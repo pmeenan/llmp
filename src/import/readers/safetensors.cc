@@ -209,7 +209,7 @@ std::expected<void, Error> Flatten(json::Value v, const std::string& key,
     case json::Kind::kFalse:
       return Insert(key, v.boolean(), out);
     case json::Kind::kNull:
-      return Insert(key, MetaValue(), out);
+      return Insert(key, MetaValue(nullptr), out);
   }
   return {};
 }
@@ -304,7 +304,8 @@ enum class ShardFormat : std::uint8_t { kNone, kMlx, kOther };
 // and the format its metadata names.
 std::expected<std::vector<Tensor>, Error> ParseHeader(std::string_view header, std::uint64_t data,
                                                       std::uint64_t size, std::uint32_t file,
-                                                      ShardFormat& format) {
+                                                      ShardFormat& format,
+                                                      std::vector<SkippedTensor>& skipped) {
   format = ShardFormat::kNone;
   // Depth 4: an entry's members may hold one more level, which is ignored.
   const auto doc = json::Parse(header, DocumentLimits(header.size(), 4, std::size_t{1} << 23U));
@@ -343,6 +344,8 @@ std::expected<std::vector<Tensor>, Error> ParseHeader(std::string_view header, s
       }
       continue;
     }
+    if (skipped.size() + tensors.size() == kMaxTensors)
+      return refuse(Rule::kBounds, "more tensors than the reader's cap");
     if (!TensorName(name)) {
       return refuse(Rule::kContainer, "a tensor name empty, too long or with control characters");
     }
@@ -373,9 +376,6 @@ std::expected<std::vector<Tensor>, Error> ParseHeader(std::string_view header, s
       }
       t.dims.push_back(*n);
     }
-    if (elements == 0) {
-      return refuse(Rule::kUnsupported, "a tensor with no elements");
-    }
     std::uint64_t bytes = 0;
     if (__builtin_mul_overflow(elements, dtype->bytes, &bytes)) {
       return refuse(Rule::kBounds, "a tensor beyond 64-bit sizes");
@@ -384,6 +384,11 @@ std::expected<std::vector<Tensor>, Error> ParseHeader(std::string_view header, s
     const auto end = NonNegative(offsets_v->at(1));
     if (!begin || !end || *end < *begin || *end - *begin != bytes) {
       return refuse(Rule::kContainer, "data offsets that do not span the tensor's bytes");
+    }
+    if (elements == 0) {
+      if (*end > size - data) return refuse(Rule::kContainer, "empty tensor offset past file");
+      skipped.push_back({.name = std::string(name), .file = file, .reason = "zero-element tensor"});
+      continue;
     }
     // GGML's order, dimensions past the fourth folded into ne[3].
     format::TensorFormat& f = t.format;
@@ -438,7 +443,8 @@ std::uint64_t HeaderLength(std::span<const std::byte, 8> length) {
 
 // One shard's tensors from its open file, and its format.
 std::expected<std::vector<Tensor>, Error> ReadShard(OpenFile& f, std::uint32_t file,
-                                                    ShardFormat& format) {
+                                                    ShardFormat& format,
+                                                    std::vector<SkippedTensor>& skipped) {
   std::array<std::byte, 8> length{};
   if (f.bytes < length.size()) {
     return Fail(Rule::kContainer, "a safetensors file shorter than its header length", file);
@@ -458,7 +464,7 @@ std::expected<std::vector<Tensor>, Error> ReadShard(OpenFile& f, std::uint32_t f
     return std::unexpected(ok.error());
   }
   f.parsed = {8 + n, base::Sha256().Update(length).Update(header).Finish()};
-  return ParseHeader(header, 8 + n, f.bytes, file, format);
+  return ParseHeader(header, 8 + n, f.bytes, file, format, skipped);
 }
 
 // The index's weight map: tensor name to shard name.
@@ -715,6 +721,23 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
   if (!config) {
     return std::unexpected(config.error());
   }
+  std::vector<SkippedFile> skipped_files;
+  // Auxiliary documents travel with the prepared artifact; never follow a
+  // kept-file link outside the checkpoint tree (HF cache blobs count).
+  for (const auto name :
+       {"tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
+        "generation_config.json", "chat_template.jinja", "chat_template.json", "tokenizer.model"}) {
+    const auto path = *root / name;
+    auto file = OpenCheckpointFileIfPresent(path, kNoItem);
+    if (!file) return std::unexpected(file.error());
+    if (!*file) continue;
+    if (!ResolvesInside(*root, path)) {
+      skipped_files.push_back({name, "kept document resolves outside the checkpoint tree"});
+      continue;
+    }
+    auto text = keep(name, **file, artifact::kMaxMetadataBytes);
+    if (!text) return std::unexpected(text.error());
+  }
   auto weights = FindWeights(*root);
   if (!weights) {
     return std::unexpected(weights.error());
@@ -761,6 +784,7 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
   // The shards come first in the checkpoint's file order; each is open
   // only while its header is read.
   std::vector<SourceFile> shard_files;
+  std::vector<SkippedTensor> skipped;
   for (std::size_t s = 0; s < shards.size(); ++s) {
     const auto file = static_cast<std::uint32_t>(s);
     // The single file was opened above; an index's shards are opened here.
@@ -770,7 +794,8 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
       return std::unexpected(f.error());
     }
     ShardFormat format = ShardFormat::kNone;
-    auto shard = ReadShard(*f, file, format);
+    const auto first_skipped = skipped.size();
+    auto shard = ReadShard(*f, file, format, skipped);
     if (!shard) {
       return std::unexpected(shard.error());
     }
@@ -779,7 +804,7 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
     if (mlx && other) {
       return Fail(Rule::kShards, "shards in MLX's format and in another's", file);
     }
-    if (tensors.size() + shard->size() > kMaxTensors) {
+    if (tensors.size() + shard->size() + skipped.size() > kMaxTensors) {
       return Fail(Rule::kBounds, "more tensors than the reader's cap", file);
     }
     for (std::size_t t = 0; t < shard->size(); ++t) {
@@ -792,6 +817,13 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
         }
       }
     }
+    for (std::size_t t = first_skipped; t < skipped.size(); ++t) {
+      if (index) {
+        const auto found = index->find(skipped[t].name);
+        if (found == index->end() || found->second != shards[s])
+          return Fail(Rule::kShards, "a skipped tensor is not placed by the shard index", file);
+      }
+    }
     std::ranges::move(*shard, std::back_inserter(tensors));
     shard_files.push_back({.name = shards[s],
                            .path = f->path,
@@ -800,13 +832,17 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
                            .inode = f->inode,
                            .parsed = f->parsed});
   }
+  // Names borrow their owning vectors only once every shard has been appended.
+  for (const auto& tensor : skipped)
+    if (!seen.insert(tensor.name).second)
+      return Fail(Rule::kShards, "a tensor name in two shards", tensor.file);
   for (std::size_t t = 0; t < tensors.size(); ++t) {
     if (!seen.insert(tensors[t].name).second) {
       return Fail(Rule::kShards, "a tensor name in two shards", tensors[t].extent.file,
                   ItemKind::kTensor, t);
     }
   }
-  if (index && index->size() != tensors.size()) {
+  if (index && index->size() != tensors.size() + skipped.size()) {
     return Fail(Rule::kShards, "the shard index names a tensor no shard holds");
   }
   HfDirectory out{
@@ -816,6 +852,8 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
   c.architecture = std::move(config->architecture);
   c.metadata = std::move(config->metadata);
   c.tensors = std::move(tensors);
+  c.skipped_tensors = std::move(skipped);
+  c.skipped = std::move(skipped_files);
   // Shards, then the documents (their extents name only shards).
   c.files = std::move(shard_files);
   std::ranges::move(sources, std::back_inserter(c.files));
@@ -844,7 +882,8 @@ std::expected<HfDirectory, Error> ParseHfShard(std::span<const std::byte> shard,
   const std::string_view header(reinterpret_cast<const char*>(shard.data() + 8),
                                 static_cast<std::size_t>(n));
   ShardFormat format = ShardFormat::kNone;
-  auto tensors = ParseHeader(header, 8 + n, shard.size(), 0, format);
+  std::vector<SkippedTensor> skipped;
+  auto tensors = ParseHeader(header, 8 + n, shard.size(), 0, format, skipped);
   if (!tensors) {
     return std::unexpected(tensors.error());
   }
@@ -856,6 +895,7 @@ std::expected<HfDirectory, Error> ParseHfShard(std::span<const std::byte> shard,
   c.architecture = std::move(parsed->architecture);
   c.metadata = std::move(parsed->metadata);
   c.tensors = std::move(*tensors);
+  c.skipped_tensors = std::move(skipped);
   c.files.push_back({.name = "memory", .bytes = shard.size()});
   return out;
 }

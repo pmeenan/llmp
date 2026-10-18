@@ -29,6 +29,7 @@
 #include "gemma4_fixture.h"
 #include "import/normalize.h"
 #include "import/readers/gguf.h"
+#include "import/readers/safetensors.h"
 #include "import_fixtures.h"
 #include "model/state_contract.h"
 #include "qwen2_exl3_normalization_fixture.h"
@@ -434,7 +435,7 @@ TEST(ImportNormalizeTest, AliasesHaveOneDestinationAndTableLifetimeIsNotBorrowed
   }();
   ASSERT_TRUE(expired) << test_support::Failed(expired, &Error::ToString).value_or("");
   EXPECT_EQ(expired->canonical().tensors[0].name, "token_embd.weight");
-  ASSERT_EQ(expired->auxiliary_namespaces().size(), 1U);
+  ASSERT_EQ(expired->auxiliary_namespaces().size(), 2U);
   EXPECT_EQ(expired->auxiliary_namespaces()[0].reason, "local compiled annotation");
   auto duplicate = Tiny();
   AddTensor(duplicate, "words.weight", {8, 10});
@@ -491,7 +492,7 @@ TEST(ImportNormalizeTest, UnknownMissingDuplicateAndNoncanonicalNamesRefuse) {
   }
   auto s = Tiny();
   Value(s, "vocab_count", std::int64_t{10});
-  EXPECT_FALSE(Normalize(std::move(s), kFunded));
+  EXPECT_TRUE(Normalize(std::move(s), kFunded));
 }
 
 TEST(ImportNormalizeTest, RefusesUnimplementedDomainsAndAlternateQueryScale) {
@@ -511,7 +512,10 @@ TEST(ImportNormalizeTest, RefusesUnimplementedDomainsAndAlternateQueryScale) {
     if (mode == 1) s.quantization = "invented";
     if (mode == 2) s.components.emplace_back();
     if (mode == 3) s.skipped.push_back({"file", "outside"});
-    EXPECT_FALSE(Normalize(std::move(s), kFunded));
+    if (mode == 3)
+      EXPECT_TRUE(Normalize(std::move(s), kFunded));
+    else
+      EXPECT_FALSE(Normalize(std::move(s), kFunded));
   }
 }
 
@@ -626,7 +630,7 @@ TEST(ImportNormalizeTest, QuantizationProvenanceIsExplicitAuxiliaryMetadata) {
   }
   EXPECT_EQ(provenance, 4U);
   Value(s, "quantize.other", std::int64_t{1});
-  EXPECT_FALSE(Normalize(std::move(s), kFunded));
+  EXPECT_TRUE(Normalize(std::move(s), kFunded));
 }
 
 TEST(ImportNormalizeTest, Gemma4DenseAndExpertPlansPreserveEverySourcePart) {
@@ -1083,17 +1087,17 @@ TEST(ImportNormalizeDsv4Test, CommunityListsAuxiliaryKeysAndTheClampFallback) {
     Value(input, "deepseek4.attention.compress_ratios", ratios(42));
     EXPECT_FALSE(normalized(std::move(input)));
   }
-  {  // Longer than the list's maximum (46): refused.
+  {  // Longer than the bounded architecture list: refused.
     auto input = test_support::Dsv4GgufCheckpoint();
-    Value(input, "deepseek4.attention.compress_ratios", ratios(47));
+    Value(input, "deepseek4.attention.compress_ratios", std::vector<std::int64_t>(1025, 0));
     EXPECT_FALSE(normalized(std::move(input)));
   }
-  {  // Within the bounds, its last entry not the profile's: refused.
+  {  // Trailing type labels are provenance for layers not imported.
     auto input = test_support::Dsv4GgufCheckpoint();
     auto changed = ratios(44);
     changed.back() = 4;
     Value(input, "deepseek4.attention.compress_ratios", changed);
-    EXPECT_FALSE(normalized(std::move(input)));
+    EXPECT_TRUE(normalized(std::move(input)));
   }
   {  // A prefix that is not the profile's: refused.
     auto input = test_support::Dsv4GgufCheckpoint();
@@ -1128,6 +1132,7 @@ TEST(ImportNormalizeDsv4Test, CommunityListsAuxiliaryKeysAndTheClampFallback) {
   {  // The exact auxiliary keys: accepted.
     auto input = test_support::Dsv4GgufCheckpoint();
     Value(input, "deepseek4.nextn_predict_layers", std::int64_t{1});
+    Value(input, "deepseek4.attention.compress_ratios", ratios(44));
     Value(input, "deepseek4.vocab_size", std::int64_t{129280});
     const auto plan = normalized(std::move(input));
     EXPECT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
@@ -1168,6 +1173,20 @@ TEST(ImportNormalizeDsv4Test, CommunityListsAuxiliaryKeysAndTheClampFallback) {
     Value(input, std::string(near), std::int64_t{1});
     EXPECT_FALSE(normalized(std::move(input))) << near;
   }
+}
+
+TEST(ImportNormalizeDsv4Test, ExtraLayerLabelsAreBoundedAndExplicitDepthCannotDisagree) {
+  auto input = test_support::Dsv4GgufCheckpoint();
+  ASSERT_TRUE(NormalizationBound(input));  // captured 43-block, 46-label source
+  auto labels =
+      std::get<std::vector<std::int64_t>>(*input.FindValue("deepseek4.attention.compress_ratios"));
+  Value(input, "deepseek4.nextn_predict_layers", std::int64_t{2});
+  EXPECT_FALSE(NormalizationBound(input));
+  Value(input, "deepseek4.nextn_predict_layers", std::int64_t{3});
+  EXPECT_TRUE(NormalizationBound(input));
+  labels.back() = 7;
+  Value(input, "deepseek4.attention.compress_ratios", labels);
+  EXPECT_FALSE(NormalizationBound(input));
 }
 
 TEST(ImportNormalizeQwen2Test, CompleteCapturedTargetMatchesV0SpecWithOmittedOrExplicitKeyLength) {
@@ -1215,7 +1234,10 @@ TEST(ImportNormalizeQwen2Test, RefusesProfileShapeEncodingAndUnclassifiedMetadat
     if (mutation == 6) input.tensors.front().format.encoding = Encoding::kBF16;
     if (mutation == 7) input.tensors.back().dims[0] = 1536;
     if (mutation == 8) input.tensors.pop_back();
-    EXPECT_FALSE(Normalize(std::move(input), kFunded)) << mutation;
+    if (mutation == 3)
+      EXPECT_TRUE(Normalize(std::move(input), kFunded));
+    else
+      EXPECT_FALSE(Normalize(std::move(input), kFunded)) << mutation;
   }
 }
 
@@ -1253,7 +1275,65 @@ TEST(ImportNormalizeQwen2Exl3Test, RefusesMalformedPartRolesRatesCodebooksAndMet
     if (mutation == 7) input.tensors[5].dims = {1};
     if (mutation == 8) input.tensors[3].format.params.k_bits = 4;  // suh disagrees with trellis
     if (mutation == 9) input.tensors.pop_back();
-    EXPECT_FALSE(Normalize(std::move(input), kFunded)) << mutation;
+    if (mutation == 1 || mutation == 2 || mutation == 4)
+      EXPECT_TRUE(Normalize(std::move(input), kFunded)) << mutation;
+    else
+      EXPECT_FALSE(Normalize(std::move(input), kFunded)) << mutation;
+  }
+}
+
+TEST(ImportNormalizeQwen2Exl3Test, ReaderCodebooksAndRatesPreserveFormatsAndRequireExactParts) {
+  using format::Exl3Codebook;
+  using format::PartRole;
+  for (const auto codebook : {Exl3Codebook::kMcg, Exl3Codebook::kMul1, Exl3Codebook::k3Inst}) {
+    for (const auto bits : {1U, 3U, 7U}) {
+      SCOPED_TRACE(static_cast<unsigned>(codebook));
+      SCOPED_TRACE(bits);
+      auto input = test_support::Qwen2Exl3Checkpoint();
+      if (codebook == Exl3Codebook::k3Inst)
+        std::erase_if(input.tensors,
+                      [](const auto& tensor) { return tensor.part == PartRole::kCodebookMarker; });
+      std::uint64_t offset = 0;
+      for (auto& tensor : input.tensors) {
+        if (tensor.format.encoding == Encoding::kExl3Trellis) {
+          tensor.format.params.codebook = codebook;
+          tensor.format.params.k_bits = static_cast<std::uint8_t>(bits);
+          if (tensor.part == PartRole::kCodes) tensor.dims[2] = 16ULL * bits;
+          if (tensor.part == PartRole::kCodebookMarker && codebook == Exl3Codebook::kMul1)
+            tensor.name.replace(tensor.name.size() - 4, 4, ".mul1");
+        }
+        tensor.extent.offset = offset;
+        tensor.extent.bytes = format::PartsOf(tensor.format)->Find(tensor.part)->bytes;
+        offset += tensor.extent.bytes;
+      }
+      input.files[0].bytes = offset;
+      auto plan = Normalize(input, kFunded);
+      ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+      for (const auto& tensor : plan->canonical().tensors)
+        if (tensor.format.encoding == Encoding::kExl3Trellis) {
+          EXPECT_EQ(tensor.format.params.codebook, codebook);
+          EXPECT_EQ(tensor.format.params.k_bits, bits);
+          // The legacy canonical marker spelling is a binding identity only.
+          if (tensor.part == PartRole::kCodebookMarker) EXPECT_TRUE(tensor.name.ends_with(".mcg"));
+        }
+      if (codebook == Exl3Codebook::k3Inst) {
+        const auto trellis = std::ranges::find(input.tensors, "lm_head.trellis", &Tensor::name);
+        ASSERT_NE(trellis, input.tensors.end());
+        auto marker = *trellis;
+        marker.name = "lm_head.mcg";
+        marker.part = PartRole::kCodebookMarker;
+        marker.dtype = "I32";
+        marker.dims.clear();
+        marker.extent = {.offset = offset, .bytes = 4};
+        input.tensors.push_back(std::move(marker));
+        input.files[0].bytes += 4;
+      } else {
+        std::erase_if(input.tensors, [](const auto& tensor) {
+          return tensor.name == "lm_head.mcg" || tensor.name == "lm_head.mul1";
+        });
+      }
+      EXPECT_FALSE(Normalize(std::move(input), kFunded));
+    }
   }
 }
 
@@ -1378,6 +1458,99 @@ TEST(ImportNormalizeSafetensorsTest, Qwen2SafetensorsMappingValidatesAndGgufSynt
   ASSERT_TRUE(spec.has_value()) << spec.error();
   EXPECT_EQ(spec->stages[0].stream.width, 3584U);
   EXPECT_EQ(spec->stages[0].layers.size(), 1U);
+}
+
+TEST(ImportNormalizeSafetensorsTest, RealisticTransformersConfigNormalizesWithEitherDtypeSpelling) {
+  const auto entries = fixtures::TinyQwen2HfEntries();
+  for (const auto dtype : {"dtype", "torch_dtype"}) {
+    const auto config = fixtures::TinyQwen2HfConfig(dtype);
+    auto input = ParseSafetensors(fixtures::Shard(entries), config);
+    ASSERT_TRUE(input) << test_support::Failed(input, &Error::ToString).value_or("");
+    ASSERT_EQ(input->skipped_tensors.size(), 1U);
+    auto bound = NormalizationBound(*input);
+    ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
+    auto plan = Normalize(std::move(*input), {bound->metadata_bytes, bound->work_units});
+    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+    EXPECT_EQ(plan->spec().stages[0].stream.width, 8U);
+    EXPECT_EQ(plan->canonical().tensors.size(), 15U);
+    EXPECT_EQ(plan->routes().size(), 15U);
+    auto malformed = config;
+    const auto null_at = malformed.find("\"rope_scaling\":null");
+    ASSERT_NE(null_at, std::string::npos);
+    malformed.replace(null_at, std::string_view("\"rope_scaling\":null").size(),
+                      "\"rope_scaling\":[true,1]");
+    auto unsafe = ParseSafetensors(fixtures::Shard(entries), malformed);
+    ASSERT_TRUE(unsafe);
+    EXPECT_FALSE(NormalizationBound(*unsafe));
+  }
+}
+
+TEST(ImportNormalizeSafetensorsTest, EmptyFallbackRoleMatchesAbsentButRequiredEmptyStillRefuses) {
+  const auto config = fixtures::TinyQwen2HfConfig();
+  auto entries = fixtures::TinyQwen2HfEntries();
+  std::erase_if(entries, [](const auto& entry) { return entry.name == "lm_head.weight"; });
+  auto absent = ParseSafetensors(fixtures::Shard(entries), config);
+  ASSERT_TRUE(absent);
+  auto expected = Normalize(std::move(*absent), kFunded);
+  ASSERT_TRUE(expected) << test_support::Failed(expected, &Error::ToString).value_or("");
+  entries.push_back(fixtures::E("lm_head.weight", "F16", {0}));
+  auto empty = ParseSafetensors(fixtures::Shard(entries), config);
+  ASSERT_TRUE(empty);
+  auto plan = Normalize(std::move(*empty), kFunded);
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  EXPECT_EQ(plan->spec(), expected->spec());
+  EXPECT_EQ(plan->spec().stages[0].heads.output->weights[0].tensor, "token_embd.weight");
+  for (auto& entry : entries)
+    if (entry.name == "model.norm.weight") entry = fixtures::E(entry.name, "F16", {0});
+  auto required = ParseSafetensors(fixtures::Shard(entries), config);
+  ASSERT_TRUE(required);
+  EXPECT_TRUE(NormalizationBound(*required));
+  EXPECT_FALSE(Normalize(std::move(*required), kFunded));
+}
+
+TEST(ImportNormalizeTest, UnreadProvenanceIsRetainedWhileUnconsumedSemanticsRefuse) {
+  auto input = Tiny();
+  Value(input, "new_converter.note", std::string("provenance"));
+  auto plan = Normalize(input, kFunded);
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  const auto entry =
+      std::ranges::find(plan->source().metadata, "new_converter.note", &MetaEntry::key);
+  ASSERT_NE(entry, plan->source().metadata.end());
+  const auto use =
+      plan->metadata()[static_cast<std::size_t>(entry - plan->source().metadata.begin())];
+  EXPECT_EQ(use.classification, MetadataClass::kAuxiliary);
+  EXPECT_TRUE(plan->auxiliary_namespaces()[use.destination].prefix.empty());
+  Value(input, "gemma2.rope.scaling.new_algorithm", true);
+  EXPECT_FALSE(NormalizationBound(input));
+}
+
+TEST(ImportNormalizeTest, EmptyTensorRecordsCannotHideRequiredWeights) {
+  auto input = Tiny();
+  input.skipped_tensors.push_back({.name = "unused.empty", .reason = "zero-element tensor"});
+  EXPECT_TRUE(Normalize(input, kFunded));
+  std::erase_if(input.tensors,
+                [](const auto& tensor) { return tensor.name == "output_norm.weight"; });
+  input.skipped_tensors.push_back({.name = "output_norm.weight", .reason = "zero-element tensor"});
+  // Preflight bounds the inventory; synthesis owns actual role requiredness.
+  EXPECT_TRUE(NormalizationBound(input));
+  EXPECT_FALSE(Normalize(std::move(input), kFunded));
+}
+
+TEST(ImportNormalizeQwen2Exl3Test, DenseFormatsAndShardsAreStructuralAndNominalDtypeIsProvenance) {
+  auto input = test_support::Qwen2Exl3Checkpoint();
+  input.files.push_back(input.files.front());
+  input.files.back().name = "second.safetensors";
+  // Metadata-only memory fixture; the extra file must have a distinct physical identity.
+  input.files.front().path = "/tmp/llmp-exl3-first";
+  input.files.front().inode = 1;
+  input.files.back().path = "/tmp/llmp-exl3-second";
+  input.files.back().inode = 2;
+  input.tensors.back().extent.file = 1;
+  Value(input, "torch_dtype", std::string("float16"));
+  Value(input, "bos_token_id", std::int64_t{1});
+  auto plan = Normalize(input, kFunded);
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  EXPECT_EQ(plan->spec().stages[0].stream.width, 896U);
 }
 
 }  // namespace

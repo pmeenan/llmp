@@ -443,6 +443,7 @@ const ComponentDef& AttentionGdn() {
       .roles = kRoles,
       .shapes = Shapes,
       .state = State,
+      .max_state_tensors = 2,
       .batch_classes = kBatchClasses,
       .splits = kSplits,
       .patterns = kPatterns,

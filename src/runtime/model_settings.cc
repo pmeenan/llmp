@@ -694,6 +694,11 @@ std::expected<ChatAssets, std::string> ReadChatAssets(const ja::Artifact& target
       return std::unexpected(json_text.error());
     }
     if (!*json_text) {
+      if (Keeps(target, "tokenizer.model"))
+        return Error(
+            "the artifact keeps a SentencePiece tokenizer.model, whose standalone format is not "
+            "supported by the native tokenizer loader; supply tokenizer.json or GGUF tokenizer "
+            "metadata");
       return Error(
           std::format("the artifact keeps no GGUF metadata or tokenizer.json and "
                       "models.{}.tokenizer is not set",
@@ -712,6 +717,31 @@ std::expected<ChatAssets, std::string> ReadChatAssets(const ja::Artifact& target
     return std::unexpected(text.error());
   }
   assets.chat_template = std::move(*text);
+  if (!assets.chat_template) {
+    for (const auto name : {"chat_template.json", "tokenizer_config.json"}) {
+      auto kept = source(name, std::nullopt);
+      if (!kept) return std::unexpected(kept.error());
+      if (!*kept) continue;
+      auto parsed = json::Parse(**kept);
+      if (!parsed) return Error(std::format("{}: invalid JSON", name));
+      const auto root = parsed->root();
+      const auto value = root.is_object() ? root.find("chat_template") : std::optional(root);
+      if (!value) continue;
+      if (value->is_string())
+        assets.chat_template = std::string(value->string());
+      else if (value->is_array()) {
+        // Transformers can store several named templates; select its default.
+        for (std::size_t i = 0; i < value->size(); ++i) {
+          const auto item = value->at(i);
+          const auto key = item.is_object() ? item.find("name") : std::nullopt;
+          const auto body = item.is_object() ? item.find("template") : std::nullopt;
+          if (key && key->is_string() && key->string() == "default" && body && body->is_string())
+            assets.chat_template = std::string(body->string());
+        }
+      }
+      if (assets.chat_template) break;
+    }
+  }
   return assets;
 }
 

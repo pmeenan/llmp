@@ -19,8 +19,8 @@
 //     inside it;
 //   - manifest.json (at most 1 MiB): strict JSON, format
 //     "jitllm-composition" and format_version 0, or "llmp-composition" and
-//     format_version 1 (any other version refused, `item` the version),
-//     canonical bytes, the directory named by their SHA-256, every key and
+//     format_version 1 or 2 (one scoped role level under meta/),
+//     canonical bytes, the directory named by D-120's identity digest, every key and
 //     value typed and patterned, lists in canonical order; 1-16 components,
 //     each a role ([a-z][a-z0-9_]{0,63}), an artifact ID and that
 //     artifact's architecture;

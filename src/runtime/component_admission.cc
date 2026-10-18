@@ -851,9 +851,9 @@ std::uint32_t ApprovedDefaultContext(const Approval& approval) {
 std::expected<ImageAdmission, std::string> ReadImageAdmission(
     const artifact::Composition& composition,
     std::span<const artifact::Artifact* const> components) {
-  if (composition.format_version() != 1)
+  if (composition.format_version() != 1 && composition.format_version() != 2)
     return Refused(std::format(
-        "composition {} ({}) is format version {}; serving reads version 1 only (D-118): "
+        "composition {} ({}) is format version {}; serving reads versions 1 and 2 (D-118): "
         "re-import its source pipeline with `llmp import SOURCE --store DIRECTORY` and configure "
         "the new composition ID",
         composition.id(), composition.architecture(), composition.format_version()));
@@ -910,6 +910,27 @@ std::expected<ImageAdmission, std::string> ReadImageAdmission(
   }
   auto profile = spec::ImageProfileOf(*family, *mapping);
   if (!profile) return Refused(profile.error());
+  // Import preserves source encodings; the current image kernels have a
+  // narrower execution contract. Report that boundary before building graphs.
+  for (std::size_t i = 0; i < named.size(); ++i) {
+    const auto kind = mapping->components[i].kinds.front();
+    const auto expected = kind == spec::kImageTextKind
+                              ? model::TextEncoderTensors(profile->text, mapping->names.text)
+                          : kind == spec::kImageFlowKind
+                              ? model::DenoiserTensors(profile->denoiser, mapping->names.denoiser)
+                              : model::VaeDecoderTensors(profile->vae, mapping->names.vae);
+    const auto source = spec::SourceOf(*components[i]);
+    if (!source) return Refused(source.error());
+    for (const auto& need : expected) {
+      const auto tensor = std::ranges::find(source->tensors, need.name, &spec::SourceTensor::name);
+      const auto encoding = need.dtype == "BF16" ? format::Encoding::kBF16 : format::Encoding::kF32;
+      if (tensor == source->tensors.end() || tensor->format.encoding != encoding)
+        return Refused(
+            std::format("image component {} tensor {}: current image runtime requires {}; source "
+                        "encoding is preserved by import",
+                        named[i].role, need.name, need.dtype));
+    }
+  }
   return ImageAdmission{.mapping = mapping,
                         .approval = approval,
                         .family = std::move(*family),

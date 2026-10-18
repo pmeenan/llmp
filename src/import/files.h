@@ -82,6 +82,7 @@ std::expected<std::filesystem::path, Error> CheckpointDirectory(const std::files
 // repository's blobs/ directory, where the cache's snapshot files link.
 // False when either cannot be resolved. A file the importer keeps verbatim
 // is kept only if this holds.
+bool Beneath(const std::filesystem::path& path, const std::filesystem::path& root);
 bool ResolvesInside(const std::filesystem::path& root, const std::filesystem::path& path);
 
 // Reads exactly out.size() bytes at offset (kIo when the file ends first).

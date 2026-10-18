@@ -15,7 +15,7 @@
 // dotted keys ("text_config.num_hidden_layers"): numbers as integers
 // (written without fraction or exponent and within 64 bits) or finite
 // reals, strings, flags, lists of integers, of numbers or of strings, and
-// none for null and any other list. Two members flattening to one key are
+// JSON null, and none for any other list. Two members flattening to one key are
 // refused.
 // `quantization_config` (and MLX's `quantization` object) is not
 // metadata: hf_quant.h reads it, and hf_quant_config.json beside it (the
@@ -48,13 +48,14 @@
 // library wrote are refused. A tensor is an object
 // with `dtype`, `shape` and `data_offsets` (other members ignored): a
 // dtype of the table below, at most kMaxRank non-negative integer
-// dimensions whose product (no element count zero: the format layer has no
-// empty shape) times the dtype's size is its bytes, and [begin, end] with
+// dimensions whose product times the dtype's size is its bytes, and [begin, end] with
 // end - begin those bytes, inside the data section and overlapping no
 // other tensor's. (Safetensors' own reader also wants the tensors to tile
 // the data section with no gap or byte left over, which this reader does
 // not need.) Names are 1 to kMaxNameBytes bytes without control
-// characters.
+// characters. Zero-element tensors have checked offsets and known dtypes,
+// but are recorded in skipped_tensors rather than the executable inventory;
+// they still count toward the aggregate tensor cap and shard index coverage.
 //
 // Dtypes and their encodings: BOOL, U8, I8, I16, U16, I32, U32, I64, U64,
 // F16, BF16, F32, F64, F8_E4M3, F8_E5M2 and F8_E8M0 (E8M0); the 4- and

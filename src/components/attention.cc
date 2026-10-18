@@ -661,6 +661,7 @@ const ComponentDef& AttentionDense() {
       .roles = kRoles,
       .shapes = Shapes,
       .state = State,
+      .max_state_tensors = 2,
       .batch_classes = kBatchClasses,
       .batching = nullptr,
       .splits = kSplits,
@@ -681,6 +682,7 @@ const ComponentDef& AttentionBorrowed() {
       .roles = kRoles,
       .shapes = Shapes,
       .state = State,
+      .max_state_tensors = 2,
       .batch_classes = std::span(kBatchClasses).first(5),  // no stores
       .batching = nullptr,
       .splits = kBorrowedSplits,

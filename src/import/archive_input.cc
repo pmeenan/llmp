@@ -535,7 +535,8 @@ std::expected<void, Error> RecordArchiveImport(const ArchiveInput& archive,
     auto relative = Relative(archive, file);
     if (!relative) return std::unexpected(relative.error());
     const auto expected = archive.files.find(*relative);
-    const std::string name = fs::path(file.name).filename().string();
+    const std::string name =
+        composition.format_version() >= 2 ? file.name : fs::path(file.name).filename().string();
     const auto actual = std::ranges::find(composition.sources(), name, &artifact::Source::name);
     if (expected == archive.files.end() || !expected->second.present || !expected->second.sha256 ||
         actual == composition.sources().end() || actual->bytes.value() != expected->second.bytes ||

@@ -21,6 +21,7 @@
 #include "artifact/error.h"
 #include "artifact/json.h"
 #include "base/check.h"
+#include "base/json.h"
 #include "base/sha256.h"
 
 namespace llmp::artifact::schema {
@@ -128,6 +129,65 @@ constexpr bool IsName(std::string_view s) {
                              [](char c) { return IsAlnumUnderscore(c) || c == '.' || c == '-'; });
 }
 
+// Checkpoint file names are UTF-8 plain names, independent of identifiers.
+inline bool IsFileName(std::string_view s) {
+  if (s.empty() || s.size() > 255 || s == "." || s == ".." || s.contains('/') || s.contains('\\') ||
+      base::json::FirstInvalidUtf8(s))
+    return false;
+  for (std::size_t i = 0; i < s.size(); ++i) {
+    const auto c = static_cast<unsigned char>(s[i]);
+    if (c < 0x20 || c == 0x7f ||
+        (c == 0xc2 && i + 1 < s.size() && static_cast<unsigned char>(s[i + 1]) >= 0x80 &&
+         static_cast<unsigned char>(s[i + 1]) <= 0x9f))
+      return false;
+  }
+  return true;
+}
+
+inline bool IsRoleName(std::string_view s) {
+  return !s.empty() && s.size() <= 64 && s.front() >= 'a' && s.front() <= 'z' &&
+         std::ranges::all_of(s, [](char c) {
+           return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+         });
+}
+
+// A composition may scope a document by one component role.
+inline bool IsKeptName(std::string_view s) {
+  const auto slash = s.find('/');
+  return slash == std::string_view::npos
+             ? IsFileName(s)
+             : IsRoleName(s.substr(0, slash)) && IsFileName(s.substr(slash + 1));
+}
+
+// v1 identity excludes build provenance. The historical sentinel preserves
+// the IDs of already published imports, whose build was "unknown".
+inline base::Sha256Digest ManifestIdentity(json::Value manifest) {
+  std::string canonical = "{";
+  for (std::size_t i = 0; i < manifest.size(); ++i) {
+    if (i) canonical += ',';
+    base::json::AppendQuoted(manifest.key(i), canonical);
+    canonical += ':';
+    const auto value = manifest.member(i);
+    if (manifest.key(i) != "importer" || !value.is_object()) {
+      json::Serialize(value, canonical);
+      continue;
+    }
+    canonical += '{';
+    for (std::size_t j = 0; j < value.size(); ++j) {
+      if (j) canonical += ',';
+      base::json::AppendQuoted(value.key(j), canonical);
+      canonical += ':';
+      if (value.key(j) == "build")
+        canonical += "\"unknown\"";
+      else
+        json::Serialize(value.member(j), canonical);
+    }
+    canonical += '}';
+  }
+  canonical += "}\n";
+  return base::Sha256().Update(canonical).Finish();
+}
+
 // 0|[1-9][0-9]{0,max_digits-1}
 constexpr bool IsCanonicalNumber(std::string_view s, std::size_t max_digits) {
   if (s.empty() || s.size() > max_digits || (s.size() > 1 && s[0] == '0')) {
@@ -175,8 +235,8 @@ constexpr bool IsShardPath(std::string_view s) {
 }
 
 // meta/<name>
-constexpr bool IsMetaPath(std::string_view s) {
-  return s.starts_with("meta/") && IsName(s.substr(5));
+inline bool IsMetaPath(std::string_view s) {
+  return s.starts_with("meta/") && IsFileName(s.substr(5));
 }
 
 constexpr bool IsLowerWordChar(char c) {

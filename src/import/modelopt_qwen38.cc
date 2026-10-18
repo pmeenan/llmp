@@ -22,6 +22,7 @@
 #include "import/files.h"
 #include "import/mlx_qwen38.h"
 #include "import/parameter_folds.h"
+#include "import/writer.h"
 #include "ir/graph.h"
 #include "model/state_contract.h"
 #include "spec/mappings/qwen38.h"
@@ -2302,9 +2303,8 @@ std::vector<std::string> FoldNames(std::span<const PlannedPartFold> planned) {
 std::expected<NormalizationCost, Error> ModelOptTargetBound(const Checkpoint& source) {
   if (source.container != "safetensors" || source.architecture != "qwen3_8_flash_next" ||
       source.quantization != "modelopt MIXED_PRECISION" || !source.role.empty() ||
-      !source.components.empty() || !source.skipped.empty() ||
-      source.tensors.size() != kPhysicalTensors || source.files.empty() ||
-      source.files.size() > 64 || source.metadata.size() > 512)
+      !source.components.empty() || source.tensors.size() != kPhysicalTensors ||
+      source.files.empty() || source.files.size() > 64 || source.metadata.size() > 512)
     return Bad("outside closed ModelOpt target source domain", Rule::kUnsupported);
   for (std::size_t i = 0; i < source.metadata.size(); ++i) {
     const auto& e = source.metadata[i];
@@ -2617,9 +2617,8 @@ SourceRule Routed(const SourceRule& aux, const MtpRole& role) {
 std::expected<void, Error> DrafterDomain(const Checkpoint& source) {
   if (source.container != "safetensors" || source.architecture != "qwen3_8_flash_next" ||
       source.quantization != "modelopt MIXED_PRECISION" || !source.role.empty() ||
-      !source.components.empty() || !source.skipped.empty() || source.files.empty() ||
-      source.files.size() > 64 || source.metadata.size() > 512 ||
-      source.tensors.size() > kPhysicalTensors)
+      !source.components.empty() || source.files.empty() || source.files.size() > 64 ||
+      source.metadata.size() > 512 || source.tensors.size() > kPhysicalTensors)
     return Bad("outside closed ModelOpt drafter source domain", Rule::kUnsupported);
   for (std::size_t i = 0; i < source.metadata.size(); ++i) {
     const auto& e = source.metadata[i];
@@ -3037,6 +3036,23 @@ std::expected<ModelOptTargetPlan, Error> NormalizeIndexedTarget(Checkpoint&& sou
   }
   return std::unexpected(
       Error{.rule = Rule::kUnsupported, .reason = "not an indexed target checkpoint"});
+}
+
+std::expected<WriteResult, Error> WriteArtifact(const ModelOptTargetPlan& plan,
+                                                const WriteOptions& options) {
+  return publication_detail::WriteIndexed(plan.parts(), plan.canonical(), plan.spec(),
+                                          plan.cost().payload_bytes, plan.bindings(),
+                                          plan.semantic(), plan.planned_folds(), {}, options);
+}
+
+std::expected<WriteResult, Error> WriteArtifact(const ModelOptDrafterPlan& plan,
+                                                const WriteOptions& options) {
+  if (options.options != plan.options())
+    return std::unexpected(Error{.rule = Rule::kConfig,
+                                 .reason = "drafter publication options differ from its plan's"});
+  return publication_detail::WriteIndexed(plan.parts(), plan.canonical(), plan.spec(),
+                                          plan.cost().payload_bytes, plan.bindings(), {},
+                                          plan.planned_folds(), plan.generated(), options);
 }
 
 }  // namespace llmp::import

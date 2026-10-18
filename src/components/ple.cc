@@ -597,6 +597,7 @@ const ComponentDef& ResidualPle() {
       .roles = kPleRoles,
       .shapes = PleShapes,
       .state = PleState,
+      .max_state_tensors = 1,
       .batch_classes = kPleBatch,
       .patterns = kPlePatterns,
       .emit = PleEmit,
@@ -616,6 +617,7 @@ const ComponentDef& EmbeddingMtp() {
       .roles = kMtpRoles,
       .shapes = MtpShapes,
       .state = MtpState,
+      .max_state_tensors = 1,
       .batch_classes = kMtpBatch,
       .emit = MtpEmit,
       .reference = MtpReference,
@@ -629,6 +631,7 @@ const ComponentDef& EmbeddingMtpRepeat() {
     value.version = 2;
     value.params = kMtpRepeatParams;
     value.state = MtpRepeatState;
+    value.max_state_tensors = 2;
     return value;
   }();
   return def;

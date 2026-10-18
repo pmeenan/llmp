@@ -93,6 +93,7 @@ TEST(ComponentsTest, CatalogHoldsTheGemmaKindsInOrder) {
     EXPECT_NE(def->reference, nullptr) << def->kind;
     EXPECT_NE(def->shapes, nullptr) << def->kind;
     EXPECT_EQ(Find(def->kind, def->version), def);
+    EXPECT_EQ(def->state != nullptr, def->max_state_tensors != 0) << def->kind;
   }
   EXPECT_TRUE(std::ranges::is_sorted(kinds));
   EXPECT_EQ(kinds, (std::vector<std::string_view>{"affine.channel",

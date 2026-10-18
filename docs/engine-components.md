@@ -2388,22 +2388,58 @@ by GGUF, never executed again; Gemma 4 declares no fold. An absent output
 weight binds the embedding through the existing mapping without inventing
 or copying a second payload.
 
-Unknown tensors or model keys, duplicate aliases, invalid scalar or
-per-layer list types, unsupported container/family pairs, inconsistent
-formats or file extents, and overlaps through physical file aliases refuse.
-Only declared `general.`, `tokenizer.` and `quantize.imatrix.` metadata
-namespaces are retained as auxiliary data. Gemma 4 uses the same mapping's
+Unknown tensors (except declared rotary-buffer patterns), duplicate
+aliases, invalid scalar or per-layer list types, unsupported container/family
+pairs, inconsistent formats or file extents, and overlaps through physical
+file aliases refuse. Unread metadata outside declared semantic namespaces is
+retained as provenance with an import warning. Keys in an architecture's
+semantic namespace, or HF rotary/quantization/attention-scale namespaces,
+must be consumed or refused; adding a converter provenance field is allowed.
+Zero-element tensors are recorded and skipped unless a mapping needs them.
+Safetensors, MLX and EXL3 retain tokenizer, generation and chat-template
+documents within the existing metadata bounds. Serving already prefers a
+kept tokenizer.json when no external tokenizer is needed, and can obtain its
+chat template from kept Jinja, JSON or tokenizer_config.json metadata. Gemma 4 uses the same mapping's
 mutually exclusive dense/MoE slots, local/global layer rules, tied global
 K/V and shared rotary table. Expert gate/up and down arrays retain their
 whole source encodings and rank-three geometry; this path neither repacks
 nor dequantizes them. Gemma 2's 46-layer and Gemma 3's 62-layer variants
 remain refused because their alternate query scale is not yet mapped.
 
-`NormalizationBound` checks the closed input domain without new heap
+`NormalizationBound` checks the structural input domain without new heap
 allocations; the caller must cover its checked incremental storage and work
 bounds before construction. The source checkpoint remains separately owned
 and funded. Copy cursors describe source byte ranges; they neither read
 payloads nor publish artifacts.
+
+Source-table encoding whitelists and checkpoint-sized shape/value pins are
+removed. Format validation, complete role bindings and shapes implied by
+component parameters remain mandatory at import and publication. Execution
+encoding coverage stays a runtime check (`ValidationPurpose::kImport`
+defers only the catalog's executable encoding list). Image artifacts retain
+the actual source tensor formats; the current image runtime reports its
+unsupported dtypes at admission. EXL3's reader and format layer own trellis
+codebook/bit-width validation and support multi-shard input. Mcg and Mul1
+bind their required marker part; 3Inst has none. The historical canonical
+`.mcg` marker name is only a binding identity: the tensor format states the
+actual codebook, including for a source `.mul1` alias. Nominal HF
+class/dtype/token IDs are provenance rather than checkpoint fingerprints.
+Component catalog entries declare their maximum state tensor count, checked
+against constructed contracts and used for normalization's storage bound.
+
+Layer lists cover the declared layers. Rotary section lists have four
+nonnegative entries covering the rotary dimension; compression codes must
+be in the mapping/component domain. N-gram row ranges fit the encoded table
+and signed I32 addressing; component parameter/shape checks relate the
+embedding width, vocabulary and n-gram table. Drafter tap layers are checked
+against the synthesized target. DeepSeek permits trailing layer-type labels
+for unimported layers: the fbbb5b93 source has 43 active blocks and 46 labels
+without a nextn/MTP depth field. This is an explicit source-table policy,
+not a fixed extra-layer count: every label must be 0, 4 or 128, length is
+bounded by 1024, and a stated extra depth must agree with the length (an
+active-layer-only list is also accepted). Only the first block-count entries
+select components; no trailing layer tensor is imported, and the CLI warns
+that the suffix is provenance. Thus a suffix cannot affect execution.
 
 Focused native checks passed on Spark on 2026-10-11: 70 host controls,
 including 16 normalization cases and complete 288/444/658/833-tensor

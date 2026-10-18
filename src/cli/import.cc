@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/build_info.h"
+#include "base/json.h"
 #include "cli/cli.h"
 #include "import/archive_input.h"
 #include "import/image_pipeline.h"
@@ -87,37 +88,79 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     if (!identities) return Failure(err, identities.error());
     expected = std::move(*identities);
   }
-  // Both owned plan kinds use the same publication and archive receipt path.
-  const auto publish = [&](const auto& plan, const import::Checkpoint& checkpoint,
-                           std::uint64_t used) {
-    const auto& info = base::GetBuildInfo();
-    const std::string build = info.commit.empty()
-                                  ? "unknown"
-                                  : std::string(info.commit) + (info.modified ? ".dirty" : "");
-    auto result = import::WriteArtifact(
-        plan,
-        {.store = store, .build = build, .expected = expected, .metadata_bytes = metadata - used});
-    if (!result) return Failure(err, result.error());
-    if (!Print(out,
-               std::format("{} {}\n", result->reused ? "verified" : "published", result->id))) {
-      Print(err, "llmp import: artifact published; cannot write result to standard output\n");
+  const auto& info = base::GetBuildInfo();
+  const std::string build =
+      info.commit.empty() ? "unknown" : std::string(info.commit) + (info.modified ? ".dirty" : "");
+  const auto warn = [&](std::string_view name, std::string_view reason) {
+    std::string quoted;
+    base::json::AppendQuoted(name, quoted);
+    Print(err, "llmp import: warning: " + quoted + ": " + std::string(reason) + '\n');
+  };
+  const auto warn_skipped = [&](const import::Checkpoint& checkpoint) {
+    for (const auto& skipped : checkpoint.skipped) warn(skipped.name, skipped.reason);
+    for (const auto& skipped : checkpoint.skipped_tensors) warn(skipped.name, skipped.reason);
+  };
+  warn_skipped(*input);
+  for (const auto& child : input->components) warn_skipped(child);
+  const auto finish = [&](const import::WriteResult& result, const import::Checkpoint& checkpoint,
+                          bool composition, bool drafter,
+                          const std::optional<std::string>& list_name = std::nullopt) {
+    if (!Print(out, std::format("{} {}\n", result.reused ? "verified" : "published", result.id))) {
+      Print(err, "llmp import: published; cannot write result to standard output\n");
       return kExitFailure;
     }
     if (*archive) {
-      auto opened = artifact::Artifact::Open(result->path);
-      if (!opened) {
-        Print(err,
-              "llmp import: artifact published, but it could not be reopened for catalog "
-              "recording\n");
-        return kExitFailure;
+      std::expected<void, import::Error> recorded;
+      if (composition) {
+        auto opened = artifact::OpenComposition(result.path);
+        if (!opened)
+          return Failure(
+              err, {.rule = import::Rule::kIo,
+                    .reason = "published composition could not reopen for catalog recording"});
+        recorded = import::RecordArchiveImport(**archive, checkpoint, *opened);
+      } else {
+        auto opened = artifact::Artifact::Open(result.path);
+        if (!opened)
+          return Failure(err,
+                         {.rule = import::Rule::kIo,
+                          .reason = "published artifact could not reopen for catalog recording"});
+        recorded = drafter ? import::RecordArchiveComponentImport(**archive, checkpoint, *opened,
+                                                                  list_name)
+                           : import::RecordArchiveImport(**archive, checkpoint, *opened);
       }
-      if (auto recorded = import::RecordArchiveImport(**archive, checkpoint, *opened); !recorded) {
-        Print(err, "llmp import: artifact published; catalog event failed: " +
-                       recorded.error().ToString() + '\n');
+      if (!recorded) {
+        Print(err, "llmp import: published; catalog event failed: " + recorded.error().ToString() +
+                       '\n');
         return kExitFailure;
       }
     }
     return kExitOk;
+  };
+  const auto publish = [&](const auto& plan, const import::Checkpoint& checkpoint,
+                           std::uint64_t used) {
+    if constexpr (requires { plan.metadata(); }) {
+      for (const auto& use : plan.metadata()) {
+        if (use.classification == import::MetadataClass::kAuxiliary &&
+            plan.auxiliary_namespaces()[use.destination].prefix.empty())
+          warn(checkpoint.metadata[use.source].key,
+               "unread metadata retained as source provenance");
+      }
+    }
+    if constexpr (requires { plan.metadata(); }) {
+      if (const auto* table =
+              import::FindSourceMapping(checkpoint.container, checkpoint.architecture))
+        for (const auto& rule : table->lists) {
+          const auto* value = checkpoint.FindValue(rule.key);
+          const auto* labels = value ? std::get_if<std::vector<std::int64_t>>(value) : nullptr;
+          if (rule.allow_unstated_extra && labels && labels->size() > plan.cost().layers)
+            warn(rule.key, "trailing unimported layer labels retained as source provenance");
+        }
+    }
+    auto result = import::WriteArtifact(
+        plan,
+        {.store = store, .build = build, .expected = expected, .metadata_bytes = metadata - used});
+    if (!result) return Failure(err, result.error());
+    return finish(*result, checkpoint, false, false);
   };
   const auto funded = [&](const import::NormalizationCost& bound) {
     return bound.metadata_bytes <= metadata;
@@ -155,38 +198,13 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
                 : expected[static_cast<std::size_t>(at - input->files.begin())]);
       }
     }
-    const auto& info = base::GetBuildInfo();
-    const std::string build = info.commit.empty()
-                                  ? "unknown"
-                                  : std::string(info.commit) + (info.modified ? ".dirty" : "");
     auto result = import::WriteArtifact(*plan, {.store = store,
                                                 .build = build,
                                                 .expected = drafter_expected,
                                                 .metadata_bytes = metadata - bound->metadata_bytes,
                                                 .options = plan->options()});
     if (!result) return Failure(err, result.error());
-    if (!Print(out,
-               std::format("{} {}\n", result->reused ? "verified" : "published", result->id))) {
-      Print(err, "llmp import: artifact published; cannot write result to standard output\n");
-      return kExitFailure;
-    }
-    if (*archive) {
-      auto opened = artifact::Artifact::Open(result->path);
-      if (!opened) {
-        Print(err,
-              "llmp import: artifact published, but it could not be reopened for catalog "
-              "recording\n");
-        return kExitFailure;
-      }
-      if (auto recorded =
-              import::RecordArchiveComponentImport(**archive, *input, *opened, list_name);
-          !recorded) {
-        Print(err, "llmp import: artifact published; catalog event failed: " +
-                       recorded.error().ToString() + '\n');
-        return kExitFailure;
-      }
-    }
-    return kExitOk;
+    return finish(*result, *input, false, true, list_name);
   }
   if (import::IsIndexedTarget(*input)) {
     auto bound = import::IndexedTargetBound(*input);
@@ -208,10 +226,8 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     auto plan = import::PlanImagePipeline(*input);
     if (!plan) return Failure(err, plan.error());
 
-    const auto& info = base::GetBuildInfo();
-    const std::string build = info.commit.empty()
-                                  ? "unknown"
-                                  : std::string(info.commit) + (info.modified ? ".dirty" : "");
+    if (auto valid = import::ValidateCompositionFiles(input->files); !valid)
+      return Failure(err, valid.error());
     std::vector<artifact::CompositionComponent> published_components;
     published_components.reserve(plan->components.size());
 
@@ -249,30 +265,17 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     });
     if (!comp_result) return Failure(err, comp_result.error());
 
-    if (!Print(out, std::format("{} {}\n", comp_result->reused ? "verified" : "published",
-                                comp_result->id))) {
-      Print(err, "llmp import: composition published; cannot write result to standard output\n");
-      return kExitFailure;
-    }
-
-    if (*archive) {
-      auto opened = artifact::OpenComposition(comp_result->path);
-      if (!opened) {
-        Print(err,
-              "llmp import: composition published, but it could not be reopened for catalog "
-              "recording\n");
-        return kExitFailure;
-      }
-      if (auto recorded = import::RecordArchiveImport(**archive, *input, *opened); !recorded) {
-        Print(err, "llmp import: composition published; catalog event failed: " +
-                       recorded.error().ToString() + '\n');
-        return kExitFailure;
-      }
-    }
-    return kExitOk;
+    return finish(*comp_result, *input, true, false);
   }
   auto bound = import::NormalizationBound(*input);
-  if (!bound) return Failure(err, bound.error());
+  if (!bound) {
+    if (bound.error().kind == import::ItemKind::kTensor &&
+        bound.error().item < input->tensors.size())
+      warn(input->tensors[bound.error().item].name, bound.error().reason);
+    if (bound.error().kind == import::ItemKind::kKey && bound.error().item < input->metadata.size())
+      warn(input->metadata[bound.error().item].key, bound.error().reason);
+    return Failure(err, bound.error());
+  }
   if (!funded(*bound))
     return Failure(err, {.rule = import::Rule::kBounds,
                          .reason = "normalization exceeds the requested metadata budget"});

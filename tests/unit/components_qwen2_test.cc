@@ -158,12 +158,28 @@ TEST(ComponentsQwen2, RefusesMissingBiasAndTrellisParts) {
   const auto values = fam::Qwen2Values(fam::Qwen25Instruct05BExl3());
   ASSERT_TRUE(values.has_value());
   const auto& mapping = sp::mappings::Qwen2Mapping();
+  const auto intact = sp::Synthesize(mapping, source, *values);
+  ASSERT_TRUE(intact) << (intact ? "" : intact.error());
+  for (const auto purpose : {co::ValidationPurpose::kExecution, co::ValidationPurpose::kImport}) {
+    const auto valid = co::ValidateSpec(*intact, source.tensors, purpose);
+    ASSERT_TRUE(valid) << (valid ? "" : valid.error());
+  }
   for (const std::string missing :
-       {"model.layers.0.self_attn.q_proj.bias", "model.layers.0.self_attn.q_proj.suh",
-        "model.layers.0.self_attn.q_proj.mcg"}) {
+       {"model.layers.0.self_attn.q_proj.bias", "model.layers.0.self_attn.q_proj.suh"}) {
     auto damaged = source;
     std::erase_if(damaged.tensors, [&](const auto& t) { return t.name == missing; });
     EXPECT_FALSE(sp::Synthesize(mapping, damaged, *values)) << missing;
+  }
+  // Marker bindings are optional in the mapping because 3Inst has none.
+  // The actual Mcg format still requires its marker at component validation.
+  std::erase_if(source.tensors,
+                [](const auto& t) { return t.name == "model.layers.0.self_attn.q_proj.mcg"; });
+  const auto spec = sp::Synthesize(mapping, source, *values);
+  ASSERT_TRUE(spec) << (spec ? "" : spec.error());
+  for (const auto purpose : {co::ValidationPurpose::kExecution, co::ValidationPurpose::kImport}) {
+    const auto valid = co::ValidateSpec(*spec, source.tensors, purpose);
+    ASSERT_FALSE(valid);
+    EXPECT_NE(valid.error().find("binds 3 parts of 4"), std::string::npos) << valid.error();
   }
 }
 TEST(ComponentsQwen2, Fp16ActualShapesSelectAndLowerThroughTheSharedGgmlBackend) {

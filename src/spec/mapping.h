@@ -157,7 +157,7 @@ struct TensorRule {
 // hash's constants).
 enum class ValueType : std::uint8_t { kInt, kReal, kBool, kString, kInts };
 // Applied to a real value: 1 / x, sqrt(x), 1 / sqrt(x).
-enum class Transform : std::uint8_t { kNone, kReciprocal, kSqrt, kRsqrt };
+enum class Transform : std::uint8_t { kNone, kReciprocal, kSqrt, kRsqrt, kFloat32 };
 
 // A rule's constant (when it has no key) or a requirement's value.
 struct Literal {

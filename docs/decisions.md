@@ -39,6 +39,51 @@ one Spark and on two.
 
 ---
 
+## D-120: Stable import identity and scoped composition metadata (2026-10-17, status: accepted at the owner's direction for the M3.6 review follow-ups; amends D-113 and D-089)
+
+**Decision.** Native artifact identity and native composition identity hash the
+canonical manifest with only `importer.build` replaced by `"unknown"`.
+The stored manifest retains the actual build as provenance. All source,
+file, index, spec, chunk, transform, importer-version and options digests
+remain in the identity and retain their existing verification. New writes
+use this identity; readers also accept a legacy v1 raw-manifest digest.
+Version 0 retains its original identity and strict ASCII JSON rules.
+Native manifests admit safe UTF-8 plain source filenames with minimal JSON
+quoting; identifier fields retain their narrower patterns.
+
+**Context.** A checkout's commit formerly changed IDs despite identical
+payload and semantics. Read-only inspection on spark-b found all 20
+published M3.6 native manifests already have build `unknown`; hashing the
+new canonical form reproduces every directory ID, so neither the published
+stores nor the frozen ID table need renaming or reimporting. New imports
+that retain additional source documents have different content and may
+therefore have different IDs.
+
+**Composition version 2.** A native composition that keeps role-scoped
+files uses `format_version: 2`; paths may be `meta/<name>` or
+`meta/<role>/<name>`, and its source receipts use the corresponding relative
+name. Each role is a validated component identifier; each leaf is a safe
+plain filename. There is one optional role level, no links inside the
+composition, the same file/count/byte caps, and exactly the listed files.
+Names and aggregate bounds are validated before publishing components.
+File size, device, inode and any parsed-prefix receipt are rechecked while
+copying a kept file; changes during streaming refuse publication.
+A flat native composition continues to use version 1. Readers and serving
+accept both native versions; old compositions and their IDs stay valid.
+The image mapping names its tokenizer by scoped path, with the legacy
+leaf-name lookup confined to compositions older than version 2.
+
+**Consequences.** Different build strings reuse the same semantic artifact
+without overwriting the stored build provenance. Archive catalog events
+record that stored provenance and continue checking every source against
+the archive manifest. A two-tokenizer pipeline can retain identically named
+files under distinct roles. Older readers refuse version 2 instead of
+flattening its names. No payload encoding or served numerical result changes.
+
+**Reopen if.** A future importer has build-dependent semantics not described
+by its importer version, options, transforms or produced files, or a future
+pipeline needs a deeper metadata tree.
+
 ## D-119: Runtime admission validates v1 artifacts by stored spec and architecture mapping; approvals.cc pins the reference fleet, not admission  (2026-10-17, status: accepted at the owner's direction of 2026-10-17; amends D-118's lock-file admission requirement and restores D-109's rule that a new checkpoint or size of a known architecture requires no C++ edit or rebuild)
 
 **Decision.** The runtime admits any format-v1 artifact or composition of a

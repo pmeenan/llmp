@@ -1313,6 +1313,7 @@ const ComponentDef& AttentionMqa() {
       .roles = kRoles,
       .shapes = Shapes,
       .state = State,
+      .max_state_tensors = 7,
       .batch_classes = kBatchClasses,
       .patterns = kPatterns,
       .masks = Masks,

@@ -20,11 +20,12 @@
 
 #include "artifact/composition.h"
 #include "artifact/format_json.h"
+#include "artifact/schema.h"
 #include "base/gguf.h"
 #include "base/json.h"
 #include "components/step.h"
 #include "format/layout.h"
-#include "import/modelopt_qwen38.h"
+#include "import/indexed_parts.h"
 #include "import/route.h"
 #include "import/source_mapping.h"
 #include "import/stream.h"
@@ -70,15 +71,7 @@ std::string Hex(std::string_view bytes) {
 std::uint64_t Align(std::uint64_t n, std::uint64_t alignment) {
   return (n + alignment - 1) / alignment * alignment;
 }
-bool SafeName(std::string_view name) {
-  return !name.empty() && name.size() <= 255 &&
-         std::ranges::all_of(name,
-                             [](char c) {
-                               return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                                      (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-';
-                             }) &&
-         name != "." && name != "..";
-}
+bool SafeName(std::string_view name) { return artifact::schema::IsFileName(name); }
 std::expected<void, Error> Write(int fd, std::uint64_t at, std::span<const std::byte> bytes) {
   while (!bytes.empty()) {
     const auto n = ::pwrite(fd, bytes.data(), bytes.size(), static_cast<off_t>(at));
@@ -168,6 +161,10 @@ struct PublicationView {
     return parts ? parts->members().size() : 0;
   }
 };
+bool IsDrafter(const spec::ModelSpec& model) {
+  return model.stages.size() == 2 && model.stages[1].role == spec::StageRole::kDrafter &&
+         model.stages[1].artifact == 1;
+}
 struct Copy {
   std::uint32_t file = 0, tensor = 0;
   // `span`: the output range its writes lie in (an interleaved lane's rows,
@@ -250,9 +247,7 @@ std::expected<void, Error> Transfers(const PublicationView& plan, Layout& layout
         return Bad("publication fold name or duplicate", Rule::kConfig);
       // The stages that run from this artifact: a drafter's alone (stage 1,
       // artifact 1), beside its target's carrier.
-      const bool drafter = plan.spec().stages.size() == 2 &&
-                           plan.spec().stages[1].role == spec::StageRole::kDrafter &&
-                           plan.spec().stages[1].artifact == 1;
+      const bool drafter = IsDrafter(plan.spec());
       for (const auto& stage : plan.spec().stages)
         if (stage.artifact == (drafter ? 1U : 0U) &&
             !std::ranges::contains(stage.folds, receipt.fold))
@@ -394,7 +389,7 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
   const auto& tensors = plan.canonical().tensors;
   if (tensors.empty() || tensors.size() > artifact::kMaxEntries ||
       plan.source().tensors.size() > kMaxTensors || plan.source().files.empty() ||
-      plan.source().files.size() > 256 || plan.members() > kMaxTensors ||
+      plan.source().files.size() > kMaxSourceFiles || plan.members() > kMaxTensors ||
       plan.semantic.size() > plan.source().tensors.size() ||
       plan.planned_folds.size() > spec::Folds().size())
     return Bad("invalid normalized output count", Rule::kBounds);
@@ -428,11 +423,9 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
                               plan.source().tensors.size() * 32 + plan.semantic.size() * 256 +
                               fold_outputs * 8192 + 65536;
   if (funding < bound) return Bad("artifact metadata has not been funded", Rule::kBounds);
-  const bool is_drafter = plan.spec().stages.size() == 2 &&
-                          plan.spec().stages[1].role == spec::StageRole::kDrafter &&
-                          plan.spec().stages[1].artifact == 1;
+  const bool is_drafter = IsDrafter(plan.spec());
   if (!is_drafter) {
-    if (!components::ValidateSpec(plan.spec(), tensors))
+    if (!components::ValidateSpec(plan.spec(), tensors, components::ValidationPurpose::kImport))
       return Bad("publication spec does not bind canonical tensors", Rule::kConfig);
   }
   std::map<std::string, GroupKey, std::less<>> owners;
@@ -727,7 +720,7 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   std::set<std::string_view> source_names;
   for (const auto& file : source.files) {
     if (!SafeName(file.name) || !source_names.insert(file.name).second || file.path.empty() ||
-        file.parsed.bytes == 0 || file.parsed.bytes > file.bytes)
+        (file.parsed.bytes == 0 && file.bytes != 0) || file.parsed.bytes > file.bytes)
       return Bad("a parsed source lacks a valid identity receipt", Rule::kConfig);
   }
   std::error_code error;
@@ -765,12 +758,14 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   std::map<std::string, std::string> sources;
   std::uint64_t kept_bytes = 0;
   std::size_t next_copy = 0, next_semantic = 0;
+  std::optional<std::size_t> active_cursor;
   FD output;
   std::optional<std::uint32_t> output_shard;
   for (std::size_t f = 0; f < source.files.size(); ++f) {
     const auto& input = source.files[f];
     const bool gguf = source.container == "gguf";
-    const bool keep = gguf || (input.name.ends_with(".json") &&
+    const bool keep = gguf || ((input.name.ends_with(".json") || input.name.ends_with(".jinja") ||
+                                input.name == "tokenizer.model") &&
                                ResolvesInside(input.path.parent_path(), input.path));
     // Source metadata copies must stay within the checkpoint (cache blobs
     // count); ordinary parsed weight files retain their usual symlink rules.
@@ -812,6 +807,9 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
               const auto piece = bytes.subspan(static_cast<std::size_t>(first - at),
                                                static_cast<std::size_t>(last - first));
               if (!c.route) return Bad("copy route lacks its checked cursor");
+              base::Check(!active_cursor || *active_cursor == i,
+                          "only one publication cursor may borrow the shared workspace");
+              active_cursor = i;
               if (auto ok = c.route->Consume(
                       first - c.source, piece,
                       [&](std::uint64_t offset,
@@ -852,7 +850,10 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
                   !ok)
                 return ok;
             }
-            if (c.route && c.route->Finish()) next_copy = i + 1;
+            if (c.route && c.route->Finish()) {
+              active_cursor.reset();
+              next_copy = i + 1;
+            }
           }
           return {};
         },
@@ -1000,9 +1001,7 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
                                {"resources", A(resources)},
                                {"shards", A(shards)}}) +
                             '\n';
-  const bool is_drafter = plan.spec().stages.size() == 2 &&
-                          plan.spec().stages[1].role == spec::StageRole::kDrafter &&
-                          plan.spec().stages[1].artifact == 1;
+  const bool is_drafter = IsDrafter(plan.spec());
   if (!is_drafter) {
     const auto spec = spec::ToJson(plan.spec());
     if (spec.size() > artifact::kMaxSpecBytes)
@@ -1057,7 +1056,9 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   if (manifest.size() > artifact::kMaxManifestBytes)
     return Bad("artifact manifest exceeds its cap", Rule::kBounds);
   if (auto ok = Save(job / "manifest.json", manifest); !ok) return std::unexpected(ok.error());
-  const std::string id = Hex(manifest);
+  const auto identity = artifact::json::Parse(manifest, true);
+  if (!identity || !identity->canonical()) return Bad("invalid canonical manifest", Rule::kConfig);
+  const std::string id = base::ToHex(artifact::schema::ManifestIdentity(identity->root()));
   auto opened = artifact::Artifact::Open(job, {.expected_id = id});
   if (!opened) return Bad("the produced artifact failed structural verification", Rule::kConfig);
   if (!is_drafter) {
@@ -1065,7 +1066,8 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
     if (!stored || *stored != plan.spec())
       return Bad("the produced artifact has an invalid embedded spec", Rule::kConfig);
     auto stored_source = spec::SourceOf(*opened);
-    if (!stored_source || !components::ValidateSpec(*stored, stored_source->tensors))
+    if (!stored_source || !components::ValidateSpec(*stored, stored_source->tensors,
+                                                    components::ValidationPurpose::kImport))
       return Bad("the produced artifact does not bind its embedded spec", Rule::kConfig);
   } else {
     auto stored_source = spec::SourceOf(*opened);
@@ -1086,7 +1088,8 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
       if (!prev_stored || *prev_stored != plan.spec())
         return Bad("the existing artifact is damaged");
       auto prev_source = spec::SourceOf(*previous);
-      if (!prev_source || !components::ValidateSpec(*prev_stored, prev_source->tensors))
+      if (!prev_source || !components::ValidateSpec(*prev_stored, prev_source->tensors,
+                                                    components::ValidationPurpose::kImport))
         return Bad("the existing artifact is damaged");
     } else {
       auto prev_source = spec::SourceOf(*previous);
@@ -1153,18 +1156,6 @@ std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
                   .copy = &plan},
                  options);
 }
-std::expected<WriteResult, Error> WriteArtifact(const ModelOptTargetPlan& plan,
-                                                const WriteOptions& options) {
-  return Publish({.checkpoint = plan.parts().source(),
-                  .canonical_source = plan.canonical(),
-                  .model_spec = plan.spec(),
-                  .payload = plan.cost().payload_bytes,
-                  .parts = &plan.parts(),
-                  .bindings = plan.bindings(),
-                  .semantic = plan.semantic(),
-                  .planned_folds = plan.planned_folds()},
-                 options);
-}
 std::expected<WriteResult, Error> WriteArtifact(const ComponentPlan& plan,
                                                 const WriteOptions& options) {
   return Publish({.checkpoint = plan.checkpoint,
@@ -1176,19 +1167,36 @@ std::expected<WriteResult, Error> WriteArtifact(const ComponentPlan& plan,
                  options);
 }
 
-std::expected<WriteResult, Error> WriteArtifact(const ModelOptDrafterPlan& plan,
-                                                const WriteOptions& options) {
-  if (options.options != plan.options())
-    return Bad("drafter publication options differ from its plan's", Rule::kConfig);
-  return Publish({.checkpoint = plan.parts().source(),
-                  .canonical_source = plan.canonical(),
-                  .model_spec = plan.spec(),
-                  .payload = plan.cost().payload_bytes,
-                  .parts = &plan.parts(),
-                  .bindings = plan.bindings(),
-                  .planned_folds = plan.planned_folds(),
-                  .generated = plan.generated()},
+std::expected<WriteResult, Error> publication_detail::WriteIndexed(
+    const IndexedPartPlan& parts, const spec::Source& source, const spec::ModelSpec& model,
+    std::uint64_t payload, std::span<const NormalizedPartBinding> bindings,
+    std::span<const SemanticReceipt> semantic, std::span<const PlannedPartFold> folds,
+    std::span<const GeneratedPart> generated, const WriteOptions& options) {
+  return Publish({.checkpoint = parts.source(),
+                  .canonical_source = source,
+                  .model_spec = model,
+                  .payload = payload,
+                  .parts = &parts,
+                  .bindings = bindings,
+                  .semantic = semantic,
+                  .planned_folds = folds,
+                  .generated = generated},
                  options);
+}
+
+std::expected<void, Error> ValidateCompositionFiles(std::span<const SourceFile> files) {
+  if (files.size() > 256) return Bad("too many kept composition files", Rule::kBounds);
+  std::set<std::string_view> names;
+  std::uint64_t total = 0;
+  for (const auto& file : files) {
+    if (!artifact::schema::IsKeptName(file.name) || !names.insert(file.name).second)
+      return Bad("invalid or duplicate metadata path in composition", Rule::kConfig);
+    if (file.bytes > artifact::kMaxMetadataBytes ||
+        file.bytes > artifact::kMaxMetadataTotal - total)
+      return Bad("composition metadata exceeds its cap", Rule::kBounds);
+    total += file.bytes;
+  }
+  return {};
 }
 
 std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions& options) {
@@ -1196,6 +1204,10 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
       options.components.empty() || options.components.size() > artifact::kMaxComponents) {
     return Bad("invalid composition write options", Rule::kConfig);
   }
+  if (auto valid = ValidateCompositionFiles(options.files); !valid)
+    return std::unexpected(valid.error());
+  const bool scoped =
+      std::ranges::any_of(options.files, [](const auto& f) { return f.name.contains('/'); });
   if (!options.expected.empty() && options.expected.size() != options.files.size()) {
     return Bad("expected identities count disagrees with composition files", Rule::kConfig);
   }
@@ -1239,38 +1251,30 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
     std::string sha256;
   };
   std::vector<KeptFileEntry> kept_entries;
-  std::set<std::string> seen_names;
-  std::vector<std::byte> buffer(65536);
+  std::set<fs::path> metadata_dirs;
   for (std::size_t f = 0; f < options.files.size(); ++f) {
     const auto& file = options.files[f];
-    const std::string name = fs::path(file.name).filename().string();
-    if (!SafeName(name) || !seen_names.insert(name).second) {
-      return Bad("invalid or duplicate metadata filename in composition", Rule::kConfig);
-    }
-    auto in = OpenCheckpointFile(file.path, f);
-    if (!in) return std::unexpected(in.error());
-    if (in->bytes != file.bytes || in->bytes > artifact::kMaxMetadataBytes) {
-      return Bad("composition metadata file size mismatch or exceeds cap", Rule::kBounds);
-    }
+    const std::string& name = file.name;
     const fs::path out_path = job / "meta" / name;
+    if (auto ok = CreateImportDirectory(out_path.parent_path(), false); !ok)
+      return std::unexpected(ok.error());
+    metadata_dirs.insert(out_path.parent_path());
     auto out = Create(out_path);
     if (!out) return std::unexpected(out.error());
-    base::Sha256 hash;
-    for (std::uint64_t at = 0; at < file.bytes;) {
-      const auto count = std::min<std::uint64_t>(buffer.size(), file.bytes - at);
-      auto chunk = std::span(buffer).first(static_cast<std::size_t>(count));
-      if (auto ok = ReadExactly(in->fd.get(), at, chunk, f); !ok)
-        return std::unexpected(ok.error());
-      if (auto ok = Write(out->get(), at, chunk); !ok) return std::unexpected(ok.error());
-      hash.Update(chunk);
-      at += count;
-    }
+    const auto digest = StreamSource(
+        file, f,
+        [&](std::uint64_t at, std::span<const std::byte> chunk) {
+          return Write(out->get(), at, chunk);
+        },
+        options.expected.empty() ? std::nullopt : options.expected[f]);
+    if (!digest) return std::unexpected(digest.error());
     if (::fsync(out->get()) != 0) return Bad("cannot sync metadata file");
-    const auto digest = hash.Finish();
-    if (!options.expected.empty() && options.expected[f] && *options.expected[f] != digest) {
-      return Bad("metadata file digest disagrees with expected archive identity");
-    }
-    kept_entries.push_back({.name = name, .bytes = file.bytes, .sha256 = base::ToHex(digest)});
+    kept_entries.push_back({.name = name, .bytes = file.bytes, .sha256 = base::ToHex(*digest)});
+  }
+  for (const auto& directory : metadata_dirs) {
+    if (::chmod(directory.c_str(), 0755) != 0)
+      return Bad("cannot set metadata directory permissions");
+    if (auto ok = Sync(directory); !ok) return std::unexpected(ok.error());
   }
   std::ranges::sort(kept_entries, {}, &KeptFileEntry::name);
 
@@ -1309,7 +1313,7 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
                            {"experimental", "true"},
                            {"files", A(file_jsons)},
                            {"format", Q("llmp-composition")},
-                           {"format_version", "1"},
+                           {"format_version", scoped ? "2" : "1"},
                            {"importer", O({{"build", Q(options.build)},
                                            {"name", Q("llmp-import")},
                                            {"options_sha256", Q(Hex(""))},
@@ -1321,7 +1325,9 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
     return Bad("composition manifest exceeds its cap", Rule::kBounds);
   }
   if (auto ok = Save(job / "manifest.json", manifest); !ok) return std::unexpected(ok.error());
-  const std::string id = Hex(manifest);
+  const auto identity = artifact::json::Parse(manifest, true);
+  if (!identity || !identity->canonical()) return Bad("invalid canonical manifest", Rule::kConfig);
+  const std::string id = base::ToHex(artifact::schema::ManifestIdentity(identity->root()));
 
   auto opened = artifact::OpenComposition(job, id);
   if (!opened) return Bad("the produced composition failed verification", Rule::kConfig);

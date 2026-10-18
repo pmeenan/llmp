@@ -167,11 +167,14 @@ std::optional<std::pair<std::size_t, std::size_t>> NarrowPoint(const StageInstan
 // Only a drafter reads, and only stages before it (its target, or the
 // drafter before it in a cascade), each name of one stage. The first
 // violation, with where it is.
+enum class ValidationPurpose : std::uint8_t { kExecution, kImport };
 std::expected<void, std::string> ValidateSpec(
-    const spec::ModelSpec& spec, std::span<const std::span<const BoundTensor>> tensors);
+    const spec::ModelSpec& spec, std::span<const std::span<const BoundTensor>> tensors,
+    ValidationPurpose purpose = ValidationPurpose::kExecution);
 // A single-artifact spec.
-std::expected<void, std::string> ValidateSpec(const spec::ModelSpec& spec,
-                                              std::span<const BoundTensor> tensors);
+std::expected<void, std::string> ValidateSpec(
+    const spec::ModelSpec& spec, std::span<const BoundTensor> tensors,
+    ValidationPurpose purpose = ValidationPurpose::kExecution);
 
 // A stage's per-layer contracts (each layer's components' concatenated,
 // layer 0's after the embedding's), for model::Layout; layers without

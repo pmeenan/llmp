@@ -74,7 +74,8 @@ constexpr bool IsRole(std::string_view s) {
 // position), refusing links and anything but regular files (hard links
 // allowed, D-056 as amended on 2026-10-09) and, where `dirs` is given,
 // directories.
-std::expected<std::vector<std::string>, Error> Scan(int dir, std::vector<std::string>* dirs) {
+std::expected<std::vector<std::string>, Error> Scan(int dir, std::vector<std::string>* dirs,
+                                                    std::size_t& remaining) {
   const int fresh = ::openat(dir, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   if (fresh < 0) {
     return Fail(Rule::kFileType, "unreadable directory");
@@ -100,6 +101,11 @@ std::expected<std::vector<std::string>, Error> Scan(int dir, std::vector<std::st
     if (name == "." || name == "..") {
       continue;
     }
+    if (remaining == 0) {
+      result = Fail(Rule::kFileSet, "composition directory tree exceeds its aggregate entry cap");
+      break;
+    }
+    --remaining;
     if (++seen > kMaxEntriesPerDirectory) {
       result = Fail(Rule::kFileSet, "more directory entries than a composition lists");
       break;
@@ -206,7 +212,9 @@ class CompositionOpener {
       return Fail(Rule::kFileType, "the composition root must be a directory");
     }
     std::vector<std::string> dirs;
-    auto files = Scan(root_.get(), &dirs);
+    // At most the old root/meta/data scan budget, shared across v2 role directories.
+    std::size_t remaining = 3 * kMaxEntriesPerDirectory;
+    auto files = Scan(root_.get(), &dirs, remaining);
     if (!files) {
       return Pass(files);
     }
@@ -223,7 +231,8 @@ class CompositionOpener {
       if (!fd.valid()) {
         return Fail(Rule::kFileType, "unreadable directory");
       }
-      auto nested = Scan(fd.get(), nullptr);
+      std::vector<std::string> roles;
+      auto nested = Scan(fd.get(), d == "meta" ? &roles : nullptr, remaining);
       if (!nested) {
         return Pass(nested);
       }
@@ -234,6 +243,17 @@ class CompositionOpener {
         present_.push_back(std::move(path));
       }
       if (d == "meta") {
+        for (const auto& role : roles) {
+          if (!schema::IsRoleName(role))
+            return Fail(Rule::kPath, "invalid metadata role directory");
+          FileDescriptor child(
+              ::openat(fd.get(), role.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+          if (!child.valid()) return Fail(Rule::kFileType, "unreadable metadata role directory");
+          auto leaves = Scan(child.get(), nullptr, remaining);
+          if (!leaves) return Pass(leaves);
+          if (leaves->empty()) return Fail(Rule::kFileSet, "empty metadata role directory");
+          for (const auto& leaf : *leaves) present_.push_back("meta/" + role + '/' + leaf);
+        }
         meta_ = std::move(fd);
       }
     }
@@ -247,7 +267,7 @@ class CompositionOpener {
       return Pass(bytes);
     }
     bytes_ = std::move(*bytes);
-    auto parsed = json::Parse(bytes_);
+    auto parsed = json::Parse(bytes_, true);
     if (!parsed) {
       return Pass(parsed);
     }
@@ -259,6 +279,10 @@ class CompositionOpener {
     } else if (!m.is_object() || !format || !schema::IsString(*format, kFormat)) {
       return Fail(Rule::kFormat, "not a llmpalooza composition");
     }
+    if (!v1_) {
+      const auto legacy = json::Parse(bytes_);
+      if (!legacy) return Pass(legacy);
+    }
     // import_m3.py checks for data after the format, as here.
     if (has_data_) {
       return Fail(Rule::kFileSet, "a composition holds no data shards");
@@ -267,16 +291,19 @@ class CompositionOpener {
     if (!v1_ && (!version || !schema::IsInt(*version, 0))) {
       return Fail(Rule::kUnsupportedVersion, "format_version is not 0");
     }
-    if (v1_ && (!version || !schema::IsInt(*version, 1))) {
+    if (v1_ && (!version || (!schema::IsInt(*version, 1) && !schema::IsInt(*version, 2)))) {
       const auto found = version ? version->integer() : std::nullopt;
       return Fail(Rule::kUnsupportedVersion, "format_version is not one this build reads",
                   found && *found >= 0 ? static_cast<std::uint64_t>(*found) : kNoItem);
     }
-    out_.format_version_ = v1_ ? 1 : 0;
+    out_.format_version_ = v1_ ? static_cast<std::uint32_t>(*version->integer()) : 0;
     if (!doc_->canonical()) {
       return Fail(Rule::kCanonical, "manifest.json is not in canonical form");
     }
-    if (out_.id_ != base::ToHex(base::Sha256().Update(bytes_).Finish())) {
+    if (out_.id_ != base::ToHex(v1_ ? schema::ManifestIdentity(m)
+                                    : base::Sha256().Update(bytes_).Finish()) &&
+        (out_.format_version_ >= 2 ||
+         out_.id_ != base::ToHex(base::Sha256().Update(bytes_).Finish()))) {
       return Fail(Rule::kIdentity, "the composition name is not the manifest digest");
     }
     return {};
@@ -352,7 +379,14 @@ class CompositionOpener {
       if (auto ok = schema::Object(s, {"name", "bytes", "sha256"}, {}, "source keys", i); !ok) {
         return ok;
       }
-      auto name = schema::Str(schema::Get(s, "name"), schema::IsName, "source.name", i);
+      auto name = schema::Str(
+          schema::Get(s, "name"),
+          [&](std::string_view name) {
+            return out_.format_version_ >= 2 ? schema::IsKeptName(name)
+                   : v1_                     ? schema::IsFileName(name)
+                                             : schema::IsName(name);
+          },
+          "source.name", i);
       if (!name) {
         return Pass(name);
       }
@@ -402,10 +436,19 @@ class CompositionOpener {
       }
       // v1's spec.json, the one file outside meta/ (its path sorts last).
       const bool spec = v1_ && schema::IsString(schema::Get(f, "role"), "spec");
-      auto path = spec ? schema::Str(
-                             schema::Get(f, "path"),
-                             [](std::string_view p) { return p == "spec.json"; }, "file.path", i)
-                       : schema::Str(schema::Get(f, "path"), schema::IsMetaPath, "file.path", i);
+      auto path = spec
+                      ? schema::Str(
+                            schema::Get(f, "path"),
+                            [](std::string_view p) { return p == "spec.json"; }, "file.path", i)
+                      : schema::Str(
+                            schema::Get(f, "path"),
+                            [&](std::string_view path) {
+                              return path.starts_with("meta/") &&
+                                     (out_.format_version_ >= 2 ? schema::IsKeptName(path.substr(5))
+                                      : v1_                     ? schema::IsFileName(path.substr(5))
+                                                                : schema::IsName(path.substr(5)));
+                            },
+                            "file.path", i);
       if (!path) {
         return Pass(path);
       }
@@ -469,7 +512,18 @@ class CompositionOpener {
       if (total > kMaxMetadataTotal) {
         return Fail(Rule::kFileSize, "kept metadata exceeds its total cap", i);
       }
-      auto data = ReadFile(meta_.get(), name.c_str(), f.bytes.value(), kMaxMetadataBytes, i);
+      FileDescriptor role_dir;
+      int dir = meta_.get();
+      std::string leaf = name;
+      if (const auto slash = name.find('/'); slash != std::string::npos) {
+        role_dir = FileDescriptor(::openat(dir, name.substr(0, slash).c_str(),
+                                           O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (!role_dir.valid())
+          return Fail(Rule::kFileType, "unreadable metadata role directory", i);
+        dir = role_dir.get();
+        leaf = name.substr(slash + 1);
+      }
+      auto data = ReadFile(dir, leaf.c_str(), f.bytes.value(), kMaxMetadataBytes, i);
       if (!data) {
         return Pass(data);
       }

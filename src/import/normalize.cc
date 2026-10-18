@@ -44,7 +44,7 @@ struct Key {
   std::uint8_t types = 0;
   std::uint32_t auxiliary = 0;
 };
-std::optional<Key> Classify(const SourceMapping& t, std::string_view key) {
+std::optional<Key> Classify(const SourceMapping& t, std::string_view key, bool is_null = false) {
   if ((t.container == "gguf" &&
        (key == "general.architecture" || key == "general.alignment" || key == "split.no" ||
         key == "split.count" || key == "split.tensors.count")) ||
@@ -54,7 +54,8 @@ std::optional<Key> Classify(const SourceMapping& t, std::string_view key) {
   for (const auto& alias : t.keys)
     if (key == alias.source) canonical = alias.canonical;
   for (const auto& requirement : t.requirements)
-    if (canonical == requirement.key && requirement.require_equal)
+    if (canonical == requirement.key &&
+        (requirement.require_equal || !requirement.equals_key.empty() || requirement.positive))
       return Key{.kind = MetadataClass::kSelected, .canonical = canonical, .types = nd::kInteger};
   if (const auto types = nd::KeyTypes(*t.architecture, canonical); types != 0)
     return Key{.kind = MetadataClass::kSelected, .canonical = canonical, .types = types};
@@ -63,7 +64,19 @@ std::optional<Key> Classify(const SourceMapping& t, std::string_view key) {
             ? key.starts_with(t.auxiliary[i].prefix)
             : key == t.auxiliary[i].prefix)
       return Key{.auxiliary = static_cast<std::uint32_t>(i)};
-  return std::nullopt;
+  if (is_null && std::ranges::contains(t.null_semantics, key))
+    return Key{.auxiliary = static_cast<std::uint32_t>(t.auxiliary.size())};
+  for (const auto semantic : t.semantic)
+    if (semantic.ends_with('*') ? key.starts_with(semantic.substr(0, semantic.size() - 1))
+        : semantic.ends_with('.')
+            ? key.starts_with(semantic)
+            : (key == semantic || (key.starts_with(semantic) && key.size() > semantic.size() &&
+                                   key[semantic.size()] == '.')))
+      return std::nullopt;
+  if (key.starts_with("llmp.") || key.starts_with("dflash.") ||
+      key.starts_with("gemma4-assistant."))
+    return std::nullopt;
+  return Key{.auxiliary = static_cast<std::uint32_t>(t.auxiliary.size())};
 }
 bool SelectedValue(const MetaValue& value, std::uint8_t types) {
   if (std::holds_alternative<std::int64_t>(value)) return (types & nd::kInteger) != 0;
@@ -154,6 +167,11 @@ std::optional<ResolvedName> TensorName(const SourceMapping& t, std::string_view 
     }
   return found;
 }
+bool IgnoredTensor(const SourceMapping& table, std::string_view name, std::uint32_t layers) {
+  return std::ranges::any_of(table.ignored_tensors, [&](const auto pattern) {
+    return nd::Match(pattern, name, layers).has_value();
+  });
+}
 std::string Expand(ResolvedName n) {
   const auto at = n.pattern.find(spec::kLayerField);
   if (at == std::string_view::npos) return std::string(n.pattern);
@@ -207,11 +225,12 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   const auto& m = *t.architecture;
   if (s.container != t.container || s.architecture != m.architecture || !s.role.empty() ||
       s.quantization != (t.container == "exl3" ? std::string_view("exl3") : std::string_view{}) ||
-      !s.components.empty() || !s.skipped.empty())
+      !s.components.empty())
     return Bad("source is outside the normalization domain", ItemKind::kNone, kNoItem,
                Rule::kUnsupported);
-  if (s.files.empty() || s.files.size() > kMaxGgufSplits || s.metadata.size() > kMaxMetadata ||
-      s.tensors.size() > kMaxTensors)
+  if (s.files.empty() || s.files.size() > kMaxSourceFiles || s.metadata.size() > kMaxMetadata ||
+      s.skipped_tensors.size() > kMaxTensors ||
+      s.tensors.size() > kMaxTensors - s.skipped_tensors.size())
     return Bad("normalization input count exceeds its bound", ItemKind::kNone, kNoItem,
                Rule::kBounds);
   for (const auto& slot : m.slots) {
@@ -219,13 +238,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
     if (!def || def->params.size() > 64 || def->roles.size() > 32)
       return Bad("component catalog exceeds normalization budget", ItemKind::kNone, kNoItem,
                  Rule::kUnsupported);
-    // The extended target's only state producers are these compiled catalog
-    // contracts (MQA seven, QSA four, GDN two, PLE one). Refuse a newly stateful kind
-    // before constructing Instances or allocating a StateContract.
-    if (t.extended_components && def->state && slot.kind != "attention.dense" &&
-        slot.kind != "attention.qsa" && slot.kind != "attention.gdn" &&
-        slot.kind != "residual.ple" && slot.kind != "attention.mqa")
-      return Bad("component state producer is outside normalization budget");
+    if ((def->state != nullptr) != (def->max_state_tensors != 0))
+      return Bad("component state contract has no catalog bound");
     for (const auto& p : def->params) {
       if (p.type == components::ParamType::kReals ||
           (p.type == components::ParamType::kInts && !t.extended_components))
@@ -253,8 +267,10 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
         (metadata_bytes = a.Add(metadata_bytes, a.Add(e.key.size() + 64, *bytes))) >
             kMaxGgufMetadataBytes)
       return Bad("metadata exceeds the reader accounting bound", ItemKind::kKey, i, Rule::kBounds);
-    const auto key = Classify(t, e.key);
-    if (!key) return Bad("unclassified source metadata", ItemKind::kKey, i);
+    const auto key = Classify(t, e.key, std::holds_alternative<std::nullptr_t>(e.value));
+    if (!key)
+      return Bad("unconsumed semantic metadata changes unsupported mapping semantics",
+                 ItemKind::kKey, i);
     if (key->kind == MetadataClass::kSelected) {
       if (!SelectedValue(e.value, key->types))
         return Bad("selected metadata has the wrong type", ItemKind::kKey, i);
@@ -273,7 +289,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
             integer && *integer > 0)
           width = static_cast<std::uint64_t>(*integer);
       for (const auto& r : t.requirements)
-        if (r.key == key->canonical && integer && ((*integer == r.reject_equal) != r.require_equal))
+        if (r.key == key->canonical && integer && r.equals_key.empty() && !r.positive &&
+            ((*integer == r.reject_equal) != r.require_equal))
           return Bad("source scalar requires unsupported mapping semantics", ItemKind::kKey, i,
                      Rule::kUnsupported);
     } else if (key->kind == MetadataClass::kStructural) {
@@ -295,17 +312,6 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
         split_count = *integer;
       else
         split_tensors = *integer;
-    } else if (t.container == "exl3" || t.container == "safetensors") {
-      if (e.key == "architectures") {
-        const auto* list = std::get_if<std::vector<std::string>>(&e.value);
-        if (!list || list->size() != 1 || (*list)[0] != "Qwen2ForCausalLM")
-          return Bad("EXL3 source architectures disagree", ItemKind::kKey, i);
-      } else {
-        const auto* text = std::get_if<std::string>(&e.value);
-        if (e.key != "transformers_version" || !text || text->empty() ||
-            !NoControlCharacters(*text))
-          return Bad("EXL3 auxiliary metadata has the wrong type", ItemKind::kKey, i);
-      }
     }
   }
   // Borrow the already classified source values only during preflight. This
@@ -322,8 +328,20 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
         if (const auto* found = s.FindTensor(alias.source)) return found;
     return nullptr;
   };
-  for (const auto& rule : t.requirements)
-    if (rule.require_equal && !value_for(rule.key)) return Bad("required source scalar is absent");
+  for (const auto& rule : t.requirements) {
+    const auto* value = value_for(rule.key);
+    if ((rule.require_equal || !rule.equals_key.empty() || rule.positive) && !value)
+      return Bad("required source scalar is absent");
+    const auto* integer = value ? std::get_if<std::int64_t>(value) : nullptr;
+    if (rule.positive && (!integer || *integer <= 0))
+      return Bad("required source scalar must be positive");
+    if (!rule.equals_key.empty()) {
+      const auto* other = value_for(rule.equals_key);
+      const auto* expected = other ? std::get_if<std::int64_t>(other) : nullptr;
+      if (!integer || !expected || *integer != *expected)
+        return Bad("source scalar disagrees with its related structural parameter");
+    }
+  }
   // Profile requirements are checked allocation-free, including required
   // presence, before allocating mapping/synthesis/catalog validation.
   for (const auto& rule : m.params) {
@@ -345,6 +363,10 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
       equal = rule.type == spec::ValueType::kString && *text == rule.value.text;
     if (!equal) return Bad("source profile requirement disagrees");
   }
+  if (!architecture || layers == 0 || layers > kLayerLimit || width == 0 ||
+      width > components::kMaxStreamWidth)
+    return Bad("source layer count or width is outside component bounds", ItemKind::kNone, kNoItem,
+               Rule::kBounds);
   std::size_t list_elements = 0;
   for (const auto& rule : t.lists) {
     const auto* value = value_for(rule.key);
@@ -355,6 +377,42 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
     if ((rule.min_size == 0 ? count != rule.size : (count < rule.min_size || count > rule.size)) ||
         (!rule.exact.empty() && (!list || !std::ranges::equal(*list, rule.exact.first(count)))))
       return Bad("source numeric-list profile requirement disagrees");
+    if (rule.per_layer) {
+      std::uint64_t extra = 0;
+      bool stated = false;
+      if (!rule.extra_layers_key.empty()) {
+        if (const auto* v = s.FindValue(rule.extra_layers_key)) {
+          const auto* n = std::get_if<std::int64_t>(v);
+          if (!n || *n < 0 || static_cast<std::uint64_t>(*n) > nd::kLayerLimit - layers)
+            return Bad("invalid declared extra layer count");
+          extra = static_cast<std::uint64_t>(*n);
+          stated = true;
+        }
+      }
+      if (count != layers && count != layers + extra &&
+          !(rule.allow_unstated_extra && !stated && count > layers))
+        return Bad("source numeric list does not cover its declared layers");
+    }
+    if (list && (rule.key == m.layer_type_key || rule.key == m.layer_flags_key)) {
+      for (const auto code : *list) {
+        if (rule.key == m.layer_type_key
+                ? std::ranges::none_of(m.layer_type_codes,
+                                       [&](const auto& c) { return c.value == code; })
+                : (code < 0 || code > 1024))
+          return Bad("source layer ratio is outside its components' domain");
+      }
+    }
+    if (list && rule.key.ends_with("rope.dimension_sections")) {
+      std::uint64_t pairs = 0;
+      for (auto n : *list) {
+        if (n < 0 || n > 1024) return Bad("invalid rotary section width");
+        pairs += static_cast<std::uint64_t>(n);
+      }
+      const auto* dims = value_for("qwen4exp.rope.dimension_count");
+      const auto* n = dims ? std::get_if<std::int64_t>(dims) : nullptr;
+      if (!n || *n < 0 || pairs * 2 != static_cast<std::uint64_t>(*n))
+        return Bad("rotary sections do not cover the rotary dimension");
+    }
     list_elements = std::max(list_elements, count);
   }
   for (const auto& rule : t.shapes) {
@@ -389,7 +447,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
     return Bad("source layer count or width is outside component bounds", ItemKind::kNone, kNoItem,
                Rule::kBounds);
   for (std::size_t i = 0; i < s.metadata.size(); ++i) {
-    const auto key = Classify(t, s.metadata[i].key);
+    const auto key =
+        Classify(t, s.metadata[i].key, std::holds_alternative<std::nullptr_t>(s.metadata[i].value));
     if (key->kind != MetadataClass::kSelected) continue;
     const auto* list = std::get_if<std::vector<std::int64_t>>(&s.metadata[i].value);
     const auto* reals = std::get_if<std::vector<double>>(&s.metadata[i].value);
@@ -413,18 +472,13 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
           return Bad("layer selector is not ordered unique in-range layers", ItemKind::kKey, i);
     }
   }
-  if (t.container == "exl3") {
-    if (s.files.size() > 2 || (s.files.size() == 2 && (s.files[0].name != "model.safetensors" ||
-                                                       s.files[1].name != "config.json")))
-      return Bad("EXL3 source files differ from the single-shard contract", ItemKind::kNone,
-                 kNoItem, Rule::kShards);
-  } else if (t.container != "safetensors" &&
-             ((split_no && *split_no != 0) ||
-              (split_count &&
-               (*split_count <= 0 || static_cast<std::uint64_t>(*split_count) != s.files.size())) ||
-              (s.files.size() > 1 && (!split_count || !split_no)) ||
-              (split_tensors && (*split_tensors < 0 ||
-                                 static_cast<std::uint64_t>(*split_tensors) != s.tensors.size()))))
+  if (t.container == "gguf" &&
+      ((split_no && *split_no != 0) ||
+       (split_count &&
+        (*split_count <= 0 || static_cast<std::uint64_t>(*split_count) != s.files.size())) ||
+       (s.files.size() > 1 && (!split_count || !split_no)) ||
+       (split_tensors && (*split_tensors < 0 || static_cast<std::uint64_t>(*split_tensors) !=
+                                                    s.tensors.size() + s.skipped_tensors.size()))))
     return Bad("split structure disagrees with checkpoint files", ItemKind::kNone, kNoItem,
                Rule::kShards);
   std::uint64_t maximum = 0;
@@ -432,7 +486,10 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
     if (rule.target) continue;
     maximum = a.Add(maximum, rule.pattern.contains(spec::kLayerField) ? layers : 1);
   }
-  if (s.tensors.empty() || s.tensors.size() > maximum)
+  const auto ignored = std::ranges::count_if(s.tensors, [&](const Tensor& tensor) {
+    return IgnoredTensor(t, tensor.name, static_cast<std::uint32_t>(layers));
+  });
+  if (s.tensors.empty() || s.tensors.size() - static_cast<std::size_t>(ignored) > maximum)
     return Bad("tensor count exceeds the complete mapping", ItemKind::kNone, kNoItem,
                Rule::kBounds);
   for (std::size_t i = 0; i < s.files.size(); ++i) {
@@ -443,32 +500,35 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
         (!f.path.empty() && (!f.path.is_absolute() || f.inode == 0)))
       return Bad("invalid source file identity", ItemKind::kShard, i);
   }
+  // A skipped empty role is absent from synthesis, which owns optional,
+  // fallback and conditional requiredness. Readers already check all live and
+  // skipped names for duplicates across shards.
   std::uint64_t payload = 0;
   for (std::size_t i = 0; i < s.tensors.size(); ++i) {
     const auto& tensor = s.tensors[i];
     const auto name = TensorName(t, tensor.name, static_cast<std::uint32_t>(layers));
+    if (!name && IgnoredTensor(t, tensor.name, static_cast<std::uint32_t>(layers))) {
+      const auto& extent = tensor.extent;
+      const auto parts = format::PartsOf(tensor.format);
+      const auto part = parts ? parts->Find(tensor.part) : std::nullopt;
+      if (!part || extent.file >= s.files.size() || extent.bytes != part->bytes ||
+          extent.offset > s.files[extent.file].bytes ||
+          extent.bytes > s.files[extent.file].bytes - extent.offset)
+        return Bad("ignored tensor has invalid source extent", ItemKind::kTensor, i);
+      continue;
+    }
     if (tensor.name.empty() || tensor.name.size() > kMaxNameBytes || !name)
-      return Bad("unclassified tensor or noncanonical layer name", ItemKind::kTensor, i);
+      return Bad("tensor has no mapping role or declared ignorable pattern", ItemKind::kTensor, i);
     const auto parts = format::PartsOf(tensor.format);
     const auto part = parts ? parts->Find(tensor.part) : std::nullopt;
     if (!part || tensor.part != name->part || tensor.experts != name->experts ||
         tensor.format.stacked != 1 || tensor.dims.size() > format::kMaxDims)
       return Bad("tensor is not a complete source part", ItemKind::kTensor, i);
-    if (!t.encodings.empty() && !std::ranges::contains(t.encodings, tensor.format.encoding))
-      return Bad("tensor encoding is outside this source domain", ItemKind::kTensor, i);
     if (t.container == "exl3" || t.container == "safetensors") {
       if (tensor.part == format::PartRole::kData) {
-        const bool bias = tensor.name.ends_with(".bias");
-        const auto expected_encoding =
-            t.container == "safetensors"
-                ? tensor.format.encoding
-                : (bias ? format::Encoding::kF16 : format::Encoding::kBF16);
-        if (parts->size() != 1 || tensor.format.encoding != expected_encoding ||
-            tensor.format.layout != format::Layout::kDense ||
+        if (parts->size() != 1 || tensor.format.layout != format::Layout::kDense ||
             tensor.format.params != format::EncodingParams{} ||
-            tensor.dims.size() != tensor.format.shape.rank ||
-            (t.container != "safetensors" && tensor.dtype != (bias ? "F16" : "BF16") &&
-             tensor.dtype != (bias ? "f16" : "bf16")))
+            tensor.dims.size() != tensor.format.shape.rank)
           return Bad("EXL3 dense tensor disagrees with its role format", ItemKind::kTensor, i);
         for (std::size_t d = 0; d < tensor.dims.size(); ++d)
           if (tensor.dims[d] != tensor.format.shape.ne[tensor.dims.size() - 1 - d])
@@ -476,10 +536,9 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
       } else {
         const auto bits = tensor.format.params.k_bits;
         const auto k = tensor.format.shape.ne[0], n = tensor.format.shape.ne[1];
-        if (parts->size() != 4 || tensor.format.encoding != format::Encoding::kExl3Trellis ||
+        if (tensor.format.encoding != format::Encoding::kExl3Trellis ||
             tensor.format.layout != format::Layout::kExl3Tiles || tensor.format.shape.rank != 2 ||
-            tensor.format.params.codebook != format::Exl3Codebook::kMcg ||
-            tensor.format.params.tensor_scale || (bits != 4 && bits != 5 && bits != 6 && bits != 8))
+            tensor.format.params.tensor_scale)
           return Bad("EXL3 trellis tensor disagrees with its role format", ItemKind::kTensor, i);
         const bool dims_ok =
             tensor.part == format::PartRole::kCodes
@@ -514,8 +573,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
         return Bad("tensor layout is not the GGUF encoding layout", ItemKind::kTensor, i);
     }
     const auto& extent = tensor.extent;
-    if ((t.container == "exl3" ? extent.file != 0 : extent.file >= s.files.size()) ||
-        extent.bytes != part->bytes || extent.offset > s.files[extent.file].bytes ||
+    if (extent.file >= s.files.size() || extent.bytes != part->bytes ||
+        extent.offset > s.files[extent.file].bytes ||
         extent.bytes > s.files[extent.file].bytes - extent.offset)
       return Bad("tensor extent disagrees with its format or file", ItemKind::kTensor, i);
     payload = a.Add(payload, extent.bytes);
@@ -558,7 +617,12 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   charge(a.Mul(C, a.Add(V(32, 160), a.Mul(3, Str(32)))));
   charge(a.Add(a.Add(V(layers, 32), V(C, 256)), a.Add(layers * 64, a.Mul(3, V(C, 8)))));
   charge(a.Mul(C, a.Add(a.Add(V(64, 128), a.Mul(3, Str(64))), V(64, 32))));
-  const auto contracts = t.extended_components ? a.Mul(7, C) : a.Mul(2, layers);
+  std::uint64_t contracts = 0;
+  for (const auto& slot : m.slots) {
+    const auto* def = components::Find(slot.kind, slot.version);
+    const auto instances = slot.site == spec::Site::kLayer || slot.per_layer ? layers : 1;
+    contracts = a.Add(contracts, a.Mul(instances, def->max_state_tensors));
+  }
   charge(a.Add(a.Add(V(contracts, 256), a.Mul(2, Str(contracts))), V(4, 256)));
   charge(a.Add(a.Mul(6, V(32, 256)), a.Mul(4, Str(32))));
   charge(64 * 256 + 16 * 8192);
@@ -637,6 +701,7 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
     auto& tensor = plan.source_.tensors[i];
     tensor.dtype = format::Info(tensor.format.encoding).name;
     const auto name = TensorName(table, tensor.name, cost->layers);
+    if (!name && IgnoredTensor(table, tensor.name, cost->layers)) continue;
     if (!name) return Bad("tensor mapping changed after preflight", ItemKind::kTensor, i);
     plan.canonical_.tensors.push_back({.name = Expand(*name),
                                        .format = tensor.format,
@@ -646,7 +711,8 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
     const auto part = parts->Find(tensor.part);
     plan.routes_.push_back({static_cast<std::uint32_t>(i), tensor.extent, part->readable});
   }
-  std::vector<std::uint32_t> names(input.tensors.size()), scratch(input.tensors.size());
+  std::vector<std::uint32_t> names(plan.canonical_.tensors.size()),
+      scratch(plan.canonical_.tensors.size());
   std::iota(names.begin(), names.end(), 0U);
   Sort(names, scratch, [&](auto x, auto y) {
     return plan.canonical_.tensors[x].name < plan.canonical_.tensors[y].name;
@@ -668,7 +734,7 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
         break;
       }
     }
-  plan.order_.resize(input.tensors.size());
+  plan.order_.resize(plan.routes_.size());
   std::iota(plan.order_.begin(), plan.order_.end(), 0U);
   Sort(plan.order_, scratch, [&](auto x, auto y) {
     const auto& a = plan.routes_[x].extent;
@@ -685,12 +751,13 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
   }
   plan.values_.reserve(64);
   plan.metadata_.reserve(input.metadata.size());
-  plan.auxiliary_.reserve(table.auxiliary.size());
+  plan.auxiliary_.reserve(table.auxiliary.size() + 1);
   for (const auto& aux : table.auxiliary)
     plan.auxiliary_.push_back({std::string(aux.prefix), std::string(aux.reason)});
+  plan.auxiliary_.push_back({"", "unread metadata retained as source provenance"});
   for (std::size_t i = 0; i < input.metadata.size(); ++i) {
     const auto& e = input.metadata[i];
-    const auto key = *Classify(table, e.key);
+    const auto key = *Classify(table, e.key, std::holds_alternative<std::nullptr_t>(e.value));
     auto destination = key.auxiliary;
     if (key.kind == MetadataClass::kAuxiliary && key.auxiliary < table.auxiliary.size()) {
       // An auxiliary key a tensor's extent states must agree with it.
@@ -742,12 +809,17 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
     if (!composed) return Bad("drafter composition failed");
     const std::array<std::span<const spec::SourceTensor>, 2> tables{target_source.tensors,
                                                                     plan.canonical_.tensors};
-    if (auto valid = components::ValidateSpec(*composed, tables); !valid) return Bad(valid.error());
+    if (auto valid =
+            components::ValidateSpec(*composed, tables, components::ValidationPurpose::kImport);
+        !valid)
+      return Bad(valid.error());
     plan.spec_ = std::move(*composed);
   } else {
     auto spec = spec::Synthesize(*table.architecture, plan.canonical_, plan.values_);
     if (!spec) return Bad("source does not satisfy the architecture mapping");
-    if (auto valid = components::ValidateSpec(*spec, plan.canonical_.tensors); !valid)
+    if (auto valid = components::ValidateSpec(*spec, plan.canonical_.tensors,
+                                              components::ValidationPurpose::kImport);
+        !valid)
       return Bad("normalized tensors do not satisfy their components");
     plan.spec_ = std::move(*spec);
   }

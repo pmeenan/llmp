@@ -181,6 +181,9 @@ std::expected<double, std::string> Transformed(double x, Transform t, std::strin
     case Transform::kRsqrt:
       y = x > 0.0 ? 1.0 / std::sqrt(x) : std::nan("");
       break;
+    case Transform::kFloat32:
+      y = static_cast<double>(static_cast<float>(x));
+      break;
   }
   if (!std::isfinite(y)) {
     return Refuse(where, "a value outside its transform's domain");
@@ -1133,7 +1136,7 @@ Status ValidateMapping(const Mapping& m) {
     const std::string at = std::format("{} parameter {}.{}", where, r.slot, r.param);
     if (static_cast<std::uint8_t>(r.type) > static_cast<std::uint8_t>(ValueType::kInts) ||
         (r.type == ValueType::kInts && (r.key.empty() || r.per_layer)) ||
-        static_cast<std::uint8_t>(r.transform) > static_cast<std::uint8_t>(Transform::kRsqrt) ||
+        static_cast<std::uint8_t>(r.transform) > static_cast<std::uint8_t>(Transform::kFloat32) ||
         (r.transform != Transform::kNone && r.type != ValueType::kReal)) {
       return Refuse(at, "an unknown type or transform, or a transform of a non-real");
     }

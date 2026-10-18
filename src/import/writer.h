@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "artifact/composition.h"
+#include "import/indexed_parts.h"
 #include "import/normalize.h"
 
 namespace llmp::import {
@@ -79,8 +80,15 @@ std::expected<WriteResult, Error> WriteArtifact(const ComponentPlan& plan,
 // derives from included, has authenticated.
 std::expected<WriteResult, Error> WriteArtifact(const ModelOptDrafterPlan& plan,
                                                 const WriteOptions& options);
+std::expected<void, Error> ValidateCompositionFiles(std::span<const SourceFile> files);
 std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions& options);
 namespace publication_detail {
+std::expected<WriteResult, Error> WriteIndexed(
+    const IndexedPartPlan& parts, const spec::Source& source, const spec::ModelSpec& model,
+    std::uint64_t payload, std::span<const NormalizedPartBinding> bindings,
+    std::span<const SemanticReceipt> semantic, std::span<const PlannedPartFold> folds,
+    std::span<const GeneratedPart> generated, const WriteOptions& options);
+
 // Internal metadata-only check of the exact placement/transfer planner used by
 // WriteArtifact. No file opens, payload reads, or publication effects. The
 // caller funds temporary layout metadata just as for publication.

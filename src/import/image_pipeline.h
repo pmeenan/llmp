@@ -15,11 +15,13 @@
 
 #include <cstdint>
 #include <expected>
+#include <span>
 #include <vector>
 
 #include "import/checkpoint.h"
 #include "import/normalize.h"
 #include "import/writer.h"
+#include "model/image_pipeline.h"
 #include "spec/spec.h"
 
 namespace llmp::import {
@@ -37,6 +39,13 @@ std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& sou
 
 std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& source);
 
+namespace image_pipeline_detail {
+// Shared component metadata validation, also used by descriptor-only tests.
+std::expected<ComponentPlan, Error> PlanComponent(const Checkpoint& component,
+                                                  std::span<const model::ImageTensor> tensors,
+                                                  const spec::ModelSpec& spec,
+                                                  std::vector<ComponentGroup> groups);
+}  // namespace image_pipeline_detail
 }  // namespace llmp::import
 
 #endif  // LLMP_IMPORT_IMAGE_PIPELINE_H_

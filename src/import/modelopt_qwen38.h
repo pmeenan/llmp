@@ -21,20 +21,6 @@ class PartPublicationFixture;
 }
 
 namespace llmp::import {
-struct SemanticReceipt {
-  std::uint32_t source = 0;
-  Extent extent{};
-  base::Sha256Digest sha256{};
-};
-// Canonical tensor index is the position in this vector. This explicit join
-// lets a generic publisher consume geometry without interpreting source names.
-struct NormalizedPartBinding {
-  std::uint32_t output = 0;
-  format::PartRole part = format::PartRole::kData;
-};
-// Newly owned transforms, not historical source-converter assertions. The
-// publisher resolves each logical output through bindings(), and records the
-// fold as applied only after every authenticated route completes.
 // The native target's canonical source and values as NormalizeModelOptTarget
 // gives them, without reading a checkpoint: the target a drafter's spec
 // composes with at import, and admission's reference.
@@ -43,10 +29,6 @@ struct ModelOptTargetForm {
   std::vector<spec::SourceValue> values{};
 };
 std::expected<ModelOptTargetForm, Error> ModelOptNativeTargetForm();
-struct PlannedPartFold {
-  std::string fold{};
-  std::vector<std::uint32_t> outputs{};
-};
 class ModelOptTargetPlan;
 // Metadata-only, allocation-free admission for the closed source domain.
 // Caller separately owns/funds Checkpoint and its reader before calling this.
@@ -108,15 +90,6 @@ struct DraftHeadList {
 };
 std::expected<DraftHeadList, Error> ReadDraftHeadList(const std::filesystem::path& path,
                                                       std::uint32_t vocab);
-
-// Bytes the importer derives from one authenticated whole source file and
-// writes as a canonical tensor's part (a selected head's token map, I32,
-// from its list). `tensor` follows every bound canonical tensor.
-struct GeneratedPart {
-  std::uint32_t tensor = 0;
-  std::uint32_t file = 0;
-  std::vector<std::byte> bytes{};
-};
 
 class ModelOptDrafterPlan;
 // The MTP drafter (`llmp import --component mtp`) of the same closed source

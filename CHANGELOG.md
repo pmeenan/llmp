@@ -24,6 +24,13 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Native imports validate structural model variants, preserve tokenizer and
+  chat metadata, and retain source encodings while reporting unsupported
+  runtime encodings at admission.
+- New artifact identities are independent of build provenance; composition
+  format v2 keeps metadata filenames under their roles, including duplicate
+  tokenizer filenames. Existing artifact IDs and v1 compositions remain
+  readable (D-120).
 - The chat route serves a request whose whole body, with pipelined bytes
   behind it, arrived with its head and then waited for request memory
   (it was left waiting for bytes it did not owe until its inactivity

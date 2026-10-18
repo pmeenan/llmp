@@ -348,7 +348,7 @@ class Opener {
       return Pass(bytes);
     }
     manifest_bytes_ = std::move(*bytes);
-    auto parsed = json::Parse(manifest_bytes_);
+    auto parsed = json::Parse(manifest_bytes_, true);
     if (!parsed) {
       return Pass(parsed);
     }
@@ -374,6 +374,10 @@ class Opener {
                   found && *found >= 0 ? static_cast<Item>(*found) : kNoItem);
     }
     artifact_.format_version_ = v1_ ? 1 : 0;
+    if (!v1_) {
+      const auto legacy = json::Parse(manifest_bytes_);
+      if (!legacy) return Pass(legacy);
+    }
     const auto layout = m.find("layout");
     if (!layout || !IsProfile(*layout)) {
       return Fail(Rule::kUnsupportedProfile, "layout is not spark-v0; re-import required");
@@ -381,7 +385,9 @@ class Opener {
     if (!manifest_.canonical()) {
       return Fail(Rule::kCanonical, "manifest.json is not in canonical form");
     }
-    if (artifact_.id_ != base::ToHex(Sha256Of(manifest_bytes_))) {
+    if (artifact_.id_ !=
+            base::ToHex(v1_ ? schema::ManifestIdentity(m) : Sha256Of(manifest_bytes_)) &&
+        artifact_.id_ != base::ToHex(Sha256Of(manifest_bytes_))) {
       return Fail(Rule::kIdentity, "the artifact name is not the manifest digest");
     }
     return {};
@@ -576,7 +582,8 @@ class Opener {
       if (auto ok = schema::Object(s, {"name", "bytes", "sha256"}, {}, "source keys", i); !ok) {
         return ok;
       }
-      auto name = schema::Str(schema::Get(s, "name"), schema::IsName, "source.name", i);
+      auto name = schema::Str(schema::Get(s, "name"), v1_ ? schema::IsFileName : schema::IsName,
+                              "source.name", i);
       if (!name) {
         return Pass(name);
       }
@@ -750,7 +757,8 @@ class Opener {
         fits = schema::IsShardPath(*path);
       } else if (*role == "source-metadata") {
         kind = FileRole::kSourceMetadata;
-        fits = schema::IsMetaPath(*path);
+        fits = v1_ ? schema::IsMetaPath(*path)
+                   : path->starts_with("meta/") && schema::IsName(path->substr(5));
       } else if (v1_ && *role == "spec") {
         kind = FileRole::kSpec;
         fits = *path == "spec.json";

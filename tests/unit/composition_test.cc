@@ -136,6 +136,12 @@ TEST_F(CompositionTest, OpensAValidCompositionAndItsKeptFiles) {
   EXPECT_EQ(c->converter().version, "m3-2+layout-a0d1980a9eddd1ad");
 }
 
+TEST_F(CompositionTest, V0KeepsItsLegacyMetadataNameRules) {
+  Spec spec;
+  spec.kept[1].first = "scheduler config.json";
+  EXPECT_EQ(RuleOf(Build(spec)), "schema");
+}
+
 TEST_F(CompositionTest, RefusesEachBrokenRuleByName) {
   // The directory.
   EXPECT_EQ(RuleOf(base_ / "missing"), "file-type");

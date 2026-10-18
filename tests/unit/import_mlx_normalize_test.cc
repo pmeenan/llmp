@@ -181,7 +181,7 @@ TEST(ImportMlxNormalizeModelsTest,
   EXPECT_EQ(checkpoint->container, "mlx");
   EXPECT_EQ(checkpoint->architecture, "qwen4_exp");
   EXPECT_EQ(checkpoint->quantization, "mlx affine");
-  EXPECT_EQ(checkpoint->files.size(), 24U);
+  EXPECT_EQ(checkpoint->files.size(), 28U);  // 22 shards, config/index and four tokenizer documents
 
   auto bound = MlxTargetBound(*checkpoint);
   ASSERT_TRUE(bound) << bound.error().ToString();

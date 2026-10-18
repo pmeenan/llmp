@@ -1595,8 +1595,8 @@ std::vector<std::string> FoldNames(std::span<const PlannedPartFold> planned) {
 std::expected<NormalizationCost, Error> MlxTargetBound(const Checkpoint& source) {
   if (source.container != "mlx" || source.architecture != "qwen4_exp" ||
       source.quantization != "mlx affine" || !source.role.empty() || !source.components.empty() ||
-      !source.skipped.empty() || source.tensors.size() != kPhysicalTensors ||
-      source.files.empty() || source.files.size() > 64 || source.metadata.size() > 512)
+      source.tensors.size() != kPhysicalTensors || source.files.empty() ||
+      source.files.size() > 64 || source.metadata.size() > 512)
     return Bad("outside closed MLX target source domain", Rule::kUnsupported);
   for (std::size_t i = 0; i < source.metadata.size(); ++i) {
     const auto& e = source.metadata[i];

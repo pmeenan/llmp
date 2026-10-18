@@ -26,6 +26,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -44,6 +45,7 @@
 
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
+#include "artifact/format_json.h"
 #include "artifact/format_map.h"
 #include "artifact/layout.h"
 #include "base/sha256.h"
@@ -93,6 +95,27 @@ void ExpectWellFormed(const Checkpoint& c) {
     ASSERT_TRUE(part.has_value()) << t.name;
     EXPECT_EQ(part.value_or(format::PartExtent{}).bytes, t.extent.bytes) << t.name;
   }
+}
+
+std::string InventoryDigest(const spec::Source& source) {
+  std::map<std::string, const spec::SourceTensor*, std::less<>> ordered;
+  for (const auto& tensor : source.tensors) ordered.emplace(tensor.name, &tensor);
+  base::Sha256 hash;
+  for (const auto& [name, tensor] : ordered) {
+    std::string format;
+    artifact::AppendFormatJson(tensor->format, format);
+    hash.Update(name).Update("\n").Update(format);
+    hash.Update(tensor->experts ? "experts\n" : "dense\n");
+    hash.Update(format::PartRoleName(tensor->part)).Update("\n");
+  }
+  return base::ToHex(hash.Finish());
+}
+
+void ReportNormalized(std::string_view name, const NormalizedPlan& plan) {
+  const auto spec = base::ToHex(plan.spec().Digest());
+  const auto inventory = InventoryDigest(plan.canonical());
+  std::printf("normalized %.*s spec=%s inventory=%s\n", static_cast<int>(name.size()), name.data(),
+              spec.c_str(), inventory.c_str());
 }
 
 struct GemmaCase {
@@ -162,6 +185,8 @@ TEST_P(ImportGemmaTest, SourceGgufGivesTheV1ArtifactsSpec) {
   auto normalized = Normalize(std::move(*checkpoint), {bound->metadata_bytes, bound->work_units});
   ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
   EXPECT_EQ(normalized->spec(), *stored);
+  EXPECT_EQ(InventoryDigest(normalized->canonical()), InventoryDigest(*v1));
+  ReportNormalized(c.artifact, *normalized);
   ASSERT_EQ(normalized->canonical().tensors.size(), source.tensors.size());
   ASSERT_EQ(normalized->routes().size(), source.tensors.size());
   ASSERT_EQ(normalized->metadata().size(), normalized->source().metadata.size());
@@ -204,6 +229,17 @@ INSTANTIATE_TEST_SUITE_P(
     [](const testing::TestParamInfo<GemmaCase>& info) {
       return std::string(info.param.architecture);
     });
+
+INSTANTIATE_TEST_SUITE_P(Qwen2, ImportGemmaTest,
+                         testing::Values(GemmaCase{
+                             .architecture = "qwen2",
+                             .gguf = "models/Qwen/Qwen2.5-0.5B-Instruct-GGUF@9217f5db/"
+                                     "qwen2.5-0.5b-instruct-fp16.gguf",
+                             .artifact = "qwen2-fp16",
+                             .tensors = 291}),
+                         [](const testing::TestParamInfo<GemmaCase>& info) {
+                           return std::string(info.param.architecture);
+                         });
 
 struct GgufCase {
   std::string_view name;
@@ -327,15 +363,23 @@ TEST_P(ImportV1FormatsTest, SourceFormatsAreTheArtifacts) {
     EXPECT_EQ(found->second->format, t.format) << t.name;
     ++compared;
   }
-  if (checkpoint->architecture == "gemma4") {
-    const auto expected = spec::StoredSpec(*artifact);
-    ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
+  if (const auto* table = FindSourceMapping(checkpoint->container, checkpoint->architecture)) {
     const auto bound = NormalizationBound(*checkpoint);
     ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
     auto normalized = Normalize(*checkpoint, {bound->metadata_bytes, bound->work_units});
     ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
-    EXPECT_EQ(normalized->spec(), *expected);
-    EXPECT_TRUE(normalized->applied_folds().empty());
+    if (table->architecture->role == spec::StageRole::kTarget) {
+      const auto expected = spec::StoredSpec(*artifact);
+      ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
+      EXPECT_EQ(normalized->spec(), *expected);
+    } else {
+      ASSERT_EQ(normalized->spec().stages.size(), 2U);
+      EXPECT_EQ(normalized->spec().stages[1].role, spec::StageRole::kDrafter);
+    }
+    ReportNormalized(c.name, *normalized);
+    EXPECT_EQ(InventoryDigest(normalized->canonical()), InventoryDigest(*v1));
+    RecordProperty("normalized_spec_digest", base::ToHex(normalized->spec().Digest()));
+    RecordProperty("normalized_inventory_digest", InventoryDigest(normalized->canonical()));
     ASSERT_EQ(normalized->routes().size(), checkpoint->tensors.size());
     std::uint64_t payload = 0;
     for (std::size_t i = 0; i < checkpoint->tensors.size(); ++i) {
@@ -398,8 +442,8 @@ TEST(ImportSafetensorsModelsTest, Qwen38ModelOptPairsEveryWeight) {
   EXPECT_EQ(checkpoint->quantization, "modelopt MIXED_PRECISION");
   ExpectWellFormed(*checkpoint);
   // The shards the index names (34 and the input scales'), then
-  // config.json, hf_quant_config.json and the index.
-  EXPECT_EQ(checkpoint->files.size(), 35U + 3U);
+  // config.json, hf_quant_config.json, the index and four kept tokenizer documents.
+  EXPECT_EQ(checkpoint->files.size(), 35U + 3U + 4U);
   std::map<std::pair<format::Encoding, format::PartRole>, std::size_t> parts;
   std::size_t tensor_scaled = 0;
   for (const Tensor& t : checkpoint->tensors) {
@@ -649,7 +693,16 @@ TEST_P(ImportExl3ModelsTest, FixturesAreTheirV1Imports) {
   ASSERT_TRUE(a.has_value()) << a.error().ToString();
   for (const SourceFile& f : c->files) {
     const auto s = std::ranges::find(a->sources(), f.name, &artifact::Source::name);
-    ASSERT_NE(s, a->sources().end()) << f.name;
+    if (s == a->sources().end()) {
+      // Old v1 imports predate preservation of optional tokenizer documents.
+      constexpr std::array<std::string_view, 7> documents{
+          "tokenizer.json",         "tokenizer_config.json", "special_tokens_map.json",
+          "generation_config.json", "chat_template.jinja",   "chat_template.json",
+          "tokenizer.model"};
+      EXPECT_TRUE(std::ranges::contains(documents, f.name)) << f.name;
+      EXPECT_EQ(f.parsed.bytes, f.bytes) << f.name;
+      continue;
+    }
     EXPECT_EQ(s->bytes.value(), f.bytes) << f.name;
   }
   std::size_t trellises = 0;
@@ -666,6 +719,19 @@ TEST_P(ImportExl3ModelsTest, FixturesAreTheirV1Imports) {
   }
   EXPECT_EQ(trellises, 169U);
   EXPECT_EQ(a->resources().size(), c->tensors.size());
+  const auto bound = NormalizationBound(*c);
+  ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
+  auto normalized = Normalize(*c, {bound->metadata_bytes, bound->work_units});
+  ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
+  const auto stored = spec::StoredSpec(*a);
+  ASSERT_TRUE(stored);
+  EXPECT_EQ(normalized->spec(), *stored);
+  const auto stored_source = spec::SourceOf(*a);
+  ASSERT_TRUE(stored_source);
+  EXPECT_EQ(InventoryDigest(normalized->canonical()), InventoryDigest(*stored_source));
+  RecordProperty("normalized_spec_digest", base::ToHex(normalized->spec().Digest()));
+  RecordProperty("normalized_inventory_digest", InventoryDigest(normalized->canonical()));
+  ReportNormalized(e.name, *normalized);
   RecordProperty("bytes_compared", std::to_string(ExpectResourcesAreTheCheckpoints(root, *a, *c)));
 }
 

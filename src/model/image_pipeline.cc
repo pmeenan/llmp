@@ -319,6 +319,8 @@ std::expected<std::vector<std::uint32_t>, std::string> BindImageComponent(
     if (r.format) {
       if (r.format->encoding == format::Encoding::kBF16) {
         dtype = "BF16";
+      } else if (r.format->encoding == format::Encoding::kF16) {
+        dtype = "F16";
       } else if (r.format->encoding == format::Encoding::kF32) {
         dtype = "F32";
       }

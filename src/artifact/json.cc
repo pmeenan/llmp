@@ -16,6 +16,7 @@
 
 #include "artifact/error.h"
 #include "base/check.h"
+#include "base/json.h"
 
 namespace llmp::artifact::json {
 
@@ -42,7 +43,8 @@ std::string_view Value::string() const {
   if (node.kind != Kind::kString) {
     return {};
   }
-  return document_->text_.substr(node.first, node.size);
+  return node.fits ? std::string_view(document_->decoded_[node.first])
+                   : document_->text_.substr(node.first, node.size);
 }
 
 std::size_t Value::size() const {
@@ -82,14 +84,15 @@ std::optional<Value> Value::find(std::string_view name) const {
 
 class Parser {
  public:
-  Parser(std::string_view text, Document& document) : text_(text), document_(document) {}
+  Parser(std::string_view text, Document& document, bool extended_strings)
+      : extended_strings_(extended_strings), text_(text), document_(document) {}
 
   std::expected<void, Error> Run() {
-    for (std::size_t i = 0; i < text_.size(); ++i) {
-      if (static_cast<unsigned char>(text_[i]) >= 0x80) {
-        return Fail("non-ASCII byte", i);
-      }
-    }
+    if (!extended_strings_)
+      for (std::size_t i = 0; i < text_.size(); ++i)
+        if (static_cast<unsigned char>(text_[i]) >= 0x80) return Fail("non-ASCII byte", i);
+    if (const auto invalid = base::json::FirstInvalidUtf8(text_))
+      return Fail("invalid UTF-8", *invalid);
     auto root = ParseValue(0);
     if (!root) {
       return std::unexpected(root.error());
@@ -174,34 +177,41 @@ class Parser {
   }
 
   std::expected<std::uint32_t, Error> ParseString() {
-    const std::size_t start = ++pos_;  // past the quote
-    while (true) {
-      if (pos_ >= text_.size()) {
-        return Fail("unterminated string", start - 1);
-      }
-      const char c = text_[pos_];
-      if (c == '"') {
-        break;
-      }
-      if (c == '\\') {
-        return Fail("a string escape (canonical strings need none)", pos_, Rule::kCanonical);
-      }
-      if (static_cast<unsigned char>(c) < 0x20) {
+    const std::size_t start = ++pos_;
+    bool escaped = false;
+    while (pos_ < text_.size() && text_[pos_] != '"') {
+      if (static_cast<unsigned char>(text_[pos_]) < 0x20)
         return Fail("a control character in a string", pos_);
-      }
-      if (c == 0x7f) {
-        document_.canonical_ = false;  // the canonical encoder escapes DEL
+      if (text_[pos_] == '\\') {
+        if (!extended_strings_)
+          return Fail("a string escape (canonical strings need none)", pos_, Rule::kCanonical);
+        escaped = true;
+        ++pos_;
+        if (pos_ == text_.size()) return Fail("unterminated escape", pos_);
       }
       ++pos_;
     }
-    if (++strings_ > kMaxStrings) {
-      return Fail("more strings than the cap", start - 1);
+    if (pos_ == text_.size()) return Fail("unterminated string", start - 1);
+    if (++strings_ > kMaxStrings) return Fail("more strings than the cap", start - 1);
+    const auto length = pos_++ - start;
+    if (!escaped) {
+      if (text_.substr(start, length).contains(char{0x7f})) document_.canonical_ = false;
+      return AddNode({.kind = Kind::kString,
+                      .size = static_cast<std::uint32_t>(length),
+                      .first = static_cast<std::uint32_t>(start)});
     }
-    const std::size_t length = pos_ - start;
-    ++pos_;  // the closing quote
+    const auto literal = text_.substr(start - 1, length + 2);
+    auto decoded = base::json::Parse(literal);
+    if (!decoded) return Fail("invalid string escape", start - 1);
+    std::string canonical;
+    base::json::AppendQuoted(decoded->root().string(), canonical);
+    if (canonical != literal) document_.canonical_ = false;
+    const auto index = static_cast<std::uint32_t>(document_.decoded_.size());
+    document_.decoded_.emplace_back(decoded->root().string());
     return AddNode({.kind = Kind::kString,
-                    .size = static_cast<std::uint32_t>(length),
-                    .first = static_cast<std::uint32_t>(start)});
+                    .fits = true,
+                    .size = static_cast<std::uint32_t>(document_.decoded_.back().size()),
+                    .first = index});
   }
 
   std::expected<std::uint32_t, Error> ParseInteger() {
@@ -364,9 +374,11 @@ class Parser {
 
   std::string_view KeyAt(std::size_t mark, std::size_t i) const {
     const Document::Node& node = document_.nodes_[stack_[mark + (2 * i)]];
-    return text_.substr(node.first, node.size);
+    return node.fits ? std::string_view(document_.decoded_[node.first])
+                     : text_.substr(node.first, node.size);
   }
 
+  bool extended_strings_ = false;
   std::string_view text_;
   Document& document_;
   std::size_t pos_ = 0;
@@ -377,13 +389,13 @@ class Parser {
   std::vector<std::string_view> keys_;
 };
 
-std::expected<Document, Error> Parse(std::string_view text) {
+std::expected<Document, Error> Parse(std::string_view text, bool extended_strings) {
   if (text.size() > std::numeric_limits<std::uint32_t>::max()) {
     return std::unexpected(Error{.rule = Rule::kJson, .reason = "document too large"});
   }
   Document document;
   document.text_ = text;
-  Parser parser(text, document);
+  Parser parser(text, document, extended_strings);
   if (auto parsed = parser.Run(); !parsed) {
     return std::unexpected(parsed.error());
   }
@@ -412,9 +424,7 @@ void Serialize(Value v, std::string& out) {
       return;
     }
     case Kind::kString:
-      out += '"';
-      out += v.string();
-      out += '"';
+      base::json::AppendQuoted(v.string(), out);
       return;
     case Kind::kArray:
       out += '[';
@@ -437,9 +447,8 @@ void Serialize(Value v, std::string& out) {
         if (i > 0) {
           out += ',';
         }
-        out += '"';
-        out += v.key(order[i]);
-        out += "\":";
+        base::json::AppendQuoted(v.key(order[i]), out);
+        out += ':';
         Serialize(v.member(order[i]), out);
       }
       out += '}';

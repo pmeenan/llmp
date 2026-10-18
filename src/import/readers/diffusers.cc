@@ -52,12 +52,6 @@ bool NamesComponent(json::Value v) {
   return v.is_array() && v.size() == 2 && v.at(0).is_string() && v.at(1).is_string();
 }
 
-// Whether `path` lies strictly beneath `root` (both resolved, absolute).
-bool Beneath(const std::filesystem::path& path, const std::filesystem::path& root) {
-  const std::filesystem::path relative = path.lexically_relative(root);
-  return !relative.empty() && *relative.begin() != "." && *relative.begin() != "..";
-}
-
 // The regular files beneath a component's directory, by name.
 std::expected<std::vector<std::string>, Error> FileNames(const std::filesystem::path& dir) {
   std::error_code error;

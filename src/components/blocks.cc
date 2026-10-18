@@ -641,6 +641,7 @@ const ComponentDef& EmbeddingProjected() {
       .roles = kProjectedRoles,
       .shapes = ProjectedShapes,
       .state = ProjectedState,
+      .max_state_tensors = 1,
       .batch_classes = std::span(kJoined).subspan(2, 3),
       .emit = ProjectedEmit,
       .reference = ProjectedReference,

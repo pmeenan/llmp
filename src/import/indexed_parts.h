@@ -16,6 +16,34 @@
 #include "import/route.h"
 
 namespace llmp::import {
+struct SemanticReceipt {
+  std::uint32_t source = 0;
+  Extent extent{};
+  base::Sha256Digest sha256{};
+};
+
+// Canonical tensor index is the position in this vector. This explicit join
+// lets a generic publisher consume geometry without interpreting source names.
+struct NormalizedPartBinding {
+  std::uint32_t output = 0;
+  format::PartRole part = format::PartRole::kData;
+};
+
+// A newly owned transform; publication records it only after all authenticated routes finish.
+struct PlannedPartFold {
+  std::string fold{};
+  std::vector<std::uint32_t> outputs{};
+};
+
+// Bytes the importer derives from one authenticated whole source file and
+// writes as a canonical tensor's part (a selected head's token map, I32,
+// from its list). `tensor` follows every bound canonical tensor.
+struct GeneratedPart {
+  std::uint32_t tensor = 0;
+  std::uint32_t file = 0;
+  std::vector<std::byte> bytes{};
+};
+
 // Geometry only: a model mapping must independently authorize each source
 // role and exclusion. Neither these declarations nor a successful plan grant
 // model admission, authenticate payloads or publish an artifact.

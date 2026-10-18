@@ -866,7 +866,10 @@ EngineImageBuild ComponentImageServingBuild(en::PagedNode& node, std::filesystem
     retained->render = chat::FindImagePromptRenderer(mapping->prompt);
     if (retained->render == nullptr)
       return Error("image pipeline has no prompt renderer of its mapping's name");
-    const auto json = source->composition->Metadata(mapping->tokenizer);
+    const auto tokenizer_file = source->composition->format_version() >= 2
+                                    ? std::string(mapping->tokenizer)
+                                    : std::filesystem::path(mapping->tokenizer).filename().string();
+    const auto json = source->composition->Metadata(tokenizer_file);
     if (!json) return Error("image composition has no native tokenizer metadata");
     const auto parsing = base::json::ParseWorkingBytes(*json);
     const auto expanded = 32 * std::uint64_t{json->size()} + parsing;

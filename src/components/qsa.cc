@@ -762,6 +762,7 @@ const ComponentDef& AttentionQsa() {
       .roles = kRoles,
       .shapes = Shapes,
       .state = State,
+      .max_state_tensors = 4,
       .batch_classes = kBatchClasses,
       .splits = kSplits,
       .patterns = kPatterns,

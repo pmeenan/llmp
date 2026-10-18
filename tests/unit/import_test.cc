@@ -541,7 +541,12 @@ TEST(ImportGgufTest, RefusesTypesShapesAndNames) {
   }
   EXPECT_EQ(RuleOf(ParseGguf(Gguf().Tensor("t", kQ4_K, {128}).Build())), Rule::kContainer);
   EXPECT_EQ(RuleOf(ParseGguf(Gguf().Tensor("t", kQ8_0, {33}).Build())), Rule::kContainer);
-  EXPECT_EQ(RuleOf(ParseGguf(Gguf().Tensor("t", kF32, {4, 0}).Build())), Rule::kUnsupported);
+  const auto empty = ParseGguf(Gguf().Tensor("t", kF32, {4, 0}).Tensor("u", kF32, {1}).Build());
+  ASSERT_TRUE(empty);
+  ASSERT_EQ(empty->skipped_tensors.size(), 1U);
+  EXPECT_EQ(empty->skipped_tensors[0].name, "t");
+  ASSERT_EQ(empty->tensors.size(), 1U);
+  EXPECT_EQ(empty->tensors[0].name, "u");
   // 2^62 F32 elements: 2^64 bytes.
   EXPECT_EQ(
       RuleOf(ParseGguf(
@@ -789,6 +794,29 @@ TEST_F(ImportGgufFilesTest, RefusesSplitSetsThatDisagree) {
   EXPECT_EQ(RuleOf(ReadGguf(dir_ / "renamed.gguf")), Rule::kShards);
 }
 
+TEST_F(ImportGgufFilesTest, SkippedNamesStayValidAcrossSplitAssembly) {
+  const auto write = [&](std::string_view last) {
+    for (int i = 0; i < 2; ++i) {
+      Write(dir_ / SplitFile(i + 1, 2), Gguf()
+                                            .U16("split.no", static_cast<std::uint16_t>(i))
+                                            .U16("split.count", 2)
+                                            .I32("split.tensors.count", 4)
+                                            .Tensor(i == 0 ? "a" : "c", kF32, {1})
+                                            .Tensor(i == 0 ? "b" : std::string(last), kF32, {0})
+                                            .Build());
+    }
+    return ReadGguf(dir_ / SplitFile(1, 2));
+  };
+  auto unique = write("d");
+  ASSERT_TRUE(unique) << unique.error().ToString();
+  EXPECT_EQ(unique->tensors.size(), 2U);
+  ASSERT_EQ(unique->skipped_tensors.size(), 2U);
+  EXPECT_EQ(unique->skipped_tensors[0].name, "b");
+  EXPECT_EQ(unique->skipped_tensors[1].name, "d");
+  EXPECT_EQ(RuleOf(write("a")), Rule::kShards);  // live name in the earlier split
+  EXPECT_EQ(RuleOf(write("b")), Rule::kShards);  // skipped name in the earlier split
+}
+
 // Files are opened as any file is, links followed (D-073 as amended on
 // 2026-10-09): who could change them is not the reader's business, but
 // only a regular file is opened.
@@ -988,7 +1016,7 @@ TEST(ImportSafetensorsTest, ReadsTensorsAndConfig) {
   EXPECT_EQ(*Get<double>(*c, "rope_theta"), 10000.0);
   EXPECT_EQ(*Get<double>(*c, "huge"), 123456789012345678901234567890.0);
   EXPECT_EQ(*Get<bool>(*c, "flag"), true);
-  EXPECT_TRUE(std::holds_alternative<std::monostate>(*c->FindValue("nothing")));
+  EXPECT_TRUE(std::holds_alternative<std::nullptr_t>(*c->FindValue("nothing")));
   EXPECT_EQ(*Get<std::vector<std::int64_t>>(*c, "ints"), (std::vector<std::int64_t>{1, -2, 3}));
   EXPECT_EQ(*Get<std::vector<double>>(*c, "reals"), (std::vector<double>{1.0, 2.5}));
   EXPECT_TRUE(std::holds_alternative<std::monostate>(*c->FindValue("mixed")));
@@ -1086,7 +1114,13 @@ TEST(ImportSafetensorsTest, RefusesHeaders) {
   EXPECT_EQ(rule(Shard({E("a", "F32", {1, 1, 1, 1, 1, 1, 1, 1, 1})})), Rule::kBounds);
   EXPECT_TRUE(
       ParseSafetensors(Shard({E("a", "F32", {1, 1, 1, 1, 1, 1, 1, 1})}), kConfig).has_value());
-  EXPECT_EQ(rule(Shard({E("a", "F32", {2, 0})})), Rule::kUnsupported);
+  EXPECT_EQ(rule(Shard({E("a", "F32", {2, 0})})), std::nullopt);
+  const auto empty = ParseSafetensors(Shard({E("a", "F32", {2, 0}), E("b", "F16", {2})}), kConfig);
+  ASSERT_TRUE(empty);
+  ASSERT_EQ(empty->skipped_tensors.size(), 1U);
+  EXPECT_EQ(empty->skipped_tensors[0].name, "a");
+  ASSERT_EQ(empty->tensors.size(), 1U);
+  EXPECT_EQ(empty->tensors[0].name, "b");
   EXPECT_EQ(
       rule(RawShard(
           R"({"a":{"dtype":"F32","shape":[4294967296,4294967296,2],"data_offsets":[0,4]}})", 4)),
@@ -1553,6 +1587,42 @@ TEST_F(ImportSafetensorsFilesTest, RefusesIndexesThatDisagree) {
   EXPECT_EQ(with(R"({"metadata":{}})"), Rule::kConfig);
   EXPECT_EQ(with("{"), Rule::kConfig);
   EXPECT_EQ(with(R"({"weight_map":[]})"), Rule::kConfig);
+}
+
+TEST_F(ImportSafetensorsFilesTest, SkippedNamesStayValidWhileLaterShardsGrowTheInventory) {
+  Write(dir_ / "config.json", kConfig);
+  std::map<std::string, std::string> index;
+  for (int i = 0; i < 32; ++i) {
+    const auto shard = std::format("s{:02}.safetensors", i);
+    const auto a = std::format("a{:02}", i), b = std::format("b{:02}", i);
+    index.emplace(a, shard);
+    index.emplace(b, shard);
+    Write(dir_ / shard, Shard({E(a, "F32", {0}), E(b, "F16", {0})}));
+  }
+  Write(dir_ / "model.safetensors.index.json", Index(index));
+  const auto checkpoint = ReadSafetensors(dir_);
+  ASSERT_TRUE(checkpoint) << checkpoint.error().ToString();
+  EXPECT_TRUE(checkpoint->tensors.empty());
+  ASSERT_EQ(checkpoint->skipped_tensors.size(), 64U);
+  for (std::size_t i = 0; i < checkpoint->skipped_tensors.size(); ++i) {
+    EXPECT_EQ(checkpoint->skipped_tensors[i].file, i / 2);
+    EXPECT_EQ(checkpoint->skipped_tensors[i].name,
+              std::format("{}{:02}", i % 2 == 0 ? 'a' : 'b', i / 2));
+  }
+}
+
+TEST_F(ImportSafetensorsFilesTest, AggregateTensorCapIncludesAnEntireEmptyInventory) {
+  Write(dir_ / "config.json", kConfig);
+  // The index establishes the aggregate bound before any shard is allocated,
+  // including when all of its tensors would have zero elements.
+  std::string index = R"({"weight_map":{)";
+  for (std::size_t i = 0; i <= kMaxTensors; ++i) {
+    if (i) index += ',';
+    index += std::format(R"("t{}":"s{}.safetensors")", i, i % 2);
+  }
+  index += "}}";
+  Write(dir_ / "model.safetensors.index.json", index);
+  EXPECT_EQ(RuleOf(ReadSafetensors(dir_)), Rule::kBounds);
 }
 
 TEST_F(ImportSafetensorsFilesTest, OpensDirectoriesThroughLinks) {

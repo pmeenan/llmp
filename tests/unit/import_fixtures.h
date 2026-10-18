@@ -184,6 +184,37 @@ inline Entry E(std::string name, std::string dtype, std::vector<std::uint64_t> s
       .name = std::move(name), .dtype = std::move(dtype), .shape = std::move(shape), .bytes = n};
 }
 
+// A complete small HF Qwen2 checkpoint for import/publication controls.
+inline std::vector<Entry> TinyQwen2HfEntries() {
+  return {E("model.embed_tokens.weight", "F16", {10, 8}),
+          E("model.norm.weight", "F16", {8}),
+          E("lm_head.weight", "F16", {10, 8}),
+          E("model.layers.0.input_layernorm.weight", "F16", {8}),
+          E("model.layers.0.post_attention_layernorm.weight", "F16", {8}),
+          E("model.layers.0.self_attn.q_proj.weight", "F16", {8, 8}),
+          E("model.layers.0.self_attn.k_proj.weight", "F16", {4, 8}),
+          E("model.layers.0.self_attn.v_proj.weight", "F16", {4, 8}),
+          E("model.layers.0.self_attn.o_proj.weight", "F16", {8, 8}),
+          E("model.layers.0.self_attn.q_proj.bias", "F16", {8}),
+          E("model.layers.0.self_attn.k_proj.bias", "F16", {4}),
+          E("model.layers.0.self_attn.v_proj.bias", "F16", {4}),
+          E("model.layers.0.mlp.gate_proj.weight", "F16", {16, 8}),
+          E("model.layers.0.mlp.up_proj.weight", "F16", {16, 8}),
+          E("model.layers.0.mlp.down_proj.weight", "F16", {8, 16}),
+          E("unused.empty", "F16", {0})};
+}
+inline std::string TinyQwen2HfConfig(std::string_view dtype = "dtype") {
+  return std::string(R"({"architectures":["Qwen2ForCausalLM"],"model_type":"qwen2",
+      "hidden_size":8,"intermediate_size":16,"num_hidden_layers":1,
+      "num_attention_heads":2,"num_key_value_heads":1,"head_dim":4,
+      "max_position_embeddings":128,"rms_norm_eps":0.000001,"rope_theta":10000,
+      "hidden_act":"silu","use_sliding_window":false,"sliding_window":null,"rope_scaling":null,
+      "attention_dropout":0.0,"bos_token_id":1,"eos_token_id":2,"vocab_size":10,
+      "tie_word_embeddings":false,"use_cache":true,"transformers_version":"5.17.0",
+      "new_training_note":{"anything":true},")") +
+         std::string(dtype) + R"(":"float16"})";
+}
+
 inline std::string ShapeText(const std::vector<std::uint64_t>& shape) {
   std::string s = "[";
   for (std::size_t i = 0; i < shape.size(); ++i) {

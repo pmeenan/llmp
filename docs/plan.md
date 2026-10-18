@@ -192,7 +192,7 @@ before new families land; each item lands as one reviewed commit.
 - [x] R2 Kernel, decode and IR correctness (validator gaps, CUTLASS and EXL3
       error paths, alignment, per-device opt-ins, latent IR rewrite bugs,
       dead kernel code)
-- [ ] R3 Importer correctness and structural normalization (safetensors
+- [x] R3 Importer correctness and structural normalization (safetensors
       metadata, composition roles, open-world keys, no encoding or shape pins,
       kept tokenizer documents, reproducible artifact identity)
 - [ ] R4 Mapping-driven admission and spec-derived bounds (no architecture

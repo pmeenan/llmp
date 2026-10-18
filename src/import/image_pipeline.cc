@@ -138,6 +138,13 @@ std::vector<ComponentGroup> GroupsOf(std::string_view kind,
   return out;
 }
 
+}  // namespace
+
+bool IsImagePipeline(const Checkpoint& source) {
+  return source.container == "diffusers" && spec::FindImageMapping(source.architecture) != nullptr;
+}
+
+namespace image_pipeline_detail {
 std::expected<ComponentPlan, Error> PlanComponent(
     const Checkpoint& comp, std::span<const model::ImageTensor> expected_tensors,
     const spec::ModelSpec& spec, std::vector<ComponentGroup> groups) {
@@ -153,7 +160,7 @@ std::expected<ComponentPlan, Error> PlanComponent(
   for (const auto& need : expected_tensors) {
     const Tensor* found = comp.FindTensor(need.name);
     if (!found) return Bad("a component lacks a tensor its mapping names");
-    if (found->dtype != need.dtype || found->dims != need.shape) {
+    if (found->dims != need.shape) {
       return Bad("a component tensor's format or shape is not its family's");
     }
     format::Shape shape;
@@ -161,13 +168,16 @@ std::expected<ComponentPlan, Error> PlanComponent(
     for (std::size_t d = 0; d < need.shape.size(); ++d) {
       shape.ne[d] = need.shape[need.shape.size() - 1 - d];
     }
-    const auto encoding = need.dtype == "BF16" ? format::Encoding::kBF16 : format::Encoding::kF32;
-    canonical.tensors.push_back({
-        .name = need.name,
-        .format = ir::Dense(encoding, shape),
-        .part = format::PartRole::kData,
-        .experts = false,
-    });
+    const auto parts = format::PartsOf(found->format);
+    if (!parts || parts->size() != 1 || found->part != format::PartRole::kData ||
+        found->format.layout != format::Layout::kDense ||
+        found->format.params != format::EncodingParams{} || found->format.stacked != 1 ||
+        found->extent.bytes != (*parts)[0].bytes || found->format.shape != shape)
+      return Bad("a component tensor has an inconsistent source format");
+    canonical.tensors.push_back({.name = need.name,
+                                 .format = found->format,
+                                 .part = format::PartRole::kData,
+                                 .experts = false});
     const auto si = static_cast<std::uint32_t>(found - comp.tensors.data());
     routes.push_back({
         .source_tensor = si,
@@ -176,7 +186,9 @@ std::expected<ComponentPlan, Error> PlanComponent(
     });
     payload += found->extent.bytes;
   }
-  if (auto valid = components::ValidateSpec(spec, canonical.tensors); !valid) {
+  if (auto valid =
+          components::ValidateSpec(spec, canonical.tensors, components::ValidationPurpose::kImport);
+      !valid) {
     return Bad("a component's spec does not bind its tensors");
   }
   return ComponentPlan{
@@ -189,11 +201,7 @@ std::expected<ComponentPlan, Error> PlanComponent(
   };
 }
 
-}  // namespace
-
-bool IsImagePipeline(const Checkpoint& source) {
-  return source.container == "diffusers" && spec::FindImageMapping(source.architecture) != nullptr;
-}
+}  // namespace image_pipeline_detail
 
 std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& source) {
   if (!IsImagePipeline(source)) {
@@ -249,8 +257,8 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
     const auto* comp = FindComponent(source, rule.role);
     const auto kind = rule.kinds.front();
     const std::size_t at = kind == spec::kImageTextKind ? 0 : kind == spec::kImageFlowKind ? 1 : 2;
-    auto plan = PlanComponent(*comp, *by_kind[at].first, *by_kind[at].second,
-                              GroupsOf(kind, *by_kind[at].first, p, names));
+    auto plan = image_pipeline_detail::PlanComponent(*comp, *by_kind[at].first, *by_kind[at].second,
+                                                     GroupsOf(kind, *by_kind[at].first, p, names));
     if (!plan) return std::unexpected(plan.error());
     out.payload_bytes += plan->payload_bytes;
     out.components.push_back(std::move(*plan));

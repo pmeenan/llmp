@@ -88,7 +88,7 @@ class Document {
 
  private:
   friend class Value;
-  friend std::expected<Document, Error> Parse(std::string_view text);
+  friend std::expected<Document, Error> Parse(std::string_view text, bool extended_strings);
   friend class Parser;
 
   struct Node {
@@ -100,6 +100,7 @@ class Document {
   };
 
   std::string_view text_;
+  std::vector<std::string> decoded_;  // only strings that need unescaping
   std::vector<Node> nodes_;
   // Arrays: element nodes; objects: key node, value node, per member.
   std::vector<std::uint32_t> kids_;
@@ -107,9 +108,10 @@ class Document {
   bool canonical_ = true;
 };
 
-// Parses text. Errors are Rule::kJson, or Rule::kCanonical for a string
-// escape; `item` is the byte offset where parsing stopped.
-std::expected<Document, Error> Parse(std::string_view text);
+// Parses text. The default retains v0's strict ASCII subset; native manifests
+// use extended_strings for UTF-8 and minimally quoted filenames. Errors are
+// Rule::kJson, or Rule::kCanonical for a v0 string escape; item is the byte offset.
+std::expected<Document, Error> Parse(std::string_view text, bool extended_strings = false);
 
 // Appends v's canonical encoding (sorted keys, no whitespace, no trailing
 // newline) to out.

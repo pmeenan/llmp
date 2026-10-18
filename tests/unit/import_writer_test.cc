@@ -31,6 +31,9 @@
 #include "qwen2_exl3_normalization_fixture.h"
 #include "qwen2_gguf_normalization_fixture.h"
 #include "qwen38_gguf_normalization_fixture.h"
+#include "runtime/component_admission.h"
+#include "runtime/model_settings.h"
+#include "spec/image_spatial.h"
 #include "spec/stored.h"
 
 namespace llmp::import {
@@ -231,6 +234,136 @@ class ImportWriterTest : public fixtures::ScratchTest {
     return {.store = dir_ / store, .build = "test", .metadata_bytes = std::uint64_t{1} << 30U};
   }
 };
+TEST_F(ImportWriterTest, BuildProvenanceDoesNotChangeIdentityOrWeakenReceipts) {
+  auto plan = Plan();
+  ASSERT_TRUE(plan);
+  auto opts = Options();
+  opts.build = "unknown";
+  auto first = WriteArtifact(*plan, opts);
+  ASSERT_TRUE(first) << test_support::Failed(first, &Error::ToString).value_or("");
+  const auto manifest = dir_ / "store" / first->id / "manifest.json";
+  opts.build = "40bf23e3.dirty";
+  auto again = WriteArtifact(*plan, opts);
+  ASSERT_TRUE(again) << test_support::Failed(again, &Error::ToString).value_or("");
+  EXPECT_EQ(again->id, first->id);
+  EXPECT_TRUE(again->reused);
+  auto opened = artifact::Artifact::Open(again->path);
+  ASSERT_TRUE(opened);
+  EXPECT_EQ(opened->converter().build, "unknown");
+  opts.store = dir_ / "other";
+  auto other = WriteArtifact(*plan, opts);
+  ASSERT_TRUE(other);
+  EXPECT_EQ(other->id, first->id);
+  opened = artifact::Artifact::Open(other->path);
+  ASSERT_TRUE(opened);
+  EXPECT_EQ(opened->converter().build, opts.build);
+  std::vector<std::optional<base::Sha256Digest>> wrong(plan->source().files.size(),
+                                                       base::Sha256Digest{});
+  opts.expected = wrong;
+  EXPECT_FALSE(WriteArtifact(*plan, opts));
+}
+
+TEST_F(ImportWriterTest, ImportPreservesF16NormsWhileRuntimeReportsItsEncodingBoundary) {
+  auto checkpoint = Tiny();
+  auto& norm = checkpoint.tensors[1];
+  ASSERT_EQ(norm.name, "output_norm.weight");
+  norm.format.encoding = Encoding::kF16;
+  norm.extent.bytes = format::PartsOf(norm.format)->Find(norm.part)->bytes;
+  Write(dir_ / "source/fp16.gguf", Gguf(checkpoint));
+  auto source = ReadGguf(dir_ / "source/fp16.gguf");
+  ASSERT_TRUE(source);
+  auto plan = Normalize(std::move(*source), kFunded);
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  EXPECT_TRUE(components::ValidateSpec(plan->spec(), plan->canonical().tensors,
+                                       components::ValidationPurpose::kImport));
+  EXPECT_FALSE(components::ValidateSpec(plan->spec(), plan->canonical().tensors));
+  auto published = WriteArtifact(*plan, Options());
+  ASSERT_TRUE(published) << test_support::Failed(published, &Error::ToString).value_or("");
+  auto opened = artifact::Artifact::Open(published->path);
+  ASSERT_TRUE(opened);
+  auto stored = spec::SourceOf(*opened);
+  ASSERT_TRUE(stored);
+  const auto tensor =
+      std::ranges::find(stored->tensors, "output_norm.weight", &spec::SourceTensor::name);
+  ASSERT_NE(tensor, stored->tensors.end());
+  EXPECT_EQ(tensor->format.encoding, Encoding::kF16);
+  auto admitted = runtime::ReadComponentAdmission(*opened);
+  ASSERT_FALSE(admitted);
+  EXPECT_NE(admitted.error().find("does not take"), std::string::npos) << admitted.error();
+}
+
+TEST_F(ImportWriterTest, HfPublicationKeepsTokenizerDocumentsAndUsesTheirChatTemplate) {
+  const auto source = dir_ / "source";
+  Write(source / "config.json", fixtures::TinyQwen2HfConfig());
+  Write(source / "model.safetensors", fixtures::Shard(fixtures::TinyQwen2HfEntries()));
+  constexpr std::string_view regex =
+      R"re((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re";
+  std::string quoted;
+  base::json::AppendQuoted(regex, quoted);
+  const std::string tokenizer =
+      R"({"added_tokens":[],"decoder":{"type":"ByteLevel"},"model":{"type":"BPE","vocab":{"a":0},"merges":[]},"pre_tokenizer":{"type":"Sequence","pretokenizers":[{"type":"Split","behavior":"Isolated","pattern":{"Regex":)" +
+      quoted + R"(}},{"type":"ByteLevel","add_prefix_space":false,"use_regex":false}]}})";
+  Write(source / "tokenizer.json", tokenizer);
+  Write(source / "tokenizer_config.json",
+        R"({"chat_template":[{"name":"default","template":"config template"}]})");
+  Write(source / "special_tokens_map.json", "{}");
+  Write(source / "generation_config.json", R"({"eos_token_id":2})");
+  Write(source / "tokenizer.model", "preserved model bytes");
+  Write(source / "chat_template.json", R"({"chat_template":"JSON template"})");
+  Write(source / "chat_template.jinja", "Jinja template");
+  for (const auto expected : {"Jinja template", "JSON template", "config template"}) {
+    auto checkpoint = ReadSafetensors(source);
+    ASSERT_TRUE(checkpoint) << test_support::Failed(checkpoint, &Error::ToString).value_or("");
+    auto plan = Normalize(std::move(*checkpoint), kFunded);
+    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+    auto written = WriteArtifact(*plan, Options());
+    ASSERT_TRUE(written) << test_support::Failed(written, &Error::ToString).value_or("");
+    auto artifact = artifact::Artifact::Open(written->path);
+    ASSERT_TRUE(artifact);
+    EXPECT_EQ(artifact->ReadMetadata("tokenizer.json"), tokenizer);
+    EXPECT_EQ(artifact->ReadMetadata("tokenizer.model"), "preserved model bytes");
+    EXPECT_EQ(artifact->ReadMetadata("generation_config.json"), R"({"eos_token_id":2})");
+    auto assets = runtime::ReadChatAssets(*artifact, {});
+    ASSERT_TRUE(assets) << test_support::Failed(assets).value_or("");
+    EXPECT_EQ(assets->from, "tokenizer.json");
+    ASSERT_TRUE(assets->chat_template);
+    EXPECT_EQ(*assets->chat_template, expected);
+    std::filesystem::remove(source / (std::string(expected) == "Jinja template"
+                                          ? "chat_template.jinja"
+                                          : "chat_template.json"));
+  }
+  std::filesystem::remove(source / "tokenizer.json");
+  auto checkpoint = ReadSafetensors(source);
+  ASSERT_TRUE(checkpoint);
+  auto plan = Normalize(std::move(*checkpoint), kFunded);
+  ASSERT_TRUE(plan);
+  auto written = WriteArtifact(*plan, Options());
+  ASSERT_TRUE(written);
+  auto artifact = artifact::Artifact::Open(written->path);
+  ASSERT_TRUE(artifact);
+  auto assets = runtime::ReadChatAssets(*artifact, {});
+  ASSERT_FALSE(assets);
+  EXPECT_NE(assets.error().find("SentencePiece tokenizer.model"), std::string::npos);
+}
+
+TEST_F(ImportWriterTest, ReaderAcceptsLegacyNamedBuildManifestIdentity) {
+  auto plan = Plan();
+  ASSERT_TRUE(plan);
+  auto opts = Options();
+  opts.build = "40bf23e3.dirty";
+  auto published = WriteArtifact(*plan, opts);
+  ASSERT_TRUE(published);
+  std::ifstream in(published->path / "manifest.json", std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(in)), {});
+  const auto raw = base::ToHex(base::Sha256().Update(text).Finish());
+  ASSERT_NE(raw, published->id);
+  const auto legacy = opts.store / raw;
+  std::filesystem::rename(published->path, legacy);
+  auto opened = artifact::Artifact::Open(legacy);
+  ASSERT_TRUE(opened) << test_support::Failed(opened, &artifact::Error::ToString).value_or("");
+  EXPECT_EQ(opened->converter().build, opts.build);
+}
+
 TEST_F(ImportWriterTest, DeterministicPublicationAndEveryPayloadByte) {
   for (const bool moe : {false, true}) {
     auto plan = Plan(moe);
@@ -1117,6 +1250,29 @@ TEST_F(ImportWriterTest, Dsv4HashTablesHaveExclusiveGroupsAndCompleteExpertSlice
   EXPECT_FALSE(std::filesystem::exists(destination));
 }
 
+TEST_F(ImportWriterTest, PlacementAcceptsTheReaderShardCountBeyond256Files) {
+  auto input = Tiny();
+  for (std::size_t i = 0; i < 300; ++i) {
+    SourceFile file{.name = std::format("shard-{}.gguf", i),
+                    .path = std::format("/tmp/llmp-import-shard-{}.gguf", i),
+                    .bytes = i == 0 ? input.files[0].bytes : 0,
+                    .inode = i + 1};
+    if (i == 0)
+      input.files[0] = std::move(file);
+    else
+      input.files.push_back(std::move(file));
+  }
+  Value(input, "split.no", std::int64_t{0});
+  Value(input, "split.count", std::int64_t{300});
+  auto plan = Normalize(input, kFunded);
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  auto placement = publication_detail::InspectPlacement(*plan, std::uint64_t{1} << 30U);
+  ASSERT_TRUE(placement) << test_support::Failed(placement, &Error::ToString).value_or("");
+  EXPECT_EQ(plan->source().files.size(), 300U);
+  input.files.resize(kMaxSourceFiles + 1);
+  EXPECT_FALSE(NormalizationBound(input));
+}
+
 TEST_F(ImportWriterTest, Qwen2PlacementAndCompleteLayerCoverageAreFundedBeforeEffects) {
   auto input = test_support::Qwen2GgufCheckpoint();
   auto cost = NormalizationBound(input);
@@ -1196,7 +1352,9 @@ TEST_F(ImportWriterTest, CompositionPublicationAndReuse) {
           {
               {.name = "scheduler/scheduler_config.json",
                .path = dir_ / "source/scheduler_config.json",
-               .bytes = static_cast<std::uint64_t>(meta_bytes.size())},
+               .bytes = static_cast<std::uint64_t>(meta_bytes.size()),
+               .device = meta_file->device,
+               .inode = meta_file->inode},
           },
   };
 
@@ -1211,7 +1369,7 @@ TEST_F(ImportWriterTest, CompositionPublicationAndReuse) {
   EXPECT_EQ(opened->components().size(), 2U);
   EXPECT_EQ(opened->components()[0].role, "text_encoder");
   EXPECT_EQ(opened->components()[1].role, "transformer");
-  auto meta = opened->Metadata("scheduler_config.json");
+  auto meta = opened->Metadata("scheduler/scheduler_config.json");
   ASSERT_TRUE(meta.has_value());
   EXPECT_EQ(*meta, meta_bytes);
 
@@ -1252,6 +1410,106 @@ TEST_F(ImportWriterTest, CompositionPublicationAndReuse) {
   const std::array<std::optional<base::Sha256Digest>, 1> bad_digest{base::Sha256Digest{}};
   bad_expected_opts.expected = bad_digest;
   EXPECT_FALSE(WriteComposition(bad_expected_opts));
+}
+
+TEST_F(ImportWriterTest, CompositionKeepsScopedDuplicatesAndAuthenticatesFileIdentity) {
+  std::vector<SourceFile> files;
+  for (const auto role : {"tokenizer", "tokenizer_2"}) {
+    const auto path = dir_ / "source" / role / "tokenizer.json";
+    Write(path, std::string(role));
+    auto opened = OpenCheckpointFile(path, files.size());
+    ASSERT_TRUE(opened);
+    files.push_back({.name = std::string(role) + "/tokenizer.json",
+                     .path = opened->path,
+                     .bytes = opened->bytes,
+                     .device = opened->device,
+                     .inode = opened->inode,
+                     .parsed = {opened->bytes, base::Sha256().Update(role).Finish()}});
+  }
+  CompositionWriteOptions options{.store = dir_ / "store",
+                                  .build = "test",
+                                  .architecture = "Pipeline",
+                                  .components = {{.role = "text_encoder",
+                                                  .artifact = std::string(64, 'a'),
+                                                  .architecture = "Text"}},
+                                  .files = files};
+  auto written = WriteComposition(options);
+  ASSERT_TRUE(written) << test_support::Failed(written, &Error::ToString).value_or("");
+  auto opened = artifact::OpenComposition(written->path);
+  ASSERT_TRUE(opened) << test_support::Failed(opened, &artifact::Error::ToString).value_or("");
+  EXPECT_EQ(opened->format_version(), 2U);
+  EXPECT_EQ(opened->Metadata("tokenizer/tokenizer.json"), "tokenizer");
+  EXPECT_EQ(opened->Metadata("tokenizer_2/tokenizer.json"), "tokenizer_2");
+  options.build = "another-commit";
+  auto reused = WriteComposition(options);
+  ASSERT_TRUE(reused);
+  EXPECT_EQ(reused->id, written->id);
+  EXPECT_TRUE(reused->reused);
+  auto unsafe = files;
+  unsafe[0].name = "../tokenizer.json";
+  EXPECT_FALSE(ValidateCompositionFiles(unsafe));
+  unsafe = files;
+  unsafe[0].name = "tokenizer/nested/tokenizer.json";
+  EXPECT_FALSE(ValidateCompositionFiles(unsafe));
+  unsafe = files;
+  unsafe.push_back(unsafe.front());
+  EXPECT_FALSE(ValidateCompositionFiles(unsafe));
+  // A parsed file can also change in place without changing its inode or size.
+  Write(files[0].path, "different");
+  auto changed = WriteComposition(options);
+  ASSERT_FALSE(changed);
+  EXPECT_EQ(changed.error().reason, "parsed source bytes changed before streaming");
+  Write(files[0].path, "tokenizer");
+  // Replacement of identical length is a different file, even before hashing.
+  const auto replacement = dir_ / "replacement";
+  Write(replacement, "different");
+  std::filesystem::rename(replacement, files[0].path);
+  EXPECT_FALSE(WriteComposition(options));
+}
+
+TEST_F(ImportWriterTest, PlainUtf8SourceNamesAreJsonQuotedAndUnsafeNamesFailAtRead) {
+  Write(dir_ / "source/model \"café\".gguf", Gguf(Tiny()));
+  auto input = ReadGguf(dir_ / "source/model \"café\".gguf");
+  ASSERT_TRUE(input);
+  auto plan = Normalize(std::move(*input), kFunded);
+  ASSERT_TRUE(plan);
+  auto written = WriteArtifact(*plan, Options());
+  ASSERT_TRUE(written) << test_support::Failed(written, &Error::ToString).value_or("");
+  auto opened = artifact::Artifact::Open(written->path);
+  ASSERT_TRUE(opened) << test_support::Failed(opened, &artifact::Error::ToString).value_or("");
+  EXPECT_EQ(opened->sources()[0].name, "model \"café\".gguf");
+  Write(dir_ / "source/bad\nname.gguf", Gguf(Tiny()));
+  EXPECT_FALSE(ReadGguf(dir_ / "source/bad\nname.gguf"));
+}
+
+TEST_F(ImportWriterTest, ImageComponentMetadataPreservesF16AndBf16VaeWeights) {
+  const auto& family = test_support::QwenImage();
+  const auto tensors = model::VaeDecoderTensors(family.profile.vae, family.mapping->names.vae);
+  auto built = spec::ImageDecodeSpec(family.profile.vae, 64, 64, tensors);
+  ASSERT_TRUE(built) << test_support::Failed(built).value_or("");
+  for (const auto encoding : {Encoding::kF16, Encoding::kBF16}) {
+    Checkpoint component{
+        .role = "vae", .container = "safetensors", .architecture = "AutoencoderKLQwenImage21"};
+    for (const auto& tensor : tensors) {
+      format::Shape shape;
+      shape.rank = static_cast<std::uint8_t>(tensor.shape.size());
+      for (std::size_t d = 0; d < tensor.shape.size(); ++d)
+        shape.ne[d] = tensor.shape[tensor.shape.size() - d - 1];
+      const auto format = ir::Dense(encoding, shape);
+      component.tensors.push_back(
+          {.name = tensor.name,
+           .format = format,
+           .extent = {.bytes = format::PartsOf(format)->Find(format::PartRole::kData)->bytes},
+           .dtype = encoding == Encoding::kF16 ? "F16" : "BF16",
+           .dims = tensor.shape});
+    }
+    auto planned = image_pipeline_detail::PlanComponent(component, tensors, built->spec, {});
+    ASSERT_TRUE(planned) << test_support::Failed(planned, &Error::ToString).value_or("");
+    EXPECT_EQ(planned->canonical.tensors.size(), tensors.size());
+    for (const auto& tensor : planned->canonical.tensors)
+      EXPECT_EQ(tensor.format.encoding, encoding);
+    EXPECT_EQ(planned->spec, built->spec);
+  }
 }
 
 TEST_F(ImportWriterTest, ImagePipelineValidationAndBound) {
@@ -1313,6 +1571,10 @@ TEST_F(ImportWriterTest, DiffusersArchiveEventRecorded) {
   ASSERT_TRUE(identities) << test_support::Failed(identities, &Error::ToString).value_or("");
   EXPECT_EQ(identities->size(), 1U);
 
+  auto source_opened = OpenCheckpointFile(source.files[0].path, 0);
+  ASSERT_TRUE(source_opened);
+  source.files[0].device = source_opened->device;
+  source.files[0].inode = source_opened->inode;
   CompositionWriteOptions opts{
       .store = dir_ / "store",
       .build = "test",

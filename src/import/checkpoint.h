@@ -42,20 +42,21 @@
 namespace llmp::import {
 
 // Caps of every reader.
+inline constexpr std::size_t kMaxSourceFiles = 4096 + 16;  // shards and kept documents
 inline constexpr std::size_t kMaxTensors = std::size_t{1} << 20U;
 inline constexpr std::size_t kMaxMetadata = std::size_t{1} << 16U;
 inline constexpr std::size_t kMaxNameBytes = 512;  // a tensor name
 inline constexpr std::size_t kMaxKeyBytes = 1024;  // a metadata key
 inline constexpr std::size_t kMaxArchitecture = 200;
 
-// A metadata value: none (JSON null, or what the metadata cannot hold: a
+// A metadata value: JSON null, none (what the metadata cannot hold: a
 // GGUF u64 above INT64_MAX, a JSON array of mixed kinds or of objects), an
 // integer, a real, a flag, a string, or a list of integers, reals or
 // strings. A GGUF bool array, and a JSON array of flags, is a list of
 // integers 0 and 1.
 using MetaValue =
-    std::variant<std::monostate, std::int64_t, double, bool, std::string, std::vector<std::int64_t>,
-                 std::vector<double>, std::vector<std::string>>;
+    std::variant<std::monostate, std::nullptr_t, std::int64_t, double, bool, std::string,
+                 std::vector<std::int64_t>, std::vector<double>, std::vector<std::string>>;
 
 struct MetaEntry {
   std::string key{};
@@ -81,6 +82,12 @@ struct SourceFile {
 // control characters), and a static reason. Reported, never a refusal.
 struct SkippedFile {
   std::string name{};
+  std::string_view reason{};
+};
+
+struct SkippedTensor {
+  std::string name{};
+  std::uint32_t file = 0;
   std::string_view reason{};
 };
 
@@ -125,7 +132,8 @@ struct Checkpoint {
   std::vector<Tensor> tensors{};
   std::vector<MetaEntry> metadata{};     // sorted by key, keys unique
   std::vector<Checkpoint> components{};  // a pipeline's, sorted by role
-  std::vector<SkippedFile> skipped{};    // a pipeline's, its components' included
+  std::vector<SkippedTensor> skipped_tensors{};
+  std::vector<SkippedFile> skipped{};  // a pipeline's, its components' included
 
   const Tensor* FindTensor(std::string_view name) const;
   const MetaValue* FindValue(std::string_view key) const;

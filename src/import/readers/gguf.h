@@ -20,9 +20,10 @@
 //     (gguf.cpp stops at 63);
 //   - every tensor's GGML type one the format layer names (format::Info's
 //     GgmlBlock, which every type of ggml.h at the pin has; a removed or
-//     unknown type is refused), its rows whole blocks, no dimension zero
-//     (the format layer has no empty shape), its bytes the size rule's
+//     unknown type is refused), its rows whole blocks, its bytes the size rule's
 //     (format::PartsOf, checked arithmetic);
+//   - zero-element tensors have checked offsets and known types, but are
+//     recorded in skipped_tensors rather than the executable tensor inventory;
 //   - every tensor's bytes, at its offset into the data section (which
 //     starts at the header's end padded to the alignment), inside the file
 //     and overlapping no other tensor's. gguf.cpp also packs them in info

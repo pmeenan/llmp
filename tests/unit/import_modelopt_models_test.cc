@@ -95,7 +95,7 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
   auto source = ReadCheckpoint(configured);
   ASSERT_TRUE(source) << source.error().ToString();
   ASSERT_EQ(source->tensors.size(), 301730U);
-  ASSERT_EQ(source->files.size(), 38U);
+  ASSERT_EQ(source->files.size(), 42U);
   auto bound = ModelOptTargetBound(*source);
   ASSERT_TRUE(bound) << bound.error().ToString();
   // The diagnostic's 8 GiB hard domain includes reader, retained Checkpoint,
@@ -229,7 +229,7 @@ struct PublicationPin {
   std::string_view name, sha256;
   std::uint64_t bytes;
 };
-constexpr std::array<PublicationPin, 38> kPublicationPins{{
+constexpr std::array<PublicationPin, 42> kPublicationPins{{
     {"config.json", "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e", 109897ULL},
     {"hf_quant_config.json", "d60c54caa65317fd8f1338bdeb81b9014512ac8f21ec18da22541cb88c6784b7",
      99088ULL},
@@ -305,6 +305,14 @@ constexpr std::array<PublicationPin, 38> kPublicationPins{{
      "49c7d04606ff7c8f103b4d1fc9742b44649a2937b25ecc896a5450ab1020f308", 9669936ULL},
     {"model.safetensors.index.json",
      "435eef76fc10fc6e932a208a1f85a86bc9c7ffc389b27b34ba83bb6a5d0371e9", 33074286ULL},
+    {"tokenizer.json", "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+     12809320ULL},
+    {"tokenizer_config.json", "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27",
+     17928ULL},
+    {"generation_config.json", "735ec63e625c2086fbec18327233a03a7b060fddabfd7915af4e6fdcec3187a2",
+     2097ULL},
+    {"chat_template.jinja", "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+     8952ULL},
 }};
 
 // Independent destination-order oracle: no route/cursor/transform API is used.
@@ -441,7 +449,7 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
     ASSERT_EQ(file.bytes, pin->bytes);
     authenticated_source_bytes += file.bytes;
   }
-  ASSERT_EQ(authenticated_source_bytes, 105872821791ULL);
+  ASSERT_EQ(authenticated_source_bytes, 105885660088ULL);
   auto bound = ModelOptTargetBound(*source);
   ASSERT_TRUE(bound) << bound.error().ToString();
   ASSERT_LT(bound->metadata_bytes, kGiB);
@@ -525,7 +533,7 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
   EXPECT_EQ(spec->Digest(), plan->spec().Digest());
   EXPECT_EQ(base::ToHex(spec->Digest()),
             "c2e2822e48502a42783ab9f1c4d8ecf3649f02e6331ea2c0ea133e2542983a0f");
-  ASSERT_EQ(stored->sources().size(), 38U);
+  ASSERT_EQ(stored->sources().size(), kPublicationPins.size());
   for (const auto& receipt : stored->sources()) {
     const auto pin = std::ranges::find(kPublicationPins, receipt.name, &PublicationPin::name);
     ASSERT_NE(pin, kPublicationPins.end());
@@ -606,7 +614,7 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
   RecordProperty("writer_metadata_bound", std::to_string(writer_bound));
   RecordProperty("combined_memory_max", std::to_string(kCombined));
   RecordProperty("mem_available_before", std::to_string(*memory.available));
-  RecordProperty("source_files_authenticated", "38");
+  RecordProperty("source_files_authenticated", std::to_string(kPublicationPins.size()));
   RecordProperty("source_bytes_authenticated", std::to_string(authenticated_source_bytes));
   RecordProperty("canonical_parts", "1789");
   RecordProperty("logical_outputs", "1308");

@@ -28,7 +28,6 @@ constexpr std::array kAuxiliary{
     AuxiliaryNamespace{"quantize.imatrix.", "source quantization calibration provenance"}};
 constexpr std::array kGemma2Requirements{ScalarRequirement{"gemma2.block_count", 46}};
 constexpr std::array kGemma3Requirements{ScalarRequirement{"gemma3.block_count", 62}};
-constexpr std::array kQwen2Encodings{format::Encoding::kF16, format::Encoding::kF32};
 constexpr std::array kQwen2HfTensors{
     TensorAlias{"model.embed_tokens.weight", "token_embd.weight"},
     TensorAlias{"model.layers.{layer}.input_layernorm.weight", "blk.{layer}.attn_norm.weight"},
@@ -47,8 +46,24 @@ constexpr std::array kQwen2HfTensors{
     TensorAlias{"model.norm.weight", "output_norm.weight"},
     TensorAlias{"lm_head.weight", "output.weight"},
 };
-constexpr std::array kQwen2HfEncodings{format::Encoding::kBF16, format::Encoding::kF16,
-                                       format::Encoding::kF32};
+// Marker names select the reader's codebook; canonical binding names do not.
+// 3inst has no marker, so the corresponding mapping bindings are optional.
+constexpr std::array kQwen2Exl3Tensors{
+    TensorAlias{"model.layers.{layer}.self_attn.q_proj.mul1",
+                "model.layers.{layer}.self_attn.q_proj.mcg"},
+    TensorAlias{"model.layers.{layer}.self_attn.k_proj.mul1",
+                "model.layers.{layer}.self_attn.k_proj.mcg"},
+    TensorAlias{"model.layers.{layer}.self_attn.v_proj.mul1",
+                "model.layers.{layer}.self_attn.v_proj.mcg"},
+    TensorAlias{"model.layers.{layer}.self_attn.o_proj.mul1",
+                "model.layers.{layer}.self_attn.o_proj.mcg"},
+    TensorAlias{"model.layers.{layer}.mlp.gate_proj.mul1",
+                "model.layers.{layer}.mlp.gate_proj.mcg"},
+    TensorAlias{"model.layers.{layer}.mlp.up_proj.mul1", "model.layers.{layer}.mlp.up_proj.mcg"},
+    TensorAlias{"model.layers.{layer}.mlp.down_proj.mul1",
+                "model.layers.{layer}.mlp.down_proj.mcg"},
+    TensorAlias{"lm_head.mul1", "lm_head.mcg"},
+};
 constexpr std::array kQwen2SafetensorsKeys{
     KeyAlias{"head_dim", "qwen2.attention.key_length"},
     KeyAlias{"hidden_act", "qwen2.hidden_act"},
@@ -73,79 +88,28 @@ constexpr std::array kSafetensorsAuxiliary{
     AuxiliaryNamespace{"sliding_window", "sliding window length"},
     AuxiliaryNamespace{"tie_word_embeddings", "embedding tying flag"},
     AuxiliaryNamespace{"torch_dtype", "checkpoint nominal dtype"},
+    AuxiliaryNamespace{"dtype", "checkpoint nominal dtype"},
     AuxiliaryNamespace{"use_cache", "transformers generation cache default"},
     AuxiliaryNamespace{"vocab_size", "vocabulary size stated by embedding table",
                        "model.embed_tokens.weight", 1},
 };
 
-constexpr std::array kExl3Auxiliary{
-    AuxiliaryNamespace{"architectures", "transformers class provenance"},
-    AuxiliaryNamespace{"transformers_version", "transformers writer version provenance"}};
-constexpr std::array kQwen2Exl3Keys{
-    KeyAlias{"attention_dropout", "qwen2.attention_dropout"},
-    KeyAlias{"bos_token_id", "qwen2.bos_token_id"},
-    KeyAlias{"eos_token_id", "qwen2.eos_token_id"},
-    KeyAlias{"head_dim", "qwen2.attention.key_length"},
-    KeyAlias{"hidden_act", "qwen2.hidden_act"},
-    KeyAlias{"hidden_size", "qwen2.embedding_length"},
-    KeyAlias{"initializer_range", "qwen2.initializer_range"},
-    KeyAlias{"intermediate_size", "qwen2.feed_forward_length"},
-    KeyAlias{"max_position_embeddings", "qwen2.context_length"},
-    KeyAlias{"max_window_layers", "qwen2.max_window_layers"},
-    KeyAlias{"num_attention_heads", "qwen2.attention.head_count"},
-    KeyAlias{"num_hidden_layers", "qwen2.block_count"},
-    KeyAlias{"num_key_value_heads", "qwen2.attention.head_count_kv"},
-    KeyAlias{"rms_norm_eps", "qwen2.attention.layer_norm_rms_epsilon"},
-    KeyAlias{"rope_theta", "qwen2.rope.freq_base"},
-    KeyAlias{"sliding_window", "qwen2.sliding_window"},
-    KeyAlias{"tie_word_embeddings", "qwen2.tie_word_embeddings"},
-    KeyAlias{"torch_dtype", "qwen2.torch_dtype"},
-    KeyAlias{"use_cache", "qwen2.use_cache"},
-    KeyAlias{"use_sliding_window", "qwen2.use_sliding_window"},
-    KeyAlias{"vocab_size", "qwen2.vocab_size"}};
-constexpr std::array kQwen2Exl3Encodings{format::Encoding::kBF16, format::Encoding::kF16,
-                                         format::Encoding::kExl3Trellis};
-constexpr std::array<std::uint64_t, 2> kQwen2Exl3EmbedShape{151936, 896};
-constexpr std::array<std::uint64_t, 3> kQwen2Exl3HeadShape{56, 9496, 128};
-constexpr std::array kQwen2Exl3Shapes{
-    TensorShapeRequirement{"model.embed_tokens.weight", kQwen2Exl3EmbedShape},
-    TensorShapeRequirement{"lm_head.trellis", kQwen2Exl3HeadShape}};
-
-constexpr std::array<std::int64_t, 1> kPleLayers{1};
-constexpr std::array<std::int64_t, 4> kRopeSections{11, 11, 10, 0};
-constexpr auto kCompressRatios = [] {
-  std::array<std::int64_t, 48> out{};
-  for (std::size_t i = 3; i < out.size(); i += 4) out[i] = 4;
-  return out;
-}();
 constexpr std::array kQwenLists{
-    ListRequirement{"qwen4exp.ple.layers", 1, kPleLayers},
-    ListRequirement{"qwen4exp.rope.dimension_sections", 4, kRopeSections},
-    ListRequirement{"qwen4exp.attention.compress_ratios", 48, kCompressRatios},
-    ListRequirement{"qwen4exp.ple.layer_multipliers", 3},
-    ListRequirement{"qwen4exp.ple.head_offsets", 16},
-    ListRequirement{"qwen4exp.ple.head_vocab_sizes", 16}};
+    ListRequirement{.key = "qwen4exp.ple.layers", .size = nd::kLayerLimit, .min_size = 1},
+    ListRequirement{.key = "qwen4exp.rope.dimension_sections", .size = 4},
+    ListRequirement{.key = "qwen4exp.attention.compress_ratios",
+                    .size = nd::kLayerLimit,
+                    .min_size = 1,
+                    .per_layer = true},
+    ListRequirement{
+        .key = "qwen4exp.ple.layer_multipliers", .size = nd::kLayerLimit, .min_size = 1},
+    ListRequirement{.key = "qwen4exp.ple.head_offsets", .size = nd::kLayerLimit, .min_size = 1},
+    ListRequirement{
+        .key = "qwen4exp.ple.head_vocab_sizes", .size = nd::kLayerLimit, .min_size = 1}};
 constexpr std::array kQwenRows{RowIndexRequirement{
     "qwen4exp.ple.head_offsets", "qwen4exp.ple.head_vocab_sizes", "per_layer_token_embd.weight"}};
-constexpr std::array kQwenEncodings{format::Encoding::kF32,    format::Encoding::kBF16,
-                                    format::Encoding::kQ6_K,   format::Encoding::kQ8_0,
-                                    format::Encoding::kIQ4_NL, format::Encoding::kIQ2_S,
-                                    format::Encoding::kIQ3_S};
-
-constexpr std::array<std::uint64_t, 2> kTokenShape{2560, 248320};
-constexpr std::array<std::uint64_t, 2> kNgramShape{160, 320001536};
-constexpr std::array kQwenShapes{
-    TensorShapeRequirement{"token_embd.weight", kTokenShape},
-    TensorShapeRequirement{"output.weight", kTokenShape},
-    TensorShapeRequirement{"per_layer_token_embd.weight", kNgramShape}};
-
-constexpr auto kDsv4Ratios = [] {
-  std::array<std::int64_t, 46> out{};
-  for (std::size_t i = 2; i < 43; ++i) out[i] = i % 2 == 0 ? 4 : 128;
-  return out;
-}();
-constexpr std::array kDsv4Requirements{
-    ScalarRequirement{"deepseek4.attention.value_length", 512, true}};
+constexpr std::array kDsv4Requirements{ScalarRequirement{
+    .key = "deepseek4.attention.value_length", .equals_key = "deepseek4.attention.key_length"}};
 // antirez's GGUFs state the checkpoint's MTP depth, whose layers' tensors
 // are not imported (a source holding any is refused, their names unmapped),
 // and its vocabulary, which the token table's shape states.
@@ -158,25 +122,49 @@ constexpr std::array kDsv4Auxiliary{
 // expert's clamps may be absent (antirez's GGUFs), when the mapping clamps
 // it as the routed experts.
 constexpr std::array kDsv4Lists{
-    ListRequirement{"deepseek4.attention.compress_ratios", 46, kDsv4Ratios, 43},
-    ListRequirement{"deepseek4.swiglu_clamp_exp", 43},
-    ListRequirement{"deepseek4.swiglu_clamp_shexp", 43, {}, 0, true}};
-constexpr std::array kDsv4Encodings{
-    format::Encoding::kF32,    format::Encoding::kBF16, format::Encoding::kF16,
-    format::Encoding::kI32,    format::Encoding::kQ8_0, format::Encoding::kQ5_K,
-    format::Encoding::kIQ2_XS, format::Encoding::kQ6_K, format::Encoding::kIQ3_XXS,
-    format::Encoding::kMxfp4,  format::Encoding::kQ4_K, format::Encoding::kQ2_K,
-    format::Encoding::kIQ2_XXS};
-
-constexpr std::array<std::int64_t, 3> kDsparkRatios{0, 0, 0};
-constexpr std::array<std::int64_t, 3> kDsparkTargetLayers{41, 42, 43};
+    ListRequirement{.key = "deepseek4.attention.compress_ratios",
+                    .size = nd::kLayerLimit,
+                    .min_size = 1,
+                    .per_layer = true,
+                    .extra_layers_key = "deepseek4.nextn_predict_layers",
+                    .allow_unstated_extra = true},
+    ListRequirement{.key = "deepseek4.swiglu_clamp_exp",
+                    .size = nd::kLayerLimit,
+                    .min_size = 1,
+                    .per_layer = true},
+    ListRequirement{.key = "deepseek4.swiglu_clamp_shexp",
+                    .size = nd::kLayerLimit,
+                    .min_size = 1,
+                    .optional = true,
+                    .per_layer = true}};
 constexpr std::array kDsparkRequirements{
-    ScalarRequirement{"dflash.attention.value_length", 512, true},
-    ScalarRequirement{"dflash.block_size", 5, true}};
+    ScalarRequirement{.key = "dflash.attention.value_length",
+                      .equals_key = "dflash.attention.key_length"},
+    ScalarRequirement{.key = "dflash.block_size", .positive = true}};
 constexpr std::array kDsparkLists{
-    ListRequirement{"dflash.attention.compress_ratios", 3, kDsparkRatios},
-    ListRequirement{"dflash.swiglu_clamp_exp", 3}, ListRequirement{"dflash.swiglu_clamp_shexp", 3},
-    ListRequirement{"dflash.target_layers", 3, kDsparkTargetLayers}};
+    ListRequirement{.key = "dflash.attention.compress_ratios",
+                    .size = nd::kLayerLimit,
+                    .min_size = 1,
+                    .per_layer = true},
+    ListRequirement{.key = "dflash.swiglu_clamp_exp",
+                    .size = nd::kLayerLimit,
+                    .min_size = 1,
+                    .per_layer = true},
+    ListRequirement{.key = "dflash.swiglu_clamp_shexp",
+                    .size = nd::kLayerLimit,
+                    .min_size = 1,
+                    .per_layer = true},
+    ListRequirement{.key = "dflash.target_layers", .size = nd::kLayerLimit, .min_size = 1}};
+constexpr std::array<std::string_view, 2> kHfIgnored{
+    "model.rotary_emb.inv_freq", "model.layers.{layer}.self_attn.rotary_emb.inv_freq"};
+constexpr std::array<std::string_view, 2> kHfNullSemantics{"rope_scaling", "rope_parameters"};
+constexpr std::array<std::string_view, 14> kHfSemantic{
+    "qwen2.",          "rope_*",      "rotary_*",   "quantization*",
+    "sliding_window*", "attention_*", "attn_*",     "partial_rotary_factor",
+    "softcap*",        "hidden_*",    "rms_norm_*", "norm_*",
+    "num_*",           "activation*"};
+constexpr std::array<std::string_view, 6> kGgufSemantic{"gemma2.", "gemma3.",   "gemma4.",
+                                                        "qwen2.",  "qwen4exp.", "deepseek4."};
 
 bool SameShape(std::string_view a, std::string_view b) {
   return (a.find(spec::kLayerField) == std::string_view::npos) ==
@@ -220,57 +208,64 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Gemma2Mapping(),
                     .auxiliary = kAuxiliary,
-                    .requirements = kGemma2Requirements},
+                    .requirements = kGemma2Requirements,
+                    .semantic = kGgufSemantic},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Gemma3Mapping(),
                     .auxiliary = kAuxiliary,
-                    .requirements = kGemma3Requirements},
+                    .requirements = kGemma3Requirements,
+                    .semantic = kGgufSemantic},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Gemma4Mapping(),
-                    .auxiliary = kAuxiliary},
+                    .auxiliary = kAuxiliary,
+                    .semantic = kGgufSemantic},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Gemma4AssistantMapping(),
-                    .auxiliary = kAuxiliary},
+                    .auxiliary = kAuxiliary,
+                    .semantic = kGgufSemantic},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Qwen2GgufMapping(),
                     .auxiliary = kAuxiliary,
-                    .encodings = kQwen2Encodings},
+                    .semantic = kGgufSemantic},
       SourceMapping{.container = "exl3",
                     .architecture = &spec::mappings::Qwen2Exl3Mapping(),
-                    .keys = kQwen2Exl3Keys,
-                    .auxiliary = kExl3Auxiliary,
-                    .encodings = kQwen2Exl3Encodings,
-                    .shapes = kQwen2Exl3Shapes},
+                    .tensors = kQwen2Exl3Tensors,
+                    .keys = kQwen2SafetensorsKeys,
+                    .auxiliary = kSafetensorsAuxiliary,
+                    .semantic = kHfSemantic,
+                    .ignored_tensors = kHfIgnored,
+                    .null_semantics = kHfNullSemantics},
       SourceMapping{
           .container = "safetensors",
           .architecture = &spec::mappings::Qwen2SafetensorsMapping(),
           .tensors = kQwen2HfTensors,
           .keys = kQwen2SafetensorsKeys,
           .auxiliary = kSafetensorsAuxiliary,
-          .encodings = kQwen2HfEncodings,
+          .semantic = kHfSemantic,
+          .ignored_tensors = kHfIgnored,
+          .null_semantics = kHfNullSemantics,
       },
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Qwen38GgufMapping(),
                     .auxiliary = kAuxiliary,
                     .lists = kQwenLists,
-                    .encodings = kQwenEncodings,
                     .extended_components = true,
-                    .shapes = kQwenShapes,
-                    .row_indices = kQwenRows},
+                    .row_indices = kQwenRows,
+                    .semantic = kGgufSemantic},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Dsv4Mapping(),
                     .auxiliary = kDsv4Auxiliary,
                     .requirements = kDsv4Requirements,
                     .lists = kDsv4Lists,
-                    .encodings = kDsv4Encodings,
-                    .extended_components = true},
+                    .extended_components = true,
+                    .semantic = kGgufSemantic},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::DsparkMapping(),
                     .auxiliary = kAuxiliary,
                     .requirements = kDsparkRequirements,
                     .lists = kDsparkLists,
-                    .encodings = kDsv4Encodings,
-                    .extended_components = true}};
+                    .extended_components = true,
+                    .semantic = kGgufSemantic}};
   for (const auto& table : tables)
     if (container == table.container && architecture == table.architecture->architecture)
       return &table;
@@ -366,7 +361,7 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
        table.container != "safetensors") ||
       table.version == 0 || !table.architecture || table.route != RouteOperation::kCopyPart ||
       table.tensors.size() > nd::kRuleLimit || table.keys.size() > 64 ||
-      table.auxiliary.size() > 16 || table.requirements.size() > 16 ||
+      table.auxiliary.size() > nd::kRuleLimit || table.requirements.size() > 16 ||
       ((table.container == "exl3" || table.container == "safetensors") &&
        (table.keys.empty() || table.auxiliary.empty())))
     return Invalid();
@@ -377,7 +372,10 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
       table.lists.size() != registered->lists.size() ||
       table.shapes.size() != registered->shapes.size() ||
       !std::ranges::equal(table.row_indices, registered->row_indices) ||
-      !std::ranges::equal(table.encodings, registered->encodings))
+      !std::ranges::equal(table.encodings, registered->encodings) ||
+      !std::ranges::equal(table.semantic, registered->semantic) ||
+      !std::ranges::equal(table.ignored_tensors, registered->ignored_tensors) ||
+      !std::ranges::equal(table.null_semantics, registered->null_semantics))
     return Invalid();
   for (std::size_t i = 0; i < table.shapes.size(); ++i) {
     const auto& a = table.shapes[i];
@@ -387,8 +385,10 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
   for (std::size_t i = 0; i < table.lists.size(); ++i) {
     const auto& a = table.lists[i];
     const auto& b = registered->lists[i];
-    if (a.key != b.key || a.size != b.size || a.size > 48 || a.min_size != b.min_size ||
-        a.min_size > a.size || a.optional != b.optional ||
+    if (a.key != b.key || a.size != b.size || a.size > nd::kLayerLimit ||
+        a.min_size != b.min_size || a.min_size > a.size || a.optional != b.optional ||
+        a.per_layer != b.per_layer || a.extra_layers_key != b.extra_layers_key ||
+        a.allow_unstated_extra != b.allow_unstated_extra ||
         (!a.exact.empty() && a.exact.size() != a.size) || !std::ranges::equal(a.exact, b.exact) ||
         (nd::KeyTypes(m, a.key) & (nd::kIntegers | nd::kReals)) == 0)
       return Invalid();
@@ -397,7 +397,8 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
     bool found = false;
     for (const auto& rule : table.requirements)
       found |= rule.key == required.key && rule.reject_equal == required.reject_equal &&
-               rule.require_equal == required.require_equal;
+               rule.require_equal == required.require_equal &&
+               rule.equals_key == required.equals_key && rule.positive == required.positive;
     if (!found) return Invalid();
   }
   const bool drafter = m.role == spec::StageRole::kDrafter;
@@ -503,7 +504,15 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
         return Invalid();
   }
   for (const auto& r : table.requirements) {
-    if (!r.require_equal && nd::KeyTypes(m, r.key) != nd::kInteger) return Invalid();
+    if (!r.require_equal && r.equals_key.empty() && !r.positive &&
+        nd::KeyTypes(m, r.key) != nd::kInteger)
+      return Invalid();
+    if ((!r.equals_key.empty() || r.positive) &&
+        std::ranges::none_of(registered->requirements, [&](const auto& known) {
+          return known.key == r.key && known.equals_key == r.equals_key &&
+                 known.positive == r.positive;
+        }))
+      return Invalid();
     if (r.require_equal && (!spec::IsSourceKey(r.key) || Structural(r.key) ||
                             std::ranges::none_of(registered->requirements, [&](const auto& known) {
                               return known.require_equal && known.key == r.key &&

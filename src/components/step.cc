@@ -383,12 +383,13 @@ std::expected<std::vector<std::optional<RoleFormat>>, std::string> RoleFormats(
   return out;
 }
 
-std::expected<void, std::string> CheckRole(const Instance& in, const RoleShape& r,
-                                           const RoleFormat& f) {
+std::expected<void, std::string> CheckRole(
+    const Instance& in, const RoleShape& r, const RoleFormat& f,
+    ValidationPurpose purpose = ValidationPurpose::kExecution) {
   const WeightRole& role = in.def->roles[r.role];
   const auto what = [&] { return std::format("{} role {}", in.def->kind, role.name); };
   if (!format::Validate(f.format)) return Refused(what() + " has an invalid format");
-  if (!role.encodings.empty() &&
+  if (purpose == ValidationPurpose::kExecution && !role.encodings.empty() &&
       (std::ranges::find(role.encodings, f.format.encoding) == role.encodings.end() ||
        f.format.layout != format::Layout::kDense)) {
     return Refused(std::format("{} is {}, which it does not take", what(),
@@ -424,7 +425,8 @@ std::expected<void, std::string> CheckRole(const Instance& in, const RoleShape& 
 }
 
 std::expected<std::vector<std::optional<RoleFormat>>, std::string> CheckedRoleFormats(
-    const Instance& in, const TensorTables& tables) {
+    const Instance& in, const TensorTables& tables,
+    ValidationPurpose purpose = ValidationPurpose::kExecution) {
   auto formats = RoleFormats(in, tables);
   if (!formats) return std::unexpected(formats.error());
   const auto shapes = in.def->shapes(in);
@@ -436,7 +438,8 @@ std::expected<std::vector<std::optional<RoleFormat>>, std::string> CheckedRoleFo
     if (!f)
       return Refused(
           std::format("{} role {} is unbound", in.def->kind, in.def->roles[r.role].name));
-    if (auto checked = CheckRole(in, r, *f); !checked) return std::unexpected(checked.error());
+    if (auto checked = CheckRole(in, r, *f, purpose); !checked)
+      return std::unexpected(checked.error());
   }
   for (std::size_t r = 0; r < used.size(); ++r)
     if (!used[r] && (*formats)[r])
@@ -698,6 +701,9 @@ std::expected<Instance, std::string> MakeInstance(const spec::ComponentRef& ref,
   if (auto shapes = def->shapes(in); !shapes) {
     return Refused(std::format("{}: {}", ref.kind, shapes.error()));
   }
+  if ((def->state != nullptr) != (def->max_state_tensors != 0) ||
+      (def->state && def->state(in).tensors.size() > def->max_state_tensors))
+    return Refused(std::format("{}: state contract exceeds its catalog bound", ref.kind));
   return in;
 }
 
@@ -816,8 +822,9 @@ std::expected<StageInstances, std::string> InstancesOf(const spec::ModelSpec& sp
 
 // --------------------------------------------------------------- validation
 
-std::expected<void, std::string> ValidateSpec(
-    const spec::ModelSpec& spec, std::span<const std::span<const BoundTensor>> tensors) {
+std::expected<void, std::string> ValidateSpec(const spec::ModelSpec& spec,
+                                              std::span<const std::span<const BoundTensor>> tensors,
+                                              ValidationPurpose purpose) {
   if (auto valid = spec::Validate(spec); !valid) return valid;
   std::vector<StageInstances> stages;
   for (std::size_t si = 0; si < spec.stages.size(); ++si) {
@@ -830,7 +837,7 @@ std::expected<void, std::string> ValidateSpec(
     const TensorTables tables = TablesOf(spec, si, tensors, tensors[s.artifact]);
     for (const Instance* in : All(*instances)) {
       const std::string where = Where(s, in->site, in->layer);
-      auto formats = CheckedRoleFormats(*in, tables);
+      auto formats = CheckedRoleFormats(*in, tables, purpose);
       if (!formats) return Refused(std::format("{}: {}", where, formats.error()));
     }
     stages.push_back(std::move(*instances));
@@ -860,9 +867,10 @@ std::expected<void, std::string> ValidateSpec(
 }
 
 std::expected<void, std::string> ValidateSpec(const spec::ModelSpec& spec,
-                                              std::span<const BoundTensor> tensors) {
+                                              std::span<const BoundTensor> tensors,
+                                              ValidationPurpose purpose) {
   const std::array<std::span<const BoundTensor>, 1> one{tensors};
-  return ValidateSpec(spec, one);
+  return ValidateSpec(spec, one, purpose);
 }
 
 // --------------------------------------------------------------- state

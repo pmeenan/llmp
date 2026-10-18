@@ -404,6 +404,8 @@ struct ComponentDef {
   std::expected<std::vector<RoleShape>, std::string> (*shapes)(const Instance& instance) = nullptr;
   // Its per-request state; null: none.
   model::StateContract (*state)(const Instance& instance) = nullptr;
+  // Upper bound on tensors returned by state(), for import preflight accounting.
+  std::uint16_t max_state_tensors = 0;
   std::span<const BatchClass> batch_classes{};
   // The limits it places on a step's joins; null: none of its own.
   model::Batching (*batching)(const Instance& instance) = nullptr;

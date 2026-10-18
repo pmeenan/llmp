@@ -586,6 +586,37 @@ TEST(ArtifactJsonTest, CapsAreEnforced) {
   EXPECT_EQ(ParseVerdict(zeros + ",0]\n").verdict, "json");
 }
 
+TEST(ArtifactJsonTest, ExtendedFileNamesAndStableBuildIdentity) {
+  const std::string unknown = R"({"files":[],"importer":{"build":"unknown","name":"llmp-import"}})"
+                              "\n";
+  const std::string other =
+      R"({"files":[],"importer":{"build":"40bf23e3.dirty","name":"llmp-import"}})"
+      "\n";
+  const auto old = json::Parse(unknown, true);
+  const auto current = json::Parse(other, true);
+  ASSERT_TRUE(old && current);
+  EXPECT_EQ(llmp::artifact::schema::ManifestIdentity(old->root()),
+            llmp::artifact::schema::ManifestIdentity(current->root()));
+  EXPECT_EQ(llmp::base::ToHex(llmp::artifact::schema::ManifestIdentity(old->root())),
+            Sha256Hex(unknown));
+  const std::string names = R"(["model \"café\".gguf","tokenizer_2/tokenizer.json"])"
+                            "\n";
+  const auto parsed = json::Parse(names, true);
+  ASSERT_TRUE(parsed) << parsed.error().ToString();
+  EXPECT_TRUE(parsed->canonical());
+  std::string canonical;
+  json::Serialize(parsed->root(), canonical);
+  EXPECT_EQ(canonical + '\n', names);
+  EXPECT_FALSE(json::Parse(names));  // v0 remains the original strict subset.
+  EXPECT_FALSE(json::Parse(R"(["\ud800"])"
+                           "\n",
+                           true));
+  EXPECT_FALSE(json::Parse(R"({"a":1,"\u0061":2})"
+                           "\n",
+                           true));
+  EXPECT_FALSE(json::Parse(std::string(10, '[') + "0" + std::string(10, ']'), true));
+}
+
 TEST(ArtifactJsonTest, CanonicalDocumentsRoundTrip) {
   // Any document the parser calls canonical re-serializes to its own bytes.
   const std::string index = ReadFile(OnlyChild(Corpus() / "golden" / "moe") / "index.json");
@@ -847,6 +878,17 @@ class ArtifactFilesTest : public ::testing::Test {
   fs::path scratch_;
   fs::path root_;
 };
+
+TEST_F(ArtifactFilesTest, V0KeepsItsLegacySourceAndMetadataNameRules) {
+  root_ = Relist(root_, [](J& m) { m["source"].items[0]["name"] = J::Str("~source.gguf"); });
+  EXPECT_EQ(Open(root_), "schema");
+  root_ = Relist(root_, [](J& m) {
+    m["source"].items[0]["name"] = J::Str("tiny.gguf");
+    for (J& file : m["files"].items)
+      if (file["role"].text == "source-metadata") file["path"] = J::Str("meta/tiny metadata.gguf");
+  });
+  EXPECT_EQ(Open(root_), "path");
+}
 
 TEST_F(ArtifactFilesTest, LinksInsideAndSpecialFilesAreRefused) {
   std::error_code error;

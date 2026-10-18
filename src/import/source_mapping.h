@@ -31,6 +31,8 @@ struct ScalarRequirement {
   std::string_view key{};
   std::int64_t reject_equal = 0;
   bool require_equal = false;
+  std::string_view equals_key{};  // require equality with another selected scalar
+  bool positive = false;
 };
 struct ListRequirement {
   std::string_view key{};
@@ -42,6 +44,10 @@ struct ListRequirement {
   std::size_t min_size = 0;
   // The key may be absent (the mapping resolves its parameter otherwise).
   bool optional = false;
+  bool per_layer = false;
+  std::string_view extra_layers_key{};
+  // Some converters append type labels for unimported layers without a depth key.
+  bool allow_unstated_extra = false;
 };
 struct TensorShapeRequirement {
   std::string_view name{};
@@ -76,6 +82,11 @@ struct SourceMapping {
   bool extended_components = false;
   std::span<const TensorShapeRequirement> shapes{};
   std::span<const RowIndexRequirement> row_indices{};
+  // Unknown metadata in these math-bearing namespaces cannot be ignored.
+  std::span<const std::string_view> semantic{};
+  std::span<const std::string_view> ignored_tensors{};
+  // These explicit JSON nulls mean that an optional semantic feature is absent.
+  std::span<const std::string_view> null_semantics{};
 };
 
 const SourceMapping* FindSourceMapping(std::string_view container, std::string_view architecture);

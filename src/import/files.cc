@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "artifact/artifact.h"
+#include "artifact/schema.h"
 #include "import/error.h"
 
 namespace llmp::import {
@@ -33,13 +34,13 @@ std::unexpected<Error> Fail(Rule rule, std::string_view reason, std::uint64_t fi
   return std::unexpected(Error{.rule = rule, .reason = reason, .file = file});
 }
 
+}  // namespace
+
 // Whether `path` lies strictly beneath `root`, both resolved.
 bool Beneath(const fs::path& path, const fs::path& root) {
   const auto [in_root, in_path] = std::ranges::mismatch(root, path);
   return in_root == root.end() && in_path != path.end();
 }
-
-}  // namespace
 
 std::expected<void, Error> CreateImportDirectory(const fs::path& path, bool parents) {
   std::error_code error;
@@ -93,6 +94,11 @@ std::expected<OpenFile, Error> OpenCheckpointFile(const fs::path& path, std::uin
 
 std::expected<std::optional<OpenFile>, Error> OpenCheckpointFileIfPresent(const fs::path& path,
                                                                           std::uint64_t file) {
+  if (!artifact::schema::IsFileName(path.filename().string()))
+    return Fail(
+        Rule::kContainer,
+        "unsafe checkpoint filename: expected a plain UTF-8 name without controls or separators",
+        file);
   std::error_code error;
   const fs::path absolute = fs::absolute(path, error);
   if (error) {

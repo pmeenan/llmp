@@ -207,6 +207,7 @@ struct Split {
 // One file, interpreted.
 struct File {
   std::vector<Tensor> tensors{};
+  std::vector<SkippedTensor> skipped{};
   std::map<std::string, MetaValue, std::less<>> metadata;
   std::optional<Split> split{};
 };
@@ -316,7 +317,11 @@ std::expected<File, Error> Interpret(const gg::Header& header, std::uint64_t siz
     Tensor t{.name = std::string(info.name)};
     t.dims.assign(info.ne.begin(), info.ne.begin() + info.dims);
     if (std::ranges::contains(t.dims, std::uint64_t{0})) {
-      return Fail(Rule::kUnsupported, "a tensor with no elements", file, ItemKind::kTensor, i);
+      const auto at = Add(*data, info.offset);
+      if (!at || *at > size)
+        return Fail(Rule::kContainer, "empty tensor offset past file", file, ItemKind::kTensor, i);
+      out.skipped.push_back({.name = t.name, .file = file, .reason = "zero-element tensor"});
+      continue;
     }
     const format::EncodingInfo& e = format::Info(*encoding);
     t.dtype = e.name;
@@ -409,7 +414,7 @@ std::expected<Checkpoint, Error> Assemble(std::vector<File> files) {
   c.architecture = std::get<std::string>(arch->second);
   std::size_t total = 0;
   for (const File& f : files) {
-    total += f.tensors.size();
+    total += f.tensors.size() + f.skipped.size();
   }
   if (total > kMaxTensors) {
     return Fail(Rule::kBounds, "more tensors than the reader's cap", kNoItem);
@@ -433,6 +438,9 @@ std::expected<Checkpoint, Error> Assemble(std::vector<File> files) {
   }
   c.tensors.reserve(total);
   for (std::size_t i = 0; i < files.size(); ++i) {
+    for (const auto& skipped : files[i].skipped)
+      if (!names.insert(skipped.name).second)
+        return Fail(Rule::kShards, "duplicate skipped tensor", skipped.file);
     for (std::size_t t = 0; t < files[i].tensors.size(); ++t) {
       if (!names.insert(files[i].tensors[t].name).second) {
         return Fail(Rule::kShards, "a tensor name in two split files", i, ItemKind::kTensor, t);
@@ -440,6 +448,7 @@ std::expected<Checkpoint, Error> Assemble(std::vector<File> files) {
     }
   }
   for (File& f : files) {
+    std::ranges::move(f.skipped, std::back_inserter(c.skipped_tensors));
     std::ranges::move(f.tensors, std::back_inserter(c.tensors));
   }
   c.metadata.reserve(meta.size());
@@ -481,7 +490,8 @@ std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path) {
     return std::unexpected(head.error());
   }
   files.push_back(std::move(*head));
-  const Split split = files[0].split.value_or(Split{.tensors = files[0].tensors.size()});
+  const Split split =
+      files[0].split.value_or(Split{.tensors = files[0].tensors.size() + files[0].skipped.size()});
   if (split.no != 0) {
     return Fail(Rule::kShards, "a split GGUF read from a file other than its first", 0);
   }
@@ -511,7 +521,7 @@ std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path) {
   }
   std::uint64_t total = 0;
   for (const File& f : files) {
-    total += f.tensors.size();
+    total += f.tensors.size() + f.skipped.size();
   }
   // llama.cpp's loader does not need split.tensors.count; when given, it is
   // the tensors' count.
@@ -540,11 +550,11 @@ std::expected<Checkpoint, Error> ParseGguf(std::span<const std::byte> file) {
   if (!f) {
     return std::unexpected(f.error());
   }
-  const Split split = f->split.value_or(Split{.tensors = f->tensors.size()});
+  const Split split = f->split.value_or(Split{.tensors = f->tensors.size() + f->skipped.size()});
   if (split.count != 1) {
     return Fail(Rule::kShards, "a split GGUF given as one file's bytes", 0);
   }
-  if (split.tensors && *split.tensors != f->tensors.size()) {
+  if (split.tensors && *split.tensors != f->tensors.size() + f->skipped.size()) {
     return Fail(Rule::kShards, "split.tensors.count is not the split files' tensors", 0);
   }
   std::vector<File> files;

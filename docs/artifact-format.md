@@ -876,19 +876,22 @@ v0, so nothing that pages an artifact in knows which version it read.
 However, runtime serving is strictly v1-only (D-118): the runtime refuses
 v0 artifacts at model registration.
 
-**What stays v0's.** The directory and its identity (the SHA-256 of
-`manifest.json`), staging and one-rename publication, the walk's rules
+**What stays v0's.** The directory layout, staging and one-rename publication, the walk's rules
 (only `data/` and `meta/`, regular files, no links inside, exactly the
 listed files), the safetensors shards and their header rules, the
 spark-v0 profile (`layout` exactly as in v0), groups tiling each shard,
 4 KiB group alignment, 2 MiB chunks numbered in group order, 256-byte
 resource alignment, over-read reserved inside a resource's own group,
 tied resources stored once, expert arrays over uniform expert groups,
-chunk digests, kept metadata and its source coverage, strict canonical
-ASCII JSON, and every cap. What changes:
+chunk digests, kept metadata and its source coverage, and every cap.
+Native manifests additionally admit safe UTF-8 filenames with minimal JSON
+quoting (identifiers keep their narrower patterns). Identity follows D-120:
+hash the canonical manifest with only `importer.build` set to `"unknown"`;
+the stored manifest keeps the actual build. Legacy v1 raw-manifest IDs also
+remain readable. What changes:
 
 ```text
-<installed store>/<artifact-id>/        artifact-id = SHA-256 of manifest.json bytes
+<installed store>/<artifact-id>/        artifact-id = SHA-256 of the D-120 canonical manifest
   manifest.json                         format "llmp-artifact", format_version 1
   spec.json                             the model spec (optional), hashed in the manifest
   index.json                            format "llmp-index", format_version 1
@@ -903,9 +906,9 @@ ASCII JSON, and every cap. What changes:
 | `format`, `format_version` | `"llmp-artifact"`, `1`. The format names the version family: `jitllm-artifact` only ever with 0, `llmp-artifact` with 1 and later. Any other version is `unsupported-version`, the error's item the version found: a later one needs a later runtime, an earlier one a re-import |
 | `experimental`, `layout` | As v0: `true`, and the spark-v0 profile exactly |
 | `model` | `{architecture, container, expert_count}`: the architecture and expert count as v0's; `container` the reader the importer read the checkpoint with, one of `exl3`, `gguf`, `mlx` and `safetensors` (a table, not a pattern: a mapping's folds depend on the container, so one this build does not know is `schema`, never read as another). No representation families |
-| `source` | As v0 |
+| `source` | As v0, with safe UTF-8 plain filenames (no separators, dot entries or control characters), JSON-quoted |
 | `transformations` | v0's `dedupe-identical` (ties) and `expert-slice`, which must describe the index exactly; and `fold` `{kind, fold, tensors}` and `relayout` `{kind, from, tensors}` (below). In canonical order by each record's canonical JSON |
-| `importer` | `{name, version, build, options_sha256}`: what made the artifact (text fields as v0's converter's; the SHA-256 of the options it ran with), so the same sources, importer and options give the same bytes and ID |
+| `importer` | `{name, version, build, options_sha256}`: what made the artifact (text fields as v0's converter's; the SHA-256 of the options it ran with), so content and semantics determine the ID while the actual build remains provenance (D-120) |
 | `files` | As v0, plus at most one `spec.json` with role `spec` |
 
 **Folds and relayouts.** A `fold` record names a fold catalog entry
@@ -1013,8 +1016,8 @@ Rules, in place of v0's representation rules:
 
 ### Compositions (v1)
 
-`format` `"llmp-composition"`, `format_version` 1 (other versions
-refused as for an artifact), `importer` in place of `converter`, and v0's
+`format` `"llmp-composition"`, `format_version` 1 (or version 2's scoped
+metadata extension below; other versions are refused), `importer` in place of `converter`, and v0's
 other rules, except that the kept files are whatever the pipeline has,
 possibly none (v0 requires `model_index.json`; a target and its drafter
 keep nothing), and that it may list `spec.json` (role `spec`), checked as
@@ -1026,6 +1029,25 @@ opened components, whose IDs and architectures must be the recorded ones
 and whose importers' folds must each be among the folds of every stage
 that runs from that component. Components may be
 of either version.
+
+### Scoped compositions (v2)
+
+A native composition with scoped metadata uses `format_version: 2` (D-120).
+It retains all v1 fields and spec rules, and keeps each source under its
+relative name: `meta/<name>` or `meta/<role>/<name>`. The source receipt's
+`name` omits `meta/` and matches exactly. Roles are validated identifiers,
+leaves are safe plain UTF-8 filenames, and nesting stops after one role.
+For example, `tokenizer/tokenizer.json` and `tokenizer_2/tokenizer.json`
+remain distinct. A flat composition is still written as v1. Runtime serving
+reads both native composition versions and uses scoped names for v2.
+
+All names, duplicates and aggregate metadata bounds are checked before any
+component is published. Reopening a kept file rechecks its size, device,
+inode and any parsed-prefix receipt, and refuses changes during streaming.
+Each role directory is independently opened without following
+links, and the same per-file and total byte caps apply. Identity uses the
+same D-120 build-provenance rule as v1 artifacts. Published v1 compositions
+remain readable at their existing IDs.
 
 ### Versions
 
