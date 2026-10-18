@@ -15,7 +15,7 @@ namespace llmp::components {
 
 std::span<const ComponentDef* const> Catalog() {
   // Sorted by (kind, version).
-  static const std::array<const ComponentDef*, 40> catalog{
+  static const std::array catalog{
       &defs::AffineChannel(),
       &defs::AttentionBorrowed(),
       &defs::AttentionDense(),

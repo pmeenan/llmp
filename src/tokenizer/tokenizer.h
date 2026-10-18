@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Native byte-level BPE, Gemma4 raw UTF-8 BPE and classic SentencePiece
+// Native byte-level BPE, raw UTF-8 BPE and scored SentencePiece BPE
 // tokenization (D-067, D-088). It encodes text
 // to token IDs and decodes them back, from a vocabulary that a loader
-// (gguf.h, hf.h) reads from untrusted model files, validated when the
+// (gguf.h, hf.h, sentencepiece.h) reads from untrusted model files, validated when the
 // tokenizer is created.
 //
 // Byte-level BPE encoding, as llama.cpp and Hugging Face tokenizers do it for these
@@ -18,7 +18,8 @@
 //      UTF-8 bytes are mapped to the GPT-2 byte alphabet.
 //   3. BPE merges adjacent symbols, lowest merge rank first, leftmost on a
 //      tie, until no ranked pair remains; each final symbol is a token.
-// Byte fallback: every byte has a token (checked at creation), and every
+// Byte coverage: every byte has a fallback token (checked at creation), or
+// raw BPE has a normal model token for that unchanged ASCII character. Every
 // merge's result is a token, so any well-formed text encodes, and nothing
 // is ever dropped.
 //
@@ -34,7 +35,10 @@
 // merges may cross spaces. Classic SentencePiece likewise uses raw code
 // points, optional dummy ▁ prefixes and highest-score, leftmost merging
 // across a whole fragment. Missing symbols emit byte fallbacks; normal
-// raw tokens decode ▁ to a space. Work is
+// raw tokens decode ▁ to a space. Native ModelProto user symbols normalize
+// with their entire region and freeze afterward with their exact model spelling;
+// external added-token extraction remains independent of model membership.
+// Native UNUSED pieces can merge, then resegment iteratively at emission. Work is
 // O(n log n), with up to 256 special-token trie steps per input byte, and
 // byte-BPE memory follows the longest window, not the text (D-102): a fragment is
 // encoded in windows of about kEncodeWindowBytes, cut only where neither
@@ -77,12 +81,19 @@ enum class Normalization : std::uint8_t { kNone, kNfc };
 struct TokenizerSpec {
   std::vector<std::string> tokens;  // by ID; byte alphabet, or raw UTF-8 for raw modes
   std::vector<TokenKind> kinds;     // by ID
+  std::vector<bool> model_tokens;   // optional BPE membership, independent of added-token matching
+  std::vector<bool> model_symbols;  // native SentencePiece user symbols protected by normalization
+  std::vector<bool> added_tokens;   // optional external token matcher membership
+  std::vector<bool> normalized_tokens;  // optional added-token matching after normalization
   std::vector<std::pair<std::string, std::string>> merges;  // in rank order
   PreTokenizer pre_tokenizer = PreTokenizer::kQwen2;
+  bool decode_added_whitespace = false;  // declared decoder also replaces markers in added tokens
+  bool raw_bpe_split_newlines = true;    // GGUF raw BPE; HF may merge across newlines
   // Classic SentencePiece uses token scores, rather than a merge list.
   std::vector<float> scores;
   bool add_space_prefix = false;
-  std::vector<bool> rstrip;  // optional per-special ASCII whitespace stripping
+  bool remove_extra_whitespaces = false;  // SentencePiece identity-map trim/collapse
+  std::vector<bool> rstrip;               // optional per-special ASCII whitespace stripping
   Normalization normalization = Normalization::kNone;
   bool ignore_merges = false;  // a piece that is a whole token skips BPE
   std::optional<TokenId> bos;
@@ -171,7 +182,8 @@ class Tokenizer {
   static std::uint64_t EncodeWorkingBytes(std::string_view text);
   // Mode-aware estimate: raw modes can merge across spaces, so they
   // charge the whole input rather than byte-BPE windows. SentencePiece
-  // adds one input byte to cover its optional dummy prefix.
+  // adds one input byte to cover its optional dummy prefix; native models
+  // with UNUSED pieces also charge their reverse-split table and work stack.
   std::uint64_t WorkingBytes(std::string_view text) const;
 
   // Appends text's tokens to out.

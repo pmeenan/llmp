@@ -39,6 +39,32 @@ one Spark and on two.
 
 ---
 
+## D-121: Choose the better architecture and do the work it requires (2026-10-17, status: accepted at the owner's direction; clarifies D-016's review criterion and amends D-018/D-062 before first shipment)
+
+**Decision.** Choose the better architecture and do the work it requires.
+Existing code, dependencies and pins, patch sets, interfaces and APIs, tooling,
+design decisions, and artifact formats, IDs, or stores are revisable, not
+immutable limits or reasons to defer. Pins record reproducibility; extend or
+replace supporting implementation and inputs as needed. Artifacts get the same
+treatment. As the owner put it: "We can always re-import and update the format
+we use as needed as well. Artifacts get the same treatment." Re-import or
+regenerate artifacts when required. Until the first version ships, migration
+and backward compatibility are not requirements for interfaces, APIs, formats,
+or artifacts.
+
+Review and challenge passes assess the requested behavior and architecture,
+and challenge workarounds or deferrals rooted only in current implementation.
+Complete and validate the supporting work, and retain source provenance.
+Explicit user instructions and license/provenance obligations remain binding.
+
+**Context.** Owner clarification during the M3.6 review follow-up, 2026-10-17.
+
+**Consequences.** Work includes the supporting dependency, code, tooling,
+interface, importer, or artifact-format changes required by the chosen design,
+plus re-import or regeneration and validation where needed.
+
+**Reopen if.** The owner changes this direction.
+
 ## D-120: Stable import identity and scoped composition metadata (2026-10-17, status: accepted at the owner's direction for the M3.6 review follow-ups; amends D-113 and D-089)
 
 **Decision.** Native artifact identity and native composition identity hash the
@@ -166,9 +192,9 @@ maps to the SHA-256 of the spec it
 executes (a target's stored `spec.json`; a stored drafter's composition
 with its approved target, whose values come from the GGUF metadata the
 drafter keeps, or for a drafter that keeps none, the native MTP import,
-by its `DraftRecipe`: its block's values from the architecture's compiled
-constants and only its head's rows from its tensors, all of which the
-pinned composition digest covers), its envelope and its policy gates,
+by its `DraftRecipe`'s declarative extraction from the target's stored spec
+and the drafter's own tensors, all of which the pinned composition digest
+covers), its envelope and its policy gates,
 and where its import transforms tensors, the applied folds' and relayouts'
 records and the mapping its spec was synthesized by. Nothing is synthesized
 from a compiled profile to admit a v1 artifact. A model's default context is bounded by its approvals. What an architecture's
@@ -201,11 +227,13 @@ the artifact until its approval is renewed.
 
 Since slice 4b a v0 target or drafter is refused at registration ("re-import
 its source checkpoint with `llmp import`"); `src/model/` holds no LLM family
-code, and a GGUF drafter's import composes its stage with its approved
-target's values and tensor shapes as its mapping's data
-(`DraftRecipe::import_targets`). The importer's closed native readers of one
-family's safetensors forms (Qwen3.8's ModelOpt and MLX normalizers and the
-CLI's dispatch to them) remain, as M3.5 debt: generalized when a second
+code. A drafter import takes the actual target artifact (`--target` under
+D-116), and compositions select the mapping by the artifact's architecture,
+container and declared composition version. Mapping recipes contain no
+function pointers or checkpoint-size profiles. The importer's closed native
+readers of one family's safetensors forms (Qwen3.8's ModelOpt and MLX
+normalizers, selected through the central normalizer registry) remain as
+M3.5 debt: generalized when a second
 ModelOpt model (Nemotron NVFP4) arrives. Re-imports of the staged
 sources reproduce the published IDs. The artifact reader still reads v0, for
 tools and tests; since the image slice the Qwen-Image composition is v1 too
@@ -272,6 +300,25 @@ options. The writer derives the head's I32 token map from the list file
 only after streaming that file against its whole-content receipt. An
 archive source records the drafter's import event against the
 checkpoint's variant, with the list as the caller's own source.
+
+*Amended 2026-10-17 (M3.6 review R4).* A new standalone drafter import
+requires `--target TARGET_ID`, a lowercase 64-digit artifact ID resolved
+within the selected `--store`. The importer reads and validates that target's
+stored version-1 spec and tensor inventory, checks the drafter's declared
+target architecture and the complete composed component/weight/state
+structure, then publishes. Missing, invalid, inconsistent or escaped target
+inputs refuse before publication. `--target` is not accepted for a target or
+image-pipeline import. `--component mtp` and optional `--draft-head IDS` select
+a registered native normalizer; token IDs are bounded by the actual target
+head's rows. The target is validation input, not a copied checkpoint or a
+new serialized runtime object. Existing published drafter artifacts remain
+readable: their retained GGUF values are used, or the mapping's data extracts
+missing native MTP values from the actual target spec and the drafter's own
+tensors. No reimport, ID change, artifact/spec/config schema bump, or fallback
+to a compiled target size is required. Requiring the new argument changes the
+CLI's semantics, so the next product MINOR becomes 0.2.0 under D-062; exit
+meanings remain 0/1/2. Container-aware mapping lookup, declared folds and
+derived policy gates are internal data-model changes, not new stored fields.
 
 ## D-115: One archive checkpoint writer, enforced across hosts by atomic NAS directory ownership  (2026-10-10, status: accepted by the owner's single-writer requirement; supersedes D-114's lock-free checkpoint claims)
 
@@ -5725,7 +5772,12 @@ device-node permissions change so the service user needs groups; a data role
 must live on a filesystem the direct-I/O probe rejects; or users need
 per-user (non-service) installs.
 
-## D-062: SemVer 0.x product versions, independent public-surface versions and a maintained changelog  (2026-09-23, status: accepted; implements D-016's versioning consequence and D-045's extension naming, moving individual names from M1 to M3, which is M5 under D-087)
+## D-062: SemVer 0.x product versions, independent public-surface versions and a maintained changelog  (2026-09-23, status: accepted; implements D-016's versioning consequence and D-045's extension naming, moving individual names from M1 to M3, which is M5 under D-087; pre-release migration and compatibility requirements superseded by D-121, 2026-10-17)
+
+**Pre-release scope (D-121).** Until the first version ships, migration and
+backward compatibility are not requirements, including durable records and
+public interfaces. Version identification, validation and changelog rules
+remain in force; regenerate or re-import development artifacts as needed.
 
 **Decision.** Owner's answer on 2026-09-23:
 
@@ -8525,7 +8577,12 @@ model alternation and long context, not a mixed-traffic benchmark.
 **Reopen if.** The project targets multi-user serving, where fairness and
 throughput under contention would move up the priority list.
 
-## D-018: Experimental artifacts before compatibility guarantees  (2026-09-20, status: accepted; amends D-009; v0 encoding in D-056)
+## D-018: Experimental artifacts before compatibility guarantees  (2026-09-20, status: accepted; amends D-009; v0 encoding in D-056; pre-release compatibility policy superseded by D-121, 2026-10-17)
+
+**Current policy (D-121).** Until the first version ships, migration and
+backward compatibility are not requirements, even after the execution evidence
+below exists. Change formats and regenerate or re-import artifacts as needed
+for the better architecture; retain source provenance and validate the results.
 
 **Decision.** M0 chooses an experimental artifact encoding and layout ABI for
 bring-up. Every artifact still declares its format and layout versions and
@@ -8613,7 +8670,7 @@ not approve incorporation or change this policy.
 **Reopen if.** A selected component's actual terms cannot be met, or the core
 allowlist or declared platform dependency families need to change.
 
-## D-016: Externally consumed project — mandatory review pass and evidence-carrying handoffs  (2026-09-20, status: accepted; supersedes D-001; versioning and changelog in D-062; its sole-committer rule amended by D-075)
+## D-016: Externally consumed project — mandatory review pass and evidence-carrying handoffs  (2026-09-20, status: accepted; supersedes D-001; versioning and changelog in D-062; its sole-committer rule amended by D-075; review criterion clarified by D-121, 2026-10-17)
 
 **Decision.** Llmpalooza is a single-developer project intended for external
 consumption, so the process is heavier than the lean personal-project default.

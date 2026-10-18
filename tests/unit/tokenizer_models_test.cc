@@ -30,6 +30,7 @@
 #include "chat/chat.h"
 #include "tokenizer/gguf.h"
 #include "tokenizer/hf.h"
+#include "tokenizer/sentencepiece.h"
 #include "tokenizer/tokenizer.h"
 #include "tokenizer/unicode.h"
 #include "tokenizer_fixtures.h"
@@ -116,12 +117,28 @@ Loaded Load(std::string_view config, std::string_view kind) {
     }
     out.chat_template = g->chat_template;
     spec = std::move(g->spec);
+  } else if (kind == "spm") {
+    spec = tok::ReadSentencePieceTokenizer(*bytes);
   } else {
     spec = tok::ReadHfTokenizer(*bytes);
   }
   if (!spec) {
     ADD_FAILURE() << out.path << ": " << spec.error().ToString();
     return out;
+  }
+  if (const auto config_path = source.find("config_path")) {
+    const auto path = ModelsDir() + "/" + std::string(config_path->string());
+    const auto config_bytes = ReadFile(path, std::size_t{64} << 20U);
+    if (!config_bytes) {
+      out.skip = "no " + path;
+      return out;
+    }
+    EXPECT_EQ(Sha256(*config_bytes), Get(source, "config_sha256").string());
+    const auto applied = tok::ApplyHfTokenizerConfig(*config_bytes, *spec);
+    if (!applied) {
+      ADD_FAILURE() << path << ": " << applied.error().ToString();
+      return out;
+    }
   }
   auto t = tok::Tokenizer::Create(std::move(*spec));
   if (!t) {
@@ -143,11 +160,15 @@ const std::map<std::pair<std::string_view, std::string_view>, std::string_view> 
 
 struct Config {
   std::string_view name;
-  std::string_view kind;        // gguf or hf
+  std::string_view kind;        // gguf, hf or spm
   std::string_view llama_twin;  // the llama.cpp configuration a divergence must match instead
 };
 
-constexpr std::array<Config, 9> kConfigs = {{
+constexpr std::array<Config, 13> kConfigs = {{
+    {"gemma-2-27b-hf", "hf", ""},
+    {"gemma-2-27b-spm", "spm", ""},
+    {"gemma-3-27b-hf", "hf", ""},
+    {"gemma-3-27b-spm", "spm", ""},
     {"gemma-4-26b-gguf", "gguf", ""},
     {"gemma-2-2b-gguf", "gguf", ""},
     {"gemma-3-4b-gguf", "gguf", ""},
@@ -203,6 +224,13 @@ TEST_P(Agreement, TokenForTokenWithTheReference) {
       options.special = special;
       const auto r = t.Encode(text, options, ids);
       ASSERT_TRUE(r.has_value()) << name << ": " << r.error().ToString();
+      if (const auto with_specials = item.find(std::string(mode) + "_with_specials")) {
+        std::vector<TokenId> inserted;
+        options.add_bos_eos = true;
+        const auto encoded = t.Encode(text, options, inserted);
+        ASSERT_TRUE(encoded) << config.name << " " << name;
+        EXPECT_EQ(inserted, Ids(*with_specials)) << config.name << " specials " << name;
+      }
       const std::vector<TokenId> expected = Ids(Get(item, mode));
       if (const auto it = kKnownDivergences.find({config.name, name});
           it != kKnownDivergences.end()) {
@@ -221,7 +249,7 @@ TEST_P(Agreement, TokenForTokenWithTheReference) {
           t.pre_tokenizer() != tok::PreTokenizer::kSentencePiece) {
         std::string back;
         ASSERT_TRUE(t.Decode(ids, {.control_tokens = true}, back).has_value());
-        if (t.pre_tokenizer() == tok::PreTokenizer::kGemma4) {
+        if (t.pre_tokenizer() == tok::PreTokenizer::kRawBpe) {
           std::string normalized;
           for (std::size_t at = 0; at < text.size();) {
             if (std::string_view(text).substr(at).starts_with("▁")) {
@@ -279,7 +307,11 @@ TEST(Vocabularies, SpecialTokensCannotSplitDifferently) {
           continue;
         }
         const auto uniform = [](std::string_view text) {
-          return text.find_first_not_of(text.front()) == std::string_view::npos;
+          const auto first = static_cast<unsigned char>(text.front());
+          const std::size_t width = first < 0x80 ? 1 : first < 0xE0 ? 2 : first < 0xF0 ? 3 : 4;
+          for (std::size_t i = width; i < text.size(); i += width)
+            if (text.substr(i, width) != text.substr(0, width)) return false;
+          return true;
         };
         if (a.front() == b.front() && uniform(a) && uniform(b)) {
           continue;

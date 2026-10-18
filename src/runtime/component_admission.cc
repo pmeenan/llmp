@@ -26,8 +26,6 @@
 #include "runtime/approvals.h"
 #include "runtime/component_admission_internal.h"
 #include "spec/image_family.h"
-#include "spec/mappings/qwen2.h"
-#include "spec/mappings/qwen38.h"
 #include "spec/stored.h"
 
 namespace llmp::runtime {
@@ -44,91 +42,17 @@ std::unexpected<std::string> Unexpected(std::string reason) {
 constexpr auto kRefusedInventory =
     "native tensor layout, part, parameters or expert geometry differs";
 
-// One tensor's native format within the approved inventory's form.
-bool Admissible(const spec::SourceTensor& t, InventoryForm form) {
-  const auto& f = t.format;
-  const auto parts = format::PartsOf(f);
-  if (!parts || !parts->Find(t.part)) return false;
-  if (f.stacked != 1 && form != InventoryForm::kModelOpt) return false;
-  switch (form) {
-    case InventoryForm::kExl3: {
-      const bool trellis = f.encoding == format::Encoding::kExl3Trellis;
-      const auto bits = f.params.k_bits;
-      if (t.experts) return false;
-      if (trellis)
-        return f.layout == format::Layout::kExl3Tiles && f.shape.rank == 2 &&
-               t.part != format::PartRole::kData &&
-               f.params.codebook == format::Exl3Codebook::kMcg && !f.params.tensor_scale &&
-               (bits == 4 || bits == 5 || bits == 6 || bits == 8);
-      return (f.encoding == format::Encoding::kBF16 || f.encoding == format::Encoding::kF16) &&
-             f.layout == format::Layout::kDense && t.part == format::PartRole::kData &&
-             f.params == format::EncodingParams{} && f.shape.rank >= 1 && f.shape.rank <= 2;
-    }
-    case InventoryForm::kModelOpt:
-    case InventoryForm::kMlx: {
-      const bool modelopt = form == InventoryForm::kModelOpt;
-      // Dense: F16/BF16, or F32 (the importer's folded parameters; ModelOpt's
-      // gathered tensor-scale vectors), and for ModelOpt I32 (a draft
-      // head's map).
-      if (f.layout == format::Layout::kDense)
-        return (f.encoding == format::Encoding::kF16 || f.encoding == format::Encoding::kBF16 ||
-                f.encoding == format::Encoding::kF32 ||
-                (modelopt && f.encoding == format::Encoding::kI32)) &&
-               t.part == format::PartRole::kData && f.params == format::EncodingParams{} &&
-               f.stacked == 1 && !t.experts && f.shape.rank >= 1 && f.shape.rank <= 2;
-      // ModelOpt's relayouts (import/expert_relayout.h): NVFP4 routed
-      // experts in scale atoms (a MoE's gate and up stacked, their tensor
-      // scales gathered apart), an NVFP4 row table row-interleaved.
-      if (modelopt && f.layout == format::Layout::kScaleAtoms)
-        return f.encoding == format::Encoding::kNvfp4 && t.experts && f.shape.rank == 3 &&
-               (f.stacked == 1 || f.stacked == 2) &&
-               (t.part == format::PartRole::kCodes || t.part == format::PartRole::kBlockScales) &&
-               !f.params.tensor_scale && f.params.k_bits == 0;
-      if (modelopt && f.layout == format::Layout::kRowInterleaved)
-        return f.encoding == format::Encoding::kNvfp4 && !t.experts && f.shape.rank == 2 &&
-               f.stacked == 1 &&
-               (t.part == format::PartRole::kData || t.part == format::PartRole::kTensorScale) &&
-               f.params.tensor_scale && f.params.k_bits == 0;
-      if (f.layout != format::Layout::kSplit || f.stacked != 1) return false;
-      const bool geometry =
-          t.experts ? f.shape.rank == 3
-                    : (form == InventoryForm::kModelOpt ? f.shape.rank == 2
-                                                        : (f.shape.rank >= 1 && f.shape.rank <= 2));
-      if (form == InventoryForm::kModelOpt) {
-        const bool nv = f.encoding == format::Encoding::kNvfp4;
-        const bool mx = f.encoding == format::Encoding::kMxfp8;
-        return (nv || mx) &&
-               (t.part == format::PartRole::kCodes || t.part == format::PartRole::kBlockScales ||
-                t.part == format::PartRole::kTensorScale) &&
-               f.params.tensor_scale == nv && f.params.k_bits == 0 &&
-               f.params.codebook == format::Exl3Codebook::kNone && geometry;
-      }
-      // Affine widths, groups and scale types are the format layer's
-      // structural rules, not the qualified checkpoint's constants (or a
-      // decoder's capability list). The pinned inventory qualifies the
-      // exact parameters; implementation selection checks capability.
-      return f.encoding == format::Encoding::kAffine &&
-             (t.part == format::PartRole::kCodes || t.part == format::PartRole::kBlockScales ||
-              t.part == format::PartRole::kBiases) &&
-             !f.params.zero_point && geometry;
-    }
-    case InventoryForm::kDense:
-      return (f.encoding == format::Encoding::kBF16 || f.encoding == format::Encoding::kF32) &&
-             f.layout == format::Layout::kDense && t.part == format::PartRole::kData &&
-             f.params == format::EncodingParams{} && !t.experts && f.shape.rank >= 1 &&
-             f.shape.rank <= 4;
-    case InventoryForm::kGguf:
-      break;
-  }
-  return t.part == format::PartRole::kData && f.params == format::EncodingParams{} &&
-         f.shape.rank >= 1 && f.shape.rank <= 3 && t.experts == (f.shape.rank == 3) &&
-         f.layout == (format::Info(f.encoding).quantized ? format::Layout::kGgmlBlocks
-                                                         : format::Layout::kDense);
+// Container origin is provenance, not executable-format permission. Actual
+// operation support is proved by the execution registry while planning.
+bool Admissible(const spec::SourceTensor& tensor) {
+  const auto parts = format::PartsOf(tensor.format);
+  return (!tensor.experts || tensor.format.shape.rank == 3) &&
+         format::Validate(tensor.format).has_value() && parts && parts->Find(tensor.part);
 }
 
 }  // namespace
 
-// The approved inventory: every tensor admissible in its form, and the
+// The approved inventory: every tensor structurally valid, and the
 // digest of every tensor's complete native description, sorted by name:
 // its name, encoding, layout (by its enumerator), part role, stacked count,
 // expert flag, every encoding parameter and its dimensions, one line each
@@ -138,7 +62,7 @@ std::expected<void, std::string> internal::CheckInventory(const spec::Source& so
   std::vector<const spec::SourceTensor*> sorted;
   sorted.reserve(source.tensors.size());
   for (const auto& t : source.tensors) {
-    if (!Admissible(t, approval.form)) return Refused(kRefusedInventory);
+    if (!Admissible(t)) return Refused(kRefusedInventory);
     sorted.push_back(&t);
   }
   std::ranges::sort(sorted, {}, [](const auto* tensor) {
@@ -257,15 +181,17 @@ std::expected<std::vector<spec::SourceValue>, std::string> KeptValues(
         v = value.text;
         break;
       case artifact::GgufValue::Kind::kIntegers:
-        if (value.integers.size() > spec::kMaxList) continue;
+        if (value.integers.size() > spec::kMaxList)
+          return Refused("retained mapping integer list exceeds the value bound");
         v = value.integers;
         break;
       case artifact::GgufValue::Kind::kFloats:
-        if (value.reals.size() > spec::kMaxList) continue;
+        if (value.reals.size() > spec::kMaxList)
+          return Refused("retained mapping real list exceeds the value bound");
         v = value.reals;
         break;
       case artifact::GgufValue::Kind::kOther:
-        continue;
+        return Refused("retained mapping value has an unsupported type");
     }
     out.push_back({.key = key, .value = std::move(v)});
   }
@@ -342,87 +268,15 @@ bool OnComponentEngine(std::string_view architecture) {
   return mapping != nullptr && (mapping->serving != nullptr || mapping->draft != nullptr);
 }
 
-namespace {
-
-const spec::Mapping* TargetMappingFor(std::string_view architecture, std::string_view container) {
-  if (architecture == "qwen4exp") {
-    return container == "gguf" ? &spec::mappings::Qwen38GgufMapping()
-                               : &spec::mappings::Qwen38NativeMapping();
-  }
-  if (architecture == "qwen2") {
-    if (container == "exl3") return &spec::mappings::Qwen2Exl3Mapping();
-    if (container == "safetensors") return &spec::mappings::Qwen2SafetensorsMapping();
-    if (container == "gguf") return &spec::mappings::Qwen2GgufMapping();
-  }
-  return spec::FindMapping(architecture);
-}
-
-const spec::Mapping* DrafterMappingFor(std::string_view architecture, std::string_view container) {
-  if (architecture == "qwen4exp-mtp" && !container.empty() && container != "gguf") {
-    return &spec::mappings::Qwen38MtpNativeMapping();
-  }
-  return spec::FindMapping(architecture);
-}
-
-std::vector<spec::SourceValue> UnpinnedGates(const spec::ModelSpec& model,
-                                             const spec::Source& source) {
-  std::vector<spec::SourceValue> gates;
-  if (model.stages.empty()) return gates;
-  bool has_moe = false;
-  bool moe_stacked = false;
-  bool moe_scaled = false;
-  for (const spec::Layer& layer : model.stages.front().layers) {
-    for (const spec::ComponentRef& comp : layer.components) {
-      if (comp.kind != "ffn.moe") continue;
-      has_moe = true;
-      if (const spec::Param* p = comp.Find("stacked")) {
-        if (const auto* b = std::get_if<bool>(&p->value); b != nullptr && *b) moe_stacked = true;
-      }
-      if (const spec::Param* p = comp.Find("projection_scales")) {
-        if (const auto* b = std::get_if<bool>(&p->value); b != nullptr && *b) moe_scaled = true;
-      }
-    }
-  }
-  if (has_moe) {
-    gates.push_back({.key = std::format("{}.expert_count", source.architecture), .value = true});
-  }
-  if (source.architecture == "qwen4exp") {
-    if (moe_stacked) {
-      gates.push_back({.key = "llmp.qwen4exp.experts_stacked", .value = true});
-      if (source.container == "safetensors") {
-        gates.push_back({.key = "llmp.qwen4exp.expert_activation_scales", .value = true});
-      }
-    }
-    if (moe_scaled) {
-      gates.push_back({.key = "llmp.qwen4exp.expert_scales", .value = true});
-    }
-  }
-  return gates;
-}
-
-}  // namespace
-
-const spec::Mapping* ComposedDrafterMapping(std::string_view architecture) {
-  const spec::Mapping* mapping = spec::FindMapping(architecture);
-  if (mapping == nullptr || mapping->draft == nullptr || mapping->draft->composed == nullptr)
-    return mapping;
-  return &mapping->draft->composed();
+const spec::Mapping* ComposedDrafterMapping(std::string_view architecture,
+                                            std::string_view container) {
+  const spec::Mapping* mapping = spec::FindMapping(architecture, container);
+  if (!mapping || !mapping->draft || !mapping->draft->composed_version) return mapping;
+  return spec::FindMapping(architecture, container, mapping->draft->composed_version);
 }
 
 const spec::Mapping* ComposedDrafterMapping(const artifact::Artifact& drafter) {
-  const Approval* approval = FindApproval(drafter.model().architecture, drafter.sources());
-  if (approval != nullptr && approval->mapping != nullptr) {
-    const spec::Mapping* mapping = &approval->mapping();
-    if (mapping->draft == nullptr || mapping->draft->composed == nullptr) return mapping;
-    return &mapping->draft->composed();
-  }
-  if (auto source = spec::SourceOf(drafter)) {
-    const spec::Mapping* mapping = DrafterMappingFor(source->architecture, source->container);
-    if (mapping == nullptr || mapping->draft == nullptr || mapping->draft->composed == nullptr)
-      return mapping;
-    return &mapping->draft->composed();
-  }
-  return ComposedDrafterMapping(drafter.model().architecture);
+  return ComposedDrafterMapping(drafter.model().architecture, drafter.model().container);
 }
 
 std::expected<void, std::string> RequireServedVersion(const artifact::Artifact& artifact) {
@@ -447,43 +301,22 @@ bool OriginsWellFormed(std::span<const artifact::Source> origins) {
   return true;
 }
 
-std::optional<InventoryForm> ContainerForm(std::string_view container) {
-  if (container == "gguf") return InventoryForm::kGguf;
-  if (container == "exl3") return InventoryForm::kExl3;
-  if (container == "mlx") return InventoryForm::kMlx;
-  if (container == "safetensors") return InventoryForm::kModelOpt;
-  return std::nullopt;
-}
-
 bool FoldDeclared(const spec::Mapping& mapping, std::string_view container, std::string_view fold) {
-  const auto matches = [&](const spec::Mapping& m) {
-    return std::ranges::any_of(m.folds, [&](const auto& f) {
-      return f.fold == fold && (f.container.empty() || f.container == container);
-    });
-  };
-  if (matches(mapping)) return true;
-  if (const spec::Mapping* by_container = TargetMappingFor(mapping.architecture, container);
-      by_container != nullptr && matches(*by_container)) {
-    return true;
-  }
-  if ((mapping.architecture == "qwen4exp" || mapping.architecture == "qwen4exp-mtp") &&
-      (container == "safetensors" || container == "mlx")) {
-    return fold == "gdn.value_heads_tiled" || fold == "norm.plus_one" || fold == "ssm.a_neg_exp";
-  }
-  return false;
+  return std::ranges::any_of(mapping.folds, [&](const spec::FoldRule& rule) {
+    return rule.fold == fold && rule.container == container;
+  });
 }
 
 std::expected<void, std::string> CheckUnpinnedInventory(const spec::Source& source,
                                                         const spec::Mapping& mapping) {
-  const auto form = ContainerForm(source.container);
-  if (!form || source.tensors.empty()) return Refused(kRefusedInventory);
+  if (source.tensors.empty()) return Refused(kRefusedInventory);
   for (const std::string& fold : source.folds) {
     if (!FoldDeclared(mapping, source.container, fold)) {
       return Refused("source fold is not declared by the architecture's mapping");
     }
   }
   for (const auto& t : source.tensors) {
-    if (!Admissible(t, *form)) return Refused(kRefusedInventory);
+    if (!Admissible(t)) return Refused(kRefusedInventory);
   }
   return {};
 }
@@ -501,30 +334,26 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValue
   }
   const Approval* t = FindApproval(target.model().architecture, target.sources());
   const Approval* d = FindApproval(drafter.model().architecture, drafter.sources());
-  if (t != nullptr && d != nullptr) {
-    if (t->drafter) return Refused("target source identity has no approved v1 execution profile");
-    if (!d->drafter) return Refused("drafter source identity has no approved v1 execution profile");
-    if (d->target != t->name)
-      return Refused(
-          std::format("the approved drafter {} is {}'s, not {}'s", d->name, d->target, t->name));
-  } else {
-    const spec::Mapping* target_mapping = spec::FindMapping(target.model().architecture);
-    if (target_mapping == nullptr || target_mapping->role != spec::StageRole::kTarget)
-      return Refused("target architecture has no target component mapping");
-    const bool arch_ok =
-        target.model().architecture == drafter.model().architecture ||
-        std::ranges::any_of(mapping->draft->import_targets, [&](const auto& it) {
-          return it.mapping != nullptr && it.mapping().architecture == target.model().architecture;
-        });
-    if (!arch_ok)
-      return Refused(std::format("drafter {} does not target architecture {}",
-                                 drafter.model().architecture, target.model().architecture));
-  }
+  if (t != nullptr && t->drafter)
+    return Refused("target source identity is a drafter, not a target");
+  if (d != nullptr && !d->drafter)
+    return Refused("drafter source identity is a target, not a drafter");
+  const spec::Mapping* target_mapping =
+      spec::FindMapping(target.model().architecture, target.model().container);
+  if (!target_mapping || target_mapping->role != spec::StageRole::kTarget)
+    return Refused("target architecture/container has no target component mapping");
+  if (mapping->draft->target_architecture != target.model().architecture)
+    return Refused(std::format("drafter {} does not target architecture {}",
+                               drafter.model().architecture, target.model().architecture));
   // A drafter without kept metadata values: its recipe's, from its source.
-  if (mapping->draft->values != nullptr) {
+  if (!mapping->draft->values.empty()) {
     auto source = spec::SourceOf(drafter);
     if (!source) return Refused(source.error());
-    auto values = mapping->draft->values(*source);
+    auto target_model = spec::StoredSpec(target);
+    if (!target_model) return Refused(target_model.error());
+    auto target_source = spec::SourceOf(target);
+    if (!target_source) return Refused(target_source.error());
+    auto values = spec::ExtractValues(*mapping, *target_model, *target_source, *source);
     if (!values) return Refused(values.error());
     return values;
   }
@@ -614,7 +443,7 @@ std::expected<void, std::string> CheckComponentDrafterAdmission(
       return Refused("source container, transforms or tensor inventory differs from its profile");
     return internal::CheckInventory(source, *approval);
   }
-  const spec::Mapping* mapping = ComposedDrafterMapping(source.architecture);
+  const spec::Mapping* mapping = ComposedDrafterMapping(source.architecture, source.container);
   if (mapping == nullptr || mapping->role != spec::StageRole::kDrafter || mapping->draft == nullptr)
     return Refused("architecture has no drafter component mapping");
   return CheckUnpinnedInventory(source, *mapping);
@@ -647,7 +476,7 @@ std::expected<void, std::string> CheckComponentAdmission(
                             [&](const Approval& a) { return SourcesMatch(a.sources, origins); })) {
       return Refused("pinned source origins disagree with the declared architecture");
     }
-    const spec::Mapping* mapping = TargetMappingFor(source.architecture, source.container);
+    const spec::Mapping* mapping = spec::FindMapping(source.architecture, source.container);
     if (mapping == nullptr || mapping->role != spec::StageRole::kTarget)
       return Refused("architecture has no target component mapping");
     if (auto inv = CheckUnpinnedInventory(source, *mapping); !inv) return inv;
@@ -672,7 +501,8 @@ std::expected<void, std::string> CheckComponentAdmission(
     }
     std::vector<std::string> expected_folds = source.folds;
     for (const spec::FoldRule& f : mapping->folds) {
-      if (f.container == source.container && !std::ranges::contains(expected_folds, f.fold)) {
+      if (!f.imported && f.container == source.container &&
+          !std::ranges::contains(expected_folds, f.fold)) {
         expected_folds.emplace_back(f.fold);
       }
     }
@@ -696,7 +526,8 @@ std::expected<void, std::string> CheckArtifactPrerequisites(const artifact::Arti
         artifact.resources().size() != approval->tensors - approval->arrays ||
         artifact.expert_arrays().size() != approval->arrays)
       return Refused("the approved artifact requires its native tensor inventory and transforms");
-  } else if (spec::FindMapping(artifact.model().architecture) == nullptr) {
+  } else if (spec::FindMapping(artifact.model().architecture, artifact.model().container) ==
+             nullptr) {
     return Refused("architecture has no component mapping");
   }
   return CheckScaleAtomSlots(artifact);
@@ -704,7 +535,8 @@ std::expected<void, std::string> CheckArtifactPrerequisites(const artifact::Arti
 
 std::expected<void, std::string> CheckComponentArtifactAdmission(
     const artifact::Artifact& artifact) {
-  const spec::Mapping* mapping = spec::FindMapping(artifact.model().architecture);
+  const spec::Mapping* mapping =
+      spec::FindMapping(artifact.model().architecture, artifact.model().container);
   if (mapping != nullptr && mapping->role == spec::StageRole::kDrafter) {
     auto admitted = ReadComponentDrafterAdmission(artifact);
     if (!admitted) return std::unexpected(admitted.error());
@@ -835,8 +667,7 @@ std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
 }
 
 std::uint32_t ApprovedDefaultContext(const Approval& approval) {
-  const spec::Mapping* mapping =
-      approval.mapping != nullptr ? &approval.mapping() : spec::FindMapping(approval.architecture);
+  const spec::Mapping* mapping = spec::FindMapping(approval.architecture, approval.container);
   std::uint32_t widest = 0;
   if (mapping != nullptr && approval.policy != ApprovedPolicy::kNone) {
     for (const spec::PolicyRule& rule : mapping->policies) {
@@ -895,7 +726,7 @@ std::expected<ImageAdmission, std::string> ReadImageAdmission(
       if (auto pinned = Pinned(want, *stored); !pinned) return std::unexpected(pinned.error());
     } else {
       for (const auto& t : source->tensors) {
-        if (!Admissible(t, InventoryForm::kDense)) return Refused(kRefusedInventory);
+        if (!Admissible(t)) return Refused(kRefusedInventory);
       }
     }
     if (const auto valid = components::ValidateSpec(*stored, source->tensors); !valid)
@@ -940,8 +771,7 @@ std::expected<ImageAdmission, std::string> ReadImageAdmission(
 std::expected<const spec::PolicyRule*, std::string> ApprovedRule(const Approval& approval,
                                                                  const spec::Envelope& envelope) {
   if (approval.policy == ApprovedPolicy::kNone) return nullptr;
-  const spec::Mapping* mapping =
-      approval.mapping != nullptr ? &approval.mapping() : spec::FindMapping(approval.architecture);
+  const spec::Mapping* mapping = spec::FindMapping(approval.architecture, approval.container);
   if (mapping == nullptr) return Refused("the approval's architecture has no mapping");
   // The gates the checkpoint holds, as flags: the approval's, not a key bag
   // read again or a profile's.
@@ -986,9 +816,9 @@ std::expected<spec::PolicyRule, std::string> AdmittedPolicy(const spec::ModelSpe
       return Refused("no approved policy for this execution envelope");
     return spec::PolicyRule{};
   }
-  const spec::Mapping* mapping = TargetMappingFor(source.architecture, source.container);
+  const spec::Mapping* mapping = spec::FindMapping(source.architecture, source.container);
   if (mapping != nullptr) {
-    const auto gates = UnpinnedGates(model, source);
+    const auto gates = spec::PolicyGates(*mapping, model, source.container);
     auto rule = spec::DefaultRule(*mapping, gates, envelope);
     if (rule && *rule != nullptr) return **rule;
   }

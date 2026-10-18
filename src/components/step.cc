@@ -40,6 +40,8 @@
 namespace llmp::components {
 namespace {
 
+CellKey KeyOf(const model::StateTensorContract& contract, std::uint64_t cells);
+
 std::unexpected<std::string> Refused(std::string detail) {
   return std::unexpected(std::move(detail));
 }
@@ -389,12 +391,7 @@ std::expected<void, std::string> CheckRole(
   const WeightRole& role = in.def->roles[r.role];
   const auto what = [&] { return std::format("{} role {}", in.def->kind, role.name); };
   if (!format::Validate(f.format)) return Refused(what() + " has an invalid format");
-  if (purpose == ValidationPurpose::kExecution && !role.encodings.empty() &&
-      (std::ranges::find(role.encodings, f.format.encoding) == role.encodings.end() ||
-       f.format.layout != format::Layout::kDense)) {
-    return Refused(std::format("{} is {}, which it does not take", what(),
-                               format::Info(f.format.encoding).name));
-  }
+  (void)purpose;  // executable support belongs to the planned operation's registry
   // Its parts: every part its format stores, each bound once.
   const auto parts = format::PartsOf(f.format);
   if (!parts) return Refused(what() + " has a format without a size");
@@ -909,6 +906,73 @@ std::expected<model::StateLayoutDerived, std::string> StageLayoutUniform(
   auto contracts = StageContracts(spec, stage);
   if (!contracts) return std::unexpected(contracts.error());
   return model::Layout(*contracts, context, max_rows, tensor_align);
+}
+
+std::expected<std::uint32_t, std::string> StagePrefillRows(const spec::ModelSpec& model,
+                                                           std::size_t stage, std::uint32_t context,
+                                                           std::uint32_t requested,
+                                                           bool rounded_selection) {
+  if (!context || !requested || stage >= model.stages.size() ||
+      context > model.stages[stage].context)
+    return Refused("prompt mask bound requires a nonzero context/chunk within the stored spec");
+  auto instances = InstancesOf(model, stage);
+  if (!instances) return std::unexpected(instances.error());
+  struct Geometry {
+    model::StateContract contract;
+    std::vector<MaskUse> masks;
+    bool exact;
+  };
+  std::vector<Geometry> geometry;
+  for (const Instance* in : All(*instances)) {
+    if (!in->def->masks) continue;
+    if (!in->def->state) return Refused("a mask declaration has no state contract");
+    Geometry g{in->def->state(*in), in->def->masks(*in), in->def->exact_masks};
+    for (const MaskUse& mask : g.masks)
+      if (mask.tensor >= g.contract.tensors.size() || !mask.plane_bytes ||
+          g.contract.tensors[mask.tensor].borrowed_from_target)
+        return Refused("prompt mask declaration lacks owned state or a valid byte width");
+    geometry.push_back(std::move(g));
+  }
+  const auto fits = [&](std::uint32_t rows) {
+    ir::Builder builder;
+    const std::uint64_t read = Pad(context, 256);
+    StepContext step(
+        builder,
+        {{.rows = rows, .past = context - rows, .read_cells = static_cast<std::uint32_t>(read)}},
+        false);
+    constexpr std::uint64_t limit = std::numeric_limits<std::int32_t>::max();
+    for (const Geometry& g : geometry) {
+      const std::array contracts{std::pair{std::uint32_t{0}, g.contract}};
+      auto layout = model::ExtentLayout(contracts, context, rows, model::kStateExtent);
+      if (!layout) return false;
+      std::uint64_t bank = 0;
+      for (const MaskUse& mask : g.masks) {
+        const auto item =
+            std::ranges::find(layout->items, mask.tensor, &model::StateLayoutDerived::Item::tensor);
+        if (item == layout->items.end()) return false;
+        const auto cells = step.ReadCells(0, KeyOf(item->contract, item->cells));
+        bank = mask.join_previous ? bank + cells : cells;
+        const auto padded_rows = g.exact ? rows : Pad(rows, kMaskRowAlign);
+        if (cells > limit / mask.plane_bytes / padded_rows ||
+            bank > limit / mask.plane_bytes / rows)
+          return false;
+        if ((!rounded_selection || !mask.indexer_selected) && mask.selection_bytes &&
+            cells > mask.selection_above && cells > limit / mask.selection_bytes / rows)
+          return false;
+      }
+    }
+    return true;
+  };
+  std::uint32_t low = 0, high = std::min(context, requested);
+  while (low < high) {
+    const auto middle = high - (high - low) / 2;
+    if (fits(middle))
+      low = middle;
+    else
+      high = middle - 1;
+  }
+  if (!low) return Refused("even one prompt row exceeds its mask/state/index budget");
+  return low;
 }
 
 std::expected<model::Batching, std::string> StageBatching(const spec::ModelSpec& spec,

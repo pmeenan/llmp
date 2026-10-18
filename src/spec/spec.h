@@ -193,6 +193,27 @@ struct Stage {
   bool operator==(const Stage&) const = default;
 };
 
+// Every component site in execution order. Shared by validation, canonicalization,
+// stored-fold checks and metadata extraction; preserves constness.
+template <class StageT, class F>
+void EachComponent(StageT& stage, const F& visit) {
+  const auto maybe = [&](auto& component, std::string_view path) {
+    if (component) visit(*component, std::string(path));
+  };
+  maybe(stage.embedding, "embedding");
+  maybe(stage.stream.mixing, "stream.mixing");
+  for (std::size_t i = 0; i < stage.side.size(); ++i)
+    visit(stage.side[i].source, "side[" + std::to_string(i) + "].source");
+  for (std::size_t l = 0; l < stage.layers.size(); ++l)
+    for (std::size_t i = 0; i < stage.layers[l].components.size(); ++i)
+      visit(stage.layers[l].components[i],
+            "layers[" + std::to_string(l) + "][" + std::to_string(i) + "]");
+  maybe(stage.heads.final_norm, "heads.final_norm");
+  maybe(stage.heads.output, "heads.output");
+  for (std::size_t i = 0; i < stage.heads.mtp.size(); ++i)
+    visit(stage.heads.mtp[i], "heads.mtp[" + std::to_string(i) + "]");
+}
+
 struct ModelSpec {
   std::uint32_t version = kSpecVersion;
   PipelineKind pipeline = PipelineKind::kLlm;

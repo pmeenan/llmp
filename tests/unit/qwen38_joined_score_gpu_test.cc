@@ -576,6 +576,7 @@ en::Status SetUp(Lifetime& life) {
   if (!options) return std::unexpected(options.error());
   rt::ModelSettings settings;
   settings.architecture = "qwen4exp";
+  settings.container = "safetensors";
   settings.max_slots.value = 4;
   settings.context.value = 512;
   settings.prefill_chunk.value = 2;

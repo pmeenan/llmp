@@ -38,7 +38,7 @@ bool AsciiSpace(char c) {
   return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
 }
 
-bool Raw(PreTokenizer p) { return p == PreTokenizer::kGemma4 || p == PreTokenizer::kSentencePiece; }
+bool Raw(PreTokenizer p) { return p == PreTokenizer::kRawBpe || p == PreTokenizer::kSentencePiece; }
 
 bool AsciiLetter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
 bool AsciiAlnum(char c) { return AsciiLetter(c) || (c >= '0' && c <= '9'); }
@@ -167,21 +167,30 @@ std::string Error::ToString() const {
 struct Tokenizer::Impl {
   std::vector<std::string> tokens;
   std::vector<TokenKind> kinds;
+  std::vector<bool> model_tokens;
+  std::vector<bool> model_symbols;
+  std::vector<bool> added_tokens;
+  std::vector<bool> normalized_tokens;
   std::vector<float> scores;
   std::vector<bool> rstrip;
   bool add_space_prefix = false;
+  bool remove_extra_whitespaces = false;
   bool strips_space = false;
   std::vector<std::string> decoded;  // normal tokens' bytes
   std::unordered_map<std::string_view, TokenId> by_text;
   std::array<TokenId, 256> byte_token{};
   std::array<std::string, 256> byte_text;  // each byte's alphabet character, UTF-8
   std::unordered_map<std::uint64_t, MergeResult, MixHash> merges;
-  // The special-token trie: node 0 is the root; edges keyed by
-  // (node << 8 | byte); terminal[node] is the token ending there, or -1.
+  // Roots 0/1 extract added tokens before/after normalization; root 2
+  // protects native SentencePiece model symbols during normalization.
+  // Edges are keyed by (node << 8 | byte); terminal[node] is the token ID.
   std::unordered_map<std::uint64_t, std::uint32_t, MixHash> edges;
   std::vector<TokenId> terminal;
-  std::array<bool, 256> special_first{};
+  std::array<std::array<bool, 256>, 3> special_first{};
+  bool unused_model_tokens = false;
   PreTokenizer pre_tokenizer = PreTokenizer::kQwen2;
+  bool decode_added_whitespace = false;
+  bool raw_bpe_split_newlines = true;
   Normalization normalization = Normalization::kNone;
   bool ignore_merges = false;
   std::optional<TokenId> bos;
@@ -190,14 +199,19 @@ struct Tokenizer::Impl {
   bool add_eos = false;
   std::size_t longest = 1;  // the longest token's bytes (decoded, or a special's text)
 
+  bool ModelToken(TokenId id) const {
+    const auto i = static_cast<std::size_t>(id);
+    return model_tokens.empty() ? kinds[i] == TokenKind::kNormal : model_tokens[i];
+  }
+
   // The longest special token matching at text[p], allowed by `special`,
   // or -1.
   TokenId MatchSpecial(std::string_view text, std::size_t p, SpecialTokens special,
-                       std::size_t* length) const {
-    if (!special_first[static_cast<unsigned char>(text[p])]) {
+                       std::size_t* length, unsigned phase = 0) const {
+    if (!special_first[phase][static_cast<unsigned char>(text[p])]) {
       return -1;
     }
-    std::uint32_t node = 0;
+    std::uint32_t node = phase;
     TokenId best = -1;
     for (std::size_t q = p; q < text.size() && q - p < kMaxSpecialBytes; ++q) {
       const auto it = edges.find((static_cast<std::uint64_t>(node) << 8U) |
@@ -309,24 +323,63 @@ struct Tokenizer::Impl {
     }
     std::string bytes;
     bytes.reserve(3 * (text.size() + 1));
-    if (add_space_prefix) {
-      bytes = "▁";
-    }
-    for (std::size_t i = 0; i < text.size(); ++i) {
-      if ((i & 0xFFFFU) == 0 && !base::Pulse()) {
-        return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", i});
+    if (!model_symbols.empty() || remove_extra_whitespaces) {
+      // ModelProto normalizes a complete region before freezing its model
+      // symbols. External added/control tokens still delimit regions in
+      // EncodeText; a native user symbol does not restart dummy prefixes or
+      // turn adjacent internal whitespace into leading/trailing whitespace.
+      bool previous_space = remove_extra_whitespaces;
+      bool started = false;
+      std::size_t work = 0;
+      for (std::size_t at = 0; at < text.size();) {
+        if ((++work & 0xFFFFU) == 0 && !base::Pulse())
+          return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", at});
+        std::size_t length = 0;
+        if (MatchSpecial(text, at, SpecialTokens::kUserDefinedOnly, &length, 2) < 0) {
+          const auto first = static_cast<unsigned char>(text[at]);
+          length = first < 0x80 ? 1 : first < 0xE0 ? 2 : first < 0xF0 ? 3 : 4;
+        }
+        auto piece = text.substr(at, length);
+        at += length;
+        if (!started && remove_extra_whitespaces && piece == " ") continue;
+        if (!started) {
+          if (add_space_prefix) bytes = "▁";
+          started = true;
+        }
+        while (previous_space && piece.starts_with(' ')) piece.remove_prefix(1);
+        for (const char c : piece) {
+          if (c == ' ')
+            bytes += "▁";
+          else
+            bytes.push_back(c);
+        }
+        if (!piece.empty()) previous_space = remove_extra_whitespaces && piece.back() == ' ';
       }
-      if (text[i] == ' ') {
-        bytes += "▁";
-      } else {
-        bytes.push_back(text[i]);
+      if (remove_extra_whitespaces) {
+        while (bytes.ends_with("▁")) {
+          if ((++work & 0xFFFFU) == 0 && !base::Pulse())
+            return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop"});
+          bytes.resize(bytes.size() - std::string_view("▁").size());
+        }
+      }
+    } else {
+      if (add_space_prefix) bytes = "▁";
+      for (std::size_t i = 0; i < text.size(); ++i) {
+        if ((i & 0xFFFFU) == 0 && !base::Pulse())
+          return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", i});
+        if (text[i] == ' ')
+          bytes += "▁";
+        else
+          bytes.push_back(text[i]);
       }
     }
+    if (bytes.empty()) return {};
     struct Symbol {
       std::size_t offset;
       std::uint32_t length;
       std::uint32_t prev;
       std::uint32_t next;
+      TokenId frozen;
     };
     std::vector<Symbol> symbols;
     symbols.reserve(text.size() + 1);
@@ -335,12 +388,21 @@ struct Tokenizer::Impl {
         return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", at});
       }
       const auto b = static_cast<unsigned char>(bytes[at]);
-      const std::uint32_t length = b < 0x80 ? 1U : b < 0xE0 ? 2U : b < 0xF0 ? 3U : 4U;
+      std::size_t special_length = 0;
+      const auto frozen = MatchSpecial(
+          bytes, at, model_symbols.empty() ? SpecialTokens::kUserDefinedOnly : options.special,
+          &special_length, model_symbols.empty() ? 0U : 1U);
+      const std::uint32_t length = frozen >= 0 ? static_cast<std::uint32_t>(special_length)
+                                   : b < 0x80  ? 1U
+                                   : b < 0xE0  ? 2U
+                                   : b < 0xF0  ? 3U
+                                               : 4U;
       const auto index = static_cast<std::uint32_t>(symbols.size());
       symbols.push_back({.offset = at,
                          .length = length,
                          .prev = index == 0 ? kNone : index - 1,
-                         .next = at + length < bytes.size() ? index + 1 : kNone});
+                         .next = at + length < bytes.size() ? index + 1 : kNone,
+                         .frozen = frozen});
       at += length;
     }
     struct Candidate {
@@ -363,8 +425,14 @@ struct Tokenizer::Impl {
     storage.reserve(3 * symbols.size() - 3);
     std::priority_queue<Candidate, std::vector<Candidate>, Lower> queue(Lower{},
                                                                         std::move(storage));
+    // Native UNUSED entries may be intermediate merges. Record the most
+    // recently considered split per piece, then resegment only surviving
+    // UNUSED pieces after all merges. A direct ID table bounds lookup and
+    // avoids recursively walking a hostile merge chain on the C++ stack.
+    std::vector<std::uint32_t> unused_splits(unused_model_tokens ? tokens.size() : 0, 0);
     const auto consider = [&](std::uint32_t left) {
-      if (left == kNone || symbols[left].next == kNone) {
+      if (left == kNone || symbols[left].next == kNone || symbols[left].frozen >= 0 ||
+          symbols[symbols[left].next].frozen >= 0) {
         return;
       }
       const auto right = symbols[left].next;
@@ -373,9 +441,10 @@ struct Tokenizer::Impl {
         return;
       }
       const auto found = by_text.find(std::string_view(bytes).substr(symbols[left].offset, length));
-      if (found != by_text.end() &&
-          kinds[static_cast<std::size_t>(found->second)] == TokenKind::kNormal) {
+      if (found != by_text.end() && ModelToken(found->second)) {
         const auto token = found->second;
+        if (kinds[static_cast<std::size_t>(token)] == TokenKind::kUnused)
+          unused_splits[static_cast<std::size_t>(token)] = symbols[left].length;
         queue.push({.score = scores[static_cast<std::size_t>(token)],
                     .left = left,
                     .right = right,
@@ -412,25 +481,45 @@ struct Tokenizer::Impl {
       consider(candidate.left);
     }
     std::size_t emission_work = 0;
+    std::vector<std::pair<std::size_t, std::uint32_t>> pending;
+    static_assert(sizeof(decltype(pending)::value_type) <= 16);
+    if (unused_model_tokens) pending.reserve(text.size() + 1);
     for (std::uint32_t i = 0; i != kNone; i = symbols[i].next) {
       if ((++emission_work & 0xFFFFU) == 0 && !base::Pulse()) {
         return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", i});
       }
       const auto& symbol = symbols[i];
-      const auto piece = std::string_view(bytes).substr(symbol.offset, symbol.length);
-      const auto found = by_text.find(piece);
-      if (found != by_text.end() &&
-          kinds[static_cast<std::size_t>(found->second)] == TokenKind::kNormal) {
-        if (auto emitted = Emit(found->second, options, out, base); !emitted) {
-          return emitted;
-        }
-      } else {
-        for (const char b : piece) {
-          if (auto emitted = Emit(byte_token[static_cast<unsigned char>(b)], options, out, base);
-              !emitted) {
-            return emitted;
+      if (symbol.frozen >= 0) {
+        if (auto emitted = Emit(symbol.frozen, options, out, base); !emitted) return emitted;
+        continue;
+      }
+      const auto emit_piece = [&](std::size_t offset,
+                                  std::uint32_t length) -> std::expected<void, Error> {
+        const auto piece = std::string_view(bytes).substr(offset, length);
+        const auto found = by_text.find(piece);
+        if (found != by_text.end() && ModelToken(found->second)) {
+          const auto id = static_cast<std::size_t>(found->second);
+          if (kinds[id] == TokenKind::kUnused && unused_splits[id] != 0) {
+            const auto split = unused_splits[id];
+            pending.emplace_back(offset + split, length - split);
+            pending.emplace_back(offset, split);
+            return {};
           }
+          return Emit(found->second, options, out, base);
         }
+        for (const char b : piece)
+          if (auto emitted = Emit(byte_token[static_cast<unsigned char>(b)], options, out, base);
+              !emitted)
+            return emitted;
+        return {};
+      };
+      if (auto emitted = emit_piece(symbol.offset, symbol.length); !emitted) return emitted;
+      while (!pending.empty()) {
+        if ((++emission_work & 0xFFFFU) == 0 && !base::Pulse())
+          return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop"});
+        const auto [offset, length] = pending.back();
+        pending.pop_back();
+        if (auto emitted = emit_piece(offset, length); !emitted) return emitted;
       }
     }
     return {};
@@ -450,7 +539,7 @@ struct Tokenizer::Impl {
         return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", start});
       }
       const std::size_t end =
-          pre_tokenizer == PreTokenizer::kGemma4 ? text.size() : WindowEnd(text, start);
+          pre_tokenizer == PreTokenizer::kRawBpe ? text.size() : WindowEnd(text, start);
       if (auto e = EncodeWindow(text.substr(start, end - start), options, out, base); !e) {
         return e;
       }
@@ -471,7 +560,7 @@ struct Tokenizer::Impl {
     if (normalization == Normalization::kNfc) {
       unicode::ToNfc(cps);
     }
-    if (pre_tokenizer == PreTokenizer::kGemma4) {
+    if (pre_tokenizer == PreTokenizer::kRawBpe) {
       for (char32_t& cp : cps) {
         if (cp == U' ') {
           cp = U'▁';
@@ -480,7 +569,11 @@ struct Tokenizer::Impl {
     }
     std::vector<std::uint32_t> lengths;
     lengths.reserve(cps.size());  // a piece a code point at most
-    PreTokenize(pre_tokenizer, cps, lengths);
+    if (pre_tokenizer == PreTokenizer::kRawBpe && !raw_bpe_split_newlines) {
+      lengths.push_back(static_cast<std::uint32_t>(cps.size()));
+    } else {
+      PreTokenize(pre_tokenizer, cps, lengths);
+    }
     std::size_t start = 0;
     std::string bytes;
     std::string alphabet;
@@ -495,11 +588,11 @@ struct Tokenizer::Impl {
         unicode::AppendUtf8(cps[i], bytes);
       }
       start += length;
-      if (pre_tokenizer == PreTokenizer::kGemma4) {
+      if (pre_tokenizer == PreTokenizer::kRawBpe) {
         // The pinned reference treats a whole newline run that is a token
         // atomically, even when its merge path would choose other tokens.
         const auto whole = by_text.find(bytes);
-        if (bytes[0] == '\n' && whole != by_text.end() &&
+        if (raw_bpe_split_newlines && bytes[0] == '\n' && whole != by_text.end() &&
             kinds[static_cast<std::size_t>(whole->second)] == TokenKind::kNormal) {
           if (auto e = Emit(whole->second, options, out, base); !e) {
             return e;
@@ -511,11 +604,19 @@ struct Tokenizer::Impl {
           if (at != 0 && (symbols.size() & 0xFFFFU) == 0 && !base::Pulse()) {
             return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", at});
           }
+          std::size_t special_length = 0;
+          const auto frozen = MatchSpecial(bytes, at, options.special, &special_length, true);
+          if (frozen >= 0) {
+            if (auto merged = Merge(symbols, options, out, base); !merged) return merged;
+            symbols.clear();
+            if (auto emitted = Emit(frozen, options, out, base); !emitted) return emitted;
+            at += special_length;
+            continue;
+          }
           const unsigned char b = static_cast<unsigned char>(bytes[at]);
           const std::size_t width = b < 0x80 ? 1 : b < 0xE0 ? 2 : b < 0xF0 ? 3 : 4;
           const auto it = by_text.find(std::string_view(bytes).substr(at, width));
-          if (it != by_text.end() &&
-              kinds[static_cast<std::size_t>(it->second)] == TokenKind::kNormal) {
+          if (it != by_text.end() && ModelToken(it->second)) {
             symbols.push_back(it->second);
           } else {
             for (std::size_t i = at; i < at + width; ++i) {
@@ -565,8 +666,9 @@ struct Tokenizer::Impl {
     // Every token covers at most `longest` bytes of normalized text, and NFC
     // shortens text at most threefold: a longer text has more tokens than
     // max_tokens, which is known before any work.
-    if (!strips_space && text.size() > Times(Times(options.max_tokens, longest),
-                                             normalization == Normalization::kNfc ? 4 : 1)) {
+    if (!strips_space && !remove_extra_whitespaces &&
+        text.size() > Times(Times(options.max_tokens, longest),
+                            normalization == Normalization::kNfc ? 4 : 1)) {
       return std::unexpected(
           Error{Rule::kOutputTooLarge, "more tokens than max_tokens", options.max_tokens});
     }
@@ -590,10 +692,9 @@ struct Tokenizer::Impl {
     return {};
   }
 
-  // Encodes text, matching special tokens as `special` allows.
-  std::expected<void, Error> EncodeText(std::string_view text, SpecialTokens special,
-                                        const EncodeOptions& options, std::vector<TokenId>& out,
-                                        std::size_t base) const {
+  // One matching policy applies before and after normalization.
+  std::expected<void, Error> EncodeText(std::string_view text, const EncodeOptions& options,
+                                        std::vector<TokenId>& out, std::size_t base) const {
     std::size_t fragment = 0;
     std::size_t checkpoint = 65536;
     for (std::size_t p = 0; p < text.size();) {
@@ -604,7 +705,7 @@ struct Tokenizer::Impl {
         checkpoint = p + 65536;
       }
       std::size_t length = 0;
-      const TokenId t = MatchSpecial(text, p, special, &length);
+      const TokenId t = MatchSpecial(text, p, options.special, &length);
       if (t < 0) {
         ++p;
         continue;
@@ -640,7 +741,11 @@ std::expected<std::uint64_t, Error> Tokenizer::ConstructionBytes(const Tokenizer
     return std::unexpected(Error{Rule::kBounds, "tokenizer construction bound overflows"});
   };
   if (spec.tokens.empty() || spec.tokens.size() > kMaxVocabulary ||
-      spec.kinds.size() != spec.tokens.size() || spec.merges.size() > 2 * kMaxVocabulary)
+      spec.kinds.size() != spec.tokens.size() || spec.merges.size() > 2 * kMaxVocabulary ||
+      (!spec.model_tokens.empty() && spec.model_tokens.size() != spec.tokens.size()) ||
+      (!spec.model_symbols.empty() && spec.model_symbols.size() != spec.tokens.size()) ||
+      (!spec.added_tokens.empty() && spec.added_tokens.size() != spec.tokens.size()) ||
+      (!spec.normalized_tokens.empty() && spec.normalized_tokens.size() != spec.tokens.size()))
     return fail();
   // The byte alphabet's 256 strings/map nodes, fixed arrays and objects.
   // Hash entries below include node allocation, bucket storage and rehash
@@ -652,8 +757,10 @@ std::expected<std::uint64_t, Error> Tokenizer::ConstructionBytes(const Tokenizer
            !__builtin_add_overflow(bytes, part, &bytes);
   };
   if (!add(spec.tokens.capacity(), sizeof(std::string)) ||
-      !add(spec.kinds.capacity(), sizeof(TokenKind)) ||
-      !add(spec.scores.capacity(), sizeof(float)) || !add(spec.rstrip.capacity(), 1) ||
+      !add(spec.kinds.capacity(), sizeof(TokenKind)) || !add(spec.model_tokens.capacity(), 1) ||
+      !add(spec.model_symbols.capacity(), 1) || !add(spec.added_tokens.capacity(), 1) ||
+      !add(spec.normalized_tokens.capacity(), 1) || !add(spec.scores.capacity(), sizeof(float)) ||
+      !add(spec.rstrip.capacity(), 1) ||
       !add(spec.merges.capacity(), sizeof(std::pair<std::string, std::string>)) ||
       !add(spec.tokens.size(), sizeof(std::string) + 192) || !add(spec.merges.size(), 192))
     return fail();
@@ -662,10 +769,16 @@ std::expected<std::uint64_t, Error> Tokenizer::ConstructionBytes(const Tokenizer
     const auto& text = spec.tokens[i];
     if (!add(text.capacity(), 1) || !add(1, 1) || !add(text.size(), 3)) return fail();
     longest = std::max(longest, static_cast<std::uint64_t>(text.size()));
-    if ((spec.kinds[i] != TokenKind::kNormal && spec.kinds[i] != TokenKind::kUnused &&
-         spec.kinds[i] != TokenKind::kByte) &&
-        !add(text.size(), 192))
-      return fail();
+    if (spec.kinds[i] != TokenKind::kNormal && spec.kinds[i] != TokenKind::kUnused &&
+        spec.kinds[i] != TokenKind::kByte) {
+      const bool normalized = !spec.normalized_tokens.empty() && spec.normalized_tokens[i];
+      const bool added = spec.added_tokens.empty() || spec.added_tokens[i];
+      std::uint64_t copies = added ? (normalized ? 3 : 1) : 0;
+      if (!spec.model_symbols.empty() && spec.model_symbols[i] &&
+          spec.kinds[i] == TokenKind::kUserDefined)
+        copies += 2;  // protected raw spelling and exact model spelling after normalization
+      if (!add(text.size(), copies * 192)) return fail();
+    }
   }
   for (const auto& [left, right] : spec.merges) {
     std::uint64_t size = 0;
@@ -676,8 +789,8 @@ std::expected<std::uint64_t, Error> Tokenizer::ConstructionBytes(const Tokenizer
     longest_merge = std::max(longest_merge, size);
   }
   // UTF-8 code points grow by doubling; the merge's joined string may grow
-  // while retaining its previous buffer. The special-trie root is separate.
-  if (!add(longest, 12) || !add(longest_merge, 3) || !add(1, 192)) return fail();
+  // while retaining its previous buffer. Three special-trie roots are separate.
+  if (!add(longest, 12) || !add(longest_merge, 3) || !add(3, 192)) return fail();
   return bytes;
 }
 
@@ -689,20 +802,26 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
   if (n == 0 || n > kMaxVocabulary) {
     return fail(Rule::kBounds, "vocabulary size", n);
   }
-  if (spec.kinds.size() != n) {
+  if (spec.kinds.size() != n || (!spec.model_tokens.empty() && spec.model_tokens.size() != n) ||
+      (!spec.model_symbols.empty() && spec.model_symbols.size() != n) ||
+      (!spec.added_tokens.empty() && spec.added_tokens.size() != n) ||
+      (!spec.normalized_tokens.empty() && spec.normalized_tokens.size() != n)) {
     return fail(Rule::kVocabulary, "token kinds and tokens differ in number", spec.kinds.size());
   }
   if (spec.merges.size() > 2 * kMaxVocabulary) {
     return fail(Rule::kBounds, "merge count", spec.merges.size());
   }
-  if (spec.pre_tokenizer == PreTokenizer::kGemma4 &&
+  if (spec.pre_tokenizer == PreTokenizer::kRawBpe &&
       (spec.normalization != Normalization::kNone || spec.ignore_merges)) {
     return fail(Rule::kUnsupported, "raw UTF-8 BPE normalization or ignore-merges");
   }
+  if (spec.decode_added_whitespace && !Raw(spec.pre_tokenizer))
+    return fail(Rule::kVocabulary, "added-token whitespace decoder requires a raw model");
   const bool spm = spec.pre_tokenizer == PreTokenizer::kSentencePiece;
   if ((spm && (spec.scores.size() != n || !spec.merges.empty() ||
                spec.normalization != Normalization::kNone || spec.ignore_merges)) ||
-      (!spm && (!spec.scores.empty() || spec.add_space_prefix || !spec.rstrip.empty()))) {
+      (!spm && (!spec.scores.empty() || spec.add_space_prefix || spec.remove_extra_whitespaces ||
+                !spec.rstrip.empty() || !spec.model_symbols.empty()))) {
     return fail(Rule::kVocabulary, "incompatible SentencePiece configuration");
   }
   if ((!spec.rstrip.empty() && spec.rstrip.size() != n) ||
@@ -712,11 +831,18 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
   auto impl = std::make_unique<Impl>();
   impl->tokens = std::move(spec.tokens);
   impl->kinds = std::move(spec.kinds);
+  impl->model_tokens = std::move(spec.model_tokens);
+  impl->model_symbols = std::move(spec.model_symbols);
+  impl->added_tokens = std::move(spec.added_tokens);
+  impl->normalized_tokens = std::move(spec.normalized_tokens);
   impl->scores = std::move(spec.scores);
   impl->rstrip = std::move(spec.rstrip);
   impl->add_space_prefix = spec.add_space_prefix;
+  impl->remove_extra_whitespaces = spec.remove_extra_whitespaces;
   impl->strips_space = std::ranges::any_of(impl->rstrip, [](bool value) { return value; });
   impl->pre_tokenizer = spec.pre_tokenizer;
+  impl->raw_bpe_split_newlines = spec.raw_bpe_split_newlines;
+  impl->decode_added_whitespace = spec.decode_added_whitespace;
   impl->normalization = spec.normalization;
   impl->ignore_merges = spec.ignore_merges;
   impl->bos = spec.bos;
@@ -733,18 +859,25 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
 
   impl->decoded.resize(n);
   impl->by_text.reserve(n);
-  impl->terminal.push_back(-1);
+  impl->terminal.resize(3, -1);
   std::vector<char32_t> cps;
   for (std::size_t id = 0; id < n; ++id) {
     const std::string& text = impl->tokens[id];
     const TokenKind kind = impl->kinds[id];
+    if (!impl->model_tokens.empty() && impl->model_tokens[id] &&
+        (kind == TokenKind::kControl || (kind == TokenKind::kUnused && !spm)))
+      return fail(Rule::kVocabulary, "control or unused token is in the BPE model", id);
+    if (!impl->model_symbols.empty() && impl->model_symbols[id] &&
+        (kind != TokenKind::kUserDefined && kind != TokenKind::kControl))
+      return fail(Rule::kVocabulary, "a model symbol is not a user-defined or control token", id);
     if (!impl->rstrip.empty() && impl->rstrip[id] && kind != TokenKind::kControl &&
         kind != TokenKind::kUserDefined) {
       return fail(Rule::kVocabulary, "whitespace stripping on a nonspecial token", id);
     }
-    if (kind == TokenKind::kUnused) {
+    if (kind == TokenKind::kUnused && !impl->ModelToken(static_cast<TokenId>(id))) {
       continue;
     }
+    if (kind == TokenKind::kUnused) impl->unused_model_tokens = true;
     if (text.empty() || text.size() > kMaxTokenBytes) {
       return fail(Rule::kVocabulary, "token text empty or too long", id);
     }
@@ -771,7 +904,7 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
       impl->decoded[id].push_back(static_cast<char>((high << 4) | low));
       continue;
     }
-    if (kind == TokenKind::kNormal) {
+    if (kind == TokenKind::kNormal || kind == TokenKind::kUnused) {
       std::string& bytes = impl->decoded[id];
       if (Raw(spec.pre_tokenizer)) {
         for (const char32_t cp : cps) {
@@ -791,23 +924,54 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
       continue;
     }
     impl->longest = std::max(impl->longest, text.size());
+    if (Raw(spec.pre_tokenizer)) {
+      for (const char32_t cp : cps) unicode::AppendUtf8(cp == U'▁' ? U' ' : cp, impl->decoded[id]);
+    }
     // A special token: add it to the trie.
     if (text.size() > kMaxSpecialBytes) {
       return fail(Rule::kBounds, "special token longer than the matcher's bound", id);
     }
-    std::uint32_t node = 0;
-    for (const char c : text) {
-      const std::uint64_t key =
-          (static_cast<std::uint64_t>(node) << 8U) | static_cast<unsigned char>(c);
-      const auto [it, added] =
-          impl->edges.emplace(key, static_cast<std::uint32_t>(impl->terminal.size()));
-      if (added) {
-        impl->terminal.push_back(-1);
+    const bool normalized = !impl->normalized_tokens.empty() && impl->normalized_tokens[id];
+    if (normalized && !Raw(impl->pre_tokenizer))
+      return fail(Rule::kUnsupported, "normalized added tokens require a raw pipeline", id);
+    std::string normalized_text;
+    std::string_view match = text;
+    if (normalized) {
+      for (const char c : text) {
+        if (c == ' ')
+          normalized_text += "▁";
+        else
+          normalized_text.push_back(c);
       }
-      node = it->second;
+      match = normalized_text;
     }
-    impl->terminal[node] = static_cast<TokenId>(id);
-    impl->special_first[static_cast<unsigned char>(text[0])] = true;
+    if (match.size() > kMaxSpecialBytes)
+      return fail(Rule::kBounds, "normalized special token exceeds the matcher's bound", id);
+    impl->longest = std::max(impl->longest, match.size());
+    const auto insert = [&](unsigned phase, std::string_view value) {
+      std::uint32_t node = phase;
+      for (const char c : value) {
+        const std::uint64_t key =
+            (static_cast<std::uint64_t>(node) << 8U) | static_cast<unsigned char>(c);
+        const auto [it, added] =
+            impl->edges.emplace(key, static_cast<std::uint32_t>(impl->terminal.size()));
+        if (added) impl->terminal.push_back(-1);
+        node = it->second;
+      }
+      if (impl->terminal[node] >= 0 && impl->terminal[node] != static_cast<TokenId>(id))
+        return false;
+      impl->terminal[node] = static_cast<TokenId>(id);
+      impl->special_first[phase][static_cast<unsigned char>(value[0])] = true;
+      return true;
+    };
+    const bool added = impl->added_tokens.empty() || impl->added_tokens[id];
+    if (added && !insert(normalized ? 1U : 0U, match))
+      return fail(Rule::kVocabulary, "added tokens have the same normalized text", id);
+    if (!impl->model_symbols.empty() && impl->model_symbols[id] &&
+        kind == TokenKind::kUserDefined) {
+      if (!insert(1, text) || !insert(2, text))
+        return fail(Rule::kVocabulary, "model symbols conflict with added-token matching", id);
+    }
   }
 
   for (unsigned b = 0; b < 256; ++b) {
@@ -818,6 +982,22 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
       impl->byte_text[b][4] = hex[b & 15U];
     }
     const auto it = impl->by_text.find(impl->byte_text[b]);
+    // Raw BPE seeds complete code points before using byte fallback. An
+    // unchanged ASCII character can therefore be covered by its normal
+    // model token (Gemma 2 stores tab this way), without changing its kind
+    // or merge eligibility. A non-ASCII character cannot stand in for an
+    // individual UTF-8 byte, and spaces normalize to the marker instead.
+    if (it == impl->by_text.end() && spec.pre_tokenizer == PreTokenizer::kRawBpe && b < 0x80 &&
+        b != ' ') {
+      const char literal = static_cast<char>(b);
+      const auto direct = impl->by_text.find(std::string_view(&literal, 1));
+      if (direct != impl->by_text.end() &&
+          impl->kinds[static_cast<std::size_t>(direct->second)] == TokenKind::kNormal &&
+          impl->ModelToken(direct->second)) {
+        impl->byte_token[b] = direct->second;
+        continue;
+      }
+    }
     if (it == impl->by_text.end() ||
         impl->kinds[static_cast<std::size_t>(it->second)] !=
             (Raw(spec.pre_tokenizer) ? TokenKind::kByte : TokenKind::kNormal)) {
@@ -837,8 +1017,7 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
   impl->merges.reserve(spec.merges.size());
   auto normal = [&impl](std::string_view text) -> std::optional<TokenId> {
     const auto it = impl->by_text.find(text);
-    if (it == impl->by_text.end() ||
-        impl->kinds[static_cast<std::size_t>(it->second)] != TokenKind::kNormal) {
+    if (it == impl->by_text.end() || !impl->ModelToken(it->second)) {
       return std::nullopt;
     }
     return it->second;
@@ -903,6 +1082,13 @@ std::uint64_t Tokenizer::WorkingBytes(std::string_view text) const {
                                text.size() < std::numeric_limits<std::size_t>::max()
                            ? text.size() + 1
                            : text.size();
+    if (impl_->unused_model_tokens) {
+      const auto table = Times(impl_->tokens.size(), sizeof(std::uint32_t));
+      const auto work = Times(bytes, 128);
+      return work > std::numeric_limits<std::uint64_t>::max() - table
+                 ? std::numeric_limits<std::uint64_t>::max()
+                 : work + table;
+    }
     return Times(bytes, kEncodeBytesPerWindowByte);
   }
   return EncodeWorkingBytes(text);
@@ -922,7 +1108,7 @@ std::expected<void, Error> Tokenizer::Encode(std::string_view text, const Encode
   if (auto b = impl_->Begin(text, options, out, base); !b) {
     return b;
   }
-  if (auto e = impl_->EncodeText(text, options.special, options, out, base); !e) {
+  if (auto e = impl_->EncodeText(text, options, out, base); !e) {
     return e;
   }
   return impl_->End(options, out, base);
@@ -937,6 +1123,8 @@ std::expected<void, Error> Tokenizer::EncodeMarked(std::string_view text,
   if (auto b = impl_->Begin(text, options, out, base); !b) {
     return b;
   }
+  auto text_options = options;
+  text_options.special = SpecialTokens::kUserDefinedOnly;
   std::size_t at = 0;
   for (std::size_t i = 0; i < spans.size(); ++i) {
     if (i != 0 && (i & 0xFFFFU) == 0 && !base::Pulse()) {
@@ -953,9 +1141,7 @@ std::expected<void, Error> Tokenizer::EncodeMarked(std::string_view text,
         Kind(*token) == TokenKind::kUnused) {
       return std::unexpected(Error{Rule::kSpecialToken, "a span is not a special token", i});
     }
-    if (auto e = impl_->EncodeText(text.substr(at, s.offset - at), SpecialTokens::kUserDefinedOnly,
-                                   options, out, base);
-        !e) {
+    if (auto e = impl_->EncodeText(text.substr(at, s.offset - at), text_options, out, base); !e) {
       return e;
     }
     if (span_tokens != nullptr) {
@@ -977,9 +1163,7 @@ std::expected<void, Error> Tokenizer::EncodeMarked(std::string_view text,
       }
     }
   }
-  if (auto e =
-          impl_->EncodeText(text.substr(at), SpecialTokens::kUserDefinedOnly, options, out, base);
-      !e) {
+  if (auto e = impl_->EncodeText(text.substr(at), text_options, out, base); !e) {
     return e;
   }
   return impl_->End(options, out, base);
@@ -994,6 +1178,9 @@ std::expected<void, Error> Tokenizer::Decode(std::span<const TokenId> tokens,
     }
     const auto u = static_cast<std::size_t>(id);
     switch (impl_->kinds[u]) {
+      case TokenKind::kUnused:
+        if (!impl_->ModelToken(id)) break;
+        [[fallthrough]];
       case TokenKind::kByte:
       case TokenKind::kNormal: {
         std::string_view piece = impl_->decoded[u];
@@ -1004,14 +1191,12 @@ std::expected<void, Error> Tokenizer::Decode(std::span<const TokenId> tokens,
         out += piece;
       } break;
       case TokenKind::kUserDefined:
-        out += impl_->tokens[u];
+        out += impl_->decode_added_whitespace ? impl_->decoded[u] : impl_->tokens[u];
         break;
       case TokenKind::kControl:
         if (options.control_tokens) {
-          out += impl_->tokens[u];
+          out += impl_->decode_added_whitespace ? impl_->decoded[u] : impl_->tokens[u];
         }
-        break;
-      case TokenKind::kUnused:
         break;
     }
   }

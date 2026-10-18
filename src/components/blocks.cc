@@ -60,6 +60,7 @@ constexpr std::array kJoined{
 // ------------------------------------------------------------------ norm.rms
 
 constexpr std::array kNormParams{
+    kNormZeroCentered,
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
     ParamSpec{.name = "f16_output",
               .type = ParamType::kBool,
@@ -68,10 +69,13 @@ constexpr std::array kNormParams{
               .most = 1,
               .fallback = 0.0},
 };
-constexpr std::array kNormRoles{WeightRole{.name = "weight", .encodings = kNormEncodings}};
+constexpr std::array kNormRoles{
+    WeightRole{.name = "weight", .encodings = kNormEncodings, .derived = kZeroCenteredNorm}};
 constexpr std::array<std::string_view, 2> kNormPatterns{"rms_norm_mul", "rms_norm_mul_add"};
 
 std::expected<std::vector<RoleShape>, std::string> NormShapes(const Instance& in) {
+  if (NormOffsetContradictsFold(in))
+    return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
   return std::vector<RoleShape>{Role(0, {in.stage.width})};
 }
 
@@ -79,7 +83,8 @@ std::expected<FragmentOut, std::string> NormEmit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
   const float eps = F32(f.instance.params.Real("eps"));
   const ir::TensorId normed = f.b.RmsNorm(f.stream, eps);
-  const ir::TensorId weight = NormScale(f.b, f.Weight(0));
+  F32Parameters<kNormRoles.size()> parameters(f);
+  const ir::TensorId weight = parameters.Norm(0);
   ir::TensorId out = f.b.Mul(normed, weight);
   if (f.instance.params.Flag("f16_output")) out = f.b.Convert(out, format::Encoding::kF16);
   return FragmentOut{.stream = out};
@@ -90,7 +95,10 @@ std::expected<void, std::string> NormReference(RefIO& io) {
   if (io.stream.size() != in.stage.width * io.rows()) {
     return std::unexpected("norm reference: a stream of another shape");
   }
-  RmsRows(io.stream, in.stage.width, F32(in.params.Real("eps")), io.weights.at(0));
+  auto weight = io.weights.at(0);
+  if (in.params.Flag("norm_zero_centered"))
+    for (float& value : weight) value += 1.0F;
+  RmsRows(io.stream, in.stage.width, F32(in.params.Real("eps")), weight);
   if (in.params.Flag("f16_output"))
     for (double& value : io.stream) value = RoundF16(value);
   return {};

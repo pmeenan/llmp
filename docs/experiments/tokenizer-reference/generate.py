@@ -86,8 +86,18 @@ LEGACY_GGUF = {'phi-3.5-gguf': {'name': 'phi35',
                      'header_sha256': '3073f37db9c1977ed7d68cd64707ce32043eecd250000a929a2ceb6723b1ad4c',
                      'path': 'tokenizer-reference/legacy/gemma3.gguf'}}
 
+# Official metadata-only archive revisions: neither fixture requires weights.
+NATIVE_GEMMA = {
+    "gemma-2-27b-hf": ("models/google/gemma-2-27b-it@aaf20e6b", "hf"),
+    "gemma-2-27b-spm": ("models/google/gemma-2-27b-it@aaf20e6b", "spm"),
+    "gemma-3-27b-hf": ("models/google/gemma-3-27b-it@005ad340", "hf"),
+    "gemma-3-27b-spm": ("models/google/gemma-3-27b-it@005ad340", "spm"),
+}
+
 # (name, kind, path relative to --models)
 CONFIGS = [
+    *((name, kind, directory + ("/tokenizer.model" if kind == "spm" else "/tokenizer.json"))
+      for name, (directory, kind) in NATIVE_GEMMA.items()),
     *((config, "gguf", pin["path"]) for config, pin in LEGACY_GGUF.items()),
     ("gemma-4-26b-gguf", "gguf", GEMMA4_HEADER),
     ("deepseek-v4-0731-gguf", "gguf", DEEPSEEK_GGUF),
@@ -180,7 +190,7 @@ def llama_tokenize(models: pathlib.Path, gguf: str, texts: dict[str, bytes], wor
     return out
 
 
-def hf_tokenize(path: pathlib.Path, texts: dict[str, bytes]) -> dict:
+def hf_tokenize(path: pathlib.Path, texts: dict[str, bytes], specials: bool = False) -> dict:
     tok = tokenizers.Tokenizer.from_file(str(path))
     out = {}
     for name, data in texts.items():
@@ -191,6 +201,11 @@ def hf_tokenize(path: pathlib.Path, texts: dict[str, bytes]) -> dict:
         plain = tok.encode(text, add_special_tokens=False).ids
         tok.encode_special_tokens = False
         out[name] = {"parse": parse, "plain": plain}
+        if specials:
+            out[name]["parse_with_specials"] = tok.encode(text, add_special_tokens=True).ids
+            tok.encode_special_tokens = True
+            out[name]["plain_with_specials"] = tok.encode(text, add_special_tokens=True).ids
+            tok.encode_special_tokens = False
     return out
 
 
@@ -254,13 +269,20 @@ def tokens(args):
             ids = llama_tokenize(models, oracle_rel, texts, pathlib.Path(args.work) / config)
             reference = f"llama.cpp llama-tokenize, image {LLAMA_IMAGE} (b29c606e)"
         else:
-            ids = hf_tokenize(path, texts)
+            oracle = path.with_name("tokenizer.json") if kind == "spm" else path
+            ids = hf_tokenize(oracle, texts, specials=config in NATIVE_GEMMA)
             reference = f"Hugging Face tokenizers {tokenizers.__version__}"
+            if kind == "spm":
+                reference += "; independent HF tokenizer.json oracle for the same ModelProto vocabulary"
         results[config] = ids
         write_json(repo / f"tests/unit/data/tokenizer/{config}.json", {
             "config": config,
             "source": {"path": rel, "sha256": sha256(path),
-                       **({"checkpoint": LEGACY_GGUF[config]} if config in LEGACY_GGUF else {})},
+                       **({"checkpoint": LEGACY_GGUF[config]} if config in LEGACY_GGUF else {}),
+                       **({"config_path": str(path.with_name("tokenizer_config.json").relative_to(models)),
+                           "config_sha256": sha256(path.with_name("tokenizer_config.json")),
+                           "reference_tokenizer_sha256": sha256(path.with_name("tokenizer.json"))}
+                          if config in NATIVE_GEMMA else {})},
             "reference": reference,
             "corpus_sha256": sha256(corpus),
             "items": [{"name": name, "well_formed": valid[name], **ids[name]} for name, _ in items],

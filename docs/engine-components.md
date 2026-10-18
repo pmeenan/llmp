@@ -1665,10 +1665,13 @@ GQA, softcap, sliding windows, NEOX rotation, GELU-tanh GLU),
 their specs from the installed artifacts equal those from the tensor
 tables in `tests/unit/data`. They also read the optional keys llama.cpp
 reads (a sliding-window rotation base, Gemma 3's final softcap) and
-refuse a layer pattern other than theirs; neither can yet express the
-27B query scale (1 / sqrt(width / heads), which llama.cpp picks by layer
-count), so the importer must not apply them to a 27B checkpoint. The catalog that gives these kinds meaning
-is the component framework's.
+refuse a layer pattern other than theirs. Native HF mappings read the explicit
+`query_pre_attn_scalar` and apply its reciprocal square root. GGUF mappings
+prefer an explicit `<architecture>.attention.scale`; the legacy key-length
+default remains for older unambiguous exports. A 46-layer Gemma 2 or 62-layer
+Gemma 3 GGUF that omits the scale refuses because its source has lost the
+information needed to distinguish the math. An explicit scale removes that
+refusal. The catalog gives these kinds their meaning.
 
 Gemma 4 (slice G2a) extends the mapping language, all as data: slots
 gated by a source key (`ffn.moe` layers when `gemma4.expert_count` is
@@ -1754,15 +1757,13 @@ kind builds, the injection writing every drafter layer's ring.
 has code outside its mapping data: the per-family profiles, binders and
 `*V0Values`, `SynthesizeV0`, `SourceOfV0` and `ComposeDrafterV0` are
 deleted, and a v0 target or drafter is refused at registration with the
-re-import message. What the mappings still carry as an architecture's
-compiled constants is data: a serving recipe's prompt bound (Qwen3.8's and
-DeepSeek V4's `most_rows`), the native MTP drafter's block values (its
-`DraftRecipe::values`, D-118), and the approved targets a GGUF drafter's
-import composes its stage with (`DraftRecipe::import_targets`: Gemma 4
-26B-A4B's and 31B's by the target width the assistant's metadata names,
-DeepSeek V4 Flash's for DSpark), each with its values and tensor shapes,
-which the importer selects by data (its closed Qwen3.8 ModelOpt and MLX
-normalizers remain per family, M3.5 debt: [M3.6 record](m36-record.md#deferred-items-from-the-reviews)). The tests
+re-import message. Since review R4, mapping recipes contain identities and
+declared extraction data; prompt bounds come from actual component masks/state
+contracts, and drafter imports validate against the stored target selected by
+`--target ID`. Existing native MTP artifacts derive missing metadata from that
+same target and their own tensors. The closed Qwen3.8 ModelOpt and MLX
+normalizers remain per family, M3.5 debt:
+[M3.6 record](m36-record.md#deferred-items-from-the-reviews). The tests
 that synthesize a real family's spec from a fixture's tensor table take
 the profile values from `tests/support/families/`, and the frozen v1
 digests (`tests/unit/data/v1_frozen/`) are the regression oracle of every
@@ -2383,9 +2384,9 @@ full-attention q_proj's MXFP8 and routed expert 7's NVFP4 agree at 0.095,
 0.089 and 0.124 relative RMS (`DecodesLikeTheNativeCheckpoint`; test
 bounds: one step, and 0.15).
 **Owned source normalization** (`import/normalize.h`, N3b1). Compiled
-`(container, architecture)` tables select the existing Gemma 2, Gemma 3 and
-Gemma 4 target GGUF mappings, plus the supported Qwen3.8 Flash-Next
-target GGUF profile. A move-owned plan classifies every metadata
+`(container, architecture)` tables select the Gemma 2/3 native HF text and
+GGUF mappings, Gemma 4 target GGUF mappings, and the supported Qwen3.8
+Flash-Next target GGUF profile. A move-owned plan classifies every metadata
 key, owns every canonical tensor and copy route, and validates the common
 component contracts. Gemma 2/3's `norm.plus_one` is asserted already applied
 by GGUF, never executed again; Gemma 4 declares no fold. An absent output
@@ -2407,8 +2408,11 @@ chat template from kept Jinja, JSON or tokenizer_config.json metadata. Gemma 4 u
 mutually exclusive dense/MoE slots, local/global layer rules, tied global
 K/V and shared rotary table. Expert gate/up and down arrays retain their
 whole source encodings and rank-three geometry; this path neither repacks
-nor dequantizes them. Gemma 2's 46-layer and Gemma 3's 62-layer variants
-remain refused because their alternate query scale is not yet mapped.
+nor dequantizes them. Native Gemma 2 and Gemma 3 safetensors use source
+zero-centered norms through the shared dense attention, GLU and final RMS
+components; their source BF16/F32 vectors remain encoded and `1 + w` is a
+transient graph value. A converter-applied `norm.plus_one` and a requested
+zero-centered offset contradict each other and refuse.
 
 `NormalizationBound` checks the structural input domain without new heap
 allocations; the caller must cover its checked incremental storage and work
@@ -2474,14 +2478,65 @@ pass with a full native build, 103 affected host controls and one real-header
 normalization case. Actual full publication, admission and model qualification
 are separate.
 
+**Mapping and admission after review R4 (2026-10-17).** Import, stored
+admission, draft composition and policy selection resolve one mapping by
+`(architecture, container, version)` from retained source provenance; an
+unknown or ambiguous variant refuses instead of selecting an architecture-only
+fallback. Native and GGUF fold declarations distinguish a converter's asserted
+fold from an allowed importer fold. Policy gate keys and their component facts
+are mapping data, including the architecture's declared expert-count key.
+The retained family normalizers are trusted native implementations in a central
+recognition/dispatch registry; a mapping and its recipes run no callbacks.
+Drafter target dimensions come from the target artifact's stored spec and its
+actual tensors (`llmp import ... --target ID`), not per-size synthetic profiles.
+
+Structural admission validates complete formats/parts, tensor shapes and
+bindings, state/read contracts, source folds and pinned inventories/specs where
+present. Container provenance grants no encoding permission. Multipart expert
+placements use `PartsOf` and exact slice extents for every declared part; actual
+operation support is the execution registry's planning decision. A missing
+implementation must refuse the executable plan rather than replacing weights
+or widening their stored encoding. Vocabulary bounds are the actual target
+head's rows. `StagePrefillRows` combines component mask-plane declarations with
+the actual state contracts, context, window/compression rules and row padding,
+and limits signed int32 plane strides (RE-037); preferred measured chunk sizes
+remain separate serving-policy defaults. Shared component traversal handles
+canonicalization, semantic validation and stored fold checks; the versioned JSON
+reader/writer retain explicit field/container ordering.
+
+Gemma 2/3's native HF route consumes the checkpoint's authoritative config and
+safetensors directly, including their explicit `query_pre_attn_scalar`. The
+`gemma2` and `gemma3_text` registrations cover standalone text checkpoints;
+`gemma3` covers the conditional checkpoint's `text_config` and
+`language_model.*` tensors as a **text-only import**. It explicitly excludes
+`vision_tower.*` and `multi_modal_projector.*` with CLI warnings, retains their
+source-file provenance, and does not claim vision inputs. Unsupported RoPE,
+activation, attention-bias and bidirectional semantics refuse rather than falling
+back to a checkpoint-size identity. The historical scalar RoPE schema is
+supported; an unhandled `rope_parameters` object or explicit layer-type list
+refuses until that schema is mapped.
+
+GGUF mappings also consume `<architecture>.attention.scale`, using the existing
+GGUF writer key. The locked
+[converter](https://github.com/ggml-org/llama.cpp/blob/d81235049384534c167caea52b85a694f6103d14/conversion/gemma.py)
+omits this metadata and its reference loaders recover 27B scale from layer count.
+Such legacy 27B exports still require a semantically complete export; this is
+missing source information, not an architecture limitation. Exporters should
+write `query_pre_attn_scalar ** -0.5` as `attention.scale`. Native import needs
+neither that conversion nor a sidecar override. The 27B source configs state
+scalars 144 (Gemma 2) and 168 (Gemma 3), both with head dimension 128; these
+produce different math from the head-dimension default. Structural import and
+component-reference tests establish this route, not full-model numerical or
+performance qualification of these additional checkpoints.
+
 **Approval as data** (`runtime/approvals.h`, D-118, slice 4a, 2026-10-15).
 The approved checkpoints are one table, reviewed as a lock file: each
-entry's source receipts, native tensor inventory (form and digest),
+entry's source receipts, complete native tensor inventory digest,
 the SHA-256 of the spec it executes (a target's stored `spec.json`; a
 stored drafter's composition with its named approved target, the
 drafter's values read from the GGUF metadata it keeps, `spec::SourceKeys`,
-or where it keeps none by its `DraftRecipe::values`: the block's compiled
-constants and the selected head's rows from its tensors),
+or where it keeps none by its `DraftRecipe::values`: declarative facts from
+the actual target spec and its own tensor geometry),
 its envelope (context, owners, the context above which one owner; a
 default context is cut to it) and the gate keys that select its mapping's
 policy rule. The inventory digest covers every tensor's name, encoding,
@@ -2496,8 +2551,8 @@ which also record their applied folds and relayouts and the mapping their
 spec was synthesized by, `Approval::fold_tensors`, `relayouts`, `mapping`). A stored drafter's inventory and envelope are checked wherever it
 composes, and a block drafter's bound and fill token come from its kept
 metadata. What serving does per architecture is its
-mapping's `ServingRecipe` (settings defaults and bounds, the shared route,
-its prompt-chunk row bound, lanes, the forced DeepSeek policy) and a
+mapping's `ServingRecipe` (settings defaults, owner bounds, the shared
+route, lanes and the forced DeepSeek policy) and a
 drafter mapping's `DraftRecipe`; `Server::Make` dispatches by the stored
 spec's pipeline kind, settings applicability and the calibration
 fingerprint follow the recipe, a stored hash-routing table is checked by
@@ -2570,14 +2625,14 @@ family migration and N5's all-artifact gates remain open. See the
 [publication and execution evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md#native-gguf-publication-and-target-serving--2026-10-13).
 
 The ModelOpt checkpoint's MTP drafter has a native v1 publication
-(`llmp import --component mtp [--draft-head IDS]`,
+(`llmp import SOURCE --store DIRECTORY --target TARGET_ID --component mtp [--draft-head IDS]`,
 `import/modelopt_qwen38.h` `NormalizeModelOptDrafter`). Its 38 `mtp.*` roles
 keep their pinned descriptors and source encodings (BF16 linears), but its
 norms' 1 + w is folded into F32 by role, as the target's (below); its
 routed experts are relaid out as the target's.
-It carries no spec; the importer composes it with a carrier of the native
-target (the target normalization's canonical outputs and the hash's checked
-constants, `ModelOptNativeTargetForm`) only to validate and place it. The
+It carries no standalone spec; the importer composes it with the actual
+stored target selected by `--target`, validating its spec and tensor inventory
+before it places or publishes any drafter output. The
 optional selected head gathers BF16 rows of `lm_head.weight` through the
 indexed row assembly and writes its I32 map as a generated part, which the
 writer emits only after streaming the list file against its whole-content
@@ -2586,8 +2641,9 @@ the v1 drafter by its approval row (Mia's list: its source receipts,
 complete inventory, the norms' fold and the relayout records, its
 composition with the approved native target), composes it through the
 row's mapping's drafting recipe (`spec::DraftRecipe`: the native
-repeat-pending form; its block's values the architecture's compiled
-constants and its head's rows from its tensors, under the pinned
+repeat-pending form; its values extracted declaratively from the actual
+target's stored component parameters and context, with the layer count and
+selected head rows read from its own tensor inventory, under the pinned
 composition digest; the head's
 token map read through its placement and checked), with no
 architecture-named branch.
@@ -2776,10 +2832,11 @@ The 8 GiB, zero-swap run completed in 31 minutes, reached its memory cap
 and incurred no OOM kills. This API extension
 does not admit a runtime model or import MTP/vision components.
 
-The `llmp import` CLI uses the registered Gemma and supported Qwen target GGUF paths and dispatches
-safetensors sources declared as `qwen3_8_flash_next` with
-`modelopt MIXED_PRECISION` to the closed native ModelOpt target normalizer.
-That dispatch is not admission authority: the normalizer still validates the
+The `llmp import` CLI uses registered source mappings for ordinary containers
+and one central normalizer registry for the retained ModelOpt/MLX normalizers.
+Container, architecture and quantization recognition are data in that registry;
+the CLI has no family dispatch or vocabulary constant. Recognition is not
+admission authority: the normalizer still validates the
 complete source contract and refuses unsupported inputs without falling back
 to another mapping. Existing flags, ordinary/archive source verification,
 parsed-prefix receipts, publication/reuse results and post-publication archive

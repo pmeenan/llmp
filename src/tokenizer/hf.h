@@ -19,6 +19,11 @@
 //   token and any other a user-defined one; an added token may restate a
 //   vocabulary entry's ID and text but not change either.
 //
+// Raw UTF-8 BPE also accepts the declared space->▁ Replace, no-op Split
+// on replaced spaces, inverse Replace/ByteFallback/Fuse decoder and a
+// single-input BOS/EOS TemplateProcessing (the Gemma 2/3 HF pipelines).
+// Model membership remains independent of added-token matching metadata.
+//
 // IDs must run densely from 0.
 
 #ifndef LLMP_TOKENIZER_HF_H_
@@ -33,6 +38,11 @@
 namespace llmp::tokenizer {
 
 std::expected<TokenizerSpec, Error> ReadHfTokenizer(std::string_view text);
+
+// The kept Transformers tokenizer_config applies special-token identities,
+// added-token metadata and automatic BOS/EOS insertion to either native
+// reader. Matching options that cannot be represented are refused.
+std::expected<void, Error> ApplyHfTokenizerConfig(std::string_view text, TokenizerSpec& spec);
 
 }  // namespace llmp::tokenizer
 

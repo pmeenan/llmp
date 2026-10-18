@@ -195,10 +195,12 @@ before new families land; each item lands as one reviewed commit.
 - [x] R3 Importer correctness and structural normalization (safetensors
       metadata, composition roles, open-world keys, no encoding or shape pins,
       kept tokenizer documents, reproducible artifact identity)
-- [ ] R4 Mapping-driven admission and spec-derived bounds (no architecture
+- [x] R4 Mapping-driven admission and spec-derived bounds (no architecture
       branches in the runtime or CLI, container variants, gates and folds as
       mapping data, row and vocabulary bounds from the spec, admissible
-      formats from capabilities)
+      formats from capabilities; native Gemma 2/3 HF mappings and tokenizer
+      assets, with 27B structural/tokenizer checks and full-weight qualification
+      still pending)
 - [x] R5 Kernel gates by real limits (F16 GQA attention at head sizes
       64–192, parametric norm and MoE fusions, EXL3 beyond one fixture)
 - [ ] R6 The decode ladder in every backend (dense NVFP4, MXFP8 grouped,
@@ -2057,8 +2059,9 @@ sustained-use schedule and duration.
 - [ ] Demand-paged EXL3 MoE only if claimed, with its own routed-expert
       closure, kernel, quality and performance baselines (D-052); resident
       EXL3 MoE arrives with M4's models.
-- [ ] Assess artifact compatibility guarantees with M6's dense and M7's
-      MoE evidence, in a separate decision (D-018).
+- [ ] Before the first shipment, define release artifact compatibility guarantees
+      using the dense and MoE evidence, in a separate decision. Development
+      artifacts require no migration or backward compatibility (D-018, D-121).
 
 **Exit criteria:**
 

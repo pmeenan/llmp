@@ -45,10 +45,8 @@
 //
 // Mappings are compiled in as data and validated like untrusted input
 // (ValidateMapping): their slot, tensor, parameter, fold and policy rules
-// run no code. Their recipes carry a few compiled functions over an
-// architecture's constants (a serving recipe's prompt-chunk bound, a
-// drafting recipe's values, a drafter import's target values and tensor
-// shapes), which read no checkpoint bytes. Synthesize applies one to a
+// run no code. Recipes and retained-metadata extraction are declarative
+// data interpreted centrally. Synthesize applies one to a
 // source: every tensor of the source matches exactly one rule, every
 // required role is bound, every parameter resolves. The native importer
 // applies them to checkpoints (import/normalize.h) and stores the spec in
@@ -139,9 +137,9 @@ struct TensorRule {
   // kLayer slots: the layer types whose layers bind it (a layer of another
   // type that has the tensor is refused); empty: every type the slot has.
   std::string_view layer_types{};
-  // A drafter mapping's rule for a tensor of its target's checkpoint (bound
-  // with the target stage's name, spec.h WeightBinding::stage): never
-  // matched against the drafter's own source.
+  // A drafter's anchor tensor in its target's logical weight role. Composition
+  // borrows that role's complete binding, preserving every part and holder
+  // stage; never matched against the drafter's own source.
   bool target = false;
   // The tensor binds with the part it holds, whatever it is (a matrix one
   // container keeps whole, kData, and another as its codes beside its
@@ -195,7 +193,8 @@ struct ParamRule {
 
 struct FoldRule {
   std::string_view fold{};       // spec.h's catalog
-  std::string_view container{};  // the source container whose converter applied it ("gguf")
+  std::string_view container{};  // the source container
+  bool imported = false;         // an allowed importer fold, never asserted automatically
 };
 
 // The planner's default policy for some checkpoints of the architecture,
@@ -294,9 +293,6 @@ struct ServingRecipe {
   // The MTP wave keys apply (draft_vocab, depth_cost_ratio,
   // shared_wave_depth, draft_wave_max, wave_lanes, wave_read_align).
   bool mtp_waves = false;
-  // The target's vocabulary, which a speculating draft_vocab may not
-  // exceed (0: unchecked).
-  std::uint32_t vocab = 0;
   // The measured defaults of the drafting and wave settings (their
   // fallbacks under calibration and overrides, runtime/model_settings.h;
   // each measured on a GB10 by the family that sets it; the others keep
@@ -338,9 +334,6 @@ struct ServingRecipe {
   // without them, only in its automatic serving shape, a derived domain for
   // every envelope.
   bool qualified_envelopes = false;
-  // A prompt chunk's rows at a context, bounded so that its masks' plane
-  // strides fit 32 bits (RE-037); null: unbounded.
-  std::uint32_t (*most_rows)(std::uint32_t context) = nullptr;
   // The runner stages a frozen read's host mask.
   bool frozen_host_masks = true;
   // A conversation-owned adaptive depth's ceiling (0: none).
@@ -354,15 +347,31 @@ struct ServingRecipe {
   const PolicyRule* serving_rule = nullptr;
 };
 
-// A target as its architecture's mapping data describes it to a drafter's
-// import: its mapping, and the values and tensors (their names, shapes and
-// a nominal encoding) of the approved checkpoint its drafter pairs with.
-struct ImportTarget {
-  std::array<std::string_view, 2> keys{};
-  std::int64_t value = 0;
-  const Mapping& (*mapping)() = nullptr;
-  std::expected<std::vector<SourceValue>, std::string> (*values)() = nullptr;
-  Source (*source)() = nullptr;
+// How missing drafter metadata is extracted from the actual target spec and
+// the drafter's own tensor inventory. No checkpoint dimensions live here.
+enum class ValueOrigin : std::uint8_t {
+  kLiteral,
+  kContext,
+  kWidth,
+  kStreams,
+  kVocabulary,
+  kComponent,
+  kTensor,
+  kLayerCount
+};
+struct ValueRule {
+  std::string_view key{};
+  ValueOrigin origin = ValueOrigin::kLiteral;
+  std::string_view kind{}, param{}, tensor{};
+  std::uint8_t dimension = 0;
+  Literal value{};
+  ValueType type = ValueType::kInt;
+  bool optional = false;
+  bool list = false;          // a scalar component parameter as a one-entry integer list
+  std::uint32_t at_most = 0;  // an integer policy default clamped to the actual value
+};
+struct GateRule {
+  std::string_view key{}, kind{}, param{}, container{};
 };
 
 // How a drafter architecture's stage drafts (the component build's
@@ -377,26 +386,18 @@ struct DraftRecipe {
   std::uint32_t depth = 0;
   std::string_view depth_key{};
   std::string_view fill_key{};
-  // The mapping a composition uses in this one's place (an MTP drafter's
-  // replay form); null: this one.
-  const Mapping& (*composed)() = nullptr;
-  // A stored drafter whose artifact keeps no metadata values (a native
-  // safetensors import's): its values given its source (the recipe's own
-  // constants for its block, what its tensors say for the rest, such as a
-  // selected head's rows; the approval's composition digest pins the
-  // result); null: its kept GGUF metadata's.
-  std::expected<std::vector<SourceValue>, std::string> (*values)(const Source& source) = nullptr;
+  // The registered mapping version used for composition (0: this version).
+  std::uint16_t composed_version = 0;
+  std::string_view target_architecture{};
+  // Only used when the stored drafter carries no kept metadata (old native
+  // artifacts). New imports use the same target-spec extraction rules.
+  std::span<const ValueRule> values{};
   // A selected draft head's token map (I32 [1, rows], strictly ascending
   // target token IDs; empty: no selected head), and the value that names the
   // draft vocabulary's rows, which serving bounds by draft_vocab and the
   // head's rows (else the target's vocabulary).
   std::string_view head_ids{};
   std::string_view vocab_key{};
-  // The targets a GGUF drafter's import composes its stage with, to check
-  // the composition before it publishes the drafter (its checkpoint keeps
-  // none of its target's tensors or values): the first whose key, of
-  // `keys`, the drafter's source holds with `value` (no keys: the only one).
-  std::span<const ImportTarget> import_targets{};
   double default_depth_cost = 1.16;
   std::uint32_t small_chunk_rows = 4;
   std::uint32_t small_chunk_max_depth = 2;
@@ -442,6 +443,10 @@ struct Mapping {
   // null: not served.
   const ServingRecipe* serving = nullptr;
   const DraftRecipe* draft = nullptr;
+  // Empty only for the container-neutral synthesis fixture; serving always
+  // selects an explicit architecture/container/version entry.
+  std::span<const std::string_view> containers{};
+  std::span<const GateRule> gates{};
 };
 inline constexpr std::size_t kMaxPolicyText = 4096;
 
@@ -454,6 +459,8 @@ inline constexpr std::string_view kTargetLastLayer = "llmp.target.last_layer.";
 // The compiled mappings, and the one for an architecture.
 std::span<const Mapping* const> Mappings();
 const Mapping* FindMapping(std::string_view architecture);
+const Mapping* FindMapping(std::string_view architecture, std::string_view container,
+                           std::uint16_t version = 1);
 std::expected<void, std::string> ValidateMapping(const Mapping& mapping);
 
 // Every source key the mapping reads (its layer, slot, parameter, read and
@@ -490,6 +497,17 @@ struct Source {
   // again.
   std::vector<std::string> folds{};
 };
+
+// The actual target head's rows (its stored tensor geometry).
+std::expected<std::uint32_t, std::string> Vocabulary(const ModelSpec& model, const Source& source);
+
+// Retained policy facts derive from components, never architecture names.
+std::vector<SourceValue> PolicyGates(const Mapping& mapping, const ModelSpec& spec,
+                                     std::string_view container);
+std::expected<std::vector<SourceValue>, std::string> ExtractValues(const Mapping& mapping,
+                                                                   const ModelSpec& target,
+                                                                   const Source& target_source,
+                                                                   const Source& drafter);
 
 // The serving envelope a policy is chosen for: the stage's context and the
 // owners it serves (0: unknown; an envelope-bounded rule then never holds).

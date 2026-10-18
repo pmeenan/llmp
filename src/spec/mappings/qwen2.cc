@@ -374,6 +374,7 @@ constexpr Mapping kGgufMapping{
     .tensors = std::span(kTensors).first(15),
     .params = kGgufParams,
     .policies = kPolicies,
+    .containers = kGgufContainers,
 };
 
 constexpr std::array kExl3Slots = {
@@ -445,6 +446,7 @@ constexpr Mapping kExl3Mapping{
     .tensors = std::span(kTensors).subspan(15),
     .params = kExl3Params,
     .policies = kPolicies,
+    .containers = kExl3Containers,
 };
 constexpr std::array kSafetensorsParams = {
     FromKey(kStageSlot, "context", "qwen2.context_length", kInt),
@@ -490,6 +492,7 @@ constexpr Mapping kSafetensorsMapping{
     .tensors = std::span(kTensors).first(15),
     .params = kSafetensorsParams,
     .policies = kPolicies,
+    .containers = kSafetensorsContainers,
 };
 }  // namespace
 

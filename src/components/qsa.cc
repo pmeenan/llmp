@@ -228,7 +228,13 @@ model::StateContract State(const Instance& in) {
                        .rollback = rollback}}};
 }
 
-std::vector<MaskUse> Masks(const Instance&) { return {{.tensor = kCacheK, .window = 0}}; }
+std::vector<MaskUse> Masks(const Instance& in) {
+  const Dims d = DimsOf(in);
+  return {{.tensor = kCacheK,
+           .window = 0,
+           .selection_bytes = 4,
+           .selection_above = static_cast<std::uint32_t>(d.budget + d.ratio - 1)}};
+}
 
 constexpr std::array kBatchClasses{
     BatchClass{.op = ir::Op::kRmsNorm, .batch = ir::Batch::kJoined},

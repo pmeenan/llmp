@@ -221,8 +221,8 @@ std::string_view PreTokenizerName(PreTokenizer p) {
       return "qwen35";
     case PreTokenizer::kDeepSeekV3:
       return "deepseek-v3";
-    case PreTokenizer::kGemma4:
-      return "gemma4";
+    case PreTokenizer::kRawBpe:
+      return "raw-bpe";
     case PreTokenizer::kSentencePiece:
       return "sentencepiece";
   }
@@ -247,7 +247,7 @@ void PreTokenize(PreTokenizer p, Text text, std::vector<std::uint32_t>& lengths)
         lengths.push_back(static_cast<std::uint32_t>(text.size()));
       }
       return;
-    case PreTokenizer::kGemma4: {
+    case PreTokenizer::kRawBpe: {
       for (std::size_t at = 0; at < text.size();) {
         std::size_t end = at + 1;
         while (end < text.size() && (text[end] == U'\n') == (text[at] == U'\n')) {

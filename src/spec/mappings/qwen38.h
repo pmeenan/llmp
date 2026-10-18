@@ -68,6 +68,8 @@ const Mapping& Qwen38GgufMapping();
 // Native source-encoded target parts. No historical converter fold assertions
 // or execution-policy eligibility; normalization proves the head permutation.
 const Mapping& Qwen38NativeMapping();
+// Container-neutral canonical recipe for synthetic component/lowering tables.
+// Runtime resolves the native variants below from actual source provenance.
 const Mapping& Qwen38MtpMapping();
 // Same numerical recipe, with the durable repeat-pending position contract.
 // Explicit opt-in; existing v1 artifacts/specs keep their original identity.
@@ -79,11 +81,6 @@ const Mapping& Qwen38MtpReplayMapping();
 // which serving composes.
 const Mapping& Qwen38MtpNativeMapping();
 const Mapping& Qwen38MtpNativeReplayMapping();
-
-// The native drafter's, with a selected head of `selected_rows` rows (0:
-// none; its target's head, its first rows the draft vocabulary).
-std::expected<std::vector<SourceValue>, std::string> Qwen38MtpNativeValues(
-    std::uint64_t selected_rows);
 
 }  // namespace llmp::spec::mappings
 

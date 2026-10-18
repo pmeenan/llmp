@@ -33,6 +33,7 @@
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
 #include "spec/mappings/qwen2.h"
+#include "spec/mappings/qwen38.h"
 #include "spec_fixtures.h"
 
 namespace llmp::spec {
@@ -352,7 +353,8 @@ TEST(MappingTest, CompiledMappingsAreValid) {
   for (const Mapping* m : Mappings()) {
     const auto ok = ValidateMapping(*m);
     EXPECT_TRUE(ok.has_value()) << m->architecture << ": " << (ok ? "" : ok.error());
-    EXPECT_EQ(FindMapping(m->architecture), m);
+    for (const auto container : m->containers)
+      EXPECT_EQ(FindMapping(m->architecture, container, m->version), m);
   }
   EXPECT_EQ(FindMapping("gemma9"), nullptr);
   EXPECT_EQ(FindMapping("gemma4-assistant")->role, StageRole::kDrafter);
@@ -525,14 +527,16 @@ TEST(MappingTest, Gemma2SpecFromItsTensorsAndProfile) {
   // A source of another container carries no GGUF fold.
   Source other = test_support::Gemma2Source();
   other.container = "safetensors";
-  const auto unfolded = Synthesize(mappings::Gemma2Mapping(), other, *values);
+  Mapping synthetic = mappings::Gemma2Mapping();
+  synthetic.containers = {};  // exercise fold semantics in an explicitly neutral test mapping
+  const auto unfolded = Synthesize(synthetic, other, *values);
   ASSERT_TRUE(unfolded.has_value());
   EXPECT_TRUE(unfolded->stages[0].folds.empty());
   EXPECT_NE(unfolded->Digest(), spec->Digest());
   // One whose importer applied the fold (a v1 artifact's record) carries
   // it as GGUF's converter's: the same spec.
   other.folds = {"norm.plus_one"};
-  const auto imported = Synthesize(mappings::Gemma2Mapping(), other, *values);
+  const auto imported = Synthesize(synthetic, other, *values);
   ASSERT_TRUE(imported.has_value()) << imported.error();
   EXPECT_EQ(imported->Digest(), spec->Digest());
   // A fold outside the catalog is refused, never ignored.
@@ -919,44 +923,29 @@ TEST(MappingTest, Gemma4AssistantComposesWithItsTarget) {
   }
 }
 
-// A drafter import's targets (DraftRecipe::import_targets, the mapping
-// data its importer composes with) are the approved checkpoints the tests'
-// family fixtures describe: the same values, and tensors their mappings
-// make a valid spec of.
-std::vector<SourceValue> SortedValues(std::vector<SourceValue> values) {
-  std::ranges::sort(values, {}, &SourceValue::key);
-  return values;
+TEST(MappingTest, DrafterTargetsNameArchitecturesWithoutCheckpointProfiles) {
+  EXPECT_EQ(mappings::Gemma4AssistantMapping().draft->target_architecture, "gemma4");
+  EXPECT_EQ(mappings::DsparkMapping().draft->target_architecture, "deepseek4");
 }
-TEST(MappingTest, DrafterImportTargetsAreTheFamiliesApprovedCheckpoints) {
-  const auto check = [](const ImportTarget& target, std::vector<SourceValue> want,
-                        std::uint32_t layers) {
-    ASSERT_NE(target.mapping, nullptr);
-    ASSERT_NE(target.values, nullptr);
-    ASSERT_NE(target.source, nullptr);
-    auto values = target.values();
-    ASSERT_TRUE(values) << values.error();
-    EXPECT_EQ(SortedValues(*values), SortedValues(std::move(want)));
-    const auto source = target.source();
-    auto made = Synthesize(target.mapping(), source, *values);
-    ASSERT_TRUE(made) << made.error();
-    EXPECT_EQ(made->stages.front().layers.size(), layers);
-  };
-  const auto& assistant = *mappings::Gemma4AssistantMapping().draft;
-  ASSERT_EQ(assistant.import_targets.size(), 2U);
-  for (const ImportTarget& t : assistant.import_targets) {
-    const auto& profile =
-        t.value == fam::Gemma4_26BA4B().width ? fam::Gemma4_26BA4B() : fam::Gemma4_31B();
-    ASSERT_EQ(t.value, profile.width);
-    auto want = fam::Gemma4Values(profile);
-    ASSERT_TRUE(want);
-    check(t, std::move(*want), profile.layers);
-  }
-  const auto& dspark = *mappings::DsparkMapping().draft;
-  ASSERT_EQ(dspark.import_targets.size(), 1U);
-  EXPECT_TRUE(dspark.import_targets.front().keys[0].empty());
-  auto want = fam::Dsv4Values(fam::Dsv4Flash());
-  ASSERT_TRUE(want);
-  check(dspark.import_targets.front(), std::move(*want), fam::Dsv4Flash().layers);
+
+TEST(MappingTest, VocabularyUsesTheEmittedHeadRowsWithinItsPhysicalWeight) {
+  auto source = test_support::Gemma2Source();
+  auto values = fam::Gemma2Values(fam::Gemma2_2B());
+  ASSERT_TRUE(values);
+  auto model = Synthesize(mappings::Gemma2Mapping(), source, *values);
+  ASSERT_TRUE(model) << model.error();
+  auto full = Vocabulary(*model, source);
+  ASSERT_TRUE(full) << full.error();
+  auto& head = *model->stages.front().heads.output;
+  head.params.push_back({.name = "rows", .value = std::int64_t{123}});
+  Canonicalize(*model);
+  EXPECT_EQ(*Vocabulary(*model, source), 123U);
+  auto selected = std::ranges::find(head.params, "rows", &Param::name);
+  ASSERT_NE(selected, head.params.end());
+  selected->value = std::int64_t{0};
+  EXPECT_EQ(*Vocabulary(*model, source), *full);
+  selected->value = std::int64_t{*full} + 1;
+  EXPECT_FALSE(Vocabulary(*model, source));
 }
 
 Source Qwen2GgufSource(std::uint32_t layers = 1) {
@@ -1012,6 +1001,95 @@ TEST(MappingTest, CheckLayerFlagsRefusesFlagWhenScheduleResolvesToAllA) {
   const auto s = Synthesize(m, source, values);
   ASSERT_FALSE(s.has_value());
   EXPECT_NE(s.error().find("not of the mapping's layer types"), std::string::npos) << s.error();
+}
+
+TEST(MappingTest, ContainerLookupIsExactAndUnknownVariantsRefuse) {
+  for (const Mapping* mapping : Mappings())
+    for (const auto container : mapping->containers)
+      EXPECT_EQ(FindMapping(mapping->architecture, container, mapping->version), mapping);
+  EXPECT_EQ(FindMapping("gemma2", "safetensors"), &mappings::Gemma2SafetensorsMapping());
+  EXPECT_EQ(FindMapping("gemma3_text", "safetensors"), &mappings::Gemma3SafetensorsMapping());
+  EXPECT_EQ(FindMapping("gemma3", "safetensors"), &mappings::Gemma3ConditionalSafetensorsMapping());
+  EXPECT_EQ(FindMapping("qwen4exp", "exl3"), nullptr);
+  EXPECT_EQ(FindMapping("qwen4exp", ""), nullptr);
+  EXPECT_EQ(FindMapping("qwen4exp-mtp", "gguf"), nullptr);
+  EXPECT_EQ(FindMapping("qwen4exp-mtp", "safetensors"), &mappings::Qwen38MtpNativeMapping());
+  auto values = fam::Gemma2Values(fam::Gemma2_2B());
+  ASSERT_TRUE(values);
+  auto source = test_support::Gemma2Source();
+  source.container = "safetensors";
+  EXPECT_FALSE(Synthesize(mappings::Gemma2Mapping(), source, *values));
+}
+
+TEST(MappingTest, SignedZeroCanonicalizesAndContainerFoldsSuppressRules) {
+  auto values = *fam::Gemma2Values(fam::Gemma2_2B());
+  values.push_back({.key = "test.zero", .value = -0.0});
+  Mapping mapping = mappings::Gemma2Mapping();
+  std::vector<ParamRule> params(mapping.params.begin(), mapping.params.end());
+  params.push_back(
+      {.slot = "embedding", .param = "zero", .key = "test.zero", .type = ValueType::kReal});
+  params.push_back({.slot = "embedding",
+                    .param = "again",
+                    .type = ValueType::kBool,
+                    .value = {.flag = true},
+                    .unless_fold = "norm.plus_one"});
+  mapping.params = params;
+  for (const auto transform : {Transform::kNone, Transform::kSqrt}) {
+    params[params.size() - 2].transform = transform;
+    auto made = Synthesize(mapping, test_support::Gemma2Source(), values);
+    ASSERT_TRUE(made) << made.error();
+    const auto& embedding = *made->stages.front().embedding;
+    ASSERT_NE(embedding.Find("zero"), nullptr);
+    EXPECT_FALSE(std::signbit(std::get<double>(embedding.Find("zero")->value)));
+    EXPECT_EQ(embedding.Find("again"), nullptr);
+  }
+}
+
+TEST(MappingTest, FallbackPartsAndUnusedSharedTensorsAreRefused) {
+  auto values = *fam::Gemma2Values(fam::Gemma2_2B());
+  Mapping mapping = mappings::Gemma2Mapping();
+  std::vector<TensorRule> rules(mapping.tensors.begin(), mapping.tensors.end());
+  auto output = std::ranges::find(rules, "output", &TensorRule::slot);
+  ASSERT_NE(output, rules.end());
+  output->part = format::PartRole::kBlockScales;
+  mapping.tensors = rules;
+  const auto wrong_part = Synthesize(mapping, test_support::Gemma2Source(), values);
+  ASSERT_FALSE(wrong_part);
+  EXPECT_NE(wrong_part.error().find("fallback tensor"), std::string::npos);
+
+  mapping = mappings::Gemma2Mapping();
+  rules.assign(mapping.tensors.begin(), mapping.tensors.end());
+  rules.push_back(
+      {.pattern = "shared_global", .slot = "attention", .role = "extra", .layer_types = "g"});
+  mapping.tensors = rules;
+  auto source = test_support::Gemma2Source();
+  std::erase_if(source.tensors, [](const SourceTensor& tensor) {
+    return tensor.name.starts_with("blk.") && !tensor.name.starts_with("blk.0.");
+  });
+  source.tensors.push_back({.name = "shared_global"});
+  std::ranges::find(values, "gemma2.block_count", &SourceValue::key)->value = std::int64_t{1};
+  const auto unused = Synthesize(mapping, source, values);
+  ASSERT_FALSE(unused);
+  EXPECT_NE(unused.error().find("no component instance"), std::string::npos);
+}
+
+TEST(MappingTest, IntegerListRequirementsCannotEnterAnUnsupportedSchema) {
+  Mapping mapping = mappings::Gemma2Mapping();
+  std::vector<ParamRule> params(mapping.params.begin(), mapping.params.end());
+  params.push_back({.key = "test.list", .type = ValueType::kInts});
+  mapping.params = params;
+  EXPECT_FALSE(ValidateMapping(mapping));
+}
+
+TEST(SpecTest, ForwardReadsCyclesAndTargetAfterDrafterAreRefused) {
+  auto spec = Fixture();
+  spec.stages.front().reads.push_back(
+      {.stage = "assistant", .kind = ReadKind::kState, .name = "kv"});
+  Canonicalize(spec);
+  EXPECT_FALSE(Validate(spec));
+  spec = Fixture();
+  std::ranges::reverse(spec.stages);
+  EXPECT_FALSE(Validate(spec));
 }
 
 }  // namespace

@@ -48,6 +48,7 @@
 #include "artifact/format_json.h"
 #include "artifact/format_map.h"
 #include "artifact/layout.h"
+#include "base/json.h"
 #include "base/sha256.h"
 #include "expected_error.h"
 #include "fixture_source.h"
@@ -116,6 +117,130 @@ void ReportNormalized(std::string_view name, const NormalizedPlan& plan) {
   const auto inventory = InventoryDigest(plan.canonical());
   std::printf("normalized %.*s spec=%s inventory=%s\n", static_cast<int>(name.size()), name.data(),
               spec.c_str(), inventory.c_str());
+}
+
+// Uses pinned real config/index bytes, but generates tensor descriptors only.
+// It never opens or invents the absent 27B weight payloads.
+TEST(ImportGemmaMetadataTest, Official27BConfigsAndIndexNamesProduceTheDeclaredTextSpecs) {
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): tests read, never set, the environment
+  const char* metadata_root = std::getenv("LLMP_TEST_GEMMA27_METADATA");
+  const auto root =
+      std::filesystem::path(metadata_root ? metadata_root : "/mnt/llm/checkpoints/hf/google");
+  for (const bool gemma3 : {false, true}) {
+    const auto directory =
+        root / (gemma3 ? "gemma-3-27b-it@005ad3404e59d6023443cb575daa05336842228a"
+                       : "gemma-2-27b-it@aaf20e6b9f4c0fcf043f6fb2a2068419086d77b0");
+    if (!Exists(directory / "config.json") || !Exists(directory / "model.safetensors.index.json")) {
+      // NOLINTNEXTLINE(concurrency-mt-unsafe): tests read, never set, the environment
+      ASSERT_EQ(std::getenv("LLMP_REQUIRE_GEMMA27_METADATA"), nullptr) << directory;
+      GTEST_SKIP() << "pinned Gemma 27B config/index metadata is absent: " << directory;
+    }
+    const auto read = [&](std::string_view name) {
+      auto file = OpenCheckpointFile(directory / name, 0);
+      EXPECT_TRUE(file);
+      return file ? ReadDocument(*file, 2ULL << 20U, 0)
+                  : std::expected<std::string, Error>(std::unexpected(file.error()));
+    };
+    auto config_text = read("config.json");
+    auto index_text = read("model.safetensors.index.json");
+    ASSERT_TRUE(config_text);
+    ASSERT_TRUE(index_text);
+    EXPECT_EQ(base::ToHex(base::Sha256().Update(*config_text).Finish()),
+              gemma3 ? "cabd884f5e0d4f01a5bd7fe14bd4bacd0bd83f3725a02acbdc4e72dc001835fa"
+                     : "8e560335c5f3156a7340edd8087e9a23339b71072338016f46f3f5ef89b8eb05");
+    EXPECT_EQ(base::ToHex(base::Sha256().Update(*index_text).Finish()),
+              gemma3 ? "71567cc4dcf16476da69af42108fb6b30b24f6cf49a4f71f9917da57715f74c5"
+                     : "0912fde150e64f7ea677c29e73dd59f7aaadbfac8cbb338745ce93321572ce43");
+    auto config = base::json::Parse(*config_text);
+    auto index = base::json::Parse(*index_text);
+    ASSERT_TRUE(config);
+    ASSERT_TRUE(index);
+    const auto model_config_root = config->root();
+    const auto text = gemma3 ? *model_config_root.find("text_config") : model_config_root;
+    const auto integer = [&](std::string_view key) {
+      return static_cast<std::uint64_t>(*text.find(key)->int64());
+    };
+    const auto width = integer("hidden_size"), hidden = integer("intermediate_size");
+    const auto heads = integer("num_attention_heads"), kv = integer("num_key_value_heads");
+    const auto dim = integer("head_dim"), layers = integer("num_hidden_layers");
+    // The official Gemma3 config omits this architecture-default vocabulary.
+    const auto vocabulary = gemma3 ? 262208ULL : integer("vocab_size");
+    Checkpoint source{.container = "safetensors",
+                      .architecture = gemma3 ? "gemma3" : "gemma2",
+                      .files = {{.name = "descriptor-only"}}};
+    auto metadata = FlattenMetadata(model_config_root);
+    ASSERT_TRUE(metadata);
+    source.metadata = std::move(*metadata);
+    const auto* table = FindSourceMapping(source.container, source.architecture);
+    ASSERT_NE(table, nullptr);
+    const auto weights = index->root().find("weight_map");
+    ASSERT_TRUE(weights && weights->is_object());
+    for (std::size_t i = 0; i < weights->size(); ++i) {
+      const auto name = weights->key(i);
+      const auto alias = std::ranges::find_if(table->tensors, [&](const auto& candidate) {
+        return normalization_detail::Match(candidate.source, name,
+                                           static_cast<std::uint32_t>(layers))
+            .has_value();
+      });
+      std::vector<std::uint64_t> shape{1};
+      if (alias == table->tensors.end()) {
+        ASSERT_TRUE(std::ranges::any_of(table->ignored_tensor_prefixes, [&](auto prefix) {
+          return name.starts_with(prefix);
+        })) << name;
+      } else {
+        const auto role = std::ranges::find(table->architecture->tensors, alias->canonical,
+                                            &spec::TensorRule::pattern);
+        ASSERT_NE(role, table->architecture->tensors.end());
+        if (role->slot == "embedding" || role->slot == "output")
+          shape = {width, vocabulary};
+        else if (role->slot == "final_norm")
+          shape = {width};
+        else if (role->role == "norm" || role->role == "post_norm")
+          shape = {width};
+        else if (role->role == "q_norm" || role->role == "k_norm")
+          shape = {dim};
+        else if (role->slot == "ffn")
+          shape = role->role == "down" ? std::vector<std::uint64_t>{hidden, width}
+                                       : std::vector<std::uint64_t>{width, hidden};
+        else if (role->role == "q")
+          shape = {width, heads * dim};
+        else if (role->role == "k" || role->role == "v")
+          shape = {width, kv * dim};
+        else if (role->role == "output")
+          shape = {heads * dim, width};
+        else
+          FAIL() << name;
+      }
+      format::TensorFormat descriptor{.encoding = format::Encoding::kBF16,
+                                      .layout = format::Layout::kDense,
+                                      .shape = *format::ShapeOf(shape)};
+      const auto bytes = (*format::PartsOf(descriptor))[0].bytes;
+      const auto offset = source.files.front().bytes;
+      std::ranges::reverse(shape);
+      source.tensors.push_back({.name = std::string(name),
+                                .format = descriptor,
+                                .extent = {.offset = offset, .bytes = bytes},
+                                .dtype = "BF16",
+                                .dims = std::move(shape)});
+      source.files.front().bytes += bytes;
+    }
+    auto plan = Normalize(std::move(source), {2ULL << 30U, 1ULL << 45U});
+    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+    const auto& stage = plan->spec().stages.front();
+    EXPECT_EQ(stage.layers.size(), layers);
+    EXPECT_EQ(stage.context, gemma3 ? 131072U : 8192U);
+    EXPECT_EQ(stage.stream.width, width);
+    EXPECT_EQ(plan->canonical().tensors.size(), gemma3 ? 808U : 508U);
+    const auto& attention = stage.layers.front().components.front();
+    EXPECT_DOUBLE_EQ(std::get<double>(attention.Find("scale")->value),
+                     1.0 / std::sqrt(gemma3 ? 168.0 : 144.0));
+    EXPECT_DOUBLE_EQ(std::get<double>(attention.Find("eps")->value), 1e-6);
+    if (gemma3) {
+      const auto& global = stage.layers[5].components.front();
+      EXPECT_EQ(std::get<double>(global.Find("rope_base")->value), 1000000.0);
+      EXPECT_EQ(std::get<double>(global.Find("rope_scale")->value), 0.125);
+    }
+  }
 }
 
 struct GemmaCase {
@@ -366,7 +491,27 @@ TEST_P(ImportV1FormatsTest, SourceFormatsAreTheArtifacts) {
   if (const auto* table = FindSourceMapping(checkpoint->container, checkpoint->architecture)) {
     const auto bound = NormalizationBound(*checkpoint);
     ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
-    auto normalized = Normalize(*checkpoint, {bound->metadata_bytes, bound->work_units});
+    std::optional<NormalizationTarget> target;
+    if (table->architecture->role == spec::StageRole::kDrafter) {
+      const std::string_view target_name = c.artifact == "gemma26-assistant"   ? "gemma26"
+                                           : c.artifact == "gemma31-assistant" ? "gemma31"
+                                                                               : "deepseek";
+      const auto target_id = test_support::V1IdNamed(target_name);
+      ASSERT_TRUE(target_id) << target_name;
+      auto opened_target =
+          artifact::Artifact::Open(std::filesystem::path(test_support::V1Store()) / *target_id);
+      ASSERT_TRUE(opened_target);
+      auto target_model = spec::StoredSpec(*opened_target);
+      auto target_source = spec::SourceOf(*opened_target);
+      ASSERT_TRUE(target_model);
+      ASSERT_TRUE(target_source);
+      const auto* mapping =
+          spec::FindMapping(target_source->architecture, target_source->container);
+      target.emplace(
+          NormalizationTarget{mapping, std::move(*target_model), std::move(*target_source)});
+    }
+    auto normalized = Normalize(*checkpoint, {bound->metadata_bytes, bound->work_units},
+                                target ? &*target : nullptr);
     ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
     if (table->architecture->role == spec::StageRole::kTarget) {
       const auto expected = spec::StoredSpec(*artifact);

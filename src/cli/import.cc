@@ -16,10 +16,10 @@
 #include "cli/cli.h"
 #include "import/archive_input.h"
 #include "import/image_pipeline.h"
-#include "import/mlx_qwen38.h"
-#include "import/modelopt_qwen38.h"
+#include "import/normalizers.h"
 #include "import/reader.h"
 #include "import/writer.h"
+#include "spec/stored.h"
 
 namespace llmp::cli {
 namespace {
@@ -36,7 +36,8 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
   const auto usage = [&]() {
     Print(err,
           "Usage: llmp import SOURCE --store DIRECTORY [--metadata-mib N]\n"
-          "                   [--component mtp [--draft-head IDS]]\n"
+          "                   [--target TARGET_ID] [--component mtp [--draft-head IDS]]\n"
+          "  --target ID       validate a drafter against this artifact in --store\n"
           "  --component mtp   import the checkpoint's MTP drafter (Qwen3.8 Flash Next's\n"
           "                    ModelOpt checkpoint) instead of its target\n"
           "  --draft-head IDS  give the drafter a selected draft head: IDS lists one\n"
@@ -46,7 +47,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
   };
   if (args.empty() || args[0].empty() || args[0].starts_with('-')) return usage();
   std::filesystem::path source(args[0]), store, draft_head;
-  std::string_view component;
+  std::string_view component, target_id;
   // Caller-owned checkpoint storage is bounded by the container readers.
   // This separate budget covers normalization and publication metadata.
   std::uint64_t metadata = std::uint64_t{4} << 30U;
@@ -66,12 +67,32 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
       limit_seen = true;
     } else if (args[i] == "--component" && component.empty() && args[i + 1] == "mtp")
       component = args[i + 1];
+    else if (args[i] == "--target" && target_id.empty())
+      target_id = args[i + 1];
     else if (args[i] == "--draft-head" && draft_head.empty())
       draft_head = args[i + 1];
     else
       return usage();
   }
   if (store.empty() || (!draft_head.empty() && component != "mtp")) return usage();
+  if (!target_id.empty() && (target_id.size() != 64 || !std::ranges::all_of(target_id, [](char c) {
+                               return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                             })))
+    return usage();
+  std::optional<import::NormalizationTarget> target;
+  if (!target_id.empty()) {
+    auto opened = artifact::Artifact::Open(store / target_id);
+    if (!opened || opened->id() != target_id)
+      return Failure(err, {.rule = import::Rule::kUnsupported,
+                           .reason = "--target does not name a readable artifact in --store"});
+    auto model = spec::StoredSpec(*opened);
+    auto tensors = spec::SourceOf(*opened);
+    if (!model || !tensors)
+      return Failure(err, {.rule = import::Rule::kUnsupported,
+                           .reason = "--target requires a valid stored version-1 target spec"});
+    const auto* mapping = spec::FindMapping(tensors->architecture, tensors->container);
+    target.emplace(import::NormalizationTarget{mapping, std::move(*model), std::move(*tensors)});
+  }
   auto archive = import::FindArchiveInput(source);
   if (!archive) return Failure(err, archive.error());
   if (*archive) {
@@ -99,6 +120,13 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
   const auto warn_skipped = [&](const import::Checkpoint& checkpoint) {
     for (const auto& skipped : checkpoint.skipped) warn(skipped.name, skipped.reason);
     for (const auto& skipped : checkpoint.skipped_tensors) warn(skipped.name, skipped.reason);
+    if (const auto* mapping =
+            import::FindSourceMapping(checkpoint.container, checkpoint.architecture))
+      for (const auto prefix : mapping->ignored_tensor_prefixes)
+        if (std::ranges::any_of(checkpoint.tensors, [&](const auto& tensor) {
+              return tensor.name.starts_with(prefix);
+            }))
+          warn(prefix, "component excluded by this text-only architecture mapping");
   };
   warn_skipped(*input);
   for (const auto& child : input->components) warn_skipped(child);
@@ -166,25 +194,32 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     return bound.metadata_bytes <= metadata;
   };
   if (component == "mtp") {
-    if (input->container != "safetensors" || input->architecture != "qwen3_8_flash_next" ||
-        input->quantization != "modelopt MIXED_PRECISION")
+    const auto* normalizer = import::FindNormalizer(*input);
+    if (!normalizer || !normalizer->drafter || !normalizer->drafter_bound)
       return Failure(err, {.rule = import::Rule::kUnsupported,
-                           .reason = "the mtp component is the ModelOpt Qwen3.8 checkpoint's"});
+                           .reason = "no registered normalizer recognizes this drafter component"});
+    if (!target)
+      return Failure(err, {.rule = import::Rule::kUnsupported,
+                           .reason = "drafter import requires --target TARGET_ID in --store"});
+    auto vocabulary = spec::Vocabulary(target->model, target->source);
+    if (!vocabulary)
+      return Failure(err, {.rule = import::Rule::kUnsupported,
+                           .reason = "drafter target vocabulary lacks a valid output head"});
     std::optional<import::DraftHeadList> head;
     std::optional<std::string> list_name;  // the caller's own source
     if (!draft_head.empty()) {
-      auto list = import::ReadDraftHeadList(draft_head, import::kModelOptQwen38Vocab);
+      auto list = import::ReadDraftHeadList(draft_head, *vocabulary);
       if (!list) return Failure(err, list.error());
       list_name = list->file.name;
       head = std::move(*list);
     }
-    auto bound = import::ModelOptDrafterBound(*input, head ? head->ids.size() : 0);
+    auto bound = normalizer->drafter_bound(*input, head ? head->ids.size() : 0);
     if (!bound) return Failure(err, bound.error());
     if (!funded(*bound))
       return Failure(err, {.rule = import::Rule::kBounds,
                            .reason = "normalization exceeds the requested metadata budget"});
-    auto plan = import::NormalizeModelOptDrafter(*input, std::move(head),
-                                                 {bound->metadata_bytes, bound->work_units});
+    auto plan = normalizer->drafter(*input, std::move(head),
+                                    {bound->metadata_bytes, bound->work_units}, &*target);
     if (!plan) return Failure(err, plan.error());
     // The archive's identities of the files it reads (the head list is
     // the caller's, not the archive's).
@@ -207,6 +242,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     return finish(*result, *input, false, true, list_name);
   }
   if (import::IsIndexedTarget(*input)) {
+    if (target) return usage();
     auto bound = import::IndexedTargetBound(*input);
     if (!bound) return Failure(err, bound.error());
     if (!funded(*bound))
@@ -218,6 +254,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     return publish(*plan, plan->parts().source(), bound->metadata_bytes);
   }
   if (import::IsImagePipeline(*input)) {
+    if (target) return usage();
     auto bound = import::ImagePipelineBound(*input);
     if (!bound) return Failure(err, bound.error());
     if (!funded(*bound))
@@ -279,7 +316,8 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
   if (!funded(*bound))
     return Failure(err, {.rule = import::Rule::kBounds,
                          .reason = "normalization exceeds the requested metadata budget"});
-  auto plan = import::Normalize(std::move(*input), {bound->metadata_bytes, bound->work_units});
+  auto plan = import::Normalize(std::move(*input), {bound->metadata_bytes, bound->work_units},
+                                target ? &*target : nullptr);
   if (!plan) return Failure(err, plan.error());
   return publish(*plan, plan->source(), bound->metadata_bytes);
 }

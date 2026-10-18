@@ -209,7 +209,10 @@ library may exceed memory (D-102). The runner follows the artifact's architectur
 refused at registration. Every
 artifact is opened and checked as the artifact reader checks it, and the
 tokenizer and template files the configuration names are read as regular
-files; who may change them is the filesystem's business (D-073 as
+files. For native HF checkpoints, kept `tokenizer.json` or standalone
+`tokenizer.model` and `tokenizer_config.json` supply the tokenizer without
+an override; a present malformed JSON file is refused. Who may change
+these files is the filesystem's business (D-073 as
 amended on 2026-10-09). A chat
 template renders natively when a native renderer has its hash or reproduces
 it on the probe corpus, and otherwise through the sandboxed Jinja-subset

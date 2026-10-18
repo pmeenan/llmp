@@ -7,6 +7,6 @@
 # tokenizer in GGUF metadata and in tokenizer.json, all untrusted input.
 # The model layer (docs/architecture.md#layers-and-dependency-rules): it
 # needs only base, and no vendor SDK.
-add_library(llmp_tokenizer STATIC gguf.cc hf.cc pretokenize.cc tokenizer.cc unicode.cc unicode_data.cc)
+add_library(llmp_tokenizer STATIC gguf.cc hf.cc sentencepiece.cc pretokenize.cc tokenizer.cc unicode.cc unicode_data.cc)
 target_include_directories(llmp_tokenizer PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_tokenizer PUBLIC llmp_base PRIVATE llmp_gguf llmp_json llmp_warnings)

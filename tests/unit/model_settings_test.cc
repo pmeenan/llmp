@@ -59,6 +59,7 @@ ArtifactFacts Facts(std::string architecture, std::string drafter = {}) {
     facts.context_ceiling = 1048576;
   } else if (facts.architecture == "qwen4exp") {
     facts.context_ceiling = 262144;
+    facts.vocabulary = 248320;
   } else if (facts.architecture == "gemma4") {
     facts.context_ceiling = 262144;
   } else if (facts.architecture == "gemma3") {
@@ -424,7 +425,7 @@ TEST(ModelSettings, ReportsTheSelectedDraftHeadsPhysicalLimit) {
 
 TEST(ModelSettings, ZeroDraftVocabularyWithoutSelectedHeadBindsTheFullVocabulary) {
   auto facts = Facts("qwen4exp", "qwen4exp_mtp");
-  facts.composed_draft_vocab = llmp::runtime::RecipeOf("qwen4exp")->vocab;
+  facts.composed_draft_vocab = facts.vocabulary;
   facts.target_spec = llmp::base::Sha256Digest{};
   facts.composed_spec = llmp::base::Sha256Digest{};
   auto entry = Model("full", true);
@@ -1161,6 +1162,16 @@ TEST(ModelSettings, CapabilityPredicatesAndKeyApplicability) {
   EXPECT_TRUE(KeyAppliesTo("image_steps", image_facts));
   EXPECT_FALSE(KeyAppliesTo("context", image_facts));
   EXPECT_FALSE(KeyAppliesTo("draft_rows", image_facts));
+}
+
+TEST(ModelSettings, DraftVocabularyUsesTheActualHeadRows) {
+  auto facts = Facts("qwen4exp", "qwen4exp-mtp");
+  facts.vocabulary = 100000;
+  auto entry = Model("other-size", true);
+  entry.overrides["draft_vocab"] = std::int64_t{100001};
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  entry.overrides["draft_vocab"] = std::int64_t{100000};
+  EXPECT_TRUE(ResolveSettings(entry, facts, nullptr, false));
 }
 
 }  // namespace

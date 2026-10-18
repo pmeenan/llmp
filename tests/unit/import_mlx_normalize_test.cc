@@ -62,7 +62,11 @@ TEST(ImportMlxNormalizeTest, NativeSplitPartsValidateAcrossCompleteTarget) {
   EXPECT_EQ(hex, "cfeffcf6b5bdb813b2f3cab5ab4554a9aba1d83ef965a4881dabe03956f408da");
 
   const auto& mapping = spec::mappings::Qwen38NativeMapping();
-  EXPECT_TRUE(mapping.folds.empty());
+  for (const auto& fold : mapping.folds) {
+    EXPECT_TRUE(fold.imported);
+    if (fold.container == f.source.container)
+      EXPECT_TRUE(std::ranges::contains(f.source.folds, fold.fold));
+  }
   // The ModelOpt target's fast forms (W4A4 and the format ladder's); MLX's
   // admission keeps the planner's default (runtime/component_admission.cc).
   EXPECT_EQ(mapping.policies.size(), 2U);

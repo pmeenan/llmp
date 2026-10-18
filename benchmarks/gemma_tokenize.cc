@@ -64,7 +64,7 @@ Result Prepare(int argc, char** argv) {
   if (!text) return std::unexpected(text.error());
   auto parsed = tok::ReadGgufTokenizer(std::as_bytes(std::span(*metadata)));
   if (!parsed) return std::unexpected(parsed.error().ToString());
-  if (parsed->spec.pre_tokenizer != tok::PreTokenizer::kGemma4 ||
+  if (parsed->spec.pre_tokenizer != tok::PreTokenizer::kRawBpe ||
       parsed->spec.tokens.size() != 262144 || parsed->spec.bos != 2 || !parsed->spec.add_bos ||
       parsed->spec.add_eos || !parsed->has_chat_template)
     return std::unexpected("expected Gemma4 vocabulary/BOS/template contract");

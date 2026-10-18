@@ -47,14 +47,6 @@ struct SourceReceipt {
 // mapping's rule for its values, or a shared route's (component_build.cc).
 enum class ApprovedPolicy : std::uint8_t { kMapping, kMappingOrNone, kNone };
 
-// The tensor formats an inventory admits: GGUF's data parts (GGML blocks,
-// dense), EXL3 trellises and their dense tensors, ModelOpt's NVFP4/MXFP8
-// splits beside BF16, MLX's affine splits beside BF16, an image
-// component's dense BF16 and F32 tensors of up to four dimensions (kDense).
-// The inventory digest covers each tensor's sorted name, encoding and
-// dimensions, and with kExl3 each part's role and K bits.
-enum class InventoryForm : std::uint8_t { kGguf, kExl3, kModelOpt, kMlx, kDense };
-
 // An importer transform the artifact records (D-113): an applied fold (by
 // its name) or relayout (by the layout its sources held, format::Info's
 // name), the tensors it covers and the SHA-256 of their names, sorted, each
@@ -82,10 +74,9 @@ struct Approval {
   std::span<const ApprovedTransform> fold_tensors{};
   std::span<const ApprovedTransform> relayouts{};
   // The native tensor inventory: its tensors (resources' and expert arrays'
-  // together), its expert arrays, its form and digest.
+  // together), its expert arrays and its complete digest.
   std::size_t tensors = 0;
   std::size_t arrays = 0;
-  InventoryForm form = InventoryForm::kGguf;
   std::string_view inventory{};
   // The SHA-256 of the spec it executes: a target's stored spec.json, a
   // drafter's composition with its approved target (before any per-alias

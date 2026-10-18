@@ -254,6 +254,8 @@ constexpr ServingRecipe kServing{.family = "Gemma",
                                  .chat_tools = false,
                                  .chat_stops = kChatStops};
 
+constexpr std::array kGates = {GateRule{.key = "gemma4.expert_count", .kind = "ffn.moe"}};
+
 constexpr Mapping kMapping{
     .architecture = "gemma4",
     .version = 1,
@@ -268,6 +270,8 @@ constexpr Mapping kMapping{
     .layer_flag_type = 'l',
     .policies = kPolicies,
     .serving = &kServing,
+    .containers = kGgufContainers,
+    .gates = kGates,
 };
 
 // -------------------------------------------------------- gemma4-assistant
@@ -381,177 +385,11 @@ constexpr std::array kAssistantPolicies = {
                        "disable rms_norm_mul_add\ndisable rms_norm_mul_rope\ndisable rope_store\n"},
 };
 
-std::vector<std::int64_t> PerLayerOf(std::uint32_t layers, auto value) {
-  std::vector<std::int64_t> out;
-  for (std::uint32_t il = 0; il < layers; ++il) out.push_back(static_cast<std::int64_t>(value(il)));
-  return out;
-}
-
-// The approved checkpoints an assistant pairs with, as the importer
-// composes an assistant's stage with its target (it keeps none of its
-// target's): their GGUF metadata's values and their tensors' names and
-// shapes, by the target width the assistant's metadata names
-// (gemma4-assistant.embedding_length_out). Five local layers to a global
-// one, no inter-layer KV sharing, no per-layer input embedding.
-struct Target {
-  std::uint32_t layers = 0, width = 0, heads = 0;
-  std::uint32_t local_kv_heads = 0, global_kv_heads = 0;
-  std::uint32_t local_head_dim = 0, global_head_dim = 0;
-  std::uint32_t local_rope_dims = 0, global_rope_dims = 0;
-  std::uint32_t ffn = 0, experts = 0, experts_used = 0, expert_ffn = 0;
-  std::uint32_t vocab = 0, context = 0, window = 0;
-  float local_rope_base = 0, global_rope_base = 0, rms_eps = 0, final_softcap = 0;
-  bool local(std::uint32_t layer) const { return (layer + 1) % 6 != 0; }
-  std::uint32_t head_dim(std::uint32_t layer) const {
-    return local(layer) ? local_head_dim : global_head_dim;
-  }
-  std::uint32_t kv_heads(std::uint32_t layer) const {
-    return local(layer) ? local_kv_heads : global_kv_heads;
-  }
-};
-// gemma-4-26B-A4B-it and gemma-4-31B-it.
-constexpr Target k26B{.layers = 30,
-                      .width = 2816,
-                      .heads = 16,
-                      .local_kv_heads = 8,
-                      .global_kv_heads = 2,
-                      .local_head_dim = 256,
-                      .global_head_dim = 512,
-                      .local_rope_dims = 256,
-                      .global_rope_dims = 512,
-                      .ffn = 2112,
-                      .experts = 128,
-                      .experts_used = 8,
-                      .expert_ffn = 704,
-                      .vocab = 262144,
-                      .context = 262144,
-                      .window = 1024,
-                      .local_rope_base = 10000,
-                      .global_rope_base = 1000000,
-                      .rms_eps = 1e-6F,
-                      .final_softcap = 30};
-constexpr Target k31B{.layers = 60,
-                      .width = 5376,
-                      .heads = 32,
-                      .local_kv_heads = 16,
-                      .global_kv_heads = 4,
-                      .local_head_dim = 256,
-                      .global_head_dim = 512,
-                      .local_rope_dims = 256,
-                      .global_rope_dims = 512,
-                      .ffn = 21504,
-                      .vocab = 262144,
-                      .context = 262144,
-                      .window = 1024,
-                      .local_rope_base = 10000,
-                      .global_rope_base = 1000000,
-                      .rms_eps = 1e-6F,
-                      .final_softcap = 30};
-
-std::expected<std::vector<SourceValue>, std::string> TargetValues(const Target& p) {
-  std::vector<SourceValue> out{
-      Value("gemma4.context_length", p.context),
-      Value("gemma4.embedding_length", p.width),
-      Value("gemma4.block_count", p.layers),
-      Value(kFfn, p.ffn),
-      Value("gemma4.attention.head_count", p.heads),
-      Value("gemma4.attention.head_count_kv",
-            PerLayerOf(p.layers, [&](std::uint32_t il) { return p.kv_heads(il); })),
-      Value("gemma4.attention.key_length", p.global_head_dim),
-      Value("gemma4.attention.key_length_swa", p.local_head_dim),
-      Value("gemma4.attention.value_length", p.global_head_dim),
-      Value("gemma4.attention.value_length_swa", p.local_head_dim),
-      Value(kEps, p.rms_eps),
-      Value("gemma4.attention.sliding_window", p.window),
-      Value("gemma4.attention.sliding_window_pattern",
-            PerLayerOf(p.layers, [&](std::uint32_t il) { return p.local(il) ? 1 : 0; })),
-      Value("gemma4.rope.freq_base", p.global_rope_base),
-      Value("gemma4.rope.freq_base_swa", p.local_rope_base),
-      Value("gemma4.rope.dimension_count", p.global_rope_dims),
-      Value("gemma4.rope.dimension_count_swa", p.local_rope_dims),
-      Value("gemma4.final_logit_softcapping", p.final_softcap),
-  };
-  if (p.experts != 0) {
-    out.push_back(Value(kExperts, p.experts));
-    out.push_back(Value("gemma4.expert_used_count", p.experts_used));
-    out.push_back(Value("gemma4.expert_feed_forward_length", p.expert_ffn));
-  }
-  return out;
-}
-
-// Its tensors as its GGUF names them, BF16 matrices and F32 vectors.
-Source TargetSource(const Target& p) {
-  Source s{.architecture = "gemma4", .container = "gguf"};
-  const auto add = [&](std::string name, std::vector<std::uint64_t> ne, bool experts = false) {
-    const auto encoding = ne.size() == 1 ? format::Encoding::kF32 : format::Encoding::kBF16;
-    format::TensorFormat f{
-        .encoding = encoding,
-        .layout = format::Layout::kDense,
-        .shape = {.ne = {1, 1, 1, 1}, .rank = static_cast<std::uint8_t>(ne.size())},
-    };
-    for (std::size_t i = 0; i < ne.size(); ++i) f.shape.ne[i] = ne[i];
-    s.tensors.push_back({.name = std::move(name),
-                         .format = f,
-                         .part = format::PartRole::kData,
-                         .experts = experts});
-  };
-  add("token_embd.weight", {p.width, p.vocab});
-  add("output_norm.weight", {p.width});
-  add("output.weight", {p.width, p.vocab});
-  add("rope_freqs.weight", {p.global_head_dim / 2});
-  for (std::uint32_t il = 0; il < p.layers; ++il) {
-    const std::string prefix = std::format("blk.{}.", il);
-    const std::uint64_t d = p.head_dim(il), kv = p.kv_heads(il) * d, q = p.heads * d;
-    add(prefix + "attn_norm.weight", {p.width});
-    add(prefix + "attn_q.weight", {p.width, q});
-    add(prefix + "attn_k.weight", {p.width, kv});
-    if (p.local(il)) {
-      add(prefix + "attn_v.weight", {p.width, kv});
-    }
-    add(prefix + "attn_q_norm.weight", {d});
-    add(prefix + "attn_k_norm.weight", {d});
-    add(prefix + "attn_output.weight", {q, p.width});
-    add(prefix + "post_attention_norm.weight", {p.width});
-    add(prefix + "layer_output_scale.weight", {1});
-    add(prefix + "ffn_norm.weight", {p.width});
-    add(prefix + "ffn_gate.weight", {p.width, p.ffn});
-    add(prefix + "ffn_up.weight", {p.width, p.ffn});
-    add(prefix + "ffn_down.weight", {p.ffn, p.width});
-    if (p.experts != 0) {
-      add(prefix + "post_ffw_norm_1.weight", {p.width});
-      add(prefix + "ffn_gate_inp.weight", {p.width, p.experts});
-      add(prefix + "ffn_gate_inp.scale", {p.width});
-      add(prefix + "pre_ffw_norm_2.weight", {p.width});
-      add(prefix + "ffn_gate_up_exps.weight", {p.width, 2U * p.expert_ffn, p.experts}, true);
-      add(prefix + "ffn_down_exps.weight", {p.expert_ffn, p.width, p.experts}, true);
-      add(prefix + "ffn_down_exps.scale", {p.experts});
-      add(prefix + "post_ffw_norm_2.weight", {p.width});
-    }
-    add(prefix + "post_ffw_norm.weight", {p.width});
-  }
-  return s;
-}
-
-constexpr std::array<std::string_view, 2> kParentWidth{"gemma4-assistant.embedding_length_out",
-                                                       "gemma4-assistant.Parent.embedding_length"};
-constexpr std::array kAssistantTargets = {
-    ImportTarget{.keys = kParentWidth,
-                 .value = k26B.width,
-                 .mapping = &Gemma4Mapping,
-                 .values = +[] { return TargetValues(k26B); },
-                 .source = +[] { return TargetSource(k26B); }},
-    ImportTarget{.keys = kParentWidth,
-                 .value = k31B.width,
-                 .mapping = &Gemma4Mapping,
-                 .values = +[] { return TargetValues(k31B); },
-                 .source = +[] { return TargetSource(k31B); }},
-};
-
 // Anchored on its target's tapped features, borrowing its target's state:
 // three drafts a unit at most, its qualified transaction's
 // (docs/experiments/gemma-assistant-throughput).
 constexpr DraftRecipe kAssistantDraft{
-    .shape = DraftRecipe::Shape::kAnchored, .depth = 3, .import_targets = kAssistantTargets};
+    .shape = DraftRecipe::Shape::kAnchored, .depth = 3, .target_architecture = "gemma4"};
 
 constexpr Mapping kAssistantMapping{
     .architecture = "gemma4-assistant",
@@ -570,6 +408,7 @@ constexpr Mapping kAssistantMapping{
     .reads = kAssistantReads,
     .policies = kAssistantPolicies,
     .draft = &kAssistantDraft,
+    .containers = kGgufContainers,
 };
 
 }  // namespace

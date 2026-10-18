@@ -43,6 +43,7 @@
 #include "artifact/gguf_metadata.h"
 #include "base/sha256.h"
 #include "config/node_config.h"
+#include "spec/mapping.h"
 #include "spec/spec.h"
 #include "tokenizer/tokenizer.h"
 
@@ -119,6 +120,9 @@ struct ArtifactFacts {
   // The artifact's architecture ("deepseek4", "qwen4exp"); a composition's
   // models are pipelines (composition is true, architecture empty).
   std::string architecture;
+  std::string container;
+  std::uint32_t vocabulary = 0;
+  std::vector<spec::SourceValue> policy_gates;
   bool composition = false;
   // The checkpoint's trained context (GGUF <architecture>.context_length,
   // config.json max_position_embeddings, or a rope-scaled original), and
@@ -239,6 +243,7 @@ struct Calibration {
 struct ModelSettings {
   std::string name;
   std::string architecture;  // empty for a composition
+  std::string container;
   bool composition = false;
   // The serving adapter's kind (a composition's: the image pipeline).
   spec::PipelineKind pipeline = spec::PipelineKind::kLlm;
@@ -320,7 +325,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
 
 // An architecture's serving recipe (its mapping's; spec/mapping.h); null:
 // none is served.
-const spec::ServingRecipe* RecipeOf(std::string_view architecture);
+const spec::ServingRecipe* RecipeOf(std::string_view architecture, std::string_view container = {});
 
 // The reasoning markers once the vocabulary is known (`find`: a token's ID
 // by its exact text): each override, which must be a token of it (empty:

@@ -3,10 +3,13 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <charconv>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <span>
 #include <string>
 #include <system_error>
 #include <tuple>
@@ -28,10 +31,13 @@
 #include "import/reader.h"
 #include "import/readers/gguf.h"
 #include "import/writer.h"
+#include "import_target_fixture.h"
 #include "runtime/component_admission.h"
+#include "runtime/model_settings.h"
 #include "spec/spec.h"
 #include "spec/stored.h"
 #include "tokenizer_fixtures.h"
+#include "v1_frozen.h"
 
 namespace llmp::import {
 namespace {
@@ -50,6 +56,20 @@ artifact::Source Origin(std::string_view name, std::uint64_t bytes, std::string_
 }
 
 std::filesystem::path ModelsRoot() { return std::filesystem::path(test_support::ModelsDir()); }
+
+std::expected<artifact::Artifact, std::string> PublishedTarget(std::string_view name) {
+  const auto id = test_support::V1IdNamed(name);
+  if (!id) return std::unexpected("no published target ID for " + std::string(name));
+  return rt::OpenInstalled(test_support::V1Store(), *id);
+}
+std::expected<NormalizationTarget, std::string> TargetOf(const artifact::Artifact& artifact) {
+  auto admitted = rt::ReadComponentAdmission(artifact);
+  if (!admitted) return std::unexpected(admitted.error());
+  const auto* mapping =
+      spec::FindMapping(admitted->source.architecture, admitted->source.container);
+  if (!mapping) return std::unexpected("published target has no exact container mapping");
+  return NormalizationTarget{mapping, std::move(admitted->model), std::move(admitted->source)};
+}
 
 std::filesystem::path TestDataDir() {
   const char* dir = std::getenv("LLMP_TEST_DATA");
@@ -90,7 +110,7 @@ void AddTensor(Checkpoint& s, std::string name, std::span<const std::uint64_t> d
 // The kept GGUF metadata (meta/<stem>.kv.gguf) the importer writes for a
 // GGUF drafter, its header's key/value section: the checkpoint's metadata
 // (GGUF v3; integers I64, reals F32 as the checkpoint stores them, lists
-// of I64). A stored drafter's composition values are read from it.
+// of I64, F32 or strings). A stored drafter's composition values are read from it.
 std::string KeptGgufHeader(const Checkpoint& s) {
   std::string out;
   const auto raw = [&](const void* p, std::size_t n) {
@@ -107,7 +127,9 @@ std::string KeptGgufHeader(const Checkpoint& s) {
   for (const MetaEntry& e : s.metadata)
     if (std::holds_alternative<std::int64_t>(e.value) || std::holds_alternative<double>(e.value) ||
         std::holds_alternative<bool>(e.value) || std::holds_alternative<std::string>(e.value) ||
-        std::holds_alternative<std::vector<std::int64_t>>(e.value))
+        std::holds_alternative<std::vector<std::int64_t>>(e.value) ||
+        std::holds_alternative<std::vector<double>>(e.value) ||
+        std::holds_alternative<std::vector<std::string>>(e.value))
       kept.push_back(&e);
   out.append("GGUF");
   u32(3);
@@ -129,12 +151,25 @@ std::string KeptGgufHeader(const Checkpoint& s) {
     } else if (const auto* t = std::get_if<std::string>(&e->value)) {
       u32(kString);
       str(*t);
-    } else {
-      const auto& list = std::get<std::vector<std::int64_t>>(e->value);
+    } else if (const auto* list = std::get_if<std::vector<std::int64_t>>(&e->value)) {
       u32(kArray);
       u32(kI64);
-      u64(list.size());
-      for (const std::int64_t v : list) raw(&v, 8);
+      u64(list->size());
+      for (const std::int64_t v : *list) raw(&v, 8);
+    } else if (const auto* reals = std::get_if<std::vector<double>>(&e->value)) {
+      u32(kArray);
+      u32(kF32);
+      u64(reals->size());
+      for (const double v : *reals) {
+        const auto f = static_cast<float>(v);
+        raw(&f, 4);
+      }
+    } else {
+      const auto& texts = std::get<std::vector<std::string>>(e->value);
+      u32(kArray);
+      u32(kString);
+      u64(texts.size());
+      for (const auto& text : texts) str(text);
     }
   }
   return out;
@@ -261,7 +296,7 @@ TEST(ImportDrafterNormalizeTest,
   auto cost = NormalizationBound(*cp);
   ASSERT_TRUE(cost) << cost.error().ToString();
   NormalizationLimits limits{cost->metadata_bytes, cost->work_units};
-  auto plan = Normalize(std::move(*cp), limits);
+  auto plan = test_support::NormalizeWithFixtureTarget(std::move(*cp), limits);
   ASSERT_TRUE(plan) << plan.error().ToString();
 
   ASSERT_EQ(plan->spec().stages.size(), 2U);
@@ -323,10 +358,86 @@ TEST(ImportDrafterNormalizeTest,
   std::filesystem::remove_all(scratch, ec);
 }
 
-// The assistant's target is the one its parent width names (the drafting
-// recipe's import targets, spec/mapping.h): a width no approved target has,
-// or two widths naming different targets, are refused.
-TEST(ImportDrafterNormalizeTest, AnAssistantNamesExactlyOneApprovedTarget) {
+TEST(ImportDrafterNormalizeTest, RetainedInvalidListsCannotEraseAnOptionalRequirement) {
+  const std::filesystem::path scratch =
+      std::filesystem::path(testing::TempDir()) / "import-drafter-retained-list-bound";
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  const auto target_art =
+      MakeTargetV1(scratch / "target", "gemma4", "target.gguf", 1, std::string(64, '1'));
+  ASSERT_TRUE(target_art) << target_art.error().ToString();
+  const std::array tensors{
+      spec::SourceTensor{.name = "tiny.weight",
+                         .format = {.encoding = fm::Encoding::kF32,
+                                    .layout = fm::Layout::kDense,
+                                    .shape = {.ne = {1, 1, 1, 1}, .rank = 1}}}};
+  const std::string key = "gemma4-assistant.attention.shared_kv_layers";
+  const auto target = test_support::GemmaImportTarget(26);
+  const auto source = test_support::Gemma4AssistantSource(26);
+  const auto& mapping = spec::mappings::Gemma4AssistantMapping();
+  auto baseline = test_support::families::Gemma4AssistantValues(
+      test_support::families::Gemma4Assistant26(), test_support::families::Gemma4_26BA4B());
+  ASSERT_TRUE(baseline) << baseline.error();
+  ASSERT_TRUE(spec::ComposeDrafter(target.model, *target.mapping, mapping, source, *baseline));
+  std::size_t sequence = 0;
+  const auto read = [&](MetaValue value) {
+    Checkpoint metadata;
+    Value(metadata, key, std::move(value));
+    auto drafter = MakeDrafterV1(scratch / std::to_string(++sequence), "gemma4-assistant", tensors,
+                                 "drafter.gguf", 1, std::string(64, '2'), KeptGgufHeader(metadata));
+    EXPECT_TRUE(drafter) << (drafter ? "" : drafter.error().ToString());
+    if (!drafter)
+      return std::expected<std::vector<spec::SourceValue>, std::string>(
+          std::unexpected("test artifact publication failed"));
+    return rt::ComponentDrafterValues(*target_art, *drafter);
+  };
+  const auto valid = read(std::int64_t{4});
+  ASSERT_TRUE(valid) << valid.error();
+  ASSERT_EQ(valid->size(), 1U);
+  EXPECT_EQ(valid->front().key, key);
+  EXPECT_EQ(std::get<std::int64_t>(valid->front().value), 4);
+  for (const bool real : {false, true}) {
+    for (const auto count : {spec::kMaxList, spec::kMaxList + 1}) {
+      SCOPED_TRACE(std::format("real={} count={}", real, count));
+      const auto values =
+          real ? read(std::vector<double>(count, 4.0)) : read(std::vector<std::int64_t>(count, 4));
+      if (count > spec::kMaxList) {
+        ASSERT_FALSE(values);
+        EXPECT_NE(values.error().find("list exceeds the value bound"), std::string::npos);
+      } else {
+        ASSERT_TRUE(values) << values.error();
+        ASSERT_EQ(values->size(), 1U);
+        EXPECT_EQ(values->front().key, key);
+        auto malformed = *baseline;
+        malformed.push_back(values->front());
+        EXPECT_FALSE(
+            spec::ComposeDrafter(target.model, *target.mapping, mapping, source, malformed));
+      }
+    }
+  }
+  // The metadata reader represents string arrays as kOther. A wanted mapping
+  // key cannot disappear merely because its present value has no supported type.
+  const auto unsupported = read(std::vector<std::string>{"4"});
+  ASSERT_FALSE(unsupported);
+  EXPECT_NE(unsupported.error().find("unsupported type"), std::string::npos);
+  std::filesystem::remove_all(scratch, ec);
+}
+
+TEST(ImportDrafterNormalizeTest, RefusedTargetDiagnosticOutlivesValidation) {
+  const auto refused = [] {
+    auto target = test_support::GemmaImportTarget(26);
+    target.model.stages.front().stream.width = 1;
+    auto valid = ValidateTarget(target, spec::mappings::Gemma4AssistantMapping());
+    EXPECT_FALSE(valid);
+    return valid.error();
+  }();
+  EXPECT_EQ(refused.reason, "drafter target spec does not satisfy its components");
+  EXPECT_EQ(refused.ToString(), "container: drafter target spec does not satisfy its components");
+}
+
+// A supplied target must satisfy the assistant's parent dimensions. A new
+// structurally compatible size does not need an approved checkpoint profile.
+TEST(ImportDrafterNormalizeTest, AssistantParentDimensionsMustMatchTheSuppliedTarget) {
   for (const auto& [out, parent, refused] :
        {std::tuple<std::int64_t, std::int64_t, bool>{5376, 0, false},
         std::tuple<std::int64_t, std::int64_t, bool>{1234, 0, true},
@@ -342,12 +453,12 @@ TEST(ImportDrafterNormalizeTest, AnAssistantNamesExactlyOneApprovedTarget) {
       EXPECT_TRUE(refused) << cost.error().ToString();
       continue;
     }
-    auto plan = Normalize(std::move(*cp), {cost->metadata_bytes, cost->work_units});
+    auto plan = test_support::NormalizeWithFixtureTarget(std::move(*cp),
+                                                         {cost->metadata_bytes, cost->work_units});
     if (refused) {
       ASSERT_FALSE(plan);
       if (parent == 0)
-        EXPECT_NE(plan.error().ToString().find("names no approved target"), std::string::npos)
-            << plan.error().ToString();
+        EXPECT_EQ(plan.error().reason, "drafter composition does not satisfy its components");
       continue;
     }
     // The 26B assistant's tensors against the 31B target: selected, then
@@ -386,8 +497,18 @@ TEST(ImportDrafterNormalizeModelsTest,
     ASSERT_TRUE(bound) << bound.error().ToString();
 
     NormalizationLimits limits{bound->metadata_bytes, bound->work_units};
-    auto plan = Normalize(std::move(*checkpoint), limits);
+    auto target_art = PublishedTarget(size == 26 ? "gemma26" : "gemma31");
+    ASSERT_TRUE(target_art) << target_art.error();
+    auto target = TargetOf(*target_art);
+    ASSERT_TRUE(target) << target.error();
+    auto plan = Normalize(std::move(*checkpoint), limits, &*target);
     ASSERT_TRUE(plan) << plan.error().ToString();
+    auto bad_target_art = PublishedTarget(size == 26 ? "gemma31" : "gemma26");
+    ASSERT_TRUE(bad_target_art) << bad_target_art.error();
+    auto bad_target = TargetOf(*bad_target_art);
+    ASSERT_TRUE(bad_target) << bad_target.error();
+    // Refuse the complete mismatched composition before any publication.
+    EXPECT_FALSE(Normalize(plan->source(), limits, &*bad_target));
 
     // Composed spec has stage 0 target, stage 1 drafter
     ASSERT_EQ(plan->spec().stages.size(), 2U);
@@ -434,28 +555,17 @@ TEST(ImportDrafterNormalizeModelsTest,
     auto admission = rt::CheckComponentDrafterAdmission(*drafter_source, drafter_art->sources());
     ASSERT_TRUE(admission) << (admission ? "" : admission.error());
 
-    // Verify target composition
-    const auto target_art = MakeTargetV1(
-        scratch / "target", "gemma4",
-        size == 26 ? "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf" : "gemma-4-31B-it-UD-Q4_K_XL.gguf",
-        size == 26 ? 16947541728ULL : 18822970304ULL,
-        size == 26 ? "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f"
-                   : "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575");
-    ASSERT_TRUE(target_art) << (target_art ? "" : target_art.error().ToString());
-
     auto vals = rt::ComponentDrafterValues(*target_art, *drafter_art);
-    ASSERT_TRUE(vals) << (vals ? "" : vals.error());
-
-    // Refusal: target width mismatch (e.g. 26B target with 31B assistant)
-    const auto bad_target_art = MakeTargetV1(
-        scratch / "bad_target", "gemma4",
-        size == 26 ? "gemma-4-31B-it-UD-Q4_K_XL.gguf" : "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
-        size == 26 ? 18822970304ULL : 16947541728ULL,
-        size == 26 ? "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575"
-                   : "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f");
-    ASSERT_TRUE(bad_target_art);
-    auto mismatch = rt::ComponentDrafterValues(*bad_target_art, *drafter_art);
-    EXPECT_FALSE(mismatch.has_value());
+    ASSERT_TRUE(vals) << vals.error();
+    const auto* mapping = rt::ComposedDrafterMapping(*drafter_art);
+    ASSERT_NE(mapping, nullptr);
+    auto composed =
+        spec::ComposeDrafter(target->model, *target->mapping, *mapping, *drafter_source, *vals);
+    ASSERT_TRUE(composed) << composed.error();
+    const std::array<std::span<const spec::SourceTensor>, 2> tables{target->source.tensors,
+                                                                    drafter_source->tensors};
+    EXPECT_TRUE(components::ValidateSpec(*composed, tables));
+    EXPECT_TRUE(rt::CheckComposedAdmission(*composed, *target_art, *drafter_art));
 
     RecordProperty("drafter_id", written->id);
     RecordProperty("drafter_path", written->path.string());
@@ -490,8 +600,17 @@ TEST(ImportDrafterNormalizeModelsTest,
   ASSERT_TRUE(bound) << bound.error().ToString();
 
   NormalizationLimits limits{bound->metadata_bytes, bound->work_units};
-  auto plan = Normalize(std::move(*checkpoint), limits);
+  auto target_art = PublishedTarget("deepseek");
+  ASSERT_TRUE(target_art) << target_art.error();
+  auto target = TargetOf(*target_art);
+  ASSERT_TRUE(target) << target.error();
+  auto plan = Normalize(std::move(*checkpoint), limits, &*target);
   ASSERT_TRUE(plan) << plan.error().ToString();
+  auto gemma_target_art = PublishedTarget("gemma26");
+  ASSERT_TRUE(gemma_target_art) << gemma_target_art.error();
+  auto gemma_target = TargetOf(*gemma_target_art);
+  ASSERT_TRUE(gemma_target) << gemma_target.error();
+  EXPECT_FALSE(Normalize(plan->source(), limits, &*gemma_target));
 
   ASSERT_EQ(plan->spec().stages.size(), 2U);
   EXPECT_EQ(plan->spec().stages[0].role, spec::StageRole::kTarget);
@@ -530,44 +649,18 @@ TEST(ImportDrafterNormalizeModelsTest,
   auto admission = rt::CheckComponentDrafterAdmission(*drafter_source, drafter_art->sources());
   ASSERT_TRUE(admission) << (admission ? "" : admission.error());
 
-  // Verify target composition with Dsv4 target
-  llmp::test::V1Plan p;
-  p.architecture = "deepseek4";
-  p.groups = {
-      llmp::test::V1Group{.kind = llmp::artifact::GroupKind::kTable,
-                          .resources = {{.name = "token_embd.weight",
-                                         .format = {.encoding = fm::Encoding::kBF16,
-                                                    .layout = fm::Layout::kDense,
-                                                    .shape = {.ne = {64, 64, 1, 1}, .rank = 2}}}}}};
-  auto rendered = llmp::test::Render(p);
-  llmp::test::Json::Array source_list;
-  source_list.emplace_back(llmp::test::Json::Object{
-      {"bytes", static_cast<std::int64_t>(5257664ULL)},
-      {"name", std::string("DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf")},
-      {"sha256", std::string("de65c5bb660817b95cc281bf54935f9d1bcc3b22535f2eae63b35a14c7c5724b")}});
-  source_list.emplace_back(llmp::test::Json::Object{
-      {"bytes", static_cast<std::int64_t>(49437013568ULL)},
-      {"name", std::string("DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00002-of-00003.gguf")},
-      {"sha256", std::string("c8728a298862cd8736782e2e4056e5e3e03c415ba552a38173264494e41ef327")}});
-  source_list.emplace_back(llmp::test::Json::Object{
-      {"bytes", static_cast<std::int64_t>(47390237120ULL)},
-      {"name", std::string("DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00003-of-00003.gguf")},
-      {"sha256", std::string("a4bae0788c025c1b2388754592c98fefa1372981748ac9875039bf6a30e6eeb4")}});
-  rendered.manifest["source"] = llmp::test::Json(std::move(source_list));
-  auto target_art =
-      llmp::artifact::Artifact::Open(llmp::test::Publish(scratch / "target_dsv4", rendered));
-  ASSERT_TRUE(target_art) << (target_art ? "" : target_art.error().ToString());
-
   auto vals = rt::ComponentDrafterValues(*target_art, *drafter_art);
-  ASSERT_TRUE(vals) << (vals ? "" : vals.error());
-
-  // Refusal: architecture mismatch (gemma4 target with dflash drafter)
-  auto gemma_target_art = MakeTargetV1(
-      scratch / "target_gemma", "gemma4", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", 16947541728ULL,
-      "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f");
-  ASSERT_TRUE(gemma_target_art);
-  auto arch_mismatch = rt::ComponentDrafterValues(*gemma_target_art, *drafter_art);
-  EXPECT_FALSE(arch_mismatch.has_value());
+  ASSERT_TRUE(vals) << vals.error();
+  const auto* mapping = rt::ComposedDrafterMapping(*drafter_art);
+  ASSERT_NE(mapping, nullptr);
+  auto composed =
+      spec::ComposeDrafter(target->model, *target->mapping, *mapping, *drafter_source, *vals);
+  ASSERT_TRUE(composed) << composed.error();
+  const std::array<std::span<const spec::SourceTensor>, 2> tables{target->source.tensors,
+                                                                  drafter_source->tensors};
+  EXPECT_TRUE(components::ValidateSpec(*composed, tables));
+  EXPECT_TRUE(rt::CheckComposedAdmission(*composed, *target_art, *drafter_art));
+  EXPECT_FALSE(rt::ComponentDrafterValues(*gemma_target_art, *drafter_art));
 
   RecordProperty("drafter_id", written->id);
   RecordProperty("drafter_path", written->path.string());

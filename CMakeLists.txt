@@ -14,7 +14,7 @@ endif()
 # The next release's version (D-062). Builds report it with their distance
 # from the last release tag (cmake/LlmpVersion.cmake); the first commit
 # after a release raises it.
-project(llmp VERSION 0.1.0 LANGUAGES CXX)
+project(llmp VERSION 0.2.0 LANGUAGES CXX)
 
 if(NOT LLMP_PROFILE)
   message(FATAL_ERROR "Configure with a preset from CMakePresets.json (`mise run build` does); "

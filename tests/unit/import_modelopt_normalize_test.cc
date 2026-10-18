@@ -12,6 +12,7 @@
 
 #include "components/step.h"
 #include "import/modelopt_qwen38.h"
+#include "import/normalizers.h"
 #include "spec/mappings/qwen38.h"
 
 namespace llmp::import {
@@ -34,7 +35,9 @@ const spec::Param* ParamOf(const spec::ComponentRef& c, std::string_view name) {
 TEST(ImportModelOptNormalizeTest, NativeRelaidTargetValidatesAcrossCompleteTarget) {
   auto f = Native();
   const auto& mapping = spec::mappings::Qwen38NativeMapping();
-  EXPECT_TRUE(mapping.folds.empty());
+  ASSERT_FALSE(mapping.folds.empty());
+  EXPECT_TRUE(
+      std::ranges::all_of(mapping.folds, [](const spec::FoldRule& fold) { return fold.imported; }));
   // W4A4 experts take the converted form's policy (moe_experts); others
   // the format ladder's.
   ASSERT_EQ(mapping.policies.size(), 2U);
@@ -159,6 +162,29 @@ TEST(ImportModelOptNormalizeTest, ExistingConvertedMappingKeepsItsFoldAndPolicyC
     return t.role == "gate_scale" && t.part == PartRole::kData;
   }));
 }
+TEST(ImportModelOptNormalizeTest, RegistryRecognitionIsUniqueAndRequiresAllSourceFields) {
+  ASSERT_FALSE(Normalizers().empty());
+  for (const auto& normalizer : Normalizers()) {
+    Checkpoint source;
+    source.container = normalizer.container;
+    source.architecture = normalizer.architecture;
+    source.quantization = normalizer.quantization;
+    EXPECT_EQ(FindNormalizer(source), &normalizer);
+    EXPECT_TRUE(IsIndexedTarget(source));
+    ASSERT_NE(normalizer.target, nullptr);
+    ASSERT_NE(normalizer.target_bound, nullptr);
+    EXPECT_EQ(normalizer.drafter != nullptr, normalizer.drafter_bound != nullptr);
+    source.quantization += "-unknown";
+    EXPECT_EQ(FindNormalizer(source), nullptr);
+    source.quantization = normalizer.quantization;
+    source.container += "-unknown";
+    EXPECT_EQ(FindNormalizer(source), nullptr);
+    source.container = normalizer.container;
+    source.architecture += "-unknown";
+    EXPECT_EQ(FindNormalizer(source), nullptr);
+  }
+}
+
 TEST(ImportModelOptNormalizeTest, UnknownSourceRefusalKeepsSourceOwnership) {
   Checkpoint source;
   source.container = "mlx";

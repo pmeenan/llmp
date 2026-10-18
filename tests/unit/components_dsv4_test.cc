@@ -1099,6 +1099,48 @@ fam::Dsv4Profile Tiny() {
   p.compress_ratios = {0, fam::kDsv4CsaRatio, fam::kDsv4HcaRatio, fam::kDsv4CsaRatio};
   return p;
 }
+TEST(ComponentsDsv4Test, PromptRowsFollowChangedWindowAndCompressedResources) {
+  for (const auto window : {512U, 4096U}) {
+    auto profile = Tiny();
+    profile.window = window;
+    auto source = fx::SourceOf("deepseek4", fx::Resources(profile, fx::kF16Types),
+                               spec::mappings::Dsv4Mapping());
+    auto values = fam::Dsv4Values(profile);
+    ASSERT_TRUE(values) << values.error();
+    auto model = spec::Synthesize(spec::mappings::Dsv4Mapping(), source, *values);
+    ASSERT_TRUE(model) << model.error();
+    for (const auto context : {257U, 65535U, 131073U}) {
+      for (const bool rounded : {false, true}) {
+        SCOPED_TRACE(std::format("window={} context={} rounded={}", window, context, rounded));
+        const auto fits = [&](std::uint64_t rows) {
+          const auto pad = [](std::uint64_t n, std::uint64_t a) { return (n + a - 1) / a * a; };
+          const auto raw = std::min(pad(context, 256),
+                                    pad(std::min<std::uint64_t>(context, window + rows), 256));
+          const auto padded_rows = pad(rows, 32);
+          constexpr auto limit = std::uint64_t{std::numeric_limits<std::int32_t>::max()};
+          if (raw * padded_rows * 2 > limit) return false;
+          for (const auto ratio : {fam::kDsv4CsaRatio, fam::kDsv4HcaRatio}) {
+            const auto compressed = pad(std::max<std::uint64_t>(1, context / ratio), 256);
+            if (compressed * padded_rows * 2 > limit || (raw + compressed) * rows * 2 > limit)
+              return false;
+            if (!rounded && ratio == fam::kDsv4CsaRatio && compressed * rows * 4 > limit)
+              return false;
+          }
+          return true;
+        };
+        std::uint32_t expected = context;
+        while (!fits(expected)) --expected;
+        const auto bound = StagePrefillRows(*model, 0, context, context, rounded);
+        ASSERT_TRUE(bound) << bound.error();
+        EXPECT_EQ(*bound, expected);
+        EXPECT_TRUE(fits(*bound));
+        if (*bound < context) EXPECT_FALSE(fits(*bound + 1));
+        EXPECT_EQ(*StagePrefillRows(*model, 0, context, expected - 1, rounded), expected - 1);
+      }
+    }
+  }
+}
+
 TEST(ComponentsDsv4Test, IndexerPolicyKeepsMasksForUnselectedCompressedAttention) {
   auto profile = Tiny();
   profile.indexer_heads = 64;
@@ -1222,6 +1264,49 @@ fam::DsparkProfile TinyDrafter() {
   d.markov_rank = 8;
   d.ring = 256;
   return d;
+}
+
+TEST(ComponentsDsv4Test, TapLayerBoundsAreCheckedBeforeEnteringAdjustment) {
+  const auto profile = Tiny();
+  const auto target_source = fx::SourceOf("deepseek4", fx::Resources(profile, fx::kF16Types),
+                                          spec::mappings::Dsv4Mapping());
+  auto target_values = fam::Dsv4Values(profile);
+  ASSERT_TRUE(target_values) << target_values.error();
+  auto target = spec::Synthesize(spec::mappings::Dsv4Mapping(), target_source, *target_values);
+  ASSERT_TRUE(target) << target.error();
+  const auto drafter_profile = TinyDrafter();
+  const auto source = fx::SourceOf("dflash", fx::DrafterResources(drafter_profile, fx::kF16Types),
+                                   spec::mappings::DsparkMapping());
+  auto values = fam::DsparkValues(drafter_profile);
+  ASSERT_TRUE(values) << values.error();
+  auto layers = std::ranges::find(*values, "dflash.target_layers", &spec::SourceValue::key);
+  ASSERT_NE(layers, values->end());
+  auto& selected = std::get<std::vector<std::int64_t>>(layers->value);
+  auto mapping = spec::mappings::DsparkMapping();
+  std::vector<spec::ReadRule> reads(mapping.reads.begin(), mapping.reads.end());
+  mapping.reads = reads;
+  const auto count = static_cast<std::int64_t>(target->stages.front().layers.size());
+  for (const bool entering : {false, true}) {
+    reads.front().entering = entering;
+    for (const auto entry :
+         {std::numeric_limits<std::int64_t>::min(), std::int64_t{-1}, std::int64_t{0},
+          std::int64_t{1}, count - 1, count, count + 1, std::numeric_limits<std::int64_t>::max()}) {
+      SCOPED_TRACE(std::format("entering={} entry={}", entering, entry));
+      selected.front() = entry;
+      auto composed =
+          spec::ComposeDrafter(*target, spec::mappings::Dsv4Mapping(), mapping, source, *values);
+      const bool valid = entering ? entry > 0 && entry <= count : entry >= 0 && entry < count;
+      ASSERT_EQ(composed.has_value(), valid);
+      if (!valid) {
+        EXPECT_NE(composed.error().find("names no layer"), std::string::npos);
+        continue;
+      }
+      const auto& taps = composed->stages.front().taps;
+      const auto tap = std::ranges::find(taps, "features_0", &spec::FeatureTap::name);
+      ASSERT_NE(tap, taps.end());
+      EXPECT_EQ(tap->layer, static_cast<std::uint32_t>(entering ? entry - 1 : entry));
+    }
+  }
 }
 
 // Binds each of a step's weights to random values in its format (the

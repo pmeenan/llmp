@@ -50,22 +50,28 @@ std::optional<Key> Classify(const SourceMapping& t, std::string_view key, bool i
         key == "split.count" || key == "split.tensors.count")) ||
       ((t.container == "exl3" || t.container == "safetensors") && key == "model_type"))
     return Key{.kind = MetadataClass::kStructural, .canonical = key};
+  if (is_null && std::ranges::contains(t.null_semantics, key))
+    return Key{.auxiliary = static_cast<std::uint32_t>(t.auxiliary.size())};
   auto canonical = key;
   for (const auto& alias : t.keys)
     if (key == alias.source) canonical = alias.canonical;
+  for (const auto& requirement : t.tensor_presence)
+    if (canonical == requirement.flag)
+      return Key{.kind = MetadataClass::kSelected, .canonical = canonical, .types = nd::kFlag};
   for (const auto& requirement : t.requirements)
     if (canonical == requirement.key &&
         (requirement.require_equal || !requirement.equals_key.empty() || requirement.positive))
-      return Key{.kind = MetadataClass::kSelected, .canonical = canonical, .types = nd::kInteger};
+      return Key{.kind = MetadataClass::kSelected,
+                 .canonical = canonical,
+                 .types = nd::KeyTypes(*t.architecture, canonical) != 0
+                              ? nd::KeyTypes(*t.architecture, canonical)
+                              : nd::kInteger};
   if (const auto types = nd::KeyTypes(*t.architecture, canonical); types != 0)
     return Key{.kind = MetadataClass::kSelected, .canonical = canonical, .types = types};
   for (std::size_t i = 0; i < t.auxiliary.size(); ++i)
-    if (t.container == "gguf" && t.auxiliary[i].prefix.ends_with('.')
-            ? key.starts_with(t.auxiliary[i].prefix)
-            : key == t.auxiliary[i].prefix)
+    if (t.auxiliary[i].prefix.ends_with('.') ? key.starts_with(t.auxiliary[i].prefix)
+                                             : key == t.auxiliary[i].prefix)
       return Key{.auxiliary = static_cast<std::uint32_t>(i)};
-  if (is_null && std::ranges::contains(t.null_semantics, key))
-    return Key{.auxiliary = static_cast<std::uint32_t>(t.auxiliary.size())};
   for (const auto semantic : t.semantic)
     if (semantic.ends_with('*') ? key.starts_with(semantic.substr(0, semantic.size() - 1))
         : semantic.ends_with('.')
@@ -168,6 +174,9 @@ std::optional<ResolvedName> TensorName(const SourceMapping& t, std::string_view 
   return found;
 }
 bool IgnoredTensor(const SourceMapping& table, std::string_view name, std::uint32_t layers) {
+  if (std::ranges::any_of(table.ignored_tensor_prefixes,
+                          [&](auto prefix) { return name.starts_with(prefix); }))
+    return true;
   return std::ranges::any_of(table.ignored_tensors, [&](const auto pattern) {
     return nd::Match(pattern, name, layers).has_value();
   });
@@ -290,7 +299,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
           width = static_cast<std::uint64_t>(*integer);
       for (const auto& r : t.requirements)
         if (r.key == key->canonical && integer && r.equals_key.empty() && !r.positive &&
-            ((*integer == r.reject_equal) != r.require_equal))
+            ((*integer == r.reject_equal) != r.require_equal) &&
+            (r.unless_present.empty() || !s.FindValue(r.unless_present)))
           return Bad("source scalar requires unsupported mapping semantics", ItemKind::kKey, i,
                      Rule::kUnsupported);
     } else if (key->kind == MetadataClass::kStructural) {
@@ -328,12 +338,21 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
         if (const auto* found = s.FindTensor(alias.source)) return found;
     return nullptr;
   };
+  for (const auto& rule : t.tensor_presence) {
+    const auto* value = value_for(rule.flag);
+    if (!value) continue;
+    const auto* flag = std::get_if<bool>(value);
+    if (!flag || (*flag == rule.when && !tensor_for(rule.tensor)))
+      return Bad("source tying flag requires an explicit output tensor");
+  }
   for (const auto& rule : t.requirements) {
     const auto* value = value_for(rule.key);
+    if (!value && rule.optional) continue;
     if ((rule.require_equal || !rule.equals_key.empty() || rule.positive) && !value)
       return Bad("required source scalar is absent");
     const auto* integer = value ? std::get_if<std::int64_t>(value) : nullptr;
-    if (rule.positive && (!integer || *integer <= 0))
+    const auto* real = value ? std::get_if<double>(value) : nullptr;
+    if (rule.positive && !(integer ? *integer > 0 : real && std::isfinite(*real) && *real > 0.0))
       return Bad("required source scalar must be positive");
     if (!rule.equals_key.empty()) {
       const auto* other = value_for(rule.equals_key);
@@ -506,6 +525,9 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   std::uint64_t payload = 0;
   for (std::size_t i = 0; i < s.tensors.size(); ++i) {
     const auto& tensor = s.tensors[i];
+    if (tensor.name.empty() || tensor.name.size() > kMaxNameBytes ||
+        !NoControlCharacters(tensor.name) || json::FirstInvalidUtf8(tensor.name))
+      return Bad("invalid source tensor name", ItemKind::kTensor, i);
     const auto name = TensorName(t, tensor.name, static_cast<std::uint32_t>(layers));
     if (!name && IgnoredTensor(t, tensor.name, static_cast<std::uint32_t>(layers))) {
       const auto& extent = tensor.extent;
@@ -626,6 +648,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   charge(a.Add(a.Add(V(contracts, 256), a.Mul(2, Str(contracts))), V(4, 256)));
   charge(a.Add(a.Mul(6, V(32, 256)), a.Mul(4, Str(32))));
   charge(64 * 256 + 16 * 8192);
+  if (m.role == spec::StageRole::kDrafter) charge(spec::kMaxSpecBytes * 32ULL);
   // Three classification scans plus selected-key duplicate, width and constraint
   // scans total at most 2048 bounded key comparisons per metadata entry.
   std::uint64_t work = metadata_bytes;
@@ -641,50 +664,17 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   return NormalizationCost{bytes, work, payload, static_cast<std::uint32_t>(layers)};
 }
 
-// The import target a drafter's source selects (spec/mapping.h
-// ImportTarget): the one whose value a key of its, among the source's
-// normalized values or raw metadata, holds; a recipe's only target when it
-// has no keys. Refused (null, with why) where none or more than one target
-// matches, or where any of the targets' keys the source holds names none of
-// them or another one than the selected (a source naming two targets).
-static std::expected<const spec::ImportTarget*, std::string_view> SelectImportTarget(
-    const spec::DraftRecipe& draft, std::span<const spec::SourceValue> values,
-    std::span<const MetaEntry> metadata) {
-  const auto targets = draft.import_targets;
-  if (targets.size() == 1 && targets.front().keys[0].empty()) return &targets.front();
-  // Every value the source holds under any target's key.
-  std::vector<std::pair<std::string_view, const std::int64_t*>> held;
-  const auto keyed = [&](std::string_view key) {
-    return !key.empty() && std::ranges::any_of(targets, [&](const spec::ImportTarget& t) {
-      return std::ranges::contains(t.keys, key);
-    });
-  };
-  for (const auto& v : values)
-    if (keyed(v.key)) held.emplace_back(v.key, std::get_if<std::int64_t>(&v.value));
-  for (const auto& e : metadata)
-    if (keyed(e.key)) held.emplace_back(e.key, std::get_if<std::int64_t>(&e.value));
-  const spec::ImportTarget* chosen = nullptr;
-  for (const auto& [key, value] : held) {
-    const spec::ImportTarget* named = nullptr;
-    for (const spec::ImportTarget& t : targets)
-      if (value != nullptr && *value == t.value && std::ranges::contains(t.keys, key)) named = &t;
-    if (named == nullptr)
-      return std::unexpected("unsupported drafter target: a key names no approved target");
-    if (chosen != nullptr && chosen != named)
-      return std::unexpected("unsupported drafter target: the source names more than one");
-    chosen = named;
-  }
-  if (chosen == nullptr) return std::unexpected("unsupported drafter target: none named");
-  return chosen;
-}
-
 std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMapping& table,
-                                           NormalizationLimits limits) {
+                                           NormalizationLimits limits,
+                                           const NormalizationTarget* target) {
   const auto cost = Bound(source, table);
   if (!cost) return std::unexpected(cost.error());
   if (cost->metadata_bytes > limits.metadata_bytes || cost->work_units > limits.work_units)
     return Bad("normalization reservation is insufficient", ItemKind::kNone, kNoItem,
                Rule::kBounds);
+  if (target != nullptr && table.architecture->role != spec::StageRole::kDrafter)
+    return Bad("--target applies only to a drafter import", ItemKind::kNone, kNoItem,
+               Rule::kUnsupported);
   if (auto mapping = spec::ValidateMapping(*table.architecture); !mapping)
     return Bad("invalid architecture mapping", ItemKind::kNone, kNoItem, Rule::kUnsupported);
   NormalizedPlan plan;
@@ -788,31 +778,20 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
     plan.metadata_.push_back({static_cast<std::uint32_t>(i), key.kind, destination});
   }
   if (table.architecture->role == spec::StageRole::kDrafter) {
-    // Its target as its drafting recipe's data describes it (its source
-    // keeps none of its target's tensors or values).
-    const spec::DraftRecipe* draft = table.architecture->draft;
-    if (draft == nullptr || draft->import_targets.empty())
-      return Bad("unsupported drafter target", ItemKind::kNone, kNoItem, Rule::kUnsupported);
-    const auto selected = SelectImportTarget(*draft, plan.values_, input.metadata);
-    if (!selected) return Bad(selected.error(), ItemKind::kNone, kNoItem, Rule::kUnsupported);
-    const spec::ImportTarget* target = *selected;
-    if (target->mapping == nullptr || target->values == nullptr || target->source == nullptr)
-      return Bad("unsupported drafter target", ItemKind::kNone, kNoItem, Rule::kUnsupported);
-    const spec::Mapping* target_mapping = &target->mapping();
-    auto target_values = target->values();
-    if (!target_values) return Bad("drafter target values refused");
-    const spec::Source target_source = target->source();
-    auto target_spec = spec::Synthesize(*target_mapping, target_source, *target_values);
-    if (!target_spec) return Bad("drafter target synthesis failed");
-    auto composed = spec::ComposeDrafter(*target_spec, *target_mapping, *table.architecture,
+    if (target == nullptr)
+      return Bad("drafter import requires --target TARGET_ID in the selected store",
+                 ItemKind::kNone, kNoItem, Rule::kUnsupported);
+    if (auto valid = ValidateTarget(*target, *table.architecture); !valid)
+      return std::unexpected(valid.error());
+    auto composed = spec::ComposeDrafter(target->model, *target->mapping, *table.architecture,
                                          plan.canonical_, plan.values_);
     if (!composed) return Bad("drafter composition failed");
-    const std::array<std::span<const spec::SourceTensor>, 2> tables{target_source.tensors,
+    const std::array<std::span<const spec::SourceTensor>, 2> tables{target->source.tensors,
                                                                     plan.canonical_.tensors};
     if (auto valid =
             components::ValidateSpec(*composed, tables, components::ValidationPurpose::kImport);
         !valid)
-      return Bad(valid.error());
+      return Bad("drafter composition does not satisfy its components");
     plan.spec_ = std::move(*composed);
   } else {
     auto spec = spec::Synthesize(*table.architecture, plan.canonical_, plan.values_);
@@ -825,18 +804,37 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
   }
   plan.folds_.reserve(table.architecture->folds.size());
   for (const auto& fold : table.architecture->folds)
-    if (fold.container == input.container)
+    if (!fold.imported && fold.container == input.container)
       plan.folds_.push_back({std::string(fold.fold), std::string(fold.container)});
   return plan;
 }
 }  // namespace normalization_detail
 
-std::expected<NormalizedPlan, Error> Normalize(Checkpoint source, NormalizationLimits limits) {
+std::expected<void, Error> ValidateTarget(const NormalizationTarget& target,
+                                          const spec::Mapping& drafter) {
+  if (!drafter.draft || target.mapping == nullptr ||
+      target.mapping != spec::FindMapping(target.source.architecture, target.source.container) ||
+      target.mapping->role != spec::StageRole::kTarget ||
+      drafter.draft->target_architecture != target.source.architecture ||
+      target.model.stages.size() != 1 ||
+      target.model.stages.front().role != spec::StageRole::kTarget ||
+      target.model.stages.front().artifact != 0)
+    return Bad("drafter target architecture/container/spec is inconsistent", ItemKind::kNone,
+               kNoItem, Rule::kUnsupported);
+  if (auto valid = components::ValidateSpec(target.model, target.source.tensors,
+                                            components::ValidationPurpose::kImport);
+      !valid)
+    return Bad("drafter target spec does not satisfy its components");
+  return {};
+}
+
+std::expected<NormalizedPlan, Error> Normalize(Checkpoint source, NormalizationLimits limits,
+                                               const NormalizationTarget* target) {
   const auto* mapping = FindSourceMapping(source.container, source.architecture);
   if (!mapping)
     return Bad("no complete normalization table for this source", ItemKind::kNone, kNoItem,
                Rule::kUnsupported);
-  return nd::Build(std::move(source), *mapping, limits);
+  return nd::Build(std::move(source), *mapping, limits, target);
 }
 std::expected<SourceCopyCursor, Error> NormalizedPlan::CursorFor(std::size_t output) const {
   if (output >= routes_.size()) return Bad("copy output index is outside the plan");

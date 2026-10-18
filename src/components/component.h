@@ -377,6 +377,14 @@ struct MaskUse {
   // An enabled indexer mask policy supplies this mask through selection
   // instead of the framework's causal mask.
   bool indexer_selected = false;
+  // Widest real plane over these cells (the selection's F32 masks too).
+  std::uint8_t plane_bytes = 2;
+  // The attention concatenates this mask with the preceding bank's.
+  bool join_previous = false;
+  // Unoptimized selection's additional plane; 0 when none. Rounded selected
+  // masks replace it, as declared by the same component's lowering option.
+  std::uint8_t selection_bytes = 0;
+  std::uint32_t selection_above = 0;  // selection exists only above these read cells
 };
 
 struct ComponentDef {

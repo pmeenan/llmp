@@ -5,7 +5,8 @@
 
 The native text front end (M3 and M3.5; plan.md, "Tokenizer and chat templates";
 D-067, D-088): byte-level BPE for the M3 models, raw UTF-8 BPE
-for Gemma 4 GGUFs, classic SentencePiece for approved legacy GGUFs, native
+for GGUF and Hugging Face vocabularies, scored SentencePiece BPE from GGUF
+or standalone ModelProto files, native
 family renderers for their chat templates and a bounded, sandboxed
 Jinja-subset interpreter for any other template, stop tokens, and greedy and
 seeded sampling. All of it is CPU code with no vendor types and builds in
@@ -20,7 +21,7 @@ carries its notice ([licensing.md](licensing.md#tokenizer-unicode-tables-m3)).
 | Module | Holds |
 | --- | --- |
 | `base/json.h` (`llmp_json`) | General RFC 8259 JSON from untrusted bytes: strict UTF-8, unescaped strings, numbers kept as text, duplicate keys refused, caps on size, depth, values and string bytes |
-| `tokenizer/` (`llmp_tokenizer`) | `unicode.h` (UCD 15.1.0 properties, strict UTF-8, U+FFFD replacement, NFC), `pretokenize.h` (four BPE pre-tokenizers and the whole-fragment SentencePiece mode), `tokenizer.h` (vocabulary validation, encode, decode, streaming decode), `gguf.h` and `hf.h` (the readers of a GGUF file's tokenizer metadata and of `tokenizer.json`) |
+| `tokenizer/` (`llmp_tokenizer`) | `unicode.h` (UCD 15.1.0 properties, strict UTF-8, U+FFFD replacement, NFC), `pretokenize.h` (four BPE pre-tokenizers and the whole-fragment SentencePiece mode), `tokenizer.h` (vocabulary validation, encode, decode, streaming decode), `gguf.h`, `hf.h` and `sentencepiece.h` (readers of GGUF tokenizer metadata, `tokenizer.json` and standalone `tokenizer.model`) |
 | `chat/` (`llmp_chat`) | `chat.h` (the conversation, the native renderers and their registry, `ChatTemplate`: the choice by hash, probe or interpreter; stop tokens, Python's `str.strip`), `jinja.h` (the Jinja-subset interpreter: `jinja_parse.cc`, `jinja_eval.cc`, `jinja_value.cc`), `pyjson.h` (JSON as Python's `json.dumps` prints it, and values as `str()` prints them); the family renderers `deepseek_v4.cc`, `qwen.cc` and `gemma.cc` |
 | `execution/sampling.h` (`llmp_sampling`) | Greedy and seeded sampling |
 
@@ -73,10 +74,30 @@ byte BPE. A whole newline run present in the vocabulary becomes that
 token directly, matching the pinned llama.cpp Gemma 4 shortcut. Decoding
 normal tokens replaces `▁` with spaces and byte tokens with their bytes;
 a literal `▁` in input therefore decodes to a space, as in the reference.
-Every byte fallback and the normal `▁` token are required; merges must
+Byte coverage and the normal `▁` token are required; merges must
 name normal constituents and a normal result. BOS/EOS and marked control
-tokens retain their existing rules. This support is for GGUF metadata;
-Gemma `tokenizer.json` remains separate work.
+tokens retain their existing rules. The raw BPE engine also reads the official Gemma 2 and 3 Hugging Face
+`tokenizer.json` pipeline. A normal model token for an unchanged ASCII
+character can supply byte coverage when its `<0xNN>` fallback is absent:
+the official Gemma 2 JSON stores tab this way. That token keeps its normal
+kind and participates in merges. Literal spaces cannot substitute because
+normalization transforms them; non-ASCII characters cannot substitute for
+individual UTF-8 fallback bytes. It validates the declared space-to-`▁` Replace,
+then Split on literal spaces with MergedWithPrevious behavior (there are
+no literal spaces after replacement), and the decoder's inverse Replace,
+ByteFallback and Fuse stages. This pipeline runs on whole fragments,
+including across newlines, while GGUF raw BPE retains its newline split
+and whole-newline-token shortcut. Model membership is independent of added
+token matching: a non-special added whitespace token can still participate
+in a declared BPE merge. Control tokens remain excluded from model merging.
+The declared HF decoder replaces markers in added tokens as well. Raw-BPE
+added tokens retain their normalization flag: raw matching runs before space
+replacement, and normalized matching runs afterward, freezing each longest
+match before model merges. Literal spaces in normalized added-token text are
+normalized by that same replacement.
+TemplateProcessing supports a single input with an optional BOS and EOS;
+insertion follows `EncodeOptions::add_bos_eos`. Other template layouts and
+pipeline stages are explicitly refused.
 
 Raw BPE can merge across spaces, so it encodes a whole fragment and
 `Tokenizer::WorkingBytes` charges 96 bytes per input byte. Serving uses
@@ -185,13 +206,47 @@ pinned gguf.cpp refuses), types must match. It accepts
 normal, control, user-defined and unused, and the Gemma 4 raw UTF-8 BPE
 metadata and byte fallback described above. Classic SentencePiece also
 requires one finite F32 score per token, accepts unknown tokens as controls,
-and rejects merge lists, other pre-tokenizers and whitespace collapse.
+and rejects merge lists and other pre-tokenizers; the standalone reader
+below supplies explicit identity-map whitespace flags.
 `ReadHfTokenizer` accepts the
-`tokenizer.json` shape hf.h lists (BPE, NFC or no normalizer, the Split and
-ByteLevel sequences above, no stripping flags) and refuses the rest. The
+`tokenizer.json` shapes hf.h lists (the byte-BPE pipelines above or the
+validated raw-BPE pipeline, with no stripping flags) and refuses the rest. The
 prepared artifact's tokenizer section is still the importer's to define;
 carrying the checkpoint's own tokenizer data and reading it with these
 readers is the suggested route.
+
+**Standalone SentencePiece.** `ReadSentencePieceTokenizer` reads ModelProto
+wire bytes directly, without a protobuf runtime or checkpoint code. It accepts
+byte-fallback BPE models with an identity normalization map and implements
+dummy prefix and whitespace trim/collapse flags. The official Gemma 2 and 3
+models disable both; a name alone never invents a normalization transform.
+Nonempty compiled maps, other algorithms, whitespace suffixes and
+denormalizers are refused explicitly. The public Gemma 3 model's unassigned
+normalizer field 7 is accepted only as its disabled value, zero. Varints,
+wire types, lengths, repeated singular fields, finite scores and vocabulary
+kinds are checked before publication; the input is bounded at 64 MiB and
+parsing has cancellation checkpoints. The shared scored-BPE engine freezes
+longest native user-defined symbols in normalized text before merging. Native
+ModelProto symbols belong to the model: they do not split normalization into
+separate fragments, restart its dummy prefix, or trim neighboring internal
+spaces. Their own spelling is protected while the identity normalizer escapes
+spaces; the model then matches its exact declared spelling, without inventing
+normalized vocabulary aliases. Externally configured added tokens still extract in their declared
+phase; GGUF's special-token fragment rules follow its reference contract.
+Native UNUSED pieces participate in scored merges and are resegmented only
+when they survive to emission. The reverse split walk is iterative. For models
+containing these pieces, `WorkingBytes` charges 128 bytes per input byte plus
+the dummy-prefix byte, and four bytes per vocabulary entry for the split table;
+models without them retain the 96-byte bound. Construction accounting covers
+model-membership/symbol flags and each raw or normalized trie spelling.
+
+For HF and ModelProto assets, `ApplyHfTokenizerConfig` reads the kept
+`tokenizer_config.json` special-token identities, added-token metadata and
+BOS/EOS insertion flags. ID/text changes, gaps, stripping/single-word options
+and enabled SentencePiece sampling are refused. The runtime ordinarily loads
+kept `tokenizer.json`, or `tokenizer.model` when JSON is absent, followed by
+that configuration and the kept chat template. A malformed present JSON
+file is an error; it never silently selects another tokenizer.
 
 ## Unicode tables
 

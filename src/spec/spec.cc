@@ -28,6 +28,7 @@
 #include "artifact/json.h"
 #include "base/sha256.h"
 #include "format/encoding.h"
+#include "spec/names.h"
 
 namespace llmp::spec {
 namespace {
@@ -88,34 +89,10 @@ std::optional<format::PartRole> PartByName(std::string_view name) {
   return std::nullopt;
 }
 
-bool Lower(char c) { return c >= 'a' && c <= 'z'; }
-bool Digit(char c) { return c >= '0' && c <= '9'; }
-
-// [a-z][a-z0-9_]*, at most kMaxText bytes.
-bool IsName(std::string_view s) {
-  if (s.empty() || s.size() > kMaxText || !Lower(s.front())) {
-    return false;
-  }
-  return std::ranges::all_of(s, [](char c) { return Lower(c) || Digit(c) || c == '_'; });
-}
-
-// Names joined by dots: "attention.dense".
-bool IsKind(std::string_view s) {
-  if (s.empty() || s.size() > kMaxText) {
-    return false;
-  }
-  std::size_t start = 0;
-  while (true) {
-    const std::size_t dot = s.find('.', start);
-    if (!IsName(s.substr(start, dot == std::string_view::npos ? dot : dot - start))) {
-      return false;
-    }
-    if (dot == std::string_view::npos) {
-      return true;
-    }
-    start = dot + 1;
-  }
-}
+using names::Digit;
+using names::IsKind;
+using names::IsName;
+using names::Lower;
 
 // A tensor name: printable ASCII without space, '"' or '\\'.
 bool IsTensor(std::string_view s) {
@@ -786,29 +763,16 @@ Status CheckStage(const ModelSpec& spec, const Stage& s, const std::string& wher
     }
     return {};
   };
-  if (s.embedding) {
-    if (auto ok = count(*s.embedding, where + ".embedding"); !ok) {
-      return ok;
-    }
-  }
+  Status component_status;
+  EachComponent(s, [&](const ComponentRef& c, const std::string& path) {
+    if (component_status) component_status = count(c, where + "." + path);
+  });
+  if (!component_status) return component_status;
   if (s.stream.streams == 0 || s.stream.streams > kMaxStreams || s.stream.width > kMaxWidth) {
     return Refuse(where + ".stream", "streams or width out of range");
   }
   if (s.stream.mixing.has_value() != (s.stream.streams > 1)) {
     return Refuse(where + ".stream", "a mixing component exactly when there are several streams");
-  }
-  if (s.stream.mixing) {
-    if (auto ok = count(*s.stream.mixing, where + ".stream.mixing"); !ok) {
-      return ok;
-    }
-  }
-  for (std::size_t l = 0; l < s.layers.size(); ++l) {
-    for (std::size_t i = 0; i < s.layers[l].components.size(); ++i) {
-      if (auto ok = count(s.layers[l].components[i], std::format("{}.layers[{}][{}]", where, l, i));
-          !ok) {
-        return ok;
-      }
-    }
   }
   if (s.side.size() > kMaxNamed || s.taps.size() > kMaxNamed || s.reads.size() > kMaxNamed ||
       s.heads.mtp.size() > kMaxNamed) {
@@ -824,31 +788,13 @@ Status CheckStage(const ModelSpec& spec, const Stage& s, const std::string& wher
     if (!IsName(in.name)) {
       return Refuse(at, "a name that is not valid");
     }
-    if (auto ok = count(in.source, at + ".source"); !ok) {
-      return ok;
-    }
     if (!StrictlySorted(in.layers, [](std::uint32_t l) { return l; }) ||
         (!in.layers.empty() && in.layers.back() >= s.layers.size())) {
       return Refuse(at, "layers not ascending or past the stage's");
     }
   }
-  if (s.heads.final_norm) {
-    if (auto ok = count(*s.heads.final_norm, where + ".heads.final_norm"); !ok) {
-      return ok;
-    }
-  }
-  if (s.heads.output) {
-    if (auto ok = count(*s.heads.output, where + ".heads.output"); !ok) {
-      return ok;
-    }
-  }
   if (s.heads.softcap && !(Finite(*s.heads.softcap) && *s.heads.softcap > 0.0)) {
     return Refuse(where + ".heads.softcap", "not a finite value above zero");
-  }
-  for (std::size_t i = 0; i < s.heads.mtp.size(); ++i) {
-    if (auto ok = count(s.heads.mtp[i], std::format("{}.heads.mtp[{}]", where, i)); !ok) {
-      return ok;
-    }
   }
   if (components > kMaxComponents) {
     return Refuse(where, std::format("more than {} components", kMaxComponents));
@@ -883,8 +829,9 @@ Status CheckStage(const ModelSpec& spec, const Stage& s, const std::string& wher
       return Refuse(at, "an invalid name or kind");
     }
     const auto other = std::ranges::find(spec.stages, r.stage, &Stage::name);
-    if (r.stage == s.name || other == spec.stages.end()) {
-      return Refuse(at, "a stage that is not another of the spec's");
+    if (other == spec.stages.end() ||
+        other >= std::ranges::find(spec.stages, s.name, &Stage::name)) {
+      return Refuse(at, "a read must name an earlier stage (stage-read cycles are forbidden)");
     }
     // State is named by its component's contract, which the catalog checks.
     if (r.kind == ReadKind::kTap &&
@@ -946,32 +893,10 @@ void Canonicalize(ModelSpec& spec) {
     });
   };
   for (Stage& s : spec.stages) {
-    if (s.embedding) {
-      component(*s.embedding);
-    }
-    if (s.stream.mixing) {
-      component(*s.stream.mixing);
-    }
-    for (SideInput& in : s.side) {
-      component(in.source);
-      std::ranges::sort(in.layers);
-    }
+    EachComponent(s, [&](ComponentRef& c, const std::string&) { component(c); });
+    for (SideInput& in : s.side) std::ranges::sort(in.layers);
     std::ranges::sort(s.side, {}, &SideInput::name);
-    for (Layer& l : s.layers) {
-      for (ComponentRef& c : l.components) {
-        component(c);
-      }
-    }
     std::ranges::sort(s.taps, {}, &FeatureTap::name);
-    if (s.heads.final_norm) {
-      component(*s.heads.final_norm);
-    }
-    if (s.heads.output) {
-      component(*s.heads.output);
-    }
-    for (ComponentRef& c : s.heads.mtp) {
-      component(c);
-    }
     std::ranges::sort(s.reads, {}, [](const Read& r) {
       return std::tuple<std::string_view, ReadKind, std::string_view>(r.stage, r.kind, r.name);
     });
@@ -1013,8 +938,8 @@ Status Validate(const ModelSpec& spec) {
     }
   }
   if ((spec.pipeline == PipelineKind::kLlm || spec.pipeline == PipelineKind::kEmbedding) &&
-      targets != 1) {
-    return Refuse("stages", "a language model's one target stage");
+      (targets != 1 || spec.stages.front().role != StageRole::kTarget)) {
+    return Refuse("stages", "a language model's one target stage must come first");
   }
   return {};
 }

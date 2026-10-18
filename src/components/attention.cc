@@ -76,8 +76,9 @@ constexpr ParamSpec Flag(std::string_view name) {
 
 // The parameters both kinds take, in order; the dense kind adds its V's
 // form, the borrowed one the target layer it reads.
-constexpr std::size_t kCommon = 19;
+constexpr std::size_t kCommon = 20;
 constexpr std::array<ParamSpec, kCommon> kCommonParams{
+    kNormZeroCentered,
     ParamSpec{.name = "placement", .type = ParamType::kName, .choices = kPlacements},
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
     ParamSpec{.name = "heads", .type = ParamType::kInt, .least = 1, .most = 1024},
@@ -158,14 +159,14 @@ enum : std::uint16_t {
   kVBias
 };
 constexpr std::array kRoles{
-    WeightRole{.name = "norm", .encodings = kNormEncodings},
+    WeightRole{.name = "norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "q"},
     WeightRole{.name = "k"},
     WeightRole{.name = "v"},
     WeightRole{.name = "output"},
-    WeightRole{.name = "post_norm", .encodings = kF32Only},
-    WeightRole{.name = "q_norm", .encodings = kF32Only},
-    WeightRole{.name = "k_norm", .encodings = kF32Only},
+    WeightRole{.name = "post_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
+    WeightRole{.name = "q_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
+    WeightRole{.name = "k_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "rope_freqs", .encodings = kF32Only},
     WeightRole{.name = "q_bias", .encodings = kBiasEncodings},
     WeightRole{.name = "k_bias", .encodings = kBiasEncodings},
@@ -212,6 +213,8 @@ Dims DimsOf(const Instance& in) {
 }
 
 std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
+  if (NormOffsetContradictsFold(in))
+    return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
   const Dims d = DimsOf(in);
   if (d.kv_encoding == Encoding::kQ8_0 &&
       (d.kd != d.vd || (d.kd != 64 && d.kd != 256 && d.kd != 512) || d.explicit_scores ||
@@ -361,7 +364,12 @@ CellKey CellsOf(const Fragment& f, std::size_t tensor) {
 std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   ir::Builder& b = f.b;
   const Dims d = DimsOf(f.instance);
-  const auto w = [&](std::uint16_t role) { return f.Weight(role); };
+  F32Parameters<kRoles.size()> parameters(f);
+  const auto w = [&](std::uint16_t role) {
+    return role == kNorm || role == kPostNorm || role == kQNorm || role == kKNorm
+               ? parameters.Norm(role)
+               : f.Weight(role);
+  };
   const std::uint64_t rows = f.step.rows();
   const ir::TensorId x = f.stream;
   // A query-only fragment emits nothing for a state-only step.
@@ -513,8 +521,15 @@ std::expected<void, std::string> Reference(RefIO& io) {
       io.state_cells.size() != 2) {
     return std::unexpected("attention reference: stream or state of another shape");
   }
+  std::array<std::vector<float>, kRoles.size()> adjusted;
+  if (in.params.Flag("norm_zero_centered")) {
+    for (const auto role : {kNorm, kPostNorm, kQNorm, kKNorm}) {
+      adjusted[role] = io.weights.at(role);
+      for (float& value : adjusted[role]) value += 1.0F;
+    }
+  }
   const auto weight = [&](std::uint16_t role) -> std::span<const float> {
-    return io.weights.at(role);
+    return adjusted[role].empty() ? io.weights.at(role) : adjusted[role];
   };
   const std::span<const float> freqs = d.freqs ? weight(kRopeFreqs) : std::span<const float>{};
   std::vector<double> normalized = io.stream;

@@ -26,6 +26,35 @@ Suggested order for PRs, one at a time: the mask pre-pass bound (RE-036),
 then ssm_conv's load bound (RE-032), then the null-buffer guard, then the
 sinks bound (RE-030).
 
+## Gemma query scale lost during HF-to-GGUF conversion
+
+- **Status:** open; inspected at the pinned release, not reported upstream.
+- **Pin:** `d81235049384534c167caea52b85a694f6103d14`,
+  `conversion/gemma.py`, `Gemma2Model.set_gguf_parameters` and
+  `Gemma3Model.set_gguf_parameters`; `gguf-py/gguf/gguf_writer.py` already
+  has `add_attention_scale`, emitting `{arch}.attention.scale`.
+- **Problem:** HF configs state `query_pre_attn_scalar`, but these exporters
+  omit it. The matching `src/models/gemma2.cpp` and `gemma3.cpp` loaders
+  recover the 27B scale from 46/62-layer model identities rather than
+  the exported semantics. A consumer cannot recover a modified checkpoint's
+  intended scalar from its head dimension or name.
+- **Repro inputs:** `unsloth/gemma-2-27b-it` at
+  `c3d7bab17f14fbda4ad59f1dec764eb7562c7e55` has scalar 144 and head
+  dimension 128. `unsloth/gemma-3-27b-it` at
+  `7a5a3053dbd5d1d58e48159e87b9df2fc545a49a` has text scalar 168 and
+  head dimension 128. Their config/index metadata was inspected without
+  downloading weights. Writing GGUF parameters currently loses that
+  distinction; no full conversion or numerical run is claimed here.
+- **Suggested fix:** validate the config scalar as finite and positive,
+  then call `self.gguf_writer.add_attention_scale(scalar ** -0.5)` in
+  each exporter. Have the loaders prefer this existing metadata key over
+  the historical layer-count rule. Test both 27B scalars, a custom scalar
+  at another depth, and malformed/nonpositive scalars.
+- **Llmpalooza route:** native HF normalization consumes the authoritative
+  scalar directly. Its GGUF mappings also accept explicit `attention.scale`;
+  an ambiguous legacy 27B export without it refuses with missing semantics.
+  This does not add Python conversion to native import or serving.
+
 ## MMA head 192 configuration (RE-060)
 
 - **Pin:** `d81235049384534c167caea52b85a694f6103d14`,

@@ -393,6 +393,12 @@ add_executable(tokenizer_test tokenizer_test.cc)
 target_link_libraries(tokenizer_test PRIVATE llmp_tokenizer)
 llmp_gtest(tokenizer_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+add_executable(tokenizer_assets_test tokenizer_assets_test.cc)
+target_link_libraries(tokenizer_assets_test PRIVATE llmp_runtime llmp_tokenizer llmp_config
+                                                   llmp_test_artifact_writer)
+llmp_gtest(tokenizer_assets_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
 # The chat renderers against their references' text (D-067), and JSON as
 # Python prints it.
 add_executable(chat_test chat_test.cc)
@@ -1161,7 +1167,8 @@ llmp_gtest(components_qwen2_models_test TEST_PREFIX unit. PROPERTIES LABELS "uni
 
 add_executable(components_qwen38_test components_qwen38_test.cc)
 target_link_libraries(components_qwen38_test PRIVATE llmp_components llmp_reference_kernels
-                                                     llmp_spec llmp_model llmp_artifact llmp_json)
+                                                     llmp_spec llmp_model llmp_artifact llmp_json
+                                                     llmp_import)
 llmp_gtest(components_qwen38_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The Qwen3.8 mappings on the published v1 artifacts: each import's stored

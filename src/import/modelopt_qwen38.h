@@ -108,7 +108,8 @@ std::expected<NormalizationCost, Error> ModelOptDrafterBound(const Checkpoint& s
 // composed with a target's at serving; its spec here is that composition
 // with the native target's, to validate and place it.
 std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
-    const Checkpoint& source, std::optional<DraftHeadList> head, NormalizationLimits prepaid);
+    const Checkpoint& source, std::optional<DraftHeadList> head, NormalizationLimits prepaid,
+    const NormalizationTarget* target = nullptr);
 class ModelOptDrafterPlan {
  public:
   ModelOptDrafterPlan(const ModelOptDrafterPlan&) = delete;
@@ -133,7 +134,8 @@ class ModelOptDrafterPlan {
  private:
   friend class llmp::test_support::PartPublicationFixture;
   friend std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
-      const Checkpoint& source, std::optional<DraftHeadList> head, NormalizationLimits prepaid);
+      const Checkpoint& source, std::optional<DraftHeadList> head, NormalizationLimits prepaid,
+      const NormalizationTarget* target);
   ModelOptDrafterPlan() = default;
   std::optional<IndexedPartPlan> parts_{};
   spec::Source canonical_{};

@@ -70,6 +70,7 @@ rt::ModelSettings Settings() {
   rt::ModelSettings s;
   s.name = "deepseek-component-target";
   s.architecture = "deepseek4";
+  s.container = "gguf";
   s.context.value = kContext;
   s.prefill_chunk.value = kChunk;
   s.max_slots.value = 1;

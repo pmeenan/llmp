@@ -30,6 +30,7 @@
 #include "spec/stored.h"
 #include "tokenizer/gguf.h"
 #include "tokenizer/hf.h"
+#include "tokenizer/sentencepiece.h"
 
 namespace llmp::runtime {
 namespace {
@@ -240,9 +241,9 @@ namespace {
 std::uint32_t ContextCeilingOf(const ArtifactFacts& facts) { return facts.context_ceiling; }
 
 // The recipe's, or none's (every capability off).
-const spec::ServingRecipe& Recipe(std::string_view architecture) {
+const spec::ServingRecipe& Recipe(std::string_view architecture, std::string_view container = {}) {
   static constexpr spec::ServingRecipe kNone{};
-  const spec::ServingRecipe* recipe = RecipeOf(architecture);
+  const spec::ServingRecipe* recipe = RecipeOf(architecture, container);
   return recipe != nullptr ? *recipe : kNone;
 }
 
@@ -255,41 +256,53 @@ std::string Grouped(std::uint64_t n) {
 
 }  // namespace
 
-const spec::ServingRecipe* RecipeOf(std::string_view architecture) {
-  const spec::Mapping* mapping = spec::FindMapping(architecture);
-  return mapping != nullptr ? mapping->serving : nullptr;
+const spec::ServingRecipe* RecipeOf(std::string_view architecture, std::string_view container) {
+  if (!container.empty()) {
+    const spec::Mapping* mapping = spec::FindMapping(architecture, container);
+    return mapping ? mapping->serving : nullptr;
+  }
+  // Recipe discovery for architecture-only UI/synthetic facts does not select
+  // a mapping variant. All variants must share the same serving recipe.
+  const spec::ServingRecipe* recipe = nullptr;
+  for (const auto* mapping : spec::Mappings()) {
+    if (mapping->architecture != architecture || !mapping->serving) continue;
+    if (recipe && recipe != mapping->serving) return nullptr;
+    recipe = mapping->serving;
+  }
+  return recipe;
 }
 
 bool SupportsSpeculativeDrafting(const ArtifactFacts& facts) {
-  return !facts.drafter_architecture.empty() || Recipe(facts.architecture).draft_rows;
+  return !facts.drafter_architecture.empty() ||
+         Recipe(facts.architecture, facts.container).draft_rows;
 }
 
 bool SupportsWaveForm(const ArtifactFacts& facts) {
-  return Recipe(facts.architecture).adaptive_waves;
+  return Recipe(facts.architecture, facts.container).adaptive_waves;
 }
 
 bool SupportsWaveCosts(const ArtifactFacts& facts) {
-  return Recipe(facts.architecture).adaptive_waves;
+  return Recipe(facts.architecture, facts.container).adaptive_waves;
 }
 
 bool SupportsMtpDrafting(const ArtifactFacts& facts) {
-  return Recipe(facts.architecture).mtp_waves;
+  return Recipe(facts.architecture, facts.container).mtp_waves;
 }
 
 bool SupportsSpeculativeDrafting(const ModelSettings& settings) {
-  return settings.drafter || Recipe(settings.architecture).draft_rows;
+  return settings.drafter || Recipe(settings.architecture, settings.container).draft_rows;
 }
 
 bool SupportsWaveForm(const ModelSettings& settings) {
-  return Recipe(settings.architecture).adaptive_waves;
+  return Recipe(settings.architecture, settings.container).adaptive_waves;
 }
 
 bool SupportsWaveCosts(const ModelSettings& settings) {
-  return Recipe(settings.architecture).adaptive_waves;
+  return Recipe(settings.architecture, settings.container).adaptive_waves;
 }
 
 bool SupportsMtpDrafting(const ModelSettings& settings) {
-  return Recipe(settings.architecture).mtp_waves;
+  return Recipe(settings.architecture, settings.container).mtp_waves;
 }
 
 bool KeyAppliesTo(std::string_view key, const ArtifactFacts& facts) {
@@ -472,8 +485,12 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
     return Error("unknown KV cache encoding");
   facts.kv_cache_encoding = kv_cache_encoding;
   const bool quantized_kv = kv_cache_encoding == "q8_0";
-  if (quantized_kv && (!OnComponentEngine(target.model().architecture) ||
-                       (drafter != nullptr && !OnComponentEngine(drafter->model().architecture))))
+  const auto shared_model = [](const ja::Artifact& artifact) {
+    const auto* mapping =
+        spec::FindMapping(artifact.model().architecture, artifact.model().container);
+    return mapping && (mapping->serving || mapping->draft);
+  };
+  if (quantized_kv && (!shared_model(target) || (drafter != nullptr && !shared_model(*drafter))))
     return Error("Q8_0 KV requires a supported shared model");
   const auto configure = [&](spec::ModelSpec& model) -> std::expected<void, std::string> {
     if (!quantized_kv) return components::ApplyKvCacheEncoding(model, format::Encoding::kF16, 0);
@@ -484,8 +501,10 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
     return components::ApplyKvCacheEncoding(model, format::Encoding::kQ8_0, *bytes);
   };
   facts.architecture = target.model().architecture;
+  facts.container = target.model().container;
   facts.approval = FindApproval(facts.architecture, target.sources());
-  if (const spec::Mapping* mapping = spec::FindMapping(facts.architecture); mapping != nullptr)
+  if (const spec::Mapping* mapping = spec::FindMapping(facts.architecture, facts.container);
+      mapping != nullptr)
     facts.pipeline = mapping->pipeline;
   std::optional<std::uint32_t> declared_context;
   // The target's stored spec (a v1 artifact's alone: D-118) and, with a
@@ -501,6 +520,11 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
     if (!admitted) return Error(admitted.error());
     declared_context = admitted->model.stages.front().context;
     facts.pipeline = admitted->model.pipeline;
+    auto vocabulary = spec::Vocabulary(admitted->model, admitted->source);
+    if (!vocabulary) return Error(vocabulary.error());
+    facts.vocabulary = *vocabulary;
+    if (const auto* mapping = spec::FindMapping(facts.architecture, facts.container))
+      facts.policy_gates = spec::PolicyGates(*mapping, admitted->model, facts.container);
     model = std::move(admitted->model);
   }
   // The drafter's admission, once: its source as checked, for its
@@ -519,7 +543,7 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
     });
     if (drafter != nullptr) {
       const auto compose = [&]() -> std::expected<base::Sha256Digest, std::string> {
-        const auto* target_mapping = spec::FindMapping(facts.architecture);
+        const auto* target_mapping = spec::FindMapping(facts.architecture, facts.container);
         if (target_mapping == nullptr) return Error("component calibration has no target mapping");
         const auto* draft_mapping = ComposedDrafterMapping(*drafter);
         if (draft_mapping == nullptr) return Error("component calibration has no drafter mapping");
@@ -535,13 +559,13 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
           if (target_mapping->serving == nullptr)
             return Error("component calibration has no target serving recipe");
           const auto& serving = *target_mapping->serving;
-          auto map = DraftHeadRows(*drafter, draft_mapping->draft->head_ids, serving.vocab);
+          auto map = DraftHeadRows(*drafter, draft_mapping->draft->head_ids, facts.vocabulary);
           if (!map) return Error(map.error());
           const auto selected =
               *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt;
           auto width = ConfigureDraftVocabulary(*draft_values, *draft_mapping->draft,
                                                 draft_vocab.value_or(serving.default_draft_vocab),
-                                                serving.vocab, selected);
+                                                facts.vocabulary, selected);
           if (!width) return Error(width.error());
           facts.composed_draft_vocab = *width;
           composed = spec::ComposeDrafter(*model, *target_mapping, *draft_mapping, *draft_source,
@@ -689,28 +713,29 @@ std::expected<ChatAssets, std::string> ReadChatAssets(const ja::Artifact& target
       return assets;
     }
   } else {
-    auto json_text = source("tokenizer.json", entry.tokenizer);
-    if (!json_text) {
-      return std::unexpected(json_text.error());
-    }
-    if (!*json_text) {
-      if (Keeps(target, "tokenizer.model"))
-        return Error(
-            "the artifact keeps a SentencePiece tokenizer.model, whose standalone format is not "
-            "supported by the native tokenizer loader; supply tokenizer.json or GGUF tokenizer "
-            "metadata");
+    const bool model = !Keeps(target, "tokenizer.json") &&
+                       (Keeps(target, "tokenizer.model") ||
+                        (entry.tokenizer && entry.tokenizer->extension() == ".model"));
+    const std::string_view name = model ? "tokenizer.model" : "tokenizer.json";
+    auto data = source(name, entry.tokenizer);
+    if (!data) return std::unexpected(data.error());
+    if (!*data)
       return Error(
-          std::format("the artifact keeps no GGUF metadata or tokenizer.json and "
-                      "models.{}.tokenizer is not set",
+          std::format("the artifact keeps no GGUF metadata, tokenizer.json or "
+                      "tokenizer.model and models.{}.tokenizer is not set",
                       entry.name));
-    }
-    auto spec = tokenizer::ReadHfTokenizer(**json_text);
-    if (!spec) {
-      return Error("tokenizer: " + spec.error().ToString());
+    auto spec =
+        model ? tokenizer::ReadSentencePieceTokenizer(**data) : tokenizer::ReadHfTokenizer(**data);
+    if (!spec) return Error(std::format("{}: {}", name, spec.error().ToString()));
+    if (auto config = source("tokenizer_config.json", std::nullopt); !config) {
+      return std::unexpected(config.error());
+    } else if (*config) {
+      auto applied = tokenizer::ApplyHfTokenizerConfig(**config, *spec);
+      if (!applied) return Error("tokenizer_config.json: " + applied.error().ToString());
     }
     assets.spec = std::move(*spec);
-    assets.from = Keeps(target, "tokenizer.json") ? std::string("tokenizer.json")
-                                                  : entry.tokenizer.value_or(fs::path()).string();
+    assets.from =
+        Keeps(target, name) ? std::string(name) : entry.tokenizer.value_or(fs::path()).string();
   }
   auto text = source("chat_template.jinja", entry.chat_template);
   if (!text) {
@@ -752,6 +777,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   ModelSettings s;
   s.name = entry.name;
   s.architecture = facts.architecture;
+  s.container = facts.container;
   s.composition = facts.composition;
   s.pipeline = facts.composition ? spec::PipelineKind::kImage : facts.pipeline;
   s.drafter = entry.drafter.has_value();
@@ -780,7 +806,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   }
   const std::string& arch = facts.architecture;
   // The architecture's serving recipe (its mapping's data).
-  const spec::ServingRecipe& recipe = Recipe(arch);
+  const spec::ServingRecipe& recipe = Recipe(arch, facts.container);
   if (trained_max && !facts.trained_context)
     return Error(std::format("{} maximum-context qualification needs trained-context metadata",
                              recipe.name.empty() ? std::string_view(arch) : recipe.name));
@@ -860,7 +886,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
                      std::format("the drafter ({})", facts.drafter_architecture)};
   }
   // A recipe without drafters (Gemma 2's and 3's) has no speculative path.
-  if (RecipeOf(arch) != nullptr && !recipe.drafters &&
+  if (RecipeOf(arch, facts.container) != nullptr && !recipe.drafters &&
       (entry.drafter || entry.Bool("speculation").value_or(false)))
     return Error(
         std::format("{} serving has no qualified assistant or speculative path", recipe.family));
@@ -927,13 +953,10 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
       if (!rule) return Error(rule.error());
       if (*rule != nullptr) recipe_chunk = (*rule)->prefill_chunk;
     } else if (facts.target_spec.has_value()) {
-      if (const spec::Mapping* mapping = spec::FindMapping(arch); mapping != nullptr) {
-        std::vector<spec::SourceValue> gates;
-        if (facts.has_moe) {
-          gates.push_back({.key = std::format("{}.expert_count", arch), .value = true});
-        }
-        const auto rule =
-            spec::DefaultRule(*mapping, gates, {.context = context, .slots = s.max_slots.value});
+      if (const spec::Mapping* mapping = spec::FindMapping(arch, facts.container);
+          mapping != nullptr) {
+        const auto rule = spec::DefaultRule(*mapping, facts.policy_gates,
+                                            {.context = context, .slots = s.max_slots.value});
         if (!rule) return Error(rule.error());
         if (*rule != nullptr) recipe_chunk = (*rule)->prefill_chunk;
       }
@@ -1077,7 +1100,8 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   s.draft_vocab = Pick<std::uint32_t>(U32(entry.Integer("draft_vocab")), basis("draft_vocab"), {},
                                       {}, {}, {}, recipe.default_draft_vocab, "measured on a GB10");
   // Keep the runner's refusal of a cap larger than its target vocabulary.
-  if (recipe.mtp_waves && speculative && recipe.vocab != 0 && s.draft_vocab.value > recipe.vocab) {
+  if (recipe.mtp_waves && speculative && facts.vocabulary != 0 &&
+      s.draft_vocab.value > facts.vocabulary) {
     return Error(std::format("draft_vocab exceeds the {} target vocabulary", recipe.name));
   }
   // The runner already caps selected heads; report that effective value
@@ -1100,7 +1124,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   }
   if (speculative && facts.composed_draft_vocab &&
       *facts.composed_draft_vocab !=
-          (s.draft_vocab.value == 0 ? recipe.vocab : s.draft_vocab.value))
+          (s.draft_vocab.value == 0 ? facts.vocabulary : s.draft_vocab.value))
     return Error("artifact facts were derived for a different draft vocabulary");
 
   s.depth_cost_ratio =

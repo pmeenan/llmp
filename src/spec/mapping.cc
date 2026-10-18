@@ -12,6 +12,7 @@
 #include <format>
 #include <map>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <span>
 #include <string>
@@ -29,6 +30,7 @@
 #include "spec/mappings/gemma4.h"
 #include "spec/mappings/qwen2.h"
 #include "spec/mappings/qwen38.h"
+#include "spec/names.h"
 #include "spec/spec.h"
 
 namespace llmp::spec {
@@ -40,13 +42,10 @@ std::unexpected<std::string> Refuse(std::string_view where, std::string_view wha
   return std::unexpected(std::format("{}: {}", where, what));
 }
 
-bool Lower(char c) { return c >= 'a' && c <= 'z'; }
-bool Digit(char c) { return c >= '0' && c <= '9'; }
-
-bool IsName(std::string_view s) {
-  return !s.empty() && s.size() <= kMaxText && Lower(s.front()) &&
-         std::ranges::all_of(s, [](char c) { return Lower(c) || Digit(c) || c == '_'; });
-}
+using names::Digit;
+using names::IsKind;
+using names::IsName;
+using names::Lower;
 
 // An architecture as GGUF names it: a name that may also hold '-'
 // ("gemma4-assistant").
@@ -54,23 +53,6 @@ bool IsArchitecture(std::string_view s) {
   return !s.empty() && s.size() <= kMaxText && Lower(s.front()) &&
          std::ranges::all_of(s,
                              [](char c) { return Lower(c) || Digit(c) || c == '_' || c == '-'; });
-}
-
-bool IsKind(std::string_view s) {
-  if (s.empty() || s.size() > kMaxText) {
-    return false;
-  }
-  std::size_t start = 0;
-  while (true) {
-    const std::size_t dot = s.find('.', start);
-    if (!IsName(s.substr(start, dot == std::string_view::npos ? dot : dot - start))) {
-      return false;
-    }
-    if (dot == std::string_view::npos) {
-      return true;
-    }
-    start = dot + 1;
-  }
 }
 
 // A tensor name or source key: printable ASCII without space, quotes,
@@ -188,7 +170,7 @@ std::expected<double, std::string> Transformed(double x, Transform t, std::strin
   if (!std::isfinite(y)) {
     return Refuse(where, "a value outside its transform's domain");
   }
-  return y;
+  return y == 0.0 ? 0.0 : y;
 }
 
 // Where a per-layer rule reads: the layer and the stage's layer count.
@@ -472,12 +454,13 @@ std::expected<std::uint64_t, std::string> Count(const ParamValue* v, std::string
 class Synthesis {
  public:
   Synthesis(const Mapping& m, const Source& s, const Values& v, std::uint32_t layers,
-            std::string_view target_stage, std::string types)
+            std::string_view target_stage, std::string types, std::span<const std::string> folds)
       : m_(m),
         source_(s),
         values_(v),
         layers_(layers),
         target_stage_(target_stage),
+        folds_(folds),
         types_(std::move(types)) {}
 
   // The slots the source has, by their gates, and the layers a slot with a
@@ -567,6 +550,11 @@ class Synthesis {
         return Refuse(t.name, std::format("layer {} of type '{}' has no {} {}", match->second,
                                           Type(match->second), rule.slot, rule.role));
       }
+      if (match->second == kShared && slot.site == Site::kLayer &&
+          !std::ranges::any_of(std::views::iota(std::uint32_t{0}, layers_), [&](auto layer) {
+            return At(slot, layer) && Applies(rule.layer_types, Type(layer));
+          }))
+        return Refuse(t.name, "a shared tensor has no component instance that binds it");
       // A per-layer side input's table, at a layer it is at.
       if (match->second != kShared && slot.site == Site::kSide &&
           !Layers(slot.slot).contains(match->second)) {
@@ -600,7 +588,7 @@ class Synthesis {
           !seen.insert(r.param).second) {
         continue;
       }
-      auto v = Resolve(m_, slot.slot, r.param, type, values_, at, source_.folds);
+      auto v = Resolve(m_, slot.slot, r.param, type, values_, at, folds_);
       if (!v) {
         return std::unexpected(v.error());
       }
@@ -640,6 +628,9 @@ class Synthesis {
       }
       // The part it holds: the rule's, or with any_part the tensor's own.
       const auto held = names_.find(tensor);
+      if (held != names_.end() && ((!rule.any_part && held->second->part != rule.part) ||
+                                   held->second->experts != rule.experts))
+        return Refuse(tensor, "fallback tensor has a different part or expert geometry");
       const format::PartRole part =
           rule.any_part && held != names_.end() ? held->second->part : rule.part;
       c.weights.push_back(WeightBinding{
@@ -671,6 +662,7 @@ class Synthesis {
   std::set<std::string_view> present_;
   std::map<std::string_view, std::set<std::uint32_t>> at_;
   std::map<std::pair<std::size_t, std::uint32_t>, std::string> bound_;  // (rule, layer)
+  std::span<const std::string> folds_;
   std::string types_;  // a letter a layer, or the mapping's repeating pattern
 };
 
@@ -747,6 +739,8 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
   if (auto ok = ValidateMapping(mapping); !ok) {
     return std::unexpected(ok.error());
   }
+  if (!mapping.containers.empty() && !std::ranges::contains(mapping.containers, source.container))
+    return Refuse("source", "container has no variant of this mapping");
   if (source.architecture != mapping.architecture) {
     return Refuse("source", std::format("architecture {}, not the mapping's {}",
                                         source.architecture, mapping.architecture));
@@ -777,8 +771,13 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
   if (auto ok = CheckLayerFlags(mapping, by_key, *types, *layers); !ok) {
     return std::unexpected(ok.error());
   }
+  std::vector<std::string> effective_folds = source.folds;
+  for (const FoldRule& f : mapping.folds)
+    if (!f.imported && f.container == source.container &&
+        !std::ranges::contains(effective_folds, f.fold))
+      effective_folds.emplace_back(f.fold);
   Synthesis syn(mapping, source, by_key, static_cast<std::uint32_t>(*layers), target_stage,
-                std::move(*types));
+                std::move(*types), effective_folds);
   if (auto ok = syn.Gate(); !ok) {
     return std::unexpected(ok.error());
   }
@@ -881,7 +880,8 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
   // latter validated against the catalog with the spec), sorted by
   // Canonicalize.
   for (const FoldRule& f : mapping.folds) {
-    if (f.container == source.container && !std::ranges::contains(stage.folds, f.fold)) {
+    if (!f.imported && f.container == source.container &&
+        !std::ranges::contains(stage.folds, f.fold)) {
       stage.folds.emplace_back(f.fold);
     }
   }
@@ -935,22 +935,182 @@ std::expected<const PolicyRule*, std::string> DefaultRule(const Mapping& mapping
 }
 
 std::span<const Mapping* const> Mappings() {
-  static const std::array<const Mapping*, 9> all = {
-      &mappings::Gemma2Mapping(), &mappings::Gemma3Mapping(),
-      &mappings::Gemma4Mapping(), &mappings::Gemma4AssistantMapping(),
-      &mappings::Qwen38Mapping(), &mappings::Qwen38MtpMapping(),
-      &mappings::Dsv4Mapping(),   &mappings::DsparkMapping(),
-      &mappings::Qwen2Mapping()};
+  static const std::array all = {&mappings::Gemma2Mapping(),
+                                 &mappings::Gemma3Mapping(),
+                                 &mappings::Gemma2SafetensorsMapping(),
+                                 &mappings::Gemma3SafetensorsMapping(),
+                                 &mappings::Gemma3ConditionalSafetensorsMapping(),
+                                 &mappings::Gemma4Mapping(),
+                                 &mappings::Gemma4AssistantMapping(),
+                                 &mappings::Qwen38Mapping(),
+                                 &mappings::Qwen38MtpMapping(),
+                                 &mappings::Dsv4Mapping(),
+                                 &mappings::DsparkMapping(),
+                                 &mappings::Qwen2Mapping(),
+                                 &mappings::Qwen38GgufMapping(),
+                                 &mappings::Qwen38NativeMapping(),
+                                 &mappings::Qwen38MtpNativeMapping(),
+                                 &mappings::Qwen38MtpReplayMapping(),
+                                 &mappings::Qwen38MtpNativeReplayMapping(),
+                                 &mappings::Qwen2GgufMapping(),
+                                 &mappings::Qwen2SafetensorsMapping(),
+                                 &mappings::Qwen2Exl3Mapping()};
   return all;
 }
 
 const Mapping* FindMapping(std::string_view architecture) {
+  for (const Mapping* m : Mappings())
+    if (m->architecture == architecture && m->version == 1) return m;
+  return nullptr;
+}
+
+const Mapping* FindMapping(std::string_view architecture, std::string_view container,
+                           std::uint16_t version) {
+  if (container.empty()) return nullptr;
+  const Mapping* result = nullptr;
   for (const Mapping* m : Mappings()) {
-    if (m->architecture == architecture) {
-      return m;
+    if (m->architecture != architecture || m->version != version ||
+        !std::ranges::contains(m->containers, container))
+      continue;
+    if (result != nullptr) return nullptr;  // ambiguous registrations never pick by order
+    result = m;
+  }
+  return result;
+}
+
+std::vector<SourceValue> PolicyGates(const Mapping& mapping, const ModelSpec& model,
+                                     std::string_view container) {
+  std::vector<SourceValue> out;
+  if (model.stages.empty()) return out;
+  for (const GateRule& rule : mapping.gates) {
+    if (!rule.container.empty() && rule.container != container) continue;
+    bool holds = false;
+    EachComponent(model.stages.front(), [&](const ComponentRef& c, const std::string&) {
+      if (c.kind != rule.kind) return;
+      if (rule.param.empty()) {
+        holds = true;
+        return;
+      }
+      if (const auto* p = c.Find(rule.param))
+        if (const auto* flag = std::get_if<bool>(&p->value); flag && *flag) holds = true;
+    });
+    if (holds) out.push_back({.key = std::string(rule.key), .value = true});
+  }
+  return out;
+}
+
+std::expected<std::uint32_t, std::string> Vocabulary(const ModelSpec& model, const Source& source) {
+  if (model.stages.empty() || !model.stages.front().heads.output)
+    return Refuse("vocabulary", "target has no output head");
+  std::optional<std::uint32_t> rows;
+  for (const WeightBinding& w : model.stages.front().heads.output->weights) {
+    if (w.role != "weight" || !w.stage.empty()) continue;
+    const auto tensor = std::ranges::find(source.tensors, w.tensor, &SourceTensor::name);
+    if (tensor == source.tensors.end() || tensor->format.shape.rank != 2 ||
+        tensor->format.shape.ne[1] == 0 || tensor->format.shape.ne[1] > kMaxWidth)
+      return Refuse("vocabulary", "output head lacks a bounded matrix");
+    auto count = static_cast<std::uint32_t>(tensor->format.shape.ne[1]);
+    if (rows && *rows != count) return Refuse("vocabulary", "head parts disagree on rows");
+    rows = count;
+  }
+  if (!rows) return Refuse("vocabulary", "output head has no weight");
+  const ComponentRef& head = *model.stages.front().heads.output;
+  if (head.kind == "head.linear") {
+    if (const Param* p = head.Find("rows")) {
+      const auto* selected = std::get_if<std::int64_t>(&p->value);
+      if (!selected || *selected < 0 || std::cmp_greater(*selected, *rows))
+        return Refuse("vocabulary", "output head rows exceed its weight");
+      if (*selected) return static_cast<std::uint32_t>(*selected);
     }
   }
-  return nullptr;
+  return *rows;
+}
+
+std::expected<std::vector<SourceValue>, std::string> ExtractValues(const Mapping& mapping,
+                                                                   const ModelSpec& target,
+                                                                   const Source& target_source,
+                                                                   const Source& source) {
+  if (!mapping.draft || target.stages.empty() || target.stages.front().role != StageRole::kTarget)
+    return Refuse(mapping.architecture, "drafter extraction requires a target spec");
+  if (auto valid = Validate(target); !valid) return std::unexpected(valid.error());
+  const Stage& stage = target.stages.front();
+  std::vector<SourceValue> out;
+  for (const ValueRule& rule : mapping.draft->values) {
+    if (std::ranges::contains(out, rule.key, &SourceValue::key)) continue;
+    std::optional<ParamValue> value;
+    switch (rule.origin) {
+      case ValueOrigin::kLiteral:
+        switch (rule.type) {
+          case ValueType::kInt:
+            value = rule.value.integer;
+            break;
+          case ValueType::kReal:
+            value = rule.value.real;
+            break;
+          case ValueType::kBool:
+            value = rule.value.flag;
+            break;
+          case ValueType::kString:
+            value = std::string(rule.value.text);
+            break;
+          case ValueType::kInts:
+            return Refuse(rule.key, "a list literal is unsupported");
+        }
+        break;
+      case ValueOrigin::kContext:
+        value = std::int64_t{stage.context};
+        break;
+      case ValueOrigin::kWidth:
+        value = static_cast<std::int64_t>(stage.stream.width);
+        break;
+      case ValueOrigin::kStreams:
+        value = std::int64_t{stage.stream.streams};
+        break;
+      case ValueOrigin::kVocabulary: {
+        auto rows = Vocabulary(target, target_source);
+        if (!rows) return std::unexpected(rows.error());
+        value = std::int64_t{*rows};
+        break;
+      }
+      case ValueOrigin::kComponent:
+        // Last matching layer/component: MTP follows the target's last block
+        // of the declared component kind. No target size or layer number is fixed.
+        EachComponent(stage, [&](const ComponentRef& c, const std::string&) {
+          if (c.kind == rule.kind)
+            if (const Param* p = c.Find(rule.param)) value = p->value;
+        });
+        break;
+      case ValueOrigin::kLayerCount: {
+        std::set<std::uint32_t> layers;
+        for (const SourceTensor& tensor : source.tensors)
+          if (auto layer = Match(rule.tensor, tensor.name, kMaxLayers)) layers.insert(*layer);
+        if (!layers.empty() && *layers.rbegin() + 1 == layers.size())
+          value = static_cast<std::int64_t>(layers.size());
+        break;
+      }
+      case ValueOrigin::kTensor:
+        if (const auto t = std::ranges::find(source.tensors, rule.tensor, &SourceTensor::name);
+            t != source.tensors.end() && rule.dimension < t->format.shape.rank)
+          value = static_cast<std::int64_t>(t->format.shape.ne[rule.dimension]);
+        break;
+    }
+    if (!value) {
+      if (rule.optional) continue;
+      return Refuse(rule.key, "target spec or drafter tensor lacks the declared extraction fact");
+    }
+    if (rule.at_most) {
+      auto* i = std::get_if<std::int64_t>(&*value);
+      if (!i || *i <= 0) return Refuse(rule.key, "a nonpositive extraction bound");
+      *i = std::min<std::int64_t>(*i, rule.at_most);
+    }
+    if (rule.list) {
+      const auto* i = std::get_if<std::int64_t>(&*value);
+      if (!i) return Refuse(rule.key, "a noninteger list extraction");
+      value = std::vector<std::int64_t>{*i};
+    }
+    out.push_back({.key = std::string(rule.key), .value = std::move(*value)});
+  }
+  return out;
 }
 
 std::vector<std::string_view> SourceKeys(const Mapping& m) {
@@ -981,6 +1141,25 @@ Status ValidateMapping(const Mapping& m) {
   if (!IsArchitecture(m.architecture) || m.version == 0 ||
       static_cast<std::uint8_t>(m.pipeline) > static_cast<std::uint8_t>(PipelineKind::kDecision)) {
     return Refuse(where, "an invalid architecture, version or pipeline");
+  }
+  for (std::size_t i = 0; i < m.containers.size(); ++i)
+    if (!IsName(m.containers[i]) || std::ranges::count(m.containers, m.containers[i]) != 1)
+      return Refuse(where, "invalid or duplicate mapping container");
+  for (const GateRule& rule : m.gates)
+    if (!IsText(rule.key) || !IsKind(rule.kind) || (!rule.param.empty() && !IsName(rule.param)) ||
+        (!rule.container.empty() && !IsName(rule.container)))
+      return Refuse(where, "invalid derived policy gate");
+  if (m.draft) {
+    if (!IsArchitecture(m.draft->target_architecture))
+      return Refuse(where, "drafter lacks a target architecture");
+    for (const ValueRule& rule : m.draft->values)
+      if (!IsText(rule.key) || rule.dimension >= format::kMaxDims ||
+          static_cast<unsigned>(rule.origin) > static_cast<unsigned>(ValueOrigin::kLayerCount) ||
+          static_cast<unsigned>(rule.type) > static_cast<unsigned>(ValueType::kInts) ||
+          (rule.origin == ValueOrigin::kComponent && (!IsKind(rule.kind) || !IsName(rule.param))) ||
+          (rule.origin == ValueOrigin::kTensor && !IsText(rule.tensor)) ||
+          (rule.origin == ValueOrigin::kLayerCount && !IsPattern(rule.tensor, true)))
+        return Refuse(where, "invalid drafter value extraction rule");
   }
   if (!IsText(m.layer_count_key) || m.layer_types.empty() ||
       m.layer_types.size() > kMaxLayerTypes || !std::ranges::all_of(m.layer_types, Lower)) {
@@ -1171,9 +1350,9 @@ Status ValidateMapping(const Mapping& m) {
       return Refuse(at, "unless a fold the catalog does not have");
     }
     if (r.slot.empty()) {
-      if (r.key.empty() || !r.param.empty() || !r.layer_types.empty() || !r.numerator_key.empty() ||
-          !r.divisor_key.empty() || r.transform != Transform::kNone || r.per_layer ||
-          !r.unless_fold.empty()) {
+      if (r.type == ValueType::kInts || r.key.empty() || !r.param.empty() ||
+          !r.layer_types.empty() || !r.numerator_key.empty() || !r.divisor_key.empty() ||
+          r.transform != Transform::kNone || r.per_layer || !r.unless_fold.empty()) {
         return Refuse(at, "a requirement is a key and its value");
       }
       continue;
@@ -1274,6 +1453,51 @@ std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
   if (!made) {
     return std::unexpected(made.error());
   }
+  // A target rule names an anchor tensor, not a physical encoding part. Borrow
+  // its complete logical role so split tables keep all of their source parts.
+  Status borrowed;
+  EachComponent(made->stage, [&](ComponentRef& component, const std::string&) {
+    if (!borrowed) return;
+    std::vector<WeightBinding> bindings;
+    for (const WeightBinding& requested : component.weights) {
+      if (requested.stage != head.name) {
+        bindings.push_back(requested);
+        continue;
+      }
+      std::optional<std::vector<WeightBinding>> found;
+      EachComponent(head, [&](const ComponentRef& owner, const std::string&) {
+        if (!borrowed) return;
+        for (const WeightBinding& anchor : owner.weights) {
+          if (anchor.tensor != requested.tensor || anchor.experts != requested.experts) continue;
+          std::vector<WeightBinding> group;
+          for (const WeightBinding& part : owner.weights) {
+            if (part.role != anchor.role) continue;
+            auto binding = part;
+            binding.role = requested.role;
+            if (binding.stage.empty()) binding.stage = head.name;
+            group.push_back(std::move(binding));
+          }
+          if (found && *found != group) {
+            borrowed = Refuse(requested.tensor, "ambiguous target weight role");
+            return;
+          }
+          found = std::move(group);
+        }
+      });
+      if (!borrowed) return;
+      if (!found) {
+        borrowed = Refuse(requested.tensor, "no target weight role contains this anchor");
+        return;
+      }
+      if (bindings.size() > kMaxWeights || found->size() > kMaxWeights - bindings.size()) {
+        borrowed = Refuse(requested.tensor, "borrowed target role exceeds the weight bound");
+        return;
+      }
+      bindings.insert(bindings.end(), found->begin(), found->end());
+    }
+    component.weights = std::move(bindings);
+  });
+  if (!borrowed) return std::unexpected(borrowed.error());
   ModelSpec spec = target;
   std::uint32_t artifact = 0;
   for (const Stage& s : spec.stages) {
@@ -1302,12 +1526,12 @@ std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
       const auto count = static_cast<std::int64_t>(target_stage.layers.size());
       const std::int64_t entry =
           list != nullptr && r.index < list->size() ? (*list)[r.index] : std::int64_t{-1};
-      const std::int64_t layer = r.entering ? entry - 1 : entry;
-      if (layer < 0 || layer >= count) {
+      if (r.entering ? entry <= 0 || entry > count : entry < 0 || entry >= count) {
         return Refuse(where,
                       std::format("read {}: {} names no layer of the target's {} ({})", r.name,
                                   r.layers_key, count, r.entering ? "entering" : "after"));
       }
+      const std::int64_t layer = r.entering ? entry - 1 : entry;
       tap_layer = static_cast<std::uint32_t>(layer);
     }
     const auto tap = std::ranges::find(target_stage.taps, r.name, &FeatureTap::name);

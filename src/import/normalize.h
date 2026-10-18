@@ -16,6 +16,16 @@
 #include "spec/spec.h"
 
 namespace llmp::import {
+// Caller-owned, validated artifact target. Normalization never manufactures a
+// target checkpoint profile; the target's stored spec and tensors are authoritative.
+struct NormalizationTarget {
+  const spec::Mapping* mapping = nullptr;
+  spec::ModelSpec model;
+  spec::Source source;
+};
+std::expected<void, Error> ValidateTarget(const NormalizationTarget& target,
+                                          const spec::Mapping& drafter);
+
 struct NormalizationLimits {
   // New requested container storage and conservative byte-comparison work.
   // The caller separately owns/funds the moved Checkpoint. Neither is a
@@ -68,7 +78,8 @@ namespace normalization_detail {
 // Internal construction seam for compiled-table tests. The public entry selects
 // only FindSourceMapping. The same validator and interpreter serve both.
 std::expected<NormalizationCost, Error> Bound(const Checkpoint&, const SourceMapping&);
-std::expected<NormalizedPlan, Error> Build(Checkpoint, const SourceMapping&, NormalizationLimits);
+std::expected<NormalizedPlan, Error> Build(Checkpoint, const SourceMapping&, NormalizationLimits,
+                                           const NormalizationTarget* = nullptr);
 }  // namespace normalization_detail
 
 class NormalizedPlan {
@@ -93,9 +104,8 @@ class NormalizedPlan {
   std::expected<SourceCopyCursor, Error> CursorFor(std::size_t output) const;
 
  private:
-  friend std::expected<NormalizedPlan, Error> normalization_detail::Build(Checkpoint,
-                                                                          const SourceMapping&,
-                                                                          NormalizationLimits);
+  friend std::expected<NormalizedPlan, Error> normalization_detail::Build(
+      Checkpoint, const SourceMapping&, NormalizationLimits, const NormalizationTarget*);
   NormalizedPlan() = default;
   Checkpoint source_{};
   spec::Source canonical_{};
@@ -111,6 +121,7 @@ class NormalizedPlan {
 };
 // Consumes metadata only. No payload reads, writes, transformation, output
 // artifact, or successful-import receipt is implied by a returned plan.
-std::expected<NormalizedPlan, Error> Normalize(Checkpoint source, NormalizationLimits limits);
+std::expected<NormalizedPlan, Error> Normalize(Checkpoint source, NormalizationLimits limits,
+                                               const NormalizationTarget* target = nullptr);
 }  // namespace llmp::import
 #endif  // LLMP_IMPORT_NORMALIZE_H_

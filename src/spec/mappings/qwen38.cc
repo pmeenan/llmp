@@ -64,39 +64,6 @@ constexpr std::array kFolds = {
     FoldRule{.fold = "gdn.value_heads_tiled", .container = "gguf"},
 };
 
-// Qwen3.8 Flash Next's facts its recipes and its MTP drafter's values are
-// made of (config.json's text_config, Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@
-// 925d7be6, the base model's): a QSA prompt chunk's bound, its vocabulary,
-// and the block the native MTP import's values describe (D-118: the
-// architecture's compiled constants).
-constexpr std::uint32_t kContext = 262144;
-constexpr std::uint32_t kVocab = 248320;
-constexpr std::uint32_t kMaxRows = 8192;
-struct Block {
-  std::uint32_t width = 2560, heads = 24, kv_heads = 2, head_dim = 256, rope_dims = 64;
-  std::array<std::int32_t, 4> rope_sections{11, 11, 10, 0};
-  float rope_base = 10000000.0F;
-  std::uint32_t experts = 512, experts_used = 10, expert_ffn = 640, shared_ffn = 640;
-  std::uint32_t hc = 4, hc_rank = 320;
-  std::uint32_t indexer_heads = 4, indexer_head_dim = 128, indexer_ratio = 4, indexer_budget = 2048;
-  float rms_eps = 1e-6F;
-};
-constexpr Block kBlock{};
-
-// The widest prompt chunk at `context`: its QSA selection's F32 masks,
-// [padded cells, rows], keep their plane strides within 32 bits (RE-037).
-std::uint32_t MostRows(std::uint32_t context) {
-  constexpr std::uint64_t kMaskBytes = 4;
-  if (context == 0 || context > kContext ||
-      context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {
-    return 0;
-  }
-  const std::uint64_t cells = (std::uint64_t{context} + 255) / 256 * 256;
-  const std::uint64_t masks =
-      std::uint64_t{std::numeric_limits<std::int32_t>::max()} / (cells * kMaskBytes);
-  return static_cast<std::uint32_t>(std::min<std::uint64_t>({context, kMaxRows, masks}));
-}
-
 // ---------------------------------------------------------------- qwen4exp
 
 constexpr std::array kSlots = {
@@ -477,7 +444,6 @@ constexpr ServingRecipe kServing{.family = "Qwen3.8",
                                  .prefill_rows = 4096,
                                  .draft_rows = true,
                                  .mtp_waves = true,
-                                 .vocab = kVocab,
                                  .default_draft_rows = 3,
                                  .default_draft_vocab = 65536,
                                  .default_depth_cost_ratio = 1.16,
@@ -486,9 +452,26 @@ constexpr ServingRecipe kServing{.family = "Qwen3.8",
                                  .default_wave_read_align = 2048,
                                  .shared_route = true,
                                  .qualified_envelopes = true,
-                                 .most_rows = &MostRows,
                                  .frozen_host_masks = false,
                                  .branch_depth = 3};
+
+constexpr std::array kGates = {
+    GateRule{.key = "qwen4exp.expert_count", .kind = "ffn.moe"},
+    GateRule{.key = kStacked, .kind = "ffn.moe", .param = "stacked"},
+    GateRule{.key = kActivationScales,
+             .kind = "ffn.moe",
+             .param = "stacked",
+             .container = "safetensors"},
+    GateRule{.key = kScaled, .kind = "ffn.moe", .param = "projection_scales"},
+};
+constexpr std::array kNativeFolds = {
+    FoldRule{.fold = "norm.plus_one", .container = "safetensors", .imported = true},
+    FoldRule{.fold = "ssm.a_neg_exp", .container = "safetensors", .imported = true},
+    FoldRule{.fold = "gdn.value_heads_tiled", .container = "safetensors", .imported = true},
+    FoldRule{.fold = "norm.plus_one", .container = "mlx", .imported = true},
+    FoldRule{.fold = "ssm.a_neg_exp", .container = "mlx", .imported = true},
+    FoldRule{.fold = "gdn.value_heads_tiled", .container = "mlx", .imported = true},
+};
 
 constexpr Mapping kMapping{
     .architecture = "qwen4exp",
@@ -504,6 +487,7 @@ constexpr Mapping kMapping{
     .layer_flag_type = 'f',
     .policies = kPolicies,
     .serving = &kServing,
+    .gates = kGates,
 };
 
 // Closed GGUF target projection: whole encoded data parts, split indexer,
@@ -525,52 +509,18 @@ constexpr auto kGgufTensors = [] {
   return out;
 }();
 static_assert(kGgufTensors.size() == 47);
-constexpr std::array kGgufProfile = {
-    RequireInt("qwen4exp.block_count", 48, false),
-    RequireInt("qwen4exp.context_length", 262144, false),
-    RequireInt("qwen4exp.embedding_length", 2560, false),
-    RequireInt("qwen4exp.attention.head_count", 24, false),
-    RequireInt("qwen4exp.attention.head_count_kv", 2, false),
-    RequireInt("qwen4exp.attention.key_length", 256, false),
-    RequireInt("qwen4exp.attention.value_length", 256, false),
-    RequireInt("qwen4exp.rope.dimension_count", 64, false),
-    RequireInt("qwen4exp.expert_count", 512, false),
-    RequireInt("qwen4exp.expert_used_count", 10, false),
-    RequireInt("qwen4exp.expert_feed_forward_length", 640, false),
-    RequireInt("qwen4exp.expert_shared_feed_forward_length", 640, false),
-    RequireInt("qwen4exp.ssm.conv_kernel", 4, false),
-    RequireInt("qwen4exp.ssm.state_size", 128, false),
-    RequireInt("qwen4exp.ssm.group_count", 16, false),
-    RequireInt("qwen4exp.ssm.time_step_rank", 48, false),
-    RequireInt("qwen4exp.ssm.inner_size", 6144, false),
-    RequireInt("qwen4exp.hyper_connection.count", 4, false),
-    RequireInt("qwen4exp.hyper_connection.low_rank", 320, false),
-    RequireInt("qwen4exp.attention.indexer.head_count", 4, false),
-    RequireInt("qwen4exp.attention.indexer.key_length", 128, false),
-    RequireInt("qwen4exp.attention.indexer.top_k", 2048, false),
-    RequireInt("qwen4exp.ple.ngram_size", 3, false),
-    RequireInt("qwen4exp.ple.heads_per_ngram", 8, false),
-    RequireInt("qwen4exp.ple.conv_kernel", 4, false),
-    RequireInt("qwen4exp.ple.eos_token_id", 248044, false),
-    RequireInt("qwen4exp.ple.image_token_id", 248056, false),
-    RequireInt("qwen4exp.embedding_length_per_layer_input", 160, false),
-    ParamRule{.key = "qwen4exp.rope.freq_base", .type = kReal, .value = {.real = 10000000.0}},
-    ParamRule{.key = "qwen4exp.attention.layer_norm_rms_epsilon",
-              .type = kReal,
-              .value = {.real = static_cast<double>(1e-6F)}},
-};
 constexpr auto kGgufParams = [] {
   constexpr auto count =
       std::ranges::count_if(kParams, [](const auto& p) { return !p.key.starts_with("llmp."); });
-  std::array<ParamRule, count + kGgufProfile.size()> out{};
+  std::array<ParamRule, count> out{};
   std::size_t n = 0;
   for (const auto& p : kParams)
     if (!p.key.starts_with("llmp.")) out[n++] = p;
-  for (const auto& p : kGgufProfile) out[n++] = p;
   return out;
 }();
 constexpr auto kGgufMapping = [] {
   auto m = kMapping;
+  m.containers = kGgufContainers;
   m.tensors = kGgufTensors;
   m.params = kGgufParams;
   m.folds = kFolds;
@@ -702,9 +652,10 @@ constexpr std::array kNativePolicies = {
 };
 constexpr auto kNativeMapping = [] {
   auto mapping = kMapping;
+  mapping.containers = kNativeContainers;
   mapping.tensors = kNativeTensors;
   mapping.params = kNativeParams;
-  mapping.folds = {};
+  mapping.folds = kNativeFolds;
   mapping.policies = kNativePolicies;
   return mapping;
 }();
@@ -846,7 +797,8 @@ constexpr std::array kMtpReads = {
 // head's token map and the draft vocabulary's value.
 constexpr std::string_view kHeadIds = "draft_output.ids";
 constexpr DraftRecipe kMtpDraft{.shape = DraftRecipe::Shape::kMtp,
-                                .composed = &Qwen38MtpReplayMapping,
+                                .composed_version = 2,
+                                .target_architecture = "qwen4exp",
                                 .head_ids = kHeadIds,
                                 .vocab_key = kDraftVocab};
 
@@ -869,8 +821,8 @@ constexpr Mapping kMtpMapping{
 
 constexpr auto kMtpReplaySlots = [] {
   auto slots = kMtpSlots;
-  for (auto& slot : slots)
-    if (slot.kind == "embedding.mtp" || slot.kind == "attention.qsa") slot.version = 2;
+  slots[0].version = 2;
+  slots[3].version = 2;
   return slots;
 }();
 constexpr auto kMtpReplayParams = [] {
@@ -924,13 +876,106 @@ constexpr auto ZeroCentered(const std::array<ParamRule, N>& base) {
 }
 constexpr auto kMtpNativeParams = ZeroCentered(kMtpParams);
 constexpr auto kMtpNativeReplayParams = ZeroCentered(kMtpReplayParams);
-// The native import's drafter (its artifact keeps no GGUF metadata): its
-// replay form, its block's values the Qwen3.8 Flash constants and its
-// selected head's rows from the tensors it holds.
-std::expected<std::vector<SourceValue>, std::string> MtpNativeSourceValues(const Source& source);
+// Missing kept metadata in published native MTP artifacts is reconstructed
+// from the actual target spec and this artifact's own selected-head tensor.
+constexpr std::array kMtpValues = {
+    ValueRule{.key = "qwen4exp-mtp.context_length", .origin = ValueOrigin::kContext},
+    ValueRule{.key = "qwen4exp-mtp.embedding_length", .origin = ValueOrigin::kWidth},
+    ValueRule{.key = "qwen4exp-mtp.hyper_connection.count", .origin = ValueOrigin::kStreams},
+    ValueRule{.key = "qwen4exp-mtp.hyper_connection.low_rank",
+              .origin = ValueOrigin::kComponent,
+              .kind = "hc.mix",
+              .param = "rank"},
+    ValueRule{.key = "qwen4exp-mtp.attention.layer_norm_rms_epsilon",
+              .origin = ValueOrigin::kComponent,
+              .kind = "attention.qsa",
+              .param = "eps"},
+    ValueRule{.key = "qwen4exp-mtp.attention.head_count",
+              .origin = ValueOrigin::kComponent,
+              .kind = "attention.qsa",
+              .param = "heads"},
+    ValueRule{.key = "qwen4exp-mtp.attention.head_count_kv",
+              .origin = ValueOrigin::kComponent,
+              .kind = "attention.qsa",
+              .param = "kv_heads"},
+    ValueRule{.key = "qwen4exp-mtp.attention.key_length",
+              .origin = ValueOrigin::kComponent,
+              .kind = "attention.qsa",
+              .param = "head_dim"},
+    ValueRule{.key = "qwen4exp-mtp.attention.value_length",
+              .origin = ValueOrigin::kComponent,
+              .kind = "attention.qsa",
+              .param = "head_dim"},
+    ValueRule{.key = "qwen4exp-mtp.rope.dimension_count",
+              .origin = ValueOrigin::kComponent,
+              .kind = "attention.qsa",
+              .param = "rope_dims"},
+    ValueRule{.key = "qwen4exp-mtp.rope.freq_base",
+              .origin = ValueOrigin::kComponent,
+              .kind = "attention.qsa",
+              .param = "rope_base"},
+    ValueRule{.key = "qwen4exp-mtp.rope.dimension_sections",
+              .origin = ValueOrigin::kComponent,
+              .kind = "attention.qsa",
+              .param = "rope_sections"},
+    ValueRule{.key = "qwen4exp-mtp.attention.indexer.head_count",
+              .origin = ValueOrigin::kComponent,
+              .kind = "attention.qsa",
+              .param = "indexer_heads"},
+    ValueRule{.key = "qwen4exp-mtp.attention.indexer.key_length",
+              .origin = ValueOrigin::kComponent,
+              .kind = "attention.qsa",
+              .param = "indexer_dim"},
+    ValueRule{.key = "qwen4exp-mtp.attention.indexer.top_k",
+              .origin = ValueOrigin::kComponent,
+              .kind = "attention.qsa",
+              .param = "budget"},
+    ValueRule{.key = "qwen4exp-mtp.attention.compress_ratios",
+              .origin = ValueOrigin::kComponent,
+              .kind = "attention.qsa",
+              .param = "ratio",
+              .list = true},
+    ValueRule{.key = "qwen4exp-mtp.expert_count",
+              .origin = ValueOrigin::kComponent,
+              .kind = "ffn.moe",
+              .param = "experts"},
+    ValueRule{.key = "qwen4exp-mtp.expert_used_count",
+              .origin = ValueOrigin::kComponent,
+              .kind = "ffn.moe",
+              .param = "used"},
+    ValueRule{.key = "qwen4exp-mtp.expert_feed_forward_length",
+              .origin = ValueOrigin::kComponent,
+              .kind = "ffn.moe",
+              .param = "expert_hidden"},
+    ValueRule{.key = "qwen4exp-mtp.expert_shared_feed_forward_length",
+              .origin = ValueOrigin::kComponent,
+              .kind = "ffn.moe",
+              .param = "hidden"},
+    ValueRule{.key = "qwen4exp-mtp.block_count",
+              .origin = ValueOrigin::kLayerCount,
+              .tensor = "blk.{layer}.attn_q.weight"},
+    ValueRule{.key = kIndexer, .value = {.text = "fused"}, .type = kString},
+    ValueRule{.key = kStacked, .value = {.flag = true}, .type = kBool},
+    ValueRule{.key = kScaled, .value = {.flag = true}, .type = kBool},
+    ValueRule{.key = kDraftRows,
+              .origin = ValueOrigin::kTensor,
+              .tensor = "draft_output.weight",
+              .dimension = 1,
+              .optional = true},
+    ValueRule{.key = kDraftVocab,
+              .origin = ValueOrigin::kTensor,
+              .tensor = "draft_output.weight",
+              .dimension = 1,
+              .optional = true,
+              .at_most = kServing.default_draft_vocab},
+    ValueRule{.key = kDraftVocab,
+              .origin = ValueOrigin::kVocabulary,
+              .at_most = kServing.default_draft_vocab},
+};
 constexpr DraftRecipe kMtpNativeDraft{.shape = DraftRecipe::Shape::kMtp,
-                                      .composed = &Qwen38MtpNativeReplayMapping,
-                                      .values = &MtpNativeSourceValues,
+                                      .composed_version = 2,
+                                      .target_architecture = "qwen4exp",
+                                      .values = kMtpValues,
                                       .head_ids = kHeadIds,
                                       .vocab_key = kDraftVocab};
 // A speculative stage's routed experts take the W4A4 grouped GEMM (its
@@ -945,50 +990,24 @@ constexpr DraftRecipe kMtpNativeDraft{.shape = DraftRecipe::Shape::kMtp,
 // without FP4 falls back to the format ladder.
 constexpr auto kMtpNativeMapping = [] {
   auto mapping = kMtpMapping;
+  mapping.containers = kNativeContainers;
   mapping.draft = &kMtpNativeDraft;
   mapping.tensors = kMtpNativeTensors;
   mapping.params = kMtpNativeParams;
-  mapping.folds = {};
+  mapping.folds = kNativeFolds;
   return mapping;
 }();
 constexpr auto kMtpNativeReplayMapping = [] {
   auto mapping = kMtpReplayMapping;
+  mapping.containers = kNativeContainers;
   mapping.draft = &kMtpNativeDraft;
   mapping.tensors = kMtpNativeTensors;
   mapping.params = kMtpNativeReplayParams;
-  mapping.folds = {};
+  mapping.folds = kNativeFolds;
   return mapping;
 }();
 
 #undef LLMP_QWEN38_BLOCK_PARAMS
-
-// The keys both mappings' blocks read, under `p`.
-void BlockValues(std::vector<SourceValue>& out, const std::string& p, const Block& q,
-                 std::vector<std::int64_t> ratios) {
-  const auto key = [&](std::string_view k) { return p + std::string(k); };
-  out.push_back(Value(key("context_length"), kContext));
-  out.push_back(Value(key("embedding_length"), q.width));
-  out.push_back(Value(key("hyper_connection.count"), q.hc));
-  out.push_back(Value(key("hyper_connection.low_rank"), q.hc_rank));
-  out.push_back(Value(key("attention.layer_norm_rms_epsilon"), q.rms_eps));
-  out.push_back(Value(key("attention.head_count"), q.heads));
-  out.push_back(Value(key("attention.head_count_kv"), q.kv_heads));
-  out.push_back(Value(key("attention.key_length"), q.head_dim));
-  out.push_back(Value(key("attention.value_length"), q.head_dim));
-  out.push_back(Value(key("rope.dimension_count"), q.rope_dims));
-  out.push_back(Value(key("rope.freq_base"), q.rope_base));
-  out.push_back(Value(key("rope.dimension_sections"),
-                      std::vector<std::int64_t>{q.rope_sections[0], q.rope_sections[1],
-                                                q.rope_sections[2], q.rope_sections[3]}));
-  out.push_back(Value(key("attention.indexer.head_count"), q.indexer_heads));
-  out.push_back(Value(key("attention.indexer.key_length"), q.indexer_head_dim));
-  out.push_back(Value(key("attention.indexer.top_k"), q.indexer_budget));
-  out.push_back(Value(key("attention.compress_ratios"), std::move(ratios)));
-  out.push_back(Value(key("expert_count"), q.experts));
-  out.push_back(Value(key("expert_used_count"), q.experts_used));
-  out.push_back(Value(key("expert_feed_forward_length"), q.expert_ffn));
-  out.push_back(Value(key("expert_shared_feed_forward_length"), q.shared_ffn));
-}
 
 }  // namespace
 
@@ -999,46 +1018,5 @@ const Mapping& Qwen38MtpMapping() { return kMtpMapping; }
 const Mapping& Qwen38MtpReplayMapping() { return kMtpReplayMapping; }
 const Mapping& Qwen38MtpNativeMapping() { return kMtpNativeMapping; }
 const Mapping& Qwen38MtpNativeReplayMapping() { return kMtpNativeReplayMapping; }
-
-namespace {
-// The MTP drafter's values in either form (both hold stacked scale-atom
-// expert tables with their tensor scales' vectors), with a selected head of
-// `selected` rows (0: none, its target's head).
-std::expected<std::vector<SourceValue>, std::string> MtpValues(const Block& p,
-                                                               std::uint64_t selected) {
-  if (selected > kVocab) return std::unexpected("a selected head of more rows than the vocabulary");
-  std::vector<SourceValue> out;
-  BlockValues(out, "qwen4exp-mtp.", p, {std::int64_t{p.indexer_ratio}});
-  out.push_back(Value("qwen4exp-mtp.block_count", 1U));
-  out.push_back(Value(kIndexer, "fused"));
-  out.push_back(FlagValue(kStacked, true));
-  out.push_back(FlagValue(kScaled, true));
-  std::uint64_t head_rows = kVocab;
-  if (selected != 0) {
-    out.push_back(Value(kDraftRows, static_cast<std::uint32_t>(selected)));
-    head_rows = selected;
-  }
-  // The draft vocabulary its serving reads by default, at most the head's.
-  out.push_back(Value(kDraftVocab, static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                                       kServing.default_draft_vocab, head_rows))));
-  return out;
-}
-
-std::expected<std::vector<SourceValue>, std::string> MtpNativeSourceValues(const Source& source) {
-  std::uint64_t selected = 0;
-  for (const SourceTensor& t : source.tensors)
-    if (t.name == "draft_output.weight") {
-      if (t.format.shape.rank != 2 || t.format.shape.ne[1] == 0)
-        return std::unexpected("a selected head of no rows");
-      selected = t.format.shape.ne[1];
-    }
-  return MtpValues(kBlock, selected);
-}
-}  // namespace
-
-std::expected<std::vector<SourceValue>, std::string> Qwen38MtpNativeValues(
-    std::uint64_t selected_rows) {
-  return MtpValues(kBlock, selected_rows);
-}
 
 }  // namespace llmp::spec::mappings

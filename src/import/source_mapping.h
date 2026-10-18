@@ -33,6 +33,13 @@ struct ScalarRequirement {
   bool require_equal = false;
   std::string_view equals_key{};  // require equality with another selected scalar
   bool positive = false;
+  // A legacy ambiguity refusal is waived only by this explicit semantic key.
+  std::string_view unless_present{};
+  bool optional = false;
+};
+struct TensorPresenceRequirement {
+  std::string_view flag{}, tensor{};
+  bool when = false;
 };
 struct ListRequirement {
   std::string_view key{};
@@ -87,6 +94,9 @@ struct SourceMapping {
   std::span<const std::string_view> ignored_tensors{};
   // These explicit JSON nulls mean that an optional semantic feature is absent.
   std::span<const std::string_view> null_semantics{};
+  // A text pipeline may explicitly exclude other components of its container.
+  std::span<const std::string_view> ignored_tensor_prefixes{};
+  std::span<const TensorPresenceRequirement> tensor_presence{};
 };
 
 const SourceMapping* FindSourceMapping(std::string_view container, std::string_view architecture);

@@ -33,9 +33,10 @@ namespace llmp::runtime {
 bool OnComponentEngine(std::string_view architecture);
 // The mapping a composition uses for a drafter architecture (its drafting
 // recipe's replay form, or its own); null when it has none.
-const spec::Mapping* ComposedDrafterMapping(std::string_view architecture);
-// The same for a drafter artifact: by its approval's mapping
-// (Approval::mapping) where it names one, else by its architecture.
+const spec::Mapping* ComposedDrafterMapping(std::string_view architecture,
+                                            std::string_view container);
+// The same for a drafter artifact, using its stored architecture/container
+// and the declared composed version. Unknown variants refuse.
 const spec::Mapping* ComposedDrafterMapping(const artifact::Artifact& drafter);
 // Serving reads format-v1 artifacts only (D-118): a v0 artifact (or any
 // other version) is refused with what to do about it, re-importing its

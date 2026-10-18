@@ -24,6 +24,19 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Import native Gemma 2/3 text checkpoints using their explicit query scale
+  and source norm convention, and accept explicit GGUF attention scales.
+  Native SentencePiece BPE assets and equivalent Hugging Face tokenizers load
+  through the ordinary artifact path.
+- Resolve architecture mappings by source container, derive admission policy
+  gates and vocabulary from stored specs and tensors, and bound prompt masks
+  from actual state geometry. Container provenance no longer acts as an
+  encoding whitelist; executable support is proved by planning. Mapping
+  recipes contain no callbacks or compiled target-size profiles.
+- Refuse invalid fallback parts, unused shared mapping tensors, oversized
+  mapping lists and forward or cyclic stage reads; canonicalize signed zero
+  and honor converter folds during mapping evaluation.
+
 - Native imports validate structural model variants, preserve tokenizer and
   chat metadata, and retain source encodings while reporting unsupported
   runtime encodings at admission.
@@ -364,6 +377,11 @@ The entries below record each change; the record of the milestone is
   checkpoint writers before upgrading. Stored archive schemas remain 1.
 
 ### Added
+
+- Native drafter imports take `--target TARGET_ID` in the selected store and
+  validate the stored target spec; published drafter artifacts remain usable
+  without reimport. This CLI semantic change raises the next product version
+  to 0.2.0; stored schema versions are unchanged.
 
 - The DeepSeek V4 community IQ2_XXS GGUF
   (`antirez/deepseek-v4-gguf@f71f23d5`, chat-v2 imatrix) serves again, as

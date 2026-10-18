@@ -24,6 +24,7 @@
 
 #include "base/sha256.h"
 #include "import/modelopt_qwen38.h"
+#include "qwen38_fixture.h"
 #include "runtime/approvals.h"
 #include "runtime/component_admission.h"
 #include "spec/mappings/qwen38.h"
@@ -33,6 +34,18 @@ namespace {
 namespace fs = std::filesystem;
 using format::Encoding;
 using format::PartRole;
+
+NormalizationTarget NativeTarget() {
+  auto fixture = test_support::qwen38::NativeModelOpt();
+  return {&spec::mappings::Qwen38NativeMapping(), std::move(fixture.model),
+          std::move(fixture.source)};
+}
+std::expected<ModelOptDrafterPlan, Error> NormalizeDrafterFixture(const Checkpoint& source,
+                                                                  std::optional<DraftHeadList> head,
+                                                                  NormalizationLimits limits) {
+  auto target = NativeTarget();
+  return NormalizeModelOptDrafter(source, std::move(head), limits, &target);
+}
 
 enum class Kind : std::uint8_t { kDense, kCodes, kScales, kScale2 };
 struct Role {
@@ -354,7 +367,7 @@ TEST(ImportModelOptDrafterTest, ReadsAStrictAscendingDraftHeadList) {
 
 TEST(ImportModelOptDrafterTest, NormalizesTheDrafterInItsSourceEncodings) {
   const auto source = Source();
-  auto plan = NormalizeModelOptDrafter(source, std::nullopt, Paid(source, 0));
+  auto plan = NormalizeDrafterFixture(source, std::nullopt, Paid(source, 0));
   ASSERT_TRUE(plan) << plan.error().ToString();
   // Only the configuration documents and the shard holding mtp.*.
   std::vector<std::string> files;
@@ -435,7 +448,7 @@ TEST(ImportModelOptDrafterTest, GathersASelectedHeadInItsListsOrder) {
   const auto source = Source();
   auto list = ReadDraftHeadList(WriteList("ids.txt", "0\n1\n2\n10\n248319\n"), 248320);
   ASSERT_TRUE(list);
-  auto plan = NormalizeModelOptDrafter(source, std::move(*list), Paid(source, 5));
+  auto plan = NormalizeDrafterFixture(source, std::move(*list), Paid(source, 5));
   ASSERT_TRUE(plan) << plan.error().ToString();
   const auto& sub = plan->parts().source();
   ASSERT_EQ(sub.files.size(), 6U);
@@ -486,7 +499,7 @@ TEST(ImportModelOptDrafterTest, RefusesWhatItCannotDescribeOrIsNotPaidFor) {
   const auto source = Source();
   const auto refused = [&](Checkpoint c, std::optional<DraftHeadList> head = std::nullopt) {
     const auto paid = Paid(source, head ? head->ids.size() : 0);
-    return !NormalizeModelOptDrafter(c, std::move(head), paid).has_value();
+    return !NormalizeDrafterFixture(c, std::move(head), paid).has_value();
   };
   {  // an expert part missing
     auto c = source;
@@ -535,8 +548,8 @@ TEST(ImportModelOptDrafterTest, RefusesWhatItCannotDescribeOrIsNotPaidFor) {
   // Not paid for.
   auto bound = ModelOptDrafterBound(source, 0);
   ASSERT_TRUE(bound);
-  EXPECT_FALSE(NormalizeModelOptDrafter(source, std::nullopt,
-                                        {bound->metadata_bytes - 1, bound->work_units}));
+  EXPECT_FALSE(NormalizeDrafterFixture(source, std::nullopt,
+                                       {bound->metadata_bytes - 1, bound->work_units}));
 }
 
 // Only the approved list's drafter is approved: its sources name exactly
@@ -546,7 +559,7 @@ TEST(ImportModelOptDrafterTest, TheApprovalNamesOneListAndItsInventory) {
   const auto source = Source();
   auto list = ReadDraftHeadList(WriteList("ids.txt", "4\n5\n"), 248320);
   ASSERT_TRUE(list);
-  auto plan = NormalizeModelOptDrafter(source, std::move(*list), Paid(source, 2));
+  auto plan = NormalizeDrafterFixture(source, std::move(*list), Paid(source, 2));
   ASSERT_TRUE(plan) << plan.error().ToString();
   const auto& a = MtpApproval();
   EXPECT_TRUE(a.drafter);
@@ -568,6 +581,46 @@ TEST(ImportModelOptDrafterTest, TheApprovalNamesOneListAndItsInventory) {
   auto other = plan->canonical();
   other.folds.push_back("ssm.a_neg_exp");
   EXPECT_FALSE(runtime::CheckComponentDrafterAdmission(other, approved));
+}
+
+TEST(ImportModelOptDrafterTest, SelectedIdsMustFitBothActualTargetAndCheckpointHeadRows) {
+  auto target = NativeTarget();
+  for (auto& tensor : target.source.tensors)
+    if (tensor.name == "token_embd.weight" || tensor.name == "output.weight")
+      tensor.format.shape.ne[1] = 300000;
+  ASSERT_TRUE(ValidateTarget(target, spec::mappings::Qwen38MtpNativeMapping()));
+  auto head = ReadDraftHeadList(WriteList("outside-source-ids.txt", "248320\n"), 300000);
+  ASSERT_TRUE(head);
+  const auto source = Source();
+  const auto normalized =
+      NormalizeModelOptDrafter(source, std::move(*head), Paid(source, 1), &target);
+  ASSERT_FALSE(normalized);
+  EXPECT_NE(normalized.error().reason.find("checkpoint head"), std::string::npos);
+}
+
+TEST(ImportModelOptDrafterTest, MissingTargetRefusesAndPublishedMetadataExtractionUsesActualFacts) {
+  const auto source = Source();
+  const auto missing = NormalizeModelOptDrafter(source, std::nullopt, Paid(source, 0));
+  ASSERT_FALSE(missing);
+  EXPECT_NE(missing.error().reason.find("--target"), std::string::npos);
+  auto target = NativeTarget();
+  target.model.stages.front().context = 123456;
+  auto own = test_support::qwen38::MtpSource(test_support::families::Qwen38Flash(), 321);
+  for (auto& tensor : target.source.tensors)
+    if (tensor.name == "output.weight") tensor.format.shape.ne[1] = 100003;
+  auto values = spec::ExtractValues(spec::mappings::Qwen38MtpNativeMapping(), target.model,
+                                    target.source, own);
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_EQ(std::get<std::int64_t>(Find(*values, "qwen4exp-mtp.context_length")->value), 123456);
+  EXPECT_EQ(std::get<std::int64_t>(Find(*values, "qwen4exp-mtp.draft_head_rows")->value), 321);
+  EXPECT_EQ(std::get<std::int64_t>(Find(*values, "qwen4exp-mtp.draft_vocab")->value), 321);
+  std::erase_if(own.tensors, [](const spec::SourceTensor& tensor) {
+    return tensor.name.starts_with("draft_output.");
+  });
+  values = spec::ExtractValues(spec::mappings::Qwen38MtpNativeMapping(), target.model,
+                               target.source, own);
+  ASSERT_TRUE(values);
+  EXPECT_EQ(std::get<std::int64_t>(Find(*values, "qwen4exp-mtp.draft_vocab")->value), 65536);
 }
 
 }  // namespace

@@ -19,6 +19,10 @@
 #include "spec/spec.h"
 
 namespace llmp::spec::mappings {
+inline constexpr std::array<std::string_view, 1> kGgufContainers{"gguf"};
+inline constexpr std::array<std::string_view, 1> kSafetensorsContainers{"safetensors"};
+inline constexpr std::array<std::string_view, 1> kExl3Containers{"exl3"};
+inline constexpr std::array<std::string_view, 2> kNativeContainers{"safetensors", "mlx"};
 
 // A parameter from a source key; `optional`: left out when the key is
 // absent and no later rule gives it.

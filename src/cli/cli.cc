@@ -41,6 +41,9 @@ constexpr std::string_view kHelp =
     "  import     verify a checkpoint and publish a native v1 artifact\n"
     "    --store DIRECTORY  destination artifact store (required)\n"
     "    --metadata-mib N   normalization and writer metadata budget (4096)\n"
+    "    --target ID        stored target artifact for a drafter import\n"
+    "    --component mtp    select a registered normalizer's MTP component\n"
+    "    --draft-head IDS   selected draft head token IDs (requires mtp)\n"
     "  --version  print the version, commit, license profile, SDK and target\n"
     "  --help     print this help\n";
 

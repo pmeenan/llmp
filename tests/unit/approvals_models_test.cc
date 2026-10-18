@@ -7,8 +7,8 @@
 //
 //   - every pinned spec digest is the stored one, and every drafter pin the
 //     composition the drafter's kept metadata gives;
-//   - every artifact and drafter inventory is admitted, and no drafter pairs
-//     with another approved target;
+//   - every artifact and drafter inventory is admitted; other targets
+//     pair only when the declared architecture and actual tensor geometry agree;
 //   - every image pipeline's composition is admitted with its components
 //     (their sources, inventories and specs, its family spec the pinned one);
 //   - every served family's default configuration (with and without its
@@ -17,10 +17,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdlib>
 #include <expected>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,6 +30,7 @@
 #include "artifact/composition.h"
 #include "base/json.h"
 #include "base/sha256.h"
+#include "components/step.h"
 #include "config/node_config.h"
 #include "runtime/approvals.h"
 #include "runtime/component_admission.h"
@@ -196,8 +199,10 @@ TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
         sp::ComposeDrafter(admitted->model, *target_mapping, *draft_mapping, *source, *kept_values);
     ASSERT_TRUE(from_kept) << from_kept.error();
     EXPECT_EQ(llmp::base::ToHex(from_kept->Digest()), approval->spec);
-    // A drafter never pairs with another approved target.
+    // Pair names qualify a measured composition; architecture and tensor
+    // geometry decide whether another target can compose the same drafter.
     for (const auto& [v0, v1] : names) {
+      SCOPED_TRACE(v1);
       if (v1 == target_id->string() || v1 == drafter_id->string()) continue;
       // An image pipeline's composition is no target.
       if (llmp::artifact::OpenComposition(std::filesystem::path(store) / v1, v1)) continue;
@@ -205,7 +210,40 @@ TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
       ASSERT_TRUE(other);
       const rt::Approval* a = rt::FindApproval(other->model().architecture, other->sources());
       if (a == nullptr || a->drafter) continue;
-      EXPECT_FALSE(rt::ComponentDrafterValues(*other, *drafter)) << v1;
+      const auto* other_mapping =
+          sp::FindMapping(other->model().architecture, other->model().container);
+      ASSERT_NE(other_mapping, nullptr);
+      auto other_values = rt::ComponentDrafterValues(*other, *drafter);
+      if (other->model().architecture != draft_mapping->draft->target_architecture) {
+        EXPECT_FALSE(other_values) << v1;
+        continue;
+      }
+      ASSERT_TRUE(other_values) << other_values.error();
+      auto other_model = sp::StoredSpec(*other);
+      auto other_source = sp::SourceOf(*other);
+      ASSERT_TRUE(other_model && other_source);
+      auto composed =
+          sp::ComposeDrafter(*other_model, *other_mapping, *draft_mapping, *source, *other_values);
+      if (other_model->stages.front().stream.width != admitted->model.stages.front().stream.width) {
+        if (composed) {
+          const std::array<std::span<const sp::SourceTensor>, 2> tables{other_source->tensors,
+                                                                        source->tensors};
+          EXPECT_FALSE(llmp::components::ValidateSpec(*composed, tables))
+              << "different target widths must not silently compose: " << v1;
+        }
+        continue;
+      }
+      // Qwen's converted and native targets have the same semantic geometry.
+      // They exercise the actual stored target + existing native MTP artifact.
+      if (other->model().architecture == "qwen4exp") {
+        ASSERT_TRUE(composed) << composed.error();
+        const std::array<std::span<const sp::SourceTensor>, 2> tables{other_source->tensors,
+                                                                      source->tensors};
+        const auto validated = llmp::components::ValidateSpec(*composed, tables);
+        EXPECT_TRUE(validated) << (validated ? "" : validated.error());
+        const auto admission = rt::CheckComposedAdmission(*composed, *other, *drafter);
+        EXPECT_TRUE(admission) << (admission ? "" : admission.error());
+      }
     }
   }
 }

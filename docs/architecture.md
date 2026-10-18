@@ -115,8 +115,9 @@
   fit. [Policy and validation cases](reservation-policy.md).
 - **Artifacts.** Prepared, versioned, hashed, atomically published; no
   process state serialized; checkpoints untrusted. Initial encoding and
-  layout are experimental; compatibility guarantees require dense and MoE
-  import/execution/eviction/restore evidence (D-009, D-018). Import repacks
+  layout are experimental; migration and backward compatibility are not
+  requirements before the first version ships. Re-import or regenerate as
+  needed and validate results (D-009, D-018, D-121). Import repacks
   weights into contiguous dependency groups, 4 KiB-aligned in safetensors
   shards and paged in 2 MiB group-relative chunks, with an expert/tensor
   index ([v0 and v1 formats](artifact-format.md); D-035, D-056, D-113).

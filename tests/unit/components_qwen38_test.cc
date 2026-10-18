@@ -33,6 +33,7 @@
 #include <cstring>
 #include <expected>
 #include <format>
+#include <limits>
 #include <map>
 #include <optional>
 #include <random>
@@ -1022,12 +1023,16 @@ TEST(ComponentsQwen38Test, TinyParametersKeepNativeBytesAndOneJoinedConversionPe
     const auto g = BuildComponent(*in, RowSteps()[0].shape, c.formats, c.cells, c.lone.inputs);
     ASSERT_TRUE(g) << g.error();
     CheckNativeParameters(*g, c.tiny);
-    // Other low-precision or integer parameter encodings remain refused.
+    // The graph retains each structurally valid encoding. Planning decides
+    // whether a registered conversion implementation supports it.
     for (auto role : c.tiny) {
-      for (const auto rejected : {Encoding::kF16, Encoding::kI32}) {
-        auto wrong = c.formats;
-        wrong[role].encoding = rejected;
-        EXPECT_FALSE(BuildComponent(*in, RowSteps()[0].shape, wrong, c.cells, c.lone.inputs));
+      for (const auto encoding : {Encoding::kF16, Encoding::kI32}) {
+        auto formats = c.formats;
+        formats[role].encoding = encoding;
+        const auto graph =
+            BuildComponent(*in, RowSteps()[0].shape, formats, c.cells, c.lone.inputs);
+        ASSERT_TRUE(graph) << graph.error();
+        EXPECT_EQ(graph->step.graph.tensor(graph->weights.at(role)).format, formats[role]);
       }
     }
   }
@@ -1172,6 +1177,111 @@ std::expected<spec::ModelSpec, std::string> WithMtp(const spec::ModelSpec& targe
   if (!values) return std::unexpected(values.error());
   return spec::ComposeDrafter(target, spec::mappings::Qwen38Mapping(),
                               spec::mappings::Qwen38MtpMapping(), Sources().mtp, *values);
+}
+
+TEST(ComponentsQwen38Test, DrafterBorrowsCompleteMultipartTargetTablesAndHeads) {
+  const auto target = fx::NativeMlx();
+  ASSERT_TRUE(ValidateSpec(target.model, target.source.tensors));
+  auto composed = WithMtp(target.model);
+  ASSERT_TRUE(composed) << composed.error();
+  const std::array<std::span<const spec::SourceTensor>, 2> tables{target.source.tensors,
+                                                                  Sources().mtp.tensors};
+  const auto valid = ValidateSpec(*composed, tables);
+  ASSERT_TRUE(valid) << valid.error();
+  const auto check = [&](const spec::ComponentRef& owner, const spec::ComponentRef& borrower,
+                         std::string_view role) {
+    std::vector<spec::WeightBinding> expected, actual;
+    for (auto binding : owner.weights) {
+      if (binding.role != role) continue;
+      binding.stage = target.model.stages.front().name;
+      expected.push_back(std::move(binding));
+    }
+    for (const auto& binding : borrower.weights)
+      if (binding.role == role) actual.push_back(binding);
+    EXPECT_EQ(actual, expected);
+    EXPECT_EQ(actual.size(), 3U);
+  };
+  check(*target.model.stages.front().embedding, *composed->stages.back().embedding, "table");
+  check(*target.model.stages.front().heads.output, *composed->stages.back().heads.output, "weight");
+  // Complete role borrowing must not hide a missing physical source part.
+  auto incomplete = target.source;
+  std::erase_if(incomplete.tensors, [](const spec::SourceTensor& tensor) {
+    return tensor.name == "token_embd.weight_bias";
+  });
+  const std::array<std::span<const spec::SourceTensor>, 2> missing{incomplete.tensors,
+                                                                   Sources().mtp.tensors};
+  EXPECT_FALSE(ValidateSpec(*composed, missing));
+  auto bad_geometry = target.source;
+  for (auto& tensor : bad_geometry.tensors)
+    if (tensor.name.starts_with("token_embd.")) tensor.format.shape.ne[0] /= 2;
+  const std::array<std::span<const spec::SourceTensor>, 2> wrong{bad_geometry.tensors,
+                                                                 Sources().mtp.tensors};
+  EXPECT_FALSE(ValidateSpec(*composed, wrong));
+}
+
+TEST(ComponentsQwen38Test, TargetWeightAliasesMustResolveToOneCompleteRole) {
+  auto target = fx::NativeMlx();
+  // A tied output is another valid component role naming the same physical table.
+  auto& head = *target.model.stages.front().heads.output;
+  head.weights = target.model.stages.front().embedding->weights;
+  for (auto& binding : head.weights) binding.role = "weight";
+  spec::Canonicalize(target.model);
+  ASSERT_TRUE(ValidateSpec(target.model, target.source.tensors));
+  const auto source = fx::MtpSource(fam::Qwen38Flash(), 321);
+  auto values = fam::Qwen38MtpValues(fam::Qwen38Flash(), 321);
+  ASSERT_TRUE(values);
+  const auto compose = [&](const spec::ModelSpec& model) {
+    return spec::ComposeDrafter(model, spec::mappings::Qwen38NativeMapping(),
+                                spec::mappings::Qwen38MtpMapping(), source, *values);
+  };
+  auto composed = compose(target.model);
+  ASSERT_TRUE(composed) << composed.error();
+  const std::array<std::span<const spec::SourceTensor>, 2> tables{target.source.tensors,
+                                                                  source.tensors};
+  ASSERT_TRUE(ValidateSpec(*composed, tables));
+  EXPECT_EQ(std::ranges::count_if(composed->stages.back().embedding->weights,
+                                  [](const auto& binding) { return !binding.stage.empty(); }),
+            3);
+
+  auto conflicting = target.model;
+  for (auto& binding : conflicting.stages.front().heads.output->weights)
+    if (binding.part == format::PartRole::kBlockScales) binding.tensor = "other.scales";
+  const auto ambiguous = compose(conflicting);
+  ASSERT_FALSE(ambiguous);
+  EXPECT_NE(ambiguous.error().find("ambiguous target weight role"), std::string::npos);
+
+  auto absent = target.model;
+  spec::EachComponent(absent.stages.front(), [&](spec::ComponentRef& component, const auto&) {
+    for (auto& binding : component.weights)
+      if (binding.tensor == "token_embd.weight") binding.tensor = "renamed.codes";
+  });
+  const auto missing = compose(absent);
+  ASSERT_FALSE(missing);
+  EXPECT_NE(missing.error().find("no target weight role"), std::string::npos);
+}
+
+TEST(ComponentsQwen38Test, BorrowedTargetRolesPreserveTheirExternalHolderStage) {
+  auto target = fx::NativeMlx();
+  auto& main = target.model.stages.front();
+  spec::Stage holder{.name = "tables",
+                     .role = spec::StageRole::kEncoder,
+                     .artifact = 1,
+                     .context = main.context,
+                     .embedding = main.embedding,
+                     .stream = {.width = main.stream.width}};
+  for (auto& binding : main.embedding->weights) binding.stage = holder.name;
+  target.model.stages.push_back(std::move(holder));
+  spec::Canonicalize(target.model);
+  auto composed = WithMtp(target.model);
+  ASSERT_TRUE(composed) << composed.error();
+  const auto& embedding = *composed->stages.back().embedding;
+  EXPECT_EQ(std::ranges::count_if(embedding.weights,
+                                  [](const auto& binding) { return binding.stage == "tables"; }),
+            3);
+  const std::array<std::span<const spec::SourceTensor>, 3> tables{
+      target.source.tensors, target.source.tensors, Sources().mtp.tensors};
+  const auto valid = ValidateSpec(*composed, tables);
+  EXPECT_TRUE(valid) << (valid ? "" : valid.error());
 }
 
 TEST(ComponentsQwen38Test, RepeatableMtpContractsCoexistWithTheOriginalLayout) {
@@ -2016,6 +2126,28 @@ TEST(ComponentsQwen38Test, FoldedParametersForwardAsTheirRawDerivations) {
   // head's), the MTP embedding's two (twice) and A.
   EXPECT_GE(roles, 12U);
 }
+TEST(ComponentsQwen38Test, PromptRowsFollowActualF32MaskGeometry) {
+  auto target = TargetSpec(Sources().modelopt_cutlass, fx::Form::kCutlass);
+  ASSERT_TRUE(target) << target.error();
+  for (const std::uint32_t context : {65535U, 131073U, 262144U}) {
+    const auto cells = (std::uint64_t{context} + 255) / 256 * 256;
+    const auto expected = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(context, std::numeric_limits<std::int32_t>::max() / (cells * 4)));
+    auto rows = StagePrefillRows(*target, 0, context, context);
+    ASSERT_TRUE(rows) << rows.error();
+    EXPECT_EQ(*rows, expected);
+    auto boundary = StagePrefillRows(*target, 0, context, expected + 1);
+    ASSERT_TRUE(boundary);
+    EXPECT_EQ(*boundary, expected);
+    EXPECT_EQ(*StagePrefillRows(*target, 0, context, expected - 1), expected - 1);
+  }
+  // No selection score exists below the declared indexer budget.
+  EXPECT_EQ(*StagePrefillRows(*target, 0, 1024, 1024), 1024U);
+  EXPECT_FALSE(StagePrefillRows(*target, 0, 0, 1));
+  EXPECT_FALSE(StagePrefillRows(*target, 0, target->stages.front().context + 1, 1));
+  EXPECT_FALSE(StagePrefillRows(*target, 1, 16, 1));
+}
+
 }  // namespace
 
 }  // namespace llmp::components

@@ -98,11 +98,9 @@ std::vector<spec::SourceValue> ValuesOf(const Checkpoint& checkpoint) {
       add(*b);
     } else if (const auto* s = std::get_if<std::string>(&e.value)) {
       add(*s);
-    } else if (const auto* is = std::get_if<std::vector<std::int64_t>>(&e.value);
-               is != nullptr && is->size() <= spec::kMaxList) {
+    } else if (const auto* is = std::get_if<std::vector<std::int64_t>>(&e.value); is != nullptr) {
       add(*is);
-    } else if (const auto* ds = std::get_if<std::vector<double>>(&e.value);
-               ds != nullptr && ds->size() <= spec::kMaxList) {
+    } else if (const auto* ds = std::get_if<std::vector<double>>(&e.value); ds != nullptr) {
       add(*ds);
     }
   }

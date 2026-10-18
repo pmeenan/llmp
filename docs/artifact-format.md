@@ -5,10 +5,11 @@
 
 Version 0 is the bring-up encoding and layout ABI chosen for open question 5
 (D-056). It implements D-009's prepared artifacts and D-035's import-time
-repacking. It is **experimental** under D-018: any change may require
-re-import, and no compatibility guarantee exists until a dense model and a
-small MoE have passed import, execution, eviction and restoration. The
-executable reference is the M0 prototype in
+repacking. Artifact formats remain **experimental** under D-018 and D-121:
+until the first version ships, migration and backward compatibility are not
+requirements. Change formats and re-import or regenerate artifacts as needed
+for the better architecture, preserving source provenance and validating the
+results. The executable reference for v0 is the M0 prototype in
 [experiments/artifact-layout](experiments/artifact-layout/README.md). It
 built, verified and page-checked real artifacts from the D-051/D-052 fixtures
 and Gemma 4, and planned three more MoE models. It is not the native C++
@@ -118,8 +119,9 @@ targets and drafters imported before these relayouts and folds must be
 re-imported: their inventories, admission profiles and spec digests
 changed.
 
-`llmp import SOURCE --store DIRECTORY --component mtp [--draft-head IDS]`
-publishes the same checkpoint's MTP drafter instead of its target
+`llmp import SOURCE --store DIRECTORY --target TARGET_ID --component mtp [--draft-head IDS]`
+publishes the same checkpoint's MTP drafter instead of its target, validating
+the composition against the stored target artifact selected by `--target`
 (`import/modelopt_qwen38.h` `NormalizeModelOptDrafter`): architecture
 `qwen4exp-mtp`, container `safetensors`, no `spec.json` (a drafter that
 reads its target, D-113; serving composes it with the target's spec), one
@@ -435,8 +437,13 @@ binds tensors by role and representation, never by these labels.
    with the manifest. For safetensors sources, the importer keeps the
    metadata files it is given (the prototype's `--meta`; the EXL3 builds
    passed `config.json`, tokenizer files and the quantization config)
-   verbatim. `config.json` is also part of the hashed source identity. Native tokenizer/template extraction remains
-   M3 (D-051).
+   verbatim. `config.json` is also part of the hashed source identity. The
+   native importer keeps `tokenizer.json`, standalone `tokenizer.model`,
+   `tokenizer_config.json` and chat-template files as source metadata. The
+   runtime reads supported tokenizer pipelines natively, preferring JSON
+   when present, and applies the kept special-token configuration; it does
+   not require a conversion or a configuration override. See
+   [tokenizer.md](tokenizer.md) for the reader contracts.
 
 ### Qwen3.8 Flash Next (ModelOpt NVFP4 and MXFP8)
 
@@ -1223,7 +1230,7 @@ importer's record, which names the norm the stage binds, so
   target head's first 65,536 rows. These are ordinary v0 tensors, not a
   container-schema change; list selection and its license are the
   importer's responsibility. Version 1's native importer takes the same
-  list as `llmp import --component mtp --draft-head IDS`
+  list as `llmp import SOURCE --store DIRECTORY --target TARGET_ID --component mtp --draft-head IDS`
   ([above](#native-writer)), its drafter in source encodings (its experts
   relaid out) and without a spec of its own.
 - **Model-parallel sharding** (TP/EP partitioning, one artifact per rank or

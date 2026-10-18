@@ -144,6 +144,14 @@ a model's spec is its v1 artifact's). All models passed the 1% speed gate agains
 their frozen M3 baselines. The historical controls and screens below document the
 qualification evidence for each model.*
 
+Native Gemma 2 and Gemma 3 text imports also accept explicit HF query-scale
+metadata, including the 27B scalar values, through the shared components. Gemma
+3 conditional checkpoints import their text component and warn about excluded
+vision/projector weights. This is structural import support; no new 27B quality,
+performance or full-model serving qualification is claimed. Legacy 27B GGUFs
+without explicit `attention.scale` require a complete export. Existing pinned
+GGUF results below retain their original numerical scope.
+
 Gemma 2 2B Q8_0 has a separate [closed profile and bounded runner](gemma2.md)
 for all 288 actual descriptors, with checked quantized readable tails and
 allocation-free public binding validation. The authenticated source has a
@@ -892,13 +900,14 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   `draft_output.ids`; neither changes the target artifact. No vocabulary
   list ships with llmpalooza. See the [draft-head study](experiments/qwen38-draft-head/README.md).
   The native importer publishes it as a v1 artifact,
-  `llmp import SOURCE --component mtp [--draft-head IDS]`, from the
+  `llmp import SOURCE --store DIRECTORY --target TARGET_ID --component mtp [--draft-head IDS]`, from the
   checkpoint's configuration documents and last shard (and with a head,
   `lm_head.weight`'s shard and the list): BF16 linears, its norms' 1 + w
   folded into F32, the routed experts relaid out into the scale-atom layout
-  (recorded fold and relayout), no spec of its own, composed with its
-  approved v1 target through `qwen4exp-mtp`'s native mapping and admitted
-  by its approval row ([artifact format](artifact-format.md#native-writer)).
+  (recorded fold and relayout), no spec of its own, validated against the
+  stored target selected by `--target`. The qualified pairing uses its approved
+  v1 target through `qwen4exp-mtp`'s native mapping and is admitted by its
+  approval row ([artifact format](artifact-format.md#native-writer)).
   With Mia's list it is `316caa59…`, whose every tensor equals
   `8600a998…`'s byte for byte. Its experts take the W4A4 grouped GEMM
   although the checkpoint quantized them W4A16: verification bounds a

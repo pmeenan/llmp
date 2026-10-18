@@ -263,7 +263,7 @@ TEST_F(ImportWriterTest, BuildProvenanceDoesNotChangeIdentityOrWeakenReceipts) {
   EXPECT_FALSE(WriteArtifact(*plan, opts));
 }
 
-TEST_F(ImportWriterTest, ImportPreservesF16NormsWhileRuntimeReportsItsEncodingBoundary) {
+TEST_F(ImportWriterTest, ImportPreservesF16NormsAndDefersExecutionSupportToPlanning) {
   auto checkpoint = Tiny();
   auto& norm = checkpoint.tensors[1];
   ASSERT_EQ(norm.name, "output_norm.weight");
@@ -276,7 +276,7 @@ TEST_F(ImportWriterTest, ImportPreservesF16NormsWhileRuntimeReportsItsEncodingBo
   ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
   EXPECT_TRUE(components::ValidateSpec(plan->spec(), plan->canonical().tensors,
                                        components::ValidationPurpose::kImport));
-  EXPECT_FALSE(components::ValidateSpec(plan->spec(), plan->canonical().tensors));
+  EXPECT_TRUE(components::ValidateSpec(plan->spec(), plan->canonical().tensors));
   auto published = WriteArtifact(*plan, Options());
   ASSERT_TRUE(published) << test_support::Failed(published, &Error::ToString).value_or("");
   auto opened = artifact::Artifact::Open(published->path);
@@ -288,8 +288,7 @@ TEST_F(ImportWriterTest, ImportPreservesF16NormsWhileRuntimeReportsItsEncodingBo
   ASSERT_NE(tensor, stored->tensors.end());
   EXPECT_EQ(tensor->format.encoding, Encoding::kF16);
   auto admitted = runtime::ReadComponentAdmission(*opened);
-  ASSERT_FALSE(admitted);
-  EXPECT_NE(admitted.error().find("does not take"), std::string::npos) << admitted.error();
+  ASSERT_TRUE(admitted) << test_support::Failed(admitted).value_or("");
 }
 
 TEST_F(ImportWriterTest, HfPublicationKeepsTokenizerDocumentsAndUsesTheirChatTemplate) {
@@ -343,7 +342,7 @@ TEST_F(ImportWriterTest, HfPublicationKeepsTokenizerDocumentsAndUsesTheirChatTem
   ASSERT_TRUE(artifact);
   auto assets = runtime::ReadChatAssets(*artifact, {});
   ASSERT_FALSE(assets);
-  EXPECT_NE(assets.error().find("SentencePiece tokenizer.model"), std::string::npos);
+  EXPECT_NE(assets.error().find("tokenizer.model:"), std::string::npos);
 }
 
 TEST_F(ImportWriterTest, ReaderAcceptsLegacyNamedBuildManifestIdentity) {

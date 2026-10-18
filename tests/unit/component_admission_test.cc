@@ -79,7 +79,7 @@ class ComponentAdmissionTest : public testing::Test {
 // derived by admission.
 struct InventoryCase {
   std::string name;
-  rt::InventoryForm form;
+  std::string_view container;
   fm::TensorFormat format;
   std::string_view digest;
 };
@@ -88,7 +88,7 @@ InventoryCase ModelOptInventory(std::string name, fm::Encoding encoding, fm::Lay
                                 std::uint8_t stacked, std::uint64_t experts,
                                 std::string_view digest) {
   return {.name = std::move(name),
-          .form = rt::InventoryForm::kModelOpt,
+          .container = "safetensors",
           .format = {.encoding = encoding,
                      .params = {.tensor_scale = encoding == fm::Encoding::kNvfp4 &&
                                                 layout == fm::Layout::kSplit},
@@ -103,7 +103,7 @@ InventoryCase MlxInventory(std::uint8_t bits, std::uint32_t group, fm::AffineSca
   const auto scale_name = fm::Info(fm::AffineScaleEncoding(scale)).name;
   return {.name = "Affine" + std::to_string(bits) + "Group" + std::to_string(group) +
                   std::string(scale_name),
-          .form = rt::InventoryForm::kMlx,
+          .container = "mlx",
           .format = {.encoding = fm::Encoding::kAffine,
                      .params = {.bits = bits, .group = group, .scale = scale},
                      .layout = fm::Layout::kSplit,
@@ -118,7 +118,7 @@ class ComponentInventoryTest : public testing::TestWithParam<InventoryCase> {
   void SetUp() override {
     const auto& c = GetParam();
     source.architecture = "inventory-test";
-    source.container = c.form == rt::InventoryForm::kMlx ? "mlx" : "safetensors";
+    source.container = c.container == "mlx" ? "mlx" : "safetensors";
     source.tensors = {
         {.name = "dense.weight",
          .format = {.encoding = fm::Encoding::kF16,
@@ -129,14 +129,13 @@ class ComponentInventoryTest : public testing::TestWithParam<InventoryCase> {
          .format = c.format,
          .part = fm::PartRole::kBlockScales,
          .experts = true}};
-    if (c.form == rt::InventoryForm::kMlx || c.format.params.tensor_scale)
-      source.tensors.push_back({.name = "weight",
-                                .format = c.format,
-                                .part = c.form == rt::InventoryForm::kMlx
-                                            ? fm::PartRole::kBiases
-                                            : fm::PartRole::kTensorScale,
-                                .experts = true});
-    if (c.form == rt::InventoryForm::kMlx) {
+    if (c.container == "mlx" || c.format.params.tensor_scale)
+      source.tensors.push_back(
+          {.name = "weight",
+           .format = c.format,
+           .part = c.container == "mlx" ? fm::PartRole::kBiases : fm::PartRole::kTensorScale,
+           .experts = true});
+    if (c.container == "mlx") {
       auto matrix = c.format;
       matrix.shape.rank = 2;
       matrix.shape.ne[2] = 1;
@@ -149,7 +148,6 @@ class ComponentInventoryTest : public testing::TestWithParam<InventoryCase> {
                 .container = source.container,
                 .tensors = source.tensors.size(),
                 .arrays = 1,
-                .form = c.form,
                 .inventory = c.digest};
   }
 };
@@ -181,7 +179,7 @@ TEST_P(ComponentInventoryTest, PinnedInventoryRejectsDigestShapeEncodingAndParam
   source.tensors.front().format.encoding = fm::Encoding::kBF16;
   EXPECT_EQ(llmp::test_support::Failed(rt::internal::CheckInventory(source, approval), differs),
             true);
-  if (approval.form == rt::InventoryForm::kMlx) {
+  if (approval.container == "mlx") {
     for (int mutation = 0; mutation != 3; ++mutation) {
       SCOPED_TRACE(mutation);
       source = original;
@@ -218,7 +216,7 @@ TEST_P(ComponentInventoryTest, GenericStructureRejectsInvalidExpertGeometryAndPa
     if (mutation == 2) t.part = fm::PartRole::kData;
     if (mutation == 3) t.format.stacked = 0;
     if (mutation == 4) {
-      if (approval.form == rt::InventoryForm::kMlx)
+      if (approval.container == "mlx")
         t.format.params.group = 0;
       else
         t.format.shape.ne[0] = 127;  // not whole NVFP4/MXFP8 blocks
@@ -815,27 +813,17 @@ TEST(ComponentAdmissionDrafterTest, ComponentDrafterValuesApprovesV1DraftersAndR
   ASSERT_FALSE(g31_pair.has_value());
   EXPECT_NE(g31_pair.error().find("keeps no GGUF metadata"), std::string::npos) << g31_pair.error();
 
-  // Size mismatches are refused: each assistant's approval names its target.
-  auto size_mismatch1 = rt::ComponentDrafterValues(*g26_target, *g31_asst);
-  ASSERT_FALSE(size_mismatch1.has_value());
-  EXPECT_NE(size_mismatch1.error().find("is gemma-4-31b-it-ud-q4_k_xl's, not "
-                                        "gemma-4-26b-a4b-it-ud-q4_k_m's"),
-            std::string::npos)
-      << size_mismatch1.error();
-
-  auto size_mismatch2 = rt::ComponentDrafterValues(*g31_target, *g26_asst);
-  ASSERT_FALSE(size_mismatch2.has_value());
-  EXPECT_NE(size_mismatch2.error().find("is gemma-4-26b-a4b-it-ud-q4_k_m's, not "
-                                        "gemma-4-31b-it-ud-q4_k_xl's"),
-            std::string::npos)
-      << size_mismatch2.error();
-
-  // Architecture mismatch is refused.
+  // Pairing qualifications do not replace structural composition. These
+  // deliberately incomplete artifacts still fail at their missing metadata.
+  for (const auto& pair :
+       {std::pair{&*g26_target, &*g31_asst}, std::pair{&*g31_target, &*g26_asst}}) {
+    auto values = rt::ComponentDrafterValues(*pair.first, *pair.second);
+    ASSERT_FALSE(values);
+    EXPECT_NE(values.error().find("keeps no GGUF metadata"), std::string::npos);
+  }
   auto arch_mismatch = rt::ComponentDrafterValues(*g26_target, *dflash);
-  ASSERT_FALSE(arch_mismatch.has_value());
-  EXPECT_NE(arch_mismatch.error().find("the approved drafter dspark-deepseek-v4-flash-0731-q8_0"),
-            std::string::npos)
-      << arch_mismatch.error();
+  ASSERT_FALSE(arch_mismatch);
+  EXPECT_NE(arch_mismatch.error().find("does not target architecture"), std::string::npos);
 
   // A pinned drafter's composition: beside its approved target, the one its
   // approval pins (this one is not); beside an unpinned target of its

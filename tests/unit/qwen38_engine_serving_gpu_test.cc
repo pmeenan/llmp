@@ -686,6 +686,7 @@ TEST(Qwen38EngineServingGpu, BadPaymentAndSlotCountRefuseBeforeModelEffects) {
   for (const auto count : {0U, 2U}) {
     rt::ModelSettings settings;
     settings.architecture = "qwen4exp";
+    settings.container = "safetensors";
     settings.max_slots.value = count;
     auto build = rt::ComponentLlmBuild(life->server->node(), life->roles.installed, entry, 0,
                                        {.target_policy = {}, .shared_route = true});
@@ -714,6 +715,7 @@ TEST(Qwen38EngineServingGpu, JoinedScoringRequiresExactOwnedTargetEnvelope) {
   entry.artifact = std::string(64, '0');
   rt::ModelSettings original;
   original.architecture = "qwen4exp";
+  original.container = "safetensors";
   original.max_slots.value = 4;
   original.context.value = 512;
   original.prefill_chunk.value = 2;
@@ -811,6 +813,7 @@ TEST(Qwen38EngineServingGpu, JoinedMtpRequiresOwnedWholeCompositionBeforeArtifac
   entry.drafter = std::string(64, '1');
   rt::ModelSettings original;
   original.architecture = "qwen4exp";
+  original.container = "safetensors";
   original.max_slots.value = 2;
   original.context.value = 512;
   original.prefill_chunk.value = 16;
@@ -865,6 +868,7 @@ TEST(Qwen38EngineServingGpu, DerivedServingDomainRequiresAnExplicitComposedReque
     auto model = entry;
     rt::ModelSettings settings;
     settings.architecture = "qwen4exp";
+    settings.container = "safetensors";
     settings.max_slots.value = 2;
     settings.context.value = 512;
     settings.prefill_chunk.value = 16;
@@ -917,6 +921,7 @@ TEST(Qwen38EngineServingGpu, DerivedPlainDomainRequiresAnOrdinaryTargetRequest) 
     entry.artifact = std::string(64, '0');
     rt::ModelSettings settings;
     settings.architecture = "qwen4exp";
+    settings.container = "safetensors";
     settings.max_slots.value = 2;
     settings.context.value = 512;
     settings.prefill_chunk.value = 16;
@@ -1324,6 +1329,7 @@ rt::Status Setup(Owner& owner, const fs::path& directory, Evidence& evidence, bo
   rt::ModelSettings settings;
   settings.name = owner.entry.name;
   settings.architecture = "qwen4exp";
+  settings.container = "safetensors";
   settings.max_slots.value = 2;
   settings.context.value = 512;
   settings.prefill_chunk.value = 16;

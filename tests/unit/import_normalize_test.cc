@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -31,6 +32,7 @@
 #include "import/readers/gguf.h"
 #include "import/readers/safetensors.h"
 #include "import_fixtures.h"
+#include "import_target_fixture.h"
 #include "model/state_contract.h"
 #include "qwen2_exl3_normalization_fixture.h"
 #include "qwen2_gguf_normalization_fixture.h"
@@ -183,13 +185,13 @@ Checkpoint AssistantCheckpoint(std::uint32_t size) {
   }
   return s;
 }
-Checkpoint Tiny(bool gemma3 = false, bool untied = false) {
+Checkpoint Tiny(bool gemma3 = false, bool untied = false, std::uint32_t layers = 2) {
   const std::string arch = gemma3 ? "gemma3" : "gemma2";
   Checkpoint s{
       .container = "gguf", .architecture = arch, .files = {{.name = "memory", .bytes = 0}}};
   Value(s, "general.architecture", arch);
   for (const auto& [key, value] :
-       std::array<std::pair<std::string_view, std::int64_t>, 10>{{{"block_count", 2},
+       std::array<std::pair<std::string_view, std::int64_t>, 10>{{{"block_count", layers},
                                                                   {"context_length", 128},
                                                                   {"embedding_length", 8},
                                                                   {"feed_forward_length", 16},
@@ -208,7 +210,7 @@ Checkpoint Tiny(bool gemma3 = false, bool untied = false) {
   AddTensor(s, "token_embd.weight", {8, 10});
   AddTensor(s, "output_norm.weight", {8});
   if (untied) AddTensor(s, "output.weight", {8, 10});
-  for (int layer = 0; layer < 2; ++layer) {
+  for (std::uint32_t layer = 0; layer < layers; ++layer) {
     const auto name = [&](std::string_view key) {
       return std::format("blk.{}.{}.weight", layer, key);
     };
@@ -227,6 +229,194 @@ Checkpoint Tiny(bool gemma3 = false, bool untied = false) {
     }
   }
   return s;
+}
+
+Checkpoint TinyGemmaHf(bool gemma3, bool conditional = false, std::uint32_t layers = 2) {
+  auto input = Tiny(gemma3, false, layers);
+  const auto* gguf = FindSourceMapping("gguf", input.architecture);
+  const std::string architecture = gemma3 ? conditional ? "gemma3" : "gemma3_text" : "gemma2";
+  const auto* native = FindSourceMapping("safetensors", architecture);
+  base::Check(native != nullptr, "native Gemma fixture table");
+  auto values = std::move(input.metadata);
+  input.metadata.clear();
+  input.container = "safetensors";
+  input.architecture = architecture;
+  Value(input, "model_type", architecture);
+  for (std::size_t i = 0; i < gguf->architecture->params.size(); ++i) {
+    const auto& before = gguf->architecture->params[i];
+    const auto& after = native->architecture->params[i];
+    if (before.key.empty() || after.key.empty() || after.key.ends_with("query_pre_attn_scalar"))
+      continue;
+    const auto found = std::ranges::find(values, before.key, &MetaEntry::key);
+    if (found != values.end()) Value(input, std::string(after.key), found->value);
+  }
+  const std::string prefix = conditional ? "text_config." : "";
+  Value(input, prefix + "query_pre_attn_scalar", gemma3 ? 168.0 : 144.0);
+  Value(input, prefix + "num_hidden_layers", std::int64_t{layers});
+  Value(input, prefix + "hidden_activation", std::string("gelu_pytorch_tanh"));
+  Value(input, prefix + "attention_bias", false);
+  Value(input, prefix + "vocab_size", std::int64_t{10});
+  if (conditional) Value(input, "text_config.model_type", std::string("gemma3_text"));
+  if (gemma3) {
+    Value(input, prefix + "attn_logit_softcapping", nullptr);
+    Value(input, prefix + "final_logit_softcapping", nullptr);
+  }
+  for (auto& tensor : input.tensors) {
+    const auto match = std::ranges::find_if(native->tensors, [&](const auto& rule) {
+      return nd::Match(rule.canonical, tensor.name, layers).has_value();
+    });
+    base::Check(match != native->tensors.end(), "Gemma fixture tensor alias");
+    const std::string digits(nd::Match(match->canonical, tensor.name, layers)->digits);
+    tensor.name = std::string(match->source);
+    if (const auto at = tensor.name.find(spec::kLayerField); at != std::string::npos)
+      tensor.name.replace(at, spec::kLayerField.size(), digits);
+    std::ranges::reverse(tensor.dims);
+  }
+  return input;
+}
+
+TEST(ImportNormalizeTest, GemmaNativeHfUsesExplicitQueryScalarAndUnfoldedNorms) {
+  for (const auto [gemma3, conditional, layers] :
+       {std::tuple{false, false, 46U}, std::tuple{true, false, 62U}, std::tuple{true, true, 62U}}) {
+    SCOPED_TRACE(std::format("gemma3={} conditional={} layers={}", gemma3, conditional, layers));
+    auto input = TinyGemmaHf(gemma3, conditional, layers);
+    const auto original = input.tensors;
+    auto normalized = Normalize(std::move(input), kFunded);
+    ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
+    const auto& stage = normalized->spec().stages.front();
+    EXPECT_TRUE(stage.folds.empty());
+    EXPECT_EQ(stage.layers.size(), layers);
+    EXPECT_DOUBLE_EQ(std::get<double>(stage.layers.front().components.front().Find("scale")->value),
+                     1.0 / std::sqrt(gemma3 ? 168.0 : 144.0));
+    for (const auto& layer : stage.layers)
+      for (const auto& component : layer.components)
+        EXPECT_EQ(component.Find("norm_zero_centered")->value, spec::ParamValue(true));
+    EXPECT_EQ(stage.heads.final_norm->Find("norm_zero_centered")->value, spec::ParamValue(true));
+    ASSERT_EQ(normalized->routes().size(), original.size());
+    for (std::size_t i = 0; i < original.size(); ++i) {
+      EXPECT_EQ(normalized->routes()[i].extent, original[i].extent);
+      EXPECT_EQ(normalized->canonical().tensors[i].format, original[i].format);
+    }
+  }
+}
+
+TEST(ImportNormalizeTest, GemmaNativeHfReadsNestedConfigAndBf16Safetensors) {
+  for (const bool gemma3 : {false, true}) {
+    auto source = TinyGemmaHf(gemma3, gemma3);
+    std::vector<fixtures::Entry> tensors;
+    for (const auto& tensor : source.tensors)
+      tensors.push_back(fixtures::E(tensor.name, "BF16", tensor.dims));
+    std::string text = "{";
+    bool first = true;
+    for (const auto& entry : source.metadata) {
+      if (entry.key == "model_type" && gemma3) continue;
+      if (!first) text += ',';
+      first = false;
+      json::AppendQuoted(gemma3 ? std::string_view(entry.key).substr(12) : entry.key, text);
+      text += ':';
+      if (const auto* string_value = std::get_if<std::string>(&entry.value))
+        json::AppendQuoted(*string_value, text);
+      else if (const auto* integer_value = std::get_if<std::int64_t>(&entry.value))
+        text += std::to_string(*integer_value);
+      else if (const auto* real_value = std::get_if<double>(&entry.value))
+        text += std::format("{}", *real_value);
+      else if (const auto* boolean_value = std::get_if<bool>(&entry.value))
+        text += *boolean_value ? "true" : "false";
+      else
+        text += "null";
+    }
+    text += '}';
+    if (gemma3) text = R"({"model_type":"gemma3","text_config":)" + text + '}';
+    auto checkpoint = ParseSafetensors(fixtures::Shard(tensors), text);
+    ASSERT_TRUE(checkpoint) << test_support::Failed(checkpoint, &Error::ToString).value_or("");
+    auto normalized = Normalize(std::move(*checkpoint), kFunded);
+    ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
+    for (const auto& tensor : normalized->canonical().tensors)
+      EXPECT_EQ(tensor.format.encoding, Encoding::kBF16);
+    EXPECT_EQ(normalized->spec().stages.front().layers.size(), 2);
+  }
+}
+
+TEST(ImportNormalizeTest, GemmaGgufExplicitScaleUnlocksAmbiguousLegacyDepths) {
+  for (const bool gemma3 : {false, true}) {
+    auto input = Tiny(gemma3, false, gemma3 ? 62 : 46);
+    EXPECT_FALSE(Normalize(input, kFunded));
+    Value(input, input.architecture + ".attention.scale", 0.071234);
+    auto normalized = Normalize(std::move(input), kFunded);
+    ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
+    EXPECT_DOUBLE_EQ(std::get<double>(normalized->spec()
+                                          .stages.front()
+                                          .layers.front()
+                                          .components.front()
+                                          .Find("scale")
+                                          ->value),
+                     0.071234);
+  }
+}
+
+TEST(ImportNormalizeTest, GemmaNativeHfRefusesMissingOrUnsupportedMath) {
+  for (const bool gemma3 : {false, true}) {
+    const std::string prefix = gemma3 ? "text_config." : "";
+    auto valid = TinyGemmaHf(gemma3, gemma3);
+    const auto baseline = Normalize(valid, kFunded);
+    ASSERT_TRUE(baseline) << test_support::Failed(baseline, &Error::ToString).value_or("");
+    for (const MetaValue& value :
+         {MetaValue{std::int64_t{0}}, MetaValue{-1.0}, MetaValue{true},
+          MetaValue{std::numeric_limits<double>::infinity()}, MetaValue{nullptr}}) {
+      auto input = valid;
+      Value(input, prefix + "query_pre_attn_scalar", value);
+      EXPECT_FALSE(Normalize(std::move(input), kFunded));
+    }
+    auto input = valid;
+    std::erase_if(input.metadata,
+                  [&](const auto& value) { return value.key == prefix + "query_pre_attn_scalar"; });
+    EXPECT_FALSE(Normalize(std::move(input), kFunded));
+    for (const auto& [key, value] : std::vector<std::pair<std::string, MetaValue>>{
+             {"attention_bias", true},
+             {"hidden_activation", std::string("silu")},
+             {"rope_scaling.rope_type", std::string("yarn")},
+             {"use_bidirectional_attention", true}}) {
+      input = valid;
+      Value(input, prefix + key, value);
+      EXPECT_FALSE(Normalize(std::move(input), kFunded));
+    }
+  }
+}
+
+TEST(ImportNormalizeTest, GemmaNativeTyingFlagCannotInventAnUntiedHead) {
+  for (const bool gemma3 : {false, true}) {
+    auto input = TinyGemmaHf(gemma3, gemma3);
+    const std::string key = gemma3 ? "text_config.tie_word_embeddings" : "tie_word_embeddings";
+    Value(input, key, false);
+    EXPECT_FALSE(Normalize(input, kFunded));
+    Value(input, key, true);
+    auto tied = Normalize(input, kFunded);
+    ASSERT_TRUE(tied) << test_support::Failed(tied, &Error::ToString).value_or("");
+    if (gemma3) {
+      Value(input, "tie_word_embeddings", false);
+      EXPECT_FALSE(Normalize(input, kFunded));
+    }
+    Value(input, key, false);
+    AddTensor(input, gemma3 ? "language_model.lm_head.weight" : "lm_head.weight", {8, 10});
+    std::ranges::reverse(input.tensors.back().dims);
+    auto untied = Normalize(std::move(input), kFunded);
+    ASSERT_TRUE(untied) << test_support::Failed(untied, &Error::ToString).value_or("");
+  }
+}
+
+TEST(ImportNormalizeTest, GemmaConditionalTextImportExplicitlyExcludesVisionComponents) {
+  auto input = TinyGemmaHf(true, true);
+  const auto count = input.tensors.size();
+  AddTensor(input, "vision_tower.vision_model.embeddings.patch_embedding.weight", {2, 2});
+  AddTensor(input, "multi_modal_projector.mm_input_projection_weight", {2, 2});
+  for (std::size_t i = count; i < input.tensors.size(); ++i)
+    std::ranges::reverse(input.tensors[i].dims);
+  Value(input, "vision_config.hidden_size", std::int64_t{2});
+  auto normalized = Normalize(input, kFunded);
+  ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
+  EXPECT_EQ(normalized->routes().size(), count);
+  Value(input, "text_config.model_type", std::string("wrong"));
+  EXPECT_FALSE(Normalize(std::move(input), kFunded));
 }
 
 Checkpoint TinyGemma4(bool moe) {
@@ -347,7 +537,7 @@ TEST(ImportNormalizeTest, CompleteOwnedPlansAndTiedHeadDoNotInventPayloads) {
                            SourceOf(input), ValuesOf(input));
       ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
       const auto count = input.tensors.size();
-      auto plan = Normalize(std::move(input), kFunded);
+      auto plan = test_support::NormalizeWithFixtureTarget(std::move(input), kFunded);
       ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
       EXPECT_EQ(plan->spec(), *expected);
       EXPECT_EQ(plan->routes().size(), count);
@@ -370,7 +560,7 @@ TEST(ImportNormalizeTest, RealGgufCopyCursorsCoverEveryOriginalByteWithoutRefold
   const auto file = Gguf(Tiny());
   auto parsed = ParseGguf(file);
   ASSERT_TRUE(parsed) << test_support::Failed(parsed, &Error::ToString).value_or("");
-  auto plan = Normalize(std::move(*parsed), kFunded);
+  auto plan = test_support::NormalizeWithFixtureTarget(std::move(*parsed), kFunded);
   ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
   std::uint64_t total = 0;
   for (std::size_t i = 0; i < plan->routes().size(); ++i) {
@@ -471,12 +661,13 @@ TEST(ImportNormalizeTest, PresentBadOptionalKeysNeverBecomeDefaults) {
            std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
     auto source = Tiny();
     Value(source, "gemma2.rope.freq_base", value);
-    EXPECT_FALSE(Normalize(std::move(source), kFunded));
+    EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(source), kFunded));
   }
   auto source = Tiny();
   Value(source, "gemma2.rope.freq_base", std::int64_t{10000});
   Value(source, "gemma2.rope.freq_base_swa", 1000.0);
-  EXPECT_TRUE(Normalize(std::move(source), kFunded));  // two distinct fallback keys
+  EXPECT_TRUE(test_support::NormalizeWithFixtureTarget(std::move(source),
+                                                       kFunded));  // two distinct fallback keys
 }
 
 TEST(ImportNormalizeTest, UnknownMissingDuplicateAndNoncanonicalNamesRefuse) {
@@ -488,23 +679,23 @@ TEST(ImportNormalizeTest, UnknownMissingDuplicateAndNoncanonicalNamesRefuse) {
     if (mode == 3) s.tensors[2].name = s.tensors[3].name;
     if (mode == 4) s.tensors[2].name = "vision.patch.weight";
     if (mode == 5) Value(s, "gemma2.unhandled_policy", std::int64_t{1});
-    EXPECT_FALSE(Normalize(std::move(s), kFunded)) << mode;
+    EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded)) << mode;
   }
   auto s = Tiny();
   Value(s, "vocab_count", std::int64_t{10});
-  EXPECT_TRUE(Normalize(std::move(s), kFunded));
+  EXPECT_TRUE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
 }
 
 TEST(ImportNormalizeTest, RefusesUnimplementedDomainsAndAlternateQueryScale) {
   for (const auto container : {"safetensors", "mlx", "exl3", "diffusers"}) {
     auto s = Tiny();
     s.container = container;
-    EXPECT_FALSE(Normalize(std::move(s), kFunded));
+    EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
   }
   for (const bool g3 : {false, true}) {
     auto s = Tiny(g3);
     Value(s, s.architecture + ".block_count", std::int64_t{g3 ? 62 : 46});
-    EXPECT_FALSE(Normalize(std::move(s), kFunded));
+    EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
   }
   for (const int mode : {0, 1, 2, 3}) {
     auto s = Tiny();
@@ -513,9 +704,9 @@ TEST(ImportNormalizeTest, RefusesUnimplementedDomainsAndAlternateQueryScale) {
     if (mode == 2) s.components.emplace_back();
     if (mode == 3) s.skipped.push_back({"file", "outside"});
     if (mode == 3)
-      EXPECT_TRUE(Normalize(std::move(s), kFunded));
+      EXPECT_TRUE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
     else
-      EXPECT_FALSE(Normalize(std::move(s), kFunded));
+      EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
   }
 }
 
@@ -530,7 +721,7 @@ TEST(ImportNormalizeTest, GeometryAndPhysicalAliasesCannotHidePayloadOverlap) {
     if (mode == 4) t.dtype = "bf16";
     if (mode == 5) t.dims[0] = 9;
     if (mode == 6) t.experts = true;
-    EXPECT_FALSE(Normalize(std::move(s), kFunded)) << mode;
+    EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded)) << mode;
   }
   auto s = Tiny();
   s.files[0].path = "/inventoried/a";
@@ -543,9 +734,10 @@ TEST(ImportNormalizeTest, GeometryAndPhysicalAliasesCannotHidePayloadOverlap) {
   Value(s, "split.count", std::int64_t{2});
   s.tensors[1].extent.file = 1;
   s.tensors[1].extent.offset = 0;
-  EXPECT_FALSE(Normalize(s, kFunded));
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(s, kFunded));
   s.files[1].inode = 4;
-  EXPECT_TRUE(Normalize(std::move(s), kFunded));  // distinct physical file, same offset
+  EXPECT_TRUE(test_support::NormalizeWithFixtureTarget(
+      std::move(s), kFunded));  // distinct physical file, same offset
 }
 
 TEST(ImportNormalizeTest, FormatAndComponentChecksGoBeyondNameCoverage) {
@@ -556,27 +748,30 @@ TEST(ImportNormalizeTest, FormatAndComponentChecksGoBeyondNameCoverage) {
   last.extent.bytes = (*format::PartsOf(last.format))[0].bytes;
   s.files[0].bytes = last.extent.offset + last.extent.bytes;
   ASSERT_TRUE(NormalizationBound(s));  // geometry/name coverage alone is insufficient
-  const auto malformed = Normalize(std::move(s), kFunded);
+  const auto malformed = test_support::NormalizeWithFixtureTarget(std::move(s), kFunded);
   EXPECT_EQ(test_support::Failed(malformed, &Error::reason),
             "normalized tensors do not satisfy their components");
   s = Tiny();
   Value(s, "gemma2.attention.head_count", std::int64_t{3});
-  EXPECT_FALSE(Normalize(std::move(s), kFunded));
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
   s = Tiny();
   Value(s, "gemma2.attention.sliding_window_pattern", std::int64_t{3});
-  EXPECT_FALSE(Normalize(std::move(s), kFunded));
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
   s = Tiny(true);
   Value(s, "gemma3.rope.scaling.type", std::string("yarn"));
-  EXPECT_FALSE(Normalize(std::move(s), kFunded));
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
 }
 
 TEST(ImportNormalizeTest, ExactReservationAndWorkLimitAreCheckedBeforeConstruction) {
   auto s = Tiny();
   const auto cost = NormalizationBound(s);
   ASSERT_TRUE(cost);
-  EXPECT_FALSE(Normalize(s, {cost->metadata_bytes - 1, cost->work_units}));
-  EXPECT_FALSE(Normalize(s, {cost->metadata_bytes, cost->work_units - 1}));
-  EXPECT_TRUE(Normalize(std::move(s), {cost->metadata_bytes, cost->work_units}));
+  EXPECT_FALSE(
+      test_support::NormalizeWithFixtureTarget(s, {cost->metadata_bytes - 1, cost->work_units}));
+  EXPECT_FALSE(
+      test_support::NormalizeWithFixtureTarget(s, {cost->metadata_bytes, cost->work_units - 1}));
+  EXPECT_TRUE(test_support::NormalizeWithFixtureTarget(std::move(s),
+                                                       {cost->metadata_bytes, cost->work_units}));
   s = Tiny();
   Value(s, "gemma2.block_count", std::int64_t{1025});
   EXPECT_FALSE(NormalizationBound(s));
@@ -590,15 +785,15 @@ TEST(ImportNormalizeTest, StructuralKeysAndAuxiliaryIndicesStayDistinct) {
                          "split.tensors.count"}) {
     auto s = Tiny();
     Value(s, key, true);
-    EXPECT_FALSE(Normalize(std::move(s), kFunded));
+    EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
   }
   auto s = Tiny();
   Value(s, "general.alignment", std::int64_t{3});
-  EXPECT_FALSE(Normalize(std::move(s), kFunded));
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
   s = Tiny();
   Value(s, "general.description", std::string("unaltered provenance"));
   Value(s, "tokenizer.ggml.tokens", std::vector<std::string>{"a", "b"});
-  auto p = Normalize(std::move(s), kFunded);
+  auto p = test_support::NormalizeWithFixtureTarget(std::move(s), kFunded);
   ASSERT_TRUE(p);
   std::size_t auxiliary = 0;
   for (const auto& use : p->metadata())
@@ -617,7 +812,7 @@ TEST(ImportNormalizeTest, QuantizationProvenanceIsExplicitAuxiliaryMetadata) {
   Value(s, "quantize.imatrix.dataset", std::string("/training_dir/calibration_datav3.txt"));
   Value(s, "quantize.imatrix.entries_count", std::int64_t{182});
   Value(s, "quantize.imatrix.file", std::string("/models_out/gemma.imatrix"));
-  auto plan = Normalize(s, kFunded);
+  auto plan = test_support::NormalizeWithFixtureTarget(s, kFunded);
   ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
   std::size_t provenance = 0;
   for (const auto& use : plan->metadata()) {
@@ -630,7 +825,7 @@ TEST(ImportNormalizeTest, QuantizationProvenanceIsExplicitAuxiliaryMetadata) {
   }
   EXPECT_EQ(provenance, 4U);
   Value(s, "quantize.other", std::int64_t{1});
-  EXPECT_TRUE(Normalize(std::move(s), kFunded));
+  EXPECT_TRUE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
 }
 
 TEST(ImportNormalizeTest, Gemma4DenseAndExpertPlansPreserveEverySourcePart) {
@@ -644,9 +839,12 @@ TEST(ImportNormalizeTest, Gemma4DenseAndExpertPlansPreserveEverySourcePart) {
     ASSERT_TRUE(input) << test_support::Failed(input, &Error::ToString).value_or("");
     const auto bound = NormalizationBound(*input);
     ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
-    EXPECT_FALSE(Normalize(*input, {bound->metadata_bytes - 1, bound->work_units}));
-    EXPECT_FALSE(Normalize(*input, {bound->metadata_bytes, bound->work_units - 1}));
-    auto plan = Normalize(std::move(*input), {bound->metadata_bytes, bound->work_units});
+    EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(
+        *input, {bound->metadata_bytes - 1, bound->work_units}));
+    EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(
+        *input, {bound->metadata_bytes, bound->work_units - 1}));
+    auto plan = test_support::NormalizeWithFixtureTarget(
+        std::move(*input), {bound->metadata_bytes, bound->work_units});
     ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
     EXPECT_EQ(plan->spec(), *expected);
     EXPECT_TRUE(plan->applied_folds().empty());
@@ -713,14 +911,14 @@ TEST(ImportNormalizeTest, Gemma4LayerListsGatesAndExpertGeometryRefuseAmbiguity)
       expert->dims[2] = 3;
       expert->extent.bytes = (*format::PartsOf(expert->format))[0].bytes;
     }
-    EXPECT_FALSE(Normalize(std::move(s), kFunded)) << mode;
+    EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded)) << mode;
   }
   auto s = TinyGemma4(false);
   s.architecture = "gemma4-assistant";
-  EXPECT_FALSE(Normalize(std::move(s), kFunded));
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
   s = TinyGemma4(false);
   Value(s, "gemma4.feed_forward_length", std::vector<std::int64_t>(6, 16));
-  EXPECT_TRUE(Normalize(std::move(s), kFunded));
+  EXPECT_TRUE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
   const auto table = *FindSourceMapping("gguf", "gemma4");
   const std::array aliases{TensorAlias{"dense.{layer}.weight", "blk.{layer}.ffn_gate.weight"}};
   auto aliased = table;
@@ -791,7 +989,7 @@ TEST(ImportNormalizeTest, Gemma4CompleteDescriptorInventoriesUseTheSameMapping) 
     const auto expected = spec::Synthesize(*FindSourceMapping("gguf", "gemma4")->architecture,
                                            SourceOf(s), ValuesOf(s));
     ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
-    auto p = Normalize(std::move(s), kFunded);
+    auto p = test_support::NormalizeWithFixtureTarget(std::move(s), kFunded);
     ASSERT_TRUE(p) << test_support::Failed(p, &Error::ToString).value_or("");
     EXPECT_EQ(p->spec(), *expected);
     EXPECT_EQ(p->routes().size(), size == 26 ? 658U : 833U);
@@ -848,7 +1046,7 @@ TEST(ImportNormalizeTest, ApprovedCompleteDescriptorInventoriesMatchExistingSpec
     const auto* table = FindSourceMapping(s.container, s.architecture);
     const auto expected = spec::Synthesize(*table->architecture, old_source, ValuesOf(s));
     ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
-    auto p = Normalize(std::move(s), kFunded);
+    auto p = test_support::NormalizeWithFixtureTarget(std::move(s), kFunded);
     ASSERT_TRUE(p) << test_support::Failed(p, &Error::ToString).value_or("");
     EXPECT_EQ(p->spec(), *expected);
     ASSERT_EQ(p->routes().size(), g3 ? 444U : 288U);
@@ -865,7 +1063,8 @@ TEST(ImportNormalizeQwenTest, OwnsCompleteEncodedTargetAndAllSemanticLists) {
   ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
   EXPECT_LT(bound->metadata_bytes, std::uint64_t{512} << 20U);
   EXPECT_EQ(bound->layers, 48U);
-  auto plan = Normalize(input, {bound->metadata_bytes, bound->work_units});
+  auto plan =
+      test_support::NormalizeWithFixtureTarget(input, {bound->metadata_bytes, bound->work_units});
   ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
   ASSERT_EQ(plan->routes().size(), 1224U);
   ASSERT_EQ(plan->spec().stages.size(), 1U);
@@ -924,7 +1123,7 @@ TEST(ImportNormalizeQwenTest, PreservesDifferentValidSourceHashConstants) {
   Value(input, "qwen4exp.ple.layer_multipliers", multipliers);
   Value(input, "qwen4exp.ple.head_offsets", offsets);
   Value(input, "qwen4exp.ple.head_vocab_sizes", vocab);
-  auto plan = Normalize(std::move(input), kFunded);
+  auto plan = test_support::NormalizeWithFixtureTarget(std::move(input), kFunded);
   ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
   for (const auto& [key, expected] :
        std::array{std::pair{"qwen4exp.ple.layer_multipliers", multipliers},
@@ -934,6 +1133,15 @@ TEST(ImportNormalizeQwenTest, PreservesDifferentValidSourceHashConstants) {
     ASSERT_NE(value, plan->values().end());
     EXPECT_EQ(std::get<std::vector<std::int64_t>>(value->value), expected);
   }
+}
+
+TEST(ImportNormalizeQwenTest, DifferentValidContextIsNotACheckpointIdentityGate) {
+  auto input = test_support::Qwen38GgufCheckpoint();
+  Value(input, "qwen4exp.context_length", std::int64_t{131071});
+  Value(input, "qwen4exp.ple.image_token_id", std::int64_t{17});
+  const auto plan = test_support::NormalizeWithFixtureTarget(input, kFunded);
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  EXPECT_EQ(plan->spec().stages.front().context, 131071U);
 }
 
 TEST(ImportNormalizeQwenTest, ProfilePreflightHonorsExistingSourceAliases) {
@@ -964,13 +1172,15 @@ TEST(ImportNormalizeQwenTest, ProfilePreflightHonorsExistingSourceAliases) {
   EXPECT_TRUE(components::ValidateSpec(plan->spec(), plan->canonical().tensors));
 }
 
-TEST(ImportNormalizeQwenTest, RejectsUnfundedConstructionAndClosedProfileMutations) {
+TEST(ImportNormalizeQwenTest, RejectsUnfundedConstructionAndInvalidStructure) {
   const auto input = test_support::Qwen38GgufCheckpoint();
   const auto bound = NormalizationBound(input);
   ASSERT_TRUE(bound);
-  EXPECT_FALSE(Normalize(input, {bound->metadata_bytes - 1, bound->work_units}));
-  EXPECT_FALSE(Normalize(input, {bound->metadata_bytes, bound->work_units - 1}));
-  for (int mode = 0; mode < 12; ++mode) {
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(
+      input, {bound->metadata_bytes - 1, bound->work_units}));
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(
+      input, {bound->metadata_bytes, bound->work_units - 1}));
+  for (int mode = 0; mode < 13; ++mode) {
     SCOPED_TRACE(mode);
     auto bad = input;
     switch (mode) {
@@ -1011,8 +1221,11 @@ TEST(ImportNormalizeQwenTest, RejectsUnfundedConstructionAndClosedProfileMutatio
       case 11:
         bad.tensors.front().dims[0] += 1;
         break;
+      case 12:
+        Value(bad, "qwen4exp.ssm.inner_size", std::int64_t{6145});
+        break;
     }
-    EXPECT_FALSE(Normalize(std::move(bad), kFunded));
+    EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(bad), kFunded));
   }
 }
 
@@ -1022,7 +1235,8 @@ TEST(ImportNormalizeDsv4Test, CompleteCapturedTargetKeepsAllEncodingsAndLayerSem
   ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
   EXPECT_EQ(cost->layers, 43U);
   EXPECT_LT(cost->metadata_bytes, std::uint64_t{1} << 30U);
-  auto plan = Normalize(input, {cost->metadata_bytes, cost->work_units});
+  auto plan =
+      test_support::NormalizeWithFixtureTarget(input, {cost->metadata_bytes, cost->work_units});
   ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
   ASSERT_EQ(plan->routes().size(), 1328U);
   ASSERT_EQ(plan->spec().stages.size(), 1U);
@@ -1040,7 +1254,8 @@ TEST(ImportNormalizeDsv4Test, CompleteCapturedTargetKeepsAllEncodingsAndLayerSem
   }
   EXPECT_EQ(encodings.size(), 10U);
   EXPECT_TRUE(plan->applied_folds().empty());
-  EXPECT_FALSE(Normalize(input, {cost->metadata_bytes - 1, cost->work_units}));
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(
+      input, {cost->metadata_bytes - 1, cost->work_units}));
 }
 TEST(ImportNormalizeDsv4Test, RefusesIncompleteListsCountsAndUnclassifiedSourceSemantics) {
   for (unsigned mutation = 0; mutation != 7; ++mutation) {
@@ -1055,7 +1270,7 @@ TEST(ImportNormalizeDsv4Test, RefusesIncompleteListsCountsAndUnclassifiedSourceS
     if (mutation == 4) Value(input, "deepseek4.attention.value_length", std::int64_t{256});
     if (mutation == 5) Value(input, "deepseek4.new_semantics", std::int64_t{1});
     if (mutation == 6) input.tensors.pop_back();
-    EXPECT_FALSE(Normalize(std::move(input), kFunded)) << mutation;
+    EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(input), kFunded)) << mutation;
   }
 }
 
@@ -1065,7 +1280,9 @@ TEST(ImportNormalizeDsv4Test, RefusesIncompleteListsCountsAndUnclassifiedSourceS
 // mapping clamps it as the routed experts; the MTP depth and the vocabulary
 // size are exact auxiliary keys, never a prefix that admits a near miss.
 TEST(ImportNormalizeDsv4Test, CommunityListsAuxiliaryKeysAndTheClampFallback) {
-  const auto normalized = [](Checkpoint input) { return Normalize(std::move(input), kFunded); };
+  const auto normalized = [](Checkpoint input) {
+    return test_support::NormalizeWithFixtureTarget(std::move(input), kFunded);
+  };
   const auto ratios = [](std::size_t count) {
     std::vector<std::int64_t> out;
     for (std::size_t il = 0; il < count; ++il)
@@ -1202,7 +1419,8 @@ TEST(ImportNormalizeQwen2Test, CompleteCapturedTargetMatchesV0SpecWithOmittedOrE
     ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
     EXPECT_EQ(cost->layers, 24U);
     EXPECT_EQ(cost->payload_bytes, 1260477952ULL);
-    auto plan = Normalize(input, {cost->metadata_bytes, cost->work_units});
+    auto plan =
+        test_support::NormalizeWithFixtureTarget(input, {cost->metadata_bytes, cost->work_units});
     ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
     ASSERT_EQ(plan->routes().size(), 291U);
     ASSERT_EQ(plan->spec().stages.size(), 1U);
@@ -1213,10 +1431,11 @@ TEST(ImportNormalizeQwen2Test, CompleteCapturedTargetMatchesV0SpecWithOmittedOrE
     EXPECT_EQ(base::ToHex(plan->spec().Digest()),
               "096ae62e7e4978ad74bdfd80d64ab61c4ae662df1dc393fc6ad76f59f324f2b5");
     EXPECT_TRUE(plan->applied_folds().empty());
-    EXPECT_FALSE(Normalize(input, {cost->metadata_bytes - 1, cost->work_units}));
+    EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(
+        input, {cost->metadata_bytes - 1, cost->work_units}));
   }
   auto tied = test_support::Qwen2GgufCheckpoint(false);
-  auto plan = Normalize(std::move(tied), kFunded);
+  auto plan = test_support::NormalizeWithFixtureTarget(std::move(tied), kFunded);
   ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
   ASSERT_EQ(plan->routes().size(), 290U);
   EXPECT_EQ(plan->spec().stages[0].heads.output->weights[0].tensor, "token_embd.weight");
@@ -1235,9 +1454,9 @@ TEST(ImportNormalizeQwen2Test, RefusesProfileShapeEncodingAndUnclassifiedMetadat
     if (mutation == 7) input.tensors.back().dims[0] = 1536;
     if (mutation == 8) input.tensors.pop_back();
     if (mutation == 3)
-      EXPECT_TRUE(Normalize(std::move(input), kFunded));
+      EXPECT_TRUE(test_support::NormalizeWithFixtureTarget(std::move(input), kFunded));
     else
-      EXPECT_FALSE(Normalize(std::move(input), kFunded)) << mutation;
+      EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(input), kFunded)) << mutation;
   }
 }
 
@@ -1248,7 +1467,8 @@ TEST(ImportNormalizeQwen2Exl3Test, CompleteCaptured40And45TargetsMatchV0SpecAndP
     ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
     EXPECT_EQ(cost->layers, 24U);
     EXPECT_EQ(cost->payload_bytes, rate_4_5 ? 611173284ULL : 588866468ULL);
-    auto plan = Normalize(input, {cost->metadata_bytes, cost->work_units});
+    auto plan =
+        test_support::NormalizeWithFixtureTarget(input, {cost->metadata_bytes, cost->work_units});
     ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
     ASSERT_EQ(plan->routes().size(), 798U);
     ASSERT_EQ(plan->spec().stages.size(), 1U);
@@ -1258,7 +1478,8 @@ TEST(ImportNormalizeQwen2Exl3Test, CompleteCaptured40And45TargetsMatchV0SpecAndP
     EXPECT_EQ(base::ToHex(plan->spec().Digest()),
               "1b982d73ad42ab6a92cd224a1ff3995825cef4af8c8e4a3f83e3059f5068c274");
     EXPECT_TRUE(plan->applied_folds().empty());
-    EXPECT_FALSE(Normalize(input, {cost->metadata_bytes - 1, cost->work_units}));
+    EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(
+        input, {cost->metadata_bytes - 1, cost->work_units}));
   }
 }
 
@@ -1276,9 +1497,9 @@ TEST(ImportNormalizeQwen2Exl3Test, RefusesMalformedPartRolesRatesCodebooksAndMet
     if (mutation == 8) input.tensors[3].format.params.k_bits = 4;  // suh disagrees with trellis
     if (mutation == 9) input.tensors.pop_back();
     if (mutation == 1 || mutation == 2 || mutation == 4)
-      EXPECT_TRUE(Normalize(std::move(input), kFunded)) << mutation;
+      EXPECT_TRUE(test_support::NormalizeWithFixtureTarget(std::move(input), kFunded)) << mutation;
     else
-      EXPECT_FALSE(Normalize(std::move(input), kFunded)) << mutation;
+      EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(input), kFunded)) << mutation;
   }
 }
 
@@ -1307,7 +1528,7 @@ TEST(ImportNormalizeQwen2Exl3Test, ReaderCodebooksAndRatesPreserveFormatsAndRequ
         offset += tensor.extent.bytes;
       }
       input.files[0].bytes = offset;
-      auto plan = Normalize(input, kFunded);
+      auto plan = test_support::NormalizeWithFixtureTarget(input, kFunded);
       ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
       for (const auto& tensor : plan->canonical().tensors)
         if (tensor.format.encoding == Encoding::kExl3Trellis) {
@@ -1332,7 +1553,7 @@ TEST(ImportNormalizeQwen2Exl3Test, ReaderCodebooksAndRatesPreserveFormatsAndRequ
           return tensor.name == "lm_head.mcg" || tensor.name == "lm_head.mul1";
         });
       }
-      EXPECT_FALSE(Normalize(std::move(input), kFunded));
+      EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(input), kFunded));
     }
   }
 }
@@ -1378,7 +1599,8 @@ TEST(ImportNormalizeDrafterTest, NormalizesGemma4AssistantCheckpointsIntoCompose
 
     auto cost = NormalizationBound(cp);
     ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
-    auto plan = Normalize(std::move(cp), {cost->metadata_bytes, cost->work_units});
+    auto plan = test_support::NormalizeWithFixtureTarget(std::move(cp),
+                                                         {cost->metadata_bytes, cost->work_units});
     ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
 
     // Drafter spec is composed: stage 0 is target, stage 1 is drafter.
@@ -1412,12 +1634,12 @@ TEST(ImportNormalizeDrafterTest, RejectsMissingDrafterKeysAndMismatchedParentWid
       std::ranges::find(cp.metadata, "gemma4-assistant.embedding_length_out", &MetaEntry::key);
   ASSERT_NE(it, cp.metadata.end());
   cp.metadata.erase(it);
-  EXPECT_FALSE(Normalize(std::move(cp), kFunded));
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(cp), kFunded));
 
   // Invalid embedding_length_out (neither 2816 nor 5376)
   cp = AssistantCheckpoint(26);
   Value(cp, "gemma4-assistant.embedding_length_out", std::int64_t{1024});
-  EXPECT_FALSE(Normalize(std::move(cp), kFunded));
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(cp), kFunded));
 }
 
 TEST(ImportNormalizeSafetensorsTest, Qwen2SafetensorsMappingValidatesAndGgufSynthesizesNon05B) {
@@ -1469,7 +1691,8 @@ TEST(ImportNormalizeSafetensorsTest, RealisticTransformersConfigNormalizesWithEi
     ASSERT_EQ(input->skipped_tensors.size(), 1U);
     auto bound = NormalizationBound(*input);
     ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
-    auto plan = Normalize(std::move(*input), {bound->metadata_bytes, bound->work_units});
+    auto plan = test_support::NormalizeWithFixtureTarget(
+        std::move(*input), {bound->metadata_bytes, bound->work_units});
     ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
     EXPECT_EQ(plan->spec().stages[0].stream.width, 8U);
     EXPECT_EQ(plan->canonical().tensors.size(), 15U);
@@ -1491,12 +1714,12 @@ TEST(ImportNormalizeSafetensorsTest, EmptyFallbackRoleMatchesAbsentButRequiredEm
   std::erase_if(entries, [](const auto& entry) { return entry.name == "lm_head.weight"; });
   auto absent = ParseSafetensors(fixtures::Shard(entries), config);
   ASSERT_TRUE(absent);
-  auto expected = Normalize(std::move(*absent), kFunded);
+  auto expected = test_support::NormalizeWithFixtureTarget(std::move(*absent), kFunded);
   ASSERT_TRUE(expected) << test_support::Failed(expected, &Error::ToString).value_or("");
   entries.push_back(fixtures::E("lm_head.weight", "F16", {0}));
   auto empty = ParseSafetensors(fixtures::Shard(entries), config);
   ASSERT_TRUE(empty);
-  auto plan = Normalize(std::move(*empty), kFunded);
+  auto plan = test_support::NormalizeWithFixtureTarget(std::move(*empty), kFunded);
   ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
   EXPECT_EQ(plan->spec(), expected->spec());
   EXPECT_EQ(plan->spec().stages[0].heads.output->weights[0].tensor, "token_embd.weight");
@@ -1505,13 +1728,13 @@ TEST(ImportNormalizeSafetensorsTest, EmptyFallbackRoleMatchesAbsentButRequiredEm
   auto required = ParseSafetensors(fixtures::Shard(entries), config);
   ASSERT_TRUE(required);
   EXPECT_TRUE(NormalizationBound(*required));
-  EXPECT_FALSE(Normalize(std::move(*required), kFunded));
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(*required), kFunded));
 }
 
 TEST(ImportNormalizeTest, UnreadProvenanceIsRetainedWhileUnconsumedSemanticsRefuse) {
   auto input = Tiny();
   Value(input, "new_converter.note", std::string("provenance"));
-  auto plan = Normalize(input, kFunded);
+  auto plan = test_support::NormalizeWithFixtureTarget(input, kFunded);
   ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
   const auto entry =
       std::ranges::find(plan->source().metadata, "new_converter.note", &MetaEntry::key);
@@ -1527,13 +1750,13 @@ TEST(ImportNormalizeTest, UnreadProvenanceIsRetainedWhileUnconsumedSemanticsRefu
 TEST(ImportNormalizeTest, EmptyTensorRecordsCannotHideRequiredWeights) {
   auto input = Tiny();
   input.skipped_tensors.push_back({.name = "unused.empty", .reason = "zero-element tensor"});
-  EXPECT_TRUE(Normalize(input, kFunded));
+  EXPECT_TRUE(test_support::NormalizeWithFixtureTarget(input, kFunded));
   std::erase_if(input.tensors,
                 [](const auto& tensor) { return tensor.name == "output_norm.weight"; });
   input.skipped_tensors.push_back({.name = "output_norm.weight", .reason = "zero-element tensor"});
   // Preflight bounds the inventory; synthesis owns actual role requiredness.
   EXPECT_TRUE(NormalizationBound(input));
-  EXPECT_FALSE(Normalize(std::move(input), kFunded));
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(input), kFunded));
 }
 
 TEST(ImportNormalizeQwen2Exl3Test, DenseFormatsAndShardsAreStructuralAndNominalDtypeIsProvenance) {
@@ -1548,9 +1771,42 @@ TEST(ImportNormalizeQwen2Exl3Test, DenseFormatsAndShardsAreStructuralAndNominalD
   input.tensors.back().extent.file = 1;
   Value(input, "torch_dtype", std::string("float16"));
   Value(input, "bos_token_id", std::int64_t{1});
-  auto plan = Normalize(input, kFunded);
+  auto plan = test_support::NormalizeWithFixtureTarget(input, kFunded);
   ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
   EXPECT_EQ(plan->spec().stages[0].stream.width, 896U);
+}
+
+TEST(ImportNormalizeDrafterTest, ActualTargetIsRequiredAndValidatedBeforePlanning) {
+  auto source = AssistantCheckpoint(26);
+  const auto missing = llmp::import::Normalize(source, kFunded);
+  ASSERT_FALSE(missing);
+  EXPECT_NE(missing.error().reason.find("--target"), std::string::npos);
+  auto target = test_support::GemmaImportTarget(26);
+  EXPECT_TRUE(llmp::import::Normalize(source, kFunded, &target));
+  target.model.stages.front().layers.resize(24);
+  std::erase_if(target.source.tensors, [](const spec::SourceTensor& tensor) {
+    if (!tensor.name.starts_with("blk.")) return false;
+    const auto dot = tensor.name.find('.', 4);
+    std::uint32_t layer = 0;
+    for (const char c : tensor.name.substr(4, dot - 4))
+      layer = layer * 10 + static_cast<std::uint32_t>(c - '0');
+    return layer >= 24;
+  });
+  auto smaller = llmp::import::Normalize(source, kFunded, &target);
+  ASSERT_TRUE(smaller) << smaller.error().ToString();
+  EXPECT_EQ(smaller->spec().stages.front().layers.size(), 24U);
+  target.source.architecture = "different";
+  EXPECT_FALSE(llmp::import::Normalize(source, kFunded, &target));
+  target = test_support::GemmaImportTarget(31);
+  EXPECT_FALSE(llmp::import::Normalize(source, kFunded, &target));
+}
+
+TEST(ImportNormalizeTest, OversizedMetadataListsAreRetainedForExplicitValidation) {
+  Checkpoint source;
+  source.metadata.push_back({"test.list", std::vector<std::int64_t>(spec::kMaxList + 1, 7)});
+  const auto values = ValuesOf(source);
+  ASSERT_EQ(values.size(), 1U);
+  EXPECT_EQ(std::get<std::vector<std::int64_t>>(values.front().value).size(), spec::kMaxList + 1);
 }
 
 }  // namespace

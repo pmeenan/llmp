@@ -135,25 +135,12 @@ std::expected<StoredComponentBindings, std::string> ReadStoredComponents(
             if (full != weight.format || array.part != role)
               return Refuse("stored expert role format or count differs from its source");
             const auto& matrix = *array.format;
-            // A split NVFP4 or affine encoding's parts, or NVFP4's in the
-            // scale-atom layout (the native importer's experts), are
-            // separate arrays of one slab, bound part by part and read by
-            // the format ladder's resident grouped products
-            // (engine/expert_slab.h, RunnerConfig::split_expert_parts) or
-            // the block-scaled grouped GEMM.
-            const bool split =
-                ((matrix.layout == format::Layout::kSplit &&
-                  (matrix.encoding == format::Encoding::kNvfp4 ||
-                   matrix.encoding == format::Encoding::kAffine)) ||
-                 (matrix.layout == format::Layout::kScaleAtoms &&
-                  matrix.encoding == format::Encoding::kNvfp4)) &&
-                (role == format::PartRole::kCodes || role == format::PartRole::kBlockScales ||
-                 role == format::PartRole::kTensorScale || role == format::PartRole::kBiases ||
-                 role == format::PartRole::kZeros);
-            if (!split &&
-                (role != format::PartRole::kData || (matrix.layout != format::Layout::kDense &&
-                                                     matrix.layout != format::Layout::kGgmlBlocks)))
-              return Refuse("stored expert placement does not support these multipart slabs");
+            // Parts are format facts. Resident grouped execution advertises
+            // its own capabilities after these exact placements are bound.
+            const auto parts = format::PartsOf(matrix);
+            const auto part = parts ? parts->Find(role) : std::optional<format::PartExtent>{};
+            if (!part || part->bytes != array.slice_bytes.value())
+              return Refuse("stored expert part has no exact source slice extent");
           } else {
             const auto& resource = artifact.resources()[*index];
             const auto parts = format::PartsOf(weight.format);

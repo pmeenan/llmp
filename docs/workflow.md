@@ -30,9 +30,18 @@ the main agent to).
    loss or corruption, invariant violations, security, broken behaviour,
    claims in docs the code doesn't back, an optimization written into one
    model's code instead of the shared piece it belongs to (below) — not
-   style or ceremony. Findings are
-   file:line claims ranked by severity. The reviewer fixes what it finds (or
-   hands back to the builder for anything larger), re-verifies with
+   style or ceremony. Review the requested behavior and better architecture,
+   not only the current implementation. Existing code, dependencies and pins,
+   patch sets, interfaces and APIs, tooling, design choices, and artifact
+   formats are revisable. Pins record reproducibility, not a reason to defer;
+   update supporting pieces and re-import or regenerate artifacts as needed.
+   Until the first version ships, migration and backward compatibility are not
+   requirements for interfaces, APIs, formats, or artifacts. Challenge
+   workarounds or deferrals rooted only in current implementation; require the
+   supporting work and its validation. Preserve source provenance, explicit
+   user direction, and license obligations. Findings are file:line claims
+   ranked by severity. The reviewer fixes what it finds (or hands back to the
+   builder for anything larger), re-verifies with
    targeted tests, the shared non-model set and the model tests of the
    areas it touched (see check cadence), and runs the full Spark check
    set only if it is the last to change the slice's code; it reports a

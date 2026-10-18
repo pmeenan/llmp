@@ -275,7 +275,7 @@ TEST_F(ComponentBindingsTest, RowTablePlacementRefusesSharedGroupsBeforeExclusio
   EXPECT_NE(refused.error().find("shares its group"), std::string::npos);
 }
 
-TEST_F(ComponentBindingsTest, PreservesOrdinaryExpertMapsAndRefusesUnimplementedMultipartSlabs) {
+TEST_F(ComponentBindingsTest, PreservesOrdinaryAndFormatDeclaredMultipartExpertMaps) {
   auto model = Tiny();
   auto moe =
       C("ffn.moe", {W("gate", "gate"), W("up", "up"), W("down", "down"), W("router", "router")},
@@ -335,9 +335,17 @@ TEST_F(ComponentBindingsTest, PreservesOrdinaryExpertMapsAndRefusesUnimplemented
   ASSERT_TRUE(multipart) << Failed(multipart, &llmp::artifact::Error::ToString).value_or("");
   auto multipart_payment = Pay(*multipart);
   ASSERT_TRUE(multipart_payment);
-  auto refused = rt::ReadStoredComponents(*multipart, std::move(*multipart_payment));
-  ASSERT_FALSE(refused);
-  EXPECT_NE(refused.error().find("multipart slabs"), std::string::npos);
+  auto multipart_bound = rt::ReadStoredComponents(*multipart, std::move(*multipart_payment));
+  ASSERT_TRUE(multipart_bound) << Failed(multipart_bound).value_or("");
+  EXPECT_EQ(std::ranges::count_if(multipart_bound->places,
+                                  [](const auto& entry) { return entry.second.array; }),
+            6);
+  for (const auto& [key, place] : multipart_bound->places) {
+    if (!place.array) continue;
+    const auto& array = multipart->expert_arrays()[place.index];
+    EXPECT_EQ(array.part, key.second);
+    EXPECT_TRUE(fm::PartsOf(*array.format)->Find(key.second));
+  }
 }
 
 #if defined(LLMP_BINDING_CUDA)

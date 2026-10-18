@@ -129,6 +129,13 @@ TEST(ImageFamily, AMappingRefusesWhatItCannotSay) {
   auto no_policy = good;
   no_policy.serving = &kNoRule;
   EXPECT_FALSE(sp::ValidateImageMapping(no_policy));
+  auto unsupported_requirement = good;
+  std::vector<sp::ImageRequirement> requirements(good.requirements.begin(),
+                                                 good.requirements.end());
+  ASSERT_FALSE(requirements.empty());
+  requirements.front().type = sp::ValueType::kInts;
+  unsupported_requirement.requirements = requirements;
+  EXPECT_FALSE(sp::ValidateImageMapping(unsupported_requirement));
   auto no_serving = good;
   no_serving.serving = nullptr;
   EXPECT_FALSE(sp::ValidateImageMapping(no_serving));
@@ -327,7 +334,6 @@ TEST(ImageFamily, TheFrozenFamilyIsTheApprovedOne) {
     const auto& c = approvals[0].components[i];
     SCOPED_TRACE(c.name);
     EXPECT_TRUE(std::ranges::contains(family.mapping->components[i].architectures, c.architecture));
-    EXPECT_EQ(c.form, llmp::runtime::InventoryForm::kDense);
     EXPECT_EQ(c.policy, llmp::runtime::ApprovedPolicy::kNone);
     EXPECT_EQ(c.inventory.size(), 64U);
     EXPECT_EQ(c.spec.size(), 64U);

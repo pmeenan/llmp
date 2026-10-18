@@ -85,10 +85,10 @@ spec::ModelSpec Gemma3Spec() {
 
 // ---------------------------------------------------------------- catalog
 
-TEST(ComponentsTest, CatalogHoldsTheGemmaKindsInOrder) {
-  std::vector<std::string_view> kinds;
+TEST(ComponentsTest, CatalogIsSortedUniqueAndHasReferences) {
+  std::vector<std::pair<std::string_view, std::uint16_t>> kinds;
   for (const ComponentDef* def : Catalog()) {
-    kinds.push_back(def->kind);
+    kinds.emplace_back(def->kind, def->version);
     EXPECT_NE(def->emit, nullptr) << def->kind;
     EXPECT_NE(def->reference, nullptr) << def->kind;
     EXPECT_NE(def->shapes, nullptr) << def->kind;
@@ -96,46 +96,7 @@ TEST(ComponentsTest, CatalogHoldsTheGemmaKindsInOrder) {
     EXPECT_EQ(def->state != nullptr, def->max_state_tensors != 0) << def->kind;
   }
   EXPECT_TRUE(std::ranges::is_sorted(kinds));
-  EXPECT_EQ(kinds, (std::vector<std::string_view>{"affine.channel",
-                                                  "attention.borrowed",
-                                                  "attention.dense",
-                                                  "attention.gdn",
-                                                  "attention.mqa",
-                                                  "attention.qsa",
-                                                  "attention.qsa",
-                                                  "attention.spatial",
-                                                  "concat.spatial",
-                                                  "condition.rows",
-                                                  "conv.spatial",
-                                                  "embedding.inject",
-                                                  "embedding.mtp",
-                                                  "embedding.mtp",
-                                                  "embedding.projected",
-                                                  "embedding.token",
-                                                  "ffn.glu",
-                                                  "ffn.moe",
-                                                  "glu.spatial",
-                                                  "hc.combine",
-                                                  "hc.mix",
-                                                  "head.linear",
-                                                  "norm.adaptive",
-                                                  "norm.channel",
-                                                  "norm.rms",
-                                                  "norm.rms_spatial",
-                                                  "norm.rope_axes",
-                                                  "projection.spatial",
-                                                  "reshape.spatial",
-                                                  "residual.gated",
-                                                  "residual.hc",
-                                                  "residual.ple",
-                                                  "residual.scaled",
-                                                  "residual.spatial",
-                                                  "residual.upsample",
-                                                  "scale.learned",
-                                                  "side.hash",
-                                                  "side.ngram",
-                                                  "slice.spatial",
-                                                  "upsample.nearest"}));
+  EXPECT_EQ(std::ranges::adjacent_find(kinds), kinds.end());
   EXPECT_EQ(Find("attention.dense", 2), nullptr);
   EXPECT_EQ(Find("attention.sparse", 1), nullptr);
   EXPECT_EQ(RoleIndex(*Find("ffn.glu", 1), "down"), 3);
@@ -598,8 +559,8 @@ std::vector<format::TensorFormat> AttentionFormats(Encoding e) {
           Vector(16)};
 }
 
-// Two owners: prefills of 5 and 3 rows, a decode each, a longer chunk
-// that fills the 20-cell ring, then one that wraps it.
+// Two owners: prefills of 5 and 3 rows, a decode each, a longer chunk,
+// then one that wraps a small ring.
 std::vector<Step> AttentionSteps(std::uint32_t read) {
   return {
       {.shape = {.segments = {Seg(0, 5, 0, read, 5), Seg(3, 3, 0, read, 3)}}},
@@ -633,6 +594,60 @@ TEST(ComponentsTest, AttentionFragmentsMatchTheirReference) {
     Compare(*in, AttentionFormats(v.weights), both, AttentionSteps(32), kOutputTolerance,
             kF16StateTolerance);
   }
+}
+
+TEST(ComponentsTest, ZeroCenteredDenseNormsMatchTheirReferencesWithoutChangingSourceWeights) {
+  for (const auto encoding : {Encoding::kF32, Encoding::kBF16}) {
+    for (const bool qk : {false, true}) {
+      auto component = Attention(16, qk ? 0.0 : 50.0, qk, "neox", "sandwich");
+      component.params.push_back(P("norm_zero_centered", ParamValue(true)));
+      std::ranges::sort(component.params, {}, &Param::name);
+      auto in = MakeInstance(component, kFacts, Site::kLayer, 0, 1);
+      ASSERT_TRUE(in) << in.error();
+      auto formats = AttentionFormats(Encoding::kF32);
+      for (const auto role : {0U, 5U, 6U, 7U}) formats[role].encoding = encoding;
+      // The final eight-row chunk wraps; retain every row's 16-position window.
+      const std::array<std::uint64_t, 2> cells{24, 24};
+      Compare(*in, formats, cells, AttentionSteps(32), kOutputTolerance, kF16StateTolerance);
+    }
+    const std::vector<Step> steps{
+        {.shape = {.segments = {Seg(0, 3, 0, 256, 1), Seg(1, 2, 7, 256, 2)}}}};
+    auto ffn = MakeInstance(C("ffn.glu", {P("placement", N("sandwich")), P("eps", R(1e-6)),
+                                          P("activation", N("gelu_tanh")), P("hidden", I(96)),
+                                          P("norm_zero_centered", ParamValue(true))}),
+                            kFacts, Site::kLayer, 0, 2);
+    ASSERT_TRUE(ffn) << ffn.error();
+    auto formats = std::vector<format::TensorFormat>{
+        Vector(kWidth), Matrix(Encoding::kF32, kWidth, 96), Matrix(Encoding::kF32, kWidth, 96),
+        Matrix(Encoding::kF32, 96, kWidth), Vector(kWidth)};
+    formats[0].encoding = formats[4].encoding = encoding;
+    Compare(*ffn, formats, {}, steps, 1e-5);
+    auto norm =
+        MakeInstance(C("norm.rms", {P("eps", R(1e-6)), P("norm_zero_centered", ParamValue(true))}),
+                     kFacts, Site::kFinalNorm, 0, 3);
+    ASSERT_TRUE(norm) << norm.error();
+    auto format = Vector(kWidth);
+    format.encoding = encoding;
+    Compare(*norm, std::span(&format, 1), {}, steps, 1e-5);
+  }
+}
+
+TEST(ComponentsTest, ZeroCenteredFinalNormAddsOneExactlyOnceAndRefusesFoldContradiction) {
+  auto component = C("norm.rms", {P("eps", R(0.0)), P("norm_zero_centered", ParamValue(true))});
+  auto instance = MakeInstance(component, {.width = 2, .context = 16}, Site::kFinalNorm, 0, 0);
+  ASSERT_TRUE(instance) << instance.error();
+  RefIO io{.instance = &*instance};
+  io.stream = {3.0, 4.0};
+  io.weights = {{0.0F, 0.0F}};
+  io.segments = {{.rows = 1}};
+  ASSERT_TRUE(instance->def->reference(io));
+  EXPECT_DOUBLE_EQ(io.stream[0], 3.0 / std::sqrt(12.5));
+  EXPECT_DOUBLE_EQ(io.stream[1], 4.0 / std::sqrt(12.5));
+  EXPECT_EQ(io.weights[0], (std::vector<float>{0.0F, 0.0F}));
+  const std::array<std::string, 1> folds{"norm.plus_one"};
+  auto facts = kFacts;
+  facts.folds = folds;
+  EXPECT_FALSE(MakeInstance(component, facts, Site::kFinalNorm, 0, 0));
 }
 
 // The bias is before rotation (including K's stored values); scaling
@@ -980,8 +995,10 @@ TEST(ComponentsTest, ChannelNormRefusesInvalidParametersAndWeightShapes) {
   ASSERT_TRUE(in.has_value());
   const planner::StepShape shape{.segments = {Seg(0, 1, 0, 256, 1)}};
   EXPECT_FALSE(BuildComponent(*in, shape, std::array{Vector(3)}, {}));
-  EXPECT_FALSE(
-      BuildComponent(*in, shape, std::array{ir::Dense(Encoding::kF16, ir::ShapeOf({2}))}, {}));
+  const auto f16 = ir::Dense(Encoding::kF16, ir::ShapeOf({2}));
+  const auto graph = BuildComponent(*in, shape, std::array{f16}, {});
+  ASSERT_TRUE(graph) << graph.error();
+  EXPECT_EQ(graph->step.graph.tensor(graph->weights.at(0)).format, f16);
   auto wide = facts;
   wide.width = kMaxStreamWidth + 1;
   EXPECT_FALSE(MakeInstance(C("norm.channel", {}), wide, Site::kLayer, 0, 1));

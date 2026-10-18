@@ -372,7 +372,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           stored_metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{}](
              const ModelSettings& settings) mutable -> std::expected<EngineLlmParts, std::string> {
     // The architecture's serving recipe (its mapping's data, spec/mapping.h).
-    const spec::Mapping* recipe_mapping = spec::FindMapping(settings.architecture);
+    const spec::Mapping* recipe_mapping =
+        spec::FindMapping(settings.architecture, settings.container);
     if (recipe_mapping == nullptr || recipe_mapping->serving == nullptr)
       return Error(
           std::format("the component engine serves no architecture {}", settings.architecture));
@@ -409,10 +410,12 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     auto artifact = OpenInstalled(store, id);
     if (!artifact) return Error(artifact.error());
 
-    const spec::Mapping* mapping = spec::FindMapping(artifact->model().architecture);
+    const spec::Mapping* mapping =
+        spec::FindMapping(artifact->model().architecture, artifact->model().container);
     if (mapping == nullptr) return Error("the artifact's architecture has no mapping");
-    if (settings.architecture != artifact->model().architecture)
-      return Error("resolved architecture differs from the opened artifact");
+    if (settings.architecture != artifact->model().architecture ||
+        settings.container != artifact->model().container)
+      return Error("resolved architecture/container differs from the opened artifact");
     // The artifact's prerequisites are admitted before its spec, component
     // parameters or role maps are parsed or copied (a v1 artifact's alone:
     // D-118); those are admitted once read, below. Retain one catalog
@@ -468,6 +471,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       hold->sources.push_back(std::move(stored_bindings->source));
       hold->place = std::move(stored_bindings->places);
     }
+    const auto target_vocabulary = stored_bindings->logit_width;
+    if (!target_vocabulary) return Error("target stored head has no vocabulary rows");
     // The drafter, a stage of its own, when the model speculates.
     const bool speculate = !drafter_id.empty() && settings.speculation.value;
     std::optional<ja::Artifact> drafter;
@@ -498,10 +503,10 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       // vocabulary; the head's token IDs are read and checked.
       if (const spec::DraftRecipe* draft = drafter_mapping->draft;
           draft != nullptr && !draft->vocab_key.empty()) {
-        auto map = DraftHeadRows(*drafter, draft->head_ids, recipe.vocab);
+        auto map = DraftHeadRows(*drafter, draft->head_ids, target_vocabulary);
         if (!map) return Error(map.error());
         auto width = ConfigureDraftVocabulary(
-            *dvalues, *draft, settings.draft_vocab.value, recipe.vocab,
+            *dvalues, *draft, settings.draft_vocab.value, target_vocabulary,
             *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt);
         if (!width) return Error(width.error());
         hold->draft_head_rows = *width;
@@ -510,7 +515,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           if (!ids) return Error(ids.error());
           // Strictly ascending target token IDs.
           for (std::size_t i = 0; i < ids->size(); ++i)
-            if ((*ids)[i] < 0 || std::cmp_greater_equal((*ids)[i], recipe.vocab) ||
+            if ((*ids)[i] < 0 || std::cmp_greater_equal((*ids)[i], target_vocabulary) ||
                 (i != 0 && (*ids)[i] <= (*ids)[i - 1]))
               return Error("a selected draft head's token IDs are not strictly ascending");
           ids->resize(*width);
@@ -611,16 +616,13 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (!bound) return Error(bound.error());
     if (settings.bound_spec && *settings.bound_spec != *bound)
       return Error("resolved calibration spec differs from the actual component spec");
-    // Qwen3.8's QSA selection builds F32 [read cells, rows] tensors (its
-    // causal selection mask, the spread block scores and the selected mask;
-    // components/qsa.cc), whose plane strides GGML takes in 32 bits
-    // (RE-037): its rows at a long context are bounded as its legacy host
-    // masks' were (262,144 cells: 2,040 rows).
-    const auto configured_chunk =
-        shared && recipe.most_rows != nullptr
-            ? PrefillChunkRows(settings.context.value, std::nullopt, settings.prefill_chunk.value,
-                               recipe.most_rows(settings.context.value))
-            : settings.prefill_chunk.value;
+    // The actual stored/composed contracts and selected emission mode bound
+    // every mask and index-score plane's signed int32 stride (RE-037).
+    auto prompt_bound =
+        components::StagePrefillRows(hold->spec, 0, settings.context.value,
+                                     settings.prefill_chunk.value, shared && recipe.lid_mask);
+    if (!prompt_bound) return Error(prompt_bound.error());
+    const auto configured_chunk = *prompt_bound;
     // How the drafter drafts (its mapping's drafting recipe).
     const spec::DraftRecipe* draft = speculate ? drafter_mapping->draft : nullptr;
     if (speculate && draft == nullptr)

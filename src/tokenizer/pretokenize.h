@@ -17,7 +17,7 @@
 //     [一-龥぀-ゟ゠-ヿ]+
 //     [!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+|[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+
 //     | ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
-// - kGemma4 (GGUF `gemma4`): [^\n]+|[\n]+ over raw UTF-8 with
+// - kRawBpe (GGUF `gemma4`): [^\n]+|[\n]+ over raw UTF-8 with
 //   spaces replaced by ▁ before splitting.
 // - kSentencePiece (GGUF model `llama`): one whole nonempty fragment;
 //   token scores select merges, with optional dummy prefix and ▁ spaces.
@@ -42,7 +42,7 @@
 
 namespace llmp::tokenizer {
 
-enum class PreTokenizer : std::uint8_t { kQwen2, kQwen35, kDeepSeekV3, kGemma4, kSentencePiece };
+enum class PreTokenizer : std::uint8_t { kQwen2, kQwen35, kDeepSeekV3, kRawBpe, kSentencePiece };
 
 std::string_view PreTokenizerName(PreTokenizer p);
 

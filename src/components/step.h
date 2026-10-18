@@ -193,6 +193,14 @@ std::expected<model::StateLayoutDerived, std::string> StageLayoutUniform(
     const spec::ModelSpec& spec, std::size_t stage, std::uint32_t context, std::uint32_t max_rows,
     std::uint64_t tensor_align);
 
+// The largest requested prompt chunk whose declared mask planes fit signed
+// int32 strides (RE-037), from this spec's actual state contracts and geometry.
+// No architecture names, checkpoint context caps or preferred chunk sizes.
+std::expected<std::uint32_t, std::string> StagePrefillRows(const spec::ModelSpec& spec,
+                                                           std::size_t stage, std::uint32_t context,
+                                                           std::uint32_t requested,
+                                                           bool rounded_selection = false);
+
 // The stage's batching capability: its components' own limits combined
 // (the tightest of each), over a step of any segments up to kMaxSegments.
 std::expected<model::Batching, std::string> StageBatching(const spec::ModelSpec& spec,

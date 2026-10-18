@@ -257,7 +257,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
   // every LLM serves under the automatic startup payment by default
   // (Start).
   if (!entry.composition) {
-    const spec::ServingRecipe* recipe = RecipeOf(settings.architecture);
+    const spec::ServingRecipe* recipe = RecipeOf(settings.architecture, settings.container);
     if (recipe == nullptr)
       return Error(std::format("model {}: no runner for architecture {}", entry.name,
                                settings.architecture));

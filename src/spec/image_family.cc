@@ -249,7 +249,8 @@ std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
       return Refused(std::format("{}.{}: a constant out of range", r.kind, r.param));
   }
   for (const auto& q : m.requirements) {
-    if (q.key.empty() || !IsSourceKey(q.key) || q.role.empty() == q.file.empty() ||
+    if (static_cast<unsigned>(q.type) > static_cast<unsigned>(ValueType::kString) ||
+        q.key.empty() || !IsSourceKey(q.key) || q.role.empty() == q.file.empty() ||
         (!q.role.empty() &&
          !std::ranges::contains(m.components, q.role, &ImageComponentRule::role)))
       return Refused(std::format("requirement {}: a key of one role or file", q.key));

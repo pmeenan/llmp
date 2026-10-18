@@ -26,8 +26,40 @@ constexpr std::array kAuxiliary{
     AuxiliaryNamespace{"general.", "container provenance"},
     AuxiliaryNamespace{"tokenizer.", "tokenizer metadata retained for the writer"},
     AuxiliaryNamespace{"quantize.imatrix.", "source quantization calibration provenance"}};
-constexpr std::array kGemma2Requirements{ScalarRequirement{"gemma2.block_count", 46}};
-constexpr std::array kGemma3Requirements{ScalarRequirement{"gemma3.block_count", 62}};
+constexpr std::array kGemma2Requirements{ScalarRequirement{
+    .key = "gemma2.block_count", .reject_equal = 46, .unless_present = "gemma2.attention.scale"}};
+constexpr std::array kGemma3Requirements{ScalarRequirement{
+    .key = "gemma3.block_count", .reject_equal = 62, .unless_present = "gemma3.attention.scale"}};
+constexpr std::array kGemmaHfTensors{
+    TensorAlias{"model.embed_tokens.weight", "token_embd.weight"},
+    TensorAlias{"model.layers.{layer}.input_layernorm.weight", "blk.{layer}.attn_norm.weight"},
+    TensorAlias{"model.layers.{layer}.self_attn.q_proj.weight", "blk.{layer}.attn_q.weight"},
+    TensorAlias{"model.layers.{layer}.self_attn.k_proj.weight", "blk.{layer}.attn_k.weight"},
+    TensorAlias{"model.layers.{layer}.self_attn.v_proj.weight", "blk.{layer}.attn_v.weight"},
+    TensorAlias{"model.layers.{layer}.self_attn.o_proj.weight", "blk.{layer}.attn_output.weight"},
+    TensorAlias{"model.layers.{layer}.post_attention_layernorm.weight",
+                "blk.{layer}.post_attention_norm.weight"},
+    TensorAlias{"model.layers.{layer}.pre_feedforward_layernorm.weight",
+                "blk.{layer}.ffn_norm.weight"},
+    TensorAlias{"model.layers.{layer}.post_feedforward_layernorm.weight",
+                "blk.{layer}.post_ffw_norm.weight"},
+    TensorAlias{"model.layers.{layer}.mlp.gate_proj.weight", "blk.{layer}.ffn_gate.weight"},
+    TensorAlias{"model.layers.{layer}.mlp.up_proj.weight", "blk.{layer}.ffn_up.weight"},
+    TensorAlias{"model.layers.{layer}.mlp.down_proj.weight", "blk.{layer}.ffn_down.weight"},
+    TensorAlias{"model.norm.weight", "output_norm.weight"},
+    TensorAlias{"lm_head.weight", "output.weight"},
+};
+constexpr auto kGemma3HfTensors = [] {
+  std::array<TensorAlias, kGemmaHfTensors.size() + 2> aliases{};
+  std::ranges::copy(kGemmaHfTensors, aliases.begin());
+  aliases[kGemmaHfTensors.size()] = {"model.layers.{layer}.self_attn.q_norm.weight",
+                                     "blk.{layer}.attn_q_norm.weight"};
+  aliases[kGemmaHfTensors.size() + 1] = {"model.layers.{layer}.self_attn.k_norm.weight",
+                                         "blk.{layer}.attn_k_norm.weight"};
+  return aliases;
+}();
+constexpr std::array kGemmaHfRequirements{
+    ScalarRequirement{.key = "query_pre_attn_scalar", .positive = true}};
 constexpr std::array kQwen2HfTensors{
     TensorAlias{"model.embed_tokens.weight", "token_embd.weight"},
     TensorAlias{"model.layers.{layer}.input_layernorm.weight", "blk.{layer}.attn_norm.weight"},
@@ -94,6 +126,113 @@ constexpr std::array kSafetensorsAuxiliary{
                        "model.embed_tokens.weight", 1},
 };
 
+// Gemma owns its mathematical keys rather than inheriting Qwen's auxiliary windows.
+constexpr auto kGemmaHfAuxiliary = [] {
+  std::array<AuxiliaryNamespace, kSafetensorsAuxiliary.size() - 3> out{};
+  std::size_t next = 0;
+  for (const auto& rule : kSafetensorsAuxiliary)
+    if (rule.prefix != "sliding_window" && rule.prefix != "max_window_layers" &&
+        rule.prefix != "tie_word_embeddings")
+      out[next++] = rule;
+  return out;
+}();
+constexpr std::array kGemmaHeadPresence{
+    TensorPresenceRequirement{.flag = "tie_word_embeddings", .tensor = "output.weight"}};
+constexpr std::array kGemmaConditionalHeadPresence{
+    TensorPresenceRequirement{.flag = "text_config.tie_word_embeddings", .tensor = "output.weight"},
+    TensorPresenceRequirement{.flag = "tie_word_embeddings", .tensor = "output.weight"}};
+constexpr std::array kGemma2HfRequirements{
+    kGemmaHfRequirements[0],
+    ScalarRequirement{
+        .key = "sliding_window_size", .equals_key = "sliding_window", .optional = true}};
+constexpr std::array<std::string_view, 5> kGemmaHfNulls{
+    "rope_scaling", "rope_parameters", "final_logit_softcapping", "attn_logit_softcapping",
+    "use_bidirectional_attention"};
+constexpr std::array<std::string_view, 5> kGemma3ConditionalNulls{
+    "text_config.rope_scaling", "text_config.rope_parameters",
+    "text_config.final_logit_softcapping", "text_config.attn_logit_softcapping",
+    "text_config.use_bidirectional_attention"};
+constexpr std::array kGemma3ConditionalRequirements{
+    ScalarRequirement{.key = "text_config.query_pre_attn_scalar", .positive = true}};
+constexpr auto kGemma3ConditionalAuxiliary = [] {
+  std::array<AuxiliaryNamespace, kGemmaHfAuxiliary.size() + 7> out{};
+  std::ranges::copy(kGemmaHfAuxiliary, out.begin());
+  // Root tokenizer/provenance fields are kept by the common declarations above.
+  auto i = kGemmaHfAuxiliary.size();
+  out[i++] = {"vision_config.", "vision component outside this text-only import"};
+  out[i++] = {"text_config.initializer_range", "weight initializer scale"};
+  out[i++] = {"text_config.attention_dropout", "training dropout configuration"};
+  out[i++] = {"text_config.cache_implementation", "transformers cache implementation"};
+  out[i++] = {"text_config.torch_dtype", "checkpoint nominal dtype"};
+  out[i++] = {"text_config.use_cache", "transformers generation cache default"};
+  out[i] = {"text_config.vocab_size", "vocabulary stated by embedding table",
+            "language_model.model.embed_tokens.weight", 1};
+  return out;
+}();
+constexpr std::array<std::string_view, 2> kGemma3Excluded{"vision_tower.",
+                                                          "multi_modal_projector."};
+constexpr std::array<std::string_view, 1> kGemma3ConditionalSemantic{"text_config."};
+constexpr auto kGemma3ConditionalTensors = [] {
+  auto tensors = kGemma3HfTensors;
+  for (auto& t : tensors)
+    if (t.source == "model.embed_tokens.weight")
+      t.source = "language_model.model.embed_tokens.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.layers.{layer}.input_layernorm.weight")
+      t.source = "language_model.model.layers.{layer}.input_layernorm.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.layers.{layer}.self_attn.q_proj.weight")
+      t.source = "language_model.model.layers.{layer}.self_attn.q_proj.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.layers.{layer}.self_attn.k_proj.weight")
+      t.source = "language_model.model.layers.{layer}.self_attn.k_proj.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.layers.{layer}.self_attn.v_proj.weight")
+      t.source = "language_model.model.layers.{layer}.self_attn.v_proj.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.layers.{layer}.self_attn.o_proj.weight")
+      t.source = "language_model.model.layers.{layer}.self_attn.o_proj.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.layers.{layer}.post_attention_layernorm.weight")
+      t.source = "language_model.model.layers.{layer}.post_attention_layernorm.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.layers.{layer}.pre_feedforward_layernorm.weight")
+      t.source = "language_model.model.layers.{layer}.pre_feedforward_layernorm.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.layers.{layer}.post_feedforward_layernorm.weight")
+      t.source = "language_model.model.layers.{layer}.post_feedforward_layernorm.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.layers.{layer}.mlp.gate_proj.weight")
+      t.source = "language_model.model.layers.{layer}.mlp.gate_proj.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.layers.{layer}.mlp.up_proj.weight")
+      t.source = "language_model.model.layers.{layer}.mlp.up_proj.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.layers.{layer}.mlp.down_proj.weight")
+      t.source = "language_model.model.layers.{layer}.mlp.down_proj.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.norm.weight") t.source = "language_model.model.norm.weight";
+  for (auto& t : tensors)
+    if (t.source == "lm_head.weight") t.source = "language_model.lm_head.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.layers.{layer}.self_attn.q_norm.weight")
+      t.source = "language_model.model.layers.{layer}.self_attn.q_norm.weight";
+  for (auto& t : tensors)
+    if (t.source == "model.layers.{layer}.self_attn.k_norm.weight")
+      t.source = "language_model.model.layers.{layer}.self_attn.k_norm.weight";
+  return tensors;
+}();
+constexpr std::array kQwenRequirements{ScalarRequirement{
+    .key = "qwen4exp.attention.value_length", .equals_key = "qwen4exp.attention.key_length"}};
+constexpr std::array kQwenAuxiliary{
+    kAuxiliary[0], kAuxiliary[1], kAuxiliary[2],
+    AuxiliaryNamespace{"qwen4exp.ssm.inner_size",
+                       "linear value width stated by its output projection", "blk.0.ssm_out.weight",
+                       0},
+    // The text-only PLE hashes use eos_token_id. This marks an image input
+    // placeholder in the checkpoint; no image input path is admitted here.
+    AuxiliaryNamespace{"qwen4exp.ple.image_token_id",
+                       "image input placeholder outside the text pipeline"}};
 constexpr std::array kQwenLists{
     ListRequirement{.key = "qwen4exp.ple.layers", .size = nd::kLayerLimit, .min_size = 1},
     ListRequirement{.key = "qwen4exp.rope.dimension_sections", .size = 4},
@@ -158,11 +297,26 @@ constexpr std::array kDsparkLists{
 constexpr std::array<std::string_view, 2> kHfIgnored{
     "model.rotary_emb.inv_freq", "model.layers.{layer}.self_attn.rotary_emb.inv_freq"};
 constexpr std::array<std::string_view, 2> kHfNullSemantics{"rope_scaling", "rope_parameters"};
-constexpr std::array<std::string_view, 14> kHfSemantic{
-    "qwen2.",          "rope_*",      "rotary_*",   "quantization*",
-    "sliding_window*", "attention_*", "attn_*",     "partial_rotary_factor",
-    "softcap*",        "hidden_*",    "rms_norm_*", "norm_*",
-    "num_*",           "activation*"};
+constexpr std::array<std::string_view, 20> kHfSemantic{"qwen2.",
+                                                       "rope_*",
+                                                       "rotary_*",
+                                                       "quantization*",
+                                                       "sliding_window*",
+                                                       "attention_*",
+                                                       "attn_*",
+                                                       "partial_rotary_factor",
+                                                       "softcap*",
+                                                       "hidden_*",
+                                                       "rms_norm_*",
+                                                       "norm_*",
+                                                       "num_*",
+                                                       "activation*",
+                                                       "query_*",
+                                                       "head_dim",
+                                                       "layer_types",
+                                                       "use_bidirectional_attention",
+                                                       "attn_logit_softcapping",
+                                                       "final_logit_softcapping"};
 constexpr std::array<std::string_view, 6> kGgufSemantic{"gemma2.", "gemma3.",   "gemma4.",
                                                         "qwen2.",  "qwen4exp.", "deepseek4."};
 
@@ -205,6 +359,33 @@ bool IsName(std::string_view s) {
 
 const SourceMapping* FindSourceMapping(std::string_view container, std::string_view architecture) {
   static const std::array tables{
+      SourceMapping{.container = "safetensors",
+                    .architecture = &spec::mappings::Gemma3ConditionalSafetensorsMapping(),
+                    .tensors = kGemma3ConditionalTensors,
+                    .auxiliary = kGemma3ConditionalAuxiliary,
+                    .requirements = kGemma3ConditionalRequirements,
+                    .semantic = kGemma3ConditionalSemantic,
+                    .null_semantics = kGemma3ConditionalNulls,
+                    .ignored_tensor_prefixes = kGemma3Excluded,
+                    .tensor_presence = kGemmaConditionalHeadPresence},
+      SourceMapping{.container = "safetensors",
+                    .architecture = &spec::mappings::Gemma2SafetensorsMapping(),
+                    .tensors = kGemmaHfTensors,
+                    .auxiliary = kGemmaHfAuxiliary,
+                    .requirements = kGemma2HfRequirements,
+                    .semantic = kHfSemantic,
+                    .ignored_tensors = kHfIgnored,
+                    .null_semantics = kGemmaHfNulls,
+                    .tensor_presence = kGemmaHeadPresence},
+      SourceMapping{.container = "safetensors",
+                    .architecture = &spec::mappings::Gemma3SafetensorsMapping(),
+                    .tensors = kGemma3HfTensors,
+                    .auxiliary = kGemmaHfAuxiliary,
+                    .requirements = kGemmaHfRequirements,
+                    .semantic = kHfSemantic,
+                    .ignored_tensors = kHfIgnored,
+                    .null_semantics = kGemmaHfNulls,
+                    .tensor_presence = kGemmaHeadPresence},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Gemma2Mapping(),
                     .auxiliary = kAuxiliary,
@@ -247,7 +428,8 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
       },
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Qwen38GgufMapping(),
-                    .auxiliary = kAuxiliary,
+                    .auxiliary = kQwenAuxiliary,
+                    .requirements = kQwenRequirements,
                     .lists = kQwenLists,
                     .extended_components = true,
                     .row_indices = kQwenRows,
@@ -362,8 +544,8 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
       table.version == 0 || !table.architecture || table.route != RouteOperation::kCopyPart ||
       table.tensors.size() > nd::kRuleLimit || table.keys.size() > 64 ||
       table.auxiliary.size() > nd::kRuleLimit || table.requirements.size() > 16 ||
-      ((table.container == "exl3" || table.container == "safetensors") &&
-       (table.keys.empty() || table.auxiliary.empty())))
+      table.ignored_tensor_prefixes.size() > 8 || table.tensor_presence.size() > 8 ||
+      ((table.container == "exl3" || table.container == "safetensors") && table.auxiliary.empty()))
     return Invalid();
   const auto& m = *table.architecture;
   const auto* registered = FindSourceMapping(table.container, m.architecture);
@@ -375,8 +557,16 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
       !std::ranges::equal(table.encodings, registered->encodings) ||
       !std::ranges::equal(table.semantic, registered->semantic) ||
       !std::ranges::equal(table.ignored_tensors, registered->ignored_tensors) ||
-      !std::ranges::equal(table.null_semantics, registered->null_semantics))
+      !std::ranges::equal(table.null_semantics, registered->null_semantics) ||
+      !std::ranges::equal(table.ignored_tensor_prefixes, registered->ignored_tensor_prefixes) ||
+      table.tensor_presence.size() != registered->tensor_presence.size())
     return Invalid();
+  for (std::size_t i = 0; i < table.tensor_presence.size(); ++i) {
+    const auto& rule = table.tensor_presence[i];
+    const auto& expected = registered->tensor_presence[i];
+    if (rule.flag != expected.flag || rule.tensor != expected.tensor || rule.when != expected.when)
+      return Invalid();
+  }
   for (std::size_t i = 0; i < table.shapes.size(); ++i) {
     const auto& a = table.shapes[i];
     const auto& b = registered->shapes[i];
@@ -398,7 +588,8 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
     for (const auto& rule : table.requirements)
       found |= rule.key == required.key && rule.reject_equal == required.reject_equal &&
                rule.require_equal == required.require_equal &&
-               rule.equals_key == required.equals_key && rule.positive == required.positive;
+               rule.equals_key == required.equals_key && rule.positive == required.positive &&
+               rule.unless_present == required.unless_present && rule.optional == required.optional;
     if (!found) return Invalid();
   }
   const bool drafter = m.role == spec::StageRole::kDrafter;
@@ -478,8 +669,7 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
          (a.prefix.ends_with('.') || !spec::IsSourceKey(a.equals_tensor) || a.equals_dim >= 4)))
       return Invalid();
     const auto matches_aux = [&](std::string_view key) {
-      return table.container == "gguf" && a.prefix.ends_with('.') ? key.starts_with(a.prefix)
-                                                                  : key == a.prefix;
+      return a.prefix.ends_with('.') ? key.starts_with(a.prefix) : key == a.prefix;
     };
     if (matches_aux(m.layer_count_key) ||
         (!m.layer_flags_key.empty() && matches_aux(m.layer_flags_key)))
@@ -498,12 +688,14 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
     for (const auto& k : table.keys)
       if (matches_aux(k.source)) return Invalid();
     for (std::size_t j = 0; j < i; ++j)
-      if (table.container == "gguf" ? (a.prefix.starts_with(table.auxiliary[j].prefix) ||
-                                       table.auxiliary[j].prefix.starts_with(a.prefix))
-                                    : a.prefix == table.auxiliary[j].prefix)
+      if (a.prefix.starts_with(table.auxiliary[j].prefix) ||
+          table.auxiliary[j].prefix.starts_with(a.prefix))
         return Invalid();
   }
   for (const auto& r : table.requirements) {
+    if (!r.unless_present.empty() && (!nd::KeyTypes(m, r.unless_present) || r.require_equal ||
+                                      r.positive || !r.equals_key.empty()))
+      return Invalid();
     if (!r.require_equal && r.equals_key.empty() && !r.positive &&
         nd::KeyTypes(m, r.key) != nd::kInteger)
       return Invalid();

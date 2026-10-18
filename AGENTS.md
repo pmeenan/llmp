@@ -30,6 +30,17 @@ Constraints evolve as we learn, but never by silent drift: changing one means
 making the case in [docs/decisions.md](docs/decisions.md) and updating the
 affected docs. Until then, these govern.
 
+Choose the better architecture and do the work it requires. Existing code,
+dependencies and pins, patch sets, interfaces and APIs, tooling, design
+decisions, and artifact formats, IDs, or stores are not immutable limits;
+extend, replace, or update them as needed. Pins record reproducibility, not a
+reason to defer. Re-import or regenerate artifacts when required. Until the
+first version ships, migration and backward compatibility are not requirements
+for interfaces, APIs, formats, or artifacts. Validate results and retain source
+provenance. Review and challenge workarounds or deferrals rooted only in current
+implementation. Explicit user instructions and license/provenance obligations
+remain binding. (D-121)
+
 - **Our own native runtime, one process per node.** Llmpalooza is not a vLLM fork
   or plugin. One modular native execution process per node owns all local
   model execution, scheduling, memory policy, VMM control, and completion
@@ -85,7 +96,8 @@ affected docs. Until then, these govern.
   import, never from raw checkpoints. Artifacts never serialize process
   addresses or runtime objects. Import validates lengths, paths, hashes, and
   metadata and never executes checkpoint code. Initial formats are explicitly
-  experimental; compatibility guarantees follow execution/restore evidence.
+  experimental; migration and backward compatibility are not requirements
+  before the first version ships (D-121).
   Import repacks weights into contiguous, indexed dependency groups
   (4 KiB-aligned on disk, paged in 2 MiB chunks with direct reads, which
   may coalesce; off by default, BP-P1); v0 uses safetensors shards with a llmpalooza manifest/index and no

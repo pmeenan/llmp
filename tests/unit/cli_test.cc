@@ -423,4 +423,18 @@ TEST(BuildInfo, IsThisBuild) {
 // entry and a decisions.md entry (D-062), and with this test.
 TEST(SurfaceVersions, Pinned) { EXPECT_EQ(llmp::surface::kReasoningSignatureVersion, 1U); }
 
+TEST(Cli, DrafterTargetMustBeAnIdWithinTheStore) {
+  for (const std::string& id :
+       {std::string("../outside"), std::string(63, 'a'), std::string(64, 'A')}) {
+    const Result result =
+        RunWith({"import", "absent", "--store", "/tmp/llmp-absent-store", "--target", id});
+    EXPECT_EQ(result.status, llmp::cli::kExitUsage);
+  }
+  const std::string missing_id(64, 'a');
+  const Result missing =
+      RunWith({"import", "absent", "--store", "/tmp/llmp-absent-store", "--target", missing_id});
+  EXPECT_EQ(missing.status, llmp::cli::kExitFailure);
+  EXPECT_THAT(missing.err, HasSubstr("--target"));
+}
+
 }  // namespace

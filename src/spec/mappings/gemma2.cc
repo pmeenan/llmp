@@ -3,6 +3,7 @@
 
 #include "spec/mappings/gemma2.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -63,7 +64,8 @@ constexpr std::array kParams = {
     FromKey("attention", "kv_heads", "gemma2.attention.head_count_kv", kInt),
     FromKey("attention", "key_dim", kKeyLength, kInt),
     FromKey("attention", "value_dim", "gemma2.attention.value_length", kInt),
-    // llama.cpp's Gemma 2 below 27B: 1 / sqrt(the key length).
+    // Explicit exporter semantics override the legacy key-length default.
+    FromKey("attention", "scale", "gemma2.attention.scale", kReal),
     FromKey("attention", "scale", kKeyLength, kReal, Transform::kRsqrt),
     FromKey("attention", "softcap", "gemma2.attn_logit_softcapping", kReal),
     FromKey("attention", "window", "gemma2.attention.sliding_window", kInt, Transform::kNone, "l"),
@@ -123,10 +125,81 @@ constexpr Mapping kMapping{
     .folds = kFolds,
     .policies = kPolicies,
     .serving = &kServing,
+    .containers = kGgufContainers,
 };
+
+// Native HF metadata is authoritative; unlike GGUF, its norm vectors are zero-centered.
+constexpr auto kNativeParams = [] {
+  std::array<ParamRule, kParams.size() + 11> params{};
+  std::ranges::copy(kParams, params.begin());
+  for (auto& p : params) {
+    if (p.param == "scale" && p.slot == "attention") {
+      p.key = "query_pre_attn_scalar";
+      p.transform = Transform::kRsqrt;
+    } else if (p.key == "gemma2.context_length")
+      p.key = "max_position_embeddings";
+    else if (p.key == "gemma2.embedding_length")
+      p.key = "hidden_size";
+    else if (p.key == "gemma2.attention.layer_norm_rms_epsilon")
+      p.key = "rms_norm_eps";
+    else if (p.key == "gemma2.attention.head_count")
+      p.key = "num_attention_heads";
+    else if (p.key == "gemma2.attention.head_count_kv")
+      p.key = "num_key_value_heads";
+    else if (p.key == "gemma2.attention.key_length" || p.key == "gemma2.attention.value_length" ||
+             p.key == "gemma2.rope.dimension_count")
+      p.key = "head_dim";
+    else if (p.key == "gemma2.attn_logit_softcapping")
+      p.key = "attn_logit_softcapping";
+    else if (p.key == "gemma2.final_logit_softcapping")
+      p.key = "final_logit_softcapping";
+    else if (p.key == "gemma2.attention.sliding_window")
+      p.key = "sliding_window";
+    else if (p.key == "gemma2.feed_forward_length")
+      p.key = "intermediate_size";
+    else if (p.key == "gemma2.rope.freq_base")
+      p.key = "rope_theta";
+    else if (p.key == "gemma2.rope.freq_base_swa")
+      p.key = "rope_theta";
+    else if (p.key == "gemma2.rope.scaling.factor")
+      p.key = "rope_scaling.factor";
+    else if (p.key == "gemma2.rope.scaling.type")
+      p.key = "rope_scaling.rope_type";
+    else if (p.key == "gemma2.attention.sliding_window_pattern")
+      p.key = "sliding_window_pattern";
+  }
+  std::size_t i = kParams.size();
+  for (std::string_view slot : {"attention", "ffn", "final_norm"}) {
+    params[i] = Flag(slot, "norm_zero_centered", true);
+    params[i++].unless_fold = "norm.plus_one";
+  }
+  params[i++] = Require("hidden_activation", "gelu_pytorch_tanh", true);
+  params[i++] =
+      ParamRule{.key = "attention_bias", .type = kBool, .value = {.flag = false}, .optional = true};
+  params[i++] = Require("hidden_act", "gelu_pytorch_tanh", true);
+  params[i++] = ParamRule{.key = "use_bidirectional_attention",
+                          .type = kBool,
+                          .value = {.flag = false},
+                          .optional = true};
+  // Defaults of the native HF config schema, not checkpoint-size inference.
+  params[i++] = Int(kStageSlot, "context", 8192);
+  params[i++] = Real("attention", "eps", 1e-6);
+  params[i++] = Real("ffn", "eps", 1e-6);
+  params[i] = Real("final_norm", "eps", 1e-6);
+  return params;
+}();
+constexpr Mapping kNativeMapping = [] {
+  auto mapping = kMapping;
+  mapping.architecture = "gemma2";
+  mapping.layer_count_key = "num_hidden_layers";
+  mapping.params = kNativeParams;
+  mapping.containers = kSafetensorsContainers;
+  return mapping;
+}();
 
 }  // namespace
 
 const Mapping& Gemma2Mapping() { return kMapping; }
+const Mapping& Gemma2SafetensorsMapping() { return kNativeMapping; }
 
 }  // namespace llmp::spec::mappings

@@ -228,7 +228,7 @@ std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte>
       return Fail(Rule::kUnsupported, "Gemma4 pre-tokenizer");
     }
     out.pre = "gemma4";
-    out.spec.pre_tokenizer = PreTokenizer::kGemma4;
+    out.spec.pre_tokenizer = PreTokenizer::kRawBpe;
   } else if (out.pre == "qwen2") {
     out.spec.pre_tokenizer = PreTokenizer::kQwen2;
   } else if (out.pre == "qwen35") {

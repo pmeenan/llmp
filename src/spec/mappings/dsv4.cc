@@ -29,64 +29,6 @@ using enum ValueType;
 constexpr std::uint32_t kCsaRatio = 4;
 constexpr std::uint32_t kHcaRatio = 128;
 
-// DeepSeek V4 Flash, as the deepseek4.* keys of DeepSeek-V4-Flash-0731-
-// UD-Q2_K_XL (and the e3aa0d6a revision) hold it (checked by
-// docs/experiments/dsv4-native/gguf_profile_check.py; the epsilons are the
-// GGUF's float32 values): what its serving recipe's prompt bound and its
-// DSpark drafter's import (its target's values and tensors) are made of.
-struct Flash {
-  std::uint32_t layers = 43, width = 4096, heads = 64, head_dim = 512, rope_dims = 64;
-  std::uint32_t q_lora = 1024, o_lora = 1024, o_groups = 8, window = 128;
-  std::uint32_t experts = 256, experts_used = 6, expert_ffn = 2048, shared_experts = 1;
-  std::uint32_t hash_layers = 3, hc = 4, sinkhorn_iterations = 20;
-  std::uint32_t indexer_heads = 64, indexer_head_dim = 128, indexer_top_k = 512;
-  std::uint32_t vocab = 129280, context = 1048576, yarn_original_context = 65536;
-  float rms_eps = 1e-6F, hc_eps = 1e-6F, rope_base = 10000.0F, compress_rope_base = 160000.0F;
-  float rope_scale = 16.0F, yarn_beta_fast = 32.0F, yarn_beta_slow = 1.0F;
-  float expert_weights_scale = 1.5F, swiglu_limit = 10.0F, swiglu_limit_shared = 10.0F;
-  // Layers 0 and 1 window-only; then CSA and HCA alternate from layer 2,
-  // the last layer CSA.
-  std::uint32_t ratio(std::uint32_t layer) const {
-    return layer < 2 ? 0 : (layer % 2 == 0 ? kCsaRatio : kHcaRatio);
-  }
-  std::uint64_t hc_width() const { return std::uint64_t{hc} * width; }
-  std::uint64_t hc_mix() const { return std::uint64_t{2 + hc} * hc; }
-};
-constexpr Flash kFlash{};
-
-// The widest prompt chunk at `context`: the fast plan's attention mask, F16
-// [ring cells + compressed cells, rows], stays under 2^31 bytes (the MMA
-// kernel takes its planes' strides in 32 bits, RE-037); the largest such
-// rows, by bisection (the mask grows with the rows).
-std::uint32_t MostRows(std::uint32_t context) {
-  const auto pad = [](std::uint64_t n) { return (n + 255) / 256 * 256; };
-  if (context == 0 || context > kFlash.context ||
-      context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {
-    return 0;
-  }
-  const std::uint64_t cells = pad(context);
-  if (cells <= kFlash.window) {
-    return 0;
-  }
-  const std::uint64_t compressed = pad((std::uint64_t{context} + kCsaRatio - 1) / kCsaRatio);
-  const auto fits = [&](std::uint64_t rows) {
-    const std::uint64_t ring = std::min(cells, pad(std::uint64_t{kFlash.window} + rows));
-    return (ring + compressed) * rows * 2 <=
-           static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
-  };
-  std::uint64_t lo = 0;
-  std::uint64_t hi = std::min<std::uint64_t>(context, cells - kFlash.window);
-  while (lo < hi) {
-    const std::uint64_t mid = hi - ((hi - lo) / 2);
-    if (fits(mid)) {
-      lo = mid;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return static_cast<std::uint32_t>(lo);
-}
-
 constexpr TensorRule Plain(std::string_view pattern, std::string_view slot, std::string_view role,
                            std::string_view layer_types = {}) {
   return {.pattern = pattern, .slot = slot, .role = role, .layer_types = layer_types};
@@ -310,11 +252,12 @@ constexpr ServingRecipe kServing{.family = "DeepSeek V4",
                                  .default_wave_read_align = 2048,
                                  .default_thinking = true,
                                  .shared_route = true,
-                                 .most_rows = &MostRows,
                                  .frozen_host_masks = false,
                                  .lanes = true,
                                  .lid_mask = true,
                                  .serving_rule = &kServingRule};
+
+constexpr std::array kGates = {GateRule{.key = "deepseek4.expert_count", .kind = "ffn.moe"}};
 
 constexpr Mapping kMapping{
     .architecture = "deepseek4",
@@ -328,6 +271,8 @@ constexpr Mapping kMapping{
     .tensors = kTensors,
     .params = kParams,
     .serving = &kServing,
+    .containers = kGgufContainers,
+    .gates = kGates,
 };
 
 // ---------------------------------------------------------------- dflash
@@ -400,152 +345,12 @@ constexpr std::array kDsparkReads = {
              .entering = true},
 };
 
-SourceValue Reals(std::string_view key, std::vector<double> v) {
-  return {.key = std::string(key), .value = ParamValue(std::move(v))};
-}
-
-// Its deepseek4.* keys.
-std::expected<std::vector<SourceValue>, std::string> TargetValues() {
-  const Flash& q = kFlash;
-  const auto key = [&](std::string_view k) { return "deepseek4." + std::string(k); };
-  std::vector<std::int64_t> ratios;
-  for (std::uint32_t il = 0; il < q.layers; ++il) ratios.push_back(q.ratio(il));
-  return std::vector<SourceValue>{
-      Value(key("block_count"), q.layers),
-      Value(key("context_length"), q.context),
-      Value(key("embedding_length"), q.width),
-      Value(key("attention.head_count"), q.heads),
-      Value(key("attention.head_count_kv"), 1U),
-      Value(key("attention.key_length"), q.head_dim),
-      Value(key("attention.value_length"), q.head_dim),
-      Value(key("rope.dimension_count"), q.rope_dims),
-      Value(key("attention.q_lora_rank"), q.q_lora),
-      Value(key("attention.output_lora_rank"), q.o_lora),
-      Value(key("attention.output_group_count"), q.o_groups),
-      Value(key("attention.sliding_window"), q.window),
-      Value(key("expert_count"), q.experts),
-      Value(key("expert_used_count"), q.experts_used),
-      Value(key("expert_feed_forward_length"), q.expert_ffn),
-      Value(key("expert_shared_count"), q.shared_experts),
-      Value(key("hash_layer_count"), q.hash_layers),
-      Value(key("hyper_connection.count"), q.hc),
-      Value(key("hyper_connection.sinkhorn_iterations"), q.sinkhorn_iterations),
-      Value(key("attention.indexer.head_count"), q.indexer_heads),
-      Value(key("attention.indexer.key_length"), q.indexer_head_dim),
-      Value(key("attention.indexer.top_k"), q.indexer_top_k),
-      Value(key("rope.scaling.original_context_length"), q.yarn_original_context),
-      Value(key("attention.layer_norm_rms_epsilon"), q.rms_eps),
-      Value(key("hyper_connection.epsilon"), q.hc_eps),
-      Value(key("rope.freq_base"), q.rope_base),
-      Value(key("attention.compress_rope_freq_base"), q.compress_rope_base),
-      Value(key("rope.scaling.factor"), q.rope_scale),
-      Value(key("rope.scaling.type"), "yarn"),
-      Value(key("rope.scaling.yarn_beta_fast"), q.yarn_beta_fast),
-      Value(key("rope.scaling.yarn_beta_slow"), q.yarn_beta_slow),
-      Value(key("expert_weights_scale"), q.expert_weights_scale),
-      FlagValue(key("expert_weights_norm"), true),
-      Value(key("expert_gating_func"), 4U),
-      Reals(key("swiglu_clamp_exp"),
-            std::vector<double>(q.layers, static_cast<double>(q.swiglu_limit))),
-      Reals(key("swiglu_clamp_shexp"),
-            std::vector<double>(q.layers, static_cast<double>(q.swiglu_limit_shared))),
-      Value(key("attention.compress_ratios"), std::move(ratios)),
-  };
-}
-
-// Its tensors as its GGUF names them: BF16 matrices, F32 vectors and I32
-// hash tables.
-Source TargetSource() {
-  const Flash& p = kFlash;
-  Source s{.architecture = "deepseek4", .container = "gguf"};
-  const auto add = [&](std::string name, std::vector<std::uint64_t> ne, bool experts = false,
-                       std::optional<format::Encoding> enc = std::nullopt) {
-    const auto encoding =
-        enc.value_or(ne.size() == 1 ? format::Encoding::kF32 : format::Encoding::kBF16);
-    format::TensorFormat f{
-        .encoding = encoding,
-        .layout = format::Layout::kDense,
-        .shape = {.ne = {1, 1, 1, 1}, .rank = static_cast<std::uint8_t>(ne.size())},
-    };
-    for (std::size_t i = 0; i < ne.size(); ++i) f.shape.ne[i] = ne[i];
-    s.tensors.push_back({.name = std::move(name),
-                         .format = f,
-                         .part = format::PartRole::kData,
-                         .experts = experts});
-  };
-  add("token_embd.weight", {p.width, p.vocab});
-  add("output_norm.weight", {p.width});
-  add("output.weight", {p.width, p.vocab});
-  add("output_hc_fn.weight", {p.hc_width(), p.hc});
-  add("output_hc_base.weight", {p.hc});
-  add("output_hc_scale.weight", {1});
-  const std::uint64_t w = p.width;
-  const std::uint64_t head = p.head_dim;
-  for (std::uint32_t il = 0; il < p.layers; ++il) {
-    const std::string prefix = std::format("blk.{}.", il);
-    add(prefix + "attn_norm.weight", {w});
-    add(prefix + "attn_sinks.weight", {p.heads});
-    add(prefix + "attn_q_a.weight", {w, p.q_lora});
-    add(prefix + "attn_q_a_norm.weight", {p.q_lora});
-    add(prefix + "attn_q_b.weight", {p.q_lora, std::uint64_t{p.heads} * head});
-    add(prefix + "attn_kv.weight", {w, head});
-    add(prefix + "attn_kv_a_norm.weight", {head});
-    add(prefix + "attn_output_a.weight",
-        {std::uint64_t{p.heads} * head / p.o_groups, std::uint64_t{p.o_lora} * p.o_groups});
-    add(prefix + "attn_output_b.weight", {std::uint64_t{p.o_lora} * p.o_groups, w});
-    add(prefix + "hc_attn_fn.weight", {p.hc_width(), p.hc_mix()});
-    add(prefix + "hc_attn_base.weight", {p.hc_mix()});
-    add(prefix + "hc_attn_scale.weight", {3});
-    add(prefix + "hc_ffn_fn.weight", {p.hc_width(), p.hc_mix()});
-    add(prefix + "hc_ffn_base.weight", {p.hc_mix()});
-    add(prefix + "hc_ffn_scale.weight", {3});
-    const std::uint32_t ratio = p.ratio(il);
-    if (ratio != 0) {
-      const std::uint64_t coff = ratio == kCsaRatio ? 2 : 1;
-      add(prefix + "attn_compressor_kv.weight", {w, coff * head});
-      add(prefix + "attn_compressor_gate.weight", {w, coff * head});
-      add(prefix + "attn_compressor_ape.weight", {coff * head, ratio});
-      add(prefix + "attn_compressor_norm.weight", {head});
-    }
-    if (ratio == kCsaRatio) {
-      const std::uint64_t ih = p.indexer_head_dim;
-      add(prefix + "indexer.attn_q_b.weight", {p.q_lora, std::uint64_t{p.indexer_heads} * ih});
-      add(prefix + "indexer.proj.weight", {w, p.indexer_heads});
-      add(prefix + "indexer_compressor_kv.weight", {w, 2 * ih});
-      add(prefix + "indexer_compressor_gate.weight", {w, 2 * ih});
-      add(prefix + "indexer_compressor_ape.weight", {2 * ih, kCsaRatio});
-      add(prefix + "indexer_compressor_norm.weight", {ih});
-    }
-    add(prefix + "ffn_norm.weight", {w});
-    add(prefix + "ffn_gate_inp.weight", {w, p.experts});
-    if (il < p.hash_layers) {
-      add(prefix + "ffn_gate_tid2eid.weight", {p.experts_used, p.vocab}, false,
-          format::Encoding::kI32);
-    } else {
-      add(prefix + "exp_probs_b.bias", {p.experts});
-    }
-    const std::uint64_t shared = std::uint64_t{p.expert_ffn} * p.shared_experts;
-    add(prefix + "ffn_gate_shexp.weight", {w, shared});
-    add(prefix + "ffn_up_shexp.weight", {w, shared});
-    add(prefix + "ffn_down_shexp.weight", {shared, w});
-    add(prefix + "ffn_gate_exps.weight", {w, p.expert_ffn, p.experts}, true);
-    add(prefix + "ffn_up_exps.weight", {w, p.expert_ffn, p.experts}, true);
-    add(prefix + "ffn_down_exps.weight", {p.expert_ffn, w, p.experts}, true);
-  }
-  return s;
-}
-
-// The DSpark drafter's import composes it with DeepSeek V4 Flash.
-constexpr std::array kDsparkTargets = {
-    ImportTarget{.mapping = &Dsv4Mapping, .values = &TargetValues, .source = &TargetSource},
-};
-
 // A block of proposals: at most dflash.block_size drafts, filled with
 // tokenizer.ggml.mask_token_id, both from the drafter's kept metadata.
 constexpr DraftRecipe kDsparkDraft{.shape = DraftRecipe::Shape::kBlock,
                                    .depth_key = "dflash.block_size",
                                    .fill_key = "tokenizer.ggml.mask_token_id",
-                                   .import_targets = kDsparkTargets};
+                                   .target_architecture = "deepseek4"};
 
 constexpr std::array kDsparkPolicies = {PolicyRule{.text = kDsparkServingPolicy}};
 
@@ -565,6 +370,7 @@ constexpr Mapping kDsparkMapping{
     .reads = kDsparkReads,
     .policies = kDsparkPolicies,
     .draft = &kDsparkDraft,
+    .containers = kGgufContainers,
 };
 
 #undef LLMP_DSV4_BLOCK_SLOTS

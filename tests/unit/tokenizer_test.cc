@@ -28,12 +28,14 @@
 #include <utility>
 #include <vector>
 
+#include "base/json.h"
 #include "base/work_pulse.h"
 #include "expected_error.h"
 #include "tokenizer/error.h"
 #include "tokenizer/gguf.h"
 #include "tokenizer/hf.h"
 #include "tokenizer/pretokenize.h"
+#include "tokenizer/sentencepiece.h"
 #include "tokenizer/unicode.h"
 
 namespace {
@@ -288,6 +290,43 @@ std::vector<TokenId> Encode(const tok::Tokenizer& t, std::string_view text,
 }
 
 TokenId Byte(char c) { return static_cast<unsigned char>(c); }
+
+void CheckMarkedNormalizedControl(const tok::Tokenizer& tokenizer, std::string_view control,
+                                  TokenId id) {
+  const auto plain = Encode(tokenizer, control);
+  EXPECT_EQ(std::ranges::find(plain, id), plain.end());
+  tok::EncodeOptions parse{.special = tok::SpecialTokens::kParse, .max_tokens = plain.size()};
+  std::vector<TokenId> out;
+  ASSERT_TRUE(tokenizer.EncodeMarked(control, {}, parse, out));
+  EXPECT_EQ(out, plain);
+
+  const auto text = std::string(control) + std::string(control);
+  const std::array spans = {tok::SpecialSpan{0, control.size()}};
+  std::vector<TokenId> expected{id};
+  expected.insert(expected.end(), plain.begin(), plain.end());
+  parse.max_tokens = expected.size();
+  out = {-1};  // max_tokens bounds the append, not the caller's existing prefix.
+  std::vector<std::size_t> positions;
+  ASSERT_TRUE(tokenizer.EncodeMarked(text, spans, parse, out, &positions));
+  EXPECT_EQ(std::vector<TokenId>(out.begin() + 1, out.end()), expected);
+  EXPECT_EQ(out.front(), -1);
+  EXPECT_EQ(positions, (std::vector<std::size_t>{1}));
+
+  --parse.max_tokens;
+  out = {-1};
+  const auto bounded = tokenizer.EncodeMarked(text, spans, parse, out);
+  EXPECT_EQ(Failed(bounded, &tok::Error::rule), Rule::kOutputTooLarge);
+  EXPECT_LE(out.size(), 1 + parse.max_tokens);
+
+  llmp::base::WorkPulse pulse;
+  pulse.Cancel();
+  out.clear();
+  llmp::base::SetThreadPulse(&pulse);
+  const auto cancelled = tokenizer.EncodeMarked(text, spans, parse, out);
+  llmp::base::SetThreadPulse(nullptr);
+  EXPECT_EQ(Failed(cancelled, &tok::Error::rule), Rule::kCancelled);
+  EXPECT_TRUE(out.empty());
+}
 
 TEST(Create, ConstructionPaymentCountsMovedCapacitiesAndSpecialTrie) {
   Vocab v;
@@ -871,7 +910,7 @@ GgufWriter SmallGguf(std::string_view pre = "qwen35") {
 // Its merge paths can cross spaces, unlike the M3 byte-BPE windows.
 tok::TokenizerSpec RawSpec() {
   tok::TokenizerSpec spec;
-  spec.pre_tokenizer = PreTokenizer::kGemma4;
+  spec.pre_tokenizer = PreTokenizer::kRawBpe;
   constexpr std::string_view hex = "0123456789ABCDEF";
   for (unsigned b = 0; b < 256; ++b) {
     std::string text = "<0x00>";
@@ -1097,7 +1136,7 @@ TEST(Gguf, RawUtf8BpeDefaultsAndStrictRefusals) {
     const auto g = tok::ReadGgufTokenizer(RawGguf("gemma4", pre).Bytes());
     ASSERT_TRUE(g.has_value()) << g.error().ToString();
     EXPECT_EQ(g->pre, "gemma4");
-    EXPECT_EQ(g->spec.pre_tokenizer, PreTokenizer::kGemma4);
+    EXPECT_EQ(g->spec.pre_tokenizer, PreTokenizer::kRawBpe);
     auto t = tok::Tokenizer::Create(g->spec);
     ASSERT_TRUE(t.has_value()) << t.error().ToString();
     EXPECT_EQ(Encode(*t, "a a"), (std::vector<TokenId>{259}));
@@ -1129,6 +1168,300 @@ TokenId SpmAdd(tok::TokenizerSpec& spec, std::string text, float score,
   spec.kinds.push_back(kind);
   spec.scores.push_back(score);
   return id;
+}
+
+std::string ProtoVarint(std::uint64_t value) {
+  std::string bytes;
+  do {
+    const auto low = value & 127U;
+    value >>= 7U;
+    bytes.push_back(static_cast<char>(low | (value != 0 ? 128U : 0U)));
+  } while (value != 0);
+  return bytes;
+}
+
+std::string ProtoScalar(unsigned field, std::uint64_t value) {
+  return ProtoVarint(std::uint64_t{field} << 3U) + ProtoVarint(value);
+}
+
+std::string ProtoBytes(unsigned field, std::string_view bytes) {
+  return ProtoVarint((std::uint64_t{field} << 3U) | 2U) + ProtoVarint(bytes.size()) +
+         std::string(bytes);
+}
+
+std::string ProtoPiece(std::string_view text, unsigned type, float score = 0) {
+  std::string piece = ProtoBytes(1, text);
+  piece += ProtoVarint((2U << 3U) | 5U);
+  const auto bits = std::bit_cast<std::uint32_t>(score);
+  for (unsigned b = 0; b < 4; ++b) piece.push_back(static_cast<char>(bits >> (8U * b)));
+  return ProtoBytes(1, piece + ProtoScalar(3, type));
+}
+
+std::string SentencePieceModel(std::string_view normalizer = {}, std::string_view extra = {}) {
+  auto spec = SpmSpec();
+  const auto unknown = SpmAdd(spec, "<unk>", 0, TokenKind::kControl);
+  const auto eos = SpmAdd(spec, "<eos>", 0, TokenKind::kControl);
+  std::string model;
+  for (std::size_t i = 0; i < spec.tokens.size(); ++i) {
+    unsigned type = spec.kinds[i] == TokenKind::kNormal ? 1
+                    : spec.kinds[i] == TokenKind::kByte ? 6
+                                                        : 3;
+    if (i == static_cast<std::size_t>(unknown)) type = 2;
+    model += ProtoPiece(spec.tokens[i], type, spec.scores[i]);
+  }
+  model += ProtoBytes(3, normalizer.empty() ? ProtoScalar(3, 0) + ProtoScalar(4, 0) : normalizer);
+  model += ProtoBytes(2, ProtoScalar(3, 2) + ProtoScalar(35, 1) +
+                             ProtoScalar(40, static_cast<std::uint64_t>(unknown)) +
+                             ProtoScalar(41, static_cast<std::uint64_t>(*spec.bos)) +
+                             ProtoScalar(42, static_cast<std::uint64_t>(eos)));
+  return model + std::string(extra);
+}
+
+TEST(SentencePieceModel, NativeReaderUsesScoresIdentityAndByteFallback) {
+  auto spec = tok::ReadSentencePieceTokenizer(SentencePieceModel());
+  ASSERT_TRUE(spec) << Failed(spec, &tok::Error::ToString).value_or("");
+  EXPECT_FALSE(spec->add_space_prefix);
+  EXPECT_FALSE(spec->remove_extra_whitespaces);
+  EXPECT_FALSE(spec->add_bos);
+  EXPECT_FALSE(spec->add_eos);
+  EXPECT_EQ(spec->bos, 264);
+  EXPECT_EQ(spec->eos, 266);
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(Encode(*tokenizer, "a a"), (std::vector<TokenId>{259}));
+  EXPECT_EQ(Encode(*tokenizer, "猫"), (std::vector<TokenId>{0xE7, 0x8C, 0xAB}));
+}
+
+TEST(SentencePieceModel, IdentityWhitespaceOptionsTrimCollapseAndPrefix) {
+  auto spec = tok::ReadSentencePieceTokenizer(SentencePieceModel(ProtoBytes(1, "identity")));
+  ASSERT_TRUE(spec) << Failed(spec, &tok::Error::ToString).value_or("");
+  EXPECT_TRUE(spec->add_space_prefix);
+  EXPECT_TRUE(spec->remove_extra_whitespaces);
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(Encode(*tokenizer, "  a   a  "), Encode(*tokenizer, "a a"));
+  EXPECT_TRUE(Encode(*tokenizer, "   ").empty());
+  EXPECT_NE(Encode(*tokenizer, "\ta"), Encode(*tokenizer, "a"));
+  tok::EncodeOptions options;
+  options.max_tokens = 1;
+  options.max_bytes = 1000;
+  std::vector<TokenId> ids;
+  EXPECT_TRUE(tokenizer->Encode(std::string(1000, ' '), options, ids));
+  EXPECT_TRUE(ids.empty());
+}
+
+TEST(SentencePieceModel, NativeSymbolsDoNotRestartNormalizationOfTheSurroundingText) {
+  const auto symbol = ProtoPiece("<symbol>", 4);
+  for (const bool prefix : {false, true}) {
+    for (const bool trim : {false, true}) {
+      SCOPED_TRACE(std::to_string(prefix) + "/" + std::to_string(trim));
+      auto spec = tok::ReadSentencePieceTokenizer(
+          SentencePieceModel(ProtoScalar(3, prefix) + ProtoScalar(4, trim), symbol));
+      ASSERT_TRUE(spec) << Failed(spec, &tok::Error::ToString).value_or("");
+      auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+      ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+      const auto first = prefix ? 258 : 256;
+      EXPECT_EQ(Encode(*tokenizer, "a<symbol>a"), (std::vector<TokenId>{first, 267, 256}));
+      EXPECT_EQ(Encode(*tokenizer, "a <symbol> a"), (std::vector<TokenId>{first, 257, 267, 258}));
+      EXPECT_EQ(Encode(*tokenizer, "<symbol>a"),
+                prefix ? (std::vector<TokenId>{257, 267, 256}) : (std::vector<TokenId>{267, 256}));
+      if (trim)
+        EXPECT_EQ(Encode(*tokenizer, "  a  <symbol>  a  "),
+                  (std::vector<TokenId>{first, 257, 267, 258}));
+    }
+  }
+}
+
+TEST(SentencePieceModel, NativeSymbolsProtectTheirOwnWhitespaceDuringNormalization) {
+  auto spec = tok::ReadSentencePieceTokenizer(SentencePieceModel(
+      ProtoScalar(3, 0) + ProtoScalar(4, 1), ProtoPiece("x  y", 4) + ProtoPiece("x▁▁y", 4)));
+  ASSERT_TRUE(spec);
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  // The raw native symbol protects its internal spaces, but the model then
+  // matches its exact marker spelling. Never invent a normalized alias for 267.
+  EXPECT_EQ(Encode(*tokenizer, "a x  y a"), (std::vector<TokenId>{256, 257, 268, 258}));
+  // Native normalization removes a trailing marker, including a literal
+  // marker in input, once at the end of the complete region.
+  EXPECT_EQ(Encode(*tokenizer, "a▁"), (std::vector<TokenId>{256}));
+}
+
+TEST(SentencePieceModel, ConfigAddedTokensKeepTheirDeclaredRawExtractionPhase) {
+  auto spec =
+      tok::ReadSentencePieceTokenizer(SentencePieceModel(ProtoScalar(3, 1) + ProtoScalar(4, 1)));
+  ASSERT_TRUE(spec);
+  ASSERT_TRUE(tok::ApplyHfTokenizerConfig(
+      R"({"added_tokens_decoder":{"267":{"content":"<added>","special":false,"normalized":false}}})",
+      *spec));
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(Encode(*tokenizer, "a<added>a"), (std::vector<TokenId>{258, 267, 258}));
+}
+
+TEST(SentencePieceModel, NormalizedConfigControlsHonorTheParsingModeAfterNormalization) {
+  auto spec =
+      tok::ReadSentencePieceTokenizer(SentencePieceModel(ProtoScalar(3, 1) + ProtoScalar(4, 1)));
+  ASSERT_TRUE(spec);
+  ASSERT_TRUE(tok::ApplyHfTokenizerConfig(
+      R"({"added_tokens_decoder":{"267":{"content":"<control>","special":true,"normalized":true}}})",
+      *spec));
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(Encode(*tokenizer, "a<control>a", {.special = tok::SpecialTokens::kParse}),
+            (std::vector<TokenId>{258, 267, 256}));
+  const auto plain = Encode(*tokenizer, "a<control>a");
+  EXPECT_EQ(std::ranges::find(plain, 267), plain.end());
+}
+
+TEST(SentencePieceModel, MarkedEncodingDoesNotParseUnmarkedNormalizedControls) {
+  auto spec =
+      tok::ReadSentencePieceTokenizer(SentencePieceModel(ProtoScalar(3, 1) + ProtoScalar(4, 1)));
+  ASSERT_TRUE(spec);
+  ASSERT_TRUE(tok::ApplyHfTokenizerConfig(
+      R"({"added_tokens_decoder":{"267":{"content":"<control>","special":true,"normalized":true}}})",
+      *spec));
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  CheckMarkedNormalizedControl(*tokenizer, "<control>", 267);
+}
+
+TEST(SentencePieceModel, UnusedPiecesCanMergeIntoLivePiecesAndResegmentAtEmission) {
+  const auto pieces =
+      ProtoPiece("b", 1) + ProtoPiece("c", 1) + ProtoPiece("ab", 5, 10) + ProtoPiece("abc", 1, 20);
+  auto spec = tok::ReadSentencePieceTokenizer(SentencePieceModel({}, pieces));
+  ASSERT_TRUE(spec);
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(Encode(*tokenizer, "abc"), (std::vector<TokenId>{270}));
+  EXPECT_EQ(Encode(*tokenizer, "ab"), (std::vector<TokenId>{256, 267}));
+  EXPECT_EQ(tokenizer->WorkingBytes("abc"), 4U * 128U + tokenizer->size() * sizeof(std::uint32_t));
+}
+
+TEST(SentencePieceModel, AnUnmergedUnusedSingletonKeepsItsNativeIdAndDecodedText) {
+  auto spec = tok::ReadSentencePieceTokenizer(SentencePieceModel({}, ProtoPiece("b", 5)));
+  ASSERT_TRUE(spec);
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  const auto ids = Encode(*tokenizer, "b");
+  EXPECT_EQ(ids, (std::vector<TokenId>{267}));
+  std::string decoded;
+  ASSERT_TRUE(tokenizer->Decode(ids, {}, decoded));
+  EXPECT_EQ(decoded, "b");
+}
+
+TEST(SentencePieceModel, InconsistentModelAndMatcherMetadataRefusesBeforeConstruction) {
+  auto parsed = tok::ReadSentencePieceTokenizer(SentencePieceModel());
+  ASSERT_TRUE(parsed);
+  for (const unsigned field : {0U, 1U, 2U, 3U}) {
+    auto malformed = *parsed;
+    auto& flags = field == 0   ? malformed.model_tokens
+                  : field == 1 ? malformed.model_symbols
+                  : field == 2 ? malformed.added_tokens
+                               : malformed.normalized_tokens;
+    flags.pop_back();
+    EXPECT_FALSE(tok::Tokenizer::ConstructionBytes(malformed));
+    EXPECT_FALSE(tok::Tokenizer::Create(std::move(malformed)));
+  }
+}
+
+TEST(SentencePieceModel, DeepUnusedChainsResegmentIterativelyWithinOutputAndWorkBounds) {
+  std::string pieces;
+  for (std::size_t size = 2; size <= tok::kMaxTokenBytes; ++size)
+    pieces += ProtoPiece(std::string(size, 'a'), 5);
+  auto spec = tok::ReadSentencePieceTokenizer(SentencePieceModel({}, pieces));
+  ASSERT_TRUE(spec);
+  const auto cost = tok::Tokenizer::ConstructionBytes(*spec);
+  ASSERT_TRUE(cost);
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  const std::string text(128 * tok::kMaxTokenBytes + 1, 'a');
+  EXPECT_EQ(tokenizer->WorkingBytes(text),
+            (text.size() + 1) * 128U + tokenizer->size() * sizeof(std::uint32_t));
+  llmp::base::WorkPulse pulse;
+  llmp::base::SetThreadPulse(&pulse);
+  std::vector<TokenId> ids;
+  const auto encoded = tokenizer->Encode(text, {.max_tokens = text.size()}, ids);
+  llmp::base::SetThreadPulse(nullptr);
+  ASSERT_TRUE(encoded) << Failed(encoded, &tok::Error::ToString).value_or("");
+  EXPECT_GT(pulse.beats(), 10U);
+  ASSERT_EQ(ids.size(), text.size());
+  EXPECT_TRUE(std::ranges::all_of(ids, [](TokenId id) { return id == 256; }));
+  ids.assign(1, 264);
+  const auto limited = tokenizer->Encode(std::string_view(text).substr(0, tok::kMaxTokenBytes),
+                                         {.max_tokens = 3}, ids);
+  EXPECT_EQ(Failed(limited, &tok::Error::rule), Rule::kOutputTooLarge);
+  EXPECT_EQ(ids, (std::vector<TokenId>{264, 256, 256, 256}));
+  pulse.Cancel();
+  llmp::base::SetThreadPulse(&pulse);
+  const auto cancelled = tokenizer->Encode(text, {}, ids);
+  llmp::base::SetThreadPulse(nullptr);
+  EXPECT_EQ(Failed(cancelled, &tok::Error::rule), Rule::kCancelled);
+}
+
+TEST(SentencePieceModel, WireErrorsAndUnsupportedNormalizationRefuseExplicitly) {
+  EXPECT_FALSE(tok::ReadSentencePieceTokenizer(""));
+  for (const auto& bad : {std::string("\x00", 1), std::string("\x0F", 1),
+                          std::string("\x0A\xFF", 2), std::string(12, '\xFF')}) {
+    EXPECT_FALSE(tok::ReadSentencePieceTokenizer(bad));
+  }
+  EXPECT_EQ(Failed(tok::ReadSentencePieceTokenizer(SentencePieceModel(ProtoBytes(2, "map"))),
+                   &tok::Error::rule),
+            Rule::kUnsupported);
+  EXPECT_EQ(Failed(tok::ReadSentencePieceTokenizer(SentencePieceModel(ProtoScalar(5, 0))),
+                   &tok::Error::rule),
+            Rule::kUnsupported);
+  EXPECT_EQ(Failed(tok::ReadSentencePieceTokenizer(SentencePieceModel(ProtoScalar(3, 2))),
+                   &tok::Error::rule),
+            Rule::kFormat);
+  EXPECT_EQ(Failed(tok::ReadSentencePieceTokenizer(
+                       SentencePieceModel(ProtoScalar(3, 0) + ProtoScalar(3, 0))),
+                   &tok::Error::rule),
+            Rule::kFormat);
+  EXPECT_FALSE(tok::ReadSentencePieceTokenizer(SentencePieceModel({}, ProtoBytes(2, ""))));
+  EXPECT_FALSE(tok::ReadSentencePieceTokenizer(SentencePieceModel({}, ProtoBytes(5, "map"))));
+  EXPECT_FALSE(tok::ReadSentencePieceTokenizer(SentencePieceModel({}, ProtoBytes(6, ""))));
+}
+
+TEST(SentencePieceModel, HfConfigAddsSpecialMetadataAndControlsInsertion) {
+  auto spec = tok::ReadSentencePieceTokenizer(SentencePieceModel());
+  ASSERT_TRUE(spec) << Failed(spec, &tok::Error::ToString).value_or("");
+  const auto applied = tok::ApplyHfTokenizerConfig(
+      R"({"bos_token":{"content":"<bos>","lstrip":false},"eos_token":"<eos>",)"
+      R"("add_bos_token":true,"add_eos_token":true,"added_tokens_decoder":{)"
+      R"("267":{"content":"<turn>","special":false,"normalized":false}}})",
+      *spec);
+  ASSERT_TRUE(applied) << Failed(applied, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(spec->kinds[267], TokenKind::kUserDefined);
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(Encode(*tokenizer, "a<turn>"), (std::vector<TokenId>{256, 267}));
+  EXPECT_EQ(Encode(*tokenizer, "a<turn>", {.add_bos_eos = true}),
+            (std::vector<TokenId>{264, 256, 267, 266}));
+}
+
+TEST(SentencePieceModel, HfConfigRefusesUnrepresentableOrInconsistentSpecialMetadata) {
+  for (const std::string_view json :
+       {R"({"bos_token":"missing"})", R"({"add_bos_token":"true"})",
+        R"({"sp_model_kwargs":{"enable_sampling":true}})",
+        R"({"added_tokens_decoder":{"267":{"content":"<x>","special":true,"lstrip":true}}})",
+        R"({"added_tokens_decoder":{"267":{"content":"<x>","special":true,"single_word":true}}})",
+        R"({"added_tokens_decoder":{"268":{"content":"<x>","special":true}}})",
+        R"({"added_tokens_decoder":{"264":{"content":"changed","special":true}}})"}) {
+    auto spec = tok::ReadSentencePieceTokenizer(SentencePieceModel());
+    ASSERT_TRUE(spec);
+    EXPECT_FALSE(tok::ApplyHfTokenizerConfig(json, *spec)) << json;
+  }
+}
+
+TEST(SentencePieceModel, RandomCorruptionsStayWithinTheWireInput) {
+  const auto model = SentencePieceModel();
+  std::mt19937 random(0x53A1);
+  for (unsigned i = 0; i < 250; ++i) {
+    std::string bad = model;
+    bad[random() % bad.size()] ^= static_cast<char>(1U << (random() % 8));
+    const auto spec = tok::ReadSentencePieceTokenizer(bad);
+    if (spec) (void)tok::Tokenizer::Create(*spec);
+  }
 }
 
 TEST(SentencePiece, PretokenizationKeepsWholeNonemptyFragment) {
@@ -1748,6 +2081,196 @@ std::string HfJson(
   json += R"(, "vocab": {)" + vocab + R"(}, "merges": [[)" + Quote(Alphabet("a")) + ", " +
           Quote(Alphabet("b")) + "]]}}";
   return json;
+}
+
+std::string RawHfJson(bool literal_tab = false) {
+  auto spec = RawSpec();
+  spec.tokens.push_back("▁▁");  // a non-special added token that remains in the BPE model
+  spec.tokens.push_back("a\n");
+  spec.merges.emplace_back("▁", "▁");
+  spec.merges.emplace_back("a", "\n");
+  if (literal_tab) {
+    // Official Gemma 2's JSON has a normal tab instead of <0x09>, and
+    // declares merges between tab tokens.
+    spec.tokens[9] = "\t";
+    spec.tokens.push_back("\t\t");
+    spec.merges.emplace_back("\t", "\t");
+  }
+  const auto quoted = [](std::string_view text) {
+    std::string out;
+    llmp::base::json::AppendQuoted(text, out);
+    return out;
+  };
+  std::string json =
+      R"({"truncation":null,"padding":null,"normalizer":{"type":"Replace",)"
+      R"("pattern":{"String":" "},"content":"▁"},"pre_tokenizer":{"type":"Split",)"
+      R"("pattern":{"String":" "},"behavior":"MergedWithPrevious","invert":false},)"
+      R"("decoder":{"type":"Sequence","decoders":[{"type":"Replace",)"
+      R"("pattern":{"String":"▁"},"content":" "},{"type":"ByteFallback"},{"type":"Fuse"}]},)"
+      R"("post_processor":{"type":"TemplateProcessing","single":[)"
+      R"({"SpecialToken":{"id":"<bos>","type_id":0}},{"Sequence":{"id":"A","type_id":0}}],)"
+      R"("special_tokens":{"<bos>":{"id":"<bos>","ids":[264],"tokens":["<bos>"]}}},)"
+      R"("added_tokens":[{"id":264,"content":"<bos>","special":true,"normalized":false},)"
+      R"({"id":265,"content":"▁▁","special":false,"normalized":false}],)"
+      R"("model":{"type":"BPE","dropout":null,"unk_token":"<bos>","fuse_unk":true,)"
+      R"("byte_fallback":true,"vocab":{)";
+  for (std::size_t i = 0; i < spec.tokens.size(); ++i) {
+    if (i != 0) json += ',';
+    json += quoted(spec.tokens[i]) + ':' + std::to_string(i);
+  }
+  json += R"(},"merges":[)";
+  for (std::size_t i = 0; i < spec.merges.size(); ++i) {
+    if (i != 0) json += ',';
+    json += '[' + quoted(spec.merges[i].first) + ',' + quoted(spec.merges[i].second) + ']';
+  }
+  return json + "]}}";
+}
+
+TEST(HfTokenizer, RawPipelinePreservesWhitespaceModelMembershipAndCrossNewlineMerges) {
+  auto spec = tok::ReadHfTokenizer(RawHfJson());
+  ASSERT_TRUE(spec) << Failed(spec, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(spec->pre_tokenizer, PreTokenizer::kRawBpe);
+  EXPECT_TRUE(spec->model_tokens[265]);
+  EXPECT_FALSE(spec->model_tokens[264]);
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(Encode(*tokenizer, "  "), (std::vector<TokenId>{265}));
+  EXPECT_EQ(Encode(*tokenizer, "a\n"), (std::vector<TokenId>{266}));
+  EXPECT_EQ(Encode(*tokenizer, "a\n", {.add_bos_eos = true}), (std::vector<TokenId>{264, 266}));
+  std::string decoded;
+  ASSERT_TRUE(tokenizer->Decode(std::vector<TokenId>{265, 266}, {}, decoded));
+  EXPECT_EQ(decoded, "  a\n");
+}
+
+TEST(HfTokenizer, RawAsciiModelTokensCoverMissingByteFallbackWithoutLosingMerges) {
+  auto spec = tok::ReadHfTokenizer(RawHfJson(true));
+  ASSERT_TRUE(spec) << Failed(spec, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(spec->kinds[9], TokenKind::kNormal);
+  EXPECT_TRUE(spec->model_tokens[9]);
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(Encode(*tokenizer, "\t"), (std::vector<TokenId>{9}));
+  EXPECT_EQ(Encode(*tokenizer, "\t\t\t"), (std::vector<TokenId>{267, 9}));
+  const std::string text = "a\t\t\t🙂\n";
+  std::string decoded;
+  ASSERT_TRUE(tokenizer->Decode(Encode(*tokenizer, text), {}, decoded));
+  EXPECT_EQ(decoded, text);
+}
+
+TEST(HfTokenizer, RawByteCoverageRejectsMissingOrSpecialAsciiAndNonAsciiSubstitutes) {
+  for (const auto& [from, to] : {
+           std::pair{R"("<0x09>":9)", R"("x":9)"},
+           std::pair{R"("<0x20>":32)", R"(" ":32)"},
+           std::pair{R"("<0xA9>":169)", R"("©":169)"},
+           std::pair{R"("<0x09>":9)", R"("<0xGG>":9)"},
+           std::pair{R"("added_tokens":[)",
+                     R"("added_tokens":[{"id":9,"content":"<0x09>","special":true},)"},
+       }) {
+    auto json = RawHfJson();
+    const auto at = json.find(from);
+    ASSERT_NE(at, std::string::npos);
+    json.replace(at, std::string_view(from).size(), to);
+    auto spec = tok::ReadHfTokenizer(json);
+    ASSERT_TRUE(spec) << Failed(spec, &tok::Error::ToString).value_or("");
+    const auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+    ASSERT_FALSE(tokenizer) << from;
+    EXPECT_EQ(Failed(tokenizer, &tok::Error::rule), Rule::kVocabulary);
+  }
+  // A literal tab that only matches as an added control is not model
+  // coverage when controls are parsed as ordinary text.
+  auto json = RawHfJson(true);
+  const auto at = json.find(R"("added_tokens":[)");
+  ASSERT_NE(at, std::string::npos);
+  json.insert(at + std::string_view(R"("added_tokens":[)").size(),
+              R"({"id":9,"content":"\t","special":true},)");
+  auto spec = tok::ReadHfTokenizer(json);
+  ASSERT_TRUE(spec) << Failed(spec, &tok::Error::ToString).value_or("");
+  EXPECT_FALSE(tok::Tokenizer::Create(std::move(*spec)));
+}
+
+TEST(HfTokenizer, NormalizedAddedTokensFreezeBeforeRawBpeMerges) {
+  auto json = RawHfJson();
+  const std::string_view from = R"("content":"▁▁","special":false,"normalized":false)";
+  const auto at = json.find(from);
+  ASSERT_NE(at, std::string::npos);
+  json.replace(at, from.size(), R"("content":"▁▁","special":false,"normalized":true)");
+  auto spec = tok::ReadHfTokenizer(json);
+  ASSERT_TRUE(spec) << Failed(spec, &tok::Error::ToString).value_or("");
+  ASSERT_TRUE(spec->normalized_tokens[265]);
+  // Prefer the model's ▁+a merge, and then allow a larger token containing
+  // both spaces. Normalized added-token extraction must precede either merge.
+  spec->tokens.push_back("▁▁a");
+  spec->kinds.push_back(TokenKind::kNormal);
+  spec->model_tokens.push_back(true);
+  spec->normalized_tokens.push_back(false);
+  spec->merges.emplace_back("▁", "▁a");
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(Encode(*tokenizer, "  a"), (std::vector<TokenId>{265, 256}));
+  EXPECT_EQ(Encode(*tokenizer, "▁▁a"), (std::vector<TokenId>{265, 256}));
+}
+
+TEST(HfTokenizer, ConfigNormalizedTokensUseTransformedTextAndSeparateMatchingPhases) {
+  auto spec = tok::ReadHfTokenizer(RawHfJson());
+  ASSERT_TRUE(spec) << Failed(spec, &tok::Error::ToString).value_or("");
+  const auto applied = tok::ApplyHfTokenizerConfig(
+      R"({"added_tokens_decoder":{"265":{"content":"▁▁","special":false,"normalized":true},)"
+      R"("267":{"content":" a▁","special":false,"normalized":true},)"
+      R"("268":{"content":"<x>","special":true,"normalized":true}}})",
+      *spec);
+  ASSERT_TRUE(applied) << Failed(applied, &tok::Error::ToString).value_or("");
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(Encode(*tokenizer, " a▁"), (std::vector<TokenId>{267}));
+  EXPECT_EQ(Encode(*tokenizer, "▁a▁", {.max_tokens = 1}), (std::vector<TokenId>{267}));
+  // The raw matcher must not consume normalized ▁▁ before the longer
+  // normalized token starting at the preceding space can match.
+  EXPECT_EQ(Encode(*tokenizer, " a▁▁"), (std::vector<TokenId>{267, 257}));
+  EXPECT_EQ(Encode(*tokenizer, "<x>", {.special = tok::SpecialTokens::kParse}),
+            (std::vector<TokenId>{268}));
+  EXPECT_NE(Encode(*tokenizer, "<x>"), (std::vector<TokenId>{268}));
+}
+
+TEST(HfTokenizer, MarkedEncodingDoesNotParseUnmarkedNormalizedControls) {
+  auto spec = tok::ReadHfTokenizer(RawHfJson());
+  ASSERT_TRUE(spec);
+  ASSERT_TRUE(tok::ApplyHfTokenizerConfig(
+      R"({"added_tokens_decoder":{"267":{"content":"<control>","special":true,"normalized":true}}})",
+      *spec));
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  CheckMarkedNormalizedControl(*tokenizer, "<control>", 267);
+}
+
+TEST(HfTokenizer, RawPipelineRefusesUnsupportedOrMalformedDeclaredOptions) {
+  for (const auto& [from, to] :
+       {std::pair{R"("content":"▁")", R"("content":"x")"},
+        std::pair{R"("invert":false)", R"("invert":true)"},
+        std::pair{R"("behavior":"MergedWithPrevious")", R"("behavior":"Removed")"},
+        std::pair{R"("ids":[264])", R"("ids":[263])"},
+        std::pair{R"("Sequence":{"id":"A")", R"("Sequence":{"id":"B")"},
+        std::pair{R"("byte_fallback":true)", R"("byte_fallback":false)"},
+        std::pair{R"("normalized":false)", R"("normalized":"false")"}}) {
+    auto json = RawHfJson();
+    const auto at = json.find(from);
+    ASSERT_NE(at, std::string::npos);
+    json.replace(at, std::string_view(from).size(), to);
+    EXPECT_FALSE(tok::ReadHfTokenizer(json)) << from;
+  }
+}
+
+TEST(SentencePiece, NormalizedUserDefinedSymbolsAreFrozenBeforeScoreMerging) {
+  auto spec = SpmSpec();
+  spec.decode_added_whitespace = true;
+  const auto whitespace = SpmAdd(spec, "▁▁", 0, TokenKind::kUserDefined);
+  SpmAdd(spec, "▁▁a", 100);
+  auto tokenizer = tok::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  const auto ids = Encode(*tokenizer, "  a");
+  EXPECT_EQ(ids, (std::vector<TokenId>{whitespace, 256}));
+  std::string decoded;
+  ASSERT_TRUE(tokenizer->Decode(ids, {}, decoded));
+  EXPECT_EQ(decoded, "  a");
 }
 
 TEST(HfTokenizer, ReadsASupportedFile) {

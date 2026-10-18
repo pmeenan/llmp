@@ -42,30 +42,6 @@ std::expected<void, std::string> CheckCatalog(const artifact::Artifact& a) {
   return {};
 }
 
-template <typename F>
-void EachComponent(const Stage& s, const F& f) {
-  const auto maybe = [&](const std::optional<ComponentRef>& c) {
-    if (c) {
-      f(*c);
-    }
-  };
-  maybe(s.embedding);
-  maybe(s.stream.mixing);
-  for (const SideInput& in : s.side) {
-    f(in.source);
-  }
-  for (const Layer& l : s.layers) {
-    for (const ComponentRef& c : l.components) {
-      f(c);
-    }
-  }
-  maybe(s.heads.final_norm);
-  maybe(s.heads.output);
-  for (const ComponentRef& c : s.heads.mtp) {
-    f(c);
-  }
-}
-
 // The importer's folds of artifact `index` (`a`) against the spec: catalog
 // names, each among the folds of every stage that runs from the artifact
 // (a stage's folds are its own artifact's, D-113), and each naming a
@@ -82,7 +58,7 @@ std::expected<void, std::string> CheckApplied(const artifact::Artifact& a, std::
   }
   std::set<std::string_view> bound;
   for (const Stage& s : spec.stages) {
-    EachComponent(s, [&](const ComponentRef& c) {
+    EachComponent(s, [&](const ComponentRef& c, const std::string&) {
       for (const WeightBinding& w : c.weights) {
         // Validated: every binding's holding stage is the spec's.
         const Stage* holder = HoldingStage(spec, s, w);

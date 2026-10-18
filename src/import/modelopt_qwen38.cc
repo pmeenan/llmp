@@ -21,6 +21,7 @@
 #include "import/expert_relayout.h"
 #include "import/files.h"
 #include "import/mlx_qwen38.h"
+#include "import/normalizers.h"
 #include "import/parameter_folds.h"
 #include "import/writer.h"
 #include "ir/graph.h"
@@ -2755,11 +2756,27 @@ std::expected<NormalizationCost, Error> ModelOptDrafterBound(const Checkpoint& s
   cost.work_units += head_ids * 64 * 32;
   cost.payload_bytes = 0;
   cost.layers = 1;
+  cost.metadata_bytes += spec::kMaxSpecBytes * 32ULL;
   return cost;
 }
 
 std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
-    const Checkpoint& source, std::optional<DraftHeadList> head, NormalizationLimits prepaid) {
+    const Checkpoint& source, std::optional<DraftHeadList> head, NormalizationLimits prepaid,
+    const NormalizationTarget* actual_target) {
+  if (actual_target == nullptr)
+    return Bad("drafter import requires --target TARGET_ID in the selected store");
+  if (auto valid = ValidateTarget(*actual_target, spec::mappings::Qwen38MtpNativeMapping()); !valid)
+    return std::unexpected(valid.error());
+  auto target_vocab = spec::Vocabulary(actual_target->model, actual_target->source);
+  if (!target_vocab) return Bad("drafter target vocabulary lacks a valid output head");
+  if (head) {
+    std::int32_t previous = -1;
+    for (const auto id : head->ids) {
+      if (id <= previous || id < 0 || static_cast<std::uint32_t>(id) >= *target_vocab)
+        return Bad("draft head token IDs exceed the actual target vocabulary or are not ascending");
+      previous = id;
+    }
+  }
   auto cost = ModelOptDrafterBound(source, head ? head->ids.size() : 0);
   if (!cost) return std::unexpected(cost.error());
   if (prepaid.metadata_bytes < cost->metadata_bytes || prepaid.work_units < cost->work_units)
@@ -2813,6 +2830,10 @@ std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
   for (std::size_t r = 0; r < kMtpRoles.size(); ++r)
     if (counts[r] != aux[r]->count) return Bad("the drafter's source role set is incomplete");
   if (head && !head_tensor) return Bad("a draft head needs the checkpoint's lm_head.weight");
+  if (head)
+    for (const auto id : head->ids)
+      if (std::cmp_greater_equal(id, source.tensors[*head_tensor].format.shape.ne[1]))
+        return Bad("a draft head token ID is outside the checkpoint head's actual rows");
   // The publication's sources: the configuration documents, the files
   // holding what it reads, then the head list.
   Checkpoint sub{.role = {},
@@ -2915,13 +2936,8 @@ std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
   // Its parameter folds, by role (import/parameter_folds.h): its stage
   // composed from its unfolded outputs with the target's carrier decides
   // them; its zero-centered norms' 1 + w in F32, as the target's.
-  auto values = spec::mappings::Qwen38MtpNativeValues(rows);
-  if (!values) return Bad("native ModelOpt drafter values refused");
-  auto carrier = NativeTargetCarrier();
-  if (!carrier) return std::unexpected(carrier.error());
-  const auto& target_mapping = spec::mappings::Qwen38NativeMapping();
-  auto target = spec::Synthesize(target_mapping, carrier->source, carrier->values);
-  if (!target) return Bad("native ModelOpt target carrier synthesis refused");
+  const auto& target_mapping = *actual_target->mapping;
+  const auto* target = &actual_target->model;
   const auto ids_tensor = [&] {
     return spec::SourceTensor{
         .name = "draft_output.ids",
@@ -2929,6 +2945,16 @@ std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
         .part = PartRole::kData,
         .experts = false};
   };
+  auto value_tensors = CanonicalOf(outputs);
+  if (!value_tensors) return std::unexpected(value_tensors.error());
+  if (head) value_tensors->push_back(ids_tensor());
+  auto values =
+      spec::ExtractValues(spec::mappings::Qwen38MtpNativeMapping(), *target, actual_target->source,
+                          {.architecture = "qwen4exp-mtp",
+                           .container = "safetensors",
+                           .tensors = std::move(*value_tensors),
+                           .folds = {}});
+  if (!values) return Bad("native ModelOpt drafter values cannot be extracted from the target");
   std::vector<PlannedPartFold> planned;
   {
     auto tensors = CanonicalOf(outputs);
@@ -2996,7 +3022,7 @@ std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
       spec::ComposeDrafter(*target, target_mapping, spec::mappings::Qwen38MtpNativeMapping(),
                            result.canonical_, result.values_);
   if (!composed) return Bad("native ModelOpt drafter composition refused");
-  const std::array<std::span<const spec::SourceTensor>, 2> tables{carrier->source.tensors,
+  const std::array<std::span<const spec::SourceTensor>, 2> tables{actual_target->source.tensors,
                                                                   result.canonical_.tensors};
   if (auto valid = components::ValidateSpec(*composed, tables); !valid)
     return Bad("native ModelOpt drafter component validation refused");
@@ -3004,38 +3030,37 @@ std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
   return result;
 }
 
-bool IsIndexedTarget(const Checkpoint& source) {
-  return (source.container == "safetensors" && source.architecture == "qwen3_8_flash_next" &&
-          source.quantization == "modelopt MIXED_PRECISION") ||
-         (source.container == "mlx" && source.architecture == "qwen4_exp" &&
-          source.quantization == "mlx affine");
+std::span<const Normalizer> Normalizers() {
+  static const std::array all{
+      Normalizer{"safetensors", "qwen3_8_flash_next", "modelopt MIXED_PRECISION",
+                 &ModelOptTargetBound, &NormalizeModelOptTarget, &ModelOptDrafterBound,
+                 &NormalizeModelOptDrafter},
+      Normalizer{"mlx", "qwen4_exp", "mlx affine", &MlxTargetBound, &NormalizeMlxTarget, nullptr,
+                 nullptr}};
+  return all;
 }
-
+const Normalizer* FindNormalizer(const Checkpoint& source) {
+  const Normalizer* result = nullptr;
+  for (const auto& normalizer : Normalizers()) {
+    if (normalizer.container != source.container ||
+        normalizer.architecture != source.architecture ||
+        normalizer.quantization != source.quantization)
+      continue;
+    if (result) return nullptr;
+    result = &normalizer;
+  }
+  return result;
+}
+bool IsIndexedTarget(const Checkpoint& source) { return FindNormalizer(source) != nullptr; }
 std::expected<NormalizationCost, Error> IndexedTargetBound(const Checkpoint& source) {
-  if (source.container == "safetensors" && source.architecture == "qwen3_8_flash_next" &&
-      source.quantization == "modelopt MIXED_PRECISION") {
-    return ModelOptTargetBound(source);
-  }
-  if (source.container == "mlx" && source.architecture == "qwen4_exp" &&
-      source.quantization == "mlx affine") {
-    return MlxTargetBound(source);
-  }
-  return std::unexpected(
-      Error{.rule = Rule::kUnsupported, .reason = "not an indexed target checkpoint"});
+  if (const auto* normalizer = FindNormalizer(source)) return normalizer->target_bound(source);
+  return Bad("no indexed normalizer recognizes this checkpoint", Rule::kUnsupported);
 }
-
 std::expected<ModelOptTargetPlan, Error> NormalizeIndexedTarget(Checkpoint&& source,
                                                                 NormalizationLimits prepaid) {
-  if (source.container == "safetensors" && source.architecture == "qwen3_8_flash_next" &&
-      source.quantization == "modelopt MIXED_PRECISION") {
-    return NormalizeModelOptTarget(std::move(source), prepaid);
-  }
-  if (source.container == "mlx" && source.architecture == "qwen4_exp" &&
-      source.quantization == "mlx affine") {
-    return NormalizeMlxTarget(std::move(source), prepaid);
-  }
-  return std::unexpected(
-      Error{.rule = Rule::kUnsupported, .reason = "not an indexed target checkpoint"});
+  if (const auto* normalizer = FindNormalizer(source))
+    return normalizer->target(std::move(source), prepaid);
+  return Bad("no indexed normalizer recognizes this checkpoint", Rule::kUnsupported);
 }
 
 std::expected<WriteResult, Error> WriteArtifact(const ModelOptTargetPlan& plan,

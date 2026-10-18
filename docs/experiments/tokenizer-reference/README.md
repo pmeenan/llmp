@@ -146,3 +146,33 @@ Use `gemma-2-2b-gguf` or `gemma-3-4b-gguf` for the other fixtures. GGUF-only
 runs do not need the Python transformer/tokenizer dependencies. Builds and
 oracle jobs on a Spark run through the installed `spark-job --gpu`
 supervisor; native builds use the locked SDK and prepared source receipts.
+
+## Native Gemma 2/3 HF and ModelProto assets (M3.6 follow-up)
+
+The native HF path reads the original tokenizer assets, without converting the
+checkpoint to GGUF. The metadata-only archived official inputs are:
+
+| Repository | Revision | Native readers |
+| --- | --- | --- |
+| `google/gemma-2-27b-it` | `aaf20e6b9f4c0fcf043f6fb2a2068419086d77b0` | `tokenizer.json`, `tokenizer.model`, kept `tokenizer_config.json` |
+| `google/gemma-3-27b-it` | `005ad3404e59d6023443cb575daa05336842228a` | the same |
+
+Both model files declare scored BPE, byte fallback and identity normalization,
+with dummy prefix and whitespace collapse disabled. Their HF pipelines declare
+space-to-marker replacement, the Split on spaces after replacement, and the
+inverse Replace/ByteFallback/Fuse decoder. HF's TemplateProcessing inserts BOS;
+the kept tokenizer configuration gives the same insertion rule for ModelProto.
+Unigram is a different algorithm and is not claimed by this BPE support.
+
+Stage the metadata from the archive into the standard local `models/google/`
+paths before the agreement checks; no weight shard is needed. Generate each
+of `gemma-2-27b-hf`, `gemma-2-27b-spm`, `gemma-3-27b-hf` and
+`gemma-3-27b-spm` using `--only tokens --config NAME`. The HF `tokenizer.json`
+loaded by the independent Hugging Face tokenizers reference supplies expected
+IDs for both native readers of the same official vocabulary. Each fixture
+records the exact native file, configuration and reference JSON hashes. These
+fixtures also record encoding with automatic special tokens, in both parsing
+modes, so BOS behavior is checked rather than inferred from admission. The
+existing corpus gives 184 encodings without insertion and 184 with insertion
+per configuration. Existing served-model fixtures remain the regression oracle;
+the new generator configurations do not regenerate them.
