@@ -167,6 +167,9 @@ lock pin):
   `src/kernels/ggml/lower.cc` (the routing and scaled-reduce windows, built
   from `build_moe_ffn`'s GGML calls), `src/kernels/ggml/capabilities.cc`
   (`MmvqRouted`, mmvq.cu's `ggml_cuda_should_use_mmvq` tables),
+  `src/kernels/ggml/float_route.{h,cc}` (the locked NVIDIA branches of
+  `ggml_cuda_should_use_mmf/mmvf`, with the 384-case compiled-selector
+  parity control kept in `tests/unit/ggml_ext_ops_test.cc`),
   `src/kernels/ggml/fusion.cc` (the fusion gates of ggml-cuda.cu, ggml.c and
   ggml-impl.h: `ggml_can_fuse_ext`, `ggml_can_fuse_subgraph_ext`,
   `ggml_cuda_should_fuse_mul_mat`, `ggml_cuda_should_fuse_rope_set_rows`),
@@ -249,8 +252,9 @@ chunk; Qwen3.8, 8,192 cells: +10%). Argsort is the same bitonic kernel
 either way for rows of at most 1,024 (MoE routing: 256 and 512 experts;
 bitwise-identical output). The selections were equal as index sets on
 distinct values and as value multisets under ties; which tied index is
-chosen differs. ExLlamaV3's GEMM kernels (MIT) also link only into tests so
-far; a shipped binary that links them carries ExLlamaV3's MIT text
+chosen differs. ExLlamaV3's audited kept kernels (MIT) now link into
+production through the backend's selected-operation source. Shipped binaries
+carry ExLlamaV3's MIT text
 ([below](#exllamav3-gemm-kernels-in-the-core-m2)). CUTLASS 4.7.1
 (BSD-3-Clause, lock component `cutlass`, headers only; M3's Qwen3.8
 prefill) is included by two llmpalooza units: `src/kernels/ggml/moe_cutlass.cu`
@@ -648,9 +652,12 @@ in P3.
 the answers close this section). The files P3 added are classified by the
 same rule: none states a license of its own, so the root MIT `LICENSE`
 governs; the GEMV header's QTIP citation is the implication D-080 judged
-not copyleft. Only tests and a benchmark link them so far: the lock marks
-the component `use: test`, and `sources.closure` refuses a packaged
-executable built from one.
+not copyleft. R6 promotes exactly this audited kept set to `use: product`
+for the production selected-operation source (owner authorization, 2026-10-17).
+The archive pin, keep list, source patches, prepared tree and MIT terms are
+unchanged. This promotion clears neither additional source files nor different
+license terms. The package source closure now includes this component and its
+root MIT notice.
 
 - **What is compiled.** In CUDA profiles only:
   - upstream's compilation units for the mcg codebook at K = 4, 5, 6 and
@@ -665,8 +672,8 @@ executable built from one.
     four rates, three Hadamard variants, and `add.cu`'s kernels as that
     file defines them.
 
-  So far only test and benchmark executables link them. In every profile
-  llmpalooza includes `exl3_devctx.cuh` for the device context's sizes.
+  The production runtime, tests and benchmarks link them in CUDA profiles.
+  In every profile llmpalooza includes `exl3_devctx.cuh` for the device context's sizes.
 - **What is kept.** Exactly the files those units include (23 files,
   5,087 lines at the pin), and the root `LICENSE`. A test follows the
   includes of the prepared tree and fails if `keep` holds more or less
@@ -785,10 +792,12 @@ directly, and the multi-GEMM kernel's group barrier compiles its
 code under Apache-2.0 WITH LLVM-exception; decision 5 above covers it,
 reached through CUDA headers or included directly (D-080).
 
-**Obligations.** None while only tests link the kernels. A shipped binary
-that links them carries ExLlamaV3's MIT
-text in its third-party notices (the lock's `notices`, with `use` set to
-`product`). No source offer is owed.
+**Obligations.** The production binary carries ExLlamaV3's root MIT text
+and Turboderp copyright in generated third-party notices. The unchanged lock's
+`notices` and `use: product` include it in the package closure. The copied
+GEMV host selector and reviewed patches retain their MIT AND Apache-2.0 tags
+and upstream copyright. No source offer is owed. The independent CPU reference
+library remains test/fuzz-only; its own copied code retains its MIT attribution.
 
 **The owner's answers** (2026-09-27, D-080: "It all sounds fine and
 permissive with no viral code issues"):

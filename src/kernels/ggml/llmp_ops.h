@@ -256,7 +256,8 @@ inline constexpr std::int64_t kMxfp8VecWaveColumns = 16;
 ggml_tensor* Mxfp8MulMatVec(ggml_context* context, ggml_tensor* codes, ggml_tensor* scales,
                             ggml_tensor* x);
 // `table` I8 [values / 2 + values / 16, rows], `ids` I32 [n], `scale` F32
-// [1]: F32 [values, n].
+// [1]: F32 [values, n]. Invalid IDs write zeros, matching the generic
+// decode row gather (which also accepts an optional bad-ID flag).
 ggml_tensor* Nvfp4Rows(ggml_context* context, ggml_tensor* table, ggml_tensor* ids,
                        ggml_tensor* scale, std::int64_t values);
 // llmp.qrows.get_rows: rows of a table in one of GGML's 32-value block

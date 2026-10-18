@@ -458,6 +458,60 @@ primitive ids). It is deterministic. The steps:
   ranks for its class; a node without a candidate is replaced by its
   decomposition where it has one (the primitive-fallback rule) and the
   plan refused otherwise.
+  Backend construction owns the compiled decode and EXL3 sources; runtime
+  assembly does not scan policy strings to attach them. Twelve decoders over
+  six templates plus two mixed GLUs expose 74 decode implementations. Physical
+  part layouts, index and stride bounds, device features and per-matrix batch
+  broadcasting remain capability requirements. Resident row gathers cover all
+  decoders; authenticated paged rows remain limited to split NVFP4 and affine.
+  Operand facts retain the actual stacked-matrix count. Row-interleaved NVFP4
+  parts preserve absent and per-stack tensor scales; the specialized native
+  gather accepts only its single-scale, unbatched representation. Measured
+  preferences include the stacked count and never rank another scale geometry.
+  Native MXFP8 vector products and short-block row gathers require their
+  two-dimensional physical operands; batched forms select the generic decoder.
+  GGML NVFP4 expert products consume only their native Data part; optional
+  separate tensor scales select the generic grouped decoder.
+  EXL3 execution requires MCG and complete four-part operands; batched EXL3
+  products and multipart weight alias views remain unsupported.
+  Selected sources receive separate per-backend memory from the runner's
+  cataloged Runtime/Pinned kernel allocations, retained across model switches
+  and shared scratch eviction. The automatic source set requires 21,015,040
+  bytes per backend, rounded to 22 MiB backing at 2 MiB granularity; explicit
+  sources add their own requirements. This backing is funded for pure-GGML
+  plans too, while unused EXL3 sources create no CUDA context. Scratch accounting
+  excludes this state. Positive completion precedes destruction of recordings
+  and launches, then release of the pinned memory; live-context overlap checks
+  remain enforced. See RE-058 in [rough edges](rough-edges.md).
+  Host metadata is paid separately: owned device/tuning facts, temporary
+  declaration copies and each stage's execution seal charge one retained
+  catalog extent before allocation. Ordinary LLM setup grows that payment
+  from actual live demand within the startup or running budget and physical
+  headroom; explicit diagnostic caps remain limits. The payment retains
+  its construction high-water across retries, reports peak and retained host
+  bytes separately, and joins automatic startup accounting after source sealing.
+  Measured preferences require the actual device model and SM count, operation,
+  encoding/layout and measured shape band. Unmeasured cases retain the existing
+  ladder. Every automatic rewrite, including batch and helper queries, uses
+  the same qualification view. New decode GLUs and occupancy-derived EXL3
+  paired products require measured preference before replacing primitive
+  operations; direct typed operations remain available. Exact historical
+  scalar EXL3 pairs retain their cache, shape, rate and output eligibility.
+  Final implementation selection retains each rewrite's qualification intent
+  through both pattern rounds, pruning and fallback decomposition. Repeated
+  explicit and automatic nodes remain separate because their eligible
+  implementation sets can differ. Occupancy proves capacity, not speed or
+  quality. Pattern digest v3 includes this qualification contract. See
+  [the decode-ladder measurements](experiments/decode-ladder-r6.md).
+  The backend declares its future lane count and per-lane scratch before
+  measurement. Sources generate owner-lane tags only for that execution domain;
+  the same facts enter plan/backend identity, configure the launch, and are
+  checked at binding. Binding never silently changes a planned lane schedule.
+  Current four-lane launches reserve four 4 MiB slices beside measured stream
+  scratch. Region-bearing program measurement also includes four lane maxima
+  before the runner's 25% margin. This existing conservative overlap remains
+  safe; physical-placement work must unify the accounting rather than remove
+  the launch reserve without funding ordinary stream scratch.
 - **Lanes** (`lanes.h`) and **placement** (`placement.h`): ports of
   `AssignLanes` and `PlaceActivations` onto the IR's steps (largest first,
   lowest free offset, step lifetimes, regions live for their spans). The
@@ -466,7 +520,12 @@ primitive ids). It is deterministic. The steps:
   the BF16 GEMM there by default, the planner knows no module's names, so
   a lowering with such implementations must pass it.
 - **Keys**: `KeyOf` makes `PlanKey` from the spec's bound digest, the
-  shape, the enabled patterns' digest, the policy's and the partition.
+  shape, the enabled patterns' digest, the policy's and the partition, with the
+  implementation registry, backend identity and capture requirements. Registry
+  identity is canonical by implementation name and covers complete declarations.
+  Backend identity also covers device facts, tuning, measured preferences and
+  explicit supplied-source preferences, retaining the execution-domain seal.
+  Immutable backend facts are hashed once at construction.
 
 On the Gemma 2 and Gemma 3 specs (`planner_gemma_test`, CPU), at every
 shape the runners measure at setup with the serving defaults (Gemma 2 at
@@ -1525,8 +1584,9 @@ serving and matched family gates remain open ([DSpark evidence](experiments/m36-
 A required component source retains the native backend's immutable device and
 explicit tuning facts. Tuning names are owned, and entries include physical
 rows, K, N and output encoding. They never replace operand, stride, alignment,
-selected-expert or capture checks. Ordinary sources keep their existing path;
-no tuning record or family policy is installed automatically.
+selected-expert or capture checks. Backend construction retains each compiled
+source's existing exact device-qualified pins; it invents neither tuning records
+nor family policy.
 
 Component planning receives conservative alignment facts for single-part weights
 from their actual nonzero virtual reservation addresses, keyed by the complete

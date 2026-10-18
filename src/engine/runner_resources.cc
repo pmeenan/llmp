@@ -39,6 +39,12 @@ RunnerResources::Status RunnerResources::OpenCublas(std::string name) {
   return {};
 }
 
+RunnerResources::Status RunnerResources::OpenSelectedWorkspace(std::string name,
+                                                               std::uint64_t bytes) {
+  if (bytes == 0) return {};
+  return Map(selected_workspace_, std::move(name), bytes, catalog::MemoryClass::kRuntime);
+}
+
 std::expected<std::unique_ptr<kg::LaunchContext>, std::string> RunnerResources::MeasuringContext()
     const {
   auto measure = kg::LaunchContext::Create(0, node().execution(), node().stream(stream()),

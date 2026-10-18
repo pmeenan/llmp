@@ -125,6 +125,7 @@ struct Record {
   pl::StepShape shape;
   ts::CorpusPlanRecord selected;
   bool measured = false;
+  std::uint64_t pool_bytes = 0;
   std::vector<std::uint64_t> parameters;
   bool parameterized = false;
 };
@@ -236,8 +237,11 @@ class RecordedSource final : public en::StepSource {
       return std::unexpected("MTP program exceeds retained payment");
     if (a.measuring()) {
       it->measured = true;
+      it->pool_bytes = (*p)->pool_bytes();
       return std::move(*p);
     }
+    if ((*p)->pool_bytes() != it->pool_bytes)
+      return std::unexpected("measured and bound MTP pool requirements differ");
     return std::make_unique<ts::CorpusProgram>(std::move(*p), it->selected);
   }
 
@@ -844,7 +848,29 @@ TEST(Qwen38JoinedMtpGpu, OwnedUnequalPendingRestoresAndChangedInputCapture) {
   EXPECT_GT(life->runner->graph_stats().replayed, life->changed_graph_replays);
   EXPECT_FALSE(record->selected.implementations.empty());
   std::string plans;
+  bool checked_serial_peak = false, checked_state_only = false;
   for (const auto& r : std::span(life->records).first(life->count)) {
+    if (r.measured && r.shape.stage == 1 && r.shape.phase == pl::Phase::kDraft &&
+        r.shape.segments.size() == 2 && r.shape.segments[0].rows == 16 &&
+        r.shape.segments[1].rows == 16) {
+      if (std::ranges::all_of(r.shape.segments, [](const auto& owner) {
+            return owner.outputs == 1 && owner.want_head;
+          })) {
+        // The headed contract runs two attention calls reusing one serial
+        // workspace. Four hypothetical lane copies previously inflated it
+        // from 6.1MiB to 24.5MiB.
+        EXPECT_GT(r.pool_bytes, 0U);
+        EXPECT_LE(r.pool_bytes, 8 * kMiB);
+        checked_serial_peak = true;
+      } else if (std::ranges::all_of(r.shape.segments, [](const auto& owner) {
+                   return owner.outputs == 0 && !owner.want_head;
+                 })) {
+        // Its separate state-only companion stops after cache projection
+        // and stores; no attention or final head needs workspace.
+        EXPECT_EQ(r.pool_bytes, 0U);
+        checked_state_only = true;
+      }
+    }
     if (r.shape.segments.size() != 2 || r.selected.implementations.empty()) continue;
     const auto header = std::format(
         "stage={} phase={} rows={}/{} identity={} count={}\n", r.shape.stage,
@@ -874,5 +900,7 @@ TEST(Qwen38JoinedMtpGpu, OwnedUnequalPendingRestoresAndChangedInputCapture) {
   testing::Test::RecordProperty("captured", std::to_string(life->runner->graph_stats().captured));
   testing::Test::RecordProperty("replayed", std::to_string(life->runner->graph_stats().replayed));
   EXPECT_TRUE(life->Retire());
+  EXPECT_TRUE(checked_serial_peak);
+  EXPECT_TRUE(checked_state_only);
 }
 }  // namespace

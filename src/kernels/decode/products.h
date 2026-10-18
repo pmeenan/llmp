@@ -9,7 +9,8 @@
 //
 // Decoders: BF16 and F16 dense; Q8_0 in GGML's blocks; NVFP4 split, in
 // CUTLASS's scale atoms, row-interleaved and in GGML's blocks (with or
-// without a tensor scale); MXFP8 split and in CUTLASS's scale atoms.
+// without a tensor scale); MXFP8 and MXFP4 split and in scale atoms;
+// affine split with its explicit per-group scales/biases.
 // Templates:
 //   RunVector     decode-shaped products, 1 to 16 input rows;
 //   RunVectorGlu  the same over a gate and an up weight (each its own

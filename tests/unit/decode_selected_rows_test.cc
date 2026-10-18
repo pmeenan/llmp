@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -25,7 +26,10 @@
 #include "engine/model_runner.h"
 #include "expected_error.h"
 #include "ir/builder.h"
+#include "kernels/decode/operand.h"
+#include "kernels/decode/products.h"
 #include "kernels/decode/selected_rows.h"
+#include "kernels/decode/selected_source.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/step_program.h"
 #include "kernels/ggml/tensors.h"
@@ -102,7 +106,7 @@ TEST(DecodeSelectedRows, CompletePartsKeepOriginalLogicalShapeAndBoundedPhysical
   auto source = de::RowsSelectedSource();
   ASSERT_TRUE(source) << source.error();
   const auto impl = (*source)->Implementations();
-  ASSERT_EQ(impl.size(), 2U);
+  ASSERT_EQ(impl.size(), static_cast<std::size_t>(de::DecoderId::kCount));
   const auto at = std::ranges::find(impl, "llmp.decode.rows.nvfp4.split",
                                     &llmp::execution::Implementation::name);
   ASSERT_NE(at, impl.end());
@@ -236,6 +240,458 @@ TEST(DecodeSelectedRows, AffineSplitRowsLowerSuccessfully) {
   EXPECT_LE((*call)->host_bytes(), 2048U);
 }
 
+TEST(DecodeSelectedRows, SharedLoweringRetainsFourthDimensionPartsForEveryDecoder) {
+  auto source = de::DecodeResidentSelectedSource().value();
+  auto registry = llmp::execution::Registry::Create(source->Implementations()).value();
+  for (std::size_t index = 0; index < static_cast<std::size_t>(de::DecoderId::kCount); ++index) {
+    const auto decoder = static_cast<de::DecoderId>(index);
+    SCOPED_TRACE(de::DecoderName(decoder));
+    fmt::TensorFormat f{.encoding = de::DecoderEncoding(decoder),
+                        .layout = de::DecoderLayout(decoder),
+                        .shape = ir::ShapeOf({256, 136, 1, 2})};
+    if (f.encoding == fmt::Encoding::kAffine)
+      f.params = {.bits = 4, .group = 32, .scale = fmt::AffineScale::kBF16};
+    if (f.encoding == fmt::Encoding::kNvfp4) f.params.tensor_scale = true;
+    ir::Builder builder;
+    builder.SetOwner(0);
+    const auto weight = builder.Weight(f, kWeight);
+    const auto x = builder.Input(ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({256, 3, 1, 2})));
+    const auto y = builder.MatMul(weight, x);
+    builder.Output(y);
+    auto graph = std::move(builder).Finish();
+    ASSERT_TRUE(graph) << graph.error().detail;
+    const auto extents = fmt::PartsOf(f).value();
+    std::vector<std::pair<std::string, Role>> parts;
+    for (const auto& e : extents.parts())
+      parts.emplace_back(std::format("part{}", parts.size()), e.role);
+    const std::array weights{co::StepWeight{.tensor = weight, .ref = kWeight, .parts = parts}};
+    const pl::DeviceFacts device{
+        .device_class = "sm_121", .arch = 121, .features = llmp::execution::kBf16Mma};
+    auto plan = pl::Plan(graph->Clone(), registry, device, {});
+    ASSERT_TRUE(plan) << plan.error().detail;
+    const kn::Addresses addresses{};
+    const co::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), weights};
+    auto lowered =
+        kg::LowerStep({*plan, io, addresses}, registry, {}, {.selected_source = source.get()});
+    ASSERT_TRUE(lowered) << lowered.error().detail;
+    ASSERT_EQ(lowered->selected.size(), 1U);
+    for (const auto& e : extents.parts()) {
+      const auto leaf = std::ranges::find_if(lowered->leaves, [&](const auto& item) {
+        return item.primitive == weight &&
+               (item.part == e.role ||
+                (!item.part && e.role == Role::kData && extents.size() == 1));
+      });
+      ASSERT_NE(leaf, lowered->leaves.end());
+      // Native descriptors expose logical block bytes; decode does not
+      // consume GGML MMQ's additional readable row-padding tail.
+      EXPECT_EQ(ggml_nbytes(leaf->tensor), leaf->part ? e.readable : e.bytes);
+    }
+  }
+}
+
+TEST(DecodeSelectedRows, CombinedRegistryKeepsNativeShapesAndDecodesBatchedOperands) {
+  auto source = de::DecodeResidentSelectedSource().value();
+  auto implementations = kg::Implementations();
+  auto decoders = source->Implementations();
+  implementations.insert(implementations.end(), decoders.begin(), decoders.end());
+  auto registry = llmp::execution::Registry::Create(std::move(implementations)).value();
+  const pl::DeviceFacts device{
+      .device_class = "sm_121", .arch = 121, .features = llmp::execution::kBf16Mma};
+  struct Case {
+    bool rows;
+    std::uint64_t w2, w3, x2, x3;
+  };
+  constexpr std::array cases{Case{false, 1, 1, 1, 1}, Case{false, 1, 1, 2, 1},
+                             Case{false, 2, 1, 4, 1}, Case{false, 1, 2, 1, 2},
+                             Case{true, 1, 1, 1, 1},  Case{true, 2, 1, 2, 1},
+                             Case{true, 1, 2, 1, 2}};
+  for (const auto& c : cases) {
+    SCOPED_TRACE(std::format("rows{} w2{} w3{} x2{} x3{}", c.rows, c.w2, c.w3, c.x2, c.x3));
+    const auto k = c.rows ? 160U : 256U;
+    const fmt::TensorFormat f{.encoding = c.rows ? fmt::Encoding::kQ8_0 : fmt::Encoding::kMxfp8,
+                              .layout = c.rows ? fmt::Layout::kGgmlBlocks : fmt::Layout::kSplit,
+                              .shape = ir::ShapeOf({k, 136, c.w2, c.w3})};
+    ir::Builder builder;
+    builder.SetOwner(0);
+    const auto w = builder.Weight(f, kWeight);
+    const auto x =
+        builder.Input(c.rows ? ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({3, c.x2, c.x3}))
+                             : ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({k, 3, c.x2, c.x3})));
+    builder.Output(c.rows ? builder.GetRows(w, x) : builder.MatMul(w, x));
+    auto graph = std::move(builder).Finish();
+    ASSERT_TRUE(graph) << graph.error().detail;
+    std::vector<std::pair<std::string, Role>> parts;
+    const auto extents = fmt::PartsOf(f).value();
+    for (const auto& e : extents.parts())
+      parts.emplace_back(std::format("part{}", parts.size()), e.role);
+    const std::array weights{co::StepWeight{.tensor = w, .ref = kWeight, .parts = parts}};
+    auto plan = pl::Plan(graph->Clone(), registry, device, {});
+    ASSERT_TRUE(plan) << plan.error().detail;
+    ASSERT_EQ(plan->steps.size(), 1U);
+    const bool native = c.w2 == 1 && c.w3 == 1 && c.x2 == 1 && c.x3 == 1;
+    const auto& chosen = registry.at(plan->steps[0].implementation).name;
+    EXPECT_EQ(chosen, native   ? c.rows ? "llmp.qrows.get_rows" : "llmp.mxfp8.mul_mat_vec"
+                      : c.rows ? "llmp.decode.rows.q8_0.ggml_blocks"
+                               : "llmp.decode.vector.mxfp8.split");
+    const kn::Addresses addresses{};
+    auto lowered = kg::LowerStep(
+        {*plan, co::GraphBuildIO{*graph, graph->inputs(), graph->outputs(), weights}, addresses},
+        registry, {}, {.selected_source = source.get()});
+    ASSERT_TRUE(lowered) << lowered.error().detail;
+    EXPECT_EQ(lowered->selected.size(), native ? 0U : 1U);
+  }
+}
+
+TEST(DecodeSelectedRows, SharedLoweringCarriesEveryMultipartExpertLayout) {
+  auto source = de::DecodeResidentSelectedSource().value();
+  auto implementations = kg::Implementations();
+  auto decoders = source->Implementations();
+  implementations.insert(implementations.end(), decoders.begin(), decoders.end());
+  auto registry = llmp::execution::Registry::Create(std::move(implementations)).value();
+  const ir::WeightRef ref{.stage = 0, .component = 7, .role = 0, .expert_array = true};
+  for (const auto decoder :
+       {de::DecoderId::kNvfp4Split, de::DecoderId::kNvfp4Atoms, de::DecoderId::kNvfp4Interleaved,
+        de::DecoderId::kNvfp4GgmlBlocks, de::DecoderId::kMxfp8Split, de::DecoderId::kMxfp8Atoms,
+        de::DecoderId::kMxfp4Split, de::DecoderId::kMxfp4Atoms, de::DecoderId::kAffineSplit}) {
+    SCOPED_TRACE(de::DecoderName(decoder));
+    fmt::TensorFormat f{.encoding = de::DecoderEncoding(decoder),
+                        .layout = de::DecoderLayout(decoder),
+                        .shape = ir::ShapeOf({256, 136, 4})};
+    if (f.encoding == fmt::Encoding::kAffine)
+      f.params = {.bits = 4, .group = 32, .scale = fmt::AffineScale::kBF16};
+    if (f.encoding == fmt::Encoding::kNvfp4) f.params.tensor_scale = true;
+    // Explicit degenerate fourth dimension is a valid MatMulId expert array.
+    f.shape.rank = 4;
+    ir::Builder builder;
+    builder.SetOwner(0);
+    const auto weight = builder.Weight(f, ref);
+    const auto x = builder.Input(ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({256, 1, 3})));
+    const auto ids = builder.Input(ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({2, 3})));
+    const auto y = builder.MatMulId(weight, x, ids);
+    builder.Output(y);
+    auto graph = std::move(builder).Finish();
+    ASSERT_TRUE(graph) << graph.error().detail;
+    auto one = f;
+    one.shape = ir::ShapeOf({256, 136});
+    const auto extents = fmt::PartsOf(one).value();
+    std::vector<std::pair<std::string, Role>> parts;
+    for (const auto& e : extents.parts())
+      parts.emplace_back(std::format("part{}", parts.size()), e.role);
+    co::StepGraph step{
+        .graph = std::move(*graph),
+        .inputs = {{.tensor = x, .kind = co::InputKind::kFeatures, .component = ref.component},
+                   {.tensor = ids, .kind = co::InputKind::kFeatures, .component = ref.component}},
+        .weights = {{.tensor = weight, .ref = ref, .parts = parts}},
+        .state = {},
+        .logits = {},
+    };
+    const pl::StepShape shape{.stage = 0,
+                              .phase = pl::Phase::kDecode,
+                              .segments = {{.slot = 0, .rows = 3, .outputs = 3}},
+                              .read_align = 256};
+    const pl::DeviceFacts device{
+        .device_class = "sm_121", .arch = 121, .features = llmp::execution::kBf16Mma};
+    auto plan = pl::Plan(step.graph.Clone(), registry, device, {});
+    ASSERT_TRUE(plan) << plan.error().detail;
+    kn::Addresses addresses{};
+    addresses.expert_part = [one, parts, extents](
+                                std::uint16_t stage,
+                                std::string_view name) -> std::optional<kn::ExpertPartBinding> {
+      if (stage != 0) return {};
+      for (std::size_t i = 0; i < parts.size(); ++i)
+        if (parts[i].first == name) {
+          const auto& e = extents[i];
+          const auto pitch = (e.readable + 255) / 256 * 256;
+          return kn::ExpertPartBinding{.address = 0x10000000ULL + i * 0x100000,
+                                       .bytes = 3 * pitch + e.readable,
+                                       .pitch = pitch,
+                                       .format = one,
+                                       .role = e.role};
+        }
+      return {};
+    };
+    auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, {},
+                                 {.selected_source = source.get()});
+    ASSERT_TRUE(lowered) << lowered.error().detail;
+    ASSERT_EQ(lowered->selected.size(), 1U);
+    for (const auto& e : extents.parts())
+      EXPECT_TRUE(std::ranges::any_of(lowered->leaves, [&](const auto& leaf) {
+        return leaf.primitive == weight && leaf.part == e.role;
+      }));
+  }
+}
+
+TEST(DecodeSelectedRows, NativeDecoderCompetitorsRefuseUnsupportedPhysicalFacts) {
+  auto registry = llmp::execution::Registry::Create(kg::Implementations()).value();
+  for (const bool nvfp4 : {false, true}) {
+    const fmt::TensorFormat f{
+        .encoding = nvfp4 ? fmt::Encoding::kNvfp4 : fmt::Encoding::kQ8_0,
+        .params = {.tensor_scale = nvfp4},
+        .layout = nvfp4 ? fmt::Layout::kRowInterleaved : fmt::Layout::kGgmlBlocks,
+        .shape = ir::ShapeOf({160, 136})};
+    std::array<llmp::execution::OperandFormat, 3> operands{};
+    const std::array formats{f, ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({3})),
+                             ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({160, 3}))};
+    for (std::size_t i = 0; i < operands.size(); ++i)
+      operands[i] = {
+          .operand = i == 2 ? llmp::execution::kOutputOperand : static_cast<std::uint8_t>(i),
+          .encoding = formats[i].encoding,
+          .layout = formats[i].layout,
+          .params = formats[i].params,
+          .ne = formats[i].shape.ne,
+          .memory = llmp::execution::OperandMemory{.nb = ir::NaturalStrides(formats[i]),
+                                                   .root_alignment = 256}};
+    const auto name = nvfp4 ? "llmp.nvfp4.get_rows" : "llmp.qrows.get_rows";
+    const auto native = registry.Find(name).value();
+    llmp::execution::CapabilityQuery query{.op = ir::Primitive(ir::Op::kGetRows),
+                                           .operands = operands,
+                                           .rows = 3,
+                                           .k = 160,
+                                           .n = 136,
+                                           .arch = 121};
+    ASSERT_TRUE(std::ranges::contains(llmp::execution::Candidates(registry, query), native));
+    const auto original = operands;
+    for (int bad = 0; bad != 9; ++bad) {
+      SCOPED_TRACE(std::format("{} mutation{}", name, bad));
+      switch (bad) {
+        case 0:
+          operands[0].ne[2] = 2;
+          break;
+        case 1:
+          operands[0].ne[3] = 2;
+          break;
+        case 2:
+          operands[1].ne[1] = 2;
+          break;
+        case 3:
+          operands[2].encoding = fmt::Encoding::kBF16;
+          break;
+        case 4:
+          operands[1].memory->nb[0] = 8;
+          break;
+        case 5:
+          operands[2].memory->nb[1] += 4;
+          break;
+        case 6:
+          operands[1].memory->view_offset = 2;
+          break;
+        case 7:
+          operands[2].memory->view_offset = 2;
+          break;
+        case 8:
+          if (nvfp4)
+            operands[0].memory->is_view = true;
+          else
+            operands[0].memory->nb[1] += 2;
+          break;
+      }
+      EXPECT_FALSE(std::ranges::contains(llmp::execution::Candidates(registry, query), native));
+      operands = original;
+    }
+  }
+  std::array<llmp::execution::OperandFormat, 3> operands{};
+  const std::array formats{fmt::TensorFormat{.encoding = fmt::Encoding::kMxfp8,
+                                             .layout = fmt::Layout::kSplit,
+                                             .shape = ir::ShapeOf({256, 136})},
+                           ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({256, 3})),
+                           ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({136, 3}))};
+  for (std::size_t i = 0; i < operands.size(); ++i)
+    operands[i] = {
+        .operand = i == 2 ? llmp::execution::kOutputOperand : static_cast<std::uint8_t>(i),
+        .encoding = formats[i].encoding,
+        .layout = formats[i].layout,
+        .ne = formats[i].shape.ne,
+        .memory = llmp::execution::OperandMemory{.nb = ir::NaturalStrides(formats[i]),
+                                                 .root_alignment = 256}};
+  const auto native = registry.Find("llmp.mxfp8.mul_mat_vec").value();
+  llmp::execution::CapabilityQuery query{.op = ir::Primitive(ir::Op::kMatMul),
+                                         .operands = operands,
+                                         .rows = 3,
+                                         .k = 256,
+                                         .n = 136,
+                                         .arch = 121};
+  ASSERT_TRUE(std::ranges::contains(llmp::execution::Candidates(registry, query), native));
+  const auto original = operands;
+  for (int bad = 0; bad != 8; ++bad) {
+    SCOPED_TRACE(std::format("MXFP8 mutation{}", bad));
+    switch (bad) {
+      case 0:
+        operands[0].ne[2] = 2;
+        break;
+      case 1:
+        operands[1].ne[3] = 2;
+        break;
+      case 2:
+        operands[1].memory->nb[0] = 8;
+        break;
+      case 3:
+        operands[1].memory->nb[1] += 4;
+        break;
+      case 4:
+        operands[1].memory->view_offset = 4;
+        break;
+      case 5:
+        operands[2].encoding = fmt::Encoding::kBF16;
+        break;
+      case 6:
+        operands[2].memory->nb[1] += 4;
+        break;
+      case 7:
+        operands[0].memory->is_view = true;
+        break;
+    }
+    EXPECT_FALSE(std::ranges::contains(llmp::execution::Candidates(registry, query), native));
+    operands = original;
+  }
+  operands[1].memory->nb[1] += 16;  // The native vector accepts pitched input rows.
+  EXPECT_TRUE(std::ranges::contains(llmp::execution::Candidates(registry, query), native));
+}
+
+TEST(DecodeSelectedRows, CombinedRegistryPreservesOptionalExpertTensorScales) {
+  auto source = de::DecodeResidentSelectedSource().value();
+  auto implementations = kg::Implementations();
+  auto decoders = source->Implementations();
+  implementations.insert(implementations.end(), decoders.begin(), decoders.end());
+  auto registry = llmp::execution::Registry::Create(std::move(implementations)).value();
+  const ir::WeightRef ref{.stage = 0, .component = 7, .role = 0, .expert_array = true};
+  for (const bool scale : {false, true}) {
+    for (const std::uint8_t stacked : {std::uint8_t{1}, std::uint8_t{2}}) {
+      SCOPED_TRACE(std::format("scale{} stacked{}", scale, stacked));
+      const fmt::TensorFormat f{.encoding = fmt::Encoding::kNvfp4,
+                                .params = {.tensor_scale = scale},
+                                .layout = fmt::Layout::kGgmlNvfp4Blocks,
+                                .shape = ir::ShapeOf({256, 136, 4}),
+                                .stacked = stacked};
+      auto one = f;
+      one.shape = ir::ShapeOf({256, 136});
+      const auto extents = fmt::PartsOf(one).value();
+      std::vector<std::pair<std::string, Role>> parts;
+      for (const auto& e : extents.parts())
+        parts.emplace_back(std::format("part{}", parts.size()), e.role);
+      ir::Builder builder;
+      builder.SetOwner(0);
+      const auto w = builder.Weight(f, ref);
+      const auto x = builder.Input(ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({256, 1, 3})));
+      const auto ids = builder.Input(ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({2, 3})));
+      builder.Output(builder.MatMulId(w, x, ids));
+      auto graph = std::move(builder).Finish();
+      ASSERT_TRUE(graph) << graph.error().detail;
+      co::StepGraph step{
+          .graph = std::move(*graph),
+          .inputs = {{.tensor = x, .kind = co::InputKind::kFeatures, .component = ref.component},
+                     {.tensor = ids, .kind = co::InputKind::kFeatures, .component = ref.component}},
+          .weights = {{.tensor = w, .ref = ref, .parts = parts}},
+          .state = {},
+          .logits = {},
+      };
+      const pl::StepShape shape{.stage = 0,
+                                .phase = pl::Phase::kDecode,
+                                .segments = {{.slot = 0, .rows = 3, .outputs = 3}},
+                                .read_align = 256};
+      auto plan = pl::Plan(
+          step.graph.Clone(), registry,
+          {.device_class = "sm_121", .arch = 121, .features = llmp::execution::kBf16Mma}, {});
+      ASSERT_TRUE(plan) << plan.error().detail;
+      ASSERT_EQ(plan->steps.size(), 1U);
+      EXPECT_EQ(registry.at(plan->steps[0].implementation).name,
+                scale ? "llmp.decode.grouped.nvfp4.ggml_nvfp4_blocks" : "ggml.mul_mat_id.nvfp4");
+      kn::Addresses addresses{};
+      addresses.expert_part = [one, parts, extents](
+                                  std::uint16_t,
+                                  std::string_view name) -> std::optional<kn::ExpertPartBinding> {
+        for (std::size_t i = 0; i < parts.size(); ++i)
+          if (parts[i].first == name) {
+            const auto& e = extents[i];
+            const auto pitch = (e.readable + 255) / 256 * 256;
+            return kn::ExpertPartBinding{.address = 0x10000000ULL + i * 0x100000,
+                                         .bytes = 3 * pitch + e.readable,
+                                         .pitch = pitch,
+                                         .format = one,
+                                         .role = e.role};
+          }
+        return {};
+      };
+      kg::DeviceChoices choices;
+      choices.quant =
+          [](const ggml_tensor*) -> std::expected<kg::QuantMulMatPath, kg::KernelFailure> {
+        return kg::QuantMulMatPath::kTile;
+      };
+      auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, choices,
+                                   {.selected_source = source.get()});
+      ASSERT_TRUE(lowered) << lowered.error().detail;
+      EXPECT_EQ(lowered->selected.size(), scale ? 1U : 0U);
+    }
+  }
+}
+
+TEST(DecodeSelectedRows, RowInterleavedScalesAndStacksSelectAndLowerTheirActualParts) {
+  auto source = de::DecodeResidentSelectedSource().value();
+  auto implementations = kg::Implementations();
+  auto decoders = source->Implementations();
+  implementations.insert(implementations.end(), decoders.begin(), decoders.end());
+  auto registry = llmp::execution::Registry::Create(std::move(implementations)).value();
+  const pl::DeviceFacts device{
+      .device_class = "sm_121", .arch = 121, .features = llmp::execution::kBf16Mma};
+  for (const bool scale : {false, true}) {
+    for (const std::uint8_t stacked : {std::uint8_t{1}, std::uint8_t{2}}) {
+      for (const std::uint64_t batches : {1U, 2U}) {
+        for (const bool rows : {false, true}) {
+          SCOPED_TRACE(
+              std::format("scale{} stacks{} batches{} rows{}", scale, stacked, batches, rows));
+          const fmt::TensorFormat f{.encoding = fmt::Encoding::kNvfp4,
+                                    .params = {.tensor_scale = scale},
+                                    .layout = fmt::Layout::kRowInterleaved,
+                                    .shape = ir::ShapeOf({256, 136, batches}),
+                                    .stacked = stacked};
+          const auto extents = fmt::PartsOf(f).value();
+          ir::Builder builder;
+          builder.SetOwner(0);
+          const auto weight = builder.Weight(f, kWeight);
+          const auto x =
+              builder.Input(rows ? ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({3, batches}))
+                                 : ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({256, 3, batches})));
+          builder.Output(rows ? builder.GetRows(weight, x) : builder.MatMul(weight, x));
+          auto graph = std::move(builder).Finish();
+          ASSERT_TRUE(graph) << graph.error().detail;
+          std::vector<std::pair<std::string, Role>> parts;
+          for (const auto& e : extents.parts())
+            parts.emplace_back(std::format("part{}", parts.size()), e.role);
+          const std::array weights{
+              co::StepWeight{.tensor = weight, .ref = kWeight, .parts = parts}};
+          auto plan = pl::Plan(graph->Clone(), registry, device, {});
+          ASSERT_TRUE(plan) << plan.error().detail;
+          ASSERT_EQ(plan->steps.size(), 1U);
+          const auto& chosen = registry.at(plan->steps[0].implementation).name;
+          const bool native = rows && scale && stacked == 1 && batches == 1;
+          if (native)
+            EXPECT_EQ(chosen, "llmp.nvfp4.get_rows");
+          else
+            EXPECT_TRUE(chosen.starts_with(rows ? "llmp.decode.rows.nvfp4.row_interleaved"
+                                                : "llmp.decode.vector.nvfp4.row_interleaved"))
+                << chosen;
+          const kn::Addresses addresses{};
+          auto lowered = kg::LowerStep(
+              {*plan, co::GraphBuildIO{*graph, graph->inputs(), graph->outputs(), weights},
+               addresses},
+              registry, {}, {.selected_source = source.get()});
+          ASSERT_TRUE(lowered) << lowered.error().detail;
+          EXPECT_EQ(lowered->selected.size(), native ? 0U : 1U);
+          std::size_t weight_parts = 0;
+          for (const auto& leaf : lowered->leaves) {
+            if (leaf.primitive != weight) continue;
+            ++weight_parts;
+            ASSERT_TRUE(leaf.part);
+            const auto extent = extents.Find(*leaf.part);
+            ASSERT_TRUE(extent);
+            EXPECT_EQ(ggml_nbytes(leaf.tensor), extent->readable);
+          }
+          EXPECT_EQ(weight_parts, extents.size());
+        }
+      }
+    }
+  }
+}
+
 TEST(DecodeSelectedRows, LoweringRequiresTheDirectSideInputAndPagedComponent) {
   auto source = de::RowsSelectedSource();
   ASSERT_TRUE(source);
@@ -244,6 +700,18 @@ TEST(DecodeSelectedRows, LoweringRequiresTheDirectSideInputAndPagedComponent) {
   implementations.insert(implementations.end(), native.begin(), native.end());
   auto registry = llmp::execution::Registry::Create(implementations);
   ASSERT_TRUE(registry) << registry.error().detail;
+  const auto& ext = *registry->at(*registry->Find("ggml.get_rows.ext")).capability;
+  ASSERT_NE(ext.rung_for, nullptr);
+  std::array rung_operands{
+      llmp::execution::OperandFormat{.operand = 0, .encoding = fmt::Encoding::kI32}};
+  llmp::execution::CapabilityQuery rung_query{.operands = rung_operands};
+  for (const auto encoding :
+       {fmt::Encoding::kI32, fmt::Encoding::kF32, fmt::Encoding::kF16, fmt::Encoding::kBF16}) {
+    rung_operands[0].encoding = encoding;
+    EXPECT_EQ(ext.rung_for(rung_query), llmp::execution::Rung::kNative);
+  }
+  rung_operands[0].encoding = fmt::Encoding::kQ8_0;
+  EXPECT_EQ(ext.rung_for(rung_query), llmp::execution::Rung::kOnChipDecode);
   const pl::DeviceFacts mixed_device{.device_class = "sm_121", .arch = 121};
   const pl::Policy policy;
   const pl::SelectionView view(*registry, mixed_device, policy, false, false);
@@ -311,8 +779,11 @@ TEST(DecodeSelectedRows, LoweringRequiresTheDirectSideInputAndPagedComponent) {
       EXPECT_EQ(lowered->inputs[0].component, kWeight.component);
     } else {
       ASSERT_FALSE(lowered);
-      EXPECT_EQ(lowered.error().detail,
-                "selected rows require a complete split table and its checked side-row input");
+      EXPECT_TRUE(
+          lowered.error().detail ==
+              "selected rows require a complete split table and its checked side-row input" ||
+          lowered.error().detail ==
+              "resident rows require matching batched I32 IDs and F32 output");
     }
   }
 }
@@ -420,6 +891,7 @@ struct Lifetime {
   std::shared_ptr<en::ExecutionMetadataAllowance> payment;
   std::shared_ptr<const kg::SelectedSource> selected;
   std::unique_ptr<kg::GgmlBackend> backend;
+  kg::SelectedWorkspace selected_state{};
   std::unique_ptr<en::ModelRunner> runner;
   std::vector<en::PagedModel*> entered;
   std::filesystem::path root;
@@ -559,9 +1031,24 @@ void PagedCase(int malformed) {
   config.weight_address = [weight_owner](const ir::WeightRef& ref, Role part) {
     return ref == kWeight && part == Role::kTensorScale ? weight_owner->resource_address(2) : 0;
   };
+  const auto selected_bytes = life->backend->persistent_bytes();
+  if (selected_bytes)
+    config.kernel_memory.push_back({.name = "selected kernel state", .bytes = selected_bytes});
+  config.prepare = [owner = life.get(),
+                    selected_bytes](std::span<const std::uint64_t> bases) -> en::Status {
+    if (bases.size() != static_cast<std::size_t>(selected_bytes != 0))
+      return std::unexpected("selected kernel state is not mapped");
+    owner->selected_state = {selected_bytes ? bases[0] : 0, selected_bytes};
+    return {};
+  };
+  config.retire = [owner = life.get()] {
+    owner->backend->LaunchReleased();
+    owner->selected_state = {};
+  };
   config.launch = [owner = life.get()](std::uint64_t) {
     return owner->backend->Launch(
-        {.base = owner->node.pool().base, .size = Bytes(owner->node.pool().bytes)});
+        {.base = owner->node.pool().base, .size = Bytes(owner->node.pool().bytes)},
+        owner->selected_state);
   };
   switch (malformed) {
     case 1:
@@ -585,7 +1072,6 @@ void PagedCase(int malformed) {
     default:
       break;
   }
-  config.retire = [owner = life.get()] { owner->backend->LaunchReleased(); };
   auto source = std::make_unique<RowsSource>(*life->backend);
   auto* source_owner = source.get();
   auto runner = en::ModelRunner::Create(life->node, std::move(config), std::move(source), 0, 0);
@@ -677,4 +1163,285 @@ TEST(DecodeSelectedRowsGpu, IncompleteOrInconsistentTablePartsRefuseBeforePlanni
     if (::testing::Test::HasFailure()) return;
   }
 }
+
+// Two actual model runners retain their EXL3 launches simultaneously. Their
+// selected state belongs to pinned per-model kernel memory, while their shared
+// scratch is deliberately evicted between every model activation.
+constexpr std::uint32_t kExlWidth = 128;
+fmt::TensorFormat ExlFormat() {
+  return {.encoding = fmt::Encoding::kExl3Trellis,
+          .params = {.k_bits = 4, .codebook = fmt::Exl3Codebook::kMcg},
+          .layout = fmt::Layout::kExl3Tiles,
+          .shape = ir::ShapeOf({kExlWidth, kExlWidth})};
+}
+constexpr std::array kExlParts{Role::kCodes, Role::kInputSigns, Role::kOutputSigns,
+                               Role::kCodebookMarker};
+constexpr std::array kExlNames{"trellis", "suh", "svh", "mcg"};
+pl::StepShape ExlShape(std::uint32_t past = 0) {
+  auto shape = Shape(past);
+  shape.segments[0].rows = shape.segments[0].outputs = 1;
+  return shape;
+}
+std::filesystem::path MakeExlArtifact(const std::filesystem::path& root) {
+  ts::V1Plan plan;
+  plan.spec = R"({"pipeline":"llm","stages":[],"version":1})"
+              "\n";
+  for (std::size_t p = 0; p < kExlParts.size(); ++p)
+    plan.groups.push_back(
+        {.kind = llmp::artifact::GroupKind::kGlobal,
+         .resources = {{.name = kExlNames[p], .format = ExlFormat(), .part = kExlParts[p]}},
+         .new_shard = p != 0});
+  auto files = ts::Render(plan);
+  for (std::size_t p = 0; p < files.shards.size(); ++p) {
+    auto& shard = files.shards[p];
+    std::uint64_t header = 0;
+    std::memcpy(&header, shard.data(), sizeof(header));
+    const auto offset = header + 8;
+    const auto bytes = fmt::PartsOf(ExlFormat()).value()[p].bytes;
+    std::fill_n(shard.data() + offset, bytes, char{0});
+    if (p == 0) {
+      for (std::size_t i = 0; i < bytes; ++i)
+        shard[offset + i] = static_cast<char>((i * 73U + 19U) & 255U);
+    } else if (p == 1 || p == 2) {
+      constexpr std::uint16_t one = 0x3c00;
+      for (std::size_t i = 0; i < bytes; i += sizeof(one))
+        std::memcpy(shard.data() + offset + i, &one, sizeof(one));
+    }
+    llmp::base::Sha256 hash;
+    hash.Update(std::string_view(shard).substr(offset));
+    files.index["chunk_sha256"].at(p) = llmp::base::ToHex(hash.Finish());
+  }
+  return ts::Publish(root, files);
+}
+class ExlWorkspaceSource final : public en::StepSource {
+ public:
+  explicit ExlWorkspaceSource(kg::GgmlBackend& backend) : backend_(backend) {}
+  pl::PlanKey KeyBase() const override { return {}; }
+  std::expected<std::unique_ptr<kn::StepProgram>, std::string> Build(
+      const pl::StepShape& shape, const kn::Addresses& addresses) override {
+    if (shape.rows() != 1 || shape.segments.size() != 1)
+      return std::unexpected("EXL3 workspace fixture requires one row and owner");
+    ir::Builder b;
+    b.SetOwner(0);
+    const auto w = b.Weight(ExlFormat(), kWeight);
+    const auto x = b.Input(ir::Dense(fmt::Encoding::kF16, ir::ShapeOf({kExlWidth, 1})));
+    b.Output(b.MatMul(w, x));
+    auto graph = std::move(b).Finish();
+    if (!graph) return std::unexpected(graph.error().detail);
+    const auto backend = backend_.Backend();
+    auto plan = pl::Plan(
+        graph->Clone(), *backend.registry, backend.device, {},
+        {.on_stream = backend.on_stream, .written = backend.written, .within = backend.within});
+    if (!plan) return std::unexpected(plan.error().detail);
+    if (plan->steps.size() != 1 ||
+        !backend.registry->at(plan->steps[0].implementation).name.starts_with("exl3."))
+      return std::unexpected("workspace fixture did not select an actual EXL3 product");
+    const std::array weights{co::StepWeight{.tensor = w,
+                                            .ref = kWeight,
+                                            .parts = {{"trellis", Role::kCodes},
+                                                      {"suh", Role::kInputSigns},
+                                                      {"svh", Role::kOutputSigns},
+                                                      {"mcg", Role::kCodebookMarker}}}};
+    ++builds;
+    return backend_.Lower(
+        {*plan, co::GraphBuildIO{*graph, graph->inputs(), graph->outputs(), weights}, addresses});
+  }
+  std::size_t builds = 0;
+
+ private:
+  kg::GgmlBackend& backend_;
+};
+struct ExlModels {
+  en::PagedNode node{{.compute_streams = 1, .slots = 1, .slot_bytes = en::kPagedExtent}};
+  std::shared_ptr<en::ExecutionMetadataAllowance> payment;
+  std::array<std::unique_ptr<kg::GgmlBackend>, 2> backends;
+  std::array<kg::SelectedWorkspace, 2> state{};
+  std::array<std::unique_ptr<en::ModelRunner>, 2> runners;
+  std::array<ExlWorkspaceSource*, 2> sources{};
+  std::vector<en::PagedModel*> entered;
+  std::filesystem::path root;
+  bool opened = false;
+};
+struct ExlRetire {
+  void operator()(ExlModels* life) const {
+    if (!life) return;
+    if (life->opened) {
+      const auto retired = life->node.TearDown(life->entered);
+      EXPECT_TRUE(retired) << (retired ? "" : retired.error());
+      if (!retired) return;  // retain all borrowers if completion is uncertain
+      for (const auto& selected : life->state) EXPECT_EQ(selected.base, 0U);
+    }
+    std::error_code error;
+    std::filesystem::remove_all(life->root, error);
+    EXPECT_FALSE(error) << error.message();
+    delete life;
+  }
+};
+TEST(DecodeSelectedRowsGpu, RetainedExl3ModelsOwnStateAcrossSwitchAndScratchRemap) {
+  const auto available = llmp::platform::AvailableMemoryBytes();
+  ASSERT_TRUE(available);
+  ASSERT_GE(*available, kDomain + (6ULL << 30));
+  std::unique_ptr<ExlModels, ExlRetire> life(new ExlModels);
+  ASSERT_TRUE(life->node.Open());
+  life->opened = true;
+  life->node.SetHostFloor(0);
+  auto payment = en::ExecutionMetadataAllowance::Admit(life->node.catalog(), life->node.domain(),
+                                                       kMetadata, *available, 6ULL << 30);
+  ASSERT_TRUE(payment) << payment.error();
+  life->payment = *payment;
+  ASSERT_TRUE(life->payment->Charge(8ULL << 20));
+  life->root = std::filesystem::path("scratch") / "retained-exl3-workspaces";
+  const auto artifact = MakeExlArtifact(life->root);
+  const std::array<std::pair<std::uint32_t, md::StateContract>, 1> state{
+      {{0,
+        {.tensors = {{.name = "fixture-state",
+                      .kind = md::StateKind::kRecurrent,
+                      .encoding = md::Encoding::kF32,
+                      .cell_bytes = 4,
+                      .cells = md::CellRule::kFixed,
+                      .window_or_ratio = 1,
+                      .rollback = md::Rollback::kSnapshot}}}}}};
+  const auto layout = md::Layout(state, kContext, 1);
+  ASSERT_TRUE(layout) << layout.error();
+  std::uint64_t activation_bytes = 0, pool_bytes = en::kPagedExtent;
+  for (std::size_t model = 0; model < 2; ++model) {
+    auto backend =
+        kg::GgmlBackend::Create(0, life->node.execution(), life->node.stream(0), nullptr, {});
+    ASSERT_TRUE(backend) << backend.error();
+    life->backends[model] = std::move(*backend);
+    const auto persistent = life->backends[model]->persistent_bytes();
+    ASSERT_EQ(persistent, 21'015'040U);
+    auto weights = std::make_unique<en::PagedWeights>();
+    ASSERT_TRUE(weights->Open(artifact));
+    auto* paged = weights.get();
+    en::RunnerConfig config;
+    config.slots = {.model = std::format("retained EXL3 {}", model),
+                    .slots = 1,
+                    .stages = {{.name = "target", .layout = *layout}},
+                    .read_align = 256,
+                    .spill_place = {},
+                    .spill_directory = life->root,
+                    .invalidate = {},
+                    .drop_plans = {}};
+    config.weights.push_back({.weights = std::move(weights),
+                              .places = std::vector(4, en::GroupPlace::kDevice),
+                              .slabs = {}});
+    config.setup_shapes = {ExlShape()};
+    config.kernel_memory.push_back({.name = "retained selected state", .bytes = persistent});
+    config.prepare = [owner = life.get(), model,
+                      persistent](std::span<const std::uint64_t> bases) -> en::Status {
+      if (bases.size() != 1) return std::unexpected("selected state was not separately funded");
+      owner->state[model] = {bases[0], persistent};
+      return {};
+    };
+    config.retire = [owner = life.get(), model] {
+      owner->backends[model]->LaunchReleased();
+      owner->state[model] = {};
+    };
+    config.launch = [owner = life.get(), model](std::uint64_t) {
+      return owner->backends[model]->Launch(
+          {.base = owner->node.pool().base, .size = Bytes(owner->node.pool().bytes)},
+          owner->state[model]);
+    };
+    config.weight_address = [paged](const ir::WeightRef& ref, Role role) -> std::uint64_t {
+      const auto part = std::ranges::find(kExlParts, role);
+      return ref == kWeight && part != kExlParts.end()
+                 ? paged->resource_address(static_cast<std::uint32_t>(part - kExlParts.begin()))
+                 : 0;
+    };
+    auto source = std::make_unique<ExlWorkspaceSource>(*life->backends[model]);
+    life->sources[model] = source.get();
+    auto runner = en::ModelRunner::Create(life->node, std::move(config), std::move(source),
+                                          static_cast<int>(model), 0);
+    ASSERT_TRUE(runner) << runner.error();
+    life->runners[model] = std::move(*runner);
+    life->entered.push_back(life->runners[model].get());
+    const auto setup = life->runners[model]->Setup();
+    ASSERT_TRUE(setup) << setup.error();
+    activation_bytes = std::max(activation_bytes, life->runners[model]->activations_needed());
+    pool_bytes = std::max(pool_bytes, life->runners[model]->pool_needed());
+  }
+  ASSERT_NE(life->state[0].base, life->state[1].base);
+  // Pinned backing is charged in whole 2MiB extents PER retained model.
+  const auto paid =
+      2 * en::kPagedExtent * ((life->state[0].bytes + en::kPagedExtent - 1) / en::kPagedExtent);
+  EXPECT_EQ(paid, 44ULL << 20);
+  ASSERT_TRUE(life->node.MapWorkspace(activation_bytes, pool_bytes, 0, true));
+  for (std::size_t model = 0; model < 2; ++model) {
+    const auto& own = life->state[model];
+    EXPECT_TRUE(own.base + own.bytes <= life->node.pool().base ||
+                life->node.pool().base + life->node.pool().bytes <= own.base);
+    EXPECT_FALSE(life->backends[model]->Launch(
+        {.base = life->node.pool().base, .size = Bytes(life->node.pool().bytes)}, {}));
+    EXPECT_FALSE(life->backends[model]->Launch(
+        {.base = life->node.pool().base, .size = Bytes(life->node.pool().bytes)},
+        {life->node.pool().base, own.bytes}));
+    EXPECT_FALSE(life->backends[model]->Launch(
+        {.base = life->node.pool().base, .size = Bytes(life->node.pool().bytes)},
+        {own.base, own.bytes - 1}));
+  }
+  ASSERT_TRUE(life->node.Start(Bytes(kDomain)));
+  for (auto& runner : life->runners) {
+    ASSERT_TRUE(runner->Register());
+    ASSERT_TRUE(runner->Bind());
+  }
+  life->node.Run();
+  std::array<std::size_t, 2> builds{};
+  std::array<std::vector<std::byte>, 2> first;
+  for (std::size_t turn = 0; turn < 4; ++turn) {
+    const auto model = turn % 2;
+    auto& runner = *life->runners[model];
+    const std::array<std::uint32_t, 1> slot{0};
+    ASSERT_TRUE(runner.slots().SelectSlots(slot));
+    const auto done = life->node.WithRequest(
+        0, runner.slots().execution(), "retained EXL3 switch", [&]() -> en::Status {
+          std::array<std::uint16_t, kExlWidth> input;
+          input.fill(model == 0 ? 0x3c00 : 0x3800);
+          const en::SegmentWork work{};
+          auto ran = runner.RunStep({.shape = ExlShape(static_cast<std::uint32_t>(turn / 2)),
+                                     .work = std::span(&work, 1),
+                                     .step_bytes = std::as_bytes(std::span(input)),
+                                     .ahead = {}});
+          if (!ran) return std::unexpected(ran.error().what);
+          if (ran->outputs.size() != 1 || ran->outputs[0].size() != kExlWidth * sizeof(float))
+            return std::unexpected("EXL3 switch returned an unexpected output extent");
+          bool nonzero = false;
+          for (std::size_t i = 0; i < kExlWidth; ++i) {
+            float value = 0;
+            std::memcpy(&value, ran->outputs[0].data() + i * sizeof(value), sizeof(value));
+            if (!std::isfinite(value))
+              return std::unexpected("EXL3 switch returned nonfinite output");
+            nonzero |= value != 0;
+          }
+          if (!nonzero) return std::unexpected("EXL3 switch did not produce a nonzero product");
+          if (turn < 2) {
+            first[model] = ran->outputs[0];
+            builds[model] = life->sources[model]->builds;
+          } else if (first[model] != ran->outputs[0] ||
+                     builds[model] != life->sources[model]->builds) {
+            return std::unexpected(
+                "scratch remap changed retained EXL3 output or rebuilt its plan");
+          }
+          return {};
+        });
+    ASSERT_TRUE(done) << done.error();
+    const auto workspace = life->node.workspace_extents();
+    ASSERT_TRUE(life->node.Evict(workspace));
+    const auto checked = life->node.Call(
+        [&]() -> en::Status {
+          for (const auto extent : workspace)
+            if (life->node.catalog().Describe(extent)->state ==
+                llmp::catalog::ExtentState::kResident)
+              return std::unexpected(
+                  "discardable scratch remained resident across the model switch");
+          return {};
+        },
+        "check scratch eviction");
+    ASSERT_TRUE(checked) << checked.error();
+  }
+  ASSERT_TRUE(life->node.TearDown(life->entered));
+  life->opened = false;
+  for (const auto& selected : life->state) EXPECT_EQ(selected.base, 0U);
+}
+
 }  // namespace

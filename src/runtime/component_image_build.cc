@@ -52,34 +52,7 @@ std::uint64_t SourceMappingBytes(const md::ImageProfile& p) {
       std::uint64_t{p.text.layers} * 17 + 2 + std::uint64_t{p.denoiser.blocks} * 17 + 19 + 258;
   return roles * 4096 + components * 8192;
 }
-bool Charge(const std::shared_ptr<en::ExecutionMetadataAllowance>& allowance, std::uint64_t bytes,
-            en::PagedNode* node = nullptr, std::uint64_t cap = 0) {
-  if (!allowance) return false;
-  if (bytes <= allowance->capacity() - allowance->used()) return allowance->Charge(bytes);
-  if (!node || cap == 0 || bytes > UINT64_MAX - allowance->used()) return false;
-  auto needed = bytes + allowance->used();
-  if (needed > UINT64_MAX - (en::kPagedExtent - 1)) return false;
-  needed = (needed + en::kPagedExtent - 1) / en::kPagedExtent * en::kPagedExtent;
-  const auto grow = [&]() -> Status {
-    const auto budget = node->open_for_setup() ? cap : std::min(cap, node->budget().value());
-    return allowance->Grow(node->catalog(), node->domain(), needed, budget,
-                           platform::AvailableMemoryBytes().value_or(0), kUncountedMargin);
-  };
-  if (node->open_for_setup()) {
-    if (!grow()) return false;
-  } else {
-    std::optional<Status> completed;
-    const auto posted = node->Call(
-        [&]() -> Status {
-          completed = grow();
-          return *completed;
-        },
-        "growing retained image construction payment");
-    // A completed catalog mutation remains authoritative after task cancellation.
-    if (!(completed ? *completed : posted)) return false;
-  }
-  return allowance->Charge(bytes);
-}
+using serving_support::ChargeExecutionMetadata;
 struct Paid {
   std::shared_ptr<en::ExecutionMetadataAllowance> allowance;
   std::uint64_t bytes = 0;
@@ -89,7 +62,7 @@ struct Paid {
     if (allowance) allowance->Release(bytes);
   }
   bool Add(std::uint64_t n) {
-    if (n > UINT64_MAX - bytes || !Charge(allowance, n, node, cap)) return false;
+    if (n > UINT64_MAX - bytes || !ChargeExecutionMetadata(allowance, n, node, cap)) return false;
     bytes += n;
     return true;
   }
@@ -159,6 +132,7 @@ struct ImageGenerationModel {
   std::array<std::vector<std::uint32_t>, 3> resource_ids;
   std::array<en::PagedWeights*, 3> weights{};
   std::array<std::uint64_t, 3> compiler_limits{};
+  kg::SelectedWorkspace selected_state{};
   std::unique_ptr<kg::CublasHandle> cublas;
   std::unique_ptr<kg::GgmlBackend> backend;
 };
@@ -321,7 +295,8 @@ std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
   for (auto id : source.prompt)
     if (id < 0 || static_cast<std::uint32_t>(id) >= p.text.vocab)
       return Error("image text input ID lies outside the actual source vocabulary");
-  if (!Charge(construction, kRequestOwnerBytes, construction_node, construction_cap))
+  if (!ChargeExecutionMetadata(construction, kRequestOwnerBytes, construction_node,
+                               construction_cap))
     return Error("image request owner is unpaid");
   auto held = std::make_shared<ImageRequestOwner>();
   held->paid.allowance = construction;
@@ -448,7 +423,8 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
   const auto channels = p.vae.z_dim;
   const auto geometry_bytes = SourceMappingBytes(p) + 2 * sizeof(ImageGeometryOwner) +
                               2 * sizeof(ImageGeometry) + 6 * sizeof(ImageStage) + 4096;
-  if (!Charge(construction, geometry_bytes, source->construction_node, source->construction_cap))
+  if (!ChargeExecutionMetadata(construction, geometry_bytes, source->construction_node,
+                               source->construction_cap))
     return Error("image geometry mapping is not prepaid");
   auto held = std::make_shared<ImageGeometryOwner>();
   held->paid.allowance = construction;
@@ -496,7 +472,8 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
     auto graph = co::BuildSpatialStep(
         mappings[i]->spec, tables, owners,
         {[construction, source](std::uint64_t bytes) {
-           return Charge(construction, bytes, source->construction_node, source->construction_cap);
+           return ChargeExecutionMetadata(construction, bytes, source->construction_node,
+                                          source->construction_cap);
          },
          [construction](std::uint64_t bytes) { construction->Release(bytes); }},
         {.links = mappings[i]->links,
@@ -587,7 +564,8 @@ EngineImageBuild ComponentImageGenerationBuild(
       if (id < 0 || static_cast<std::uint32_t>(id) >= p.text.vocab)
         return Error("image text input ID lies outside the actual source vocabulary");
     const auto owner_bytes = SourceOwnerBytes(p);
-    if (!Charge(construction, owner_bytes, source->construction_node, source->construction_cap))
+    if (!ChargeExecutionMetadata(construction, owner_bytes, source->construction_node,
+                                 source->construction_cap))
       return Error("image source mapping is not prepaid");
     auto held = std::make_shared<ImageGenerationModel>();
     held->paid.allowance = construction;
@@ -649,7 +627,8 @@ EngineImageBuild ComponentImageGenerationBuild(
     auto declared = held->backend->Declare(
         tuples, blas_bytes,
         [construction, source](std::uint64_t bytes) {
-          return Charge(construction, bytes, source->construction_node, source->construction_cap);
+          return ChargeExecutionMetadata(construction, bytes, source->construction_node,
+                                         source->construction_cap);
         },
         [construction](std::uint64_t bytes) { construction->Release(bytes); });
     if (!declared) return Error(declared.error());
@@ -681,8 +660,14 @@ EngineImageBuild ComponentImageGenerationBuild(
                              .slabs = {}});
     }
     out.kernel_memory.push_back({.name = "image shared cuBLAS", .bytes = blas_bytes});
-    out.prepare = [&node, owner, held, blas_bytes](std::span<const std::uint64_t> bases) -> Status {
-      if (bases.size() != 1) return Error("image cuBLAS workspace is absent");
+    const auto selected_bytes = held->backend->persistent_bytes();
+    if (selected_bytes)
+      out.kernel_memory.push_back({.name = "image selected kernel state", .bytes = selected_bytes});
+    out.prepare = [&node, owner, held, blas_bytes,
+                   selected_bytes](std::span<const std::uint64_t> bases) -> Status {
+      if (bases.size() != 1U + static_cast<std::size_t>(selected_bytes != 0))
+        return Error("image kernel workspaces are absent");
+      held->selected_state = {selected_bytes ? bases[1] : 0, selected_bytes};
       auto blas = kg::CublasHandle::Create(0, node.execution(),
                                            node.stream(static_cast<std::uint32_t>(owner)),
                                            {.base = bases[0], .size = base::Bytes(blas_bytes)});
@@ -703,13 +688,15 @@ EngineImageBuild ComponentImageGenerationBuild(
     out.launch = [&node,
                   held]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
       auto made = held->backend->Launch(
-          {.base = node.pool().base, .size = base::Bytes(node.pool().capacity_bytes)});
+          {.base = node.pool().base, .size = base::Bytes(node.pool().capacity_bytes)},
+          held->selected_state);
       if (made && static_cast<kg::GgmlStepLaunch*>(made->get())->context().lanes() != 0)
         return std::unexpected("an image launch has concurrent lanes");
       return made;
     };
     out.retire = [held] {
       held->backend->LaunchReleased();
+      held->selected_state = {};
       held->cublas.reset();
     };
     return out;
@@ -755,7 +742,7 @@ std::expected<ImageGenerationRequest, std::string> ReadImageInput(
         __builtin_add_overflow(initial, doubled, &initial))
       return Error("image input working bound overflows");
   }
-  if (!Charge(owner->paid.allowance, initial, owner->paid.node, owner->paid.cap))
+  if (!ChargeExecutionMetadata(owner->paid.allowance, initial, owner->paid.node, owner->paid.cap))
     return Error("image input construction exceeds available memory");
   auto keep = std::make_shared<ImageInputOwner>();
   keep->paid.allowance = owner->paid.allowance;

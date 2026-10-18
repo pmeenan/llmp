@@ -27,6 +27,7 @@
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
+#include "kernels/ggml/float_route.h"
 #include "kernels/ggml/gemma_moe.h"
 #include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
@@ -1306,15 +1307,61 @@ bool AcceptsDsv4HcPost(const ex::CapabilityQuery& q) {
          ShapedOperand(q, kOut + 1, {16384, tokens, 1, 1});
 }
 
-// llmp.mxfp8.mul_mat_vec: up to kMxfp8VecColumns columns (a wave's to
-// kMxfp8VecWaveColumns).
+// The native competitors' known physical facts, before a binding exists.
+bool KnownAligned(const ex::OperandFormat& operand, std::uint64_t bytes) {
+  return !operand.memory ||
+         (operand.memory->view_offset % bytes == 0 &&
+          (operand.memory->root_alignment == 0 || (operand.memory->root_alignment >= bytes &&
+                                                   operand.memory->root_alignment % bytes == 0)));
+}
+bool NativePacked(const ex::OperandFormat& operand, std::uint64_t bytes) {
+  if (!operand.memory) return true;
+  for (std::size_t d = 0; d < 4; ++d) {
+    if (operand.memory->nb[d] != bytes || __builtin_mul_overflow(bytes, operand.ne[d], &bytes))
+      return false;
+  }
+  return true;
+}
+bool NativeRows(const ex::CapabilityQuery& q) {
+  const auto* table = Operand(q, 0);
+  const auto* ids = Operand(q, 1);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  return table && ids && table->ne[0] && table->ne[1] && ids->ne[0] && table->ne[2] == 1 &&
+         table->ne[3] == 1 && ids->ne[1] == 1 && ids->ne[2] == 1 && ids->ne[3] == 1 &&
+         table->ne[1] <= INT32_MAX && ids->ne[0] <= 65535ULL * 1024 && NativePacked(*ids, 4) &&
+         KnownAligned(*ids, 4) &&
+         (!out ||
+          (out->encoding == Encoding::kF32 && out->layout == Layout::kDense &&
+           out->ne == std::array{table->ne[0], ids->ne[0], std::uint64_t{1}, std::uint64_t{1}} &&
+           NativePacked(*out, 4) && KnownAligned(*out, 4)));
+}
 bool AcceptsMxfp8Vec(const ex::CapabilityQuery& q) {
-  return Built(q) && q.rows >= 1 && q.rows <= static_cast<std::uint64_t>(kMxfp8VecWaveColumns) &&
-         q.k % 32 == 0;
+  if (!Built(q) || q.rows < 1 || q.rows > kMxfp8VecWaveColumns || q.k == 0 || q.k % 32 ||
+      q.k > INT32_MAX || q.n == 0 || q.n > INT32_MAX - 8)
+    return false;
+  const auto p = ParamsOf<ir::ProductParams>(q);
+  if (p && p->hint != ir::ProductHint::kNone) return false;
+  const auto* w = Operand(q, 0);
+  const auto* x = Operand(q, 1);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  if (!w || !x) return false;
+  // Queries without logical extents carry no physical geometry yet.
+  if (w->ne[0] == 0 || x->ne[0] == 0) return true;
+  if (w->ne != std::array{q.k, q.n, std::uint64_t{1}, std::uint64_t{1}} ||
+      x->ne != std::array{q.k, q.rows, std::uint64_t{1}, std::uint64_t{1}} ||
+      (w->memory && (w->memory->is_view || w->memory->view_offset != 0)) || !KnownAligned(*x, 16))
+    return false;
+  if (x->memory &&
+      (x->memory->nb[0] != 4 || x->memory->nb[1] % 16 || x->memory->nb[1] / 4 > INT32_MAX))
+    return false;
+  return !out || (out->ne == std::array{q.n, q.rows, std::uint64_t{1}, std::uint64_t{1}} &&
+                  NativePacked(*out, 4) && KnownAligned(*out, 4));
 }
 // llmp.mxfp8.gemm.cutlass: past the vector product's columns, on the GB10.
 bool AcceptsMxfp8Gemm(const ex::CapabilityQuery& q) {
   return Built(q) && q.arch == kCutlassArch &&
+         (q.features & (ex::kFp8Mma | ex::kBlockScaledMma)) ==
+             (ex::kFp8Mma | ex::kBlockScaledMma) &&
          q.rows > static_cast<std::uint64_t>(kMxfp8VecWaveColumns) && q.k % 128 == 0;
 }
 bool AcceptsMxfp8Quantize(const ex::CapabilityQuery& q) {
@@ -1324,7 +1371,14 @@ bool AcceptsMxfp8Quantize(const ex::CapabilityQuery& q) {
 // llmp.nvfp4.get_rows: CheckNvfp4Rows' rows of 16 to 1,024 values (a
 // thread a value) and its grid of ids.
 bool AcceptsNvfp4Rows(const ex::CapabilityQuery& q) {
-  return Built(q) && Ne(q, 0, 0) % 16 == 0 && Ne(q, 0, 0) >= 16 && Ne(q, 0, 0) <= 1024 &&
+  const auto* table = Operand(q, 0);
+  const auto* ids = Operand(q, 1);
+  // This kernel reads one global scale, unlike the general decoder's
+  // optional per-stack scales and batched tables.
+  return Built(q) && NativeRows(q) && table && ids && table->params.tensor_scale &&
+         table->stacked == 1 &&
+         (!table->memory || (!table->memory->is_view && table->memory->view_offset == 0)) &&
+         Ne(q, 0, 0) % 16 == 0 && Ne(q, 0, 0) >= 16 && Ne(q, 0, 0) <= 1024 &&
          Ne(q, 0, 1) <= static_cast<std::uint64_t>(INT32_MAX) &&
          Ne(q, 1, 0) <= std::uint64_t{65535} * 1024;
 }
@@ -1336,7 +1390,60 @@ bool AcceptsQRows(const ex::CapabilityQuery& q) {
   const bool type = t->encoding == Encoding::kQ4_0 || t->encoding == Encoding::kQ4_1 ||
                     t->encoding == Encoding::kQ5_0 || t->encoding == Encoding::kQ5_1 ||
                     t->encoding == Encoding::kQ8_0 || t->encoding == Encoding::kIQ4_NL;
-  return type && t->ne[0] % 32 == 0 && t->ne[0] % 256 != 0 && t->ne[0] <= 1024;
+  if (!type || !NativeRows(q) || t->ne[0] % 32 || t->ne[0] % 256 == 0 || t->ne[0] > 1024)
+    return false;
+  const auto& native = *format::Info(t->encoding).ggml;
+  if (!KnownAligned(*t, t->encoding == Encoding::kQ4_1 || t->encoding == Encoding::kQ5_1 ? 4 : 2))
+    return false;
+  if (!t->memory) return true;
+  const auto stride = t->ne[0] / native.block_elements * native.block_bytes;
+  return t->memory->nb == std::array{std::uint64_t{native.block_bytes}, stride, stride * t->ne[1],
+                                     stride * t->ne[1]};
+}
+bool AcceptsNvfp4Experts(const ex::CapabilityQuery& q) {
+  const auto* w = Operand(q, 0);
+  const auto* x = Operand(q, 1);
+  const auto* ids = Operand(q, 2);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  // GGML's NVFP4 tensor contains only Data. Optional per-stack global
+  // scales are separate physical parts consumed by the generic decoder.
+  if (!Built(q) || !w || w->params.tensor_scale || !x || !ids ||
+      (out && (out->encoding != Encoding::kF32 || out->layout != Layout::kDense)))
+    return false;
+  if (!w->ne[0] || !x->ne[0] || !ids->ne[0]) return true;
+  const auto indexed = [](const ex::OperandFormat& operand, std::uint64_t unit, std::uint64_t block,
+                          std::uint64_t alignment, std::uint64_t tail) {
+    std::uint64_t span = unit;
+    for (const auto dim : operand.ne)
+      if (dim == 0 || dim > INT32_MAX) return false;
+    if (!KnownAligned(operand, alignment)) return false;
+    if (!operand.memory) return true;
+    if (operand.memory->nb[0] != unit || operand.ne[0] % block ||
+        operand.memory->nb[1] < operand.ne[0] / block * unit)
+      return false;
+    for (std::size_t d = 0; d < 4; ++d) {
+      const auto stride = operand.memory->nb[d];
+      std::uint64_t step = 0;
+      if (stride % unit || stride / unit > INT32_MAX ||
+          __builtin_mul_overflow(d == 0 ? operand.ne[d] / block - 1 : operand.ne[d] - 1, stride,
+                                 &step) ||
+          __builtin_add_overflow(span, step, &span))
+        return false;
+    }
+    return span / unit <= static_cast<std::uint64_t>(INT32_MAX) + (block > 1 ? 1U : 0U) - tail;
+  };
+  const auto& native = *format::Info(Encoding::kNvfp4).ggml;
+  const auto tail = (512 - w->ne[0] % 512) % 512 / native.block_elements;
+  if (!indexed(*w, native.block_bytes, native.block_elements, 16, tail) ||
+      !indexed(*x, 4, 1, 4, 0) || !indexed(*ids, 4, 1, 4, 0) || (out && !indexed(*out, 4, 1, 4, 0)))
+    return false;
+  if ((x->memory && (x->memory->nb[1] == 0 || x->memory->nb[2] % x->memory->nb[1])) ||
+      (out && out->memory && (out->memory->nb[1] == 0 || out->memory->nb[2] % out->memory->nb[1])))
+    return false;
+  return w->ne[3] == 1 && x->ne[3] == 1 && ids->ne[2] == 1 && ids->ne[3] == 1 &&
+         w->ne[0] == x->ne[0] && (x->ne[1] == 1 || x->ne[1] == ids->ne[0]) &&
+         x->ne[2] == ids->ne[1] && ids->ne[0] <= w->ne[2] &&
+         (!out || out->ne == std::array{w->ne[1], ids->ne[0], ids->ne[1], std::uint64_t{1}});
 }
 // The hyper-connections' kernels: at most 8 streams, widths of 8.
 bool AcceptsHcPrep(const ex::CapabilityQuery& q) {
@@ -1872,26 +1979,69 @@ struct Entry {
   std::string_view accepts;
 };
 
+ex::Rung GetRowsRung(const ex::CapabilityQuery& q) {
+  const auto* table = Operand(q, 0);
+  return table && std::ranges::contains(kQuantized, table->encoding) ? ex::Rung::kOnChipDecode
+                                                                     : ex::Rung::kNative;
+}
+
 constexpr ex::Capability Cap(ir::OpKey op, std::span<const Rule> rules,
                              bool (*accepts)(const ex::CapabilityQuery&), bool row_invariant,
                              std::string_view group = {}, std::uint16_t priority = 0,
                              ex::ShapeRule shape = {}, std::uint16_t batch = 0,
                              std::span<const std::string_view> launches = {},
                              bool needs_state_span = false) {
-  return {.op = op,
-          .operands = rules,
-          .shape = shape,
-          .rung = ex::Rung::kNative,
-          .expansion = ex::Expansion::kNone,
-          .lossy = false,
-          .row_invariant = row_invariant,
-          .capturable = true,
-          .group = group,
-          .priority = priority,
-          .batch = batch,
-          .accepts = accepts,
-          .launches = launches,
-          .needs_state_span = needs_state_span};
+  ex::Capability result{
+      .op = op,
+      .operands = rules,
+      .shape = shape,
+      .rung = ex::Rung::kNative,
+      .expansion = ex::Expansion::kNone,
+      .lossy = false,
+      .row_invariant = row_invariant,
+      .capturable = true,
+      .group = group,
+      .priority = static_cast<std::uint16_t>(
+          priority + ((op.op == Op::kMatMul || op.op == Op::kMatMulId || op.op == Op::kGetRows ||
+                       op.op == Op::kAdd || op.fused == FusedKind::kMatMulGlu ||
+                       op.fused == FusedKind::kMatMulIdGlu)
+                          ? 8
+                          : 0)),
+      .batch = batch,
+      .accepts = accepts,
+      .launches = launches,
+      .needs_state_span = needs_state_span};
+  const bool reads_quantized = op.op == Op::kMatMul || op.op == Op::kMatMulId ||
+                               op.op == Op::kGetRows || op.op == Op::kAttention ||
+                               (op.op == Op::kFused && op.fused != FusedKind::kGroupedStores &&
+                                op.fused != FusedKind::kRopeStore);
+  if (reads_quantized) {
+    for (const auto& rule : rules) {
+      if (rule.operand >= ex::kOutputOperand) continue;
+      for (const auto encoding : rule.encodings)
+        if (std::ranges::contains(kQuantized, encoding) || encoding == Encoding::kNvfp4 ||
+            encoding == Encoding::kMxfp8 || encoding == Encoding::kMxfp4 ||
+            encoding == Encoding::kAffine)
+          result.rung = ex::Rung::kOnChipDecode;
+    }
+  }
+  if (op == ir::Primitive(Op::kGetRows) && rules.empty()) {
+    result.rung = ex::Rung::kOnChipDecode;
+    result.rung_for = &GetRowsRung;
+  }
+  if (group == "ggml.mul_mat" && std::ranges::any_of(rules, [](const Rule& r) {
+        return r.operand == 0 && std::ranges::contains(r.encodings, Encoding::kF16);
+      })) {
+    result.expansion = ex::Expansion::kDenseF32Accumulation;
+    result.expands = &FloatProductUsesCublas;
+  }
+  return result;
+}
+
+constexpr ex::Capability NativeBlockScaled(ex::Capability cap, std::uint32_t features) {
+  cap.rung = ex::Rung::kNative;
+  cap.device.needs = features;
+  return cap;
 }
 
 constexpr ex::Capability F32MaskedAttention() {
@@ -2228,7 +2378,9 @@ const std::array kEntries = {
           Cap(P(Op::kMatMul), kMxfp8Vec, &AcceptsMxfp8Vec, false, {}, 4),
           "; selectable for the build's SASS architectures: up to 16 columns"},
     Entry{kMxfp8GemmName, Operation::kMatMul,
-          Cap(P(Op::kMatMul), kMxfp8Gemm, &AcceptsMxfp8Gemm, false, {}, 4, {}, 0, kMxfp8GemmSteps),
+          NativeBlockScaled(Cap(P(Op::kMatMul), kMxfp8Gemm, &AcceptsMxfp8Gemm, false, {}, 4, {}, 0,
+                                kMxfp8GemmSteps),
+                            ex::kFp8Mma | ex::kBlockScaledMma),
           "; selectable on sm_121 past 16 columns, K of whole 128-value rows"},
     Entry{kMxfp8QuantizeName, Operation::kQuantize,
           Cap(P(Op::kPrepare), kMxfp8Prepare, &AcceptsMxfp8Quantize, true),
@@ -2321,8 +2473,9 @@ const std::array kEntries = {
           "; selectable for the build's SASS architectures: a normalized softmax top-k of up to "
           "32 of up to 1,024 experts"},
     Entry{kMoeExpertsName, Operation::kMulMatId,
-          Cap(F(FusedKind::kMoeExperts), kCutlassExperts, &AcceptsMoeExperts, false, {}, 0, {}, 0,
-              kMoeExpertsSteps),
+          NativeBlockScaled(Cap(F(FusedKind::kMoeExperts), kCutlassExperts, &AcceptsMoeExperts,
+                                false, {}, 0, {}, 0, kMoeExpertsSteps),
+                            ex::kFp4Mma | ex::kBlockScaledMma),
           "; selectable on sm_121: the CUTLASS layout's experts with their scales, SwiGLU"},
     Entry{kMoeGluName, Operation::kMoeGlu,
           Cap(F(FusedKind::kMoeGlu), kF32Binary, &AcceptsMoeGlu, true), kBuilt},
@@ -2350,7 +2503,8 @@ const std::array kEntries = {
               kVecQSteps),
           "; selectable for the build's SASS architectures: up to 64 (token, slot) pairs"},
     Entry{kMulMatIdNvfp4Name, Operation::kMulMatId,
-          Cap(P(Op::kMatMulId), kNvfp4Experts, &AcceptsAny, false, {}, 0, {}, 0, kMulMatIdSteps),
+          Cap(P(Op::kMatMulId), kNvfp4Experts, &AcceptsNvfp4Experts, false, {}, 0, {}, 0,
+              kMulMatIdSteps),
           kBuilt},
     // Block-quantized KV caches (kv_quant.h).
     Entry{kFlashAttnVecQ8Name, Operation::kFlashAttn,

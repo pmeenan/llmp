@@ -464,6 +464,10 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
              }}});
     if (!made) return std::unexpected(made.error());
     source->backend = std::move(*made);
+    if (auto x = source->resources->OpenSelectedWorkspace("selected kernel state",
+                                                          source->backend->persistent_bytes());
+        !x)
+      return x;
     auto target_weights = std::make_unique<en::PagedWeights>();
     if (auto x = target_weights->Open(target); !x) return x;
     en::PagedWeights* tw = target_weights.get();
@@ -525,7 +529,9 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
     config.launch =
         [&](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return source->backend->Launch(
-          {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)});
+          {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)},
+          {.base = source->resources->selected_workspace().base,
+           .bytes = source->resources->selected_workspace().bytes});
     };
     config.weight_address = [&place, tw, aw](const llmp::ir::WeightRef& ref,
                                              llmp::format::PartRole) -> std::uint64_t {

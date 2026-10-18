@@ -15,7 +15,9 @@
 #include "components/step.h"
 #include "ir/builder.h"
 #include "kernels/common/step_program.h"
+#include "kernels/decode/implementations.h"
 #include "kernels/decode/operand.h"
+#include "kernels/decode/products.h"
 #include "kernels/decode/selected_grouped.h"
 #include "kernels/decode/selected_rows.h"
 #include "kernels/ggml/implementations.h"
@@ -80,7 +82,7 @@ TEST(DecodeSelectedGrouped, StackedPaddedExpertsRetainEveryPhysicalPart) {
   auto source = de::GroupedSelectedSource();
   ASSERT_TRUE(source);
   const auto implementations = (*source)->Implementations();
-  ASSERT_EQ(implementations.size(), 2U);
+  ASSERT_EQ(implementations.size(), static_cast<std::size_t>(de::DecoderId::kCount));
   const auto at = std::ranges::find(implementations, "llmp.decode.grouped.nvfp4.split",
                                     &llmp::execution::Implementation::name);
   ASSERT_NE(at, implementations.end());
@@ -151,7 +153,9 @@ TEST(DecodeSelectedGrouped, PitchedRouterIdsRetainExactSourceGeometry) {
 TEST(DecodeSelectedGrouped, ForeignSourceAndLogicalGeometryRefuse) {
   auto source = de::GroupedSelectedSource();
   ASSERT_TRUE(source);
-  const auto impl = (*source)->Implementations()[0];
+  const auto implementations = (*source)->Implementations();
+  const auto impl = *std::ranges::find(implementations, "llmp.decode.grouped.nvfp4.split",
+                                       &ex::Implementation::name);
   for (int bad = 0; bad != 6; ++bad) {
     SCOPED_TRACE(bad);
     Inputs d;
@@ -171,7 +175,9 @@ TEST(DecodeSelectedGrouped, ForeignSourceAndLogicalGeometryRefuse) {
 TEST(DecodeSelectedGrouped, ChangedBindingsRefuseBeforeAnyDescriptorWrite) {
   auto source = de::GroupedSelectedSource();
   ASSERT_TRUE(source);
-  const auto impl = (*source)->Implementations()[0];
+  const auto implementations = (*source)->Implementations();
+  const auto impl = *std::ranges::find(implementations, "llmp.decode.grouped.nvfp4.split",
+                                       &ex::Implementation::name);
   for (int bad = 0; bad != 10; ++bad) {
     SCOPED_TRACE(bad);
     Inputs d;
@@ -293,7 +299,7 @@ TEST(DecodeSelectedGrouped, ExplicitIdentityIncludesRecipeAndDefaultSourcesRemai
   ASSERT_TRUE((*first)->ExecutionIdentity());
   EXPECT_EQ((*first)->ExecutionIdentity(), (*second)->ExecutionIdentity());
   EXPECT_NE(*(*first)->ExecutionIdentity(), llmp::base::Sha256Digest{});
-  EXPECT_FALSE((*rows)->ExecutionIdentity());
+  EXPECT_TRUE((*rows)->ExecutionIdentity());
   const auto impl = (*first)->Implementations();
   EXPECT_NE(*(*first)->ExecutionIdentity(), llmp::execution::IdentityOf(impl[0]));
 }
@@ -449,6 +455,96 @@ TEST(DecodeSelectedGrouped, AffineSplitExpertPartBindsLeavesInLowerStep) {
         ASSERT_FALSE(lowered);
       }
     }
+  }
+}
+
+TEST(DecodeSelectedGrouped, EveryDecoderRetainsPitchedCompletePhysicalParts) {
+  auto routed = de::GroupedSelectedSource();
+  ASSERT_TRUE(routed);
+  auto resident = de::ResidentGroupedSelectedSource();
+  ASSERT_TRUE(resident);
+  const auto implementations = (*routed)->Implementations();
+  for (std::size_t index = 0; index < static_cast<std::size_t>(de::DecoderId::kCount); ++index) {
+    const auto decoder = static_cast<de::DecoderId>(index);
+    SCOPED_TRACE(de::DecoderName(decoder));
+    auto arena = kg::TensorArena::Create(12);
+    ASSERT_TRUE(arena);
+    auto* c = arena->context();
+    std::array<kg::SelectedOperand, 3> inputs{};
+    std::array<kg::SelectedOperand, 1> outputs{};
+    auto& weight = inputs[0];
+    weight.desc.format = {.encoding = de::DecoderEncoding(decoder),
+                          .layout = de::DecoderLayout(decoder),
+                          .shape = ir::ShapeOf({256, 130, 4})};
+    if (weight.desc.format.encoding == fmt::Encoding::kAffine) {
+      weight.desc.format.params.bits = 4;
+      weight.desc.format.params.group = 32;
+      weight.desc.format.params.scale = fmt::AffineScale::kBF16;
+    }
+    if (weight.desc.format.encoding == fmt::Encoding::kNvfp4) {
+      weight.desc.format.params.tensor_scale = true;
+      weight.desc.format.stacked = 2;
+    }
+    weight.expert_weight = kWeight;
+    auto matrix = weight.desc.format;
+    matrix.shape.rank = 2;
+    matrix.shape.ne[2] = 1;
+    const auto extents = fmt::PartsOf(matrix);
+    ASSERT_TRUE(extents);
+    std::uint64_t base = 0x100000;
+    for (const auto& e : extents->parts()) {
+      auto* t = ggml_new_tensor_2d(c, GGML_TYPE_I8, static_cast<std::int64_t>(e.readable), 4);
+      t->nb[1] = (e.readable + 255) / 256 * 256;
+      t->nb[2] = t->nb[3] = t->nb[1] * 3 + e.readable;
+      kg::TensorArena::Bind(t, base);
+      base += 0x100000;
+      weight.parts.push_back({e.role, t});
+    }
+    weight.tensor = weight.parts[0].tensor;
+    inputs[1].desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({256, 1, 3}));
+    inputs[1].desc.nb = ir::NaturalStrides(inputs[1].desc.format);
+    inputs[1].tensor = ggml_new_tensor_3d(c, GGML_TYPE_F32, 256, 1, 3);
+    kg::TensorArena::Bind(inputs[1].tensor, 0x1000000);
+    inputs[2].desc.format = ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({2, 3}));
+    inputs[2].desc.nb = {4, 16, 48, 48};
+    inputs[2].tensor = ggml_new_tensor_2d(c, GGML_TYPE_I32, 2, 3);
+    std::ranges::copy(inputs[2].desc.nb, inputs[2].tensor->nb);
+    kg::TensorArena::Bind(inputs[2].tensor, 0x1100000);
+    outputs[0].desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({130, 2, 3}));
+    outputs[0].desc.nb = ir::NaturalStrides(outputs[0].desc.format);
+    outputs[0].tensor = ggml_new_tensor_3d(c, GGML_TYPE_F32, 130, 2, 3);
+    kg::TensorArena::Bind(outputs[0].tensor, 0x1200000);
+    ir::Node node;
+    node.key = ir::Primitive(ir::Op::kMatMulId);
+    node.nsrc = 3;
+    node.nout = 1;
+    const auto at = std::ranges::find(
+        implementations,
+        de::ImplementationName({.tmpl = de::Template::kGrouped, .gate = decoder, .up = decoder}),
+        &ex::Implementation::name);
+    ASSERT_NE(at, implementations.end());
+    auto call = (*routed)->Lower(*at, node, inputs, outputs);
+    ASSERT_TRUE(call) << call.error().detail;
+    alignas(256) std::array<de::Operand, 4> descriptors{};
+    auto staged = (*call)->StageDescriptors(std::as_writable_bytes(std::span(descriptors)));
+    ASSERT_TRUE(staged) << staged.error().detail;
+    EXPECT_EQ(descriptors[3].k, 256U);
+    EXPECT_EQ(descriptors[3].rows, 130U);
+    auto ordinary = (*resident)->Lower(*at, node, inputs, outputs);
+    ASSERT_TRUE(ordinary) << ordinary.error().detail;
+    // IR accepts an explicit degenerate fourth dimension as the same experts.
+    weight.desc.format.shape.rank = 4;
+    auto rank4 = (*routed)->Lower(*at, node, inputs, outputs);
+    ASSERT_TRUE(rank4) << rank4.error().detail;
+    auto rank4_resident = (*resident)->Lower(*at, node, inputs, outputs);
+    ASSERT_TRUE(rank4_resident) << rank4_resident.error().detail;
+    weight.desc.format.shape.ne[3] = 2;
+    EXPECT_FALSE((*routed)->Lower(*at, node, inputs, outputs));
+    EXPECT_FALSE((*resident)->Lower(*at, node, inputs, outputs));
+    weight.desc.format.shape.ne[3] = 1;
+    // Complete-read coverage is authoritative even when the pitch is larger.
+    weight.parts[0].tensor->ne[0] -= 1;
+    EXPECT_FALSE((*call)->StageDescriptors(std::as_writable_bytes(std::span(descriptors))));
   }
 }
 

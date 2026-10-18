@@ -18,8 +18,10 @@
 #include <utility>
 #include <vector>
 
+#include "base/sha256.h"
 #include "format/tensor_format.h"
 #include "ir/graph.h"
+#include "kernels/decode/selected_source.h"
 #include "kernels/exl3/implementations.h"
 #include "kernels/exl3/launch.h"
 #include "kernels/exl3/recon_gemm.h"
@@ -50,12 +52,39 @@ constexpr std::uint64_t kPersistent = (kLockBytes + 255U) / 256U * 256U;
 
 class Runtime final : public kg::SelectedLaunch {
  public:
-  Runtime(const kg::SelectedSource* owner, providers::NativeStream stream,
-          std::unique_ptr<LaunchContext> launch, std::unique_ptr<ReconGemm> gemm)
-      : kg::SelectedLaunch(owner, stream), launch(std::move(launch)), gemm(std::move(gemm)) {}
-  bool faulted() const override { return launch->faulted(); }
+  Runtime(const kg::SelectedSource* owner, providers::NativeStream native, int device,
+          providers::DeviceExecution& execution, providers::StreamId stream, std::uint64_t locks,
+          int sms)
+      : kg::SelectedLaunch(owner, native),
+        device_(device),
+        execution_(execution),
+        stream_(stream),
+        locks_(locks),
+        sms_(sms) {}
+  bool faulted() const override { return launch && launch->faulted(); }
+  // Bind runs on the owning device driver, before submission/capture. Lower
+  // only builds immutable descriptors and may run concurrently without entering
+  // this state. Unused registered sources claim no live lock context/handle.
+  std::expected<void, Failure> Ensure() {
+    if (launch) return {};
+    auto lt = ReconGemm::Create();
+    if (!lt) return std::unexpected(Convert(lt.error()));
+    auto made = LaunchContext::Create(device_, execution_, stream_, locks_, true);
+    if (!made) return std::unexpected(Convert(made.error()));
+    if ((*made)->sm_count() != sms_) return Reject("EXL3 source device SM count changed");
+    gemm = std::move(*lt);
+    launch = std::move(*made);
+    return {};
+  }
   std::unique_ptr<LaunchContext> launch;
   std::unique_ptr<ReconGemm> gemm;
+
+ private:
+  int device_;
+  providers::DeviceExecution& execution_;
+  providers::StreamId stream_;
+  std::uint64_t locks_;
+  int sms_;
 };
 
 enum class Kind : std::uint8_t { kGemm, kGemv, kMulti, kReconstruct, kFused, kBias };
@@ -161,6 +190,7 @@ class Call final : public kg::SelectedCall {
       SelectedWorkspace scratch) const override {
     if (launch.owner() != owner()) return Reject("foreign selected-source launch");
     auto& runtime = static_cast<Runtime&>(launch);
+    if (auto ready = runtime.Ensure(); !ready) return std::unexpected(ready.error());
     if (scratch.bytes < scratch_bytes() || scratch.base % 256 != 0 ||
         scratch.base + scratch.bytes < scratch.base)
       return Reject("EXL3 selected operation's declared scratch is not covered");
@@ -324,12 +354,23 @@ bool AcceptsBias(const execution::CapabilityQuery& query) {
     const auto at = std::ranges::find(query.operands, id, &execution::OperandFormat::operand);
     return at == query.operands.end() ? nullptr : &*at;
   };
+  const auto packed = [](const execution::OperandFormat& value) {
+    if (!value.memory) return true;
+    std::uint64_t stride = 2;
+    for (std::size_t dimension = 0; dimension < 4; ++dimension) {
+      if (value.memory->nb[dimension] != stride ||
+          __builtin_mul_overflow(stride, value.ne[dimension], &stride))
+        return false;
+    }
+    return true;
+  };
   const auto* x = operand(0);
   const auto* b = operand(1);
   const auto* y = operand(execution::kOutputOperand);
-  return query.arch >= 80 && x && b && y && x->ne == y->ne && x->ne[0] >= 1 &&
-         x->ne[0] <= kMaxDimension && x->ne[1] >= 1 && x->ne[1] <= kMaxRows && x->ne[2] == 1 &&
-         x->ne[3] == 1 && b->ne[0] == x->ne[0] && b->ne[1] == 1 && b->ne[2] == 1 && b->ne[3] == 1 &&
+  return query.arch >= 80 && x && b && y && packed(*x) && packed(*b) && packed(*y) &&
+         x->ne == y->ne && x->ne[0] >= 1 && x->ne[0] <= kMaxDimension && x->ne[1] >= 1 &&
+         x->ne[1] <= kMaxRows && x->ne[2] == 1 && x->ne[3] == 1 && b->ne[0] == x->ne[0] &&
+         b->ne[1] == 1 && b->ne[2] == 1 && b->ne[3] == 1 &&
          // CheckBias's (CheckExtent's) element bound, so a planned bias lowers.
          static_cast<std::uint64_t>(x->ne[0]) * static_cast<std::uint64_t>(x->ne[1]) <= INT32_MAX;
 }
@@ -370,8 +411,9 @@ std::expected<std::array<ggml_tensor*, 4>, Failure> PhysicalParts(const Selected
 class Source final : public kg::SelectedSource {
  public:
   Source(FrozenCache cache, std::optional<GemvCapacity> capacity,
-         std::optional<PackedCapacity> defaults)
+         std::optional<PackedCapacity> defaults, bool generic = false)
       : cache_(cache),
+        generic_(generic),
         capacity_(capacity),
         defaults_(defaults),
         canonical_(exl3::Implementations()),
@@ -379,9 +421,12 @@ class Source final : public kg::SelectedSource {
     for (auto& declaration : declarations_) {
       const auto native_name = declaration.name;
       declaration.name =
-          std::format("exl3.pinned.{}.{}", ProfileName(cache), native_name.substr(5));
-      declaration.variant += std::format("; frozen profile {}, exact cache keys; ordered shared IR",
-                                         ProfileName(cache));
+          generic ? std::format("exl3.device.{}", native_name.substr(5))
+                  : std::format("exl3.pinned.{}.{}", ProfileName(cache), native_name.substr(5));
+      declaration.variant +=
+          generic ? "; actual-device occupancy defaults; no measured pins"
+                  : std::format("; frozen profile {}, exact cache keys; ordered shared IR",
+                                ProfileName(cache));
       if (defaults_) {
         declaration.variant +=
             std::format("; default occupancy arch{} SMs{}", defaults_->arch, defaults_->sms);
@@ -392,6 +437,7 @@ class Source final : public kg::SelectedSource {
                 declaration.variant += std::format("; packed={}", count);
       }
       if (capacity_) {
+        declaration.variant += std::format("; GEMV arch{} SMs{}", capacity_->arch, capacity_->sms);
         for (const auto& output : capacity_->blocks)
           for (const auto& rows : output)
             for (const auto count : rows)
@@ -434,11 +480,32 @@ class Source final : public kg::SelectedSource {
         capability.device = {.min_arch = defaults_->arch, .max_arch = defaults_->arch};
         capability.needs_tuning = false;
         capability.shape.max_rows = kMaxRows;
+        // Occupancy proves executable capacity, not a qualified replacement
+        // for two separately selected products. Direct paired operations stay
+        // available; automatic rewrites need their own measured preference.
+        capability.fusion_needs_measurement = native_name == "exl3.multi_linear.mgemm";
       }
       if (native_name == "exl3.linear.gemv" && capacity_) {
         declaration.capability->device = {.min_arch = capacity_->arch, .max_arch = capacity_->arch};
       }
     }
+    if (generic_) {
+      for (std::size_t i = canonical_.size(); i-- > 0;) {
+        if (canonical_[i].name == "exl3.linear.gemm" ||
+            canonical_[i].name == "exl3.multi_linear.mgemm")
+          continue;
+        canonical_.erase(canonical_.begin() + static_cast<std::ptrdiff_t>(i));
+        declarations_.erase(declarations_.begin() + static_cast<std::ptrdiff_t>(i));
+      }
+      for (auto& declaration : declarations_) declaration.capability->priority = 0;
+    }
+    base::Sha256 hash;
+    hash.Update("llmp-exl3-selected-v1;exact-caches-and-device-capacity;deferred-bind-resources");
+    for (const auto& impl : declarations_) {
+      const auto id = execution::IdentityOf(impl);
+      hash.Update(std::as_bytes(std::span(id)));
+    }
+    identity_ = hash.Finish();
   }
   std::vector<execution::Implementation> Implementations() const override { return declarations_; }
   std::string_view Name(std::string_view native) const {
@@ -448,6 +515,7 @@ class Source final : public kg::SelectedSource {
                : declarations_[static_cast<std::size_t>(at - canonical_.begin())].name;
   }
   std::vector<execution::TunedShape> Tuning(std::uint32_t arch) const override {
+    if (generic_) return {};
     if ((defaults_ && arch != defaults_->arch) || (capacity_ && arch != capacity_->arch)) return {};
     const bool pinned_device =
         (!defaults_ || defaults_->sms == 48) && (!capacity_ || capacity_->sms == 48);
@@ -458,14 +526,16 @@ class Source final : public kg::SelectedSource {
     // Physical problems present in the authenticated caches, not model dispatch.
     constexpr std::array shapes{std::pair{896, 896}, std::pair{896, 128}, std::pair{896, 4864},
                                 std::pair{4864, 896}, std::pair{896, 151936}};
-    const auto add = [&](std::string_view implementation, int rows, int k, int n, Output output) {
+    const auto add = [&](std::string_view implementation, int rows, int k, int n, Output output,
+                         int bits) {
       const execution::TunedShape fact{.implementation = Name(implementation),
                                        .rows = static_cast<unsigned>(rows),
                                        .k = static_cast<unsigned>(k),
                                        .n = static_cast<unsigned>(n),
                                        .output_encoding = output == Output::kF32
                                                               ? format::Encoding::kF32
-                                                              : format::Encoding::kF16};
+                                                              : format::Encoding::kF16,
+                                       .weight_bits = static_cast<std::uint8_t>(bits)};
       if (!std::ranges::contains(result, fact)) result.push_back(fact);
     };
     for (const auto [k, n] : shapes) {
@@ -473,12 +543,12 @@ class Source final : public kg::SelectedSource {
         for (const auto output : {Output::kF16, Output::kF32}) {
           for (const int bits : {4, 5, 6, 8}) {
             if (FrozenGemmPlan(cache_, arch, sms, rows, k, n, bits, output))
-              add("exl3.linear.gemm", rows, k, n, output);
+              add("exl3.linear.gemm", rows, k, n, output, bits);
             if (rows <= 32 && FrozenMultiGemmPlan(cache_, arch, sms, rows, k, n, bits, output))
-              add("exl3.multi_linear.mgemm", rows, k, n, output);
+              add("exl3.multi_linear.mgemm", rows, k, n, output, bits);
           }
-          if (capacity_ && rows <= 8 && Gemv(rows, k, n, 4, output))
-            add("exl3.linear.gemv", rows, k, n, output);
+          if (Optimized(cache_) && capacity_ && rows <= 8 && Gemv(rows, k, n, 4, output))
+            add("exl3.linear.gemv", rows, k, n, output, 4);
         }
       }
     }
@@ -495,6 +565,7 @@ class Source final : public kg::SelectedSource {
                             rows, k, n, bits, kCodebookMcg, counts[0], counts[1]);
   }
   std::uint64_t persistent_bytes() const override { return kPersistent; }
+  std::optional<base::Sha256Digest> ExecutionIdentity() const override { return identity_; }
   std::expected<std::unique_ptr<kg::SelectedCall>, Failure> Lower(
       const execution::Implementation& implementation, const ir::Node& node,
       std::span<const SelectedOperand> inputs,
@@ -567,8 +638,10 @@ class Source final : public kg::SelectedSource {
     } else if (kind == Kind::kGemm) {
       const auto arch = defaults_ ? defaults_->arch : capacity_ ? capacity_->arch : 121U;
       const auto sms = defaults_ ? defaults_->sms : capacity_ ? capacity_->sms : 48;
-      auto plan =
-          FrozenGemmPlan(cache_, arch, sms, call->rows, call->k, call->n, call->bits, call->output);
+      auto plan = generic_ ? DefaultGemmPlan(*defaults_, call->rows, call->k, call->n, call->bits,
+                                             call->output)
+                           : FrozenGemmPlan(cache_, arch, sms, call->rows, call->k, call->n,
+                                            call->bits, call->output);
       if (!plan && defaults_)
         plan = DefaultGemmPlan(*defaults_, call->rows, call->k, call->n, call->bits, call->output);
       if (!defaults_ && UpstreamPath(call->rows) != LinearPath::kPacked)
@@ -609,15 +682,10 @@ class Source final : public kg::SelectedSource {
       const auto actual = QueryGemvCapacity(device);
       if (!actual || *actual != *capacity_) return Reject("EXL3 GEMV occupancy facts changed");
     }
-    auto gemm = ReconGemm::Create();
-    if (!gemm) return std::unexpected(Convert(gemm.error()));
-    auto launch = LaunchContext::Create(device, execution, stream, persistent.base, true);
-    if (!launch) return std::unexpected(Convert(launch.error()));
-    if ((*launch)->sm_count() != sms)
-      return Reject("EXL3 frozen cache requires the recorded GB10 device");
     auto native = execution.Submission(stream);
     if (!native) return Reject(native.error().detail);
-    return std::make_unique<Runtime>(this, *native, std::move(*launch), std::move(*gemm));
+    return std::make_unique<Runtime>(this, *native, device, execution, stream, persistent.base,
+                                     sms);
   }
 
  private:
@@ -660,8 +728,10 @@ class Source final : public kg::SelectedSource {
     call->output = Output::kF32;
     const auto arch = defaults_ ? defaults_->arch : capacity_ ? capacity_->arch : 121U;
     const auto sms = defaults_ ? defaults_->sms : capacity_ ? capacity_->sms : 48;
-    auto plan = FrozenMultiGemmPlan(cache_, arch, sms, call->rows, call->k, call->n, call->bits,
-                                    call->output);
+    std::expected<MultiGemmPlan, std::string> plan = std::unexpected("no measured multi-GEMM pin");
+    if (!generic_)
+      plan = FrozenMultiGemmPlan(cache_, arch, sms, call->rows, call->k, call->n, call->bits,
+                                 call->output);
     if (!plan && defaults_) {
       const auto fallback =
           DefaultGemmPlan(*defaults_, call->rows, call->k, call->n, call->bits, call->output, true);
@@ -671,7 +741,9 @@ class Source final : public kg::SelectedSource {
     call->multi_plan = *plan;
     return call;
   }
+  base::Sha256Digest identity_{};
   FrozenCache cache_;
+  bool generic_ = false;
   std::optional<GemvCapacity> capacity_;
   std::optional<PackedCapacity> defaults_;
   std::vector<execution::Implementation> canonical_;
@@ -743,4 +815,24 @@ std::expected<std::shared_ptr<const kg::SelectedSource>, std::string> SelectedSo
   }
   return std::make_shared<Source>(cache, capacity, defaults);
 }
+std::expected<std::shared_ptr<const kg::SelectedSource>, std::string> DeviceSelectedSource(
+    int device) {
+  const auto facts = providers::QueryDeviceFacts(device);
+  if (!facts) return std::unexpected(facts.error().text());
+  if (!CompiledForDevice(facts->architecture / 10)) return decode::CompositeSelectedSource({});
+  auto gemv = QueryGemvCapacity(device);
+  if (!gemv) return std::unexpected(gemv.error());
+  auto packed = QueryPackedCapacity(device);
+  if (!packed) return std::unexpected(packed.error());
+  std::vector<std::shared_ptr<const kg::SelectedSource>> sources;
+  for (const auto cache :
+       {FrozenCache::k40G, FrozenCache::k45G, FrozenCache::k40O, FrozenCache::k45O}) {
+    // G profiles retain their measured GEMM-only routing; occupancy facts
+    // still identify their actual device and prevent borrowing 48-SM pins.
+    sources.push_back(std::make_shared<Source>(cache, *gemv, std::nullopt));
+  }
+  sources.push_back(std::make_shared<Source>(FrozenCache::k45O, *gemv, *packed, true));
+  return decode::CompositeSelectedSource(std::move(sources));
+}
+
 }  // namespace llmp::kernels::exl3

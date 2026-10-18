@@ -8,7 +8,7 @@
 //   for float products (NMSE 1e-7: its F32 block sums differ only in order);
 //   a wave's 9 to 16 columns equal to the lone columns bit for bit; and the
 //   format's edge codes and scales;
-// - the n-gram table's NVFP4 row lookup, exactly, and NaN for an id outside
+// - the n-gram table's NVFP4 row lookup, exactly, and zeros for an id outside
 //   the table; and a GGUF checkpoint's (IQ4_NL and the other 32-value block
 //   types), GGML's CPU dequantization bit for bit;
 // - GGML's NVFP4 expert products (mul_mat_id) over weights in ModelOpt's
@@ -48,6 +48,8 @@
 #include "base/bytes.h"
 #include "expected_error.h"
 #include "ggml.h"
+#include "ir/graph.h"
+#include "kernels/decode/products.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops_ext.h"
@@ -431,19 +433,41 @@ TEST_F(Qwen38OpsTest, Nvfp4TableRowsDequantizeExactly) {
                                          : static_cast<std::uint8_t>(random() & 0xFF);
     }
   }
-  const std::vector<std::int32_t> ids = {0, 36, 5, 5, 17, 37};  // the last is outside
+  const std::vector<std::int32_t> ids = {0, 36, 5, 5, 17, 37, -1, INT32_MAX};
   const std::vector<float> global = {0.375f};
   ggml_tensor* t = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I8, kRowBytes, kRows), table);
-  ggml_tensor* id = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 6), ids);
+  ggml_tensor* id =
+      Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, static_cast<std::int64_t>(ids.size())), ids);
   ggml_tensor* g = Place(ggml_new_tensor_1d(c(), GGML_TYPE_F32, 1), global);
   ggml_tensor* out = Place(kg::Nvfp4Rows(c(), t, id, g, kValues));
   ASSERT_TRUE(kg::RunNvfp4Rows(launch(), out).has_value());
   const std::vector<float> got = Download(out);
+  namespace decode = llmp::kernels::decode;
+  namespace format = llmp::format;
+  auto fmt = llmp::ir::Dense(format::Encoding::kNvfp4, llmp::ir::ShapeOf({kValues, kRows}));
+  fmt.layout = format::Layout::kRowInterleaved;
+  fmt.params.tensor_scale = true;
+  const std::array<decode::DevicePart, 2> parts{
+      {{format::PartRole::kData, t->data, ggml_nbytes(t)},
+       {format::PartRole::kTensorScale, g->data, ggml_nbytes(g)}}};
+  auto* other =
+      Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kValues, static_cast<std::int64_t>(ids.size())));
+  auto* bad = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 1));
+  const auto gathered = decode::RunRows({.weight = {.format = fmt, .parts = parts},
+                                         .ids = static_cast<const std::int32_t*>(id->data),
+                                         .count = ids.size(),
+                                         .out = static_cast<float*>(other->data),
+                                         .out_stride = kValues,
+                                         .bad = static_cast<std::int32_t*>(bad->data)},
+                                        launch().native_stream().handle);
+  ASSERT_TRUE(gathered.has_value());
+  EXPECT_EQ(Download(other), got);
+  EXPECT_EQ(Download<std::int32_t>(bad), std::vector<std::int32_t>{1});
   for (std::size_t i = 0; i < ids.size(); ++i) {
     for (std::size_t j = 0; j < static_cast<std::size_t>(kValues); ++j) {
       const float v = got[(i * kValues) + j];
-      if (ids[i] >= kRows) {
-        EXPECT_TRUE(std::isnan(v)) << j;
+      if (ids[i] < 0 || ids[i] >= kRows) {
+        EXPECT_EQ(v, 0.0f) << j;
         continue;
       }
       const std::uint8_t* row = table.data() + (static_cast<std::size_t>(ids[i]) * kRowBytes);

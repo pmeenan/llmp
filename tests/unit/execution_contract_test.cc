@@ -159,6 +159,9 @@ TEST(ExecutionContractTest, IdentitySealsAllOrderedStagesAndSelectionFacts) {
   different([](auto& in) { ++in.device.arch; });
   different([](auto& in) { in.device.features |= ex::kFp8Mma; });
   different([](auto& in) { in.device.device_class = "another_class"; });
+  different([](auto& in) { in.device.device_model = "actual GPU model"; });
+  different([](auto& in) { ++in.device.multiprocessors; });
+  different([](auto& in) { in.device.preferred = {"fake.score"}; });
   different([](auto& in) { in.device.tuned = {{"fake.score", 1, 128, 256}}; });
   different([](auto& in) { in.reservation_alignment = 0; });
   different([](auto& in) { in.placement_alignment = 512; });
@@ -202,6 +205,11 @@ TEST(ExecutionContractTest, TuningOutputPrecisionAndPresenceHaveDistinctIdentiti
   EXPECT_NE(omitted->identity(), half->identity());
   EXPECT_NE(omitted->identity(), full->identity());
   EXPECT_NE(half->identity(), full->identity());
+  in.device.tuned[0].weight_bits = 4;
+  auto rate = seal();
+  ASSERT_TRUE(rate);
+  EXPECT_NE(full->identity(), rate->identity());
+  in.device.tuned[0].weight_bits = 0;
   auto repeated = seal();
   ASSERT_TRUE(repeated) << Failed(repeated).value_or("");
   EXPECT_EQ(full->identity(), repeated->identity());
@@ -508,6 +516,69 @@ TEST(ExecutionMetadataAllowanceTest, RetainedGrowthPreservesIdentityAndRefusalPa
   EXPECT_EQ(catalog.ExtentsOf(domain).size(), 1U);
   EXPECT_EQ(owner.used(), unit / 2);
   EXPECT_TRUE(owner.HeldBy(catalog, domain));
+}
+
+TEST(ExecutionMetadataAllowanceTest, InitialBootstrapHonorsBudgetBeforeAnyCatalogMutation) {
+  llmp::catalog::Catalog catalog;
+  const auto domain = catalog.AddDomain("node");
+  constexpr std::uint64_t unit = 1U << 20;
+  EXPECT_FALSE(en::ExecutionMetadataAllowance::AdmitWithin(catalog, domain, unit, unit - 1,
+                                                           16 * unit, unit));
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), 0U);
+  auto first =
+      en::ExecutionMetadataAllowance::AdmitWithin(catalog, domain, unit, 2 * unit, 16 * unit, unit);
+  ASSERT_TRUE(first);
+  EXPECT_FALSE(en::ExecutionMetadataAllowance::AdmitWithin(catalog, domain, unit, 2 * unit - 1,
+                                                           16 * unit, unit));
+  EXPECT_EQ(catalog.ExtentsOf(domain).size(), 1U);
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), unit);
+}
+
+TEST(ExecutionMetadataAllowanceTest, ActualChargeGrowthFundsPeakAndRetriesWithoutNewExtents) {
+  llmp::catalog::Catalog catalog;
+  const auto domain = catalog.AddDomain("node");
+  constexpr std::uint64_t unit = 1U << 20;
+  auto admitted = en::ExecutionMetadataAllowance::Admit(catalog, domain, unit, 16 * unit, unit);
+  ASSERT_TRUE(admitted);
+  auto& owner = **admitted;
+  const auto extent = catalog.ExtentsOf(domain).front().first;
+  ASSERT_TRUE(owner.Charge(unit / 2));
+  const auto initial = owner.capacity();
+  // A declaration's temporary copy is live when its retained facts are paid.
+  ASSERT_TRUE(owner.ChargeOrGrow(catalog, domain, unit, 16 * unit, 16 * unit, unit));
+  EXPECT_EQ(owner.used(), 3 * unit / 2);
+  EXPECT_EQ(owner.capacity(), owner.used());
+  EXPECT_EQ(owner.peak(), owner.used());
+  const auto occupied = catalog.OccupancyOf(domain).Total();
+  EXPECT_FALSE(owner.ChargeOrGrow(catalog, domain, 2 * unit, 3 * unit, 16 * unit, unit));
+  EXPECT_FALSE(owner.ChargeOrGrow(catalog, domain, 2 * unit, 16 * unit, 2 * unit, unit));
+  EXPECT_FALSE(owner.ChargeOrGrow(catalog, domain, UINT64_MAX, 16 * unit, 16 * unit, unit));
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total(), occupied);
+  EXPECT_EQ(owner.capacity(), 3 * unit / 2);
+  EXPECT_EQ(owner.used(), 3 * unit / 2);
+  EXPECT_EQ(owner.peak(), 3 * unit / 2);
+  ASSERT_TRUE(owner.ChargeOrGrow(catalog, domain, 2 * unit, 16 * unit, 16 * unit, unit));
+  owner.Release(unit);  // Destroy the temporary copy, retaining the declaration.
+  EXPECT_EQ(owner.used(), 5 * unit / 2);
+  EXPECT_EQ(owner.peak(), 7 * unit / 2);
+  EXPECT_EQ(owner.capacity(), 7 * unit / 2);
+  EXPECT_GT(owner.capacity(), initial);
+  // Retrying construction reuses the paid high-water extent.
+  for (unsigned retry = 0; retry < 3; ++retry) {
+    ASSERT_TRUE(owner.ChargeOrGrow(catalog, domain, unit, 16 * unit, 16 * unit, unit));
+    owner.Release(unit);
+  }
+  EXPECT_EQ(catalog.ExtentsOf(domain).size(), 1U);
+  EXPECT_EQ(catalog.ExtentsOf(domain).front().first, extent);
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), owner.capacity() + owner.OverheadBytes());
+  EXPECT_EQ(owner.peak(), 7 * unit / 2);
+  owner.Release(owner.used());
+  EXPECT_EQ(owner.used(), 0U);
+  EXPECT_EQ(owner.peak(), 7 * unit / 2);
+  ASSERT_TRUE(catalog.ReleasePinned(extent));
+  ASSERT_TRUE(catalog.RemoveExtent(extent));
+  EXPECT_FALSE(owner.ChargeOrGrow(catalog, domain, 1, 16 * unit, 16 * unit, unit));
+  EXPECT_EQ(owner.used(), 0U);
 }
 
 TEST_F(SourceIdentityTest, ProductionAllowanceRejectsConstructionAndFundsRetryOnlyOnce) {

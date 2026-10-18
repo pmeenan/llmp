@@ -262,7 +262,11 @@ class ImageFusionGpu : public ::testing::Test {
     ASSERT_TRUE(declared) << Failed(declared).value_or("");
     auto lent = backend->LendCublas(cublas.get());
     ASSERT_TRUE(lent) << Failed(lent).value_or("");
-    auto launched = backend->Launch({.base = Allocate(kPool), .size = llmp::base::Bytes(kPool)});
+    const auto selected_bytes = backend->persistent_bytes();
+    const kg::SelectedWorkspace selected_state{selected_bytes ? Allocate(selected_bytes) : 0,
+                                               selected_bytes};
+    auto launched = backend->Launch({.base = Allocate(kPool), .size = llmp::base::Bytes(kPool)},
+                                    selected_state);
     ASSERT_TRUE(launched) << Failed(launched).value_or("");
     launch = std::move(*launched);
   }

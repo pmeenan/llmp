@@ -838,7 +838,10 @@ TEST_F(KvQuantTest, TheRegistryDeclaresEachWithItsCapability) {
     ASSERT_LT(index, registry.size()) << name;
     const ex::Implementation& implementation = registry.at(index);
     ASSERT_TRUE(implementation.capability.has_value()) << name;
-    EXPECT_EQ(implementation.capability->rung, ex::Rung::kNative);
+    EXPECT_EQ(implementation.capability->rung,
+              name == kg::kFlashAttnVecQ8Name || name == kg::kFlashAttnVecQ4Name
+                  ? ex::Rung::kOnChipDecode
+                  : ex::Rung::kNative);
     EXPECT_EQ(implementation.capability->expansion, ex::Expansion::kNone);
     EXPECT_FALSE(implementation.capability->lossy);
     const auto kernel = kg::Kernel::Bind(implementation);

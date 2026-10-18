@@ -686,4 +686,17 @@ TEST(ChunkMeasurementRows, EverySmallOwnerCompositionIsMeasuredAndKeepsBudgets) 
   }
 }
 
+TEST(PlanCacheTest, RegistryBackendAndCapturabilityAreDistinctKeys) {
+  llmp::execution::PlanKey key;
+  std::array<llmp::execution::PlanKey, 4> keys{key, key, key, key};
+  keys[1].registry[0] = 1;
+  keys[2].backend[0] = 1;
+  keys[3].capturable = true;
+  for (std::size_t i = 0; i < keys.size(); ++i)
+    for (std::size_t j = i + 1; j < keys.size(); ++j) {
+      EXPECT_NE(keys[i], keys[j]);
+      EXPECT_NE(llmp::execution::HashOf(keys[i]), llmp::execution::HashOf(keys[j]));
+    }
+}
+
 }  // namespace

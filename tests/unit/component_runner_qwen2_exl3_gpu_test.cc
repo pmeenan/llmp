@@ -1211,6 +1211,10 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
         {.lower = {.index_scratch_limit = 32 * kMiB}, .selected = std::move(*selected)});
     if (!backend) return std::unexpected(backend.error());
     kernel->backend = std::move(*backend);
+    if (auto x = kernel->resources->OpenSelectedWorkspace("selected kernel state",
+                                                          kernel->backend->persistent_bytes());
+        !x)
+      return x;
     auto weights = std::make_unique<en::PagedWeights>();
     if (auto x = weights->Open(root); !x) return x;
     en::PagedWeights* paged = weights.get();
@@ -1357,7 +1361,9 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
         [held = life.get()](
             std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return held->kernel->backend->Launch(
-          {.base = held->node.pool().base, .size = llmp::base::Bytes(held->node.pool().bytes)});
+          {.base = held->node.pool().base, .size = llmp::base::Bytes(held->node.pool().bytes)},
+          {.base = held->kernel->resources->selected_workspace().base,
+           .bytes = held->kernel->resources->selected_workspace().bytes});
     };
     config.weight_address = [held = life.get(), paged](
                                 const llmp::ir::WeightRef& ref,

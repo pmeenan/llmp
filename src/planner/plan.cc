@@ -258,6 +258,16 @@ std::vector<bool> Unread(const ir::Graph& graph) {
   return unread;
 }
 
+// Applied::made follows every rewrite round and subsequent graph adoption.
+// Keep that authority through final selection, where an eligible incumbent
+// must not admit an unqualified competitor for the same automatic operation.
+std::vector<bool> AutomaticNodes(const ir::Graph& graph, std::span<const Applied> applied) {
+  std::vector<bool> automatic(graph.nodes().size(), false);
+  for (const auto& rewrite : applied)
+    for (const auto node : rewrite.made) automatic.at(node.v) = true;
+  return automatic;
+}
+
 // For each node of `graph` that repeats an earlier one, the earlier one:
 // the same operation and parameters over the same sources (as repeats
 // resolve), with outputs of the same roles, formats, strides and segments,
@@ -265,7 +275,7 @@ std::vector<bool> Unread(const ir::Graph& graph) {
 // nodes with sources and no Effect whose outputs are roots the graph
 // neither outputs nor keeps (nor an Effect reads) repeat. Empty when none
 // does.
-std::vector<NodeId> Repeats(const ir::Graph& graph) {
+std::vector<NodeId> Repeats(const ir::Graph& graph, const std::vector<bool>& automatic) {
   std::vector<TensorId> canon(graph.tensor_count());
   for (std::uint32_t t = 0; t < canon.size(); ++t) canon[t] = TensorId{t};
   // Outputs and kept tensors are never another's; a node reading or
@@ -310,8 +320,11 @@ std::vector<NodeId> Repeats(const ir::Graph& graph) {
             static_cast<std::uint16_t>(n.key.fused),
         first.valid() ? canon[first.v].v : TensorId::kNone};
     auto& bucket = seen[key];
-    const auto at =
-        std::ranges::find_if(bucket, [&](std::uint32_t j) { return same(graph.nodes()[j], n); });
+    const auto at = std::ranges::find_if(bucket, [&](std::uint32_t j) {
+      // Explicit and automatic operations may select different implementations.
+      // Joining them would erase one caller's qualification contract.
+      return automatic.at(j) == automatic.at(i) && same(graph.nodes()[j], n);
+    });
     if (at == bucket.end()) {
       bucket.push_back(i);
       continue;
@@ -336,9 +349,10 @@ Selected One(const execution::Registry& registry, NodeId id, std::size_t impleme
 }
 
 Selection Select(const ir::Graph& graph, const SelectionView& view,
-                 std::span<const OwnerProductScope> scopes) {
+                 std::span<const OwnerProductScope> scopes, std::span<const Applied> applied) {
   Selection out;
   out.missing.assign(graph.nodes().size(), false);
+  const auto automatic = AutomaticNodes(graph, applied);
   MatchContext context(graph, view);
   const execution::Registry& registry = view.registry();
   for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
@@ -363,7 +377,8 @@ Selection Select(const ir::Graph& graph, const SelectionView& view,
                     .batch = p.name};
       bool singles = true;
       for (const NodeId member : m->nodes) {
-        const auto own = view.Candidates(graph, graph.node(member));
+        const auto& own_node = graph.node(member);
+        const auto own = view.Candidates(graph, own_node, own_node.key, automatic.at(member.v));
         if (own.empty()) {
           singles = false;
           break;
@@ -382,7 +397,7 @@ Selection Select(const ir::Graph& graph, const SelectionView& view,
     if (batched) {
       continue;
     }
-    const auto candidates = view.Candidates(graph, node);
+    const auto candidates = view.Candidates(graph, node, node.key, automatic.at(i));
     if (candidates.empty()) {
       out.missing[i] = true;
       out.complete = false;
@@ -638,7 +653,7 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
     graph = std::move(next);
   };
   // A node computed again (the same rows joined twice) runs once.
-  if (const auto repeats = Repeats(graph); !repeats.empty()) {
+  if (const auto repeats = Repeats(graph, AutomaticNodes(graph, applied)); !repeats.empty()) {
     std::vector<TensorId> map;
     std::vector<NodeId> back;
     auto joined = ExpandNodes(graph, std::vector<bool>(graph.nodes().size(), false), map, back,
@@ -665,7 +680,7 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   std::vector<std::string> decomposed;
   Selection selection;
   for (int pass = 0;; ++pass) {
-    selection = Select(graph, view, scopes);
+    selection = Select(graph, view, scopes, applied);
     if (selection.complete) {
       std::vector<TensorId> map;
       std::vector<NodeId> back;

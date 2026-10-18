@@ -2675,7 +2675,7 @@ bool CompositeImplemented(const Policy& policy, ir::OpKey key) {
 
 base::Sha256Digest PatternsDigest(const Policy& policy) {
   base::Sha256 hash;
-  hash.Update(std::string_view("llmp.planner.patterns.v1\n"));
+  hash.Update(std::string_view("llmp.planner.patterns.v3;qualified-automatic-recipes\n"));
   for (const Pattern& p : kPatterns) {
     if (!Disabled(policy, p.name)) {
       hash.Update(std::format("{} {}\n", p.name, p.version));

@@ -77,6 +77,8 @@ struct GgmlBackendOptions {
   LowerOptions lower{};
   // Build-time native operation source; owned for the whole backend lifetime.
   std::shared_ptr<const SelectedSource> selected{};
+  // Current executor supports either the ordinary stream or all four lanes.
+  kernels::LaneConfiguration lanes{};
 };
 
 class GgmlBackend {
@@ -96,7 +98,8 @@ class GgmlBackend {
   // Opt-in immutable configuration for a required shared source. The caller
   // pays counted metadata before it is allocated; the backend retains its
   // charge through all source/program borrowers. No tuning is installed by
-  // ordinary Create. Call before plans/launches or lending the setup handle.
+  // ordinary Create beyond the source's exact existing pins. Call before
+  // plans/launches or lending the setup handle.
   std::expected<void, std::string> Declare(std::span<const execution::TunedShape> tuning,
                                            std::uint64_t cublas_workspace_bytes,
                                            std::function<bool(std::uint64_t)> charge,
@@ -112,10 +115,19 @@ class GgmlBackend {
   // made. Its plans are built the same with or without one (only running a
   // cuBLAS product needs it).
   std::expected<void, std::string> LendCublas(CublasHandle* cublas);
-  // The step launch over `pool` (the node's pool, mapped), made once at the
-  // runner's Bind; a program of this backend binds only to it.
+  // Exact source-owned state requirement, separate from discardable scratch.
+  std::uint64_t persistent_bytes() const {
+    return options_.selected ? options_.selected->persistent_bytes() : 0;
+  }
+  // Carved from the launch pool, apart from the measured ordinary scratch.
+  std::uint64_t lane_pool_reserve() const {
+    return options_.lanes.count * options_.lanes.scratch_bytes_per_lane;
+  }
+  // The caller owns distinct, cataloged persistent backing for this backend,
+  // mapped and charged until completed retirement destroys every launch/call.
+  // It must survive scratch eviction/remapping; the node pool cannot supply it.
   std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> Launch(
-      LaunchContext::Workspace pool);
+      LaunchContext::Workspace pool, SelectedWorkspace persistent);
   // The runner destroyed the launch (its Release): nothing binds to it
   // after, and another may be made.
   void LaunchReleased();

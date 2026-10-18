@@ -30,5 +30,11 @@ src/tokenizer/unicode_data.cc holds data generated from the Unicode
 Character Database 15.1.0, Copyright (c) 1991-2023 Unicode, Inc., under the
 Unicode License V3 (LICENSES/Unicode-3.0.txt).
 
+The production EXL3 selected-operation source incorporates the audited kept
+ExLlamaV3 kernels, Copyright (c) 2025 Turboderp, under the MIT License.
+The copied GGML float-product routing predicates retain the MIT notices of
+The ggml authors (2023-2026). Their full MIT texts accompany binary packages
+in the generated third-party notices.
+
 Binary packages also carry the notices of the third-party components their
 build incorporates, recorded in docs/licensing.md.

@@ -1226,6 +1226,80 @@ TEST(PlannerPatternTest, SharedInputPreparationStopsAtAnInPlaceWrite) {
   }
 }
 
+TEST(PlannerPatternTest, EveryRewriteLookupRequiresQualificationWhileDirectNodesRemainAvailable) {
+  auto implementations = Everything();
+  for (auto& implementation : implementations)
+    if (implementation.name == "t.rms_norm_mul")
+      implementation.capability->fusion_needs_measurement = true;
+  const auto registry = Registry(std::move(implementations));
+  NormGraph fixture;
+  fixture.b.Output(fixture.m);
+  auto graph = Finish(fixture.b);
+  EXPECT_EQ(Names(PlanOf(graph.Clone(), registry), registry),
+            (std::vector<std::string>{"t.rms_norm", "t.mul"}));
+  Policy measured;
+  measured.ranks = {{.device_class = "test", .implementation = "t.rms_norm_mul", .rank = 0}};
+  EXPECT_EQ(Names(PlanOf(graph.Clone(), registry, measured), registry),
+            std::vector<std::string>{"t.rms_norm_mul"});
+  measured.ranks[0].device_class = "different_device";
+  EXPECT_TRUE(Patterns(PlanOf(graph.Clone(), registry, measured)).empty());
+  measured.ranks[0].device_class = "test";
+  measured.ranks[0].implementation = "different_implementation";
+  EXPECT_TRUE(Patterns(PlanOf(graph.Clone(), registry, measured)).empty());
+  ir::Builder direct;
+  const auto x = direct.Input(F32({64, 3}));
+  const auto w = direct.Weight(F32({64}), W(0));
+  direct.Output(
+      direct.Fused(FusedKind::kRmsNormMul, std::array{x, w}, ir::NormParams{.eps = 1e-6f})[0]);
+  EXPECT_EQ(Names(PlanOf(Finish(direct), registry), registry),
+            std::vector<std::string>{"t.rms_norm_mul"});
+}
+
+TEST(PlannerPatternTest, FinalRewriteSelectionCannotBorrowAnotherImplementationsQualification) {
+  auto implementations = Everything();
+  std::erase_if(implementations, [](const auto& implementation) {
+    return implementation.name == "t.rms_norm_mul_add";
+  });
+  auto competitor = Any(ir::Fused(FusedKind::kRmsNormMul));
+  competitor.priority = 100;
+  competitor.fusion_needs_measurement = true;
+  implementations.push_back(Fake("t.unmeasured_norm", competitor));
+  const auto registry = Registry(std::move(implementations));
+  Policy policy;
+  policy.enabled = {"bf16_branch"};  // Exercise both rewrite rounds, even without a branch match.
+  for (const bool fallback : {false, true}) {
+    SCOPED_TRACE(fallback);
+    ir::Builder b;
+    const auto x = b.Input(F32({64, 3}));
+    const auto w = b.Weight(F32({64}), W(0));
+    (void)b.Scale(x, 7.0F);  // Pruning renumbers the rewrite's nodes.
+    b.Output(b.Mul(b.RmsNorm(x, 1e-6F), w));
+    if (fallback) {
+      const auto residual = b.Input(F32({64, 3}));
+      b.Output(b.Fused(ir::FusedKind::kRmsNormMulAdd, std::array{x, w, residual},
+                       ir::NormParams{.eps = 1e-6F})[0]);
+    }
+    const auto graph = Finish(b);
+    const auto ordinary = PlanOf(graph.Clone(), registry, policy);
+    const auto ordinary_names = Names(ordinary, registry);
+    EXPECT_EQ(std::ranges::count(ordinary_names, "t.rms_norm_mul"), 1);
+    EXPECT_FALSE(std::ranges::contains(ordinary_names, "t.unmeasured_norm"));
+    EXPECT_EQ(ordinary.decomposed.empty(), !fallback);
+    policy.ranks = {{.device_class = "test", .implementation = "t.unmeasured_norm", .rank = 0}};
+    EXPECT_EQ(std::ranges::count(Names(PlanOf(graph.Clone(), registry, policy), registry),
+                                 "t.unmeasured_norm"),
+              1);
+    policy.ranks.clear();
+  }
+  ir::Builder direct;
+  const auto x = direct.Input(F32({64, 3}));
+  const auto w = direct.Weight(F32({64}), W(0));
+  direct.Output(
+      direct.Fused(FusedKind::kRmsNormMul, std::array{x, w}, ir::NormParams{.eps = 1e-6F})[0]);
+  EXPECT_EQ(Names(PlanOf(Finish(direct), registry), registry),
+            std::vector<std::string>{"t.unmeasured_norm"});
+}
+
 TEST(PlannerPatternTest, NormAndItsWeightFuse) {
   NormGraph t;
   t.b.Output(t.m);
@@ -2015,6 +2089,35 @@ std::vector<std::size_t> StepSizes(const StepPlan& p) {
   return out;
 }
 
+TEST(PlannerBatchTest, GraphCandidateQueriesRequireMeasuredQualificationToo) {
+  auto implementations = Everything();
+  for (auto& implementation : implementations)
+    if (implementation.name == "t.set_rows.grouped")
+      implementation.capability->fusion_needs_measurement = true;
+  const auto registry = Registry(std::move(implementations));
+  // Grouping requires independent stores whose results are not externally
+  // exposed. The separate kept-output control below must remain ungrouped.
+  const auto graph = [] {
+    ir::Builder b;
+    const auto source = b.Input(F32({16, 2}));
+    const auto ids = b.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({2})));
+    for (std::uint16_t tensor = 0; tensor < 2; ++tensor) {
+      const auto cache = b.State(ir::Dense(Encoding::kF16, ir::ShapeOf({16, 8})),
+                                 {.stage = 0, .tensor = tensor, .layer = 0, .segment = 0});
+      b.CacheStore(cache, source, ids);
+    }
+    return Finish(b);
+  };
+  EXPECT_EQ(StepSizes(PlanOf(graph(), registry)), (std::vector<std::size_t>{1, 1}));
+  Policy measured;
+  measured.ranks = {{.device_class = "test", .implementation = "t.set_rows.grouped", .rank = 0}};
+  EXPECT_EQ(StepSizes(PlanOf(graph(), registry, measured)), std::vector<std::size_t>{2});
+  EXPECT_EQ(StepSizes(PlanOf(KeptStoresGraph(2), registry, measured)),
+            (std::vector<std::size_t>{1, 1}));
+  measured.ranks[0].device_class = "different_device";
+  EXPECT_EQ(StepSizes(PlanOf(graph(), registry, measured)), (std::vector<std::size_t>{1, 1}));
+}
+
 TEST(PlannerBatchTest, ConsecutiveStoresRunAsOne) {
   // Stores of rows into `caches` caches, a scale before the third when
   // `split`.
@@ -2272,6 +2375,33 @@ void ExpectDisjoint(const StepPlan& p) {
         EXPECT_TRUE(oa + bytes[a.v] <= ob || ob + bytes[b.v] <= oa) << a.v << " and " << b.v;
       }
     }
+  }
+}
+
+TEST(PlannerPlanTest, RepeatedExplicitAndAutomaticNodesRetainTheirSelectionContracts) {
+  auto implementations = Everything();
+  auto competitor = Any(ir::Fused(FusedKind::kRmsNormMul));
+  competitor.priority = 100;
+  competitor.fusion_needs_measurement = true;
+  implementations.push_back(Fake("t.unmeasured_norm", competitor));
+  const auto registry = Registry(std::move(implementations));
+  for (const bool direct_first : {false, true}) {
+    SCOPED_TRACE(direct_first);
+    ir::Builder b;
+    const auto x = b.Input(F32({64, 3}));
+    const auto w = b.Weight(F32({64}), W(0));
+    const auto direct = [&] {
+      return b.Fused(FusedKind::kRmsNormMul, std::array{x, w}, ir::NormParams{.eps = 1e-6F})[0];
+    };
+    const auto automatic = [&] { return b.Mul(b.RmsNorm(x, 1e-6F), w); };
+    const auto first = direct_first ? direct() : automatic();
+    const auto second = direct_first ? automatic() : direct();
+    b.Output(b.Add(b.Scale(first, 2.0F), b.Scale(second, 3.0F)));
+    const auto plan = PlanOf(Finish(b), registry);
+    const auto names = Names(plan, registry);
+    EXPECT_EQ(std::ranges::count(names, "t.rms_norm_mul"), 1);
+    EXPECT_EQ(std::ranges::count(names, "t.unmeasured_norm"), 1);
+    ExpectDisjoint(plan);
   }
 }
 

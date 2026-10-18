@@ -165,7 +165,13 @@ enum class Rung : std::uint8_t {
 // Whether an implementation expands a weight into device memory while it
 // runs (D-052's bounded reconstruction into funded workspace, GGML's cuBLAS
 // path). Never for a decode-shaped product (D-108).
-enum class Expansion : std::uint8_t { kNone, kTransientWorkspace };
+enum class Expansion : std::uint8_t {
+  kNone,
+  kTransientWorkspace,
+  // Float product groups may widen F16/BF16 weights when F32 precision is
+  // explicitly requested. Default-precision and F32 weights do not widen.
+  kDenseF32Accumulation,
+};
 
 // The formats one operand may have (an empty list: any).
 struct OperandRule {
@@ -239,6 +245,18 @@ struct Capability {
   // span. A shape-only query has no such fact. Other implementations of
   // the same formula can omit this requirement and compute its copies.
   bool needs_state_span = false;
+  // A group may contain paths that do not expand. Its module can prove
+  // whether the concrete query uses the declared expansion; null means
+  // every matching query expands. The variant/source identity covers it.
+  bool (*expands)(const CapabilityQuery&) = nullptr;
+  // A newly available fused implementation needs measured preference before
+  // an automatic rewrite elides incumbent primitive operations. Direct typed
+  // operations and explicit rank selections remain available.
+  bool fusion_needs_measurement = false;
+  // A shared scalar implementation may have native-copy and decode paths.
+  // The declared rung is its conservative default; concrete operand facts
+  // choose the actual path without adding implementation aliases.
+  Rung (*rung_for)(const CapabilityQuery&) = nullptr;
 };
 
 // An output's format in a capability query: the operand at this index
@@ -258,11 +276,16 @@ inline constexpr std::uint8_t kOutputOperand = 128;
 struct OperandMemory {
   std::array<std::uint64_t, 4> nb{};
   std::uint64_t view_offset = 0;
-  std::uint64_t root_alignment = 0;
+  // Real allocations cannot require an alignment at or above 2^63. Packing
+  // the alias fact here keeps this frequently copied inventory at 48 bytes.
+  std::uint64_t root_alignment : 63 = 0;
+  std::uint64_t is_view : 1 = 0;
 };
 
 struct OperandFormat {
   std::uint8_t operand = 0;
+  // Matrices joined along ne[1], each with its own optional tensor scale.
+  std::uint8_t stacked = 1;
   format::Encoding encoding = format::Encoding::kF32;
   format::Layout layout = format::Layout::kDense;
   format::EncodingParams params{};
@@ -302,6 +325,8 @@ struct TunedShape {
   // reconstruction). When present, a query must name that exact first
   // output operand; an omitted output is not evidence for the pin.
   std::optional<format::Encoding> output_encoding{};
+  // Exact EXL3 packed pin rate; zero keeps the format-independent contract.
+  std::uint8_t weight_bits = 0;
   bool operator==(const TunedShape&) const = default;
 };
 
@@ -330,6 +355,11 @@ struct CapabilityQuery {
   // Derived from actual immutable state layout and binding identity by
   // the planner. Never inferred from operand shapes or adjacent numbers.
   bool state_span = false;
+  // Actual immutable provider facts qualify the checked-in measurement table.
+  std::string_view device_class{}, device_model{};
+  std::uint32_t multiprocessors = 0;
+  bool automatic_fusion = false;
+  std::span<const std::string> preferred{};
 };
 
 // One compiled implementation of an operation, as its module declares it.
@@ -377,7 +407,7 @@ class Registry {
   // Per-registry implementation cap, a bound on the registry's host memory
   // (the serving and runner proofs' static accounting pins it). A GGML
   // backend's registry holds the GGML module's declarations (about 155)
-  // and one selected source's (the decode products' 62, or EXL3's), so the
+  // and the complete decode and EXL3 sources, so the
   // cap leaves room for the families to come.
   static constexpr std::size_t kMaxImplementations = 512;
   static constexpr std::size_t kMaxName = 128;
@@ -398,11 +428,14 @@ class Registry {
   const Implementation& at(std::size_t index) const;
   // IdentityOf(at(index)), computed once.
   const base::Sha256Digest& identity(std::size_t index) const;
+  // Canonical implementation set, independent of insertion order.
+  const base::Sha256Digest& Digest() const { return digest_; }
 
  private:
   Registry(std::vector<Implementation> implementations, std::vector<base::Sha256Digest> identities,
            std::vector<std::size_t> by_name);
 
+  base::Sha256Digest digest_{};
   std::vector<Implementation> implementations_;
   std::vector<base::Sha256Digest> identities_;  // parallel to implementations_
   std::vector<std::size_t> by_name_;            // indices, sorted by name

@@ -55,6 +55,9 @@ constexpr std::array<DecoderRow, static_cast<std::size_t>(DecoderId::kCount)> kD
      16},
     {DecoderId::kMxfp8Atoms, Encoding::kMxfp8, Layout::kScaleAtoms, "mxfp8.scale_atoms",
      kMxfp8Block * kAtomBlocks, "bf16", 16},
+    {DecoderId::kMxfp4Split, Encoding::kMxfp4, Layout::kSplit, "mxfp4.split", 32, "bf16", 8},
+    {DecoderId::kMxfp4Atoms, Encoding::kMxfp4, Layout::kScaleAtoms, "mxfp4.scale_atoms", 128,
+     "bf16", 8},
     {DecoderId::kAffineSplit, Encoding::kAffine, Layout::kSplit, "affine.split", kSegment, "bf16",
      8},
 }};

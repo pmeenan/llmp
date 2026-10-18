@@ -455,6 +455,72 @@ TEST_F(EngineLlmTest, AnUnbuiltStateEstimateIsAnErrorNotZeroBytes) {
   EXPECT_NE(bytes.error().find("not built"), std::string::npos);
 }
 
+TEST_F(EngineLlmTest, PostFactoryExecutionSealGrowthRemainsInStartupAccounting) {
+  class SealingSource final : public en::StepSource {
+   public:
+    SealingSource(std::unique_ptr<en::StepSource> source, std::function<en::Status()> seal)
+        : source_(std::move(source)), seal_(std::move(seal)) {}
+    pl::PlanKey KeyBase() const override { return source_->KeyBase(); }
+    en::Status PrepareExecution() override {
+      if (auto charged = seal_(); !charged) return charged;
+      return source_->PrepareExecution();
+    }
+    std::expected<std::optional<llmp::base::Sha256Digest>, std::string> ExecutionIdentity()
+        const override {
+      return source_->ExecutionIdentity();
+    }
+    std::vector<std::uint64_t> ShapeParameters(const pl::StepShape& shape) const override {
+      return source_->ShapeParameters(shape);
+    }
+    std::expected<std::unique_ptr<kn::StepProgram>, std::string> Build(
+        const pl::StepShape& shape, const kn::Addresses& addresses) override {
+      return source_->Build(shape, addresses);
+    }
+
+   private:
+    std::unique_ptr<en::StepSource> source_;
+    std::function<en::Status()> seal_;
+  };
+  node_ = std::make_unique<en::PagedNode>(
+      en::NodeSettings{.compute_streams = 1, .slots = 2, .copy_lane = true, .slot_bytes = kExtent});
+  ASSERT_TRUE(node_->Open());
+  auto paid = en::ExecutionMetadataAllowance::AdmitWithin(
+      node_->catalog(), node_->domain(), kExtent, 128 * kExtent, 128 * kExtent, kExtent);
+  ASSERT_TRUE(paid);
+  auto payment = *paid;
+  constexpr std::uint64_t fixed_host = 4096;
+  const auto before_factory = fixed_host + payment->capacity() + payment->OverheadBytes();
+  std::uint64_t factory_bytes = 0;
+  auto build = [&, original = Build(false)](const rt::ModelSettings& settings) mutable
+      -> std::expected<rt::EngineLlmParts, std::string> {
+    auto parts = original(settings);
+    if (!parts) return parts;
+    parts->startup_host_bytes = fixed_host;
+    parts->execution_metadata = payment;
+    parts->source = std::make_unique<SealingSource>(std::move(parts->source), [&, payment] {
+      // Production source sealing happens here, after the factory returns.
+      return payment->ChargeOrGrow(node_->catalog(), node_->domain(), 2 * kExtent, 128 * kExtent,
+                                   128 * kExtent, kExtent);
+    });
+    factory_bytes = fixed_host + payment->capacity() + payment->OverheadBytes();
+    return parts;
+  };
+  llm_ =
+      std::make_unique<rt::EngineLlm>(*node_, entry_, Settings(false), roles_, 0, std::move(build));
+  ASSERT_TRUE(llm_->Setup());
+  EXPECT_EQ(factory_bytes, before_factory);
+  EXPECT_GT(llm_->startup_host_bytes(), factory_bytes);
+  EXPECT_EQ(llm_->startup_host_bytes(),
+            fixed_host + payment->capacity() + payment->OverheadBytes());
+  const auto extents = node_->catalog().ExtentsOf(node_->domain()).size();
+  ASSERT_TRUE(payment->ChargeOrGrow(node_->catalog(), node_->domain(), kExtent, 128 * kExtent,
+                                    128 * kExtent, kExtent));
+  EXPECT_EQ(node_->catalog().ExtentsOf(node_->domain()).size(), extents);
+  EXPECT_EQ(llm_->startup_host_bytes(),
+            fixed_host + payment->capacity() + payment->OverheadBytes());
+  Stop();
+}
+
 TEST_F(EngineLlmTest, OpaqueSnapshotRestoresCapturedBytesAndHistoryWithOneCharge) {
   Start(false, false);
   auto& branch = BranchAt(0);

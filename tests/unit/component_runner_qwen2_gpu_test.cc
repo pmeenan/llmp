@@ -734,6 +734,10 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
                                 {.lower = {.index_scratch_limit = 32 * kMiB}});
     if (!backend) return std::unexpected(backend.error());
     kernel->backend = std::move(*backend);
+    if (auto x = kernel->resources->OpenSelectedWorkspace("selected kernel state",
+                                                          kernel->backend->persistent_bytes());
+        !x)
+      return x;
     auto weights = std::make_unique<en::PagedWeights>();
     if (auto x = weights->Open(root); !x) return x;
     en::PagedWeights* paged = weights.get();
@@ -824,7 +828,9 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
         [held = life.get()](
             std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return held->kernel->backend->Launch(
-          {.base = held->node.pool().base, .size = llmp::base::Bytes(held->node.pool().bytes)});
+          {.base = held->node.pool().base, .size = llmp::base::Bytes(held->node.pool().bytes)},
+          {.base = held->kernel->resources->selected_workspace().base,
+           .bytes = held->kernel->resources->selected_workspace().bytes});
     };
     config.weight_address = [held = life.get(), paged](const llmp::ir::WeightRef& ref,
                                                        llmp::format::PartRole) -> std::uint64_t {
@@ -1049,10 +1055,11 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
             if (auto x = SaveState(*life, true); !x) return x;
             if (life->saved_positions != checkpoint_positions)
               return std::unexpected("FP16 checkpoint starts at the wrong completed position");
-            // The complete checkpoint state at position 32, frozen (the v0
-            // import met the same digest, as the same sealed logit rows).
+            // Freeze the complete state at the configured checkpoint. Explicit
+            // bridge and selected-default attention have separate references.
             if (!corpus)
               frozen.Expect(std::string(fusion ? "fused" : "unfused") +
+                                (same_plan ? ".selected_default" : "") +
                                 (heldout ? ".heldout" : ".control") + (q8_cache ? ".q8" : "") +
                                 ".checkpoint_state",
                             CheckpointDigest(*life));

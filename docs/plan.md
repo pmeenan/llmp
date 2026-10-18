@@ -203,7 +203,7 @@ before new families land; each item lands as one reviewed commit.
       still pending)
 - [x] R5 Kernel gates by real limits (F16 GQA attention at head sizes
       64–192, parametric norm and MoE fusions, EXL3 beyond one fixture)
-- [ ] R6 The decode ladder in every backend (dense NVFP4, MXFP8 grouped,
+- [x] R6 The decode ladder in every backend (dense NVFP4, MXFP8 grouped,
       MXFP4; honest rungs, feature bits and measured ranks)
 - [ ] R7 Planner: quality-preserving fusions on by default, plan and
       coverage reports, family constants out of the planner, `Operation`

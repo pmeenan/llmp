@@ -14,6 +14,7 @@
 #include "base/sha256.h"
 #include "kernels/decode/implementations.h"
 #include "kernels/decode/products.h"
+#include "kernels/decode/selected_weight.h"
 #include "kernels/ggml/validate_util.h"
 #include "providers/device_runtime.h"
 
@@ -22,8 +23,6 @@ namespace {
 namespace kg = ggml;
 using Failure = kg::KernelFailure;
 using Role = format::PartRole;
-constexpr std::string_view kNvfp4Name = "llmp.decode.rows.nvfp4.split";
-constexpr std::string_view kAffineName = "llmp.decode.rows.affine.split";
 std::unexpected<Failure> Reject(std::string message) {
   return std::unexpected(Failure{.detail = std::move(message)});
 }
@@ -38,12 +37,16 @@ bool Packed(const ggml_tensor* t, ggml_type type, std::uint64_t width, std::uint
 }
 struct Geometry {
   format::TensorFormat effective;
-  std::array<ggml_tensor*, 3> parts{};
-  std::array<format::PartRole, 3> roles{};
+  std::array<ggml_tensor*, format::PartList::kMax> parts{};
+  std::array<format::PartRole, format::PartList::kMax> roles{};
   std::size_t count = 0;
   ggml_tensor* ids = nullptr;
   ggml_tensor* out = nullptr;
   std::uint64_t rows = 0;
+  std::uint64_t batches = 1;
+  std::optional<detail::WeightGeometry> resident{};
+  std::array<std::int64_t, 4> ids_ne{}, out_ne{};
+  std::array<std::size_t, 4> ids_nb{}, out_nb{};
 };
 std::expected<Geometry, Failure> Shape(const ir::Node& node,
                                        std::span<const kg::SelectedOperand> inputs,
@@ -55,12 +58,44 @@ std::expected<Geometry, Failure> Shape(const ir::Node& node,
   const auto& ids = inputs[1];
   const auto& out = outputs[0];
   const auto& f = w.desc.format;
+  if (!w.paged_weight) {
+    auto weight = detail::WeightOf(w);
+    if (!weight) return std::unexpected(weight.error());
+    if (ids.side_rows_component || ids.desc.format.encoding != format::Encoding::kI32 ||
+        ids.desc.format.layout != format::Layout::kDense || !ir::IsContiguous(ids.desc) ||
+        ids.desc.ne(1) != f.shape.ne[2] || ids.desc.ne(2) != f.shape.ne[3] || ids.desc.ne(3) != 1 ||
+        ids.desc.ne(0) >= (1ULL << 31) || out.desc.format.encoding != format::Encoding::kF32 ||
+        out.desc.format.layout != format::Layout::kDense || !ir::IsContiguous(out.desc) ||
+        out.desc.shape().ne !=
+            ir::ShapeOf({f.shape.ne[0], ids.desc.ne(0), ids.desc.ne(1), ids.desc.ne(2)}).ne ||
+        !ids.parts.empty() || !out.parts.empty() || !ids.tensor || !out.tensor ||
+        ids.tensor->type != GGML_TYPE_I32 || out.tensor->type != GGML_TYPE_F32 ||
+        !ggml_is_contiguous(ids.tensor) || !ggml_is_contiguous(out.tensor) ||
+        ggml_nelements(ids.tensor) != static_cast<std::int64_t>(ir::Elements(ids.desc.shape())) ||
+        ggml_nelements(out.tensor) != static_cast<std::int64_t>(ir::Elements(out.desc.shape())))
+      return Reject("resident rows require matching batched I32 IDs and F32 output");
+    Geometry g;
+    g.effective = f;
+    g.parts = weight->parts;
+    g.roles = weight->roles;
+    g.count = weight->count;
+    g.ids = ids.tensor;
+    g.out = out.tensor;
+    g.rows = ids.desc.ne(0);
+    g.batches = format::Matrices(f);
+    g.resident = *weight;
+    std::ranges::copy(g.ids->ne, g.ids_ne.begin());
+    std::ranges::copy(g.ids->nb, g.ids_nb.begin());
+    std::ranges::copy(g.out->ne, g.out_ne.begin());
+    std::ranges::copy(g.out->nb, g.out_nb.begin());
+    return g;
+  }
   const auto parts = format::PartsOf(f);
   if (!parts ||
       (f.encoding != format::Encoding::kNvfp4 && f.encoding != format::Encoding::kAffine) ||
-      f.layout != format::Layout::kSplit || f.shape.rank != 2 || f.stacked != 1 ||
-      f.shape.ne[0] >= (1ULL << 30) || f.shape.ne[1] >= (1ULL << 31) || !w.paged_weight ||
-      w.paged_weight->expert_array || !ids.side_rows_component ||
+      f.layout != format::Layout::kSplit || f.shape.ne[2] != 1 || f.shape.ne[3] != 1 ||
+      f.stacked != 1 || f.shape.ne[0] >= (1ULL << 30) || f.shape.ne[1] >= (1ULL << 31) ||
+      !w.paged_weight || w.paged_weight->expert_array || !ids.side_rows_component ||
       *ids.side_rows_component != w.paged_weight->component || w.parts.size() != parts->size())
     return Reject("selected rows require a complete split table and its checked side-row input");
   if (ids.desc.format.encoding != format::Encoding::kI32 ||
@@ -106,22 +141,30 @@ std::expected<Geometry, Failure> Shape(const ir::Node& node,
   g.effective.shape.ne[1] = resident;
   return g;
 }
-std::expected<std::array<DevicePart, 3>, Failure> BindParts(const Geometry& g) {
-  for (std::size_t i = 0; i < g.count; ++i) {
-    if (g.roles[i] == Role::kTensorScale) {
-      if (!Packed(g.parts[i], GGML_TYPE_F32, 1, 1))
-        return Reject("selected row geometry changed after lowering");
-    } else {
-      const auto row_bytes = format::RowBytes(g.effective, g.roles[i]);
-      if (!row_bytes || !Packed(g.parts[i], GGML_TYPE_I8, *row_bytes, g.effective.shape.ne[1]))
-        return Reject("selected row geometry changed after lowering");
+std::expected<std::array<DevicePart, format::PartList::kMax>, Failure> BindParts(
+    const Geometry& g) {
+  if (g.resident &&
+      (g.ids->type != GGML_TYPE_I32 || g.out->type != GGML_TYPE_F32 ||
+       !std::ranges::equal(g.ids->ne, g.ids_ne) || !std::ranges::equal(g.ids->nb, g.ids_nb) ||
+       !std::ranges::equal(g.out->ne, g.out_ne) || !std::ranges::equal(g.out->nb, g.out_nb)))
+    return Reject("selected resident row geometry changed after lowering");
+  if (!g.resident) {
+    for (std::size_t i = 0; i < g.count; ++i) {
+      if (g.roles[i] == Role::kTensorScale) {
+        if (!Packed(g.parts[i], GGML_TYPE_F32, 1, 1))
+          return Reject("selected row geometry changed after lowering");
+      } else {
+        const auto row_bytes = format::RowBytes(g.effective, g.roles[i]);
+        if (!row_bytes || !Packed(g.parts[i], GGML_TYPE_I8, *row_bytes, g.effective.shape.ne[1]))
+          return Reject("selected row geometry changed after lowering");
+      }
     }
+    if (!Packed(g.ids, GGML_TYPE_I32, g.rows, 1) ||
+        !Packed(g.out, GGML_TYPE_F32, g.effective.shape.ne[0], g.rows))
+      return Reject("selected row geometry changed after lowering");
   }
-  if (!Packed(g.ids, GGML_TYPE_I32, g.rows, 1) ||
-      !Packed(g.out, GGML_TYPE_F32, g.effective.shape.ne[0], g.rows))
-    return Reject("selected row geometry changed after lowering");
-  std::array<DevicePart, 3> result{};
-  std::array<const ggml_tensor*, 5> all{};
+  std::array<DevicePart, format::PartList::kMax> result{};
+  std::array<const ggml_tensor*, 6> all{};
   std::size_t all_count = 0;
   for (std::size_t i = 0; i < g.count; ++i) {
     all[all_count++] = g.parts[i];
@@ -144,6 +187,11 @@ std::expected<std::array<DevicePart, 3>, Failure> BindParts(const Geometry& g) {
     return Reject("selected row IDs or output are misaligned");
   for (std::size_t i = 0; i < g.count; ++i)
     result[i] = {g.roles[i], g.parts[i]->data, ggml_nbytes(g.parts[i])};
+  if (g.resident) {
+    auto checked = detail::BindWeightParts(*g.resident);
+    if (!checked) return std::unexpected(checked.error());
+    return checked;
+  }
   auto operand = OperandOf({g.effective, std::span(result).first(g.count), 0});
   if (!operand) return Reject(operand.error());
   return result;
@@ -166,17 +214,20 @@ class BoundCall final : public kg::BoundSelectedCall {
       return Reject("selected rows cannot run on a failed or foreign stream");
     const auto parts = BindParts(geometry_);
     if (!parts) return std::unexpected(parts.error());
-    auto ran =
-        RunRows({.weight = {geometry_.effective, std::span(*parts).first(geometry_.count), 0},
-                 .ids = static_cast<const std::int32_t*>(geometry_.ids->data),
-                 .count = geometry_.rows,
-                 .out = static_cast<float*>(geometry_.out->data),
-                 .out_stride = geometry_.effective.shape.ne[0],
-                 .bad = nullptr},
-                stream.handle);
-    if (!ran) {
-      runtime_.failed = true;
-      return std::unexpected(Failure{.error = kg::KernelError::kUnknown, .detail = ran.error()});
+    for (std::uint64_t matrix = 0; matrix < geometry_.batches; ++matrix) {
+      auto ran = RunRows(
+          {.weight = {geometry_.effective, std::span(*parts).first(geometry_.count), matrix},
+           .ids = static_cast<const std::int32_t*>(geometry_.ids->data) + matrix * geometry_.rows,
+           .count = geometry_.rows,
+           .out = static_cast<float*>(geometry_.out->data) +
+                  matrix * geometry_.rows * geometry_.effective.shape.ne[0],
+           .out_stride = geometry_.effective.shape.ne[0],
+           .bad = nullptr},
+          stream.handle);
+      if (!ran) {
+        runtime_.failed = true;
+        return std::unexpected(Failure{.error = kg::KernelError::kUnknown, .detail = ran.error()});
+      }
     }
     return {};
   }
@@ -190,19 +241,15 @@ class Call final : public kg::SelectedCall {
   Call(const kg::SelectedSource* owner, Geometry geometry, base::Sha256Digest identity)
       : kg::SelectedCall(owner), geometry_(geometry), identity_(identity) {}
   std::uint64_t scratch_bytes() const override { return 0; }
-  std::uint64_t host_bytes() const override {
-    static_assert(sizeof(Call) + sizeof(BoundCall) + 128 <= 2048);
-    return 2048;
-  }
-  std::uint64_t launches() const override { return 1; }
+  std::uint64_t host_bytes() const override { return sizeof(Call) + sizeof(BoundCall) + 128; }
+  std::uint64_t launches() const override { return geometry_.batches; }
   std::expected<std::unique_ptr<kg::BoundSelectedCall>, Failure> Bind(
       const execution::Implementation& implementation, kg::SelectedLaunch& launch,
       kg::SelectedWorkspace) const override {
     if (launch.owner() != owner() || execution::IdentityOf(implementation) != identity_)
       return Reject("selected row source or implementation identity changed");
     const auto bound = decode::Bind(implementation);
-    if (!bound || bound->tmpl != Template::kRows ||
-        (bound->gate != DecoderId::kNvfp4Split && bound->gate != DecoderId::kAffineSplit))
+    if (!bound || bound->tmpl != Template::kRows || DecoderOf(geometry_.effective) != bound->gate)
       return Reject("selected row declaration is not the native split decoder");
     if (auto parts = BindParts(geometry_); !parts) return std::unexpected(parts.error());
     return std::make_unique<BoundCall>(static_cast<Runtime&>(launch), geometry_);
@@ -215,7 +262,15 @@ class Call final : public kg::SelectedCall {
 class Source final : public kg::SelectedSource {
  public:
   explicit Source(std::vector<execution::Implementation> implementations)
-      : implementations_(std::move(implementations)) {}
+      : implementations_(std::move(implementations)) {
+    base::Sha256 hash;
+    hash.Update("llmp-native-rows-v1;resident-batches;paged-component-slot-authentication");
+    for (const auto& impl : implementations_) {
+      const auto id = execution::IdentityOf(impl);
+      hash.Update(std::as_bytes(std::span(id)));
+    }
+    identity_ = hash.Finish();
+  }
   std::vector<execution::Implementation> Implementations() const override {
     return implementations_;
   }
@@ -225,6 +280,7 @@ class Source final : public kg::SelectedSource {
                                [&](const auto& impl) { return impl.name == name; });
   }
   std::uint64_t persistent_bytes() const override { return 0; }
+  std::optional<base::Sha256Digest> ExecutionIdentity() const override { return identity_; }
   std::expected<std::unique_ptr<kg::SelectedCall>, Failure> Lower(
       const execution::Implementation& implementation, const ir::Node& node,
       std::span<const kg::SelectedOperand> inputs,
@@ -236,12 +292,9 @@ class Source final : public kg::SelectedSource {
       return Reject("foreign rows declaration");
     auto geometry = Shape(node, inputs, outputs);
     if (!geometry) return std::unexpected(geometry.error());
-    if (implementation.name == kNvfp4Name &&
-        geometry->effective.encoding != format::Encoding::kNvfp4)
-      return Reject("rows implementation and weight encoding differ");
-    if (implementation.name == kAffineName &&
-        geometry->effective.encoding != format::Encoding::kAffine)
-      return Reject("rows implementation and weight encoding differ");
+    const auto bound = decode::Bind(implementation);
+    if (!bound || DecoderOf(geometry->effective) != bound->gate)
+      return Reject("rows implementation and weight format differ");
     return std::make_unique<Call>(this, *geometry, execution::IdentityOf(implementation));
   }
   std::expected<std::unique_ptr<kg::SelectedLaunch>, Failure> Launch(
@@ -257,6 +310,7 @@ class Source final : public kg::SelectedSource {
 
  private:
   std::vector<execution::Implementation> implementations_;
+  base::Sha256Digest identity_{};
 };
 }  // namespace
 std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> RowsSelectedSource(
@@ -264,9 +318,9 @@ std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> RowsSele
   auto implementations = decode::Implementations();
   std::vector<execution::Implementation> matched;
   for (const auto& impl : implementations) {
-    if (impl.name == kNvfp4Name && (!encoding || *encoding == format::Encoding::kNvfp4))
-      matched.push_back(impl);
-    else if (impl.name == kAffineName && (!encoding || *encoding == format::Encoding::kAffine))
+    const auto bound = decode::Bind(impl);
+    if (bound && bound->tmpl == Template::kRows &&
+        (!encoding || DecoderEncoding(bound->gate) == *encoding))
       matched.push_back(impl);
   }
   if (matched.empty()) return std::unexpected("native split rows implementation missing");

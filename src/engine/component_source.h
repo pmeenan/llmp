@@ -102,8 +102,8 @@ struct ComponentSourceOptions {
   // domain. Requires a real backend owner. Joined pending replay additionally
   // requires its explicit use and complete compatible composition layouts.
   std::shared_ptr<const NumericalDomain> execution_domain{};
-  // Require graph-capture-safe implementations. Uncaptured callers may
-  // opt out; their runner must disable graph capture too.
+  // Require graph-capture-safe implementations. Eager-capable callers may
+  // opt out; each actual program still reports whether it can be captured.
   bool require_capture = true;
   // Diagnostic validation only, after the real backend lowers both measuring
   // and bound plans. No callback means the ordinary path is unchanged.
@@ -157,6 +157,7 @@ class ComponentStepSource final : public StepSource {
     return o_.backend.owner ? o_.backend.owner->backend() : o_.backend;
   }
   planner::Policy policy_;
+  planner::PlanKey key_base_;
   std::vector<components::Instance> shaped_, side_;
   base::Sha256Digest layout_identity_{};
   planner::StateSpans StateSpans(const planner::StepShape& shape,

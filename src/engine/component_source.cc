@@ -11,6 +11,7 @@
 
 #include "base/check.h"
 #include "engine/graph_plan.h"
+#include "execution/measured_ranks.h"
 #include "format/tensor_format.h"
 #include "ir/graph.h"
 #include "planner/plan.h"
@@ -75,6 +76,13 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
   if (backend.registry == nullptr || !backend.lower) {
     return std::unexpected("a component step source needs a kernel source");
   }
+  if ((backend.lanes.count == 0 && backend.lanes.scratch_bytes_per_lane != 0) ||
+      backend.lanes.count > planner::kMaxLanes ||
+      (backend.lanes.count != 0 &&
+       (backend.lanes.scratch_bytes_per_lane == 0 ||
+        backend.lanes.scratch_bytes_per_lane % 256 != 0 ||
+        backend.lanes.scratch_bytes_per_lane > UINT64_MAX / backend.lanes.count)))
+    return std::unexpected("the backend's lane configuration is invalid");
   planner::Policy policy;
   if (options.policy) {
     policy = *options.policy;
@@ -126,6 +134,35 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
   if (!instances) return std::unexpected(instances.error());
   auto source = std::unique_ptr<ComponentStepSource>(
       new ComponentStepSource(std::move(options), std::move(policy)));
+  auto key = planner::KeyOf(source->o_.bound_digest, {}, source->policy_);
+  const auto& source_backend =
+      source->o_.backend.owner ? source->o_.backend.owner->backend() : source->o_.backend;
+  key.registry = source_backend.registry->Digest();
+  key.capturable = source->o_.require_capture;
+  base::Sha256 facts;
+  facts.Update("llmp-plan-backend-v2");
+  facts.Update(std::format("lanes:{}:{};", source_backend.lanes.count,
+                           source_backend.lanes.scratch_bytes_per_lane));
+  facts.Update(std::as_bytes(std::span(execution::MeasuredRanksDigest())));
+  facts.Update(std::format("{}:", source_backend.device.device_class.size()));
+  facts.Update(source_backend.device.device_class);
+  facts.Update(std::format(":{}:{}:{}:{}:", source_backend.device.arch,
+                           source_backend.device.features, source_backend.device.multiprocessors,
+                           source_backend.device.device_model.size()));
+  facts.Update(source_backend.device.device_model);
+  for (const auto& name : source_backend.device.preferred) {
+    facts.Update(std::format("preferred:{}:", name.size()));
+    facts.Update(name);
+  }
+  for (const auto& tune : source_backend.device.tuned) {
+    facts.Update(std::format("{}:", tune.implementation.size()));
+    facts.Update(tune.implementation);
+    facts.Update(std::format(":{}:{}:{}:{}:{};", tune.rows, tune.k, tune.n,
+                             tune.output_encoding ? static_cast<int>(*tune.output_encoding) : -1,
+                             tune.weight_bits));
+  }
+  key.backend = facts.Finish();
+  source->key_base_ = std::move(key);
   const auto add = [&](const components::Instance& in) {
     if (in.def->shape_parameters != nullptr) source->shaped_.push_back(in);
     if (in.def->side_rows != nullptr) source->side_.push_back(in);
@@ -358,7 +395,7 @@ Status ComponentStepSource::CheckExecutionShape(const planner::StepShape& shape)
 }
 
 planner::PlanKey ComponentStepSource::KeyBase() const {
-  auto key = planner::KeyOf(o_.bound_digest, {}, policy_);
+  auto key = key_base_;
   if (execution_) {
     base::Sha256 hash;
     hash.Update(std::as_bytes(std::span(key.patterns)));
@@ -521,7 +558,8 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
       aligned_staged.push_back(input.tensor);
   }
   planner::LaneTags lane_tags;
-  if ((shape.phase == planner::Phase::kDecode || shape.phase == planner::Phase::kVerify ||
+  if (Backend().lanes.count != 0 &&
+      (shape.phase == planner::Phase::kDecode || shape.phase == planner::Phase::kVerify ||
        shape.phase == planner::Phase::kDraft) &&
       shape.segments.size() > 1) {
     std::uint32_t region = 0;
@@ -538,7 +576,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
           }
           lane_tags.push_back({ir::NodeId{i}, planner::LaneTag{
                                                   .lane = static_cast<std::uint8_t>(
-                                                      (segment % planner::kMaxLanes) + 1),
+                                                      (segment % Backend().lanes.count) + 1),
                                                   .region = region,
                                               }});
         }
@@ -577,7 +615,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
 std::expected<std::unique_ptr<StagedStepSource>, std::string> StagedStepSource::Create(
     std::vector<std::unique_ptr<ComponentStepSource>> stages) {
   if (stages.empty()) return std::unexpected("a staged step source needs a stage");
-  base::Sha256 patterns, policies;
+  base::Sha256 patterns, policies, registries, backends;
   for (std::size_t i = 0; i < stages.size(); ++i) {
     if (stages[i] == nullptr || stages[i]->stage() != i) {
       return std::unexpected(std::format("stage {}'s step source is not its own", i));
@@ -588,10 +626,15 @@ std::expected<std::unique_ptr<StagedStepSource>, std::string> StagedStepSource::
     const planner::PlanKey key = stages[i]->KeyBase();
     patterns.Update(std::as_bytes(std::span(key.patterns)));
     policies.Update(std::as_bytes(std::span(key.policy)));
+    registries.Update(std::as_bytes(std::span(key.registry)));
+    backends.Update(std::as_bytes(std::span(key.backend)));
+    backends.Update(key.capturable ? "capturable" : "ordinary");
   }
   planner::PlanKey key = stages.front()->KeyBase();
   key.patterns = patterns.Finish();
   key.policy = policies.Finish();
+  key.registry = registries.Finish();
+  key.backend = backends.Finish();
   return std::unique_ptr<StagedStepSource>(new StagedStepSource(std::move(stages), key));
 }
 

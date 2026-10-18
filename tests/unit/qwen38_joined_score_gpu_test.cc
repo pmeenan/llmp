@@ -490,7 +490,7 @@ std::expected<rt::ComponentBuildOptions, std::string> Options(Lifetime& life) {
       .state_only_prefill = false,
       .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain)),
       .tuning = {},
-      .execution_metadata_bytes = 1 * kMiB,
+      .execution_metadata_cap_bytes = kMetadataEnvelope,
       .validate_program = [&life](const kn::LowerInput& input, const kn::StepProgram& program) {
         return ValidateProgram(life, input, program);
       }};

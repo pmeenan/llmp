@@ -209,6 +209,10 @@ en::Status SetupFixture(Lifetime& life, bool small) {
   auto backend = kg::GgmlBackend::Create(0, life.node.execution(), life.node.stream(0), nullptr);
   if (!backend) return Error(backend.error());
   life.backend = std::move(*backend);
+  if (auto r = life.resources.OpenSelectedWorkspace("selected kernel state",
+                                                    life.backend->persistent_bytes());
+      !r)
+    return r;
   auto facts = llmp::providers::QueryDeviceFacts(0);
   if (!facts) return Error("actual device facts");
   const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
@@ -233,7 +237,9 @@ en::Status SetupFixture(Lifetime& life, bool small) {
     if (!measuring) {
       if (auto r = life.node.MapWorkspace(kActivation + 2 * kGuard, kPool + 2 * kGuard); !r)
         return r;
-      auto launch = life.backend->Launch({life.node.pool().base + kGuard, Bytes(0)});
+      auto launch = life.backend->Launch({life.node.pool().base + kGuard, Bytes(0)},
+                                         {.base = life.resources.selected_workspace().base,
+                                          .bytes = life.resources.selected_workspace().bytes});
       if (!launch) return Error(launch.error());
       life.launch = std::move(*launch);
     }
@@ -261,7 +267,9 @@ en::Status SetupFixture(Lifetime& life, bool small) {
   life.launch.reset();
   life.backend->LaunchReleased();
   if (auto r = life.backend->LendCublas(&life.resources.cublas()); !r) return Error(r.error());
-  auto launch = life.backend->Launch({life.node.pool().base + kGuard, Bytes(kPool)});
+  auto launch = life.backend->Launch({life.node.pool().base + kGuard, Bytes(kPool)},
+                                     {.base = life.resources.selected_workspace().base,
+                                      .bytes = life.resources.selected_workspace().bytes});
   if (!launch) return Error(launch.error());
   life.launch = std::move(*launch);
   for (std::size_t i = 0; i < 2; ++i) {

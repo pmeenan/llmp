@@ -3702,6 +3702,9 @@ owner answered them together and set the general rule.
   derivatives' mixed provenance is unchanged.
 - A shipped binary may link the GEMM kernels, with ExLlamaV3's MIT text in
   its notices.
+  The M3.6 review follow-up makes that same kept kernel set a product source
+  (`use: test` to `use: product`), preserving the archive pin, kept files,
+  patches, license scope and MIT notices.
 
 **Reopen if.** Evidence of copied GPL code appears in a component cleared
 here (it then becomes an optional module, still shipped by default), or a

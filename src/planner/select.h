@@ -50,6 +50,11 @@ struct DeviceFacts {
   // Shapes implementations have tuning data for here (registry.h
   // TunedShape; their names point into the tuning record).
   std::vector<execution::TunedShape> tuned{};
+  std::string device_model{};
+  std::uint32_t multiprocessors = 0;
+  // Explicitly supplied source implementations retain compatibility preference
+  // after measured ranks. Names are exact owned declarations, not prefixes.
+  std::vector<std::string> preferred{};
 };
 
 // A source/backend's immutable copy of device facts, including the strings
@@ -148,19 +153,20 @@ class SelectionView {
   std::vector<std::size_t> Candidates(ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
                                       std::span<const ir::TensorDesc* const> outputs,
                                       std::span<const std::byte> params = {},
-                                      bool state_span = false) const;
+                                      bool state_span = false, bool automatic_fusion = false) const;
   // The same for a node of `graph` (with its parameters), as it is or
   // under another key (a batch's).
   std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node) const;
-  std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node,
-                                      ir::OpKey key) const;
+  std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
+                                      bool automatic_fusion = false) const;
 
  private:
   std::vector<std::size_t> ForOperands(ir::OpKey key,
                                        std::span<const ir::TensorDesc* const> sources,
                                        std::span<const ir::TensorDesc* const> outputs,
                                        std::span<const std::byte> params, bool state_span,
-                                       std::span<const std::uint64_t> alignments) const;
+                                       std::span<const std::uint64_t> alignments,
+                                       bool automatic_fusion = false) const;
   const execution::Registry& registry_;
   const DeviceFacts& device_;
   const Policy& policy_;

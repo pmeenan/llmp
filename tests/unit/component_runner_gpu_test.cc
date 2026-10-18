@@ -229,6 +229,7 @@ Component Lowered(const fs::path& root, const llmp::spec::ModelSpec& spec,
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
   std::unique_ptr<en::ModelRunner> runner;
   std::unique_ptr<kg::GgmlBackend> backend;
+  kg::SelectedWorkspace selected_state{};
   std::vector<en::PagedModel*> entered;
   const auto started = [&]() -> en::Status {
     if (auto x = node.Open(); !x) return x;
@@ -262,10 +263,24 @@ Component Lowered(const fs::path& root, const llmp::spec::ModelSpec& spec,
     config.weights.push_back(
         {.weights = std::move(weights), .places = std::move(places), .slabs = {}});
     config.setup_shapes = shapes;
+    const auto selected_bytes = backend->persistent_bytes();
+    if (selected_bytes)
+      config.kernel_memory.push_back({.name = "selected kernel state", .bytes = selected_bytes});
+    config.prepare = [&selected_state,
+                      selected_bytes](std::span<const std::uint64_t> bases) -> en::Status {
+      if (bases.size() != static_cast<std::size_t>(selected_bytes != 0))
+        return std::unexpected("selected kernel state is not mapped");
+      selected_state = {selected_bytes ? bases[0] : 0, selected_bytes};
+      return {};
+    };
+    config.retire = [&] {
+      backend->LaunchReleased();
+      selected_state = {};
+    };
     config.launch =
         [&](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return backend->Launch(
-          {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)});
+          {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)}, selected_state);
     };
     config.weight_address = [&resource, paged](const llmp::ir::WeightRef& ref,
                                                llmp::format::PartRole) -> std::uint64_t {

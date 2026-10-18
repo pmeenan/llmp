@@ -6,21 +6,28 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <format>
+#include <thread>
 #include <vector>
 
 #include "components/step.h"
 #include "engine/component_source.h"
+#include "expected_error.h"
 #include "families/qwen.h"
 #include "ir/graph.h"
+#include "kernels/decode/selected_source.h"
 #include "kernels/exl3/reconstruction_tuning.h"
 #include "kernels/exl3/selected_source.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/lower.h"
+#include "kernels/ggml/step_program.h"
 #include "kernels/ggml/tensors.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
+#include "providers/cuda/cuda_device_execution.h"
+#include "providers/device_runtime.h"
 #include "spec/mapping.h"
 #include "spec/mappings/qwen2.h"
 
@@ -176,6 +183,36 @@ TEST(Exl3SelectedTest, DefaultsCoverNonfixtureWidthsAndDropMissingCapacityOrPins
       const auto candidates = execution::Candidates(*registry, query);
       ASSERT_EQ(candidates.size(), 1U);
       EXPECT_EQ(registry->at(candidates.front()).name, gemm->name);
+      // Planner queries use Node's full fixed storage; direct capability
+      // callers may provide only ProductParams. Both carry the same values.
+      ir::ProductParams params{};
+      query.params = {};
+      EXPECT_EQ(execution::Candidates(*registry, query).size(), 1U);
+      query.params = std::as_bytes(std::span(&params, 1));
+      EXPECT_EQ(execution::Candidates(*registry, query).size(), 1U);
+      query.params = query.params.first(sizeof(params) - 1);
+      EXPECT_TRUE(execution::Candidates(*registry, query).empty());
+      params = {.accumulate = ir::Accumulate::kF32};
+      query.params = std::as_bytes(std::span(&params, 1));
+      EXPECT_TRUE(execution::Candidates(*registry, query).empty());
+      product.node.SetParams(params);
+      query.params = product.node.params;
+      EXPECT_TRUE(execution::Candidates(*registry, query).empty());
+      params = {.hint = ir::ProductHint::kHadamard};
+      query.params = std::as_bytes(std::span(&params, 1));
+      EXPECT_TRUE(execution::Candidates(*registry, query).empty());
+      product.node.SetParams(params);
+      query.params = product.node.params;
+      EXPECT_TRUE(execution::Candidates(*registry, query).empty());
+      product.node.SetParams(ir::ProductParams{});
+      EXPECT_EQ(execution::Candidates(*registry, query).size(), 1U);
+      // Multipart alias descriptors cannot carry all four physical-part
+      // views through shared lowering, including a zero-offset alias.
+      operands[0].memory = execution::OperandMemory{.is_view = true};
+      EXPECT_TRUE(execution::Candidates(*registry, query).empty());
+      operands[0].memory = execution::OperandMemory{.view_offset = 16};
+      EXPECT_TRUE(execution::Candidates(*registry, query).empty());
+      operands[0].memory.reset();
       auto pinned = ex::SelectedSource(ex::FrozenCache::k40G);
       ASSERT_TRUE(pinned);
       auto no_defaults = execution::Registry::Create((*pinned)->Implementations());
@@ -195,6 +232,11 @@ TEST(Exl3SelectedTest, DefaultsCoverNonfixtureWidthsAndDropMissingCapacityOrPins
       const auto paired = execution::Candidates(*registry, query);
       ASSERT_EQ(paired.size(), 1U);
       EXPECT_EQ(registry->at(paired.front()).name, "exl3.pinned.40g.multi_linear.mgemm");
+      for (const auto index : {0U, 1U}) {
+        pair[index].memory = execution::OperandMemory{.is_view = true};
+        EXPECT_TRUE(execution::Candidates(*registry, query).empty());
+        pair[index].memory.reset();
+      }
       for (const auto index : {3U, 4U}) {
         pair[index].encoding = Encoding::kF16;
         EXPECT_TRUE(execution::Candidates(*registry, query).empty());
@@ -295,6 +337,181 @@ TEST(Exl3SelectedTest, RefusesMissingDuplicateShortPartsAndWrongNumericalPath) {
   EXPECT_FALSE((*source)->Lower(*impl, p.node, p.inputs, p.output));
   EXPECT_FALSE(ex::SelectedSource(ex::FrozenCache::k40O));
 }
+TEST(Exl3SelectedTest, AutomaticPairedProductsNeedQualificationAcrossTheCompleteRegistry) {
+  namespace pl = llmp::planner;
+  namespace execution = llmp::execution;
+  namespace de = llmp::kernels::decode;
+  const auto hardware = llmp::providers::QueryDeviceFacts(0);
+  ASSERT_TRUE(hardware);
+  if (hardware->architecture != 1210 || hardware->multiprocessors != 48)
+    GTEST_SKIP() << "the historical reconstruction pins require the measured GB10/48SM device";
+  const auto pinned = ex::SelectedSource(ex::FrozenCache::k40G);
+  const auto decoders = de::DecodeResidentSelectedSource();
+  const auto device = ex::DeviceSelectedSource(0);
+  ASSERT_TRUE(pinned);
+  ASSERT_TRUE(decoders);
+  ASSERT_TRUE(device);
+  const auto complete = de::CompositeSelectedSource({*pinned, *decoders, *device});
+  auto implementations = kg::Implementations();
+  for (auto& implementation : complete->Implementations())
+    implementations.push_back(std::move(implementation));
+  const auto registry = execution::Registry::Create(std::move(implementations));
+  ASSERT_TRUE(registry);
+  auto device_execution = llmp::providers::cuda::OpenDeviceExecution(0);
+  ASSERT_TRUE(device_execution);
+  const auto stream = (*device_execution)->CreateStream();
+  ASSERT_TRUE(stream);
+  auto default_backend = kg::GgmlBackend::Create(0, **device_execution, *stream, nullptr);
+  ASSERT_TRUE(default_backend);
+  const auto ordinary_backend = (*default_backend)->Backend();
+  ASSERT_TRUE(ordinary_backend.device.preferred.empty());
+  pl::DeviceFacts facts{.device_class = "sm_121", .arch = 121, .tuned = complete->Tuning(121)};
+  for (const auto& implementation : (*pinned)->Implementations())
+    facts.preferred.push_back(implementation.name);
+  const auto graph = [](std::uint32_t rows, bool direct, bool decode_glu = false,
+                        std::uint32_t width = 896) {
+    ir::Builder b;
+    const fmt::TensorFormat weight{
+        .encoding = decode_glu ? Encoding::kMxfp8 : Encoding::kExl3Trellis,
+        .params = decode_glu
+                      ? fmt::EncodingParams{}
+                      : fmt::EncodingParams{.k_bits = 4, .codebook = fmt::Exl3Codebook::kMcg},
+        .layout = decode_glu ? fmt::Layout::kSplit : fmt::Layout::kExl3Tiles,
+        .shape = ir::ShapeOf({width, 4864})};
+    const auto wg = b.Weight(weight, {.stage = 0, .component = 1, .role = 0});
+    const auto wu = b.Weight(weight, {.stage = 0, .component = 1, .role = 1});
+    const auto x = b.Input(
+        ir::Dense(decode_glu ? Encoding::kF32 : Encoding::kF16, ir::ShapeOf({width, rows})));
+    if (direct) {
+      const auto output = b.Fused(ir::FusedKind::kPreparedProducts, std::array{wg, wu, x});
+      b.Output(output[0]);
+      b.Output(output[1]);
+    } else {
+      const auto gate = b.MatMul(wg, x);
+      const auto up = b.MatMul(wu, x);
+      b.Output(b.Glu(gate, up, {.kind = ir::GluKind::kSwiGlu}));
+    }
+    return std::move(b).Finish();
+  };
+  const auto names = [&](const pl::StepPlan& plan) {
+    std::vector<std::string> result;
+    for (const auto& step : plan.steps) result.push_back(registry->at(step.implementation).name);
+    return result;
+  };
+  // An already available native quantized GLU stays eligible alongside the
+  // newly registered decoder GLU; the qualification gate is not a blanket
+  // prohibition on automatic fused operations.
+  ir::Builder native_glu;
+  const fmt::TensorFormat q8{.encoding = Encoding::kQ8_0,
+                             .layout = fmt::Layout::kGgmlBlocks,
+                             .shape = ir::ShapeOf({896, 4864})};
+  const auto qg = native_glu.Weight(q8, {.stage = 0, .component = 1, .role = 0});
+  const auto qu = native_glu.Weight(q8, {.stage = 0, .component = 1, .role = 1});
+  const auto qx = native_glu.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({896, 1})));
+  const auto qgate = native_glu.MatMul(qg, qx);
+  const auto qup = native_glu.MatMul(qu, qx);
+  native_glu.Output(native_glu.Glu(qgate, qup, {.kind = ir::GluKind::kSwiGlu}));
+  auto native_graph = std::move(native_glu).Finish();
+  ASSERT_TRUE(native_graph);
+  const auto native_plan = pl::Plan(std::move(*native_graph), *registry, facts, {});
+  ASSERT_TRUE(native_plan) << native_plan.error().detail;
+  EXPECT_EQ(names(*native_plan), std::vector<std::string>{"ggml.mul_mat_glu.mmvq_fused"});
+  for (const auto rows : {1U, 145U, 1024U}) {
+    SCOPED_TRACE(rows);
+    auto primitive = graph(rows, false);
+    ASSERT_TRUE(primitive);
+    const auto ordinary = pl::Plan(primitive->Clone(), *registry, facts, {});
+    ASSERT_TRUE(ordinary) << ordinary.error().detail;
+    // The ordinary production backend has no explicit-source preference to
+    // hide a later unqualified competitor behind the matcher-approved pin.
+    const auto default_plan =
+        pl::Plan(primitive->Clone(), *ordinary_backend.registry, ordinary_backend.device, {});
+    ASSERT_TRUE(default_plan) << default_plan.error().detail;
+    for (const auto& step : default_plan->steps) {
+      const auto& implementation = ordinary_backend.registry->at(step.implementation);
+      EXPECT_NE(implementation.name, "exl3.device.multi_linear.mgemm");
+    }
+    EXPECT_EQ(default_plan->steps.size(), rows == 1 ? 2U : 3U);
+    if (rows == 1)
+      EXPECT_EQ(ordinary_backend.registry->at(default_plan->steps.front().implementation).name,
+                "exl3.pinned.40g.multi_linear.mgemm");
+    auto default_direct = graph(rows, true);
+    ASSERT_TRUE(default_direct);
+    const auto default_typed = pl::Plan(std::move(*default_direct), *ordinary_backend.registry,
+                                        ordinary_backend.device, {});
+    ASSERT_TRUE(default_typed) << default_typed.error().detail;
+    ASSERT_EQ(default_typed->steps.size(), 1U);
+    EXPECT_EQ(ordinary_backend.registry->at(default_typed->steps.front().implementation).name,
+              "exl3.device.multi_linear.mgemm");
+    if (rows == 1) {
+      EXPECT_EQ(names(*ordinary),
+                (std::vector<std::string>{"exl3.pinned.40g.multi_linear.mgemm", "ggml.swiglu"}));
+    } else {
+      const auto linear = rows == 145 ? "exl3.pinned.40g.linear.reconstruct"
+                                      : "exl3.pinned.40g.linear.reconstruct_fused";
+      EXPECT_EQ(names(*ordinary), (std::vector<std::string>{linear, linear, "ggml.swiglu"}));
+      // Direct typed use and a caller's actual measured preference remain
+      // available. These synthetic facts qualify only this test, not a device
+      // measurement or a production rank-table entry.
+      auto direct = graph(rows, true);
+      ASSERT_TRUE(direct);
+      const auto typed = pl::Plan(std::move(*direct), *registry, facts, {});
+      ASSERT_TRUE(typed) << typed.error().detail;
+      EXPECT_EQ(names(*typed), std::vector<std::string>{"exl3.device.multi_linear.mgemm"});
+      pl::Policy measured;
+      measured.ranks = {{.device_class = "sm_121",
+                         .implementation = "exl3.device.multi_linear.mgemm",
+                         .rank = 0}};
+      const auto qualified = pl::Plan(primitive->Clone(), *registry, facts, measured);
+      ASSERT_TRUE(qualified) << qualified.error().detail;
+      EXPECT_EQ(names(*qualified),
+                (std::vector<std::string>{"exl3.device.multi_linear.mgemm", "ggml.swiglu"}));
+      auto unsupported = graph(rows, false, false, 912);  // valid tiles, no packed K=128 grid
+      ASSERT_TRUE(unsupported);
+      EXPECT_FALSE(pl::Plan(std::move(*unsupported), *registry, facts, measured));
+      measured.ranks[0].device_class = "different_device";
+      const auto other_device = pl::Plan(primitive->Clone(), *registry, facts, measured);
+      ASSERT_TRUE(other_device) << other_device.error().detail;
+      EXPECT_EQ(names(*other_device), names(*ordinary));
+      measured.ranks[0].device_class = "sm_121";
+      measured.ranks[0].implementation = "different_implementation";
+      const auto other_impl = pl::Plan(primitive->Clone(), *registry, facts, measured);
+      ASSERT_TRUE(other_impl) << other_impl.error().detail;
+      EXPECT_EQ(names(*other_impl), names(*ordinary));
+    }
+    auto decode = graph(rows, false, true);
+    ASSERT_TRUE(decode);
+    const auto decoded = pl::Plan(std::move(*decode), *registry, facts, {});
+    ASSERT_TRUE(decoded) << decoded.error().detail;
+    EXPECT_FALSE(std::ranges::any_of(decoded->graph.nodes(), [](const auto& node) {
+      return node.key == ir::Fused(ir::FusedKind::kMatMulGlu) ||
+             node.key == ir::Fused(ir::FusedKind::kPreparedProducts);
+    }));
+  }
+  // Backend creation borrows Submission even without payload launches. The
+  // provider requires a seen-complete, released fence before stream retirement.
+  const auto fence = (*device_execution)->Record(*stream);
+  ASSERT_TRUE(fence)
+      << llmp::test_support::Failed(fence, &llmp::providers::Failure::detail).value_or("");
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  auto state = (*device_execution)->Query(*fence);
+  while (state && *state == llmp::providers::FenceState::kPending &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::microseconds(50));
+    state = (*device_execution)->Query(*fence);
+  }
+  ASSERT_TRUE(state)
+      << llmp::test_support::Failed(state, &llmp::providers::Failure::detail).value_or("");
+  ASSERT_EQ(*state, llmp::providers::FenceState::kComplete);
+  const auto released = (*device_execution)->Release(*fence);
+  ASSERT_TRUE(released)
+      << llmp::test_support::Failed(released, &llmp::providers::Failure::detail).value_or("");
+  default_backend->reset();
+  const auto destroyed = (*device_execution)->DestroyStream(*stream);
+  EXPECT_TRUE(destroyed)
+      << llmp::test_support::Failed(destroyed, &llmp::providers::Failure::detail).value_or("");
+}
+
 TEST(Exl3SelectedTest, SharedGraphKeepsEveryWeightPartAndExactSelectedOperation) {
   namespace co = llmp::components;
   namespace sp = llmp::spec;
@@ -321,6 +538,11 @@ TEST(Exl3SelectedTest, SharedGraphKeepsEveryWeightPartAndExactSelectedOperation)
     return kg::MulMatPath::kCublas;
   };
   const llmp::kernels::Addresses addresses{};
+  // This manually assembled backend supplies one exact source, just as
+  // GgmlBackend::Create's explicit-source preference does in production.
+  std::vector<std::string> preferred;
+  for (const auto& implementation : (*native)->Implementations())
+    preferred.push_back(implementation.name);
   for (const auto rows : {1U, 3U, 7U, 8U, 32U, 33U, 144U, 145U, 1023U, 1024U}) {
     SCOPED_TRACE(rows);
     const pl::StepShape shape{.phase = (rows <= 8) ? pl::Phase::kScore : pl::Phase::kPrefill,
@@ -334,13 +556,16 @@ TEST(Exl3SelectedTest, SharedGraphKeepsEveryWeightPartAndExactSelectedOperation)
     std::vector<ir::TensorId> staged;
     for (const auto& input : step->inputs)
       if (input.kind != co::InputKind::kCellPositions) staged.push_back(input.tensor);
-    auto plan =
-        pl::Plan(step->graph.Clone(), *registry,
-                 {.device_class = "sm_121", .arch = 121, .tuned = (*native)->Tuning(121)}, *policy,
-                 {.staged = staged,
-                  .written = &kg::WrittenBytes,
-                  .within = &kg::WithinRoot,
-                  .shape = &shape});
+    auto plan = pl::Plan(step->graph.Clone(), *registry,
+                         {.device_class = "sm_121",
+                          .arch = 121,
+                          .tuned = (*native)->Tuning(121),
+                          .preferred = preferred},
+                         *policy,
+                         {.staged = staged,
+                          .written = &kg::WrittenBytes,
+                          .within = &kg::WithinRoot,
+                          .shape = &shape});
     if (rows == 3) {
       // The frozen G cache has no bucket4 fact for this required product.
       // Refuse instead of manufacturing tuning for the natural43 tail.
@@ -425,6 +650,58 @@ TEST(Exl3SelectedTest, ProfileIdentityAndGemvFactsAreExplicit) {
   auto stale = *at;
   stale.variant += "; stale";
   EXPECT_FALSE((*g)->Lower(stale, p.node, p.inputs, p.output));
+}
+
+TEST(Exl3SelectedTest, BiasCandidatesRequireTheSamePackedGeometryAsLowering) {
+  namespace execution = llmp::execution;
+  auto source = ex::SelectedSource(ex::FrozenCache::k40G);
+  ASSERT_TRUE(source);
+  const auto declarations = (*source)->Implementations();
+  const auto bias =
+      std::ranges::find(declarations, "exl3.pinned.40g.bias_add", &execution::Implementation::name);
+  ASSERT_NE(bias, declarations.end());
+  auto registry = execution::Registry::Create(declarations).value();
+  auto arena = kg::TensorArena::Create(4).value();
+  const auto dense = [&](std::uint64_t rows) {
+    kg::SelectedOperand value;
+    value.desc.format = ir::Dense(Encoding::kF16, ir::ShapeOf({64, rows}));
+    value.desc.nb = ir::NaturalStrides(value.desc.format);
+    value.tensor =
+        ggml_new_tensor_2d(arena.context(), GGML_TYPE_F16, 64, static_cast<std::int64_t>(rows));
+    return value;
+  };
+  std::array inputs{dense(7), dense(1)};
+  auto output = dense(7);
+  const std::array descriptors{&inputs[0], &inputs[1], &output};
+  std::array<execution::OperandFormat, 3> operands{};
+  for (std::size_t index = 0; index < operands.size(); ++index) {
+    operands[index] = {
+        .operand = index == 2 ? execution::kOutputOperand : static_cast<std::uint8_t>(index),
+        .encoding = Encoding::kF16,
+        .layout = fmt::Layout::kDense,
+        .ne = descriptors[index]->desc.shape().ne,
+        .memory = execution::OperandMemory{.nb = descriptors[index]->desc.nb}};
+  }
+  ir::Node node;
+  node.key = ir::Primitive(ir::Op::kAdd);
+  node.nsrc = 2;
+  node.nout = 1;
+  execution::CapabilityQuery query{.op = node.key, .operands = operands, .arch = 121};
+  ASSERT_EQ(execution::Candidates(registry, query).size(), 1U);
+  ASSERT_TRUE((*source)->Lower(*bias, node, inputs, output));
+  for (std::size_t index = 0; index < descriptors.size(); ++index) {
+    for (std::size_t dimension = 0; dimension < 4; ++dimension) {
+      SCOPED_TRACE(std::format("operand{} stride{}", index, dimension));
+      auto& desc = descriptors[index]->desc;
+      const auto packed = desc.nb;
+      desc.nb[dimension] += 2;
+      operands[index].memory->nb = desc.nb;
+      EXPECT_TRUE(execution::Candidates(registry, query).empty());
+      EXPECT_FALSE((*source)->Lower(*bias, node, inputs, output));
+      desc.nb = packed;
+      operands[index].memory->nb = packed;
+    }
+  }
 }
 
 TEST(Exl3SelectedTest, UncapturedComponentSelectionIsExplicitAndKeyed) {

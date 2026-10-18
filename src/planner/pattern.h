@@ -150,6 +150,32 @@
 
 namespace llmp::planner {
 
+// Every candidate lookup made while matching a rewrite or batch has the
+// same qualification contract. This borrowed view cannot silently perform an
+// ordinary direct-operation lookup; it adds no tuning/name inventory copy.
+class RewriteSelectionView {
+ public:
+  explicit RewriteSelectionView(const SelectionView& view) : view_(view) {}
+  const execution::Registry& registry() const { return view_.registry(); }
+  const Policy& policy() const { return view_.policy(); }
+  std::vector<std::size_t> Candidates(ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
+                                      std::span<const ir::TensorDesc* const> outputs,
+                                      std::span<const std::byte> params = {},
+                                      bool state_span = false) const {
+    return view_.Candidates(key, sources, outputs, params, state_span, true);
+  }
+  std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node,
+                                      ir::OpKey key) const {
+    return view_.Candidates(graph, node, key, true);
+  }
+  std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node) const {
+    return Candidates(graph, node, node.key);
+  }
+
+ private:
+  const SelectionView& view_;
+};
+
 // A graph's readers, as patterns ask about them.
 class MatchContext {
  public:
@@ -159,7 +185,7 @@ class MatchContext {
                StateSpans state_spans = {});
 
   const ir::Graph& graph() const { return graph_; }
-  const SelectionView& view() const { return view_; }
+  const RewriteSelectionView& view() const { return view_; }
   const StepShape* shape() const { return shape_; }
   const StateSpans& state_spans() const { return state_spans_; }
   std::uint32_t max_decode_rows() const { return view_.policy().max_decode_rows; }
@@ -182,7 +208,7 @@ class MatchContext {
 
  private:
   const ir::Graph& graph_;
-  const SelectionView& view_;
+  RewriteSelectionView view_;
   const StepShape* shape_ = nullptr;
   StateSpans state_spans_{};
   std::vector<std::vector<ir::NodeId>> readers_;  // by tensor

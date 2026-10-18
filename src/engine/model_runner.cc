@@ -423,6 +423,9 @@ void ModelRunner::FillKey(const pl::StepShape& shape, pl::PlanKey& key) const {
   key.spec = key_base_.spec;
   key.patterns = key_base_.patterns;
   key.policy = key_base_.policy;
+  key.registry = key_base_.registry;
+  key.backend = key_base_.backend;
+  key.capturable = key_base_.capturable;
   key.partition = key_base_.partition;
   key.shape.stage = shape.stage;
   key.shape.phase = shape.phase;

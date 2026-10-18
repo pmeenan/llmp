@@ -2746,9 +2746,10 @@ struct Owner {
   std::optional<pl::StepPlan> plan;
   std::unique_ptr<kn::StepProgram> program;
   std::unique_ptr<kn::Recorded> captured;
-  std::array<void*, 3> allocations{};
+  std::array<void*, 4> allocations{};
   std::size_t allocation_count = 0;
   std::uint64_t allocated = 0, metadata = 0, activation = 0;
+  kg::SelectedWorkspace selected_state{};
   void* pinned = nullptr;
   bool Finish() {
     if (unknown) return false;
@@ -2855,7 +2856,7 @@ TEST(GgmlRoundedConsumerGpu, DeclaredCountsSelectOneFullMaskAcrossChangedCapture
   auto facts = pr::QueryDeviceFacts(0);
   ASSERT_TRUE(facts);
   const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
-  ASSERT_LE(workspace.value(), rc::kDevice - rc::kPool - rc::kActivation);
+  ASSERT_LE(workspace.value(), rc::kDevice - rc::kPool - rc::kActivation - (32U << 20));
   const auto cublas_address = life->Allocate(workspace.value());
   ASSERT_NE(cublas_address, 0U);
   auto cublas = kg::CublasHandle::Create(0, *life->execution, life->stream,
@@ -2870,7 +2871,7 @@ TEST(GgmlRoundedConsumerGpu, DeclaredCountsSelectOneFullMaskAcrossChangedCapture
   ASSERT_TRUE(life->backend->Declare(
       {}, workspace.value(),
       [owner](std::uint64_t bytes) {
-        if (bytes > (1U << 20) - owner->metadata) return false;
+        if (bytes > (16U << 20) - owner->metadata) return false;
         owner->metadata += bytes;
         return true;
       },
@@ -2884,10 +2885,15 @@ TEST(GgmlRoundedConsumerGpu, DeclaredCountsSelectOneFullMaskAcrossChangedCapture
   ASSERT_NE(table.owner, nullptr);
   ASSERT_TRUE(table.owner->Ready());
   const auto& native = table.owner->backend();
+  ASSERT_LE(life->backend->persistent_bytes(), 32U << 20);
+  life->selected_state.bytes = life->backend->persistent_bytes();
+  life->selected_state.base =
+      life->selected_state.bytes ? life->Allocate(life->selected_state.bytes) : 0;
   const auto pool = life->Allocate(rc::kPool);
   ASSERT_NE(pool, 0U);
-  auto launch = life->backend->Launch({.base = pool, .size = llmp::base::Bytes(rc::kPool)});
-  ASSERT_TRUE(launch);
+  auto launch = life->backend->Launch({.base = pool, .size = llmp::base::Bytes(rc::kPool)},
+                                      life->selected_state);
+  ASSERT_TRUE(launch) << (launch ? "" : launch.error());
   life->launch = std::move(*launch);
   life->activation = life->Allocate(rc::kActivation);
   ASSERT_NE(life->activation, 0U);
@@ -3214,7 +3220,8 @@ TEST(GgmlRoundedConsumerGpu, RealMappedSourceBuildsAndExecutesItsAttentionPipeli
   auto facts = pr::QueryDeviceFacts(0);
   ASSERT_TRUE(facts);
   const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
-  ASSERT_LE(workspace.value(), rounded_corridor::kDevice - rounded_corridor::kPool - mc::kPacked);
+  ASSERT_LE(workspace.value(),
+            rounded_corridor::kDevice - rounded_corridor::kPool - mc::kPacked - (32U << 20));
   const auto workspace_address = life->Allocate(workspace.value());
   ASSERT_NE(workspace_address, 0U);
   auto cublas = kg::CublasHandle::Create(0, *life->execution, life->stream,
@@ -3229,7 +3236,7 @@ TEST(GgmlRoundedConsumerGpu, RealMappedSourceBuildsAndExecutesItsAttentionPipeli
   ASSERT_TRUE(life->backend->Declare(
       {}, workspace.value(),
       [owner](std::uint64_t bytes) {
-        if (bytes > (1U << 20) - owner->metadata) return false;
+        if (bytes > (16U << 20) - owner->metadata) return false;
         owner->metadata += bytes;
         return true;
       },
@@ -3239,11 +3246,15 @@ TEST(GgmlRoundedConsumerGpu, RealMappedSourceBuildsAndExecutesItsAttentionPipeli
       }));
   ASSERT_TRUE(life->backend->LendCublas(life->cublas.get()));
   ASSERT_TRUE(life->backend->Backend().owner->Ready());
+  ASSERT_LE(life->backend->persistent_bytes(), 32U << 20);
+  life->selected_state.bytes = life->backend->persistent_bytes();
+  life->selected_state.base =
+      life->selected_state.bytes ? life->Allocate(life->selected_state.bytes) : 0;
   const auto pool = life->Allocate(rounded_corridor::kPool);
   ASSERT_NE(pool, 0U);
-  auto launch =
-      life->backend->Launch({.base = pool, .size = llmp::base::Bytes(rounded_corridor::kPool)});
-  ASSERT_TRUE(launch);
+  auto launch = life->backend->Launch(
+      {.base = pool, .size = llmp::base::Bytes(rounded_corridor::kPool)}, life->selected_state);
+  ASSERT_TRUE(launch) << (launch ? "" : launch.error());
   life->launch = std::move(*launch);
   life->packed = life->Allocate(mc::kPacked);
   ASSERT_NE(life->packed, 0U);

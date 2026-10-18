@@ -10,7 +10,8 @@
 #include "format/encoding.h"
 #include "kernels/ggml/selected_operation.h"
 namespace llmp::kernels::decode {
-// NVFP4 and Affine split GetRows over the runner's checked, multipart row slots.
+// Every decoder over resident tables; NVFP4/affine split over the runner's
+// authenticated multipart row slots. Batched resident IDs follow IR GetRows.
 // Does not admit models or advertise products. The source outlives all calls.
 std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> RowsSelectedSource(
     std::optional<format::Encoding> encoding = std::nullopt);

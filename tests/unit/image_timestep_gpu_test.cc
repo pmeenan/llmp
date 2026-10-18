@@ -403,6 +403,10 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   auto backend = kg::GgmlBackend::Create(0, life.node.execution(), life.node.stream(0), nullptr);
   if (!backend) return Error(backend.error());
   life.backend = std::move(*backend);
+  if (auto r = life.resources.OpenSelectedWorkspace("selected kernel state",
+                                                    life.backend->persistent_bytes());
+      !r)
+    return r;
   const auto facts = llmp::providers::QueryDeviceFacts(0);
   if (!facts) return Error("actual device facts");
   const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
@@ -436,7 +440,9 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
     if (auto r = CheckProgram(life, **measured); !r) return r;
   }
   if (auto r = life.node.MapWorkspace(life.limits.activation, life.limits.pool); !r) return r;
-  auto launch = life.backend->Launch({life.node.pool().base, Bytes(life.node.pool().bytes)});
+  auto launch = life.backend->Launch({life.node.pool().base, Bytes(life.node.pool().bytes)},
+                                     {.base = life.resources.selected_workspace().base,
+                                      .bytes = life.resources.selected_workspace().bytes});
   if (!launch) return Error(launch.error());
   life.launch = std::move(*launch);
   auto host = life.resources.Pinned(kPinned);

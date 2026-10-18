@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <expected>
 #include <filesystem>
@@ -438,6 +439,10 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
                                          {.selected = *selected});
   if (!backend) return Error(backend.error());
   life->kernel->backend = std::move(*backend);
+  if (auto r = life->kernel->resources.OpenSelectedWorkspace(
+          "selected kernel state", life->kernel->backend->persistent_bytes());
+      !r)
+    return r;
   const auto facts = llmp::providers::QueryDeviceFacts(0);
   if (!facts) return Error("device facts");
   const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
@@ -581,7 +586,9 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
   config.launch =
       [held](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
     auto launch = held->kernel->backend->Launch(
-        {.base = held->node.pool().base, .size = Bytes(held->node.pool().bytes)});
+        {.base = held->node.pool().base, .size = Bytes(held->node.pool().bytes)},
+        {.base = held->kernel->resources.selected_workspace().base,
+         .bytes = held->kernel->resources.selected_workspace().bytes});
     if (launch) held->launch = launch->get();
     return launch;
   };
@@ -947,7 +954,69 @@ TEST(RoutedComponentGpu, OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitu
   };
   EXPECT_FALSE(declare());  // Default/absent selected identity remains refused.
   source->identity = (*real)->ExecutionIdentity();
-  ASSERT_TRUE(declare());
+  // The automatic source owns all compiled EXL3 tuning facts even when this
+  // particular graph uses only routed products. A fixed 1 MiB allowance must
+  // refuse cleanly; retry from actual live demand must fund the same extent.
+  auto small = en::ExecutionMetadataAllowance::Admit(life->node.catalog(), life->node.domain(),
+                                                     kMiB, *available, 6ULL << 30);
+  ASSERT_TRUE(small);
+  auto payment = *small;
+  const auto fixed_capacity = payment->capacity();
+  const auto fixed_used = payment->used();
+  const auto metadata_extents = life->node.catalog().ExtentsOf(life->node.domain()).size();
+  auto limited = life->kernel->backend->Declare(
+      {}, workspace.value(), [payment](std::uint64_t n) { return payment->Charge(n); },
+      [payment](std::uint64_t n) { payment->Release(n); });
+  if (facts->architecture / 10 == 121 && facts->multiprocessors == 48) {
+    EXPECT_FALSE(limited);
+    EXPECT_EQ(payment->used(), fixed_used);
+    EXPECT_EQ(payment->capacity(), fixed_capacity);
+  }
+  struct Requests {
+    std::array<std::uint64_t, 4> bytes{};
+    std::size_t count = 0;
+  };
+  auto requested = std::make_shared<Requests>();
+  if (!limited) {
+    ASSERT_TRUE(life->kernel->backend->Declare(
+        {}, workspace.value(),
+        [payment, held = life.get(), available = *available, requested](std::uint64_t n) {
+          if (requested->count < requested->bytes.size()) requested->bytes[requested->count++] = n;
+          return payment
+              ->ChargeOrGrow(held->node.catalog(), held->node.domain(), n, kDomain, available,
+                             6ULL << 30)
+              .has_value();
+        },
+        [payment](std::uint64_t n) { payment->Release(n); }));
+    EXPECT_EQ(requested->count, 2U);
+    EXPECT_GE(payment->capacity(), fixed_capacity);
+    EXPECT_EQ(payment->peak(), payment->capacity());
+    EXPECT_LT(payment->used(), payment->peak());  // Temporary request copy was destroyed.
+    EXPECT_TRUE(payment->HeldBy(life->node.catalog(), life->node.domain()));
+    EXPECT_EQ(life->node.catalog().ExtentsOf(life->node.domain()).size(), metadata_extents);
+  }
+  testing::Test::RecordProperty(
+      "backend_tuning_facts",
+      std::to_string(life->kernel->backend->Backend().owner->backend().device.tuned.size()));
+  testing::Test::RecordProperty("backend_declaration_temporary_requested",
+                                std::to_string(requested->bytes[0]));
+  testing::Test::RecordProperty("backend_declaration_retained_requested",
+                                std::to_string(requested->bytes[1]));
+  testing::Test::RecordProperty("backend_metadata_host_peak_bytes",
+                                std::to_string(payment->peak()));
+  testing::Test::RecordProperty("backend_metadata_host_retained_bytes",
+                                std::to_string(payment->used()));
+  (void)std::fprintf(
+      stderr,
+      "backend metadata: tuning_facts=%zu temporary_requested=%llu retained_requested=%llu "
+      "host_peak=%llu host_retained=%llu host_paid=%llu selected_device_state=%llu\n",
+      life->kernel->backend->Backend().owner->backend().device.tuned.size(),
+      static_cast<unsigned long long>(requested->bytes[0]),
+      static_cast<unsigned long long>(requested->bytes[1]),
+      static_cast<unsigned long long>(payment->peak()),
+      static_cast<unsigned long long>(payment->used()),
+      static_cast<unsigned long long>(payment->capacity()),
+      static_cast<unsigned long long>(life->kernel->backend->persistent_bytes()));
   ASSERT_TRUE(life->kernel->backend->LendCublas(&life->kernel->resources.cublas()));
   const auto owner = life->kernel->backend->Backend().owner;
   ASSERT_TRUE(owner);

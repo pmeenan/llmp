@@ -82,6 +82,9 @@ struct PlanKey {
   StepShape shape;
   base::Sha256Digest patterns{};
   base::Sha256Digest policy{};
+  base::Sha256Digest registry{};
+  base::Sha256Digest backend{};
+  bool capturable = false;
   std::uint32_t partition = 0;
   // Position-dependent graph dimensions supplied by the step source.
   std::vector<std::uint64_t> parameters{};
@@ -103,6 +106,9 @@ inline std::size_t HashOf(const PlanKey& key) {
   digest(key.spec);
   digest(key.patterns);
   digest(key.policy);
+  digest(key.registry);
+  digest(key.backend);
+  mix(key.capturable);
   mix(key.partition);
   mix((std::uint64_t{key.shape.stage} << 32U) | (std::uint64_t{key.shape.row_invariant} << 16U) |
       static_cast<std::uint64_t>(key.shape.phase));

@@ -31,6 +31,7 @@
 #ifndef LLMP_PROVIDERS_DEVICE_RUNTIME_H_
 #define LLMP_PROVIDERS_DEVICE_RUNTIME_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -81,6 +82,13 @@ struct DeviceFacts {
   // 100 × major + 10 × minor of the compute capability (GGML's convention;
   // 1210 on the GB10).
   std::uint32_t architecture = 0;
+  int multiprocessors = 0;
+  std::array<char, 256> name{};
+  bool bf16_mma = false;
+  bool int8_mma = false;
+  bool fp8_mma = false;
+  bool fp4_mma = false;
+  bool block_scaled_mma = false;
 };
 std::expected<DeviceFacts, DeviceStatus> QueryDeviceFacts(int ordinal);
 

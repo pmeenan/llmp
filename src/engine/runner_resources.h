@@ -50,6 +50,9 @@ class RunnerResources : public RunnerMemory {
   kernels::ggml::CublasHandle& cublas() const { return *cublas_; }
   const Mapped& cublas_workspace() const { return cublas_workspace_; }
   std::uint64_t cublas_bytes() const { return cublas_bytes_; }
+  // Kernel source state is private pinned runtime memory, never shared scratch.
+  Status OpenSelectedWorkspace(std::string name, std::uint64_t bytes);
+  const Mapped& selected_workspace() const { return selected_workspace_; }
 
   // A launch context without a pool, to measure plans at setup.
   std::expected<std::unique_ptr<kernels::ggml::LaunchContext>, std::string> MeasuringContext()
@@ -67,6 +70,7 @@ class RunnerResources : public RunnerMemory {
 
  private:
   Mapped cublas_workspace_;
+  Mapped selected_workspace_;
   std::uint64_t cublas_bytes_ = 0;
   std::unique_ptr<kernels::ggml::CublasHandle> cublas_;
   std::unique_ptr<kernels::ggml::LaunchContext> launch_;

@@ -26,6 +26,17 @@ Suggested order for PRs, one at a time: the mask pre-pass bound (RE-036),
 then ssm_conv's load bound (RE-032), then the null-buffer guard, then the
 sinks bound (RE-030).
 
+## Host selector parity in the decode ladder
+
+R6 ports the locked NVIDIA MMVF/MMF selector branches into the vendor-free
+`src/kernels/ggml/float_route.cc` to declare actual float-product expansion
+before selection. This is upstream-derived MIT code, with ggml-author copyright
+and MIT AND Apache-2.0 tags; it is not an independent reimplementation claim.
+`FloatExpansionPredicateMatchesPinnedPhysicalRoute` compares 384 physical
+shape/type/batch cases against the compiled pinned selector. Keep the helper and
+control in sync whenever the GGML pin or CUDA image set changes. Quantized GGML
+products retain their separate MMVQ/MMQ routes. No upstream change is proposed.
+
 ## Gemma query scale lost during HF-to-GGUF conversion
 
 - **Status:** open; inspected at the pinned release, not reported upstream.

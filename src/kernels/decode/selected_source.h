@@ -20,7 +20,7 @@ std::shared_ptr<const ggml::SelectedSource> CompositeSelectedSource(
     std::vector<std::shared_ptr<const ggml::SelectedSource>> sources);
 
 // Unified decode SelectedSource providing grouped, rows, and products decoders
-// (for Affine split and/or NVFP4 split).
+// for every compiled decoder and both mixed GLU pairs.
 std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> DecodeSelectedSource(
     std::optional<format::Encoding> encoding = std::nullopt);
 // The same for ordinary serving programs over resident weights: the grouped

@@ -91,7 +91,11 @@ ex::Registry PlanningRegistry() {
 }
 
 const pl::DeviceFacts& Gb10() {
-  static const pl::DeviceFacts facts{.device_class = "sm_121", .arch = kGb10};
+  static const pl::DeviceFacts facts{
+      .device_class = "sm_121",
+      .arch = kGb10,
+      .features = llmp::execution::kBf16Mma | llmp::execution::kInt8Mma | llmp::execution::kFp8Mma |
+                  llmp::execution::kFp4Mma | llmp::execution::kBlockScaledMma};
   return facts;
 }
 

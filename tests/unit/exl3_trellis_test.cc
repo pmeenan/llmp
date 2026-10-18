@@ -217,12 +217,14 @@ TEST(Exl3TrellisSelectionTest, CandidatesFollowRowsRatesShapesAndDevices) {
   const std::array mixed = {Trellis(0, 4), Trellis(1, 5), Dense(2, Encoding::kF16)};
   multi.operands = mixed;
   EXPECT_TRUE(Names(r, multi).empty());
-  // Every declaration but the bias add's has a capability, at rung 1.
+  // Trellis products decode to F16 at rung 2. Reconstruction carries the
+  // same rank with explicit transient workspace; packed paths decode on-chip.
+  // The bias add has no product capability.
   for (std::size_t i = 0; i < r.size(); ++i) {
     const ex::Implementation& impl = r.at(i);
     EXPECT_EQ(impl.capability.has_value(), impl.name != "exl3.bias_add") << impl.name;
     if (impl.capability) {
-      EXPECT_EQ(impl.capability->rung, ex::Rung::kNative) << impl.name;
+      EXPECT_EQ(impl.capability->rung, ex::Rung::kOnChipDecode) << impl.name;
       EXPECT_EQ(impl.capability->expansion == ex::Expansion::kTransientWorkspace,
                 impl.name.starts_with("exl3.linear.reconstruct"))
           << impl.name;

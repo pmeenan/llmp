@@ -1106,7 +1106,7 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
   const std::uint64_t slots = in_.addresses.weight_rows ? in_.addresses.weight_rows(w.ref) : 0;
   if (slots > d.ne(1)) return Refused("a row-paged weight exceeds its table");
   const auto rows = static_cast<std::int64_t>(slots != 0 ? slots : d.ne(1));
-  const auto matrices = static_cast<std::int64_t>(d.ne(2));
+  const auto matrices = static_cast<std::int64_t>(d.ne(2) * d.ne(3));
   auto& parts = parts_[out.v];
   ggml_tensor* first = nullptr;
   const auto part = [&](format::PartRole role, ggml_tensor* t) {
@@ -1128,13 +1128,10 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
         return Refused("missing, duplicate or oversized selected weight part");
       part(extent.role, bytes(static_cast<std::int64_t>(extent.readable), 1, 1));
     }
-  } else if (options_.selected_source != nullptr &&
-             (d.format.encoding == Encoding::kNvfp4 || d.format.encoding == Encoding::kAffine) &&
-             (d.format.layout == format::Layout::kSplit ||
-              (d.format.layout == format::Layout::kScaleAtoms && !BlockScaledGemm(out))) &&
-             w.ref.expert_array) {
-    // Split parts, or scale-atom tables no block-scaled grouped GEMM reads
-    // (the format ladder decodes them on chip): each part at its pitch.
+  } else if (options_.selected_source != nullptr && w.ref.expert_array && !BlockScaledGemm(out)) {
+    // The selected decoder owns the format; every physical part is carried
+    // at its checked expert pitch, including native blocks with a separate
+    // tensor scale and row-interleaved/scale-atom expert arrays.
     if (!in_.addresses.expert_part) return Refused("split expert parts have no source binding");
     auto one = d.format;
     one.shape.rank = 2;
@@ -1187,10 +1184,28 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
     part(format::PartRole::kBlockScales, bytes(k / 32, rows, 1));
   } else if (d.format.encoding == Encoding::kNvfp4 &&
              d.format.layout == format::Layout::kRowInterleaved && matrices == 1) {
-    // Each row's codes then its scales, and the table's F32 scale.
-    part(format::PartRole::kData, bytes((k / 2) + (k / 16), rows, 1));
-    std::array<std::int64_t, 4> one{1, 1, 1, 1};
-    part(format::PartRole::kTensorScale, ggml_new_tensor(c_, GGML_TYPE_F32, 1, one.data()));
+    // Keep the native gather's row-shaped data while deriving optional
+    // tensor scales and their complete stacked extent from the format.
+    const auto extents = format::PartsOf(d.format);
+    if (!extents || extents->size() != w.parts.size())
+      return Refused("incomplete row-interleaved decoder weight");
+    for (const auto& e : extents->parts()) {
+      if (std::ranges::count_if(w.parts,
+                                [&](const auto& entry) { return entry.second == e.role; }) != 1)
+        return Refused("row-interleaved decoder weight part coverage differs");
+      if (e.role == format::PartRole::kData) {
+        const auto row_bytes = format::RowBytes(d.format, e.role);
+        if (!row_bytes || *row_bytes > INT64_MAX)
+          return Refused("invalid row-interleaved decoder row bytes");
+        part(e.role, bytes(static_cast<std::int64_t>(*row_bytes), rows, 1));
+      } else if (e.role == format::PartRole::kTensorScale && e.bytes % sizeof(float) == 0 &&
+                 e.bytes / sizeof(float) <= INT64_MAX) {
+        part(e.role, ggml_new_tensor_1d(c_, GGML_TYPE_F32,
+                                        static_cast<std::int64_t>(e.bytes / sizeof(float))));
+      } else {
+        return Refused("unsupported row-interleaved decoder part");
+      }
+    }
   } else if (d.format.encoding == Encoding::kNvfp4 &&
              d.format.layout == format::Layout::kScaleAtoms && w.ref.expert_array) {
     // The CUTLASS layout's slab (moe_layout.h): a layer's gate-and-up and
@@ -1210,6 +1225,20 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
     }
     parts[format::PartRole::kCodes] = at->second;
     first = at->second;
+  } else if (options_.selected_source != nullptr && slots == 0 && !w.ref.expert_array &&
+             (d.format.encoding == Encoding::kNvfp4 || d.format.encoding == Encoding::kAffine ||
+              d.format.encoding == Encoding::kMxfp4 || d.format.encoding == Encoding::kMxfp8)) {
+    // Generic resident multipart weights, including stacked and batched
+    // matrices. The format owns the byte geometry (atoms include padding).
+    const auto extents = format::PartsOf(d.format);
+    if (!extents || extents->size() != w.parts.size()) return Refused("incomplete decoder weight");
+    for (const auto& e : extents->parts()) {
+      if (e.readable > INT64_MAX || std::ranges::count_if(w.parts, [&](const auto& entry) {
+                                      return entry.second == e.role;
+                                    }) != 1)
+        return Refused("decoder weight part coverage or extent differs");
+      part(e.role, bytes(static_cast<std::int64_t>(e.readable), 1, 1));
+    }
   } else {
     return Refused(std::format("a weight of {} in {} parts", format::Info(d.format.encoding).name,
                                w.parts.size()));

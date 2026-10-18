@@ -9,6 +9,7 @@
 #include <array>
 #include <charconv>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <limits>
@@ -118,8 +119,9 @@ bool Reconstructs(Path path) {
 // What each path computes, for the planner (D-108; execution/registry.h):
 // a product of an EXL3 trellis in its tiles (operand 0; the multi-GEMM's
 // second matrix is operand 1) with F16 activations (operand 1, or 2), at
-// rung 1, the encoding's own kernels. The reconstruction paths expand a
-// slice of the weights to F16 in workspace (D-052's bounded
+// rung 2, decoded F16 arithmetic. Packed paths decode weights on-chip. The
+// reconstruction paths carry the same rank with explicit transient-workspace
+// expansion: a slice of weights becomes F16 in workspace (D-052's bounded
 // reconstruction), so Candidates() never offers them for a decode-shaped
 // product; their predicate cannot see whether a plan holds each slice's
 // pinned algorithm, which ReconGemm requires (implementations.h). Nothing
@@ -193,10 +195,21 @@ bool Accepts(const execution::CapabilityQuery& q, std::span<const std::uint8_t> 
   if (!CompiledFor(q.arch)) {
     return false;
   }
+  // An empty parameter query denotes the IR defaults.
+  if (q.op == ir::Primitive(ir::Op::kMatMul) && !q.params.empty()) {
+    // Planner queries carry Node::params fixed storage; direct callers may
+    // supply just the typed prefix, exactly as Node::Params reads it.
+    if (q.params.size() < sizeof(ir::ProductParams)) return false;
+    ir::ProductParams params{};
+    std::memcpy(&params, q.params.data(), sizeof(params));
+    if (params.accumulate != ir::Accumulate::kDefault || params.hint != ir::ProductHint::kNone)
+      return false;
+  }
   const execution::OperandFormat* first = nullptr;
   for (const std::uint8_t operand : weights) {
     const execution::OperandFormat* w = OperandOf(q, operand);
-    if (w == nullptr || w->params.codebook != format::Exl3Codebook::kMcg ||
+    if (w == nullptr || (w->memory && (w->memory->is_view || w->memory->view_offset != 0)) ||
+        w->params.codebook != format::Exl3Codebook::kMcg ||
         !(gemv ? w->params.k_bits == 4 : RateCompiled(w->params.k_bits)) ||
         (first != nullptr && w->params != first->params)) {
       return false;
@@ -205,6 +218,28 @@ bool Accepts(const execution::CapabilityQuery& q, std::span<const std::uint8_t> 
   }
   if (first == nullptr) {
     return false;
+  }
+  if (first->ne[0] != 0) {
+    const auto* x = OperandOf(q, static_cast<std::uint8_t>(weights.size()));
+    const auto* y = OperandOf(q, execution::kOutputOperand);
+    if (first->ne[2] != 1 || first->ne[3] != 1 || !x || x->ne[0] != first->ne[0] ||
+        x->ne[1] != q.rows || x->ne[2] != 1 || x->ne[3] != 1)
+      return false;
+    for (const auto index : weights)
+      if (OperandOf(q, index)->ne != first->ne) return false;
+    const auto packed = [](const execution::OperandFormat& o, std::uint64_t element) {
+      if (!o.memory) return true;
+      std::uint64_t stride = element;
+      for (std::size_t d = 0; d < 4; ++d) {
+        if (o.memory->nb[d] != stride || __builtin_mul_overflow(stride, o.ne[d], &stride))
+          return false;
+      }
+      return true;
+    };
+    if (!packed(*x, 2)) return false;
+    if (y && (y->ne != std::array{first->ne[1], x->ne[1], std::uint64_t{1}, std::uint64_t{1}} ||
+              !packed(*y, y->encoding == format::Encoding::kF32 ? 4 : 2)))
+      return false;
   }
   const auto matrices = static_cast<std::uint64_t>(weights.size());
   constexpr auto kIntMax = static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
@@ -253,7 +288,7 @@ std::optional<execution::Capability> CapabilityOf(Path path) {
              .max_rows = static_cast<std::uint64_t>(kMaxRows),
              .k_multiple = static_cast<std::uint64_t>(kHadamardBlock),
              .n_multiple = static_cast<std::uint64_t>(kHadamardBlock)};
-  c.rung = execution::Rung::kNative;
+  c.rung = execution::Rung::kOnChipDecode;
   c.expansion = execution::Expansion::kNone;
   c.row_invariant = false;
   c.capturable = false;
@@ -333,6 +368,8 @@ std::expected<void, KernelFailure> Takes(const Kernel::Entry& entry, Path path,
 }
 
 }  // namespace
+
+bool CompiledForDevice(std::uint32_t arch) { return CompiledFor(arch); }
 
 std::vector<execution::Implementation> Implementations() {
   std::vector<execution::Implementation> declared;

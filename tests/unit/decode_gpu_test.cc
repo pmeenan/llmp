@@ -57,11 +57,20 @@
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
+#include "ir/builder.h"
 #include "ir/op.h"
 #include "kernels/decode/grouped_route.h"
 #include "kernels/decode/implementations.h"
 #include "kernels/decode/products.h"
+#include "kernels/decode/selected_products.h"
+#include "kernels/decode/selected_rows.h"
+#include "kernels/decode/selected_source.h"
+#include "kernels/ggml/implementations.h"
+#include "kernels/ggml/lower.h"
+#include "kernels/ggml/tensors.h"
 #include "kernels/reference/decode.h"
+#include "planner/plan.h"
+#include "providers/cuda/cuda_device_execution.h"
 
 namespace {
 
@@ -77,11 +86,12 @@ using format::PartRole;
 using format::TensorFormat;
 using llmp::test_support::Failed;
 
-constexpr std::array kDecoders = {DecoderId::kBf16Dense,       DecoderId::kF16Dense,
-                                  DecoderId::kQ8_0Blocks,      DecoderId::kNvfp4Split,
-                                  DecoderId::kNvfp4Atoms,      DecoderId::kNvfp4Interleaved,
-                                  DecoderId::kNvfp4GgmlBlocks, DecoderId::kMxfp8Split,
-                                  DecoderId::kMxfp8Atoms,      DecoderId::kAffineSplit};
+constexpr auto kDecoders = [] {
+  std::array<DecoderId, static_cast<std::size_t>(DecoderId::kCount)> ids{};
+  for (std::size_t i = 0; i < ids.size(); ++i) ids[i] = static_cast<DecoderId>(i);
+  return ids;
+}();
+static_assert(kDecoders.size() == static_cast<std::size_t>(DecoderId::kCount));
 constexpr std::array<std::uint64_t, 5> kVectorRows = {1, 2, 3, 8, 16};
 constexpr std::array<std::uint64_t, 9> kRows = {1, 2, 3, 8, 16, 64, 100, 512, 2048};
 constexpr std::uint64_t kN = 136;
@@ -157,15 +167,15 @@ struct HostWeight {
 // A weight of `matrices` matrices of [k, n] in the decoder's format, NVFP4
 // with a tensor scale per stacked half.
 HostWeight MakeWeight(DecoderId id, std::uint64_t k, std::uint64_t n, std::uint64_t matrices,
-                      std::mt19937& rng) {
+                      std::mt19937& rng, bool tensor_scale = true, std::uint8_t stacked = 2) {
   HostWeight w;
   TensorFormat& f = w.format;
   f.encoding = decode::DecoderEncoding(id);
   f.layout = decode::DecoderLayout(id);
   f.shape = format::ShapeOf(std::array{k, n, matrices}).value();
   if (f.encoding == Encoding::kNvfp4) {
-    f.params.tensor_scale = true;
-    f.stacked = 2;
+    f.params.tensor_scale = tensor_scale;
+    f.stacked = stacked;
   } else if (f.encoding == Encoding::kAffine) {
     f.params.bits = 4;
     f.params.group = 32;
@@ -214,7 +224,9 @@ HostWeight MakeWeight(DecoderId id, std::uint64_t k, std::uint64_t n, std::uint6
           }
         } else {
           for (std::byte& b : bytes) {
-            b = f.encoding == Encoding::kMxfp8 ? B(ScaleE8m0(rng)) : B(Scale4m3(rng));
+            b = (f.encoding == Encoding::kMxfp8 || f.encoding == Encoding::kMxfp4)
+                    ? B(ScaleE8m0(rng))
+                    : B(Scale4m3(rng));
           }
         }
         break;
@@ -866,11 +878,12 @@ TEST_F(DecodeGpuTest, RefusesWhatTheDecodersCannotRead) {
                     .y_stride = kN};
   ASSERT_TRUE(decode::RunVector(p, nullptr).has_value());
 
-  // A format without a decoder.
-  TensorFormat mxfp4 = w->format;
-  mxfp4.encoding = Encoding::kMxfp4;
-  EXPECT_FALSE(decode::DecoderOf(mxfp4).has_value());
-  EXPECT_TRUE(Failed(decode::OperandOf({.format = mxfp4, .parts = w->parts})).has_value());
+  // Q4_0 is served by GGML, rather than a decoder in this module.
+  TensorFormat unsupported = w->format;
+  unsupported.encoding = Encoding::kQ4_0;
+  unsupported.layout = Layout::kGgmlBlocks;
+  EXPECT_FALSE(decode::DecoderOf(unsupported).has_value());
+  EXPECT_TRUE(Failed(decode::OperandOf({.format = unsupported, .parts = w->parts})).has_value());
   // A part missing, short, or given twice; a matrix past the format's.
   std::vector<decode::DevicePart> parts = w->parts;
   EXPECT_TRUE(Failed(decode::OperandOf({.format = w->format, .parts = std::span(parts).first(1)}))
@@ -944,7 +957,7 @@ TEST_F(DecodeGpuTest, DeclarationsBindAndSelect) {
   execution::Implementation stale = declared.front();
   stale.variant += " (another)";
   EXPECT_TRUE(Failed(decode::Bind(stale)).value_or("").contains("is not this build's"));
-  stale.name = "llmp.decode.vector.mxfp4.split";
+  stale.name = "llmp.decode.vector.unknown.split";
   EXPECT_FALSE(decode::Bind(stale).has_value());
 
   // A decode-shaped NVFP4 product on this device: the vector template
@@ -1401,6 +1414,441 @@ TEST_F(DecodeGpuTest, EveryTemplateCapturesAsOneKernel) {
         },
         7 * k);
   }
+}
+
+// End-to-end selected adapters, rather than direct template launches: every
+// decoder over physical parts, batched broadcasting and pitched activations.
+llmp::kernels::ggml::SelectedOperand SelectedWeight(llmp::kernels::ggml::TensorArena& arena,
+                                                    const DeviceWeight& weight) {
+  namespace kg = llmp::kernels::ggml;
+  kg::SelectedOperand operand;
+  operand.desc.format = weight.format;
+  operand.desc.nb = ir::NaturalStrides(weight.format);
+  for (const auto& part : weight.parts) {
+    auto* tensor =
+        ggml_new_tensor_1d(arena.context(), GGML_TYPE_I8, static_cast<std::int64_t>(part.bytes));
+    kg::TensorArena::Bind(tensor, reinterpret_cast<std::uintptr_t>(part.address));
+    operand.parts.push_back({part.role, tensor});
+  }
+  operand.tensor = operand.parts.front().tensor;
+  return operand;
+}
+llmp::kernels::ggml::SelectedOperand SelectedActivation(llmp::kernels::ggml::TensorArena& arena,
+                                                        format::Shape shape, Encoding encoding,
+                                                        ggml_type type, void* address) {
+  llmp::kernels::ggml::SelectedOperand operand;
+  operand.desc.format = ir::Dense(encoding, shape);
+  operand.desc.nb = ir::NaturalStrides(operand.desc.format);
+  std::array<std::int64_t, 4> ne{};
+  for (std::size_t i = 0; i < 4; ++i) ne[i] = static_cast<std::int64_t>(shape.ne[i]);
+  operand.tensor = ggml_new_tensor(arena.context(), type, shape.rank, ne.data());
+  llmp::kernels::ggml::TensorArena::Bind(operand.tensor, reinterpret_cast<std::uintptr_t>(address));
+  return operand;
+}
+
+TEST_F(DecodeGpuTest, SelectedProductsExecuteBatchedBroadcastAndPitchesForEveryDecoder) {
+  namespace kg = llmp::kernels::ggml;
+  auto execution = llmp::providers::cuda::OpenDeviceExecution(0).value();
+  const auto stream = execution->CreateStream().value();
+  const auto native = execution->Submission(stream).value();
+  auto source = decode::ProductsSelectedSource().value();
+  auto launch = source->Launch(0, *execution, stream, {}).value();
+  const auto implementations = source->Implementations();
+  constexpr std::uint64_t rows = 3, batch2 = 4, batch3 = 2;
+  for (const auto decoder : kDecoders) {
+    SCOPED_TRACE(decode::DecoderName(decoder));
+    const auto k = KFor(decoder);
+    const auto weight = Upload(MakeWeight(decoder, k, kN, 2, rng_));
+    const auto x = MakeInputs(rows * batch2 * batch3, k, rng_);
+    Buffer y(kN * rows * batch2 * batch3 * sizeof(float));
+    auto arena = kg::TensorArena::Create(16).value();
+    std::array inputs{SelectedWeight(arena, *weight),
+                      SelectedActivation(arena, ir::ShapeOf({k, rows, batch2, batch3}),
+                                         Encoding::kF32, GGML_TYPE_F32, x.device->as<void>())};
+    inputs[1].desc.nb = {4, x.stride * 4, x.stride * rows * 4, x.stride * rows * batch2 * 4};
+    std::ranges::copy(inputs[1].desc.nb, inputs[1].tensor->nb);
+    std::array outputs{SelectedActivation(arena, ir::ShapeOf({kN, rows, batch2, batch3}),
+                                          Encoding::kF32, GGML_TYPE_F32, y.as<void>())};
+    ir::Node node;
+    node.key = ir::Primitive(ir::Op::kMatMul);
+    node.nsrc = 2;
+    node.nout = 1;
+    for (const auto tmpl :
+         {decode::Template::kVector, decode::Template::kMatrix, decode::Template::kMatrixFma}) {
+      const auto name = decode::ImplementationName({.tmpl = tmpl, .gate = decoder, .up = decoder});
+      const auto at = std::ranges::find(implementations, name, &execution::Implementation::name);
+      ASSERT_NE(at, implementations.end());
+      auto call = source->Lower(*at, node, inputs, outputs);
+      ASSERT_TRUE(call) << Failed(call)->detail;
+      // Pitched outputs are not supported; mutation must be caught at Bind.
+      outputs[0].tensor->nb[1] += 4;
+      EXPECT_FALSE((*call)->Bind(*at, *launch, {}));
+      outputs[0].tensor->nb[1] -= 4;
+      auto bound = (*call)->Bind(*at, *launch, {});
+      ASSERT_TRUE(bound) << Failed(bound)->detail;
+      ASSERT_TRUE((*bound)->Run(native));
+      const auto got = y.Get<float>();
+      for (std::uint64_t b3 = 0; b3 < batch3; ++b3) {
+        for (std::uint64_t b2 = 0; b2 < batch2; ++b2) {
+          const auto matrix = b2 / 2;
+          for (std::uint64_t r = 0; r < rows; ++r) {
+            const auto index = ((b3 * batch2 + b2) * rows) + r;
+            for (std::uint64_t j = 0; j < kN; ++j) {
+              const auto dot = DotOf(weight->row(matrix, j), x.row(index), k);
+              EXPECT_LE(std::abs(got[index * kN + j] - dot.sum),
+                        Bound(dot, Tolerance(decoder, tmpl == decode::Template::kMatrix, k)));
+            }
+          }
+        }
+      }
+    }
+  }
+  const auto fence = execution->Record(stream).value();
+  ASSERT_EQ(cudaStreamSynchronize(static_cast<cudaStream_t>(native.handle)), cudaSuccess);
+  ASSERT_EQ(execution->Query(fence).value(), llmp::providers::FenceState::kComplete);
+  EXPECT_TRUE(execution->Release(fence));
+  launch.reset();
+  EXPECT_TRUE(execution->DestroyStream(stream));
+}
+
+TEST_F(DecodeGpuTest, SelectedResidentRowsExecuteBatchedTablesForEveryDecoder) {
+  namespace kg = llmp::kernels::ggml;
+  auto execution = llmp::providers::cuda::OpenDeviceExecution(0).value();
+  const auto stream = execution->CreateStream().value();
+  const auto native = execution->Submission(stream).value();
+  auto source = decode::RowsSelectedSource().value();
+  auto launch = source->Launch(0, *execution, stream, {}).value();
+  const auto implementations = source->Implementations();
+  const std::vector<std::int32_t> ids{-1, 0, 135, 5, 5, 0, 136, -1, 7, 2};
+  Buffer id_buffer(ids);
+  for (const auto decoder : kDecoders) {
+    SCOPED_TRACE(decode::DecoderName(decoder));
+    const auto k = KFor(decoder);
+    const auto weight = Upload(MakeWeight(decoder, k, kN, 2, rng_));
+    Buffer y(k * ids.size() * sizeof(float));
+    auto arena = kg::TensorArena::Create(16).value();
+    std::array inputs{SelectedWeight(arena, *weight),
+                      SelectedActivation(arena, ir::ShapeOf({5, 2}), Encoding::kI32, GGML_TYPE_I32,
+                                         id_buffer.as<void>())};
+    std::array outputs{SelectedActivation(arena, ir::ShapeOf({k, 5, 2}), Encoding::kF32,
+                                          GGML_TYPE_F32, y.as<void>())};
+    ir::Node node;
+    node.key = ir::Primitive(ir::Op::kGetRows);
+    node.nsrc = 2;
+    node.nout = 1;
+    const auto name = decode::ImplementationName(
+        {.tmpl = decode::Template::kRows, .gate = decoder, .up = decoder});
+    const auto at = std::ranges::find(implementations, name, &execution::Implementation::name);
+    ASSERT_NE(at, implementations.end());
+    auto call = source->Lower(*at, node, inputs, outputs);
+    ASSERT_TRUE(call) << Failed(call)->detail;
+    inputs[1].tensor->ne[0] = 10;
+    EXPECT_FALSE((*call)->Bind(*at, *launch, {}));
+    inputs[1].tensor->ne[0] = 5;
+    auto bound = (*call)->Bind(*at, *launch, {});
+    ASSERT_TRUE(bound) << Failed(bound)->detail;
+    ASSERT_TRUE((*bound)->Run(native));
+    const auto got = y.Get<float>();
+    for (std::size_t i = 0; i < ids.size(); ++i)
+      for (std::uint64_t j = 0; j < k; ++j)
+        EXPECT_EQ(got[i * k + j], ids[i] < 0 || ids[i] >= static_cast<std::int32_t>(kN)
+                                      ? 0.0f
+                                      : weight->row(i / 5, static_cast<std::uint64_t>(ids[i]))[j]);
+  }
+  const auto fence = execution->Record(stream).value();
+  ASSERT_EQ(cudaStreamSynchronize(static_cast<cudaStream_t>(native.handle)), cudaSuccess);
+  ASSERT_EQ(execution->Query(fence).value(), llmp::providers::FenceState::kComplete);
+  EXPECT_TRUE(execution->Release(fence));
+  launch.reset();
+  EXPECT_TRUE(execution->DestroyStream(stream));
+}
+
+TEST_F(DecodeGpuTest, SelectedGluCapturesSameAndMixedFormatsInBothOperandOrders) {
+  namespace kg = llmp::kernels::ggml;
+  auto execution = llmp::providers::cuda::OpenDeviceExecution(0).value();
+  const auto stream = execution->CreateStream().value();
+  const auto native = execution->Submission(stream).value();
+  auto source = decode::ProductsSelectedSource().value();
+  auto launch = source->Launch(0, *execution, stream, {}).value();
+  constexpr std::uint64_t k = 256, rows = 3, batches = 4;
+  const auto x = MakeInputs(rows * batches, k, rng_);
+  Buffer y(kN * rows * batches * sizeof(float));
+  for (const auto& impl : source->Implementations()) {
+    const auto declaration = decode::Bind(impl);
+    if (!declaration || declaration->tmpl != decode::Template::kVectorGlu) continue;
+    SCOPED_TRACE(impl.name);
+    const auto gate = Upload(MakeWeight(declaration->gate, k, kN, 2, rng_));
+    const auto up = Upload(MakeWeight(declaration->up, k, kN, 2, rng_));
+    auto arena = kg::TensorArena::Create(16).value();
+    const auto gate_operand = SelectedWeight(arena, *gate);
+    const auto up_operand = SelectedWeight(arena, *up);
+    auto input = SelectedActivation(arena, ir::ShapeOf({k, rows, batches}), Encoding::kF32,
+                                    GGML_TYPE_F32, x.device->as<void>());
+    input.desc.nb = {4, x.stride * 4, x.stride * rows * 4, x.stride * rows * batches * 4};
+    std::ranges::copy(input.desc.nb, input.tensor->nb);
+    std::array outputs{SelectedActivation(arena, ir::ShapeOf({kN, rows, batches}), Encoding::kF32,
+                                          GGML_TYPE_F32, y.as<void>())};
+    for (const bool swapped : {false, true}) {
+      const std::array inputs{swapped ? up_operand : gate_operand,
+                              swapped ? gate_operand : up_operand, input};
+      ir::Node node;
+      node.key = ir::Fused(ir::FusedKind::kMatMulGlu);
+      node.nsrc = 3;
+      node.nout = 1;
+      node.SetParams(ir::GluParams{.kind = ir::GluKind::kSwiGlu, .swapped = swapped});
+      auto call = source->Lower(impl, node, inputs, outputs);
+      ASSERT_TRUE(call) << Failed(call)->detail;
+      auto bound = (*call)->Bind(impl, *launch, {});
+      ASSERT_TRUE(bound) << Failed(bound)->detail;
+      ASSERT_TRUE((*bound)->Run(native));  // load modules outside capture
+      ASSERT_EQ(cudaStreamSynchronize(static_cast<cudaStream_t>(native.handle)), cudaSuccess);
+      ASSERT_TRUE(launch->capturable());
+      ASSERT_EQ(cudaStreamBeginCapture(static_cast<cudaStream_t>(native.handle),
+                                       cudaStreamCaptureModeThreadLocal),
+                cudaSuccess);
+      ASSERT_TRUE((*bound)->Run(native));
+      cudaGraph_t graph = nullptr;
+      cudaGraphExec_t captured = nullptr;
+      ASSERT_EQ(cudaStreamEndCapture(static_cast<cudaStream_t>(native.handle), &graph),
+                cudaSuccess);
+      ASSERT_EQ(cudaGraphInstantiate(&captured, graph, 0), cudaSuccess);
+      ASSERT_EQ(cudaGraphLaunch(captured, static_cast<cudaStream_t>(native.handle)), cudaSuccess);
+      const auto got = y.Get<float>();
+      for (std::uint64_t b = 0; b < batches; ++b)
+        for (std::uint64_t r = 0; r < rows; ++r)
+          for (std::uint64_t j = 0; j < kN; ++j) {
+            const auto index = b * rows + r;
+            const auto g = DotOf(gate->row(b / 2, j), x.row(index), k);
+            const auto u = DotOf(up->row(b / 2, j), x.row(index), k);
+            const auto bg = Bound(g, Tolerance(declaration->gate, false, k));
+            const auto bu = Bound(u, Tolerance(declaration->up, false, k));
+            const auto want = GluOf(ir::GluKind::kSwiGlu, g.sum, u.sum, 0);
+            const auto act = GluOf(ir::GluKind::kSwiGlu, g.sum, 1, 0);
+            const auto tolerance = (1.2 * bg * (std::abs(u.sum) + bu)) + std::abs(act) * bu +
+                                   0x1p-20 * std::abs(want) + 1e-30;
+            EXPECT_LE(std::abs(got[index * kN + j] - want), tolerance);
+          }
+      EXPECT_EQ(cudaGraphExecDestroy(captured), cudaSuccess);
+      EXPECT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+    }
+  }
+  const auto fence = execution->Record(stream).value();
+  ASSERT_EQ(cudaStreamSynchronize(static_cast<cudaStream_t>(native.handle)), cudaSuccess);
+  ASSERT_EQ(execution->Query(fence).value(), llmp::providers::FenceState::kComplete);
+  EXPECT_TRUE(execution->Release(fence));
+  launch.reset();
+  EXPECT_TRUE(execution->DestroyStream(stream));
+}
+
+TEST_F(DecodeGpuTest, SharedLoweringExecutesOptionalAndStackedRowInterleavedScales) {
+  namespace kg = llmp::kernels::ggml;
+  namespace co = llmp::components;
+  namespace pl = llmp::planner;
+  namespace kn = llmp::kernels;
+  auto execution = llmp::providers::cuda::OpenDeviceExecution(0).value();
+  const auto stream = execution->CreateStream().value();
+  const auto native = execution->Submission(stream).value();
+  auto source = decode::DecodeResidentSelectedSource().value();
+  auto launch = source->Launch(0, *execution, stream, {}).value();
+  auto registry = execution::Registry::Create(source->Implementations()).value();
+  constexpr std::uint64_t k = 256, rows = 3, activation_bytes = 1U << 20;
+  const ir::WeightRef ref_weight{.stage = 0, .component = 7, .role = 0};
+  const pl::DeviceFacts device{
+      .device_class = "sm_121", .arch = arch_, .features = execution::kBf16Mma};
+  for (const bool scale : {false, true}) {
+    for (const std::uint8_t stacked : {std::uint8_t{1}, std::uint8_t{2}}) {
+      for (const std::uint64_t batches : {1U, 2U}) {
+        const auto weight =
+            Upload(MakeWeight(DecoderId::kNvfp4Interleaved, k, kN, batches, rng_, scale, stacked));
+        const auto x = Normal(k * rows * batches, rng_);
+        std::vector<std::int32_t> ids(rows * batches);
+        for (std::size_t i = 0; i < ids.size(); ++i)
+          ids[i] = static_cast<std::int32_t>(i % 3 == 0 ? 0 : i % 3 == 1 ? kN / 2 : kN - 1);
+        for (const bool gather : {false, true}) {
+          SCOPED_TRACE(
+              std::format("scale{} stacks{} batches{} gather{}", scale, stacked, batches, gather));
+          ir::Builder builder;
+          builder.SetOwner(0);
+          const auto w = builder.Weight(weight->format, ref_weight);
+          const auto input =
+              builder.Input(gather ? ir::Dense(Encoding::kI32, ir::ShapeOf({rows, batches}))
+                                   : ir::Dense(Encoding::kF32, ir::ShapeOf({k, rows, batches})));
+          builder.Output(gather ? builder.GetRows(w, input) : builder.MatMul(w, input));
+          auto graph = std::move(builder).Finish();
+          ASSERT_TRUE(graph) << graph.error().detail;
+          std::vector<std::pair<std::string, PartRole>> parts;
+          for (const auto& part : weight->parts)
+            parts.emplace_back(std::format("part{}", parts.size()), part.role);
+          const std::array weights{co::StepWeight{.tensor = w, .ref = ref_weight, .parts = parts}};
+          auto plan = pl::Plan(graph->Clone(), registry, device, {},
+                               {.staged = std::vector<ir::TensorId>{input}});
+          ASSERT_TRUE(plan) << plan.error().detail;
+          Buffer activations(activation_bytes);
+          const kn::Addresses addresses{
+              .weight = [&](const ir::WeightRef& ref, PartRole role) -> std::uint64_t {
+                if (ref != ref_weight) return 0;
+                const auto at = std::ranges::find(weight->parts, role, &decode::DevicePart::role);
+                return at == weight->parts.end() ? 0
+                                                 : reinterpret_cast<std::uintptr_t>(at->address);
+              },
+              .weight_rows = {},
+              .state = {},
+              .save = {},
+              .activations = reinterpret_cast<std::uintptr_t>(activations.as<void>()),
+              .activation_bytes = activation_bytes};
+          auto lowered = kg::LowerStep(
+              {*plan, co::GraphBuildIO{*graph, graph->inputs(), graph->outputs(), weights},
+               addresses},
+              registry, {}, {.selected_source = source.get()});
+          ASSERT_TRUE(lowered) << lowered.error().detail;
+          ASSERT_EQ(lowered->selected.size(), 1U);
+          ASSERT_EQ(lowered->inputs.size(), 1U);
+          const auto input_bytes =
+              gather ? ids.size() * sizeof(std::int32_t) : x.size() * sizeof(float);
+          ASSERT_EQ(lowered->inputs[0].bytes, input_bytes);
+          ASSERT_EQ(cudaMemcpyAsync(reinterpret_cast<void*>(lowered->inputs[0].device_address),
+                                    gather ? static_cast<const void*>(ids.data())
+                                           : static_cast<const void*>(x.data()),
+                                    input_bytes, cudaMemcpyHostToDevice,
+                                    static_cast<cudaStream_t>(native.handle)),
+                    cudaSuccess);
+          const auto& selected = lowered->selected[0];
+          auto bound = selected.call->Bind(*selected.implementation, *launch, {});
+          ASSERT_TRUE(bound) << Failed(bound)->detail;
+          ASSERT_TRUE((*bound)->Run(native));
+          ASSERT_EQ(cudaStreamSynchronize(static_cast<cudaStream_t>(native.handle)), cudaSuccess);
+          const auto width = gather ? k : kN;
+          std::vector<float> got(width * rows * batches);
+          ASSERT_EQ(cudaMemcpy(got.data(), selected.tensor->data, got.size() * sizeof(float),
+                               cudaMemcpyDeviceToHost),
+                    cudaSuccess);
+          for (std::uint64_t b = 0; b < batches; ++b)
+            for (std::uint64_t r = 0; r < rows; ++r)
+              for (std::uint64_t j = 0; j < width; ++j) {
+                const auto at = b * rows + r;
+                if (gather) {
+                  EXPECT_EQ(got[at * width + j],
+                            weight->row(b, static_cast<std::uint64_t>(ids[at]))[j]);
+                } else {
+                  const auto dot = DotOf(weight->row(b, j), x.data() + at * k, k);
+                  EXPECT_LE(std::abs(got[at * width + j] - dot.sum),
+                            Bound(dot, Tolerance(DecoderId::kNvfp4Interleaved, false, k)));
+                }
+              }
+        }
+      }
+    }
+  }
+  const auto fence = execution->Record(stream).value();
+  ASSERT_EQ(cudaStreamSynchronize(static_cast<cudaStream_t>(native.handle)), cudaSuccess);
+  ASSERT_EQ(execution->Query(fence).value(), llmp::providers::FenceState::kComplete);
+  EXPECT_TRUE(execution->Release(fence));
+  launch.reset();
+  EXPECT_TRUE(execution->DestroyStream(stream));
+}
+
+TEST_F(DecodeGpuTest, CombinedRegistryExecutesBatchedNativeFallbacks) {
+  namespace kg = llmp::kernels::ggml;
+  namespace co = llmp::components;
+  namespace pl = llmp::planner;
+  namespace kn = llmp::kernels;
+  auto execution = llmp::providers::cuda::OpenDeviceExecution(0).value();
+  const auto stream = execution->CreateStream().value();
+  const auto native = execution->Submission(stream).value();
+  auto source = decode::DecodeResidentSelectedSource().value();
+  auto launch = source->Launch(0, *execution, stream, {}).value();
+  auto implementations = kg::Implementations();
+  auto decoders = source->Implementations();
+  implementations.insert(implementations.end(), decoders.begin(), decoders.end());
+  auto registry = execution::Registry::Create(std::move(implementations)).value();
+  const pl::DeviceFacts device{
+      .device_class = "sm_121", .arch = arch_, .features = execution::kBf16Mma};
+  constexpr std::uint64_t rows = 3, batches = 2, activation_bytes = 1U << 20;
+  const ir::WeightRef ref{.stage = 0, .component = 7, .role = 0};
+  for (const bool gather : {false, true}) {
+    for (const std::uint64_t weight_batches : {1U, 2U}) {
+      if (gather && weight_batches == 1) continue;
+      const auto decoder = gather ? DecoderId::kQ8_0Blocks : DecoderId::kMxfp8Split;
+      const std::uint64_t k = gather ? 160 : 256;
+      const auto weight = Upload(MakeWeight(decoder, k, kN, weight_batches, rng_));
+      const auto x = Normal(k * rows * batches, rng_);
+      const std::vector<std::int32_t> ids{0, 68, 135, 135, 0, 68};
+      ir::Builder builder;
+      builder.SetOwner(0);
+      const auto w = builder.Weight(weight->format, ref);
+      const auto input =
+          builder.Input(gather ? ir::Dense(Encoding::kI32, ir::ShapeOf({rows, batches}))
+                               : ir::Dense(Encoding::kF32, ir::ShapeOf({k, rows, batches})));
+      builder.Output(gather ? builder.GetRows(w, input) : builder.MatMul(w, input));
+      auto graph = std::move(builder).Finish();
+      ASSERT_TRUE(graph) << graph.error().detail;
+      std::vector<std::pair<std::string, PartRole>> parts;
+      for (const auto& part : weight->parts)
+        parts.emplace_back(std::format("part{}", parts.size()), part.role);
+      const std::array weights{co::StepWeight{.tensor = w, .ref = ref, .parts = parts}};
+      auto plan = pl::Plan(graph->Clone(), registry, device, {},
+                           {.staged = std::vector<ir::TensorId>{input}});
+      ASSERT_TRUE(plan) << plan.error().detail;
+      ASSERT_EQ(plan->steps.size(), 1U);
+      EXPECT_EQ(registry.at(plan->steps[0].implementation).name,
+                gather ? "llmp.decode.rows.q8_0.ggml_blocks" : "llmp.decode.vector.mxfp8.split");
+      Buffer activations(activation_bytes);
+      const kn::Addresses addresses{
+          .weight = [&](const ir::WeightRef& key, PartRole role) -> std::uint64_t {
+            if (key != ref) return 0;
+            const auto at = std::ranges::find(weight->parts, role, &decode::DevicePart::role);
+            return at == weight->parts.end() ? 0 : reinterpret_cast<std::uintptr_t>(at->address);
+          },
+          .weight_rows = {},
+          .state = {},
+          .save = {},
+          .activations = reinterpret_cast<std::uintptr_t>(activations.as<void>()),
+          .activation_bytes = activation_bytes};
+      auto lowered = kg::LowerStep(
+          {*plan, co::GraphBuildIO{*graph, graph->inputs(), graph->outputs(), weights}, addresses},
+          registry, {}, {.selected_source = source.get()});
+      ASSERT_TRUE(lowered) << lowered.error().detail;
+      ASSERT_EQ(lowered->selected.size(), 1U);
+      ASSERT_EQ(lowered->inputs.size(), 1U);
+      const auto bytes = gather ? ids.size() * sizeof(std::int32_t) : x.size() * sizeof(float);
+      ASSERT_EQ(
+          cudaMemcpyAsync(
+              reinterpret_cast<void*>(lowered->inputs[0].device_address),
+              gather ? static_cast<const void*>(ids.data()) : static_cast<const void*>(x.data()),
+              bytes, cudaMemcpyHostToDevice, static_cast<cudaStream_t>(native.handle)),
+          cudaSuccess);
+      const auto& selected = lowered->selected[0];
+      auto bound = selected.call->Bind(*selected.implementation, *launch, {});
+      ASSERT_TRUE(bound) << Failed(bound)->detail;
+      ASSERT_TRUE((*bound)->Run(native));
+      ASSERT_EQ(cudaStreamSynchronize(static_cast<cudaStream_t>(native.handle)), cudaSuccess);
+      const auto width = gather ? k : kN;
+      std::vector<float> got(width * rows * batches);
+      ASSERT_EQ(cudaMemcpy(got.data(), selected.tensor->data, got.size() * sizeof(float),
+                           cudaMemcpyDeviceToHost),
+                cudaSuccess);
+      for (std::uint64_t b = 0; b < batches; ++b)
+        for (std::uint64_t r = 0; r < rows; ++r)
+          for (std::uint64_t j = 0; j < width; ++j) {
+            const auto at = b * rows + r;
+            const auto matrix = weight_batches == 1 ? 0 : b;
+            if (gather) {
+              EXPECT_EQ(got[at * width + j],
+                        weight->row(matrix, static_cast<std::uint64_t>(ids[at]))[j]);
+            } else {
+              const auto dot = DotOf(weight->row(matrix, j), x.data() + at * k, k);
+              EXPECT_LE(std::abs(got[at * width + j] - dot.sum),
+                        Bound(dot, Tolerance(decoder, false, k)));
+            }
+          }
+    }
+  }
+  const auto fence = execution->Record(stream).value();
+  ASSERT_EQ(cudaStreamSynchronize(static_cast<cudaStream_t>(native.handle)), cudaSuccess);
+  ASSERT_EQ(execution->Query(fence).value(), llmp::providers::FenceState::kComplete);
+  EXPECT_TRUE(execution->Release(fence));
+  launch.reset();
+  EXPECT_TRUE(execution->DestroyStream(stream));
 }
 
 }  // namespace

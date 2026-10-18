@@ -24,6 +24,24 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Scratch planning and funding use the backend's actual lane configuration,
+  so serial multiowner programs do not reserve four unused lane workspaces.
+  Launch, binding and cache identity share that immutable configuration.
+- Automatic fusion queries and final implementation selection require measured
+  qualification for newly available decode GLUs and EXL3 paired products.
+  Rewrite provenance survives graph transformations; explicit typed operations
+  retain their own selection contract.
+- Decode selection declares actual device requirements and expansion, honors
+  vector-row policy and per-matrix batch shapes, and keys cached plans by the
+  implementation set, backend identity and capture requirements.
+- NVFP4 row gathers consistently produce zeros for invalid IDs; the decode
+  primitive also sets its optional error flag. Shared CUDA scalar conversions
+  retain an independent CPU decoder as the numerical oracle.
+- Row-interleaved NVFP4 products and gathers retain their optional tensor
+  scales and every stacked scale; only single-scale unbatched gathers use
+  the specialized native implementation.
+- Batched MXFP8 products and short-block row gathers select a decoder that
+  supports their batches; NVFP4 expert products preserve separate tensor scales.
 - Import native Gemma 2/3 text checkpoints using their explicit query scale
   and source norm convention, and accept explicit GGUF attention scales.
   Native SentencePiece BPE assets and equivalent Hugging Face tokenizers load
@@ -378,6 +396,13 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Every GGML backend exposes the complete CUDA decode ladder: 74 operations,
+  including MXFP4 split/scale-atoms decoding, dense NVFP4, MXFP8 routed experts,
+  resident row gathers, batched products and both compiled mixed GLUs.
+  Production EXL3 uses the audited kept MIT kernels with actual occupancy facts
+  and the existing exact reconstruction pins.
+  Selected kernel state is separately funded and retained per backend, so
+  model switches and scratch remapping preserve its ownership and initialization.
 - Native drafter imports take `--target TARGET_ID` in the selected store and
   validate the stored target spec; published drafter artifacts remain usable
   without reimport. This CLI semantic change raises the next product version

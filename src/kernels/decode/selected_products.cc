@@ -17,6 +17,7 @@
 #include "base/sha256.h"
 #include "kernels/decode/implementations.h"
 #include "kernels/decode/products.h"
+#include "kernels/decode/selected_weight.h"
 #include "kernels/ggml/validate_util.h"
 #include "providers/device_runtime.h"
 
@@ -26,11 +27,6 @@ namespace kg = ggml;
 using Failure = kg::KernelFailure;
 using Role = format::PartRole;
 
-constexpr std::string_view kVectorAffineName = "llmp.decode.vector.affine.split";
-constexpr std::string_view kVectorGluAffineName = "llmp.decode.vector_glu.affine.split";
-constexpr std::string_view kMatrixAffineName = "llmp.decode.matrix.affine.split";
-constexpr std::string_view kMatrixFmaAffineName = "llmp.decode.matrix_fma.affine.split";
-
 std::unexpected<Failure> Reject(std::string message) {
   return std::unexpected(Failure{.detail = std::move(message)});
 }
@@ -39,101 +35,49 @@ std::uint64_t Address(const ggml_tensor* t) {
   return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(t->data));
 }
 
-bool Packed(const ggml_tensor* t, ggml_type type, std::uint64_t width, std::uint64_t rows) {
-  return t != nullptr && t->type == type && width > 0 && rows > 0 &&
-         static_cast<std::uint64_t>(t->ne[0]) == width &&
-         static_cast<std::uint64_t>(t->ne[1]) == rows && t->ne[2] == 1 && t->ne[3] == 1 &&
-         ggml_is_contiguous(t);
-}
-
-struct WeightGeometry {
-  format::TensorFormat format{};
-  std::array<ggml_tensor*, 3> parts{};
-  std::array<format::PartRole, 3> roles{};
-  std::size_t count = 0;
-};
-
+using detail::BindWeightParts;
+using detail::WeightGeometry;
 std::expected<void, Failure> CheckWeight(const kg::SelectedOperand& w, WeightGeometry& out) {
-  const auto& f = w.desc.format;
-  const auto parts = format::PartsOf(f);
-  if (!parts || f.encoding != format::Encoding::kAffine || f.layout != format::Layout::kSplit ||
-      f.shape.rank != 2 || f.stacked != 1 || f.shape.ne[0] >= (1ULL << 30) ||
-      f.shape.ne[1] >= (1ULL << 31) || w.parts.size() != parts->size()) {
-    return Reject("selected product requires a complete affine split weight");
-  }
-  const std::uint64_t k = f.shape.ne[0];
-  const std::uint64_t n = f.shape.ne[1];
-  if (k % DecoderKMultiple(DecoderId::kAffineSplit) != 0) {
-    return Reject("selected product weight K must be a multiple of decoder segment");
-  }
-  out.format = f;
-  out.count = parts->size();
-  for (std::size_t i = 0; i < out.count; ++i) {
-    const auto role = (*parts)[i].role;
-    const auto at = std::ranges::find(w.parts, role, &kg::SelectedPart::role);
-    if (at == w.parts.end() || std::ranges::count(w.parts, role, &kg::SelectedPart::role) != 1 ||
-        at->tensor == nullptr) {
-      return Reject("selected product weight part missing or duplicated");
-    }
-    out.parts[i] = at->tensor;
-    out.roles[i] = role;
-    if (role == Role::kTensorScale) {
-      if (!Packed(at->tensor, GGML_TYPE_F32, 1, 1))
-        return Reject("selected product tensor scale physical geometry differs");
-    } else {
-      const auto row_bytes = format::RowBytes(f, role);
-      if (!row_bytes || !Packed(at->tensor, GGML_TYPE_I8, *row_bytes, n))
-        return Reject("selected product weight part physical geometry differs");
-    }
-  }
+  auto geometry = detail::WeightOf(w);
+  if (!geometry) return std::unexpected(geometry.error());
+  out = *geometry;
   return {};
 }
 
-std::expected<std::array<DevicePart, 3>, Failure> BindWeightParts(const WeightGeometry& g) {
-  for (std::size_t i = 0; i < g.count; ++i) {
-    if (g.roles[i] == Role::kTensorScale) {
-      if (!Packed(g.parts[i], GGML_TYPE_F32, 1, 1))
-        return Reject("selected product part geometry changed after lowering");
-    } else {
-      const auto row_bytes = format::RowBytes(g.format, g.roles[i]);
-      if (!row_bytes || !Packed(g.parts[i], GGML_TYPE_I8, *row_bytes, g.format.shape.ne[1]))
-        return Reject("selected product part geometry changed after lowering");
-    }
-    if (!kg::detail::Current(g.parts[i]) || Address(g.parts[i]) == 0)
-      return Reject("selected product part requires current physical binding");
-    const auto bytes = ggml_nbytes(g.parts[i]);
-    if (bytes > UINT64_MAX - Address(g.parts[i]))
-      return Reject("selected product part address overflows");
-  }
-  std::array<DevicePart, 3> result{};
-  for (std::size_t i = 0; i < g.count; ++i) {
-    result[i] = {g.roles[i], g.parts[i]->data, ggml_nbytes(g.parts[i])};
-  }
-  auto operand = OperandOf({g.format, std::span(result).first(g.count), 0});
-  if (!operand) return Reject(operand.error());
-  return result;
-}
-
-struct SingleGeometry {
-  WeightGeometry weight;
+struct ActivationGeometry {
   ggml_tensor* x = nullptr;
   ggml_tensor* y = nullptr;
-  std::uint64_t k = 0;
-  std::uint64_t outputs = 0;
-  std::uint64_t rows = 0;
+  std::uint64_t k = 0, outputs = 0, rows = 0, batches2 = 1, batches3 = 1;
+  std::array<std::int64_t, 4> x_ne{}, y_ne{};
+  std::array<std::size_t, 4> x_nb{}, y_nb{};
+};
+struct SingleGeometry : ActivationGeometry {
+  WeightGeometry weight;
   Template tmpl = Template::kVector;
 };
-
-struct GluGeometry {
+struct GluGeometry : ActivationGeometry {
   WeightGeometry gate;
   WeightGeometry up;
   ir::GluParams glu{};
-  ggml_tensor* x = nullptr;
-  ggml_tensor* y = nullptr;
-  std::uint64_t k = 0;
-  std::uint64_t outputs = 0;
-  std::uint64_t rows = 0;
 };
+bool InputRows(const ir::TensorDesc& desc) {
+  return desc.nb[0] == 4 && desc.nb[1] % 16 == 0 && desc.nb[1] >= desc.ne(0) * 4 &&
+         desc.nb[2] >= desc.nb[1] * desc.ne(1) && desc.nb[3] >= desc.nb[2] * desc.ne(2) &&
+         (desc.ne(2) == 1 || desc.nb[2] % 16 == 0) && (desc.ne(3) == 1 || desc.nb[3] % 16 == 0);
+}
+void Remember(ActivationGeometry& g) {
+  std::ranges::copy(g.x->ne, g.x_ne.begin());
+  std::ranges::copy(g.y->ne, g.y_ne.begin());
+  std::ranges::copy(g.x->nb, g.x_nb.begin());
+  std::ranges::copy(g.y->nb, g.y_nb.begin());
+}
+bool CurrentActivations(const ActivationGeometry& g) {
+  return g.x && g.y && kg::detail::Current(g.x) && kg::detail::Current(g.y) &&
+         kg::detail::Extent(g.x) && kg::detail::Extent(g.y) && g.x->type == GGML_TYPE_F32 &&
+         g.y->type == GGML_TYPE_F32 && std::ranges::equal(g.x->ne, g.x_ne) &&
+         std::ranges::equal(g.y->ne, g.y_ne) && std::ranges::equal(g.x->nb, g.x_nb) &&
+         std::ranges::equal(g.y->nb, g.y_nb) && Address(g.x) % 16 == 0 && Address(g.y) % 4 == 0;
+}
 
 using ProductGeometry = std::variant<SingleGeometry, GluGeometry>;
 
@@ -156,14 +100,16 @@ std::expected<SingleGeometry, Failure> ShapeSingle(Template tmpl, const ir::Node
   g.outputs = g.weight.format.shape.ne[1];
 
   if (x.desc.format.encoding != format::Encoding::kF32 ||
-      x.desc.format.layout != format::Layout::kDense || !ir::IsContiguous(x.desc) ||
-      !x.parts.empty() || x.desc.ne(0) != g.k)
+      x.desc.format.layout != format::Layout::kDense || !InputRows(x.desc) || !x.parts.empty() ||
+      x.desc.ne(0) != g.k)
     return Reject("selected product input x must be contiguous F32 matching K");
 
   const std::uint64_t total_x_elems = ir::Elements(x.desc.shape());
   if (total_x_elems % g.k != 0)
     return Reject("selected product input x elements must be multiple of K");
-  g.rows = total_x_elems / g.k;
+  g.rows = x.desc.ne(1);
+  g.batches2 = x.desc.ne(2);
+  g.batches3 = x.desc.ne(3);
 
   if (tmpl == Template::kVector) {
     if (g.rows < 1 || g.rows > kMaxVectorRows)
@@ -174,18 +120,24 @@ std::expected<SingleGeometry, Failure> ShapeSingle(Template tmpl, const ir::Node
 
   if (y.desc.format.encoding != format::Encoding::kF32 ||
       y.desc.format.layout != format::Layout::kDense || !ir::IsContiguous(y.desc) ||
-      !y.parts.empty() || y.desc.ne(0) != g.outputs ||
-      ir::Elements(y.desc.shape()) != g.outputs * g.rows)
+      !y.parts.empty() ||
+      y.desc.shape().ne != ir::ShapeOf({g.outputs, g.rows, g.batches2, g.batches3}).ne ||
+      ir::Elements(y.desc.shape()) != g.outputs * (total_x_elems / g.k))
     return Reject("selected product output y must be contiguous F32 matching N and rows");
 
   g.x = x.tensor;
   g.y = y.tensor;
   if (!g.x || !g.y || g.x->type != GGML_TYPE_F32 || g.y->type != GGML_TYPE_F32 ||
-      !ggml_is_contiguous(g.x) || !ggml_is_contiguous(g.y) ||
+      !ggml_is_contiguous(g.y) ||
       static_cast<std::uint64_t>(ggml_nelements(g.x)) != total_x_elems ||
-      static_cast<std::uint64_t>(ggml_nelements(g.y)) != g.outputs * g.rows)
+      static_cast<std::uint64_t>(ggml_nelements(g.y)) != g.outputs * (total_x_elems / g.k))
     return Reject("selected product activation physical geometry differs");
 
+  Remember(g);
+  if (!std::ranges::equal(g.x->nb, x.desc.nb) || !std::ranges::equal(g.y->nb, y.desc.nb))
+    return Reject("selected product activation strides differ");
+  if (x.desc.ne(2) % g.weight.format.shape.ne[2] || x.desc.ne(3) % g.weight.format.shape.ne[3])
+    return Reject("selected product weight batches do not broadcast to input");
   return g;
 }
 
@@ -213,40 +165,54 @@ std::expected<GluGeometry, Failure> ShapeGlu(const ir::Node& node,
   if (!up_ok) return std::unexpected(up_ok.error());
 
   if (g.gate.format.shape.ne[0] != g.up.format.shape.ne[0] ||
-      g.gate.format.shape.ne[1] != g.up.format.shape.ne[1])
+      g.gate.format.shape.ne != g.up.format.shape.ne)
     return Reject("selected vector_glu gate and up weight shapes must match");
 
   g.k = g.gate.format.shape.ne[0];
   g.outputs = g.gate.format.shape.ne[1];
 
   if (x.desc.format.encoding != format::Encoding::kF32 ||
-      x.desc.format.layout != format::Layout::kDense || !ir::IsContiguous(x.desc) ||
-      !x.parts.empty() || x.desc.ne(0) != g.k)
+      x.desc.format.layout != format::Layout::kDense || !InputRows(x.desc) || !x.parts.empty() ||
+      x.desc.ne(0) != g.k)
     return Reject("selected vector_glu input x must be contiguous F32 matching K");
 
   const std::uint64_t total_x_elems = ir::Elements(x.desc.shape());
   if (total_x_elems % g.k != 0)
     return Reject("selected vector_glu input x elements must be multiple of K");
-  g.rows = total_x_elems / g.k;
+  g.rows = x.desc.ne(1);
+  g.batches2 = x.desc.ne(2);
+  g.batches3 = x.desc.ne(3);
 
   if (g.rows < 1 || g.rows > kMaxVectorRows)
     return Reject("selected vector_glu requires 1 to 16 rows");
 
   if (y.desc.format.encoding != format::Encoding::kF32 ||
       y.desc.format.layout != format::Layout::kDense || !ir::IsContiguous(y.desc) ||
-      !y.parts.empty() || y.desc.ne(0) != g.outputs ||
-      ir::Elements(y.desc.shape()) != g.outputs * g.rows)
+      !y.parts.empty() ||
+      y.desc.shape().ne != ir::ShapeOf({g.outputs, g.rows, g.batches2, g.batches3}).ne ||
+      ir::Elements(y.desc.shape()) != g.outputs * (total_x_elems / g.k))
     return Reject("selected vector_glu output y must be contiguous F32 matching N and rows");
 
   g.x = x.tensor;
   g.y = y.tensor;
   if (!g.x || !g.y || g.x->type != GGML_TYPE_F32 || g.y->type != GGML_TYPE_F32 ||
-      !ggml_is_contiguous(g.x) || !ggml_is_contiguous(g.y) ||
+      !ggml_is_contiguous(g.y) ||
       static_cast<std::uint64_t>(ggml_nelements(g.x)) != total_x_elems ||
-      static_cast<std::uint64_t>(ggml_nelements(g.y)) != g.outputs * g.rows)
+      static_cast<std::uint64_t>(ggml_nelements(g.y)) != g.outputs * (total_x_elems / g.k))
     return Reject("selected vector_glu activation physical geometry differs");
 
+  Remember(g);
+  if (!std::ranges::equal(g.x->nb, x.desc.nb) || !std::ranges::equal(g.y->nb, y.desc.nb))
+    return Reject("selected GLU activation strides differ");
+  if (x.desc.ne(2) % g.gate.format.shape.ne[2] || x.desc.ne(3) % g.gate.format.shape.ne[3])
+    return Reject("selected GLU weight batches do not broadcast to input");
   return g;
+}
+
+std::uint64_t MatrixAt(const WeightGeometry& w, std::uint64_t b2, std::uint64_t b3,
+                       std::uint64_t x2, std::uint64_t x3) {
+  const auto w2 = w.format.shape.ne[2], w3 = w.format.shape.ne[3];
+  return b2 / (x2 / w2) + (b3 / (x3 / w3)) * w2;
 }
 
 class Runtime final : public kg::SelectedLaunch {
@@ -267,32 +233,41 @@ class BoundCall final : public kg::BoundSelectedCall {
     if (runtime_.failed || stream.handle != runtime_.stream().handle)
       return Reject("selected product cannot run on a failed or foreign stream");
 
+    if (!std::visit([](const auto& g) { return CurrentActivations(g); }, geometry_))
+      return Reject("selected product activation geometry changed");
     if (std::holds_alternative<SingleGeometry>(geometry_)) {
       const auto& g = std::get<SingleGeometry>(geometry_);
       const auto parts = BindWeightParts(g.weight);
       if (!parts) return std::unexpected(parts.error());
-      Product p{
-          .weight = {g.weight.format, std::span(*parts).first(g.weight.count), 0},
-          .first = 0,
-          .outputs = g.outputs,
-          .x = static_cast<const float*>(g.x->data),
-          .rows = g.rows,
-          .x_stride = g.k,
-          .y = static_cast<float*>(g.y->data),
-          .y_stride = g.outputs,
-      };
-      Status status;
-      if (g.tmpl == Template::kVector) {
-        status = RunVector(p, stream.handle);
-      } else if (g.tmpl == Template::kMatrix) {
-        status = RunMatrix(p, MatrixPath::kMma, stream.handle);
-      } else if (g.tmpl == Template::kMatrixFma) {
-        status = RunMatrix(p, MatrixPath::kFma, stream.handle);
-      }
-      if (!status) {
-        runtime_.failed = true;
-        return std::unexpected(
-            Failure{.error = kg::KernelError::kUnknown, .detail = status.error()});
+      for (std::uint64_t b3 = 0; b3 < g.batches3; ++b3) {
+        for (std::uint64_t b2 = 0; b2 < g.batches2; ++b2) {
+          const auto offset = (b3 * g.batches2 + b2) * g.rows;
+          Product p{
+              .weight = {g.weight.format, std::span(*parts).first(g.weight.count),
+                         MatrixAt(g.weight, b2, b3, g.batches2, g.batches3)},
+              .first = 0,
+              .outputs = g.outputs,
+              .x = reinterpret_cast<const float*>(static_cast<const std::byte*>(g.x->data) +
+                                                  b2 * g.x_nb[2] + b3 * g.x_nb[3]),
+              .rows = g.rows,
+              .x_stride = g.x_nb[1] / sizeof(float),
+              .y = static_cast<float*>(g.y->data) + offset * g.outputs,
+              .y_stride = g.outputs,
+          };
+          Status status;
+          if (g.tmpl == Template::kVector) {
+            status = RunVector(p, stream.handle);
+          } else if (g.tmpl == Template::kMatrix) {
+            status = RunMatrix(p, MatrixPath::kMma, stream.handle);
+          } else if (g.tmpl == Template::kMatrixFma) {
+            status = RunMatrix(p, MatrixPath::kFma, stream.handle);
+          }
+          if (!status) {
+            runtime_.failed = true;
+            return std::unexpected(
+                Failure{.error = kg::KernelError::kUnknown, .detail = status.error()});
+          }
+        }
       }
     } else {
       const auto& g = std::get<GluGeometry>(geometry_);
@@ -300,24 +275,32 @@ class BoundCall final : public kg::BoundSelectedCall {
       if (!gate_parts) return std::unexpected(gate_parts.error());
       const auto up_parts = BindWeightParts(g.up);
       if (!up_parts) return std::unexpected(up_parts.error());
-      GluProduct p{
-          .gate = {g.gate.format, std::span(*gate_parts).first(g.gate.count), 0},
-          .gate_first = 0,
-          .up = {g.up.format, std::span(*up_parts).first(g.up.count), 0},
-          .up_first = 0,
-          .outputs = g.outputs,
-          .glu = g.glu,
-          .x = static_cast<const float*>(g.x->data),
-          .rows = g.rows,
-          .x_stride = g.k,
-          .y = static_cast<float*>(g.y->data),
-          .y_stride = g.outputs,
-      };
-      auto status = RunVectorGlu(p, stream.handle);
-      if (!status) {
-        runtime_.failed = true;
-        return std::unexpected(
-            Failure{.error = kg::KernelError::kUnknown, .detail = status.error()});
+      for (std::uint64_t b3 = 0; b3 < g.batches3; ++b3) {
+        for (std::uint64_t b2 = 0; b2 < g.batches2; ++b2) {
+          const auto offset = (b3 * g.batches2 + b2) * g.rows;
+          GluProduct p{
+              .gate = {g.gate.format, std::span(*gate_parts).first(g.gate.count),
+                       MatrixAt(g.gate, b2, b3, g.batches2, g.batches3)},
+              .gate_first = 0,
+              .up = {g.up.format, std::span(*up_parts).first(g.up.count),
+                     MatrixAt(g.up, b2, b3, g.batches2, g.batches3)},
+              .up_first = 0,
+              .outputs = g.outputs,
+              .glu = g.glu,
+              .x = reinterpret_cast<const float*>(static_cast<const std::byte*>(g.x->data) +
+                                                  b2 * g.x_nb[2] + b3 * g.x_nb[3]),
+              .rows = g.rows,
+              .x_stride = g.x_nb[1] / sizeof(float),
+              .y = static_cast<float*>(g.y->data) + offset * g.outputs,
+              .y_stride = g.outputs,
+          };
+          auto status = RunVectorGlu(p, stream.handle);
+          if (!status) {
+            runtime_.failed = true;
+            return std::unexpected(
+                Failure{.error = kg::KernelError::kUnknown, .detail = status.error()});
+          }
+        }
       }
     }
     return {};
@@ -333,23 +316,27 @@ class Call final : public kg::SelectedCall {
   Call(const kg::SelectedSource* owner, ProductGeometry geometry, base::Sha256Digest identity)
       : kg::SelectedCall(owner), geometry_(std::move(geometry)), identity_(identity) {}
   std::uint64_t scratch_bytes() const override { return 0; }
-  std::uint64_t host_bytes() const override { return 2048; }
-  std::uint64_t launches() const override { return 1; }
+  std::uint64_t host_bytes() const override { return sizeof(Call) + sizeof(BoundCall) + 128; }
+  std::uint64_t launches() const override {
+    return std::visit([](const auto& g) { return g.batches2 * g.batches3; }, geometry_);
+  }
   std::expected<std::unique_ptr<kg::BoundSelectedCall>, Failure> Bind(
       const execution::Implementation& implementation, kg::SelectedLaunch& launch,
       kg::SelectedWorkspace) const override {
     if (launch.owner() != owner() || execution::IdentityOf(implementation) != identity_)
       return Reject("selected product source or implementation identity changed");
     const auto bound = decode::Bind(implementation);
-    if (!bound || bound->gate != DecoderId::kAffineSplit)
-      return Reject("selected product declaration is not affine split decoder");
+    if (!bound) return Reject("selected product declaration has no decoder");
 
+    if (!std::visit([](const auto& g) { return CurrentActivations(g); }, geometry_))
+      return Reject("selected product activation geometry changed");
     if (std::holds_alternative<SingleGeometry>(geometry_)) {
       const auto& g = std::get<SingleGeometry>(geometry_);
-      if (bound->tmpl != g.tmpl) return Reject("selected product implementation template mismatch");
+      if (bound->tmpl != g.tmpl || DecoderOf(g.weight.format) != bound->gate)
+        return Reject("selected product implementation template mismatch");
       auto parts = BindWeightParts(g.weight);
       if (!parts) return std::unexpected(parts.error());
-      std::array<const ggml_tensor*, 5> all{};
+      std::array<const ggml_tensor*, 6> all{};
       std::size_t all_count = 0;
       for (std::size_t i = 0; i < g.weight.count; ++i) all[all_count++] = g.weight.parts[i];
       all[all_count++] = g.x;
@@ -373,13 +360,14 @@ class Call final : public kg::SelectedCall {
         return Reject("selected product input or output is misaligned");
     } else {
       const auto& g = std::get<GluGeometry>(geometry_);
-      if (bound->tmpl != Template::kVectorGlu)
+      if (bound->tmpl != Template::kVectorGlu || DecoderOf(g.gate.format) != bound->gate ||
+          DecoderOf(g.up.format) != bound->up)
         return Reject("selected vector_glu implementation template mismatch");
       auto gate_parts = BindWeightParts(g.gate);
       if (!gate_parts) return std::unexpected(gate_parts.error());
       auto up_parts = BindWeightParts(g.up);
       if (!up_parts) return std::unexpected(up_parts.error());
-      std::array<const ggml_tensor*, 8> all{};
+      std::array<const ggml_tensor*, 10> all{};
       std::size_t all_count = 0;
       for (std::size_t i = 0; i < g.gate.count; ++i) all[all_count++] = g.gate.parts[i];
       for (std::size_t i = 0; i < g.up.count; ++i) all[all_count++] = g.up.parts[i];
@@ -414,7 +402,17 @@ class Call final : public kg::SelectedCall {
 class Source final : public kg::SelectedSource {
  public:
   explicit Source(std::vector<execution::Implementation> implementations)
-      : implementations_(std::move(implementations)) {}
+      : implementations_(std::move(implementations)) {
+    base::Sha256 hash;
+    hash.Update("llmp-native-split-products-v1");
+    hash.Update(
+        "checked-weights;all-decoders;batched-broadcast;vector-vector_glu-matrix-matrix_fma");
+    for (const auto& impl : implementations_) {
+      const auto implementation = execution::IdentityOf(impl);
+      hash.Update(std::as_bytes(std::span(implementation)));
+    }
+    identity_ = hash.Finish();
+  }
   std::vector<execution::Implementation> Implementations() const override {
     return implementations_;
   }
@@ -424,16 +422,7 @@ class Source final : public kg::SelectedSource {
                                [&](const auto& impl) { return impl.name == name; });
   }
   std::uint64_t persistent_bytes() const override { return 0; }
-  std::optional<base::Sha256Digest> ExecutionIdentity() const override {
-    base::Sha256 hash;
-    hash.Update("llmp-native-split-products-v1");
-    hash.Update("checked-weights;affine-split;vector-vector_glu-matrix-matrix_fma");
-    for (const auto& impl : implementations_) {
-      const auto implementation = execution::IdentityOf(impl);
-      hash.Update(std::as_bytes(std::span(implementation)));
-    }
-    return hash.Finish();
-  }
+  std::optional<base::Sha256Digest> ExecutionIdentity() const override { return identity_; }
   std::expected<std::unique_ptr<kg::SelectedCall>, Failure> Lower(
       const execution::Implementation& implementation, const ir::Node& node,
       std::span<const kg::SelectedOperand> inputs,
@@ -444,21 +433,31 @@ class Source final : public kg::SelectedSource {
         execution::IdentityOf(implementation) != execution::IdentityOf(*at))
       return Reject("foreign product declaration");
 
-    if (implementation.name == kVectorAffineName) {
+    const auto bound = decode::Bind(implementation);
+    if (!bound) return Reject("product declaration has no decoder");
+    if (bound->tmpl == Template::kVector) {
       auto geom = ShapeSingle(Template::kVector, node, inputs, outputs);
       if (!geom) return std::unexpected(geom.error());
+      if (DecoderOf(geom->weight.format) != bound->gate)
+        return Reject("product decoder and format differ");
       return std::make_unique<Call>(this, *geom, execution::IdentityOf(implementation));
-    } else if (implementation.name == kMatrixAffineName) {
+    } else if (bound->tmpl == Template::kMatrix) {
       auto geom = ShapeSingle(Template::kMatrix, node, inputs, outputs);
       if (!geom) return std::unexpected(geom.error());
+      if (DecoderOf(geom->weight.format) != bound->gate)
+        return Reject("product decoder and format differ");
       return std::make_unique<Call>(this, *geom, execution::IdentityOf(implementation));
-    } else if (implementation.name == kMatrixFmaAffineName) {
+    } else if (bound->tmpl == Template::kMatrixFma) {
       auto geom = ShapeSingle(Template::kMatrixFma, node, inputs, outputs);
       if (!geom) return std::unexpected(geom.error());
+      if (DecoderOf(geom->weight.format) != bound->gate)
+        return Reject("product decoder and format differ");
       return std::make_unique<Call>(this, *geom, execution::IdentityOf(implementation));
-    } else if (implementation.name == kVectorGluAffineName) {
+    } else if (bound->tmpl == Template::kVectorGlu) {
       auto geom = ShapeGlu(node, inputs, outputs);
       if (!geom) return std::unexpected(geom.error());
+      if (DecoderOf(geom->gate.format) != bound->gate || DecoderOf(geom->up.format) != bound->up)
+        return Reject("GLU decoder pair and physical operand formats differ");
       return std::make_unique<Call>(this, *geom, execution::IdentityOf(implementation));
     }
     return Reject("unsupported product implementation name");
@@ -476,20 +475,21 @@ class Source final : public kg::SelectedSource {
 
  private:
   std::vector<execution::Implementation> implementations_;
+  base::Sha256Digest identity_{};
 };
 
 }  // namespace
 
 std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> ProductsSelectedSource(
     std::optional<format::Encoding> encoding) {
-  if (encoding && *encoding != format::Encoding::kAffine) {
-    return std::unexpected("products selected source only supports affine encoding");
-  }
   auto implementations = decode::Implementations();
   std::vector<execution::Implementation> matched;
   for (const auto& impl : implementations) {
-    if (impl.name == kVectorAffineName || impl.name == kVectorGluAffineName ||
-        impl.name == kMatrixAffineName || impl.name == kMatrixFmaAffineName) {
+    const auto bound = decode::Bind(impl);
+    if (bound &&
+        (bound->tmpl == Template::kVector || bound->tmpl == Template::kVectorGlu ||
+         bound->tmpl == Template::kMatrix || bound->tmpl == Template::kMatrixFma) &&
+        (!encoding || DecoderEncoding(bound->gate) == *encoding)) {
       matched.push_back(impl);
     }
   }

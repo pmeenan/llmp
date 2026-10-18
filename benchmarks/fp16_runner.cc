@@ -123,6 +123,7 @@ struct Fp16Runner::State {
   std::map<ir::WeightRef, std::uint32_t> resources;
   std::unique_ptr<kg::GgmlBackend> backend;
   std::unique_ptr<kg::CublasHandle> cublas;
+  kg::SelectedWorkspace selected_state{};
   std::unique_ptr<en::ModelRunner> runner;
   catalog::Closure nothing;
   std::string artifact_id;
@@ -302,8 +303,14 @@ Status Fp16Runner::Setup() {
   const auto cublas_bytes =
       kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture)).value();
   config.kernel_memory.push_back({.name = "FP16 benchmark cuBLAS", .bytes = cublas_bytes});
-  config.prepare = [&s, cublas_bytes](std::span<const std::uint64_t> bases) -> Status {
-    if (bases.size() != 1) return Error("FP16 cuBLAS workspace is not mapped");
+  const auto selected_bytes = s.backend->persistent_bytes();
+  if (selected_bytes)
+    config.kernel_memory.push_back({.name = "FP16 selected kernel state", .bytes = selected_bytes});
+  config.prepare = [&s, cublas_bytes,
+                    selected_bytes](std::span<const std::uint64_t> bases) -> Status {
+    if (bases.size() != 1U + static_cast<std::size_t>(selected_bytes != 0))
+      return Error("FP16 kernel workspaces are not mapped");
+    s.selected_state = {selected_bytes ? bases[1] : 0, selected_bytes};
     auto handle =
         kg::CublasHandle::Create(0, s.node.execution(), s.node.stream(s.stream),
                                  {.base = bases.front(), .size = base::Bytes(cublas_bytes)});
@@ -313,12 +320,13 @@ Status Fp16Runner::Setup() {
   };
   config.retire = [&s] {
     s.backend->LaunchReleased();
+    s.selected_state = {};
     s.cublas.reset();
   };
   config.launch =
       [&s](std::uint64_t) -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
-    return s.backend->Launch(
-        {.base = s.node.pool().base, .size = base::Bytes(s.node.pool().bytes)});
+    return s.backend->Launch({.base = s.node.pool().base, .size = base::Bytes(s.node.pool().bytes)},
+                             s.selected_state);
   };
   config.weight_address = [&s, paged](const ir::WeightRef& weight, format::PartRole) {
     const auto found = s.resources.find(weight);

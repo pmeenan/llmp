@@ -28,9 +28,6 @@
 #include "engine/paged_weights.h"
 #include "engine/ple_rows.h"
 #include "format/tensor_format.h"
-#include "kernels/decode/selected_grouped.h"
-#include "kernels/decode/selected_rows.h"
-#include "kernels/decode/selected_source.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
 #include "planner/policy.h"
@@ -74,7 +71,8 @@ struct DerivedDomain {
 std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> ComponentServingDomain(
     const spec::ModelSpec& model_spec, std::span<const model::StateLayoutDerived> layouts,
     std::uint32_t slots, const engine::DecodingMode& mode,
-    const std::shared_ptr<engine::ExecutionMetadataAllowance>& allowance) {
+    const std::shared_ptr<engine::ExecutionMetadataAllowance>& allowance,
+    std::function<bool(std::uint64_t)> charge_metadata) {
   const bool composed = model_spec.stages.size() > 1;
   std::uint64_t verify = composed ? 1 : 0;
   for (const auto& draft : mode.drafters) {
@@ -135,7 +133,8 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Compo
         return Error("joined replay requires complete companion progress contracts");
     }
   }
-  if (!allowance->Charge(bytes)) return Error("serving domain metadata allowance is insufficient");
+  if (!(charge_metadata ? charge_metadata(bytes) : allowance->Charge(bytes)))
+    return Error("serving domain metadata allowance is insufficient");
   auto charge = std::make_shared<ConstructionCharge>();
   charge->allowance = allowance;
   charge->bytes = bytes;
@@ -289,6 +288,7 @@ struct ComponentHold {
   std::map<ir::WeightRef, std::uint64_t> pitch;
   // Before the backend, whose launch borrows it (the runner's Release
   // destroys that launch, then retires the handle).
+  kernels::ggml::SelectedWorkspace selected_state{};
   std::unique_ptr<kernels::ggml::CublasHandle> cublas;
   std::unique_ptr<kernels::ggml::GgmlBackend> backend;
 };
@@ -378,6 +378,41 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error(
           std::format("the component engine serves no architecture {}", settings.architecture));
     const spec::ServingRecipe& recipe = *recipe_mapping->serving;
+    const auto metadata_cap =
+        [&node, startup_cap =
+                    options.automatic_startup_cap]() -> std::expected<std::uint64_t, std::string> {
+      if (startup_cap != 0) return startup_cap;
+      if (!node.open_for_setup()) return node.budget().value();
+      // A stopped diagnostic has no execution budget yet. Physical headroom
+      // bounds admission; Start still enforces its eventual configured cap.
+      const auto available = platform::AvailableMemoryBytes().value_or(0);
+      const auto occupied = node.catalog().OccupancyOf(node.domain()).Total().value();
+      std::uint64_t cap = 0;
+      if (available <= kUncountedMargin ||
+          __builtin_add_overflow(occupied, available - kUncountedMargin, &cap))
+        return Error("execution metadata lacks bounded physical headroom");
+      return cap;
+    };
+    const auto charge_metadata =
+        [&node, metadata_cap, limit = options.execution_metadata_cap_bytes](
+            const std::shared_ptr<engine::ExecutionMetadataAllowance>& paid, std::uint64_t bytes) {
+          if (!paid) return false;
+          const auto overhead = engine::ExecutionMetadataAllowance::OverheadBytes();
+          if (limit != 0 && (limit < overhead || paid->used() > limit - overhead ||
+                             bytes > limit - overhead - paid->used()))
+            return false;
+          auto cap = metadata_cap();
+          return cap && serving_support::ChargeExecutionMetadata(paid, bytes, &node, *cap);
+        };
+    const auto admit_metadata = [&node, metadata_cap,
+                                 limit = options.execution_metadata_cap_bytes]()
+        -> std::expected<std::shared_ptr<engine::ExecutionMetadataAllowance>, std::string> {
+      const auto bytes = engine::ExecutionMetadataAllowance::OverheadBytes() + 1;
+      if (limit != 0 && bytes > limit) return Error("execution metadata cap cannot fund its owner");
+      auto cap = metadata_cap();
+      if (!cap) return Error(cap.error());
+      return serving_support::AdmitExecutionMetadata(node, bytes, *cap);
+    };
     // A shared route qualified by its plain or joined envelopes (else one
     // owner), or one served only in its automatic serving shape.
     const bool solo = recipe.shared_route && recipe.qualified_envelopes;
@@ -551,13 +586,11 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       auto bytes = components::KvCacheEncodingBytes(hold->spec, format::Encoding::kQ8_0);
       if (!bytes) return Error(bytes.error());
       if (!metadata) {
-        auto admitted = engine::ExecutionMetadataAllowance::Admit(
-            node.catalog(), node.domain(), options.execution_metadata_bytes,
-            platform::AvailableMemoryBytes().value_or(0), kUncountedMargin);
+        auto admitted = admit_metadata();
         if (!admitted) return Error(admitted.error());
         metadata = std::move(*admitted);
       }
-      if (!metadata->Charge(*bytes))
+      if (!charge_metadata(metadata, *bytes))
         return Error("Q8_0 KV source metadata allowance is insufficient");
       hold->kv_encoding_charge = std::make_shared<ConstructionCharge>();
       hold->kv_encoding_charge->allowance = metadata;
@@ -869,6 +902,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (solo && had_rows && stored_bindings->rows.empty())
       return Error("the component recipe has no n-gram row table");
     ComponentHold* held = hold.get();
+    const bool lanes = shared && recipe.lanes;
     kernels::ggml::GgmlBackendOptions backend_options{
         .lower = {.device_masks = true,
                   // The runner stages a frozen read's host mask (its cells'
@@ -881,64 +915,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                   .expert_stride = [held](const ir::WeightRef& ref) -> std::uint64_t {
                     const auto at = held->pitch.find(ref);
                     return at == held->pitch.end() ? 0 : at->second;
-                  }}};
-    // The format ladder's decoders for what GGML does not read: affine
-    // tables, and the native importer's split NVFP4 routed experts; else
-    // only what a native artifact's NVFP4 needs: the grouped product for
-    // scale-atom experts (the importer's relayout), which a stage without
-    // the block-scaled grouped GEMM (a W4A16 checkpoint's policy, a device
-    // without FP4) decodes on chip, and the rows of a split NVFP4 table.
-    bool has_affine = false, has_atoms = false, has_rows = false;
-    bool has_exl3 = false;
-    for (const auto& table : hold->tables) {
-      for (const auto& tensor : table) {
-        if (tensor.format.encoding == format::Encoding::kExl3Trellis) {
-          has_exl3 = true;
-        }
-        const bool nvfp4 = tensor.format.encoding == format::Encoding::kNvfp4;
-        if (tensor.format.encoding == format::Encoding::kAffine ||
-            (tensor.experts && nvfp4 && tensor.format.layout == format::Layout::kSplit))
-          has_affine = true;
-        if (nvfp4 && tensor.experts && tensor.format.layout == format::Layout::kScaleAtoms)
-          has_atoms = true;
-        if (nvfp4 && !tensor.experts && tensor.format.layout == format::Layout::kSplit)
-          has_rows = true;
-      }
-    }
-    const std::string_view policy_text = options.target_policy
-                                             ? std::string_view(*options.target_policy)
-                                             : std::string_view(composition.text);
-    if (policy_text.find("llmp.decode.") != std::string_view::npos) {
-      has_affine = true;
-    }
-    if (has_exl3) {
-      // exllamav3 is locked with `use: test` in third_party/sources.lock.json
-      // (tests/sources/check_closure.py), so llmp-runtime does not link
-      // llmp_exl3_selected; test harnesses attach kernels::exl3::SelectedSource
-      // directly on ModelRunner.
-      return Error(
-          "EXL3 trellis execution is test-only until exllamav3 is promoted from use:test in "
-          "third_party/sources.lock.json");
-    }
-    if (has_affine) {
-      // Resident experts: the grouped products route on the device.
-      auto decode_source = kernels::decode::DecodeResidentSelectedSource();
-      if (!decode_source) return Error(decode_source.error());
-      backend_options.selected = *decode_source;
-    } else if (has_atoms || has_rows) {
-      std::vector<std::shared_ptr<const kernels::ggml::SelectedSource>> sources;
-      if (has_atoms) {
-        auto grouped = kernels::decode::ResidentGroupedSelectedSource(format::Encoding::kNvfp4);
-        if (!grouped) return Error(grouped.error());
-        sources.push_back(std::move(*grouped));
-      }
-      if (has_rows) {
-        auto rows = kernels::decode::RowsSelectedSource(format::Encoding::kNvfp4);
-        if (!rows) return Error(rows.error());
-        sources.push_back(std::move(*rows));
-      }
-      backend_options.selected = kernels::decode::CompositeSelectedSource(std::move(sources));
-    }
+                  }},
+        .lanes = {.count = lanes ? kernels::ggml::kMaxLanes : 0,
+                  .scratch_bytes_per_lane = lanes ? kLaneScratchBytes : 0}};
     auto backend = kernels::ggml::GgmlBackend::Create(
         0, node.execution(), node.stream(static_cast<std::uint32_t>(index)), nullptr,
         std::move(backend_options));
@@ -977,14 +956,15 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     }
     auto execution_domain = options.execution_domain;
     if (options.derive_execution_domain && !metadata) {
-      auto admitted = engine::ExecutionMetadataAllowance::Admit(
-          node.catalog(), node.domain(), options.execution_metadata_bytes,
-          platform::AvailableMemoryBytes().value_or(0), kUncountedMargin);
+      auto admitted = admit_metadata();
       if (!admitted) return Error(admitted.error());
       metadata = std::move(*admitted);
     }
     if (options.derive_execution_domain) {
-      auto domain = ComponentServingDomain(hold->spec, hold->layouts, slots, mode, metadata);
+      auto domain = ComponentServingDomain(hold->spec, hold->layouts, slots, mode, metadata,
+                                           [metadata, charge_metadata](std::uint64_t bytes) {
+                                             return charge_metadata(metadata, bytes);
+                                           });
       if (!domain) return Error(domain.error());
       execution_domain = std::move(*domain);
     }
@@ -992,9 +972,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error("explicit tuning requires a declared execution source");
     if (execution_domain) {
       if (!metadata) {
-        auto admitted = engine::ExecutionMetadataAllowance::Admit(
-            node.catalog(), node.domain(), options.execution_metadata_bytes,
-            platform::AvailableMemoryBytes().value_or(0), kUncountedMargin);
+        auto admitted = admit_metadata();
         if (!admitted) return Error(admitted.error());
         metadata = std::move(*admitted);
       }
@@ -1003,7 +981,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                          : std::span<const execution::TunedShape>{};
       if (auto declared = hold->backend->Declare(
               tuning, cublas_bytes,
-              [metadata](std::uint64_t bytes) { return metadata->Charge(bytes); },
+              [metadata, charge_metadata](std::uint64_t bytes) {
+                return charge_metadata(metadata, bytes);
+              },
               [metadata](std::uint64_t bytes) { metadata->Release(bytes); });
           !declared)
         return Error(declared.error());
@@ -1060,6 +1040,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                       : std::nullopt,
            .backend = hold->backend->Backend(),
            .execution_domain = execution_domain,
+           // Actual programs report capture safety; eager-only implementations
+           // remain eligible without disabling capture of ordinary programs.
+           .require_capture = false,
            .validate_program = options.validate_program,
            .compiler = hold->compiler,
            .compiler_bytes = hold->compiler_bytes});
@@ -1079,6 +1062,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     engine::PagedWeights* paged = weights.get();
     engine::PagedWeights* drafter_paged = nullptr;
     EngineLlmParts parts;
+    parts.execution_metadata = metadata;
     if (hold->automatic_construction) {
       parts.startup_host_bytes = hold->automatic_construction->capacity() +
                                  engine::ExecutionMetadataAllowance::OverheadBytes();
@@ -1096,7 +1080,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     parts.config.weights.push_back({.weights = std::move(weights),
                                     .places = std::move(placements[0].places),
                                     .slabs = std::move(placements[0].slabs)});
-    parts.config.split_expert_parts = has_affine || has_atoms;
+    // Always expose the checked physical-part callback. Kernel candidates,
+    // rather than a model-table scan, decide which representation they read.
+    parts.config.split_expert_parts = true;
     parts.config.row_tables = std::move(stored_bindings->rows);
     if (options.capture_first_verify)
       parts.config.capture_first_phases = 1U << static_cast<unsigned>(planner::Phase::kVerify);
@@ -1132,10 +1118,17 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // engine's handle, never one GGML makes).
     parts.config.kernel_memory.push_back(
         {.name = std::format("{} cuBLAS workspace", settings.name), .bytes = cublas_bytes});
+    const auto selected_bytes = held->backend->persistent_bytes();
+    if (selected_bytes)
+      parts.config.kernel_memory.push_back(
+          {.name = std::format("{} selected kernel state", settings.name),
+           .bytes = selected_bytes});
     parts.config.prepare =
-        [&node, held, index,
+        [&node, held, index, selected_bytes,
          cublas_bytes](std::span<const std::uint64_t> bases) -> std::expected<void, std::string> {
-      if (bases.size() != 1) return Error("the cuBLAS workspace is not mapped");
+      if (bases.size() != 1U + static_cast<std::size_t>(selected_bytes != 0))
+        return Error("the kernel workspaces are not mapped");
+      held->selected_state = {selected_bytes ? bases[1] : 0, selected_bytes};
       auto cublas = kernels::ggml::CublasHandle::Create(
           0, node.execution(), node.stream(static_cast<std::uint32_t>(index)),
           {.base = bases.front(), .size = base::Bytes(cublas_bytes)});
@@ -1145,33 +1138,18 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     };
     parts.config.retire = [held] {
       held->backend->LaunchReleased();
+      held->selected_state = {};
       held->cublas.reset();
     };
-    // Concurrent lanes (a joined wave's owner regions on streams of their
-    // own) for the serving plans measured to gain from them (its recipe's).
-    // Lanes take their pools from the end of the model's own prefix of the
-    // shared pool, so the stream's own scratch shrinks by kMaxLanes of
-    // them: a model that runs lanes sets them apart beside what its setup
-    // shapes measured (the runner's pool need), and every other model's
-    // regions run on its stream.
-    const bool lanes = shared && recipe.lanes;
-    if (lanes) parts.config.launch_pool_reserve = kernels::ggml::kMaxLanes * kLaneScratchBytes;
-    parts.config.launch = [&node, held, lanes](std::uint64_t pool_bytes)
+    // The backend's immutable future launch configuration also governs
+    // measurement. Its lane pools are funded beside measured stream scratch.
+    parts.config.launch_pool_reserve = held->backend->lane_pool_reserve();
+    parts.config.launch = [&node, held](std::uint64_t pool_bytes)
         -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
       if (pool_bytes == 0 || pool_bytes > node.pool().bytes)
         return Error("a launch's pool lies outside the node's workspace");
-      auto made =
-          held->backend->Launch({.base = node.pool().base, .size = base::Bytes(pool_bytes)});
-      if (!made || !lanes) return made;
-      auto* ggml_launch = static_cast<kernels::ggml::GgmlStepLaunch*>(made->get());
-      // Each lane its whole scratch: the model's pool holds the reserve for
-      // them beside what its steps measured (launch_pool_reserve).
-      if (auto r = ggml_launch->context().ConfigureLanes(kernels::ggml::kMaxLanes,
-                                                         base::Bytes(kLaneScratchBytes));
-          !r) {
-        return Error(std::format("ConfigureLanes: {}", r.error().detail));
-      }
-      return made;
+      return held->backend->Launch({.base = node.pool().base, .size = base::Bytes(pool_bytes)},
+                                   held->selected_state);
     };
     parts.config.weight_address = [held, paged, drafter_paged](
                                       const ir::WeightRef& ref,

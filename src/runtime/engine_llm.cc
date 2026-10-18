@@ -92,6 +92,7 @@ Status EngineLlm::Setup() {
   chat_ = std::move(parts->chat);
   keep_ = std::move(parts->keep);
   startup_host_bytes_ = parts->startup_host_bytes;
+  execution_metadata_ = std::move(parts->execution_metadata);
   // Control tokens that end a chat reply (a channel the slice does not
   // parse), where the tokenizer has them.
   chat_stops_.clear();

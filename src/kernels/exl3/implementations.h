@@ -40,8 +40,8 @@
 //
 // Each path but the bias add also declares its capability (D-108): a
 // product of the EXL3 trellis in its tiles with F16 activations, at the
-// format ladder's rung 1, with the shapes, rates and devices its host
-// checks (validate.h) take; the two reconstruction paths as a transient
+// format ladder's decoded-arithmetic rank, with the shapes, rates and devices
+// its host checks (validate.h) take; the two reconstruction paths declare a transient
 // expansion into workspace, which Candidates() refuses for decode-shaped
 // products, and only on the GB10, where their cuBLASLt algorithms were
 // pinned. Those two also need tuning: each slice's GEMM runs only with an
@@ -77,6 +77,8 @@
 #include "kernels/exl3/validate.h"
 
 namespace llmp::kernels::exl3 {
+// Whether the locked build contains executable images for this device.
+bool CompiledForDevice(std::uint32_t arch);
 
 // What this module declares to the registry.
 std::vector<execution::Implementation> Implementations();

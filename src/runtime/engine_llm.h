@@ -125,6 +125,9 @@ struct EngineLlmParts {
   std::shared_ptr<void> keep;
   std::uint64_t startup_host_bytes = 0;
   std::uint64_t startup_cap = 0;
+  // Remains live through source sealing; its counted high-water may grow
+  // after the parts factory returns and must enter startup loan retirement.
+  std::shared_ptr<engine::ExecutionMetadataAllowance> execution_metadata{};
 };
 
 // Makes a model's parts from its settings: the component engine's
@@ -158,6 +161,9 @@ class EngineLlm final : public Llm {
   std::uint64_t plan_floor_bytes() const override;
   std::uint64_t startup_host_bytes() const override {
     return startup_host_bytes_ +
+           (execution_metadata_ ? execution_metadata_->capacity() +
+                                      engine::ExecutionMetadataAllowance::OverheadBytes()
+                                : 0) +
            (chat_startup_
                 ? chat_startup_->capacity() + engine::ExecutionMetadataAllowance::OverheadBytes()
                 : 0);
@@ -347,6 +353,7 @@ class EngineLlm final : public Llm {
   // Declared before the runner, so it outlives it (EngineLlmParts::keep).
   std::shared_ptr<void> keep_;
   std::uint64_t startup_host_bytes_ = 0;
+  std::shared_ptr<engine::ExecutionMetadataAllowance> execution_metadata_{};
   std::unique_ptr<engine::ModelRunner> runner_;
   std::optional<base::Sha256Digest> execution_identity_{};
   std::optional<engine::WaveComposer> composer_;

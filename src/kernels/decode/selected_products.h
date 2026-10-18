@@ -14,7 +14,7 @@
 
 namespace llmp::kernels::decode {
 
-// Affine split vector, vector_glu, matrix, and matrix_fma products over
+// Every compiled decoder: vector, vector_glu, matrix and matrix_fma products over
 // weights in their stored encodings. Does not admit models or advertise
 // foreign operations. The source outlives all calls.
 std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> ProductsSelectedSource(

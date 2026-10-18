@@ -41,6 +41,11 @@ class ExecutionMetadataAllowance {
   static std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string> Admit(
       catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes,
       std::uint64_t available, std::uint64_t margin);
+  // Initial admission under an execution cap, before any owner allocation.
+  // The caller holds serialized catalog ownership, as for Grow.
+  static std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string> AdmitWithin(
+      catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes,
+      std::uint64_t budget, std::uint64_t available, std::uint64_t margin);
   ExecutionMetadataAllowance(const ExecutionMetadataAllowance&) = delete;
   ExecutionMetadataAllowance& operator=(const ExecutionMetadataAllowance&) = delete;
   // Serialized catalog-owner operation. Retain the same accounting identity;
@@ -48,9 +53,15 @@ class ExecutionMetadataAllowance {
   std::expected<void, std::string> Grow(catalog::Catalog& catalog, catalog::DomainId domain,
                                         std::uint64_t capacity, std::uint64_t budget,
                                         std::uint64_t available, std::uint64_t margin);
+  // Under the same serialized catalog ownership as Grow: fund the actual
+  // live charge before allocating, growing the same extent only as needed.
+  std::expected<void, std::string> ChargeOrGrow(catalog::Catalog& catalog, catalog::DomainId domain,
+                                                std::uint64_t bytes, std::uint64_t budget,
+                                                std::uint64_t available, std::uint64_t margin);
   bool Charge(std::uint64_t bytes);
   void Release(std::uint64_t bytes);
   std::uint64_t used() const { return used_; }
+  std::uint64_t peak() const { return peak_; }
   std::uint64_t capacity() const { return capacity_; }
   // Startup/driver check: location alone is insufficient; the pinned catalog
   // payment must still exist. Call only under that catalog's normal ownership.
@@ -63,7 +74,7 @@ class ExecutionMetadataAllowance {
   const catalog::Catalog* catalog_;
   catalog::DomainId domain_;
   catalog::ExtentId extent_;
-  std::uint64_t capacity_ = 0, used_ = 0;
+  std::uint64_t capacity_ = 0, used_ = 0, peak_ = 0;
 };
 
 enum class NumericalUse : std::uint8_t {

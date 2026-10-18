@@ -18,6 +18,7 @@
 #include "base/bytes.h"
 #include "common.cuh"
 #include "dequantize.cuh"
+#include "kernels/decode/float_formats.cuh"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/moe_cutlass.h"
@@ -84,19 +85,8 @@ __global__ void Gemma4MaskKernel(const std::int32_t* positions, Bits* mask, std:
   mask[index] = visible ? 0 : negative_infinity;
 }
 
-// An E8M0 scale: 2^(e - 127); e = 255 is NaN (OCP MX v1.0).
-__device__ __forceinline__ float E8m0(std::uint8_t e) {
-  if (e == 0) {
-    return __uint_as_float(0x00400000u);  // 2^-127, a subnormal
-  }
-  return e == 255 ? __uint_as_float(0x7fc00000u) : __uint_as_float(std::uint32_t{e} << 23);
-}
-
-// Two E4M3 codes (low byte first) as floats.
-__device__ __forceinline__ float2 E4m3x2(std::uint16_t pair) {
-  const __half2_raw raw = __nv_cvt_fp8x2_to_halfraw2(pair, __NV_E4M3);
-  return __half22float2(__half2(raw));
-}
+using precision::E4m3x2;
+using precision::E8m0;
 
 // Sixteen E4M3 codes as floats.
 __device__ __forceinline__ void Decode16(const uint4 q, float out[16]) {
@@ -410,23 +400,21 @@ __global__ void Nvfp4RowsKernel(const std::uint8_t* __restrict__ table, std::int
                                 const std::int32_t* __restrict__ ids,
                                 const float* __restrict__ global, float* __restrict__ out,
                                 int values) {
-  constexpr float kE2m1[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
   const int j = static_cast<int>(threadIdx.x);
   const std::int64_t i = blockIdx.x;
   const std::int32_t id = ids[i];
   float* dst = out + i * values + j;
   if (id < 0 || id >= rows) {
-    *dst = __uint_as_float(0x7fc00000u);
+    *dst = 0.0f;
     return;
   }
   const int row_bytes = values / 2 + values / 16;
   const std::uint8_t* row = table + static_cast<std::int64_t>(id) * row_bytes;
   const std::uint8_t byte = row[j / 2];
   const std::uint8_t code = (j % 2 == 0) ? (byte & 0x0f) : (byte >> 4);
-  const float magnitude = kE2m1[code & 7];
   const std::uint8_t scale_code = row[values / 2 + j / 16];
-  const float scale = __half2float(__half(__nv_cvt_fp8_to_halfraw(scale_code, __NV_E4M3)));
-  *dst = ((code & 8) != 0 ? -magnitude : magnitude) * scale * global[0];
+  const float scale = precision::E4m3(scale_code);
+  *dst = precision::E2m1(code) * scale * global[0];
 }
 
 // One value of a 32-value block type's row (llmp.qrows.get_rows): value

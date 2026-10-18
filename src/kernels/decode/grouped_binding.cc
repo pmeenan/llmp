@@ -23,8 +23,7 @@ format::TensorFormat MatrixFormat(format::TensorFormat f) {
 
 std::expected<GroupedBindingSize, GroupedBindingError> GroupedBindingBound(
     const format::TensorFormat& f) {
-  if (!format::Validate(f) || !DecoderOf(f) || f.shape.rank < 2)
-    return std::unexpected(GroupedBindingError::kFormat);
+  if (!format::Validate(f) || !DecoderOf(f)) return std::unexpected(GroupedBindingError::kFormat);
   const auto count = format::Matrices(f);
   if (count == 0 || count > 4096) return std::unexpected(GroupedBindingError::kExtent);
   return GroupedBindingSize{.experts = count, .descriptors = base::Bytes(count * sizeof(Operand))};

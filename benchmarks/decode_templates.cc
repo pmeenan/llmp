@@ -8,7 +8,7 @@
 //   vector      MXFP8 K 2560 x N 10240 (blk.N.attn_qkv), rows 1 and 16,
 //               against llmp.mxfp8.mul_mat_vec;
 //   vector_glu  MXFP8 K 2560 x N 640 gate and up (the shared expert), rows
-//               1 and 16, against two llmp.mxfp8.mul_mat_vec (no SwiGLU);
+//               1 and 16, against two llmp.mxfp8.mul_mat_vec and SwiGLU;
 //   matrix      the qkv shape, rows 512, against llmp.mxfp8.quantize,
 //               .swizzle and .gemm (CUTLASS), and the swizzle alone;
 //               matrix_fma beside it;
@@ -31,13 +31,16 @@
 // replay's time per launch is reported (JSON lines), with the batches'
 // range. Informational: nothing here selects an implementation.
 //
-//   llmp_decode_templates [--reps 64] [--batches 7]
+//   llmp_decode_templates [--case all|mxfp8|glu|grouped|rows|dense] [--rows 1|16|512]
+//                         [--reps 64] [--batches 7]
 
 #include <cuda_runtime.h>
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -86,6 +89,7 @@ using format::PartRole;
 using Status = std::expected<void, std::string>;
 
 [[noreturn]] void Die(std::string_view what) {
+  (void)std::fflush(stdout);
   std::println(stderr, "llmp_decode_templates: {}", what);
   (void)std::fflush(stderr);
   std::_Exit(1);  // no GPU-resource destructors after a failure
@@ -127,7 +131,7 @@ class Bench {
  public:
   using Replay = std::function<void()>;
 
-  Bench(int reps, int batches) : reps_(reps), batches_(batches) {
+  Bench(int reps, int batches, int rows) : reps_(reps), batches_(batches), rows_(rows) {
     auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
     if (!execution) {
       Die("no CUDA device execution");
@@ -152,9 +156,13 @@ class Bench {
     Cuda(cudaEventCreate(&end_), "event");
   }
 
+  bool RowsEnabled(std::int64_t rows) const { return rows_ == 0 || rows_ == rows; }
+
   std::uint64_t Allocate(std::uint64_t bytes, int fill = 0) {
     void* p = nullptr;
-    Cuda(cudaMalloc(&p, std::max<std::uint64_t>(bytes, 256)), "cudaMalloc");
+    const auto allocated = std::max<std::uint64_t>(bytes, 256);
+    Cuda(cudaMalloc(&p, allocated), "cudaMalloc");
+    allocated_bytes_ += allocated;
     Cuda(cudaMemset(p, fill, bytes), "cudaMemset");
     return reinterpret_cast<std::uintptr_t>(p);
   }
@@ -189,6 +197,10 @@ class Bench {
       auto plan = kg::PlanGraph(nodes, false, kg::DeviceChoicesOf(*launch_));
       if (!plan) {
         Die(plan.error().detail);
+      }
+      if (bound.empty()) {
+        for (const auto& step : plan->steps)
+          std::println(R"({{"kind":"resolved_route","implementation":"{}"}})", step.implementation);
       }
       auto one = kg::BoundGraph::Bind(*registry_, *plan);
       if (!one) {
@@ -273,7 +285,38 @@ class Bench {
   }
 
   void Report(std::string_view tmpl, std::string_view shape, std::int64_t rows,
-              const std::vector<std::string>& names, const std::vector<Replay>& candidates) {
+              const std::vector<std::string>& names, const std::vector<Replay>& candidates,
+              const float* baseline = nullptr, const float* candidate = nullptr,
+              std::size_t elements = 0, double tolerance = 0.01) {
+    if (baseline && candidate) {
+      candidates[0]();
+      candidates[1]();
+      Cuda(cudaStreamSynchronize(native_), "correctness sync");
+      std::vector<float> a(elements), z(elements);
+      Cuda(cudaMemcpy(a.data(), baseline, elements * sizeof(float), cudaMemcpyDeviceToHost),
+           "baseline result");
+      Cuda(cudaMemcpy(z.data(), candidate, elements * sizeof(float), cudaMemcpyDeviceToHost),
+           "candidate result");
+      double squared = 0, reference = 0;
+      for (std::size_t i = 0; i < elements; ++i) {
+        if (!std::isfinite(a[i]) || !std::isfinite(z[i])) Die("non-finite comparison output");
+        const double delta = static_cast<double>(a[i]) - z[i];
+        squared += delta * delta;
+        reference += static_cast<double>(a[i]) * a[i];
+      }
+      const double rms = std::sqrt(squared / std::max(reference, 1e-20));
+      std::println(
+          R"({{"kind":"correctness","template":"{}","rows":{},"relative_rms":{:.9g},"tolerance":{}}})",
+          tmpl, rows, rms, tolerance);
+      if (rms > tolerance)
+        Die(std::format("{} relative RMS {} exceeds frozen tolerance {}; first output {} vs {}",
+                        names[1], rms, tolerance, a.front(), z.front()));
+    }
+    std::size_t free = 0, total = 0;
+    Cuda(cudaMemGetInfo(&free, &total), "memory accounting");
+    std::println(
+        R"({{"kind":"memory","template":"{}","rows":{},"harness_allocated_bytes":{},"device_used_bytes":{},"device_total_bytes":{}}})",
+        tmpl, rows, allocated_bytes_, total - free, total);
     const std::vector<Time> times = Measure(candidates);
     for (std::size_t i = 0; i < names.size(); ++i) {
       std::println(
@@ -284,8 +327,10 @@ class Bench {
   }
 
  private:
+  std::uint64_t allocated_bytes_ = 0;
   int reps_;
   int batches_;
+  int rows_;
   std::unique_ptr<llmp::providers::DeviceExecution> execution_;
   llmp::providers::StreamId stream_;
   cudaStream_t native_ = nullptr;
@@ -354,6 +399,7 @@ std::vector<Mxfp8> MakeMxfp8(Bench& b, std::int64_t k, std::int64_t n, std::size
 void VectorAndMatrix(Bench& b) {
   const std::vector<Mxfp8> w = MakeMxfp8(b, kWidth, kQkv, 4);
   for (const std::int64_t rows : {std::int64_t{1}, std::int64_t{16}, std::int64_t{512}}) {
+    if (!b.RowsEnabled(rows)) continue;
     float* x = b.Upload(Normal(static_cast<std::size_t>(kWidth * rows), 1));
     auto* y = Pointer<float>(b.Allocate(static_cast<std::uint64_t>(kQkv * rows * 4)));
     const auto product = [&](const Mxfp8& m) {
@@ -378,11 +424,14 @@ void VectorAndMatrix(Bench& b) {
       }
     }
     if (rows <= 16) {
+      const auto incumbent = b.Tuned(tuned);
       b.Report("vector", "mxfp8.split K2560 N10240", rows,
                {"llmp.mxfp8.mul_mat_vec", "llmp.decode.vector.mxfp8.split"},
-               {b.Tuned(tuned), b.Ours([&](void* s, std::size_t r) {
+               {incumbent, b.Ours([&](void* s, std::size_t r) {
                   return decode::RunVector(product(w[r % w.size()]), s);
-                })});
+                })},
+               static_cast<const float*>(tuned.back().front()->data), y,
+               static_cast<std::size_t>(kQkv * rows));
       continue;
     }
     std::vector<std::vector<ggml_tensor*>> swizzle;
@@ -405,17 +454,20 @@ void Glu(Bench& b) {
   const std::vector<Mxfp8> gate = MakeMxfp8(b, kWidth, kFfn, 16);
   const std::vector<Mxfp8> up = MakeMxfp8(b, kWidth, kFfn, 16);
   for (const std::int64_t rows : {std::int64_t{1}, std::int64_t{16}}) {
+    if (!b.RowsEnabled(rows)) continue;
     float* x = b.Upload(Normal(static_cast<std::size_t>(kWidth * rows), 2));
     auto* y = Pointer<float>(b.Allocate(static_cast<std::uint64_t>(kFfn * rows * 4)));
     std::vector<std::vector<ggml_tensor*>> tuned;
     for (std::size_t i = 0; i < gate.size(); ++i) {
       ggml_tensor* xt = b.Leaf(ggml_new_tensor_2d(b.c(), GGML_TYPE_F32, kWidth, rows), x);
-      tuned.push_back({kg::Mxfp8MulMatVec(b.c(), gate[i].Codes(b), gate[i].Scales(b), xt),
-                       kg::Mxfp8MulMatVec(b.c(), up[i].Codes(b), up[i].Scales(b), xt)});
+      auto* g = kg::Mxfp8MulMatVec(b.c(), gate[i].Codes(b), gate[i].Scales(b), xt);
+      auto* u = kg::Mxfp8MulMatVec(b.c(), up[i].Codes(b), up[i].Scales(b), xt);
+      tuned.push_back({ggml_swiglu_split(b.c(), g, u)});
     }
+    const auto incumbent = b.Tuned(tuned);
     b.Report("vector_glu", "mxfp8.split K2560 N640 gate and up", rows,
-             {"2x llmp.mxfp8.mul_mat_vec", "llmp.decode.vector_glu.mxfp8.split"},
-             {b.Tuned(tuned), b.Ours([&](void* s, std::size_t r) {
+             {"2x llmp.mxfp8.mul_mat_vec+swiglu", "llmp.decode.vector_glu.mxfp8.split"},
+             {incumbent, b.Ours([&](void* s, std::size_t r) {
                 const decode::GluProduct p{.gate = gate[r % gate.size()].weight(),
                                            .up = up[r % up.size()].weight(),
                                            .outputs = kFfn,
@@ -426,7 +478,9 @@ void Glu(Bench& b) {
                                            .y = y,
                                            .y_stride = kFfn};
                 return decode::RunVectorGlu(p, s);
-              })});
+              })},
+             static_cast<const float*>(tuned.back().front()->data), y,
+             static_cast<std::size_t>(kFfn * rows));
   }
 }
 
@@ -489,6 +543,7 @@ void Grouped(Bench& b) {
   const decode::Operand* table = b.Upload(operands);
   const std::string shape = "nvfp4.scale_atoms K2560 N1280, 10 of 512 experts";
   for (const std::int64_t tokens : {std::int64_t{1}, std::int64_t{16}, std::int64_t{512}}) {
+    if (!b.RowsEnabled(tokens)) continue;
     std::vector<Routing> routings;
     for (std::size_t i = 0; i < (tokens <= 16 ? kRoutings : 1); ++i) {
       routings.push_back(Route(
@@ -563,6 +618,7 @@ void Rows(Bench& b) {
         static_cast<std::uint64_t>(kTableRows * kRowBytes)},
        {PartRole::kTensorScale, scale, 4}}};
   for (const std::int64_t tokens : {std::int64_t{1}, std::int64_t{16}, std::int64_t{512}}) {
+    if (!b.RowsEnabled(tokens)) continue;
     const std::int64_t count = 16 * tokens;
     std::vector<std::int32_t*> id_sets;
     std::mt19937 rng(static_cast<std::uint32_t>(tokens));
@@ -582,17 +638,89 @@ void Rows(Bench& b) {
       ggml_tensor* st = b.Leaf(ggml_new_tensor_1d(b.c(), GGML_TYPE_F32, 1), scale);
       tuned.push_back({kg::Nvfp4Rows(b.c(), tt, it, st, kValues)});
     }
+    const auto incumbent = b.Tuned(tuned);
     b.Report("rows", "nvfp4.row_interleaved 160 values, 16 ids a token", tokens,
              {"llmp.nvfp4.get_rows", "llmp.decode.rows.nvfp4.row_interleaved"},
-             {b.Tuned(tuned), b.Ours([&](void* s, std::size_t r) {
+             {incumbent, b.Ours([&](void* s, std::size_t r) {
                 const decode::RowsGather g{.weight = {.format = f, .parts = parts},
                                            .ids = id_sets[r % id_sets.size()],
                                            .count = static_cast<std::uint64_t>(count),
                                            .out = out,
                                            .out_stride = kValues};
                 return decode::RunRows(g, s);
-              })});
+              })},
+             static_cast<const float*>(tuned.back().front()->data), out,
+             static_cast<std::size_t>(count * kValues), 0.0);
   }
+}
+
+// Gemma 2 2B's dense BF16 FFN projection (the frozen fixture profile).
+void Dense(Bench& b) {
+  constexpr std::int64_t k = 2304, n = 9216;
+  std::vector<decode::DevicePart> weights;
+  for (int i = 0; i < 4; ++i) {
+    auto* data = b.Upload(std::vector<std::uint16_t>(k * n, 0x3f80));
+    weights.push_back({PartRole::kData, data, k * n * 2});
+  }
+  for (const std::int64_t rows : {std::int64_t{1}, std::int64_t{16}, std::int64_t{512}}) {
+    if (!b.RowsEnabled(rows)) continue;
+    const auto inputs = Normal(k * static_cast<std::uint64_t>(rows), 7);
+    auto* x = b.Upload(inputs);
+    if (rows == 1) {
+      double f32_sum = 0, bf16_sum = 0;
+      for (const float value : inputs) {
+        f32_sum += value;
+        auto bits = std::bit_cast<std::uint32_t>(value);
+        bits += 0x7fffU + ((bits >> 16U) & 1U);
+        bf16_sum += std::bit_cast<float>(bits & 0xffff0000U);
+      }
+      // The constant unit weights make the expected activation-rounding
+      // difference independently visible before any candidate can qualify.
+      std::println(R"({{"kind":"dense_input_sums","f32":{:.9g},"bf16":{:.9g}}})", f32_sum,
+                   bf16_sum);
+    }
+    auto* out = Pointer<float>(b.Allocate(n * static_cast<std::uint64_t>(rows) * 4));
+    std::vector<std::vector<ggml_tensor*>> tuned;
+    for (const auto& w : weights) {
+      auto* wt = b.Leaf(ggml_new_tensor_2d(b.c(), GGML_TYPE_BF16, k, n), w.address);
+      auto* xt = b.Leaf(ggml_new_tensor_2d(b.c(), GGML_TYPE_F32, k, rows), x);
+      tuned.push_back({ggml_mul_mat(b.c(), wt, xt)});
+    }
+    const auto product = [&](std::size_t r) {
+      return decode::Product{.weight = {.format = Format(Encoding::kBF16, Layout::kDense, k, n),
+                                        .parts = std::span(weights).subspan(r % weights.size(), 1)},
+                             .outputs = static_cast<std::uint64_t>(n),
+                             .x = x,
+                             .rows = static_cast<std::uint64_t>(rows),
+                             .x_stride = static_cast<std::uint64_t>(k),
+                             .y = out,
+                             .y_stride = static_cast<std::uint64_t>(n)};
+    };
+    std::vector<std::string> names{"ggml.mul_mat", "llmp.decode.matrix.bf16.dense",
+                                   "llmp.decode.matrix_fma.bf16.dense"};
+    std::vector<Bench::Replay> arms{
+        b.Tuned(tuned), b.Ours([&](void* stream, std::size_t r) {
+          return decode::RunMatrix(product(r), decode::MatrixPath::kMma, stream);
+        }),
+        b.Ours([&](void* stream, std::size_t r) {
+          return decode::RunMatrix(product(r), decode::MatrixPath::kFma, stream);
+        })};
+    if (rows <= 16) {
+      names.push_back("llmp.decode.vector.bf16.dense");
+      arms.push_back(b.Ours(
+          [&](void* stream, std::size_t r) { return decode::RunVector(product(r), stream); }));
+    }
+    for (std::size_t i = 1; i < arms.size(); ++i) {
+      b.Report("dense", "bf16.dense K2304 N9216", rows, {names[0], names[i]}, {arms[0], arms[i]},
+               static_cast<const float*>(tuned.back().front()->data), out,
+               static_cast<std::size_t>(n * rows));
+    }
+  }
+}
+std::string_view Case(int argc, char** argv) {
+  for (int i = 1; i + 1 < argc; ++i)
+    if (std::string_view(argv[i]) == "--case") return argv[i + 1];
+  return "all";
 }
 
 int Flag(int argc, char** argv, std::string_view name, int fallback) {
@@ -613,10 +741,26 @@ int Flag(int argc, char** argv, std::string_view name, int fallback) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  Bench b(Flag(argc, argv, "--reps", 64), Flag(argc, argv, "--batches", 7));
-  VectorAndMatrix(b);
-  Glu(b);
-  Grouped(b);
-  Rows(b);
+  const auto selected = Case(argc, argv);
+  if (selected != "all" && selected != "mxfp8" && selected != "glu" && selected != "grouped" &&
+      selected != "rows" && selected != "dense")
+    Die("unknown --case");
+  const int reps = Flag(argc, argv, "--reps", 64), batches = Flag(argc, argv, "--batches", 7);
+  const int rows = Flag(argc, argv, "--rows", 0);
+  cudaDeviceProp device{};
+  Cuda(cudaGetDeviceProperties(&device, 0), "device properties");
+  int driver = 0, runtime = 0;
+  Cuda(cudaDriverGetVersion(&driver), "driver version");
+  Cuda(cudaRuntimeGetVersion(&runtime), "runtime version");
+  std::println(
+      R"({{"kind":"provenance","device":"{}","arch":{},"sms":{},"driver":{},"runtime":{},"reps":{},"batches":{},"case":"{}","rows_filter":{}}})",
+      device.name, device.major * 10 + device.minor, device.multiProcessorCount, driver, runtime,
+      reps, batches, selected, rows);
+  Bench b(reps, batches, rows);
+  if (selected == "all" || selected == "mxfp8") VectorAndMatrix(b);
+  if (selected == "all" || selected == "glu") Glu(b);
+  if (selected == "all" || selected == "grouped") Grouped(b);
+  if (selected == "all" || selected == "rows") Rows(b);
+  if (selected == "all" || selected == "dense") Dense(b);
   std::_Exit(0);  // the process ends; its GPU resources go with it
 }

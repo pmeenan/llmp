@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -71,9 +72,10 @@ struct ComponentBuildOptions {
   // an explicit domain cannot be combined with this request.
   bool derive_execution_domain = false;
   std::shared_ptr<const planner::OwnedDeviceFacts> tuning{};
-  // Paid once in the node catalog, before declaration construction. The build
-  // retains it across retries; no host-floor/pre-Start counter is authority.
-  std::uint64_t execution_metadata_bytes = 1U << 20;
+  // Optional cap on this source's one growing metadata payment, including
+  // accounting overhead. Zero uses the node's startup/running budget and
+  // physical headroom. Admission pays actual live demand, never this cap.
+  std::uint64_t execution_metadata_cap_bytes = 0;
   // Read-only diagnostic validation of the real source's lowering. Captures
   // are part of the harness's prepaid lifetime, never an alternate backend.
   kernels::ProgramValidator validate_program{};
@@ -102,7 +104,8 @@ struct ComponentBuildOptions {
 std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> ComponentServingDomain(
     const spec::ModelSpec& model, std::span<const model::StateLayoutDerived> layouts,
     std::uint32_t slots, const engine::DecodingMode& mode,
-    const std::shared_ptr<engine::ExecutionMetadataAllowance>& allowance);
+    const std::shared_ptr<engine::ExecutionMetadataAllowance>& allowance,
+    std::function<bool(std::uint64_t)> charge = {});
 
 EngineBuild ComponentLlmBuild(engine::PagedNode& node, std::filesystem::path store,
                               const config::ModelEntry& entry, int index,

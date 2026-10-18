@@ -38,39 +38,17 @@
 
 #include <cstdint>
 
+#include "kernels/decode/float_formats.cuh"
 #include "kernels/decode/operand.h"
 
 namespace llmp::kernels::decode {
 
 using Values = float[kSegment];
 
-__device__ __forceinline__ float Nan() { return __uint_as_float(0x7FC00000U); }
-
-// E2M1's magnitudes times two, a nibble each: 0, 1, 2, 3, 4, 6, 8, 12.
-__device__ __forceinline__ float E2m1(std::uint32_t code) {
-  const float m = static_cast<float>((0xC8643210U >> ((code & 7U) * 4U)) & 15U) * 0.5f;
-  return (code & 8U) != 0 ? -m : m;
-}
-
-__device__ __forceinline__ float E4m3(std::uint32_t bits) {
-  const std::uint32_t mag = bits & 0x7FU;
-  if (mag == 0x7FU) {
-    return Nan();
-  }
-  const std::uint32_t e = mag >> 3U;
-  const std::uint32_t m = mag & 7U;
-  // Normal: 2^(e - 7) (1 + m / 8), F32 exponent e + 120; subnormal m · 2^-9.
-  const float v = e != 0 ? __uint_as_float(((e + 120U) << 23U) | (m << 20U))
-                         : static_cast<float>(m) * 0.001953125f;
-  return (bits & 0x80U) != 0 ? -v : v;
-}
-
-__device__ __forceinline__ float E8m0(std::uint32_t bits) {
-  if (bits == 0xFFU) {
-    return Nan();
-  }
-  return bits != 0 ? __uint_as_float(bits << 23U) : __uint_as_float(0x00400000U);  // 2^-127
-}
+using precision::E2m1;
+using precision::E4m3;
+using precision::E8m0;
+using precision::Nan;
 
 __device__ __forceinline__ std::uint32_t Byte(const std::uint8_t* p) { return __ldg(p); }
 
@@ -236,6 +214,25 @@ struct Mxfp8Atoms {
   __device__ static void Load(const Operand& p, std::uint32_t row, std::uint32_t seg, Values& v) {
     const float s = E8m0(Byte(p.scales + AtomOffset(row, seg / 2U, p.k / kMxfp8Block)));
     Mxfp8Codes(p, row, seg, s, v);
+  }
+};
+
+// MXFP4 uses the same adjacent E2M1 nibbles as NVFP4 and one E8M0
+// scale per 32 values; each 16-value segment uses half of that block.
+struct Mxfp4Split {
+  static constexpr DecoderId kId = DecoderId::kMxfp4Split;
+  using Mma = __nv_bfloat16;
+  __device__ static void Load(const Operand& p, std::uint32_t row, std::uint32_t seg, Values& v) {
+    const float s = E8m0(Byte(p.scales + row * static_cast<std::uint64_t>(p.k / 32U) + seg / 2U));
+    Nvfp4Codes(p, row, seg, s, v);
+  }
+};
+struct Mxfp4Atoms {
+  static constexpr DecoderId kId = DecoderId::kMxfp4Atoms;
+  using Mma = __nv_bfloat16;
+  __device__ static void Load(const Operand& p, std::uint32_t row, std::uint32_t seg, Values& v) {
+    const float s = E8m0(Byte(p.scales + AtomOffset(row, seg / 2U, p.k / 32U)));
+    Nvfp4Codes(p, row, seg, s, v);
   }
 };
 

@@ -1,8 +1,14 @@
 {
  "digests": {
   "fused.control.checkpoint_state": "bd1596986e7106a11b4e23b550f9b6aa2978a66dc7a19b1311a296b376f94593:6291456:3",
-  "unfused.control.checkpoint_state": "bd1596986e7106a11b4e23b550f9b6aa2978a66dc7a19b1311a296b376f94593:6291456:3"
+  "fused.heldout.checkpoint_state": "a8fc6d29d372d6a5c88087990df91ae286bc16e56c6efd5d3ca3faafdac7cd67:12582912:6",
+  "fused.selected_default.control.checkpoint_state": "1327ff3df9ad7991fec84161648b08d380534cc41747bfa22dbd0054280513be:6291456:3",
+  "fused.selected_default.control.q8.checkpoint_state": "5be0a3b713ab798cf77b94b3bf7de10ea3eb4ac517570d4d7157700ff8f5e53c:3342336:2",
+  "fused.selected_default.heldout.checkpoint_state": "ab252bf2dfb0b1b7842b9925b06e6dfac2bab11d998db765af447b5ea47a5bde:12582912:6",
+  "unfused.control.checkpoint_state": "bd1596986e7106a11b4e23b550f9b6aa2978a66dc7a19b1311a296b376f94593:6291456:3",
+  "unfused.heldout.checkpoint_state": "a8fc6d29d372d6a5c88087990df91ae286bc16e56c6efd5d3ca3faafdac7cd67:12582912:6"
  },
  "family": "qwen2_fp16",
- "provenance": "Recorded 2026-10-15 on Spark A (GB10, spark-native build of main ba2d4b19 plus the v1-import slice) from the v0 arm, with the v1 arm compared bit for bit in the same run; v1 artifacts imported by llmp import from the staged, manifest-verified sources (IDs in the store's v1-ids.json). A change that legitimately moves bits re-records these."
+ "provenance": "Recorded 2026-10-15 on Spark A (GB10, spark-native build of main ba2d4b19 plus the v1-import slice) from the v0 arm, with the v1 arm compared bit for bit in the same run; v1 artifacts imported by llmp import from the staged, manifest-verified sources (IDs in the store's v1-ids.json). A change that legitimately moves bits re-records these.",
+ "backfill_provenance": "Five additional checkpoint keys recorded 2026-10-17 on spark (NVIDIA GB10), accepted baseline80ede618 with diagnostic-only plan recorder; no arithmetic change. Historical-explicit Bridge heldout keys retained independent sealed FP16 full-logit oracle comparisons. selected_default keys use the unchanged mapping recipe, live first-pass full-vocabulary reference and checkpoint/spill/eviction consistency; Q8 additionally requires all24 quantized attention operations. These five pins are baseline80ede618 regression witnesses, not newly claimed historicalM3.6 v0-equivalence or independent selected-default/Q8 quality oracles. Original two control pins and their provenance are unchanged. Raw32record SHA256 d7f334a3c293625ca25d4033653c1c9746c6b248806501eaf9dd5aa4c6b7d717; control decimal IDs SHA256 37e46a2304b5ab5648d0f2b7fdb94224596ed690caaddc1726df27110b585e21, deterministic76-I32LE derivative SHA256 9103929b9f263293d64c46d20bb22937cca01172aa03d76b81707e07e2c5be7a; heldout1040-I64LE source SHA256 6dd8da897821f5615e7796f4d882795faf306a941f050e2eb68b619096e3fb0c. The first recording correctly stopped on legacy key aliasing across explicit-attention and selected-default recipes; the additive selected_default namespace separates those recipes without changing either existing Bridge control value."
 }

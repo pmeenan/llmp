@@ -1729,6 +1729,7 @@ struct Environment {
     return false;
   }
   std::uint64_t declaration_bytes = 0, pool_base = 0;
+  kg::SelectedWorkspace selected_state{};
   bool Finish() {
     if (retained) return false;
     if (!stream_ready) return true;
@@ -1810,7 +1811,7 @@ struct Environment {
                 pr::CopyKind::kHostToDevice) &&
            Finish();
   }
-  void Open(bool declared = false) {
+  void Open(bool declared = false, kn::LaneConfiguration lanes = {}) {
     auto opened = pr::cuda::OpenDeviceExecution(0);
     ASSERT_TRUE(opened);
     execution = std::move(*opened);
@@ -1824,7 +1825,8 @@ struct Environment {
         CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
     // Complete device request known before the first allocation. The fixed
     // buffers are reused only after retirement, at most three programs live.
-    constexpr auto fixed = kPool + 3 * kActivation + 8 * kRowBytes + 2 * kMatrixBytes + kRowBytes;
+    constexpr auto fixed =
+        kPool + 3 * kActivation + 8 * kRowBytes + 2 * kMatrixBytes + kRowBytes + (32U << 20);
     ASSERT_LE(cublas_bytes.value(), kDevice - fixed);
     allocations.reserve(8);
     const auto cublas_base = Allocate(cublas_bytes.value());
@@ -1835,12 +1837,12 @@ struct Environment {
     cublas = std::move(*handle);
     auto made_backend =
         kg::GgmlBackend::Create(0, *execution, stream, declared ? nullptr : cublas.get(),
-                                {.lower = {.index_scratch_limit = 1U << 20}});
+                                {.lower = {.index_scratch_limit = 1U << 20}, .lanes = lanes});
     ASSERT_TRUE(made_backend) << (made_backend ? "" : made_backend.error());
     backend = std::move(*made_backend);
     if (declared) {
       const auto charge = [this](std::uint64_t bytes) {
-        constexpr std::uint64_t ceiling = 1U << 20;
+        constexpr std::uint64_t ceiling = 16U << 20;
         if (bytes > ceiling - declaration_bytes) return false;
         declaration_bytes += bytes;
         return true;
@@ -1859,10 +1861,13 @@ struct Environment {
       ASSERT_TRUE(owner->Ready());
     }
 
+    ASSERT_LE(backend->persistent_bytes(), 32U << 20);
+    selected_state.bytes = backend->persistent_bytes();
+    selected_state.base = selected_state.bytes ? Allocate(selected_state.bytes) : 0;
     const auto pool = Allocate(kPool);
     pool_base = pool;
     ASSERT_NE(pool, 0U);
-    auto made_launch = backend->Launch({.base = pool, .size = Bytes(kPool)});
+    auto made_launch = backend->Launch({.base = pool, .size = Bytes(kPool)}, selected_state);
     ASSERT_TRUE(made_launch) << (made_launch ? "" : made_launch.error());
     launch = std::move(*made_launch);
     activations = Allocate(3 * kActivation);
@@ -1996,9 +2001,16 @@ struct Environment {
     pl::Canonicalize(policy);
     std::vector<ir::TensorId> staged;
     for (const auto& input : p.step.inputs) staged.push_back(input.tensor);
+    // Exercise the same graph on a declared lane as well as the ordinary
+    // stream; cuBLAS calls retain the backend's mandatory stream restriction.
+    pl::LaneTags lanes;
+    if (native.lanes.count != 0)
+      for (std::uint32_t n = 0; n < p.step.graph.nodes().size(); ++n)
+        lanes.push_back({ir::NodeId{n}, {.lane = 1, .region = 1}});
     auto planned = pl::Plan(p.step.graph.Clone(), *native.registry, native.device, policy,
                             {.capturable = true,
                              .staged = std::move(staged),
+                             .lanes = std::move(lanes),
                              .on_stream = native.on_stream,
                              .written = native.written,
                              .within = native.within,
@@ -2006,6 +2018,8 @@ struct Environment {
                              .activation_alignment = 256});
     ASSERT_TRUE(planned) << (planned ? "" : planned.error().detail);
     p.plan.emplace(std::move(*planned));
+    EXPECT_EQ(std::ranges::any_of(p.plan->steps, [](const auto& step) { return step.lane != 0; }),
+              native.lanes.count != 0);
     ASSERT_LE(p.plan->graph.nodes().size(), 128U);
     EXPECT_EQ(std::ranges::count_if(
                   p.plan->graph.nodes(),
@@ -2250,6 +2264,60 @@ TEST_F(SelectedHcStepProgramTest, JoinedSelectedRowsMatchScalarProgramsAndReplay
   ASSERT_TRUE(e.Finish());
 }
 
+TEST_F(SelectedHcStepProgramTest, DeclaredLaneResourcesBindAndCaptureChangedInputs) {
+  auto& e = *environment;
+  constexpr kn::LaneConfiguration lanes{.count = 4, .scratch_bytes_per_lane = 1U << 20};
+  ASSERT_NO_FATAL_FAILURE(e.Open(true, lanes));
+  const auto table = e.backend->Backend();
+  ASSERT_NE(table.owner, nullptr);
+  EXPECT_EQ(table.owner->backend().lanes, lanes);
+  EXPECT_EQ(e.backend->lane_pool_reserve(), 4U << 20);
+  auto& context = static_cast<kg::GgmlStepLaunch&>(*e.launch).context();
+  EXPECT_EQ(context.lanes(), lanes.count);
+  EXPECT_EQ(context.scratch_size(1).value(), lanes.scratch_bytes_per_lane);
+  const std::array rows{1U, 3U};
+  ASSERT_NO_FATAL_FAILURE(e.Build(0, rows, e.features, e.host_outputs));
+  ASSERT_NO_FATAL_FAILURE(e.Build(1, std::array{1U}, e.features, e.host_outputs + 2 * kW));
+  ASSERT_NO_FATAL_FAILURE(
+      e.Build(2, std::array{1U}, e.features + 3 * kRowBytes, e.host_outputs + 3 * kW));
+  for (int variant = 0; variant < 3; ++variant) ASSERT_NO_FATAL_FAILURE(e.Execute(variant, rows));
+  ASSERT_TRUE(e.Finish());
+}
+
+TEST_F(SelectedHcStepProgramTest, LaneConfigurationRefusesPartialFundingAndBindingMutation) {
+  auto& e = *environment;
+  ASSERT_NO_FATAL_FAILURE(e.Open());
+  auto create = [&](kn::LaneConfiguration lanes) {
+    return kg::GgmlBackend::Create(0, *e.execution, e.stream, e.cublas.get(), {.lanes = lanes});
+  };
+  EXPECT_FALSE(create({.count = 0, .scratch_bytes_per_lane = 256}));
+  EXPECT_FALSE(create({.count = 2, .scratch_bytes_per_lane = 256}));
+  EXPECT_FALSE(create({.count = 4, .scratch_bytes_per_lane = 0}));
+  EXPECT_FALSE(create({.count = 4, .scratch_bytes_per_lane = 257}));
+  auto backend = create({.count = 4, .scratch_bytes_per_lane = 1U << 20});
+  ASSERT_TRUE(backend);
+  EXPECT_FALSE(
+      (*backend)->Launch({.base = e.pool_base, .size = Bytes((4U << 20) - 256)}, e.selected_state));
+  auto retry = (*backend)->Launch({.base = e.pool_base, .size = Bytes(kPool)}, e.selected_state);
+  ASSERT_TRUE(retry) << (retry ? "" : retry.error());
+  ASSERT_TRUE(e.Finish());
+  retry->reset();
+  (*backend)->LaunchReleased();
+  backend->reset();
+
+  ASSERT_NO_FATAL_FAILURE(e.Build(0, std::array{1U, 3U}, e.features, e.host_outputs));
+  EXPECT_EQ(e.backend->Backend().lanes.count, 0U);
+  EXPECT_EQ(e.backend->lane_pool_reserve(), 0U);
+  auto& context = static_cast<kg::GgmlStepLaunch&>(*e.launch).context();
+  EXPECT_EQ(context.lanes(), 0U);
+  ASSERT_TRUE(e.Finish());
+  // Tampering with the launch cannot silently change a planned schedule.
+  ASSERT_TRUE(context.ConfigureLanes(kg::kMaxLanes, Bytes(256)));
+  const auto bound = e.programs[0]->program->Bind(*e.launch);
+  ASSERT_FALSE(bound);
+  EXPECT_NE(bound.error().detail.find("lane resources"), std::string::npos);
+}
+
 TEST_F(SelectedHcStepProgramTest, OwnedBackendChecksPreparationAndRecordedReadiness) {
   auto& e = *environment;
   ASSERT_NO_FATAL_FAILURE(e.Open(true));
@@ -2276,8 +2344,9 @@ TEST_F(SelectedHcStepProgramTest, OwnedBackendChecksPreparationAndRecordedReadin
   EXPECT_GT(e.declaration_bytes, 0U);
   ASSERT_TRUE(e.backend->LendCublas(e.cublas.get()));
   EXPECT_EQ(owner->Ready(), identity);
-  auto replacement = e.backend->Launch({.base = e.pool_base + 256, .size = Bytes(kPool - 256)});
-  ASSERT_TRUE(replacement);
+  auto replacement =
+      e.backend->Launch({.base = e.pool_base + 256, .size = Bytes(kPool - 256)}, e.selected_state);
+  ASSERT_TRUE(replacement) << (replacement ? "" : replacement.error());
   // Identical durable configuration cannot revive the old launch/recording.
   EXPECT_FALSE(e.launch->Launch(*native, *e.programs[0]->graph));
   EXPECT_FALSE(e.programs[0]->program->Run(*e.launch, *native));

@@ -29,5 +29,9 @@ std::expected<GemvCapacity, std::string> QueryGemvCapacity(int device);
 std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> SelectedSource(
     FrozenCache cache, std::optional<GemvCapacity> gemv = {},
     std::optional<PackedCapacity> defaults = {});
+// All existing frozen pin sets plus one distinct occupancy-derived packed source.
+// No model identity selects a profile; capabilities prove each physical problem.
+std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> DeviceSelectedSource(
+    int device);
 }  // namespace llmp::kernels::exl3
 #endif  // LLMP_KERNELS_EXL3_SELECTED_SOURCE_H_

@@ -8,6 +8,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <span>
@@ -19,7 +20,9 @@
 #include "execution/registry.h"
 #include "format/encoding.h"
 #include "format/layout.h"
+#include "ir/graph.h"
 #include "ir/op.h"
+#include "kernels/common/grouped_worklist.h"
 #include "kernels/decode/launch.h"
 #include "kernels/decode/operand.h"
 #include "kernels/decode/products.h"
@@ -56,12 +59,13 @@ constexpr std::size_t kDecoderCount = static_cast<std::size_t>(DecoderId::kCount
 
 // Each decoder's encoding and layout, for the operand rules' spans.
 constexpr std::array<Encoding, kDecoderCount> kEncodings = {
-    Encoding::kBF16,  Encoding::kF16,   Encoding::kQ8_0,  Encoding::kNvfp4, Encoding::kNvfp4,
-    Encoding::kNvfp4, Encoding::kNvfp4, Encoding::kMxfp8, Encoding::kMxfp8, Encoding::kAffine};
+    Encoding::kBF16,  Encoding::kF16,   Encoding::kQ8_0,  Encoding::kNvfp4,
+    Encoding::kNvfp4, Encoding::kNvfp4, Encoding::kNvfp4, Encoding::kMxfp8,
+    Encoding::kMxfp8, Encoding::kMxfp4, Encoding::kMxfp4, Encoding::kAffine};
 constexpr std::array<Layout, kDecoderCount> kLayouts = {
     Layout::kDense,      Layout::kDense,          Layout::kGgmlBlocks,      Layout::kSplit,
     Layout::kScaleAtoms, Layout::kRowInterleaved, Layout::kGgmlNvfp4Blocks, Layout::kSplit,
-    Layout::kScaleAtoms, Layout::kSplit};
+    Layout::kScaleAtoms, Layout::kSplit,          Layout::kScaleAtoms,      Layout::kSplit};
 constexpr std::array<Encoding, 1> kF32 = {Encoding::kF32};
 constexpr std::array<Encoding, 1> kI32 = {Encoding::kI32};
 constexpr std::array<Layout, 1> kDense = {Layout::kDense};
@@ -88,23 +92,124 @@ OperandRule DenseRule(std::uint8_t operand, std::span<const Encoding> encodings)
   return {.operand = operand, .encodings = encodings, .layouts = kDense};
 }
 
-bool Accepts(const execution::CapabilityQuery& q) {
-  if (!CompiledFor(q.arch) || q.k >= (std::uint64_t{1} << 30U) ||
-      q.n >= (std::uint64_t{1} << 31U)) {
-    return false;
-  }
-  for (const auto& o : q.operands) {
-    if (o.encoding == Encoding::kAffine && o.params.bits != 0) {
-      if (!((o.params.bits == 4 || o.params.bits == 8) &&
-            (o.params.group == 32 || o.params.group == 64 || o.params.group == 128) &&
-            (o.params.scale == format::AffineScale::kBF16 ||
-             o.params.scale == format::AffineScale::kF16) &&
-            !o.params.zero_point && (q.k == 0 || q.k % o.params.group == 0))) {
-        return false;
-      }
-    }
+const execution::OperandFormat* Operand(const execution::CapabilityQuery& q, std::uint8_t index) {
+  const auto at = std::ranges::find(q.operands, index, &execution::OperandFormat::operand);
+  return at == q.operands.end() ? nullptr : &*at;
+}
+bool Packed(const execution::OperandFormat& o, std::uint64_t element) {
+  if (!o.memory || o.ne[0] == 0) return true;
+  std::uint64_t stride = element;
+  for (std::size_t d = 0; d < 4; ++d) {
+    if (o.memory->nb[d] != stride || __builtin_mul_overflow(stride, o.ne[d], &stride)) return false;
   }
   return true;
+}
+bool WeightReadable(const execution::OperandFormat& o) {
+  if (!o.memory || !o.ne[0]) return true;
+  format::TensorFormat f{.encoding = o.encoding,
+                         .params = o.params,
+                         .layout = o.layout,
+                         .shape = {.ne = o.ne, .rank = 4},
+                         .stacked = o.stacked};
+  // Multipart aliases have no physical part-view map in the shared lowering.
+  // Native one-part contiguous aliases retain their supported offset semantics.
+  if (ir::UnitBytes(f) == 0) return !o.memory->is_view && o.memory->view_offset == 0;
+  return o.memory->nb == ir::NaturalStrides(f);
+}
+bool ProductRows(const execution::OperandFormat& o) {
+  if (!o.memory || !o.ne[0]) return true;
+  const auto& nb = o.memory->nb;
+  return nb[0] == 4 && nb[1] % 16 == 0 && nb[1] >= o.ne[0] * 4 && nb[2] >= nb[1] * o.ne[1] &&
+         nb[3] >= nb[2] * o.ne[2] && (o.ne[2] == 1 || nb[2] % 16 == 0) &&
+         (o.ne[3] == 1 || nb[3] % 16 == 0);
+}
+bool Accepts(const execution::CapabilityQuery& q) {
+  if (!CompiledFor(q.arch) || q.k >= (1ULL << 30) || q.n >= (1ULL << 31)) return false;
+  for (const auto& o : q.operands) {
+    if (o.operand < (q.op == ir::Fused(ir::FusedKind::kMatMulGlu) ? 2 : 1) &&
+        q.op != ir::Primitive(ir::Op::kMatMulId) && !WeightReadable(o))
+      return false;
+    if (o.encoding == Encoding::kAffine && o.params.bits != 0 &&
+        !((o.params.bits == 4 || o.params.bits == 8) &&
+          (o.params.group == 32 || o.params.group == 64 || o.params.group == 128) &&
+          (o.params.scale == format::AffineScale::kBF16 ||
+           o.params.scale == format::AffineScale::kF16) &&
+          !o.params.zero_point && (q.k == 0 || q.k % o.params.group == 0)))
+      return false;
+    if (o.operand >= execution::kOutputOperand &&
+        (o.encoding != Encoding::kF32 || o.layout != Layout::kDense || !Packed(o, 4)))
+      return false;
+  }
+  return true;
+}
+bool AcceptsProduct(const execution::CapabilityQuery& q) {
+  if (!Accepts(q)) return false;
+  const bool glu = q.op == ir::Fused(ir::FusedKind::kMatMulGlu);
+  const auto* w = Operand(q, 0);
+  const auto* x = Operand(q, glu ? 2 : 1);
+  const auto* y = Operand(q, execution::kOutputOperand);
+  if (!w || !x || x->ne[0] == 0 || w->ne[0] == 0) return true;  // shape-only query
+  if (!ProductRows(*x) || x->ne[0] != w->ne[0] || x->ne[2] % w->ne[2] || x->ne[3] % w->ne[3])
+    return false;
+  if (y && y->ne[0] && (y->ne != std::array{w->ne[1], x->ne[1], x->ne[2], x->ne[3]})) return false;
+  if (glu) {
+    const auto* up = Operand(q, 1);
+    if (!up || up->ne != w->ne) return false;
+    if (q.params.size() >= sizeof(ir::GluParams)) {
+      ir::GluParams p{};
+      std::memcpy(&p, q.params.data(), sizeof(p));
+      if (static_cast<std::uint8_t>(p.kind) > static_cast<std::uint8_t>(ir::GluKind::kSwiGluClamp))
+        return false;
+    }
+  } else if (q.params.size() >= sizeof(ir::ProductParams)) {
+    ir::ProductParams p{};
+    std::memcpy(&p, q.params.data(), sizeof(p));
+    if (p.hint != ir::ProductHint::kNone) return false;
+  }
+  return true;
+}
+bool AcceptsVector(const execution::CapabilityQuery& q) {
+  return AcceptsProduct(q) && (q.policy.vector_rows == 0 || q.rows <= q.policy.vector_rows);
+}
+bool AcceptsRows(const execution::CapabilityQuery& q) {
+  if (!Accepts(q)) return false;
+  const auto* w = Operand(q, 0);
+  const auto* ids = Operand(q, 1);
+  const auto* out = Operand(q, execution::kOutputOperand);
+  if (!w || !ids || w->ne[0] == 0 || ids->ne[0] == 0) return true;
+  return w->ne[0] < (1ULL << 30) && w->ne[1] < (1ULL << 31) && ids->ne[0] < (1ULL << 31) &&
+         Packed(*ids, 4) && w->ne[2] == ids->ne[1] && w->ne[3] == ids->ne[2] && ids->ne[3] == 1 &&
+         (!out || out->ne[0] == 0 ||
+          out->ne == std::array{w->ne[0], ids->ne[0], ids->ne[1], ids->ne[2]});
+}
+bool AcceptsGrouped(const execution::CapabilityQuery& q) {
+  if (!Accepts(q)) return false;
+  const auto* w = Operand(q, 0);
+  const auto* x = Operand(q, 1);
+  const auto* ids = Operand(q, 2);
+  const auto* out = Operand(q, execution::kOutputOperand);
+  if (!w || !x || !ids || !w->ne[0] || !x->ne[0] || !ids->ne[0]) return true;
+  if (w->memory && w->memory->is_view) return false;
+  if (w->ne[2] > 4096 || w->ne[3] != 1 || x->ne[3] != 1 || ids->ne[2] != 1 || ids->ne[3] != 1 ||
+      x->ne[0] != w->ne[0] || x->ne[2] != ids->ne[1] || ids->ne[0] % x->ne[1] || !Packed(*x, 4))
+    return false;
+  if (!GroupedRouteBound({w->ne[2], ids->ne[0], ids->ne[1], x->ne[1]})) return false;
+  if (ids->memory && (ids->memory->nb[0] != 4 || ids->memory->nb[1] % 4 ||
+                      ids->memory->nb[1] / 4 < ids->ne[0] || ids->memory->nb[1] / 4 > INT32_MAX))
+    return false;
+  return !out || out->ne[0] == 0 ||
+         out->ne == std::array{w->ne[1], ids->ne[0], ids->ne[1], std::uint64_t{1}};
+}
+template <DecoderId Gate, DecoderId Up>
+bool AcceptsMixed(const execution::CapabilityQuery& q) {
+  if (!AcceptsVector(q)) return false;
+  ir::GluParams p{};
+  if (q.params.size() >= sizeof(p)) std::memcpy(&p, q.params.data(), sizeof(p));
+  const auto* gate = Operand(q, p.swapped ? 1 : 0);
+  const auto* up = Operand(q, p.swapped ? 0 : 1);
+  return gate && up && gate->encoding == DecoderEncoding(Gate) &&
+         gate->layout == DecoderLayout(Gate) && up->encoding == DecoderEncoding(Up) &&
+         up->layout == DecoderLayout(Up);
 }
 
 std::string TemplateText(Template t, std::string_view mma) {
@@ -176,6 +281,10 @@ Declared Declare(const Bound& b) {
     case Template::kVectorGlu:
       d.rules = {WeightRule(0, b.gate), WeightRule(1, b.up), DenseRule(2, kF32)};
       d.rule_count = 3;
+      if (b.gate != b.up) {
+        d.rules[0] = {.operand = 0};
+        d.rules[1] = {.operand = 1};
+      }
       break;
     case Template::kGrouped:
       d.rules = {WeightRule(0, b.gate), DenseRule(1, kF32), DenseRule(2, kI32)};
@@ -217,12 +326,13 @@ Implementation Declaration(const Declared& d) {
   c.row_invariant = true;
   c.capturable = true;
   c.shape.k_multiple = std::max(DecoderKMultiple(d.bound.gate), DecoderKMultiple(d.bound.up));
-  c.accepts = &Accepts;
+  c.accepts = &AcceptsProduct;
   Operation operation = Operation::kMatMul;
   switch (d.bound.tmpl) {
     case Template::kVector:
       c.op = ir::Primitive(ir::Op::kMatMul);
       c.shape.max_rows = kMaxVectorRows;
+      c.accepts = &AcceptsVector;
       c.priority = 3;
       break;
     case Template::kMatrix:
@@ -239,21 +349,30 @@ Implementation Declaration(const Declared& d) {
       break;
     case Template::kVectorGlu:
       c.op = ir::Fused(ir::FusedKind::kMatMulGlu);
+      c.fusion_needs_measurement = DecoderEncoding(d.bound.gate) != Encoding::kAffine;
       c.shape.max_rows = kMaxVectorRows;
+      c.accepts = &AcceptsVector;
       operation = Operation::kMulMatGlu;
       break;
     case Template::kGrouped:
       c.op = ir::Primitive(ir::Op::kMatMulId);
+      c.accepts = &AcceptsGrouped;
       c.device.min_arch = 80;
       c.device.needs = execution::kBf16Mma;
       operation = Operation::kMulMatId;
       break;
     case Template::kRows:
       c.op = ir::Primitive(ir::Op::kGetRows);
+      c.accepts = &AcceptsRows;
       operation = Operation::kGetRows;
       break;
     case Template::kCount:
       break;
+  }
+  if (d.bound.gate != d.bound.up) {
+    c.accepts = d.bound.gate == DecoderId::kMxfp8Split
+                    ? &AcceptsMixed<DecoderId::kMxfp8Split, DecoderId::kBf16Dense>
+                    : &AcceptsMixed<DecoderId::kNvfp4Split, DecoderId::kQ8_0Blocks>;
   }
   const std::string build = std::format(
       "sdk {}; target {}; cuda architectures {}; build type {} ({}, {}); sanitize {}; module "

@@ -177,7 +177,8 @@ struct RunnerConfig {
   // zero preserves D-090. This never records before the warm eager execution.
   std::uint32_t capture_first_phases = 0;
   // Device memory the step source's kernels hold beside the node's
-  // workspace (a cuBLAS workspace): each mapped at Setup before any
+  // workspace (cuBLAS workspace and persistent selected-source state): each
+  // mapped at Setup before any
   // measurement, of the runtime class, pinned and in every closure as the
   // runner's own memory. `prepare` then makes what uses it (given each
   // one's base, in order: a cuBLAS handle on the model's stream), and

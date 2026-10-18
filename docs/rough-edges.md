@@ -97,23 +97,26 @@ deterministic: handles allocated once at start while memory is clean and
 recycled on eviction. This is the root cause of M3.6's accepted DSpark C4
 wall exception ([m36-record.md](m36-record.md)).
 
-## RE-058: EXL3's selected source keeps its persistent lock slots at the shared pool's base  (2026-10-16, status: open)
+## RE-058: EXL3 lock slots cannot live in shared discardable scratch (2026-10-16, status: fixed in R6)
 
-Environment: any node that would serve an EXL3 model through the GGML
-backend's selected source (`kernels/exl3/selected_source.cc`), not yet
-wired into serving. `GgmlBackend::Launch` (`kernels/ggml/step_program.cc`)
-gives the selected source the first `persistent_bytes()` of the pool it is
-handed, and EXL3's launch context zeroes its lock slots there once, at its
-first launch (`kernels/exl3/launch.cc`, `needs_zero_`), then relies on them
-persisting across jobs. The pool is the node's shared workspace: since
-2026-10-16 it pages with the active model (a swap evicts it, a load brings
-fresh, unzeroed backing, and the catalog keeps scratch's generation,
-`catalog::KeepsGenerationOnEviction`), and every other model's scratch
-draws from the same base between jobs anyway. Impact: latent; an EXL3
-model served beside another would run with stale or garbage locks.
-Expected fix before EXL3 selected sources serve: move the lock slots into
-the runner's own `kernel_memory` (pinned, never shared or paged), as the
-cuBLAS workspace is, or re-zero them at each request's first job.
+Environment: the GGML backend's selected EXL3 sources. Their launch contexts
+initialize lock slots once and retain a live-context address overlap guard.
+The old backend carved these slots from the shared pool. Two retained model
+backends therefore attempted to own the same lock addresses, refusing the
+second model's first EXL3 binding. Pool eviction/remap also replaced initialized
+lock bytes while the retained context still considered them initialized.
+
+R6 requires separate selected-source memory in each runner's cataloged
+`Runtime`/`Pinned` kernel memory, beside its cuBLAS workspace. It funds
+21,015,040 bytes per ordinary backend (22 MiB after 2 MiB physical rounding),
+plus explicitly supplied source requirements. It retains backing across model
+switches and destroys contexts after positive completion and plan/recording
+retirement, before releasing their memory. Shared scratch remains discardable;
+there is no shared-pool fallback and the overlap guard remains enforced.
+`DecodeSelectedRowsGpu.RetainedExl3ModelsOwnStateAcrossSwitchAndScratchRemap`
+covers two retained runners, actual EXL3 work, scratch eviction/remap and
+retirement. This is a native integration lifetime fix, not an upstream kernel
+patch; see [upstream/exllamav3.md](upstream/exllamav3.md).
 
 ## RE-057: A timing run begun with a build's page cache swaps during its first large load  (2026-10-16, status: worked-around)
 

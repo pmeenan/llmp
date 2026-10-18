@@ -33,6 +33,8 @@ enum class DecoderId : std::uint8_t {
   kNvfp4GgmlBlocks,   // GGML's block_nvfp4: four E4M3 scales, then 32 bytes
   kMxfp8Split,        // E4M3 codes K bytes a row, E8M0 scales K / 32 a row
   kMxfp8Atoms,        // codes as split, scales in CUTLASS's SM1xx atoms
+  kMxfp4Split,        // E2M1 codes K / 2 bytes, E8M0 scales K / 32
+  kMxfp4Atoms,        // codes as split, E8M0 scales in SM1xx atoms
   kAffineSplit,       // MLX affine: 4/8-bit codes, BF16/F16 scales and biases per group
   kCount
 };

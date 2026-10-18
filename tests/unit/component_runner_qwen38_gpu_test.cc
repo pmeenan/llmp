@@ -458,6 +458,10 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
          }}});
     if (!made) return std::unexpected(made.error());
     source->backend = std::move(*made);
+    if (auto x = source->resources->OpenSelectedWorkspace("selected kernel state",
+                                                          source->backend->persistent_bytes());
+        !x)
+      return x;
     auto weights = std::make_unique<en::PagedWeights>();
     if (auto x = weights->Open(t.root); !x) return x;
     en::PagedWeights* tw = weights.get();
@@ -518,7 +522,9 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
     config.launch =
         [&](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       auto made_launch = source->backend->Launch(
-          {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)});
+          {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)},
+          {.base = source->resources->selected_workspace().base,
+           .bytes = source->resources->selected_workspace().bytes});
       if (made_launch) launch = static_cast<kg::GgmlStepLaunch*>(made_launch->get());
       return made_launch;
     };

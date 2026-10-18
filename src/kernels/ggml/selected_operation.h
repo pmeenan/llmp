@@ -62,6 +62,9 @@ class SelectedLaunch {
   // host-dependent kernel preparation or synchronization may occur in capture.
   // Captures retain the launch generation; a fault forbids capture and replay.
   virtual bool capturable() const { return false; }
+  // A launch may prove a narrower call safe (e.g. a routed call inside an
+  // already admitted segment) while refusing capture of a whole program.
+  virtual bool capturable(const SelectedCall&) const { return capturable(); }
 
  private:
   const SelectedSource* owner_;
@@ -93,6 +96,11 @@ class SelectedCall {
   // descriptors which the shared arena already counts.
   virtual std::uint64_t host_bytes() const = 0;
   virtual std::uint64_t launches() const = 0;
+  // Runtime opt-in for this exact call's launch, in addition to its static
+  // capability. Composites delegate to the owning child, never other programs.
+  virtual bool capturable(const SelectedLaunch& launch) const {
+    return launch.owner() == owner() && launch.capturable(*this);
+  }
   virtual std::optional<SelectedRoute> route() const { return {}; }
   virtual std::uint64_t route_descriptor_bytes() const { return 0; }
   virtual std::expected<void, KernelFailure> RouteBuffers(SelectedRouteBuffers) {

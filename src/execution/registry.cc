@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <optional>
@@ -18,6 +19,7 @@
 
 #include "base/check.h"
 #include "base/sha256.h"
+#include "execution/measured_ranks.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "ir/op.h"
@@ -93,6 +95,9 @@ std::string CapabilityText(const Capability& c) {
   // Added only when set, so that the identities of capabilities without
   // them are unchanged.
   if (c.needs_state_span) text += "; needs contiguous state span";
+  if (c.expands) text += "; concrete expansion predicate";
+  if (c.fusion_needs_measurement) text += "; automatic fusion requires measurement";
+  if (c.rung_for) text += "; concrete operand rung";
   if (c.needs_tuning) {
     text += "; needs tuning";
   }
@@ -120,7 +125,7 @@ bool ValidCapability(const Capability& c) {
   }
   const bool known_rung = c.rung == Rung::kNative || c.rung == Rung::kOnChipDecode ||
                           c.rung == Rung::kBf16Decode || c.rung == Rung::kPrimitive;
-  if (!known_rung || static_cast<std::uint8_t>(c.expansion) > 1 ||
+  if (!known_rung || static_cast<std::uint8_t>(c.expansion) > 2 ||
       (!c.group.empty() && !ValidName(c.group)) || c.shape.min_rows > c.shape.max_rows ||
       c.shape.k_multiple == 0 || c.shape.n_multiple == 0 || c.device.min_arch > c.device.max_arch) {
     return false;
@@ -179,7 +184,17 @@ bool Computes(const Capability& c, const CapabilityQuery& q) {
     return false;
   }
   // D-108: a decode-shaped product reads each weight once, compressed.
-  if (c.expansion == Expansion::kTransientWorkspace && q.rows <= q.policy.max_decode_rows) {
+  bool expands = c.expansion == Expansion::kTransientWorkspace;
+  if (c.expansion == Expansion::kDenseF32Accumulation) {
+    ir::ProductParams product{};
+    if (q.params.size() >= sizeof(product)) std::memcpy(&product, q.params.data(), sizeof(product));
+    const auto weight = std::ranges::find(q.operands, std::uint8_t{0}, &OperandFormat::operand);
+    expands =
+        product.accumulate == ir::Accumulate::kF32 && weight != q.operands.end() &&
+        (weight->encoding == format::Encoding::kF16 || weight->encoding == format::Encoding::kBF16);
+  }
+  if (expands && c.expands) expands = c.expands(q);
+  if (expands && q.rows <= q.policy.max_decode_rows) {
     return false;
   }
   if (c.needs_state_span && !q.state_span) return false;
@@ -196,6 +211,11 @@ bool Tuned(const Implementation& implementation, const CapabilityQuery& q) {
          std::ranges::any_of(q.tuned, [&](const TunedShape& t) {
            return t.implementation == implementation.name && t.rows == q.rows && t.k == q.k &&
                   t.n == q.n &&
+                  (t.weight_bits == 0 ||
+                   std::ranges::any_of(q.operands,
+                                       [&](const auto& o) {
+                                         return o.operand == 0 && o.params.k_bits == t.weight_bits;
+                                       })) &&
                   (!t.output_encoding || std::ranges::any_of(q.operands, [&](const auto& o) {
                     return o.operand == kOutputOperand && o.encoding == *t.output_encoding;
                   }));
@@ -494,7 +514,12 @@ Registry::Registry(std::vector<Implementation> implementations,
                    std::vector<base::Sha256Digest> identities, std::vector<std::size_t> by_name)
     : implementations_(std::move(implementations)),
       identities_(std::move(identities)),
-      by_name_(std::move(by_name)) {}
+      by_name_(std::move(by_name)) {
+  base::Sha256 hash;
+  hash.Update("llmp-registry-set-v1");
+  for (const auto index : by_name_) hash.Update(std::as_bytes(std::span(identities_[index])));
+  digest_ = hash.Finish();
+}
 
 std::expected<Registry, PlanRejection> Registry::Create(
     std::vector<Implementation> implementations) {
@@ -608,12 +633,61 @@ std::expected<BoundPlan, PlanRejection> Resolve(const Registry& registry, const 
   return BoundPlan(std::move(bound), plan.identity());
 }
 
+std::optional<std::uint32_t> DeviceRank(const CapabilityQuery& query,
+                                        std::string_view implementation) {
+  const auto weight = std::ranges::find(query.operands, 0, &OperandFormat::operand);
+  if (weight == query.operands.end() || weight->ne[0] != query.k || weight->ne[1] != query.n ||
+      weight->ne[2] != 1 || weight->ne[3] != 1)
+    return {};
+  const auto input = std::ranges::find(query.operands, 1, &OperandFormat::operand);
+  if (input == query.operands.end()) return {};
+  if (query.op == ir::Primitive(ir::Op::kMatMul) &&
+      (input->ne[0] != query.k || input->ne[1] != query.rows))
+    return {};
+  if (query.op == ir::Primitive(ir::Op::kGetRows) && input->ne[0] != query.rows) return {};
+  for (const auto& operand : query.operands)
+    if (operand.ne[2] != 1 || operand.ne[3] != 1) return {};
+  for (const auto& record : kDeviceMeasuredRanks) {
+    if (record.implementation == implementation && record.op == query.op &&
+        record.device_class == query.device_class && record.device_model == query.device_model &&
+        record.arch == query.arch && record.multiprocessors == query.multiprocessors &&
+        record.encoding == weight->encoding && record.layout == weight->layout &&
+        record.params == weight->params && record.stacked == weight->stacked &&
+        query.rows >= record.rows_min && query.rows <= record.rows_max && record.k == query.k &&
+        record.n == query.n)
+      return record.rank;
+  }
+  return {};
+}
+const base::Sha256Digest& MeasuredRanksDigest() {
+  static const auto digest = [] {
+    base::Sha256 hash;
+    Field(hash, "llmp-device-measured-ranks-v1");
+    for (const auto& r : kDeviceMeasuredRanks) {
+      Field(hash, r.device_class);
+      Field(hash, r.device_model);
+      Field(hash, r.implementation);
+      Field(hash, std::format("stacked:{}", r.stacked));
+      Field(hash, std::format("params:{}:{}:{}:{}:{}:{}:{}", r.params.k_bits,
+                              static_cast<unsigned>(r.params.codebook), r.params.tensor_scale,
+                              r.params.bits, r.params.group, static_cast<unsigned>(r.params.scale),
+                              r.params.zero_point));
+      Field(hash, std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", r.arch, r.multiprocessors,
+                              static_cast<unsigned>(r.op.op), static_cast<unsigned>(r.op.fused),
+                              static_cast<unsigned>(r.encoding), static_cast<unsigned>(r.layout),
+                              r.rows_min, r.rows_max, r.k, r.n, r.rank, 0));
+    }
+    return hash.Finish();
+  }();
+  return digest;
+}
 std::vector<std::size_t> Candidates(const Registry& registry, const CapabilityQuery& query) {
   struct Ranked {
     std::size_t index = 0;
     std::uint8_t rung = 0;
     std::uint64_t measured = 0;  // unranked last
     std::uint16_t priority = 0;
+    bool preferred = false;
     std::string_view name;
   };
   std::vector<Ranked> ranked;
@@ -626,11 +700,20 @@ std::vector<std::size_t> Candidates(const Registry& registry, const CapabilityQu
     const auto rank = std::ranges::find_if(query.measured, [&](const MeasuredRank& m) {
       return m.implementation == implementation.name;
     });
+    const auto device_rank = DeviceRank(query, implementation.name);
+    if (query.automatic_fusion && implementation.capability->fusion_needs_measurement &&
+        rank == query.measured.end() && !device_rank)
+      continue;
     ranked.push_back(
         {.index = i,
-         .rung = static_cast<std::uint8_t>(implementation.capability->rung),
-         .measured = rank == query.measured.end() ? ~std::uint64_t{0} : std::uint64_t{rank->rank},
+         .rung = static_cast<std::uint8_t>(implementation.capability->rung_for
+                                               ? implementation.capability->rung_for(query)
+                                               : implementation.capability->rung),
+         .measured = rank != query.measured.end() ? std::uint64_t{rank->rank}
+                     : device_rank                ? (std::uint64_t{1} << 32U) + *device_rank
+                                                  : ~std::uint64_t{0},
          .priority = implementation.capability->priority,
+         .preferred = std::ranges::contains(query.preferred, implementation.name),
          .name = implementation.name});
   }
   // D-053: correctness (the filter above), then measured speed; the
@@ -639,6 +722,7 @@ std::vector<std::size_t> Candidates(const Registry& registry, const CapabilityQu
     if (a.measured != b.measured) {
       return a.measured < b.measured;
     }
+    if (a.preferred != b.preferred) return a.preferred;
     if (a.rung != b.rung) {
       return a.rung < b.rung;
     }

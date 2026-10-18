@@ -51,10 +51,11 @@ class CompositeLaunch final : public kg::SelectedLaunch {
   }
 
   bool capturable() const override {
-    return std::ranges::all_of(launches_, [](const auto& l) { return l->capturable(); });
+    return std::ranges::all_of(launches_, [](const auto& child) { return child->capturable(); });
   }
 
   kg::SelectedLaunch& Child(std::size_t index) { return *launches_.at(index); }
+  const kg::SelectedLaunch& Child(std::size_t index) const { return *launches_.at(index); }
 
  private:
   std::vector<std::unique_ptr<kg::SelectedLaunch>> launches_;
@@ -69,6 +70,10 @@ class CompositeCall final : public kg::SelectedCall {
   std::uint64_t scratch_bytes() const override { return child_call_->scratch_bytes(); }
   std::uint64_t host_bytes() const override { return child_call_->host_bytes(); }
   std::uint64_t launches() const override { return child_call_->launches(); }
+  bool capturable(const kg::SelectedLaunch& launch) const override {
+    return launch.owner() == owner() &&
+           child_call_->capturable(static_cast<const CompositeLaunch&>(launch).Child(child_index_));
+  }
 
   std::optional<kg::SelectedRoute> route() const override { return child_call_->route(); }
   std::uint64_t route_descriptor_bytes() const override {
@@ -100,14 +105,22 @@ class CompositeCall final : public kg::SelectedCall {
 class CompositeSource final : public kg::SelectedSource {
  public:
   explicit CompositeSource(std::vector<std::shared_ptr<const kg::SelectedSource>> sources)
-      : sources_(std::move(sources)) {}
+      : sources_(std::move(sources)) {
+    base::Sha256 hash;
+    for (const auto& impl : Implementations()) {
+      const auto id = execution::IdentityOf(impl);
+      hash.Update(std::as_bytes(std::span(id)));
+    }
+    declarations_ = hash.Finish();
+  }
 
   std::vector<execution::Implementation> Implementations() const override {
     std::vector<execution::Implementation> result;
     for (const auto& s : sources_) {
       auto impls = s->Implementations();
-      result.insert(result.end(), std::make_move_iterator(impls.begin()),
-                    std::make_move_iterator(impls.end()));
+      for (auto& impl : impls)
+        if (!std::ranges::contains(result, impl.name, &execution::Implementation::name))
+          result.push_back(std::move(impl));
     }
     return result;
   }
@@ -116,8 +129,8 @@ class CompositeSource final : public kg::SelectedSource {
     std::vector<execution::TunedShape> result;
     for (const auto& s : sources_) {
       auto tuned = s->Tuning(arch);
-      result.insert(result.end(), std::make_move_iterator(tuned.begin()),
-                    std::make_move_iterator(tuned.end()));
+      for (const auto& fact : tuned)
+        if (!std::ranges::contains(result, fact)) result.push_back(fact);
     }
     return result;
   }
@@ -128,11 +141,13 @@ class CompositeSource final : public kg::SelectedSource {
 
   std::optional<base::Sha256Digest> ExecutionIdentity() const override {
     base::Sha256 hash;
-    hash.Update("llmp-decode-composite-source-v1");
-    for (const auto& impl : Implementations()) {
-      const auto id = execution::IdentityOf(impl);
-      hash.Update(std::as_bytes(std::span(id)));
+    hash.Update("llmp-decode-composite-source-v2");
+    for (const auto& source : sources_) {
+      const auto child = source->ExecutionIdentity();
+      if (!child) return {};
+      hash.Update(std::as_bytes(std::span(*child)));
     }
+    hash.Update(std::as_bytes(std::span(declarations_)));
     return hash.Finish();
   }
 
@@ -187,6 +202,7 @@ class CompositeSource final : public kg::SelectedSource {
 
  private:
   std::vector<std::shared_ptr<const kg::SelectedSource>> sources_;
+  base::Sha256Digest declarations_{};
 };
 
 }  // namespace
@@ -205,22 +221,11 @@ using Child = std::expected<std::shared_ptr<const ggml::SelectedSource>, std::st
 // declarations) is the source's, never a silently smaller source.
 std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> Decode(
     std::optional<format::Encoding> encoding, Child (*grouped)(std::optional<format::Encoding>)) {
-  using format::Encoding;
-  struct Kind {
-    bool nvfp4 = false;  // which encodings the child decodes
-    bool affine = false;
-    Child (*make)(std::optional<Encoding>) = nullptr;
-  };
-  const std::array<Kind, 3> children{{{.nvfp4 = true, .affine = true, .make = grouped},
-                                      {.nvfp4 = true, .affine = true, .make = &RowsSelectedSource},
-                                      {.affine = true, .make = &ProductsSelectedSource}}};
+  const std::array<Child (*)(std::optional<format::Encoding>), 3> children{
+      grouped, &RowsSelectedSource, &ProductsSelectedSource};
   std::vector<std::shared_ptr<const ggml::SelectedSource>> sources;
-  for (const Kind& child : children) {
-    // All of them when no encoding is requested.
-    if (encoding && !(*encoding == Encoding::kNvfp4 && child.nvfp4) &&
-        !(*encoding == Encoding::kAffine && child.affine))
-      continue;
-    auto made = child.make(encoding);
+  for (const auto child : children) {
+    auto made = child(encoding);
     if (!made) return std::unexpected("a decode source failed: " + made.error());
     sources.push_back(std::move(*made));
   }

@@ -9,9 +9,12 @@
 #ifndef LLMP_RUNTIME_SERVING_SUPPORT_H_
 #define LLMP_RUNTIME_SERVING_SUPPORT_H_
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <expected>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <system_error>
@@ -54,6 +57,51 @@ inline std::expected<std::shared_ptr<engine::ExecutionMetadataAllowance>, std::s
   if (!owner) return Error(owner.error());
   if (!(*owner)->Charge(bytes)) return Error("startup metadata charge exceeds its payment");
   return owner;
+}
+
+inline std::expected<std::shared_ptr<engine::ExecutionMetadataAllowance>, std::string>
+AdmitExecutionMetadata(engine::PagedNode& node, std::uint64_t bytes, std::uint64_t cap) {
+  using Payment = std::shared_ptr<engine::ExecutionMetadataAllowance>;
+  std::optional<std::expected<Payment, std::string>> completed;
+  const auto admit = [&]() -> engine::Status {
+    const auto budget = node.open_for_setup() ? cap : std::min(cap, node.budget().value());
+    completed = engine::ExecutionMetadataAllowance::AdmitWithin(
+        node.catalog(), node.domain(), bytes, budget, platform::AvailableMemoryBytes().value_or(0),
+        kUncountedMargin);
+    return *completed ? engine::Status{} : engine::Status{Error(completed->error())};
+  };
+  if (node.open_for_setup()) {
+    (void)admit();
+    return std::move(*completed);
+  }
+  const auto posted = node.Call(admit, "admitting retained execution metadata payment");
+  if (completed) return std::move(*completed);
+  return Error(posted ? "execution metadata admission did not complete" : posted.error());
+}
+
+// Growth is an explicit caller contract: absent node/cap keeps a diagnostic's
+// fixed allowance. Catalog changes run under the node's serialized owner.
+inline bool ChargeExecutionMetadata(
+    const std::shared_ptr<engine::ExecutionMetadataAllowance>& allowance, std::uint64_t bytes,
+    engine::PagedNode* node = nullptr, std::uint64_t cap = 0) {
+  if (!allowance) return false;
+  if (bytes <= allowance->capacity() - allowance->used()) return allowance->Charge(bytes);
+  if (!node || cap == 0) return false;
+  const auto grow = [&]() -> engine::Status {
+    const auto budget = node->open_for_setup() ? cap : std::min(cap, node->budget().value());
+    return allowance->ChargeOrGrow(node->catalog(), node->domain(), bytes, budget,
+                                   platform::AvailableMemoryBytes().value_or(0), kUncountedMargin);
+  };
+  if (node->open_for_setup()) return grow().has_value();
+  std::optional<engine::Status> completed;
+  const auto posted = node->Call(
+      [&]() -> engine::Status {
+        completed = grow();
+        return *completed;
+      },
+      "growing retained execution metadata payment");
+  // Completed catalog admission remains authoritative after cancellation.
+  return (completed ? *completed : posted).has_value();
 }
 
 inline double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }

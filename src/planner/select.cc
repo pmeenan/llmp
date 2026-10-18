@@ -44,11 +44,13 @@ std::expected<std::uint64_t, std::string> OwnedDeviceFacts::Bound(const DeviceFa
   if (__builtin_mul_overflow(static_cast<std::uint64_t>(facts.tuned.size()),
                              sizeof(execution::TunedShape) + sizeof(std::string) + overhead,
                              &entries) ||
-      !add(entries) || !add(facts.device_class.size()) || !add(1 + 4 * overhead))
+      !add(entries) || !add(facts.device_model.size() + 1) || !add(facts.device_class.size()) ||
+      !add(1 + 4 * overhead))
     return std::unexpected("owned device facts byte bound overflows");
   for (std::size_t i = 0; i < facts.tuned.size(); ++i) {
     const auto& tune = facts.tuned[i];
     if (tune.implementation.empty() || tune.rows == 0 || tune.k == 0 || tune.n == 0 ||
+        tune.weight_bits > 8 ||
         (tune.output_encoding &&
          std::ranges::find(format::Encodings(), *tune.output_encoding, &format::EncodingInfo::id) ==
              format::Encodings().end()))
@@ -57,12 +59,18 @@ std::expected<std::uint64_t, std::string> OwnedDeviceFacts::Bound(const DeviceFa
       const auto& before = facts.tuned[j];
       if (before.implementation == tune.implementation && before.rows == tune.rows &&
           before.k == tune.k && before.n == tune.n &&
-          before.output_encoding == tune.output_encoding)
+          before.output_encoding == tune.output_encoding && before.weight_bits == tune.weight_bits)
         return std::unexpected("owned device facts repeat a tuning key");
     }
     if (!add(tune.implementation.size()) || !add(1))
       return std::unexpected("owned tuning name byte bound overflows");
   }
+  if (facts.preferred.size() > execution::Registry::kMaxImplementations)
+    return std::unexpected("owned device facts have too many preferred implementations");
+  for (const auto& name : facts.preferred)
+    if (name.empty() || name.size() > execution::Registry::kMaxName ||
+        !add(sizeof(std::string) + overhead) || !add(name.size() + 1))
+      return std::unexpected("owned preferred implementation metadata is invalid or overflows");
   return bytes;
 }
 
@@ -74,8 +82,12 @@ std::expected<OwnedDeviceFacts, std::string> OwnedDeviceFacts::Create(const Devi
   auto storage = std::make_unique<Storage>();
   storage->names.reserve(facts.tuned.size());
   for (const auto& tune : facts.tuned) storage->names.emplace_back(tune.implementation);
-  storage->facts = {
-      .device_class = facts.device_class, .arch = facts.arch, .features = facts.features};
+  storage->facts = {.device_class = facts.device_class,
+                    .arch = facts.arch,
+                    .features = facts.features,
+                    .device_model = facts.device_model,
+                    .multiprocessors = facts.multiprocessors,
+                    .preferred = facts.preferred};
   storage->facts.tuned.reserve(facts.tuned.size());
   for (std::size_t i = 0; i < facts.tuned.size(); ++i) {
     auto tune = facts.tuned[i];
@@ -152,7 +164,7 @@ QueryShape Product(const ir::TensorDesc* w, const ir::TensorDesc* x) {
   if (w == nullptr || x == nullptr) {
     return {};
   }
-  return {.rows = Rows(*x), .k = x->ne(0), .n = w->ne(1)};
+  return {.rows = x->ne(1), .k = x->ne(0), .n = w->ne(1)};
 }
 
 }  // namespace
@@ -331,7 +343,8 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
       case FusedKind::kDsv4OutA: {
         const ir::TensorDesc* x = At(sources, 1);
         return x == nullptr ? QueryShape{}
-                            : QueryShape{.rows = x->ne(2), .k = x->ne(0) * x->ne(1),
+                            : QueryShape{.rows = x->ne(2),
+                                         .k = x->ne(0) * x->ne(1),
                                          .n = s0 == nullptr ? 0 : s0->ne(1) * s0->ne(2)};
       }
       default:
@@ -360,6 +373,11 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
         return {};
       }
       return {.rows = b->ne(2), .k = b->ne(0), .n = s0->ne(1)};
+    }
+    case Op::kGetRows: {
+      const auto* ids = At(sources, 1);
+      return !s0 || !ids ? QueryShape{}
+                         : QueryShape{.rows = ids->ne(0), .k = s0->ne(0), .n = s0->ne(1)};
     }
     case Op::kAttention: {
       const ir::TensorDesc* v = At(sources, 2);
@@ -451,15 +469,15 @@ std::vector<std::size_t> SelectionView::Candidates(ir::OpKey key,
                                                    std::span<const ir::TensorDesc* const> sources,
                                                    std::span<const ir::TensorDesc* const> outputs,
                                                    std::span<const std::byte> params,
-                                                   bool state_span) const {
+                                                   bool state_span, bool automatic_fusion) const {
   // Hypothetical descriptors have no authenticated current graph/root.
-  return ForOperands(key, sources, outputs, params, state_span, {});
+  return ForOperands(key, sources, outputs, params, state_span, {}, automatic_fusion);
 }
 
 std::vector<std::size_t> SelectionView::ForOperands(
     ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
     std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
-    bool state_span, std::span<const std::uint64_t> alignments) const {
+    bool state_span, std::span<const std::uint64_t> alignments, bool automatic_fusion) const {
   // A composite op whose own implementations the policy leaves off
   // (pattern.h route_reduce) has none: it decomposes.
   if (!CompositeImplemented(policy_, key)) {
@@ -486,6 +504,8 @@ std::vector<std::size_t> SelectionView::ForOperands(
   if (key == ir::Fused(ir::FusedKind::kMoeCombine) &&
       (sources.size() <= 4 || sources[4] == nullptr) && Disabled(policy_, "moe_combine"))
     return {};
+  if (std::ranges::any_of(alignments, [](auto alignment) { return alignment >= (1ULL << 63); }))
+    return {};
   std::vector<execution::OperandFormat> operands;
   operands.reserve(sources.size());
   for (std::size_t i = 0; i < sources.size(); ++i) {
@@ -495,14 +515,16 @@ std::vector<std::size_t> SelectionView::ForOperands(
     const format::TensorFormat& f = sources[i]->format;
     operands.push_back(
         {.operand = static_cast<std::uint8_t>(i),
+         .stacked = f.stacked,
          .encoding = f.encoding,
          .layout = f.layout,
          .params = f.params,
          .ne = {f.shape.ne.at(0), f.shape.ne.at(1), f.shape.ne.at(2), f.shape.ne.at(3)},
-         .memory = execution::OperandMemory{
-             .nb = sources[i]->nb,
-             .view_offset = sources[i]->view_offset,
-             .root_alignment = i < alignments.size() ? alignments[i] : 0}});
+         .memory =
+             execution::OperandMemory{.nb = sources[i]->nb,
+                                      .view_offset = sources[i]->view_offset,
+                                      .root_alignment = i < alignments.size() ? alignments[i] : 0,
+                                      .is_view = sources[i]->is_view()}});
   }
   // The outputs' formats, for rules and predicates on the result.
   for (std::size_t i = 0; i < outputs.size(); ++i) {
@@ -512,6 +534,7 @@ std::vector<std::size_t> SelectionView::ForOperands(
     const format::TensorFormat& f = outputs[i]->format;
     operands.push_back(
         {.operand = static_cast<std::uint8_t>(execution::kOutputOperand + i),
+         .stacked = f.stacked,
          .encoding = f.encoding,
          .layout = f.layout,
          .params = f.params,
@@ -520,7 +543,8 @@ std::vector<std::size_t> SelectionView::ForOperands(
                                             .view_offset = outputs[i]->view_offset,
                                             .root_alignment = sources.size() + i < alignments.size()
                                                                   ? alignments[sources.size() + i]
-                                                                  : 0}});
+                                                                  : 0,
+                                            .is_view = outputs[i]->is_view()}});
   }
   const QueryShape shape = ShapeOfNode(key, sources, outputs);
   const execution::CapabilityQuery query{.op = key,
@@ -538,7 +562,12 @@ std::vector<std::size_t> SelectionView::ForOperands(
                                          .measured = ranks_,
                                          .tuned = device_.tuned,
                                          .params = params,
-                                         .state_span = state_span};
+                                         .state_span = state_span,
+                                         .device_class = device_.device_class,
+                                         .device_model = device_.device_model,
+                                         .multiprocessors = device_.multiprocessors,
+                                         .automatic_fusion = automatic_fusion,
+                                         .preferred = device_.preferred};
   return execution::Candidates(registry_, query);
 }
 
@@ -548,7 +577,7 @@ std::vector<std::size_t> SelectionView::Candidates(const ir::Graph& graph,
 }
 
 std::vector<std::size_t> SelectionView::Candidates(const ir::Graph& graph, const ir::Node& node,
-                                                   ir::OpKey key) const {
+                                                   ir::OpKey key, bool automatic_fusion) const {
   // Direct composites need the same immutable source authority as the
   // primitive matcher. Refuse native selection early so ordinary expansion
   // remains available for otherwise valid grouped products.
@@ -598,7 +627,8 @@ std::vector<std::size_t> SelectionView::Candidates(const ir::Graph& graph, const
   };
   for (const auto tensor : node.sources()) alignments.push_back(alignment(tensor));
   for (const auto tensor : node.outputs()) alignments.push_back(alignment(tensor));
-  auto candidates = ForOperands(key, sources, outputs, node.params, state_span, alignments);
+  auto candidates =
+      ForOperands(key, sources, outputs, node.params, state_span, alignments, automatic_fusion);
   if (grouped) {
     std::erase_if(candidates, [&](std::size_t index) {
       const auto& capability = registry_.at(index).capability;

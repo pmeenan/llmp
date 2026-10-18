@@ -463,6 +463,29 @@ TEST_F(ComponentBindingsTest, ActualStoredSourcePlansLowersAndBindsWithoutDevice
        .backend = {.owner = owner},
        .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*numerical))});
   ASSERT_TRUE(source) << Failed(source).value_or("");
+  // Even an undeclared source's plan key must describe its future launch
+  // resources; a currently unconfigured measurement context is not authority.
+  const auto with_lanes = [&](kn::LaneConfiguration lanes) {
+    auto backend = owner->backend();
+    backend.lanes = lanes;
+    return en::ComponentStepSource::Create(
+        {.spec = &bindings->model,
+         .bindings = {.tensors = bindings->source.tensors, .state = &*layout},
+         .slots = 1,
+         .policy = pl::Policy{},
+         .backend = std::move(backend)});
+  };
+  auto serial = with_lanes({});
+  auto four = with_lanes({.count = 4, .scratch_bytes_per_lane = 256});
+  auto larger = with_lanes({.count = 4, .scratch_bytes_per_lane = 512});
+  ASSERT_TRUE(serial);
+  ASSERT_TRUE(four);
+  ASSERT_TRUE(larger);
+  EXPECT_NE((*serial)->KeyBase(), (*four)->KeyBase());
+  EXPECT_NE((*four)->KeyBase(), (*larger)->KeyBase());
+  EXPECT_FALSE(with_lanes({.count = 0, .scratch_bytes_per_lane = 256}));
+  EXPECT_FALSE(with_lanes({.count = 4, .scratch_bytes_per_lane = 0}));
+  EXPECT_FALSE(with_lanes({.count = 5, .scratch_bytes_per_lane = 256}));
   // Synthetic nonoverlapping host descriptor addresses, never device accesses.
   kn::Addresses addresses{};
   std::size_t lookups = 0;

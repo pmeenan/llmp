@@ -17,6 +17,7 @@
 #include "kernels/decode/grouped_route.h"
 #include "kernels/decode/implementations.h"
 #include "kernels/decode/products.h"
+#include "kernels/decode/selected_weight.h"
 #include "kernels/ggml/validate_util.h"
 #include "providers/device_runtime.h"
 
@@ -24,23 +25,10 @@ namespace llmp::kernels::decode {
 namespace {
 namespace kg = ggml;
 using Failure = kg::KernelFailure;
-constexpr std::string_view kNvfp4Name = "llmp.decode.grouped.nvfp4.split";
-constexpr std::string_view kAffineName = "llmp.decode.grouped.affine.split";
-// NVFP4 routed experts the importer relaid out into the scale-atom layout,
-// decoded on chip (W4A16) where the block-scaled grouped GEMM is not taken.
-constexpr std::string_view kNvfp4AtomsName = "llmp.decode.grouped.nvfp4.scale_atoms";
-
-bool CheckGroupedFormat(std::string_view name, const format::TensorFormat& f) {
-  if (name == kNvfp4Name) {
-    return f.encoding == format::Encoding::kNvfp4 && f.layout == format::Layout::kSplit;
-  }
-  if (name == kNvfp4AtomsName) {
-    return f.encoding == format::Encoding::kNvfp4 && f.layout == format::Layout::kScaleAtoms;
-  }
-  if (name == kAffineName) {
-    return f.encoding == format::Encoding::kAffine && f.layout == format::Layout::kSplit;
-  }
-  return false;
+bool CheckGroupedFormat(const execution::Implementation& implementation,
+                        const format::TensorFormat& f) {
+  const auto bound = decode::Bind(implementation);
+  return bound && bound->tmpl == Template::kGrouped && DecoderOf(f) == bound->gate;
 }
 
 std::unexpected<Failure> Reject(std::string detail) {
@@ -54,6 +42,7 @@ struct Geometry {
   std::array<std::array<std::int64_t, 4>, format::PartList::kMax> ne{};
   std::array<std::array<std::uint64_t, 4>, format::PartList::kMax> nb{};
   std::size_t count = 0;
+  bool native = false;
   ggml_tensor* ids = nullptr;
   std::array<std::uint64_t, 4> ids_nb{};
   ggml_tensor* x = nullptr;
@@ -71,11 +60,8 @@ std::expected<Geometry, Failure> Shape(const ir::Node& n,
   const auto& ids = inputs[2];
   const auto& y = outputs[0];
   const auto& f = w.desc.format;
-  if (!w.expert_weight || !w.expert_weight->expert_array ||
-      (f.encoding != format::Encoding::kNvfp4 && f.encoding != format::Encoding::kAffine) ||
-      (f.layout != format::Layout::kSplit &&
-       !(f.layout == format::Layout::kScaleAtoms && f.encoding == format::Encoding::kNvfp4)) ||
-      f.shape.rank != 3 || x.desc.ne(0) != f.shape.ne[0] ||
+  if (!w.expert_weight || !w.expert_weight->expert_array || !DecoderOf(f) || !format::Validate(f) ||
+      w.desc.ne(3) != 1 || x.desc.ne(0) != f.shape.ne[0] ||
       y.desc.format.encoding != format::Encoding::kF32 ||
       y.desc.format.layout != format::Layout::kDense || !ir::IsContiguous(y.desc) ||
       x.desc.format.encoding != format::Encoding::kF32 ||
@@ -96,13 +82,17 @@ std::expected<Geometry, Failure> Shape(const ir::Node& n,
   one.shape.rank = 2;
   one.shape.ne[2] = 1;
   const auto parts = format::PartsOf(one);
-  if (!parts || parts->size() != w.parts.size()) return Reject("incomplete grouped parts");
+  const bool native = w.parts.empty();
+  if (!parts || (!native && parts->size() != w.parts.size()) ||
+      (native && (parts->size() != 1 || (*parts)[0].role != format::PartRole::kData || !w.tensor)))
+    return Reject("incomplete grouped parts");
   Geometry g{.format = f,
              .weight = *w.expert_weight,
              .parts = {},
              .ne = {},
              .nb = {},
-             .count = w.parts.size(),
+             .count = parts->size(),
+             .native = native,
              .ids = ids.tensor,
              .x = x.tensor,
              .y = y.tensor,
@@ -125,7 +115,10 @@ std::expected<Geometry, Failure> Shape(const ir::Node& n,
   for (auto dimension : {f.shape.ne[1], g.tokens, g.used})
     if (__builtin_mul_overflow(g.y_bytes, dimension, &g.y_bytes))
       return Reject("grouped output extent overflow");
-  std::ranges::copy(w.parts, g.parts.begin());
+  if (native)
+    g.parts[0] = {format::PartRole::kData, w.tensor};
+  else
+    std::ranges::copy(w.parts, g.parts.begin());
   for (std::size_t p = 0; p != g.count; ++p) {
     if (!g.parts[p].tensor) return Reject("missing grouped part descriptor");
     for (std::size_t d = 0; d != 4; ++d) {
@@ -140,6 +133,21 @@ std::expected<std::array<PitchedExpertPart, format::PartList::kMax>, Failure> Pa
   std::array<PitchedExpertPart, format::PartList::kMax> out{};
   for (std::size_t i = 0; i != g.count; ++i) {
     const auto& p = g.parts[i];
+    if (g.native) {
+      if (!detail::NativeType(p.tensor, g.format) || !kg::detail::Current(p.tensor) ||
+          !kg::detail::Extent(p.tensor) ||
+          p.tensor->ne[0] != static_cast<std::int64_t>(g.format.shape.ne[0]) ||
+          p.tensor->ne[1] != static_cast<std::int64_t>(g.format.shape.ne[1]) ||
+          p.tensor->ne[2] != static_cast<std::int64_t>(g.format.shape.ne[2]) ||
+          p.tensor->ne[3] != 1 || p.tensor->nb[0] != ggml_type_size(p.tensor->type) ||
+          p.tensor->nb[1] != ggml_row_size(p.tensor->type, p.tensor->ne[0]))
+        return Reject("grouped native weight geometry differs");
+      for (std::size_t d = 0; d < 4; ++d)
+        if (p.tensor->ne[d] != g.ne[i][d] || p.tensor->nb[d] != g.nb[i][d])
+          return Reject("grouped native descriptor changed after lowering");
+      out[i] = {p.role, Address(p.tensor), ggml_nbytes(p.tensor), p.tensor->nb[2]};
+      continue;
+    }
     if (!p.tensor || !kg::detail::Current(p.tensor) || !kg::detail::Extent(p.tensor) ||
         p.tensor->type != GGML_TYPE_I8 || p.tensor->ne[0] <= 0 ||
         p.tensor->ne[1] != static_cast<std::int64_t>(g.format.shape.ne[2]) ||
@@ -209,7 +217,11 @@ class Runtime final : public kg::SelectedLaunch {
       : kg::SelectedLaunch(owner, stream) {}
   bool faulted() const override { return failed; }
   // Whole graphs are deliberately unavailable. The routed program owns and
-  // records separate admitted segments instead.
+  // records separate admitted segments instead. Their bound calls queue
+  // only the fixed grouped launch over the admitted route buffers.
+  bool capturable(const kg::SelectedCall& call) const override {
+    return !failed && call.owner() == owner() && call.route().has_value();
+  }
   bool failed = false;
 };
 class BoundCall final : public kg::BoundSelectedCall {
@@ -300,8 +312,7 @@ class Call final : public kg::SelectedCall {
     const auto native = decode::Bind(implementation);
     if (launch.owner() != owner() || execution::IdentityOf(implementation) != identity_ ||
         !native || native->tmpl != Template::kGrouped ||
-        (native->gate != DecoderId::kNvfp4Split && native->gate != DecoderId::kAffineSplit) ||
-        !place_->assigned)
+        DecoderOf(geometry_.format) != native->gate || !place_->assigned)
       return Reject("grouped selection lacks its exact routed native declaration");
     if (auto parts = Parts(geometry_); !parts) return std::unexpected(parts.error());
     return std::make_unique<BoundCall>(static_cast<Runtime&>(launch), geometry_, place_);
@@ -315,17 +326,7 @@ class Call final : public kg::SelectedCall {
 class Source final : public kg::SelectedSource {
  public:
   explicit Source(std::vector<execution::Implementation> implementations)
-      : implementations_(std::move(implementations)) {}
-  std::vector<execution::Implementation> Implementations() const override {
-    return implementations_;
-  }
-  std::vector<execution::TunedShape> Tuning(std::uint32_t) const override { return {}; }
-  bool Owns(std::string_view name) const override {
-    return std::ranges::any_of(implementations_,
-                               [&](const auto& impl) { return impl.name == name; });
-  }
-  std::uint64_t persistent_bytes() const override { return 0; }
-  std::optional<base::Sha256Digest> ExecutionIdentity() const override {
+      : implementations_(std::move(implementations)) {
     base::Sha256 hash;
     hash.Update("llmp-native-split-routed-group-v2");
     hash.Update(
@@ -335,8 +336,18 @@ class Source final : public kg::SelectedSource {
       const auto implementation = execution::IdentityOf(impl);
       hash.Update(std::as_bytes(std::span(implementation)));
     }
-    return hash.Finish();
+    identity_ = hash.Finish();
   }
+  std::vector<execution::Implementation> Implementations() const override {
+    return implementations_;
+  }
+  std::vector<execution::TunedShape> Tuning(std::uint32_t) const override { return {}; }
+  bool Owns(std::string_view name) const override {
+    return std::ranges::any_of(implementations_,
+                               [&](const auto& impl) { return impl.name == name; });
+  }
+  std::uint64_t persistent_bytes() const override { return 0; }
+  std::optional<base::Sha256Digest> ExecutionIdentity() const override { return identity_; }
   std::expected<std::unique_ptr<kg::SelectedCall>, Failure> Lower(
       const execution::Implementation& implementation, const ir::Node& node,
       std::span<const kg::SelectedOperand> inputs,
@@ -348,7 +359,7 @@ class Source final : public kg::SelectedSource {
       return Reject("foreign grouped declaration");
     auto geometry = Shape(node, inputs, outputs);
     if (!geometry) return std::unexpected(geometry.error());
-    if (!CheckGroupedFormat(implementation.name, geometry->format))
+    if (!CheckGroupedFormat(implementation, geometry->format))
       return Reject("grouped implementation and weight encoding differ");
     return std::make_unique<Call>(this, std::move(*geometry),
                                   execution::IdentityOf(implementation));
@@ -365,6 +376,7 @@ class Source final : public kg::SelectedSource {
 
  private:
   std::vector<execution::Implementation> implementations_;
+  base::Sha256Digest identity_{};
 };
 // ------------------------------------------------------- resident experts
 
@@ -455,8 +467,7 @@ class ResidentCall final : public kg::SelectedCall {
     const auto scratch = ScratchOf(g);
     if (launch.owner() != owner() || execution::IdentityOf(implementation) != identity_ ||
         !native || native->tmpl != Template::kGrouped ||
-        (native->gate != DecoderId::kNvfp4Split && native->gate != DecoderId::kAffineSplit &&
-         native->gate != DecoderId::kNvfp4Atoms) ||
+
         // The implementation's decoder is the weight's own (its layout's).
         DecoderOf(g.format) != native->gate || workspace.base == 0 || workspace.base % 256 ||
         workspace.bytes < scratch.bytes)
@@ -525,17 +536,7 @@ class ResidentCall final : public kg::SelectedCall {
 class ResidentSource final : public kg::SelectedSource {
  public:
   explicit ResidentSource(std::vector<execution::Implementation> implementations)
-      : implementations_(std::move(implementations)) {}
-  std::vector<execution::Implementation> Implementations() const override {
-    return implementations_;
-  }
-  std::vector<execution::TunedShape> Tuning(std::uint32_t) const override { return {}; }
-  bool Owns(std::string_view name) const override {
-    return std::ranges::any_of(implementations_,
-                               [&](const auto& impl) { return impl.name == name; });
-  }
-  std::uint64_t persistent_bytes() const override { return 0; }
-  std::optional<base::Sha256Digest> ExecutionIdentity() const override {
+      : implementations_(std::move(implementations)) {
     base::Sha256 hash;
     hash.Update("llmp-native-split-resident-group-v1");
     hash.Update(
@@ -545,8 +546,18 @@ class ResidentSource final : public kg::SelectedSource {
       const auto implementation = execution::IdentityOf(impl);
       hash.Update(std::as_bytes(std::span(implementation)));
     }
-    return hash.Finish();
+    identity_ = hash.Finish();
   }
+  std::vector<execution::Implementation> Implementations() const override {
+    return implementations_;
+  }
+  std::vector<execution::TunedShape> Tuning(std::uint32_t) const override { return {}; }
+  bool Owns(std::string_view name) const override {
+    return std::ranges::any_of(implementations_,
+                               [&](const auto& impl) { return impl.name == name; });
+  }
+  std::uint64_t persistent_bytes() const override { return 0; }
+  std::optional<base::Sha256Digest> ExecutionIdentity() const override { return identity_; }
   std::expected<std::unique_ptr<kg::SelectedCall>, Failure> Lower(
       const execution::Implementation& implementation, const ir::Node& node,
       std::span<const kg::SelectedOperand> inputs,
@@ -558,7 +569,7 @@ class ResidentSource final : public kg::SelectedSource {
       return Reject("foreign resident grouped declaration");
     auto geometry = Shape(node, inputs, outputs);
     if (!geometry) return std::unexpected(geometry.error());
-    if (!CheckGroupedFormat(implementation.name, geometry->format))
+    if (!CheckGroupedFormat(implementation, geometry->format))
       return Reject("resident grouped implementation and weight encoding differ");
     return std::make_unique<ResidentCall>(this, std::move(*geometry),
                                           execution::IdentityOf(implementation));
@@ -575,15 +586,15 @@ class ResidentSource final : public kg::SelectedSource {
 
  private:
   std::vector<execution::Implementation> implementations_;
+  base::Sha256Digest identity_{};
 };
 std::vector<execution::Implementation> GroupedImplementations(
     std::optional<format::Encoding> encoding) {
   std::vector<execution::Implementation> matched;
   for (const auto& impl : decode::Implementations()) {
-    if ((impl.name == kNvfp4Name || impl.name == kNvfp4AtomsName) &&
-        (!encoding || *encoding == format::Encoding::kNvfp4))
-      matched.push_back(impl);
-    else if (impl.name == kAffineName && (!encoding || *encoding == format::Encoding::kAffine))
+    const auto bound = decode::Bind(impl);
+    if (bound && bound->tmpl == Template::kGrouped &&
+        (!encoding || DecoderEncoding(bound->gate) == *encoding))
       matched.push_back(impl);
   }
   return matched;
@@ -591,14 +602,7 @@ std::vector<execution::Implementation> GroupedImplementations(
 }  // namespace
 std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> GroupedSelectedSource(
     std::optional<format::Encoding> encoding) {
-  auto implementations = decode::Implementations();
-  std::vector<execution::Implementation> matched;
-  for (const auto& impl : implementations) {
-    if (impl.name == kNvfp4Name && (!encoding || *encoding == format::Encoding::kNvfp4))
-      matched.push_back(impl);
-    else if (impl.name == kAffineName && (!encoding || *encoding == format::Encoding::kAffine))
-      matched.push_back(impl);
-  }
+  auto matched = GroupedImplementations(encoding);
   if (matched.empty()) return std::unexpected("native split grouped implementation missing");
   return std::make_shared<Source>(std::move(matched));
 }

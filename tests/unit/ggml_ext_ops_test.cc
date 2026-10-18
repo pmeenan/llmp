@@ -60,6 +60,7 @@
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/fattn_mma.h"
 #include "kernels/ggml/fattn_owner.h"
+#include "kernels/ggml/float_route.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
@@ -7640,6 +7641,52 @@ TEST_F(GgmlExtOpsTest, PartialPhysicalStreamsMatchOffsetFilteredRealRootGroupsEx
         EXPECT_FALSE(bounded.faulted());
         Finish();
       }
+}
+
+TEST_F(GgmlExtOpsTest, FloatExpansionPredicateMatchesPinnedPhysicalRoute) {
+  for (const auto type : {GGML_TYPE_F16, GGML_TYPE_BF16}) {
+    for (const std::int64_t k : {62, 64, 96}) {
+      for (const std::int64_t n : {30, 32, 512, 514}) {
+        for (const std::int64_t rows : {1, 3, 7, 8, 9, 16, 17, 64}) {
+          for (const std::int64_t batches : {1, 2}) {
+            auto arena = TensorArena::Create(8);
+            ASSERT_TRUE(arena);
+            auto* weights = ggml_new_tensor_3d(arena->context(), type, k, n, batches);
+            auto* x = ggml_new_tensor_3d(arena->context(), GGML_TYPE_F32, k, rows, batches);
+            auto* out = ggml_mul_mat(arena->context(), weights, x);
+            TensorArena::Bind(weights, 0x1000000);
+            TensorArena::Bind(x, 0x2000000);
+            TensorArena::Bind(out, 0x3000000);
+            const auto physical = kg::SelectMulMat(launch(), out);
+            ASSERT_TRUE(physical) << physical.error().detail;
+            std::array<llmp::execution::OperandFormat, 3> operands{};
+            for (std::size_t i = 0; i < operands.size(); ++i) {
+              const auto* t = i == 0 ? weights : i == 1 ? x : out;
+              auto& o = operands[i];
+              o.operand = i == 2 ? llmp::execution::kOutputOperand : static_cast<std::uint8_t>(i);
+              o.encoding = i == 0 ? type == GGML_TYPE_F16 ? llmp::format::Encoding::kF16
+                                                          : llmp::format::Encoding::kBF16
+                                  : llmp::format::Encoding::kF32;
+              o.layout = llmp::format::Layout::kDense;
+              for (std::size_t d = 0; d < 4; ++d) o.ne[d] = static_cast<std::uint64_t>(t->ne[d]);
+              o.memory = llmp::execution::OperandMemory{};
+              std::ranges::copy(t->nb, o.memory->nb.begin());
+            }
+            const llmp::execution::CapabilityQuery query{
+                .op = llmp::ir::Primitive(llmp::ir::Op::kMatMul),
+                .operands = operands,
+                .rows = static_cast<std::uint64_t>(rows),
+                .k = static_cast<std::uint64_t>(k),
+                .n = static_cast<std::uint64_t>(n),
+                .arch = static_cast<std::uint32_t>(ComputeCapability() / 10)};
+            EXPECT_EQ(kg::FloatProductUsesCublas(query), *physical == kg::MulMatPath::kCublas)
+                << "type " << type << " K " << k << " N " << n << " rows " << rows << " batches "
+                << batches;
+          }
+        }
+      }
+    }
+  }
 }
 
 }  // namespace

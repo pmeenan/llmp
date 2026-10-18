@@ -7,6 +7,7 @@
 
 #include <cuda_runtime_api.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -84,7 +85,23 @@ std::expected<DeviceFacts, DeviceStatus> QueryDeviceFacts(int ordinal) {
       r != cudaSuccess) {
     return Failed(r);
   }
-  return DeviceFacts{.architecture = static_cast<std::uint32_t>((100 * major) + (10 * minor))};
+  cudaDeviceProp properties{};
+  if (const auto r = cudaGetDeviceProperties(&properties, ordinal); r != cudaSuccess)
+    return Failed(r);
+  DeviceFacts facts;
+  facts.architecture = static_cast<std::uint32_t>((100 * major) + (10 * minor));
+  facts.multiprocessors = properties.multiProcessorCount;
+  std::copy_n(properties.name, facts.name.size(), facts.name.begin());
+  facts.name.back() = '\0';
+  // Instruction families of the queried compute capability. Physical support
+  // is independent of whether this build contains SASS for that device.
+  const int arch = major * 10 + minor;
+  facts.bf16_mma = arch >= 80;
+  facts.int8_mma = arch >= 75;
+  facts.fp8_mma = arch == 89 || arch == 90 || major == 10 || major == 12;
+  facts.fp4_mma = major == 10 || major == 12;
+  facts.block_scaled_mma = facts.fp4_mma;
+  return facts;
 }
 
 std::expected<DeviceMemoryInfo, DeviceStatus> QueryDeviceMemory() {

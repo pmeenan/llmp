@@ -26,6 +26,7 @@
 #include <utility>
 #include <vector>
 
+#include "execution/measured_ranks.h"
 #include "execution/registry.h"
 #include "expected_error.h"
 #include "format/encoding.h"
@@ -516,6 +517,175 @@ TEST(CapabilityTest, RefusesMalformedCapabilities) {
   }
   EXPECT_TRUE(
       Registry::Create({Capable("fake.mm", {.op = mm, .group = "ggml.mul_mat"})}).has_value());
+}
+
+TEST(PlanRegistryTest, SetDigestIsCanonicalAndCoversImplementationIdentity) {
+  auto a = Registry::Create({Fake("fake.a", Operation::kAdd), Fake("fake.b", Operation::kMatMul)});
+  auto b = Registry::Create({Fake("fake.b", Operation::kMatMul), Fake("fake.a", Operation::kAdd)});
+  auto changed =
+      Registry::Create({Fake("fake.a", Operation::kAdd), Fake("fake.b", Operation::kMatMul, "r2")});
+  ASSERT_TRUE(a);
+  ASSERT_TRUE(b);
+  ASSERT_TRUE(changed);
+  EXPECT_EQ(a->Digest(), b->Digest());
+  EXPECT_NE(a->Digest(), changed->Digest());
+}
+TEST(CapabilityTest, DenseExpansionFollowsRequestedPrecisionAndWeightEncoding) {
+  const auto implementation = Capable(
+      "fake.dense",
+      {.op = ir::Primitive(ir::Op::kMatMul), .expansion = ex::Expansion::kDenseF32Accumulation});
+  auto registry = Registry::Create({implementation});
+  ASSERT_TRUE(registry);
+  std::array operands{ex::OperandFormat{.operand = 0, .encoding = Encoding::kBF16}};
+  ir::ProductParams params{};
+  ex::CapabilityQuery query{.op = ir::Primitive(ir::Op::kMatMul),
+                            .operands = operands,
+                            .rows = 1,
+                            .params = std::as_bytes(std::span(&params, 1))};
+  EXPECT_EQ(ex::Candidates(*registry, query).size(), 1U);
+  params.accumulate = ir::Accumulate::kF32;
+  EXPECT_TRUE(ex::Candidates(*registry, query).empty());
+  operands[0].encoding = Encoding::kF32;
+  EXPECT_EQ(ex::Candidates(*registry, query).size(), 1U);
+  operands[0].encoding = Encoding::kBF16;
+  query.rows = 17;
+  EXPECT_EQ(ex::Candidates(*registry, query).size(), 1U);
+}
+
+TEST(CapabilityTest, AutomaticFusionRequiresEvidenceWithoutHidingDirectOperations) {
+  const auto op = ir::Fused(ir::FusedKind::kMatMulGlu);
+  auto implementation = Capable("fake.fusion", {.op = op});
+  const auto before = ex::IdentityOf(implementation);
+  implementation.capability->fusion_needs_measurement = true;
+  EXPECT_NE(before, ex::IdentityOf(implementation));
+  auto registry = Registry::Create({implementation}).value();
+  ex::CapabilityQuery query{.op = op};
+  EXPECT_EQ(ex::Candidates(registry, query).size(), 1U);
+  query.automatic_fusion = true;
+  EXPECT_TRUE(ex::Candidates(registry, query).empty());
+  const std::array measured{ex::MeasuredRank{.implementation = "fake.fusion", .rank = 0}};
+  query.measured = measured;
+  EXPECT_EQ(ex::Candidates(registry, query).size(), 1U);
+}
+
+TEST(CapabilityTest, ExplicitSourcePreferencePreservesPinsAfterMeasuredRanks) {
+  const auto op = ir::Primitive(ir::Op::kMatMul);
+  auto registry = Registry::Create({Capable("fake.new", {.op = op, .priority = 100}),
+                                    Capable("fake.pin", {.op = op})})
+                      .value();
+  const std::vector<std::string> preferred{"fake.pin"};
+  ex::CapabilityQuery query{.op = op, .preferred = preferred};
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, query)).front(), "fake.pin");
+  const std::array measured{ex::MeasuredRank{.implementation = "fake.new", .rank = 0}};
+  query.measured = measured;
+  EXPECT_EQ(Names(registry, ex::Candidates(registry, query)).front(), "fake.new");
+}
+
+TEST(CapabilityTest, DeviceRanksRequireEveryMeasuredFactAndUnbatchedOperands) {
+  ASSERT_EQ(ex::kDeviceMeasuredRanks.size(), 2U);
+  for (const auto& record : ex::kDeviceMeasuredRanks) {
+    SCOPED_TRACE(record.implementation);
+    const bool product = record.op == ir::Primitive(ir::Op::kMatMul);
+    std::array operands{
+        ex::OperandFormat{.operand = 0,
+                          .stacked = record.stacked,
+                          .encoding = record.encoding,
+                          .layout = record.layout,
+                          .params = record.params,
+                          .ne = {record.k, record.n, 1, 1}},
+        ex::OperandFormat{
+            .operand = 1,
+            .encoding = product ? Encoding::kF32 : Encoding::kI32,
+            .layout = Layout::kDense,
+            .ne = {product ? record.k : record.rows_min, product ? record.rows_min : 1, 1, 1}},
+        ex::OperandFormat{.operand = ex::kOutputOperand,
+                          .encoding = Encoding::kF32,
+                          .layout = Layout::kDense,
+                          .ne = {product ? record.n : record.k, record.rows_min, 1, 1}},
+    };
+    ex::CapabilityQuery query{.op = record.op,
+                              .operands = operands,
+                              .rows = record.rows_min,
+                              .k = record.k,
+                              .n = record.n,
+                              .arch = record.arch,
+                              .device_class = record.device_class,
+                              .device_model = record.device_model,
+                              .multiprocessors = record.multiprocessors};
+    ASSERT_EQ(ex::DeviceRank(query, record.implementation), 0U);
+    EXPECT_FALSE(ex::DeviceRank(query, "fake.unmeasured"));
+    auto registry =
+        Registry::Create({Capable(std::string(record.implementation), {.op = record.op}),
+                          Capable("fake.alternative", {.op = record.op, .priority = 100})})
+            .value();
+    EXPECT_EQ(Names(registry, ex::Candidates(registry, query)).front(), record.implementation);
+    const auto original = query;
+    const auto original_operands = operands;
+    const auto misses = [&] {
+      EXPECT_FALSE(ex::DeviceRank(query, record.implementation));
+      query = original;
+      operands = original_operands;
+    };
+    query.device_class = "sm_86";
+    misses();
+    query.device_model = "another device";
+    misses();
+    --query.arch;
+    misses();
+    --query.multiprocessors;
+    misses();
+    query.op = ir::Primitive(ir::Op::kAdd);
+    misses();
+    operands[0].encoding = Encoding::kBF16;
+    misses();
+    operands[0].layout = Layout::kDense;
+    misses();
+    operands[0].params.tensor_scale = !operands[0].params.tensor_scale;
+    misses();
+    ++operands[0].stacked;
+    misses();
+    --query.rows;
+    misses();
+    ++query.rows;
+    misses();
+    ++query.k;
+    misses();
+    ++query.n;
+    misses();
+    ++operands[0].ne[0];
+    misses();
+    ++operands[0].ne[1];
+    misses();
+    ++operands[1].ne[product ? 1 : 0];
+    misses();
+    for (auto& operand : operands) {
+      for (const std::size_t dimension : {2U, 3U}) {
+        operand.ne[dimension] = 2;
+        misses();
+      }
+    }
+    query.operands = {};
+    misses();
+    query.operands = std::span(operands).first(1);
+    misses();
+    const std::array override{ex::MeasuredRank{.implementation = "fake.alternative", .rank = 0}};
+    query.measured = override;
+    EXPECT_EQ(Names(registry, ex::Candidates(registry, query)).front(), "fake.alternative");
+  }
+}
+
+TEST(CapabilityTest, TuningPinsCannotBeBorrowedAcrossExl3Rates) {
+  const auto op = ir::Primitive(ir::Op::kMatMul);
+  auto registry = Registry::Create({Capable("fake.pin", {.op = op, .needs_tuning = true})}).value();
+  const std::array tuned{ex::TunedShape{
+      .implementation = "fake.pin", .rows = 1, .k = 896, .n = 896, .weight_bits = 4}};
+  std::array operands{
+      ex::OperandFormat{.operand = 0, .encoding = Encoding::kExl3Trellis, .params = {.k_bits = 4}}};
+  ex::CapabilityQuery query{
+      .op = op, .operands = operands, .rows = 1, .k = 896, .n = 896, .tuned = tuned};
+  EXPECT_EQ(ex::Candidates(registry, query).size(), 1U);
+  operands[0].params.k_bits = 5;
+  EXPECT_TRUE(ex::Candidates(registry, query).empty());
 }
 
 }  // namespace

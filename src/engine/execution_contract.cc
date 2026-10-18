@@ -50,6 +50,16 @@ bool ExecutionMetadataAllowance::HeldBy(const catalog::Catalog& catalog,
          extent->descriptor.size.value() >= capacity_ + OverheadBytes();
 }
 
+std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string>
+ExecutionMetadataAllowance::AdmitWithin(catalog::Catalog& catalog, catalog::DomainId domain,
+                                        std::uint64_t bytes, std::uint64_t budget,
+                                        std::uint64_t available, std::uint64_t margin) {
+  const auto occupied = catalog.OccupancyOf(domain).Total().value();
+  if (occupied > budget || bytes > budget - occupied)
+    return std::unexpected("initial execution metadata exceeds the admitted budget");
+  return Admit(catalog, domain, bytes, available, margin);
+}
+
 std::expected<void, std::string> ExecutionMetadataAllowance::Grow(
     catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t capacity,
     std::uint64_t budget, std::uint64_t available, std::uint64_t margin) {
@@ -69,7 +79,20 @@ std::expected<void, std::string> ExecutionMetadataAllowance::Grow(
 bool ExecutionMetadataAllowance::Charge(std::uint64_t bytes) {
   if (bytes > capacity_ - used_) return false;
   used_ += bytes;
+  peak_ = std::max(peak_, used_);
   return true;
+}
+
+std::expected<void, std::string> ExecutionMetadataAllowance::ChargeOrGrow(
+    catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes, std::uint64_t budget,
+    std::uint64_t available, std::uint64_t margin) {
+  std::uint64_t needed = 0;
+  if (__builtin_add_overflow(used_, bytes, &needed))
+    return std::unexpected("metadata live charge overflows");
+  if (!HeldBy(catalog, domain)) return std::unexpected("metadata charge lost its held payment");
+  if (auto grown = Grow(catalog, domain, needed, budget, available, margin); !grown) return grown;
+  if (!Charge(bytes)) return std::unexpected("metadata charge exceeds its grown payment");
+  return {};
 }
 
 void ExecutionMetadataAllowance::Release(std::uint64_t bytes) {
@@ -263,10 +286,18 @@ std::expected<ExecutionContract, std::string> ExecutionContract::Create(
     hash.Text(stage.device.device_class);
     hash.Number(stage.device.arch);
     hash.Number(stage.device.features);
+    hash.Text(stage.device.device_model);
+    hash.Number(stage.device.multiprocessors);
+    hash.Number(stage.device.preferred.size());
+    for (const auto& name : stage.device.preferred) {
+      if (!stage.registry->Find(name))
+        return std::unexpected("execution preference names an unavailable implementation");
+      hash.Text(name);
+    }
     hash.Number(stage.device.tuned.size());
     for (const auto& tune : stage.device.tuned) {
       if (tune.implementation.empty() || tune.rows == 0 || tune.k == 0 || tune.n == 0 ||
-          !stage.registry->Find(tune.implementation) ||
+          tune.weight_bits > 8 || !stage.registry->Find(tune.implementation) ||
           (tune.output_encoding &&
            std::ranges::find(format::Encodings(), *tune.output_encoding,
                              &format::EncodingInfo::id) == format::Encodings().end())) {
@@ -276,6 +307,7 @@ std::expected<ExecutionContract, std::string> ExecutionContract::Create(
       hash.Number(tune.rows);
       hash.Number(tune.k);
       hash.Number(tune.n);
+      hash.Number(tune.weight_bits);
       hash.Number(tune.output_encoding.has_value());
       if (tune.output_encoding) hash.Number(static_cast<std::uint16_t>(*tune.output_encoding));
     }

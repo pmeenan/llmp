@@ -12,6 +12,8 @@ namespace {
 
 constexpr DecoderKernels kSplit = KernelsOf<Mxfp8Split>();
 constexpr DecoderKernels kAtoms = KernelsOf<Mxfp8Atoms>();
+constexpr DecoderKernels kFp4Split = KernelsOf<Mxfp4Split>();
+constexpr DecoderKernels kFp4Atoms = KernelsOf<Mxfp4Atoms>();
 
 }  // namespace
 
@@ -21,6 +23,10 @@ const DecoderKernels* Mxfp8Kernels(DecoderId id) {
       return &kSplit;
     case DecoderId::kMxfp8Atoms:
       return &kAtoms;
+    case DecoderId::kMxfp4Split:
+      return &kFp4Split;
+    case DecoderId::kMxfp4Atoms:
+      return &kFp4Atoms;
     default:
       return nullptr;
   }

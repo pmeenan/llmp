@@ -150,7 +150,7 @@
       "kind": "archive",
       "category": "implementation",
       "tier": "core",
-      "use": "test",
+      "use": "product",
       "machine": "target",
       "upstream": {
         "repository": "https://github.com/turboderp-org/exllamav3",

@@ -22,15 +22,78 @@ configuration extension (RE-060 in [rough edges](rough-edges.md)). The
 equal-width 192 vector retains its physical KV padding requirement, with
 a mask excluding the logical tail.
 
-The EXL3 selected-operation adapter accepts optional current-device packed
-occupancy facts. With them it derives cooperative GEMM defaults for unpinned
-MCG-codebook shapes on a compiled architecture, retaining authenticated
-tuning as an override. The adapter still requires the four MCG physical
-parts; importing another codebook does not establish its execution support.
-Without capacity facts it keeps its pin-only contract; reconstruction still
-requires complete measured cuBLASLt pins. This is an adapter capability,
-not a model-admission claim: production decode-ladder wiring must supply
-`QueryPackedCapacity` facts when it attaches this source.
+Every CUDA GGML backend now owns the complete decode selected source (74
+implementations: twelve format/layout decoders times six templates, plus two
+mixed GLUs) and the compiled EXL3 source. Registration is independent of model
+labels and policy text. Product adapters retain physical parts and per-matrix
+rows, batch broadcasting and input pitches; resident table gathers support all
+twelve decoders, while authenticated paged table gathers remain split NVFP4 and
+affine. Row-interleaved NVFP4 retains optional and per-stack tensor scales;
+the native gather requires one scale and an unbatched table. The actual stack
+count also qualifies measured preferences. An unsupported physical shape must be
+refused by the capability before selection, rather than admitted merely because
+an encoding has a decoder.
+Native MXFP8 vector products and short-block row gathers retain their 2D
+operand domain; batched operands reach the general decoder. Native GGML NVFP4
+expert products accept their one-part representation, while separate optional
+tensor scales reach the grouped decoder under its own implementation identity.
+
+The EXL3 factory queries current-device GEMV and packed occupancy facts on a
+compiled architecture. It composes the four existing frozen G/O pin sets with
+a separately named occupancy-derived packed GEMM/multi-GEMM source. The latter
+has no borrowed reconstruction algorithms or measured pins. All paths still
+require the four MCG physical parts; importing another codebook does not
+establish execution support. Packed GEMM/GEMV pins require their exact rate;
+reconstruction retains exact shape/output-typed cuBLASLt pins over reconstructed
+F16 slices, independent of the original compiled trellis rate. Reconstruction is
+not offered for decode-shaped products. Architectures
+without a compiled EXL3 image publish no EXL3 candidates and require no EXL3
+occupancy query. Each backend declares five disjoint lock workspaces
+(4,203,008 bytes each, 21,015,040 bytes total), plus any explicitly supplied
+source requirements. Its runner funds these separately in cataloged
+`Runtime`/`Pinned` kernel memory: 22 MiB of physical backing per ordinary
+backend at 2 MiB granularity, including backends whose graphs use only GGML.
+They never borrow the shared discardable scratch pool. The runner retains
+this memory through every model switch and releases it only after drain,
+plan/recording destruction and launch retirement. CUDA lock contexts and
+reconstruction handles are created only when an actual selected EXL3 call
+binds, on the driver before submission or capture; unused sources retain
+their paid backing but create no CUDA lock context.
+Device names, architecture, SM counts and supported MMA
+features come from the provider; profile labels do not establish these facts.
+
+GGML quantized products decode on chip through MMVQ/MMQ. Float products that
+actually route through cuBLAS with F32 accumulation declare the transient dense
+conversion and cannot expand decode-shaped weights. A narrow vendor-free port
+of the locked NVIDIA MMVF/MMF selectors proves the non-expanding paths; its
+384-case physical-shape parity control compares against the compiled selector.
+When the source pin or compiled images change, update that port and rerun the
+parity control. Native block-scaled CUTLASS forms require the actual feature
+bits and their compiled images. A device's intrinsic feature support alone
+does not establish that an architecture-specific kernel was compiled.
+
+Plan keys include the canonical implementation-set digest, immutable device and
+tuning facts, checked-in measurement-table identity, exact explicitly supplied
+source preferences and capture requirement,
+while retaining the backend execution-domain seal. Explicit source preferences
+rank after measured evidence and before the ordinary ladder; they preserve
+existing exact pins without relabeling or combining different frozen profiles. Backend facts are hashed
+once when a source is created, not on each routed step. Unmeasured device and
+shape combinations retain the ordinary ladder. Recording additionally requires
+the exact bound selected call's runtime opt-in, delegated through composites to
+its owning child. Eager-only programs report their actual capture limitation;
+ordinary programs on the same backend retain capture. Every matcher lookup,
+including helper and batched queries, carries automatic-rewrite intent through
+one borrowed selection view. Newly reachable decode GLUs and occupancy-derived
+EXL3 paired products require measured preference before replacing primitive
+products. Occupancy establishes executable capacity, not speed or quality.
+Historical exact scalar paired pins retain their qualified domain, and direct
+typed operations remain available. Final selection retains rewrite provenance
+through pattern rounds, pruning and fallback decomposition; an eligible
+incumbent never admits an unqualified competitor. Common-subexpression joining
+keeps explicit and automatic operations separate when their selection contracts
+differ. See the
+[competition protocol](experiments/decode-ladder-r6.md).
 
 ## Where vendor and OS code may live
 

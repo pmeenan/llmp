@@ -12,9 +12,9 @@ explains the mechanism and why it was chosen.
 It holds six core components: GoogleTest, toml++, GGML (D-077),
 ExLlamaV3's kernels for the native EXL3 linear, CUTLASS's headers for
 Qwen3.8's NVFP4 grouped GEMM, and ds4's MIT D2R and token-tile HCA units. toml++, GGML,
-CUTLASS and ds4 ship (`use: product`: since D-096 the runtime links the
-engine's kernels); GoogleTest
-and ExLlamaV3 link only into tests and benchmarks (`use: test`). The last
+CUTLASS, ds4 and the same D-080-audited ExLlamaV3 kept kernels ship
+(`use: product`: the runtime links the engine's kernels and selected sources);
+GoogleTest links only into tests (`use: test`). The last
 four are adapted sources: each is its upstream archive narrowed by
 `archive.keep`, with the reviewed
 patches in [patches/](patches/)`<id>/` that add llmpalooza's build of the files

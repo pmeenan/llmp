@@ -71,10 +71,19 @@ using ProgramValidator =
 
 class BackendOwner;
 
+// Immutable future launch resources, also used while measuring without a
+// configured launch. Zero means every operation runs on the ordinary stream.
+struct LaneConfiguration {
+  std::uint32_t count = 0;
+  std::uint64_t scratch_bytes_per_lane = 0;
+  bool operator==(const LaneConfiguration&) const = default;
+};
+
 struct StepBackend {
   // Outlives every plan made over it.
   const execution::Registry* registry = nullptr;
   planner::DeviceFacts device{};
+  LaneConfiguration lanes{};
   // The implementations that borrow the stream's library handle (lanes.h).
   std::function<bool(std::string_view)> on_stream{};
   // What its implementations write beyond a root's own bytes, and the roots

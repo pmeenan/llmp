@@ -810,7 +810,8 @@ if(LLMP_CUDA)
   add_executable(decode_gpu_test decode_gpu_test.cc)
   target_include_directories(decode_gpu_test SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(decode_gpu_test PRIVATE llmp_decode_kernels llmp_reference_kernels)
+  target_link_libraries(decode_gpu_test PRIVATE llmp_decode_selected llmp_reference_kernels
+                                              llmp_ggml_kernels)
   llmp_gpu_gtest(decode_gpu_test DISCRETE ALL)
 
   # Block-quantized KV caches (kernels/ggml/kv_quant.h): the quantizing
@@ -1011,7 +1012,8 @@ if(LLMP_CUDA)
                          DecodeSelectedRowsGpu.IncompleteOrInconsistentTablePartsRefuseBeforePlanningOrReads)
 
   add_executable(exl3_selected_test exl3_selected_test.cc)
-  target_link_libraries(exl3_selected_test PRIVATE llmp_exl3_selected llmp_model llmp_spec llmp_engine)
+  target_link_libraries(exl3_selected_test PRIVATE llmp_exl3_selected llmp_model llmp_spec llmp_engine
+                                                 llmp_cuda_device_memory)
   # CUDA-linked descriptor controls: discover names from source without loading cuBLAS.
   llmp_gpu_gtest(exl3_selected_test
                    DISCRETE Exl3SelectedTest.AllCompletePinnedReconstructionsRetainFourPartsAndBoundScratch
