@@ -1410,8 +1410,8 @@ a dense token-ID array), the parsed request for as long as it is queued or
 running, a stream's unread output as it grows (released as the socket
 takes it), the conversation's rendering and tokenization while they run
 (the copy of the messages, the rendering's bound, the interpreter's values
-where the template may interpret, the tokenizer's longest window and the
-tokens), a literal completion's score rows, a non-streaming response's
+where the template may interpret, the tokenizer's complete normalized working
+set and source-derived token output), a literal completion's score rows, a non-streaming response's
 text as it grows, and a completed body until the socket has taken it.
 Prepared prompt IDs remain charged through their shared ownership by active
 work and paused requests. Continuations charge their copied generation and
@@ -1499,7 +1499,7 @@ brackets are a DGX Spark's serving DeepSeek V4 Flash:
 | Prompt | under the usable context | 400 `context_length_exceeded` | As above; counted by the model's own tokenizer and template, which stop at the context |
 | A conversation's text | at most what a prompt that fits the usable context could render to: the context × the longest token's bytes (four times under NFC, which composes text at most threefold), at least 1 MiB [DeepSeek V4: 32 MiB] | 400 `context_length_exceeded`, before it is queued | Host memory and the driver's time: a longer conversation cannot fit |
 | A rendering | at most four times its messages' bytes, 4 KiB a message and 1 MiB, within the bound above; an interpreted template's values at most that and 16 MiB | 400 | Host memory, charged before rendering |
-| Tokenization | the text refused unread past max_tokens × the longest token (four times under NFC); encoded in windows of about 1 MiB, cut where no pre-tokenizer or NFC joins across (tokenizer.md), 96 bytes of working set a window byte | 400 `context_length_exceeded` for text whose longest stretch without a line break or space between words could never be held (its window past the request memory's capacity); 503 for the request memory now | Host memory: the tokenizer's working set follows its longest window, not the text |
+| Tokenization | the complete source-defined fragment, including normalization, regex/split work and source postprocessor IDs; the tokenizer supplies checked working-memory and output bounds before allocation (tokenizer.md) | context overflow is `context_length_exceeded`; insufficient request-memory capacity or availability is reported by the request-memory admission path | Host memory: whole-fragment processing preserves merges and source regex semantics, with funded working storage, bounded VM work and cooperative cancellation |
 | `temperature`, `top_p`, `top_k`, `min_p` | [0, 2], (0, 1] (`top_p` not rounding to 0 as a float), −1 to 2³¹−1, [0, 1] | 400 | OpenAI's ranges and vLLM's for `top_k` and `min_p`; sampling.h's, which takes floats |
 | `seed` | a 64-bit signed integer | 400 | OpenAI's type |
 | `stop` | any number of non-empty strings, any length | 400 for an empty one | — (the body's bytes; matched together by one automaton built at parse and shared with the output, a few steps an output byte whatever their number; its tables, a node a distinct prefix, charged to the request memory; the held-back text is at most the longest string) |

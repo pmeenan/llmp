@@ -734,7 +734,23 @@ std::expected<ImageGenerationRequest, std::string> ReadImageInput(
   const auto elements = rows * profile.vae.z_dim;
   if (input.prompt.size() > (UINT64_MAX - 65536) / 16)
     return Error("image prompt working bound overflows");
+  const auto rendered_bound = chat::ImagePromptBytesBound(input.prompt.size());
+  if (rendered_bound > SIZE_MAX) return Error("image rendering bound overflows");
+  const auto token_bound =
+      owner->tokenizer->OutputTokensBound(static_cast<std::size_t>(rendered_bound));
+  const auto work = owner->tokenizer->WorkingBytes(static_cast<std::size_t>(rendered_bound));
+  // Fund rendering, its complete tokenization and the marked-span token
+  // indexes before the renderer or encoder allocates any of them.
   std::uint64_t initial = 16 * input.prompt.size() + 65536;
+  for (const auto& [count, unit] :
+       {std::pair{work, std::uint64_t{1}},
+        std::pair{token_bound, std::uint64_t{2} * sizeof(tokenizer::TokenId)},
+        std::pair{rendered_bound, std::uint64_t{2} * sizeof(std::size_t)}}) {
+    std::uint64_t term = 0;
+    if (__builtin_mul_overflow(count, unit, &term) ||
+        __builtin_add_overflow(initial, term, &initial))
+      return Error("image tokenization working bound overflows");
+  }
   for (const auto term : {8 * elements, std::uint64_t{input.output.native().size()},
                           std::uint64_t{input.noise.native().size()}}) {
     std::uint64_t doubled = 0;
@@ -749,21 +765,31 @@ std::expected<ImageGenerationRequest, std::string> ReadImageInput(
   keep->paid.node = owner->paid.node;
   keep->paid.cap = owner->paid.cap;
   keep->paid.bytes = initial;
-  auto rendered = owner->render(input.prompt, *owner->tokenizer);
+  auto rendered = owner->render(input.prompt);
   if (!rendered) return Error(rendered.error().ToString());
-  const auto work = owner->tokenizer->WorkingBytes(rendered->rendered.text);
-  if (!keep->paid.Add(work)) return Error("image tokenization working space is unpaid");
+  if (rendered->rendered.text.size() > rendered_bound)
+    return Error("image renderer exceeded its paid framing bound");
   ImageGenerationRequest request;
   request.keep = keep;
   request.width = width;
   request.height = height;
   request.output = input.output;
-  if (auto encoded = owner->tokenizer->EncodeMarked(
-          rendered->rendered.text, rendered->rendered.specials, {}, request.prompt);
+  std::vector<std::size_t> span_tokens;
+  span_tokens.reserve(rendered->rendered.specials.size());
+  if (auto encoded =
+          owner->tokenizer->EncodeMarked(rendered->rendered.text, rendered->rendered.specials,
+                                         {.special = tokenizer::SpecialTokens::kUserDefinedOnly,
+                                          .add_bos_eos = false,
+                                          .max_bytes = static_cast<std::size_t>(rendered_bound),
+                                          .max_tokens = static_cast<std::size_t>(token_bound)},
+                                         request.prompt, &span_tokens);
       !encoded)
     return Error(encoded.error().ToString());
-  if (rendered->drop_tokens > UINT32_MAX) return Error("image dropped prefix is unrepresentable");
-  request.drop = static_cast<std::uint32_t>(rendered->drop_tokens);
+  if (rendered->drop_span >= span_tokens.size())
+    return Error("image dropped prefix span is absent");
+  const auto drop = span_tokens[rendered->drop_span];
+  if (drop > UINT32_MAX) return Error("image dropped prefix is unrepresentable");
+  request.drop = static_cast<std::uint32_t>(drop);
   const auto& noise_path = input.noise.empty() ? owner->noise : input.noise;
   auto noise = platform::ReadSmallFile(noise_path, elements * sizeof(std::uint16_t));
   if (!noise || noise->size() != elements * sizeof(std::uint16_t))

@@ -294,38 +294,44 @@ Status Llm::SaveState(void* host) { return default_branch_.SaveState(host); }
 
 Status Llm::RestoreState(void* host) { return default_branch_.RestoreState(host); }
 
-std::expected<std::vector<std::int32_t>, std::string> Llm::EncodeText(std::string_view text,
-                                                                      RequestMemory* memory,
-                                                                      std::uint64_t* needed) const {
-  std::vector<tokenizer::TokenId> ids;
-  // The working set and the tokens (a byte each at most, grown by
-  // doubling), charged while they are built.
-  MemoryCharge charge;
+std::expected<EncodedText, std::string> Llm::EncodeText(std::string_view text,
+                                                        RequestMemory* memory,
+                                                        std::uint64_t* needed) const {
+  MemoryCharge work_charge;
+  EncodedText encoded;
+  auto& ids = encoded.tokens;
+  const auto output = tokenizer_->OutputTokensBound(text.size(), true);
+  const tokenizer::EncodeOptions options{.special = tokenizer::SpecialTokens::kUserDefinedOnly,
+                                         .add_bos_eos = true,
+                                         .max_bytes = text.size(),
+                                         .max_tokens = static_cast<std::size_t>(output)};
+  std::uint64_t capacity = 0, output_bytes = 0, need = 0;
+  const auto working = tokenizer_->WorkingBytes(text);
+  if (__builtin_add_overflow(output, std::uint64_t{1}, &capacity) || capacity > ids.max_size() ||
+      __builtin_mul_overflow(capacity, std::uint64_t{sizeof(tokenizer::TokenId)}, &output_bytes) ||
+      __builtin_add_overflow(working, output_bytes, &need)) {
+    if (needed != nullptr) *needed = std::numeric_limits<std::uint64_t>::max();
+    return Error("encoding output capacity overflows its representation");
+  }
   if (memory != nullptr) {
-    const std::uint64_t need = tokenizer_->WorkingBytes(text) +
-                               (std::uint64_t{2} * sizeof(tokenizer::TokenId) * (text.size() + 2));
-    if (!charge.Add(*memory, need)) {
+    if (!work_charge.Add(*memory, working) || !encoded.charge.Add(*memory, output_bytes)) {
       if (needed != nullptr) {
         *needed = need;
       }
       return Error(std::format("encoding the text needs {} bytes of request memory", need));
     }
   }
-  // Bounded by the text itself (D-102): every token covers at least a
-  // byte, beside a BOS and an EOS.
-  if (auto r = tokenizer_->Encode(text,
-                                  {.special = tokenizer::SpecialTokens::kUserDefinedOnly,
-                                   .add_bos_eos = true,
-                                   .max_bytes = text.size(),
-                                   .max_tokens = text.size() + 2},
-                                  ids);
-      !r) {
+  // Exact paid capacity includes the endpoint's extra BOS, so neither source
+  // insertion nor the final prepend can trigger geometric vector growth.
+  if (auto reserved = tokenizer_->ReserveOutput(text, options, ids, 1); !reserved)
+    return Error(reserved.error().ToString());
+  if (auto r = tokenizer_->Encode(text, options, ids); !r) {
     return Error(r.error().ToString());
   }
   if (tokenizer_->bos() && (ids.empty() || ids.front() != *tokenizer_->bos())) {
     ids.insert(ids.begin(), *tokenizer_->bos());  // BOS first, as the references fed it
   }
-  return ids;
+  return encoded;
 }
 
 RenderCharge Llm::RenderChargeFor(std::uint64_t message_bytes, std::size_t messages) const {
@@ -371,25 +377,19 @@ std::expected<std::vector<std::int32_t>, std::string> Llm::RenderChat(
     }
     return Error(rendered.error().ToString());
   }
-  // The tokenization's working set and its tokens (a byte each at most,
-  // grown by doubling), charged while they are built.
+  // The whole-fragment working set and bounded output are charged together.
   MemoryCharge charge;
   if (options.memory != nullptr) {
-    const std::uint64_t window = tokenizer_->WorkingBytes(rendered->text);
-    const std::uint64_t need =
-        window + (std::uint64_t{2} * sizeof(tokenizer::TokenId) *
-                  std::min<std::uint64_t>(rendered->text.size(), options.max_tokens));
-    if (need > options.memory->capacity()) {
-      // A stretch without a cut point too long to tokenize here at all,
-      // whatever else the node holds: the prompt's shape, not the moment.
-      if (failure != nullptr) {
-        *failure = ChatRenderFailure::kUnbroken;
-      }
-      if (options.memory_needed != nullptr) {
-        *options.memory_needed = window / tokenizer::kEncodeBytesPerWindowByte;
-      }
-      return Error("the conversation holds text too long without a break to tokenize");
-    }
+    const auto output = std::min<std::uint64_t>(
+        tokenizer_->OutputTokensBound(rendered->text.size()), options.max_tokens);
+    std::uint64_t need = 0, output_bytes = 0, span_bytes = 0;
+    if (__builtin_mul_overflow(output, std::uint64_t{2 * sizeof(tokenizer::TokenId)},
+                               &output_bytes) ||
+        __builtin_mul_overflow(static_cast<std::uint64_t>(rendered->specials.size()),
+                               std::uint64_t{2 * sizeof(std::size_t)}, &span_bytes) ||
+        __builtin_add_overflow(tokenizer_->WorkingBytes(rendered->text), output_bytes, &need) ||
+        __builtin_add_overflow(need, span_bytes, &need))
+      need = std::numeric_limits<std::uint64_t>::max();
     if (!charge.Add(*options.memory, need)) {
       if (failure != nullptr) {
         *failure = ChatRenderFailure::kMemory;

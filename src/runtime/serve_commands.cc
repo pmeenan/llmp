@@ -12,7 +12,6 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <iterator>
 #include <map>
 #include <memory>
 #include <string>
@@ -22,14 +21,34 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/json.h"
 #include "base/report.h"
 #include "base/sha256.h"
+#include "base/work_pulse.h"
 #include "runtime/commands.h"
 #include "runtime/intake_limits.h"
 #include "runtime/serving.h"
 
 namespace llmp::runtime {
+
+Status ReadContextText(std::istream& input, std::span<char> storage) {
+  if (storage.empty()) return std::unexpected("the context text is empty");
+  for (std::size_t at = 0; at < storage.size();) {
+    if (!base::Pulse()) return std::unexpected("reading the context text was asked to stop");
+    const auto count = std::min(storage.size() - at, std::size_t{65536});
+    input.read(storage.data() + at, static_cast<std::streamsize>(count));
+    if (!input || input.gcount() != static_cast<std::streamsize>(count))
+      return std::unexpected("the context text changed length or could not be read");
+    at += count;
+  }
+  if (!base::Pulse()) return std::unexpected("reading the context text was asked to stop");
+  char extra = 0;
+  if (input.get(extra)) return std::unexpected("the context text grew while it was read");
+  if (!input.eof() || input.bad()) return std::unexpected("the context text could not be read");
+  return {};
+}
+
 namespace {
 
 constexpr std::uint32_t kShortContext = 16;  // an LLM A's prompt at 0 context
@@ -457,9 +476,9 @@ class Table {
   std::unique_ptr<RequestMemory> memory_;  // the request memory, once a context is read
   MemoryCharge text_charge_;               // text_'s bytes in it
   std::string text_;
-  std::map<std::string, std::vector<std::int32_t>> context_;  // by LLM
-  std::map<std::string, std::string> first_outputs_;          // B's, by pair
-  std::map<std::string, std::string> pixels_;                 // an image A's control
+  std::map<std::string, EncodedText> context_;        // tokens and retained payment, by LLM
+  std::map<std::string, std::string> first_outputs_;  // B's, by pair
+  std::map<std::string, std::string> pixels_;         // an image A's control
   std::vector<Row> rows_;
   std::vector<std::string> positioning_;
   std::vector<std::string> problems_;
@@ -487,33 +506,37 @@ Status Table::Context(Llm& a) {
     const std::uint64_t most = memory_->capacity();
     std::error_code size_error;
     const auto size = std::filesystem::file_size(o_.context_text, size_error);
-    if (size_error || size == 0 || size > most || !text_charge_.Add(*memory_, size)) {
+    if (size_error || size == 0 || size >= most || size > text_.max_size() ||
+        !text_charge_.Add(*memory_, size + 1)) {
       return Error(
           std::format("{} is empty, unreadable or over {} bytes (the request memory, "
                       "[client] request_memory_bytes)",
                       o_.context_text.string(), most));
     }
+    // The count constructor allocates once at exactly size (or uses the
+    // string object's inline storage), with its terminating byte paid too.
+    std::string loaded(static_cast<std::size_t>(size), '\0');
+    base::Check(
+        loaded.capacity() <= std::max(static_cast<std::size_t>(size), std::string{}.capacity()),
+        "context text exceeded its paid capacity");
     std::ifstream file(o_.context_text, std::ios::binary);
-    text_.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-    if (text_.empty() || text_.size() > most) {
-      return Error(
-          std::format("{} is empty, unreadable or over {} bytes", o_.context_text.string(), most));
-    }
+    if (auto read = ReadContextText(file, std::span(loaded)); !read) return read;
+    text_.swap(loaded);
   }
   auto ids = a.EncodeText(text_, memory_.get());
   if (!ids) {
     return std::unexpected(ids.error() + " ([client] request_memory_bytes bounds it)");
   }
-  if (ids->size() < o_.context_tokens) {
+  if (ids->tokens.size() < o_.context_tokens) {
     return Error(std::format("{} has {} of {}'s tokens, fewer than {}", o_.context_text.string(),
-                             ids->size(), a.name(), o_.context_tokens));
+                             ids->tokens.size(), a.name(), o_.context_tokens));
   }
   if (o_.context_tokens + o_.continue_tokens + 1 >= a.context()) {
     return Error(std::format("{}'s context of {} does not hold {} tokens and {} more", a.name(),
                              a.context(), o_.context_tokens, o_.continue_tokens));
   }
-  ids->resize(o_.context_tokens);
-  context_[a.name()] = std::move(*ids);
+  ids->tokens.resize(o_.context_tokens);
+  context_.emplace(a.name(), std::move(*ids));
   return {};
 }
 
@@ -617,12 +640,12 @@ Status Table::Pair(Served& a, Served& b) {
     positioning_.push_back(PartsJson(parts));
     Print(out_, "positioning: " + PartsLine(parts));
   }
-  std::vector<std::int32_t> context;
+  std::span<const std::int32_t> context;
   if (a.llm()) {
     if (auto r = Context(static_cast<Llm&>(a)); !r) {
       return r;
     }
-    context = context_.at(a.name());
+    context = context_.at(a.name()).tokens;
   } else if (!pixels_.contains(a.name())) {
     // An image A's control: one generation, never swapped.
     std::string first;
@@ -822,7 +845,7 @@ Status Table::Pair(Served& a, Served& b) {
     } else {
       // At 0 context: a short prompt from a cleared state.
       auto& l = static_cast<Llm&>(a);
-      std::vector<std::int32_t> prompt(context.begin(), context.begin() + kShortContext);
+      const auto prompt = context.first(std::min(context.size(), std::size_t{kShortContext}));
       Clock::time_point first;
       if (auto r = server_.InRequest(a,
                                      [&]() -> Status {

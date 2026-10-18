@@ -891,6 +891,25 @@ TEST(LiteralTokens, TextHonorsAddBosPolicyButIdsRemainExact) {
   EXPECT_FALSE(api::PrepareLiteralPrompt(*request, *with, 2, kResponse).has_value());
 }
 
+TEST(LiteralTokens, SourcePostprocessorDoesNotChangeLiteralBosOnlyPolicy) {
+  auto spec = LiteralVocabulary(true);
+  spec.has_post_processor = true;
+  spec.post_processor = {.ids = {257, 257}, .prefix = {{0, 2}}, .suffix = {{0, 1}}};
+  spec.add_eos = true;
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(tokenizer);
+  auto request = api::ParseCompletionRequest(R"({"model":"m","prompt":"A","max_tokens":0})");
+  ASSERT_TRUE(request);
+  auto prepared = api::PrepareLiteralPrompt(*request, *tokenizer, 2, kResponse);
+  ASSERT_TRUE(prepared);
+  EXPECT_THAT(prepared->tokens, ElementsAre(256, 65));
+  request->prompt.reset();
+  request->token_ids = {257, 65};
+  prepared = api::PrepareLiteralPrompt(*request, *tokenizer, 2, kResponse);
+  ASSERT_TRUE(prepared);
+  EXPECT_THAT(prepared->tokens, ElementsAre(257, 65));
+}
+
 TEST(LiteralTokens, EmptyTextRequiresEnabledBosAndNormalizationIsExplicit) {
   auto with = llmp::tokenizer::Tokenizer::Create(LiteralVocabulary(true));
   auto spec = LiteralVocabulary(false);

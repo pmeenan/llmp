@@ -145,8 +145,7 @@ std::expected<NativeCodec, std::string> OpenCodec(const fs::path& path) {
   if (!bytes) return std::unexpected(bytes.error().ToString());
   auto read = tok::ReadGgufTokenizer(std::as_bytes(std::span(*bytes)));
   if (!read) return std::unexpected(read.error().ToString());
-  if (!read->has_chat_template || read->spec.tokens.size() != 129280 ||
-      read->spec.pre_tokenizer != tok::PreTokenizer::kDeepSeekV3)
+  if (!read->has_chat_template || read->spec.tokens.size() != 129280 || read->pre != "deepseek-v3")
     return std::unexpected("fixed native tokenizer/template shape differs");
   auto model_template = llmp::chat::FindTemplateForText(read->chat_template);
   if (!model_template) return std::unexpected(model_template.error());

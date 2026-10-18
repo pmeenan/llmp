@@ -6,10 +6,10 @@
     tools/gen-unicode-tables --ucd DIR [--download] [--output FILE | --check FILE]
 
 Reads UnicodeData.txt, PropList.txt, DerivedNormalizationProps.txt,
-SpecialCasing.txt and DerivedCoreProperties.txt of UCD 15.1.0 from DIR,
+SpecialCasing.txt, DerivedCoreProperties.txt and CaseFolding.txt of UCD 15.1.0 from DIR,
 after checking each against the SHA-256 pinned below, and writes
 src/tokenizer/unicode_data.cc: the data behind src/tokenizer/unicode_data.h.
-`--download` first fetches the five files from
+`--download` first fetches the six files from
 unicode.org into DIR (and still checks them). `--check FILE` regenerates in
 memory and fails unless FILE holds exactly those bytes.
 
@@ -35,7 +35,9 @@ notice the package already ships):
   else UnicodeData.txt's simple mappings (an empty title mapping being the
   upper one); and the Lowercase, Uppercase, Cased and Case_Ignorable
   properties as code point ranges. UCD 15.1.0 and Python 3.12's 15.0.0 have
-  the same case data (docs/tokenizer.md).
+  the same case data (docs/tokenizer.md);
+- default full folds from CaseFolding.txt C/F records, excluding simple-only
+  and Turkic variants, used by regex literal runs independently of Python.
 """
 
 import sys
@@ -55,6 +57,7 @@ FILES = {
     "DerivedNormalizationProps.txt": "8875dccee2bc1a7c1fe568a3b502a9e78c9e0495afd96b6568b4294d0ed1f7e1",
     "SpecialCasing.txt": "55a477efd933a52cd27e6a9bf70265bb2d8814af31aab07767abc8eb421f27ef",
     "DerivedCoreProperties.txt": "f55d0db69123431a7317868725b1fcbf1eab6b265d756d1bd7f0f6d9f9ee108b",
+    "CaseFolding.txt": "4e55acfdc32825a22e87670e9056a3bf94ad7c5400065778e9e10f8314372bcf",
 }
 
 MAX_CODE_POINT = 0x110000
@@ -101,6 +104,21 @@ def ranges(text: str):
         span = fields[0]
         first, _, last = span.partition("..")
         yield int(first, 16), int(last or first, 16), fields[1:]
+
+
+def default_case_folds(text: str):
+    """Default full Unicode folds (C/F); simple-only S and Turkic T are not default folds."""
+    folds = {}
+    for first, last, fields in ranges(text):
+        if first != last or len(fields) < 2 or fields[0] not in {"C", "F", "S", "T"}:
+            raise Error("CaseFolding.txt: malformed entry")
+        if fields[0] in {"S", "T"}:
+            continue
+        parts = [int(value, 16) for value in fields[1].split()]
+        if first in folds or not 1 <= len(parts) <= 3 or any(cp >= MAX_CODE_POINT for cp in parts):
+            raise Error("CaseFolding.txt: invalid or repeated full fold")
+        folds[first] = parts
+    return sorted(folds.items())
 
 
 def unicode_data(text: str):
@@ -204,6 +222,7 @@ def generate(ucd: pathlib.Path) -> str:
                 if not 1 <= len(mapped) <= 3:
                     raise Error(f"a case mapping of {cp:04X} has {len(mapped)} code points")
                 case_maps[name].append((cp, mapped))
+    case_maps["fold"] = default_case_folds(texts["CaseFolding.txt"])
     case_parts: list[int] = []
     case_entries: dict[str, list[tuple[int, int, int]]] = {}
     for name, maps in case_maps.items():
@@ -281,7 +300,7 @@ def generate(ucd: pathlib.Path) -> str:
     array("char32_t", "kDecompositionPartData", [f"0x{cp:05X}" for cp in flat], 8)
     array("Composition", "kCompositionData",
           [f"Composition{{0x{a:05X}, 0x{b:05X}, 0x{c:05X}}}" for a, b, c in compositions], 2)
-    for name, symbol in (("lower", "kLowerFull"), ("upper", "kUpperFull"), ("title", "kTitleFull")):
+    for name, symbol in (("lower", "kLowerFull"), ("upper", "kUpperFull"), ("title", "kTitleFull"), ("fold", "kCaseFold")):
         array("CaseMapping", f"{symbol}Data",
               [f"CaseMapping{{0x{cp:05X}, {off}, {n}}}" for cp, off, n in case_entries[name]], 3)
     array("char32_t", "kCasePartData", [f"0x{cp:05X}" for cp in case_parts], 8)
@@ -299,7 +318,7 @@ def generate(ucd: pathlib.Path) -> str:
     w("const std::span<const Decomposition> kDecompositions(kDecompositionData);")
     w("const std::span<const char32_t> kDecompositionParts(kDecompositionPartData);")
     w("const std::span<const Composition> kCompositions(kCompositionData);")
-    for symbol in ("kLowerFull", "kUpperFull", "kTitleFull"):
+    for symbol in ("kLowerFull", "kUpperFull", "kTitleFull", "kCaseFold"):
         w(f"const std::span<const CaseMapping> {symbol}({symbol}Data);")
     w("const std::span<const char32_t> kCaseParts(kCasePartData);")
     for symbol in ("kLowercase", "kUppercase", "kCased", "kCaseIgnorable"):

@@ -209,8 +209,8 @@ std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte>
   if (!has_template) {
     return std::unexpected(has_template.error());
   }
-  if (!*has_model || (!*has_pre && model != "gemma4" && model != "llama")) {
-    return Fail(Rule::kFormat, "tokenizer model or pre-tokenizer missing");
+  if (!*has_model) {
+    return Fail(Rule::kFormat, "tokenizer model missing");
   }
   out.has_chat_template = *has_template;
   if (model != "gpt2" && model != "gemma4" && model != "llama") {
@@ -229,14 +229,17 @@ std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte>
     }
     out.pre = "gemma4";
     out.spec.pre_tokenizer = PreTokenizer::kRawBpe;
-  } else if (out.pre == "qwen2") {
-    out.spec.pre_tokenizer = PreTokenizer::kQwen2;
-  } else if (out.pre == "qwen35") {
-    out.spec.pre_tokenizer = PreTokenizer::kQwen35;
-  } else if (out.pre == "deepseek-v3" || out.pre == "joyai-llm") {
-    out.spec.pre_tokenizer = PreTokenizer::kDeepSeekV3;
   } else {
-    return Fail(Rule::kUnsupported, "pre-tokenizer");
+    // The locked BPE reader explicitly maps missing/empty pre to its own
+    // four-stage default, distinct from GPT-2 and SentencePiece.
+    if (!*has_pre || out.pre.empty()) out.pre = "default";
+    auto preset = ReadPreTokenizerPreset(out.pre);
+    if (!preset) return std::unexpected(preset.error());
+    out.spec.pre_tokenizer = PreTokenizer::kByteBpe;
+    out.spec.split_expressions = std::move(preset->expressions);
+    out.spec.split_dialect = preset->dialect;
+    out.spec.ignore_merges = preset->ignore_merges;
+    out.spec.add_bos = preset->add_bos;
   }
   out.spec.normalization = Normalization::kNone;
 
@@ -354,7 +357,7 @@ std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte>
   if (!spaces) {
     return std::unexpected(spaces.error());
   }
-  out.spec.add_bos = add_bos->value_or(spm);
+  out.spec.add_bos = add_bos->value_or(spm || out.spec.add_bos);
   out.spec.add_eos = add_eos->value_or(false);
   out.spec.add_space_prefix = spm && prefix->value_or(true);
   if ((!spm && prefix->value_or(false)) || spaces->value_or(false)) {

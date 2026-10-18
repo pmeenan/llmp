@@ -208,7 +208,7 @@ before new families land; each item lands as one reviewed commit.
 - [ ] R7 Planner: quality-preserving fusions on by default, plan and
       coverage reports, family constants out of the planner, `Operation`
       retired
-- [ ] R8 Tokenizer: GGUF and `tokenizer.json` pre-tokenizers from their
+- [x] R8 Tokenizer: GGUF and `tokenizer.json` pre-tokenizers from their
       regexes, post-processors
 - [ ] R9 Components: one attention core (YaRN, sections, gate, sinks,
       compression, selection), merged fused kinds, format-independent specs,

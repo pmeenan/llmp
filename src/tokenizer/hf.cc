@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <expected>
 #include <initializer_list>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -16,6 +17,7 @@
 #include <vector>
 
 #include "base/json.h"
+#include "base/work_pulse.h"
 #include "tokenizer/error.h"
 #include "tokenizer/pretokenize.h"
 #include "tokenizer/tokenizer.h"
@@ -29,26 +31,6 @@ std::unexpected<Error> Fail(Rule rule, std::string_view reason, std::uint64_t it
   return std::unexpected(Error{rule, reason, item});
 }
 
-// The Split expressions each pre-tokenizer stands for, as tokenizer.json
-// holds them (after JSON unescaping).
-constexpr std::string_view kQwen2Split =
-    R"re((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re";
-constexpr std::string_view kQwen35Split =
-    R"re((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re";
-constexpr std::string_view kDeepSeekDigits = R"re(\p{N}{1,3})re";
-// [一-龥぀-ゟ゠-ヿ]+
-constexpr std::string_view kDeepSeekCjk =
-    "[\xE4\xB8\x80-\xE9\xBE\xA5\xE3\x81\x80-\xE3\x82\x9F\xE3\x82\xA0-\xE3\x83\xBF]+";
-// With literal CR and LF inside the classes, as DeepSeek's file has them.
-constexpr std::string_view kDeepSeekWords =
-    R"re([!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+|[^)re"
-    "\r\n"
-    R"re(\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+| ?[\p{P}\p{S}]+[)re"
-    "\r\n"
-    R"re(]*|\s*[)re"
-    "\r\n"
-    R"re(]+|\s+(?!\S)|\s+)re";
-
 std::optional<std::string_view> StringMember(json::Value object, std::string_view name) {
   const auto v = object.find(name);
   if (!v || !v->is_string()) {
@@ -61,6 +43,12 @@ std::optional<std::string_view> StringMember(json::Value object, std::string_vie
 bool Off(json::Value object, std::string_view name) {
   const auto v = object.find(name);
   return !v || v->is_null() || (v->is_bool() && !v->boolean());
+}
+
+// Serialized boolean stage flags never reinterpret null or another type.
+bool FalseFlag(json::Value object, std::string_view name) {
+  const auto v = object.find(name);
+  return !v || (v->is_bool() && !v->boolean());
 }
 
 // A member that must be absent, null or "".
@@ -92,49 +80,71 @@ std::expected<Normalization, Error> ReadNormalizer(json::Value root) {
   return Fail(Rule::kUnsupported, "normalizer");
 }
 
-std::expected<PreTokenizer, Error> ReadPreTokenizer(json::Value root) {
-  const auto p = root.find("pre_tokenizer");
-  if (!p || StringMember(*p, "type") != "Sequence") {
-    return Fail(Rule::kUnsupported, "pre-tokenizer other than a Sequence");
-  }
-  const auto list = p->find("pretokenizers");
-  if (!list || !list->is_array() || list->size() < 2) {
-    return Fail(Rule::kUnsupported, "pre-tokenizer sequence");
-  }
-  const json::Value last = list->at(list->size() - 1);
-  if (StringMember(last, "type") != "ByteLevel" || !Off(last, "add_prefix_space") ||
-      !Off(last, "use_regex")) {
-    return Fail(Rule::kUnsupported, "pre-tokenizer sequence not ending in a plain ByteLevel");
-  }
-  std::vector<std::string_view> splits;
-  for (std::size_t i = 0; i + 1 < list->size(); ++i) {
-    const json::Value s = list->at(i);
-    const auto pattern = s.find("pattern");
-    const auto regex = pattern ? StringMember(*pattern, "Regex") : std::nullopt;
-    if (StringMember(s, "type") != "Split" || !regex || StringMember(s, "behavior") != "Isolated" ||
-        !Off(s, "invert")) {
-      return Fail(Rule::kUnsupported, "pre-tokenizer stage other than an isolated regex Split", i);
-    }
-    splits.push_back(*regex);
-  }
-  if (splits.size() == 1 && splits[0] == kQwen2Split) {
-    return PreTokenizer::kQwen2;
-  }
-  if (splits.size() == 1 && splits[0] == kQwen35Split) {
-    return PreTokenizer::kQwen35;
-  }
-  if (splits.size() == 3 && splits[0] == kDeepSeekDigits && splits[1] == kDeepSeekCjk &&
-      splits[2] == kDeepSeekWords) {
-    return PreTokenizer::kDeepSeekV3;
-  }
-  return Fail(Rule::kUnsupported, "pre-tokenizer expressions");
-}
-
 bool Only(json::Value value, std::initializer_list<std::string_view> names) {
   if (!value.is_object()) return false;
   for (std::size_t i = 0; i < value.size(); ++i)
     if (std::ranges::find(names, value.key(i)) == names.end()) return false;
   return true;
+}
+
+std::expected<void, Error> ReadPreTokenizer(json::Value root, TokenizerSpec& spec) {
+  const auto pre = root.find("pre_tokenizer");
+  if (!pre || pre->is_null())
+    return Fail(Rule::kUnsupported, "byte BPE requires ByteLevel pre-tokenizer");
+  std::vector<json::Value> pending{*pre};
+  spec.split_expressions.clear();
+  spec.split_dialect = RegexDialect::kHuggingFace;
+  bool byte_level = false;
+  while (!pending.empty()) {
+    if (!base::Pulse()) return Fail(Rule::kCancelled, "pre-tokenizer parsing was asked to stop");
+    const auto value = pending.back();
+    pending.pop_back();
+    const auto type = StringMember(value, "type");
+    if (type == "Sequence") {
+      const auto list = value.find("pretokenizers");
+      if (!Only(value, {"type", "pretokenizers"}) || !list || !list->is_array())
+        return Fail(Rule::kFormat, "pre-tokenizer Sequence fields");
+      if (list->size() > pending.max_size() - pending.size())
+        return Fail(Rule::kBounds, "pre-tokenizer traversal storage overflows");
+      for (std::size_t i = list->size(); i > 0; --i) {
+        if ((i & 255U) == 0 && !base::Pulse())
+          return Fail(Rule::kCancelled, "pre-tokenizer parsing was asked to stop");
+        pending.push_back(list->at(i - 1));
+      }
+    } else if (type == "ByteLevel") {
+      if (!Only(value, {"type", "add_prefix_space", "trim_offsets", "use_regex"}) || byte_level)
+        return Fail(Rule::kUnsupported, "repeated or malformed ByteLevel stage");
+      for (const auto name : {"add_prefix_space", "trim_offsets", "use_regex"}) {
+        const auto flag = value.find(name);
+        if (flag && !flag->is_bool()) return Fail(Rule::kFormat, "ByteLevel flag is not boolean");
+      }
+      const auto prefix = value.find("add_prefix_space");
+      if (!prefix || prefix->boolean())
+        return Fail(Rule::kUnsupported, "ByteLevel add_prefix_space");
+      const auto regex = value.find("use_regex");
+      if (!regex || regex->boolean()) {
+        auto preset = ReadPreTokenizerPreset("gpt-2");
+        spec.split_expressions.insert(spec.split_expressions.end(), preset->expressions.begin(),
+                                      preset->expressions.end());
+      }
+      byte_level = true;
+    } else if (type == "Split") {
+      const auto pattern = value.find("pattern");
+      const auto regex = pattern ? StringMember(*pattern, "Regex") : std::nullopt;
+      if (!Only(value, {"type", "pattern", "behavior", "invert"}) || !pattern ||
+          !Only(*pattern, {"Regex"}) || !regex || StringMember(value, "behavior") != "Isolated" ||
+          !FalseFlag(value, "invert"))
+        return Fail(Rule::kUnsupported, "pre-tokenizer stage other than isolated regex Split");
+      if (byte_level) return Fail(Rule::kUnsupported, "Split after byte alphabet conversion");
+      if (Regex::ConstructionBytes(regex->size()) == UINT64_MAX)
+        return Fail(Rule::kBounds, "regex construction representation overflows");
+      spec.split_expressions.emplace_back(*regex);
+    } else
+      return Fail(Rule::kUnsupported, "pre-tokenizer stage");
+  }
+  if (!byte_level) return Fail(Rule::kUnsupported, "byte BPE requires ByteLevel pre-tokenizer");
+  spec.pre_tokenizer = PreTokenizer::kByteBpe;
+  return {};
 }
 
 bool Replace(json::Value value, std::string_view from, std::string_view to) {
@@ -154,7 +164,7 @@ std::expected<void, Error> ReadRawPipeline(json::Value root, TokenizerSpec& spec
     if (!Only(*pre, {"type", "pattern", "behavior", "invert"}) ||
         StringMember(*pre, "type") != "Split" || !pattern || !Only(*pattern, {"String"}) ||
         StringMember(*pattern, "String") != " " ||
-        StringMember(*pre, "behavior") != "MergedWithPrevious" || !Off(*pre, "invert"))
+        StringMember(*pre, "behavior") != "MergedWithPrevious" || !FalseFlag(*pre, "invert"))
       return Fail(Rule::kUnsupported, "raw BPE pre-tokenizer");
     // Space replacement runs first and leaves no literal spaces. Therefore
     // this declared Split has no matches; the model receives the whole fragment.
@@ -173,86 +183,234 @@ std::expected<void, Error> ReadRawPipeline(json::Value root, TokenizerSpec& spec
   return {};
 }
 
-std::expected<void, Error> ReadRawPostProcessor(json::Value root, TokenizerSpec& spec) {
+std::expected<void, Error> ReadPostProcessor(json::Value root, TokenizerSpec& spec) {
   const auto post = root.find("post_processor");
   if (!post || post->is_null()) return {};
-  if (!Only(*post, {"type", "single", "pair", "special_tokens"}) ||
-      StringMember(*post, "type") != "TemplateProcessing")
-    return Fail(Rule::kUnsupported, "raw BPE post-processor other than TemplateProcessing");
-  const auto definitions = post->find("special_tokens");
-  const auto single = post->find("single");
-  if (!definitions || !definitions->is_object() || !single || !single->is_array())
-    return Fail(Rule::kFormat, "TemplateProcessing definitions or single template missing");
-  for (std::size_t i = 0; i < definitions->size(); ++i) {
-    const auto definition = definitions->member(i);
-    const auto ids = definition.find("ids");
-    const auto tokens = definition.find("tokens");
-    if (!Only(definition, {"id", "ids", "tokens"}) ||
-        StringMember(definition, "id") != definitions->key(i) || !ids || !ids->is_array() ||
-        !tokens || !tokens->is_array())
-      return Fail(Rule::kFormat, "malformed TemplateProcessing special token", i);
-    if (ids->size() != 1 || tokens->size() != 1)
-      return Fail(Rule::kUnsupported, "multi-token TemplateProcessing special token", i);
-    const auto id = ids->at(0).int64();
-    if (!id || *id < 0 || std::cmp_greater_equal(*id, spec.tokens.size()) ||
-        !tokens->at(0).is_string() ||
-        spec.tokens[static_cast<std::size_t>(*id)] != tokens->at(0).string())
-      return Fail(Rule::kVocabulary, "TemplateProcessing special token ID/text mismatch", i);
-  }
-  const auto read_template = [&](json::Value list, bool pair) -> std::expected<void, Error> {
-    if (!list.is_array()) return Fail(Rule::kFormat, "TemplateProcessing template is not an array");
-    if (list.size() > (pair ? 6U : 3U))
-      return Fail(Rule::kUnsupported, "template exceeds single BOS/EOS wrappers");
-    unsigned sequences = 0;
-    std::optional<TokenId> prefix, suffix;
-    for (std::size_t i = 0; i < list.size(); ++i) {
-      const auto entry = list.at(i);
-      if (!entry.is_object() || entry.size() != 1)
-        return Fail(Rule::kFormat, "TemplateProcessing item is not a tagged object", i);
-      const bool sequence = entry.key(0) == "Sequence";
-      if (!sequence && entry.key(0) != "SpecialToken")
-        return Fail(Rule::kUnsupported, "TemplateProcessing item kind", i);
-      const auto item = entry.member(0);
-      const auto name = StringMember(item, "id");
-      const auto type = item.find("type_id");
-      const auto id = type ? type->int64() : std::nullopt;
-      if (!Only(item, {"id", "type_id"}) || !name || !id || *id < 0 || *id > 0xFFFFFFFFLL)
-        return Fail(Rule::kFormat, "TemplateProcessing item has invalid fields", i);
-      if (sequence) {
-        const unsigned bit = *name == "A" ? 1U : pair && *name == "B" ? 2U : 0U;
-        if (bit == 0 || (sequences & bit) != 0)
-          return Fail(Rule::kUnsupported, "TemplateProcessing repeated or unknown sequence", i);
-        sequences |= bit;
-      } else {
-        const auto definition = definitions->find(*name);
-        if (!definition)
-          return Fail(Rule::kVocabulary, "undefined TemplateProcessing special token", i);
-        const auto token = static_cast<TokenId>(*definition->find("ids")->at(0).int64());
-        if (!pair) {
-          auto& insertion = sequences == 0 ? prefix : suffix;
-          if (insertion) return Fail(Rule::kUnsupported, "multiple BOS or EOS template tokens", i);
-          insertion = token;
+  spec.has_post_processor = true;
+  std::size_t prefix_count = 0, suffix_count = 0;
+  const auto parse = [&](bool measuring) -> std::expected<void, Error> {
+    std::vector<json::Value> pending{*post};
+    std::uint64_t expanded_tokens = 0;
+    std::size_t definition_ids = 0;
+    while (!pending.empty()) {
+      if (!base::Pulse()) return Fail(Rule::kCancelled, "postprocessor parsing was asked to stop");
+      const auto value = pending.back();
+      pending.pop_back();
+      const auto type = StringMember(value, "type");
+      if (type == "Sequence") {
+        const auto list = value.find("processors");
+        if (!Only(value, {"type", "processors"}) || !list || !list->is_array())
+          return Fail(Rule::kFormat, "postprocessor Sequence fields");
+        if (list->size() > pending.max_size() - pending.size())
+          return Fail(Rule::kBounds, "postprocessor traversal storage overflows");
+        for (std::size_t i = list->size(); i > 0; --i) {
+          if ((i & 255U) == 0 && !base::Pulse())
+            return Fail(Rule::kCancelled, "postprocessor parsing was asked to stop");
+          pending.push_back(list->at(i - 1));
+        }
+        continue;
+      }
+      if (type == "ByteLevel") {
+        if (!Only(value, {"type", "add_prefix_space", "trim_offsets", "use_regex"}))
+          return Fail(Rule::kUnsupported, "ByteLevel postprocessor fields");
+        for (const auto name : {"add_prefix_space", "trim_offsets", "use_regex"})
+          if (const auto flag = value.find(name); flag && !flag->is_bool())
+            return Fail(Rule::kFormat, "ByteLevel postprocessor flag is not boolean");
+        continue;  // offsets-only; this tokenizer returns IDs, never offsets
+      }
+      if (type != "TemplateProcessing" ||
+          !Only(value, {"type", "single", "pair", "special_tokens"}))
+        return Fail(Rule::kUnsupported, "postprocessor type or fields");
+      const auto definitions = value.find("special_tokens");
+      const auto single = value.find("single");
+      if (!definitions || !definitions->is_object() || !single)
+        return Fail(Rule::kFormat, "TemplateProcessing definitions or single template missing");
+      std::uint64_t comparisons = 0, pulsed_comparisons = 0;
+      auto by_name = [&](std::string_view left, std::string_view right) {
+        ++comparisons;
+        return left < right;
+      };
+      // Borrow names from the JSON document. Ordered nodes bound adversarial
+      // lookup to logarithmic comparisons without hash-collision assumptions.
+      // The existing 32*source-byte parser allowance funds 128 bytes per node:
+      // this build's value/tree links use 64, plus allocation/alignment overhead.
+      // Each accepted definition has at least 32 source bytes, so the index
+      // costs at most 4*source bytes and is gone before Create's retained charge.
+      using Definitions = std::map<std::string_view, PostProcessorSlice, decltype(by_name)>;
+      static_assert(sizeof(Definitions::value_type) <= 64);
+      Definitions defined(by_name);
+      if (definitions->size() > defined.max_size())
+        return Fail(Rule::kBounds, "postprocessor definition storage overflows");
+      const auto index_progress = [&] {
+        const auto now = comparisons >> 8U;
+        if (now == pulsed_comparisons) return true;
+        pulsed_comparisons = now;
+        return base::Pulse();
+      };
+      for (std::size_t i = 0; i < definitions->size(); ++i) {
+        const auto definition = definitions->member(i);
+        const auto ids = definition.find("ids"), tokens = definition.find("tokens");
+        if (!Only(definition, {"id", "ids", "tokens"}) ||
+            StringMember(definition, "id") != definitions->key(i) || !ids || !ids->is_array() ||
+            !tokens || !tokens->is_array() || ids->size() == 0 || ids->size() != tokens->size())
+          return Fail(Rule::kFormat, "malformed TemplateProcessing special token", i);
+        if (ids->size() > spec.post_processor.ids.max_size() - definition_ids)
+          return Fail(Rule::kBounds, "postprocessor definition storage overflows");
+        const auto inserted =
+            defined.emplace(definitions->key(i), PostProcessorSlice{definition_ids, ids->size()});
+        // Observe cancellation after the balanced operation, never by changing
+        // comparator ordering halfway through an insertion or lookup.
+        if (!index_progress())
+          return Fail(Rule::kCancelled, "postprocessor parsing was asked to stop");
+        if (!inserted.second)
+          return Fail(Rule::kFormat, "duplicate TemplateProcessing special token", i);
+        definition_ids += ids->size();
+        for (std::size_t j = 0; j < ids->size(); ++j) {
+          if ((j & 255U) == 0 && !base::Pulse())
+            return Fail(Rule::kCancelled, "postprocessor parsing was asked to stop");
+          const auto id = ids->at(j).int64();
+          if (!id || *id < 0 || std::cmp_greater_equal(*id, spec.tokens.size()) ||
+              !tokens->at(j).is_string() ||
+              spec.tokens[static_cast<std::size_t>(*id)] != tokens->at(j).string())
+            return Fail(Rule::kVocabulary, "TemplateProcessing special token ID/text mismatch", i);
+          if (!measuring) spec.post_processor.ids.push_back(static_cast<TokenId>(*id));
+        }
+      }
+      const auto prefix_begin = prefix_count;
+      const auto read_template = [&](json::Value list, bool pair) -> std::expected<void, Error> {
+        if (!list.is_array() && !list.is_string())
+          return Fail(Rule::kFormat, "TemplateProcessing template is neither string nor array");
+        unsigned sequences = 0;
+        std::size_t string_pos = 0, entries = 0, examined = 0;
+        const auto text = list.is_string() ? list.string() : std::string_view{};
+        while (list.is_array() ? entries < list.size() : string_pos < text.size()) {
+          if ((entries & 255U) == 0 && !base::Pulse())
+            return Fail(Rule::kCancelled, "postprocessor parsing was asked to stop");
+          ++entries;
+          std::string_view name;
+          bool sequence = false;
+          if (list.is_array()) {
+            const auto entry = list.at(entries - 1);
+            if (!entry.is_object() || entry.size() != 1)
+              return Fail(Rule::kFormat, "TemplateProcessing item is not tagged");
+            sequence = entry.key(0) == "Sequence";
+            if (!sequence && entry.key(0) != "SpecialToken")
+              return Fail(Rule::kUnsupported, "TemplateProcessing item kind");
+            const auto item = entry.member(0);
+            const auto token_name = StringMember(item, "id");
+            const auto type_value = item.find("type_id");
+            const auto type_id = type_value ? type_value->int64() : std::nullopt;
+            if (!Only(item, {"id", "type_id"}) || !token_name || !type_id || *type_id < 0 ||
+                *type_id > 0xFFFFFFFFLL)
+              return Fail(Rule::kFormat, "TemplateProcessing item fields");
+            name = *token_name;
+          } else {
+            while (string_pos < text.size() && text[string_pos] == ' ') {
+              if ((++examined & 255U) == 0 && !base::Pulse())
+                return Fail(Rule::kCancelled, "postprocessor parsing was asked to stop");
+              ++string_pos;
+            }
+            if (string_pos == text.size()) break;
+            const auto begin = string_pos;
+            while (string_pos < text.size() && text[string_pos] != ' ') {
+              if ((++examined & 255U) == 0 && !base::Pulse())
+                return Fail(Rule::kCancelled, "postprocessor parsing was asked to stop");
+              ++string_pos;
+            }
+            name = text.substr(begin, string_pos - begin);
+            if (const auto colon = name.rfind(':'); colon != std::string_view::npos) {
+              std::uint32_t type_id = 0;
+              const auto digits = name.substr(colon + 1);
+              const auto result =
+                  std::from_chars(digits.data(), digits.data() + digits.size(), type_id);
+              if (digits.empty() || result.ec != std::errc{} ||
+                  result.ptr != digits.data() + digits.size())
+                return Fail(Rule::kFormat, "TemplateProcessing type ID");
+              name = name.substr(0, colon);
+            }
+            sequence = name.starts_with('$');
+            if (sequence) {
+              name.remove_prefix(1);
+              if (!name.empty() && name.front() >= '0' && name.front() <= '9') {
+                std::uint32_t type_id = 0;
+                const auto result =
+                    std::from_chars(name.data(), name.data() + name.size(), type_id);
+                if (result.ec != std::errc{} || result.ptr != name.data() + name.size())
+                  return Fail(Rule::kFormat, "TemplateProcessing sequence ID");
+                name = "A";
+              }
+            }
+          }
+          if (sequence) {
+            const unsigned bit = name == "A" ? 1U : pair && name == "B" ? 2U : 0U;
+            if (bit == 0 || (sequences & bit) != 0)
+              return Fail(Rule::kUnsupported, "TemplateProcessing repeated or unknown sequence");
+            sequences |= bit;
+          } else {
+            const auto definition = defined.find(name);
+            if (!index_progress())
+              return Fail(Rule::kCancelled, "postprocessor parsing was asked to stop");
+            if (definition == defined.end())
+              return Fail(Rule::kVocabulary, "undefined TemplateProcessing special token");
+            if (!pair) {
+              const bool before = sequences == 0;
+              auto& insertion = before ? spec.post_processor.prefix : spec.post_processor.suffix;
+              auto& count = before ? prefix_count : suffix_count;
+              if (count == insertion.max_size() ||
+                  __builtin_add_overflow(expanded_tokens,
+                                         static_cast<std::uint64_t>(definition->second.length),
+                                         &expanded_tokens))
+                return Fail(Rule::kBounds, "postprocessor insertion representation overflows");
+              ++count;
+              if (!measuring) insertion.push_back(definition->second);
+            }
+          }
+        }
+        if (sequences != (pair ? 3U : 1U))
+          return Fail(Rule::kUnsupported, "TemplateProcessing sequence is missing");
+        return {};
+      };
+      if (auto parsed = read_template(*single, false); !parsed) return parsed;
+      if (const auto pair = value.find("pair"); pair) {
+        if (auto parsed = read_template(*pair, true); !parsed) return parsed;
+      }
+      if (!measuring) {
+        // Append each template's prefix reversed. One final reversal produces
+        // later-prefix/earlier-prefix order without any insertion copies.
+        auto& prefix = spec.post_processor.prefix;
+        for (std::size_t left = prefix_begin, right = prefix.size(); left < right && left < --right;
+             ++left) {
+          if ((left & 255U) == 0 && !base::Pulse())
+            return Fail(Rule::kCancelled, "postprocessor parsing was asked to stop");
+          std::swap(prefix[left], prefix[right]);
         }
       }
     }
-    if (sequences != (pair ? 3U : 1U))
-      return Fail(Rule::kUnsupported, "TemplateProcessing sequence is missing");
-    if (!pair) {
-      spec.bos = prefix;
-      spec.eos = suffix;
-      spec.add_bos = prefix.has_value();
-      spec.add_eos = suffix.has_value();
+    if (measuring) {
+      // Count first: these allocations and all later retained storage are
+      // proportional to JSON definitions/references, never expanded output.
+      spec.post_processor.ids.reserve(definition_ids);
+      spec.post_processor.prefix.reserve(prefix_count);
+      spec.post_processor.suffix.reserve(suffix_count);
     }
     return {};
   };
-  if (auto value = read_template(*single, false); !value) return value;
-  if (const auto pair = post->find("pair"); pair) return read_template(*pair, true);
+  if (auto counted = parse(true); !counted) return counted;
+  prefix_count = suffix_count = 0;
+  if (auto filled = parse(false); !filled) return filled;
+  auto& prefix = spec.post_processor.prefix;
+  for (std::size_t left = 0, right = prefix.size(); left < right && left < --right; ++left) {
+    if ((left & 255U) == 0 && !base::Pulse())
+      return Fail(Rule::kCancelled, "postprocessor parsing was asked to stop");
+    std::swap(prefix[left], prefix[right]);
+  }
   return {};
 }
 
 }  // namespace
 
 std::expected<TokenizerSpec, Error> ReadHfTokenizer(std::string_view text) {
+  if (!base::Pulse()) return Fail(Rule::kCancelled, "tokenizer parsing was asked to stop");
   auto parsed = json::Parse(text);
   if (!parsed) {
     return Fail(Rule::kFormat, "tokenizer.json is not JSON", parsed.error().offset);
@@ -274,14 +432,9 @@ std::expected<TokenizerSpec, Error> ReadHfTokenizer(std::string_view text) {
     auto normalization = ReadNormalizer(root);
     if (!normalization) return std::unexpected(normalization.error());
     spec.normalization = *normalization;
-    auto pre = ReadPreTokenizer(root);
-    if (!pre) return std::unexpected(pre.error());
-    spec.pre_tokenizer = *pre;
+    if (auto pre = ReadPreTokenizer(root, spec); !pre) return std::unexpected(pre.error());
     if (!decoder || StringMember(*decoder, "type") != "ByteLevel")
       return Fail(Rule::kUnsupported, "decoder other than ByteLevel");
-    if (const auto post = root.find("post_processor");
-        post && !post->is_null() && StringMember(*post, "type") != "ByteLevel")
-      return Fail(Rule::kUnsupported, "post-processor other than ByteLevel");
   }
 
   const auto model = root.find("model");
@@ -409,9 +562,7 @@ std::expected<TokenizerSpec, Error> ReadHfTokenizer(std::string_view text) {
       return Fail(Rule::kFormat, "a merge is neither a string nor a pair", i);
     }
   }
-  if (raw) {
-    if (auto post = ReadRawPostProcessor(root, spec); !post) return std::unexpected(post.error());
-  }
+  if (auto post = ReadPostProcessor(root, spec); !post) return std::unexpected(post.error());
   return spec;
 }
 

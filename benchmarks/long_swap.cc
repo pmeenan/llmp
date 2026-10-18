@@ -108,10 +108,10 @@ Status Run(std::span<const std::string_view> args) {
     return std::unexpected("cannot read prompt text");
   }
   auto input = llm.EncodeText(text);
-  if (!input || input->size() < count) {
+  if (!input || input->tokens.size() < count) {
     return std::unexpected("prompt text does not supply enough tokens");
   }
-  input->resize(count);
+  input->tokens.resize(count);
   const rt::GenerateOptions options{.max_tokens = kOutputs,
                                     .stop = false,
                                     .keep_logits = true,
@@ -134,7 +134,7 @@ Status Run(std::span<const std::string_view> args) {
                                return clear;
                              }
                              std::vector<float> last;
-                             if (auto pref = alternate.Prefill(*short_input, last); !pref) {
+                             if (auto pref = alternate.Prefill(short_input->tokens, last); !pref) {
                                return pref;
                              }
                              rt::Generation ignored;
@@ -169,7 +169,7 @@ Status Run(std::span<const std::string_view> args) {
               return clear;
             }
             const auto start = rt::Clock::now();
-            if (auto pref = llm.Prefill(*input, control_last, {}, &control_run); !pref) {
+            if (auto pref = llm.Prefill(input->tokens, control_last, {}, &control_run); !pref) {
               return pref;
             }
             control_prefill = Seconds(rt::Clock::now() - start);
@@ -191,7 +191,7 @@ Status Run(std::span<const std::string_view> args) {
               return clear;
             }
             const auto start = rt::Clock::now();
-            if (auto pref = llm.Prefill(*input, repeat_last, {}, &repeat_run); !pref) {
+            if (auto pref = llm.Prefill(input->tokens, repeat_last, {}, &repeat_run); !pref) {
               return pref;
             }
             repeat_prefill = Seconds(rt::Clock::now() - start);

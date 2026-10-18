@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/work_pulse.h"
 #include "tokenizer/error.h"
 #include "tokenizer/pretokenize.h"
@@ -39,49 +40,6 @@ bool AsciiSpace(char c) {
 }
 
 bool Raw(PreTokenizer p) { return p == PreTokenizer::kRawBpe || p == PreTokenizer::kSentencePiece; }
-
-bool AsciiLetter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
-bool AsciiAlnum(char c) { return AsciiLetter(c) || (c >= '0' && c <= '9'); }
-
-// Whether encoding may cut `text` before byte p (0 < p < size): before an
-// ASCII letter or digit that follows a newline, or before a space between
-// an ASCII letter or digit and an ASCII letter. Every pre-tokenizer's piece
-// ends there whatever follows (a newline ends its run, and a letter or
-// digit run ends at a space; no alternative joins a newline to a following
-// letter or digit, or a space to a preceding one), and matching from there
-// looks only forward; NFC composes neither (each side is a starter that
-// composes with nothing before it).
-bool CutAt(std::string_view text, std::size_t p) {
-  const char before = text[p - 1];
-  const char at = text[p];
-  if (before == '\n') {
-    return AsciiAlnum(at);
-  }
-  return at == ' ' && p + 1 < text.size() && AsciiAlnum(before) && AsciiLetter(text[p + 1]);
-}
-
-// The end of the window that starts at `start`: the last cut point within
-// kEncodeWindowBytes of it, else the first after, else the text's end.
-// Linear over a text: a window's backward scan crosses only bytes past the
-// last window's cut point, or ends in a forward scan the next window starts
-// after.
-std::size_t WindowEnd(std::string_view text, std::size_t start) {
-  if (text.size() - start <= kEncodeWindowBytes) {
-    return text.size();
-  }
-  const std::size_t limit = start + kEncodeWindowBytes;
-  for (std::size_t p = limit; p > start; --p) {
-    if (CutAt(text, p)) {
-      return p;
-    }
-  }
-  for (std::size_t p = limit + 1; p < text.size(); ++p) {
-    if (CutAt(text, p)) {
-      return p;
-    }
-  }
-  return text.size();
-}
 
 // a * b, saturating.
 std::size_t Times(std::size_t a, std::size_t b) {
@@ -188,7 +146,11 @@ struct Tokenizer::Impl {
   std::vector<TokenId> terminal;
   std::array<std::array<bool, 256>, 3> special_first{};
   bool unused_model_tokens = false;
-  PreTokenizer pre_tokenizer = PreTokenizer::kQwen2;
+  PreTokenizer pre_tokenizer = PreTokenizer::kByteBpe;
+  SplitPlan split_plan;
+  bool has_post_processor = false;
+  PostProcessorPlan post_processor;
+  std::uint64_t post_processor_tokens = 0;
   bool decode_added_whitespace = false;
   bool raw_bpe_split_newlines = true;
   Normalization normalization = Normalization::kNone;
@@ -255,7 +217,7 @@ struct Tokenizer::Impl {
       // (rank, left position): the lowest rank first, then the leftmost.
       using Candidate = std::pair<std::uint32_t, std::uint32_t>;
       // At most n - 1 first candidates and two a merge, so its storage
-      // never doubles past them (kEncodeBytesPerWindowByte).
+      // never doubles past them (kEncodeBytesPerInputByte).
       std::vector<Candidate> storage;
       storage.reserve((3 * n) - 3);
       std::priority_queue<Candidate, std::vector<Candidate>, std::greater<>> queue(
@@ -525,31 +487,21 @@ struct Tokenizer::Impl {
     return {};
   }
 
-  // Encodes text containing no special token (a fragment), a window at a
-  // time (kEncodeWindowBytes).
+  // Encodes a whole fragment; generic expressions may join across spaces.
   std::expected<void, Error> EncodeFragment(std::string_view text, const EncodeOptions& options,
-                                            std::vector<TokenId>& out, std::size_t base) const {
+                                            std::vector<TokenId>& out, std::size_t base,
+                                            RegexBudget& budget) const {
     if (pre_tokenizer == PreTokenizer::kSentencePiece) {
       return EncodeSentencePiece(text, options, out, base);
     }
-    for (std::size_t start = 0; start < text.size();) {
-      // A window at a time: a beat of the thread's pulse (a long encoding
-      // is progress, not a hang), and a cancellation checkpoint (D-102).
-      if (!base::Pulse()) {
-        return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", start});
-      }
-      const std::size_t end =
-          pre_tokenizer == PreTokenizer::kRawBpe ? text.size() : WindowEnd(text, start);
-      if (auto e = EncodeWindow(text.substr(start, end - start), options, out, base); !e) {
-        return e;
-      }
-      start = end;
-    }
-    return {};
+    if (!base::Pulse())
+      return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop"});
+    return EncodeWindow(text, options, out, base, budget);
   }
 
   std::expected<void, Error> EncodeWindow(std::string_view text, const EncodeOptions& options,
-                                          std::vector<TokenId>& out, std::size_t base) const {
+                                          std::vector<TokenId>& out, std::size_t base,
+                                          RegexBudget& budget) const {
     if (text.empty()) {
       return {};
     }
@@ -569,10 +521,21 @@ struct Tokenizer::Impl {
     }
     std::vector<std::uint32_t> lengths;
     lengths.reserve(cps.size());  // a piece a code point at most
-    if (pre_tokenizer == PreTokenizer::kRawBpe && !raw_bpe_split_newlines) {
-      lengths.push_back(static_cast<std::uint32_t>(cps.size()));
-    } else {
-      PreTokenize(pre_tokenizer, cps, lengths);
+    if (pre_tokenizer == PreTokenizer::kRawBpe) {
+      if (!raw_bpe_split_newlines) {
+        lengths.push_back(static_cast<std::uint32_t>(cps.size()));
+      } else
+        for (std::size_t at = 0; at < cps.size();) {
+          std::size_t end = at + 1;
+          while (end < cps.size() && (cps[end] == U'\n') == (cps[at] == U'\n')) {
+            if (auto paid = budget.Pay(); !paid) return paid;
+            ++end;
+          }
+          lengths.push_back(static_cast<std::uint32_t>(end - at));
+          at = end;
+        }
+    } else if (auto split = split_plan.Split(cps, lengths, budget); !split) {
+      return split;
     }
     std::size_t start = 0;
     std::string bytes;
@@ -655,8 +618,51 @@ struct Tokenizer::Impl {
     return {};
   }
 
-  std::expected<void, Error> Begin(std::string_view text, const EncodeOptions& options,
-                                   std::vector<TokenId>& out, std::size_t base) const {
+  std::expected<void, Error> Insert(std::span<const PostProcessorSlice> pieces,
+                                    const EncodeOptions& options, std::vector<TokenId>& out,
+                                    std::size_t base) const {
+    for (const auto piece : pieces) {
+      if (!base::Pulse())
+        return std::unexpected(Error{Rule::kCancelled, "postprocessing was asked to stop"});
+      for (const auto id : std::span(post_processor.ids).subspan(piece.offset, piece.length)) {
+        if (!base::Pulse())
+          return std::unexpected(Error{Rule::kCancelled, "postprocessing was asked to stop"});
+        if (auto emitted = Emit(id, options, out, base); !emitted) return emitted;
+      }
+    }
+    return {};
+  }
+
+  std::uint64_t OutputTokensBound(std::size_t n, bool source) const {
+    const auto limit = std::numeric_limits<std::uint64_t>::max();
+    const auto bytes = n == limit ? limit : Times(n + 1, 16);
+    const auto wrappers = !source              ? 0
+                          : has_post_processor ? post_processor_tokens
+                                               : static_cast<std::uint64_t>(add_bos) +
+                                                     static_cast<std::uint64_t>(add_eos);
+    return bytes > limit - wrappers ? limit : bytes + wrappers;
+  }
+
+  std::expected<void, Error> ReserveOutput(std::size_t n, const EncodeOptions& options,
+                                           std::vector<TokenId>& out, std::size_t extra) const {
+    const auto append =
+        std::min<std::uint64_t>(OutputTokensBound(n, options.add_bos_eos), options.max_tokens);
+    std::uint64_t capacity = 0;
+    if (__builtin_add_overflow(append, static_cast<std::uint64_t>(out.size()), &capacity) ||
+        __builtin_add_overflow(capacity, static_cast<std::uint64_t>(extra), &capacity) ||
+        capacity > out.max_size())
+      return std::unexpected(Error{Rule::kBounds, "output reservation overflows"});
+    if (!base::Pulse())
+      return std::unexpected(Error{Rule::kCancelled, "output reservation was asked to stop"});
+    if (capacity > out.capacity()) {
+      out.reserve(static_cast<std::size_t>(capacity));
+      // The pinned library's reserve allocates exactly n, never geometric growth.
+      base::Check(out.capacity() == capacity, "token output exceeded its reserved capacity");
+    }
+    return {};
+  }
+
+  std::expected<void, Error> Preflight(std::string_view text, const EncodeOptions& options) const {
     if (text.size() > options.max_bytes ||
         (text.size() > kNone ||
          (pre_tokenizer == PreTokenizer::kSentencePiece && text.size() == kNone))) {
@@ -678,23 +684,39 @@ struct Tokenizer::Impl {
     if (auto valid = unicode::ValidateUtf8(text); !valid) {
       return valid;
     }
-    if (options.add_bos_eos && add_bos && bos) {  // Create checked add_bos names a BOS
-      return Emit(*bos, options, out, base);
+    return {};
+  }
+
+  std::expected<void, Error> Begin(std::string_view text, const EncodeOptions& options,
+                                   std::vector<TokenId>& out, std::size_t base) const {
+    if (auto valid = Preflight(text, options); !valid) return valid;
+    if (auto reserved = ReserveOutput(text.size(), options, out, 0); !reserved) return reserved;
+    if (options.add_bos_eos) {
+      if (has_post_processor) {
+        if (auto inserted = Insert(post_processor.prefix, options, out, base); !inserted)
+          return inserted;
+      } else if (add_bos && bos)
+        return Emit(*bos, options, out, base);
     }
     return {};
   }
 
   std::expected<void, Error> End(const EncodeOptions& options, std::vector<TokenId>& out,
                                  std::size_t base) const {
-    if (options.add_bos_eos && add_eos && eos) {
-      return Emit(*eos, options, out, base);
+    if (options.add_bos_eos) {
+      if (has_post_processor) {
+        if (auto inserted = Insert(post_processor.suffix, options, out, base); !inserted)
+          return inserted;
+      } else if (add_eos && eos)
+        return Emit(*eos, options, out, base);
     }
     return {};
   }
 
   // One matching policy applies before and after normalization.
   std::expected<void, Error> EncodeText(std::string_view text, const EncodeOptions& options,
-                                        std::vector<TokenId>& out, std::size_t base) const {
+                                        std::vector<TokenId>& out, std::size_t base,
+                                        RegexBudget& budget) const {
     std::size_t fragment = 0;
     std::size_t checkpoint = 65536;
     for (std::size_t p = 0; p < text.size();) {
@@ -710,7 +732,8 @@ struct Tokenizer::Impl {
         ++p;
         continue;
       }
-      if (auto e = EncodeFragment(text.substr(fragment, p - fragment), options, out, base); !e) {
+      if (auto e = EncodeFragment(text.substr(fragment, p - fragment), options, out, base, budget);
+          !e) {
         return e;
       }
       if (auto e = Emit(t, options, out, base); !e) {
@@ -727,9 +750,28 @@ struct Tokenizer::Impl {
       }
       fragment = p;
     }
-    return EncodeFragment(text.substr(fragment), options, out, base);
+    return EncodeFragment(text.substr(fragment), options, out, base, budget);
   }
 };
+
+namespace {
+std::expected<std::uint64_t, Error> PostProcessorTokens(const PostProcessorPlan& plan) {
+  std::uint64_t count = 0;
+  for (const auto& list : {std::span(plan.prefix), std::span(plan.suffix)}) {
+    for (const auto piece : list) {
+      if (!base::Pulse())
+        return std::unexpected(
+            Error{Rule::kCancelled, "postprocessor validation was asked to stop"});
+      if (piece.offset > plan.ids.size() || piece.length > plan.ids.size() - piece.offset)
+        return std::unexpected(Error{Rule::kVocabulary, "postprocessor slice outside definitions"});
+      if (__builtin_add_overflow(count, static_cast<std::uint64_t>(piece.length), &count))
+        return std::unexpected(
+            Error{Rule::kBounds, "expanded postprocessor token count overflows"});
+    }
+  }
+  return count;
+}
+}  // namespace
 
 Tokenizer::Tokenizer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Tokenizer::Tokenizer(Tokenizer&&) noexcept = default;
@@ -764,6 +806,17 @@ std::expected<std::uint64_t, Error> Tokenizer::ConstructionBytes(const Tokenizer
       !add(spec.merges.capacity(), sizeof(std::pair<std::string, std::string>)) ||
       !add(spec.tokens.size(), sizeof(std::string) + 192) || !add(spec.merges.size(), 192))
     return fail();
+  if (auto count = PostProcessorTokens(spec.post_processor); !count)
+    return std::unexpected(count.error());
+  if (!add(spec.split_expressions.capacity(), sizeof(std::string)) ||
+      !add(spec.post_processor.ids.capacity(), sizeof(TokenId)) ||
+      !add(spec.post_processor.prefix.capacity(), sizeof(PostProcessorSlice)) ||
+      !add(spec.post_processor.suffix.capacity(), sizeof(PostProcessorSlice)))
+    return fail();
+  for (const auto& expression : spec.split_expressions) {
+    if (!add(expression.capacity(), 1) || !add(1, Regex::ConstructionBytes(expression.size())))
+      return fail();
+  }
   std::uint64_t longest = 0, longest_merge = 0;
   for (std::size_t i = 0; i < spec.tokens.size(); ++i) {
     const auto& text = spec.tokens[i];
@@ -798,6 +851,8 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
   auto fail = [](Rule rule, std::string_view reason, std::uint64_t item = kNoItem) {
     return std::unexpected(Error{rule, reason, item});
   };
+  auto wrapper_count = PostProcessorTokens(spec.post_processor);
+  if (!wrapper_count) return std::unexpected(wrapper_count.error());
   const std::size_t n = spec.tokens.size();
   if (n == 0 || n > kMaxVocabulary) {
     return fail(Rule::kBounds, "vocabulary size", n);
@@ -840,6 +895,21 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
   impl->add_space_prefix = spec.add_space_prefix;
   impl->remove_extra_whitespaces = spec.remove_extra_whitespaces;
   impl->strips_space = std::ranges::any_of(impl->rstrip, [](bool value) { return value; });
+  auto plan = SplitPlan::Compile(spec.pre_tokenizer == PreTokenizer::kByteBpe
+                                     ? std::span<const std::string>(spec.split_expressions)
+                                     : std::span<const std::string>{},
+                                 spec.split_dialect);
+  if (!plan) return std::unexpected(plan.error());
+  impl->split_plan = std::move(*plan);
+  impl->has_post_processor = spec.has_post_processor;
+  impl->post_processor = std::move(spec.post_processor);
+  impl->post_processor_tokens = *wrapper_count;
+  for (const auto id : impl->post_processor.ids) {
+    if (!base::Pulse()) return fail(Rule::kCancelled, "postprocessor validation was asked to stop");
+    if (id < 0 || std::cmp_greater_equal(id, n) ||
+        impl->kinds[static_cast<std::size_t>(id)] == TokenKind::kUnused)
+      return fail(Rule::kVocabulary, "postprocessor ID outside vocabulary");
+  }
   impl->pre_tokenizer = spec.pre_tokenizer;
   impl->raw_bpe_split_newlines = spec.raw_bpe_split_newlines;
   impl->decode_added_whitespace = spec.decode_added_whitespace;
@@ -1066,32 +1136,30 @@ TokenKind Tokenizer::Kind(TokenId id) const { return impl_->kinds[static_cast<st
 
 std::size_t Tokenizer::longest_token_bytes() const { return impl_->longest; }
 
-std::uint64_t Tokenizer::EncodeWorkingBytes(std::string_view text) {
-  std::size_t widest = 0;
-  for (std::size_t start = 0; start < text.size();) {
-    const std::size_t end = WindowEnd(text, start);
-    widest = std::max(widest, end - start);
-    start = end;
-  }
-  return std::uint64_t{widest} * kEncodeBytesPerWindowByte;
-}
-
 std::uint64_t Tokenizer::WorkingBytes(std::string_view text) const {
-  if (Raw(impl_->pre_tokenizer)) {
-    const auto bytes = impl_->pre_tokenizer == PreTokenizer::kSentencePiece &&
-                               text.size() < std::numeric_limits<std::size_t>::max()
-                           ? text.size() + 1
-                           : text.size();
-    if (impl_->unused_model_tokens) {
-      const auto table = Times(impl_->tokens.size(), sizeof(std::uint32_t));
-      const auto work = Times(bytes, 128);
-      return work > std::numeric_limits<std::uint64_t>::max() - table
-                 ? std::numeric_limits<std::uint64_t>::max()
-                 : work + table;
-    }
-    return Times(bytes, kEncodeBytesPerWindowByte);
-  }
-  return EncodeWorkingBytes(text);
+  return WorkingBytes(text.size());
+}
+std::uint64_t Tokenizer::WorkingBytes(std::size_t n) const {
+  const auto limit = std::numeric_limits<std::uint64_t>::max();
+  if (n == limit) return limit;
+  const auto bytes = Times(n + 1, impl_->normalization == Normalization::kNfc ? 4 : 1);
+  auto bound = Times(bytes, impl_->unused_model_tokens ? 128 : kEncodeBytesPerInputByte);
+  const auto scratch =
+      impl_->pre_tokenizer == PreTokenizer::kByteBpe ? impl_->split_plan.WorkingBytes(bytes) : 0;
+  const auto table =
+      impl_->unused_model_tokens ? Times(impl_->tokens.size(), sizeof(std::uint32_t)) : 0;
+  if (bound > limit - scratch || bound + scratch > limit - table) return limit;
+  return bound + scratch + table;
+}
+std::uint64_t Tokenizer::OutputTokensBound(std::size_t n, bool source) const {
+  return impl_->OutputTokensBound(n, source);
+}
+std::expected<void, Error> Tokenizer::ReserveOutput(std::string_view text,
+                                                    const EncodeOptions& options,
+                                                    std::vector<TokenId>& out,
+                                                    std::size_t extra) const {
+  if (auto valid = impl_->Preflight(text, options); !valid) return valid;
+  return impl_->ReserveOutput(text.size(), options, out, extra);
 }
 
 std::optional<TokenId> Tokenizer::Find(std::string_view text) const {
@@ -1105,10 +1173,11 @@ std::optional<TokenId> Tokenizer::Find(std::string_view text) const {
 std::expected<void, Error> Tokenizer::Encode(std::string_view text, const EncodeOptions& options,
                                              std::vector<TokenId>& out) const {
   const std::size_t base = out.size();
+  auto budget = impl_->split_plan.Budget(Times(text.size() + 1, 4));
   if (auto b = impl_->Begin(text, options, out, base); !b) {
     return b;
   }
-  if (auto e = impl_->EncodeText(text, options, out, base); !e) {
+  if (auto e = impl_->EncodeText(text, options, out, base, budget); !e) {
     return e;
   }
   return impl_->End(options, out, base);
@@ -1120,8 +1189,14 @@ std::expected<void, Error> Tokenizer::EncodeMarked(std::string_view text,
                                                    std::vector<TokenId>& out,
                                                    std::vector<std::size_t>* span_tokens) const {
   const std::size_t base = out.size();
+  auto budget = impl_->split_plan.Budget(Times(text.size() + 1, 4));
   if (auto b = impl_->Begin(text, options, out, base); !b) {
     return b;
+  }
+  if (span_tokens != nullptr) {
+    if (spans.size() > span_tokens->max_size() - span_tokens->size())
+      return std::unexpected(Error{Rule::kBounds, "span index reservation overflows"});
+    span_tokens->reserve(span_tokens->size() + spans.size());
   }
   auto text_options = options;
   text_options.special = SpecialTokens::kUserDefinedOnly;
@@ -1141,7 +1216,8 @@ std::expected<void, Error> Tokenizer::EncodeMarked(std::string_view text,
         Kind(*token) == TokenKind::kUnused) {
       return std::unexpected(Error{Rule::kSpecialToken, "a span is not a special token", i});
     }
-    if (auto e = impl_->EncodeText(text.substr(at, s.offset - at), text_options, out, base); !e) {
+    if (auto e = impl_->EncodeText(text.substr(at, s.offset - at), text_options, out, base, budget);
+        !e) {
       return e;
     }
     if (span_tokens != nullptr) {
@@ -1163,7 +1239,7 @@ std::expected<void, Error> Tokenizer::EncodeMarked(std::string_view text,
       }
     }
   }
-  if (auto e = impl_->EncodeText(text.substr(at), text_options, out, base); !e) {
+  if (auto e = impl_->EncodeText(text.substr(at), text_options, out, base, budget); !e) {
     return e;
   }
   return impl_->End(options, out, base);

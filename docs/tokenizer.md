@@ -21,7 +21,7 @@ carries its notice ([licensing.md](licensing.md#tokenizer-unicode-tables-m3)).
 | Module | Holds |
 | --- | --- |
 | `base/json.h` (`llmp_json`) | General RFC 8259 JSON from untrusted bytes: strict UTF-8, unescaped strings, numbers kept as text, duplicate keys refused, caps on size, depth, values and string bytes |
-| `tokenizer/` (`llmp_tokenizer`) | `unicode.h` (UCD 15.1.0 properties, strict UTF-8, U+FFFD replacement, NFC), `pretokenize.h` (four BPE pre-tokenizers and the whole-fragment SentencePiece mode), `tokenizer.h` (vocabulary validation, encode, decode, streaming decode), `gguf.h`, `hf.h` and `sentencepiece.h` (readers of GGUF tokenizer metadata, `tokenizer.json` and standalone `tokenizer.model`) |
+| `tokenizer/` (`llmp_tokenizer`) | `unicode.h` (UCD 15.1.0 properties, strict UTF-8, U+FFFD replacement, NFC), `regex.h` (bounded compiled expressions), `pretokenize.h` (ordered split plans), `presets.cc` (GGUF preset data), `tokenizer.h` (vocabulary validation, encode, decode, streaming decode), `gguf.h`, `hf.h` and `sentencepiece.h` (readers of GGUF tokenizer metadata, `tokenizer.json` and standalone `tokenizer.model`) |
 | `chat/` (`llmp_chat`) | `chat.h` (the conversation, the native renderers and their registry, `ChatTemplate`: the choice by hash, probe or interpreter; stop tokens, Python's `str.strip`), `jinja.h` (the Jinja-subset interpreter: `jinja_parse.cc`, `jinja_eval.cc`, `jinja_value.cc`), `pyjson.h` (JSON as Python's `json.dumps` prints it, and values as `str()` prints them); the family renderers `deepseek_v4.cc`, `qwen.cc` and `gemma.cc` |
 | `execution/sampling.h` (`llmp_sampling`) | Greedy and seeded sampling |
 
@@ -30,8 +30,9 @@ first: it needs only `base`; `chat` needs `tokenizer` and `llmp_json`.
 
 ## The tokenizer
 
-Byte-level BPE encoding follows what llama.cpp (the pinned `b29c606e`)
-and Hugging Face tokenizers do for these vocabularies:
+Byte-level BPE encoding follows each source vocabulary. Historical agreement
+fixtures retain llama.cpp `b29c606e`; new Llama 3.2 evidence uses the locked
+`d8123504` reference (the reference-generation README records both pins):
 
 1. **Special tokens** are matched in the raw text, leftmost-longest.
    User-defined tokens (Hugging Face's non-special added tokens, such as
@@ -45,22 +46,65 @@ and Hugging Face tokenizers do for these vocabularies:
    runs; both matching orders consume the longest run from the left.
 2. **Normalization:** NFC for the tokenizer.json vocabularies that declare
    it (both Qwen files), none otherwise.
-3. **Pre-tokenization** splits each fragment natively; no regex engine
-   runs. Each pre-tokenizer is identified by name (GGUF) or by the exact
-   expressions of its Split stages (`tokenizer.json`); anything else is
-   refused, never approximated:
+3. **Pre-tokenization** compiles source expressions once into immutable
+   bytecode. HF `Split(Regex, Isolated)` stages and nested `Sequence` stages
+   flatten into an ordered split plan; every later stage runs within each
+   preceding piece. Unmatched gaps remain pieces. `ByteLevel` must be last:
+   `use_regex=true` (the default) adds GPT-2 splitting, and false adds none.
+   `add_prefix_space=true` (also the default if absent) is explicitly refused;
+   false is supported. Offset-only flags are type checked. Unsupported fields,
+   split behaviors, inversion and byte conversion in the middle are refused.
 
-   | Pre-tokenizer | Names | Expression |
-   | --- | --- | --- |
-   | `kQwen2` | GGUF `qwen2`; Qwen2Tokenizer's Split | `(?i:'s\|'t\|'re\|'ve\|'m\|'ll\|'d)\|[^\r\n\p{L}\p{N}]?\p{L}+\|\p{N}\| ?[^\s\p{L}\p{N}]+[\r\n]*\|\s*[\r\n]+\|\s+(?!\S)\|\s+` |
-   | `kQwen35` | GGUF `qwen35` (Qwen3.5, Qwen3.8) | as `kQwen2`, with `[\p{L}\p{M}]+` words and marks out of the symbol run |
-   | `kDeepSeekV3` | GGUF `deepseek-v3`, `joyai-llm` (DeepSeek V3, V4) | three stages: `\p{N}{1,3}`, `[一-龥぀-ゟ゠-ヿ]+`, then ``[!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{\|}~][A-Za-z]+\|[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+\| ?[\p{P}\p{S}]+[\r\n]*\|\s*[\r\n]+\|\s+(?!\S)\|\s+`` |
+   GGUF names select expression lists and semantic defaults from a data table
+   transcribed from llama.cpp `d81235049384534c167caea52b85a694f6103d14`,
+   `src/llama-vocab.cpp`. This includes `llama-bpe`/`llama3`/`llama-v3`,
+   `gpt-2`/`phi-2`, `gpt-4o`, `tekken`, `starcoder`, `falcon`, `command-r`,
+   `qwen2`/`qwen35`, `deepseek-llm`/`deepseek-coder`/`deepseek-v3` and
+   `joyai-llm`, with the pinned aliases recorded in `presets.cc`. Unknown
+   names refuse. Explicit `default`, an empty name and absent byte-BPE `pre`
+   select the pin's four-stage BPE default; this is distinct from GPT-2 and
+   SentencePiece, and no architecture inference is used. Llama 3 and Tekken default to whole-piece direct vocabulary
+   lookup before merges and automatic BOS; explicit GGUF BOS/EOS booleans
+   override defaults, including false. HF supplies expressions directly:
+   a new expression within the supported grammar needs no family code.
 
-   Semantics are a backtracking regex's (the first alternative matching
-   at the leftmost position), which both references use; text a stage
-   does not match stays one piece. `\s` is White_Space and `\p{..}` the
-   general category, from UCD 15.1.0. The contractions match ASCII letters
-   of either case only: both references leave `'ſ` unmatched.
+   Matching chooses the first successful alternative at the leftmost position.
+   The grammar includes UTF-8 literals, escaped metacharacters and whitespace,
+   dot, positive/negative classes and ranges, all 30 UCD general categories
+   and their L/M/N/P/S/Z/C aggregates with `\p`/`\P`, `\s`/`\S`, ordered
+   alternation, capturing/noncapturing grouping (captures are not returned),
+   scoped `(?i:)`, greedy/lazy/possessive `? * + {m} {m,n} {m,}`, `^`,
+   `$`, `(?!\S)`, and positive lookahead for one character class,
+   `(?=[...])`. HF anchors are Oniguruma line anchors: `^` also matches
+   after LF and `$` before LF; `\A` and `\z` are absolute. GGUF presets
+   retain the locked llama.cpp fallback's non-multiline ECMAScript anchors
+   over each stage fragment. HF classes support nested union and `&&`
+   intersection; escaped ampersands remain literals. GGUF classes retain
+   literal ampersands. Class algebra uses explicit source-sized compiler and
+   matcher stacks and pays the shared transition allowance. `(?m:)` remains
+   unsupported: Oniguruma uses that flag for dotall, not line-anchor selection.
+   `\s` is UCD 15.1.0 White_Space.
+   Case-insensitive literal runs use UCD 15.1.0 default full folding: `s`
+   matches long-s, `k` matches Kelvin sign, and the literal run `ss` matches
+   sharp-s. Folding consumes complete original code points and does not join
+   across classes, repetition atoms, captures or scoped groups: `s{2}` and
+   `[s][s]` do not match sharp-s. ASCII case-insensitive classes use single
+   code-point fold equivalence; non-ASCII caseless classes, caseless category
+   properties, backreferences, other assertions, scripts and unknown escapes
+   refuse explicitly. Independent pinned tokenizers 0.22.2/Oniguruma probes
+   establish these literal-run and group-boundary controls; Python case
+   conversion is not the source of the folding data or the regex oracle.
+   A successful empty match establishes a boundary without emitting an empty
+   piece, then advances search by one code point. Unmatched input is retained;
+   every emitted piece is nonempty and their lengths sum to the input. There are no separate handwritten family matchers.
+
+   GGUF presets use the actual runtime expressions at the locked source,
+   including ASCII contraction classes and GPT4O/Tekken's category/class
+   lookahead workaround. HF expressions retain their own Unicode semantics;
+   neither comment expressions nor a family label replace them. For example,
+   HF Qwen's contraction alternative splits `a'ſz` as `a`, `'ſ`, `z`, while
+   the GGUF preset's explicit ASCII classes retain `'ſz` as one word piece.
+   This corrects the previous HF ASCII-only case matching on such inputs.
 4. **BPE** on each piece's bytes in the GPT-2 byte alphabet: the lowest
    merge rank first, the leftmost on a tie, until no ranked pair remains.
 
@@ -95,13 +139,12 @@ added tokens retain their normalization flag: raw matching runs before space
 replacement, and normalized matching runs afterward, freezing each longest
 match before model merges. Literal spaces in normalized added-token text are
 normalized by that same replacement.
-TemplateProcessing supports a single input with an optional BOS and EOS;
-insertion follows `EncodeOptions::add_bos_eos`. Other template layouts and
-pipeline stages are explicitly refused.
+The shared postprocessor described below applies to raw and byte-alphabet
+BPE alike.
 
 Raw BPE can merge across spaces, so it encodes a whole fragment and
-`Tokenizer::WorkingBytes` charges 96 bytes per input byte. Serving uses
-this mode-aware estimate; byte BPE keeps its windowed estimate. Replacing
+`Tokenizer::WorkingBytes` charges 96 times (input bytes + 1) for raw BPE.
+Byte-alphabet BPE also funds the complete normalized fragment and VM scratch. Replacing
 one space with three UTF-8 bytes still creates only one symbol because
 `▁` is required. Every other code point contributes at most its original
 byte count of symbols. Code points and piece lengths, expanded text,
@@ -132,8 +175,7 @@ The approved checkpoint's name, `Phi 3.5 Mini Instruct`, does not trigger
 that override. Strip scans have cancellation checkpoints and cannot cross
 a marked control span. Unsupported whitespace-collapse flags are refused.
 
-SentencePiece encodes each complete fragment; byte-BPE window cuts are
-inapplicable. `WorkingBytes` charges 96 times (input bytes + 1): expanded
+SentencePiece encodes each complete fragment. `WorkingBytes` charges 96 times (input bytes + 1): expanded
 text needs at most 3 bytes per input byte or dummy symbol, symbols and
 links at most 24, and the score heap at most 60 (three candidates per
 symbol). The heap uses bounded token lookups and stale-entry checks rather
@@ -142,8 +184,8 @@ emission and special stripping pulse periodically. The cheap output-size
 lower-bound refusal is disabled when stripping could shorten the input;
 the output cap remains enforced during emission. This slice establishes
 tokenizer agreement, without claiming model execution or rendered-chat
-token agreement. Command R 7B's approved GGUF uses a separate `gpt2`
-`command-r` pre-tokenizer and remains a follow-up.
+token agreement. The separate `gpt2` / `command-r` preset is now supported;
+actual Command R model agreement is not claimed.
 
 **Byte fallback.** Byte BPE creation requires a normal token for every
 byte and a token for every merge's result, so every well-formed text encodes and
@@ -161,27 +203,86 @@ prompt is cut below what the body and the context admit (a 4 MiB+ chat
 renders and tokenizes, `llm_scores_test`). A text longer than `max_tokens`
 times the vocabulary's longest token (four times that under NFC, which
 composes text at most threefold) cannot fit and is refused
-(`kOutputTooLarge`) before it is decoded. For byte BPE, memory follows the longest
-window, not the text: a fragment past `kEncodeWindowBytes` (1 MiB) is
-encoded a window at a time, cut at the last cut point within the window
-(or the first after it): before an ASCII letter or digit that follows a
-newline, or before a space between an ASCII letter or digit and an ASCII
-letter. No byte-BPE pre-tokenizer's piece spans one (a newline ends its run, a
-letter or digit run ends at a space, matching looks only forward from
-there) and NFC composes across neither, so the tokens are the whole
-fragment's (`WindowCutsSplitNoPieceAndNoComposition` checks every cut in
-random text against all three pre-tokenizers and NFC). Serving charges
-`Tokenizer::WorkingBytes` (96 bytes a byte of the longest window for byte BPE)
-and the tokens to the request memory before encoding; a text whose
-longest stretch without a cut point could never be held (its window past
-the request memory's capacity) is refused as the prompt's shape
-(`context_length_exceeded`), not as memory busy. Work is
-O(n log n) (NFC sorts combining runs, BPE uses a heap), except that
-special-token matching may take up to 256 trie steps per byte: on spark-b
-4 MiB takes 0.1–1.1 s with the real vocabularies and about 7 s with a
-hostile one built for the worst case. Vocabulary caps:
+(`kOutputTooLarge`) before it is decoded. All modes encode whole fragments:
+an arbitrary source regex can join across the former 1 MiB space/newline cuts.
+`WorkingBytes(input_bytes)` is allocation-free and saturates on overflow. It
+funds normalization (fourfold under NFC), code points, merging, split vectors,
+and VM counters/choices; `OutputTokensBound` separately funds output and all
+source wrappers. `ReserveOutput` checks the append bound and reserves it
+before either `Encode` or `EncodeMarked` emits anything, avoiding geometric
+growth while a compact source recipe expands. `max_tokens` still limits this
+append, independent of existing output IDs. Callers fund existing capacity
+plus replacement capacity when reserving a nonempty vector, and can reserve
+an explicit extra endpoint BOS slot. Marked span-index storage is reserved
+separately from token storage. Serving pays both before encoding; capacity and
+temporary availability failures report actual required memory bytes. In particular a
+line break does not make a generic regex's working set smaller.
+`Llm::EncodeText` returns a move-only owner that retains the output-capacity
+charge after temporary work is released. Swap-table context caches keep that
+owner after shrinking the visible token count and borrow its immutable tokens
+for pair operations; destruction releases token storage before its payment.
+
+Parser storage derives from the source and paid construction memory. There
+are no separate small expression, group, stage or wrapper-count policy limits.
+Compilation uses explicit source-sized frames, resolves deep group chains once,
+and checks that worst-case node/program/literal offsets fit their uint32
+representation and that byte arithmetic does not overflow. Decimal counts are
+compact checked uint32 counters, never expanded into instructions. The existing
+JSON parser's source/representation limits apply to HF input. `ConstructionBytes`
+funds source capacities, program/classes, compiler peak stacks and the actual
+compact postprocessor definition/reference capacities. Matching has one transition allowance
+for the entire encoding, across search starts, stage pieces, stages and special
+fragments: `16 * (4 * (input_bytes + 1) + 1) * plan_program_size`, saturating
+on arithmetic overflow. Program size includes instructions, classes, class
+terms and literal storage; every transition, scan, class term, counter snapshot and restoration
+pays that allowance. Choice storage has its own cap derived from input and
+program size; single-class repetitions use compact backtracking ranges rather
+than a snapshot per character. Nullable loops must make progress once their
+minimum is met. Exhausted work or choice storage returns `kBounds`, with a
+static reason; it never returns approximate pieces or uses elapsed time.
+This is bounded backtracking, not a claim of linear completion for every
+expression. Compiler, matching, merging, extraction and emission pulse for
+cancellation; grammar/syntax refusals remain distinct from resource exhaustion.
+BPE itself is O(n log n), and special-token extraction takes at most 256 trie
+steps per byte. Historical window-based performance measurements do not
+qualify the generic regex path.
+
+Vocabulary caps:
 2^22 tokens of at most 1,024 bytes, special tokens of at most 256 bytes.
 Every refusal is a named `Rule` with a static reason and an item.
+
+**Source postprocessing.** `EncodeOptions::add_bos_eos` applies the complete
+source insertion recipe when true. `TemplateProcessing` accepts string and
+object templates, exactly one A in a single-input template, any bounded number
+of prefix/suffix wrappers and multi-ID named special definitions. The reader
+first validates/counts definitions and references, reserves those exact capacities,
+then fills a compact recipe. Each definition's IDs are stored once, with checked
+slice references for repeated uses; construction never materializes reference-count
+× definition-length IDs. Prefix composition reverses references in place instead
+of repeatedly copying earlier wrappers. Traversal and temporary recipe storage
+remain proportional to JSON source under the caller's parser loan. Construction
+and emission pulse for cancellation; emitted IDs stream under `max_tokens`, and
+the checked expanded insertion count enters `OutputTokensBound`. Definitions'
+IDs and text must agree with the vocabulary; type IDs are checked uint32 values.
+Pair metadata is validated for one A and one B, but this is a single-input
+encoding API. Repeated/missing A or B in a single layout refuses. `Sequence`
+composes in source order: later prefixes wrap earlier prefixes and earlier
+suffixes precede later suffixes. ByteLevel postprocessing changes offsets only,
+so has no ID effect. Wrapper IDs count toward the append's output cap and marked
+span indexes include preceding wrappers. Named BOS/EOS roles remain independent
+of arbitrary wrappers; kept tokenizer configuration supplies those roles. An
+explicit HF processor, including an empty one, is authoritative for the source
+recipe. GGUF and ModelProto use their insertion flags when no processor exists.
+Literal completions retain their documented BOS-only policy (runtime-serving.md):
+source processing is disabled, then at most one enabled named BOS is inserted;
+no EOS or arbitrary template wrapper is added, and explicit IDs remain exact.
+
+Qwen-Image's renderer returns its fixed framing and the marked-span index at
+the end of its dropped system segment. The runtime encodes the whole rendering
+once and obtains the dropped token count from that marked span's actual output
+index. It funds the exact fixed-framing bound, complete tokenizer work, output
+and span indexes before rendering; user-spelled control markers remain ordinary
+content. There is no hidden system-prefix tokenization in the renderer.
 
 **Decoding** gives each token's bytes: normal tokens through the byte
 alphabet (raw UTF-8 normal tokens replace `▁` with spaces and byte fallback
@@ -202,7 +303,7 @@ lengths are checked against caps (2^16 keys, 2^24 elements in any array,
 allocated; other keys' values are not converted; keys are non-empty
 UTF-8 and may not repeat, bools are 0 or 1, no array holds arrays (as
 pinned gguf.cpp refuses), types must match. It accepts
-`gpt2` vocabularies with the three pre-tokenizer modes above and token types
+`gpt2` vocabularies with the preset split plans above and token types
 normal, control, user-defined and unused, and the Gemma 4 raw UTF-8 BPE
 metadata and byte fallback described above. Classic SentencePiece also
 requires one finite F32 score per token, accepts unknown tokens as controls,
@@ -252,8 +353,12 @@ file is an error; it never silently selects another tokenizer.
 
 `src/tokenizer/unicode_data.cc` is generated by `tools/gen-unicode-tables`
 from UCD 15.1.0's UnicodeData.txt, PropList.txt,
-DerivedNormalizationProps.txt, SpecialCasing.txt and
-DerivedCoreProperties.txt, each pinned by SHA-256 in the tool (D-088):
+DerivedNormalizationProps.txt, SpecialCasing.txt,
+DerivedCoreProperties.txt and CaseFolding.txt, each pinned by SHA-256 in the tool (D-088):
+CaseFolding.txt is the official 84,870-byte versioned file, SHA-256
+`4e55acfdc32825a22e87670e9056a3bf94ad7c5400065778e9e10f8314372bcf`.
+Its C/F records provide default full folds (up to three code points); S/T
+records do not substitute simple or Turkic folds. The generated data provides
 general category, White_Space and NFC_QC per code point as two-stage
 tables, canonical combining classes, full canonical decompositions and the
 primary composites; and, for the chat templates' case operations, the full
@@ -286,6 +391,7 @@ without parsing special tokens (184 encodings per configuration):
 
 | Configuration | Source (under `~/.local/share/llmp/` on the Sparks) | Reference | Result |
 | --- | --- | --- | --- |
+| `llama-3.2-1b-gguf` | `tokenizer-reference/llama32/header.gguf` | llama.cpp `d8123504`, current locked ARM64 image | 92 inputs in four modes plus four independent BOS probes; native verification pending |
 | `phi-3.5-gguf` | `tokenizer-reference/legacy/phi35.gguf`; 32,064 tokens, `llama` | pinned llama.cpp | 184 of 184 equal |
 | `gemma-2-2b-gguf` | `tokenizer-reference/legacy/gemma2.gguf`; 256,000 tokens, `llama` | pinned llama.cpp | 184 of 184 equal |
 | `gemma-3-4b-gguf` | `tokenizer-reference/legacy/gemma3.gguf`; 262,208 tokens, `llama` | pinned llama.cpp | 184 of 184 equal |

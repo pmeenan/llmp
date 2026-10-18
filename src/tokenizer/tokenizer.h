@@ -40,9 +40,9 @@
 // external added-token extraction remains independent of model membership.
 // Native UNUSED pieces can merge, then resegment iteratively at emission. Work is
 // O(n log n), with up to 256 special-token trie steps per input byte, and
-// byte-BPE memory follows the longest window, not the text (D-102): a fragment is
-// encoded in windows of about kEncodeWindowBytes, cut only where neither
-// normalization nor its byte-BPE pre-tokenizer joins across (EncodeWorkingBytes).
+// regex work is bounded by input length and compiled program size. Whole
+// fragments are encoded and funded: arbitrary expressions may join across
+// spaces or newlines.
 // A Tokenizer is immutable once created; Encode and Decode are safe to call
 // from several threads at once.
 
@@ -77,6 +77,17 @@ enum class TokenKind : std::uint8_t {
 
 enum class Normalization : std::uint8_t { kNone, kNfc };
 
+// Compact source recipe: definitions are stored once, while the ordered
+// wrappers refer to checked slices. Repeated multi-ID names never expand
+// construction storage; encoding streams the actual IDs under its output bound.
+struct PostProcessorSlice {
+  std::size_t offset = 0, length = 0;
+};
+struct PostProcessorPlan {
+  std::vector<TokenId> ids;
+  std::vector<PostProcessorSlice> prefix, suffix;
+};
+
 // A vocabulary as a loader reads it; Tokenizer::Create validates it.
 struct TokenizerSpec {
   std::vector<std::string> tokens;  // by ID; byte alphabet, or raw UTF-8 for raw modes
@@ -86,7 +97,9 @@ struct TokenizerSpec {
   std::vector<bool> added_tokens;   // optional external token matcher membership
   std::vector<bool> normalized_tokens;  // optional added-token matching after normalization
   std::vector<std::pair<std::string, std::string>> merges;  // in rank order
-  PreTokenizer pre_tokenizer = PreTokenizer::kQwen2;
+  PreTokenizer pre_tokenizer = PreTokenizer::kByteBpe;
+  std::vector<std::string> split_expressions = DefaultByteSplits();
+  RegexDialect split_dialect = RegexDialect::kHuggingFace;
   bool decode_added_whitespace = false;  // declared decoder also replaces markers in added tokens
   bool raw_bpe_split_newlines = true;    // GGUF raw BPE; HF may merge across newlines
   // Classic SentencePiece uses token scores, rather than a merge list.
@@ -100,25 +113,19 @@ struct TokenizerSpec {
   std::optional<TokenId> eos;
   bool add_bos = false;
   bool add_eos = false;
+  // Source insertion recipe, independent of the named BOS/EOS roles. An
+  // explicitly empty processor overrides the GGUF/config insertion flags.
+  bool has_post_processor = false;
+  PostProcessorPlan post_processor;
 };
 
 // Caps on what Create accepts.
 inline constexpr std::size_t kMaxVocabulary = std::size_t{1} << 22U;
 inline constexpr std::size_t kMaxTokenBytes = 1024;
 
-// Byte-BPE encoding's windows: a fragment longer than this is cut, at the last cut
-// point within it (or the first after it, if none), into windows encoded
-// one at a time. A cut point is before an ASCII letter or digit that
-// follows a newline, or before a space between an ASCII letter or digit and
-// an ASCII letter: no pre-tokenizer's piece and no NFC composition spans
-// one, so the tokens are those of the whole fragment.
-inline constexpr std::size_t kEncodeWindowBytes = std::size_t{1} << 20U;
-// What encoding allocates beside its output, at most, per byte of its
-// longest window: the code points (4), NFC's decomposition (up to four code
-// points a character, its vector grown by doubling: 32), the pieces'
-// lengths and the pre-tokenizer's stages (12), and a piece's merging
-// (symbols, links and candidates, 36; its bytes, up to 3 more), rounded up.
-inline constexpr std::size_t kEncodeBytesPerWindowByte = 96;
+// Per normalized input byte, excluding regex VM scratch and output. Whole
+// fragments are charged because user-supplied expressions can cross spaces.
+inline constexpr std::size_t kEncodeBytesPerInputByte = 96;
 
 enum class SpecialTokens : std::uint8_t {
   kUserDefinedOnly,  // llama.cpp's parse_special = false
@@ -127,7 +134,7 @@ enum class SpecialTokens : std::uint8_t {
 
 struct EncodeOptions {
   SpecialTokens special = SpecialTokens::kUserDefinedOnly;
-  bool add_bos_eos = false;  // add BOS and EOS where the vocabulary asks for them
+  bool add_bos_eos = false;  // apply the complete declared source postprocessor
   std::size_t max_bytes = std::size_t{4} << 20U;
   std::size_t max_tokens = std::size_t{1} << 22U;
 };
@@ -174,17 +181,19 @@ class Tokenizer {
   // token's text. Without stripping, n bytes need at least n / this tokens.
   std::size_t longest_token_bytes() const;
 
-  // Byte-BPE estimate (use WorkingBytes when the tokenizer is known).
-  // The bytes Encode or EncodeMarked allocates for `text` at most, beside
-  // its output: kEncodeBytesPerWindowByte a byte of its longest window
-  // (kEncodeWindowBytes, or longer where the text has no cut point). A
-  // caller charges this before encoding untrusted text. A scan of the text.
-  static std::uint64_t EncodeWorkingBytes(std::string_view text);
-  // Mode-aware estimate: raw modes can merge across spaces, so they
-  // charge the whole input rather than byte-BPE windows. SentencePiece
-  // adds one input byte to cover its optional dummy prefix; native models
-  // with UNUSED pieces also charge their reverse-split table and work stack.
+  // Saturating bounds, including whole-fragment normalization, merging,
+  // split vectors and the bounded VM's registers/choices. Output is separate.
   std::uint64_t WorkingBytes(std::string_view text) const;
+  std::uint64_t WorkingBytes(std::size_t input_bytes) const;
+  std::uint64_t OutputTokensBound(std::size_t input_bytes, bool source_postprocessor = false) const;
+  // Reserve the complete bounded append before emission. The caller funds
+  // existing storage plus this replacement capacity (including their overlap).
+  // Extra slots are for caller-owned suffix/prefix policy, not emitted tokens;
+  // max_tokens still bounds only this encoding's append. Encode/EncodeMarked
+  // do this automatically with no extra slots, after input preflight.
+  std::expected<void, Error> ReserveOutput(std::string_view text, const EncodeOptions& options,
+                                           std::vector<TokenId>& out,
+                                           std::size_t extra_tokens = 0) const;
 
   // Appends text's tokens to out.
   std::expected<void, Error> Encode(std::string_view text, const EncodeOptions& options,

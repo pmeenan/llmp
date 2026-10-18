@@ -85,6 +85,8 @@ struct CaseMapping {
 CaseMapping ToLowerFull(char32_t cp);
 CaseMapping ToUpperFull(char32_t cp);
 CaseMapping ToTitleFull(char32_t cp);
+// Default full Unicode folding, independently sourced from CaseFolding.txt.
+CaseMapping CaseFold(char32_t cp);
 // The derived core properties Python's case operations and tests read.
 bool IsLowercase(char32_t cp);      // Lowercase
 bool IsUppercase(char32_t cp);      // Uppercase

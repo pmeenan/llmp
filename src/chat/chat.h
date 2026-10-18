@@ -289,21 +289,21 @@ std::expected<Rendered, Error> RenderGemma4Unsloth(const Conversation& conversat
 std::expected<Rendered, Error> RenderGemma4EUnsloth(const Conversation& conversation);
 std::expected<Rendered, Error> RenderGemma4April(const Conversation& conversation);
 
-// Qwen-Image 2.1's text-to-image prompt around `prompt` (an empty prompt
-// becomes " ", as the pipeline does), and how many leading tokens of the
-// encoder's output the pipeline drops: the system segment's tokens.
+// Image prompts return a renderer-authored special-span index at the end
+// of the dropped system prefix. Encode the complete rendering once with
+// EncodeMarked(span_tokens): span_tokens[drop_span] is the exact token count
+// to drop, under that encoding's normalization/splitting policy.
 struct ImagePrompt {
   Rendered rendered;
-  std::size_t drop_tokens = 0;
+  std::size_t drop_span = 0;
 };
-std::expected<ImagePrompt, Error> RenderQwenImagePrompt(std::string_view prompt,
-                                                        const tokenizer::Tokenizer& tokenizer);
+// The native image renderer's exact output bytes (empty becomes one space).
+// No escaping is performed. Saturates on overflow; fund output, tokenization
+// and span-token indexes before rendering. Every registered renderer honors it.
+std::uint64_t ImagePromptBytesBound(std::size_t input_bytes);
+std::expected<ImagePrompt, Error> RenderQwenImagePrompt(std::string_view prompt);
 
-// An image pipeline's prompt renderer by its name, the one its image
-// mapping names (spec/image_family.h): "qwen_image_2_1"
-// (RenderQwenImagePrompt); null for a name it does not know.
-using ImagePromptRenderer = std::expected<ImagePrompt, Error> (*)(
-    std::string_view prompt, const tokenizer::Tokenizer& tokenizer);
+using ImagePromptRenderer = std::expected<ImagePrompt, Error> (*)(std::string_view prompt);
 ImagePromptRenderer FindImagePromptRenderer(std::string_view name);
 
 // Python's str.strip(): the characters str.isspace() accepts, which

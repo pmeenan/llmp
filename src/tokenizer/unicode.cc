@@ -149,6 +149,7 @@ bool InRanges(std::span<const data::CodePointRange> ranges, char32_t cp) {
 CaseMapping ToLowerFull(char32_t cp) { return MapCase(data::kLowerFull, cp); }
 CaseMapping ToUpperFull(char32_t cp) { return MapCase(data::kUpperFull, cp); }
 CaseMapping ToTitleFull(char32_t cp) { return MapCase(data::kTitleFull, cp); }
+CaseMapping CaseFold(char32_t cp) { return MapCase(data::kCaseFold, cp); }
 bool IsLowercase(char32_t cp) { return InRanges(data::kLowercase, cp); }
 bool IsUppercase(char32_t cp) { return InRanges(data::kUppercase, cp); }
 bool IsCased(char32_t cp) { return InRanges(data::kCased, cp); }

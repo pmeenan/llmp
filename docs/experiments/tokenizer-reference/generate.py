@@ -37,6 +37,8 @@ import pathlib
 import subprocess
 
 
+CURRENT_LLAMA_IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:c604ea4f1c2e8d5c8b27d89fef727384d59e23c5b07e369cde5393820e0607db"
+
 LLAMA_IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7"
 
 DEEPSEEK_GGUF = "models/unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93/UD-Q2_K_XL/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf"
@@ -86,6 +88,16 @@ LEGACY_GGUF = {'phi-3.5-gguf': {'name': 'phi35',
                      'header_sha256': '3073f37db9c1977ed7d68cd64707ce32043eecd250000a929a2ceb6723b1ad4c',
                      'path': 'tokenizer-reference/legacy/gemma3.gguf'}}
 
+# Metadata-only native input; derived vocab-only copy is solely for the oracle.
+LLAMA32 = {"name": "llama32", "repository": "bartowski/Llama-3.2-1B-Instruct-GGUF",
+    "revision": "067b946cf014b7c697f3654f621d577a3e3afd1c",
+    "file": "Llama-3.2-1B-Instruct-Q8_0.gguf", "full_bytes": 1321083008,
+    "full_sha256": "432f310a77f4650a88d0fd59ecdd7cebed8d684bafea53cbff0473542964f0c3",
+    "header_bytes": 7822851,
+    "header_sha256": "bd1db0aa84ea2d4e51eaa0a2202888886ded4a67c28abb726b2d6db4686fd4ff",
+    "path": "tokenizer-reference/llama32/header.gguf"}
+GGUF_PREFIXES = {**LEGACY_GGUF, "llama-3.2-1b-gguf": LLAMA32}
+
 # Official metadata-only archive revisions: neither fixture requires weights.
 NATIVE_GEMMA = {
     "gemma-2-27b-hf": ("models/google/gemma-2-27b-it@aaf20e6b", "hf"),
@@ -98,7 +110,7 @@ NATIVE_GEMMA = {
 CONFIGS = [
     *((name, kind, directory + ("/tokenizer.model" if kind == "spm" else "/tokenizer.json"))
       for name, (directory, kind) in NATIVE_GEMMA.items()),
-    *((config, "gguf", pin["path"]) for config, pin in LEGACY_GGUF.items()),
+    *((config, "gguf", pin["path"]) for config, pin in GGUF_PREFIXES.items()),
     ("gemma-4-26b-gguf", "gguf", GEMMA4_HEADER),
     ("deepseek-v4-0731-gguf", "gguf", DEEPSEEK_GGUF),
     ("qwen3.8-gguf", "gguf", QWEN38_GGUF),
@@ -168,7 +180,7 @@ def reference_text(data: bytes) -> tuple[bool, bytes]:
         return False, data.decode("utf-8", "replace").encode("utf-8")
 
 
-def llama_tokenize(models: pathlib.Path, gguf: str, texts: dict[str, bytes], work: pathlib.Path) -> dict:
+def llama_tokenize(models: pathlib.Path, gguf: str, texts: dict[str, bytes], work: pathlib.Path, *, image: str = LLAMA_IMAGE, specials: bool = False) -> dict:
     """Runs llama-tokenize over every text in one container, both modes."""
     work.mkdir(parents=True, exist_ok=True)
     names = sorted(texts)
@@ -179,14 +191,19 @@ def llama_tokenize(models: pathlib.Path, gguf: str, texts: dict[str, bytes], wor
         f"./llama-tokenize -m /models/{gguf} -f $f --no-escape --ids --no-bos --log-disable > $f.parse 2>$f.err1; "
         f"./llama-tokenize -m /models/{gguf} -f $f --no-escape --ids --no-bos --log-disable --no-parse-special"
         " > $f.plain 2>$f.err2; done")
+    if specials:
+        script = script.removesuffix("; done") + (
+            f"; ./llama-tokenize -m /models/{gguf} -f $f --no-escape --ids --log-disable > $f.parse_with_specials 2>$f.err3; "
+            f"./llama-tokenize -m /models/{gguf} -f $f --no-escape --ids --log-disable --no-parse-special"
+            " > $f.plain_with_specials 2>$f.err4; done")
     subprocess.run(["sudo", "-n", "docker", "run", "--rm", "--network", "none", "-e", "CUDA_DISABLE_PTX_JIT=1",
                     "--user", f"{os.getuid()}:{os.getgid()}",
-                    "-v", f"{models}:/models:ro", "-v", f"{work}:/work", "--entrypoint", "/bin/sh", LLAMA_IMAGE,
+                    "-v", f"{models}:/models:ro", "-v", f"{work}:/work", "--entrypoint", "/bin/sh", image,
                     "-c", script], check=True)
     out = {}
     for i, name in enumerate(names):
         base = work / f"{i:04d}.txt"
-        out[name] = {mode: json.loads((base.parent / f"{base.name}.{mode}").read_text()) for mode in ("parse", "plain")}
+        out[name] = {mode: json.loads((base.parent / f"{base.name}.{mode}").read_text()) for mode in (("parse", "plain", "parse_with_specials", "plain_with_specials") if specials else ("parse", "plain"))}
     return out
 
 
@@ -243,11 +260,11 @@ def tokens(args):
             continue
         path = models / rel
         oracle_rel = rel
-        if config in LEGACY_GGUF:
-            pin = LEGACY_GGUF[config]
+        if config in GGUF_PREFIXES:
+            pin = GGUF_PREFIXES[config]
             header = path.read_bytes()
             if len(header) != pin["header_bytes"] or sha256(path) != pin["header_sha256"]:
-                raise ValueError("legacy metadata prefix differs from the approved checkpoint")
+                raise ValueError("metadata prefix differs from the approved checkpoint")
             if header[:4] != b"GGUF":
                 raise ValueError("not a GGUF metadata prefix")
             vocab = bytearray(header)
@@ -266,8 +283,20 @@ def tokens(args):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(prefix)
         if kind == "gguf":
-            ids = llama_tokenize(models, oracle_rel, texts, pathlib.Path(args.work) / config)
-            reference = f"llama.cpp llama-tokenize, image {LLAMA_IMAGE} (b29c606e)"
+            current = config == "llama-3.2-1b-gguf"
+            image = CURRENT_LLAMA_IMAGE if current else LLAMA_IMAGE
+            ids = llama_tokenize(models, oracle_rel, texts, pathlib.Path(args.work) / config,
+                                 image=image, specials=current)
+            revision = "d81235049384534c167caea52b85a694f6103d14" if current else "b29c606e"
+            reference = f"llama.cpp llama-tokenize, image {image} ({revision})"
+            special_probes = []
+            if current:
+                probes = {"empty": b"", "existing-bos": b"<|begin_of_text|>",
+                          "plain-text": b"Hello!", "existing-bos-text": b"<|begin_of_text|>Hello!"}
+                probe_ids = llama_tokenize(models, oracle_rel, probes,
+                    pathlib.Path(args.work) / (config + "-special-probes"), image=image, specials=True)
+                special_probes = [{"name": name, "text": data.decode(), **probe_ids[name]}
+                                  for name, data in probes.items()]
         else:
             oracle = path.with_name("tokenizer.json") if kind == "spm" else path
             ids = hf_tokenize(oracle, texts, specials=config in NATIVE_GEMMA)
@@ -278,12 +307,13 @@ def tokens(args):
         write_json(repo / f"tests/unit/data/tokenizer/{config}.json", {
             "config": config,
             "source": {"path": rel, "sha256": sha256(path),
-                       **({"checkpoint": LEGACY_GGUF[config]} if config in LEGACY_GGUF else {}),
+                       **({"checkpoint": GGUF_PREFIXES[config]} if config in GGUF_PREFIXES else {}),
                        **({"config_path": str(path.with_name("tokenizer_config.json").relative_to(models)),
                            "config_sha256": sha256(path.with_name("tokenizer_config.json")),
                            "reference_tokenizer_sha256": sha256(path.with_name("tokenizer.json"))}
                           if config in NATIVE_GEMMA else {})},
             "reference": reference,
+            **({"special_probes": special_probes} if kind == "gguf" and config == "llama-3.2-1b-gguf" else {}),
             "corpus_sha256": sha256(corpus),
             "items": [{"name": name, "well_formed": valid[name], **ids[name]} for name, _ in items],
         })

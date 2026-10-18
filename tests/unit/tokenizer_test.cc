@@ -79,6 +79,21 @@ TEST(Unicode, TablesAreUcd15_1) {
   EXPECT_EQ(uni::GetCategory(0xD800), uni::Category::kCs);
 }
 
+TEST(Unicode, DefaultFullCaseFoldingUsesPinnedUcdData) {
+  const auto fold = [](char32_t cp) {
+    const auto mapped = uni::CaseFold(cp);
+    return std::u32string(mapped.view().begin(), mapped.view().end());
+  };
+  EXPECT_EQ(fold(U'ſ'), U"s");
+  EXPECT_EQ(fold(U'K'), U"k");
+  EXPECT_EQ(fold(U'ß'), U"ss");
+  EXPECT_EQ(fold(U'ẞ'), U"ss");
+  EXPECT_EQ(fold(U'İ'), U"i\u0307");
+  EXPECT_EQ(fold(U'ς'), U"σ");
+  EXPECT_EQ(fold(U'ﬃ'), U"ffi");
+  EXPECT_EQ(fold(U'中'), U"中");
+}
+
 TEST(Unicode, WhiteSpaceIsThePropListSet) {
   for (const char32_t c :
        {U'\x09', U'\x0A', U'\x0B', U'\x0C', U'\x0D', U'\x20', U'\x85', U'\xA0', U'\x1680',
@@ -161,11 +176,18 @@ TEST(Unicode, NfcOfALongCombiningRunIsNotQuadratic) {
 
 // --- pre-tokenizers ------------------------------------------------------------
 
-std::vector<std::string> Pieces(PreTokenizer p, std::string_view text) {
+std::vector<std::string> Pieces(std::string_view p, std::string_view text) {
   std::vector<char32_t> cps;
   EXPECT_TRUE(uni::DecodeUtf8(text, cps).has_value());
   std::vector<std::uint32_t> lengths;
-  tok::PreTokenize(p, cps, lengths);
+  const auto preset = tok::ReadPreTokenizerPreset(p);
+  EXPECT_TRUE(preset.has_value());
+  if (!preset) return {};
+  const auto plan = tok::SplitPlan::Compile(preset->expressions, preset->dialect);
+  EXPECT_TRUE(plan.has_value());
+  if (!plan) return {};
+  auto budget = plan->Budget(text.size() * 4 + 1);
+  EXPECT_TRUE(plan->Split(cps, lengths, budget).has_value());
   std::vector<std::string> out;
   std::size_t at = 0;
   for (const std::uint32_t n : lengths) {
@@ -180,7 +202,7 @@ std::vector<std::string> Pieces(PreTokenizer p, std::string_view text) {
 using Strings = std::vector<std::string>;
 
 TEST(PreTokenize, Qwen2) {
-  const PreTokenizer q = PreTokenizer::kQwen2;
+  const std::string_view q = "qwen2";
   EXPECT_EQ(Pieces(q, "Hello world"), (Strings{"Hello", " world"}));
   EXPECT_EQ(Pieces(q, "I'm OK'LL"), (Strings{"I", "'m", " OK", "'LL"}));
   EXPECT_EQ(Pieces(q, "abc123"), (Strings{"abc", "1", "2", "3"}));
@@ -197,16 +219,16 @@ TEST(PreTokenize, Qwen2) {
 }
 
 TEST(PreTokenize, Qwen35TakesMarksIntoWords) {
-  const PreTokenizer q = PreTokenizer::kQwen35;
+  const std::string_view q = "qwen35";
   EXPECT_EQ(Pieces(q, "éx"), (Strings{"éx"}));
   // A mark is no longer a symbol: it ends the symbol run and starts a word.
   EXPECT_EQ(Pieces(q, "क्ष !́"), (Strings{"क्ष", " !", "́"}));
-  EXPECT_EQ(Pieces(PreTokenizer::kQwen2, "क्ष !́"), (Strings{"क", "्ष", " !́"}));
+  EXPECT_EQ(Pieces("qwen2", "क्ष !́"), (Strings{"क", "्ष", " !́"}));
   EXPECT_EQ(Pieces(q, " ́́"), (Strings{" ́́"}));
 }
 
 TEST(PreTokenize, ContractionsMatchAsciiLettersOfEitherCase) {
-  const PreTokenizer q = PreTokenizer::kQwen35;
+  const std::string_view q = "qwen35";
   EXPECT_EQ(Pieces(q, "a'Sx"), (Strings{"a", "'S", "x"}));
   EXPECT_EQ(Pieces(q, "a'lLx"), (Strings{"a", "'lL", "x"}));
   EXPECT_EQ(Pieces(q, "a'ſx"), (Strings{"a", "'ſx"}));  // long s is no s
@@ -216,7 +238,7 @@ TEST(PreTokenize, ContractionsMatchAsciiLettersOfEitherCase) {
 }
 
 TEST(PreTokenize, DeepSeekV3Stages) {
-  const PreTokenizer d = PreTokenizer::kDeepSeekV3;
+  const std::string_view d = "deepseek-v3";
   EXPECT_EQ(Pieces(d, "abc12345def"), (Strings{"abc", "123", "45", "def"}));
   EXPECT_EQ(Pieces(d, "日本語テキスト"), (Strings{"日本語テキスト"}));
   EXPECT_EQ(Pieces(d, "hello世界!"), (Strings{"hello", "世界", "!"}));
@@ -230,6 +252,295 @@ TEST(PreTokenize, DeepSeekV3Stages) {
   EXPECT_EQ(Pieces(d, "don't"), (Strings{"don", "'t"}));
   EXPECT_EQ(Pieces(d, "x   "), (Strings{"x", "   "}));
   EXPECT_EQ(Pieces(d, "x   y"), (Strings{"x", "  ", " y"}));
+}
+
+std::vector<std::string> RegexPieces(std::string_view expression, std::u32string_view text,
+                                     tok::RegexDialect dialect = tok::RegexDialect::kHuggingFace) {
+  auto regex = tok::Regex::Compile(expression, dialect);
+  EXPECT_TRUE(regex) << Failed(regex, &tok::Error::ToString).value_or("");
+  if (!regex) return {};
+  tok::RegexBudget budget{tok::kRegexWorkFactor * (text.size() + 1) * (regex->instructions() + 1)};
+  std::vector<std::uint32_t> lengths;
+  const auto split = regex->Split(text, lengths, budget);
+  EXPECT_TRUE(split) << Failed(split, &tok::Error::ToString).value_or("");
+  std::vector<std::string> pieces;
+  std::size_t at = 0;
+  for (const auto n : lengths) {
+    EXPECT_GT(n, 0U);
+    pieces.push_back(Utf8(text.substr(at, n)));
+    at += n;
+  }
+  EXPECT_EQ(at, text.size());
+  return pieces;
+}
+
+// Independent HF expectations: tokenizers 0.22.2 isolated Split probe,
+// r8-final-hf-probes.log. GGUF expectations follow the locked llama.cpp
+// non-multiline ECMAScript fallback, not Oniguruma's default line anchors.
+TEST(Regex, SourceDialectKeepsLineAndAbsoluteAnchorsDistinct) {
+  EXPECT_EQ(RegexPieces("^a", U"x\na y"), (Strings{"x\n", "a", " y"}));
+  EXPECT_EQ(RegexPieces("b$", U"xb\ny"), (Strings{"x", "b", "\ny"}));
+  EXPECT_EQ(RegexPieces("$", U"ab\ncd\n"), (Strings{"ab", "\ncd", "\n"}));
+  EXPECT_EQ(RegexPieces("^", U"ab\ncd\n"), (Strings{"ab\n", "cd\n"}));
+  EXPECT_EQ(RegexPieces(R"(\A)", U"ab\ncd\n"), (Strings{"ab\ncd\n"}));
+  EXPECT_EQ(RegexPieces(R"(\z)", U"ab\ncd\n"), (Strings{"ab\ncd\n"}));
+  EXPECT_EQ(RegexPieces(R"(\Aa)", U"x\na y"), (Strings{"x\na y"}));
+  EXPECT_EQ(RegexPieces(R"(b\z)", U"xb\ny"), (Strings{"xb\ny"}));
+  EXPECT_EQ(RegexPieces(R"(b\z)", U"xb\n"), (Strings{"xb\n"}));
+  EXPECT_EQ(RegexPieces(R"(b\z)", U"xb"), (Strings{"x", "b"}));
+  EXPECT_EQ(RegexPieces("^a", U"x\na y", tok::RegexDialect::kGguf), (Strings{"x\na y"}));
+  EXPECT_EQ(RegexPieces("b$", U"xb\ny", tok::RegexDialect::kGguf), (Strings{"xb\ny"}));
+  EXPECT_EQ(RegexPieces("b$", U"xb\n", tok::RegexDialect::kGguf), (Strings{"xb\n"}));
+  EXPECT_EQ(RegexPieces(R"(\s+$)", U"a \nb \n", tok::RegexDialect::kGguf),
+            (Strings{"a \nb", " \n"}));
+  EXPECT_EQ(RegexPieces(R"(\s+$)", U"a \nb \n"), (Strings{"a", " ", "\nb", " \n"}));
+  EXPECT_EQ(RegexPieces(".+", U"a\rb\nc\u2028d"), (Strings{"a\rb", "\n", "c\u2028d"}));
+  EXPECT_EQ(RegexPieces(".+", U"a\rb\nc\u2028d", tok::RegexDialect::kGguf),
+            (Strings{"a", "\r", "b", "\n", "c", "\u2028", "d"}));
+  // Oniguruma's m flag controls dotall, not its default line anchors.
+  // It remains explicitly unsupported rather than being treated as an alias.
+  EXPECT_FALSE(tok::Regex::Compile("(?m:^a)"));
+  auto preset = tok::ReadPreTokenizerPreset("deepseek-llm");
+  ASSERT_TRUE(preset);
+  EXPECT_EQ(preset->dialect, tok::RegexDialect::kGguf);
+  EXPECT_NE(std::ranges::find(preset->expressions, R"(\s+$)"), preset->expressions.end());
+  EXPECT_EQ(Pieces("deepseek-llm", "a \nb \n"), (Strings{"a", " ", "\n", "b", " ", "\n"}));
+}
+
+TEST(Regex, CharacterClassAlgebraIsNotLiteralAmpersands) {
+  EXPECT_FALSE(tok::Regex::Compile("[[:alpha:]]"));
+  // Additional independent class-precedence probe a52665ed63d2874e... .
+  const std::u32string_view sample = U"za&bcdeiou\n";
+  EXPECT_EQ(RegexPieces(R"([a-z&&[^aeiou]])", sample),
+            (Strings{"z", "a&", "b", "c", "d", "eiou\n"}));
+  EXPECT_EQ(RegexPieces("[ab&&bc]", sample), (Strings{"za&", "b", "cdeiou\n"}));
+  EXPECT_EQ(RegexPieces("[[ab]c&&[bc]]", sample), (Strings{"za&", "b", "c", "deiou\n"}));
+  for (const auto expression : {"[a&&]", "[&&a]"}) {
+    EXPECT_EQ(RegexPieces(expression, sample), (Strings{"za&bcdeiou\n"}));
+    EXPECT_EQ(RegexPieces(expression, U""), Strings{});
+  }
+  EXPECT_EQ(RegexPieces("[a&b]", sample), (Strings{"z", "a", "&", "b", "cdeiou\n"}));
+  // Removed-mode pinned probes establish membership; isolated partitions alone
+  // cannot distinguish a one-character match from a retained unmatched gap.
+  EXPECT_EQ(RegexPieces("x[^ab&&bc]x", U"!xbx~"), (Strings{"!xbx~"}));
+  EXPECT_EQ(RegexPieces("x[^ab&&bc]x", U"!xax~"), (Strings{"!", "xax", "~"}));
+  EXPECT_EQ(RegexPieces("x[^ab&&bc]x", U"!xcx~"), (Strings{"!", "xcx", "~"}));
+  EXPECT_EQ(RegexPieces("[^a&&b]+", sample), (Strings{"za&bcdeiou\n"}));
+  EXPECT_EQ(RegexPieces("[a&&b]", U"za&bz"), (Strings{"za&bz"}));
+  EXPECT_EQ(RegexPieces("[a&&a]", U"za&bz"), (Strings{"z", "a", "&bz"}));
+  EXPECT_EQ(RegexPieces(R"([a\&\&a])", U"za&bz"), (Strings{"z", "a", "&", "bz"}));
+  EXPECT_EQ(RegexPieces("[a&&b]", U"za&bz", tok::RegexDialect::kGguf),
+            (Strings{"z", "a", "&", "b", "z"}));
+  EXPECT_EQ(RegexPieces(R"([\p{L}&&[^a-z]]+)", U"aÉ中b!"), (Strings{"a", "É中", "b!"}));
+  // A deep expression has source-sized explicit compiler/matcher stacks.
+  std::string nested;
+  for (unsigned i = 0; i < 256; ++i) nested += "[a&&";
+  nested += "a" + std::string(256, ']');
+  EXPECT_EQ(RegexPieces(nested, U"zaaz"), (Strings{"z", "a", "a", "z"}));
+  const auto program = tok::Regex::Compile(nested);
+  ASSERT_TRUE(program);
+  EXPECT_LT(program->WorkingBytes(4), tok::Regex::ConstructionBytes(nested.size()));
+}
+
+TEST(Regex, OrderedAlternationGreedyLazyAndPossessive) {
+  EXPECT_EQ(RegexPieces("a|ab", U"ab"), (Strings{"a", "b"}));
+  EXPECT_EQ(RegexPieces("ab|a", U"ab"), (Strings{"ab"}));
+  EXPECT_EQ(RegexPieces("a+a|a", U"aaaa"), (Strings{"aaaa"}));
+  EXPECT_EQ(RegexPieces("a+?a", U"aaaa"), (Strings{"aa", "aa"}));
+  EXPECT_EQ(RegexPieces("a++a|a", U"aaaa"), (Strings{"a", "a", "a", "a"}));
+  EXPECT_EQ(RegexPieces("(a|ab)++b|.", U"abb"), (Strings{"ab", "b"}));
+  EXPECT_EQ(RegexPieces("(ab|a){1,2}+b|.", U"ababb"), (Strings{"ababb"}));
+  EXPECT_EQ(RegexPieces("a{2,3}?", U"aaaaaa"), (Strings{"aa", "aa", "aa"}));
+  EXPECT_EQ(RegexPieces("(a?)*", U"aab"), (Strings{"aa", "b"}));
+}
+
+TEST(Regex, GapsEmptyMatchesAndPositionPredicatesNeverDropInput) {
+  EXPECT_EQ(RegexPieces("x+", U"abxxcdx"), (Strings{"ab", "xx", "cd", "x"}));
+  EXPECT_EQ(RegexPieces("", U"abc"), (Strings{"a", "b", "c"}));
+  EXPECT_EQ(RegexPieces("a*?", U"abc"), (Strings{"a", "b", "c"}));
+  EXPECT_EQ(RegexPieces("^a|b$", U"ab\n"), (Strings{"a", "b", "\n"}));
+  EXPECT_EQ(RegexPieces(R"(\s+(?!\S)|\s+|\p{L}+)", U"a   b\r\n"),
+            (Strings{"a", "  ", " ", "b", "\r\n"}));
+  EXPECT_EQ(RegexPieces(R"(\s+)", U"\x1c\u0085\u00a0x"),
+            (Strings{std::string(1, '\x1c'), "\u0085\u00a0", "x"}));
+  EXPECT_EQ(RegexPieces(R"((?i:'s|'ll))", U"'S'Ll'ſ"), (Strings{"'S", "'Ll", "'ſ"}));
+}
+
+// Independent tokenizers 0.22.2 / Oniguruma probes, rather than Python
+// regex or the implementation under test: r8-regex-fold-probes.json SHA256
+// 06c11ad9c6a028297e2657a241730c1efc50bd67c583d6040ab6325141f94d15.
+TEST(Regex, ScopedCaseFoldingPreservesLiteralAndInstructionBoundaries) {
+  EXPECT_EQ(RegexPieces("(?i:s)", U"!ſ~"), (Strings{"!", "ſ", "~"}));
+  EXPECT_EQ(RegexPieces("(?i:k)", U"!K~"), (Strings{"!", "K", "~"}));
+  EXPECT_EQ(RegexPieces("(?i:é)", U"!É~"), (Strings{"!", "É", "~"}));
+  EXPECT_EQ(RegexPieces("(?i:é)", U"!é~"), (Strings{"!é~"}));
+  EXPECT_EQ(RegexPieces("(?i:σ)", U"!Σσς~"), (Strings{"!", "Σ", "σ", "ς", "~"}));
+  EXPECT_EQ(RegexPieces("(?i:ss)", U"!ßẞssSS~"), (Strings{"!", "ß", "ẞ", "ss", "SS", "~"}));
+  EXPECT_EQ(RegexPieces("(?i:ß)", U"!ssSS~"), (Strings{"!", "ss", "SS", "~"}));
+  for (const auto expression :
+       {"(?i:s{2})", "(?i:[s][s])", "(?i:s)(?i:s)", "(?i:(s)(s))", "(?i:s+)", "(?i:[A-Z])"}) {
+    EXPECT_EQ(RegexPieces(expression, U"!ßẞ~"), (Strings{"!ßẞ~"})) << expression;
+  }
+  EXPECT_EQ(RegexPieces("(?i:[A-Z])", U"!ſK~"), (Strings{"!", "ſ", "K", "~"}));
+  EXPECT_EQ(RegexPieces("(?i:[A-Z])", U"!İıßσ~"), (Strings{"!İıßσ~"}));
+  EXPECT_EQ(RegexPieces("(?i:i)", U"!İı~"), (Strings{"!İı~"}));
+  EXPECT_EQ(RegexPieces("(?i:ss)x", U"!ßx~"), (Strings{"!", "ßx", "~"}));
+  EXPECT_EQ(RegexPieces("(?i:(s|ss))x", U"!ßx~"), (Strings{"!", "ßx", "~"}));
+  EXPECT_EQ(RegexPieces("(?i:s)s", U"!ß~"), (Strings{"!ß~"}));
+}
+
+TEST(Regex, SourceContractionsUseUnicodeFoldingWithoutChangingGgufClasses) {
+  constexpr std::string_view hf =
+      R"((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)";
+  // Bare-source probes SHA 5f1c76c044512c286c7afcc943e9b94bfbdbad6192b955143b06c7b1e755a4b3.
+  EXPECT_EQ(RegexPieces(hf, U"'ſ"), (Strings{"'ſ"}));
+  EXPECT_EQ(RegexPieces(hf, U" 'ſ"), (Strings{" '", "ſ"}));
+  EXPECT_EQ(RegexPieces(hf, U"a'ſ"), (Strings{"a", "'ſ"}));
+  EXPECT_EQ(RegexPieces(hf, U"x'ſz"), (Strings{"x", "'ſ", "z"}));
+  EXPECT_EQ(RegexPieces(hf, U"a'Kz"), (Strings{"a", "'Kz"}));
+  EXPECT_EQ(RegexPieces(hf, U"!x'ſz~"), (Strings{"!x", "'ſ", "z", "~"}));
+  EXPECT_EQ(RegexPieces(hf, U"!x'Sz~"), (Strings{"!x", "'S", "z", "~"}));
+  // GGUF's actual pinned expression spells its contraction classes in ASCII.
+  EXPECT_EQ(Pieces("qwen2", "!x'ſz~"), (Strings{"!x", "'ſz", "~"}));
+}
+
+TEST(Regex, PositiveClassLookaheadRetainsOriginalPositionAndCategory) {
+  EXPECT_EQ(RegexPieces(R"((?=[\p{L}])[^a-z]+)", U"!A中a~"), (Strings{"!", "A中", "a~"}));
+  EXPECT_EQ(RegexPieces(R"(((?=[\p{L}])([^A-Z]))+)", U"!é中A~"), (Strings{"!", "é中", "A~"}));
+}
+
+// Independent tokenizers 0.22.2 isolated Split oracle, log SHA256
+// b5fe2135b53ca401a76c47b6d7309883283d3b925f0a1ff38a20f09e9d90420d.
+TEST(Regex, SuccessfulZeroWidthMatchesAreBoundariesWithoutEmptyPieces) {
+  EXPECT_EQ(RegexPieces(R"((?=[a]))", U"baac"), (Strings{"b", "a", "ac"}));
+  EXPECT_EQ(RegexPieces(R"((?=[a]))", U"aaa"), (Strings{"a", "a", "a"}));
+  EXPECT_EQ(RegexPieces("^", U"abc"), (Strings{"abc"}));
+  EXPECT_EQ(RegexPieces("$", U"abc"), (Strings{"abc"}));
+  EXPECT_EQ(RegexPieces("a*", U"baac"), (Strings{"b", "aa", "c"}));
+  EXPECT_EQ(RegexPieces("(?:)", U"abc"), (Strings{"a", "b", "c"}));
+  EXPECT_EQ(RegexPieces("a*?", U"baac"), (Strings{"b", "a", "a", "c"}));
+  EXPECT_EQ(RegexPieces("(a?)*?", U"baac"), (Strings{"b", "a", "a", "c"}));
+  EXPECT_EQ(RegexPieces("x", U"baac"), (Strings{"baac"}));
+}
+
+TEST(Regex, FundedSourceAndFrameStorageReplaceSmallPolicyLimits) {
+  const std::string nested = std::string(4096, '(') + "a" + std::string(4096, ')');
+  llmp::base::WorkPulse pulse;
+  llmp::base::SetThreadPulse(&pulse);
+  const auto regex = tok::Regex::Compile(nested);
+  llmp::base::SetThreadPulse(nullptr);
+  ASSERT_TRUE(regex) << Failed(regex, &tok::Error::ToString).value_or("");
+  EXPECT_GT(pulse.beats(), 16U);
+  EXPECT_EQ(RegexPieces(nested, U"ab"), (Strings{"a", "b"}));
+  const std::string long_literal(16385, 'a');
+  EXPECT_GT(tok::Regex::ConstructionBytes(long_literal.size()),
+            tok::Regex::ConstructionBytes(long_literal.size() - 1));
+  EXPECT_EQ(RegexPieces(long_literal, std::u32string(16385, U'a')), (Strings{long_literal}));
+  EXPECT_EQ(tok::Regex::ConstructionBytes(SIZE_MAX), UINT64_MAX);
+}
+
+TEST(Regex, GeneralCategoryAggregatesInversesAndCaseCategories) {
+  EXPECT_EQ(RegexPieces(R"(\p{Lu}+|\p{Ll}+|\p{Lt}+|\p{Lm}+|\p{Lo}+|\p{M}+|\p{N}+)",
+                        U"ABabǅʰ中\u0301\u0903Ⅳ٢²"),
+            (Strings{"AB", "ab", "ǅ", "ʰ", "中", "\u0301\u0903", "Ⅳ٢²"}));
+  EXPECT_EQ(RegexPieces(R"([\p{L}\p{M}]+|\P{L}+)", U"a中́!! 42"), (Strings{"a中́", "!! 42"}));
+  EXPECT_EQ(RegexPieces(R"(\p{P}+|\p{S}+|\p{Z}+|\p{C}+)", U"!?€🙂 \u200d"),
+            (Strings{"!?", "€🙂", " ", "\u200d"}));
+  EXPECT_EQ(RegexPieces(R"([^a-c]+|[a-c]+)", U"xyabcz"), (Strings{"xy", "abc", "z"}));
+}
+
+TEST(Regex, ParserLimitsUnsupportedSyntaxAndCompactCounts) {
+  for (const auto expression :
+       {R"(\1)", R"(\p{Han})", R"((?=a))", R"((?i:[é]))", R"((?i:\p{L}))", R"(\w)", "[a-", "[z-a]",
+        "a{3,2}", "(", "a**", "\\", "a{4294967296}"}) {
+    EXPECT_FALSE(tok::Regex::Compile(expression)) << expression;
+  }
+  EXPECT_TRUE(tok::Regex::Compile(std::string(65, '(') + "a" + std::string(65, ')')));
+  EXPECT_TRUE(tok::Regex::Compile(std::string(16385, 'a')));
+  EXPECT_EQ(tok::Regex::ConstructionBytes(SIZE_MAX), UINT64_MAX);
+  EXPECT_FALSE(tok::Regex::Compile(std::string(1, static_cast<char>(0xff))));
+  auto compact = tok::Regex::Compile("(a?){4294967294}");
+  ASSERT_TRUE(compact);
+  EXPECT_LT(compact->instructions(), 20U);
+  tok::RegexBudget budget{1000};
+  std::vector<std::uint32_t> lengths;
+  EXPECT_EQ(Failed(compact->Split({}, lengths, budget), &tok::Error::rule), Rule::kBounds);
+}
+
+TEST(Regex, AdversarialWorkAndStorageHaveDeterministicBounds) {
+  const auto regex = tok::Regex::Compile("(a+)+b");
+  ASSERT_TRUE(regex);
+  const std::u32string input(64, U'a');
+  std::uint64_t spent = 0;
+  for (unsigned run = 0; run < 2; ++run) {
+    tok::RegexBudget budget{16 * (input.size() + 1) * (regex->instructions() + 1)};
+    std::vector<std::uint32_t> lengths;
+    const auto split = regex->Split(input, lengths, budget);
+    EXPECT_EQ(Failed(split, &tok::Error::rule), Rule::kBounds);
+    if (run) EXPECT_EQ(budget.spent, spent);
+    spent = budget.spent;
+  }
+  const std::vector<std::string> expressions = {"x", "(a+)+b"};
+  const auto plan = tok::SplitPlan::Compile(expressions);
+  ASSERT_TRUE(plan);
+  tok::RegexBudget budget{200};
+  std::vector<std::uint32_t> lengths;
+  const auto split = plan->Split(U"axaaaaaaaaaaaaaaaaaaaa", lengths, budget);
+  EXPECT_EQ(Failed(split, &tok::Error::rule), Rule::kBounds);
+  EXPECT_LE(budget.spent, 200U);
+}
+
+TEST(Regex, ReproducibleSyntaxFuzzAndCancellation) {
+  std::mt19937 rng(808);
+  constexpr std::string_view alphabet = "abc|()*+?{}[],^$\\123";
+  for (unsigned round = 0; round < 500; ++round) {
+    std::string expression;
+    for (unsigned n = rng() % 40; n > 0; --n) expression += alphabet[rng() % alphabet.size()];
+    const auto regex = tok::Regex::Compile(expression);
+    if (!regex) continue;
+    tok::RegexBudget budget{10000};
+    std::vector<std::uint32_t> lengths;
+    const auto split = regex->Split(std::u32string_view(U"aabcbaaa"), lengths, budget);
+    if (split) {
+      std::size_t total = 0;
+      for (const auto length : lengths) {
+        EXPECT_GT(length, 0U);
+        total += length;
+      }
+      EXPECT_EQ(total, 8U);
+    } else
+      EXPECT_EQ(split.error().rule, Rule::kBounds);
+  }
+  llmp::base::WorkPulse pulse;
+  pulse.Cancel();
+  llmp::base::SetThreadPulse(&pulse);
+  const auto cancelled = tok::Regex::Compile("a");
+  llmp::base::SetThreadPulse(nullptr);
+  EXPECT_EQ(Failed(cancelled, &tok::Error::rule), Rule::kCancelled);
+}
+
+TEST(PreTokenize, RequiredPresetsCompileAndConserveLongUnicodeInput) {
+  for (const auto name :
+       {"llama-bpe", "gpt-2", "phi-2", "gpt-4o", "tekken", "starcoder", "falcon", "command-r",
+        "qwen2", "qwen35", "deepseek-llm", "deepseek-coder", "deepseek-v3", "joyai-llm"}) {
+    const auto preset = tok::ReadPreTokenizerPreset(name);
+    ASSERT_TRUE(preset) << name;
+    const auto plan = tok::SplitPlan::Compile(preset->expressions, preset->dialect);
+    ASSERT_TRUE(plan) << name << " " << Failed(plan, &tok::Error::ToString).value_or("");
+    std::string input;
+    for (unsigned i = 0; i < 300; ++i) input += "Hello'LL 世界क्षé́12345\r\n  λΑǅʰǂ🙂! ";
+    std::vector<char32_t> cps;
+    ASSERT_TRUE(uni::DecodeUtf8(input, cps));
+    auto budget = plan->Budget(input.size() * 4 + 1);
+    std::vector<std::uint32_t> lengths;
+    ASSERT_TRUE(plan->Split(cps, lengths, budget)) << name;
+    std::size_t total = 0;
+    for (const auto n : lengths) {
+      EXPECT_GT(n, 0U);
+      total += n;
+    }
+    EXPECT_EQ(total, cps.size()) << name;
+  }
 }
 
 // --- BPE on a synthetic byte-level vocabulary ---------------------------------------
@@ -352,7 +663,7 @@ TEST(Create, ConstructionPaymentCountsMovedCapacitiesAndSpecialTrie) {
 
 TEST(Bpe, MergesByRankThenLeftmost) {
   Vocab v;
-  v.spec.pre_tokenizer = PreTokenizer::kQwen2;
+  v.spec.pre_tokenizer = PreTokenizer::kByteBpe;
   const TokenId bc = v.Merge("b", "c");  // rank 0
   v.Merge("a", "b");                     // rank 1: never applies to "abc"
   const TokenId aa = v.Merge("a", "a");  // rank 2
@@ -481,148 +792,20 @@ TEST(Encode, LongRunsStayLinear) {
   EXPECT_EQ(ids.size(), 1U << 19U);
 }
 
-// The windows' cut rule as tokenizer.h documents it (kEncodeWindowBytes),
-// written independently: before an ASCII letter or digit after a newline,
-// or before a space between an ASCII letter or digit and an ASCII letter.
-bool DocumentedCut(std::u32string_view t, std::size_t p) {
-  const auto letter = [](char32_t c) {
-    return (c >= U'a' && c <= U'z') || (c >= U'A' && c <= U'Z');
-  };
-  const auto alnum = [&](char32_t c) { return letter(c) || (c >= U'0' && c <= U'9'); };
-  if (t[p - 1] == U'\n') {
-    return alnum(t[p]);
-  }
-  return t[p] == U' ' && p + 1 < t.size() && alnum(t[p - 1]) && letter(t[p + 1]);
-}
-
-std::vector<std::uint32_t> PieceLengths(PreTokenizer p, std::u32string_view cps) {
-  std::vector<std::uint32_t> lengths;
-  tok::PreTokenize(p, std::span(cps.data(), cps.size()), lengths);
-  return lengths;
-}
-
-// Every cut point splits the pieces of every pre-tokenizer exactly where
-// the halves' own pieces meet, and NFC of the halves is NFC of the whole:
-// so encoding window by window gives the whole text's tokens.
-TEST(Encode, WindowCutsSplitNoPieceAndNoComposition) {
-  // Code points by value, so nothing invisible sits in the source: e and a
-  // combining acute, the acute alone, CJK, katakana, a zero-width joiner,
-  // Hangul jamo L and V (composing), an emoji, an Arabic-Indic digit, and
-  // a precomposed e acute.
-  const auto cps = [](std::initializer_list<char32_t> c) { return std::u32string(c); };
-  const std::array<std::u32string, 28> atoms = {U"a",
-                                                U"Zed",
-                                                U"q",
-                                                U"7",
-                                                U"421",
-                                                U" ",
-                                                U"  ",
-                                                U"\n",
-                                                U"\r\n",
-                                                U"\n\n",
-                                                U"\t",
-                                                U"'s",
-                                                U"'LL",
-                                                U"!",
-                                                U"#inc",
-                                                U"...",
-                                                cps({0x65, 0x301}),
-                                                cps({0x301}),
-                                                cps({0x4E2D, 0x6587}),
-                                                cps({0x30C6}),
-                                                cps({0x200D}),
-                                                cps({0x1100, 0x1161}),
-                                                cps({0x1F600}),
-                                                cps({0x663}),
-                                                U" !!",
-                                                U"x",
-                                                cps({0xE9}),
-                                                U"\n "};
-  // NOLINTNEXTLINE(bugprone-random-generator-seed): reproducible
-  std::mt19937 rng(20261003);
-  std::uniform_int_distribution<std::size_t> pick(0, atoms.size() - 1);
-  std::uniform_int_distribution<std::size_t> count(1, 120);
-  std::size_t cuts = 0;
-  for (int round = 0; round < 400; ++round) {
-    std::u32string text;
-    for (std::size_t n = count(rng); n > 0; --n) {
-      text += atoms[pick(rng)];
-    }
-    for (std::size_t p = 1; p < text.size(); ++p) {
-      if (!DocumentedCut(text, p)) {
-        continue;
-      }
-      ++cuts;
-      const std::u32string_view whole(text);
-      for (const PreTokenizer pre :
-           {PreTokenizer::kQwen2, PreTokenizer::kQwen35, PreTokenizer::kDeepSeekV3}) {
-        std::vector<std::uint32_t> halves = PieceLengths(pre, whole.substr(0, p));
-        const std::vector<std::uint32_t> right = PieceLengths(pre, whole.substr(p));
-        halves.insert(halves.end(), right.begin(), right.end());
-        ASSERT_EQ(halves, PieceLengths(pre, whole))
-            << tok::PreTokenizerName(pre) << " at " << p << " of " << Utf8(text);
-      }
-      std::vector<char32_t> nfc(text.begin(), text.end());
-      std::vector<char32_t> left(text.begin(), text.begin() + static_cast<std::ptrdiff_t>(p));
-      std::vector<char32_t> right(text.begin() + static_cast<std::ptrdiff_t>(p), text.end());
-      uni::ToNfc(nfc);
-      uni::ToNfc(left);
-      uni::ToNfc(right);
-      left.insert(left.end(), right.begin(), right.end());
-      ASSERT_EQ(left, nfc) << "NFC at " << p << " of " << Utf8(text);
-    }
-  }
-  EXPECT_GT(cuts, 300U);  // the texts had cut points to check
-}
-
-// A text past kEncodeWindowBytes encodes window by window, with the tokens
-// of its lines encoded one at a time (each line under a window), including
-// a stretch longer than a window with no cut point (scanned forward), under
-// NFC and each pre-tokenizer; its working set follows the widest window.
-TEST(Encode, WindowedEncodingMatchesLineByLine) {
-  std::string text;
-  while (text.size() < 2 * tok::kEncodeWindowBytes) {
-    text += "hello world 123 h\xC3\xA9llo e\xCC\x81 don't\n";
-    text += "  indented!!\n\nWell said\r\n9 lives\n";
-  }
-  const std::size_t stretch = tok::kEncodeWindowBytes + (tok::kEncodeWindowBytes / 2);
-  text += std::string(stretch, '!');
-  text += "\nlast line";
-  // The widest window: from the cut in "9| lives\n" through the stretch to
-  // the cut before "last" (7 bytes before it, 1 after).
-  EXPECT_EQ(tok::Tokenizer::EncodeWorkingBytes(text),
-            std::uint64_t{stretch + 8} * tok::kEncodeBytesPerWindowByte);
-  EXPECT_EQ(tok::Tokenizer::EncodeWorkingBytes("short text"),
-            std::uint64_t{10} * tok::kEncodeBytesPerWindowByte);
-  for (const PreTokenizer pre :
-       {PreTokenizer::kQwen2, PreTokenizer::kQwen35, PreTokenizer::kDeepSeekV3}) {
-    Vocab v;
-    v.spec.pre_tokenizer = pre;
-    v.spec.normalization = tok::Normalization::kNfc;
-    v.Merge("h", "e");
-    v.Merge("l", "l");
-    v.Merge("he", "ll");
-    v.Merge(" ", "w");
-    v.Merge("!", "!");
-    v.Merge("\n", "\n");
-    const tok::Tokenizer t = v.Build();
-    tok::EncodeOptions o;
-    o.max_bytes = text.size();
-    o.max_tokens = text.size();
-    const auto whole = Encode(t, text, o);
-    std::vector<TokenId> lines;
-    std::size_t start = 0;
-    for (std::size_t p = 1; p <= text.size(); ++p) {
-      const bool cut = p < text.size() && text[p - 1] == '\n' &&
-                       std::isalnum(static_cast<unsigned char>(text[p])) != 0;
-      if (cut || p == text.size()) {
-        const auto line = Encode(t, std::string_view(text).substr(start, p - start), o);
-        lines.insert(lines.end(), line.begin(), line.end());
-        start = p;
-      }
-    }
-    EXPECT_EQ(whole, lines) << tok::PreTokenizerName(pre);
-  }
+// Arbitrary source expressions can join across the old fixed-window cuts.
+TEST(Encode, GenericRegexKeepsMergesAcrossLongFragments) {
+  Vocab v;
+  v.spec.split_expressions = {".+"};
+  v.Merge("a", " ");
+  const auto merged = v.Merge("a ", "b");
+  const auto t = v.Build();
+  std::string text((std::size_t{1} << 20U) - 1, '!');
+  text += "a b";
+  const auto ids = Encode(t, text);
+  ASSERT_FALSE(ids.empty());
+  EXPECT_EQ(ids.back(), merged);
+  EXPECT_EQ(ids.size(), text.size() - 2);
+  EXPECT_GE(t.WorkingBytes(text), (text.size() + 1) * tok::kEncodeBytesPerInputByte);
 }
 
 TEST(Encode, AddsBosAndEosOnlyWhenAsked) {
@@ -953,17 +1136,16 @@ TEST(RawBpe, BoundsAndAccountingIncludeTheWholeInput) {
   auto t = tok::Tokenizer::Create(RawSpec());
   ASSERT_TRUE(t.has_value());
   std::string text;
-  for (std::size_t i = 0; i < tok::kEncodeWindowBytes / 2; ++i) {
+  for (std::size_t i = 0; i < (std::size_t{1} << 20U) / 2; ++i) {
     text += "a a\n";
   }
-  EXPECT_EQ(t->WorkingBytes(text), text.size() * tok::kEncodeBytesPerWindowByte);
-  EXPECT_GT(t->WorkingBytes(text), tok::Tokenizer::EncodeWorkingBytes(text));
+  EXPECT_EQ(t->WorkingBytes(text), (text.size() + 1) * tok::kEncodeBytesPerInputByte);
   llmp::base::WorkPulse pulse;
   llmp::base::SetThreadPulse(&pulse);
   const auto ids = Encode(*t, text);
   llmp::base::SetThreadPulse(nullptr);
   EXPECT_GT(pulse.beats(), 2U);
-  ASSERT_EQ(ids.size(), tok::kEncodeWindowBytes);
+  ASSERT_EQ(ids.size(), (std::size_t{1} << 20U));
   for (std::size_t i = 0; i < ids.size(); i += 2) {
     ASSERT_EQ(ids[i], 259);
     ASSERT_EQ(ids[i + 1], 260);
@@ -1464,12 +1646,15 @@ TEST(SentencePieceModel, RandomCorruptionsStayWithinTheWireInput) {
   }
 }
 
-TEST(SentencePiece, PretokenizationKeepsWholeNonemptyFragment) {
+TEST(SplitPlan, EmptyPlanKeepsWholeNonemptyFragment) {
+  const auto plan = tok::SplitPlan::Compile({});
+  ASSERT_TRUE(plan);
+  auto budget = plan->Budget(10);
   std::vector<std::uint32_t> lengths;
-  tok::PreTokenize(PreTokenizer::kSentencePiece, {}, lengths);
+  ASSERT_TRUE(plan->Split({}, lengths, budget));
   EXPECT_TRUE(lengths.empty());
   const std::u32string_view fragment = U"a b";
-  tok::PreTokenize(PreTokenizer::kSentencePiece, fragment, lengths);
+  ASSERT_TRUE(plan->Split(fragment, lengths, budget));
   EXPECT_EQ(lengths, (std::vector<std::uint32_t>{3}));
 }
 
@@ -1669,11 +1854,10 @@ TEST(SentencePiece, LongWholeFragmentUsesFundedBoundAndReportsProgress) {
   auto t = tok::Tokenizer::Create(std::move(spec));
   ASSERT_TRUE(t);
   std::string text;
-  for (std::size_t i = 0; i < tok::kEncodeWindowBytes; ++i) {
+  for (std::size_t i = 0; i < (std::size_t{1} << 20U); ++i) {
     text += "a ";
   }
-  EXPECT_EQ(t->WorkingBytes(text), (text.size() + 1) * tok::kEncodeBytesPerWindowByte);
-  EXPECT_GT(t->WorkingBytes(text), tok::Tokenizer::EncodeWorkingBytes(text));
+  EXPECT_EQ(t->WorkingBytes(text), (text.size() + 1) * tok::kEncodeBytesPerInputByte);
   llmp::base::WorkPulse pulse;
   llmp::base::SetThreadPulse(&pulse);
   std::vector<TokenId> ids;
@@ -1871,7 +2055,7 @@ TEST(Gguf, ReadsTheTokenizer) {
   ASSERT_TRUE(g.has_value()) << g.error().ToString();
   EXPECT_EQ(g->architecture, "test");
   EXPECT_EQ(g->pre, "qwen35");
-  EXPECT_EQ(g->spec.pre_tokenizer, PreTokenizer::kQwen35);
+  EXPECT_EQ(g->spec.pre_tokenizer, PreTokenizer::kByteBpe);
   EXPECT_EQ(g->chat_template, "{{ messages }}");
   EXPECT_EQ(g->spec.tokens.size(), 259U);
   EXPECT_EQ(g->spec.kinds[258], TokenKind::kUnused);
@@ -1879,6 +2063,66 @@ TEST(Gguf, ReadsTheTokenizer) {
   auto t = tok::Tokenizer::Create(g->spec);
   ASSERT_TRUE(t.has_value()) << t.error().ToString();
   EXPECT_EQ(Encode(*t, "ab"), (std::vector<TokenId>{256}));
+}
+
+TEST(Gguf, LlamaPresetDefaultsAndExplicitFalseOverride) {
+  auto original = SmallGguf("llama-bpe");
+  auto explicit_false = tok::ReadGgufTokenizer(original.Bytes());
+  ASSERT_TRUE(explicit_false);
+  EXPECT_TRUE(explicit_false->spec.ignore_merges);
+  EXPECT_FALSE(explicit_false->spec.add_bos);
+  // Replace the explicit false insertion flag with a named BOS, keeping
+  // the metadata count fixed. The absent flag must select the preset default.
+  auto& bytes = original.raw();
+  const auto offset = bytes.find("tokenizer.ggml.add_bos_token");
+  ASSERT_NE(offset, std::string::npos);
+  bytes.erase(offset - 8, 8 + std::string_view("tokenizer.ggml.add_bos_token").size() + 4 + 1);
+  original.U32("tokenizer.ggml.bos_token_id", 257);
+  auto defaults = tok::ReadGgufTokenizer(original.Bytes());
+  ASSERT_TRUE(defaults) << Failed(defaults, &tok::Error::ToString).value_or("");
+  EXPECT_TRUE(defaults->spec.add_bos);
+  auto tokenizer = tok::Tokenizer::Create(std::move(defaults->spec));
+  ASSERT_TRUE(tokenizer);
+  EXPECT_EQ(Encode(*tokenizer, "", {.add_bos_eos = true}), (std::vector<TokenId>{257}));
+  EXPECT_EQ(Encode(*tokenizer, "ab", {.add_bos_eos = true}), (std::vector<TokenId>{257, 256}));
+}
+
+TEST(Encode, DirectPieceVocabularyLookupFollowsSourceFlag) {
+  Vocab v;
+  const auto whole = v.Add(Alphabet("abc"));
+  auto preset = tok::ReadPreTokenizerPreset("llama-bpe");
+  ASSERT_TRUE(preset);
+  v.spec.split_expressions = preset->expressions;
+  v.spec.split_dialect = preset->dialect;
+  v.spec.ignore_merges = preset->ignore_merges;
+  EXPECT_EQ(Encode(v.Build(), "abc"), (std::vector<TokenId>{whole}));
+  v.spec.ignore_merges = false;
+  EXPECT_EQ(Encode(v.Build(), "abc"), (std::vector<TokenId>{97, 98, 99}));
+}
+
+TEST(Gguf, ExplicitEmptyAndAbsentBytePresetUseThePinnedDefault) {
+  auto explicit_default = tok::ReadGgufTokenizer(SmallGguf("default").Bytes());
+  auto empty = tok::ReadGgufTokenizer(SmallGguf("").Bytes());
+  ASSERT_TRUE(explicit_default);
+  ASSERT_TRUE(empty);
+  auto absent = SmallGguf("default");
+  const auto key = absent.raw().find("tokenizer.ggml.pre");
+  ASSERT_NE(key, std::string::npos);
+  const auto begin = key - 8;  // uint64 key length
+  const auto bytes = 8 + std::string_view("tokenizer.ggml.pre").size() + 4 + 8 + 7;
+  absent.raw().erase(begin, bytes);
+  absent.raw()[16] = 10;  // metadata count; the source fixture has eleven keys
+  auto read_absent = tok::ReadGgufTokenizer(absent.Bytes());
+  ASSERT_TRUE(read_absent) << Failed(read_absent, &tok::Error::ToString).value_or("");
+  for (const auto* read : {&*explicit_default, &*empty, &*read_absent}) {
+    EXPECT_EQ(read->pre, "default");
+    EXPECT_EQ(read->spec.pre_tokenizer, PreTokenizer::kByteBpe);
+    EXPECT_EQ(read->spec.split_expressions, explicit_default->spec.split_expressions);
+    EXPECT_EQ(read->spec.split_expressions.size(), 4U);
+    EXPECT_FALSE(read->spec.ignore_merges);
+  }
+  EXPECT_EQ(Pieces("default", "1234567"), (Strings{"123", "456", "7"}));
+  EXPECT_EQ(Pieces("gpt-2", "1234567"), (Strings{"1234567"}));
 }
 
 TEST(Gguf, EveryTruncationFailsCleanly) {
@@ -1924,8 +2168,8 @@ TEST(Encode, RandomTextNeverCrashes) {
   v.Add("<|end|>", TokenKind::kControl);
   v.Add("<think>", TokenKind::kUserDefined);
   v.spec.normalization = tok::Normalization::kNfc;
-  for (const auto p : {PreTokenizer::kQwen2, PreTokenizer::kQwen35, PreTokenizer::kDeepSeekV3}) {
-    v.spec.pre_tokenizer = p;
+  for (const auto p : {"qwen2", "qwen35", "deepseek-v3"}) {
+    v.spec.split_expressions = tok::ReadPreTokenizerPreset(p)->expressions;
     const tok::Tokenizer t = v.Build();
     std::mt19937 random(11);  // NOLINT(bugprone-random-generator-seed): reproducible
     const std::array<std::string_view, 14> atoms = {
@@ -1961,7 +2205,7 @@ TEST(Gguf, RefusesMalformedAndUnsupportedFiles) {
     w.raw()[0] = 'X';
     EXPECT_EQ(rule(w), Rule::kFormat);
   }
-  EXPECT_EQ(rule(SmallGguf("llama-bpe")), Rule::kUnsupported);
+  EXPECT_TRUE(tok::ReadGgufTokenizer(SmallGguf("llama-bpe").Bytes()));
   {
     GgufWriter w;
     w.Header(2).String("tokenizer.ggml.model", "gpt2").String("tokenizer.ggml.model", "gpt2");
@@ -2081,6 +2325,355 @@ std::string HfJson(
   json += R"(, "vocab": {)" + vocab + R"(}, "merges": [[)" + Quote(Alphabet("a")) + ", " +
           Quote(Alphabet("b")) + "]]}}";
   return json;
+}
+
+std::string HfWithPost(std::string_view post) {
+  auto text = HfJson();
+  const auto begin = text.find("\"post_processor\":");
+  const auto end = text.find("\"decoder\":", begin);
+  text.replace(begin, end - begin, "\"post_processor\":" + std::string(post) + ",\n");
+  return text;
+}
+
+std::string HfWithPre(std::string_view pre) {
+  auto text = HfJson();
+  const auto begin = text.find("\"pre_tokenizer\":");
+  const auto end = text.find("\"post_processor\":", begin);
+  text.replace(begin, end - begin, "\"pre_tokenizer\":" + std::string(pre) + ",\n");
+  return text;
+}
+
+TEST(HfTokenizer, SourceDialectTravelsFromReaderIntoTheEncodingPlan) {
+  auto hf = tok::ReadHfTokenizer(HfJson("null", "b$"));
+  ASSERT_TRUE(hf);
+  EXPECT_EQ(hf->split_dialect, tok::RegexDialect::kHuggingFace);
+  auto gguf = tok::ReadGgufTokenizer(SmallGguf("deepseek-llm").Bytes());
+  ASSERT_TRUE(gguf);
+  EXPECT_EQ(gguf->spec.split_dialect, tok::RegexDialect::kGguf);
+  // The source vocab contains the ab merge. A line-end match isolates b
+  // before BPE, whereas an absolute-end expression leaves ab together.
+  auto absolute = *hf;
+  absolute.split_dialect = tok::RegexDialect::kGguf;
+  auto line_tokenizer = tok::Tokenizer::Create(std::move(*hf));
+  auto absolute_tokenizer = tok::Tokenizer::Create(std::move(absolute));
+  ASSERT_TRUE(line_tokenizer);
+  ASSERT_TRUE(absolute_tokenizer);
+  EXPECT_EQ(Encode(*line_tokenizer, "ab\ncd"), (std::vector<TokenId>{97, 98, 10, 99, 100}));
+  EXPECT_EQ(Encode(*absolute_tokenizer, "ab\ncd"), (std::vector<TokenId>{256, 10, 99, 100}));
+}
+
+constexpr std::string_view kTemplate =
+    R"({"type":"TemplateProcessing","single":[{"SpecialToken":{"id":"start","type_id":0}},)"
+    R"({"Sequence":{"id":"A","type_id":0}},{"SpecialToken":{"id":"end","type_id":0}}],)"
+    R"("pair":"start $A end $B:1","special_tokens":{)"
+    R"("start":{"id":"start","ids":[257,258],"tokens":["<|end|>","<think>"]},)"
+    R"("end":{"id":"end","ids":[257],"tokens":["<|end|>"]}}})";
+
+std::vector<TokenId> WrapperIds(const tok::PostProcessorPlan& plan, bool prefix) {
+  std::vector<TokenId> result;
+  for (const auto piece : prefix ? plan.prefix : plan.suffix)
+    for (const auto id : std::span(plan.ids).subspan(piece.offset, piece.length))
+      result.push_back(id);
+  return result;
+}
+
+TEST(HfTokenizer, SharedPostprocessorMultiIdsSequenceOrderAndRoleSeparation) {
+  auto second = std::string(kTemplate);
+  const auto begin = second.find("\"single\":");
+  const auto end = second.find("\"pair\":", begin);
+  second.replace(begin, end - begin, R"("single":"end:1 $A:0 start",)");
+  const auto post =
+      R"({"type":"Sequence","processors":[)" + std::string(kTemplate) +
+      R"(,{"type":"Sequence","processors":[{"type":"ByteLevel","trim_offsets":true},)" + second +
+      "]}]}";
+  auto spec = tok::ReadHfTokenizer(HfWithPost(post));
+  ASSERT_TRUE(spec) << Failed(spec, &tok::Error::ToString).value_or("");
+  EXPECT_FALSE(spec->bos);
+  EXPECT_FALSE(spec->eos);
+  EXPECT_FALSE(spec->add_bos);
+  EXPECT_EQ(WrapperIds(spec->post_processor, true), (std::vector<TokenId>{257, 257, 258}));
+  EXPECT_EQ(WrapperIds(spec->post_processor, false), (std::vector<TokenId>{257, 257, 258}));
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(Encode(*tokenizer, "ab"), (std::vector<TokenId>{256}));
+  EXPECT_EQ(Encode(*tokenizer, "ab", {.add_bos_eos = true}),
+            (std::vector<TokenId>{257, 257, 258, 256, 257, 257, 258}));
+  EXPECT_EQ(Encode(*tokenizer, "", {.add_bos_eos = true}),
+            (std::vector<TokenId>{257, 257, 258, 257, 257, 258}));
+  EXPECT_GE(tokenizer->OutputTokensBound(0, true), 6U);
+  std::vector<TokenId> out{9};
+  EXPECT_EQ(Failed(tokenizer->Encode("ab", {.add_bos_eos = true, .max_tokens = 6}, out),
+                   &tok::Error::rule),
+            Rule::kOutputTooLarge);
+  EXPECT_EQ(out.front(), 9);
+  const std::string control = "<|end|>";
+  const std::array<tok::SpecialSpan, 1> spans{{{0, control.size()}}};
+  out = {9};
+  std::vector<std::size_t> positions;
+  ASSERT_TRUE(tokenizer->EncodeMarked(control, spans, {.add_bos_eos = true}, out, &positions));
+  EXPECT_EQ(positions, (std::vector<std::size_t>{4}));
+  EXPECT_EQ(out, (std::vector<TokenId>{9, 257, 257, 258, 257, 257, 257, 258}));
+}
+
+TEST(HfTokenizer, SourceSizedStageAndPostprocessorPlansAcceptAffordableLargeInputs) {
+  std::string pre = R"({"type":"Sequence","pretokenizers":[)";
+  for (unsigned i = 0; i < 33; ++i)
+    pre += R"({"type":"Split","pattern":{"Regex":"a"},"behavior":"Isolated","invert":false},)";
+  pre += R"({"type":"ByteLevel","add_prefix_space":false,"use_regex":false}]})";
+  auto split = tok::ReadHfTokenizer(HfWithPre(pre));
+  ASSERT_TRUE(split) << Failed(split, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(split->split_expressions.size(), 33U);
+  auto tokenizer = tok::Tokenizer::Create(std::move(*split));
+  ASSERT_TRUE(tokenizer);
+  EXPECT_EQ(Encode(*tokenizer, "aab"), (std::vector<TokenId>{97, 97, 98}));
+
+  std::string post = R"({"type":"Sequence","processors":[)";
+  for (unsigned i = 0; i < 1025; ++i) {
+    if (i) post += ',';
+    post += R"({"type":"ByteLevel"})";
+  }
+  post += "]}";
+  auto offsets = tok::ReadHfTokenizer(HfWithPost(post));
+  ASSERT_TRUE(offsets) << Failed(offsets, &tok::Error::ToString).value_or("");
+  EXPECT_TRUE(offsets->post_processor.ids.empty());
+  EXPECT_TRUE(offsets->post_processor.prefix.empty());
+
+  post = R"({"type":"TemplateProcessing","single":")";
+  for (unsigned i = 0; i < 65537; ++i) post += "x ";
+  post += R"($A","special_tokens":{"x":{"id":"x","ids":[257],"tokens":["<|end|>"]}}})";
+  auto wrappers = tok::ReadHfTokenizer(HfWithPost(post));
+  ASSERT_TRUE(wrappers) << Failed(wrappers, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(wrappers->post_processor.ids.size(), 1U);
+  EXPECT_EQ(wrappers->post_processor.prefix.size(), 65537U);
+  const auto payment = tok::Tokenizer::ConstructionBytes(*wrappers);
+  ASSERT_TRUE(payment);
+  EXPECT_GE(*payment, wrappers->post_processor.prefix.capacity() * sizeof(tok::PostProcessorSlice));
+  auto large = tok::Tokenizer::Create(std::move(*wrappers));
+  ASSERT_TRUE(large);
+  EXPECT_EQ(Encode(*large, "", {.add_bos_eos = true, .max_tokens = 65537}).size(), 65537U);
+}
+
+TEST(HfTokenizer, MultiIdReferencesStayCompactAndEmissionPaysItsOutputBound) {
+  constexpr std::size_t count = 4096;
+  std::string post = R"({"type":"TemplateProcessing","single":")";
+  for (std::size_t i = 0; i < count; ++i) post += "x ";
+  post += R"($A","special_tokens":{"x":{"id":"x","ids":[)";
+  for (std::size_t i = 0; i < count; ++i) post += i ? ",257" : "257";
+  post += R"(],"tokens":[)";
+  for (std::size_t i = 0; i < count; ++i) post += i ? ",\"<|end|>\"" : "\"<|end|>\"";
+  post += "]}}}";
+  auto source = tok::ReadHfTokenizer(HfWithPost(post));
+  ASSERT_TRUE(source) << Failed(source, &tok::Error::ToString).value_or("");
+  EXPECT_EQ(source->post_processor.ids.size(), count);
+  EXPECT_EQ(source->post_processor.prefix.size(), count);
+  const auto bytes = tok::Tokenizer::ConstructionBytes(*source);
+  ASSERT_TRUE(bytes);
+  EXPECT_LT(*bytes, count * count * sizeof(TokenId));
+  auto tokenizer = tok::Tokenizer::Create(*source);
+  ASSERT_TRUE(tokenizer);
+  EXPECT_GE(tokenizer->OutputTokensBound(0, true), count * count);
+  std::vector<TokenId> out;
+  const auto encoded = tokenizer->Encode("", {.add_bos_eos = true, .max_tokens = 8}, out);
+  EXPECT_EQ(Failed(encoded, &tok::Error::rule), Rule::kOutputTooLarge);
+  EXPECT_EQ(out.size(), 8U);
+  source->post_processor.prefix[0] = {source->post_processor.ids.size(), 1};
+  EXPECT_EQ(Failed(tok::Tokenizer::ConstructionBytes(*source), &tok::Error::rule),
+            Rule::kVocabulary);
+  EXPECT_EQ(Failed(tok::Tokenizer::Create(*source), &tok::Error::rule), Rule::kVocabulary);
+
+  llmp::base::WorkPulse pulse;
+  pulse.Cancel();
+  llmp::base::SetThreadPulse(&pulse);
+  const auto cancelled_read = tok::ReadHfTokenizer(HfWithPost(post));
+  const auto cancelled_create = tok::Tokenizer::Create(*source);
+  out.clear();
+  const auto cancelled_emit = tokenizer->Encode("", {.add_bos_eos = true}, out);
+  llmp::base::SetThreadPulse(nullptr);
+  EXPECT_EQ(Failed(cancelled_read, &tok::Error::rule), Rule::kCancelled);
+  EXPECT_EQ(Failed(cancelled_create, &tok::Error::rule), Rule::kCancelled);
+  EXPECT_EQ(Failed(cancelled_emit, &tok::Error::rule), Rule::kCancelled);
+  EXPECT_TRUE(out.empty());
+}
+
+TEST(HfTokenizer, CompactInsertionReservesCapacityBeforeEmissionAndKeepsAppendLimits) {
+  Vocab vocab;
+  const auto control = vocab.Add("<control>", TokenKind::kControl);
+  vocab.spec.has_post_processor = true;
+  vocab.spec.post_processor.ids.assign(512, control);
+  vocab.spec.post_processor.prefix.assign(256, {0, 512});
+  vocab.spec.post_processor.prefix.push_back({0, 1});
+  auto tokenizer = vocab.Build();
+  const tok::EncodeOptions options{.add_bos_eos = true, .max_tokens = 200000};
+  std::vector<TokenId> out{11, 12};
+  ASSERT_TRUE(tokenizer.ReserveOutput("", options, out, 1));
+  const auto capacity = out.capacity();
+  const auto* address = out.data();
+  EXPECT_EQ(capacity, 2 + tokenizer.OutputTokensBound(0, true) + 1);
+  ASSERT_TRUE(tokenizer.Encode("", options, out));
+  EXPECT_EQ(out.data(), address);
+  EXPECT_EQ(out.capacity(), capacity);
+  EXPECT_EQ(out.size(), 2 + 131073U);
+  EXPECT_EQ(out[0], 11);
+  EXPECT_EQ(out[1], 12);
+
+  std::vector<TokenId> limited(100, 11);
+  const auto result = tokenizer.Encode("", {.add_bos_eos = true, .max_tokens = 8}, limited);
+  EXPECT_EQ(Failed(result, &tok::Error::rule), Rule::kOutputTooLarge);
+  EXPECT_EQ(limited.size(), 108U);
+  EXPECT_EQ(limited.capacity(), 108U);
+  std::vector<TokenId> invalid{11};
+  EXPECT_EQ(Failed(tokenizer.ReserveOutput("", {}, invalid, SIZE_MAX), &tok::Error::rule),
+            Rule::kBounds);
+  EXPECT_EQ(invalid, (std::vector<TokenId>{11}));
+  const std::string bad_utf8(1, static_cast<char>(0xff));
+  const auto original_capacity = invalid.capacity();
+  EXPECT_FALSE(tokenizer.ReserveOutput(bad_utf8, options, invalid));
+  EXPECT_EQ(invalid.capacity(), original_capacity);
+
+  const std::string text = "<control>";
+  const std::array<tok::SpecialSpan, 1> spans{{{0, text.size()}}};
+  std::vector<TokenId> marked{11};
+  std::vector<std::size_t> positions{7, 8};
+  ASSERT_TRUE(tokenizer.EncodeMarked(text, spans, {.max_tokens = 1}, marked, &positions));
+  EXPECT_EQ(marked, (std::vector<TokenId>{11, control}));
+  EXPECT_EQ(positions, (std::vector<std::size_t>{7, 8, 1}));
+  EXPECT_EQ(positions.capacity(), 3U);
+}
+
+TEST(HfTokenizer, ManyDefinitionsAndLateReferencesHaveBoundedLookupWork) {
+  constexpr std::size_t definitions = 2048, references = 8192;
+  const auto name = [](std::size_t i) { return "definition_" + std::to_string(i); };
+  const auto last = name(definitions - 1);
+  std::string post = R"({"type":"TemplateProcessing","single":")";
+  for (std::size_t i = 0; i < references; ++i) post += last + ' ';
+  post += name(0) + " $A " + name(2) + ' ' + last;
+  post += R"(","special_tokens":{)";
+  for (std::size_t i = 0; i < definitions; ++i) {
+    if (i) post += ',';
+    const auto id = name(i);
+    post += Quote(id) + R"(:{"id":)" + Quote(id);
+    post +=
+        i % 2 ? R"(,"ids":[258],"tokens":["<think>"]})" : R"(,"ids":[257],"tokens":["<|end|>"]})";
+  }
+  post += "}}";
+  const auto input = HfWithPost(post);
+  llmp::base::WorkPulse pulse;
+  llmp::base::SetThreadPulse(&pulse);
+  auto source = tok::ReadHfTokenizer(input);
+  llmp::base::SetThreadPulse(nullptr);
+  ASSERT_TRUE(source) << Failed(source, &tok::Error::ToString).value_or("");
+  // Parsing pulses also cover JSON, source scanning, IDs and index comparisons.
+  // The old two-pass late-name scan alone beats >131,000 times here. Bound
+  // metered work, not elapsed time, while allowing all source-linear work.
+  EXPECT_LT(pulse.beats(), 4 * (definitions + references));
+  EXPECT_EQ(source->post_processor.ids.size(), definitions);
+  ASSERT_EQ(source->post_processor.prefix.size(), references + 1);
+  ASSERT_EQ(source->post_processor.suffix.size(), 2U);
+  for (std::size_t i = 0; i < references; ++i) {
+    EXPECT_EQ(source->post_processor.prefix[i].offset, definitions - 1);
+    EXPECT_EQ(source->post_processor.prefix[i].length, 1U);
+  }
+  EXPECT_EQ(source->post_processor.prefix.back().offset, 0U);
+  EXPECT_EQ(source->post_processor.suffix[0].offset, 2U);
+  EXPECT_EQ(source->post_processor.suffix[1].offset, definitions - 1);
+  // Index nodes are transient parser storage, conservatively 128 bytes each
+  // inside the existing source allowance. Retained construction funds only
+  // the definition-ID pool and ordered slices, not a definitions*references
+  // table or an expanded insertion list.
+  EXPECT_LE(128 * definitions, 4 * post.size());
+  const auto payment = tok::Tokenizer::ConstructionBytes(*source);
+  ASSERT_TRUE(payment);
+  const auto& plan = source->post_processor;
+  EXPECT_GE(*payment, plan.ids.capacity() * sizeof(TokenId) +
+                          (plan.prefix.capacity() + plan.suffix.capacity()) *
+                              sizeof(tok::PostProcessorSlice));
+  EXPECT_LT(*payment, definitions * references * sizeof(TokenId));
+  auto tokenizer = tok::Tokenizer::Create(std::move(*source));
+  ASSERT_TRUE(tokenizer);
+  const auto output = Encode(*tokenizer, "ab", {.add_bos_eos = true, .max_tokens = references + 4});
+  ASSERT_EQ(output.size(), references + 4);
+  EXPECT_TRUE(std::ranges::all_of(std::span(output).first(references),
+                                  [](TokenId id) { return id == 258; }));
+  EXPECT_EQ(output[references], 257);
+  EXPECT_EQ(output[references + 1], 256);
+  EXPECT_EQ(output[references + 2], 257);
+  EXPECT_EQ(output[references + 3], 258);
+
+  const auto repeated_name = post.substr(0, post.size() - 2) + ',' + Quote(name(0)) + R"(:{"id":)" +
+                             Quote(name(0)) + R"(,"ids":[257],"tokens":["<|end|>"]}}})";
+  EXPECT_EQ(Failed(tok::ReadHfTokenizer(HfWithPost(repeated_name)), &tok::Error::rule),
+            Rule::kFormat);
+}
+
+TEST(HfTokenizer, TemplateStringSequenceAliasesAndMalformedDefinitions) {
+  auto post = std::string(kTemplate);
+  auto begin = post.find("\"single\":");
+  auto end = post.find("\"pair\":", begin);
+  post.replace(begin, end - begin, R"("single":"start $0 end",)");
+  auto spec = tok::ReadHfTokenizer(HfWithPost(post));
+  ASSERT_TRUE(spec);
+  EXPECT_EQ(WrapperIds(spec->post_processor, true), (std::vector<TokenId>{257, 258}));
+  EXPECT_EQ(WrapperIds(spec->post_processor, false), (std::vector<TokenId>{257}));
+  for (const auto& [from, to] : {
+           std::pair{R"("ids":[257,258])", R"("ids":[257])"},
+           std::pair{R"("ids":[257,258])", R"("ids":[257,-1])"},
+           std::pair{R"("tokens":["<|end|>","<think>"])", R"("tokens":["<|end|>","wrong"] )"},
+           std::pair{R"("type_id":0)", R"("type_id":4294967296)"},
+           std::pair{R"("id":"A")", R"("id":"B")"},
+           std::pair{R"("id":"start","type_id":0)", R"("id":"missing","type_id":0)"},
+           std::pair{R"("pair":"start $A end $B:1")", R"("pair":"start $A end $A:1")"},
+       }) {
+    auto bad = std::string(kTemplate);
+    const auto offset = bad.find(from);
+    ASSERT_NE(offset, std::string::npos);
+    bad.replace(offset, std::string_view(from).size(), to);
+    EXPECT_FALSE(tok::ReadHfTokenizer(HfWithPost(bad))) << from;
+  }
+  for (const auto single : {"start end", "$A $A", "$B", "$A:no", "$4294967296"}) {
+    auto bad = std::string(kTemplate);
+    begin = bad.find("\"single\":");
+    end = bad.find("\"pair\":", begin);
+    bad.replace(begin, end - begin, "\"single\":" + Quote(single) + ",");
+    EXPECT_FALSE(tok::ReadHfTokenizer(HfWithPost(bad))) << single;
+  }
+  EXPECT_FALSE(tok::ReadHfTokenizer(HfWithPost(R"({"type":"Sequence","processors":null})")));
+  EXPECT_FALSE(tok::ReadHfTokenizer(HfWithPost(R"({"type":"ByteLevel","trim_offsets":"true"})")));
+}
+
+TEST(HfTokenizer, GenericNestedSplitsAndFaithfulByteLevelOptions) {
+  auto text = HfJson();
+  const auto begin = text.find("\"pre_tokenizer\":");
+  const auto end = text.find("\"post_processor\":", begin);
+  const auto with = [&](std::string_view pre) {
+    auto result = text;
+    result.replace(begin, end - begin, "\"pre_tokenizer\":" + std::string(pre) + ",");
+    return result;
+  };
+  const auto generic = with(
+      R"({"type":"Sequence","pretokenizers":[{"type":"Sequence","pretokenizers":[)"
+      R"({"type":"Split","pattern":{"Regex":"b+"},"behavior":"Isolated","invert":false}]},)"
+      R"({"type":"ByteLevel","add_prefix_space":false,"use_regex":false,"trim_offsets":true}]})");
+  auto spec = tok::ReadHfTokenizer(generic);
+  ASSERT_TRUE(spec);
+  EXPECT_EQ(spec->split_expressions, (std::vector<std::string>{"b+"}));
+  auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+  ASSERT_TRUE(tokenizer);
+  EXPECT_EQ(Encode(*tokenizer, "ab"), (std::vector<TokenId>{97, 98}));
+  auto byte_only = tok::ReadHfTokenizer(
+      with(R"({"type":"ByteLevel","add_prefix_space":false,"use_regex":false})"));
+  ASSERT_TRUE(byte_only);
+  EXPECT_TRUE(byte_only->split_expressions.empty());
+  auto gpt2 = tok::ReadHfTokenizer(with(R"({"type":"ByteLevel","add_prefix_space":false})"));
+  ASSERT_TRUE(gpt2);
+  EXPECT_EQ(gpt2->split_expressions, tok::ReadPreTokenizerPreset("gpt-2")->expressions);
+  for (
+      const auto pre :
+      {R"({"type":"ByteLevel","add_prefix_space":true})",
+       R"({"type":"ByteLevel","add_prefix_space":false,"use_regex":"false"})",
+       R"({"type":"Sequence","pretokenizers":[{"type":"ByteLevel","add_prefix_space":false,"use_regex":false},)"
+       R"({"type":"Split","pattern":{"Regex":"."},"behavior":"Isolated"}]})"}) {
+    EXPECT_FALSE(tok::ReadHfTokenizer(with(pre))) << pre;
+  }
 }
 
 std::string RawHfJson(bool literal_tab = false) {
@@ -2276,7 +2869,7 @@ TEST(SentencePiece, NormalizedUserDefinedSymbolsAreFrozenBeforeScoreMerging) {
 TEST(HfTokenizer, ReadsASupportedFile) {
   const auto spec = tok::ReadHfTokenizer(HfJson());
   ASSERT_TRUE(spec.has_value()) << spec.error().ToString();
-  EXPECT_EQ(spec->pre_tokenizer, PreTokenizer::kQwen35);
+  EXPECT_EQ(spec->pre_tokenizer, PreTokenizer::kByteBpe);
   EXPECT_EQ(spec->normalization, tok::Normalization::kNfc);
   ASSERT_EQ(spec->tokens.size(), 259U);
   EXPECT_EQ(spec->kinds[257], TokenKind::kControl);
@@ -2291,7 +2884,7 @@ TEST(HfTokenizer, RefusesWhatItDoesNotImplement) {
     return Failed(tok::ReadHfTokenizer(json), &tok::Error::rule);
   };
   EXPECT_EQ(rule(HfJson(R"({"type": "NFKC"})")), Rule::kUnsupported);
-  EXPECT_EQ(rule(HfJson(R"({"type": "NFC"})", R"(\\p{L}+)")), Rule::kUnsupported);
+  EXPECT_TRUE(tok::ReadHfTokenizer(HfJson(R"({"type": "NFC"})", R"(\\p{L}+)")));
   EXPECT_EQ(rule(HfJson(R"({"type": "NFC"})", kQwen35Regex, "[]", R"("byte_fallback": true)")),
             Rule::kUnsupported);
   EXPECT_EQ(rule(HfJson(R"({"type": "NFC"})", kQwen35Regex,

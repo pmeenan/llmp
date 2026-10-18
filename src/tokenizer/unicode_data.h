@@ -71,6 +71,8 @@ extern const std::span<const Composition> kCompositions;
 extern const std::span<const CaseMapping> kLowerFull;
 extern const std::span<const CaseMapping> kUpperFull;
 extern const std::span<const CaseMapping> kTitleFull;
+// Default full folding from CaseFolding.txt, C/F records only.
+extern const std::span<const CaseMapping> kCaseFold;
 extern const std::span<const char32_t> kCaseParts;
 // The Lowercase, Uppercase, Cased and Case_Ignorable properties: sorted,
 // disjoint, not adjacent.

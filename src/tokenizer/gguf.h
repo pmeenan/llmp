@@ -10,8 +10,9 @@
 // gguf.cpp), and the tokenizer keys must have their documented types.
 //
 // Supported: `tokenizer.ggml.model` "gpt2" (byte-level BPE) with the
-// pre-tokenizers `qwen2`, `qwen35`, `deepseek-v3` and `joyai-llm`, as
-// llama.cpp reads them; token types normal, control, user-defined and unused.
+// preset split plans in presets.cc (Llama 3, GPT-2/4o, Tekken, Qwen,
+// DeepSeek, Falcon, StarCoder and Command R, including their pinned aliases);
+// token types normal, control, user-defined and unused.
 // Also "gemma4": raw UTF-8 BPE, optional `gemma4` pre-tokenizer, and
 // <0xNN> byte fallback tokens. Also "llama": classic SentencePiece with
 // absent/default pre-tokenizer, finite F32 token scores, optional dummy

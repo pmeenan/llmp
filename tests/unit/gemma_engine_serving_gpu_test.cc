@@ -531,10 +531,10 @@ TEST_P(GemmaEngineQ8CacheGpu, AliasTeacherScoresCheckpointSpillAndKeptContinuati
     layout_ids[arm] = Engine().runner().slots().kept_layout_id();
     auto encoded = model->EncodeText(text);
     ASSERT_TRUE(encoded) << (encoded ? "" : encoded.error());
-    ASSERT_GT(encoded->size(), 40U);
-    ASSERT_LE(encoded->size(), 256U);
-    if (arm == 0) ids = *encoded;
-    ASSERT_EQ(*encoded, ids);
+    ASSERT_GT(encoded->tokens.size(), 40U);
+    ASSERT_LE(encoded->tokens.size(), 256U);
+    if (arm == 0) ids = encoded->tokens;
+    ASSERT_EQ(encoded->tokens, ids);
     losses[arm].reserve(ids.size() - 1);
     std::size_t at = 1;
     bool valid_rows = true;

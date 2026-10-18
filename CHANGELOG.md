@@ -24,6 +24,11 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+
+- Compile bounded native regex split plans from tokenizer sources, admitting
+  Llama 3 and additional GGUF presets. Apply shared multi-ID HF template
+  postprocessors, and fund complete normalized tokenizer work and outputs.
+  Image prompts derive their dropped prefix from one complete encoding.
 - Scratch planning and funding use the backend's actual lane configuration,
   so serial multiowner programs do not reserve four unused lane workspaces.
   Launch, binding and cache identity share that immutable configuration.

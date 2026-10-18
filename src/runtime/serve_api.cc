@@ -247,18 +247,6 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
   if (!rendered && failure == ChatRenderFailure::kMemory) {
     return std::unexpected(api::MemoryRefusal(memory, needed, "tokenizing the conversation"));
   }
-  if (!rendered && failure == ChatRenderFailure::kUnbroken) {
-    // Text the tokenizer cannot cut into windows (no line break or word
-    // boundary) and cannot hold whole: the prompt's shape, refused as the
-    // context is.
-    return std::unexpected(Failure(
-        400,
-        std::format("The messages hold {} bytes of text without a line break or a space between "
-                    "words; this model tokenizes at most {} bytes without one. Please break up "
-                    "the text.",
-                    needed, memory.capacity() / tokenizer::kEncodeBytesPerWindowByte),
-        "context_length_exceeded", "messages"));
-  }
   if (!rendered && failure == ChatRenderFailure::kCancelled && pulse != nullptr &&
       pulse->cancels() != cancels) {
     // Stopped by the hang ladder (rung 1): the work stops here, so the

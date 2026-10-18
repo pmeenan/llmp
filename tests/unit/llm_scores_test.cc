@@ -15,15 +15,18 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include "base/work_pulse.h"
 #include "chat/chat.h"
 #include "ggml.h"
 #include "kernels/ggml/llmp_ops.h"
@@ -699,7 +702,7 @@ std::string ByteText(unsigned b) {
   return out;
 }
 
-llmp::tokenizer::Tokenizer ByteTokenizer() {
+llmp::tokenizer::TokenizerSpec ByteTokenizerSpec() {
   llmp::tokenizer::TokenizerSpec spec;
   for (unsigned b = 0; b < 256; ++b) {
     spec.tokens.push_back(ByteText(b));
@@ -710,9 +713,93 @@ llmp::tokenizer::Tokenizer ByteTokenizer() {
     spec.kinds.push_back(llmp::tokenizer::TokenKind::kControl);
   }
   spec.eos = 258;
+  return spec;
+}
+llmp::tokenizer::Tokenizer ByteTokenizer() {
+  auto spec = ByteTokenizerSpec();
   auto t = llmp::tokenizer::Tokenizer::Create(std::move(spec));
   EXPECT_TRUE(t.has_value()) << t.error().ToString();
   return std::move(*t);
+}
+
+TEST(LlmRender, CompactSourceOutputRetainsItsExactFundedCapacityThroughCacheOwnership) {
+  auto spec = ByteTokenizerSpec();
+  spec.has_post_processor = true;
+  spec.post_processor.ids.assign(512, 257);
+  spec.post_processor.prefix.assign(256, {0, 512});
+  spec.post_processor.prefix.push_back({0, 1});
+  spec.bos = 258;
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(tokenizer);
+  FakeLlm model;
+  ASSERT_TRUE(model.UseChat(std::move(*tokenizer), "{{ messages[0].content }}"));
+  const auto capacity = model.tokenizer().OutputTokensBound(1, true) + 1;
+  const auto output_bytes = capacity * sizeof(std::int32_t);
+  const auto need = model.tokenizer().WorkingBytes(1) + output_bytes;
+  rt::RequestMemory too_small(need - 1);
+  std::uint64_t reported = 0;
+  const auto refused = model.EncodeText("a", &too_small, &reported);
+  EXPECT_FALSE(refused);
+  EXPECT_EQ(reported, need);
+  EXPECT_EQ(too_small.used(), 0U);
+
+  rt::RequestMemory memory(need);
+  {
+    auto encoded = model.EncodeText("a", &memory);
+    ASSERT_TRUE(encoded) << (encoded ? "" : encoded.error());
+    EXPECT_EQ(encoded->tokens.capacity(), capacity);
+    EXPECT_EQ(encoded->tokens.size(), 131075U);  // endpoint BOS + source prefix + a
+    EXPECT_EQ(encoded->tokens.front(), 258);
+    EXPECT_EQ(encoded->tokens.back(), 'a');
+    EXPECT_EQ(encoded->charge.bytes(), output_bytes);
+    EXPECT_EQ(memory.used(), output_bytes);  // temporary work was released
+    std::map<std::string, rt::EncodedText> cache;
+    encoded->tokens.resize(16);
+    cache.emplace("model", std::move(*encoded));
+    EXPECT_EQ(memory.used(), output_bytes);
+    const std::span<const std::int32_t> borrowed = cache.at("model").tokens;
+    EXPECT_EQ(borrowed.data(), cache.at("model").tokens.data());
+    EXPECT_EQ(borrowed.size(), 16U);
+    cache.clear();
+    EXPECT_EQ(memory.used(), 0U);
+  }
+  EXPECT_EQ(memory.used(), 0U);
+  const auto invalid = model.EncodeText(std::string(1, static_cast<char>(0xff)), &memory);
+  EXPECT_FALSE(invalid);
+  EXPECT_EQ(memory.used(), 0U);
+}
+
+TEST(LlmRender, ContextTextReadCannotGrowPastTheFundedFileSize) {
+  // Larger than the string's inline storage, small enough to isolate the
+  // actual fixed-buffer contract without a model or filesystem race.
+  std::string storage(33, '\0');
+  const auto capacity = storage.capacity();
+  const auto* address = storage.data();
+  const std::string input(33, 'a');
+  std::istringstream exact(input);
+  ASSERT_TRUE(rt::ReadContextText(exact, std::span(storage)));
+  EXPECT_EQ(storage, input);
+  EXPECT_EQ(storage.capacity(), capacity);
+  EXPECT_EQ(storage.data(), address);
+  for (const auto& changed : {std::string(32, 'a'), std::string(34, 'a')}) {
+    std::istringstream stream(changed);
+    EXPECT_FALSE(rt::ReadContextText(stream, std::span(storage)));
+    EXPECT_EQ(storage.capacity(), capacity);
+    EXPECT_EQ(storage.data(), address);
+  }
+  std::istringstream broken(input);
+  broken.setstate(std::ios::badbit);
+  EXPECT_FALSE(rt::ReadContextText(broken, std::span(storage)));
+  std::istringstream empty;
+  EXPECT_FALSE(rt::ReadContextText(empty, {}));
+  llmp::base::WorkPulse pulse;
+  pulse.Cancel();
+  llmp::base::SetThreadPulse(&pulse);
+  std::istringstream cancelled(input);
+  const auto result = rt::ReadContextText(cancelled, std::span(storage));
+  llmp::base::SetThreadPulse(nullptr);
+  EXPECT_FALSE(result);
+  EXPECT_EQ(cancelled.tellg(), std::streampos{0});
 }
 
 // The prompt-size chain follows the model, not the tokenizer's library

@@ -176,3 +176,102 @@ modes, so BOS behavior is checked rather than inferred from admission. The
 existing corpus gives 184 encodings without insertion and 184 with insertion
 per configuration. Existing served-model fixtures remain the regression oracle;
 the new generator configurations do not regenerate them.
+
+## Llama 3.2 GGUF and compiled split plans (R8), 2026-10-18
+
+The new `llama-3.2-1b-gguf` configuration uses the current locked reference
+from [llama-reference-refresh/pins.json](../llama-reference-refresh/pins.json):
+llama.cpp v0.6.0, source `d81235049384534c167caea52b85a694f6103d14`,
+ARM64 image
+`ghcr.io/ggml-org/llama.cpp@sha256:c604ea4f1c2e8d5c8b27d89fef727384d59e23c5b07e369cde5393820e0607db`
+(config `c45165320931c3c957baef9edf518d731870f9c4f9eb98f749170d5009afe2bd`).
+Historical configurations retain their original image and output identities.
+
+The original archived source is
+`bartowski/Llama-3.2-1B-Instruct-GGUF@067b946cf014b7c697f3654f621d577a3e3afd1c/Llama-3.2-1B-Instruct-Q8_0.gguf`,
+1,321,083,008 bytes, archived manifest SHA-256
+`432f310a77f4650a88d0fd59ecdd7cebed8d684bafea53cbff0473542964f0c3`.
+Only its complete 7,822,851-byte metadata prefix is staged for the native
+reader, at `~/.local/share/llmp/tokenizer-reference/llama32/header.gguf`, SHA-256
+`bd1db0aa84ea2d4e51eaa0a2202888886ded4a67c28abb726b2d6db4686fd4ff`.
+This is metadata staging, not a complete staged checkpoint or a new full-weight
+hash verification. The oracle copy changes tensor count to zero and pads to
+32-byte alignment: 7,822,880 bytes, SHA-256
+`85bc054b2a2aa699a5e3c48e2386adf4fe8eb7e04372ed70f1e4c254b6c9c7de`.
+It retains every original tokenizer metadata byte and remains outside Git.
+
+On `spark-b`, supervised `r8-llama32-oracle-generate` ran the current
+`llama-tokenize` with `--no-escape --ids --log-disable`, parsing specials and
+with `--no-parse-special`, both with `--no-bos` and with that flag omitted.
+The current binary's help confirms BOS is enabled by default. The resulting
+fixture has 92 corpus inputs (83 valid, nine replaced after strict UTF-8
+refusal), four encodings each, plus four independent special-token probes:
+empty input, literal `<|begin_of_text|>`, `Hello!`, and BOS followed by that
+text. Automatic insertion produces `[128000]` for empty input and two BOS IDs
+for a parsed preexisting BOS; no deduplication is inferred. The sealed fixture
+SHA-256 is `2099969b0945b6f1aa3e28eb3fb4824d9a9c8152f3cff84cdbe6c3155fb82e17`.
+
+Rerun this configuration alone in an external fixture workspace, with the
+unchanged checked-in corpus copied to its normal relative path:
+
+```sh
+python3 docs/experiments/tokenizer-reference/generate.py --repo <fixture-workspace> \
+    --models ~/.local/share/llmp --work <scratch> --only tokens \
+    --config llama-3.2-1b-gguf
+```
+
+Inventory the current image and helpers before acquiring anything. Model
+metadata comes from the archive under [model-archive.md](../../model-archive.md).
+The generator verifies the prefix before deriving the vocabulary-only oracle
+copy. This establishes GGUF oracle evidence; it does not claim an official HF
+Llama `tokenizer.json` was acquired or tested. Synthetic HF tests cover generic
+regexes and shared postprocessors. Native agreement is reported in tokenizer.md
+once its checks complete.
+
+The independent engine is Apache-2.0. The GGUF expression/alias table in
+`src/tokenizer/presets.cc` is transcribed MIT data from the same locked
+`src/llama-vocab.cpp` (189,021 bytes, SHA-256
+`18f624c7f5a64f6bd4458248d2cde0ba989cbd46c47b8007be1765e31486c938`),
+with the ggml authors' copyright and `MIT AND Apache-2.0` tags. The table uses
+actual runtime expression strings, including ASCII contraction classes and
+GPT4O/Tekken's category/class lookahead workaround. HF expressions retain
+Unicode case semantics directly. The pin's explicit `default` BPE preset has
+four ordered stages; absent/empty BPE names select that same declared default,
+independently of the SentencePiece algorithm's separate default.
+
+Independent regex controls used the already installed Python 3.12.3,
+tokenizers 0.22.2 and transformers 5.12.1 on `spark-b`. The exact two HF Qwen
+expressions were read from source files with tokenizer.json SHA-256
+`c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539`
+(Qwen2.5 EXL3) and
+`0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3`
+(Qwen3.8 FP8). The corrected group-boundary probe JSON is SHA-256
+`06c11ad9c6a028297e2657a241730c1efc50bd67c583d6040ab6325141f94d15`;
+the bare start/space/in-word controls are SHA-256
+`5f1c76c044512c286c7afcc943e9b94bfbdbad6192b955143b06c7b1e755a4b3`.
+These controls establish long-s and Kelvin-sign literal equivalence, default
+full folding inside literal runs, and its boundary behavior: `ss` can match
+sharp-s, while `s{2}`, `[s][s]`, separate scoped groups and captures cannot
+join its expansion. Sentinels `!`/`~` avoid confounding ASCII class matches.
+The native tests retain original code-point spans; they do not fold the whole
+input or normalize it as a substitute for matching.
+
+The generated folding data comes directly from the official versioned
+[UCD 15.1.0 CaseFolding.txt](https://www.unicode.org/Public/15.1.0/ucd/CaseFolding.txt),
+84,870 bytes, SHA-256
+`4e55acfdc32825a22e87670e9056a3bf94ad7c5400065778e9e10f8314372bcf`.
+The generator checks this sixth input alongside the existing UCD files and
+uses C/F records for default full folds, excluding simple-only S and Turkic T
+records. Existing Unicode License V3 attribution applies; Python's runtime
+case mappings are not its source.
+
+
+The independent isolated-Split zero-width probe used the same pinned HF
+environment, raw log SHA-256
+`b5fe2135b53ca401a76c47b6d7309883283d3b925f0a1ff38a20f09e9d90420d`.
+On `baac`, `(?=[a])` yields `b`, `a`, `ac`, with offsets [0,1], [1,2], [2,4].
+On `aaa` it yields three characters; an empty regex similarly splits `abc`
+into its characters. Anchors `^`/`$` retain the whole `abc`; `a*` yields
+`b`, `aa`, `c` on `baac`. Successful zero-width matches therefore establish
+boundaries without emitted empty pieces; they differ from unsuccessful matches.
+Native controls also cover lazy nullable progress and retained input.

@@ -37,6 +37,25 @@ shape/type/batch cases against the compiled pinned selector. Keep the helper and
 control in sync whenever the GGML pin or CUDA image set changes. Quantized GGML
 products retain their separate MMVQ/MMQ routes. No upstream change is proposed.
 
+
+## Incorporated tokenizer preset data
+
+- **Status:** incorporated data; no upstream patch or report requested.
+- **Source:** v0.6.0, `d81235049384534c167caea52b85a694f6103d14`,
+  `src/llama-vocab.cpp`, 189,021 bytes, SHA-256
+  `18f624c7f5a64f6bd4458248d2cde0ba989cbd46c47b8007be1765e31486c938`.
+- **Use:** `src/tokenizer/presets.cc` transcribes expression lists, supported
+  aliases and Llama/Tekken semantic defaults. It uses the actual runtime
+  expressions, including ASCII contraction classes and GPT4O/Tekken's
+  category/class lookahead workaround. HF expressions retain their own
+  Unicode semantics. Native matching is an independent bounded compiled VM;
+  no upstream matcher code is ported.
+- **License:** MIT, Copyright (c) 2023–2026 The ggml authors; the table carries
+  `MIT AND Apache-2.0`, and NOTICE/licensing record incorporation.
+- **Evidence:** [tokenizer reference provenance](../experiments/tokenizer-reference/README.md)
+  retains the historical oracle identities and adds the current-pin Llama 3.2
+  metadata-only source and BOS controls. Synthetic HF tests exercise shared
+  regex/postprocessor semantics without claiming an official HF Llama asset.
 ## Gemma query scale lost during HF-to-GGUF conversion
 
 - **Status:** open; inspected at the pinned release, not reported upstream.

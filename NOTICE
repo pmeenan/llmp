@@ -26,6 +26,12 @@ MIT notices of The ds4.c authors (2026), Entrpi (2026), The ggml authors
 (2023-2026), and Marco Palaferri (2026). Its license and attribution are
 recorded in third_party/sources.lock.json and shipped third-party notices.
 
+src/tokenizer/presets.cc incorporates expression and alias data from
+llama.cpp v0.6.0, d81235049384534c167caea52b85a694f6103d14,
+src/llama-vocab.cpp, Copyright (c) 2023-2026 The ggml authors, under the
+MIT License (LICENSES/MIT.txt). The compiled regex engine is independent
+llmpalooza code under Apache-2.0.
+
 src/tokenizer/unicode_data.cc holds data generated from the Unicode
 Character Database 15.1.0, Copyright (c) 1991-2023 Unicode, Inc., under the
 Unicode License V3 (LICENSES/Unicode-3.0.txt).

@@ -638,18 +638,18 @@ TEST_P(Gemma4ServingGpu, OwnedSnapshotTurnRollbackSpillAndRestartContinueExactly
 TEST_P(Gemma4ServingGpu, LiteralTeacherForcingAndChatRefusalsUseTheTargetRoute) {
   auto literal = model->EncodeText("Hello, café. 世界");
   ASSERT_TRUE(literal);
-  EXPECT_EQ(literal->front(), 2);
+  EXPECT_EQ(literal->tokens.front(), 2);
   ASSERT_TRUE(Select(1));
   std::vector<float> last;
   std::size_t at = 1;
-  auto scored =
-      Branch(0).ScorePrompt(*literal, last, [&](std::int32_t id, std::span<const float> row) {
-        EXPECT_EQ(id, (*literal)[at++]);
-        EXPECT_EQ(row.size(), 262144U);
-        return true;
-      });
+  auto scored = Branch(0).ScorePrompt(literal->tokens, last,
+                                      [&](std::int32_t id, std::span<const float> row) {
+                                        EXPECT_EQ(id, literal->tokens[at++]);
+                                        EXPECT_EQ(row.size(), 262144U);
+                                        return true;
+                                      });
   ASSERT_TRUE(scored) << (scored ? "" : scored.error());
-  EXPECT_EQ(at, literal->size());
+  EXPECT_EQ(at, literal->tokens.size());
   llmp::chat::Conversation c;
   c.messages.push_back({.role = llmp::chat::Role::kUser,
                         .content = "Hello",

@@ -98,8 +98,15 @@ links into tests alone, and toml++ (MIT, D-073) into the shipped binaries,
 whose notices then carry its MIT text and Bjoern Hoehrmann's copyright line
 from its UTF-8 decoder. GGML (MIT, D-077) links into the runtime's engine
 as well as tests and benchmarks (D-096); the package carries its MIT text
-and the YaRN attribution from its RoPE kernel. Llmpalooza's
-`src/kernels/ggml/ggml_support.cu`, adapted from GGML, and
+and the YaRN attribution from its RoPE kernel.
+`src/tokenizer/presets.cc` incorporates expression/alias data from the same
+locked llama.cpp `src/llama-vocab.cpp`, retaining the 2023–2026 ggml authors'
+copyright and `MIT AND Apache-2.0`. The source member's SHA-256 is
+`18f624c7f5a64f6bd4458248d2cde0ba989cbd46c47b8007be1765e31486c938`;
+[the tokenizer reference README](experiments/tokenizer-reference/README.md)
+records the exact source/image and derived metadata provenance. Its independent
+compiled regex engine and postprocessor implementation are Apache-2.0.
+Llmpalooza's `src/kernels/ggml/ggml_support.cu`, adapted from GGML, and
 `src/kernels/ggml/fattn.cu`, which instantiates GGML's vector
 flash-attention case and copies `launch_fattn`'s host arithmetic, keep
 GGML's notice in their headers, as do the M3 units that instantiate or
@@ -482,7 +489,7 @@ The tables are therefore UCD 15.1.0 data.
 
 **What llmpalooza uses instead.** `tools/gen-unicode-tables` (llmpalooza's,
 Apache-2.0; a developer-run build tool) generates
-`src/tokenizer/unicode_data.cc` from five UCD 15.1.0 files and checks each:
+`src/tokenizer/unicode_data.cc` from six UCD 15.1.0 files and checks each:
 
 | File | SHA-256 |
 | --- | --- |
@@ -491,14 +498,15 @@ Apache-2.0; a developer-run build tool) generates
 | DerivedNormalizationProps.txt | `8875dccee2bc1a7c1fe568a3b502a9e78c9e0495afd96b6568b4294d0ed1f7e1` |
 | SpecialCasing.txt | `55a477efd933a52cd27e6a9bf70265bb2d8814af31aab07767abc8eb421f27ef` |
 | DerivedCoreProperties.txt | `f55d0db69123431a7317868725b1fcbf1eab6b265d756d1bd7f0f6d9f9ee108b` |
+| CaseFolding.txt | `4e55acfdc32825a22e87670e9056a3bf94ad7c5400065778e9e10f8314372bcf` |
 | NormalizationTest.txt (tests only) | `871238e37e3be0696ec2bd0891119a041b052da1a84485eda05a5438724b223e` |
 
 | Field | Record |
 | --- | --- |
-| Role | Incorporated data: general categories, White_Space, NFC quick-check values, combining classes, canonical decompositions and compositions, and the full case mappings and case properties (Lowercase, Uppercase, Cased, Case_Ignorable) that Python's str operations use, compiled into `llmp_tokenizer` |
+| Role | Incorporated data: general categories, White_Space, NFC quick-check values, combining classes, canonical decompositions and compositions, the full case mappings and case properties (Lowercase, Uppercase, Cased, Case_Ignorable) that Python's str operations use, and the regex engine's default full case folds from CaseFolding.txt C/F records, compiled into `llmp_tokenizer` |
 | Version | Unicode Character Database 15.1.0 (release 2023-09) |
 | License | Unicode License V3 (SPDX `Unicode-3.0`; [LICENSES/Unicode-3.0.txt](../LICENSES/Unicode-3.0.txt)). The files point to unicode.org's terms of use, which (read 2026-09-28) place every data file under `/Public/` under that license |
-| In a binary | None shipped yet: `llmp` and `llmp-runtime` do not link `llmp_tokenizer` (the swap runner and the chat route will). Tests and harnesses link it |
+| In a binary | Compiled into `llmp_tokenizer`, linked by the importer, runtime, tests and harnesses |
 | Obligations | The copyright and permission notice, with the data or in associated documentation; no source offer. The repository carries it: [NOTICE](../NOTICE) names the file, its UCD version and Unicode's copyright, and [LICENSES/Unicode-3.0.txt](../LICENSES/Unicode-3.0.txt) holds the text. Every package carries it already: `THIRD-PARTY-NOTICES` includes the notice's full text ([provenance.toml](../toolchains/provenance.toml)'s `unicode` notice, `packaging/notices/Unicode-3.0.txt`, the same bytes as the LICENSES copy) whenever the GCC runtime ships, which is always (decision 4 above), and the package installs NOTICE unchanged. When a packaged executable is built from `unicode_data.cc`, `tools/llmp_package.py` also lists the data: `Unicode-3.0` in the copyright file's license and a Unicode Character Database 15.1.0 entry in the SBOM, its notice under its own heading in `THIRD-PARTY-NOTICES`; the package check requires them. Packaging stops if a file under `src/` declares a license outside the core's (`CORE_LICENSES`, D-091), one no source-lock component or shipped provenance unit declares, or Unicode-3.0, which only this record lists, without a record in the tool's `IN_TREE_UNITS`, if a recorded file is gone, or if Ninja cannot list the executables' inputs |
 | Source file | `src/tokenizer/unicode_data.cc` declares `Apache-2.0 AND Unicode-3.0` and "1991-2023 Unicode, Inc."; [NOTICE](../NOTICE) names it |
 

@@ -6,6 +6,7 @@
 // transformers, and Qwen-Image 2.1's text-to-image prompt. Written from the
 // format, not translated from the template (docs/tokenizer.md).
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <expected>
@@ -282,39 +283,43 @@ std::expected<Rendered, Error> RenderQwen38Unsloth(const Conversation& c) {
                         .blank_string_arguments = true});
 }
 
-std::expected<ImagePrompt, Error> RenderQwenImagePrompt(std::string_view prompt,
-                                                        const tokenizer::Tokenizer& tokenizer) {
-  constexpr std::string_view kSystem = "Comprehend and analyze the provided prompt.";
-  Writer w;
+namespace {
+constexpr std::string_view kImageSystem = "Comprehend and analyze the provided prompt.";
+constexpr std::string_view kImageSystemRole = "system\n";
+constexpr std::string_view kImageUserRole = "user\n";
+constexpr std::string_view kImageAssistantRole = "assistant\n";
+constexpr std::size_t kImageFraming = 3 * kImStart.size() + 2 * kImEnd.size() +
+                                      kImageSystemRole.size() + kImageUserRole.size() +
+                                      kImageAssistantRole.size() + kImageSystem.size() + 2;
+}  // namespace
+
+std::uint64_t ImagePromptBytesBound(std::size_t n) {
+  const auto input = std::max(n, std::size_t{1});
+  return input > UINT64_MAX - kImageFraming ? UINT64_MAX : input + kImageFraming;
+}
+
+std::expected<ImagePrompt, Error> RenderQwenImagePrompt(std::string_view prompt) {
+  const auto bound = ImagePromptBytesBound(prompt.size());
+  if (bound == UINT64_MAX || bound > SIZE_MAX)
+    return Fail(Rule::kInvalid, "the image prompt's framing bound overflows");
+  Writer w(static_cast<std::size_t>(bound));
   w.Special(kImStart);
-  w.Text("system\n");
-  w.Text(kSystem);
+  w.Text(kImageSystemRole);
+  w.Text(kImageSystem);
   w.Special(kImEnd);
   w.Text("\n");
   w.Mark(BoundaryKind::kPrefixEnd);
-  const Rendered system = [&] {
-    Writer s;
-    s.Special(kImStart);
-    s.Text("system\n");
-    s.Text(kSystem);
-    s.Special(kImEnd);
-    s.Text("\n");
-    return s.Take();
-  }();
   w.Special(kImStart);
-  w.Text("user\n");
+  w.Text(kImageUserRole);
   w.Text(prompt.empty() ? std::string_view(" ") : prompt);
   w.Special(kImEnd);
   w.Text("\n");
   w.Mark(BoundaryKind::kGenerationPrompt);
   w.Special(kImStart);
-  w.Text("assistant\n");
-
-  std::vector<tokenizer::TokenId> ids;
-  if (auto e = tokenizer.EncodeMarked(system.text, system.specials, {}, ids); !e) {
-    return Fail(Rule::kInvalid, "the image prompt's system segment does not encode");
-  }
-  return ImagePrompt{w.Take(), ids.size()};
+  w.Text(kImageAssistantRole);
+  auto rendered = w.Finish();
+  if (!rendered) return std::unexpected(rendered.error());
+  return ImagePrompt{std::move(*rendered), 2};
 }
 
 ImagePromptRenderer FindImagePromptRenderer(std::string_view name) {

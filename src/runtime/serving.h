@@ -54,6 +54,7 @@
 #include <expected>
 #include <filesystem>
 #include <functional>
+#include <iosfwd>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -95,6 +96,20 @@ namespace llmp::runtime {
 
 using Status = std::expected<void, std::string>;
 using Clock = std::chrono::steady_clock;
+
+// Storage is destroyed before its retained payment. Move assignment is not
+// needed: replacing a cache entry must retire its old storage/charge together.
+struct EncodedText {
+  MemoryCharge charge;
+  std::vector<std::int32_t> tokens;
+  EncodedText() = default;
+  EncodedText(EncodedText&&) = default;
+  EncodedText& operator=(EncodedText&&) = delete;
+};
+
+// Fill already-funded, fixed-size context storage. A short/long/erroring
+// stream refuses; it never grows storage to accommodate a changed file.
+Status ReadContextText(std::istream& input, std::span<char> storage);
 
 // The lowest available memory (platform::AvailableMemoryBytes, Linux's
 // MemAvailable) since the last Reset, sampled every 20 ms on a thread of its
@@ -390,13 +405,11 @@ struct ChatRenderOptions {
   const std::function<bool()>* cancelled = nullptr;                  // the request's end
   // When given, the tokenization's working set (Tokenizer::WorkingBytes
   // and the tokens) is charged to it while it runs; when it does not fit,
-  // kMemory, with the bytes it needed in *memory_needed; when it could
-  // never fit (byte-BPE's longest window, or raw BPE's whole input, passes the
-  // memory's capacity), kUnbroken, with that stretch's bytes.
+  // kMemory, with the actual bytes it needed in *memory_needed.
   RequestMemory* memory = nullptr;
   std::uint64_t* memory_needed = nullptr;
 };
-enum class ChatRenderFailure : std::uint8_t { kOther, kTooLong, kCancelled, kMemory, kUnbroken };
+enum class ChatRenderFailure : std::uint8_t { kOther, kTooLong, kCancelled, kMemory };
 
 // What rendering a conversation may take (Llm::RenderChargeFor, D-102).
 struct RenderCharge {
@@ -792,12 +805,13 @@ class Llm : public Served {
   virtual std::span<const std::int32_t> ChatStops() const { return {}; }
 
   // Tokens of plain text (no template; BOS first where the vocabulary has
-  // one, as the reference runs fed it). Bounded by the text itself; with
-  // `memory`, the encoding's working set is charged to it while it runs
-  // (when it does not fit, an error, with the bytes it needed in *needed).
-  std::expected<std::vector<std::int32_t>, std::string> EncodeText(
-      std::string_view text, RequestMemory* memory = nullptr,
-      std::uint64_t* needed = nullptr) const;
+  // one, as the reference runs fed it). With `memory`, temporary work is
+  // charged during encoding and output capacity remains charged until the
+  // returned owner is destroyed. The memory must outlive that owner. On
+  // refusal, *needed gives the complete working+output requirement.
+  std::expected<EncodedText, std::string> EncodeText(std::string_view text,
+                                                     RequestMemory* memory = nullptr,
+                                                     std::uint64_t* needed = nullptr) const;
   // A conversation of `messages` messages holding `message_bytes` renders
   // to at most min(render_bytes(), 4 × message_bytes + kRenderBytesPerMessage
   // × messages + 1 MiB); an interpreted rendering's values hold at most

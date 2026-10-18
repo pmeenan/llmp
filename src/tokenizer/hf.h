@@ -9,11 +9,12 @@
 //   byte fallback or fused unknowns; ignore_merges either way; merges as
 //   "a b" strings or [a, b] pairs;
 // - normalizer: none, NFC, or a Sequence of none or NFC alone;
-// - pre_tokenizer: a Sequence of Split(Regex, Isolated) stages whose
-//   expressions are exactly one of the pre-tokenizers pretokenize.h
-//   implements, then ByteLevel without a prefix space or its own regex;
-// - decoder ByteLevel; post_processor ByteLevel or none, which add nothing;
-//   no truncation or padding;
+// - pre_tokenizer: nested Sequence and isolated regex Split stages, ending
+//   in ByteLevel without prefix spaces; use_regex adds GPT-2 splitting;
+// - decoder ByteLevel; post_processor ByteLevel, TemplateProcessing with
+//   compact multi-ID definitions/references and exactly one A, or nested Sequence; no padding or
+//   truncation. Count/validate precedes exact recipe allocation; expanded IDs
+//   are streamed only at encoding. Unsupported layouts/flags are refused;
 // - added_tokens without lstrip, rstrip or single_word, and "normalized"
 //   only where no normalizer could change them. A special one is a control
 //   token and any other a user-defined one; an added token may restate a
@@ -21,7 +22,7 @@
 //
 // Raw UTF-8 BPE also accepts the declared space->▁ Replace, no-op Split
 // on replaced spaces, inverse Replace/ByteFallback/Fuse decoder and a
-// single-input BOS/EOS TemplateProcessing (the Gemma 2/3 HF pipelines).
+// the shared single-input postprocessor (the Gemma 2/3 HF pipelines).
 // Model membership remains independent of added-token matching metadata.
 //
 // IDs must run densely from 0.

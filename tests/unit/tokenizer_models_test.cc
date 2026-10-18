@@ -164,7 +164,8 @@ struct Config {
   std::string_view llama_twin;  // the llama.cpp configuration a divergence must match instead
 };
 
-constexpr std::array<Config, 13> kConfigs = {{
+constexpr std::array<Config, 14> kConfigs = {{
+    {"llama-3.2-1b-gguf", "gguf", ""},
     {"gemma-2-27b-hf", "hf", ""},
     {"gemma-2-27b-spm", "spm", ""},
     {"gemma-3-27b-hf", "hf", ""},
@@ -200,6 +201,22 @@ TEST_P(Agreement, TokenForTokenWithTheReference) {
 
   const auto corpus = Corpus();
   ASSERT_EQ(items.size(), corpus.size());
+  if (const auto probes = fixture.root().find("special_probes")) {
+    for (std::size_t i = 0; i < probes->size(); ++i) {
+      const auto probe = probes->at(i);
+      const auto text = Get(probe, "text").string();
+      for (const auto& [mode, special] :
+           {std::pair{"parse", tok::SpecialTokens::kParse},
+            std::pair{"plain", tok::SpecialTokens::kUserDefinedOnly}}) {
+        for (const bool source : {false, true}) {
+          std::vector<TokenId> ids;
+          ASSERT_TRUE(t.Encode(text, {.special = special, .add_bos_eos = source}, ids));
+          EXPECT_EQ(ids, Ids(Get(probe, std::string(mode) + (source ? "_with_specials" : ""))))
+              << config.name << " " << Get(probe, "name").string();
+        }
+      }
+    }
+  }
   std::size_t compared = 0;
   std::size_t tokens = 0;
   for (std::size_t i = 0; i < corpus.size(); ++i) {
@@ -486,14 +503,15 @@ TEST(ChatTokens, QwenImagePrompt) {
   ASSERT_GT(cases.size(), 3U);
   for (std::size_t i = 0; i < cases.size(); ++i) {
     const json::Value c = cases.at(i);
-    const auto prompt = chat::RenderQwenImagePrompt(Get(c, "prompt").string(), *loaded.tokenizer);
+    const auto prompt = chat::RenderQwenImagePrompt(Get(c, "prompt").string());
     ASSERT_TRUE(prompt.has_value());
     EXPECT_EQ(prompt->rendered.text, Get(c, "text").string());
-    EXPECT_EQ(static_cast<std::int64_t>(prompt->drop_tokens), drop);
     std::vector<TokenId> ids;
-    ASSERT_TRUE(
-        loaded.tokenizer->EncodeMarked(prompt->rendered.text, prompt->rendered.specials, {}, ids)
-            .has_value());
+    std::vector<std::size_t> positions;
+    ASSERT_TRUE(loaded.tokenizer->EncodeMarked(prompt->rendered.text, prompt->rendered.specials,
+                                               {.add_bos_eos = false}, ids, &positions));
+    ASSERT_LT(prompt->drop_span, positions.size());
+    EXPECT_EQ(static_cast<std::int64_t>(positions[prompt->drop_span]), drop);
     EXPECT_EQ(ids, Ids(Get(c, "hf_ids"))) << Get(c, "name").string();
   }
 }

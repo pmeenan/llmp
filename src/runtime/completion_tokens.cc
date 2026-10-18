@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <format>
+#include <limits>
 #include <utility>
 
 #include "base/check.h"
@@ -65,19 +66,24 @@ std::expected<LiteralPrompt, Error> PrepareLiteralPrompt(const CompletionRequest
     // and its tokenization's working set the request memory's.
     MemoryCharge charge;
     if (memory != nullptr) {
-      const std::uint64_t need = tokenizer.WorkingBytes(*request.prompt) +
-                                 (std::uint64_t{2} * sizeof(std::int32_t) *
-                                  std::min<std::uint64_t>(request.prompt->size() + 1, context));
+      const auto output =
+          std::min<std::uint64_t>(tokenizer.OutputTokensBound(request.prompt->size()), context);
+      const auto output_bytes = std::uint64_t{2 * sizeof(std::int32_t)} * (output + 1);
+      std::uint64_t need = 0;
+      if (__builtin_add_overflow(tokenizer.WorkingBytes(*request.prompt), output_bytes, &need))
+        need = std::numeric_limits<std::uint64_t>::max();
       if (!charge.Add(*memory, need)) {
         return std::unexpected(MemoryRefusal(*memory, need, "tokenizing the prompt"));
       }
     }
-    auto encoded = tokenizer.Encode(*request.prompt,
-                                    {.special = tokenizer::SpecialTokens::kParse,
-                                     .add_bos_eos = false,
-                                     .max_bytes = request.prompt->size(),
-                                     .max_tokens = context},
-                                    prompt.tokens);
+    const tokenizer::EncodeOptions encoding{.special = tokenizer::SpecialTokens::kParse,
+                                            .add_bos_eos = false,
+                                            .max_bytes = request.prompt->size(),
+                                            .max_tokens = context};
+    if (auto reserved = tokenizer.ReserveOutput(*request.prompt, encoding, prompt.tokens, 1);
+        !reserved)
+      return std::unexpected(BadPrompt("the literal prompt cannot be tokenized"));
+    auto encoded = tokenizer.Encode(*request.prompt, encoding, prompt.tokens);
     if (!encoded && encoded.error().rule == tokenizer::Rule::kOutputTooLarge) {
       return std::unexpected(BadPrompt(
           std::format("the prompt is longer than the model's context of {} tokens", context),

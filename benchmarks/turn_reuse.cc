@@ -101,10 +101,10 @@ Status Run(std::span<const std::string_view> args) {
     return std::unexpected("prompt text is empty or exceeds 16 MiB");
   }
   auto input = llm.EncodeText(text);
-  if (!input || input->size() < count) {
+  if (!input || input->tokens.size() < count) {
     return std::unexpected("prompt text does not supply enough tokens");
   }
-  const std::string content = llm.Detokenize(std::span(*input).first(count));
+  const std::string content = llm.Detokenize(std::span(input->tokens).first(count));
   ch::Conversation first;
   llm.Defaults(first);
   first.messages.push_back(
@@ -223,7 +223,7 @@ Status Run(std::span<const std::string_view> args) {
                                          return cleared;
                                        }
                                        std::vector<float> last;
-                                       return alternate.Prefill(*other_tokens, last);
+                                       return alternate.Prefill(other_tokens->tokens, last);
                                      });
         !pref) {
       return pref;

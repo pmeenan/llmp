@@ -227,13 +227,15 @@ Error MemoryRefusal(const RequestMemory& memory, std::uint64_t bytes, std::strin
 // Their charge follows the allocation until its last owner releases it.
 class PromptTokens {
  public:
+  PromptTokens& operator=(PromptTokens&&) = delete;
   static std::expected<std::shared_ptr<const PromptTokens>, Error> Hold(
       std::vector<std::int32_t> tokens, RequestMemory& memory);
   const std::vector<std::int32_t>& values() const { return tokens_; }
 
  private:
-  std::vector<std::int32_t> tokens_;
+  // Release backing before its payment, including on shared-owner retirement.
   MemoryCharge charge_;
+  std::vector<std::int32_t> tokens_;
 };
 
 // The unknown fields requests have carried, by name (never a value;

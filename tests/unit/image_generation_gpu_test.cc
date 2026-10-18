@@ -168,16 +168,20 @@ struct Lifetime {
     if (!spec) return Error(spec.error().ToString());
     auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(*spec));
     if (!tokenizer) return Error(tokenizer.error().ToString());
-    auto prompt = llmp::chat::RenderQwenImagePrompt(
-        rectangular_request ? kRectangularPrompt : kPrompt, *tokenizer);
+    auto prompt =
+        llmp::chat::RenderQwenImagePrompt(rectangular_request ? kRectangularPrompt : kPrompt);
     if (!prompt) return Error(prompt.error().ToString());
-    if (auto encoded = tokenizer->EncodeMarked(prompt->rendered.text, prompt->rendered.specials, {},
-                                               source->prompt);
+    std::vector<std::size_t> prompt_positions;
+    if (auto encoded =
+            tokenizer->EncodeMarked(prompt->rendered.text, prompt->rendered.specials,
+                                    {.add_bos_eos = false}, source->prompt, &prompt_positions);
         !encoded)
       return Error(encoded.error().ToString());
-    if (!rectangular_request && (source->prompt.size() != 39 || prompt->drop_tokens != 14))
+    if (prompt->drop_span >= prompt_positions.size()) return Error("image prefix span is absent");
+    const auto drop = prompt_positions[prompt->drop_span];
+    if (!rectangular_request && (source->prompt.size() != 39 || drop != 14))
       return Error("native source prompt geometry differs");
-    source->drop = static_cast<std::uint32_t>(prompt->drop_tokens);
+    source->drop = static_cast<std::uint32_t>(drop);
     prompt_rows = static_cast<std::uint32_t>(source->prompt.size());
     dropped_rows = source->drop;
     if (rectangular_request) {
@@ -192,14 +196,18 @@ struct Lifetime {
       replacement_credit = 4 * 524288ULL + 8 * source->prompt.size() * sizeof(std::int32_t) + 4096;
       if (!allowance->Charge(replacement_credit)) return Error("request seed copies are unpaid");
       auto other = llmp::chat::RenderQwenImagePrompt(
-          "A blue ceramic teapot on a plain wooden table, soft daylight, no text.", *tokenizer);
+          "A blue ceramic teapot on a plain wooden table, soft daylight, no text.");
       if (!other) return Error(other.error().ToString());
-      if (auto encoded = tokenizer->EncodeMarked(other->rendered.text, other->rendered.specials, {},
-                                                 alternate_prompt);
+      std::vector<std::size_t> other_positions;
+      if (auto encoded =
+              tokenizer->EncodeMarked(other->rendered.text, other->rendered.specials,
+                                      {.add_bos_eos = false}, alternate_prompt, &other_positions);
           !encoded)
         return Error(encoded.error().ToString());
-      if (alternate_prompt.size() != source->prompt.size() || other->drop_tokens != source->drop ||
-          alternate_prompt == source->prompt)
+      if (other->drop_span >= other_positions.size())
+        return Error("replacement prefix span is absent");
+      if (alternate_prompt.size() != source->prompt.size() ||
+          other_positions[other->drop_span] != source->drop || alternate_prompt == source->prompt)
         return Error("native replacement prompt must change content within the retained layout");
     }
     auto initial = ReadExact(noise, 524288);
