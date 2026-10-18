@@ -331,7 +331,8 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
       case FusedKind::kDsv4OutA: {
         const ir::TensorDesc* x = At(sources, 1);
         return x == nullptr ? QueryShape{}
-                            : QueryShape{.rows = x->ne(2), .k = x->ne(0) * x->ne(1), .n = 8192};
+                            : QueryShape{.rows = x->ne(2), .k = x->ne(0) * x->ne(1),
+                                         .n = s0 == nullptr ? 0 : s0->ne(1) * s0->ne(2)};
       }
       default:
         break;

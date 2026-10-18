@@ -59,9 +59,6 @@ namespace {
 
 namespace co = llmp::components;
 
-// The measured compact expert scheduling floor for production DeepSeek
-// prefill.
-inline constexpr std::int64_t kCompactExpertMinRows = 2048;
 // Upstream's product routing groups (capabilities.cc): an IR selection in
 // one is resolved by PlanGraph inside it.
 inline constexpr std::string_view kMulMatGroupName = "ggml.mul_mat";
@@ -86,8 +83,9 @@ std::uint64_t SelectedRoutePlane(const ir::Graph& graph, const ir::Node& node) {
   if (node.key != ir::Primitive(Op::kRoute) || node.nout != 2 || !node.src[0].valid()) return 0;
   const auto p = node.Params<ir::RouteParams>();
   const bool biased = p.kind == ir::RouteKind::kSqrtSoftplusBias;
-  if ((!biased && p.kind != ir::RouteKind::kHash) || p.experts != 256 || p.used < 1 ||
-      p.used > 32 || !std::isfinite(p.scale) || (biased && p.scale <= 0.0F))
+  if ((!biased && p.kind != ir::RouteKind::kHash) || (p.experts < 1 || p.experts > 256) ||
+      p.used < 1 || p.used > std::min(32U, p.experts) || !std::isfinite(p.scale) ||
+      (biased && p.scale <= 0.0F))
     return 0;
   if (biased ? (node.nsrc != 2 || !node.src[1].valid())
              : (node.nsrc != 3 || node.src[1].valid() || !node.src[2].valid()))
@@ -102,9 +100,9 @@ std::uint64_t SelectedRoutePlane(const ir::Graph& graph, const ir::Node& node) {
            t.ne(0) == width && t.ne(1) == count && t.ne(2) == 1 && t.ne(3) == 1 &&
            t.view_offset == 0 && ir::IsContiguous(t);
   };
-  if (!packed(node.src[0], Encoding::kF32, 256, rows) ||
+  if (!packed(node.src[0], Encoding::kF32, p.experts, rows) ||
       !packed(node.src[biased ? 1 : 2], biased ? Encoding::kF32 : Encoding::kI32,
-              biased ? 256U : p.used, biased ? 1U : rows) ||
+              biased ? p.experts : p.used, biased ? 1U : rows) ||
       !packed(node.out[0], Encoding::kI32, p.used, rows) ||
       !packed(node.out[1], Encoding::kF32, p.used, rows))
     return 0;
@@ -1810,9 +1808,8 @@ std::expected<void, KernelFailure> Lowering::MakeRoute(NodeId id, const ir::Node
 // kExpertReduce (with each slot's scale gathered) as GGML's fused Gemma
 // scaled reduce runs it: the experts' outputs times their scales, times
 // their weights ([1, used, T], the weights' rows), each slot's view, then
-// the slots added in order: the seventeen nodes GemmaReductionFusionAt
-// takes. It writes only the sum; the products and partial sums take its
-// place (WrittenBytes holds the products').
+// the slots added in order, as GemmaReductionFusionAt takes. It writes only the sum; the products
+// and partial sums take its place (WrittenBytes holds the products').
 std::expected<void, KernelFailure> Lowering::MakeReduce(NodeId id, const ir::Node& n) {
   if (n.nsrc != 4 || n.nout != 1) return Refused("a reduce without its slots' scales");
   ggml_tensor* x = made_.at(n.src[0].v);
@@ -1866,6 +1863,27 @@ std::expected<void, KernelFailure> Lowering::MakeSelected(NodeId id, const ir::N
     SelectedOperand operand{
         .id = tensor, .desc = p_.tensor(tensor), .tensor = made_.at(tensor.v), .parts = {}};
     if (operand.tensor == nullptr) return Refused("a selected-source input was not made");
+    if (n.key == ir::Primitive(Op::kMatMulId) && i == 2) {
+      const auto producer = p_.producer(tensor);
+      const auto& route = p_.node(producer);
+      // Only our selected Route owns this layout change. External IDs and
+      // byte views keep their exact declared strides at the source boundary.
+      if (route.key == ir::Primitive(Op::kRoute) && route.out[0] == tensor &&
+          registry_.at(impl_of_.at(producer.v)).name == "ggml.gemma.route.fused") {
+        const auto params = route.Params<ir::RouteParams>();
+        const auto root = placed_root_.find(tensor.v);
+        const auto* ids = operand.tensor;
+        const auto pitch = std::uint64_t{params.experts} * sizeof(std::int32_t);
+        const auto bytes = pitch * operand.desc.ne(1);
+        if (p_.root(tensor) != tensor || operand.desc.is_view() || root == placed_root_.end() ||
+            ids->view_src != root->second || ids->view_offs != 0 || ids->type != GGML_TYPE_I32 ||
+            ids->nb[0] != sizeof(std::int32_t) || ids->nb[1] != pitch || ids->nb[2] != bytes ||
+            ids->nb[3] != bytes || ggml_nbytes(root->second) != bytes ||
+            WrittenBytes(p_, tensor) != bytes)
+          return Refused("a selected routing's owned sort layout changed");
+        for (std::size_t d = 0; d < 4; ++d) operand.desc.nb[d] = ids->nb[d];
+      }
+    }
     if (n.key == ir::Primitive(Op::kGetRows)) {
       const auto& producer = p_.node(p_.producer(tensor));
       bool unchanged = p_.root(tensor) == tensor;
@@ -3014,9 +3032,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
   choices.vector_floats = choices.vector_floats || products.vector_floats;
   choices.d2r_experts = choices.d2r_experts || products.d2r_experts;
   choices.pair_experts = choices.pair_experts || products.pair_experts;
-  choices.compact_experts =
-      choices.compact_experts ||
-      (products.compact_experts && in_.token && in_.token->shape.rows() >= kCompactExpertMinRows);
+  choices.compact_experts = choices.compact_experts || (products.compact_experts && in_.token);
   choices.pair_glu = choices.pair_glu || (products.pair_glu && choices.compact_experts);
   choices.pair_glu_q8 = choices.pair_glu_q8 || (products.pair_glu_q8 && choices.compact_experts);
   choices.dense_pair = choices.dense_pair || products.dense_pair;
@@ -4248,8 +4264,8 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
     case FusedKind::kMoeCombine: {
       if (Selected(id) == kDsv4CombineName) {
         ggml_tensor* w_down = src(2);
-        if (w_down->ne[0] == 6 && w_down->ne[2] == 1) {
-          w_down = ggml_reshape_3d(c_, w_down, 1, 6, w_down->ne[1]);
+        if (w_down->ne[0] == src(0)->ne[1] && w_down->ne[2] == 1) {
+          w_down = ggml_reshape_3d(c_, w_down, 1, w_down->ne[0], w_down->ne[1]);
           Node(w_down, id);
         }
         const bool has_hc_norm_post =
@@ -4627,8 +4643,20 @@ std::expected<void, KernelFailure> Lowering::MakeRouting() {
           const auto& producer = g_.node(g_.producer(input));
           if (producer.key != ir::Primitive(Op::kRoute) || producer.out[0] != input)
             return Refused("dynamic experts lack their original router IDs output");
-          const auto planned = plan_.tensors.at(input.v);
-          if (!planned.valid()) return Refused("router IDs lost their planned mapping");
+          // Exposed IDs may map to a compact Cont while this direct product
+          // still reads the native pitched Route. Authenticate the reader's
+          // actual source, rather than conflating the two values' storage.
+          const auto output = plan_.tensors.at(node.out[0].v);
+          if (!output.valid()) return Refused("routed product lost its planned mapping");
+          const auto& reader = p_.node(p_.producer(output));
+          if (reader.key != ir::Primitive(Op::kMatMulId) || reader.nsrc != 3)
+            return Refused("routed product changed its planned operation");
+          const auto planned = reader.src[2];
+          const auto planned_route = p_.producer(planned);
+          if (p_.node(planned_route).key != ir::Primitive(Op::kRoute) ||
+              p_.node(planned_route).out[0] != planned ||
+              plan_.from.at(planned_route.v) != g_.producer(input))
+            return Refused("router IDs lost their reader-specific producer");
           auto group = std::ranges::find(groups, made_.at(planned.v), &Group::ids);
           if (group == groups.end() || (group->original.valid() && group->original != input))
             return Refused("router IDs changed their actual group identity");
@@ -4647,8 +4675,8 @@ std::expected<void, KernelFailure> Lowering::MakeRouting() {
           if (node.key != ir::Primitive(Op::kMatMulId) || node.nsrc != 3 ||
               node.src[0] != weight.tensor)
             continue;
-          const auto planned = plan_.tensors.at(node.src[2].v);
-          if (planned.valid() && made_.at(planned.v) == group.ids) ++actual_count;
+          // The pass above authenticated each reader's actual planned source.
+          if (node.src[2] == group.original) ++actual_count;
         }
         for (const auto index : group.calls)
           if (out_.selected[index].call->route()->weight == weight.ref) ++selected_count;

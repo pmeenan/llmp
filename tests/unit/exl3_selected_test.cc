@@ -14,6 +14,7 @@
 #include "engine/component_source.h"
 #include "families/qwen.h"
 #include "ir/graph.h"
+#include "kernels/exl3/reconstruction_tuning.h"
 #include "kernels/exl3/selected_source.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/lower.h"
@@ -117,6 +118,118 @@ Product Make(ggml_context* context, int rows, int k, int n, Encoding output, int
   result.node.nout = 1;
   result.node.SetParams(ir::ProductParams{});
   return result;
+}
+
+TEST(Exl3SelectedTest, DefaultsCoverNonfixtureWidthsAndDropMissingCapacityOrPins) {
+  for (const auto arch : {86U, 121U}) {
+    ex::PackedCapacity capacity{.arch = arch, .sms = arch == 86 ? 84 : 48};
+    for (auto* table : {&capacity.gemm, &capacity.multi})
+      for (auto& output : *table)
+        for (auto& rate : output) rate.fill(capacity.sms);
+    const auto source = ex::SelectedSource(ex::FrozenCache::k40G, {}, capacity);
+    ASSERT_TRUE(source) << (source ? "" : source.error());
+    auto arena = kg::TensorArena::Create(32).value();
+    auto product = Make(arena.context(), 257, 2048, 6144, Encoding::kF32, 6);
+    const auto declarations = (*source)->Implementations();
+    const auto gemm = std::ranges::find(declarations, "exl3.pinned.40g.linear.gemm",
+                                        &llmp::execution::Implementation::name);
+    ASSERT_NE(gemm, declarations.end());
+    EXPECT_FALSE(gemm->capability->needs_tuning);
+    EXPECT_EQ(gemm->capability->device.min_arch, arch);
+    const auto call = (*source)->Lower(*gemm, product.node, product.inputs, product.output);
+    ASSERT_TRUE(call) << (call ? "" : call.error().detail);
+    const auto fallback = ex::DefaultGemmPlan(capacity, 257, 2048, 6144, 6, ex::Output::kF32);
+    ASSERT_TRUE(fallback);
+    EXPECT_GE(fallback->shape, 1);
+    EXPECT_LE(fallback->shape, ex::kShapes);
+    EXPECT_LE(fallback->blocks, capacity.sms);
+    auto missing = capacity;
+    for (auto* table : {&missing.gemm, &missing.multi})
+      for (auto& output : *table)
+        for (auto& rate : output) rate.fill(0);
+    EXPECT_FALSE(ex::DefaultGemmPlan(missing, 257, 2048, 6144, 6, ex::Output::kF32));
+    EXPECT_FALSE(ex::SelectedSource(ex::FrozenCache::k40G, {}, missing));
+    EXPECT_FALSE(ex::ReconstructionAlgorithms(arch, 257, 2048, 6144, ex::Output::kF32));
+    EXPECT_FALSE(ex::DefaultGemmPlan(capacity, 257, 2049, 6144, 6, ex::Output::kF32));
+    if (arch == 121) {
+      namespace execution = llmp::execution;
+      const auto operand = [](std::uint8_t index, const kg::SelectedOperand& value) {
+        const auto& f = value.desc.format;
+        return execution::OperandFormat{
+            .operand = index,
+            .encoding = f.encoding,
+            .layout = f.layout,
+            .params = f.params,
+            .ne = {value.desc.ne(0), value.desc.ne(1), value.desc.ne(2), value.desc.ne(3)}};
+      };
+      auto registry = execution::Registry::Create(declarations);
+      ASSERT_TRUE(registry);
+      std::array operands{operand(0, product.inputs[0]), operand(1, product.inputs[1]),
+                          operand(execution::kOutputOperand, product.output)};
+      execution::CapabilityQuery query{.op = product.node.key,
+                                       .operands = operands,
+                                       .rows = 257,
+                                       .k = 2048,
+                                       .n = 6144,
+                                       .arch = arch,
+                                       .params = product.node.params};
+      const auto candidates = execution::Candidates(*registry, query);
+      ASSERT_EQ(candidates.size(), 1U);
+      EXPECT_EQ(registry->at(candidates.front()).name, gemm->name);
+      auto pinned = ex::SelectedSource(ex::FrozenCache::k40G);
+      ASSERT_TRUE(pinned);
+      auto no_defaults = execution::Registry::Create((*pinned)->Implementations());
+      ASSERT_TRUE(no_defaults);
+      const auto pins = (*pinned)->Tuning(arch);
+      query.tuned = pins;
+      EXPECT_TRUE(execution::Candidates(*no_defaults, query).empty());
+      operands[2].encoding = Encoding::kBF16;
+      EXPECT_TRUE(execution::Candidates(*registry, query).empty());
+
+      std::array pair{operand(0, product.inputs[0]), operand(1, product.inputs[0]),
+                      operand(2, product.inputs[1]),
+                      operand(execution::kOutputOperand, product.output),
+                      operand(execution::kOutputOperand + 1, product.output)};
+      query.op = ir::Fused(ir::FusedKind::kPreparedProducts);
+      query.operands = pair;
+      const auto paired = execution::Candidates(*registry, query);
+      ASSERT_EQ(paired.size(), 1U);
+      EXPECT_EQ(registry->at(paired.front()).name, "exl3.pinned.40g.multi_linear.mgemm");
+      for (const auto index : {3U, 4U}) {
+        pair[index].encoding = Encoding::kF16;
+        EXPECT_TRUE(execution::Candidates(*registry, query).empty());
+        pair[index].encoding = Encoding::kF32;
+      }
+    }
+  }
+}
+
+TEST(Exl3SelectedTest, GemvCapacityCannotBorrowPackedPinsFromAnotherSmCount) {
+  ex::GemvCapacity capacity{.arch = 121, .sms = 24};  // Synthetic device facts.
+  for (auto& output : capacity.blocks)
+    for (auto& rows : output) rows.fill(capacity.sms);
+  const auto source = ex::SelectedSource(ex::FrozenCache::k40O, capacity);
+  ASSERT_TRUE(source);
+  for (const auto& fact : (*source)->Tuning(121))
+    EXPECT_TRUE(fact.implementation.ends_with(".linear.gemv"));
+  const auto declarations = (*source)->Implementations();
+  const auto gemm = std::ranges::find(declarations, "exl3.pinned.40o.linear.gemm",
+                                      &llmp::execution::Implementation::name);
+  const auto multi = std::ranges::find(declarations, "exl3.pinned.40o.multi_linear.mgemm",
+                                       &llmp::execution::Implementation::name);
+  ASSERT_NE(gemm, declarations.end());
+  ASSERT_NE(multi, declarations.end());
+  auto arena = kg::TensorArena::Create(32).value();
+  const auto a = Make(arena.context(), 16, 896, 4864, Encoding::kF32);
+  const auto b = Make(arena.context(), 16, 896, 4864, Encoding::kF32);
+  EXPECT_FALSE((*source)->Lower(*gemm, a.node, a.inputs, a.output));
+  auto pair = a.node;
+  pair.key = ir::Fused(ir::FusedKind::kPreparedProducts);
+  pair.nsrc = 3;
+  pair.nout = 2;
+  const std::array inputs{a.inputs[0], b.inputs[0], a.inputs[1]};
+  const std::array outputs{a.output, b.output};
+  EXPECT_FALSE((*source)->Lower(*multi, pair, inputs, outputs));
 }
 
 TEST(Exl3SelectedTest, AllCompletePinnedReconstructionsRetainFourPartsAndBoundScratch) {

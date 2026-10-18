@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -29,7 +30,8 @@ template <int D, ggml_type K, ggml_type V>
 void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context&, ggml_tensor*);
 namespace kg = llmp::kernels::ggml;
 int main(int argc, char** argv) {
-  int heads = 16, rows = 1, segments = 1;
+  const bool common = argc == 2 && std::strcmp(argv[1], "common192") == 0;
+  int heads = 16, rows = common ? 128 : 1, segments = 1;
   if (argc == 3 || argc == 4) {
     const auto parse = [](const char* s, int& value) {
       const char* end = s + std::strlen(s);
@@ -38,14 +40,16 @@ int main(int argc, char** argv) {
     };
     if (!parse(argv[1], heads) || !parse(argv[2], rows) || (argc == 4 && !parse(argv[3], segments)))
       return 1;
-  } else if (argc != 1)
+  } else if (argc != 1 && !common)
     return 1;
-  if ((heads != 16 && heads != 32) ||
-      (rows != 1 && rows != 2 && rows != 4 && rows != 8 && rows != 16 && rows != 33 &&
-       rows != 1025) ||
-      (segments != 1 && segments != 2 && segments != 4))
+  if (!common && ((heads != 16 && heads != 32) ||
+                  (rows != 1 && rows != 2 && rows != 4 && rows != 8 && rows != 16 && rows != 33 &&
+                   rows != 1025) ||
+                  (segments != 1 && segments != 2 && segments != 4)))
     return 1;
-  constexpr int d = 256, cells = 1280, launches = 128;
+  const int d = common ? 192 : 256, cells = common ? 2048 : 1280;
+  const int kv_heads = heads / (common ? 8 : 2);
+  constexpr int launches = 128;
   auto opened = llmp::providers::cuda::OpenDeviceExecution(0);
   if (!opened) return 1;
   auto execution = std::move(*opened);
@@ -81,8 +85,8 @@ int main(int argc, char** argv) {
   std::vector<ggml_tensor*> nodes;
   for (int segment = 0; segment < segments; ++segment) {
     auto* q = place(ggml_new_tensor_4d(arena.context(), GGML_TYPE_F32, d, rows, heads, 1));
-    auto* k = place(ggml_new_tensor_4d(arena.context(), GGML_TYPE_F16, d, cells, heads / 2, 1));
-    auto* v = place(ggml_new_tensor_4d(arena.context(), GGML_TYPE_F16, d, cells, heads / 2, 1));
+    auto* k = place(ggml_new_tensor_4d(arena.context(), GGML_TYPE_F16, d, cells, kv_heads, 1));
+    auto* v = place(ggml_new_tensor_4d(arena.context(), GGML_TYPE_F16, d, cells, kv_heads, 1));
     const int mask_rows = rows >= 1024 ? (rows + 31) / 32 * 32 : rows;
     auto* mask = place(ggml_new_tensor_2d(arena.context(), GGML_TYPE_F16, cells, mask_rows));
     if (!q || !k || !v || !mask) return 1;
@@ -113,10 +117,23 @@ int main(int argc, char** argv) {
     nodes.push_back(node);
   }
   auto* node = nodes.front();
-  const bool vector = kg::FlashAttnVec256Selected(launch, node);
+  const bool vector = !common && kg::FlashAttnVec256Selected(launch, node);
   std::uint64_t scratch = 0;
   int columns = 1;
-  if (vector) {
+  if (common) {
+    const auto mma = kg::PlanFlashAttnMmaCommon(launch, node);
+    const auto vec = kg::PlanFlashAttnVecCommon(launch, node);
+    if (!mma || !vec) return 1;
+    scratch = std::max(mma->scratch, vec->scratch);
+    columns = mma->columns;
+    const auto resource = kg::detail::FlashAttnMmaShapeCommon(d, d, columns, 0);
+    if (!resource) return 1;
+    std::println(
+        "D192 MMA resources: threads{} dynamic_shared{} static_shared{} registers{} "
+        "resident_blocks_per_sm{} KVbatch{}",
+        resource->threads, resource->dynamic_shared_bytes, resource->static_shared_bytes,
+        resource->registers, resource->blocks_per_sm, resource->kv_batch);
+  } else if (vector) {
     auto plan = kg::PlanFlashAttnVec256(launch, node);
     if (!plan) return 1;
     scratch = plan->scratch;
@@ -128,11 +145,13 @@ int main(int argc, char** argv) {
   }
   // Actual pinned overall selector chooses vector only at one row and one
   // sequence on GB10; all other local cases choose group2 MMA.
-  if (vector != (rows == 1)) return 1;
+  if (!common && vector != (rows == 1)) return 1;
   const auto original = [&](kg::LaunchContext& l) {
     for (auto* segment : nodes) {
       auto result = l.Run(llmp::base::Bytes(scratch), [=](ggml_backend_cuda_context& c) {
-        if (vector)
+        if (common)
+          ggml_cuda_flash_attn_ext_vec_case<192, GGML_TYPE_F16, GGML_TYPE_F16>(c, segment);
+        else if (vector)
           ggml_cuda_flash_attn_ext_vec_case<256, GGML_TYPE_F16, GGML_TYPE_F16>(c, segment);
         else
           kg::detail::FlashAttnMmaCaseGqa2(columns)(c, segment);
@@ -143,7 +162,9 @@ int main(int argc, char** argv) {
   };
   const auto selected = [&](kg::LaunchContext& l) {
     for (auto* segment : nodes) {
-      auto result = vector ? kg::FlashAttnVec256(l, segment) : kg::FlashAttnMmaGqa2(l, segment);
+      auto result = common   ? kg::FlashAttnMmaCommon(l, segment)
+                    : vector ? kg::FlashAttnVec256(l, segment)
+                             : kg::FlashAttnMmaGqa2(l, segment);
       if (!result) return result;
     }
     return std::expected<void, kg::KernelFailure>{};
@@ -159,12 +180,23 @@ int main(int argc, char** argv) {
   };
   std::vector<float> reference(elements * nodes.size());
   if (!download(reference)) return 1;
+  const auto agrees = [&](const std::vector<float>& values) {
+    if (!common)
+      return std::memcmp(values.data(), reference.data(), values.size() * sizeof(float)) == 0;
+    double error = 0, norm = 0;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      if (!std::isfinite(values[i])) return false;
+      error += double(values[i] - reference[i]) * double(values[i] - reference[i]);
+      norm += double(reference[i]) * reference[i];
+    }
+    const double relative = std::sqrt(error / norm);
+    std::println("D192 vector/MMA relative RMS {:.8g}", relative);
+    return relative <= .003;
+  };
   launch.ResetScratchPeak();
   if (!selected(launch) || cudaDeviceSynchronize() != cudaSuccess) return 1;
   std::vector<float> candidate(reference.size());
-  if (!download(candidate) ||
-      std::memcmp(candidate.data(), reference.data(), candidate.size() * sizeof(float)) != 0 ||
-      launch.scratch_peak().value() > scratch)
+  if (!download(candidate) || !agrees(candidate) || launch.scratch_peak().value() > scratch)
     return 1;
   const auto peak = launch.scratch_peak().value();
   auto captured_a = launch.Capture(original);
@@ -174,39 +206,53 @@ int main(int argc, char** argv) {
   std::optional<kg::CapturedGraph> b(std::move(*captured_b));
   for (auto* graph : {&*a, &*b}) {
     if (!launch.Launch(*graph) || cudaDeviceSynchronize() != cudaSuccess || !download(candidate) ||
-        std::memcmp(candidate.data(), reference.data(), candidate.size() * sizeof(float)) != 0)
+        !agrees(candidate))
       return 1;
   }
   std::println(
-      "D256 heads{} KV{} rows{} segments{} scale1 cells{} selected{} tile{} scratch{} peak{} "
+      "D{} heads{} KV{} rows{} segments{} scale1 cells{} selected{} tile{} scratch{} peak{} "
       "graph_nodes{}/{} "
-      "exact",
-      heads, heads / 2, rows, segments, cells, vector ? "vector" : "group2", columns, scratch, peak,
-      a->nodes(), b->nodes());
+      "{}",
+      d, heads, kv_heads, rows, segments, cells,
+      common   ? "common_mma"
+      : vector ? "vector"
+               : "group2",
+      columns, scratch, peak, a->nodes(), b->nodes(), common ? "relative_RMS<=0.003" : "exact");
   const auto submission = execution->Submission(stream_id);
   if (!submission) return 1;
   const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
   for (const bool captured : {false, true}) {
-    for (int stage = 0; stage < 3; ++stage) {
-      const bool use_candidate = stage == 1;
-      cudaEvent_t start = nullptr, end = nullptr;
-      if (cudaEventCreate(&start) != cudaSuccess || cudaEventCreate(&end) != cudaSuccess) return 1;
-      if (cudaEventRecord(start, stream) != cudaSuccess) return 1;
-      for (int i = 0; i < launches; ++i) {
-        const auto result = captured        ? launch.Launch(use_candidate ? *b : *a)
-                            : use_candidate ? selected(launch)
-                                            : original(launch);
-        if (!result) return 1;
+    if (common) {
+      for (int i = 0; i < 8; ++i) {
+        const auto first = captured ? launch.Launch(*a) : original(launch);
+        const auto second = captured ? launch.Launch(*b) : selected(launch);
+        if (!first || !second) return 1;
       }
-      if (cudaEventRecord(end, stream) != cudaSuccess || cudaEventSynchronize(end) != cudaSuccess)
-        return 1;
-      float elapsed = 0;
-      if (cudaEventElapsedTime(&elapsed, start, end) != cudaSuccess ||
-          cudaEventDestroy(start) != cudaSuccess || cudaEventDestroy(end) != cudaSuccess)
-        return 1;
-      std::println("{} {} {:.3f} us paid mask/fixup", captured ? "graph" : "launch",
-                   use_candidate ? "selected" : "original", elapsed * 1000 / launches);
+      if (cudaDeviceSynchronize() != cudaSuccess) return 1;
     }
+    for (int round = 0; round < (common ? 3 : 1); ++round)
+      for (int stage = 0; stage < 3; ++stage) {
+        const bool use_candidate = stage == 1;
+        cudaEvent_t start = nullptr, end = nullptr;
+        if (cudaEventCreate(&start) != cudaSuccess || cudaEventCreate(&end) != cudaSuccess)
+          return 1;
+        if (cudaEventRecord(start, stream) != cudaSuccess) return 1;
+        for (int i = 0; i < launches; ++i) {
+          const auto result = captured        ? launch.Launch(use_candidate ? *b : *a)
+                              : use_candidate ? selected(launch)
+                                              : original(launch);
+          if (!result) return 1;
+        }
+        if (cudaEventRecord(end, stream) != cudaSuccess || cudaEventSynchronize(end) != cudaSuccess)
+          return 1;
+        float elapsed = 0;
+        if (cudaEventElapsedTime(&elapsed, start, end) != cudaSuccess ||
+            cudaEventDestroy(start) != cudaSuccess || cudaEventDestroy(end) != cudaSuccess)
+          return 1;
+        std::println("round{} {} {} {:.3f} us paid mask/fixup", round,
+                     captured ? "graph" : "launch", use_candidate ? "selected" : "original",
+                     elapsed * 1000 / launches);
+      }
   }
   if (cudaDeviceSynchronize() != cudaSuccess) return 1;
   a.reset();

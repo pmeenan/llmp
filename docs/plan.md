@@ -199,7 +199,7 @@ before new families land; each item lands as one reviewed commit.
       branches in the runtime or CLI, container variants, gates and folds as
       mapping data, row and vocabulary bounds from the spec, admissible
       formats from capabilities)
-- [ ] R5 Kernel gates by real limits (F16 GQA attention at head sizes
+- [x] R5 Kernel gates by real limits (F16 GQA attention at head sizes
       64–192, parametric norm and MoE fusions, EXL3 beyond one fixture)
 - [ ] R6 The decode ladder in every backend (dense NVFP4, MXFP8 grouped,
       MXFP4; honest rungs, feature bits and measured ranks)

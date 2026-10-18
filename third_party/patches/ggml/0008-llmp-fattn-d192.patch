@@ -1,0 +1,36 @@
+--- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
++++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
+@@ -60,6 +60,11 @@
+     GGML_CUDA_FATTN_MMA_CONFIG_CASE(128, 128, 16, 128, 2,  64,  64,  64,  64, 2, true);
+     GGML_CUDA_FATTN_MMA_CONFIG_CASE(128, 128, 32, 128, 2,  64,  64,  64,  64, 2, true);
+     GGML_CUDA_FATTN_MMA_CONFIG_CASE(128, 128, 64, 128, 2,  64,  64,  64,  64, 2, true);
++
++    // Full 192-wide values: one 96-half2 K/V/combine tile. Preserve the
++    // neighboring 192/128 launch geometry; actual occupancy is queried.
++    GGML_CUDA_FATTN_MMA_CONFIG_CASE(192, 192,  8,  64, 4,  64,  96,  96,  96, 2, true);
++    GGML_CUDA_FATTN_MMA_CONFIG_CASE(192, 192, 32, 128, 2,  32,  96,  96,  96, 2, true);
+ 
+     GGML_CUDA_FATTN_MMA_CONFIG_CASE(192, 128,  8,  64, 4,  64,  96,  64,  64, 2, true);
+     GGML_CUDA_FATTN_MMA_CONFIG_CASE(192, 128, 16,  64, 4,  32,  96,  64,  64, 2, true);
+@@ -1835,7 +1840,10 @@
+         NO_DEVICE_CODE;
+         return;
+     }
+-    if (DKQ == 192 && ncols2 != 8 && ncols2 != 16) {
++    // Llmpalooza explicitly instantiates these group-one query tiles.
++    constexpr bool common192 = ncols2 == 1 && (DV == 128 || DV == 192) &&
++        (ncols1 == 8 || ncols1 == 32);
++    if (DKQ == 192 && ncols2 != 8 && ncols2 != 16 && !common192) {
+         NO_DEVICE_CODE;
+         return;
+     }
+--- a/ggml/src/ggml-cuda/fattn-vec.cuh
++++ b/ggml/src/ggml-cuda/fattn-vec.cuh
+@@ -487,6 +487,7 @@
+ 
+ #pragma unroll
+             for (int i0 = 0; i0 < D; i0 += nthreads) {
++                if (i0 + tid >= D) continue;
+                 float dst_val = 0;
+ #pragma unroll
+                 for (int w = 0; w < nwarps; ++w) {

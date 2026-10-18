@@ -115,7 +115,7 @@ std::uint64_t SoftMaxSharedBytes(const ggml_tensor* node);
 enum class ContCopy : std::uint8_t {
   kMemcpy,     // both contiguous: one cudaMemcpyAsync (cpy.cu:467-475)
   kMemcpy2d,   // a contiguous prefix at a fixed pitch: cudaMemcpy2DAsync
-  kScalar,     // cpy_scalar<cpy_1_scalar<float, float>>, one thread per element
+  kScalar,     // upstream scalar copy, or owned bit-preserving strided I32 copy
   kTranspose,  // rows that are transposed columns: cpy_scalar_transpose's tiles
 };
 std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node);
@@ -144,6 +144,7 @@ std::expected<void, KernelFailure> CheckConvert(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckFlashAttnVec(const ggml_tensor* node);
 // D256 F16 KV, exact GQA2, one sequence; finite positive softcap is
 // allowed when scale/cap is finite. Preserves the zero-only D64 contract.
+std::expected<void, KernelFailure> CheckFlashAttnVecCommon(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckFlashAttnVec256(const ggml_tensor* node);
 
 // MMVF with GGML's fusion arguments (ggml_cuda_mul_mat_vec_f,

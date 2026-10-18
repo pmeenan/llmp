@@ -172,6 +172,14 @@ std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& l
       auto attention = PlanFlashAttnVec(launch, step.nodes.front());
       if (!attention) return std::unexpected(attention.error());
       planned = attention->scratch;
+    } else if (step.implementation == "ggml.flash_attn_ext.vec_common") {
+      auto attention = PlanFlashAttnVecCommon(launch, step.nodes.front());
+      if (!attention) return std::unexpected(attention.error());
+      planned = attention->scratch;
+    } else if (step.implementation == "ggml.flash_attn_ext.mma_common") {
+      auto attention = PlanFlashAttnMmaCommon(launch, step.nodes.front());
+      if (!attention) return std::unexpected(attention.error());
+      planned = attention->scratch;
     } else if (step.implementation == kFlashAttnVec256Name) {
       auto attention = PlanFlashAttnVec256(launch, step.nodes.front());
       if (!attention) return std::unexpected(attention.error());

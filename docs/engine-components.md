@@ -385,7 +385,11 @@ primitive ids). It is deterministic. The steps:
   which the component step source applies per step with `ForStep`; the
   planner holds no family's row gates) and measured ranks per
   device class, as canonical text whose digest is a plan key's input. The
-  product choices default off. DeepSeek mappings select their eligible
+  product choices default off. `compact_expert_min_rows <n>` sets an alias's
+  compact-expert crossover (1–65,536 rows). Its historical default is 2,048;
+  the directive is omitted at that default, preserving existing canonical
+  policy bytes and digests. The planner resolves this bound against the step
+  shape before lowering. DeepSeek mappings select their eligible
   schedules explicitly; Qwen retains its ordinary product choices. A
   neighboring attention or routing operation does not enable them.
   Existing artifact spec identities are unchanged. The

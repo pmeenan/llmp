@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "kernels/exl3/packed_tuning.h"
 #include "kernels/exl3/upstream_gemv.h"
 #include "kernels/exl3/validate.h"
 #include "llmp_exl3_kernels.h"
@@ -483,6 +484,40 @@ std::expected<void, KernelFailure> LaunchContext::Bias(const BiasOperands& o) {
   auto args = Arguments(x, y, z, numel_x, numel_y);
   return End(Launched(cudaLaunchKernel(llmp_exl3::AddKernelHhh(), dim3(blocks), dim3(kAddThreads),
                                        args.data(), 0, static_cast<cudaStream_t>(*stream))));
+}
+
+std::expected<PackedCapacity, std::string> QueryPackedCapacity(int device) {
+  int current = -1, sms = 0, major = 0, minor = 0;
+  if (cudaGetDevice(&current) != cudaSuccess || current != device ||
+      cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess ||
+      cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device) != cudaSuccess ||
+      cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device) != cudaSuccess ||
+      sms < 1 || major < 8) {
+    (void)cudaGetLastError();
+    return std::unexpected("packed EXL3 occupancy requires a current compiled CUDA device");
+  }
+  PackedCapacity result{.arch = static_cast<std::uint32_t>(major * 10 + minor), .sms = sms};
+  constexpr std::array rates{4, 5, 6, 8};
+  for (std::size_t output = 0; output < 2; ++output)
+    for (std::size_t rate = 0; rate < rates.size(); ++rate)
+      for (int shape = 1; shape <= kShapes; ++shape)
+        for (const bool multi : {false, true}) {
+          const void* kernel = multi ? llmp_exl3::MultiGemmKernel(rates[rate], shape, output != 0)
+                                     : llmp_exl3::GemmKernel(rates[rate], shape, output != 0);
+          int per_sm = 0;
+          if (kernel != nullptr &&
+              cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                   kGemmSharedMemory) == cudaSuccess &&
+              cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+                  &per_sm, kernel, kBlockDim[static_cast<std::size_t>(shape)], kGemmSharedMemory) ==
+                  cudaSuccess &&
+              per_sm > 0 && per_sm <= 32 && sms <= INT32_MAX / per_sm)
+            (multi ? result.multi
+                   : result.gemm)[output][rate][static_cast<std::size_t>(shape - 1)] = per_sm * sms;
+          else
+            (void)cudaGetLastError();
+        }
+  return result;
 }
 
 }  // namespace llmp::kernels::exl3

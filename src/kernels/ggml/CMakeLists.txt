@@ -91,7 +91,7 @@ if(LLMP_CUDA)
 
   add_library(llmp_ggml_kernels STATIC conv2d_tiled.cu attention_f32.cu ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
                                          fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu dsv4_hca_tokentile.cu mmvq_rows.cu fattn_mma.cu
-                                         fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
+                                         fattn_mma_common.cu fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
                                          llmp_ops.cu llmp_fused.cu llmp_moe.cu dsv4_fast.cu dsv4_sparse.cu
                                          qsa_sparse.cu
                                          cublas.cc executor.cc implementations.cc
@@ -193,7 +193,7 @@ if(LLMP_CUDA)
                    dsv4_hca_tokentile.cu
                    executor.cc
                    executor.h fattn.cu fattn_mma.cu
-                   fattn_mma.h fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu fattn_mma_q16.cuh
+                   fattn_mma.h fattn_mma_common.cu fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu fattn_mma_q16.cuh
                    fattn_mma_shape.cuh fattn_mma_shape_body.cuh fattn_owner.h fattn_owner.cc fattn_owner.cu fattn_owner_kernel.cuh fattn_owner_partial_kernel.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
                    implementations.h llmp_fused.cu llmp_moe.cu llmp_ops.cc llmp_ops.cu
@@ -258,7 +258,7 @@ if(LLMP_CUDA)
   # the other launchers' wrappers. Llmpalooza's fusions of GGML nodes
   # (llmp_fused.cu) build with the same flags, so that their arithmetic
   # compiles as the nodes' does.
-  set_source_files_properties(fattn_owner.cu fattn_mma.cu fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
+  set_source_files_properties(fattn_owner.cu fattn_mma.cu fattn_mma_common.cu fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
                               mul_mat_q.cu mul_mat_q_glu.cu mul_mat_q2_d2r.cu mmvq_rows.cu ops_ext.cu llmp_fused.cu llmp_moe.cu
                               dsv4_fast.cu dsv4_sparse.cu dsv4_weighted_reduce.cu gemma_moe.cu dsv4_qhead.cu dsv4_outa.cu dsv4_hc_norm.cu PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")

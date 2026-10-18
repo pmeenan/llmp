@@ -955,10 +955,22 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           add(Operation::kFlashAttn, kAttentionF32, i, {node}, 1);
           break;
         }
-        // D64 float attention must not bypass the quantized-cache dispatch.
-        if (node->src[0] != nullptr && node->src[0]->ne[0] == 64) {
-          add(Operation::kFlashAttn, "ggml.flash_attn_ext.vec", i, {node}, 1);
-          break;
+        // Preserve the served D64 vector selection. Common head sizes use
+        // vector at one row when its padded-cell contract holds, MMA otherwise.
+        if (node->src[0] != nullptr && node->src[1] != nullptr) {
+          const auto head = node->src[0]->ne[0];
+          if (head == 64 && node->src[1]->ne[1] % 256 == 0) {
+            add(Operation::kFlashAttn, "ggml.flash_attn_ext.vec", i, {node}, 1);
+            break;
+          }
+          if (head == 64 || head == 80 || head == 96 || head == 112 || head == 128 || head == 192) {
+            add(Operation::kFlashAttn,
+                (node->src[0]->ne[1] == 1) && CheckFlashAttnVecCommon(node)
+                    ? "ggml.flash_attn_ext.vec_common"
+                    : "ggml.flash_attn_ext.mma_common",
+                i, {node}, 1);
+            break;
+          }
         }
         if (node->src[0] == nullptr || (node->src[0]->ne[0] != 256 && node->src[0]->ne[0] != 512)) {
           return Rejected(

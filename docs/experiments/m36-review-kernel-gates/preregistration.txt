@@ -1,0 +1,72 @@
+R5 D192/192 MMA screen, fixed before timing (2026-10-17)
+
+Host: spark, stream B /home/pmeenan/src/m36-final-53c2. Exclusive installed
+spark-job; no workstation execution. Pin unchanged. GGML patch0008 adds only
+192/192 configuration rows at query tiles8 and32; actual CUDA resource facts
+must print before the run. Recorded source-tree digest follows hash job.
+
+One representative prefill shape: Q/K/V head192, 128 queries, 16 query heads,
+2 KV heads (GQA8), 2048 physical KV cells, per-query1024-cell ring window,
+F32 Q/output and F16 K/V/mask. Deterministic seed714, normal inputs with
+standard deviation0.25, attention scale1, as existing attention benchmark.
+Baseline: existing vector192 instance. Candidate: common group-one MMA192,
+query tile32. Both own the same paid mask/fixup work and input descriptors.
+
+Correctness: every output finite and relative RMS<=0.003 versus vector;
+common-head GPU test independently checks FP64 CPU formulas with GQA1/4/8,
+rows1/9/35, masks, 257 actual KV cells and padded256/253-logical controls.
+Unknown completion or any CUDA error fails the screen.
+
+Timing:8 warm-up launches per arm, then3 rounds of V/M/V,128 repetitions
+per stage, CUDA events on the submission stream, separately uncaptured and
+captured. Record all18 stage timings, per-round candidate/bookend-mean
+ratios, and the median ratio in each execution mode. No shape/threshold
+changes after looking at timings. Expected run under2minutes.
+
+Adopt MMA as the equal192 prefill selection only if correctness passes and
+both median ratios<=0.90 (at least10% faster). Otherwise retain vector
+selection for padded equal192; do not call an unmeasured geometry a tuning
+pin. Supported MMA may remain explicitly callable while performance policy
+keeps the fallback. Expand only if this screen reveals a concrete issue.
+
+Pre-timing source correction (2026-10-17; no timings have run): patch0008
+also enables the explicitly instantiated group-one D192 kernels through the
+upstream compile-size pruning guard: V128 or192, query columns8 or32, and
+one query head per tile. The existing group8/group16 variants remain
+unchanged. The generic arithmetic body is unchanged. This corrects the
+source description above; the fixed shape, inputs, warmups, repetitions,
+V/M/V order, correctness bound and >=10% adoption criterion are unchanged.
+Final revised patch/tree hashes will be recorded before timing below.
+Original preregistration SHA256 before this appended source correction:
+a8b2fa9c920de0a52a758f3b03f3ca53a1e251b9aced76eccdff80908a8d4969.
+Revised source correction hashes, recorded before any timing:
+patch0008 SHA256 7ec6a60e49f85ee2e694b0fff9da31fb14d4f38824bbf5f9d0bcdd25e2711d14;
+resulting321-file GGML tree2122c8353916bf50566b38b942c997d75b70ef0663ab10b05ad581e8060c8c7d;
+benchmark SHA256 9e37f38d2ee54eb1c55d3c9d975a6c465c0abf14a9b99630600ea7d24721e4e0.
+
+Further pre-timing baseline correction (2026-10-17; no timings have run):
+upstream fattn-vec.cuh's final128-thread loop lacks an iteration-specific
+bound at non128-multiple heads. D192 writes indices192..255 past its head
+on the second iteration; existing power-of-two served heads do not take an
+invalid iteration. Patch0008 now also guards `i0 + tid < D`. The baseline
+is this corrected vector192, not the invalid original. No valid-element
+arithmetic expression changes. The GPU control now records V/cells/branch
+and checks256-byte output guards. Final revised patch/tree hashes follow
+before timing. Shape, order, repetitions, correctness and adoption bound
+remain exactly as originally fixed.
+Final two-file source correction hashes, before any timing:
+patch0008 SHA256 db938628b2da71ed5deb4d3f32493eef6681f3a710cb6513c48e49464210cd21;
+resulting321-file GGML tree620c8c8bdcd84ba26cebca77093a0ebb3fb6ae315adea6ad32ffa6f266494d28;
+benchmark SHA256 9e37f38d2ee54eb1c55d3c9d975a6c465c0abf14a9b99630600ea7d24721e4e0.
+These supersede previous patch/tree hashes only; the benchmark and protocol
+are unchanged. Hash-only result: r5-ggml-hash-final.log, Spark stream B.
+
+Pre-timing warmup clarification (2026-10-17; no timings have run): the fixed
+8 launches per arm apply to each execution mode. The harness now performs
+8 uncaptured launches per arm before uncaptured stages and8 captured graph
+replays per arm before captured stages. This resolves the original wording;
+shape, round order, repetitions, correctness bound and adoption criterion do
+not change. Final benchmark SHA256 after this clarification:
+fd35e66f7afabf97eadb43ea9390a9564c0195513cf83597fca3dc224f9e3224.
+Patch/tree remain db938628b2da71ed5deb4d3f32493eef6681f3a710cb6513c48e49464210cd21 /
+620c8c8bdcd84ba26cebca77093a0ebb3fb6ae315adea6ad32ffa6f266494d28.

@@ -297,7 +297,23 @@ bool Dense(const SelectedOperand& operand, format::Encoding encoding) {
          operand.desc.ne(2) == 1 && operand.desc.ne(3) == 1;
 }
 constexpr std::array kF16 = {format::Encoding::kF16};
+constexpr std::array kOutputs = {format::Encoding::kF16, format::Encoding::kF32};
+constexpr std::array kF32 = {format::Encoding::kF32};
+constexpr std::array kTrellis = {format::Encoding::kExl3Trellis};
+constexpr std::array kTiles = {format::Layout::kExl3Tiles};
 constexpr std::array kDense = {format::Layout::kDense};
+constexpr std::array<execution::OperandRule, 3> kLinearRules = {{
+    {.operand = 0, .encodings = kTrellis, .layouts = kTiles},
+    {.operand = 1, .encodings = kF16, .layouts = kDense},
+    {.operand = execution::kOutputOperand, .encodings = kOutputs, .layouts = kDense},
+}};
+constexpr std::array<execution::OperandRule, 5> kPairRules = {{
+    {.operand = 0, .encodings = kTrellis, .layouts = kTiles},
+    {.operand = 1, .encodings = kTrellis, .layouts = kTiles},
+    {.operand = 2, .encodings = kF16, .layouts = kDense},
+    {.operand = execution::kOutputOperand, .encodings = kF32, .layouts = kDense},
+    {.operand = execution::kOutputOperand + 1, .encodings = kF32, .layouts = kDense},
+}};
 constexpr std::array<execution::OperandRule, 3> kBiasRules = {{
     {.operand = 0, .encodings = kF16, .layouts = kDense},
     {.operand = 1, .encodings = kF16, .layouts = kDense},
@@ -311,7 +327,7 @@ bool AcceptsBias(const execution::CapabilityQuery& query) {
   const auto* x = operand(0);
   const auto* b = operand(1);
   const auto* y = operand(execution::kOutputOperand);
-  return query.arch == 121 && x && b && y && x->ne == y->ne && x->ne[0] >= 1 &&
+  return query.arch >= 80 && x && b && y && x->ne == y->ne && x->ne[0] >= 1 &&
          x->ne[0] <= kMaxDimension && x->ne[1] >= 1 && x->ne[1] <= kMaxRows && x->ne[2] == 1 &&
          x->ne[3] == 1 && b->ne[0] == x->ne[0] && b->ne[1] == 1 && b->ne[2] == 1 && b->ne[3] == 1 &&
          // CheckBias's (CheckExtent's) element bound, so a planned bias lowers.
@@ -353,9 +369,11 @@ std::expected<std::array<ggml_tensor*, 4>, Failure> PhysicalParts(const Selected
 }
 class Source final : public kg::SelectedSource {
  public:
-  Source(FrozenCache cache, std::optional<GemvCapacity> capacity)
+  Source(FrozenCache cache, std::optional<GemvCapacity> capacity,
+         std::optional<PackedCapacity> defaults)
       : cache_(cache),
         capacity_(capacity),
+        defaults_(defaults),
         canonical_(exl3::Implementations()),
         declarations_(canonical_) {
     for (auto& declaration : declarations_) {
@@ -364,6 +382,15 @@ class Source final : public kg::SelectedSource {
           std::format("exl3.pinned.{}.{}", ProfileName(cache), native_name.substr(5));
       declaration.variant += std::format("; frozen profile {}, exact cache keys; ordered shared IR",
                                          ProfileName(cache));
+      if (defaults_) {
+        declaration.variant +=
+            std::format("; default occupancy arch{} SMs{}", defaults_->arch, defaults_->sms);
+        for (const auto& table : {defaults_->gemm, defaults_->multi})
+          for (const auto& output : table)
+            for (const auto& rate : output)
+              for (const auto count : rate)
+                declaration.variant += std::format("; packed={}", count);
+      }
       if (capacity_) {
         for (const auto& output : capacity_->blocks)
           for (const auto& rows : output)
@@ -371,15 +398,26 @@ class Source final : public kg::SelectedSource {
               declaration.variant += std::format("; occupancy={}", count);
       }
       if (native_name == "exl3.bias_add") {
-        declaration.capability = execution::Capability{.op = ir::Primitive(ir::Op::kAdd),
-                                                       .operands = kBiasRules,
-                                                       .device = {.min_arch = 121, .max_arch = 121},
-                                                       .row_invariant = false,
-                                                       .capturable = false,
-                                                       .priority = 1,
-                                                       .accepts = &AcceptsBias};
+        declaration.capability =
+            execution::Capability{.op = ir::Primitive(ir::Op::kAdd),
+                                  .operands = kBiasRules,
+                                  .device = {.min_arch = defaults_   ? defaults_->arch
+                                                         : capacity_ ? capacity_->arch
+                                                                     : 121U,
+                                             .max_arch = defaults_   ? defaults_->arch
+                                                         : capacity_ ? capacity_->arch
+                                                                     : 121U},
+                                  .row_invariant = false,
+                                  .capturable = false,
+                                  .priority = 1,
+                                  .accepts = &AcceptsBias};
       } else {
         auto& capability = *declaration.capability;
+        // Pair() writes adjacent F32 results; Linear() permits F16 or F32.
+        // Selection must reject other encodings before either lowering runs.
+        capability.operands = native_name == "exl3.multi_linear.mgemm"
+                                  ? std::span<const execution::OperandRule>(kPairRules)
+                                  : std::span<const execution::OperandRule>(kLinearRules);
         capability.device.min_arch = 121;
         capability.device.max_arch = 121;
         capability.needs_tuning = true;
@@ -389,6 +427,16 @@ class Source final : public kg::SelectedSource {
           capability.shape.max_rows = native_name == "exl3.linear.gemv"          ? 8
                                       : native_name == "exl3.multi_linear.mgemm" ? 32
                                                                                  : 144;
+      }
+      if (defaults_ &&
+          (native_name == "exl3.linear.gemm" || native_name == "exl3.multi_linear.mgemm")) {
+        auto& capability = *declaration.capability;
+        capability.device = {.min_arch = defaults_->arch, .max_arch = defaults_->arch};
+        capability.needs_tuning = false;
+        capability.shape.max_rows = kMaxRows;
+      }
+      if (native_name == "exl3.linear.gemv" && capacity_) {
+        declaration.capability->device = {.min_arch = capacity_->arch, .max_arch = capacity_->arch};
       }
     }
   }
@@ -400,7 +448,11 @@ class Source final : public kg::SelectedSource {
                : declarations_[static_cast<std::size_t>(at - canonical_.begin())].name;
   }
   std::vector<execution::TunedShape> Tuning(std::uint32_t arch) const override {
-    auto result = ReconstructionTuning(arch);
+    if ((defaults_ && arch != defaults_->arch) || (capacity_ && arch != capacity_->arch)) return {};
+    const bool pinned_device =
+        (!defaults_ || defaults_->sms == 48) && (!capacity_ || capacity_->sms == 48);
+    const auto sms = defaults_ ? defaults_->sms : capacity_ ? capacity_->sms : 48;
+    auto result = pinned_device ? ReconstructionTuning(arch) : std::vector<execution::TunedShape>{};
     for (auto& fact : result) fact.implementation = Name(fact.implementation);
     if (arch != 121) return result;
     // Physical problems present in the authenticated caches, not model dispatch.
@@ -420,9 +472,9 @@ class Source final : public kg::SelectedSource {
       for (int rows = 1; rows <= 144; ++rows) {
         for (const auto output : {Output::kF16, Output::kF32}) {
           for (const int bits : {4, 5, 6, 8}) {
-            if (FrozenGemmPlan(cache_, arch, 48, rows, k, n, bits, output))
+            if (FrozenGemmPlan(cache_, arch, sms, rows, k, n, bits, output))
               add("exl3.linear.gemm", rows, k, n, output);
-            if (rows <= 32 && FrozenMultiGemmPlan(cache_, arch, 48, rows, k, n, bits, output))
+            if (rows <= 32 && FrozenMultiGemmPlan(cache_, arch, sms, rows, k, n, bits, output))
               add("exl3.multi_linear.mgemm", rows, k, n, output);
           }
           if (capacity_ && rows <= 8 && Gemv(rows, k, n, 4, output))
@@ -438,8 +490,9 @@ class Source final : public kg::SelectedSource {
   std::optional<GemvPlan> Gemv(int rows, int k, int n, int bits, Output output) const {
     if (!capacity_ || rows < 1 || rows > 8) return {};
     const auto& counts = capacity_->blocks[output == Output::kF32 ? 1 : 0][rows == 1 ? 0 : 1];
-    return UpstreamGemvPlan(CcClass::kBlackwell, rows, k, n, bits, kCodebookMcg, counts[0],
-                            counts[1]);
+    return UpstreamGemvPlan(UpstreamCcClass(static_cast<int>(capacity_->arch / 10),
+                                            static_cast<int>(capacity_->arch % 10)),
+                            rows, k, n, bits, kCodebookMcg, counts[0], counts[1]);
   }
   std::uint64_t persistent_bytes() const override { return kPersistent; }
   std::expected<std::unique_ptr<kg::SelectedCall>, Failure> Lower(
@@ -512,10 +565,14 @@ class Source final : public kg::SelectedSource {
       if (!plan) return Reject("the frozen O profile does not select this GEMV");
       call->gemv = *plan;
     } else if (kind == Kind::kGemm) {
-      if (UpstreamPath(call->rows) != LinearPath::kPacked)
+      const auto arch = defaults_ ? defaults_->arch : capacity_ ? capacity_->arch : 121U;
+      const auto sms = defaults_ ? defaults_->sms : capacity_ ? capacity_->sms : 48;
+      auto plan =
+          FrozenGemmPlan(cache_, arch, sms, call->rows, call->k, call->n, call->bits, call->output);
+      if (!plan && defaults_)
+        plan = DefaultGemmPlan(*defaults_, call->rows, call->k, call->n, call->bits, call->output);
+      if (!defaults_ && UpstreamPath(call->rows) != LinearPath::kPacked)
         return Reject("EXL3 packed product is outside the approved reference routing");
-      const auto plan =
-          FrozenGemmPlan(cache_, 121, 48, call->rows, call->k, call->n, call->bits, call->output);
       if (!plan) return Reject(plan.error());
       call->plan = *plan;
     } else {
@@ -524,6 +581,9 @@ class Source final : public kg::SelectedSource {
       if (UpstreamPath(call->rows) != expected)
         return Reject(
             "EXL3 selected reconstruction path disagrees with the approved row threshold");
+      if ((defaults_ && (defaults_->arch != 121 || defaults_->sms != 48)) ||
+          (capacity_ && (capacity_->arch != 121 || capacity_->sms != 48)))
+        return Reject("reconstruction requires the measured device; use the packed default");
       auto algorithms = ReconstructionAlgorithms(121, call->rows, call->k, call->n, call->output);
       if (!algorithms) return Reject(algorithms.error());
       call->algorithms = std::move(*algorithms);
@@ -537,8 +597,14 @@ class Source final : public kg::SelectedSource {
         persistent.base + persistent.bytes < persistent.base)
       return Reject("EXL3 persistent locks lack their declared aligned workspace");
     const auto facts = providers::QueryDeviceFacts(device);
-    if (device != 0 || !facts || facts->architecture != 1210)
-      return Reject("EXL3 frozen cache requires the recorded sm_121 architecture");
+    const auto arch = defaults_ ? defaults_->arch : capacity_ ? capacity_->arch : 121U;
+    const auto sms = defaults_ ? defaults_->sms : capacity_ ? capacity_->sms : 48;
+    if (!facts || facts->architecture != arch * 10)
+      return Reject("EXL3 source device differs from its queried architecture");
+    if (defaults_) {
+      const auto actual = QueryPackedCapacity(device);
+      if (!actual || *actual != *defaults_) return Reject("EXL3 packed occupancy facts changed");
+    }
     if (capacity_) {
       const auto actual = QueryGemvCapacity(device);
       if (!actual || *actual != *capacity_) return Reject("EXL3 GEMV occupancy facts changed");
@@ -547,7 +613,7 @@ class Source final : public kg::SelectedSource {
     if (!gemm) return std::unexpected(Convert(gemm.error()));
     auto launch = LaunchContext::Create(device, execution, stream, persistent.base, true);
     if (!launch) return std::unexpected(Convert(launch.error()));
-    if ((*launch)->cc_class() != CcClass::kBlackwell || (*launch)->sm_count() != 48)
+    if ((*launch)->sm_count() != sms)
       return Reject("EXL3 frozen cache requires the recorded GB10 device");
     auto native = execution.Submission(stream);
     if (!native) return Reject(native.error().detail);
@@ -575,7 +641,8 @@ class Source final : public kg::SelectedSource {
         !format::Validate(w.desc.format) || w.desc.ne(2) != 1 || w.desc.ne(3) != 1 ||
         !RateCompiled(w.desc.format.params.k_bits) || w.desc.ne(0) != x.desc.ne(0) ||
         w.desc.ne(1) != first.desc.ne(0) || x.desc.ne(1) != first.desc.ne(1) || x.desc.ne(1) < 1 ||
-        x.desc.ne(1) > 32 || w.desc.ne(0) > kMaxDimension || w.desc.ne(1) > kMaxDimension)
+        x.desc.ne(1) > static_cast<std::uint64_t>(defaults_ ? kMaxRows : 32) ||
+        w.desc.ne(0) > kMaxDimension || w.desc.ne(1) > kMaxDimension)
       return Reject("paired EXL3 operands violate the native complete-matrix contract");
     const auto first_parts = PhysicalParts(w);
     const auto second_parts = PhysicalParts(other);
@@ -591,14 +658,22 @@ class Source final : public kg::SelectedSource {
     call->n = static_cast<int>(w.desc.ne(1));
     call->bits = w.desc.format.params.k_bits;
     call->output = Output::kF32;
-    const auto plan = FrozenMultiGemmPlan(cache_, 121, 48, call->rows, call->k, call->n, call->bits,
-                                          call->output);
+    const auto arch = defaults_ ? defaults_->arch : capacity_ ? capacity_->arch : 121U;
+    const auto sms = defaults_ ? defaults_->sms : capacity_ ? capacity_->sms : 48;
+    auto plan = FrozenMultiGemmPlan(cache_, arch, sms, call->rows, call->k, call->n, call->bits,
+                                    call->output);
+    if (!plan && defaults_) {
+      const auto fallback =
+          DefaultGemmPlan(*defaults_, call->rows, call->k, call->n, call->bits, call->output, true);
+      if (fallback) plan = MultiGemmPlan{fallback->shape, fallback->blocks, 1};
+    }
     if (!plan) return Reject(plan.error());
     call->multi_plan = *plan;
     return call;
   }
   FrozenCache cache_;
   std::optional<GemvCapacity> capacity_;
+  std::optional<PackedCapacity> defaults_;
   std::vector<execution::Implementation> canonical_;
   std::vector<execution::Implementation> declarations_;
 };
@@ -606,16 +681,18 @@ class Source final : public kg::SelectedSource {
 std::expected<GemvCapacity, std::string> QueryGemvCapacity(int device) {
   const auto facts = providers::QueryDeviceFacts(device);
   int current = -1, sms = 0;
-  if (device != 0 || !facts || facts->architecture != 1210 ||
-      cudaGetDevice(&current) != cudaSuccess || current != device ||
+  if (!facts || facts->architecture < 800 || cudaGetDevice(&current) != cudaSuccess ||
+      current != device ||
       cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess ||
-      sms != 48) {
+      sms < 1) {
     // A failed query leaves the runtime's last error set, which the next
     // launch context's Begin would take for its own launch's.
     (void)cudaGetLastError();
-    return std::unexpected("frozen GEMV occupancy requires current device0 sm_121 with48SMs");
+    return std::unexpected("GEMV occupancy requires a current CUDA device with compiled kernels");
   }
   GemvCapacity result;
+  result.arch = facts->architecture / 10;
+  result.sms = sms;
   for (std::size_t output = 0; output < 2; ++output) {
     for (std::size_t rows = 0; rows < 2; ++rows) {
       for (std::size_t config = 0; config < 2; ++config) {
@@ -636,7 +713,8 @@ std::expected<GemvCapacity, std::string> QueryGemvCapacity(int device) {
   return result;
 }
 std::expected<std::shared_ptr<const kg::SelectedSource>, std::string> SelectedSource(
-    FrozenCache cache, std::optional<GemvCapacity> capacity) {
+    FrozenCache cache, std::optional<GemvCapacity> capacity,
+    std::optional<PackedCapacity> defaults) {
   if (ProfileName(cache).empty() || Optimized(cache) != capacity.has_value())
     return std::unexpected(
         "the frozen O profile requires queried GEMV capacities; G requires none");
@@ -644,9 +722,25 @@ std::expected<std::shared_ptr<const kg::SelectedSource>, std::string> SelectedSo
     for (const auto& output : capacity->blocks)
       for (const auto& rows : output)
         for (const auto count : rows)
-          if (count < 48 || count > 32 * 48 || count % 48 != 0)
+          if (capacity->arch < 80 || capacity->sms < 1 || count < capacity->sms ||
+              count > 32LL * capacity->sms || count % capacity->sms != 0)
             return std::unexpected("invalid GEMV co-resident count");
   }
-  return std::make_shared<Source>(cache, capacity);
+  if (defaults) {
+    if (defaults->arch < 80 || defaults->sms < 1 ||
+        (capacity && (capacity->arch != defaults->arch || capacity->sms != defaults->sms)))
+      return std::unexpected("inconsistent EXL3 device capacities");
+    // Every rate/output must have the universally divisible128-wide tile.
+    // Without this, shape-only candidate declaration cannot prove a default.
+    for (const auto& table : {defaults->gemm, defaults->multi})
+      for (const auto& output : table)
+        for (const auto& rate : output) {
+          if (rate[0] < 1) return std::unexpected("no universally divisible packed EXL3 default");
+          for (const auto count : rate)
+            if (count < 0 || count > 32LL * defaults->sms || count % defaults->sms != 0)
+              return std::unexpected("invalid packed EXL3 occupancy");
+        }
+  }
+  return std::make_shared<Source>(cache, capacity, defaults);
 }
 }  // namespace llmp::kernels::exl3

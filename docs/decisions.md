@@ -887,6 +887,14 @@ implementation choice; compare larger workspaces when they may be worthwhile.
 The matched 1% speed gate, quality, source-encoding and restoration contracts
 remain in force.
 
+**Planning policy extension, 2026-10-17.** The canonical planning policy
+accepts `compact_expert_min_rows <n>` for 1–65,536 rows. Its historical
+default, 2,048, is omitted from canonical text, preserving existing stored
+policy bytes and digests. The planner resolves this bound against the step
+shape before lowering. The crossover is alias policy data, rather than a
+backend-wide threshold. The additive syntax preserves existing valid
+policies and public-surface versions under D-062.
+
 **Context.** On 2026-10-08, about 35.5k lines were family-specific against
 8.3k of shared skeleton; Gemma2's and Gemma3's runners differed by about 100 lines
 and had drifted apart; slot-lifecycle methods were 80–99% alike across

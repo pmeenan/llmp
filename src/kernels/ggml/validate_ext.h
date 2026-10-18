@@ -289,6 +289,7 @@ std::expected<void, KernelFailure> CheckDsv4HcaTokentile(const ggml_tensor* node
 // mask and no sinks, no ALiBi and no logit soft-capping, every non-first
 // stride a multiple of 16 bytes, into the packed F32 output [128, heads,
 // rows, 1]. Qwen-Image-2.1's denoiser attends this way.
+std::expected<void, KernelFailure> CheckFlashAttnMmaCommon(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckFlashAttnMma128(const ggml_tensor* node);
 
 }  // namespace llmp::kernels::ggml

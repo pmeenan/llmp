@@ -1061,6 +1061,10 @@ The entries below record each change; the record of the milestone is
 
 ### Changed
 
+- Select common F16 GQA attention kernels at head widths 64, 80, 96,
+  112, 128 and 192; gate norm and MoE fusions by their launch limits;
+  and expose an alias-specific compact-expert crossover while retaining
+  existing default selections.
 - An approved checkpoint's envelope (its context, owners and wide context)
   is its settings' default, not a refusal: a configuration naming more is
   served with a warning in the log and in `llmp-runtime settings` (its JSON

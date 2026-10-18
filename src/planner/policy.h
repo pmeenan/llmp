@@ -20,6 +20,7 @@
 //   vector_rows <n>                     when set (1 to 65,536)
 //   row_invariant                       when set
 //   allow_lossy                         when set
+//   compact_expert_min_rows <n>         when not 2048 (1 to 65,536)
 //   product <choice>                    independent product policies, names ascending
 //   enable <pattern>                    an opt-in pattern of the table, names ascending
 //   disable <pattern>                   a pattern of the table (pattern.h), names ascending
@@ -83,6 +84,9 @@ struct StepRule {
 // its own explicit choice; pairing never opts into it.
 struct ProductPolicy {
   bool compact_experts = false;
+  // Measured crossover, configurable per alias. Omitted from canonical text
+  // at its historical default to preserve existing policy identities.
+  std::uint32_t compact_expert_min_rows = 2048;
   bool d2r_experts = false;
   bool dense_pair = false;
   bool pair_experts = false;

@@ -26,6 +26,45 @@ Suggested order for PRs, one at a time: the mask pre-pass bound (RE-036),
 then ssm_conv's load bound (RE-032), then the null-buffer guard, then the
 sinks bound (RE-030).
 
+## MMA head 192 configuration (RE-060)
+
+- **Pin:** `d81235049384534c167caea52b85a694f6103d14`,
+  `ggml/src/ggml-cuda/fattn-mma-f16.cuh` configuration tables.
+- **Observed on Spark:** instantiating `<192,192,8,1>` fails at compile
+  time with zero-sized KQ/V tiles and division by zero in device assertions.
+  Only Q/K192 with V128 is present in the locked tables.
+- **Local extension:** patch0008 adds equal192 at query columns8 and32.
+  Full96-half2 K/V/combine tiles divide both192-wide heads exactly; the
+  neighboring192/128 entry supplies threads and KV batch geometry. Existing
+  configurations and valid-element arithmetic are unchanged. Occupancy is
+  queried from CUDA, not claimed from the table's target. The original
+  192/128 case and equal192 vector remain available. A separate upstream
+  compile-size pruning guard also excludes all group-one192 kernels; the
+  patch narrowly permits V128/192 at columns8/32 through that guard. The
+  initial table-only patch compiled but aborted in this guard on Spark.
+  Existing group8/group16 variants remain unchanged.
+- **Vector tail bound:** fattn-vec.cuh writes128 values per final iteration;
+  D192 has only64 values left in its second iteration. The new per-index
+  bound prevents64 out-of-range shared reads and output writes, preserving
+  every valid-element expression and existing power-of-two head behavior.
+  This is exposed by the added D192 vector instantiation, not a claim that
+  upstream's usual selection runs that specialization. GPU parity tests
+  check output guards; the screen uses corrected vector192.
+- **Provenance:** MIT AND Apache-2.0 sidecar; patch SHA-256
+  `db938628b2da71ed5deb4d3f32493eef6681f3a710cb6513c48e49464210cd21`,
+  resulting GGML tree
+  `620c8c8bdcd84ba26cebca77093a0ebb3fb6ae315adea6ad32ffa6f266494d28`.
+  No upstream pin refresh. Performance qualification is separate from the
+  geometric derivation.
+- **Qualified on GB10:** the common-head CPU-reference/guard controls
+  passed; the fixed D192 prefill screen reported median MMA/vector ratios
+  0.156830 uncaptured and 0.159607 captured, relative RMS0.00079151713.
+  Actual128-thread CUDA resources were25,600 dynamic shared bytes,
+  0 static bytes,222 registers and2 resident blocks per SM. Full inputs,
+  protocol, allocation accounting and provenance are in the
+  [kernel report](../experiments/m36-review-kernel-gates/README.md).
+  No sm86 execution or whole-model speed claim.
+
 ## Empty CUDA SoftMax rows (RE-055)
 
 - **Status:** local shared primitive correction; no upstream issue submitted.

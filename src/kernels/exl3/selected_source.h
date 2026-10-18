@@ -16,6 +16,8 @@ namespace llmp::kernels::exl3 {
 // when the source launch is made; declarations include all eight facts.
 struct GemvCapacity {
   std::array<std::array<std::array<int, 2>, 2>, 2> blocks{};
+  std::uint32_t arch = 121;
+  int sms = 48;
   bool operator==(const GemvCapacity&) const = default;
 };
 std::expected<GemvCapacity, std::string> QueryGemvCapacity(int device);
@@ -25,6 +27,7 @@ std::expected<GemvCapacity, std::string> QueryGemvCapacity(int device);
 // selected product/bias, physical parts, and global activation placement.
 // Packed tuning is the authenticated cache, never a new autotuning run.
 std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> SelectedSource(
-    FrozenCache cache, std::optional<GemvCapacity> gemv = {});
+    FrozenCache cache, std::optional<GemvCapacity> gemv = {},
+    std::optional<PackedCapacity> defaults = {});
 }  // namespace llmp::kernels::exl3
 #endif  // LLMP_KERNELS_EXL3_SELECTED_SOURCE_H_

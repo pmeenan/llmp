@@ -907,13 +907,12 @@ std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node) {
     return Rejected("not a bound cont node");
   }
   const ggml_tensor* src = node->src[0];
-  // F32/F16 into the same type; or I32 into I32 (the indexer's top-k), which upstream
-  // copies with one cudaMemcpyAsync when both are contiguous (cpy.cu:465-475)
-  // and which this implementation takes only then.
+  // F32/F16 use upstream copies; I32 uses memcpy when contiguous, otherwise
+  // our bit-preserving scalar copy over the source's actual four strides.
   const bool i32 = src->type == GGML_TYPE_I32 && node->type == GGML_TYPE_I32;
   const bool f16 = src->type == GGML_TYPE_F16 && node->type == GGML_TYPE_F16;
   if ((!IsF32(src) || !IsF32(node)) && !f16 && !i32) {
-    return Rejected("cont copies F32/F16 into the same type, or contiguous I32 into I32");
+    return Rejected("cont copies F32/F16/I32 into the same type");
   }
   const std::size_t element = ggml_type_size(src->type);
   if (AnyEmpty({node, src}) || !AllSane({node, src})) {
@@ -922,9 +921,6 @@ std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node) {
   if (ggml_nelements(node) != ggml_nelements(src) || !Packed(node) || !ElementStrides(src) ||
       !Aligned(src, element) || !Aligned(node, element)) {
     return Rejected("cont into a packed tensor of as many elements, from whole elements");
-  }
-  if (i32 && (!ggml_is_contiguous(src) || ggml_nbytes(src) != ggml_nbytes(node))) {
-    return Rejected("cont of I32 only between contiguous tensors");
   }
   // The scalar kernel's blocks of 64 are counted in an int (cpy.cu:212-213).
   if (ggml_nelements(src) / 64 >= static_cast<std::int64_t>(kInt32Max)) {
@@ -937,6 +933,7 @@ std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node) {
   if (ggml_is_contiguous(src) && ggml_is_contiguous(node)) {
     return ContCopy::kMemcpy;
   }
+  if (i32) return ContCopy::kScalar;
   if (CopiesAsMemcpy2d(src, node)) {
     return ContCopy::kMemcpy2d;
   }
@@ -1236,6 +1233,13 @@ static std::expected<void, KernelFailure> CheckFlashAttnVecHead(const ggml_tenso
 
 std::expected<void, KernelFailure> CheckFlashAttnVec(const ggml_tensor* node) {
   return CheckFlashAttnVecHead(node, 64);
+}
+std::expected<void, KernelFailure> CheckFlashAttnVecCommon(const ggml_tensor* node) {
+  if (node == nullptr || node->src[0] == nullptr) return Rejected("missing query");
+  const auto head = node->src[0]->ne[0];
+  if (head != 64 && head != 128 && head != 192)
+    return Rejected("no common-head vector specialization");
+  return CheckFlashAttnVecHead(node, head);
 }
 std::expected<void, KernelFailure> CheckFlashAttnVec256(const ggml_tensor* node) {
   return CheckFlashAttnVecHead(node, 256);

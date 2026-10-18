@@ -28,6 +28,32 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-060: GGML MMA head 192 lacks an equal-width configuration  (2026-10-17, status: worked-around)
+
+On `spark`'s native `sm_121` build with the locked GGML
+`d81235049384534c167caea52b85a694f6103d14` source, instantiating
+`ggml_cuda_flash_attn_ext_mma_f16_case<192,192,8,1>` fails with zero-sized
+KQ/V tiles and division by zero in device assertions. Its configuration
+tables contain `(DKQ,DV)=(192,128)`, but not `(192,192)`. The failure is the
+missing table entry, not an inherent matrix-instruction width limit. A
+second compile-size pruning guard replaces all group-one192 device code
+with an abort; table entries alone therefore compile but cannot execute.
+Patch0008 adds the equal-width case at query columns8/32 using full96-half2
+K/V/combine tiles and neighboring192/128 launch geometry. It also narrowly
+enables group-one192/128 and192/192 at columns8/32 through the pruning
+guard, retaining every existing group8/group16 variant. D192 vector also
+exposes an upstream final-loop tail overrun:128 threads write64 extra values
+in the second iteration. Patch0008 bounds that per-index write/read, without
+changing valid-element arithmetic. Runtime CUDA
+queries determine actual occupancy and resources. Equal192 vector remains
+a fallback with physically padded KV cells and a mask over the logical tail.
+See the [GGML handoff](upstream/ggml.md#mma-head-192-configuration-re-060).
+The corrected common-head controls pass on GB10; the fixed D192 prefill
+screen qualified MMA over corrected vector with all paid work included.
+See the [measured report](experiments/m36-review-kernel-gates/README.md),
+including queried resources and workspace allocation accounting. No sm86
+execution is established by this result.
+
 ## RE-059: GB10 kernel speed depends on where the kernel's free memory puts a device allocation  (2026-10-17, status: open)
 
 Environment: `spark` and `spark-b` (GB10, driver 580.178.04, CUDA 13.0,

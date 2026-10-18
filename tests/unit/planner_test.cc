@@ -249,6 +249,43 @@ TEST(PlannerPolicyTest, ProductChoicesAreIndependentCanonicalAndKeyed) {
   EXPECT_FALSE(ParsePolicy("max_decode_rows 16\nproduct dense_pair\nproduct dense_pair\n"));
 }
 
+TEST(PlannerPolicyTest, CompactExpertCrossoverPreservesDefaultTextAndKeysOverrides) {
+  Policy policy;
+  EXPECT_EQ(ToText(policy), "max_decode_rows 16\n");
+  policy.products.compact_experts = true;
+  const auto original = Digest(policy);
+  policy.products.compact_expert_min_rows = 512;
+  EXPECT_EQ(ToText(policy),
+            "max_decode_rows 16\ncompact_expert_min_rows 512\nproduct compact_experts\n");
+  EXPECT_EQ(ParsePolicy(ToText(policy)).value(), policy);
+  EXPECT_NE(Digest(policy), original);
+  for (const auto bound : {0U, 65537U}) {
+    policy.products.compact_expert_min_rows = bound;
+    EXPECT_FALSE(Validate(policy));
+  }
+  EXPECT_FALSE(ParsePolicy("max_decode_rows 16\ncompact_expert_min_rows 2048\n"));
+  EXPECT_FALSE(ParsePolicy(
+      "max_decode_rows 16\ncompact_expert_min_rows 512\ncompact_expert_min_rows 512\n"));
+}
+
+TEST(PlannerPolicyTest, CompactExpertCrossoverResolvesBeforeLowering) {
+  const auto registry = Registry();
+  Policy policy;
+  policy.products.compact_experts = true;
+  policy.products.compact_expert_min_rows = 512;
+  for (const auto rows : {511U, 512U, 513U}) {
+    NormGraph graph(64, rows);
+    graph.b.Output(graph.m);
+    const StepShape shape{.segments = {{.rows = rows, .outputs = rows}}};
+    const auto plan = PlanOf(Finish(graph.b), registry, policy, {.shape = &shape});
+    EXPECT_EQ(plan.products.compact_experts, rows >= 512);
+    EXPECT_EQ(plan.products.compact_expert_min_rows, 512U);
+  }
+  NormGraph graph;
+  graph.b.Output(graph.m);
+  EXPECT_FALSE(PlanOf(Finish(graph.b), registry, policy).products.compact_experts);
+}
+
 TEST(PlannerPolicyTest, DigestsFollowWhatChanges) {
   const Policy base{};
   const Policy off = Disabling({"rms_norm_mul_rope"});
@@ -528,6 +565,41 @@ TEST(PlannerPatternTest, StateBanksKeepAttentionParametersAndRefuseObservableCop
     EXPECT_EQ(old_attn.key, ir::Primitive(Op::kAttention));
     EXPECT_EQ(old_attn.params, ir::ToBytes(params));
   }
+}
+
+TEST(PlannerPatternTest, GroupedOutputShapeComesFromItsWeightRatherThanACheckpoint) {
+  ir::TensorDesc weight, heads;
+  weight.format = F32({128, 384, 2});
+  heads.format = F32({64, 4, 5});
+  const std::array<const ir::TensorDesc*, 2> sources{&weight, &heads};
+  const auto shape = ShapeOfNode(ir::Fused(FusedKind::kDsv4OutA), sources, {});
+  EXPECT_EQ(shape.rows, 5U);
+  EXPECT_EQ(shape.k, 256U);
+  EXPECT_EQ(shape.n, 768U);
+}
+
+TEST(PlannerPatternTest, GroupedOutputMatcherDelegatesSpecializedDimensionsToTheCandidate) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.outa", Any(ir::Fused(FusedKind::kDsv4OutA))));
+  const auto registry = Registry(std::move(implementations));
+  const Policy policy{};
+  const SelectionView selection(registry, kDevice, policy, false, false);
+  ir::Builder b;
+  const auto weight = b.Input(F32({128, 384, 2}));
+  const auto heads = b.Input(F32({64, 4, 5}));
+  const auto positions = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({5})));
+  const auto rotated =
+      b.Rope(heads, positions, {},
+             {.mode = ir::RopeMode::kNormal, .inverse = true, .dims = 32, .offset = 32});
+  const auto reshaped = b.Reshape(rotated, ir::ShapeOf({128, 2, 5}));
+  const auto low = b.MatMul(weight, b.Permute(reshaped, {0, 2, 1, 3}));
+  const auto out = b.Cont(b.Permute(low, {0, 2, 1, 3}), ir::ShapeOf({768, 5}));
+  b.Output(out);
+  const auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+  const auto match =
+      fusions::Dsv4OutAMatch(MatchContext(*graph, selection, nullptr), graph->producer(out));
+  EXPECT_TRUE(match);
 }
 
 TEST(PlannerPatternTest, Dsv4QHeadChecksTailOwnershipSideReadersAndInterveningWrites) {

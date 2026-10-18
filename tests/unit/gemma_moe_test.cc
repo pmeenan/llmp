@@ -24,19 +24,19 @@ class GemmaMoe : public ::testing::Test {
     kg::TensorArena::Bind(t, address);
     return t;
   }
-  kg::GemmaRouting Route(std::int64_t rows) {
-    auto* x = Tensor(GGML_TYPE_F32, {128, rows, 1, 1}, 0x100000000ULL);
-    auto* w = Tensor(GGML_TYPE_F32, {1, 8, rows, 1}, 0x200000000ULL);
+  kg::GemmaRouting Route(std::int64_t rows, std::int64_t experts = 128, std::int64_t used = 8) {
+    auto* x = Tensor(GGML_TYPE_F32, {experts, rows, 1, 1}, 0x100000000ULL);
+    auto* w = Tensor(GGML_TYPE_F32, {1, used, rows, 1}, 0x200000000ULL);
     auto* root = ggml_argsort(c(), x, GGML_SORT_ORDER_DESC);
     kg::TensorArena::Bind(root, 0x300000000ULL);
-    auto* ids = ggml_view_2d(c(), root, 8, rows, root->nb[1], 0);
-    return {{x, Bytes(static_cast<std::uint64_t>(rows) * 128 * 4)},
-            {w, Bytes(static_cast<std::uint64_t>(rows) * 8 * 4)},
-            {ids, Bytes(static_cast<std::uint64_t>(rows) * 128 * 4)}};
+    auto* ids = ggml_view_2d(c(), root, used, rows, root->nb[1], 0);
+    return {{x, Bytes(static_cast<std::uint64_t>(rows) * static_cast<std::uint64_t>(experts) * 4)},
+            {w, Bytes(static_cast<std::uint64_t>(rows) * static_cast<std::uint64_t>(used) * 4)},
+            {ids, Bytes(static_cast<std::uint64_t>(rows) * static_cast<std::uint64_t>(experts) * 4)}};
   }
-  kg::GemmaScaledReduction Reduce(std::int64_t rows) {
+  kg::GemmaScaledReduction Reduce(std::int64_t rows, std::int64_t width = 2816, std::int64_t used = 8) {
     const std::array<std::array<std::int64_t, 4>, 4> shapes = {
-        {{2816, 8, rows, 1}, {1, 8, rows, 1}, {1, 8, rows, 1}, {2816, rows, 1, 1}}};
+        {{width, used, rows, 1}, {1, used, rows, 1}, {1, used, rows, 1}, {width, rows, 1, 1}}};
     std::array<kg::GemmaMoeOperand, 4> o{};
     for (std::size_t i = 0; i < o.size(); ++i) {
       auto* t = Tensor(GGML_TYPE_F32, shapes[i], (i + 1) * 0x100000000ULL);
@@ -46,6 +46,24 @@ class GemmaMoe : public ::testing::Test {
   }
   std::unique_ptr<kg::TensorArena> arena;
 };
+TEST_F(GemmaMoe, UnpinnedShapesFollowCompiledExpertsAndReductionGridBounds) {
+  for (const auto experts : {1, 32, 64, 256, 288, 512, 576}) {
+    arena->Reset();
+    EXPECT_TRUE(kg::CheckGemmaRouting(Route(3, experts, std::min(experts, 6))));
+  }
+  for (const auto experts : {3, 96, 513, 1024}) {
+    arena->Reset();
+    EXPECT_FALSE(kg::CheckGemmaRouting(Route(3, experts, 3)));
+  }
+  for (const auto width : {1, 1024, 4097}) {
+    arena->Reset();
+    EXPECT_TRUE(kg::CheckGemmaScaledReduction(Reduce(3, width, 6)));
+  }
+  EXPECT_FALSE(kg::GemmaReductionShapeFits(65535ULL * 256 + 1, 2, 1));
+  EXPECT_FALSE(kg::GemmaReductionShapeFits(1, 0, 1));
+  EXPECT_FALSE(kg::GemmaRoutingShapeFits(128, 129, 1));
+  EXPECT_FALSE(kg::GemmaRoutingShapeFits(128, 8, INT32_MAX / 128 + 1ULL));
+}
 TEST_F(GemmaMoe, ExistingArgsortTop8ViewHasFullyFundedPitch) {
   for (const auto rows : {1, 2, 4, 8, 128, 8192}) {
     arena->Reset();

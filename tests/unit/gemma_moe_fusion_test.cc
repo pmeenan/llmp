@@ -31,34 +31,36 @@ class GemmaMoeFusion : public ::testing::Test {
     address += (ggml_nbytes(t) + 255) / 256 * 256 + 256;
     return t;
   }
-  std::vector<ggml_tensor*> Route(std::int64_t rows = 4) {
-    auto* x = Tensor(128, rows);
+  std::vector<ggml_tensor*> Route(std::int64_t rows = 4, std::int64_t experts = 128,
+                                  std::int64_t used = 8) {
+    auto* x = Tensor(experts, rows);
     auto* p = ggml_soft_max(c(), x);
-    auto* probabilities = ggml_reshape_3d(c(), p, 1, 128, rows);
-    auto* ids = ggml_argsort_top_k(c(), p, 8);
+    auto* probabilities = ggml_reshape_3d(c(), p, 1, experts, rows);
+    auto* ids = ggml_argsort_top_k(c(), p, static_cast<int>(used));
     auto* gathered = ggml_get_rows(c(), probabilities, ids);
-    auto* selected = ggml_reshape_2d(c(), gathered, 8, rows);
+    auto* selected = ggml_reshape_2d(c(), gathered, used, rows);
     auto* sum = ggml_sum_rows(c(), selected);
     auto* clamped =
         ggml_clamp(c(), sum, kg::kGemmaRouteClamp, std::numeric_limits<float>::infinity());
     auto* normalized = ggml_div(c(), selected, clamped);
-    auto* out = ggml_reshape_3d(c(), normalized, 1, 8, rows);
+    auto* out = ggml_reshape_3d(c(), normalized, 1, used, rows);
     std::vector<ggml_tensor*> n{p,        probabilities, ids->view_src, ids,        gathered,
                                 selected, sum,           clamped,       normalized, out};
     kg::BindDistinct(n, 0x10000000000ULL);
     return n;
   }
-  std::vector<ggml_tensor*> Reduce(std::int64_t rows = 4) {
-    auto* x = Tensor(2816, 8, rows);
-    auto* scales = Tensor(1, 8, rows);
-    auto* weights = Tensor(1, 8, rows);
+  std::vector<ggml_tensor*> Reduce(std::int64_t rows = 4, std::int64_t width = 2816,
+                                   std::int64_t used = 8) {
+    auto* x = Tensor(width, used, rows);
+    auto* scales = Tensor(1, used, rows);
+    auto* weights = Tensor(1, used, rows);
     auto* scaled = ggml_mul(c(), x, scales);
     auto* weighted = ggml_mul(c(), scaled, weights);
     std::vector<ggml_tensor*> n{scaled, weighted};
-    for (std::size_t i = 0; i < 8; ++i)
-      n.push_back(ggml_view_2d(c(), weighted, 2816, rows, weighted->nb[2], i * weighted->nb[1]));
+    for (std::size_t i = 0; i < static_cast<std::size_t>(used); ++i)
+      n.push_back(ggml_view_2d(c(), weighted, width, rows, weighted->nb[2], i * weighted->nb[1]));
     auto* out = n[2];
-    for (std::size_t i = 1; i < 8; ++i) {
+    for (std::size_t i = 1; i < static_cast<std::size_t>(used); ++i) {
       out = ggml_add(c(), out, n[2 + i]);
       n.push_back(out);
     }
@@ -68,6 +70,22 @@ class GemmaMoeFusion : public ::testing::Test {
   std::unique_ptr<kg::TensorArena> arena;
   std::uint64_t address = 0x100000000ULL;
 };
+TEST_F(GemmaMoeFusion, UnpinnedExpertCountsAndWidthsKeepTheLiteralGraphContracts) {
+  auto route = Route(3, 64, 4);
+  ASSERT_TRUE(kg::GemmaRoutingFusionAt(route, 0));
+  arena->Reset();
+  auto reduce = Reduce(3, 4096, 6);
+  const auto fused = kg::GemmaReductionFusionAt(reduce, 0);
+  ASSERT_TRUE(fused);
+  EXPECT_EQ(fused->nodes.size(), 13U);
+  kg::DeviceChoices choices;
+  choices.fuse_gemma_reduce = true;
+  const auto plan = kg::PlanGraph(reduce, false, choices);
+  ASSERT_TRUE(plan);
+  ASSERT_EQ(plan->steps.size(), 1U);
+  EXPECT_EQ(plan->steps[0].implementation, kg::kGemmaReduceName);
+  EXPECT_EQ(plan->steps[0].nodes.size(), 13U);
+}
 TEST_F(GemmaMoeFusion, ExactPatternsPreserveBothRoutingOutputsAndScaledOrder) {
   for (const auto rows : {1, 2, 4, 8, 128, 8192}) {
     arena->Reset();

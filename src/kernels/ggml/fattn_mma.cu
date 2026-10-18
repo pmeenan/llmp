@@ -4,7 +4,8 @@
 
 // GGML's tensor-core flash attention for head dimensions 256 and 512 under
 // llmpalooza's dispatch (ops_ext.h FlashAttnMma), and at 128 without head
-// grouping or a mask (FlashAttnMma128). Llmpalooza does not compile
+// grouping (FlashAttnMma128), plus common F16-KV head sizes with arbitrary
+// GQA and masks (FlashAttnMmaCommon). Llmpalooza does not compile
 // GGML's fattn.cu, whose dispatcher names every head size's and K/V type's
 // instance; this unit has, from fattn.cu at llama.cpp b29c606e2, with
 // the query-tile sparse union backported from dc9879cf (PR 29298):
@@ -355,9 +356,9 @@ std::expected<void, KernelFailure> FlashAttnMmaGqa2(LaunchContext& launch, ggml_
                     [node, run](ggml_backend_cuda_context& context) { run(context, node); });
 }
 
-std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchContext& launch,
-                                                                   const ggml_tensor* node) {
-  if (auto checked = CheckFlashAttnMma128(node); !checked) {
+std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMmaCommon(const LaunchContext& launch,
+                                                                      const ggml_tensor* node) {
+  if (auto checked = CheckFlashAttnMmaCommon(node); !checked) {
     return std::unexpected(checked.error());
   }
   const ggml_tensor* q = node->src[0];
@@ -368,10 +369,12 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchC
     return Rejected("the MMA flash-attention kernels need Turing or later");
   }
   FlashAttnMmaPlan plan;
-  plan.head = 128;
+  plan.head = static_cast<int>(q->ne[0]);
   plan.group = 1;
   // switch_ncols1 for ncols2 = 1 (fattn.cu:146-166).
-  if (q->ne[1] <= 8) {
+  if (plan.head != 128) {
+    plan.columns = q->ne[1] <= 8 ? 8 : 32;
+  } else if (q->ne[1] <= 8) {
     plan.columns = 8;
   } else if (q->ne[1] <= 16) {
     plan.columns = 16;
@@ -380,18 +383,19 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchC
   } else {
     plan.columns = 64;
   }
-  auto shape = detail::FlashAttnMmaShape128(plan.columns, launch.device());
+  auto shape = detail::FlashAttnMmaShapeCommon(plan.head, static_cast<int>(node->src[2]->ne[0]),
+                                               plan.columns, launch.device());
   if (!shape) {
     return std::unexpected(KernelFailure{.error = KernelError::kUnknown, .detail = shape.error()});
   }
-  // launch_fattn<128, columns, 1> with stream-k (fattn-common.cuh:1085-1180);
+  // launch_fattn<V, columns, 1> with stream-k (fattn-common.cuh:1085-1180);
   // The optional mask scan reads full query tiles, including the tail.
   const std::int64_t ncols = plan.columns;
   const std::int64_t ntiles_x = (q->ne[1] + plan.columns - 1) / plan.columns;
   const std::int64_t ntiles_dst = ntiles_x * q->ne[2] * q->ne[3];
   if (const auto* mask = node->src[3]; mask && k->ne[1] % 256 == 0 && q->ne[1] >= 1024) {
     if (mask->ne[1] < ntiles_x * plan.columns)
-      return Rejected("D128 mask scan needs complete padded query tiles");
+      return Rejected("common-head mask scan needs complete padded query tiles");
     plan.mask_prepass = true;
     plan.scratch = static_cast<std::uint64_t>(ntiles_x) * sizeof(int);
   }
@@ -432,9 +436,24 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchC
   if (ntiles_dst % blocks != 0) {
     plan.scratch = (plan.scratch > 0 ? Round(plan.scratch) : 0) +
                    static_cast<std::uint64_t>(blocks) * static_cast<std::uint64_t>(ncols) *
-                       static_cast<std::uint64_t>(2 + (plan.head / 2)) * sizeof(float2);
+                       static_cast<std::uint64_t>(2 + (node->src[2]->ne[0] / 2)) * sizeof(float2);
   }
   return plan;
+}
+
+std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchContext& launch,
+                                                                   const ggml_tensor* node) {
+  if (auto checked = CheckFlashAttnMma128(node); !checked) return std::unexpected(checked.error());
+  return PlanFlashAttnMmaCommon(launch, node);
+}
+std::expected<void, KernelFailure> FlashAttnMmaCommon(LaunchContext& launch, ggml_tensor* node) {
+  auto plan = PlanFlashAttnMmaCommon(launch, node);
+  if (!plan) return std::unexpected(plan.error());
+  const auto run = detail::FlashAttnMmaCaseCommon(plan->head, static_cast<int>(node->src[2]->ne[0]),
+                                                  plan->columns);
+  if (run == nullptr) return Rejected("no common-head MMA query tile");
+  return launch.Run(base::Bytes(plan->scratch),
+                    [node, run](ggml_backend_cuda_context& context) { run(context, node); });
 }
 
 std::expected<void, KernelFailure> FlashAttnMma128(LaunchContext& launch, ggml_tensor* node) {

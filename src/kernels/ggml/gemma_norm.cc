@@ -54,9 +54,10 @@ std::expected<void, KernelFailure> CheckGemmaNormRope(const ggml_tensor* norm,
   if (auto r = Norm(norm, mul); !r) return r;
   if (!OperandChains(rope)) return Rejected("invalid RoPE operand view chain");
   if (rope == nullptr || rope->op != GGML_OP_ROPE || !IsF32(rope) || rope->src[0] != mul ||
-      (mul->ne[0] != 256 && mul->ne[0] != 512) || rope->op_params[1] != mul->ne[0] ||
-      rope->op_params[4] <= 0 || !Extent(rope) || !Packed(mul) || !Packed(rope))
-    return Rejected("norm/RoPE requires full D256/D512 rotation and packed tensors");
+      (mul->ne[0] <= 0 || mul->ne[0] % 2 != 0 || mul->ne[0] > std::numeric_limits<int>::max()) ||
+      rope->op_params[1] != mul->ne[0] || rope->op_params[4] <= 0 || !Extent(rope) ||
+      !Packed(mul) || !Packed(rope))
+    return Rejected("norm/RoPE requires full even-width rotation and packed tensors");
   if (auto r = CheckRope(rope); !r) return r;
   if (Elided(rope->src[1], norm, mul) || Elided(rope->src[2], norm, mul))
     return Rejected("RoPE metadata depends on an elided intermediate");
@@ -81,8 +82,8 @@ std::expected<void, KernelFailure> CheckGemmaNormAdd(const ggml_tensor* norm,
   if (!OperandChains(add)) return Rejected("invalid residual operand view chain");
   if (add == nullptr || (add->src[0] != mul && add->src[1] != mul) || !IsF32(add))
     return Rejected("norm/residual ADD must consume this product");
-  if (norm->ne[0] != 2304 && norm->ne[0] != 2560 && norm->ne[0] != 2816 && norm->ne[0] != 5376)
-    return Rejected("norm/residual is bounded to approved Gemma widths");
+  if (norm->ne[0] <= 0 || norm->ne[0] > std::numeric_limits<int>::max())
+    return Rejected("norm/residual width exceeds the launcher int bound");
   if (auto r = CheckBinary(add, GGML_OP_ADD); !r) return r;
   const auto* residual = add->src[0] == mul ? add->src[1] : add->src[0];
   if (Elided(residual, norm, mul)) return Rejected("residual depends on an elided intermediate");

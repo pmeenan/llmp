@@ -275,4 +275,8 @@ TEST_F(GemmaNormGpu, ApprovedResidualWidthsOrdersAndCaptureFreshInputs) {
   for (std::size_t width : {2816U, 5376U})
     for (bool reversed : {false, true}) Operand(false, width, reversed);
 }
+TEST_F(GemmaNormGpu, UnpinnedWidthsAndCommonQkHeadsMatchReference) {
+  for (std::size_t head : {64U, 80U, 96U, 112U, 128U, 192U, 1024U}) Operand(true, head);
+  for (std::size_t width : {2559U, 2561U, 4096U}) Operand(false, width);
+}
 }  // namespace

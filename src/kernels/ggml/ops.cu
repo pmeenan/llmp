@@ -131,6 +131,26 @@ __global__ void Copy3dContigDim0Kernel(const char* __restrict__ src, float* __re
   }
 }
 
+// I32 copy never passes through floating point, including NaN bit patterns.
+// The validated source strides address logical elements; the result is packed.
+__global__ void CopyI32ContKernel(const char* __restrict__ src, std::int32_t* __restrict__ dst,
+                                  std::int64_t count, std::int64_t ne0, std::int64_t ne1,
+                                  std::int64_t ne2, std::size_t nb0, std::size_t nb1,
+                                  std::size_t nb2, std::size_t nb3) {
+  const auto index = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index >= count) return;
+  auto rest = index;
+  const auto i0 = rest % ne0;
+  rest /= ne0;
+  const auto i1 = rest % ne1;
+  rest /= ne1;
+  const auto i2 = rest % ne2;
+  const auto i3 = rest / ne2;
+  const auto offset = static_cast<std::size_t>(i0) * nb0 + static_cast<std::size_t>(i1) * nb1 +
+                      static_cast<std::size_t>(i2) * nb2 + static_cast<std::size_t>(i3) * nb3;
+  dst[index] = *reinterpret_cast<const std::int32_t*>(src + offset);
+}
+
 }  // namespace
 
 std::expected<void, KernelFailure> LayerNorm(LaunchContext& launch, ggml_tensor* norm) {
@@ -339,6 +359,20 @@ std::expected<void, KernelFailure> Cont(LaunchContext& launch, ggml_tensor* node
   }
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
     const ggml_tensor* src = node->src[0];
+    if (src->type == GGML_TYPE_I32) {
+      if (ggml_is_contiguous(src)) {
+        CUDA_CHECK(cudaMemcpyAsync(node->data, src->data, ggml_nbytes(node),
+                                   cudaMemcpyDeviceToDevice, context.stream()));
+      } else {
+        const auto count = ggml_nelements(src);
+        const auto blocks = static_cast<unsigned>((count + 63) / 64);
+        CopyI32ContKernel<<<blocks, 64, 0, context.stream()>>>(
+            static_cast<const char*>(src->data), static_cast<std::int32_t*>(node->data), count,
+            src->ne[0], src->ne[1], src->ne[2], src->nb[0], src->nb[1], src->nb[2], src->nb[3]);
+        CUDA_CHECK(cudaGetLastError());
+      }
+      return;
+    }
     if (src->type == GGML_TYPE_F32 && node->type == GGML_TYPE_F32 && ggml_is_contiguous(node)) {
       const CollapsedCont c = CollapseF32Cont(src);
       cudaStream_t stream = context.stream();

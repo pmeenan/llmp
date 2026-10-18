@@ -112,10 +112,10 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
 
-constexpr std::array<Kernel::Entry, 152> kKernels = {{
+constexpr std::array<Kernel::Entry, 154> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
-     .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
+     .variant = "original ggml_cuda_op_topk_moe; compiled experts/dynamic top-k/clamp2^-14; "
                 "both outputs, full sort backing retained",
      .arity = 10,
      .check = [](ConstNodes n) -> std::expected<void, KernelFailure> {
@@ -131,11 +131,14 @@ constexpr std::array<Kernel::Entry, 152> kKernels = {{
     {.name = kGemmaReduceName,
      .operation = execution::Operation::kGemmaScaledReduce,
      .variant = "original ggml_cuda_op_moe_weighted_reduction; "
-                "F32[2816,8,rows], (expert*scale)*weight, ascending selected slots",
-     .arity = 17,
+                "F32[width,used,rows], (expert*scale)*weight, ascending selected slots",
+     .arity = 0,
      .check = [](ConstNodes n) -> std::expected<void, KernelFailure> {
-       const auto nodes = Borrow<17>(n);
-       return GemmaReductionFusionAt(nodes, 0) ? std::expected<void, KernelFailure>{}
+       std::vector<ggml_tensor*> nodes;
+       nodes.reserve(n.size());
+       for (const auto* node : n) nodes.push_back(const_cast<ggml_tensor*>(node));
+       const auto f = GemmaReductionFusionAt(nodes, 0);
+       return f && f->nodes.size() == n.size() ? std::expected<void, KernelFailure>{}
                                                : InvalidGemmaChain();
      },
      .run = [](LaunchContext& l, Nodes n) -> std::expected<void, KernelFailure> {
@@ -145,15 +148,16 @@ constexpr std::array<Kernel::Entry, 152> kKernels = {{
      }},
     {.name = kGemmaNormRopeName,
      .operation = execution::Operation::kRmsNormMulRope,
-     .variant = "original ggml_cuda_op_rms_norm_mul_rope_fused; F32 full D256/D512 NEOX, "
+     .variant = "original ggml_cuda_op_rms_norm_mul_rope_fused; F32 full even-width NEOX, "
                 "no direct cache store; default-off checked three-node chain",
      .arity = 3,
      .check = [](ConstNodes n) { return CheckGemmaNormRope(n[0], n[1], n[2]); },
      .run = [](LaunchContext& l, Nodes n) { return RunGemmaNormRope(l, n[0], n[1], n[2]); }},
     {.name = kGemmaNormAddName,
      .operation = execution::Operation::kRmsNormMulAdd,
-     .variant = "original ggml_cuda_op_rms_norm_fused_add; F32 approved Gemma widths, "
-                "default-off checked three-node chain",
+     .variant =
+         "original ggml_cuda_op_rms_norm_fused_add; F32 widths within launcher integer bounds, "
+         "default-off checked three-node chain",
      .arity = 3,
      .check = [](ConstNodes n) { return CheckGemmaNormAdd(n[0], n[1], n[2]); },
      .run = [](LaunchContext& l, Nodes n) { return RunGemmaNormAdd(l, n[0], n[1], n[2]); }},
@@ -311,9 +315,9 @@ constexpr std::array<Kernel::Entry, 152> kKernels = {{
      .run = [](LaunchContext& launch, Nodes n) { return SoftMax(launch, n[0]); }},
     {.name = "ggml.cont",
      .operation = execution::Operation::kCont,
-     .variant = "ggml_cuda_dup: cudaMemcpyAsync if contiguous, cudaMemcpy2DAsync for a pitched "
-                "block, else same-type F32/F16 scalar or guarded tiled transpose; contiguous I32 "
-                "only; upstream launch configuration",
+     .variant =
+         "same-type F32/F16 copies: memcpy, pitched copy, scalar or guarded tiled transpose; "
+         "I32 memcpy if contiguous, otherwise owned 64-thread scalar copy",
      .arity = 1,
      .check = [](ConstNodes n) -> std::expected<void, KernelFailure> {
        if (auto checked = CheckCont(n[0]); !checked) {
@@ -711,6 +715,19 @@ constexpr std::array<Kernel::Entry, 152> kKernels = {{
        return {};
      },
      .run = [](LaunchContext& launch, Nodes n) { return AttentionF32(launch, n[0]); }},
+    {.name = "ggml.flash_attn_ext.mma_common",
+     .operation = execution::Operation::kFlashAttn,
+     .variant = "upstream group-one MMA at D64/80/96/112/128/192, F16 KV, mask and arbitrary GQA; "
+                "query tiles8/32 (D128 retains8/16/32/64), original stream-k fixup",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckFlashAttnMmaCommon(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return FlashAttnMmaCommon(launch, n[0]); }},
+    {.name = "ggml.flash_attn_ext.vec_common",
+     .operation = execution::Operation::kFlashAttn,
+     .variant = "upstream F16 vector attention at D64/128/192, padded KV, masks and arbitrary GQA",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckFlashAttnVecCommon(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return FlashAttnVecCommon(launch, n[0]); }},
     {.name = "ggml.flash_attn_ext.mma_d128",
      .operation = execution::Operation::kFlashAttn,
      .variant = "ggml_cuda_flash_attn_ext_mma_f16_case<128, 128, 8, 16, 32 or 64, 1> as "

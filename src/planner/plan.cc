@@ -120,6 +120,68 @@ std::expected<ir::Graph, ir::VerifyError> ExpandNodes(
   return std::move(b).Finish();
 }
 
+// GGML's selected top-k fusion writes IDs at the full sort's expert pitch.
+// Direct products and Cont understand that pitch. Byte-layout operations
+// and exposed values need the IR's compact IDs instead: make that copy an
+// explicit, placed step, shared by those readers only. Other implementations
+// retain their own layout contract and do not acquire a copy here.
+std::expected<std::optional<ir::Graph>, ir::VerifyError> CompactRouteReaders(
+    const ir::Graph& graph, std::span<const Selected> steps, const execution::Registry& registry,
+    std::vector<TensorId>& map, std::vector<NodeId>& from) {
+  std::vector<bool> pitched(graph.tensor_count(), false);
+  for (const auto& step : steps) {
+    if (registry.at(step.implementation).name != "ggml.gemma.route.fused") continue;
+    for (const auto id : step.nodes) {
+      const auto& node = graph.node(id);
+      if (node.key == ir::Primitive(ir::Op::kRoute)) pitched[node.out[0].v] = true;
+    }
+  }
+  const auto byte_layout = [](const ir::Node& node) {
+    return node.key == ir::Primitive(ir::Op::kView) ||
+           node.key == ir::Primitive(ir::Op::kReshape) ||
+           node.key == ir::Primitive(ir::Op::kPermute);
+  };
+  std::vector<bool> needed(graph.tensor_count(), false);
+  for (const auto& node : graph.nodes())
+    for (std::size_t i = 0; i < node.nsrc; ++i)
+      if (node.src[i].valid() && pitched[node.src[i].v] && byte_layout(node))
+        needed[node.src[i].v] = true;
+  for (const auto t : graph.outputs()) needed[t.v] = pitched[t.v];
+  for (const auto t : graph.keep()) needed[t.v] = pitched[t.v];
+  if (std::ranges::none_of(needed, [](bool value) { return value; })) return std::nullopt;
+
+  ir::Builder b;
+  map.assign(graph.tensor_count(), TensorId{});
+  from.clear();
+  RewriteContext rc(graph, b, map);
+  std::vector<TensorId> compact(graph.tensor_count());
+  for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
+    const auto& node = graph.nodes()[i];
+    std::vector<std::pair<TensorId, TensorId>> restore;
+    for (std::size_t j = 0; j < node.nsrc; ++j) {
+      const auto t = node.src[j];
+      if (t.valid() && needed[t.v] && byte_layout(node)) {
+        if (std::ranges::none_of(restore, [t](const auto& entry) { return entry.first == t; }))
+          restore.emplace_back(t, rc.Map(t));
+        rc.Set(t, compact[t.v]);
+      }
+    }
+    rc.Copy(node);
+    for (const auto& [t, original] : restore) rc.Set(t, original);
+    for (const auto t : node.outputs())
+      if (needed[t.v]) compact[t.v] = b.Cont(rc.Map(t));
+    if (!b.ok()) return std::unexpected(*b.error());
+    from.resize(b.node_count(), NodeId{i});
+  }
+  for (const auto t : graph.outputs()) b.Output(needed[t.v] ? compact[t.v] : rc.Map(t));
+  for (const auto t : graph.keep()) b.Keep(needed[t.v] ? compact[t.v] : rc.Map(t));
+  for (std::size_t i = 0; i < needed.size(); ++i)
+    if (needed[i]) map[i] = compact[i];
+  auto result = std::move(b).Finish();
+  if (!result) return std::unexpected(result.error());
+  return std::optional<ir::Graph>(std::move(*result));
+}
+
 // A node whose run matters beyond its outputs: a leaf, a write in place (a
 // cache store, a fused node's aliased output) or communication.
 bool Effect(const ir::Node& n) {
@@ -605,6 +667,16 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   for (int pass = 0;; ++pass) {
     selection = Select(graph, view, scopes);
     if (selection.complete) {
+      std::vector<TensorId> map;
+      std::vector<NodeId> back;
+      auto compact = CompactRouteReaders(graph, selection.steps, registry, map, back);
+      if (!compact)
+        return Failed(PlanError::kPattern,
+                      std::format("materializing routing IDs: {}", compact.error().detail));
+      if (*compact) {
+        adopt(std::move(**compact), map, back);
+        continue;
+      }
       break;
     }
     // The primitive-fallback rule: a node no implementation computes is
@@ -740,7 +812,14 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
           options.shape->segments.size() > 1 &&
           std::ranges::all_of(options.shape->segments, [](const auto& s) { return s.rows == 1; }),
       .owner_rows_policy_enabled = !Disabled(policy, "owner_row_invariant"),
-      .products = policy.products,
+      .products =
+          [&] {
+            auto products = policy.products;
+            if (options.shape == nullptr ||
+                options.shape->rows() < products.compact_expert_min_rows)
+              products.compact_experts = false;
+            return products;
+          }(),
       .root_alignments = std::move(alignments),
       .owner_products = std::move(scopes),
       .owner_digest =

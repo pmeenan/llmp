@@ -62,6 +62,7 @@
 #include "kernels/exl3/implementations.h"
 #include "kernels/exl3/launch.h"
 #include "kernels/exl3/linear.h"
+#include "kernels/exl3/packed_tuning.h"
 #include "kernels/exl3/recon_gemm.h"
 #include "kernels/exl3/validate.h"
 #include "providers/cuda/cuda_device_execution.h"
@@ -568,6 +569,36 @@ double RelativeRms(const std::vector<float>& a, const std::vector<float>& refere
     norm += static_cast<double>(reference[i]) * static_cast<double>(reference[i]);
   }
   return norm == 0 ? 1.0 : std::sqrt(error / norm);
+}
+
+TEST_F(Exl3LinearTest, UnpinnedPackedDefaultsMatchSingleBlockAtNonfixturePrefillShapes) {
+  const auto capacity = exl3::QueryPackedCapacity(0);
+  ASSERT_TRUE(capacity) << (capacity ? "" : capacity.error());
+  auto launch = Context(Placement::kCudaMalloc);
+  ASSERT_TRUE(launch);
+  constexpr int rows = 257, k = 512, n = 1536;
+  for (const int bits : {4, 5, 6, 8}) {
+    SCOPED_TRACE(bits);
+    const auto weight = Linear(Placement::kCudaMalloc, 971, k, n, bits);
+    exl3::LinearOperands operands{
+        .weights = weight,
+        .x = Upload(Placement::kCudaMalloc, Halves(static_cast<std::size_t>(rows * k), 97, .25F)),
+        .a_had = Allocate(Placement::kCudaMalloc, Bytes16(rows, k)),
+        .y = Allocate(Placement::kCudaMalloc, static_cast<std::uint64_t>(rows * n) * 4),
+        .output = Output::kF32,
+        .m = rows};
+    const auto plan = exl3::DefaultGemmPlan(*capacity, rows, k, n, bits, Output::kF32);
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error());
+    auto ran = exl3::PackedGemmLinear(*launch, operands, *plan, 0);
+    ASSERT_TRUE(ran) << (ran ? "" : ran.error().detail);
+    const auto actual = Download(operands.y, static_cast<std::uint64_t>(rows * n) * 4);
+    operands.y = Allocate(Placement::kCudaMalloc, static_cast<std::uint64_t>(rows * n) * 4);
+    ran = exl3::PackedGemmLinear(*launch, operands, {.shape = plan->shape, .blocks = 1}, 0);
+    ASSERT_TRUE(ran) << (ran ? "" : ran.error().detail);
+    const auto reference = Download(operands.y, static_cast<std::uint64_t>(rows * n) * 4);
+    EXPECT_LT(RelativeRms(Floats(actual, true), Floats(reference, true)), .01);
+    EXPECT_FALSE(launch->faulted());
+  }
 }
 
 TEST_F(Exl3LinearTest, EveryPathIsExactAcrossMemoryKindsAndThePathsAgree) {

@@ -6,6 +6,7 @@
 #include <array>
 #include <bit>
 #include <cstddef>
+#include <limits>
 #include <span>
 namespace llmp::kernels::exl3 {
 namespace {
@@ -138,6 +139,44 @@ std::expected<Record, std::string> Lookup(FrozenCache cache, std::uint32_t arch,
   return *found;
 }
 }  // namespace
+std::expected<GemmPlan, std::string> DefaultGemmPlan(const PackedCapacity& capacity, int rows,
+                                                     int k, int n, int bits, Output output,
+                                                     bool multi) {
+  constexpr std::array rates{4, 5, 6, 8};
+  const auto rate = std::ranges::find(rates, bits);
+  if (capacity.arch < 80 || capacity.sms < 1 ||
+      (output != Output::kF16 && output != Output::kF32) || rate == rates.end() || rows < 1 ||
+      rows > kMaxRows || k < 128 || n < 128 || k > kMaxDimension || n > kMaxDimension || k % 128 ||
+      n % 128 ||
+      std::uint64_t(rows) * static_cast<std::uint64_t>(std::max(k, n)) * (multi ? 2U : 1U) >
+          INT32_MAX ||
+      std::uint64_t(k / 16) * static_cast<std::uint64_t>(n / 16) * 16 *
+              static_cast<unsigned>(bits) >
+          INT32_MAX)
+    return std::unexpected("no default packed EXL3 plan within kernel indexing bounds");
+  const auto& counts =
+      (multi ? capacity.multi : capacity.gemm)[output == Output::kF32 ? 1 : 0]
+                                              [static_cast<std::size_t>(rate - rates.begin())];
+  GemmPlan best{};
+  std::uint64_t work = std::numeric_limits<std::uint64_t>::max();
+  for (int shape = 1; shape <= kShapes; ++shape) {
+    const auto at = static_cast<std::size_t>(shape);
+    if (k % kTileK[at] || n % kTileN[at] || counts[at - 1] <= 0) continue;
+    const int slices = (k / kTileK[at]) * (n / kTileN[at]);
+    // Multi-GEMM concurrency1 permits the complete device occupancy.
+    const int blocks = std::min({counts[at - 1], slices, INT32_MAX / slices});
+    if (blocks <= 0) continue;
+    const auto serial = std::uint64_t((slices + blocks - 1) / blocks) *
+                        static_cast<unsigned>(kTileK[at]) * static_cast<unsigned>(kTileN[at]);
+    if (serial < work) {
+      work = serial;
+      best = {shape, blocks};
+    }
+  }
+  if (best.shape == 0) return std::unexpected("no resident packed EXL3 kernel divides this shape");
+  return best;
+}
+
 std::expected<GemmPlan, std::string> FrozenGemmPlan(FrozenCache cache, std::uint32_t arch, int sms,
                                                     int rows, int k, int n, int bits,
                                                     Output output) {

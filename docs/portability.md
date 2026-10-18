@@ -11,6 +11,27 @@ code maximized. Nothing here is built for another platform yet; this is
 where the seams are, what checks them, and what a port would still have to
 do.
 
+The owner-root attention forms retain a GB10 qualification gate. Their
+owner-cohort partition, mask scan and resource geometry have been checked
+on `sm_121`; `sm_86` execution, occupancy and over-read controls are still
+owed. A compiled cubin alone does not establish those properties. Ordinary
+F16 attention has common-head vector/MMA forms at 64/80/96/112/128/192,
+with vector instances only at multiples of 64 as upstream requires. The
+locked Q/K192/V128 form is retained; equal-width 192 MMA adds a small local
+configuration extension (RE-060 in [rough edges](rough-edges.md)). The
+equal-width 192 vector retains its physical KV padding requirement, with
+a mask excluding the logical tail.
+
+The EXL3 selected-operation adapter accepts optional current-device packed
+occupancy facts. With them it derives cooperative GEMM defaults for unpinned
+MCG-codebook shapes on a compiled architecture, retaining authenticated
+tuning as an override. The adapter still requires the four MCG physical
+parts; importing another codebook does not establish its execution support.
+Without capacity facts it keeps its pin-only contract; reconstruction still
+requires complete measured cuBLASLt pins. This is an adapter capability,
+not a model-admission claim: production decode-ladder wiring must supply
+`QueryPackedCapacity` facts when it attaches this source.
+
 ## Where vendor and OS code may live
 
 | Code | Only in | Everything else |

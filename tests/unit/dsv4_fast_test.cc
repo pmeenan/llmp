@@ -1082,68 +1082,72 @@ TEST_F(Dsv4FastTest, RoutedExpertsReadOnceMatchPerTokenProducts) {
 }
 
 TEST_F(Dsv4FastTest, RoutingPicksTheTopExpertsAndNormalizesTheirWeights) {
-  constexpr std::int64_t kExperts = 256;
-  constexpr std::int64_t kUsed = 6;
-  constexpr std::int64_t kTokens = 5;
-  constexpr float kClamp = 6.103515625e-5f;
-  constexpr float kScale = 1.5f;
-  const std::vector<float> logits = Normal(21, kExperts * kTokens, 2.0f);
-  const std::vector<float> bias = Normal(22, kExperts, 0.1f);
-  ggml_tensor* l = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kExperts, kTokens), logits);
-  ggml_tensor* b = Place(ggml_new_tensor_1d(c(), GGML_TYPE_F32, kExperts), bias);
-  ggml_tensor* route =
-      Place(kg::Dsv4Route(c(), l, b, nullptr, nullptr, kUsed, true, kClamp, kScale));
-  Launched(kg::RunDsv4Route(launch(), route), "route");
-  const std::vector<std::int32_t> got = Download<std::int32_t>(route);
-  // The hash layers' form: the table's experts, their weights the same way.
-  std::vector<std::int32_t> table(static_cast<std::size_t>(kUsed * 10));
-  for (std::size_t i = 0; i < table.size(); ++i) {
-    table[i] = static_cast<std::int32_t>((i * 37) % kExperts);
-  }
-  const std::vector<std::int32_t> tokens = {3, 0, 9, 3, 7};
-  ggml_tensor* tab = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, 10), table);
-  ggml_tensor* tok = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, kTokens), tokens);
-  ggml_tensor* hashed = Place(kg::Dsv4Route(c(), l, nullptr, tab, tok, kUsed, true, kClamp, 1.0f));
-  Launched(kg::RunDsv4Route(launch(), hashed), "hashed route");
-  const std::vector<std::int32_t> got_hashed = Download<std::int32_t>(hashed);
-  for (std::int64_t t = 0; t < kTokens; ++t) {
-    std::vector<double> p(kExperts);
-    std::vector<std::pair<double, int>> sel;
-    for (int e = 0; e < kExperts; ++e) {
-      const double v = logits[static_cast<std::size_t>((t * kExperts) + e)];
-      p[static_cast<std::size_t>(e)] = std::sqrt(v > 20.0 ? v : std::log1p(std::exp(v)));
-      sel.emplace_back(p[static_cast<std::size_t>(e)] + bias[static_cast<std::size_t>(e)], -e);
+  for (const std::int64_t kExperts : {128, 256}) {
+    SCOPED_TRACE(kExperts);
+    constexpr std::int64_t kUsed = 6;
+    constexpr std::int64_t kTokens = 5;
+    constexpr float kClamp = 6.103515625e-5f;
+    constexpr float kScale = 1.5f;
+    const std::vector<float> logits =
+        Normal(21, static_cast<std::size_t>(kExperts * kTokens), 2.0f);
+    const std::vector<float> bias = Normal(22, static_cast<std::size_t>(kExperts), 0.1f);
+    ggml_tensor* l = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kExperts, kTokens), logits);
+    ggml_tensor* b = Place(ggml_new_tensor_1d(c(), GGML_TYPE_F32, kExperts), bias);
+    ggml_tensor* route =
+        Place(kg::Dsv4Route(c(), l, b, nullptr, nullptr, kUsed, true, kClamp, kScale));
+    Launched(kg::RunDsv4Route(launch(), route), "route");
+    const std::vector<std::int32_t> got = Download<std::int32_t>(route);
+    // The hash layers' form: the table's experts, their weights the same way.
+    std::vector<std::int32_t> table(static_cast<std::size_t>(kUsed * 10));
+    for (std::size_t i = 0; i < table.size(); ++i) {
+      table[i] = static_cast<std::int32_t>((i * 37) % static_cast<std::size_t>(kExperts));
     }
-    std::ranges::sort(sel, std::greater<>());
-    const auto check = [&](const std::vector<std::int32_t>& out, std::vector<int> want_ids,
-                           double scale, const std::string& what) {
-      double sum = 0.0;
-      for (const int e : want_ids) {
-        sum += p[static_cast<std::size_t>(e)];
+    const std::vector<std::int32_t> tokens = {3, 0, 9, 3, 7};
+    ggml_tensor* tab = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, 10), table);
+    ggml_tensor* tok = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, kTokens), tokens);
+    ggml_tensor* hashed =
+        Place(kg::Dsv4Route(c(), l, nullptr, tab, tok, kUsed, true, kClamp, 1.0f));
+    Launched(kg::RunDsv4Route(launch(), hashed), "hashed route");
+    const std::vector<std::int32_t> got_hashed = Download<std::int32_t>(hashed);
+    for (std::int64_t t = 0; t < kTokens; ++t) {
+      std::vector<double> p(static_cast<std::size_t>(kExperts));
+      std::vector<std::pair<double, int>> sel;
+      for (int e = 0; e < kExperts; ++e) {
+        const double v = logits[static_cast<std::size_t>((t * kExperts) + e)];
+        p[static_cast<std::size_t>(e)] = std::sqrt(v > 20.0 ? v : std::log1p(std::exp(v)));
+        sel.emplace_back(p[static_cast<std::size_t>(e)] + bias[static_cast<std::size_t>(e)], -e);
       }
+      std::ranges::sort(sel, std::greater<>());
+      const auto check = [&](const std::vector<std::int32_t>& out, std::vector<int> want_ids,
+                             double scale, const std::string& what) {
+        double sum = 0.0;
+        for (const int e : want_ids) {
+          sum += p[static_cast<std::size_t>(e)];
+        }
+        for (std::int64_t k = 0; k < kUsed; ++k) {
+          const auto at = static_cast<std::size_t>((t * 2 * kUsed) + k);
+          EXPECT_EQ(out[at], want_ids[static_cast<std::size_t>(k)]) << what << " token " << t;
+          float w = 0.0f;
+          std::memcpy(&w, &out[at + kUsed], sizeof(w));
+          const double want = p[static_cast<std::size_t>(want_ids[static_cast<std::size_t>(k)])] /
+                              std::max<double>(sum, kClamp) * scale;
+          EXPECT_NEAR(w, want, (1e-5 * std::abs(want)) + 1e-7) << what << " token " << t;
+        }
+      };
+      std::vector<int> top;
+      top.reserve(kUsed);
       for (std::int64_t k = 0; k < kUsed; ++k) {
-        const auto at = static_cast<std::size_t>((t * 2 * kUsed) + k);
-        EXPECT_EQ(out[at], want_ids[static_cast<std::size_t>(k)]) << what << " token " << t;
-        float w = 0.0f;
-        std::memcpy(&w, &out[at + kUsed], sizeof(w));
-        const double want = p[static_cast<std::size_t>(want_ids[static_cast<std::size_t>(k)])] /
-                            std::max<double>(sum, kClamp) * scale;
-        EXPECT_NEAR(w, want, (1e-5 * std::abs(want)) + 1e-7) << what << " token " << t;
+        top.push_back(-sel[static_cast<std::size_t>(k)].second);
       }
-    };
-    std::vector<int> top;
-    top.reserve(kUsed);
-    for (std::int64_t k = 0; k < kUsed; ++k) {
-      top.push_back(-sel[static_cast<std::size_t>(k)].second);
+      check(got, top, kScale, "biased");
+      std::vector<int> listed;
+      listed.reserve(kUsed);
+      for (std::int64_t k = 0; k < kUsed; ++k) {
+        listed.push_back(
+            table[static_cast<std::size_t>((tokens[static_cast<std::size_t>(t)] * kUsed) + k)]);
+      }
+      check(got_hashed, listed, 1.0, "hashed");
     }
-    check(got, top, kScale, "biased");
-    std::vector<int> listed;
-    listed.reserve(kUsed);
-    for (std::int64_t k = 0; k < kUsed; ++k) {
-      listed.push_back(
-          table[static_cast<std::size_t>((tokens[static_cast<std::size_t>(t)] * kUsed) + k)]);
-    }
-    check(got_hashed, listed, 1.0, "hashed");
   }
 }
 
@@ -1541,9 +1545,9 @@ TEST_F(Dsv4FastTest, TheChecksRefuseWhatTheKernelsDoNotTake) {
   ggml_tensor* q3 = Place(kg::QuantizeQ8(c(), x3));
   EXPECT_FALSE(kg::CheckVecQ(Place(kg::VecQ(c(), w, q3, nullptr, 2, false))).has_value());
   EXPECT_TRUE(kg::CheckVecQ(Place(kg::VecQ(c(), w, q, nullptr, 2, false))).has_value());
-  // Routing over something other than 256 experts.
-  ggml_tensor* l = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 128, 2));
-  ggml_tensor* bias = Place(ggml_new_tensor_1d(c(), GGML_TYPE_F32, 128));
+  // Routing beyond the kernel's 256 expert lanes.
+  ggml_tensor* l = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 257, 2));
+  ggml_tensor* bias = Place(ggml_new_tensor_1d(c(), GGML_TYPE_F32, 257));
   EXPECT_FALSE(
       kg::CheckDsv4Route(Place(kg::Dsv4Route(c(), l, bias, nullptr, nullptr, 6, true, 1e-4f, 1.0f)))
           .has_value());

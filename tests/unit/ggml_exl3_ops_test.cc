@@ -37,6 +37,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <random>
 #include <span>
 #include <string>
@@ -48,8 +49,10 @@
 #include "base/bytes.h"
 #include "expected_error.h"
 #include "ggml.h"
+#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
+#include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "launch_recorder.h"
@@ -339,6 +342,176 @@ std::vector<double> Reference(const AttentionCase& a, const std::vector<float>& 
     }
   }
   return out;
+}
+
+TEST_F(GgmlExl3OpsTest, CommonHeadAttentionMatchesCpuWithGqaMasksAndOddKvTails) {
+  namespace kg = llmp::kernels::ggml;
+  for (const int head : {64, 80, 96, 112, 128, 192})
+    for (const int value_head : head == 192 ? std::vector<int>{128, 192} : std::vector<int>{head})
+      for (const int group : {1, 4, 8})
+        for (const int cells : {256, 257})
+          for (const int rows : {1, 9, 35}) {
+            SCOPED_TRACE(testing::Message() << "D=" << head << " V=" << value_head << " GQA="
+                                            << group << " rows=" << rows << " cells=" << cells);
+            auto arena = TensorArena::Create(24).value();
+            auto* c = arena.context();
+            constexpr int kvheads = 2;
+            const int mask_cells = (cells + 7) / 8 * 8;
+            const int valid_cells = cells == 256 ? 253 : cells;
+            const int heads = kvheads * group;
+            const float scale = 1.0F / std::sqrt(static_cast<float>(head));
+            std::vector<float> q(static_cast<std::size_t>(head * heads * rows));
+            std::vector<std::uint16_t> k(static_cast<std::size_t>(head * kvheads * cells)),
+                v(static_cast<std::size_t>(value_head * kvheads * cells));
+            for (std::size_t i = 0; i < q.size(); ++i)
+              q[i] = static_cast<float>(int(i * 17 % 61) - 30) / 32.F;
+            for (std::size_t i = 0; i < k.size(); ++i) {
+              k[i] = HalfBits(static_cast<float>(int(i * 13 % 59) - 29) / 32.F);
+            }
+            for (std::size_t i = 0; i < v.size(); ++i)
+              v[i] = HalfBits(static_cast<float>(int(i * 23 % 67) - 33) / 32.F);
+            std::vector<std::uint16_t> mask(static_cast<std::size_t>(mask_cells * rows),
+                                            HalfBits(-INFINITY));
+            for (int row = 0; row < rows; ++row)
+              for (int key = 0; key < valid_cells - rows + row + 1; ++key)
+                if (key % 13 != 7)
+                  mask[static_cast<std::size_t>(row * mask_cells + key)] =
+                      HalfBits(key % 7 == 0 ? -.25F : 0.F);
+            auto* tq = Place(ggml_new_tensor_3d(c, GGML_TYPE_F32, head, heads, rows), q);
+            auto* tk = Place(ggml_new_tensor_3d(c, GGML_TYPE_F16, head, kvheads, cells), k);
+            auto* tv = Place(ggml_new_tensor_3d(c, GGML_TYPE_F16, value_head, kvheads, cells), v);
+            auto* tm = Place(ggml_new_tensor_2d(c, GGML_TYPE_F16, mask_cells, rows), mask);
+            auto* node = ggml_flash_attn_ext(c, ggml_permute(c, tq, 0, 2, 1, 3),
+                                             ggml_permute(c, tk, 0, 2, 1, 3),
+                                             ggml_permute(c, tv, 0, 2, 1, 3), tm, scale, 0, 0);
+            ASSERT_TRUE(ggml_prec_set_acc(node, GGML_PREC_F32));
+            constexpr std::size_t guard_bytes = 256;
+            const auto output_bytes = ggml_nbytes(node);
+            const auto allocation = Allocate(output_bytes + 2 * guard_bytes);
+            ASSERT_EQ(cudaMemset(reinterpret_cast<void*>(allocation), 0x5a,
+                                 output_bytes + 2 * guard_bytes),
+                      cudaSuccess);
+            ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+            TensorArena::Bind(node, allocation + guard_bytes);
+            auto planning = Launcher();
+            const bool vector = cells == 256 && (head == 64 || (head == 128 && rows == 1) ||
+                                                 (head == 192 && value_head == 192 && rows == 1));
+            SCOPED_TRACE(vector ? "vector" : "MMA");
+            const auto scratch = [&]() -> std::optional<std::uint64_t> {
+              if (vector) {
+                const auto plan = kg::PlanFlashAttnVecCommon(*planning, node);
+                EXPECT_TRUE(plan) << (plan ? "" : plan.error().detail);
+                return plan ? std::optional(plan->scratch) : std::nullopt;
+              }
+              const auto plan = kg::PlanFlashAttnMmaCommon(*planning, node);
+              EXPECT_TRUE(plan) << (plan ? "" : plan.error().detail);
+              return plan ? std::optional(plan->scratch) : std::nullopt;
+            }();
+            ASSERT_TRUE(scratch);
+            auto launch = Launcher(*scratch);
+            Launched(vector ? kg::FlashAttnVecCommon(*launch, node)
+                            : kg::FlashAttnMmaCommon(*launch, node));
+            const auto actual = Download<float>(node);
+            std::array<std::uint8_t, guard_bytes> before{}, after{};
+            ASSERT_EQ(cudaMemcpy(before.data(), reinterpret_cast<void*>(allocation), guard_bytes,
+                                 cudaMemcpyDeviceToHost),
+                      cudaSuccess);
+            ASSERT_EQ(cudaMemcpy(after.data(),
+                                 reinterpret_cast<void*>(allocation + guard_bytes + output_bytes),
+                                 guard_bytes, cudaMemcpyDeviceToHost),
+                      cudaSuccess);
+            EXPECT_TRUE(std::ranges::all_of(before, [](auto byte) { return byte == 0x5a; }));
+            EXPECT_TRUE(std::ranges::all_of(after, [](auto byte) { return byte == 0x5a; }));
+            double error = 0, norm = 0;
+            for (int row = 0; row < rows; ++row)
+              for (int h = 0; h < heads; ++h) {
+                std::vector<double> scores(static_cast<std::size_t>(cells));
+                double maximum = -INFINITY;
+                for (int key = 0; key < cells; ++key) {
+                  double dot = 0;
+                  for (int d = 0; d < head; ++d)
+                    dot += q[static_cast<std::size_t>((row * heads + h) * head + d)] *
+                           FromHalf(
+                               k[static_cast<std::size_t>((key * kvheads + h / group) * head + d)]);
+                  scores[static_cast<std::size_t>(key)] =
+                      dot * scale +
+                      FromHalf(mask[static_cast<std::size_t>(row * mask_cells + key)]);
+                  maximum = std::max(maximum, scores[static_cast<std::size_t>(key)]);
+                }
+                double denominator = 0;
+                for (auto& score : scores) {
+                  score = std::exp(score - maximum);
+                  denominator += score;
+                }
+                for (int d = 0; d < value_head; ++d) {
+                  double want = 0;
+                  for (int key = 0; key < cells; ++key)
+                    want += scores[static_cast<std::size_t>(key)] *
+                            FromHalf(v[static_cast<std::size_t>(
+                                (key * kvheads + h / group) * value_head + d)]);
+                  want /= denominator;
+                  const auto got =
+                      actual[static_cast<std::size_t>((row * heads + h) * value_head + d)];
+                  ASSERT_TRUE(std::isfinite(got));
+                  error += (got - want) * (got - want);
+                  norm += want * want;
+                }
+              }
+            EXPECT_LT(std::sqrt(error / norm), .003);
+            const std::array nodes{node};
+            const auto selected = kg::PlanGraph(nodes, false, {});
+            ASSERT_TRUE(selected);
+            EXPECT_EQ(selected->steps.front().implementation,
+                      cells == 256 && head == 64 ? "ggml.flash_attn_ext.vec"
+                      : vector                   ? "ggml.flash_attn_ext.vec_common"
+                                                 : "ggml.flash_attn_ext.mma_common");
+          }
+}
+
+TEST_F(GgmlExl3OpsTest, LegacyD64VectorRefusesOtherCommonHeadsBeforeEnqueue) {
+  namespace kg = llmp::kernels::ggml;
+  for (const int head : {128, 192}) {
+    SCOPED_TRACE(head);
+    auto arena = TensorArena::Create(16).value();
+    auto* c = arena.context();
+    auto* q = Place(ggml_new_tensor_3d(c, GGML_TYPE_F32, head, 1, 4),
+                    std::vector<float>(static_cast<std::size_t>(head * 4), .125F));
+    const std::vector<std::uint16_t> kv(static_cast<std::size_t>(head * 256), HalfBits(.25F));
+    auto* k = Place(ggml_new_tensor_3d(c, GGML_TYPE_F16, head, 256, 1), kv);
+    auto* v = Place(ggml_new_tensor_3d(c, GGML_TYPE_F16, head, 256, 1), kv);
+    auto* mask = Place(ggml_new_tensor_2d(c, GGML_TYPE_F16, 256, 1),
+                       std::vector<std::uint16_t>(256, HalfBits(0)));
+    auto* node = ggml_flash_attn_ext(c, q, k, v, mask, .125F, 0, 0);
+    ASSERT_TRUE(ggml_prec_set_acc(node, GGML_PREC_F32));
+    constexpr std::size_t guard_bytes = 256;
+    const auto bytes = ggml_nbytes(node) + 2 * guard_bytes;
+    const auto address = Allocate(bytes);
+    ASSERT_EQ(cudaMemset(reinterpret_cast<void*>(address), 0x5a, bytes), cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    TensorArena::Bind(node, address + guard_bytes);
+    ASSERT_TRUE(kg::CheckFlashAttnVecCommon(node));
+    EXPECT_FALSE(kg::CheckFlashAttnVec(node));
+    auto launch = Launcher();
+    ASSERT_TRUE(launch);
+    const auto peak = launch->scratch_peak();
+    const auto events = Record([&] {
+      const auto plan = kg::PlanFlashAttnVec(*launch, node);
+      ASSERT_FALSE(plan);
+      EXPECT_EQ(plan.error().error, KernelError::kRejected);
+      const auto ran = kg::FlashAttnVec(*launch, node);
+      ASSERT_FALSE(ran);
+      EXPECT_EQ(ran.error().error, KernelError::kRejected);
+    });
+    EXPECT_TRUE(events.empty());
+    EXPECT_EQ(launch->scratch_peak(), peak);
+    EXPECT_FALSE(launch->faulted());
+    Finish();
+    std::vector<std::uint8_t> output_and_guards(bytes);
+    ASSERT_EQ(cudaMemcpy(output_and_guards.data(), reinterpret_cast<void*>(address), bytes,
+                         cudaMemcpyDeviceToHost),
+              cudaSuccess);
+    EXPECT_TRUE(std::ranges::all_of(output_and_guards, [](auto byte) { return byte == 0x5a; }));
+  }
 }
 
 TEST_F(GgmlExl3OpsTest, VectorAttentionMatchesTheRecordAndAnFp64Reference) {

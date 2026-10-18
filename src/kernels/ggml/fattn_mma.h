@@ -12,6 +12,7 @@
 #ifndef LLMP_KERNELS_GGML_FATTN_MMA_H_
 #define LLMP_KERNELS_GGML_FATTN_MMA_H_
 
+#include <cstddef>
 #include <expected>
 #include <string>
 
@@ -25,8 +26,12 @@ namespace llmp::kernels::ggml::detail {
 // fit a multiprocessor, after raising its dynamic shared memory limit as
 // the case function does before launching it.
 struct MmaKernelShape {
-  int kv_batch = 0;               // nbatch_fa
-  int blocks_per_sm = 0;          // occupancy at the case's threads and shared memory
+  int kv_batch = 0;       // nbatch_fa
+  int blocks_per_sm = 0;  // occupancy at the case's threads and shared memory
+  int threads = 0;
+  std::size_t dynamic_shared_bytes = 0;
+  std::size_t static_shared_bytes = 0;
+  int registers = 0;
   bool async_kv_preload = false;  // the upstream two-stage, nonsparse kernel
 };
 
@@ -56,6 +61,10 @@ MmaCase FlashAttnMmaCase512Q16(int columns);
 // (fattn_mma_d128.cu).
 std::expected<MmaKernelShape, std::string> FlashAttnMmaShape128(int columns, int device);
 MmaCase FlashAttnMmaCase128(int columns);
+// Group-one common-head cases; 128 retains its existing four column tiles.
+std::expected<MmaKernelShape, std::string> FlashAttnMmaShapeCommon(int head, int value, int columns,
+                                                                   int device);
+MmaCase FlashAttnMmaCaseCommon(int head, int value, int columns);
 
 }  // namespace llmp::kernels::ggml::detail
 

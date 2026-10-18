@@ -947,13 +947,15 @@ TEST_F(GgmlOpsValidateTest, ContCopiesAsUpstreamChooses) {
   ASSERT_EQ(narrow->nb[1], sizeof(float));
   ASSERT_EQ(narrow->nb[2], static_cast<std::size_t>(narrow->ne[0] * narrow->ne[1]) * sizeof(float));
   Rejected(CheckCont(Bound(ggml_cont(context(), narrow))));
-  // Contiguous I32 (the indexer's top-k) copies whole; strided I32 does not.
+  // Contiguous I32 copies whole; strided I32 uses the owned integer kernel.
   const auto ids = CheckCont(Bound(ggml_cont(context(), Typed(GGML_TYPE_I32, 64, 2))));
   ASSERT_TRUE(ids.has_value()) << ids.error().detail;
   EXPECT_EQ(*ids, ContCopy::kMemcpy);
   ggml_tensor* id_rows = Typed(GGML_TYPE_I32, 64, 2);
-  Rejected(CheckCont(
-      Bound(ggml_cont(context(), ggml_view_2d(context(), id_rows, 32, 2, id_rows->nb[1], 0)))));
+  const auto integer_pitched = CheckCont(
+      Bound(ggml_cont(context(), ggml_view_2d(context(), id_rows, 32, 2, id_rows->nb[1], 0))));
+  ASSERT_TRUE(integer_pitched);
+  EXPECT_EQ(*integer_pitched, ContCopy::kScalar);
   // Unsupported BF16, and an output over its input.
   Rejected(CheckCont(Bound(ggml_cont(context(), Typed(GGML_TYPE_BF16, 64, 2)))));
   ggml_tensor* heads = Typed(GGML_TYPE_F32, kHead, 4, kHeads);

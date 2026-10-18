@@ -2803,21 +2803,22 @@ std::expected<void, KernelFailure> CheckDsv4Route(const ggml_tensor* node) {
     return Rejected("not a bound llmp.dsv4.route node");
   }
   const ggml_tensor* logits = node->src[0];
+  const auto experts = logits == nullptr ? 0 : logits->ne[0];
   const bool hashed = node->src[2] != nullptr;
   const std::int64_t used = LlmpOpInt(node, 0);
   const std::int64_t tokens = logits == nullptr ? 0 : logits->ne[1];
-  if (!IsF32(logits) || !Bound(logits) || logits->ne[0] != 256 || logits->ne[2] != 1 ||
+  if (!IsF32(logits) || !Bound(logits) || (experts < 1 || experts > 256) || logits->ne[2] != 1 ||
       logits->ne[3] != 1 || !Packed(logits) || tokens < 1 || tokens > 65535 || used < 1 ||
-      used > 32 || node->type != GGML_TYPE_I32 || !Shaped(node, 2 * used, tokens, 1) ||
-      !Packed(node)) {
+      used > std::min<std::int64_t>(32, experts) || node->type != GGML_TYPE_I32 ||
+      !Shaped(node, 2 * used, tokens, 1) || !Packed(node)) {
     return Rejected("F32 logits [256, tokens] into I32 [2 · used, tokens], at most 32 used");
   }
   const auto mode = LlmpOpInt(node, 4);
   if (mode != 0 && mode != 1 && mode != 2) return Rejected("an unknown route addressing mode");
   if (mode == 2) {
     const auto* bias = node->src[1];
-    if (hashed || !Vector(bias, 256) || !Bound(bias) || !Packed(bias) || tokens > kVecQMaxTokens ||
-        !Aligned(logits, 4) || !Aligned(bias, 4) || !Aligned(node, 4) ||
+    if (hashed || !Vector(bias, experts) || !Bound(bias) || !Packed(bias) ||
+        tokens > kVecQMaxTokens || !Aligned(logits, 4) || !Aligned(bias, 4) || !Aligned(node, 4) ||
         !Disjoint(node, bias, false) || !AllCurrent({node, bias}) || !AllSane({bias}) ||
         (LlmpOpInt(node, 1) != 0 && LlmpOpInt(node, 1) != 1) || LlmpOpFloat(node, 2) != 0x1p-14F ||
         !std::isfinite(LlmpOpFloat(node, 3)) || LlmpOpFloat(node, 3) <= 0.0F)
@@ -2858,7 +2859,7 @@ std::expected<void, KernelFailure> CheckDsv4Route(const ggml_tensor* node) {
               kInt32Max)) {
         return Rejected("a hash table I32 [used, vocab] and the tokens I32 [tokens]");
       }
-    } else if (!Vector(node->src[1], 256) || !Bound(node->src[1]) || !Packed(node->src[1]) ||
+    } else if (!Vector(node->src[1], experts) || !Bound(node->src[1]) || !Packed(node->src[1]) ||
                !Aligned(node->src[1], 4) || !Disjoint(node, node->src[1], false) ||
                !AllCurrent({node->src[1]}) || !AllSane({node->src[1]})) {
       return Rejected("a bias F32 [256]");

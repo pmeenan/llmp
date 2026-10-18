@@ -1665,16 +1665,14 @@ std::optional<Match> Dsv4OutAMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, rope, Op::kRope) || Only(c, c.node(reshape1).src[0]) != reshape1) return std::nullopt;
   const ir::Node& ro = c.node(rope);
   const auto rp = ro.Params<ir::RopeParams>();
-  // The kernel rotates only the last 64 channels and computes its own
-  // frequencies. Preserve the primitive graph for every other rotation.
-  if (!rp.inverse || rp.mode != ir::RopeMode::kNormal || rp.dims != 64 || rp.offset != 448 ||
+  // Match the operation, leaving specialized dimensions and row bounds to
+  // the candidate kernel capability.
+  if (!rp.inverse || rp.mode != ir::RopeMode::kNormal || rp.dims == 0 || rp.dims % 2 != 0 ||
       rp.table || ro.src[2].valid())
     return std::nullopt;
 
   const ir::TensorDesc& heads = c.tensor(ro.src[0]);
-  const auto rows = heads.ne(2);
-  if (rows < 64 || rows > 4096) return std::nullopt;
-  if (heads.ne(0) != 512 || heads.ne(1) != 64 || heads.ne(3) != 1) return std::nullopt;
+  if (rp.dims > heads.ne(0) || rp.offset != heads.ne(0) - rp.dims) return std::nullopt;
 
   NodeId groups_node = Made(c, mm.src[0]);
   TensorId weight_out_a = mm.src[0];

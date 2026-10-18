@@ -1547,11 +1547,15 @@ TEST(GgmlLowerTest, DensePairPolicyIsIndependentOfUnrelatedRouteSelection) {
       policy.products.pair_glu_q8 = true;
       if (unrelated == 1) policy.enabled = {"hash_route"};
       const pl::StepShape shape{.segments = {{.rows = 64, .outputs = 0, .want_head = false}}};
-      auto plan =
-          pl::Plan(step.graph.Clone(), registry, Gb10(), policy,
-                   {.staged = staged, .written = &kg::WrittenBytes, .within = &kg::WithinRoot});
+      auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), policy,
+                           {.staged = staged,
+                            .written = &kg::WrittenBytes,
+                            .within = &kg::WithinRoot,
+                            .shape = &shape});
       ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
-      EXPECT_EQ(plan->products, policy.products);
+      auto resolved = policy.products;
+      resolved.compact_experts = false;  // This64-row step is below the default crossover.
+      EXPECT_EQ(plan->products, resolved);
       const kn::Addresses addresses{};
       // The compact GLU policies are ineligible at 64 rows and must not
       // require the reader index that only their wide recipe consumes.
@@ -1918,6 +1922,183 @@ TEST(GgmlLowerTest, RefusesASelectionPlanGraphDoesNotMake) {
 // ggml_cuda_should_use_mmvq at the pin): the GB10's bound for its types,
 // the RTX 3080 Ti's (sm_86) default, Ada's k-quant bounds, and nothing for
 // an unquantized type.
+TEST(GgmlLowerTest, D64VectorSelectionKeepsItsPriorityWhileMmaReportsItsRealSupport) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  const auto registry = PlanningRegistry();
+  const std::array operands{
+      ex::OperandFormat{
+          .operand = 0, .encoding = Encoding::kF32, .layout = Layout::kDense, .ne = {64, 1, 14, 1}},
+      ex::OperandFormat{.operand = 1,
+                        .encoding = Encoding::kF16,
+                        .layout = Layout::kDense,
+                        .ne = {64, 256, 2, 1}},
+      ex::OperandFormat{.operand = 2,
+                        .encoding = Encoding::kF16,
+                        .layout = Layout::kDense,
+                        .ne = {64, 256, 2, 1}},
+      ex::OperandFormat{
+          .operand = 3, .encoding = Encoding::kF16, .layout = Layout::kDense, .ne = {256, 1, 1, 1}},
+      ex::OperandFormat{.operand = ex::kOutputOperand,
+                        .encoding = Encoding::kF32,
+                        .layout = Layout::kDense,
+                        .ne = {64, 14, 1, 1}}};
+  const ir::AttnParams params{.scale = .125F, .accumulate = ir::Accumulate::kF32};
+  const auto candidates = ex::Candidates(registry, {.op = ir::Primitive(ir::Op::kAttention),
+                                                    .operands = operands,
+                                                    .rows = 1,
+                                                    .k = 64,
+                                                    .n = 64,
+                                                    .arch = 121,
+                                                    .params = ir::ToBytes(params)});
+  ASSERT_FALSE(candidates.empty());
+  EXPECT_EQ(registry.at(candidates.front()).name, "ggml.flash_attn_ext.vec");
+  EXPECT_TRUE(std::ranges::any_of(candidates, [&](auto at) {
+    return registry.at(at).name == "ggml.flash_attn_ext.mma_common";
+  }));
+}
+
+TEST(GgmlLowerTest, CommonAttentionCapabilitiesGateParametersAndOutputEncoding) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  const auto registry = PlanningRegistry();
+  std::array operands{
+      ex::OperandFormat{
+          .operand = 0, .encoding = Encoding::kF32, .layout = Layout::kDense, .ne = {128, 9, 8, 1}},
+      ex::OperandFormat{.operand = 1,
+                        .encoding = Encoding::kF16,
+                        .layout = Layout::kDense,
+                        .ne = {128, 257, 2, 1}},
+      ex::OperandFormat{.operand = 2,
+                        .encoding = Encoding::kF16,
+                        .layout = Layout::kDense,
+                        .ne = {128, 257, 2, 1}},
+      ex::OperandFormat{
+          .operand = 3, .encoding = Encoding::kF16, .layout = Layout::kDense, .ne = {264, 9, 1, 1}},
+      ex::OperandFormat{.operand = ex::kOutputOperand,
+                        .encoding = Encoding::kF32,
+                        .layout = Layout::kDense,
+                        .ne = {128, 8, 9, 1}}};
+  const ir::AttnParams base{.scale = .125F, .accumulate = ir::Accumulate::kF32};
+  const auto accepts = [&](const ir::AttnParams& p) {
+    const auto found = ex::Candidates(registry, {.op = ir::Primitive(ir::Op::kAttention),
+                                                 .operands = operands,
+                                                 .rows = operands[0].ne[1],
+                                                 .k = 128,
+                                                 .n = 128,
+                                                 .arch = 121,
+                                                 .params = ir::ToBytes(p)});
+    return std::ranges::any_of(
+        found, [&](auto at) { return registry.at(at).name == "ggml.flash_attn_ext.mma_common"; });
+  };
+  ASSERT_TRUE(accepts(base));
+  auto p = base;
+  p.softcap = 50;
+  EXPECT_FALSE(accepts(p));
+  p = base;
+  p.max_bias = 1;
+  EXPECT_FALSE(accepts(p));
+  p = base;
+  p.scale = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_FALSE(accepts(p));
+  p = base;
+  p.n_kv_max = 128;
+  EXPECT_FALSE(accepts(p));
+  p = base;
+  p.accumulate = ir::Accumulate::kDefault;
+  EXPECT_FALSE(accepts(p));
+  operands.back().encoding = Encoding::kF16;
+  EXPECT_FALSE(accepts(base));
+  operands.back().encoding = Encoding::kF32;
+  operands[0].ne[1] = 1025;
+  operands[1].ne[1] = operands[2].ne[1] = 256;
+  operands[3].ne = {256, 1025, 1, 1};
+  EXPECT_FALSE(accepts(base));
+  operands[3].ne[1] = 1088;  // Complete64-row MMA query tiles.
+  EXPECT_TRUE(accepts(base));
+}
+
+TEST(GgmlLowerTest, WidenedNormCapabilitiesGateRotationAndOutputSemantics) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  const auto registry = PlanningRegistry();
+  std::array operands{
+      ex::OperandFormat{
+          .operand = 0, .encoding = Encoding::kF32, .layout = Layout::kDense, .ne = {128, 4, 3, 1}},
+      ex::OperandFormat{
+          .operand = 1, .encoding = Encoding::kF32, .layout = Layout::kDense, .ne = {128, 1, 1, 1}},
+      ex::OperandFormat{
+          .operand = 2, .encoding = Encoding::kI32, .layout = Layout::kDense, .ne = {3, 1, 1, 1}},
+      ex::OperandFormat{.operand = ex::kOutputOperand,
+                        .encoding = Encoding::kF32,
+                        .layout = Layout::kDense,
+                        .ne = {128, 4, 3, 1}}};
+  const ir::NormRopeParams base{.eps = 1e-6F,
+                                .rope = {.mode = ir::RopeMode::kNeox,
+                                         .dims = 128,
+                                         .original_context = 4096,
+                                         .base = 10000.F,
+                                         .scale = 1.F,
+                                         .attn_factor = 1.F,
+                                         .beta_fast = 32.F,
+                                         .beta_slow = 1.F}};
+  const auto accepts = [&](const ir::NormRopeParams& p) {
+    const auto found = ex::Candidates(registry, {.op = ir::Fused(ir::FusedKind::kRmsNormMulRope),
+                                                 .operands = operands,
+                                                 .rows = 3,
+                                                 .k = 128,
+                                                 .arch = 121,
+                                                 .params = ir::ToBytes(p)});
+    return !found.empty();
+  };
+  ASSERT_TRUE(accepts(base));
+  auto p = base;
+  p.rope.mode = ir::RopeMode::kNormal;
+  EXPECT_FALSE(accepts(p));
+  p = base;
+  p.rope.dims = 64;
+  EXPECT_FALSE(accepts(p));
+  p = base;
+  p.rope.inverse = true;
+  EXPECT_FALSE(accepts(p));
+  p = base;
+  p.rope.offset = 2;
+  EXPECT_FALSE(accepts(p));
+  p = base;
+  p.rope.table = true;
+  EXPECT_FALSE(accepts(p));
+  p = base;
+  p.eps = -1;
+  EXPECT_FALSE(accepts(p));
+  operands.back().encoding = Encoding::kF16;
+  EXPECT_FALSE(accepts(base));
+}
+
+TEST(GgmlLowerTest, PrepareCapabilityDistinguishesItsOutputEncoding) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  const auto registry = PlanningRegistry();
+  const std::array operands{
+      ex::OperandFormat{.operand = 0, .encoding = Encoding::kF32, .layout = Layout::kDense},
+      ex::OperandFormat{.operand = ex::kOutputOperand,
+                        .encoding = Encoding::kQ8_1,
+                        .layout = Layout::kGgmlBlocks}};
+  // The ordinary SelectionView supplies output encodings; a shape-only
+  // query cannot claim a Q8_1 preparation for another target.
+  for (const auto output : {Encoding::kQ8_1, Encoding::kF16, Encoding::kQ8_0}) {
+    auto formats = operands;
+    formats[1].encoding = output;
+    const auto candidates = ex::Candidates(registry, {.op = ir::Primitive(ir::Op::kPrepare),
+                                                      .operands = formats,
+                                                      .rows = 1,
+                                                      .k = 256,
+                                                      .arch = 121});
+    const bool q8 = std::ranges::any_of(
+        candidates, [&](auto at) { return registry.at(at).name == "llmp.q8_1"; });
+    EXPECT_EQ(q8, output == Encoding::kQ8_1);
+  }
+}
+
 TEST(GgmlLowerTest, CapabilitiesRouteAsUpstream) {
   using llmp::format::Encoding;
   EXPECT_TRUE(kg::MmvqRouted(Encoding::kQ4_0, 121, 8));

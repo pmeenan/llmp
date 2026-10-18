@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <vector>
 
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/gemma_moe.h"
@@ -21,23 +22,24 @@ inline constexpr std::string_view kGemmaRouteName = "ggml.gemma.route.fused";
 inline constexpr std::string_view kGemmaReduceName = "ggml.gemma.scaled_reduce.fused";
 
 // All descriptors remain in the eventual step for conservative placement.
-// These matchers allocate nothing and select no execution policy. Operands'
+// The reduction descriptor list is bounded by the input graph window.
+// These matchers select no execution policy. Operands'
 // byte counts describe required logical backing, not catalog residency proof.
 struct GemmaRoutingFusionNodes {
   std::array<ggml_tensor*, 10> nodes;
   GemmaRouting operands;
 };
 struct GemmaReductionFusionNodes {
-  std::array<ggml_tensor*, 17> nodes;
+  std::vector<ggml_tensor*> nodes;
   GemmaScaledReduction operands;
 };
-// Exact native Gemma 128/top-eight pattern, including full ARGSORT backing.
-// First-eight IDs and normalized weights may be read/kept independently.
+// Native normalized softmax/top-k pattern, including full ARGSORT backing.
+// Selected IDs and normalized weights may be read/kept independently.
 // Full sort, probabilities and other elided values require primitives.
 std::optional<GemmaRoutingFusionNodes> GemmaRoutingFusionAt(
     GraphNodes graph, std::size_t index, std::span<ggml_tensor* const> keep = {},
     const detail::GraphReadIndex* reads = nullptr);
-// Two products (expert*scale)*weight, eight selected-slot views, seven
+// Two products (expert*scale)*weight, the selected-slot views and their
 // ascending dependent additions. Every elided producer/view must be private.
 std::optional<GemmaReductionFusionNodes> GemmaReductionFusionAt(
     GraphNodes graph, std::size_t index, std::span<ggml_tensor* const> keep = {},

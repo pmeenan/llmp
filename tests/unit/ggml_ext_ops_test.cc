@@ -52,15 +52,18 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "components/graph_io.h"
 #include "execution/registry.h"
 #include "expected_error.h"
 #include "ggml.h"
+#include "ir/builder.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/fattn_mma.h"
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
+#include "kernels/ggml/lower.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/shared_q8.h"
@@ -68,6 +71,7 @@
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
 #include "model/host_mask.h"
+#include "planner/plan.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/cuda/cuda_device_memory.h"
 #include "providers/device_execution.h"
@@ -3959,9 +3963,14 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionAt128WithoutMaskMatchesTheReferen
   struct Case {
     std::int64_t heads, rows, cells;
     int columns;
+    std::int64_t mask_cells = 0;
   };
-  const std::array<Case, 5> cases = {
-      {{4, 1, 77, 8}, {4, 12, 300, 16}, {3, 20, 1000, 32}, {2, 100, 257, 64}, {2, 300, 4121, 64}}};
+  const std::array<Case, 6> cases = {{{4, 1, 77, 8},
+                                      {4, 12, 300, 16},
+                                      {3, 20, 1000, 32},
+                                      {2, 100, 257, 64},
+                                      {2, 300, 4121, 64},
+                                      {4, 12, 300, 16, 512}}};
   const auto n = [](std::int64_t count) { return static_cast<std::size_t>(count); };
   constexpr std::int64_t kHead = 128;
   for (const Case& test : cases) {
@@ -3977,7 +3986,15 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionAt128WithoutMaskMatchesTheReferen
     ggml_tensor* tv =
         Place(ggml_new_tensor_4d(c(), GGML_TYPE_F16, kHead, test.cells, test.heads, 1), v16);
     const float scale = 1.0f / std::sqrt(static_cast<float>(kHead));
-    ggml_tensor* node = Place(ggml_flash_attn_ext(c(), tq, tk, tv, nullptr, scale, 0.0f, 0.0f));
+    std::vector<float> mask(n(test.mask_cells * test.rows), -1000.0F);
+    for (std::int64_t r = 0; r < test.rows && test.mask_cells != 0; ++r)
+      for (std::int64_t cell = 0; cell < test.cells; ++cell)
+        mask[n(r * test.mask_cells + cell)] = (cell + r) % 7 == 0 ? -2.0F : 0.0F;
+    auto* tm = test.mask_cells == 0
+                   ? nullptr
+                   : Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, test.mask_cells, test.rows),
+                           Halves(mask));
+    ggml_tensor* node = Place(ggml_flash_attn_ext(c(), tq, tk, tv, tm, scale, 0.0f, 0.0f));
     ASSERT_TRUE(kg::CheckFlashAttnMma128(node).has_value()) << name;
     const auto plan = kg::PlanFlashAttnMma128(launch(), node);
     ASSERT_TRUE(plan.has_value()) << name << ": " << plan.error().detail;
@@ -3997,7 +4014,8 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionAt128WithoutMaskMatchesTheReferen
             dot += static_cast<double>(q[n((((h * test.rows) + r) * kHead) + d)]) *
                    ggml_fp16_to_fp32(k16[n((((h * test.cells) + cell) * kHead) + d)]);
           }
-          logits[n(cell)] = dot * scale;
+          logits[n(cell)] =
+              dot * scale + (test.mask_cells == 0 ? 0.0 : mask[n(r * test.mask_cells + cell)]);
           max = std::max(max, logits[n(cell)]);
         }
         double sum = 0.0;
@@ -4030,8 +4048,12 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionAt128WithoutMaskMatchesTheReferen
   };
   EXPECT_TRUE(kg::CheckFlashAttnMma128(build(128, 4, 4, false)).has_value());
   EXPECT_TRUE(kg::CheckFlashAttnMma128(build(128, 4, 4, true)).has_value());
-  EXPECT_EQ(FailedCode(kg::CheckFlashAttnMma128(build(128, 4, 4, true, GGML_TYPE_F16, 512))),
-            KernelError::kRejected);
+  EXPECT_TRUE(kg::CheckFlashAttnMma128(build(128, 4, 4, true, GGML_TYPE_F16, 512)));
+  {
+    auto* short_mask = build(128, 4, 4, true);
+    short_mask->src[3]->ne[0] = 299;
+    EXPECT_EQ(FailedCode(kg::CheckFlashAttnMma128(short_mask)), KernelError::kRejected);
+  }
   {
     // ggml_flash_attn_ext asserts an F16 mask, so swap one in afterwards.
     ggml_tensor* node = build(128, 4, 4, false);
@@ -4043,6 +4065,110 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionAt128WithoutMaskMatchesTheReferen
   ggml_tensor* sinks = build(128, 4, 4, false);
   ggml_flash_attn_ext_add_sinks(sinks, Place(ggml_new_tensor_1d(c(), GGML_TYPE_F32, 4)));
   EXPECT_EQ(FailedCode(kg::CheckFlashAttnMma128(sinks)), KernelError::kRejected);
+}
+
+TEST_F(GgmlExtOpsTest, StridedI32ContPreservesBitsAndOutputGuards) {
+  std::vector<std::int32_t> bits(128);
+  for (std::size_t i = 0; i < bits.size(); ++i)
+    bits[i] = std::bit_cast<std::int32_t>(std::uint32_t{0x7fc00001U} +
+                                          static_cast<std::uint32_t>(i) * 0x01010101U);
+  auto* root = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 128), bits);
+  auto* src = ggml_view_4d(c(), root, 3, 2, 2, 2, 40, 120, 320, 0);
+  src->nb[0] = 8;
+  auto* out = ggml_cont(c(), src);
+  constexpr std::size_t kGuard = 256;
+  const auto bytes = ggml_nbytes(out);
+  const auto allocation = Allocate(bytes + 2 * kGuard);
+  ASSERT_EQ(cudaMemset(reinterpret_cast<void*>(allocation), 0xa5, bytes + 2 * kGuard), cudaSuccess);
+  TensorArena::Bind(out, allocation + kGuard);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  const auto checked = kg::CheckCont(out);
+  ASSERT_TRUE(checked) << checked.error().detail;
+  EXPECT_EQ(*checked, kg::ContCopy::kScalar);
+  ASSERT_TRUE(kg::Cont(launch(), out));
+  const auto got = Download<std::int32_t>(out);
+  std::size_t index = 0;
+  for (std::size_t i3 = 0; i3 != 2; ++i3)
+    for (std::size_t i2 = 0; i2 != 2; ++i2)
+      for (std::size_t i1 = 0; i1 != 2; ++i1)
+        for (std::size_t i0 = 0; i0 != 3; ++i0)
+          EXPECT_EQ(got.at(index++), bits.at((i0 * 8 + i1 * 40 + i2 * 120 + i3 * 320) / 4));
+  std::vector<unsigned char> guarded(bytes + 2 * kGuard);
+  ASSERT_EQ(cudaMemcpy(guarded.data(), reinterpret_cast<void*>(allocation), guarded.size(),
+                       cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_TRUE(std::ranges::all_of(std::span(guarded).first(kGuard),
+                                  [](auto value) { return value == 0xa5; }));
+  EXPECT_TRUE(std::ranges::all_of(std::span(guarded).last(kGuard),
+                                  [](auto value) { return value == 0xa5; }));
+  // The new integer path retains the same alias and alignment refusal.
+  TensorArena::Bind(out, reinterpret_cast<std::uintptr_t>(src->data));
+  EXPECT_FALSE(kg::CheckCont(out));
+  TensorArena::Bind(out, allocation + kGuard + 1);
+  EXPECT_FALSE(kg::CheckCont(out));
+}
+
+TEST_F(GgmlExtOpsTest, FusedRouteIdsMaterializeBeforeLogicalLayoutReaders) {
+  namespace ir = llmp::ir;
+  namespace pl = llmp::planner;
+  namespace fmt = llmp::format;
+  ir::Builder b;
+  const auto logits = b.Input(ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({4, 3})));
+  const auto route = b.Route(logits, {}, {}, {}, {.normalize = true, .experts = 4, .used = 2});
+  // Row 1 starts at logical byte 8, but at physical byte 16 in the sort.
+  b.Output(b.View(route[0], ir::ShapeOf({2, 1}), b.tensor(route[0]).nb, 8));
+  const auto flat = b.Reshape(route[0], ir::ShapeOf({6}));
+  b.Output(flat);
+  b.Output(b.Cont(b.Transpose(route[0])));
+  b.Output(b.View(flat, ir::ShapeOf({2}), b.tensor(flat).nb, 8));
+  b.Output(route[0]);
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph) << graph.error().detail;
+  auto registry = llmp::execution::Registry::Create(kg::Implementations());
+  ASSERT_TRUE(registry);
+  auto plan = pl::Plan(graph->Clone(), *registry, {.device_class = "sm_121", .arch = 121}, {},
+                       {.written = kg::WrittenBytes, .within = kg::WithinRoot});
+  ASSERT_TRUE(plan) << plan.error().detail;
+  EXPECT_EQ(std::ranges::count_if(plan->steps,
+                                  [&](const auto& step) {
+                                    return registry->at(step.implementation).name ==
+                                           "ggml.gemma.route.fused";
+                                  }),
+            1);
+  // One shared compact ID root, plus the explicit transposed output's Cont.
+  EXPECT_EQ(std::ranges::count_if(plan->steps,
+                                  [&](const auto& step) {
+                                    return registry->at(step.implementation).name == kg::kContName;
+                                  }),
+            2);
+  llmp::kernels::Addresses addresses{};
+  addresses.activations = Allocate(plan->placement.extent);
+  addresses.activation_bytes = plan->placement.extent;
+  llmp::components::StepGraph step{
+      .graph = std::move(*graph),
+      .inputs = {{.tensor = logits, .kind = llmp::components::InputKind::kFeatures}},
+      .weights = {},
+      .state = {}};
+  const pl::StepShape shape{.segments = {{.rows = 3, .outputs = 0, .want_head = false}}};
+  auto lowered =
+      kg::LowerStep({*plan, step, shape, addresses}, *registry, kg::DeviceChoicesOf(launch()));
+  ASSERT_TRUE(lowered) << lowered.error().detail;
+  ASSERT_EQ(lowered->leaves.size(), 1U);
+  const std::array<float, 12> scores{8, 7, 1, 0, 0, 1, 7, 8, 0, 9, 1, 8};
+  ASSERT_EQ(cudaMemcpy(lowered->leaves[0].tensor->data, scores.data(), sizeof(scores),
+                       cudaMemcpyHostToDevice),
+            cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  auto bound = kg::BoundGraph::Bind(*registry, lowered->plan);
+  ASSERT_TRUE(bound) << bound.error().detail;
+  ASSERT_TRUE(bound->Run(launch()));
+  const std::array<std::vector<std::int32_t>, 5> want{
+      {{3, 2}, {0, 1, 3, 2, 1, 3}, {0, 3, 1, 1, 2, 3}, {3, 2}, {0, 1, 3, 2, 1, 3}}};
+  ASSERT_EQ(lowered->keep.size(), want.size());
+  for (std::size_t i = 0; i < want.size(); ++i) {
+    SCOPED_TRACE(i);
+    EXPECT_EQ(Download<std::int32_t>(lowered->keep[i]), want[i]);
+  }
 }
 
 TEST_F(GgmlExtOpsTest, FlashAttentionChecksRefuseWhatTheKernelsWouldNotTake) {

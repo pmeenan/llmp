@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -23,6 +24,7 @@
 #include "kernels/ggml/gemma_moe.h"
 #include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "providers/cuda/cuda_device_execution.h"
 
 namespace {
@@ -124,6 +126,78 @@ class GemmaMoeGpu : public ::testing::Test {
   std::vector<kg::CapturedGraph> graphs;
   bool retirement_failed = false;
 };
+TEST_F(GemmaMoeGpu, SelectedRouteMasksUnusedLanesAtNonfixtureExpertCounts) {
+  for (const int experts : {1, 3, 33, 64, 129, 255}) {
+    SCOPED_TRACE(experts);
+    constexpr int rows = 3;
+    const int used = std::min(experts, 4);
+    auto* logits = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, experts, rows));
+    auto* bias = Place(ggml_new_tensor_1d(c(), GGML_TYPE_F32, experts));
+    auto* route = Place(kg::RouteBiasedTopK(c(), logits, bias, used, true, 1.F));
+    Upload(logits, std::vector<float>(static_cast<std::size_t>(experts * rows), 0.F));
+    std::vector<float> biases(static_cast<std::size_t>(experts));
+    std::iota(biases.begin(), biases.end(), 0.F);
+    Upload(bias, biases);
+    const auto ran = kg::RunDsv4Route(*launch, route);
+    ASSERT_TRUE(ran) << (ran ? "" : ran.error().detail);
+    const auto output = Read<std::int32_t>(route);
+    ASSERT_EQ(output.size(), static_cast<std::size_t>(2 * used * rows));
+    for (int row = 0; row < rows; ++row)
+      for (int slot = 0; slot < used; ++slot) {
+        const auto at = static_cast<std::size_t>(row * used + slot);
+        EXPECT_EQ(output[at], experts - slot - 1);
+        EXPECT_NEAR(std::bit_cast<float>(output[static_cast<std::size_t>(used * rows) + at]),
+                    1.F / static_cast<float>(used), 1e-7F);
+      }
+  }
+}
+
+TEST_F(GemmaMoeGpu, UnpinnedRoutingAndScaledReductionMatchTheirCpuFormulas) {
+  constexpr int rows = 3, experts = 64, used = 4, width = 4097, reduced = 6;
+  auto* logits = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, experts, rows));
+  auto* weights = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 1, used, rows));
+  auto* root = Place(ggml_argsort(c(), logits, GGML_SORT_ORDER_DESC));
+  auto* ids = ggml_view_2d(c(), root, used, rows, root->nb[1], 0);
+  Upload(logits, std::vector<float>(experts * rows, 0.F));
+  Upload(root, std::vector<std::int32_t>(experts * rows, -777));
+  const kg::GemmaRouting routing{{logits, Bytes(ggml_nbytes(logits))},
+                                 {weights, Bytes(ggml_nbytes(weights))},
+                                 {ids, Bytes(ggml_nbytes(root))}};
+  auto ran = kg::RunGemmaRouting(*launch, routing);
+  ASSERT_TRUE(ran) << (ran ? "" : ran.error().detail);
+  const auto actual_ids = Read<std::int32_t>(root);
+  const auto actual_weights = Read<float>(weights);
+  for (int row = 0; row < rows; ++row)
+    for (int expert = 0; expert < experts; ++expert)
+      EXPECT_EQ(actual_ids[static_cast<std::size_t>(row * experts + expert)],
+                expert < used ? expert : -777);
+  for (const auto value : actual_weights) EXPECT_EQ(value, .25F);
+  auto* x = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, width, reduced, rows));
+  auto* scale = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 1, reduced, rows));
+  auto* w = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 1, reduced, rows));
+  auto* y = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, width, rows));
+  std::vector<float> input(width * reduced * rows);
+  for (std::size_t i = 0; i < input.size(); ++i) input[i] = static_cast<float>(i % 31) / 32.F;
+  Upload(x, input);
+  Upload(scale, std::vector<float>(reduced * rows, 2.F));
+  Upload(w, std::vector<float>(reduced * rows, .25F));
+  const kg::GemmaScaledReduction reduction{{x, Bytes(ggml_nbytes(x))},
+                                           {scale, Bytes(ggml_nbytes(scale))},
+                                           {w, Bytes(ggml_nbytes(w))},
+                                           {y, Bytes(ggml_nbytes(y))}};
+  ran = kg::RunGemmaScaledReduction(*launch, reduction);
+  ASSERT_TRUE(ran) << (ran ? "" : ran.error().detail);
+  const auto actual = Read<float>(y);
+  for (int row = 0; row < rows; ++row)
+    for (int col = 0; col < width; ++col) {
+      float expected = 0;
+      for (int slot = 0; slot < reduced; ++slot)
+        expected +=
+            (input[static_cast<std::size_t>((row * reduced + slot) * width + col)] * 2.F) * .25F;
+      EXPECT_EQ(actual[static_cast<std::size_t>(row * width + col)], expected);
+    }
+}
+
 TEST_F(GemmaMoeGpu, RegisteredBothOutputPlanPreservesTailAndFreshCapturedOperands) {
   auto registry = llmp::execution::Registry::Create(kg::Implementations());
   ASSERT_TRUE(registry);

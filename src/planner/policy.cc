@@ -127,6 +127,8 @@ void Canonicalize(Policy& policy) {
 }
 
 std::expected<void, std::string> Validate(const Policy& policy) {
+  if (!Bound(policy.products.compact_expert_min_rows))
+    return Error("compact_expert_min_rows outside 1 to 65,536");
   if (policy.max_decode_rows == 0 || policy.max_decode_rows > kMaxDecodeRowsBound) {
     return Error(std::format("max_decode_rows {} outside 1 to {}", policy.max_decode_rows,
                              kMaxDecodeRowsBound));
@@ -209,6 +211,8 @@ std::string ToText(const Policy& policy) {
   if (policy.allow_lossy) {
     text += "allow_lossy\n";
   }
+  if (policy.products.compact_expert_min_rows != 2048)
+    text += std::format("compact_expert_min_rows {}\n", policy.products.compact_expert_min_rows);
   for (const auto& [name, member] : kProducts)
     if (policy.products.*member) text += std::format("product {}\n", name);
   for (const std::string& name : policy.enabled) {
@@ -283,6 +287,10 @@ std::expected<Policy, std::string> ParsePolicy(std::string_view text) {
       policy.row_invariant = true;
     } else if (w.size() == 1 && w[0] == "allow_lossy") {
       policy.allow_lossy = true;
+    } else if (w.size() == 2 && w[0] == "compact_expert_min_rows") {
+      const auto n = Number(w[1]);
+      if (!n) return std::unexpected(n.error());
+      policy.products.compact_expert_min_rows = *n;
     } else if (w.size() == 2 && w[0] == "product") {
       const auto found =
           std::ranges::find_if(kProducts, [&](const auto& p) { return p.first == w[1]; });

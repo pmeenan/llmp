@@ -946,6 +946,7 @@ constexpr int kRouteWarps = 4;
 struct RouteArgs {
   const float* logits = nullptr;
   int logits_stride = 0;  // floats between tokens
+  int experts = kExperts;
   bool selected_ids = false;
   bool planar_output = false;
   const float* bias = nullptr;
@@ -973,9 +974,9 @@ __global__ void __launch_bounds__(32 * kRouteWarps) RouteKernel(const RouteArgs 
 #pragma unroll
   for (int i = 0; i < kPerLane; ++i) {
     const int e = lane + (32 * i);
-    const float v = a.logits[(t * a.logits_stride) + e];
-    prob[i] = sqrtf(v > 20.0f ? v : logf(1.0f + expf(v)));
-    select[i] = a.bias != nullptr ? prob[i] + a.bias[e] : prob[i];
+    const float v = e < a.experts ? a.logits[(t * a.logits_stride) + e] : 0.0f;
+    prob[i] = e < a.experts ? sqrtf(v > 20.0f ? v : logf(1.0f + expf(v))) : 0.0f;
+    select[i] = e >= a.experts ? -INFINITY : a.bias != nullptr ? prob[i] + a.bias[e] : prob[i];
   }
   // Lane k keeps slot k's expert and weight.
   int my_id = 0;
@@ -1461,6 +1462,7 @@ std::expected<void, KernelFailure> RunDsv4Route(LaunchContext& launch, ggml_tens
     RouteArgs a;
     a.selected_ids = selected;
     a.planar_output = LlmpOpInt(node, 4) != 0;
+    a.experts = static_cast<int>(logits->ne[0]);
     a.logits = static_cast<const float*>(logits->data);
     a.logits_stride = static_cast<int>(logits->nb[1] / sizeof(float));
     a.bias = hashed ? nullptr : static_cast<const float*>(node->src[1]->data);

@@ -1427,7 +1427,7 @@ std::expected<void, KernelFailure> CheckDsv4HcaTokentile(const ggml_tensor* node
   return {};
 }
 
-std::expected<void, KernelFailure> CheckFlashAttnMma128(const ggml_tensor* node) {
+std::expected<void, KernelFailure> CheckFlashAttnMmaCommon(const ggml_tensor* node) {
   if (node == nullptr || node->op != GGML_OP_FLASH_ATTN_EXT || !Bound(node) ||
       !Bound(node->src[0]) || !Bound(node->src[1]) || !Bound(node->src[2]) ||
       node->src[4] != nullptr) {
@@ -1439,20 +1439,25 @@ std::expected<void, KernelFailure> CheckFlashAttnMma128(const ggml_tensor* node)
   if (!IsF32(q) || !IsF32(node) || k->type != GGML_TYPE_F16 || v->type != GGML_TYPE_F16) {
     return Rejected("F32 Q, F16 K and V, into F32");
   }
-  if (ParamF32(node, 1) != 0.0f || ParamF32(node, 2) != 0.0f || node->op_params[4] != 0) {
+  if (!std::isfinite(ParamF32(node, 0)) || ParamF32(node, 0) <= 0 || ParamF32(node, 1) != 0.0f ||
+      ParamF32(node, 2) != 0.0f || node->op_params[4] != 0) {
     return Rejected("no ALiBi, no logit soft-capping and no sparse bound");
   }
-  if (q->ne[0] != 128 || k->ne[0] != 128 || v->ne[0] != 128) {
-    return Rejected("head dimension 128 for Q, K and V");
+  const auto head = q->ne[0];
+  const auto value_head = v->ne[0];
+  if ((head != 64 && head != 80 && head != 96 && head != 112 && head != 128 && head != 192) ||
+      k->ne[0] != head ||
+      (head == 192 ? (value_head != 128 && value_head != 192) : value_head != head)) {
+    return Rejected("compiled common head dimensions, Q/K widths and the compiled V width");
   }
   std::initializer_list<const ggml_tensor*> operands = {node, q, k, v};
   if (AnyEmpty(operands) || !AllSane(operands)) {
     return Rejected("flash attention on an empty or unmeasurable tensor");
   }
-  // One query head per KV head, one sample.
-  if (!ggml_are_same_shape(k, v) || q->ne[2] != k->ne[2] || q->ne[3] != 1 || k->ne[3] != 1 ||
-      node->ne[0] != 128 || node->ne[1] != q->ne[2] || node->ne[2] != q->ne[1] ||
-      node->ne[3] != 1) {
+  // A whole number of query heads per KV head, one sample.
+  if ((k->ne[1] != v->ne[1] || k->ne[2] != v->ne[2] || k->ne[3] != v->ne[3]) ||
+      q->ne[2] % k->ne[2] != 0 || q->ne[3] != 1 || k->ne[3] != 1 || node->ne[0] != value_head ||
+      node->ne[1] != q->ne[2] || node->ne[2] != q->ne[1] || node->ne[3] != 1) {
     return Rejected("multi-head attention whose shapes do not follow ggml_flash_attn_ext's");
   }
   if (q->nb[0] != sizeof(float) || k->nb[0] != sizeof(ggml_fp16_t) ||
@@ -1475,10 +1480,10 @@ std::expected<void, KernelFailure> CheckFlashAttnMma128(const ggml_tensor* node)
   }
   if (const auto* mask = node->src[3]) {
     if (!Bound(mask) || mask->type != GGML_TYPE_F16 || !AllSane({mask}) || !AllCurrent({mask}) ||
-        !Packed(mask) || !Aligned(mask, 4) || mask->ne[0] != k->ne[1] || mask->ne[1] < q->ne[1] ||
+        !Packed(mask) || !Aligned(mask, 4) || mask->ne[0] < k->ne[1] || mask->ne[1] < q->ne[1] ||
         mask->ne[2] != 1 || mask->ne[3] != 1 || mask->nb[1] % 4 != 0 || Span(mask) > kInt32Max ||
         !Disjoint(node, mask, false))
-      return Rejected("D128 attention needs a current disjoint packed F16 additive mask");
+      return Rejected("common-head attention needs a current disjoint packed F16 additive mask");
   }
   if (!AllCurrent(operands)) {
     return Rejected("a stale view");
@@ -1488,6 +1493,13 @@ std::expected<void, KernelFailure> CheckFlashAttnMma128(const ggml_tensor* node)
       return Rejected("an output overlapping an operand");
     }
   }
+  return {};
+}
+
+std::expected<void, KernelFailure> CheckFlashAttnMma128(const ggml_tensor* node) {
+  if (auto checked = CheckFlashAttnMmaCommon(node); !checked) return checked;
+  if (node->src[0]->ne[0] != 128 || node->src[0]->ne[2] != node->src[1]->ne[2])
+    return Rejected("D128 MHA requires one query head per KV head");
   return {};
 }
 

@@ -123,14 +123,14 @@ TEST_F(GemmaNormTest, ApprovedResidualWidthsAndOperandOrders) {
       EXPECT_TRUE(kg::CheckGemmaNormAdd(t.norm, t.mul, t.out));
     }
 }
-TEST_F(GemmaNormTest, RejectsUnapprovedResidualWidths) {
+TEST_F(GemmaNormTest, AcceptsUnpinnedResidualWidths) {
   for (int width : {2559, 2561, 4096}) {
     const auto t = Add(width);
-    EXPECT_FALSE(kg::CheckGemmaNormAdd(t.norm, t.mul, t.out));
+    EXPECT_TRUE(kg::CheckGemmaNormAdd(t.norm, t.mul, t.out));
   }
 }
-TEST_F(GemmaNormTest, D256AndD512FrequencyFactors) {
-  for (int dim : {256, 512}) {
+TEST_F(GemmaNormTest, EvenWidthFrequencyFactors) {
+  for (int dim : {64, 80, 96, 112, 128, 192, 256, 512, 1024}) {
     const auto t = Rope(dim, dim == 512);
     EXPECT_TRUE(kg::CheckGemmaNormRope(t.norm, t.mul, t.out));
   }

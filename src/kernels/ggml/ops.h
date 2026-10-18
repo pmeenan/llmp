@@ -106,9 +106,8 @@ std::expected<void, KernelFailure> RopeSetRows(LaunchContext& launch, ggml_tenso
 // A ggml_soft_max_ext node over F32 with an F32 mask (attention's scores),
 // refused if a row does not fit the device's shared memory.
 std::expected<void, KernelFailure> SoftMax(LaunchContext& launch, ggml_tensor* node);
-// A ggml_cont node over F32 (attention's merged heads): a copy, a pitched
-// copy or GGML's scalar kernel, as upstream's launcher chooses
-// (validate.h CheckCont).
+// A same-type F32/F16/I32 cont: upstream float copies or the owned
+// bit-preserving scalar I32 copy, with checked strides/extent/aliasing.
 std::expected<void, KernelFailure> Cont(LaunchContext& launch, ggml_tensor* node);
 // A ggml_swiglu_split node over F32.
 std::expected<void, KernelFailure> SwiGlu(LaunchContext& launch, ggml_tensor* node);
@@ -147,6 +146,9 @@ std::expected<void, KernelFailure> FlashAttnVec(LaunchContext& launch, ggml_tens
 // D256 F16 KV vector primitive, exact GQA2 and one sequence. Zero or
 // positive finite softcap, with finite scale/cap normalization. The pinned
 // overall selector chooses it for one query on Ada+; other rows use MMA.
+std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVecCommon(const LaunchContext& launch,
+                                                                   const ggml_tensor* node);
+std::expected<void, KernelFailure> FlashAttnVecCommon(LaunchContext& launch, ggml_tensor* node);
 std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVec256(const LaunchContext& launch,
                                                                 const ggml_tensor* node);
 std::expected<void, KernelFailure> FlashAttnVec256(LaunchContext& launch, ggml_tensor* node);

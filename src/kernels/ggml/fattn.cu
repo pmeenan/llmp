@@ -30,6 +30,8 @@
 #include "kernels/ggml/validate.h"
 
 DECL_FATTN_VEC_CASE(64, GGML_TYPE_F16, GGML_TYPE_F16);
+DECL_FATTN_VEC_CASE(128, GGML_TYPE_F16, GGML_TYPE_F16);
+DECL_FATTN_VEC_CASE(192, GGML_TYPE_F16, GGML_TYPE_F16);
 DECL_FATTN_VEC_CASE(256, GGML_TYPE_F16, GGML_TYPE_F16);
 
 namespace llmp::kernels::ggml {
@@ -45,9 +47,12 @@ std::unexpected<KernelFailure> Rejected(std::string detail) {
 template <int kHead>
 static std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVecHead(const LaunchContext& launch,
                                                                         const ggml_tensor* node) {
-  if (auto checked = kHead == 64 ? CheckFlashAttnVec(node) : CheckFlashAttnVec256(node); !checked) {
+  if (auto checked = kHead == 256 ? CheckFlashAttnVec256(node) : CheckFlashAttnVecCommon(node);
+      !checked) {
     return std::unexpected(checked.error());
   }
+  if (node->src[0]->ne[0] != kHead)
+    return Rejected("the vector launcher requires its instantiated head width");
   const ggml_tensor* q = node->src[0];
   const auto& device = ggml_cuda_info().devices[launch.device()];
   FlashAttnPlan plan;
@@ -114,6 +119,37 @@ std::expected<void, KernelFailure> FlashAttnVec256(LaunchContext& launch, ggml_t
   if (!plan) return std::unexpected(plan.error());
   return launch.Run(base::Bytes(plan->scratch), [node](ggml_backend_cuda_context& context) {
     ggml_cuda_flash_attn_ext_vec_case<256, GGML_TYPE_F16, GGML_TYPE_F16>(context, node);
+  });
+}
+
+std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVecCommon(const LaunchContext& launch,
+                                                                   const ggml_tensor* node) {
+  if (auto checked = CheckFlashAttnVecCommon(node); !checked)
+    return std::unexpected(checked.error());
+  switch (node->src[0]->ne[0]) {
+    case 64:
+      return PlanFlashAttnVecHead<64>(launch, node);
+    case 128:
+      return PlanFlashAttnVecHead<128>(launch, node);
+    default:
+      return PlanFlashAttnVecHead<192>(launch, node);
+  }
+}
+std::expected<void, KernelFailure> FlashAttnVecCommon(LaunchContext& launch, ggml_tensor* node) {
+  auto plan = PlanFlashAttnVecCommon(launch, node);
+  if (!plan) return std::unexpected(plan.error());
+  return launch.Run(base::Bytes(plan->scratch), [node](ggml_backend_cuda_context& context) {
+    switch (node->src[0]->ne[0]) {
+      case 64:
+        ggml_cuda_flash_attn_ext_vec_case<64, GGML_TYPE_F16, GGML_TYPE_F16>(context, node);
+        break;
+      case 128:
+        ggml_cuda_flash_attn_ext_vec_case<128, GGML_TYPE_F16, GGML_TYPE_F16>(context, node);
+        break;
+      default:
+        ggml_cuda_flash_attn_ext_vec_case<192, GGML_TYPE_F16, GGML_TYPE_F16>(context, node);
+        break;
+    }
   });
 }
 

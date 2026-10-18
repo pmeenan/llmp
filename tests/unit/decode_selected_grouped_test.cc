@@ -117,7 +117,7 @@ TEST(DecodeSelectedGrouped, PitchedRouterIdsRetainExactSourceGeometry) {
                                     &llmp::execution::Implementation::name);
   ASSERT_NE(at, impls.end());
   const auto& impl = *at;
-  for (int bad = 0; bad != 5; ++bad) {
+  for (int bad = 0; bad != 6; ++bad) {
     SCOPED_TRACE(bad);
     Inputs d;
     auto& ids = d.input[2];
@@ -128,6 +128,7 @@ TEST(DecodeSelectedGrouped, PitchedRouterIdsRetainExactSourceGeometry) {
     if (bad == 3) ids.desc.nb[1] = 17;
     if (bad == 4) ids.desc.nb[1] = (std::uint64_t{INT32_MAX} + 1) * 4;
     for (std::size_t i = 0; i != 4; ++i) ids.tensor->nb[i] = ids.desc.nb[i];
+    if (bad == 5) ids.tensor->nb[1] = 24;
     auto call = (*source)->Lower(impl, d.node, d.input, d.output);
     if (bad != 0) {
       EXPECT_FALSE(call);
@@ -306,113 +307,147 @@ TEST(DecodeSelectedGrouped, AffineSplitExpertPartBindsLeavesInLowerStep) {
   auto registry = ex::Registry::Create(implementations);
   ASSERT_TRUE(registry) << registry.error().detail;
 
-  ir::Builder builder;
-  const fmt::TensorFormat format = {
-      .encoding = fmt::Encoding::kAffine,
-      .params = {.bits = 4, .group = 32, .scale = fmt::AffineScale::kBF16},
-      .layout = fmt::Layout::kSplit,
-      .shape = ir::ShapeOf({32, 64, 4}),
-      .stacked = 1};
-  const auto weight = builder.Weight(format, kWeight);
-  const auto x = builder.Input(ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({32, 1, 3})));
-  const auto logits = builder.Input(ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({4, 3})));
-  const auto route = builder.Route(logits, {}, {}, {},
-                                   ir::RouteParams{.normalize = true, .experts = 4, .used = 2});
-  const auto out = builder.MatMulId(weight, x, route[0]);
-  builder.Output(out);
-  auto graph = std::move(builder).Finish();
-  ASSERT_TRUE(graph) << graph.error().detail;
+  for (const bool alias : {false, true}) {
+    SCOPED_TRACE(alias);
+    ir::Builder builder;
+    const fmt::TensorFormat format = {
+        .encoding = fmt::Encoding::kAffine,
+        .params = {.bits = 4, .group = 32, .scale = fmt::AffineScale::kBF16},
+        .layout = fmt::Layout::kSplit,
+        .shape = ir::ShapeOf({32, 64, 4}),
+        .stacked = 1};
+    const auto weight = builder.Weight(format, kWeight);
+    const auto x = builder.Input(ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({32, 1, 3})));
+    const auto logits = builder.Input(ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({4, 3})));
+    const auto route = builder.Route(logits, {}, {}, {},
+                                     ir::RouteParams{.normalize = true, .experts = 4, .used = 2});
+    const auto product_ids = alias ? builder.View(route[0], builder.tensor(route[0]).shape(),
+                                                  builder.tensor(route[0]).nb, 0)
+                                   : route[0];
+    const auto out = builder.MatMulId(weight, x, product_ids);
+    builder.Output(out);
+    // Mixed consumers: direct product keeps the pitched source; byte readers
+    // and the exposed IDs share a separately placed compact materialization.
+    builder.Output(builder.View(route[0], ir::ShapeOf({2, 1}), builder.tensor(route[0]).nb, 8));
+    builder.Output(builder.Reshape(route[0], ir::ShapeOf({6})));
+    builder.Output(route[0]);
+    auto graph = std::move(builder).Finish();
+    ASSERT_TRUE(graph) << graph.error().detail;
 
-  co::StepGraph step{
-      .graph = std::move(*graph),
-      .inputs = {{.tensor = x, .kind = co::InputKind::kFeatures, .component = kWeight.component},
-                 {.tensor = logits,
-                  .kind = co::InputKind::kFeatures,
-                  .component = kWeight.component}},
-      .weights = {{.tensor = weight,
-                   .ref = kWeight,
-                   .parts = {{"codes", Role::kCodes},
-                             {"scales", Role::kBlockScales},
-                             {"biases", Role::kBiases}}}},
-      .state = {},
-      .logits = {}};
+    co::StepGraph step{
+        .graph = std::move(*graph),
+        .inputs = {{.tensor = x, .kind = co::InputKind::kFeatures, .component = kWeight.component},
+                   {.tensor = logits,
+                    .kind = co::InputKind::kFeatures,
+                    .component = kWeight.component}},
+        .weights = {{.tensor = weight,
+                     .ref = kWeight,
+                     .parts = {{"codes", Role::kCodes},
+                               {"scales", Role::kBlockScales},
+                               {"biases", Role::kBiases}}}},
+        .state = {},
+        .logits = {}};
 
-  const pl::DeviceFacts device{.device_class = "sm_121", .arch = 121, .features = ex::kBf16Mma};
-  auto plan = pl::Plan(step.graph.Clone(), *registry, device, {});
-  ASSERT_TRUE(plan) << plan.error().detail;
-  EXPECT_TRUE(std::ranges::any_of(plan->steps, [&](const auto& s) {
-    return registry->at(s.implementation).name == "llmp.decode.grouped.affine.split";
-  }));
+    const pl::DeviceFacts device{.device_class = "sm_121", .arch = 121, .features = ex::kBf16Mma};
+    auto plan = pl::Plan(step.graph.Clone(), *registry, device, {},
+                         {.written = kg::WrittenBytes, .within = kg::WithinRoot});
+    ASSERT_TRUE(plan) << plan.error().detail;
+    EXPECT_TRUE(std::ranges::any_of(plan->steps, [&](const auto& s) {
+      return registry->at(s.implementation).name == "llmp.decode.grouped.affine.split";
+    }));
 
-  auto one = format;
-  one.shape.rank = 2;
-  one.shape.ne[2] = one.shape.ne[3] = 1;
-  const auto extents = fmt::PartsOf(one);
-  ASSERT_TRUE(extents);
-  constexpr std::uint64_t kPitch = 4096;
-  constexpr std::uint64_t kMatrices = 4;
+    auto one = format;
+    one.shape.rank = 2;
+    one.shape.ne[2] = one.shape.ne[3] = 1;
+    const auto extents = fmt::PartsOf(one);
+    ASSERT_TRUE(extents);
+    constexpr std::uint64_t kPitch = 4096;
+    constexpr std::uint64_t kMatrices = 4;
 
-  const pl::StepShape shape{
-      .stage = 0,
-      .phase = pl::Phase::kDecode,
-      .segments =
-          {{.slot = 0, .rows = 3, .past = 0, .read_cells = 2048, .outputs = 3, .want_head = false}},
-      .read_align = 256,
-  };
-
-  class TestOwner final : public kn::BackendOwner {
-   public:
-    const kn::StepBackend& backend() const override {
-      static const kn::StepBackend b{};
-      return b;
-    }
-    bool Charge(std::uint64_t) const override { return true; }
-    void Release(std::uint64_t) const override {}
-    std::expected<ex::BackendDeclaration, std::string> Ready() const override {
-      return ex::BackendDeclaration{};
-    }
-  };
-  const auto funder = std::make_shared<TestOwner>();
-
-  for (int mode = 0; mode != 3; ++mode) {
-    SCOPED_TRACE(mode);
-    kn::Addresses addresses{};
-    addresses.activations = 0x800000;
-    addresses.activation_bytes = 1048576;
-    if (mode == 2) {
-      addresses.weight = [](const ir::WeightRef&, Role) -> std::uint64_t { return 0x999999; };
-    }
-    addresses.expert_part = [mode, extents = *extents, one](
-                                std::uint16_t stage,
-                                std::string_view name) -> std::optional<kn::ExpertPartBinding> {
-      if (mode == 1 || stage != kWeight.stage) return std::nullopt;
-      for (const auto& e : extents.parts()) {
-        if ((e.role == Role::kCodes && name == "codes") ||
-            (e.role == Role::kBlockScales && name == "scales") ||
-            (e.role == Role::kBiases && name == "biases")) {
-          const std::uint64_t total_bytes = (kMatrices - 1) * kPitch + e.readable;
-          std::uint64_t base_addr = 0x100000;
-          if (e.role == Role::kBlockScales) base_addr = 0x200000;
-          if (e.role == Role::kBiases) base_addr = 0x300000;
-          return kn::ExpertPartBinding{
-              .address = base_addr,
-              .bytes = total_bytes,
-              .pitch = kPitch,
-              .format = one,
-              .role = e.role,
-          };
-        }
-      }
-      return std::nullopt;
+    const pl::StepShape shape{
+        .stage = 0,
+        .phase = pl::Phase::kDecode,
+        .segments = {{.slot = 0,
+                      .rows = 3,
+                      .past = 0,
+                      .read_cells = 2048,
+                      .outputs = 3,
+                      .want_head = false}},
+        .read_align = 256,
     };
 
-    auto lowered = kg::LowerStep({*plan, step, shape, addresses, 2048}, *registry, {},
-                                 {.routed_funder = funder, .selected_source = source->get()});
-    if (mode == 0) {
-      ASSERT_TRUE(lowered) << lowered.error().detail;
-      EXPECT_EQ(lowered->selected.size(), 1U);
-    } else {
-      ASSERT_FALSE(lowered);
+    class TestOwner final : public kn::BackendOwner {
+     public:
+      const kn::StepBackend& backend() const override {
+        static const kn::StepBackend b{};
+        return b;
+      }
+      bool Charge(std::uint64_t) const override { return true; }
+      void Release(std::uint64_t) const override {}
+      std::expected<ex::BackendDeclaration, std::string> Ready() const override {
+        return ex::BackendDeclaration{};
+      }
+    };
+    const auto funder = std::make_shared<TestOwner>();
+
+    for (int mode = 0; mode != 3; ++mode) {
+      SCOPED_TRACE(mode);
+      kn::Addresses addresses{};
+      addresses.activations = 0x800000;
+      addresses.activation_bytes = 1048576;
+      if (mode == 2) {
+        addresses.weight = [](const ir::WeightRef&, Role) -> std::uint64_t { return 0x999999; };
+      }
+      addresses.expert_part = [mode, extents = *extents, one](
+                                  std::uint16_t stage,
+                                  std::string_view name) -> std::optional<kn::ExpertPartBinding> {
+        if (mode == 1 || stage != kWeight.stage) return std::nullopt;
+        for (const auto& e : extents.parts()) {
+          if ((e.role == Role::kCodes && name == "codes") ||
+              (e.role == Role::kBlockScales && name == "scales") ||
+              (e.role == Role::kBiases && name == "biases")) {
+            const std::uint64_t total_bytes = (kMatrices - 1) * kPitch + e.readable;
+            std::uint64_t base_addr = 0x100000;
+            if (e.role == Role::kBlockScales) base_addr = 0x200000;
+            if (e.role == Role::kBiases) base_addr = 0x300000;
+            return kn::ExpertPartBinding{
+                .address = base_addr,
+                .bytes = total_bytes,
+                .pitch = kPitch,
+                .format = one,
+                .role = e.role,
+            };
+          }
+        }
+        return std::nullopt;
+      };
+
+      auto lowered = kg::LowerStep({*plan, step, shape, addresses, 2048}, *registry, {},
+                                   {.routed_funder = funder, .selected_source = source->get()});
+      if (mode == 0 && alias) {
+        ASSERT_FALSE(lowered);
+        EXPECT_EQ(lowered.error().detail,
+                  "lowering onto GGML: dynamic experts lack their original router IDs output");
+      } else if (mode == 0) {
+        ASSERT_TRUE(lowered) << lowered.error().detail;
+        ASSERT_EQ(lowered->selected.size(), 1U);
+        const auto* ids = lowered->selected.front().call->route()->ids;
+        EXPECT_EQ(ids->nb[1], 4U * sizeof(std::int32_t));
+        ASSERT_NE(ids->view_src, nullptr);
+        EXPECT_EQ(ggml_nbytes(ids->view_src), 4U * 3U * sizeof(std::int32_t));
+        const auto rt = std::ranges::find_if(plan->graph.nodes(), [](const auto& node) {
+          return node.key == ir::Primitive(ir::Op::kRoute);
+        });
+        ASSERT_NE(rt, plan->graph.nodes().end());
+        EXPECT_EQ(kg::WrittenBytes(plan->graph, rt->out[0]), 4U * 3U * sizeof(std::int32_t));
+        const auto mapped = plan->tensors.at(route[0].v);
+        EXPECT_EQ(plan->graph.node(plan->graph.producer(mapped)).key, ir::Primitive(ir::Op::kCont));
+        EXPECT_EQ(ggml_nbytes(lowered->keep.back()), 2U * 3U * sizeof(std::int32_t));
+        EXPECT_EQ(lowered->keep.back()->nb[1], 2U * sizeof(std::int32_t));
+        EXPECT_NE(lowered->keep.back()->data, ids->data);
+      } else {
+        ASSERT_FALSE(lowered);
+      }
     }
   }
 }
