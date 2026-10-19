@@ -88,6 +88,14 @@ std::expected<PleRowPlan, std::string> PlanPleRows(const PleTable& table,
                                                    std::uint64_t max_slots,
                                                    std::uint64_t max_read = kPleMaxRead);
 
+// Declared caller-paid planning capacities follow the actual lookup count.
+// PlanPleRows reserves these exact maxima once (distinct IDs, read index,
+// slots, sources and reads); no per-step arbitrary descriptor limit.
+inline constexpr std::uint64_t kPleRetainedBytesPerLookup =
+    sizeof(std::int32_t) + sizeof(std::uint64_t) + sizeof(PleRead);
+inline constexpr std::uint64_t kPleScratchBytesPerLookup =
+    sizeof(std::int32_t) + sizeof(std::size_t);
+
 // The most landing bytes a chunk of `lookups` lookups can need: each row's
 // two blocks.
 constexpr std::uint64_t PleLandingBound(std::uint64_t lookups) { return lookups * 2 * kPleBlock; }

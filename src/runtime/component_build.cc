@@ -38,6 +38,7 @@
 #include "providers/device_runtime.h"
 #include "runtime/component_admission.h"
 #include "runtime/component_bindings.h"
+#include "runtime/llm_policy.h"
 #include "runtime/memory_guard.h"
 #include "runtime/model_settings.h"
 #include "runtime/prefill.h"
@@ -60,130 +61,6 @@ struct ConstructionCharge {
   std::uint64_t bytes = 0;
   ~ConstructionCharge() { allowance->Release(bytes); }
 };
-
-// The domain and its payment share one owner, including failed source setup.
-// Explicit caller domains retain their existing ownership contract.
-struct DerivedDomain {
-  std::shared_ptr<ConstructionCharge> charge;
-  engine::NumericalDomain domain;
-};
-
-}  // namespace
-
-std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> ComponentServingDomain(
-    const spec::ModelSpec& model_spec, std::span<const model::StateLayoutDerived> layouts,
-    std::uint32_t slots, const engine::DecodingMode& mode,
-    const std::shared_ptr<engine::ExecutionMetadataAllowance>& allowance,
-    std::function<bool(std::uint64_t)> charge_metadata) {
-  const bool composed = model_spec.stages.size() > 1;
-  std::uint64_t verify = composed ? 1 : 0;
-  for (const auto& draft : mode.drafters) {
-    if (mode.combine == engine::DecodingMode::Drafters::kCascade)
-      verify += draft.max_depth;
-    else
-      verify = std::max(verify, std::uint64_t{draft.max_depth} + 1);
-    if (verify > UINT32_MAX) return Error("serving verify row bound overflows");
-  }
-  const auto verify_rows = static_cast<std::uint32_t>(verify);
-  bool repeat_pending = false;
-  if (model_spec.pipeline != spec::PipelineKind::kLlm || model_spec.stages.empty() ||
-      model_spec.stages.size() > std::uint64_t{UINT16_MAX} + 1 ||
-      model_spec.stages.size() != layouts.size() || slots == 0 || slots > Llm::kMaxBranches ||
-      (composed ? mode.kind != engine::DecodingMode::Kind::kSpeculative || verify_rows == 0 ||
-                      mode.drafters.size() != layouts.size() - 1
-                : mode.kind != engine::DecodingMode::Kind::kPlain || !mode.drafters.empty()) ||
-      !allowance)
-    return Error("a serving domain needs its complete state and owner envelope");
-  std::uint64_t bytes = sizeof(DerivedDomain) + sizeof(ConstructionCharge) + 512;
-  for (std::size_t i = 0; i < layouts.size(); ++i) {
-    const auto& stage = model_spec.stages[i];
-    auto progress = model::DraftBounds(layouts[i]);
-    if (!progress ||
-        (i == 0 ? stage.role != spec::StageRole::kTarget || progress->has_value()
-                : stage.role != spec::StageRole::kDrafter) ||
-        layouts[i].max_rows == 0 || (i == 0 && verify_rows > layouts[i].max_rows))
-      return Error("a serving domain needs the actual target and drafter bounds");
-    if (i != 0) {
-      const auto& draft = mode.drafters[i - 1];
-      if (draft.stage != i || draft.max_depth == 0 || draft.shared_wave_depth > draft.max_depth ||
-          (draft.shared_wave_depth != 0 &&
-           draft.shape != engine::DrafterSpec::Shape::kAutoregressive) ||
-          verify_rows > layouts[i].max_rows ||
-          (!layouts[i].borrowed.empty() && !draft.borrows_target) ||
-          (draft.features && model::FeatureTap(layouts[i]) == nullptr) ||
-          (progress->has_value() && (draft.shape != engine::DrafterSpec::Shape::kAutoregressive ||
-                                     !draft.catch_up || !draft.features || draft.anchored)))
-        return Error("a serving domain disagrees with the actual drafter schedule");
-      repeat_pending |= progress->has_value();
-    }
-    // Input vectors, canonical domain, the retained shared owner and the
-    // maximum temporary moved representation; no graph or tensor payload.
-    const auto stage_bytes = sizeof(engine::NumericalStage) + stage.name.size() + 1 +
-                             5 * sizeof(engine::NumericalUse) + 4 * sizeof(engine::NumericalPhase);
-    std::uint64_t copy_bytes = 0;
-    if (__builtin_mul_overflow(std::uint64_t{4}, static_cast<std::uint64_t>(stage_bytes),
-                               &copy_bytes) ||
-        __builtin_add_overflow(bytes, copy_bytes, &bytes))
-      return Error("serving domain construction bound overflows");
-  }
-  if (repeat_pending && slots > 1) {
-    // The existing joined replay contract requires every companion to own
-    // replay progress; block drafters use the ordinary speculative contract.
-    for (std::size_t i = 1; i < layouts.size(); ++i) {
-      auto progress = model::DraftBounds(layouts[i]);
-      if (!progress || !*progress)
-        return Error("joined replay requires complete companion progress contracts");
-    }
-  }
-  if (!(charge_metadata ? charge_metadata(bytes) : allowance->Charge(bytes)))
-    return Error("serving domain metadata allowance is insufficient");
-  auto charge = std::make_shared<ConstructionCharge>();
-  charge->allowance = allowance;
-  charge->bytes = bytes;
-  std::vector<engine::NumericalStage> stages;
-  stages.reserve(layouts.size());
-  for (std::size_t i = 0; i < layouts.size(); ++i) {
-    engine::NumericalStage stage{
-        .stage = static_cast<std::uint16_t>(i),
-        .name = model_spec.stages[i].name,
-        .uses = {engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode},
-        .phases = {}};
-    if (composed) {
-      stage.uses.push_back(engine::NumericalUse::kPromptCompanions);
-      stage.uses.push_back(engine::NumericalUse::kSpeculative);
-      if (repeat_pending && slots > 1)
-        stage.uses.push_back(engine::NumericalUse::kJoinedRepeatPending);
-    }
-    stage.phases.reserve(i == 0 ? (composed ? 4 : 2) : 1);
-    const auto add = [&](planner::Phase phase, std::uint32_t rows) {
-      stage.phases.push_back({.phase = phase,
-                              .max_owners = slots,
-                              .max_owner_rows = rows,
-                              .max_total_rows = std::uint64_t{slots} * rows});
-    };
-    if (i == 0) {
-      add(planner::Phase::kPrefill, layouts[i].max_rows);
-      add(planner::Phase::kDecode, 1);
-      if (composed) {
-        add(planner::Phase::kVerify, verify_rows);
-        add(planner::Phase::kCommit, verify_rows);
-      }
-    } else {
-      const auto& draft = mode.drafters[i - 1];
-      add(planner::Phase::kDraft, draft.shape == engine::DrafterSpec::Shape::kBlock
-                                      ? draft.max_depth
-                                      : layouts[i].max_rows);
-    }
-    stages.push_back(std::move(stage));
-  }
-  auto domain = engine::NumericalDomain::Create(std::move(stages));
-  if (!domain) return Error(domain.error());
-  auto owner = std::make_shared<DerivedDomain>(
-      DerivedDomain{.charge = std::move(charge), .domain = std::move(*domain)});
-  return std::shared_ptr<const engine::NumericalDomain>(owner, &owner->domain);
-}
-
-namespace {
 
 // PlanGraph owns one temporary reader index per synchronous lowering; current
 // and future retained programs do not retain that index. This named category
@@ -249,7 +126,8 @@ std::expected<ServingConstruction, std::string> ServingConstructionBytes(
       if (!add(group.chunks, 128)) return false;
     return true;
   };
-  if (!source(target) || (draft && !source(*draft)))
+  if (!source(target) || (draft && !source(*draft)) ||
+      !add(model.stages.size(), sizeof(model::Batching)) || !add(1, 64))
     return Error("component retained source inventory overflows");
   if (!add(1, kernels::kRegistrationPlanReportMetadataBytes))
     return Error("registration plan-report metadata inventory overflows");
@@ -263,6 +141,7 @@ struct ComponentHold {
   std::shared_ptr<engine::SharedCompilerAllowance> compiler;
   std::uint64_t compiler_bytes = 0;
   std::shared_ptr<ConstructionCharge> kv_encoding_charge;
+  std::shared_ptr<ConstructionCharge> setup_charge;
   std::unique_ptr<StoredBindingPayment> stored_payment;
   spec::ModelSpec spec;
   // Actual admitted semantic identities, captured before composition, draft
@@ -271,6 +150,7 @@ struct ComponentHold {
   std::vector<spec::Source> sources;  // by artifact: the target's, the drafter's
   std::vector<std::span<const components::BoundTensor>> tables;
   std::vector<model::StateLayoutDerived> layouts;  // by stage
+  std::vector<model::Batching> batching;           // canonical component limits, by stage
   std::vector<const model::StateLayoutDerived*> stages;
   std::vector<spec::SourceValue> drafter_values;
   std::shared_ptr<const std::vector<std::int32_t>> draft_head_ids;
@@ -288,71 +168,370 @@ struct ComponentHold {
 };
 static_assert(sizeof(ComponentHold) <= 4096);  // StoredBindingBytes fixed owner inventory.
 
-// Closed internal scoring experiment, not a serving route: only a caller's
-// explicit execution domain reaches it (the Server derives its own, so no
-// served configuration does). Its four owners, 512-token context, 2-row
-// chunks and 256-byte read alignment are that experiment's one matched
-// shape (tests/unit/qwen38_joined_score_gpu_test.cc), fixed so its domain
-// is checked against exactly what it was matched at; a non-null domain
-// alone is not authority to lift the single-owner bound.
-bool JoinedScoreEnvelope(const ModelSettings& settings, std::string_view drafter,
-                         const ComponentBuildOptions& options) {
-  if (!options.shared_route || !options.execution_domain || !drafter.empty() ||
-      settings.speculation.value || settings.max_slots.value != 4 ||
-      settings.context.value != 512 || settings.prefill_chunk.value != 2 ||
-      settings.wave_read_align.value != 256)
-    return false;
-  const auto stages = options.execution_domain->stages();
-  constexpr std::array uses{engine::NumericalUse::kDecode, engine::NumericalUse::kScore};
-  constexpr std::array ordinary_uses{engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode,
-                                     engine::NumericalUse::kScore};
-  if (stages.size() != 1 || stages[0].stage != 0 || stages[0].name != "target" ||
-      (!std::ranges::equal(stages[0].uses, uses) &&
-       !std::ranges::equal(stages[0].uses, ordinary_uses)))
-    return false;
-  constexpr std::array phases{engine::NumericalPhase{.phase = planner::Phase::kPrefill,
-                                                     .max_owners = 4,
-                                                     .max_owner_rows = 2,
-                                                     .max_total_rows = 8},
-                              engine::NumericalPhase{.phase = planner::Phase::kDecode,
-                                                     .max_owners = 4,
-                                                     .max_owner_rows = 1,
-                                                     .max_total_rows = 4},
-                              engine::NumericalPhase{.phase = planner::Phase::kScore,
-                                                     .max_owners = 4,
-                                                     .max_owner_rows = 2,
-                                                     .max_total_rows = 8}};
-  return std::ranges::equal(stages[0].phases, phases);
+// Owned preparation phase. The actual stored/composed contracts supply every
+// row, state and batching limit; no serving family supplies capabilities.
+Status PrepareComponentState(ComponentHold& hold, std::uint32_t context, std::uint32_t max_rows) {
+  hold.layouts.reserve(hold.spec.stages.size());
+  hold.batching.reserve(hold.spec.stages.size());
+  hold.stages.reserve(hold.spec.stages.size());
+  for (std::uint16_t stage = 0; stage < hold.spec.stages.size(); ++stage) {
+    auto layout = components::StageLayout(hold.spec, stage, context, max_rows);
+    if (!layout) return Error(layout.error());
+    auto batching = components::StageBatching(hold.spec, stage);
+    if (!batching) return Error(batching.error());
+    hold.layouts.push_back(std::move(*layout));
+    hold.batching.push_back(*batching);
+  }
+  for (const auto& layout : hold.layouts) hold.stages.push_back(&layout);
+  return {};
 }
 
-// Derive only from an actual target-only ordinary request. Explicit caller
-// domains keep their existing (including closed scoring) admission contract.
-bool PlainServingEnvelope(const ModelSettings& settings, std::string_view drafter,
-                          const ComponentBuildOptions& options) {
-  return options.shared_route && options.derive_execution_domain && !options.execution_domain &&
-         drafter.empty() && !settings.speculation.value && settings.max_slots.value >= 1 &&
-         settings.max_slots.value <= Llm::kMaxBranches && settings.context.value != 0 &&
-         settings.prefill_chunk.value != 0;
+struct PreparedPlacement {
+  std::vector<engine::LayerSlabs> slabs;
+  std::uint32_t logit_width = 0;
+};
+
+std::expected<PreparedPlacement, std::string> PrepareComponentPlacement(
+    ComponentHold& hold, const ja::Artifact& artifact, const ja::Artifact* draft_artifact,
+    StoredComponentBindings& bindings, std::span<const planner::StepShape> setup,
+    bool indexed_masks) {
+  // Each weight's place, by what the steps bind (the head's included;
+  // a state-only prompt chunk binds a subset), and a head row's width:
+  // its logits' (the head's vocabulary).
+  // Native expert parts retain their 16-byte bases in each actual encoded
+  // slab; this is byte alignment, independent of owner/expert counts.
+  constexpr std::uint64_t kExpertAlignment = 16;
+  std::vector<engine::LayerSlabs> placements;
+  for (std::size_t a = 0; a < hold.sources.size(); ++a) {
+    auto slabs = engine::ExpertSlabsOf(a == 0 ? artifact : *draft_artifact, kExpertAlignment);
+    if (!slabs) return Error(slabs.error());
+    placements.push_back(std::move(*slabs));
+  }
+  // A table read by rows only where that holds less than the table (its
+  // landing and slots for the most lookups a setup shape makes,
+  // engine::RowPagingPays); a smaller one stays resident with its group,
+  // so no step waits on its reads.
+  {
+    const auto& rows = bindings.rows;
+    std::vector<engine::RunnerConfig::RowTable> paged;
+    for (const auto& row : rows) {
+      const ja::Artifact& owner =
+          hold.spec.stages.at(row.weight.stage).artifact == 0 ? artifact : *draft_artifact;
+      std::uint64_t lookups = 0, table = 0, row_bytes = 0;
+      for (const planner::StepShape& s : setup)
+        if (s.stage == row.weight.stage)
+          lookups = std::max(lookups, std::uint64_t{s.rows()} * row.rows_per_token);
+      for (const auto& part : rows) {
+        if (part.weight != row.weight) continue;
+        table += owner.resources()[part.resource].bytes.value();
+        row_bytes += format::RowBytes(part.format, part.part).value_or(0);
+      }
+      if (engine::RowPagingPays(table, lookups, row_bytes)) paged.push_back(row);
+    }
+    bindings.rows = std::move(paged);
+  }
+  std::uint32_t logit_width = 0;
+  {
+    logit_width = bindings.logit_width;
+    for (const auto& [key, place] : hold.place)
+      if (place.array) hold.pitch[key.first] = placements.at(place.artifact).pitch.at(place.index);
+    for (const auto& row : bindings.rows) {
+      const auto art_idx = hold.spec.stages.at(row.weight.stage).artifact;
+      const ja::Artifact& owner = art_idx == 0 ? artifact : *draft_artifact;
+      if (row.resource >= owner.resources().size()) {
+        return Error("a paged row table names a resource outside its artifact");
+      }
+      placements.at(art_idx).places.at(owner.resources()[row.resource].group) =
+          engine::GroupPlace::kNone;
+    }
+  }
+  // The stored target's maps came from its validated component roles
+  // above; only a speculating model builds the setup graphs, to place its
+  // drafter's weights.
+  if (draft_artifact != nullptr) {
+    for (const planner::StepShape& s : setup) {
+      auto step = components::BuildStep(hold.spec, s.stage, s,
+                                        {.tensors = hold.tables.at(s.stage),
+                                         .state = &hold.layouts.at(s.stage),
+                                         .stages = hold.stages,
+                                         .artifacts = hold.tables},
+                                        {.narrow = true, .dsv4_lid_mask = indexed_masks});
+      if (!step) return Error(step.error());
+      for (const components::StepWeight& weight : step->weights) {
+        // A stored target's weights are placed above from its validated
+        // roles. A target-stage step also binds the drafter's weights (the
+        // feature projection a prompt chunk runs when the model speculates),
+        // and those have no other source of places.
+        if (weight.ref.stage == 0) continue;
+        const auto art_idx = hold.spec.stages.at(weight.ref.stage).artifact;
+        const ja::Artifact& a = *draft_artifact;
+        for (const auto& [name, role] : weight.parts) {
+          const auto found =
+              weight.ref.expert_array ? a.FindExpertArray(name) : a.FindResource(name);
+          if (!found) return Error(std::format("no weight part holds {}", name));
+          hold.place[{weight.ref, role}] = {.artifact = static_cast<std::uint16_t>(art_idx),
+                                            .array = weight.ref.expert_array,
+                                            .index = *found};
+          if (weight.ref.expert_array)
+            hold.pitch[weight.ref] = placements.at(art_idx).pitch.at(*found);
+        }
+      }
+      if (s.stage == 0 && step->logits.valid() && logit_width == 0) {
+        const std::uint64_t width = step->graph.tensor(step->logits).shape().ne[0];
+        if (width == 0 ||
+            width > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+          return Error(std::format("the head's {} logits a row", width));
+        }
+        logit_width = static_cast<std::uint32_t>(width);
+      }
+    }
+  }
+  if (logit_width == 0) return Error("the spec's target stage has no head");
+  return PreparedPlacement{.slabs = std::move(placements), .logit_width = logit_width};
 }
 
-// The joined MTP envelope: a composed (speculating) source of two or more
-// owners on the shared route, its domain derived from the actual source by
-// the Server's serving request, or a caller's explicit domain with every
-// joined mode. The actual source seal additionally validates every
-// stage/layout/phase and binds real prepared backend owners.
-bool JoinedMtpEnvelope(const ModelSettings& settings, std::string_view drafter,
-                       const ComponentBuildOptions& options) {
-  if (!options.shared_route || (!options.execution_domain && !options.derive_execution_domain) ||
-      drafter.empty() || !settings.speculation.value || settings.max_slots.value < 2 ||
-      settings.max_slots.value > Llm::kMaxBranches || !settings.context.value ||
-      !settings.prefill_chunk.value || !settings.draft_rows.value)
-    return false;
-  if (options.derive_execution_domain) return !options.execution_domain;
-  const auto& domain = *options.execution_domain;
-  return domain.stages().size() == 2 &&
-         domain.CheckMode(engine::NumericalUse::kJoinedRepeatPending).has_value() &&
-         domain.CheckMode(engine::NumericalUse::kSpeculative).has_value() &&
-         domain.CheckMode(engine::NumericalUse::kPromptCompanions).has_value();
+std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSources(
+    ComponentHold& hold, const ComponentBuildOptions& options, const spec::PolicyRule& composition,
+    bool forced, bool speculate, const spec::Mapping* mapping, const spec::Mapping* drafter_mapping,
+    const base::Sha256Digest& bound, std::uint32_t slots, std::uint32_t context,
+    const std::shared_ptr<const engine::NumericalDomain>& execution_domain,
+    const ja::Artifact& artifact, const ja::Artifact* drafter) {
+  // The target's policy: a harness's matched recipe or the rule admission
+  // chose (AdmittedPolicy); where it chose none
+  // (an approval's kNone, or no rule holds), the engine's default. Its
+  // step source never chooses a rule again from its mapping.
+  planner::Policy target_policy;
+  if (!composition.text.empty() || options.target_policy || forced) {
+    auto parsed =
+        planner::ParsePolicy(options.target_policy ? *options.target_policy : composition.text);
+    if (!parsed) return Error(std::format("the target's policy: {}", parsed.error()));
+    target_policy = std::move(*parsed);
+  }
+  std::optional<planner::Policy> drafter_policy;
+  if (options.drafter_policy) {
+    auto parsed = planner::ParsePolicy(*options.drafter_policy);
+    if (!parsed) return Error(std::format("the drafter's policy: {}", parsed.error()));
+    drafter_policy = std::move(*parsed);
+  }
+  if (!drafter_policy && forced && speculate) {
+    // The forced route retains its shared fusion rules for the drafter,
+    // but each stage's independent product policies come from its mapping.
+    auto text = spec::DefaultPolicy(*drafter_mapping, hold.drafter_values,
+                                    {.context = context, .slots = slots});
+    if (!text) return Error(text.error());
+    auto own = text->empty() ? std::expected<planner::Policy, std::string>(planner::Policy{})
+                             : planner::ParsePolicy(*text);
+    if (!own) return Error(own.error());
+    drafter_policy = target_policy;
+    drafter_policy->products = own->products;
+  }
+  std::vector<std::unique_ptr<engine::ComponentStepSource>> sources;
+  for (std::uint16_t stage = 0; stage < hold.spec.stages.size(); ++stage) {
+    auto stage_policy = stage == 0       ? std::optional(target_policy)
+                        : drafter_policy ? drafter_policy
+                        : forced         ? std::optional(target_policy)
+                                         : std::nullopt;
+    if (!stage_policy) {
+      auto text = spec::DefaultPolicy(*drafter_mapping, hold.drafter_values,
+                                      {.context = context, .slots = slots});
+      if (!text) return Error(text.error());
+      auto parsed = text->empty() ? std::expected<planner::Policy, std::string>(planner::Policy{})
+                                  : planner::ParsePolicy(*text);
+      if (!parsed) return Error(parsed.error());
+      stage_policy = std::move(*parsed);
+    }
+    const auto artifact_index = hold.spec.stages[stage].artifact;
+    const auto& admitted_artifact = artifact_index == 0 ? artifact : *drafter;
+    auto numerical = AdmittedNumerics(
+        hold.spec, hold.sources.at(artifact_index), admitted_artifact.sources(),
+        FindApproval(admitted_artifact.model().architecture, admitted_artifact.sources()),
+        hold.numerical_semantics[stage], {.context = context, .slots = slots}, stage,
+        hold.backend->Backend().ConstructionFunding());
+    if (!numerical) return Error(numerical.error());
+    stage_policy->numerical = std::move(*numerical);
+    auto made = engine::ComponentStepSource::Create(
+        {.spec = &hold.spec,
+         .stage = stage,
+         .bindings = {.tensors = hold.tables.at(hold.spec.stages.at(stage).artifact),
+                      .state = &hold.layouts.at(stage),
+                      .stages = hold.stages,
+                      .artifacts = hold.tables},
+         .bound_digest = bound,
+         .mapping = stage == 0 ? mapping : drafter_mapping,
+         .values = stage == 0 ? std::span<const spec::SourceValue>{}
+                              : std::span<const spec::SourceValue>(hold.drafter_values),
+         .slots = slots,
+         // A drafter stage: the diagnostic's policy, else a forced
+         // admitted recipe's (the target's), else its mapping's.
+         .policy = std::move(stage_policy),
+         .backend = hold.backend->Backend(),
+         .execution_domain = execution_domain,
+         // Actual programs report capture safety; eager-only implementations
+         // remain eligible without disabling capture of ordinary programs.
+         .require_capture = false,
+         .validate_program = options.validate_program,
+         .compiler = hold.compiler,
+         .compiler_bytes = hold.compiler_bytes});
+    if (!made) return Error(made.error());
+    sources.push_back(std::move(*made));
+  }
+  std::unique_ptr<engine::StepSource> step_source;
+  if (sources.size() == 1) {
+    step_source = std::move(sources.front());
+  } else {
+    auto staged = engine::StagedStepSource::Create(std::move(sources));
+    if (!staged) return Error(staged.error());
+    step_source = std::move(*staged);
+  }
+  return step_source;
+}
+
+struct PreparedServing {
+  std::shared_ptr<ComponentHold> hold;
+  std::unique_ptr<engine::StepSource> source;
+  std::vector<engine::LayerSlabs> placements;
+  std::vector<engine::RunnerConfig::RowTable> rows;
+  std::vector<planner::StepShape> setup;
+  engine::DecodingMode mode;
+  LlmServingPolicy policy;
+  base::Sha256Digest bound;
+  std::uint32_t logit_width = 0, verify_rows = 0, branch_depth = 0;
+  std::uint64_t cublas_bytes = 0;
+};
+
+std::expected<EngineLlmParts, std::string> AssembleComponentParts(
+    engine::PagedNode& node, const fs::path& store, std::string_view id,
+    std::string_view drafter_id, int index, const ModelSettings& settings,
+    const spec::ServingRecipe& recipe, const spec::Mapping* drafter_mapping,
+    const ComponentBuildOptions& options,
+    const std::shared_ptr<engine::ExecutionMetadataAllowance>& metadata, PreparedServing built) {
+  auto* held = built.hold.get();
+  const auto& target = held->layouts.front();
+  const auto slots = built.policy.owners();
+  const auto read_align = built.policy.read_align();
+  const auto chunk = target.max_rows;
+  const bool speculate = built.mode.kind == engine::DecodingMode::Kind::kSpeculative;
+  auto weights = std::make_unique<engine::PagedWeights>();
+  if (auto opened = weights->Open(store / id); !opened) return Error(opened.error());
+  engine::PagedWeights* paged = weights.get();
+  engine::PagedWeights* drafter_paged = nullptr;
+  EngineLlmParts parts;
+  parts.execution_metadata = metadata;
+  if (built.hold->automatic_construction) {
+    parts.startup_host_bytes = built.hold->automatic_construction->capacity() +
+                               engine::ExecutionMetadataAllowance::OverheadBytes();
+    parts.startup_cap = options.automatic_startup_cap;
+  }
+  parts.config.slots = {.model = settings.name,
+                        .slots = slots,
+                        .stages = {{.name = "target", .layout = target, .read_align = 0}},
+                        .spec = built.bound,
+                        .read_align = read_align,
+                        .spill_place = {},
+                        .spill_directory = {},
+                        .invalidate = {},
+                        .drop_plans = {}};
+  parts.config.weights.push_back({.weights = std::move(weights),
+                                  .places = std::move(built.placements[0].places),
+                                  .slabs = std::move(built.placements[0].slabs)});
+  // Always expose the checked physical-part callback. Kernel candidates,
+  // rather than a model-table scan, decide which representation they read.
+  parts.config.split_expert_parts = true;
+  parts.config.row_tables = std::move(built.rows);
+  if (options.capture_first_verify)
+    parts.config.capture_first_phases = 1U << static_cast<unsigned>(planner::Phase::kVerify);
+  parts.config.automatic_capture_phases &= ~(1U << static_cast<unsigned>(planner::Phase::kPrefill));
+  if (speculate) {
+    parts.config.slots.stages.push_back(
+        {.name = std::string(drafter_mapping->stage), .layout = built.hold->layouts.at(1)});
+    auto dweights = std::make_unique<engine::PagedWeights>();
+    if (auto opened = dweights->Open(store / drafter_id); !opened) return Error(opened.error());
+    drafter_paged = dweights.get();
+    parts.config.weights.push_back({.weights = std::move(dweights),
+                                    .places = std::move(built.placements[1].places),
+                                    .slabs = std::move(built.placements[1].slabs)});
+    parts.config.max_verify_rows = built.verify_rows;
+    parts.mode = std::move(built.mode);
+  }
+  if (speculate) {
+    execution::AdaptiveWaveMode::Costs costs{};
+    for (std::size_t i = 0; i < settings.wave_costs.value.size() && i + 2 < costs.size(); ++i)
+      costs[i + 2] = settings.wave_costs.value[i];
+    const auto force = settings.wave_form.value == config::WaveForm::kPlain
+                           ? execution::AdaptiveWaveMode::Force::kPlain
+                       : settings.wave_form.value == config::WaveForm::kSpeculative
+                           ? execution::AdaptiveWaveMode::Force::kSpeculative
+                           : execution::AdaptiveWaveMode::Force::kNone;
+    // The shared composer admits full per-owner verifies or separates them;
+    // it has no legacy fixed sixteen-row lane that truncates each owner.
+    parts.wave_mode.emplace(costs, force);
+  }
+  parts.config.setup_shapes = std::move(built.setup);
+  // cuBLAS on the model's stream over the runner's workspace (D-053: the
+  // engine's handle, never one GGML makes).
+  parts.config.kernel_memory.push_back(
+      {.name = std::format("{} cuBLAS workspace", settings.name), .bytes = built.cublas_bytes});
+  const auto selected_bytes = held->backend->persistent_bytes();
+  if (selected_bytes)
+    parts.config.kernel_memory.push_back(
+        {.name = std::format("{} selected kernel state", settings.name), .bytes = selected_bytes});
+  parts.config.prepare =
+      [&node, held, index, selected_bytes, cublas_bytes = built.cublas_bytes](
+          std::span<const std::uint64_t> bases) -> std::expected<void, std::string> {
+    if (bases.size() != 1U + static_cast<std::size_t>(selected_bytes != 0))
+      return Error("the kernel workspaces are not mapped");
+    held->selected_state = {selected_bytes ? bases[1] : 0, selected_bytes};
+    auto cublas = kernels::ggml::CublasHandle::Create(
+        0, node.execution(), node.stream(static_cast<std::uint32_t>(index)),
+        {.base = bases.front(), .size = base::Bytes(cublas_bytes)});
+    if (!cublas) return Error(std::format("cuBLAS: {}", cublas.error().detail));
+    held->cublas = std::move(*cublas);
+    return held->backend->LendCublas(held->cublas.get());
+  };
+  parts.config.retire = [held] {
+    held->backend->LaunchReleased();
+    held->selected_state = {};
+    held->cublas.reset();
+  };
+  // The backend's immutable future launch configuration also governs
+  // measurement. Its lane pools are funded beside measured stream scratch.
+  parts.config.launch_pool_reserve = held->backend->lane_pool_reserve();
+  parts.config.launch = [&node, held](std::uint64_t pool_bytes)
+      -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
+    if (pool_bytes == 0 || pool_bytes > node.pool().bytes)
+      return Error("a launch's pool lies outside the node's workspace");
+    return held->backend->Launch({.base = node.pool().base, .size = base::Bytes(pool_bytes)},
+                                 held->selected_state);
+  };
+  parts.config.weight_address = [held, paged, drafter_paged](
+                                    const ir::WeightRef& ref,
+                                    format::PartRole role) -> std::uint64_t {
+    const auto at = held->place.find({ref, role});
+    if (at == held->place.end()) return 0;
+    const ComponentHold::Place& p = at->second;
+    const auto* owner = p.artifact == 0 ? paged : drafter_paged;
+    if (owner == nullptr) return 0;
+    return p.array ? owner->array_address(p.index) : owner->resource_address(p.index);
+  };
+  parts.source = std::move(built.source);
+  parts.caps = built.policy.batching();
+  parts.logit_width = built.logit_width;
+  parts.device_greedy = built.policy.device_tokens();
+  parts.device_verify = built.policy.device_tokens();
+  parts.branch_depth = built.branch_depth;
+  parts.prefill = {.chunk_rows = chunk,
+                   .lookahead = built.policy.lookahead(),
+                   .capture_ahead = built.policy.capture_ahead(),
+                   .prepare_ahead = built.policy.prepare_ahead(),
+                   .state_only = built.policy.state_only()};
+  parts.architecture = settings.architecture;
+  parts.chat = {
+      .thinking = recipe.chat_thinking,
+      .tools = recipe.chat_tools,
+      .stops = std::vector<std::string>(recipe.chat_stops.begin(), recipe.chat_stops.end()),
+      .default_thinking = recipe.default_thinking};
+  parts.keep = std::move(built.hold);
+  return parts;
 }
 
 }  // namespace
@@ -407,35 +586,14 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       if (!cap) return Error(cap.error());
       return serving_support::AdmitExecutionMetadata(node, bytes, *cap);
     };
-    // A shared route qualified by its plain or joined envelopes (else one
-    // owner), or one served only in its automatic serving shape.
-    const bool solo = recipe.shared_route && recipe.qualified_envelopes;
-    if (options.derive_execution_domain && (!options.shared_route || options.execution_domain))
-      return Error(
-          "derived serving qualification needs an internal request without a caller domain");
-    const bool automatic_only = recipe.shared_route && !recipe.qualified_envelopes;
-    const bool automatic_serving =
-        automatic_only && options.derive_execution_domain && options.automatic_startup_cap != 0 &&
-        !options.target_policy && settings.context.value != 0 &&
-        settings.prefill_chunk.value != 0 &&
-        settings.prefill_chunk.value < settings.context.value && settings.max_slots.value != 0 &&
-        settings.max_slots.value <= Llm::kMaxBranches &&
-        (!settings.speculation.value || !drafter_id.empty());
-    if (automatic_only && !automatic_serving)
-      return Error(std::format("the {} shared route serves only its automatic serving envelope",
-                               recipe.name));
-    // The shared route's serving shape.
-    const bool shared = solo || automatic_serving;
-    const bool joined_score = solo && JoinedScoreEnvelope(settings, drafter_id, options);
-    const bool joined_mtp = solo && JoinedMtpEnvelope(settings, drafter_id, options);
-    const bool plain_serving = solo && PlainServingEnvelope(settings, drafter_id, options);
-    if (options.derive_execution_domain && !plain_serving && !joined_mtp && !automatic_serving)
-      return Error(
-          "derived serving qualification needs an ordinary target or composed replay source");
-    if (solo && (!options.shared_route ||
-                 (settings.max_slots.value != 1 && !joined_score && !joined_mtp && !plain_serving)))
-      return Error(std::format(
-          "the {} component qualification requires exactly one configured slot", recipe.name));
+    // All LLMs use the same declared backend and admitted source route.
+    // Configuration is validated against actual artifacts/layouts below;
+    // it cannot grant numerical transformations or execution capability.
+    if (settings.context.value == 0 || settings.prefill_chunk.value == 0 ||
+        settings.max_slots.value == 0 || settings.max_slots.value > Llm::kMaxBranches)
+      return Error("component serving needs positive context/chunk and a bounded owner count");
+    if (settings.speculation.value && drafter_id.empty())
+      return Error("component speculation needs an owned drafter artifact");
     auto artifact = OpenInstalled(store, id);
     if (!artifact) return Error(artifact.error());
 
@@ -602,12 +760,6 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error(configured.error());
     }
     for (const spec::Source& s : hold->sources) hold->tables.emplace_back(s.tensors);
-    if (joined_mtp && options.execution_domain &&
-        hold->spec.stages.size() != options.execution_domain->stages().size())
-      return Error("joined MTP requires every actual source stage");
-    if (joined_score &&
-        (hold->spec.stages.size() != 1 || hold->spec.stages.front().name != "target"))
-      return Error("joined scoring requires the actual single target stage");
     if (auto valid = components::ValidateSpec(hold->spec, hold->tables); !valid) {
       return Error(valid.error());
     }
@@ -645,11 +797,19 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (!bound) return Error(bound.error());
     if (settings.bound_spec && *settings.bound_spec != *bound)
       return Error("resolved calibration spec differs from the actual component spec");
+    // Resolve the admitted composition before choosing any mechanism. Its
+    // numerical/source policy is separate from mechanical backend support.
+    spec::PolicyRule composition = *stored_policy;
+    const bool forced = recipe.serving_rule != nullptr;
+    if (forced) composition = *recipe.serving_rule;
+    auto indexed = components::StageIndexedMasks(hold->spec, 0);
+    if (!indexed) return Error(indexed.error());
+    const auto backend_capabilities = kernels::ggml::GgmlBackend::Capabilities();
+    const bool indexed_masks = *indexed && backend_capabilities.indexed_masks;
     // The actual stored/composed contracts and selected emission mode bound
     // every mask and index-score plane's signed int32 stride (RE-037).
-    auto prompt_bound =
-        components::StagePrefillRows(hold->spec, 0, settings.context.value,
-                                     settings.prefill_chunk.value, shared && recipe.lid_mask);
+    auto prompt_bound = components::StagePrefillRows(hold->spec, 0, settings.context.value,
+                                                     settings.prefill_chunk.value, indexed_masks);
     if (!prompt_bound) return Error(prompt_bound.error());
     const auto configured_chunk = *prompt_bound;
     // How the drafter drafts (its mapping's drafting recipe).
@@ -683,222 +843,128 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // of an extent or more on its own extents (its growth crosses extents
     // with every other's), smaller ones packed, a bank kept contiguous.
     static_assert(model::kStateExtent == kExtent, "state is laid out over the paged extent");
-    for (std::uint16_t stage = 0; stage < hold->spec.stages.size(); ++stage) {
-      auto layout =
-          components::StageLayout(hold->spec, stage, settings.context.value, configured_chunk);
-      if (!layout) return Error(layout.error());
-      hold->layouts.push_back(std::move(*layout));
-    }
-    for (const auto& l : hold->layouts) hold->stages.push_back(&l);
+    if (auto state = PrepareComponentState(*hold, settings.context.value, configured_chunk); !state)
+      return Error(state.error());
     const model::StateLayoutDerived& target = hold->layouts.front();
-    auto caps = components::StageBatching(hold->spec, 0);
-    if (!caps) return Error(caps.error());
+    const auto caps = hold->batching.front();
     const std::uint32_t slots = std::clamp<std::uint32_t>(
         settings.max_slots.value, 1, static_cast<std::uint32_t>(Llm::kMaxBranches));
     const std::uint32_t context = target.context;
     const std::uint32_t chunk = std::max<std::uint32_t>(target.max_rows, 1);
-    // The recipe for this serving envelope, and how it composes steps.
-    spec::PolicyRule composition = *stored_policy;
-    // The shared route's own recipe in place of the admitted one.
-    const bool forced = shared && recipe.serving_rule != nullptr;
-    if (forced) composition = *recipe.serving_rule;
-    if (composition.prompts_alone) caps->join_prefill = false;
-    if (composition.owners_alone) caps->max_segments = 1;
-    if (shared) {
-      caps->common_read = true;
-      caps->joined_read_align = settings.wave_read_align.value;
-    }
-    if (joined_score && caps->max_segments < 4)
-      return Error("the actual component capability cannot join the scoring cohort");
+    // One immutable value controls composition, actual lanes and prefill.
+    // A setting requests a mechanism; only the admitted components/backend
+    // supply support. Neither this value nor a domain creates numerical grants.
+    auto serving_policy = LlmServingPolicy::Resolve(
+        {.batching = caps, .context = context, .max_rows = chunk, .indexed_masks = *indexed},
+        backend_capabilities,
+        {.owners = slots,
+         .read_align = settings.wave_read_align.value,
+         .wave_lanes = settings.wave_lanes.value,
+         .lane_scratch_bytes = kLaneScratchBytes,
+         .owners_alone = composition.owners_alone,
+         .prompts_alone = composition.prompts_alone,
+         .common_read = composition.common_read,
+         .lookahead = options.prefill_lookahead ? composition.prefill_lookahead : 0U,
+         .capture_ahead = composition.capture_ahead,
+         .prepare_ahead = options.prepare_state,
+         .state_only = options.state_only_prefill.value_or(!speculate),
+         .trial_mixed_outputs = options.trial_mixed_outputs,
+         .trial_mixed_causal = options.trial_mixed_causal});
+    if (!serving_policy) return Error(serving_policy.error());
     // A verify's rows: the anchor and every draft.
     const std::uint32_t verify_rows = speculate ? depth + 1 : 0;
     if (speculate && std::ranges::any_of(hold->layouts, [verify_rows](const auto& layout) {
           return verify_rows > layout.max_rows;
         }))
       return Error("the complete drafter verify exceeds its actual stage row bounds");
-    const std::uint32_t read_align = shared ? settings.wave_read_align.value : 256;
-    // The widest steps (the setup measurement): every owner's rows at the
-    // end of its context, reading all of it.
-    const auto shape = [&](std::uint16_t stage, planner::Phase phase, std::uint32_t owners,
-                           std::uint32_t rows, std::uint32_t outputs, bool greedy) {
-      planner::StepShape s{.stage = stage,
-                           .phase = phase,
-                           .segments = {},
-                           .row_invariant = false,
-                           .read_align = read_align};
-      for (std::uint32_t o = 0; o < owners; ++o) {
-        s.segments.push_back({.slot = static_cast<std::uint8_t>(o),
-                              .rows = rows,
-                              .past = context - rows,
-                              .read_cells = context,
-                              .outputs = outputs,
-                              .group = 0,
-                              .want_head = outputs != 0,
-                              .greedy = greedy});
-      }
-      return s;
-    };
-    const std::uint32_t joined = std::min(slots, std::max(caps->max_segments, 1U));
-    // A prompt chunk and a decode row, joined and alone, with logits and
-    // with device tokens: their plans differ (owner attention joins
-    // owners), so each is measured; with a drafter, a verify and a draft
-    // pass too, joined and alone.
-    std::vector<planner::StepShape> setup;
-    for (const std::uint32_t owners : {1U, joined}) {
-      const auto add = [&](planner::StepShape s) {
-        if (std::ranges::find(setup, s) == setup.end()) setup.push_back(std::move(s));
-      };
-      if (owners == 1 || caps->join_prefill) {
-        add(shape(0, planner::Phase::kPrefill, owners, chunk, 1, false));
-      }
-      for (const bool greedy : {false, true}) {
-        add(shape(0, planner::Phase::kDecode, owners, 1, 1, greedy));
-      }
-      if (block) {
-        if (shared) {
-          const std::uint32_t max_rows =
-              caps->max_segment_rows != 0 ? caps->max_segment_rows / owners : verify_rows;
-          const std::uint32_t d_rows = std::min(depth, max_rows);
-          const std::uint32_t v_rows = std::min(verify_rows, max_rows);
-          if (d_rows > 0) add(shape(1, planner::Phase::kDraft, owners, d_rows, d_rows, true));
-          if (v_rows > 0) add(shape(0, planner::Phase::kVerify, owners, v_rows, v_rows, false));
-        } else {
-          // Block proposals produce every head, including short reply tails;
-          // every verify includes its anchor. No autoregressive catch-up pass.
-          for (std::uint32_t rows = 1; rows <= depth; ++rows)
-            add(shape(1, planner::Phase::kDraft, owners, rows, rows, false));
-          for (std::uint32_t rows = 1; rows <= verify_rows; ++rows)
-            add(shape(0, planner::Phase::kVerify, owners, rows, rows, false));
-        }
-      } else if (speculate) {
-        for (const bool greedy : {false, true}) {
-          add(shape(0, planner::Phase::kVerify, owners, verify_rows, verify_rows, greedy));
-          add(shape(1, planner::Phase::kDraft, owners, 1, 1, mtp && greedy));
-        }
-        if (mtp) {
-          for (const auto rows : {verify_rows, chunk}) {
-            add(shape(1, planner::Phase::kDraft, owners, rows, 1, true));
-            add(shape(1, planner::Phase::kDraft, owners, rows, 0, false));
-          }
-        }
-      }
-    }
-    if (joined_score) {
-      // Full-head scored shapes are additional to ordinary prefill/decode
-      // measurements. Include each real fallback slot, not just owner zero.
-      for (const std::uint32_t rows : {1U, 2U}) {
-        auto scored = shape(0, planner::Phase::kScore, 4, rows, rows, false);
-        for (auto& segment : scored.segments) {
-          segment.past = 256 - rows;
-          segment.read_cells = 256;
-        }
-        setup.push_back(scored);
-        for (const auto& segment : scored.segments) {
-          auto single = scored;
-          single.segments = {segment};
-          setup.push_back(std::move(single));
-        }
-      }
-    }
-    // Each weight's place, by what the steps bind (the head's included;
-    // a state-only prompt chunk binds a subset), and a head row's width:
-    // its logits' (the head's vocabulary).
-    std::vector<engine::LayerSlabs> placements;
-    for (std::size_t a = 0; a < hold->sources.size(); ++a) {
-      auto slabs = engine::ExpertSlabsOf(a == 0 ? *artifact : *drafter, shared ? 16 : 256);
-      if (!slabs) return Error(slabs.error());
-      placements.push_back(std::move(*slabs));
-    }
-    // A table read by rows only where that holds less than the table (its
-    // landing and slots for the most lookups a setup shape makes,
-    // engine::RowPagingPays); a smaller one stays resident with its group,
-    // so no step waits on its reads.
-    const bool had_rows = !stored_bindings->rows.empty();
-    {
-      const auto& rows = stored_bindings->rows;
-      std::vector<engine::RunnerConfig::RowTable> paged;
-      for (const auto& row : rows) {
-        const ja::Artifact& owner =
-            hold->spec.stages.at(row.weight.stage).artifact == 0 ? *artifact : *drafter;
-        std::uint64_t lookups = 0, table = 0, row_bytes = 0;
-        for (const planner::StepShape& s : setup)
-          if (s.stage == row.weight.stage)
-            lookups = std::max(lookups, std::uint64_t{s.rows()} * row.rows_per_token);
-        for (const auto& part : rows) {
-          if (part.weight != row.weight) continue;
-          table += owner.resources()[part.resource].bytes.value();
-          row_bytes += format::RowBytes(part.format, part.part).value_or(0);
-        }
-        if (engine::RowPagingPays(table, lookups, row_bytes)) paged.push_back(row);
-      }
-      stored_bindings->rows = std::move(paged);
-    }
-    std::uint32_t logit_width = 0;
-    {
-      logit_width = stored_bindings->logit_width;
-      for (const auto& [key, place] : hold->place)
-        if (place.array)
-          hold->pitch[key.first] = placements.at(place.artifact).pitch.at(place.index);
-      for (const auto& row : stored_bindings->rows) {
-        const auto art_idx = hold->spec.stages.at(row.weight.stage).artifact;
-        const ja::Artifact& owner = art_idx == 0 ? *artifact : *drafter;
-        if (row.resource >= owner.resources().size()) {
-          return Error("a paged row table names a resource outside its artifact");
-        }
-        placements.at(art_idx).places.at(owner.resources()[row.resource].group) =
-            engine::GroupPlace::kNone;
-      }
-    }
-    // The stored target's maps came from its validated component roles
-    // above; only a speculating model builds the setup graphs, to place its
-    // drafter's weights.
+    const std::uint32_t read_align = serving_policy->read_align();
+    engine::DecodingMode mode;
     if (speculate) {
-      for (const planner::StepShape& s : setup) {
-        auto step =
-            components::BuildStep(hold->spec, s.stage, s,
-                                  {.tensors = hold->tables.at(s.stage),
-                                   .state = &hold->layouts.at(s.stage),
-                                   .stages = hold->stages,
-                                   .artifacts = hold->tables},
-                                  {.narrow = true, .dsv4_lid_mask = shared && recipe.lid_mask});
-        if (!step) return Error(step.error());
-        for (const components::StepWeight& weight : step->weights) {
-          // A stored target's weights are placed above from its validated
-          // roles. A target-stage step also binds the drafter's weights (the
-          // feature projection a prompt chunk runs when the model speculates),
-          // and those have no other source of places.
-          if (weight.ref.stage == 0) continue;
-          const auto art_idx = hold->spec.stages.at(weight.ref.stage).artifact;
-          const ja::Artifact& a = *drafter;
-          for (const auto& [name, role] : weight.parts) {
-            const auto found =
-                weight.ref.expert_array ? a.FindExpertArray(name) : a.FindResource(name);
-            if (!found) return Error(std::format("no weight part holds {}", name));
-            hold->place[{weight.ref, role}] = {.artifact = static_cast<std::uint16_t>(art_idx),
-                                               .array = weight.ref.expert_array,
-                                               .index = *found};
-            if (weight.ref.expert_array)
-              hold->pitch[weight.ref] = placements.at(art_idx).pitch.at(*found);
-          }
-        }
-        if (s.stage == 0 && step->logits.valid() && logit_width == 0) {
-          const std::uint64_t width = step->graph.tensor(step->logits).shape().ne[0];
-          if (width == 0 ||
-              width > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
-            return Error(std::format("the head's {} logits a row", width));
-          }
-          logit_width = static_cast<std::uint32_t>(width);
-        }
-      }
+      mode = {
+          .kind = engine::DecodingMode::Kind::kSpeculative,
+          .drafters = {{.stage = 1,
+                        .shape = block ? engine::DrafterSpec::Shape::kBlock
+                                       : engine::DrafterSpec::Shape::kAutoregressive,
+                        .max_depth = depth,
+                        .shared_wave_depth =
+                            mtp ? std::min(settings.shared_wave_depth.value, depth) : 0,
+                        .draft_wave_max = mtp ? settings.draft_wave_max.value : 0,
+                        .catch_up = mtp,
+                        .fill = block_fill,
+                        .borrows_target = !mtp && !block,
+                        .anchored = !mtp && !block,
+                        .features = !block,
+                        .adaptive = mtp && depth >= 3,
+                        .depth_cost = mtp ? settings.depth_cost_ratio.value
+                                          : (draft != nullptr ? draft->default_depth_cost : 1.16),
+                        .device_tokens = serving_policy->device_tokens(),
+                        .draft_before_limit = true,
+                        .head_ids = hold->draft_head_ids,
+                        .head_rows = hold->draft_head_rows}},
+          .combine = engine::DecodingMode::Drafters::kCascade,
+          .row_invariant = false};
     }
-    if (logit_width == 0) return Error("the spec's target stage has no head");
+    auto execution_domain = options.execution_domain;
+    if (!execution_domain && !metadata) {
+      auto admitted = admit_metadata();
+      if (!admitted) return Error(admitted.error());
+      metadata = std::move(*admitted);
+    }
+    if (!execution_domain) {
+      auto domain =
+          ComponentServingDomain(hold->spec, hold->layouts, hold->batching, slots, mode, metadata,
+                                 [metadata, charge_metadata](std::uint64_t bytes) {
+                                   return charge_metadata(metadata, bytes);
+                                 });
+      if (!domain) return Error(domain.error());
+      execution_domain = std::move(*domain);
+    }
+    if (auto checked =
+            ValidateServingEnvelope(*execution_domain, hold->layouts, hold->batching, slots);
+        !checked)
+      return Error(checked.error());
+    if (!options.diagnostic_setup_shapes.empty()) {
+      if (!options.execution_domain)
+        return Error("diagnostic setup shapes require an explicit source domain");
+      if (!metadata) {
+        auto admitted = admit_metadata();
+        if (!admitted) return Error(admitted.error());
+        metadata = std::move(*admitted);
+      }
+      // Source/build owner, immutable retained shape copies and their vectors.
+      // Standard allocator/control overhead is named separately from payload.
+      std::uint64_t bytes = sizeof(ConstructionCharge) + 2 * 64;
+      for (const auto& shape : options.diagnostic_setup_shapes) {
+        std::uint64_t segments = 0, item = 0;
+        if (__builtin_mul_overflow(static_cast<std::uint64_t>(shape.segments.size()),
+                                   sizeof(planner::Segment), &segments) ||
+            __builtin_add_overflow(segments, sizeof(planner::StepShape) + 2 * 64, &item) ||
+            __builtin_add_overflow(bytes, item, &bytes))
+          return Error("diagnostic setup inventory overflows");
+      }
+      if (!charge_metadata(metadata, bytes))
+        return Error("diagnostic setup metadata allowance is insufficient");
+      hold->setup_charge = std::make_shared<ConstructionCharge>();
+      hold->setup_charge->allowance = metadata;
+      hold->setup_charge->bytes = bytes;
+    }
+    auto setup_caps = hold->batching;
+    setup_caps.front() = serving_policy->batching();
+    auto measured = ComponentSetupShapes(
+        hold->layouts, setup_caps, slots, read_align, mode, options.execution_domain.get(),
+        options.diagnostic_setup_shapes, serving_policy->device_tokens());
+    if (!measured) return Error(measured.error());
+    auto setup = std::move(*measured);
+    auto placed =
+        PrepareComponentPlacement(*hold, *artifact, drafter ? &*drafter : nullptr, *stored_bindings,
+                                  setup, serving_policy->indexed_masks());
+    if (!placed) return Error(placed.error());
+    auto placements = std::move(placed->slabs);
+    const auto logit_width = placed->logit_width;
     if (block && std::cmp_greater_equal(block_fill, logit_width))
       return Error("a block drafter's fill token is outside the vocabulary");
     // A layer's routed experts in one slab (the M3 runners' pitch).
-    if (solo && had_rows && stored_bindings->rows.empty())
-      return Error("the component recipe has no n-gram row table");
     ComponentHold* held = hold.get();
-    const bool lanes = shared && recipe.lanes;
     kernels::ggml::GgmlBackendOptions backend_options{
         .lower = {.device_masks = true,
                   // The runner stages a frozen read's host mask (its cells'
@@ -912,8 +978,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                     const auto at = held->pitch.find(ref);
                     return at == held->pitch.end() ? 0 : at->second;
                   }},
-        .lanes = {.count = lanes ? kernels::ggml::kMaxLanes : 0,
-                  .scratch_bytes_per_lane = lanes ? kLaneScratchBytes : 0}};
+        .lanes = serving_policy->lanes()};
     auto backend = kernels::ggml::GgmlBackend::Create(
         0, node.execution(), node.stream(static_cast<std::uint32_t>(index)), nullptr,
         std::move(backend_options));
@@ -939,49 +1004,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     const std::uint64_t cublas_bytes =
         kernels::ggml::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture))
             .value();
-    engine::DecodingMode mode;
-    if (speculate) {
-      mode = {
-          .kind = engine::DecodingMode::Kind::kSpeculative,
-          .drafters = {{.stage = 1,
-                        .shape = block ? engine::DrafterSpec::Shape::kBlock
-                                       : engine::DrafterSpec::Shape::kAutoregressive,
-                        .max_depth = depth,
-                        .shared_wave_depth =
-                            mtp ? std::min(settings.shared_wave_depth.value, depth) : 0,
-                        .draft_wave_max = mtp ? settings.draft_wave_max.value : 0,
-                        .catch_up = mtp,
-                        .fill = block_fill,
-                        .borrows_target = !mtp && !block,
-                        .anchored = !mtp && !block,
-                        .features = !block,
-                        .adaptive = mtp && depth >= 3,
-                        .depth_cost = mtp ? settings.depth_cost_ratio.value
-                                          : (draft != nullptr ? draft->default_depth_cost : 1.16),
-                        .device_tokens = shared,
-                        .draft_before_limit = shared,
-                        .head_ids = hold->draft_head_ids,
-                        .head_rows = hold->draft_head_rows}},
-          .combine = engine::DecodingMode::Drafters::kCascade,
-          .row_invariant = false};
-    }
-    auto execution_domain = options.execution_domain;
-    if (options.derive_execution_domain && !metadata) {
-      auto admitted = admit_metadata();
-      if (!admitted) return Error(admitted.error());
-      metadata = std::move(*admitted);
-    }
-    if (options.derive_execution_domain) {
-      auto domain = ComponentServingDomain(hold->spec, hold->layouts, slots, mode, metadata,
-                                           [metadata, charge_metadata](std::uint64_t bytes) {
-                                             return charge_metadata(metadata, bytes);
-                                           });
-      if (!domain) return Error(domain.error());
-      execution_domain = std::move(*domain);
-    }
-    if (options.tuning && !execution_domain)
-      return Error("explicit tuning requires a declared execution source");
-    if (execution_domain) {
+    {
       if (!metadata) {
         auto admitted = admit_metadata();
         if (!admitted) return Error(admitted.error());
@@ -1000,221 +1023,25 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         return Error(declared.error());
     }
 
-    // The target's policy: a harness's matched recipe, the shared route's
-    // own, or the rule admission chose (AdmittedPolicy); where it chose none
-    // (an approval's kNone, or no rule holds), the engine's default. Its
-    // step source never chooses a rule again from its mapping.
-    planner::Policy target_policy;
-    if (!composition.text.empty() || options.target_policy || forced) {
-      auto parsed =
-          planner::ParsePolicy(options.target_policy ? *options.target_policy : composition.text);
-      if (!parsed) return Error(std::format("the target's policy: {}", parsed.error()));
-      target_policy = std::move(*parsed);
-    }
-    std::optional<planner::Policy> drafter_policy;
-    if (options.drafter_policy) {
-      auto parsed = planner::ParsePolicy(*options.drafter_policy);
-      if (!parsed) return Error(std::format("the drafter's policy: {}", parsed.error()));
-      drafter_policy = std::move(*parsed);
-    }
-    if (!drafter_policy && forced && speculate) {
-      // The forced route retains its shared fusion rules for the drafter,
-      // but each stage's independent product policies come from its mapping.
-      auto text = spec::DefaultPolicy(*drafter_mapping, hold->drafter_values,
-                                      {.context = settings.context.value, .slots = slots});
-      if (!text) return Error(text.error());
-      auto own = text->empty() ? std::expected<planner::Policy, std::string>(planner::Policy{})
-                               : planner::ParsePolicy(*text);
-      if (!own) return Error(own.error());
-      drafter_policy = target_policy;
-      drafter_policy->products = own->products;
-    }
-    std::vector<std::unique_ptr<engine::ComponentStepSource>> sources;
-    for (std::uint16_t stage = 0; stage < hold->spec.stages.size(); ++stage) {
-      auto stage_policy = stage == 0       ? std::optional(target_policy)
-                          : drafter_policy ? drafter_policy
-                          : forced         ? std::optional(target_policy)
-                                           : std::nullopt;
-      if (!stage_policy) {
-        auto text = spec::DefaultPolicy(*drafter_mapping, hold->drafter_values,
-                                        {.context = settings.context.value, .slots = slots});
-        if (!text) return Error(text.error());
-        auto parsed = text->empty() ? std::expected<planner::Policy, std::string>(planner::Policy{})
-                                    : planner::ParsePolicy(*text);
-        if (!parsed) return Error(parsed.error());
-        stage_policy = std::move(*parsed);
-      }
-      const auto artifact_index = hold->spec.stages[stage].artifact;
-      const auto& admitted_artifact = artifact_index == 0 ? *artifact : *drafter;
-      auto numerical = AdmittedNumerics(
-          hold->spec, hold->sources.at(artifact_index), admitted_artifact.sources(),
-          FindApproval(admitted_artifact.model().architecture, admitted_artifact.sources()),
-          hold->numerical_semantics[stage], {.context = settings.context.value, .slots = slots},
-          stage, hold->backend->Backend().ConstructionFunding());
-      if (!numerical) return Error(numerical.error());
-      stage_policy->numerical = std::move(*numerical);
-      auto made = engine::ComponentStepSource::Create(
-          {.spec = &hold->spec,
-           .stage = stage,
-           .bindings = {.tensors = hold->tables.at(hold->spec.stages.at(stage).artifact),
-                        .state = &hold->layouts.at(stage),
-                        .stages = hold->stages,
-                        .artifacts = hold->tables},
-           .bound_digest = *bound,
-           .mapping = stage == 0 ? mapping : drafter_mapping,
-           .values = stage == 0 ? std::span<const spec::SourceValue>{}
-                                : std::span<const spec::SourceValue>(hold->drafter_values),
-           .slots = slots,
-           // A drafter stage: the diagnostic's policy, else a forced
-           // shared-route recipe's (the target's), else its mapping's.
-           .policy = std::move(stage_policy),
-           .backend = hold->backend->Backend(),
-           .execution_domain = execution_domain,
-           // Actual programs report capture safety; eager-only implementations
-           // remain eligible without disabling capture of ordinary programs.
-           .require_capture = false,
-           .validate_program = options.validate_program,
-           .compiler = hold->compiler,
-           .compiler_bytes = hold->compiler_bytes});
-      if (!made) return Error(made.error());
-      sources.push_back(std::move(*made));
-    }
-    std::unique_ptr<engine::StepSource> step_source;
-    if (sources.size() == 1) {
-      step_source = std::move(sources.front());
-    } else {
-      auto staged = engine::StagedStepSource::Create(std::move(sources));
-      if (!staged) return Error(staged.error());
-      step_source = std::move(*staged);
-    }
-    auto weights = std::make_unique<engine::PagedWeights>();
-    if (auto opened = weights->Open(store / id); !opened) return Error(opened.error());
-    engine::PagedWeights* paged = weights.get();
-    engine::PagedWeights* drafter_paged = nullptr;
-    EngineLlmParts parts;
-    parts.execution_metadata = metadata;
-    if (hold->automatic_construction) {
-      parts.startup_host_bytes = hold->automatic_construction->capacity() +
-                                 engine::ExecutionMetadataAllowance::OverheadBytes();
-      parts.startup_cap = options.automatic_startup_cap;
-    }
-    parts.config.slots = {.model = settings.name,
-                          .slots = slots,
-                          .stages = {{.name = "target", .layout = target, .read_align = 0}},
-                          .spec = *bound,
-                          .read_align = read_align,
-                          .spill_place = {},
-                          .spill_directory = {},
-                          .invalidate = {},
-                          .drop_plans = {}};
-    parts.config.weights.push_back({.weights = std::move(weights),
-                                    .places = std::move(placements[0].places),
-                                    .slabs = std::move(placements[0].slabs)});
-    // Always expose the checked physical-part callback. Kernel candidates,
-    // rather than a model-table scan, decide which representation they read.
-    parts.config.split_expert_parts = true;
-    parts.config.row_tables = std::move(stored_bindings->rows);
-    if (options.capture_first_verify)
-      parts.config.capture_first_phases = 1U << static_cast<unsigned>(planner::Phase::kVerify);
-    if (shared)
-      parts.config.capture_phases &= ~(1U << static_cast<unsigned>(planner::Phase::kPrefill));
-    if (speculate) {
-      parts.config.slots.stages.push_back(
-          {.name = std::string(drafter_mapping->stage), .layout = hold->layouts.at(1)});
-      auto dweights = std::make_unique<engine::PagedWeights>();
-      if (auto opened = dweights->Open(store / drafter_id); !opened) return Error(opened.error());
-      drafter_paged = dweights.get();
-      parts.config.weights.push_back({.weights = std::move(dweights),
-                                      .places = std::move(placements[1].places),
-                                      .slabs = std::move(placements[1].slabs)});
-      parts.config.max_verify_rows = verify_rows;
-      parts.mode = std::move(mode);
-    }
-    if (shared && speculate && recipe.adaptive_waves) {
-      execution::AdaptiveWaveMode::Costs costs{};
-      for (std::size_t i = 0; i < settings.wave_costs.value.size() && i + 2 < costs.size(); ++i)
-        costs[i + 2] = settings.wave_costs.value[i];
-      const auto force = settings.wave_form.value == config::WaveForm::kPlain
-                             ? execution::AdaptiveWaveMode::Force::kPlain
-                         : settings.wave_form.value == config::WaveForm::kSpeculative
-                             ? execution::AdaptiveWaveMode::Force::kSpeculative
-                             : execution::AdaptiveWaveMode::Force::kNone;
-      // The shared composer admits full per-owner verifies or separates them;
-      // it has no legacy fixed sixteen-row lane that truncates each owner.
-      parts.wave_mode.emplace(costs, force);
-    }
-    parts.config.setup_shapes = std::move(setup);
-    // cuBLAS on the model's stream over the runner's workspace (D-053: the
-    // engine's handle, never one GGML makes).
-    parts.config.kernel_memory.push_back(
-        {.name = std::format("{} cuBLAS workspace", settings.name), .bytes = cublas_bytes});
-    const auto selected_bytes = held->backend->persistent_bytes();
-    if (selected_bytes)
-      parts.config.kernel_memory.push_back(
-          {.name = std::format("{} selected kernel state", settings.name),
-           .bytes = selected_bytes});
-    parts.config.prepare =
-        [&node, held, index, selected_bytes,
-         cublas_bytes](std::span<const std::uint64_t> bases) -> std::expected<void, std::string> {
-      if (bases.size() != 1U + static_cast<std::size_t>(selected_bytes != 0))
-        return Error("the kernel workspaces are not mapped");
-      held->selected_state = {selected_bytes ? bases[1] : 0, selected_bytes};
-      auto cublas = kernels::ggml::CublasHandle::Create(
-          0, node.execution(), node.stream(static_cast<std::uint32_t>(index)),
-          {.base = bases.front(), .size = base::Bytes(cublas_bytes)});
-      if (!cublas) return Error(std::format("cuBLAS: {}", cublas.error().detail));
-      held->cublas = std::move(*cublas);
-      return held->backend->LendCublas(held->cublas.get());
-    };
-    parts.config.retire = [held] {
-      held->backend->LaunchReleased();
-      held->selected_state = {};
-      held->cublas.reset();
-    };
-    // The backend's immutable future launch configuration also governs
-    // measurement. Its lane pools are funded beside measured stream scratch.
-    parts.config.launch_pool_reserve = held->backend->lane_pool_reserve();
-    parts.config.launch = [&node, held](std::uint64_t pool_bytes)
-        -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
-      if (pool_bytes == 0 || pool_bytes > node.pool().bytes)
-        return Error("a launch's pool lies outside the node's workspace");
-      return held->backend->Launch({.base = node.pool().base, .size = base::Bytes(pool_bytes)},
-                                   held->selected_state);
-    };
-    parts.config.weight_address = [held, paged, drafter_paged](
-                                      const ir::WeightRef& ref,
-                                      format::PartRole role) -> std::uint64_t {
-      const auto at = held->place.find({ref, role});
-      if (at == held->place.end()) return 0;
-      const ComponentHold::Place& p = at->second;
-      const auto* owner = p.artifact == 0 ? paged : drafter_paged;
-      if (owner == nullptr) return 0;
-      return p.array ? owner->array_address(p.index) : owner->resource_address(p.index);
-    };
-    parts.source = std::move(step_source);
-    parts.caps = *caps;
-    parts.logit_width = logit_width;
-    parts.device_greedy = true;
-    parts.device_verify = shared;
-    parts.branch_depth = recipe.branch_depth;
-    parts.prefill = {.chunk_rows = chunk,
-                     .lookahead = composition.prefill_lookahead,
-                     .capture_ahead = composition.capture_ahead,
-                     .prepare_ahead = true,
-                     .state_only = true};
-    if (shared) {
-      parts.prefill.lookahead = options.prefill_lookahead ? 2 : 0;
-      parts.prefill.prepare_ahead = options.prepare_state;
-      parts.prefill.state_only = options.state_only_prefill.value_or(!speculate);
-    }
-    parts.architecture = settings.architecture;
-    parts.chat = {
-        .thinking = recipe.chat_thinking,
-        .tools = recipe.chat_tools,
-        .stops = std::vector<std::string>(recipe.chat_stops.begin(), recipe.chat_stops.end()),
-        .default_thinking = recipe.default_thinking};
-    parts.keep = std::move(hold);
-    return parts;
+    auto sealed = SealComponentSources(*hold, options, composition, forced, speculate, mapping,
+                                       drafter_mapping, *bound, slots, context, execution_domain,
+                                       *artifact, drafter ? &*drafter : nullptr);
+    if (!sealed) return Error(sealed.error());
+    auto step_source = std::move(*sealed);
+    return AssembleComponentParts(node, store, id, drafter_id, index, settings, recipe,
+                                  drafter_mapping, options, metadata,
+                                  {.hold = std::move(hold),
+                                   .source = std::move(step_source),
+                                   .placements = std::move(placements),
+                                   .rows = std::move(stored_bindings->rows),
+                                   .setup = std::move(setup),
+                                   .mode = std::move(mode),
+                                   .policy = *serving_policy,
+                                   .bound = *bound,
+                                   .logit_width = logit_width,
+                                   .verify_rows = verify_rows,
+                                   .branch_depth = mtp ? depth : 0,
+                                   .cublas_bytes = cublas_bytes});
   };
 }
 

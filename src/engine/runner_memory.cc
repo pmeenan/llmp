@@ -15,23 +15,25 @@
 namespace llmp::engine {
 
 RunnerMemory::Status RunnerMemory::Map(Mapped& mapped, std::string name, std::uint64_t bytes,
-                                       catalog::MemoryClass memory_class) {
+                                       catalog::MemoryClass memory_class, bool* over_budget) {
+  if (over_budget) *over_budget = false;
   // Retain even a partially mapped attempt through fenced teardown.
   // MapResident can fail after reservation or some backing was acquired.
   mapped_.push_back(&mapped);
   if (auto r = node_.MapResident(mapped, std::move(name), bytes, providers::BackingKind::kDevice,
-                                 memory_class, catalog::Recovery::kPinned, owner_);
+                                 memory_class, catalog::Recovery::kPinned, owner_, over_budget);
       !r) {
     return r;
   }
   return {};
 }
 
-std::expected<void*, std::string> RunnerMemory::Pinned(std::uint64_t bytes) {
+std::expected<void*, std::string> RunnerMemory::Pinned(std::uint64_t bytes, bool* over_budget) {
+  if (over_budget) *over_budget = false;
   const auto charged = std::max<std::uint64_t>(bytes, 256);
   if (charged > UINT64_MAX - pinned_bytes_)
     return std::unexpected("pinned staging accounting overflows");
-  auto allocated = node_.Pinned(bytes, owner_, staging_);
+  auto allocated = node_.Pinned(bytes, owner_, staging_, over_budget);
   if (allocated) {
     pinned_bytes_ += charged;
     pinned_.push_back({*allocated, staging_.back(), charged});
@@ -71,6 +73,40 @@ std::uint64_t RunnerMemory::mapped_bytes() const {
     bytes += mapped->bytes;
   }
   return bytes;
+}
+
+std::expected<std::uint64_t, std::string> RunnerMemory::MetadataBytes(std::size_t mappings,
+                                                                      std::size_t pinned) {
+  std::uint64_t bytes = 0, n = 0;
+  if (__builtin_mul_overflow(std::uint64_t{mappings}, std::uint64_t{sizeof(Mapped*)}, &bytes) ||
+      __builtin_mul_overflow(std::uint64_t{pinned},
+                             std::uint64_t{sizeof(PinnedAllocation) + sizeof(catalog::ExtentId)},
+                             &n) ||
+      __builtin_add_overflow(bytes, n, &bytes) ||
+      __builtin_add_overflow(bytes, std::uint64_t{(mappings ? 1U : 0U) + (pinned ? 2U : 0U)} * 64,
+                             &bytes) ||
+      bytes > PTRDIFF_MAX)
+    return std::unexpected("private memory descriptor storage overflows");
+  return bytes;
+}
+void RunnerMemory::ReserveMetadata(std::size_t mappings, std::size_t pinned) {
+  mapped_.reserve(mappings);
+  pinned_.reserve(pinned);
+  staging_.reserve(pinned);
+}
+std::size_t RunnerMemory::ExtentCount() const {
+  std::size_t count = staging_.size();
+  for (const auto* mapped : mapped_) count += mapped->extents.size();
+  return count;
+}
+RunnerMemory::Status RunnerMemory::FillExtents(std::span<catalog::ExtentId> into) const {
+  if (into.size() != ExtentCount())
+    return std::unexpected("private memory extent count/fill differs");
+  std::size_t at = 0;
+  for (const auto* mapped : mapped_)
+    for (const auto id : mapped->extents) into[at++] = id;
+  for (const auto id : staging_) into[at++] = id;
+  return {};
 }
 
 std::vector<catalog::ExtentId> RunnerMemory::extents() const {

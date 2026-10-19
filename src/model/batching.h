@@ -59,6 +59,12 @@ struct Batching {
   // Owners whose head intent differs (a state-only cut beside a headed
   // chunk) may join; otherwise they step apart.
   bool mixed_heads = false;
+  // Mechanically supported per-owner result encodings (I32 device choices or
+  // F32 distributions). Enabled only by an evaluated composition policy.
+  bool mixed_greedy = false;
+  // Evaluated common causal target path: prefill rows and ordinary one-row
+  // decode preserve individual roles/results in one admitted program.
+  bool mixed_causal = false;
 };
 
 }  // namespace llmp::model

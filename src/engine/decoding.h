@@ -226,8 +226,8 @@ struct DecodeOutcome {
   bool discarded = false;                // the judge refused: the verify undone whole
   // The step's (plain, scored or the verify's) own outputs, its joined
   // outputs and where it sat in its step (WaveOutcome's).
-  std::vector<std::byte> outputs{};
-  std::vector<std::byte> joined{};
+  HostBuffer outputs{};
+  HostBuffer joined{};
   std::uint32_t segment = 0, first_row = 0, first_output = 0;
   RunPath path = RunPath::kEager;
 };

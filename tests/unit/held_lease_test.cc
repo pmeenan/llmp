@@ -483,6 +483,47 @@ TEST_F(HeldLeaseTest, LeaseReplacementRequiresTheAuthenticIdleHolderAndDoesNotRe
   Settle();
 }
 
+TEST_F(HeldLeaseTest, PreparedExchangeAndInPlaceRemovalRequireTheSameRetiredHolder) {
+  Build(2 * kPerModel);
+  Request request;
+  Open(request, 0);
+  const auto original = ModelClosure(0);
+  const auto lease = request.channel.lease;
+  const auto workspace = catalog_.ClosureOfExtents(std::array{workspace_});
+  ASSERT_TRUE(workspace);
+  const auto removed = catalog_.ClosureOfExtents(weights_[0]);
+  ASSERT_TRUE(removed);
+  sc::Scheduler::LeaseReplacementStorage storage;
+  for (const auto& [id, generation] : workspace->extents) {
+    (void)generation;
+    storage.catalog_extents.push_back(id);
+    storage.held_extents.push_back(id);
+  }
+  const auto held = Held();
+  EXPECT_FALSE(scheduler_->RemoveRequestExtents(request.tag + 1, lease, removed->extents));
+  auto wrong = storage;
+  wrong.held_extents.clear();
+  EXPECT_FALSE(scheduler_->ReplaceRequestLease(request.tag, lease, *workspace, wrong));
+  std::atomic<int> runs{0};
+  Step(request, Counting(runs), false);
+  EXPECT_EQ(Failed(scheduler_->ReplaceRequestLease(request.tag, lease, *workspace, storage)),
+            sc::WorkError::kBusy);
+  EXPECT_EQ(Failed(scheduler_->RemoveRequestExtents(request.tag, lease, removed->extents)),
+            sc::WorkError::kBusy);
+  EXPECT_EQ(Held(), held);
+  Settle();
+  ASSERT_TRUE(scheduler_->RemoveRequestExtents(request.tag, lease, removed->extents));
+  EXPECT_EQ(request.channel.lease, lease);
+  EXPECT_EQ(Leases(0), 0U);
+  EXPECT_EQ(Held(), Bytes(kSize));
+  // Restore under the unchanged canonical holder; a malformed paid storage
+  // inventory above granted neither work nor removal rights.
+  ASSERT_TRUE(scheduler_->ReplaceRequestLease(request.tag, lease, original));
+  EXPECT_EQ(Held(), held);
+  End(request);
+  EXPECT_FALSE(scheduler_->RemoveRequestExtents(request.tag, lease, removed->extents));
+}
+
 TEST_F(HeldLeaseTest, ARequestLeasesItsClosureOnceAndEachStepRunsUnderIt) {
   Build(2 * kPerModel);
   Request request;
@@ -499,6 +540,7 @@ TEST_F(HeldLeaseTest, ARequestLeasesItsClosureOnceAndEachStepRunsUnderIt) {
     EXPECT_EQ(runs.load(), step);
     EXPECT_EQ(request.channel.steps.load(), static_cast<std::uint64_t>(step));
     EXPECT_FALSE(request.channel.step_failed.load());
+    EXPECT_TRUE(request.channel.step_retired.load());
     EXPECT_EQ(Leases(0), kPerModel) << "step " << step;  // the one lease, no other
     EXPECT_EQ(scheduler_->operations(), 0U);
   }
@@ -758,17 +800,23 @@ TEST_F(HeldLeaseTest, OnlyTheHolderSubmitsAndOnlyAResidentClosureIsHeld) {
   std::atomic<int> runs{0};
   std::optional<std::expected<sc::OperationId, sc::WorkError>> foreign;
   std::optional<std::expected<sc::Readiness, sc::WorkError>> foreign_end;
+  bool foreign_retired = true;
+  bool missing_retired = true;
   ASSERT_TRUE(scheduler_
                   ->Start(++request_, std::make_unique<ProbeProgram>([&](sc::TaskContext& c) {
                     foreign = c.SubmitLaunch(requests,
                                              sc::LaunchWork{.stream = 0, .job = Counting(runs)});
                     foreign_end = c.EndLease(requests);
+                    foreign_retired = c.LeaseWorkRetired(requests);
+                    missing_retired = c.LeaseWorkRetired({});
                   }))
                   .has_value());
   Settle();
   ASSERT_TRUE(foreign.has_value() && foreign_end.has_value());
   EXPECT_EQ(Failed(foreign.value_or(sc::OperationId())), sc::WorkError::kInvalid);
   EXPECT_EQ(Failed(foreign_end.value_or(sc::Readiness::kReady)), sc::WorkError::kInvalid);
+  EXPECT_FALSE(foreign_retired);  // Another task cannot turn a foreign lease into proof.
+  EXPECT_FALSE(missing_retired);
   EXPECT_EQ(runs.load(), 0);
   EXPECT_EQ(Leases(0), kPerModel);  // still the request's
   End(request);
@@ -789,7 +837,9 @@ TEST_F(HeldLeaseTest, AnUnprovenStepKeepsTheLeaseForGood) {
   EXPECT_EQ(scheduler_->fault(), sc::Fault::kUnproven);
   EXPECT_EQ(scheduler_->quarantined(), 1U);
   EXPECT_TRUE(request.channel.step_failed.load());
-  End(request);  // ending it cannot release it
+  EXPECT_EQ(request.channel.steps.load(), 1U);        // Failure wake still publishes a result.
+  EXPECT_FALSE(request.channel.step_retired.load());  // It did not publish fence proof.
+  End(request);                                       // ending it cannot release it
   EXPECT_EQ(Leases(0), kPerModel);
   EXPECT_EQ(scheduler_->held(), 1U);
   EXPECT_EQ(Held(), Bytes((kPerModel + 1) * kSize));  // stays charged
@@ -1083,6 +1133,84 @@ TEST_F(HeldLeaseTest, SupplementalKeepsBaseWhileMaterializingAndLeasingSelected)
   EXPECT_EQ(request.channel.external->load(), 0U);
   EXPECT_EQ((*allowance)->used(), 0U);
   End(request);
+}
+
+TEST_F(HeldLeaseTest, PrepaidSupplementalCapacityReusesOnlyAfterActualRetirementAndDestruction) {
+  namespace en = llmp::engine;
+  auto allowance = en::ExecutionMetadataAllowance::Admit(catalog_, domain_, 65536, 131072, 65536);
+  ASSERT_TRUE(allowance);
+  Build(8);
+  Request request;
+  Open(request, 0);
+  const auto selected = ModelClosure(1);
+  auto capacity = en::SupplementalRun::Prepare(catalog_, domain_, request.channel, request.done,
+                                               selected.extents.size(), *allowance);
+  ASSERT_TRUE(capacity) << capacity.error();
+  const auto retained = (*allowance)->used();
+  ASSERT_GT(retained, 0U);
+  const auto filler = (*allowance)->capacity() - retained;
+  ASSERT_TRUE((*allowance)->Charge(filler));
+  std::atomic<int> runs{0};
+  auto payload = std::make_shared<int>(7);
+  // Actual remaining capacity is zero: construction must borrow the paid
+  // receipt rather than make another admission after earlier work.
+  EXPECT_FALSE(en::SupplementalRun::Create(catalog_, domain_, request.channel, request.done,
+                                           selected, Counting(runs), 0, payload, *allowance));
+  for (int iteration = 0; iteration != 2; ++iteration) {
+    auto ticket =
+        en::SupplementalRun::Create(catalog_, domain_, request.channel, request.done, selected,
+                                    Counting(runs), 0, payload, *allowance, *capacity);
+    ASSERT_TRUE(ticket) << ticket.error();
+    EXPECT_EQ((*allowance)->used(), (*allowance)->capacity());
+    EXPECT_FALSE(en::SupplementalRun::Covers(*capacity, request.channel, domain_, *allowance));
+    EXPECT_FALSE(en::SupplementalRun::Create(catalog_, domain_, request.channel, request.done,
+                                             selected, Counting(runs), 0, payload, *allowance,
+                                             *capacity));
+    ASSERT_TRUE(Run((*ticket)->Program(), (*ticket)->done()));
+    const auto retired = (*ticket)->Retire(*scheduler_);
+    ASSERT_TRUE(retired && *retired);
+    // Even positively retired state still owns allocations under the receipt.
+    EXPECT_FALSE(en::SupplementalRun::Covers(*capacity, request.channel, domain_, *allowance));
+    ticket->reset();
+    EXPECT_TRUE(en::SupplementalRun::Covers(*capacity, request.channel, domain_, *allowance));
+    EXPECT_EQ(request.channel.external->load(), 0U);
+  }
+  EXPECT_EQ(runs.load(), 2);
+  (*allowance)->Release(filler);
+  *capacity = {};
+  EXPECT_EQ((*allowance)->used(), 0U);
+  End(request);
+}
+
+TEST_F(HeldLeaseTest, PrepaidSupplementalReceiptRejectsForeignHolderAndOversizedActualClosure) {
+  namespace en = llmp::engine;
+  auto allowance = en::ExecutionMetadataAllowance::Admit(catalog_, domain_, 65536, 131072, 65536);
+  ASSERT_TRUE(allowance);
+  Build(8);
+  Request first, other;
+  Open(first, 0);
+  Open(other, 1);
+  auto capacity =
+      en::SupplementalRun::Prepare(catalog_, domain_, first.channel, first.done, 1, *allowance);
+  ASSERT_TRUE(capacity) << capacity.error();
+  const auto charge = (*allowance)->used();
+  std::atomic<int> runs{0};
+  auto payload = std::make_shared<int>(9);
+  const auto selected = ModelClosure(1);
+  ASSERT_GT(selected.extents.size(), 1U);
+  EXPECT_FALSE(en::SupplementalRun::Create(catalog_, domain_, first.channel, first.done, selected,
+                                           Counting(runs), 0, payload, *allowance, *capacity));
+  EXPECT_FALSE(en::SupplementalRun::Create(catalog_, domain_, other.channel, other.done, selected,
+                                           Counting(runs), 0, payload, *allowance, *capacity));
+  EXPECT_EQ(runs.load(), 0);
+  EXPECT_EQ(first.channel.external->load(), 0U);
+  EXPECT_EQ(other.channel.external->load(), 0U);
+  EXPECT_EQ((*allowance)->used(), charge);
+  EXPECT_EQ(Resident(1), kPerModel);  // only the explicit second base request
+  *capacity = {};
+  EXPECT_EQ((*allowance)->used(), 0U);
+  End(other);
+  End(first);
 }
 
 TEST_F(HeldLeaseTest, SupplementalRejectsWholeMalformedClosureBeforeEffects) {

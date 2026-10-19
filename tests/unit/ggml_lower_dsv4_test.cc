@@ -178,6 +178,98 @@ TEST(GgmlLowerDsv4Test, PlanKeysFollowCompressorDimensionsAndPreserveReuse) {
   EXPECT_TRUE(f.source->ShapeParameters({.stage = 2, .segments = {}}).empty());
 }
 
+TEST(GgmlLowerDsv4Test, CanonicalProviderFindsNonPowerOfTwoBoundariesWithoutChangingKeyWords) {
+  Fixture f;
+  ASSERT_TRUE(f.Init());
+  pl::StepShape shape{.segments = {{.rows = 130, .past = 0, .read_cells = 512, .outputs = 1}}};
+  const auto before = f.source->ShapeParameters(shape);
+  const auto change = f.source->NextSpecializationChange(
+      {.shape = shape, .owner = 0, .after = 0, .through = 256, .context = 65536});
+  ASSERT_TRUE(change);
+  EXPECT_EQ(change->coverage, en::SpecializationChange::Coverage::kComplete);
+  ASSERT_TRUE(change->next);
+  EXPECT_EQ(change->next->position, 126U);  // The actual HCA plans its second 128-row block.
+  for (std::uint32_t past = 1; past < change->next->position; ++past) {
+    shape.segments.front().past = past;
+    EXPECT_EQ(f.source->ShapeParameters(shape), before);
+  }
+  shape.segments.front().past = change->next->position;
+  EXPECT_NE(f.source->ShapeParameters(shape), before);
+  shape.segments.front().past = 128;
+  EXPECT_EQ(f.source->ShapeParameters(shape), before);  // The provider fact is not monotone.
+}
+
+TEST(GgmlLowerDsv4Test, CanonicalProviderSeparatesOwnerReadCutoffsAndProvesValueOnlyReuse) {
+  Fixture f;
+  ASSERT_TRUE(f.Init());
+  pl::StepShape shape{
+      .segments = {{.slot = 0, .rows = 1, .past = 4, .read_cells = 512, .outputs = 1},
+                   {.slot = 1, .rows = 1, .past = 255, .read_cells = 256, .outputs = 1}}};
+  auto first = f.source->NextSpecializationChange(
+      {.shape = shape, .owner = 0, .after = 4, .through = 260, .context = 65536});
+  auto second = f.source->NextSpecializationChange(
+      {.shape = shape, .owner = 1, .after = 255, .through = 260, .context = 65536});
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  EXPECT_EQ(first->coverage, en::SpecializationChange::Coverage::kComplete);
+  EXPECT_FALSE(first->next);
+  ASSERT_TRUE(second->next);
+  EXPECT_EQ(second->next->position, 256U);
+  EXPECT_EQ(second->next->fact, UINT64_MAX);  // Source key's real read-plane cutoff.
+  const auto before = f.source->ShapeParameters(shape);
+  shape.segments.front().past = 5;  // A value-only position change inside the same geometry.
+  EXPECT_EQ(f.source->ShapeParameters(shape), before);
+  shape = {.segments = {{.rows = 1, .past = 65530, .read_cells = 65536, .outputs = 1}}};
+  auto end = f.source->NextSpecializationChange(
+      {.shape = shape, .owner = 0, .after = 65530, .through = 65535, .context = 65536});
+  ASSERT_TRUE(end);
+  EXPECT_EQ(end->coverage, en::SpecializationChange::Coverage::kComplete);
+  EXPECT_FALSE(end->next);
+  EXPECT_FALSE(f.source->NextSpecializationChange(
+      {.shape = shape, .owner = 0, .after = 65530, .through = 65536, .context = 65536}));
+  EXPECT_FALSE(f.source->NextSpecializationChange(
+      {.shape = shape, .owner = 0, .after = 65530, .through = UINT32_MAX, .context = UINT32_MAX}));
+  // The injected drafter's positions affect inputs only; its real frozen read
+  // cutoff is later than this horizon and no compressor key is fabricated.
+  shape = {.stage = 1, .segments = {{.rows = 1, .past = 12, .read_cells = 256, .outputs = 1}}};
+  auto frozen = f.source->NextSpecializationChange(
+      {.shape = shape, .owner = 0, .after = 12, .through = 200, .context = 65536});
+  ASSERT_TRUE(frozen);
+  EXPECT_EQ(frozen->coverage, en::SpecializationChange::Coverage::kComplete);
+  EXPECT_FALSE(frozen->next);
+}
+
+TEST(GgmlLowerDsv4Test, CanonicalCompressorIntervalsMatchTheOriginalDimensionFormula) {
+  for (const auto ratio : {3U, 7U, 128U}) {
+    for (const auto rows : {1U, ratio, ratio + 1, 2 * ratio - 1}) {
+      for (const auto past : {0U, 1U, ratio - 1, ratio, ratio + 1}) {
+        for (const bool overlap : {false, true}) {
+          const auto fact = co::CompressorBlockParameter(rows, past, ratio, overlap);
+          const auto legacy = [&](std::uint32_t at) {
+            return overlap ? (std::uint64_t{rows} + ratio - 1) / ratio
+                           : std::max(std::uint64_t{1},
+                                      (std::uint64_t{at} + rows) / ratio - at / ratio);
+          };
+          EXPECT_EQ(fact.value, legacy(past));
+          const auto through = fact.next.value_or(std::uint64_t{past} + 2 * ratio + 1);
+          for (auto at = std::uint64_t{past} + 1; at < through; ++at)
+            EXPECT_EQ(legacy(static_cast<std::uint32_t>(at)), fact.value);
+          if (fact.next) EXPECT_NE(legacy(static_cast<std::uint32_t>(*fact.next)), fact.value);
+        }
+      }
+    }
+  }
+  const auto read = co::CompressedReadParameter(20, 3, 7);
+  EXPECT_EQ(read.value, 7U);
+  EXPECT_EQ(read.next, 24U);
+  for (const auto end : {21U, 22U, 23U}) EXPECT_EQ(co::CompressedReadCells(end, 3, 7), 7U);
+  EXPECT_EQ(co::CompressedReadCells(24, 3, 7), 14U);
+  const auto near_limit = co::CompressedReadParameter(UINT32_MAX, 1024, 256);
+  ASSERT_TRUE(near_limit.next);
+  EXPECT_GT(*near_limit.next, UINT32_MAX);
+  EXPECT_FALSE(co::CompressedReadParameter(UINT64_MAX, 1, 1).next);
+}
+
 TEST(GgmlLowerDsv4Test, StateBankLayoutIdentityChangesOnlyOptedInSourceKeys) {
   Fixture f;
   ASSERT_TRUE(f.Init());
@@ -1399,6 +1491,118 @@ TEST(GgmlLowerDsv4Test, SinkhornComponentLayerUsesNativeFoldAndFinalHeadKeepsSep
       if (s.implementation == kg::kHcPreName) EXPECT_TRUE(kg::CheckHcPre(s.nodes[0]));
       if (s.implementation == kg::kHcCombName) EXPECT_TRUE(kg::CheckHcComb(s.nodes[0]));
     }
+  }
+}
+
+TEST(GgmlLowerDsv4Test, TokenHeadSlotsRequireRequestedKindWhileNoHeadFragmentsOmitHeadSlots) {
+  using llmp::format::Encoding;
+  const auto dense = [](std::initializer_list<std::uint64_t> dims) {
+    auto shape = ir::ShapeOf(dims);
+    shape.rank = static_cast<std::uint8_t>(dims.size());
+    return ir::Dense(Encoding::kF32, shape);
+  };
+  auto registry = Registry();
+  const pl::StepShape shape{
+      .segments = {{.slot = 0, .rows = 2, .read_cells = 256, .outputs = 1, .greedy = false},
+                   {.slot = 1, .rows = 2, .read_cells = 256, .outputs = 1, .greedy = true}}};
+
+  // A primitive/component fragment with neither semantic head tensor omits
+  // vocabulary-head slots while preserving its graph output roots, output-row
+  // gather metadata, funding and physical layout.
+  {
+    sp::ComponentRef ref{
+        .kind = "hc.mix",
+        .version = 1,
+        .params = {{.name = "eps", .value = sp::ParamValue(1e-6)},
+                   {.name = "gather", .value = sp::ParamValue(true)},
+                   {.name = "hc_eps", .value = sp::ParamValue(1e-6)},
+                   {.name = "inject", .value = sp::ParamValue(false)},
+                   {.name = "mix", .value = sp::ParamValue(std::string("sinkhorn"))}},
+        .weights = {}};
+    auto instance = co::MakeInstance(ref, {.width = 32, .context = 256, .streams = 4},
+                                     co::Site::kFinalNorm, 0, 2);
+    ASSERT_TRUE(instance) << (instance ? "" : instance.error());
+    const std::array formats{dense({128}), dense({1}), dense({1}), dense({128, 4}),
+                             dense({4}),   dense({1}), dense({32})};
+    auto fragment = co::BuildComponent(*instance, shape, formats, {}, {.residual = true});
+    ASSERT_TRUE(fragment) << (fragment ? "" : fragment.error());
+    auto& step = fragment->step;
+    EXPECT_FALSE(step.logits.valid());
+    EXPECT_FALSE(step.greedy.valid());
+    ASSERT_EQ(step.graph.outputs().size(), 1U);
+    for (auto& in : step.inputs)
+      if (in.kind == co::InputKind::kStream || in.kind == co::InputKind::kResidual ||
+          in.kind == co::InputKind::kCarry || in.kind == co::InputKind::kSide)
+        in.kind = co::InputKind::kFeatures;
+    std::vector<ir::TensorId> staged;
+    bool has_output_rows = false;
+    for (const auto& in : step.inputs) {
+      staged.push_back(in.tensor);
+      if (in.kind == co::InputKind::kOutputRows) has_output_rows = true;
+    }
+    EXPECT_TRUE(has_output_rows);
+    auto plan = pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, {},
+                         {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    auto lowered = kg::LowerStep({*plan, step, shape, {}, 256}, registry, Device());
+    ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+    EXPECT_TRUE(lowered->outputs.empty());
+    EXPECT_GT(lowered->extent, 0U);
+    EXPECT_FALSE(lowered->physical_roots.empty());
+    const auto planned_out = plan->tensors.at(step.graph.outputs().front().v);
+    ASSERT_TRUE(planned_out.valid());
+    EXPECT_TRUE(std::ranges::any_of(lowered->physical_roots, [&](const auto& r) {
+      return r.root == plan->graph.root(planned_out);
+    }));
+  }
+
+  // A genuine token-head step lowers mixed per-owner outputs and refuses any
+  // output owner whose requested result encoding is absent.
+  {
+    sp::ComponentRef ref{.kind = "head.linear", .version = 1, .params = {}, .weights = {}};
+    auto instance =
+        co::MakeInstance(ref, {.width = 32, .context = 256, .streams = 1}, co::Site::kOutput, 0, 1);
+    ASSERT_TRUE(instance) << (instance ? "" : instance.error());
+    const std::array formats{dense({32, 64}), dense({32, 32}),
+                             ir::Dense(Encoding::kI32, ir::ShapeOf({1, 64})), dense({32, 64}),
+                             dense({32, 64})};
+    auto headed = co::BuildComponent(*instance, shape, formats, {});
+    ASSERT_TRUE(headed) << (headed ? "" : headed.error());
+    auto& step = headed->step;
+    ASSERT_TRUE(step.logits.valid());
+    ASSERT_TRUE(step.greedy.valid());
+    for (auto& in : step.inputs)
+      if (in.kind == co::InputKind::kStream) in.kind = co::InputKind::kFeatures;
+    std::vector<ir::TensorId> staged;
+    for (const auto& in : step.inputs) staged.push_back(in.tensor);
+    auto plan = pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, {},
+                         {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    auto lowered = kg::LowerStep({*plan, step, shape, {}, 256}, registry, Device());
+    ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+    ASSERT_EQ(lowered->outputs.size(), 2U);
+    EXPECT_EQ(lowered->outputs[0].segment, 0U);
+    EXPECT_EQ(lowered->outputs[0].tensor, step.logits);
+    EXPECT_EQ(lowered->outputs[0].bytes, 64U * sizeof(float));
+    EXPECT_EQ(lowered->outputs[1].segment, 1U);
+    EXPECT_EQ(lowered->outputs[1].tensor, step.greedy);
+    EXPECT_EQ(lowered->outputs[1].bytes, sizeof(std::int32_t));
+
+    const auto saved_logits = step.logits;
+    const auto saved_greedy = step.greedy;
+    step.greedy = {};
+    const auto refused_greedy = kg::LowerStep({*plan, step, shape, {}, 256}, registry, Device());
+    ASSERT_FALSE(refused_greedy);
+    EXPECT_EQ(refused_greedy.error().detail,
+              "lowering onto GGML: the owner's requested head result is absent");
+
+    step.greedy = saved_greedy;
+    step.logits = {};
+    const auto refused_logits = kg::LowerStep({*plan, step, shape, {}, 256}, registry, Device());
+    ASSERT_FALSE(refused_logits);
+    EXPECT_EQ(refused_logits.error().detail,
+              "lowering onto GGML: the owner's requested head result is absent");
+    step.logits = saved_logits;
   }
 }
 

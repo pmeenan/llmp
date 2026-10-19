@@ -1,20 +1,20 @@
 {
  "digests": {
-  "continued.0": "b327f64cd9b4183a75002b048a836155dbb29abf4db16a0de905830f9c909770",
+  "continued.0": "194c74643963715c77548ed900e53f947f40a3e414ee4a3b760f80c8c87af293",
   "continued.1": "f5c9c0fffee08ed947234e37815bc0fd7ba2d73228bd04de22571904308d9cd4",
-  "heads.0": "ca6b246f131256ee8dfecb16b8638d31094f02415eb46bb3d2b63e6d389a4ad1",
+  "heads.0": "10c2252c219d3eaa0abc070898fd38e1c744a79ca5822fe9b6b3a34f317f58e4",
   "heads.1": "afec141a6ec46a3775c215b38b7cc41735cf81157adbf7970032d6ac463f4dd5",
   "history.0": "34934b56a74ca1a5db9d2de7294fcba041f076a3958025a0a2cbb2ad85c53ea7",
   "history.1": "ce4de27fdc7e45d4bbf249be3d03812788bd9fbeeaaf8d2eb37d91807e46789e",
-  "logits.0": "3cc86db32bc912a258ee5f89d6aab71cc3b416dbb8242ca2948125825a4b823f",
+  "logits.0": "7ee41888305e90e20e8486eae840ed2a42a3ea356285821be606413fdd202a3e",
   "logits.1": "9d6b341e0daa1ae504f9c922db4f82137f2f571aa6519b430f4d8d028d4e71f8",
-  "resumed.0": "d386906e25e087ab345699bd53d2d4349426ffbf9df811919e3cbb773eed509f",
+  "resumed.0": "9fb96fdeb79fdb3b261dc449802ffdcedd211593890c85e0b9495d32cb19e01f",
   "resumed.1": "8a41250c1434122841382d2f4392a2636cb19eec511606bde364c0e2ae8df807",
-  "state.0": "e93584fdd4a30880734208beea3918887dff07634a1f45cea60cd6642a17674c",
+  "state.0": "5aef604b1b312be6924722702449b1c0417df69459e9c38e8d11fe24c55f2409",
   "state.1": "c698cee79f2f1cd533637b755dbe82bcd2899142e3f3aac41f626aede0412417",
   "tokens.0": "235322,235279,235313,591",
   "tokens.1": "529,563,818,5279"
  },
  "family": "gemma_Gemma2",
- "provenance": "Recorded 2026-10-18 on spark-c4e2 (GB10), integrated R8+R7 source manifest 1b0cab3369b4b8c195ccb4b581f4338be752b484f8b7a19431577204e1a18e03, from the original two-owner frozen fixture (.0/.1 identify owners). Changed selected reductions preserve the original finite-head, completed generation, prefix-reuse, spill/restore, checkpoint/restart and retirement checks. Bounded 1070-target and both fixed-reply controls match final R6 for Gemma2/26, or the independently retained historical accepted1facc957 Gemma3 record. Original per-key failures and raw Gemma3 final-R6 pair failure remain external evidence; no threshold, grant, token/state assertion or source encoding was relaxed."
+ "provenance": "Recorded 2026-10-18 on spark-c4e2 (GB10), integrated R8+R7 source manifest 1b0cab3369b4b8c195ccb4b581f4338be752b484f8b7a19431577204e1a18e03, from the original two-owner frozen fixture (.0/.1 identify owners). Changed selected reductions preserve the original finite-head, completed generation, prefix-reuse, spill/restore, checkpoint/restart and retirement checks. Bounded 1070-target and both fixed-reply controls match final R6 for Gemma2/26, or the independently retained historical accepted1facc957 Gemma3 record. Original per-key failures and raw Gemma3 final-R6 pair failure remain external evidence; no threshold, grant, token/state assertion or source encoding was relaxed. Owner-0 float digests (heads.0, logits.0, state.0, continued.0, resumed.0) updated 2026-10-19 on spark-56f5 (GB10) for R10 WaveComposer::CanJoinPrefill joining unequal-length JoinedPrompts({7, 11}) into one 18-row mmq step; tokens.0, history.0 and all .1 digests unchanged."
 }

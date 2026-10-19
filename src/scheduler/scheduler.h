@@ -564,6 +564,19 @@ class Scheduler {
   // changes, and cancellation, outstanding or unproven work refuses mutation.
   std::expected<void, WorkError> ReplaceRequestLease(std::uint64_t request, catalog::LeaseId held,
                                                      const catalog::Closure& closure);
+  struct LeaseReplacementStorage {
+    std::vector<catalog::ExtentId> catalog_extents, held_extents;
+  };
+  // Same authenticated mutation, with all candidate storage paid/prepared by
+  // its driver before effects. Both vectors must exactly match the closure.
+  std::expected<void, WorkError> ReplaceRequestLease(std::uint64_t request, catalog::LeaseId held,
+                                                     const catalog::Closure& closure,
+                                                     LeaseReplacementStorage& storage);
+  // Shrink in place after actual drain; retains the installed vector capacities
+  // and every unrelated permanent addition. Never allocates a reverse buffer.
+  std::expected<void, WorkError> RemoveRequestExtents(
+      std::uint64_t request, catalog::LeaseId held,
+      std::span<const std::pair<catalog::ExtentId, std::uint64_t>> removed);
 
   // The scheduler thread, or before it runs (a task's step may call these).
   // Where a nonresident extent's contents are read from, directly into its
@@ -665,6 +678,7 @@ class Scheduler {
   const SchedulerStats& stats() const { return stats_; }
 
  private:
+  std::expected<void, WorkError> CheckRequestLease(std::uint64_t request, catalog::LeaseId lease);
   friend class TaskContext;
 
   // What an operation is: a stage of a page-in, the unmap of an eviction,

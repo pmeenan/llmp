@@ -286,6 +286,47 @@ TEST_F(CatalogTest, ALeaseReplacementIsAtomicAndCountsSharedBackingOnce) {
   EXPECT_EQ(catalog_.OccupancyOf(domain_).idle, 4_MiB);
 }
 
+TEST_F(CatalogTest, PreparedLeaseStorageAndPrivateRemovalRefuseBeforeAnyMutation) {
+  const auto a = Weights(0), b = Weights(1), foreign = Weights(2);
+  Load(a);
+  Load(b);
+  Load(foreign);
+  const auto original = Of({a});
+  const auto candidate = Of({a, b});
+  const auto lease = catalog_.AcquireLease(original);
+  ASSERT_TRUE(lease);
+  std::vector<ExtentId> wrong = {b, a};
+  EXPECT_FALSE(catalog_.ReplaceLease(*lease, candidate, wrong));
+  EXPECT_EQ(catalog_.Describe(a)->leases, 1U);
+  EXPECT_EQ(catalog_.Describe(b)->leases, 0U);
+  std::vector<ExtentId> storage = {a, b};
+  const auto* allocation = storage.data();
+  ASSERT_TRUE(catalog_.ReplaceLease(*lease, candidate, storage));
+  EXPECT_THAT(storage, ElementsAre(a));  // original capacity/IDs returned to its payer
+  auto stale = Of({b});
+  ++stale.extents.front().second;
+  EXPECT_EQ(Failed(catalog_.RemoveLeaseExtents(*lease, stale.extents)),
+            CatalogError::kStaleContent);
+  EXPECT_FALSE(catalog_.RemoveLeaseExtents(*lease, Of({foreign}).extents));
+  auto duplicate = Of({b});
+  duplicate.extents.push_back(duplicate.extents.front());
+  EXPECT_FALSE(catalog_.RemoveLeaseExtents(*lease, duplicate.extents));
+  EXPECT_EQ(catalog_.Describe(a)->leases, 1U);
+  EXPECT_EQ(catalog_.Describe(b)->leases, 1U);
+  const auto removed = Of({b});
+  ASSERT_TRUE(catalog_.RemoveLeaseExtents(*lease, removed.extents));
+  EXPECT_EQ(catalog_.Describe(a)->leases, 1U);
+  EXPECT_EQ(catalog_.Describe(b)->leases, 0U);
+  // The installed vector is retained in place. A prepared replacement returns
+  // its original allocation, proving reverse did not swap in a new container.
+  std::vector<ExtentId> next = {a, b};
+  ASSERT_TRUE(catalog_.ReplaceLease(*lease, candidate, next));
+  EXPECT_EQ(next.data(), allocation);
+  EXPECT_THAT(next, ElementsAre(a));
+  ASSERT_TRUE(catalog_.ReleaseLease(*lease));
+  EXPECT_EQ(catalog_.OccupancyOf(domain_).held, Bytes{});
+}
+
 TEST_F(CatalogTest, RegistrationsHoldLikeLeases) {
   const ExtentId extent = Weights(0);
   EXPECT_EQ(Failed(catalog_.AddRegistration(extent)), CatalogError::kNotResident);

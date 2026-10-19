@@ -25,6 +25,7 @@
 
 #include "components/graph_io.h"
 #include "execution/registry.h"
+#include "kernels/common/execution_resources.h"
 #include "kernels/common/step_program.h"
 #include "planner/plan.h"
 #include "planner/select.h"
@@ -87,6 +88,14 @@ struct LaneConfiguration {
   bool operator==(const LaneConfiguration&) const = default;
 };
 
+// Build-time mechanisms supplied by a concrete backend. These are mechanical
+// capabilities only; neither a user setting nor this value grants numerical
+// transformations or an execution/source envelope.
+struct BackendCapabilities {
+  std::uint32_t owner_lanes = 0;
+  bool device_tokens = false, indexed_masks = false;
+};
+
 struct StepBackend {
   // Outlives every plan made over it.
   const execution::Registry* registry = nullptr;
@@ -125,6 +134,22 @@ class BackendOwner {
   // Unprepared or faulted is an error, never an absent legacy declaration.
   // First successful preparation freezes the value; later changes refuse.
   virtual std::expected<execution::BackendDeclaration, std::string> Ready() const = 0;
+  // A distinct eager binding/launch over caller-owned paid workspace. Factory
+  // affinity, immutable producer identity and host prepayment are enforced here.
+  std::expected<ExecutionResources, ResourceFailure> Resources(
+      std::shared_ptr<const BackendOwner> self, ResourceWorkspace workspace,
+      ParentResources retained, ResourceKeep backing) const;
+
+ protected:
+  virtual std::expected<std::uint64_t, ResourceFailure> ResourceBytes(ResourceWorkspace) const {
+    return std::unexpected(ResourceFailure{
+        ResourceError::kUnsupported, "this backend does not provide private execution resources"});
+  }
+  virtual std::expected<ResourceInstance*, ResourceFailure> MakeResources(ResourceOrigin,
+                                                                          ResourceWorkspace) const {
+    return std::unexpected(ResourceFailure{
+        ResourceError::kUnsupported, "this backend does not provide private execution resources"});
+  }
 };
 
 inline std::shared_ptr<const ConstructionFunder> StepBackend::ConstructionFunding() const {

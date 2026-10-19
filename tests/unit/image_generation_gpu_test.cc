@@ -626,6 +626,23 @@ TEST(ImageRequestInputs, PaymentAndLayoutRemainIndependentOfRequestContent) {
     float delta = 0;
     std::memcpy(&delta, staged.data(), sizeof(delta));
     EXPECT_EQ(delta, -1.F);
+    auto mapping = *FrozenFamily()->mapping;
+    std::vector<llmp::spec::ImageHostInput> declared(mapping.host_inputs.begin(),
+                                                     mapping.host_inputs.end());
+    auto found = std::ranges::find(declared, llmp::spec::ImageInputValue::kEulerDelta,
+                                   &llmp::spec::ImageHostInput::value);
+    ASSERT_NE(found, declared.end());
+    found->slot = 7;
+    mapping.host_inputs = declared;
+    auto mapped_family = std::make_shared<rt::ImageFamily>(*FrozenFamily());
+    mapped_family->mapping = &mapping;
+    auto mapped = rt::ComponentImageGenerationRequest(mapped_family, input(), settings, *paid);
+    ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
+    EXPECT_NE(mapped->layout, first->layout);
+    ASSERT_TRUE(mapped->fill({1, 0}, 7, staged));
+    std::memcpy(&delta, staged.data(), sizeof(delta));
+    EXPECT_EQ(delta, -1.F);
+    EXPECT_FALSE(mapped->fill({1, 0}, 5, staged));
     auto changed = input();
     changed.prompt[0] = 4;
     changed.noise[0] = llmp::model::ToBf16(1.F);
@@ -932,13 +949,24 @@ struct ServerGrowthLifetime {
   }
   Status Geometry(std::uint32_t width, std::uint32_t height) {
     if (ordinary) {
-      if (auto r = image->PrepareRequest({.prompt = width == 1024 ? kRectangularPrompt : kPrompt,
-                                          .width = width,
-                                          .height = height,
-                                          .steps = width == 1024 ? 2U : 1U,
-                                          .noise = width == 1024 ? grown_noise : small_noise});
-          !r)
-        return r;
+      rt::ImageInput input{.prompt = width == 1024 ? kRectangularPrompt : kPrompt,
+                           .width = width,
+                           .height = height,
+                           .steps = width == 1024 ? 2U : 1U,
+                           .noise = width == 1024 ? grown_noise : small_noise};
+      if (width == 1024) {
+        const auto count = std::uint64_t{width / 16} * (height / 16) * 64 * 2;
+        auto raw = ReadExact(grown_noise, count);
+        if (!raw) return Error(raw.error());
+        auto bytes = en::HostBuffer::Copy(server->node(), std::as_bytes(std::span(*raw)));
+        if (!bytes) return Error(bytes.error());
+        input.noise.clear();
+        input.noise_buffer = rt::ImageNoise{.bytes = std::move(*bytes)};
+        auto wrong = input;
+        wrong.noise_buffer->encoding = llmp::format::Encoding::kF16;
+        if (image->PrepareRequest(wrong)) return Error("image accepted mislabeled noise bytes");
+      }
+      if (auto r = image->PrepareRequest(input); !r) return r;
       ++retired_geometries;
       Observe();
       return {};

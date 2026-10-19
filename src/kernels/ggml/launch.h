@@ -148,6 +148,12 @@ class LaunchContext {
       int device, providers::DeviceExecution& execution, providers::StreamId stream,
       Workspace workspace, CublasHandle* cublas = nullptr);
 
+  // Private main-stream pool; unchanged paid lanes are borrowed from the
+  // authenticated retained parent. No stream/event/cuBLAS resource is created.
+  static std::expected<std::unique_ptr<LaunchContext>, KernelFailure> CreatePrivate(
+      LaunchContext& parent, Workspace workspace);
+  static std::expected<std::uint64_t, KernelFailure> PrivateHostBytes(Workspace workspace);
+
   LaunchContext(const LaunchContext&) = delete;
   LaunchContext& operator=(const LaunchContext&) = delete;
   LaunchContext(LaunchContext&&) = delete;
@@ -178,7 +184,9 @@ class LaunchContext {
   // before its first launch and the stream wait for each lane before the
   // run ends (BoundGraph::Run does), so the stream's fence covers it.
   std::expected<void, KernelFailure> ConfigureLanes(std::uint32_t count, base::Bytes lane_scratch);
-  std::uint32_t lanes() const { return static_cast<std::uint32_t>(lanes_.size()); }
+  std::uint32_t lanes() const {
+    return lane_source_ ? lane_source_->lanes() : static_cast<std::uint32_t>(lanes_.size());
+  }
   // Where the next Run launches: 0, the context's stream, or a lane.
   void SelectLane(std::uint32_t lane);
   // Makes `waiter`'s stream wait for what `on`'s stream has queued so far
@@ -219,7 +227,7 @@ class LaunchContext {
   base::Bytes scratch_peak() const;
   // Between runs: the next peak counts only the runs after this.
   void ResetScratchPeak();
-  bool faulted() const { return faulted_; }
+  bool faulted() const { return faulted_ || (lane_source_ && lane_source_->faulted()); }
   // Borrowed-operation adapters must fence the provider stream used here,
   // not another stream that happens to have the same numerical ID.
   bool UsesStream(const providers::DeviceExecution& execution, providers::StreamId stream) const {
@@ -265,6 +273,7 @@ class LaunchContext {
   std::unique_ptr<ggml_backend_cuda_context> context_;
   Workspace workspace_;
   CublasHandle* cublas_;
+  LaunchContext* lane_source_ = nullptr;  // retained by the private resource origin
   std::vector<std::unique_ptr<Lane>> lanes_;
   std::uint32_t active_ = 0;
   std::uint64_t lane_scratch_ = 0;

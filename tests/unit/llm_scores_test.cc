@@ -60,6 +60,8 @@ class FakeLlm : public rt::Llm {
   friend class NativeBranchesFake;
 
  public:
+  using Llm::GenerationReadyFor;
+  using Llm::RemainingGenerationRowsFor;
   explicit FakeLlm(bool speculative = false) {
     name_ = "fake";
     context_ = 32;
@@ -416,6 +418,8 @@ class NativeBranchesFake final : public FakeLlm {
   std::vector<std::vector<std::uint32_t>> prefill_dispatches;
   std::vector<std::pair<std::uint32_t, rt::PrefillHint>> delivered_prefill_hints;
   std::vector<PrefillHeadModes> future_prefill_heads;
+  std::vector<std::optional<std::uint32_t>> delivered_continuation_rows;
+  std::vector<std::optional<bool>> delivered_future_sampling;
   std::optional<std::uint32_t> nonfinite_wave_row;
   std::optional<std::uint32_t> failed_wave_judgement;
   std::optional<std::uint32_t> failed_scalar_judgement;
@@ -493,6 +497,8 @@ class NativeBranchesFake final : public FakeLlm {
     std::vector<std::uint32_t> owners;
     for (const auto& unit : prepared) {
       owners.push_back(BranchIndex(*unit.branch));
+      delivered_continuation_rows.push_back(unit.session->continuation_rows());
+      delivered_future_sampling.push_back(unit.session->continuation_sampling());
       EXPECT_FALSE(unit.session->NextUnit().has_value());  // still borrowed
       EXPECT_EQ(unit.branch->history().size(), unit.past);
     }
@@ -2378,6 +2384,7 @@ TEST(LlmScores, PromptWaveRefusesMixedModesForeignDuplicatesAndCheckpointUnits) 
   EXPECT_EQ(rt::Llm::PromptSession::SelectForWave(false, 0, sessions), 0U);
   ASSERT_TRUE((*y)->Advance());
   const std::array<rt::PrefillGoOn, 2> callbacks{};
+  const auto initial_dispatches = model.prefill_dispatches.size();
   EXPECT_FALSE((*x)->CanJoin(**y));
   EXPECT_FALSE(model.RunPromptWave(sessions, callbacks, true));
   sessions[1] = x->get();
@@ -2386,6 +2393,7 @@ TEST(LlmScores, PromptWaveRefusesMixedModesForeignDuplicatesAndCheckpointUnits) 
   EXPECT_FALSE(model.RunPromptWave(sessions, callbacks, true));
   sessions[1] = y->get();
   EXPECT_FALSE(foreign.RunPromptWave(sessions, callbacks, true));
+  EXPECT_EQ(model.prefill_dispatches.size(), initial_dispatches);
   EXPECT_TRUE((*a)->history().empty());
   EXPECT_TRUE((*b)->history().empty());
   ASSERT_TRUE((*y)->Advance());
@@ -2393,8 +2401,9 @@ TEST(LlmScores, PromptWaveRefusesMixedModesForeignDuplicatesAndCheckpointUnits) 
   ASSERT_EQ((*y)->NextUnit()->phase, rt::Llm::PromptSession::Phase::kCheckpoint);
   EXPECT_EQ(rt::Llm::PromptSession::SelectForWave(false, 0, sessions), 0U);
   EXPECT_EQ(rt::Llm::PromptSession::SelectForWave(false, 1, sessions), 1U);
+  const auto checkpoint_dispatches = model.prefill_dispatches.size();
   EXPECT_FALSE(model.RunPromptWave(sessions, callbacks, true));
-  EXPECT_TRUE(model.prefill_dispatches.empty());
+  EXPECT_EQ(model.prefill_dispatches.size(), checkpoint_dispatches);
   (*x)->Cancel();
   (*y)->Cancel();
   ASSERT_TRUE((*x)->Finish());
@@ -3341,6 +3350,143 @@ TEST(LlmScores, ASerialGenerationReleasesIdleStateThenEndsTypedWhenAlone) {
   EXPECT_FALSE(model.default_branch().capacity_refused());
   EXPECT_TRUE(model.history().empty());
   model.fail_settle = false;
+}
+
+TEST(LlmScores, PromptFutureRowsUseFreshOrResumedGenerationBudgetsExactly) {
+  EXPECT_EQ(rt::PromptTargetRows(1, 0, false), 0U);
+  EXPECT_EQ(rt::PromptTargetRows(10, 4, false), 9U);  // Fresh Begin replaces the old result.
+  EXPECT_EQ(rt::PromptTargetRows(10, 4, true), 6U);
+  EXPECT_EQ(rt::PromptTargetRows(3, 9, true), 0U);
+  EXPECT_FALSE(rt::PromptTargetRows(std::numeric_limits<std::size_t>::max(), 0, true));
+}
+
+TEST(LlmScores, ActivePeerBudgetTracksApplyAndRejectsPreparedOrCancelledSessions) {
+  FakeLlm model;
+  auto& branch = model.default_branch();
+  std::vector<float> last;
+  ASSERT_TRUE(branch.Prefill(std::array<std::int32_t, 1>{0}, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.stop = false;
+  std::uint32_t callbacks = 0;
+  options.on_tokens = [&](std::span<const std::int32_t>) {
+    ++callbacks;
+    EXPECT_FALSE(model.GenerationReadyFor(branch));
+    EXPECT_FALSE(model.RemainingGenerationRowsFor(branch));
+    return true;
+  };
+  rt::Generation out;
+  auto opened = branch.BeginGeneration(last, options, out);
+  ASSERT_TRUE(opened);
+  auto& session = **opened;
+  EXPECT_TRUE(model.GenerationReadyFor(branch));
+  EXPECT_EQ(model.RemainingGenerationRowsFor(branch), 3U);
+  auto step = session.PrepareStep();
+  ASSERT_TRUE(step);
+  EXPECT_FALSE(model.GenerationReadyFor(branch));
+  EXPECT_FALSE(model.RemainingGenerationRowsFor(branch));
+  model.target.push_back(step->all.back());
+  ASSERT_TRUE(session.ApplyPlain(FakeLlm::Row(2)));
+  EXPECT_TRUE(model.GenerationReadyFor(branch));
+  EXPECT_EQ(callbacks, 2U);
+  EXPECT_EQ(model.RemainingGenerationRowsFor(branch), 2U);  // Before another PrepareStep.
+  session.Cancel();
+  EXPECT_FALSE(model.GenerationReadyFor(branch));
+  EXPECT_EQ(model.RemainingGenerationRowsFor(branch), 0U);
+  ASSERT_TRUE(session.Finish());
+  EXPECT_FALSE(model.RemainingGenerationRowsFor(branch));
+  rt::Generation next;
+  auto again = branch.BeginGeneration(FakeLlm::Row(3), options, next);
+  ASSERT_TRUE(again);
+  ASSERT_TRUE(session.Finish());  // Old close cannot clear the new session's owner.
+  EXPECT_TRUE(model.GenerationReadyFor(branch));
+  (*again)->Cancel();
+  ASSERT_TRUE((*again)->Finish());
+}
+
+TEST(LlmScores, StoppedOneTokenAndFailedBeginHaveNoFutureTargetRowsOrStaleOwner) {
+  FakeLlm model;
+  auto& branch = model.default_branch();
+  std::vector<float> last;
+  ASSERT_TRUE(branch.Prefill(std::array<std::int32_t, 1>{0}, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.sampling = llmp::execution::SamplingParams{};
+  auto bad = last;
+  bad[0] = std::numeric_limits<float>::quiet_NaN();
+  rt::Generation out;
+  EXPECT_FALSE(branch.BeginGeneration(bad, options, out));
+  EXPECT_FALSE(model.GenerationReadyFor(branch));
+  EXPECT_FALSE(model.RemainingGenerationRowsFor(branch));
+  options.sampling.reset();
+  auto stopped = branch.BeginGeneration(FakeLlm::Row(7), options, out);
+  ASSERT_TRUE(stopped);
+  EXPECT_TRUE((*stopped)->done());
+  EXPECT_EQ(model.RemainingGenerationRowsFor(branch), 0U);
+  ASSERT_TRUE((*stopped)->Finish());
+  options.max_tokens = 1;
+  auto single = branch.BeginGeneration(last, options, out);
+  ASSERT_TRUE(single);
+  EXPECT_TRUE((*single)->done());
+  EXPECT_EQ(model.RemainingGenerationRowsFor(branch), 0U);
+  ASSERT_TRUE((*single)->Finish());
+  EXPECT_FALSE(model.RemainingGenerationRowsFor(branch));
+}
+
+TEST(LlmScores, ResumedSessionUsesProducedTokenCountWithoutAnotherFirstSample) {
+  FakeLlm model;
+  auto& branch = model.default_branch();
+  std::vector<float> last;
+  ASSERT_TRUE(branch.Prefill(std::array<std::int32_t, 1>{0}, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 6;
+  options.stop = false;
+  rt::Generation out;
+  auto first = branch.BeginGeneration(last, options, out);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE((*first)->RunScalarStep());
+  ASSERT_EQ(out.tokens.size(), 2U);
+  (*first)->Cancel();
+  ASSERT_TRUE((*first)->Finish());
+  auto resumed = branch.ResumeGeneration({}, options, out);
+  ASSERT_TRUE(resumed);
+  EXPECT_EQ(out.tokens.size(), 2U);
+  EXPECT_FALSE(out.cancelled);
+  EXPECT_EQ(model.RemainingGenerationRowsFor(branch), 4U);
+  (*resumed)->Cancel();
+  ASSERT_TRUE((*resumed)->Finish());
+}
+
+TEST(LlmScores, SharedPromptDispatchCarriesEachSessionsFutureBudgetAndSamplingIntent) {
+  NativeBranchesFake model;
+  model.prefill_waves = true;
+  std::array<std::unique_ptr<rt::Llm::PromptSession>, 2> sessions;
+  const std::array<std::int32_t, 8> prompt{0, 1, 2, 3, 4, 5, 6, 0};
+  for (std::size_t i = 0; i < sessions.size(); ++i) {
+    auto branch = model.branch(static_cast<std::uint32_t>(i));
+    ASSERT_TRUE(branch);
+    auto begun = (*branch)->BeginPrompt(prompt);
+    ASSERT_TRUE(begun);
+    sessions[i] = std::move(*begun);
+    EXPECT_FALSE(sessions[i]->has_continuation());
+    sessions[i]->SetContinuationRows(rt::PromptTargetRows(i == 0 ? 1 : 5, 0, false), i != 0);
+    EXPECT_EQ(sessions[i]->prompt_rows(), prompt.size());
+    while (!sessions[i]->done()) {
+      auto next = sessions[i]->NextUnit();
+      ASSERT_TRUE(next);
+      if (next->phase == rt::Llm::PromptSession::Phase::kChunk) break;
+      ASSERT_TRUE(sessions[i]->Advance());
+    }
+  }
+  const std::array<rt::Llm::PromptSession*, 2> both{sessions[0].get(), sessions[1].get()};
+  const std::array<rt::PrefillGoOn, 2> go_on{};
+  ASSERT_TRUE(model.RunPromptWave(both, go_on));
+  EXPECT_EQ(model.delivered_continuation_rows, (std::vector<std::optional<std::uint32_t>>{0, 4}));
+  EXPECT_EQ(model.delivered_future_sampling, (std::vector<std::optional<bool>>{false, true}));
+  for (auto& session : sessions) {
+    EXPECT_TRUE(session->done());
+    ASSERT_TRUE(session->Finish());
+  }
 }
 
 }  // namespace

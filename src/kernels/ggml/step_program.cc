@@ -78,13 +78,14 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
  public:
   GgmlStepProgram(const GgmlStepLaunch* const* launch, const std::uint64_t* generation,
                   const execution::Registry& registry, LoweredStep lowered, std::uint64_t pool,
-                  kernels::LaneConfiguration lanes,
+                  std::uint64_t private_pool, kernels::LaneConfiguration lanes,
                   std::shared_ptr<const kernels::BackendOwner> owner)
       : launch_(launch),
         generation_(generation),
         registry_(registry),
         lowered_(std::move(lowered)),
         pool_(pool),
+        private_pool_(private_pool),
         lanes_(lanes),
         owner_(std::move(owner)) {
     for (const PlanStep& step : lowered_.plan.steps) {
@@ -148,6 +149,7 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
   }
   std::uint64_t scratch_bytes() const override { return lowered_.extent; }
   std::uint64_t pool_bytes() const override { return pool_; }
+  std::uint64_t private_pool_bytes() const override { return private_pool_; }
   std::uint64_t host_bytes() const override {
     return lowered_.arena->bytes() + (nodes_ * kPlanNodeHostBytes) + selected_host_;
   }
@@ -452,7 +454,7 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
   std::uint64_t bound_generation_ = 0;
   const execution::Registry& registry_;
   LoweredStep lowered_;
-  std::uint64_t pool_ = 0;
+  std::uint64_t pool_ = 0, private_pool_ = 0;
   kernels::LaneConfiguration lanes_{};
   std::shared_ptr<const kernels::BackendOwner> owner_;
   std::uint64_t nodes_ = 0;
@@ -464,6 +466,8 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
 
 std::expected<std::unique_ptr<Recorded>, StepFailure> GgmlStepLaunch::Capture(
     providers::NativeStream stream, const Body& body) {
+  if (private_eager_ || retired())
+    return std::unexpected(StepFailure{.detail = "private or retired launch refuses capture"});
   if ((active_ && *active_ != this) || (current_generation_ && *current_generation_ != generation_))
     return std::unexpected(StepFailure{.detail = "the declared launch was retired"});
   if (owner_) {
@@ -489,6 +493,8 @@ std::expected<std::unique_ptr<Recorded>, StepFailure> GgmlStepLaunch::Capture(
 
 std::expected<void, StepFailure> GgmlStepLaunch::Launch(providers::NativeStream stream,
                                                         const Recorded& recorded) {
+  if (private_eager_ || retired())
+    return std::unexpected(StepFailure{.detail = "private or retired launch refuses replay"});
   if ((active_ && *active_ != this) || (current_generation_ && *current_generation_ != generation_))
     return std::unexpected(StepFailure{.detail = "the declared launch was retired"});
   if (owner_) {
@@ -511,6 +517,30 @@ std::expected<void, StepFailure> GgmlStepLaunch::Launch(providers::NativeStream 
 
 // Configuration has stable storage and no callback-address identity. The
 // backend/resources still obey the existing rule that they outlive borrowers.
+// Binding slots are owned by this private instance, never the global backend.
+// The origin authenticates/retains the actual runner before borrowing anything.
+class GgmlResources final : public kernels::ResourceInstance {
+ public:
+  GgmlResources(kernels::ResourceOrigin origin, const GgmlBackend& source,
+                std::unique_ptr<LaunchContext> context, SelectedLaunch* selected)
+      : ResourceInstance(std::move(origin)), source_(source) {
+    launch_ = std::make_unique<GgmlStepLaunch>(std::move(context), nullptr, parent_owner(),
+                                               &active_, &generation_, generation_, selected, true);
+    active_ = launch_.get();
+  }
+  kernels::StepLaunch& launch() const override { return *launch_; }
+  std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Lower(
+      const kernels::LowerInput& input) const override {
+    return source_.LowerFor(input, &active_, &generation_, true);
+  }
+
+ private:
+  const GgmlBackend& source_;
+  const std::uint64_t generation_ = 1;
+  const GgmlStepLaunch* active_ = nullptr;
+  std::unique_ptr<GgmlStepLaunch> launch_;
+};
+
 struct GgmlBackend::Declaration final : kernels::BackendOwner {
   Declaration(GgmlBackend& backend_source, planner::OwnedDeviceFacts owned_facts,
               std::uint64_t workspace_bytes, std::function<bool(std::uint64_t)> reserve,
@@ -532,6 +562,38 @@ struct GgmlBackend::Declaration final : kernels::BackendOwner {
           source.options_.selected->persistent_bytes() != selected_persistent)))
       return std::unexpected("the declared backend is not prepared or has faulted");
     return *sealed;
+  }
+  std::expected<std::uint64_t, kernels::ResourceFailure> ResourceBytes(
+      kernels::ResourceWorkspace region) const override {
+    auto host = LaunchContext::PrivateHostBytes({region.base, base::Bytes(region.bytes)});
+    if (!host)
+      return std::unexpected(
+          kernels::ResourceFailure{kernels::ResourceError::kBounds, host.error().detail});
+    constexpr std::uint64_t kAllocationMetadataBytes = 64;
+    std::uint64_t bytes = 0;
+    if (__builtin_add_overflow(*host,
+                               std::uint64_t{sizeof(GgmlResources) + sizeof(GgmlStepLaunch) +
+                                             2 * kAllocationMetadataBytes},
+                               &bytes))
+      return std::unexpected(kernels::ResourceFailure{kernels::ResourceError::kBounds,
+                                                      "private backend metadata size overflows"});
+    return bytes;
+  }
+  std::expected<kernels::ResourceInstance*, kernels::ResourceFailure> MakeResources(
+      kernels::ResourceOrigin origin, kernels::ResourceWorkspace region) const override {
+    if (!source.launch_ || origin.parent_launch() != source.launch_)
+      return std::unexpected(kernels::ResourceFailure{
+          kernels::ResourceError::kOwnership,
+          "private resources do not retain this producer's actual parent launch"});
+    auto context = LaunchContext::CreatePrivate(source.launch_->context(),
+                                                {region.base, base::Bytes(region.bytes)});
+    if (!context)
+      return std::unexpected(kernels::ResourceFailure{context.error().error == KernelError::kUnknown
+                                                          ? kernels::ResourceError::kFault
+                                                          : kernels::ResourceError::kProvider,
+                                                      context.error().detail});
+    return new GgmlResources(std::move(origin), source, std::move(*context),
+                             source.launch_->selected());
   }
   GgmlBackend& source;
   planner::OwnedDeviceFacts facts;
@@ -861,6 +923,12 @@ std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> GgmlBackend::La
 
 std::expected<std::unique_ptr<kernels::StepProgram>, std::string> GgmlBackend::Lower(
     const kernels::LowerInput& input) const {
+  return LowerFor(input, &launch_, &launch_generation_);
+}
+
+std::expected<std::unique_ptr<kernels::StepProgram>, std::string> GgmlBackend::LowerFor(
+    const kernels::LowerInput& input, const GgmlStepLaunch* const* launch,
+    const std::uint64_t* generation, bool /*private_resources*/) const {
   if (!construction_funder_)
     return std::unexpected("native GGML construction requires a paid backend funder");
   auto inventory = LowerConstructionOf(input);
@@ -886,7 +954,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> GgmlBackend::L
   if (options_.lanes.count == 0) lowered->plan.regions.clear();
   auto scratch = PlanScratch(*measuring_, lowered->plan);
   if (!scratch) return std::unexpected(scratch.error().detail);
-  std::uint64_t pool = *scratch;
+  std::uint64_t pool = *scratch, private_pool = *scratch;
   if (!lowered->plan.regions.empty()) {
     auto lane = PlanLaneScratch(*measuring_, lowered->plan);
     if (!lane) return std::unexpected(lane.error().detail);
@@ -896,13 +964,13 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> GgmlBackend::L
     // tail. The runner adds lane_pool_reserve() beside the measured ordinary
     // scratch; charging it here too would fund the same physical slices twice.
   }
-  for (const auto& selected : lowered->selected)
+  for (const auto& selected : lowered->selected) {
     pool = std::max(pool, selected.call->scratch_bytes());
+    private_pool = std::max(private_pool, selected.call->scratch_bytes());
+  }
   auto program =
-      std::make_unique<GgmlStepProgram>(&launch_, &launch_generation_, *registry_,
-                                        std::move(*lowered), pool, options_.lanes, declaration_);
-  // Keep the local reference through a refused slot too: even that failure
-  // destroys program before its payment. Copying a shared_ptr allocates nothing.
+      std::make_unique<GgmlStepProgram>(launch, generation, *registry_, std::move(*lowered), pool,
+                                        private_pool, options_.lanes, declaration_);
   if (!program->HoldConstruction(payment))
     return std::unexpected("native construction payment could not follow its program");
   return program;

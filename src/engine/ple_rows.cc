@@ -54,12 +54,13 @@ std::expected<PleRowPlan, std::string> PlanPleRows(const PleTable& table,
   }
   PleRowPlan plan;
   plan.slots.reserve(rows.size());
+  plan.reads.reserve(rows.size());
   for (const std::int32_t r : rows) {
     plan.slots.push_back(
         static_cast<std::int32_t>(std::ranges::lower_bound(distinct, r) - distinct.begin()));
   }
   // Reads over the rows in file order, blocks that touch or overlap merged.
-  std::vector<std::size_t> read_of(distinct.size());
+  std::vector<std::size_t> read_of(rows.size());
   std::int64_t last_chunk = -1;
   for (std::size_t i = 0; i < distinct.size(); ++i) {
     const std::uint64_t start =
@@ -107,7 +108,7 @@ std::expected<PleRowPlan, std::string> PlanPleRows(const PleTable& table,
     return Error(std::format("the n-gram rows' reads need {} bytes, more than the landing's {}",
                              plan.landing_bytes, landing_capacity));
   }
-  plan.sources.reserve(distinct.size());
+  plan.sources.reserve(rows.size());
   for (std::size_t i = 0; i < distinct.size(); ++i) {
     const PleRead& read = plan.reads[read_of[i]];
     const std::uint64_t start =

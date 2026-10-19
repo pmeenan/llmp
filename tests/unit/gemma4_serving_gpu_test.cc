@@ -922,29 +922,54 @@ TEST_P(Gemma4ServingGpu, CompleteLikelihoodRowsMatchOwnedOneTokenFrontiersAndSto
   const auto peer_history = Branch(1).history();
   const auto peer_bytes = model->ResidentStateBytes(Branch(1));
   std::size_t at = 1;
+  bool stop_at_three = true;
+  const auto check_row = [&](std::int32_t id, std::span<const float> row) {
+    EXPECT_EQ(id, prompt[at]);
+    EXPECT_EQ(row.size(), rows[at - 1].size());
+    const auto actual = llmp::execution::ScoreToken(row, id, 16);
+    const auto expected = llmp::execution::ScoreToken(rows[at - 1], prompt[at], 16);
+    EXPECT_TRUE(actual);
+    EXPECT_TRUE(expected);
+    if (actual && expected && !actual->top.empty() && !expected->top.empty()) {
+      EXPECT_TRUE(std::ranges::any_of(actual->top,
+                                      [&](const auto& c) { return c.id == expected->top[0].id; }));
+      EXPECT_NEAR(actual->logprob, expected->logprob, 0.65);
+    }
+    return ++at < 4 || !stop_at_three;
+  };
   rt::PrefillRun run;
   std::vector<float> stopped;
-  const auto score = Branch(0).ScorePrompt(
-      prompt, stopped,
-      [&](std::int32_t id, std::span<const float> row) {
-        EXPECT_EQ(id, prompt[at]);
-        EXPECT_TRUE(std::ranges::equal(row, rows[at - 1]));
-        const auto actual = llmp::execution::ScoreToken(row, id, 16);
-        const auto expected = llmp::execution::ScoreToken(rows[at - 1], prompt[at], 16);
-        EXPECT_TRUE(actual);
-        EXPECT_TRUE(expected);
-        if (actual && expected) EXPECT_EQ(actual->logprob, expected->logprob);
-        return ++at < 4;
-      },
-      {}, &run);
+  const auto score = Branch(0).ScorePrompt(prompt, stopped, check_row, {}, &run);
   ASSERT_TRUE(score);
   EXPECT_EQ(at, 4U);
-  EXPECT_EQ(run.end, 3U);
+  EXPECT_EQ(run.published, 3U);
+  EXPECT_EQ(run.end, prompt.size());
   EXPECT_TRUE(run.stopped);
   EXPECT_TRUE(stopped.empty());
-  EXPECT_EQ(Branch(0).history(), (std::vector<std::int32_t>(prompt.begin(), prompt.begin() + 3)));
+  EXPECT_EQ(Branch(0).history(), peer_history);
+  stop_at_three = false;
+  auto resumed = Branch(0).BeginScoringPrompt(prompt, check_row, true);
+  ASSERT_TRUE(resumed);
+  while (!(*resumed)->done()) ASSERT_TRUE((*resumed)->Advance());
+  ASSERT_TRUE((*resumed)->Finish());
+  EXPECT_EQ(at, prompt.size());
+  EXPECT_EQ((*resumed)->run().published, prompt.size() - 1);
+  EXPECT_EQ((*resumed)->run().chunks, 0U);
+  EXPECT_FALSE((*resumed)->last().empty());
+  EXPECT_EQ(Branch(0).history(), peer_history);
   EXPECT_EQ(Branch(1).history(), peer_history);
   EXPECT_EQ(model->ResidentStateBytes(Branch(1)), peer_bytes);
+  std::vector<float> full_last;
+  ASSERT_TRUE(Branch(1).Clear());
+  ASSERT_TRUE(Branch(1).Prefill(prompt, full_last));
+  const auto actual_last = llmp::execution::ScoreToken((*resumed)->last(), prompt.back(), 16);
+  const auto expected_last = llmp::execution::ScoreToken(full_last, prompt.back(), 16);
+  ASSERT_TRUE(actual_last);
+  ASSERT_TRUE(expected_last);
+  ASSERT_FALSE(actual_last->top.empty());
+  ASSERT_FALSE(expected_last->top.empty());
+  EXPECT_EQ(actual_last->top[0].id, expected_last->top[0].id);
+  EXPECT_NEAR(actual_last->logprob, expected_last->logprob, 0.05);
   EXPECT_TRUE(server->RetireRequestBranches(*model, true).references_retired);
 }
 

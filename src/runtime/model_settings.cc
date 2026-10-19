@@ -23,6 +23,7 @@
 #include "base/json.h"
 #include "base/report.h"
 #include "components/state_encoding.h"
+#include "engine/request_cohort.h"
 #include "runtime/approvals.h"
 #include "runtime/calibration.h"
 #include "runtime/component_admission.h"
@@ -277,13 +278,9 @@ bool SupportsSpeculativeDrafting(const ArtifactFacts& facts) {
          Recipe(facts.architecture, facts.container).draft_rows;
 }
 
-bool SupportsWaveForm(const ArtifactFacts& facts) {
-  return Recipe(facts.architecture, facts.container).adaptive_waves;
-}
+bool SupportsWaveForm(const ArtifactFacts& facts) { return SupportsSpeculativeDrafting(facts); }
 
-bool SupportsWaveCosts(const ArtifactFacts& facts) {
-  return Recipe(facts.architecture, facts.container).adaptive_waves;
-}
+bool SupportsWaveCosts(const ArtifactFacts& facts) { return SupportsSpeculativeDrafting(facts); }
 
 bool SupportsMtpDrafting(const ArtifactFacts& facts) {
   return Recipe(facts.architecture, facts.container).mtp_waves;
@@ -294,11 +291,11 @@ bool SupportsSpeculativeDrafting(const ModelSettings& settings) {
 }
 
 bool SupportsWaveForm(const ModelSettings& settings) {
-  return Recipe(settings.architecture, settings.container).adaptive_waves;
+  return SupportsSpeculativeDrafting(settings);
 }
 
 bool SupportsWaveCosts(const ModelSettings& settings) {
-  return Recipe(settings.architecture, settings.container).adaptive_waves;
+  return SupportsSpeculativeDrafting(settings);
 }
 
 bool SupportsMtpDrafting(const ModelSettings& settings) {
@@ -322,7 +319,7 @@ bool KeyAppliesTo(std::string_view key, const ArtifactFacts& facts) {
     return SupportsWaveCosts(facts);
   }
   if (key == "draft_vocab" || key == "depth_cost_ratio" || key == "shared_wave_depth" ||
-      key == "draft_wave_max" || key == "wave_lanes" || key == "wave_read_align") {
+      key == "draft_wave_max") {
     return SupportsMtpDrafting(facts);
   }
   return true;
@@ -345,7 +342,7 @@ bool KeyAppliesTo(std::string_view key, const ModelSettings& settings) {
     return SupportsWaveCosts(settings);
   }
   if (key == "draft_vocab" || key == "depth_cost_ratio" || key == "shared_wave_depth" ||
-      key == "draft_wave_max" || key == "wave_lanes" || key == "wave_read_align") {
+      key == "draft_wave_max") {
     return SupportsMtpDrafting(settings);
   }
   return true;
@@ -847,7 +844,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   } else if (recipe.default_context != 0 && ceiling >= recipe.default_context) {
     // The wider scalar envelope is explicit opt-in; retain the checked default.
     s.context = {recipe.default_context, SettingSource::kDerived,
-                 std::format("bounded {} default; wider scalar context opt-in", recipe.name)};
+                 std::format("bounded {} default; wider context opt-in", recipe.name)};
   } else if (ceiling < config::kDefaultContext) {
     s.context = {ceiling, SettingSource::kDerived, ceiling_from};
   } else {
@@ -903,10 +900,10 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
       : deep  ? std::format("measured on a GB10 (above {} tokens: the mask's memory)",
                             Grouped(recipe.deep_context))
               : std::string("measured on a GB10"));
-  s.max_slots = Pick<std::uint32_t>(U32(entry.Integer("max_slots")), basis("max_slots"),
-                                    cal.max_slots, cal.basis, {}, {}, bounded ? 1U : kDefaultSlots,
-                                    bounded ? "bounded scalar-cohort route; uncalibrated"
-                                            : "the knee measured on a GB10 (D-104)");
+  s.max_slots = Pick<std::uint32_t>(
+      U32(entry.Integer("max_slots")), basis("max_slots"), cal.max_slots, cal.basis, {}, {},
+      kDefaultSlots,
+      bounded ? "cooperative cohort default; uncalibrated" : "the knee measured on a GB10 (D-104)");
   // The approved envelopes (the target's approval's and its configured
   // drafter's; D-119's qualified envelope defaults): within them by
   // default, as the context is above, the basis saying so; an override past
@@ -965,28 +962,12 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
       s.prefill_chunk.value = recipe_chunk;
       s.prefill_chunk.basis = std::format("qualified bounded {} serving envelope", label);
     }
-    const auto cap = std::min(recipe_chunk != 0 ? recipe_chunk : recipe.prefill_rows, context - 1);
-    if (s.prefill_chunk.value > cap) {
-      s.prefill_chunk.value = cap;
-      s.prefill_chunk.basis += std::format(", capped by the bounded {} serving envelope",
-                                           recipe_chunk != 0 ? label : recipe.family);
-    }
-    if (recipe.max_owners != 0 && s.max_slots.value > recipe.max_owners)
-      return Error(std::format("{} serving needs at most {} conversation owners", recipe.name,
-                               recipe.max_owners));
-    if (recipe.wide_context != 0 && context > recipe.wide_context && s.max_slots.value != 1)
-      return Error(std::format("{} context above {} needs exactly one conversation owner",
-                               recipe.name, recipe.wide_context));
-    if (s.max_slots.value > 12 || s.max_slots.value > s.prefill_chunk.value)
-      return Error(std::format("{} serving needs at most twelve owners, within its chunk envelope",
-                               recipe.family));
   }
-  if (recipe.speculative_owners != 0 && speculative &&
-      s.max_slots.value > recipe.speculative_owners) {
-    s.max_slots.basis += std::format(", at most {}: {} speculative verify row bound",
-                                     recipe.speculative_owners, recipe.name);
-    s.max_slots.value = recipe.speculative_owners;
-  }
+  // Settings never assert component/backend capacity. The common serving
+  // policy intersects those facts after source admission; this bound is the
+  // actual request-slot representation, independent of model family.
+  if (s.max_slots.value == 0 || s.max_slots.value > engine::kMaxRequestSlots)
+    return Error("max_slots exceeds the request-slot representation");
   s.prefill_floor_tok_s = Pick<std::uint32_t>(
       U32(entry.Integer("prefill_floor_tok_s")), basis("prefill_floor_tok_s"),
       cal.prefill_floor_tok_s, cal.basis, {}, {}, config::kDefaultPrefillFloor, "the default");
@@ -1141,8 +1122,9 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   s.draft_wave_max =
       Pick<std::uint32_t>(U32(entry.Integer("draft_wave_max")), basis("draft_wave_max"), {}, {}, {},
                           {}, recipe.default_draft_wave_max, "measured on a GB10");
-  s.wave_lanes = Pick<bool>(entry.Bool("wave_lanes"), basis("wave_lanes"), {}, {}, {}, {}, true,
-                            "measured four-request concurrent streams on a GB10");
+  s.wave_lanes = Pick<bool>(entry.Bool("wave_lanes"), basis("wave_lanes"), {}, {}, {}, {},
+                            recipe.default_wave_lanes,
+                            "enabled when admitted backend lanes and workspace permit");
   s.wave_read_align =
       Pick<std::uint32_t>(U32(entry.Integer("wave_read_align")), basis("wave_read_align"), {}, {},
                           {}, {}, recipe.default_wave_read_align, "the plans' reuse across depths");

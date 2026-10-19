@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <functional>
@@ -146,7 +147,7 @@ class StepBuilder {
   }
   static bool Greedy(const planner::StepShape& shape) {
     return !shape.segments.empty() &&
-           std::ranges::all_of(shape.segments, [](const auto& s) { return s.greedy; });
+           std::ranges::any_of(shape.segments, [](const auto& s) { return s.greedy; });
   }
 
   ir::Builder& b() { return b_; }
@@ -268,18 +269,28 @@ std::expected<void, std::string> CheckShape(const planner::StepShape& shape) {
   if (shape.read_align == 0 || shape.read_align % 256 != 0) {
     return Refused(std::format("a read alignment of {}", shape.read_align));
   }
-  const bool greedy = shape.segments.front().greedy;
   std::set<std::uint8_t> slots;
+  bool any_origin = false;
+  bool any_primary = false;
   for (const planner::Segment& s : shape.segments) {
+    if (s.origin_phase &&
+        (shape.stage != 0 || shape.phase != planner::Phase::kPrefill || shape.row_invariant ||
+         *s.origin_phase != planner::Phase::kDecode || s.rows != 1))
+      return Refused("mixed causal origin requires an ordinary one-row target decode");
+    any_origin = any_origin || s.origin_phase.has_value();
+    any_primary = any_primary || !s.origin_phase.has_value();
     if (s.rows == 0 || s.outputs > s.rows || !slots.insert(s.slot).second) {
       return Refused("an empty or repeated segment, or more outputs than rows");
     }
-    if (s.greedy != greedy || (greedy && s.outputs == 0)) {
-      return Refused("greedy segments are all of them, each with an output");
+    if (s.greedy && s.outputs == 0) {
+      return Refused("a greedy segment needs an output");
     }
     if (s.past > std::numeric_limits<std::uint32_t>::max() - s.rows) {
       return Refused("a segment's positions overflow");
     }
+  }
+  if (any_origin && !any_primary) {
+    return Refused("a step with only decode segments must use the decode phase");
   }
   return {};
 }
@@ -479,6 +490,20 @@ std::vector<const Instance*> All(const StageInstances& s) {
   return out;
 }
 
+bool IndexedMasks(const StageInstances& instances) {
+  const auto indexed = [](const Instance& in) {
+    return in.def->masks != nullptr &&
+           std::ranges::any_of(in.def->masks(in), &MaskUse::indexer_selected);
+  };
+  if (instances.embedding && indexed(*instances.embedding)) return true;
+  if (std::ranges::any_of(instances.side, indexed)) return true;
+  if (instances.mixing && indexed(*instances.mixing)) return true;
+  for (const auto& layer : instances.layers)
+    if (std::ranges::any_of(layer, indexed)) return true;
+  return (instances.final_norm && indexed(*instances.final_norm)) ||
+         (instances.output && indexed(*instances.output));
+}
+
 // A stage's contract tensors with where they sit: (layer, index in the
 // layer's contract, the tensor).
 struct ContractTensor {
@@ -665,16 +690,33 @@ std::expected<void, std::string> CheckReads(const spec::ModelSpec& spec,
 
 // --------------------------------------------------------------- compressors
 
+namespace {
+template <class Emit>
+void EmitHadamard(std::uint64_t n, Emit emit) {
+  if (n == 0 || (n & (n - 1)) != 0) {
+    for (std::uint64_t i = 0; i < n * n; ++i) emit(i, 0.0F);
+    return;
+  }
+  const float value = 1.0F / std::sqrt(static_cast<float>(n));
+  for (std::uint64_t i = 0; i < n; ++i)
+    for (std::uint64_t j = 0; j < n; ++j)
+      emit(i * n + j, std::popcount(i & j) % 2 == 0 ? value : -value);
+}
+}  // namespace
 std::vector<float> HadamardValues(std::uint64_t n) {
   std::vector<float> out(n * n, 0.0F);
-  if (n == 0 || (n & (n - 1)) != 0) return out;
-  const float value = 1.0F / std::sqrt(static_cast<float>(n));
-  for (std::uint64_t i = 0; i < n; ++i) {
-    for (std::uint64_t j = 0; j < n; ++j) {
-      out[(i * n) + j] = std::popcount(i & j) % 2 == 0 ? value : -value;
-    }
-  }
+  EmitHadamard(n, [&](std::uint64_t index, float value) { out[index] = value; });
   return out;
+}
+std::expected<void, std::string> WriteHadamard(std::uint64_t n, std::span<std::byte> into) {
+  std::uint64_t values = 0, bytes = 0;
+  if (__builtin_mul_overflow(n, n, &values) ||
+      __builtin_mul_overflow(values, std::uint64_t{sizeof(float)}, &bytes) || bytes != into.size())
+    return std::unexpected("a Hadamard input's size");
+  EmitHadamard(n, [&](std::uint64_t index, float value) {
+    std::memcpy(into.data() + index * sizeof(float), &value, sizeof(float));
+  });
+  return {};
 }
 
 // --------------------------------------------------------------- instances
@@ -973,6 +1015,12 @@ std::expected<std::uint32_t, std::string> StagePrefillRows(const spec::ModelSpec
   }
   if (!low) return Refused("even one prompt row exceeds its mask/state/index budget");
   return low;
+}
+
+std::expected<bool, std::string> StageIndexedMasks(const spec::ModelSpec& spec, std::size_t stage) {
+  auto instances = InstancesOf(spec, stage);
+  if (!instances) return std::unexpected(instances.error());
+  return IndexedMasks(*instances);
 }
 
 std::expected<model::Batching, std::string> StageBatching(const spec::ModelSpec& spec,
@@ -1668,18 +1716,9 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
     }
     if (!indexed) return Refused("rounded indexer policy names no indexed attention");
   }
-  bool has_indexer = false;
-  if (options.dsv4_lid_mask) {
-    for (const auto& layer : instances->layers) {
-      for (const auto& in : layer) {
-        if (in.def->masks != nullptr &&
-            std::ranges::any_of(in.def->masks(in), &MaskUse::indexer_selected)) {
-          has_indexer = true;
-          break;
-        }
-      }
-    }
-  }
+  // Same canonical component declaration as serving policy, reusing the
+  // instances already paid and materialized for this graph.
+  const bool has_indexer = options.dsv4_lid_mask && IndexedMasks(*instances);
   StepBuilder sb(stage, shape);
   StepContext& ctx = sb.ctx();
   ctx.EnableOwnerProducts(options.owner_products);
@@ -2372,9 +2411,10 @@ std::expected<ComponentGraph, std::string> BuildComponent(
                         .weights = std::move(weights)};
 }
 
-std::expected<std::vector<std::int64_t>, std::string> InputValues(
-    const StepInput& input, const planner::StepShape& shape, std::span<const std::int32_t> tokens) {
-  std::vector<std::int64_t> out;
+std::expected<void, std::string> EmitInputValues(const StepInput& input,
+                                                 const planner::StepShape& shape,
+                                                 std::span<const std::int32_t> tokens,
+                                                 InputValueSink& out) {
   std::uint32_t rows = 0;
   for (const planner::Segment& s : shape.segments) rows += s.rows;
   switch (input.kind) {
@@ -2408,35 +2448,38 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
             static_cast<std::int64_t>(std::min((std::uint64_t{segment.past} + row + 1) / c.block,
                                                std::min(input.visible_capacity, input.read))));
       }
-      return out;
+      return out.Finish();
     }
     case InputKind::kTokens:
       if (tokens.size() != rows) return Refused("a token per row");
-      out.assign(tokens.begin(), tokens.end());
-      return out;
+      for (const auto token : tokens) out.push_back(token);
+      return out.Finish();
     case InputKind::kPositions:
       for (std::uint8_t sec = 0; sec < std::max<std::uint8_t>(input.sections, 1); ++sec) {
         for (const planner::Segment& s : shape.segments) {
           for (std::uint32_t i = 0; i < s.rows; ++i) out.push_back(std::int64_t{s.past} + i);
         }
       }
-      return out;
+      return out.Finish();
     case InputKind::kOutputRows: {
       std::int64_t first = 0;
       for (const planner::Segment& s : shape.segments) {
         for (std::uint32_t i = s.rows - s.outputs; i < s.rows; ++i) out.push_back(first + i);
         first += s.rows;
       }
-      return out;
+      return out.Finish();
     }
     case InputKind::kStoreCells:
       // A fixed tensor's one row.
-      if (input.cells.fixed) return std::vector<std::int64_t>{0};
+      if (input.cells.fixed) {
+        out.push_back(0);
+        return out.Finish();
+      }
       // A cell a row of the whole step (a verify's joined saves).
       if (input.cells.per_row && input.segment == ir::kJoinedSegment) {
         for (std::uint32_t i = 0; i < rows; ++i)
           out.push_back(std::int64_t{input.cells.first_row} + i);
-        return out;
+        return out.Finish();
       }
       break;
     case InputKind::kHadamard:
@@ -2448,7 +2491,7 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
           out.push_back(static_cast<std::int64_t>((std::uint64_t{s.past} + i) % input.ratio));
         }
       }
-      return out;
+      return out.Finish();
     case InputKind::kCellPositions:
     case InputKind::kOutputCells:
     case InputKind::kBlockPositions:
@@ -2470,16 +2513,10 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
     const std::uint64_t ring = input.kind == InputKind::kPoolReads
                                    ? input.cells.capacity
                                    : std::uint64_t{input.ratio} * (input.overlap ? 2 : 1);
-    auto plan = PlanCompressor(s.rows, s.past, input.ratio, input.overlap, ring, cache);
-    if (!plan) return std::unexpected(plan.error());
-    switch (input.kind) {
-      case InputKind::kPoolReads:
-        return std::move(plan->reads);
-      case InputKind::kBlockCells:
-        return std::move(plan->cells);
-      default:
-        return std::move(plan->starts);
-    }
+    return EmitCompressor(s.rows, s.past, input.ratio, input.overlap, ring, cache,
+                          input.kind == InputKind::kPoolReads ? &out : nullptr,
+                          input.kind == InputKind::kBlockCells ? &out : nullptr,
+                          input.kind == InputKind::kBlockStarts ? &out : nullptr);
   }
   if (input.segment >= shape.segments.size() || input.cells.capacity == 0) {
     return Refused("an input of no segment of the shape");
@@ -2493,7 +2530,7 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
         out.push_back(static_cast<std::int64_t>(b * input.cells.block));
       }
     }
-    return out;
+    return out.Finish();
   }
   if (input.kind == InputKind::kKeptRows || input.kind == InputKind::kKeptCells) {
     // A recent ring's last min(rows, capacity) rows, in row order.
@@ -2503,13 +2540,13 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
                         ? static_cast<std::int64_t>(i)
                         : static_cast<std::int64_t>((std::uint64_t{s.past} + i) % cap));
     }
-    return out;
+    return out.Finish();
   }
   if (input.kind == InputKind::kStoreCells && input.cells.block != 0) {
     // A block tensor's first `read` blocks, each at its own cell.
     if (input.read > cap) return Refused("blocks past a block tensor's cells");
     for (std::uint64_t b = 0; b < input.read; ++b) out.push_back(static_cast<std::int64_t>(b));
-    return out;
+    return out.Finish();
   }
   if (input.kind == InputKind::kStoreCells || input.kind == InputKind::kOutputCells) {
     if (input.cells.block != 0) return Refused("a block tensor's cells are not a row's");
@@ -2523,7 +2560,7 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
       const std::uint64_t p = std::uint64_t{s.past} + i;
       out.push_back(static_cast<std::int64_t>(input.cells.ring ? p % cap : p));
     }
-    return out;
+    return out.Finish();
   }
   // A frozen read's cells hold the positions before the segment's.
   const std::uint64_t end = std::uint64_t{s.past} + (input.cells.frozen ? 0 : s.rows);
@@ -2540,7 +2577,16 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
       out.push_back(static_cast<std::int64_t>(c));
     }
   }
-  return out;
+  return out.Finish();
+}
+
+std::expected<std::vector<std::int64_t>, std::string> InputValues(
+    const StepInput& input, const planner::StepShape& shape, std::span<const std::int32_t> tokens) {
+  std::vector<std::int64_t> values;
+  InputValueSink sink(values);
+  if (auto emitted = EmitInputValues(input, shape, tokens, sink); !emitted)
+    return std::unexpected(emitted.error());
+  return values;
 }
 
 std::expected<void, std::string> VisitWeightBindings(

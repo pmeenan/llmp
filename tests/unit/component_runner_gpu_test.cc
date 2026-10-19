@@ -334,7 +334,7 @@ Component Lowered(const fs::path& root, const llmp::spec::ModelSpec& spec,
         if (ran->path == en::RunPath::kReplayed) ++out.replayed;
         auto& row = out.outputs.emplace_back();
         if (p.wave.head == Head::kNone) continue;
-        for (const auto& bytes : ran->outputs) row.push_back(bytes);
+        for (const auto& bytes : ran->outputs) row.emplace_back(bytes.begin(), bytes.end());
       }
       return {};
     });

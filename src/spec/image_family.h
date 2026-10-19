@@ -86,6 +86,24 @@ struct ImageRequirement {
   Literal value{};
 };
 
+// Source-owned meanings of host inputs. Stage and port numbers are mapping
+// data, checked against the actual typed graph when geometry is built.
+// Graph edge/export unification belongs to the shared typed-program contract.
+enum class ImageInputValue : std::uint8_t {
+  kPromptIds,
+  kTextPositions,
+  kTextCausalMask,
+  kTimestepSinusoid,
+  kJointPositions,
+  kJointMask,
+  kEulerDelta,
+  kLatentAffine
+};
+struct ImageHostInput {
+  std::uint16_t stage = 0, slot = 0;
+  ImageInputValue value = ImageInputValue::kPromptIds;
+};
+
 struct ImageMapping {
   std::string_view architecture{};  // the pipeline's (model_index.json's _class_name)
   std::uint16_t version = 1;
@@ -105,6 +123,7 @@ struct ImageMapping {
   // pipeline's prompt renderer (chat/chat.h's, by name).
   std::string_view tokenizer{};
   std::string_view prompt{};
+  std::span<const ImageHostInput> host_inputs{};
 };
 
 std::span<const ImageMapping* const> ImageMappings();

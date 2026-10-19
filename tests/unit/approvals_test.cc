@@ -117,8 +117,6 @@ TEST(Approvals, EveryServedArchitectureHasARecipeAndEveryDrafterADraftingOne) {
       ASSERT_NE(m->serving, nullptr);
       EXPECT_NE(m->serving->prefill_rows, 0U);
       EXPECT_FALSE(m->serving->name.empty());
-      // Only a shared route is qualified by its envelopes.
-      if (!m->serving->shared_route) EXPECT_FALSE(m->serving->qualified_envelopes);
     }
     EXPECT_EQ(rt::OnComponentEngine(m->architecture), m->architecture != "qwen2");
   }

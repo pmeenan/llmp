@@ -122,13 +122,26 @@ class WaveComposer {
   }
   std::uint32_t LoneRead(std::size_t stage, std::uint32_t past, std::uint32_t rows) const;
 
+  // Runtime session eligibility uses this same pairwise rule; no second
+  // equal-width/head/read-alignment policy lives in the serving adapter.
+  bool CanJoinPrefill(std::uint32_t past, std::uint32_t rows, bool want_head,
+                      std::uint32_t peer_past, std::uint32_t peer_rows, bool peer_want_head) const;
   Composition Compose(std::span<const PendingWork> pending) const;
+  enum class PredictionError : std::uint8_t { kExtent, kWork };
+  // Allocation-free composition into already paid shape/segment capacities.
+  // Uses the same joining and read geometry as authoritative composition.
+  std::expected<std::size_t, PredictionError> ComposePrediction(
+      std::span<const PendingWork> pending, std::span<planner::StepShape> into,
+      std::span<std::size_t> order) const;
+  static StepAuthorization Authorize(const ModelRunner& runner, const PendingWork& work);
 
  private:
   WaveComposer(model::Batching caps, std::vector<StageReads> stages)
       : caps_(caps), stages_(std::move(stages)) {}
   // Fills in the shape's alignment, reads and groups from its segments.
   void Finish(planner::StepShape& shape) const;
+  void Finish(std::uint16_t stage, bool row_invariant, std::span<planner::Segment> segments,
+              std::uint32_t& read_align) const;
 
   model::Batching caps_;
   std::vector<StageReads> stages_;
@@ -137,8 +150,10 @@ class WaveComposer {
 // One pending work's outcome.
 struct WaveOutcome {
   std::optional<StepRefusal> refusal{};  // none: it ran
-  std::vector<std::byte> outputs{};      // its own output slots
-  std::vector<std::byte> joined{};       // its step's joined outputs
+  HostBuffer outputs{};                  // its own output slots
+  HostBuffer joined{};                   // its step's joined outputs
+  planner::Phase phase = planner::Phase::kDecode;
+  std::uint32_t rows = 0;
   RunPath path = RunPath::kEager;
   std::uint32_t step = 0;  // the step (in run order) it ran in
   // Where it sat in that step, to find its share of `joined` without
@@ -150,6 +165,31 @@ struct WaveOutcome {
 };
 
 struct WaveReport {
+  WaveReport() = default;
+  WaveReport(WaveReport&& other) noexcept { Swap(other); }
+  WaveReport& operator=(WaveReport&& other) noexcept {
+    WaveReport replaced(std::move(other));
+    Swap(replaced);
+    return *this;
+  }
+  void Swap(WaveReport& other) noexcept {
+    std::swap(payment_, other.payment_);
+    outcomes.swap(other.outcomes);
+    std::swap(steps, other.steps);
+    std::swap(recomposed, other.recomposed);
+  }
+  // The copied result descriptors die before their retained payment. Payloads
+  // carry their own independent host receipts through any longer retention.
+ private:
+  HostPayment payment_;
+
+ public:
+  bool HoldPayment(HostPayment paid) {
+    if (payment_.bytes() != 0) return false;
+    payment_ = std::move(paid);
+    return true;
+  }
+  std::uint64_t paid_bytes() const { return payment_.bytes(); }
   std::vector<WaveOutcome> outcomes;  // by pending index
   std::uint32_t steps = 0;            // steps run
   std::uint32_t recomposed = 0;       // compositions after a refusal
@@ -165,7 +205,9 @@ using AheadFor =
 // owners' positions (`advance`; a verify's and a draft's do not).
 WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
                    std::span<const PendingWork> pending, std::span<const SegmentWork> work,
-                   bool advance = true, const AheadFor& ahead = {});
+                   bool advance = true, const AheadFor& ahead = {},
+                   std::span<const StepAuthorization> authorization = {},
+                   const PromptBatch& batch = {});
 
 }  // namespace llmp::engine
 

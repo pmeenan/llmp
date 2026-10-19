@@ -635,7 +635,7 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
         if (ran->path == en::RunPath::kReplayed) ++out.replayed;
         pass += draft ? 1 : 0;
         if (planned.wave.head == Head::kNone) continue;
-        for (const auto& bytes : ran->outputs) row.push_back(bytes);
+        for (const auto& bytes : ran->outputs) row.emplace_back(bytes.begin(), bytes.end());
         if (draft && pass == 1) last_draft = row;
       }
       return {};

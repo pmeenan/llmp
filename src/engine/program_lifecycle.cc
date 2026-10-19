@@ -66,10 +66,16 @@ std::expected<void, std::string> ProgramLifecycle::BindLaunch(
 
 std::expected<Coverage, std::string> ProgramLifecycle::BindPrepared(StepPlanned& planned,
                                                                     const Validate& validate) {
-  if (!launch_ || !planned.program) return Error("no launch or program to bind");
+  if (!launch_) return Error("no ordinary launch to bind");
+  return BindPrepared(planned, *launch_, validate);
+}
+std::expected<Coverage, std::string> ProgramLifecycle::BindPrepared(StepPlanned& planned,
+                                                                    kernels::StepLaunch& launch,
+                                                                    const Validate& validate) {
+  if (!planned.program) return Error("no program to bind");
   auto& program = *planned.program;
   if (!planned.bound) {
-    if (auto bound = program.Bind(*launch_); !bound)
+    if (auto bound = program.Bind(launch); !bound)
       return Error(std::format("binding a step: {}", bound.error().detail));
     planned.bound = true;
   }

@@ -60,6 +60,12 @@ add_dependencies(model_settings_test artifact_corpus)
 llmp_gtest(model_settings_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
              PROPERTIES LABELS unit)
 
+# The one mechanical LLM serving policy uses admitted component/backend facts;
+# no device provider or numerical grant is supplied by these value-only tests.
+add_executable(llm_policy_test llm_policy_test.cc)
+target_link_libraries(llm_policy_test PRIVATE llmp_runtime_llm llmp_fake_device_backend)
+llmp_gtest(llm_policy_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The calibration record (D-103): its format, key, atomic write and trusted
 # read, and what a model's first uses measure.
 add_executable(calibration_test calibration_test.cc)
@@ -579,6 +585,10 @@ llmp_gtest(slot_lifecycle_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
 
 # The one model runner, its wave composer and prefill orchestrator over a
 # fake step source (tests/support/fake_step_source.h).
+add_executable(step_transaction_test step_transaction_test.cc)
+target_link_libraries(step_transaction_test PRIVATE llmp_engine_core llmp_fake_device_backend)
+llmp_gtest(step_transaction_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit)
+
 add_executable(model_runner_test model_runner_test.cc)
 target_link_libraries(model_runner_test PRIVATE llmp_engine_core llmp_fake_step_source
                                                 llmp_fake_device_backend llmp_platform)
@@ -596,6 +606,12 @@ llmp_gtest(decoding_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
 # An anchored drafter over its target's frozen state and tapped features
 # (Gemma 4's assistant's decoding), the features' sources and the computed
 # inputs the runner stages, over the same fake step source.
+add_executable(compound_routed_test compound_routed_test.cc)
+target_link_libraries(compound_routed_test PRIVATE llmp_engine_core llmp_fake_step_source
+                                                 llmp_fake_device_backend llmp_test_artifact_writer)
+llmp_gtest(compound_routed_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
 add_executable(draft_companions_test draft_companions_test.cc)
 target_link_libraries(draft_companions_test PRIVATE llmp_engine_core llmp_fake_step_source
                                                    llmp_fake_device_backend llmp_platform)

@@ -22,6 +22,9 @@
 //   or, when it repeats this shape, this shape captured on its first run,
 //   and the next chunk's fresh state prepared before the job
 //   (LiveState::Prepare through SlotLifecycle::PrepareThrough).
+// - Production continuation policy receives actual session budgets, sampling
+//   intent and ready peers; semantic boundaries come from the owned source.
+//   Candidate, key and build capacities are paid from actual resource counts.
 // - The lifecycle's ledger: a write recorded from each owner's first row
 //   before the job, its positions set to the chunk's end after it.
 //
@@ -32,11 +35,16 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <functional>
 #include <optional>
 #include <span>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "engine/model_runner.h"
+#include "engine/prefill_lookahead.h"
 #include "engine/run_stats.h"
 #include "engine/wave_composer.h"
 
@@ -44,7 +52,9 @@ namespace llmp::engine {
 
 struct PrefillOptions {
   std::uint32_t chunk_rows = 128;  // an owner's rows a unit
-  std::uint32_t lookahead = 2;     // futures built ahead (0 to 2)
+  std::uint32_t lookahead = 2;     // independent optional compiler grants
+  // Explicit optional search budget, not a model/compressor interval.
+  std::uint32_t specialization_lookahead = 1;
   bool capture_ahead = true;
   bool prepare_ahead = true;
   bool state_only = true;  // nonfinal chunks skip the head
@@ -68,24 +78,79 @@ struct PromptWork {
   std::span<const std::int32_t> history{};
 };
 
+// Production input: an exact chunk and the session's actual next geometry.
+// Histories/tokens are borrowed only for the synchronous StepPrepared call.
+struct PrefillUnit {
+  PendingWork current;
+  SegmentWork work;
+  PrefillHint next;
+  // Full session prompt extent; absent for a caller that supplies only chunks.
+  // A zero near hint may instead mean a checkpoint or unknown geometry.
+  std::optional<std::uint32_t> prompt_end{};
+  // Actual future target input rows remaining in this generation session.
+  // Absence never supplies an invented peer lifetime.
+  std::optional<std::uint32_t> remaining{};
+  bool decode_greedy = false, verify_greedy = false, all_outputs = false;
+  bool generation_expected = false, sampling = false;
+};
+struct PrefillPeer {
+  PendingWork next;  // exact next decode coordinate, including its output mode
+  bool ready = false, verify_greedy = false, sampling = false;
+  std::optional<std::uint32_t> remaining{};
+};
+struct PrefillContinuation {
+  bool speculate = false, row_invariant = false;
+  std::uint32_t verify_rows = 1, min_verify_rows = 1;
+  // Pure choice from the same configured adaptive policy used for decoding.
+  // Empty means plain unless speculation is requested.
+  std::function<bool(std::uint32_t, bool)> plain{};
+};
+
 struct PrefillOutcome {
   std::optional<StepRefusal> refusal{};
+  planner::Phase phase = planner::Phase::kPrefill;
   std::uint32_t rows = 0;  // prefilled by this unit
   bool last = false;       // the prompt's last chunk
-  std::vector<std::byte> outputs{};
+  HostBuffer outputs{};
   // Its step's joined outputs, and where it sat in that step (its
   // segment, the rows and outputs of the segments before it): its share of
   // them (WaveOutcome's).
-  std::vector<std::byte> joined{};
+  HostBuffer joined{};
   std::uint32_t segment = 0;
   std::uint32_t first_row = 0;
   std::uint32_t first_output = 0;
   RunPath path = RunPath::kEager;
 };
 
-struct PrefillReport {
-  std::vector<PrefillOutcome> outcomes;  // by prompt
+class PrefillReport {
+ public:
+  PrefillReport() = default;
+  PrefillReport(const PrefillReport&) = delete;
+  PrefillReport& operator=(const PrefillReport&) = delete;
+  PrefillReport(PrefillReport&& other) noexcept { Swap(other); }
+  PrefillReport& operator=(PrefillReport&& other) noexcept {
+    PrefillReport replacement(std::move(other));
+    Swap(replacement);
+    return *this;
+  }
+  std::span<const PrefillOutcome> outcomes() const { return outcomes_; }
+  std::optional<StepRefusal> refusal{};  // required dispatch metadata refused before work
   std::uint32_t steps = 0;
+  std::uint32_t prediction_refused = 0;
+
+ private:
+  friend class PrefillOrchestrator;
+  void Swap(PrefillReport& other) noexcept {
+    std::swap(refusal, other.refusal);
+    std::swap(steps, other.steps);
+    std::swap(prediction_refused, other.prediction_refused);
+    std::swap(payment_, other.payment_);
+    outcomes_.swap(other.outcomes_);
+  }
+  // Private lifetime: capacity is destroyed before its payment, including
+  // replacement after move assignment. Immutable views cannot reset receipts.
+  HostPayment payment_;
+  std::vector<PrefillOutcome> outcomes_;
 };
 
 class PrefillOrchestrator {
@@ -101,6 +166,15 @@ class PrefillOrchestrator {
 
   // One completed unit: every prompt's next chunk.
   PrefillReport Step(std::span<const PromptWork> prompts);
+  PrefillReport StepPrepared(std::span<const PrefillUnit> units,
+                             std::span<const PrefillPeer> peers = {},
+                             const PrefillContinuation& continuation = {});
+  // Pure optional policy over explicit session facts. All candidate/workspace
+  // capacity is admitted before composition. Refusal never changes real work.
+  std::expected<StepAhead, std::string> Predict(std::span<const PrefillUnit> units,
+                                                std::span<const PrefillPeer> peers,
+                                                const PrefillContinuation& continuation,
+                                                std::span<const std::size_t> owners) const;
 
  private:
   ModelRunner& runner_;

@@ -15,8 +15,11 @@ same code (`tests/support/paged_node.h`).
 builders have been replaced by one engine of shared components over
 llmpalooza's own graph IR ([engine-components.md](engine-components.md)).
 All LLMs (Gemma 2, Gemma 3, Gemma 4, Qwen2, Qwen3.8, DeepSeek V4 Flash),
-drafters (`gemma4_assistant`, `dspark`), and `Qwen-Image-2.1` execute on
-`ModelRunner` (`src/engine/model_runner.h`) and `SlotLifecycle` (`src/engine/slot_lifecycle.h`).
+and drafters (`gemma4_assistant`, `dspark`) execute on `ModelRunner`
+(`src/engine/model_runner.h`) and `SlotLifecycle` (`src/engine/slot_lifecycle.h`).
+`Qwen-Image-2.1` uses the stateless `StagedExecution`
+(`src/engine/staged_execution.h`) over the same program, cache, capture and
+memory lifecycle.
 This file describes the shared engine architecture.
 
 **Two libraries** (D-096 as amended for M3.6). `llmp_engine_core` builds
@@ -507,8 +510,8 @@ then the launch, then the memory they name. A step (`RunStep`):
 4. the futures (`StepAhead`): deduplicated against the shape and each
    other and protected by `Find` before any funding; a recording made
    ahead whose staging differs is dropped; the capture decision (second
-   run in the phases `capture_phases` names, or the first run of a shape
-   the next one repeats) and `ChargeGraph`; the next shape's recording
+   run in permitted `capture_phases` also named by `automatic_capture_phases`,
+   or an explicit hinted repeat/future in a permitted phase) and `ChargeGraph`; the next shape's recording
    captured beside this run when it differs and is planned; up to two
    missing futures funded (`PrefillLookaheadGroup`) and built in the job's
    meanwhile; the next shape's fresh state prepared;
@@ -806,6 +809,13 @@ code (`runtime/llm.cc`, moved out of `serving.cc`), every build profile:
 they reach the engine through the core and name no kernel library, so
 `engine_llm_test` drives a whole `Llm` session over the fake backend.
 
+`EngineImage` translates source requests and observations. The engine's
+`StagedExecution` owns typed-stage invocation, per-stage closures, geometry
+replacement, `BasicPlanCache`, `ProgramLifecycle`, `StepRuns` and `RunnerMemory`.
+Its paid node-owned root retains plans and backing after frontend destruction
+until authenticated fences and physical retirement. It has no autoregressive
+slots; broader typed graph/export unification belongs to R9.
+
 An adapter is made with its model's settings (D-103) and an `EngineBuild`
 that turns them into its parts (`EngineLlmParts`): the `RunnerConfig`
 (every stage's layout, from the settings' context and chunk; the bound
@@ -861,6 +871,24 @@ the kept places the server sets before Register), a `WaveComposer` over
 the slots, a plain `DecodingOrchestrator` and, when the model has drafters
 and speculation is on, a speculative one with the adapter's policy, and
 prepares a branch per slot.
+
+The serving runner has a paid `RunnerOwner` root retained by the node. Its
+explicit parts owner outlives the complete runner and all source/config borrowers. Adapter
+or private-view destruction cannot orphan its mappings or run driver cleanup
+on a consumer thread. Node teardown visits these roots and its caller's models
+once each. Real stream fences permit clearing internal retained flights;
+external private views refuse teardown before eviction or stream destruction.
+Dropping those views allows retry. A successful authenticated release retires
+the root. Destroying a node with unretired adopted resources fails before its
+providers are destroyed; the service already exits on unproven retirement.
+
+A producer-minted private execution view preserves the canonical registry,
+selection policy and numerical authority while owning distinct binding storage
+and a main scratch context. It retains the actual parent launch and borrows its
+unchanged paid lanes, selected kernel state and library handle. Private GGML
+views execute eagerly; ordinary programs and recordings retain their original
+stable binding. Source graph planning stays canonical and checks the private
+view's exact producer before lowering.
 
 How `Llm`'s units map:
 
@@ -1190,12 +1218,10 @@ remain separate.
 What the skeleton assumes today, which a family that differs changes here
 rather than works around:
 
-- **GGML plans.** `planned.h` and `GraphRuns::Queue` run a GGML
-  `BoundGraph`, and `RunnerResources::BindLaunch` binds against GGML's
-  implementations only. A family run by another executor (EXL3's, or its
-  own kernels as Qwen-Image's are) composes the weights, resources and
-  live state but runs and captures its own steps, as the image runner
-  does.
+- **Bound step programs.** Token `ModelRunner` and stateless
+  `StagedExecution` share `BasicPlanCache`, `ProgramLifecycle`, `StepRuns`
+  and `RunnerMemory`. Kernel sources lower programs and supply launch
+  contexts; they do not own another stage dispatcher.
 - **State access described by the model.** Each live-state region reserves
   its layout's virtual bytes. DeepSeek and Qwen3.8 materialize only the
   extents their padded cache prefixes and fixed rings or recurrent state

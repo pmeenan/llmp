@@ -206,9 +206,15 @@ class RecordedSource final : public en::StepSource {
       -> std::expected<std::optional<llmp::base::Sha256Digest>, std::string> override {
     return inner_->ExecutionIdentity();
   }
-  std::vector<std::uint64_t> ShapeParameters(const pl::StepShape& s) const override {
-    return inner_->ShapeParameters(s);
+  void EmitShapeParameters(const pl::StepShape& s,
+                           llmp::model::ShapeParameterSink& sink) const override {
+    inner_->EmitShapeParameters(s, sink);
   }
+  std::expected<en::SpecializationChange, en::SpecializationError> NextSpecializationChange(
+      const en::SpecializationRequest& request) const override {
+    return inner_->NextSpecializationChange(request);
+  }
+
   bool JoinedRepeatPending(std::uint16_t stage) const override {
     return inner_->JoinedRepeatPending(stage);
   }
@@ -361,7 +367,6 @@ en::Status SetUp(Lifetime& life) {
     return std::unexpected("settings did not retain the narrowed composed identity");
   rt::ComponentBuildOptions options{
       .target_policy = {},
-      .shared_route = true,
       .prefill_lookahead = false,
       .prepare_state = false,
       .state_only_prefill = false,

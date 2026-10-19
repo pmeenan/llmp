@@ -21,6 +21,30 @@ using support::Round;
 
 bool AlignValid(std::uint32_t align) { return align != 0 && align % 256 == 0; }
 
+pl::Phase DispatchPhase(const model::Batching& caps, const PendingWork& p) {
+  return caps.mixed_causal && caps.join_prefill && caps.max_segments > 1 && p.stage == 0 &&
+                 !p.row_invariant &&
+                 (p.phase == pl::Phase::kPrefill || (p.phase == pl::Phase::kDecode && p.rows == 1))
+             ? pl::Phase::kPrefill
+             : p.phase;
+}
+auto Kind(const model::Batching& caps, const PendingWork& p) {
+  return std::make_tuple(p.stage, static_cast<int>(DispatchPhase(caps, p)), p.row_invariant,
+                         caps.mixed_greedy ? false : p.greedy, caps.mixed_heads || p.want_head);
+}
+bool Join(const model::Batching& caps, const PendingWork& first, const PendingWork& next,
+          std::size_t owners, std::uint32_t rows, std::uint32_t first_read,
+          std::uint32_t next_read) {
+  return Kind(caps, first) == Kind(caps, next) && !first.alone && !next.alone &&
+         caps.max_segments > 1 &&
+         (DispatchPhase(caps, next) != pl::Phase::kPrefill || caps.join_prefill) &&
+         owners < caps.max_segments && std::uint64_t{rows} + next.rows <= UINT32_MAX &&
+         (caps.max_step_rows == 0 || std::uint64_t{rows} + next.rows <= caps.max_step_rows) &&
+         (DispatchPhase(caps, next) != pl::Phase::kPrefill || !caps.equal_prefill ||
+          (caps.mixed_causal && first.phase != next.phase) ||
+          (next.rows == first.rows && next_read == first_read));
+}
+
 }  // namespace
 
 std::expected<WaveComposer, std::string> WaveComposer::Make(model::Batching caps,
@@ -60,25 +84,37 @@ std::uint32_t WaveComposer::LoneRead(std::size_t stage, std::uint32_t past,
 }
 
 void WaveComposer::Finish(pl::StepShape& shape) const {
+  if (shape.phase == pl::Phase::kPrefill && !shape.segments.empty() &&
+      std::ranges::all_of(shape.segments, [](const auto& segment) {
+        return segment.origin_phase == pl::Phase::kDecode;
+      })) {
+    shape.phase = pl::Phase::kDecode;
+    for (auto& segment : shape.segments) segment.origin_phase.reset();
+  }
+  Finish(shape.stage, shape.row_invariant, shape.segments, shape.read_align);
+}
+
+void WaveComposer::Finish(std::uint16_t stage, bool row_invariant, std::span<pl::Segment> segments,
+                          std::uint32_t& read_align) const {
   // A row-invariant step reads each owner's own cells (D-092): its stage's
   // alignment, no common read.
-  shape.read_align = AlignFor(shape.stage, shape.segments.size(), shape.row_invariant);
+  read_align = AlignFor(stage, segments.size(), row_invariant);
   std::uint32_t widest = 0;
-  for (pl::Segment& s : shape.segments) {
-    const std::uint64_t end = frozen(shape.stage) ? s.past : std::uint64_t{s.past} + s.rows;
-    s.read_cells = static_cast<std::uint32_t>(
-        std::min<std::uint64_t>(Round(end, shape.read_align), context(shape.stage)));
+  for (pl::Segment& s : segments) {
+    const std::uint64_t end = frozen(stage) ? s.past : std::uint64_t{s.past} + s.rows;
+    s.read_cells =
+        static_cast<std::uint32_t>(std::min<std::uint64_t>(Round(end, read_align), context(stage)));
     widest = std::max(widest, s.read_cells);
   }
-  if (caps_.common_read && shape.segments.size() > 1 && !shape.row_invariant) {
-    for (pl::Segment& s : shape.segments) s.read_cells = widest;
+  if (caps_.common_read && segments.size() > 1 && !row_invariant) {
+    for (pl::Segment& s : segments) s.read_cells = widest;
   }
-  const std::uint32_t group_segments = shape.row_invariant && caps_.invariant_group_segments != 0
+  const std::uint32_t group_segments = row_invariant && caps_.invariant_group_segments != 0
                                            ? caps_.invariant_group_segments
                                            : caps_.group_segments;
   std::uint8_t group = 0;
   std::uint32_t rows = 0, owners = 0;
-  for (pl::Segment& s : shape.segments) {
+  for (pl::Segment& s : segments) {
     const bool rows_full = caps_.group_rows != 0 && rows + s.rows > caps_.group_rows;
     const bool owners_full = group_segments != 0 && owners + 1 > group_segments;
     if (owners != 0 && (rows_full || owners_full)) {
@@ -92,9 +128,37 @@ void WaveComposer::Finish(pl::StepShape& shape) const {
   }
 }
 
+bool WaveComposer::CanJoinPrefill(std::uint32_t past, std::uint32_t rows, bool want_head,
+                                  std::uint32_t peer_past, std::uint32_t peer_rows,
+                                  bool peer_want_head) const {
+  const auto valid = [&](std::uint32_t at, std::uint32_t count) {
+    return count != 0 && at <= context() && count <= context() - at &&
+           (caps_.max_segment_rows == 0 || count <= caps_.max_segment_rows);
+  };
+  if (!valid(past, rows) || !valid(peer_past, peer_rows)) return false;
+  const PendingWork first{.slot = 0,
+                          .stage = 0,
+                          .phase = pl::Phase::kPrefill,
+                          .past = past,
+                          .rows = rows,
+                          .outputs = want_head ? 1U : 0U,
+                          .want_head = want_head};
+  const PendingWork peer{.slot = 1,
+                         .stage = 0,
+                         .phase = pl::Phase::kPrefill,
+                         .past = peer_past,
+                         .rows = peer_rows,
+                         .outputs = peer_want_head ? 1U : 0U,
+                         .want_head = peer_want_head};
+  return Join(caps_, first, peer, 1, rows, LoneRead(past, rows), LoneRead(peer_past, peer_rows));
+}
+
 Composition WaveComposer::Compose(std::span<const PendingWork> pending) const {
   Composition out;
   std::vector<std::size_t> order;
+  order.reserve(pending.size());
+  out.steps.reserve(pending.size());
+  out.refused.reserve(pending.size());
   for (std::size_t i = 0; i < pending.size(); ++i) {
     const PendingWork& p = pending[i];
     std::string why;
@@ -123,10 +187,7 @@ Composition WaveComposer::Compose(std::span<const PendingWork> pending) const {
   // Kinds together, slots ascending within a kind, and work that steps
   // alone after the rest of its kind (between them, it would split their
   // joined step in two).
-  const auto kind = [&](const PendingWork& p) {
-    return std::make_tuple(p.stage, static_cast<int>(p.phase), p.row_invariant, p.greedy,
-                           caps_.mixed_heads || p.want_head);
-  };
+  const auto kind = [&](const PendingWork& p) { return Kind(caps_, p); };
   std::ranges::stable_sort(order, [&](std::size_t a, std::size_t b) {
     return std::tuple_cat(kind(pending[a]), std::make_tuple(pending[a].alone, pending[a].slot)) <
            std::tuple_cat(kind(pending[b]), std::make_tuple(pending[b].alone, pending[b].slot));
@@ -146,17 +207,14 @@ Composition WaveComposer::Compose(std::span<const PendingWork> pending) const {
     bool join = !step.work.empty();
     if (join) {
       const PendingWork& first = pending[step.work.front()];
-      join = kind(first) == kind(p) && !first.alone && !p.alone && caps_.max_segments > 1 &&
-             (p.phase != pl::Phase::kPrefill || caps_.join_prefill) &&
-             step.work.size() < caps_.max_segments &&
-             (caps_.max_step_rows == 0 || step_rows + p.rows <= caps_.max_step_rows) &&
-             (p.phase != pl::Phase::kPrefill || !caps_.equal_prefill ||
-              (p.rows == first.rows && lone_read(p) == lone_read(first)));
+      join = Join(caps_, first, p, step.work.size(), step_rows, lone_read(first), lone_read(p));
     }
     if (!join) close();
     if (step.work.empty()) {
+      step.work.reserve(pending.size());
+      step.shape.segments.reserve(pending.size());
       step.shape.stage = p.stage;
-      step.shape.phase = p.phase;
+      step.shape.phase = DispatchPhase(caps_, p);
       step.shape.row_invariant = p.row_invariant;
     }
     step.shape.segments.push_back({.slot = static_cast<std::uint8_t>(p.slot),
@@ -166,7 +224,10 @@ Composition WaveComposer::Compose(std::span<const PendingWork> pending) const {
                                    .outputs = p.outputs,
                                    .group = 0,
                                    .want_head = p.want_head,
-                                   .greedy = p.greedy});
+                                   .greedy = p.greedy,
+                                   .origin_phase = DispatchPhase(caps_, p) != p.phase
+                                                       ? std::optional(p.phase)
+                                                       : std::nullopt});
     step.work.push_back(i);
     step_rows += p.rows;
   }
@@ -174,11 +235,95 @@ Composition WaveComposer::Compose(std::span<const PendingWork> pending) const {
   return out;
 }
 
+std::expected<std::size_t, WaveComposer::PredictionError> WaveComposer::ComposePrediction(
+    std::span<const PendingWork> pending, std::span<pl::StepShape> into,
+    std::span<std::size_t> order) const {
+  if (order.size() < pending.size() || into.size() < pending.size())
+    return std::unexpected(PredictionError::kExtent);
+  for (std::size_t i = 0; i < pending.size(); ++i) {
+    const auto& p = pending[i];
+    if (p.stage >= stages_.size() || p.rows == 0 || p.past > context(p.stage) ||
+        p.rows > context(p.stage) - p.past ||
+        (caps_.max_segment_rows && p.rows > caps_.max_segment_rows) || p.outputs > p.rows ||
+        (!p.want_head && p.outputs != 0) || p.slot >= kMaxRequestSlots)
+      return std::unexpected(PredictionError::kWork);
+    for (std::size_t j = 0; j < i; ++j)
+      if (pending[j].slot == p.slot && pending[j].stage == p.stage)
+        return std::unexpected(PredictionError::kWork);
+    order[i] = i;
+    if (into[i].segments.capacity() < pending.size())
+      return std::unexpected(PredictionError::kExtent);
+    into[i].segments.clear();
+  }
+  order = order.first(pending.size());
+  std::ranges::sort(order, [&](std::size_t a, std::size_t b) {
+    return std::tuple_cat(Kind(caps_, pending[a]),
+                          std::make_tuple(pending[a].alone, pending[a].slot, a)) <
+           std::tuple_cat(Kind(caps_, pending[b]),
+                          std::make_tuple(pending[b].alone, pending[b].slot, b));
+  });
+  std::size_t count = 0, first = 0;
+  std::uint32_t rows = 0;
+  for (const auto i : order) {
+    const auto& p = pending[i];
+    if (count && !into[count - 1].segments.empty() &&
+        !Join(caps_, pending[first], p, into[count - 1].segments.size(), rows,
+              LoneRead(pending[first].stage, pending[first].past, pending[first].rows),
+              LoneRead(p.stage, p.past, p.rows))) {
+      Finish(into[count - 1]);
+      rows = 0;
+      ++count;
+    }
+    if (!count) ++count;
+    auto& shape = into[count - 1];
+    if (shape.segments.empty()) {
+      first = i;
+      shape.stage = p.stage;
+      shape.phase = DispatchPhase(caps_, p);
+      shape.row_invariant = p.row_invariant;
+    }
+    shape.segments.push_back({.slot = static_cast<std::uint8_t>(p.slot),
+                              .rows = p.rows,
+                              .past = p.past,
+                              .read_cells = 0,
+                              .outputs = p.outputs,
+                              .group = 0,
+                              .want_head = p.want_head,
+                              .greedy = p.greedy,
+                              .origin_phase = DispatchPhase(caps_, p) != p.phase
+                                                  ? std::optional(p.phase)
+                                                  : std::nullopt});
+    rows += p.rows;
+  }
+  if (count) Finish(into[count - 1]);
+  return count;
+}
+
+StepAuthorization WaveComposer::Authorize(const ModelRunner& runner, const PendingWork& work) {
+  StepAuthorization permit;
+  permit.runner_ = &runner;
+  permit.slot_ = work.slot;
+  permit.stage_ = work.stage;
+  permit.phase_ = work.phase;
+  permit.past_ = work.past;
+  permit.rows_ = work.rows;
+  permit.outputs_ = work.outputs;
+  permit.want_head_ = work.want_head;
+  permit.greedy_ = work.greedy;
+  permit.part_ = StepAuthorization::Part::kOrigin;
+  return permit;
+}
+
 WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
                    std::span<const PendingWork> pending, std::span<const SegmentWork> work,
-                   bool advance, const AheadFor& ahead) {
+                   bool advance, const AheadFor& ahead,
+                   std::span<const StepAuthorization> authorization, const PromptBatch& batch) {
   WaveReport report;
   report.outcomes.resize(pending.size());
+  for (std::size_t i = 0; i < pending.size(); ++i) {
+    report.outcomes[i].phase = pending[i].phase;
+    report.outcomes[i].rows = pending[i].rows;
+  }
   if (auto qualified = runner.CheckOwners(pending.size()); !qualified) {
     for (auto& out : report.outcomes) out.refusal = StepRefusal{.what = qualified.error()};
     return report;
@@ -198,7 +343,9 @@ WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
               composer.context(s) != slots.context(s) ||
               composer.frozen(s) != (s != 0 && model::ReadsFrozen(slots.layout(s)));
   }
-  const char* mismatch = work.size() != pending.size()
+  const char* mismatch = !authorization.empty() && authorization.size() != pending.size()
+                             ? "the wave authorization does not match its pending work"
+                         : work.size() != pending.size()
                              ? "the wave's work does not match its pending work"
                          : differs ? "the composer's read alignment or context is not the state's"
                                    : nullptr;
@@ -211,6 +358,8 @@ WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
   for (;;) {
     std::vector<std::size_t> open;
     std::vector<PendingWork> subset;
+    open.reserve(live.size());
+    subset.reserve(live.size());
     for (std::size_t i = 0; i < live.size(); ++i) {
       if (settled[i]) continue;
       open.push_back(i);
@@ -224,22 +373,38 @@ WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
     bool restart = false;
     for (const ComposedStep& composed : composition.steps) {
       std::vector<SegmentWork> segments;
+      std::vector<StepAuthorization> permits;
       std::vector<std::size_t> indices;
+      segments.reserve(composed.work.size());
+      permits.reserve(composed.work.size());
+      indices.reserve(composed.work.size());
+      const bool mixed_origin = std::ranges::any_of(
+          composed.shape.segments, [](const pl::Segment& s) { return s.origin_phase.has_value(); });
       for (const std::size_t j : composed.work) {
         segments.push_back(work[open[j]]);
+        if (!authorization.empty()) {
+          permits.push_back(authorization[open[j]]);
+        } else if (mixed_origin) {
+          permits.push_back(WaveComposer::Authorize(runner, live[open[j]]));
+        }
         indices.push_back(open[j]);
       }
       const StepRequest request{.shape = composed.shape,
                                 .work = segments,
                                 .step_bytes = {},
                                 .advance = advance,
-                                .ahead = ahead ? ahead(composed, indices) : StepAhead{}};
+                                .ahead = batch ? batch.Ahead(composed.shape)
+                                               : (ahead ? ahead(composed, indices) : StepAhead{}),
+                                .authorization = permits,
+                                .batch = batch};
       auto ran = runner.RunStep(request);
       if (ran) {
         std::uint32_t rows = 0, outputs = 0;
         for (std::size_t s = 0; s < composed.work.size(); ++s) {
           WaveOutcome& outcome = report.outcomes[open[composed.work[s]]];
-          outcome.outputs = std::move(ran->outputs[s]);
+          outcome.phase = composed.shape.segments[s].origin_phase.value_or(composed.shape.phase);
+          outcome.rows = composed.shape.segments[s].rows;
+          outcome.outputs = ran->outputs[s];
           outcome.joined = ran->joined;
           outcome.path = ran->path;
           outcome.step = report.steps;
@@ -268,16 +433,24 @@ WaveReport RunWave(ModelRunner& runner, const WaveComposer& composer,
         if (refusal.state_refused && refusal.widening && !refused.alone &&
             composed.work.size() > 1) {
           refused.alone = true;
+          if (batch)
+            for (auto& item : live) item.alone = true;
           restart = true;
           break;
         }
         settle(open[*refused_at], std::move(refusal));
+        if (batch)
+          for (auto& item : live) item.alone = true;
         restart = true;
         break;
       }
       if (refusal.clean && composed.work.size() > 1) {
         // The joined step was refused before anything ran: its owners alone.
-        for (const std::size_t j : composed.work) live[open[j]].alone = true;
+        if (batch) {
+          for (auto& item : live) item.alone = true;
+        } else {
+          for (const std::size_t j : composed.work) live[open[j]].alone = true;
+        }
         restart = true;
         break;
       }

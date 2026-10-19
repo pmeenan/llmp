@@ -41,7 +41,7 @@ class Gemma2ChatAssets : public ::testing::Test {
     ASSERT_TRUE(settings) << *llmp::test_support::Failed(settings);
     EXPECT_EQ(settings->context.value, 8192U);
     EXPECT_EQ(settings->prefill_chunk.value, 128U);
-    EXPECT_EQ(settings->max_slots.value, 1U);
+    EXPECT_EQ(settings->max_slots.value, 4U);
     auto assets = rt::ReadChatAssets(*artifact, {});
     ASSERT_TRUE(assets) << *llmp::test_support::Failed(assets);
     ASSERT_TRUE(assets->chat_template);

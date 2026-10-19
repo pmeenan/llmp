@@ -27,6 +27,7 @@
 #ifndef LLMP_RUNTIME_PREFILL_H_
 #define LLMP_RUNTIME_PREFILL_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
@@ -34,6 +35,17 @@
 #include <string>
 
 namespace llmp::runtime {
+
+// Exact future target-input rows from the cooperative caller's generation
+// budget. Fresh prompt logits already choose the first emitted token; resume
+// owns that anchor. Values outside the engine coordinate domain stay Unknown.
+inline std::optional<std::uint32_t> PromptTargetRows(std::size_t limit, std::size_t produced,
+                                                     bool resume) {
+  const auto consumed = resume ? produced : std::size_t{1};
+  const auto rows = limit > consumed ? limit - consumed : 0;
+  if (rows > UINT32_MAX) return std::nullopt;
+  return static_cast<std::uint32_t>(rows);
+}
 
 inline constexpr std::uint32_t kPrefillRowTile = 8;
 inline constexpr std::uint32_t kPrefillTiledFrom = 1024;
@@ -63,6 +75,9 @@ struct PrefillRun {
   std::uint32_t chunks = 0;  // chunks run
   bool stopped = false;      // go_on said no before a chunk
   double longest = 0;        // seconds: the longest chunk, the cancellation granularity
+  // Scoring only: last token position delivered to the score callback. This
+  // can precede end when cancellation follows a retired multirow batch.
+  std::uint32_t published = 0;
 };
 
 // Runs positions [from, end) in chunks of at most `rows`, in order (one of

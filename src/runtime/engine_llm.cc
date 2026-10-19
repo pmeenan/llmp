@@ -60,12 +60,12 @@ Status EngineLlm::Built() const {
 // ------------------------------------------------------------------ its life
 
 en::PagedModel& EngineLlm::paged() {
-  base::Check(runner_ != nullptr, "an engine-backed model's runner before its Setup");
+  base::Check(static_cast<bool>(runner_), "an engine-backed model's runner before its Setup");
   return *runner_;
 }
 
 Status EngineLlm::Setup() {
-  if (runner_ != nullptr) return Error(std::format("model {}: set up already", name_));
+  if (static_cast<bool>(runner_)) return Error(std::format("model {}: set up already", name_));
   if (!build_) return Error(std::format("model {}: no component pipeline builds it", name_));
   auto parts = build_(settings_);
   if (!parts) return Error(std::format("model {}: {}", name_, parts.error()));
@@ -143,7 +143,9 @@ Status EngineLlm::Setup() {
       en::ModelRunner::Create(node_ref_, std::move(parts->config), std::move(parts->source), index_,
                               static_cast<std::uint32_t>(index_));
   if (!runner) return Error(std::format("model {}: {}", name_, runner.error()));
-  runner_ = std::move(*runner);
+  auto retained = en::RunnerOwner::Adopt(node_ref_, *runner, keep_);
+  if (!retained) return Error(retained.error());
+  runner_ = std::move(*retained);
   if (auto set = runner_->Setup(); !set) return set;
   auto identity = runner_->ExecutionIdentity();
   if (!identity) return Error(identity.error());
@@ -232,11 +234,11 @@ void EngineLlm::StateWrittenBack(bool whole) {
   if (runner_) runner_->slots().StateWrittenBack(whole);
 }
 const catalog::Closure& EngineLlm::everything() const {
-  base::Check(runner_ != nullptr, "an engine-backed model's closure before its Setup");
+  base::Check(static_cast<bool>(runner_), "an engine-backed model's closure before its Setup");
   return runner_->slots().everything();
 }
 const catalog::Closure& EngineLlm::request_closure() const {
-  base::Check(runner_ != nullptr, "an engine-backed model's closure before its Setup");
+  base::Check(static_cast<bool>(runner_), "an engine-backed model's closure before its Setup");
   return runner_->slots().execution();
 }
 Status EngineLlm::PrepareDefaultRequest() {
@@ -283,11 +285,12 @@ std::string EngineLlm::violations() const {
 
 std::string EngineLlm::extra() const {
   return std::format(
-      R"({{"engine":"component","architecture":"{}","slots":{},"speculative":{},"verify_rows":{},"joined_prefill_steps":{},"joined_prefill_rows":{},"joined_waves":{},"joined_units":{},"speculative_units":{},"drafted":{},"accepted":{},"discarded":{},"greedy_tokens":{},"runner":{}}})",
+      R"({{"engine":"component","architecture":"{}","slots":{},"speculative":{},"verify_rows":{},"joined_prefill_steps":{},"joined_prefill_rows":{},"joined_causal_steps":{},"joined_causal_rows":{},"joined_waves":{},"joined_units":{},"speculative_units":{},"drafted":{},"accepted":{},"discarded":{},"greedy_tokens":{},"runner":{}}})",
       architecture_, slots_, speculate_, verify_rows_, counts_.joined_prefill_steps,
-      counts_.joined_prefill_rows, counts_.joined_waves, counts_.joined_units,
-      counts_.speculative_units, counts_.drafted, counts_.accepted, counts_.discarded,
-      counts_.greedy_tokens, runner_ ? runner_->report_json() : std::string("{}"));
+      counts_.joined_prefill_rows, counts_.joined_causal_steps, counts_.joined_causal_rows,
+      counts_.joined_waves, counts_.joined_units, counts_.speculative_units, counts_.drafted,
+      counts_.accepted, counts_.discarded, counts_.greedy_tokens,
+      runner_ ? runner_->report_json() : std::string("{}"));
 }
 
 // ------------------------------------------------------------------ the LLM
@@ -359,19 +362,10 @@ std::size_t EngineLlm::prefill_wave_capacity() const {
 }
 
 bool EngineLlm::CompatiblePrefill(std::uint32_t past, std::uint32_t rows, std::uint32_t peer_past,
-                                  std::uint32_t peer_rows) const {
-  if (!caps_.join_prefill || !composer_ || rows < 2 || rows != peer_rows) return false;
-  if (past > context_ || rows > context_ - past || peer_past > context_ ||
-      peer_rows > context_ - peer_past) {
-    return false;
-  }
-  if (!caps_.equal_prefill) return true;
-  // Equal reads at the joined alignment (the composer joins no others).
-  const std::uint32_t align = composer_->AlignFor(0, 2);
-  const auto read = [&](std::uint64_t end) {
-    return std::min<std::uint64_t>((end + align - 1) / align * align, context_);
-  };
-  return read(std::uint64_t{past} + rows) == read(std::uint64_t{peer_past} + peer_rows);
+                                  std::uint32_t peer_rows, bool want_head,
+                                  bool peer_want_head) const {
+  return composer_ &&
+         composer_->CanJoinPrefill(past, rows, want_head, peer_past, peer_rows, peer_want_head);
 }
 
 std::uint32_t EngineLlm::StepTokenBoundFor(const Branch& /*branch*/, std::uint32_t left) const {
@@ -590,20 +584,21 @@ void EngineLlm::RunPlain(std::span<PreparedGeneration> units) {
   std::vector<en::DecodeWork> work;
   std::vector<bool> greedy;
   work.reserve(units.size());
-  // A wave chooses on the device only when every unit may (a step's greedy
-  // segments are all of them): one that keeps its rows or samples keeps
-  // the whole wave on rows, joined, as the M3 classes' homogeneous waves.
+  // The accepted policy uses homogeneous outputs. The internal measured
+  // candidate preserves each owner's requested device-token or row result.
   const bool device =
       device_greedy_ && std::ranges::all_of(units, [](const PreparedGeneration& unit) {
         return GreedyWithoutRows(unit);
       });
   for (PreparedGeneration& unit : units) {
     unit.chosen.reset();
-    greedy.push_back(device);
+    const bool owner_device =
+        caps_.mixed_greedy ? device_greedy_ && GreedyWithoutRows(unit) : device;
+    greedy.push_back(owner_device);
     work.push_back({.slot = Slot(*unit.branch),
                     .history = unit.step.all,
                     .left = std::max<std::uint32_t>(unit.step.left, 1),
-                    .greedy = device,
+                    .greedy = owner_device,
                     .score = {}});
   }
   const en::DecodeReport report = plain_->Step(work);
@@ -652,20 +647,21 @@ void EngineLlm::RunSpeculative(std::span<PreparedGeneration> units) {
   work.reserve(units.size());
   // The scalar SpecStepFor bridge has no session pointer. Its owned branch
   // still supplies sampling state, and need_logits supplies output intent.
-  const bool device =
-      device_verify_ && std::ranges::all_of(units, [this](const PreparedGeneration& unit) {
-        return unit.branch != nullptr && &unit.branch->model() == this && !unit.step.need_logits &&
-               !sampling(*unit.branch);
-      });
+  const auto device_for = [this](const PreparedGeneration& unit) {
+    return device_verify_ && unit.branch != nullptr && &unit.branch->model() == this &&
+           !unit.step.need_logits && !sampling(*unit.branch);
+  };
+  const bool device = std::ranges::all_of(units, device_for);
   for (PreparedGeneration& unit : units) {
     const std::uint32_t slot = Slot(*unit.branch);
-    verify_tokens_.at(slot) = device;
+    const bool owner_device = caps_.mixed_greedy ? device_for(unit) : device;
+    verify_tokens_.at(slot) = owner_device;
     want_rows_.at(slot) = unit.step.need_logits;
     verified_rows_.at(slot).clear();
     work.push_back({.slot = slot,
                     .history = unit.step.all,
                     .left = std::max<std::uint32_t>(unit.step.left, 1),
-                    .greedy = device,
+                    .greedy = owner_device,
                     .score = {}});
   }
   SyncDrafters(work);
@@ -798,7 +794,7 @@ Status EngineLlm::SpecStepFor(Branch& branch, std::span<const std::int32_t> all,
 }
 
 bool EngineLlm::GenerationCohortUsable() const {
-  return runner_ != nullptr && !runner_->slots().faulted();
+  return static_cast<bool>(runner_) && !runner_->slots().faulted();
 }
 
 Status EngineLlm::PrepareSamplingScratchFor(Branch& branch, std::size_t rows) {
@@ -815,324 +811,286 @@ void EngineLlm::RetireSamplingScratchFor(Branch& branch) { DropBranchSamplingScr
 // ------------------------------------------------------------- prompts
 
 Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
+  if (prepared.empty()) return {};
   if (auto built = Built(); !built) return built;
-  std::vector<en::PendingWork> pending;
-  std::vector<en::SegmentWork> work;
-  std::vector<std::size_t> of;  // each pending work's unit
+  constexpr std::uint64_t kAllocatorMetadata = 64;
+  std::uint64_t bytes = 0, peer_bytes = 0;
+  if (__builtin_mul_overflow(std::uint64_t{prepared.size()},
+                             std::uint64_t{sizeof(en::PrefillUnit) + sizeof(std::size_t)},
+                             &bytes) ||
+      __builtin_mul_overflow(std::uint64_t{active_branches_.size()},
+                             std::uint64_t{sizeof(en::PrefillPeer)}, &peer_bytes) ||
+      __builtin_add_overflow(bytes, peer_bytes, &bytes) ||
+      __builtin_add_overflow(bytes, 3 * kAllocatorMetadata, &bytes))
+    return Error("prefill adapter metadata extent overflows");
+  auto metadata_payment = node_ref_.PrepayHost(bytes);
+  if (!metadata_payment) {
+    for (auto& unit : prepared) {
+      if (unit.branch) MarkCapacityRefused(*unit.branch, true);
+      unit.capacity_refused = true;
+      unit.result = Error(metadata_payment.error());
+    }
+    return Error(metadata_payment.error());
+  }
+  // Declared after its payment: all temporary capacity dies before refund.
+  std::vector<en::PrefillUnit> units;
+  std::vector<std::size_t> of;
+  units.reserve(prepared.size());
+  of.reserve(prepared.size());
   for (std::size_t i = 0; i < prepared.size(); ++i) {
-    PreparedPrefill& unit = prepared[i];
+    auto& unit = prepared[i];
+    unit.capacity_refused = false;
+    if (unit.branch) MarkCapacityRefused(*unit.branch, false);
+    const bool scoring = unit.session && unit.session->scoring();
     if (unit.branch == nullptr || &unit.branch->model() != this || unit.rows == 0 ||
         unit.all.size() != std::size_t{unit.past} + unit.rows) {
       unit.result = Error(std::format("{} needs its own nonempty prompt chunks", name_));
       continue;
     }
-    if (unit.next.rows > 0) {
-      prefill_done_pos_.at(Slot(*unit.branch)) = 0;
+    en::PrefillHint next{.rows = unit.next.rows,
+                         .want_head = unit.next.want_head,
+                         .after_rows = unit.next.after_rows,
+                         .after_want_head = unit.next.after_want_head};
+    if (prepared.size() == 1 && unit.session && !scoring && !unit.generation) {
+      const auto prompt_rows = unit.session->prompt_rows();
+      const auto current_end = unit.past + unit.rows;
+      if (next.rows == 0 && current_end < prompt_rows) {
+        next.rows = PrefillRows(prompt_rows - current_end, max_rows_);
+        next.want_head = current_end + next.rows == prompt_rows;
+      }
+      const auto after = current_end + next.rows;
+      if (next.rows != 0 && next.after_rows == 0 && after < prompt_rows) {
+        next.after_rows = PrefillRows(prompt_rows - after, max_rows_);
+        next.after_want_head = after + next.after_rows == prompt_rows;
+      }
     }
-    pending.push_back({.slot = Slot(*unit.branch),
-                       .stage = 0,
-                       .phase = pl::Phase::kPrefill,
-                       .past = unit.past,
-                       .rows = unit.rows,
-                       .outputs = unit.want_head ? 1U : 0U,
-                       .want_head = unit.want_head,
-                       .greedy = false,
-                       .row_invariant = false,
-                       .alone = false});
-    work.push_back({.tokens = unit.all.subspan(unit.past, unit.rows), .bytes = {}});
+    units.push_back(
+        {.current = {.slot = Slot(*unit.branch),
+                     .stage = 0,
+                     .phase = scoring           ? pl::Phase::kScore
+                              : unit.generation ? pl::Phase::kDecode
+                                                : pl::Phase::kPrefill,
+                     .past = unit.past,
+                     .rows = unit.rows,
+                     .outputs = scoring ? unit.rows : (unit.want_head ? 1U : 0U),
+                     .want_head = unit.want_head,
+                     .greedy = unit.chosen != nullptr,
+                     .row_invariant = false,
+                     .alone = false},
+         .work = {.tokens = unit.all.subspan(unit.past, unit.rows),
+                  .bytes = {},
+                  .feature = {},
+                  .history = unit.all},
+         .next = next,
+         .prompt_end = unit.session ? std::optional(unit.session->prompt_rows()) : std::nullopt,
+         .remaining = unit.session ? unit.session->continuation_rows() : std::nullopt,
+         .decode_greedy = device_greedy_ && unit.session &&
+                          !unit.session->continuation_sampling().value_or(true),
+         .verify_greedy = device_verify_ && unit.session &&
+                          !unit.session->continuation_sampling().value_or(true),
+         .all_outputs = scoring,
+         .generation_expected = unit.session && unit.session->has_continuation(),
+         .sampling = unit.session && unit.session->continuation_sampling().value_or(false)});
     of.push_back(i);
   }
-  // The same owners' next two chunks, as their sessions said (an owner
-  // whose prompt ends there drops out), as the steps they will run in:
-  // together when Llm would join them (PromptSession::CanJoin: equal heads
-  // and CompatiblePrefill), else each alone.
-  const auto future = [&](std::span<const std::size_t> owners,
-                          bool after) -> std::vector<pl::StepShape> {
-    std::vector<en::PendingWork> next;
-    for (const std::size_t j : owners) {
-      const PreparedPrefill& unit = prepared[of[j]];
-      const PrefillHint& hint = unit.next;
-      const std::uint32_t rows = after ? hint.after_rows : hint.rows;
-      if (rows == 0 || (after && hint.rows == 0)) continue;
-      const bool head = after ? hint.after_want_head : hint.want_head;
-      next.push_back({.slot = pending[j].slot,
-                      .stage = 0,
-                      .phase = pl::Phase::kPrefill,
-                      .past = unit.past + unit.rows + (after ? hint.rows : 0),
-                      .rows = rows,
-                      .outputs = head ? 1U : 0U,
-                      .want_head = head,
-                      .greedy = false,
-                      .row_invariant = false,
-                      .alone = false});
+  std::vector<en::PrefillPeer> peers;
+  peers.reserve(active_branches_.size());
+  for (const auto* branch : active_branches_) {
+    if (!branch || !GenerationReadyFor(*branch) ||
+        std::ranges::any_of(of, [&](auto i) { return prepared[i].branch == branch; }))
+      continue;
+    const auto past = CursorFor(*branch);
+    if (past == 0 || past >= context_) continue;
+    peers.push_back({.next = {.slot = Slot(*branch),
+                              .stage = 0,
+                              .phase = pl::Phase::kDecode,
+                              .past = past,
+                              .rows = 1,
+                              .outputs = 1,
+                              .want_head = true,
+                              .greedy = device_greedy_ && !sampling(*branch),
+                              .row_invariant = speculative_ && speculative_->mode().row_invariant,
+                              .alone = false},
+                     .ready = true,
+                     .verify_greedy = device_verify_ && !sampling(*branch),
+                     .sampling = sampling(*branch),
+                     .remaining = RemainingGenerationRowsFor(*branch)});
+  }
+  const en::PrefillContinuation continuation{
+      .speculate = speculate_ && verify_rows_ > 1,
+      .row_invariant = speculative_ && speculative_->mode().row_invariant,
+      .verify_rows = verify_rows_,
+      .min_verify_rows = branch_depth_ ? 1U : verify_rows_,
+      .plain = [&](std::uint32_t owners, bool sampled) {
+        return !speculate_ || (wave_mode_ && wave_mode_->Choose(owners, sampled) ==
+                                                 execution::AdaptiveWaveMode::Mode::kPlain);
+      }};
+  en::PrefillOrchestrator prefill(*runner_, *composer_, prefill_);
+  const auto report = prefill.StepPrepared(units, peers, continuation);
+  if (report.refusal) {
+    for (const auto i : of) {
+      prepared[i].result = Error(report.refusal->what);
+      prepared[i].capacity_refused = report.refusal->capacity_refused;
+      MarkCapacityRefused(*prepared[i].branch, prepared[i].capacity_refused);
     }
-    std::vector<pl::StepShape> steps;
-    if (next.empty()) return steps;
-    const bool join = std::ranges::all_of(next, [&](const en::PendingWork& w) {
-      return w.want_head == next.front().want_head &&
-             CompatiblePrefill(next.front().past, next.front().rows, w.past, w.rows);
-    });
-    const auto compose = [&](std::span<const en::PendingWork> work) {
-      en::Composition composed = composer_->Compose(work);
-      if (!composed.refused.empty()) return false;
-      for (en::ComposedStep& c : composed.steps) steps.push_back(std::move(c.shape));
-      return true;
-    };
-    if (join) {
-      if (!compose(next)) steps.clear();
-      return steps;
+    return Error(report.refusal->what);
+  }
+  std::size_t completed = 0;
+  for (std::size_t j = 0; j < units.size(); ++j) {
+    auto& unit = prepared[of[j]];
+    const auto& outcome = report.outcomes()[j];
+    if (outcome.refusal) {
+      unit.result = Error(outcome.refusal->what);
+      unit.capacity_refused = outcome.refusal->capacity_refused;
+      MarkCapacityRefused(*unit.branch, unit.capacity_refused);
+      continue;
     }
-    for (const en::PendingWork& w : next) {
-      if (!compose(std::span(&w, 1))) return {};
-    }
-    return steps;
-  };
-  const en::AheadFor ahead = [&](const en::ComposedStep& /*step*/,
-                                 std::span<const std::size_t> owners) {
-    en::StepAhead a;
-    if (prefill_.lookahead == 0 && !prefill_.capture_ahead && !prefill_.prepare_ahead) return a;
-    std::size_t filled = 0;
-    const auto push_shape = [&](pl::StepShape&& s) {
-      if (filled < a.shapes.size()) a.shapes[filled++] = std::move(s);
-    };
-    const bool row_invariant = speculative_ && speculative_->mode().row_invariant;
-    const auto push_verify_futures = [&](std::size_t j, std::uint32_t end_past) {
-      const PreparedPrefill& unit = prepared[of[j]];
-      const bool greedy = device_verify_ && unit.branch != nullptr && !sampling(*unit.branch);
-      const std::uint32_t min_vrows = branch_depth_ ? 1U : verify_rows_;
-      for (std::uint32_t vrows = verify_rows_; vrows >= min_vrows && filled < a.shapes.size();
-           --vrows) {
-        if (end_past > context_ || vrows > context_ - end_past) continue;
-        const en::PendingWork vw{.slot = pending[j].slot,
-                                 .stage = 0,
-                                 .phase = pl::Phase::kVerify,
-                                 .past = end_past,
-                                 .rows = vrows,
-                                 .outputs = vrows,
-                                 .want_head = true,
-                                 .greedy = greedy,
-                                 .row_invariant = row_invariant,
-                                 .alone = false};
-        en::Composition composed = composer_->Compose(std::span(&vw, 1));
-        if (composed.refused.empty() && composed.steps.size() == 1) {
-          push_shape(std::move(composed.steps.front().shape));
-        }
-      }
-      if (filled < a.shapes.size() && verify_rows_ > 1 && end_past < context_ &&
-          verify_rows_ <= context_ - end_past) {
-        const std::uint32_t align = std::max<std::uint32_t>(caps_.joined_read_align, 256U);
-        const std::uint32_t next_bucket_past =
-            ((end_past + verify_rows_ + align - 1U) / align) * align;
-        const std::uint32_t later_past =
-            std::min(std::max(end_past + 128U, next_bucket_past), context_ - verify_rows_);
-        if (later_past > end_past) {
-          const en::PendingWork vw{.slot = pending[j].slot,
-                                   .stage = 0,
-                                   .phase = pl::Phase::kVerify,
-                                   .past = later_past,
-                                   .rows = verify_rows_,
-                                   .outputs = verify_rows_,
-                                   .want_head = true,
-                                   .greedy = greedy,
-                                   .row_invariant = row_invariant,
-                                   .alone = false};
-          en::Composition composed = composer_->Compose(std::span(&vw, 1));
-          if (composed.refused.empty() && composed.steps.size() == 1) {
-            push_shape(std::move(composed.steps.front().shape));
-          }
-        }
-      }
-    };
-    const auto push_post_prefill_futures = [&](std::size_t j, std::uint32_t end_past) {
-      const PreparedPrefill& unit = prepared[of[j]];
-      bool plain_multi = false;
-      std::uint32_t solo_tail_past = end_past;
-      if (wave_mode_ && active_branches_.size() > 1) {
-        std::vector<en::PendingWork> decode_work;
-        std::vector<std::uint32_t> generated;
-        for (Branch* b : active_branches_) {
-          if (b == nullptr) continue;
-          const bool is_cur = (b == unit.branch);
-          const std::uint32_t slot = Slot(*b);
-          const std::uint32_t done_pos = prefill_done_pos_.at(slot);
-          if (!is_cur && done_pos == 0) continue;
-          const std::uint32_t pos = is_cur ? end_past : CursorFor(*b);
-          if (pos == 0 || pos >= context_ || (!is_cur && pos < done_pos)) continue;
-          const bool greedy = device_greedy_ && !sampling(*b);
-          decode_work.push_back({.slot = slot,
-                                 .stage = 0,
-                                 .phase = pl::Phase::kDecode,
-                                 .past = pos,
-                                 .rows = 1,
-                                 .outputs = 1,
-                                 .want_head = true,
-                                 .greedy = greedy,
-                                 .row_invariant = row_invariant,
-                                 .alone = false});
-          generated.push_back(is_cur ? 0U : (pos - done_pos));
-        }
-        if (decode_work.size() >= 2 &&
-            wave_mode_->Choose(static_cast<std::uint32_t>(decode_work.size())) ==
-                execution::AdaptiveWaveMode::Mode::kPlain) {
-          plain_multi = true;
-          const auto push_composed = [&](std::span<const en::PendingWork> dw) {
-            if (filled >= a.shapes.size()) return;
-            en::Composition composed = composer_->Compose(dw);
-            if (composed.refused.empty() && composed.steps.size() == 1) {
-              push_shape(std::move(composed.steps.front().shape));
-            }
-          };
-          // 1. Current multi-slot wave at d = 0.
-          push_composed(decode_work);
-          // 2. Future multi-slot waves advancing past compressor boundaries.
-          for (const std::uint32_t d : {64U, 128U}) {
-            std::vector<en::PendingWork> advanced = decode_work;
-            for (auto& w : advanced) w.past = std::min(w.past + d, context_ - 1U);
-            push_composed(advanced);
-          }
-          // 3. Tail waves as peers finish in descending order of already-generated tokens.
-          std::vector<std::size_t> peer_order;
-          for (std::size_t idx = 0; idx < decode_work.size(); ++idx) {
-            if (decode_work[idx].slot != Slot(*unit.branch)) peer_order.push_back(idx);
-          }
-          std::ranges::stable_sort(peer_order, [&](std::size_t a_idx, std::size_t b_idx) {
-            return generated[a_idx] > generated[b_idx];
-          });
-          std::vector<bool> dropped(decode_work.size(), false);
-          for (std::size_t p_i = 0; p_i < peer_order.size(); ++p_i) {
-            const std::size_t drop_idx = peer_order[p_i];
-            dropped[drop_idx] = true;
-            const std::uint32_t gen = generated[drop_idx];
-            const std::uint32_t rem = gen < 128U ? 128U - gen : 1U;
-            solo_tail_past = std::min(end_past + rem,
-                                      context_ > verify_rows_ ? context_ - verify_rows_ : end_past);
-            std::vector<en::PendingWork> surviving;
-            for (std::size_t idx = 0; idx < decode_work.size(); ++idx) {
-              if (dropped[idx]) continue;
-              en::PendingWork w = decode_work[idx];
-              w.past = std::min(w.past + rem, context_ - 1U);
-              surviving.push_back(w);
-            }
-            if (!surviving.empty()) {
-              push_composed(surviving);
-            }
-          }
-        }
-      }
-      if (speculate_ && verify_rows_ > 1) {
-        push_verify_futures(j, plain_multi ? solo_tail_past : end_past);
-      }
-    };
-    std::vector<pl::StepShape> near = future(owners, false);
-    std::vector<pl::StepShape> far;
-    if (near.size() == 1) {
-      push_shape(std::move(near.front()));
-      far = future(owners, true);
-      if (far.size() == 1) {
-        push_shape(std::move(far.front()));
-      } else if (far.empty() && owners.size() == 1) {
-        const std::size_t j = owners.front();
-        const PreparedPrefill& unit = prepared[of[j]];
-        if (unit.past > 0 || unit.next.rows > 0) {
-          push_post_prefill_futures(j, unit.past + unit.rows + unit.next.rows);
-        }
-      }
-    } else if (near.size() > 1) {
-      // The owners' next chunks step apart (a prompt's last chunk is
-      // shorter than its peer's): the first two of those steps, each built
-      // while this one runs rather than on its own first run, when the
-      // device would wait for it.
-      push_shape(std::move(near[0]));
-      push_shape(std::move(near[1]));
-    } else if (near.empty() && owners.size() == 1) {
-      const std::size_t j = owners.front();
-      const PreparedPrefill& unit = prepared[of[j]];
-      if (unit.past > 0 || unit.rows > 0) {
-        push_post_prefill_futures(j, unit.past + unit.rows);
-      }
-    } else if (near.empty() && owners.size() > 1) {
-      const bool plain_wave =
-          !speculate_ ||
-          (wave_mode_ && wave_mode_->Choose(static_cast<std::uint32_t>(owners.size())) ==
-                             execution::AdaptiveWaveMode::Mode::kPlain);
-      if (plain_wave) {
-        std::vector<en::PendingWork> decode_work;
-        for (const std::size_t j : owners) {
-          const PreparedPrefill& unit = prepared[of[j]];
-          const std::uint32_t end_past = unit.past + unit.rows;
-          if (end_past >= context_) continue;
-          const bool greedy = device_greedy_ && unit.branch != nullptr && !sampling(*unit.branch);
-          decode_work.push_back({.slot = pending[j].slot,
-                                 .stage = 0,
-                                 .phase = pl::Phase::kDecode,
-                                 .past = end_past,
-                                 .rows = 1,
-                                 .outputs = 1,
-                                 .want_head = true,
-                                 .greedy = greedy,
-                                 .row_invariant = row_invariant,
-                                 .alone = false});
-        }
-        if (decode_work.size() == owners.size()) {
-          en::Composition composed = composer_->Compose(decode_work);
-          if (composed.refused.empty() && composed.steps.size() == 1) {
-            push_shape(std::move(composed.steps.front().shape));
-          }
-        }
-      }
-    }
-    a.build =
-        ((near.empty() || far.empty()) && speculate_ && verify_rows_ > 1 && prefill_.lookahead > 0)
-            ? 4U
-            : std::min<std::uint32_t>(prefill_.lookahead, 2);
-    a.capture_ahead = !near.empty() && prefill_.capture_ahead;
-    a.prepare = !near.empty() && prefill_.prepare_ahead;
-    return a;
-  };
-  if (!pending.empty()) {
-    std::vector<std::span<const std::int32_t>> histories;
-    for (const auto j : of) histories.push_back(prepared[j].all);
-    const en::WaveReport wave =
-        en::RunPromptWave(*runner_, *composer_, pending, work, histories, ahead);
-    for (std::size_t j = 0; j < pending.size(); ++j) {
-      PreparedPrefill& unit = prepared[of[j]];
-      const en::WaveOutcome& ran = wave.outcomes[j];
-      if (ran.refusal) {
-        unit.result = Error(ran.refusal->what);
+    ++completed;
+    unit.retired = true;
+    if (!unit.generation) ResetDrafters(units[j].current.slot);
+    if (unit.chosen) {
+      std::int32_t token = 0;
+      if (outcome.outputs.size() != sizeof(token)) {
+        unit.result = Error("mixed decode returned no complete device token");
         continue;
       }
-      if (unit.next.rows == 0) {
-        prefill_done_pos_.at(Slot(*unit.branch)) = unit.past + unit.rows;
-      } else {
-        prefill_done_pos_.at(Slot(*unit.branch)) = 0;
+      std::memcpy(&token, outcome.outputs.data(), sizeof(token));
+      if (token < 0 || std::cmp_greater_equal(token, logit_width_)) {
+        unit.result = Error("mixed decode returned an invalid device token");
+        continue;
       }
-      ResetDrafters(pending[j].slot);
-      if (unit.want_head) {
-        auto row = LogitsRow(ran.outputs, 0);
-        if (!row) {
-          unit.result = Error(row.error());
-          continue;
-        }
-        if (unit.logits != nullptr) *unit.logits = std::move(*row);
-      } else if (unit.logits != nullptr) {
-        unit.logits->clear();
+      *unit.chosen = token;
+      ++counts_.greedy_tokens;
+    } else if (unit.want_head) {
+      const bool scoring = unit.session && unit.session->scoring();
+      const auto expected_rows = scoring ? unit.rows : 1U;
+      auto actual_rows = HeadRows(outcome.outputs);
+      if (!actual_rows || *actual_rows != expected_rows) {
+        unit.result = Error(actual_rows ? "scoring result row count differs from retired work"
+                                        : actual_rows.error());
+        continue;
       }
-      unit.result = {};
+      if (scoring)
+        unit.scored = {.bytes = outcome.outputs,
+                       .first = unit.past,
+                       .rows = unit.rows,
+                       .width = static_cast<std::uint32_t>(logit_width_)};
+      auto row = LogitsRow(outcome.outputs, expected_rows - 1);
+      if (!row) {
+        unit.result = Error(row.error());
+        continue;
+      }
+      if (unit.logits) *unit.logits = std::move(*row);
+    } else if (unit.logits) {
+      unit.logits->clear();
     }
-    if (pending.size() > 1 && wave.steps < pending.size()) {
-      ++counts_.joined_prefill_steps;
-      for (const en::PendingWork& p : pending) counts_.joined_prefill_rows += p.rows;
-    }
+    unit.result = {};
+  }
+  if (completed > 1 && report.steps < completed) {
+    const bool mixed =
+        std::ranges::any_of(prepared, [](const auto& unit) { return unit.generation != nullptr; });
+    auto& steps = mixed ? counts_.joined_causal_steps : counts_.joined_prefill_steps;
+    auto& rows = mixed ? counts_.joined_causal_rows : counts_.joined_prefill_rows;
+    ++steps;
+    for (std::size_t j = 0; j < units.size(); ++j)
+      if (!report.outcomes()[j].refusal) rows += units[j].current.rows;
   }
   return GenerationCohortUsable() ? Status{}
                                   : Error(std::format("{}'s request cohort faulted", name_));
+}
+
+Status EngineLlm::RunPreparedCausalWave(std::span<PreparedPrefill> prompts,
+                                        std::span<PreparedGeneration> generations) {
+  if (!supports_causal_waves() || prompts.size() + generations.size() > caps_.max_segments)
+    return Error("mixed causal dispatch exceeds its actual mechanical policy");
+  std::array<PreparedPrefill, kMaxBranches> storage{};
+  std::array<std::size_t, kMaxBranches> source{};
+  std::size_t count = 0;
+  for (std::size_t i = 0; i < prompts.size(); ++i) {
+    storage[count] = std::move(prompts[i]);
+    source[count++] = i;
+  }
+  for (std::size_t i = 0; i < generations.size(); ++i) {
+    auto& unit = generations[i];
+    if (unit.step.speculative) return Error("mixed causal dispatch cannot replace verification");
+    unit.chosen.reset();
+    storage[count] = {.session = nullptr,
+                      .branch = unit.branch,
+                      .all = unit.step.all,
+                      .past = unit.step.position,
+                      .rows = 1,
+                      .want_head = true,
+                      .next = {},
+                      .logits = &unit.row,
+                      .result = {},
+                      .generation = unit.session,
+                      .chosen = device_greedy_ && GreedyWithoutRows(unit) ? &unit.chosen : nullptr};
+    source[count++] = prompts.size() + i;
+  }
+  // Both maps are caller-bounded by the existing slot representation; all
+  // dynamic native dispatch metadata is paid by RunPrefill before construction.
+  auto prepared = std::span(storage).first(count);
+  // Keep the source map in the same order as each moved descriptor.
+  for (std::size_t i = 1; i < count; ++i)
+    for (std::size_t j = i; j && Slot(*prepared[j].branch) < Slot(*prepared[j - 1].branch); --j) {
+      std::swap(prepared[j], prepared[j - 1]);
+      std::swap(source[j], source[j - 1]);
+    }
+  const auto result = RunPrefill(prepared);
+  for (std::size_t i = 0; i < count; ++i) {
+    if (source[i] < prompts.size())
+      prompts[source[i]] = std::move(prepared[i]);
+    else {
+      auto& unit = generations[source[i] - prompts.size()];
+      unit.result = std::move(prepared[i].result);
+      unit.anchor_processed = !unit.result && prepared[i].retired;
+      if (!unit.result) unit.failed_prefix_valid = StateUsableFor(*unit.branch);
+    }
+  }
+  return result;
+}
+
+std::uint32_t EngineLlm::ScoreChunkRowsFor(const Branch& /*branch*/) const {
+  if (!runner_) return 0;
+  return std::min(max_rows_, runner_->slots().layout(0).max_rows);
 }
 
 Status EngineLlm::RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) {
   if (prepared.empty() || prepared.size() > prefill_wave_capacity()) {
     return Error(std::format("{}'s prompt wave exceeds its capability", name_));
   }
-  return RunPrefill(prepared);
+  if (prepared.size() != 1 || !prepared[0].session || !prepared[0].session->scoring())
+    return RunPrefill(prepared);
+  auto& unit = prepared[0];
+  const auto original = unit.all;
+  // This only chooses a candidate; exact selected target/companion resources
+  // and all results still go through complete-batch admission before progress.
+  // A head row needs device output, pinned DMA and immutable host publication.
+  const auto free = node_ref_.FreeBytes();
+  if (!free) {
+    unit.result = Error(free.error());
+    return unit.result;
+  }
+  std::uint64_t row_cost = 0;
+  if (__builtin_mul_overflow(std::uint64_t{logit_width_}, std::uint64_t{3 * sizeof(float)},
+                             &row_cost) ||
+      row_cost == 0) {
+    unit.result = Error("scoring head resource extent overflows");
+    return unit.result;
+  }
+  const auto candidate = std::max<std::uint64_t>(1, *free / row_cost);
+  unit.rows = static_cast<std::uint32_t>(std::min(std::uint64_t{unit.rows}, candidate));
+  for (;;) {
+    unit.all = original.first(std::size_t{unit.past} + unit.rows);
+    unit.next = {};
+    unit.result = {};
+    unit.scored = {};
+    const auto result = RunPrefill(prepared);
+    if (!unit.capacity_refused || unit.rows == 1) return result;
+    // A clean capacity refusal happened before every numeric batch child.
+    // Retry the complete schedule, preserving the exact token/history prefix.
+    unit.rows = std::max(1U, unit.rows / 2);
+  }
 }
 
 Status EngineLlm::RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,
@@ -1252,7 +1210,6 @@ Status EngineLlm::ClearStateFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
   if (branch_depth_)
     BranchDecoding(branch) = execution::AdaptiveDepth(branch_depth_, depth_cost_ratio_);
-  prefill_done_pos_.at(Slot(branch)) = 0;
   return runner_->slots().Clear(Slot(branch));
 }
 
@@ -1264,20 +1221,18 @@ bool EngineLlm::StateUsableFor(const Branch& branch) const {
 }
 
 bool EngineLlm::StateRefusedFor(const Branch& branch) const {
-  return runner_ && runner_->slots().state_refused(Slot(branch));
+  return branch.capacity_refused() || (runner_ && runner_->slots().state_refused(Slot(branch)));
 }
 
 Status EngineLlm::ReleaseIdleStateFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
   if (branch_depth_)
     BranchDecoding(branch) = execution::AdaptiveDepth(branch_depth_, depth_cost_ratio_);
-  prefill_done_pos_.at(Slot(branch)) = 0;
   return runner_->slots().ClearIdle(Slot(branch));
 }
 
 Status EngineLlm::SpillFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
-  prefill_done_pos_.at(Slot(branch)) = 0;
   return runner_->slots().Spill(Slot(branch));
 }
 
@@ -1403,7 +1358,6 @@ Status EngineLlm::PreparePositionRestoreFor(Branch& branch, std::uint32_t positi
   if (auto checked = CheckCheckpointMetadataFor(branch, position, cursor, footprint); !checked) {
     return checked;
   }
-  prefill_done_pos_.at(Slot(branch)) = 0;
   return runner_->slots().PrepareRestore(Slot(branch), position, footprint, layout);
 }
 
@@ -1412,7 +1366,6 @@ Status EngineLlm::CompletePositionRestoreFor(Branch& branch, std::uint32_t posit
   if (auto completed = runner_->slots().CompleteRestore(Slot(branch), position); !completed) {
     return completed;
   }
-  prefill_done_pos_.at(Slot(branch)) = position;
   ResetDrafters(Slot(branch));
   return {};
 }
@@ -1442,7 +1395,6 @@ Status EngineLlm::AdoptPositionFor(Branch& branch, std::span<const std::int32_t>
   if (auto adopted = runner_->slots().Adopt(Slot(branch), cursor, ranges, layout); !adopted) {
     return adopted;
   }
-  prefill_done_pos_.at(Slot(branch)) = cursor;
   ResetDrafters(Slot(branch));
   return {};
 }

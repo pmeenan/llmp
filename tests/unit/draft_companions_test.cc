@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "engine/batch_inventory.h"
 #include "engine/decoding.h"
 #include "engine/paged_node.h"
 #include "engine/prefill.h"
@@ -81,7 +82,10 @@ class DraftCompanionsTest : public ::testing::Test {
     while (h.size() <= through) h.push_back(Token(slot, static_cast<std::uint32_t>(h.size())));
   }
   virtual void Configure(en::RunnerConfig&) {}
+  virtual void ConfigureBatching(md::Batching&) {}
   virtual bool JoinedQualified() const { return true; }
+  virtual bool BorrowsTarget() const { return false; }
+  virtual void CheckDraftBorrow(std::uint32_t) {}
   virtual std::vector<en::StageState> StateStages() const { return Stages(); }
   virtual std::uint64_t BudgetExtents() const { return 64; }
   void SetUp() override {
@@ -157,6 +161,7 @@ class DraftCompanionsTest : public ::testing::Test {
     ASSERT_TRUE(node_.BeginRequest(0, slots().execution(), "repeat tests"));
     md::Batching caps;
     caps.max_segments = 2;
+    ConfigureBatching(caps);
     auto composer = en::WaveComposer::For(caps, slots());
     ASSERT_TRUE(composer);
     composer_.emplace(std::move(*composer));
@@ -181,6 +186,26 @@ class DraftCompanionsTest : public ::testing::Test {
     if (!copied) return {};
     auto* begin = static_cast<const std::byte*>(*host);
     return {begin, begin + bytes};
+  }
+  void CheckControl(std::uint32_t slot, std::size_t stage) {
+    const auto& items = slots().layout(stage).items;
+    const auto control = std::ranges::find_if(items, [](const auto& item) {
+      return item.contract.kind == md::StateKind::kDrafterProgress;
+    });
+    ASSERT_NE(control, items.end());
+    const en::LiveState::Range range{
+        .region = stage, .offset = control->offset, .bytes = md::kDraftProgressBytes};
+    const auto bytes = Read(slot, std::span(&range, 1));
+    ASSERT_EQ(bytes.size(), md::kDraftProgressBytes);
+    md::DraftProgressWords actual;
+    std::memcpy(&actual, bytes.data(), sizeof(actual));
+    const auto bounds = md::DraftBounds(slots().layout(stage));
+    ASSERT_TRUE(bounds);
+    ASSERT_TRUE(bounds->has_value());
+    const auto expected =
+        md::EncodeDraftProgress(slots().progress(slot, stage)->completed(), **bounds);
+    ASSERT_TRUE(expected) << ts::Failed(expected).value_or("");
+    EXPECT_EQ(actual, *expected);
   }
   struct Checkpoint {
     std::vector<en::LiveState::Range> footprint, pages;
@@ -235,13 +260,17 @@ class DraftCompanionsTest : public ::testing::Test {
     }
   }
   en::DecodingOrchestrator Decoder() {
-    en::DecodingMode mode{
-        .kind = en::DecodingMode::Kind::kSpeculative,
-        .drafters = {{.stage = 1, .max_depth = 3, .catch_up = true, .features = true}}};
+    en::DecodingMode mode{.kind = en::DecodingMode::Kind::kSpeculative,
+                          .drafters = {{.stage = 1,
+                                        .max_depth = 3,
+                                        .catch_up = true,
+                                        .borrows_target = BorrowsTarget(),
+                                        .features = true}}};
     en::DecodingPolicy policy;
     policy.propose = [this](
                          std::uint32_t slot, std::size_t, std::span<const std::byte> bytes,
                          std::uint32_t) -> std::expected<std::vector<std::int32_t>, std::string> {
+      CheckDraftBorrow(slot);
       drafts_[slot].emplace_back();
       std::memcpy(&drafts_[slot].back(), bytes.data(), sizeof(ts::FakeRow));
       const auto& staged = source_->options().seen_inputs->at(0);
@@ -269,7 +298,514 @@ class DraftCompanionsTest : public ::testing::Test {
     }
     return decoder.Step(work);
   }
+  void CheckPromptPrefixFolding() {
+    const std::array owners{0U, 1U};
+    for (const auto& out : Prompt(owners, 7).outcomes) ASSERT_FALSE(out.refusal);
+    auto decoder = Decoder();
+    for (const auto& out : Decode(decoder, owners).outcomes) ASSERT_FALSE(out.refusal);
+    const std::array before{slots().progress(0, 1)->completed(),
+                            slots().progress(1, 1)->completed()};
+    std::uint32_t checked = 0;
+    source_->options().on_build = [&](const pl::StepShape& shape, bool measuring) {
+      if (measuring || shape.stage != 1 || shape.phase != pl::Phase::kDraft || checked != 0) return;
+      for (const auto owner : owners) {
+        EXPECT_TRUE(slots().progress(owner, 1)->owed());
+        EXPECT_TRUE(slots().progress(owner, 1)->compound_owned());
+        EXPECT_EQ(slots().progress(owner, 1)->completed(), before[owner]);
+        EXPECT_FALSE(slots().Clear(owner));
+        EXPECT_FALSE(slots().Spill(owner));
+      }
+      ++checked;
+    };
+    (void)node_.TakeTimes(0);
+    auto continued = Prompt(owners, 2);
+    source_->options().on_build = {};
+    for (const auto& out : continued.outcomes) ASSERT_FALSE(out.refusal) << out.refusal->what;
+    EXPECT_EQ(checked, 1U);
+    // Both predecessor and final controls share useful numeric jobs.
+    EXPECT_EQ(node_.TakeTimes(0).steps, continued.steps);
+    for (const auto owner : owners) {
+      EXPECT_EQ(slots().positions(owner), 12U);
+      EXPECT_EQ(slots().progress(owner, 1)->completed().positions, 12U);
+      EXPECT_FALSE(slots().owed(owner));
+      EXPECT_FALSE(slots().borrowed(owner));
+    }
+  }
 };
+
+class JoinedPromptDraftCompanionsTest : public DraftCompanionsTest {
+ protected:
+  void ConfigureBatching(md::Batching& caps) override { caps.join_prefill = true; }
+};
+
+TEST_F(JoinedPromptDraftCompanionsTest, PaidBatchPreviewIncludesEveryRealPreAndPostConsumerShape) {
+  Prefill(0, 4);
+  Prefill(1, 6);
+  const auto built = source_->built().size();
+  const auto queued = source_->queued();
+  auto adopted = en::RunnerOwner::Adopt(node_, runner_);
+  ASSERT_TRUE(adopted);
+  struct Retire {
+    en::PagedNode& node;
+    en::RunnerOwner root;
+    ~Retire() {
+      if (node.InRequest(0)) EXPECT_TRUE(node.EndRequest(0));
+      const auto retired = node.TearDown({});
+      EXPECT_TRUE(retired) << ts::Failed(retired).value_or("");
+    }
+  } lifetime{node_, std::move(*adopted)};
+  const std::array pending{
+      en::PendingWork{.slot = 0, .phase = pl::Phase::kPrefill, .past = 4, .rows = 3},
+      en::PendingWork{.slot = 1, .phase = pl::Phase::kPrefill, .past = 6, .rows = 3}};
+  std::array<md::DraftCompanions, 2> consumers;
+  for (std::size_t i = 0; i < consumers.size(); ++i) {
+    const auto preview =
+        lifetime.root->slots().progress(static_cast<std::uint32_t>(i), 1)->PreviewCompound(3);
+    ASSERT_TRUE(preview);
+    consumers[i] = *preview;
+  }
+  auto preview = en::PromptBatchInventory::Preview(*lifetime.root, *composer_, pending);
+  ASSERT_TRUE(preview) << ts::Failed(preview).value_or(llmp::kernels::ResourceFailure{}).what;
+  std::array<bool, 2> pre{}, post{};
+  for (const auto& shape : preview->shapes()) {
+    if (shape.stage == 0) continue;
+    EXPECT_EQ(shape.stage, 1U);
+    EXPECT_EQ(shape.phase, pl::Phase::kDraft);
+    for (const auto& segment : shape.segments) {
+      ASSERT_LT(segment.slot, consumers.size());
+      const auto& before = consumers[segment.slot].before;
+      const auto& after = consumers[segment.slot].after;
+      const bool matches_pre = segment.past == before.cache_first && segment.rows == before.count;
+      const bool matches_post = segment.past == after.cache_first && segment.rows == after.count;
+      EXPECT_TRUE(matches_pre || matches_post);
+      pre[segment.slot] = pre[segment.slot] || matches_pre;
+      post[segment.slot] = post[segment.slot] || matches_post;
+      EXPECT_FALSE(segment.want_head);
+      EXPECT_EQ(segment.outputs, 0U);
+    }
+  }
+  for (std::size_t i = 0; i < consumers.size(); ++i) {
+    EXPECT_EQ(pre[i], consumers[i].before.count != 0);
+    EXPECT_EQ(post[i], consumers[i].after.count != 0);
+    EXPECT_TRUE(lifetime.root->slots().progress(static_cast<std::uint32_t>(i), 1)->settled());
+  }
+  EXPECT_TRUE(preview->Revalidate());
+  EXPECT_EQ(source_->built().size(), built);
+  EXPECT_EQ(source_->queued(), queued);
+  auto* progress = lifetime.root->slots().progress(0, 1);
+  const auto active = progress->BeginCompound(3);
+  ASSERT_TRUE(active);
+  EXPECT_FALSE(preview->Revalidate());
+  ASSERT_TRUE(progress->RefuseCompound(active->unit));
+  EXPECT_TRUE(preview->Revalidate());
+}
+
+TEST_F(JoinedPromptDraftCompanionsTest, FirstRowTailPublishesBothOwnersInsideTheUsefulTargetJob) {
+  const std::array owners{0U, 1U};
+  (void)node_.TakeTimes(0);
+  bool joined_target = false;
+  source_->options().on_build = [&](const pl::StepShape& shape, bool measuring) {
+    if (!measuring && shape.stage == 0) joined_target = shape.segments.size() == 2;
+  };
+  auto report = Prompt(owners, 1);
+  source_->options().on_build = {};
+  ASSERT_TRUE(joined_target);
+  ASSERT_EQ(report.steps, 1U);
+  EXPECT_EQ(node_.TakeTimes(0).steps, report.steps);
+  for (const auto owner : owners) {
+    ASSERT_FALSE(report.outcomes[owner].refusal) << report.outcomes[owner].refusal->what;
+    EXPECT_EQ(slots().positions(owner), 1U);
+    EXPECT_TRUE(slots().progress(owner, 1)->settled());
+    EXPECT_EQ(slots().progress(owner, 1)->completed(), (md::DraftProgress{1, 0, 0, 1, 0}));
+    CheckControl(owner, 1);
+  }
+}
+
+TEST_F(JoinedPromptDraftCompanionsTest,
+       PostCompanionTailPublishesNativeControlsWithoutAControlOnlyJob) {
+  const std::array owners{0U, 1U};
+  (void)node_.TakeTimes(0);
+  auto report = Prompt(owners, 2);
+  ASSERT_EQ(report.steps, 2U);  // Target, then its shifted post companion.
+  EXPECT_EQ(node_.TakeTimes(0).steps, report.steps);
+  for (const auto owner : owners) {
+    ASSERT_FALSE(report.outcomes[owner].refusal) << report.outcomes[owner].refusal->what;
+    EXPECT_EQ(slots().positions(owner), 2U);
+    EXPECT_EQ(slots().progress(owner, 1)->completed(), (md::DraftProgress{2, 1, 0, 2, 0}));
+    CheckControl(owner, 1);
+  }
+}
+
+TEST_F(JoinedPromptDraftCompanionsTest,
+       RejectedFinalTargetNeverPublishesOrRetainsUnattemptedTailWords) {
+  const std::array owners{0U, 1U};
+  source_->options().fail_phase = pl::Phase::kPrefill;
+  source_->options().fail_run = llmp::kernels::StepError::kRejected;
+  auto refused = Prompt(owners, 1);
+  for (const auto owner : owners) {
+    ASSERT_TRUE(refused.outcomes[owner].refusal);
+    EXPECT_EQ(slots().positions(owner), 0U);
+    EXPECT_EQ(slots().progress(owner, 1)->completed(), md::DraftProgress{});
+  }
+  EXPECT_EQ(node_.kept_pinned(), 0U);
+}
+
+TEST_F(JoinedPromptDraftCompanionsTest,
+       LaterOwnerTailCopyFailurePublishesNeitherOwnerAndRetainsBothWords) {
+  const std::array owners{0U, 1U};
+  llmp::providers::fake::FailNextCopy(llmp::providers::CopyKind::kHostToDevice,
+                                      md::kDraftProgressBytes, true, 1);
+  const auto report = Prompt(owners, 1);
+  for (const auto owner : owners) {
+    ASSERT_TRUE(report.outcomes[owner].refusal);
+    EXPECT_FALSE(report.outcomes[owner].refusal->clean);
+    EXPECT_EQ(slots().positions(owner), 0U);
+    EXPECT_EQ(slots().progress(owner, 1)->completed(), md::DraftProgress{});
+    EXPECT_FALSE(slots().usable(owner));
+  }
+  EXPECT_EQ(node_.kept_pinned(), 2U);
+}
+
+TEST_F(JoinedPromptDraftCompanionsTest, RetiredNativeTailWithALateInvalidOwnerPublishesNoOwner) {
+  const std::array owners{0U, 1U};
+  std::uint32_t invalidated = 0;
+  source_->options().after_execute = [&](pl::Phase phase) {
+    if (phase != pl::Phase::kPrefill) return;
+    slots().progress(1, 1)->Quarantine();
+    ++invalidated;
+  };
+  const auto report = Prompt(owners, 1);
+  source_->options().after_execute = {};
+  EXPECT_EQ(invalidated, 1U);
+  for (const auto owner : owners) {
+    ASSERT_TRUE(report.outcomes[owner].refusal);
+    EXPECT_EQ(slots().positions(owner), 0U);
+    EXPECT_EQ(slots().progress(owner, 1)->completed(), md::DraftProgress{});
+    EXPECT_FALSE(slots().usable(owner));
+  }
+  EXPECT_EQ(node_.kept_pinned(), 0U);  // Full native copies positively retired.
+}
+
+TEST_F(DraftCompanionsTest, RetainedOutputsSurviveLaterStepsAndResultMoves) {
+  const std::array owners{std::uint32_t{0}, std::uint32_t{1}};
+  auto first = Prompt(owners, 2);
+  ASSERT_EQ(first.outcomes.size(), 2U);
+  ASSERT_FALSE(first.outcomes[0].refusal);
+  auto retained = first.outcomes[0].outputs;
+  const std::vector<std::byte> snapshot(retained.begin(), retained.end());
+  const auto paid = retained.paid_bytes();
+  ASSERT_GT(paid, 0U);
+  auto moved = std::move(first);
+  moved = {};
+  auto later = Prompt(owners, 2);
+  ASSERT_EQ(later.outcomes.size(), 2U);
+  ASSERT_FALSE(later.outcomes[0].refusal);
+  EXPECT_TRUE(std::ranges::equal(retained, snapshot));
+  EXPECT_FALSE(std::ranges::equal(retained, later.outcomes[0].outputs));
+  EXPECT_EQ(retained.paid_bytes(), paid);
+}
+
+TEST_F(DraftCompanionsTest, PromptPredecessorsShareTheFirstUsefulCompanionJob) {
+  CheckPromptPrefixFolding();
+}
+
+TEST_F(DraftCompanionsTest, UnsubmittedPromptSuccessorKeepsItsOldPrefixAndRetries) {
+  Prefill(0, 7);
+  const std::array owners{0U};
+  auto decoder = Decoder();
+  ASSERT_FALSE(Decode(decoder, owners).outcomes[0].refusal);
+  const auto completed = slots().progress(0, 1)->completed();
+  const auto pending = slots().progress(0, 1)->after_owed();
+  const auto executed = source_->executed();
+  runner_->DropPlans();
+  source_->options().refuse_build = [](const pl::StepShape& shape) { return shape.stage == 1; };
+  auto refused = Prompt(owners, 2);
+  ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_TRUE(refused.outcomes[0].refusal->clean);
+  EXPECT_EQ(source_->executed(), executed);
+  EXPECT_EQ(slots().progress(0, 1)->completed(), completed);
+  EXPECT_EQ(slots().progress(0, 1)->after_owed(), pending);
+  EXPECT_TRUE(slots().owed(0));
+  source_->options().refuse_build = {};
+  auto retry = Prompt(owners, 2);
+  ASSERT_FALSE(retry.outcomes[0].refusal) << retry.outcomes[0].refusal->what;
+  EXPECT_EQ(slots().positions(0), 12U);
+}
+
+TEST_F(DraftCompanionsTest, PartialPromptPredecessorNeverPublishesOrBecomesRetryable) {
+  Prefill(0, 7);
+  const std::array owners{0U};
+  auto decoder = Decoder();
+  ASSERT_FALSE(Decode(decoder, owners).outcomes[0].refusal);
+  const auto completed = slots().progress(0, 1)->completed();
+  llmp::providers::fake::FailNextCopy(llmp::providers::CopyKind::kHostToDevice,
+                                      md::kDraftProgressBytes, true);
+  auto refused = Prompt(owners, 2);
+  ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_FALSE(refused.outcomes[0].refusal->clean);
+  EXPECT_EQ(slots().progress(0, 1)->completed(), completed);
+  EXPECT_FALSE(slots().usable(0));
+  EXPECT_EQ(node_.kept_pinned(), 1U);
+}
+
+class OutputPaymentDraftCompanionsTest : public DraftCompanionsTest {
+ protected:
+  void Configure(en::RunnerConfig&) override {
+    // Size/measure actual outputs during normal Setup, rather than changing
+    // an installed plan's advertised result after admission.
+    source_->options().logits = 16384;
+  }
+};
+
+TEST_F(OutputPaymentDraftCompanionsTest, OutputPaymentRefusalPrecedesAnyProgramOrStateSubmission) {
+  const std::array owners{0U};
+  auto warm = Prompt(owners, 1);
+  ASSERT_FALSE(warm.outcomes[0].refusal) << warm.outcomes[0].refusal->what;
+  ASSERT_TRUE(slots().Clear(0));  // Keeps stable places and cached plans for the exact retry shape.
+  warm = {};
+  node_.SetHostFloor(0);
+  ASSERT_TRUE(node_.TryChargeHost(0));
+  auto free = node_.FreeBytes();
+  ASSERT_TRUE(free);
+  const auto counted = node_.host_counted();
+  const auto limit = (node_.host_charged() + *free) / kExtent * kExtent;
+  constexpr std::uint64_t kPermissionHeadroom = 16U << 10U;
+  ASSERT_GT(limit, counted + kPermissionHeadroom);
+  // Existing permission descriptors fit; the actual 64 KiB output does not.
+  const auto filler = limit - counted - kPermissionHeadroom;
+  ASSERT_TRUE(node_.ChargeHost(filler, false));
+  const auto executed = source_->executed();
+  const auto positions = slots().positions(0);
+  auto refused = Prompt(owners, 1);  // Real companion authority, no fabricated StepRequest.
+  node_.UnchargeHost(filler);
+  ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_TRUE(refused.outcomes[0].refusal->clean);
+  EXPECT_NE(refused.outcomes[0].refusal->what.find("owned host result"), std::string::npos);
+  EXPECT_EQ(source_->executed(), executed);
+  EXPECT_EQ(slots().positions(0), positions);
+  EXPECT_TRUE(slots().usable(0));
+}
+
+class BorrowingDraftCompanionsTest : public DraftCompanionsTest {
+ protected:
+  bool BorrowsTarget() const override { return true; }
+  std::vector<en::StageState> StateStages() const override {
+    auto stages = Stages();
+    md::StateContract contract;
+    for (const auto& item : stages[1].layout.items) contract.tensors.push_back(item.contract);
+    contract.tensors.push_back(
+        {.name = "kv", .cell_bytes = 1024, .borrowed_from_target = true, .target_layer = 0});
+    const std::array layers{std::pair{std::uint32_t{0}, std::move(contract)}};
+    auto derived = md::Layout(layers, kContext, kRows);
+    EXPECT_TRUE(derived) << ts::Failed(derived).value_or("");
+    if (derived) stages[1].layout = std::move(*derived);
+    return stages;
+  }
+  void CheckDraftBorrow(std::uint32_t slot) override {
+    EXPECT_TRUE(slots().borrowed(slot, 0));
+    EXPECT_FALSE(slots().ReserveStateThrough(slot, slots().positions(slot) + 1));
+    EXPECT_FALSE(slots().Spill(slot));
+  }
+};
+
+TEST_F(BorrowingDraftCompanionsTest, BorrowedPromptPredecessorsShareTheUsefulCompanionJob) {
+  CheckPromptPrefixFolding();
+}
+
+TEST_F(BorrowingDraftCompanionsTest, ReadyReaderFollowsAnotherConsumersOwedNumericCommit) {
+  Prefill(0, 7);
+  const std::array owners{0U};
+  auto decoder = Decoder();
+  ASSERT_FALSE(Decode(decoder, owners).outcomes[0].refusal);
+  ASSERT_TRUE(slots().Settle(0));
+  ASSERT_TRUE(slots().progress(0, 1)->settled());
+  auto& numeric = slots().live(0, 0);
+  // Model a separately deferred numeric consumer using the normal LiveState
+  // commit path. The marker lies in a cache cell's unused padding, so the
+  // fake target/companion programs still read their exact committed cells.
+  auto* marker = static_cast<std::byte*>(en::support::Pointer(numeric.base(0) + 128));
+  std::uint32_t commits = 0;
+  numeric.SetCommit(
+      [&](llmp::providers::NativeStream native, std::uint32_t keep) -> en::LiveState::Queued {
+        if (keep != 1)
+          return std::unexpected(
+              en::LiveState::QueueFailure{.detail = "wrong mixed-consumer kept prefix"});
+        ++commits;
+        if (!llmp::providers::FillAsync(native, marker, 0x42, 1).ok())
+          return std::unexpected(en::LiveState::QueueFailure{
+              .unknown = true, .detail = "mixed-consumer commit marker failed"});
+        return {};
+      });
+  numeric.BeginSaves();
+  ASSERT_TRUE(node_.Job(
+      slots().execution(),
+      [&](llmp::providers::NativeStream native) {
+        return llmp::providers::FillAsync(native, marker, 0x11, 1).ok()
+                   ? llmp::scheduler::JobResult::kQueued
+                   : llmp::scheduler::JobResult::kUnknown;
+      },
+      "mixed-consumer provisional numeric write", 0));
+  numeric.Verified(1);
+  ASSERT_TRUE(numeric.Accept(1));
+  ASSERT_TRUE(slots().owed(0));
+  EXPECT_TRUE(slots().progress(0, 1)->settled());  // This reader owes no control copy.
+  bool saw_pending_guard = false;
+  source_->options().on_build = [&](const pl::StepShape& shape, bool measuring) {
+    if (measuring || shape.stage != 1 || saw_pending_guard) return;
+    EXPECT_EQ(slots().progress(0, 1)->state(), en::DraftProgressLedger::State::kCompound);
+    EXPECT_FALSE(slots().progress(0, 1)->owed());
+    EXPECT_TRUE(slots().borrowed(0));
+    EXPECT_FALSE(slots().borrowed(0, 0));
+    EXPECT_EQ(commits, 0U);
+    saw_pending_guard = true;
+  };
+  (void)node_.TakeTimes(0);
+  auto prompt = Prompt(owners, 2);
+  source_->options().on_build = {};
+  numeric.SetCommit({});
+  ASSERT_FALSE(prompt.outcomes[0].refusal) << prompt.outcomes[0].refusal->what;
+  EXPECT_TRUE(saw_pending_guard);
+  EXPECT_EQ(commits, 1U);
+  EXPECT_EQ(*marker, std::byte{0x42});
+  EXPECT_EQ(node_.TakeTimes(0).steps, prompt.steps);  // Prefix and tail share useful work.
+  EXPECT_FALSE(slots().owed(0));
+  EXPECT_FALSE(slots().borrowed(0));
+  EXPECT_EQ(slots().positions(0), 12U);
+}
+
+TEST_F(BorrowingDraftCompanionsTest, PendingBorrowGuardsTargetWithoutGrantingOrdinaryReadiness) {
+  const std::array owners{0U, 1U};
+  for (const auto& out : Prompt(owners, 7).outcomes) ASSERT_FALSE(out.refusal);
+  auto decoder = Decoder();
+  for (const auto& out : Decode(decoder, owners).outcomes) ASSERT_FALSE(out.refusal);
+  auto successor = slots().BeginDraftSuccessor(0, 1);
+  auto peer = slots().BeginDraftSuccessor(1, 1);
+  ASSERT_TRUE(successor);
+  ASSERT_TRUE(peer);
+  auto borrow = slots().BorrowAfterPrefix(0, 1, *successor);
+  ASSERT_TRUE(borrow) << ts::Failed(borrow).value_or("");
+  EXPECT_TRUE(slots().borrowed(0));      // Target guard is reserved now.
+  EXPECT_FALSE(slots().borrowed(0, 0));  // No completed frozen view exists yet.
+  EXPECT_FALSE(slots().Borrow(0));
+  EXPECT_FALSE(slots().ReserveStateThrough(0, slots().positions(0) + 1));
+  EXPECT_FALSE(slots().Spill(0));
+  EXPECT_TRUE(slots().CheckBorrowAfterPrefix(0, 1, successor->unit, successor->predecessor));
+  EXPECT_FALSE(slots().CheckBorrowAfterPrefix(0, 1, peer->unit, peer->predecessor));
+  en::StateBorrow moved = std::move(*borrow);
+  EXPECT_FALSE(borrow->held());
+  moved.Return();  // A never-submitted reservation can be canceled cleanly.
+  EXPECT_FALSE(slots().borrowed(0));
+  ASSERT_TRUE(slots().CancelDraftSuccessor(0, 1, successor->unit));
+  ASSERT_TRUE(slots().CancelDraftSuccessor(1, 1, peer->unit));
+}
+
+TEST_F(BorrowingDraftCompanionsTest, JoinedUsefulSuccessorJobPublishesAndActivatesBothBorrows) {
+  const std::array owners{0U, 1U};
+  for (const auto& out : Prompt(owners, 7).outcomes) ASSERT_FALSE(out.refusal);
+  auto decoder = Decoder();
+  for (const auto& out : Decode(decoder, owners).outcomes) ASSERT_FALSE(out.refusal);
+  for (const auto owner : owners) ASSERT_TRUE(slots().owed(owner));
+  (void)node_.TakeTimes(0);
+  auto next = Decode(decoder, owners);
+  for (const auto& out : next.outcomes) ASSERT_FALSE(out.refusal) << out.refusal->what;
+  EXPECT_EQ(node_.TakeTimes(0).steps, next.steps);  // No per-owner settlement job.
+  for (const auto owner : owners) {
+    EXPECT_FALSE(slots().borrowed(owner));  // Healthy borrow returned after its passes.
+    ASSERT_FALSE(drafts_[owner].empty());
+    EXPECT_GT(drafts_[owner].front().borrowed, 0);  // Actual target bytes were read.
+  }
+}
+
+TEST_F(BorrowingDraftCompanionsTest, UnsubmittedReaderRefusalReturnsItsGuardAndCanRetry) {
+  Prefill(0, 7);
+  const std::array owners{0U};
+  auto decoder = Decoder();
+  ASSERT_FALSE(Decode(decoder, owners).outcomes[0].refusal);
+  const auto pending = slots().progress(0, 1)->after_owed();
+  runner_->DropPlans();
+  source_->options().refuse_build = [](const pl::StepShape& shape) { return shape.stage == 1; };
+  auto refused = Decode(decoder, owners);
+  ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_TRUE(refused.outcomes[0].refusal->clean);
+  EXPECT_FALSE(slots().borrowed(0));
+  EXPECT_EQ(slots().progress(0, 1)->after_owed(), pending);
+  source_->options().refuse_build = {};
+  ASSERT_FALSE(Decode(decoder, owners).outcomes[0].refusal);
+}
+
+TEST_F(BorrowingDraftCompanionsTest, UnprovenPrefixRetainsGuardAfterStackBorrowReturns) {
+  Prefill(0, 7);
+  const std::array owners{0U};
+  auto decoder = Decoder();
+  ASSERT_FALSE(Decode(decoder, owners).outcomes[0].refusal);
+  const auto before = slots().progress(0, 1)->completed();
+  llmp::providers::fake::FailNextCopy(llmp::providers::CopyKind::kHostToDevice,
+                                      md::kDraftProgressBytes, true);
+  const auto refused = Decode(decoder, owners);
+  ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_FALSE(refused.outcomes[0].refusal->clean);
+  EXPECT_FALSE(slots().usable(0));
+  EXPECT_TRUE(slots().borrowed(0));  // Lifecycle owns unproven guard until recovery.
+  EXPECT_FALSE(slots().borrowed(0, 0));
+  EXPECT_EQ(slots().progress(0, 1)->completed(), before);
+  EXPECT_FALSE(slots().ReserveStateThrough(0, slots().positions(0) + 1));
+  EXPECT_FALSE(slots().Spill(0));
+}
+
+TEST_F(BorrowingDraftCompanionsTest, RetiredPrefixAndRejectedOwnProgramReturnAnActivatedGuard) {
+  Prefill(0, 7);
+  const std::array owners{0U};
+  auto decoder = Decoder();
+  ASSERT_FALSE(Decode(decoder, owners).outcomes[0].refusal);
+  const auto pending = slots().progress(0, 1)->after_owed();
+  source_->options().fail_phase = pl::Phase::kDraft;
+  source_->options().fail_run = llmp::kernels::StepError::kRejected;
+  auto refused = Decode(decoder, owners);
+  ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_TRUE(refused.outcomes[0].refusal->clean);
+  EXPECT_TRUE(slots().usable(0));
+  EXPECT_FALSE(slots().borrowed(0));
+  EXPECT_EQ(slots().progress(0, 1)->completed(), pending);
+}
+
+TEST_F(BorrowingDraftCompanionsTest, InvalidLaterPrefixActivatesNeitherOwnersBorrow) {
+  const std::array owners{0U, 1U};
+  for (const auto& out : Prompt(owners, 7).outcomes) ASSERT_FALSE(out.refusal);
+  auto decoder = Decoder();
+  for (const auto& out : Decode(decoder, owners).outcomes) ASSERT_FALSE(out.refusal);
+  const std::array before{slots().progress(0, 1)->completed(), slots().progress(1, 1)->completed()};
+  std::array<en::StateBorrow, 2> borrows;
+  for (const auto owner : owners) {
+    auto successor = slots().BeginDraftSuccessor(owner, 1);
+    ASSERT_TRUE(successor);
+    auto borrowed = slots().BorrowAfterPrefix(owner, 1, *successor);
+    ASSERT_TRUE(borrowed);
+    borrows[owner] = std::move(*borrowed);
+    ASSERT_TRUE(slots().PrepareOwed(owner));
+  }
+  en::JobReport report;
+  auto posted = node_.Job(
+      slots().execution(),
+      [&](llmp::providers::NativeStream stream) {
+        for (const auto owner : owners) {
+          auto prefix = slots().QueueOwed(owner, stream);
+          if (!prefix.result) return llmp::scheduler::JobResult::kUnknown;
+        }
+        slots().progress(1, 1)->Quarantine();
+        return llmp::scheduler::JobResult::kQueued;
+      },
+      "invalid later ordered borrow prefix", 0, {}, &report);
+  ASSERT_TRUE(posted);
+  ASSERT_EQ(report.retirement, en::JobReport::Retirement::kRetired);
+  EXPECT_FALSE(slots().CompleteOwed(owners, true));
+  for (const auto owner : owners) {
+    borrows[owner].Return();
+    EXPECT_TRUE(slots().borrowed(owner));
+    EXPECT_FALSE(slots().borrowed(owner, 0));
+    EXPECT_EQ(slots().progress(owner, 1)->completed(), before[owner]);
+    EXPECT_FALSE(slots().usable(owner));
+  }
+}
 
 class UnqualifiedDraftCompanionsTest : public DraftCompanionsTest {
  protected:
@@ -416,9 +952,14 @@ TEST_F(UnqualifiedDraftCompanionsTest, EveryBoundaryPreservesOwedStateAndExistin
   auto scalar = joined;
   scalar.segments.resize(1);
   en::StepAhead ahead;
-  ahead.shapes[1] = joined;  // second hint must not escape the first-hint check
+  std::array<std::optional<pl::StepShape>, 2> predictions{};
+  predictions[1] = joined;  // second hint must not escape the first-hint check
   ahead.prepare = ahead.capture_ahead = true;
   ahead.build = 2;
+  auto paid_prediction =
+      runner_->Predict(predictions, ahead.build, ahead.capture_ahead, ahead.prepare);
+  ASSERT_TRUE(paid_prediction) << ts::Failed(paid_prediction).value_or("");
+  ahead = std::move(*paid_prediction);
   const en::AheadFor predict = [&](const en::ComposedStep&, std::span<const std::size_t>) {
     return ahead;
   };
@@ -442,7 +983,13 @@ TEST_F(UnqualifiedDraftCompanionsTest, EveryBoundaryPreservesOwedStateAndExistin
   };
   const auto refused_report = [&](const auto& report) {
     EXPECT_EQ(report.steps, 0U);
-    for (const auto& out : report.outcomes) {
+    const auto outcomes = [&] {
+      if constexpr (requires { report.outcomes(); })
+        return report.outcomes();
+      else
+        return std::span(report.outcomes);
+    }();
+    for (const auto& out : outcomes) {
       ASSERT_TRUE(out.refusal);
       Refused(*out.refusal);
     }
@@ -507,6 +1054,197 @@ TEST_F(DraftCompanionsTest, PromptAndPendingPassKeepShiftedCoordinatesForTwoOwne
     EXPECT_EQ(drafts_[slot].front().token, Token(slot, 10));
     EXPECT_EQ(drafts_[slot].front().tap, Token(slot, 9));
   }
+}
+
+TEST_F(DraftCompanionsTest, NextJoinedReplayAbsorbsBothOwnersOwedPrefixes) {
+  const std::array owners{0U, 1U};
+  auto prompt = Prompt(owners, 7);
+  for (const auto& out : prompt.outcomes) ASSERT_FALSE(out.refusal) << out.refusal->what;
+  auto decoder = Decoder();
+  auto first = Decode(decoder, owners);
+  for (const auto& out : first.outcomes) ASSERT_FALSE(out.refusal) << out.refusal->what;
+  const auto first_steps = first.steps;
+  std::array<md::DraftProgress, 2> prior{};
+  for (const auto slot : owners) {
+    ASSERT_TRUE(slots().owed(slot));
+    prior[slot] = slots().progress(slot, 1)->after_owed();
+  }
+  (void)node_.TakeTimes(0);
+  const auto second = Decode(decoder, owners);
+  for (const auto& out : second.outcomes) ASSERT_FALSE(out.refusal) << out.refusal->what;
+  // Every node job is useful draft/verify work reported by the real decoder.
+  // The old per-owner eager Settle path adds two extra jobs here.
+  EXPECT_EQ(node_.TakeTimes(0).steps, second.steps);
+  EXPECT_EQ(second.steps, first_steps);
+  for (const auto slot : owners) {
+    EXPECT_EQ(slots().progress(slot, 1)->completed(), prior[slot]);
+    EXPECT_TRUE(slots().owed(slot));  // Only this new unit's acceptance remains.
+  }
+  (void)node_.TakeTimes(0);
+  ASSERT_TRUE(slots().FlushOwed(owners, "test final completed-state boundary"));
+  EXPECT_EQ(node_.TakeTimes(0).steps, 1U);
+  for (const auto slot : owners) EXPECT_FALSE(slots().owed(slot));
+}
+
+TEST_F(DraftCompanionsTest, UnsubmittedSuccessorRefusalLeavesOriginalPrefixAndCanRetry) {
+  Prefill(0, 7);
+  const std::array owners{0U};
+  auto decoder = Decoder();
+  ASSERT_FALSE(Decode(decoder, owners).outcomes[0].refusal);
+  const auto completed = slots().progress(0, 1)->completed();
+  const auto pending = slots().progress(0, 1)->after_owed();
+  runner_->DropPlans();
+  source_->options().refuse_build = [](const pl::StepShape& shape) { return shape.stage == 1; };
+  const auto refused = Decode(decoder, owners);
+  ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_TRUE(refused.outcomes[0].refusal->clean);
+  EXPECT_EQ(slots().progress(0, 1)->completed(), completed);
+  EXPECT_EQ(slots().progress(0, 1)->after_owed(), pending);
+  EXPECT_TRUE(slots().owed(0));
+  // The failed call explicitly canceled its unused reservation.
+  auto fresh = slots().BeginDraftSuccessor(0, 1);
+  ASSERT_TRUE(fresh) << ts::Failed(fresh).value_or("");
+  ASSERT_TRUE(slots().CancelDraftSuccessor(0, 1, fresh->unit));
+  source_->options().refuse_build = {};
+  const auto retried = Decode(decoder, owners);
+  ASSERT_FALSE(retried.outcomes[0].refusal) << retried.outcomes[0].refusal->what;
+}
+
+TEST_F(DraftCompanionsTest, PositivelyRetiredPrefixPublishesDespiteOwnProgramRejection) {
+  Prefill(0, 7);
+  const std::array owners{0U};
+  auto decoder = Decoder();
+  ASSERT_FALSE(Decode(decoder, owners).outcomes[0].refusal);
+  const auto pending = slots().progress(0, 1)->after_owed();
+  const auto executed = source_->executed();
+  source_->options().fail_phase = pl::Phase::kDraft;
+  source_->options().fail_run = llmp::kernels::StepError::kRejected;
+  const auto refused = Decode(decoder, owners);
+  ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_TRUE(refused.outcomes[0].refusal->clean);
+  EXPECT_EQ(source_->executed(), executed);
+  EXPECT_EQ(slots().progress(0, 1)->completed(), pending);
+  EXPECT_FALSE(slots().owed(0));
+  EXPECT_TRUE(slots().usable(0));
+  source_->options().fail_phase.reset();
+  source_->options().fail_run.reset();
+  const auto retried = Decode(decoder, owners);
+  ASSERT_FALSE(retried.outcomes[0].refusal) << retried.outcomes[0].refusal->what;
+}
+
+TEST_F(DraftCompanionsTest, PartialSuccessorPrefixNeverPublishesAndRetainsPinnedControl) {
+  Prefill(0, 7);
+  const std::array owners{0U};
+  auto decoder = Decoder();
+  ASSERT_FALSE(Decode(decoder, owners).outcomes[0].refusal);
+  const auto completed = slots().progress(0, 1)->completed();
+  llmp::providers::fake::FailNextCopy(llmp::providers::CopyKind::kHostToDevice,
+                                      md::kDraftProgressBytes, true);
+  const auto refused = Decode(decoder, owners);
+  ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_FALSE(refused.outcomes[0].refusal->clean);
+  EXPECT_EQ(slots().progress(0, 1)->completed(), completed);
+  EXPECT_FALSE(slots().usable(0));
+  EXPECT_EQ(node_.kept_pinned(), 1U);
+}
+
+TEST_F(DraftCompanionsTest, LateInvalidOwnerTicketPublishesNeitherCompletedPrefix) {
+  const std::array owners{0U, 1U};
+  const auto prompt = Prompt(owners, 7);
+  for (const auto& out : prompt.outcomes) ASSERT_FALSE(out.refusal) << out.refusal->what;
+  auto decoder = Decoder();
+  const auto accepted = Decode(decoder, owners);
+  for (const auto& out : accepted.outcomes) ASSERT_FALSE(out.refusal) << out.refusal->what;
+  const std::array before{slots().progress(0, 1)->completed(), slots().progress(1, 1)->completed()};
+  for (const auto owner : owners) ASSERT_TRUE(slots().PrepareOwed(owner));
+  en::JobReport report;
+  const auto queued = node_.Job(
+      slots().execution(),
+      [&](llmp::providers::NativeStream stream) {
+        for (const auto owner : owners) {
+          const auto prefix = slots().QueueOwed(owner, stream);
+          EXPECT_TRUE(prefix.result);
+          if (!prefix.result) return llmp::scheduler::JobResult::kUnknown;
+        }
+        slots().progress(1, 1)->Quarantine();  // Invalidate the later ticket after queueing.
+        return llmp::scheduler::JobResult::kQueued;
+      },
+      "atomic prefix publication failure", 0, {}, &report);
+  ASSERT_TRUE(queued);
+  ASSERT_EQ(report.retirement, en::JobReport::Retirement::kRetired);
+  EXPECT_FALSE(slots().CompleteOwed(owners, true));
+  for (const auto owner : owners) {
+    EXPECT_EQ(slots().progress(owner, 1)->completed(), before[owner]);
+    EXPECT_FALSE(slots().usable(owner));
+  }
+}
+
+TEST_F(DraftCompanionsTest, ReplacedUnitDuringPlanBuildCannotReachFeatureOrStateWrites) {
+  Prefill(0, 7);
+  const std::array owners{0U};
+  auto decoder = Decoder();
+  // Without side-row preflight the cache miss builds after owner admission,
+  // so only the final current-unit check can reject this stale capability.
+  const auto extra_inputs = source_->options().extra_inputs;
+  const auto side_rows = source_->options().side_rows;
+  source_->options().extra_inputs = {};
+  source_->options().side_rows = {};
+  runner_->DropPlans();
+  const auto executed = source_->executed();
+  bool replaced = false;
+  source_->options().on_build = [&](const pl::StepShape& shape, bool measuring) {
+    if (measuring || replaced || shape.stage != 1 || shape.phase != pl::Phase::kDraft) return;
+    replaced = true;
+    ASSERT_TRUE(slots().progress(0, 1)->BeginUnit());
+  };
+  const auto refused = Decode(decoder, owners);
+  EXPECT_TRUE(replaced);
+  ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_TRUE(refused.outcomes[0].refusal->clean);
+  EXPECT_EQ(source_->executed(), executed);
+  EXPECT_EQ(slots().positions(0), 7U);
+  EXPECT_TRUE(slots().usable(0));
+  source_->options().on_build = {};
+  // The fixture's successful proposal inspects its declarative side input.
+  // Restore that input contract and rebuild the stripped diagnostic plan.
+  source_->options().extra_inputs = extra_inputs;
+  source_->options().side_rows = side_rows;
+  runner_->DropPlans();
+  auto retry = Decode(decoder, owners);
+  ASSERT_FALSE(retry.outcomes[0].refusal) << retry.outcomes[0].refusal->what;
+}
+
+TEST_F(DraftCompanionsTest, FeatureCopyBeforeARejectedDraftRetiresBeforePeerContinues) {
+  const std::array owners{0U};
+  Prefill(0, 7);
+  auto decoder = Decoder();
+  const auto executed = source_->executed();
+  source_->options().fail_phase = pl::Phase::kDraft;
+  source_->options().fail_run = llmp::kernels::StepError::kRejected;
+  const auto refused = Decode(decoder, owners);
+  ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_EQ(source_->executed(), executed);  // no rejected program body ran
+  EXPECT_EQ(slots().positions(0), 7U);
+  bool copied = false;
+  runner_->plans().ForEach([&](const auto& entry) {
+    if (entry.key.shape.stage != 1) return;
+    for (const auto& input : entry.planned->program->inputs()) {
+      if (input.kind != llmp::kernels::InputKind::kFeatures) continue;
+      ASSERT_GE(input.bytes, sizeof(ts::FakeCell));
+      ts::FakeCell first;
+      const auto* address = reinterpret_cast<const void*>(input.device_address);
+      std::memcpy(&first, address, sizeof(first));
+      EXPECT_EQ(first.token, Token(0, 6));
+      EXPECT_EQ(first.position, 6);
+      copied = true;
+    }
+  });
+  EXPECT_TRUE(copied);  // actual asynchronous feature payload reached its input
+  source_->options().fail_phase.reset();
+  source_->options().fail_run.reset();
+  const std::array peer{1U};
+  auto prompt = Prompt(peer, 7);
+  ASSERT_FALSE(prompt.outcomes[0].refusal) << prompt.outcomes[0].refusal->what;
 }
 
 TEST_F(DraftCompanionsTest, WholeDiscardAndCleanPromptRefusalRetryOriginalK) {
@@ -674,6 +1412,20 @@ TEST_F(DraftCompanionsTest, CheckpointRequiresTheReplayedPageBeforeTheTwoMiBBoun
         {.shape = shape, .work = std::span(&input, 1), .advance = false, .ahead = {}});
     ASSERT_FALSE(direct);
     EXPECT_TRUE(direct.error().clean);
+    // Supplying a correctly sized empty capability does not mint authority.
+    const std::array<en::StepAuthorization, 1> empty{};
+    auto with_empty = runner_->RunStep({.shape = shape,
+                                        .work = std::span(&input, 1),
+                                        .advance = false,
+                                        .ahead = {},
+                                        .authorization = empty});
+    ASSERT_FALSE(with_empty);
+    EXPECT_TRUE(with_empty.error().clean);
+    const std::array<en::StepAuthorization, 2> mismatched{};
+    auto malformed = en::RunWave(*runner_, *composer_, std::span(&bad, 1), std::span(&input, 1),
+                                 false, {}, mismatched);
+    ASSERT_TRUE(malformed.outcomes[0].refusal);
+    EXPECT_TRUE(malformed.outcomes[0].refusal->clean);
   }
   EXPECT_EQ(source_->executed(), executed);
   EXPECT_EQ(slots().used_bytes(0), used);
@@ -1113,6 +1865,60 @@ class MultipleDraftConsumersTest : public DraftCompanionsTest {
   }
 };
 
+class JoinedPromptMultipleConsumersTest : public MultipleDraftConsumersTest {
+ protected:
+  void ConfigureBatching(md::Batching& caps) override { caps.join_prefill = true; }
+};
+
+TEST_F(JoinedPromptMultipleConsumersTest, LastPostCompanionPublishesEveryConsumerTogether) {
+  const std::array owners{0U, 1U};
+  (void)node_.TakeTimes(0);
+  auto report = Prompt(owners, 2);
+  ASSERT_EQ(report.steps, 3U);  // Target and two useful post stages.
+  EXPECT_EQ(node_.TakeTimes(0).steps, report.steps);
+  for (const auto owner : owners) {
+    ASSERT_FALSE(report.outcomes[owner].refusal) << report.outcomes[owner].refusal->what;
+    EXPECT_EQ(slots().positions(owner), 2U);
+    for (const auto stage : {1U, 2U}) {
+      EXPECT_TRUE(slots().progress(owner, stage)->settled());
+      EXPECT_EQ(slots().progress(owner, stage)->completed(), (md::DraftProgress{2, 1, 0, 2, 0}));
+      CheckControl(owner, stage);
+    }
+  }
+}
+
+TEST_F(MultipleDraftConsumersTest, PartialFinalPostControlBatchPublishesNoConsumer) {
+  const std::array owners{0U};
+  llmp::providers::fake::FailNextCopy(llmp::providers::CopyKind::kHostToDevice,
+                                      md::kDraftProgressBytes, false, 1);
+  auto report = Prompt(owners, 2);
+  ASSERT_TRUE(report.outcomes[0].refusal);
+  EXPECT_FALSE(report.outcomes[0].refusal->clean);
+  EXPECT_EQ(slots().positions(0), 0U);
+  for (const auto stage : {1U, 2U})
+    EXPECT_EQ(slots().progress(0, stage)->completed(), md::DraftProgress{});
+  EXPECT_FALSE(slots().usable(0));
+  EXPECT_EQ(node_.kept_pinned(), 2U);
+}
+
+TEST_F(MultipleDraftConsumersTest,
+       RetiredFinalPostCannotPublishAnEarlierConsumerAfterInvalidation) {
+  const std::array owners{0U};
+  std::uint32_t posts = 0;
+  source_->options().after_execute = [&](pl::Phase phase) {
+    if (phase == pl::Phase::kDraft && ++posts == 2) slots().progress(0, 2)->Quarantine();
+  };
+  auto report = Prompt(owners, 2);
+  source_->options().after_execute = {};
+  EXPECT_EQ(posts, 2U);
+  ASSERT_TRUE(report.outcomes[0].refusal);
+  for (const auto stage : {1U, 2U})
+    EXPECT_EQ(slots().progress(0, stage)->completed(), md::DraftProgress{});
+  EXPECT_EQ(slots().positions(0), 0U);
+  EXPECT_FALSE(slots().usable(0));
+  EXPECT_EQ(node_.kept_pinned(), 0U);
+}
+
 TEST_F(MultipleDraftConsumersTest, UnselectedConsumersKeepTheOriginalRepeatSchedule) {
   const std::array owners{0U, 1U};
   ASSERT_FALSE(Prompt(owners, 7).outcomes[0].refusal);
@@ -1206,6 +2012,33 @@ TEST_F(MultipleDraftConsumersTest, ASecondInvalidHydrationPublishesNoFirstStageM
   EXPECT_FALSE(slots().kept_whole(0));
   EXPECT_EQ(slots().progress(0, 1)->completed(), first_before);
   EXPECT_EQ(slots().progress(0, 2)->completed(), second_before);
+}
+
+TEST_F(MultipleDraftConsumersTest, LateInvalidConsumerTicketPublishesNeitherConsumerMirror) {
+  Prefill(0, 7);
+  auto decoder = Alternatives();
+  const std::array owners{0U};
+  ASSERT_FALSE(Decode(decoder, owners).outcomes[0].refusal);
+  const auto first_before = slots().progress(0, 1)->completed();
+  const auto second_before = slots().progress(0, 2)->completed();
+  ASSERT_TRUE(slots().PrepareOwed(0));
+  en::JobReport report;
+  const auto queued = node_.Job(
+      slots().execution(),
+      [&](llmp::providers::NativeStream stream) {
+        const auto prefix = slots().QueueOwed(0, stream);
+        EXPECT_TRUE(prefix.result);
+        if (!prefix.result) return llmp::scheduler::JobResult::kUnknown;
+        slots().progress(0, 2)->Quarantine();
+        return llmp::scheduler::JobResult::kQueued;
+      },
+      "atomic consumer publication failure", 0, {}, &report);
+  ASSERT_TRUE(queued);
+  ASSERT_EQ(report.retirement, en::JobReport::Retirement::kRetired);
+  EXPECT_FALSE(slots().CompleteOwed(owners, true));
+  EXPECT_EQ(slots().progress(0, 1)->completed(), first_before);
+  EXPECT_EQ(slots().progress(0, 2)->completed(), second_before);
+  EXPECT_FALSE(slots().usable(0));
 }
 
 TEST_F(MultipleDraftConsumersTest, ASecondPublicationCopyFailureExposesNeitherNewMirror) {

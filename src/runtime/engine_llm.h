@@ -69,6 +69,7 @@
 #include "engine/model_runner.h"
 #include "engine/paged_node.h"
 #include "engine/prefill.h"
+#include "engine/runner_owner.h"
 #include "engine/wave_composer.h"
 #include "execution/adaptive_wave_mode.h"
 #include "model/batching.h"
@@ -78,6 +79,9 @@ namespace llmp::runtime {
 
 // What an engine-backed LLM runs, made from its settings.
 struct EngineLlmParts {
+  // What the step source and the launch borrow (the spec, the artifact's
+  // tensors, a kernel source's backend): kept until the runner is gone.
+  std::shared_ptr<void> keep;
   // The runner: the slots (each stage's layout, sized by the settings'
   // context and prefill chunk; the bound spec's digest, D-105's layout
   // identity), the stages' weights, setup shapes, launch, verify rows and
@@ -120,9 +124,6 @@ struct EngineLlmParts {
     std::optional<bool> default_thinking;
   };
   ChatSlice chat;
-  // What the step source and the launch borrow (the spec, the artifact's
-  // tensors, a kernel source's backend): kept until the runner is gone.
-  std::shared_ptr<void> keep;
   std::uint64_t startup_host_bytes = 0;
   std::uint64_t startup_cap = 0;
   // Remains live through source sealing; its counted high-water may grow
@@ -151,7 +152,7 @@ class EngineLlm final : public Llm {
 
   // ---------------------------------------------------------- Served
   engine::PagedModel& paged() override;
-  bool has_paged() const override { return runner_ != nullptr; }
+  bool has_paged() const override { return static_cast<bool>(runner_); }
   Status Setup() override;
   Status Register() override;
   Status Bind() override;
@@ -208,8 +209,12 @@ class EngineLlm final : public Llm {
   bool supports_generation_waves() const override { return true; }
   std::size_t generation_wave_capacity() const override;
   std::size_t prefill_wave_capacity() const override;
+  bool supports_causal_waves() const override {
+    return !speculate_ && caps_.mixed_causal && caps_.join_prefill && caps_.max_segments > 1;
+  }
   bool CompatiblePrefill(std::uint32_t past, std::uint32_t rows, std::uint32_t peer_past,
-                         std::uint32_t peer_rows) const override;
+                         std::uint32_t peer_rows, bool want_head = true,
+                         bool peer_want_head = true) const override;
   std::string KeptLayout() const override;
   std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const override;
   std::vector<std::uint64_t> KeptRegions() const override;
@@ -223,6 +228,7 @@ class EngineLlm final : public Llm {
   // and kept.
   struct Counts {
     std::uint64_t joined_prefill_steps = 0, joined_prefill_rows = 0;
+    std::uint64_t joined_causal_steps = 0, joined_causal_rows = 0;
     std::uint64_t joined_waves = 0, joined_units = 0;
     std::uint64_t speculative_units = 0, drafted = 0, accepted = 0, discarded = 0;
     std::uint64_t greedy_tokens = 0;
@@ -240,7 +246,10 @@ class EngineLlm final : public Llm {
                             bool inject, bool want_head, std::vector<float>& logits,
                             PrefillHint next) override;
   Status PreparePrefillStateFor(Branch& branch, std::uint32_t past, std::uint32_t rows) override;
+  std::uint32_t ScoreChunkRowsFor(const Branch& branch) const override;
   Status RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) override;
+  Status RunPreparedCausalWave(std::span<PreparedPrefill> prompts,
+                               std::span<PreparedGeneration> generations) override;
   Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) override;
   Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
                      std::uint32_t left, std::vector<std::int32_t>& kept,
@@ -357,7 +366,7 @@ class EngineLlm final : public Llm {
   std::shared_ptr<void> keep_;
   std::uint64_t startup_host_bytes_ = 0;
   std::shared_ptr<engine::ExecutionMetadataAllowance> execution_metadata_{};
-  std::unique_ptr<engine::ModelRunner> runner_;
+  engine::RunnerOwner runner_;
   std::optional<base::Sha256Digest> execution_identity_{};
   std::optional<engine::WaveComposer> composer_;
   std::optional<engine::DecodingOrchestrator> plain_;
@@ -383,7 +392,6 @@ class EngineLlm final : public Llm {
   std::array<bool, kMaxBranches> want_rows_{};
   std::array<bool, kMaxBranches> verify_tokens_{};
   std::array<std::vector<std::vector<float>>, kMaxBranches> verified_rows_{};
-  std::array<std::uint32_t, kMaxBranches> prefill_done_pos_{};
   Counts counts_;
   kernels::PlanRecordSink plan_report_sink_{};
 };

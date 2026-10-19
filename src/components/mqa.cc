@@ -308,6 +308,12 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   return out;
 }
 
+std::uint32_t CompressedCellPad() {
+  // The component's state contract and both geometry consumers share this
+  // declaration; inspecting a shape never constructs an allocating State.
+  return model::StateTensorContract{}.cell_pad;
+}
+
 model::StateContract State(const Instance& in) {
   const Dims d = DimsOf(in);
   const auto kv_cell_bytes = model::CellBytes(d.kv_encoding, d.d);
@@ -353,6 +359,7 @@ model::StateContract State(const Instance& in) {
                          .cell_bytes = *bytes,
                          .cells = model::CellRule::kPerBlock,
                          .window_or_ratio = d.ratio,
+                         .cell_pad = CompressedCellPad(),
                          .basis = model::BlockBasis::kPositions,
                          .dummy_last = true,
                          .rollback = model::Rollback::kSnapshot,
@@ -1149,8 +1156,7 @@ std::expected<void, std::string> Reference(RefIO& io) {
     std::uint64_t compressed_read = 0;
     if (d.ratio != 0) {
       compressed_read = std::min<std::uint64_t>(
-          io.state_cells.at(kCompressed),
-          CompressedReadCells(end, d.ratio, State(*io.instance).tensors[kCompressed].cell_pad));
+          io.state_cells.at(kCompressed), CompressedReadCells(end, d.ratio, CompressedCellPad()));
     }
     for (std::uint64_t t = 0; t < seg.rows; ++t) {
       const std::uint64_t r = first + t;
@@ -1286,12 +1292,13 @@ void RotateNormal(std::span<double> row, std::uint64_t heads, std::uint64_t dim,
 }
 
 void ShapeParameters(const Instance& in, std::uint32_t rows, std::uint32_t past,
-                     std::uint32_t /*read_align*/, std::vector<std::uint64_t>& out) {
+                     std::uint32_t /*read_align*/, model::ShapeParameterSink& out) {
   const Dims d = DimsOf(in);
   if (d.ratio == 0) return;
-  out.push_back(CompressorBlocks(rows, past, d.ratio, d.overlap));
-  out.push_back(CompressedReadCells(std::uint64_t{past} + rows, d.ratio,
-                                    State(in).tensors[kCompressed].cell_pad));
+  out.push_back(CompressorBlockParameter(rows, past, d.ratio, d.overlap));
+  auto read = CompressedReadParameter(std::uint64_t{past} + rows, d.ratio, CompressedCellPad());
+  if (read.next) *read.next -= rows;  // The same end cutoff, in candidate past coordinates.
+  out.push_back(read);
 }
 
 const ComponentDef& AttentionMqa() {
@@ -1309,6 +1316,7 @@ const ComponentDef& AttentionMqa() {
       .reference = Reference,
       .inject = Inject,
       .shape_parameters = ShapeParameters,
+      .shape_parameter_intervals = true,
   };
   return def;
 }
@@ -1317,78 +1325,110 @@ const ComponentDef& AttentionMqa() {
 
 namespace llmp::components {
 
+model::ShapeParameterFact CompressorBlockParameter(std::uint32_t rows, std::uint32_t past,
+                                                   std::uint32_t ratio, bool overlap) {
+  if (ratio == 0 || rows == 0) return {};
+  if (overlap) return {.value = (std::uint64_t{rows} + ratio - 1) / ratio};
+  const auto quotient = rows / ratio;
+  const auto remainder = rows % ratio;
+  const auto position = past % ratio;
+  const auto threshold = ratio - remainder;
+  const auto blocks = std::uint64_t{quotient} + (position >= threshold ? 1U : 0U);
+  model::ShapeParameterFact result{.value = std::max(blocks, std::uint64_t{1})};
+  // A zero/one complete block always plans the same one dummy/real block.
+  // Otherwise the two exact values alternate at these residue cutoffs.
+  if (quotient != 0 && remainder != 0)
+    result.next =
+        std::uint64_t{past} + (position < threshold ? threshold - position : ratio - position);
+  return result;
+}
+
 std::uint64_t CompressorBlocks(std::uint32_t rows, std::uint32_t past, std::uint32_t ratio,
                                bool overlap) {
-  if (ratio == 0 || rows == 0) return 0;
-  const std::uint64_t end = std::uint64_t{past} + rows;
-  const std::uint64_t complete = (end / ratio) - (std::uint64_t{past} / ratio);
-  if (overlap) return (std::uint64_t{rows} + ratio - 1) / ratio;
-  return std::max<std::uint64_t>(complete, 1);
+  return CompressorBlockParameter(rows, past, ratio, overlap).value;
+}
+
+model::ShapeParameterFact CompressedReadParameter(std::uint64_t end, std::uint32_t ratio,
+                                                  std::uint32_t cell_pad) {
+  if (ratio == 0) return {};
+  const auto align = std::uint64_t{std::max(cell_pad, 1U)};
+  const auto blocks = end / ratio;
+  // Division/remainder avoids overflow in the ceiling calculation.
+  const auto groups = blocks / align + (blocks % align != 0 ? 1U : 0U);
+  std::uint64_t rounded = 0;
+  if (__builtin_mul_overflow(groups, align, &rounded))
+    return {.value = UINT64_MAX};  // Outside every uint32 execution coordinate.
+  model::ShapeParameterFact result{.value = std::max(align, rounded)};
+  std::uint64_t next_blocks = 0, next_end = 0;
+  if (!__builtin_add_overflow(result.value, std::uint64_t{1}, &next_blocks) &&
+      !__builtin_mul_overflow(next_blocks, std::uint64_t{ratio}, &next_end))
+    result.next = next_end;
+  return result;
 }
 
 std::uint64_t CompressedReadCells(std::uint64_t end, std::uint32_t ratio, std::uint32_t cell_pad) {
-  if (ratio == 0) return 0;
-  const std::uint64_t align = std::max<std::uint32_t>(cell_pad, 1);
-  const std::uint64_t blocks = end / ratio;
-  return std::max(align, ((blocks + align - 1) / align) * align);
+  return CompressedReadParameter(end, ratio, cell_pad).value;
 }
 
 // llama.cpp's dsv4_build_comp_plan.
-std::expected<CompressorPlan, std::string> PlanCompressor(std::uint32_t rows, std::uint32_t past,
-                                                          std::uint32_t ratio, bool overlap,
-                                                          std::uint64_t ring, std::uint64_t cache) {
-  if (ratio == 0 || rows == 0 || ring < std::uint64_t{ratio} * (overlap ? 2 : 1) || cache == 0) {
+std::expected<void, std::string> EmitCompressor(std::uint32_t rows, std::uint32_t past,
+                                                std::uint32_t ratio, bool overlap,
+                                                std::uint64_t ring, std::uint64_t cache,
+                                                InputValueSink* reads, InputValueSink* cells,
+                                                InputValueSink* starts) {
+  if (ratio == 0 || rows == 0 || ring < std::uint64_t{ratio} * (overlap ? 2 : 1) || cache == 0)
     return std::unexpected<std::string>("not a compressor's geometry");
-  }
   const std::uint64_t end = std::uint64_t{past} + rows;
-  // A position's row of [ring | rows | zero row].
+  const auto completed = end / ratio - past / ratio;
+  const auto want = CompressorBlocks(rows, past, ratio, overlap);
+  const bool dummy = completed + 1 == want;
+  if (!dummy && completed != want)
+    return std::unexpected<std::string>("a compressor's blocks are not its plan's");
+  if (completed && (end / ratio - 1) >= cache)
+    return std::unexpected<std::string>(
+        std::format("block {} past a {}-cell cache", end / ratio - 1, cache));
+  if (dummy && end / ratio >= cache)
+    return std::unexpected<std::string>("the dummy block would overwrite a visible cell");
   const auto source = [&](std::int64_t pos) -> std::int64_t {
     if (pos < 0) return static_cast<std::int64_t>(ring + rows);
     const auto p = static_cast<std::uint64_t>(pos);
     if (p >= past && p < end) return static_cast<std::int64_t>(ring + (p - past));
     return static_cast<std::int64_t>(p % ring);
   };
-  CompressorPlan plan;
-  std::vector<std::int64_t> prev;
-  std::vector<std::int64_t> cur;
-  const auto read_block = [&](std::int64_t start, bool dummy) {
-    for (std::uint32_t j = 0; j < ratio; ++j) {
-      const std::int64_t own = dummy ? source(past) : source(start + j);
-      if (overlap) {
-        prev.push_back(dummy ? own : source(start - ratio + j));
-        cur.push_back(own);
-      } else {
-        plan.reads.push_back(own);
-      }
-    }
+  const auto blocks = [&](auto emit) {
+    for (std::uint64_t block = past / ratio; block < end / ratio; ++block)
+      emit(static_cast<std::int64_t>(block * ratio), block, false);
+    if (dummy) emit(std::int64_t{0}, cache - 1, true);
   };
-  for (std::uint64_t pos = past; pos < end; ++pos) {
-    if ((pos + 1) % ratio != 0) continue;
-    const std::uint64_t block = pos / ratio;
-    if (block >= cache)
-      return std::unexpected<std::string>(
-          std::format("block {} past a {}-cell cache", block, cache));
-    const auto start = static_cast<std::int64_t>(pos + 1 - ratio);
-    plan.cells.push_back(static_cast<std::int64_t>(block));
-    plan.starts.push_back(start);
-    read_block(start, false);
+  blocks([&](std::int64_t start, std::uint64_t cell, bool) {
+    if (cells) cells->push_back(static_cast<std::int64_t>(cell));
+    if (starts) starts->push_back(start);
+  });
+  if (reads) {
+    // Original overlapping order: all previous-block rows, then all own rows.
+    if (overlap)
+      blocks([&](std::int64_t start, std::uint64_t, bool is_dummy) {
+        for (std::uint32_t j = 0; j < ratio; ++j)
+          reads->push_back(is_dummy ? source(past) : source(start - ratio + j));
+      });
+    blocks([&](std::int64_t start, std::uint64_t, bool is_dummy) {
+      for (std::uint32_t j = 0; j < ratio; ++j)
+        reads->push_back(is_dummy ? source(past) : source(start + j));
+    });
   }
-  const std::uint64_t want = CompressorBlocks(rows, past, ratio, overlap);
-  if (plan.cells.size() + 1 == want) {
-    // The dummy block: the cache's last cell, which no row sees.
-    if (end / ratio >= cache)
-      return std::unexpected<std::string>("the dummy block would overwrite a visible cell");
-    plan.cells.push_back(static_cast<std::int64_t>(cache - 1));
-    plan.starts.push_back(0);
-    read_block(0, true);
-  } else if (plan.cells.size() != want) {
-    return std::unexpected<std::string>("a compressor's blocks are not its plan's");
-  }
-  if (overlap) {
-    plan.reads = std::move(prev);
-    plan.reads.insert(plan.reads.end(), cur.begin(), cur.end());
-  }
-  return plan;
+  for (const auto* sink : {reads, cells, starts})
+    if (sink)
+      if (auto done = sink->Finish(); !done) return done;
+  return {};
+}
+std::expected<CompressorPlan, std::string> PlanCompressor(std::uint32_t rows, std::uint32_t past,
+                                                          std::uint32_t ratio, bool overlap,
+                                                          std::uint64_t ring, std::uint64_t cache) {
+  CompressorPlan result;
+  InputValueSink reads(result.reads), cells(result.cells), starts(result.starts);
+  auto emitted = EmitCompressor(rows, past, ratio, overlap, ring, cache, &reads, &cells, &starts);
+  if (!emitted) return std::unexpected(emitted.error());
+  return result;
 }
 
 }  // namespace llmp::components

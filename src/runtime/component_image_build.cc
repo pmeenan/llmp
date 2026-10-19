@@ -123,6 +123,21 @@ struct ImageRequestOwner {
 };
 constexpr std::uint64_t kRequestOwnerBytes =
     2 * sizeof(ImageRequestOwner) + 2 * sizeof(ImageRequest) + 4 * sizeof(ImagePort) + 4096;
+
+base::Sha256Digest RequestLayoutDigest(const spec::ImageMapping& mapping,
+                                       const RequestGeometry& geometry, std::uint32_t drop) {
+  base::Sha256 layout;
+  layout.Update("llmp-image-request-layout-v2");
+  layout.Update(mapping.architecture);
+  for (const auto& input : mapping.host_inputs) {
+    const std::array<std::uint32_t, 3> facts{input.stage, input.slot,
+                                             static_cast<std::uint32_t>(input.value)};
+    layout.Update(std::as_bytes(std::span(facts)));
+  }
+  const std::array shape{geometry.width, geometry.height, geometry.prompt_rows, drop};
+  layout.Update(std::as_bytes(std::span(shape)));
+  return layout.Finish();
+}
 }  // namespace
 struct ImageGenerationModel {
   Paid paid;
@@ -223,77 +238,99 @@ Status Fill(const ImageRequestOwner& held, const ImageInvocation& invocation, st
   const auto exact = [&](std::uint64_t count) {
     return count <= SIZE_MAX / 4 && bytes.size() == count * 4;
   };
-  if (invocation.stage == 0) {
-    if (slot < 2 && exact(rows)) {
-      for (std::uint32_t row = 0; row < rows; ++row)
-        put(row, slot == 0 ? held.source.prompt[row] : static_cast<std::int32_t>(row));
-      return {};
-    }
-    if (slot == 2 && exact(std::uint64_t{rows} * rows)) {
-      for (std::uint32_t q = 0; q < rows; ++q)
-        for (std::uint32_t k = 0; k < rows; ++k)
-          put(k + std::size_t{rows} * q, k <= q ? 0.F : -INFINITY);
-      return {};
-    }
-  } else if (invocation.stage == 1 && invocation.iteration < held.request.steps) {
-    const std::uint32_t joint = text + held.request.rows;
-    if (slot == 2 && exact(2 * profile.denoiser.timestep_dim)) {
-      const auto sinusoid =
-          md::ImageTimestepSinusoid(profile.denoiser, held.timesteps[invocation.iteration]);
-      for (std::uint32_t c = 0; c < profile.denoiser.timestep_dim; ++c)
-        for (std::uint32_t row = 0; row < 2; ++row)
-          put(2 * c + row, md::FromBf16(sinusoid[row * profile.denoiser.timestep_dim + c]));
-      return {};
-    }
-    if (slot == 3 && exact(3ULL * joint)) {
-      if (invocation.iteration > 0 && joint >= 2) {
-        const auto pos0 =
-            md::ImageDenoiserPosition(text, held.request.grid_height, held.request.grid_width, 0);
-        const auto pos_last = md::ImageDenoiserPosition(text, held.request.grid_height,
-                                                        held.request.grid_width, joint - 1);
-        std::int32_t cur0 = -1, cur_last = -1;
-        std::memcpy(&cur0, bytes.data(), sizeof(std::int32_t));
-        std::memcpy(&cur_last, bytes.data() + (3ULL * joint - 1) * sizeof(std::int32_t),
-                    sizeof(std::int32_t));
-        if (cur0 == pos0[0] && cur_last == pos_last[2]) return {};
+  const std::uint32_t joint = text + held.request.rows;
+  const auto& inputs = held.family->mapping->host_inputs;
+  const auto source = std::ranges::find_if(inputs, [&](const spec::ImageHostInput& input) {
+    return input.stage == invocation.stage && input.slot == slot;
+  });
+  if (source == inputs.end()) return Error("image host input has no mapping declaration");
+  using Value = spec::ImageInputValue;
+  switch (source->value) {
+    case Value::kPromptIds:
+    case Value::kTextPositions:
+      if (exact(rows)) {
+        for (std::uint32_t row = 0; row < rows; ++row)
+          put(row, source->value == Value::kPromptIds ? held.source.prompt[row]
+                                                      : static_cast<std::int32_t>(row));
+        return {};
       }
-      for (std::uint32_t row = 0; row < joint; ++row) {
-        const auto positions =
-            md::ImageDenoiserPosition(text, held.request.grid_height, held.request.grid_width, row);
-        for (std::uint32_t axis = 0; axis < 3; ++axis) {
-          put(row + std::size_t{joint} * axis, positions[axis]);
+      break;
+    case Value::kTextCausalMask:
+      if (exact(std::uint64_t{rows} * rows)) {
+        for (std::uint32_t q = 0; q < rows; ++q)
+          for (std::uint32_t k = 0; k < rows; ++k)
+            put(k + std::size_t{rows} * q, k <= q ? 0.F : -INFINITY);
+        return {};
+      }
+      break;
+    case Value::kTimestepSinusoid:
+      if (invocation.iteration < held.request.steps && exact(2 * profile.denoiser.timestep_dim)) {
+        const auto sinusoid =
+            md::ImageTimestepSinusoid(profile.denoiser, held.timesteps[invocation.iteration]);
+        for (std::uint32_t c = 0; c < profile.denoiser.timestep_dim; ++c)
+          for (std::uint32_t row = 0; row < 2; ++row)
+            put(2 * c + row, md::FromBf16(sinusoid[row * profile.denoiser.timestep_dim + c]));
+        return {};
+      }
+      break;
+    case Value::kJointPositions:
+      if (exact(3ULL * joint)) {
+        if (invocation.iteration > 0 && joint >= 2) {
+          const auto pos0 =
+              md::ImageDenoiserPosition(text, held.request.grid_height, held.request.grid_width, 0);
+          const auto pos_last = md::ImageDenoiserPosition(text, held.request.grid_height,
+                                                          held.request.grid_width, joint - 1);
+          std::int32_t cur0 = -1, cur_last = -1;
+          std::memcpy(&cur0, bytes.data(), sizeof(std::int32_t));
+          std::memcpy(&cur_last, bytes.data() + (3ULL * joint - 1) * sizeof(std::int32_t),
+                      sizeof(std::int32_t));
+          if (cur0 == pos0[0] && cur_last == pos_last[2]) return {};
         }
-      }
-      return {};
-    }
-    if (slot == 4 && exact(std::uint64_t{joint} * joint)) {
-      if (invocation.iteration > 0 && joint >= 2 && text >= 1) {
-        float v0 = 1.0f, v1 = 0.0f, vlast = 1.0f;
-        std::memcpy(&v0, bytes.data(), sizeof(float));
-        std::memcpy(&v1, bytes.data() + sizeof(float), sizeof(float));
-        std::memcpy(&vlast, bytes.data() + (std::size_t{joint} * joint - 1) * sizeof(float),
-                    sizeof(float));
-        if (v0 == 0.0f && std::isinf(v1) && v1 < 0.0f && vlast == 0.0f) return {};
-      }
-      std::memset(bytes.data(), 0, bytes.size());
-      const std::uint32_t masked_rows = std::min(text, joint);
-      for (std::uint32_t q = 0; q < masked_rows; ++q) {
-        for (std::uint32_t k = q + 1; k < joint; ++k) {
-          put(k + std::size_t{joint} * q, -INFINITY);
+        for (std::uint32_t row = 0; row < joint; ++row) {
+          const auto positions = md::ImageDenoiserPosition(text, held.request.grid_height,
+                                                           held.request.grid_width, row);
+          for (std::uint32_t axis = 0; axis < 3; ++axis) {
+            put(row + std::size_t{joint} * axis, positions[axis]);
+          }
         }
+        return {};
       }
-      return {};
-    }
-    if (slot == 5 && exact(1)) {
-      put(0, held.sigmas[invocation.iteration + 1] - held.sigmas[invocation.iteration]);
-      return {};
-    }
-  } else if (invocation.stage == 2 && slot == 1 && exact(2 * profile.vae.z_dim)) {
-    for (std::size_t c = 0; c < profile.vae.z_dim; ++c) {
-      put(2 * c, profile.vae.latents_std[c]);
-      put(2 * c + 1, profile.vae.latents_mean[c]);
-    }
-    return {};
+      break;
+    case Value::kJointMask:
+      if (exact(std::uint64_t{joint} * joint)) {
+        if (invocation.iteration > 0 && joint >= 2 && text >= 1) {
+          float v0 = 1.0f, v1 = 0.0f, vlast = 1.0f;
+          std::memcpy(&v0, bytes.data(), sizeof(float));
+          std::memcpy(&v1, bytes.data() + sizeof(float), sizeof(float));
+          std::memcpy(&vlast, bytes.data() + (std::size_t{joint} * joint - 1) * sizeof(float),
+                      sizeof(float));
+          if (v0 == 0.0f && std::isinf(v1) && v1 < 0.0f && vlast == 0.0f) return {};
+        }
+        std::memset(bytes.data(), 0, bytes.size());
+        const std::uint32_t masked_rows = std::min(text, joint);
+        for (std::uint32_t q = 0; q < masked_rows; ++q) {
+          for (std::uint32_t k = q + 1; k < joint; ++k) {
+            put(k + std::size_t{joint} * q, -INFINITY);
+          }
+        }
+        return {};
+      }
+      break;
+    case Value::kEulerDelta:
+      if (invocation.iteration < held.request.steps && exact(1)) {
+        put(0, held.sigmas[invocation.iteration + 1] - held.sigmas[invocation.iteration]);
+        return {};
+      }
+      break;
+    case Value::kLatentAffine:
+      if (exact(2 * profile.vae.z_dim)) {
+        for (std::size_t c = 0; c < profile.vae.z_dim; ++c) {
+          put(2 * c, profile.vae.latents_std[c]);
+          put(2 * c + 1, profile.vae.latents_mean[c]);
+        }
+        return {};
+      }
+      break;
   }
   return Error("image input does not match its immutable typed stage recipe");
 }
@@ -332,12 +369,7 @@ std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
   held->timesteps = std::move(schedule->timesteps);
   ImageRequest out;
   out.keep = held;
-  base::Sha256 layout;
-  layout.Update("llmp-image-request-layout-v1");
-  layout.Update(family->mapping->architecture);
-  const std::array shape{geometry.width, geometry.height, geometry.prompt_rows, held->source.drop};
-  layout.Update(std::as_bytes(std::span(shape)));
-  out.layout = layout.Finish();
+  out.layout = RequestLayoutDigest(*family->mapping, geometry, held->source.drop);
   base::Sha256 identity;
   identity.Update(base::ToHex(out.layout));
   identity.Update(std::as_bytes(std::span(held->source.prompt)));
@@ -556,6 +588,17 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
       stage.inputs = {1, {}};
       stage.outputs = {{}};
     }
+    for (std::size_t slot = 0; slot < stage.inputs.size(); ++slot) {
+      const auto count = std::ranges::count_if(model->family->mapping->host_inputs,
+                                               [&](const spec::ImageHostInput& input) {
+                                                 return input.stage == i && input.slot == slot;
+                                               });
+      if (count != (stage.inputs[slot] ? 0 : 1))
+        return Error("image mapping host inputs differ from actual typed graph ports");
+    }
+    for (const auto& input : model->family->mapping->host_inputs)
+      if (input.stage == i && input.slot >= stage.inputs.size())
+        return Error("image mapping host input names no typed graph port");
     if (stage.numerical) identity.Update(std::as_bytes(std::span(stage.numerical->digest())));
     out.stages.push_back(std::move(stage));
   }
@@ -767,6 +810,13 @@ std::expected<ImageGenerationRequest, std::string> ReadImageInput(
   if (rows > UINT32_MAX || rows > std::uint64_t{PTRDIFF_MAX} / (4 * profile.vae.z_dim))
     return Error("image noise extent overflows its representation");
   const auto elements = rows * profile.vae.z_dim;
+  std::span<const std::byte> noise_buffer;
+  if (input.noise_buffer) {
+    if (!input.noise.empty()) return Error("image request names both a noise buffer and a file");
+    auto checked = CheckedImageNoise(*input.noise_buffer, elements);
+    if (!checked) return Error(checked.error());
+    noise_buffer = *checked;
+  }
   if (input.prompt.size() > (UINT64_MAX - 65536) / 16)
     return Error("image prompt working bound overflows");
   const auto rendered_bound = chat::ImagePromptBytesBound(input.prompt.size());
@@ -825,12 +875,16 @@ std::expected<ImageGenerationRequest, std::string> ReadImageInput(
   const auto drop = span_tokens[rendered->drop_span];
   if (drop > UINT32_MAX) return Error("image dropped prefix is unrepresentable");
   request.drop = static_cast<std::uint32_t>(drop);
-  const auto& noise_path = input.noise.empty() ? owner->noise : input.noise;
-  auto noise = platform::ReadSmallFile(noise_path, elements * sizeof(std::uint16_t));
-  if (!noise || noise->size() != elements * sizeof(std::uint16_t))
-    return Error("image noise file differs from the exact requested BF16 extent");
   request.noise.resize(elements);
-  std::memcpy(request.noise.data(), noise->data(), noise->size());
+  if (input.noise_buffer) {
+    std::memcpy(request.noise.data(), noise_buffer.data(), noise_buffer.size());
+  } else {
+    const auto& noise_path = input.noise.empty() ? owner->noise : input.noise;
+    auto noise = platform::ReadSmallFile(noise_path, elements * sizeof(std::uint16_t));
+    if (!noise || noise->size() != elements * sizeof(std::uint16_t))
+      return Error("image noise file differs from the exact requested BF16 extent");
+    std::memcpy(request.noise.data(), noise->data(), noise->size());
+  }
   return request;
 }
 std::expected<std::uint64_t, std::string> RetainedImageArtifactBytes(const artifact::Artifact& a) {
@@ -946,12 +1000,7 @@ EngineImageBuild ComponentImageServingBuild(en::PagedNode& node, std::filesystem
       if (!request) return Error(request.error());
       auto checked = RequestOf(*request, next_settings, retained->family->profile);
       if (!checked) return Error(checked.error());
-      base::Sha256 hash;
-      hash.Update("llmp-image-request-layout-v1");
-      hash.Update(retained->family->mapping->architecture);
-      const std::array shape{checked->width, checked->height, checked->prompt_rows, request->drop};
-      hash.Update(std::as_bytes(std::span(shape)));
-      if (hash.Finish() == layout) {
+      if (RequestLayoutDigest(*retained->family->mapping, *checked, request->drop) == layout) {
         auto content =
             ComponentImageGenerationRequest(retained->family, std::move(*request), next_settings,
                                             construction, retained->paid.node, retained->paid.cap);

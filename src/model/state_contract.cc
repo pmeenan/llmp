@@ -485,8 +485,12 @@ std::expected<std::optional<DraftProgressBounds>, std::string> DraftBounds(
     control = &item;
   }
   if (control == nullptr) return std::optional<DraftProgressBounds>{};
-  if (!layout.borrowed.empty())
-    return Refused("repeatable drafter companions do not borrow target state");
+  // Borrowed tensors are read-only views, guarded by the engine's exact
+  // accepted-prefix reservation. Only owned tensors declare private replay.
+  for (const auto& borrowed : layout.borrowed)
+    if (!borrowed.contract.borrowed_from_target || borrowed.contract.target_writes ||
+        borrowed.contract.replayable)
+      return Refused("repeatable drafter borrowed state must be a read-only target view");
   const Item* tap = FeatureTap(layout);
   if (tap == nullptr || tap->contract.cells != CellRule::kPerRow ||
       tap->contract.window_or_ratio == 0 || tap->contract.rollback != Rollback::kSnapshot ||
@@ -506,20 +510,61 @@ std::expected<std::optional<DraftProgressBounds>, std::string> DraftBounds(
                                            .relation = control->contract.draft.relation}};
 }
 
+namespace {
+template <class Emit>
+std::expected<void, std::string> EmitUsedRanges(const StateLayoutDerived& layout,
+                                                std::uint32_t positions, std::uint32_t read_align,
+                                                Emit emit) {
+  if (!Valid(layout) || !AlignValid(read_align) || positions > layout.context)
+    return Refused("used state is outside its layout");
+  for (const Item& item : layout.items) {
+    const std::uint64_t used = UsedCells(layout, item, positions, read_align);
+    if (used != 0 && !emit(Cells(item, 0, used)))
+      return Refused("used state exceeds its counted range storage");
+    if (item.contract.dummy_last && used < item.cells && !emit(Dummy(item)))
+      return Refused("used state exceeds its counted dummy storage");
+  }
+  return {};
+}
+}  // namespace
 std::expected<std::vector<StateRange>, std::string> UsedThrough(const StateLayoutDerived& layout,
                                                                 std::uint32_t positions,
                                                                 std::uint32_t read_align) {
-  if (!Valid(layout) || !AlignValid(read_align) || positions > layout.context) {
+  if (!Valid(layout) || !AlignValid(read_align) || positions > layout.context)
     return Refused("used state is outside its layout");
-  }
   std::vector<StateRange> out;
   out.reserve(layout.items.size());
-  for (const Item& item : layout.items) {
-    const std::uint64_t used = UsedCells(layout, item, positions, read_align);
-    if (used != 0) out.push_back(Cells(item, 0, used));
-    if (item.contract.dummy_last && used < item.cells) out.push_back(Dummy(item));
-  }
+  auto result = EmitUsedRanges(layout, positions, read_align, [&](StateRange range) {
+    out.push_back(range);
+    return true;
+  });
+  if (!result) return Refused(result.error());
   return out;
+}
+std::expected<std::size_t, std::string> UsedRangeCount(const StateLayoutDerived& layout,
+                                                       std::uint32_t positions,
+                                                       std::uint32_t read_align) {
+  std::size_t count = 0;
+  auto result = EmitUsedRanges(layout, positions, read_align, [&](StateRange) {
+    if (count == SIZE_MAX) return false;
+    ++count;
+    return true;
+  });
+  if (!result) return Refused(result.error());
+  return count;
+}
+std::expected<void, std::string> UsedThroughInto(const StateLayoutDerived& layout,
+                                                 std::uint32_t positions, std::uint32_t read_align,
+                                                 std::span<StateRange> into) {
+  std::size_t count = 0;
+  auto result = EmitUsedRanges(layout, positions, read_align, [&](StateRange range) {
+    if (count == into.size()) return false;
+    into[count++] = range;
+    return true;
+  });
+  if (!result) return result;
+  if (count != into.size()) return Refused("used state range count/fill differs");
+  return {};
 }
 
 std::expected<std::vector<StateRange>, std::string> ChunkWrites(const StateLayoutDerived& layout,

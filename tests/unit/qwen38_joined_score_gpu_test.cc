@@ -241,9 +241,15 @@ class RecordedSource final : public en::StepSource {
       const override {
     return inner_->ExecutionIdentity();
   }
-  std::vector<std::uint64_t> ShapeParameters(const pl::StepShape& shape) const override {
-    return inner_->ShapeParameters(shape);
+  void EmitShapeParameters(const pl::StepShape& shape,
+                           llmp::model::ShapeParameterSink& sink) const override {
+    inner_->EmitShapeParameters(shape, sink);
   }
+  std::expected<en::SpecializationChange, en::SpecializationError> NextSpecializationChange(
+      const en::SpecializationRequest& request) const override {
+    return inner_->NextSpecializationChange(request);
+  }
+
   bool JoinedRepeatPending(std::uint16_t stage) const override {
     return inner_->JoinedRepeatPending(stage);
   }
@@ -497,7 +503,6 @@ std::expected<rt::ComponentBuildOptions, std::string> Options(Lifetime& life) {
   if (!domain) return std::unexpected(domain.error());
   rt::ComponentBuildOptions options{
       .target_policy = pl::ToText(*policy),
-      .shared_route = true,
       .prefill_lookahead = false,
       .prepare_state = false,
       .state_only_prefill = false,
@@ -529,6 +534,30 @@ std::expected<rt::ComponentBuildOptions, std::string> Options(Lifetime& life) {
   }
   testing::Test::RecordProperty("effective_policy", *options.target_policy);
   testing::Test::RecordProperty("effective_policy_sha256", llmp::base::ToHex(pl::Digest(*policy)));
+  // This diagnostic pays/validates its exact source inventory. These are
+  // additional measurements, independent of the normal serving schedule.
+  for (const auto rows : {1U, 2U}) {
+    pl::StepShape scored{.stage = 0,
+                         .phase = pl::Phase::kScore,
+                         .segments = {},
+                         .row_invariant = false,
+                         .read_align = 256};
+    for (std::uint32_t owner = 0; owner < kOwners; ++owner)
+      scored.segments.push_back({.slot = static_cast<std::uint8_t>(owner),
+                                 .rows = rows,
+                                 .past = 256 - rows,
+                                 .read_cells = 256,
+                                 .outputs = rows,
+                                 .group = 0,
+                                 .want_head = true,
+                                 .greedy = false});
+    options.diagnostic_setup_shapes.push_back(scored);
+    for (const auto& segment : scored.segments) {
+      auto single = scored;
+      single.segments = {segment};
+      options.diagnostic_setup_shapes.push_back(std::move(single));
+    }
+  }
   return options;
 }
 
@@ -878,11 +907,11 @@ en::Status OrdinarySchedule(Lifetime& life) {
                   .boundary = 0,
                   .history = std::span(state.history[owner]).first(kPromptRows)};
             const auto report = prompt.Step(std::span(work).first(owners));
-            if (report.steps != 1 || report.outcomes.size() != owners)
+            if (report.steps != 1 || report.outcomes().size() != owners)
               return std::unexpected("ordinary prompt did not run one requested cohort");
             ++state.prompt_waves;
             for (std::uint32_t owner = 0; owner < owners; ++owner) {
-              const auto& out = report.outcomes[owner];
+              const auto& out = report.outcomes()[owner];
               if (out.refusal || out.rows != 2 || out.last != (at + 2 == kPromptRows) ||
                   !out.joined.empty() || slots.positions(owner) != at + 2)
                 return std::unexpected("ordinary prompt owner completion differs");

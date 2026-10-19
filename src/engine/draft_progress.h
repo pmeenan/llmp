@@ -75,6 +75,21 @@ class DraftProgressLedger {
 
   std::expected<Unit, std::string> BeginUnit();
   Status CheckUnit(Unit unit) const;
+  struct Successor {
+    Unit unit;
+    Transition predecessor;
+    model::DraftRows replay;
+  };
+  // Reserve the next replay against the unpublished record without making
+  // it ready. It may execute only behind this exact publication prefix.
+  std::expected<Successor, std::string> BeginSuccessor();
+  Status CheckSuccessor(Unit unit, Transition predecessor, const model::DraftRows& rows) const;
+  // Before its ordered prefix/own job is submitted. Cancellation then needs
+  // real retirement; a queued successor cannot be revoked as unused.
+  Status SuccessorQueued(Unit unit, Transition predecessor, const model::DraftRows& rows);
+  // Only before any successor work is queued. Leaves the predecessor owed.
+  Status CancelSuccessor(Unit unit);
+
   Status ReplayCompleted(Unit unit, const model::DraftRows& rows);
   Status CanVerify(Unit unit, std::uint32_t rows) const;
   // Before target verification can overwrite its consumers' old taps.
@@ -84,21 +99,31 @@ class DraftProgressLedger {
                                                                    std::uint32_t keep) const;
   Status Accept(Unit unit, std::uint32_t keep);
   // The old tap bytes have been restored. Retry requires a new unit/replay.
+  Status CheckDiscard(Unit unit) const;
   Status DiscardCompleted(Unit unit);
 
   struct Compound {
     Unit unit;
     model::DraftCompanions shapes;
   };
-  // Acquires compound ownership before any pre companion runs.
+  // Acquires compound ownership before any pre companion runs. An owed
+  // predecessor stays unpublished until this unit's first useful job retires.
+  std::expected<model::DraftCompanions, std::string> PreviewCompound(std::uint32_t rows) const;
   std::expected<Compound, std::string> BeginCompound(std::uint32_t rows);
+  Status CheckCompound(Unit unit) const;
+  bool compound_owned() const { return state_ == State::kCompound || compound_successor_; }
+  bool CompoundNeedsPrefix(Unit unit) const;
+  Status CompoundPrefixQueued(Unit unit);
   Status PreQueued(Unit unit);
+  Status CheckPreCompletion(Unit unit) const;
   Status PreCompleted(Unit unit);
   // Before the first target or leading-carry write, not just its kernel.
   Status TargetQueued(Unit unit);
+  Status CheckTargetCompletion(Unit unit) const;
   Status TargetCompleted(Unit unit);
   // Only the compound's private post companion may read these new taps.
   std::optional<model::DraftProgress> compound_tap() const;
+  Status CheckPostCompletion(Unit unit) const;
   Status PostCompleted(Unit unit);
   Status FinishCompound(Unit unit);
   // Only known completed/no pre work and zero target/tap writes permit
@@ -110,7 +135,21 @@ class DraftProgressLedger {
     model::DraftProgressWords words;
   };
   std::expected<PublicationCopy, std::string> Publication() const;
+  enum class CompoundClose : std::uint8_t { kTarget, kPost, kEarlier };
+  // A tail is prepared before its final useful job, with a separate identity
+  // from any predecessor publication in the same job. Preparation is not
+  // completion, and never changes the completed record.
+  std::expected<model::DraftProgress, std::string> CompoundTailCandidate(Unit unit,
+                                                                         CompoundClose close) const;
+  std::expected<PublicationCopy, std::string> PrepareCompoundTail(Unit unit, CompoundClose close);
+  Status CheckCompoundTailQueued(Unit unit, Transition ticket, CompoundClose close) const;
+  Status CheckCompoundTailRetired(Unit unit, Transition ticket, CompoundClose close) const;
+  std::expected<std::uint32_t, std::string> CompoundTailPositions(Unit unit,
+                                                                  Transition ticket) const;
+  Status CheckCompoundTailCursor(Unit unit, Transition ticket, std::uint32_t positions) const;
+  Status CompleteCompoundTail(Unit unit, Transition ticket, CompoundClose close);
   // Completion of every data restore/commit, then the control copy.
+  Status CheckPublication(Transition ticket) const;
   Status PublicationCompleted(Transition ticket);
   void Quarantine();
 
@@ -133,15 +172,24 @@ class DraftProgressLedger {
   bool Current(Unit unit) const;
   bool Current(Transition ticket) const;
   Transition Ticket() const;
-  Status NextEpoch();
+  Status NextUnit();
+  Status NextTransition();
   void InvalidateUnit();
   Status Need(Unit unit, State state) const;
+  Status NeedCompoundExecution(Unit unit) const;
 
   model::DraftProgressBounds bounds_;
   model::DraftProgress completed_{};
   std::optional<model::DraftProgress> pending_;
   State state_ = State::kReady;
-  std::uint64_t epoch_ = 0;
+  std::uint64_t unit_epoch_ = 0, transition_epoch_ = 0, next_transition_epoch_ = 0;
+  std::optional<model::DraftProgress> tail_candidate_;
+  std::uint64_t tail_epoch_ = 0;
+  CompoundClose tail_close_ = CompoundClose::kTarget;
+  bool successor_ = false, successor_queued_ = false;
+  bool compound_successor_ = false, compound_prefix_queued_ = false;
+  Transition compound_predecessor_;
+  model::DraftProgress compound_base_{};
   bool unit_active_ = false;
   bool replayed_ = false;
   std::uint32_t verify_rows_ = 0;

@@ -17,6 +17,7 @@
 #include "base/sha256.h"
 #include "engine/live_state.h"
 #include "execution/adaptive_depth.h"
+#include "runtime/score_rows.h"
 
 namespace llmp::engine {
 class PagedNode;
@@ -40,6 +41,8 @@ class StateSnapshot {
 
  private:
   friend class SnapshotStore;
+  friend class Llm;
+  ScoreRows score_rows_;  // request publication ownership, never a native payload copy
   std::weak_ptr<SnapshotControl> control_;
   std::uint64_t generation_ = 0;
 };

@@ -245,6 +245,7 @@ TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   // state its joined waves read rounded as Qwen3.8's.
   EXPECT_EQ(s.wave_costs.value, (std::vector<double>{2.08, 2.52, 2.81, 2.40, 2.12, 2.21, 2.23}));
   EXPECT_EQ(s.wave_read_align.value, 2048U);
+  EXPECT_TRUE(s.wave_lanes.value);
   EXPECT_EQ(s.wave_costs_override_count, 0U);
   EXPECT_TRUE(s.ignored.empty());
 
@@ -256,145 +257,66 @@ TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   EXPECT_EQ(q.shared_wave_depth.value, 2U);
   EXPECT_EQ(q.draft_wave_max.value, 2U);
   EXPECT_EQ(q.wave_read_align.value, 2048U);
-  EXPECT_TRUE(q.wave_lanes.value);
+  EXPECT_FALSE(q.wave_lanes.value);
 }
 
-TEST(ModelSettings, Gemma3UsesTheBoundedServingEnvelopeAndRejectsUnsupportedOverrides) {
-  auto entry = Model("gemma3");
-  auto facts = Facts("gemma3");
-  facts.trained_context = 131072;
-  facts.trained_context_from = "gemma3.context_length";
-  auto settings = ResolveSettings(entry, facts, nullptr, false);
-  ASSERT_TRUE(settings);
-  EXPECT_EQ(settings->context.value, 4096U);
-  EXPECT_EQ(settings->prefill_chunk.value, 128U);
-  EXPECT_EQ(settings->max_slots.value, 1U);
-  EXPECT_FALSE(settings->speculation.value);
-  entry.overrides["max_slots"] = std::int64_t{2};
-  settings = ResolveSettings(entry, facts, nullptr, false);
-  ASSERT_TRUE(settings);
-  EXPECT_EQ(settings->max_slots.value, 2U);
-  entry.overrides["max_slots"] = std::int64_t{3};
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
-  entry = Model("gemma3");
-  entry.overrides["context"] = std::int64_t{8449};
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
-  entry = Model("gemma3");
-  entry.overrides["prefill_chunk"] = std::int64_t{256};
-  settings = ResolveSettings(entry, facts, nullptr, false);
-  ASSERT_TRUE(settings);
-  EXPECT_EQ(settings->prefill_chunk.value, 128U);
-  entry.overrides["speculation"] = true;
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
-  EXPECT_FALSE(ResolveSettings(Model("gemma3", true), facts, nullptr, false));
-  Calibration calibration;
-  calibration.max_slots = 4;
-  EXPECT_FALSE(ResolveSettings(Model("gemma3"), facts, &calibration, false));
-}
-
-TEST(ModelSettings, Gemma3WiderContextIsExplicitAndScalarAfterCalibrationAndOverrides) {
-  auto entry = Model("gemma3");
-  auto facts = Facts("gemma3");
-  facts.trained_context = 131072;
-  facts.trained_context_from = "gemma3.context_length";
-  Calibration calibration;
-  calibration.max_slots = 2;
-  auto settings = ResolveSettings(entry, facts, &calibration, false);
-  ASSERT_TRUE(settings);
-  EXPECT_EQ(settings->context.value, 4096U);
-  EXPECT_EQ(settings->max_slots.value, 2U);
-  for (const auto context : {4097, 8192, 8448}) {
-    entry.overrides["context"] = std::int64_t{context};
-    settings = ResolveSettings(entry, facts, nullptr, false);
-    ASSERT_TRUE(settings);
-    EXPECT_EQ(settings->context.value, static_cast<std::uint32_t>(context));
-    EXPECT_EQ(settings->max_slots.value, 1U);
-    EXPECT_FALSE(ResolveSettings(entry, facts, &calibration, false));
-    entry.overrides["max_slots"] = std::int64_t{2};
+TEST(ModelSettings, GemmaCohortPreferencesDoNotManufactureOrRestrictPhysicalCapabilities) {
+  for (const auto* architecture : {"gemma2", "gemma3", "gemma4"}) {
+    SCOPED_TRACE(architecture);
+    auto facts = Facts(architecture);
+    facts.trained_context = 262144;
+    facts.trained_context_from = "stored context";
+    auto entry = Model("gemma");
+    auto defaults = ResolveSettings(entry, facts, nullptr, false);
+    ASSERT_TRUE(defaults);
+    EXPECT_EQ(defaults->max_slots.value, 4U);
+    EXPECT_FALSE(defaults->speculation.value);
+    for (const auto owners : {1, 3, 4, 8, 16}) {
+      entry.overrides["max_slots"] = std::int64_t{owners};
+      entry.overrides["prefill_chunk"] = std::int64_t{256};
+      auto settings = ResolveSettings(entry, facts, nullptr, false);
+      ASSERT_TRUE(settings);
+      EXPECT_EQ(settings->max_slots.value, static_cast<std::uint32_t>(owners));
+      EXPECT_EQ(settings->prefill_chunk.value, 256U);
+      // The real source, state and paid backend admission still decide
+      // whether this requested geometry is executable.
+    }
+    entry.overrides["max_slots"] = std::int64_t{17};
     EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
-    entry.overrides["max_slots"] = std::int64_t{1};
-    settings = ResolveSettings(entry, facts, &calibration, false);
-    ASSERT_TRUE(settings);
-    EXPECT_EQ(settings->context.value, static_cast<std::uint32_t>(context));
-    EXPECT_EQ(settings->max_slots.value, 1U);
-    EXPECT_EQ(settings->max_slots.source, SettingSource::kOverride);
-    entry.overrides.erase("max_slots");
+    entry = Model("gemma");
+    Calibration calibration;
+    calibration.max_slots = 4;
+    EXPECT_TRUE(ResolveSettings(entry, facts, &calibration, false));
+    entry.overrides["context"] = std::int64_t{262145};
+    EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
   }
-  entry.overrides["context"] = std::int64_t{8449};
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
-  entry.overrides["context"] = std::int64_t{8448};
-  facts.trained_context = 8192;
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
-  entry.overrides.erase("context");
-  settings = ResolveSettings(entry, facts, &calibration, false);
-  ASSERT_TRUE(settings);
-  EXPECT_EQ(settings->context.value, 4096U);
-  EXPECT_EQ(settings->max_slots.value, 2U);
 }
 
-TEST(ModelSettings, Gemma3TrainedMaximumHookKeepsOrdinaryAdmissionAndScalarBounds) {
-  auto entry = Model("gemma3");
-  auto facts = Facts("gemma3");
-  facts.trained_context = 131072;
-  facts.trained_context_from = "gemma3.context_length";
-  auto settings = ResolveSettings(entry, facts, nullptr, true, true);
-  ASSERT_TRUE(settings);
-  EXPECT_EQ(settings->context.value, 4096U);
-  entry.overrides["context"] = std::int64_t{131072};
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, true));
-  settings = ResolveSettings(entry, facts, nullptr, true, true);
-  ASSERT_TRUE(settings);
-  EXPECT_EQ(settings->context.value, 131072U);
-  EXPECT_EQ(settings->prefill_chunk.value, 128U);
-  EXPECT_EQ(settings->max_slots.value, 1U);
-  Calibration calibration;
-  calibration.max_slots = 2;
-  EXPECT_FALSE(ResolveSettings(entry, facts, &calibration, true, true));
-  entry.overrides["max_slots"] = std::int64_t{1};
-  EXPECT_TRUE(ResolveSettings(entry, facts, &calibration, true, true));
-  entry.overrides["max_slots"] = std::int64_t{2};
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, true, true));
-  entry.overrides["max_slots"] = std::int64_t{1};
-  entry.overrides["context"] = std::int64_t{131073};
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, true, true));
-  entry.overrides["context"] = std::int64_t{131072};
-  facts.trained_context = 65536;
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, true, true));
-  facts.trained_context.reset();
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, true, true));
+TEST(ModelSettings, PinnedGemma23ServingEnvelopesKeepTheFourOwnerDefault) {
+  for (const auto& [architecture, name, context] :
+       {std::tuple{"gemma2", "gemma-2-2b-it-q8_0", 8192U},
+        std::tuple{"gemma3", "gemma-3-4b-it-qat-q4_0", 4096U}}) {
+    auto facts = Facts(architecture);
+    facts.approval = llmp::runtime::FindApprovalNamed(name);
+    ASSERT_NE(facts.approval, nullptr);
+    auto entry = Model("gemma");
+    entry.overrides["context"] = std::int64_t{context};
+    auto settings = ResolveSettings(entry, facts, nullptr, false);
+    ASSERT_TRUE(settings);
+    EXPECT_EQ(settings->max_slots.value, 4U);
+    // This is a serving geometry/default. Numerical transformation authority
+    // remains a separate immutable per-source/component/shape qualification.
+    EXPECT_FALSE(settings->speculation.value);
+  }
 }
 
-TEST(ModelSettings, Gemma2UsesTheBoundedServingEnvelopeAndRejectsUnsupportedOverrides) {
-  auto entry = Model("gemma2");
-  auto facts = Facts("gemma2");
-  facts.trained_context = 8192;
-  facts.trained_context_from = "gemma2.context_length";
-  auto settings = ResolveSettings(entry, facts, nullptr, false);
-  ASSERT_TRUE(settings);
-  EXPECT_EQ(settings->context.value, 8192U);
-  EXPECT_EQ(settings->prefill_chunk.value, 128U);
-  EXPECT_EQ(settings->max_slots.value, 1U);
-  EXPECT_FALSE(settings->speculation.value);
-  entry.overrides["max_slots"] = std::int64_t{2};
-  settings = ResolveSettings(entry, facts, nullptr, false);
-  ASSERT_TRUE(settings);
-  EXPECT_EQ(settings->max_slots.value, 2U);
-  entry.overrides["max_slots"] = std::int64_t{3};
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
-  entry = Model("gemma2");
-  entry.overrides["context"] = std::int64_t{8193};
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
-  entry = Model("gemma2");
-  entry.overrides["prefill_chunk"] = std::int64_t{256};
-  settings = ResolveSettings(entry, facts, nullptr, false);
-  ASSERT_TRUE(settings);
-  EXPECT_EQ(settings->prefill_chunk.value, 128U);
-  entry.overrides["speculation"] = true;
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
-  EXPECT_FALSE(ResolveSettings(Model("gemma2", true), facts, nullptr, false));
-  Calibration calibration;
-  calibration.max_slots = 4;
-  EXPECT_FALSE(ResolveSettings(Model("gemma2"), facts, &calibration, false));
+TEST(ModelSettings, Gemma23DoNotInventAnUnimplementedDrafter) {
+  for (const auto* architecture : {"gemma2", "gemma3"}) {
+    EXPECT_FALSE(ResolveSettings(Model("gemma", true), Facts(architecture), nullptr, false));
+    auto entry = Model("gemma");
+    entry.overrides["speculation"] = true;
+    EXPECT_FALSE(ResolveSettings(entry, Facts(architecture), nullptr, false));
+  }
 }
 
 TEST(ModelSettings, ReportsTheSelectedDraftHeadsPhysicalLimit) {
@@ -513,31 +435,31 @@ TEST(ModelSettings, AnApprovedEnvelopeIsADefaultAnOverridePassesWithAWarning) {
   EXPECT_TRUE(alone.warnings.empty());
 }
 
-TEST(ModelSettings, GemmaDefaultsAreBoundedAndExplicitlyUncalibrated) {
+TEST(ModelSettings, GemmaDefaultsKeepAnUncalibratedFourOwnerPreference) {
   auto entry = Model("gemma");
   auto facts = Facts("gemma4");
   facts.trained_context = 262144;
   facts.trained_context_from = "gemma4.context_length";
   const auto s = Resolved(entry, facts);
   EXPECT_EQ(s.context.value, 262144U);
-  EXPECT_EQ(s.max_slots.value, 1U);
+  EXPECT_EQ(s.max_slots.value, 4U);
   EXPECT_EQ(s.prefill_chunk.value, 128U);
   EXPECT_THAT(s.max_slots.basis, HasSubstr("uncalibrated"));
   EXPECT_THAT(s.prefill_chunk.basis, HasSubstr("uncalibrated"));
   EXPECT_THAT(s.recompute_ms_per_token.basis, HasSubstr("uncalibrated"));
   EXPECT_FALSE(s.speculation.value);
-  for (const auto owners : {1, 2, 4, 8, 12}) {
+  for (const auto owners : {1, 2, 4, 8, 16}) {
     entry.overrides["max_slots"] = std::int64_t{owners};
     const auto chosen = Resolved(entry, facts);
     EXPECT_EQ(chosen.max_slots.value, static_cast<std::uint32_t>(owners));
   }
-  entry.overrides["max_slots"] = std::int64_t{13};
+  entry.overrides["max_slots"] = std::int64_t{17};
   EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
   entry.overrides["max_slots"] = std::int64_t{12};
   entry.overrides["prefill_chunk"] = std::int64_t{4};
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  EXPECT_TRUE(ResolveSettings(entry, facts, nullptr, false));
   entry.overrides["prefill_chunk"] = std::int64_t{4096};
-  EXPECT_EQ(Resolved(entry, facts).prefill_chunk.value, 128U);
+  EXPECT_EQ(Resolved(entry, facts).prefill_chunk.value, 4096U);
   entry.overrides["context"] = std::int64_t{262145};
   EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
   // Gemma 4 drafts with its assistant; without one, speculation is ignored.
@@ -563,18 +485,18 @@ TEST(ModelSettings, Gemma31ProductionDefaultIsBoundedAndProfileSpecific) {
   facts.approval = llmp::runtime::FindApprovalNamed("gemma-4-31b-it-ud-q4_k_xl");
   auto candidate = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(candidate);
-  EXPECT_EQ(candidate->prefill_chunk.value, 256U);
+  EXPECT_EQ(candidate->prefill_chunk.value, 1024U);
   EXPECT_EQ(candidate->max_slots.value, 4U);
   EXPECT_FALSE(candidate->speculation.value);
   entry.overrides["context"] = std::int64_t{8193};
   auto larger_context = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(larger_context);
-  EXPECT_EQ(larger_context->prefill_chunk.value, 128U);
+  EXPECT_EQ(larger_context->prefill_chunk.value, 1024U);
   entry.overrides["context"] = std::int64_t{8192};
   entry.overrides["max_slots"] = std::int64_t{5};
   auto larger_cohort = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(larger_cohort);
-  EXPECT_EQ(larger_cohort->prefill_chunk.value, 128U);
+  EXPECT_EQ(larger_cohort->prefill_chunk.value, 1024U);
   entry.overrides["max_slots"] = std::int64_t{4};
   facts.approval = llmp::runtime::FindApprovalNamed("gemma-4-26b-a4b-it-ud-q4_k_m");
   auto profile26 = ResolveSettings(entry, facts, nullptr, true);
@@ -583,7 +505,7 @@ TEST(ModelSettings, Gemma31ProductionDefaultIsBoundedAndProfileSpecific) {
   facts.approval = nullptr;
   auto unknown = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(unknown);
-  EXPECT_EQ(unknown->prefill_chunk.value, 128U);
+  EXPECT_EQ(unknown->prefill_chunk.value, 1024U);
 }
 
 // A default configuration resolves within its approval: Gemma 4's joined
@@ -660,7 +582,7 @@ TEST(ModelSettings, Gemma26ProductionUses1024WithinBoundsAndPreservesSmallerOver
   entry.overrides["prefill_chunk"] = std::int64_t{2048};
   candidate = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(candidate);
-  EXPECT_EQ(candidate->prefill_chunk.value, 1024U);
+  EXPECT_EQ(candidate->prefill_chunk.value, 2048U);
   entry.overrides["prefill_chunk"] = std::int64_t{64};
   candidate = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(candidate);
@@ -675,7 +597,7 @@ TEST(ModelSettings, Gemma31ProductionUses256WithinBoundsAndPreservesSmallerOverr
   ASSERT_TRUE(candidate);
   EXPECT_EQ(candidate->context.value, 8192U);  // the approved envelope's
   EXPECT_EQ(candidate->prefill_chunk.value, 256U);
-  EXPECT_EQ(candidate->max_slots.value, 1U);
+  EXPECT_EQ(candidate->max_slots.value, 4U);
   entry.overrides["context"] = std::int64_t{16384};
   candidate = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(candidate);
@@ -966,9 +888,9 @@ TEST(ModelSettings, BoundsFromTheArchitecture) {
   ModelEntry wide = Model("ds", true);
   wide.overrides["max_slots"] = std::int64_t{16};
   const ModelSettings capped = Resolved(wide, Facts("deepseek4", "dflash"));
-  EXPECT_EQ(capped.max_slots.value, 8U);
+  EXPECT_EQ(capped.max_slots.value, 16U);
   EXPECT_EQ(capped.max_slots.source, SettingSource::kOverride);
-  EXPECT_THAT(capped.max_slots.basis, HasSubstr("at most 8"));
+  EXPECT_THAT(capped.max_slots.basis, HasSubstr("max_slots"));
   const ModelSettings plain = Resolved(wide, Facts("deepseek4", "dflash"), nullptr, true);
   EXPECT_FALSE(plain.speculation.value);
   EXPECT_EQ(plain.speculation.basis, "--plain");
@@ -1006,9 +928,15 @@ TEST(ModelSettings, RefusesAndIgnoresOverrides) {
   q.overrides["wave_costs"] = std::vector<double>{1.0};
   const ModelSettings s = Resolved(q, Facts("qwen4exp", "qwen4exp-mtp"));
   EXPECT_EQ(s.draft_rows.value, 2U);
-  EXPECT_THAT(s.ignored, Contains(HasSubstr("wave_form")));
-  EXPECT_THAT(s.ignored, Contains(HasSubstr("wave_costs")));
-  EXPECT_EQ(s.ignored.size(), 2U);
+  // Adaptive wave selection is shared by actual speculative compositions;
+  // Qwen no longer loses its explicit controls to a family-only allowlist.
+  EXPECT_TRUE(s.ignored.empty());
+  EXPECT_EQ(s.wave_form.value, llmp::config::WaveForm::kPlain);
+  EXPECT_EQ(s.wave_form.source, SettingSource::kOverride);
+  EXPECT_EQ(s.wave_costs.source, SettingSource::kOverride);
+  EXPECT_EQ(s.wave_costs_override_count, 1U);
+  ASSERT_FALSE(s.wave_costs.value.empty());
+  EXPECT_EQ(s.wave_costs.value.front(), 1.0);
 
   ModelEntry lone = Model("lone");
   lone.overrides["speculation"] = true;
@@ -1134,11 +1062,11 @@ TEST(ModelSettings, CapabilityPredicatesAndKeyApplicability) {
 
   ArtifactFacts qwen_facts = Facts("qwen4exp");
   EXPECT_TRUE(SupportsSpeculativeDrafting(qwen_facts));
-  EXPECT_FALSE(SupportsWaveForm(qwen_facts));
-  EXPECT_FALSE(SupportsWaveCosts(qwen_facts));
+  EXPECT_TRUE(SupportsWaveForm(qwen_facts));
+  EXPECT_TRUE(SupportsWaveCosts(qwen_facts));
   EXPECT_TRUE(SupportsMtpDrafting(qwen_facts));
   EXPECT_TRUE(KeyAppliesTo("draft_rows", qwen_facts));
-  EXPECT_FALSE(KeyAppliesTo("wave_form", qwen_facts));
+  EXPECT_TRUE(KeyAppliesTo("wave_form", qwen_facts));
   EXPECT_TRUE(KeyAppliesTo("draft_vocab", qwen_facts));
   EXPECT_TRUE(KeyAppliesTo("depth_cost_ratio", qwen_facts));
 

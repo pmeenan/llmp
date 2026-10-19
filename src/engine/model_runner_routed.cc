@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "engine/model_runner.h"
+#include "engine/step_transaction.h"
 #include "engine/supplemental_run.h"
 #include "engine/support.h"
 #include "providers/device_runtime.h"
@@ -253,7 +254,7 @@ std::uint64_t ModelRunner::RoutedPinnedBytes() const {
   return routed_ ? routed_->pinned_bytes + 255 : 0;
 }
 
-Status ModelRunner::CheckRouting(const kn::StepProgram& program) const {
+Status ModelRunner::CheckRoutingBindings(const kn::StepProgram& program) const {
   if (!routed_) return program.routed() ? Error("unmeasured routed program") : Status{};
   if (!routed_->finalized) return Error("routed source inventory is not finalized");
   if (auto current = CheckRoutingSource(); !current) return current;
@@ -285,6 +286,12 @@ Status ModelRunner::CheckRouting(const kn::StepProgram& program) const {
       }
     }
   }
+  return {};
+}
+
+Status ModelRunner::CheckRouting(const kn::StepProgram& program) const {
+  if (auto bindings = CheckRoutingBindings(program); !bindings) return bindings;
+  if (!routed_) return {};
   if (const auto* route = program.routed();
       route && (route->pinned_bytes() > routed_->pinned_bytes ||
                 !std::ranges::contains(routed_->signatures, route->routing_identity())))
@@ -306,6 +313,15 @@ struct ModelRunner::RoutedFlight {
   std::shared_ptr<RoutedState> state;
   kn::RoutedProgram* program = nullptr;
   StepPlanRuns* runs = nullptr;
+  StepRuns execution{false};
+  std::span<std::byte> pinned;
+  kn::ExecutionResources resources;
+  const kn::StepProgram* compiled = nullptr;
+  Plans::Entry* cached = nullptr;
+  base::Sha256Digest graph_identity{}, routing_identity{};
+  PromptBatch batch;
+  SupplementalCapacity capacity;
+  std::size_t input_capacity = 0, output_capacity = 0, carry_capacity = 0;
   kn::RoutedAccess access;
   Copies inputs, outputs, carries;
   std::vector<catalog::ExtentId> selected;
@@ -314,16 +330,131 @@ struct ModelRunner::RoutedFlight {
   bool capture = false, started = false, unknown = false;
   StepQueued prefix, continuation;
   explicit RoutedFlight(kn::RoutedAccess token) : access(token) {}
-  ~RoutedFlight() {
-    if (state) state->allowance->Release(charge);
-  }
 };
 
+std::expected<std::shared_ptr<ModelRunner::RoutedFlight>, std::string>
+ModelRunner::PrepareBatchRouting(Plans::Entry& planned, const kn::ExecutionResources& resources,
+                                 std::span<std::byte> pinned, StepRuns& execution,
+                                 StepPlanRuns& runs, std::size_t input_copies,
+                                 std::size_t output_copies, std::size_t carry_copies) {
+  auto& program = *planned.planned->program;
+  auto* route = program.routed();
+  if (!route) return std::unexpected("batch route has no authoritative routed program");
+  if (resources) {
+    if (!program.UsesResources(resources) || resources.launch() != execution.launch() ||
+        !resources.Ready())
+      return std::unexpected("private route requires its actual successful private lowering");
+  } else {
+    if (plans_.Find(planned.key) != &planned)
+      return std::unexpected("ordinary batch route has no installed cache owner");
+    if (auto checked = CheckRouting(program); !checked) return std::unexpected(checked.error());
+    pinned = {static_cast<std::byte*>(routed_->pinned), routed_->pinned_bytes};
+  }
+  if (auto bindings = CheckRoutingBindings(program); !bindings)
+    return std::unexpected(bindings.error());
+  if (!routed_ || route->groups() == 0 || route->groups() == SIZE_MAX ||
+      route->pinned_bytes() > pinned.size())
+    return std::unexpected("private route exceeds its paid preparation inventory");
+  std::uint64_t total = 0;
+  for (std::size_t g = 0; g != route->groups(); ++g) {
+    const auto& layout = route->layout(g);
+    if (!kn::GroupedRouteBound(layout.shape) || layout.host_bytes == 0 ||
+        layout.host_bytes % 256 != 0 || layout.host_offset != total ||
+        __builtin_add_overflow(total, layout.host_bytes, &total) || route->members(g).empty())
+      return std::unexpected("private route has invalid producer preparation storage");
+    for (const auto member : route->members(g))
+      if (member >= route->weights().size() || !route->weights()[member].dynamic)
+        return std::unexpected("private route names no authoritative dynamic source");
+  }
+  if (total != route->pinned_bytes())
+    return std::unexpected("private route preparation sum differs from its actual inventory");
+  static_assert(sizeof(RoutedFlight) + 1024 <= 4096);
+  std::uint64_t copies = input_copies, bytes = 4096;
+  const auto add = [&](std::uint64_t n, std::uint64_t size) {
+    std::uint64_t amount = 0;
+    return !__builtin_mul_overflow(n, size, &amount) &&
+           !__builtin_add_overflow(bytes, amount, &bytes) && bytes <= PTRDIFF_MAX;
+  };
+  if (__builtin_add_overflow(copies, std::uint64_t{output_copies}, &copies) ||
+      __builtin_add_overflow(copies, std::uint64_t{carry_copies}, &copies) || !add(copies, 128) ||
+      !add(routed_->pages.size(), 128) ||
+      !add(route->groups() + 1, sizeof(std::unique_ptr<kn::RoutedRecording>)) ||
+      !routed_->allowance->Charge(bytes))
+    return std::unexpected("private routed flight metadata was not funded");
+  auto flight = std::shared_ptr<RoutedFlight>(new RoutedFlight(kn::RoutedAccess(route, 0)),
+                                              [](RoutedFlight* old) {
+                                                auto allowance = old->state->allowance;
+                                                const auto charge = old->charge;
+                                                delete old;
+                                                allowance->Release(charge);
+                                              });
+  flight->state = routed_;
+  flight->charge = bytes;
+  flight->compiled = &program;
+  flight->program = route;
+  flight->resources = resources;
+  flight->cached = resources ? nullptr : &planned;
+  flight->graph_identity = route->graph_identity();
+  flight->routing_identity = route->routing_identity();
+  flight->execution = resources ? execution : programs_.runs();
+  flight->pinned = pinned.first(static_cast<std::size_t>(total));
+  flight->runs = &runs;
+  flight->input_capacity = input_copies;
+  flight->output_capacity = output_copies;
+  flight->carry_capacity = carry_copies;
+  flight->inputs.reserve(input_copies);
+  flight->outputs.reserve(output_copies);
+  flight->carries.reserve(carry_copies);
+  flight->selected.reserve(routed_->pages.size());
+  runs.routed_graphs.resize(route->groups() + 1);
+  runs.copies.reserve(input_copies);
+  runs.routed_outputs.reserve(output_copies);
+  auto capacity =
+      node_.PrepareSupplementalCapacity(stream_, routed_->pages.size(), routed_->allowance);
+  if (!capacity) return std::unexpected(capacity.error());
+  flight->capacity = std::move(*capacity);
+  return flight;
+}
+
 Status ModelRunner::BeginRouted(kn::StepProgram& program, StepPlanRuns& runs, const Copies& inputs,
-                                const Copies& outputs, const Copies& carries, bool capture) {
+                                const Copies& outputs, const Copies& carries, bool capture,
+                                std::shared_ptr<RoutedFlight> prepared, const PromptBatch& batch) {
   if (!program.routed()) return {};
   if (!routed_ || routed_flight_ || routed_->epoch == UINT64_MAX)
     return Error("routed execution is unprepared, still retained or exhausted");
+  if (prepared) {
+    const bool private_view = bool(prepared->resources);
+    if (!batch.ready() || prepared->compiled != &program || prepared->program != program.routed() ||
+        (private_view
+             ? (!prepared->resources.Ready() || !program.UsesResources(prepared->resources))
+             : (!prepared->cached || plans_.Find(prepared->cached->key) != prepared->cached ||
+                prepared->cached->planned->program.get() != &program)) ||
+        prepared->runs != &runs || prepared->started || (private_view && capture) ||
+        prepared->graph_identity != program.routed()->graph_identity() ||
+        prepared->routing_identity != program.routed()->routing_identity() ||
+        inputs.size() > prepared->input_capacity || outputs.size() > prepared->output_capacity ||
+        carries.size() > prepared->carry_capacity)
+      return Error("private route differs from its producer-minted paid execution capability");
+    if (auto checked = private_view ? CheckRoutingBindings(program) : CheckRouting(program);
+        !checked)
+      return checked;
+    if (runs.has_graph() && (runs.copies != inputs || runs.routed_outputs != outputs))
+      return Error("prepaid routed cached staging layout changed");
+    prepared->capture = capture;
+    if (!runs.has_graph()) {
+      runs.copies.assign(inputs.begin(), inputs.end());
+      runs.routed_outputs.assign(outputs.begin(), outputs.end());
+    }
+    prepared->batch = batch;
+    prepared->inputs.assign(inputs.begin(), inputs.end());
+    prepared->outputs.assign(outputs.begin(), outputs.end());
+    prepared->carries.assign(carries.begin(), carries.end());
+    prepared->access = kn::RoutedAccess(prepared->program, ++routed_->epoch);
+    routed_->completed_program = nullptr;
+    routed_flight_ = std::move(prepared);
+    return {};
+  }
+  if (batch) return Error("private batch route lacks its paid producer capability");
   if (auto checked = CheckRouting(program); !checked) return checked;
   if (runs.has_graph() && (runs.copies != inputs || runs.routed_outputs != outputs))
     return Error("routed captured staging layout changed");
@@ -341,12 +472,19 @@ Status ModelRunner::BeginRouted(kn::StepProgram& program, StepPlanRuns& runs, co
   if (!routed_->allowance->Charge(bytes)) return Error("routed flight metadata was not admitted");
   routed_->completed_program = nullptr;
   const kn::RoutedAccess access(program.routed(), ++routed_->epoch);
-  auto flight = std::make_shared<RoutedFlight>(access);
+  auto flight = std::shared_ptr<RoutedFlight>(new RoutedFlight(access), [](RoutedFlight* old) {
+    auto allowance = old->state->allowance;
+    const auto charge = old->charge;
+    delete old;
+    allowance->Release(charge);
+  });
   flight->owner = std::move(owner);
   flight->state = routed_;
   flight->charge = bytes;
   flight->program = program.routed();
   flight->runs = &runs;
+  flight->execution = programs_.runs();
+  flight->pinned = {static_cast<std::byte*>(routed_->pinned), routed_->pinned_bytes};
   flight->capture = capture;
   flight->inputs = inputs;
   flight->outputs = outputs;
@@ -396,15 +534,15 @@ StepQueued ModelRunner::QueueRoutedPrefix(providers::NativeStream native) {
   if (!flight) return {.result = std::unexpected(kn::StepFailure{.detail = "no routed flight"})};
   flight->started = true;
   const auto bytes = flight->program->layout().host_bytes;
-  flight->prefix = programs_.runs().QueueRouted(
+  flight->prefix = flight->execution.QueueRouted(
       *flight->runs, flight->access, *flight->program, flight->inputs, {},
-      {static_cast<std::byte*>(routed_->pinned), bytes}, flight->capture, graph_stats_, native);
+      flight->pinned.first(static_cast<std::size_t>(bytes)), flight->capture, graph_stats_, native);
   flight->unknown =
       !flight->prefix.result && flight->prefix.result.error().error == kn::StepError::kUnknown;
   return flight->prefix;
 }
 
-Status ModelRunner::ContinueRouted(RunPath& path) {
+Status ModelRunner::ContinueRouted(RunPath& path, std::shared_ptr<StepTransaction> transaction) {
   auto flight = routed_flight_;
   if (!flight || !flight->started || !flight->prefix.result || flight->unknown)
     return Error("routed prefix has not completed successfully");
@@ -417,8 +555,8 @@ Status ModelRunner::ContinueRouted(RunPath& path) {
     if (auto current = CheckRoutingSource(); !current) return current;
     const auto& layout = flight->program->layout(group);
     flight->access = kn::RoutedAccess(flight->program, flight->access.epoch(), group);
-    auto pinned =
-        std::span(static_cast<std::byte*>(routed_->pinned) + layout.host_offset, layout.host_bytes);
+    auto pinned = flight->pinned.subspan(static_cast<std::size_t>(layout.host_offset),
+                                         static_cast<std::size_t>(layout.host_bytes));
     if (auto prepared = flight->program->Prepare(flight->access, pinned); !prepared)
       return Error(prepared.error().detail);
     // Prepare proved the complete offsets/bijection and every actual ID, not a
@@ -468,15 +606,16 @@ Status ModelRunner::ContinueRouted(RunPath& path) {
     const auto segment = group + 1;
     flight->access = kn::RoutedAccess(flight->program, flight->access.epoch(), segment);
     const bool final = segment == flight->program->groups();
+    JobReport retired;
     const auto posted = node_.SupplementalJob(
         flight->closure,
-        [this, flight, segment, final](providers::NativeStream native) {
+        [this, flight, segment, final, transaction](providers::NativeStream native) {
           const auto next_staging =
               final ? std::span<std::byte>{}
-                    : std::span(static_cast<std::byte*>(flight->state->pinned) +
-                                    flight->program->layout(segment).host_offset,
-                                flight->program->layout(segment).host_bytes);
-          flight->continuation = programs_.runs().QueueRouted(
+                    : flight->pinned.subspan(
+                          static_cast<std::size_t>(flight->program->layout(segment).host_offset),
+                          static_cast<std::size_t>(flight->program->layout(segment).host_bytes));
+          flight->continuation = flight->execution.QueueRouted(
               *flight->runs, flight->access, *flight->program, {},
               final ? std::span<const RunCopy>(flight->outputs) : std::span<const RunCopy>{},
               next_staging, flight->capture, graph_stats_, native);
@@ -495,11 +634,22 @@ Status ModelRunner::ContinueRouted(RunPath& path) {
                 return scheduler::JobResult::kUnknown;
               }
             }
+          if (final) {
+            if (!transaction) return scheduler::JobResult::kUnknown;
+            if (auto tail = transaction->QueueCompoundTail(native); !tail) {
+              flight->unknown = true;
+              flight->continuation.result = std::unexpected(
+                  kn::StepFailure{.error = kn::StepError::kUnknown, .detail = tail.error()});
+              return scheduler::JobResult::kUnknown;
+            }
+          }
           return scheduler::JobResult::kQueued;
         },
-        flight, routed_->allowance, "routed selected continuation", stream_);
+        flight, routed_->allowance, "routed selected continuation", stream_, &retired,
+        flight->capacity);
+    if (final && transaction) transaction->CompoundTailRetired(retired);
     if (!posted || flight->unknown || !flight->continuation.result ||
-        programs_.launch()->faulted()) {
+        flight->execution.launch()->faulted()) {
       // No false inference from an error to retirement. The retained flight
       // keeps the complete caller owner, plan, source, pinned data and launch.
       return Error(!posted                        ? posted.error()
@@ -515,7 +665,7 @@ Status ModelRunner::ContinueRouted(RunPath& path) {
   }
   path = all_replayed ? RunPath::kReplayed : any_captured ? RunPath::kCaptured : RunPath::kEager;
   ++flight->runs->eager_runs;
-  routed_->completed_program = flight->program;
+  routed_->completed_program = flight->resources ? nullptr : flight->program;
   routed_flight_.reset();
   return {};
 }

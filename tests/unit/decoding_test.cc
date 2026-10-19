@@ -29,6 +29,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <expected>
@@ -58,6 +59,8 @@
 #include "model/state_contract.h"
 #include "planner/step_shape.h"
 #include "providers/fake/fake_device_execution.h"
+#include "providers/fake/fake_device_runtime.h"
+#include "scheduler/scheduler.h"
 
 namespace {
 
@@ -248,10 +251,15 @@ en::DrafterSpec Block(std::uint32_t depth) {
 
 class DecodingFixture : public ::testing::Test {
  protected:
+  explicit DecodingFixture(bool direct = true)
+      : node_(en::NodeSettings{.compute_streams = 1,
+                               .slots = 2,
+                               .copy_lane = true,
+                               .slot_bytes = kExtent,
+                               .direct_steps = direct}) {}
   virtual std::uint32_t Slots() const { return kSlots; }
 
-  en::PagedNode node_{
-      en::NodeSettings{.compute_streams = 1, .slots = 2, .copy_lane = true, .slot_bytes = kExtent}};
+  en::PagedNode node_;
   std::unique_ptr<en::ModelRunner> runner_;
   ts::FakeStepSource* source_ = nullptr;
   std::uint64_t fixed_ = 0;
@@ -455,10 +463,11 @@ class DecodingFixture : public ::testing::Test {
                          .boundary = 0});
     }
     const en::PrefillReport report = prefill.Step(prompts);
+    ASSERT_FALSE(report.refusal);
     for (std::uint32_t slot = 0; slot < lengths.size(); ++slot) {
-      ASSERT_FALSE(report.outcomes[slot].refusal.has_value())
-          << report.outcomes[slot].refusal->what;
-      ASSERT_TRUE(report.outcomes[slot].last);
+      ASSERT_FALSE(report.outcomes()[slot].refusal.has_value())
+          << report.outcomes()[slot].refusal->what;
+      ASSERT_TRUE(report.outcomes()[slot].last);
       history_[slot].push_back(Truth(lengths[slot]));
       if (o != nullptr) o->Reset(slot);
     }
@@ -521,6 +530,7 @@ class DecodingFixture : public ::testing::Test {
 
 class DecodingTest : public DecodingFixture {
  protected:
+  using DecodingFixture::DecodingFixture;
   md::Rollback KvRollback() const override { return md::Rollback::kSnapshot; }
 };
 class TruncatingTest : public DecodingFixture {
@@ -865,7 +875,7 @@ TEST_F(DecodingTest, AVerifyRefusedMidWaveLeavesItsPeersVerified) {
   EXPECT_EQ(slots().positions(1), 46U);
 }
 
-TEST_F(DecodingTest, AVerifyFailingAfterItsJobQueuedWorkIsUndoneWhole) {
+TEST_F(DecodingTest, ARejectedVerifyPublishesItsRetiredPrefixWithoutItsOwnNumericEffects) {
   auto o = Make(Cascade());
   const std::array<std::uint32_t, 3> prompts = {40, 41, 42};
   Prefill(prompts, &o);
@@ -874,15 +884,24 @@ TEST_F(DecodingTest, AVerifyFailingAfterItsJobQueuedWorkIsUndoneWhole) {
   // alone (one token left: no drafts) queues them, then its run is refused.
   source_->options().fail_run = kn::StepError::kRejected;
   source_->options().fail_phase = pl::Phase::kVerify;
+  runner_->DropPlans();  // Failure injection must reach Run, not replay a prior recording.
+  const auto executed = source_->executed();
+  const auto commits = commits_;
   const auto failed = Unit(o, {0, 1, 2}, 1);
+  EXPECT_EQ(source_->executed(), executed);  // No rejected verify executed.
+  EXPECT_EQ(commits_ - commits, kSlots);     // Every prior Accept actually retired.
   for (std::uint32_t slot = 0; slot < kSlots; ++slot) {
     const auto& out = failed.outcomes[slot];
     ASSERT_TRUE(out.refusal.has_value());
-    EXPECT_FALSE(out.refusal->clean);  // its job wrote (what the Accept owed)
+    EXPECT_TRUE(out.refusal->clean);  // Complete prior work published; this verify wrote nothing.
+    EXPECT_NE(out.refusal->what.find("the fake refuses to run"), std::string::npos);
     EXPECT_TRUE(out.drafts.empty());
     EXPECT_EQ(slots().positions(slot), prompts[slot] + 5);
     EXPECT_FALSE(slots().verify_pending(slot));
-    EXPECT_TRUE(slots().usable(slot));  // undone, not quarantined
+    // The rejected verify's snapshots now owe an undo, distinct from the
+    // prior Accept's commits whose execution was counted above.
+    EXPECT_TRUE(slots().owed(slot));
+    EXPECT_TRUE(slots().usable(slot));  // The saves undo whole; no rejected numeric writes.
   }
   source_->options().fail_run.reset();
   source_->options().fail_phase.reset();
@@ -950,6 +969,75 @@ TEST_F(DecodingTest, AdaptiveDepthChangesBetweenUnitsFromCompleteStepsOnly) {
 
 // --------------------------------------------------------- borrowed state
 
+TEST_F(DecodingTest, AnOrdinaryReaderRequiresItsExactAcceptedPrefixPermit) {
+  auto o = Make({.kind = en::DecodingMode::Kind::kSpeculative,
+                 .drafters = {{.stage = kAssistant, .max_depth = 2, .borrows_target = true}},
+                 .combine = en::DecodingMode::Drafters::kCascade,
+                 .row_invariant = false});
+  const std::array<std::uint32_t, 2> prompts{40, 41};
+  Prefill(prompts, &o);
+  auto first = Unit(o, {0, 1});
+  for (const auto& out : first.outcomes) ASSERT_FALSE(out.refusal);
+  ASSERT_TRUE(slots().owed(0));
+  const auto past = slots().positions(0);
+  auto borrowed = slots().BorrowAfterOwed(0, kAssistant, past, 1);
+  ASSERT_TRUE(borrowed) << ts::Failed(borrowed).value_or("");
+  ASSERT_TRUE(borrowed->permit());
+  const auto permit = *borrowed->permit();
+  EXPECT_TRUE(slots().borrowed(0));
+  EXPECT_FALSE(slots().borrowed(0, 0));
+  EXPECT_TRUE(slots().CheckBorrowPermit(permit, 0, kAssistant, past, 1));
+  EXPECT_FALSE(slots().CheckBorrowPermit(permit, 1, kAssistant, past, 1));
+  EXPECT_FALSE(slots().CheckBorrowPermit(permit, 0, kAssistant, past + 1, 1));
+  EXPECT_FALSE(slots().SetPositions(0, past + 1));
+  EXPECT_FALSE(slots().ReserveStateThrough(0, past + 1));
+  const std::array token{Truth(past)};
+  const std::array work{en::SegmentWork{.tokens = token}};
+  const pl::StepShape shape{
+      .stage = kAssistant,
+      .phase = pl::Phase::kDraft,
+      .segments = {{.slot = 0, .rows = 1, .past = past, .read_cells = past + 1, .outputs = 1}},
+      .read_align = 256};
+  const auto executed = source_->executed();
+  auto refused = runner_->RunStep({.shape = shape, .work = work, .advance = false, .ahead = {}});
+  ASSERT_FALSE(refused);
+  EXPECT_TRUE(refused.error().clean);
+  EXPECT_NE(refused.error().what.find("ordered borrow"), std::string::npos);
+  EXPECT_EQ(source_->executed(), executed);
+  borrowed->Return();
+  EXPECT_FALSE(slots().borrowed(0));
+  auto fresh = slots().BorrowAfterOwed(0, kAssistant, past, 1);
+  ASSERT_TRUE(fresh);
+  EXPECT_FALSE(slots().CheckBorrowPermit(permit, 0, kAssistant, past, 1));
+  fresh->Return();
+}
+
+TEST_F(DecodingTest, UnknownOrdinaryReaderRetainsItsOrderedGuardUntilRecovery) {
+  auto o = Make({.kind = en::DecodingMode::Kind::kSpeculative,
+                 .drafters = {{.stage = kAssistant, .max_depth = 2, .borrows_target = true}},
+                 .combine = en::DecodingMode::Drafters::kCascade,
+                 .row_invariant = false});
+  const std::array<std::uint32_t, 1> prompts{40};
+  Prefill(prompts, &o);
+  ASSERT_FALSE(Unit(o, {0}).outcomes[0].refusal);
+  ASSERT_TRUE(slots().owed(0));
+  source_->options().fail_phase = pl::Phase::kDraft;
+  source_->options().fail_run = kn::StepError::kUnknown;
+  runner_->DropPlans();  // A replay does not call the host Run failure hook.
+  const auto queued = source_->queued();
+  const auto failed = Unit(o, {0});
+  EXPECT_GT(source_->queued(), queued);  // The injected reader really submitted work.
+  ASSERT_TRUE(failed.outcomes[0].refusal);
+  ASSERT_FALSE(failed.outcomes[0].drafts.empty());
+  ASSERT_TRUE(failed.outcomes[0].drafts[0].refusal);
+  EXPECT_NE(failed.outcomes[0].drafts[0].refusal->what.find("the fake faulted"), std::string::npos);
+  EXPECT_FALSE(failed.outcomes[0].refusal->clean);
+  EXPECT_FALSE(slots().usable(0));
+  EXPECT_TRUE(slots().borrowed(0));
+  EXPECT_FALSE(slots().ReserveStateThrough(0, slots().positions(0) + 1));
+  EXPECT_FALSE(slots().Spill(0));
+}
+
 TEST_F(DecodingTest, AnAssistantDraftsFromTheTargetsStateBorrowedFrozen) {
   auto o = Make({.kind = en::DecodingMode::Kind::kSpeculative,
                  .drafters = {{.stage = kAssistant,
@@ -972,7 +1060,13 @@ TEST_F(DecodingTest, AnAssistantDraftsFromTheTargetsStateBorrowedFrozen) {
   for (int unit = 0; unit < 2; ++unit) {
     draft_rows_.clear();
     const std::array<std::uint32_t, 2> at = {slots().positions(0), slots().positions(1)};
+    if (unit != 0) {
+      EXPECT_TRUE(slots().owed(0));
+      EXPECT_TRUE(slots().owed(1));
+    }
+    (void)node_.TakeTimes(0);
     const auto report = Unit(o, {0, 1});
+    EXPECT_EQ(node_.TakeTimes(0).steps, report.steps);  // Both prefixes fold into useful work.
     for (std::uint32_t slot = 0; slot < 2; ++slot) {
       ASSERT_FALSE(report.outcomes[slot].refusal.has_value())
           << report.outcomes[slot].refusal->what;
@@ -1187,7 +1281,7 @@ TEST_F(DecodingTest, PrefillOutcomesKeepTheirPlaceInAJoinedStep) {
   EXPECT_EQ(report.steps, 1U);
   std::uint32_t rows = 0, outputs = 0;
   for (std::uint32_t slot = 0; slot < kSlots; ++slot) {
-    const auto& out = report.outcomes[slot];
+    const auto& out = report.outcomes()[slot];
     ASSERT_FALSE(out.refusal.has_value()) << out.refusal->what;
     EXPECT_EQ(out.segment, slot);
     EXPECT_EQ(out.first_row, rows);
@@ -1413,12 +1507,18 @@ TEST_F(DecodingTest, AFailedDraftQuarantinesItsOwnStageNeverTheTargets) {
   const std::array<std::uint32_t, 3> prompts = {40, 41, 42};
   Prefill(prompts, &o);
   ASSERT_FALSE(Unit(o, {0, 1, 2}).outcomes[0].refusal.has_value());
-  source_->options().fail_run = kn::StepError::kRejected;
+  source_->options().fail_run = kn::StepError::kUnknown;
   source_->options().fail_phase = pl::Phase::kDraft;
+  runner_->DropPlans();  // Reach Run and its post-submission failure hook.
+  const auto executed = source_->executed();
+  const auto commits = commits_;
   const auto failed = Unit(o, {0});
+  EXPECT_GT(source_->executed(), executed);  // Actual draft writes, not only input staging.
+  EXPECT_EQ(commits_ - commits, 1U);         // Prior target commitment positively retired.
   ASSERT_TRUE(failed.outcomes[0].refusal.has_value());
   ASSERT_FALSE(failed.outcomes[0].drafts.empty());
   EXPECT_TRUE(failed.outcomes[0].drafts[0].refusal.has_value());
+  EXPECT_NE(failed.outcomes[0].drafts[0].refusal->what.find("the fake faulted"), std::string::npos);
   EXPECT_EQ(slots().positions(0), 45U);
   EXPECT_FALSE(slots().verify_pending(0));
   // The draft's job ran what the Accept owed whole, then its run failed
@@ -1449,6 +1549,146 @@ TEST_F(DecodingTest, AFailedDraftQuarantinesItsOwnStageNeverTheTargets) {
     EXPECT_EQ(verify_rows_[slot].front().hash,
               Hash(std::span(history_[slot]).first(std::size_t{before} + 1)));
   }
+}
+
+TEST_F(DecodingTest, UnknownInputTransportNeverClaimsTheProgramsNarrowWriteScope) {
+  auto decoder = Make(Cascade());
+  const std::array<std::uint32_t, 3> prompts{40, 41, 42};
+  Prefill(prompts, &decoder);
+  ASSERT_FALSE(Unit(decoder, {0, 1, 2}).outcomes[0].refusal);
+  runner_->DropPlans();
+  bool armed = false;
+  source_->options().on_build = [&](const pl::StepShape& shape, bool measuring) {
+    if (!measuring && !armed && shape.phase == pl::Phase::kDraft) {
+      armed = true;
+      llmp::providers::fake::FailNextCopy(llmp::providers::CopyKind::kHostToDevice,
+                                          shape.rows() * sizeof(std::int32_t), true);
+    }
+  };
+  const auto executed = source_->executed();
+  const auto failed = Unit(decoder, {0});
+  llmp::providers::fake::ClearCopyFailure();
+  source_->options().on_build = {};
+  ASSERT_TRUE(armed);
+  ASSERT_TRUE(failed.outcomes[0].refusal);
+  ASSERT_FALSE(failed.outcomes[0].drafts.empty());
+  ASSERT_TRUE(failed.outcomes[0].drafts[0].refusal);
+  EXPECT_NE(failed.outcomes[0].drafts[0].refusal->what.find("an input copy"), std::string::npos);
+  EXPECT_FALSE(failed.outcomes[0].refusal->clean);
+  EXPECT_EQ(source_->executed(), executed);  // The transport failed before program Run.
+  EXPECT_FALSE(slots().faulted());           // A retired transport error is local to this owner.
+  for (std::size_t stage = 0; stage < slots().stages(); ++stage)
+    EXPECT_TRUE(slots().live(0, stage).quarantined());
+  EXPECT_TRUE(slots().usable(1));
+  EXPECT_TRUE(slots().usable(2));
+}
+
+// The provider deliberately withholds retirement. Keep the complete node,
+// source and runner alive until the subprocess exits; a failed teardown or
+// a test destructor would not grant permission to release their allocations.
+class UnprovenDraftProbe final : public DecodingTest {
+ public:
+  explicit UnprovenDraftProbe(bool direct) : DecodingTest(direct) {}
+  void TestBody() override {}
+  void Exercise() {
+    SetUp();
+    if (HasFatalFailure()) return;
+    auto decoder = Make(Cascade());
+    const std::array<std::uint32_t, 3> prompts{40, 41, 42};
+    Prefill(prompts, &decoder);
+    if (HasFatalFailure()) return;
+    ASSERT_FALSE(Unit(decoder, {0, 1, 2}).outcomes[0].refusal);
+    runner_->DropPlans();
+    source_->options().fail_run = kn::StepError::kUnknown;
+    source_->options().fail_phase = pl::Phase::kDraft;
+    bool armed = false;
+    auto& execution = static_cast<llmp::providers::fake::FakeDeviceExecution&>(node_.execution());
+    source_->options().on_build = [&](const pl::StepShape& shape, bool measuring) {
+      if (!measuring && !armed && shape.phase == pl::Phase::kDraft) {
+        armed = true;
+        execution.FailNextQuery(llmp::providers::ProviderError::kUnknown);
+      }
+    };
+    const auto queued = source_->queued();
+    const auto executed = source_->executed();
+    const auto failed = Unit(decoder, {0});
+    std::fprintf(stderr,
+                 "lost-fence probe: direct=%d armed=%d queued=%llu->%llu executed=%llu->%llu\n",
+                 node_.direct() ? 1 : 0, armed ? 1 : 0, static_cast<unsigned long long>(queued),
+                 static_cast<unsigned long long>(source_->queued()),
+                 static_cast<unsigned long long>(executed),
+                 static_cast<unsigned long long>(source_->executed()));
+    if (failed.outcomes[0].refusal)
+      std::fprintf(stderr, "lost-fence outcome: %s\n", failed.outcomes[0].refusal->what.c_str());
+    ASSERT_TRUE(armed);
+    EXPECT_GT(source_->queued(), queued);  // Own draft was submitted before the lost fence.
+    ASSERT_TRUE(failed.outcomes[0].refusal);
+    ASSERT_FALSE(failed.outcomes[0].drafts.empty());
+    ASSERT_TRUE(failed.outcomes[0].drafts[0].refusal);
+    EXPECT_NE(failed.outcomes[0].drafts[0].refusal->what.find("the fake faulted"),
+              std::string::npos);
+    EXPECT_FALSE(failed.outcomes[0].refusal->clean);
+    for (std::size_t stage = 0; stage < slots().stages(); ++stage)
+      EXPECT_TRUE(slots().live(0, stage).quarantined());
+    if (node_.direct()) {
+      // DirectStep owns its fence outside the scheduler: the complete held
+      // request and retained runner transaction protect every active peer.
+      EXPECT_FALSE(node_.scheduler().fault());
+      EXPECT_FALSE(slots().faulted());
+      EXPECT_TRUE(node_.InRequest(0));
+      EXPECT_TRUE(slots().usable(1));
+      EXPECT_TRUE(slots().usable(2));
+    } else {
+      EXPECT_EQ(node_.scheduler().fault(), llmp::scheduler::Fault::kUnproven);
+      EXPECT_TRUE(slots().faulted());
+      for (std::uint32_t slot = 1; slot < kSlots; ++slot)
+        for (std::size_t stage = 0; stage < slots().stages(); ++stage)
+          EXPECT_TRUE(slots().live(slot, stage).quarantined());
+    }
+    const auto before_peer = source_->queued();
+    const auto peer_past = slots().positions(1);
+    const std::array token{Truth(peer_past)};
+    const std::array work{en::SegmentWork{.tokens = token, .history = history_[1]}};
+    const auto peer =
+        runner_->RunStep({.shape = Shape(0, pl::Phase::kDecode, {Seg(1, peer_past, 1, 256)}),
+                          .work = work,
+                          .ahead = {}});
+    ASSERT_FALSE(peer);
+    EXPECT_FALSE(peer.error().clean);
+    EXPECT_NE(peer.error().what.find("unproven effects"), std::string::npos);
+    EXPECT_EQ(source_->queued(), before_peer);
+    const auto held = runner_->plans().size();
+    ASSERT_GT(held, 0U);
+    runner_->DropPlans();
+    EXPECT_EQ(runner_->plans().size(), held);  // Unproven transaction still protects its plans.
+  }
+};
+
+void CheckUnprovenDraft(bool direct) {
+  EXPECT_EXIT(
+      {
+        auto* retained = new UnprovenDraftProbe(direct);
+        retained->Exercise();
+        const auto* result = ::testing::UnitTest::GetInstance()->current_test_info()->result();
+        for (int i = 0; i < result->total_part_count(); ++i) {
+          const auto& part = result->GetTestPartResult(i);
+          if (part.failed())
+            std::fprintf(stderr, "%s:%d: %s\n", part.file_name() ? part.file_name() : "child",
+                         part.line_number(), part.message());
+        }
+        std::fflush(stderr);
+        std::_Exit(::testing::Test::HasFailure() ? 1 : 0);
+      },
+      ::testing::ExitedWithCode(0), "");
+}
+
+TEST(DecodingUnprovenDeathTest, DirectOwnProgramUnknownRetainsEveryAffectedStageAndCompleteOwner) {
+  CheckUnprovenDraft(true);
+}
+
+TEST(DecodingUnprovenDeathTest,
+     ScheduledOwnProgramUnknownRetainsEveryAffectedStageAndCompleteOwner) {
+  CheckUnprovenDraft(false);
 }
 
 TEST_F(DecodingTest, ARefusedCommitAfterItsRestoreFailsItsSlotAlone) {
@@ -1664,11 +1904,11 @@ TEST_F(DecodingTest, CompletePassScheduleRefusesContextTailBeforeEffects) {
                                 .boundary = 0,
                                 .history = history_[0]};
     const auto report = prefill.Step(std::span(&prompt, 1));
-    ASSERT_EQ(report.outcomes.size(), 1U);
-    ASSERT_FALSE(report.outcomes[0].refusal) << report.outcomes[0].refusal->what;
-    ASSERT_EQ(report.outcomes[0].rows, std::min(kChunk, kContext - 2 - past));
-    past += report.outcomes[0].rows;
-    ASSERT_EQ(report.outcomes[0].last, past == kContext - 2);
+    ASSERT_EQ(report.outcomes().size(), 1U);
+    ASSERT_FALSE(report.outcomes()[0].refusal) << report.outcomes()[0].refusal->what;
+    ASSERT_EQ(report.outcomes()[0].rows, std::min(kChunk, kContext - 2 - past));
+    past += report.outcomes()[0].rows;
+    ASSERT_EQ(report.outcomes()[0].last, past == kContext - 2);
     ASSERT_EQ(runner_->slots().positions(0), past);
   }
   history_[0].push_back(Truth(kContext - 2));

@@ -537,9 +537,8 @@ std::expected<catalog::LeaseId, WorkError> Scheduler::HoldLease(
   return *lease;
 }
 
-std::expected<void, WorkError> Scheduler::ReplaceRequestLease(std::uint64_t request,
-                                                              catalog::LeaseId lease,
-                                                              const catalog::Closure& closure) {
+std::expected<void, WorkError> Scheduler::CheckRequestLease(std::uint64_t request,
+                                                            catalog::LeaseId lease) {
   const auto found = held_.find(lease);
   if (found == held_.end()) return std::unexpected(WorkError::kInvalid);
   const auto* record = Record(found->second.task);
@@ -548,17 +547,61 @@ std::expected<void, WorkError> Scheduler::ReplaceRequestLease(std::uint64_t requ
   if (fault_ || record->finished || !task || task->cancelled || found->second.ending)
     return std::unexpected(WorkError::kClosed);
   if (!found->second.Drained()) return std::unexpected(WorkError::kBusy);
-  std::vector<catalog::ExtentId> next;
-  next.reserve(closure.extents.size());
+  return {};
+}
+
+std::expected<void, WorkError> Scheduler::ReplaceRequestLease(std::uint64_t request,
+                                                              catalog::LeaseId lease,
+                                                              const catalog::Closure& closure) {
+  if (auto ready = CheckRequestLease(request, lease); !ready) return ready;
+  LeaseReplacementStorage storage;
+  storage.catalog_extents.reserve(closure.extents.size());
+  storage.held_extents.reserve(closure.extents.size());
   for (const auto& [extent, generation] : closure.extents) {
     (void)generation;
-    next.push_back(extent);
+    storage.catalog_extents.push_back(extent);
+    storage.held_extents.push_back(extent);
   }
-  std::ranges::sort(next);
-  next.erase(std::ranges::unique(next).begin(), next.end());
-  auto replaced = catalog_.ReplaceLease(lease, closure);
+  // Request closures are canonical. Reject an invalid candidate before any
+  // mutation rather than invent storage/authority from caller vectors.
+  return ReplaceRequestLease(request, lease, closure, storage);
+}
+
+std::expected<void, WorkError> Scheduler::ReplaceRequestLease(std::uint64_t request,
+                                                              catalog::LeaseId lease,
+                                                              const catalog::Closure& closure,
+                                                              LeaseReplacementStorage& storage) {
+  if (auto ready = CheckRequestLease(request, lease); !ready) return ready;
+  if (storage.catalog_extents != storage.held_extents ||
+      storage.catalog_extents.size() != closure.extents.size())
+    return std::unexpected(WorkError::kInvalid);
+  for (std::size_t i = 0; i < closure.extents.size(); ++i)
+    if (storage.catalog_extents[i] != closure.extents[i].first ||
+        (i && closure.extents[i].first <= closure.extents[i - 1].first))
+      return std::unexpected(WorkError::kInvalid);
+  auto replaced = catalog_.ReplaceLease(lease, closure, storage.catalog_extents);
   if (!replaced) return std::unexpected(ErrorOf(replaced.error()));
-  found->second.extents.swap(next);
+  held_.find(lease)->second.extents.swap(storage.held_extents);
+  return {};
+}
+
+std::expected<void, WorkError> Scheduler::RemoveRequestExtents(
+    std::uint64_t request, catalog::LeaseId lease,
+    std::span<const std::pair<catalog::ExtentId, std::uint64_t>> removed) {
+  if (auto ready = CheckRequestLease(request, lease); !ready) return ready;
+  auto& held = held_.find(lease)->second;
+  for (const auto& [extent, generation] : removed) {
+    (void)generation;
+    if (!std::ranges::binary_search(held.extents, extent))
+      return std::unexpected(WorkError::kInvalid);
+  }
+  if (auto shrunk = catalog_.RemoveLeaseExtents(lease, removed); !shrunk)
+    return std::unexpected(ErrorOf(shrunk.error()));
+  std::erase_if(held.extents, [&](catalog::ExtentId id) {
+    const auto at =
+        std::ranges::lower_bound(removed, id, {}, [](const auto& e) { return e.first; });
+    return at != removed.end() && at->first == id;
+  });
   return {};
 }
 

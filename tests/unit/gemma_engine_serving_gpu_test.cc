@@ -468,6 +468,666 @@ TEST_P(GemmaEngineNativeV1Gpu, PublishedGemma2HeadsTokensStateAndSpillContinuati
   }
 }
 
+TEST_P(GemmaEngineNativeV1Gpu, MixedCausalAndMixedOutputsMatchSeparateBaselineAndMeasureTiming) {
+  struct CausalObserved {
+    std::vector<std::int32_t> tokens;
+    std::vector<std::vector<float>> decode_rows;
+    std::vector<float> prefill_head;
+    std::array<std::vector<std::int32_t>, 2> histories;
+    std::array<llmp::base::Sha256Digest, 2> state{};
+  };
+  struct PlainObserved {
+    std::array<std::vector<std::int32_t>, 2> tokens;
+    std::vector<std::vector<float>> sampled_rows;
+    std::array<std::vector<std::int32_t>, 2> histories;
+    std::array<llmp::base::Sha256Digest, 2> state{};
+  };
+  struct SameMCausalObserved {
+    std::int32_t decoded_token = -1;
+    std::vector<float> decode_row;
+    std::vector<float> prefill_head;
+    std::array<llmp::base::Sha256Digest, 2> state{};
+  };
+  std::array<std::array<CausalObserved, 2>, 2> causal_arms;
+  SameMCausalObserved same_m_prompt_baseline;
+  std::array<SameMCausalObserved, 2> same_m_causal_modes;
+  std::array<PlainObserved, 2> plain_arms;
+  double separate_causal_us = 0.0, mixed_causal_us = 0.0;
+  double separate_workload_us = 0.0, mixed_workload_us = 0.0;
+  double homog_decode_us = 0.0, separate_decode_us = 0.0, mixed_decode_us = 0.0;
+
+  const auto prompt0 = Tokens(0, 64);
+  const auto prompt1_63 = Tokens(1, 63);
+  const auto prompt1 = Tokens(1, 200);
+
+  for (std::size_t arm = 0; arm < 2; ++arm) {
+    const bool mixed = arm == 1;
+    life->options = {};
+    life->options.diagnostic_mixed_causal = mixed;
+    life->options.diagnostic_mixed_outputs = mixed;
+    const auto started = Start(2);
+    ASSERT_TRUE(started) << (started ? "" : started.error());
+    EXPECT_EQ(model->supports_causal_waves(), mixed);
+
+    // 1a. Same-M (M = 64) bit-for-bit GPU control: Owner 1 prefilling 63 rows at past=0 +
+    // Owner 0 stepping 1 row at past=64 via RunPromptWave (arm 0) vs RunCausalWave (arm 1).
+    if (!mixed) {
+      ASSERT_TRUE(Branch(0).Clear());
+      ASSERT_TRUE(Branch(1).Clear());
+      std::vector<float> head0;
+      ASSERT_TRUE(Branch(0).Prefill(prompt0, head0));
+      ASSERT_TRUE(Finite(head0, Vocab()));
+      const auto t0 =
+          static_cast<std::int32_t>(std::distance(head0.begin(), std::ranges::max_element(head0)));
+      auto prompt0_cont = prompt0;
+      prompt0_cont.push_back(t0);
+      auto ps0 = Branch(0).BeginPrompt(prompt0_cont, 0, false, true);
+      ASSERT_TRUE(ps0) << (ps0 ? "" : ps0.error());
+      ASSERT_TRUE((*ps0)->Advance());
+      EXPECT_EQ((*ps0)->reused(), 64U);
+      auto ps1 = Branch(1).BeginPrompt(prompt1_63);
+      ASSERT_TRUE(ps1) << (ps1 ? "" : ps1.error());
+      ASSERT_TRUE((*ps1)->Advance());
+      const std::array<rt::Llm::PromptSession*, 2> prompts{ps1->get(), ps0->get()};
+      const std::array<rt::PrefillGoOn, 2> callbacks{};
+      ASSERT_TRUE(model->RunPromptWave(prompts, callbacks));
+      ASSERT_TRUE((*ps1)->last_unit_result());
+      ASSERT_TRUE((*ps0)->last_unit_result());
+      ASSERT_TRUE((*ps1)->done());
+      ASSERT_TRUE((*ps0)->done());
+      same_m_prompt_baseline.prefill_head = (*ps1)->last();
+      same_m_prompt_baseline.decode_row = (*ps0)->last();
+      same_m_prompt_baseline.decoded_token = static_cast<std::int32_t>(
+          std::distance(same_m_prompt_baseline.decode_row.begin(),
+                        std::ranges::max_element(same_m_prompt_baseline.decode_row)));
+      ASSERT_TRUE((*ps1)->Finish());
+      ASSERT_TRUE((*ps0)->Finish());
+      ps1->reset();
+      ps0->reset();
+      for (std::uint32_t slot = 0; slot < 2; ++slot) {
+        auto sh = StateHash(slot);
+        ASSERT_TRUE(sh) << sh.error();
+        same_m_prompt_baseline.state[slot] = *sh;
+      }
+    } else {
+      for (std::size_t mode = 0; mode < 2; ++mode) {
+        const bool device_decode = mode == 1;
+        ASSERT_TRUE(Branch(0).Clear());
+        ASSERT_TRUE(Branch(1).Clear());
+        std::vector<float> head0;
+        ASSERT_TRUE(Branch(0).Prefill(prompt0, head0));
+        ASSERT_TRUE(Finite(head0, Vocab()));
+        rt::GenerateOptions gen_opts;
+        gen_opts.max_tokens = 2;
+        gen_opts.stop = false;
+        gen_opts.keep_logits = !device_decode;
+        rt::Generation gen_out;
+        auto gs0 = Branch(0).BeginGeneration(head0, gen_opts, gen_out);
+        ASSERT_TRUE(gs0) << (gs0 ? "" : gs0.error());
+        auto ps1 = Branch(1).BeginPrompt(prompt1_63);
+        ASSERT_TRUE(ps1) << (ps1 ? "" : ps1.error());
+        ASSERT_TRUE((*ps1)->Advance());
+        const std::array<rt::Llm::PromptSession*, 1> prompts{ps1->get()};
+        const std::array<rt::PrefillGoOn, 1> callbacks{};
+        const std::array<rt::Llm::GenerationSession*, 1> generations{gs0->get()};
+        ASSERT_TRUE(model->RunCausalWave(prompts, callbacks, generations));
+        ASSERT_TRUE((*ps1)->last_unit_result());
+        ASSERT_TRUE((*ps1)->done());
+        ASSERT_TRUE((*gs0)->done());
+        same_m_causal_modes[mode].prefill_head = (*ps1)->last();
+        ASSERT_TRUE((*ps1)->Finish());
+        ASSERT_TRUE((*gs0)->Finish());
+        ps1->reset();
+        gs0->reset();
+        ASSERT_EQ(gen_out.tokens.size(), 2U);
+        same_m_causal_modes[mode].decoded_token = gen_out.tokens[1];
+        if (!device_decode) {
+          ASSERT_EQ(gen_out.logits.size(), 2U);
+          same_m_causal_modes[mode].decode_row = std::move(gen_out.logits[1]);
+        }
+        for (std::uint32_t slot = 0; slot < 2; ++slot) {
+          auto sh = StateHash(slot);
+          ASSERT_TRUE(sh) << sh.error();
+          same_m_causal_modes[mode].state[slot] = *sh;
+        }
+      }
+    }
+
+    // 1b. Mixed prefill + decode multi-chunk equivalence (Mode 0: logit rows; Mode 1: device-greedy
+    // token).
+    for (std::size_t mode = 0; mode < 2; ++mode) {
+      const bool device_decode = mode == 1;
+      ASSERT_TRUE(Branch(0).Clear());
+      ASSERT_TRUE(Branch(1).Clear());
+      std::vector<float> head0;
+      ASSERT_TRUE(Branch(0).Prefill(prompt0, head0));
+      ASSERT_TRUE(Finite(head0, Vocab()));
+
+      rt::GenerateOptions gen_opts;
+      gen_opts.max_tokens = 3;
+      gen_opts.stop = false;
+      gen_opts.keep_logits = !device_decode;
+      rt::Generation gen_out;
+      auto gen_session = Branch(0).BeginGeneration(head0, gen_opts, gen_out);
+      ASSERT_TRUE(gen_session) << (gen_session ? "" : gen_session.error());
+      auto prompt_session = Branch(1).BeginPrompt(prompt1);
+      ASSERT_TRUE(prompt_session) << (prompt_session ? "" : prompt_session.error());
+      ASSERT_TRUE((*prompt_session)->Advance());
+
+      const auto before = Engine().counts();
+      const std::array<rt::Llm::PromptSession*, 1> prompts{prompt_session->get()};
+      const std::array<rt::PrefillGoOn, 1> callbacks{};
+      const std::array<rt::Llm::GenerationSession*, 1> generations{gen_session->get()};
+      if (!mixed) {
+        EXPECT_FALSE(model->RunCausalWave(prompts, callbacks, generations));
+      }
+      for (unsigned step = 0; step < 2; ++step) {
+        ASSERT_FALSE((*prompt_session)->done());
+        ASSERT_FALSE((*gen_session)->done());
+        if (mixed) {
+          const auto ran = model->RunCausalWave(prompts, callbacks, generations);
+          ASSERT_TRUE(ran) << (ran ? "" : ran.error());
+        } else {
+          ASSERT_TRUE(model->RunPromptWave(prompts, callbacks));
+          ASSERT_TRUE(model->RunGenerationWave(generations));
+        }
+        ASSERT_TRUE((*prompt_session)->last_unit_result());
+      }
+      const auto after = Engine().counts();
+      if (mixed) {
+        EXPECT_EQ(after.joined_causal_steps - before.joined_causal_steps, 2U);
+        EXPECT_EQ(after.joined_causal_rows - before.joined_causal_rows, 202U);
+        EXPECT_EQ(after.greedy_tokens - before.greedy_tokens, device_decode ? 2U : 0U);
+      } else {
+        EXPECT_EQ(after.joined_causal_steps - before.joined_causal_steps, 0U);
+        EXPECT_EQ(after.joined_causal_rows - before.joined_causal_rows, 0U);
+      }
+      ASSERT_TRUE((*prompt_session)->done());
+      ASSERT_TRUE((*gen_session)->done());
+      CausalObserved& obs = causal_arms[arm][mode];
+      obs.prefill_head = (*prompt_session)->last();
+      ASSERT_TRUE(Finite(obs.prefill_head, Vocab()));
+      ASSERT_TRUE((*prompt_session)->Finish());
+      ASSERT_TRUE((*gen_session)->Finish());
+      prompt_session->reset();
+      gen_session->reset();
+
+      ASSERT_EQ(gen_out.tokens.size(), 3U);
+      ASSERT_EQ(gen_out.logits.size(), device_decode ? 0U : 3U);
+      for (const auto& row : gen_out.logits) ASSERT_TRUE(Finite(row, Vocab()));
+      obs.tokens = std::move(gen_out.tokens);
+      obs.decode_rows = std::move(gen_out.logits);
+      obs.histories[0] = Branch(0).history();
+      obs.histories[1] = Branch(1).history();
+      for (std::uint32_t slot = 0; slot < 2; ++slot) {
+        auto sh = StateHash(slot);
+        ASSERT_TRUE(sh) << sh.error();
+        obs.state[slot] = *sh;
+      }
+    }
+
+    // Matched timing loop for prefill (128 + 72 rows) + decode (1 + 1 rows).
+    constexpr unsigned kWarmup = 2, kTimed = 8;
+    double elapsed_us = 0.0;
+    for (unsigned iter = 0; iter < kWarmup + kTimed; ++iter) {
+      ASSERT_TRUE(Branch(0).Clear());
+      ASSERT_TRUE(Branch(1).Clear());
+      std::vector<float> head0;
+      ASSERT_TRUE(Branch(0).Prefill(prompt0, head0));
+      rt::GenerateOptions gen_opts;
+      gen_opts.max_tokens = 3;
+      gen_opts.stop = false;
+      gen_opts.keep_logits = false;
+      rt::Generation gen_out;
+      auto gen_session = Branch(0).BeginGeneration(head0, gen_opts, gen_out);
+      ASSERT_TRUE(gen_session);
+      auto prompt_session = Branch(1).BeginPrompt(prompt1);
+      ASSERT_TRUE(prompt_session);
+      ASSERT_TRUE((*prompt_session)->Advance());
+      const std::array<rt::Llm::PromptSession*, 1> prompts{prompt_session->get()};
+      const std::array<rt::PrefillGoOn, 1> callbacks{};
+      const std::array<rt::Llm::GenerationSession*, 1> generations{gen_session->get()};
+      const auto t0 = std::chrono::steady_clock::now();
+      for (unsigned step = 0; step < 2; ++step) {
+        if (mixed) {
+          ASSERT_TRUE(model->RunCausalWave(prompts, callbacks, generations));
+        } else {
+          ASSERT_TRUE(model->RunPromptWave(prompts, callbacks));
+          ASSERT_TRUE(model->RunGenerationWave(generations));
+        }
+      }
+      const auto t1 = std::chrono::steady_clock::now();
+      if (iter >= kWarmup) {
+        elapsed_us += std::chrono::duration<double, std::micro>(t1 - t0).count() / 2.0;
+      }
+      ASSERT_TRUE((*prompt_session)->Finish());
+      ASSERT_TRUE((*gen_session)->Finish());
+    }
+    if (mixed) {
+      mixed_causal_us = elapsed_us / kTimed;
+    } else {
+      separate_causal_us = elapsed_us / kTimed;
+    }
+
+    // Timed whole cooperative workload (Owner 0 at generation start, Owner 1 prefilling 200 tokens
+    // in 2 chunks, both completing 9 tokens of generation).
+    double workload_us = 0.0;
+    for (unsigned iter = 0; iter < kWarmup + kTimed; ++iter) {
+      ASSERT_TRUE(Branch(0).Clear());
+      ASSERT_TRUE(Branch(1).Clear());
+      std::vector<float> head0;
+      ASSERT_TRUE(Branch(0).Prefill(prompt0, head0));
+      rt::GenerateOptions gen_opts;
+      gen_opts.max_tokens = 9;
+      gen_opts.stop = false;
+      gen_opts.keep_logits = false;
+      std::array<rt::Generation, 2> gen_out;
+      std::array<std::unique_ptr<rt::Llm::GenerationSession>, 2> gen_sessions;
+      auto opened0 = Branch(0).BeginGeneration(head0, gen_opts, gen_out[0]);
+      ASSERT_TRUE(opened0);
+      gen_sessions[0] = std::move(*opened0);
+      auto prompt_session = Branch(1).BeginPrompt(prompt1);
+      ASSERT_TRUE(prompt_session);
+      ASSERT_TRUE((*prompt_session)->Advance());
+      const std::array<rt::Llm::PromptSession*, 1> prompts{prompt_session->get()};
+      const std::array<rt::PrefillGoOn, 1> callbacks{};
+      const std::array<rt::Llm::GenerationSession*, 1> gen0{gen_sessions[0].get()};
+      const auto t0 = std::chrono::steady_clock::now();
+      for (unsigned step = 0; step < 2; ++step) {
+        if (mixed) {
+          ASSERT_TRUE(model->RunCausalWave(prompts, callbacks, gen0));
+        } else {
+          ASSERT_TRUE(model->RunPromptWave(prompts, callbacks));
+        }
+      }
+      while (!(*prompt_session)->done()) {
+        ASSERT_TRUE((*prompt_session)->Advance());
+      }
+      std::vector<float> head1 = (*prompt_session)->last();
+      ASSERT_TRUE((*prompt_session)->Finish());
+      prompt_session->reset();
+      auto opened1 = Branch(1).BeginGeneration(head1, gen_opts, gen_out[1]);
+      ASSERT_TRUE(opened1);
+      gen_sessions[1] = std::move(*opened1);
+      while (!gen_sessions[0]->done() || !gen_sessions[1]->done()) {
+        std::array<rt::Llm::GenerationSession*, 2> active{};
+        std::size_t count = 0;
+        for (std::size_t id = 0; id < 2; ++id) {
+          if (!gen_sessions[id]->done()) active[count++] = gen_sessions[id].get();
+        }
+        ASSERT_TRUE(model->RunGenerationWave(std::span(active).first(count)));
+      }
+      const auto t1 = std::chrono::steady_clock::now();
+      if (iter >= kWarmup) {
+        workload_us += std::chrono::duration<double, std::micro>(t1 - t0).count();
+      }
+      for (std::size_t id = 0; id < 2; ++id) {
+        ASSERT_TRUE(gen_sessions[id]->Finish());
+        gen_sessions[id].reset();
+      }
+    }
+    if (mixed) {
+      mixed_workload_us = workload_us / kTimed;
+    } else {
+      separate_workload_us = workload_us / kTimed;
+    }
+
+    // 2. Mixed greedy + sampled plain decode equivalence and timing.
+    {
+      ASSERT_TRUE(Branch(0).Clear());
+      ASSERT_TRUE(Branch(1).Clear());
+      std::array<std::vector<float>, 2> heads;
+      ASSERT_TRUE(Branch(0).Prefill(Tokens(0, 64), heads[0]));
+      ASSERT_TRUE(Branch(1).Prefill(Tokens(1, 64), heads[1]));
+      std::array<rt::GenerateOptions, 2> opts;
+      opts[0].max_tokens = 9;
+      opts[0].stop = false;
+      opts[0].keep_logits = false;
+      opts[1].max_tokens = 9;
+      opts[1].stop = false;
+      opts[1].keep_logits = true;
+      opts[1].seed = 4242;
+      opts[1].sampling = llmp::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
+      std::array<rt::Generation, 2> out;
+      std::array<std::unique_ptr<rt::Llm::GenerationSession>, 2> sessions;
+      for (std::uint32_t id = 0; id < 2; ++id) {
+        auto opened = Branch(id).BeginGeneration(heads[id], opts[id], out[id]);
+        ASSERT_TRUE(opened) << (opened ? "" : opened.error());
+        sessions[id] = std::move(*opened);
+      }
+      const auto before = Engine().counts();
+      const std::array<rt::Llm::GenerationSession*, 2> both{sessions[0].get(), sessions[1].get()};
+      for (unsigned step = 0; step < 8; ++step) {
+        ASSERT_TRUE(model->RunGenerationWave(both));
+      }
+      const auto after = Engine().counts();
+      EXPECT_EQ(after.joined_waves - before.joined_waves, 8U);
+      EXPECT_EQ(after.greedy_tokens - before.greedy_tokens, mixed ? 8U : 0U);
+      for (std::uint32_t id = 0; id < 2; ++id) {
+        ASSERT_TRUE(sessions[id]->done());
+        ASSERT_TRUE(sessions[id]->Finish());
+        sessions[id].reset();
+      }
+      ASSERT_EQ(out[0].tokens.size(), 9U);
+      ASSERT_EQ(out[1].tokens.size(), 9U);
+      ASSERT_EQ(out[0].logits.size(), 0U);
+      ASSERT_EQ(out[1].logits.size(), 9U);
+      PlainObserved& obs = plain_arms[arm];
+      obs.tokens[0] = std::move(out[0].tokens);
+      obs.tokens[1] = std::move(out[1].tokens);
+      obs.sampled_rows = std::move(out[1].logits);
+      obs.histories[0] = Branch(0).history();
+      obs.histories[1] = Branch(1).history();
+      for (std::uint32_t slot = 0; slot < 2; ++slot) {
+        auto sh = StateHash(slot);
+        ASSERT_TRUE(sh) << sh.error();
+        obs.state[slot] = *sh;
+      }
+
+      // Timed plain decode waves (joined homogeneous/mixed, and separate 1-slot in arm 0).
+      for (const bool separate_slots : {false, true}) {
+        if (separate_slots && mixed) continue;
+        double wave_us = 0.0;
+        for (unsigned iter = 0; iter < kWarmup + kTimed; ++iter) {
+          ASSERT_TRUE(Branch(0).Clear());
+          ASSERT_TRUE(Branch(1).Clear());
+          ASSERT_TRUE(Branch(0).Prefill(Tokens(0, 64), heads[0]));
+          ASSERT_TRUE(Branch(1).Prefill(Tokens(1, 64), heads[1]));
+          opts[1].keep_logits = false;
+          std::array<rt::Generation, 2> timed_out;
+          for (std::uint32_t id = 0; id < 2; ++id) {
+            auto opened = Branch(id).BeginGeneration(heads[id], opts[id], timed_out[id]);
+            ASSERT_TRUE(opened);
+            sessions[id] = std::move(*opened);
+          }
+          const std::array<rt::Llm::GenerationSession*, 2> active{sessions[0].get(),
+                                                                  sessions[1].get()};
+          const std::array<rt::Llm::GenerationSession*, 1> s0{sessions[0].get()};
+          const std::array<rt::Llm::GenerationSession*, 1> s1{sessions[1].get()};
+          const auto t0 = std::chrono::steady_clock::now();
+          for (unsigned step = 0; step < 8; ++step) {
+            if (separate_slots) {
+              ASSERT_TRUE(model->RunGenerationWave(s0));
+              ASSERT_TRUE(model->RunGenerationWave(s1));
+            } else {
+              ASSERT_TRUE(model->RunGenerationWave(active));
+            }
+          }
+          const auto t1 = std::chrono::steady_clock::now();
+          if (iter >= kWarmup) {
+            wave_us += std::chrono::duration<double, std::micro>(t1 - t0).count() / 8.0;
+          }
+          for (std::uint32_t id = 0; id < 2; ++id) {
+            ASSERT_TRUE(sessions[id]->Finish());
+            sessions[id].reset();
+          }
+        }
+        if (separate_slots) {
+          separate_decode_us = wave_us / kTimed;
+        } else if (mixed) {
+          mixed_decode_us = wave_us / kTimed;
+        } else {
+          homog_decode_us = wave_us / kTimed;
+        }
+      }
+    }
+
+    EXPECT_EQ(Engine().runner().coverage().violations, 0U);
+    ASSERT_TRUE(Retire());
+    ASSERT_NO_FATAL_FAILURE(ClearStorage());
+  }
+
+  const auto argmax = [](std::span<const float> row) {
+    return static_cast<std::int32_t>(std::distance(row.begin(), std::ranges::max_element(row)));
+  };
+  const auto max_abs_diff = [](std::span<const float> a, std::span<const float> b) {
+    float d = 0.0F;
+    for (std::size_t i = 0; i < a.size() && i < b.size(); ++i) {
+      d = std::max(d, std::abs(a[i] - b[i]));
+    }
+    return d;
+  };
+  for (std::size_t mode = 0; mode < 2; ++mode) {
+    SCOPED_TRACE(std::format("same-M causal mode {}", mode));
+    EXPECT_EQ(same_m_causal_modes[mode].decoded_token, same_m_prompt_baseline.decoded_token);
+    EXPECT_TRUE(Same(same_m_causal_modes[mode].prefill_head, same_m_prompt_baseline.prefill_head));
+    if (mode == 0) {
+      EXPECT_TRUE(Same(same_m_causal_modes[mode].decode_row, same_m_prompt_baseline.decode_row));
+    }
+    EXPECT_EQ(same_m_causal_modes[mode].state, same_m_prompt_baseline.state);
+  }
+  for (std::size_t arm = 0; arm < 2; ++arm) {
+    SCOPED_TRACE(std::format("causal arm {}", arm));
+    // Within the same batch geometry, logit-row decode and device-greedy decode
+    // produce bit-for-bit identical tokens, prefill heads, histories, and KV state.
+    EXPECT_EQ(causal_arms[arm][0].tokens, causal_arms[arm][1].tokens);
+    EXPECT_TRUE(Same(causal_arms[arm][0].prefill_head, causal_arms[arm][1].prefill_head));
+    EXPECT_EQ(causal_arms[arm][0].histories, causal_arms[arm][1].histories);
+    EXPECT_EQ(causal_arms[arm][0].state, causal_arms[arm][1].state);
+  }
+  for (std::size_t mode = 0; mode < 2; ++mode) {
+    SCOPED_TRACE(std::format("causal mode {}", mode));
+    EXPECT_EQ(causal_arms[0][mode].tokens, causal_arms[1][mode].tokens);
+    EXPECT_EQ(argmax(causal_arms[0][mode].prefill_head), argmax(causal_arms[1][mode].prefill_head));
+    EXPECT_LT(max_abs_diff(causal_arms[0][mode].prefill_head, causal_arms[1][mode].prefill_head),
+              1.0F);
+    ASSERT_EQ(causal_arms[0][mode].decode_rows.size(), causal_arms[1][mode].decode_rows.size());
+    if (!causal_arms[0][mode].decode_rows.empty()) {
+      EXPECT_TRUE(Same(causal_arms[0][mode].decode_rows[0], causal_arms[1][mode].decode_rows[0]));
+      for (std::size_t r = 1; r < causal_arms[0][mode].decode_rows.size(); ++r) {
+        EXPECT_EQ(argmax(causal_arms[0][mode].decode_rows[r]),
+                  argmax(causal_arms[1][mode].decode_rows[r]))
+            << "row " << r;
+        EXPECT_LT(
+            max_abs_diff(causal_arms[0][mode].decode_rows[r], causal_arms[1][mode].decode_rows[r]),
+            1.0F)
+            << "row " << r;
+      }
+    }
+    EXPECT_EQ(causal_arms[0][mode].histories, causal_arms[1][mode].histories);
+  }
+
+  EXPECT_EQ(plain_arms[0].tokens, plain_arms[1].tokens);
+  ASSERT_EQ(plain_arms[0].sampled_rows.size(), plain_arms[1].sampled_rows.size());
+  for (std::size_t r = 0; r < plain_arms[0].sampled_rows.size(); ++r) {
+    EXPECT_TRUE(Same(plain_arms[0].sampled_rows[r], plain_arms[1].sampled_rows[r])) << "row " << r;
+  }
+  EXPECT_EQ(plain_arms[0].histories, plain_arms[1].histories);
+  EXPECT_EQ(plain_arms[0].state, plain_arms[1].state);
+
+  std::println(
+      "MIXED_EVAL_GEMMA2 separate_causal_us={:.1f} mixed_causal_us={:.1f} "
+      "separate_workload_us={:.1f} mixed_workload_us={:.1f} "
+      "homog_decode_us={:.1f} separate_decode_us={:.1f} mixed_decode_us={:.1f}",
+      separate_causal_us, mixed_causal_us, separate_workload_us, mixed_workload_us, homog_decode_us,
+      separate_decode_us, mixed_decode_us);
+}
+
+TEST_P(GemmaEngineNativeV1Gpu,
+       MixedGreedyAndSampledSpeculativeVerifyMatchesHomogeneousAndMeasuresTiming) {
+  const std::string target = Published("gemma26");
+  const std::string assistant = Published("gemma26-assistant");
+  if (target.empty() || assistant.empty()) {
+    GTEST_FAIL() << "no published v1 gemma26 and gemma26-assistant";
+  }
+  struct VerifyObserved {
+    std::array<std::vector<std::int32_t>, 2> tokens;
+    std::array<std::uint64_t, 2> drafted{}, accepted{};
+    std::vector<std::vector<float>> sampled_rows;
+    std::array<std::vector<std::int32_t>, 2> histories;
+    std::array<llmp::base::Sha256Digest, 2> state{};
+  };
+  std::array<VerifyObserved, 2> arms;
+  double homog_verify_us = 0.0, separate_verify_us = 0.0, mixed_verify_us = 0.0;
+
+  std::array<std::vector<std::int32_t>, 2> prompts;
+  constexpr std::array<std::int32_t, 6> seed{2, 818, 5279, 529, 7001, 563};
+  for (int i = 0; i < 24; ++i) prompts[0].insert(prompts[0].end(), seed.begin(), seed.end());
+  for (int i = 0; i < 25; ++i) prompts[1].insert(prompts[1].end(), seed.begin(), seed.end());
+
+  for (std::size_t arm = 0; arm < 2; ++arm) {
+    const bool mixed = arm == 1;
+    life->config.models.clear();
+    cfg::ModelEntry entry;
+    entry.name = "gemma";
+    entry.artifact = target;
+    entry.drafter = assistant;
+    entry.overrides["context"] = std::int64_t{4096};
+    entry.overrides["prefill_chunk"] = std::int64_t{256};
+    entry.overrides["max_slots"] = std::int64_t{2};
+    entry.overrides["wave_form"] = std::string("speculative");
+    life->config.models.push_back(entry);
+    life->options = {};
+    life->options.diagnostic_mixed_outputs = mixed;
+
+    const auto started = Start(2);
+    ASSERT_TRUE(started) << (started ? "" : started.error());
+    ASSERT_TRUE(model->speculative());
+
+    std::array<std::vector<float>, 2> heads;
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      ASSERT_TRUE(Branch(id).Clear());
+      ASSERT_TRUE(Branch(id).Prefill(prompts[id], heads[id]));
+      ASSERT_TRUE(Finite(heads[id], 262144U));
+    }
+
+    std::array<rt::GenerateOptions, 2> opts;
+    opts[0].max_tokens = 24;
+    opts[0].stop = false;
+    opts[0].keep_logits = false;
+    opts[1].max_tokens = 24;
+    opts[1].stop = false;
+    opts[1].keep_logits = true;
+    opts[1].seed = 4242;
+    opts[1].sampling = llmp::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
+    std::array<rt::Generation, 2> out;
+    std::array<std::unique_ptr<rt::Llm::GenerationSession>, 2> sessions;
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      auto opened = Branch(id).BeginGeneration(heads[id], opts[id], out[id]);
+      ASSERT_TRUE(opened) << (opened ? "" : opened.error());
+      sessions[id] = std::move(*opened);
+    }
+
+    const auto before = Engine().counts();
+    for (unsigned wave = 0; wave < 32 && (!sessions[0]->done() || !sessions[1]->done()); ++wave) {
+      std::array<rt::Llm::GenerationSession*, 2> active{};
+      std::size_t count = 0;
+      for (auto& s : sessions) {
+        if (!s->done()) active[count++] = s.get();
+      }
+      ASSERT_TRUE(model->RunGenerationWave(std::span(active).first(count)));
+    }
+    const auto after = Engine().counts();
+    EXPECT_GT(after.joined_waves, before.joined_waves);
+    EXPECT_GT(after.speculative_units, before.speculative_units);
+    EXPECT_GT(after.drafted, before.drafted);
+
+    bool saw_expected_verify_shape = false;
+    Engine().runner().plans().ForEach([&](const auto& plan) {
+      const auto& shape = plan.key.shape;
+      if (shape.stage == 0 && shape.phase == llmp::planner::Phase::kVerify &&
+          shape.segments.size() == 2) {
+        if (shape.segments[0].greedy == mixed && !shape.segments[1].greedy) {
+          saw_expected_verify_shape = true;
+        }
+      }
+    });
+    EXPECT_TRUE(saw_expected_verify_shape) << "arm=" << arm;
+
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      ASSERT_TRUE(sessions[id]->done());
+      ASSERT_TRUE(sessions[id]->Finish());
+      sessions[id].reset();
+    }
+    ASSERT_EQ(out[0].tokens.size(), 24U);
+    ASSERT_EQ(out[1].tokens.size(), 24U);
+    ASSERT_EQ(out[0].logits.size(), 0U);
+    ASSERT_EQ(out[1].logits.size(), 24U);
+    VerifyObserved& obs = arms[arm];
+    obs.tokens[0] = std::move(out[0].tokens);
+    obs.tokens[1] = std::move(out[1].tokens);
+    obs.drafted = {out[0].drafted, out[1].drafted};
+    obs.accepted = {out[0].accepted, out[1].accepted};
+    obs.sampled_rows = std::move(out[1].logits);
+    obs.histories[0] = Branch(0).history();
+    obs.histories[1] = Branch(1).history();
+    for (std::uint32_t slot = 0; slot < 2; ++slot) {
+      auto sh = StateHash(slot);
+      ASSERT_TRUE(sh) << sh.error();
+      obs.state[slot] = *sh;
+    }
+
+    // Matched timing loop: 4 speculative draft/verify rounds per iteration.
+    constexpr unsigned kWarmup = 2, kTimed = 6;
+    for (const bool separate_slots : {false, true}) {
+      if (separate_slots && mixed) continue;
+      double wave_us = 0.0;
+      for (unsigned iter = 0; iter < kWarmup + kTimed; ++iter) {
+        for (std::uint32_t id = 0; id < 2; ++id) {
+          ASSERT_TRUE(Branch(id).Clear());
+          ASSERT_TRUE(Branch(id).Prefill(prompts[id], heads[id]));
+        }
+        opts[0].max_tokens = 64;
+        opts[1].max_tokens = 64;
+        opts[1].keep_logits = false;
+        std::array<rt::Generation, 2> timed_out;
+        for (std::uint32_t id = 0; id < 2; ++id) {
+          auto opened = Branch(id).BeginGeneration(heads[id], opts[id], timed_out[id]);
+          ASSERT_TRUE(opened);
+          sessions[id] = std::move(*opened);
+        }
+        const std::array<rt::Llm::GenerationSession*, 2> active{sessions[0].get(),
+                                                                sessions[1].get()};
+        const std::array<rt::Llm::GenerationSession*, 1> s0{sessions[0].get()};
+        const std::array<rt::Llm::GenerationSession*, 1> s1{sessions[1].get()};
+        const auto t0 = std::chrono::steady_clock::now();
+        for (unsigned step = 0; step < 4; ++step) {
+          if (separate_slots) {
+            ASSERT_TRUE(model->RunGenerationWave(s0));
+            ASSERT_TRUE(model->RunGenerationWave(s1));
+          } else {
+            ASSERT_TRUE(model->RunGenerationWave(active));
+          }
+        }
+        const auto t1 = std::chrono::steady_clock::now();
+        if (iter >= kWarmup) {
+          wave_us += std::chrono::duration<double, std::micro>(t1 - t0).count() / 4.0;
+        }
+        for (std::uint32_t id = 0; id < 2; ++id) {
+          sessions[id]->Cancel();
+          ASSERT_TRUE(sessions[id]->Finish());
+          sessions[id].reset();
+        }
+      }
+      if (separate_slots) {
+        separate_verify_us = wave_us / kTimed;
+      } else if (mixed) {
+        mixed_verify_us = wave_us / kTimed;
+      } else {
+        homog_verify_us = wave_us / kTimed;
+      }
+    }
+
+    EXPECT_EQ(Engine().runner().coverage().violations, 0U);
+    ASSERT_TRUE(Retire());
+    ASSERT_NO_FATAL_FAILURE(ClearStorage());
+  }
+
+  EXPECT_EQ(arms[0].tokens, arms[1].tokens);
+  EXPECT_EQ(arms[0].drafted, arms[1].drafted);
+  EXPECT_EQ(arms[0].accepted, arms[1].accepted);
+  ASSERT_EQ(arms[0].sampled_rows.size(), arms[1].sampled_rows.size());
+  for (std::size_t r = 0; r < arms[0].sampled_rows.size(); ++r) {
+    EXPECT_TRUE(Same(arms[0].sampled_rows[r], arms[1].sampled_rows[r])) << "row " << r;
+  }
+  EXPECT_EQ(arms[0].histories, arms[1].histories);
+  EXPECT_EQ(arms[0].state, arms[1].state);
+
+  std::println(
+      "MIXED_EVAL_VERIFY homog_verify_us={:.1f} separate_verify_us={:.1f} mixed_verify_us={:.1f}",
+      homog_verify_us, separate_verify_us, mixed_verify_us);
+}
+
 // A bounded public-alias opt-in screen. Cross-encoding quality is paired
 // NLL on identical native-tokenized text; exact state/heads are required only
 // when restoring the same Q8 source. No original-weight or speed claim.
@@ -741,15 +1401,10 @@ TEST_P(GemmaEngineServingGpu, SnapshotSpillCheckpointAndRestartKeepTheState) {
   constexpr std::array<std::int32_t, 1> anchor{563};
   std::vector<float> expected_next;
   {
-    auto& node = life->server->node();
-    std::vector<llmp::catalog::ExtentId> staging;
-    auto snapshot = node.Pinned(Branch(0).state_snapshot_bytes(), 0, staging);
-    ASSERT_TRUE(snapshot);
-    ASSERT_TRUE(Branch(0).SaveState(*snapshot));
+    ASSERT_TRUE(life->server->SaveSnapshot(*model));
     ASSERT_TRUE(Branch(0).Prefill(anchor, expected_next));
     ASSERT_TRUE(Finite(expected_next, Vocab()));
-    ASSERT_TRUE(Branch(0).RestoreState(*snapshot));
-    ASSERT_TRUE(node.FreePinned(*snapshot));
+    ASSERT_TRUE(life->server->RestoreSnapshot(*model));
   }
   EXPECT_EQ(Branch(0).history(), first);
   const auto restored = StateHash(0);

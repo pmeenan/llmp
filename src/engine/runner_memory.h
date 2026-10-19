@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -56,10 +57,10 @@ class RunnerMemory {
   // `mapped` must remain alive at the same address through fenced release,
   // including when Map fails after making a partial allocation.
   Status Map(Mapped& mapped, std::string name, std::uint64_t bytes,
-             catalog::MemoryClass memory_class);
+             catalog::MemoryClass memory_class, bool* over_budget = nullptr);
   // Pinned host memory, cataloged as the runner's staging. Before the
   // node runs.
-  std::expected<void*, std::string> Pinned(std::uint64_t bytes);
+  std::expected<void*, std::string> Pinned(std::uint64_t bytes, bool* over_budget = nullptr);
   // An aligned view of pinned staging. A nonzero size and power-of-two
   // alignment are required. The allocation includes alignment - 1 slack
   // bytes and is charged whole before use; node teardown owns its lifetime.
@@ -71,6 +72,14 @@ class RunnerMemory {
   // byte minimum. This excludes the shared workspace and growing live state.
   std::uint64_t mapped_bytes() const;
   std::uint64_t pinned_bytes() const { return pinned_bytes_; }
+
+  // Counted control capacities for an owner that will perform these exact
+  // allocations. ReserveMetadata is called only after the owner prepays it.
+  static std::expected<std::uint64_t, std::string> MetadataBytes(std::size_t mappings,
+                                                                 std::size_t pinned);
+  void ReserveMetadata(std::size_t mappings, std::size_t pinned);
+  std::size_t ExtentCount() const;
+  Status FillExtents(std::span<catalog::ExtentId> into) const;
 
   // Every extent mapped here and the staging's: a closure's share.
   std::vector<catalog::ExtentId> extents() const;

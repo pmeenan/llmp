@@ -46,6 +46,11 @@ class ProgramLifecycle {
   // Source/routing authority is checked by the consumer before this call.
   using Validate = std::function<std::expected<void, std::string>(const kernels::StepProgram&)>;
   std::expected<Coverage, std::string> BindPrepared(StepPlanned& planned, const Validate& validate);
+  // Same installation/coverage contract with an actual producer-owned eager
+  // launch view. It never replaces this lifecycle's ordinary launch/cache.
+  std::expected<Coverage, std::string> BindPrepared(StepPlanned& planned,
+                                                    kernels::StepLaunch& launch,
+                                                    const Validate& validate);
   StepRuns& runs() { return runs_; }
   const StepRuns& runs() const { return runs_; }
   kernels::StepLaunch* launch() const { return launch_.get(); }

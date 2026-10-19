@@ -3475,28 +3475,35 @@ std::expected<void, KernelFailure> Lowering::Slots() {
     }
   } else {
     // Each owner's own outputs: its token, or its rows of the logits.
+    // A primitive/component fragment with neither semantic head tensor omits
+    // vocabulary-head slots while keeping its graph outputs, shape metadata,
+    // funding and physical layout; any step that declares a token head checks
+    // every output owner's requested encoding.
     const planner::StepShape& shape = in_.token->shape;
-    const bool greedy = in_.token->step.greedy.valid();
-    const TensorId result = greedy ? in_.token->step.greedy : in_.token->step.logits;
-    if (result.valid() && shape.outputs() != 0) {
-      const TensorId planned = plan_.tensors.at(result.v);
-      const ggml_tensor* t = planned.valid() ? made_.at(planned.v) : nullptr;
-      if (t == nullptr || t->data == nullptr) return Refused("the step's result was not made");
-      const std::uint64_t row = greedy ? sizeof(std::int32_t) : t->nb[1];
-      if (static_cast<std::uint64_t>(greedy ? t->ne[0] : t->ne[1]) != shape.outputs()) {
-        return Refused("the step's result does not hold its outputs");
-      }
-      std::uint64_t first = 0;
+    if (in_.token->step.logits.valid() || in_.token->step.greedy.valid()) {
+      std::uint64_t first_output = 0;
       for (std::size_t i = 0; i < shape.segments.size(); ++i) {
-        const std::uint32_t n = shape.segments[i].outputs;
+        const auto& segment = shape.segments[i];
+        const auto n = segment.outputs;
         if (n == 0) continue;
+        // The common head produces logits and, when any owner requests them,
+        // device choices. Each owner retains its own actual result encoding.
+        const bool greedy = segment.greedy;
+        const TensorId result = greedy ? in_.token->step.greedy : in_.token->step.logits;
+        if (!result.valid()) return Refused("the owner's requested head result is absent");
+        const TensorId planned = plan_.tensors.at(result.v);
+        const ggml_tensor* t = planned.valid() ? made_.at(planned.v) : nullptr;
+        if (t == nullptr || t->data == nullptr) return Refused("the step's result was not made");
+        const std::uint64_t row = greedy ? sizeof(std::int32_t) : t->nb[1];
+        if (static_cast<std::uint64_t>(greedy ? t->ne[0] : t->ne[1]) != shape.outputs())
+          return Refused("the step's result does not hold its outputs");
         out_.outputs.push_back({.device_address = static_cast<std::uint64_t>(
                                                       reinterpret_cast<std::uintptr_t>(t->data)) +
-                                                  (first * row),
+                                                  (first_output * row),
                                 .bytes = n * row,
                                 .tensor = result,
                                 .segment = static_cast<std::uint8_t>(i)});
-        first += n;
+        first_output += n;
       }
     }
     // A drafter head's next features, each owner's rows after its logits.

@@ -22,6 +22,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "config/node_config.h"
 #include "engine/component_source.h"
@@ -29,6 +30,7 @@
 #include "engine/paged_node.h"
 #include "kernels/common/lower.h"
 #include "runtime/component_admission.h"
+#include "runtime/component_domain.h"
 #include "runtime/engine_llm.h"
 #include "spec/spec.h"
 
@@ -42,16 +44,12 @@ struct ComponentBuildOptions {
   // The same for a drafter stage (a diagnostic: its mapping's default
   // otherwise).
   std::optional<std::string> drafter_policy{};
-  // On the shared route (the Server sets it for the architectures whose
-  // serving recipe names one, ServingRecipe::shared_route): its plain,
-  // joined MTP and automatic serving envelopes. Explicit diagnostic domains
-  // retain their closed envelopes (a route without qualified envelopes has
-  // none: it serves only its automatic shape). Automatic service admission
-  // derives the domain and payment from its actual source, state, decoding
-  // mode and configured owners.
-  bool shared_route = false;
   // Default-off capture scheduling experiment; numerical policy is unchanged.
   bool capture_first_verify = false;
+  // Internal common-path measurement candidate. No CLI/settings activation;
+  // production remains separate until actual matched evidence selects it.
+  bool trial_mixed_outputs = false;
+  bool trial_mixed_causal = false;
   // Nonzero only under the Server's admitted metadata bootstrap loan (its
   // default automatic startup): the node's startup execution cap. Derive and
   // pin this source's construction budget before graph construction.
@@ -66,11 +64,14 @@ struct ComponentBuildOptions {
   // this. An explicit complete domain requires the real backend declaration;
   // supplied tuning owns all names and never supplies provider device facts.
   std::shared_ptr<const engine::NumericalDomain> execution_domain{};
-  // Derive the complete ordinary or composed domain from the actual spec,
-  // state layouts and configured envelope (Server's default for Qwen3.8 and
-  // DeepSeek V4). The existing metadata allowance pays before construction;
-  // an explicit domain cannot be combined with this request.
-  bool derive_execution_domain = false;
+  // Internal diagnostics own/prepay their supplied inventory just like the
+  // validation callback. Build prepays its retained copy before allocation.
+  // Every shape must fit the actual layout/backend and explicit domain; this
+  // measures only the supplied shapes, never grants wider execution support.
+  std::vector<planner::StepShape> diagnostic_setup_shapes{};
+  // With no explicit internal domain the complete mechanical envelope is
+  // derived from the admitted source/state/mode. Neither form grants numerical
+  // transformations; actual policy evidence and source sealing still apply.
   std::shared_ptr<const planner::OwnedDeviceFacts> tuning{};
   // Optional cap on this source's one growing metadata payment, including
   // accounting overhead. Zero uses the node's startup/running budget and
@@ -98,14 +99,6 @@ struct ComponentBuildOptions {
 // of logits; a greedy step returns each owner's token chosen on the
 // device. An architecture whose mapping has no serving recipe is refused
 // at Setup, naming why.
-// The paid internal serving domain, shared by ordinary and block/replay
-// compositions. The retained domain owns its allowance charge; this does not
-// approve a source or replace ComponentStepSource's complete sealing checks.
-std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> ComponentServingDomain(
-    const spec::ModelSpec& model, std::span<const model::StateLayoutDerived> layouts,
-    std::uint32_t slots, const engine::DecodingMode& mode,
-    const std::shared_ptr<engine::ExecutionMetadataAllowance>& allowance,
-    std::function<bool(std::uint64_t)> charge = {});
 
 EngineBuild ComponentLlmBuild(engine::PagedNode& node, std::filesystem::path store,
                               const config::ModelEntry& entry, int index,

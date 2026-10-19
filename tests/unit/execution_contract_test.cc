@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -73,6 +74,43 @@ en::StageExecutionInput Input(const ex::Registry& registry, std::uint16_t stage,
                       .selection = Seal("test selector options and device facts")},
           .reservation_alignment = 2097152,
           .placement_alignment = 256};
+}
+
+TEST(ExecutionContractTest, MixedCausalRoleCannotBroadenTheOriginalPhaseAuthority) {
+  auto declaration = Stage(0, "target");
+  auto domain = en::NumericalDomain::Create(std::vector{declaration});
+  ASSERT_TRUE(domain);
+  auto mixed = Shape();
+  mixed.segments[1].rows = 1;
+  mixed.segments[1].origin_phase = pl::Phase::kDecode;
+  EXPECT_TRUE(domain->CheckShape(mixed));
+  auto invalid = mixed;
+  invalid.segments[1].rows = 2;
+  EXPECT_FALSE(domain->CheckShape(invalid));
+  invalid = mixed;
+  invalid.segments[1].origin_phase = pl::Phase::kVerify;
+  EXPECT_FALSE(domain->CheckShape(invalid));
+  invalid = mixed;
+  invalid.row_invariant = true;
+  EXPECT_FALSE(domain->CheckShape(invalid));
+  invalid = mixed;
+  invalid.segments[0].rows = 1;
+  invalid.segments[0].origin_phase = pl::Phase::kDecode;
+  EXPECT_FALSE(domain->CheckShape(invalid));
+  auto tight_decode = Stage(0, "target");
+  tight_decode.phases[0].max_owners = 3;
+  tight_decode.phases[1].max_owners = 3;
+  tight_decode.phases[1].max_total_rows = 1;
+  auto one_decode_row = en::NumericalDomain::Create(std::vector{tight_decode});
+  ASSERT_TRUE(one_decode_row);
+  auto two_decode = mixed;
+  two_decode.segments.push_back(
+      {.slot = 2, .rows = 1, .past = 0, .read_cells = 256, .origin_phase = pl::Phase::kDecode});
+  EXPECT_FALSE(one_decode_row->CheckShape(two_decode));
+  declaration.phases.erase(declaration.phases.begin() + 1);
+  auto no_decode = en::NumericalDomain::Create(std::vector{declaration});
+  ASSERT_TRUE(no_decode);
+  EXPECT_FALSE(no_decode->CheckShape(mixed));
 }
 
 TEST(ExecutionContractTest, DomainOwnsDeclarationsAndRefusesUnknownAndUnqualifiedUses) {
@@ -896,6 +934,52 @@ TEST_F(JoinedSourceIdentityTest, ExistingDomainDoesNotAcquireJoinedPermissionImp
   ASSERT_TRUE((*ordinary)->PrepareExecution());
   EXPECT_FALSE((*ordinary)->JoinedRepeatPending(0));
   EXPECT_FALSE((*ordinary)->JoinedRepeatPending(1));
+}
+
+TEST(ExecutionMetadataAllowanceTest, ConcurrentRefundAndDriverChargeConserveTheOriginalReceipt) {
+  llmp::catalog::Catalog catalog;
+  const auto domain = catalog.AddDomain("consumer refund");
+  constexpr std::uint64_t capacity = 65536, count = 1024;
+  auto admitted =
+      en::ExecutionMetadataAllowance::Admit(catalog, domain, capacity, 4 * capacity, capacity);
+  ASSERT_TRUE(admitted) << Failed(admitted).value_or("");
+  auto owner = *admitted;
+  ASSERT_TRUE(owner->Charge(count));
+  std::atomic<bool> start{false};
+  std::thread consumer([owner, &start] {
+    while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+    for (std::uint64_t i = 0; i < count; ++i) owner->Release(1);
+  });
+  start.store(true, std::memory_order_release);
+  for (std::uint64_t i = 0; i < count; ++i) EXPECT_TRUE(owner->Charge(1));
+  consumer.join();
+  EXPECT_EQ(owner->used(), count);
+  EXPECT_GE(owner->peak(), count);
+  EXPECT_LE(owner->peak(), 2 * count);
+  owner->Release(UINT64_MAX);  // A malformed over-release cannot create capacity.
+  EXPECT_EQ(owner->used(), count);
+  owner->Release(count);
+  EXPECT_EQ(owner->used(), 0U);
+  EXPECT_TRUE(owner->HeldBy(catalog, domain));
+}
+
+TEST(ExecutionMetadataAllowanceTest, RetainedConsumerRefundNeverBorrowsADeadCatalogOwner) {
+  std::shared_ptr<en::ExecutionMetadataAllowance> owner;
+  {
+    llmp::catalog::Catalog catalog;
+    const auto domain = catalog.AddDomain("expired catalog owner");
+    auto admitted = en::ExecutionMetadataAllowance::Admit(catalog, domain, 65536, 262144, 65536);
+    ASSERT_TRUE(admitted) << Failed(admitted).value_or("");
+    owner = *admitted;
+    ASSERT_TRUE(owner->Charge(512));
+  }
+  std::thread consumer([retained = owner] { retained->Release(512); });
+  consumer.join();
+  EXPECT_EQ(owner->used(), 0U);
+  EXPECT_EQ(owner->peak(), 512U);
+  owner->Release(1);
+  EXPECT_EQ(owner->used(), 0U);
+  owner.reset();
 }
 
 }  // namespace

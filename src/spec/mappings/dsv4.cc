@@ -219,8 +219,10 @@ constexpr std::array kParams = {
 // (a DSpark verify takes two of a wave's sixteen rows); adaptive waves on
 // lanes of their own. Its chat route thinks unless a request turns thinking
 // off.
-constexpr PolicyRule kServingRule{
-    .text = kDeepSeekServingPolicy, .prompts_alone = true, .capture_ahead = false};
+constexpr PolicyRule kServingRule{.text = kDeepSeekServingPolicy,
+                                  .prompts_alone = true,
+                                  .common_read = true,
+                                  .capture_ahead = false};
 // With DSpark: a draft-verify wave's time over a plain decode wave's,
 // widths 2 to 8 (execution/adaptive_wave_mode.h): the median joined wave of
 // the retired `llmp_spec_runner --check wave --slots N --wave-mode
@@ -240,7 +242,6 @@ constexpr ServingRecipe kServing{.family = "DeepSeek V4",
                                  .prefill_rows = 4096,
                                  .deep_context = 262144,
                                  .deep_prefill_rows = 2048,
-                                 .speculative_owners = 8,
                                  .draft_rows = true,
                                  .block_drafts = true,
                                  .adaptive_waves = true,
@@ -249,12 +250,12 @@ constexpr ServingRecipe kServing{.family = "DeepSeek V4",
                                  // wave reads rounded as Qwen3.8's.
                                  .default_draft_rows = 3,
                                  .default_wave_costs = kWaveCosts,
+                                 .default_wave_lanes = true,
                                  .default_wave_read_align = 2048,
                                  .default_thinking = true,
-                                 .shared_route = true,
+
                                  .frozen_host_masks = false,
-                                 .lanes = true,
-                                 .lid_mask = true,
+
                                  .serving_rule = &kServingRule};
 
 constexpr std::array kGates = {GateRule{.key = "deepseek4.expert_count", .kind = "ffn.moe"}};

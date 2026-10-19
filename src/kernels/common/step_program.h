@@ -44,6 +44,8 @@ namespace llmp::execution {
 class BoundPlan;
 }
 
+#include "kernels/common/execution_resources.h"
+
 namespace llmp::kernels {
 
 class StepLaunch;
@@ -283,7 +285,13 @@ class StepLaunch {
                                                   const Recorded& recorded) = 0;
   // A fault the launch context latched (a GGML context's): every request
   // that shares it stops (the cohort's fault).
-  virtual bool faulted() const { return false; }
+  virtual bool faulted() const { return retired_; }
+  // Denies further execution; it grants no completion or release rights.
+  void Retire() { retired_ = true; }
+  bool retired() const { return retired_; }
+
+ private:
+  bool retired_ = false;
 };
 
 // Complete primitive weight-read inventory emitted by the lowering. A
@@ -326,6 +334,14 @@ class StepProgram {
   StepProgram& operator=(StepProgram&&) = delete;
   virtual ~StepProgram() = default;
 
+  bool HoldResources(ExecutionResources owner) {
+    if (!owner || resources_) return false;
+    resources_ = std::move(owner);
+    return true;
+  }
+  bool UsesResources(const ExecutionResources& owner) const {
+    return owner.instance_ && resources_.instance_ == owner.instance_;
+  }
   // A compiler's temporary payment follows the returned program until its
   // caller transfers the retained graph/arena to a paid plan or future. The
   // base member dies after derived storage, including failed measurements.
@@ -343,6 +359,9 @@ class StepProgram {
   // each).
   virtual std::uint64_t scratch_bytes() const = 0;
   virtual std::uint64_t pool_bytes() const { return 0; }
+  // Exact new main-pool backing for a private view when its producer reuses
+  // already paid immutable lanes. This describes resources, never capability.
+  virtual std::uint64_t private_pool_bytes() const { return pool_bytes(); }
   virtual std::uint64_t host_bytes() const = 0;
   virtual std::uint64_t launches() const = 0;
   // Privacy-safe static plan facts only. No values, addresses or tensor names.
@@ -433,6 +452,7 @@ class StepProgram {
   }
 
  private:
+  ExecutionResources resources_;
   std::shared_ptr<void> construction_{};
 };
 

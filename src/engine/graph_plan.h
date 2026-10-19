@@ -39,7 +39,8 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponent
     const kernels::Addresses& addresses, planner::PlanOptions options,
     std::optional<kernels::TokenLowerInput> token = std::nullopt,
     const kernels::ProgramValidator& validate = {},
-    std::shared_ptr<const kernels::BackendOwner> report_owner = {});
+    std::shared_ptr<const kernels::BackendOwner> report_owner = {},
+    const kernels::ExecutionResources* resources = nullptr);
 
 }  // namespace llmp::engine
 #endif  // LLMP_ENGINE_GRAPH_PLAN_H_

@@ -36,7 +36,8 @@ struct ReportPayment {
   ReportPayment(const ReportPayment&) = delete;
   ~ReportPayment() { Release(); }
   void Release() {
-    if (owner) owner->Release(bytes);
+    if (owner)
+      owner->Release(bytes);
     else if (funder)
       funder->release(bytes);
     funder.reset();
@@ -233,8 +234,12 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponent
     const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
     const kernels::Addresses& addresses, planner::PlanOptions options,
     std::optional<kernels::TokenLowerInput> token, const kernels::ProgramValidator& validate,
-    std::shared_ptr<const kernels::BackendOwner> report_owner) {
+    std::shared_ptr<const kernels::BackendOwner> report_owner,
+    const kernels::ExecutionResources* resources) {
   if (!backend.lower) return std::unexpected("a component graph needs a backend lowerer");
+  if (resources &&
+      (!*resources || !resources->parent() || &backend != &resources->parent()->backend()))
+    return std::unexpected("private lowering resources differ from the canonical planning backend");
   if (token && (&token->step.graph != &io.graph || options.shape != &token->shape))
     return std::unexpected("token lowering metadata differs from the planned graph or shape");
   if (!token && (options.shape != nullptr || options.state_spans))
@@ -242,7 +247,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponent
   auto plan = PlanComponentGraph(io, backend, policy, addresses, std::move(options));
   if (!plan) return std::unexpected(std::move(plan.error()));
   const kernels::LowerInput input{*plan, io, addresses, token};
-  auto lowered = backend.lower(input);
+  auto lowered = resources ? resources->Lower(input) : backend.lower(input);
   if (!lowered) return lowered;
   if (!*lowered) return std::unexpected("the backend returned no step program");
   if (validate) {
@@ -303,7 +308,14 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponent
   auto* wrapper = new (std::nothrow)
       ReportedProgram(std::move(*lowered), std::move(*inventory), coverage, std::move(payment));
   if (!wrapper) return std::unexpected("allocating the paid plan report wrapper failed");
-  return std::unique_ptr<kernels::StepProgram>(wrapper);
+  std::unique_ptr<kernels::StepProgram> result(wrapper);
+  // Successful private lowering minted the inner program's capability. The
+  // reporting decorator carries that SAME producer-minted identity, so routed
+  // preflight authenticates the returned program rather than losing authority
+  // at an otherwise transparent wrapper. Copying the receipt allocates nothing.
+  if (resources && !result->HoldResources(*resources))
+    return std::unexpected("the paid report wrapper lost private resource identity");
+  return result;
 }
 
 }  // namespace llmp::engine

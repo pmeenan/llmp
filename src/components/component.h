@@ -51,6 +51,7 @@
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "model/batching.h"
+#include "model/shape_parameters.h"
 #include "model/state_contract.h"
 #include "spec/spec.h"
 
@@ -457,9 +458,15 @@ struct ComponentDef {
   std::vector<std::string> (*inject_reads)(const Instance& instance) = nullptr;
   // Baked graph dimensions that depend on positions, appended to the
   // step source's cache key for each segment. Null: positions affect only
-  // input data. Uses the same geometry helpers as the fragment.
+  // input data. Uses the same geometry helpers as the fragment. Annotated
+  // facts include their first actual change coordinate; unannotated words
+  // deliberately leave specialization-query coverage Unknown.
   void (*shape_parameters)(const Instance& instance, std::uint32_t rows, std::uint32_t past,
-                           std::uint32_t read_align, std::vector<std::uint64_t>& out) = nullptr;
+                           std::uint32_t read_align, model::ShapeParameterSink& out) = nullptr;
+  // Explicit immutable provider promise: annotated intervals cover every
+  // position-dependent key word, including changes in emitted cardinality.
+  // New/older emitters default Unknown even when they emit no words here.
+  bool shape_parameter_intervals = false;
   // The rows of each segment an injection writes: its last min(rows, this).
   std::uint32_t (*inject_rows)(const Instance& instance) = nullptr;
 };

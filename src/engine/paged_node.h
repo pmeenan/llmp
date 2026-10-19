@@ -113,6 +113,8 @@
 #include "base/bytes.h"
 #include "base/wake.h"
 #include "catalog/catalog.h"
+#include "engine/supplemental_run.h"
+#include "kernels/common/execution_resources.h"
 #include "providers/device_execution.h"
 #include "providers/device_memory.h"
 #include "providers/device_runtime.h"
@@ -416,6 +418,22 @@ class PagedModel {
   // After the scheduler stopped cleanly: its launch contexts, memory and
   // files.
   virtual Status Release() = 0;
+
+ private:
+  friend class PagedNode;
+  // Only the node calls this after real stream fences and before eviction.
+  // Host callback status, a caller boolean or a destructor cannot grant it.
+  virtual Status RetireAfterFence() { return {}; }
+};
+
+// Embedded in an adopted runner's paid root, so registration needs no second
+// allocation/container. Its node-owned reference is retired only after the
+// node's authenticated fence/release path; adapter/view last-drop cannot run
+// driver cleanup or orphan a mapped runner.
+struct RetainedModelRoot {
+  PagedModel* model = nullptr;
+  kernels::ResourceKeep keep;
+  RetainedModelRoot* next = nullptr;
 };
 
 // Driver-thread observation only. Even a retained observer cannot keep this
@@ -486,6 +504,34 @@ class HostPayment {
   }
   Releases* releases_ = nullptr;
   std::uint64_t bytes_ = 0;
+};
+
+// A prepaid extension of one exact live request/lease. Copying retains only
+// metadata; it grants no work, retirement or cleanup proof. Only the issuing
+// node can close it after canonical Held::Drained validation.
+class RequestExtension {
+ public:
+  RequestExtension() = default;
+  RequestExtension(const RequestExtension&) = default;
+  RequestExtension& operator=(const RequestExtension&) = default;
+  RequestExtension(RequestExtension&&) noexcept = default;
+  RequestExtension& operator=(RequestExtension&&) noexcept = default;
+  explicit operator bool() const { return static_cast<bool>(keep_); }
+
+ private:
+  friend class PagedNode;
+  struct Data;
+  RequestExtension(kernels::ResourceKeep keep, Data* data) : keep_(std::move(keep)), data_(data) {}
+  kernels::ResourceKeep keep_;
+  Data* data_ = nullptr;
+};
+
+// A job's effects and retirement are independent of its success Status.
+// Written by Job and SupplementalJob; no callback result alone proves a fence.
+struct JobReport {
+  enum class Retirement : std::uint8_t { kNotSubmitted, kRetired, kUnproven };
+  Retirement retirement = Retirement::kNotSubmitted;
+  std::optional<scheduler::JobResult> callback_result{};
 };
 
 class PagedNode {
@@ -578,7 +624,7 @@ class PagedNode {
   // access, one resident extent of `memory_class` per 2 MiB. Before Run.
   Status MapResident(Mapped& mapped, std::string name, std::uint64_t bytes,
                      providers::BackingKind kind, catalog::MemoryClass memory_class,
-                     catalog::Recovery recovery, int owner);
+                     catalog::Recovery recovery, int owner, bool* over_budget = nullptr);
   // Reserves a live-state region and catalogs its extents without physical
   // backing. Each extent is materialized through its registered page source
   // before a job reads or writes it. Normally before Start; after Run the
@@ -590,7 +636,8 @@ class PagedNode {
   // the reclaimer free it first (as ChargeHost does), and is refused only
   // when it still does not.
   std::expected<void*, std::string> Pinned(std::uint64_t bytes, int owner,
-                                           std::vector<catalog::ExtentId>& staging);
+                                           std::vector<catalog::ExtentId>& staging,
+                                           bool* over_budget = nullptr);
   // Pinned staging set apart once, at the runtime's start, for one user at
   // a time (a turn checkpoint's capture or restore, engine/
   // checkpoint_file.h), so a budget full of reclaimable plans, graphs and
@@ -648,6 +695,8 @@ class PagedNode {
   // or a forced charge. Called before submitting preparation, outside Job.
   bool TryChargeHost(std::uint64_t bytes);
   void UnchargeHost(std::uint64_t bytes);
+  // Refusal-capable prepayment for exported owned host bytes. Release has no
+  // node/catalog borrower and is safe after teardown and on other threads.
   std::expected<HostPayment, std::string> PrepayHost(std::uint64_t bytes);
   // The chat route's request memory past the start's floor (runtime/
   // intake_limits.h, D-102), charged inside the budget as its own pinned
@@ -763,7 +812,8 @@ class PagedNode {
   // device's run of it. It may not call the node, inspect run state,
   // dispatch GPU work or change the closure. Inline lanes skip it.
   Status Job(const catalog::Closure& closure, scheduler::DeviceJob job, std::string_view what,
-             std::uint32_t stream, const std::function<void()>& meanwhile = {});
+             std::uint32_t stream, const std::function<void()>& meanwhile = {},
+             JobReport* report = nullptr);
   // Explicit dependency-discovery continuation. The request's original lease
   // stays held while the scheduler materializes and leases `selected` for this
   // job. Complete payload/source ownership and admitted metadata are mandatory;
@@ -776,7 +826,11 @@ class PagedNode {
   Status SupplementalJob(const catalog::Closure& selected, scheduler::DeviceJob job,
                          std::shared_ptr<const void> payload,
                          std::shared_ptr<ExecutionMetadataAllowance> allowance,
-                         std::string_view what, std::uint32_t stream);
+                         std::string_view what, std::uint32_t stream, JobReport* report = nullptr,
+                         const SupplementalCapacity& capacity = {});
+  std::expected<SupplementalCapacity, std::string> PrepareSupplementalCapacity(
+      std::uint32_t stream, std::uint64_t max_extents,
+      std::shared_ptr<ExecutionMetadataAllowance> allowance);
   // Retirement only, never success of the failed work. A refusal leaves the
   // pending owner linked; callers must retain their complete node environment.
   Status FinishSupplemental();
@@ -793,6 +847,13 @@ class PagedNode {
   // capacity refusal preserves the old request. Shrinking does not evict.
   Status TryRefreshRequest(std::uint32_t stream, const catalog::Closure& closure,
                            bool* over_budget = nullptr);
+  // All forward storage is paid before materialization/publication. Closing
+  // removes only these private additions IN PLACE, preserving any permanent
+  // state/workspace growth; no optional reverse allocation is needed.
+  std::expected<RequestExtension, std::string> PrepareRequestExtension(
+      std::uint32_t stream, const catalog::Closure& additions, bool* over_budget = nullptr);
+  Status ApplyRequestExtension(const RequestExtension& extension, bool* over_budget = nullptr);
+  Status CloseRequestExtension(const RequestExtension& extension);
 
   // Ends it: its lease released (no step is in flight between Jobs), its
   // extents resident. Its task's failure, if it failed.
@@ -855,6 +916,12 @@ class PagedNode {
   friend struct PagedWeightsTestAccess;
   friend class LiveState;
   friend class ModelRunner;
+  friend class StagedExecution;
+  friend class RunnerOwner;
+  friend class PromptBatch;
+  void KeepModelRoot(RetainedModelRoot& root);
+  void RetireModelRoot(RetainedModelRoot& root);
+  RetainedModelRoot* model_roots_ = nullptr;
   struct WeightFile {
     int owner = kShared;
     scheduler::FileId id;
@@ -883,12 +950,15 @@ class PagedNode {
                    catalog::Recovery recovery, int owner, bool resident,
                    std::uint64_t virtual_capacity = 0);
   Status GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::BackingKind kind,
-                    catalog::MemoryClass memory_class, catalog::Recovery recovery, int owner);
+                    catalog::MemoryClass memory_class, catalog::Recovery recovery, int owner,
+                    bool* over_budget = nullptr);
   Status Region(scheduler::RegionWork work, std::string_view what);
   Status RegionCatalog(std::function<Status()> mutation, std::string_view what);
   struct OpenRequest {
-    // Closure/catalog/held storage dies before its paid lifetime.
+    // Extra closure/catalog/held capacities, destroyed before their refund.
+    ~OpenRequest();
     HostPayment replacement_payment;
+    RequestExtension extension;
     std::string what;
     catalog::Closure closure;
     std::uint64_t request = 0;
@@ -899,6 +969,9 @@ class PagedNode {
     bool cancelled = false;
     bool unproven = false;
   };
+  Status ApplyRequestReplacement(OpenRequest& open, catalog::Closure& next,
+                                 scheduler::Scheduler::LeaseReplacementStorage* prepared,
+                                 HostPayment& payment, bool& applied);
   // A job's times on the device lane's thread, read once it has retired.
   struct Timing {
     std::chrono::steady_clock::time_point started;
@@ -919,10 +992,11 @@ class PagedNode {
             const Timing& timing);
   Status Step(std::uint32_t stream, OpenRequest& open, const catalog::Closure& closure,
               scheduler::DeviceJob job, std::string_view what,
-              const std::function<void()>& meanwhile);
+              const std::function<void()>& meanwhile, JobReport* report);
   // Step's direct form (NodeSettings::direct_steps).
   Status DirectStep(std::uint32_t stream, OpenRequest& open, scheduler::DeviceJob job,
-                    std::string_view what, const std::function<void()>& meanwhile);
+                    std::string_view what, const std::function<void()>& meanwhile,
+                    JobReport* report);
   // A request that can take no further step: awaited and erased, with the
   // error `why`.
   Status Ended(std::uint32_t stream, std::string_view what, std::string_view why);
@@ -931,6 +1005,7 @@ class PagedNode {
   std::expected<std::uint64_t, std::string> EndRequestsOver(
       std::span<const catalog::ExtentId> extents);
 
+  const std::uint64_t lifetime_generation_;  // process-local opaque token issuer
   NodeSettings settings_;
   QuietPatience own_patience_{settings_.quiet};
   Patience* patience_ = nullptr;

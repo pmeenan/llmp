@@ -154,6 +154,17 @@ constexpr ServingRecipe kServing{
 constexpr std::array<std::uint64_t, 1> kAttentionRows{4121};
 constexpr std::array<std::uint64_t, 1> kAttentionImageRows{4096};
 
+constexpr std::array kHostInputs{
+    ImageHostInput{0, 0, ImageInputValue::kPromptIds},
+    ImageHostInput{0, 1, ImageInputValue::kTextPositions},
+    ImageHostInput{0, 2, ImageInputValue::kTextCausalMask},
+    ImageHostInput{1, 2, ImageInputValue::kTimestepSinusoid},
+    ImageHostInput{1, 3, ImageInputValue::kJointPositions},
+    ImageHostInput{1, 4, ImageInputValue::kJointMask},
+    ImageHostInput{1, 5, ImageInputValue::kEulerDelta},
+    ImageHostInput{2, 1, ImageInputValue::kLatentAffine},
+};
+
 }  // namespace
 
 const ImageMapping& QwenImage21Mapping() {
@@ -214,7 +225,8 @@ const ImageMapping& QwenImage21Mapping() {
       .attention_rows = kAttentionRows,
       .attention_image_rows = kAttentionImageRows,
       .tokenizer = "tokenizer/tokenizer.json",
-      .prompt = "qwen_image_2_1"};
+      .prompt = "qwen_image_2_1",
+      .host_inputs = kHostInputs};
   return kMapping;
 }
 

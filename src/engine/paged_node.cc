@@ -13,7 +13,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <format>
+#include <iterator>
 #include <limits>
+#include <new>
 #include <optional>
 #include <print>
 #include <span>
@@ -51,6 +53,7 @@ using sc::SwapReport;
 using support::Address;
 using support::Error;
 using support::Joined;
+std::atomic<std::uint64_t> next_node_generation{0};
 
 // A request's driver spins from this long before a step's expected end
 // until this long after it (the device lanes' defaults, DeviceSettings).
@@ -123,6 +126,31 @@ void DriveUntil(Done done, Round round, Progress progress, std::chrono::millisec
     }
     round();
   }
+}
+
+// Catalog thread only. Caller-supplied occupancy is a consistency check,
+// never admission authority, for both ordinary and prepaid replacements.
+Status CheckReplacementClosure(const catalog::Catalog& catalog, catalog::DomainId domain,
+                               const catalog::Closure& closure) {
+  base::Bytes actual;
+  std::optional<catalog::ExtentId> previous;
+  for (const auto& [extent, generation] : closure.extents) {
+    const auto view = catalog.Describe(extent);
+    if (!view || view->descriptor.domain != domain || view->content_generation != generation ||
+        view->discarded || view->state == catalog::ExtentState::kQuarantined ||
+        (previous && extent <= *previous))
+      return Error("replacement closure is foreign, stale or noncanonical");
+    auto total = actual.Plus(view->descriptor.size);
+    if (!total) return Error("replacement physical occupancy overflows");
+    actual = *total;
+    previous = extent;
+  }
+  if (closure.extents.empty() ? !closure.bytes_by_domain.empty()
+                              : closure.bytes_by_domain.size() != 1 ||
+                                    closure.bytes_by_domain.begin()->first != domain ||
+                                    closure.bytes_by_domain.begin()->second != actual)
+    return Error("replacement closure occupancy disagrees with its actual extents");
+  return {};
 }
 
 }  // namespace
@@ -336,9 +364,60 @@ std::size_t CountingStorage::Harvest(std::span<providers::IoCompletion> out, boo
   return produced;
 }
 
-PagedNode::PagedNode(NodeSettings settings) : settings_(settings) {}
+struct RequestExtension::Data final : kernels::ResourceDependency {
+  Data(HostPayment paid, PagedNode& owner, std::uint64_t issuer, std::uint32_t at,
+       std::uint64_t request_id, catalog::LeaseId held)
+      : payment(std::move(paid)),
+        node(&owner),
+        generation(issuer),
+        stream(at),
+        request(request_id),
+        lease(held) {}
+  kernels::ResourceKeep Publish() { return Adopt(); }
+  void Destroy() override {
+    auto paid = std::move(payment);
+    delete this;  // consumer-safe metadata only; no driver or node callback
+    paid.Reset();
+  }
+  // Forward and close use the existing serialized CallMetadata path.
+  // Controls run sequentially, so one actual CallProgram/callback allocation
+  // capacity suffices. Capture bounds are checked against the real closure types below.
+  static constexpr auto kValidationCaptureBytes = 4 * sizeof(void*);
+  static constexpr auto kRemovalCaptureBytes = 3 * sizeof(void*);
+  static constexpr auto kReplacementCaptureBytes = 5 * sizeof(void*);
+  static constexpr auto kControlBytes =
+      sizeof(sc::CallProgram) + kReplacementCaptureBytes + 2 * std::uint64_t{64};
+  HostPayment payment, installed_payment;
+  std::vector<std::pair<catalog::ExtentId, std::uint64_t>> additions;
+  catalog::Closure candidate;
+  sc::Scheduler::LeaseReplacementStorage prepared;
+  PagedNode* node;
+  std::uint64_t generation;
+  std::uint32_t stream;
+  std::uint64_t request;
+  catalog::LeaseId lease;
+  enum class State : std::uint8_t { kPrepared, kActive, kClosed };
+  State state = State::kPrepared;
+};
+
+PagedNode::OpenRequest::~OpenRequest() {
+  // This invalidates only metadata/holder identity, never certifies native
+  // work. A private batch independently retains every unproven child owner.
+  if (extension) extension.data_->state = RequestExtension::Data::State::kClosed;
+}
+
+PagedNode::PagedNode(NodeSettings settings)
+    : lifetime_generation_(next_node_generation.fetch_add(1, std::memory_order_relaxed) + 1),
+      settings_(settings) {
+  base::Check(lifetime_generation_ != 0, "node token generation overflow");
+}
 
 PagedNode::~PagedNode() {
+  // Continuing ordinary member destruction would release providers/streams
+  // under retained launch borrowers. Runtime uses RetireServiceOrExit on a
+  // failed teardown; direct embedders must follow the same fail-stop boundary.
+  base::Check(model_roots_ == nullptr,
+              "a node cannot destruct with unretired adopted runner resources");
   if (staging_lifetime_) staging_lifetime_->live_ = false;
   staging_lifetime_.reset();
   if (torn_down_ || scheduler_ == nullptr) {
@@ -599,11 +678,12 @@ Status PagedNode::GrowWorkspace(std::uint64_t activations, std::uint64_t pool) {
 
 Status PagedNode::MapResident(Mapped& mapped, std::string name, std::uint64_t bytes,
                               providers::BackingKind kind, MemoryClass memory_class,
-                              catalog::Recovery recovery, int owner) {
+                              catalog::Recovery recovery, int owner, bool* over_budget) {
+  if (over_budget) *over_budget = false;
   if (scheduler_) {
     if (mapped.reservation.valid()) return Error("an owned region is already mapped");
     mapped.name = std::move(name);
-    return GrowMapped(mapped, bytes, kind, memory_class, recovery, owner);
+    return GrowMapped(mapped, bytes, kind, memory_class, recovery, owner, over_budget);
   }
   return MapRegion(mapped, std::move(name), bytes, kind, memory_class, recovery, owner, true);
 }
@@ -825,7 +905,9 @@ Status PagedNode::RegionCatalog(std::function<Status()> mutation, std::string_vi
 }
 
 Status PagedNode::GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::BackingKind kind,
-                             MemoryClass memory_class, catalog::Recovery recovery, int owner) {
+                             MemoryClass memory_class, catalog::Recovery recovery, int owner,
+                             bool* over_budget) {
+  if (over_budget) *over_budget = false;
   if (!scheduler_ || job_active_ || supplemental_ || torn_down_ ||
       bytes > UINT64_MAX - (kPagedExtent - 1))
     return Error("owned-region growth has invalid size or an unretired operation");
@@ -863,8 +945,12 @@ Status PagedNode::GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::Bac
       __builtin_add_overflow(retained, metadata, &retained))
     return Error("owned-region retained metadata copy overflows");
   const auto growth = retained > region_metadata_bytes_ ? retained - region_metadata_bytes_ : 0;
-  if (__builtin_add_overflow(metadata, growth, &charge) || !TryChargeHost(charge))
+  if (__builtin_add_overflow(metadata, growth, &charge))
+    return Error("owned-region metadata charge overflows");
+  if (!TryChargeHost(charge)) {
+    if (over_budget) *over_budget = true;
     return Error("owned-region metadata does not fit");
+  }
   region_metadata_bytes_ += growth;
   auto result = std::make_shared<sc::RegionResult>();
   const auto new_count = static_cast<std::size_t>(added / kPagedExtent);
@@ -885,7 +971,10 @@ Status PagedNode::GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::Bac
   };
   auto admitted = RegionCatalog(
       [&]() -> Status {
-        if (Shortfall(added) != 0) return Error("owned-region backing does not fit");
+        if (Shortfall(added) != 0) {
+          if (over_budget) *over_budget = true;
+          return Error("owned-region backing does not fit");
+        }
         spans_.reserve(spans_.size() + new_count);
         for (std::size_t i = 0; i < new_count; ++i) {
           const auto extent = catalog_.AddExtent({.domain = domain_,
@@ -1088,7 +1177,9 @@ Status PagedNode::RetireMapped(Mapped& mapped) {
 }
 
 std::expected<void*, std::string> PagedNode::Pinned(std::uint64_t bytes, int owner,
-                                                    std::vector<ExtentId>& staging) {
+                                                    std::vector<ExtentId>& staging,
+                                                    bool* over_budget) {
+  if (over_budget) *over_budget = false;
   bytes = std::max<std::uint64_t>(bytes, 256);
   if (scheduler_ != nullptr) {
     // What does not fit has the reclaim order free it first, then is
@@ -1111,6 +1202,7 @@ std::expected<void*, std::string> PagedNode::Pinned(std::uint64_t bytes, int own
       // checked again after each reclaim, a few times at most.
       const std::uint64_t ask = (shortfall + kPagedExtent - 1) / kPagedExtent * kPagedExtent;
       if (attempt >= 3 || AskReclaim(ask, ReclaimFor::kStaging) == 0) {
+        if (over_budget) *over_budget = true;
         return Error("pinned staging exceeds the execution budget");
       }
     }
@@ -1124,6 +1216,7 @@ std::expected<void*, std::string> PagedNode::Pinned(std::uint64_t bytes, int own
     if (scheduler_ != nullptr) {
       const auto occupancy = catalog_.OccupancyOf(domain_).Total().value();
       if (occupancy > budget_.value() || bytes > budget_.value() - occupancy) {
+        if (over_budget) *over_budget = true;
         return Error("pinned staging exceeds the execution budget");
       }
     }
@@ -1231,6 +1324,8 @@ bool PagedNode::ChargeRuntime(catalog::ExtentId& held, std::uint64_t& charged, s
 
 bool PagedNode::ChargeHost(std::uint64_t bytes, bool required) {
   CollectHostReleases();
+  if (bytes > UINT64_MAX - host_total_ || host_total_ + bytes > UINT64_MAX - (kPagedExtent - 1))
+    return false;
   if (bytes == 0) {
     return true;
   }
@@ -1266,8 +1361,9 @@ bool PagedNode::ChargeHost(std::uint64_t bytes, bool required) {
 }
 
 bool PagedNode::TryChargeHost(std::uint64_t bytes) {
-  if (job_active_ || torn_down_ || bytes > UINT64_MAX - host_total_ ||
-      host_total_ + bytes > UINT64_MAX - (kPagedExtent - 1))
+  if (job_active_ || torn_down_) return false;
+  CollectHostReleases();
+  if (bytes > UINT64_MAX - host_total_ || host_total_ + bytes > UINT64_MAX - (kPagedExtent - 1))
     return false;
   if (!Recharge(host_total_ + bytes, false, nullptr)) return false;
   host_total_ += bytes;
@@ -1797,16 +1893,25 @@ std::expected<sc::SchedulerStats, std::string> PagedNode::Stats() {
 }
 
 Status PagedNode::Job(const catalog::Closure& closure, sc::DeviceJob job, std::string_view what,
-                      std::uint32_t stream, const std::function<void()>& meanwhile) {
+                      std::uint32_t stream, const std::function<void()>& meanwhile,
+                      JobReport* report) {
+  if (report) *report = {};
   if (supplemental_) return Error("a supplemental operation has not proven retirement");
   if (job_active_) return Error("a device job cannot recursively dispatch another job");
+  if (report && job) {
+    job = [inner = std::move(job), report](providers::NativeStream native) mutable {
+      const auto result = inner(native);
+      report->callback_result = result;
+      return result;
+    };
+  }
   job_active_ = true;
   struct ActiveJob {
     bool& active;
     ~ActiveJob() { active = false; }
   } active{job_active_};
   if (const auto open = requests_.find(stream); open != requests_.end()) {
-    return Step(stream, *open->second, closure, std::move(job), what, meanwhile);
+    return Step(stream, *open->second, closure, std::move(job), what, meanwhile, report);
   }
   // A fence over nothing (TearDown's) pages nothing in.
   if (auto files = closure.extents.empty() ? Status{} : SyncWeightFiles(); !files) {
@@ -1818,12 +1923,19 @@ Status PagedNode::Job(const catalog::Closure& closure, sc::DeviceJob job, std::s
   auto program =
       std::make_unique<RunProgram>(done, closure, Timed(std::move(job), stream, timing), stream);
   Status posted;
+  if (report) report->retirement = JobReport::Retirement::kUnproven;
   if (meanwhile && threaded()) {
     const auto request = Submit(std::move(program));
     meanwhile();
     posted = Await(done, what, request);
   } else {
     posted = Post(std::move(program), done, what);
+  }
+  if (report) {
+    report->retirement = done.retired.load() ? JobReport::Retirement::kRetired
+                                             : JobReport::Retirement::kNotSubmitted;
+    if (report->callback_result == sc::JobResult::kNotStarted)
+      report->retirement = JobReport::Retirement::kNotSubmitted;
   }
   if (posted) {
     Note(stream, called, timing);
@@ -1850,10 +1962,42 @@ Status PagedNode::CallMetadata(std::function<Status()> call, std::string_view wh
   return Await(done, what, request);
 }
 
+std::expected<SupplementalCapacity, std::string> PagedNode::PrepareSupplementalCapacity(
+    std::uint32_t stream, std::uint64_t max_extents,
+    std::shared_ptr<ExecutionMetadataAllowance> allowance) {
+  const auto found = requests_.find(stream);
+  if (!scheduler_ || job_active_ || supplemental_ || torn_down_ || found == requests_.end() ||
+      found->second->cancelled || found->second->unproven || found->second->done.gone.load())
+    return std::unexpected("supplemental prepayment needs a completed live request boundary");
+  // Pay preparation before constructing its control. Later controls borrow the
+  // receipt minted inside it and make no new optional admission decision.
+  if (!allowance || !allowance->Charge(SupplementalRun::kControlBytes))
+    return std::unexpected("supplemental preparation control was not funded");
+  struct Refund {
+    std::shared_ptr<ExecutionMetadataAllowance> allowance;
+    ~Refund() { allowance->Release(SupplementalRun::kControlBytes); }
+  } refund{allowance};
+  std::expected<SupplementalCapacity, std::string> result =
+      std::unexpected("supplemental prepayment did not run");
+  auto prepared = CallMetadata(
+      [&]() -> Status {
+        auto& open = *found->second;
+        result = SupplementalRun::Prepare(catalog_, domain_, open.channel, open.done, max_extents,
+                                          allowance);
+        if (!result) return Error(result.error());
+        return {};
+      },
+      "prepaying complete supplemental continuation capacity");
+  if (!prepared) return std::unexpected(prepared.error());
+  return result;
+}
+
 Status PagedNode::SupplementalJob(const catalog::Closure& selected, sc::DeviceJob job,
                                   std::shared_ptr<const void> payload,
                                   std::shared_ptr<ExecutionMetadataAllowance> allowance,
-                                  std::string_view what, std::uint32_t stream) {
+                                  std::string_view what, std::uint32_t stream, JobReport* report,
+                                  const SupplementalCapacity& capacity) {
+  if (report) *report = {};
   if (job_active_ || supplemental_ || torn_down_ || stream >= streams_.size())
     return Error("supplemental work has an invalid stream, overlapping job or unretired operation");
   const auto found = requests_.find(stream);
@@ -1863,13 +2007,18 @@ Status PagedNode::SupplementalJob(const catalog::Closure& selected, sc::DeviceJo
   auto& open = *found->second;
   // Pay the preflight control before allocating it. The retained operation
   // charges its own Bound inside that control; this fixed overlap is separate.
-  constexpr std::uint64_t control_bytes = 4096;
-  if (what.size() > 256 || !allowance || !allowance->Charge(control_bytes))
+  constexpr std::uint64_t control_bytes = SupplementalRun::kControlBytes;
+  if (what.size() > 256 || !allowance ||
+      (capacity ? !SupplementalRun::Covers(capacity, open.channel, domain_, allowance)
+                : !allowance->Charge(control_bytes)))
     return Error("supplemental metadata control was not funded or its label is too long");
   struct ControlCharge {
     std::shared_ptr<ExecutionMetadataAllowance> allowance;
-    ~ControlCharge() { allowance->Release(control_bytes); }
-  } control_charge{allowance};
+    bool charged;
+    ~ControlCharge() {
+      if (charged) allowance->Release(control_bytes);
+    }
+  } control_charge{allowance, !capacity};
   job_active_ = true;
   struct ActiveJob {
     bool& flag;
@@ -1881,7 +2030,7 @@ Status PagedNode::SupplementalJob(const catalog::Closure& selected, sc::DeviceJo
       [&]() -> Status {
         auto made = SupplementalRun::Create(catalog_, domain_, open.channel, open.done, selected,
                                             Timed(std::move(job), stream, timing), stream,
-                                            std::move(payload), std::move(allowance));
+                                            std::move(payload), std::move(allowance), capacity);
         if (!made) return Error(made.error());
         supplemental_ = std::move(*made);
         return {};
@@ -1897,6 +2046,7 @@ Status PagedNode::SupplementalJob(const catalog::Closure& selected, sc::DeviceJo
     supplemental_.reset();  // no selected materialization or launch was offered
     return files;
   }
+  if (report) report->retirement = JobReport::Retirement::kUnproven;
   auto ran = Post(supplemental_->Program(), supplemental_->done(), what);
   if (!ran) open.cancelled = true;
   bool retired = false;
@@ -1912,6 +2062,7 @@ Status PagedNode::SupplementalJob(const catalog::Closure& selected, sc::DeviceJo
     open.unproven = true;
     return Error("supplemental completion is unproven; complete payload and base lease retained");
   }
+  if (report) report->retirement = JobReport::Retirement::kRetired;
   supplemental_.reset();
   wake_.Signal();
   if (ran) Note(stream, called, timing);
@@ -2078,7 +2229,203 @@ Status PagedNode::RefreshRequest(std::uint32_t stream, const catalog::Closure& c
   return BeginRequest(stream, closure, what);
 }
 
-Status PagedNode::TryRefreshRequest(std::uint32_t stream, const catalog::Closure& closure,
+std::expected<RequestExtension, std::string> PagedNode::PrepareRequestExtension(
+    std::uint32_t stream, const catalog::Closure& additions, bool* over_budget) {
+  if (over_budget) *over_budget = false;
+  const auto found = requests_.find(stream);
+  if (found == requests_.end()) return Error("request extension needs an open holder");
+  OpenRequest& open = *found->second;
+  if (job_active_ || supplemental_ || open.unproven || open.cancelled || open.done.gone.load() ||
+      !open.channel.held.load(std::memory_order_acquire) || open.extension)
+    return Error("request extension needs a healthy unextended completed boundary");
+  if (additions.extents.empty()) return Error("request extension has no private additions");
+  auto valid = CallMetadata(
+      [&]() -> Status {
+        if (auto current = CheckReplacementClosure(catalog_, domain_, open.closure); !current)
+          return current;
+        return CheckReplacementClosure(catalog_, domain_, additions);
+      },
+      "checking prepared request extension authority");
+  if (!valid) return Error(valid.error());
+  for (const auto& added : additions.extents) {
+    const auto at = std::ranges::lower_bound(open.closure.extents, added.first, {},
+                                             [](const auto& e) { return e.first; });
+    if (at != open.closure.extents.end() && at->first == added.first)
+      return Error("private request additions overlap the permanent holder");
+  }
+  constexpr std::uint64_t kAllocationMetadata = 64;
+  using Entry = decltype(additions.extents)::value_type;
+  std::uint64_t control = 0, installed = 0, count = 0;
+  constexpr std::uint64_t kDomainNode = sizeof(decltype(additions.bytes_by_domain)::value_type) +
+                                        3 * sizeof(void*) + kAllocationMetadata;
+  constexpr auto kPerExtent = sizeof(Entry) + 2 * sizeof(catalog::ExtentId);
+  if (__builtin_mul_overflow(std::uint64_t{additions.extents.size()}, std::uint64_t{sizeof(Entry)},
+                             &control) ||
+      __builtin_add_overflow(control,
+                             std::uint64_t{sizeof(RequestExtension::Data)} +
+                                 2 * kAllocationMetadata + RequestExtension::Data::kControlBytes,
+                             &control) ||
+      __builtin_add_overflow(std::uint64_t{open.closure.extents.size()},
+                             std::uint64_t{additions.extents.size()}, &count) ||
+      __builtin_mul_overflow(count, std::uint64_t{kPerExtent}, &installed) ||
+      __builtin_add_overflow(installed, kDomainNode + 3 * kAllocationMetadata, &installed) ||
+      control > PTRDIFF_MAX || installed > PTRDIFF_MAX)
+    return Error("prepared request extension metadata overflows");
+  const auto old_bytes = open.closure.bytes_by_domain.empty()
+                             ? std::uint64_t{0}
+                             : open.closure.bytes_by_domain.begin()->second.value();
+  const auto added_bytes = additions.bytes_by_domain.begin()->second.value();
+  std::uint64_t total = 0;
+  if (__builtin_add_overflow(old_bytes, added_bytes, &total))
+    return Error("prepared request extension occupancy overflows");
+  auto paid = PrepayHost(control);
+  if (!paid) {
+    if (over_budget) *over_budget = true;
+    return Error(paid.error());
+  }
+  auto capacity = PrepayHost(installed);
+  if (!capacity) {
+    if (over_budget) *over_budget = true;
+    return Error(capacity.error());
+  }
+  auto* data = new (std::nothrow) RequestExtension::Data(
+      std::move(*paid), *this, lifetime_generation_, stream, open.request, open.channel.lease);
+  if (!data) return Error("allocating prepaid request extension failed");
+  RequestExtension token(data->Publish(), data);
+  data->installed_payment = std::move(*capacity);
+  data->additions.assign(additions.extents.begin(), additions.extents.end());
+  data->candidate.extents.reserve(static_cast<std::size_t>(count));
+  std::ranges::merge(open.closure.extents, additions.extents,
+                     std::back_inserter(data->candidate.extents));
+  data->candidate.bytes_by_domain.emplace(domain_, Bytes(total));
+  data->prepared.catalog_extents.reserve(static_cast<std::size_t>(count));
+  data->prepared.held_extents.reserve(static_cast<std::size_t>(count));
+  for (const auto& [extent, generation] : data->candidate.extents) {
+    (void)generation;
+    data->prepared.catalog_extents.push_back(extent);
+    data->prepared.held_extents.push_back(extent);
+  }
+  return token;
+}
+
+Status PagedNode::ApplyRequestExtension(const RequestExtension& extension, bool* over_budget) {
+  if (over_budget) *over_budget = false;
+  if (!extension || extension.data_->node != this ||
+      extension.data_->generation != lifetime_generation_)
+    return Error("prepared request extension belongs to another node");
+  auto& data = *extension.data_;
+  const auto found = requests_.find(data.stream);
+  if (found == requests_.end()) return Error("prepared request extension holder ended");
+  OpenRequest& open = *found->second;
+  if (open.request != data.request || open.channel.lease != data.lease || job_active_ ||
+      supplemental_ || open.unproven || open.cancelled || open.done.gone.load() ||
+      !open.channel.held.load(std::memory_order_acquire))
+    return Error("prepared request extension lost its healthy authenticated holder");
+  using State = RequestExtension::Data::State;
+  if (data.state == State::kActive && open.extension.data_ == &data) return {};
+  if (data.state != State::kPrepared || open.extension)
+    return Error("prepared request extension is closed, consumed or conflicts");
+  // No snapshot prefix is restored later. This check only rejects a stale
+  // PREPARE before its first publication; reverse removes private IDs in place.
+  auto original = open.closure.extents.begin();
+  for (const auto& entry : data.candidate.extents) {
+    if (std::ranges::binary_search(data.additions, entry)) continue;
+    if (original == open.closure.extents.end() || *original != entry)
+      return Error("permanent request closure changed after extension preparation");
+    ++original;
+  }
+  if (original != open.closure.extents.end())
+    return Error("permanent request closure changed after extension preparation");
+  auto valid =
+      CallMetadata([&]() { return CheckReplacementClosure(catalog_, domain_, data.candidate); },
+                   "checking prepared request extension content");
+  if (!valid) return valid;
+  AcquireReport acquired;
+  if (auto admitted =
+          Acquire(data.candidate, acquired, "admitting prepared request extension", over_budget);
+      !admitted)
+    return admitted;
+  bool applied = false;
+  auto replaced = ApplyRequestReplacement(open, data.candidate, &data.prepared,
+                                          data.installed_payment, applied);
+  if (applied) {
+    data.state = State::kActive;
+    open.extension = extension;
+  }
+  return replaced;
+}
+
+Status PagedNode::CloseRequestExtension(const RequestExtension& extension) {
+  if (!extension || extension.data_->node != this ||
+      extension.data_->generation != lifetime_generation_)
+    return Error("prepared request extension belongs to another node");
+  auto& data = *extension.data_;
+  using State = RequestExtension::Data::State;
+  if (data.state == State::kClosed) return {};
+  if (data.state == State::kPrepared) {
+    {
+      catalog::Closure candidate;
+      sc::Scheduler::LeaseReplacementStorage prepared;
+      std::swap(candidate, data.candidate);
+      std::swap(prepared, data.prepared);
+    }
+    data.installed_payment.Reset();
+    data.state = State::kClosed;
+    return {};
+  }
+  const auto found = requests_.find(data.stream);
+  if (found == requests_.end()) return Error("active request extension holder ended unexpectedly");
+  OpenRequest& open = *found->second;
+  if (open.extension.data_ != &data || open.request != data.request ||
+      open.channel.lease != data.lease || job_active_ || supplemental_ || open.unproven ||
+      open.cancelled || open.done.gone.load() || !open.channel.held.load(std::memory_order_acquire))
+    return Error("closing request extension needs its healthy authenticated completed holder");
+  std::uint64_t removed_bytes = 0;
+  const auto validate = [&]() -> Status {
+    if (auto checked = CheckReplacementClosure(catalog_, domain_, open.closure); !checked)
+      return checked;
+    for (const auto& entry : data.additions) {
+      if (!std::ranges::binary_search(open.closure.extents, entry))
+        return Error("private request addition is no longer held at its prepared generation");
+      const auto view = catalog_.Describe(entry.first);
+      if (!view || view->state != catalog::ExtentState::kResident ||
+          __builtin_add_overflow(removed_bytes, view->descriptor.size.value(), &removed_bytes))
+        return Error("private request addition has invalid resident occupancy");
+    }
+    if (open.closure.bytes_by_domain.empty() ||
+        removed_bytes > open.closure.bytes_by_domain.begin()->second.value())
+      return Error("private request addition exceeds installed occupancy");
+    return {};
+  };
+  static_assert(sizeof(validate) <= RequestExtension::Data::kValidationCaptureBytes);
+  auto valid = CallMetadata(validate, "checking private request removal");
+  if (!valid) return valid;
+  bool applied = false;
+  const auto remove = [&]() -> Status {
+    auto changed = scheduler_->RemoveRequestExtents(data.request, data.lease, data.additions);
+    if (!changed) return Error(sc::ToString(changed.error()));
+    applied = true;
+    return {};
+  };
+  static_assert(sizeof(remove) <= RequestExtension::Data::kRemovalCaptureBytes);
+  auto removed = CallMetadata(remove, "closing a prepaid request extension");
+  if (applied) {
+    std::erase_if(open.closure.extents, [&](const auto& entry) {
+      return std::ranges::binary_search(data.additions, entry);
+    });
+    if (open.closure.extents.empty())
+      open.closure.bytes_by_domain.clear();
+    else
+      open.closure.bytes_by_domain.begin()->second =
+          Bytes(open.closure.bytes_by_domain.begin()->second.value() - removed_bytes);
+    data.state = State::kClosed;
+    open.extension = {};
+    if (!removed) open.cancelled = true;
+  }
+  return removed;
+}
+
+Status PagedNode::TryRefreshRequest(std::uint32_t stream, const catalog::Closure& requested,
                                     bool* over_budget) {
   if (over_budget) *over_budget = false;
   const auto found = requests_.find(stream);
@@ -2087,33 +2434,79 @@ Status PagedNode::TryRefreshRequest(std::uint32_t stream, const catalog::Closure
   if (job_active_ || supplemental_ || open.unproven || open.cancelled || open.done.gone.load() ||
       !open.channel.held.load(std::memory_order_acquire))
     return Error("request replacement needs a healthy completed boundary");
+  // Ordinary permanent growth remains canonical while a private scope is
+  // active. Keep its additions protected in the SAME held closure; closing
+  // later subtracts only those IDs rather than restoring an obsolete prefix.
+  HostPayment merge_payment;
+  catalog::Closure merged;
+  const catalog::Closure* candidate = &requested;
+  if (open.extension) {
+    const auto& extension = *open.extension.data_;
+    if (extension.state != RequestExtension::Data::State::kActive || extension.node != this ||
+        extension.generation != lifetime_generation_ || extension.request != open.request ||
+        extension.lease != open.channel.lease)
+      return Error("request replacement lost its authenticated private extension");
+    std::uint64_t missing = 0, added_bytes = 0;
+    auto checked = CallMetadata(
+        [&]() -> Status {
+          if (auto valid = CheckReplacementClosure(catalog_, domain_, requested); !valid)
+            return valid;
+          for (const auto& entry : extension.additions) {
+            if (!std::ranges::binary_search(open.closure.extents, entry))
+              return Error("active private extension disappeared from its holder");
+            const auto view = catalog_.Describe(entry.first);
+            if (!view || view->descriptor.domain != domain_ ||
+                view->content_generation != entry.second || view->discarded ||
+                view->state != catalog::ExtentState::kResident)
+              return Error("active private extension lost its resident generation");
+            const auto found = std::ranges::lower_bound(requested.extents, entry.first, {},
+                                                        [](const auto& e) { return e.first; });
+            if (found != requested.extents.end() && found->first == entry.first) {
+              if (*found != entry) return Error("permanent closure changed a private generation");
+              continue;
+            }
+            if (__builtin_add_overflow(missing, std::uint64_t{1}, &missing) ||
+                __builtin_add_overflow(added_bytes, view->descriptor.size.value(), &added_bytes))
+              return Error("private extension union occupancy overflows");
+          }
+          return {};
+        },
+        "checking permanent growth beside a private extension");
+    if (!checked) return checked;
+    if (missing != 0) {
+      constexpr std::uint64_t kAllocatorMetadata = 64;
+      constexpr std::uint64_t kDomainNode =
+          sizeof(decltype(requested.bytes_by_domain)::value_type) + 3 * sizeof(void*) +
+          kAllocatorMetadata;
+      std::uint64_t count = 0, bytes = 0, total = 0;
+      const auto permanent = requested.bytes_by_domain.empty()
+                                 ? std::uint64_t{0}
+                                 : requested.bytes_by_domain.begin()->second.value();
+      if (__builtin_add_overflow(std::uint64_t{requested.extents.size()}, missing, &count) ||
+          __builtin_mul_overflow(
+              count, std::uint64_t{sizeof(decltype(requested.extents)::value_type)}, &bytes) ||
+          __builtin_add_overflow(bytes, kDomainNode + kAllocatorMetadata, &bytes) ||
+          __builtin_add_overflow(permanent, added_bytes, &total) || bytes > PTRDIFF_MAX)
+        return Error("private extension union metadata overflows");
+      auto paid = PrepayHost(bytes);
+      if (!paid) {
+        if (over_budget) *over_budget = true;
+        return Error(paid.error());
+      }
+      merge_payment = std::move(*paid);
+      merged.extents.reserve(static_cast<std::size_t>(count));
+      std::ranges::set_union(requested.extents, extension.additions,
+                             std::back_inserter(merged.extents));
+      merged.bytes_by_domain.emplace(domain_, Bytes(total));
+      candidate = &merged;
+    }
+  }
+  const catalog::Closure& closure = *candidate;
   // A node admits one physical domain. Validate source facts before any
   // payment or materialization, including the no-reclaimer acquisition path.
   // The supplied occupancy map is a consistency check, never authority.
-  auto valid = CallMetadata(
-      [&]() -> Status {
-        base::Bytes actual;
-        std::optional<catalog::ExtentId> previous;
-        for (const auto& [extent, generation] : closure.extents) {
-          const auto view = catalog_.Describe(extent);
-          if (!view || view->descriptor.domain != domain_ ||
-              view->content_generation != generation || view->discarded ||
-              view->state == catalog::ExtentState::kQuarantined ||
-              (previous && extent <= *previous))
-            return Error("replacement closure is foreign, stale or noncanonical");
-          auto total = actual.Plus(view->descriptor.size);
-          if (!total) return Error("replacement physical occupancy overflows");
-          actual = *total;
-          previous = extent;
-        }
-        if (closure.extents.empty() ? !closure.bytes_by_domain.empty()
-                                    : closure.bytes_by_domain.size() != 1 ||
-                                          closure.bytes_by_domain.begin()->first != domain_ ||
-                                          closure.bytes_by_domain.begin()->second != actual)
-          return Error("replacement closure occupancy disagrees with its actual extents");
-        return {};
-      },
-      "checking replacement request authority");
+  auto valid = CallMetadata([&]() { return CheckReplacementClosure(catalog_, domain_, closure); },
+                            "checking replacement request authority");
   if (!valid) return valid;
   if (open.closure.extents == closure.extents) return {};
   // The three new vectors (driver closure, catalog lease and Held), the
@@ -2142,26 +2535,36 @@ Status PagedNode::TryRefreshRequest(std::uint32_t stream, const catalog::Closure
   if (auto admitted = Acquire(next, acquired, "admitting a replacement request", over_budget);
       !admitted)
     return admitted;
-  // Canonical Held::Drained checks scheduled operations and direct external
-  // work. Neither a result wake nor a step count is used as retirement proof.
   bool applied = false;
-  auto replaced = CallMetadata(
-      [&]() -> Status {
-        auto result = scheduler_->ReplaceRequestLease(open.request, open.channel.lease, next);
-        if (!result) return Error(sc::ToString(result.error()));
-        applied = true;
-        return {};
-      },
-      "replacing a completed request lease");
+  return ApplyRequestReplacement(open, next, nullptr, *payment, applied);
+}
+
+Status PagedNode::ApplyRequestReplacement(OpenRequest& open, catalog::Closure& next,
+                                          sc::Scheduler::LeaseReplacementStorage* prepared,
+                                          HostPayment& payment, bool& applied) {
+  // Canonical Held::Drained checks scheduled operations and direct external
+  // work. Neither a result wake nor a step count is retirement proof.
+  const auto replace = [&]() -> Status {
+    auto result =
+        prepared
+            ? scheduler_->ReplaceRequestLease(open.request, open.channel.lease, next, *prepared)
+            : scheduler_->ReplaceRequestLease(open.request, open.channel.lease, next);
+    if (!result) return Error(sc::ToString(result.error()));
+    applied = true;
+    return {};
+  };
+  static_assert(sizeof(replace) <= RequestExtension::Data::kReplacementCaptureBytes);
+  auto replaced = CallMetadata(replace, "replacing a completed request lease");
   if (applied) {
-    // Commit even if the control wait was cancelled after applying the atomic
-    // mutation. Such a cancellation is a real request failure, never a clean
-    // capacity backoff under stale driver authority.
     {
       auto previous = std::move(open.closure);
       open.closure = std::move(next);
-    }  // Old vector/map capacities die before their previous payment.
-    open.replacement_payment = std::move(*payment);
+    }
+    if (prepared) {
+      sc::Scheduler::LeaseReplacementStorage previous;
+      std::swap(previous, *prepared);
+    }  // All old driver/catalog/Held capacities precede their old refund.
+    open.replacement_payment = std::move(payment);
     if (!replaced) open.cancelled = true;
   }
   return replaced;
@@ -2169,7 +2572,9 @@ Status PagedNode::TryRefreshRequest(std::uint32_t stream, const catalog::Closure
 
 Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::Closure& closure,
                        sc::DeviceJob job, std::string_view what,
-                       const std::function<void()>& meanwhile) {
+                       const std::function<void()>& meanwhile, JobReport* report) {
+  // Admission refusal is independent of draining a request at its end. Keep
+  // the complete request/lease owner when its original work is unproven.
   if (open.unproven) return Error(std::format("{}: its request retains unproven work", what));
   if (open.cancelled || open.done.gone.load())
     return Ended(stream, what, "the request cannot continue after failed work");
@@ -2183,10 +2588,11 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
     return Error(std::format("{}: its closure is not within {}'s", what, open.what));
   }
   if (settings_.direct_steps) {
-    return DirectStep(stream, open, std::move(job), what, meanwhile);
+    return DirectStep(stream, open, std::move(job), what, meanwhile, report);
   }
   Timing timing;
   open.channel.job = Timed(std::move(job), stream, timing);
+  if (report) report->retirement = JobReport::Retirement::kUnproven;
   open.channel.stream = stream;
   const std::uint64_t before = open.channel.steps.load(std::memory_order_acquire);
   const auto called = std::chrono::steady_clock::now();
@@ -2238,6 +2644,7 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
     open.channel.job = nullptr;
     const std::uint64_t counted = hang_cancels_;
     auto ended = Await(open.done, open.what, open.request);
+    if (report && open.done.retired.load()) report->retirement = JobReport::Retirement::kRetired;
     requests_.erase(stream);  // `open` is gone from here on
     if (cancelled) {
       hang_cancelled_ = true;
@@ -2254,9 +2661,17 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
     ++hang_cancels_;
   }
   Note(stream, called, timing);
-  // The acquire steps load orders this immutable dispatch proof. A result
-  // wake may report quarantine, so it alone never authenticates retirement.
-  if (!open.channel.step_retired.load(std::memory_order_relaxed)) {
+  // The acquire read of the new steps count above orders these immutable
+  // facts for this dispatch. A result wake can also report quarantined work.
+  const bool retired = open.channel.step_retired.load(std::memory_order_relaxed);
+  if (report) {
+    report->retirement =
+        retired ? JobReport::Retirement::kRetired : JobReport::Retirement::kUnproven;
+    if (retired && (open.channel.step_error.load(std::memory_order_relaxed) >= 0 ||
+                    report->callback_result == sc::JobResult::kNotStarted))
+      report->retirement = JobReport::Retirement::kNotSubmitted;
+  }
+  if (!retired) {
     open.unproven = true;
     return Error(std::format("{}: its step's end could not be proven", what));
   }
@@ -2283,7 +2698,8 @@ Status PagedNode::Ended(std::uint32_t stream, std::string_view what, std::string
 }
 
 Status PagedNode::DirectStep(std::uint32_t stream, OpenRequest& open, sc::DeviceJob job,
-                             std::string_view what, const std::function<void()>& meanwhile) {
+                             std::string_view what, const std::function<void()>& meanwhile,
+                             JobReport* report) {
   if (open.unproven || open.cancelled || open.done.gone.load()) {
     // Its task is ending or gone (cancelled, failed), or a step's end is
     // unproven: nothing more runs under its lease.
@@ -2304,6 +2720,7 @@ Status PagedNode::DirectStep(std::uint32_t stream, OpenRequest& open, sc::Device
   wait.emplace(*this, what);
   const providers::StreamId id = streams_[stream];
   sc::JobResult result = sc::JobResult::kNotStarted;
+  if (report) report->retirement = JobReport::Retirement::kUnproven;
   {
     auto timed = Timed(std::move(job), stream, timing);
     const auto native = execution_->Submission(id);
@@ -2318,6 +2735,7 @@ Status PagedNode::DirectStep(std::uint32_t stream, OpenRequest& open, sc::Device
   // seen complete balances it.
   const auto fence = execution_->Record(id);
   const bool queued = result != sc::JobResult::kNotStarted;
+  if (report && !queued) report->retirement = JobReport::Retirement::kNotSubmitted;
   if (!fence && queued) {
     // Nothing can show when the queued work ends: its lease is kept.
     open.unproven = true;
@@ -2391,6 +2809,7 @@ Status PagedNode::DirectStep(std::uint32_t stream, OpenRequest& open, sc::Device
     }
     return Error(std::format("{}: its step's end could not be proven", what));
   }
+  if (report && queued) report->retirement = JobReport::Retirement::kRetired;
   if (fence) {
     for (std::uint32_t tries = 0; tries < kFenceRefusals; ++tries) {
       const auto released = execution_->Release(*fence);
@@ -2684,6 +3103,26 @@ Status PagedNode::Copy(std::uint32_t stream, const catalog::Closure& closure, st
       what, stream);
 }
 
+void PagedNode::KeepModelRoot(RetainedModelRoot& root) {
+  base::Check(root.model && root.keep && !torn_down_,
+              "a paid runner root attaches to its live node");
+  for (auto* saved = model_roots_; saved; saved = saved->next)
+    base::Check(saved != &root && saved->model != root.model, "a runner root attaches once");
+  root.next = model_roots_;
+  model_roots_ = &root;
+}
+
+void PagedNode::RetireModelRoot(RetainedModelRoot& root) {
+  auto** saved = &model_roots_;
+  while (*saved && *saved != &root) saved = &(*saved)->next;
+  base::Check(*saved == &root, "an authenticated retired runner detaches its actual root once");
+  *saved = root.next;
+  root.next = nullptr;
+  auto keep = std::move(root.keep);
+  // The visiting teardown reference outlives this callback, including when
+  // the frontend and private view already dropped every other root reference.
+}
+
 Status PagedNode::TearDown(std::span<PagedModel* const> models) {
   if (torn_down_) {
     return {};
@@ -2702,9 +3141,32 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
       problems.push_back(ended.error());
     }
   }
-  if (staging_lifetime_) staging_lifetime_->live_ = false;
-  staging_lifetime_.reset();
-  torn_down_ = true;
+  // Do not mark teardown complete or invalidate staging until actual fences
+  // and every model's retained-resource check permit destruction. A refusal
+  // here must allow dropping an external view and retrying the same node.
+  auto visit_models = [&](auto&& visit) -> Status {
+    for (std::size_t i = 0; i < models.size(); ++i) {
+      auto* model = models[i];
+      if (!model) return Error("node teardown received an absent model");
+      bool registered = false;
+      for (auto* root = model_roots_; root; root = root->next)
+        registered = registered || root->model == model;
+      if (registered || std::find(models.begin(), models.begin() + static_cast<std::ptrdiff_t>(i),
+                                  model) != models.begin() + static_cast<std::ptrdiff_t>(i))
+        continue;
+      if (auto visited = visit(*model); !visited) return visited;
+    }
+    for (auto* root = model_roots_; root;) {
+      auto* next = root->next;
+      auto keep = root->keep;  // Node's actual complete owner survives Release's detach.
+      if (auto visited = visit(*root->model); !visited) return visited;
+      root = next;
+    }
+    return {};
+  };
+  auto retire_models = [&]() -> Status {
+    return visit_models([](PagedModel& model) { return model.RetireAfterFence(); });
+  };
   // Requests first: their leases would hold what the teardown evicts.
   std::vector<std::uint32_t> open;
   open.reserve(requests_.size());
@@ -2729,19 +3191,24 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
     const catalog::Closure nothing;
     std::vector<ExtentId> managed;
     bool fenced_all = usable;
-    for (PagedModel* model : models) {
+    auto collected = visit_models([&](PagedModel& model) -> Status {
       if (usable) {
         if (auto fenced = Job(
                 nothing, [](providers::NativeStream) { return sc::JobResult::kQueued; },
-                "fencing a compute stream", model->stream());
+                "fencing a compute stream", model.stream());
             !fenced) {
           problems.push_back(std::format("compute stream {} could not be fenced: {}",
-                                         model->stream(), fenced.error()));
+                                         model.stream(), fenced.error()));
           fenced_all = false;
         }
       }
-      const auto extents = model->managed_extents();
+      const auto extents = model.managed_extents();
       managed.insert(managed.end(), extents.begin(), extents.end());
+      return {};
+    });
+    if (!collected) return collected;
+    if (fenced_all) {
+      if (auto retired = retire_models(); !retired) return retired;
     }
     if (workspace_pageable_) {
       // Its backing is the VMM lane's, released through its eviction too.
@@ -2805,11 +3272,14 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
       }
     }
   }
-  for (PagedModel* model : models) {
-    if (auto released = model->Release(); !released) {
-      problems.push_back(released.error());
-    }
+  if (scheduler_ == nullptr) {
+    if (auto retired = retire_models(); !retired) return retired;
   }
+  if (auto released = visit_models([](PagedModel& model) { return model.Release(); }); !released)
+    return released;
+  if (staging_lifetime_) staging_lifetime_->live_ = false;
+  staging_lifetime_.reset();
+  torn_down_ = true;
   if (execution_ != nullptr) {
     for (const auto stream : streams_) {
       if (stream.valid() && !execution_->DestroyStream(stream)) {

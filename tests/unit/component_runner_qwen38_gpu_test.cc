@@ -703,7 +703,7 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
         }
         if (ran->path == en::RunPath::kReplayed) ++out.replayed;
         if (planned.wave.head == Head::kNone) continue;
-        for (const auto& bytes : ran->outputs) row.push_back(bytes);
+        for (const auto& bytes : ran->outputs) row.emplace_back(bytes.begin(), bytes.end());
       }
       // Each owner's state, by tensor.
       for (std::uint32_t s = 0; s < kOwners; ++s) {

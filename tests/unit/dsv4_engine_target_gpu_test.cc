@@ -77,25 +77,6 @@ rt::ModelSettings Settings() {
   s.wave_read_align.value = 256;
   return s;
 }
-// A caller's explicit single-owner target domain (what the closed
-// diagnostic bridge took, before it was retired).
-std::expected<std::shared_ptr<const en::NumericalDomain>, std::string> Domain() {
-  auto d =
-      en::NumericalDomain::Create({{.stage = 0,
-                                    .name = "target",
-                                    .uses = {en::NumericalUse::kPrompt, en::NumericalUse::kDecode},
-                                    .phases = {{.phase = pl::Phase::kPrefill,
-                                                .max_owners = 1,
-                                                .max_owner_rows = kChunk,
-                                                .max_total_rows = kChunk},
-                                               {.phase = pl::Phase::kDecode,
-                                                .max_owners = 1,
-                                                .max_owner_rows = 1,
-                                                .max_total_rows = 1}}}});
-  if (!d) return std::unexpected(d.error());
-  return std::make_shared<const en::NumericalDomain>(std::move(*d));
-}
-
 // Bounded streaming checks before JSON/tokenizer construction. Artifact::Open
 // authenticates every prepared header again; no full weight hash pass is added.
 Status File(const fs::path& path, std::uint64_t bytes, std::string_view digest) {
@@ -157,6 +138,7 @@ TEST(Dsv4EngineTargetInputs, ServingDomainUsesActualBlockStateAndOwnsItsPayment)
   ASSERT_TRUE(a) << Failed(a).value_or("");
   ASSERT_TRUE(b) << Failed(b).value_or("");
   const std::array layouts{*a, *b};
+  const std::array batching{md::Batching{.max_segments = 4}, md::Batching{.max_segments = 4}};
   en::DecodingMode mode{
       .kind = en::DecodingMode::Kind::kSpeculative,
       .drafters = {{.stage = 1, .shape = en::DrafterSpec::Shape::kBlock, .max_depth = 3}},
@@ -168,7 +150,7 @@ TEST(Dsv4EngineTargetInputs, ServingDomainUsesActualBlockStateAndOwnsItsPayment)
                                             2 * kMiB + rt::kUncountedMargin, rt::kUncountedMargin);
   ASSERT_TRUE(allowance) << Failed(allowance).value_or("");
   for (const auto owners : {1U, 4U}) {
-    auto domain = rt::ComponentServingDomain(spec, layouts, owners, mode, *allowance);
+    auto domain = rt::ComponentServingDomain(spec, layouts, batching, owners, mode, *allowance);
     ASSERT_TRUE(domain) << Failed(domain).value_or("");
     EXPECT_GT((*allowance)->used(), 0U);
     EXPECT_TRUE((*domain)->CheckMode(en::NumericalUse::kPrompt));
@@ -181,11 +163,11 @@ TEST(Dsv4EngineTargetInputs, ServingDomainUsesActualBlockStateAndOwnsItsPayment)
   EXPECT_EQ((*allowance)->used(), 0U);
   auto invalid = mode;
   invalid.drafters[0].stage = 0;
-  EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, 4, invalid, *allowance));
+  EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, batching, 4, invalid, *allowance));
   invalid = mode;
   invalid.drafters[0].max_depth = 512;
-  EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, 4, invalid, *allowance));
-  EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, 4, mode, nullptr));
+  EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, batching, 4, invalid, *allowance));
+  EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, batching, 4, mode, nullptr));
   EXPECT_EQ((*allowance)->used(), 0U);
   const std::vector<std::pair<std::uint32_t, md::StateContract>> replay = {
       {0,
@@ -202,69 +184,44 @@ TEST(Dsv4EngineTargetInputs, ServingDomainUsesActualBlockStateAndOwnsItsPayment)
   auto replay_layout = md::Layout(replay, 8192, 512);
   ASSERT_TRUE(replay_layout) << Failed(replay_layout).value_or("");
   const std::array replay_layouts{*a, *replay_layout};
-  EXPECT_FALSE(rt::ComponentServingDomain(spec, replay_layouts, 4, mode, *allowance));
+  EXPECT_FALSE(rt::ComponentServingDomain(spec, replay_layouts, batching, 4, mode, *allowance));
   auto block_shared = mode;
   block_shared.drafters[0].shared_wave_depth = 2;
-  EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, 4, block_shared, *allowance));
+  EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, batching, 4, block_shared, *allowance));
   auto autoregressive = mode;
   autoregressive.drafters[0].shape = en::DrafterSpec::Shape::kAutoregressive;
   autoregressive.drafters[0].catch_up = true;
   autoregressive.drafters[0].features = true;
   autoregressive.drafters[0].shared_wave_depth = 2;
   {
-    auto joined = rt::ComponentServingDomain(spec, replay_layouts, 4, autoregressive, *allowance);
+    auto joined =
+        rt::ComponentServingDomain(spec, replay_layouts, batching, 4, autoregressive, *allowance);
     ASSERT_TRUE(joined) << Failed(joined).value_or("");
     EXPECT_TRUE((*joined)->CheckMode(en::NumericalUse::kJoinedRepeatPending));
   }
   autoregressive.drafters[0].shared_wave_depth = 4;
-  EXPECT_FALSE(rt::ComponentServingDomain(spec, replay_layouts, 4, autoregressive, *allowance));
+  EXPECT_FALSE(
+      rt::ComponentServingDomain(spec, replay_layouts, batching, 4, autoregressive, *allowance));
   EXPECT_EQ((*allowance)->used(), 0U);
   spec.stages.resize(1);
-  auto plain = rt::ComponentServingDomain(spec, std::span(layouts).first(1), 4, {}, *allowance);
+  auto plain = rt::ComponentServingDomain(spec, std::span(layouts).first(1),
+                                          std::span(batching).first(1), 4, {}, *allowance);
   ASSERT_TRUE(plain) << Failed(plain).value_or("");
   EXPECT_FALSE((*plain)->CheckMode(en::NumericalUse::kSpeculative));
 }
 
-// The shared route without qualified envelopes serves only its automatic
-// shape: an unpaid, mixed-authority or explicit-domain request is refused
-// before its source is read.
-TEST(Dsv4EngineTargetInputs, AutomaticServingRefusesUnpaidOrMixedAuthorityBeforeSourceRead) {
-  EXPECT_TRUE(rt::OnComponentEngine("deepseek4"));
+TEST(Dsv4EngineTargetInputs, SpeculationWithoutAnOwnedDrafterRefusesBeforeSourceRead) {
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
   llmp::config::ModelEntry entry;
   entry.name = Settings().name;
   entry.artifact = std::string(kArtifact);
-  auto domain = Domain();
-  ASSERT_TRUE(domain) << Failed(domain).value_or("");
-  for (unsigned mutation = 0; mutation < 7; ++mutation) {
-    auto settings = Settings();
-    settings.context.value = 8192;
-    settings.max_slots.value = 4;
-    rt::ComponentBuildOptions options{.target_policy = std::nullopt,
-                                      .shared_route = true,
-                                      .automatic_startup_cap = kCap,
-                                      .derive_execution_domain = true};
-    if (mutation == 0) options.automatic_startup_cap = 0;
-    if (mutation == 1) options.execution_domain = *domain;
-    if (mutation == 2) options.shared_route = false;
-    if (mutation == 3) options.target_policy = "";
-    if (mutation == 4) settings.speculation.value = true;  // no drafter
-    if (mutation >= 5) {
-      // The retired closed bridge's request: an explicit single-owner
-      // domain (or none), not derived.
-      options.derive_execution_domain = false;
-      options.automatic_startup_cap = 0;
-      if (mutation == 5) options.execution_domain = *domain;
-      settings = Settings();
-    }
-    auto build = rt::ComponentLlmBuild(node, "/nonexistent-dsv4-serving-control", entry, 0,
-                                       std::move(options));
-    auto parts = build(settings);
-    ASSERT_FALSE(parts) << mutation;
-    EXPECT_TRUE(parts.error().find("automatic serving envelope") != std::string::npos ||
-                parts.error().find("internal request") != std::string::npos)
-        << mutation << ": " << parts.error();
-  }
+  auto settings = Settings();
+  settings.speculation.value = true;
+  auto build = rt::ComponentLlmBuild(node, "/nonexistent-serving-source", entry, 0);
+  const auto refused = build(settings);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error(), "component speculation needs an owned drafter artifact");
+  EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), 0U);
 }
 
 namespace native_target {

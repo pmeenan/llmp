@@ -11,6 +11,24 @@
 namespace llmp::engine {
 namespace sc = scheduler;
 
+struct SupplementalCapacity::Data final : kernels::ResourceDependency {
+  kernels::ResourceKeep Publish() { return Adopt(); }
+  void Destroy() override {
+    auto paid = std::move(allowance);
+    const auto bytes = charge;
+    delete this;
+    paid->Release(bytes);
+  }
+  std::shared_ptr<ExecutionMetadataAllowance> allowance;
+  std::shared_ptr<std::atomic<std::uint32_t>> external;
+  catalog::DomainId domain;
+  const catalog::Catalog* catalog = nullptr;
+  std::uint64_t charge = 0, max_extents = 0;
+  // Only the serialized scheduler/catalog owner accesses busy. Payment can be
+  // released on another thread, without touching the catalog or a dead node.
+  bool busy = false;
+};
+
 struct SupplementalRun::State {
   sc::ProgramDone done;
   catalog::Closure closure;
@@ -21,10 +39,10 @@ struct SupplementalRun::State {
   std::shared_ptr<ExecutionMetadataAllowance> allowance;
   std::shared_ptr<std::atomic<std::uint32_t>> external;
   std::uint64_t charge = 0;
+  SupplementalCapacity capacity;
   bool offered = false, started = false, held = false;
   ~State() {
     if (held) external->fetch_sub(1, std::memory_order_acq_rel);
-    allowance->Release(charge);
   }
 };
 
@@ -59,17 +77,57 @@ std::expected<std::uint64_t, std::string> SupplementalRun::Bound(std::uint64_t e
   return 4096 + extents * 256;
 }
 
+std::expected<SupplementalCapacity, std::string> SupplementalRun::Prepare(
+    const catalog::Catalog& catalog, catalog::DomainId domain, const sc::RequestChannel& base,
+    const sc::ProgramDone& base_done, std::uint64_t max_extents,
+    std::shared_ptr<ExecutionMetadataAllowance> allowance) {
+  auto bytes = Bound(max_extents);
+  if (!bytes) return std::unexpected(bytes.error());
+  if (!allowance || !allowance->HeldBy(catalog, domain) || !base.external ||
+      !base.held.load(std::memory_order_acquire) || base_done.gone.load() ||
+      base_done.outcome.load() != -1 || base.end)
+    return std::unexpected("supplemental prepayment needs its live authenticated request");
+  // Actual receipt storage, its shared control and allocator overhead, plus
+  // the node's serialized validation/retirement controls. The operation's
+  // State, Program and selected closure are already in Bound(max_extents).
+  constexpr std::uint64_t receipt_bytes = sizeof(SupplementalCapacity::Data) + 64;
+  std::uint64_t total = 0;
+  if (__builtin_add_overflow(*bytes, receipt_bytes + kControlBytes, &total) ||
+      !allowance->Charge(total))
+    return std::unexpected("supplemental prepaid capacity was not funded");
+  auto* data = new SupplementalCapacity::Data;
+  data->allowance = std::move(allowance);
+  data->external = base.external;
+  data->domain = domain;
+  data->catalog = &catalog;
+  data->charge = total;
+  data->max_extents = max_extents;
+  return SupplementalCapacity(data->Publish(), data);
+}
+
+bool SupplementalRun::Covers(const SupplementalCapacity& capacity, const sc::RequestChannel& base,
+                             catalog::DomainId domain,
+                             const std::shared_ptr<ExecutionMetadataAllowance>& allowance) {
+  return capacity && capacity.data_->external == base.external &&
+         capacity.data_->domain == domain && capacity.data_->allowance == allowance &&
+         !capacity.data_->busy;
+}
+
 std::expected<std::unique_ptr<SupplementalRun>, std::string> SupplementalRun::Create(
     const catalog::Catalog& catalog, catalog::DomainId domain, sc::RequestChannel& base,
     const sc::ProgramDone& base_done, const catalog::Closure& selected, sc::DeviceJob job,
     std::uint32_t stream, std::shared_ptr<const void> payload,
-    std::shared_ptr<ExecutionMetadataAllowance> allowance) {
+    std::shared_ptr<ExecutionMetadataAllowance> allowance, const SupplementalCapacity& capacity) {
   auto bytes = Bound(selected.extents.size());
   if (!bytes) return std::unexpected(bytes.error());
   if (!payload || !job || !allowance || !base.external ||
       !base.held.load(std::memory_order_acquire) || base_done.gone.load() ||
       base_done.outcome.load() != -1 || base.end)
     return std::unexpected("supplemental work needs a live base request and owned payload");
+  if (capacity &&
+      (!Covers(capacity, base, domain, allowance) || capacity.data_->catalog != &catalog ||
+       selected.extents.size() > capacity.data_->max_extents))
+    return std::unexpected("supplemental capacity is busy, foreign or too small");
   std::uint64_t physical = 0;
   std::optional<catalog::ExtentId> previous;
   for (const auto& [id, generation] : selected.extents) {
@@ -83,15 +141,23 @@ std::expected<std::unique_ptr<SupplementalRun>, std::string> SupplementalRun::Cr
   }
   // No caller map/capacity is copied before payment; use the actual catalog's
   // single-domain sizes. Ownership of the caller's original closure stays put.
-  if (!allowance->Charge(*bytes)) return std::unexpected("supplemental metadata was not funded");
+  if (!capacity && !allowance->Charge(*bytes))
+    return std::unexpected("supplemental metadata was not funded");
   auto state = std::shared_ptr<State>(new State, [](State* s) {
     // A dropped ticket is not a retirement certificate. Keep the entire source
     // owner, counter and charge if an offered operation still may touch them.
     if (s->held && s->offered) return;
+    auto funder = std::move(s->allowance);
+    auto saved_capacity = std::move(s->capacity);
+    const auto charge = s->charge;
     delete s;
+    if (saved_capacity) saved_capacity.data_->busy = false;
+    if (charge != 0) funder->Release(charge);
   });
   state->allowance = std::move(allowance);
-  state->charge = *bytes;
+  state->charge = capacity ? 0 : *bytes;
+  state->capacity = capacity;
+  if (capacity) capacity.data_->busy = true;
   state->closure.extents.assign(selected.extents.begin(), selected.extents.end());
   state->closure.bytes_by_domain.emplace(domain, base::Bytes(physical));
   state->ids.reserve(selected.extents.size());

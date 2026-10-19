@@ -249,9 +249,11 @@ class AnchoredDrafterTest : public ::testing::Test {
         of.push_back(slot);
       }
       const en::PrefillReport report = prefill.Step(open);
+      ASSERT_FALSE(report.refusal);
       for (std::size_t j = 0; j < of.size(); ++j) {
-        ASSERT_FALSE(report.outcomes[j].refusal.has_value()) << report.outcomes[j].refusal->what;
-        done[of[j]] = report.outcomes[j].last;
+        ASSERT_FALSE(report.outcomes()[j].refusal.has_value())
+            << report.outcomes()[j].refusal->what;
+        done[of[j]] = report.outcomes()[j].last;
       }
     }
     for (std::uint32_t slot = 0; slot < lengths.size(); ++slot) {

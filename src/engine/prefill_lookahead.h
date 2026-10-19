@@ -101,6 +101,8 @@ class PrefillLookahead {
   PrefillLookahead& operator=(const PrefillLookahead&) = delete;
   ~PrefillLookahead() { Abandon(); }
 
+  std::uint64_t allowance() const { return allowance_; }
+
   bool Fund() {
     if (attempted_ || finished_) return false;
     attempted_ = true;

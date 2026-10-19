@@ -690,17 +690,21 @@ TEST(Qwen38EngineServingGpu, BadPaymentAndSlotCountRefuseBeforeModelEffects) {
   EXPECT_EQ(
       life->server->node().catalog().OccupancyOf(life->server->node().domain()).Total().value(),
       0U);
-  for (const auto count : {0U, 2U}) {
+  for (const auto count : {0U, static_cast<std::uint32_t>(rt::Llm::kMaxBranches + 1)}) {
     rt::ModelSettings settings;
     settings.architecture = "qwen4exp";
     settings.container = "safetensors";
     settings.max_slots.value = count;
+    settings.context.value = 512;
+    settings.prefill_chunk.value = 16;
     auto build = rt::ComponentLlmBuild(life->server->node(), life->roles.installed, entry, 0,
-                                       {.target_policy = {}, .shared_route = true});
+                                       {
+                                           .target_policy = {},
+                                       });
     const auto refused = build(settings);
     ASSERT_FALSE(refused);
     EXPECT_EQ(refused.error(),
-              "the Qwen3.8 component qualification requires exactly one configured slot");
+              "component serving needs positive context/chunk and a bounded owner count");
     EXPECT_EQ(life->server->Find("missing"), nullptr);
     EXPECT_EQ(
         life->server->node().catalog().OccupancyOf(life->server->node().domain()).Total().value(),
@@ -713,288 +717,28 @@ TEST(Qwen38EngineServingGpu, BadPaymentAndSlotCountRefuseBeforeModelEffects) {
   }
 }
 
-// No provider open or artifact read on malformed envelopes. The positive
-// request reaches ordinary artifact authentication rather than claiming success.
-TEST(Qwen38EngineServingGpu, JoinedScoringRequiresExactOwnedTargetEnvelope) {
+// Geometry is checked against the authenticated source rather than a historical
+// checkpoint experiment. No missing source can manufacture execution authority.
+TEST(Qwen38EngineServingGpu, ServingGeometryRequiresAnAuthenticatedSource) {
   en::PagedNode node{{}};
   cfg::ModelEntry entry;
   entry.name = "missing";
   entry.artifact = std::string(64, '0');
-  rt::ModelSettings original;
-  original.architecture = "qwen4exp";
-  original.container = "safetensors";
-  original.max_slots.value = 4;
-  original.context.value = 512;
-  original.prefill_chunk.value = 2;
-  original.wave_read_align.value = 256;
-  original.speculation.value = false;
-  en::NumericalStage target{.stage = 0,
-                            .name = "target",
-                            .uses = {en::NumericalUse::kDecode, en::NumericalUse::kScore},
-                            .phases = {{.phase = llmp::planner::Phase::kPrefill,
-                                        .max_owners = 4,
-                                        .max_owner_rows = 2,
-                                        .max_total_rows = 8},
-                                       {.phase = llmp::planner::Phase::kDecode,
-                                        .max_owners = 4,
-                                        .max_owner_rows = 1,
-                                        .max_total_rows = 4},
-                                       {.phase = llmp::planner::Phase::kScore,
-                                        .max_owners = 4,
-                                        .max_owner_rows = 2,
-                                        .max_total_rows = 8}}};
-  for (const bool prompt : {false, true}) {
-    SCOPED_TRACE(prompt);
-    for (int mutation = 0; mutation < 14; ++mutation) {
-      SCOPED_TRACE(mutation);
-      auto settings = original;
-      auto declared = target;
-      if (prompt) declared.uses.insert(declared.uses.begin(), en::NumericalUse::kPrompt);
-      auto model = entry;
-      rt::ComponentBuildOptions options{.target_policy = std::nullopt, .shared_route = true};
-      switch (mutation) {
-        case 1:
-          settings.max_slots.value = 3;
-          break;
-        case 2:
-          settings.context.value = 513;
-          break;
-        case 3:
-          settings.prefill_chunk.value = 8;
-          break;
-        case 4:
-          settings.wave_read_align.value = 512;
-          break;
-        case 5:
-          settings.speculation.value = true;
-          break;
-        case 6:
-          model.drafter = std::string(64, '1');
-          break;
-        case 7:
-          declared.name = "other";
-          break;
-        case 8:
-          declared.phases.back().max_owner_rows = 3;
-          break;
-        case 9:
-          declared.phases.back().row_invariant = true;
-          break;
-        case 10:
-          options.shared_route = false;
-          break;
-        case 12:
-          declared.uses.push_back(en::NumericalUse::kPromptCompanions);
-          break;
-        case 13:
-          std::erase(declared.uses, en::NumericalUse::kDecode);
-          break;
-        default:
-          break;
-      }
-      if (mutation != 11) {
-        auto domain = en::NumericalDomain::Create({std::move(declared)});
-        ASSERT_TRUE(domain);
-        options.execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain));
-      }
-      auto build = rt::ComponentLlmBuild(node, "/nonexistent-qwen-scoring-control", model, 0,
-                                         std::move(options));
-      auto result = build(settings);
-      ASSERT_FALSE(result);
-      if (mutation == 0)
-        EXPECT_NE(result.error().find("artifact"), std::string::npos);
-      else
-        EXPECT_EQ(result.error(),
-                  "the Qwen3.8 component qualification requires exactly one configured slot");
+  for (const auto owners : {1U, 2U, 3U, 4U}) {
+    for (const auto context : {512U, 8192U}) {
+      rt::ModelSettings settings;
+      settings.architecture = "qwen4exp";
+      settings.container = "safetensors";
+      settings.max_slots.value = owners;
+      settings.context.value = context;
+      settings.prefill_chunk.value = 16;
+      auto build = rt::ComponentLlmBuild(node, "/nonexistent-serving-source", entry, 0,
+                                         {.target_policy = {}});
+      const auto refused = build(settings);
+      ASSERT_FALSE(refused);
+      EXPECT_NE(refused.error().find("artifact"), std::string::npos);
+      EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), 0U);
     }
-  }
-}
-
-// Only the complete semantic declaration reaches the existing artifact opener.
-// No provider/model payload or GPU is touched by these early negatives.
-TEST(Qwen38EngineServingGpu, JoinedMtpRequiresOwnedWholeCompositionBeforeArtifacts) {
-  en::PagedNode node{{}};
-  cfg::ModelEntry entry;
-  entry.name = "missing";
-  entry.artifact = std::string(64, '0');
-  entry.drafter = std::string(64, '1');
-  rt::ModelSettings original;
-  original.architecture = "qwen4exp";
-  original.container = "safetensors";
-  original.max_slots.value = 2;
-  original.context.value = 512;
-  original.prefill_chunk.value = 16;
-  original.draft_rows.value = 2;
-  original.speculation.value = true;
-  for (int mutation = 0; mutation != 7; ++mutation) {
-    auto settings = original;
-    auto model = entry;
-    std::vector<en::NumericalStage> stages;
-    for (std::uint16_t stage = 0; stage != 2; ++stage)
-      stages.push_back(
-          {.stage = stage,
-           .name = stage == 0 ? "target" : "mtp",
-           .uses = {en::NumericalUse::kPromptCompanions, en::NumericalUse::kSpeculative,
-                    en::NumericalUse::kJoinedRepeatPending},
-           .phases = {{.phase = llmp::planner::Phase::kDraft,
-                       .max_owners = 2,
-                       .max_owner_rows = 16,
-                       .max_total_rows = 32}}});
-    // Actual phase/layout eligibility is checked by the real source seal;
-    // the factory's first guard checks operation scope before opening files.
-    if (mutation == 1) stages[1].uses.pop_back();
-    if (mutation == 2) stages.pop_back();
-    if (mutation == 3) settings.speculation.value = false;
-    if (mutation == 4) model.drafter.reset();
-    if (mutation == 5) settings.draft_rows.value = 0;
-    auto domain = en::NumericalDomain::Create(std::move(stages));
-    ASSERT_TRUE(domain);
-    rt::ComponentBuildOptions options{
-        .target_policy = std::nullopt,
-        .shared_route = mutation != 6,
-        .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain))};
-    auto build = rt::ComponentLlmBuild(node, "/nonexistent-joined-mtp-control", model, 0,
-                                       std::move(options));
-    auto result = build(settings);
-    ASSERT_FALSE(result);
-    if (mutation == 0)
-      EXPECT_NE(result.error().find("artifact"), std::string::npos);
-    else
-      EXPECT_EQ(result.error(),
-                "the Qwen3.8 component qualification requires exactly one configured slot");
-  }
-}
-
-TEST(Qwen38EngineServingGpu, DerivedServingDomainRequiresAnExplicitComposedRequest) {
-  en::PagedNode node{{}};
-  cfg::ModelEntry entry;
-  entry.name = "missing";
-  entry.artifact = std::string(64, '0');
-  entry.drafter = std::string(64, '1');
-  for (int mutation = 0; mutation != 8; ++mutation) {
-    auto model = entry;
-    rt::ModelSettings settings;
-    settings.architecture = "qwen4exp";
-    settings.container = "safetensors";
-    settings.max_slots.value = 2;
-    settings.context.value = 512;
-    settings.prefill_chunk.value = 16;
-    settings.draft_rows.value = 2;
-    settings.speculation.value = true;
-    rt::ComponentBuildOptions options{
-        .target_policy = {}, .shared_route = true, .derive_execution_domain = true};
-    switch (mutation) {
-      case 1:
-        options.derive_execution_domain = false;
-        break;
-      case 2:
-        options.shared_route = false;
-        break;
-      case 3:
-        model.drafter.reset();
-        break;
-      case 4:
-        settings.speculation.value = false;
-        break;
-      case 5:
-        settings.context.value = 0;
-        break;
-      case 6:
-        settings.prefill_chunk.value = 0;
-        break;
-      case 7:
-        settings.draft_rows.value = 0;
-        break;
-      default:
-        break;
-    }
-    auto build = rt::ComponentLlmBuild(node, "/nonexistent-derived-serving-control", model, 0,
-                                       std::move(options));
-    const auto result = build(settings);
-    ASSERT_FALSE(result);
-    if (mutation == 0)
-      EXPECT_NE(result.error().find("artifact"), std::string::npos);
-    else
-      EXPECT_EQ(result.error().find("artifact"), std::string::npos);
-    EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), 0U);
-  }
-}
-
-TEST(Qwen38EngineServingGpu, DerivedPlainDomainRequiresAnOrdinaryTargetRequest) {
-  en::PagedNode node{{}};
-  for (int mutation = 0; mutation != 12; ++mutation) {
-    cfg::ModelEntry entry;
-    entry.name = "missing";
-    entry.artifact = std::string(64, '0');
-    rt::ModelSettings settings;
-    settings.architecture = "qwen4exp";
-    settings.container = "safetensors";
-    settings.max_slots.value = 2;
-    settings.context.value = 512;
-    settings.prefill_chunk.value = 16;
-    settings.speculation.value = false;
-    rt::ComponentBuildOptions options{
-        .target_policy = {}, .shared_route = true, .derive_execution_domain = true};
-    switch (mutation) {
-      case 1:
-        settings.max_slots.value = 1;
-        break;
-      case 2:
-        settings.max_slots.value = 4;
-        break;
-      case 3:
-        settings.max_slots.value = 0;
-        break;
-      case 4:
-        settings.max_slots.value = rt::Llm::kMaxBranches + 1;
-        break;
-      case 5:
-        settings.context.value = 0;
-        break;
-      case 6:
-        settings.prefill_chunk.value = 0;
-        break;
-      case 7:
-        settings.speculation.value = true;
-        break;
-      case 8:
-        entry.drafter = std::string(64, '1');
-        break;
-      case 9:
-        options.shared_route = false;
-        break;
-      case 10:
-        options.derive_execution_domain = false;
-        break;
-      case 11: {
-        auto domain = en::NumericalDomain::Create(
-            {{.stage = 0,
-              .name = "target",
-              .uses = {en::NumericalUse::kPrompt, en::NumericalUse::kDecode},
-              .phases = {{.phase = llmp::planner::Phase::kPrefill,
-                          .max_owners = 2,
-                          .max_owner_rows = 16,
-                          .max_total_rows = 32},
-                         {.phase = llmp::planner::Phase::kDecode,
-                          .max_owners = 2,
-                          .max_owner_rows = 1,
-                          .max_total_rows = 2}}}});
-        ASSERT_TRUE(domain);
-        options.execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain));
-        break;
-      }
-      default:
-        break;
-    }
-    auto build = rt::ComponentLlmBuild(node, "/nonexistent-derived-plain-control", entry, 0,
-                                       std::move(options));
-    const auto result = build(settings);
-    ASSERT_FALSE(result);
-    if (mutation < 3)
-      EXPECT_NE(result.error().find("artifact"), std::string::npos);
-    else
-      EXPECT_EQ(result.error().find("artifact"), std::string::npos);
-    EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), 0U);
   }
 }
 
@@ -1304,7 +1048,6 @@ std::expected<rt::ComponentBuildOptions, std::string> Options(Owner& owner) {
   if (!domain) return std::unexpected(domain.error());
   rt::ComponentBuildOptions options{
       .target_policy = pl::ToText(*policy),
-      .shared_route = true,
       .prefill_lookahead = false,
       .prepare_state = false,
       .state_only_prefill = false,

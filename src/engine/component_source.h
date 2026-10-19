@@ -127,9 +127,10 @@ class ComponentStepSource final : public StepSource {
   Status CheckExecutionUse(NumericalUse use) const override;
   Status CheckExecutionShape(const planner::StepShape& shape) const override;
   std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const override;
-  std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const override;
-  void AppendShapeParameters(const planner::StepShape& shape,
-                             std::vector<std::uint64_t>& out) const override;
+  void EmitShapeParameters(const planner::StepShape& shape,
+                           model::ShapeParameterSink& out) const override;
+  std::expected<SpecializationChange, SpecializationError> NextSpecializationChange(
+      const SpecializationRequest& request) const override;
   bool JoinedRepeatPending(std::uint16_t stage) const override;
   bool UsesSideRows(std::uint16_t stage) const override;
   Status SideRows(std::uint16_t stage, std::uint16_t component,
@@ -140,11 +141,20 @@ class ComponentStepSource final : public StepSource {
   const planner::Policy& policy() const { return policy_; }
   std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
       const planner::StepShape& shape, const kernels::Addresses& addresses) override;
+  std::shared_ptr<const kernels::BackendOwner> ResourceBackend(std::uint16_t stage) const override {
+    return stage == o_.stage ? o_.backend.owner : nullptr;
+  }
+  std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildPrivate(
+      const planner::StepShape& shape, const kernels::Addresses& addresses,
+      const kernels::ExecutionResources& resources) override;
 
   std::uint16_t stage() const { return o_.stage; }
   const base::Sha256Digest& bound_digest() const { return o_.bound_digest; }
 
  private:
+  std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildWith(
+      const planner::StepShape& shape, const kernels::Addresses& addresses,
+      const kernels::ExecutionResources* resources);
   ComponentStepSource(ComponentSourceOptions options, planner::Policy policy)
       : o_(std::move(options)), policy_(std::move(policy)) {}
   friend class StagedStepSource;
@@ -182,9 +192,14 @@ class StagedStepSource final : public StepSource {
   Status CheckExecutionUse(NumericalUse use) const override;
   Status CheckExecutionShape(const planner::StepShape& shape) const override;
   std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const override;
-  std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const override;
-  void AppendShapeParameters(const planner::StepShape& shape,
-                             std::vector<std::uint64_t>& out) const override;
+  void EmitShapeParameters(const planner::StepShape& shape,
+                           model::ShapeParameterSink& out) const override;
+  std::expected<SpecializationChange, SpecializationError> NextSpecializationChange(
+      const SpecializationRequest& request) const override {
+    if (!ValidSpecializationRequest(request) || request.shape.stage >= stages_.size())
+      return std::unexpected(SpecializationError::kRequest);
+    return stages_[request.shape.stage]->NextSpecializationChange(request);
+  }
   bool JoinedRepeatPending(std::uint16_t stage) const override;
   bool UsesSideRows(std::uint16_t stage) const override;
   Status SideRows(std::uint16_t stage, std::uint16_t component,
@@ -194,6 +209,15 @@ class StagedStepSource final : public StepSource {
       std::uint16_t stage, std::uint32_t rows) const override;
   std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
       const planner::StepShape& shape, const kernels::Addresses& addresses) override;
+  std::shared_ptr<const kernels::BackendOwner> ResourceBackend(std::uint16_t stage) const override {
+    return stage < stages_.size() ? stages_[stage]->ResourceBackend(stage) : nullptr;
+  }
+  std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildPrivate(
+      const planner::StepShape& shape, const kernels::Addresses& addresses,
+      const kernels::ExecutionResources& resources) override {
+    if (shape.stage >= stages_.size()) return std::unexpected("private step stage is absent");
+    return stages_[shape.stage]->BuildPrivate(shape, addresses, resources);
+  }
   const ComponentStepSource& stage(std::size_t index) const { return *stages_.at(index); }
 
  private:

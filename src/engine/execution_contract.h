@@ -10,6 +10,7 @@
 #ifndef LLMP_ENGINE_EXECUTION_CONTRACT_H_
 #define LLMP_ENGINE_EXECUTION_CONTRACT_H_
 
+#include <atomic>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -58,10 +59,13 @@ class ExecutionMetadataAllowance {
   std::expected<void, std::string> ChargeOrGrow(catalog::Catalog& catalog, catalog::DomainId domain,
                                                 std::uint64_t bytes, std::uint64_t budget,
                                                 std::uint64_t available, std::uint64_t margin);
+  // One catalog/driver owner charges/grows capacity. Consumer threads may
+  // release retained allocations concurrently, without touching the catalog.
   bool Charge(std::uint64_t bytes);
   void Release(std::uint64_t bytes);
-  std::uint64_t used() const { return used_; }
-  std::uint64_t peak() const { return peak_; }
+  // Independent observations; peak is published before Charge returns.
+  std::uint64_t used() const { return used_.load(std::memory_order_acquire); }
+  std::uint64_t peak() const { return peak_.load(std::memory_order_acquire); }
   std::uint64_t capacity() const { return capacity_; }
   // Startup/driver check: location alone is insufficient; the pinned catalog
   // payment must still exist. Call only under that catalog's normal ownership.
@@ -74,7 +78,8 @@ class ExecutionMetadataAllowance {
   const catalog::Catalog* catalog_;
   catalog::DomainId domain_;
   catalog::ExtentId extent_;
-  std::uint64_t capacity_ = 0, used_ = 0, peak_ = 0;
+  std::uint64_t capacity_ = 0;  // catalog/driver owner only
+  std::atomic<std::uint64_t> used_{0}, peak_{0};
 };
 
 enum class NumericalUse : std::uint8_t {

@@ -462,10 +462,36 @@ std::expected<LeaseId, CatalogError> Catalog::AcquireLease(const Closure& closur
 }
 
 std::expected<void, CatalogError> Catalog::ReplaceLease(LeaseId lease, const Closure& closure) {
-  Lease* held = leases_.Find(lease);
-  if (held == nullptr) return std::unexpected(CatalogError::kUnknownId);
   std::vector<ExtentId> next;
   next.reserve(closure.extents.size());
+  for (const auto& [extent, generation] : closure.extents) {
+    (void)generation;
+    next.push_back(extent);
+  }
+  std::ranges::sort(next);
+  next.erase(std::ranges::unique(next).begin(), next.end());
+  return ReplaceLeaseImpl(lease, closure, next, false);
+}
+
+std::expected<void, CatalogError> Catalog::ReplaceLease(LeaseId lease, const Closure& closure,
+                                                        std::vector<ExtentId>& next) {
+  return ReplaceLeaseImpl(lease, closure, next, true);
+}
+
+std::expected<void, CatalogError> Catalog::ReplaceLeaseImpl(LeaseId lease, const Closure& closure,
+                                                            std::vector<ExtentId>& next,
+                                                            bool check_prepared_inventory) {
+  Lease* held = leases_.Find(lease);
+  if (held == nullptr) return std::unexpected(CatalogError::kUnknownId);
+  // The ordinary wrapper just constructed its normalized candidate. An
+  // external paid inventory must match a canonical closure exactly instead;
+  // these are storage checks, never substitute content/lease authority.
+  if (check_prepared_inventory) {
+    if (next.size() != closure.extents.size()) return std::unexpected(CatalogError::kUnknownId);
+    for (std::size_t i = 0; i < next.size(); ++i)
+      if (next[i] != closure.extents[i].first || (i && next[i] <= next[i - 1]))
+        return std::unexpected(CatalogError::kUnknownId);
+  }
   for (const auto& [extent, generation] : closure.extents) {
     const ExtentRecord* record = Extent(extent);
     if (record == nullptr) return std::unexpected(CatalogError::kUnknownId);
@@ -473,10 +499,7 @@ std::expected<void, CatalogError> Catalog::ReplaceLease(LeaseId lease, const Clo
       return std::unexpected(CatalogError::kNotResident);
     if (record->view.content_generation != generation || record->view.discarded)
       return std::unexpected(CatalogError::kStaleContent);
-    next.push_back(extent);
   }
-  std::ranges::sort(next);
-  next.erase(std::ranges::unique(next).begin(), next.end());
   // No failure or allocation follows the first mutation. Common entries keep
   // their lease count, including when that count is already at its bound.
   for (const auto extent : next) {
@@ -496,6 +519,40 @@ std::expected<void, CatalogError> Catalog::ReplaceLease(LeaseId lease, const Clo
     Recount(record, before);
   }
   held->extents.swap(next);
+  return {};
+}
+
+std::expected<void, CatalogError> Catalog::RemoveLeaseExtents(
+    LeaseId lease, std::span<const std::pair<ExtentId, std::uint64_t>> removed) {
+  Lease* held = leases_.Find(lease);
+  if (!held) return std::unexpected(CatalogError::kUnknownId);
+  std::optional<ExtentId> previous;
+  for (const auto& [extent, generation] : removed) {
+    const auto* record = Extent(extent);
+    if (!record || (previous && extent <= *previous) ||
+        !std::ranges::binary_search(held->extents, extent))
+      return std::unexpected(CatalogError::kUnknownId);
+    if (record->view.state != ExtentState::kResident)
+      return std::unexpected(CatalogError::kNotResident);
+    if (record->view.content_generation != generation || record->view.discarded)
+      return std::unexpected(CatalogError::kStaleContent);
+    previous = extent;
+  }
+  // Erasure retains already paid capacity. No allocation/failure follows the
+  // first mutation; unrelated permanent additions remain held in place.
+  for (const auto& [extent, generation] : removed) {
+    (void)generation;
+    auto& record = *Extent(extent);
+    const auto before = BucketOf(record.view);
+    base::Check(record.view.leases != 0, "removing a held private extent");
+    --record.view.leases;
+    Recount(record, before);
+  }
+  std::erase_if(held->extents, [&](ExtentId id) {
+    const auto at =
+        std::ranges::lower_bound(removed, id, {}, [](const auto& e) { return e.first; });
+    return at != removed.end() && at->first == id;
+  });
   return {};
 }
 

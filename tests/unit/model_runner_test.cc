@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <expected>
@@ -34,26 +35,35 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "artifact/format_map.h"
 #include "base/bytes.h"
 #include "base/json.h"
+#include "engine/batch_inventory.h"
 #include "engine/component_source.h"
+#include "engine/copy_sink.h"
+#include "engine/draft_companions.h"
+#include "engine/graph_plan.h"
 #include "engine/paged_node.h"
 #include "engine/ple_rows.h"
 #include "engine/prefill.h"
 #include "engine/runner_memory.h"
+#include "engine/runner_owner.h"
 #include "engine/step_runs.h"
 #include "engine/wave_composer.h"
 #include "expected_error.h"
 #include "fake_step_source.h"
+#include "ir/builder.h"
 #include "kernels/common/recording_launch.h"
+#include "kernels/ggml/scratch_stack.h"
 #include "model/batching.h"
 #include "model/state_contract.h"
 #include "plan_report.h"
 #include "planner/step_shape.h"
+#include "providers/fake/fake_device_execution.h"
 #include "providers/fake/fake_device_runtime.h"
 #include "providers/fake/fake_storage.h"
 
@@ -858,11 +868,16 @@ TEST_F(CompilerTransferTest, MeasurementAndInstalledPlanReturnTheSharedCompilerC
 TEST_F(CompilerTransferTest, TwoPaidFuturesReleaseCompilerBeforeTheNextBuild) {
   const auto before = source_->built().size();
   en::StepAhead ahead;
+  std::array<std::optional<pl::StepShape>, 2> predictions{};
   // Different read classes make both keys distinct from the current256-cell
   // decode and from each other; changing only runtime past is insufficient.
-  ahead.shapes[0] = Shape(pl::Phase::kDecode, {Seg(1, 256, 1, 1)});
-  ahead.shapes[1] = Shape(pl::Phase::kDecode, {Seg(2, 512, 1, 1)});
+  predictions[0] = Shape(pl::Phase::kDecode, {Seg(1, 256, 1, 1)});
+  predictions[1] = Shape(pl::Phase::kDecode, {Seg(2, 512, 1, 1)});
   ahead.build = 2;
+  auto paid_prediction =
+      runner_->Predict(predictions, ahead.build, ahead.capture_ahead, ahead.prepare);
+  ASSERT_TRUE(paid_prediction) << ts::Failed(paid_prediction).value_or("");
+  ahead = std::move(*paid_prediction);
   auto ran = Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{7}}, ahead);
   ASSERT_TRUE(ran) << ran.error().what;
   EXPECT_EQ(ran->built_ahead, 2U);
@@ -1651,9 +1666,14 @@ TEST_F(ModelRunnerTest, AReclaimDuringAStepSparesWhatTheStepHolds) {
     for (const auto& c : candidates) reclaimed += runner_->Reclaim(c.kind, c.id);
   };
   en::StepAhead ahead;
-  ahead.shapes[0] = decode(1, 4);
-  ahead.shapes[1] = decode(2, 1);
+  std::array<std::optional<pl::StepShape>, 2> predictions{};
+  predictions[0] = decode(1, 4);
+  predictions[1] = decode(2, 1);
   ahead.build = 2;
+  auto paid_prediction =
+      runner_->Predict(predictions, ahead.build, ahead.capture_ahead, ahead.prepare);
+  ASSERT_TRUE(paid_prediction) << ts::Failed(paid_prediction).value_or("");
+  ahead = std::move(*paid_prediction);
   auto ran = Run(decode(0, 2), {{3}}, ahead);
   ASSERT_TRUE(ran.has_value()) << ran.error().what;
   EXPECT_TRUE(reclaiming);
@@ -1677,17 +1697,23 @@ TEST_F(ModelRunnerTest, AReclaimDuringAStepSparesWhatTheStepHolds) {
 }
 
 TEST_F(ModelRunnerTest, LookaheadUsesDerivedDimensionsForBuildAndCaptureIdentity) {
-  source_->options().shape_parameters = [](const pl::StepShape& shape) {
-    return std::vector<std::uint64_t>{shape.segments.front().past / 2};
+  source_->options().shape_parameters = [](const pl::StepShape& shape,
+                                           llmp::model::ShapeParameterSink& sink) {
+    sink.push_back(shape.segments.front().past / 2);
   };
   const auto shape = [](std::uint32_t past) {
     return Shape(pl::Phase::kDecode, {Seg(0, past, 1, 1)});
   };
   ASSERT_EQ(shape(0), shape(2));
   en::StepAhead ahead;
-  ahead.shapes = {shape(2), shape(3)};  // one future dimension, unlike the current one
+  std::array<std::optional<pl::StepShape>, 2> predictions{};
+  predictions = {shape(2), shape(3)};  // one future dimension, unlike the current one
   ahead.build = 2;
   ahead.capture_ahead = true;
+  auto paid_prediction =
+      runner_->Predict(predictions, ahead.build, ahead.capture_ahead, ahead.prepare);
+  ASSERT_TRUE(paid_prediction) << ts::Failed(paid_prediction).value_or("");
+  ahead = std::move(*paid_prediction);
   auto first = Run(shape(0), {{4}}, ahead);
   ASSERT_TRUE(first) << first.error().what;
   EXPECT_EQ(runner_->lookahead_stats().built, 1U);
@@ -1959,8 +1985,13 @@ TEST_F(PositionedTest, AProgramThatTakesItsPositionsIsNeverRecorded) {
     const auto token = static_cast<std::int32_t>(60 + i);
     all.push_back(token);
     en::StepAhead ahead;
-    ahead.shapes[0] = Shape(pl::Phase::kDecode, {Seg(0, i + 1, 1, 1)});
+    std::array<std::optional<pl::StepShape>, 2> predictions{};
+    predictions[0] = Shape(pl::Phase::kDecode, {Seg(0, i + 1, 1, 1)});
     ahead.capture_ahead = true;
+    auto paid_prediction =
+        runner_->Predict(predictions, ahead.build, ahead.capture_ahead, ahead.prepare);
+    ASSERT_TRUE(paid_prediction) << ts::Failed(paid_prediction).value_or("");
+    ahead = std::move(*paid_prediction);
     auto ran = Run(Shape(pl::Phase::kDecode, {Seg(0, i, 1, 1)}), {{token}}, ahead);
     ASSERT_TRUE(ran.has_value()) << ran.error().what;
     EXPECT_EQ(ran->path, en::RunPath::kEager);
@@ -2219,6 +2250,43 @@ TEST_F(WaveTest, ARefusedJoinedPlanRunsItsOwnersAlone) {
   }
 }
 
+TEST_F(WaveTest, MixedCausalOriginRequiresWavePermitAndRecordsOwnerPhaseAndRows) {
+  auto mixed_shape = Shape(pl::Phase::kPrefill, {Seg(0, 0, 4, 1), Seg(1, 0, 1, 1)});
+  mixed_shape.segments[1].origin_phase = pl::Phase::kDecode;
+  auto unpermitted = Run(mixed_shape, {{10, 11, 12, 13}, {20}});
+  ASSERT_FALSE(unpermitted.has_value());
+  EXPECT_TRUE(unpermitted.error().clean);
+  const std::array<en::StepAuthorization, 2> mismatched{
+      en::WaveComposer::Authorize(*runner_, Prefill(0, 0, 4, true)),
+      en::WaveComposer::Authorize(*runner_, Prefill(1, 0, 1, true)),
+  };
+  const std::vector<std::int32_t> t0{10, 11, 12, 13}, t1{20};
+  const std::array<en::SegmentWork, 2> work{
+      en::SegmentWork{.tokens = t0},
+      en::SegmentWork{.tokens = t1},
+  };
+  auto forged = runner_->RunStep({.shape = mixed_shape,
+                                  .work = work,
+                                  .advance = true,
+                                  .ahead = {},
+                                  .authorization = mismatched});
+  ASSERT_FALSE(forged.has_value());
+  EXPECT_TRUE(forged.error().clean);
+  auto caps = Caps();
+  caps.join_prefill = true;
+  caps.mixed_heads = true;
+  caps.mixed_causal = true;
+  const auto report =
+      Wave({Prefill(0, 0, 4, false), Decode(1, 0, 1)}, {{10, 11, 12, 13}, {20}}, caps);
+  EXPECT_EQ(report.steps, 1U);
+  ASSERT_FALSE(report.outcomes[0].refusal.has_value()) << report.outcomes[0].refusal->what;
+  ASSERT_FALSE(report.outcomes[1].refusal.has_value()) << report.outcomes[1].refusal->what;
+  EXPECT_EQ(report.outcomes[0].phase, pl::Phase::kPrefill);
+  EXPECT_EQ(report.outcomes[0].rows, 4U);
+  EXPECT_EQ(report.outcomes[1].phase, pl::Phase::kDecode);
+  EXPECT_EQ(report.outcomes[1].rows, 1U);
+}
+
 TEST_F(WaveTest, ACommonReadIsBackedForEveryOwner) {
   // Slot 0 holds 600 positions, slot 1 none. With a common read both read
   // 768 cells: slot 1's cells past 512 lie in its cache's second extent,
@@ -2238,22 +2306,35 @@ TEST_F(WaveTest, ACommonReadIsBackedForEveryOwner) {
   EXPECT_EQ(Rows(report.outcomes[1].outputs).at(0).cells, 1);
 }
 
-TEST_F(WaveTest, AJoinedStepThatFailedAfterQueueingFailsItsOwnersTogether) {
-  // The program refuses after the step's input copies were queued: every
-  // owner refused together (not clean), quarantined, its positions not
-  // published, and no owner runs the step again alone.
+TEST_F(WaveTest, ARejectedJoinedProgramLeavesEveryOwnersNumericStateUntouched) {
+  // Input staging is not a numeric state write. A rejected program queued
+  // none of its own work, so the wave may safely try its owners alone.
   source_->options().fail_run = kn::StepError::kRejected;
   const auto report = Wave({Decode(0, 0), Decode(1, 0)}, {{1}, {2}});
   EXPECT_EQ(report.steps, 0U);
-  EXPECT_EQ(report.recomposed, 0U);
+  EXPECT_EQ(report.recomposed, 1U);
   for (std::uint32_t slot = 0; slot < 2; ++slot) {
     ASSERT_TRUE(report.outcomes[slot].refusal.has_value());
-    EXPECT_FALSE(report.outcomes[slot].refusal->clean);
+    EXPECT_TRUE(report.outcomes[slot].refusal->clean);
+    EXPECT_NE(report.outcomes[slot].refusal->what.find("the fake refuses to run"),
+              std::string::npos);
     EXPECT_EQ(runner_->slots().positions(slot), 0U);
-    EXPECT_FALSE(runner_->slots().usable(slot));
+    EXPECT_TRUE(runner_->slots().usable(slot));
   }
   EXPECT_EQ(source_->queued(), 0U);
   EXPECT_TRUE(runner_->slots().usable(2));
+  // The rejected jobs retired; permission payment releases and a peer may run.
+  source_->options().fail_run.reset();
+  const auto retry = Wave({Decode(0, 0), Decode(1, 0)}, {{1}, {2}});
+  EXPECT_EQ(retry.steps, 1U);
+  for (std::uint32_t slot = 0; slot < 2; ++slot) {
+    ASSERT_FALSE(retry.outcomes[slot].refusal);
+    EXPECT_EQ(runner_->slots().positions(slot), 1U);
+    EXPECT_EQ(Rows(retry.outcomes[slot].outputs).at(0).token, static_cast<std::int32_t>(slot + 1));
+  }
+  auto peer = Wave({Decode(2, 0)}, {{3}});
+  ASSERT_FALSE(peer.outcomes[0].refusal) << peer.outcomes[0].refusal->what;
+  EXPECT_EQ(runner_->slots().positions(2), 1U);
 }
 
 TEST_F(WaveTest, AJoinedStepOfUnknownEffectFailsItsOwnersTogether) {
@@ -2268,12 +2349,42 @@ TEST_F(WaveTest, AJoinedStepOfUnknownEffectFailsItsOwnersTogether) {
     EXPECT_FALSE(runner_->slots().usable(slot));
   }
   EXPECT_EQ(source_->queued(), 1U);  // the joined run, never an owner's alone
+  // Unknown effects quarantine their owners even when the fence was seen.
+  // Fence retirement still releases the completed transaction's metadata.
+  source_->options().fail_run.reset();
+  auto peer = Wave({Decode(2, 0)}, {{3}});
+  ASSERT_FALSE(peer.outcomes[0].refusal) << peer.outcomes[0].refusal->what;
+  EXPECT_EQ(runner_->slots().positions(2), 1U);
 }
 
 class CapacityTest : public WaveTest {
  protected:
   std::uint64_t BudgetExtents() const override { return 24; }
 };
+
+TEST_F(CapacityTest, RefusedOptionalFutureBackingStillPublishesTheRequiredRow) {
+  // The actual row needs its first cache extent and fixed state. The future
+  // reaches a second cache extent, for which this request has no capacity.
+  Leave(2);
+  const std::array<std::optional<pl::StepShape>, 1> shapes{
+      Shape(pl::Phase::kPrefill, {Seg(0, 512, 1, 1)})};
+  auto ahead = runner_->Predict(shapes, 0, false, true);
+  ASSERT_TRUE(ahead) << ts::Failed(ahead).value_or("");
+  const auto before = source_->executed();
+  auto ran = Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{17}}, std::move(*ahead));
+  ASSERT_TRUE(ran) << ran.error().what;
+  EXPECT_EQ(source_->executed(), before + 1);
+  EXPECT_EQ(runner_->slots().positions(0), 1U);
+  EXPECT_TRUE(runner_->slots().usable(0));
+  const auto& live = runner_->slots().live(0, 0);
+  EXPECT_FALSE(live.preparing());
+  EXPECT_GT(live.preparation_stats().attempted, 0U);
+  EXPECT_GT(live.preparation_stats().refused + live.preparation_stats().failed, 0U);
+  const auto rows = Rows(ran->outputs.at(0));
+  ASSERT_EQ(rows.size(), 1U);
+  EXPECT_EQ(rows.front().position, 0);
+  EXPECT_EQ(rows.front().token, 17);
+}
 
 TEST_F(CapacityTest, AnOwnerOutOfStateCapacityIsRefusedAlone) {
   // Alone each owner needs two extents (its first cache extent and its
@@ -2500,8 +2611,12 @@ class PrefillTest : public WaveTest {
         return last;
       }
       const auto report = prefill.Step(work);
+      if (report.refusal) {
+        ADD_FAILURE() << report.refusal->what;
+        return last;
+      }
       for (std::size_t j = 0; j < work.size(); ++j) {
-        const auto& outcome = report.outcomes[j];
+        const auto& outcome = report.outcomes()[j];
         EXPECT_FALSE(outcome.refusal.has_value()) << outcome.refusal->what;
         if (outcome.refusal) return last;
         done[of[j]] += outcome.rows;
@@ -2669,21 +2784,21 @@ TEST_F(PrefillTest, AJoinedStepReportsEachPromptsShareOfItsOutputs) {
       {.slot = 1, .stage = 0, .tokens = b, .past = 0, .want_head = true, .all_outputs = false}};
   const auto report = prefill.Step(prompts);
   ASSERT_EQ(report.steps, 1U);  // one joined step
-  ASSERT_EQ(report.outcomes.size(), 2U);
-  for (const auto& outcome : report.outcomes) {
+  ASSERT_EQ(report.outcomes().size(), 2U);
+  for (const auto& outcome : report.outcomes()) {
     ASSERT_FALSE(outcome.refusal.has_value()) << outcome.refusal->what;
     EXPECT_TRUE(outcome.last);
     EXPECT_FALSE(outcome.outputs.empty());
   }
   // The step's joined outputs, whatever they hold (this fake's program
   // returns each owner's own), are the same step's for both.
-  EXPECT_EQ(report.outcomes[0].joined, report.outcomes[1].joined);
-  EXPECT_EQ(report.outcomes[0].segment, 0U);
-  EXPECT_EQ(report.outcomes[0].first_row, 0U);
-  EXPECT_EQ(report.outcomes[0].first_output, 0U);
-  EXPECT_EQ(report.outcomes[1].segment, 1U);
-  EXPECT_EQ(report.outcomes[1].first_row, 30U);
-  EXPECT_EQ(report.outcomes[1].first_output, 1U);
+  EXPECT_EQ(report.outcomes()[0].joined, report.outcomes()[1].joined);
+  EXPECT_EQ(report.outcomes()[0].segment, 0U);
+  EXPECT_EQ(report.outcomes()[0].first_row, 0U);
+  EXPECT_EQ(report.outcomes()[0].first_output, 0U);
+  EXPECT_EQ(report.outcomes()[1].segment, 1U);
+  EXPECT_EQ(report.outcomes()[1].first_row, 30U);
+  EXPECT_EQ(report.outcomes()[1].first_output, 1U);
 }
 
 TEST_F(PrefillTest, AllRowsOutputsAndCheckpointBoundaries) {
@@ -2706,17 +2821,17 @@ TEST_F(PrefillTest, AllRowsOutputsAndCheckpointBoundaries) {
   EXPECT_EQ(prefill.ChunkRows(cut, 0), 40U);
   EXPECT_EQ(prefill.ChunkRows(cut, 40), 60U);
   auto first = prefill.Step(std::vector{cut});
-  ASSERT_FALSE(first.outcomes[0].refusal.has_value());
-  EXPECT_EQ(first.outcomes[0].rows, 40U);
-  EXPECT_TRUE(first.outcomes[0].outputs.empty());  // a state-only cut at the boundary
+  ASSERT_FALSE(first.outcomes()[0].refusal.has_value());
+  EXPECT_EQ(first.outcomes()[0].rows, 40U);
+  EXPECT_TRUE(first.outcomes()[0].outputs.empty());  // a state-only cut at the boundary
   en::PromptWork rest = cut;
   rest.tokens = std::span(a).subspan(40);
   rest.past = 40;
   rest.boundary = 0;
   auto second = prefill.Step(std::vector{rest});
-  ASSERT_FALSE(second.outcomes[0].refusal.has_value());
-  EXPECT_TRUE(second.outcomes[0].last);
-  const auto rows = Rows(second.outcomes[0].outputs);
+  ASSERT_FALSE(second.outcomes()[0].refusal.has_value());
+  EXPECT_TRUE(second.outcomes()[0].last);
+  const auto rows = Rows(second.outcomes()[0].outputs);
   ASSERT_EQ(rows.size(), 60U);  // every row's outputs (scoring)
   EXPECT_EQ(rows.front().position, 40);
   EXPECT_EQ(rows.back().hash, Hash(a));
@@ -2760,8 +2875,13 @@ TEST_F(ComponentCommitTest, JoinedSavesSurviveAPeerStepAndLatePreparationFailure
   };
   const auto before = source_->executed();
   en::StepAhead ahead;
+  std::array<std::optional<pl::StepShape>, 2> predictions{};
   ahead.prepare = true;
-  ahead.shapes[0] = Shape(pl::Phase::kPrefill, {Seg(0, 510, 4, 1)});
+  predictions[0] = Shape(pl::Phase::kPrefill, {Seg(0, 510, 4, 1)});
+  auto paid_prediction =
+      runner_->Predict(predictions, ahead.build, ahead.capture_ahead, ahead.prepare);
+  ASSERT_TRUE(paid_prediction) << ts::Failed(paid_prediction).value_or("");
+  ahead = std::move(*paid_prediction);
   auto refused = Run(next, {{14}, {24}}, ahead);
   ASSERT_FALSE(refused);
   EXPECT_TRUE(refused.error().clean);
@@ -2838,9 +2958,14 @@ TEST_F(ComponentCommitTest, CommitInputsStayDistinctThroughCaptureAndReplay) {
 
 TEST_F(ComponentCommitTest, AnInternalCommitCannotBeCapturedAhead) {
   en::StepAhead ahead;
-  ahead.shapes[0] = Shape(pl::Phase::kCommit, {Seg(0, 0, 1, 0)});
+  std::array<std::optional<pl::StepShape>, 2> predictions{};
+  predictions[0] = Shape(pl::Phase::kCommit, {Seg(0, 0, 1, 0)});
   ahead.build = 1;
   ahead.capture_ahead = true;
+  auto paid_prediction =
+      runner_->Predict(predictions, ahead.build, ahead.capture_ahead, ahead.prepare);
+  ASSERT_TRUE(paid_prediction) << ts::Failed(paid_prediction).value_or("");
+  ahead = std::move(*paid_prediction);
   const auto before = source_->queued();
   auto refused = Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{17}}, ahead);
   ASSERT_FALSE(refused);
@@ -2882,6 +3007,1292 @@ TEST_F(ModelRunnerTest, PhysicalAlignmentFactsMatchMeasurementAndExecutionBindin
   ASSERT_TRUE(ran) << ran.error().what;
   ASSERT_FALSE(source_->built().back().measuring);
   check();
+}
+
+TEST_F(ModelRunnerTest, PaidPredictionOwnsCopiesAndRefundsOnlyAfterTheLastRelease) {
+  auto warm = runner_->PayHostMetadata(1);
+  ASSERT_TRUE(warm);
+  warm->Reset();
+  const auto before = node_.host_counted();
+  std::array<std::optional<pl::StepShape>, 1> shapes{Shape(pl::Phase::kDecode, {Seg(0, 9, 1, 1)})};
+  auto paid = runner_->Predict(shapes, 1, true, true);
+  ASSERT_TRUE(paid) << ts::Failed(paid).value_or("");
+  auto owner = std::move(*paid);
+  const auto bytes = owner.paid_bytes();
+  EXPECT_GT(bytes, sizeof(pl::StepShape));
+  EXPECT_EQ(node_.host_counted(), before + bytes);
+  auto retained = owner;
+  shapes[0]->segments[0].past = 99;
+  EXPECT_EQ(retained.shapes()[0]->segments[0].past, 9U);
+  auto* self = &retained;
+  retained = std::move(*self);
+  ASSERT_EQ(retained.shapes().size(), 1U);
+  owner = {};
+  EXPECT_EQ(node_.host_counted(), before + bytes);
+  std::thread release([owned = std::move(retained)]() mutable { owned = {}; });
+  release.join();
+  EXPECT_EQ(node_.host_counted(), before);
+}
+
+TEST_F(ModelRunnerTest, DynamicLookaheadBuildsTwelveDistinctPaidCandidates) {
+  source_->options().shape_parameters = [](const pl::StepShape& shape,
+                                           md::ShapeParameterSink& sink) {
+    sink.push_back(shape.segments.front().past);
+  };
+  std::vector<std::optional<pl::StepShape>> shapes;
+  for (std::uint32_t i = 1; i <= 12; ++i)
+    shapes.emplace_back(Shape(pl::Phase::kDecode, {Seg(0, i, 1, 1)}));
+  auto ahead = runner_->Predict(shapes, 12);
+  ASSERT_TRUE(ahead) << ts::Failed(ahead).value_or("");
+  const auto before = runner_->lookahead_stats();
+  auto ran = Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{17}}, *ahead);
+  ASSERT_TRUE(ran) << ran.error().what;
+  EXPECT_EQ(ran->built_ahead, 12U);
+  EXPECT_EQ(ran->cached_ahead, 12U);
+  EXPECT_EQ(runner_->lookahead_stats().attempted - before.attempted, 12U);
+  EXPECT_EQ(runner_->slots().positions(0), 1U);
+}
+
+TEST_F(ModelRunnerTest, AChangedShapeEmitterRefusesBeforeBuildOrPublication) {
+  std::size_t emits = 0;
+  source_->options().shape_parameters = [&](const pl::StepShape&, md::ShapeParameterSink& sink) {
+    sink.push_back(1);
+    if (++emits % 2 == 0) sink.push_back(2);
+  };
+  const auto built = source_->built().size();
+  const auto plans = runner_->plans().size();
+  const auto tensors = runner_->coverage().tensors;
+  auto ran = Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{17}});
+  ASSERT_FALSE(ran);
+  EXPECT_TRUE(ran.error().clean);
+  EXPECT_NE(ran.error().what.find("emitter changed"), std::string::npos);
+  EXPECT_EQ(source_->built().size(), built);
+  EXPECT_EQ(runner_->plans().size(), plans);
+  EXPECT_EQ(runner_->coverage().tensors, tensors);
+  EXPECT_EQ(runner_->slots().positions(0), 0U);
+}
+
+TEST_F(PrefillTest, PredictionPreservesDepthAlternativesBeyondEightWithoutSpecializationGuesses) {
+  auto caps = Caps();
+  caps.max_step_rows = 512;
+  auto composer = en::WaveComposer::Make(caps, kContext, 256);
+  ASSERT_TRUE(composer);
+  en::PrefillOrchestrator prefill(*runner_, *composer, {});
+  const std::array<en::PrefillUnit, 1> units{{{.current = ::Prefill(0, 60, 4),
+                                               .work = {},
+                                               .next = {},
+                                               .prompt_end = 64,
+                                               .remaining = 64,
+                                               .generation_expected = true}}};
+  en::PrefillContinuation continuation{.speculate = true, .verify_rows = 12, .min_verify_rows = 1};
+  auto ahead = prefill.Predict(units, {}, continuation, std::array<std::size_t, 1>{0});
+  ASSERT_TRUE(ahead) << ts::Failed(ahead).value_or("");
+  ASSERT_EQ(ahead->shapes().size(), 12U);
+  for (std::size_t i = 0; i < ahead->shapes().size(); ++i) {
+    const auto& shape = *ahead->shapes()[i];
+    EXPECT_EQ(shape.phase, pl::Phase::kVerify);
+    EXPECT_EQ(shape.segments[0].rows, 12U - i);
+    EXPECT_EQ(shape.segments[0].past, 64U);  // Unknown provider supplies no invented boundary.
+  }
+}
+
+TEST_F(PrefillTest, KnownPeerBudgetsProduceTheActualExitOrderAndUnknownPeersStay) {
+  auto composer = en::WaveComposer::Make(Caps(), kContext, 256);
+  ASSERT_TRUE(composer);
+  en::PrefillOrchestrator prefill(*runner_, *composer, {});
+  const std::array<en::PrefillUnit, 1> units{{{.current = ::Prefill(0, 60, 4),
+                                               .work = {},
+                                               .next = {},
+                                               .prompt_end = 64,
+                                               .remaining = 20,
+                                               .generation_expected = true}}};
+  const std::array<en::PrefillPeer, 2> peers{
+      {{.next = Decode(1, 300), .ready = true, .remaining = 3},
+       {.next = Decode(2, 200), .ready = true, .remaining = {}}}};
+  auto ahead = prefill.Predict(units, peers, {}, std::array<std::size_t, 1>{0});
+  ASSERT_TRUE(ahead) << ts::Failed(ahead).value_or("");
+  ASSERT_EQ(ahead->shapes().size(), 3U);
+  const auto& initial = ahead->shapes()[0]->segments;
+  ASSERT_EQ(initial.size(), 3U);
+  const auto& first_exit = ahead->shapes()[1]->segments;
+  ASSERT_EQ(first_exit.size(), 2U);
+  EXPECT_EQ(first_exit[0].slot, 0U);
+  EXPECT_EQ(first_exit[0].past, 67U);
+  EXPECT_EQ(first_exit[1].slot, 2U);
+  EXPECT_EQ(first_exit[1].past, 203U);
+  const auto& final = ahead->shapes()[2]->segments;
+  ASSERT_EQ(final.size(), 1U);
+  EXPECT_EQ(final[0].slot, 2U);
+  EXPECT_EQ(final[0].past, 220U);  // Actual 20-row budget, never 128-generated.
+}
+
+TEST_F(PrefillTest, CanonicalSourceBoundaryReplacesFamilySpecificOffsets) {
+  source_->options().specialization = [](const en::SpecializationRequest& request)
+      -> std::expected<en::SpecializationChange, en::SpecializationError> {
+    const auto boundary = (request.after / 7U + 1U) * 7U;
+    en::SpecializationChange change{.coverage = en::SpecializationChange::Coverage::kComplete};
+    if (boundary <= request.through)
+      change.next = en::SpecializationBoundary{.position = boundary, .fact = 7};
+    return change;
+  };
+  source_->options().shape_parameters = [](const pl::StepShape& shape,
+                                           md::ShapeParameterSink& sink) {
+    for (const auto& owner : shape.segments) sink.push_back(owner.past / 7U);
+  };
+  auto composer = en::WaveComposer::Make(Caps(), kContext, 256);
+  ASSERT_TRUE(composer);
+  en::PrefillOrchestrator prefill(*runner_, *composer, {.specialization_lookahead = 2});
+  const std::array<en::PrefillUnit, 1> units{{{.current = ::Prefill(0, 60, 4),
+                                               .work = {},
+                                               .next = {},
+                                               .prompt_end = 64,
+                                               .remaining = 9,
+                                               .generation_expected = true}}};
+  auto ahead = prefill.Predict(units, {}, {}, std::array<std::size_t, 1>{0});
+  ASSERT_TRUE(ahead) << ts::Failed(ahead).value_or("");
+  ASSERT_EQ(ahead->shapes().size(), 2U);  // Next 70 boundary fits; 77 exceeds real budget.
+  EXPECT_EQ(ahead->shapes()[0]->segments[0].past, 64U);
+  EXPECT_EQ(ahead->shapes()[1]->segments[0].past, 70U);
+}
+
+TEST_F(PrefillTest, RefusedOptionalCapacityStillExecutesAndPublishesThePrompt) {
+  // The general fake fixture disables host charges with an unlimited floor.
+  // Exercise the actual finite physical budget before requesting this workspace.
+  node_.SetHostFloor(node_.host_counted());
+  auto composer = en::WaveComposer::Make(Caps(), kContext, 256);
+  ASSERT_TRUE(composer);
+  en::PrefillOrchestrator prefill(*runner_, *composer, {.specialization_lookahead = UINT32_MAX});
+  const std::array<std::int32_t, 4> tokens{4, 5, 6, 7};
+  const std::array<en::PrefillUnit, 1> units{
+      {{.current = ::Prefill(0, 0, 4),
+        .work = {.tokens = tokens, .bytes = {}, .feature = {}, .history = tokens},
+        .next = {},
+        .remaining = 20,
+        .generation_expected = true}}};
+  const auto report = prefill.StepPrepared(units);
+  ASSERT_EQ(report.outcomes().size(), 1U);
+  ASSERT_FALSE(report.outcomes()[0].refusal) << report.outcomes()[0].refusal->what;
+  EXPECT_EQ(report.prediction_refused, 1U);
+  EXPECT_EQ(report.steps, 1U);
+  EXPECT_EQ(runner_->slots().positions(0), 4U);
+  ExpectPrompt(0, tokens);
+  node_.SetHostFloor(UINT64_MAX);
+}
+
+TEST(WaveComposerTest, MixedCausalCompositionRetainsRolesAndNormalDecodeKeys) {
+  auto caps = Caps();
+  caps.join_prefill = true;
+  caps.equal_prefill = true;
+  caps.mixed_greedy = true;
+  const std::array pending{::Prefill(0, 90, 7), Decode(1, 40)};
+  auto separate = en::WaveComposer::Make(caps, kContext, 256);
+  ASSERT_TRUE(separate);
+  EXPECT_EQ(separate->Compose(pending).steps.size(), 2U);
+  caps.mixed_causal = true;
+  auto mixed = en::WaveComposer::Make(caps, kContext, 256);
+  ASSERT_TRUE(mixed);
+  const auto joined = mixed->Compose(pending);
+  ASSERT_TRUE(joined.refused.empty());
+  ASSERT_EQ(joined.steps.size(), 1U);
+  const auto& shape = joined.steps.front().shape;
+  EXPECT_EQ(shape.phase, pl::Phase::kPrefill);
+  ASSERT_EQ(shape.segments.size(), 2U);
+  EXPECT_FALSE(shape.segments[0].origin_phase);
+  EXPECT_EQ(shape.segments[1].origin_phase, pl::Phase::kDecode);
+  pl::PlanKey first{.shape = shape};
+  auto forged = first;
+  forged.shape.segments[1].origin_phase.reset();
+  EXPECT_NE(first, forged);
+  EXPECT_NE(llmp::execution::HashOf(first), llmp::execution::HashOf(forged));
+  const std::array decodes{Decode(0, 20), Decode(1, 40)};
+  const auto ordinary = separate->Compose(decodes);
+  const auto candidate = mixed->Compose(decodes);
+  ASSERT_EQ(candidate.steps.size(), 1U);
+  EXPECT_EQ(candidate.steps[0].shape, ordinary.steps[0].shape);
+  std::array<pl::StepShape, 2> into;
+  for (auto& planned : into) planned.segments.reserve(pending.size());
+  std::array<std::size_t, 2> order;
+  const auto predicted = mixed->ComposePrediction(pending, into, order);
+  ASSERT_TRUE(predicted);
+  ASSERT_EQ(*predicted, 1U);
+  EXPECT_EQ(into[0], shape);
+}
+
+TEST(WaveComposerTest, PaidPredictionCompositionMatchesAuthoritativeSplits) {
+  auto caps = Caps();
+  caps.join_prefill = caps.equal_prefill = true;
+  auto composer = en::WaveComposer::Make(caps, kContext, 256);
+  ASSERT_TRUE(composer);
+  const std::array<en::PendingWork, 3> pending{::Prefill(2, 64, 4), ::Prefill(0, 64, 4),
+                                               ::Prefill(1, 64, 2)};
+  const auto real = composer->Compose(pending);
+  ASSERT_TRUE(real.refused.empty());
+  std::array<pl::StepShape, 3> into;
+  for (auto& shape : into) shape.segments.reserve(pending.size());
+  std::array<std::size_t, 3> order;
+  const auto predicted = composer->ComposePrediction(pending, into, order);
+  ASSERT_TRUE(predicted);
+  ASSERT_EQ(*predicted, real.steps.size());
+  for (std::size_t i = 0; i < *predicted; ++i) {
+    EXPECT_EQ(into[i], real.steps[i].shape);
+    for (std::size_t j = 0; j < into[i].segments.size(); ++j)
+      EXPECT_EQ(into[i].segments[j].past, real.steps[i].shape.segments[j].past);
+  }
+  std::array<pl::StepShape, 3> unfunded;
+  EXPECT_FALSE(composer->ComposePrediction(pending, unfunded, order));
+}
+
+TEST(ShapeParameterSinkTest, CountAndExactFillShareTheEmitterWithoutGrowingStorage) {
+  const auto emit = [](md::ShapeParameterSink& sink) {
+    for (const auto word : {3ULL, 7ULL, 11ULL}) sink.push_back(word);
+  };
+  md::ShapeParameterSink count;
+  emit(count);
+  ASSERT_EQ(count.Finish(), 3U);
+  std::array<std::uint64_t, 5> words{99, 99, 99, 99, 99};
+  md::ShapeParameterSink exact(std::span(words).subspan(1, 3));
+  emit(exact);
+  EXPECT_EQ(exact.Finish(), 3U);
+  EXPECT_EQ(words, (std::array<std::uint64_t, 5>{99, 3, 7, 11, 99}));
+  md::ShapeParameterSink short_span(std::span(words).subspan(1, 2));
+  emit(short_span);
+  EXPECT_FALSE(short_span.Finish());
+  EXPECT_EQ(words.front(), 99U);
+  EXPECT_EQ(words.back(), 99U);
+  md::ShapeParameterSink long_span(std::span(words).first(4));
+  emit(long_span);
+  EXPECT_FALSE(long_span.Finish());
+}
+
+TEST(ShapeParameterSinkTest, ObservationSharesEmittedWordsAndUnannotatedFactsStayUnknown) {
+  const auto emit = [](md::ShapeParameterSink& sink) {
+    sink.push_back(md::ShapeParameterFact{.value = 3, .next = 17});
+    sink.push_back(md::ShapeParameterFact{.value = 7});
+    sink.push_back(md::ShapeParameterFact{.value = 11, .next = 29});
+  };
+  std::array<std::uint64_t, 3> words{};
+  md::ShapeParameterSink filling(words);
+  emit(filling);
+  EXPECT_EQ(filling.Finish(), 3U);
+  EXPECT_EQ(words, (std::array<std::uint64_t, 3>{3, 7, 11}));
+  auto observed = md::ShapeParameterSink::Observe(12, 30);
+  emit(observed);
+  auto next = observed.Next();
+  ASSERT_TRUE(next);
+  EXPECT_TRUE(next->complete);
+  EXPECT_EQ(next->next, 17U);
+  EXPECT_EQ(next->word, 0U);
+  observed.push_back(99);  // An older/future provider has not supplied interval coverage.
+  ASSERT_TRUE(observed.Next());
+  EXPECT_FALSE(observed.Next()->complete);
+  auto past = md::ShapeParameterSink::Observe(17, 30);
+  past.push_back(md::ShapeParameterFact{.value = 3, .next = 17});
+  EXPECT_FALSE(past.Next());
+  auto end = md::ShapeParameterSink::Observe(UINT32_MAX - 1, UINT32_MAX);
+  end.push_back(md::ShapeParameterFact{.value = 1, .next = UINT64_MAX});
+  ASSERT_TRUE(end.Next());
+  EXPECT_TRUE(end.Next()->complete);
+  EXPECT_FALSE(end.Next()->next);
+  end.push_back(md::ShapeParameterFact{.value = 2, .next = UINT32_MAX});
+  EXPECT_EQ(end.Next()->next, UINT32_MAX);
+  EXPECT_FALSE(md::ShapeParameterSink::Observe(UINT32_MAX, UINT32_MAX).Next());
+}
+
+TEST(StepAheadTest, AnImmutablePredictionCanOutliveTheNodeAndReleaseOnAnotherThread) {
+  en::StepAhead retained;
+  {
+    auto node = std::make_unique<en::PagedNode>(
+        en::NodeSettings{.compute_streams = 1, .slots = 1, .slot_bytes = kExtent});
+    ASSERT_TRUE(node->Open());
+    const auto fixed = node->catalog().OccupancyOf(node->domain()).Total().value();
+    ASSERT_TRUE(node->Start(Bytes(fixed + 16 * kExtent)));
+    node->Run();
+    const std::array<std::optional<pl::StepShape>, 1> shapes{
+        Shape(pl::Phase::kDecode, {Seg(0, 19, 1, 1)})};
+    auto owner = en::StepAhead::Create(*node, shapes, 1);
+    ASSERT_TRUE(owner) << ts::Failed(owner).value_or("");
+    retained = std::move(*owner);
+    ASSERT_TRUE(node->TearDown({}));
+  }
+  ASSERT_EQ(retained.shapes().size(), 1U);
+  EXPECT_EQ(retained.shapes()[0]->segments[0].past, 19U);
+  std::thread release([owner = std::move(retained)]() mutable { owner = {}; });
+  release.join();
+}
+
+TEST(SpecializationQueryTest, MalformedCoverageAndBoundsAreRefused) {
+  const auto shape = Shape(pl::Phase::kDecode, {Seg(0, 9, 1, 1)});
+  const en::SpecializationRequest request{
+      .shape = shape, .owner = 0, .after = 9, .through = 31, .context = 32};
+  EXPECT_TRUE(en::ValidSpecializationRequest(request));
+  EXPECT_FALSE(en::ValidSpecializationChange(
+      request, {.coverage = static_cast<en::SpecializationChange::Coverage>(255)}));
+  EXPECT_FALSE(en::ValidSpecializationChange(
+      request, {.coverage = en::SpecializationChange::Coverage::kUnknown,
+                .next = en::SpecializationBoundary{.position = 10}}));
+  EXPECT_FALSE(en::ValidSpecializationChange(
+      request, {.coverage = en::SpecializationChange::Coverage::kComplete,
+                .next = en::SpecializationBoundary{.position = 9}}));
+  EXPECT_FALSE(en::ValidSpecializationChange(
+      request, {.coverage = en::SpecializationChange::Coverage::kComplete,
+                .next = en::SpecializationBoundary{.position = 32}}));
+  EXPECT_FALSE(en::ValidSpecializationRequest(
+      {.shape = shape, .owner = 0, .after = 8, .through = 31, .context = 32}));
+  EXPECT_FALSE(en::ValidSpecializationRequest(
+      {.shape = shape, .owner = 0, .after = 9, .through = 32, .context = 32}));
+}
+
+TEST_F(PrefillTest, ACheckpointOrUnknownHintDoesNotPretendThePromptHasFinished) {
+  auto composer = en::WaveComposer::Make(Caps(), kContext, 256);
+  ASSERT_TRUE(composer);
+  en::PrefillOrchestrator prefill(*runner_, *composer, {});
+  std::array<en::PrefillUnit, 1> units{{{.current = ::Prefill(0, 60, 4),
+                                         .work = {},
+                                         .next = {},
+                                         .prompt_end = 100,
+                                         .remaining = 20,
+                                         .generation_expected = true}}};
+  auto at_checkpoint = prefill.Predict(units, {}, {}, std::array<std::size_t, 1>{0});
+  ASSERT_TRUE(at_checkpoint);
+  EXPECT_TRUE(at_checkpoint->shapes().empty());
+  units[0].prompt_end.reset();
+  auto unknown = prefill.Predict(units, {}, {}, std::array<std::size_t, 1>{0});
+  ASSERT_TRUE(unknown);
+  EXPECT_TRUE(unknown->shapes().empty());
+  units[0].prompt_end = 64;
+  units[0].remaining = 0;
+  auto one_emitted_token = prefill.Predict(units, {}, {}, std::array<std::size_t, 1>{0});
+  ASSERT_TRUE(one_emitted_token);
+  EXPECT_TRUE(one_emitted_token->shapes().empty());
+}
+
+TEST_F(PrefillTest, RequiredDispatchMetadataRefusalPrecedesPlanningStateAndQueueing) {
+  auto warm = runner_->PayHostMetadata(1);
+  ASSERT_TRUE(warm);
+  warm->Reset();
+  ASSERT_TRUE(node_.ChargeHost(0, false));  // Apply the deferred release before setting its floor.
+  node_.SetHostFloor(node_.host_counted());
+  const auto total = fixed_ + BudgetExtents() * kExtent;
+  const auto occupied = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+  ASSERT_GT(total, occupied);
+  // Existing catalog entries may occupy a partial extent. Fill all complete
+  // free extents; even one more byte then needs an extent that cannot fit.
+  const auto filler = (total - occupied) / kExtent * kExtent;
+  ASSERT_TRUE(node_.ChargeHost(filler, false));
+  auto composer = en::WaveComposer::Make(Caps(), kContext, 256);
+  ASSERT_TRUE(composer);
+  en::PrefillOrchestrator prefill(*runner_, *composer, {});
+  const std::array<std::int32_t, 1> tokens{3};
+  const std::array<en::PrefillUnit, 1> units{
+      {{.current = ::Prefill(0, 0, 1),
+        .work = {.tokens = tokens, .bytes = {}, .feature = {}, .history = tokens},
+        .next = {}}}};
+  const auto builds = source_->built().size();
+  const auto queued = source_->queued();
+  const auto report = prefill.StepPrepared(units);
+  EXPECT_TRUE(report.refusal);
+  EXPECT_TRUE(report.outcomes().empty());
+  EXPECT_EQ(source_->built().size(), builds);
+  EXPECT_EQ(source_->queued(), queued);
+  EXPECT_EQ(runner_->slots().positions(0), 0U);
+  node_.UnchargeHost(filler);
+  node_.SetHostFloor(UINT64_MAX);
+}
+
+TEST_F(PrefillTest, OutcomeCapacityRemainsPaidAcrossMovesAndReleasesBeforeRetainedOutput) {
+  auto composer = en::WaveComposer::Make(Caps(), kContext, 256);
+  ASSERT_TRUE(composer);
+  en::PrefillOrchestrator prefill(*runner_, *composer,
+                                  {.lookahead = 0, .capture_ahead = false, .prepare_ahead = false});
+  const std::array<std::int32_t, 1> tokens{3};
+  const std::array<en::PrefillUnit, 1> units{
+      {{.current = ::Prefill(0, 0, 1),
+        .work = {.tokens = tokens, .bytes = {}, .feature = {}, .history = tokens},
+        .next = {}}}};
+  auto report = prefill.StepPrepared(units);
+  ASSERT_FALSE(report.refusal);
+  ASSERT_EQ(report.outcomes().size(), 1U);
+  ASSERT_FALSE(report.outcomes()[0].refusal);
+  auto retained = report.outcomes()[0].outputs;
+  const auto counted = node_.host_counted();
+  auto moved = std::move(report);
+  EXPECT_TRUE(report.outcomes().empty());
+  auto* self = &moved;
+  moved = std::move(*self);
+  ASSERT_EQ(moved.outcomes().size(), 1U);
+  EXPECT_EQ(node_.host_counted(), counted);
+  moved = {};
+  EXPECT_EQ(node_.host_counted(), counted - sizeof(en::PrefillOutcome) - 64);
+  EXPECT_FALSE(retained.empty());
+  const auto rows = Rows(retained);
+  ASSERT_EQ(rows.size(), 1U);
+  EXPECT_EQ(rows[0].position, 0);
+}
+
+TEST_F(ModelRunnerTest, MalformedProviderCoverageIsRejectedByTheOwnedSourceBoundary) {
+  source_->options().specialization = [](const en::SpecializationRequest&)
+      -> std::expected<en::SpecializationChange, en::SpecializationError> {
+    return en::SpecializationChange{.coverage =
+                                        static_cast<en::SpecializationChange::Coverage>(255)};
+  };
+  const auto shape = Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)});
+  const auto queried = runner_->NextSpecializationChange(
+      {.shape = shape, .owner = 0, .after = 0, .through = 3, .context = kContext});
+  EXPECT_EQ(ts::Failed(queried), en::SpecializationError::kProvider);
+}
+
+TEST_F(ModelRunnerTest, InvalidRootAdoptionPreservesTheOriginalUniqueRunnerAndItsAuthority) {
+  en::PagedNode foreign{en::NodeSettings{}};
+  const auto* original = runner_.get();
+  auto refused = en::RunnerOwner::Adopt(foreign, runner_);
+  EXPECT_FALSE(refused);
+  EXPECT_EQ(runner_.get(), original);
+  EXPECT_TRUE(Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{7}}));
+}
+
+class RunnerDependenciesTest : public ModelRunnerTest {
+ protected:
+  struct Dependency {
+    explicit Dependency(bool& alive) : live(alive) { live = true; }
+    ~Dependency() { live = false; }
+    bool& live;
+  };
+  struct Borrower {
+    const bool& live;
+    bool& observed;
+    ~Borrower() { observed = live; }
+  };
+  bool dependency_live_ = false, borrower_observed_live_ = false;
+  std::shared_ptr<Dependency> dependency_;
+  void Configure(en::RunnerConfig& config) override {
+    dependency_ = std::make_shared<Dependency>(dependency_live_);
+    // Deliberately no strong owner in this callback: parts.keep may be the
+    // sole owner of a config/source borrower's environment.
+    auto borrower = std::make_shared<Borrower>(dependency_live_, borrower_observed_live_);
+    config.retire = [borrower] {};
+  }
+  void TearDown() override {
+    if (node_.InRequest(0)) EXPECT_TRUE(node_.EndRequest(0));
+    const std::array<en::PagedModel*, 1> models{runner_.get()};
+    if (runner_)
+      EXPECT_TRUE(node_.TearDown(models));
+    else
+      EXPECT_TRUE(node_.TearDown({}));
+    runner_.reset();
+    dependency_.reset();
+  }
+};
+
+TEST_F(RunnerDependenciesTest, NodeRootRetainsExplicitPartsUntilEveryRunnerBorrowerIsDestroyed) {
+  const std::weak_ptr<Dependency> weak = dependency_;
+  auto adopted = en::RunnerOwner::Adopt(node_, runner_, dependency_);
+  ASSERT_TRUE(adopted) << ts::Failed(adopted).value_or("");
+  auto owner = std::move(*adopted);
+  dependency_.reset();
+  owner.reset();  // Adapter gone; the node's registered root still owns parts.
+  EXPECT_FALSE(weak.expired());
+  EXPECT_TRUE(dependency_live_);
+  EXPECT_FALSE(borrower_observed_live_);
+  ASSERT_TRUE(node_.EndRequest(0));
+  ASSERT_TRUE(node_.TearDown({}));
+  EXPECT_TRUE(weak.expired());
+  EXPECT_FALSE(dependency_live_);
+  EXPECT_TRUE(borrower_observed_live_);
+}
+
+// Real retained runner ownership, with a producer-minted private test backend.
+// No completion proof is injected: the node's ordinary job/fence path is used.
+class PrivateResourcesTest : public ModelRunnerTest {
+ protected:
+  en::RunnerOwner owned_;
+  void SetUp() override {
+    ModelRunnerTest::SetUp();
+    if (HasFatalFailure()) return;
+    auto owner = en::RunnerOwner::Adopt(node_, runner_);
+    ASSERT_TRUE(owner) << ts::Failed(owner).value_or("");
+    owned_ = std::move(*owner);
+  }
+  void TearDown() override {
+    if (!owned_) return;
+    if (node_.InRequest(0)) EXPECT_TRUE(node_.EndRequest(0));
+    const std::array<en::PagedModel*, 1> models{owned_.get()};
+    EXPECT_TRUE(node_.TearDown(models));
+    owned_.reset();
+  }
+};
+
+TEST(CopySinkTest, CountAndPaidFillPreserveWrapAndPortBoundariesWithoutAllocation) {
+  const auto emit = [](en::CopySink& sink) {
+    return sink.Push({100, 200, 16}) && sink.Push({116, 216, 16}, true) &&
+           sink.Push({132, 1000, 16}, true) && sink.Push({148, 1016, 16}, true) &&
+           sink.Push({164, 1032, 16});  // a new port never merges with the old
+  };
+  en::CopySink count;
+  ASSERT_TRUE(emit(count));
+  ASSERT_EQ(count.size(), 3U);
+  std::array<en::RunCopy, 3> storage{};
+  en::CopySink fill{std::span(storage)};
+  ASSERT_TRUE(emit(fill));
+  EXPECT_EQ(fill.size(), count.size());
+  EXPECT_EQ(storage[0], (en::RunCopy{100, 200, 32}));
+  EXPECT_EQ(storage[1], (en::RunCopy{132, 1000, 32}));
+  EXPECT_EQ(storage[2], (en::RunCopy{164, 1032, 16}));
+  const auto before = storage;
+  EXPECT_FALSE(fill.Push({999, 999, 1}));
+  EXPECT_EQ(storage, before);
+  EXPECT_EQ(fill.size(), 3U);
+  en::Copies ordinary;
+  en::CopySink vector(ordinary);
+  ASSERT_TRUE(emit(vector));
+  EXPECT_TRUE(std::ranges::equal(ordinary, storage));
+}
+
+TEST(CopySinkTest, AddressWrapCannotMasqueradeAsAContiguousCopy) {
+  std::array<en::RunCopy, 2> storage{};
+  en::CopySink into{std::span(storage)};
+  ASSERT_TRUE(into.Push({UINT64_MAX - 7, UINT64_MAX - 7, 16}));
+  ASSERT_TRUE(into.Push({8, 8, 16}, true));
+  EXPECT_EQ(into.size(), 2U);
+  EXPECT_EQ(storage[0][2], 16U);
+  EXPECT_EQ(storage[1][2], 16U);
+}
+
+TEST_F(ModelRunnerTest, PrivateBatchPreviewCannotBorrowAnUnretainedRunnerLifetime) {
+  auto composer = en::WaveComposer::For(Caps(), runner_->slots());
+  ASSERT_TRUE(composer);
+  const std::array target{Decode(0, 0)};
+  const auto built = source_->built().size();
+  auto preview = en::PromptBatchInventory::Preview(*runner_, *composer, target);
+  ASSERT_FALSE(preview);
+  EXPECT_EQ(preview.error().error, kn::ResourceError::kOwnership);
+  EXPECT_EQ(source_->built().size(), built);
+  EXPECT_EQ(source_->queued(), 0U);
+}
+
+TEST_F(PrivateResourcesTest, CompleteBatchPreviewOwnsCanonicalJoinedAndSingletonShapesWithoutWork) {
+  auto composer = en::WaveComposer::For(Caps(), owned_->slots());
+  ASSERT_TRUE(composer);
+  const std::array target{Decode(0, 0, 2), Decode(1, 0, 2)};
+  const auto built = source_->built().size();
+  const auto queued = source_->queued();
+  ASSERT_TRUE(node_.ChargeHost(0, false));
+  const auto before = node_.host_counted();
+  {
+    auto preview = en::PromptBatchInventory::Preview(*owned_, *composer, target);
+    ASSERT_TRUE(preview) << ts::Failed(preview).value_or(kn::ResourceFailure{}).what;
+    ASSERT_EQ(preview->shapes().size(), 3U);
+    const auto composed = composer->Compose(target);
+    ASSERT_EQ(composed.steps.size(), 1U);
+    EXPECT_EQ(preview->shapes()[0], composed.steps[0].shape);
+    EXPECT_EQ(preview->shapes()[0].segments.size(), 2U);
+    for (std::size_t i = 1; i < preview->shapes().size(); ++i) {
+      ASSERT_EQ(preview->shapes()[i].segments.size(), 1U);
+      EXPECT_EQ(preview->shapes()[i].segments[0].slot, i - 1);
+      EXPECT_EQ(preview->shapes()[i].segments[0].past, 0U);
+      EXPECT_EQ(preview->shapes()[i].segments[0].rows, 2U);
+      EXPECT_EQ(preview->shapes()[i].read_align, owned_->slots().read_align());
+    }
+    EXPECT_TRUE(preview->Revalidate());
+    EXPECT_GT(preview->paid_bytes(), 0U);
+    auto* self = &*preview;
+    *preview = std::move(*self);
+    EXPECT_EQ(preview->shapes().size(), 3U);
+    EXPECT_TRUE(preview->Revalidate());
+    EXPECT_EQ(source_->built().size(), built);
+    EXPECT_EQ(source_->queued(), queued);
+    EXPECT_EQ(owned_->slots().positions(0), 0U);
+    EXPECT_EQ(owned_->slots().positions(1), 0U);
+    EXPECT_EQ(owned_->plans().size(), 0U);
+  }
+  ASSERT_TRUE(node_.ChargeHost(0, false));
+  EXPECT_EQ(node_.host_counted(), before);
+}
+
+TEST_F(PrivateResourcesTest, BatchPreviewRevalidatesActualTargetPositionsBeforeCompoundMint) {
+  auto composer = en::WaveComposer::For(Caps(), owned_->slots());
+  ASSERT_TRUE(composer);
+  const std::array target{Decode(0, 0)};
+  auto preview = en::PromptBatchInventory::Preview(*owned_, *composer, target);
+  ASSERT_TRUE(preview);
+  ASSERT_TRUE(preview->Revalidate());
+  const std::array<std::int32_t, 1> tokens{7};
+  const std::array work{en::SegmentWork{.tokens = tokens, .bytes = {}}};
+  auto ran = owned_->RunStep({.shape = Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}),
+                              .work = work,
+                              .step_bytes = {},
+                              .advance = true,
+                              .ahead = {}});
+  ASSERT_TRUE(ran) << ts::Failed(ran).value_or(en::StepRefusal{}).what;
+  EXPECT_EQ(owned_->slots().positions(0), 1U);
+  EXPECT_FALSE(preview->Revalidate());
+  // Immutable preview still describes its original coordinate; no new rights.
+  EXPECT_EQ(preview->shapes().front().segments.front().past, 0U);
+}
+
+class PaidPrivateBacking final : public kn::ResourceDependency {
+ public:
+  PaidPrivateBacking(en::HostPayment paid, std::vector<std::string>& events)
+      : paid_(std::move(paid)), events_(events) {}
+  static std::expected<kn::ResourceKeep, std::string> Make(en::PagedNode& node,
+                                                           std::vector<std::string>& events) {
+    auto paid = node.PrepayHost(sizeof(PaidPrivateBacking) + 64);
+    if (!paid) return std::unexpected(paid.error());
+    auto* backing = new PaidPrivateBacking(std::move(*paid), events);
+    return backing->Adopt();
+  }
+
+ private:
+  void Destroy() override {
+    auto paid = std::move(paid_);
+    auto& events = events_;
+    delete this;
+    events.push_back("backing destroyed");
+    paid.Reset();
+  }
+  en::HostPayment paid_;
+  std::vector<std::string>& events_;
+};
+
+class PrivateResourceProgram final : public kn::StepProgram {
+ public:
+  PrivateResourceProgram(kn::StepLaunch& launch, std::vector<std::string>& events)
+      : launch_(launch), events_(events) {}
+  ~PrivateResourceProgram() override { events_.push_back("program destroyed"); }
+  std::uint64_t scratch_bytes() const override { return 0; }
+  std::uint64_t host_bytes() const override { return sizeof(*this); }
+  std::uint64_t launches() const override { return 0; }
+  std::span<const kn::InputSlot> inputs() const override { return {}; }
+  std::span<const kn::OutputSlot> outputs() const override { return {}; }
+  std::span<const kn::TensorUse> tensors() const override { return {}; }
+  std::expected<void, kn::StepFailure> Bind(kn::StepLaunch& launch) override {
+    if (&launch != &launch_) return std::unexpected(kn::StepFailure{.detail = "private affinity"});
+    return {};
+  }
+  std::expected<void, kn::StepFailure> Run(kn::StepLaunch& launch,
+                                           llmp::providers::NativeStream) const override {
+    if (&launch != &launch_) return std::unexpected(kn::StepFailure{.detail = "private affinity"});
+    return {};
+  }
+
+ private:
+  kn::StepLaunch& launch_;
+  std::vector<std::string>& events_;
+};
+
+class PrivateResourceBackend final : public kn::BackendOwner {
+ public:
+  PrivateResourceBackend(en::PagedNode& node, kn::StepLaunch* actual,
+                         std::vector<std::string>& events,
+                         const llmp::execution::Registry* registry = nullptr,
+                         std::shared_ptr<const kn::ConstructionFunder> construction = {})
+      : node_(node), actual_(actual), events_(events) {
+    table_.registry = registry;
+    table_.construction_funder = std::move(construction);
+    table_.lower =
+        [](const kn::LowerInput&) -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
+      return std::unexpected("ordinary test lowering was not requested");
+    };
+  }
+  const kn::StepBackend& backend() const override { return table_; }
+  std::expected<llmp::execution::BackendDeclaration, std::string> Ready() const override {
+    return llmp::execution::BackendDeclaration{};
+  }
+  bool Charge(std::uint64_t n) const override {
+    EXPECT_EQ(paid_.bytes(), 0U);
+    if (refuse_payment) return false;
+    auto paid = node_.PrepayHost(n);
+    if (!paid) return false;
+    paid_ = std::move(*paid);
+    charged += n;
+    return true;
+  }
+  void Release(std::uint64_t n) const override {
+    EXPECT_EQ(n, paid_.bytes());
+    refunded += n;
+    events_.push_back("view refunded");
+    paid_.Reset();
+  }
+  bool refuse_payment = false, refuse_factory = false;
+  mutable std::uint64_t charged = 0, refunded = 0;
+  mutable std::size_t factories = 0;
+
+ private:
+  class View final : public kn::ResourceInstance {
+   public:
+    View(kn::ResourceOrigin origin, std::vector<std::string>& events)
+        : ResourceInstance(std::move(origin)), events_(events) {}
+    ~View() override { events_.push_back("view destroyed"); }
+    kn::StepLaunch& launch() const override { return launch_; }
+    std::expected<std::unique_ptr<kn::StepProgram>, std::string> Lower(
+        const kn::LowerInput&) const override {
+      return std::make_unique<PrivateResourceProgram>(launch_, events_);
+    }
+
+   private:
+    mutable kn::RecordingLaunch launch_;
+    std::vector<std::string>& events_;
+  };
+  std::expected<std::uint64_t, kn::ResourceFailure> ResourceBytes(
+      kn::ResourceWorkspace) const override {
+    return sizeof(View) + 64;
+  }
+  std::expected<kn::ResourceInstance*, kn::ResourceFailure> MakeResources(
+      kn::ResourceOrigin origin, kn::ResourceWorkspace) const override {
+    ++factories;
+    if (refuse_factory || origin.parent_launch() != actual_)
+      return std::unexpected(kn::ResourceFailure{kn::ResourceError::kOwnership,
+                                                 "the producer refused its actual parent"});
+    return new View(std::move(origin), events_);
+  }
+  en::PagedNode& node_;
+  kn::StepLaunch* actual_;
+  std::vector<std::string>& events_;
+  kn::StepBackend table_{};
+  mutable en::HostPayment paid_;
+};
+
+class PrivateBatchTest : public PrivateResourcesTest {
+ protected:
+  std::shared_ptr<PrivateResourceBackend> producer_;
+  std::vector<pl::StepShape> SetupShapes() override {
+    return {Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)})};
+  }
+  void SetUp() override {
+    PrivateResourcesTest::SetUp();
+    if (HasFatalFailure()) return;
+    auto parent = owned_->KeepResources();
+    ASSERT_TRUE(parent);
+    producer_ = std::make_shared<PrivateResourceBackend>(node_, parent->launch(), log_);
+    source_->options().private_backend = producer_;
+  }
+};
+
+TEST_F(PrivateBatchTest, WholeScoreBatchOutgrowsDecodeStagingAndRetainsAllRowsAfterClose) {
+  const std::array<std::int32_t, 1> initial{4};
+  const std::array initial_work{en::SegmentWork{.tokens = initial, .bytes = {}}};
+  auto warm = owned_->RunStep(
+      {.shape = Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), .work = initial_work, .ahead = {}});
+  ASSERT_TRUE(warm) << ts::Failed(warm).value_or(en::StepRefusal{}).what;
+  const auto cached = owned_->plans().size();
+  auto composer = en::WaveComposer::For(Caps(), owned_->slots());
+  ASSERT_TRUE(composer);
+  std::array<std::int32_t, 18> history{};
+  history[0] = 4;
+  for (std::size_t i = 1; i < history.size(); ++i) history[i] = static_cast<std::int32_t>(i + 10);
+  auto item = Decode(0, 1, 17);
+  item.phase = pl::Phase::kScore;
+  const std::array pending{item};
+  const std::array work{
+      en::SegmentWork{.tokens = std::span(history).subspan(1), .bytes = {}, .history = history}};
+  const std::array<std::span<const std::int32_t>, 1> histories{history};
+  auto batch = en::PromptBatch::Prepare(*owned_, *composer, pending, work, histories);
+  ASSERT_TRUE(batch) << ts::Failed(batch).value_or(kn::ResourceFailure{}).what;
+  EXPECT_GT(batch->paid_bytes(), 0U);
+  EXPECT_EQ(source_->queued(), 1U);
+  EXPECT_EQ(owned_->slots().positions(0), 1U);
+  EXPECT_EQ(owned_->plans().size(), cached);
+  const auto builds = source_->built().size();
+  source_->options().refuse_build = [](const auto&) { return true; };
+  auto report = en::RunWave(*owned_, *composer, pending, work, true, {}, {}, *batch);
+  ASSERT_EQ(report.outcomes.size(), 1U);
+  ASSERT_FALSE(report.outcomes[0].refusal)
+      << report.outcomes[0].refusal.value_or(en::StepRefusal{}).what;
+  EXPECT_EQ(source_->built().size(), builds);  // all plans existed before progress
+  EXPECT_EQ(owned_->slots().positions(0), 18U);
+  auto retained = report.outcomes[0].outputs;
+  ASSERT_TRUE(batch->Close());
+  EXPECT_FALSE(batch->ready());
+  auto late = en::RunWave(*owned_, *composer, pending, work, true, {}, {}, *batch);
+  ASSERT_TRUE(late.outcomes[0].refusal);
+  EXPECT_EQ(source_->queued(), 2U);
+  const auto rows = Rows(retained);
+  ASSERT_EQ(rows.size(), 17U);
+  for (std::size_t i = 0; i != rows.size(); ++i) {
+    EXPECT_EQ(rows[i].position, static_cast<std::int32_t>(i + 1));
+    EXPECT_EQ(rows[i].token, history[i + 1]);
+  }
+  source_->options().refuse_build = {};
+  const std::array<std::int32_t, 1> next{23};
+  const std::array next_work{en::SegmentWork{.tokens = next, .bytes = {}}};
+  auto ordinary = owned_->RunStep(
+      {.shape = Shape(pl::Phase::kDecode, {Seg(0, 18, 1, 1)}), .work = next_work, .ahead = {}});
+  ASSERT_TRUE(ordinary) << ts::Failed(ordinary).value_or(en::StepRefusal{}).what;
+  EXPECT_EQ(owned_->plans().size(), cached);  // original addresses/cache remain usable
+  EXPECT_EQ(source_->built().size(), builds);
+  EXPECT_EQ(producer_->charged, producer_->refunded);
+}
+
+TEST_F(PrivateBatchTest, ProducerCapacityRefusalPrecedesEveryNumericChildAndKeepsOldClosureUsable) {
+  producer_->refuse_payment = true;
+  auto composer = en::WaveComposer::For(Caps(), owned_->slots());
+  ASSERT_TRUE(composer);
+  std::array<std::int32_t, 17> tokens{};
+  std::iota(tokens.begin(), tokens.end(), 3);
+  auto request = Decode(0, 0, 17);
+  request.phase = pl::Phase::kScore;
+  const std::array pending{request};
+  const std::array work{en::SegmentWork{.tokens = tokens, .bytes = {}, .history = tokens}};
+  const std::array<std::span<const std::int32_t>, 1> histories{tokens};
+  auto refused = en::RunPromptWave(*owned_, *composer, pending, work, histories);
+  ASSERT_EQ(refused.outcomes.size(), 1U);
+  ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_TRUE(refused.outcomes[0].refusal->clean);
+  EXPECT_EQ(source_->queued(), 0U);
+  EXPECT_EQ(owned_->slots().positions(0), 0U);
+  EXPECT_TRUE(owned_->slots().usable(0));
+  const std::array<std::int32_t, 1> next{3};
+  const std::array ordinary_work{en::SegmentWork{.tokens = next, .bytes = {}}};
+  auto ordinary = owned_->RunStep(
+      {.shape = Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), .work = ordinary_work, .ahead = {}});
+  ASSERT_TRUE(ordinary) << ts::Failed(ordinary).value_or(en::StepRefusal{}).what;
+  EXPECT_EQ(owned_->slots().positions(0), 1U);
+}
+
+TEST_F(PrivateBatchTest, ProductionPromptCallerUsesTheActualPrivateProducerAndClosesBeforeReturn) {
+  auto composer = en::WaveComposer::For(Caps(), owned_->slots());
+  ASSERT_TRUE(composer);
+  std::array<std::int32_t, 17> tokens{};
+  std::iota(tokens.begin(), tokens.end(), 3);
+  auto request = Decode(0, 0, 17);
+  request.phase = pl::Phase::kScore;
+  const std::array pending{request};
+  const std::array work{en::SegmentWork{.tokens = tokens, .bytes = {}, .history = tokens}};
+  const std::array<std::span<const std::int32_t>, 1> histories{tokens};
+  auto report = en::RunPromptWave(*owned_, *composer, pending, work, histories);
+  ASSERT_EQ(report.outcomes.size(), 1U);
+  ASSERT_FALSE(report.outcomes[0].refusal)
+      << report.outcomes[0].refusal.value_or(en::StepRefusal{}).what;
+  EXPECT_EQ(owned_->slots().positions(0), 17U);
+  EXPECT_EQ(source_->queued(), 1U);
+  EXPECT_EQ(producer_->factories, 1U);
+  EXPECT_EQ(producer_->charged, producer_->refunded);
+  EXPECT_GT(report.paid_bytes(), 0U);
+  const auto rows = Rows(report.outcomes[0].outputs);
+  ASSERT_EQ(rows.size(), 17U);
+  EXPECT_EQ(rows.back().position, 16);
+  EXPECT_EQ(rows.back().token, 19);
+}
+
+TEST_F(PrivateBatchTest, OrdinaryFitKeepsItsCachedGraphAndPredictionAtOriginalAddresses) {
+  auto composer = en::WaveComposer::For(Caps(), owned_->slots());
+  ASSERT_TRUE(composer);
+  const std::array<std::int32_t, 3> history{5, 6, 7};
+  std::size_t predictions = 0, builds = 0;
+  for (std::uint32_t past = 0; past != 3; ++past) {
+    const std::array pending{Decode(0, past)};
+    const auto tokens = std::span(history).subspan(past, 1);
+    const std::array work{en::SegmentWork{
+        .tokens = tokens, .bytes = {}, .history = std::span(history).first(past + 1)}};
+    const std::array<std::span<const std::int32_t>, 1> histories{work[0].history};
+    auto report = en::RunPromptWave(*owned_, *composer, pending, work, histories,
+                                    [&](const en::ComposedStep&, std::span<const std::size_t>) {
+                                      ++predictions;
+                                      return en::StepAhead{};
+                                    });
+    ASSERT_FALSE(report.outcomes[0].refusal)
+        << report.outcomes[0].refusal.value_or(en::StepRefusal{}).what;
+    EXPECT_EQ(report.outcomes[0].path, past == 0   ? en::RunPath::kEager
+                                       : past == 1 ? en::RunPath::kCaptured
+                                                   : en::RunPath::kReplayed);
+    EXPECT_EQ(producer_->factories, 0U);
+    if (past == 0) builds = source_->built().size();
+    EXPECT_EQ(source_->built().size(), builds);
+    const auto rows = Rows(report.outcomes[0].outputs);
+    ASSERT_EQ(rows.size(), 1U);
+    EXPECT_EQ(rows[0].position, static_cast<std::int32_t>(past));
+    EXPECT_EQ(rows[0].token, history[past]);
+  }
+  EXPECT_EQ(predictions, 3U);
+  EXPECT_EQ(owned_->plans().size(), 1U);
+}
+
+class PrivateBatchUnprovenProbe final : public PrivateBatchTest {
+ public:
+  void TestBody() override {}
+  void Exercise() {
+    SetUp();
+    if (HasFatalFailure()) return;
+    auto composer = en::WaveComposer::For(Caps(), owned_->slots());
+    ASSERT_TRUE(composer);
+    std::array<std::int32_t, 17> tokens{};
+    std::iota(tokens.begin(), tokens.end(), 7);
+    auto item = Decode(0, 0, 17);
+    item.phase = pl::Phase::kScore;
+    const std::array pending{item};
+    const std::array work{en::SegmentWork{.tokens = tokens, .bytes = {}, .history = tokens}};
+    const std::array<std::span<const std::int32_t>, 1> histories{tokens};
+    auto batch = en::PromptBatch::Prepare(*owned_, *composer, pending, work, histories);
+    ASSERT_TRUE(batch) << ts::Failed(batch).value_or(kn::ResourceFailure{}).what;
+    auto* actual = owned_.get();
+    auto& execution = static_cast<llmp::providers::fake::FakeDeviceExecution&>(node_.execution());
+    // Arm only after all private admission/initialization. The very next
+    // submitted numeric job loses its actual fence proof.
+    execution.FailNextQuery(llmp::providers::ProviderError::kUnknown);
+    auto report = en::RunWave(*actual, *composer, pending, work, true, {}, {}, *batch);
+    ASSERT_EQ(report.outcomes.size(), 1U);
+    ASSERT_TRUE(report.outcomes[0].refusal);
+    EXPECT_FALSE(report.outcomes[0].refusal->clean);
+    EXPECT_EQ(source_->queued(), 1U);
+    EXPECT_FALSE(batch->Close());
+    EXPECT_FALSE(actual->Release());
+    const auto queued = source_->queued();
+    auto second = actual->RunStep(
+        {.shape = Shape(pl::Phase::kDecode, {Seg(1, 0, 1, 1)}), .work = work, .ahead = {}});
+    EXPECT_FALSE(second);
+    EXPECT_EQ(source_->queued(), queued);
+    owned_.reset();
+    *batch = {};
+    const auto occupied = node_.catalog().OccupancyOf(node_.domain()).Total();
+    EXPECT_FALSE(node_.TearDown({}));
+    EXPECT_EQ(node_.catalog().OccupancyOf(node_.domain()).Total(), occupied);
+    EXPECT_EQ(producer_->refunded, 0U);
+    EXPECT_TRUE(log_.empty());
+    // Keep the actual unproven work, batch and parent environment alive.
+  }
+};
+
+TEST(PrivateBatchDeathTest, UnknownJobRetainsPrivateBackingAndParentAfterAllCallerCapsDrop) {
+  EXPECT_EXIT(([] {
+                auto* probe = new PrivateBatchUnprovenProbe;
+                probe->Exercise();
+                const auto* result =
+                    ::testing::UnitTest::GetInstance()->current_test_info()->result();
+                for (int i = 0; i != result->total_part_count(); ++i) {
+                  const auto& part = result->GetTestPartResult(i);
+                  if (part.failed())
+                    std::fprintf(stderr, "%s:%d: %s\n", part.file_name(), part.line_number(),
+                                 part.message());
+                }
+                std::_Exit(::testing::Test::HasFailure() ? 1 : 0);
+              }()),
+              ::testing::ExitedWithCode(0), "");
+}
+
+TEST_F(PrivateResourcesTest, ReleaseRefusesBeforeDestroyingAnyParentResource) {
+  auto parent = owned_->KeepResources();
+  ASSERT_TRUE(parent) << ts::Failed(parent).value_or(kn::ResourceFailure{}).what;
+  const auto before = node_.FreeBytes();
+  const auto log = log_;
+  EXPECT_FALSE(owned_->Release());
+  EXPECT_EQ(log_, log);
+  EXPECT_EQ(node_.FreeBytes(), before);
+  EXPECT_TRUE(parent->ready());
+  parent = kn::ParentResources{};
+  EXPECT_TRUE(node_.EndRequest(0));
+  const std::array<en::PagedModel*, 1> models{owned_.get()};
+  EXPECT_TRUE(node_.TearDown(models));
+}
+
+TEST_F(PrivateResourcesTest, TeardownRefusalPreservesBackingAndCanRetryAfterTheViewIsDropped) {
+  auto parent = owned_->KeepResources();
+  ASSERT_TRUE(parent);
+  const auto backing = node_.catalog().OccupancyOf(node_.domain()).Total();
+  const auto log = log_;
+  const auto lifetime = node_.staging_lifetime().lock();
+  const std::array<en::PagedModel*, 1> models{owned_.get()};
+  const auto refused = node_.TearDown(models);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().find("private resource views"), std::string::npos);
+  EXPECT_EQ(node_.catalog().OccupancyOf(node_.domain()).Total(), backing);
+  EXPECT_EQ(log_, log);
+  ASSERT_TRUE(lifetime);
+  EXPECT_TRUE(lifetime->live());
+  EXPECT_FALSE(parent->ready());  // Draining denies use, but never fabricates release.
+  EXPECT_FALSE(owned_->KeepResources());
+  const auto built = source_->built().size();
+  const auto queued = source_->queued();
+  const std::array<std::int32_t, 1> ids{7};
+  const std::array work{en::SegmentWork{.tokens = ids, .bytes = {}}};
+  auto after_drain = owned_->RunStep({.shape = Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}),
+                                      .work = work,
+                                      .step_bytes = {},
+                                      .advance = true,
+                                      .ahead = {}});
+  EXPECT_FALSE(after_drain);
+  EXPECT_EQ(source_->built().size(), built);
+  EXPECT_EQ(source_->queued(), queued);
+  parent = kn::ParentResources{};
+  EXPECT_TRUE(node_.TearDown(models));
+  EXPECT_FALSE(lifetime->live());
+  EXPECT_EQ(std::count(log_.begin(), log_.end(), "launch"), 1);
+  EXPECT_TRUE(node_.TearDown(models));  // Same span/root was released exactly once.
+}
+
+TEST_F(PrivateResourcesTest, AdapterThenLastViewDropLeaveCleanupWithTheOwningNode) {
+  auto parent = owned_->KeepResources();
+  ASSERT_TRUE(parent);
+  auto* runner = owned_.get();
+  owned_.reset();
+  EXPECT_TRUE(log_.empty());
+  EXPECT_TRUE(parent->ready());
+  EXPECT_FALSE(runner->Release());
+  parent = kn::ParentResources{};
+  // Last-drop on a view is not a completed driver-release boundary. The node
+  // still owns the root and discovers it even without the dead adapter's span.
+  EXPECT_TRUE(log_.empty());
+  EXPECT_TRUE(node_.TearDown({}));
+  EXPECT_EQ(std::count(log_.begin(), log_.end(), "launch"), 1);
+}
+
+TEST_F(PrivateResourcesTest, PaidReportDecoratorPreservesActualPrivateLoweringAuthority) {
+  auto parent = owned_->KeepResources();
+  ASSERT_TRUE(parent);
+  auto registry = llmp::execution::Registry::Create({});
+  ASSERT_TRUE(registry);
+  en::HostPayment report_payment;
+  auto funder = std::make_shared<kn::ConstructionFunder>(
+      kn::ConstructionFunder{.charge =
+                                 [&](std::uint64_t bytes) {
+                                   EXPECT_EQ(report_payment.bytes(), 0U);
+                                   auto paid = node_.PrepayHost(bytes);
+                                   if (!paid) return false;
+                                   report_payment = std::move(*paid);
+                                   return true;
+                                 },
+                             .release =
+                                 [&](std::uint64_t bytes) {
+                                   EXPECT_EQ(bytes, report_payment.bytes());
+                                   report_payment.Reset();
+                                 }});
+  auto producer =
+      std::make_shared<PrivateResourceBackend>(node_, parent->launch(), log_, &*registry, funder);
+  auto backing = PaidPrivateBacking::Make(node_, log_);
+  ASSERT_TRUE(backing);
+  auto view =
+      producer->Resources(producer, {0x100000, 512}, std::move(*parent), std::move(*backing));
+  ASSERT_TRUE(view);
+  llmp::ir::Builder builder;
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph);
+  const llmp::components::GraphBuildIO io{*graph, {}, {}, {}};
+  auto program =
+      en::BuildComponentProgram(io, producer->backend(), {}, {}, {}, std::nullopt, {}, {}, &*view);
+  ASSERT_TRUE(program) << ts::Failed(program).value_or("");
+  EXPECT_TRUE((*program)->UsesResources(*view));
+  EXPECT_TRUE((*program)->Bind(*view->launch()));
+  EXPECT_GT(report_payment.bytes(), 0U);
+  auto* launch = view->launch();
+  *view = {};
+  EXPECT_TRUE((*program)->Bind(*launch));
+  EXPECT_FALSE(owned_->Release());
+  EXPECT_TRUE(log_.empty());
+  program->reset();
+  EXPECT_EQ(report_payment.bytes(), 0U);
+  EXPECT_EQ(std::count(log_.begin(), log_.end(), "view destroyed"), 1);
+  EXPECT_EQ(std::count(log_.begin(), log_.end(), "program destroyed"), 1);
+}
+
+TEST_F(PrivateResourcesTest, PrivateProgramsRetainTheirBindingBackingAndReceiptUntilDestruction) {
+  auto parent = owned_->KeepResources();
+  ASSERT_TRUE(parent);
+  auto producer = std::make_shared<PrivateResourceBackend>(node_, parent->launch(), log_);
+  auto backing = PaidPrivateBacking::Make(node_, log_);
+  ASSERT_TRUE(backing);
+  auto view =
+      producer->Resources(producer, {0x100000, 512}, std::move(*parent), std::move(*backing));
+  ASSERT_TRUE(view) << ts::Failed(view).value_or(kn::ResourceFailure{}).what;
+  EXPECT_EQ(view->host_bytes(), producer->charged);
+  auto* private_launch = view->launch();
+  llmp::ir::Builder builder;
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph);
+  auto registry = llmp::execution::Registry::Create({});
+  ASSERT_TRUE(registry);
+  auto plan = pl::Plan(graph->Clone(), *registry, {}, {});
+  ASSERT_TRUE(plan);
+  const kn::Addresses addresses{};
+  const kn::LowerInput input{*plan, llmp::components::GraphBuildIO{*graph, {}, {}, {}}, addresses};
+  auto program = view->Lower(input);
+  ASSERT_TRUE(program);
+  auto ordinary = owned_->KeepResources();
+  ASSERT_TRUE(ordinary);
+  auto foreign = std::make_shared<PrivateResourceBackend>(node_, ordinary->launch(), log_);
+  const auto wrong_source = en::BuildComponentProgram(input.io, foreign->backend(), {}, addresses,
+                                                      {}, std::nullopt, {}, {}, &*view);
+  ASSERT_FALSE(wrong_source);
+  EXPECT_NE(wrong_source.error().find("canonical planning backend"), std::string::npos);
+  EXPECT_FALSE((*program)->Bind(*ordinary->launch()));
+  EXPECT_TRUE((*program)->Bind(*private_launch));
+  ordinary = kn::ParentResources{};
+  auto self = std::move(*view);
+  auto* alias = &self;
+  self = std::move(*alias);
+  EXPECT_TRUE(self.Ready());
+  self = {};
+  EXPECT_TRUE(log_.empty());
+  EXPECT_FALSE(owned_->Release());
+  EXPECT_GT(producer->charged, 0U);
+  EXPECT_EQ(producer->refunded, 0U);
+  program->reset();
+  const std::vector<std::string> expected{"program destroyed", "view destroyed", "view refunded",
+                                          "backing destroyed"};
+  EXPECT_EQ(log_, expected);
+  EXPECT_EQ(producer->refunded, producer->charged);
+}
+
+TEST_F(PrivateResourcesTest, FailedPaymentAndFactoryReturnTheirOwnersWithoutPublishingAView) {
+  for (bool payment : {false, true}) {
+    auto parent = owned_->KeepResources();
+    ASSERT_TRUE(parent);
+    auto producer = std::make_shared<PrivateResourceBackend>(node_, parent->launch(), log_);
+    producer->refuse_payment = !payment;
+    producer->refuse_factory = payment;
+    auto backing = PaidPrivateBacking::Make(node_, log_);
+    ASSERT_TRUE(backing);
+    auto refused =
+        producer->Resources(producer, {0x100000, 512}, std::move(*parent), std::move(*backing));
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().error,
+              payment ? kn::ResourceError::kOwnership : kn::ResourceError::kCapacity);
+    EXPECT_EQ(producer->factories, payment ? 1U : 0U);
+    EXPECT_EQ(producer->charged, producer->refunded);
+    EXPECT_EQ(log_.back(), "backing destroyed");
+    EXPECT_TRUE(owned_->KeepResources());
+    log_.clear();
+  }
+}
+
+TEST_F(PrivateResourcesTest, ConsumerThreadLastReleaseReturnsTheOriginalPaymentOnce) {
+  auto parent = owned_->KeepResources();
+  ASSERT_TRUE(parent);
+  auto producer = std::make_shared<PrivateResourceBackend>(node_, parent->launch(), log_);
+  auto backing = PaidPrivateBacking::Make(node_, log_);
+  ASSERT_TRUE(backing);
+  auto view =
+      producer->Resources(producer, {0x100000, 512}, std::move(*parent), std::move(*backing));
+  ASSERT_TRUE(view);
+  owned_.reset();  // Node owns cleanup even when the consumer drops the last view.
+  std::thread consumer([owned = std::move(*view)]() mutable { owned = {}; });
+  consumer.join();
+  EXPECT_EQ(producer->charged, producer->refunded);
+  const std::vector<std::string> expected{"view destroyed", "view refunded", "backing destroyed"};
+  EXPECT_EQ(log_, expected);
+  EXPECT_TRUE(node_.TearDown({}));
+  EXPECT_EQ(std::count(log_.begin(), log_.end(), "launch"), 1);
+}
+
+class PrivateUnprovenProbe final : public PrivateResourcesTest {
+ public:
+  void TestBody() override {}
+  void Exercise() {
+    SetUp();
+    if (HasFatalFailure()) return;
+    auto parent = owned_->KeepResources();
+    ASSERT_TRUE(parent);
+    auto* actual = owned_.get();
+    auto producer = std::make_shared<PrivateResourceBackend>(node_, parent->launch(), log_);
+    auto backing = PaidPrivateBacking::Make(node_, log_);
+    ASSERT_TRUE(backing);
+    auto view =
+        producer->Resources(producer, {0x100000, 512}, std::move(*parent), std::move(*backing));
+    ASSERT_TRUE(view);
+    view_ = std::move(*view);
+    producer_ = producer;
+    owned_.reset();  // The node and real private view retain the complete runner.
+    bool invoked = false;
+    auto& execution = static_cast<llmp::providers::fake::FakeDeviceExecution&>(node_.execution());
+    execution.FailNextQuery(llmp::providers::ProviderError::kUnknown);
+    en::JobReport report;
+    const auto ran = node_.Job(
+        {},
+        [&](llmp::providers::NativeStream stream) {
+          invoked = true;
+          const auto filled = llmp::providers::FillAsync(stream, target_.data(), 3, target_.size());
+          return filled.ok() ? llmp::scheduler::JobResult::kQueued
+                             : llmp::scheduler::JobResult::kUnknown;
+        },
+        "private resource lost-fence control", 0, {}, &report);
+    ASSERT_TRUE(invoked);
+    ASSERT_FALSE(ran);
+    ASSERT_EQ(report.retirement, en::JobReport::Retirement::kUnproven);
+    EXPECT_FALSE(actual->Release());
+    const auto occupied = node_.catalog().OccupancyOf(node_.domain()).Total();
+    const std::array<en::PagedModel*, 1> models{actual};
+    EXPECT_FALSE(node_.TearDown(models));
+    EXPECT_EQ(node_.catalog().OccupancyOf(node_.domain()).Total(), occupied);
+    EXPECT_TRUE(log_.empty());  // No program/context/backing/control destruction or refund.
+    EXPECT_EQ(producer->refunded, 0U);
+    EXPECT_GT(producer->charged, 0U);
+    EXPECT_TRUE(view_.Ready());  // A failed fence did not invoke the authenticated drain hook.
+    // Deliberately do not destroy the node, landing, view or payer. No status or
+    // destructor establishes retirement for the actual submitted operation.
+  }
+
+ private:
+  std::shared_ptr<PrivateResourceBackend> producer_;
+  kn::ExecutionResources view_;
+  std::array<std::byte, 256> target_{};
+};
+
+TEST(PrivateResourcesDeathTest, FailedFenceKeepsTheCompleteEnvironmentAndCannotGrantDrain) {
+  EXPECT_EXIT(([] {
+                auto* probe = new PrivateUnprovenProbe;
+                probe->Exercise();
+                const auto* result =
+                    ::testing::UnitTest::GetInstance()->current_test_info()->result();
+                for (int i = 0; i < result->total_part_count(); ++i) {
+                  const auto& part = result->GetTestPartResult(i);
+                  if (part.failed())
+                    std::fprintf(stderr, "%s:%d: %s\n", part.file_name(), part.line_number(),
+                                 part.message());
+                }
+                std::_Exit(::testing::Test::HasFailure() ? 1 : 0);
+              }()),
+              ::testing::ExitedWithCode(0), "");
+}
+
+TEST_F(PrivateResourcesTest, ExplicitReleaseCannotClaimTheNodesDrainProof) {
+  const auto refused = owned_->Release();
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().find("node-authenticated drain"), std::string::npos);
+  EXPECT_TRUE(log_.empty());
+  EXPECT_TRUE(owned_->KeepResources());
+}
+
+TEST(PrivateResourcesDeathTest, NodeDestructionCannotContinueWithLiveAdoptedResources) {
+  EXPECT_DEATH(([] {
+                 // This probe uses the real fixture's adopted owner; deliberately deleting
+                 // its node before canonical teardown must fail-stop before provider/member
+                 // destruction can invalidate the retained launch environment.
+                 struct Probe final : PrivateResourcesTest {
+                   void TestBody() override {}
+                   void Run() {
+                     SetUp();
+                     if (HasFatalFailure()) std::_Exit(2);
+                   }
+                   void DestroyNode() { node_.~PagedNode(); }
+                 };
+                 auto* probe = new Probe;
+                 probe->Run();
+                 probe->DestroyNode();
+               }()),
+               "unretired adopted runner resources");
+}
+
+TEST(ScratchStackTest, NestedEmptyAndInteriorFreePreserveTheRealTop) {
+  using Stack = kn::ggml::ScratchStack;
+  std::array<Stack::Block, 3> blocks{};
+  Stack stack(blocks);
+  ASSERT_EQ(Stack::Capacity(513), 3U);
+  EXPECT_EQ(stack.Allocate(0, 0), 0U);
+  EXPECT_TRUE(stack.empty());
+  EXPECT_EQ(stack.Allocate(1, 513), 0U);
+  EXPECT_EQ(stack.Allocate(0, 513), 0U);
+  EXPECT_EQ(stack.Allocate(1, 513), 256U);
+  EXPECT_EQ(stack.Allocate(1, 513), 512U);
+  EXPECT_FALSE(stack.Allocate(1, 1024));  // Exact paid descriptor capacity, no allocation.
+  EXPECT_TRUE(stack.Free(256, 1));
+  EXPECT_TRUE(stack.Free(0, 0));
+  EXPECT_FALSE(stack.Free(0, 2));
+  EXPECT_FALSE(stack.Free(256, 1));
+  EXPECT_TRUE(stack.Free(512, 1));
+  EXPECT_EQ(stack.Allocate(257, 513), 256U);
+  EXPECT_TRUE(stack.Free(256, 257));
+  EXPECT_TRUE(stack.Free(0, 1));
+  EXPECT_TRUE(stack.empty());
+  EXPECT_EQ(stack.peak(), 513U);
+  stack.ResetPeak();
+  EXPECT_EQ(stack.peak(), 0U);
 }
 
 }  // namespace

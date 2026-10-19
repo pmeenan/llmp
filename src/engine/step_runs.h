@@ -50,6 +50,9 @@ struct StepPlanRuns {
   // A capture ahead of the plan's first run was refused: not asked again
   // ahead, while a capture beside a run (which may succeed) still may be.
   bool ahead_refused = false;
+  // Prediction may request the next routed program's first real use to
+  // record its segments. This is no routing or residency authority.
+  bool capture_on_use = false;
   std::unique_ptr<kernels::Recorded> graph;
   std::vector<std::unique_ptr<kernels::RoutedRecording>> routed_graphs;
   Copies copies;
@@ -92,6 +95,9 @@ std::uint64_t PlannedHostBytes(const StepPlanned& planned);
 struct StepQueued {
   RunPath path = RunPath::kEager;
   bool before = false;  // work queued before any failure
+  // Only an eager program Run/RunWarm returned kUnknown. Copies, whole-graph
+  // recording/replay and routed continuation errors cannot assert this scope.
+  bool program_unknown = false;
   std::expected<void, kernels::StepFailure> result;
 };
 
@@ -164,7 +170,7 @@ class StepRuns {
   std::expected<void, kernels::StepFailure> Record(
       const Copies& inputs, const std::function<bool(providers::NativeStream)>& between,
       const kernels::StepProgram& program, std::span<const RunCopy> outputs,
-      providers::NativeStream native, bool warm = false) const;
+      providers::NativeStream native, bool warm = false, bool* program_unknown = nullptr) const;
   std::expected<bool, kernels::StepFailure> CaptureInto(
       StepPlanRuns& runs, const Copies& inputs,
       const std::function<bool(providers::NativeStream)>& between,

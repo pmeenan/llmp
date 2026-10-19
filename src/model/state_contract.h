@@ -324,6 +324,15 @@ std::expected<std::vector<StateRange>, std::string> UsedThrough(const StateLayou
                                                                 std::uint32_t positions,
                                                                 std::uint32_t read_align = 256);
 
+// Allocation-free inventory/fill of the same canonical used-range emitter.
+// Fill requires exactly the counted span; a source/count mismatch refuses.
+std::expected<std::size_t, std::string> UsedRangeCount(const StateLayoutDerived& layout,
+                                                       std::uint32_t positions,
+                                                       std::uint32_t read_align = 256);
+std::expected<void, std::string> UsedThroughInto(const StateLayoutDerived& layout,
+                                                 std::uint32_t positions, std::uint32_t read_align,
+                                                 std::span<StateRange> into);
+
 // What a chunk of `rows` rows after `past` positions writes, tensor by
 // tensor: its cells (a ring's wrapped in two), the blocks its positions
 // fall in, a dummy row, and fixed or per-row state whole.

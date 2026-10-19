@@ -104,13 +104,9 @@ constexpr std::array kPolicies = {
     PolicyRule{.text = "max_decode_rows 16\n"},
 };
 
-// Its bounded serving route: at most two owners, no drafter.
-constexpr ServingRecipe kServing{.family = "Gemma",
-                                 .name = "Gemma2",
-                                 .bounded = true,
-                                 .prefill_rows = 128,
-                                 .max_owners = 2,
-                                 .drafters = false};
+// Its serving defaults; actual component capabilities bound owners. No drafter.
+constexpr ServingRecipe kServing{
+    .family = "Gemma", .name = "Gemma2", .bounded = true, .prefill_rows = 128, .drafters = false};
 
 constexpr Mapping kMapping{
     .architecture = "gemma2",

@@ -38,8 +38,8 @@
 //   chunk a step under it (D-093). The prefill's chunk is the model's
 //   (runtime/prefill.h), and a caller's `go_on` may stop a prefill between
 //   chunks, the history then the chunks that ran.
-// - The image pipeline generates the prompt and latents it registered with
-//   (this slice's runner fixes them at setup).
+// - Image requests replace paid prompt/noise buffers at completed boundaries;
+//   the engine owns typed stage execution, captures and atomic geometry changes.
 
 #ifndef LLMP_RUNTIME_SERVING_H_
 #define LLMP_RUNTIME_SERVING_H_
@@ -72,6 +72,7 @@
 #include "engine/checkpoint_file.h"
 #include "engine/component_source.h"
 #include "engine/execution_contract.h"
+#include "engine/host_buffer.h"
 #include "engine/live_state.h"
 #include "engine/paged_node.h"
 #include "execution/adaptive_depth.h"
@@ -487,9 +488,9 @@ class Llm : public Served {
     std::expected<std::unique_ptr<PromptSession>, std::string> BeginPrompt(
         std::span<const std::int32_t> tokens, std::uint32_t stable_boundary = 0, bool fresh = false,
         bool resume = false) &;
-    // Literal teacher forcing in completed one-row units, as ScorePrompt.
+    // Literal teacher forcing in resource-admitted batches, as ScorePrompt.
     // A new scorer clears history; a resumed scorer restores its completed
-    // prefix and reports only rows beyond it. The first supplied token has
+    // prefix and first publishes any undelivered retired rows. The first supplied token has
     // no preceding row and remains the caller's responsibility.
     std::expected<std::unique_ptr<PromptSession>, std::string> BeginScoringPrompt(
         std::span<const std::int32_t> tokens,
@@ -544,6 +545,8 @@ class Llm : public Served {
     bool needs_clear_ = false;
     // A capability never owns this issuer. Expiry rejects before payload reads.
     std::shared_ptr<const std::byte> snapshot_issuer_ = std::make_shared<const std::byte>();
+    ScoreRows score_rows_;
+    ScoreRows saved_score_rows_;
     MemoryCharge saved_history_charge_;
     std::vector<std::int32_t> saved_history_;
     MemoryCharge verify_tokens_charge_;
@@ -574,6 +577,7 @@ class Llm : public Served {
     std::atomic<std::uint32_t> continuations_{0};
     bool capacity_refused_ = false;
     const PromptSession* prompt_session_ = nullptr;
+    const GenerationSession* generation_session_ = nullptr;
     execution::AdaptiveDepth decoding_{1};
     execution::AdaptiveDepth saved_decoding_{1};
   };
@@ -865,11 +869,11 @@ class Llm : public Served {
   // `run` (if given) says so.
   Status Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
                  const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr);
-  // Literal teacher forcing from an empty history. Runs one completed
-  // target step per supplied token, reporting token j's row from j-1.
-  // The first supplied token has no preceding distribution. This bounded
-  // first scorer reuses the existing one-row workspace; it has decode-like
-  // throughput and does not exercise full prefill attention tiles.
+  // Literal teacher forcing from an empty history. Reports token j's row
+  // from j-1 in order, batching by actual paid model capacity. The first
+  // supplied token has no preceding distribution. Cancellation stops further
+  // callbacks/submission; executed history and delivered-score frontiers may
+  // differ. A resumed scorer publishes retained rows before any new work.
   Status ScorePrompt(std::span<const std::int32_t> tokens, std::vector<float>& last,
                      const std::function<bool(std::int32_t, std::span<const float>)>& on_row,
                      const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr);
@@ -886,7 +890,7 @@ class Llm : public Served {
   // The model outlives the session; an unfinished session cannot be destroyed.
   class PromptSession {
    public:
-    enum class Phase { kReuse, kChunk, kCheckpoint };
+    enum class Phase { kReuse, kChunk, kCheckpoint, kScores };
     struct Unit {
       Phase phase = Phase::kReuse;
       std::uint32_t rows = 0;
@@ -919,9 +923,20 @@ class Llm : public Served {
     std::uint32_t remaining_rows() const;
     // Its reuse settled: its first unit ran.
     bool started() const;
+    bool scoring() const { return scoring_; }
     // Plain chunks only, with the same publication mode. Reuse, checkpoints
-    // and scoring retain their scalar completed-unit path.
+    // and scoring keep independent completed-session boundaries.
     bool CanJoin(const PromptSession& peer) const;
+    // Prediction only. Exact future target input rows, after any initial
+    // token chosen from prompt logits. No supplied budget means Unknown.
+    void SetContinuationRows(std::optional<std::uint32_t> rows, bool sampling) {
+      continuation_rows_ = rows;
+      continuation_sampling_ = sampling;
+    }
+    bool has_continuation() const { return continuation_sampling_.has_value(); }
+    std::optional<bool> continuation_sampling() const { return continuation_sampling_; }
+    std::uint32_t prompt_rows() const { return static_cast<std::uint32_t>(tokens_.size()); }
+    std::optional<std::uint32_t> continuation_rows() const { return continuation_rows_; }
     // Keep the schedule's chunk anchor, but first settle one compatible
     // peer's scalar reuse/checkpoint unit. A due decode is never replaced.
     static std::optional<std::size_t> SelectForWave(bool decode, std::optional<std::size_t> chosen,
@@ -938,7 +953,8 @@ class Llm : public Served {
     PrefillHint NextPrefillHint(std::uint32_t current_end) const;
     Status PrepareChunk(std::uint32_t rows, bool defer_capacity);
     Status CompleteChunk(std::uint32_t rows, double wall_seconds, double accounted_seconds,
-                         Status result, bool defer_capacity);
+                         Status result, bool defer_capacity, ScoreRows scored = {});
+    Status PublishScores();
     void Stop();
     Status Fail(std::string error);
     Llm& model_;
@@ -960,6 +976,8 @@ class Llm : public Served {
     Phase phase_ = Phase::kReuse;
     Status ran_;
     Status unit_result_;
+    std::optional<std::uint32_t> continuation_rows_{};
+    std::optional<bool> continuation_sampling_{};
     bool checkpoint_pending_ = false;
     bool complete_ = false;
     bool finished_ = false;
@@ -970,10 +988,17 @@ class Llm : public Served {
   // capacity-refused owners are omitted without preventing completed peers.
   Status RunPromptWave(std::span<PromptSession* const> sessions, std::span<const PrefillGoOn> go_on,
                        bool defer_capacity = false);
+  // Measured-policy candidate; every participant still completes through its
+  // ordinary session Apply/CompleteChunk contract after the common native unit.
+  virtual bool supports_causal_waves() const { return false; }
+  Status RunCausalWave(std::span<PromptSession* const> prompts, std::span<const PrefillGoOn> go_on,
+                       std::span<GenerationSession* const> generations,
+                       bool defer_capacity = false);
   virtual std::size_t prefill_wave_capacity() const { return 1; }
   virtual bool CompatiblePrefill(std::uint32_t, std::uint32_t rows, std::uint32_t,
-                                 std::uint32_t peer_rows) const {
-    return rows >= 2 && rows == peer_rows;
+                                 std::uint32_t peer_rows, bool want_head = true,
+                                 bool peer_want_head = true) const {
+    return rows >= 2 && rows == peer_rows && want_head == peer_want_head;
   }
   std::size_t turn_checkpoints() const { return default_branch_.turn_checkpoints(); }
   std::uint64_t turn_checkpoint_bytes() const;
@@ -1055,6 +1080,7 @@ class Llm : public Served {
     std::string refusal_;  // the last PrepareStep's deferred capacity refusal
     bool failed_prefix_valid_ = false;
     bool prepared_ = false;
+    bool initialized_ = false, publishing_ = false;
     bool finished_ = false;
   };
   std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
@@ -1181,7 +1207,15 @@ class Llm : public Served {
     PrefillHint next;
     std::vector<float>* logits = nullptr;
     Status result;
+    ScoreRows scored{};
+    bool capacity_refused = false;
+    GenerationSession* generation = nullptr;
+    std::optional<std::int32_t>* chosen = nullptr;
+    bool retired = false;
   };
+  virtual Status RunPreparedCausalWave(std::span<PreparedPrefill>, std::span<PreparedGeneration>) {
+    return std::unexpected("the model does not support mixed causal dispatch");
+  }
   struct PrefillHeadModes {
     std::optional<bool> next, after;
   };
@@ -1190,6 +1224,9 @@ class Llm : public Served {
   // Fund state before shared dispatch; a clean refusal leaves its completed
   // prefix usable and does not publish another owner's prepared history.
   virtual Status PreparePrefillStateFor(Branch&, std::uint32_t, std::uint32_t) { return {}; }
+  // Legal scoring geometry, independently of currently paid output staging.
+  // Scalar-only adapters retain their actual one-row implementation.
+  virtual std::uint32_t ScoreChunkRowsFor(const Branch&) const { return 1; }
   virtual Status RunPreparedPrefillWave(std::span<PreparedPrefill> prepared);
   // One speculative step from `pos`, the anchor `all.back()` (at pos, not
   // in the state yet): the verify's kept tokens (the anchor's accepted
@@ -1210,6 +1247,10 @@ class Llm : public Served {
   // the state usable as it was. Waiting for peers' state to be freed may
   // then let it succeed. Families without this distinction never claim it.
   virtual bool StateRefusedFor(const Branch& /*branch*/) const { return false; }
+  // Completed-boundary adapter diagnostic, never an authority to submit.
+  static void MarkCapacityRefused(Branch& branch, bool refused) {
+    branch.capacity_refused_ = refused;
+  }
   // Discards an unselected branch's native state (Branch::ReleaseIdleState).
   virtual Status ReleaseIdleStateFor(Branch& /*branch*/) {
     return std::unexpected("this model keeps no idle conversation state apart");
@@ -1329,6 +1370,12 @@ class Llm : public Served {
   }
   virtual void RestoreTurnDecodingStateFor(Branch& /*branch*/,
                                            const execution::AdaptiveDepth& /*state*/) {}
+
+  // Live cooperative session facts, queried only at completed driver
+  // boundaries. The session owns options/output; no duplicated remaining
+  // counter can become stale between Apply and the next PrepareStep.
+  bool GenerationReadyFor(const Branch& branch) const;
+  std::optional<std::uint32_t> RemainingGenerationRowsFor(const Branch& branch) const;
 
   // During Generate: whether it samples, the token for a row's logits at
   // a position in the conversation (greedy: the argmax), and whether the
@@ -1463,12 +1510,21 @@ class Llm : public Served {
   }
 };
 
+// Buffer input owns its payment and exact encoded bytes, independently of the
+// producer's lifetime. Layout is explicit: row-major [image row, channel].
+enum class ImageNoiseLayout : std::uint8_t { kRowsChannels };
+struct ImageNoise {
+  engine::HostBuffer bytes;
+  format::Encoding encoding = format::Encoding::kBF16;
+  ImageNoiseLayout layout = ImageNoiseLayout::kRowsChannels;
+};
 // One serial image request. Zero dimensions/steps keep the model settings;
-// an empty noise path keeps its configured seed input. No count accumulation.
+// absent buffer/path keeps the configured seed input. No count accumulation.
 struct ImageInput {
   std::string_view prompt;
   std::uint32_t width = 0, height = 0, steps = 0;
   std::filesystem::path noise{};
+  std::optional<ImageNoise> noise_buffer{};
   // Explicit quality/export observer only. Empty leaves timing unobserved.
   std::filesystem::path output{};
 };
@@ -1493,9 +1549,10 @@ class Image : public Served {
   // Nothing in flight; a completed or unstarted generation is unchanged.
   virtual Status Abandon() = 0;
   // Where the adapter reports what it does not refuse for (the server's log).
-  void set_log(std::function<void(std::string_view)> log) { log_ = std::move(log); }
+  virtual void set_log(std::function<void(std::string_view)> log) { log_ = std::move(log); }
 
  protected:
+  std::function<void(std::string_view)> log_observer() const { return log_; }
   void Log(std::string_view text) const {
     if (log_) log_(text);
   }

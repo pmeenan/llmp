@@ -459,21 +459,36 @@ TEST(Calibration, EqualWaveCostVectorsWithDifferentOverridePrefixesHaveDifferent
   }
 }
 
-TEST(Calibration, QwenDoesNotKeyIgnoredDeepSeekWaveCostOverrides) {
-  llmp::config::ModelEntry entry;
-  entry.name = "qwen";
-  entry.artifact = Key().artifact;
-  llmp::runtime::ArtifactFacts facts;
-  facts.architecture = "qwen4exp";
+TEST(Calibration, IgnoredWaveCostOverridesAreNotKeyedWhileSharedWaveCostsAre) {
+  llmp::config::ModelEntry gemma_entry;
+  gemma_entry.name = "gemma";
+  gemma_entry.artifact = Key().artifact;
+  llmp::runtime::ArtifactFacts gemma_facts;
+  gemma_facts.architecture = "gemma4";
+  gemma_facts.context_ceiling = 262144U;
+  const auto gemma_before =
+      llmp::runtime::ResolveSettings(gemma_entry, gemma_facts, nullptr, false);
+  ASSERT_TRUE(gemma_before.has_value());
+  gemma_entry.overrides["wave_costs"] = std::vector<double>{3.0};
+  const auto gemma_after = llmp::runtime::ResolveSettings(gemma_entry, gemma_facts, nullptr, false);
+  ASSERT_TRUE(gemma_after.has_value());
+  EXPECT_FALSE(gemma_after->ignored.empty());
+  EXPECT_EQ(llmp::runtime::MeasuredWith(*gemma_before), llmp::runtime::MeasuredWith(*gemma_after));
+
+  llmp::config::ModelEntry qwen_entry;
+  qwen_entry.name = "qwen";
+  qwen_entry.artifact = Key().artifact;
+  llmp::runtime::ArtifactFacts qwen_facts;
+  qwen_facts.architecture = "qwen4exp";
   // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
-  facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
-  const auto before = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
-  ASSERT_TRUE(before.has_value());
-  entry.overrides["wave_costs"] = std::vector<double>{3.0};
-  const auto after = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
-  ASSERT_TRUE(after.has_value());
-  EXPECT_FALSE(after->ignored.empty());
-  EXPECT_EQ(llmp::runtime::MeasuredWith(*before), llmp::runtime::MeasuredWith(*after));
+  qwen_facts.context_ceiling = qwen_facts.architecture == "deepseek4" ? 1048576U : 262144U;
+  const auto qwen_before = llmp::runtime::ResolveSettings(qwen_entry, qwen_facts, nullptr, false);
+  ASSERT_TRUE(qwen_before.has_value());
+  qwen_entry.overrides["wave_costs"] = std::vector<double>{3.0};
+  const auto qwen_after = llmp::runtime::ResolveSettings(qwen_entry, qwen_facts, nullptr, false);
+  ASSERT_TRUE(qwen_after.has_value());
+  EXPECT_TRUE(qwen_after->ignored.empty());
+  EXPECT_NE(llmp::runtime::MeasuredWith(*qwen_before), llmp::runtime::MeasuredWith(*qwen_after));
 }
 
 // Measured for another device, driver, build, drafter or measured-with

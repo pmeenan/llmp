@@ -289,6 +289,15 @@ class Catalog {
   // caller authenticates its holder and proves all work under it has retired.
   // Failure leaves the complete old lease unchanged; overlap counts once.
   std::expected<void, CatalogError> ReplaceLease(LeaseId lease, const Closure& closure);
+  // Caller-paid exact candidate IDs. Validation grants the same authority as
+  // ReplaceLease; successful exchange leaves the previous capacity in next.
+  std::expected<void, CatalogError> ReplaceLease(LeaseId lease, const Closure& closure,
+                                                 std::vector<ExtentId>& next);
+  // Allocation-free removal from an authenticated resident lease. Every
+  // removed content generation is checked before the first lease mutation.
+  std::expected<void, CatalogError> RemoveLeaseExtents(
+      LeaseId lease, std::span<const std::pair<ExtentId, std::uint64_t>> removed);
+
   // Ends a lease; its extents stay resident (release is not eviction).
   std::expected<void, CatalogError> ReleaseLease(LeaseId lease);
   // Records an actual use of every extent a lease covers, at tick.
@@ -352,6 +361,9 @@ class Catalog {
   static bool Evictable(const ExtentView& extent);
 
  private:
+  std::expected<void, CatalogError> ReplaceLeaseImpl(LeaseId lease, const Closure& closure,
+                                                     std::vector<ExtentId>& next,
+                                                     bool check_prepared_inventory);
   struct Domain {
     std::string name;
     Occupancy occupancy;

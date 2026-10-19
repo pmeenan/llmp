@@ -4,6 +4,7 @@
 #include "engine/decoding.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <format>
@@ -279,6 +280,36 @@ DecodeReport DecodingOrchestrator::Single(std::span<const DecodeWork> work, bool
     segments.push_back({.tokens = tokens, .bytes = {}});
     of.push_back(i);
   }
+  bool companions = false;
+  for (std::size_t s = 1; s < slots.stages(); ++s) companions |= slots.progress(0, s) != nullptr;
+  if (!scored && !companions) {
+    if (auto qualified = runner_->CheckOwners(pending.size()); !qualified) {
+      for (const auto idx : of)
+        report.outcomes[idx].refusal = StepRefusal{.what = qualified.error()};
+      return report;
+    }
+    if (!pending.empty()) {
+      if (auto allowed = runner_->CheckExecutionUse(NumericalUse::kDecode); !allowed) {
+        for (const auto idx : of)
+          report.outcomes[idx].refusal = StepRefusal{.what = allowed.error()};
+        return report;
+      }
+    }
+    for (std::size_t j = 0; j < pending.size(); ++j) segments[j].history = work[of[j]].history;
+    WaveReport wave = RunWave(*runner_, *composer_, pending, segments, true);
+    report.steps = wave.steps;
+    for (std::size_t j = 0; j < pending.size(); ++j) {
+      DecodeOutcome& out = report.outcomes[of[j]];
+      WaveOutcome& ran = wave.outcomes[j];
+      if (ran.refusal) {
+        out.refusal = std::move(ran.refusal);
+        continue;
+      }
+      out.kept = pending[j].rows;
+      Place(out, ran);
+    }
+    return report;
+  }
   std::vector<std::vector<std::int32_t>> full(pending.size());
   std::vector<std::span<const std::int32_t>> histories;
   for (std::size_t j = 0; j < pending.size(); ++j) {
@@ -328,6 +359,7 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     std::optional<std::size_t> alternative;   // the drafter chosen
     std::vector<std::optional<DraftProgressLedger::Unit>> progress;
     std::vector<model::DraftRows> replay;
+    std::vector<std::optional<DraftProgressLedger::Transition>> predecessor;
   };
   std::vector<Unit> units(work.size());
   const std::uint32_t target_context = slots.context(0);
@@ -373,26 +405,44 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     }
     u.progress.resize(drafters);
     u.replay.resize(drafters);
+    u.predecessor.resize(drafters);
     Status ready;
     for (std::size_t d = 0; d < drafters; ++d) {
       const auto stage = mode_.drafters[d].stage;
-      if (!slots.progress(w.slot, stage)) continue;
-      if (slots.owed(w.slot)) ready = slots.Settle(w.slot);
-      if (!ready) break;
-      auto unit = slots.BeginDraftUnit(w.slot, stage);
-      if (!unit) {
-        ready = Error(unit.error());
-        break;
+      auto* progress = slots.progress(w.slot, stage);
+      if (!progress) continue;
+      if (progress->owed()) {
+        // Reserve this exact next replay; its first useful joined job owns the
+        // predecessor prefix instead of an eager standalone settlement job.
+        auto successor = slots.BeginDraftSuccessor(w.slot, stage);
+        if (!successor) {
+          ready = Error(successor.error());
+          break;
+        }
+        u.progress[d] = successor->unit;
+        u.predecessor[d] = successor->predecessor;
+        u.replay[d] = successor->replay;
+      } else {
+        auto unit = slots.BeginDraftUnit(w.slot, stage);
+        if (!unit) {
+          ready = Error(unit.error());
+          break;
+        }
+        u.progress[d] = *unit;
+        if (u.positions == 0) continue;
+        auto bounds = model::DraftBounds(slots.layout(stage));
+        if (!bounds || !*bounds) {
+          ready =
+              Error(bounds ? "repeat-pending stage lost its progress geometry" : bounds.error());
+          break;
+        }
+        auto rows = model::DraftFirstPass(progress->completed(), **bounds);
+        if (!rows) {
+          ready = Error(rows.error());
+          break;
+        }
+        u.replay[d] = *rows;
       }
-      u.progress[d] = *unit;
-      if (u.positions == 0) continue;
-      auto bounds = model::DraftBounds(slots.layout(stage));
-      auto rows = model::DraftFirstPass(slots.progress(w.slot, stage)->completed(), **bounds);
-      if (!rows) {
-        ready = Error(rows.error());
-        break;
-      }
-      u.replay[d] = *rows;
     }
     if (!ready) {
       out.refusal = Refusal(ready.error(), w.slot);
@@ -461,20 +511,15 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
       u.first[d] = static_cast<std::uint32_t>(u.proposed.size());
       u.run[d] = out.drafts.size();
       out.drafts.push_back({.drafter = d, .depth = u.depth[d]});
-      if (spec.borrows_target) {
-        // The target's state frozen for its passes, once what the last
-        // verify owes has run.
-        const std::uint32_t slot = work[i].slot;
-        Status settled = slots.owed(slot) ? slots.Settle(slot) : Status{};
-        auto borrowed =
-            settled ? slots.Borrow(slot, 0)
-                    : std::expected<StateBorrow, std::string>(std::unexpected(settled.error()));
+      if (spec.borrows_target && !slots.owed(work[i].slot)) {
+        auto borrowed = slots.Borrow(work[i].slot, 0);
         if (!borrowed) {
-          out.drafts.back().refusal = Refusal(borrowed.error(), slot);
+          out.drafts.back().refusal = Refusal(borrowed.error(), work[i].slot);
           continue;
         }
         borrows[i] = std::move(*borrowed);
       }
+
       drafting[i] = true;
       passes = std::max(passes, block ? 1U : u.depth[d]);
     }
@@ -524,6 +569,23 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
           token_first = past;
           feature_first = past == 0 ? 0 : past - 1;
         }
+        if (spec.borrows_target && pass == 0 && !borrows[i].held()) {
+          // Coordinates are now concrete for this reader. A guard reserves
+          // the exact accepted prefix without publishing a frozen view.
+          auto borrowed = u.predecessor[d] && u.progress[d] && progress && progress->owed()
+                              ? slots.BorrowAfterPrefix(
+                                    w.slot, spec.stage,
+                                    DraftProgressLedger::Successor{.unit = *u.progress[d],
+                                                                   .predecessor = *u.predecessor[d],
+                                                                   .replay = u.replay[d]})
+                              : slots.BorrowAfterOwed(w.slot, spec.stage, past, rows);
+          if (!borrowed) {
+            report.outcomes[i].drafts[u.run[d]].refusal = Refusal(borrowed.error(), w.slot);
+            drafting[i] = false;
+            continue;
+          }
+          borrows[i] = std::move(*borrowed);
+        }
         std::vector<std::int32_t> in;
         if (block) {
           in.assign(rows, spec.fill);
@@ -566,19 +628,33 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
         segments.push_back(
             {.tokens = tokens[j], .bytes = {}, .feature = features[j], .history = histories[j]});
       }
-      runner_->authorized_drafts_.clear();
+      std::vector<StepAuthorization> authorization(pending.size());
       for (std::size_t j = 0; j < pending.size(); ++j) {
         const auto& owner = units[of[j]];
-        if (owner.progress[d])
-          runner_->authorized_drafts_.push_back({.slot = pending[j].slot,
-                                                 .stage = pending[j].stage,
-                                                 .past = pending[j].past,
-                                                 .rows = pending[j].rows,
-                                                 .feature = segments[j].feature,
-                                                 .unit = *owner.progress[d]});
+        const auto borrowed = borrows[of[j]].permit();
+        if (owner.progress[d] || borrowed) {
+          auto& permit = authorization[j];
+          permit.runner_ = runner_;
+          permit.slot_ = pending[j].slot;
+          permit.stage_ = pending[j].stage;
+          permit.phase_ = pending[j].phase;
+          permit.past_ = pending[j].past;
+          permit.rows_ = pending[j].rows;
+          permit.outputs_ = pending[j].outputs;
+          permit.want_head_ = pending[j].want_head;
+          permit.greedy_ = pending[j].greedy;
+          permit.feature_ = segments[j].feature;
+          permit.part_ = StepAuthorization::Part::kDraft;
+          permit.borrowed_ = borrowed;
+          if (owner.progress[d]) {
+            permit.draft_ = *owner.progress[d];
+            if (slots.progress(permit.slot_, spec.stage)->owed())
+              permit.predecessor_ = owner.predecessor[d];
+          }
+        }
       }
-      WaveReport wave = RunWave(*runner_, *composer_, pending, segments, /*advance=*/false);
-      runner_->authorized_drafts_.clear();
+      WaveReport wave =
+          RunWave(*runner_, *composer_, pending, segments, /*advance=*/false, {}, authorization);
       report.steps += wave.steps;
       for (std::size_t j = 0; j < pending.size(); ++j) {
         const std::size_t i = of[j];
@@ -648,16 +724,25 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     if (mode_.drafters[d].draft_wave_max > 0 && catchup.size() > mode_.drafters[d].draft_wave_max) {
       for (PendingWork& w : catchup) w.alone = true;
     }
-    runner_->authorized_drafts_.clear();
-    for (std::size_t j = 0; j < catchup.size(); ++j)
-      runner_->authorized_drafts_.push_back({.slot = catchup[j].slot,
-                                             .stage = stage,
-                                             .past = catchup[j].past,
-                                             .rows = catchup[j].rows,
-                                             .feature = inputs[j].feature,
-                                             .unit = *units[owners[j]].progress[d]});
-    auto caught = RunWave(*runner_, *composer_, catchup, inputs, false);
-    runner_->authorized_drafts_.clear();
+    std::vector<StepAuthorization> authorization(catchup.size());
+    for (std::size_t j = 0; j < catchup.size(); ++j) {
+      auto& permit = authorization[j];
+      permit.runner_ = runner_;
+      permit.slot_ = catchup[j].slot;
+      permit.stage_ = stage;
+      permit.phase_ = catchup[j].phase;
+      permit.past_ = catchup[j].past;
+      permit.rows_ = catchup[j].rows;
+      permit.outputs_ = catchup[j].outputs;
+      permit.want_head_ = catchup[j].want_head;
+      permit.greedy_ = catchup[j].greedy;
+      permit.feature_ = inputs[j].feature;
+      permit.part_ = StepAuthorization::Part::kDraft;
+      permit.draft_ = *units[owners[j]].progress[d];
+      if (slots.progress(permit.slot_, stage)->owed())
+        permit.predecessor_ = units[owners[j]].predecessor[d];
+    }
+    auto caught = RunWave(*runner_, *composer_, catchup, inputs, false, {}, authorization);
     report.steps += caught.steps;
     for (std::size_t j = 0; j < owners.size(); ++j) {
       const auto i = owners[j];
@@ -777,6 +862,31 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     }
     if (u.alternative) choice_.at(slot).Observe(*u.alternative, verdict->keep);
   }
+  for (std::size_t i = 0; i < units.size(); ++i) {
+    auto& unit = units[i];
+    for (std::size_t d = 0; d < unit.predecessor.size(); ++d) {
+      if (!unit.predecessor[d] || !unit.progress[d]) continue;
+      auto* progress = slots.progress(work[i].slot, mode_.drafters[d].stage);
+      // A completed replay can already have produced this unit's next owed
+      // transition. Cancel only the original still-current predecessor, never
+      // a newer publication that consumed/replaced the reservation.
+      if (!progress || !progress->CheckPublication(*unit.predecessor[d])) continue;
+      if (auto canceled =
+              slots.CancelDraftSuccessor(work[i].slot, mode_.drafters[d].stage, *unit.progress[d]);
+          !canceled) {
+        // Submitted or replaced reservations cannot be silently revoked. The
+        // retained transaction/ledger owns retirement; the owner stays unusable.
+        const std::array owner{work[i].slot};
+        slots.QuarantineOwners(owner);
+        auto& refusal = report.outcomes[i].refusal;
+        if (!refusal) refusal = Refusal(canceled.error(), work[i].slot);
+        refusal->clean = false;
+      }
+    }
+  }
+  for (std::size_t i = 0; i < report.outcomes.size(); ++i)
+    if (auto& refusal = report.outcomes[i].refusal; refusal && work[i].slot < slots.slots())
+      refusal->clean = refusal->clean && slots.usable(work[i].slot);
   return report;
 }
 

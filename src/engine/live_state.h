@@ -112,6 +112,9 @@ class LiveState {
   std::expected<bool, std::string> Use(PagedNode& node, std::span<const Range> ranges,
                                        const catalog::Closure* keep = nullptr,
                                        bool* over_budget = nullptr);
+  // Pure check of already initialized ranges. A private batch uses its owned
+  // canonical preflight inventory; this never grows/admits or grants work.
+  Status CheckUsed(std::span<const Range> ranges) const;
   // Optional next-chunk growth, submitted BEFORE the current Job. Only fresh
   // zero sources are eligible: kept restart files retain the ordinary read
   // path. No victims or reclaimer, and no publication into used ranges,

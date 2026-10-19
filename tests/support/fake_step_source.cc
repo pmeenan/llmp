@@ -188,6 +188,7 @@ class FakeProgram final : public kn::StepProgram {
             seen->emplace_back(from, from + bytes);
           }
           executed->fetch_add(1);
+          if (options->after_execute) options->after_execute(phase);
         });
     if (!launched) {
       return std::unexpected(
@@ -355,6 +356,19 @@ std::expected<std::vector<engine::CommitBuffer>, std::string> FakeStepSource::Co
     return std::vector<engine::CommitBuffer>{};
   return std::vector<engine::CommitBuffer>{
       {.layer = 0, .component = 0, .what = "hash", .row_bytes = 8}};
+}
+
+std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::BuildPrivate(
+    const pl::StepShape& shape, const kn::Addresses& addresses,
+    const kn::ExecutionResources& resources) {
+  if (!options_.private_backend || resources.parent() != options_.private_backend.get() ||
+      !resources.Ready())
+    return Refuse("fake private build requires its actual producer-owned ready view");
+  auto program = Build(shape, addresses);
+  if (!program) return program;
+  if (!*program || !(**program).HoldResources(resources))
+    return Refuse("fake private program cannot retain its actual view");
+  return program;
 }
 
 std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Build(

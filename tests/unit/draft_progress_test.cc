@@ -180,6 +180,25 @@ TEST(DraftProgressTest, ControlUsesOrdinaryStateWithoutClaimingI64NumericKvSuppo
     for (const auto& range : row) EXPECT_LT(range.offset, control.offset);
 }
 
+TEST(DraftProgressTest, RepeatablePrivateStateCanAlsoDeclareAReadOnlyTargetView) {
+  auto contract = RepeatableContract();
+  contract.tensors.push_back(
+      {.name = "kv", .cell_bytes = 1024, .borrowed_from_target = true, .target_layer = 0});
+  auto derived = Layout(contract);
+  ASSERT_TRUE(derived) << llmp::test_support::Failed(derived).value_or("");
+  auto bounds = md::DraftBounds(*derived);
+  ASSERT_TRUE(bounds);
+  ASSERT_TRUE(bounds->has_value());
+  EXPECT_EQ(derived->borrowed.size(), 1U);
+  EXPECT_EQ(derived->items.size(), 3U);  // No payload is allocated for the target view.
+  EXPECT_EQ((*bounds)->carry, 1U);
+  contract.tensors.back().replayable = true;
+  EXPECT_FALSE(Layout(contract));  // A borrowed view has no private replay state.
+  contract.tensors.back().replayable = false;
+  contract.tensors.back().target_writes = true;
+  EXPECT_FALSE(Layout(contract));  // It cannot claim the target writes owned bytes here.
+}
+
 TEST(DraftProgressTest, LayoutRefusesControlMasqueradingAndUnqualifiedReplay) {
   for (int variant = 0; variant < 11; ++variant) {
     auto c = RepeatableContract();

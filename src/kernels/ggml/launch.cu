@@ -12,6 +12,7 @@
 #include <format>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,6 +23,7 @@
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/ggml_support.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/scratch_stack.h"
 
 namespace llmp::kernels::ggml {
 
@@ -35,20 +37,46 @@ namespace llmp::kernels::ggml {
 class WorkspacePool final : public ggml_cuda_pool {
  public:
   WorkspacePool(std::uint64_t base, std::uint64_t size) : base_(base), size_(size) {}
-
+  // For nonzero allocations, successive stack entries start at distinct
+  // 256-byte boundaries. Dead interior entries have distinct starts too.
+  // Private run metadata is therefore allocated/paid before any submission.
+  static std::uint64_t Blocks(std::uint64_t bytes) { return ScratchStack::Capacity(bytes); }
+  static std::uint64_t DescriptorBytes(std::uint64_t bytes) {
+    return Blocks(bytes) * sizeof(ScratchStack::Block);
+  }
+  void MakePrivate() {
+    capacity_ = Blocks(size_);
+    if (capacity_ != 0)
+      fixed_ = std::make_unique_for_overwrite<ScratchStack::Block[]>(
+          static_cast<std::size_t>(capacity_));
+    stack_ = ScratchStack(std::span(fixed_.get(), static_cast<std::size_t>(capacity_)));
+    bounded_ = true;
+  }
   void* alloc(std::size_t size, std::size_t* actual_size) override {
+    *actual_size = size;
+    // No descriptor for zero bytes: freeing any such view is a no-op, even
+    // when nested with an allocation at the same offset.
+    if (size == 0) return reinterpret_cast<void*>(base_);
+    if (bounded_) {
+      auto offset = stack_.Allocate(size, limit_);
+      base::Check(offset.has_value(), "private scratch fits its paid backing and descriptors");
+      return reinterpret_cast<void*>(base_ + *offset);
+    }
     const std::uint64_t offset = (top_ + kAlign - 1) / kAlign * kAlign;
     base::Check(offset <= limit_ && size <= limit_ - offset,
                 "a GGML launcher drew more scratch than its operation's bound");
     blocks_.push_back(Block{.offset = offset, .end = offset + size, .live = true});
     top_ = offset + size;
     peak_ = std::max(peak_, top_);
-    *actual_size = size;
-    return reinterpret_cast<void*>(base_ + offset);  // NOLINT(performance-no-int-to-ptr)
+    return reinterpret_cast<void*>(base_ + offset);
   }
-
   void free(void* ptr, std::size_t size) override {
+    if (size == 0) return;
     const std::uint64_t offset = reinterpret_cast<std::uintptr_t>(ptr) - base_;
+    if (bounded_) {
+      base::Check(stack_.Free(offset, size), "private scratch frees its own live allocation once");
+      return;
+    }
     bool found = false;
     for (Block& block : blocks_) {
       if (block.live && block.offset == offset && block.end - block.offset == size) {
@@ -58,35 +86,34 @@ class WorkspacePool final : public ggml_cuda_pool {
       }
     }
     base::Check(found, "GGML freed a block the pool did not hand out");
-    while (!blocks_.empty() && !blocks_.back().live) {
-      blocks_.pop_back();
-    }
+    while (!blocks_.empty() && !blocks_.back().live) blocks_.pop_back();
     top_ = blocks_.empty() ? 0 : blocks_.back().end;
   }
-
-  // Bounds the next operation's scratch.
   void Limit(std::uint64_t limit) {
     base::Check(limit <= size_, "an operation's scratch bound fits the workspace");
     limit_ = limit;
   }
-  bool empty() const { return blocks_.empty(); }
-  std::uint64_t peak() const { return peak_; }
-  void ResetPeak() { peak_ = top_; }
+  bool empty() const { return bounded_ ? stack_.empty() : blocks_.empty(); }
+  std::uint64_t peak() const { return bounded_ ? stack_.peak() : peak_; }
+  void ResetPeak() {
+    if (bounded_)
+      stack_.ResetPeak();
+    else
+      peak_ = top_;
+  }
 
  private:
   static constexpr std::uint64_t kAlign = 256;
   struct Block {
-    std::uint64_t offset = 0;
-    std::uint64_t end = 0;
+    std::uint64_t offset = 0, end = 0;
     bool live = false;
   };
-
-  std::uint64_t base_;
-  std::uint64_t size_;
-  std::uint64_t limit_ = 0;
-  std::uint64_t top_ = 0;
-  std::uint64_t peak_ = 0;
+  std::uint64_t base_, size_, limit_ = 0, top_ = 0, peak_ = 0;
   std::vector<Block> blocks_;
+  std::unique_ptr<ScratchStack::Block[]> fixed_;
+  ScratchStack stack_;
+  std::uint64_t capacity_ = 0;
+  bool bounded_ = false;
 };
 
 namespace {
@@ -168,6 +195,37 @@ std::expected<std::unique_ptr<LaunchContext>, KernelFailure> LaunchContext::Crea
       device, execution, stream, *native, std::move(context), std::move(pool), workspace, cublas));
 }
 
+std::expected<std::uint64_t, KernelFailure> LaunchContext::PrivateHostBytes(Workspace workspace) {
+  constexpr std::uint64_t kAllocationMetadataBytes = 64;
+  // Context, pool, their owner, and the actual fixed descriptor capacity.
+  // The context's short device name uses its existing standard-library inline
+  // representation. A separate named 64-byte name/control allowance also
+  // covers a provider/library implementation using dynamic short-name storage.
+  std::uint64_t bytes = sizeof(LaunchContext) + sizeof(ggml_backend_cuda_context) +
+                        sizeof(WorkspacePool) + 4 * kAllocationMetadataBytes +
+                        (workspace.size.value() ? kAllocationMetadataBytes : 0);
+  std::uint64_t descriptors = 0;
+  if (__builtin_mul_overflow(WorkspacePool::Blocks(workspace.size.value()),
+                             std::uint64_t{WorkspacePool::DescriptorBytes(256)}, &descriptors) ||
+      __builtin_add_overflow(bytes, descriptors, &bytes))
+    return Rejected("private launch metadata size overflows");
+  return bytes;
+}
+
+std::expected<std::unique_ptr<LaunchContext>, KernelFailure> LaunchContext::CreatePrivate(
+    LaunchContext& parent, Workspace workspace) {
+  if (parent.faulted() || parent.capturing_ || parent.lane_source_ ||
+      workspace.base + workspace.size.value() < workspace.base ||
+      (workspace.base < parent.workspace_.base + parent.workspace_.size.value() &&
+       parent.workspace_.base < workspace.base + workspace.size.value()))
+    return Rejected("private workspace needs a healthy original parent and distinct backing");
+  auto made = Create(parent.device_, parent.execution_, parent.stream_, workspace, parent.cublas_);
+  if (!made) return made;
+  (*made)->pool_->MakePrivate();
+  (*made)->lane_source_ = &parent;
+  return made;
+}
+
 LaunchContext::LaunchContext(int device, providers::DeviceExecution& execution,
                              providers::StreamId stream, providers::NativeStream native,
                              std::unique_ptr<ggml_backend_cuda_context> context,
@@ -226,7 +284,7 @@ void LaunchContext::ReleaseLanes() {
 
 std::expected<void, KernelFailure> LaunchContext::ConfigureLanes(std::uint32_t count,
                                                                  base::Bytes lane_scratch) {
-  if (!lanes_.empty() || capturing_ || faulted_) {
+  if (lane_source_ || !lanes_.empty() || capturing_ || faulted_) {
     return Rejected("lanes are made once, outside a capture, on a usable context");
   }
   const std::uint64_t each = (lane_scratch.value() + 255) / 256 * 256;
@@ -265,15 +323,21 @@ std::expected<void, KernelFailure> LaunchContext::ConfigureLanes(std::uint32_t c
 }
 
 void LaunchContext::SelectLane(std::uint32_t lane) {
-  base::Check(lane <= lanes_.size(), "a lane the context has");
+  base::Check(lane <= lanes(), "a lane the context has");
   active_ = lane;
 }
 
 void* LaunchContext::StreamOf(std::uint32_t lane) const {
-  return lane == 0 ? native_.handle : lanes_[lane - 1]->stream;
+  return lane_source_ ? lane_source_->StreamOf(lane)
+                      : (lane == 0 ? native_.handle : lanes_[lane - 1]->stream);
 }
 
 std::expected<void, KernelFailure> LaunchContext::LaneWait(std::uint32_t waiter, std::uint32_t on) {
+  if (lane_source_) {
+    auto waited = lane_source_->LaneWait(waiter, on);
+    if (!waited && waited.error().error == KernelError::kUnknown) faulted_ = true;
+    return waited;
+  }
   if (waiter > lanes_.size() || on > lanes_.size() || waiter == on) {
     return Rejected("a lane wait between two of the context's lanes");
   }
@@ -291,6 +355,7 @@ std::expected<void, KernelFailure> LaunchContext::LaneWait(std::uint32_t waiter,
 
 base::Bytes LaunchContext::scratch_size(std::uint32_t lane) const {
   if (lane != 0) {
+    if (lane_source_) return lane_source_->scratch_size(lane);
     return base::Bytes(lane <= lanes_.size() ? lane_scratch_ : 0);
   }
   return base::Bytes(workspace_.size.value() - (lane_scratch_ * lanes_.size()));
@@ -300,6 +365,11 @@ std::uint64_t LaunchContext::scratch_base() const {
   if (active_ == 0) {
     return workspace_.base;
   }
+  if (lane_source_) {
+    const auto& source = *lane_source_;
+    return source.workspace_.base + source.workspace_.size.value() -
+           (source.lane_scratch_ * source.lanes_.size()) + ((active_ - 1) * source.lane_scratch_);
+  }
   // ConfigureLanes: lane i's pool follows lane i - 1's, from the workspace's
   // end less every lane's scratch.
   const std::uint64_t start = workspace_.size.value() - (lane_scratch_ * lanes_.size());
@@ -307,15 +377,19 @@ std::uint64_t LaunchContext::scratch_base() const {
 }
 
 ggml_backend_cuda_context* LaunchContext::ActiveContext() {
-  return active_ == 0 ? context_.get() : lanes_[active_ - 1]->context.get();
+  return active_ == 0 ? context_.get()
+                      : (lane_source_ ? lane_source_->lanes_[active_ - 1]->context.get()
+                                      : lanes_[active_ - 1]->context.get());
 }
 
 WorkspacePool& LaunchContext::ActivePool() {
-  return active_ == 0 ? *pool_ : *lanes_[active_ - 1]->pool;
+  return active_ == 0 ? *pool_
+                      : (lane_source_ ? *lane_source_->lanes_[active_ - 1]->pool
+                                      : *lanes_[active_ - 1]->pool);
 }
 
 std::expected<void, KernelFailure> LaunchContext::Begin(base::Bytes scratch) {
-  if (faulted_) {
+  if (faulted()) {
     return Rejected("the launch context faulted earlier; its stream awaits recovery");
   }
   if (scratch > scratch_size(active_)) {
@@ -368,8 +442,7 @@ std::expected<void, KernelFailure> LaunchContext::End() {
   }
   // A lane lends no cuBLAS handle; one GGML made there would queue
   // outside the run's order and hold memory nothing counts.
-  if (!error && active_ != 0 &&
-      lanes_[active_ - 1]->context->cublas_handles[device_][0] != nullptr) {
+  if (!error && active_ != 0 && ActiveContext()->cublas_handles[device_][0] != nullptr) {
     error = std::string("an operation on a lane created a cuBLAS handle");
   }
   if (error) {

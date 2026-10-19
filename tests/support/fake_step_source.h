@@ -105,6 +105,7 @@ inline std::uint64_t FakeHash(std::uint64_t hash, std::int32_t token) {
 struct FakeSourceOptions {
   // The stages' layouts (the slots' own), to find each state tensor.
   std::vector<model::StateLayoutDerived> layouts;
+  std::shared_ptr<const kernels::BackendOwner> private_backend{};
   bool joined_inputs = false;  // one joined token and position input
   std::uint64_t host_bytes = 4096;
   std::uint64_t pool_bytes = 0;
@@ -118,7 +119,10 @@ struct FakeSourceOptions {
   // test may change them between steps.
   std::function<bool(const planner::StepShape&)> refuse_build;
   std::function<engine::Status(engine::NumericalUse)> check_execution_use;
-  std::function<std::vector<std::uint64_t>(const planner::StepShape&)> shape_parameters;
+  std::function<void(const planner::StepShape&, model::ShapeParameterSink&)> shape_parameters;
+  std::function<std::expected<engine::SpecializationChange, engine::SpecializationError>(
+      const engine::SpecializationRequest&)>
+      specialization;
   std::function<engine::Status(std::uint16_t, std::uint16_t, std::span<const std::int32_t>,
                                std::uint32_t, std::span<std::int32_t>)>
       side_rows;
@@ -133,6 +137,9 @@ struct FakeSourceOptions {
   // Called at the start of every Build (on the driver; a lookahead's in
   // the job's meanwhile).
   std::function<void(const planner::StepShape&, bool measuring)> on_build;
+  // Runs inside the queued fake numeric operation, after its writes. Tests
+  // may invalidate a later consumer before the real retirement preflight.
+  std::function<void(planner::Phase)> after_execute;
   // Tests the real runner's returned-program payment transfer.
   std::function<std::shared_ptr<void>()> construction_owner;
   // Programs are not capturable and take each row's position from
@@ -185,9 +192,14 @@ class FakeStepSource final : public engine::StepSource {
     return joined_repeat_pending_;
   }
   planner::PlanKey KeyBase() const override;
-  std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const override {
-    return options_.shape_parameters ? options_.shape_parameters(shape)
-                                     : std::vector<std::uint64_t>{};
+  void EmitShapeParameters(const planner::StepShape& shape,
+                           model::ShapeParameterSink& sink) const override {
+    if (options_.shape_parameters) options_.shape_parameters(shape, sink);
+  }
+  std::expected<engine::SpecializationChange, engine::SpecializationError> NextSpecializationChange(
+      const engine::SpecializationRequest& request) const override {
+    return options_.specialization ? options_.specialization(request)
+                                   : engine::SpecializationChange{};
   }
   bool UsesSideRows(std::uint16_t /*stage*/) const override { return bool(options_.side_rows); }
   engine::Status SideRows(std::uint16_t stage, std::uint16_t component,
@@ -200,6 +212,13 @@ class FakeStepSource final : public engine::StepSource {
       std::uint16_t stage, std::uint32_t rows) const override;
   std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
       const planner::StepShape& shape, const kernels::Addresses& addresses) override;
+
+  std::shared_ptr<const kernels::BackendOwner> ResourceBackend(std::uint16_t) const override {
+    return options_.private_backend;
+  }
+  std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildPrivate(
+      const planner::StepShape& shape, const kernels::Addresses& addresses,
+      const kernels::ExecutionResources& resources) override;
 
   // Every Build, measuring or not, in order.
   struct Built {

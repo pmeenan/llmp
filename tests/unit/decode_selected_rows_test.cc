@@ -1421,9 +1421,9 @@ TEST(DecodeSelectedRowsGpu, RetainedExl3ModelsOwnStateAcrossSwitchAndScratchRema
           }
           if (!nonzero) return std::unexpected("EXL3 switch did not produce a nonzero product");
           if (turn < 2) {
-            first[model] = ran->outputs[0];
+            first[model].assign(ran->outputs[0].begin(), ran->outputs[0].end());
             builds[model] = life->sources[model]->builds;
-          } else if (first[model] != ran->outputs[0] ||
+          } else if (!std::ranges::equal(first[model], ran->outputs[0]) ||
                      builds[model] != life->sources[model]->builds) {
             return std::unexpected(
                 "scratch remap changed retained EXL3 output or rebuilt its plan");

@@ -27,7 +27,7 @@
 // stage's snapshot, queued in its job before its run; its rows then await
 // the slot's Accept (SlotLifecycle::Accept), and a failed one is undone
 // whole. The decoding modes that drive drafts and verifies are
-// decoding.h's. Around it, what a caller predicts (StepAhead): up to two
+// decoding.h's. Around it, what a caller predicts (StepAhead): paid owned
 // future shapes built while the device runs this one (the prefill
 // lookahead), the next one's recording captured beside this run, and the
 // next one's fresh state prepared before the job. Policy (which futures,
@@ -40,6 +40,7 @@
 #define LLMP_ENGINE_MODEL_RUNNER_H_
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -51,8 +52,10 @@
 #include <vector>
 
 #include "catalog/catalog.h"
+#include "engine/batch_resources.h"
 #include "engine/coverage.h"
 #include "engine/execution_contract.h"
+#include "engine/host_buffer.h"
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
 #include "engine/plan_account.h"
@@ -61,7 +64,10 @@
 #include "engine/program_lifecycle.h"
 #include "engine/run_stats.h"
 #include "engine/runner_memory.h"
+#include "engine/runner_owner.h"
 #include "engine/slot_lifecycle.h"
+#include "engine/specialization.h"
+#include "engine/step_ahead.h"
 #include "engine/step_runs.h"
 #include "format/encoding.h"
 #include "format/tensor_format.h"
@@ -69,6 +75,7 @@
 #include "kernels/common/routed_program.h"
 #include "kernels/common/step_program.h"
 #include "memory/reclaim.h"
+#include "model/shape_parameters.h"
 #include "planner/step_shape.h"
 
 namespace llmp::test_support {
@@ -87,7 +94,7 @@ struct CommitBuffer {
   std::uint64_t row_bytes = 0;
 };
 
-class StepSource {
+class StepSource : public SpecializationQuery {
  public:
   StepSource() = default;
   StepSource(const StepSource&) = delete;
@@ -107,16 +114,23 @@ class StepSource {
   virtual std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const {
     return std::optional<base::Sha256Digest>{};
   }
-  // Only baked graph dimensions that depend on positions; empty when
-  // positions affect input data alone. Pure, also called by lookahead.
-  virtual std::vector<std::uint64_t> ShapeParameters(const planner::StepShape&) const { return {}; }
-  // The same appended to `out`: a plan's lookup (every step's) reuses its
-  // key's storage rather than allocating. By default ShapeParameters'.
-  virtual void AppendShapeParameters(const planner::StepShape& shape,
-                                     std::vector<std::uint64_t>& out) const {
-    const std::vector<std::uint64_t> parameters = ShapeParameters(shape);
-    out.insert(out.end(), parameters.begin(), parameters.end());
+  // Canonical baked graph dimensions. The same allocation-free emitter counts
+  // before storage admission, then fills an exact paid span. It must be pure.
+  virtual void EmitShapeParameters(const planner::StepShape&, model::ShapeParameterSink&) const {}
+  std::expected<std::size_t, model::ShapeParameterSink::Error> CountShapeParameters(
+      const planner::StepShape& shape) const {
+    model::ShapeParameterSink sink;
+    EmitShapeParameters(shape, sink);
+    return sink.Finish();
   }
+  std::expected<std::size_t, model::ShapeParameterSink::Error> FillShapeParameters(
+      const planner::StepShape& shape, std::span<std::uint64_t> into) const {
+    model::ShapeParameterSink sink(into);
+    EmitShapeParameters(shape, sink);
+    return sink.Finish();
+  }
+  // Diagnostic convenience. Production key construction uses Count/Fill.
+  std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const;
   // Immutable numerical qualification for this stage's contribution to a
   // multi-owner repeat-pending submission (including target, companions,
   // head-bearing replay and continuation). The runner requires every
@@ -149,6 +163,14 @@ class StepSource {
   // follow `past` unless included in ShapeParameters.
   virtual std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Build(
       const planner::StepShape& shape, const kernels::Addresses& addresses) = 0;
+  virtual std::shared_ptr<const kernels::BackendOwner> ResourceBackend(
+      std::uint16_t /*stage*/) const {
+    return {};
+  }
+  virtual std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildPrivate(
+      const planner::StepShape&, const kernels::Addresses&, const kernels::ExecutionResources&) {
+    return std::unexpected("the source has no private-resource lowering capability");
+  }
 };
 
 // One stage's weights, opened by the caller; Setup reserves their places.
@@ -169,11 +191,14 @@ struct RunnerConfig {
   std::vector<planner::StepShape> setup_shapes;
   // Detailed debug observer of successful paid cache installation only.
   kernels::PlanRecordSink plan_report_sink{};
-  // Graphs on (D-090), and the phases a shape is captured in on its second
-  // run (bit 1 << Phase; a hinted repeat or a capture ahead is the step's
-  // own request). Qwen3.8 and DeepSeek capture prefill only from a hint.
+  // Graphs on (D-090). capture_phases permits recording in each phase
+  // (bit 1 << Phase), including an explicit hint or first-use experiment.
   bool graphs = true;
   std::uint32_t capture_phases = 0x1F;
+  // Within permitted phases, capture automatically on a shape's second use.
+  // Turning this off leaves explicit repeat/future hints eligible. Production
+  // prefill uses hints so arbitrary recurring chunks need not create graphs.
+  std::uint32_t automatic_capture_phases = 0x1F;
   // Internal experiment: eligible phases may record beside their first eager
   // run. Still subject to capture_phases, graph payment and program capability;
   // zero preserves D-090. This never records before the warm eager execution.
@@ -286,23 +311,38 @@ struct SegmentWork {
   std::span<const std::int32_t> history{};
 };
 
-// What the caller predicts beyond the step: never work, and a wrong
-// prediction costs only an unused plan, recording or zero page.
-struct StepAhead {
-  // The next step's shape and the one after it, from this step's owners
-  // continuing (the prefill lookahead's near and far futures).
-  std::array<std::optional<planner::StepShape>, 8> shapes{};
-  // Distinct missing futures built while the device runs this step (0 to
-  // 2; a threaded node only), each under its own optional allowance.
-  std::uint32_t build = 0;
-  // The next shape's recording captured beside this run when it differs
-  // and is planned; or, when it repeats this shape, this shape captured on
-  // its first run (prefill reads grow every alignment, so a second-run
-  // capture of a chunk shape would never replay).
-  bool capture_ahead = false;
-  // The next shape's fresh state prepared before this job (a threaded node
-  // only; drained after it).
-  bool prepare = false;
+class ModelRunner;
+class StepTransaction;
+class CopySink;
+
+// One exact segment's execution permission. Only the engine's decoding and
+// prompt orchestrators can mint it; copying it grants no fresh ledger unit.
+// A default permit authorizes no repeat-pending or compound work.
+class StepAuthorization {
+ public:
+  StepAuthorization() = default;
+
+ private:
+  friend class ModelRunner;
+  friend class StepTransaction;
+  friend class DecodingOrchestrator;
+  friend class PromptCompanions;
+  friend class WaveComposer;
+  enum class Part : std::uint8_t { kNone, kOrigin, kDraft, kPre, kTarget, kPost };
+  const ModelRunner* runner_ = nullptr;
+  std::uint32_t slot_ = 0;
+  std::uint16_t stage_ = 0;
+  planner::Phase phase_ = planner::Phase::kPrefill;
+  std::uint32_t past_ = 0, rows_ = 0, outputs_ = 0;
+  bool want_head_ = false, greedy_ = false;
+  FeatureFrom feature_;
+  Part part_ = Part::kNone;
+  bool compound_tail_ = false;
+  DraftProgressLedger::Unit draft_;
+  std::optional<StateBorrowPermit> borrowed_{};
+  // Conditional execution only behind this exact owed publication prefix.
+  std::optional<DraftProgressLedger::Transition> predecessor_{};
+  std::span<const std::pair<std::size_t, DraftProgressLedger::Unit>> consumers_{};
 };
 
 struct StepRequest {
@@ -318,23 +358,28 @@ struct StepRequest {
   // verify or a drafter's step that would advance is refused).
   bool advance = true;
   StepAhead ahead;
+  // Empty for ordinary work, otherwise exactly one permit per segment.
+  // Borrowed during RunStep; its transaction retains any queued witnesses.
+  std::span<const StepAuthorization> authorization{};
+  PromptBatch batch{};  // opaque owned preflight, independent of execution permissions
 };
 
 struct StepReport {
   RunPath path = RunPath::kEager;
-  std::vector<std::vector<std::byte>> outputs;  // by segment: its own output slots, in order
-  std::vector<std::byte> joined;                // the step's joined outputs
-  bool captured_first = false;                  // captured on its first run (a hinted repeat)
+  HostOutputs outputs;          // immutable paid descriptors/payload, by segment
+  HostBuffer joined;            // shares the same private paid backing
+  bool captured_first = false;  // captured on its first run (a hinted repeat)
   std::uint32_t built_ahead = 0, cached_ahead = 0;
   bool captured_ahead = false;
   bool prepared_ahead = false;
 };
 
-// Why a step did not run. `clean`: nothing was queued and no owner's state
-// changed beyond clean growth, so its owners stay usable and the step (or
-// its peers without `slot`) may run again; otherwise every owner the step
-// may have written is quarantined. `slot`: the one owner that refused (its
-// state could not grow, it is not active), whose peers are untouched.
+// Why a step did not run. `clean`: no unresolved own-state effects remain,
+// so its owners stay usable and the step (or its peers without `slot`) may
+// run again. A completed predecessor prefix may already have published.
+// Otherwise every owner the step may have written is quarantined. `slot`: the
+// one owner that refused (its state could not grow, it is not active), whose
+// peers are untouched.
 struct StepRefusal {
   std::string what{};
   bool clean = true;
@@ -344,6 +389,9 @@ struct StepRefusal {
   // joined alignment, a common read): what it reads alone is backed, so it
   // may step alone with no growth.
   bool widening = false;
+  // Authenticated clean resource refusal before any numeric batch child.
+  // Diagnostic for whole-batch backoff; it grants no execution authority.
+  bool capacity_refused = false;
 };
 
 struct StepLookaheadStats {
@@ -352,7 +400,7 @@ struct StepLookaheadStats {
   double build_seconds = 0;
 };
 
-class ModelRunner final : public PagedModel {
+class ModelRunner final : public PagedModel, public SpecializationQuery {
  public:
   using Plans = BasicPlanCache<planner::PlanKey, StepPlanned, 1, StepPlanRuns>;
 
@@ -364,6 +412,12 @@ class ModelRunner final : public PagedModel {
   ModelRunner(ModelRunner&&) = delete;
   ModelRunner& operator=(ModelRunner&&) = delete;
   ~ModelRunner() override;
+
+  // A real retained owner is required for private resource views. Copies of
+  // this token retain source, launch, bindings and payer together. Unique-only
+  // callers cannot accidentally promise that lifetime.
+  std::expected<kernels::ParentResources, kernels::ResourceFailure> KeepResources();
+  RunnerOwner RetainedOwner() const;
 
   // ------------------------------------------------------------ its life
 
@@ -399,6 +453,25 @@ class ModelRunner final : public PagedModel {
     return source_->ExecutionIdentity();
   }
   std::uint64_t plan_floor_bytes() const { return plan_floor_bytes_; }
+  std::expected<HostPayment, std::string> PayHostMetadata(std::uint64_t bytes) {
+    return node_.PrepayHost(bytes);
+  }
+  std::expected<StepAhead, std::string> Predict(
+      std::span<const std::optional<planner::StepShape>> shapes, std::uint32_t builds = 0,
+      bool capture = false, bool prepare = false) {
+    return StepAhead::Create(node_, shapes, builds, capture, prepare);
+  }
+  std::expected<SpecializationChange, SpecializationError> NextSpecializationChange(
+      const SpecializationRequest& request) const override {
+    if (!ValidSpecializationRequest(request) || request.shape.stage >= slots_.stages() ||
+        request.context != slots_.context(request.shape.stage))
+      return std::unexpected(SpecializationError::kRequest);
+    auto change = source_->NextSpecializationChange(request);
+    if (!change) return std::unexpected(change.error());
+    if (!ValidSpecializationChange(request, *change))
+      return std::unexpected(SpecializationError::kProvider);
+    return change;
+  }
 
   SlotLifecycle& slots() { return slots_; }
   const SlotLifecycle& slots() const { return slots_; }
@@ -440,7 +513,8 @@ class ModelRunner final : public PagedModel {
   // stage's alignment, SlotLifecycle::read_align(stage), as a lone step's
   // segment), then through the step's reads.
   std::expected<void, StepRefusal> Admit(const planner::Segment& segment, std::uint16_t stage,
-                                         std::uint32_t read_align, bool advance);
+                                         std::uint32_t read_align, bool advance,
+                                         const StepAuthorization* authorization = nullptr);
 
   // ------------------------------------------------- plans and reclaim
 
@@ -461,29 +535,17 @@ class ModelRunner final : public PagedModel {
   void ReportPlans(const kernels::PlanRecordSink& sink) const;
 
  private:
+  friend class StepTransaction;
   friend class llmp::test_support::RoutedComponentInspection;
   friend class PromptCompanions;
+  friend class PromptBatchInventory;
+  friend class PromptBatch;
   friend class DecodingOrchestrator;
-  struct AuthorizedDraft {
-    std::uint32_t slot = 0;
-    std::uint16_t stage = 0;
-    std::uint32_t past = 0, rows = 0;
-    FeatureFrom feature;
-    DraftProgressLedger::Unit unit;
-  };
-  std::vector<AuthorizedDraft> authorized_drafts_;
-  enum class CompanionPart : std::uint8_t { kPre, kTarget, kPost };
-  struct CompanionStep {
-    std::uint32_t slot = 0;
-    std::uint16_t stage = 0;
-    std::uint32_t past = 0, rows = 0;
-    CompanionPart part = CompanionPart::kTarget;
-    std::vector<std::pair<std::size_t, DraftProgressLedger::Unit>> units;
-  };
-  // Set only by the shared helper. Public steps cannot acquire a compound
-  // operation's state or overwrite an opted-in consumer's pending taps.
-  std::vector<CompanionStep> companion_steps_;
-  const CompanionStep* CompanionFor(std::uint32_t slot, std::uint16_t stage) const;
+  std::expected<void, StepRefusal> CheckAdmission(const planner::Segment& segment,
+                                                  std::uint16_t stage, bool advance,
+                                                  const StepAuthorization* authorization);
+  const StepAuthorization* CompanionFor(std::span<const StepAuthorization> authorization,
+                                        std::uint32_t slot, std::uint16_t stage) const;
   ModelRunner(PagedNode& node, RunnerConfig config, std::unique_ptr<StepSource> source, int owner,
               std::uint32_t stream);
   static SlotLifecycleOptions LifecycleOptions(ModelRunner* self, SlotLifecycleOptions options);
@@ -500,24 +562,33 @@ class ModelRunner final : public PagedModel {
   // The device copies filling a step's kFeatures input from where each
   // segment's work names it.
   std::expected<std::vector<RunCopy>, std::string> FeatureCopies(
-      const kernels::StepProgram& program, const StepRequest& request) const;
+      const kernels::StepProgram& program, const StepRequest& request,
+      std::span<const StepAuthorization> authorization) const;
   // The device copies carrying each segment's next features (a drafter
   // head's) to its slot's carry on the step's stage.
   std::expected<std::vector<RunCopy>, std::string> CarryCopies(
       const kernels::StepProgram& program, const planner::StepShape& shape) const;
+  Status EmitFeatureCopies(const kernels::StepProgram& program, const StepRequest& request,
+                           std::span<const StepAuthorization> authorization, CopySink& into) const;
+  Status EmitCarryCopies(const kernels::StepProgram& program, const planner::StepShape& shape,
+                         CopySink& into) const;
   std::uint64_t CarryAddress(std::uint32_t slot, std::size_t stage) const;
   void ForgetCarry(std::uint32_t slot);
   struct TapRows {
     std::uint32_t first = 0, count = 0, preceding = 0;
   };
-  TapRows HeldTapRows(std::uint32_t slot, std::size_t stage) const;
+  TapRows HeldTapRows(std::uint32_t slot, std::size_t stage,
+                      const StepAuthorization* authorization = nullptr) const;
   std::expected<std::vector<RunCopy>, std::string> TapCarries(
       const planner::StepShape& shape) const;
+  Status EmitTapCarries(const planner::StepShape& shape, CopySink& into) const;
 
   // A step's plan key: KeyOf a new one (a plan being added), FillKey into
-  // one whose storage a lookup reuses (lookup_key_, ahead_keys_).
-  planner::PlanKey KeyOf(const planner::StepShape& shape) const;
-  void FillKey(const planner::StepShape& shape, planner::PlanKey& key) const;
+  // one whose storage a lookup reuses (lookup_key_).
+  std::expected<planner::PlanKey, std::string> KeyOf(const planner::StepShape& shape) const;
+  void NormalizeKeyShape(const planner::StepShape& shape, planner::StepShape& into) const;
+  Status FillKey(const planner::StepShape& shape, planner::PlanKey& key,
+                 bool fixed_capacity = false) const;
   kernels::Addresses AddressesFor(const planner::StepShape& shape, bool measuring) const;
   std::expected<void, std::string> CheckShape(const planner::StepShape& shape) const;
   // A plan found, or built, bound, checked and cached.
@@ -529,11 +600,18 @@ class ModelRunner final : public PagedModel {
                                                     double seconds,
                                                     const std::function<void()>& transfer);
   std::expected<Copies, std::string> OutputCopies(const kernels::StepProgram& program) const;
+  std::expected<Copies, std::string> OutputCopies(const kernels::StepProgram& program,
+                                                  std::byte* staging, std::uint64_t bytes) const;
   std::vector<catalog::ExtentId> weight_extents() const;
   struct RoutedState;
   struct RoutedFlight;
+  std::expected<std::shared_ptr<RoutedFlight>, std::string> PrepareBatchRouting(
+      Plans::Entry& planned, const kernels::ExecutionResources& resources,
+      std::span<std::byte> pinned, StepRuns& execution, StepPlanRuns& runs,
+      std::size_t input_copies, std::size_t output_copies, std::size_t carry_copies);
   Status BeginRouted(kernels::StepProgram& program, StepPlanRuns& runs, const Copies& inputs,
-                     const Copies& outputs, const Copies& carries, bool capture);
+                     const Copies& outputs, const Copies& carries, bool capture,
+                     std::shared_ptr<RoutedFlight> prepared = {}, const PromptBatch& batch = {});
   void ForgetUnstartedRouted();
   void ForgetCompletedRouting();
   // Private test-support observation of already completed retained host copies.
@@ -541,16 +619,21 @@ class ModelRunner final : public PagedModel {
   std::expected<std::pair<std::uint64_t, std::span<const std::int32_t>>, std::string>
   CompletedRoute(const kernels::RoutedProgram&, std::size_t group) const;
   StepQueued QueueRoutedPrefix(providers::NativeStream native);
-  Status ContinueRouted(RunPath& path);
+  Status ContinueRouted(RunPath& path, std::shared_ptr<StepTransaction> transaction);
   Status MeasureRouting(const kernels::StepProgram& program);
   Status FinishRoutingSetup();
   std::uint64_t RoutedPinnedBytes() const;
   Status CheckRouting(const kernels::StepProgram& program) const;
   Status CheckRoutingSource() const;
+  Status CheckRoutingBindings(const kernels::StepProgram& program) const;
+  Status CheckPorts(const planner::StepShape& shape, const kernels::StepProgram& program) const;
   Status CheckRoutedWeightBindings(std::span<const kernels::RoutedWeight> reads) const;
   std::vector<catalog::ExtentId> base_weight_extents() const;
   std::shared_ptr<RoutedState> routed_;
   std::shared_ptr<RoutedFlight> routed_flight_;
+  // A submitted transaction's paid witnesses survive unproven retirement.
+  // Release clears this only after its existing whole-node drain contract.
+  std::shared_ptr<StepTransaction> step_flight_;
   // Whether a target's verify saves in, or commits, a slot's stage.
   bool Verifies(std::uint32_t slot, std::size_t stage) const;
   // The cells an owner of `past` positions and `rows` rows reads alone on
@@ -558,6 +641,15 @@ class ModelRunner final : public PagedModel {
   std::uint32_t LoneRead(std::size_t stage, std::uint32_t past, std::uint32_t rows) const;
   // Its steps read only the cells before their rows (model::ReadsFrozen).
   bool Frozen(std::size_t stage) const { return frozen_.at(stage); }
+
+  Status RetireAfterFence() override;
+  void RetireRoot();
+  friend class RunnerOwner;
+  struct Lifetime;
+  struct ResourceLease;
+  PromptBatch::Data* batch_active_ = nullptr;  // serialized paid batch, never a caller marker
+  Lifetime* lifetime_ = nullptr;               // owned by the intrusive root containing this runner
+  std::atomic<std::size_t> resource_leases_{0};  // each lease owns its root
 
   PagedNode& node_;
   RunnerConfig config_;
@@ -569,8 +661,7 @@ class ModelRunner final : public PagedModel {
   ProgramLifecycle programs_;
   Plans plans_;
   planner::PlanKey key_base_;
-  planner::PlanKey lookup_key_;                 // Planned's, reused
-  std::array<planner::PlanKey, 8> ahead_keys_;  // RunStep's futures', reused
+  planner::PlanKey lookup_key_;  // Planned's, reused
 
   std::uint64_t activations_needed_ = 0;
   std::uint64_t pool_needed_ = 0;
@@ -629,7 +720,7 @@ class ModelRunner final : public PagedModel {
   void ObservePlanCoverage(const kernels::StepProgram& program);
   void EmitPlanReport(const Plans::Entry& entry, const kernels::PlanRecordSink& sink) const;
   StepLookaheadStats lookahead_;
-  bool setup_ = false, registered_ = false, bound_ = false, released_ = false;
+  bool setup_ = false, registered_ = false, bound_ = false, closing_ = false, released_ = false;
 };
 
 }  // namespace llmp::engine

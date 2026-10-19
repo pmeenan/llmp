@@ -412,15 +412,8 @@ planner::PlanKey ComponentStepSource::KeyBase() const {
   return key;
 }
 
-std::vector<std::uint64_t> ComponentStepSource::ShapeParameters(
-    const planner::StepShape& shape) const {
-  std::vector<std::uint64_t> out;
-  AppendShapeParameters(shape, out);
-  return out;
-}
-
-void ComponentStepSource::AppendShapeParameters(const planner::StepShape& shape,
-                                                std::vector<std::uint64_t>& out) const {
+void ComponentStepSource::EmitShapeParameters(const planner::StepShape& shape,
+                                              model::ShapeParameterSink& out) const {
   if (!o_.require_capture) out.push_back(0x6e6f636170747572ULL);  // uncaptured selection identity
   if (!planner::Disabled(policy_, "state_bank_attention")) {
     out.push_back(0x737461746562616eULL);  // state-bank layout identity, fixed four words
@@ -434,6 +427,51 @@ void ComponentStepSource::AppendShapeParameters(const planner::StepShape& shape,
   for (const auto& in : shaped_)
     for (const auto& segment : shape.segments)
       in.def->shape_parameters(in, segment.rows, segment.past, shape.read_align, out);
+}
+
+std::expected<SpecializationChange, SpecializationError>
+ComponentStepSource::NextSpecializationChange(const SpecializationRequest& request) const {
+  if (!ValidSpecializationRequest(request) || request.shape.stage != o_.stage ||
+      request.context != o_.bindings.state->context || request.shape.read_align == 0 ||
+      request.shape.read_align % 256 != 0 ||
+      (o_.slots != 0 && request.shape.segments.size() > o_.slots))
+    return std::unexpected(SpecializationError::kRequest);
+  const auto& own = request.shape.segments[request.owner];
+  const bool frozen = model::ReadsFrozen(*o_.bindings.state);
+  const auto read_end = std::uint64_t{own.past} + (frozen ? 0U : own.rows);
+  if (own.rows > o_.bindings.state->max_rows || own.read_cells > request.context ||
+      own.read_cells < read_end)
+    return std::unexpected(SpecializationError::kRequest);
+  // Fixed source/capture/layout words cannot change within this immutable
+  // source. Every position-dependent component word is observed through the
+  // SAME callback used by EmitShapeParameters; unknown annotations fail closed.
+  auto sink = model::ShapeParameterSink::Observe(request.after, request.through);
+  for (const auto& in : shaped_) {
+    if (!in.def->shape_parameter_intervals) return SpecializationChange{};
+    in.def->shape_parameters(in, own.rows, own.past, request.shape.read_align, sink);
+  }
+  const auto observed = sink.Next();
+  if (!observed)
+    return std::unexpected(observed.error() == model::ShapeParameterSink::Error::kOverflow
+                               ? SpecializationError::kOverflow
+                               : SpecializationError::kProvider);
+  if (!observed->complete) return SpecializationChange{};
+  SpecializationChange result{.coverage = SpecializationChange::Coverage::kComplete};
+  if (observed->next)
+    result.next = SpecializationBoundary{.position = *observed->next, .fact = observed->word + 1};
+  // read_cells is already part of the actual plan key. The first owner whose
+  // true frontier exceeds its currently padded/common plane changes that key.
+  // For a shared common plane, other owners may remain inside it longer; the
+  // predictor takes the earliest independently authenticated owner cutoff.
+  if (own.read_cells < request.context) {
+    const auto offset = frozen ? 0U : own.rows;
+    const auto next = std::uint64_t{own.read_cells} - offset + 1;
+    if (next > request.after && next <= request.through &&
+        (!result.next || next < result.next->position))
+      result.next =
+          SpecializationBoundary{.position = static_cast<std::uint32_t>(next), .fact = UINT64_MAX};
+  }
+  return result;
 }
 
 planner::StateSpans ComponentStepSource::StateSpans(const planner::StepShape& shape,
@@ -533,6 +571,18 @@ std::expected<std::vector<CommitBuffer>, std::string> ComponentStepSource::Commi
 
 std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepSource::Build(
     const planner::StepShape& shape, const kernels::Addresses& addresses) {
+  return BuildWith(shape, addresses, nullptr);
+}
+std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepSource::BuildPrivate(
+    const planner::StepShape& shape, const kernels::Addresses& addresses,
+    const kernels::ExecutionResources& resources) {
+  if (!o_.backend.owner || resources.parent() != o_.backend.owner.get())
+    return std::unexpected("private step resources belong to another canonical source backend");
+  return BuildWith(shape, addresses, &resources);
+}
+std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepSource::BuildWith(
+    const planner::StepShape& shape, const kernels::Addresses& addresses,
+    const kernels::ExecutionResources* resources) {
   if (auto checked = CheckExecutionShape(shape); !checked) return std::unexpected(checked.error());
   if (shape.stage != o_.stage) {
     return std::unexpected(
@@ -612,9 +662,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
        .observed_bound_model = o_.bound_digest,
        .observed_model_spec = semantic_identity_},
       kernels::TokenLowerInput{*step, shape, o_.bindings.state->context, state_spans},
-      // The effective table also carries its independent construction payer,
-      // including sources without a numerical execution declaration.
-      o_.validate_program, o_.backend.owner);
+      o_.validate_program, o_.backend.owner, resources);
   if (program && compiler) {
     auto held = std::make_shared<SharedCompilerAllowance::Use>(std::move(*compiler));
     if (!(**program).HoldConstruction(std::move(held)))
@@ -694,15 +742,9 @@ Status StagedStepSource::CheckExecutionShape(const planner::StepShape& shape) co
   return stages_[shape.stage]->CheckExecutionShape(shape);
 }
 
-std::vector<std::uint64_t> StagedStepSource::ShapeParameters(
-    const planner::StepShape& shape) const {
-  return shape.stage < stages_.size() ? stages_[shape.stage]->ShapeParameters(shape)
-                                      : std::vector<std::uint64_t>{};
-}
-
-void StagedStepSource::AppendShapeParameters(const planner::StepShape& shape,
-                                             std::vector<std::uint64_t>& out) const {
-  if (shape.stage < stages_.size()) stages_[shape.stage]->AppendShapeParameters(shape, out);
+void StagedStepSource::EmitShapeParameters(const planner::StepShape& shape,
+                                           model::ShapeParameterSink& out) const {
+  if (shape.stage < stages_.size()) stages_[shape.stage]->EmitShapeParameters(shape, out);
 }
 
 std::expected<std::unique_ptr<kernels::StepProgram>, std::string> StagedStepSource::Build(

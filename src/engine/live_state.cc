@@ -414,6 +414,23 @@ std::expected<std::uint64_t, std::string> LiveState::UsedBytesOf(
   return total;
 }
 
+LiveState::Status LiveState::CheckUsed(std::span<const Range> ranges) const {
+  if (auto usable = Usable(); !usable) return usable;
+  if (preparation_) return Error("prepaid state still has a preparation in flight");
+  for (const auto& range : ranges) {
+    if (range.region >= regions_.size()) return Error("prepaid state names no region");
+    const auto& region = regions_[range.region];
+    if (range.offset > region.bytes || range.bytes > region.bytes - range.offset)
+      return Error("prepaid state passes its real layout");
+    if (range.bytes == 0) continue;
+    const auto first = static_cast<std::size_t>(range.offset / kExtent);
+    const auto last = static_cast<std::size_t>((range.offset + range.bytes - 1) / kExtent);
+    for (auto i = first; i <= last; ++i)
+      if (region.used[i] == 0) return Error("prepaid state lost initialized backing");
+  }
+  return {};
+}
+
 std::expected<bool, std::string> LiveState::Use(PagedNode& node, std::span<const Range> ranges,
                                                 const catalog::Closure* keep, bool* over_budget) {
   if (over_budget != nullptr) {

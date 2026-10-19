@@ -1111,10 +1111,9 @@ TEST(Dsv4EngineLowering, EveryServingProgramBindsTheCompleteExpertDomain) {
   roles.installed = installed;
   rt::ComponentBuildOptions options{
       .target_policy = std::nullopt,
-      .shared_route = true,
       .automatic_startup_cap = 110ULL << 30U,
       .shared_compiler = std::make_shared<en::SharedCompilerAllowance>(),
-      .derive_execution_domain = true};
+  };
   options.validate_program = [&seen, check](const llmp::kernels::LowerInput& in,
                                             const llmp::kernels::StepProgram& program) {
     auto checked = check(in, program);

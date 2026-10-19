@@ -58,6 +58,49 @@ using spec::ComponentRef;
 using spec::Param;
 using spec::ParamValue;
 
+TEST(InputValueSinkTest, TypedCapacityAndNarrowingRefuseWithoutWideningOrLosingPadding) {
+  InputValueSink count;
+  count.push_back(7);
+  count.push_back(-3);
+  ASSERT_TRUE(count.Finish());
+  EXPECT_EQ(count.size(), 2U);
+  std::array<std::int32_t, 3> stored{99, 99, 99};
+  InputValueSink padded(std::as_writable_bytes(std::span(stored)), sizeof(std::int32_t), true);
+  padded.push_back(7);
+  padded.push_back(-3);
+  ASSERT_TRUE(padded.Finish());
+  EXPECT_EQ(stored, (std::array<std::int32_t, 3>{7, -3, 0}));
+  InputValueSink exact(std::as_writable_bytes(std::span(stored)), sizeof(std::int32_t));
+  exact.push_back(7);
+  EXPECT_FALSE(exact.Finish());
+  InputValueSink narrow(std::as_writable_bytes(std::span(stored)), sizeof(std::int32_t), true);
+  narrow.push_back(std::int64_t{INT32_MAX} + 1);
+  EXPECT_FALSE(narrow.Finish());
+  EXPECT_EQ(stored, (std::array<std::int32_t, 3>{7, -3, 0}));
+}
+
+TEST(InputValueSinkTest, CanonicalCompressorCountAndFillPreserveIndependentOverlapOrder) {
+  const std::array<std::int64_t, 16> expected{16, 16, 16, 16, 8,  9,  10, 11,
+                                              8,  9,  10, 11, 12, 13, 14, 15};
+  InputValueSink count;
+  ASSERT_TRUE(EmitCompressor(8, 0, 4, true, 8, 16, &count, nullptr, nullptr));
+  ASSERT_EQ(count.size(), expected.size());
+  std::array<std::int64_t, 16> reads{};
+  std::array<std::int64_t, 2> cells{}, starts{};
+  InputValueSink read_sink(std::as_writable_bytes(std::span(reads)), sizeof(std::int64_t));
+  InputValueSink cell_sink(std::as_writable_bytes(std::span(cells)), sizeof(std::int64_t));
+  InputValueSink start_sink(std::as_writable_bytes(std::span(starts)), sizeof(std::int64_t));
+  ASSERT_TRUE(EmitCompressor(8, 0, 4, true, 8, 16, &read_sink, &cell_sink, &start_sink));
+  EXPECT_EQ(reads, expected);
+  EXPECT_EQ(cells, (std::array<std::int64_t, 2>{0, 1}));
+  EXPECT_EQ(starts, (std::array<std::int64_t, 2>{0, 4}));
+  std::array<std::int64_t, 15> short_storage{};
+  InputValueSink short_sink(std::as_writable_bytes(std::span(short_storage)), sizeof(std::int64_t));
+  EXPECT_FALSE(EmitCompressor(8, 0, 4, true, 8, 16, &short_sink, nullptr, nullptr));
+  // Even an omitted read array cannot suppress validation of an invalid cache.
+  EXPECT_FALSE(EmitCompressor(8, 0, 4, true, 8, 1, nullptr, nullptr, nullptr));
+}
+
 constexpr std::uint64_t kExtent = 2ULL << 20U;
 
 ComponentRef C(std::string kind, std::vector<Param> params) {
@@ -151,6 +194,12 @@ TEST(ComponentsTest, GemmaSpecsValidateAgainstTheirTensorTables) {
   EXPECT_TRUE(v2.has_value()) << v2.error();
   const auto v3 = ValidateSpec(Gemma3Spec(), g3.tensors);
   EXPECT_TRUE(v3.has_value()) << v3.error();
+  const auto g2_masks = StageIndexedMasks(Gemma2Spec(), 0);
+  const auto g3_masks = StageIndexedMasks(Gemma3Spec(), 0);
+  ASSERT_TRUE(g2_masks) << g2_masks.error();
+  ASSERT_TRUE(g3_masks) << g3_masks.error();
+  EXPECT_FALSE(*g2_masks);
+  EXPECT_FALSE(*g3_masks);
   // Each against the other's tensors: shapes and roles differ.
   EXPECT_FALSE(ValidateSpec(Gemma2Spec(), g3.tensors));
 }
@@ -1438,10 +1487,17 @@ TEST(ComponentsTest, BuildStepMakesTheGemmaStepsFromTheirSpecs) {
     ASSERT_TRUE(picked.has_value()) << picked.error();
     ASSERT_TRUE(picked->greedy.valid());
     EXPECT_EQ(picked->graph.tensor(picked->greedy).ne(0), 2U);
-    // Refusals: reads that miss the rows, mixed greedy, a stage mismatch.
+    // Mixed head consumers share the same logits; only the owner asking for
+    // device tokens reads Argmax. Lowering must preserve the individual ports.
+    auto mixed = BuildStep(
+        m.spec, 0, {.segments = {Seg(0, 1, 9, 256, 1, true), Seg(1, 1, 3, 256, 1)}}, bindings);
+    ASSERT_TRUE(mixed) << mixed.error();
+    ASSERT_TRUE(mixed->logits.valid());
+    ASSERT_TRUE(mixed->greedy.valid());
+    EXPECT_EQ(mixed->graph.tensor(mixed->logits).ne(1), 2U);
+    EXPECT_EQ(mixed->graph.tensor(mixed->greedy).ne(0), 2U);
+    // Refusals: reads that miss the rows or a stage mismatch.
     EXPECT_FALSE(BuildStep(m.spec, 0, {.segments = {Seg(0, 4, 300, 256, 1)}}, bindings));
-    EXPECT_FALSE(BuildStep(
-        m.spec, 0, {.segments = {Seg(0, 1, 9, 256, 1, true), Seg(1, 1, 3, 256, 1)}}, bindings));
     EXPECT_FALSE(BuildStep(m.spec, 0, {.stage = 1, .segments = {Seg(0, 1, 0, 256, 1)}}, bindings));
     EXPECT_FALSE(BuildStep(m.spec, 0, two, {.tensors = m.source.tensors, .state = nullptr}));
   }

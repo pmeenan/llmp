@@ -48,6 +48,7 @@
 #include "engine/paged_node.h"
 #include "expected_error.h"
 #include "fake_step_source.h"
+#include "kernels/common/lower.h"
 #include "kernels/common/recording_launch.h"
 #include "model/batching.h"
 #include "model/state_contract.h"
@@ -163,6 +164,44 @@ std::int32_t ArgmaxOf(std::span<const float> row) {
   return static_cast<std::int32_t>(std::ranges::max_element(row) - row.begin());
 }
 
+// The same real producer API as an admitted kernel backend, over fake device
+// execution. One prepaid metadata allowance backs every private instance.
+class ScoreBackend final : public kn::BackendOwner {
+ public:
+  explicit ScoreBackend(std::shared_ptr<en::ExecutionMetadataAllowance> allowance)
+      : allowance_(std::move(allowance)) {}
+  const kn::StepBackend& backend() const override { return table_; }
+  std::expected<llmp::execution::BackendDeclaration, std::string> Ready() const override {
+    return llmp::execution::BackendDeclaration{};
+  }
+  bool Charge(std::uint64_t bytes) const override { return allowance_->Charge(bytes); }
+  void Release(std::uint64_t bytes) const override { allowance_->Release(bytes); }
+
+ private:
+  class View final : public kn::ResourceInstance {
+   public:
+    explicit View(kn::ResourceOrigin origin) : ResourceInstance(std::move(origin)) {}
+    kn::StepLaunch& launch() const override { return launch_; }
+    std::expected<std::unique_ptr<kn::StepProgram>, std::string> Lower(
+        const kn::LowerInput&) const override {
+      return std::unexpected("the fake source lowers its own private program");
+    }
+
+   private:
+    mutable kn::RecordingLaunch launch_;
+  };
+  std::expected<std::uint64_t, kn::ResourceFailure> ResourceBytes(
+      kn::ResourceWorkspace) const override {
+    return sizeof(View) + 64;
+  }
+  std::expected<kn::ResourceInstance*, kn::ResourceFailure> MakeResources(
+      kn::ResourceOrigin origin, kn::ResourceWorkspace) const override {
+    return new View(std::move(origin));
+  }
+  std::shared_ptr<en::ExecutionMetadataAllowance> allowance_;
+  kn::StepBackend table_{};
+};
+
 class EngineLlmTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -219,10 +258,26 @@ class EngineLlmTest : public ::testing::Test {
       }
       ts::FakeSourceOptions o;
       for (const auto& s : stages) o.layouts.push_back(s.layout);
-      o.logits = kWidth;
+      o.logits = score_width_;
       o.features = native_outputs_;
+      if (score_workspace_) {
+        o.extra_inputs = [](const pl::StepShape& shape) {
+          if (shape.phase != pl::Phase::kScore) return std::vector<kn::InputSlot>{};
+          // Canonical token padding is real bound input/DMA storage. Its
+          // resource cost is independent of the head-only initial estimate.
+          return std::vector<kn::InputSlot>{{.bytes = std::uint64_t{shape.rows()} * kExtent,
+                                             .segment = 0,
+                                             .kind = kn::InputKind::kTokens}};
+        };
+      }
       o.spec = spec_;
       o.execution_identity = [this] { return execution_identity_; };
+      if (private_score_) {
+        auto allowance = en::ExecutionMetadataAllowance::Admit(node_->catalog(), node_->domain(),
+                                                               kExtent, 128 * kExtent, kExtent);
+        if (!allowance) return std::unexpected(allowance.error());
+        o.private_backend = std::make_shared<ScoreBackend>(std::move(*allowance));
+      }
       auto source = std::make_unique<ts::FakeStepSource>(std::move(o));
       source_ = source.get();
       parts.config.slots = {.model = "ignored",
@@ -234,7 +289,7 @@ class EngineLlmTest : public ::testing::Test {
                             .spill_directory = {},
                             .invalidate = {},
                             .drop_plans = {}};
-      parts.config.setup_shapes = {Wide(0, pl::Phase::kPrefill, kChunk, 256)};
+      parts.config.setup_shapes = {Wide(0, pl::Phase::kPrefill, private_score_ ? 1U : kChunk, 256)};
       if (drafters) {
         parts.config.setup_shapes.push_back(Wide(0, pl::Phase::kVerify, kVerifyRows, 256));
         parts.config.setup_shapes.push_back(Wide(kMtp, pl::Phase::kDraft, kChunk, 512));
@@ -249,6 +304,10 @@ class EngineLlmTest : public ::testing::Test {
       parts.source = std::move(source);
       parts.caps.max_segments = kSlots;
       parts.caps.join_prefill = true;
+      parts.caps.equal_prefill = equal_prefill_;
+      parts.caps.mixed_heads = mixed_prefill_heads_;
+      parts.caps.mixed_greedy = mixed_outputs_;
+      parts.caps.mixed_causal = mixed_causal_;
       if (drafters) {
         parts.mode = {.kind = en::DecodingMode::Kind::kSpeculative,
                       .drafters = {{.stage = kMtp,
@@ -274,7 +333,7 @@ class EngineLlmTest : public ::testing::Test {
         parts.branch_depth = 3;
       }
       parts.wave_mode = wave_mode_;
-      parts.logit_width = kWidth;
+      parts.logit_width = score_width_;
       parts.device_greedy = true;
       parts.prefill = {.chunk_rows = kChunk,
                        .lookahead = 2,
@@ -429,6 +488,48 @@ class EngineLlmTest : public ::testing::Test {
     return image;
   }
 
+  struct CausalSessions {
+    const std::vector<std::int32_t> original = Prompt(17, 3), incoming = Prompt(5, 9);
+    rt::GenerateOptions options;
+    rt::Generation out;
+    std::unique_ptr<rt::Llm::PromptSession> prompt;
+    std::unique_ptr<rt::Llm::GenerationSession> generation;
+    CausalSessions() {
+      options.max_tokens = 4;
+      options.stop = false;
+    }
+    ~CausalSessions() {
+      if (prompt) {
+        if (!prompt->done()) prompt->Cancel();
+        (void)prompt->Finish();
+      }
+      if (generation) {
+        if (!generation->done()) generation->Cancel();
+        (void)generation->Finish();
+      }
+    }
+  };
+  std::expected<std::unique_ptr<CausalSessions>, std::string> ReadyCausal() {
+    auto sessions = std::make_unique<CausalSessions>();
+    std::vector<float> head;
+    auto warm = BranchAt(0).Prefill(sessions->original, head);
+    if (!warm) return std::unexpected(Why(warm));
+    auto generation = BranchAt(0).BeginGeneration(head, sessions->options, sessions->out);
+    if (!generation) return std::unexpected(Failed(generation).value_or("generation"));
+    sessions->generation = std::move(*generation);
+    auto prompt = BranchAt(1).BeginPrompt(sessions->incoming);
+    if (!prompt) return std::unexpected(Failed(prompt).value_or("prompt"));
+    sessions->prompt = std::move(*prompt);
+    while (!sessions->prompt->done()) {
+      const auto next = sessions->prompt->NextUnit();
+      if (!next) return std::unexpected(Failed(next).value_or("unit"));
+      if (next->phase == rt::Llm::PromptSession::Phase::kChunk) break;
+      auto advanced = sessions->prompt->Advance();
+      if (!advanced) return std::unexpected(Why(advanced));
+    }
+    return sessions;
+  }
+
   fs::path root_;
   llmp::config::RuntimeRoles roles_;
   llmp::config::ModelEntry entry_;
@@ -439,14 +540,323 @@ class EngineLlmTest : public ::testing::Test {
   std::expected<std::optional<llmp::base::Sha256Digest>, std::string> execution_identity_{
       std::nullopt};
   std::optional<llmp::execution::AdaptiveWaveMode> wave_mode_;
-  bool native_outputs_ = false;
+  bool native_outputs_ = false, mixed_causal_ = false;
+  bool private_score_ = false, score_workspace_ = false, mixed_outputs_ = false;
+  std::uint32_t score_width_ = kWidth;
   bool kept_progress_ = false;
+  bool equal_prefill_ = false, mixed_prefill_heads_ = false;
   bool save_checkpoints_ = true;  // Llm::set_turn_checkpoints at Start
 };
 
 // Snapshot payload and variable metadata have one catalog charge. These are
 // integration controls over the real slot copy/restore path on the fake node;
 // no test receives a writable pointer into the opaque snapshot.
+TEST_F(EngineLlmTest, MixedVerifyKeepsEachOwnersDeviceOrSampledOutputAndCompletedChain) {
+  native_outputs_ = true;
+  mixed_outputs_ = true;
+  Start(true, true);
+  const std::array prompts{Prompt(17, 3), Prompt(23, 5)};
+  Open({&BranchAt(0), &BranchAt(1)});
+  std::array<rt::Generation, 2> outputs;
+  std::array<rt::GenerateOptions, 2> owned_options{};
+  const auto finish = [](rt::Llm::GenerationSession* session) {
+    if (!session) return;
+    if (!session->done()) session->Cancel();
+    (void)session->Finish();
+    delete session;
+  };
+  std::array<std::unique_ptr<rt::Llm::GenerationSession, decltype(finish)>, 2> sessions;
+  for (std::size_t i = 0; i < 2; ++i) {
+    std::vector<float> head;
+    std::uint32_t reused = 0;
+    ASSERT_TRUE(BranchAt(i).PreparePrompt(prompts[i], 0, head, reused));
+    auto& options = owned_options[i];
+    options.max_tokens = 16;
+    options.stop = false;
+    if (i == 1)
+      options.sampling =
+          llmp::execution::SamplingParams{.temperature = 1, .top_k = 1, .top_p = 1, .min_p = 0};
+    auto opened = BranchAt(i).BeginGeneration(head, options, outputs[i]);
+    ASSERT_TRUE(opened);
+    sessions[i].reset(opened->release());
+  }
+  for (unsigned guard = 0; guard < 32; ++guard) {
+    std::vector<rt::Llm::GenerationSession*> active;
+    for (auto& session : sessions)
+      if (!session->done()) active.push_back(session.get());
+    if (active.empty()) break;
+    ASSERT_TRUE(llm_->RunGenerationWave(active));
+  }
+  for (std::size_t i = 0; i < sessions.size(); ++i) {
+    ASSERT_TRUE(sessions[i]->done());
+    ASSERT_TRUE(sessions[i]->Finish());
+    EXPECT_EQ(outputs[i].tokens, Chain(prompts[i], 16));
+  }
+  EXPECT_TRUE(std::ranges::any_of(source_->built(), [](const auto& built) {
+    return !built.measuring && built.shape.phase == pl::Phase::kVerify &&
+           built.shape.segments.size() == 2 &&
+           built.shape.segments[0].greedy != built.shape.segments[1].greedy;
+  }));
+  Close();
+}
+
+TEST_F(EngineLlmTest, MixedCausalUnitKeepsEachRoleResultHistoryAndNextStep) {
+  mixed_causal_ = mixed_outputs_ = true;
+  Start(false, false);
+  Open({&BranchAt(0), &BranchAt(1)});
+  auto ready = ReadyCausal();
+  ASSERT_TRUE(ready) << Failed(ready).value_or("");
+  auto& sessions = **ready;
+  const auto before = source_->executed();
+  const std::array prompts{sessions.prompt.get()};
+  const std::array generations{sessions.generation.get()};
+  const std::array<rt::PrefillGoOn, 1> callbacks{};
+  ASSERT_TRUE(llm_->RunCausalWave(prompts, callbacks, generations));
+  EXPECT_EQ(source_->executed(), before + 1);
+  EXPECT_EQ(llm_->counts().joined_causal_steps, 1U);
+  EXPECT_EQ(llm_->counts().joined_causal_rows, sessions.incoming.size() + 1);
+  EXPECT_EQ(BranchAt(1).history(), sessions.incoming);
+  EXPECT_EQ(sessions.out.tokens, Chain(sessions.original, 2));
+  EXPECT_EQ(llm_->runner().slots().positions(0), sessions.original.size() + 1);
+  EXPECT_EQ(llm_->runner().slots().positions(1), sessions.incoming.size());
+  EXPECT_TRUE(std::ranges::any_of(source_->built(), [](const auto& built) {
+    return !built.measuring && built.shape.phase == pl::Phase::kPrefill &&
+           built.shape.segments.size() == 2 &&
+           built.shape.segments[0].origin_phase == pl::Phase::kDecode &&
+           built.shape.segments[0].greedy && !built.shape.segments[1].greedy;
+  }));
+  ASSERT_TRUE(sessions.prompt->done());
+  const auto last = sessions.prompt->last();
+  ASSERT_TRUE(sessions.prompt->Finish());
+  while (!sessions.generation->done()) ASSERT_TRUE(llm_->RunGenerationWave(generations));
+  ASSERT_TRUE(sessions.generation->Finish());
+  EXPECT_EQ(sessions.out.tokens, Chain(sessions.original, sessions.options.max_tokens));
+  rt::Generation next;
+  ASSERT_TRUE(BranchAt(1).Generate(last, sessions.options, next));
+  EXPECT_EQ(next.tokens, Chain(sessions.incoming, sessions.options.max_tokens));
+  Close();
+}
+
+TEST_F(EngineLlmTest, MixedCausalPromptCancellationLeavesItsPeerAndCursorExact) {
+  mixed_causal_ = mixed_outputs_ = true;
+  Start(false, false);
+  Open({&BranchAt(0), &BranchAt(1)});
+  auto ready = ReadyCausal();
+  ASSERT_TRUE(ready) << Failed(ready).value_or("");
+  auto& sessions = **ready;
+  const auto before = source_->executed();
+  unsigned calls = 0;
+  const std::array<rt::PrefillGoOn, 1> callbacks{[&](std::uint32_t rows) {
+    EXPECT_EQ(rows, sessions.incoming.size());
+    ++calls;
+    return false;
+  }};
+  const std::array prompts{sessions.prompt.get()};
+  const std::array generations{sessions.generation.get()};
+  ASSERT_TRUE(llm_->RunCausalWave(prompts, callbacks, generations));
+  EXPECT_EQ(calls, 1U);
+  EXPECT_EQ(source_->executed(), before + 1);
+  EXPECT_TRUE(sessions.prompt->done());
+  EXPECT_EQ(llm_->runner().slots().positions(1), 0U);
+  EXPECT_TRUE(BranchAt(1).history().empty());
+  EXPECT_EQ(sessions.out.tokens, Chain(sessions.original, 2));
+  ASSERT_TRUE(sessions.prompt->Finish());
+  while (!sessions.generation->done()) ASSERT_TRUE(llm_->RunGenerationWave(generations));
+  ASSERT_TRUE(sessions.generation->Finish());
+  EXPECT_EQ(sessions.out.tokens, Chain(sessions.original, sessions.options.max_tokens));
+  EXPECT_EQ(calls, 1U);
+  Close();
+}
+
+TEST_F(EngineLlmTest, MixedCausalUnknownWorkPublishesNeitherOwnersOutputs) {
+  mixed_causal_ = mixed_outputs_ = true;
+  Start(false, false);
+  Open({&BranchAt(0), &BranchAt(1)});
+  auto ready = ReadyCausal();
+  ASSERT_TRUE(ready) << Failed(ready).value_or("");
+  auto& sessions = **ready;
+  source_->options().positioned = true;
+  source_->options().fail_run = kn::StepError::kUnknown;
+  source_->options().fail_phase = pl::Phase::kPrefill;
+  const auto before = source_->executed();
+  const auto output_before = sessions.out.tokens;
+  const std::array prompts{sessions.prompt.get()};
+  const std::array generations{sessions.generation.get()};
+  const std::array<rt::PrefillGoOn, 1> callbacks{};
+  (void)llm_->RunCausalWave(prompts, callbacks, generations);
+  EXPECT_EQ(source_->executed(), before + 1);  // Real queued numeric fault fired.
+  EXPECT_FALSE(sessions.prompt->last_unit_result());
+  EXPECT_EQ(sessions.out.tokens, output_before);
+  EXPECT_FALSE(llm_->runner().slots().usable(0));
+  EXPECT_FALSE(llm_->runner().slots().usable(1));
+  EXPECT_TRUE(sessions.prompt->done());
+  EXPECT_TRUE(sessions.generation->done());
+  EXPECT_FALSE(sessions.prompt->Finish());
+  EXPECT_FALSE(sessions.generation->Finish());
+  sessions.prompt.reset();
+  sessions.generation.reset();
+  source_->options().fail_run.reset();
+  std::ignore = node_->EndRequest(0);
+  ASSERT_TRUE(node_->Job(
+      llmp::catalog::Closure{},
+      [](llmp::providers::NativeStream) { return llmp::scheduler::JobResult::kQueued; },
+      "fencing the test's stream", 0));
+  ASSERT_TRUE(llm_->RecoverInPlace());
+}
+
+TEST_F(EngineLlmTest, ScoringBatchesGrowPastDecodeCapacityWithoutLosingAnyLikelihoodRow) {
+  private_score_ = true;
+  Start(false, false);
+  const auto prompt = Prompt(2 * kChunk + 5, 3);
+  auto& branch = BranchAt(0);
+  Open({&branch});
+  std::vector<float> last;
+  std::size_t scores = 0;
+  rt::PrefillRun run;
+  const auto scored = branch.ScorePrompt(
+      prompt, last,
+      [&](std::int32_t token, std::span<const float> row) {
+        EXPECT_EQ(token, prompt[scores + 1]);
+        EXPECT_EQ(ArgmaxOf(row),
+                  ts::FakeLogit(prompt[scores], static_cast<std::int32_t>(scores), kWidth));
+        ++scores;
+        return true;
+      },
+      {}, &run);
+  ASSERT_TRUE(scored) << Why(scored);
+  EXPECT_EQ(scores, prompt.size() - 1);
+  EXPECT_EQ(run.end, prompt.size());
+  EXPECT_EQ(run.published, prompt.size() - 1);
+  EXPECT_LT(run.chunks, prompt.size());
+  EXPECT_EQ(branch.history(), prompt);
+  EXPECT_EQ(ArgmaxOf(last),
+            ts::FakeLogit(prompt.back(), static_cast<std::int32_t>(prompt.size() - 1), kWidth));
+  EXPECT_TRUE(std::ranges::any_of(source_->built(), [](const auto& build) {
+    return build.shape.phase == pl::Phase::kScore && build.shape.segments.front().rows > 1;
+  }));
+  Close();
+}
+
+TEST_F(EngineLlmTest, ScoringCapacityBackoffRetriesWholeUntouchedBatchAndPublishesAllRows) {
+  private_score_ = true;
+  score_workspace_ = true;
+  // Actual F32 head bytes, not an injected refusal or an invented row quota.
+  // The ordinary one-row-per-owner setup fits; larger batches must compete
+  // for the same 128-extent node budget as device, DMA and owned outputs.
+  score_width_ = 1U << 20;
+  Start(false, false);
+  const auto prompt = Prompt(kChunk + 5, 9);
+  auto& branch = BranchAt(0);
+  Open({&branch});
+  std::size_t scores = 0;
+  auto session =
+      branch.BeginScoringPrompt(prompt, [&](std::int32_t token, std::span<const float> row) {
+        EXPECT_EQ(token, prompt[scores + 1]);
+        EXPECT_EQ(row.size(), score_width_);
+        EXPECT_EQ(ArgmaxOf(row),
+                  ts::FakeLogit(prompt[scores], static_cast<std::int32_t>(scores), score_width_));
+        ++scores;
+        return true;
+      });
+  ASSERT_TRUE(session);
+  ASSERT_TRUE((*session)->Advance());  // empty-state reuse
+  const auto queued = source_->queued();
+  ASSERT_TRUE((*session)->Advance()) << Why((*session)->last_unit_result());
+  std::uint32_t measured = 0;
+  for (const auto& built : source_->built())
+    if (built.shape.phase == pl::Phase::kScore)
+      measured = std::max(measured, built.shape.segments.front().rows);
+  EXPECT_GT(measured, (*session)->run().end);
+  EXPECT_GT((*session)->run().end, 1U);
+  EXPECT_EQ(source_->queued(), queued + 1);  // refused candidates had no numeric child
+  EXPECT_EQ(source_->executed(), queued + 1);
+  while (!(*session)->done()) ASSERT_TRUE((*session)->Advance());
+  ASSERT_TRUE((*session)->Finish());
+  EXPECT_EQ(scores, prompt.size() - 1);
+  EXPECT_EQ(branch.history(), prompt);
+  EXPECT_FALSE(branch.capacity_refused());
+  Close();
+}
+
+TEST_F(EngineLlmTest, ScoringSourceRefusalIsNotRetriedAsCapacityOrPublished) {
+  private_score_ = true;
+  Start(false, false);
+  const auto prompt = Prompt(kChunk + 5, 4);
+  auto& branch = BranchAt(0);
+  Open({&branch});
+  source_->options().refuse_build = [](const pl::StepShape& shape) {
+    return shape.phase == pl::Phase::kScore;
+  };
+  std::uint32_t published = 0;
+  std::vector<float> last;
+  const auto queued = source_->queued();
+  auto result = branch.ScorePrompt(prompt, last, [&](std::int32_t, std::span<const float>) {
+    ++published;
+    return true;
+  });
+  ASSERT_FALSE(result);
+  EXPECT_EQ(published, 0U);
+  EXPECT_EQ(source_->queued(), queued);
+  EXPECT_TRUE(branch.history().empty());
+  EXPECT_FALSE(branch.capacity_refused());
+  EXPECT_EQ(std::ranges::count_if(
+                source_->built(),
+                [](const auto& built) { return built.shape.phase == pl::Phase::kScore; }),
+            1);
+  source_->options().refuse_build = {};
+  ASSERT_TRUE(branch.Prefill(prompt, last));
+  EXPECT_EQ(branch.history(), prompt);  // old model closure is still usable
+  Close();
+}
+
+TEST_F(EngineLlmTest, ScoringCallbackStopKeepsRetiredRowsThroughSpillAndResumedPublication) {
+  private_score_ = true;
+  Start(false, false);
+  const auto prompt = Prompt(2 * kChunk + 5, 7);
+  auto& branch = BranchAt(0);
+  Open({&branch});
+  std::vector<std::int32_t> ids;
+  const auto callback = [&](std::int32_t token, std::span<const float> row) {
+    EXPECT_EQ(token, prompt[ids.size() + 1]);
+    EXPECT_EQ(ArgmaxOf(row),
+              ts::FakeLogit(prompt[ids.size()], static_cast<std::int32_t>(ids.size()), kWidth));
+    ids.push_back(token);
+    return ids.size() != 2;
+  };
+  auto first = branch.BeginScoringPrompt(prompt, callback);
+  ASSERT_TRUE(first) << ts::Failed(first).value_or("");
+  while (!(*first)->done()) ASSERT_TRUE((*first)->Advance());
+  ASSERT_TRUE((*first)->Finish());
+  EXPECT_TRUE((*first)->run().stopped);
+  EXPECT_EQ((*first)->run().published, 2U);
+  EXPECT_GT((*first)->run().end, 2U);
+  const auto end = (*first)->run().end;
+  const auto queued = source_->queued();
+  EXPECT_EQ(branch.history().size(), end);
+  first->reset();
+  Close();
+  branch.HoldContinuation();
+  ASSERT_TRUE(llm_->SpillIdle(branch));
+  Open({&branch});
+  auto resumed = branch.BeginScoringPrompt(prompt, callback, true);
+  ASSERT_TRUE(resumed);
+  ASSERT_TRUE((*resumed)->Advance());  // actual state restore/reuse
+  const auto after_restore = source_->queued();
+  ASSERT_FALSE((*resumed)->done());
+  const auto next = (*resumed)->NextUnit();
+  ASSERT_TRUE(next);
+  EXPECT_EQ(next->phase, rt::Llm::PromptSession::Phase::kScores);
+  ASSERT_TRUE((*resumed)->Advance());  // publish remaining owned rows, no native work
+  EXPECT_EQ(source_->queued(), after_restore);
+  EXPECT_GE(after_restore, queued);
+  while (!(*resumed)->done()) ASSERT_TRUE((*resumed)->Advance());
+  ASSERT_TRUE((*resumed)->Finish());
+  EXPECT_EQ(ids.size(), prompt.size() - 1);
+  EXPECT_EQ(branch.history(), prompt);
+  Close();
+  branch.ReleaseContinuation();
+}
+
 TEST_F(EngineLlmTest, AnUnbuiltStateEstimateIsAnErrorNotZeroBytes) {
   en::PagedNode node(en::NodeSettings{});
   rt::EngineLlm model(node, entry_, Settings(false), roles_, 0, Build(false));
@@ -469,9 +879,15 @@ TEST_F(EngineLlmTest, PostFactoryExecutionSealGrowthRemainsInStartupAccounting) 
         const override {
       return source_->ExecutionIdentity();
     }
-    std::vector<std::uint64_t> ShapeParameters(const pl::StepShape& shape) const override {
-      return source_->ShapeParameters(shape);
+    void EmitShapeParameters(const pl::StepShape& shape,
+                             llmp::model::ShapeParameterSink& sink) const override {
+      source_->EmitShapeParameters(shape, sink);
     }
+    std::expected<en::SpecializationChange, en::SpecializationError> NextSpecializationChange(
+        const en::SpecializationRequest& request) const override {
+      return source_->NextSpecializationChange(request);
+    }
+
     std::expected<std::unique_ptr<kn::StepProgram>, std::string> Build(
         const pl::StepShape& shape, const kn::Addresses& addresses) override {
       return source_->Build(shape, addresses);
@@ -800,6 +1216,7 @@ TEST_F(EngineLlmTest, PromptAndGenerationWavesJoinTheSlots) {
 // apart) builds both of those steps while it runs, so neither is planned
 // on its own first run; the prompts still end on the chain.
 TEST_F(EngineLlmTest, UnequalLastChunksAreBuiltAhead) {
+  equal_prefill_ = true;
   Start(false, false);
   const std::array<std::vector<std::int32_t>, 2> prompts = {Prompt(kChunk + 20, 3),
                                                             Prompt(kChunk + 40, 17)};
@@ -1966,6 +2383,21 @@ TEST_F(EngineLlmTest, SetupRefusesWhatItCannotBuild) {
   EXPECT_FALSE(refused.has_paged());
 }
 
+// Setup-only controls still own real runner mappings, staging and callbacks.
+// Retire through the node while the serving adapter remains alive, including
+// an early ASSERT return; dropping the adapter never authenticates a fence.
+class SetupNodeRetirement {
+ public:
+  explicit SetupNodeRetirement(en::PagedNode& owner) : node_(owner) {}
+  ~SetupNodeRetirement() {
+    const auto retired = node_.TearDown({});
+    EXPECT_TRUE(retired) << Why(retired);
+  }
+
+ private:
+  en::PagedNode& node_;
+};
+
 // A request's thinking when it names none: the slice's default (DeepSeek
 // V4's on, as its M3 class served it), the template's own when unset, and
 // off where thinking is not served; a request's own choice is kept.
@@ -1997,6 +2429,7 @@ TEST_F(EngineLlmTest, ConversationDefaultsFollowTheChatSlice) {
           parts->chat.default_thinking = c.default_thinking;
           return parts;
         });
+    const SetupNodeRetirement retirement(node);
     const auto set = llm.Setup();
     ASSERT_TRUE(set) << Why(set);
     llmp::chat::Conversation conversation;
@@ -2041,6 +2474,7 @@ TEST_F(EngineLlmTest, CompleteDraftScheduleReservesOnlyItsEnabledDepth) {
           parts->config.slots.stages.front().layout.context = c.target_context;
           return parts;
         });
+    const SetupNodeRetirement retirement(node);
     const auto set = llm.Setup();
     if (c.usable == 0) {
       ASSERT_FALSE(set);
@@ -2124,6 +2558,150 @@ TEST_F(EngineLlmTest, NativeDraftAndVerifyTokensPreserveRowsAndSnapshotContinuat
   const auto changed = Turn(0, Prompt(37, 11), 18);
   EXPECT_EQ(changed.out.tokens, Chain(Prompt(37, 11), 18));
   EXPECT_NE(changed.out.tokens, tokens.out.tokens);
+}
+
+TEST_F(EngineLlmTest, FreshPromptPredictionUsesFutureSamplingAndReplaysTheCorrectDecodePlan) {
+  Start(false, false);
+  Open({&BranchAt(0), &BranchAt(1)});
+  for (std::uint32_t owner = 0; owner < 2; ++owner) {
+    const bool sampled = owner == 1;
+    rt::GenerateOptions options;
+    options.max_tokens = 3;
+    options.stop = false;
+    if (sampled)
+      options.sampling =
+          llmp::execution::SamplingParams{.temperature = 1, .top_k = 1, .top_p = 1, .min_p = 0};
+    auto prompt = BranchAt(owner).BeginPrompt(Prompt(kChunk, static_cast<std::int32_t>(owner + 1)));
+    ASSERT_TRUE(prompt) << Failed(prompt).value_or("");
+    (*prompt)->SetContinuationRows(rt::PromptTargetRows(options.max_tokens, 0, false), sampled);
+    while (!(*prompt)->done()) ASSERT_TRUE((*prompt)->Advance());
+    auto head = (*prompt)->last();
+    ASSERT_TRUE((*prompt)->Finish());
+    bool predicted = false;
+    for (const auto& built : source_->built()) {
+      if (built.measuring || built.shape.phase != pl::Phase::kDecode ||
+          built.shape.segments.size() != 1 || built.shape.segments[0].slot != owner)
+        continue;
+      predicted = true;
+      EXPECT_EQ(built.shape.segments[0].greedy, !sampled);
+    }
+    ASSERT_TRUE(predicted);
+    const auto before = source_->built().size();
+    rt::Generation out;
+    auto generation = BranchAt(owner).BeginGeneration(head, options, out);
+    ASSERT_TRUE(generation) << Failed(generation).value_or("");
+    const std::array<rt::Llm::GenerationSession*, 1> one{generation->get()};
+    ASSERT_TRUE(llm_->RunGenerationWave(one));
+    EXPECT_EQ(source_->built().size(), before);
+    if (!(*generation)->done()) (*generation)->Cancel();
+    ASSERT_TRUE((*generation)->Finish());
+  }
+  Close();
+}
+
+TEST_F(EngineLlmTest, PromptPolicyObservesTheActivePeersBudgetAfterItsCompletedApply) {
+  Start(false, false);
+  Open({&BranchAt(0), &BranchAt(1)});
+  std::vector<float> head;
+  ASSERT_TRUE(BranchAt(0).Prefill(Prompt(kChunk, 1), head));
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.stop = false;
+  rt::Generation out;
+  auto generation = BranchAt(0).BeginGeneration(head, options, out);
+  ASSERT_TRUE(generation) << Failed(generation).value_or("");
+  const std::array<rt::Llm::GenerationSession*, 1> one{generation->get()};
+  ASSERT_TRUE(llm_->RunGenerationWave(one));
+  ASSERT_EQ(out.tokens.size(), 2U);  // Two target rows remain before PrepareStep is called again.
+  auto prompt = BranchAt(1).BeginPrompt(Prompt(kChunk, 2));
+  ASSERT_TRUE(prompt) << Failed(prompt).value_or("");
+  (*prompt)->SetContinuationRows(5, false);
+  while (!(*prompt)->done()) ASSERT_TRUE((*prompt)->Advance());
+  ASSERT_TRUE((*prompt)->Finish());
+  bool joined = false, actual_tail = false;
+  for (const auto& built : source_->built()) {
+    if (built.measuring || built.shape.phase != pl::Phase::kDecode) continue;
+    if (built.shape.segments.size() == 2) {
+      joined = true;
+      EXPECT_EQ(built.shape.segments[0].past, kChunk + 1);
+      EXPECT_EQ(built.shape.segments[1].past, kChunk);
+    } else if (built.shape.segments.size() == 1 && built.shape.segments[0].slot == 1 &&
+               built.shape.segments[0].past == kChunk + 2) {
+      actual_tail = true;
+    }
+  }
+  EXPECT_TRUE(joined);
+  EXPECT_TRUE(actual_tail);
+  (*generation)->Cancel();
+  ASSERT_TRUE((*generation)->Finish());
+  Close();
+}
+
+TEST_F(EngineLlmTest, OneTokenFreshPromptDoesNotBuildUnusedPostPrefillWork) {
+  Start(false, false);
+  Open({&BranchAt(0)});
+  auto prompt = BranchAt(0).BeginPrompt(Prompt(kChunk, 1));
+  ASSERT_TRUE(prompt) << Failed(prompt).value_or("");
+  (*prompt)->SetContinuationRows(rt::PromptTargetRows(1, 0, false), false);
+  while (!(*prompt)->done()) ASSERT_TRUE((*prompt)->Advance());
+  ASSERT_TRUE((*prompt)->Finish());
+  for (const auto& built : source_->built()) {
+    if (!built.measuring) EXPECT_NE(built.shape.phase, pl::Phase::kDecode);
+  }
+  Close();
+}
+
+TEST_F(EngineLlmTest, CapabilityAdmittedRaggedPromptSessionsUseOneActualSharedStep) {
+  Start(false, false);
+  Open({&BranchAt(0), &BranchAt(1)});
+  EXPECT_TRUE(llm_->CompatiblePrefill(0, 1, 0, 2));
+  EXPECT_FALSE(llm_->CompatiblePrefill(0, 1, 0, 2, true, false));
+  std::array<std::unique_ptr<rt::Llm::PromptSession>, 2> prompts;
+  const std::array<std::uint32_t, 2> lengths{3, 5};
+  for (std::size_t i = 0; i < prompts.size(); ++i) {
+    auto begun = BranchAt(i).BeginPrompt(Prompt(lengths[i], static_cast<std::int32_t>(i + 1)));
+    ASSERT_TRUE(begun);
+    prompts[i] = std::move(*begun);
+    while (!prompts[i]->done()) {
+      auto next = prompts[i]->NextUnit();
+      ASSERT_TRUE(next);
+      if (next->phase == rt::Llm::PromptSession::Phase::kChunk) break;
+      ASSERT_TRUE(prompts[i]->Advance());
+    }
+  }
+  ASSERT_TRUE(prompts[0]->CanJoin(*prompts[1]));
+  const std::array<rt::Llm::PromptSession*, 2> both{prompts[0].get(), prompts[1].get()};
+  const std::array<rt::PrefillGoOn, 2> go_on{};
+  ASSERT_TRUE(llm_->RunPromptWave(both, go_on));
+  EXPECT_EQ(llm_->counts().joined_prefill_steps, 1U);
+  for (std::size_t i = 0; i < prompts.size(); ++i) {
+    EXPECT_TRUE(prompts[i]->done());
+    EXPECT_EQ(llm_->runner().slots().positions(static_cast<std::uint32_t>(i)), lengths[i]);
+    ASSERT_TRUE(prompts[i]->Finish());
+  }
+  Close();
+}
+
+TEST(EngineLlmPartsTest, UninstalledPartsDestroyConfigBorrowersBeforeTheirSourceOwner) {
+  struct Owner {
+    explicit Owner(bool* value) : alive(value) { *alive = true; }
+    ~Owner() { *alive = false; }
+    bool* alive;
+  };
+  struct Borrower {
+    const bool* alive;
+    bool* observed;
+    ~Borrower() { *observed = *alive; }
+  };
+  bool owner_lived = false, alive = false;
+  {
+    llmp::runtime::EngineLlmParts parts;
+    auto owner = std::make_shared<Owner>(&alive);
+    auto borrowed = std::make_shared<Borrower>(&alive, &owner_lived);
+    parts.keep = owner;
+    parts.config.retire = [borrowed] {};
+  }
+  EXPECT_TRUE(owner_lived);
 }
 
 }  // namespace

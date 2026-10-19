@@ -1151,6 +1151,10 @@ TEST(ComponentsDsv4Test, IndexerPolicyKeepsMasksForUnselectedCompressedAttention
   ASSERT_TRUE(values) << values.error();
   auto spec = spec::Synthesize(spec::mappings::Dsv4Mapping(), source, *values);
   ASSERT_TRUE(spec) << spec.error();
+  const auto indexed = StageIndexedMasks(*spec, 0);
+  ASSERT_TRUE(indexed) << indexed.error();
+  EXPECT_TRUE(*indexed);
+  EXPECT_FALSE(StageIndexedMasks(*spec, spec->stages.size()));
   auto layout = StageLayout(*spec, 0, 257, 8);
   ASSERT_TRUE(layout) << layout.error();
   const Bindings bindings{.tensors = source.tensors, .state = &*layout};

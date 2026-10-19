@@ -113,14 +113,12 @@ constexpr std::array kPolicies = {
 };
 
 // Its bounded serving route: 4,096 tokens by default (a wider context is an
-// explicit opt-in for exactly one owner), at most two owners, no drafter.
+// explicit opt-in); actual component capabilities bound owners. No drafter.
 constexpr ServingRecipe kServing{.family = "Gemma",
                                  .name = "Gemma3",
                                  .bounded = true,
                                  .prefill_rows = 128,
                                  .default_context = 4096,
-                                 .max_owners = 2,
-                                 .wide_context = 4096,
                                  .drafters = false};
 
 constexpr Mapping kMapping{

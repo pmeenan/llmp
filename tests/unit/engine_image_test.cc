@@ -287,11 +287,13 @@ struct Life {
       std::memcpy(data.data(), values.data(), data.size());
       return {};
     };
-    parts.prepare_request = [this](const rt::ImageInput& input, const llmp::base::Sha256Digest&)
+    parts.prepare_request =
+        [this](const rt::ImageInput& input, const llmp::base::Sha256Digest& layout)
         -> std::expected<std::variant<rt::ImageRequest, rt::ImageGeometry>, std::string> {
       ++trace->prepared_requests;
       if (input.prompt == "refuse") return std::unexpected("paid source refused input");
       auto request = Request(input.prompt == "changed" ? 9.F : 1.F);
+      if (request.layout != layout) return std::unexpected("request layout digest mismatch");
       if (!input.output.empty())
         request.finish = [](std::span<const std::byte>) -> std::expected<std::string, std::string> {
           return std::unexpected("completed host export refused");
@@ -1000,10 +1002,17 @@ TEST_F(EngineImageTest, ServingRequestPreparationIsIdleAtomicAndReusesCompletedO
   EXPECT_FALSE(life->image->PrepareRequest({.prompt = "changed"}));
   EXPECT_EQ(life->trace->prepared_requests, calls);
   ASSERT_TRUE(life->image->Finish(original));
+  EXPECT_EQ(life->trace->construction_paid, 2U);
+  EXPECT_EQ(life->trace->live_programs, 2U);
   ASSERT_TRUE(life->image->PrepareRequest({.prompt = "changed"}));
+  EXPECT_EQ(life->trace->construction_paid, 2U);
+  EXPECT_EQ(life->trace->live_programs, 2U);
   ASSERT_TRUE(life->image->FirstOutput(first));
   ASSERT_TRUE(life->image->Finish(changed));
   EXPECT_NE(original, changed);
+  EXPECT_EQ(life->trace->construction_paid, 2U);
+  EXPECT_EQ(life->trace->live_programs, 2U);
+  EXPECT_EQ(life->trace->launch->captures(), 2U);
   const auto captures = life->trace->launch->captures();
   const auto occupied = life->node.catalog().OccupancyOf(life->node.domain()).Total();
   EXPECT_FALSE(life->image->PrepareRequest({.prompt = "refuse"}));
@@ -1129,6 +1138,68 @@ TEST_F(EngineImageTest, QueuedFailureQuarantinesTheWholeFlightUntilPositiveDrain
   EXPECT_EQ(life->trace->live_programs, 2U);
   // TearDown owns the positive drain in the common fixture cleanup. No failed
   // completion or destruction is interpreted as a retirement certificate.
+}
+TEST_F(EngineImageTest, NodeRetainsUnknownStagesAfterTheRuntimeAdapterIsDropped) {
+  ASSERT_TRUE(life->Start(path));
+  life->trace->fail_second = true;
+  std::string value;
+  ASSERT_TRUE(life->image->FirstOutput(value));
+  ASSERT_FALSE(life->image->Finish(value));
+  EXPECT_FALSE(life->image->Release());  // Public status is no drain certificate.
+  EXPECT_EQ(life->trace->live_programs, 2U);
+  life->image.reset();
+  life->entered.clear();  // Node retains the actual executor, independently.
+  EXPECT_EQ(life->trace->live_programs, 2U);
+  ASSERT_TRUE(life->node.TearDown({}));
+  EXPECT_EQ(life->trace->live_programs, 0U);
+}
+TEST_F(EngineImageTest, NodeRetainsIdlePlansAfterTheRuntimeAdapterIsDropped) {
+  ASSERT_TRUE(life->Start(path));
+  std::string value;
+  ASSERT_TRUE(life->image->FirstOutput(value));
+  ASSERT_TRUE(life->image->Finish(value));
+  EXPECT_FALSE(life->image->Release());
+  life->image.reset();
+  life->entered.clear();
+  EXPECT_EQ(life->trace->live_programs, 2U);
+  ASSERT_TRUE(life->node.TearDown({}));
+  EXPECT_EQ(life->trace->live_programs, 0U);
+}
+TEST_F(EngineImageTest, BufferNoiseOwnsItsPaymentAndValidatesEncodingLayoutExtentAndFiniteness) {
+  ASSERT_TRUE(life->Start(path));
+  std::array<std::uint16_t, 2> values{0x3F80, 0xBF80};
+  auto made = en::HostBuffer::Copy(life->node, std::as_bytes(std::span(values)));
+  ASSERT_TRUE(made) << Failed(made).value_or("");
+  rt::ImageNoise noise{.bytes = std::move(*made)};
+  auto checked = rt::CheckedImageNoise(noise, 2);
+  ASSERT_TRUE(checked);
+  values[0] = 0;  // The caller's temporary storage is independent.
+  std::uint16_t retained = 0;
+  std::memcpy(&retained, checked->data(), sizeof(retained));
+  EXPECT_EQ(retained, 0x3F80);
+  EXPECT_GT(noise.bytes.paid_bytes(), noise.bytes.size());
+  EXPECT_FALSE(rt::CheckedImageNoise(noise, 1));
+  EXPECT_FALSE(rt::CheckedImageNoise(noise, UINT64_MAX));
+  auto wrong = noise;
+  wrong.encoding = llmp::format::Encoding::kF16;
+  EXPECT_FALSE(rt::CheckedImageNoise(wrong, 2));
+  wrong = noise;
+  wrong.layout = static_cast<rt::ImageNoiseLayout>(255);
+  EXPECT_FALSE(rt::CheckedImageNoise(wrong, 2));
+  EXPECT_FALSE(rt::CheckedImageNoise({}, 2));
+  for (const auto nonfinite : {std::uint16_t{0x7F80}, std::uint16_t{0x7FC1}}) {
+    values[0] = nonfinite;
+    auto bytes = en::HostBuffer::Copy(life->node, std::as_bytes(std::span(values)));
+    ASSERT_TRUE(bytes);
+    EXPECT_FALSE(rt::CheckedImageNoise({.bytes = std::move(*bytes)}, 2));
+  }
+  const auto counted = life->node.host_counted();
+  const auto payment = noise.bytes.paid_bytes();
+  wrong = {};
+  auto last = std::move(noise.bytes);
+  EXPECT_EQ(life->node.host_counted(), counted);
+  last = {};
+  EXPECT_EQ(life->node.host_counted(), counted - payment);
 }
 TEST_F(EngineImageTest, ARefusalBetweenStagesReleasesTheLeaseItHeld) {
   ASSERT_TRUE(life->Start(path));

@@ -14,8 +14,12 @@
 #include <vector>
 
 #include "artifact/format_map.h"
+#include "base/check.h"
 #include "components/step.h"
+#include "engine/copy_sink.h"
 #include "engine/prefill_lookahead.h"
+#include "engine/step_inputs.h"
+#include "engine/step_transaction.h"
 #include "engine/support.h"
 #include "kernels/paging/paging.h"
 #include "model/state_contract.h"
@@ -39,158 +43,6 @@ std::unexpected<StepRefusal> Refused(std::string what, bool clean = true,
                                      bool state_refused = false) {
   return std::unexpected(StepRefusal{
       .what = std::move(what), .clean = clean, .slot = slot, .state_refused = state_refused});
-}
-
-constexpr std::uint32_t PhaseBit(pl::Phase phase) {
-  return std::uint32_t{1} << static_cast<std::uint32_t>(phase);
-}
-
-// The I32 values of one segment's rows (or every segment's, joined) for a
-// tokens or positions input, written into `out` and the rest zeroed.
-std::expected<void, std::string> WriteRows(std::span<std::byte> out,
-                                           std::span<const std::int32_t> values) {
-  const std::uint64_t bytes = values.size_bytes();
-  if (bytes > out.size()) return Error("an input's rows exceed its slot");
-  if (bytes != 0) std::memcpy(out.data(), values.data(), bytes);
-  std::fill(out.begin() + static_cast<std::ptrdiff_t>(bytes), out.end(), std::byte{0});
-  return {};
-}
-
-// The values of an input the step's shape decides (step_program.h
-// kOutputRows, kStoreCells, kMask), by components/step.h InputValues' rules.
-std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl::StepShape& shape,
-                                               std::span<std::byte> out) {
-  namespace co = llmp::components;
-  const co::CellKey cells{.capacity = in.cells.capacity,
-                          .ring = in.cells.ring,
-                          .frozen = in.cells.frozen,
-                          .fixed = in.cells.fixed,
-                          .block = in.cells.block,
-                          .per_row = in.cells.per_row,
-                          .first_row = in.cells.first_row,
-                          .positions = in.cells.positions,
-                          .recent = in.cells.recent};
-  co::StepInput input{.segment = in.segment,
-                      .cells = cells,
-                      .read = in.read,
-                      .ratio = in.ratio,
-                      .overlap = in.overlap,
-                      .ring = in.ring,
-                      .visible_capacity = in.visible_capacity};
-  switch (in.kind) {
-    case kn::InputKind::kHadamard: {
-      const auto values = co::HadamardValues(in.read);
-      if (values.size() * sizeof(float) != out.size()) return Error("a Hadamard input's size");
-      std::memcpy(out.data(), values.data(), out.size());
-      return {};
-    }
-    case kn::InputKind::kVisibleCells:
-    case kn::InputKind::kPositionPhases:
-    case kn::InputKind::kKeptRows:
-    case kn::InputKind::kKeptCells:
-    case kn::InputKind::kPoolReads:
-    case kn::InputKind::kBlockCells:
-    case kn::InputKind::kBlockStarts: {
-      switch (in.kind) {
-        case kn::InputKind::kVisibleCells:
-          input.kind = co::InputKind::kVisibleCells;
-          break;
-        case kn::InputKind::kPositionPhases:
-          input.kind = co::InputKind::kPositionPhases;
-          break;
-        case kn::InputKind::kKeptRows:
-          input.kind = co::InputKind::kKeptRows;
-          break;
-        case kn::InputKind::kKeptCells:
-          input.kind = co::InputKind::kKeptCells;
-          break;
-        case kn::InputKind::kPoolReads:
-          input.kind = co::InputKind::kPoolReads;
-          break;
-        case kn::InputKind::kBlockCells:
-          input.kind = co::InputKind::kBlockCells;
-          break;
-        case kn::InputKind::kBlockStarts:
-          input.kind = co::InputKind::kBlockStarts;
-          break;
-        default:
-          break;
-      }
-      auto values = co::InputValues(input, shape, {});
-      if (!values) return Error(values.error());
-      if (in.kind == kn::InputKind::kKeptCells || in.kind == kn::InputKind::kBlockCells) {
-        if (values->size() * sizeof(std::int64_t) != out.size())
-          return Error("a compressor's cell input size");
-        std::memcpy(out.data(), values->data(), out.size());
-        return {};
-      }
-      for (const auto value : *values)
-        if (value < std::numeric_limits<std::int32_t>::min() ||
-            value > std::numeric_limits<std::int32_t>::max())
-          return Error("a compressor's row index exceeds I32");
-      const std::vector<std::int32_t> rows(values->begin(), values->end());
-      return WriteRows(out, rows);
-    }
-    case kn::InputKind::kOutputRows: {
-      input.kind = co::InputKind::kOutputRows;
-      auto values = co::InputValues(input, shape, {});
-      if (!values) return Error(values.error());
-      std::vector<std::int32_t> rows(values->begin(), values->end());
-      return WriteRows(out, rows);
-    }
-    case kn::InputKind::kBlockPositions: {
-      input.kind = co::InputKind::kBlockPositions;
-      input.sections = static_cast<std::uint8_t>(in.sections);
-      auto values = co::InputValues(input, shape, {});
-      if (!values) return Error(values.error());
-      std::vector<std::int32_t> rows(values->begin(), values->end());
-      return WriteRows(out, rows);
-    }
-    case kn::InputKind::kStoreCells: {
-      // With `outputs`, the segment's last rows' cells only (a target's
-      // tap rows, components/step.h kOutputCells).
-      if (in.outputs != 0 && (in.segment >= shape.segments.size() ||
-                              in.outputs != shape.segments[in.segment].outputs)) {
-        return Error("a tap's cells name no segment's outputs");
-      }
-      input.kind = in.outputs != 0 ? co::InputKind::kOutputCells : co::InputKind::kStoreCells;
-      auto values = co::InputValues(input, shape, {});
-      if (!values) return Error(values.error());
-      const std::uint64_t bytes = values->size() * sizeof(std::int64_t);
-      if (bytes > out.size()) return Error("an input's cells exceed its slot");
-      if (bytes != 0) std::memcpy(out.data(), values->data(), bytes);
-      std::fill(out.begin() + static_cast<std::ptrdiff_t>(bytes), out.end(), std::byte{0});
-      return {};
-    }
-    case kn::InputKind::kMask: {
-      // The positions the read cells hold, then each row's view of them.
-      input.kind = co::InputKind::kCellPositions;
-      input.read = in.read;
-      auto held = co::InputValues(input, shape, {});
-      if (!held) return Error(held.error());
-      const pl::Segment& s = shape.segments.at(in.segment);
-      if (held->size() != in.read || in.mask_rows < s.rows ||
-          out.size() != in.read * in.mask_rows * sizeof(std::uint16_t)) {
-        return Error("a mask's slot does not hold its cells and rows");
-      }
-      constexpr std::uint16_t kSeen = 0x0000;    // F16 0
-      constexpr std::uint16_t kHidden = 0xFC00;  // F16 -inf
-      std::vector<std::uint16_t> mask(in.read * in.mask_rows, kHidden);
-      for (std::uint32_t r = 0; r < s.rows; ++r) {
-        const std::int64_t position = std::int64_t{s.past} + r;
-        for (std::uint64_t c = 0; c < in.read; ++c) {
-          const std::int64_t cell = (*held)[c];
-          const bool seen = cell >= 0 && (in.ahead || cell <= position) &&
-                            (in.window == 0 || position - cell < std::int64_t{in.window});
-          if (seen) mask[(std::uint64_t{r} * in.read) + c] = kSeen;
-        }
-      }
-      std::memcpy(out.data(), mask.data(), out.size());
-      return {};
-    }
-    default:
-      return Error("not a computed input");
-  }
 }
 
 }  // namespace
@@ -356,8 +208,16 @@ std::expected<void, std::string> ModelRunner::CheckShape(const pl::StepShape& sh
     });
     if (per_row) row_bound = std::min(row_bound, layout.max_rows);
   }
+  bool any_origin = false;
+  bool any_primary = false;
   for (std::size_t i = 0; i < shape.segments.size(); ++i) {
     const pl::Segment& s = shape.segments[i];
+    if (s.origin_phase &&
+        (shape.stage != 0 || shape.phase != planner::Phase::kPrefill || shape.row_invariant ||
+         *s.origin_phase != planner::Phase::kDecode || s.rows != 1))
+      return Error("mixed causal origin requires an ordinary one-row target decode");
+    any_origin = any_origin || s.origin_phase.has_value();
+    any_primary = any_primary || !s.origin_phase.has_value();
     if (s.slot >= slots_.slots()) return Error(std::format("a step names slot {}", s.slot));
     if (i > 0 && s.slot <= shape.segments[i - 1].slot) {
       return Error("a step's segments are not in ascending, distinct slots");
@@ -395,6 +255,9 @@ std::expected<void, std::string> ModelRunner::CheckShape(const pl::StepShape& sh
       return Error(std::format("slot {}'s row-invariant reads follow its peers", s.slot));
     }
   }
+  if (any_origin && !any_primary) {
+    return Error("a step with only decode segments must use the decode phase");
+  }
   return {};
 }
 
@@ -411,15 +274,33 @@ bool ModelRunner::Verifies(std::uint32_t slot, std::size_t stage) const {
                              [](const auto& item) { return item.contract.target_writes; });
 }
 
-pl::PlanKey ModelRunner::KeyOf(const pl::StepShape& shape) const {
+std::expected<pl::PlanKey, std::string> ModelRunner::KeyOf(const pl::StepShape& shape) const {
   pl::PlanKey key;
-  FillKey(shape, key);
+  if (auto filled = FillKey(shape, key); !filled) return Error(filled.error());
   return key;
 }
 
-void ModelRunner::FillKey(const pl::StepShape& shape, pl::PlanKey& key) const {
-  // Assigned field by field into `key`'s own storage (its segments and
-  // parameters keep their capacity): no allocation once it has grown.
+void ModelRunner::NormalizeKeyShape(const pl::StepShape& shape, pl::StepShape& into) const {
+  into.stage = shape.stage;
+  into.phase = shape.phase;
+  into.row_invariant = shape.row_invariant;
+  into.read_align = shape.read_align;
+  into.segments.assign(shape.segments.begin(), shape.segments.end());
+  if (shape.stage < slots_.stages()) {
+    if (const auto bound = model::ReadCellsBound(slots_.layout(shape.stage))) {
+      into.read_align = 0;
+      for (auto& seg : into.segments) {
+        seg.read_cells =
+            static_cast<decltype(seg.read_cells)>(std::min<std::uint64_t>(seg.read_cells, *bound));
+      }
+    }
+  }
+}
+
+Status ModelRunner::FillKey(const pl::StepShape& shape, pl::PlanKey& key,
+                            bool fixed_capacity) const {
+  if (fixed_capacity && shape.segments.size() > key.shape.segments.capacity())
+    return Error("shape exceeds paid key segment storage");
   key.spec = key_base_.spec;
   key.patterns = key_base_.patterns;
   key.policy = key_base_.policy;
@@ -427,24 +308,15 @@ void ModelRunner::FillKey(const pl::StepShape& shape, pl::PlanKey& key) const {
   key.backend = key_base_.backend;
   key.capturable = key_base_.capturable;
   key.partition = key_base_.partition;
-  key.shape.stage = shape.stage;
-  key.shape.phase = shape.phase;
-  key.shape.row_invariant = shape.row_invariant;
-  key.shape.read_align = shape.read_align;
-  key.shape.segments.assign(shape.segments.begin(), shape.segments.end());
-  if (shape.stage < slots_.stages()) {
-    // A stage whose steps read only part of their read cells (position
-    // rings, min(their cells, the read cells)) or none keys only that part.
-    if (const auto bound = model::ReadCellsBound(slots_.layout(shape.stage))) {
-      key.shape.read_align = 0;
-      for (auto& seg : key.shape.segments) {
-        seg.read_cells =
-            static_cast<decltype(seg.read_cells)>(std::min<std::uint64_t>(seg.read_cells, *bound));
-      }
-    }
-  }
-  key.parameters.clear();
-  source_->AppendShapeParameters(key.shape, key.parameters);
+  NormalizeKeyShape(shape, key.shape);
+  auto count = source_->CountShapeParameters(key.shape);
+  if (!count) return Error("shape parameter count overflow");
+  if (fixed_capacity && *count > key.parameters.capacity())
+    return Error("shape exceeds paid key parameter storage");
+  key.parameters.resize(*count);
+  if (!source_->FillShapeParameters(key.shape, key.parameters))
+    return Error("shape parameter emitter changed between count and fill");
+  return {};
 }
 
 Status ModelRunner::CheckRoutedWeightBindings(std::span<const kn::RoutedWeight> reads) const {
@@ -780,8 +652,18 @@ void ModelRunner::ForgetCarry(std::uint32_t slot) {
 }
 
 std::expected<std::vector<RunCopy>, std::string> ModelRunner::FeatureCopies(
-    const kn::StepProgram& program, const StepRequest& request) const {
-  std::vector<RunCopy> copies;
+    const kn::StepProgram& program, const StepRequest& request,
+    std::span<const StepAuthorization> authorization) const {
+  Copies copies;
+  CopySink into(copies);
+  if (auto emitted = EmitFeatureCopies(program, request, authorization, into); !emitted)
+    return Error(emitted.error());
+  return copies;
+}
+
+Status ModelRunner::EmitFeatureCopies(const kn::StepProgram& program, const StepRequest& request,
+                                      std::span<const StepAuthorization> authorization,
+                                      CopySink& copies) const {
   const pl::StepShape& shape = request.shape;
   for (const kn::InputSlot& in : program.inputs()) {
     if (in.kind != kn::InputKind::kFeatures) continue;
@@ -809,8 +691,8 @@ std::expected<std::vector<RunCopy>, std::string> ModelRunner::FeatureCopies(
           }
           // Positions the target has committed and its ring still holds.
           std::uint64_t committed = slots_.positions(seg.slot);
-          if (const auto* own = CompanionFor(seg.slot, shape.stage);
-              own && own->part == CompanionPart::kPost) {
+          if (const auto* own = CompanionFor(authorization, seg.slot, shape.stage);
+              own && own->part_ == StepAuthorization::Part::kPost) {
             if (const auto tap_span = slots_.progress(seg.slot, shape.stage)->compound_tap())
               committed = tap_span->positions;
           }
@@ -821,7 +703,8 @@ std::expected<std::vector<RunCopy>, std::string> ModelRunner::FeatureCopies(
                                      seg.slot, from.position, last - 1));
           }
           const std::uint64_t base = slots_.live(seg.slot, shape.stage).base(0) + tap->offset;
-          const TapRows held = HeldTapRows(seg.slot, shape.stage);
+          const TapRows held = HeldTapRows(seg.slot, shape.stage,
+                                           CompanionFor(authorization, seg.slot, shape.stage));
           if (tap->contract.cells == model::CellRule::kPerRow &&
               (held.count == 0 || std::uint64_t{from.position} + held.preceding < held.first ||
                last > std::uint64_t{held.first} + held.count)) {
@@ -837,12 +720,8 @@ std::expected<std::vector<RunCopy>, std::string> ModelRunner::FeatureCopies(
                     : (std::uint64_t{from.position} + r) % tap->cells;
             const std::uint64_t dst = to + (r * row_bytes);
             const std::uint64_t src = base + (cell * tap->contract.cell_bytes);
-            if (r != 0 && copies.back()[0] + copies.back()[2] == dst &&
-                copies.back()[1] + copies.back()[2] == src) {
-              copies.back()[2] += row_bytes;
-            } else {
-              copies.push_back({dst, src, row_bytes});
-            }
+            if (!copies.Push({dst, src, row_bytes}, r != 0))
+              return Error("feature copies exceed their paid capacity");
           }
           break;
         }
@@ -853,18 +732,25 @@ std::expected<std::vector<RunCopy>, std::string> ModelRunner::FeatureCopies(
             return Error(std::format("slot {} carries no features of its {} rows on stage {}",
                                      seg.slot, seg.rows, shape.stage));
           }
-          copies.push_back({to, CarryAddress(seg.slot, shape.stage), seg.rows * row_bytes});
+          if (!copies.Push({to, CarryAddress(seg.slot, shape.stage), seg.rows * row_bytes}))
+            return Error("carried feature copies exceed their paid capacity");
           break;
         }
       }
     }
   }
-  return copies;
+  return {};
 }
 
-ModelRunner::TapRows ModelRunner::HeldTapRows(std::uint32_t slot, std::size_t stage) const {
+ModelRunner::TapRows ModelRunner::HeldTapRows(std::uint32_t slot, std::size_t stage,
+                                              const StepAuthorization* authorization) const {
   if (const auto* progress = slots_.progress(slot, stage)) {
-    const auto provisional = companion_steps_.empty() ? std::nullopt : progress->compound_tap();
+    const auto provisional = authorization && authorization->runner_ == this &&
+                                     authorization->slot_ == slot &&
+                                     authorization->stage_ == stage &&
+                                     authorization->part_ == StepAuthorization::Part::kPost
+                                 ? progress->compound_tap()
+                                 : std::nullopt;
     const model::DraftProgress& p = provisional ? *provisional : progress->after_owed();
     return {.first = p.tap_first, .count = p.tap_rows, .preceding = p.preceding};
   }
@@ -881,8 +767,14 @@ ModelRunner::TapRows ModelRunner::HeldTapRows(std::uint32_t slot, std::size_t st
 
 std::expected<std::vector<RunCopy>, std::string> ModelRunner::TapCarries(
     const pl::StepShape& shape) const {
-  std::vector<RunCopy> copies;
-  if (shape.stage != 0) return copies;
+  Copies copies;
+  CopySink into(copies);
+  if (auto emitted = EmitTapCarries(shape, into); !emitted) return Error(emitted.error());
+  return copies;
+}
+
+Status ModelRunner::EmitTapCarries(const pl::StepShape& shape, CopySink& copies) const {
+  if (shape.stage != 0) return {};
   for (const pl::Segment& seg : shape.segments) {
     for (std::size_t stage = 1; stage < slots_.stages(); ++stage) {
       const auto* tap = model::FeatureTap(slots_.layout(stage));
@@ -892,27 +784,36 @@ std::expected<std::vector<RunCopy>, std::string> ModelRunner::TapCarries(
       if (count == 0 || std::uint64_t{held.first} + held.count != seg.past) continue;
       const std::uint64_t bytes = tap->contract.cell_bytes;
       const std::uint64_t base = slots_.live(seg.slot, stage).base(0) + tap->offset;
-      copies.push_back({base + ((tap->contract.window_or_ratio - count) * bytes),
+      if (!copies.Push({base + ((tap->contract.window_or_ratio - count) * bytes),
                         base + ((tap->contract.window_or_ratio + held.count - count) * bytes),
-                        count * bytes});
+                        count * bytes}))
+        return Error("tap carries exceed their paid capacity");
     }
   }
-  return copies;
+  return {};
 }
 
 std::expected<std::vector<RunCopy>, std::string> ModelRunner::CarryCopies(
     const kn::StepProgram& program, const pl::StepShape& shape) const {
-  std::vector<RunCopy> copies;
+  Copies copies;
+  CopySink into(copies);
+  if (auto emitted = EmitCarryCopies(program, shape, into); !emitted) return Error(emitted.error());
+  return copies;
+}
+
+Status ModelRunner::EmitCarryCopies(const kn::StepProgram& program, const pl::StepShape& shape,
+                                    CopySink& copies) const {
   for (const kn::OutputSlot& out : program.outputs()) {
     if (!out.features) continue;
     if (shape.stage == 0 || out.segment >= shape.segments.size() ||
         out.bytes > carry_bytes_.at(shape.stage)) {
       return Error("a step's next features pass their carry");
     }
-    copies.push_back({CarryAddress(shape.segments[out.segment].slot, shape.stage),
-                      out.device_address, out.bytes});
+    if (!copies.Push({CarryAddress(shape.segments[out.segment].slot, shape.stage),
+                      out.device_address, out.bytes}))
+      return Error("output carries exceed their paid capacity");
   }
-  return copies;
+  return {};
 }
 
 Status ModelRunner::SetupSnapshots() {
@@ -1187,7 +1088,7 @@ Status ModelRunner::PrepareCommit(std::uint32_t slot, std::uint16_t stage, std::
   auto copies = staging.Stage(
       program.inputs(),
       [&](std::size_t i, std::span<std::byte> out) {
-        return WriteComputed(program.inputs()[i], shape, out);
+        return step_inputs::WriteComputed(program.inputs()[i], shape, out);
       },
       0);
   if (!copies) return Error(copies.error());
@@ -1267,12 +1168,30 @@ Status ModelRunner::Bind() {
   return {};
 }
 
+Status ModelRunner::RetireAfterFence() {
+  // PagedNode alone authenticates completed stream fences. Internal flights
+  // may now release their unknown-work cycles; external views keep the actual
+  // environment alive and refuse physical teardown until their last drop.
+  closing_ = true;
+  if (programs_.launch()) programs_.launch()->Retire();
+  routed_flight_.reset();
+  step_flight_.reset();
+  if (resource_leases_.load(std::memory_order_acquire) != 0)
+    return Error("private resource views still retain this runner's launch and backing");
+  return {};
+}
+
 Status ModelRunner::Release() {
   if (released_) return {};
+  if (resource_leases_.load(std::memory_order_acquire) != 0)
+    return Error("private resource views still retain this runner's launch and backing");
+  if (lifetime_ && !closing_)
+    return Error("a retained runner requires node-authenticated drain before release");
   released_ = true;
   // Release's existing contract is node teardown after successful drain and
   // stream fences. Only that proof may break a retained routed-owner cycle.
   routed_flight_.reset();
+  step_flight_.reset();
   // The recordings name the launch and the memory: they go first (D-090).
   DropPlans();
   programs_.ReleaseAfterDrain();
@@ -1290,13 +1209,15 @@ Status ModelRunner::Release() {
   for (StageWeights& w : config_.weights) {
     if (auto r = w.weights->Release(node_.memory()); !r) problems.push_back(r.error());
   }
-  return support::Joined(problems);
+  auto result = support::Joined(problems);
+  if (result) RetireRoot();  // Last: may destroy the adapter-less node-owned root.
+  return result;
 }
 
 // --------------------------------------------------------------------- plans
 
 void ModelRunner::DropPlans() {
-  if (!routed_flight_) {
+  if (!batch_active_ && !routed_flight_ && (!step_flight_ || !step_flight_->unproven())) {
     ForgetCompletedRouting();
     plans_.Clear();
   }
@@ -1304,16 +1225,33 @@ void ModelRunner::DropPlans() {
 
 void ModelRunner::ReclaimCandidates(std::uint32_t owner, bool running,
                                     std::vector<memory::ReclaimCandidate>& out) {
-  if (released_ || slots_.faulted()) return;
+  if (released_ || slots_.faulted() || batch_active_) return;
   std::array<PlanCacheBase*, 1> caches{&plans_};
   CollectPlans(caches, owner, running, out);
 }
 
 std::uint64_t ModelRunner::Reclaim(memory::ReclaimKind kind, std::uint64_t id) {
-  if (released_ || slots_.faulted() || routed_flight_) return 0;
+  if (released_ || slots_.faulted() || batch_active_ || routed_flight_ ||
+      (step_flight_ && step_flight_->unproven()))
+    return 0;
   std::array<PlanCacheBase*, 1> caches{&plans_};
   ForgetCompletedRouting();
   return ReclaimPlan(caches, kind, id);
+}
+
+Status ModelRunner::CheckPorts(const pl::StepShape& shape, const kn::StepProgram& bound) const {
+  // Every lowered port belongs to this token shape; typed image ports use
+  // their own graph authority at the same common installation seam.
+  const auto segment_ok = [&](std::uint8_t segment) {
+    return segment == ir::kJoinedSegment || segment < shape.segments.size();
+  };
+  for (const auto& in : bound.inputs()) {
+    if (!segment_ok(in.segment)) return Error("a step's input names no segment of its shape");
+  }
+  for (const auto& out : bound.outputs()) {
+    if (!segment_ok(out.segment)) return Error("a step's output names no segment of its shape");
+  }
+  return {};
 }
 
 std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Install(
@@ -1322,30 +1260,24 @@ std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Install(
   if (planned == nullptr || planned->program == nullptr) return Error("no program to install");
   kn::StepProgram& program = *planned->program;
   if (auto routed = CheckRouting(program); !routed) return Error(routed.error());
-  auto checked = programs_.BindPrepared(*planned, [&](const kn::StepProgram& bound) -> Status {
-    // Every lowered port belongs to this token shape; typed image ports use
-    // their own graph authority at the same common installation seam.
-    const auto segment_ok = [&](std::uint8_t segment) {
-      return segment == ir::kJoinedSegment || segment < shape.segments.size();
-    };
-    for (const auto& in : bound.inputs()) {
-      if (!segment_ok(in.segment)) return Error("a step's input names no segment of its shape");
-    }
-    for (const auto& out : bound.outputs()) {
-      if (!segment_ok(out.segment)) return Error("a step's output names no segment of its shape");
-    }
-    return {};
-  });
+  auto checked = programs_.BindPrepared(
+      *planned, [&](const kn::StepProgram& bound) -> Status { return CheckPorts(shape, bound); });
   if (!checked) return Error(checked.error());
-  coverage_.tensors += checked->tensors;
   const std::uint64_t host = program.host_bytes();
   const std::uint64_t launches = program.launches();
+  auto key = KeyOf(shape);
+  if (!key) return Error(key.error());
   if (transfer) transfer();
   ForgetCompletedRouting();
-  Plans::Entry& entry = plans_.Add(KeyOf(shape), std::move(planned), host, launches, seconds);
+  Plans::Entry& entry = plans_.Add(std::move(*key), std::move(planned), host, launches, seconds);
+  if (lookup_key_.shape.segments.capacity() < entry.key.shape.segments.size())
+    lookup_key_.shape.segments.reserve(entry.key.shape.segments.size());
+  if (lookup_key_.parameters.capacity() < entry.key.parameters.size())
+    lookup_key_.parameters.reserve(entry.key.parameters.size());
   // Add's required PlanAccount charge owns all returned program storage before
   // the source's transient compiler use can be returned to another builder.
   entry.planned->program->ConstructionPaid();
+  coverage_.tensors += checked->tensors;
   EmitPlanReport(entry, config_.plan_report_sink);
   // Never recorded: no capture beside a run, on its first run or ahead.
   if (entry.planned->positioned) entry.runs[0].uncapturable = true;
@@ -1356,7 +1288,7 @@ std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Planned(
     const pl::StepShape& shape) {
   if (auto identity = source_->ExecutionIdentity(); !identity) return Error(identity.error());
   if (auto current = CheckRoutingSource(); !current) return Error(current.error());
-  FillKey(shape, lookup_key_);
+  if (auto filled = FillKey(shape, lookup_key_); !filled) return Error(filled.error());
   if (Plans::Entry* found = plans_.Find(lookup_key_); found != nullptr) return found;
   const auto started = std::chrono::steady_clock::now();
   // Construct over owned stable virtual places. This is not residency or
@@ -1397,13 +1329,19 @@ std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Planned(
 }
 
 std::expected<Copies, std::string> ModelRunner::OutputCopies(const kn::StepProgram& program) const {
+  return OutputCopies(program, outputs_staging_, outputs_staging_bytes_);
+}
+std::expected<Copies, std::string> ModelRunner::OutputCopies(const kn::StepProgram& program,
+                                                             std::byte* staging,
+                                                             std::uint64_t bytes) const {
   Copies copies;
+  copies.reserve(program.outputs().size());
   std::uint64_t at = 0;
   for (const kn::OutputSlot& slot : program.outputs()) {
-    if (at > outputs_staging_bytes_ || slot.bytes > outputs_staging_bytes_ - at) {
+    if (at > bytes || slot.bytes > bytes - at) {
       return Error("a step's outputs exceed their staging");
     }
-    copies.push_back({Address(outputs_staging_ + at), slot.device_address, slot.bytes});
+    copies.push_back({Address(staging + at), slot.device_address, slot.bytes});
     at += Round(slot.bytes, 256);
   }
   return copies;
@@ -1419,22 +1357,46 @@ Status ModelRunner::PrepareStep(const pl::StepShape& shape) {
   return {};
 }
 
-std::expected<void, StepRefusal> ModelRunner::Admit(const pl::Segment& segment, std::uint16_t stage,
-                                                    std::uint32_t read_align, bool advance) {
-  if (!bound_ || released_) return Refused("the model runner is not bound");
+std::expected<void, StepRefusal> ModelRunner::CheckAdmission(
+    const pl::Segment& segment, std::uint16_t stage, bool advance,
+    const StepAuthorization* authorization) {
+  if (!bound_ || released_ || closing_) return Refused("the model runner is not bound");
   const std::uint32_t slot = segment.slot;
   if (slot >= slots_.slots()) return Refused(std::format("no slot {}", slot));
   if (stage >= slots_.stages()) return Refused(std::format("no stage {}", stage));
-  if (stage != 0 && slots_.progress(slot, stage) && CompanionFor(slot, stage) == nullptr) {
-    const auto authorized = std::ranges::find_if(authorized_drafts_, [&](const auto& own) {
-      return own.slot == slot && own.stage == stage && own.past == segment.past &&
-             own.rows == segment.rows;
-    });
-    if (authorized == authorized_drafts_.end() ||
-        !slots_.progress(slot, stage)->CheckUnit(authorized->unit))
+  const bool exact =
+      authorization && authorization->runner_ == this && authorization->slot_ == slot &&
+      authorization->stage_ == stage && authorization->past_ == segment.past &&
+      authorization->rows_ == segment.rows && authorization->outputs_ == segment.outputs &&
+      authorization->want_head_ == segment.want_head && authorization->greedy_ == segment.greedy;
+  if (segment.origin_phase) {
+    if (*segment.origin_phase != pl::Phase::kDecode || stage != 0 || !advance ||
+        segment.rows != 1 || !segment.want_head || segment.outputs != 1 || !exact ||
+        authorization->part_ == StepAuthorization::Part::kNone ||
+        authorization->phase_ != *segment.origin_phase) {
+      return Refused("mixed causal origin requires its exact decode execution permit", true, slot);
+    }
+  }
+  const bool companion = exact && (authorization->part_ == StepAuthorization::Part::kPre ||
+                                   authorization->part_ == StepAuthorization::Part::kTarget ||
+                                   authorization->part_ == StepAuthorization::Part::kPost);
+  if (companion) {
+    if (authorization->consumers_.empty())
+      return Refused("prompt companion has no owned consumers", true, slot);
+    for (const auto& [consumer, unit] : authorization->consumers_) {
+      if (consumer == 0 || consumer >= slots_.stages())
+        return Refused("prompt companion consumer stage is outside the runner", true, slot);
+      const auto* progress = slots_.progress(slot, consumer);
+      if (!progress || !progress->CheckCompound(unit))
+        return Refused("prompt companion no longer owns its ledger unit", true, slot);
+    }
+  }
+  if (stage != 0 && slots_.progress(slot, stage) && !companion) {
+    if (!exact || authorization->part_ != StepAuthorization::Part::kDraft ||
+        !StepTransaction::CheckDraftPermit(*this, *authorization))
       return Refused("repeat-pending draft requires its owned decoding schedule", true, slot);
   }
-  if (stage == 0 && advance && CompanionFor(slot, stage) == nullptr)
+  if (stage == 0 && advance && !companion)
     for (std::size_t s = 1; s < slots_.stages(); ++s)
       if (slots_.progress(slot, s))
         return Refused("target step requires its shared prompt companions", true, slot);
@@ -1481,13 +1443,26 @@ std::expected<void, StepRefusal> ModelRunner::Admit(const pl::Segment& segment, 
                      true, slot);
     }
     // Its view of the target's state is read only while that is frozen.
-    if (!slots_.layout(stage).borrowed.empty() && !slots_.borrowed(slot, 0)) {
+    const bool ordered_borrow =
+        exact && (companion || authorization->part_ == StepAuthorization::Part::kDraft) &&
+        authorization->borrowed_ &&
+        slots_.CheckBorrowPermit(*authorization->borrowed_, slot, stage, segment.past,
+                                 segment.rows);
+    if (!slots_.layout(stage).borrowed.empty() && !slots_.borrowed(slot, 0) && !ordered_borrow) {
       return Refused(std::format("slot {}'s drafter reads the target's state, which is not "
                                  "borrowed",
                                  slot),
                      true, slot);
     }
   }
+  return {};
+}
+
+std::expected<void, StepRefusal> ModelRunner::Admit(const pl::Segment& segment, std::uint16_t stage,
+                                                    std::uint32_t read_align, bool advance,
+                                                    const StepAuthorization* authorization) {
+  if (auto ready = CheckAdmission(segment, stage, advance, authorization); !ready) return ready;
+  const auto slot = segment.slot;
   // Backed through every cell the step reads, not only its own rows' (a
   // common read reaches the widest owner's cells): reading absent backing
   // is a fault. Only this growth's refusal says capacity: an earlier one's
@@ -1505,824 +1480,30 @@ std::expected<void, StepRefusal> ModelRunner::Admit(const pl::Segment& segment, 
   return {};
 }
 
-const ModelRunner::CompanionStep* ModelRunner::CompanionFor(std::uint32_t slot,
-                                                            std::uint16_t stage) const {
-  for (const auto& step : companion_steps_)
-    if (step.slot == slot && step.stage == stage) return &step;
+const StepAuthorization* ModelRunner::CompanionFor(std::span<const StepAuthorization> authorization,
+                                                   std::uint32_t slot, std::uint16_t stage) const {
+  for (const auto& permit : authorization)
+    if (permit.runner_ == this && permit.slot_ == slot && permit.stage_ == stage &&
+        (permit.part_ == StepAuthorization::Part::kPre ||
+         permit.part_ == StepAuthorization::Part::kTarget ||
+         permit.part_ == StepAuthorization::Part::kPost))
+      return &permit;
   return nullptr;
 }
 
 std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& request) {
-  if (routed_flight_) return Refused("a routed step retains unproven effects", false);
-  if (routed_ &&
-      (request.ahead.build || request.ahead.capture_ahead || request.ahead.prepare ||
-       std::ranges::any_of(request.ahead.shapes, [](const auto& s) { return s.has_value(); })))
-    return Refused("routed continuation does not admit asynchronous lookahead");
-  if (!bound_ || released_) return Refused("the model runner is not bound");
-  const pl::StepShape& shape = request.shape;
-  if (auto checked = CheckShape(shape); !checked) return Refused(checked.error());
-  if (request.work.size() != shape.segments.size()) {
-    return Refused("a step's work does not match its segments");
-  }
-  for (const auto& future : request.ahead.shapes) {
-    if (future) {
-      if (auto qualified = CheckOwners(future->segments.size()); !qualified)
-        return Refused(qualified.error());
-    }
-    if (future && future->phase == pl::Phase::kCommit)
-      return Refused("commits are internal and cannot be lookahead steps");
-  }
-  const bool verify = shape.phase == pl::Phase::kVerify;
-  if (shape.phase == pl::Phase::kCommit) return Refused("commits run only after a verify's Accept");
-  if (verify && (shape.stage != 0 || request.advance)) {
-    return Refused("a verify runs on the target and leaves its rows to their Accept");
-  }
-  if (verify && (config_.max_verify_rows == 0 ||
-                 std::ranges::any_of(shape.segments, [&](const pl::Segment& s) {
-                   return s.rows > config_.max_verify_rows;
-                 }))) {
-    return Refused(std::format("the runner verifies at most {} rows", config_.max_verify_rows));
-  }
-  if (shape.stage != 0 && request.advance) {
-    return Refused("a drafter's step never commits positions");
-  }
-  for (std::size_t segment_index = 0; segment_index < shape.segments.size(); ++segment_index) {
-    const auto& segment = shape.segments[segment_index];
-    const auto* companion = CompanionFor(segment.slot, shape.stage);
-    if (companion && (companion->past != segment.past || companion->rows != segment.rows ||
-                      request.advance || verify))
-      return Refused("step differs from its owned prompt companion");
-    if (shape.stage != 0 && !companion) {
-      if (const auto* progress = slots_.progress(segment.slot, shape.stage)) {
-        const auto& feature = request.work[segment_index].feature;
-        const auto authorization = std::ranges::find_if(authorized_drafts_, [&](const auto& own) {
-          return own.slot == segment.slot && own.stage == shape.stage && own.past == segment.past &&
-                 own.rows == segment.rows && own.feature.kind == feature.kind &&
-                 own.feature.position == feature.position;
-        });
-        if (shape.phase != pl::Phase::kDraft || authorization == authorized_drafts_.end() ||
-            !progress->CheckUnit(authorization->unit))
-          return Refused("repeat-pending draft requires its owned decoding schedule");
-      }
-    }
-    if (shape.stage == 0 && !verify && !companion) {
-      for (std::size_t s = 1; s < slots_.stages(); ++s)
-        if (slots_.progress(segment.slot, s))
-          return Refused("target step requires its shared prompt companions");
-    }
-  }
-  if (slots_.faulted()) return Refused("the cohort is faulted", false);
-  const PlanStep step;
-  struct RowRead {
-    RowTableState* table = nullptr;
-    PleRowPlan plan;
-  };
-  std::vector<std::vector<std::int32_t>> side_rows;
-  const auto plan_rows =
-      [&](const kn::StepProgram& program) -> std::expected<std::vector<RowRead>, StepRefusal> {
-    std::vector<RowRead> row_reads;
-    side_rows.resize(program.inputs().size());
-    // One joined slot per component owns its table's landing and row-slot
-    // numbering. Independent segmented plans cannot share that storage.
-    std::vector<std::uint16_t> components;
-    for (const auto& input : program.inputs()) {
-      if (input.kind != kn::InputKind::kSideRows) continue;
-      if (std::ranges::find(components, input.component) != components.end())
-        return Refused("side-table components require one joined row input");
-      components.push_back(input.component);
-    }
-    for (std::size_t index = 0; index < program.inputs().size(); ++index) {
-      const auto& input = program.inputs()[index];
-      if (input.kind != kn::InputKind::kSideRows) continue;
-      auto& ids = side_rows[index];
-      if (!request.side_rows.empty()) {
-        if (input.bytes != request.side_rows.size_bytes())
-          return Refused("the side rows must fill their slot");
-        ids.assign(request.side_rows.begin(), request.side_rows.end());
-      } else {
-        std::uint64_t rows = 0;
-        for (std::size_t i = 0; i < shape.segments.size(); ++i)
-          if (input.segment == ir::kJoinedSegment || input.segment == i)
-            rows += shape.segments[i].rows;
-        if (rows == 0 || input.bytes % (rows * sizeof(std::int32_t)) != 0)
-          return Refused("side rows have no whole number of heads");
-        const auto heads = input.bytes / (rows * sizeof(std::int32_t));
-        if (heads == 0) return Refused("side rows have no heads");
-        ids.resize(input.bytes / sizeof(std::int32_t));
-        std::size_t at = 0;
-        for (std::size_t i = 0; i < shape.segments.size(); ++i) {
-          if (input.segment != ir::kJoinedSegment && input.segment != i) continue;
-          const auto& segment = shape.segments[i];
-          const auto& work = request.work[i];
-          auto bounds = model::DraftBounds(slots_.layout(shape.stage));
-          if (!bounds) return Refused(bounds.error());
-          const std::uint64_t token_first =
-              std::uint64_t{segment.past} +
-              (bounds->has_value() && (**bounds).relation == model::DraftRelation::kTokenAfterCache
-                   ? 1U
-                   : 0U);
-          if (token_first > work.history.size() ||
-              segment.rows > work.history.size() - token_first ||
-              work.tokens.size() != segment.rows ||
-              !std::ranges::equal(work.tokens, work.history.subspan(token_first, segment.rows)))
-            return Refused("side rows require the owner's complete matching token history");
-          for (std::uint32_t row = 0; row < segment.rows; ++row) {
-            auto derived = source_->SideRows(shape.stage, input.component, work.history,
-                                             static_cast<std::uint32_t>(token_first + row),
-                                             std::span(ids).subspan(at, heads));
-            if (!derived) return Refused(derived.error());
-            at += heads;
-          }
-        }
-      }
-      if (std::ranges::any_of(ids, [](const auto id) { return id < 0; }))
-        return Refused("a side row is negative");
-      for (auto& table : row_tables_) {
-        if (table->config.weight.stage != shape.stage ||
-            table->config.weight.component != input.component)
-          continue;
-        if (table->stalled) return Refused("row-table reads have unproven completion", false);
-        auto plan =
-            PlanPleRows(table->table, ids, PleLandingBound(table->capacity), table->capacity);
-        if (!plan) return Refused(plan.error());
-        // One side-row input is staged from its first part's remap. Every
-        // other part must agree in lookup order, not just in its unique IDs.
-        for (const auto& prior : row_reads) {
-          if (prior.table->config.weight.stage == shape.stage &&
-              prior.table->config.weight.component == input.component &&
-              prior.plan.slots != plan->slots)
-            return Refused("a side table's parts disagree on row-slot mapping");
-        }
-        row_reads.push_back({.table = table.get(), .plan = std::move(*plan)});
-      }
-    }
-
-    return row_reads;
-  };
-  // Row-table input validation precedes admission: even zeroing newly
-  // backed state is work a malformed set of side rows must not cause.
-  // Planning binds stable virtual addresses only; PlanStep pins the plan
-  // across admission and the eventual job.
-  // Exact selection and activation admission precede every owner's state
-  // growth/zeroing and all model progress. A failed replacement with unknown
-  // retirement faults the slots and must never become a clean singleton retry.
-  auto entry_of = Planned(shape);
-  if (!entry_of) return Refused(entry_of.error(), !slots_.faulted());
-  std::vector<RowRead> row_reads;
-  if (!row_tables_.empty() || !request.side_rows.empty() || source_->UsesSideRows(shape.stage)) {
-    auto reads = plan_rows(*(*entry_of)->planned->program);
-    if (!reads) return std::unexpected(reads.error());
-    row_reads = std::move(*reads);
-  }
-  // Every owner's own cells (what it reads alone: its rows at its state's
-  // alignment, exactly as a lone step's segment admits them) before any
-  // owner's wider reads for the join (a joined alignment, a common read
-  // through a peer's cells): widened first, an early owner could take what
-  // a later owner's own rows need and keep it, refusing that owner in every
-  // wave while capacity for both owners' own reads was there. A refusal
-  // there is the owner's alone too; one in the widening is not (`widening`).
-  // A widening refused for a later owner keeps the earlier owners' (clean,
-  // leased growth they read once their positions reach it): bounded by the
-  // join's reads, not released (docs/engine.md).
-  if (shape.segments.size() > 1) {
-    for (pl::Segment own : shape.segments) {
-      own.read_cells = LoneRead(shape.stage, own.past, own.rows);
-      if (auto admitted = Admit(own, shape.stage, 0, request.advance); !admitted) {
-        return std::unexpected(std::move(admitted.error()));
-      }
-    }
-  }
-  for (const pl::Segment& s : shape.segments) {
-    if (auto admitted = Admit(s, shape.stage, shape.read_align, request.advance); !admitted) {
-      admitted.error().widening = shape.segments.size() > 1;
-      return std::unexpected(std::move(admitted.error()));
-    }
-  }
-  if (auto places = slots_.CheckPlaces(); !places) return Refused(places.error());
-  Plans::Entry& entry = **entry_of;
-  kn::StepProgram& program = *entry.planned->program;
-
-  // Inputs, staged by slot.
-  const auto fill = [&](std::size_t index,
-                        std::span<std::byte> out) -> std::expected<void, std::string> {
-    const kn::InputSlot& in = program.inputs()[index];
-    const bool joined = in.segment == ir::kJoinedSegment;
-    const std::size_t segment = in.segment;
-    if (!joined && segment >= shape.segments.size()) return Error("an input names no segment");
-    std::vector<std::int32_t> values;
-    switch (in.kind) {
-      case kn::InputKind::kTokens:
-        if (!joined) {
-          const auto tokens = request.work[in.segment].tokens;
-          if (tokens.size() != shape.segments[in.segment].rows) return Error("a segment's tokens");
-          return WriteRows(out, tokens);
-        }
-        for (std::size_t i = 0; i < shape.segments.size(); ++i) {
-          const auto tokens = request.work[i].tokens;
-          if (tokens.size() != shape.segments[i].rows) return Error("a segment's tokens");
-          values.insert(values.end(), tokens.begin(), tokens.end());
-        }
-        return WriteRows(out, values);
-      case kn::InputKind::kPositions:
-        // In `sections` copies, one after another (a multi-section
-        // rotation's).
-        for (std::uint32_t sec = 0; sec < std::max<std::uint32_t>(in.sections, 1); ++sec) {
-          for (std::size_t i = 0; i < shape.segments.size(); ++i) {
-            if (!joined && i != segment) continue;
-            for (std::uint32_t r = 0; r < shape.segments[i].rows; ++r) {
-              values.push_back(static_cast<std::int32_t>(shape.segments[i].past + r));
-            }
-          }
-        }
-        return WriteRows(out, values);
-      case kn::InputKind::kSideRows: {
-        const auto ids = std::span(side_rows[index]);
-        if (ids.size_bytes() != out.size()) {
-          return Error("the side rows must fill their slot");
-        }
-        for (const RowRead& read : row_reads) {
-          if (read.table->config.weight.component == in.component) {
-            return WriteRows(out, read.plan.slots);
-          }
-        }
-        return WriteRows(out, ids);
-      }
-      case kn::InputKind::kSegmentBytes: {
-        if (joined) return Error("a segment's bytes name no segment");
-        const auto bytes = request.work[in.segment].bytes;
-        if (bytes.size() > out.size()) return Error("a segment's bytes exceed their slot");
-        std::ranges::copy(bytes, out.begin());
-        std::fill(out.begin() + static_cast<std::ptrdiff_t>(bytes.size()), out.end(), std::byte{0});
-        return {};
-      }
-      case kn::InputKind::kStepBytes:
-        if (request.step_bytes.size() > out.size())
-          return Error("the step's bytes exceed their slot");
-        std::ranges::copy(request.step_bytes, out.begin());
-        std::fill(out.begin() + static_cast<std::ptrdiff_t>(request.step_bytes.size()), out.end(),
-                  std::byte{0});
-        return {};
-      case kn::InputKind::kOutputRows:
-      case kn::InputKind::kStoreCells:
-      case kn::InputKind::kMask:
-      case kn::InputKind::kBlockPositions:
-      case kn::InputKind::kVisibleCells:
-      case kn::InputKind::kPositionPhases:
-      case kn::InputKind::kKeptRows:
-      case kn::InputKind::kKeptCells:
-      case kn::InputKind::kPoolReads:
-      case kn::InputKind::kBlockCells:
-      case kn::InputKind::kBlockStarts:
-      case kn::InputKind::kHadamard:
-        // A fixed tensor's cell, and a verify's whole step's rows, are
-        // every segment's.
-        if (in.kind != kn::InputKind::kOutputRows && in.kind != kn::InputKind::kPositionPhases &&
-            in.kind != kn::InputKind::kHadamard && joined && !in.cells.fixed && !in.cells.per_row)
-          return Error("an input names no segment");
-        if (in.commit_save) {
-          std::vector<std::int64_t> rows;
-          for (const pl::Segment& s : shape.segments) {
-            for (std::uint32_t r = 0; r < s.rows; ++r) {
-              rows.push_back(std::int64_t{s.slot} * config_.max_verify_rows + r);
-            }
-          }
-          if (rows.size() * sizeof(std::int64_t) != out.size()) {
-            return Error("a verify's joined save indices do not fill their slot");
-          }
-          std::memcpy(out.data(), rows.data(), out.size());
-          return {};
-        }
-        return WriteComputed(in, shape, out);
-      case kn::InputKind::kFeatures:
-        return Error("a step's features are copied on the device, never staged");
-    }
-    return Error("an unknown input kind");
-  };
-  auto copies = programs_.runs().Stage(program.inputs(), fill, 0);
-  if (!copies) return Refused(copies.error());
-  auto outputs = OutputCopies(program);
-  if (!outputs) return Refused(outputs.error());
-  // A drafter's features, copied in on the device before its run, and its
-  // next features carried to its slots' carries after it.
-  auto features = FeatureCopies(program, request);
-  if (!features) return Refused(features.error());
-  auto carries = CarryCopies(program, shape);
-  if (!carries) return Refused(carries.error());
-  auto taps = TapCarries(shape);
-  if (!taps) return Refused(taps.error());
-  if (entry.planned->positioned) {
-    // Between jobs: no run of this program is in flight.
-    std::vector<std::uint32_t> past;
-    past.reserve(shape.segments.size());
-    for (const pl::Segment& s : shape.segments) past.push_back(s.past);
-    if (auto positioned = entry.planned->program->Position(past); !positioned) {
-      return Refused(std::format("positioning a step: {}", positioned.error().detail));
-    }
-  }
-
-  // The futures: deduplicated against this shape and each other, and the
-  // cached ones protected (found) before any optional funding.
-  const StepAhead& ahead = request.ahead;
-  std::array<Plans::Entry*, 8> ahead_cached{};
-  // Each future's key in ahead_keys_ (storage reused), where it has one.
-  std::array<bool, 8> keyed{};
-  std::array<bool, 8> distinct{};
-  for (std::size_t k = 0; k < ahead.shapes.size(); ++k) {
-    if (!ahead.shapes[k] || !CheckShape(*ahead.shapes[k])) continue;
-    FillKey(*ahead.shapes[k], ahead_keys_[k]);
-    keyed[k] = true;
-    if (ahead_keys_[k] == entry.key) {
-      ahead_cached[k] = &entry;
-      continue;
-    }
-    bool duplicate = false;
-    for (std::size_t prior = 0; prior < k; ++prior) {
-      if (keyed[prior] && ahead_keys_[k] == ahead_keys_[prior]) {
-        ahead_cached[k] = ahead_cached[prior];
-        duplicate = true;
-        break;
-      }
-    }
-    if (duplicate) continue;
-    distinct[k] = true;
-    ahead_cached[k] = plans_.Find(ahead_keys_[k]);
-  }
-  StepPlanRuns& runs = entry.runs[0];
-  // A recording made ahead holds the layout its plan's inputs predicted;
-  // one that differs from what was staged is dropped (its charge settles).
-  if (programs_.runs().graphs() && runs.has_graph() && *copies != runs.copies) {
-    runs.DropGraph();
-    ++lookahead_.dropped_ahead;
-  }
-  const bool repeats = keyed[0] && ahead_keys_[0] == entry.key;
-  const bool first_capture =
-      (config_.capture_first_phases & config_.capture_phases & PhaseBit(shape.phase)) != 0 &&
-      programs_.runs().graphs() && runs.eager_runs == 0 && !runs.has_graph() &&
-      !runs.uncapturable && !program.routed();
-  bool capture = first_capture ||
-                 (runs.CaptureDue(programs_.runs().graphs()) &&
-                  (config_.capture_phases & PhaseBit(shape.phase)) != 0) ||
-                 (ahead.capture_ahead && repeats && programs_.runs().graphs() &&
-                  !runs.has_graph() && !runs.uncapturable);
-  if (capture && !plans_.ChargeGraph(entry)) capture = false;
-  const bool capture_first = capture && runs.eager_runs == 0;
-  // The next shape's recording, beside this run, when it differs and is
-  // already planned.
-  Plans::Entry* upcoming = nullptr;
-  Copies upcoming_copies, upcoming_outputs;
-  if (ahead.capture_ahead && ahead.shapes[0] && !repeats && programs_.runs().graphs() &&
-      ahead_cached[0] != nullptr) {
-    upcoming = ahead_cached[0];
-    const kn::StepProgram& next = *upcoming->planned->program;
-    auto layout = programs_.runs().Layout(next.inputs(), 0);
-    auto out = OutputCopies(next);
-    if (upcoming->runs[0].has_graph() || upcoming->runs[0].uncapturable ||
-        upcoming->runs[0].ahead_refused || !layout || !out || !plans_.ChargeGraph(*upcoming)) {
-      upcoming = nullptr;
-    } else {
-      upcoming_copies = std::move(*layout);
-      upcoming_outputs = std::move(*out);
-    }
-  }
-  // Independent optional grants for the distinct missing futures.
-  std::array<const pl::StepShape*, 4> build{};
-  std::size_t build_count = 0;
-  if (node_.threaded()) {
-    for (std::size_t k = 0;
-         k < ahead.shapes.size() && build_count < std::min<std::size_t>(ahead.build, build.size());
-         ++k) {
-      if (distinct[k] && ahead_cached[k] == nullptr) build[build_count++] = &*ahead.shapes[k];
-    }
-  }
-  PrefillLookaheadGroup<StepPlanned, 4> future(node_, plan_floor_bytes_);
-  bool funded = false;
-  for (std::size_t i = 0; i < build_count; ++i) {
-    ++lookahead_.attempted;
-    if (!future.Fund(i)) {
-      ++lookahead_.refused;
-      build[i] = nullptr;
-    } else {
-      funded = true;
-    }
-  }
-  StepReport report;
-  const std::function<void()> meanwhile = funded ? std::function<void()>([&] {
-    const auto built = future.BuildAll(
-        [&](std::size_t i) -> std::expected<std::unique_ptr<StepPlanned>, std::string> {
-          if (build[i] == nullptr) return Error("not funded");
-          auto program = source_->Build(*build[i], AddressesFor(*build[i], false));
-          if (!program) return std::unexpected(std::move(program.error()));
-          auto planned = std::make_unique<StepPlanned>();
-          planned->program = std::move(*program);
-          // Fund already charged this future's allowance. Keep construction
-          // ownership until its actual returned storage fits that paid owner;
-          // an oversized future is destroyed by the existing Build refusal.
-          if (PlannedHostBytes(*planned) <= plan_floor_bytes_) planned->program->ConstructionPaid();
-          return planned;
-        });
-    for (std::size_t i = 0; i < built.size(); ++i) {
-      lookahead_.built += built[i];
-      report.built_ahead += built[i];
-      lookahead_.build_seconds += future.seconds(i);
-    }
-  })
-                                                 : std::function<void()>{};
-
-  // The next shape's fresh state, prepared before the job.
-  if (ahead.prepare && ahead.shapes[0] && CheckShape(*ahead.shapes[0])) {
-    for (const pl::Segment& s : ahead.shapes[0]->segments) {
-      // Through what that step will back (Admit): its reads, common or not.
-      auto prepared = slots_.PrepareThrough(s.slot, std::max(s.past + s.rows, s.read_cells),
-                                            ahead.shapes[0]->read_align, ahead.shapes[0]->stage);
-      if (!prepared) {
-        // A drain that cannot prove its page-ins retired quarantined a
-        // state: then the refusal is not clean.
-        const bool drained = slots_.FinishPreparations().has_value();
-        return Refused(prepared.error(), drained);
-      }
-      report.prepared_ahead = report.prepared_ahead || *prepared;
-    }
-    lookahead_.prepared += report.prepared_ahead;
-  }
-
-  // A verify's saves (D-068): what it writes in each stage, by row, into
-  // that stage's snapshot, queued in its job before its run.
-  struct Saving {
-    LiveState* live = nullptr;
-    std::uint32_t rows = 0;
-    bool any = false;     // ranges to queue (a committing or truncating stage may have none)
-    bool queued = false;  // its saves were queued (or it had none): a failure undoes it whole
-  };
-  std::vector<Saving> saving;
-  if (verify) {
-    for (const pl::Segment& s : shape.segments) {
-      for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
-        if (!Verifies(s.slot, stage)) continue;
-        const bool commits = commits_.at((std::size_t{s.slot} * slots_.stages()) + stage);
-        auto writes = model::WritesFor(slots_.layout(stage), s.past, s.rows,
-                                       {.commits = commits, .drafter = stage != 0});
-        if (!writes) {
-          const bool drained = slots_.FinishPreparations().has_value();
-          return Refused(std::format("a verify's saves: {}", writes.error()), drained);
-        }
-        LiveState& live = slots_.live(s.slot, stage);
-        live.BeginSaves();
-        const std::uint64_t base = live.base(0);
-        Status saved;
-        bool any = false;
-        for (std::uint32_t r = 0; r < s.rows && saved; ++r) {
-          for (const model::StateRange& range : writes->rows[r]) {
-            saved = live.Save(base + range.offset, range.bytes, r);
-            if (!saved) break;
-            any = true;
-          }
-        }
-        for (const model::StateRange& range : writes->scratch) {
-          if (!saved) break;
-          saved = live.Save(base + range.offset, range.bytes, -1);
-          any = true;
-        }
-        if (!saved) {
-          live.BeginSaves();
-          if (!slots_.FinishPreparations()) return Refused(saved.error(), false);
-          return Refused(saved.error(), true, s.slot);
-        }
-        // Every stage it writes or commits, even one that saves nothing
-        // (every tensor it writes there truncates): its rows await their
-        // Accept, and a failure undoes it whole (by nothing), never
-        // quarantines it.
-        saving.push_back({.live = &live, .rows = s.rows, .any = any});
-      }
-    }
-  }
-
-  if (auto begin = BeginRouted(program, runs, *copies, *outputs, *carries, capture); !begin)
-    return Refused(begin.error(), slots_.FinishPreparations().has_value());
-  struct RoutedCleanup {
-    ModelRunner& runner;
-    ~RoutedCleanup() { runner.ForgetUnstartedRouted(); }
-  } routed_cleanup{*this};
-  // What the step writes, recorded before the job (incremental spill).
-  for (const pl::Segment& s : shape.segments) {
-    if (auto recorded = slots_.RecordWrite(s.slot, s.past); !recorded) {
-      if (!slots_.FinishPreparations()) return Refused(recorded.error(), false);
-      return Refused(recorded.error(), true, s.slot);
-    }
-  }
-  bool wrote = false, unknown = false;
-  // What of `wrote` is the step's own work (its program's queueing), apart
-  // from what its owners owed: owed work runs whole or stays owed, so a
-  // failure after it alone leaves their states as consistent as before.
-  bool own_wrote = false;
-  // A verify's saves queued: work on the stream (the job never "not
-  // started"), though they write no state.
-  bool saves_queued = false;
-  for (const pl::Segment& s : shape.segments) {
-    if (auto prepared = slots_.PrepareOwed(s.slot); !prepared) {
-      const bool drained = slots_.FinishPreparations().has_value();
-      return Refused(prepared.error(), drained && !slots_.faulted() && slots_.usable(s.slot));
-    }
-  }
-  for (RowRead& read : row_reads) {
-    RowTableState& table = *read.table;
-    const int fd = config_.weights[table.config.weight.stage].weights->shard_fd(table.shard);
-    if (fd < 0)
-      return Refused("a row table's shard is not open", slots_.FinishPreparations().has_value());
-    if (auto loaded = ReadPleRows(*table.storage, fd, read.plan, table.landing); !loaded) {
-      table.stalled = table.storage->in_flight() != 0;
-      const bool drained = slots_.FinishPreparations().has_value();
-      return Refused(loaded.error(), drained && !table.stalled);
-    }
-    std::ranges::copy(read.plan.sources, table.sources);
-    *table.count = static_cast<std::uint32_t>(read.plan.sources.size());
-  }
-  if (verify) {
-    for (const pl::Segment& s : shape.segments) {
-      if (auto checked = slots_.CheckProgressVerify(s.slot, s.rows); !checked)
-        return Refused(checked.error(), slots_.FinishPreparations().has_value());
-    }
-    for (const pl::Segment& s : shape.segments) {
-      if (auto begun = slots_.BeginProgressVerify(s.slot, s.rows); !begun) {
-        (void)slots_.FinishPreparations();
-        for (const pl::Segment& owner : shape.segments) slots_.ProgressVerifyFailed(owner.slot);
-        return Refused(begun.error(), false);
-      }
-    }
-  }
-  std::string failure;
-  auto posted = node_.Job(
-      slots_.execution(),
-      [&](providers::NativeStream native) {
-        // What the owners' states owe (a verify's restore and commit)
-        // before this step's own work.
-        for (const pl::Segment& s : shape.segments) {
-          auto owed = slots_.QueueOwed(s.slot, native);
-          wrote = wrote || owed.wrote;
-          if (!owed.result) {
-            failure = owed.result.error().detail;
-            unknown = owed.result.error().unknown;
-            return unknown ? sc::JobResult::kUnknown
-                   : wrote ? sc::JobResult::kFailed
-                           : sc::JobResult::kNotStarted;
-          }
-        }
-        for (Saving& sv : saving) {
-          // Nothing to save (what it writes truncates, or a commit rebuilds
-          // it): undone whole by nothing.
-          if (sv.any) {
-            if (auto saved = sv.live->QueueSaves(native); !saved) {
-              failure = saved.error().detail;
-              unknown = saved.error().unknown;
-              return unknown                 ? sc::JobResult::kUnknown
-                     : wrote || saves_queued ? sc::JobResult::kFailed
-                                             : sc::JobResult::kNotStarted;
-            }
-            saves_queued = true;
-          }
-          sv.queued = true;
-        }
-        // This point precedes the first leading-tap copy or private cache
-        // write. Clean planning/admission refusals never enter it.
-        for (const auto& segment : shape.segments) {
-          const auto* companion = CompanionFor(segment.slot, shape.stage);
-          if (companion == nullptr) continue;
-          for (const auto& [stage, unit] : companion->units) {
-            auto* progress = slots_.progress(segment.slot, stage);
-            Status marked = companion->part == CompanionPart::kPre ? progress->PreQueued(unit)
-                            : companion->part == CompanionPart::kTarget
-                                ? progress->TargetQueued(unit)
-                                : Status{};
-            if (!marked) {
-              failure = marked.error();
-              unknown = true;
-              return sc::JobResult::kUnknown;
-            }
-          }
-        }
-        // Outside any recording: their sources move with the positions.
-        for (const auto& [to, from, bytes] : *taps) {
-          const auto copied =
-              providers::CopyAsync(native, support::Pointer(to), support::Pointer(from), bytes,
-                                   providers::CopyKind::kDeviceToDevice);
-          if (!copied.ok()) {
-            failure = std::format("a chunk tap's carry: {}", copied.text());
-            unknown = true;
-            return sc::JobResult::kUnknown;
-          }
-          own_wrote = true;  // a drafter's tap cells: the step's own write
-        }
-        for (const auto& [to, from, bytes] : *features) {
-          if (const providers::DeviceStatus copied =
-                  providers::CopyAsync(native, support::Pointer(to), support::Pointer(from), bytes,
-                                       providers::CopyKind::kDeviceToDevice);
-              !copied.ok()) {
-            failure = std::format("a step's features: {}", copied.text());
-            unknown = true;
-            return sc::JobResult::kUnknown;
-          }
-        }
-        for (const RowRead& read : row_reads) {
-          const RowTableState& table = *read.table;
-          if (!kernels::paging::GatherPleRows(
-                  table.landing, table.sources, table.count,
-                  static_cast<std::uint32_t>(read.plan.slots.size()),
-                  static_cast<std::uint32_t>(table.table.row_bytes),
-                  static_cast<std::byte*>(support::Pointer(table.slots.base)), native.handle)) {
-            failure = "a row table's gather failed";
-            unknown = true;
-            return sc::JobResult::kUnknown;
-          }
-          saves_queued = true;
-        }
-        const StepQueued q = program.routed()
-                                 ? QueueRoutedPrefix(native)
-                                 : programs_.runs().Queue(runs, *copies, {}, program, *outputs,
-                                                          capture, graph_stats_, native);
-        own_wrote = own_wrote || q.before || q.result.has_value();
-        wrote = wrote || own_wrote;
-        report.path = q.path;
-        if (!q.result) {
-          failure = q.result.error().detail;
-          unknown = q.result.error().error == kn::StepError::kUnknown;
-          return unknown                 ? sc::JobResult::kUnknown
-                 : wrote || saves_queued ? sc::JobResult::kFailed
-                                         : sc::JobResult::kNotStarted;
-        }
-        if (!program.routed())
-          for (const auto& [to, from, bytes] : *carries) {
-            if (const providers::DeviceStatus copied =
-                    providers::CopyAsync(native, support::Pointer(to), support::Pointer(from),
-                                         bytes, providers::CopyKind::kDeviceToDevice);
-                !copied.ok()) {
-              failure = std::format("a step's carried features: {}", copied.text());
-              unknown = true;
-              return sc::JobResult::kUnknown;
-            }
-          }
-        if (upcoming != nullptr) {
-          auto captured = programs_.runs().CaptureAhead(upcoming->runs[0], upcoming_copies,
-                                                        *upcoming->planned->program,
-                                                        upcoming_outputs, graph_stats_, native);
-          if (!captured) {
-            // This run's work is queued; the capture's fault is the launch's.
-            failure = captured.error().detail;
-            unknown = true;
-            return sc::JobResult::kUnknown;
-          }
-          report.captured_ahead = *captured;
-        }
-        return sc::JobResult::kQueued;
-      },
-      "a model step", stream_, meanwhile);
-  if (program.routed() && posted && failure.empty() && !programs_.launch()->faulted()) {
-    if (auto continued = ContinueRouted(report.path); !continued) {
-      failure = continued.error();
-      unknown = true;  // prefix effects exist; no completion inferred from refusal
-      posted = Error(continued.error());
-    }
-  }
-  // The job retired: every optional preparation drained before anything
-  // else touches the state.
-  const Status preparation = slots_.FinishPreparations();
-  // What a drafter step carried, by its slots: nothing until it ran.
-  for (const pl::Segment& seg : shape.segments) {
-    carry_rows_.at((std::size_t{seg.slot} * slots_.stages()) + shape.stage) = 0;
-  }
-  if (!posted || !failure.empty() || programs_.launch()->faulted()) {
-    slots_.CheckFailedJob();
-    for (const pl::Segment& s : shape.segments) {
-      (void)slots_.CompleteOwed(s.slot, false,
-                                !posted || unknown ? LiveState::CopyRetirement::kUnproven
-                                                   : LiveState::CopyRetirement::kProven);
-    }
-    // What the step's own work may write: its stage, and on the target the
-    // drafters' taps (Admit's rule). Another stage changed only by what it
-    // owed, which ran whole or stays owed (a partial queueing is unknown).
-    const auto written = [&](std::size_t stage) {
-      return stage == shape.stage ||
-             (shape.stage == 0 &&
-              std::ranges::any_of(slots_.layout(stage).items,
-                                  [](const auto& item) { return item.contract.target_writes; }));
-    };
-    for (const pl::Segment& s : shape.segments) {
-      for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
-        LiveState& live = slots_.live(s.slot, stage);
-        // A verify whose saves were queued is undone whole; anything else
-        // the step's own work may have written quarantines (not what its
-        // owners owed, which ran whole: counting it would quarantine a
-        // state the failure left consistent).
-        const auto sv = std::ranges::find(saving, &live, &Saving::live);
-        (void)live.Settle(sv != saving.end() && sv->queued, own_wrote && written(stage), unknown);
-      }
-      if (verify) slots_.ProgressVerifyFailed(s.slot);
-    }
-    if (programs_.launch()->faulted()) slots_.Fault();
-    future.Abandon();
-    // A faulted cohort (the launch's fault, or one CheckFailedJob found:
-    // a scheduler fault, a lost lease) quarantined every owner, written or
-    // not: never clean.
-    return Refused(!failure.empty() ? failure
-                   : !posted        ? posted.error()
-                                    : "the launch faulted",
-                   !wrote && !unknown && !slots_.faulted() && preparation.has_value());
-  }
-  for (const pl::Segment& s : shape.segments) {
-    if (auto completed = slots_.CompleteOwed(s.slot, true); !completed) {
-      future.Abandon();
-      return Refused(completed.error(), false);
-    }
-  }
-  // The verify ran: its rows await their Accept in every stage it writes or
-  // that commits.
-  for (const Saving& sv : saving) sv.live->Verified(sv.rows);
-  if (!preparation) {
-    // This step's writes completed but no position is published: every
-    // owner becomes unusable rather than expose state at an old cursor.
-    for (const pl::Segment& s : shape.segments) {
-      for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
-        slots_.live(s.slot, stage).Quarantine();
-      }
-    }
-    future.Abandon();
-    return Refused(preparation.error(), false);
-  }
-  const auto installed =
-      future.InstallAfterCompletion([&](std::size_t i, std::unique_ptr<StepPlanned> planned,
-                                        double seconds, const auto& transfer) {
-        return Install(*build[i], std::move(planned), seconds, transfer).has_value();
-      });
-  for (const bool cached : installed) {
-    lookahead_.cached += cached;
-    report.cached_ahead += cached;
-  }
-  for (const kn::OutputSlot& out : program.outputs()) {
-    if (out.features && out.segment < shape.segments.size()) {
-      const pl::Segment& seg = shape.segments[out.segment];
-      carry_rows_.at((std::size_t{seg.slot} * slots_.stages()) + shape.stage) = seg.outputs;
-    }
-  }
-  lookahead_.captured_ahead += report.captured_ahead;
-  if (shape.stage == 0) {
-    for (const pl::Segment& seg : shape.segments) {
-      for (std::size_t stage = 1; stage < slots_.stages(); ++stage) {
-        const auto* tap = model::FeatureTap(slots_.layout(stage));
-        if (tap == nullptr || tap->contract.cells != model::CellRule::kPerRow) continue;
-        const std::size_t at = (std::size_t{seg.slot} * slots_.stages()) + stage;
-        const TapRows held = HeldTapRows(seg.slot, stage);
-        previous_tap_rows_[at] = verify ? held : TapRows{};
-        tap_rows_[at] = {.first = seg.past,
-                         .count = seg.rows,
-                         .preceding = std::uint64_t{held.first} + held.count == seg.past
-                                          ? std::min(held.count, tap->contract.window_or_ratio)
-                                          : 0};
-      }
-    }
-  }
-  report.captured_first = capture_first && report.path == RunPath::kCaptured;
-  lookahead_.captured_first += report.captured_first;
-  Count(graph_stats_, report.path);
-
-  for (const auto& segment : shape.segments) {
-    const auto* companion = CompanionFor(segment.slot, shape.stage);
-    if (companion == nullptr) continue;
-    for (const auto& [stage, unit] : companion->units) {
-      auto* progress = slots_.progress(segment.slot, stage);
-      Status completed = companion->part == CompanionPart::kPre ? progress->PreCompleted(unit)
-                         : companion->part == CompanionPart::kTarget
-                             ? progress->TargetCompleted(unit)
-                             : progress->PostCompleted(unit);
-      if (!completed) {
-        progress->Quarantine();
-        return Refused(completed.error(), false);
-      }
-    }
-  }
-  // Each owner's own outputs, then its positions.
-  report.outputs.resize(shape.segments.size());
-  for (std::size_t i = 0; i < program.outputs().size(); ++i) {
-    const kn::OutputSlot& slot = program.outputs()[i];
-    const auto* from = support::Pointer((*outputs)[i][0]);
-    const auto bytes = std::span(static_cast<const std::byte*>(from), slot.bytes);
-    std::vector<std::byte>& to =
-        slot.segment == ir::kJoinedSegment ? report.joined : report.outputs.at(slot.segment);
-    to.insert(to.end(), bytes.begin(), bytes.end());
-  }
-  if (request.advance) {
-    for (const pl::Segment& s : shape.segments) {
-      if (auto set = slots_.SetPositions(s.slot, s.past + s.rows); !set) {
-        // Admitted owners always take their positions; should one not, the
-        // step's writes are done but not every cursor moved: every owner
-        // becomes unusable, and no peer may run the step again (no slot).
-        for (const pl::Segment& o : shape.segments) {
-          for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
-            slots_.live(o.slot, stage).Quarantine();
-          }
-        }
-        return Refused(set.error(), false);
-      }
-    }
-  }
-  return report;
+  if (batch_active_ && request.batch.data_ != batch_active_)
+    return Refused("the runner is inside another owned complete batch");
+  if (step_flight_) return Refused("a step retains unproven effects", false);
+  auto transaction = StepTransaction::Begin(*this, request);
+  if (!transaction) return std::unexpected(std::move(transaction.error()));
+  step_flight_ = std::move(*transaction);
+  auto result = step_flight_->Run(request);
+  if (step_flight_->releasable())
+    step_flight_.reset();
+  else if (!result)
+    result.error().clean = false;
+  return result;
 }
 
 // -------------------------------------------------------------------- report

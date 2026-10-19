@@ -77,9 +77,14 @@ std::expected<void, std::string> ExecutionMetadataAllowance::Grow(
 }
 
 bool ExecutionMetadataAllowance::Charge(std::uint64_t bytes) {
-  if (bytes > capacity_ - used_) return false;
-  used_ += bytes;
-  peak_ = std::max(peak_, used_);
+  auto current = used_.load(std::memory_order_acquire);
+  do {
+    if (current > capacity_ || bytes > capacity_ - current) return false;
+  } while (!used_.compare_exchange_weak(current, current + bytes, std::memory_order_acq_rel,
+                                        std::memory_order_acquire));
+  // Only the serialized charging driver writes peak; releases never alter it.
+  const auto paid = current + bytes;
+  peak_.store(std::max(peak_.load(std::memory_order_relaxed), paid), std::memory_order_release);
   return true;
 }
 
@@ -87,7 +92,7 @@ std::expected<void, std::string> ExecutionMetadataAllowance::ChargeOrGrow(
     catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes, std::uint64_t budget,
     std::uint64_t available, std::uint64_t margin) {
   std::uint64_t needed = 0;
-  if (__builtin_add_overflow(used_, bytes, &needed))
+  if (__builtin_add_overflow(used(), bytes, &needed))
     return std::unexpected("metadata live charge overflows");
   if (!HeldBy(catalog, domain)) return std::unexpected("metadata charge lost its held payment");
   if (auto grown = Grow(catalog, domain, needed, budget, available, margin); !grown) return grown;
@@ -98,7 +103,11 @@ std::expected<void, std::string> ExecutionMetadataAllowance::ChargeOrGrow(
 void ExecutionMetadataAllowance::Release(std::uint64_t bytes) {
   // Releases are paired by the immutable metadata owner; an over-release must
   // not invent capacity on a malformed caller path.
-  if (bytes <= used_) used_ -= bytes;
+  auto current = used_.load(std::memory_order_acquire);
+  while (bytes <= current &&
+         !used_.compare_exchange_weak(current, current - bytes, std::memory_order_acq_rel,
+                                      std::memory_order_acquire)) {
+  }
 }
 
 namespace {
@@ -214,14 +223,36 @@ std::expected<void, std::string> NumericalDomain::CheckShape(
     return std::unexpected("the source does not qualify this step's owner count");
   }
   std::uint64_t rows = 0;
+  std::uint32_t decode_owners = 0;
+  std::uint64_t decode_rows = 0;
+  std::uint32_t primary_owners = 0;
   for (std::size_t i = 0; i < shape.segments.size(); ++i) {
     const auto& segment = shape.segments[i];
+    if (segment.origin_phase) {
+      if (shape.stage != 0 || shape.phase != planner::Phase::kPrefill || shape.row_invariant ||
+          *segment.origin_phase != planner::Phase::kDecode || segment.rows != 1)
+        return std::unexpected("mixed causal origin is not an ordinary target decode");
+      ++decode_owners;
+      decode_rows += segment.rows;
+      const auto original =
+          std::ranges::find(stage.phases, *segment.origin_phase, &NumericalPhase::phase);
+      if (original == stage.phases.end() || shape.segments.size() > original->max_owners ||
+          decode_owners > original->max_owners || segment.rows > original->max_owner_rows ||
+          decode_rows > original->max_total_rows)
+        return std::unexpected("mixed owner exceeds its original admitted phase");
+    } else {
+      ++primary_owners;
+    }
+
     if (segment.rows == 0 || segment.rows > phase->max_owner_rows ||
         (i != 0 && shape.segments[i - 1].slot >= segment.slot)) {
       return std::unexpected("the source does not qualify these ordered owner rows");
     }
     // At most 256 owners of uint32 rows, so this addition cannot overflow.
     rows += segment.rows;
+  }
+  if (decode_owners != 0 && primary_owners == 0) {
+    return std::unexpected("a mixed-origin prefill step has no prefill segment");
   }
   if (rows > phase->max_total_rows) {
     return std::unexpected("the source does not qualify this step's total rows");

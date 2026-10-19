@@ -76,6 +76,8 @@ struct ServingOptions {
   bool plain = false;
   // Debug: detailed plan records once per paid cache installation.
   bool debug_plans = false;
+  // Internal matched common-path measurement candidates, default off.
+  bool diagnostic_mixed_causal = false, diagnostic_mixed_outputs = false;
   // Internal default-off experiment, only with the paid shared service route.
   bool diagnostic_capture_first_verify = false;
   // Internal: a drafter stage's planning policy in place of its mapping's
@@ -137,8 +139,7 @@ struct ServingOptions {
   // overrides for matched controls only.
   bool zero_state = true;
   std::optional<std::size_t> handle_reserve;  // unset: the node's default
-  // The shared serving route's prompt prediction (ServingRecipe::
-  // shared_route: lookahead, state prepared ahead); internal matched-control
+  // Serving prompt prediction and state preparation; internal matched-control
   // overrides, no public setting or output-policy change.
   bool prefill_lookahead = true;
   bool prepare_state = true;

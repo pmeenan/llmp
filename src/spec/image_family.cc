@@ -218,6 +218,16 @@ std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
     for (const auto kind : c.kinds)
       if (!KnownKind(kind)) return Refused(std::format("{}: an unknown kind {}", c.role, kind));
   }
+  if (m.host_inputs.empty()) return Refused("declared image host inputs");
+  for (std::size_t i = 0; i < m.host_inputs.size(); ++i) {
+    const auto& input = m.host_inputs[i];
+    if (input.stage >= m.components.size() ||
+        static_cast<unsigned>(input.value) > static_cast<unsigned>(ImageInputValue::kLatentAffine))
+      return Refused("an image host input's stage or semantic value");
+    for (std::size_t j = 0; j < i; ++j)
+      if (m.host_inputs[j].stage == input.stage && m.host_inputs[j].slot == input.slot)
+        return Refused("unique image host input ports");
+  }
   // Every schema parameter of a used kind: exactly one rule.
   for (const auto& s : kSchema) {
     const bool used = std::ranges::any_of(

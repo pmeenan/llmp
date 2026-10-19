@@ -72,6 +72,7 @@
 #include <vector>
 
 #include "components/component.h"
+#include "components/input_values.h"
 #include "components/owner_products.h"
 #include "execution/step_shape.h"
 #include "ir/graph.h"
@@ -203,6 +204,10 @@ std::expected<std::uint32_t, std::string> StagePrefillRows(const spec::ModelSpec
 
 // The stage's batching capability: its components' own limits combined
 // (the tightest of each), over a step of any segments up to kMaxSegments.
+// Canonical component mask declarations, shared by serving policy and graph
+// construction. This reports a requirement; backend support is separate.
+std::expected<bool, std::string> StageIndexedMasks(const spec::ModelSpec& spec, std::size_t stage);
+
 std::expected<model::Batching, std::string> StageBatching(const spec::ModelSpec& spec,
                                                           std::size_t stage);
 
@@ -250,6 +255,11 @@ struct CellKey {
 // complete fewer than ceil(rows / ratio), and without it one where they
 // complete none: a dummy block, written to the compressed cache's last
 // cell, which no mask shows.
+model::ShapeParameterFact CompressorBlockParameter(std::uint32_t rows, std::uint32_t past,
+                                                   std::uint32_t ratio, bool overlap);
+// Its next coordinate is an end position, not a past position.
+model::ShapeParameterFact CompressedReadParameter(std::uint64_t end, std::uint32_t ratio,
+                                                  std::uint32_t cell_pad);
 std::uint64_t CompressorBlocks(std::uint32_t rows, std::uint32_t past, std::uint32_t ratio,
                                bool overlap);
 
@@ -273,10 +283,19 @@ std::expected<CompressorPlan, std::string> PlanCompressor(std::uint32_t rows, st
                                                           std::uint32_t ratio, bool overlap,
                                                           std::uint64_t ring, std::uint64_t cache);
 
+// Same compressor geometry, without constructing unrequested arrays. Every
+// sink is optional; omitted data still undergoes the same source validation.
+std::expected<void, std::string> EmitCompressor(std::uint32_t rows, std::uint32_t past,
+                                                std::uint32_t ratio, bool overlap,
+                                                std::uint64_t ring, std::uint64_t cache,
+                                                InputValueSink* reads, InputValueSink* cells,
+                                                InputValueSink* starts);
+
 // The Hadamard matrix of `n` (a power of two) values a row, normalized
 // (H[i][j] = (-1)^popcount(i & j) / sqrt(n)): the values of an
 // InputKind::kHadamard input, row-major ([n, n], ne[0] a row).
 std::vector<float> HadamardValues(std::uint64_t n);
+std::expected<void, std::string> WriteHadamard(std::uint64_t n, std::span<std::byte> into);
 
 // The step's interface: an input leaf and what it holds.
 enum class InputKind : std::uint8_t {
@@ -689,6 +708,10 @@ std::expected<Instance, std::string> MakeInstance(const spec::ComponentRef& ref,
 // An input's values for `shape` (each segment's past) and the step's
 // `tokens` (kTokens'), in the input's logical order; kStream's and
 // kFeatures' are the caller's.
+std::expected<void, std::string> EmitInputValues(const StepInput& input,
+                                                 const planner::StepShape& shape,
+                                                 std::span<const std::int32_t> tokens,
+                                                 InputValueSink& into);
 std::expected<std::vector<std::int64_t>, std::string> InputValues(
     const StepInput& input, const planner::StepShape& shape, std::span<const std::int32_t> tokens);
 

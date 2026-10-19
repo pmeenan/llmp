@@ -326,6 +326,23 @@ TEST_F(SlotLifecycleTest, NullExecutionIdentityPreservesLegacyLayoutAndCannotBeR
   EXPECT_EQ(slots().kept_layout_id(), unbound_layout_);
 }
 
+TEST_F(SlotLifecycleTest, CursorPublicationChecksEveryOwnerBeforeChangingAnyCursor) {
+  const std::array<std::pair<std::uint32_t, std::uint32_t>, 2> invalid{std::pair{0U, 1U},
+                                                                       std::pair{1U, kContext + 1}};
+  EXPECT_FALSE(slots().SetPositions(invalid));
+  EXPECT_EQ(slots().positions(0), 0U);
+  EXPECT_EQ(slots().positions(1), 0U);
+  const std::array<std::pair<std::uint32_t, std::uint32_t>, 2> duplicated{std::pair{0U, 1U},
+                                                                          std::pair{0U, 2U}};
+  EXPECT_FALSE(slots().SetPositions(duplicated));
+  EXPECT_EQ(slots().positions(0), 0U);
+  const std::array<std::pair<std::uint32_t, std::uint32_t>, 2> valid{std::pair{0U, 1U},
+                                                                     std::pair{1U, 2U}};
+  ASSERT_TRUE(slots().SetPositions(valid));
+  EXPECT_EQ(slots().positions(0), 1U);
+  EXPECT_EQ(slots().positions(1), 2U);
+}
+
 class QualifiedSlotLifecycleTest : public SlotLifecycleTest {
  protected:
   std::optional<llmp::base::Sha256Digest> ExecutionIdentity() const override {

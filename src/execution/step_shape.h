@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <vector>
 
 #include "base/sha256.h"
@@ -43,10 +44,14 @@ struct Segment {
   bool want_head = true;         // false: the head is skipped (state-only)
   bool greedy = false;           // tokens chosen on the device instead of logits returned
 
+  // Present only in a mixed causal target step normalized to kPrefill. It
+  // retains each owner's real invocation role for keys and admission.
+  std::optional<Phase> origin_phase{};
+
   bool operator==(const Segment& other) const {
     return slot == other.slot && rows == other.rows && read_cells == other.read_cells &&
            outputs == other.outputs && group == other.group && want_head == other.want_head &&
-           greedy == other.greedy;
+           greedy == other.greedy && origin_phase == other.origin_phase;
   }
 };
 
@@ -117,6 +122,7 @@ inline std::size_t HashOf(const PlanKey& key) {
     mix((std::uint64_t{s.slot} << 56U) | (std::uint64_t{s.group} << 48U) |
         (std::uint64_t{s.want_head} << 40U) | (std::uint64_t{s.greedy} << 32U) | s.rows);
     mix((std::uint64_t{s.read_cells} << 32U) | s.outputs);
+    if (s.origin_phase) mix(0x100U + static_cast<std::uint64_t>(*s.origin_phase));
   }
   for (const std::uint64_t p : key.parameters) mix(p);
   return static_cast<std::size_t>(h);

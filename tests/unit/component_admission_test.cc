@@ -543,8 +543,9 @@ TEST_F(ComponentAdmissionTest, PolicyRechecksTheApprovedSpecBeforeSelectingItsRe
 TEST_F(ComponentAdmissionTest, AnApprovedEnvelopeIsADefaultNotABound) {
   const rt::Approval* approval = rt::FindApproval(source.architecture, origins);
   ASSERT_NE(approval, nullptr);
-  EXPECT_TRUE(rt::WithinApprovedEnvelope(*approval, {.context = 8192, .slots = 2}));
-  EXPECT_FALSE(rt::WithinApprovedEnvelope(*approval, {.context = 8192, .slots = 3}));
+  EXPECT_EQ(approval->max_slots, 4U);
+  EXPECT_TRUE(rt::WithinApprovedEnvelope(*approval, {.context = 8192, .slots = 4}));
+  EXPECT_FALSE(rt::WithinApprovedEnvelope(*approval, {.context = 8192, .slots = 5}));
   const auto past = rt::AdmittedPolicy(model, source, approval, {.context = 4096, .slots = 16});
   ASSERT_TRUE(past) << (past ? "" : past.error());
   EXPECT_FALSE(rt::AdmittedPolicy(model, source, approval, {.context = 8193, .slots = 1}));

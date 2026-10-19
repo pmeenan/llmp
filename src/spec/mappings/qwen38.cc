@@ -342,12 +342,15 @@ constexpr std::array kParams = {
 constexpr std::array kPolicies = {
     PolicyRule{.gate = kStacked,
                .text = "max_decode_rows 16\n"
-                       "enable owner_row_invariant\n"},
+                       "enable owner_row_invariant\n",
+               .common_read = true},
     PolicyRule{.gate = kScaled,
                .text = "max_decode_rows 16\n"
-                       "enable owner_row_invariant\n"},
+                       "enable owner_row_invariant\n",
+               .common_read = true},
     PolicyRule{.text = "max_decode_rows 16\n"
-                       "enable owner_row_invariant\n"},
+                       "enable owner_row_invariant\n",
+               .common_read = true},
 };
 
 // Its serving: the derived shared route, qualified by its plain or joined
@@ -372,10 +375,8 @@ constexpr ServingRecipe kServing{.family = "Qwen3.8",
                                  .default_shared_wave_depth = 2,
                                  .default_draft_wave_max = 2,
                                  .default_wave_read_align = 2048,
-                                 .shared_route = true,
-                                 .qualified_envelopes = true,
-                                 .frozen_host_masks = false,
-                                 .branch_depth = 3};
+
+                                 .frozen_host_masks = false};
 
 constexpr std::array kGates = {
     GateRule{.key = "qwen4exp.expert_count", .kind = "ffn.moe"},

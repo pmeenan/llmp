@@ -223,6 +223,9 @@ struct PolicyRule {
   std::string_view text{};
   bool prompts_alone = false;
   bool owners_alone = false;
+  // The admitted composition's joined read semantics, independent of which
+  // backend mechanisms serving selects. Numerical grants remain separate.
+  bool common_read = false;
   std::uint8_t prefill_lookahead = 2;
   bool capture_ahead = true;
   std::uint32_t prefill_chunk = 0;
@@ -264,10 +267,8 @@ struct ServingRecipe {
   // settings' bases and refusals ("Gemma", "Gemma3").
   std::string_view family{};
   std::string_view name{};
-  // A bounded scalar-cohort route: a prompt chunk of at most
-  // `prefill_rows` (or the rows its envelope's policy rule names), one
-  // owner by default, at most twelve within its chunk, a provisional
-  // recompute cost. Otherwise `prefill_rows` is the measured default.
+  // Profile defaults may depend on the admitted envelope. Settings remain
+  // preferences; actual component/backend and paid capacity bound execution.
   bool bounded = false;
   std::uint32_t prefill_rows = 0;
   // Above this context, `deep_prefill_rows` (the mask's memory; 0: none).
@@ -275,12 +276,6 @@ struct ServingRecipe {
   std::uint32_t deep_prefill_rows = 0;
   // A bounded default context, wider ones an explicit opt-in (0: none).
   std::uint32_t default_context = 0;
-  // Configured owners at most (0: no bound of its own); above
-  // `wide_context`, exactly one (0: none).
-  std::uint32_t max_owners = 0;
-  std::uint32_t wide_context = 0;
-  // A speculating model's owners at most (0: no bound of its own).
-  std::uint32_t speculative_owners = 0;
   // Whether a drafter may be configured at all.
   bool drafters = true;
   // draft_rows applies without a drafter; within a block drafter's block
@@ -311,6 +306,7 @@ struct ServingRecipe {
   double default_depth_cost_ratio = 0;
   std::uint32_t default_shared_wave_depth = 0;
   std::uint32_t default_draft_wave_max = 0;
+  bool default_wave_lanes = false;
   std::uint32_t default_wave_read_align = 256;
   // What of its chat template the chat route serves (its qualified slice,
   // whatever template the model renders: a native match or an owner's
@@ -324,25 +320,9 @@ struct ServingRecipe {
   bool chat_tools = true;
   std::span<const std::string_view> chat_stops{};
   std::optional<bool> default_thinking{};
-  // Construction. The derived shared route: its numerical domain derived
-  // from the actual spec, state and owners, every joined read at the
-  // settings' wave_read_align, prompt capture off, tokens chosen and
-  // verified on the device, a layer's routed experts in slabs of 16.
-  bool shared_route = false;
-  // How a shared route is qualified: by its plain, joined-MTP or
-  // joined-scoring envelopes, one owner otherwise (qualified_envelopes);
-  // without them, only in its automatic serving shape, a derived domain for
-  // every envelope.
-  bool qualified_envelopes = false;
   // The runner stages a frozen read's host mask.
   bool frozen_host_masks = true;
-  // A conversation-owned adaptive depth's ceiling (0: none).
-  std::uint32_t branch_depth = 0;
-  // Joined waves' owner regions on lanes of their own.
-  bool lanes = false;
-  // The lowering's lightning-indexer mask form.
-  bool lid_mask = false;
-  // The shared route's recipe in place of the admitted one (its policy
+  // The serving composition in place of the admitted one (its policy
   // text and how it composes steps); null: the admitted one.
   const PolicyRule* serving_rule = nullptr;
 };

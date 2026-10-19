@@ -80,7 +80,8 @@ std::expected<Copies, std::string> StepRuns::Stage(std::span<const kn::InputSlot
 std::expected<void, kn::StepFailure> StepRuns::Record(
     const Copies& inputs, const std::function<bool(providers::NativeStream)>& between,
     const kn::StepProgram& program, std::span<const RunCopy> outputs,
-    providers::NativeStream native, bool warm) const {
+    providers::NativeStream native, bool warm, bool* program_unknown) const {
+  if (program_unknown) *program_unknown = false;
   for (const auto& [to, bytes, at] : inputs) {
     if (const providers::DeviceStatus copied = providers::CopyAsync(
             native, Pointer(to), staging_ + at, bytes, providers::CopyKind::kHostToDevice);
@@ -91,8 +92,10 @@ std::expected<void, kn::StepFailure> StepRuns::Record(
   if (between && !between(native)) {
     return std::unexpected(Unknown("the work queued between the inputs and the program"));
   }
-  if (auto ran = warm ? program.RunWarm(*launch_, native) : program.Run(*launch_, native); !ran)
+  if (auto ran = warm ? program.RunWarm(*launch_, native) : program.Run(*launch_, native); !ran) {
+    if (program_unknown) *program_unknown = ran.error().error == kn::StepError::kUnknown;
     return ran;
+  }
   for (const auto& [to, from, bytes] : outputs) {
     if (const providers::DeviceStatus copied = providers::CopyAsync(
             native, Pointer(to), Pointer(from), bytes, providers::CopyKind::kDeviceToHost);
@@ -297,7 +300,7 @@ StepQueued StepRuns::Queue(StepPlanRuns& runs, const Copies& inputs,
   if (beside) {
     ++runs.eager_runs;
     q.before = true;
-    q.result = Record(inputs, between, program, outputs, native, warm);
+    q.result = Record(inputs, between, program, outputs, native, warm, &q.program_unknown);
     if (!q.result) return q;
   }
   if (capture) {
@@ -316,7 +319,7 @@ StepQueued StepRuns::Queue(StepPlanRuns& runs, const Copies& inputs,
   }
   ++runs.eager_runs;
   q.before = true;
-  q.result = Record(inputs, between, program, outputs, native, warm);
+  q.result = Record(inputs, between, program, outputs, native, warm, &q.program_unknown);
   return q;
 }
 

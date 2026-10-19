@@ -283,7 +283,7 @@ artifacts (no process lock, no device), so it runs beside the service.
 | `context` | LLM | tokens, 512 to 2^32−1 | derived: the trained context (GGUF `<arch>.context_length`, `config.json` `max_position_embeddings`, or the original context times a rope scaling factor where that is longer) when below 262,144, within the runner's own ceiling; else fallback 262,144. An override past the ceiling is refused |
 | `speculation` | LLM | boolean | derived: true with a drafter, false without (`--plain`: false) |
 | `prefill_chunk` | LLM | rows, 1 to 262,144 | fallback: 4,096 (DeepSeek above 262,144 tokens of context: 2,048); then capped by the model at its context (below) |
-| `max_slots` | LLM | 1 to 16 | fallback: 4, the measured knee; DeepSeek with DSpark at most 8 (below) |
+| `max_slots` | LLM | 1 to 16 | fallback: 4; an admitted envelope or calibration may choose fewer. Actual component/backend and paid capacity govern each step |
 | `prefill_floor_tok_s` | LLM | tokens a second, 1 to 1,000,000 | calibrated: a third of the measured prefill speed at short context; else fallback 100 (progress and deadlines, below) |
 | `decode_floor_tok_s` | LLM | tokens a second, 1 to 100,000 | calibrated: a third of the measured decode speed a request at short context (its steps', or its waves' with the peers sharing them); else fallback 5 |
 | `recompute_ms_per_token` | LLM | milliseconds, above 0 to 10^6 | calibrated: the slowest of three whole prefills of 8,192 tokens or more, a token; else fallback 1.4, DeepSeek's prefill (16,384 tokens in 22.9 s). The reclaim order's cost of dropping an idle conversation is its tokens at this cost |
@@ -296,8 +296,8 @@ artifacts (no process lock, no device), so it runs beside the service.
 | `depth_cost_ratio` | Qwen3.8 | above 0 to 100 | calibrated: a three-draft step's measured time over a two-draft step's; else fallback 1.16 (adaptive depth, below) |
 | `shared_wave_depth` | Qwen3.8 | drafts, 1 to 16 | fallback 2: a request's drafts in a wave of several; at most `draft_rows` (listed so) |
 | `draft_wave_max` | Qwen3.8 | requests, 1 to 16 | fallback 2: past it each request drafts alone |
-| `wave_lanes` | Qwen3.8 | boolean | fallback true: independent work within a wave runs on per-request streams from four requests; smaller waves keep one stream |
-| `wave_read_align` | Qwen3.8 | a power of two, 256 to 65,536 | fallback 2,048: the cells a wave reads, rounded up (coarser keeps plans replayable; GGUF equivalence is qualified at the same alignment) |
+| `wave_lanes` | LLM | boolean | fallback true: requests concurrent owner lanes when the admitted source and compiled backend support them; their workspace is paid separately |
+| `wave_read_align` | LLM | a power of two, 256 to 65,536 | fallback 2,048: the cells a wave reads, rounded up (coarser keeps plans replayable; GGUF equivalence is qualified at the same alignment) |
 | `image_size` | composition | pixels, 64 to 2,048, a multiple of 32 | fallback 1,024 (its latents file must match) |
 | `image_steps` | composition | 2 to 100 | fallback 40 |
 
@@ -305,6 +305,27 @@ artifacts (no process lock, no device), so it runs beside the service.
 the model's files rather than settings. Kernel schedules (the D2R, IQ2 pair, output-A and MXFP8 tables)
 are still chosen by hand-tuned tables for the GB10 and the measured
 shapes; their calibration on the machine is later work.
+
+All LLM construction uses one declared backend and an immutable serving policy
+resolved from the admitted component batching, exact state layouts, configured
+preferences and compiled backend support. Source identity and numerical
+transformation qualifications remain separate requirements. Internal diagnostic
+setup shapes must fit their explicit domain and physical geometry; a narrower
+measurement does not authorize a larger output or workspace. Literal scoring
+admits complete batches against the same node budget, including device head
+workspace, DMA and owned result rows, and retries smaller untouched batches on
+real capacity refusal. Callback cancellation stops subsequent work; retired
+history may extend beyond delivered scores. Same-process scoring resume keeps
+the paid pending rows and publishes them before another native submission.
+
+The runtime separates startup and kept-model bookkeeping (`serving.cc`), reclaim
+and spill budgets (`serving_memory.cc`), and physical swaps and recovery
+(`serving_swap.cc`). Service lifetime stays in `serve_api.cc`; serial and
+cooperative requests run in `service_backend.cc` and `service_cohort.cc`, sharing
+paid request ownership from `service_request`. Connection I/O, response streaming
+and the cooperative HTTP driver live in `api_connection.cc`, `api_stream.cc` and
+`api_dispatch.cc`. LLM branch/checkpoint storage remains in `llm.cc`, with prompt
+and scoring sessions in `llm_prompt.cc` and generation in `llm_generation.cc`.
 
 ### Calibration
 
@@ -938,11 +959,15 @@ identity or the independent shared-prefix and branch cache planned under
 D-031. The native control and measurements are in
 [turn reuse](experiments/turn-reuse/README.md).
 
-The image pipeline generates the prompt and initial latents it registered
-with: this slice's image runner (being reworked by the image-speed slice)
-takes them at setup, so a process serves one image prompt, and the latents
-come from a file (the reference's for its seed; a native seeded generator
-is still to come).
+Image requests prepare prompt and noise at initial or completed boundaries.
+Noise may be a paid immutable BF16 row/channel buffer or runtime file input;
+exact dtype, layout, extent and finiteness are validated before use. Source
+construction is paid before allocation. Same-layout replacement retains
+addresses and captures; geometry replacement measures and adopts atomically.
+The runtime parses requests and files and observes output. The engine's
+`StagedExecution` owns stage execution and retained retirement. Current VAE
+execution requires F32 weights; F16/BF16 imports remain preserved and ordinary
+admission explicitly refuses them.
 
 ## Conversations kept across a restart
 
@@ -1772,10 +1797,9 @@ with the cap: across two bursts Qwen3.8 planned 1.8 s at four slots and
 budget and reclaimable, but taken from conversation-state room). The start logs the
 value and its source (`model NAME: 4 request slots (fallback: the knee
 measured on a GB10 (D-104))`). Sixteen
-is the most a model takes: sixteen one-row decode steps fill the joined
-products' sixteen rows; with DSpark, DeepSeek takes at most eight (a
-verify of at least two rows a request), and a larger `max_slots` is
-lowered with the reason logged.
+is the request-slot representation limit. The common composer separates
+complete units when the actual component row or owner bound prevents a join;
+it does not lower the configured cohort merely to fit one speculative step.
 
 Below the cap, memory decides. While its model is resident, a request
 joins its model's running requests only when the execution budget holds
@@ -2308,8 +2332,9 @@ short DeepSeek and Qwen prompts, with speculation on and off.
 - A name the Host check does not derive (a LAN DNS name without a reverse
   record) cannot reach the route; a `[client] host_names` key could name
   such names later.
-- The image serves one prompt a process, from a latents file (above), and
-  only through the commands.
+- Images use the commands/internal image request adapter; the LLM HTTP
+  completions route rejects image models. Completed image requests may change
+  prompt, paid noise buffer or file, and admitted geometry.
 - Turn reuse keeps a stable boundary a turn on the current branch, within
   retention and the spill budget. A client editing a prefix before the
   oldest kept boundary, or returning after their expiry, needs a fresh

@@ -99,6 +99,17 @@ struct SlotLifecycleOptions {
 
 class SlotLifecycle;
 
+// Opaque permission for the first reader behind one exact accepted prefix.
+// It grants no ordinary frozen view and cannot be minted by a caller.
+class StateBorrowPermit {
+ private:
+  friend class SlotLifecycle;
+  const SlotLifecycle* owner_ = nullptr;
+  std::uint32_t slot_ = 0;
+  std::size_t reader_ = 0;
+  std::uint64_t identity_ = 0;
+};
+
 // A borrow of one slot's stage (SlotLifecycle::Borrow): move-only, returned
 // once (Return, or its destruction), and before its lifecycle is
 // destroyed. A borrow from before a recovery (RecoverInPlace drops every
@@ -115,6 +126,7 @@ class StateBorrow {
   bool held() const { return owner_ != nullptr; }
   std::uint32_t slot() const { return slot_; }
   std::size_t stage() const { return stage_; }
+  std::optional<StateBorrowPermit> permit() const { return permit_; }
 
  private:
   friend class SlotLifecycle;
@@ -122,6 +134,8 @@ class StateBorrow {
   std::uint32_t slot_ = 0;
   std::size_t stage_ = 0;
   std::uint64_t epoch_ = 0;
+  std::optional<std::size_t> ordered_reader_;
+  std::optional<StateBorrowPermit> permit_;
 };
 
 class SlotLifecycle {
@@ -195,6 +209,10 @@ class SlotLifecycle {
   const DraftProgressLedger* progress(std::uint32_t slot, std::size_t stage) const;
   std::expected<DraftProgressLedger::Unit, std::string> BeginDraftUnit(std::uint32_t slot,
                                                                        std::size_t stage);
+  std::expected<DraftProgressLedger::Successor, std::string> BeginDraftSuccessor(std::uint32_t slot,
+                                                                                 std::size_t stage);
+  Status CancelDraftSuccessor(std::uint32_t slot, std::size_t stage,
+                              DraftProgressLedger::Unit unit);
   // Check every owner before beginning any owner, after host preflight.
   Status CheckProgressVerify(std::uint32_t slot, std::uint32_t rows) const;
   Status BeginProgressVerify(std::uint32_t slot, std::uint32_t rows);
@@ -354,7 +372,10 @@ class SlotLifecycle {
   Status RecordWrite(std::uint32_t slot, std::span<const Range> ranges);
   // After a step's completed positions retired. Refused mid-restore or
   // while spilled.
+  Status CheckPositions(std::uint32_t slot, std::uint32_t positions) const;
   Status SetPositions(std::uint32_t slot, std::uint32_t positions);
+  // Validate every cursor before publishing any owner.
+  Status SetPositions(std::span<const std::pair<std::uint32_t, std::uint32_t>> positions);
   // A reader (an assistant drafting from the target's KV) holds a slot's
   // stage frozen until the borrow returns: no growth of that stage, and no
   // clear, spill, restore or copy in of the slot, nor a selection dropping
@@ -362,6 +383,27 @@ class SlotLifecycle {
   // verify is accepted and what it owes has run (the state is not yet the
   // kept rows').
   std::expected<StateBorrow, std::string> Borrow(std::uint32_t slot, std::size_t stage = 0);
+
+  // Reserve the target guard now, but authorize a reader only behind this
+  // exact successor's data/control prefix. Ordinary borrowed(stage) remains
+  // false until its positive, atomic publication. No fresh allocation.
+  std::expected<StateBorrow, std::string> BorrowAfterPrefix(
+      std::uint32_t slot, std::size_t reader, const DraftProgressLedger::Successor& successor);
+  Status CheckBorrowAfterPrefix(std::uint32_t slot, std::size_t reader,
+                                DraftProgressLedger::Unit unit,
+                                DraftProgressLedger::Transition predecessor) const;
+
+  std::expected<StateBorrow, std::string> BorrowAfterOwed(std::uint32_t slot, std::size_t reader,
+                                                          std::uint32_t past, std::uint32_t rows);
+  std::expected<StateBorrow, std::string> BorrowAfterCompoundPrefix(std::uint32_t slot,
+                                                                    std::size_t reader,
+                                                                    DraftProgressLedger::Unit unit,
+                                                                    std::uint32_t past,
+                                                                    std::uint32_t rows);
+  Status CompanionPrefixQueued(std::uint32_t slot, std::size_t reader,
+                               DraftProgressLedger::Unit unit);
+  Status CheckBorrowPermit(const StateBorrowPermit& permit, std::uint32_t slot, std::size_t reader,
+                           std::uint32_t past, std::uint32_t rows) const;
 
   // ------------------------------------------------------------ a verify
   //
@@ -384,6 +426,7 @@ class SlotLifecycle {
   // (CheckFailedJob); a stage it quarantined faults the cohort (the shared
   // stream's work is unproven).
   Status Settle(std::uint32_t slot);
+  Status FlushOwed(std::span<const std::uint32_t> slots, std::string_view boundary);
   // Common boundary for RunStep and standalone Settle. A PlanStep remains
   // alive across prepare/queue/retirement; private control staging cannot
   // be reused until CompleteOwed. All stages' numeric work precedes controls.
@@ -395,6 +438,21 @@ class SlotLifecycle {
   OwedQueued QueueOwed(std::uint32_t slot, providers::NativeStream stream);
   Status CompleteOwed(std::uint32_t slot, bool success,
                       CopyRetirement retirement = CopyRetirement::kProven);
+  // Prevalidate every completed consumer/owner before publishing any mirror.
+  Status CompleteOwed(std::span<const std::uint32_t> slots, bool success,
+                      CopyRetirement retirement = CopyRetirement::kProven);
+  using CompoundConsumer = std::pair<std::size_t, DraftProgressLedger::Unit>;
+  struct CompoundTailOwner {
+    std::uint32_t slot = 0;
+    std::uint16_t closing_stage = 0;
+    std::span<const CompoundConsumer> consumers;
+  };
+  Status PrepareCompoundTail(const CompoundTailOwner& owner);
+  Status QueueCompoundTail(const CompoundTailOwner& owner, providers::NativeStream native);
+  Status CompleteCompoundTails(std::span<const CompoundTailOwner> owners,
+                               JobReport::Retirement retirement);
+  // Quarantine exactly these admitted owners after partial/invalid publication.
+  void QuarantineOwners(std::span<const std::uint32_t> slots);
   // Every slot quarantined until RecoverInPlace.
   void Fault();
   // After a failed job: request_cohort.h's CheckFailedJob.
@@ -410,7 +468,15 @@ class SlotLifecycle {
   struct Stage {
     std::unique_ptr<LiveState> live;
     SpillTrack track;
-    std::uint32_t borrows = 0;
+    std::uint32_t borrows = 0;  // includes guards reserved behind an owed prefix
+    struct OrderedBorrow {
+      std::optional<DraftProgressLedger::Successor> successor;
+      std::optional<DraftProgressLedger::Unit> compound;
+      std::uint64_t identity = 0, prefix_epoch = 0;
+      std::uint32_t positions = 0, past = 0, rows = 0;
+      bool active = false, prefix_queued = false;
+    };
+    std::optional<OrderedBorrow> ordered_borrow;  // this stage reads target stage 0
     // Kept from the process before (D-105): what its spill file holds,
     // until Restore reads it.
     std::vector<Range> adopted;
@@ -418,6 +484,9 @@ class SlotLifecycle {
     std::uint64_t control_offset = 0;
     model::DraftProgressWords* control_publish = nullptr;
     model::DraftProgressWords* control_hydrate = nullptr;
+    model::DraftProgressWords* control_tail = nullptr;
+    std::optional<DraftProgressLedger::Transition> tail_ticket;
+    bool tail_attempted = false, tail_queued = false;
     std::optional<DraftProgressLedger::Transition> control_ticket;
     std::optional<DraftProgressLedger::Transition> restore_ticket;
     std::optional<DraftProgressLedger::Unit> progress_unit;
@@ -429,6 +498,7 @@ class SlotLifecycle {
     std::vector<Stage> stages;
     catalog::Closure fence;
     std::uint32_t positions = 0;
+    std::uint64_t accepted_epoch = 0;
     bool spilled = false;
     bool state_refused = false;
     // Set only around the shared compound helper's synchronous steps.
@@ -453,7 +523,12 @@ class SlotLifecycle {
   bool Borrowed(const Slot& slot) const;
   // The stages a step on `stage` grows (every one for the target's).
   std::vector<std::size_t> GrownBy(std::size_t stage) const;
-  void Return(std::uint32_t slot, std::size_t stage, std::uint64_t epoch);
+  std::expected<StateBorrow, std::string> ReserveOrderedBorrow(
+      std::uint32_t slot, std::size_t reader, std::uint32_t past, std::uint32_t rows,
+      std::optional<DraftProgressLedger::Successor> successor,
+      std::optional<DraftProgressLedger::Unit> compound = std::nullopt);
+  void Return(std::uint32_t slot, std::size_t stage, std::uint64_t epoch,
+              std::optional<std::size_t> ordered_reader);
   // No stage's verify awaits its Accept or owes a restore or commit.
   bool Settled(const Slot& slot) const;
   bool ProgressBusy(const Slot& slot) const;
@@ -478,6 +553,7 @@ class SlotLifecycle {
   catalog::Closure everything_, fence_, execution_;
   std::optional<std::uint64_t> places_clean_;
   std::string kept_layout_id_;
+  std::uint64_t borrow_identity_ = 0;
   std::uint64_t borrow_epoch_ = 1;  // bumped by RecoverInPlace
   bool setup_ = false, registered_ = false, bound_ = false, released_ = false;
   bool execution_sealed_ = false;

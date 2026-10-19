@@ -31,6 +31,7 @@
 #include "kernels/common/step_program.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/lower.h"
+#include "planner/lanes.h"
 #include "providers/device_execution.h"
 
 namespace llmp::kernels::ggml {
@@ -46,14 +47,17 @@ class GgmlStepLaunch final : public kernels::StepLaunch {
                           std::shared_ptr<const kernels::BackendOwner> owner = {},
                           const GgmlStepLaunch* const* active = nullptr,
                           const std::uint64_t* current_generation = nullptr,
-                          std::uint64_t generation = 0)
+                          std::uint64_t generation = 0, SelectedLaunch* borrowed_selected = nullptr,
+                          bool private_eager = false)
       : launch_(std::move(launch)),
         selected_(std::move(selected)),
         owner_(std::move(owner)),
         active_(active),
         current_generation_(current_generation),
-        generation_(generation) {}
-  SelectedLaunch* selected() const { return selected_.get(); }
+        generation_(generation),
+        borrowed_selected_(borrowed_selected),
+        private_eager_(private_eager) {}
+  SelectedLaunch* selected() const { return selected_ ? selected_.get() : borrowed_selected_; }
   LaunchContext& context() const { return *launch_; }
 
   std::expected<std::unique_ptr<Recorded>, StepFailure> Capture(providers::NativeStream stream,
@@ -61,7 +65,7 @@ class GgmlStepLaunch final : public kernels::StepLaunch {
   std::expected<void, StepFailure> Launch(providers::NativeStream stream,
                                           const Recorded& recorded) override;
   bool faulted() const override {
-    return launch_->faulted() || (selected_ && selected_->faulted());
+    return retired() || launch_->faulted() || (selected() && selected()->faulted());
   }
 
  private:
@@ -71,6 +75,8 @@ class GgmlStepLaunch final : public kernels::StepLaunch {
   const GgmlStepLaunch* const* active_ = nullptr;
   const std::uint64_t* current_generation_ = nullptr;
   std::uint64_t generation_ = 0;
+  SelectedLaunch* borrowed_selected_ = nullptr;  // retained by the private origin
+  bool private_eager_ = false;
 };
 
 struct GgmlBackendOptions {
@@ -83,6 +89,9 @@ struct GgmlBackendOptions {
 
 class GgmlBackend {
  public:
+  static constexpr kernels::BackendCapabilities Capabilities() {
+    return {.owner_lanes = planner::kMaxLanes, .device_tokens = true, .indexed_masks = true};
+  }
   // On `stream` of `execution`'s device `device`, lending `cublas` (null:
   // none; a plan needing it is refused) to its launches, which must
   // outlive the backend.
@@ -149,6 +158,10 @@ class GgmlBackend {
   GgmlBackend(int device, providers::DeviceExecution& execution, providers::StreamId stream,
               CublasHandle* cublas, GgmlBackendOptions options);
 
+  friend class GgmlResources;
+  std::expected<std::unique_ptr<kernels::StepProgram>, std::string> LowerFor(
+      const kernels::LowerInput& input, const GgmlStepLaunch* const* launch,
+      const std::uint64_t* generation, bool private_resources = false) const;
   std::shared_ptr<const ConstructionFunder> construction_funder_{};
   bool construction_started_ = false;
   struct Declaration;

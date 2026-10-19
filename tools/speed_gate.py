@@ -650,8 +650,15 @@ def run_metrics(record: dict, family: Family) -> dict:
     The verdict recomputes them from the record, so every run is judged by this code."""
     metrics = {}
     passes = [p for p in record.get("passes", []) if not p["warmup"]]
-    for width in family.cells:
-        cells = [stored_requests(p["cells"][f"C{width}"]) for p in passes]
+    widths = list(family.cells)
+    for p in passes:
+        for k in p.get("cells", {}):
+            if k.startswith("C") and k[1:].isdigit():
+                w = int(k[1:])
+                if w not in widths:
+                    widths.append(w)
+    for width in sorted(widths):
+        cells = [stored_requests(p["cells"][f"C{width}"]) for p in passes if f"C{width}" in p.get("cells", {})]
         found = [cell_metrics(c) for c in cells if c]
         for key in ("prefill_s", "decode_tok_s", "wall_tok_s"):
             values = [m[key] for m in found if key in m]
@@ -790,6 +797,9 @@ def image_run(family: Family, runtime: pathlib.Path, share: pathlib.Path,
 
 def cmd_run(args: argparse.Namespace) -> int:
     family = FAMILIES[args.family]
+    if getattr(args, "cells", None):
+        family = dataclasses.replace(
+            family, cells=tuple(int(c.strip()) for c in args.cells.split(",")))
     pixels_pin = image_pixels_pin(family, args.label, args.image_pixels_sha256)
     out = pathlib.Path(args.out).resolve()
     share = pathlib.Path(args.share).expanduser().resolve()
@@ -1043,7 +1053,7 @@ def judge(values: list[float], margin: float, min_blocks: int, max_blocks: int,
 
 def run_spec(spec: dict) -> dict:
     return {k: v for k, v in json.loads(json.dumps(spec)).items()
-            if k not in ("min_blocks", "max_blocks")}
+            if k not in ("min_blocks", "max_blocks", "cells")}
 
 
 def workload_identity(record: dict) -> dict:
@@ -1423,6 +1433,7 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--prime", action="store_true",
                            help="the session's priming run, kept out of every statistic")
             p.add_argument("--session", help="the session (job) the run belongs to")
+            p.add_argument("--cells", help="comma-separated cell widths (e.g. 1,2,4)")
             p.add_argument("--keep-data", action="store_true")
     p = sub.add_parser("plan")
     p.add_argument("--family", required=True, choices=sorted(FAMILIES))
