@@ -455,6 +455,34 @@ class HeldLeaseTest : public ::testing::Test {
 // The request pages its closure in and leases it once; its steps run under
 // that one lease (never a second, never none) and its end releases it with
 // every extent still resident, idle, and its last use the release's.
+TEST_F(HeldLeaseTest, LeaseReplacementRequiresTheAuthenticIdleHolderAndDoesNotReleaseItsIdentity) {
+  Build(2 * kPerModel);
+  Request request;
+  Open(request, 0);
+  const auto lease = request.channel.lease;
+  const auto original = ModelClosure(0);
+  const auto just_workspace = catalog_.ClosureOfExtents(std::array{workspace_});
+  ASSERT_TRUE(just_workspace);
+  EXPECT_FALSE(scheduler_->ReplaceRequestLease(request.tag + 1, lease, *just_workspace));
+  EXPECT_FALSE(scheduler_->ReplaceRequestLease(request.tag, {}, *just_workspace));
+  const auto held = Held();
+  std::atomic<int> runs{0};
+  Step(request, Counting(runs), false);
+  EXPECT_EQ(Failed(scheduler_->ReplaceRequestLease(request.tag, lease, *just_workspace)),
+            sc::WorkError::kBusy);
+  EXPECT_EQ(Held(), held);
+  Settle();
+  ASSERT_TRUE(scheduler_->ReplaceRequestLease(request.tag, lease, *just_workspace));
+  EXPECT_EQ(request.channel.lease, lease);
+  EXPECT_EQ(Leases(0), 0U);
+  EXPECT_EQ(Held(), Bytes(kSize));
+  ASSERT_TRUE(scheduler_->ReplaceRequestLease(request.tag, lease, original));
+  EXPECT_EQ(Held(), held);
+  ASSERT_TRUE(scheduler_->Cancel(request.tag));
+  EXPECT_FALSE(scheduler_->ReplaceRequestLease(request.tag, lease, *just_workspace));
+  Settle();
+}
+
 TEST_F(HeldLeaseTest, ARequestLeasesItsClosureOnceAndEachStepRunsUnderIt) {
   Build(2 * kPerModel);
   Request request;

@@ -158,6 +158,20 @@ class RewriteSelectionView {
   explicit RewriteSelectionView(const SelectionView& view) : view_(view) {}
   const execution::Registry& registry() const { return view_.registry(); }
   const Policy& policy() const { return view_.policy(); }
+  // Describe the incumbent before rewriting. Replacement lookups below still
+  // retain automatic-fusion qualification and every final selection constraint.
+  ir::ProductArithmetic IncumbentArithmetic(const ir::Graph& graph, const ir::Node& node) const {
+    return view_.IncumbentArithmetic(graph, node);
+  }
+  std::optional<NumericalQualification> Qualification(NumericalChange change,
+                                                      const ir::Graph& graph,
+                                                      const ir::Node& node) const {
+    return view_.Qualification(change, graph, node);
+  }
+  bool NumericallyQualified(NumericalChange change, const ir::Graph& graph,
+                            const ir::Node& node) const {
+    return view_.NumericallyQualified(change, graph, node);
+  }
   std::vector<std::size_t> Candidates(ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
                                       std::span<const ir::TensorDesc* const> outputs,
                                       std::span<const std::byte> params = {},
@@ -239,6 +253,13 @@ struct Match {
   ir::ParamBytes params{};
   std::size_t implementation = 0;
   std::shared_ptr<const MatchDetail> detail{};
+  std::optional<NumericalChange> numerical_change{};
+  std::optional<NumericalChange> unqualified_numerical{};
+  // Every product whose arithmetic changes, in this round's input graph.
+  // Empty means the pattern anchor. Equivalent preparation sharing leaves
+  // numerical_change absent and needs no changed-arithmetic authorization.
+  std::vector<ir::NodeId> numerical_sites{};
+  std::vector<ir::NodeId> unqualified_sites{};
 };
 
 // Rebuilding a graph with matches replaced: the original graph's tensors
@@ -246,8 +267,9 @@ struct Match {
 // prepared input).
 class RewriteContext {
  public:
-  RewriteContext(const ir::Graph& original, ir::Builder& builder, std::vector<ir::TensorId>& map)
-      : original_(original), builder_(builder), map_(map) {}
+  RewriteContext(const ir::Graph& original, ir::Builder& builder, std::vector<ir::TensorId>& map,
+                 const SelectionView* view = nullptr)
+      : original_(original), builder_(builder), map_(map), view_(view) {}
   const ir::Graph& original() const { return original_; }
   ir::Builder& builder() { return builder_; }
   ir::TensorId Map(ir::TensorId original) const {
@@ -267,6 +289,7 @@ class RewriteContext {
   const ir::Graph& original_;
   ir::Builder& builder_;
   std::vector<ir::TensorId>& map_;
+  const SelectionView* view_ = nullptr;
   std::vector<ir::TensorId> local_{};
   std::map<std::string, ir::TensorId> shared_{};
 };
@@ -295,10 +318,11 @@ struct Pattern {
   // A rewrite's: what replaces the match's node `index` (each of its nodes
   // in turn, in node order), mapping the original outputs it stands for.
   void (*rewrite)(RewriteContext& context, const Match& match, std::size_t index) = nullptr;
-  // Off unless the policy enables it (policy.h `enable`): a pattern whose
-  // result rounds where the primitive graph does not (a fast form's BF16
-  // and MXFP8 activations), which a model's policy chooses.
+  // Off unless explicitly selected: a numerical representation whose
+  // same-quality domain is qualified separately, or a caller requirement.
+  // Structural fusions and proved incumbent preparation sharing default on.
   bool opt_in = false;
+  std::optional<NumericalChange> numerical_change{};
   // The rewrite's round: round 0 matches the step's primitive graph, round
   // 1 round 0's result (a pattern over another's fused nodes).
   std::uint8_t round = 0;
@@ -318,10 +342,43 @@ base::Sha256Digest PatternsDigest(const Policy& policy);
 
 // A rewrite applied: the pattern, the original nodes it replaced and the
 // nodes it made.
+// Observed graph facts, never a qualification or evidence grant. Bound model
+// identity is spec::BoundDigest (whole actual artifact composition); model_spec
+// is the actual semantic ModelSpec digest. Zero means unavailable, independent
+// of a candidate's deliberately zero grant identities.
+struct NumericalObservation {
+  std::uint16_t active_stage = UINT16_MAX;
+  std::optional<ir::WeightRef> weight{};
+  format::TensorFormat operand_format{}, leaf_format{}, input_format{};
+  std::array<std::uint64_t, 4> operand_strides{}, leaf_strides{}, input_strides{};
+  base::Sha256Digest bound_model{}, model_spec{};
+};
+struct NumericalProof {
+  ir::NodeId site{};  // original primitive graph ID, composed across rounds
+  // For a compound site, distinguish its two original product weight operands.
+  std::uint8_t weight_operand = 0;
+  NumericalQualification qualification{};
+  QueryShape actual{};
+  bool candidate = false;
+  bool grouped_projection = false;
+  NumericalObservation observed{};
+};
 struct Applied {
   std::string_view pattern{};
   std::vector<ir::NodeId> replaced{};
   std::vector<ir::NodeId> made{};
+  std::optional<NumericalChange> numerical_change{};
+  base::Sha256Digest numerical_evidence{}, numerical_source{}, numerical_semantic{};
+  bool numerical_candidate = false;
+  bool numerical_incumbent = false;
+  // One authenticated proof (or explicit candidate) per changed recipient.
+  std::vector<NumericalProof> numerical_proofs{};
+};
+struct MissingNumericalQualification {
+  NumericalChange change{};
+  std::uint16_t component = 0;
+  ir::OpKey anchor{};
+  bool operator==(const MissingNumericalQualification&) const = default;
 };
 
 struct Rewritten {
@@ -333,6 +390,7 @@ struct Rewritten {
   // The original graph's tensor i in the new graph, or none (an elided
   // intermediate).
   std::vector<ir::TensorId> tensors;
+  std::vector<MissingNumericalQualification> missing_numerical{};
 };
 
 // The enabled rewrite patterns applied over `graph` (see the header), for

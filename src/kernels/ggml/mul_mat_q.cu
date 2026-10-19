@@ -436,6 +436,9 @@ std::expected<void, KernelFailure> RunMmvqPrepared(LaunchContext& launch, ggml_t
   const auto padded = GGML_PAD(original->src[1]->ne[0], MATRIX_ROW_PADDING);
   // The descriptor is copied into this synchronous host callback. No cached
   // plan or deferred submission retains a pointer to a stack descriptor.
+  // MmvqPreparedOriginal proves immutable dense weights and disjoint writable
+  // inputs/output. The caller's execution leases keep them live until GPU
+  // completion, permitting weight-only prefetch ahead of the PDL wait.
   return launch.Run(base::Bytes(0), [original = *original, q8 = node->src[1],
                                      padded](ggml_backend_cuda_context& context) mutable {
     ggml_cuda_op_mul_mat_vec_q(context, original.src[0], original.src[1], &original,
@@ -443,7 +446,7 @@ std::expected<void, KernelFailure> RunMmvqPrepared(LaunchContext& launch, ggml_t
                                static_cast<const float*>(original.src[1]->data),
                                static_cast<const char*>(q8->data),
                                static_cast<float*>(original.data), 0, original.ne[0],
-                               original.ne[1], padded, context.stream());
+                               original.ne[1], padded, context.stream(), true);
   });
 }
 

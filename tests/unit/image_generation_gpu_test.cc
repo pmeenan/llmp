@@ -390,6 +390,8 @@ struct Lifetime {
           return std::unexpected(std::string("initial replacement request stage inventory"));
         request_layout = parts->request.layout;
         initial_request_identity = parts->request.identity;
+        if (initial_request_identity == llmp::base::Sha256Digest{})
+          return std::unexpected(std::string("image content identity was not finalized"));
         request_owner = parts->request.keep;
         return parts;
       };
@@ -616,6 +618,8 @@ TEST(ImageRequestInputs, PaymentAndLayoutRemainIndependentOfRequestContent) {
     ASSERT_TRUE(first) << Failed(first).value_or("");
     layout = first->layout;
     identity = first->identity;
+    EXPECT_NE(identity, llmp::base::Sha256Digest{});
+    EXPECT_NE(layout, llmp::base::Sha256Digest{});
     EXPECT_EQ(first->sequence.size(), 3U);
     std::array<std::byte, 4> staged{};
     ASSERT_TRUE(first->fill({1, 0}, 5, staged));

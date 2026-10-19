@@ -150,6 +150,11 @@
 //       port's comparison allows for those, not for another formation.
 // Elementwise (b broadcasts over a; the result has a's shape):
 //   kAdd, kSub, kMul, kDiv (a, b).
+//   kSelect (condition I32, yes, no): exact byte copy from yes where the
+//       condition is nonzero, otherwise no. Condition and no broadcast over
+//       yes; branches have the same dense scalar encoding. The output has
+//       yes's shape/encoding. No arithmetic, conversion or inspection of the
+//       unselected value; NaN payloads, signed zero and integers retain bits.
 //   kScale (x): ScaleParams: x · scale + bias.
 //   kUnary (x): UnaryParams.       kClamp (x): ClampParams (NaN stays NaN;
 //       GGML's fminf/fmaxf give a bound, as kSwiGluClamp's do).
@@ -335,6 +340,7 @@ enum class Op : std::uint16_t {
   kSelectedMask,
   kRoundedIndexScore,
   kPrefixOverwrite,
+  kSelect,
 };
 
 // Each fused kind's sources (in order), outputs and parameters; its
@@ -647,10 +653,21 @@ enum class ProductHint : std::uint8_t {
   kNone,
   kHadamard,  // a is a square Hadamard matrix (GGML_HINT_SRC0_IS_HADAMARD)
 };
+// Numerical contract preserved through sharing, CSE and final selection.
+// Convert/Prepare still explicitly describes the operand's representation.
+enum class ProductArithmetic : std::uint8_t {
+  kImplementation,
+  kBf16F32,      // BF16 RNE input, F32 accumulation, declared output storage
+  kGgmlQ8_1F32,  // Ordinary MMVQ: block32 max-abs, FP16 scale/sum, roundf int8,
+                 // pad512 zero tail and original vector reduction into F32
+};
+std::string_view ProductArithmeticName(ProductArithmetic arithmetic);
 struct ProductParams {
   Accumulate accumulate = Accumulate::kDefault;
   ProductHint hint = ProductHint::kNone;
   std::array<std::uint8_t, 2> reserved{};
+  ProductArithmetic arithmetic = ProductArithmetic::kImplementation;
+  std::array<std::uint8_t, 3> arithmetic_reserved{};
 };
 
 struct AttnParams {
@@ -692,7 +709,7 @@ struct UnaryParams {
 };
 
 // kGeGluErf is GGML's GEGLU_ERF; kGeGluTanh is GGML's GEGLU (ggml_geglu_split,
-// every Gemma FFN) and execution::Operation::kGeGlu.
+// every Gemma FFN). The typed GluParams distinguish the arithmetic.
 enum class GluKind : std::uint8_t { kSwiGlu, kGeGluErf, kGeGluTanh, kSwiGluClamp };
 struct GluParams {
   GluKind kind = GluKind::kSwiGlu;
@@ -970,7 +987,7 @@ static_assert(sizeof(SinkhornPreParams) == 16 && sizeof(SpatialNormParams) == 12
 // No implicit padding: each struct's size is the sum of its fields'.
 static_assert(sizeof(RopeParams) == 4 + (3 * 4) + (6 * 4) + 16);
 static_assert(sizeof(MaskParams) == 4 + 4 + 4);
-static_assert(sizeof(ProductParams) == 4);
+static_assert(sizeof(ProductParams) == 8);
 static_assert(sizeof(AttnParams) == (4 * 4) + 4 + 4);
 static_assert(sizeof(GluParams) == 4 + 4);
 static_assert(sizeof(RouteParams) == 4 + (3 * 4));

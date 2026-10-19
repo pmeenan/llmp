@@ -56,6 +56,7 @@
 #include "components/step.h"
 #include "engine/component_source.h"
 #include "engine/decoding.h"
+#include "engine/execution_contract.h"
 #include "engine/expert_slab.h"
 #include "engine/live_state.h"
 #include "engine/model_runner.h"
@@ -69,6 +70,7 @@
 #include "model/state_contract.h"
 #include "planner/policy.h"
 #include "planner/step_shape.h"
+#include "platform/host_probe.h"
 #include "providers/device_runtime.h"
 #include "runtime/component_admission.h"
 #include "spec/mapping.h"
@@ -458,6 +460,18 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
          }}});
     if (!made) return std::unexpected(made.error());
     source->backend = std::move(*made);
+    // Native construction has a separate finite fixture allowance. Retained
+    // plans still acquire the runner's ordinary paid ownership before transfer.
+    const auto available = llmp::platform::AvailableMemoryBytes();
+    if (!available) return std::unexpected("native construction physical headroom is unknown");
+    auto paid = en::ExecutionMetadataAllowance::Admit(node.catalog(), node.domain(), 128ULL << 20U,
+                                                      *available, 6ULL << 30U);
+    if (!paid) return std::unexpected(paid.error());
+    if (auto funded = source->backend->FundConstruction(
+            [paid = *paid](std::uint64_t n) { return paid->Charge(n); },
+            [paid = *paid](std::uint64_t n) { paid->Release(n); });
+        !funded)
+      return std::unexpected(funded.error());
     if (auto x = source->resources->OpenSelectedWorkspace("selected kernel state",
                                                           source->backend->persistent_bytes());
         !x)
@@ -501,6 +515,7 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
                     .spill_directory = scratch,
                     .invalidate = {},
                     .drop_plans = {}};
+    config.split_expert_parts = true;
     config.weights.push_back(
         {.weights = std::move(weights), .places = places->places, .slabs = places->slabs});
     config.setup_shapes = shapes;

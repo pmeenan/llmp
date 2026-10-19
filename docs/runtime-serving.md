@@ -1220,6 +1220,24 @@ s; peak 109.3 GiB, against 108.0–108.4 with 512-row chunks in
 
 ## The commands
 
+The service and serving commands accept `--debug-plans`, off by default:
+`llmp-runtime --debug-plans` enables it for the service; `chat` and
+`swap-table` also accept it among their command options. Each successful
+plan-cache installation emits a detailed report of selected implementations,
+applied fusions, primitive fallbacks and physical storage. A cache hit emits
+no new report; a plan rebuilt after eviction emits its new report. The
+registration log carries aggregate coverage, including primitive fallbacks
+and decode-shaped products requiring expansion. Reports contain no prompt,
+KV or tensor payloads. Each compiled program retains an owned, typed logical
+inventory paid before allocation; its physical report reuses the backend's
+existing inventory. JSON is serialized only for debug installation or an
+explicit query, as synchronous begin/fragment/end events with stack formatting.
+Debug-off compilation and cache hits do not serialize reports. No complete JSON
+copy is retained. The report includes numerical qualification evidence and
+source/spec identities, and encountered opportunities lacking qualification.
+Retained metadata transfers once from construction payment to the plan cache's
+host charge.
+
     llmp-runtime [--config FILE] [--anchor PATH] chat [--max-tokens N]
         [--ignore-stop] [--fresh] [SERVING] --turn MODEL TEXT...
     llmp-runtime [--config FILE] [--anchor PATH] swap-table [--pairs A:B,...]

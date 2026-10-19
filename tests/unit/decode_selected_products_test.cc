@@ -143,7 +143,7 @@ class WorkspaceSource final : public kg::SelectedSource {
     if (name_.empty()) return {};
     ex::Implementation implementation{};
     implementation.name = name_;
-    implementation.operation = ex::Operation::kAdd;
+    implementation.operation = llmp::ir::Primitive(llmp::ir::Op::kAdd);
     implementation.capability =
         ex::Capability{.op = ir::Primitive(ir::Op::kAdd), .capturable = true};
     return {implementation};

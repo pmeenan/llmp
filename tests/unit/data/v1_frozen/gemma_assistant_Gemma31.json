@@ -4,12 +4,12 @@
   "accepted.1": "11",
   "drafted.0": "35",
   "drafted.1": "11",
-  "heads.0": "a967052393cbf16690c9cf1c383a3332434b21910407ad55f1a72f19641215a7",
+  "heads.0": "1aa0d8c7fdd73eff975c57cbec7886b8e7dc6ce641aa3b5cc49c44f5836f16e2",
   "heads.1": "3b6b200131d83a8ce785005336c84c335b7f07f108c3e789a77868139b2eca6d",
   "history.0": "aa57c583dd6542a250a137547b49970c2294271ca8310ea21fc0f082488755c1",
   "history.1": "830866e8bab9db1c4fbc1a0aac58e9383540c1af1e0e8b8c7bfa35d93c8bb58e",
   "restored.0": "eb23c03a765f3935fa13ef51cbbf4efce66ff5038bf06e036e5395ff252d692b:252002304:121:191",
-  "rows.0": "48:c9819e760f9efb0c69e061fbdbf9845e2194aa6d0d688ff3c93cb8bff7a16340",
+  "rows.0": "48:28f75173f799b961d2ea5d6ae2daa3753ef9d1666757155922e3d87482c1e9e0",
   "rows.1": "16:5a21ce277808e7eb2dc1b688c7b3c547e8780eff8b84243e6016ed014cbde50f",
   "state.0": "eb23c03a765f3935fa13ef51cbbf4efce66ff5038bf06e036e5395ff252d692b:252002304:121:191",
   "state.1": "3951f7cbfd3d7b087624187bb236ab20afd31be4c0e407be069ecc00fdd79483:252002304:121:207",
@@ -18,5 +18,5 @@
   "tokens.1": "7001,563,818,5279,529,7001,563,818,5279,529,7001,563,818,5279,529,7001"
  },
  "family": "gemma_assistant_Gemma31",
- "provenance": "Recorded 2026-10-15 on Spark A (GB10, spark-native build of main ba2d4b19 plus the v1-import slice) from the v0 arm, with the v1 arm compared bit for bit in the same run; v1 artifacts imported by llmp import from the staged, manifest-verified sources (IDs in the store's v1-ids.json). A change that legitimately moves bits re-records these."
+ "provenance": "Recorded 2026-10-18 on spark-c4e2 (GB10), integrated R8+R7 source manifest 1b0cab3369b4b8c195ccb4b581f4338be752b484f8b7a19431577204e1a18e03. Only initial prefill head and first 48 generation-logit rows change under the selected reductions; complete token/history/draft/accept/step counts, continuation head/rows and all state/spill/restore values remain exact. The existing assistant served-quality control reproduces all 1070 plain target scores; the 31B fixed replies also match, while 26B replies are recorded separately under the existing rule. Original failed assertions and bounded review are retained externally; no numerical grant or assertion is relaxed."
 }

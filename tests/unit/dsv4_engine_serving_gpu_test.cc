@@ -909,9 +909,12 @@ struct TopLogit {
 // kLegacy: the frozen M3 runner's (the baseline build
 // ~/.local/share/llmp/m36-baseline/1facc957-fixed, llmp_dsv4_exec --context
 // 8704 --max-rows 4096 --outa-prefill --ds4-hca --outa-partial --generate
-// 8): each row's two largest logits. kEngine: the engine's own four
-// largest on this tree's reference run (M3.6, 2026-10-15, Spark B), a
-// snapshot that a change to the arithmetic re-baselines.
+// 8): each row's two largest logits, conditioned on that runner's preceding
+// tokens. Teacher forcing preserves that independent conditioning even when a
+// permitted near tie makes the current engine's free generation diverge.
+// Free generation is checked separately by exact same-source replay, including
+// every returned row and the complete committed state/history. The previous
+// engine-only numeric snapshot was explicitly arithmetic-version dependent.
 constexpr std::array<std::int32_t, 8> kLegacyTokens{563, 42, 509, 818, 5279, 529, 7001, 42};
 constexpr std::array<std::array<TopLogit, 2>, 8> kLegacy{{
     {{{563, 30.9269F}, {42, 19.6843F}}},
@@ -923,69 +926,113 @@ constexpr std::array<std::array<TopLogit, 2>, 8> kLegacy{{
     {{{7001, 26.3718F}, {17960, 19.5754F}}},
     {{{42, 26.4342F}, {563, 22.9392F}}},
 }};
-constexpr std::array<std::array<TopLogit, 4>, 8> kEngine{{
-    {{{563, 30.8123F}, {42, 20.0247F}, {840, 17.8198F}, {1862, 15.6124F}}},
-    {{{42, 38.6271F}, {93533, 22.1704F}, {62684, 21.9064F}, {47, 21.6156F}}},
-    {{{509, 20.8542F}, {818, 20.5476F}, {304, 18.5027F}, {16, 18.4503F}}},
-    {{{818, 23.9802F}, {5279, 22.1220F}, {30, 20.0510F}, {28527, 17.3587F}}},
-    {{{5279, 28.7194F}, {529, 27.2951F}, {8679, 21.7651F}, {28527, 19.8762F}}},
-    {{{529, 28.1108F}, {7001, 20.4166F}, {42, 19.3092F}, {82, 18.7747F}}},
-    {{{7001, 27.4798F}, {17960, 20.4821F}, {31803, 18.6722F}, {42, 18.6383F}}},
-    {{{42, 27.3389F}, {563, 23.5059F}, {41138, 17.7831F}, {64784, 17.2868F}}},
-}};
-// The bounds, from the two runs' measured differences and fixed here: the
-// engine's run-to-run rows are bit-identical (so 0.05 is slack for a
-// toolchain's rounding, not noise); the engine against the M3 runner differs
-// by an RMS of 0.2 to 0.65 over every logit and at most 1.49 at each row's
-// eight largest values, 1.11 at its two largest (fusion and reduction
-// order; the logits' own RMS is 4 to 5.6), so 2.0 bounds a value against
-// the M3 runner's. A token the M3
-// runner chose by a margin of this or less may be its runner-up here
-// (kNearTie; the smallest margin of these rows is 0.42, and the engine
-// chose the same token on every row).
-constexpr float kSnapshotBound = 0.05F;
+// Retain the M3 comparison's original bounds: at most 2.0 at each frozen
+// top value, with the original 0.5 legacy-margin rule for a changed argmax.
+// Applying these bounds after consuming a different free-generated token
+// would compare different conditional distributions.
 constexpr float kLegacyBound = 2.0F;
 constexpr float kNearTie = 0.5F;
 
 TEST_F(Dsv4EngineTarget, FixedPromptHeadAndGreedyTokensMatchTheReferences) {
   const auto started = Start({}, 1);
   ASSERT_TRUE(started) << (started ? "" : started.error());
-  std::vector<float> head;
-  const auto prefilled = Branch(0).Prefill(Tokens(0, 1285), head);
+  HostFunding funding(life->server->node());
+  ASSERT_TRUE(funding.funded());
+  const auto prompt = Tokens(0, 1285);
+  std::vector<std::int32_t> conditioned = prompt;
+  std::vector<float> logits;
+  const auto prefilled = Branch(0).Prefill(conditioned, logits);
   ASSERT_TRUE(prefilled) << (prefilled ? "" : prefilled.error());
+  // Row i predicts the next token from prompt + legacy[0:i]. Check that
+  // distribution BEFORE consuming legacy[i], regardless of our own argmax.
+  for (std::size_t row = 0; row < kLegacyTokens.size(); ++row) {
+    SCOPED_TRACE(std::format("legacy-conditioned row {}", row));
+    ASSERT_TRUE(Finite(logits));
+    ASSERT_EQ(Branch(0).history(), conditioned);
+    ASSERT_EQ(Engine().runner().slots().positions(0), conditioned.size());
+    const auto& legacy = kLegacy[row];
+    const auto token = Argmax(logits);
+    const float margin = legacy[0].logit - legacy[1].logit;
+    EXPECT_TRUE(token == kLegacyTokens[row] || (margin <= kNearTie && token == legacy[1].id))
+        << "token " << token << ", the M3 runner's " << kLegacyTokens[row] << " by " << margin;
+    for (const TopLogit& want : legacy)
+      EXPECT_NEAR(logits[static_cast<std::size_t>(want.id)], want.logit, kLegacyBound)
+          << "token " << want.id << " against the same-history M3 runner";
+    if (row + 1 != kLegacyTokens.size()) {
+      // Select only the forced anchor from this synthetic head. Generate's
+      // second row is the unmodified real decode result after that anchor;
+      // its final selected token remains pending and is never committed.
+      // Prefill(one token) would use a different, prefill-phase program.
+      std::vector<float> forced(logits.size(), 0.0F);
+      forced[static_cast<std::size_t>(kLegacyTokens[row])] = 1.0F;
+      rt::GenerateOptions advance_options;
+      advance_options.max_tokens = 2;
+      advance_options.stop = false;
+      advance_options.keep_logits = true;
+      rt::Generation advanced;
+      const auto ran = Branch(0).Generate(forced, advance_options, advanced);
+      ASSERT_TRUE(ran) << (ran ? "" : ran.error());
+      ASSERT_EQ(advanced.tokens.size(), 2U);
+      ASSERT_EQ(advanced.logits.size(), 2U);
+      ASSERT_EQ(advanced.tokens.front(), kLegacyTokens[row]);
+      ASSERT_FALSE(advanced.stopped);
+      ASSERT_FALSE(advanced.cancelled);
+      ASSERT_EQ(advanced.steps, 1U);
+      ASSERT_EQ(advanced.drafted, 0U);
+      ASSERT_EQ(advanced.accepted, 0U);
+      ASSERT_TRUE(Same(advanced.logits.front(), forced));
+      ASSERT_TRUE(Finite(advanced.logits.back()));
+      ASSERT_EQ(advanced.tokens.back(), Argmax(advanced.logits.back()));
+      conditioned.push_back(kLegacyTokens[row]);
+      ASSERT_EQ(Branch(0).history(), conditioned);
+      ASSERT_EQ(Engine().runner().slots().positions(0), conditioned.size());
+      logits = std::move(advanced.logits.back());
+    }
+  }
+
   rt::GenerateOptions options;
   options.max_tokens = kLegacyTokens.size();
   options.stop = false;
   options.keep_logits = true;
-  rt::Generation out;
-  const auto generated = Branch(0).Generate(head, options, out);
-  ASSERT_TRUE(generated) << (generated ? "" : generated.error());
-  ASSERT_EQ(out.tokens.size(), kLegacyTokens.size());
-  ASSERT_EQ(out.logits.size(), kLegacyTokens.size());
-  ASSERT_TRUE(Same(head, out.logits[0]));
-  for (std::size_t row = 0; row < kLegacyTokens.size(); ++row) {
-    const auto& logits = out.logits[row];
-    ASSERT_TRUE(Finite(logits)) << "row " << row;
-    EXPECT_EQ(out.tokens[row], Argmax(logits)) << "row " << row;
-    // The M3 runner's tokens, tie-aware.
-    const auto& legacy = kLegacy[row];
-    const float margin = legacy[0].logit - legacy[1].logit;
-    EXPECT_TRUE(out.tokens[row] == kLegacyTokens[row] ||
-                (margin <= kNearTie && out.tokens[row] == legacy[1].id))
-        << "row " << row << ": token " << out.tokens[row] << ", the M3 runner's "
-        << kLegacyTokens[row] << " by " << margin;
-    for (const TopLogit& want : legacy)
-      EXPECT_NEAR(logits[static_cast<std::size_t>(want.id)], want.logit, kLegacyBound)
-          << "row " << row << " token " << want.id << " against the M3 runner";
-    // The engine's own reference.
-    EXPECT_EQ(Argmax(logits), kEngine[row][0].id) << "row " << row;
-    for (const TopLogit& want : kEngine[row])
-      EXPECT_NEAR(logits[static_cast<std::size_t>(want.id)], want.logit, kSnapshotBound)
-          << "row " << row << " token " << want.id << " against the engine's reference";
-    llmp::base::Sha256 digest;
-    digest.Update(std::as_bytes(std::span(logits)));
-    RecordProperty(std::format("row{}_sha256", row), llmp::base::ToHex(digest.Finish()));
+  std::array<rt::Generation, 2> generated;
+  std::array<llmp::base::Sha256Digest, 2> states{};
+  for (std::size_t arm = 0; arm < generated.size(); ++arm) {
+    SCOPED_TRACE(std::format("free-generation replay {}", arm));
+    // Synchronous Clear/Prefill/Generate use the existing leased branch API.
+    // No session or pending output borrows the state at this arm boundary.
+    const auto cleared = Branch(0).Clear();
+    ASSERT_TRUE(cleared) << (cleared ? "" : cleared.error());
+    std::vector<float> head;
+    const auto filled = Branch(0).Prefill(prompt, head);
+    ASSERT_TRUE(filled) << (filled ? "" : filled.error());
+    auto& out = generated[arm];
+    const auto ran = Branch(0).Generate(head, options, out);
+    ASSERT_TRUE(ran) << (ran ? "" : ran.error());
+    ASSERT_EQ(out.tokens.size(), kLegacyTokens.size());
+    ASSERT_EQ(out.logits.size(), kLegacyTokens.size());
+    ASSERT_TRUE(Same(head, out.logits[0]));
+    for (std::size_t row = 0; row < out.logits.size(); ++row) {
+      ASSERT_TRUE(Finite(out.logits[row])) << "row " << row;
+      EXPECT_EQ(out.tokens[row], Argmax(out.logits[row])) << "row " << row;
+      llmp::base::Sha256 digest;
+      digest.Update(std::as_bytes(std::span(out.logits[row])));
+      RecordProperty(std::format("replay{}_row{}_sha256", arm, row),
+                     llmp::base::ToHex(digest.Finish()));
+    }
+    // A finished ordinary generation leaves its final chosen anchor pending;
+    // every earlier token is in both the retired state and committed history.
+    auto committed = prompt;
+    committed.insert(committed.end(), out.tokens.begin(), out.tokens.end() - 1);
+    EXPECT_EQ(Branch(0).history(), committed);
+    EXPECT_EQ(Engine().runner().slots().positions(0), committed.size());
+    const auto state = StateHash(0);
+    ASSERT_TRUE(state) << (state ? "" : state.error());
+    states[arm] = *state;
   }
+  EXPECT_EQ(generated[0].tokens, generated[1].tokens);
+  for (std::size_t row = 0; row < generated[0].logits.size(); ++row)
+    EXPECT_TRUE(Same(generated[0].logits[row], generated[1].logits[row])) << "row " << row;
+  EXPECT_EQ(states[0], states[1]);
   EXPECT_EQ(Engine().runner().coverage().violations, 0U);
 }
 

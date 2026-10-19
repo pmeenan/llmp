@@ -11,11 +11,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 #include "execution/registry.h"
 #include "format/encoding.h"
@@ -27,6 +30,7 @@
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
+#include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/float_route.h"
 #include "kernels/ggml/gemma_moe.h"
 #include "kernels/ggml/gemma_moe_fusion.h"
@@ -49,7 +53,6 @@ using format::Encoding;
 using format::Layout;
 using ir::FusedKind;
 using ir::Op;
-using Operation = ex::Operation;
 
 // ------------------------------------------------------------- operand lists
 
@@ -1092,6 +1095,28 @@ bool AcceptsDsv4LidMask(const ex::CapabilityQuery& q) {
          onb[2] == width * rows * 2 && onb[3] == onb[2];
 }
 
+bool AcceptsSelect(const ex::CapabilityQuery& q) {
+  const auto* condition = Operand(q, 0);
+  const auto* yes = Operand(q, 1);
+  const auto* no = Operand(q, 2);
+  const auto* out = Operand(q, kOut);
+  if (!Built(q) || q.operands.size() != 4 || !condition || !yes || !no || !out ||
+      condition->encoding != Encoding::kI32 || condition->layout != Layout::kDense ||
+      yes->layout != Layout::kDense || no->layout != Layout::kDense ||
+      out->layout != Layout::kDense || yes->encoding != no->encoding ||
+      yes->encoding != out->encoding || yes->ne != out->ne)
+    return false;
+  const auto& info = format::Info(yes->encoding);
+  if (!info.ggml || info.block_elements != 1) return false;
+  std::uint64_t elements = 1;
+  for (unsigned axis = 0; axis < 4; ++axis) {
+    if (!condition->ne[axis] || !no->ne[axis] || !yes->ne[axis] ||
+        yes->ne[axis] % condition->ne[axis] || yes->ne[axis] % no->ne[axis] ||
+        __builtin_mul_overflow(elements, yes->ne[axis], &elements) || elements > INT32_MAX)
+      return false;
+  }
+  return true;
+}
 bool AcceptsPrefixOverwrite(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::PrefixOverwriteParams>(q);
   const auto* values = Operand(q, 0);
@@ -1561,6 +1586,9 @@ std::uint64_t VectorRows(const ex::CapabilityQuery& q) {
   return q.policy.vector_rows == 0 ? std::numeric_limits<std::uint64_t>::max()
                                    : q.policy.vector_rows;
 }
+bool OptionEnabled(const ex::CapabilityQuery& q, std::string_view name) {
+  return !q.policy.options || std::ranges::contains(*q.policy.options, name);
+}
 bool AcceptsSelectedRoute(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::RouteParams>(q);
   const auto* logits = Operand(q, 0);
@@ -1571,14 +1599,16 @@ bool AcceptsSelectedRoute(const ex::CapabilityQuery& q) {
       !logits || !out_ids || !weights)
     return false;
   const bool biased = p->kind == ir::RouteKind::kSqrtSoftplusBias;
-  if (!biased && p->kind != ir::RouteKind::kHash) return false;
+  if ((!biased && p->kind != ir::RouteKind::kHash) ||
+      !OptionEnabled(q, biased ? "biased_route" : "hash_route"))
+    return false;
   const auto* source = Operand(q, biased ? 1 : 2);
   if (!source || source->encoding != (biased ? Encoding::kF32 : Encoding::kI32) ||
       source->layout != Layout::kDense || (biased && p->scale <= 0.0F))
     return false;
   const auto rows = logits->ne[1];
   const std::uint64_t max_rows = std::min<std::uint64_t>(
-      biased ? static_cast<std::uint64_t>(kVecQMaxTokens) : 65535U, VectorRows(q));
+      biased ? std::min<std::uint64_t>(kVecQMaxTokens, 16) : 8U, VectorRows(q));
   if (rows < 1 || rows > max_rows) return false;
   const auto packed = [](const ex::OperandFormat& operand, std::uint64_t width,
                          std::uint64_t count) {
@@ -1653,13 +1683,38 @@ bool AcceptsGroupedVecQ(const ex::CapabilityQuery& q) {
          packed(*out, sizeof(float), n);
 }
 
+bool VecQGluFormula(const ex::CapabilityQuery& q) {
+  std::optional<ir::GluParams> glu;
+  if (q.op == ir::Fused(FusedKind::kMatMulGlu)) {
+    glu = ParamsOf<ir::GluParams>(q);
+  } else if (q.op == ir::Fused(FusedKind::kMatMulIdGlu)) {
+    const auto p = ParamsOf<ir::MoeExpertsParams>(q);
+    if (p) glu = p->glu;
+  } else {
+    return true;
+  }
+  return glu && !glu->swapped && std::isfinite(glu->limit) &&
+         ((glu->kind == ir::GluKind::kSwiGluClamp && glu->limit > 0.0F) ||
+          ((glu->kind == ir::GluKind::kSwiGlu || glu->kind == ir::GluKind::kGeGluTanh) &&
+           glu->limit == 0.0F));
+}
+
 bool AcceptsVecQ(const ex::CapabilityQuery& q) {
-  return VecQ(q) && q.rows >= 1 && q.rows <= MaxVecQRows(q);
+  return VecQ(q) && VecQGluFormula(q) && q.rows >= 1 && q.rows <= MaxVecQRows(q);
 }
 // Routed: its (token, slot) pairs within the kernel's 128 (the fast form's).
+// The primitive accepts one broadcast input slot or one for each selected
+// expert. Intermediate repeating-slot counts require the ordinary fallback.
 bool AcceptsVecQRouted(const ex::CapabilityQuery& q) {
-  const std::uint64_t used = Ne(q, q.op == ir::Fused(FusedKind::kMatMulIdGlu) ? 3 : 2, 0);
-  return VecQ(q) && q.rows >= 1 && q.rows <= MaxVecQRows(q) && used >= 1 && q.rows * used <= 128;
+  const bool glu = q.op == ir::Fused(FusedKind::kMatMulIdGlu);
+  const auto* x = Operand(q, glu ? 2 : 1);
+  const auto* ids = Operand(q, glu ? 3 : 2);
+  if (!VecQ(q) || !VecQGluFormula(q) || !x || !ids || q.rows < 1 || q.rows > MaxVecQRows(q) ||
+      ids->ne[0] < 1 || ids->ne[0] > 128 / q.rows || ids->ne[1] != q.rows || ids->ne[2] != 1 ||
+      ids->ne[3] != 1 || x->ne[0] != q.k || x->ne[3] != 1)
+    return false;
+  if (glu) return x->ne[1] == q.rows && x->ne[2] == 1;
+  return (x->ne[1] == 1 || x->ne[1] == ids->ne[0]) && x->ne[2] == q.rows;
 }
 // validate_ext.cc CheckGetRowsExt: GGML's decoder has no NVFP4 or
 // multipart split case. Do not let this generic native rung preempt an
@@ -1890,6 +1945,7 @@ bool AcceptsNormRopeSections(const ex::CapabilityQuery& q) {
   return covered == dim && Operand(q, static_cast<std::uint8_t>(2 + p->sections)) == nullptr;
 }
 bool AcceptsSelectedCombine(const ex::CapabilityQuery& q) {
+  if (!OptionEnabled(q, "moe_combine")) return false;
   const auto n = Ne(q, 0, 0), used = Ne(q, 0, 1), tokens = Ne(q, 0, 2);
   if (!Built(q) || q.operands.size() != 5 || n == 0 || n > INT32_MAX - 1024 || n % 4 != 0 ||
       used == 0 || used > 32 || tokens == 0 || tokens > 65535 ||
@@ -1974,7 +2030,6 @@ bool AcceptsRopeStore(const ex::CapabilityQuery& q) {
 // whose kernels upstream picks by the column count, nor attention.
 struct Entry {
   std::string_view name;
-  Operation operation;
   ex::Capability capability;
   std::string_view accepts;
 };
@@ -1983,6 +2038,84 @@ ex::Rung GetRowsRung(const ex::CapabilityQuery& q) {
   const auto* table = Operand(q, 0);
   return table && std::ranges::contains(kQuantized, table->encoding) ? ex::Rung::kOnChipDecode
                                                                      : ex::Rung::kNative;
+}
+
+// Concrete numerical facts, including the group's actual routing. A BF16
+// weight alone does not prove input rounding: this proof covers the resolved
+// cuBLAS BF16 operands/F32 accumulation path with declared output storage;
+// it makes no claim about MMVF/MMF arithmetic. Explicit F32 accumulation
+// with an F32 input makes cuBLAS widen both operands.
+ir::ProductArithmetic Bf16ProductArithmetic(const ex::CapabilityQuery& q) {
+  const auto* weight = Operand(q, 0);
+  const auto* input = Operand(q, 1);
+  const auto* output = Operand(q, ex::kOutputOperand);
+  const auto p = ParamsOf<ir::ProductParams>(q);
+  if (!weight || !input || !output || weight->encoding != Encoding::kBF16 ||
+      (output->encoding != Encoding::kF32 && output->encoding != Encoding::kBF16) ||
+      weight->ne[2] != 1 || weight->ne[3] != 1 || input->ne[2] != 1 || input->ne[3] != 1 ||
+      q.arch < 80 || !CompiledFor(q.arch))
+    return ir::ProductArithmetic::kImplementation;
+  // Both supported accumulation requests use CUBLAS_COMPUTE_32F for
+  // already-BF16 operands. RunGemmBf16 and its pinned Lt path use F32
+  // accumulation with either declared F32 or BF16 output storage. A Hadamard
+  // hint is only an optional algorithm
+  // hint; the ordinary BF16 GEMM still computes those actual weights.
+  if (input->encoding == Encoding::kBF16 && input->layout == Layout::kDense && p &&
+      (p->accumulate == ir::Accumulate::kDefault || p->accumulate == ir::Accumulate::kF32) &&
+      (p->hint == ir::ProductHint::kNone || p->hint == ir::ProductHint::kHadamard))
+    return ir::ProductArithmetic::kBf16F32;
+  if (input->encoding == Encoding::kF32 && output->encoding == Encoding::kF32 && p &&
+      p->accumulate == ir::Accumulate::kDefault && p->hint == ir::ProductHint::kNone &&
+      FloatProductUsesCublas(q))
+    return ir::ProductArithmetic::kBf16F32;
+  return ir::ProductArithmetic::kImplementation;
+}
+// Both ordinary MMVQ and its explicit Prepare use quantize_row_q8_1_cuda:
+// 32-value max-abs blocks, FP16 scale/sum, signed int8 rounded values and
+// zero-filled padding to 512 values. The prepared product calls the original
+// ggml_cuda_op_mul_mat_vec_q with that exact padded stride. MMQ and VecQ
+// have different packing/reduction recipes and deliberately do not claim it.
+ir::ProductArithmetic Q8ProductArithmetic(const ex::CapabilityQuery& q) {
+  const auto* weight = Operand(q, 0);
+  const auto* input = Operand(q, 1);
+  const auto* output = Operand(q, ex::kOutputOperand);
+  const auto params = ParamsOf<ir::ProductParams>(q);
+  constexpr auto unknown = ir::ProductArithmetic::kImplementation;
+  if (q.op != ir::Primitive(Op::kMatMul) || !Built(q) || !weight || !input || !output || !params ||
+      params->hint != ir::ProductHint::kNone || q.k == 0 || q.k > INT32_MAX - 511 || q.k % 32 ||
+      q.rows == 0 || q.rows > 8 || weight->layout != Layout::kGgmlBlocks ||
+      !std::ranges::contains(kPreparedWeights, weight->encoding) ||
+      weight->ne != std::array<std::uint64_t, 4>{q.k, q.n, 1, 1} ||
+      input->ne != std::array<std::uint64_t, 4>{q.k, q.rows, 1, 1} ||
+      output->ne != std::array<std::uint64_t, 4>{q.n, q.rows, 1, 1} ||
+      output->encoding != Encoding::kF32 || output->layout != Layout::kDense || !weight->memory ||
+      weight->memory->is_view || weight->memory->view_offset != 0 || !input->memory ||
+      input->memory->is_view || input->memory->view_offset != 0 ||
+      !PackedOf(output, sizeof(float)) || !Routed(q))
+    return unknown;
+  const auto& info = format::Info(weight->encoding);
+  if (!info.ggml || q.k % info.ggml->block_elements) return unknown;
+  const auto packed = [](const ex::OperandFormat& operand, std::uint64_t bytes,
+                         std::uint64_t inner) {
+    if (operand.memory->nb[0] != bytes) return false;
+    std::uint64_t stride = bytes * inner;
+    for (std::size_t axis = 1; axis < 4; ++axis) {
+      if (operand.memory->nb[axis] != stride ||
+          __builtin_mul_overflow(stride, operand.ne[axis], &stride))
+        return false;
+    }
+    return true;
+  };
+  if (!packed(*weight, info.ggml->block_bytes, q.k / info.ggml->block_elements)) return unknown;
+  if (input->encoding == Encoding::kF32 && input->layout == Layout::kDense &&
+      packed(*input, sizeof(float), q.k))
+    return ir::ProductArithmetic::kGgmlQ8_1F32;
+  // Logical Q8_1 row strides describe unpadded blocks; the owned Prepare
+  // lowering authenticates and funds the complete physical padded rows.
+  if (input->encoding == Encoding::kQ8_1 && input->layout == Layout::kGgmlBlocks &&
+      packed(*input, 36, q.k / 32))
+    return ir::ProductArithmetic::kGgmlQ8_1F32;
+  return unknown;
 }
 
 constexpr ex::Capability Cap(ir::OpKey op, std::span<const Rule> rules,
@@ -2034,6 +2167,16 @@ constexpr ex::Capability Cap(ir::OpKey op, std::span<const Rule> rules,
       })) {
     result.expansion = ex::Expansion::kDenseF32Accumulation;
     result.expands = &FloatProductUsesCublas;
+  }
+  if (op.op == Op::kMatMul) {
+    if (group == "ggml.mul_mat" && accepts == &AcceptsFloatProduct)
+      result.product_arithmetic = &Bf16ProductArithmetic;
+    if (std::ranges::any_of(rules, [](const Rule& rule) {
+          return rule.operand == 1 && std::ranges::contains(rule.encodings, Encoding::kBF16);
+        }))
+      result.product_arithmetic = &Bf16ProductArithmetic;
+    if ((group == "ggml.mul_mat" && accepts == &AcceptsMmvq) || accepts == &AcceptsPrepared)
+      result.product_arithmetic = &Q8ProductArithmetic;
   }
   return result;
 }
@@ -2095,7 +2238,8 @@ constexpr std::string_view kDsv4HcPrePackedName = "llmp.dsv4.hc_pre_packed";
 constexpr std::array<std::string_view, 3> kDsv4HcPreSteps = {kDsv4HcMixName, kDsv4HcPreName,
                                                              kContName};
 constexpr std::string_view kMulMatIdNvfp4Name = "ggml.mul_mat_id.nvfp4";
-constexpr std::array<std::string_view, 2> kMulMatIdSteps = {kMulMatIdVecQ, kMulMatIdQ};
+constexpr std::array<std::string_view, 3> kMulMatIdSteps = {kMulMatIdVecQ, kMulMatIdQ,
+                                                            kMulMatIdVecQRows};
 constexpr std::string_view kAttentionGroup = "ggml.flash_attn_ext";
 constexpr std::string_view kMulMatIdGroup = "ggml.mul_mat_id";
 constexpr std::string_view kBuilt = "; selectable for the build's SASS architectures";
@@ -2106,117 +2250,106 @@ constexpr std::string_view kMmqText =
 
 const std::array kEntries = {
     // Gathers, elementwise, norms.
-    Entry{"ggml.get_rows", Operation::kGetRows,
-          Cap(P(Op::kGetRows), kFloatTable, &AcceptsAny, true, {}, 1), kBuilt},
-    Entry{"ggml.get_rows.ext", Operation::kGetRows,
-          Cap(P(Op::kGetRows), {}, &AcceptsGetRowsExt, true), kBuilt},
-    Entry{kConv2dTiledF32, Operation::kConv2d, SpatialTiled(), kBuilt},
-    Entry{kConv1x1Name, Operation::kConv2d,
-          Cap(P(Op::kConv2d), kSpatialConvRules, &AcceptsConv1x1, false, {}, 2), kBuilt},
-    Entry{"ggml.conv2d.f32", Operation::kConv2d,
+    Entry{"ggml.get_rows", Cap(P(Op::kGetRows), kFloatTable, &AcceptsAny, true, {}, 1), kBuilt},
+    Entry{"ggml.get_rows.ext", Cap(P(Op::kGetRows), {}, &AcceptsGetRowsExt, true), kBuilt},
+    Entry{kConv2dTiledF32, SpatialTiled(), kBuilt},
+    Entry{kConv1x1Name, Cap(P(Op::kConv2d), kSpatialConvRules, &AcceptsConv1x1, false, {}, 2),
+          kBuilt},
+    Entry{"ggml.conv2d.f32",
           Cap(P(Op::kConv2d), kSpatialConvRules, &AcceptsSpatialConv, false, {}, 0, {}, 0,
               kSpatialConvSteps),
           kBuilt},
-    Entry{"ggml.upsample.nearest", Operation::kUpsample,
-          Cap(P(Op::kUpsample), kSpatialUpRules, &AcceptsSpatialUp, false), kBuilt},
-    Entry{"ggml.scale", Operation::kScale, Cap(P(Op::kScale), kF32In, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.add", Operation::kAdd, Cap(P(Op::kAdd), kAddRules, &AcceptsAdd, true), kBuilt},
-    Entry{"ggml.mul", Operation::kMul, Cap(P(Op::kMul), kF32Binary, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.sub", Operation::kSub, Cap(P(Op::kSub), kF32Binary, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.div", Operation::kDiv, Cap(P(Op::kDiv), kF32Binary, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.unary", Operation::kUnary, Cap(P(Op::kUnary), kF32In, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.clamp", Operation::kClamp, Cap(P(Op::kClamp), kF32In, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.fill", Operation::kFill, Cap(P(Op::kFill), {}, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.repeat", Operation::kRepeat, Cap(P(Op::kRepeat), {}, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.concat", Operation::kConcat, Cap(P(Op::kConcat), {}, &AcceptsAny, true), kBuilt},
-    Entry{"ggml.cont", Operation::kCont, Cap(P(Op::kCont), {}, &AcceptsCont, true), kBuilt},
-    Entry{"ggml.sum_rows", Operation::kSumRows, Cap(P(Op::kSumRows), kF32In, &AcceptsAny, true),
+    Entry{"ggml.upsample.nearest", Cap(P(Op::kUpsample), kSpatialUpRules, &AcceptsSpatialUp, false),
           kBuilt},
-    Entry{"ggml.soft_max", Operation::kSoftMax, Cap(P(Op::kSoftMax), {}, &AcceptsAny, true),
-          kBuilt},
-    Entry{"ggml.argsort.bitonic", Operation::kArgsort,
-          Cap(P(Op::kArgsort), kF32In, &AcceptsAny, true), kBuilt},
-    Entry{kLightningIndexerName, Operation::kLightningIndexer,
+    Entry{"ggml.scale", Cap(P(Op::kScale), kF32In, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.add", Cap(P(Op::kAdd), kAddRules, &AcceptsAdd, true), kBuilt},
+    Entry{"ggml.mul", Cap(P(Op::kMul), kF32Binary, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.sub", Cap(P(Op::kSub), kF32Binary, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.div", Cap(P(Op::kDiv), kF32Binary, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.unary", Cap(P(Op::kUnary), kF32In, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.clamp", Cap(P(Op::kClamp), kF32In, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.fill", Cap(P(Op::kFill), {}, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.repeat", Cap(P(Op::kRepeat), {}, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.concat", Cap(P(Op::kConcat), {}, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.cont", Cap(P(Op::kCont), {}, &AcceptsCont, true), kBuilt},
+    Entry{"ggml.sum_rows", Cap(P(Op::kSumRows), kF32In, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.soft_max", Cap(P(Op::kSoftMax), {}, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.argsort.bitonic", Cap(P(Op::kArgsort), kF32In, &AcceptsAny, true), kBuilt},
+    Entry{kLightningIndexerName,
           Cap(P(Op::kIndexScore), kIndexScoreRules, &AcceptsIndexScore, true),
           "; selectable for the build's SASS architectures: D 128, 32 or 64 indexer heads"},
-    Entry{kVisibleTopKName, Operation::kTopK,
-          Cap(P(Op::kVisibleTopK), kVisibleTopKRules, &AcceptsVisibleTopK, true), kBuilt},
+    Entry{kVisibleTopKName, Cap(P(Op::kVisibleTopK), kVisibleTopKRules, &AcceptsVisibleTopK, true),
+          kBuilt},
     Entry{
-        kRoundedIndexScoreName, Operation::kLightningIndexer,
+        kRoundedIndexScoreName,
         Cap(P(Op::kRoundedIndexScore), kRoundedIndexScoreRules, &AcceptsRoundedIndexScore, false),
         "; explicit root alignment and native pitches; paid literal fill then original Lid groups"},
-    Entry{kPrefixOverwriteName, Operation::kFill,
+    Entry{"llmp.select", Cap(P(Op::kSelect), {}, &AcceptsSelect, true),
+          "; I32 nonzero predicate; same dense scalar branches; bounded broadcast byte copies"},
+    Entry{kPrefixOverwriteName,
           Cap(P(Op::kPrefixOverwrite), kPrefixOverwriteRules, &AcceptsPrefixOverwrite, true),
           kBuilt},
-    Entry{kSelectedMaskName, Operation::kFill,
+    Entry{kSelectedMaskName,
           Cap(P(Op::kSelectedMask), kSelectedMaskRules, &AcceptsSelectedMask, true), kBuilt},
-    Entry{kTopKName, Operation::kTopK, Cap(P(Op::kTopK), kF32In, &AcceptsTopK, true),
+    Entry{kTopKName, Cap(P(Op::kTopK), kF32In, &AcceptsTopK, true),
           "; selectable for the build's SASS architectures: F32 rows within I32 counts"},
-    Entry{"ggml.norm", Operation::kLayerNorm,
-          Cap(P(Op::kLayerNorm), kF32In, &AcceptsLayerNorm, true),
+    Entry{"ggml.norm", Cap(P(Op::kLayerNorm), kF32In, &AcceptsLayerNorm, true),
           "; locked centered F32 normalization over packed rows; finite nonnegative epsilon"},
-    Entry{"ggml.l2_norm", Operation::kL2Norm, Cap(P(Op::kL2Norm), kF32In, &AcceptsL2Norm, true),
-          kBuilt},
-    Entry{kSpatialChannelNormName, Operation::kSpatialChannelNorm,
+    Entry{"ggml.l2_norm", Cap(P(Op::kL2Norm), kF32In, &AcceptsL2Norm, true), kBuilt},
+    Entry{kSpatialChannelNormName,
           Cap(F(FusedKind::kSpatialChannelNorm), kF32Binary, &AcceptsSpatialChannelNorm, true),
           "; selectable for the build's SASS architectures: packed F32 [W, H, C, 1] and an F32 "
           "[C] gamma"},
-    Entry{kNormRopeSectionsName, Operation::kRmsNormMulRopeSections,
+    Entry{kNormRopeSectionsName,
           Cap(F(FusedKind::kRmsNormMulRopeSections), kNormRopeSectionsRules,
               &AcceptsNormRopeSections, true),
           "; selectable for the build's SASS architectures: packed F32 or BF16 heads of D at most "
           "512, an F32 or BF16 [D] weight, one to three plain sections covering D"},
-    Entry{"ggml.rms_norm", Operation::kRmsNorm, Cap(P(Op::kRmsNorm), kF32In, &AcceptsAny, true),
+    Entry{"ggml.rms_norm", Cap(P(Op::kRmsNorm), kF32In, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.rms_norm_mul.fused", Cap(F(FusedKind::kRmsNormMul), kNormMul, &AcceptsAny, true),
           kBuilt},
-    Entry{"ggml.rms_norm_mul.fused", Operation::kRmsNormMul,
-          Cap(F(FusedKind::kRmsNormMul), kNormMul, &AcceptsAny, true), kBuilt},
-    Entry{kGemmaNormRopeName, Operation::kRmsNormMulRope,
+    Entry{kGemmaNormRopeName,
           Cap(F(FusedKind::kRmsNormMulRope), kNormMulRope, &AcceptsNormRope, true),
           "; full even-width NEOX rotation within launcher integer bounds "
           "with F32 frequency factors or none, its parameters finite"},
-    Entry{kGemmaNormAddName, Operation::kRmsNormMulAdd,
-          Cap(F(FusedKind::kRmsNormMulAdd), kNormMulAdd, &AcceptsNormAdd, true),
+    Entry{kGemmaNormAddName, Cap(F(FusedKind::kRmsNormMulAdd), kNormMulAdd, &AcceptsNormAdd, true),
           "; positive F32 widths within launcher integer bounds, finite nonnegative epsilon"},
     // Rotations and stores.
-    Entry{"ggml.rope.neox", Operation::kRope,
-          Cap(P(Op::kRope), kRope, &AcceptsRopeNeox, true, {}, 1),
+    Entry{"ggml.rope.neox", Cap(P(Op::kRope), kRope, &AcceptsRopeNeox, true, {}, 1),
           "; selectable for the build's SASS architectures: NEOX over positions without "
           "frequency factors or an offset"},
-    Entry{"ggml.rope.ext", Operation::kRope, Cap(P(Op::kRope), kRope, &AcceptsRopeExt, true),
+    Entry{"ggml.rope.ext", Cap(P(Op::kRope), kRope, &AcceptsRopeExt, true),
           "; selectable for the build's SASS architectures over positions"},
-    Entry{"ggml.set_rows", Operation::kSetRows,
-          Cap(P(Op::kCacheStore), kF16Store, &AcceptsAny, true, {}, 1), kBuilt},
-    Entry{"ggml.set_rows.ext", Operation::kSetRows,
-          Cap(P(Op::kCacheStore), kFloatStore, &AcceptsAny, true), kBuilt},
-    Entry{kSetRowsGroupedName, Operation::kSetRows,
+    Entry{"ggml.set_rows", Cap(P(Op::kCacheStore), kF16Store, &AcceptsAny, true, {}, 1), kBuilt},
+    Entry{"ggml.set_rows.ext", Cap(P(Op::kCacheStore), kFloatStore, &AcceptsAny, true), kBuilt},
+    Entry{kSetRowsGroupedName,
           Cap(F(FusedKind::kGroupedStores), kF16Store, &AcceptsAny, true, {}, 0, {},
               static_cast<std::uint16_t>(kSetRowsGroupMax)),
           kBuilt},
-    Entry{"ggml.rope_set_rows.fused", Operation::kRopeSetRows,
+    Entry{"ggml.rope_set_rows.fused",
           Cap(F(FusedKind::kRopeStore), kF16RopeStore, &AcceptsRopeStore, true),
           "; selectable for the build's SASS architectures: NEOX into F16 rows"},
     // Products.
-    Entry{"ggml.mul_mat.mmvq", Operation::kMatMul,
+    Entry{"ggml.mul_mat.mmvq",
           Cap(P(Op::kMatMul), kQuantProduct, &AcceptsMmvq, false, kMulMatGroup, 1), kMmvqText},
-    Entry{"ggml.mul_mat.mmq", Operation::kMatMul,
-          Cap(P(Op::kMatMul), kQuantProduct, &AcceptsMmq, false, kMulMatGroup), kMmqText},
-    Entry{kMulMatVecFRows, Operation::kMatMul, Bf16VectorProduct(),
+    Entry{"ggml.mul_mat.mmq", Cap(P(Op::kMatMul), kQuantProduct, &AcceptsMmq, false, kMulMatGroup),
+          kMmqText},
+    Entry{kMulMatVecFRows, Bf16VectorProduct(),
           "; exact output-typed tuning; packed BF16/F32/F32 product, 1..8 physical columns"},
-    Entry{"ggml.mul_mat.mmvf", Operation::kMatMul,
+    Entry{"ggml.mul_mat.mmvf",
           Cap(P(Op::kMatMul), kFloatProduct, &AcceptsFloatProduct, false, kMulMatGroup, 2), kBuilt},
-    Entry{"ggml.mul_mat.mmf", Operation::kMatMul,
+    Entry{"ggml.mul_mat.mmf",
           Cap(P(Op::kMatMul), kFloatProduct, &AcceptsFloatProduct, false, kMulMatGroup, 1), kBuilt},
-    Entry{"ggml.mul_mat.cublas", Operation::kMatMul,
+    Entry{"ggml.mul_mat.cublas",
           Cap(P(Op::kMatMul), kFloatProduct, &AcceptsFloatProduct, false, kMulMatGroup), kBuilt},
-    Entry{"ggml.mul_mat.fwht", Operation::kMatMul,
-          Cap(P(Op::kMatMul), kFloatProduct, &AcceptsHadamard, false, {}, 3),
+    Entry{"ggml.mul_mat.fwht", Cap(P(Op::kMatMul), kFloatProduct, &AcceptsHadamard, false, {}, 3),
           "; selectable for the build's SASS architectures: a square Hadamard hint"},
     Entry{
-        "ggml.mul_mat_add.mmvf_fused", Operation::kMulMatAdd,
+        "ggml.mul_mat_add.mmvf_fused",
         Cap(F(FusedKind::kMatMulAdd), kF16ProductAdd, &AcceptsFloatProductFusion, false),
         "; selectable for the build's SASS architectures: one F32 input column, one dense "
         "F16 matrix with even K, F32 add of the same shape; actual MMVF and fusion gates checked"},
-    Entry{"ggml.mul_mat_glu.mmvf_fused", Operation::kMulMatGlu,
+    Entry{"ggml.mul_mat_glu.mmvf_fused",
           Cap(F(FusedKind::kMatMulGlu), kF16ProductGlu, &AcceptsFloatSwiGlu, false),
           "; selectable for the build's SASS architectures: one F32 input column, dense F16 "
           "gate/up matrices with even K, split unswapped SwiGLU; actual MMVF and fusion gates "
@@ -2224,305 +2357,272 @@ const std::array kEntries = {
     // Routed experts: the expert products by upstream's routing (MMVQ or
     // MMQ, ggml_cuda_mul_mat_id), and Gemma's fused routing and scaled
     // reduce (gemma_moe_fusion.h).
-    Entry{kMulMatIdVecQ, Operation::kMulMatId,
+    Entry{kMulMatIdVecQ,
           Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup, 1), kBuilt},
-    Entry{kMulMatIdQ, Operation::kMulMatId,
+    Entry{kMulMatIdQ, Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup),
+          kBuilt},
+    Entry{kMulMatIdQCompact,
           Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup), kBuilt},
-    Entry{kMulMatIdQCompact, Operation::kMulMatId,
+    Entry{kMulMatIdQCompactPrequant,
           Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup), kBuilt},
-    Entry{kMulMatIdQCompactPrequant, Operation::kMulMatId,
-          Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup), kBuilt},
-    Entry{kMulMatIdQ2D2r, Operation::kMulMatId,
-          Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup), kBuilt},
-    Entry{kDsv4RouteName, Operation::kMoeRoute,
-          Cap(P(Op::kRoute), kSelectedRouteRules, &AcceptsSelectedRoute, true),
-          "; opt-in sqrt-softplus routing of 1..256 experts, used 1..min(experts,32): selected IDs "
-          "rows 1..65535, "
-          "biased top-k rows 1..8"},
-    Entry{kGemmaRouteName, Operation::kGemmaRoute,
-          Cap(P(Op::kRoute), kRouteLogits, &AcceptsGemmaRoute, true),
+    Entry{kMulMatIdQ2D2r, Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup),
+          kBuilt},
+    Entry{kDsv4RouteName, Cap(P(Op::kRoute), kSelectedRouteRules, &AcceptsSelectedRoute, true),
+          "; typed selected routing of 1..256 experts, used 1..min(experts,32): hash rows <=8, "
+          "biased rows <=min(16,native vector bound), under the supplied arithmetic policy"},
+    Entry{kGemmaRouteName, Cap(P(Op::kRoute), kRouteLogits, &AcceptsGemmaRoute, true),
           "; compiled expert counts, valid top-k, scale1 and int-bounded row offsets"},
-    Entry{kGemmaReduceName, Operation::kGemmaScaledReduce,
-          Cap(P(Op::kExpertReduce), kScaledReduce, &AcceptsGemmaReduce, true),
+    Entry{kGemmaReduceName, Cap(P(Op::kExpertReduce), kScaledReduce, &AcceptsGemmaReduce, true),
           "; F32 expert slots, each scale gathered, within the 2-D grid and uint64 indexing"},
-    Entry{"llmp.q8_1", Operation::kQuantize,
+    Entry{"llmp.q8_1",
           Cap(P(Op::kPrepare), kQ8Prepare, &AcceptsAny, true, {}, 0, {.k_multiple = 32}),
           "; selectable for the build's SASS architectures: rows of whole Q8_1 blocks"},
-    Entry{"llmp.mmvq.prepared", Operation::kMatMul,
+    Entry{"llmp.mmvq.prepared",
           Cap(P(Op::kMatMul), kPreparedProduct, &AcceptsPrepared, false, {}, 0,
               {.min_rows = 1, .max_rows = 8, .k_multiple = 32}),
           kMmvqText},
-    Entry{"ggml.mul_mat_geglu.mmvq_fused", Operation::kMulMatGeGlu,
+    Entry{"ggml.mul_mat_geglu.mmvq_fused",
           Cap(F(FusedKind::kMatMulGlu), kQuantGlu, &AcceptsQuantGeGlu, false),
           "; selectable for the build's SASS architectures past Pascal: GELU-tanh of one column "
           "over gate and up weights of one type, which upstream's ggml_cuda_should_use_mmvq "
           "takes"},
-    Entry{"ggml.mul_mat_glu.mmvq_fused", Operation::kMulMatGlu,
+    Entry{"ggml.mul_mat_glu.mmvq_fused",
           Cap(F(FusedKind::kMatMulGlu), kQuantGlu, &AcceptsQuantSwiGlu, false),
           "; selectable for the build's SASS architectures past Pascal: SwiGLU of one column "
           "over gate and up weights of one type, which upstream's ggml_cuda_should_use_mmvq "
           "takes"},
-    Entry{"ggml.geglu", Operation::kGeGlu, Cap(P(Op::kGlu), kF32Glu, &AcceptsGeGlu, true),
+    Entry{"ggml.geglu", Cap(P(Op::kGlu), kF32Glu, &AcceptsGeGlu, true),
           "; selectable for the build's SASS architectures: split GELU-tanh, not swapped"},
-    Entry{kAttentionMaskPackName, Operation::kAttentionMaskPack,
+    Entry{kAttentionMaskPackName,
           Cap(F(FusedKind::kAttentionMaskPack), kMaskPackRules, &AcceptsMaskPack, true),
           "; selectable for the build's SASS architectures: an F32 mask into F16 padded to "
           "multiples of 256 columns"},
-    Entry{kRopeTableName, Operation::kRopeTable,
-          Cap(F(FusedKind::kRopeTable), kRopeTableRules, &AcceptsRopeTable, true),
+    Entry{kRopeTableName, Cap(F(FusedKind::kRopeTable), kRopeTableRules, &AcceptsRopeTable, true),
           "; selectable for the build's SASS architectures: one to three normal sections of a "
           "head of at most 512"},
-    Entry{kQkAttentionName, Operation::kQkAttention,
+    Entry{kQkAttentionName,
           Cap(F(FusedKind::kQkAttention), kQkAttentionRules, &AcceptsQkAttention, false),
           "; selectable from compute capability 8.0: BF16 heads of 128, a packed mask and table"},
-    Entry{kLayerNormModulateSplitName, Operation::kLayerNormModulateSplit,
+    Entry{kLayerNormModulateSplitName,
           Cap(F(FusedKind::kLayerNormModulateSplit), kModulateSplitRules, &AcceptsModulateSplit,
               true),
           "; selectable for the build's SASS architectures: packed F32 rows of at most 65536"},
-    Entry{kGatedResidualModulateSplitName, Operation::kGatedResidualModulateSplit,
+    Entry{kGatedResidualModulateSplitName,
           Cap(F(FusedKind::kGatedResidualModulateSplit), kGatedModulateSplitRules,
               &AcceptsGatedModulateSplit, true),
           "; selectable for the build's SASS architectures: the residual's sum and its "
           "modulation in one pass over packed rows"},
-    Entry{kDupUpAddName, Operation::kDupUpAdd,
-          Cap(F(FusedKind::kDupUpAdd), kF32Binary, &AcceptsDupUpAdd, false),
+    Entry{kDupUpAddName, Cap(F(FusedKind::kDupUpAdd), kF32Binary, &AcceptsDupUpAdd, false),
           "; selectable for the build's SASS architectures: packed F32 of one image, an int "
           "element count"},
-    Entry{kGatedResidualSplitName, Operation::kGatedResidualSplit,
+    Entry{kGatedResidualSplitName,
           Cap(F(FusedKind::kGatedResidualSplit), kGatedSplitRules, &AcceptsGatedSplit, true),
           "; selectable for the build's SASS architectures: packed rows of int elements"},
-    Entry{kSwiGluBf16Name, Operation::kSwiGlu,
-          Cap(P(Op::kGlu), kSwiGluBf16Rules, &AcceptsSwiGluBf16, true),
+    Entry{kSwiGluBf16Name, Cap(P(Op::kGlu), kSwiGluBf16Rules, &AcceptsSwiGluBf16, true),
           "; selectable for the build's SASS architectures: a split SwiGLU of F32 or BF16 "
           "operands of one shape into BF16"},
-    Entry{"ggml.swiglu", Operation::kSwiGlu, Cap(P(Op::kGlu), kF32Glu, &AcceptsSwiGlu, true),
+    Entry{"ggml.swiglu", Cap(P(Op::kGlu), kF32Glu, &AcceptsSwiGlu, true),
           "; selectable for the build's SASS architectures: split SwiGLU, not swapped"},
-    Entry{"ggml.swiglu_clamp", Operation::kSwiGluClamp,
-          Cap(P(Op::kGlu), kF32Glu, &AcceptsSwiGluClamp, true),
+    Entry{"ggml.swiglu_clamp", Cap(P(Op::kGlu), kF32Glu, &AcceptsSwiGluClamp, true),
           "; selectable for the build's SASS architectures: split clamped SwiGLU"},
     // Attention and its masks.
-    Entry{kAttentionF32, Operation::kFlashAttn, F32MaskedAttention(),
+    Entry{kAttentionF32, F32MaskedAttention(),
           "; opt-in packed D128 MHA: transient F16 Q/K/V MMA operands and additive mask, "
           "F32 accumulation/output; finite F16 operand range must be qualified"},
-    Entry{"ggml.state_bank_attention", Operation::kFlashAttn,
+    Entry{"ggml.state_bank_attention",
           Cap(F(FusedKind::kStateBankAttention), kStateBankAttention, &AcceptsStateBankAttention,
               false, kAttentionGroup, 0, {}, 0, {}, true),
           "; the existing flash-attention group over a proven contiguous F16 state span"},
-    Entry{"ggml.flash_attn_ext.vec", Operation::kFlashAttn,
+    Entry{"ggml.flash_attn_ext.vec",
           Cap(P(Op::kAttention), kF16Attention, &AcceptsAttention64, false, kAttentionGroup, 1),
           "; selectable for the build's SASS architectures: D64 F32 query, F16 K/V/mask, "
           "256-padded cells, no sinks, softcap or ALiBi and F32 precision"},
-    Entry{"ggml.flash_attn_ext.mma_common", Operation::kFlashAttn,
+    Entry{"ggml.flash_attn_ext.mma_common",
           Cap(P(Op::kAttention), kCommonF16Attention, &AcceptsCommonAttention, false,
               kAttentionGroup),
           "; compiled D64/80/96/112/128/192 group-one MMA, F16 KV/mask, arbitrary GQA"},
-    Entry{"ggml.flash_attn_ext.vec_common", Operation::kFlashAttn,
+    Entry{"ggml.flash_attn_ext.vec_common",
           Cap(P(Op::kAttention), kCommonF16Attention, &AcceptsCommonVectorAttention, false,
               kAttentionGroup),
           "; compiled D64/128/192 vector kernels with 256-padded KV cells"},
-    Entry{"ggml.flash_attn_ext.vec_d256", Operation::kFlashAttn,
+    Entry{"ggml.flash_attn_ext.vec_d256",
           Cap(P(Op::kAttention), kF16Attention, &AcceptsAttention256, false, kAttentionGroup, 2),
           "; selectable for the build's SASS architectures at head size 256"},
-    Entry{"ggml.flash_attn_ext.mma_gqa2", Operation::kFlashAttn,
+    Entry{"ggml.flash_attn_ext.mma_gqa2",
           Cap(P(Op::kAttention), kF16Attention, &AcceptsAttention256, false, kAttentionGroup, 1),
           "; selectable for the build's SASS architectures at head size 256"},
-    Entry{"ggml.flash_attn_ext.mma", Operation::kFlashAttn,
+    Entry{"ggml.flash_attn_ext.mma",
           Cap(P(Op::kAttention), kF16Attention, &AcceptsAttention, false, kAttentionGroup),
           "; selectable for the build's SASS architectures at head size 256 or 512"},
-    Entry{kFlashAttnMmaWideName, Operation::kFlashAttn,
+    Entry{kFlashAttnMmaWideName,
           Cap(P(Op::kAttention), kF16Attention, &AcceptsWideAttention, false, kAttentionGroup, 1),
           "; a declared D512 sparse-any recipe over bounded F16 K/V and masks"},
-    Entry{kFlashAttnOwnersName, Operation::kFlashAttn,
+    Entry{kFlashAttnOwnersName,
           Cap(F(FusedKind::kOwnerAttention), kOwnerAttention, &AcceptsOwnerAttention, false),
           "; selectable for the build's SASS architectures: CheckFlashAttnOwners' Gemma "
           "cohorts, head sizes, cells and rows over independent F16 caches, a softcap of 0 or "
           "50, and bounded roots for two owners alone; 16 or 32 heads or D 512 (Gemma 4's) on "
           "sm_121 only"},
-    Entry{kGemma4MaskName, Operation::kFill,
-          Cap(P(Op::kMaskBuild), kMaskPositions, &AcceptsMask, true),
+    Entry{kGemma4MaskName, Cap(P(Op::kMaskBuild), kMaskPositions, &AcceptsMask, true),
           "; selectable for the build's SASS architectures: causal, window and ahead masks"},
-    Entry{"llmp.argmax", Operation::kTopK, Cap(P(Op::kArgmax), kF32In, &AcceptsArgmax, true),
-          kBuilt},
-    Entry{"llmp.dsv4.lid_mask", Operation::kLightningIndexer,
+    Entry{"llmp.argmax", Cap(P(Op::kArgmax), kF32In, &AcceptsArgmax, true), kBuilt},
+    Entry{"llmp.dsv4.lid_mask",
           Cap(F(FusedKind::kDsv4LidMask), kDsv4LidMaskRules, &AcceptsDsv4LidMask, false, {}, 0, {},
               0, kDsv4LidMaskSteps),
           "; closed rounded-query score, visible selection and complete sparse mask"},
-    Entry{kDsv4QHeadName, Operation::kRope,
-          Cap(F(FusedKind::kDsv4QHead), kDsv4QHeadRules, &AcceptsDsv4QHead, true),
+    Entry{kDsv4QHeadName, Cap(F(FusedKind::kDsv4QHead), kDsv4QHeadRules, &AcceptsDsv4QHead, true),
           "; packed F32 [512, 64, 16..8192] Q heads and normal rotary tail"},
-    Entry{kDsv4CompressName, Operation::kSoftMax,
+    Entry{kDsv4CompressName,
           Cap(F(FusedKind::kDsv4Compress), kDsv4CompressRules, &AcceptsDsv4Compress, true),
           "; F32 compressor values/scores, ratio 1..1024, at most 65535 blocks"},
-    Entry{kHcCombName, Operation::kHcComb,
-          Cap(P(Op::kHcMix), kSinkhornHcMixRules, &AcceptsSinkhornHcMix, true),
+    Entry{kHcCombName, Cap(P(Op::kHcMix), kSinkhornHcMixRules, &AcceptsSinkhornHcMix, true),
           "; packed F32 four-stream Sinkhorn, 1..100 iterations; native ordered reductions"},
-    Entry{kHcPreName, Operation::kHcPre,
-          Cap(P(Op::kHcPre), kWeightedHcPreRules, &AcceptsWeightedHcPre, true),
+    Entry{kHcPreName, Cap(P(Op::kHcPre), kWeightedHcPreRules, &AcceptsWeightedHcPre, true),
           "; packed F32 weighted fold of four streams; the original native ordered reduction"},
-    Entry{kDsv4HcPrePackedName, Operation::kHcPre,
+    Entry{kDsv4HcPrePackedName,
           Cap(F(FusedKind::kDsv4HcPre), kDsv4HcPreRules, &AcceptsDsv4HcPre, true, {}, 0, {}, 0,
               kDsv4HcPreSteps),
           "; full Sinkhorn carry, four F32 streams, width 4096 or 8192; packed carry copies"},
-    Entry{kHcPostName, Operation::kHcPost, Cap(P(Op::kHcPost), kHcPostRules, &AcceptsHcPost, true),
+    Entry{kHcPostName, Cap(P(Op::kHcPost), kHcPostRules, &AcceptsHcPost, true),
           "four-stream F32 HC post with ordered native FMAs, element strides and bounded grid"},
-    Entry{kDsv4HcPostNormF16Name, Operation::kHcPost,
+    Entry{kDsv4HcPostNormF16Name,
           Cap(F(FusedKind::kHcNormPost), kDsv4HcPostRules, &AcceptsDsv4HcPost, true),
           "; four 4096-value streams, post and flat F32 norm"},
-    Entry{kDsv4OutAFastPackName, Operation::kMatMul,
+    Entry{kDsv4OutAFastPackName,
           Cap(F(FusedKind::kDsv4OutA), kDsv4OutARules, &AcceptsDsv4OutA, true),
           "; paid raw-Q8 packing, inverse tail64 RoPE, staged F16/HMMA grouped output-A"},
     // Qwen3.8's fast forms (slice G3b): the MXFP8 and BF16
     // products, the n-gram tables' rows, the hyper-connections, Gated
     // DeltaNet, QSA and the routed experts.
-    Entry{kMxfp8MulMatVecName, Operation::kMatMul,
-          Cap(P(Op::kMatMul), kMxfp8Vec, &AcceptsMxfp8Vec, false, {}, 4),
+    Entry{kMxfp8MulMatVecName, Cap(P(Op::kMatMul), kMxfp8Vec, &AcceptsMxfp8Vec, false, {}, 4),
           "; selectable for the build's SASS architectures: up to 16 columns"},
-    Entry{kMxfp8GemmName, Operation::kMatMul,
+    Entry{kMxfp8GemmName,
           NativeBlockScaled(Cap(P(Op::kMatMul), kMxfp8Gemm, &AcceptsMxfp8Gemm, false, {}, 4, {}, 0,
                                 kMxfp8GemmSteps),
                             ex::kFp8Mma | ex::kBlockScaledMma),
           "; selectable on sm_121 past 16 columns, K of whole 128-value rows"},
-    Entry{kMxfp8QuantizeName, Operation::kQuantize,
-          Cap(P(Op::kPrepare), kMxfp8Prepare, &AcceptsMxfp8Quantize, true),
+    Entry{kMxfp8QuantizeName, Cap(P(Op::kPrepare), kMxfp8Prepare, &AcceptsMxfp8Quantize, true),
           "; selectable on sm_121: rows of whole 128 values"},
-    Entry{kGemmBf16Name, Operation::kMatMul,
-          Cap(P(Op::kMatMul), kBf16Product, &AcceptsAny, false, {}, 4), kBuilt},
+    Entry{kGemmBf16Name, Cap(P(Op::kMatMul), kBf16Product, &AcceptsAny, false, {}, 4), kBuilt},
     // The pinned form below the plain one: a policy that ranks it (the
     // image's) takes it.
-    Entry{kGemmBf16LtName, Operation::kMatMul,
-          Cap(P(Op::kMatMul), kBf16Product, &AcceptsAny, false, {}, 3), kBuilt},
-    Entry{"ggml.convert", Operation::kConvert,
-          Cap(P(Op::kConvert), kFloatConvert, &AcceptsConvert, true),
+    Entry{kGemmBf16LtName, Cap(P(Op::kMatMul), kBf16Product, &AcceptsAny, false, {}, 3), kBuilt},
+    Entry{"ggml.convert", Cap(P(Op::kConvert), kFloatConvert, &AcceptsConvert, true),
           "; selectable for the build's SASS architectures: F16/F32 casts within I32 counts"},
-    Entry{kBf16Name, Operation::kConvert, Cap(P(Op::kConvert), kToBf16, &AcceptsAny, true), kBuilt},
-    Entry{kNvfp4RowsName, Operation::kGetRows,
-          Cap(P(Op::kGetRows), kNvfp4Table, &AcceptsNvfp4Rows, true, {}, 2), kBuilt},
-    Entry{kQRowsName, Operation::kGetRows,
-          Cap(P(Op::kGetRows), kQRowsTable, &AcceptsQRows, true, {}, 2),
+    Entry{kBf16Name, Cap(P(Op::kConvert), kToBf16, &AcceptsAny, true), kBuilt},
+    Entry{kNvfp4RowsName, Cap(P(Op::kGetRows), kNvfp4Table, &AcceptsNvfp4Rows, true, {}, 2),
+          kBuilt},
+    Entry{kQRowsName, Cap(P(Op::kGetRows), kQRowsTable, &AcceptsQRows, true, {}, 2),
           "; selectable for the build's SASS architectures: 32-value blocks of rows GGML's "
           "get_rows does not take"},
-    Entry{kHcPrepName, Operation::kHcNorm,
-          Cap(F(FusedKind::kHcPrep), kHcPrepRules, &AcceptsHcPrep, true),
+    Entry{kHcPrepName, Cap(F(FusedKind::kHcPrep), kHcPrepRules, &AcceptsHcPrep, true),
           "; selectable for the build's SASS architectures: 2 to 8 streams of widths of 8 to "
           "4,096, a BF16 inject"},
-    Entry{kHcLoName, Operation::kUnary,
-          Cap(F(FusedKind::kScaledUnary), kHcLoRules, &AcceptsHcLo, true),
+    Entry{kHcLoName, Cap(F(FusedKind::kScaledUnary), kHcLoRules, &AcceptsHcLo, true),
           "; selectable for the build's SASS architectures: SiLU scaled by the reciprocal of "
           "1 to 8 streams"},
-    Entry{kHcMixBf16Name, Operation::kHcMix,
-          Cap(F(FusedKind::kHcFold), kHcFoldRules, &AcceptsHcFold, true),
+    Entry{kHcMixBf16Name, Cap(F(FusedKind::kHcFold), kHcFoldRules, &AcceptsHcFold, true),
           "; selectable for the build's SASS architectures: 2 to 8 streams; prepared past 16 "
           "rows of whole 128-value rows"},
-    Entry{kHcCombineName, Operation::kHcCombine,
-          Cap(F(FusedKind::kHcCombine), kHcCombineRules, &AcceptsHcCombine, true), kBuilt},
-    Entry{kHcNormName, Operation::kHcNorm,
-          Cap(F(FusedKind::kHcNorm), kHcNormRules, &AcceptsHcNorm, true),
+    Entry{kHcCombineName, Cap(F(FusedKind::kHcCombine), kHcCombineRules, &AcceptsHcCombine, true),
+          kBuilt},
+    Entry{kHcNormName, Cap(F(FusedKind::kHcNorm), kHcNormRules, &AcceptsHcNorm, true),
           "; selectable for the build's SASS architectures: streams of at least 1,024"},
-    Entry{kHcMixName, Operation::kHcMix,
-          Cap(F(FusedKind::kHcMixNorm), kHcNormRules, &AcceptsHcNorm, true),
+    Entry{kHcMixName, Cap(F(FusedKind::kHcMixNorm), kHcNormRules, &AcceptsHcNorm, true),
           "; selectable for the build's SASS architectures: streams of at least 1,024"},
-    Entry{kSsmConvName, Operation::kSsmConv,
+    Entry{kSsmConvName,
           Cap(P(Op::kSsmConv), kSsmConvRules, &AcceptsSsmConv, true, {}, 0, {}, 0, kSsmConvSteps),
           "; one sequence; past 32 tokens of a partial window, its input padded"},
-    Entry{kGdnConvName, Operation::kSsmConv,
-          Cap(F(FusedKind::kGdnConv), kGdnConvRules, &AcceptsGdnConv, true),
+    Entry{kGdnConvName, Cap(F(FusedKind::kGdnConv), kGdnConvRules, &AcceptsGdnConv, true),
           "; selectable for the build's SASS architectures: heads of 128, a kernel of 4"},
-    Entry{kGdnHistoryName, Operation::kCont,
-          Cap(F(FusedKind::kGdnHistory), kRowsRules, &AcceptsGdnHistory, true), kBuilt},
-    Entry{kGdnStepName, Operation::kGatedDeltaNet,
-          Cap(F(FusedKind::kGdnStep), kGatedDeltaRules, &AcceptsGdnStep, false),
+    Entry{kGdnHistoryName, Cap(F(FusedKind::kGdnHistory), kRowsRules, &AcceptsGdnHistory, true),
+          kBuilt},
+    Entry{kGdnStepName, Cap(F(FusedKind::kGdnStep), kGatedDeltaRules, &AcceptsGdnStep, false),
           "; selectable for the build's SASS architectures: heads of 128, up to 16 tokens"},
-    Entry{kGdnGatesName, Operation::kUnary,
-          Cap(F(FusedKind::kGdnGates), kHcNormRules, &AcceptsGdnGates, true),
+    Entry{kGdnGatesName, Cap(F(FusedKind::kGdnGates), kHcNormRules, &AcceptsGdnGates, true),
           "; selectable for the build's SASS architectures: 48 heads, up to 16 rows"},
-    Entry{kGdnNormGateName, Operation::kNormGate,
-          Cap(F(FusedKind::kNormGate), kNormGateRules, &AcceptsGdnNormGate, true),
+    Entry{kGdnNormGateName, Cap(F(FusedKind::kNormGate), kNormGateRules, &AcceptsGdnNormGate, true),
           "; selectable for the build's SASS architectures: heads of 128"},
-    Entry{kGatedDeltaNetName, Operation::kGatedDeltaNet,
+    Entry{kGatedDeltaNetName,
           Cap(P(Op::kGatedDeltaNet), kGatedDeltaRules, &AcceptsGatedDelta, false, kGatedDeltaGroup),
           kBuilt},
-    Entry{kGatedDeltaNetColumnsName, Operation::kGatedDeltaNet,
+    Entry{kGatedDeltaNetColumnsName,
           Cap(P(Op::kGatedDeltaNet), kGatedDeltaRules, &AcceptsGatedDelta, false, kGatedDeltaGroup,
               1),
           kBuilt},
-    Entry{kGatedDeltaNetLanesName, Operation::kGatedDeltaNet,
+    Entry{kGatedDeltaNetLanesName,
           Cap(P(Op::kGatedDeltaNet), kGatedDeltaRules, &AcceptsGatedDelta, false, kGatedDeltaGroup,
               2),
           kBuilt},
-    Entry{kQsaPrepName, Operation::kRope,
+    Entry{kQsaPrepName,
           Cap(F(FusedKind::kRmsNormMulRope), kNormMulRope, &AcceptsQsaPrep, true, {}, 1),
           "; selectable for the build's SASS architectures: the interleaved multi-section "
           "rotation of 64 dimensions over heads of 64 to 512, without frequency or amplitude "
           "scaling; lowering requires typed replicated position sections"},
-    Entry{kQsaPoolName, Operation::kRope,
-          Cap(F(FusedKind::kQsaPool), kQsaPoolRules, &AcceptsQsaPool, true),
+    Entry{kQsaPoolName, Cap(F(FusedKind::kQsaPool), kQsaPoolRules, &AcceptsQsaPool, true),
           "; selectable for the build's SASS architectures: blocks of 1 to 32 cells, with a "
           "forward unscaled 64-dimension interleaved rotation; lowering requires canonical "
           "typed block positions/cells and stored raw keys"},
-    Entry{kQsaAttentionName, Operation::kFlashAttn,
+    Entry{kQsaAttentionName,
           Cap(F(FusedKind::kQsaAttention), kQsaAttnRules, &AcceptsQsaAttention, false, {}, 0, {}, 0,
               kQsaAttentionSteps),
           "; selectable for the build's SASS architectures: heads of 256, at most 16 a KV head, "
           "an indexer of 4 heads of 128, the selection within its tiles; lowering requires "
           "canonical typed position tables, stores and causal masks"},
-    Entry{kQsaGateQuantizeName, Operation::kQuantize,
+    Entry{kQsaGateQuantizeName,
           Cap(F(FusedKind::kHeadGate), kHeadGateRules, &AcceptsHeadGate, true),
           "; selectable on sm_121: heads of whole 32 values into MXFP8 rows"},
-    Entry{kMoeRouterName, Operation::kArgsort,
-          Cap(F(FusedKind::kMoeRouter), kMoeRouterRules, &AcceptsMoeRouter, true),
+    Entry{kMoeRouterName, Cap(F(FusedKind::kMoeRouter), kMoeRouterRules, &AcceptsMoeRouter, true),
           "; selectable for the build's SASS architectures: a normalized softmax top-k of up to "
           "32 of up to 1,024 experts"},
-    Entry{kMoeExpertsName, Operation::kMulMatId,
+    Entry{kMoeExpertsName,
           NativeBlockScaled(Cap(F(FusedKind::kMoeExperts), kCutlassExperts, &AcceptsMoeExperts,
                                 false, {}, 0, {}, 0, kMoeExpertsSteps),
                             ex::kFp4Mma | ex::kBlockScaledMma),
           "; selectable on sm_121: the CUTLASS layout's experts with their scales, SwiGLU"},
-    Entry{kMoeGluName, Operation::kMoeGlu,
-          Cap(F(FusedKind::kMoeGlu), kF32Binary, &AcceptsMoeGlu, true), kBuilt},
-    Entry{kDsv4CombineName, Operation::kMoeCombine,
+    Entry{kMoeGluName, Cap(F(FusedKind::kMoeGlu), kF32Binary, &AcceptsMoeGlu, true), kBuilt},
+    Entry{kDsv4CombineName,
           Cap(F(FusedKind::kMoeCombine), kSelectedCombineRules, &AcceptsSelectedCombine, true),
           "; packed ungated ordered-FMA combination, used 1..32, rows 1..8"},
-    Entry{kMoeCombineName, Operation::kMoeCombine,
-          Cap(F(FusedKind::kMoeCombine), kF32In, &AcceptsGatedCombine, true), kBuilt},
-    Entry{"llmp.vecq.grouped", Operation::kMatMul,
+    Entry{kMoeCombineName, Cap(F(FusedKind::kMoeCombine), kF32In, &AcceptsGatedCombine, true),
+          kBuilt},
+    Entry{"llmp.vecq.grouped",
           Cap(F(FusedKind::kGroupedMatMul), kGroupedVecQRules, &AcceptsGroupedVecQ, false, {}, 0,
               {}, 0, kGroupedVecQSteps),
           "packed grouped F32 input, two-to-256 immutable GGML groups, one-to-eight tokens; "
           "original Q8_1 preparation and per-slot VecQ in paid activation space"},
-    Entry{kVecQDenseName, Operation::kMatMul,
+    Entry{kVecQDenseName,
           Cap(P(Op::kMatMul), kVecQProduct, &AcceptsVecQ, false, {}, 3, {}, 0, kVecQSteps),
           "; selectable for the build's SASS architectures: up to 8 tokens"},
-    Entry{kVecQGluName, Operation::kMulMatGlu,
+    Entry{kVecQGluName,
           Cap(F(FusedKind::kMatMulGlu), kVecQGlu, &AcceptsVecQ, false, {}, 3, {}, 0, kVecQSteps),
           "; selectable for the build's SASS architectures: up to 8 tokens"},
-    Entry{kVecQExpertsName, Operation::kMulMatId,
+    Entry{kVecQExpertsName,
           Cap(P(Op::kMatMulId), kVecQExperts, &AcceptsVecQRouted, false, {}, 3, {}, 0, kVecQSteps),
           "; selectable for the build's SASS architectures: up to 64 (token, slot) pairs"},
-    Entry{kVecQExpertsGluName, Operation::kMulMatId,
+    Entry{kVecQExpertsGluName,
           Cap(F(FusedKind::kMatMulIdGlu), kVecQExpertsGlu, &AcceptsVecQRouted, false, {}, 3, {}, 0,
               kVecQSteps),
           "; selectable for the build's SASS architectures: up to 64 (token, slot) pairs"},
-    Entry{kMulMatIdNvfp4Name, Operation::kMulMatId,
+    Entry{kMulMatIdNvfp4Name,
           Cap(P(Op::kMatMulId), kNvfp4Experts, &AcceptsNvfp4Experts, false, {}, 0, {}, 0,
               kMulMatIdSteps),
           kBuilt},
     // Block-quantized KV caches (kv_quant.h).
-    Entry{kFlashAttnVecQ8Name, Operation::kFlashAttn,
-          Cap(P(Op::kAttention), kQ8Attention, &AcceptsQuantAttention, false),
+    Entry{kFlashAttnVecQ8Name, Cap(P(Op::kAttention), kQ8Attention, &AcceptsQuantAttention, false),
           "; selectable for the build's SASS architectures at head size 64, 256 or 512 (K's and "
           "V's), with or without F32 sinks"},
-    Entry{kFlashAttnVecQ4Name, Operation::kFlashAttn,
-          Cap(P(Op::kAttention), kQ4Attention, &AcceptsQ4Attention, false),
+    Entry{kFlashAttnVecQ4Name, Cap(P(Op::kAttention), kQ4Attention, &AcceptsQ4Attention, false),
           "; selectable for the build's SASS architectures at head size 64 or 256 (K's and V's), "
           "with or without F32 sinks"},
-    Entry{kSetRowsQuantName, Operation::kSetRows,
+    Entry{kSetRowsQuantName,
           Cap(P(Op::kCacheStore), kQuantStore, &AcceptsQuantStore, true, {}, 0, {.k_multiple = 32}),
           "; selectable for the build's SASS architectures, rows of whole 32-value blocks"},
-    Entry{kSetRowsQuantGroupName, Operation::kSetRows,
+    Entry{kSetRowsQuantGroupName,
           Cap(F(FusedKind::kGroupedStores), kQuantStore, &AcceptsQuantStore, true, {}, 0,
               {.k_multiple = 32}, static_cast<std::uint16_t>(kSetRowsQuantGroupMax)),
           "; selectable for the build's SASS architectures, rows of whole 32-value blocks"},
-    Entry{kRopeSetRowsQuantName, Operation::kRopeSetRows,
+    Entry{kRopeSetRowsQuantName,
           Cap(F(FusedKind::kRopeStore), kQuantRopeStore, &AcceptsQuantRopeStore, true, {}, 0,
               {.k_multiple = 32}),
           "; selectable for the build's SASS architectures, rows of whole 32-value blocks"},
@@ -2531,9 +2631,7 @@ const std::array kEntries = {
 const std::array<CapabilityDeclaration, kEntries.size()> kDeclarations = [] {
   std::array<CapabilityDeclaration, kEntries.size()> out{};
   for (std::size_t i = 0; i < kEntries.size(); ++i) {
-    out[i] = {.name = kEntries[i].name,
-              .operation = kEntries[i].operation,
-              .capability = &kEntries[i].capability};
+    out[i] = {.name = kEntries[i].name, .capability = &kEntries[i].capability};
   }
   return out;
 }();
@@ -2556,6 +2654,44 @@ std::string_view AcceptsTextOf(std::string_view implementation) {
 }
 
 std::span<const CapabilityDeclaration> CapabilityDeclarations() { return kDeclarations; }
+
+std::span<const RecipeDeclaration> RecipeDeclarations() {
+  static constexpr RecipeDeclaration recipes[] = {
+#define LLMP_GGML_NORM_RECIPE(NAME, VARIANT, CHECK, RUN) \
+  {NAME, ir::Fused(ir::FusedKind::kRmsNormMul), VARIANT, 2},
+#define LLMP_GGML_RECIPE(NAME, KEY, VARIANT, ARITY, CHECK, RUN) {NAME, KEY, VARIANT, ARITY},
+#include "kernels/ggml/recipe_entries.inc"
+#undef LLMP_GGML_RECIPE
+#undef LLMP_GGML_NORM_RECIPE
+  };
+  return recipes;
+}
+
+std::vector<execution::Implementation> PlanningImplementations() {
+  std::vector<execution::Implementation> out;
+  out.reserve(RecipeDeclarations().size() + CapabilityDeclarations().size());
+  const auto append = [&](std::string_view name, ir::OpKey op, const execution::Capability* cap) {
+    const auto recipes = RecipeDeclarations();
+    const auto recipe = std::ranges::find(recipes, name, &RecipeDeclaration::name);
+    const auto contract = recipe == recipes.end()
+                              ? std::string("ordered launches declared by capability")
+                              : std::format("{}; ordered descriptor arity {}",
+                                            recipe->numerical_contract, recipe->arity);
+    out.push_back({.name = std::string(name),
+                   .operation = op,
+                   .source = "ggml",
+                   .revision = "structural declarations; cannot bind executable kernels",
+                   .build = "planning only",
+                   .variant = std::format("{}; {}", contract, AcceptsTextOf(name)),
+                   .capability = cap ? std::optional(*cap) : std::nullopt});
+  };
+  // Retain the capability inventory's tie order. Concrete helper-only recipes
+  // cannot become selectable candidates merely by being present in a registry.
+  for (const auto& d : CapabilityDeclarations()) append(d.name, d.capability->op, d.capability);
+  for (const auto& recipe : RecipeDeclarations())
+    if (!CapabilityOf(recipe.name)) append(recipe.name, recipe.operation, nullptr);
+  return out;
+}
 
 bool CompiledFor(std::uint32_t arch) {
   const std::string_view list = LLMP_GGML_CUDA_ARCHITECTURES;

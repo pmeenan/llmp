@@ -107,6 +107,11 @@ struct FakeSourceOptions {
   std::vector<model::StateLayoutDerived> layouts;
   bool joined_inputs = false;  // one joined token and position input
   std::uint64_t host_bytes = 4096;
+  std::uint64_t pool_bytes = 0;
+  // An additional activation root, independent of host staging. Tests use it
+  // to exercise exact-shape workspace admission after startup measurement.
+  std::uint64_t extra_activation_bytes = 0;
+  kernels::PlanCoverage plan_coverage{};
   std::uint64_t launches = 8;
   // Test hooks: Build refuses a shape; programs refuse to record. The
   // program hooks are read when a program binds, records or runs, so a

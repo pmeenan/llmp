@@ -159,7 +159,7 @@ class ComponentStepSource final : public StepSource {
   planner::Policy policy_;
   planner::PlanKey key_base_;
   std::vector<components::Instance> shaped_, side_;
-  base::Sha256Digest layout_identity_{};
+  base::Sha256Digest layout_identity_{}, semantic_identity_{};
   planner::StateSpans StateSpans(const planner::StepShape& shape,
                                  const kernels::Addresses& addresses) const;
 };

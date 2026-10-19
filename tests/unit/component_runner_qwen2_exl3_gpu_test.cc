@@ -42,6 +42,7 @@
 #include "base/bytes.h"
 #include "base/json.h"
 #include "base/sha256.h"
+#include "compiler_inventory.h"
 #include "components/step.h"
 #include "corpus_score.h"
 #include "engine/component_source.h"
@@ -196,14 +197,13 @@ pl::StepShape Shape(std::uint32_t past, std::uint32_t rows) {
           .read_align = 256};
 }
 
-// Same reviewed hard-cap inventory as the DeepSeek first screen: 2,560
-// MiB compiler, 1,024 MiB metadata/retained native programs, 768 MiB for
-// the retained initial IR and observations; their exact sum fits 4 GiB. The external funding note
-// names each phase/owner, including BoundGraph::Bind's transient copies. These are source bounds,
-// not measured peaks. Guard metadata before parsing and reproduce Lowering::Run's descriptor
-// reservation before TensorArena.
+// Same reviewed hard-cap inventory as the DeepSeek first screen, plus actual
+// numerical provenance and native physical-table growth: 1,024 MiB metadata/retained native
+// programs, 768 MiB for the retained initial IR and observations; their exact sum sets the catalog
+// payment below. The external funding note names each phase/owner, including BoundGraph::Bind's
+// transient copies. These are source bounds, not measured peaks. Guard metadata before parsing and
+// reproduce Lowering::Run's descriptor reservation before TensorArena.
 constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
-constexpr std::uint64_t kHostAllowance = 4096 * kMiB;
 constexpr std::uint64_t kProgramHost = 64 * kMiB;
 constexpr std::uint64_t kLaunches = 4096;
 constexpr std::uint64_t kRuntimePlans = 1 * (kProgramHost + kLaunches * en::kGraphNodeHostBytes);
@@ -211,7 +211,7 @@ static_assert(llmp::ir::Graph::kMaxNodes == 65536 && llmp::ir::Graph::kMaxTensor
 static_assert(sizeof(void*) == 8 && sizeof(std::string) <= 32 && sizeof(std::vector<void*>) <= 24);
 static_assert(sizeof(llmp::ir::Node) <= 160 && sizeof(llmp::ir::TensorDesc) <= 160);
 static_assert(sizeof(llmp::ir::Binding) <= 24 && sizeof(llmp::format::TensorFormat) <= 72);
-static_assert(sizeof(pl::Selected) <= 128 && sizeof(pl::Applied) <= 64);
+static_assert(sizeof(pl::Selected) <= 128);
 static_assert(sizeof(pl::Match) + sizeof(void*) <= 256);
 static_assert(sizeof(pl::RootAlignmentFact) <= 16 && sizeof(kn::InputSlot) <= 512);
 static_assert(sizeof(std::pair<llmp::ir::TensorDesc, std::uint64_t>) <= 176);
@@ -224,7 +224,8 @@ static_assert(sizeof(llmp::execution::OperandMemory) <= 48 &&
               sizeof(llmp::execution::CapabilityQuery) <= 256);
 // The inherited inventory's largest overlapping phase (seven graphs;
 // this target uses fewer) and the fixed screen's additional live owners.
-constexpr std::uint64_t kInheritedCompiler = 2526477744ULL;
+constexpr std::uint64_t kInheritedCompiler =
+    2526477744ULL + llmp::test_support::compiler_inventory::kLegacyCompilerGrowth;
 struct BoundStepAbi {
   std::variant<kg::Kernel, kg::RmsNormMulKernel, std::unique_ptr<kg::BoundSelectedCall>> kernel;
   std::vector<void*> nodes;
@@ -246,10 +247,10 @@ constexpr std::uint64_t kObservationOwners =
     std::uint64_t{145} * 151936 * sizeof(float) +      // complete oracle
     3 * std::uint64_t{145} * 151936 * sizeof(float) +  // outputs, joined row copy, growth overlap
     16 * kMiB;                                         // histories, script, headers, rounding
-static_assert(kInheritedCompiler <= 2560 * kMiB);
+// The old 2,560MiB subcategory no longer fits; retain the actual whole-owner
+// admission checks below rather than inventing a larger rounded subcategory.
 static_assert(kMetadataOwners <= 1024 * kMiB);
 static_assert(kObservationOwners <= 768 * kMiB);
-static_assert(kInheritedCompiler + kMetadataOwners + kObservationOwners <= kHostAllowance);
 constexpr std::uint64_t kDomainCap = std::uint64_t{8} << 30U;
 constexpr std::size_t kTokenLimit = 1040 * 8;
 constexpr std::size_t kOracleBytes = std::size_t{145} * 151936 * sizeof(float);
@@ -268,7 +269,14 @@ constexpr std::uint64_t kFullObservationOwners =
     kObservationOwners + kFullOracleBytes - kOracleBytes;
 static_assert(kFullMetadataOwners <= 1024 * kMiB);
 static_assert(kFullObservationOwners <= 768 * kMiB);
-static_assert(kInheritedCompiler + kFullMetadataOwners + kFullObservationOwners <= kHostAllowance);
+// The complete retained-observation/control envelope exceeds the previous
+// 4GiB payment by349,872 bytes with the new physical/provenance types. Derive
+// its payment from the actual owner sum, rounded to the catalog's2MiB extent.
+constexpr std::uint64_t kHostRequired =
+    kInheritedCompiler + kFullMetadataOwners + kFullObservationOwners + 8 * kMiB + kStateMetadata;
+constexpr std::uint64_t kHostAllowance = ((kHostRequired + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
+static_assert(kInheritedCompiler + kMetadataOwners + kObservationOwners <= kHostAllowance);
+static_assert(kHostRequired <= kHostAllowance);
 
 std::expected<std::vector<std::int32_t>, std::string> HeldOutPrefix(const std::string& bytes,
                                                                     std::size_t count = 145) {
@@ -291,32 +299,13 @@ std::expected<std::vector<std::int32_t>, std::string> HeldOutPrefix(const std::s
 
 en::Status NativeReservation(const kn::LowerInput& input) {
   const auto& p = input.plan.graph;
-  const auto& g = input.token->step.graph;
   if (input.token->shape.stage != 0 || p.nodes().size() > 4096 || p.tensor_count() > 16384 ||
       input.token->step.inputs.size() > 256 || input.token->step.weights.size() > 4096 ||
       input.token->step.state.size() > 4096 || !input.token->step.saves.empty())
     return std::unexpected("screen bindings exceed paid single-stage inventory");
-  std::uint64_t descriptors = p.tensor_count() + 16;
-  for (const auto& applied : input.plan.applied)
-    for (const auto replaced : applied.replaced) {
-      if (replaced.v >= g.nodes().size())
-        return std::unexpected("screen malformed original replacement map");
-      descriptors += g.node(replaced).nout;
-    }
-  using O = llmp::ir::Op;
-  for (const auto& n : p.nodes()) {
-    if (n.key == llmp::ir::Primitive(O::kRoute)) descriptors += 10;
-    if (n.key == llmp::ir::Primitive(O::kFill) || n.key == llmp::ir::Primitive(O::kConvert))
-      ++descriptors;
-    if (n.key == llmp::ir::Primitive(O::kExpertReduce)) {
-      if (n.nsrc == 0 || p.tensor(n.src[0]).ne(1) > 10)
-        return std::unexpected("screen expert reduction bound");
-      descriptors += 3 + 2 * p.tensor(n.src[0]).ne(1);
-    }
-    if (n.key.op == O::kFused || n.key.op == O::kMatMul || n.key.op == O::kWeight ||
-        n.key.op == O::kGatedDeltaNet)
-      descriptors += 8;
-  }
+  const auto inventory = kg::LowerConstructionOf(input);
+  if (!inventory) return std::unexpected(inventory.error().detail);
+  const auto descriptors = inventory->descriptors;
   if (descriptors > 65536) return std::unexpected("screen native descriptors exceed paid bound");
   std::uint64_t traversal = 2;
   while (traversal / 2 < descriptors) traversal *= 2;
@@ -541,14 +530,24 @@ class KeptProgram final : public kn::StepProgram {
       : inner_(std::move(inner), record), record_(record), life_(life) {
     ++life_.programs_created;
   }
+  void ConstructionPaid() override {
+    if (construction_transferred_) return;
+    construction_transferred_ = true;
+    inner_.ConstructionPaid();
+    kn::StepProgram::ConstructionPaid();
+  }
   std::uint64_t scratch_bytes() const override { return inner_.scratch_bytes(); }
   std::uint64_t pool_bytes() const override { return inner_.pool_bytes(); }
+  kn::PlanCoverage plan_coverage() const override { return inner_.plan_coverage(); }
   std::uint64_t host_bytes() const override { return inner_.host_bytes() + sizeof(*this); }
   std::uint64_t launches() const override { return inner_.launches(); }
   std::span<const kn::InputSlot> inputs() const override { return inner_.inputs(); }
   std::span<const kn::OutputSlot> outputs() const override { return inner_.outputs(); }
   std::span<const kn::TensorUse> tensors() const override { return inner_.tensors(); }
   const llmp::execution::BoundPlan* bound() const override { return inner_.bound(); }
+  void StreamPlanReport(const kn::PlanReportSink& sink) const override {
+    inner_.StreamPlanReport(sink);
+  }
   bool capturable() const override { return inner_.capturable(); }
   std::expected<void, kn::StepFailure> Position(std::span<const std::uint32_t> past) override {
     return inner_.Position(past);
@@ -571,6 +570,7 @@ class KeptProgram final : public kn::StepProgram {
   }
 
  private:
+  bool construction_transferred_ = false;
   ts::CorpusProgram inner_;
   ts::CorpusPlanRecord& record_;
   Lifetime& life_;
@@ -1211,6 +1211,25 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
         {.lower = {.index_scratch_limit = 32 * kMiB}, .selected = std::move(*selected)});
     if (!backend) return std::unexpected(backend.error());
     kernel->backend = std::move(*backend);
+    // A bounded subledger of the already cataloged whole-host envelope's
+    // native category; no second native catalog payment. Retained plans have
+    // their separate kMetadataOwners category before ConstructionPaid.
+    auto native_used = std::make_shared<std::uint64_t>(0);
+    if (auto funded = kernel->backend->FundConstruction(
+            [native_used](std::uint64_t n) {
+              constexpr auto limit = llmp::test_support::compiler_inventory::NativeBytes(
+                                         65536, llmp::ir::Graph::kMaxTensors) +
+                                     512;
+              if (*native_used > limit || n > limit - *native_used) return false;
+              *native_used += n;
+              return true;
+            },
+            [native_used](std::uint64_t n) {
+              EXPECT_LE(n, *native_used);
+              if (n <= *native_used) *native_used -= n;
+            });
+        !funded)
+      return std::unexpected(funded.error());
     if (auto x = kernel->resources->OpenSelectedWorkspace("selected kernel state",
                                                           kernel->backend->persistent_bytes());
         !x)

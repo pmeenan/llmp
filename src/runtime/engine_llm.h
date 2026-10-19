@@ -159,6 +159,9 @@ class EngineLlm final : public Llm {
   std::uint64_t pool_needed() const override;
   std::uint64_t host_input_bytes() const override;
   std::uint64_t plan_floor_bytes() const override;
+  std::string plan_report() const override;
+  void set_plan_report_sink(kernels::PlanRecordSink sink) override;
+  void ReportPlans(const kernels::PlanRecordSink& sink) const override;
   std::uint64_t startup_host_bytes() const override {
     return startup_host_bytes_ +
            (execution_metadata_ ? execution_metadata_->capacity() +
@@ -382,6 +385,7 @@ class EngineLlm final : public Llm {
   std::array<std::vector<std::vector<float>>, kMaxBranches> verified_rows_{};
   std::array<std::uint32_t, kMaxBranches> prefill_done_pos_{};
   Counts counts_;
+  kernels::PlanRecordSink plan_report_sink_{};
 };
 
 }  // namespace llmp::runtime

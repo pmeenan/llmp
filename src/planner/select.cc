@@ -21,6 +21,7 @@
 #include "format/tensor_format.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "planner/fusions.h"
 #include "planner/pattern.h"
 #include "planner/policy.h"
 
@@ -423,7 +424,10 @@ SelectionView::SelectionView(const execution::Registry& registry, const DeviceFa
       state_spans_(std::move(state_spans)),
       root_alignment_(std::move(root_alignment)),
       activation_(std::move(activation)),
-      ranks_(RanksFor(policy, device.device_class)) {}
+      ranks_(RanksFor(policy, device.device_class)) {
+  for (const auto& pattern : Patterns())
+    if (!Disabled(policy, pattern.name)) enabled_options_.push_back(pattern.name);
+}
 
 void SelectionView::Forward(const ir::Graph& before, const ir::Graph& after,
                             std::span<const ir::TensorId> tensors) {
@@ -477,33 +481,13 @@ std::vector<std::size_t> SelectionView::Candidates(ir::OpKey key,
 std::vector<std::size_t> SelectionView::ForOperands(
     ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
     std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
-    bool state_span, std::span<const std::uint64_t> alignments, bool automatic_fusion) const {
+    bool state_span, std::span<const std::uint64_t> alignments, bool automatic_fusion,
+    const QueryInspector& inspect) const {
   // A composite op whose own implementations the policy leaves off
   // (pattern.h route_reduce) has none: it decomposes.
   if (!CompositeImplemented(policy_, key)) {
     return {};
   }
-  // Selected-ID hash routing is the opt-in small-row recipe (at most eight
-  // rows). Larger products retain separately rounded primitive routing;
-  // a kernel's larger launch limit is not authority to change that recipe.
-  // Biased top-k has its own default-off small-row recipe. Other kinds
-  // retain their existing native eligibility.
-  if (key == ir::Primitive(Op::kRoute) && params.size() >= sizeof(ir::RouteParams)) {
-    ir::RouteParams route{};
-    std::memcpy(&route, params.data(), sizeof(route));
-    if (route.kind == ir::RouteKind::kSqrtSoftplusBias &&
-        (Disabled(policy_, "biased_route") || sources.empty() || sources[0] == nullptr ||
-         sources[0]->ne(1) > 16))
-      return {};
-    if (route.kind == ir::RouteKind::kHash && (Disabled(policy_, "hash_route") || sources.empty() ||
-                                               sources[0] == nullptr || sources[0]->ne(1) > 8))
-      return {};
-  }
-  // The ungated four-input combination is a distinct ordered-FMA recipe.
-  // Direct composites obey the same explicit opt-in as the primitive matcher.
-  if (key == ir::Fused(ir::FusedKind::kMoeCombine) &&
-      (sources.size() <= 4 || sources[4] == nullptr) && Disabled(policy_, "moe_combine"))
-    return {};
   if (std::ranges::any_of(alignments, [](auto alignment) { return alignment >= (1ULL << 63); }))
     return {};
   std::vector<execution::OperandFormat> operands;
@@ -547,27 +531,33 @@ std::vector<std::size_t> SelectionView::ForOperands(
                                             .is_view = outputs[i]->is_view()}});
   }
   const QueryShape shape = ShapeOfNode(key, sources, outputs);
-  const execution::CapabilityQuery query{.op = key,
-                                         .operands = operands,
-                                         .rows = shape.rows,
-                                         .k = shape.k,
-                                         .n = shape.n,
-                                         .arch = device_.arch,
-                                         .features = device_.features,
-                                         .row_invariant = row_invariant_,
-                                         .capturable = capturable_,
-                                         .policy = {.max_decode_rows = policy_.max_decode_rows,
-                                                    .allow_lossy = policy_.allow_lossy,
-                                                    .vector_rows = policy_.vector_rows},
-                                         .measured = ranks_,
-                                         .tuned = device_.tuned,
-                                         .params = params,
-                                         .state_span = state_span,
-                                         .device_class = device_.device_class,
-                                         .device_model = device_.device_model,
-                                         .multiprocessors = device_.multiprocessors,
-                                         .automatic_fusion = automatic_fusion,
-                                         .preferred = device_.preferred};
+  const execution::CapabilityQuery query{
+      .op = key,
+      .operands = operands,
+      .rows = shape.rows,
+      .k = shape.k,
+      .n = shape.n,
+      .arch = device_.arch,
+      .features = device_.features,
+      .row_invariant = row_invariant_,
+      .capturable = capturable_,
+      .policy = {.max_decode_rows = policy_.max_decode_rows,
+                 .allow_lossy = policy_.allow_lossy,
+                 .vector_rows = policy_.vector_rows,
+                 .options = std::span<const std::string_view>(enabled_options_)},
+      .measured = ranks_,
+      .tuned = device_.tuned,
+      .params = params,
+      .state_span = state_span,
+      .device_class = device_.device_class,
+      .device_model = device_.device_model,
+      .multiprocessors = device_.multiprocessors,
+      .automatic_fusion = automatic_fusion,
+      .preferred = device_.preferred};
+  if (inspect) {
+    inspect(query);
+    return {};
+  }
   return execution::Candidates(registry_, query);
 }
 
@@ -578,6 +568,108 @@ std::vector<std::size_t> SelectionView::Candidates(const ir::Graph& graph,
 
 std::vector<std::size_t> SelectionView::Candidates(const ir::Graph& graph, const ir::Node& node,
                                                    ir::OpKey key, bool automatic_fusion) const {
+  return CandidatesForNode(graph, node, key, automatic_fusion);
+}
+void SelectionView::Inspect(const ir::Graph& graph, const ir::Node& node,
+                            const QueryInspector& inspect) const {
+  if (inspect) (void)CandidatesForNode(graph, node, node.key, false, inspect);
+}
+ir::ProductArithmetic SelectionView::IncumbentArithmetic(const ir::Graph& graph,
+                                                         const ir::Node& node) const {
+  const auto candidates = Candidates(graph, node);
+  if (candidates.empty()) return ir::ProductArithmetic::kImplementation;
+  const auto& cap = registry_.at(candidates.front()).capability;
+  if (!cap || !cap->product_arithmetic) return ir::ProductArithmetic::kImplementation;
+  auto arithmetic = ir::ProductArithmetic::kImplementation;
+  Inspect(graph, node,
+          [&](const execution::CapabilityQuery& q) { arithmetic = cap->product_arithmetic(q); });
+  return arithmetic;
+}
+std::optional<SelectionView::WeightOperand> SelectionView::ResolveWeightOperand(
+    const ir::Graph& graph, const ir::Node& node, std::uint8_t operand) {
+  auto weight = node.source(operand);
+  for (std::size_t depth = 0; weight.valid() && depth < graph.nodes().size(); ++depth) {
+    const auto& tensor = graph.tensor(weight);
+    if (const auto* ref = std::get_if<ir::WeightRef>(&tensor.binding))
+      return WeightOperand{*ref, weight};
+    const auto& producer = graph.node(graph.producer(weight));
+    if (producer.component != node.component || producer.nsrc == 0) break;
+    weight = producer.source(0);
+  }
+  return std::nullopt;
+}
+std::optional<NumericalQualification> SelectionView::Qualification(
+    NumericalChange change, const ir::Graph& graph, const ir::Node& node,
+    std::uint8_t weight_operand) const {
+  if (!policy_.numerical || policy_.active_stage == UINT16_MAX ||
+      weight_operand >= NumericalOperands(node))
+    return std::nullopt;
+  QueryShape shape{};
+  Inspect(graph, node, [&](const execution::CapabilityQuery& query) {
+    shape = {.rows = query.rows, .k = query.k, .n = query.n};
+  });
+  auto anchor = node.key;
+  if (NumericalOperands(node) == 2) {
+    // The fused output has no independent authority for its second product.
+    // Project each product's actual K/N from that operand, with the shared
+    // input's real row count; use the original primitive product anchor.
+    anchor = ir::Primitive(node.key.fused == FusedKind::kMatMulGlu ? Op::kMatMul : Op::kMatMulId);
+    const auto& weight = graph.tensor(node.source(weight_operand));
+    shape.k = weight.ne(0);
+    shape.n = weight.ne(1);
+  }
+  const bool product_node = node.key == ir::Primitive(Op::kMatMul) ||
+                            node.key == ir::Primitive(Op::kMatMulId) ||
+                            NumericalOperands(node) == 2;
+  const bool product_contract = (change == NumericalChange::kQ8VectorReduction ||
+                                 change == NumericalChange::kMxfp8ProductInput) &&
+                                product_node;
+  const auto weight = ResolveWeightOperand(graph, node, weight_operand);
+  const bool viewed_weight = product_node && weight_operand < node.nsrc &&
+                             node.source(weight_operand).valid() &&
+                             graph.tensor(node.source(weight_operand)).is_view();
+  std::optional<fusions::GroupedProduct> grouped;
+  if (viewed_weight && node.key == ir::Primitive(Op::kMatMul) && weight_operand == 0 &&
+      node.nout > 0 && node.out[0].valid()) {
+    grouped = fusions::GroupedProductOf(graph, graph.producer(node.out[0]));
+  }
+  for (const auto& entry : policy_.numerical->entries()) {
+    if (entry.change != change || entry.stage != policy_.active_stage ||
+        entry.component != node.component || entry.anchor != anchor || entry.arch != device_.arch ||
+        shape.rows < entry.min_rows || shape.rows > entry.max_rows)
+      continue;
+    if (entry.weight_role != UINT16_MAX || product_contract || viewed_weight) {
+      // Follow this product's weight operand, never its sibling's binding or
+      // another dependency branch. Stage, component and role all authenticate.
+      if (!weight || weight->reference.stage != entry.stage ||
+          weight->reference.component != node.component ||
+          (entry.weight_role != UINT16_MAX && weight->reference.role != entry.weight_role))
+        continue;
+    }
+    if (!viewed_weight) {
+      if ((entry.exact_shape || entry.exact_dimensions)
+              ? (shape.k != entry.max_k || shape.n != entry.max_n)
+              : (shape.k > entry.max_k || shape.n > entry.max_n))
+        continue;
+      return entry;
+    }
+    if (entry.weight_role == UINT16_MAX || (!entry.exact_shape && !entry.exact_dimensions) ||
+        !grouped || grouped->leaf != weight->leaf)
+      continue;
+    const auto& original = graph.tensor(grouped->leaf);
+    if (original.ne(0) != entry.max_k || original.ne(1) != entry.max_n) continue;
+    auto projected = entry;
+    projected.max_k = graph.tensor(grouped->weight).ne(0);
+    projected.max_n = graph.tensor(grouped->weight).ne(1);
+    return projected;
+  }
+  return std::nullopt;
+}
+
+std::vector<std::size_t> SelectionView::CandidatesForNode(const ir::Graph& graph,
+                                                          const ir::Node& node, ir::OpKey key,
+                                                          bool automatic_fusion,
+                                                          const QueryInspector& inspect) const {
   // Direct composites need the same immutable source authority as the
   // primitive matcher. Refuse native selection early so ordinary expansion
   // remains available for otherwise valid grouped products.
@@ -627,8 +719,8 @@ std::vector<std::size_t> SelectionView::Candidates(const ir::Graph& graph, const
   };
   for (const auto tensor : node.sources()) alignments.push_back(alignment(tensor));
   for (const auto tensor : node.outputs()) alignments.push_back(alignment(tensor));
-  auto candidates =
-      ForOperands(key, sources, outputs, node.params, state_span, alignments, automatic_fusion);
+  auto candidates = ForOperands(key, sources, outputs, node.params, state_span, alignments,
+                                automatic_fusion, inspect);
   if (grouped) {
     std::erase_if(candidates, [&](std::size_t index) {
       const auto& capability = registry_.at(index).capability;

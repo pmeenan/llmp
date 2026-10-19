@@ -354,6 +354,10 @@ TensorId Builder::Mul(TensorId a, TensorId b) {
   return One(Primitive(Op::kMul), ParamBytes{}, std::array{a, b});
 }
 
+TensorId Builder::Select(TensorId condition, TensorId yes, TensorId no) {
+  return One(Primitive(Op::kSelect), ParamBytes{}, std::array{condition, yes, no});
+}
+
 TensorId Builder::Div(TensorId a, TensorId b) {
   return One(Primitive(Op::kDiv), ParamBytes{}, std::array{a, b});
 }

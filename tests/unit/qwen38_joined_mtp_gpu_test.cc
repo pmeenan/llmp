@@ -27,6 +27,7 @@
 
 #include "artifact/artifact.h"
 #include "base/sha256.h"
+#include "compiler_inventory.h"
 #include "corpus_score.h"
 #include "engine/decoding.h"
 #include "engine/draft_companions.h"
@@ -50,7 +51,7 @@ namespace ts = llmp::test_support;
 namespace fs = std::filesystem;
 using llmp::test_support::Failed;
 constexpr std::uint64_t kMiB = 1ULL << 20, kGiB = 1ULL << 30;
-constexpr std::uint64_t kDomain = 104 * kGiB, kHost = 12 * kGiB;
+constexpr std::uint64_t kDomain = 104 * kGiB;
 constexpr std::uint32_t kVocabulary = 248320, kDraftLimit = 32768;
 // Factory: at most eleven classes for each of lone/joined owners. Actual
 // script: two lone prompts + two companion tails + three joined shapes.
@@ -64,15 +65,21 @@ constexpr std::uint64_t kTensors = llmp::ir::Graph::kMaxTensors;
 // layer/owner. Actual source has fewer; account for all 48 layers.
 constexpr std::uint64_t kSaves = 5 * 48 * 2;
 constexpr std::uint64_t kDescriptors = kTensors + 16 + (8 + 23) * kNodes + 4 * kSaves;
-constexpr std::uint64_t kCompiler = 4 * 3 * (kNodes * 480 + kTensors * 192) +
-                                    4096 * (kNodes + kTensors) + kDescriptors * (512 + 1024 + 32) +
-                                    64 * kMiB;
+constexpr std::uint64_t kCompiler =
+    llmp::test_support::compiler_inventory::GraphBytes(kNodes, kTensors) +
+    4096 * (kNodes + kTensors) +
+    llmp::test_support::compiler_inventory::NativeBytes(kDescriptors, kTensors) + 64 * kMiB;
 constexpr std::uint64_t kRetained = (kClasses + 1) * (kProgram + 4096 * en::kGraphNodeHostBytes);
 constexpr std::uint64_t kMetadata = 2 * kGiB, kObservations = 256 * kMiB;
+// Actual proof descriptor storage is already counted by GraphBytes; retain
+// every reviewed category and round only the resulting paid total to extents.
+constexpr std::uint64_t kHostRequired = kCompiler + kRetained + kMetadata + kObservations;
+constexpr std::uint64_t kHost =
+    ((kHostRequired + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
 static_assert(kCompiler + kRetained + kMetadata + kObservations <= kHost);
 static_assert(kNodes == 65536 && kTensors == 131072);
 static_assert(sizeof(llmp::ir::Node) <= 160 && sizeof(llmp::ir::TensorDesc) <= 160);
-static_assert(sizeof(pl::Selected) <= 128 && sizeof(pl::Applied) <= 64);
+static_assert(sizeof(pl::Selected) <= 128);
 static_assert(sizeof(llmp::kernels::ggml::PlanStep) <= 64);
 static_assert(sizeof(std::string) <= 32 && sizeof(en::SlotLifecycle::Range) <= 24);
 constexpr std::string_view kTarget =

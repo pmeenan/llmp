@@ -38,13 +38,13 @@ TEST(ImportModelOptNormalizeTest, NativeRelaidTargetValidatesAcrossCompleteTarge
   ASSERT_FALSE(mapping.folds.empty());
   EXPECT_TRUE(
       std::ranges::all_of(mapping.folds, [](const spec::FoldRule& fold) { return fold.imported; }));
-  // W4A4 experts take the converted form's policy (moe_experts); others
-  // the format ladder's.
+  // Activation scales select the native rule; structural patterns default
+  // on in either form and arithmetic changes still require separate evidence.
   ASSERT_EQ(mapping.policies.size(), 2U);
   EXPECT_EQ(mapping.policies[0].gate, "llmp.qwen4exp.expert_activation_scales");
   EXPECT_EQ(mapping.policies[0].text, spec::mappings::Qwen38Mapping().policies[0].text);
   EXPECT_TRUE(mapping.policies[1].gate.empty());
-  EXPECT_TRUE(mapping.policies[1].text.contains("disable moe_glu\n"));
+  EXPECT_EQ(mapping.policies[1].text, spec::mappings::Qwen38Mapping().policies.back().text);
   EXPECT_FALSE(mapping.policies[1].text.contains("enable moe_experts\n"));
   // The experts' tables in the scale-atom layout: gate-up stacked.
   std::size_t tables = 0, vectors = 0;
@@ -113,13 +113,15 @@ TEST(ImportModelOptNormalizeTest, NativeRelaidTargetValidatesAcrossCompleteTarge
   // Its policy: the W4A4 form; without activation scales, the ladder's.
   auto rule = spec::DefaultRule(mapping, f.values, {.context = 8192, .slots = 1});
   ASSERT_TRUE(rule && *rule != nullptr);
-  EXPECT_TRUE((**rule).text.contains("enable moe_experts\n"));
+  EXPECT_EQ(*rule, &mapping.policies[0]);
+  EXPECT_FALSE((**rule).text.contains("candidate_numerics "));
   auto w4a16 = f.values;
   for (auto& v : w4a16)
     if (v.key == "llmp.qwen4exp.expert_activation_scales") v.value = false;
   rule = spec::DefaultRule(mapping, w4a16, {.context = 8192, .slots = 1});
   ASSERT_TRUE(rule && *rule != nullptr);
-  EXPECT_FALSE((**rule).text.contains("enable moe_experts\n"));
+  EXPECT_EQ(*rule, &mapping.policies[1]);
+  EXPECT_FALSE((**rule).text.contains("candidate_numerics "));
 }
 TEST(ImportModelOptNormalizeTest, NativeMappingRejectsMissingPartAndReadsItsFolds) {
   auto f = Native();

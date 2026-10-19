@@ -24,11 +24,33 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
-
+- Prepared ordinary quantized vector products may overlap immutable-weight
+  prefetch and dependent launches while preserving their quantization,
+  accumulation and reduction. Dependent inputs still wait for predecessor
+  completion; unsupported CUDA images retain the ordinary path.
 - Compile bounded native regex split plans from tokenizer sources, admitting
   Llama 3 and additional GGUF presets. Apply shared multi-ID HF template
   postprocessors, and fund complete normalized tokenizer work and outputs.
   Image prompts derive their dropped prefix from one complete encoding.
+- Prepared expert vector products preserve broadcast versus per-slot input rows,
+  and fused vector GLUs preserve SwiGLU, clamped SwiGLU and GELU-tanh formulas.
+  Unsupported shapes or GLUs keep their ordinary fallback.
+- The measurement client retains server errors sent inside an SSE response,
+  instead of replacing their cause with a missing-usage message.
+
+- Unequal-read joined token steps admit their exact activation storage before
+  state or model work, preserving cached addresses and the old request on
+  clean capacity refusal instead of silently losing the joined batch.
+- Numerical qualifications retain their paid construction token on every
+  serving path, including sources without a declared execution domain.
+  Row-invariant quantized products execute every advertised block encoding.
+- Owner attention accepts equivalent singleton view strides while checking
+  every live row, head and owner pitch and current backing address.
+- Report selected implementations, fusions and fallbacks at model registration
+  and on demand; `--debug-plans` logs detailed paid plans on cache installation
+  for the service, `chat` and `swap-table` (unreleased 0.2.0; no separate
+  public-surface version changes).
+
 - Scratch planning and funding use the backend's actual lane configuration,
   so serial multiowner programs do not reserve four unused lane workspaces.
   Launch, binding and cache identity share that immutable configuration.

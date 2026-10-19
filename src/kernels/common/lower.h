@@ -69,6 +69,14 @@ using LowerFunction =
 using ProgramValidator =
     std::function<std::expected<void, std::string>(const LowerInput&, const StepProgram&)>;
 
+// A prepaid immutable callback owner, independent of numerical execution
+// declarations. A backend exposes the same retained payer to each construction
+// category; native lowering and logical reporting obtain separate exact loans.
+struct ConstructionFunder {
+  std::function<bool(std::uint64_t)> charge;
+  std::function<void(std::uint64_t)> release;
+};
+
 class BackendOwner;
 
 // Immutable future launch resources, also used while measuring without a
@@ -95,6 +103,11 @@ struct StepBackend {
   // reference from it. Fields above may be empty; a caller-modified copy is
   // not the owner's authority.
   std::shared_ptr<const BackendOwner> owner{};
+  // Also required for undeclared backends: absence never means free metadata.
+  // The backend prepays the callback/control storage before exporting this token.
+  std::shared_ptr<const ConstructionFunder> construction_funder{};
+  // Owned tables carry their actual payer; wrapper fields cannot replace it.
+  std::shared_ptr<const ConstructionFunder> ConstructionFunding() const;
 };
 
 // Immutable effective backend/configuration. The real kernel backend creates
@@ -113,6 +126,10 @@ class BackendOwner {
   // First successful preparation freezes the value; later changes refuse.
   virtual std::expected<execution::BackendDeclaration, std::string> Ready() const = 0;
 };
+
+inline std::shared_ptr<const ConstructionFunder> StepBackend::ConstructionFunding() const {
+  return owner ? owner->backend().construction_funder : construction_funder;
+}
 
 }  // namespace llmp::kernels
 

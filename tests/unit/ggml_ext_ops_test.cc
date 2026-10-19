@@ -305,6 +305,43 @@ RefChunk ReferenceChunk(std::uint32_t window, std::uint32_t global_cells, std::u
   return out;
 }
 
+TEST_F(GgmlExtOpsTest, SelectCopiesPayloadBitsAndCapturedPredicatesWithoutArithmetic) {
+  for (const auto type : {GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_F32, GGML_TYPE_I64}) {
+    const auto unit = ggml_type_size(type);
+    const std::array<std::uint64_t, 8> bits{0x7d01,     0x8000,
+                                            0x7f800001, 0xff800000,
+                                            0x7fc12345, 0xffffffffffffffffULL,
+                                            0,          0x8000000000000000ULL};
+    std::vector<std::uint8_t> bytes(8 * unit), expected(8 * unit, 0xa5);
+    for (std::size_t i = 0; i < bits.size(); ++i)
+      std::memcpy(bytes.data() + i * unit, &bits[i], unit);
+    auto* predicate =
+        Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, 1, 2), std::vector<std::int32_t>{-7, 0});
+    auto* yes = Place(ggml_new_tensor_2d(c(), type, 4, 2), bytes);
+    auto* no = Place(ggml_new_tensor_1d(c(), type, 1), std::vector<std::uint8_t>(unit, 0xa5));
+    auto* out = Place(kg::Select(c(), predicate, yes, no));
+    std::copy_n(bytes.begin(), 4 * unit, expected.begin());
+    ASSERT_TRUE(kg::RunSelect(launch(), out));
+    EXPECT_EQ(Download<std::uint8_t>(out), expected);
+    auto captured = launch().Capture([&](auto& context) { return kg::RunSelect(context, out); });
+    ASSERT_TRUE(captured);
+    const std::array<std::int32_t, 2> changed{0, 11};
+    ASSERT_EQ(cudaMemcpy(predicate->data, changed.data(), sizeof(changed), cudaMemcpyHostToDevice),
+              cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    expected.assign(8 * unit, 0xa5);
+    std::copy(bytes.begin() + static_cast<std::ptrdiff_t>(4 * unit), bytes.end(),
+              expected.begin() + static_cast<std::ptrdiff_t>(4 * unit));
+    ASSERT_TRUE(launch().Launch(*captured));
+    EXPECT_EQ(Download<std::uint8_t>(out), expected);
+    const auto saved = predicate->type;
+    predicate->type = GGML_TYPE_F32;
+    EXPECT_FALSE(kg::CheckSelect(out));
+    predicate->type = saved;
+    EXPECT_FALSE(launch().faulted());
+  }
+}
+
 TEST_F(GgmlExtOpsTest, Gemma3DeviceMasksMatchEveryHostByteAcrossWrapAndTrainedMaximum) {
   const auto submission = execution_->Submission(stream_);
   ASSERT_TRUE(submission);
@@ -1165,7 +1202,7 @@ TEST_F(GgmlExtOpsTest, SharedPreparationKeepsOrdinaryScalarThroughEightMmvqAndCh
       };
       auto* q8 = guarded(shared.Get(x));
       ASSERT_EQ(shared.Get(x), q8);
-      std::array<ggml_tensor*, 3> ordinary{}, candidate{}, weights{};
+      std::array<ggml_tensor*, 3> ordinary{}, candidate{}, consumed{}, weights{};
       std::array<std::vector<std::uint8_t>, 3> weight_bytes;
       for (std::size_t i = 0; i < kOutputs.size(); ++i) {
         const auto quant =
@@ -1180,6 +1217,7 @@ TEST_F(GgmlExtOpsTest, SharedPreparationKeepsOrdinaryScalarThroughEightMmvqAndCh
         ASSERT_EQ(kg::LlmpOpOf(candidate[i]), kg::LlmpOp::kMmvqPrepared);
         ASSERT_EQ(candidate[i]->src[1], q8);
         ASSERT_EQ(candidate[i]->src[2], x);
+        consumed[i] = guarded(ggml_scale(context, candidate[i], 2.0F));
         const auto original_plan = kg::PlanMulMatVecQ(launch(), ordinary[i]);
         ASSERT_TRUE(original_plan);
         EXPECT_EQ(*original_plan, static_cast<std::uint64_t>(kg::Q8Bytes(kWidth, columns)));
@@ -1191,6 +1229,10 @@ TEST_F(GgmlExtOpsTest, SharedPreparationKeepsOrdinaryScalarThroughEightMmvqAndCh
         if (auto r = kg::RunQuantizeQ8(context, q8); !r) return r;
         for (auto* product : candidate)
           if (auto r = kg::RunMmvqPrepared(context, product); !r) return r;
+        // Consume the last signaled product first: its output must not be
+        // read until the PDL wait observes all predecessor writes.
+        for (auto at = consumed.rbegin(); at != consumed.rend(); ++at)
+          if (auto r = kg::Scale(context, *at); !r) return r;
         return {};
       };
       std::array<std::vector<float>, 3> baseline;
@@ -1205,6 +1247,9 @@ TEST_F(GgmlExtOpsTest, SharedPreparationKeepsOrdinaryScalarThroughEightMmvqAndCh
         ASSERT_TRUE(std::ranges::all_of(got, [](float v) { return std::isfinite(v); }));
         EXPECT_EQ(got, baseline[i]);
         EXPECT_EQ(std::memcmp(got.data(), baseline[i].data(), got.size() * sizeof(float)), 0);
+        const auto doubled = Download(consumed[i]);
+        ASSERT_EQ(doubled.size(), got.size());
+        for (std::size_t j = 0; j < got.size(); ++j) EXPECT_EQ(doubled[j], 2.0F * got[j]);
       }
       auto graph = launch().Capture(run);
       ASSERT_TRUE(graph);
@@ -1229,11 +1274,15 @@ TEST_F(GgmlExtOpsTest, SharedPreparationKeepsOrdinaryScalarThroughEightMmvqAndCh
         const auto got = Download(candidate[i]);
         EXPECT_EQ(got, expected[i]);
         EXPECT_EQ(std::memcmp(got.data(), expected[i].data(), got.size() * sizeof(float)), 0);
+        const auto doubled = Download(consumed[i]);
+        ASSERT_EQ(doubled.size(), got.size());
+        for (std::size_t j = 0; j < got.size(); ++j) EXPECT_EQ(doubled[j], 2.0F * got[j]);
       }
       EXPECT_EQ(Download(x), changed);
       for (std::size_t i = 0; i < weights.size(); ++i)
         EXPECT_EQ(Download<std::uint8_t>(weights[i]), weight_bytes[i]);
-      for (const auto* tensor : {q8, candidate[0], candidate[1], candidate[2]}) {
+      for (const auto* tensor :
+           {q8, candidate[0], candidate[1], candidate[2], consumed[0], consumed[1], consumed[2]}) {
         std::array<std::uint8_t, 256> guard{};
         ASSERT_EQ(cudaMemcpy(guard.data(),
                              static_cast<const std::byte*>(tensor->data) + ggml_nbytes(tensor),
@@ -1242,6 +1291,10 @@ TEST_F(GgmlExtOpsTest, SharedPreparationKeepsOrdinaryScalarThroughEightMmvqAndCh
         EXPECT_TRUE(std::ranges::all_of(guard, [](auto v) { return v == 0xA5; }));
       }
       const auto output_before = Download(candidate[0]);
+      const auto saved_op = weights[0]->op;
+      weights[0]->op = GGML_OP_SCALE;
+      EXPECT_FALSE(kg::RunMmvqPrepared(launch(), candidate[0]));
+      weights[0]->op = saved_op;
       const auto saved_q8 = *q8;
       q8->nb[0] = 0;
       EXPECT_FALSE(kg::RunQuantizeQ8(launch(), q8));
@@ -1551,7 +1604,7 @@ TEST_F(GgmlExtOpsTest, RawQ2D2rPreservesItsOwnCapturedProductAndPlansAllScratch)
   auto* other = Place(ggml_mul_mat_id(c(), w, x, routes));
   const auto scratch = kg::PlanMulMatIdQ2D2r(launch(), product);
   ASSERT_TRUE(scratch.has_value()) << (scratch ? "" : scratch.error().detail);
-  const kg::GraphPlan plan{.steps = {{.operation = llmp::execution::Operation::kMulMatId,
+  const kg::GraphPlan plan{.steps = {{.operation = llmp::ir::Primitive(llmp::ir::Op::kMatMulId),
                                       .implementation = kg::kMulMatIdQ2D2r,
                                       .nodes = {product},
                                       .lane = 0}},
@@ -3894,7 +3947,7 @@ TEST_F(GgmlExtOpsTest, Ds4HcaPlansItsWholeScratchRefusesCaptureAndPreservesOwnRe
     auto* control = make();
     const auto scratch = kg::PlanDsv4HcaTokentile(launch(), node);
     ASSERT_TRUE(scratch.has_value()) << (scratch ? "" : scratch.error().detail);
-    const kg::GraphPlan plan{.steps = {{.operation = llmp::execution::Operation::kFlashAttn,
+    const kg::GraphPlan plan{.steps = {{.operation = llmp::ir::Primitive(llmp::ir::Op::kAttention),
                                         .implementation = kg::kDsv4HcaTokentileName,
                                         .nodes = {node},
                                         .lane = 0}},
@@ -4604,43 +4657,42 @@ TEST_F(GgmlExtOpsTest, OperationsReadWriteAndDrawOnlyWhatTheyShould) {
 // ---- The registry ----
 
 TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
-  using llmp::execution::Operation;
   const std::vector<llmp::execution::Implementation> declared = kg::Implementations();
   const auto registry = llmp::execution::Registry::Create(declared).value();
-  const std::array<std::pair<const char*, Operation>, 33> expected = {{
-      {"ggml.mul_mat.mmvq", Operation::kMatMul},
-      {"ggml.mul_mat.mmq", Operation::kMatMul},
-      {"ggml.mul_mat.fwht", Operation::kMatMul},
-      {"ggml.mul_mat_id.mmvq", Operation::kMulMatId},
-      {"ggml.mul_mat_id.mmq", Operation::kMulMatId},
-      {"llmp.mul_mat_id.mmq_pair", Operation::kMulMatId},
-      {"llmp.mul_mat_id.mmq_compact", Operation::kMulMatId},
-      {"llmp.mul_mat_id.mmq_pair_compact", Operation::kMulMatId},
-      {"llmp.mul_mat_id.q2_d2r", Operation::kMulMatId},
-      {"ggml.sub", Operation::kSub},
-      {"ggml.div", Operation::kDiv},
-      {"ggml.scale", Operation::kScale},
-      {"ggml.unary", Operation::kUnary},
-      {"ggml.clamp", Operation::kClamp},
-      {"ggml.fill", Operation::kFill},
-      {"ggml.repeat", Operation::kRepeat},
-      {"ggml.concat", Operation::kConcat},
-      {"ggml.sum_rows", Operation::kSumRows},
-      {"ggml.argsort.bitonic", Operation::kArgsort},
-      {"ggml.top_k.radix", Operation::kTopK},
-      {"ggml.swiglu_clamp", Operation::kSwiGluClamp},
-      {"ggml.rope.ext", Operation::kRope},
-      {"ggml.get_rows.ext", Operation::kGetRows},
-      {"ggml.set_rows.ext", Operation::kSetRows},
-      {"ggml.ssm_conv", Operation::kSsmConv},
-      {"ggml.gated_delta_net", Operation::kGatedDeltaNet},
-      {"ggml.lightning_indexer.wmma", Operation::kLightningIndexer},
-      {"ggml.dsv4_hc_comb", Operation::kHcComb},
-      {"ggml.dsv4_hc_pre", Operation::kHcPre},
-      {"ggml.dsv4_hc_post", Operation::kHcPost},
-      {"ggml.flash_attn_ext.mma", Operation::kFlashAttn},
-      {"llmp.dsv4.hca_tokentile", Operation::kFlashAttn},
-      {"ggml.flash_attn_ext.mma_d128", Operation::kFlashAttn},
+  const std::array<std::pair<const char*, llmp::ir::OpKey>, 33> expected = {{
+      {"ggml.mul_mat.mmvq", llmp::ir::Primitive(llmp::ir::Op::kMatMul)},
+      {"ggml.mul_mat.mmq", llmp::ir::Primitive(llmp::ir::Op::kMatMul)},
+      {"ggml.mul_mat.fwht", llmp::ir::Primitive(llmp::ir::Op::kMatMul)},
+      {"ggml.mul_mat_id.mmvq", llmp::ir::Primitive(llmp::ir::Op::kMatMulId)},
+      {"ggml.mul_mat_id.mmq", llmp::ir::Primitive(llmp::ir::Op::kMatMulId)},
+      {"llmp.mul_mat_id.mmq_pair", llmp::ir::Primitive(llmp::ir::Op::kMatMulId)},
+      {"llmp.mul_mat_id.mmq_compact", llmp::ir::Primitive(llmp::ir::Op::kMatMulId)},
+      {"llmp.mul_mat_id.mmq_pair_compact", llmp::ir::Primitive(llmp::ir::Op::kMatMulId)},
+      {"llmp.mul_mat_id.q2_d2r", llmp::ir::Primitive(llmp::ir::Op::kMatMulId)},
+      {"ggml.sub", llmp::ir::Primitive(llmp::ir::Op::kSub)},
+      {"ggml.div", llmp::ir::Primitive(llmp::ir::Op::kDiv)},
+      {"ggml.scale", llmp::ir::Primitive(llmp::ir::Op::kScale)},
+      {"ggml.unary", llmp::ir::Primitive(llmp::ir::Op::kUnary)},
+      {"ggml.clamp", llmp::ir::Primitive(llmp::ir::Op::kClamp)},
+      {"ggml.fill", llmp::ir::Primitive(llmp::ir::Op::kFill)},
+      {"ggml.repeat", llmp::ir::Primitive(llmp::ir::Op::kRepeat)},
+      {"ggml.concat", llmp::ir::Primitive(llmp::ir::Op::kConcat)},
+      {"ggml.sum_rows", llmp::ir::Primitive(llmp::ir::Op::kSumRows)},
+      {"ggml.argsort.bitonic", llmp::ir::Primitive(llmp::ir::Op::kArgsort)},
+      {"ggml.top_k.radix", llmp::ir::Primitive(llmp::ir::Op::kTopK)},
+      {"ggml.swiglu_clamp", llmp::ir::Primitive(llmp::ir::Op::kGlu)},
+      {"ggml.rope.ext", llmp::ir::Primitive(llmp::ir::Op::kRope)},
+      {"ggml.get_rows.ext", llmp::ir::Primitive(llmp::ir::Op::kGetRows)},
+      {"ggml.set_rows.ext", llmp::ir::Primitive(llmp::ir::Op::kCacheStore)},
+      {"ggml.ssm_conv", llmp::ir::Primitive(llmp::ir::Op::kSsmConv)},
+      {"ggml.gated_delta_net", llmp::ir::Primitive(llmp::ir::Op::kGatedDeltaNet)},
+      {"ggml.lightning_indexer.wmma", llmp::ir::Primitive(llmp::ir::Op::kIndexScore)},
+      {"ggml.dsv4_hc_comb", llmp::ir::Primitive(llmp::ir::Op::kHcMix)},
+      {"ggml.dsv4_hc_pre", llmp::ir::Primitive(llmp::ir::Op::kHcPre)},
+      {"ggml.dsv4_hc_post", llmp::ir::Primitive(llmp::ir::Op::kHcPost)},
+      {"ggml.flash_attn_ext.mma", llmp::ir::Primitive(llmp::ir::Op::kAttention)},
+      {"llmp.dsv4.hca_tokentile", llmp::ir::Primitive(llmp::ir::Op::kAttention)},
+      {"ggml.flash_attn_ext.mma_d128", llmp::ir::Primitive(llmp::ir::Op::kAttention)},
   }};
   for (const auto& [name, operation] : expected) {
     const std::size_t index = registry.Find(name).value_or(registry.size());
@@ -4669,6 +4721,103 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
   // A node of another operation is refused before any launch.
   const std::array<const ggml_tensor*, 1> wrong = {Place(ggml_relu(c(), in))};
   EXPECT_EQ(FailedCode(scale.Check(wrong)), KernelError::kRejected);
+}
+
+// Compare the owner's closed packed launcher with the independent original
+// packed MMA while giving every inactive coordinate a different legal pitch.
+// This includes the one-row Q permutation canonicalized by native lowering.
+TEST_F(GgmlExtOpsTest, OwnerAttentionIgnoresOnlySingletonStrides) {
+  if (ComputeCapability() != 1210) GTEST_SKIP() << "Owner implementation is GB10 only";
+  constexpr std::int64_t cells = 512, owners = 2;
+  for (const auto [d, heads, cap] :
+       {std::array<std::int64_t, 3>{256, 8, 50}, {256, 8, 0}, {256, 16, 0}, {512, 32, 0}}) {
+    SCOPED_TRACE(d);
+    SCOPED_TRACE(heads);
+    SCOPED_TRACE(cap);
+    const auto kvh = heads / (d == 256 ? 2 : 8);
+    const auto n = [](std::int64_t x) { return static_cast<std::size_t>(x); };
+    auto arena = TensorArena::Create(64).value();
+    auto* ctx = arena.context();
+    auto* raw_q = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1, owners),
+                        Normal(28601, n(d * heads * owners)));
+    auto* raw_k = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, owners),
+                        Halves(Normal(28602, n(d * kvh * cells * owners))));
+    auto* raw_v = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, owners),
+                        Halves(Normal(28603, n(d * kvh * cells * owners))));
+    const auto permute = [&](ggml_tensor* tensor) {
+      auto* view = ggml_permute(ctx, tensor, 0, 2, 1, 3);
+      TensorArena::Bind(view, reinterpret_cast<std::uintptr_t>(tensor->data));
+      return view;
+    };
+    auto* q = permute(raw_q);
+    std::vector<ggml_fp16_t> masks(n(cells * 32 * owners), ggml_fp32_to_fp16(-INFINITY));
+    for (std::int64_t owner = 0; owner < owners; ++owner)
+      std::fill_n(masks.begin() + owner * cells * 32, cells - owner * 32, ggml_fp16_t{0});
+    auto* mask = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, cells, 32, 1, owners), masks);
+    auto* reference = Place(ggml_flash_attn_ext(ctx, q, permute(raw_k), permute(raw_v), mask, 1, 0,
+                                                static_cast<float>(cap)));
+    ggml_prec_set_acc(reference, GGML_PREC_F32);
+    std::array<ggml_tensor*, 4> keys{}, values{};
+    for (std::int64_t owner = 0; owner < owners; ++owner)
+      for (const bool value : {false, true}) {
+        auto* root = value ? raw_v : raw_k;
+        auto* view = ggml_view_4d(ctx, root, d, kvh, cells, 1, n(d * 2), n(d * kvh * 2),
+                                  n(d * kvh * cells * 2), n(owner * d * kvh * cells * 2));
+        TensorArena::Bind(view, reinterpret_cast<std::uintptr_t>(root->data) + view->view_offs);
+        (value ? values : keys)[n(owner)] = permute(view);
+      }
+    auto* output = Place(kg::FlashAttnOwnersNode(ctx, q, mask, keys, values, 2, 2, 0,
+                                                 static_cast<std::uint32_t>(cap)));
+    auto original = d == 256 ? kg::PlanFlashAttnMmaGqa2(launch(), reference)
+                             : kg::PlanFlashAttnMma(launch(), reference);
+    ASSERT_TRUE(original) << original.error().detail;
+    auto initial = kg::FlashAttnOwnersFromNode(output);
+    ASSERT_TRUE(initial) << initial.error().detail;
+    auto planned = kg::PlanFlashAttnOwners(launch(), *initial);
+    ASSERT_TRUE(planned) << planned.error().detail;
+    ASSERT_LE(original->scratch, kWorkspace);
+    ASSERT_LE(planned->original.scratch, kWorkspace);
+    if (d == 256)
+      ASSERT_TRUE(kg::FlashAttnMmaGqa2(launch(), reference));
+    else
+      ASSERT_TRUE(kg::FlashAttnMma(launch(), reference));
+    const auto want = Download(reference);
+    std::array<ggml_tensor, 7> descriptors{*q,       *mask,      *output,   *keys[0],
+                                           *keys[1], *values[0], *values[1]};
+    for (auto& descriptor : descriptors)
+      for (std::size_t axis = 0; axis < 4; ++axis)
+        if (descriptor.ne[axis] == 1) descriptor.nb[axis] = 4;
+    // The real lowered Q chooses this unused row pitch, rather than its
+    // historical whole-head-plane pitch. Neither changes an addressed byte.
+    descriptors[0].nb[1] = n(d) * sizeof(float);
+    auto normalized = *initial;
+    normalized.q = &descriptors[0];
+    normalized.mask = &descriptors[1];
+    normalized.output = &descriptors[2];
+    normalized.k[0] = &descriptors[3];
+    normalized.k[1] = &descriptors[4];
+    normalized.v[0] = &descriptors[5];
+    normalized.v[1] = &descriptors[6];
+    ASSERT_TRUE(kg::CheckFlashAttnOwners(normalized));
+    ASSERT_TRUE(kg::FlashAttnOwnerRoots(launch(), normalized));
+    const auto got = Download(output);
+    ASSERT_EQ(got.size(), want.size());
+    ASSERT_EQ(std::memcmp(got.data(), want.data(), got.size() * sizeof(float)), 0);
+    // Every real row/head/owner pitch remains mandatory. Inactive pitches
+    // do not license an altered stream layout or a stale view address.
+    for (auto& descriptor : descriptors)
+      for (std::size_t axis = 0; axis < 4; ++axis)
+        if (descriptor.ne[axis] > 1) {
+          const auto before = descriptor.nb[axis];
+          descriptor.nb[axis] += 16;
+          EXPECT_FALSE(kg::CheckFlashAttnOwners(normalized));
+          descriptor.nb[axis] = before;
+        }
+    const auto data = descriptors[0].data;
+    descriptors[0].data = static_cast<std::byte*>(data) + 16;
+    EXPECT_FALSE(kg::CheckFlashAttnOwners(normalized));
+    descriptors[0].data = data;
+  }
 }
 
 void GgmlExtOpsTest::MultirowOwnerControl(

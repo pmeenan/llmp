@@ -2918,5 +2918,70 @@ TEST_F(ExecTest, BindingsAreCheckedAndStateKeepsItsStores) {
   EXPECT_EQ(Get(total)[0], 20.0f);
 }
 
+TEST(ReferenceLayoutTest, SingletonStrideReshapesKeepEveryPayloadByteAndChangedInput) {
+  for (const bool first : {false, true}) {
+    ir::Builder b;
+    const auto input = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({12})));
+    const auto shape = first ? ir::ShapeOf({1, 4, 3}) : ir::ShapeOf({4, 1, 3});
+    const auto strides = first ? std::array<std::uint64_t, 4>{123456, 4, 16, 987654}
+                               : std::array<std::uint64_t, 4>{4, 123456, 16, 987654};
+    const auto view = b.View(input, shape, strides, 0);
+    const auto out = b.Reshape(view, ir::ShapeOf({12}));
+    b.Output(out);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+    auto executor = Executor::Create(*graph);
+    ASSERT_TRUE(executor);
+    for (unsigned change = 0; change < 2; ++change) {
+      std::array<std::uint32_t, 12> bits{};
+      for (std::size_t i = 0; i < bits.size(); ++i)
+        bits[i] = 0x7f800001U ^ (static_cast<std::uint32_t>(i) << (change + 3));
+      const PartView data{.role = format::PartRole::kData, .bytes = std::as_bytes(std::span(bits))};
+      ASSERT_TRUE(executor->Bind(input, std::span(&data, 1)));
+      ASSERT_TRUE(executor->Run());
+      EXPECT_TRUE(std::ranges::equal(executor->Bytes(out), data.bytes));
+    }
+  }
+}
+
+TEST(ReferenceSelectTest, PreservesPayloadBitsAndBroadcastsWithoutArithmetic) {
+  for (const Encoding encoding :
+       {Encoding::kF16, Encoding::kBF16, Encoding::kF32, Encoding::kI64}) {
+    ir::Builder b;
+    const auto condition = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({1, 2})));
+    const auto yes = b.Input(ir::Dense(encoding, ir::ShapeOf({4, 2})));
+    const auto no = b.Input(ir::Dense(encoding, ir::ShapeOf({1})));
+    const auto out = b.Select(condition, yes, no);
+    b.Output(out);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+    auto executor = Executor::Create(*graph);
+    ASSERT_TRUE(executor) << (executor ? "" : executor.error().detail);
+    const std::size_t unit = graph->tensor(out).nb[0];
+    // Repeated arbitrary bytes cover signaling/quiet NaNs, negative zero,
+    // infinities and integer payloads without a float encoder canonicalizing them.
+    const std::array<std::uint64_t, 8> bits{0x7d01,     0x8000,
+                                            0x7f800001, 0xff800000,
+                                            0x7fc12345, 0xffffffffffffffffULL,
+                                            0,          0x8000000000000000ULL};
+    std::vector<std::byte> true_bytes(8 * unit);
+    for (std::size_t i = 0; i < bits.size(); ++i)
+      std::memcpy(true_bytes.data() + i * unit, &bits[i], unit);
+    const std::vector<std::byte> false_bytes(unit, std::byte{0xa5});
+    const PartView true_part{.role = format::PartRole::kData, .bytes = true_bytes};
+    const PartView false_part{.role = format::PartRole::kData, .bytes = false_bytes};
+    ASSERT_TRUE(executor->Bind(yes, std::span(&true_part, 1)));
+    ASSERT_TRUE(executor->Bind(no, std::span(&false_part, 1)));
+    const std::array<std::int64_t, 2> predicate{-3, 0};
+    ASSERT_TRUE(executor->BindInts(condition, predicate));
+    ASSERT_TRUE(executor->Run());
+    const auto result = executor->Bytes(out);
+    ASSERT_EQ(result.size(), true_bytes.size());
+    EXPECT_TRUE(std::ranges::equal(result.first(4 * unit), std::span(true_bytes).first(4 * unit)));
+    for (std::size_t i = 4; i < 8; ++i)
+      EXPECT_TRUE(std::ranges::equal(result.subspan(i * unit, unit), false_bytes));
+  }
+}
+
 }  // namespace
 }  // namespace llmp::kernels::reference

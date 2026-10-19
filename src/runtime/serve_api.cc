@@ -2260,10 +2260,9 @@ std::string HostNames(const api::HostGuard& hosts) {
 }  // namespace
 
 int RunService(const config::NodeConfig& config, const config::RuntimeRoles& roles,
-               std::FILE* log) {
+               ServingOptions serving, std::FILE* log) {
   // Speculative where there is a drafter; no image prompt; conversations
   // kept across a restart (D-105).
-  ServingOptions serving;
   serving.keep_conversations = true;
   if (auto configured = ApplyServiceDiagnosticEnvironment(serving); !configured) {
     Say(log, configured.error());

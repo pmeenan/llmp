@@ -39,6 +39,7 @@
 
 #include "artifact/format_map.h"
 #include "base/bytes.h"
+#include "base/json.h"
 #include "engine/component_source.h"
 #include "engine/paged_node.h"
 #include "engine/ple_rows.h"
@@ -51,6 +52,7 @@
 #include "kernels/common/recording_launch.h"
 #include "model/batching.h"
 #include "model/state_contract.h"
+#include "plan_report.h"
 #include "planner/step_shape.h"
 #include "providers/fake/fake_device_runtime.h"
 #include "providers/fake/fake_storage.h"
@@ -66,6 +68,126 @@ using llmp::base::Bytes;
 constexpr std::uint64_t kExtent = en::kPagedExtent;
 constexpr std::uint32_t kContext = 1024;
 constexpr std::uint32_t kSlots = 3;
+
+TEST(PagedNodeWorkspaceTest,
+     RequestWorkspaceGrowthAdmitsAtomicallyAndCapacityRefusalKeepsTheOldLease) {
+  for (const bool direct : {false, true}) {
+    SCOPED_TRACE(direct);
+    en::PagedNode node({.compute_streams = 1,
+                        .slots = 1,
+                        .inline_lanes = true,
+                        .slot_bytes = en::kPagedExtent,
+                        .direct_steps = direct});
+    ASSERT_TRUE(node.Open());
+    ASSERT_TRUE(node.MapWorkspace(en::kPagedExtent, en::kPagedExtent, 8 * en::kPagedExtent, true));
+    const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+    ASSERT_TRUE(node.Start(llmp::base::Bytes(fixed + 4 * en::kPagedExtent)));
+    node.Run();
+    auto initial = node.catalog().ClosureOfExtents(node.activations().extents);
+    auto wider = node.catalog().ClosureOfExtents(node.workspace_extents());
+    ASSERT_TRUE(initial);
+    ASSERT_TRUE(wider);
+    ASSERT_TRUE(node.BeginRequest(0, *initial, "workspace replacement"));
+    unsigned calls = 0;
+    const auto job = [&](llmp::providers::NativeStream) {
+      ++calls;
+      return llmp::scheduler::JobResult::kQueued;
+    };
+    ASSERT_TRUE(node.Job(*initial, job, "initial protected work", 0));
+    const auto leases = node.scheduler().held();
+    ASSERT_TRUE(node.TryRefreshRequest(0, *wider));
+    EXPECT_EQ(node.scheduler().held(), leases);
+    ASSERT_TRUE(node.Job(*wider, job, "enlarged protected work", 0));
+    EXPECT_EQ(calls, 2U);
+    ASSERT_TRUE(node.GrowWorkspace(4 * en::kPagedExtent, en::kPagedExtent));
+    auto cannot_fit = node.catalog().ClosureOfExtents(node.workspace_extents());
+    ASSERT_TRUE(cannot_fit);
+    bool over_budget = false;
+    EXPECT_FALSE(node.TryRefreshRequest(0, *cannot_fit, &over_budget));
+    EXPECT_TRUE(over_budget);
+    EXPECT_TRUE(node.InRequest(0));
+    EXPECT_EQ(node.scheduler().held(), leases);
+    const auto refused = node.Job(*cannot_fit, job, "unadmitted workspace", 0);
+    EXPECT_FALSE(refused);
+    EXPECT_EQ(calls, 2U);
+    ASSERT_TRUE(node.Job(*wider, job, "old authority survives refusal", 0));
+    EXPECT_EQ(calls, 3U);
+    ASSERT_TRUE(node.TryRefreshRequest(0, *initial));
+    EXPECT_EQ(node.scheduler().held(), leases);
+    ASSERT_TRUE(node.EndRequest(0));
+    ASSERT_TRUE(node.TearDown({}));
+  }
+}
+
+TEST(PagedNodeWorkspaceTest,
+     RequestReplacementRefusesForeignAndForgedOccupancyBeforeEitherAcquisitionPolicy) {
+  for (const bool reclaim : {false, true}) {
+    SCOPED_TRACE(reclaim);
+    en::PagedNode node(
+        {.compute_streams = 1, .slots = 1, .inline_lanes = true, .slot_bytes = en::kPagedExtent});
+    ASSERT_TRUE(node.Open());
+    ASSERT_TRUE(node.MapWorkspace(en::kPagedExtent, en::kPagedExtent));
+    auto local = node.catalog().ClosureOfExtents(node.activations().extents);
+    ASSERT_TRUE(local);
+    const auto other_domain = node.catalog().AddDomain("foreign physical budget");
+    auto foreign = node.catalog().AddExtent({.domain = other_domain,
+                                             .memory_class = llmp::catalog::MemoryClass::kRuntime,
+                                             .recovery = llmp::catalog::Recovery::kPinned,
+                                             .size = llmp::base::Bytes(en::kPagedExtent),
+                                             .content = {}},
+                                            true);
+    ASSERT_TRUE(foreign);
+    auto foreign_closure = node.catalog().ClosureOfExtents(std::array{*foreign});
+    ASSERT_TRUE(foreign_closure);
+    const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+    ASSERT_TRUE(node.Start(llmp::base::Bytes(fixed + 8 * en::kPagedExtent)));
+    node.Run();
+    ASSERT_TRUE(node.BeginRequest(0, *local, "local replacement owner"));
+    auto paid = node.PrepayHost(1);
+    ASSERT_TRUE(paid);
+    const auto before_payment = paid->accounted_bytes();
+    const auto before_held = node.scheduler().held();
+    const auto before_occupancy = node.catalog().OccupancyOf(node.domain()).Total();
+    unsigned reclaim_calls = 0, job_calls = 0;
+    if (reclaim)
+      node.SetReclaimer(
+          [&](std::uint64_t, en::PagedNode::ReclaimFor, std::span<const llmp::catalog::ExtentId>) {
+            ++reclaim_calls;
+            return std::uint64_t{0};
+          });
+    bool over_budget = true;
+    EXPECT_FALSE(node.TryRefreshRequest(0, *foreign_closure, &over_budget));
+    EXPECT_FALSE(over_budget);
+    auto forged = *local;
+    forged.bytes_by_domain.clear();
+    EXPECT_FALSE(node.TryRefreshRequest(0, forged, &over_budget));
+    EXPECT_FALSE(over_budget);
+    EXPECT_EQ(paid->accounted_bytes(), before_payment);
+    EXPECT_EQ(node.scheduler().held(), before_held);
+    EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total(), before_occupancy);
+    EXPECT_EQ(node.catalog().Describe(*foreign)->leases, 0U);
+    EXPECT_EQ(reclaim_calls, 0U);
+    const auto job = [&](llmp::providers::NativeStream) {
+      ++job_calls;
+      return llmp::scheduler::JobResult::kQueued;
+    };
+    EXPECT_FALSE(node.Job(*foreign_closure, job, "foreign work remains inadmissible", 0));
+    EXPECT_EQ(job_calls, 0U);
+    ASSERT_TRUE(node.Job(*local, job, "original local authority remains usable", 0));
+    EXPECT_EQ(job_calls, 1U);
+    ASSERT_TRUE(node.EndRequest(0));
+    node.SetReclaimer({});
+    paid->Reset();
+    ASSERT_TRUE(node.Call(
+        [&]() -> en::Status {
+          if (!node.catalog().ReleasePinned(*foreign))
+            return std::unexpected("retiring the foreign test extent");
+          return {};
+        },
+        "retiring foreign domain control"));
+    ASSERT_TRUE(node.TearDown({}));
+  }
+}
 
 // Exercise the exact pre-allocation source gate with the physical v0 table
 // representation: 37 rows of 90 U8 bytes encode 160 NVFP4 values per row.
@@ -583,6 +705,8 @@ class ModelRunnerTest : public ::testing::Test {
   // Extents of each workspace region past this runner's need (another
   // model's larger need on a shared node).
   virtual std::uint64_t WorkspaceExtra() const { return 0; }
+  virtual std::uint64_t WorkspaceCapacity() const { return 0; }
+  virtual bool PageableWorkspace() const { return false; }
   virtual void Configure(en::RunnerConfig& /*config*/) {}
   std::uint64_t launched_pool_ = 0;  // what the runner gave its launch
 
@@ -622,9 +746,10 @@ class ModelRunnerTest : public ::testing::Test {
     ASSERT_TRUE(set) << llmp::test_support::Failed(set).value_or("");
     EXPECT_FALSE(runner_->Setup());
     EXPECT_FALSE(runner_->Bind());
-    ASSERT_TRUE(node_.MapWorkspace(
-        runner_->activations_needed() + (WorkspaceExtra() * kExtent),
-        std::max(runner_->pool_needed(), kExtent) + (WorkspaceExtra() * kExtent)));
+    ASSERT_TRUE(
+        node_.MapWorkspace(runner_->activations_needed() + (WorkspaceExtra() * kExtent),
+                           std::max(runner_->pool_needed(), kExtent) + (WorkspaceExtra() * kExtent),
+                           WorkspaceCapacity(), PageableWorkspace()));
     auto started = node_.Start(Bytes(fixed_ + (BudgetExtents() * kExtent)));
     ASSERT_TRUE(started) << llmp::test_support::Failed(started).value_or("");
     auto registered = runner_->Register();
@@ -810,6 +935,216 @@ TEST_F(WorkspacePrefixTest, TheRunnerNamesOnlyItsOwnPrefixOfTheSharedWorkspace) 
   auto ran = Run(Shape(pl::Phase::kPrefill, {Seg(0, 0, 100, 1)}), {tokens});
   ASSERT_TRUE(ran.has_value()) << ran.error().what;
   ExpectPrompt(0, tokens);
+}
+
+class ExactWorkspaceTest : public ModelRunnerTest, public ::testing::WithParamInterface<bool> {
+ protected:
+  std::uint64_t WorkspaceCapacity() const override { return 8 * kExtent; }
+  bool PageableWorkspace() const override { return true; }
+  void SetUp() override {
+    ModelRunnerTest::SetUp();
+    if (HasFatalFailure() || GetParam()) return;
+    ASSERT_TRUE(node_.EndRequest(0));
+    ASSERT_TRUE(runner_->slots().SelectSlots(std::array<std::uint32_t, 1>{0}));
+  }
+};
+INSTANTIATE_TEST_SUITE_P(HeldModes, ExactWorkspaceTest, ::testing::Bool(),
+                         [](const ::testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Held" : "NoHeld";
+                         });
+
+TEST_P(ExactWorkspaceTest, SelectedShapeGrowsPaidPrefixBeforeStateAndPreservesCachedPlaces) {
+  const auto prompt = Tokens(16, 7);
+  const auto prompt_shape = Shape(pl::Phase::kPrefill, {Seg(0, 0, 16, 1)});
+  ASSERT_TRUE(Run(prompt_shape, {prompt}));
+  const auto base = node_.activations().base;
+  const auto before = runner_->activation_bytes();
+  const auto pool = runner_->pool_bytes();
+  const auto positions = runner_->slots().positions(0);
+  const auto queued = source_->queued();
+  source_->options().extra_activation_bytes = 2 * kExtent;
+  const auto decode = Shape(pl::Phase::kDecode, {Seg(0, positions, 1, 1)});
+  auto prepared = runner_->PrepareStep(decode);
+  ASSERT_TRUE(prepared) << prepared.error();
+  EXPECT_GT(runner_->activation_bytes(), before);
+  EXPECT_EQ(node_.activations().base, base);
+  EXPECT_EQ(runner_->pool_bytes(), pool);
+  EXPECT_EQ(launched_pool_, pool);
+  EXPECT_EQ(runner_->slots().positions(0), positions);
+  EXPECT_EQ(source_->queued(), queued);
+  EXPECT_EQ(node_.InRequest(0), GetParam());
+  EXPECT_FALSE(runner_->slots().faulted());
+  for (std::size_t i = 0; i < runner_->activation_bytes() / kExtent; ++i) {
+    const auto extent = node_.activations().extents.at(i);
+    EXPECT_TRUE(std::ranges::any_of(runner_->slots().execution().extents,
+                                    [&](const auto& e) { return e.first == extent; }));
+  }
+  const auto builds = source_->built().size();
+  ASSERT_TRUE(runner_->PrepareStep(decode));
+  EXPECT_EQ(source_->built().size(), builds);
+  ASSERT_TRUE(Run(decode, {Tokens(1, 29)}));
+  EXPECT_EQ(runner_->slots().positions(0), positions + 1);
+  // The previously installed prompt still names the same activation places.
+  ASSERT_TRUE(runner_->slots().Clear(0));
+  ASSERT_TRUE(Run(prompt_shape, {prompt}));
+  EXPECT_EQ(source_->built().size(), builds);
+  ExpectPrompt(0, prompt);
+}
+
+TEST_P(ExactWorkspaceTest, CapacityRefusalPreservesOldLeaseStateAndCachedPlan) {
+  const auto prompt = Tokens(16, 7);
+  const auto shape = Shape(pl::Phase::kPrefill, {Seg(0, 0, 16, 1)});
+  ASSERT_TRUE(Run(shape, {prompt}));
+  const auto old_closure = runner_->slots().execution().extents;
+  const auto old_bytes = runner_->activation_bytes();
+  const auto queued = source_->queued();
+  auto free = node_.FreeBytes();
+  ASSERT_TRUE(free);
+  ASSERT_GT(*free, kExtent);
+  // ChargeHost may consume only the existing prepaid host floor. Use a
+  // real pinned allocation so exactly one physical extent remains free.
+  const auto occupied = ((*free / kExtent) - 1) * kExtent;
+  std::vector<llmp::catalog::ExtentId> pressure_extents;
+  auto pressure = node_.Pinned(occupied, 0, pressure_extents);
+  ASSERT_TRUE(pressure) << pressure.error();
+  source_->options().extra_activation_bytes = 2 * kExtent;
+  const auto decode = Shape(pl::Phase::kDecode, {Seg(0, 16, 1, 1)});
+  EXPECT_FALSE(runner_->PrepareStep(decode));
+  EXPECT_EQ(runner_->activation_bytes(), old_bytes);
+  EXPECT_EQ(runner_->slots().execution().extents, old_closure);
+  EXPECT_EQ(runner_->slots().positions(0), 16U);
+  EXPECT_EQ(source_->queued(), queued);
+  EXPECT_EQ(node_.InRequest(0), GetParam());
+  EXPECT_FALSE(runner_->slots().faulted());
+  ASSERT_TRUE(node_.FreePinned(*pressure));
+  source_->options().extra_activation_bytes = 0;
+  ASSERT_TRUE(runner_->slots().Clear(0));
+  ASSERT_TRUE(Run(shape, {prompt}));
+  ExpectPrompt(0, prompt);
+}
+
+TEST_P(ExactWorkspaceTest, PoolAndStagingGrowthRefuseBeforeActivationOrStateMutation) {
+  const auto before = runner_->activation_bytes();
+  const auto closure = runner_->slots().execution().extents;
+  const auto queued = source_->queued();
+  const auto shape = Shape(pl::Phase::kPrefill, {Seg(0, 0, 16, 1)});
+  source_->options().pool_bytes = runner_->pool_bytes() + 1;
+  EXPECT_FALSE(runner_->PrepareStep(shape));
+  source_->options().pool_bytes = 0;
+  source_->options().extra_inputs = [](const pl::StepShape&) {
+    return std::vector<kn::InputSlot>{{.bytes = 1U << 20, .kind = kn::InputKind::kStepBytes}};
+  };
+  EXPECT_FALSE(runner_->PrepareStep(shape));
+  EXPECT_EQ(runner_->activation_bytes(), before);
+  EXPECT_EQ(runner_->slots().execution().extents, closure);
+  EXPECT_EQ(runner_->slots().positions(0), 0U);
+  EXPECT_EQ(source_->queued(), queued);
+  EXPECT_FALSE(runner_->slots().faulted());
+}
+
+class LaunchReserveTest : public ModelRunnerTest {
+ protected:
+  static constexpr std::uint64_t kOrdinary = 3U << 20, kLaneTail = 4U << 20;
+  ts::FakeSourceOptions SourceOptions() override {
+    auto options = ModelRunnerTest::SourceOptions();
+    options.pool_bytes = kOrdinary;
+    return options;
+  }
+  void Configure(en::RunnerConfig& config) override { config.launch_pool_reserve = kLaneTail; }
+};
+TEST_F(LaunchReserveTest, AddsImmutableLaneTailOnceOutsideTheOrdinaryScratchMargin) {
+  constexpr auto expected =
+      ((kOrdinary + kOrdinary / 4 + kLaneTail + kExtent - 1) / kExtent) * kExtent;
+  EXPECT_EQ(runner_->pool_needed(), expected);
+  EXPECT_EQ(launched_pool_, expected);
+  EXPECT_GE(launched_pool_ - kLaneTail, kOrdinary);
+  EXPECT_EQ(runner_->pool_bytes(), expected);
+  ASSERT_TRUE(Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{17}}));
+  EXPECT_EQ(runner_->pool_needed(), expected);
+}
+class ExpansionCoverageTest : public ModelRunnerTest {
+ protected:
+  ts::FakeSourceOptions SourceOptions() override {
+    auto options = ModelRunnerTest::SourceOptions();
+    options.plan_coverage.decode_expansion_rules = 1;
+    return options;
+  }
+};
+TEST_F(ExpansionCoverageTest, RegistrationWarnsForExpansionWithoutPrimitiveFallbacks) {
+  auto report = llmp::base::json::Parse(runner_->plan_report());
+  ASSERT_TRUE(report);
+  EXPECT_EQ(report->root().find("max_available_fast_fallbacks")->int64(), 0);
+  EXPECT_EQ(report->root().find("max_decode_expansion_rules")->int64(), 1);
+  EXPECT_FALSE(report->root().find("warning")->string().empty());
+}
+
+class NumericalCoverageTest : public ModelRunnerTest {
+ protected:
+  ts::FakeSourceOptions SourceOptions() override {
+    auto options = ModelRunnerTest::SourceOptions();
+    options.plan_coverage.missing_numerical_qualifications = 7;
+    return options;
+  }
+};
+TEST_F(NumericalCoverageTest, RegistrationWarnsForMissingQualificationWithoutOtherFallbacks) {
+  auto report = llmp::base::json::Parse(runner_->plan_report());
+  ASSERT_TRUE(report);
+  EXPECT_EQ(report->root().find("max_available_fast_fallbacks")->int64(), 0);
+  EXPECT_EQ(report->root().find("max_decode_expansion_rules")->int64(), 0);
+  EXPECT_EQ(report->root().find("max_missing_numerical_qualifications")->int64(), 7);
+  EXPECT_NE(report->root().find("warning")->string().find("qualification"), std::string_view::npos);
+}
+
+class CandidateNumericalCoverageTest : public NumericalCoverageTest {
+ protected:
+  ts::FakeSourceOptions SourceOptions() override {
+    auto options = NumericalCoverageTest::SourceOptions();
+    options.plan_coverage.unqualified_numerical_candidates = 2;
+    return options;
+  }
+};
+TEST_F(CandidateNumericalCoverageTest,
+       RegistrationIdentifiesActiveCandidatesBeforeMissingEvidence) {
+  auto report = llmp::base::json::Parse(runner_->plan_report());
+  ASSERT_TRUE(report);
+  EXPECT_EQ(report->root().find("max_unqualified_numerical_candidates")->int64(), 2);
+  EXPECT_EQ(report->root().find("max_missing_numerical_qualifications")->int64(), 7);
+  EXPECT_NE(report->root().find("warning")->string().find("UNQUALIFIED CANDIDATE"),
+            std::string_view::npos);
+}
+
+class InstalledPlanReportTest : public ModelRunnerTest {
+ protected:
+  std::vector<std::string> records_;
+  void Configure(en::RunnerConfig& config) override {
+    config.plan_report_sink = ts::CollectPlanRecords(records_);
+  }
+};
+TEST_F(InstalledPlanReportTest, EmitsOnlyPaidInstallsAndOffersCachedReportsOnDemand) {
+  EXPECT_TRUE(records_.empty());  // Setup measurements are not installations.
+  for (std::uint32_t past = 0; past < 3; ++past) {
+    const auto result = Run(Shape(pl::Phase::kDecode, {Seg(0, past, 1, 1)}), {{902341}});
+    ASSERT_TRUE(result) << (result ? "" : result.error().what);
+    ASSERT_EQ(records_.size(), 1U);  // Capture/replay/cache hits add no records.
+    EXPECT_EQ(runner_->plans().size(), 1U);
+  }
+  EXPECT_NE(records_[0].find("installed_plan"), std::string::npos);
+  EXPECT_EQ(records_[0].find("902341"), std::string::npos);
+  std::vector<std::string> requested;
+  runner_->ReportPlans(ts::CollectPlanRecords(requested));
+  EXPECT_EQ(requested, records_);
+  runner_->DropPlans();
+  ASSERT_TRUE(Run(Shape(pl::Phase::kDecode, {Seg(0, 3, 1, 1)}), {{902341}}));
+  ASSERT_EQ(records_.size(), 2U);  // A new paid entry for that key may report again.
+  EXPECT_NE(records_[0], records_[1]);
+}
+TEST_F(ModelRunnerTest, DisabledPlanDebugSinkStillAllowsOnDemandCachedDetails) {
+  ASSERT_TRUE(Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{902341}}));
+  std::vector<std::string> requested;
+  runner_->ReportPlans(ts::CollectPlanRecords(requested));
+  ASSERT_EQ(requested.size(), 1U);
+  EXPECT_EQ(requested[0].find("902341"), std::string::npos);
+  EXPECT_EQ(runner_->plans().size(), 1U);
 }
 
 TEST_F(ModelRunnerTest, PrefillsWritesItsCellsAndReturnsItsFrontier) {

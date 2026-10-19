@@ -81,6 +81,36 @@ class HeadProgram final : public kn::StepProgram {
   }
 };
 
+TEST(CorpusScore, ConstructionPaymentForwardsInnerBeforeOuterAndTransfersOnce) {
+  for (const bool transfer : {false, true}) {
+    SCOPED_TRACE(transfer);
+    std::vector<int> refunds;
+    ts::CorpusPlanRecord record;
+    {
+      auto inner = std::make_unique<HeadProgram>();
+      ASSERT_TRUE(inner->HoldConstruction(std::shared_ptr<int>(new int{1}, [&](int* token) {
+        refunds.push_back(*token);
+        delete token;
+      })));
+      ts::CorpusProgram wrapped(std::move(inner), record);
+      ASSERT_TRUE(wrapped.HoldConstruction(std::shared_ptr<int>(new int{2}, [&](int* token) {
+        refunds.push_back(*token);
+        delete token;
+      })));
+      EXPECT_TRUE(refunds.empty());
+      if (transfer) {
+        wrapped.ConstructionPaid();
+        EXPECT_EQ(refunds, (std::vector<int>{1, 2}));
+        wrapped.ConstructionPaid();
+        EXPECT_EQ(refunds, (std::vector<int>{1, 2}));
+      }
+    }
+    // Abandonment also destroys the owned inner/native storage before the
+    // outer construction owner; an explicit transfer adds no later refund.
+    EXPECT_EQ(refunds, (std::vector<int>{1, 2}));
+  }
+}
+
 TEST(CorpusScore, GuardedLowerRejectsTypedNarrowedAndMisownedHeadsBeforeExecution) {
   namespace ir = llmp::ir;
   namespace fm = llmp::format;

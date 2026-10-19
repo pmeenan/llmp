@@ -107,6 +107,9 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
   } else {
     return std::unexpected("a component step source needs a planning policy or a mapping");
   }
+  // Facts were authenticated once at admission; source construction scopes
+  // them to this actual stage, never a caller's stale stage ordinal.
+  policy.active_stage = options.stage;
   if (auto valid = planner::Validate(policy); !valid) {
     return std::unexpected(std::format("the planning policy: {}", valid.error()));
   }
@@ -163,6 +166,7 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
   }
   key.backend = facts.Finish();
   source->key_base_ = std::move(key);
+  source->semantic_identity_ = source->o_.spec->Digest();
   const auto add = [&](const components::Instance& in) {
     if (in.def->shape_parameters != nullptr) source->shaped_.push_back(in);
     if (in.def->side_rows != nullptr) source->side_.push_back(in);
@@ -223,6 +227,9 @@ ComponentStepSource::SealExecution(std::span<ComponentStepSource* const> stages)
     if (!bound || !add(*bound) || !add(sizeof(StageExecutionInput) + 1024) ||
         !text(domain->stages()[i].name))
       return std::unexpected("execution metadata bound overflows");
+    for (const auto change : stage->policy_.numerical_candidates)
+      if (!add(sizeof(change) + 128) || !text(planner::NumericalChangeName(change)))
+        return std::unexpected("candidate numerical policy bound overflows");
     for (const auto& name : stage->policy_.enabled)
       if (!text(name)) return std::unexpected("execution policy bound overflows");
     for (const auto& name : stage->policy_.disabled)
@@ -601,9 +608,13 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
        .within = Backend().within,
        .shape = &shape,
        .state_spans = state_spans,
-       .alignment_staged = std::move(aligned_staged)},
+       .alignment_staged = std::move(aligned_staged),
+       .observed_bound_model = o_.bound_digest,
+       .observed_model_spec = semantic_identity_},
       kernels::TokenLowerInput{*step, shape, o_.bindings.state->context, state_spans},
-      o_.validate_program);
+      // The effective table also carries its independent construction payer,
+      // including sources without a numerical execution declaration.
+      o_.validate_program, o_.backend.owner);
   if (program && compiler) {
     auto held = std::make_shared<SharedCompilerAllowance::Use>(std::move(*compiler));
     if (!(**program).HoldConstruction(std::move(held)))

@@ -9,26 +9,21 @@
 // layers into contiguous ranges, each on its own group of devices (a
 // pipeline stage); the embedding, side sources and stream mixing run with
 // the first range, the final norm and the output head with the last.
-// Within a stage of several devices
-// every layer component that has a split fitting the group's size splits
-// (its first such option of least modelled traffic: attention by heads,
-// a feed-forward block by its hidden columns, routed experts placed whole,
-// expert parallelism, before any split inside an expert); one that has
-// none runs whole on every device of the group. The embedding, side sources,
-// stream mixing, the final norm and the head run whole on every device
-// of their stage where that
-// fits, and split otherwise. The search is exact under those rules: a
-// dynamic program over the layer cuts and the device groups (interchangeable
-// devices, twins in the topology, are taken in one order, and a group's ring
-// runs in twin-class order, which makes that pruning lossless) that is
-// memory-feasible on every device and minimizes the modelled communication
-// time per step, weighted by the workload's mix of prefill and decode steps;
-// ties go to fewer devices, then fewer stages. Its memory deduplicates each
-// device's accumulated weights across layers and extras and adds its state; it
-// refuses a topology past its state or work bound rather than search long.
-// Compute is not modelled, so one device wins whenever the stage fits it.
-// AssignPipeline evaluates a pipeline given (a configured placement), its
-// rings in the order given.
+// Within a group, every declared feasible split competes with whole replicated
+// execution under the described execution-cost objective. Traffic-only mode
+// retains layer splits and chooses the least communication. Weight/state
+// capacity is checked jointly across the stage, deduplicating bound weights.
+// The exact bounded search minimizes the explicitly weighted prefill/decode
+// request latency; it does not model pipelined multi-request throughput.
+// Unknown device performance is represented by explicit traffic-only mode.
+// Execution work uses the actual local primitive graphs, summing each node's
+// max(read/write bytes / bandwidth, operation units / rate) in component order
+// and taking the slowest rank per component, then adding ordered communication.
+// Shared framework dependencies are conservatively charged per consumer; no
+// fusion, shared mask reuse, transfer concurrency or pipeline overlap is assumed.
+// Execution mode requires described sustainable rates and provenance, and
+// refuses work it cannot price. No device rates are assumed by the application.
+// AssignPipeline evaluates a configured pipeline under the same objective.
 //
 // The traffic model: a collective over a group runs as a ring in the
 // group's order (an all-reduce 2(g - 1) steps of 1/g of the tensor, a
@@ -58,8 +53,8 @@
 // devices (a pipeline cut). Expert parallelism keeps the routing whole on
 // every device: each device runs its own experts' products for every
 // routed slot (ids remapped to its own through a constant table, slots of
-// other experts computing with its first expert) and its weighted sum
-// masks the other experts' slots (a constant per-expert scale of 0 or 1),
+// other experts computing with its first expert) and literal selections
+// zero foreign products and weights and neutralize foreign scales before its sum,
 // so its sum is a partial sum the all-reduce completes (each device runs
 // every routed slot's products: expert parallelism divides the experts'
 // memory and weight reads, not the routed compute); dispatch needs no
@@ -77,6 +72,7 @@
 #ifndef LLMP_PLANNER_PARTITION_H_
 #define LLMP_PLANNER_PARTITION_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -97,10 +93,31 @@ inline constexpr std::size_t kMaxDevices = 16;
 
 // ------------------------------------------------------------------ topology
 
+// Sustainable rates described by the topology owner, not inferred device peaks.
+// MatMul, MatMulId and Attention use FLOPs/s; other ops use output elements/s
+// for that exact typed operation. Rates must conservatively cover the workload
+// shapes under consideration. Unary/GLU parameters remain part of the key.
+struct OperationRate {
+  ir::OpKey op{};
+  std::array<std::byte, ir::kMaxParamBytes> params{};
+  format::Encoding encoding = format::Encoding::kF32;
+  ir::Accumulate accumulate = ir::Accumulate::kDefault;
+  double units_per_s = 0;
+  bool operator==(const OperationRate&) const = default;
+};
+struct DevicePerformance {
+  double memory_bytes_per_s = 0;
+  std::vector<OperationRate> rates{};
+  std::string provenance{};
+  bool operator==(const DevicePerformance&) const = default;
+};
+enum class CostModel : std::uint8_t { kTraffic, kExecution };
+
 // A device and the bytes it gives the stage's weights and state.
 struct Device {
   std::uint32_t id = 0;
   std::uint64_t memory = 0;
+  std::optional<DevicePerformance> performance{};
 };
 // A link between two devices, both directions.
 struct Link {
@@ -113,6 +130,7 @@ struct Link {
 struct Topology {
   std::vector<Device> devices{};
   std::vector<Link> links{};
+  CostModel cost_model = CostModel::kTraffic;
 };
 // Ids unique, at most kMaxDevices devices, every link between two known
 // distinct devices, at most one a pair, a positive bandwidth and a
@@ -150,6 +168,10 @@ struct StageModel {
   std::vector<std::vector<RoleTensor>> roles{};
   // Reader layers for each side source, in instances.side order.
   std::vector<std::vector<std::uint32_t>> side_layers{};
+  // Borrowed like Instance::ref; gives side-input names and actual step graphs
+  // for execution work. A manually constructed model uses standalone fragments.
+  const spec::ModelSpec* source = nullptr;
+  std::span<const components::BoundTensor> tensors{};
 };
 std::expected<StageModel, std::string> ModelOf(const spec::ModelSpec& spec, std::uint16_t stage,
                                                std::span<const components::BoundTensor> tensors);
@@ -197,6 +219,10 @@ struct Assignment {
   Traffic decode{};
   double modelled_seconds_per_step = 0.0;
   double modelled_bytes_per_step = 0.0;
+  // Sequential per-component roofline time, separate from communication.
+  // Traffic-only mode leaves these absent, never a claimed zero runtime cost.
+  std::optional<double> prefill_execution_seconds{};
+  std::optional<double> decode_execution_seconds{};
   // Each device's weights and state (devices the assignment uses).
   std::vector<std::pair<std::uint32_t, std::uint64_t>> memory{};
 
@@ -216,7 +242,7 @@ std::expected<Assignment, std::string> AssignPipeline(const StageModel& model,
                                                       const Topology& topology,
                                                       const Workload& workload,
                                                       const Pipeline& pipeline);
-// The least-traffic memory-feasible assignment, or why there is none.
+// The least-cost memory-feasible assignment, or why there is none.
 std::expected<Assignment, std::string> Assign(const StageModel& model, const Topology& topology,
                                               const Workload& workload);
 // A spec's target stage (stage 0) bound to its artifact's tensors.

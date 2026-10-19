@@ -388,21 +388,6 @@ std::vector<MaskUse> Masks(const Instance& in) {
   return out;
 }
 
-constexpr std::array kBatchClasses{
-    BatchClass{.op = ir::Op::kRmsNorm, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMatMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kRope, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kCacheStore, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kPool, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kIndexScore, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kTopK, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kAttention, .batch = ir::Batch::kPerOwner},
-};
-
-constexpr std::array<std::string_view, 6> kPatterns{"dsv4_qhead",    "dsv4_compress",
-                                                    "dsv4_lid_topk", "dsv4_sparse_attention",
-                                                    "dsv4_out_a",    "rms_norm_mul"};
-
 // The layer's rotation (the retired dsv4_graph.cc's Rope: YaRN where the mapping gives
 // a factor, its attention factor reciprocal to YaRN's magnitude), over
 // `head` values from head - rope_dims.
@@ -1318,8 +1303,7 @@ const ComponentDef& AttentionMqa() {
       .shapes = Shapes,
       .state = State,
       .max_state_tensors = 7,
-      .batch_classes = kBatchClasses,
-      .patterns = kPatterns,
+
       .masks = Masks,
       .emit = Emit,
       .reference = Reference,

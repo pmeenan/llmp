@@ -223,6 +223,9 @@ struct Addresses {
   // Zero retains the step's packed rows, for standalone lowerings.
   std::uint64_t save_rows = 0;
   std::uint64_t activations = 0;
+  // Construction's address limit, which may be the owned virtual capacity.
+  // It neither proves backing nor authorizes a launch. The consumer admits
+  // the returned program's exact scratch requirement before binding/running.
   std::uint64_t activation_bytes = 0;
   // Physical reservation guarantees, identical for measurement and binding.
   // Zero/absent is unknown; neither logical offsets nor placeholders prove it.
@@ -293,6 +296,27 @@ struct RoutedWeight {
   bool operator==(const RoutedWeight&) const = default;
 };
 
+using PlanReportSink = std::function<void(std::string_view)>;
+// Complete records without an assembly buffer. All views are borrowed only
+// for the synchronous callback; begin/end carry no text, fragments omit '\n'.
+enum class PlanReportEvent : std::uint8_t { kBegin, kFragment, kEnd };
+using PlanRecordSink = std::function<void(PlanReportEvent, std::string_view)>;
+// Registration has only fixed keys/static warnings and uint64 counters: each
+// formatted representation is below 1KiB. Three simultaneous representations
+// (summary, Printable, log line) plus allocator/control headers fit this bound.
+inline constexpr std::uint64_t kRegistrationPlanReportMetadataBytes = 4096;
+struct PlanCoverage {
+  std::uint64_t primitive_fallbacks = 0;
+  std::uint64_t available_fast_fallbacks = 0;
+  std::uint64_t decode_expansion_rules = 0;
+  std::uint64_t missing_numerical_qualifications = 0;
+  std::uint64_t unqualified_numerical_candidates = 0;
+  std::uint64_t logical_activation_bytes = 0;
+  std::uint64_t physical_activation_bytes = 0;
+  std::uint64_t unmaterialized_logical_bytes = 0;
+  std::uint64_t unmaterialized_roots = 0;
+};
+
 class StepProgram {
  public:
   StepProgram() = default;
@@ -310,16 +334,53 @@ class StepProgram {
     construction_ = std::move(owner);
     return true;
   }
-  void ConstructionPaid() { construction_.reset(); }
+  virtual void ConstructionPaid() { construction_.reset(); }
 
   // What it needs: the activations' extent it was placed in, the backend's
-  // pool scratch, the host bytes the plan holds (its arena, its steps), and
+  // ordinary pool scratch (excluding a launch's separately reserved slices),
+  // the host bytes the plan holds (its arena, its steps), and
   // the launches it queues (a captured graph's cost, kGraphNodeHostBytes
   // each).
   virtual std::uint64_t scratch_bytes() const = 0;
   virtual std::uint64_t pool_bytes() const { return 0; }
   virtual std::uint64_t host_bytes() const = 0;
   virtual std::uint64_t launches() const = 0;
+  // Privacy-safe static plan facts only. No values, addresses or tensor names.
+  // Retained report storage is included in host_bytes(); emission is on demand.
+  virtual void ReportPlan(const PlanReportSink& /*sink*/) const {}
+  // Same records as allocation-free fragments, including newlines. Called
+  // only on demand; implementations use owned inventory and stack formatting.
+  virtual void StreamPlanReport(const PlanReportSink& sink) const {
+    if (!sink) return;
+    ReportPlan([&sink](std::string_view record) {
+      sink(record);
+      sink("\n");
+    });
+  }
+
+  void ReportPlanRecords(const PlanRecordSink& sink) const {
+    if (!sink) return;
+    bool begun = false;
+    StreamPlanReport([&](std::string_view fragment) {
+      while (!fragment.empty()) {
+        if (!begun) {
+          sink(PlanReportEvent::kBegin, {});
+          begun = true;
+        }
+        const auto end = fragment.find('\n');
+        const auto part = fragment.substr(0, end);
+        if (!part.empty()) sink(PlanReportEvent::kFragment, part);
+        if (end == std::string_view::npos) break;
+        sink(PlanReportEvent::kEnd, {});
+        begun = false;
+        fragment.remove_prefix(end + 1);
+      }
+    });
+    if (begun) sink(PlanReportEvent::kEnd, {});
+  }
+
+  virtual PlanCoverage plan_coverage() const { return {}; }
+
   virtual std::span<const InputSlot> inputs() const = 0;
   virtual std::span<const OutputSlot> outputs() const = 0;
   virtual std::span<const TensorUse> tensors() const = 0;

@@ -13,6 +13,7 @@
 #include <map>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "components/spatial.h"
@@ -50,14 +51,8 @@ llmp::planner::Policy ImagePolicy() {
 }
 std::expected<ex::Registry, ex::PlanRejection> Registry() {
   std::vector<ex::Implementation> entries;
-  for (const auto& declaration : kg::CapabilityDeclarations()) {
-    entries.push_back({.name = std::string(declaration.name),
-                       .operation = declaration.operation,
-                       .source = "ggml",
-                       .revision = "host_descriptor_control",
-                       .build = "host",
-                       .variant = "unchanged_actual_capability",
-                       .capability = *declaration.capability});
+  for (auto declaration : kg::PlanningImplementations()) {
+    entries.push_back(std::move(declaration));
   }
   return ex::Registry::Create(std::move(entries));
 }
@@ -372,7 +367,8 @@ TEST(GgmlSpatialTest, CompleteActualDecoderGeometryPlansAndLowersWithoutTokenMet
       const kn::LowerInput input{*plan, io, addresses};
       auto absent = kg::LowerStep(input, *registry, {});
       ASSERT_FALSE(absent);
-      EXPECT_NE(absent.error().detail.find("no floating product selector"), std::string::npos);
+      EXPECT_NE(absent.error().detail.find("selected float product group lacks device routing"),
+                std::string::npos);
       // This descriptor-only control models the existing cuBLAS product path;
       // actual GPU programs obtain their selector from the owned backend.
       kg::DeviceChoices device;
@@ -750,6 +746,12 @@ TEST(GgmlSpatialTest, PlannedFlowFusesEveryBlock) {
                           .within = kg::WithinRoot};
   auto policy = llmp::planner::ParsePolicy(::llmp::test_support::QwenImagePolicy());
   ASSERT_TRUE(policy) << policy.error();
+  // Synthetic fusion audit: propose only the three arithmetic boundaries
+  // whose implementations are asserted below, without source-quality grants.
+  policy->numerical_candidates = {llmp::planner::NumericalChange::kBf16SwiGluIntermediates,
+                                  llmp::planner::NumericalChange::kBf16ProductInputAndResult,
+                                  llmp::planner::NumericalChange::kBf16AttentionIntermediates};
+  llmp::planner::Canonicalize(*policy);
   kn::Addresses addresses;
   addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
     return 0x100000000ULL + std::uint64_t{ref.component} * (256ULL << 20U);

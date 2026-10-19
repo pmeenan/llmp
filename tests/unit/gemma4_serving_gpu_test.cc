@@ -344,6 +344,27 @@ class Gemma4EnvelopeServingGpu : public Gemma4ServingGpu {
       run.continuation[id] = output[id].tokens;
     }
     ASSERT_TRUE(continued) << (continued ? "" : continued.error());
+    // Unequal cache widths must retain the admitted four-owner decode.
+    // Passing continuation by silently recomposing four singleton plans is
+    // insufficient: exact selected-shape workspace admission pays its padding.
+    auto* engine = dynamic_cast<rt::EngineLlm*>(model);
+    ASSERT_NE(engine, nullptr);
+    bool joined_decode = false;
+    engine->runner().plans().ForEach([&](const auto& plan) {
+      const auto& shape = plan.key.shape;
+      if (shape.phase != llmp::planner::Phase::kDecode || shape.segments.size() != 4) return;
+      bool matching = true;
+      for (std::size_t owner = 0; owner < tokens.size(); ++owner) {
+        const auto cells = ((tokens[owner].size() + 1 + 255) / 256) * 256;
+        matching &=
+            shape.segments[owner].slot == owner && shape.segments[owner].read_cells == cells;
+      }
+      if (matching) {
+        joined_decode = true;
+        EXPECT_LE(plan.planned->program->scratch_bytes(), engine->runner().activation_bytes());
+      }
+    });
+    EXPECT_TRUE(joined_decode);
   }
 };
 

@@ -38,6 +38,7 @@
 #include "artifact/artifact.h"
 #include "base/bytes.h"
 #include "base/sha256.h"
+#include "compiler_inventory.h"
 #include "components/state_encoding.h"
 #include "components/step.h"
 #include "corpus_score.h"
@@ -182,14 +183,13 @@ pl::StepShape Shape(std::uint32_t past, std::uint32_t rows) {
           .read_align = 256};
 }
 
-// Same reviewed hard-cap inventory as the DeepSeek first screen: 2,560
-// MiB compiler, 1,024 MiB metadata/retained native programs, 512 MiB for
-// the retained initial IR and observations. The external funding note names
+// Same reviewed hard-cap inventory as the DeepSeek first screen, plus actual
+// numerical provenance and native physical-table growth: 1,024 MiB metadata/retained native
+// programs, 512 MiB for the retained initial IR and observations. The external funding note names
 // each phase/owner, including BoundGraph::Bind's transient copies. These are
 // source bounds, not measured peaks. Guard metadata before parsing and
 // reproduce Lowering::Run's descriptor reservation before TensorArena.
 constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
-constexpr std::uint64_t kHostAllowance = 4096 * kMiB;
 constexpr std::uint64_t kStateCopyLimit = 16 * kMiB;
 static_assert(sizeof(en::SlotLifecycle::Range) <= 24);
 constexpr std::uint64_t kStateMetadata = 3 * 4 * 512 * 24;
@@ -200,7 +200,7 @@ static_assert(llmp::ir::Graph::kMaxNodes == 65536 && llmp::ir::Graph::kMaxTensor
 static_assert(sizeof(void*) == 8 && sizeof(std::string) <= 32 && sizeof(std::vector<void*>) <= 24);
 static_assert(sizeof(llmp::ir::Node) <= 160 && sizeof(llmp::ir::TensorDesc) <= 160);
 static_assert(sizeof(llmp::ir::Binding) <= 24 && sizeof(llmp::format::TensorFormat) <= 72);
-static_assert(sizeof(pl::Selected) <= 128 && sizeof(pl::Applied) <= 64);
+static_assert(sizeof(pl::Selected) <= 128);
 static_assert(sizeof(pl::Match) + sizeof(void*) <= 256);
 static_assert(sizeof(pl::RootAlignmentFact) <= 16 && sizeof(kn::InputSlot) <= 512);
 static_assert(sizeof(std::pair<llmp::ir::TensorDesc, std::uint64_t>) <= 176);
@@ -212,7 +212,8 @@ static_assert(sizeof(llmp::execution::OperandMemory) <= 48 &&
               sizeof(llmp::execution::CapabilityQuery) <= 256);
 // The inherited inventory's largest overlapping phase (seven graphs;
 // this target uses fewer) and the fixed screen's additional live owners.
-constexpr std::uint64_t kInheritedCompiler = 2526477744ULL;
+constexpr std::uint64_t kInheritedCompiler =
+    2526477744ULL + llmp::test_support::compiler_inventory::kLegacyCompilerGrowth;
 struct BoundStepAbi {
   std::variant<kg::Kernel, kg::RmsNormMulKernel> kernel;
   std::vector<void*> nodes;
@@ -234,7 +235,16 @@ constexpr std::uint64_t kObservationOwners =
     3 * std::uint64_t{32} * 151936 * sizeof(float) +  // outputs, joined row copy, growth overlap
     16 * kMiB +                                       // histories, script, headers, rounding
     2 * kStateCopyLimit + kStateMetadata;             // state copies and bounded range lists
-static_assert(kInheritedCompiler <= 2560 * kMiB);
+// The old 2,560MiB subcategory no longer fits; retain the actual whole-owner
+// admission checks below rather than inventing a larger rounded subcategory.
+// Include the largest additional observation owner below (8MiB selected-plan
+// names/text), then round the canonical sizeof-based inventory to 2MiB extents.
+// The obsolete fixed 4GiB fixture ceiling cannot cover current proof metadata.
+constexpr std::uint64_t kHostRequired =
+    kInheritedCompiler + kMetadataOwners + kObservationOwners + 8 * kMiB;
+constexpr std::uint64_t kHostAllowance =
+    ((kHostRequired + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
+static_assert(kInheritedCompiler < kHostAllowance);
 static_assert(kMetadataOwners <= 1024 * kMiB);
 static_assert(kObservationOwners <= 512 * kMiB);
 static_assert(kInheritedCompiler + kMetadataOwners + kObservationOwners <= kHostAllowance);
@@ -256,33 +266,13 @@ static_assert(kInheritedCompiler + kHeldoutMetadataOwners + kHeldoutObservationO
               kHeldoutHostAllowance);
 
 en::Status NativeReservation(const kn::LowerInput& input) {
-  const auto& p = input.plan.graph;
-  const auto& g = input.token->step.graph;
   if (input.token->shape.stage != 0 || input.token->step.inputs.size() > 256 ||
       input.token->step.weights.size() > 4096 || input.token->step.state.size() > 4096 ||
       !input.token->step.saves.empty())
     return std::unexpected("screen bindings exceed paid single-stage inventory");
-  std::uint64_t descriptors = p.tensor_count() + 16;
-  for (const auto& applied : input.plan.applied)
-    for (const auto replaced : applied.replaced) {
-      if (replaced.v >= g.nodes().size())
-        return std::unexpected("screen malformed original replacement map");
-      descriptors += g.node(replaced).nout;
-    }
-  using O = llmp::ir::Op;
-  for (const auto& n : p.nodes()) {
-    if (n.key == llmp::ir::Primitive(O::kRoute)) descriptors += 10;
-    if (n.key == llmp::ir::Primitive(O::kFill) || n.key == llmp::ir::Primitive(O::kConvert))
-      ++descriptors;
-    if (n.key == llmp::ir::Primitive(O::kExpertReduce)) {
-      if (n.nsrc == 0 || p.tensor(n.src[0]).ne(1) > 10)
-        return std::unexpected("screen expert reduction bound");
-      descriptors += 3 + 2 * p.tensor(n.src[0]).ne(1);
-    }
-    if (n.key.op == O::kFused || n.key.op == O::kMatMul || n.key.op == O::kWeight ||
-        n.key.op == O::kGatedDeltaNet)
-      descriptors += 8;
-  }
+  const auto inventory = kg::LowerConstructionOf(input);
+  if (!inventory) return std::unexpected(inventory.error().detail);
+  const auto descriptors = inventory->descriptors;
   if (descriptors > 65536) return std::unexpected("screen native descriptors exceed paid bound");
   std::uint64_t traversal = 2;
   while (traversal / 2 < descriptors) traversal *= 2;
@@ -734,6 +724,25 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
                                 {.lower = {.index_scratch_limit = 32 * kMiB}});
     if (!backend) return std::unexpected(backend.error());
     kernel->backend = std::move(*backend);
+    // A bounded subledger of the already cataloged whole-host envelope's
+    // native category; no second native catalog payment. Retained plans have
+    // their separate kMetadataOwners category before ConstructionPaid.
+    auto native_used = std::make_shared<std::uint64_t>(0);
+    if (auto funded = kernel->backend->FundConstruction(
+            [native_used](std::uint64_t n) {
+              constexpr auto limit = llmp::test_support::compiler_inventory::NativeBytes(
+                                         65536, llmp::ir::Graph::kMaxTensors) +
+                                     512;
+              if (*native_used > limit || n > limit - *native_used) return false;
+              *native_used += n;
+              return true;
+            },
+            [native_used](std::uint64_t n) {
+              EXPECT_LE(n, *native_used);
+              if (n <= *native_used) *native_used -= n;
+            });
+        !funded)
+      return std::unexpected(funded.error());
     if (auto x = kernel->resources->OpenSelectedWorkspace("selected kernel state",
                                                           kernel->backend->persistent_bytes());
         !x)

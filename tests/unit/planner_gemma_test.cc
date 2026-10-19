@@ -98,7 +98,7 @@ bool NormAddWidths(const ex::CapabilityQuery& q) {
   return q.k == 2304 || q.k == 2560 || q.k == 2816 || q.k == 5376;
 }
 
-ex::Implementation Fake(std::string name, ex::Operation operation, ex::Capability capability) {
+ex::Implementation Fake(std::string name, llmp::ir::OpKey operation, ex::Capability capability) {
   return {.name = std::move(name),
           .operation = operation,
           .source = "fake",
@@ -111,55 +111,60 @@ ex::Implementation Fake(std::string name, ex::Operation operation, ex::Capabilit
 ex::Capability Any(ir::OpKey key) { return ex::Capability{.op = key}; }
 
 ex::Registry GemmaRegistry() {
-  using ex::Operation;
   using ir::FusedKind;
   using ir::Op;
   const auto prim = [](Op op) { return Any(ir::Primitive(op)); };
   std::vector<ex::Implementation> v = {
-      Fake("fake.get_rows", Operation::kGetRows, prim(Op::kGetRows)),
-      Fake("fake.scale", Operation::kScale, prim(Op::kScale)),
-      Fake("fake.rms_norm", Operation::kRmsNorm, prim(Op::kRmsNorm)),
-      Fake("fake.mul", Operation::kMul, prim(Op::kMul)),
-      Fake("fake.add", Operation::kAdd, prim(Op::kAdd)),
-      Fake("fake.rope", Operation::kRope, prim(Op::kRope)),
-      Fake("fake.set_rows", Operation::kSetRows, prim(Op::kCacheStore)),
-      Fake("fake.flash_attn", Operation::kFlashAttn, prim(Op::kAttention)),
-      Fake("fake.concat", Operation::kConcat, prim(Op::kConcat)),
-      Fake("fake.cont", Operation::kCont, prim(Op::kCont)),
-      Fake("fake.geglu", Operation::kGeGlu, prim(Op::kGlu)),
-      Fake("fake.unary", Operation::kUnary, prim(Op::kUnary)),
-      Fake("fake.argmax", Operation::kTopK, prim(Op::kArgmax)),
-      Fake("fake.mask", Operation::kFill, prim(Op::kMaskBuild)),
-      Fake("fake.q8_1", Operation::kQuantize,
+      Fake("fake.get_rows", llmp::ir::Primitive(llmp::ir::Op::kGetRows), prim(Op::kGetRows)),
+      Fake("fake.scale", llmp::ir::Primitive(llmp::ir::Op::kScale), prim(Op::kScale)),
+      Fake("fake.rms_norm", llmp::ir::Primitive(llmp::ir::Op::kRmsNorm), prim(Op::kRmsNorm)),
+      Fake("fake.mul", llmp::ir::Primitive(llmp::ir::Op::kMul), prim(Op::kMul)),
+      Fake("fake.add", llmp::ir::Primitive(llmp::ir::Op::kAdd), prim(Op::kAdd)),
+      Fake("fake.rope", llmp::ir::Primitive(llmp::ir::Op::kRope), prim(Op::kRope)),
+      Fake("fake.set_rows", llmp::ir::Primitive(llmp::ir::Op::kCacheStore), prim(Op::kCacheStore)),
+      Fake("fake.flash_attn", llmp::ir::Primitive(llmp::ir::Op::kAttention), prim(Op::kAttention)),
+      Fake("fake.concat", llmp::ir::Primitive(llmp::ir::Op::kConcat), prim(Op::kConcat)),
+      Fake("fake.cont", llmp::ir::Primitive(llmp::ir::Op::kCont), prim(Op::kCont)),
+      Fake("fake.geglu", llmp::ir::Primitive(llmp::ir::Op::kGlu), prim(Op::kGlu)),
+      Fake("fake.unary", llmp::ir::Primitive(llmp::ir::Op::kUnary), prim(Op::kUnary)),
+      Fake("fake.argmax", llmp::ir::Primitive(llmp::ir::Op::kTopK), prim(Op::kArgmax)),
+      Fake("fake.mask", llmp::ir::Primitive(llmp::ir::Op::kFill), prim(Op::kMaskBuild)),
+      Fake("fake.q8_1", llmp::ir::Primitive(llmp::ir::Op::kPrepare),
            ex::Capability{.op = ir::Primitive(Op::kPrepare), .shape = {.max_rows = 8}}),
-      Fake("fake.mul_mat.mmvq", Operation::kMatMul,
-           ex::Capability{.op = ir::Primitive(Op::kMatMul),
-                          .operands = kProductRules,
-                          .shape = {.max_rows = 8},
-                          .group = "fake.mul_mat"}),
-      Fake("fake.mul_mat.mmq", Operation::kMatMul,
+      Fake("fake.mul_mat.mmvq", llmp::ir::Primitive(llmp::ir::Op::kMatMul),
+           ex::Capability{
+               .op = ir::Primitive(Op::kMatMul),
+               .operands = kProductRules,
+               .shape = {.max_rows = 8},
+               .group = "fake.mul_mat",
+               .product_arithmetic =
+                   [](const ex::CapabilityQuery&) { return ir::ProductArithmetic::kGgmlQ8_1F32; }}),
+      Fake("fake.mul_mat.mmq", llmp::ir::Primitive(llmp::ir::Op::kMatMul),
            ex::Capability{.op = ir::Primitive(Op::kMatMul),
                           .operands = kProductRules,
                           .shape = {.min_rows = 9},
                           .group = "fake.mul_mat"}),
-      Fake("fake.mmvq.prepared", Operation::kMatMul,
-           ex::Capability{.op = ir::Primitive(Op::kMatMul),
-                          .operands = kPreparedRules,
-                          .shape = {.max_rows = 8}}),
-      Fake("fake.rms_norm_mul.fused", Operation::kRmsNormMul,
+      Fake("fake.mmvq.prepared", llmp::ir::Primitive(llmp::ir::Op::kMatMul),
+           ex::Capability{
+               .op = ir::Primitive(Op::kMatMul),
+               .operands = kPreparedRules,
+               .shape = {.max_rows = 8},
+               .product_arithmetic =
+                   [](const ex::CapabilityQuery&) { return ir::ProductArithmetic::kGgmlQ8_1F32; }}),
+      Fake("fake.rms_norm_mul.fused", llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul),
            Any(ir::Fused(FusedKind::kRmsNormMul))),
-      Fake("fake.rms_norm_mul_rope.fused", Operation::kRmsNormMulRope,
+      Fake("fake.rms_norm_mul_rope.fused", llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMulRope),
            ex::Capability{.op = ir::Fused(FusedKind::kRmsNormMulRope), .accepts = &NormRopeWidths}),
-      Fake("fake.rms_norm_mul_add.fused", Operation::kRmsNormMulAdd,
+      Fake("fake.rms_norm_mul_add.fused", llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMulAdd),
            ex::Capability{.op = ir::Fused(FusedKind::kRmsNormMulAdd), .accepts = &NormAddWidths}),
-      Fake("fake.mul_mat_geglu.mmvq_fused", Operation::kMulMatGeGlu,
+      Fake("fake.mul_mat_geglu.mmvq_fused", llmp::ir::Fused(llmp::ir::FusedKind::kMatMulGlu),
            ex::Capability{.op = ir::Fused(FusedKind::kMatMulGlu),
                           .operands = kGluRules,
                           .shape = {.max_rows = 1}}),
-      Fake("fake.set_rows.grouped", Operation::kSetRows,
+      Fake("fake.set_rows.grouped", llmp::ir::Primitive(llmp::ir::Op::kCacheStore),
            ex::Capability{
                .op = ir::Fused(FusedKind::kGroupedStores), .operands = kStoreRules, .batch = 16}),
-      Fake("fake.rope_set_rows.fused", Operation::kRopeSetRows,
+      Fake("fake.rope_set_rows.fused", llmp::ir::Fused(llmp::ir::FusedKind::kRopeStore),
            Any(ir::Fused(FusedKind::kRopeStore))),
   };
   return std::move(ex::Registry::Create(std::move(v)).value());
@@ -179,6 +184,8 @@ Policy PolicyOf(std::string_view text, bool shared_q8) {
   Policy p = ParsePolicy(text).value();
   if (!shared_q8) {
     p.disabled.emplace_back("prepared_inputs");
+    p.disabled.emplace_back("vecq_inputs");
+    p.disabled.emplace_back("vecq_glu");
     Canonicalize(p);
   }
   return p;
@@ -481,10 +488,17 @@ void ExpectFamilyPlans(std::string_view policy_text) {
         ASSERT_TRUE(p.plan.has_value());
         EXPECT_GT(CountApplied(*p.plan, "rms_norm_mul"), 0U);
         EXPECT_GT(CountApplied(*p.plan, "rms_norm_mul_add"), 0U);
-        // Gemma 3's recipe alone fuses the norm and the rotation and
-        // groups the KV stores.
-        EXPECT_EQ(CountApplied(*p.plan, "rms_norm_mul_rope") > 0, F::kGemma3);
-        EXPECT_EQ(CountApplied(*p.plan, "grouped_stores") > 0, F::kGemma3);
+        // Gemma3 normalizes Q/K before rotation. Gemma2 has no Q/K
+        // normalization, so its rotations cannot match either norm fusion.
+        const auto norm_rope =
+            CountApplied(*p.plan, "rms_norm_mul_rope") + CountApplied(*p.plan, "qsa_prep");
+        if constexpr (F::kGemma3) {
+          EXPECT_GT(norm_rope, 0U);
+        } else {
+          EXPECT_EQ(norm_rope, 0U);
+        }
+        EXPECT_GT(CountApplied(*p.plan, "grouped_stores") + CountApplied(*p.plan, "rope_store"),
+                  0U);
         // A decode row's quantized products fuse as the GeGLU; a prompt
         // chunk's do not.
         glu += CountApplied(*p.plan, "mul_mat_glu");
@@ -496,8 +510,11 @@ void ExpectFamilyPlans(std::string_view policy_text) {
         const Planned p = PlanIr(ir, c, state, PolicyOf(policy_text, true));
         ASSERT_TRUE(p.plan.has_value());
         const auto groups = IrShared(*p.step, *p.plan, F::Resources());
-        for (const auto& g : groups) EXPECT_GT(g.size(), 1U);
-        shared += groups.size();
+        // Default vector preparation also handles single recipients. Retain
+        // the shared-Q8 control by counting only actual multi-product groups.
+        for (const auto& g : groups) EXPECT_FALSE(g.empty());
+        shared += static_cast<std::size_t>(
+            std::ranges::count_if(groups, [](const auto& g) { return g.size() > 1; }));
         ASSERT_GT(p.plan->placement.extent, 0U);
         ExpectPlacedDisjoint(*p.plan);
         if (::testing::Test::HasFatalFailure()) return;
@@ -525,12 +542,12 @@ TEST(PlannerGemmaTest, TheRecipesArePolicies) {
   EXPECT_EQ(ToText(g3), kGemma3Policy);
   EXPECT_FALSE(Disabled(g2, "owner_attention"));
   EXPECT_FALSE(Disabled(g3, "owner_attention"));
-  EXPECT_TRUE(Disabled(g2, "rms_norm_mul_rope"));
+  EXPECT_FALSE(Disabled(g2, "rms_norm_mul_rope"));
   EXPECT_FALSE(Disabled(g3, "rms_norm_mul_rope"));
-  EXPECT_TRUE(Disabled(g2, "grouped_stores"));
+  EXPECT_FALSE(Disabled(g2, "grouped_stores"));
   EXPECT_FALSE(Disabled(g3, "grouped_stores"));
-  EXPECT_NE(PatternsDigest(g2), PatternsDigest(g3));
-  EXPECT_NE(Digest(g2), Digest(g3));
+  EXPECT_EQ(PatternsDigest(g2), PatternsDigest(g3));
+  EXPECT_EQ(Digest(g2), Digest(g3));
 }
 
 }  // namespace

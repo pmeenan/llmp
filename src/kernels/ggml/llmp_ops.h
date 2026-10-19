@@ -146,6 +146,7 @@ enum class LlmpOp : std::uint8_t {
   kVisibleTopK,
   kSelectedMask,
   kPrefixOverwrite,
+  kSelect,
   kRoundedIndexScore,
   kSpatialChannelNorm,
   kNormRopeSections,
@@ -173,6 +174,12 @@ std::expected<void, KernelFailure> RunRoundedIndexScore(LaunchContext& launch, g
 
 // Exact bit-copy within a clamped row prefix, literal fill outside it.
 // Arbitrary whole-element input/count strides; fresh packed disjoint output.
+// I32 nonzero predicate; exact byte-copy branches, false/predicate broadcast.
+ggml_tensor* Select(ggml_context* context, ggml_tensor* condition, ggml_tensor* yes,
+                    ggml_tensor* no);
+std::expected<void, KernelFailure> CheckSelect(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunSelect(LaunchContext& launch, ggml_tensor* node);
+
 ggml_tensor* PrefixOverwrite(ggml_context* context, ggml_tensor* values, ggml_tensor* counts,
                              std::uint32_t fill_bits);
 std::expected<void, KernelFailure> CheckPrefixOverwrite(const ggml_tensor* node);

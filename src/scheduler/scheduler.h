@@ -559,6 +559,12 @@ class Scheduler {
   // Cancels the request's task tree, or trees if its tag was started again
   // while an earlier start drained; false if no such request is live.
   bool Cancel(std::uint64_t request);
+  // Authenticated completed-boundary replacement. Materialization is a
+  // separate operation while the old lease stays held. No task/lease identity
+  // changes, and cancellation, outstanding or unproven work refuses mutation.
+  std::expected<void, WorkError> ReplaceRequestLease(std::uint64_t request, catalog::LeaseId held,
+                                                     const catalog::Closure& closure);
+
   // The scheduler thread, or before it runs (a task's step may call these).
   // Where a nonresident extent's contents are read from, directly into its
   // backing, which stays mapped: the PageSource below with neither a zone
@@ -1055,6 +1061,14 @@ class TaskContext {
   // caller.
   std::expected<OperationId, WorkError> SubmitLaunch(catalog::LeaseId held, LaunchWork&& work) {
     return Launch(nullptr, held, std::move(work));
+  }
+  // Canonical no-further-access proof for this task's still-held lease.
+  // A missing/foreign lease proves nothing. Quarantined operations and
+  // external direct work remain in the existing drained accounting.
+  bool LeaseWorkRetired(catalog::LeaseId held) const {
+    const auto found = scheduler_.held_.find(held);
+    return found != scheduler_.held_.end() && found->second.task == task_ &&
+           found->second.Drained();
   }
   std::expected<OperationId, WorkError> SubmitDevice(catalog::LeaseId held,
                                                      const DeviceWork& work) {

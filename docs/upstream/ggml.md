@@ -56,6 +56,34 @@ products retain their separate MMVQ/MMQ routes. No upstream change is proposed.
   retains the historical oracle identities and adds the current-pin Llama 3.2
   metadata-only source and BOS controls. Synthetic HF tests exercise shared
   regex/postprocessor semantics without claiming an official HF Llama asset.
+## Prepared ordinary MMVQ dependency overlap
+
+- **Pin:** `d81235049384534c167caea52b85a694f6103d14`,
+  `ggml/src/ggml-cuda/mmvq.cu` and `mmvq.cuh`; local patch0009.
+- **Observed:** matching full-cohort Gemma3 C2 decode traces have 796 kernels
+  per wave and unchanged owner attention. In 30 matching interior waves,
+  median GPU span grows 14.801 to 15.328 ms while median inter-wave host gap
+  stays 0.689 ms. Ordinary prepared MMVQ replaces VecQ products, losing
+  programmatic dependency overlap despite similar summed kernel time.
+  Traced durations diagnose the cause; they are not speed-gate samples.
+- **Local repair:** the original prepared entry point accepts explicit
+  immutable-weight metadata, default false for other callers. Its native
+  caller proves dense immutable weights, bounded rows, and disjoint writable
+  inputs/output; execution leases retain those weights through completion.
+  Only these weights may be prefetched before the existing dependency wait.
+  Activations, routing IDs, biases and scales remain after that wait. A
+  launch-completion signal after the original dot loop allows the next
+  dependent kernel's independent prologue to overlap the reduction/write
+  tail. Arithmetic, reduction order, block geometry and quantization remain
+  unchanged. Existing CUDA/PTX gates disable these primitives on pre-Hopper
+  images, including the discrete sm86 target.
+- **Controls:** the ordinary prepared-MMVQ test retains nine source formats
+  and rows 1 through 8, exact independent ordinary results, changed-input graph
+  replay, guards and immutable descriptor refusal. Dependent consumers also
+  check that the launch signal cannot expose unfinished product output.
+  Native build, actual GPU controls and matched speed remain required before
+  adoption; no new quality qualification or performance result is claimed.
+
 ## Gemma query scale lost during HF-to-GGUF conversion
 
 - **Status:** open; inspected at the pinned release, not reported upstream.

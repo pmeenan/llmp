@@ -147,14 +147,6 @@ model::StateContract State(const Instance& in) {
                   Fixed("recurrent", model::StateKind::kRecurrent, d.d * d.d * d.hv * 4)}};
 }
 
-constexpr std::array kBatchClasses{
-    BatchClass{.op = ir::Op::kMatMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kSsmConv, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kGatedDeltaNet, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kCacheStore, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kRmsNorm, .batch = ir::Batch::kJoined},
-};
-
 // By heads: the value heads' rows of every product with their key heads
 // (whole key-head groups), the output product by its columns, the
 // recurrent state by its value heads; the partial sums reduce after the
@@ -162,9 +154,6 @@ constexpr std::array kBatchClasses{
 // split by contiguous rows, so no split is declared until a component
 // takes its channels apart (the partitioner then runs it whole).
 constexpr std::array<SplitOption, 0> kSplits{};
-
-constexpr std::array<std::string_view, 5> kPatterns{"gdn_conv", "gdn_gates", "gdn_step",
-                                                    "gdn_norm_gate", "prepared_inputs"};
 
 std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   ir::Builder& b = f.b;
@@ -444,9 +433,9 @@ const ComponentDef& AttentionGdn() {
       .shapes = Shapes,
       .state = State,
       .max_state_tensors = 2,
-      .batch_classes = kBatchClasses,
+
       .splits = kSplits,
-      .patterns = kPatterns,
+
       .emit = Emit,
       .reference = Reference,
       .commit = Commit,

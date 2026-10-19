@@ -26,9 +26,7 @@
 // operation it computes, the operand encodings and layouts, devices and
 // shapes it takes, and its rung on the format ladder. Candidates() lists
 // those that compute a node, measured speed first and the ladder's order
-// after, for a planner to choose from; the plan still names the one chosen. Operation stays as
-// the per-family runners' vocabulary until the last of them is deleted,
-// each an alias of its IR key (OpKeyOf).
+// after, for a planner to choose from; the plan names one typed IR operation.
 
 #ifndef LLMP_EXECUTION_REGISTRY_H_
 #define LLMP_EXECUTION_REGISTRY_H_
@@ -63,86 +61,6 @@ struct BackendDeclaration {
   base::Sha256Digest selection{};
   bool operator==(const BackendDeclaration&) const = default;
 };
-
-enum class Operation : std::uint8_t {
-  kRmsNorm,     // rows scaled to unit root mean square
-  kRmsNormMul,  // the same, then scaled by a weight
-  kAdd,
-  kMul,
-  kMatMul,
-  kGetRows,           // rows gathered by index
-  kSetRows,           // rows stored at indices: the KV write
-  kRope,              // rotary position embedding
-  kRopeSetRows,       // RoPE, then its rows stored at indices
-  kSoftMax,           // masked, scaled soft_max over rows
-  kCont,              // a copy into packed layout
-  kSwiGlu,            // silu(gate) * up
-  kMulMatAdd,         // a matrix product plus a bias (or residual) of its shape
-  kMulMatGlu,         // gate and up products of one input, then SwiGLU
-  kQuantLinear,       // a product with quantized weights and their transforms
-  kQuantMultiLinear,  // several such products of one input
-  kConvert,           // an element-type conversion of a dense tensor (a cast)
-  kFlashAttn,         // masked, scaled attention over a K/V cache, never materializing scores
-  kBiasAdd,           // a bias broadcast over rows, added in the operands' own type
-  // DeepSeek V4 Flash's and Qwen3.8 Flash's operations (M3).
-  kMulMatId,  // each token's rows times its selected experts' weights
-  kSub,
-  kDiv,
-  kScale,  // x * s + b
-  kUnary,  // an elementwise function of one tensor, named by the node
-  kClamp,
-  kFill,    // every element set to one value
-  kRepeat,  // a tensor tiled to a larger shape
-  kConcat,
-  kSumRows,
-  kArgsort,
-  kTopK,              // the indices of each row's k largest values
-  kSwiGluClamp,       // silu(min(gate, limit)) * clamp(up, -limit, limit)
-  kSsmConv,           // a depthwise causal convolution over tokens
-  kGatedDeltaNet,     // the gated delta rule's recurrence over tokens
-  kLightningIndexer,  // DeepSeek V4's sparse-attention cell scores
-  kHcComb,            // DeepSeek V4's hyper-connection mixing matrices
-  kHcPre,             // hyper-connection streams folded into one
-  kHcPost,            // one output spread back over the streams
-  // Qwen3.8 Flash's fused hyper-connection and MoE-output work (M3).
-  kHcCombine,   // a block's output added to each stream, gated per stream
-  kHcNorm,      // each stream's rows scaled to unit RMS, times a weight
-  kHcMix,       // gated streams folded into one
-  kMoeGlu,      // the experts' scales, then SwiGLU
-  kMoeCombine,  // the experts' weighted sum plus the gated shared expert
-  kMoeRoute,    // routed rows sorted by expert
-  kQuantize,    // activations into a quantized format
-  kNormGate,    // rows scaled to unit RMS, times a weight and a sigmoid gate
-  // The image pipeline's spatial operations (M3).
-  kConv2d,    // a 2-D convolution plus a bias
-  kUpsample,  // nearest 2x upsampling
-  kDupUpAdd,  // a shortcut's channels spread over 2x2 pixels, added
-  // Gemma 4 primitives (M3.5), preserving existing operation identities.
-  kGeGlu,              // GELU-tanh(gate) * up
-  kMulMatGeGlu,        // gate and up products of one input, then GELU-tanh GLU
-  kRmsNormMulRope,     // learned RMS normalization, then rotation
-  kRmsNormMulAdd,      // learned RMS normalization, then residual addition
-  kGemmaRoute,         // softmax, top-eight IDs and normalized routing weights
-  kGemmaScaledReduce,  // eight scaled/weighted experts summed in selected order
-  kL2Norm,             // x / max(sqrt(sum(x*x)), eps), distinct from RMS normalization
-  kLayerNorm,          // centered rows divided by sqrt(variance + eps)
-  // Shared image component kernels (M3.6).
-  kSpatialChannelNorm,          // each pixel's channels L2-normed, scaled, times a weight (+SiLU)
-  kRmsNormMulRopeSections,      // a head's RMS norm times a weight, then 1-3 rotated sections
-  kAttentionMaskPack,           // an attention mask in F16, padded
-  kRopeTable,                   // a rotation's cos and sin per row and pair
-  kQkAttention,                 // attention of RMS-normed, rotated queries over packed rows
-  kLayerNormModulateSplit,      // a layer norm times 1 + one of two rows' conditioning vectors
-  kGatedResidualSplit,          // carry + branch times tanh of one of two rows' gate vectors
-  kGatedResidualModulateSplit,  // the two above, the residual's sum modulated
-};
-
-std::string_view OperationName(Operation operation);
-
-// The operation's key in the IR's op set (ir/op.h). The operations stay
-// while the per-family runners do, each an alias of its key; several may
-// share one, their variants told apart by the node's parameters.
-ir::OpKey OpKeyOf(Operation operation);
 
 // ---------------------------------------------------------------- capabilities
 
@@ -257,6 +175,10 @@ struct Capability {
   // The declared rung is its conservative default; concrete operand facts
   // choose the actual path without adding implementation aliases.
   Rung (*rung_for)(const CapabilityQuery&) = nullptr;
+  // Actual conversion/accumulation recipe, including a group's resolved path.
+  // Absent or unspecified facts cannot justify input-preparation sharing.
+  // The module's variant identifies the concrete numerical definition.
+  ir::ProductArithmetic (*product_arithmetic)(const CapabilityQuery&) = nullptr;
 };
 
 // An output's format in a capability query: the operand at this index
@@ -303,6 +225,9 @@ struct SelectionPolicy {
   // routing) takes, where the policy bounds them below their kernels' own
   // limits (planner/policy.h vector_rows); zero: no such bound.
   std::uint64_t vector_rows = 0;
+  // Known generic planner options, when a planner supplied a policy. Absent
+  // means a direct typed query; it does not invent or replace a policy.
+  std::optional<std::span<const std::string_view>> options{};
 };
 
 // A measured order among implementations (lower first), where one exists;
@@ -369,7 +294,7 @@ struct Implementation {
   // Unique in a build and the same across builds, such as
   // "ggml.rms_norm_mul.fused": lower-case letters, digits, '.' and '_'.
   std::string name;
-  Operation operation = Operation::kRmsNorm;
+  llmp::ir::OpKey operation = llmp::ir::Primitive(llmp::ir::Op::kRmsNorm);
   // The kernel source, such as "ggml".
   std::string source;
   // The source's exact bytes, such as its prepared tree's digest (D-057).
@@ -443,7 +368,7 @@ class Registry {
 
 // A planner's choice for one operation.
 struct Choice {
-  Operation operation = Operation::kRmsNorm;
+  llmp::ir::OpKey operation = llmp::ir::Primitive(llmp::ir::Op::kRmsNorm);
   std::string implementation;
 };
 
@@ -454,7 +379,7 @@ class Plan {
   static constexpr std::size_t kMaxOperations = std::size_t{1} << 16;
 
   struct Step {
-    Operation operation = Operation::kRmsNorm;
+    llmp::ir::OpKey operation = llmp::ir::Primitive(llmp::ir::Op::kRmsNorm);
     std::string implementation;
     base::Sha256Digest identity{};
   };
@@ -507,6 +432,9 @@ std::expected<BoundPlan, PlanRejection> Resolve(const Registry& registry, const 
 // the crossover between on-chip decode and a transient expansion, a BF16
 // decode that measures faster); then by the ladder's rung, priority
 // (higher first) and name, the static order until something is measured.
+// Whether this exact selected numerical query expands into transient storage;
+// the same rule used by decode admission, including conditional expansion.
+bool Expands(const Capability& capability, const CapabilityQuery& query);
 std::vector<std::size_t> Candidates(const Registry& registry, const CapabilityQuery& query);
 
 }  // namespace llmp::execution

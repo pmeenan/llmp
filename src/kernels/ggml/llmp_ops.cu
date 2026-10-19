@@ -28,6 +28,32 @@
 namespace llmp::kernels::ggml {
 namespace {
 
+struct SelectView {
+  const unsigned char* data;
+  std::uint64_t ne[4], nb[4];
+};
+__device__ std::uint64_t SelectOffset(const SelectView& view, const std::uint64_t ix[4]) {
+  std::uint64_t offset = 0;
+  for (unsigned axis = 0; axis < 4; ++axis) offset += (ix[axis] % view.ne[axis]) * view.nb[axis];
+  return offset;
+}
+__global__ void SelectKernel(SelectView condition, SelectView yes, SelectView no,
+                             unsigned char* out, std::int64_t elements, unsigned unit) {
+  const std::int64_t i = std::int64_t{blockIdx.x} * blockDim.x + threadIdx.x;
+  if (i >= elements) return;
+  auto remaining = static_cast<std::uint64_t>(i);
+  std::uint64_t ix[4];
+  for (unsigned axis = 0; axis < 4; ++axis) {
+    ix[axis] = remaining % yes.ne[axis];
+    remaining /= yes.ne[axis];
+  }
+  const bool choose =
+      *reinterpret_cast<const std::int32_t*>(condition.data + SelectOffset(condition, ix)) != 0;
+  const auto& selected = choose ? yes : no;
+  const auto* source = selected.data + SelectOffset(selected, ix);
+  for (unsigned byte = 0; byte < unit; ++byte) out[i * unit + byte] = source[byte];
+}
+
 // Integer loads and stores preserve every F32 bit, including signaling NaNs.
 // Every output has one writer; repeated source views need no special case.
 __global__ void PrefixOverwriteKernel(const std::uint32_t* values, const std::int32_t* counts,
@@ -947,6 +973,27 @@ std::expected<void, KernelFailure> RunMxfp8Gemm(LaunchContext& launch, ggml_tens
         .detail = std::format("CUTLASS refused the MXFP8 product (status {})", status - 1)});
   }
   return {};
+}
+
+std::expected<void, KernelFailure> RunSelect(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckSelect(node); !checked) return checked;
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const auto view = [](const ggml_tensor* t) {
+      SelectView out{};
+      out.data = static_cast<const unsigned char*>(t->data);
+      for (unsigned axis = 0; axis < 4; ++axis) {
+        out.ne[axis] = static_cast<std::uint64_t>(t->ne[axis]);
+        out.nb[axis] = t->nb[axis];
+      }
+      return out;
+    };
+    const auto elements = ggml_nelements(node);
+    constexpr unsigned threads = 256;
+    SelectKernel<<<static_cast<unsigned>((elements + threads - 1) / threads), threads, 0,
+                   context.stream()>>>(view(node->src[0]), view(node->src[1]), view(node->src[2]),
+                                       static_cast<unsigned char*>(node->data), elements,
+                                       static_cast<unsigned>(ggml_type_size(node->type)));
+  });
 }
 
 std::expected<void, KernelFailure> RunPrefixOverwrite(LaunchContext& launch, ggml_tensor* node) {

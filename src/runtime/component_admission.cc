@@ -16,12 +16,17 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "artifact/gguf_metadata.h"
+#include "base/json_stream.h"
 #include "base/sha256.h"
 #include "components/step.h"
+#include "kernels/common/lower.h"
+#include "kernels/common/step_program.h"
+#include "planner/select.h"
 #include "platform/direct_io.h"
 #include "runtime/approvals.h"
 #include "runtime/component_admission_internal.h"
@@ -766,6 +771,282 @@ std::expected<ImageAdmission, std::string> ReadImageAdmission(
                         .approval = approval,
                         .family = std::move(*family),
                         .profile = std::move(*profile)};
+}
+
+namespace {
+std::expected<base::Sha256Digest, std::string> NumericalDigest(std::string_view hex) {
+  base::Sha256Digest digest{};
+  if (hex.size() != digest.size() * 2) return Refused("numerical evidence has no SHA-256 identity");
+  for (std::size_t i = 0; i < digest.size(); ++i) {
+    const auto digit = [](char c) -> int {
+      return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+    };
+    const auto high = digit(hex[2 * i]), low = digit(hex[2 * i + 1]);
+    if (high < 0 || low < 0) return Refused("numerical evidence identity is not canonical SHA-256");
+    digest[i] = static_cast<std::uint8_t>(high * 16 + low);
+  }
+  return digest;
+}
+base::Sha256Digest NumericalSourceIdentity(std::span<const SourceReceipt> expected,
+                                           std::span<const artifact::Source> actual) {
+  base::Sha256 hash;
+  hash.Update("llmp.numerical.source-receipts.v1\n");
+  // The verified declaration's order canonicalizes the actual receipt set.
+  const base::json::FragmentSink sink = [&](std::string_view text) { hash.Update(text); };
+  const base::json::Stream out(sink);
+  for (const auto& want : expected) {
+    const auto source = std::ranges::find(actual, want.name, &artifact::Source::name);
+    if (source == actual.end()) return {};
+    out.Quoted(source->name);
+    out.Number(source->bytes.value());
+    hash.Update(std::as_bytes(std::span(source->sha256)));
+  }
+  return hash.Finish();
+}
+struct NumericalPayment {
+  std::shared_ptr<const kernels::ConstructionFunder> funder;
+  std::uint64_t bytes = 0;
+  ~NumericalPayment() {
+    if (funder) funder->release(bytes);
+  }
+};
+// Count/fill the identical deterministic projection before constructing any
+// retained fact vector. Temporary admission/spec inventories use the existing
+// compiler/parser allowance; this owns only the new immutable output.
+template <class Emit>
+std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string> ProjectNumerics(
+    const base::Sha256Digest& source, const base::Sha256Digest& semantic,
+    const std::shared_ptr<const kernels::ConstructionFunder>& funder, const Emit& emit) {
+  std::uint64_t count = 0;
+  bool overflow = false;
+  auto counted = emit([&](const planner::NumericalQualification&) {
+    if (count == UINT64_MAX)
+      overflow = true;
+    else
+      ++count;
+  });
+  if (!counted) return std::unexpected(counted.error());
+  if (count == 0) return std::shared_ptr<const planner::NumericalQualifications>{};
+  if (overflow || count > std::numeric_limits<std::size_t>::max())
+    return Refused("numerical qualification count overflows");
+  auto storage = planner::NumericalQualificationBytes(static_cast<std::size_t>(count));
+  if (!storage || *storage > UINT64_MAX - sizeof(NumericalPayment) - 64)
+    return Refused("numerical qualification payment overflows");
+  const auto bytes = *storage + sizeof(NumericalPayment) + 64;
+  if (!funder || !funder->charge || !funder->release || !funder->charge(bytes))
+    return Refused("numerical qualifications are not prepaid");
+  auto payment = std::make_shared<NumericalPayment>();
+  payment->funder = funder;
+  payment->bytes = bytes;
+  std::vector<planner::NumericalQualification> entries;
+  entries.reserve(static_cast<std::size_t>(count));
+  auto filled =
+      emit([&](const planner::NumericalQualification& entry) { entries.push_back(entry); });
+  if (!filled) return std::unexpected(filled.error());
+  if (entries.size() != count) return Refused("numerical qualification projection changed");
+  // Equivalent primitive sites may produce the same semantic grant. Keep
+  // one lookup record; the paid vector capacity remains the exact pre-counted
+  // construction inventory, including that deterministic temporary excess.
+  std::ranges::sort(entries, {}, [](const auto& e) {
+    return std::tuple(e.change, e.stage, e.component, e.anchor, e.min_rows, e.max_rows, e.max_k,
+                      e.max_n, e.weight_role);
+  });
+  entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+  return planner::NumericalQualifications::Bind(std::move(entries), source, semantic,
+                                                std::move(payment));
+}
+}  // namespace
+
+std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
+AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
+                 std::span<const artifact::Source> origins, const Approval* approval,
+                 const base::Sha256Digest& admitted_semantic, const spec::Envelope& envelope,
+                 std::uint16_t active_stage,
+                 std::shared_ptr<const kernels::ConstructionFunder> funder) {
+  if (!approval || approval->numerical.empty())
+    return std::shared_ptr<const planner::NumericalQualifications>{};
+  if (!OriginsWellFormed(origins) || !SourcesMatch(approval->sources, origins) ||
+      !SourceMatches(source, *approval) || model.stages.empty())
+    return Refused("numerical source facts differ from the active admitted source");
+  if (auto inventory = internal::CheckInventory(source, *approval); !inventory)
+    return std::unexpected(inventory.error());
+  const auto& semantic = admitted_semantic;
+  if (base::ToHex(semantic) != approval->spec)
+    return Refused("numerical semantic facts differ from the admitted spec");
+  // A target is bound before composition; a drafter's approval pins its
+  // composed spec. Its actual stage ordinal is retained in every grant.
+  const std::size_t stage = model.stages.size() == 1 ? 0 : active_stage;
+  if (stage >= model.stages.size()) return Refused("numerical stage is absent from the spec");
+  auto instances = components::InstancesOf(model, stage);
+  if (!instances) return std::unexpected(instances.error());
+  const auto identity = NumericalSourceIdentity(approval->sources, origins);
+  const auto visit = [&](const auto& callback) {
+    const auto optional = [&](const auto& instance) {
+      if (instance) callback(*instance);
+    };
+    optional(instances->embedding);
+    for (const auto& instance : instances->side) callback(instance);
+    optional(instances->mixing);
+    for (const auto& layer : instances->layers)
+      for (const auto& instance : layer) callback(instance);
+    optional(instances->final_norm);
+    optional(instances->output);
+  };
+  return ProjectNumerics(
+      identity, semantic, funder, [&](const auto& record) -> std::expected<void, std::string> {
+        for (const auto& domain : approval->numerical) {
+          if (!envelope.context || !envelope.slots || envelope.context > domain.max_context ||
+              envelope.slots > domain.max_slots)
+            continue;
+          auto evidence = NumericalDigest(domain.evidence);
+          if (!evidence) return std::unexpected(evidence.error());
+          bool missing_weight = false;
+          visit([&](const components::Instance& instance) {
+            if (!domain.component_kind.empty() && instance.ref->kind != domain.component_kind)
+              return;
+            // Exact role geometry replaces a max-dimension box. A source/spec
+            // binding plus the complete semantic matcher authenticates the
+            // arithmetic site; equal-size unrelated roles are not authorized.
+            std::uint64_t rows = domain.max_rows;
+            if (domain.rows.empty()) {
+              if (__builtin_mul_overflow(rows, std::uint64_t{envelope.slots}, &rows) ||
+                  (domain.stream_rows &&
+                   __builtin_mul_overflow(rows, std::uint64_t{instance.stage.streams}, &rows))) {
+                missing_weight = true;
+                return;
+              }
+              if (!domain.row_parameter.empty() &&
+                  __builtin_mul_overflow(
+                      rows, static_cast<std::uint64_t>(instance.params.Int(domain.row_parameter)),
+                      &rows)) {
+                missing_weight = true;
+                return;
+              }
+            }
+            const auto emit = [&](ir::OpKey anchor, std::uint64_t k, std::uint64_t n,
+                                  std::uint16_t role) {
+              const auto at_rows = [&](std::uint64_t low, std::uint64_t high) {
+                record(planner::NumericalQualification{.change = domain.change,
+                                                       .evidence = *evidence,
+                                                       .source = identity,
+                                                       .semantic = semantic,
+                                                       .stage = active_stage,
+                                                       .component = instance.index,
+                                                       .anchor = anchor,
+                                                       .arch = domain.arch,
+                                                       .min_rows = low,
+                                                       .max_rows = high,
+                                                       .max_k = k,
+                                                       .max_n = n,
+                                                       .exact_dimensions = true,
+                                                       .incumbent_recipe = domain.incumbent_recipe,
+                                                       .weight_role = role});
+              };
+              if (domain.rows.empty())
+                at_rows(1, rows);
+              else
+                for (const auto row : domain.rows) at_rows(row, row);
+            };
+            for (const auto& weight : instance.ref->weights) {
+              // A different artifact's shared role needs that artifact's own
+              // authenticated grant. No guessed stream-width substitute.
+              if (!weight.stage.empty()) continue;
+              const auto tensor =
+                  std::ranges::find(source.tensors, weight.tensor, &spec::SourceTensor::name);
+              if (tensor == source.tensors.end()) {
+                missing_weight = true;
+                return;
+              }
+              const auto role = std::ranges::find(instance.def->roles, weight.role,
+                                                  &components::WeightRole::name);
+              if (role == instance.def->roles.end()) {
+                missing_weight = true;
+                return;
+              }
+              const auto ordinal = static_cast<std::uint16_t>(role - instance.def->roles.begin());
+              const auto& shape = tensor->format.shape;
+              for (const auto anchor : domain.anchors) {
+                if (anchor == ir::Primitive(ir::Op::kRmsNorm)) {
+                  if (shape.rank == 1 && role->name == "norm")
+                    emit(anchor,
+                         domain.stream_rows ? shape.ne[0] / instance.stage.streams : shape.ne[0], 0,
+                         UINT16_MAX);
+                } else if (anchor == ir::Primitive(ir::Op::kExpertReduce)) {
+                  if (shape.rank >= 2 && role->name == "down_experts")
+                    emit(anchor, shape.ne[1], 0, ordinal);
+                } else if (shape.rank >= 2) {
+                  if (anchor == ir::Primitive(ir::Op::kGlu))
+                    emit(anchor, shape.ne[1] / tensor->format.stacked, 0, ordinal);
+                  else
+                    emit(anchor, shape.ne[0], shape.ne[1], ordinal);
+                }
+              }
+            }
+          });
+          if (missing_weight)
+            return Refused("numerical component binding or derived row bound is invalid");
+        }
+        return {};
+      });
+}
+
+std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
+AdmittedImageNumerics(const spec::ModelSpec& family, const ImageApproval* approval,
+                      const artifact::Composition& composition, const ir::Graph& graph,
+                      std::uint16_t stage, std::uint32_t width, std::uint32_t height,
+                      std::uint32_t prompt_rows,
+                      std::shared_ptr<const kernels::ConstructionFunder> funder) {
+  if (!approval || approval->numerical.empty() || width != approval->numerical_width ||
+      height != approval->numerical_height || prompt_rows != approval->numerical_prompt_rows)
+    return std::shared_ptr<const planner::NumericalQualifications>{};
+  if (!OriginsWellFormed(composition.sources()) ||
+      !SourcesMatch(approval->sources, composition.sources()) ||
+      base::ToHex(family.Digest()) != approval->spec)
+    return Refused("image numerical evidence differs from the active family/source identity");
+  const auto identity = NumericalSourceIdentity(approval->sources, composition.sources());
+  const auto semantic = family.Digest();
+  return ProjectNumerics(
+      identity, semantic, funder, [&](const auto& record) -> std::expected<void, std::string> {
+        for (const auto& domain : approval->numerical) {
+          auto evidence = NumericalDigest(domain.evidence);
+          if (!evidence) return std::unexpected(evidence.error());
+          for (const auto& node : graph.nodes()) {
+            if (node.key.op == ir::Op::kInput || node.key.op == ir::Op::kWeight ||
+                node.key.op == ir::Op::kState)
+              continue;
+            std::array<const ir::TensorDesc*, ir::kMaxSources> sources{};
+            std::array<const ir::TensorDesc*, ir::kMaxOutputs> outputs{};
+            for (std::size_t i = 0; i < node.nsrc; ++i)
+              sources[i] = node.src[i].valid() ? &graph.tensor(node.src[i]) : nullptr;
+            for (std::size_t i = 0; i < node.nout; ++i) outputs[i] = &graph.tensor(node.out[i]);
+            const auto shape = planner::ShapeOfNode(node.key, std::span(sources).first(node.nsrc),
+                                                    std::span(outputs).first(node.nout));
+            for (const auto anchor : domain.anchors) {
+              // The residual/modulation composite is introduced by the preceding
+              // structural round. Its primitive mul has the same row/width query.
+              if (anchor != node.key &&
+                  !(anchor == ir::Fused(ir::FusedKind::kLayerNormModulateSplit) &&
+                    node.key == ir::Primitive(ir::Op::kMul)))
+                continue;
+              record(planner::NumericalQualification{.change = domain.change,
+                                                     .evidence = *evidence,
+                                                     .source = identity,
+                                                     .semantic = semantic,
+                                                     .stage = stage,
+                                                     .component = node.component,
+                                                     .anchor = anchor,
+                                                     .arch = domain.arch,
+                                                     .min_rows = shape.rows,
+                                                     .max_rows = shape.rows,
+                                                     .max_k = shape.k,
+                                                     .max_n = shape.n,
+                                                     .exact_shape = true,
+                                                     .incumbent_recipe = domain.incumbent_recipe});
+            }
+          }
+        }
+        return {};
+      });
 }
 
 std::expected<const spec::PolicyRule*, std::string> ApprovedRule(const Approval& approval,

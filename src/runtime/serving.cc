@@ -269,7 +269,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
         auto llm = std::make_unique<EngineLlm>(
             node_, entry, settings, roles_, index,
             ComponentLlmBuild(node_, roles_.installed, entry, index,
-                              {.target_policy = {},
+                              {.target_policy = options_.diagnostic_target_policy,
                                .drafter_policy = options_.diagnostic_drafter_policy,
                                .shared_route = shared,
                                .capture_first_verify = options_.diagnostic_capture_first_verify,
@@ -554,6 +554,41 @@ Status Server::Start(bool snapshot) {
   std::uint64_t host_inputs = 0;
   std::uint64_t plans = 0;
   for (const auto& m : models_) {
+    if (options_.debug_plans)
+      m->set_plan_report_sink(
+          [this, model = m.get()](kernels::PlanReportEvent event, std::string_view record) {
+            // Records are compiler-produced JSON; stream the paid typed inventory.
+            // Escape the user-controlled model label without copying the record
+            // through Log/Printable/format or allocating a prefix string.
+            if (event == kernels::PlanReportEvent::kBegin) {
+              (void)std::fputs("llmp-runtime: debug plan model \"", log_);
+              constexpr char hex[] = "0123456789abcdef";
+              for (const char byte : model->name()) {
+                const auto c = static_cast<unsigned char>(byte);
+                if (c == '\\' || c == '\"') {
+                  (void)std::fputc('\\', log_);
+                  (void)std::fputc(c, log_);
+                } else if (c < 0x20 || c == 0x7f) {
+                  const char escaped[] = {'\\', 'u', '0', '0', hex[c >> 4], hex[c & 15]};
+                  (void)std::fwrite(escaped, 1, sizeof(escaped), log_);
+                } else {
+                  (void)std::fputc(c, log_);
+                }
+              }
+              (void)std::fputs("\": ", log_);
+              return;
+            }
+            if (event == kernels::PlanReportEvent::kFragment) {
+              while (!record.empty()) {
+                const auto count = std::min<std::size_t>(record.size(), 4096);
+                (void)std::fwrite(record.data(), 1, count, log_);
+                record.remove_prefix(count);
+              }
+              return;
+            }
+            (void)std::fputc('\n', log_);
+            (void)std::fflush(log_);
+          });
     const auto started = Clock::now();
     StartProgress();
     if (auto r = m->Setup(); !r) {

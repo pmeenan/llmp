@@ -285,6 +285,10 @@ class Catalog {
   // Leases every extent of a closure, all or none: each must be RESIDENT
   // with the contents the closure recorded.
   std::expected<LeaseId, CatalogError> AcquireLease(const Closure& closure);
+  // Atomically replace a resident lease's closure at recorded contents. The
+  // caller authenticates its holder and proves all work under it has retired.
+  // Failure leaves the complete old lease unchanged; overlap counts once.
+  std::expected<void, CatalogError> ReplaceLease(LeaseId lease, const Closure& closure);
   // Ends a lease; its extents stay resident (release is not eviction).
   std::expected<void, CatalogError> ReleaseLease(LeaseId lease);
   // Records an actual use of every extent a lease covers, at tick.

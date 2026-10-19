@@ -28,10 +28,14 @@
 #ifndef LLMP_PLANNER_PLAN_H_
 #define LLMP_PLANNER_PLAN_H_
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -111,9 +115,16 @@ struct PlanOptions {
   // Proved physical owner columns, expanded before width-sensitive patterns.
   // Null keeps existing planning unchanged. The proof outlives this call.
   const components::OwnerProducts* owner_products = nullptr;
+  // Report-only identities supplied by the actual component source, never
+  // inspected by selection/qualification or parsed as policy permission.
+  base::Sha256Digest observed_bound_model{}, observed_model_spec{};
 };
 
 struct StepPlan {
+  base::Sha256Digest primitive_digest{};
+  // Computed when planning finishes; report capture never hashes the graph.
+  base::Sha256Digest graph_digest{};
+  base::Sha256Digest policy_digest{};
   ir::Graph graph;               // the planned graph
   std::vector<Selected> steps;   // in node order
   std::vector<Region> regions;   // lanes' spans of steps
@@ -127,6 +138,7 @@ struct StepPlan {
   // Primitive decompositions taken for want of an implementation (their
   // keys' names), in order.
   std::vector<std::string> decomposed;
+  std::vector<MissingNumericalQualification> missing_numerical{};
   // Several one-row owners retain each owner's scalar product arithmetic
   // (the policy's owner_row_invariant option). Multirow input products retain
   // ordinary batched arithmetic; a selected-output basis may be proved below.
@@ -147,6 +159,84 @@ struct StepPlan {
   // order (none without invariant inputs).
   std::vector<ir::TensorId> invariant{};
   std::vector<std::uint32_t> prologue{};
+};
+
+// On-demand JSON-lines diagnostics of the actual plan, in execution order.
+// Includes identities and shapes, never tensor names, constants, input values,
+// addresses or prompt/state contents. The caller owns sink storage and admission.
+using PlanReportSink = std::function<void(std::string_view)>;
+// Allocation-free serialization; a record may span many fragments and each ends
+// with a newline. The borrowed sink consumes every fragment synchronously. Count
+// and fill the same stream to fund exactly its inventory, without a global cap.
+void StreamPlanReport(const StepPlan& plan, const execution::Registry& registry,
+                      const PlanReportSink& sink);
+// Convenience wrapper: assembles each complete record, without its newline,
+// before calling the sink. May allocate; serving uses StreamPlanReport instead.
+void ReportPlan(const StepPlan& plan, const execution::Registry& registry,
+                const PlanReportSink& sink);
+
+// Owned, compact report facts. Capture copies no tensors/parameters/payloads;
+// every string and identity survives the temporary graph and registry. One
+// allocation holds exact arrays and a string pool, with no growth capacities.
+// The caller pays StorageBytes plus its wrapper BEFORE Capture, and retains
+// that payment until destruction or transfer to the installed plan's charge.
+class PlanReportInventory {
+ public:
+  static std::expected<std::uint64_t, std::string> StorageBytes(
+      const StepPlan& plan, const execution::Registry& registry);
+  static std::expected<PlanReportInventory, std::string> Capture(
+      const StepPlan& plan, const execution::Registry& registry, std::uint64_t bytes);
+  void Stream(const PlanReportSink& sink) const;
+  std::uint64_t storage_bytes() const { return storage_bytes_; }
+
+ private:
+  std::expected<std::uint64_t, std::string> Layout(const StepPlan& plan,
+                                                   const execution::Registry& registry,
+                                                   std::byte* storage);
+  struct Implementation {
+    std::string_view name;
+    base::Sha256Digest identity{};
+    unsigned rung = 0, expansion = 0;
+  };
+  struct Node {
+    ir::NodeId id;
+    ir::OpKey key;
+    std::optional<ir::ProductArithmetic> arithmetic{};
+    std::uint16_t component = 0;
+    std::span<ir::TensorId> sources{}, outputs{};
+  };
+  struct Selection {
+    std::size_t implementation = 0;
+    std::uint32_t lane = 0;
+    std::string_view group;
+    std::span<Node> nodes;
+  };
+  struct PatternRecord {
+    std::string_view name;
+    std::uint64_t replaced = 0, made = 0;
+    std::optional<NumericalChange> numerical_change{};
+    base::Sha256Digest evidence{}, source{}, semantic{};
+    bool numerical_candidate = false;
+    bool numerical_incumbent = false;
+    std::span<NumericalProof> numerical_proofs{};
+  };
+  struct Activation {
+    ir::TensorId root;
+    ir::NodeId producer;
+    ir::OpKey operation;
+    std::uint16_t component = 0;
+    std::uint64_t offset = 0, bytes = 0;
+    std::array<std::uint64_t, 4> shape{}, strides{};
+  };
+  base::Sha256Digest primitive_{}, graph_{}, policy_{}, registry_{};
+  std::uint64_t activation_bytes_ = 0, storage_bytes_ = 0;
+  std::unique_ptr<std::byte[]> storage_;
+  std::span<Implementation> implementations_;
+  std::span<Selection> selections_;
+  std::span<PatternRecord> patterns_;
+  std::span<std::string_view> fallbacks_;
+  std::span<Activation> activations_;
+  std::span<MissingNumericalQualification> missing_;
 };
 
 std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::Registry& registry,

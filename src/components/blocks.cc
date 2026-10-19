@@ -48,15 +48,6 @@
 namespace llmp::components::defs {
 namespace {
 
-constexpr std::array kJoined{
-    BatchClass{.op = ir::Op::kRmsNorm, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kGetRows, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kScale, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMatMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kArgmax, .batch = ir::Batch::kJoined},
-};
-
 // ------------------------------------------------------------------ norm.rms
 
 constexpr std::array kNormParams{
@@ -71,7 +62,6 @@ constexpr std::array kNormParams{
 };
 constexpr std::array kNormRoles{
     WeightRole{.name = "weight", .encodings = kNormEncodings, .derived = kZeroCenteredNorm}};
-constexpr std::array<std::string_view, 2> kNormPatterns{"rms_norm_mul", "rms_norm_mul_add"};
 
 std::expected<std::vector<RoleShape>, std::string> NormShapes(const Instance& in) {
   if (NormOffsetContradictsFold(in))
@@ -362,7 +352,6 @@ constexpr std::array<format::Encoding, 1> kI32Only{format::Encoding::kI32};
 constexpr std::array kHeadRoles{WeightRole{.name = "weight"}, WeightRole{.name = "projection"},
                                 WeightRole{.name = "ids", .encodings = kI32Only},
                                 WeightRole{.name = "markov_w1"}, WeightRole{.name = "markov_w2"}};
-constexpr std::array<std::string_view, 1> kHeadPatterns{"prepared_products"};
 
 // By the vocabulary: the output matrix by its rows, the logits gathered
 // (each output row's logits, F32) where something needs them whole.
@@ -603,8 +592,7 @@ const ComponentDef& NormRms() {
       .params = kNormParams,
       .roles = kNormRoles,
       .shapes = NormShapes,
-      .batch_classes = std::span(kJoined).first(2),
-      .patterns = kNormPatterns,
+
       .emit = NormEmit,
       .reference = NormReference,
   };
@@ -618,7 +606,7 @@ const ComponentDef& ScaleLearned() {
       .row_local = true,
       .roles = kScaleRoles,
       .shapes = ScaleShapes,
-      .batch_classes = std::span(kJoined).subspan(1, 1),
+
       .emit = ScaleEmit,
       .reference = ScaleReference,
   };
@@ -633,7 +621,7 @@ const ComponentDef& EmbeddingToken() {
       .params = kEmbeddingParams,
       .roles = kEmbeddingRoles,
       .shapes = EmbeddingShapes,
-      .batch_classes = std::span(kJoined).subspan(2, 2),
+
       .spatial = &kSpatialEmbedding,
       .emit = EmbeddingEmit,
       .reference = EmbeddingReference,
@@ -650,7 +638,7 @@ const ComponentDef& EmbeddingProjected() {
       .shapes = ProjectedShapes,
       .state = ProjectedState,
       .max_state_tensors = 1,
-      .batch_classes = std::span(kJoined).subspan(2, 3),
+
       .emit = ProjectedEmit,
       .reference = ProjectedReference,
   };
@@ -665,9 +653,9 @@ const ComponentDef& HeadLinear() {
       .params = kHeadParams,
       .roles = kHeadRoles,
       .shapes = HeadShapes,
-      .batch_classes = std::span(kJoined).subspan(2),
+
       .splits = kHeadSplits,
-      .patterns = kHeadPatterns,
+
       .gathers = HeadGathers,
       .emit = HeadEmit,
       .reference = HeadReference,

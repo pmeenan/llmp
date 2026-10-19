@@ -39,13 +39,14 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr std::string_view kUsage =
-    "Usage: llmp-runtime [--config FILE] [--anchor PATH] [COMMAND [ARGS...]]\n"
+    "Usage: llmp-runtime [--config FILE] [--anchor PATH] [--debug-plans] [COMMAND [ARGS...]]\n"
     "\n"
     "The llmpalooza node runtime, which llmp.service starts without a command.\n"
     "  --config FILE  the node's configuration (default /etc/llmp/llmp.toml\n"
     "                 and /etc/llmp/llmp.d/)\n"
     "  --anchor PATH  the enrollment anchor (default /var/lib/llmp/enrollment);\n"
     "                 the process lock is PATH.lock\n"
+    "  --debug-plans  log detailed paid plans once on cache installation\n"
     "\n";
 
 std::string Errno(int error) { return std::strerror(error); }  // NOLINT(concurrency-mt-unsafe)
@@ -106,11 +107,14 @@ std::expected<Options, std::string> ParseArguments(std::span<const std::string_v
       if (!command) {
         return std::unexpected(command.error());
       }
+      command->serving.debug_plans |= options.command.serving.debug_plans;
       options.command = std::move(*command);
       break;
     }
     if (arg == "--help" || arg == "-h") {
       options.help = true;
+    } else if (arg == "--debug-plans") {
+      options.command.serving.debug_plans = true;
     } else if (arg == "--config" || arg == "--anchor") {
       if (i + 1 >= args.size() || args[i + 1].empty()) {
         return std::unexpected(std::format("{} needs a path", arg));

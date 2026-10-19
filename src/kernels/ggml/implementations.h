@@ -196,7 +196,7 @@ class Kernel {
   std::expected<void, KernelFailure> Run(LaunchContext& launch,
                                          std::span<ggml_tensor* const> nodes) const;
   std::string_view name() const;
-  execution::Operation operation() const;
+  llmp::ir::OpKey operation() const;
   // How many nodes the operation takes; zero means its check owns a bounded
   // variable arity.
   std::size_t arity() const;

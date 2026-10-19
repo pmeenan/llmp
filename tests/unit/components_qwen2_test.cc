@@ -11,6 +11,7 @@
 #include <format>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "components/step.h"
@@ -187,14 +188,8 @@ TEST(ComponentsQwen2, Fp16ActualShapesSelectAndLowerThroughTheSharedGgmlBackend)
   namespace ex = llmp::execution;
   namespace pl = llmp::planner;
   std::vector<ex::Implementation> implementations;
-  for (const auto& d : kg::CapabilityDeclarations()) {
-    implementations.push_back({.name = std::string(d.name),
-                               .operation = d.operation,
-                               .source = "ggml",
-                               .revision = "planning",
-                               .build = "cpu",
-                               .variant = std::string(kg::AcceptsTextOf(d.name)),
-                               .capability = *d.capability});
+  for (auto d : kg::PlanningImplementations()) {
+    implementations.push_back(std::move(d));
   }
   auto registry = ex::Registry::Create(std::move(implementations));
   ASSERT_TRUE(registry.has_value());
@@ -209,9 +204,11 @@ TEST(ComponentsQwen2, Fp16ActualShapesSelectAndLowerThroughTheSharedGgmlBackend)
   const auto policy = pl::ParsePolicy(mapping.policies.front().text);
   ASSERT_TRUE(policy.has_value()) << policy.error();
   kg::DeviceChoices choices;
-  choices.mul_mat = [](const ggml_tensor*) -> std::expected<kg::MulMatPath, kg::KernelFailure> {
-    return kg::MulMatPath::kCublas;
+  choices.mul_mat =
+      [](const ggml_tensor* tensor) -> std::expected<kg::MulMatPath, kg::KernelFailure> {
+    return tensor->ne[1] == 1 ? kg::MulMatPath::kVector : kg::MulMatPath::kCublas;
   };
+  choices.vector_fusible = [](const ggml_tensor* tensor) { return tensor->ne[1] == 1; };
   const llmp::kernels::Addresses addresses{};
   for (const auto rows : {1U, 32U, 145U}) {
     SCOPED_TRACE(rows);
@@ -241,14 +238,8 @@ TEST(ComponentsQwen2, Fp16FloatFusionsAreSelectedOnlyForOneColumn) {
   namespace ex = llmp::execution;
   namespace pl = llmp::planner;
   std::vector<ex::Implementation> implementations;
-  for (const auto& d : kg::CapabilityDeclarations()) {
-    implementations.push_back({.name = std::string(d.name),
-                               .operation = d.operation,
-                               .source = "ggml",
-                               .revision = "planning",
-                               .build = "cpu",
-                               .variant = std::string(kg::AcceptsTextOf(d.name)),
-                               .capability = *d.capability});
+  for (auto d : kg::PlanningImplementations()) {
+    implementations.push_back(std::move(d));
   }
   auto registry = ex::Registry::Create(std::move(implementations));
   ASSERT_TRUE(registry.has_value());

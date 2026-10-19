@@ -189,7 +189,7 @@ inline void SetDsv4PrefillStages(DeviceChoices& device, bool on) {
 // One implementation's run over its nodes, in the order implementations.h
 // lists for it.
 struct PlanStep {
-  execution::Operation operation = execution::Operation::kAdd;
+  llmp::ir::OpKey operation = llmp::ir::Primitive(llmp::ir::Op::kAdd);
   std::string_view implementation;
   std::vector<ggml_tensor*> nodes;
   // The lane it runs on (AssignLanes): 0, the context's stream, or 1 to

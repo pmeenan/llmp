@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -20,11 +21,17 @@
 
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
+#include "ir/graph.h"
 #include "model/qwen_image.h"
+#include "planner/policy.h"
 #include "runtime/approvals.h"
 #include "spec/image_family.h"
 #include "spec/mapping.h"
 #include "spec/spec.h"
+
+namespace llmp::kernels {
+struct ConstructionFunder;
+}
 
 namespace llmp::runtime {
 
@@ -174,6 +181,26 @@ struct ImageAdmission {
 std::expected<ImageAdmission, std::string> ReadImageAdmission(
     const artifact::Composition& composition,
     std::span<const artifact::Artifact* const> components);
+
+// Uses the backend's existing paid construction token, independently of
+// execution-domain declarations, and retains its exact charge/refund lifetime.
+// Called after ordinary admission, before per-alias state transformations or
+// composition: exact verified source/spec identity is checked once here.
+std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
+AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
+                 std::span<const artifact::Source> origins, const Approval* approval,
+                 const base::Sha256Digest& admitted_semantic, const spec::Envelope& envelope,
+                 std::uint16_t active_stage,
+                 std::shared_ptr<const kernels::ConstructionFunder> funder);
+// The current image graph is generated from its admitted family/profile.
+// Project only its exact retained-reference geometry, using actual generated
+// component ordinals and query dimensions; no generic shape transfer.
+std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
+AdmittedImageNumerics(const spec::ModelSpec& family, const ImageApproval* approval,
+                      const artifact::Composition& composition, const ir::Graph& graph,
+                      std::uint16_t stage, std::uint32_t width, std::uint32_t height,
+                      std::uint32_t prompt_rows,
+                      std::shared_ptr<const kernels::ConstructionFunder> funder);
 
 // The approval's planning policy rule for an envelope (its mapping's first
 // rule whose gate, by the approval's gates, and envelope hold; null: none).

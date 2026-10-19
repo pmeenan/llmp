@@ -1,22 +1,22 @@
 {
  "digests": {
-  "continued.0": "e7ce7b68ea6e077fb6565433c222f69fafacafcd47b57aeca3a0f09d53931068",
-  "continued.1": "ab875d2314f68fd4373207d2eb3c2335b60bf4654092b711f02eca45eba5cb29",
-  "heads.0": "7ad5d80e3ebcc891082ead5a3419c4940ee5859679d95d4886de42cd67902f3d",
-  "heads.1": "edcdca559c5713fc25433357841347239a58f5e3ae16407eca565275aeb5c417",
+  "continued.0": "16db3525a31036142b5eee46f77a5ec382b5a922e92dd7bbfd83b319d49952d2",
+  "continued.1": "e65c1505672402113aed1c424b412d22b956d3bc4045c5230c6cb150f6f7a501",
+  "heads.0": "d72c7ecb267c681bfce976a62c39e6f25471f30eb2f84f0cbc9423f8e48a364d",
+  "heads.1": "86ade5f74155989763deb17473d39ecad92a09e09271f988dcca82d4f112bd21",
   "history.0": "fb602b5677d7e76f17218b33c9d50bd3aa5c5ed026ca28979e2ea0bbe37b9ca9",
   "history.1": "b3636a6b84286272cc3a2b7c97d426f8ef465cd839855c7d519b2af9f41543ff",
-  "logits.0": "1285533d5a80845f0101710485fa8b498fc441703fedc90e3961189c7a631798",
-  "logits.1": "3df0b26e18051cbd3a4cffb993e1dd2c8c58bd3f29c29a306db81d47b3f08493",
-  "restored.0": "e8b2473d38db50a1063f1881052e050368abcda7ba1d0b911060cb8f540abae1:142606336:10",
-  "restored.1": "4cd44f650dfcc51e658d47eaec11b41f7ed6793ce26f8bd621158083f7ad2026:142606336:10",
-  "resumed.0": "6c25021d234e1bfb224ff34aaae5fc8f448de3f743060ee18dcb14b99e518a86:142606336:11",
-  "resumed.1": "b3a6ef0c33503f8b71d8bc48fb0094dc7f208804593b8d834c4fe70705f0da4e:142606336:11",
-  "state.0": "e8b2473d38db50a1063f1881052e050368abcda7ba1d0b911060cb8f540abae1:142606336:10",
-  "state.1": "4cd44f650dfcc51e658d47eaec11b41f7ed6793ce26f8bd621158083f7ad2026:142606336:10",
+  "logits.0": "f7f9957e16cd8b70b31a67782ae8e8821b2638dcff1ac54fc025c516a4fc42ce",
+  "logits.1": "00634a038b5026c001829cfd7b7d1169151df29e7df5e992edd117083c613e3a",
+  "restored.0": "37b8667055313d3411dbc14726f8d013e5e78794c62742d10c70e3835c1a5fdb:142606336:10",
+  "restored.1": "2fd33ca9b71ccbc3114ce61866660e31a4b70f338aed2f4acbcd3a02b606fe4c:142606336:10",
+  "resumed.0": "bf1227b0c23b47a62e8296b0e2b910352b428e9c9192735acb09199be610657d:142606336:11",
+  "resumed.1": "c1d56058b403bbd87d04a25d9056a7998edc296c11801a97676d3cafb5cb2282:142606336:11",
+  "state.0": "37b8667055313d3411dbc14726f8d013e5e78794c62742d10c70e3835c1a5fdb:142606336:10",
+  "state.1": "2fd33ca9b71ccbc3114ce61866660e31a4b70f338aed2f4acbcd3a02b606fe4c:142606336:10",
   "tokens.0": "818,236743,236770,236771",
-  "tokens.1": "506,1883,529,7693"
+  "tokens.1": "506,1883,529,188819"
  },
  "family": "gemma_Gemma3",
- "provenance": "Recorded 2026-10-15 on Spark A (GB10, spark-native build of main ba2d4b19 plus the v1-import slice) from the v0 arm, with the v1 arm compared bit for bit in the same run; v1 artifacts imported by llmp import from the staged, manifest-verified sources (IDs in the store's v1-ids.json). A change that legitimately moves bits re-records these. Its state, restored and resumed digests re-recorded 2026-10-16 on spark at f6442ebe with model::ExtentLayout's per-tensor state layout (each growing tensor of 2 MiB or more on its own extents, the rest packed); every other digest recorded unchanged"
+ "provenance": "Recorded 2026-10-18 on spark-c4e2 (GB10), integrated R8+R7 source manifest 1b0cab3369b4b8c195ccb4b581f4338be752b484f8b7a19431577204e1a18e03, from the original two-owner frozen fixture (.0/.1 identify owners). Changed selected reductions preserve the original finite-head, completed generation, prefix-reuse, spill/restore, checkpoint/restart and retirement checks. Bounded 1070-target and both fixed-reply controls match final R6 for Gemma2/26, or the independently retained historical accepted1facc957 Gemma3 record. Original per-key failures and raw Gemma3 final-R6 pair failure remain external evidence; no threshold, grant, token/state assertion or source encoding was relaxed."
 }

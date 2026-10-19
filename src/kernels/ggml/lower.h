@@ -15,7 +15,7 @@
 //      state, GGML's own builder call for each node, and for a fused node
 //      the GGML node sequence its implementation covers (the primitive
 //      nodes the rewrite replaced: GGML's fused implementations run over
-//      them, as PlanGraph groups them), and for a composite op an
+//      them, in the selected recipe), and for a composite op an
 //      implementation of its own runs (planner/pattern.h route_reduce) the
 //      GGML node sequence that implementation's gate takes (Gemma's fused
 //      routing and scaled reduce). Node order is the planned graph's,
@@ -25,22 +25,14 @@
 //      producer derives the cells' positions, so the step stages none; a
 //      frozen read's under its frozen policy) or, with device masks off, a
 //      host-built input (step_program.h kMask);
-//   3. binds the planned activations at the IR placement (its extent is the
-//      step's), weights and state at the addresses given (distinct
-//      placeholder addresses where none is, as for a measurement), and the
-//      intermediates a fused implementation never writes at its result's
-//      place;
-//   4. derives the DeviceChoices flags from the selection (a fused or
-//      grouped implementation selected anywhere turns its PlanGraph policy
-//      on) over the device's own choices, and runs PlanGraph without
-//      upstream's fusion;
-//   5. requires PlanGraph's steps to be the IR selection's, in order: the
-//      same GGML nodes under the selected implementation, or under a member
-//      of the selected group (the group is resolved here, by upstream's
-//      routing). Anything else is a lowering bug, and the step is refused;
-//      Requested owner products additionally require complete proof/scope
-//      coverage, original bound operands/preparation and the exact resolved
-//      owner recipe. An unresolved group is insufficient for that contract.
+//   3. authenticates physical materializations and reads from the selected
+//      recipes, retaining proof-only dependencies in the IR; a descriptor-only
+//      provisional binding makes group routing checkable without submitting work;
+//   4. emits the selected implementations' explicit launch recipes, resolving
+//      only declared groups. It never runs the independent native PlanGraph;
+//   5. places the real schedule, including paired products and extra reads,
+//      then authenticates final addresses, typed operands and protected owner
+//      recipes. Provisional addresses grant no execution authority;
 //   6. gives the input slots (tokens, positions, the head's rows, each
 //      owner's store cells, a target's tap cells and host masks, a
 //      drafter's features, which the engine copies in on the device), the
@@ -53,6 +45,8 @@
 #ifndef LLMP_KERNELS_GGML_LOWER_H_
 #define LLMP_KERNELS_GGML_LOWER_H_
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
@@ -75,6 +69,31 @@
 
 namespace llmp::kernels::ggml {
 
+// Independent of numerical execution declarations. The backend prepays this
+// immutable callback owner before allocating it; each native build keeps it
+// alive until retained-plan accounting takes over or native teardown completes.
+using ConstructionFunder = kernels::ConstructionFunder;
+struct ConstructionPayment {
+  ConstructionPayment() = default;
+  ConstructionPayment(const ConstructionPayment&) = delete;
+  ConstructionPayment& operator=(const ConstructionPayment&) = delete;
+  std::shared_ptr<const ConstructionFunder> funder;
+  std::uint64_t bytes = 0;
+  ~ConstructionPayment() {
+    if (bytes != 0) funder->release(bytes);
+  }
+};
+struct LowerConstructionInventory {
+  std::size_t descriptors = 0;
+  std::uint64_t bytes = 0;
+};
+// Allocation-free checked inventory of the actual lowering descriptor bound.
+// Both backend admission and TensorArena sizing consume this same operation
+// inventory. It is a bound, not a measured memory peak. Standalone LowerStep
+// callers must supply their own enclosing prepayment; production uses Lower.
+std::expected<LowerConstructionInventory, KernelFailure> LowerConstructionOf(
+    const LowerInput& input);
+
 struct LowerOptions {
   // Actual backend allowance; used before allocating ordered routed metadata.
   std::shared_ptr<const kernels::BackendOwner> routed_funder{};
@@ -86,7 +105,7 @@ struct LowerOptions {
   // state): its slot's cells say so (step_program.h InputCells::frozen),
   // which a stager must honour; off, such a step is refused with host masks.
   bool frozen_host_masks = false;
-  // PlanGraph's graph reader index allowance (graph_plan.h).
+  // The selected recipe reader index allowance (graph_read_index.h).
   std::uint64_t index_scratch_limit = std::numeric_limits<std::uint64_t>::max();
   // The bytes between an expert array's experts as the runner placed them
   // (a slab's pitch, engine/paged_weights.h SlabSpec); 0 or none: packed.
@@ -120,8 +139,31 @@ struct LoweredRouting {
   std::vector<kernels::RoutedCopy> uploads;
   std::vector<std::pair<std::size_t, std::uint64_t>> descriptors;  // selected index, pinned offset
   ggml_tensor* preparation = nullptr;
+  // The preparation's actual activation-tail placement, relative to the
+  // common activation base. Never a process address in a report.
+  std::uint64_t activation_offset = 0, activation_bytes = 0;
   std::size_t cut = 0;
   base::Sha256Digest graph_identity{};
+};
+// Actual arena descriptor identity. The pointer is an internal lookup key,
+// never serialized; id is its stable construction ordinal. Unmapped auxiliary
+// descriptors retain their owning planned producer without inventing an IR value.
+struct PhysicalTensor {
+  const ggml_tensor* descriptor = nullptr;
+  std::uint32_t id = 0;
+  ir::TensorId tensor{}, root{};
+  ir::NodeId producer{};
+  std::optional<format::PartRole> part{};
+};
+struct PhysicalRoot {
+  ir::TensorId root;
+  ir::NodeId producer;
+  ir::OpKey operation;
+  std::uint16_t component = 0;
+  std::uint32_t backend_tensor = UINT32_MAX;
+  std::uint64_t offset = 0, bytes = 0;
+  std::array<std::uint64_t, 4> ne{}, nb{};
+  format::Encoding encoding = format::Encoding::kF32;
 };
 struct LoweredStep {
   std::optional<TensorArena> arena;  // owns every tensor below
@@ -130,12 +172,21 @@ struct LoweredStep {
   std::vector<LoweredLeaf> leaves;
   std::vector<SavedLeaf> saves;
   std::vector<SelectedNode> selected;  // exact selected calls, borrowing this arena
-  GraphPlan plan;                      // PlanGraph's: the IR selection's steps, lanes and regions
+  GraphPlan plan;                      // explicit lowered schedule, lanes and regions
   std::vector<InputSlot> inputs;
   std::vector<OutputSlot> outputs;
   std::vector<TensorUse> tensors;
-  std::uint64_t extent = 0;  // the activations' (the IR placement's)
-  bool measuring = false;    // placeless: never bound to run
+  std::vector<PhysicalRoot> physical_roots;
+  // Sorted by internal descriptor pointer for allocation-free logarithmic
+  // ID lookup while lazily reporting actual concrete nodes/source edges.
+  std::vector<PhysicalTensor> physical_tensors;
+  std::size_t descriptor_bound = 0;  // canonical prepaid construction inventory
+  std::uint64_t extent = 0;          // the activations' (the IR placement's)
+  std::uint64_t logical_extent = 0;  // conservative semantic-IR placement, for diagnostics
+  // Sum of omitted logical root sizes, not a peak-memory saving.
+  std::uint64_t unmaterialized_logical_bytes = 0;
+  std::uint64_t unmaterialized_roots = 0;
+  bool measuring = false;  // placeless: never bound to run
   // The plan's prologue (planner/plan.h StepPlan::prologue) as `plan`'s
   // step indices, in order: what a warm run skips.
   std::vector<std::size_t> prologue{};
@@ -146,6 +197,15 @@ struct LoweredStep {
   std::uint64_t routed_pinned_bytes = 0;
   std::optional<std::vector<kernels::RoutedWeight>> weight_reads{};
 };
+
+const PhysicalTensor* PhysicalTensorOf(const LoweredStep& step, const ggml_tensor* tensor);
+struct PhysicalReportMetrics {
+  std::uint64_t pool_bytes = 0, lanes = 0, lane_scratch_bytes = 0, launches = 0;
+};
+// The same allocation-free lazy serializer is built in every profile.
+void StreamPhysicalPlanReport(const LoweredStep& step, const execution::Registry& registry,
+                              const kernels::PlanReportSink& sink,
+                              const PhysicalReportMetrics& metrics = {});
 
 // The bytes the module writes for a root of `graph` beyond the tensor's
 // own (planner/placement.h RootBytesOf): a prepared Q8_1 input, which

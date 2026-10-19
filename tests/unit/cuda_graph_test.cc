@@ -109,10 +109,10 @@ TEST_F(GgmlBindingTest, RepeatedMixedWrappersCheckEveryOccurrenceAndEveryBind) {
     auto* norm = Bind(ggml_rms_norm(c, x, 1e-6f));
     auto* mul = Bind(ggml_mul(c, norm, w));
     auto* add = Bind(ggml_add(c, mul, x));
-    plan.steps.push_back({.operation = llmp::execution::Operation::kRmsNormMul,
+    plan.steps.push_back({.operation = llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul),
                           .implementation = kg::kRmsNormMulFused,
                           .nodes = {norm, mul}});
-    plan.steps.push_back({.operation = llmp::execution::Operation::kAdd,
+    plan.steps.push_back({.operation = llmp::ir::Primitive(llmp::ir::Op::kAdd),
                           .implementation = kg::kAddName,
                           .nodes = {add}});
     last_mul = mul;
@@ -163,7 +163,7 @@ TEST_F(GgmlBindingTest, RepeatedCublasWrapperStillChecksTheLaterLaneAndOperands)
     auto* w = Bind(ggml_new_tensor_2d(c, GGML_TYPE_F32, 32, 16));
     auto* x = Bind(ggml_new_tensor_2d(c, GGML_TYPE_F32, 32, 2));
     last = Bind(ggml_mul_mat(c, w, x));
-    plan.steps.push_back({.operation = llmp::execution::Operation::kMatMul,
+    plan.steps.push_back({.operation = llmp::ir::Primitive(llmp::ir::Op::kMatMul),
                           .implementation = kg::kMulMatCublas,
                           .nodes = {last}});
   }

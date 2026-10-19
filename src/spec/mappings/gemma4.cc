@@ -162,27 +162,23 @@ constexpr std::array kParams = {
     RequireInt("gemma4.embedding_length_per_layer_input", 0, true),
 };
 
-// The serving recipes (the M3 class's, retired with it, are these rules'
-// origin). Within the qualified envelope (a context of at most 8,192 and
-// four owners): fused norms, norm-rope and norm-add, the
-// routing and reduce fused on 26B-A4B and the quantized GLU only on 31B;
-// owner attention over joined one-row owners of equal reads, its masks
-// joined in pairs, and at most 4,096 cells and two owners each owner's
-// cache at its own width (bounded roots, common reads); every row to the
-// head (no frontier_head); no rope-store, grouped stores or shared Q8
-// inputs. Outside it, the frontier head's narrowed final layer and the
-// fused norm-mul alone. The bounded rules also name the prompt chunk the
-// recipes were qualified at (26B-A4B at stock's matched 1,024 rows, where
-// its MoE arithmetic reproduces stock's tokens, docs/experiments/
-// gemma26-production; 31B at 256), which serving takes unless a setting
-// overrides it.
+// The serving policies: structural eligibility is shared across envelopes,
+// with `owner_padded_reads` disabled because padding narrower owners' caches
+// in unequal-width 4-owner global attention waves regresses Gemma 4 26B-A4B
+// C4 decode by +4.715% (102.342 -> 97.734 tok/s, +0.951 ms/wave GPU span from
+// 20 `concat_cont` KV-padding launches adding +3.038 ms/wave across the five
+// global layers, outweighing the -1.897 ms/wave attention + grouped-stores
+// gain; consistent with docs/experiments/gemma4-bounded-owner-roots/README.md).
+// The bounded rules also name the prompt chunk the recipes were qualified at
+// (26B-A4B at stock's matched 1,024 rows, where its MoE arithmetic reproduces
+// stock's tokens, docs/experiments/gemma26-production; 31B at 256), which
+// serving takes unless a setting overrides it.
 constexpr std::array kPolicies = {
     PolicyRule{.gate = kExperts,
                .max_context = 4096,
                .max_slots = 2,
-               .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
-                       "disable narrow_final\ndisable owner_chained_masks\n"
-                       "disable owner_padded_reads\ndisable prepared_inputs\ndisable rope_store\n",
+               .text = "max_decode_rows 16\n"
+                       "disable owner_padded_reads\n",
                .prompts_alone = true,
                .prefill_lookahead = 1,
                .capture_ahead = false,
@@ -190,19 +186,15 @@ constexpr std::array kPolicies = {
     PolicyRule{.gate = kExperts,
                .max_context = 8192,
                .max_slots = 4,
-               .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
-                       "disable narrow_final\ndisable owner_bounded_roots\n"
-                       "disable owner_chained_masks\ndisable owner_padded_reads\n"
-                       "disable prepared_inputs\ndisable rope_store\n",
+               .text = "max_decode_rows 16\n"
+                       "disable owner_padded_reads\n",
                .prompts_alone = true,
                .prefill_lookahead = 1,
                .capture_ahead = false,
                .prefill_chunk = 1024},
     PolicyRule{.gate = kExperts,
-               .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
-                       "disable owner_attention\ndisable prepared_inputs\n"
-                       "disable rms_norm_mul_add\ndisable rms_norm_mul_rope\ndisable rope_store\n"
-                       "disable route_reduce\n",
+               .text = "max_decode_rows 16\n"
+                       "disable owner_padded_reads\n",
                .prompts_alone = true,
                .owners_alone = true,
                .prefill_lookahead = 1,
@@ -211,9 +203,8 @@ constexpr std::array kPolicies = {
                .gate_absent = true,
                .max_context = 4096,
                .max_slots = 2,
-               .text = "max_decode_rows 16\ndisable grouped_stores\ndisable narrow_final\n"
-                       "disable owner_chained_masks\ndisable owner_padded_reads\n"
-                       "disable prepared_inputs\ndisable rope_store\n",
+               .text = "max_decode_rows 16\n"
+                       "disable owner_padded_reads\n",
                .prompts_alone = true,
                .prefill_lookahead = 1,
                .capture_ahead = false,
@@ -222,18 +213,16 @@ constexpr std::array kPolicies = {
                .gate_absent = true,
                .max_context = 8192,
                .max_slots = 4,
-               .text = "max_decode_rows 16\ndisable grouped_stores\ndisable narrow_final\n"
-                       "disable owner_bounded_roots\ndisable owner_chained_masks\n"
-                       "disable owner_padded_reads\ndisable prepared_inputs\ndisable rope_store\n",
+               .text = "max_decode_rows 16\n"
+                       "disable owner_padded_reads\n",
                .prompts_alone = true,
                .prefill_lookahead = 1,
                .capture_ahead = false,
                .prefill_chunk = 256},
     PolicyRule{.gate = kExperts,
                .gate_absent = true,
-               .text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
-                       "disable owner_attention\ndisable prepared_inputs\n"
-                       "disable rms_norm_mul_add\ndisable rms_norm_mul_rope\ndisable rope_store\n",
+               .text = "max_decode_rows 16\n"
+                       "disable owner_padded_reads\n",
                .prompts_alone = true,
                .owners_alone = true,
                .prefill_lookahead = 1,
@@ -380,9 +369,8 @@ constexpr std::array kAssistantReads = {
 // The assistant's plans are plain primitives today (engine/
 // gemma4_assistant.cc: no target fusion is inherited).
 constexpr std::array kAssistantPolicies = {
-    PolicyRule{.text = "max_decode_rows 16\ndisable grouped_stores\ndisable mul_mat_glu\n"
-                       "disable owner_attention\ndisable prepared_inputs\ndisable rms_norm_mul\n"
-                       "disable rms_norm_mul_add\ndisable rms_norm_mul_rope\ndisable rope_store\n"},
+    PolicyRule{.text = "max_decode_rows 16\n"
+                       ""},
 };
 
 // Anchored on its target's tapped features, borrowing its target's state:

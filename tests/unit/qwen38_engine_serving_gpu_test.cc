@@ -46,6 +46,7 @@
 #include "artifact/json.h"
 #include "base/bytes.h"
 #include "base/sha256.h"
+#include "compiler_inventory.h"
 #include "engine/component_source.h"
 #include "engine/paged_weights.h"
 #include "engine/plan_cache.h"
@@ -84,14 +85,13 @@ constexpr std::uint64_t kControlBudget = std::uint64_t{16} << 30U;
 // caps. The serving delta includes artifact/binding owners, maps, integer
 // metadata, server state, and both retained results. ABI guards below check
 // the coefficients; native allocations remain cataloged by the normal node.
-constexpr std::uint64_t kCompiler = 3584 * kMiB;
+constexpr std::uint64_t kCompilerMinimum = 3584 * kMiB;
 constexpr std::uint64_t kResults = 128 * kMiB;
-constexpr std::uint64_t kAllowance = kCompiler + kResults;
 static_assert(sizeof(void*) == 8 && sizeof(std::string) <= 32 && sizeof(std::vector<void*>) <= 24);
 static_assert(llmp::ir::Graph::kMaxNodes == 65536 && llmp::ir::Graph::kMaxTensors == 131072);
 static_assert(sizeof(llmp::ir::Node) <= 160 && sizeof(llmp::ir::TensorDesc) <= 160);
 static_assert(sizeof(llmp::ir::Binding) <= 24 && sizeof(llmp::format::TensorFormat) <= 72);
-static_assert(sizeof(llmp::planner::Selected) <= 128 && sizeof(llmp::planner::Applied) <= 64);
+static_assert(sizeof(llmp::planner::Selected) <= 128);
 static_assert(sizeof(llmp::planner::Match) + sizeof(void*) <= 256);
 static_assert(sizeof(llmp::planner::RootAlignmentFact) <= 16);
 static_assert(sizeof(llmp::kernels::InputSlot) <= 512 && sizeof(llmp::kernels::TensorUse) <= 64);
@@ -105,7 +105,8 @@ static_assert(llmp::ir::kMaxSources == 10 && llmp::ir::kMaxOutputs == 4);
 // Inherited hard-cap compiler peak plus the source-inventoried serving
 // owners below. The fixture fingerprints are checked before either arm;
 // this fixed allowance is not a general arbitrary-artifact memory claim.
-constexpr std::uint64_t kInheritedCompilerMaximum = 2528028992ULL;
+constexpr std::uint64_t kInheritedCompilerMaximum =
+    2528028992ULL + llmp::test_support::compiler_inventory::kLegacyCompilerGrowth;
 constexpr std::uint64_t kArtifactValues = 530000;
 constexpr std::uint64_t kTokenizerValues = 750000;
 constexpr std::uint64_t kTokens = 250000;
@@ -139,7 +140,13 @@ constexpr std::uint64_t kDirectoryNames = 3 * 65536 * (32 + 2 * 256);
 static_assert(llmp::artifact::kMaxDirectoryEntries == 65536);
 constexpr std::uint64_t kServingDelta =
     kDirectoryNames + kArtifactParse + kArtifacts + kTokenizer + kCatalogOwners + kServingBindings;
-static_assert(kInheritedCompilerMaximum + kServingDelta <= kCompiler);
+// Exact legacy phase inventory plus current owned serving metadata. Retain the
+// prior minimum; provenance/site payloads increase payment only when needed.
+constexpr std::uint64_t kCompilerRequired = kInheritedCompilerMaximum + kServingDelta;
+constexpr std::uint64_t kCompiler =
+    ((std::max(kCompilerMinimum, kCompilerRequired) + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
+constexpr std::uint64_t kAllowance = kCompiler + kResults;
+static_assert(kCompilerRequired <= kCompiler);
 static_assert(sizeof(llmp::artifact::Resource) <= 512 &&
               sizeof(llmp::artifact::ExpertArray) <= 512 && sizeof(llmp::artifact::Group) <= 64);
 static_assert(sizeof(llmp::engine::SlabPage) <= 128 && sizeof(llmp::scheduler::PageSource) <= 256 &&
@@ -998,16 +1005,16 @@ TEST(Qwen38EngineServingGpu, GgufPlain) { Screen(kGguf, false, true, 2); }
 // The native drafter mapping's policy (W4A4: its moe_experts), and
 // the same without the block-scaled GEMM: the format ladder decodes the
 // scale-atom experts on chip (W4A16), as on a device without FP4.
-std::string LadderDrafterPolicy() {
-  std::string text(llmp::spec::mappings::Qwen38MtpNativeReplayMapping().policies.front().text);
-  const auto at = text.find("enable moe_experts\n");
-  EXPECT_NE(at, std::string::npos);
-  if (at == std::string::npos) return text;
-  text.erase(at, 19);
-  const auto before = text.find("disable mul_mat_glu\n");
-  EXPECT_NE(before, std::string::npos);
-  if (before != std::string::npos) text.insert(before, "disable moe_experts\n");
-  return text;
+std::expected<std::string, std::string> LadderDrafterPolicy() {
+  auto policy = llmp::planner::ParsePolicy(
+      llmp::spec::mappings::Qwen38MtpNativeReplayMapping().policies.front().text);
+  if (!policy) return std::unexpected(policy.error());
+  std::erase(policy->enabled, "moe_experts");
+  if (!std::ranges::contains(policy->disabled, "moe_experts"))
+    policy->disabled.emplace_back("moe_experts");
+  llmp::planner::Canonicalize(*policy);
+  if (auto valid = llmp::planner::Validate(*policy); !valid) return std::unexpected(valid.error());
+  return llmp::planner::ToText(*policy);
 }
 std::pair<std::uint64_t, std::uint64_t> Acceptance(const Result& r) {
   std::uint64_t accepted = 0, drafted = 0;
@@ -1057,8 +1064,10 @@ TEST(Qwen38EngineServingGpu, NativeMtpLadderDrafterKeepsTokens) {
     EXPECT_TRUE(std::ranges::all_of(head, [](float value) { return std::isfinite(value); }));
   }
   for (const auto& generation : now.generations) EXPECT_GT(generation.drafted, 0U);
-  auto ladder_arm = ::Run(kModelOpt, true, true, true, 3, default_arm->get(), {}, true, kMtp,
-                          LadderDrafterPolicy());
+  const auto ladder_policy = LadderDrafterPolicy();
+  ASSERT_TRUE(ladder_policy) << (ladder_policy ? "" : ladder_policy.error());
+  auto ladder_arm =
+      ::Run(kModelOpt, true, true, true, 3, default_arm->get(), {}, true, kMtp, *ladder_policy);
   ASSERT_TRUE(ladder_arm) << (ladder_arm ? "" : ladder_arm.error());
   ExpectSameTokens(now, (*ladder_arm)->result, "w4a16");
   for (auto* arm : {&*default_arm, &*ladder_arm}) {
@@ -1082,10 +1091,17 @@ constexpr std::uint64_t kDescriptors = kT + 16 + 31 * kN + 4 * kSaves;
 // the existing authenticated artifact/tokenizer/catalog owners above. Retained
 // programs are measured and separately admitted; no launch-count guess.
 constexpr std::uint64_t kCompile =
-    12 * (kN * 480 + kT * 192) + 4096 * (kN + kT) + kDescriptors * (512 + 1024 + 32) + 64 * kMiB;
+    llmp::test_support::compiler_inventory::GraphBytes(kN, kT) + 4096 * (kN + kT) +
+    llmp::test_support::compiler_inventory::NativeBytes(kDescriptors, kT) + 64 * kMiB;
 constexpr std::uint64_t kObserve = 128 * kMiB;
 constexpr std::uint64_t kStartup = kCompile + kServingDelta + kObserve;
-static_assert(kCompile == 4946022912ULL);
+// Preserve the reviewed baseline identity while deriving all added record
+// storage from actual types, including per-recipient vector payloads.
+static_assert(kCompile == 4946022912ULL +
+                              12 * kN * (llmp::planner::kConstructionGraphNodeBytes - 480) +
+                              llmp::planner::NumericalConstructionBytes(kN).value() +
+                              2 * kDescriptors * sizeof(llmp::kernels::ggml::PhysicalTensor) +
+                              2 * kT * sizeof(llmp::kernels::ggml::PhysicalRoot));
 static_assert(3 * 2 * 8 * kVocab * sizeof(float) + 32 * kMiB < kObserve);
 
 struct Plan {

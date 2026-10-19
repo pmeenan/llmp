@@ -18,6 +18,7 @@
 
 #include "base/bytes.h"
 #include "base/check.h"
+#include "base/json_stream.h"
 #include "execution/measured_ranks.h"
 #include "execution/registry.h"
 #include "kernels/decode/selected_source.h"
@@ -108,6 +109,8 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
             selected == lowered_.selected.end() ? step.nodes.size() : selected->call->launches();
       }
     }
+    selected_host_ += lowered_.physical_roots.capacity() * sizeof(PhysicalRoot);
+    selected_host_ += lowered_.physical_tensors.capacity() * sizeof(PhysicalTensor);
     for (const auto& selected : lowered_.selected) selected_host_ += selected.call->host_bytes();
     if (lowered_.weight_reads) {
       selected_host_ += lowered_.weight_reads->capacity() * sizeof(RoutedWeight);
@@ -149,6 +152,19 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
     return lowered_.arena->bytes() + (nodes_ * kPlanNodeHostBytes) + selected_host_;
   }
   std::uint64_t launches() const override { return launches_; }
+  kernels::PlanCoverage plan_coverage() const override {
+    return {.logical_activation_bytes = lowered_.logical_extent,
+            .physical_activation_bytes = lowered_.extent,
+            .unmaterialized_logical_bytes = lowered_.unmaterialized_logical_bytes,
+            .unmaterialized_roots = lowered_.unmaterialized_roots};
+  }
+  void StreamPlanReport(const kernels::PlanReportSink& sink) const override {
+    StreamPhysicalPlanReport(lowered_, registry_, sink,
+                             {.pool_bytes = pool_,
+                              .lanes = lanes_.count,
+                              .lane_scratch_bytes = lanes_.scratch_bytes_per_lane,
+                              .launches = launches_});
+  }
   std::span<const InputSlot> inputs() const override { return lowered_.inputs; }
   std::span<const OutputSlot> outputs() const override { return lowered_.outputs; }
   std::span<const TensorUse> tensors() const override { return lowered_.tensors; }
@@ -528,6 +544,24 @@ struct GgmlBackend::Declaration final : kernels::BackendOwner {
   std::uint64_t selected_persistent = 0;
 };
 
+std::expected<void, std::string> GgmlBackend::FundConstruction(
+    std::function<bool(std::uint64_t)> charge, std::function<void(std::uint64_t)> release) {
+  if (construction_funder_ || construction_started_ || launch_ || !charge || !release)
+    return std::unexpected("the backend needs one complete construction funder before use");
+  constexpr std::uint64_t bytes = sizeof(ConstructionFunder) + 2 * 64;
+  if (!charge(bytes)) return std::unexpected("backend construction funder metadata was not funded");
+  construction_funder_ = std::shared_ptr<const ConstructionFunder>(
+      new ConstructionFunder{std::move(charge), std::move(release)}, [](ConstructionFunder* owner) {
+        auto refund = std::move(owner->release);
+        delete owner;
+        refund(bytes);
+      });
+  // Declarations may precede construction funding (the image path). Export
+  // the same paid token without changing any numerical/device declaration.
+  if (declaration_) declaration_->table.construction_funder = construction_funder_;
+  return {};
+}
+
 std::expected<void, std::string> GgmlBackend::Declare(std::span<const execution::TunedShape> tuning,
                                                       std::uint64_t workspace,
                                                       std::function<bool(std::uint64_t)> charge,
@@ -738,6 +772,7 @@ std::expected<std::unique_ptr<GgmlBackend>, std::string> GgmlBackend::Create(
 }
 
 kernels::StepBackend GgmlBackend::Backend() {
+  construction_started_ = true;
   if (!declaration_) return PlainBackend();
   // The owner supplies the table by const reference. In particular, returning
   // its token does not allocate another uncharged tuning/name vector.
@@ -762,10 +797,12 @@ kernels::StepBackend GgmlBackend::PlainBackend() {
               },
           .written = &WrittenBytes,
           .within = &WithinRoot,
-          .lower = [this](const kernels::LowerInput& input) { return Lower(input); }};
+          .lower = [this](const kernels::LowerInput& input) { return Lower(input); },
+          .construction_funder = construction_funder_};
 }
 
 std::expected<void, std::string> GgmlBackend::LendCublas(CublasHandle* cublas) {
+  construction_started_ = true;
   if (launch_ != nullptr) return std::unexpected("the backend's launch was made already");
   CublasHandle* previous = cublas_;
   cublas_ = cublas;
@@ -785,6 +822,7 @@ void GgmlBackend::LaunchReleased() {
 
 std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> GgmlBackend::Launch(
     LaunchContext::Workspace pool, SelectedWorkspace persistent) {
+  construction_started_ = true;
   if (launch_ != nullptr) return std::unexpected("the backend's launch was made already");
   if (launch_generation_ == std::numeric_limits<std::uint64_t>::max())
     return std::unexpected("the backend launch generation is exhausted");
@@ -823,9 +861,21 @@ std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> GgmlBackend::La
 
 std::expected<std::unique_ptr<kernels::StepProgram>, std::string> GgmlBackend::Lower(
     const kernels::LowerInput& input) const {
+  if (!construction_funder_)
+    return std::unexpected("native GGML construction requires a paid backend funder");
+  auto inventory = LowerConstructionOf(input);
+  if (!inventory) return std::unexpected(inventory.error().detail);
   if (declaration_) {
     if (auto ready = declaration_->Ready(); !ready) return std::unexpected(ready.error());
   }
+  // This guard precedes every native allocation (including its own shared
+  // control). Declared before lowered/program so all refusal and abandoned
+  // result paths destroy native storage before refunding the loan.
+  if (!construction_funder_->charge(inventory->bytes))
+    return std::unexpected("native GGML construction inventory was not funded");
+  auto payment = std::make_shared<ConstructionPayment>();
+  payment->funder = construction_funder_;
+  payment->bytes = inventory->bytes;
   auto options = options_.lower;
   options.routed_funder = declaration_;
   auto lowered = LowerStep(input, *registry_, DeviceChoicesOf(*measuring_), options);
@@ -842,15 +892,20 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> GgmlBackend::L
     if (!lane) return std::unexpected(lane.error().detail);
     if (*lane > options_.lanes.scratch_bytes_per_lane)
       return std::unexpected("the step exceeds its declared per-lane scratch capacity");
-    uint64_t lane_total = 0;
-    if (__builtin_mul_overflow(static_cast<uint64_t>(kMaxLanes), *lane, &lane_total) ||
-        __builtin_add_overflow(pool, lane_total, &pool))
-      return std::unexpected("step lane scratch pool overflows");
+    // This work uses the immutable lane slices carved from the launch pool's
+    // tail. The runner adds lane_pool_reserve() beside the measured ordinary
+    // scratch; charging it here too would fund the same physical slices twice.
   }
   for (const auto& selected : lowered->selected)
     pool = std::max(pool, selected.call->scratch_bytes());
-  return std::make_unique<GgmlStepProgram>(&launch_, &launch_generation_, *registry_,
-                                           std::move(*lowered), pool, options_.lanes, declaration_);
+  auto program =
+      std::make_unique<GgmlStepProgram>(&launch_, &launch_generation_, *registry_,
+                                        std::move(*lowered), pool, options_.lanes, declaration_);
+  // Keep the local reference through a refused slot too: even that failure
+  // destroys program before its payment. Copying a shared_ptr allocates nothing.
+  if (!program->HoldConstruction(payment))
+    return std::unexpected("native construction payment could not follow its program");
+  return program;
 }
 
 }  // namespace llmp::kernels::ggml

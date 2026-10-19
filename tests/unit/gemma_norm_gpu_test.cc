@@ -158,8 +158,8 @@ class GemmaNormGpu : public ::testing::Test {
     const auto registry = llmp::execution::Registry::Create(kg::Implementations());
     ASSERT_TRUE(registry);
     kg::GraphPlan plan;
-    plan.steps.push_back({.operation = rope ? llmp::execution::Operation::kRmsNormMulRope
-                                            : llmp::execution::Operation::kRmsNormMulAdd,
+    plan.steps.push_back({.operation = rope ? llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMulRope)
+                                            : llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMulAdd),
                           .implementation = rope ? kg::kGemmaNormRopeName : kg::kGemmaNormAddName,
                           .nodes = {norm, mul, out}});
     const auto scratch = kg::PlanScratch(*launch, plan);

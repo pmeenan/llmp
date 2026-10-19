@@ -117,9 +117,13 @@
         {
           "path": "patches/ggml/0008-llmp-fattn-d192.patch",
           "sha256": "db938628b2da71ed5deb4d3f32493eef6681f3a710cb6513c48e49464210cd21"
+        },
+        {
+          "path": "patches/ggml/0009-llmp-immutable-mmvq-pdl.patch",
+          "sha256": "149f805395b5a7c7bf2adb866d3ec5a9a97c62bc601c8d741f24f5eddfda59c3"
         }
       ],
-      "tree_sha256": "620c8c8bdcd84ba26cebca77093a0ebb3fb6ae315adea6ad32ffa6f266494d28",
+      "tree_sha256": "a27e5edcb9ab3442b7c0277f33f291fe9ac1aaab51f5283df0d5f41917cbaeaa",
       "depends": [],
       "cmake": {
         "subdirectory": "llmp",

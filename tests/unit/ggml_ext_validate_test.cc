@@ -125,7 +125,7 @@ TEST_F(GgmlExtValidateTest, GemmaDeviceMaskGuardsItsEntirePaddedOutputBeforeSubm
   ASSERT_TRUE(plan);
   ASSERT_EQ(plan->steps.size(), 1);
   EXPECT_EQ(plan->steps[0].implementation, kg::kGemma4MaskName);
-  EXPECT_EQ(plan->steps[0].operation, llmp::execution::Operation::kFill);
+  EXPECT_EQ(plan->steps[0].operation, llmp::ir::Primitive(llmp::ir::Op::kMaskBuild));
 }
 
 TEST_F(GgmlExtValidateTest, GemmaQuantGeGluUsesExactGateViewsAndNoClamp) {

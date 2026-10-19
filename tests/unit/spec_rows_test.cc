@@ -133,6 +133,21 @@ class SpecRowsTest : public ::testing::Test {
     ASSERT_TRUE(execution_->Release(fence).has_value());
   }
 
+  void RetireCase() {
+    Finish();
+    if (HasFatalFailure()) return;
+    // Every case has completed its original/specialized comparisons. Drop
+    // its descriptors and buffers together; only the launch's first allocation
+    // (its workspace) survives. The complete advertised domain need not fit
+    // all cases' already-retired tensor metadata in one context.
+    arena_.reset();
+    while (device_.size() > 1) {
+      ASSERT_EQ(cudaFree(device_.back()), cudaSuccess);
+      device_.pop_back();
+    }
+    arena_ = std::make_unique<TensorArena>(TensorArena::Create(4096).value());
+  }
+
   std::uint64_t Allocate(std::size_t bytes) {
     void* pointer = nullptr;
     EXPECT_EQ(cudaMalloc(&pointer, std::max<std::size_t>(bytes, 256)), cudaSuccess);
@@ -324,22 +339,18 @@ TEST_F(SpecRowsTest, EveryColumnOfARowInvariantProductIsItsOneColumnLaunch) {
   // drafter: q_b (k 1,024), q_a, kv, the compressors and the shared
   // expert's gate and up (4,096), its down (2,048), wo_b (8,192), the
   // drafter's fc (12,288), the head (Q4_K, 4,096), and wo_a's eight groups.
-  const std::array<Case, 16> cases = {{{GGML_TYPE_Q4_0, 704, 1},
-                                       {GGML_TYPE_Q4_1, 2816, 1},
-                                       {GGML_TYPE_Q5_0, 704, 1},
-                                       {GGML_TYPE_Q5_1, 704, 1},
-                                       {GGML_TYPE_IQ4_NL, 2816, 1},
-                                       {GGML_TYPE_Q8_0, 1024, 1},
-                                       {GGML_TYPE_Q8_0, 4096, 1},
-                                       {GGML_TYPE_Q8_0, 8192, 1},
-                                       {GGML_TYPE_Q8_0, 12288, 1},
-                                       {GGML_TYPE_Q8_0, 4096, 8},
-                                       {GGML_TYPE_Q5_K, 4096, 1},
-                                       {GGML_TYPE_Q6_K, 2048, 1},
-                                       {GGML_TYPE_Q4_K, 4096, 1},
-                                       {GGML_TYPE_IQ2_XS, 4096, 1},
-                                       {GGML_TYPE_IQ3_XXS, 2048, 1},
-                                       {GGML_TYPE_MXFP4, 2048, 1}}};
+  std::vector<Case> cases = {
+      {GGML_TYPE_Q4_0, 704, 1},     {GGML_TYPE_Q4_1, 2816, 1},   {GGML_TYPE_Q5_0, 704, 1},
+      {GGML_TYPE_Q5_1, 704, 1},     {GGML_TYPE_IQ4_NL, 2816, 1}, {GGML_TYPE_Q8_0, 1024, 1},
+      {GGML_TYPE_Q8_0, 4096, 1},    {GGML_TYPE_Q8_0, 8192, 1},   {GGML_TYPE_Q8_0, 12288, 1},
+      {GGML_TYPE_Q8_0, 4096, 8},    {GGML_TYPE_Q5_K, 4096, 1},   {GGML_TYPE_Q6_K, 2048, 1},
+      {GGML_TYPE_Q4_K, 4096, 1},    {GGML_TYPE_IQ2_XS, 4096, 1}, {GGML_TYPE_IQ2_S, 2560, 1},
+      {GGML_TYPE_IQ3_XXS, 2048, 1}, {GGML_TYPE_MXFP4, 2048, 1}};
+  // Exercise every type the native product planner advertises, not only the
+  // formats that appeared in the original model-specific shape table.
+  for (const auto type : kg::QuantizedWeightTypes())
+    if (!std::ranges::any_of(cases, [type](const Case& c) { return c.type == type; }))
+      cases.push_back({type, 512, 1});
   constexpr std::int64_t kOut = 192;
   for (const Case& test : cases) {
     const std::vector<std::uint8_t> bytes = Quantize(test.type, test.k, kOut * test.groups, 5);
@@ -383,6 +394,7 @@ TEST_F(SpecRowsTest, EveryColumnOfARowInvariantProductIsItsOneColumnLaunch) {
         }
       }
     }
+    ASSERT_NO_FATAL_FAILURE(RetireCase());
   }
 }
 
@@ -395,10 +407,14 @@ TEST_F(SpecRowsTest, EveryTokenOfARowInvariantExpertProductIsItsOneTokenLaunch) 
     std::int64_t k;
     bool broadcast;
   };
-  const std::array<Case, 4> cases = {{{GGML_TYPE_IQ2_XS, 4096, true},
-                                      {GGML_TYPE_IQ3_XXS, 2048, false},
-                                      {GGML_TYPE_MXFP4, 2048, false},
-                                      {GGML_TYPE_MXFP4, 4096, true}}};
+  std::vector<Case> cases = {{GGML_TYPE_IQ2_XS, 4096, true}, {GGML_TYPE_IQ2_S, 2560, true},
+                             {GGML_TYPE_IQ2_S, 2560, false}, {GGML_TYPE_IQ3_XXS, 2048, false},
+                             {GGML_TYPE_MXFP4, 2048, false}, {GGML_TYPE_MXFP4, 4096, true}};
+  for (const auto type : kg::QuantizedWeightTypes())
+    for (const bool broadcast : {false, true})
+      if (!std::ranges::any_of(
+              cases, [&](const Case& c) { return c.type == type && c.broadcast == broadcast; }))
+        cases.push_back({type, 512, broadcast});
   for (const Case& test : cases) {
     const std::vector<std::uint8_t> bytes = Quantize(test.type, test.k, kOut * kExperts, 7);
     ggml_tensor* w = Place(ggml_new_tensor_3d(c(), test.type, test.k, kOut, kExperts), bytes);
@@ -437,6 +453,7 @@ TEST_F(SpecRowsTest, EveryTokenOfARowInvariantExpertProductIsItsOneTokenLaunch) 
         EXPECT_TRUE(SameBits(slice, want)) << what << ": token " << t;
       }
     }
+    ASSERT_NO_FATAL_FAILURE(RetireCase());
   }
 }
 

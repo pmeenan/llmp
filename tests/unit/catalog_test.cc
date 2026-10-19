@@ -256,6 +256,36 @@ TEST_F(CatalogTest, LeasesAndEvictionExcludeEachOther) {
   EXPECT_TRUE(catalog_.AcquireLease(only_a).has_value());
 }
 
+TEST_F(CatalogTest, ALeaseReplacementIsAtomicAndCountsSharedBackingOnce) {
+  const auto a = Weights(0), b = Weights(1), absent = Weights(2);
+  Load(a);
+  Load(b);
+  auto lease = catalog_.AcquireLease(Of({a}));
+  ASSERT_TRUE(lease);
+  auto peer = catalog_.AcquireLease(Of({a}));
+  ASSERT_TRUE(peer);
+  const auto before = catalog_.OccupancyOf(domain_);
+  EXPECT_EQ(Failed(catalog_.ReplaceLease(*lease, Of({a, absent}))), CatalogError::kNotResident);
+  EXPECT_EQ(catalog_.OccupancyOf(domain_).held, before.held);
+  EXPECT_EQ(catalog_.Describe(a)->leases, 2U);
+  EXPECT_EQ(catalog_.Describe(b)->leases, 0U);
+  auto stale = Of({a, b});
+  ++stale.extents.back().second;
+  EXPECT_EQ(Failed(catalog_.ReplaceLease(*lease, stale)), CatalogError::kStaleContent);
+  EXPECT_EQ(catalog_.Describe(a)->leases, 2U);
+  ASSERT_TRUE(catalog_.ReplaceLease(*lease, Of({a, b})));
+  EXPECT_EQ(catalog_.Describe(a)->leases, 2U);
+  EXPECT_EQ(catalog_.Describe(b)->leases, 1U);
+  EXPECT_EQ(catalog_.OccupancyOf(domain_).held, 4_MiB);
+  ASSERT_TRUE(catalog_.ReplaceLease(*lease, Of({b})));
+  EXPECT_EQ(catalog_.Describe(a)->leases, 1U);
+  EXPECT_EQ(catalog_.Describe(b)->leases, 1U);
+  ASSERT_TRUE(catalog_.ReleaseLease(*lease));
+  ASSERT_TRUE(catalog_.ReleaseLease(*peer));
+  EXPECT_EQ(catalog_.OccupancyOf(domain_).held, Bytes{});
+  EXPECT_EQ(catalog_.OccupancyOf(domain_).idle, 4_MiB);
+}
+
 TEST_F(CatalogTest, RegistrationsHoldLikeLeases) {
   const ExtentId extent = Weights(0);
   EXPECT_EQ(Failed(catalog_.AddRegistration(extent)), CatalogError::kNotResident);

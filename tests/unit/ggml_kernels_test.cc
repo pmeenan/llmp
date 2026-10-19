@@ -763,7 +763,7 @@ const char* const kUnfused = "ggml.rms_norm_mul.unfused";
 
 llmp::execution::Plan NormPlan(const llmp::execution::Registry& registry, const char* name) {
   const std::vector<llmp::execution::Choice> choices = {
-      {.operation = llmp::execution::Operation::kRmsNormMul, .implementation = name}};
+      {.operation = llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul), .implementation = name}};
   return llmp::execution::Plan::Build(registry, choices).value();
 }
 
@@ -772,7 +772,8 @@ TEST_F(GgmlPlanTest, EachSelectionIsExactAcrossMemoryAndCloseToTheReference) {
       llmp::execution::Registry::Create(llmp::kernels::ggml::Implementations()).value();
   std::size_t candidates = 0;
   for (std::size_t i = 0; i < registry.size(); ++i) {
-    candidates += registry.at(i).operation == llmp::execution::Operation::kRmsNormMul ? 1 : 0;
+    candidates +=
+        registry.at(i).operation == llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul) ? 1 : 0;
   }
   EXPECT_EQ(candidates, 2U);
   const auto fused = NormPlan(registry, kFused);
@@ -841,7 +842,7 @@ TEST_F(GgmlPlanTest, AStaleOrForeignImplementationSelectsNoKernel) {
   // A plan naming an implementation of a module this build lacks (BP-S4).
   std::vector<llmp::execution::Implementation> with_module = llmp::kernels::ggml::Implementations();
   with_module.push_back({.name = "module.rms_norm_mul.other",
-                         .operation = llmp::execution::Operation::kRmsNormMul,
+                         .operation = llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul),
                          .source = "module",
                          .revision = "1",
                          .build = "1",

@@ -537,6 +537,31 @@ std::expected<catalog::LeaseId, WorkError> Scheduler::HoldLease(
   return *lease;
 }
 
+std::expected<void, WorkError> Scheduler::ReplaceRequestLease(std::uint64_t request,
+                                                              catalog::LeaseId lease,
+                                                              const catalog::Closure& closure) {
+  const auto found = held_.find(lease);
+  if (found == held_.end()) return std::unexpected(WorkError::kInvalid);
+  const auto* record = Record(found->second.task);
+  const auto task = tasks_.Describe(found->second.task);
+  if (record == nullptr || record->request != request) return std::unexpected(WorkError::kInvalid);
+  if (fault_ || record->finished || !task || task->cancelled || found->second.ending)
+    return std::unexpected(WorkError::kClosed);
+  if (!found->second.Drained()) return std::unexpected(WorkError::kBusy);
+  std::vector<catalog::ExtentId> next;
+  next.reserve(closure.extents.size());
+  for (const auto& [extent, generation] : closure.extents) {
+    (void)generation;
+    next.push_back(extent);
+  }
+  std::ranges::sort(next);
+  next.erase(std::ranges::unique(next).begin(), next.end());
+  auto replaced = catalog_.ReplaceLease(lease, closure);
+  if (!replaced) return std::unexpected(ErrorOf(replaced.error()));
+  found->second.extents.swap(next);
+  return {};
+}
+
 std::expected<Readiness, WorkError> Scheduler::EndLease(TaskId task, catalog::LeaseId lease) {
   TaskRecord* record = Record(task);
   const auto found = held_.find(lease);

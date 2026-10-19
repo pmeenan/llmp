@@ -567,6 +567,9 @@ def stream_chat(port: int, body: dict, barrier: threading.Barrier | None) -> dic
                 record["t_end"] = now
                 break
             event = json.loads(data)
+            if "error" in event:
+                record["error"] = "SSE error: " + json.dumps(event["error"], ensure_ascii=True)[:400]
+                return record
             if event.get("usage"):
                 record["usage"] = event["usage"]
             for choice in event.get("choices", []):

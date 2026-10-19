@@ -108,7 +108,16 @@ execution::Registry Registry() {
                    .revision = "r1",
                    .build = "cpu",
                    .variant = "owner-products",
-                   .capability = execution::Capability{.op = ir::Primitive(op)}});
+                   .capability = execution::Capability{
+                       .op = ir::Primitive(op),
+                       .product_arithmetic = +[](const execution::CapabilityQuery& q) {
+                         const auto w = std::ranges::find(q.operands, std::uint8_t{0},
+                                                          &execution::OperandFormat::operand);
+                         return w != q.operands.end() && w->encoding == Encoding::kBF16 &&
+                                        q.rows > 16
+                                    ? ir::ProductArithmetic::kBf16F32
+                                    : ir::ProductArithmetic::kImplementation;
+                       }}});
   }
   return std::move(execution::Registry::Create(std::move(all)).value());
 }
@@ -229,7 +238,7 @@ TEST(OwnerProductsTest, SplitsBeforeBf16PreparationAndComposesEveryInterfaceMap)
     auto proof = Prove(f);
     ASSERT_TRUE(proof) << test_support::Failed(proof).value_or("");
     Policy policy;
-    policy.enabled = {"bf16_inputs"};
+
     const auto plain = Plan(f.graph.Clone(), registry, {}, policy);
     ASSERT_TRUE(plain) << plain.error().detail;
     const auto changed = Plan(f.graph.Clone(), registry, {}, policy, {.owner_products = &*proof});
@@ -278,7 +287,7 @@ TEST(OwnerProductsTest, SingletonKeepsThePrimitiveAndItsProtectedScope) {
     EXPECT_EQ(split->scopes[0].segment, 0);
     EXPECT_EQ(split->scopes[0].columns, 4U * rows);
     Policy policy;
-    policy.enabled = {"bf16_inputs"};
+
     const auto planned = Plan(f.graph.Clone(), Registry(), {}, policy, {.owner_products = &*proof});
     ASSERT_TRUE(planned) << planned.error().detail;
     ASSERT_EQ(planned->owner_products.size(), 1U);
@@ -365,7 +374,7 @@ TEST(OwnerProductsTest, WiderOwnerRefusesRatherThanUsingAggregateOrRoundedRecipe
   ASSERT_TRUE(proof);
   EXPECT_FALSE(SplitOwnerProducts(f.graph, *proof));
   Policy policy;
-  policy.enabled = {"bf16_inputs"};
+
   EXPECT_FALSE(Plan(f.graph.Clone(), Registry(), {}, policy, {.owner_products = &*proof}));
   const auto unopted = Plan(f.graph.Clone(), Registry(), {}, policy);
   ASSERT_TRUE(unopted) << unopted.error().detail;
@@ -439,7 +448,7 @@ TEST(OwnerProductsTest, AlignmentSelectionSurvivesOwnerPatternAndFallbackMaps) {
   ASSERT_TRUE(made_registry);
   const auto& registry = *made_registry;
   Policy policy;
-  policy.enabled = {"bf16_inputs"};
+
   const auto facts = GraphRootAlignments(*graph, std::array{RootAlignmentFact{state, 256}});
   for (const bool split : {false, true}) {
     SCOPED_TRACE(split);

@@ -4,6 +4,7 @@
 #include "runtime/engine_image.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <format>
@@ -107,6 +108,7 @@ struct EngineImage::State {
   catalog::Closure all, fence;
   execution::BackendDeclaration declaration;
   en::ProgramEnvelope measured;
+  kn::PlanCoverage plan_coverage;
   std::vector<en::ProgramEnvelope> stage_envelopes;
   std::vector<std::uint64_t> stage_capture_nodes;
   // Each stage's graph digest, its plans' key: the geometry's typed graphs
@@ -154,13 +156,17 @@ struct EngineImage::State {
     const en::GraphBuildIO io{graph.graph(), graph.graph().inputs(), graph.graph().outputs(),
                               graph.weights()};
     const auto& backend = model->parts.backend->owner->backend();
+    auto policy = model->parts.policy;
+    policy.numerical = parts.stages.at(stage).numerical;
+    policy.active_stage = static_cast<std::uint16_t>(stage);
     return en::BuildComponentProgram(
-        io, backend, model->parts.policy, Addresses(stage, measuring),
+        io, backend, policy, Addresses(stage, measuring),
         {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
          .written = backend.written,
          .within = backend.within,
          .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end()),
-         .invariant = Invariant(stage)});
+         .invariant = Invariant(stage)},
+        std::nullopt, {}, model->parts.backend->owner);
   }
   // The stage's inputs its source keeps the same within a generation.
   std::vector<ir::TensorId> Invariant(std::size_t stage) const {
@@ -175,7 +181,8 @@ struct EngineImage::State {
     return {parts.identity, stage_digests[stage], declaration, static_cast<std::uint32_t>(stage)};
   }
   // A stage's plan: the cached one, or built, bound and added.
-  std::expected<Plans::Entry*, std::string> Plan(std::size_t stage) {
+  std::expected<Plans::Entry*, std::string> Plan(std::size_t stage,
+                                                 const kn::PlanRecordSink& report_sink) {
     const Key key = KeyOf(stage);
     if (auto* entry = plans.Find(key)) return entry;
     auto program = Build(stage, false);
@@ -194,8 +201,48 @@ struct EngineImage::State {
     if (!bind) return Error(bind.error());
     const auto bytes = planned->program->host_bytes();
     auto* entry = &plans.Add(key, std::move(planned), bytes, stage_capture_nodes[stage], 0);
+    // Add's required plan charge owns the complete retained program before
+    // its compiler/report subgrant becomes available for another construction.
+    entry->planned->program->ConstructionPaid();
     for (auto& runs : entry->runs) runs.uncapturable = entry->planned->positioned;
+    EmitPlanReport(*entry, report_sink);
     return entry;
+  }
+  void ObservePlanCoverage(const kn::StepProgram& program) {
+    const auto observed = program.plan_coverage();
+    auto& kept = plan_coverage;
+    kept.primitive_fallbacks = std::max(kept.primitive_fallbacks, observed.primitive_fallbacks);
+    kept.available_fast_fallbacks =
+        std::max(kept.available_fast_fallbacks, observed.available_fast_fallbacks);
+    kept.unqualified_numerical_candidates =
+        std::max(kept.unqualified_numerical_candidates, observed.unqualified_numerical_candidates);
+    kept.missing_numerical_qualifications =
+        std::max(kept.missing_numerical_qualifications, observed.missing_numerical_qualifications);
+    kept.decode_expansion_rules =
+        std::max(kept.decode_expansion_rules, observed.decode_expansion_rules);
+    kept.logical_activation_bytes =
+        std::max(kept.logical_activation_bytes, observed.logical_activation_bytes);
+    kept.physical_activation_bytes =
+        std::max(kept.physical_activation_bytes, observed.physical_activation_bytes);
+    kept.unmaterialized_logical_bytes =
+        std::max(kept.unmaterialized_logical_bytes, observed.unmaterialized_logical_bytes);
+    kept.unmaterialized_roots = std::max(kept.unmaterialized_roots, observed.unmaterialized_roots);
+  }
+  static void EmitPlanReport(const Plans::Entry& entry, const kn::PlanRecordSink& sink) {
+    if (!sink) return;
+    std::array<char, 512> header{};
+    const auto written = std::format_to_n(
+        header.data(), header.size(),
+        R"({{"kind":"installed_plan","pipeline":"image","id":{},"stage":{},"host_bytes":{}}})",
+        entry.serial, entry.key.stage, entry.host_bytes);
+    base::Check(static_cast<std::size_t>(written.size) <= header.size(),
+                "bounded installed image-plan report header");
+    sink(kn::PlanReportEvent::kBegin, {});
+    sink(kn::PlanReportEvent::kFragment,
+         std::string_view(header.data(), static_cast<std::size_t>(written.size)));
+    sink(kn::PlanReportEvent::kEnd, {});
+    // Explicit record boundaries let the logger frame streamed JSON fragments.
+    entry.planned->program->ReportPlanRecords(sink);
   }
   // The staging of a stage's host inputs, in slot order at 256-byte
   // boundaries: a warm run's invariant inputs keep their place but are not
@@ -305,6 +352,10 @@ struct EngineImage::State {
   }
 };
 
+std::uint64_t EngineImage::ControlMetadataBytes() {
+  return sizeof(State) + sizeof(State::Model) + sizeof(EngineImage);
+}
+
 EngineImage::EngineImage(en::PagedNode& node, const config::ModelEntry& entry,
                          const ModelSettings& settings, int index, EngineImageBuild build)
     : node_(node), index_(index), build_(std::move(build)) {
@@ -389,6 +440,7 @@ Status EngineImage::PrepareState(State& s) {
     if (auto ports = s.Ports(stage, **program); !ports) return ports;
     auto envelope = en::ProgramEnvelope::Measure(**program, true);
     if (!envelope) return Error(envelope.error());
+    s.ObservePlanCoverage(**program);
     s.measured.Include(*envelope);
     s.stage_envelopes.push_back(*envelope);
     // One H2D or D2D per input and a fixed observation D2H are captured.
@@ -603,7 +655,7 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
       }
       s.flight.reset();
     }
-    auto planned = s.Plan(invocation.stage);
+    auto planned = s.Plan(invocation.stage, plan_report_sink_);
     Status checked = planned ? Status{} : Error(planned.error());
     if (!checked) {
       auto ended = settle();
@@ -749,7 +801,7 @@ Status EngineImage::AfterLoad() {
     const std::size_t stage = sequence[i].stage;
     // A plan this cannot make now is the first request's to make (or
     // refuse): only a recording's fault fails the load.
-    auto planned = s.Plan(stage);
+    auto planned = s.Plan(stage, plan_report_sink_);
     if (!planned) continue;
     auto* entry = *planned;
     const auto& program = *entry->planned->program;
@@ -961,6 +1013,41 @@ std::uint64_t EngineImage::startup_host_bytes() const {
   return payment ? payment->capacity() + en::ExecutionMetadataAllowance::OverheadBytes() : 0;
 }
 std::uint64_t EngineImage::plan_floor_bytes() const { return state_ ? state_->plan_floor : 0; }
+std::string EngineImage::plan_report() const {
+  if (!state_ || !state_->setup) return {};
+  const auto& c = state_->plan_coverage;
+  return std::format(
+      R"({{"measured_shapes":{},"max_primitive_fallbacks":{},"max_available_fast_fallbacks":{},"max_decode_expansion_rules":{},"max_missing_numerical_qualifications":{},"max_unqualified_numerical_candidates":{},"max_logical_activation_bytes":{},"max_physical_activation_bytes":{},"max_omitted_logical_bytes":{},"max_omitted_roots":{},"warning":"{}"}})",
+      state_->stage_envelopes.size(), c.primitive_fallbacks, c.available_fast_fallbacks,
+      c.decode_expansion_rules, c.missing_numerical_qualifications,
+      c.unqualified_numerical_candidates, c.logical_activation_bytes, c.physical_activation_bytes,
+      c.unmaterialized_logical_bytes, c.unmaterialized_roots,
+      c.unqualified_numerical_candidates
+          ? "UNQUALIFIED CANDIDATE arithmetic is active; results are diagnostic only"
+      : c.missing_numerical_qualifications
+          ? "arithmetic opportunities lack qualification; enable --debug-plans for details"
+      : c.available_fast_fallbacks
+          ? (c.decode_expansion_rules
+                 ? "fast implementations are ineligible for some measured ops; decode products "
+                   "expand; enable --debug-plans for selected recipes"
+                 : "fast implementations are ineligible for some measured ops; enable "
+                   "--debug-plans for selected fallbacks")
+          : (c.decode_expansion_rules
+                 ? "decode products expand; enable --debug-plans for selected recipes"
+                 : ""));
+}
+void EngineImage::set_plan_report_sink(kernels::PlanRecordSink sink) {
+  plan_report_sink_ = std::move(sink);
+}
+void EngineImage::ReportPlans(const kernels::PlanRecordSink& sink) const {
+  if (!sink) return;
+  const auto emit = [&](const State& state) {
+    state.plans.ForEach(
+        [&](const State::Plans::Entry& entry) { State::EmitPlanReport(entry, sink); });
+  };
+  if (state_) emit(*state_);
+  for (const auto& pending : transitions_) emit(*pending);
+}
 void EngineImage::ReclaimCandidates(std::uint32_t owner, bool running,
                                     std::vector<memory::ReclaimCandidate>& out) {
   if (state_ && !state_->unknown && !state_->flight && !state_->released)

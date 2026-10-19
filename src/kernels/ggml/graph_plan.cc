@@ -22,6 +22,7 @@
 #include "execution/registry.h"
 #include "ggml.h"
 #include "kernels/ggml/attention_f32.h"
+#include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
@@ -41,8 +42,6 @@
 
 namespace llmp::kernels::ggml {
 namespace {
-
-using execution::Operation;
 
 std::unexpected<KernelFailure> Rejected(std::string detail) {
   return std::unexpected(
@@ -197,13 +196,16 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
   }
   GraphPlan plan;
   std::vector<bool> taken(graph.size(), false);
-  const auto add = [&](Operation operation, std::string_view name, std::size_t first,
+  const auto add = [&](llmp::ir::OpKey operation, std::string_view name, std::size_t first,
                        std::vector<ggml_tensor*> nodes, std::size_t span) {
     for (std::size_t k = first; k < first + span; ++k) {
       taken[k] = true;
     }
-    plan.steps.push_back(
-        {.operation = operation, .implementation = name, .nodes = std::move(nodes), .lane = 0});
+    const auto* capability = CapabilityOf(name);
+    plan.steps.push_back({.operation = capability ? capability->op : operation,
+                          .implementation = name,
+                          .nodes = std::move(nodes),
+                          .lane = 0});
   };
   std::unordered_map<std::size_t, Dsv4HcPostExpertsNodes> deferred;
   std::unordered_map<std::size_t, RmsNormChainNodes> deferred_norm_add;
@@ -221,26 +223,27 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
     }
     if (const auto d = deferred.find(i); d != deferred.end()) {
       const Dsv4HcPostExpertsNodes& f = d->second;
-      add(Operation::kHcPost, kDsv4HcPostExpertsNormF16Name, i, {f.reduce, f.add, f.post, f.norm},
-          4);
+      add(llmp::ir::Primitive(llmp::ir::Op::kHcPost), kDsv4HcPostExpertsNormF16Name, i,
+          {f.reduce, f.add, f.post, f.norm}, 4);
       continue;
     }
     if (const auto d = deferred_norm_add.find(i); d != deferred_norm_add.end()) {
       const auto& f = d->second;
-      add(Operation::kRmsNormMulAdd, kGemmaNormAddName, i, {f.norm, f.mul, f.out}, 1);
+      add(llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMulAdd), kGemmaNormAddName, i,
+          {f.norm, f.mul, f.out}, 1);
       continue;
     }
     if (!fusion && device.fuse_gemma_route && node->op == GGML_OP_SOFT_MAX) {
       if (const auto f = GemmaRoutingFusionAt(graph, i, keep, &*reads)) {
-        add(Operation::kGemmaRoute, kGemmaRouteName, i, {f->nodes.begin(), f->nodes.end()},
-            f->nodes.size());
+        add(llmp::ir::Primitive(llmp::ir::Op::kRoute), kGemmaRouteName, i,
+            {f->nodes.begin(), f->nodes.end()}, f->nodes.size());
         continue;
       }
     }
     if (!fusion && device.fuse_gemma_reduce && node->op == GGML_OP_MUL) {
       if (const auto f = GemmaReductionFusionAt(graph, i, keep, &*reads)) {
-        add(Operation::kGemmaScaledReduce, kGemmaReduceName, i, {f->nodes.begin(), f->nodes.end()},
-            f->nodes.size());
+        add(llmp::ir::Primitive(llmp::ir::Op::kExpertReduce), kGemmaReduceName, i,
+            {f->nodes.begin(), f->nodes.end()}, f->nodes.size());
         continue;
       }
     }
@@ -249,14 +252,16 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                              ? GemmaNormRopeFusionAt(graph, i, reads ? &*reads : nullptr)
                              : std::nullopt;
           f && reads->OnlyReader(f->norm, f->mul) && reads->OnlyReader(f->mul, f->out)) {
-        add(Operation::kRmsNormMulRope, kGemmaNormRopeName, i, {f->norm, f->mul, f->out}, 3);
+        add(llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMulRope), kGemmaNormRopeName, i,
+            {f->norm, f->mul, f->out}, 3);
         continue;
       }
       if (const auto f = device.fuse_norm_add
                              ? GemmaNormAddFusionAt(graph, i, reads ? &*reads : nullptr)
                              : std::nullopt;
           f && reads->OnlyReader(f->norm, f->mul) && reads->OnlyReader(f->mul, f->out)) {
-        add(Operation::kRmsNormMulAdd, kGemmaNormAddName, i, {f->norm, f->mul, f->out}, 3);
+        add(llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMulAdd), kGemmaNormAddName, i,
+            {f->norm, f->mul, f->out}, 3);
         continue;
       }
       if (const auto f = device.fuse_norm_add
@@ -278,9 +283,11 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           })) {
         // The products are elided: only the GLU reads them.
         if (ggml_get_glu_op(f->glu) == GGML_GLU_OP_GEGLU) {
-          add(Operation::kMulMatGeGlu, kMulMatGeGluQFused, i, {f->gate, f->up, f->glu}, 3);
+          add(llmp::ir::Fused(llmp::ir::FusedKind::kMatMulGlu), kMulMatGeGluQFused, i,
+              {f->gate, f->up, f->glu}, 3);
         } else {
-          add(Operation::kMulMatGlu, kMulMatGluQFused, i, {f->gate, f->up, f->glu}, 3);
+          add(llmp::ir::Fused(llmp::ir::FusedKind::kMatMulGlu), kMulMatGluQFused, i,
+              {f->gate, f->up, f->glu}, 3);
         }
         continue;
       }
@@ -291,7 +298,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           std::ranges::none_of(keep, [&](const auto* kept) {
             return kept != nullptr && Storage(kept) == f->rope;
           })) {
-        add(Operation::kRopeSetRows, kRopeSetRowsFused, i, {f->rope, f->set_rows}, 3);
+        add(llmp::ir::Fused(llmp::ir::FusedKind::kRopeStore), kRopeSetRowsFused, i,
+            {f->rope, f->set_rows}, 3);
         continue;
       }
       // Its quantized destination's form (kv_quant.h).
@@ -300,7 +308,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           std::ranges::none_of(keep, [&](const auto* kept) {
             return kept != nullptr && Storage(kept) == f->rope;
           })) {
-        add(Operation::kRopeSetRows, kRopeSetRowsQuantName, i, {f->rope, f->set_rows}, 3);
+        add(llmp::ir::Fused(llmp::ir::FusedKind::kRopeStore), kRopeSetRowsQuantName, i,
+            {f->rope, f->set_rows}, 3);
         continue;
       }
     }
@@ -316,7 +325,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       }
       if (node->op == GGML_OP_ROPE) {
         if (const auto f = RopeSetRowsFusionAt(graph, i, reads ? &*reads : nullptr)) {
-          add(Operation::kRopeSetRows, kRopeSetRowsFused, i, {f->rope, f->set_rows}, 3);
+          add(llmp::ir::Fused(llmp::ir::FusedKind::kRopeStore), kRopeSetRowsFused, i,
+              {f->rope, f->set_rows}, 3);
           continue;
         }
       }
@@ -328,34 +338,38 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             // The products are elided: keep/read dependencies must survive.
             if (MulMatVecGeGluPrecisionFits(f->gate, f->up) && reads->OnlyReader(f->gate, f->glu) &&
                 reads->OnlyReader(f->up, f->glu)) {
-              add(Operation::kMulMatGeGlu, kMulMatGeGluFused, i, {f->gate, f->up, f->glu}, 3);
+              add(llmp::ir::Fused(llmp::ir::FusedKind::kMatMulGlu), kMulMatGeGluFused, i,
+                  {f->gate, f->up, f->glu}, 3);
               continue;
             }
           } else if (op == GGML_GLU_OP_SWIGLU) {
-            add(Operation::kMulMatGlu, kMulMatGluFused, i, {f->gate, f->up, f->glu}, 3);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kMatMulGlu), kMulMatGluFused, i,
+                {f->gate, f->up, f->glu}, 3);
             continue;
           }
         }
         if (const auto f = MulMatAddFusionAt(graph, i, reads ? &*reads : nullptr);
             f && device.vector_fusible(f->mul_mat)) {
-          add(Operation::kMulMatAdd, kMulMatAddFused, i, {f->mul_mat, f->add}, 2);
+          add(llmp::ir::Fused(llmp::ir::FusedKind::kMatMulAdd), kMulMatAddFused, i,
+              {f->mul_mat, f->add}, 2);
           continue;
         }
       }
       if (node->op == GGML_OP_RMS_NORM) {
         if (const auto f = RmsNormMulFusionAt(graph, i, reads ? &*reads : nullptr);
             f && reads->OnlyReader(f->norm, f->mul)) {
-          add(Operation::kRmsNormMul, kRmsNormMulFused, i, {f->norm, f->mul}, 2);
+          add(llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul), kRmsNormMulFused, i,
+              {f->norm, f->mul}, 2);
           continue;
         }
       }
     }
     switch (node->op) {
       case GGML_OP_NORM:
-        add(Operation::kLayerNorm, "ggml.norm", i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kLayerNorm), "ggml.norm", i, {node}, 1);
         break;
       case GGML_OP_L2_NORM:
-        add(Operation::kL2Norm, "ggml.l2_norm", i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kL2Norm), "ggml.l2_norm", i, {node}, 1);
         break;
       case GGML_OP_RMS_NORM: {
         ggml_tensor* next = i + 1 < graph.size() ? graph[i + 1] : nullptr;
@@ -363,23 +377,25 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                                ? RmsNormMulFusionAt(graph, i, reads ? &*reads : nullptr)
                                : std::nullopt;
             f && reads->OnlyReader(f->norm, f->mul)) {
-          add(Operation::kRmsNormMul, kRmsNormMulFused, i, {f->norm, f->mul}, 2);
+          add(llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul), kRmsNormMulFused, i,
+              {f->norm, f->mul}, 2);
         } else if (!fusion && next != nullptr && next->op == GGML_OP_MUL && next->src[0] == node) {
-          add(Operation::kRmsNormMul, kRmsNormMulUnfused, i, {node, next}, 2);
+          add(llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul), kRmsNormMulUnfused, i,
+              {node, next}, 2);
         } else {
-          add(Operation::kRmsNorm, kRmsNormName, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kRmsNorm), kRmsNormName, i, {node}, 1);
         }
         break;
       }
       case GGML_OP_MUL:
-        add(Operation::kMul, kMulName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kMul), kMulName, i, {node}, 1);
         break;
       case GGML_OP_ADD:
-        add(Operation::kAdd, kAddName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kAdd), kAddName, i, {node}, 1);
         break;
       case GGML_OP_MUL_MAT: {
         if (MulMatHint(node) == GGML_HINT_SRC0_IS_HADAMARD) {
-          add(Operation::kMatMul, kMulMatHadamard, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kMatMul), kMulMatHadamard, i, {node}, 1);
           break;
         }
         if (device.row_invariant) {
@@ -389,7 +405,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                             "columns",
                             Where(graph, i), kRowInvariantColumns));
           }
-          add(Operation::kMatMul,
+          add(llmp::ir::Primitive(llmp::ir::Op::kMatMul),
               IsQuantizedWeightType(node->src[0]->type) ? kMulMatVecQRows : kMulMatVecFRows, i,
               {node}, 1);
           break;
@@ -423,7 +439,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
               const auto other_path = device.quant(other);
               if (other_path && *other_path == QuantMulMatPath::kTile &&
                   CheckMulMatQPairDense(node, other)) {
-                add(Operation::kMatMul, kMulMatQPairDense, i, {node, other}, 1);
+                add(llmp::ir::Primitive(llmp::ir::Op::kMatMul), kMulMatQPairDense, i, {node, other},
+                    1);
                 taken[k] = true;
                 paired = true;
                 break;
@@ -433,8 +450,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
               break;
             }
           }
-          add(Operation::kMatMul, *path == QuantMulMatPath::kVector ? kMulMatVecQ : kMulMatQ, i,
-              {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kMatMul),
+              *path == QuantMulMatPath::kVector ? kMulMatVecQ : kMulMatQ, i, {node}, 1);
           break;
         }
         if ((device.vector_floats ||
@@ -442,7 +459,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             node->src[1] != nullptr && node->src[1]->ne[1] <= kRowInvariantColumns &&
             (node->src[0]->type == GGML_TYPE_F32 || node->src[0]->type == GGML_TYPE_F16 ||
              node->src[0]->type == GGML_TYPE_BF16)) {
-          add(Operation::kMatMul, kMulMatVecFRows, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kMatMul), kMulMatVecFRows, i, {node}, 1);
           break;
         }
         if (!device.mul_mat) {
@@ -452,7 +469,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         if (!path) {
           return Rejected(std::format("{}: {}", Where(graph, i), path.error().detail));
         }
-        add(Operation::kMatMul, MulMatName(*path), i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kMatMul), MulMatName(*path), i, {node}, 1);
         break;
       }
       case GGML_OP_MUL_MAT_ID: {
@@ -463,7 +480,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                             "most {} tokens",
                             Where(graph, i), kRowInvariantColumns));
           }
-          add(Operation::kMulMatId, kMulMatIdVecQRows, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kMatMulId), kMulMatIdVecQRows, i, {node}, 1);
           break;
         }
         if (!device.quant) {
@@ -475,7 +492,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         }
         if (device.d2r_experts && *path == QuantMulMatPath::kTile && device.q2_d2r_fits &&
             device.q2_d2r_fits(node)) {
-          add(Operation::kMulMatId, kMulMatIdQ2D2r, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kMatMulId), kMulMatIdQ2D2r, i, {node}, 1);
           break;
         }
         if (device.pair_experts && *path == QuantMulMatPath::kTile && i + 1 < graph.size()) {
@@ -503,15 +520,18 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                     CheckMulMatIdQCompact(down) && reads->OnlyReader(glu, down)) {
                   const auto down_path = device.quant(down);
                   if (down_path && *down_path == QuantMulMatPath::kTile) {
-                    add(Operation::kMulMatId, kMulMatIdQPairGluQ8, i, {second, node, glu}, 3);
-                    add(Operation::kMulMatId, kMulMatIdQCompactPrequant, i + 3, {down}, 1);
+                    add(llmp::ir::Primitive(llmp::ir::Op::kMatMulId), kMulMatIdQPairGluQ8, i,
+                        {second, node, glu}, 3);
+                    add(llmp::ir::Primitive(llmp::ir::Op::kMatMulId), kMulMatIdQCompactPrequant,
+                        i + 3, {down}, 1);
                     break;
                   }
                 }
-                add(Operation::kMulMatId, kMulMatIdQPairGlu, i, {second, node, glu}, 3);
+                add(llmp::ir::Primitive(llmp::ir::Op::kMatMulId), kMulMatIdQPairGlu, i,
+                    {second, node, glu}, 3);
                 break;
               }
-              add(Operation::kMulMatId,
+              add(llmp::ir::Primitive(llmp::ir::Op::kMatMulId),
                   device.compact_experts ? kMulMatIdQPairCompact : kMulMatIdQPair, i,
                   {node, second}, 2);
               break;
@@ -520,8 +540,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         }
         const auto tile_name =
             device.compact_experts && CheckMulMatIdQCompact(node) ? kMulMatIdQCompact : kMulMatIdQ;
-        add(Operation::kMulMatId, *path == QuantMulMatPath::kVector ? kMulMatIdVecQ : tile_name, i,
-            {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kMatMulId),
+            *path == QuantMulMatPath::kVector ? kMulMatIdVecQ : tile_name, i, {node}, 1);
         break;
       }
       case GGML_OP_ROPE:
@@ -532,13 +552,13 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         // names the same implementation whatever the addresses.
         if (node->op_params[2] == GGML_ROPE_TYPE_NEOX && node->src[2] == nullptr &&
             node->op_params[15] == 0) {
-          add(Operation::kRope, kRopeName, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kRope), kRopeName, i, {node}, 1);
         } else {
-          add(Operation::kRope, kRopeExtName, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kRope), kRopeExtName, i, {node}, 1);
         }
         break;
       case GGML_OP_ROPE_BACK:
-        add(Operation::kRope, kRopeExtName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kRope), kRopeExtName, i, {node}, 1);
         break;
       case GGML_OP_SET_ROWS:
         // A Q8_0 or Q4_0 destination (kv_quant.h): the quantizing store,
@@ -567,11 +587,12 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
               end = j + 1;
             }
             if (stores.size() > 1) {
-              add(Operation::kSetRows, kSetRowsQuantGroupName, i, std::move(stores), end - i);
+              add(llmp::ir::Primitive(llmp::ir::Op::kCacheStore), kSetRowsQuantGroupName, i,
+                  std::move(stores), end - i);
               break;
             }
           }
-          add(Operation::kSetRows, kSetRowsQuantName, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kCacheStore), kSetRowsQuantName, i, {node}, 1);
           break;
         }
         if (device.group_set_rows) {
@@ -595,7 +616,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             end = j + 1;
           }
           if (stores.size() > 1) {
-            add(Operation::kSetRows, kSetRowsGroupedName, i, std::move(stores), end - i);
+            add(llmp::ir::Primitive(llmp::ir::Op::kCacheStore), kSetRowsGroupedName, i,
+                std::move(stores), end - i);
             break;
           }
         }
@@ -603,7 +625,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         // indices; everything else the extended implementation. (A
         // set_rows node's sources are the rows, the indices and then the
         // destination, ggml.c:4021-4023.)
-        add(Operation::kSetRows,
+        add(llmp::ir::Primitive(llmp::ir::Op::kCacheStore),
             node->type == GGML_TYPE_F16 && node->src[0] != nullptr &&
                     node->src[0]->type == GGML_TYPE_F32 && node->src[1] != nullptr &&
                     node->src[1]->type == GGML_TYPE_I64
@@ -612,7 +634,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             i, {node}, 1);
         break;
       case GGML_OP_GET_ROWS:
-        add(Operation::kGetRows,
+        add(llmp::ir::Primitive(llmp::ir::Op::kGetRows),
             node->src[0]->type == GGML_TYPE_F32 || node->src[0]->type == GGML_TYPE_F16 ||
                     node->src[0]->type == GGML_TYPE_BF16
                 ? kGetRowsName
@@ -620,22 +642,22 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             i, {node}, 1);
         break;
       case GGML_OP_SOFT_MAX:
-        add(Operation::kSoftMax, kSoftMaxName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kSoftMax), kSoftMaxName, i, {node}, 1);
         break;
       case GGML_OP_CPY:
-        add(Operation::kConvert, "ggml.convert", i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kConvert), "ggml.convert", i, {node}, 1);
         break;
       case GGML_OP_CONT:
-        add(Operation::kCont, kContName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kCont), kContName, i, {node}, 1);
         break;
       case GGML_OP_GLU:
         if (ggml_get_glu_op(node) == GGML_GLU_OP_SWIGLU_CLAMP) {
-          add(Operation::kSwiGluClamp, kSwiGluClampName, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kGlu), kSwiGluClampName, i, {node}, 1);
           break;
         }
         if (ggml_get_glu_op(node) == GGML_GLU_OP_GEGLU && node->src[1] != nullptr &&
             node->op_params[1] == 0) {
-          add(Operation::kGeGlu, kGeGluName, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kGlu), kGeGluName, i, {node}, 1);
           break;
         }
         if (ggml_get_glu_op(node) != GGML_GLU_OP_SWIGLU || node->src[1] == nullptr) {
@@ -643,249 +665,258 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
               std::format("{}: only split SwiGLU and unswapped GELU-tanh GeGLU are implemented",
                           Where(graph, i)));
         }
-        add(Operation::kSwiGlu, kSwiGluName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kGlu), kSwiGluName, i, {node}, 1);
         break;
       case GGML_OP_SUB:
-        add(Operation::kSub, kSubName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kSub), kSubName, i, {node}, 1);
         break;
       case GGML_OP_DIV:
-        add(Operation::kDiv, kDivName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kDiv), kDivName, i, {node}, 1);
         break;
       case GGML_OP_CONV_2D:
-        add(Operation::kConv2d,
+        add(llmp::ir::Primitive(llmp::ir::Op::kConv2d),
             device.conv2d_tiled && device.conv2d_tiled(node) ? kConv2dTiledF32 : "ggml.conv2d.f32",
             i, {node}, 1);
         break;
       case GGML_OP_UPSCALE:
-        add(Operation::kUpsample, "ggml.upsample.nearest", i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kUpsample), "ggml.upsample.nearest", i, {node}, 1);
         break;
       case GGML_OP_SCALE:
-        add(Operation::kScale, kScaleName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kScale), kScaleName, i, {node}, 1);
         break;
       case GGML_OP_UNARY:
       case GGML_OP_SQRT:
-        add(Operation::kUnary, kUnaryName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kUnary), kUnaryName, i, {node}, 1);
         break;
       case GGML_OP_CLAMP:
-        add(Operation::kClamp, kClampName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kClamp), kClampName, i, {node}, 1);
         break;
       case GGML_OP_FILL:
-        add(Operation::kFill, kFillName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kFill), kFillName, i, {node}, 1);
         break;
       case GGML_OP_REPEAT:
-        add(Operation::kRepeat, kRepeatName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kRepeat), kRepeatName, i, {node}, 1);
         break;
       case GGML_OP_CONCAT:
-        add(Operation::kConcat, kConcatName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kConcat), kConcatName, i, {node}, 1);
         break;
       case GGML_OP_SUM_ROWS:
-        add(Operation::kSumRows, kSumRowsName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kSumRows), kSumRowsName, i, {node}, 1);
         break;
       case GGML_OP_ARGSORT:
-        add(Operation::kArgsort, kArgsortName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kArgsort), kArgsortName, i, {node}, 1);
         break;
       case GGML_OP_TOP_K:
-        add(Operation::kTopK, kTopKName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kTopK), kTopKName, i, {node}, 1);
         break;
       case GGML_OP_LIGHTNING_INDEXER:
-        add(Operation::kLightningIndexer, kLightningIndexerName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kIndexScore), kLightningIndexerName, i, {node}, 1);
         break;
       case GGML_OP_DSV4_HC_COMB:
-        add(Operation::kHcComb, kHcCombName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kHcMix), kHcCombName, i, {node}, 1);
         break;
       case GGML_OP_DSV4_HC_PRE:
-        add(Operation::kHcPre, kHcPreName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kHcPre), kHcPreName, i, {node}, 1);
         break;
       case GGML_OP_DSV4_HC_POST:
         if (const auto f = Dsv4HcPostNormF16At(graph, i)) {
           // The post, its flat reshape and the F16 mix-input norm: one kernel.
-          add(Operation::kHcPost, kDsv4HcPostNormF16Name, i, {f->post, f->norm}, 3);
+          add(llmp::ir::Primitive(llmp::ir::Op::kHcPost), kDsv4HcPostNormF16Name, i,
+              {f->post, f->norm}, 3);
           break;
         }
-        add(Operation::kHcPost, kHcPostName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kHcPost), kHcPostName, i, {node}, 1);
         break;
       case GGML_OP_SSM_CONV:
-        add(Operation::kSsmConv, kSsmConvName, i, {node}, 1);
+        add(llmp::ir::Primitive(llmp::ir::Op::kSsmConv), kSsmConvName, i, {node}, 1);
         break;
       case GGML_OP_GATED_DELTA_NET:
         // llmpalooza's column-blocked recurrence where it takes the shape (the
         // same arithmetic, llmp_ops.h), else upstream's.
         if (GatedDeltaNetLanesFits(node)) {
-          add(Operation::kGatedDeltaNet, kGatedDeltaNetLanesName, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kGatedDeltaNet), kGatedDeltaNetLanesName, i, {node},
+              1);
         } else if (GatedDeltaNetColumnsFits(node)) {
-          add(Operation::kGatedDeltaNet, kGatedDeltaNetColumnsName, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kGatedDeltaNet), kGatedDeltaNetColumnsName, i,
+              {node}, 1);
         } else {
-          add(Operation::kGatedDeltaNet, kGatedDeltaNetName, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kGatedDeltaNet), kGatedDeltaNetName, i, {node}, 1);
         }
         break;
       case GGML_OP_CUSTOM:
         switch (LlmpOpOf(node)) {
           case LlmpOp::kMxfp8MulMatVec:
-            add(Operation::kMatMul, kMxfp8MulMatVecName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kMatMul), kMxfp8MulMatVecName, i, {node}, 1);
             break;
           case LlmpOp::kNvfp4Rows:
-            add(Operation::kGetRows, kNvfp4RowsName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kGetRows), kNvfp4RowsName, i, {node}, 1);
             break;
           case LlmpOp::kQRows:
-            add(Operation::kGetRows, kQRowsName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kGetRows), kQRowsName, i, {node}, 1);
             break;
           case LlmpOp::kHcCombine:
-            add(Operation::kHcCombine, kHcCombineName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kHcPost), kHcCombineName, i, {node}, 1);
             break;
           case LlmpOp::kHcNorm:
-            add(Operation::kHcNorm, kHcNormName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kHcNorm), kHcNormName, i, {node}, 1);
             break;
           case LlmpOp::kHcMix:
-            add(Operation::kHcMix, kHcMixName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kHcPre), kHcMixName, i, {node}, 1);
             break;
           case LlmpOp::kMoeGlu:
-            add(Operation::kMoeGlu, kMoeGluName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kMoeGlu), kMoeGluName, i, {node}, 1);
             break;
           case LlmpOp::kMoeCombine:
-            add(Operation::kMoeCombine, kMoeCombineName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kMoeCombine), kMoeCombineName, i, {node}, 1);
             break;
           case LlmpOp::kBf16:
-            add(Operation::kConvert, kBf16Name, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kConvert), kBf16Name, i, {node}, 1);
             break;
           case LlmpOp::kGemmBf16:
-            add(Operation::kMatMul, GemmBf16Pinned(node) ? kGemmBf16LtName : kGemmBf16Name, i,
-                {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kMatMul),
+                GemmBf16Pinned(node) ? kGemmBf16LtName : kGemmBf16Name, i, {node}, 1);
             break;
           case LlmpOp::kMoeRoute:
-            add(Operation::kMoeRoute, kMoeRouteName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kExpertSort), kMoeRouteName, i, {node}, 1);
             break;
           case LlmpOp::kMoeQuantize:
-            add(Operation::kQuantize, kMoeQuantizeName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kPrepare), kMoeQuantizeName, i, {node}, 1);
             break;
           case LlmpOp::kMoeGemm:
-            add(Operation::kMulMatId, kMoeGemmName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kMatMulId), kMoeGemmName, i, {node}, 1);
             break;
           case LlmpOp::kMoeGluQuantize:
-            add(Operation::kMoeGlu, kMoeGluQuantizeName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kMoeGlu), kMoeGluQuantizeName, i, {node}, 1);
             break;
           case LlmpOp::kMoeCombineSorted:
-            add(Operation::kMoeCombine, kMoeCombineSortedName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kMoeCombine), kMoeCombineSortedName, i, {node},
+                1);
             break;
           case LlmpOp::kMoeGemv:
-            add(Operation::kMulMatId, kMoeGemvName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kMatMulId), kMoeGemvName, i, {node}, 1);
             break;
           case LlmpOp::kGdnConv:
-            add(Operation::kSsmConv, kGdnConvName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kSsmConv), kGdnConvName, i, {node}, 1);
             break;
           case LlmpOp::kGdnNormGate:
-            add(Operation::kNormGate, kGdnNormGateName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kNormGate), kGdnNormGateName, i, {node}, 1);
             break;
           case LlmpOp::kArgmax:
-            add(Operation::kTopK, kArgmaxName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kTopK), kArgmaxName, i, {node}, 1);
             break;
           case LlmpOp::kMxfp8Quantize:
-            add(Operation::kQuantize, kMxfp8QuantizeName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kPrepare), kMxfp8QuantizeName, i, {node}, 1);
             break;
           case LlmpOp::kMxfp8Swizzle:
-            add(Operation::kConvert, kMxfp8SwizzleName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kConvert), kMxfp8SwizzleName, i, {node}, 1);
             break;
           case LlmpOp::kMxfp8Gemm:
-            add(Operation::kMatMul, kMxfp8GemmName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kMatMul), kMxfp8GemmName, i, {node}, 1);
             break;
           case LlmpOp::kHcPrep:
-            add(Operation::kHcNorm, kHcPrepName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kHcNorm), kHcPrepName, i, {node}, 1);
             break;
           case LlmpOp::kHcLo:
-            add(Operation::kUnary, kHcLoName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kUnary), kHcLoName, i, {node}, 1);
             break;
           case LlmpOp::kSpatialChannelNorm:
-            add(Operation::kSpatialChannelNorm, kSpatialChannelNormName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kSpatialChannelNorm), kSpatialChannelNormName,
+                i, {node}, 1);
             break;
           case LlmpOp::kNormRopeSections:
-            add(Operation::kRmsNormMulRopeSections, kNormRopeSectionsName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMulRopeSections),
+                kNormRopeSectionsName, i, {node}, 1);
             break;
           case LlmpOp::kSwiGluBf16:
-            add(Operation::kSwiGlu, kSwiGluBf16Name, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kGlu), kSwiGluBf16Name, i, {node}, 1);
             break;
           case LlmpOp::kAttentionMaskPack:
-            add(Operation::kAttentionMaskPack, kAttentionMaskPackName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kAttentionMaskPack), kAttentionMaskPackName, i,
+                {node}, 1);
             break;
           case LlmpOp::kRopeTable:
-            add(Operation::kRopeTable, kRopeTableName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kRopeTable), kRopeTableName, i, {node}, 1);
             break;
           case LlmpOp::kQkAttention:
-            add(Operation::kQkAttention, kQkAttentionName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kQkAttention), kQkAttentionName, i, {node}, 1);
             break;
           case LlmpOp::kLayerNormModulateSplit:
-            add(Operation::kLayerNormModulateSplit, kLayerNormModulateSplitName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kLayerNormModulateSplit),
+                kLayerNormModulateSplitName, i, {node}, 1);
             break;
           case LlmpOp::kGatedResidualSplit:
             // Joined with the modulation of its sum that follows it (lower.cc).
             if (i + 1 < graph.size() && Joined(node, graph[i + 1])) {
-              add(Operation::kGatedResidualModulateSplit, kGatedResidualModulateSplitName, i,
-                  {node, graph[i + 1]}, 2);
+              add(llmp::ir::Fused(llmp::ir::FusedKind::kGatedResidualModulateSplit),
+                  kGatedResidualModulateSplitName, i, {node, graph[i + 1]}, 2);
             } else {
-              add(Operation::kGatedResidualSplit, kGatedResidualSplitName, i, {node}, 1);
+              add(llmp::ir::Fused(llmp::ir::FusedKind::kGatedResidualSplit),
+                  kGatedResidualSplitName, i, {node}, 1);
             }
             break;
           case LlmpOp::kDupUpAdd:
-            add(Operation::kDupUpAdd, kDupUpAddName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kDupUpAdd), kDupUpAddName, i, {node}, 1);
             break;
           case LlmpOp::kConv1x1:
-            add(Operation::kConv2d, kConv1x1Name, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kConv2d), kConv1x1Name, i, {node}, 1);
             break;
           case LlmpOp::kHcMixBf16:
-            add(Operation::kHcMix, kHcMixBf16Name, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kHcPre), kHcMixBf16Name, i, {node}, 1);
             break;
           case LlmpOp::kMoeRouter:
-            add(Operation::kArgsort, kMoeRouterName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kArgsort), kMoeRouterName, i, {node}, 1);
             break;
           case LlmpOp::kGdnHistory:
-            add(Operation::kCont, kGdnHistoryName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kCont), kGdnHistoryName, i, {node}, 1);
             break;
           case LlmpOp::kGdnGates:
-            add(Operation::kUnary, kGdnGatesName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kUnary), kGdnGatesName, i, {node}, 1);
             break;
           case LlmpOp::kGdnStep:
-            add(Operation::kGatedDeltaNet, kGdnStepName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kGatedDeltaNet), kGdnStepName, i, {node}, 1);
             break;
           case LlmpOp::kQsaPrep:
-            add(Operation::kRope, kQsaPrepName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kRope), kQsaPrepName, i, {node}, 1);
             break;
           case LlmpOp::kDsv4QHead:
-            add(Operation::kRope, kDsv4QHeadName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kRope), kDsv4QHeadName, i, {node}, 1);
             break;
           case LlmpOp::kDsv4OutA:
-            add(Operation::kMatMul, device.outa_fast_pack ? kDsv4OutAFastPackName : kDsv4OutAName,
-                i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kMatMul),
+                device.outa_fast_pack ? kDsv4OutAFastPackName : kDsv4OutAName, i, {node}, 1);
             break;
           case LlmpOp::kDsv4HcNormF16:
-            add(Operation::kRmsNorm, kDsv4HcNormF16Name, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kRmsNorm), kDsv4HcNormF16Name, i, {node}, 1);
             break;
           case LlmpOp::kDsv4F16Copy:
-            add(Operation::kConvert, kDsv4F16CopyName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kConvert), kDsv4F16CopyName, i, {node}, 1);
             break;
           case LlmpOp::kQsaGateQuantize:
-            add(Operation::kQuantize, kQsaGateQuantizeName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kPrepare), kQsaGateQuantizeName, i, {node}, 1);
             break;
           case LlmpOp::kQsaPool:
-            add(Operation::kRope, kQsaPoolName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kRope), kQsaPoolName, i, {node}, 1);
             break;
           case LlmpOp::kQsaTopK:
-            add(Operation::kTopK, kQsaTopKName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kTopK), kQsaTopKName, i, {node}, 1);
             break;
           case LlmpOp::kQsaAttn:
-            add(Operation::kFlashAttn, kQsaAttnName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kAttention), kQsaAttnName, i, {node}, 1);
             break;
           case LlmpOp::kQuantizeQ8:
-            add(Operation::kQuantize, kQuantizeQ8Name, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kPrepare), kQuantizeQ8Name, i, {node}, 1);
             break;
           case LlmpOp::kMmvqPrepared:
-            add(Operation::kMatMul, kMmvqPreparedName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kMatMul), kMmvqPreparedName, i, {node}, 1);
             break;
           case LlmpOp::kVecQ:
-            add(Operation::kMatMul, kVecQName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kMatMul), kVecQName, i, {node}, 1);
             break;
           case LlmpOp::kDsv4Route:
-            add(Operation::kMoeRoute, kDsv4RouteName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kExpertSort), kDsv4RouteName, i, {node}, 1);
             break;
           case LlmpOp::kDsv4Combine:
-            add(Operation::kMoeCombine, kDsv4CombineName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kMoeCombine), kDsv4CombineName, i, {node}, 1);
             break;
           case LlmpOp::kDsv4WeightedReduce:
             if (device.hc_post_experts) {
@@ -897,40 +928,45 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                 break;
               }
             }
-            add(Operation::kMoeCombine, kDsv4WeightedReduceName, i, {node}, 1);
+            add(llmp::ir::Fused(llmp::ir::FusedKind::kMoeCombine), kDsv4WeightedReduceName, i,
+                {node}, 1);
             break;
           case LlmpOp::kDsv4HcMix:
-            add(Operation::kHcMix, kDsv4HcMixName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kHcPre), kDsv4HcMixName, i, {node}, 1);
             break;
           case LlmpOp::kDsv4HcPre:
-            add(Operation::kHcPre, kDsv4HcPreName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kHcPre), kDsv4HcPreName, i, {node}, 1);
             break;
           case LlmpOp::kDsv4Compress:
-            add(Operation::kSoftMax, kDsv4CompressName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kSoftMax), kDsv4CompressName, i, {node}, 1);
             break;
           case LlmpOp::kVisibleTopK:
-            add(Operation::kTopK, kVisibleTopKName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kTopK), kVisibleTopKName, i, {node}, 1);
             break;
           case LlmpOp::kRoundedIndexScore:
-            add(Operation::kLightningIndexer, kRoundedIndexScoreName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kIndexScore), kRoundedIndexScoreName, i, {node},
+                1);
+            break;
+          case LlmpOp::kSelect:
+            add(llmp::ir::Primitive(llmp::ir::Op::kSelect), "llmp.select", i, {node}, 1);
             break;
           case LlmpOp::kPrefixOverwrite:
-            add(Operation::kFill, kPrefixOverwriteName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kFill), kPrefixOverwriteName, i, {node}, 1);
             break;
           case LlmpOp::kSelectedMask:
-            add(Operation::kFill, kSelectedMaskName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kFill), kSelectedMaskName, i, {node}, 1);
             break;
           case LlmpOp::kDsv4LidTopK:
-            add(Operation::kLightningIndexer, kDsv4LidTopKName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kIndexScore), kDsv4LidTopKName, i, {node}, 1);
             break;
           case LlmpOp::kFlashAttnOwners:
-            add(Operation::kFlashAttn, kFlashAttnOwnersName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kAttention), kFlashAttnOwnersName, i, {node}, 1);
             break;
           case LlmpOp::kGemma4Mask:
-            add(Operation::kFill, kGemma4MaskName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kFill), kGemma4MaskName, i, {node}, 1);
             break;
           case LlmpOp::kDsv4SparseMask:
-            add(Operation::kFill, kDsv4SparseMaskName, i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kFill), kDsv4SparseMaskName, i, {node}, 1);
             break;
           case LlmpOp::kNone:
             return Rejected(
@@ -947,12 +983,12 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             return Rejected(
                 std::format("{}: quantized V needs K of the same encoding", Where(graph, i)));
           }
-          add(Operation::kFlashAttn, quantized, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kAttention), quantized, i, {node}, 1);
           break;
         }
         if (node->src[0] && node->src[0]->ne[0] == 128 && node->src[1] &&
             node->src[1]->type == GGML_TYPE_F32) {
-          add(Operation::kFlashAttn, kAttentionF32, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kAttention), kAttentionF32, i, {node}, 1);
           break;
         }
         // Preserve the served D64 vector selection. Common head sizes use
@@ -960,11 +996,12 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         if (node->src[0] != nullptr && node->src[1] != nullptr) {
           const auto head = node->src[0]->ne[0];
           if (head == 64 && node->src[1]->ne[1] % 256 == 0) {
-            add(Operation::kFlashAttn, "ggml.flash_attn_ext.vec", i, {node}, 1);
+            add(llmp::ir::Primitive(llmp::ir::Op::kAttention), "ggml.flash_attn_ext.vec", i, {node},
+                1);
             break;
           }
           if (head == 64 || head == 80 || head == 96 || head == 112 || head == 128 || head == 192) {
-            add(Operation::kFlashAttn,
+            add(llmp::ir::Primitive(llmp::ir::Op::kAttention),
                 (node->src[0]->ne[1] == 1) && CheckFlashAttnVecCommon(node)
                     ? "ggml.flash_attn_ext.vec_common"
                     : "ggml.flash_attn_ext.mma_common",
@@ -980,17 +1017,17 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         }
         if (node->src[0]->ne[0] == 256 && node->src[1] != nullptr && node->src[1]->ne[2] > 0 &&
             node->src[0]->ne[2] == 2 * node->src[1]->ne[2]) {
-          add(Operation::kFlashAttn,
+          add(llmp::ir::Primitive(llmp::ir::Op::kAttention),
               device.flash_attn_vec256 && device.flash_attn_vec256(node) ? kFlashAttnVec256Name
                                                                          : kFlashAttnMmaGqa2Name,
               i, {node}, 1);
           break;
         }
         if (device.ds4_hca && device.ds4_hca_fits && device.ds4_hca_fits(node)) {
-          add(Operation::kFlashAttn, kDsv4HcaTokentileName, i, {node}, 1);
+          add(llmp::ir::Primitive(llmp::ir::Op::kAttention), kDsv4HcaTokentileName, i, {node}, 1);
           break;
         }
-        add(Operation::kFlashAttn,
+        add(llmp::ir::Primitive(llmp::ir::Op::kAttention),
             (device.wide_sparse_attention ||
              (device.wide_sparse_attention_node && device.wide_sparse_attention_node(node))) &&
                     (LlmpOpOf(node->src[3]) != LlmpOp::kDsv4SparseMask ||
@@ -1062,7 +1099,7 @@ void AssignLanes(GraphPlan& plan, const LaneTags& tags,
             if (next.lane != lane.lane || next.region != lane.region) break;
             ++end;
           }
-          separated.push_back({.operation = Operation::kSetRows,
+          separated.push_back({.operation = llmp::ir::Primitive(llmp::ir::Op::kCacheStore),
                                .implementation = end - first > 1 ? grouped : single,
                                .nodes = {step.nodes.begin() + static_cast<std::ptrdiff_t>(first),
                                          step.nodes.begin() + static_cast<std::ptrdiff_t>(end)},

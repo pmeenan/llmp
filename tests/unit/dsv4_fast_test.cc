@@ -312,7 +312,7 @@ TEST_F(Dsv4FastTest, GemmaQuantGeGluPreservesFusedSlabAndIndependentRows) {
     auto* gate = weight_view(0);
     auto* up = weight_view(static_cast<std::size_t>(n) * row);
     if (routed) EXPECT_NE(pitch % 256, 0);
-    for (const std::int64_t tokens : {1, 2, 4}) {
+    for (const std::int64_t tokens : {1, 2, 3, 4}) {
       auto input_values = Normal(492, static_cast<std::size_t>(k * tokens), 0.5f);
       if (tokens == 2)
         for (std::int64_t i = 0; i < k; ++i) input_values[static_cast<std::size_t>(i)] *= 1e-6f;
@@ -749,7 +749,7 @@ TEST_F(Dsv4FastTest, GemmaQ51DownJoinsTopEightStridedDuplicateRoutesExactly) {
   ASSERT_EQ(cudaMemcpy(w->data, padded.data(), padded.size(), cudaMemcpyHostToDevice), cudaSuccess);
   kg::MarkRowPaddingReadable(w);
   const auto values = Normal(705, static_cast<std::size_t>(k * used * 16));
-  for (const std::int64_t tokens : {1, 2, 4, 16}) {
+  for (const std::int64_t tokens : {1, 2, 3, 4, 16}) {
     std::vector<std::int32_t> routes(static_cast<std::size_t>((used + 2) * tokens), -1);
     for (std::int64_t t = 0; t < tokens; ++t) {
       for (std::int64_t u = 0; u < used; ++u) {

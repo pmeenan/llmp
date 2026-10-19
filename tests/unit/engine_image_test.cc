@@ -6,20 +6,24 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "artifact_writer.h"
+#include "base/json.h"
 #include "base/sha256.h"
 #include "engine/program_lifecycle.h"
 #include "expected_error.h"
 #include "kernels/common/recording_launch.h"
+#include "plan_report.h"
 #include "providers/fake/fake_device_execution.h"
 
 namespace {
@@ -37,6 +41,11 @@ struct Trace {
   std::size_t live_programs = 0;
   // Warm runs: the first stage's programs declare a warm form and its input
   // invariant; the warm runs made and the host fills of request inputs.
+  bool fail_bind = false, expansion_only = false, missing_qualification_only = false;
+  bool numerical_candidate = false;
+  std::uint64_t report_charge_calls = 0, report_release_calls = 0, live_report_bytes = 0;
+  std::uint64_t construction_paid = 0;
+  std::uint64_t report_emissions = 0;
   bool warm_capable = false;
   std::size_t warm_runs = 0, fills = 0;
   float value = 1;
@@ -84,12 +93,37 @@ class TypedCopy final : public kn::StepProgram {
   std::uint64_t scratch_bytes() const override { return scratch_; }
   std::uint64_t host_bytes() const override { return 1024; }
   std::uint64_t launches() const override { return 1; }
+  void StreamPlanReport(const kn::PlanReportSink& sink) const override {
+    if (!sink) return;
+    ++trace_->report_emissions;
+    sink(R"({"kind":"image_backend","stage":)");
+    sink(second_ ? "1" : "0");
+    sink("}\n");
+  }
+  kn::PlanCoverage plan_coverage() const override {
+    if (trace_->numerical_candidate)
+      return {.missing_numerical_qualifications = 7, .unqualified_numerical_candidates = 2};
+    if (trace_->expansion_only) return {.decode_expansion_rules = 1};
+    if (trace_->missing_qualification_only) return {.missing_numerical_qualifications = 7};
+    return {.primitive_fallbacks = second_ ? 3U : 1U,
+            .available_fast_fallbacks = second_ ? 2U : 0U,
+            .logical_activation_bytes = second_ ? 1024U : 512U,
+            .physical_activation_bytes = second_ ? 512U : 256U,
+            .unmaterialized_logical_bytes = second_ ? 512U : 256U,
+            .unmaterialized_roots = second_ ? 2U : 1U};
+  }
+  void ConstructionPaid() override {
+    ++trace_->construction_paid;
+    kn::StepProgram::ConstructionPaid();
+  }
   std::span<const kn::InputSlot> inputs() const override { return input_; }
   std::span<const kn::OutputSlot> outputs() const override { return output_; }
   std::span<const kn::TensorUse> tensors() const override { return uses_; }
   std::expected<void, kn::StepFailure> Bind(kn::StepLaunch&) override {
     if (measuring_)
       return std::unexpected(kn::StepFailure{kn::StepError::kRejected, "measurement"});
+    if (trace_->fail_bind)
+      return std::unexpected(kn::StepFailure{kn::StepError::kRejected, "image bind refused"});
     bound_ = true;
     return {};
   }
@@ -127,8 +161,17 @@ class Owner final : public kn::BackendOwner {
         std::shared_ptr<Trace> trace)
       : backend_(std::move(backend)), payment_(std::move(payment)), trace_(std::move(trace)) {}
   const kn::StepBackend& backend() const override { return backend_; }
-  bool Charge(std::uint64_t n) const override { return payment_->Charge(n); }
-  void Release(std::uint64_t n) const override { payment_->Release(n); }
+  bool Charge(std::uint64_t n) const override {
+    if (!payment_->Charge(n)) return false;
+    ++trace_->report_charge_calls;
+    trace_->live_report_bytes += n;
+    return true;
+  }
+  void Release(std::uint64_t n) const override {
+    ++trace_->report_release_calls;
+    trace_->live_report_bytes -= n;
+    payment_->Release(n);
+  }
   std::expected<llmp::execution::BackendDeclaration, std::string> Ready() const override {
     const auto id =
         llmp::base::Sha256{}
@@ -150,6 +193,7 @@ struct Life {
   std::unique_ptr<rt::EngineImage> image;
   std::vector<en::PagedModel*> entered;
   bool attempted = false;
+  kn::PlanRecordSink report_sink;
   Status Start(const std::filesystem::path& scratch, bool bad_port = false,
                bool mapped_weight = false, bool pageable = false) {
     if (auto opened = node.Open(); !opened) return opened;
@@ -265,6 +309,7 @@ struct Life {
           captured->reset();
           return result;
         });
+    image->set_plan_report_sink(report_sink);
     auto setup = image->Setup();
     if (image->has_paged()) entered.push_back(&image->paged());
     if (!setup) return setup;
@@ -378,6 +423,223 @@ class EngineImageTest : public ::testing::Test {
   std::filesystem::path path;
   std::unique_ptr<Life> life;
 };
+TEST_F(EngineImageTest, RegistrationWarnsForExpansionWithoutPrimitiveFallbacks) {
+  life->trace->expansion_only = true;
+  ASSERT_TRUE(life->Start(path));
+  auto report = llmp::base::json::Parse(life->image->plan_report());
+  ASSERT_TRUE(report);
+  EXPECT_EQ(report->root().find("max_available_fast_fallbacks")->int64(), 0);
+  EXPECT_EQ(report->root().find("max_decode_expansion_rules")->int64(), 1);
+  EXPECT_FALSE(report->root().find("warning")->string().empty());
+}
+TEST_F(EngineImageTest, RegistrationWarnsForMissingQualificationWithoutOtherFallbacks) {
+  life->trace->missing_qualification_only = true;
+  ASSERT_TRUE(life->Start(path));
+  auto report = llmp::base::json::Parse(life->image->plan_report());
+  ASSERT_TRUE(report);
+  EXPECT_EQ(report->root().find("max_available_fast_fallbacks")->int64(), 0);
+  EXPECT_EQ(report->root().find("max_decode_expansion_rules")->int64(), 0);
+  EXPECT_EQ(report->root().find("max_missing_numerical_qualifications")->int64(), 7);
+  EXPECT_NE(report->root().find("warning")->string().find("qualification"), std::string_view::npos);
+}
+TEST_F(EngineImageTest, RegistrationIdentifiesActiveCandidatesBeforeMissingEvidence) {
+  life->trace->numerical_candidate = true;
+  ASSERT_TRUE(life->Start(path));
+  auto report = llmp::base::json::Parse(life->image->plan_report());
+  ASSERT_TRUE(report);
+  EXPECT_EQ(report->root().find("max_unqualified_numerical_candidates")->int64(), 2);
+  EXPECT_EQ(report->root().find("max_missing_numerical_qualifications")->int64(), 7);
+  EXPECT_NE(report->root().find("warning")->string().find("UNQUALIFIED CANDIDATE"),
+            std::string_view::npos);
+}
+TEST_F(EngineImageTest, DebugReportsInstallOnceAndOnDemandUsesCompleteRetainedRecords) {
+  std::vector<std::string> records;
+  life->report_sink = llmp::test_support::CollectPlanRecords(records);
+  const auto started = life->Start(path);
+  ASSERT_TRUE(started) << Failed(started).value_or("");
+  // The sink was set before Setup, but measurement is not installation.
+  EXPECT_TRUE(records.empty());
+  const auto summary = llmp::base::json::Parse(life->image->plan_report());
+  ASSERT_TRUE(summary);
+  EXPECT_EQ(summary->root().find("measured_shapes")->int64(), 2);
+  EXPECT_EQ(summary->root().find("max_primitive_fallbacks")->int64(), 3);
+  EXPECT_EQ(summary->root().find("max_available_fast_fallbacks")->int64(), 2);
+  EXPECT_EQ(summary->root().find("max_logical_activation_bytes")->int64(), 1024);
+  EXPECT_EQ(summary->root().find("max_physical_activation_bytes")->int64(), 512);
+  EXPECT_EQ(summary->root().find("max_omitted_logical_bytes")->int64(), 512);
+  EXPECT_EQ(summary->root().find("max_omitted_roots")->int64(), 2);
+  EXPECT_FALSE(summary->root().find("warning")->string().empty());
+  std::string output;
+  ASSERT_TRUE(life->image->FirstOutput(output));
+  ASSERT_TRUE(life->image->Finish(output));
+  ASSERT_FALSE(records.empty());
+  std::size_t installed = 0, compiler = 0, backend = 0;
+  std::vector<std::int64_t> serials;
+  for (const auto& record : records) {
+    EXPECT_EQ(record.find('\n'), std::string::npos);
+    auto parsed = llmp::base::json::Parse(record);
+    ASSERT_TRUE(parsed) << record;
+    const auto kind = parsed->root().find("kind");
+    ASSERT_TRUE(kind);
+    if (kind->string() == "installed_plan") {
+      ++installed;
+      serials.push_back(parsed->root().find("id")->int64().value_or(-1));
+      EXPECT_EQ(parsed->root().find("pipeline")->string(), "image");
+    }
+    compiler += kind->string() == "plan";
+    backend += kind->string() == "image_backend";
+    EXPECT_EQ(record.find("device_address"), std::string::npos);
+  }
+  ASSERT_EQ(installed, 2U);
+  EXPECT_EQ(compiler, 2U);
+  EXPECT_EQ(backend, 2U);
+  std::vector<std::string> queried;
+  life->image->ReportPlans(llmp::test_support::CollectPlanRecords(queried));
+  EXPECT_EQ(queried, records);
+  life->image->ReportPlans({});
+  const auto initial = records;
+  ASSERT_TRUE(life->image->FirstOutput(output));
+  ASSERT_TRUE(life->image->Finish(output));
+  EXPECT_EQ(records, initial);                   // Cache hits stay quiet.
+  EXPECT_EQ(life->trace->report_emissions, 4U);  // Two installs, two explicit queries.
+  life->image->DropPlans();
+  queried.clear();
+  life->image->ReportPlans(llmp::test_support::CollectPlanRecords(queried));
+  EXPECT_TRUE(queried.empty());
+  ASSERT_TRUE(life->image->FirstOutput(output));
+  ASSERT_TRUE(life->image->Finish(output));
+  EXPECT_EQ(records.size(), initial.size() * 2);
+  std::size_t reinstalled = 0;
+  for (std::size_t i = initial.size(); i < records.size(); ++i) {
+    const auto parsed = llmp::base::json::Parse(records[i]);
+    ASSERT_TRUE(parsed);
+    if (parsed->root().find("kind")->string() != "installed_plan") continue;
+    EXPECT_GT(parsed->root().find("id")->int64(), serials.back());
+    ++reinstalled;
+  }
+  EXPECT_EQ(reinstalled, 2U);
+}
+TEST_F(EngineImageTest, DefaultReportsAreQueryableAndConstructionPaymentTransfersToTheCache) {
+  const auto started = life->Start(path);
+  ASSERT_TRUE(started) << Failed(started).value_or("");
+  const auto before = life->payment->used();
+  const auto host_before = life->node.host_counted();
+  EXPECT_EQ(life->trace->live_report_bytes, 0U);
+  EXPECT_EQ(life->trace->report_emissions, 0U);
+  EXPECT_EQ(life->trace->report_charge_calls, 2U);
+  EXPECT_EQ(life->trace->report_release_calls, 2U);
+  EXPECT_EQ(life->trace->construction_paid, 0U);
+  EXPECT_EQ(life->trace->live_programs, 0U);
+  std::string output;
+  ASSERT_TRUE(life->image->FirstOutput(output));
+  ASSERT_TRUE(life->image->Finish(output));
+  EXPECT_EQ(life->trace->construction_paid, 2U);
+  EXPECT_EQ(life->trace->report_emissions, 0U);  // Debug off never serializes.
+  EXPECT_EQ(life->trace->live_programs, 2U);
+  EXPECT_EQ(life->trace->live_report_bytes, 0U);
+  EXPECT_EQ(life->trace->report_charge_calls, life->trace->report_release_calls);
+  EXPECT_EQ(life->payment->used(), before);
+  EXPECT_GT(life->node.host_counted(), host_before);
+  std::size_t records = 0;
+  life->image->ReportPlans([&](kn::PlanReportEvent event, std::string_view) {
+    records += event == kn::PlanReportEvent::kEnd;
+  });
+  EXPECT_GT(records, 2U);
+  life->image->DropPlans();
+  EXPECT_EQ(life->trace->live_programs, 0U);
+  EXPECT_EQ(life->node.host_counted(), host_before);
+  // Enabling reporting after setup affects subsequent cache installations.
+  life->image->set_plan_report_sink([&](kn::PlanReportEvent event, std::string_view) {
+    records += event == kn::PlanReportEvent::kEnd;
+  });
+  const auto previous_records = records;
+  ASSERT_TRUE(life->image->FirstOutput(output));
+  ASSERT_TRUE(life->image->Finish(output));
+  EXPECT_GT(records, previous_records);
+  life->image->set_plan_report_sink({});
+  life->image->DropPlans();
+  const auto disabled_records = records;
+  ASSERT_TRUE(life->image->FirstOutput(output));
+  ASSERT_TRUE(life->image->Finish(output));
+  EXPECT_EQ(records, disabled_records);
+}
+TEST_F(EngineImageTest, FailedBindingReleasesReportSubgrantWithoutPublishingOrTransferring) {
+  std::vector<std::string> records;
+  life->report_sink = llmp::test_support::CollectPlanRecords(records);
+  const auto started = life->Start(path);
+  ASSERT_TRUE(started) << Failed(started).value_or("");
+  const auto before = life->payment->used();
+  const auto host_before = life->node.host_counted();
+  life->trace->fail_bind = true;
+  std::string output;
+  const auto refused = life->image->FirstOutput(output);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().find("image bind refused"), std::string::npos);
+  EXPECT_TRUE(records.empty());
+  EXPECT_EQ(life->trace->construction_paid, 0U);
+  EXPECT_EQ(life->trace->live_programs, 0U);
+  EXPECT_EQ(life->trace->live_report_bytes, 0U);
+  EXPECT_EQ(life->trace->report_charge_calls, 3U);
+  EXPECT_EQ(life->trace->report_charge_calls, life->trace->report_release_calls);
+  EXPECT_EQ(life->payment->used(), before);
+  EXPECT_EQ(life->node.host_counted(), host_before);
+  EXPECT_EQ(life->trace->queued, 0U);
+  life->image->ReportPlans(llmp::test_support::CollectPlanRecords(records));
+  EXPECT_TRUE(records.empty());
+  life->trace->fail_bind = false;
+  ASSERT_TRUE(life->image->FirstOutput(output));
+  ASSERT_TRUE(life->image->Finish(output));
+  EXPECT_FALSE(records.empty());
+  EXPECT_EQ(life->trace->construction_paid, 2U);
+  EXPECT_EQ(life->trace->live_report_bytes, 0U);
+  EXPECT_EQ(life->payment->used(), before);
+}
+TEST_F(EngineImageTest, GeometryReplacementMeasuresQuietlyAndUsesTheInstanceReportSink) {
+  std::vector<std::string> records;
+  life->report_sink = llmp::test_support::CollectPlanRecords(records);
+  const auto started = life->Start(path);
+  ASSERT_TRUE(started) << Failed(started).value_or("");
+  std::string output;
+  ASSERT_TRUE(life->image->FirstOutput(output));
+  ASSERT_TRUE(life->image->Finish(output));
+  const auto count = records.size();
+  auto geometry = life->Geometry(4, 4, 7.F);
+  ASSERT_TRUE(geometry) << Failed(geometry).value_or("");
+  ASSERT_TRUE(life->image->ReplaceGeometry(std::move(*geometry)));
+  EXPECT_EQ(records.size(), count);
+  EXPECT_EQ(life->trace->live_programs, 0U);
+  EXPECT_EQ(life->trace->live_report_bytes, 0U);
+  std::size_t queried = 0;
+  life->image->ReportPlans([&](kn::PlanReportEvent event, std::string_view) {
+    queried += event == kn::PlanReportEvent::kEnd;
+  });
+  EXPECT_EQ(queried, 0U);
+  ASSERT_TRUE(life->image->FirstOutput(output));
+  ASSERT_TRUE(life->image->Finish(output));
+  EXPECT_GT(records.size(), count);
+  queried = 0;
+  std::vector<std::string> requested;
+  life->image->ReportPlans(llmp::test_support::CollectPlanRecords(requested));
+  for (const auto& record : requested) {
+    auto parsed = llmp::base::json::Parse(record);
+    EXPECT_TRUE(parsed) << record;
+    ++queried;
+  }
+  EXPECT_EQ(queried, records.size() - count);
+  EXPECT_EQ(life->trace->construction_paid, 4U);
+  EXPECT_EQ(life->trace->live_report_bytes, 0U);
+}
+TEST_F(EngineImageTest, FailedMeasurementReleasesReportSubgrantWithoutInstalling) {
+  std::vector<std::string> records;
+  life->report_sink = llmp::test_support::CollectPlanRecords(records);
+  EXPECT_FALSE(life->Start(path, true));
+  EXPECT_TRUE(records.empty());
+  EXPECT_GT(life->trace->report_charge_calls, 0U);
+  EXPECT_EQ(life->trace->report_charge_calls, life->trace->report_release_calls);
+  EXPECT_EQ(life->trace->live_report_bytes, 0U);
+  EXPECT_EQ(life->trace->live_programs, 0U);
+  EXPECT_EQ(life->trace->construction_paid, 0U);
+}
 TEST_F(EngineImageTest, DeviceHandoffAndChangedInputsSurviveRepeatedGenerations) {
   const auto started = life->Start(path);
   ASSERT_TRUE(started) << Failed(started).value_or("");

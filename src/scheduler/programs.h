@@ -338,12 +338,14 @@ class SwapProgram final : public EvictingProgram {
 struct RequestChannel {
   scheduler::DeviceJob job;  // the next step's
   std::uint32_t stream = 0;
-  bool end = false;                      // end the request instead
-  std::atomic<bool> held{false};         // the lease is taken
-  std::atomic<std::uint64_t> steps{0};   // steps ended: their fence seen, or refused
-  std::atomic<bool> step_failed{false};  // the last step's outcome, set before `steps`
-  std::atomic<int> step_error{-1};       // a WorkError that refused it, else -1
-  base::WakeFlag reported;               // signalled after each `steps`, for a driver asleep
+  bool end = false;                       // end the request instead
+  catalog::LeaseId lease;                 // published before held; immutable for this task
+  std::atomic<bool> held{false};          // the lease is taken
+  std::atomic<std::uint64_t> steps{0};    // step results published, including unproven failure
+  std::atomic<bool> step_failed{false};   // the last step's outcome, set before `steps`
+  std::atomic<int> step_error{-1};        // a WorkError that refused it, else -1
+  std::atomic<bool> step_retired{false};  // no further access, set before `steps`
+  base::WakeFlag reported;                // signalled after each `steps`, for a driver asleep
   // Steps the driver runs under the lease itself (PagedNode's direct
   // steps), not yet seen to end: the lease outlasts them (HoldLease), which
   // shares the count, so it may outlive the channel.
@@ -391,6 +393,7 @@ class RequestProgram final : public ReportingProgram {
             return Fail(held.error());
           }
           lease_ = *held;
+          channel_.lease = lease_;
           phase_ = Phase::kIdle;
           channel_.held.store(true, std::memory_order_release);
           continue;
@@ -429,15 +432,23 @@ class RequestProgram final : public ReportingProgram {
               return scheduler::Step::Yield();
             }
             work.job = nullptr;  // gone before the driver hears of it
-            Report(true, static_cast<int>(submitted.error()));
+            Report(true, static_cast<int>(submitted.error()), true);
             continue;
           }
           phase_ = Phase::kRunning;
           return scheduler::Step::Wait();
         }
-        case Phase::kRunning:
-          Report(context.TakeFailure(), -1);  // its fence was seen: it touches nothing more
+        case Phase::kRunning: {
+          const bool failed = context.TakeFailure();
+          // This sequential request has exactly one scheduled step under
+          // its lease. A quarantine wake is a result, never fence proof.
+          // Host lookahead and page-in preparations own separate tasks;
+          // external direct work is also covered by the lease's accounting.
+          const bool retired = context.LeaseWorkRetired(lease_);
+          if (!retired && !failed) return scheduler::Step::Wait();
+          Report(failed, -1, retired);
           continue;
+        }
         case Phase::kEnding:
           return scheduler::Step::Finish(context.TakeFailure()
                                              ? scheduler::TaskOutcome::kFailed
@@ -448,10 +459,11 @@ class RequestProgram final : public ReportingProgram {
 
  private:
   enum class Phase : std::uint8_t { kLeasing, kIdle, kSubmitting, kRunning, kEnding };
-  void Report(bool failed, int error) {
+  void Report(bool failed, int error, bool retired) {
     phase_ = Phase::kIdle;
     channel_.step_failed.store(failed, std::memory_order_relaxed);
     channel_.step_error.store(error, std::memory_order_relaxed);
+    channel_.step_retired.store(retired, std::memory_order_relaxed);
     channel_.steps.fetch_add(1, std::memory_order_release);
     channel_.reported.Signal();
   }

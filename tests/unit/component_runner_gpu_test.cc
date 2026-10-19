@@ -47,12 +47,14 @@
 #include "base/bytes.h"
 #include "components/step.h"
 #include "engine/component_source.h"
+#include "engine/execution_contract.h"
 #include "engine/model_runner.h"
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
 #include "engine/support.h"
 #include "kernels/ggml/step_program.h"
 #include "planner/step_shape.h"
+#include "platform/host_probe.h"
 #include "runtime/approvals.h"
 #include "spec/mapping.h"
 #include "spec/stored.h"
@@ -236,6 +238,18 @@ Component Lowered(const fs::path& root, const llmp::spec::ModelSpec& spec,
     auto made = kg::GgmlBackend::Create(0, node.execution(), node.stream(0), nullptr, {});
     if (!made) return std::unexpected(made.error());
     backend = std::move(*made);
+    // Native construction has a separate finite fixture allowance. Retained
+    // plans still acquire the runner's ordinary paid ownership before transfer.
+    const auto available = llmp::platform::AvailableMemoryBytes();
+    if (!available) return std::unexpected("native construction physical headroom is unknown");
+    auto paid = en::ExecutionMetadataAllowance::Admit(node.catalog(), node.domain(), 128ULL << 20U,
+                                                      *available, 6ULL << 30U);
+    if (!paid) return std::unexpected(paid.error());
+    if (auto funded =
+            backend->FundConstruction([paid = *paid](std::uint64_t n) { return paid->Charge(n); },
+                                      [paid = *paid](std::uint64_t n) { paid->Release(n); });
+        !funded)
+      return std::unexpected(funded.error());
     auto weights = std::make_unique<en::PagedWeights>();
     if (auto x = weights->Open(root); !x) return x;
     en::PagedWeights* paged = weights.get();

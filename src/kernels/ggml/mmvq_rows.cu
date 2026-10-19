@@ -106,8 +106,22 @@ constexpr __device__ VecDot RowsVecDot(ggml_type type) {
       return vec_dot_q6_K_q8_1;
     case GGML_TYPE_IQ2_XS:
       return vec_dot_iq2_xs_q8_1;
+    case GGML_TYPE_IQ2_S:
+      return vec_dot_iq2_s_q8_1;
     case GGML_TYPE_IQ3_XXS:
       return vec_dot_iq3_xxs_q8_1;
+    case GGML_TYPE_Q2_0:
+      return vec_dot_q2_0_q8_1;
+    case GGML_TYPE_Q3_K:
+      return vec_dot_q3_K_q8_1;
+    case GGML_TYPE_IQ1_S:
+      return vec_dot_iq1_s_q8_1;
+    case GGML_TYPE_IQ3_S:
+      return vec_dot_iq3_s_q8_1;
+    case GGML_TYPE_IQ4_XS:
+      return vec_dot_iq4_xs_q8_1;
+    case GGML_TYPE_NVFP4:
+      return vec_dot_nvfp4_q8_1;
     default:
       return nullptr;
   }
@@ -450,27 +464,7 @@ std::unexpected<KernelFailure> Rejected(std::string detail) {
       KernelFailure{.error = KernelError::kRejected, .detail = std::move(detail)});
 }
 
-bool RowsType(ggml_type type) {
-  switch (type) {
-    case GGML_TYPE_Q4_0:
-    case GGML_TYPE_Q4_1:
-    case GGML_TYPE_Q5_0:
-    case GGML_TYPE_Q5_1:
-    case GGML_TYPE_IQ4_NL:
-    case GGML_TYPE_Q2_K:
-    case GGML_TYPE_IQ2_XXS:
-    case GGML_TYPE_Q8_0:
-    case GGML_TYPE_MXFP4:
-    case GGML_TYPE_Q4_K:
-    case GGML_TYPE_Q5_K:
-    case GGML_TYPE_Q6_K:
-    case GGML_TYPE_IQ2_XS:
-    case GGML_TYPE_IQ3_XXS:
-      return true;
-    default:
-      return false;
-  }
-}
+bool RowsType(ggml_type type) { return IsQuantizedWeightType(type); }
 
 // What the launch passes the kernel, as ggml_cuda_mul_mat_vec_q computes it
 // (mmvq.cu:1484-1535).
@@ -666,8 +660,29 @@ void LaunchSwitchType(ggml_type type, const RowsArgs& a, bool per_token, int cc,
     case GGML_TYPE_IQ2_XS:
       LaunchType<GGML_TYPE_IQ2_XS>(a, per_token, cc, warp_size, stream);
       break;
+    case GGML_TYPE_IQ2_S:
+      LaunchType<GGML_TYPE_IQ2_S>(a, per_token, cc, warp_size, stream);
+      break;
     case GGML_TYPE_IQ3_XXS:
       LaunchType<GGML_TYPE_IQ3_XXS>(a, per_token, cc, warp_size, stream);
+      break;
+    case GGML_TYPE_Q2_0:
+      LaunchType<GGML_TYPE_Q2_0>(a, per_token, cc, warp_size, stream);
+      break;
+    case GGML_TYPE_Q3_K:
+      LaunchType<GGML_TYPE_Q3_K>(a, per_token, cc, warp_size, stream);
+      break;
+    case GGML_TYPE_IQ1_S:
+      LaunchType<GGML_TYPE_IQ1_S>(a, per_token, cc, warp_size, stream);
+      break;
+    case GGML_TYPE_IQ3_S:
+      LaunchType<GGML_TYPE_IQ3_S>(a, per_token, cc, warp_size, stream);
+      break;
+    case GGML_TYPE_IQ4_XS:
+      LaunchType<GGML_TYPE_IQ4_XS>(a, per_token, cc, warp_size, stream);
+      break;
+    case GGML_TYPE_NVFP4:
+      LaunchType<GGML_TYPE_NVFP4>(a, per_token, cc, warp_size, stream);
       break;
     default:
       break;  // refused by the plan

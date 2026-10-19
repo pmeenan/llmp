@@ -101,8 +101,7 @@ constexpr std::array kFolds = {FoldRule{.fold = "norm.plus_one", .container = "g
 // fused norm-rope (Gemma 2 has no QK norm), grouped KV stores or RoPE
 // store. One rule: every checkpoint.
 constexpr std::array kPolicies = {
-    PolicyRule{.text = "max_decode_rows 16\ndisable grouped_stores\ndisable rms_norm_mul_rope\n"
-                       "disable rope_store\n"},
+    PolicyRule{.text = "max_decode_rows 16\n"},
 };
 
 // Its bounded serving route: at most two owners, no drafter.

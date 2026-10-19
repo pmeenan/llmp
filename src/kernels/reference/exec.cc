@@ -1086,6 +1086,35 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
       }
       return Store(out, result);
     }
+    case Op::kSelect: {
+      const auto& yes = graph().tensor(node.src[1]);
+      const auto& no = graph().tensor(node.src[2]);
+      const auto& condition = graph().tensor(node.src[0]);
+      const auto& dest = graph().tensor(out);
+      const auto& predicate_bytes = RootOf(node.src[0]).parts[0];
+      auto& target = RootOf(out).parts[0];
+      const auto unit = dest.nb[0];
+      const auto offset = [](const TensorDesc& d, const Ne& ix) {
+        std::uint64_t pos = d.view_offset;
+        for (std::size_t axis = 0; axis < 4; ++axis) pos += (ix[axis] % d.ne(axis)) * d.nb[axis];
+        return pos;
+      };
+      for (std::uint64_t i = 0; i < Count(dest.shape().ne); ++i) {
+        std::uint64_t remaining = i;
+        Ne ix{};
+        for (std::size_t axis = 0; axis < 4; ++axis) {
+          ix[axis] = remaining % dest.ne(axis);
+          remaining /= dest.ne(axis);
+        }
+        const bool choose = Raw<std::int32_t>(predicate_bytes.data() + offset(condition, ix)) != 0;
+        const auto source_id = node.src[choose ? 1 : 2];
+        const auto& source_desc = choose ? yes : no;
+        const auto& source = RootOf(source_id).parts[0];
+        std::memcpy(target.data() + offset(dest, ix), source.data() + offset(source_desc, ix),
+                    unit);
+      }
+      return {};
+    }
     case Op::kPrefixOverwrite: {
       const auto counts = LoadInts(node.src[1]);
       if (!counts) return std::unexpected(counts.error());

@@ -302,9 +302,7 @@ constexpr std::array kParams = {
 // A correctness recipe, not a serving admission. No capture/row-invariance
 // claim is made for EXL3; the pinned shape controls precede such a claim.
 constexpr std::array kPolicies = {
-    PolicyRule{.text = "max_decode_rows 1\ndisable owner_attention\ndisable rope_store\n",
-               .owners_alone = true,
-               .capture_ahead = false},
+    PolicyRule{.text = "max_decode_rows 1\n", .owners_alone = true, .capture_ahead = false},
 };
 constexpr Mapping kMapping{
     .architecture = "qwen2",

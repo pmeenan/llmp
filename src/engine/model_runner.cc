@@ -682,6 +682,7 @@ Status ModelRunner::Setup() {
     auto program = source_->Build(shape, AddressesFor(shape, true));
     if (!program) return Error(std::format("measuring a step: {}", program.error()));
     const kn::StepProgram& p = **program;
+    ObservePlanCoverage(p);
     if (auto routed = MeasureRouting(p); !routed) return routed;
     auto measured = ProgramEnvelope::Measure(p);
     if (!measured) return Error(measured.error());
@@ -707,6 +708,7 @@ Status ModelRunner::Setup() {
           .segments = {{.rows = keep, .read_cells = slots_.context(stage), .want_head = false}}};
       auto p = source_->Build(shape, AddressesFor(shape, true));
       if (!p) return Error(std::format("measuring a commit: {}", p.error()));
+      ObservePlanCoverage(**p);
       if (auto routed = MeasureRouting(**p); !routed) return routed;
       auto measured = ProgramEnvelope::Measure(**p, true);
       if (!measured) return Error(measured.error());
@@ -1344,6 +1346,7 @@ std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Install(
   // Add's required PlanAccount charge owns all returned program storage before
   // the source's transient compiler use can be returned to another builder.
   entry.planned->program->ConstructionPaid();
+  EmitPlanReport(entry, config_.plan_report_sink);
   // Never recorded: no capture beside a run, on its first run or ahead.
   if (entry.planned->positioned) entry.runs[0].uncapturable = true;
   return &entry;
@@ -1356,9 +1359,37 @@ std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Planned(
   FillKey(shape, lookup_key_);
   if (Plans::Entry* found = plans_.Find(lookup_key_); found != nullptr) return found;
   const auto started = std::chrono::steady_clock::now();
-  auto program = source_->Build(shape, AddressesFor(shape, false));
+  // Construct over owned stable virtual places. This is not residency or
+  // permission to run: the exact program's requirements are admitted below,
+  // before binding, state preparation, capture, or submission.
+  auto addresses = AddressesFor(shape, false);
+  addresses.activation_bytes = node_.activations().capacity_bytes;
+  auto program = source_->Build(shape, addresses);
   if (!program) return Error(std::format("planning a step: {}", program.error()));
   if (*program == nullptr) return Error("planning a step gave no program");
+  auto envelope = ProgramEnvelope::Measure(**program);
+  if (!envelope) return Error(envelope.error());
+  const auto pool = pool_bytes();
+  if (config_.launch_pool_reserve > pool || envelope->pool > pool - config_.launch_pool_reserve)
+    return Error("the selected step exceeds its fixed launch pool capacity");
+  if (envelope->inputs > inputs_staging_bytes_ || envelope->outputs > outputs_staging_bytes_)
+    return Error("the selected step exceeds its fixed host staging capacity");
+  if (envelope->scratch > activation_bytes()) {
+    if (envelope->scratch > node_.activations().capacity_bytes)
+      return Error("the selected step exceeds its activation virtual reservation");
+    const auto needed = Round(envelope->scratch, kPagedExtent);
+    if (auto grown = node_.GrowWorkspace(needed, node_.pool().bytes); !grown)
+      return Error(grown.error());
+    const auto count = static_cast<std::size_t>(needed / kPagedExtent);
+    bool over_budget = false;
+    if (auto held = slots_.TryExtendShared(std::span(node_.activations().extents).first(count),
+                                           &over_budget);
+        !held)
+      return Error(held.error());
+    // Only a positively admitted prefix becomes this model's high water.
+    // Existing plans keep their places and the launch/pool never changes.
+    activations_needed_ = needed;
+  }
   auto planned = std::make_unique<StepPlanned>();
   planned->program = std::move(*program);
   return Install(shape, std::move(planned),
@@ -1380,6 +1411,14 @@ std::expected<Copies, std::string> ModelRunner::OutputCopies(const kn::StepProgr
 
 // --------------------------------------------------------------------- steps
 
+Status ModelRunner::PrepareStep(const pl::StepShape& shape) {
+  if (!bound_ || released_ || slots_.faulted()) return Error("the model runner is not usable");
+  if (auto checked = CheckShape(shape); !checked) return checked;
+  auto prepared = Planned(shape);
+  if (!prepared) return Error(prepared.error());
+  return {};
+}
+
 std::expected<void, StepRefusal> ModelRunner::Admit(const pl::Segment& segment, std::uint16_t stage,
                                                     std::uint32_t read_align, bool advance) {
   if (!bound_ || released_) return Refused("the model runner is not bound");
@@ -1399,7 +1438,13 @@ std::expected<void, StepRefusal> ModelRunner::Admit(const pl::Segment& segment, 
     for (std::size_t s = 1; s < slots_.stages(); ++s)
       if (slots_.progress(slot, s))
         return Refused("target step requires its shared prompt companions", true, slot);
-  if (auto active = slots_.CheckActive(slot); !active) return Refused(active.error(), true, slot);
+  if (auto active = slots_.CheckActive(slot); !active) {
+    // Compilation/admission may have exposed loss of the shared request.
+    // Recheck canonical cohort authority before inviting any clean retry.
+    slots_.CheckFailedJob();
+    if (slots_.faulted()) return Refused(active.error(), false);
+    return Refused(active.error(), true, slot);
+  }
   const std::uint32_t positions = slots_.positions(slot);
   if (stage == 0) {
     // The target's rows start at the committed positions, a verify's (at
@@ -1618,11 +1663,13 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   // backed state is work a malformed set of side rows must not cause.
   // Planning binds stable virtual addresses only; PlanStep pins the plan
   // across admission and the eventual job.
-  std::expected<Plans::Entry*, std::string> entry_of = nullptr;
+  // Exact selection and activation admission precede every owner's state
+  // growth/zeroing and all model progress. A failed replacement with unknown
+  // retirement faults the slots and must never become a clean singleton retry.
+  auto entry_of = Planned(shape);
+  if (!entry_of) return Refused(entry_of.error(), !slots_.faulted());
   std::vector<RowRead> row_reads;
   if (!row_tables_.empty() || !request.side_rows.empty() || source_->UsesSideRows(shape.stage)) {
-    entry_of = Planned(shape);
-    if (!entry_of) return Refused(entry_of.error());
     auto reads = plan_rows(*(*entry_of)->planned->program);
     if (!reads) return std::unexpected(reads.error());
     row_reads = std::move(*reads);
@@ -1652,13 +1699,6 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     }
   }
   if (auto places = slots_.CheckPlaces(); !places) return Refused(places.error());
-  if (*entry_of == nullptr) {
-    entry_of = Planned(shape);
-    if (!entry_of) return Refused(entry_of.error());
-    auto reads = plan_rows(*(*entry_of)->planned->program);
-    if (!reads) return std::unexpected(reads.error());
-    row_reads = std::move(*reads);
-  }
   Plans::Entry& entry = **entry_of;
   kn::StepProgram& program = *entry.planned->program;
 
@@ -2286,6 +2326,77 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
 }
 
 // -------------------------------------------------------------------- report
+
+void ModelRunner::ObservePlanCoverage(const kernels::StepProgram& program) {
+  ++measured_plan_shapes_;
+  const auto observed = program.plan_coverage();
+  auto& kept = setup_plan_coverage_;
+  kept.primitive_fallbacks = std::max(kept.primitive_fallbacks, observed.primitive_fallbacks);
+  kept.available_fast_fallbacks =
+      std::max(kept.available_fast_fallbacks, observed.available_fast_fallbacks);
+  kept.unqualified_numerical_candidates =
+      std::max(kept.unqualified_numerical_candidates, observed.unqualified_numerical_candidates);
+  kept.missing_numerical_qualifications =
+      std::max(kept.missing_numerical_qualifications, observed.missing_numerical_qualifications);
+  kept.decode_expansion_rules =
+      std::max(kept.decode_expansion_rules, observed.decode_expansion_rules);
+  kept.logical_activation_bytes =
+      std::max(kept.logical_activation_bytes, observed.logical_activation_bytes);
+  kept.physical_activation_bytes =
+      std::max(kept.physical_activation_bytes, observed.physical_activation_bytes);
+  kept.unmaterialized_logical_bytes =
+      std::max(kept.unmaterialized_logical_bytes, observed.unmaterialized_logical_bytes);
+  kept.unmaterialized_roots = std::max(kept.unmaterialized_roots, observed.unmaterialized_roots);
+}
+
+std::string ModelRunner::plan_report() const {
+  const auto& c = setup_plan_coverage_;
+  return std::format(
+      R"({{"measured_shapes":{},"max_primitive_fallbacks":{},"max_available_fast_fallbacks":{},"max_decode_expansion_rules":{},"max_missing_numerical_qualifications":{},"max_unqualified_numerical_candidates":{},"max_logical_activation_bytes":{},"max_physical_activation_bytes":{},"max_omitted_logical_bytes":{},"max_omitted_roots":{},"warning":"{}"}})",
+      measured_plan_shapes_, c.primitive_fallbacks, c.available_fast_fallbacks,
+      c.decode_expansion_rules, c.missing_numerical_qualifications,
+      c.unqualified_numerical_candidates, c.logical_activation_bytes, c.physical_activation_bytes,
+      c.unmaterialized_logical_bytes, c.unmaterialized_roots,
+      c.unqualified_numerical_candidates
+          ? "UNQUALIFIED CANDIDATE arithmetic is active; results are diagnostic only"
+      : c.missing_numerical_qualifications
+          ? "arithmetic opportunities lack qualification; enable --debug-plans for details"
+      : c.available_fast_fallbacks
+          ? (c.decode_expansion_rules
+                 ? "fast implementations are ineligible for some measured ops; decode products "
+                   "expand; enable --debug-plans for selected recipes"
+                 : "fast implementations are ineligible for some measured ops; enable "
+                   "--debug-plans for selected fallbacks")
+          : (c.decode_expansion_rules
+                 ? "decode products expand; enable --debug-plans for selected recipes"
+                 : ""));
+}
+
+void ModelRunner::EmitPlanReport(const Plans::Entry& entry,
+                                 const kernels::PlanRecordSink& sink) const {
+  if (!sink) return;
+  // Serialize only on request, streaming the paid typed inventory without
+  // allocating a second copy of the complete report.
+  std::array<char, 512> header{};
+  const auto& shape = entry.key.shape;
+  const auto written = std::format_to_n(
+      header.data(), header.size(),
+      R"({{"kind":"installed_plan","id":{},"stage":{},"phase":{},"rows":{},"segments":{},"host_bytes":{}}})",
+      entry.serial, shape.stage, static_cast<unsigned>(shape.phase), shape.rows(),
+      shape.segments.size(), entry.host_bytes);
+  base::Check(static_cast<std::size_t>(written.size) <= header.size(),
+              "bounded installed-plan report header");
+  sink(kernels::PlanReportEvent::kBegin, {});
+  sink(kernels::PlanReportEvent::kFragment,
+       std::string_view(header.data(), static_cast<std::size_t>(written.size)));
+  sink(kernels::PlanReportEvent::kEnd, {});
+  entry.planned->program->ReportPlanRecords(sink);
+}
+
+void ModelRunner::ReportPlans(const kernels::PlanRecordSink& sink) const {
+  if (!sink) return;
+  plans_.ForEach([&](const Plans::Entry& entry) { EmitPlanReport(entry, sink); });
+}
 
 std::string ModelRunner::report_json() const {
   return std::format(

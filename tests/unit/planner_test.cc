@@ -33,6 +33,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/json.h"
 #include "base/sha256.h"
 #include "execution/registry.h"
 #include "format/encoding.h"
@@ -42,6 +43,7 @@
 #include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "planner/construction.h"
 #include "planner/fusions.h"
 #include "planner/lanes.h"
 #include "planner/pattern.h"
@@ -72,9 +74,12 @@ constexpr std::array kPreparedRules = {ex::OperandRule{.operand = 0, .encodings 
                                        ex::OperandRule{.operand = 1, .encodings = kQ8_1}};
 
 bool Width64(const ex::CapabilityQuery& q) { return q.k == 64; }
+ir::ProductArithmetic FixtureVectorArithmetic(const ex::CapabilityQuery& q) {
+  return q.rows <= 8 ? ir::ProductArithmetic::kGgmlQ8_1F32 : ir::ProductArithmetic::kImplementation;
+}
 
 ex::Implementation Fake(std::string name, ex::Capability capability,
-                        ex::Operation operation = ex::Operation::kAdd) {
+                        llmp::ir::OpKey operation = llmp::ir::Primitive(llmp::ir::Op::kAdd)) {
   return {.name = std::move(name),
           .operation = operation,
           .source = "fake",
@@ -101,14 +106,16 @@ std::vector<ex::Implementation> Everything() {
       Fake("t.mul_mat.vector", ex::Capability{.op = ir::Primitive(Op::kMatMul),
                                               .operands = kProductRules,
                                               .shape = {.max_rows = 8},
-                                              .group = "t.mul_mat"}),
+                                              .group = "t.mul_mat",
+                                              .product_arithmetic = &FixtureVectorArithmetic}),
       Fake("t.mul_mat.tile", ex::Capability{.op = ir::Primitive(Op::kMatMul),
                                             .operands = kProductRules,
                                             .shape = {.min_rows = 9},
                                             .group = "t.mul_mat"}),
       Fake("t.mul_mat.prepared", ex::Capability{.op = ir::Primitive(Op::kMatMul),
                                                 .operands = kPreparedRules,
-                                                .shape = {.max_rows = 8}}),
+                                                .shape = {.max_rows = 8},
+                                                .product_arithmetic = &FixtureVectorArithmetic}),
       Fake("t.rms_norm_mul", Any(ir::Fused(FusedKind::kRmsNormMul))),
       Fake("t.rms_norm_mul_rope",
            ex::Capability{.op = ir::Fused(FusedKind::kRmsNormMulRope), .accepts = &Width64}),
@@ -162,6 +169,56 @@ StepPlan PlanOf(ir::Graph g, const ex::Registry& registry, const Policy& policy 
   return std::move(*p);
 }
 
+// These synthetic numerical controls qualify their own exact graph sites;
+// they are not historical checkpoint or production quality attestations.
+Policy FixtureNumericalPolicy(const ir::Graph& graph, Policy policy,
+                              std::span<const NumericalChange> changes) {
+  const auto source = base::Sha256{}.Update("planner numerical control source").Finish();
+  const auto semantic = graph.Digest();
+  const auto evidence = base::Sha256{}.Update("independent synthetic numerical control").Finish();
+  std::vector<NumericalQualification> entries;
+  for (const auto& node : graph.nodes()) {
+    if (node.key.op == ir::Op::kInput || node.key.op == ir::Op::kWeight ||
+        node.key.op == ir::Op::kState)
+      continue;
+    std::vector<const ir::TensorDesc*> sources, outputs;
+    for (const auto id : node.sources())
+      sources.push_back(id.valid() ? &graph.tensor(id) : nullptr);
+    for (const auto id : node.outputs()) outputs.push_back(&graph.tensor(id));
+    const auto shape = ShapeOfNode(node.key, sources, outputs);
+    for (const auto change : changes) {
+      const auto add = [&](ir::OpKey anchor) {
+        entries.push_back({.change = change,
+                           .evidence = evidence,
+                           .source = source,
+                           .semantic = semantic,
+                           .stage = 0,
+                           .component = node.component,
+                           .anchor = anchor,
+                           .arch = kDevice.arch,
+                           .min_rows = shape.rows,
+                           .max_rows = shape.rows,
+                           .max_k = shape.k,
+                           .max_n = shape.n,
+                           .exact_shape = true});
+      };
+      add(node.key);
+      if (change == NumericalChange::kBf16ResidualCarry)
+        add(ir::Fused(FusedKind::kLayerNormModulateSplit));
+    }
+  }
+  auto bound = NumericalQualifications::Bind(entries, source, semantic);
+  EXPECT_TRUE(bound) << (bound ? "" : bound.error());
+  if (bound) policy.numerical = std::move(*bound);
+  policy.active_stage = 0;
+  return policy;
+}
+StepPlan NumericalPlanOf(ir::Graph graph, const ex::Registry& registry, const Policy& policy,
+                         std::initializer_list<NumericalChange> changes) {
+  const auto qualified = FixtureNumericalPolicy(graph, policy, changes);
+  return PlanOf(std::move(graph), registry, qualified);
+}
+
 std::vector<std::string_view> Patterns(const StepPlan& p) {
   std::vector<std::string_view> out;
   for (const Applied& a : p.applied) out.push_back(a.pattern);
@@ -199,6 +256,109 @@ struct NormGraph {
     m = b.Mul(n, w);
   }
 };
+
+TEST(PlannerReportTest, StreamsActualOrderedSelectionsWithoutValuesOrTensorNames) {
+  auto registry = ex::Registry::Create(Everything()).value();
+  ir::Builder b;
+  auto x = b.Input(F32({64, 3}), "private_prompt_contents");
+  auto w = b.Weight(F32({64}), W(0));
+  b.Output(b.Mul(b.RmsNorm(x, 1e-6F), w));
+  auto plan = PlanOf(Finish(b), registry);
+  std::vector<std::string> records;
+  ReportPlan(plan, registry, [&](std::string_view record) { records.emplace_back(record); });
+  ASSERT_FALSE(records.empty());
+  std::size_t selected = 0;
+  for (const auto& record : records) {
+    EXPECT_EQ(record.find("private_prompt_contents"), std::string::npos);
+    auto parsed = base::json::Parse(record);
+    ASSERT_TRUE(parsed) << record;
+    const auto kind = parsed->root().find("kind");
+    ASSERT_TRUE(kind);
+    if (kind->string() != "selection") continue;
+    ASSERT_LT(selected, plan.steps.size());
+    const auto& step = plan.steps[selected];
+    EXPECT_EQ(parsed->root().find("implementation")->string(),
+              registry.at(step.implementation).name);
+    EXPECT_EQ(parsed->root().find("identity")->string(),
+              base::ToHex(registry.identity(step.implementation)));
+    EXPECT_EQ(parsed->root().find("step")->int64(), selected);
+    ++selected;
+  }
+  EXPECT_EQ(selected, plan.steps.size());
+  std::vector<std::string> repeated;
+  ReportPlan(plan, registry, [&](std::string_view record) { repeated.emplace_back(record); });
+  EXPECT_EQ(records, repeated);
+  ReportPlan(plan, registry, {});
+}
+
+TEST(PlannerReportTest, ExactFragmentCountParsesEscapesAndMaximumUnsignedFields) {
+  auto registry = ex::Registry::Create(Everything()).value();
+  ir::Builder b;
+  auto x = b.Input(F32({64, 3}));
+  auto w = b.Weight(F32({64}), W(0));
+  b.Output(b.Mul(b.RmsNorm(x, 1e-6F), w));
+  auto plan = PlanOf(Finish(b), registry);
+  EXPECT_EQ(plan.graph_digest, plan.graph.Digest());
+  ASSERT_FALSE(plan.steps.empty());
+  ASSERT_FALSE(plan.placement.offsets.empty());
+  const std::string escaped = std::string("quoted\" slash\\ tab\t line\n") + char{0} + char{1};
+  plan.steps[0].group = escaped;
+  plan.applied.push_back({.pattern = escaped});
+  plan.decomposed.push_back(escaped);
+  plan.placement.extent = UINT64_MAX;
+  plan.placement.offsets[0].second = UINT64_MAX;
+  std::size_t counted = 0, fragments = 0;
+  StreamPlanReport(plan, registry, [&](std::string_view part) {
+    counted += part.size();
+    ++fragments;
+  });
+  EXPECT_GT(fragments, plan.steps.size());
+  std::string filled(counted, '\0');
+  std::size_t written = 0;
+  StreamPlanReport(plan, registry, [&](std::string_view part) {
+    ASSERT_LE(part.size(), filled.size() - written);
+    std::ranges::copy(part, filled.begin() + static_cast<std::ptrdiff_t>(written));
+    written += part.size();
+  });
+  ASSERT_EQ(written, counted);
+  std::string wrapped;
+  ReportPlan(plan, registry, [&](std::string_view record) {
+    wrapped.append(record);
+    wrapped += '\n';
+  });
+  EXPECT_EQ(wrapped, filled);
+  bool header = false, group = false, pattern = false, fallback = false, offset = false;
+  std::string_view records = filled;
+  while (!records.empty()) {
+    const auto end = records.find('\n');
+    ASSERT_NE(end, std::string_view::npos);
+    const auto record = records.substr(0, end);
+    auto parsed = base::json::Parse(record);
+    ASSERT_TRUE(parsed) << record;
+    const auto root = parsed->root();
+    const auto kind = root.find("kind")->string();
+    if (kind == "plan") {
+      EXPECT_EQ(root.find("activation_bytes")->number(), "18446744073709551615");
+      EXPECT_EQ(root.find("graph")->string(), base::ToHex(plan.graph_digest));
+      header = true;
+    } else if (kind == "selection" && root.find("step")->int64() == 0) {
+      EXPECT_EQ(root.find("group")->string(), escaped);
+      group = true;
+      EXPECT_EQ(root.find("nodes")->size(), plan.steps[0].nodes.size());
+      EXPECT_EQ(root.find("implementation")->string(),
+                registry.at(plan.steps[0].implementation).name);
+    } else if (kind == "pattern" && root.find("name")->string() == escaped) {
+      pattern = true;
+    } else if (kind == "fallback" && root.find("op")->string() == escaped) {
+      EXPECT_EQ(root.find("reason")->string(), "no_eligible_implementation");
+      fallback = true;
+    } else if (kind == "activation" && root.find("offset")->number() == "18446744073709551615") {
+      offset = true;
+    }
+    records.remove_prefix(end + 1);
+  }
+  EXPECT_TRUE(header && group && pattern && fallback && offset);
+}
 
 // ---------------------------------------------------------------- policy
 
@@ -296,6 +456,151 @@ TEST(PlannerPolicyTest, DigestsFollowWhatChanges) {
   EXPECT_NE(Digest(base), Digest(rows));
   EXPECT_EQ(PatternsDigest(base), PatternsDigest(rows));  // same patterns
   EXPECT_EQ(Digest(base), Digest(Policy{}));
+}
+
+TEST(PlannerPolicyTest, NumericalCandidatesAreTypedCanonicalAndNeverEvidence) {
+  Policy candidate;
+  candidate.numerical_candidates = {NumericalChange::kQ8VectorReduction,
+                                    NumericalChange::kBf16ResidualCarry};
+  Canonicalize(candidate);
+  const auto text = ToText(candidate);
+  EXPECT_EQ(text,
+            "max_decode_rows 16\ncandidate_numerics bf16_residual_carry\n"
+            "candidate_numerics q8_vector_reduction\n");
+  ASSERT_TRUE(ParsePolicy(text));
+  EXPECT_EQ(ParsePolicy(text).value(), candidate);
+  EXPECT_NE(Digest(candidate), Digest(Policy{}));
+  EXPECT_FALSE(candidate.numerical);
+  EXPECT_FALSE(ParsePolicy("max_decode_rows 16\ncandidate_numerics all\n"));
+  EXPECT_FALSE(
+      ParsePolicy("max_decode_rows 16\ncandidate_numerics q8_vector_reduction\n"
+                  "candidate_numerics q8_vector_reduction\n"));
+  EXPECT_FALSE(
+      ParsePolicy("max_decode_rows 16\ncandidate_numerics q8_vector_reduction\n"
+                  "candidate_numerics bf16_residual_carry\n"));
+}
+
+TEST(PlannerPolicyTest, NumericalQualificationsBindOnlyTheActiveNonzeroIdentityAndExactSite) {
+  const auto source = base::Sha256{}.Update("authenticated source receipt set").Finish();
+  const auto semantic = base::Sha256{}.Update("admitted semantic spec").Finish();
+  NumericalQualification grant{.change = NumericalChange::kBf16ProductInputAndResult,
+                               .evidence = base::Sha256{}.Update("same quality control").Finish(),
+                               .source = source,
+                               .semantic = semantic,
+                               .stage = 0,
+                               .component = 3,
+                               .anchor = ir::Primitive(Op::kMatMul),
+                               .arch = 121,
+                               .min_rows = 17,
+                               .max_rows = 17,
+                               .max_k = 64,
+                               .max_n = 32,
+                               .exact_shape = true,
+                               .weight_role = 0};
+  const std::array entries{grant};
+  EXPECT_FALSE(NumericalQualifications::Bind(entries, {}, semantic));
+  EXPECT_FALSE(NumericalQualifications::Bind(entries, source, {}));
+  EXPECT_FALSE(NumericalQualifications::Bind(entries, semantic, semantic));
+  EXPECT_FALSE(NumericalQualifications::Bind(entries, source, source));
+  auto unproven = grant;
+  unproven.evidence = {};
+  EXPECT_FALSE(NumericalQualifications::Bind(std::array{unproven}, source, semantic));
+  unproven = grant;
+  unproven.max_rows = 18;  // Exact evidence is not a general smaller-shape rule.
+  EXPECT_FALSE(NumericalQualifications::Bind(std::array{unproven}, source, semantic));
+  auto facts = NumericalQualifications::Bind(entries, source, semantic);
+  ASSERT_TRUE(facts);
+  EXPECT_EQ((*facts)->host_bytes(), NumericalQualificationBytes(entries.size()).value());
+  Policy qualified{.numerical = *facts, .active_stage = 0};
+  const auto key = Digest(qualified);
+  EXPECT_NE(key, Digest(Policy{}));
+  EXPECT_FALSE(ParsePolicy("max_decode_rows 16\nnumerical same_quality\n"));
+  const auto registry = Registry();
+  for (int mutation = 0; mutation < 8; ++mutation) {
+    ir::Builder builder;
+    builder.SetComponent(mutation == 1 ? 4 : 3);
+    auto ref = W(mutation == 6 ? 1 : 0);
+    ref.component = mutation == 1 ? 4 : 3;
+    if (mutation == 7) ref.stage = 1;  // same role/K/N from another admitted stage
+    const auto weight = builder.Weight(Q8(mutation == 3 ? 96 : 64, mutation == 4 ? 16 : 32), ref);
+    const auto input = builder.Input(F32({mutation == 3 ? 96U : 64U, mutation == 2 ? 16U : 17U}));
+    const auto output = builder.MatMul(weight, input);
+    builder.Output(output);
+    const auto graph = Finish(builder);
+    Policy policy = qualified;
+    if (mutation == 5) policy.active_stage = 1;
+    const SelectionView view(registry, kDevice, policy, false, false);
+    const auto matched =
+        view.Qualification(grant.change, graph, graph.node(graph.producer(output)));
+    EXPECT_EQ(matched.has_value(), mutation == 0);
+    if (matched) EXPECT_EQ(matched->evidence, grant.evidence);
+  }
+  qualified.active_stage = 1;
+  EXPECT_NE(Digest(qualified), key);
+  auto other = grant;
+  other.evidence = base::Sha256{}.Update("different measured evidence").Finish();
+  qualified.numerical = NumericalQualifications::Bind(std::array{other}, source, semantic).value();
+  qualified.active_stage = 0;
+  EXPECT_NE(Digest(qualified), key);
+}
+
+TEST(PlannerPolicyTest, ScalarIncumbentCannotAuthorizeMoreRowsOtherRolesOrGeometry) {
+  const auto source = base::Sha256{}.Update("exact scalar checkpoint receipts").Finish();
+  const auto semantic = base::Sha256{}.Update("exact scalar admitted spec").Finish();
+  const NumericalQualification grant{
+      .change = NumericalChange::kQ8VectorReduction,
+      .evidence = base::Sha256{}.Update("retained scalar incumbent reference evidence").Finish(),
+      .source = source,
+      .semantic = semantic,
+      .stage = 0,
+      .component = 3,
+      .anchor = ir::Primitive(Op::kMatMul),
+      .arch = 121,
+      .min_rows = 1,
+      .max_rows = 1,
+      .max_k = 64,
+      .max_n = 32,
+      .exact_dimensions = true,
+      .incumbent_recipe = true,
+      .weight_role = 0};
+  auto facts = NumericalQualifications::Bind(std::array{grant}, source, semantic);
+  ASSERT_TRUE(facts);
+  EXPECT_FALSE(NumericalQualifications::Bind(std::array{grant}, semantic, semantic));
+  const auto registry = Registry();
+  for (const auto rows : {1U, 2U, 3U, 4U, 8U}) {
+    for (unsigned mutation = 0; mutation != 5; ++mutation) {
+      SCOPED_TRACE(rows);
+      SCOPED_TRACE(mutation);
+      ir::Builder builder;
+      builder.SetComponent(3);
+      auto ref = W(mutation == 1 ? 1 : 0);
+      ref.component = 3;
+      if (mutation == 4) ref.stage = 1;
+      const auto k = mutation == 2 ? 96U : 64U;
+      const auto n = mutation == 3 ? 16U : 32U;
+      const auto weight = builder.Weight(Q8(k, n), ref);
+      const auto input = builder.Input(F32({k, rows}));
+      const auto output = builder.MatMul(weight, input);
+      builder.Output(output);
+      const auto graph = Finish(builder);
+      const Policy policy{.numerical = *facts, .active_stage = 0};
+      const SelectionView view(registry, kDevice, policy, false, false);
+      EXPECT_EQ(
+          view.Qualification(grant.change, graph, graph.node(graph.producer(output))).has_value(),
+          rows == 1 && mutation == 0);
+    }
+  }
+}
+
+TEST(PlannerPolicyTest, DefaultAvailabilityDoesNotTurnEnableIntoNumericalAuthority) {
+  EXPECT_FALSE(Disabled({}, "dsv4_qhead"));
+  EXPECT_FALSE(Disabled({}, "bf16_glu"));
+  EXPECT_TRUE(Disabled({}, "rounded_indexer"));
+  EXPECT_TRUE(Disabled({}, "owner_row_invariant"));
+  const auto explicit_enable = ParsePolicy("max_decode_rows 16\nenable bf16_glu\n");
+  ASSERT_TRUE(explicit_enable);
+  EXPECT_FALSE(explicit_enable->numerical);
+  EXPECT_TRUE(Validate(Policy{.enabled = {"rms_norm_mul"}}));
 }
 
 TEST(PlannerPolicyTest, StepRulesAreCanonicalAndChecked) {
@@ -462,7 +767,7 @@ TEST(PlannerPatternTest, StateBanksKeepAttentionParametersAndRefuseObservableCop
   Policy on;
   on.enabled = {"state_bank_attention"};
   const SelectionView enabled(registry, kDevice, on, false, false);
-  const Policy default_policy{};
+  const Policy default_policy{.disabled = {"state_bank_attention"}};
   const SelectionView off(registry, kDevice, default_policy, false, false);
   // 0: canonical; others change exactly one proof premise.
   for (int mutation = 0; mutation < 14; ++mutation) {
@@ -606,7 +911,7 @@ TEST(PlannerPatternTest, Dsv4QHeadChecksTailOwnershipSideReadersAndInterveningWr
   auto implementations = Everything();
   implementations.push_back(Fake("t.dsv4_qhead", Any(ir::Fused(FusedKind::kDsv4QHead))));
   const auto registry = Registry(std::move(implementations));
-  const Policy policy{};
+  const Policy policy{.disabled = {"dsv4_qhead"}};
   const SelectionView selection(registry, kDevice, policy, false, false);
   for (int mutation = 0; mutation <= 10; ++mutation) {
     SCOPED_TRACE(mutation);
@@ -821,7 +1126,7 @@ TEST(PlannerPatternTest, Dsv4CompressorChecksTheEntireCanonicalAssemblyAndReadOr
   auto implementations = Everything();
   implementations.push_back(Fake("t.dsv4_compress", Any(ir::Fused(FusedKind::kDsv4Compress))));
   const auto registry = Registry(std::move(implementations));
-  const Policy policy{};
+  const Policy policy{.disabled = {"dsv4_compress"}};
   const SelectionView selection(registry, kDevice, policy, false, false);
   for (bool overlap : {false, true}) {
     for (int mutation = 0; mutation <= 9; ++mutation) {
@@ -1065,7 +1370,7 @@ TEST(PlannerPatternTest, GdnHistoryChecksStandaloneCommitTail) {
       implementations.push_back(Fake("t.gdn_history", Any(ir::Fused(FusedKind::kGdnHistory))));
     }
     const auto registry = Registry(std::move(implementations));
-    const Policy policy{};
+    const Policy policy{.disabled = {"gdn_conv"}};
     const SelectionView selection(registry, kDevice, policy, false, false);
 
     ir::Builder b;
@@ -1196,11 +1501,958 @@ TEST(PlannerPatternTest, QsaPoolingDoesNotDropRotationFrequencyFactors) {
   }
 }
 
+TEST(PlannerPolicyTest, NumericalConstructionRejectsUnrepresentableResourceInventory) {
+  EXPECT_EQ(NumericalConstructionBytes(0), 0U);
+  EXPECT_FALSE(NumericalConstructionBytes(UINT64_MAX));
+  ASSERT_TRUE(NumericalConstructionBytes(ir::Graph::kMaxNodes));
+}
+
+// Exact role-bound synthetic evidence for numerical admission controls only.
+Policy RoleNumericalPolicy(const ir::Graph& graph, Policy policy, NumericalChange change,
+                           std::span<const std::uint16_t> roles,
+                           bool wrong_second_geometry = false) {
+  const auto source = base::Sha256{}.Update("role-bound numerical control source").Finish();
+  const auto semantic = graph.Digest();
+  std::vector<NumericalQualification> entries;
+  for (const auto& node : graph.nodes()) {
+    if (node.key != ir::Primitive(Op::kMatMul) && node.key != ir::Primitive(Op::kMatMulId))
+      continue;
+    const auto& weight = graph.tensor(graph.root(node.src[0]));
+    const auto* ref = std::get_if<ir::WeightRef>(&weight.binding);
+    if (!ref || !std::ranges::contains(roles, ref->role)) continue;
+    std::array<const ir::TensorDesc*, ir::kMaxSources> sources{};
+    for (std::size_t i = 0; i < node.nsrc; ++i) sources[i] = &graph.tensor(node.src[i]);
+    const std::array outputs{&graph.tensor(node.out[0])};
+    auto shape = ShapeOfNode(node.key, std::span(sources).first(node.nsrc), outputs);
+    auto max_n = weight.ne(1);
+    if (wrong_second_geometry && ref->role == 1) ++max_n;
+    entries.push_back({.change = change,
+                       .evidence = base::Sha256{}.Update(std::to_string(ref->role)).Finish(),
+                       .source = source,
+                       .semantic = semantic,
+                       .stage = 0,
+                       .component = node.component,
+                       .anchor = node.key,
+                       .arch = kDevice.arch,
+                       .min_rows = shape.rows,
+                       .max_rows = shape.rows,
+                       .max_k = weight.ne(0),
+                       .max_n = max_n,
+                       .exact_shape = true,
+                       .weight_role = ref->role});
+  }
+  auto bound = NumericalQualifications::Bind(entries, source, semantic);
+  EXPECT_TRUE(bound) << (bound ? "" : bound.error());
+  if (bound) policy.numerical = std::move(*bound);
+  policy.active_stage = 0;
+  return policy;
+}
+
+TEST(PlannerPatternTest, QuantizedGluAuthenticatesBothProductsAndPreparedCompoundOperands) {
+  for (const bool routed : {false, true}) {
+    for (const bool already_fused : {false, true}) {
+      for (unsigned authority = 0; authority < 8; ++authority) {
+        SCOPED_TRACE(routed);
+        SCOPED_TRACE(already_fused);
+        SCOPED_TRACE(authority);
+        auto implementations = Everything();
+        // These controls have no incumbent conversion-equivalence fact.
+        auto product = Any(ir::Primitive(routed ? Op::kMatMulId : Op::kMatMul));
+        product.priority = 100;
+        implementations.push_back(Fake("test.changed_product", product));
+        auto fused = Any(ir::Fused(routed ? FusedKind::kMatMulIdGlu : FusedKind::kMatMulGlu));
+        fused.priority = 100;
+        implementations.push_back(Fake("test.changed_glu", fused));
+        const auto registry = Registry(std::move(implementations));
+        ir::Builder b;
+        b.SetComponent(1);
+        const auto x = b.Input(F32({256, 4}));
+        std::array<TensorId, 2> weights{};
+        for (std::uint16_t role = 0; role < 2; ++role) {
+          auto ref = W(role);
+          if ((authority == 3 || authority == 7) && role == 1) ref.stage = 1;
+          auto format = Q8(256, 128);
+          if (routed) format.shape = ir::ShapeOf({256, 128, 4});
+          weights[role] = b.Weight(format, ref);
+        }
+        const auto ids =
+            routed ? b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2, 4}))) : TensorId{};
+        const auto input = routed ? b.Reshape(x, ir::ShapeOf({256, 1, 4})) : x;
+        const auto gate = routed ? b.MatMulId(weights[0], input, ids) : b.MatMul(weights[0], input);
+        const auto up = routed ? b.MatMulId(weights[1], input, ids) : b.MatMul(weights[1], input);
+        b.Output(b.Glu(gate, up, {}));
+        auto primitive = Finish(b);
+        std::array<ir::NodeId, 2> original_sites{};
+        std::size_t found = 0;
+        for (std::uint32_t i = 0; i < primitive.nodes().size(); ++i)
+          if (primitive.node({i}).key == product.op) original_sites.at(found++) = {i};
+        ASSERT_EQ(found, 2U);
+        Policy policy{.disabled = {"float_mul_mat_glu", "mul_mat_glu", "paired_glu_products"}};
+        const std::array<std::uint16_t, 1> first{0};
+        const std::array<std::uint16_t, 2> both{0, 1};
+        if (authority != 0 && authority != 4)
+          policy = RoleNumericalPolicy(primitive, policy, NumericalChange::kQ8VectorReduction,
+                                       authority == 1 ? std::span<const std::uint16_t>(first)
+                                                      : std::span<const std::uint16_t>(both),
+                                       authority == 5);
+        if (authority == 6 || authority == 7) {
+          std::vector<NumericalQualification> entries(policy.numerical->entries().begin(),
+                                                      policy.numerical->entries().end());
+          if (authority == 6) {
+            // The review's counterexample supplied gate-side GLU/compound
+            // grants rather than either original product contract.
+            entries.resize(2);
+            entries[0].anchor = ir::Primitive(Op::kGlu);
+            entries[0].max_k = 128;
+            entries[0].max_n = 0;
+            entries[0].weight_role = 0;
+            entries[1] = entries[0];
+            entries[1].anchor = fused.op;
+            entries[1].max_k = 256;
+            entries[1].max_n = 128;
+          } else {
+            // Even a whole-component role wildcard cannot borrow authority
+            // for a weight belonging to a different authenticated stage.
+            for (auto& entry : entries) entry.weight_role = UINT16_MAX;
+          }
+          auto qualified = NumericalQualifications::Bind(entries, entries.front().source,
+                                                         entries.front().semantic);
+          ASSERT_TRUE(qualified) << (qualified ? "" : qualified.error());
+          policy.numerical = std::move(*qualified);
+        }
+        if (authority == 4) policy.numerical_candidates = {NumericalChange::kQ8VectorReduction};
+        auto graph = primitive.Clone();
+        if (already_fused) {
+          // Supply the fused input directly rather than relying on a round-0
+          // proof transfer. Grants still describe each original product.
+          ir::Builder direct;
+          direct.SetComponent(1);
+          const auto dx = direct.Input(F32({256, 4}));
+          std::array<TensorId, 2> dw{};
+          for (std::size_t i = 0; i < dw.size(); ++i)
+            dw[i] = direct.Weight(primitive.tensor(weights[i]).format,
+                                  std::get<ir::WeightRef>(primitive.tensor(weights[i]).binding));
+          if (routed) {
+            const auto di = direct.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2, 4})));
+            const std::array src{dw[0], dw[1], dx, di};
+            direct.Output(direct.Fused(FusedKind::kMatMulIdGlu, src,
+                                       ir::MoeExpertsParams{.glu = {}, .hidden = 128})[0]);
+          } else {
+            const std::array src{dw[0], dw[1], dx};
+            direct.Output(direct.Fused(FusedKind::kMatMulGlu, src, ir::GluParams{})[0]);
+          }
+          graph = Finish(direct);
+        }
+        const auto plan = PlanOf(std::move(graph), registry, policy);
+        const bool permitted = authority == 2 || authority == 4;
+        const auto compound = std::ranges::find(plan.graph.nodes(), fused.op, &ir::Node::key);
+        if (already_fused || permitted) {
+          ASSERT_NE(compound, plan.graph.nodes().end());
+          EXPECT_EQ(plan.graph.tensor(compound->src[2]).format.encoding == Encoding::kQ8_1,
+                    permitted);
+        }
+        std::size_t preparations = 0, paired = 0;
+        for (const auto& applied : plan.applied) {
+          if (applied.pattern != "vecq_glu" && applied.pattern != "vecq_inputs") continue;
+          if (applied.pattern == "vecq_glu") {
+            ++paired;
+            ASSERT_EQ(applied.numerical_proofs.size(), 2U);
+            EXPECT_EQ(applied.numerical_proofs[0].site, original_sites[0]);
+            EXPECT_EQ(applied.numerical_proofs[1].site, original_sites[1]);
+          }
+          if (applied.pattern == "vecq_inputs" && permitted) {
+            ++preparations;
+            ASSERT_EQ(applied.numerical_proofs.size(), 2U);
+            EXPECT_EQ(applied.numerical_proofs[0].weight_operand, 0U);
+            EXPECT_EQ(applied.numerical_proofs[1].weight_operand, 1U);
+          }
+          for (const auto& proof : applied.numerical_proofs) {
+            EXPECT_EQ(proof.candidate, authority == 4);
+            EXPECT_EQ(proof.actual.rows, 4U);
+            EXPECT_EQ(proof.actual.k, 256U);
+            EXPECT_EQ(proof.actual.n, 128U);
+            ASSERT_TRUE(proof.observed.weight);
+            EXPECT_EQ(proof.observed.weight->component, 1U);
+            EXPECT_LT(proof.observed.weight->role, 2U);
+            EXPECT_EQ(
+                proof.observed.weight->stage,
+                ((authority == 3 || authority == 7) && proof.observed.weight->role == 1) ? 1U : 0U);
+            EXPECT_EQ(proof.observed.operand_format.encoding, Encoding::kQ8_0);
+            EXPECT_EQ(proof.observed.leaf_format.encoding, Encoding::kQ8_0);
+            if (!proof.candidate) {
+              EXPECT_EQ(proof.qualification.stage, 0U);
+              EXPECT_EQ(proof.qualification.anchor, product.op);
+              EXPECT_NE(proof.qualification.evidence, base::Sha256Digest{});
+            }
+          }
+        }
+        EXPECT_EQ(paired, !already_fused && permitted ? 1U : 0U);
+        EXPECT_EQ(preparations, permitted ? 1U : 0U);
+        if (authority == 1 || authority == 3 || authority == 5 || authority == 6 || authority == 7)
+          EXPECT_FALSE(plan.missing_numerical.empty());
+      }
+    }
+  }
+}
+
+TEST(PlannerPatternTest, QuantizedGluCannotEraseAnExplicitProductConstraint) {
+  auto implementations = Everything();
+  auto product = Any(ir::Primitive(Op::kMatMul));
+  product.priority = 100;
+  implementations.push_back(Fake("test.changed_product", product));
+  implementations.push_back(Fake("test.changed_glu", Any(ir::Fused(FusedKind::kMatMulGlu))));
+  const auto registry = Registry(std::move(implementations));
+  ir::Builder builder;
+  builder.SetComponent(1);
+  const auto x = builder.Input(F32({256, 4}));
+  const auto gate = builder.MatMul(builder.Weight(Q8(256, 128), W(0)), x);
+  const auto up =
+      builder.MatMul(builder.Weight(Q8(256, 128), W(1)), x, {.accumulate = ir::Accumulate::kF32});
+  builder.Output(builder.Glu(gate, up, {}));
+  auto graph = Finish(builder);
+  const std::array<std::uint16_t, 2> roles{0, 1};
+  auto policy = RoleNumericalPolicy(graph, {}, NumericalChange::kQ8VectorReduction, roles);
+  const auto plan = PlanOf(std::move(graph), registry, policy);
+  EXPECT_EQ(std::ranges::count(plan.applied, "vecq_glu", &Applied::pattern), 0);
+  EXPECT_EQ(std::ranges::count(plan.graph.nodes(), ir::Primitive(Op::kGlu), &ir::Node::key), 1);
+  const auto constrained = std::ranges::find_if(plan.graph.nodes(), [](const auto& node) {
+    return node.key == ir::Primitive(Op::kMatMul) &&
+           node.template Params<ir::ProductParams>().accumulate == ir::Accumulate::kF32;
+  });
+  ASSERT_NE(constrained, plan.graph.nodes().end());
+  EXPECT_EQ(plan.graph.tensor(constrained->src[1]).format.encoding, Encoding::kQ8_1);
+}
+
+TEST(PlannerPatternTest, SharedChangedPreparationQualifiesEveryRecipientAndRetainsEachProof) {
+  for (const auto encoding : {Encoding::kMxfp8, Encoding::kQ8_0}) {
+    for (unsigned authority = 0; authority < 6; ++authority) {
+      SCOPED_TRACE(static_cast<unsigned>(encoding));
+      SCOPED_TRACE(authority);
+      auto implementations = Everything();
+      auto product = Any(ir::Primitive(Op::kMatMul));
+      product.priority = 100;  // No incumbent-equivalence fact, for either input encoding.
+      implementations.push_back(Fake("t.changed_product", product));
+      implementations.push_back(Fake("t.prepare", Any(ir::Primitive(Op::kPrepare))));
+      const auto registry = Registry(std::move(implementations));
+      ir::Builder b;
+      b.SetComponent(1);
+      const auto x = b.Input(F32({128, 2}));
+      std::array<ir::NodeId, 2> sites{};
+      for (std::uint16_t role = 0; role < 2; ++role) {
+        auto ref = W(role);
+        if (authority == 3 && role == 1)
+          ref.stage = 1;  // A foreign-stage weight stays unqualified.
+        const auto format = encoding == Encoding::kMxfp8
+                                ? format::TensorFormat{.encoding = encoding,
+                                                       .layout = Layout::kScaleAtoms,
+                                                       .shape = ir::ShapeOf({128, 8 + 8ULL * role})}
+                                : Q8(128, 8 + 8ULL * role);
+        const auto w = b.Weight(format, ref);
+        const auto y = b.MatMul(w, x);
+        b.Output(b.Scale(y, 2));
+      }
+      const auto graph = Finish(b);
+      // Resolve primitive IDs before planning/remapping.
+      std::size_t at = 0;
+      for (std::uint32_t i = 0; i < graph.nodes().size(); ++i)
+        if (graph.node({i}).key == ir::Primitive(Op::kMatMul)) sites.at(at++) = {i};
+      const auto change = encoding == Encoding::kMxfp8 ? NumericalChange::kMxfp8ProductInput
+                                                       : NumericalChange::kQ8VectorReduction;
+      const std::array<std::uint16_t, 2> both{0, 1};
+      const std::array<std::uint16_t, 1> first{0};
+      Policy policy;
+      if (authority != 0 && authority != 4)
+        policy = RoleNumericalPolicy(graph, policy, change,
+                                     authority == 1 ? std::span<const std::uint16_t>(first)
+                                                    : std::span<const std::uint16_t>(both),
+                                     authority == 5);
+      if (authority == 4) policy.numerical_candidates = {change};
+      const auto plan = PlanOf(graph.Clone(), registry, policy);
+      std::size_t changed = 0, proof_count = 0;
+      for (const auto& node : plan.graph.nodes())
+        if (node.key == ir::Primitive(Op::kMatMul) &&
+            plan.graph.tensor(node.src[1]).format.encoding != Encoding::kF32)
+          ++changed;
+      EXPECT_EQ(changed, authority == 0
+                             ? 0U
+                             : (authority == 1 || authority == 3 || authority == 5 ? 1U : 2U));
+      for (const auto& applied : plan.applied) {
+        for (const auto& proof : applied.numerical_proofs) {
+          EXPECT_TRUE(std::ranges::contains(sites, proof.site));
+          if (!proof.candidate)
+            EXPECT_EQ(proof.site, sites.at(proof.qualification.weight_role == 1 ? 1 : 0));
+          EXPECT_EQ(proof.actual.rows, 2U);
+          EXPECT_EQ(proof.actual.k, 128U);
+          EXPECT_EQ(proof.candidate, authority == 4);
+          if (!proof.candidate) {
+            EXPECT_EQ(proof.qualification.stage, 0U);
+            EXPECT_EQ(proof.actual.n, proof.qualification.max_n);
+            EXPECT_NE(proof.qualification.evidence, base::Sha256Digest{});
+          }
+          ++proof_count;
+        }
+      }
+      EXPECT_EQ(proof_count, changed);
+      EXPECT_EQ(std::ranges::count(plan.graph.nodes(), ir::Primitive(Op::kPrepare), &ir::Node::key),
+                authority == 0 ? 0 : 1);
+      if (authority == 1 || authority == 3 || authority == 5)
+        EXPECT_FALSE(plan.missing_numerical.empty());
+    }
+  }
+}
+
+TEST(PlannerPatternTest, GroupedVecQRequiresTheActualProductQualification) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.grouped", Any(ir::Fused(FusedKind::kGroupedMatMul))));
+  implementations.push_back(Fake("t.cont", Any(ir::Primitive(Op::kCont))));
+  const auto registry = Registry(std::move(implementations));
+  ir::Builder b;
+  b.SetComponent(1);
+  const auto leaf = b.Weight(Q8(64, 48), W(7));
+  const auto w = b.Reshape(leaf, ir::ShapeOf({64, 16, 3}));
+  const auto x = b.Input(F32({64, 3, 2}));
+  const auto y = b.MatMul(w, b.Permute(x, {0, 2, 1, 3}));
+  b.Output(b.Cont(b.Permute(y, {0, 2, 1, 3}), ir::ShapeOf({48, 2})));
+  const auto graph = Finish(b);
+  const auto product = graph.producer(y);
+  const auto grouped_product = fusions::GroupedProductOf(graph, product);
+  ASSERT_TRUE(grouped_product.has_value());
+  EXPECT_EQ(grouped_product->product, product);
+  EXPECT_EQ(grouped_product->leaf, leaf);
+  EXPECT_EQ(grouped_product->weight, w);
+  EXPECT_EQ(grouped_product->input, x);
+  const std::array<std::uint16_t, 1> role{7};
+  // 0: unqualified, 1: concrete full-leaf role qualification [64, 48],
+  // 2: explicit candidate proposal, 3: wildcard role [64, 48],
+  // 4: unprojected per-group [64, 16] without full-leaf authority,
+  // 5: non-exact full-leaf [64, 48].
+  for (unsigned authority = 0; authority < 6; ++authority) {
+    SCOPED_TRACE(authority);
+    Policy policy;
+    if (authority == 1 || authority >= 3) {
+      policy = RoleNumericalPolicy(graph, policy, NumericalChange::kQ8VectorReduction, role);
+      if (authority >= 3) {
+        std::vector<NumericalQualification> entries(policy.numerical->entries().begin(),
+                                                    policy.numerical->entries().end());
+        ASSERT_EQ(entries.size(), 1U);
+        if (authority == 3) entries[0].weight_role = UINT16_MAX;
+        if (authority == 4) entries[0].max_n = 16;
+        if (authority == 5) {
+          entries[0].exact_shape = false;
+          entries[0].exact_dimensions = false;
+        }
+        auto bound = NumericalQualifications::Bind(entries, entries[0].source, entries[0].semantic);
+        ASSERT_TRUE(bound) << (bound ? "" : bound.error());
+        policy.numerical = std::move(*bound);
+      }
+    }
+    if (authority == 2) policy.numerical_candidates = {NumericalChange::kQ8VectorReduction};
+    const SelectionView view(registry, kDevice, policy, false, false);
+    const auto matched =
+        view.Qualification(NumericalChange::kQ8VectorReduction, graph, graph.node(product));
+    EXPECT_EQ(matched.has_value(), authority == 1);
+    if (matched) {
+      EXPECT_EQ(matched->weight_role, 7U);
+      EXPECT_EQ(matched->max_k, 64U);
+      EXPECT_EQ(matched->max_n, 16U);
+    }
+    const auto plan = PlanOf(graph.Clone(), registry, policy);
+    const auto found = std::ranges::find(plan.applied, "grouped_vecq", &Applied::pattern);
+    const bool permitted = authority == 1 || authority == 2;
+    EXPECT_EQ(found != plan.applied.end(), permitted);
+    if (found != plan.applied.end()) {
+      ASSERT_EQ(found->numerical_proofs.size(), 1U);
+      const auto& proof = found->numerical_proofs[0];
+      EXPECT_EQ(proof.site, product);
+      EXPECT_EQ(proof.candidate, authority == 2);
+      EXPECT_EQ(proof.grouped_projection, authority == 1);
+      EXPECT_EQ(proof.actual.rows, 2U);
+      EXPECT_EQ(proof.actual.k, 64U);
+      EXPECT_EQ(proof.actual.n, 16U);
+      ASSERT_TRUE(proof.observed.weight.has_value());
+      EXPECT_EQ(*proof.observed.weight, W(7));
+      EXPECT_EQ(proof.observed.operand_format.shape.ne,
+                (std::array<std::uint64_t, 4>{64, 16, 3, 1}));
+      EXPECT_EQ(proof.observed.leaf_format.shape.ne, (std::array<std::uint64_t, 4>{64, 48, 1, 1}));
+      if (authority == 1) {
+        EXPECT_EQ(proof.qualification.max_k, 64U);
+        EXPECT_EQ(proof.qualification.max_n, 16U);
+        const auto bytes = PlanReportInventory::StorageBytes(plan, registry);
+        ASSERT_TRUE(bytes.has_value());
+        const auto inventory = PlanReportInventory::Capture(plan, registry, *bytes);
+        ASSERT_TRUE(inventory.has_value());
+        std::string streamed, captured;
+        StreamPlanReport(plan, registry, [&](std::string_view part) { streamed.append(part); });
+        inventory->Stream([&](std::string_view part) { captured.append(part); });
+        EXPECT_EQ(streamed, captured);
+        bool saw_pattern = false;
+        std::string_view remaining = streamed;
+        while (!remaining.empty()) {
+          const auto end = remaining.find('\n');
+          ASSERT_NE(end, std::string_view::npos);
+          auto json = base::json::Parse(remaining.substr(0, end));
+          ASSERT_TRUE(json.has_value());
+          if (json->root().find("kind")->string() == "pattern" &&
+              json->root().find("name")->string() == "grouped_vecq") {
+            const auto recipient = json->root().find("numerical_recipients")->at(0);
+            EXPECT_EQ(recipient.find("rows")->int64(), 2);
+            EXPECT_EQ(recipient.find("k")->int64(), 64);
+            EXPECT_EQ(recipient.find("n")->int64(), 16);
+            EXPECT_TRUE(recipient.find("grouped_projection")->boolean());
+            const auto envelope = recipient.find("qualified_envelope");
+            ASSERT_TRUE(envelope.has_value());
+            EXPECT_EQ(envelope->at(2).int64(), 64);
+            EXPECT_EQ(envelope->at(3).int64(), 16);
+            const auto leaf_envelope = recipient.find("qualified_leaf_envelope");
+            ASSERT_TRUE(leaf_envelope.has_value());
+            EXPECT_EQ(leaf_envelope->at(2).int64(), 64);
+            EXPECT_EQ(leaf_envelope->at(3).int64(), 48);
+            const auto observed = recipient.find("observed");
+            ASSERT_TRUE(observed.has_value());
+            EXPECT_EQ(observed->find("weight_operand")->find("shape")->at(1).int64(), 16);
+            EXPECT_EQ(observed->find("weight_operand")->find("shape")->at(2).int64(), 3);
+            EXPECT_EQ(observed->find("weight_leaf")->find("shape")->at(1).int64(), 48);
+            saw_pattern = true;
+          }
+          remaining.remove_prefix(end + 1);
+        }
+        EXPECT_TRUE(saw_pattern);
+      }
+    } else {
+      EXPECT_FALSE(plan.missing_numerical.empty());
+    }
+  }
+}
+
+TEST(PlannerPatternTest,
+     GroupedQualificationProjectionRejectsMalformedUnclosedAndSharedLeafMisuse) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.grouped", Any(ir::Fused(FusedKind::kGroupedMatMul))));
+  implementations.push_back(Fake("t.cont", Any(ir::Primitive(Op::kCont))));
+  implementations.push_back(Fake("t.prepare", Any(ir::Primitive(Op::kPrepare))));
+  auto changed = Any(ir::Primitive(Op::kMatMul));
+  changed.priority = 100;
+  implementations.push_back(Fake("t.changed_product", changed));
+  const auto registry = Registry(std::move(implementations));
+  const std::array<std::uint16_t, 1> role{7};
+
+  // 0: valid closed grouped product, 1: non-zero view offset on weight,
+  // 2: non-contiguous weight view, 3: wrong input permute axes,
+  // 4: missing input permute, 5: wrong output permute axes,
+  // 6: missing Cont assembly, 7: mismatched Cont shape,
+  // 8: groups < 2, 9: unclosed product output escaping to graph outputs.
+  for (unsigned mutation = 0; mutation < 10; ++mutation) {
+    SCOPED_TRACE(mutation);
+    ir::Builder b;
+    b.SetComponent(1);
+    const std::uint64_t groups = mutation == 8 ? 1U : 3U;
+    const std::uint64_t n_per = mutation == 8 ? 48U : 16U;
+    const auto leaf = b.Weight(Q8(64, 48), W(7));
+    TensorId w{};
+    if (mutation == 1) {
+      const auto sub = b.View(leaf, ir::ShapeOf({64, 32}), ir::NaturalStrides(Q8(64, 32)), 68);
+      w = b.Reshape(sub, ir::ShapeOf({64, 16, 2}));
+    } else if (mutation == 2) {
+      w = b.View(leaf, ir::ShapeOf({64, 8, 3}), {34, 136, 1088, 3264}, 0);
+    } else {
+      w = b.Reshape(leaf, ir::ShapeOf({64, n_per, groups}));
+    }
+    ASSERT_TRUE(b.ok()) << (b.error() ? b.error()->detail : "");
+    const std::uint64_t w_groups = b.tensor(w).ne(2);
+    const std::uint64_t w_n = b.tensor(w).ne(1);
+    const bool swapped_x = mutation == 3 || mutation == 4;
+    const auto x = b.Input(F32({64, swapped_x ? 2U : w_groups, swapped_x ? w_groups : 2U}));
+    const auto x_in = mutation == 4
+                          ? x
+                          : b.Permute(x, mutation == 3 ? std::array<std::uint8_t, 4>{0, 1, 2, 3}
+                                                       : std::array<std::uint8_t, 4>{0, 2, 1, 3});
+    const auto y = b.MatMul(w, x_in);
+    if (mutation == 9) b.Output(y);
+    const auto y_out = b.Permute(y, mutation == 5 ? std::array<std::uint8_t, 4>{0, 1, 2, 3}
+                                                  : std::array<std::uint8_t, 4>{0, 2, 1, 3});
+    if (mutation == 6) {
+      b.Output(y_out);
+    } else {
+      const auto cont_shape =
+          mutation == 7 ? ir::ShapeOf({w_n * w_groups * 2, 1}) : ir::ShapeOf({w_n * w_groups, 2});
+      b.Output(b.Cont(y_out, cont_shape));
+    }
+    const auto graph = Finish(b);
+    const auto product = graph.producer(y);
+    EXPECT_EQ(fusions::GroupedProductOf(graph, product).has_value(), mutation == 0);
+    const auto policy = RoleNumericalPolicy(graph, {}, NumericalChange::kQ8VectorReduction, role);
+    const SelectionView view(registry, kDevice, policy, false, false);
+    EXPECT_EQ(view.Qualification(NumericalChange::kQ8VectorReduction, graph, graph.node(product))
+                  .has_value(),
+              mutation == 0);
+    const auto plan = PlanOf(graph.Clone(), registry, policy);
+    const auto found = std::ranges::find(plan.applied, "grouped_vecq", &Applied::pattern);
+    EXPECT_EQ(found != plan.applied.end(), mutation == 0);
+  }
+
+  // Shared-leaf isolation: a single weight leaf [64, 48] consumed in the same
+  // plan by a valid dense [64, 48] MatMul, a valid closed grouped [64, 16, 3]
+  // product, and malformed/unclosed consumers qualifies the dense consumer with
+  // full-leaf [1, 1, 64, 48] (grouped_projection == false), the closed grouped
+  // consumer with projected [1, 1, 64, 16] (grouped_projection == true and
+  // qualified_leaf_envelope == [1, 1, 64, 48]), and rejects only the malformed
+  // consumer sites.
+  ir::Builder shared;
+  shared.SetComponent(1);
+  const auto leaf = shared.Weight(Q8(64, 48), W(7));
+  const auto x_dense = shared.Input(F32({64, 1}));
+  const auto y_dense = shared.MatMul(leaf, x_dense);
+  shared.Output(y_dense);
+  const auto w_grouped = shared.Reshape(leaf, ir::ShapeOf({64, 16, 3}));
+  const auto x_grouped = shared.Input(F32({64, 3, 1}));
+  const auto y_grouped = shared.MatMul(w_grouped, shared.Permute(x_grouped, {0, 2, 1, 3}));
+  shared.Output(shared.Cont(shared.Permute(y_grouped, {0, 2, 1, 3}), ir::ShapeOf({48, 1})));
+  const auto w_slice = shared.View(leaf, ir::ShapeOf({64, 16}), ir::NaturalStrides(Q8(64, 48)), 0);
+  const auto x_slice = shared.Input(F32({64, 1}));
+  const auto y_slice = shared.MatMul(w_slice, x_slice);
+  shared.Output(y_slice);
+  const auto w_unclosed = shared.Reshape(leaf, ir::ShapeOf({64, 16, 3}));
+  const auto x_unclosed = shared.Input(F32({64, 3, 1}));
+  const auto y_unclosed = shared.MatMul(w_unclosed, shared.Permute(x_unclosed, {0, 2, 1, 3}));
+  shared.Output(y_unclosed);
+  shared.Output(shared.Cont(shared.Permute(y_unclosed, {0, 2, 1, 3}), ir::ShapeOf({48, 1})));
+  const auto shared_graph = Finish(shared);
+  const auto dense_site = shared_graph.producer(y_dense);
+  const auto grouped_site = shared_graph.producer(y_grouped);
+  const auto slice_site = shared_graph.producer(y_slice);
+  const auto unclosed_site = shared_graph.producer(y_unclosed);
+  EXPECT_TRUE(fusions::GroupedProductOf(shared_graph, grouped_site).has_value());
+  EXPECT_FALSE(fusions::GroupedProductOf(shared_graph, slice_site).has_value());
+  EXPECT_FALSE(fusions::GroupedProductOf(shared_graph, unclosed_site).has_value());
+
+  // Bind a single concrete full-leaf [1, 1, 64, 48] qualification for role 7.
+  const auto source = base::Sha256{}.Update("shared-leaf control source").Finish();
+  const auto semantic = shared_graph.Digest();
+  const NumericalQualification full_leaf_grant{
+      .change = NumericalChange::kQ8VectorReduction,
+      .evidence = base::Sha256{}.Update("role-7-full-leaf").Finish(),
+      .source = source,
+      .semantic = semantic,
+      .stage = 0,
+      .component = 1,
+      .anchor = ir::Primitive(Op::kMatMul),
+      .arch = kDevice.arch,
+      .min_rows = 1,
+      .max_rows = 1,
+      .max_k = 64,
+      .max_n = 48,
+      .exact_dimensions = true,
+      .weight_role = 7};
+  auto bound = NumericalQualifications::Bind(std::array{full_leaf_grant}, source, semantic);
+  ASSERT_TRUE(bound.has_value());
+  const Policy policy{.numerical = std::move(*bound), .active_stage = 0};
+  const SelectionView view(registry, kDevice, policy, false, false);
+  const auto q_dense = view.Qualification(NumericalChange::kQ8VectorReduction, shared_graph,
+                                          shared_graph.node(dense_site));
+  ASSERT_TRUE(q_dense.has_value());
+  EXPECT_EQ(q_dense->max_k, 64U);
+  EXPECT_EQ(q_dense->max_n, 48U);
+  const auto q_grouped = view.Qualification(NumericalChange::kQ8VectorReduction, shared_graph,
+                                            shared_graph.node(grouped_site));
+  ASSERT_TRUE(q_grouped.has_value());
+  EXPECT_EQ(q_grouped->max_k, 64U);
+  EXPECT_EQ(q_grouped->max_n, 16U);
+  EXPECT_FALSE(view.Qualification(NumericalChange::kQ8VectorReduction, shared_graph,
+                                  shared_graph.node(slice_site))
+                   .has_value());
+  EXPECT_FALSE(view.Qualification(NumericalChange::kQ8VectorReduction, shared_graph,
+                                  shared_graph.node(unclosed_site))
+                   .has_value());
+
+  const auto plan = PlanOf(shared_graph.Clone(), registry, policy);
+  const auto found_grouped = std::ranges::find(plan.applied, "grouped_vecq", &Applied::pattern);
+  ASSERT_NE(found_grouped, plan.applied.end());
+  ASSERT_EQ(found_grouped->numerical_proofs.size(), 1U);
+  EXPECT_EQ(found_grouped->numerical_proofs[0].site, grouped_site);
+  EXPECT_TRUE(found_grouped->numerical_proofs[0].grouped_projection);
+  EXPECT_EQ(found_grouped->numerical_proofs[0].qualification.max_k, 64U);
+  EXPECT_EQ(found_grouped->numerical_proofs[0].qualification.max_n, 16U);
+
+  const auto found_dense = std::ranges::find(plan.applied, "vecq_inputs", &Applied::pattern);
+  ASSERT_NE(found_dense, plan.applied.end());
+  ASSERT_EQ(found_dense->numerical_proofs.size(), 1U);
+  EXPECT_EQ(found_dense->numerical_proofs[0].site, dense_site);
+  EXPECT_FALSE(found_dense->numerical_proofs[0].grouped_projection);
+  EXPECT_EQ(found_dense->numerical_proofs[0].qualification.max_k, 64U);
+  EXPECT_EQ(found_dense->numerical_proofs[0].qualification.max_n, 48U);
+
+  std::string streamed;
+  StreamPlanReport(plan, registry, [&](std::string_view part) { streamed.append(part); });
+  bool saw_grouped_report = false, saw_dense_report = false;
+  std::string_view remaining = streamed;
+  while (!remaining.empty()) {
+    const auto end = remaining.find('\n');
+    ASSERT_NE(end, std::string_view::npos);
+    auto json = base::json::Parse(remaining.substr(0, end));
+    ASSERT_TRUE(json.has_value());
+    if (json->root().find("kind")->string() == "pattern") {
+      const auto name = json->root().find("name")->string();
+      if (name == "grouped_vecq") {
+        const auto recipient = json->root().find("numerical_recipients")->at(0);
+        EXPECT_TRUE(recipient.find("grouped_projection")->boolean());
+        const auto env = recipient.find("qualified_envelope");
+        ASSERT_TRUE(env.has_value());
+        EXPECT_EQ(env->at(0).int64(), 1);
+        EXPECT_EQ(env->at(1).int64(), 1);
+        EXPECT_EQ(env->at(2).int64(), 64);
+        EXPECT_EQ(env->at(3).int64(), 16);
+        const auto leaf_env = recipient.find("qualified_leaf_envelope");
+        ASSERT_TRUE(leaf_env.has_value());
+        EXPECT_EQ(leaf_env->at(0).int64(), 1);
+        EXPECT_EQ(leaf_env->at(1).int64(), 1);
+        EXPECT_EQ(leaf_env->at(2).int64(), 64);
+        EXPECT_EQ(leaf_env->at(3).int64(), 48);
+        saw_grouped_report = true;
+      } else if (name == "vecq_inputs") {
+        const auto recipient = json->root().find("numerical_recipients")->at(0);
+        EXPECT_FALSE(recipient.find("grouped_projection").has_value());
+        EXPECT_FALSE(recipient.find("qualified_leaf_envelope").has_value());
+        const auto env = recipient.find("qualified_envelope");
+        ASSERT_TRUE(env.has_value());
+        EXPECT_EQ(env->at(0).int64(), 1);
+        EXPECT_EQ(env->at(1).int64(), 1);
+        EXPECT_EQ(env->at(2).int64(), 64);
+        EXPECT_EQ(env->at(3).int64(), 48);
+        saw_dense_report = true;
+      }
+    }
+    remaining.remove_prefix(end + 1);
+  }
+  EXPECT_TRUE(saw_grouped_report);
+  EXPECT_TRUE(saw_dense_report);
+
+  // Only the malformed sites fail qualification; the dense MatMul takes Q8_1,
+  // the closed grouped product becomes kGroupedMatMul, and the two malformed
+  // MatMul sites remain F32.
+  EXPECT_EQ(
+      std::ranges::count(plan.graph.nodes(), ir::Fused(FusedKind::kGroupedMatMul), &ir::Node::key),
+      1);
+  EXPECT_EQ(std::ranges::count(plan.graph.nodes(), ir::Primitive(Op::kPrepare), &ir::Node::key), 1);
+  std::size_t q8_products = 0, f32_products = 0;
+  for (const auto& node : plan.graph.nodes()) {
+    if (node.key != ir::Primitive(Op::kMatMul)) continue;
+    if (plan.graph.tensor(node.src[1]).format.encoding == Encoding::kQ8_1)
+      ++q8_products;
+    else if (plan.graph.tensor(node.src[1]).format.encoding == Encoding::kF32)
+      ++f32_products;
+  }
+  EXPECT_EQ(q8_products, 1U);
+  EXPECT_EQ(f32_products, 2U);
+  EXPECT_TRUE(plan.missing_numerical.empty());
+}
+
+TEST(PlannerPatternTest, MqaOutAGroupedAndDenseVecQQualifyAtOneRowAndRefuseMultiRow) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.grouped", Any(ir::Fused(FusedKind::kGroupedMatMul))));
+  implementations.push_back(Fake("t.cont", Any(ir::Primitive(Op::kCont))));
+  implementations.push_back(Fake("t.prepare", Any(ir::Primitive(Op::kPrepare))));
+  auto changed = Any(ir::Primitive(Op::kMatMul));
+  changed.priority = 100;
+  implementations.push_back(Fake("t.changed_product", changed));
+  const auto registry = Registry(std::move(implementations));
+
+  // Real MQA output projection geometry: out_a (role 6) full leaf [1536, 32768]
+  // reshaped to [1536, 2048, 16] for grouped_vecq, feeding out_b (role 7)
+  // [32768, 7168] for vecq_inputs, under a single-row (rows = {1}) incumbent
+  // qualification.
+  for (const std::uint64_t rows : {1ULL, 2ULL, 4ULL}) {
+    SCOPED_TRACE(rows);
+    ir::Builder b;
+    b.SetComponent(3);
+    const auto out_a =
+        b.Weight(Q8(1536, 32768), ir::WeightRef{.stage = 0, .component = 3, .role = 6});
+    const auto out_b =
+        b.Weight(Q8(32768, 7168), ir::WeightRef{.stage = 0, .component = 3, .role = 7});
+    const auto x = b.Input(F32({1536, 16, rows}));
+    const auto groups = b.Reshape(out_a, ir::ShapeOf({1536, 2048, 16}));
+    const auto low_grouped = b.MatMul(groups, b.Permute(x, {0, 2, 1, 3}));
+    const auto low = b.Cont(b.Permute(low_grouped, {0, 2, 1, 3}), ir::ShapeOf({32768, rows}));
+    const auto y = b.MatMul(out_b, low);
+    b.Output(y);
+    const auto graph = Finish(b);
+    const auto out_a_site = graph.producer(low_grouped);
+    const auto out_b_site = graph.producer(y);
+
+    const auto source = base::Sha256{}.Update("mqa-out-a-incumbent-source").Finish();
+    const auto semantic = graph.Digest();
+    const std::array<NumericalQualification, 2> grants{
+        NumericalQualification{.change = NumericalChange::kQ8VectorReduction,
+                               .evidence = base::Sha256{}.Update("mqa-out-a").Finish(),
+                               .source = source,
+                               .semantic = semantic,
+                               .stage = 0,
+                               .component = 3,
+                               .anchor = ir::Primitive(Op::kMatMul),
+                               .arch = kDevice.arch,
+                               .min_rows = 1,
+                               .max_rows = 1,
+                               .max_k = 1536,
+                               .max_n = 32768,
+                               .exact_dimensions = true,
+                               .incumbent_recipe = true,
+                               .weight_role = 6},
+        NumericalQualification{.change = NumericalChange::kQ8VectorReduction,
+                               .evidence = base::Sha256{}.Update("mqa-out-b").Finish(),
+                               .source = source,
+                               .semantic = semantic,
+                               .stage = 0,
+                               .component = 3,
+                               .anchor = ir::Primitive(Op::kMatMul),
+                               .arch = kDevice.arch,
+                               .min_rows = 1,
+                               .max_rows = 1,
+                               .max_k = 32768,
+                               .max_n = 7168,
+                               .exact_dimensions = true,
+                               .incumbent_recipe = true,
+                               .weight_role = 7},
+    };
+    auto bound = NumericalQualifications::Bind(grants, source, semantic);
+    ASSERT_TRUE(bound.has_value());
+    const Policy policy{.numerical = std::move(*bound), .active_stage = 0};
+    const auto plan = PlanOf(graph.Clone(), registry, policy);
+    const auto grouped = std::ranges::find(plan.applied, "grouped_vecq", &Applied::pattern);
+    const auto vecq = std::ranges::find(plan.applied, "vecq_inputs", &Applied::pattern);
+    if (rows == 1) {
+      ASSERT_NE(grouped, plan.applied.end());
+      ASSERT_NE(vecq, plan.applied.end());
+      EXPECT_TRUE(plan.missing_numerical.empty());
+      ASSERT_EQ(grouped->numerical_proofs.size(), 1U);
+      EXPECT_EQ(grouped->numerical_proofs[0].site, out_a_site);
+      EXPECT_TRUE(grouped->numerical_proofs[0].grouped_projection);
+      EXPECT_EQ(grouped->numerical_proofs[0].actual.rows, 1U);
+      EXPECT_EQ(grouped->numerical_proofs[0].actual.k, 1536U);
+      EXPECT_EQ(grouped->numerical_proofs[0].actual.n, 2048U);
+      EXPECT_EQ(grouped->numerical_proofs[0].qualification.max_k, 1536U);
+      EXPECT_EQ(grouped->numerical_proofs[0].qualification.max_n, 2048U);
+      ASSERT_EQ(vecq->numerical_proofs.size(), 1U);
+      EXPECT_EQ(vecq->numerical_proofs[0].site, out_b_site);
+      EXPECT_FALSE(vecq->numerical_proofs[0].grouped_projection);
+      EXPECT_EQ(vecq->numerical_proofs[0].actual.rows, 1U);
+      EXPECT_EQ(vecq->numerical_proofs[0].actual.k, 32768U);
+      EXPECT_EQ(vecq->numerical_proofs[0].actual.n, 7168U);
+      EXPECT_EQ(std::ranges::count(plan.graph.nodes(), ir::Fused(FusedKind::kGroupedMatMul),
+                                   &ir::Node::key),
+                1);
+      EXPECT_EQ(std::ranges::count(plan.graph.nodes(), ir::Primitive(Op::kPrepare), &ir::Node::key),
+                1);
+      const auto final_matmul =
+          std::ranges::find(plan.graph.nodes(), ir::Primitive(Op::kMatMul), &ir::Node::key);
+      ASSERT_NE(final_matmul, plan.graph.nodes().end());
+      EXPECT_EQ(plan.graph.tensor(final_matmul->src[1]).format.encoding, Encoding::kQ8_1);
+    } else {
+      EXPECT_EQ(grouped, plan.applied.end());
+      EXPECT_EQ(vecq, plan.applied.end());
+      EXPECT_FALSE(plan.missing_numerical.empty());
+      EXPECT_EQ(std::ranges::count(plan.graph.nodes(), ir::Fused(FusedKind::kGroupedMatMul),
+                                   &ir::Node::key),
+                0);
+      EXPECT_EQ(std::ranges::count(plan.graph.nodes(), ir::Primitive(Op::kPrepare), &ir::Node::key),
+                0);
+      EXPECT_FALSE(
+          SelectionView(registry, kDevice, policy, false, false)
+              .Qualification(NumericalChange::kQ8VectorReduction, graph, graph.node(out_a_site))
+              .has_value());
+      EXPECT_FALSE(
+          SelectionView(registry, kDevice, policy, false, false)
+              .Qualification(NumericalChange::kQ8VectorReduction, graph, graph.node(out_b_site))
+              .has_value());
+    }
+  }
+}
+
+TEST(PlannerPatternTest, QsaGateQualifiesItsDownstreamProductRatherThanItsMulAnchor) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.product", Any(ir::Primitive(Op::kMatMul))));
+  implementations.push_back(Fake("t.cont", Any(ir::Primitive(Op::kCont))));
+  implementations.push_back(Fake("t.unary", Any(ir::Primitive(Op::kUnary))));
+  implementations.push_back(Fake("t.gate", Any(ir::Fused(FusedKind::kHeadGate))));
+  const auto registry = Registry(std::move(implementations));
+  ir::Builder b;
+  b.SetComponent(1);
+  const auto x = b.Input(F32({128, 2}));
+  const auto full = b.Input(F32({256, 2}));
+  const auto view = b.View(full, ir::ShapeOf({64, 2, 2}), {4, 512, 1024, 2048}, 256);
+  const auto gate = b.Cont(view, ir::ShapeOf({128, 2}));
+  const auto gated = b.Mul(x, b.Unary(gate, ir::UnaryFn::kSigmoid));
+  const auto w = b.Weight(
+      {.encoding = Encoding::kMxfp8, .layout = Layout::kScaleAtoms, .shape = ir::ShapeOf({128, 8})},
+      W(3));
+  const auto product = b.MatMul(w, gated);
+  b.Output(product);
+  const auto graph = Finish(b);
+  const std::array<std::uint16_t, 1> role{3};
+  for (unsigned authority = 0; authority < 3; ++authority) {
+    Policy policy;
+    if (authority == 1)
+      policy = RoleNumericalPolicy(graph, policy, NumericalChange::kMxfp8ProductInput, role);
+    if (authority == 2) policy.numerical_candidates = {NumericalChange::kMxfp8ProductInput};
+    const auto plan = PlanOf(graph.Clone(), registry, policy);
+    const auto found = std::ranges::find(plan.applied, "qsa_gate", &Applied::pattern);
+    EXPECT_EQ(found != plan.applied.end(), authority != 0);
+    if (found != plan.applied.end()) {
+      ASSERT_EQ(found->numerical_proofs.size(), 1U);
+      EXPECT_EQ(found->numerical_proofs[0].site, graph.producer(product));
+      EXPECT_EQ(found->numerical_proofs[0].candidate, authority == 2);
+    }
+  }
+}
+
+TEST(PlannerPatternTest, DefaultPreparationRequiresIncumbentFactsAndConstrainsFinalCompetitors) {
+  constexpr std::array bf16{Encoding::kBF16};
+  const std::array raw{ex::OperandRule{.operand = 0, .encodings = bf16},
+                       ex::OperandRule{.operand = 1, .encodings = kF32}};
+  const std::array rounded{ex::OperandRule{.operand = 0, .encodings = bf16},
+                           ex::OperandRule{.operand = 1, .encodings = bf16}};
+  for (const bool facts : {false, true}) {
+    auto implementations = Everything();
+    auto incumbent = ex::Capability{.op = ir::Primitive(Op::kMatMul), .operands = raw};
+    if (facts)
+      incumbent.product_arithmetic =
+          +[](const ex::CapabilityQuery&) { return ir::ProductArithmetic::kBf16F32; };
+    implementations.push_back(Fake("t.raw", incumbent));
+    implementations.push_back(
+        Fake("t.rounded", ex::Capability{.op = ir::Primitive(Op::kMatMul),
+                                         .operands = rounded,
+                                         .product_arithmetic = +[](const ex::CapabilityQuery&) {
+                                           return ir::ProductArithmetic::kBf16F32;
+                                         }}));
+    // Correct for its typed operands, but it offers no incumbent-equivalence
+    // contract. Priority cannot override the required numerical recipe.
+    implementations.push_back(Fake(
+        "t.unqualified",
+        ex::Capability{.op = ir::Primitive(Op::kMatMul), .operands = rounded, .priority = 100}));
+    implementations.push_back(Fake("t.convert", Any(ir::Primitive(Op::kConvert))));
+    const auto registry = Registry(std::move(implementations));
+    ir::Builder b;
+    const auto x = b.Input(F32({64, 17}));
+    for (std::uint16_t role = 0; role < 2; ++role) {
+      const auto w = b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({64, 8})), W(role));
+      b.Output(b.Scale(b.MatMul(w, x), 2));
+    }
+    const auto plan = PlanOf(Finish(b), registry);
+    EXPECT_EQ(
+        std::ranges::any_of(plan.applied,
+                            [](const auto& applied) { return applied.pattern == "bf16_inputs"; }),
+        facts);
+    std::size_t products = 0;
+    for (const auto& step : plan.steps) {
+      for (const auto id : step.nodes) {
+        const auto& node = plan.graph.node(id);
+        if (node.key.op != Op::kMatMul) continue;
+        ++products;
+        EXPECT_EQ(registry.at(step.implementation).name, facts ? "t.rounded" : "t.raw");
+        EXPECT_EQ(node.Params<ir::ProductParams>().arithmetic,
+                  facts ? ir::ProductArithmetic::kBf16F32 : ir::ProductArithmetic::kImplementation);
+      }
+    }
+    EXPECT_EQ(products, 2U);
+  }
+}
+
+TEST(PlannerPatternTest, QualifiedVectorRecipientsReachTheirOwnArithmeticSelection) {
+  // Exercise both sibling orders: an equivalent sharing match must neither
+  // capture a qualified sibling nor use its authority for an unqualified one.
+  for (unsigned control = 0; control < 9; ++control) {
+    SCOPED_TRACE(control);
+    auto implementations = Everything();
+    if (control != 8) {
+      auto changed = ex::Capability{.op = ir::Primitive(Op::kMatMul),
+                                    .operands = kPreparedRules,
+                                    .shape = {.max_rows = 8},
+                                    .priority = 100};
+      implementations.push_back(Fake("t.changed_vector", changed));
+    }
+    const auto registry = Registry(std::move(implementations));
+    ir::Builder builder;
+    builder.SetComponent(1);
+    const auto x = builder.Input(F32({128, 2}));
+    for (std::uint16_t role = 0; role < 2; ++role) {
+      auto ref = W(role);
+      if (control == 4 && role == 0) ref.stage = 1;
+      const auto w = builder.Weight(Q8(128, 8 + 8ULL * role), ref);
+      ir::ProductParams params;
+      if (control == 7 && role == 0) params.arithmetic = ir::ProductArithmetic::kGgmlQ8_1F32;
+      builder.Output(builder.Scale(builder.MatMul(w, x, params), 2));
+    }
+    const auto graph = Finish(builder);
+    const std::array<std::uint16_t, 1> first{0}, second{1};
+    const std::array<std::uint16_t, 2> both{0, 1};
+    Policy policy;
+    if (control != 0 && control != 6)
+      policy = RoleNumericalPolicy(
+          graph, policy, NumericalChange::kQ8VectorReduction,
+          control == 2 ? std::span<const std::uint16_t>(second)
+                       : (control == 3 || control == 7 ? std::span<const std::uint16_t>(both)
+                                                       : std::span<const std::uint16_t>(first)));
+    if (control == 5) {
+      // Same source/role/geometry, but this evidence covers one actual row.
+      auto entries = std::vector<NumericalQualification>(policy.numerical->entries().begin(),
+                                                         policy.numerical->entries().end());
+      for (auto& entry : entries) entry.min_rows = entry.max_rows = 1;
+      auto bound =
+          NumericalQualifications::Bind(entries, entries.front().source, entries.front().semantic);
+      ASSERT_TRUE(bound) << (bound ? "" : bound.error());
+      policy.numerical = std::move(*bound);
+    }
+    if (control == 6) policy.numerical_candidates = {NumericalChange::kQ8VectorReduction};
+    const auto plan = PlanOf(graph.Clone(), registry, policy);
+    std::array<bool, 2> seen{};
+    for (const auto& step : plan.steps) {
+      for (const auto id : step.nodes) {
+        const auto& node = plan.graph.node(id);
+        if (node.key != ir::Primitive(Op::kMatMul)) continue;
+        const auto& ref = std::get<ir::WeightRef>(plan.graph.tensor(node.src[0]).binding);
+        ASSERT_LT(ref.role, seen.size());
+        EXPECT_FALSE(seen[ref.role]);
+        seen[ref.role] = true;
+        const bool changed = control == 3 || control == 6 || (control == 1 && ref.role == 0) ||
+                             ((control == 2 || control == 7) && ref.role == 1);
+        const bool explicit_raw = control == 7 && ref.role == 0;
+        EXPECT_EQ(registry.at(step.implementation).name,
+                  changed ? "t.changed_vector"
+                          : (explicit_raw ? "t.mul_mat.vector" : "t.mul_mat.prepared"));
+        EXPECT_EQ(node.Params<ir::ProductParams>().arithmetic,
+                  changed || (control == 8 && ref.role == 0)
+                      ? ir::ProductArithmetic::kImplementation
+                      : ir::ProductArithmetic::kGgmlQ8_1F32);
+        EXPECT_EQ(plan.graph.tensor(node.src[1]).format.encoding,
+                  explicit_raw ? Encoding::kF32 : Encoding::kQ8_1);
+      }
+    }
+    EXPECT_TRUE(std::ranges::all_of(seen, [](bool found) { return found; }));
+    std::array<unsigned, 2> proofs{};
+    for (const auto& applied : plan.applied) {
+      for (const auto& proof : applied.numerical_proofs) {
+        ASSERT_TRUE(proof.observed.weight.has_value());
+        const auto role = proof.observed.weight->role;
+        ASSERT_LT(role, proofs.size());
+        ++proofs[role];
+        EXPECT_EQ(proof.actual.rows, 2U);
+        EXPECT_EQ(proof.observed.weight->stage, 0U);
+        EXPECT_EQ(proof.candidate, control == 6);
+        if (!proof.candidate) EXPECT_EQ(proof.qualification.weight_role, role);
+      }
+    }
+    EXPECT_EQ(proofs[0], control == 1 || control == 3 || control == 6 || control == 8 ? 1U : 0U);
+    EXPECT_EQ(proofs[1], control == 2 || control == 3 || control == 6 || control == 7 ? 1U : 0U);
+  }
+}
+
 TEST(PlannerPatternTest, SharedInputPreparationStopsAtAnInPlaceWrite) {
   for (bool bf16 : {false, true}) {
     SCOPED_TRACE(bf16);
     auto implementations = Everything();
-    implementations.push_back(Fake("t.any_product", Any(ir::Primitive(Op::kMatMul))));
+    auto product = Any(ir::Primitive(Op::kMatMul));
+    if (bf16)
+      product.product_arithmetic =
+          +[](const ex::CapabilityQuery&) { return ir::ProductArithmetic::kBf16F32; };
+    implementations.push_back(Fake("t.any_product", product));
     implementations.push_back(Fake("t.convert", Any(ir::Primitive(Op::kConvert))));
     const auto registry = Registry(std::move(implementations));
     const Policy policy{};
@@ -1392,7 +2644,25 @@ TEST(PlannerPatternTest, NothingMovesAReadPastAWrite) {
       b.Output(b.Scale(src, 1.0f));
     }
     b.Output(b.Add(first, b.MatMul(b.Weight(Q8(64, 32), W(1)), x)));
-    EXPECT_EQ(Patterns(PlanOf(Finish(b), r)).size(), store ? 0U : 1U) << store;
+    const auto plan = PlanOf(Finish(b), r);
+    EXPECT_EQ(std::ranges::count(plan.applied, "prepared_inputs", &Applied::pattern),
+              store ? 0 : 1);
+    if (store) {
+      std::array<std::uint32_t, 2> preparations{};
+      std::size_t count = 0;
+      std::uint32_t store_at = UINT32_MAX;
+      for (std::uint32_t i = 0; i < plan.graph.nodes().size(); ++i) {
+        const auto key = plan.graph.node({i}).key;
+        if (key == ir::Primitive(Op::kPrepare)) {
+          ASSERT_LT(count, preparations.size());
+          preparations[count++] = i;
+        }
+        if (key == ir::Primitive(Op::kCacheStore)) store_at = i;
+      }
+      ASSERT_EQ(count, 2U);
+      EXPECT_LT(preparations[0], store_at);
+      EXPECT_LT(store_at, preparations[1]);
+    }
   }
 }
 
@@ -1537,19 +2807,19 @@ TEST(PlannerPatternTest, RotatedSectionsTakeTheWeightWideningAndPositionCopies) 
     ASSERT_EQ(p.applied.size(), 1U);
     EXPECT_EQ(p.applied[0].replaced.size(), 8U);
   }
-  // Not enabled (it is opt-in), without an implementation, with sections
+  // Explicitly disabled, without an implementation, with sections
   // that leave part of the head, or of different bases: no sections (the
   // norm and weight still fuse).
   const std::vector<std::string_view> norm_only{"rms_norm_mul"};
-  EXPECT_EQ(Patterns(PlanOf(graph({}), fused)), norm_only);
+  EXPECT_EQ(Patterns(PlanOf(graph({}), fused, Disabling({"rms_norm_mul_rope_sections"}))),
+            norm_only);
   EXPECT_EQ(Patterns(PlanOf(graph({}), r, on)), norm_only);
   EXPECT_EQ(Patterns(PlanOf(graph({.dims = {2, 2, 2}}), fused, on)), norm_only);
   EXPECT_EQ(Patterns(PlanOf(graph({.last_base = 60.0F}), fused, on)), norm_only);
 }
 
-// A model whose policy disables rms_norm_mul_rope (Gemma 4's) keeps its
-// rotations primitive: the sectioned form, which would take the same
-// whole-head rotation, is opt-in, so it does not stand in.
+// Each exact matcher can be disabled independently. Disable both matching
+// norm/rotation patterns when the control requires primitive rotation.
 TEST(PlannerPatternTest, DisablingNormRopeIsNotUndoneByTheSectionedForm) {
   std::vector<ex::Implementation> everything = Everything();
   everything.push_back(
@@ -1564,14 +2834,17 @@ TEST(PlannerPatternTest, DisablingNormRopeIsNotUndoneByTheSectionedForm) {
     return Finish(b);
   };
   // Both fused fakes take this graph.
-  EXPECT_EQ(Patterns(PlanOf(graph(), r)), std::vector<std::string_view>{"rms_norm_mul_rope"});
-  const StepPlan off = PlanOf(graph(), r, Disabling({"rms_norm_mul_rope"}));
+  EXPECT_EQ(Patterns(PlanOf(graph(), r, Disabling({"qsa_prep"}))),
+            std::vector<std::string_view>{"rms_norm_mul_rope"});
+  const StepPlan off = PlanOf(
+      graph(), r, Disabling({"qsa_prep", "rms_norm_mul_rope", "rms_norm_mul_rope_sections"}));
   EXPECT_EQ(Patterns(off), std::vector<std::string_view>{"rms_norm_mul"});
   EXPECT_EQ(Keys(off.graph),
             (std::vector{ir::Fused(FusedKind::kRmsNormMul), ir::Primitive(Op::kRope)}));
   EXPECT_EQ(Names(off, r), (std::vector<std::string>{"t.rms_norm_mul", "t.rope"}));
-  // Only a policy that enables it (the image's) takes the sectioned form.
-  Policy image{.enabled = {"rms_norm_mul_rope_sections"}, .disabled = {"rms_norm_mul_rope"}};
+  // Leaving the sectioned matcher available selects that exact alternative.
+  Policy image{.enabled = {"rms_norm_mul_rope_sections"},
+               .disabled = {"qsa_prep", "rms_norm_mul_rope"}};
   Canonicalize(image);
   EXPECT_EQ(Patterns(PlanOf(graph(), r, image)),
             std::vector<std::string_view>{"rms_norm_mul_rope_sections"});
@@ -1619,7 +2892,7 @@ TEST(PlannerPatternTest, Bf16GluRecordsTheMlpInBf16) {
     if (v.glu_scaled) b.Output(b.Scale(glu, 2.0F));
     return Finish(b);
   };
-  const StepPlan p = PlanOf(graph({}), r, on);
+  const StepPlan p = NumericalPlanOf(graph({}), r, on, {NumericalChange::kBf16SwiGluIntermediates});
   EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"bf16_glu"});
   std::size_t converts = 0, bf16_products = 0;
   for (const ir::Node& n : p.graph.nodes()) {
@@ -1634,13 +2907,35 @@ TEST(PlannerPatternTest, Bf16GluRecordsTheMlpInBf16) {
   EXPECT_EQ(converts, 1U);       // the products' shared input, once
   EXPECT_EQ(bf16_products, 2U);  // the gate and the up; the down writes F32
   EXPECT_EQ(p.graph.tensor(p.graph.outputs()[0]).format.encoding, Encoding::kF32);
-  // Opt-in; without BF16 products; a gate read elsewhere; a GLU read by
+  // Without numerical authority, without BF16 products, a gate read elsewhere, or a GLU read by
   // other than a product; an F32 down product: nothing.
-  EXPECT_TRUE(Patterns(PlanOf(graph({}), r)).empty());
-  EXPECT_TRUE(Patterns(PlanOf(graph({}), plain, on)).empty());
-  EXPECT_TRUE(Patterns(PlanOf(graph({.gate_read = true}), r, on)).empty());
-  EXPECT_TRUE(Patterns(PlanOf(graph({.glu_scaled = true}), r, on)).empty());
-  EXPECT_TRUE(Patterns(PlanOf(graph({.f32_down = true}), r, on)).empty());
+  const auto preserved = PlanOf(graph({}), r);
+  EXPECT_TRUE(Patterns(preserved).empty());
+  EXPECT_FALSE(preserved.missing_numerical.empty());
+  Policy candidate;
+  candidate.numerical_candidates = {NumericalChange::kBf16SwiGluIntermediates};
+  const auto proposed = PlanOf(graph({}), r, candidate);
+  ASSERT_EQ(proposed.applied.size(), 1U);
+  EXPECT_EQ(proposed.applied[0].pattern, "bf16_glu");
+  EXPECT_TRUE(proposed.applied[0].numerical_candidate);
+  EXPECT_FALSE(proposed.applied[0].numerical_incumbent);
+  EXPECT_EQ(proposed.applied[0].numerical_evidence, base::Sha256Digest{});
+  EXPECT_FALSE(proposed.missing_numerical.empty());
+  // The diagnostic cannot relax observer closure or implementation support.
+  EXPECT_TRUE(Patterns(PlanOf(graph({.gate_read = true}), r, candidate)).empty());
+  EXPECT_TRUE(Patterns(PlanOf(graph({}), plain, candidate)).empty());
+  EXPECT_TRUE(
+      Patterns(NumericalPlanOf(graph({}), plain, on, {NumericalChange::kBf16SwiGluIntermediates}))
+          .empty());
+  EXPECT_TRUE(Patterns(NumericalPlanOf(graph({.gate_read = true}), r, on,
+                                       {NumericalChange::kBf16SwiGluIntermediates}))
+                  .empty());
+  EXPECT_TRUE(Patterns(NumericalPlanOf(graph({.glu_scaled = true}), r, on,
+                                       {NumericalChange::kBf16SwiGluIntermediates}))
+                  .empty());
+  EXPECT_TRUE(Patterns(NumericalPlanOf(graph({.f32_down = true}), r, on,
+                                       {NumericalChange::kBf16SwiGluIntermediates}))
+                  .empty());
 }
 
 TEST(PlannerPatternTest, SplitModulationAndGatedResidualFuseTheirConditioning) {
@@ -1653,14 +2948,22 @@ TEST(PlannerPatternTest, SplitModulationAndGatedResidualFuseTheirConditioning) {
   std::vector<ex::Implementation> everything = Everything();
   for (const Op op : {Op::kLayerNorm, Op::kRepeat, Op::kConcat, Op::kUnary, Op::kConvert})
     everything.push_back(Fake(std::format("t.{}", ir::OpKeyName(ir::Primitive(op))), prim(op)));
-  everything.push_back(Fake("t.mul_mat.float", ex::Capability{.op = ir::Primitive(Op::kMatMul),
-                                                              .operands = kFloatProducts}));
+  everything.push_back(
+      Fake("t.mul_mat.float", ex::Capability{.op = ir::Primitive(Op::kMatMul),
+                                             .operands = kFloatProducts,
+                                             .product_arithmetic = +[](const ex::CapabilityQuery&) {
+                                               return ir::ProductArithmetic::kBf16F32;
+                                             }}));
   everything.push_back(
       Fake("t.modulate_split", Any(ir::Fused(FusedKind::kLayerNormModulateSplit))));
   everything.push_back(Fake("t.gated_split", Any(ir::Fused(FusedKind::kGatedResidualSplit))));
   const ex::Registry f32_inputs = Registry(everything);
-  everything.push_back(Fake("t.mul_mat.bf16", ex::Capability{.op = ir::Primitive(Op::kMatMul),
-                                                             .operands = kBf16Products}));
+  everything.push_back(
+      Fake("t.mul_mat.bf16", ex::Capability{.op = ir::Primitive(Op::kMatMul),
+                                            .operands = kBf16Products,
+                                            .product_arithmetic = +[](const ex::CapabilityQuery&) {
+                                              return ir::ProductArithmetic::kBf16F32;
+                                            }}));
   const ex::Registry r = Registry(std::move(everything));
   Policy on{.enabled = {"split_gated_residual", "split_modulate"}};
   Canonicalize(on);
@@ -1722,10 +3025,12 @@ TEST(PlannerPatternTest, SplitModulationAndGatedResidualFuseTheirConditioning) {
     EXPECT_EQ(split_of(p, FusedKind::kLayerNormModulateSplit), 12U);
     EXPECT_EQ(modulation(p), Encoding::kF32);
   }
-  // Opt-in; a conditioning without its one: no modulation.
-  EXPECT_TRUE(Patterns(PlanOf(graph({}), r)).empty());
+  // An explicit control disables both exact matchers. A conditioning
+  // without its one still refuses the modulation.
+  EXPECT_EQ(Patterns(PlanOf(graph({}), r, Disabling({"split_gated_residual", "split_modulate"}))),
+            std::vector<std::string_view>{"bf16_inputs"});
   EXPECT_EQ(Patterns(PlanOf(graph({.bias = 2.0F}), r, on)),
-            std::vector<std::string_view>{"split_gated_residual"});
+            (std::vector<std::string_view>{"split_gated_residual", "bf16_inputs"}));
 }
 
 TEST(PlannerPatternTest, SplitResidualJoinsTheModulationOfItsSum) {
@@ -1766,9 +3071,11 @@ TEST(PlannerPatternTest, SplitResidualJoinsTheModulationOfItsSum) {
   EXPECT_EQ(count(p, FusedKind::kGatedResidualModulateSplit), 1);
   EXPECT_EQ(count(p, FusedKind::kGatedResidualSplit), 0);
   EXPECT_EQ(count(p, FusedKind::kLayerNormModulateSplit), 0);
-  // Opt-in; not implemented; the sum read before its modulation: apart.
+  // Explicitly disabled, not implemented, or read before modulation: apart.
   Policy without = on;
-  without.enabled.erase(std::ranges::find(without.enabled, "split_gated_residual_modulate"));
+  std::erase(without.enabled, "split_gated_residual_modulate");
+  without.disabled.push_back("split_gated_residual_modulate");
+  Canonicalize(without);
   EXPECT_EQ(count(PlanOf(graph(false), r, without), FusedKind::kGatedResidualModulateSplit), 0);
   EXPECT_EQ(count(PlanOf(graph(false), apart, on), FusedKind::kGatedResidualModulateSplit), 0);
   const StepPlan between = PlanOf(graph(true), r, on);
@@ -1817,7 +3124,8 @@ TEST(PlannerPatternTest, SplitResidualJoinsTheModulationOfARangeOfItsRows) {
     return std::ranges::count(p.graph.nodes(), ir::Fused(kind), &ir::Node::key);
   };
   for (const bool copy : {false, true}) {
-    const StepPlan p = PlanOf(graph(12, copy, false, 0), r, on);
+    const StepPlan p =
+        NumericalPlanOf(graph(12, copy, false, 0), r, on, {NumericalChange::kBf16ResidualCarry});
     EXPECT_EQ(count(p, FusedKind::kGatedResidualModulateSplit), 1) << copy;
     EXPECT_EQ(count(p, FusedKind::kGatedResidualSplit), 0) << copy;
     EXPECT_EQ(count(p, FusedKind::kLayerNormModulateSplit), 0) << copy;
@@ -1831,10 +3139,13 @@ TEST(PlannerPatternTest, SplitResidualJoinsTheModulationOfARangeOfItsRows) {
       }
   }
   // A range's split at the residual's (counted from its first row): joined.
-  EXPECT_EQ(count(PlanOf(graph(8, false, true, 4), r, on), FusedKind::kGatedResidualModulateSplit),
-            1);
+  EXPECT_EQ(
+      count(NumericalPlanOf(graph(8, false, true, 4), r, on, {NumericalChange::kBf16ResidualCarry}),
+            FusedKind::kGatedResidualModulateSplit),
+      1);
   // Elsewhere: apart.
-  const StepPlan apart = PlanOf(graph(8, false, true, 6), r, on);
+  const StepPlan apart =
+      NumericalPlanOf(graph(8, false, true, 6), r, on, {NumericalChange::kBf16ResidualCarry});
   EXPECT_EQ(count(apart, FusedKind::kGatedResidualModulateSplit), 0);
   EXPECT_EQ(count(apart, FusedKind::kGatedResidualSplit), 1);
 }
@@ -1874,16 +3185,93 @@ TEST(PlannerPatternTest, Bf16BranchRecordsTheResidualsBranchInBf16) {
         return p.graph.tensor(n.src[1]).format.encoding;
     return Encoding::kF16;  // none
   };
-  const StepPlan p = PlanOf(graph(false), r, on);
+  const StepPlan p =
+      NumericalPlanOf(graph(false), r, on, {NumericalChange::kBf16ProductInputAndResult});
   EXPECT_EQ(Patterns(p), (std::vector<std::string_view>{"split_gated_residual", "bf16_branch"}));
   EXPECT_EQ(branch(p), Encoding::kBF16);
   // The input converted once, for the product.
   EXPECT_EQ(std::ranges::count(p.graph.nodes(), ir::Primitive(Op::kConvert), &ir::Node::key), 1);
-  // Opt-in; a product read elsewhere too keeps F32.
+  // Missing numerical authority or another product reader keeps F32.
   Policy without{.enabled = {"split_gated_residual"}};
   Canonicalize(without);
   EXPECT_EQ(branch(PlanOf(graph(false), r, without)), Encoding::kF32);
-  EXPECT_EQ(branch(PlanOf(graph(true), r, on)), Encoding::kF32);
+  EXPECT_EQ(
+      branch(NumericalPlanOf(graph(true), r, on, {NumericalChange::kBf16ProductInputAndResult})),
+      Encoding::kF32);
+}
+
+TEST(PlannerPatternTest, Round1Bf16BranchPreservesOnlyItsMatchingPreparedArithmeticSeal) {
+  static constexpr std::array bf16{Encoding::kBF16};
+  static constexpr std::array rules{ex::OperandRule{.operand = 0, .encodings = bf16},
+                                    ex::OperandRule{.operand = 1, .encodings = bf16}};
+  for (unsigned control = 0; control < 8; ++control) {
+    SCOPED_TRACE(control);
+    auto implementations = Everything();
+    for (const auto op : {Op::kRepeat, Op::kUnary, Op::kConvert})
+      implementations.push_back(
+          Fake(std::format("test.{}", ir::OpName(op)), Any(ir::Primitive(op))));
+    implementations.push_back(
+        Fake("test.residual", Any(ir::Fused(FusedKind::kGatedResidualSplit))));
+    auto arithmetic = +[](const ex::CapabilityQuery&) { return ir::ProductArithmetic::kBf16F32; };
+    if (control == 7)
+      arithmetic = +[](const ex::CapabilityQuery& query) {
+        const auto output =
+            std::ranges::find(query.operands, ex::kOutputOperand, &ex::OperandFormat::operand);
+        return output != query.operands.end() && output->encoding == Encoding::kF32
+                   ? ir::ProductArithmetic::kBf16F32
+                   : ir::ProductArithmetic::kImplementation;
+      };
+    implementations.push_back(
+        Fake("test.bf16_product", ex::Capability{.op = ir::Primitive(Op::kMatMul),
+                                                 .operands = rules,
+                                                 .product_arithmetic = arithmetic}));
+    const auto registry = Registry(std::move(implementations));
+    ir::Builder builder;
+    builder.SetComponent(1);
+    auto input = ir::Dense(control == 5 ? Encoding::kF32 : Encoding::kBF16, ir::ShapeOf({64, 32}));
+    const auto x = builder.Input(input);
+    const auto w = builder.Weight(
+        ir::Dense(control == 6 ? Encoding::kF32 : Encoding::kBF16, ir::ShapeOf({64, 64})), W(0));
+    ir::ProductParams params{.arithmetic = control == 2 ? ir::ProductArithmetic::kGgmlQ8_1F32
+                                                        : ir::ProductArithmetic::kBf16F32};
+    if (control == 3) params.accumulate = ir::Accumulate::kF32;
+    if (control == 4) params.hint = ir::ProductHint::kHadamard;
+    const auto product = builder.MatMul(w, x, params);
+    const auto carry = builder.Input(F32({64, 32}));
+    const auto side = builder.Repeat(builder.Input(F32({64})), ir::ShapeOf({64, 32}));
+    builder.Output(
+        builder.Add(carry, builder.Mul(product, builder.Unary(side, ir::UnaryFn::kTanh))));
+    auto graph = Finish(builder);
+    Policy policy;
+    if (control != 1) {
+      const std::array changes{NumericalChange::kBf16ProductInputAndResult};
+      policy = FixtureNumericalPolicy(graph, policy, changes);
+    }
+    const SelectionView view(registry, kDevice, policy, false, false);
+    // ApplyPatterns isolates matcher refusal even for an intentionally
+    // unsupported foreign seal. It never invents a runnable implementation.
+    auto rewritten = ApplyPatterns(graph, view);
+    ASSERT_TRUE(rewritten) << (rewritten ? "" : rewritten.error().detail);
+    EXPECT_EQ(std::ranges::count(rewritten->applied, "bf16_branch", &Applied::pattern),
+              control == 0 ? 1 : 0);
+    const auto kept =
+        std::ranges::find(rewritten->graph.nodes(), ir::Primitive(Op::kMatMul), &ir::Node::key);
+    ASSERT_NE(kept, rewritten->graph.nodes().end());
+    EXPECT_EQ(kept->params, ir::ToBytes(params));
+    EXPECT_EQ(rewritten->graph.tensor(kept->out[0]).format.encoding,
+              control == 0 ? Encoding::kBF16 : Encoding::kF32);
+    if (control == 1) EXPECT_FALSE(rewritten->missing_numerical.empty());
+    if (control == 0) {
+      // Final selection must honor the retained seal as well as the matcher.
+      const auto plan = PlanOf(graph.Clone(), registry, policy);
+      EXPECT_EQ(std::ranges::count(plan.applied, "bf16_branch", &Applied::pattern), 1);
+      const auto selected =
+          std::ranges::find(plan.graph.nodes(), ir::Primitive(Op::kMatMul), &ir::Node::key);
+      ASSERT_NE(selected, plan.graph.nodes().end());
+      EXPECT_EQ(selected->params, ir::ToBytes(params));
+      EXPECT_EQ(plan.graph.tensor(selected->out[0]).format.encoding, Encoding::kBF16);
+    }
+  }
 }
 
 TEST(PlannerPatternTest, Bf16ResidualKeepsTheSumANextResidualCarriesInBf16) {
@@ -1920,12 +3308,17 @@ TEST(PlannerPatternTest, Bf16ResidualKeepsTheSumANextResidualCarriesInBf16) {
         return p.graph.tensor(n.out[0]).format.encoding;
     return Encoding::kF16;  // none
   };
-  EXPECT_EQ(sum(PlanOf(graph(false), r, on)), Encoding::kBF16);
-  // Opt-in; a sum another reader reads stays F32.
+  EXPECT_EQ(sum(NumericalPlanOf(graph(false), r, on, {NumericalChange::kBf16ResidualCarry})),
+            Encoding::kBF16);
+  // Missing numerical authority or another sum reader keeps F32.
   Policy without = on;
-  without.enabled.erase(std::ranges::find(without.enabled, "bf16_residual"));
-  EXPECT_EQ(sum(PlanOf(graph(false), r, without)), Encoding::kF32);
-  EXPECT_EQ(sum(PlanOf(graph(true), r, on)), Encoding::kF32);
+  std::erase(without.enabled, "bf16_residual");
+  without.disabled.push_back("bf16_residual");
+  Canonicalize(without);
+  EXPECT_EQ(sum(NumericalPlanOf(graph(false), r, without, {NumericalChange::kBf16ResidualCarry})),
+            Encoding::kF32);
+  EXPECT_EQ(sum(NumericalPlanOf(graph(true), r, on, {NumericalChange::kBf16ResidualCarry})),
+            Encoding::kF32);
 }
 
 TEST(PlannerPatternTest, TheLongerChainComesFirst) {
@@ -1940,13 +3333,15 @@ TEST(PlannerPatternTest, TheLongerChainComesFirst) {
     return Finish(b);
   };
   const ex::Registry r = Registry();
-  EXPECT_EQ(Patterns(PlanOf(graph(64), r)), std::vector<std::string_view>{"rms_norm_mul_rope"});
-  EXPECT_EQ(Keys(PlanOf(graph(64), r).graph), std::vector{ir::Fused(FusedKind::kRmsNormMulRope)});
+  EXPECT_EQ(Patterns(PlanOf(graph(64), r, Disabling({"qsa_prep"}))),
+            std::vector<std::string_view>{"rms_norm_mul_rope"});
+  EXPECT_EQ(Keys(PlanOf(graph(64), r, Disabling({"qsa_prep"})).graph),
+            std::vector{ir::Fused(FusedKind::kRmsNormMulRope)});
   // Disabled, or at a width its implementation does not take: the norm and
   // its weight still fuse, the rotation stays.
-  EXPECT_EQ(Patterns(PlanOf(graph(64), r, Disabling({"rms_norm_mul_rope"}))),
+  EXPECT_EQ(Patterns(PlanOf(graph(64), r, Disabling({"qsa_prep", "rms_norm_mul_rope"}))),
             std::vector<std::string_view>{"rms_norm_mul"});
-  const StepPlan wide = PlanOf(graph(128), r);
+  const StepPlan wide = PlanOf(graph(128), r, Disabling({"qsa_prep"}));
   EXPECT_EQ(Patterns(wide), std::vector<std::string_view>{"rms_norm_mul"});
   EXPECT_EQ(Keys(wide.graph),
             (std::vector{ir::Fused(FusedKind::kRmsNormMul), ir::Primitive(Op::kRope)}));
@@ -1982,7 +3377,12 @@ ir::Graph GluGraph(std::uint64_t rows, bool read_gate, bool other_input, bool ac
 
 TEST(PlannerPatternTest, GateAndUpProductsJoinTheirGlu) {
   const ex::Registry r = Registry();
-  const StepPlan p = PlanOf(GluGraph(1, false, false, false), r);
+  const auto isolated = [&](ir::Graph graph, Policy policy = {}) {
+    policy.disabled.push_back("vecq_inputs");
+    Canonicalize(policy);
+    return PlanOf(std::move(graph), r, policy);
+  };
+  const StepPlan p = isolated(GluGraph(1, false, false, false));
   EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"mul_mat_glu"});
   EXPECT_EQ(Names(p, r), std::vector<std::string>{"t.mul_mat_glu"});
   const ir::Node& fused = p.graph.nodes().back();
@@ -1990,13 +3390,13 @@ TEST(PlannerPatternTest, GateAndUpProductsJoinTheirGlu) {
   // Not past the implementation's rows (the two products then share their
   // prepared input instead), not with the gate read elsewhere, not over
   // two inputs, not where a product asks for F32 sums.
-  EXPECT_EQ(Patterns(PlanOf(GluGraph(2, false, false, false), r)),
+  EXPECT_EQ(Patterns(isolated(GluGraph(2, false, false, false))),
             std::vector<std::string_view>{"prepared_inputs"});
   EXPECT_TRUE(
-      Patterns(PlanOf(GluGraph(1, true, false, false), r, Disabling({"prepared_inputs"}))).empty());
-  EXPECT_TRUE(Patterns(PlanOf(GluGraph(1, false, true, false), r)).empty());
+      Patterns(isolated(GluGraph(1, true, false, false), Disabling({"prepared_inputs"}))).empty());
+  EXPECT_TRUE(Patterns(isolated(GluGraph(1, false, true, false))).empty());
   EXPECT_TRUE(
-      Patterns(PlanOf(GluGraph(1, false, false, true), r, Disabling({"prepared_inputs"}))).empty());
+      Patterns(isolated(GluGraph(1, false, false, true), Disabling({"prepared_inputs"}))).empty());
 }
 
 // x [8, 2, rows] rotated, its rows stored at idx; `owners` stores of
@@ -2049,7 +3449,12 @@ ir::Graph SharedGraph(int weights, std::uint64_t rows) {
 
 TEST(PlannerPatternTest, ProductsOfOneInputShareItsPreparation) {
   const ex::Registry r = Registry();
-  const StepPlan p = PlanOf(SharedGraph(3, 2), r);
+  const auto isolated = [&](ir::Graph graph, Policy policy = {}) {
+    policy.disabled.push_back("vecq_inputs");
+    Canonicalize(policy);
+    return PlanOf(std::move(graph), r, policy);
+  };
+  const StepPlan p = isolated(SharedGraph(3, 2));
   EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"prepared_inputs"});
   EXPECT_EQ(Names(p, r),
             (std::vector<std::string>{"t.q8_1", "t.mul_mat.prepared", "t.mul_mat.prepared",
@@ -2060,8 +3465,8 @@ TEST(PlannerPatternTest, ProductsOfOneInputShareItsPreparation) {
   const ir::TensorDesc& prepared = p.graph.tensor(p.graph.nodes()[p.applied[0].made[0].v].out[0]);
   EXPECT_EQ(prepared.format.encoding, Encoding::kQ8_1);
   // One product alone, or past the prepared products' rows: none.
-  EXPECT_TRUE(Patterns(PlanOf(SharedGraph(1, 2), r)).empty());
-  const StepPlan wide = PlanOf(SharedGraph(3, 16), r);
+  EXPECT_TRUE(Patterns(isolated(SharedGraph(1, 2))).empty());
+  const StepPlan wide = isolated(SharedGraph(3, 16));
   EXPECT_TRUE(Patterns(wide).empty());
   EXPECT_EQ(Names(wide, r)[0], "t.mul_mat.tile");
   EXPECT_EQ(wide.steps[0].group, "t.mul_mat");
@@ -2321,12 +3726,13 @@ TEST(PlannerSelectionTest, PlansAreDeterministic) {
     EXPECT_EQ(a.from, b.from);
     EXPECT_EQ(a.tensors, b.tensors);
   }
-  // At one row the GLU fuses and K and V share a preparation; at 32 rows
-  // neither.
-  EXPECT_EQ(Patterns(PlanOf(LayerGraph(1), r)),
-            (std::vector<std::string_view>{"rms_norm_mul", "prepared_inputs", "mul_mat_glu",
-                                           "rms_norm_mul_add", "rms_norm_mul", "prepared_inputs",
-                                           "mul_mat_glu", "rms_norm_mul_add"}));
+  // At one row the GLU fuses and K and V share a preparation; each
+  // down-product also prepares its singleton input. At 32 rows none apply.
+  EXPECT_EQ(
+      Patterns(PlanOf(LayerGraph(1), r)),
+      (std::vector<std::string_view>{
+          "rms_norm_mul", "prepared_inputs", "mul_mat_glu", "rms_norm_mul_add", "rms_norm_mul",
+          "prepared_inputs", "mul_mat_glu", "rms_norm_mul_add", "vecq_inputs", "vecq_inputs"}));
   EXPECT_EQ(Patterns(PlanOf(LayerGraph(32), r)),
             (std::vector<std::string_view>{"rms_norm_mul", "rms_norm_mul_add", "rms_norm_mul",
                                            "rms_norm_mul_add"}));
@@ -3044,6 +4450,34 @@ TEST(PlannerTest, ExternalSaveInputsDoNotInheritTheArenaPromise) {
                        .alignment_staged = std::vector{saved}});
   ASSERT_FALSE(invalid);
   EXPECT_EQ(invalid.error().error, PlanError::kPlacement);
+}
+
+TEST(PlannerPlacementTest, PhysicalContractOmitsProofStorageAndRejectsUnfundedReads) {
+  ir::Builder b;
+  const auto x = b.Input(F32({64}));
+  const auto proof = b.Fill(ir::ShapeOf({4096}), 0.0F);
+  const auto y = b.Add(x, x);
+  b.Output(y);
+  auto graph = Finish(b);
+  std::vector<Selected> steps;
+  for (std::uint32_t i = 0; i < graph.nodes().size(); ++i)
+    if (!LaunchesNothing(graph.nodes()[i].key)) steps.push_back({.nodes = {ir::NodeId{i}}});
+  const std::array staged{x};
+  auto logical = PlaceActivations(graph, steps, {}, staged);
+  ASSERT_TRUE(logical);
+  PhysicalStorage physical;
+  physical.materialized.resize(graph.tensor_count(), true);
+  physical.materialized[proof.v] = false;
+  for (const auto& n : graph.nodes())
+    physical.reads.emplace_back(n.sources().begin(), n.sources().end());
+  auto real = PlaceActivations(graph, steps, {}, staged, 256, {}, {}, {}, &physical);
+  ASSERT_TRUE(real) << real.error();
+  EXPECT_LT(real->extent, logical->extent);
+  EXPECT_FALSE(std::ranges::any_of(real->offsets, [&](const auto& p) { return p.first == proof; }));
+  physical.reads[graph.producer(y).v].push_back(proof);
+  auto invalid = PlaceActivations(graph, steps, {}, staged, 256, {}, {}, {}, &physical);
+  ASSERT_FALSE(invalid);
+  EXPECT_EQ(invalid.error(), "a physical read names an absent materialization");
 }
 
 }  // namespace

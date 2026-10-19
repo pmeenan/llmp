@@ -31,6 +31,10 @@ units retain the original fast-math flags; the bounded Gemma26 serving recipe
 selects them through llmpalooza's graph plan. It does not compile all of GGML (the lock's `license.scope` lists the files).
 Patch 0005 adds an IQ2 compact-pair kernel specialization for the measured
 GB10 shape; ordinary MMQ configurations remain unchanged.
+Patch 0009 extends the prepared ordinary MMVQ entry point with explicit
+immutable-weight metadata: PDL-capable kernels may prefetch only those weights
+before waiting, then signal after the unchanged dot loop. Other callers and
+pre-Hopper images retain their ordinary scheduling.
 [licensing.md](../docs/licensing.md) records their audits.
 
 | Step | Where | Does |

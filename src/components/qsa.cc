@@ -236,16 +236,6 @@ std::vector<MaskUse> Masks(const Instance& in) {
            .selection_above = static_cast<std::uint32_t>(d.budget + d.ratio - 1)}};
 }
 
-constexpr std::array kBatchClasses{
-    BatchClass{.op = ir::Op::kRmsNorm, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMatMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kRope, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kCacheStore, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kAttention, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kIndexScore, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kTopK, .batch = ir::Batch::kPerOwner},
-};
-
 // By KV heads, as attention.dense: Q (each head with its gate), K, V by
 // their rows, the output product by its columns, K and V by their heads;
 // the indexer and its caches whole on every device (the selection is the
@@ -265,9 +255,6 @@ constexpr std::array kSplits{SplitOption{
     },
     .weights = kHeadRoles,
     .state = kHeadState}};
-
-constexpr std::array<std::string_view, 6> kPatterns{"qsa_prep", "qsa_pool", "qsa_topk",
-                                                    "qsa_attn", "qsa_gate", "prepared_inputs"};
 
 ir::RopeParams Rotation(const Dims& d) {
   return {.mode = ir::RopeMode::kInterleavedMulti,
@@ -769,9 +756,9 @@ const ComponentDef& AttentionQsa() {
       .shapes = Shapes,
       .state = State,
       .max_state_tensors = 4,
-      .batch_classes = kBatchClasses,
+
       .splits = kSplits,
-      .patterns = kPatterns,
+
       .masks = Masks,
       .exact_masks = true,
       .emit = Emit,

@@ -18,7 +18,9 @@
 #include <utility>
 
 #include "base/bytes.h"
+#include "base/check.h"
 #include "base/sha256.h"
+#include "compiler_inventory.h"
 #include "components/step.h"
 #include "engine/component_source.h"
 #include "engine/model_runner.h"
@@ -44,7 +46,20 @@ constexpr std::uint64_t kMiB = 1ULL << 20U;
 // oracle storage. Charges precede construction, and compiler storage is released
 // only after synchronous setup/bind or a completed step.
 constexpr std::uint64_t kMetadata = 1024 * kMiB;
-constexpr std::uint64_t kCompiler = 3072 * kMiB;
+// Same reviewed seven-graph inventory as the Qwen2 fixture, including current
+// Applied headers, the independent two-round proof payload, and physical tables.
+constexpr std::uint64_t kReviewedCompiler =
+    2526477744ULL + test_support::compiler_inventory::kLegacyCompilerGrowth;
+// Nominal native category already covered by the original compiler envelope.
+// Its source is the shared fixture's checked 65,536-descriptor inventory, plus
+// exact funder/payment controls. This is an accounting carve, NOT a native
+// admission ceiling: actual demand uses the whole remaining paid host envelope.
+constexpr std::uint64_t kNativeCarve =
+    test_support::compiler_inventory::NativeBytes(65536, ir::Graph::kMaxTensors) +
+    sizeof(kg::ConstructionPayment) + sizeof(kg::ConstructionFunder) + 4 * 64;
+constexpr std::uint64_t kCompiler = std::max(3072 * kMiB, kReviewedCompiler + kNativeCarve);
+constexpr std::uint64_t kIrCompiler = kCompiler - kNativeCarve;
+static_assert(kIrCompiler >= kReviewedCompiler);
 constexpr std::uint32_t kVocabulary = 151936;
 constexpr std::uint64_t kControlEnvelope = 6144 * kMiB;
 constexpr std::uint64_t kHeldoutEnvelope = 12288 * kMiB;
@@ -59,20 +74,47 @@ static_assert(kMetadata + kCompiler + kHeldoutResults + kRuntime +
 
 std::unexpected<std::string> Error(std::string text) { return std::unexpected(std::move(text)); }
 
+// One real enclosing catalog payment, retained by backend construction and
+// program payments. PagedNode outlives this adapter; the runner exposes no
+// programs outside State. BuildAll is sequential in one host callback, and the
+// adapter's synchronous Setup/Bind/Evaluate/Release do not overlap: no worker
+// races these counters. Unknown retirement deliberately leaks the entire State.
+struct HostAllowance {
+  en::PagedNode& node;
+  catalog::ExtentId extent;
+  std::uint64_t limit = 0, used = 0;
+  bool Charge(std::uint64_t bytes) {
+    if (used > limit || bytes > limit - used) return false;
+    used += bytes;
+    return true;
+  }
+  void Release(std::uint64_t bytes) {
+    base::Check(bytes <= used, "FP16 host payment refunds only held bytes");
+    used -= bytes;
+  }
+};
+// Shared owner/control and both retained callback capture allocations. The
+// backend separately prepays its ConstructionFunder/control before moving them.
+constexpr std::uint64_t kHostControl =
+    sizeof(HostAllowance) + 2 * 64 + 2 * (sizeof(std::shared_ptr<HostAllowance>) + 64);
+constexpr std::uint64_t kInitialHostUsed = kMetadata + kRuntime + kHostControl;
+static_assert(kInitialHostUsed + kCompiler + kHeldoutResults +
+                  3 * std::uint64_t{512} * kVocabulary * sizeof(float) <=
+              kHeldoutEnvelope);
+
 class TemporaryCharge {
  public:
-  TemporaryCharge(std::uint64_t& used, std::uint64_t limit, std::uint64_t bytes)
-      : used_(used), bytes_(bytes) {
-    held_ = used <= limit && bytes <= limit - used;
-    if (held_) used_ += bytes;
-  }
+  TemporaryCharge(std::shared_ptr<HostAllowance> owner, std::uint64_t bytes)
+      : owner_(std::move(owner)), bytes_(bytes), held_(owner_ && owner_->Charge(bytes)) {}
+  TemporaryCharge(const TemporaryCharge&) = delete;
+  TemporaryCharge& operator=(const TemporaryCharge&) = delete;
   ~TemporaryCharge() {
-    if (held_) used_ -= bytes_;
+    if (held_) owner_->Release(bytes_);
   }
   bool held() const { return held_; }
 
  private:
-  std::uint64_t& used_;
+  std::shared_ptr<HostAllowance> owner_;
   std::uint64_t bytes_;
   bool held_ = false;
 };
@@ -109,8 +151,7 @@ struct Fp16Runner::State {
   bool entered = false;
   bool bound = false;
   bool released = false;
-  catalog::ExtentId host_envelope{};
-  std::uint64_t host_used = 0;
+  std::shared_ptr<HostAllowance> host;
   std::uint64_t host_limit = 0;
   std::uint64_t result_limit = 0;
   std::uint64_t result_charge = 0;
@@ -142,18 +183,18 @@ Fp16Runner::~Fp16Runner() {
     (void)state_.release();
     return;
   }
-  if (state_->host_envelope.valid()) {
-    // Outputs are owned by the caller, whose results precede this adapter in
-    // destruction order. Release never refunds their enclosing host payment.
-    (void)state_->node.catalog().ReleasePinned(state_->host_envelope);
-    (void)state_->node.catalog().RemoveExtent(state_->host_envelope);
-  }
+  // State owns retained IR, descriptors, programs and callback borrowers even
+  // after a failed Setup. Destroy all of them (and State itself) before the
+  // final shared host owner refunds its catalog extent. External result buffers
+  // already precede this adapter in the harness's destruction order.
+  auto host = std::move(state_->host);
+  state_.reset();
 }
 
 Status Fp16Runner::Setup() {
   auto& s = *state_;
   const auto& o = s.options;
-  if (s.entered || s.released || s.host_envelope.valid())
+  if (s.entered || s.released || s.host != nullptr)
     return Error("FP16 benchmark setup is not repeatable");
   if (s.recording || o.restores != 0 || o.relocate || o.load_only != 0 || o.weights_host ||
       o.premapped || o.partial || !o.spill.empty() || o.shared_embeddings)
@@ -171,6 +212,8 @@ Status Fp16Runner::Setup() {
   if (!available || *available < s.host_limit + margin ||
       occupied > *available - s.host_limit - margin)
     return Error("FP16 setup lacks physical headroom for its paid envelope");
+  // Reserve the control object and its shared allocator metadata before new.
+  if (kInitialHostUsed > s.host_limit) return Error("FP16 host controls exceed admission");
   auto paid = s.node.catalog().AddExtent({.domain = s.node.domain(),
                                           .memory_class = catalog::MemoryClass::kRuntime,
                                           .recovery = catalog::Recovery::kPinned,
@@ -178,9 +221,15 @@ Status Fp16Runner::Setup() {
                                           .content = {}},
                                          true);
   if (!paid) return Error("FP16 host envelope cannot be cataloged");
-  s.host_envelope = *paid;
-  s.host_used = kMetadata + kRuntime;
-  TemporaryCharge compiler(s.host_used, s.host_limit, kCompiler);
+  s.host = std::shared_ptr<HostAllowance>(
+      new HostAllowance{s.node, *paid, s.host_limit, kInitialHostUsed}, [](HostAllowance* owner) {
+        auto* node = &owner->node;
+        const auto extent = owner->extent;
+        delete owner;
+        (void)node->catalog().ReleasePinned(extent);
+        (void)node->catalog().RemoveExtent(extent);
+      });
+  TemporaryCharge compiler(s.host, kIrCompiler);
   if (!compiler.held()) return Error("FP16 construction exceeds host admission");
   auto trajectory = LoadTrajectory(o.trajectory, o.tokens);
   if (!trajectory) return Error(trajectory.error());
@@ -236,6 +285,11 @@ Status Fp16Runner::Setup() {
   auto backend = kg::GgmlBackend::Create(0, s.node.execution(), s.node.stream(s.stream), nullptr);
   if (!backend) return Error(backend.error());
   s.backend = std::move(*backend);
+  if (auto funded = s.backend->FundConstruction(
+          [host = s.host](std::uint64_t bytes) { return host->Charge(bytes); },
+          [host = s.host](std::uint64_t bytes) { host->Release(bytes); });
+      !funded)
+    return Error(funded.error());
   std::optional<pl::Policy> policy;
   if (!o.fusion) {
     policy.emplace();
@@ -348,7 +402,7 @@ Status Fp16Runner::Register() {
 Status Fp16Runner::Bind() {
   auto& s = *state_;
   if (!s.runner || s.bound || s.released) return Error("FP16 benchmark bind is not available");
-  TemporaryCharge compiler(s.host_used, s.host_limit, kCompiler);
+  TemporaryCharge compiler(s.host, kIrCompiler);
   if (!compiler.held()) return Error("FP16 bind exceeds host admission");
   if (auto bound = s.runner->Bind(); !bound) return bound;
   s.bound = true;
@@ -361,15 +415,14 @@ Status Fp16Runner::Evaluate(int evaluation, std::vector<float>& result) {
   const auto count = s.trajectory.tokens.size() * std::uint64_t{kVocabulary};
   const auto bytes = count * sizeof(float);
   if (result.capacity() > count || bytes > s.result_limit / 2 ||
-      s.result_charge > s.result_limit - 2 * bytes || s.host_used > s.host_limit - 2 * bytes)
+      s.result_charge > s.result_limit - 2 * bytes || !s.host->Charge(2 * bytes))
     return Error("FP16 externally retained output exceeds its admitted domain");
   // Callers retain complete evaluations. Their bytes and allocation growth stay
   // paid until adapter destruction; failed attempts consume the same allowance.
   s.result_charge += 2 * bytes;
-  s.host_used += 2 * bytes;
   const auto max_rows = *std::ranges::max_element(s.trajectory.chunks);
   const auto step_outputs = 3 * std::uint64_t{max_rows} * kVocabulary * sizeof(float);
-  TemporaryCharge compiler(s.host_used, s.host_limit, kCompiler + step_outputs);
+  TemporaryCharge compiler(s.host, kIrCompiler + step_outputs);
   if (!compiler.held()) return Error("FP16 step exceeds host admission");
   result.resize(static_cast<std::size_t>(count));
   auto& slots = s.runner->slots();

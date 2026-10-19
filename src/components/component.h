@@ -13,13 +13,11 @@
 //     (RoleShape);
 //   - its state contract per instance (model/state_contract.h), from which
 //     the engine's slot lifecycle derives regions, spill and restore;
-//   - its batching capability as data: which of its ops join rows across
-//     requests and which stay one owner's (BatchClass), and the limits it
-//     places on a step (model::Batching);
+//   - its batching limits (model::Batching); the emitted IR nodes carry
+//     whether they join requests or stay with one owner;
 //   - how it splits across devices, as data: the roles and state tensors
 //     each split divides and what it communicates per step (SplitOption),
 //     for the partitioner;
-//   - the fusion patterns it takes part in, by name (the planner's);
 //   - `emit`: the primitive IR fragment for a step's shape (a Fragment),
 //     which the planner's patterns later rewrite;
 //   - `reference`: a scalar CPU implementation written independently of
@@ -178,13 +176,6 @@ struct RoleShape {
 };
 
 // -------------------------------------------------------- batching, splits
-
-// Whether an op of the component joins rows across requests or stays one
-// owner's (attention over one request's cache, a cache store).
-struct BatchClass {
-  ir::Op op = ir::Op::kMatMul;
-  ir::Batch batch = ir::Batch::kJoined;
-};
 
 enum class SplitKind : std::uint8_t { kNone, kHeads, kColumns, kRows, kExperts, kWholeLayer };
 std::string_view SplitKindName(SplitKind kind);
@@ -414,11 +405,9 @@ struct ComponentDef {
   model::StateContract (*state)(const Instance& instance) = nullptr;
   // Upper bound on tensors returned by state(), for import preflight accounting.
   std::uint16_t max_state_tensors = 0;
-  std::span<const BatchClass> batch_classes{};
   // The limits it places on a step's joins; null: none of its own.
   model::Batching (*batching)(const Instance& instance) = nullptr;
   std::span<const SplitOption> splits{};
-  std::span<const std::string_view> patterns{};
   // Masks it reads: made once per step and segment before the first layer
   // (StepContext::Mask).
   std::vector<MaskUse> (*masks)(const Instance& instance) = nullptr;

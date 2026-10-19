@@ -197,7 +197,10 @@ en::Status SetupFixture(Lifetime& life, bool small) {
                                                     kMetadata, *available, 6ULL << 30U);
   if (!paid) return Error(paid.error());
   life.paid = *paid;
-  if (!life.paid->Charge(kConstruction)) return Error("attention preconstruction payment");
+  // The old 16MiB native category is now available to actual backend loans;
+  // retained program/input/capture categories stay in this enclosing charge.
+  if (!life.paid->Charge(kConstruction - 16 * kMiB))
+    return Error("attention preconstruction payment");
   Fill(life, false);
   for (std::size_t i = 0; i < 2; ++i) {
     auto graph = Graph(life.rows, life.heads, i == 0);
@@ -223,6 +226,11 @@ en::Status SetupFixture(Lifetime& life, bool small) {
         .k = 128,
         .n = 128,
         .output_encoding = fm::Encoding::kF32}}};
+  if (auto r = life.backend->FundConstruction(
+          [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
+          [paid = life.paid](std::uint64_t n) { paid->Release(n); });
+      !r)
+    return r;
   if (auto r = life.backend->Declare(
           tuning, workspace.value(), [p = life.paid](auto n) { return p->Charge(n); },
           [p = life.paid](auto n) { p->Release(n); });
@@ -255,6 +263,9 @@ en::Status SetupFixture(Lifetime& life, bool small) {
       if (!program) return Error(program.error());
       if (auto r = Check(life, **program, i); !r) return r;
       if (!measuring) {
+        // kConstruction still prepays two retained kProgram slots after
+        // removing its native category. Check passed before this handoff.
+        (*program)->ConstructionPaid();
         arm.program = std::move(*program);
         if (i == 1) {
           const auto refused = arm.program->Bind(*life.launch);

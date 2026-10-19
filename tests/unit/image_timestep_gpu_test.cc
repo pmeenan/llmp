@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "base/sha256.h"
+#include "compiler_inventory.h"
 #include "components/spatial.h"
 #include "engine/coverage.h"
 #include "engine/execution_contract.h"
@@ -70,9 +71,10 @@ constexpr std::array<std::uint64_t, 4> kWeightBytes{2097152, 33554432, 134217728
 constexpr std::uint64_t kWeightTotal = 203423744;
 // Fixed graph, source/clone/rewrite/native inventories, measuring+retained program,
 // one <=67-node capture, and 16MiB source-index/owner/report margin. No payload oracle.
-static_assert(12 * (37 * 480ULL + 74 * 192ULL) + 4096 * (37 + 74ULL) +
-                  (74 + 4 + 31 * 37ULL + 4) * (512 + 1024 + 32) + 2 * kProgram +
-                  67 * en::kGraphNodeHostBytes + 16 * kMiB <
+static_assert(llmp::test_support::compiler_inventory::GraphBytes(37, 74) + 4096 * (37 + 74ULL) +
+                  llmp::test_support::compiler_inventory::NativeBytes((74 + 4 + 31 * 37ULL + 4),
+                                                                      74) +
+                  2 * kProgram + 67 * en::kGraphNodeHostBytes + 16 * kMiB <
               kCompilerAndOwner);
 static_assert(kOutputOffset + kOutputTotal <= kSavedOffset &&
               kSavedOffset + kOutputTotal <= kPinned);
@@ -111,9 +113,10 @@ constexpr std::array<std::string_view, 9> kBlockNames{
     "transformer_blocks.0.img_mlp.out.weight"};
 constexpr std::array<std::uint64_t, 9> kBlockBytes{33554432, 33554432,  33554432,  33554432, 256,
                                                    256,      100663296, 100663296, 100663296};
-static_assert(12 * (250 * 480ULL + 500 * 192ULL) + 4096 * (250 + 500ULL) +
-                  (500 + 13 + 31 * 250ULL + 4) * (512 + 1024 + 32) + 2 * kBlock.program +
-                  262 * en::kGraphNodeHostBytes + 16 * kMiB <
+static_assert(llmp::test_support::compiler_inventory::GraphBytes(250, 500) + 4096 * (250 + 500ULL) +
+                  llmp::test_support::compiler_inventory::NativeBytes((500 + 13 + 31 * 250ULL + 4),
+                                                                      500) +
+                  2 * kBlock.program + 262 * en::kGraphNodeHostBytes + 16 * kMiB <
               kBlock.compiler);
 static_assert(kBlock.output_offset + kBlock.outputs[0] + kBlock.outputs[1] <= kSavedOffset &&
               kSavedOffset + kBlock.outputs[0] + kBlock.outputs[1] <= kPinned);
@@ -126,9 +129,11 @@ constexpr Limits kFlow{16ULL << 30U, 1024 * kMiB, 768 * kMiB, 16 * kMiB, 32 * kM
                        5948,         297,         6818,       6818,      {1024, 1024}};
 constexpr std::uint64_t kFlowSourceBytes = 14230249472ULL;
 constexpr std::uint64_t kFlowMappingBytes = 2675712;
-static_assert(12 * (5948 * 480ULL + 11896 * 192ULL) + 4096 * (5948 + 11896ULL) +
-                  (11896 + 297 + 31 * 5948ULL + 6) * (512 + 1024 + 32) + 2 * kFlow.program +
-                  (5948 + 8) * en::kGraphNodeHostBytes + 16 * kMiB <
+static_assert(llmp::test_support::compiler_inventory::GraphBytes(5948, 11896) +
+                  4096 * (5948 + 11896ULL) +
+                  llmp::test_support::compiler_inventory::NativeBytes(
+                      (11896 + 297 + 31 * 5948ULL + 6), 11896) +
+                  2 * kFlow.program + (5948 + 8) * en::kGraphNodeHostBytes + 16 * kMiB <
               kFlow.compiler);
 static_assert(kFlow.compiler + kFlow.graph_metadata + kFlowMappingBytes + kProgram <
               kFlow.metadata);
@@ -283,7 +288,15 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
                                                     life.limits.metadata, *available, 6ULL << 30U);
   if (!paid) return Error(paid.error());
   life.paid = *paid;
-  if (!life.paid->Charge(life.limits.compiler)) return Error("preconstruction owner payment");
+  // Release the old source-specific native category from the compiler loan;
+  // actual checked native demand is charged by FundConstruction below.
+  const auto native_category = llmp::test_support::compiler_inventory::NativeBytes(
+      life.limits.tensors + life.limits.parts + 31 * life.limits.nodes +
+          (life.limits.nodes == kFlow.nodes ? 6 : 4),
+      life.limits.tensors);
+  if (native_category > life.limits.compiler ||
+      !life.paid->Charge(life.limits.compiler - native_category))
+    return Error("preconstruction owner payment");
   std::error_code ec;
   if (std::filesystem::file_size(path / "manifest.json", ec) != 2246 || ec ||
       std::filesystem::file_size(path / "index.json", ec) != 543282 || ec)
@@ -411,6 +424,11 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   if (!facts) return Error("actual device facts");
   const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
   if (workspace.value() > 32 * kMiB) return Error("owned handle workspace");
+  if (auto r = life.backend->FundConstruction(
+          [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
+          [paid = life.paid](std::uint64_t n) { paid->Release(n); });
+      !r)
+    return r;
   if (auto r = life.backend->Declare(
           {}, workspace.value(), [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
           [paid = life.paid](std::uint64_t n) { paid->Release(n); });
@@ -453,6 +471,9 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   auto program = build(false);
   if (!program) return Error(program.error());
   if (auto r = CheckProgram(life, **program); !r) return r;
+  // The existing paid compiler/owner envelope includes the retained program
+  // bound checked above. Its native loan must not also remain charged.
+  (*program)->ConstructionPaid();
   life.program = std::move(*program);
   if (auto r = life.program->Bind(*life.launch); !r) return Error(r.error().detail);
   if (!life.program->bound()) return Error("actual program not bound");

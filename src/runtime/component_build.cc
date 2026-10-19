@@ -30,6 +30,8 @@
 #include "format/tensor_format.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
+#include "planner/construction.h"
+#include "planner/plan.h"
 #include "planner/policy.h"
 #include "planner/step_shape.h"
 #include "platform/host_probe.h"
@@ -196,43 +198,30 @@ constexpr std::uint64_t kLaneScratchBytes = 4ULL * 1024ULL * 1024ULL;
 
 // Called under the Server's parser loan after source/schema validation, and
 // before any BuildStep/lowering. Graph maxima are the existing IR contract;
-// commit roots come from the actual component inventory and owner envelope.
+// native lowering admits its own actual operation and saved-root inventory.
 struct ServingConstruction {
   std::uint64_t compiler = 0, retained = 0;
 };
 std::expected<ServingConstruction, std::string> ServingConstructionBytes(
-    const spec::ModelSpec& model, const ja::Artifact& target, const ja::Artifact* draft,
-    const ModelSettings& settings) {
-  auto saves = components::CommitSaveBound(model, settings.max_slots.value);
-  if (!saves) return Error(saves.error());
+    const spec::ModelSpec& model, const ja::Artifact& target, const ja::Artifact* draft) {
   constexpr std::uint64_t nodes = ir::Graph::kMaxNodes;
   constexpr std::uint64_t tensors = ir::Graph::kMaxTensors;
-  // One step's construction at the IR's maxima, whatever the actual graph:
-  // its graph (480 bytes a node and 192 a tensor for the built graph, its
-  // clone and the plan's facts), the lowering's reader index (enforced at
-  // that bound above), and GGML's descriptor arena (a descriptor, its
-  // record and pointer for every tensor, node and saved commit root).
-  // Compiles run one at a time on the driver, so one such payment (shared
-  // across aliases) covers each; what a plan or graph keeps is charged
-  // separately (PlanAccount). Measured on spark-b (2026-10-15, VmHWM reset
-  // before each ComponentStepSource::Build, the largest growth across a
-  // no-diagnostic `llmp-runtime chat` turn of each family; setup shapes
-  // included): DeepSeek V4 + DSpark 40.3 MB, Gemma 4 26B-A4B 23.6 MB, 31B
-  // 20.4 MB, Gemma 3 8.6 MB, Gemma 2 7.1 MB, Qwen3.8 (NVFP4 + MTP, GGUF) 22.2
-  // and 22.3 MB; this charge is about 501 MB.
-  std::uint64_t descriptors = tensors + 16 + nodes;
-  std::uint64_t extra = 0;
-  if (__builtin_mul_overflow(*saves, std::uint64_t{4}, &extra) ||
-      __builtin_add_overflow(descriptors, extra, &descriptors))
-    return Error("component saved-root descriptor payment overflows");
-  std::uint64_t bytes = (480 * nodes + 192 * tensors) + kServingReaderScratchBytes;
+  // One serialized IR compiler loan, shared across aliases: graph/rewrite
+  // inventories and the independently bounded reader index. Native descriptor
+  // construction is admitted from the actual immutable LowerInput by the
+  // backend funder; retained programs transfer to PlanAccount before release.
+  // These coefficients are conservative bounds, not measured memory peaks.
+  std::uint64_t bytes = 0;
   const auto add = [&](std::uint64_t count, std::uint64_t unit) {
     std::uint64_t part = 0;
     return !__builtin_mul_overflow(count, unit, &part) &&
            !__builtin_add_overflow(bytes, part, &bytes);
   };
-  if (ggml_tensor_overhead() > 512 || !add(descriptors, 512 + 1024 + 32))
-    return Error("component descriptor ABI or payment exceeds its construction inventory");
+  const auto numerical = planner::NumericalConstructionBytes(nodes);
+  if (!numerical || !add(nodes, planner::kConstructionGraphNodeBytes) ||
+      !add(tensors, planner::kConstructionGraphTensorBytes) ||
+      !add(1, kServingReaderScratchBytes) || !add(1, *numerical))
+    return Error("component IR compiler payment overflows");
   ServingConstruction result{.compiler = bytes};
   bytes = 0;
   // The complete spec and canonical/digest copies, parameter/role maps and
@@ -262,6 +251,8 @@ std::expected<ServingConstruction, std::string> ServingConstructionBytes(
   };
   if (!source(target) || (draft && !source(*draft)))
     return Error("component retained source inventory overflows");
+  if (!add(1, kernels::kRegistrationPlanReportMetadataBytes))
+    return Error("registration plan-report metadata inventory overflows");
   result.retained = bytes;
   return result;
 }
@@ -274,6 +265,9 @@ struct ComponentHold {
   std::shared_ptr<ConstructionCharge> kv_encoding_charge;
   std::unique_ptr<StoredBindingPayment> stored_payment;
   spec::ModelSpec spec;
+  // Actual admitted semantic identities, captured before composition, draft
+  // vocabulary narrowing and per-alias state representation transforms.
+  std::array<base::Sha256Digest, spec::kMaxStages> numerical_semantics{};
   std::vector<spec::Source> sources;  // by artifact: the target's, the drafter's
   std::vector<std::span<const components::BoundTensor>> tables;
   std::vector<model::StateLayoutDerived> layouts;  // by stage
@@ -493,6 +487,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                                   artifact->sources());
           !admitted)
         return Error(admitted.error());
+      hold->numerical_semantics[0] = stored_bindings->model.Digest();
       auto policy =
           AdmittedPolicy(stored_bindings->model, stored_bindings->source,
                          FindApproval(artifact->model().architecture, artifact->sources()),
@@ -569,12 +564,14 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       if (approved_values == hold->drafter_values) {
         if (auto approved = CheckComposedAdmission(*composed, *artifact, *drafter); !approved)
           return Error(approved.error());
+        hold->numerical_semantics[1] = composed->Digest();
       } else {
         auto pinned = spec::ComposeDrafter(*synthesized, *mapping, *drafter_mapping, *dsource,
                                            approved_values);
         if (!pinned) return Error(pinned.error());
         if (auto approved = CheckComposedAdmission(*pinned, *artifact, *drafter); !approved)
           return Error(approved.error());
+        hold->numerical_semantics[1] = pinned->Digest();
       }
       hold->spec = std::move(*composed);
       hold->sources.push_back(std::move(*dsource));
@@ -617,8 +614,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (options.automatic_startup_cap != 0) {
       // Component families use the same paid construction inventory without
       // inventing a NumericalDomain (their serving recipe is checked above).
-      auto bytes =
-          ServingConstructionBytes(hold->spec, *artifact, drafter ? &*drafter : nullptr, settings);
+      auto bytes = ServingConstructionBytes(hold->spec, *artifact, drafter ? &*drafter : nullptr);
       if (!bytes) return Error(bytes.error());
       if (!node.open_for_setup() || !options.shared_compiler)
         return Error("automatic compiler admission requires its stopped Server owner");
@@ -923,6 +919,21 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         std::move(backend_options));
     if (!backend) return Error(backend.error());
     hold->backend = std::move(*backend);
+    // Native construction is funded for every family, whether or not its
+    // execution source requests a numerical domain. The shared allowance and
+    // catalog-aware admission outlive all payments returned with programs.
+    if (!metadata) {
+      auto admitted = admit_metadata();
+      if (!admitted) return Error(admitted.error());
+      metadata = std::move(*admitted);
+    }
+    if (auto funded = hold->backend->FundConstruction(
+            [metadata, charge_metadata](std::uint64_t bytes) {
+              return charge_metadata(metadata, bytes);
+            },
+            [metadata](std::uint64_t bytes) { metadata->Release(bytes); });
+        !funded)
+      return Error(funded.error());
     const providers::DeviceFacts facts =
         providers::QueryDeviceFacts(0).value_or(providers::DeviceFacts{});
     const std::uint64_t cublas_bytes =
@@ -1020,6 +1031,28 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     }
     std::vector<std::unique_ptr<engine::ComponentStepSource>> sources;
     for (std::uint16_t stage = 0; stage < hold->spec.stages.size(); ++stage) {
+      auto stage_policy = stage == 0       ? std::optional(target_policy)
+                          : drafter_policy ? drafter_policy
+                          : forced         ? std::optional(target_policy)
+                                           : std::nullopt;
+      if (!stage_policy) {
+        auto text = spec::DefaultPolicy(*drafter_mapping, hold->drafter_values,
+                                        {.context = settings.context.value, .slots = slots});
+        if (!text) return Error(text.error());
+        auto parsed = text->empty() ? std::expected<planner::Policy, std::string>(planner::Policy{})
+                                    : planner::ParsePolicy(*text);
+        if (!parsed) return Error(parsed.error());
+        stage_policy = std::move(*parsed);
+      }
+      const auto artifact_index = hold->spec.stages[stage].artifact;
+      const auto& admitted_artifact = artifact_index == 0 ? *artifact : *drafter;
+      auto numerical = AdmittedNumerics(
+          hold->spec, hold->sources.at(artifact_index), admitted_artifact.sources(),
+          FindApproval(admitted_artifact.model().architecture, admitted_artifact.sources()),
+          hold->numerical_semantics[stage], {.context = settings.context.value, .slots = slots},
+          stage, hold->backend->Backend().ConstructionFunding());
+      if (!numerical) return Error(numerical.error());
+      stage_policy->numerical = std::move(*numerical);
       auto made = engine::ComponentStepSource::Create(
           {.spec = &hold->spec,
            .stage = stage,
@@ -1034,10 +1067,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
            .slots = slots,
            // A drafter stage: the diagnostic's policy, else a forced
            // shared-route recipe's (the target's), else its mapping's.
-           .policy = stage == 0       ? std::optional(target_policy)
-                     : drafter_policy ? drafter_policy
-                     : forced         ? std::optional(target_policy)
-                                      : std::nullopt,
+           .policy = std::move(stage_policy),
            .backend = hold->backend->Backend(),
            .execution_domain = execution_domain,
            // Actual programs report capture safety; eager-only implementations

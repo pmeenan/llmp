@@ -2,15 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // A planning policy (D-053, D-107; docs/engine-components.md#the-graph-ir):
-// what the planner may do for one model alias, as data. The patterns it
-// leaves off (a family's first migration reproduces its current fusion
-// selection: Gemma 2 serves without the fused norm-rope, Gemma 3 with it),
-// the decode-shaped product bound (D-108), the vector forms' row bound,
-// whether every plan must be row-invariant (D-092), the lossy opt-in, the
-// rules that hold for some steps only (by their rows and owners: a fast
-// form a model takes only for small solo steps, a mapping's data, never a
-// planner constant), and measured ranks per device class, which order the
-// registry's candidates before the format ladder does.
+// what the planner may do for one model alias, as data. Structural and
+// proved incumbent-equivalent patterns default on. Changed rounding or
+// reduction requires authenticated numerical evidence, or an explicitly
+// reported diagnostic candidate. Independent lossy and product choices,
+// row invariance, step-specific bounds, and measured device ranks remain
+// explicit policy inputs.
 //
 // The text form is canonical, so a policy can live in a spec, an alias's
 // settings or a test as bytes, and its digest is a plan key's input
@@ -22,7 +19,8 @@
 //   allow_lossy                         when set
 //   compact_expert_min_rows <n>         when not 2048 (1 to 65,536)
 //   product <choice>                    independent product policies, names ascending
-//   enable <pattern>                    an opt-in pattern of the table, names ascending
+//   candidate_numerics <change>         explicit diagnostic proposals, names ascending
+//   enable <pattern>                    known patterns, names ascending
 //   disable <pattern>                   a pattern of the table (pattern.h), names ascending
 //   when <scope> <test> <n> <action>    step rules, ascending (StepRule's order)
 //   rank <class> <implementation> <n>   ascending by class, then rank, then name
@@ -37,6 +35,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -85,7 +85,7 @@ struct StepRule {
 struct ProductPolicy {
   bool compact_experts = false;
   // Measured crossover, configurable per alias. Omitted from canonical text
-  // at its historical default to preserve existing policy identities.
+  // at the canonical default.
   std::uint32_t compact_expert_min_rows = 2048;
   bool d2r_experts = false;
   bool dense_pair = false;
@@ -96,9 +96,64 @@ struct ProductPolicy {
   bool operator==(const ProductPolicy&) const = default;
 };
 
+// Arithmetic changes whose same-quality evidence is distinct from structural
+// fusion or sharing an incumbent's already mandatory conversion. The names
+// describe rounding/reduction boundaries, not matchers or model families.
+enum class NumericalChange : std::uint8_t {
+  kBf16SwiGluIntermediates,
+  kBf16ProductInputAndResult,
+  kBf16AttentionIntermediates,
+  kBf16ResidualCarry,
+  kBf16HyperConnectionIntermediates,
+  kMxfp8ProductInput,
+  kQ8VectorReduction,
+  kNvfp4ExpertIntermediates,
+};
+std::string_view NumericalChangeName(NumericalChange change);
+struct NumericalQualification {
+  NumericalChange change{};
+  base::Sha256Digest evidence{}, source{}, semantic{};
+  std::uint16_t stage = 0, component = 0;
+  ir::OpKey anchor{};
+  std::uint32_t arch = 0;
+  // Bounds within this exact admitted source/spec envelope, not evidence
+  // for unrelated smaller graphs. exact_shape restricts rows/K/N to one
+  // measured geometry instead of an explicitly qualified envelope.
+  std::uint64_t min_rows = 1, max_rows = 1, max_k = 0, max_n = 0;
+  bool exact_shape = false;
+  // Role-bound incumbent recipes keep their exact K/N over the accepted row
+  // envelope. A measured one-shape candidate additionally fixes its rows.
+  bool exact_dimensions = false;
+  bool incumbent_recipe = false;
+  std::uint16_t weight_role = UINT16_MAX;
+  bool operator==(const NumericalQualification&) const = default;
+};
+class NumericalQualifications {
+ public:
+  std::span<const NumericalQualification> entries() const { return entries_; }
+  std::uint64_t host_bytes() const;
+  const base::Sha256Digest& digest() const { return digest_; }
+  // Caller prepays the exact entries/control inventory before this copy.
+  // Admission supplies independently authenticated active identities; zero
+  // or different receipts/specs refuse before any retained allocation.
+  static std::expected<std::shared_ptr<const NumericalQualifications>, std::string> Bind(
+      std::span<const NumericalQualification> entries, const base::Sha256Digest& active_source,
+      const base::Sha256Digest& active_semantic, std::shared_ptr<const void> paid_owner = {});
+  static std::expected<std::shared_ptr<const NumericalQualifications>, std::string> Bind(
+      std::vector<NumericalQualification>&& entries, const base::Sha256Digest& active_source,
+      const base::Sha256Digest& active_semantic, std::shared_ptr<const void> paid_owner = {});
+
+ private:
+  // Payment outlives the retained entries on every failed/retired path.
+  std::shared_ptr<const void> paid_owner_;
+  std::vector<NumericalQualification> entries_;
+  base::Sha256Digest digest_{};
+};
+std::expected<std::uint64_t, std::string> NumericalQualificationBytes(std::size_t count);
+
 struct Policy {
-  // Opt-in patterns it enables (pattern.h Pattern::opt_in), ascending, each
-  // once.
+  // Explicit enables, ascending and unique. Enabling an already-default
+  // pattern is idempotent; an explicit disable may not name the same pattern.
   std::vector<std::string> enabled{};
   std::vector<std::string> disabled{};  // pattern names, ascending, each once
   std::uint32_t max_decode_rows = 16;
@@ -112,6 +167,14 @@ struct Policy {
   // applies them.
   std::vector<StepRule> rules{};
   ProductPolicy products{};
+  // Explicit diagnostic arithmetic proposals. They are never evidence and
+  // never enabled by production mappings; applied plans report them as
+  // UNQUALIFIED_CANDIDATE until a separate accepted measurement grants them.
+  std::vector<NumericalChange> numerical_candidates{};
+  // Authenticated immutable facts shared by all plans of an admitted source.
+  // They are never parsed from alias policy text. Digest includes their seal.
+  std::shared_ptr<const NumericalQualifications> numerical{};
+  std::uint16_t active_stage = UINT16_MAX;
   bool operator==(const Policy&) const = default;
 };
 
@@ -123,8 +186,8 @@ bool Disabled(const Policy& policy, std::string_view pattern);
 void Canonicalize(Policy& policy);
 
 // The policy's own rules: names and classes of [a-z0-9_.] (classes
-// without '.'), patterns of the table, each once (an enabled one opt-in,
-// and not also disabled), an implementation ranked once a class, the
+// without '.'), patterns of the table, each once (not both enabled and
+// disabled), an implementation ranked once a class, the
 // bounds above.
 std::expected<void, std::string> Validate(const Policy& policy);
 
@@ -139,7 +202,7 @@ std::expected<Policy, std::string> ParsePolicy(std::string_view text);
 std::expected<Policy, std::string> ForStep(const Policy& policy, std::uint64_t rows,
                                            std::size_t segments);
 
-// SHA-256 of ToText.
+// SHA-256 of canonical text plus the authenticated numerical seal and active stage.
 base::Sha256Digest Digest(const Policy& policy);
 
 // The ranks measured on `device_class`, as Candidates() takes them; they

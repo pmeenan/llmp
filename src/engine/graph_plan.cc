@@ -5,11 +5,135 @@
 
 #include <algorithm>
 #include <format>
+#include <limits>
+#include <memory>
+#include <new>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 namespace llmp::engine {
+
+namespace {
+// Two retained allocations: the wrapper and the inventory's single exact
+// array/string block. Each pays an allocator header/alignment quantum. The
+// payment is embedded, so it creates no shared control block or temporary heap.
+constexpr std::uint64_t kReportAllocationMetadataBytes = 64;
+constexpr std::uint64_t kRetainedReportAllocations = 2;
+struct ReportPayment {
+  std::shared_ptr<const kernels::BackendOwner> owner;
+  std::shared_ptr<const kernels::ConstructionFunder> funder;
+  std::uint64_t bytes = 0;
+  ReportPayment(std::shared_ptr<const kernels::BackendOwner> paid_owner,
+                std::shared_ptr<const kernels::ConstructionFunder> paid_funder,
+                std::uint64_t paid_bytes)
+      : owner(std::move(paid_owner)), funder(std::move(paid_funder)), bytes(paid_bytes) {}
+  ReportPayment(ReportPayment&& other) noexcept
+      : owner(std::move(other.owner)),
+        funder(std::move(other.funder)),
+        bytes(std::exchange(other.bytes, 0)) {}
+  ReportPayment(const ReportPayment&) = delete;
+  ~ReportPayment() { Release(); }
+  void Release() {
+    if (owner) owner->Release(bytes);
+    else if (funder)
+      funder->release(bytes);
+    funder.reset();
+    owner.reset();
+    bytes = 0;
+  }
+};
+// The report follows exactly the returned program's lifetime and host charge.
+// It forwards source-specific diagnostics without retaining the compiler graph.
+class ReportedProgram final : public kernels::StepProgram {
+ public:
+  ReportedProgram(std::unique_ptr<kernels::StepProgram> program,
+                  planner::PlanReportInventory inventory, kernels::PlanCoverage coverage,
+                  ReportPayment payment)
+      : payment_(std::move(payment)),
+        program_(std::move(program)),
+        inventory_(std::move(inventory)),
+        coverage_(coverage) {}
+  void ConstructionPaid() override {
+    if (construction_transferred_) return;
+    construction_transferred_ = true;
+    program_->ConstructionPaid();
+    payment_.Release();
+    kernels::StepProgram::ConstructionPaid();
+  }
+  std::uint64_t scratch_bytes() const override { return program_->scratch_bytes(); }
+  std::uint64_t pool_bytes() const override { return program_->pool_bytes(); }
+  std::uint64_t host_bytes() const override {
+    return program_->host_bytes() + sizeof(*this) + inventory_.storage_bytes() +
+           kRetainedReportAllocations * kReportAllocationMetadataBytes;
+  }
+  std::uint64_t launches() const override { return program_->launches(); }
+  std::span<const kernels::InputSlot> inputs() const override { return program_->inputs(); }
+  std::span<const kernels::OutputSlot> outputs() const override { return program_->outputs(); }
+  std::span<const kernels::TensorUse> tensors() const override { return program_->tensors(); }
+  const execution::BoundPlan* bound() const override { return program_->bound(); }
+  bool capturable() const override { return program_->capturable(); }
+  std::optional<std::span<const kernels::RoutedWeight>> weight_reads() const override {
+    return program_->weight_reads();
+  }
+  kernels::RoutedProgram* routed() override { return program_->routed(); }
+  const kernels::RoutedProgram* routed() const override { return program_->routed(); }
+  std::expected<void, kernels::StepFailure> Bind(kernels::StepLaunch& launch) override {
+    return program_->Bind(launch);
+  }
+  std::expected<void, kernels::StepFailure> Position(std::span<const std::uint32_t> past) override {
+    return program_->Position(past);
+  }
+  std::expected<void, kernels::StepFailure> Run(kernels::StepLaunch& launch,
+                                                providers::NativeStream stream) const override {
+    return program_->Run(launch, stream);
+  }
+  bool warm() const override { return program_->warm(); }
+  std::expected<void, kernels::StepFailure> RunWarm(kernels::StepLaunch& launch,
+                                                    providers::NativeStream stream) const override {
+    return program_->RunWarm(launch, stream);
+  }
+  std::expected<std::unique_ptr<kernels::Recorded>, kernels::StepFailure> Record(
+      kernels::StepLaunch& launch, providers::NativeStream stream,
+      const kernels::StepLaunch::Body& body) const override {
+    return program_->Record(launch, stream, body);
+  }
+  void StreamPlanReport(const kernels::PlanReportSink& sink) const override {
+    if (!sink) return;
+    inventory_.Stream(sink);
+    program_->StreamPlanReport(sink);
+  }
+  // Convenience for callers that explicitly own assembly storage. Serving uses
+  // ReportPlanRecords, which frames fragments without allocating a JSON string.
+  void ReportPlan(const kernels::PlanReportSink& sink) const override {
+    if (!sink) return;
+    std::string record;
+    ReportPlanRecords([&](kernels::PlanReportEvent event, std::string_view part) {
+      if (event == kernels::PlanReportEvent::kBegin) record.clear();
+      if (event == kernels::PlanReportEvent::kFragment) record.append(part);
+      if (event == kernels::PlanReportEvent::kEnd) sink(record);
+    });
+  }
+  kernels::PlanCoverage plan_coverage() const override {
+    auto out = program_->plan_coverage();
+    out.primitive_fallbacks += coverage_.primitive_fallbacks;
+    out.available_fast_fallbacks += coverage_.available_fast_fallbacks;
+    out.decode_expansion_rules += coverage_.decode_expansion_rules;
+    out.missing_numerical_qualifications += coverage_.missing_numerical_qualifications;
+    out.unqualified_numerical_candidates += coverage_.unqualified_numerical_candidates;
+    return out;
+  }
+
+ private:
+  // Payment dies last on a failed/uninstalled program, after all report bytes.
+  ReportPayment payment_;
+  std::unique_ptr<kernels::StepProgram> program_;
+  planner::PlanReportInventory inventory_;
+  kernels::PlanCoverage coverage_;
+  bool construction_transferred_ = false;
+};
+}  // namespace
 
 std::expected<planner::StepPlan, std::string> PlanComponentGraph(
     const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
@@ -108,7 +232,8 @@ std::expected<planner::StepPlan, std::string> PlanComponentGraph(
 std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponentProgram(
     const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
     const kernels::Addresses& addresses, planner::PlanOptions options,
-    std::optional<kernels::TokenLowerInput> token, const kernels::ProgramValidator& validate) {
+    std::optional<kernels::TokenLowerInput> token, const kernels::ProgramValidator& validate,
+    std::shared_ptr<const kernels::BackendOwner> report_owner) {
   if (!backend.lower) return std::unexpected("a component graph needs a backend lowerer");
   if (token && (&token->step.graph != &io.graph || options.shape != &token->shape))
     return std::unexpected("token lowering metadata differs from the planned graph or shape");
@@ -124,7 +249,61 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponent
     auto valid = validate(input, **lowered);
     if (!valid) return std::unexpected(valid.error());
   }
-  return lowered;
+  auto inventory_bytes = planner::PlanReportInventory::StorageBytes(*plan, *backend.registry);
+  if (!inventory_bytes) return std::unexpected(inventory_bytes.error());
+  std::uint64_t payment_bytes = 0;
+  if (__builtin_add_overflow(
+          *inventory_bytes,
+          static_cast<std::uint64_t>(sizeof(ReportedProgram) +
+                                     kRetainedReportAllocations * kReportAllocationMetadataBytes),
+          &payment_bytes))
+    return std::unexpected("the plan report inventory payment overflows");
+  if ((*lowered)->host_bytes() > std::numeric_limits<std::uint64_t>::max() - payment_bytes)
+    return std::unexpected("the retained program and report host bytes overflow");
+  if (!report_owner) report_owner = backend.owner;
+  auto report_funder = report_owner ? nullptr : backend.construction_funder;
+  if (!report_owner && (!report_funder || !report_funder->charge || !report_funder->release))
+    return std::unexpected("the plan report inventory needs a paid construction funder");
+  if (report_owner ? !report_owner->Charge(payment_bytes) : !report_funder->charge(payment_bytes))
+    return std::unexpected("the plan report inventory could not be funded");
+  // Declared before inventory: failure destroys retained bytes before release.
+  // Native lowering holds its own loan; each category is transferred once.
+  ReportPayment payment(std::move(report_owner), std::move(report_funder), payment_bytes);
+  auto inventory =
+      planner::PlanReportInventory::Capture(*plan, *backend.registry, *inventory_bytes);
+  if (!inventory) return std::unexpected(inventory.error());
+  kernels::PlanCoverage coverage{
+      .primitive_fallbacks = plan->decomposed.size(),
+      .missing_numerical_qualifications = plan->missing_numerical.size(),
+      .unqualified_numerical_candidates = static_cast<std::uint64_t>(
+          std::ranges::count(plan->applied, true, &planner::Applied::numerical_candidate))};
+  for (const auto& key : plan->decomposed) {
+    for (std::size_t i = 0; i < backend.registry->size(); ++i) {
+      const auto& impl = backend.registry->at(i);
+      if (impl.capability && impl.capability->rung != execution::Rung::kPrimitive &&
+          ir::OpKeyName(impl.capability->op) == key) {
+        ++coverage.available_fast_fallbacks;
+        break;
+      }
+    }
+  }
+  if (token && token->shape.rows() <= policy.max_decode_rows) {
+    const planner::SelectionView view(*backend.registry, backend.device, policy, false, false);
+    for (const auto& selected : plan->steps) {
+      const auto& impl = backend.registry->at(selected.implementation);
+      if (!impl.capability || impl.capability->expansion == execution::Expansion::kNone) continue;
+      for (const auto node : selected.nodes)
+        view.Inspect(plan->graph, plan->graph.node(node), [&](const execution::CapabilityQuery& q) {
+          coverage.decode_expansion_rules += execution::Expands(*impl.capability, q);
+        });
+    }
+  }
+  // Allocate the wrapper before moving payment/inventory. A failed allocation
+  // leaves both locals alive so destruction still precedes payment release.
+  auto* wrapper = new (std::nothrow)
+      ReportedProgram(std::move(*lowered), std::move(*inventory), coverage, std::move(payment));
+  if (!wrapper) return std::unexpected("allocating the paid plan report wrapper failed");
+  return std::unique_ptr<kernels::StepProgram>(wrapper);
 }
 
 }  // namespace llmp::engine

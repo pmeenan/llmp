@@ -523,8 +523,10 @@ TEST_F(DraftCompanionsTest, WholeDiscardAndCleanPromptRefusalRetryOriginalK) {
     return shape.stage == 0 && shape.phase == pl::Phase::kPrefill;
   };
   runner_->DropPlans();
+  const auto queued = source_->queued();
   auto refused = Prompt(owners, 2);
   ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_GT(source_->queued(), queued);  // The replay-safe PRE really completed.
   EXPECT_TRUE(refused.outcomes[0].refusal->clean);
   EXPECT_EQ(slots().progress(0, 1)->completed(), before);
   EXPECT_EQ(slots().positions(0), 10U);
@@ -964,6 +966,25 @@ TEST_F(DraftCompanionsTest, LeadingCarryMutationBeforeRejectedTargetQuarantines)
   source_->options().fail_run = llmp::kernels::StepError::kRejected;
   auto refused = Prompt(owners, 2);
   ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_FALSE(refused.outcomes[0].refusal->clean);
+  EXPECT_FALSE(slots().usable(0));
+  EXPECT_EQ(slots().positions(0), 7U);
+}
+
+TEST_F(DraftCompanionsTest, TargetMutationBeforePostActivationRefusalIsNeverClean) {
+  Prefill(0, 7);
+  const auto queued = source_->queued();
+  const std::array owners{0U};
+  runner_->DropPlans();
+  source_->options().on_build = [&](const pl::StepShape& shape, bool measuring) {
+    if (!measuring)
+      source_->options().extra_activation_bytes =
+          shape.stage == 1 ? node_.activations().capacity_bytes : 0;
+  };
+  auto refused = Prompt(owners, 2);
+  ASSERT_TRUE(refused.outcomes[0].refusal);
+  EXPECT_GT(source_->queued(), queued);  // Target/tap mutation preceded the POST refusal.
+  EXPECT_NE(refused.outcomes[0].refusal->what.find("activations"), std::string::npos);
   EXPECT_FALSE(refused.outcomes[0].refusal->clean);
   EXPECT_FALSE(slots().usable(0));
   EXPECT_EQ(slots().positions(0), 7U);

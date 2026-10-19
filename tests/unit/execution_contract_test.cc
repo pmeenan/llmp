@@ -54,7 +54,7 @@ pl::StepShape Shape() {
 
 ex::Implementation Implementation(std::string name = "fake.score", std::string variant = "v1") {
   return {.name = std::move(name),
-          .operation = ex::Operation::kLightningIndexer,
+          .operation = llmp::ir::Primitive(llmp::ir::Op::kIndexScore),
           .source = "fake",
           .revision = "test source",
           .build = "test build",

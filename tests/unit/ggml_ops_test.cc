@@ -1229,20 +1229,19 @@ TEST_F(GgmlOpsPlanMatchTest, DecodeStepStartRecordsAsTheSample) {
 // The registry declares every new implementation, binds it by identity and
 // runs it over its nodes (D-053); a stale or foreign declaration binds none.
 TEST_F(GgmlOpsTest, TheRegistryDeclaresBindsAndRunsEveryNewImplementation) {
-  using llmp::execution::Operation;
   const std::vector<llmp::execution::Implementation> declared =
       llmp::kernels::ggml::Implementations();
   const auto registry = llmp::execution::Registry::Create(declared).value();
-  const std::array<std::pair<const char*, Operation>, 9> expected = {{
-      {"ggml.get_rows", Operation::kGetRows},
-      {"ggml.set_rows", Operation::kSetRows},
-      {"ggml.rope.neox", Operation::kRope},
-      {"ggml.rope_set_rows.fused", Operation::kRopeSetRows},
-      {"ggml.soft_max", Operation::kSoftMax},
-      {"ggml.cont", Operation::kCont},
-      {"ggml.swiglu", Operation::kSwiGlu},
-      {"ggml.mul_mat_add.mmvf_fused", Operation::kMulMatAdd},
-      {"ggml.mul_mat_glu.mmvf_fused", Operation::kMulMatGlu},
+  const std::array<std::pair<const char*, llmp::ir::OpKey>, 9> expected = {{
+      {"ggml.get_rows", llmp::ir::Primitive(llmp::ir::Op::kGetRows)},
+      {"ggml.set_rows", llmp::ir::Primitive(llmp::ir::Op::kCacheStore)},
+      {"ggml.rope.neox", llmp::ir::Primitive(llmp::ir::Op::kRope)},
+      {"ggml.rope_set_rows.fused", llmp::ir::Fused(llmp::ir::FusedKind::kRopeStore)},
+      {"ggml.soft_max", llmp::ir::Primitive(llmp::ir::Op::kSoftMax)},
+      {"ggml.cont", llmp::ir::Primitive(llmp::ir::Op::kCont)},
+      {"ggml.swiglu", llmp::ir::Primitive(llmp::ir::Op::kGlu)},
+      {"ggml.mul_mat_add.mmvf_fused", llmp::ir::Fused(llmp::ir::FusedKind::kMatMulAdd)},
+      {"ggml.mul_mat_glu.mmvf_fused", llmp::ir::Fused(llmp::ir::FusedKind::kMatMulGlu)},
   }};
   for (const auto& [name, operation] : expected) {
     const std::size_t index = registry.Find(name).value_or(registry.size());
@@ -1399,7 +1398,7 @@ TEST_F(GgmlOpsTest, GemmaGeluUnaryAndRegistryUseTheTanhPrimitive) {
   const auto ix = registry.Find("ggml.geglu");
   ASSERT_TRUE(ix);
   const std::array<llmp::execution::Choice, 1> choices{
-      {{.operation = llmp::execution::Operation::kGeGlu, .implementation = "ggml.geglu"}}};
+      {{.operation = llmp::ir::Primitive(llmp::ir::Op::kGlu), .implementation = "ggml.geglu"}}};
   const auto plan = llmp::execution::Plan::Build(registry, choices).value();
   const auto bound = llmp::execution::Resolve(registry, plan).value();
   auto kernel = kg::Kernel::Bind(bound.at(0)).value();
@@ -1486,7 +1485,7 @@ TEST_F(GgmlOpsTest, GemmaFloatingGeGluFusionMatchesItsPrimitiveFallbackAndRefuse
       ExpectClose(got, reference, 3e-6, "fused versus primitive GeGLU");
       const auto registry = llmp::execution::Registry::Create(kg::Implementations()).value();
       const std::array<llmp::execution::Choice, 1> choices{
-          {{.operation = llmp::execution::Operation::kMulMatGeGlu,
+          {{.operation = llmp::ir::Fused(llmp::ir::FusedKind::kMatMulGlu),
             .implementation = "ggml.mul_mat_geglu.mmvf_fused"}}};
       const auto plan = llmp::execution::Plan::Build(registry, choices).value();
       const auto bound = llmp::execution::Resolve(registry, plan).value();
@@ -1625,7 +1624,7 @@ TEST_F(GgmlOpsTest, GemmaAdversarialRefusalsSubmitNoGpuWorkOrOutputWrites) {
   EXPECT_FALSE(launch->faulted());
   const auto registry = llmp::execution::Registry::Create(kg::Implementations()).value();
   const std::array<llmp::execution::Choice, 1> wrong{
-      {{.operation = llmp::execution::Operation::kSwiGlu, .implementation = "ggml.geglu"}}};
+      {{.operation = llmp::ir::Primitive(llmp::ir::Op::kAdd), .implementation = "ggml.geglu"}}};
   EXPECT_FALSE(llmp::execution::Plan::Build(registry, wrong));
 }
 

@@ -993,6 +993,9 @@ void PagedCase(int malformed) {
                                          {.selected = life->selected});
   ASSERT_TRUE(backend) << backend.error();
   life->backend = std::move(*backend);
+  ASSERT_TRUE(life->backend->FundConstruction(
+      [paid = life->payment](std::uint64_t n) { return paid->Charge(n); },
+      [paid = life->payment](std::uint64_t n) { paid->Release(n); }));
   auto weights = std::make_unique<en::PagedWeights>();
   const auto opened = weights->Open(path);
   ASSERT_TRUE(opened) << llmp::test_support::Failed(opened).value_or("");
@@ -1309,6 +1312,9 @@ TEST(DecodeSelectedRowsGpu, RetainedExl3ModelsOwnStateAcrossSwitchAndScratchRema
         kg::GgmlBackend::Create(0, life->node.execution(), life->node.stream(0), nullptr, {});
     ASSERT_TRUE(backend) << backend.error();
     life->backends[model] = std::move(*backend);
+    ASSERT_TRUE(life->backends[model]->FundConstruction(
+        [paid = life->payment](std::uint64_t n) { return paid->Charge(n); },
+        [paid = life->payment](std::uint64_t n) { paid->Release(n); }));
     const auto persistent = life->backends[model]->persistent_bytes();
     ASSERT_EQ(persistent, 21'015'040U);
     auto weights = std::make_unique<en::PagedWeights>();

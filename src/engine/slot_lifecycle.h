@@ -153,6 +153,12 @@ class SlotLifecycle {
   // weights, the workspace, the runner's own memory), and the weights
   // CheckPlaces checks. Builds the closures.
   Status Bind(std::vector<catalog::ExtentId> shared, std::vector<const PagedWeights*> weights);
+  // Stable-address workspace growth, before any new state/model work. New
+  // cataloged extents become shared only after atomic request admission.
+  // Capacity refusal preserves the old closures; unknown replacement faults
+  // the cohort. No existing shared extent or cached address is removed.
+  Status TryExtendShared(std::span<const catalog::ExtentId> additional,
+                         bool* over_budget = nullptr);
   // Every region released (problems appended). Once, after teardown.
   void Release(providers::VmmProvider& memory, std::vector<std::string>& problems);
 
@@ -461,6 +467,9 @@ class SlotLifecycle {
   SlotLifecycleOptions options_;
   int owner_;
   std::uint32_t stream_;
+  // Every candidate closure, including the per-slot fences, dies before
+  // this replacement payment is refunded.
+  std::shared_ptr<const void> shared_payment_;
   RequestCohort cohort_;
   std::vector<Slot> slots_;
   std::vector<catalog::ExtentId> shared_;

@@ -94,7 +94,20 @@ std::array<std::uint64_t, format::kMaxDims> NaturalStrides(const format::TensorF
 }
 
 bool IsContiguous(const TensorDesc& tensor) {
-  return UnitBytes(tensor.format) != 0 && tensor.nb == NaturalStrides(tensor.format);
+  const auto unit = UnitBytes(tensor.format);
+  const auto per = UnitElements(tensor.format);
+  if (!unit || !per || tensor.ne(0) == 0 || tensor.ne(0) % per) return false;
+  // A single unit never steps along axis zero. Other singleton axes likewise
+  // have no observable stride: reshaping them cannot change any addressed byte.
+  if (tensor.ne(0) != per && tensor.nb[0] != unit) return false;
+  std::uint64_t next = 0;
+  if (__builtin_mul_overflow(unit, tensor.ne(0) / per, &next)) return false;
+  for (std::size_t axis = 1; axis < format::kMaxDims; ++axis) {
+    if (tensor.ne(axis) == 0 || (tensor.ne(axis) != 1 && tensor.nb[axis] != next) ||
+        __builtin_mul_overflow(next, tensor.ne(axis), &next))
+      return false;
+  }
+  return true;
 }
 
 bool SameViewSource(const TensorDesc& was, const TensorDesc& now) {

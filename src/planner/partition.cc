@@ -42,6 +42,8 @@ using ir::Op;
 using ir::TensorId;
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
+// Existing exact planner work contract, shared by work derivation and search.
+inline constexpr std::uint64_t kMaxPartitionWork = std::uint64_t{1} << 24U;
 
 std::unexpected<std::string> Refused(std::string detail) {
   return std::unexpected(std::move(detail));
@@ -70,7 +72,7 @@ void Add(Traffic& a, const Traffic& b) {
 // A validated topology by slot (its devices' order).
 class Net {
  public:
-  explicit Net(const Topology& t) : n_(t.devices.size()), links_(n_ * n_) {
+  explicit Net(const Topology& t) : n_(t.devices.size()), links_(n_ * n_), topology_(t) {
     for (const Device& d : t.devices) {
       ids_.push_back(d.id);
       memory_.push_back(d.memory);
@@ -91,6 +93,10 @@ class Net {
   }
   std::uint32_t Id(std::size_t slot) const { return ids_[slot]; }
   std::uint64_t Memory(std::size_t slot) const { return memory_[slot]; }
+  bool Execution() const { return topology_.cost_model == CostModel::kExecution; }
+  const std::optional<DevicePerformance>& Performance(std::size_t slot) const {
+    return topology_.devices[slot].performance;
+  }
   const std::optional<Link>& LinkOf(std::size_t a, std::size_t b) const {
     return links_[(a * n_) + b];
   }
@@ -108,6 +114,7 @@ class Net {
   std::vector<std::uint32_t> ids_;
   std::vector<std::uint64_t> memory_;
   std::vector<std::optional<Link>> links_;
+  const Topology& topology_;
 };
 
 // A ring of `steps` steps over `group` in its order, each member sending
@@ -180,7 +187,11 @@ std::expected<std::uint64_t, std::string> FormatBytes(const format::TensorFormat
   const auto parts = format::PartsOf(f);
   if (!parts) return Refused("a weight format without a size");
   std::uint64_t n = 0;
-  for (const format::PartExtent& p : parts->parts()) n += p.bytes;
+  for (const format::PartExtent& p : parts->parts()) {
+    if (p.bytes > std::numeric_limits<std::uint64_t>::max() - n)
+      return Refused("weight byte count overflows");
+    n += p.bytes;
+  }
   return n;
 }
 
@@ -196,6 +207,22 @@ struct WeightUse {
   std::uint64_t bytes = 0;
 };
 
+// Work in an actual local primitive graph: bytes include source reads and
+// output writes. Structural aliases do no work. Product units are FLOPs;
+// other operations use typed output-element rates, including their parameters.
+struct WorkTerm {
+  ir::OpKey op{};
+  std::array<std::byte, ir::kMaxParamBytes> params{};
+  format::Encoding encoding = format::Encoding::kF32;
+  ir::Accumulate accumulate = ir::Accumulate::kDefault;
+  double units = 0;
+  double bytes = 0;
+};
+using RankWork = std::vector<std::vector<WorkTerm>>;
+struct ComponentWork {
+  std::array<RankWork, 2> phase{};
+};
+
 // What the partitioner needs of an instance.
 struct Info {
   const Instance* in = nullptr;
@@ -209,12 +236,14 @@ struct Info {
   // head it works on the step's output rows, not its rows.
   bool narrowed = false;
   std::uint64_t side_bytes = 0;  // a side source's output bytes per row
+  std::map<std::pair<std::uint32_t, std::uint8_t>, ComponentWork> work{};
 };
 
 // With `state`, its state's bytes for the workload too.
 std::expected<Info, std::string> InfoOf(const StageModel& m, const Instance& in, const Workload& w,
                                         std::uint16_t state_first, bool state) {
   Info info{.in = &in, .state_first = state_first};
+  if (in.def->splits.size() > kWhole) return Refused("too many split options for a placement");
   const auto shapes = in.def->shapes(in);
   if (!shapes) return Refused(std::format("{}: {}", in.def->kind, shapes.error()));
   info.shapes.assign(in.def->roles.size(), format::Shape{.ne = {1, 1, 1, 1}, .rank = 0});
@@ -304,7 +333,7 @@ struct Held {
 
 // What an instance places on the group's rank-`rank` device: its weights
 // and its state bytes (for `slots` slots).
-void Hold(const Info& info, const SplitOption* o, std::uint32_t g, std::uint32_t rank,
+bool Hold(const Info& info, const SplitOption* o, std::uint32_t g, std::uint32_t rank,
           std::uint32_t slots, std::vector<Held>& held, std::uint64_t& state) {
   for (const WeightUse& w : info.weights) {
     std::optional<std::uint8_t> dim;
@@ -318,21 +347,25 @@ void Hold(const Info& info, const SplitOption* o, std::uint32_t g, std::uint32_t
       continue;
     }
     const auto bytes = FormatBytes(Local(w.format, *dim, g));
-    held.push_back(
-        {.name = w.name, .dim = *dim, .parts = g, .part = rank, .bytes = bytes.value_or(0)});
+    if (!bytes) return false;
+    held.push_back({.name = w.name, .dim = *dim, .parts = g, .part = rank, .bytes = *bytes});
   }
   for (std::size_t t = 0; t < info.state.size(); ++t) {
     bool split = false;
     if (o != nullptr) {
       for (const components::StateSplit& ss : o->state) split = split || ss.tensor == t;
     }
-    state += (split ? info.state[t] / g : info.state[t]) * slots;
+    const auto bytes = split ? info.state[t] / g : info.state[t];
+    if (slots != 0 && bytes > (std::numeric_limits<std::uint64_t>::max() - state) / slots)
+      return false;
+    state += bytes * slots;
   }
+  return true;
 }
 
 // A device's bytes: each tensor once (whole, or its distinct parts), and
 // its state.
-std::uint64_t Total(std::span<const Held> held, std::uint64_t state) {
+std::optional<std::uint64_t> Total(std::span<const Held> held, std::uint64_t state) {
   std::map<std::string,
            std::pair<std::uint64_t, std::map<std::tuple<std::uint8_t, std::uint32_t, std::uint32_t>,
                                              std::uint64_t>>>
@@ -348,9 +381,13 @@ std::uint64_t Total(std::span<const Held> held, std::uint64_t state) {
   std::uint64_t n = state;
   for (const auto& [name, v] : by) {
     if (v.first != 0) {
+      if (v.first > std::numeric_limits<std::uint64_t>::max() - n) return std::nullopt;
       n += v.first;
     } else {
-      for (const auto& [key, bytes] : v.second) n += bytes;
+      for (const auto& [key, bytes] : v.second) {
+        if (bytes > std::numeric_limits<std::uint64_t>::max() - n) return std::nullopt;
+        n += bytes;
+      }
     }
   }
   return n;
@@ -363,6 +400,13 @@ std::uint64_t StreamBytes(const StageModel& m, std::uint32_t rows) {
   const std::uint64_t streams =
       all.empty() ? 1 : std::max<std::uint32_t>(1, all.front()->stage.streams);
   return width * streams * rows * 4;
+}
+
+// A pipeline boundary after the final row-mixing layer carries narrowed rows.
+std::uint64_t BoundaryBytes(const StageModel& model, std::uint32_t first_layer, std::uint32_t rows,
+                            std::uint32_t outputs) {
+  const auto narrow = components::NarrowPoint(model.instances);
+  return StreamBytes(model, narrow && first_layer > narrow->first ? outputs : rows);
 }
 
 // The modelled traffic of an option's collective over `group`.
@@ -378,10 +422,44 @@ Traffic OptionTraffic(const Net& net, const Info& info, const SplitOption& o,
   return Collective(net, o.collective, group, o.bytes_per_step(step));
 }
 
-double OptionCost(const Net& net, const Workload& w, const Info& info, const SplitOption& o,
-                  std::span<const std::size_t> group) {
-  return Weighted(w, OptionTraffic(net, info, o, group, w.prefill_rows, 1),
-                  OptionTraffic(net, info, o, group, w.decode_rows, w.decode_rows));
+double ExecutionSeconds(const Net& net, const Info& info, std::uint8_t choice,
+                        std::span<const std::size_t> group, std::size_t phase) {
+  if (!net.Execution()) return 0;
+  const auto at = info.work.find({static_cast<std::uint32_t>(group.size()), choice});
+  if (at == info.work.end()) return kInf;
+  double bottleneck = 0;
+  for (std::size_t rank = 0; rank < group.size(); ++rank) {
+    const auto& performance = net.Performance(group[rank]);
+    if (!performance) return kInf;
+    double seconds = 0;
+    for (const auto& term : at->second.phase[phase][rank]) {
+      const auto rate = std::ranges::find_if(performance->rates, [&](const auto& r) {
+        return r.op == term.op && r.params == term.params && r.encoding == term.encoding &&
+               r.accumulate == term.accumulate;
+      });
+      if (rate == performance->rates.end()) return kInf;
+      seconds +=
+          std::max(term.bytes / performance->memory_bytes_per_s, term.units / rate->units_per_s);
+    }
+    bottleneck = std::max(bottleneck, seconds);
+  }
+  return bottleneck;
+}
+
+double ComponentCost(const Net& net, const Workload& w, const Info& info, std::uint8_t choice,
+                     std::span<const std::size_t> group) {
+  double cost = 0;
+  if (choice != kWhole) {
+    const auto& o = info.in->def->splits[choice];
+    cost = Weighted(w, OptionTraffic(net, info, o, group, w.prefill_rows, 1),
+                    OptionTraffic(net, info, o, group, w.decode_rows, w.decode_rows));
+  }
+  // Avoid 0 * infinity for an unused phase, without excusing missing facts in
+  // phases that the workload actually asks to price.
+  if (w.decode_share < 1)
+    cost += (1 - w.decode_share) * ExecutionSeconds(net, info, choice, group, 0);
+  if (w.decode_share > 0) cost += w.decode_share * ExecutionSeconds(net, info, choice, group, 1);
+  return cost;
 }
 
 // A layer component's choice on a group: its first fitting option of least
@@ -394,7 +472,7 @@ std::uint8_t LayerChoice(const Net& net, const Workload& w, const Info& info,
   for (std::size_t i = 0; i < info.in->def->splits.size(); ++i) {
     const SplitOption& o = info.in->def->splits[i];
     if (!Fits(info, o, g)) continue;
-    const double c = OptionCost(net, w, info, o, group);
+    const double c = ComponentCost(net, w, info, static_cast<std::uint8_t>(i), group);
     if (c < cost) {
       cost = c;
       best = static_cast<std::uint8_t>(i);
@@ -478,6 +556,14 @@ std::expected<Infos, std::string> InfosOf(const StageModel& m, const Workload& w
     if (out.final_norm) out.all[*out.final_norm].narrowed = true;
     if (out.output) out.all[*out.output].narrowed = true;
   }
+  std::map<std::string, format::TensorFormat> formats;
+  for (const auto& info : out.all) {
+    for (const auto& weight : info.weights) {
+      const auto [at, fresh] = formats.emplace(weight.name, weight.format);
+      if (!fresh && at->second != weight.format)
+        return Refused("one weight identity has conflicting formats");
+    }
+  }
   return out;
 }
 
@@ -493,43 +579,6 @@ std::vector<std::size_t> Extras(const Infos& infos, bool first, bool last) {
   }
   if (last && infos.final_norm) out.push_back(*infos.final_norm);
   if (last && infos.output) out.push_back(*infos.output);
-  return out;
-}
-
-// A choice for each of the extras and its cost. Memory is checked together
-// with the layers' holdings, so aliases across either inventory count once.
-struct ExtrasChoice {
-  std::vector<std::uint8_t> choice{};
-  double cost = 0.0;
-};
-// Every combination of whole and fitting options, whole first.
-std::vector<ExtrasChoice> ExtrasChoices(const Net& net, const Workload& w, const Infos& infos,
-                                        std::span<const std::size_t> extras,
-                                        std::span<const std::size_t> group) {
-  const auto g = static_cast<std::uint32_t>(group.size());
-  std::vector<std::vector<std::uint8_t>> options;
-  for (const std::size_t e : extras) {
-    auto& o = options.emplace_back(1, kWhole);
-    const Info& info = infos.all[e];
-    for (std::size_t i = 0; i < info.in->def->splits.size(); ++i) {
-      if (Fits(info, info.in->def->splits[i], g)) o.push_back(static_cast<std::uint8_t>(i));
-    }
-  }
-  std::vector<ExtrasChoice> out;
-  std::vector<std::size_t> at(extras.size(), 0);
-  while (true) {
-    ExtrasChoice c;
-    for (std::size_t k = 0; k < extras.size(); ++k) c.choice.push_back(options[k][at[k]]);
-    for (std::size_t k = 0; k < extras.size(); ++k) {
-      if (const SplitOption* o = OptionOf(infos.all[extras[k]], c.choice[k]); o != nullptr) {
-        c.cost += OptionCost(net, w, infos.all[extras[k]], *o, group);
-      }
-    }
-    out.push_back(std::move(c));
-    std::size_t k = 0;
-    while (k < extras.size() && ++at[k] == options[k].size()) at[k++] = 0;
-    if (k == extras.size()) break;
-  }
   return out;
 }
 
@@ -554,6 +603,331 @@ ComponentPlacement PlacementOf(const Info& info, std::uint8_t choice, const Net&
   return p;
 }
 
+// Derive work from actual primitive graphs. Source-backed models use BuildStep,
+// including real narrowing/head gathers. Framework dependencies such as masks
+// are charged with every consuming component: a conservative no-reuse bound,
+// rather than assuming physical fusion or cross-component sharing.
+std::expected<std::vector<WorkTerm>, std::string> WorkOf(const ir::Graph& graph,
+                                                         std::uint16_t component) {
+  std::vector<bool> framework(graph.nodes().size(), false);
+  const auto visit = [&](auto&& self, TensorId id) -> void {
+    if (!id.valid()) return;
+    const auto producer = graph.producer(id);
+    const auto& node = graph.node(producer);
+    if (node.component != components::kFrameworkComponent || framework[producer.v]) return;
+    framework[producer.v] = true;
+    for (auto src : node.sources()) self(self, src);
+  };
+  for (const auto& node : graph.nodes()) {
+    if (node.component == component)
+      for (auto src : node.sources()) visit(visit, src);
+  }
+  std::vector<WorkTerm> out;
+  for (std::size_t ni = 0; ni < graph.nodes().size(); ++ni) {
+    const auto& node = graph.nodes()[ni];
+    if (node.component != component && !framework[ni]) continue;
+    const Op op = node.key.op;
+    if (op == Op::kInput || op == Op::kWeight || op == Op::kState || op == Op::kView ||
+        op == Op::kReshape || op == Op::kPermute || op == Op::kAllReduce || op == Op::kAllGather ||
+        op == Op::kAllToAll || op == Op::kSend || op == Op::kRecv)
+      continue;
+    if (node.nout == 0) return Refused("execution work for an operation without output");
+    WorkTerm term{.op = node.key,
+                  .params = node.params,
+                  .encoding = graph.tensor(node.out[0]).format.encoding};
+    const bool product = op == Op::kMatMul || op == Op::kMatMulId;
+    if (product) {
+      term.encoding = graph.tensor(node.src[0]).format.encoding;
+      term.accumulate = node.Params<ir::ProductParams>().accumulate;
+    } else if (op == Op::kAttention) {
+      term.encoding = graph.tensor(node.src[1]).format.encoding;
+      term.accumulate = node.Params<ir::AttnParams>().accumulate;
+    }
+    for (auto id : node.outputs()) {
+      const auto& tensor = graph.tensor(id);
+      term.units += static_cast<double>(ir::Elements(tensor.shape()));
+      auto bytes = FormatBytes(tensor.format);
+      if (!bytes) return std::unexpected(bytes.error());
+      term.bytes += static_cast<double>(*bytes);
+    }
+    for (std::size_t si = 0; si < node.nsrc; ++si) {
+      const auto id = node.src[si];
+      if (!id.valid() || (op == Op::kCacheStore && si == 0)) continue;
+      const auto& tensor = graph.tensor(id);
+      auto bytes = FormatBytes(tensor.format);
+      if (!bytes) return std::unexpected(bytes.error());
+      double reads = static_cast<double>(*bytes);
+      if (op == Op::kGetRows && si == 0) {
+        // Only selected rows are read; repeated ids may reuse them, but reuse
+        // is not assumed. Batch products, in contrast, reuse a matrix once.
+        auto row = tensor.format;
+        row.shape.ne[1] = row.shape.ne[2] = row.shape.ne[3] = 1;
+        auto row_bytes = FormatBytes(row);
+        if (!row_bytes) return std::unexpected(row_bytes.error());
+        reads = (term.units / static_cast<double>(tensor.ne(0))) * static_cast<double>(*row_bytes);
+      }
+      if (op == Op::kMatMulId && si == 0) {
+        const auto experts = tensor.ne(2);
+        const auto& ids = graph.tensor(node.src[2]);
+        // Worst possible distinct local experts, with no balance assumption.
+        // EP executes every routed slot, including foreign slots mapped to its
+        // first expert. The local graph retains the full routed output shape.
+        reads *= static_cast<double>(std::min(experts, ir::Elements(ids.shape()))) /
+                 static_cast<double>(experts);
+      }
+      term.bytes += reads;
+    }
+    if (op == Op::kCacheStore) {
+      // The result aliases the cache: only the submitted values are written.
+      auto written = graph.tensor(node.src[0]).format;
+      written.shape = graph.tensor(node.src[1]).format.shape;
+      auto bytes = FormatBytes(written);
+      if (!bytes) return std::unexpected(bytes.error());
+      term.bytes = static_cast<double>(*bytes);
+      for (std::size_t si = 1; si < node.nsrc; ++si) {
+        if (!node.src[si].valid()) continue;
+        auto read = FormatBytes(graph.tensor(node.src[si]).format);
+        if (!read) return std::unexpected(read.error());
+        term.bytes += static_cast<double>(*read);
+      }
+      term.units = static_cast<double>(ir::Elements(graph.tensor(node.src[1]).shape()));
+    }
+    if (product) term.units *= 2 * static_cast<double>(graph.tensor(node.src[0]).ne(0));
+    if (op == Op::kAttention) {
+      const auto& q = graph.tensor(node.src[0]);
+      const auto& k = graph.tensor(node.src[1]);
+      const auto& v = graph.tensor(node.src[2]);
+      term.units = 2 * static_cast<double>(q.ne(0) + v.ne(0)) * static_cast<double>(k.ne(1)) *
+                   static_cast<double>(q.ne(1)) * static_cast<double>(q.ne(2)) *
+                   static_cast<double>(q.ne(3));
+    }
+    if (!std::isfinite(term.bytes) || !std::isfinite(term.units))
+      return Refused("execution work overflow");
+    out.push_back(term);
+  }
+  return out;
+}
+
+std::expected<void, std::string> PrepareWork(const StageModel& model, Infos& infos,
+                                             const Topology& topology, const Workload& workload) {
+  if (topology.cost_model != CostModel::kExecution) return {};
+  if (workload.prefill_rows == 0 || workload.decode_rows == 0 || workload.context == 0 ||
+      workload.slots == 0)
+    return Refused("execution work needs positive rows, context and retained slots");
+  const auto max_rows = std::max(workload.prefill_rows, workload.decode_rows);
+  if (max_rows > workload.context) return Refused("execution rows past the described context");
+  if (workload.context > std::numeric_limits<std::uint32_t>::max() - 255)
+    return Refused("execution context overflows aligned read cells");
+  std::vector<model::StateLayoutDerived> layouts;
+  std::vector<const model::StateLayoutDerived*> layout_ptrs;
+  if (model.source) {
+    for (std::size_t stage = 0; stage < model.source->stages.size(); ++stage) {
+      if (model.source->stages[stage].artifact != model.source->stages[model.stage].artifact)
+        return Refused("execution work needs the other stage's artifact bindings");
+      auto layout = components::StageLayout(*model.source, stage, workload.context, max_rows);
+      if (!layout) return std::unexpected(layout.error());
+      layouts.push_back(std::move(*layout));
+    }
+    for (const auto& layout : layouts) layout_ptrs.push_back(&layout);
+  }
+  std::uint64_t graph_work = 0;
+  std::array<std::optional<ir::Graph>, 2> source;
+  for (std::size_t phase = 0; phase < 2; ++phase) {
+    if ((phase == 0 && workload.decode_share == 1) || (phase == 1 && workload.decode_share == 0))
+      continue;
+    const auto rows = phase == 0 ? workload.prefill_rows : workload.decode_rows;
+    const auto outputs = phase == 0 ? 1U : rows;
+    const StepShape shape{.stage = model.stage,
+                          .phase = phase == 0 ? Phase::kPrefill : Phase::kDecode,
+                          .segments = {{.rows = rows,
+                                        .past = workload.context - rows,
+                                        .read_cells = ((workload.context + 255) / 256) * 256,
+                                        .outputs = outputs}}};
+    if (model.source) {
+      auto step = components::BuildStep(
+          *model.source, model.stage, shape,
+          {.tensors = model.tensors, .state = layout_ptrs[model.stage], .stages = layout_ptrs});
+      if (!step) return Refused(std::format("execution work: {}", step.error()));
+      source[phase] = std::move(step->graph);
+    }
+    for (auto& info : infos.all) {
+      std::optional<ir::Graph> fragment;
+      if (!model.source) {
+        std::vector<format::TensorFormat> formats(info.in->def->roles.size());
+        for (const auto& weight : info.weights) formats[weight.role] = weight.format;
+        const std::array contract{std::pair{info.in->layer, info.contract}};
+        auto layout = model::Layout(contract, workload.context, max_rows);
+        if (!layout) return std::unexpected(layout.error());
+        std::vector<std::uint64_t> cells(info.contract.tensors.size());
+        for (const auto& item : layout->items) cells[item.tensor] = item.cells;
+        auto built = components::BuildComponent(*info.in, shape, formats, cells);
+        if (!built)
+          return Refused(
+              std::format("execution fragment {}: {}", info.in->def->kind, built.error()));
+        fragment = std::move(built->step.graph);
+      }
+      const auto& graph = model.source ? *source[phase] : *fragment;
+      for (std::uint32_t ways = 1; ways <= topology.devices.size(); ++ways) {
+        std::vector<std::uint8_t> choices{kWhole};
+        for (std::size_t oi = 0; oi < info.in->def->splits.size(); ++oi)
+          if (Fits(info, info.in->def->splits[oi], ways))
+            choices.push_back(static_cast<std::uint8_t>(oi));
+        for (auto choice : choices) {
+          // Synthetic rank ids carry no device-rate claim. Partition determines
+          // the actual shapes/replicas/EP auxiliary operations, once per option.
+          Assignment assignment{.stage = model.stage};
+          std::vector<std::uint32_t> group;
+          for (std::uint32_t rank = 0; rank < ways; ++rank) {
+            assignment.topology.devices.push_back({.id = rank});
+            group.push_back(rank);
+            for (std::uint32_t other = 0; other < rank; ++other)
+              assignment.topology.links.push_back({.a = other, .b = rank, .bytes_per_s = 1});
+          }
+          assignment.stages.push_back(group);
+          for (const auto& placed : infos.all) {
+            auto p = PlacementOf(placed, placed.in->index == info.in->index ? choice : kWhole,
+                                 Net(assignment.topology), SortedSlots((1U << ways) - 1));
+            if (!model.source) p.state_first = 0;
+            assignment.per_layer.push_back({std::move(p)});
+          }
+          std::map<std::string, ir::WeightRef> first;
+          for (const auto& placed : infos.all) {
+            for (const auto& weight : placed.weights) {
+              ir::WeightRef ref{.stage = model.stage,
+                                .component = placed.in->index,
+                                .role = weight.role,
+                                .layer = placed.in->layer};
+              const auto [at, fresh] = first.emplace(weight.name, ref);
+              if (!fresh)
+                assignment.aliases.push_back(
+                    {.component = placed.in->index, .leaf = at->second, .role = weight.role});
+            }
+          }
+          const auto upper = static_cast<std::uint64_t>(graph.nodes().size()) * ways;
+          if (upper > kMaxPartitionWork - graph_work)
+            return Refused("execution graph work is past the exact planner's work bound");
+          graph_work += upper;
+          auto partition = Partition(graph, assignment);
+          if (!partition)
+            return Refused(
+                std::format("execution partition {}: {}", info.in->def->kind, partition.error()));
+          auto& work = info.work[{ways, choice}].phase[phase];
+          work.resize(ways);
+          for (const auto& device : partition->devices) {
+            auto terms = WorkOf(device.graph, info.in->index);
+            if (!terms) return std::unexpected(terms.error());
+            work[device.device] = std::move(*terms);
+          }
+        }
+      }
+    }
+  }
+  // All candidate work must be priceable; missing rates must not make an
+  // unknown candidate silently lose against a known one.
+  for (const auto& device : topology.devices) {
+    for (const auto& info : infos.all)
+      for (const auto& [key, work] : info.work)
+        for (const auto& ranks : work.phase)
+          for (const auto& terms : ranks)
+            for (const auto& term : terms) {
+              const auto& rates = device.performance->rates;
+              if (!std::ranges::any_of(rates, [&](const auto& rate) {
+                    return rate.op == term.op && rate.params == term.params &&
+                           rate.encoding == term.encoding && rate.accumulate == term.accumulate;
+                  }))
+                return Refused(std::format("device {} lacks described rate for {} ({})", device.id,
+                                           ir::OpKeyName(term.op),
+                                           static_cast<int>(term.encoding)));
+            }
+  }
+  return {};
+}
+
+// One interval's cheapest jointly feasible choices. Layer choices cannot be
+// finalized before capacity is checked: a cheaper whole replica can be too big
+// where a split fits. The same choice search serves configured pipelines and
+// the global DP. A cost lower bound prunes only provably no-better suffixes.
+struct RangeChoice {
+  std::vector<std::size_t> ids{};
+  std::vector<std::uint8_t> choices{};
+  std::vector<std::uint64_t> memory{};
+  double cost = kInf;
+};
+std::expected<RangeChoice, std::string> ChooseRange(const Net& net, const Workload& workload,
+                                                    const Infos& infos,
+                                                    std::span<const std::size_t> group,
+                                                    std::uint32_t begin, std::uint32_t end,
+                                                    std::uint64_t& work) {
+  RangeChoice best;
+  std::set<std::size_t> layers;
+  for (auto layer = begin; layer < end; ++layer) {
+    best.ids.insert(best.ids.end(), infos.layers[layer].begin(), infos.layers[layer].end());
+    layers.insert(infos.layers[layer].begin(), infos.layers[layer].end());
+  }
+  const auto extras = Extras(infos, begin == 0, end == infos.layers.size());
+  best.ids.insert(best.ids.end(), extras.begin(), extras.end());
+  const auto ways = static_cast<std::uint32_t>(group.size());
+  std::vector<std::vector<std::pair<std::uint8_t, double>>> options;
+  for (auto id : best.ids) {
+    const auto& info = infos.all[id];
+    auto& choices = options.emplace_back();
+    if (!net.Execution() && layers.contains(id)) {
+      const auto choice = LayerChoice(net, workload, info, group);
+      choices.emplace_back(choice, ComponentCost(net, workload, info, choice, group));
+    } else {
+      choices.emplace_back(kWhole, ComponentCost(net, workload, info, kWhole, group));
+      for (std::size_t option = 0; option < info.in->def->splits.size(); ++option) {
+        if (!Fits(info, info.in->def->splits[option], ways)) continue;
+        const auto choice = static_cast<std::uint8_t>(option);
+        choices.emplace_back(choice, ComponentCost(net, workload, info, choice, group));
+      }
+    }
+    std::ranges::stable_sort(choices, {}, &std::pair<std::uint8_t, double>::second);
+  }
+  std::vector<double> suffix(best.ids.size() + 1, 0);
+  for (std::size_t i = best.ids.size(); i > 0; --i)
+    suffix[i - 1] = suffix[i] + options[i - 1].front().second;
+  std::vector<std::uint8_t> chosen(best.ids.size());
+  bool overflow = false;
+  const auto visit = [&](auto&& self, std::size_t at, double cost) -> void {
+    if (++work > kMaxPartitionWork) {
+      overflow = true;
+      return;
+    }
+    if (!std::isfinite(cost + suffix[at]) || cost + suffix[at] >= best.cost) return;
+    if (at < best.ids.size()) {
+      for (const auto& [choice, seconds] : options[at]) {
+        chosen[at] = choice;
+        self(self, at + 1, cost + seconds);
+        if (overflow) return;
+      }
+      return;
+    }
+    std::vector<std::uint64_t> memory;
+    for (std::uint32_t rank = 0; rank < ways; ++rank) {
+      std::vector<Held> held;
+      std::uint64_t state = 0;
+      for (std::size_t k = 0; k < best.ids.size(); ++k) {
+        if (++work > kMaxPartitionWork) {
+          overflow = true;
+          return;
+        }
+        const auto& info = infos.all[best.ids[k]];
+        if (!Hold(info, OptionOf(info, chosen[k]), ways, rank, workload.slots, held, state)) return;
+      }
+      const auto bytes = Total(held, state);
+      if (!bytes || *bytes > net.Memory(group[rank])) return;
+      memory.push_back(*bytes);
+    }
+    best.cost = cost;
+    best.choices = chosen;
+    best.memory = std::move(memory);
+  };
+  visit(visit, 0, 0);
+  if (overflow) return Refused("the topology is past the exact search's work bound");
+  return best;
+}
+
 }  // namespace
 
 // ------------------------------------------------------------------ public
@@ -566,6 +940,37 @@ std::expected<void, std::string> Validate(const Topology& t) {
   std::set<std::uint32_t> ids;
   for (const Device& d : t.devices) {
     if (!ids.insert(d.id).second) return Refused(std::format("device {} twice", d.id));
+  }
+  if (t.cost_model != CostModel::kTraffic && t.cost_model != CostModel::kExecution)
+    return Refused("unknown partition cost model");
+  for (const auto& d : t.devices) {
+    if (!d.performance) {
+      if (t.cost_model == CostModel::kExecution)
+        return Refused(std::format("device {} has no described execution performance", d.id));
+      continue;
+    }
+    const auto& p = *d.performance;
+    if (!(p.memory_bytes_per_s > 0) || !std::isfinite(p.memory_bytes_per_s) || p.provenance.empty())
+      return Refused(
+          std::format("device {} needs finite positive memory bandwidth and provenance", d.id));
+    for (std::size_t i = 0; i < p.rates.size(); ++i) {
+      const auto& r = p.rates[i];
+      if (!(r.units_per_s > 0) || !std::isfinite(r.units_per_s))
+        return Refused(std::format("device {} needs finite positive operation rates", d.id));
+      if (ir::OpName(r.op.op) == "unknown" ||
+          (r.op.op == Op::kFused
+               ? (r.op.fused == ir::FusedKind::kNone || ir::FusedKindName(r.op.fused) == "unknown")
+               : r.op.fused != ir::FusedKind::kNone) ||
+          static_cast<std::size_t>(r.encoding) >= format::Encodings().size() ||
+          (r.accumulate != ir::Accumulate::kDefault && r.accumulate != ir::Accumulate::kF32))
+        return Refused(std::format("device {} has an invalid typed operation rate", d.id));
+      for (std::size_t j = 0; j < i; ++j) {
+        const auto& before = p.rates[j];
+        if (before.op == r.op && before.params == r.params && before.encoding == r.encoding &&
+            before.accumulate == r.accumulate)
+          return Refused(std::format("device {} repeats an operation rate", d.id));
+      }
+    }
   }
   std::set<std::pair<std::uint32_t, std::uint32_t>> pairs;
   for (const Link& l : t.links) {
@@ -603,7 +1008,12 @@ std::expected<StageModel, std::string> ModelOf(const spec::ModelSpec& spec, std:
                                                std::span<const components::BoundTensor> tensors) {
   auto instances = components::InstancesOf(spec, stage);
   if (!instances) return std::unexpected(instances.error());
-  StageModel m{.stage = stage, .instances = std::move(*instances), .roles = {}};
+  StageModel m{.stage = stage,
+               .instances = std::move(*instances),
+               .roles = {},
+               .side_layers = {},
+               .source = &spec,
+               .tensors = tensors};
   for (const auto& side : spec.stages[stage].side) m.side_layers.push_back(side.layers);
   for (const Instance* in : All(m.instances)) {
     if (m.roles.size() <= in->index) m.roles.resize(in->index + 1);
@@ -647,7 +1057,11 @@ Traffic ModelTraffic(const StageModel& model, const Assignment& a, std::uint32_t
   for (std::size_t s = 1; s < a.stages.size(); ++s) {
     const auto from = slots(a.stages[s - 1]);
     const auto to = slots(a.stages[s]);
-    Add(t, Relay(net, from, to, StreamBytes(model, rows)));
+    const auto begin = std::ranges::find(a.stage_of_layer, static_cast<std::uint32_t>(s));
+    if (begin == a.stage_of_layer.end()) return {.bytes = t.bytes, .seconds = kInf};
+    Add(t, Relay(net, from, to,
+                 BoundaryBytes(model, static_cast<std::uint32_t>(begin - a.stage_of_layer.begin()),
+                               rows, outputs)));
   }
   // Side outputs are immutable: a group receives each one only if it has
   // a reader, and later groups can relay it from any previous recipient.
@@ -680,6 +1094,8 @@ std::expected<Assignment, std::string> AssignPipeline(const StageModel& model,
   const Net net(topology);
   auto infos = InfosOf(model, workload);
   if (!infos) return std::unexpected(infos.error());
+  if (auto prepared = PrepareWork(model, *infos, topology, workload); !prepared)
+    return std::unexpected(prepared.error());
   const auto layers = static_cast<std::uint32_t>(infos->layers.size());
   const std::size_t stages = pipeline.stages.size();
   if (stages == 0 || pipeline.first_layer.size() != stages || pipeline.first_layer[0] != 0) {
@@ -706,67 +1122,34 @@ std::expected<Assignment, std::string> AssignPipeline(const StageModel& model,
   Assignment a{.topology = topology, .stage = model.stage};
   a.stages = pipeline.stages;
   a.stage_of_layer.resize(layers);
-  std::vector<std::vector<Held>> held(net.size());
-  std::vector<std::uint64_t> state(net.size(), 0);
-  const auto place = [&](const Info& info, std::uint8_t choice,
-                         std::span<const std::size_t> group) {
-    const auto g = static_cast<std::uint32_t>(group.size());
-    for (std::uint32_t r = 0; r < g; ++r) {
-      Hold(info, OptionOf(info, choice), g, r, workload.slots, held[group[r]], state[group[r]]);
-    }
-    return PlacementOf(info, choice, net, group);
-  };
+  std::uint64_t work = 0;
   for (std::size_t s = 0; s < stages; ++s) {
-    const std::uint32_t end = s + 1 < stages ? pipeline.first_layer[s + 1] : layers;
-    for (std::uint32_t l = pipeline.first_layer[s]; l < end; ++l) {
-      a.stage_of_layer[l] = static_cast<std::uint32_t>(s);
-      auto& out = a.per_layer.emplace_back();
-      for (const std::size_t i : infos->layers[l]) {
-        out.push_back(
-            place(infos->all[i], LayerChoice(net, workload, infos->all[i], groups[s]), groups[s]));
-      }
+    const auto begin = pipeline.first_layer[s];
+    const auto end = s + 1 < stages ? pipeline.first_layer[s + 1] : layers;
+    auto range = ChooseRange(net, workload, *infos, groups[s], begin, end, work);
+    if (!range) return std::unexpected(range.error());
+    if (!std::isfinite(range->cost)) return Refused("no component choices fit the devices' memory");
+    for (auto layer = begin; layer < end; ++layer) {
+      a.stage_of_layer[layer] = static_cast<std::uint32_t>(s);
+      a.per_layer.emplace_back();
     }
+    for (std::size_t k = 0; k < range->ids.size(); ++k) {
+      const auto id = range->ids[k];
+      const auto& info = infos->all[id];
+      auto placement = PlacementOf(info, range->choices[k], net, groups[s]);
+      if (infos->embedding == id) a.embedding = placement;
+      if (std::ranges::contains(infos->side, id)) a.side.push_back(placement);
+      if (infos->mixing == id) a.mixing = placement;
+      if (infos->final_norm == id) a.final_norm = placement;
+      if (infos->output == id) a.output = placement;
+      for (auto layer = begin; layer < end; ++layer)
+        if (std::ranges::contains(infos->layers[layer], id))
+          a.per_layer[layer].push_back(placement);
+    }
+    for (std::size_t rank = 0; rank < groups[s].size(); ++rank)
+      a.memory.emplace_back(net.Id(groups[s][rank]), range->memory[rank]);
   }
-  // The extras: the cheapest choices that fit what the layers left.
-  for (std::size_t s = 0; s < stages; ++s) {
-    const auto extras = Extras(*infos, s == 0, s + 1 == stages);
-    if (extras.empty()) continue;
-    const auto choices = ExtrasChoices(net, workload, *infos, extras, groups[s]);
-    // Each choice's bytes counted with what the devices already hold.
-    const ExtrasChoice* best = nullptr;
-    for (const ExtrasChoice& c : choices) {
-      bool fits = true;
-      const auto g = static_cast<std::uint32_t>(groups[s].size());
-      for (std::uint32_t r = 0; r < g && fits; ++r) {
-        std::vector<Held> h = held[groups[s][r]];
-        std::uint64_t st = state[groups[s][r]];
-        for (std::size_t k = 0; k < extras.size(); ++k) {
-          Hold(infos->all[extras[k]], OptionOf(infos->all[extras[k]], c.choice[k]), g, r,
-               workload.slots, h, st);
-        }
-        fits = Total(h, st) <= net.Memory(groups[s][r]);
-      }
-      if (fits && (best == nullptr || c.cost < best->cost)) best = &c;
-    }
-    if (best == nullptr) best = &choices.front();  // refused below, by memory
-    for (std::size_t k = 0; k < extras.size(); ++k) {
-      const Info& info = infos->all[extras[k]];
-      ComponentPlacement p = place(info, best->choice[k], groups[s]);
-      if (infos->embedding == extras[k]) a.embedding = std::move(p);
-      if (std::ranges::contains(infos->side, extras[k])) a.side.push_back(std::move(p));
-      if (infos->mixing == extras[k]) a.mixing = std::move(p);
-      if (infos->final_norm == extras[k]) a.final_norm = std::move(p);
-      if (infos->output == extras[k]) a.output = std::move(p);
-    }
-  }
-  for (const std::size_t slot : used) {
-    const std::uint64_t bytes = Total(held[slot], state[slot]);
-    if (bytes > net.Memory(slot)) {
-      return Refused(std::format("device {} needs {} bytes, past its {}", net.Id(slot), bytes,
-                                 net.Memory(slot)));
-    }
-    a.memory.emplace_back(net.Id(slot), bytes);
-  }
+  std::ranges::sort(a.memory, {}, [&](const auto& value) { return *net.Slot(value.first); });
   // A tensor first bound by one component and read by another: the later
   // one's alias of the first's leaf.
   std::map<std::string, ir::WeightRef> first;
@@ -789,6 +1172,22 @@ std::expected<Assignment, std::string> AssignPipeline(const StageModel& model,
     return Refused("a group or stage boundary without the links it needs");
   }
   a.modelled_seconds_per_step = Weighted(workload, a.prefill, a.decode);
+  if (net.Execution()) {
+    if (workload.decode_share < 1) a.prefill_execution_seconds = 0;
+    if (workload.decode_share > 0) a.decode_execution_seconds = 0;
+    for (const auto& info : infos->all) {
+      const auto* placement = a.Find(info.in->index);
+      std::vector<std::size_t> group;
+      for (const auto id : placement->devices) group.push_back(*net.Slot(id));
+      if (workload.decode_share < 1)
+        *a.prefill_execution_seconds += ExecutionSeconds(net, info, placement->option, group, 0);
+      if (workload.decode_share > 0)
+        *a.decode_execution_seconds += ExecutionSeconds(net, info, placement->option, group, 1);
+    }
+    a.modelled_seconds_per_step +=
+        (1 - workload.decode_share) * a.prefill_execution_seconds.value_or(0) +
+        workload.decode_share * a.decode_execution_seconds.value_or(0);
+  }
   a.modelled_bytes_per_step =
       (workload.decode_share * static_cast<double>(a.decode.bytes)) +
       ((1.0 - workload.decode_share) * static_cast<double>(a.prefill.bytes));
@@ -834,7 +1233,9 @@ class Search {
       cls[i] = static_cast<int>(classes_.size());
       classes_.push_back({i});
       for (std::size_t j = i + 1; j < n; ++j) {
-        if (cls[j] >= 0 || net_.Memory(i) != net_.Memory(j)) continue;
+        if (cls[j] >= 0 || net_.Memory(i) != net_.Memory(j) ||
+            net_.Performance(i) != net_.Performance(j))
+          continue;
         bool twin = true;
         for (std::size_t k = 0; k < n && twin; ++k) {
           if (k == i || k == j) continue;
@@ -892,7 +1293,7 @@ class Search {
   // The search's work (a group's layers evaluated, a candidate group or a
   // stage end tried): bounded too, so a topology past it is refused
   // promptly rather than searched for hours.
-  static constexpr std::uint64_t kMaxWork = std::uint64_t{1} << 24U;
+  static constexpr std::uint64_t kMaxWork = kMaxPartitionWork;
   // The candidate groups (twelve devices without twins; any count of
   // devices in a few twin classes).
   static constexpr std::uint64_t kMaxGroups = std::uint64_t{1} << 12U;
@@ -936,43 +1337,31 @@ class Search {
 
   struct Group {
     std::vector<std::size_t> slots{};
-    std::vector<std::vector<std::uint8_t>> choices{};  // by layer, then component
-    std::vector<double> cost{};                        // per layer
-    std::map<std::pair<bool, bool>, std::vector<ExtrasChoice>> extras{};
+    std::map<std::pair<std::uint32_t, std::uint32_t>, RangeChoice> ranges{};
   };
-
-  const Group& GroupOf(std::uint32_t mask) {
+  Group& GroupOf(std::uint32_t mask) {
     if (const auto at = groups_.find(mask); at != groups_.end()) return at->second;
-    Group g{.slots = Ordered(mask)};
-    for (std::uint32_t l = 0; l < layers_; ++l) {
-      double cost = 0.0;
-      auto& choices = g.choices.emplace_back();
-      for (const std::size_t i : infos_.layers[l]) {
-        const std::uint8_t c = LayerChoice(net_, w_, infos_.all[i], g.slots);
-        choices.push_back(c);
-        if (const SplitOption* o = OptionOf(infos_.all[i], c); o != nullptr) {
-          cost += OptionCost(net_, w_, infos_.all[i], *o, g.slots);
-        }
-      }
-      g.cost.push_back(cost);
+    return groups_.emplace(mask, Group{.slots = Ordered(mask)}).first->second;
+  }
+  const RangeChoice* RangeOf(Group& group, std::uint32_t begin, std::uint32_t end) {
+    const auto key = std::pair{begin, end};
+    if (const auto at = group.ranges.find(key); at != group.ranges.end()) return &at->second;
+    auto choice = ChooseRange(net_, w_, infos_, group.slots, begin, end, work_);
+    if (!choice) {
+      overflow_ = true;
+      return nullptr;
     }
-    for (const bool first : {false, true}) {
-      for (const bool last : {false, true}) {
-        const auto extras = Extras(infos_, first, last);
-        g.extras[{first, last}] = extras.empty() ? std::vector<ExtrasChoice>{ExtrasChoice{}}
-                                                 : ExtrasChoices(net_, w_, infos_, extras, g.slots);
-      }
-    }
-    return groups_.emplace(mask, std::move(g)).first->second;
+    return &group.ranges.emplace(key, std::move(*choice)).first->second;
   }
 
-  double Boundary(std::uint32_t from, std::uint32_t to) {
-    const auto key = std::pair{from, to};
+  double Boundary(std::uint32_t from, std::uint32_t to, std::uint32_t first_layer) {
+    const auto key = std::tuple{from, to, first_layer};
     if (const auto at = boundaries_.find(key); at != boundaries_.end()) return at->second;
     const auto a = Ordered(from);
     const auto b = Ordered(to);
-    const double c = Weighted(w_, Relay(net_, a, b, StreamBytes(model_, w_.prefill_rows)),
-                              Relay(net_, a, b, StreamBytes(model_, w_.decode_rows)));
+    const double c = Weighted(
+        w_, Relay(net_, a, b, BoundaryBytes(model_, first_layer, w_.prefill_rows, 1)),
+        Relay(net_, a, b, BoundaryBytes(model_, first_layer, w_.decode_rows, w_.decode_rows)));
     boundaries_.emplace(key, c);
     return c;
   }
@@ -1017,28 +1406,14 @@ class Search {
       if (!Spend(1)) return {};
       const auto ways = static_cast<std::uint64_t>(std::popcount(mask));
       if (!groups_.contains(mask) && !Spend(std::uint64_t{layers_} * ways)) return {};
-      const Group& g = GroupOf(mask);
-      const double boundary = i == 0 ? 0.0 : Boundary(prev, mask);
+      Group& g = GroupOf(mask);
+      const double boundary = i == 0 ? 0.0 : Boundary(prev, mask, i);
       if (std::isinf(boundary)) continue;
-      std::vector<std::vector<Held>> held(g.slots.size());
-      std::vector<std::uint64_t> state(g.slots.size(), 0);
       double cost = boundary;
       auto next_side = side;
       if (i == 0) std::ranges::fill(next_side, mask);
       for (std::uint32_t j = i + 1; j <= layers_; ++j) {
         if (!Spend(1)) return {};
-        // Keep each rank's accumulated inventory, including aliases across
-        // layers. Extra choices below are evaluated against this same set.
-        const auto parts = static_cast<std::uint32_t>(g.slots.size());
-        for (std::uint32_t rank = 0; rank < parts; ++rank) {
-          if (!Spend(1 + infos_.layers[j - 1].size())) return {};
-          for (std::size_t k = 0; k < infos_.layers[j - 1].size(); ++k) {
-            const Info& info = infos_.all[infos_.layers[j - 1][k]];
-            Hold(info, OptionOf(info, g.choices[j - 1][k]), parts, rank, w_.slots, held[rank],
-                 state[rank]);
-          }
-        }
-        cost += g.cost[j - 1];
         if (!Spend(side.size())) return {};
         for (std::size_t k = 0; k < side.size(); ++k) {
           if ((next_side[k] & mask) != 0 || !Reads(k, j - 1, j)) continue;
@@ -1049,26 +1424,10 @@ class Search {
           next_side[k] |= mask;
         }
         const bool last = j == layers_;
-        const auto extra_ids = Extras(infos_, i == 0, last);
-        const ExtrasChoice* extras = nullptr;
-        for (const auto& choice : g.extras.at({i == 0, last})) {
-          bool fits = true;
-          for (std::uint32_t rank = 0; rank < parts && fits; ++rank) {
-            if (!Spend(1 + held[rank].size() + extra_ids.size())) return {};
-            auto h = held[rank];
-            auto st = state[rank];
-            for (std::size_t k = 0; k < extra_ids.size(); ++k) {
-              const Info& info = infos_.all[extra_ids[k]];
-              Hold(info, OptionOf(info, choice.choice[k]), parts, rank, w_.slots, h, st);
-            }
-            fits = Total(h, st) <= net_.Memory(g.slots[rank]);
-          }
-          if (fits && (extras == nullptr || choice.cost < extras->cost)) extras = &choice;
-        }
-        // A later whole-weight alias can cover earlier split holdings;
-        // neither layers nor extras have a monotone standalone byte sum.
-        if (extras == nullptr) continue;
-        Value v{.cost = cost + extras->cost,
+        const auto* range = RangeOf(g, i, j);
+        if (!range) return {};
+        if (!std::isfinite(range->cost)) continue;
+        Value v{.cost = cost + range->cost,
                 .devices = static_cast<std::uint32_t>(std::popcount(mask)),
                 .stages = 1,
                 .group = mask,
@@ -1097,7 +1456,7 @@ class Search {
   std::vector<std::vector<std::size_t>> classes_;
   std::vector<std::size_t> class_of_;  // by slot
   std::unordered_map<std::uint32_t, Group> groups_;
-  std::map<std::pair<std::uint32_t, std::uint32_t>, double> boundaries_;
+  std::map<std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>, double> boundaries_;
   std::unordered_map<StateKey, Value, StateHash> memo_;
   std::uint64_t work_ = 0;
   bool overflow_ = false;
@@ -1113,6 +1472,8 @@ std::expected<Assignment, std::string> Assign(const StageModel& model, const Top
   }
   auto infos = InfosOf(model, workload);
   if (!infos) return std::unexpected(infos.error());
+  if (auto prepared = PrepareWork(model, *infos, topology, workload); !prepared)
+    return std::unexpected(prepared.error());
   if (infos->layers.empty()) return Refused("a stage without layers");
   Search search(model, topology, workload, *infos);
   auto best = search.Run();
@@ -1299,9 +1660,9 @@ class Partitioner {
   std::expected<TensorId, std::string> LocalIds(TensorId ids, std::size_t slot, std::uint32_t rank,
                                                 std::uint32_t parts, std::uint32_t experts,
                                                 std::uint16_t component);
-  std::expected<TensorId, std::string> ExpertMask(TensorId scale, TensorId ids, std::size_t slot,
-                                                  std::uint32_t rank, std::uint32_t parts,
-                                                  std::uint32_t experts, std::uint16_t component);
+  std::expected<std::pair<TensorId, TensorId>, std::string> ExpertMask(
+      TensorId ids, std::size_t slot, std::uint32_t rank, std::uint32_t parts,
+      std::uint32_t experts, std::uint16_t component);
 
   const ir::Graph& g_;
   const Assignment& a_;
@@ -1940,47 +2301,27 @@ std::expected<TensorId, std::string> Partitioner::LocalIds(TensorId ids, std::si
   return local;
 }
 
-std::expected<TensorId, std::string> Partitioner::ExpertMask(TensorId scale, TensorId ids,
-                                                             std::size_t slot, std::uint32_t rank,
-                                                             std::uint32_t parts,
-                                                             std::uint32_t experts,
-                                                             std::uint16_t component) {
+std::expected<std::pair<TensorId, TensorId>, std::string> Partitioner::ExpertMask(
+    TensorId ids, std::size_t slot, std::uint32_t rank, std::uint32_t parts, std::uint32_t experts,
+    std::uint16_t component) {
+  auto original = FullOn(ids, slot);
+  if (!original) return std::unexpected(original.error());
   ir::Builder& b = b_[slot];
   b.SetComponent(component);
   b.SetJoined();
-  ConstantValues values{.local = {}, .ints = {}, .values = {}};
-  const std::uint32_t own = experts / parts;
-  for (std::uint32_t e = 0; e < experts; ++e) {
-    values.values.push_back(e / own == rank ? 1.0F : 0.0F);
-  }
-  const TensorId mask = b.Constant(ir::Dense(format::Encoding::kF32, ir::ShapeOf({experts})),
-                                   "expert_mask", std::as_bytes(std::span(values.values)));
-  values.local = mask;
+  ConstantValues values;
+  const auto own = experts / parts;
+  for (std::uint32_t e = 0; e < experts; ++e) values.ints.push_back(e / own == rank ? 1 : 0);
+  const auto table = b.Constant(ir::Dense(format::Encoding::kI32, ir::ShapeOf({experts})),
+                                "expert_ownership", std::as_bytes(std::span(values.ints)));
+  values.local = table;
   constants_[slot].push_back(std::move(values));
-  if (!scale.valid()) return mask;
-  auto s = FullOn(scale, slot);
-  if (!s) return s;
-  b.SetComponent(component);
-  b.SetJoined();
-  // A scale gathered per slot [1, U, T] (op.h kExpertReduce): the mask
-  // gathered by the slots' experts as the scale was, then their product.
-  const ir::TensorDesc& st = g_.tensor(scale);
-  const ir::TensorDesc* it = ids.valid() ? &g_.tensor(ids) : nullptr;
-  const bool gathered = it != nullptr && st.ne(0) == 1 && st.ne(1) == it->ne(0) &&
-                        st.ne(2) == it->ne(1) && st.ne(3) == 1;
-  TensorId factor = mask;
-  if (gathered) {
-    auto i = FullOn(ids, slot);
-    if (!i) return i;
-    b.SetComponent(component);
-    b.SetJoined();
-    const TensorId table = b.Repeat(b.Reshape(mask, ir::ShapeOf({1, experts, 1})),
-                                    ir::ShapeOf({1, experts, st.ne(2)}));
-    factor = b.GetRows(table, *i);
-  }
-  const TensorId out = b.Mul(*s, factor);
-  if (!b.ok()) return Refused(std::format("expert mask: {}", b.error()->detail));
-  return out;
+  const auto tokens = g_.tensor(ids).ne(1);
+  const auto rows =
+      b.Repeat(b.Reshape(table, ir::ShapeOf({1, experts, 1})), ir::ShapeOf({1, experts, tokens}));
+  const auto selected = b.GetRows(rows, *original);
+  if (!b.ok()) return Refused(std::format("expert ownership: {}", b.error()->detail));
+  return std::pair{table, selected};
 }
 
 std::expected<void, std::string> Partitioner::Emit(const ir::Node& node, const Place& place) {
@@ -2049,11 +2390,28 @@ std::expected<void, std::string> Partitioner::Emit(const ir::Node& node, const P
       sources[2] = *ids;
     }
     if (experts_mask) {
-      auto mask = ExpertMask(node.nsrc > 3 ? node.src[3] : TensorId{}, node.src[2], slot, rank, g,
-                             cur[0].experts, node.component);
+      auto mask = ExpertMask(node.src[2], slot, rank, g, cur[0].experts, node.component);
       if (!mask) return std::unexpected(mask.error());
-      sources[3] = *mask;
-      nsrc = std::max<std::size_t>(nsrc, 4);
+      auto& builder = b_[slot];
+      Context(builder, node);
+      const auto zero = [&](TensorId value) {
+        return builder.Fill(ir::ShapeOf({1}), 0, builder.tensor(value).format.encoding);
+      };
+      // Literal selection, before any reduction arithmetic. Selecting products
+      // alone would still allow 0 * Inf/NaN in a foreign routing weight/scale.
+      // Original expert ids remain authoritative for the reduction and scales.
+      sources[0] = builder.Select(mask->second, sources[0], zero(sources[0]));
+      const auto weights = builder.tensor(sources[1]);
+      const auto weight_mask = builder.Reshape(mask->second, weights.shape());
+      sources[1] = builder.Select(weight_mask, sources[1], zero(sources[1]));
+      if (node.nsrc > 3 && node.src[3].valid()) {
+        const auto scale = builder.tensor(sources[3]);
+        const auto& ids = g_.tensor(node.src[2]);
+        const bool gathered = scale.ne(0) == 1 && scale.ne(1) == ids.ne(0) &&
+                              scale.ne(2) == ids.ne(1) && scale.ne(3) == 1;
+        const auto one = builder.Fill(ir::ShapeOf({1}), 1, scale.format.encoding);
+        sources[3] = builder.Select(gathered ? mask->second : mask->first, sources[3], one);
+      }
     }
     ir::Builder& b = b_[slot];
     Context(b, node);

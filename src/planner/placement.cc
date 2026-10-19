@@ -72,10 +72,23 @@ std::expected<std::uint64_t, std::string> RootBytes(const ir::TensorDesc& tensor
 std::expected<Placement, std::string> PlaceActivations(
     const ir::Graph& graph, std::span<const Selected> steps, std::span<const Region> regions,
     std::span<const ir::TensorId> staged, std::uint64_t alignment, const RootBytesOf& written,
-    const RootWithin& within, std::span<const ir::TensorId> preserved) {
+    const RootWithin& within, std::span<const ir::TensorId> preserved,
+    const PhysicalStorage* physical) {
   if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
     return Error("the alignment is not a power of two");
   }
+  if (physical && (physical->materialized.size() != graph.tensor_count() ||
+                   physical->reads.size() != graph.nodes().size()))
+    return Error("physical storage inventory differs from the graph");
+  if (physical)
+    for (const auto& reads : physical->reads)
+      for (const auto t : reads)
+        if (!t.valid() || t.v >= graph.tensor_count() || !physical->materialized[graph.root(t).v])
+          return Error("a physical read names an absent materialization");
+  const auto sources = [&](ir::NodeId id) -> std::span<const ir::TensorId> {
+    return physical ? std::span<const ir::TensorId>(physical->reads[id.v])
+                    : graph.node(id).sources();
+  };
   struct Life {
     ir::TensorId tensor{};
     std::int64_t first = 0;  // the step computing it; -1 for a staged input
@@ -89,6 +102,7 @@ std::expected<Placement, std::string> PlaceActivations(
   // A root inside another's place stands for it.
   std::vector<ir::TensorId> inside(graph.tensor_count(), ir::TensorId{});
   const auto track = [&](ir::TensorId t, std::int64_t first) -> std::expected<void, std::string> {
+    if (physical && !physical->materialized[t.v]) return {};
     if (index.at(t.v) != ~std::size_t{0}) {
       return {};
     }
@@ -161,7 +175,7 @@ std::expected<Placement, std::string> PlaceActivations(
   for (std::size_t s = 0; s < steps.size(); ++s) {
     const auto step = static_cast<std::int64_t>(s);
     for (const ir::NodeId id : steps[s].nodes) {
-      for (const ir::TensorId src : graph.node(id).sources()) {
+      for (const ir::TensorId src : sources(id)) {
         if (!src.valid()) {
           continue;
         }
@@ -170,16 +184,6 @@ std::expected<Placement, std::string> PlaceActivations(
         const ir::Node& made = graph.node(graph.producer(root_of[src.v]));
         if (made.key == ir::Primitive(ir::Op::kPrepare)) {
           read(made.src[0], step);
-        }
-        // Where an HC post with F16 rows fuses with the MoE combine before it,
-        // the combine's inputs remain live through the post.
-        if (graph.node(id).key == ir::Fused(ir::FusedKind::kHcNormPost) &&
-            made.key == ir::Fused(ir::FusedKind::kMoeCombine)) {
-          for (const ir::TensorId s_in : made.sources()) {
-            if (s_in.valid()) {
-              read(s_in, step);
-            }
-          }
         }
       }
     }
@@ -201,7 +205,7 @@ std::expected<Placement, std::string> PlaceActivations(
         for (const ir::TensorId o : n.outputs()) {
           widen(o);
         }
-        for (const ir::TensorId src : n.sources()) {
+        for (const ir::TensorId src : sources(id)) {
           if (src.valid()) {
             widen(src);
           }
@@ -238,7 +242,7 @@ std::expected<Placement, std::string> PlaceActivations(
   std::iota(order.begin(), order.end(), std::size_t{0});
   std::ranges::stable_sort(
       order, [&](std::size_t a, std::size_t b) { return lives[a].bytes > lives[b].bytes; });
-  Placement placement;
+  Placement placement{.alignment = alignment};
   struct PlacedSpan {
     std::uint64_t offset = 0;
     std::uint64_t end = 0;

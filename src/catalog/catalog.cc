@@ -461,6 +461,44 @@ std::expected<LeaseId, CatalogError> Catalog::AcquireLease(const Closure& closur
   return lease;
 }
 
+std::expected<void, CatalogError> Catalog::ReplaceLease(LeaseId lease, const Closure& closure) {
+  Lease* held = leases_.Find(lease);
+  if (held == nullptr) return std::unexpected(CatalogError::kUnknownId);
+  std::vector<ExtentId> next;
+  next.reserve(closure.extents.size());
+  for (const auto& [extent, generation] : closure.extents) {
+    const ExtentRecord* record = Extent(extent);
+    if (record == nullptr) return std::unexpected(CatalogError::kUnknownId);
+    if (record->view.state != ExtentState::kResident)
+      return std::unexpected(CatalogError::kNotResident);
+    if (record->view.content_generation != generation || record->view.discarded)
+      return std::unexpected(CatalogError::kStaleContent);
+    next.push_back(extent);
+  }
+  std::ranges::sort(next);
+  next.erase(std::ranges::unique(next).begin(), next.end());
+  // No failure or allocation follows the first mutation. Common entries keep
+  // their lease count, including when that count is already at its bound.
+  for (const auto extent : next) {
+    if (std::ranges::binary_search(held->extents, extent)) continue;
+    auto& record = *Extent(extent);
+    const auto before = BucketOf(record.view);
+    base::Check(record.view.leases < UINT32_MAX, "lease count overflow");
+    ++record.view.leases;
+    Recount(record, before);
+  }
+  for (const auto extent : held->extents) {
+    if (std::ranges::binary_search(next, extent)) continue;
+    auto& record = *Extent(extent);
+    const auto before = BucketOf(record.view);
+    base::Check(record.view.leases != 0, "replacing a held extent");
+    --record.view.leases;
+    Recount(record, before);
+  }
+  held->extents.swap(next);
+  return {};
+}
+
 std::expected<void, CatalogError> Catalog::ReleaseLease(LeaseId lease) {
   const Lease* found = leases_.Find(lease);
   if (found == nullptr) {

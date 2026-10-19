@@ -54,12 +54,6 @@ constexpr std::array kParams{
 enum : std::uint16_t { kTable, kFc, kNorm };
 constexpr std::array kRoles{WeightRole{.name = "table"}, WeightRole{.name = "fc"},
                             WeightRole{.name = "norm", .encodings = kF32Only}};
-constexpr std::array kBatch{
-    BatchClass{.op = ir::Op::kGetRows, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMatMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kRmsNorm, .batch = ir::Batch::kJoined},
-};
-constexpr std::array<std::string_view, 2> kPatterns{"rms_norm_mul", "vecq_inputs"};
 
 std::uint64_t Taps(const Instance& in) { return static_cast<std::uint64_t>(in.params.Int("taps")); }
 
@@ -147,8 +141,7 @@ const ComponentDef& EmbeddingInject() {
       .params = kParams,
       .roles = kRoles,
       .shapes = Shapes,
-      .batch_classes = kBatch,
-      .patterns = kPatterns,
+
       .emit = Emit,
       .reference = Reference,
       .inject = Inject,

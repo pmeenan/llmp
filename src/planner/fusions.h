@@ -25,6 +25,13 @@
 
 namespace llmp::planner::fusions {
 
+struct GroupedProduct {
+  ir::NodeId product{}, input_permute{}, output_permute{}, assembly{};
+  ir::TensorId leaf{}, weight{}, input{};
+};
+
+std::optional<GroupedProduct> GroupedProductOf(const ir::Graph& graph, ir::NodeId product);
+
 // Round 0 (over the step's primitive graph).
 std::optional<Match> GroupedVecQMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> Dsv4LidMaskMatch(const MatchContext& c, ir::NodeId anchor);

@@ -33,14 +33,24 @@ class CorpusProgram final : public kernels::StepProgram {
  public:
   CorpusProgram(std::unique_ptr<kernels::StepProgram> inner, CorpusPlanRecord& record)
       : inner_(std::move(inner)), record_(record) {}
+  void ConstructionPaid() override {
+    if (construction_transferred_) return;
+    construction_transferred_ = true;
+    inner_->ConstructionPaid();
+    kernels::StepProgram::ConstructionPaid();
+  }
   std::uint64_t scratch_bytes() const override { return inner_->scratch_bytes(); }
   std::uint64_t pool_bytes() const override { return inner_->pool_bytes(); }
+  kernels::PlanCoverage plan_coverage() const override { return inner_->plan_coverage(); }
   std::uint64_t host_bytes() const override { return inner_->host_bytes() + sizeof(*this); }
   std::uint64_t launches() const override { return inner_->launches(); }
   std::span<const kernels::InputSlot> inputs() const override { return inner_->inputs(); }
   std::span<const kernels::OutputSlot> outputs() const override { return inner_->outputs(); }
   std::span<const kernels::TensorUse> tensors() const override { return inner_->tensors(); }
   const llmp::execution::BoundPlan* bound() const override { return inner_->bound(); }
+  void StreamPlanReport(const kernels::PlanReportSink& sink) const override {
+    inner_->StreamPlanReport(sink);
+  }
   bool capturable() const override { return inner_->capturable(); }
   std::expected<void, kernels::StepFailure> Position(std::span<const std::uint32_t> past) override {
     return inner_->Position(past);
@@ -76,6 +86,7 @@ class CorpusProgram final : public kernels::StepProgram {
   }
 
  private:
+  bool construction_transferred_ = false;
   std::unique_ptr<kernels::StepProgram> inner_;
   CorpusPlanRecord& record_;
 };

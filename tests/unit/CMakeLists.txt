@@ -857,8 +857,14 @@ if(LLMP_CUDA)
   target_include_directories(qwen38_fast_test SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(qwen38_fast_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory
-                                               llmp_device_runtime)
+                                               llmp_device_runtime llmp_engine_core llmp_platform)
   llmp_gpu_gtest(qwen38_fast_test)
+
+  # Real native construction funders, failure teardown and retained-plan transfer.
+  add_executable(ggml_step_program_gpu_test ggml_step_program_gpu_test.cc)
+  target_link_libraries(ggml_step_program_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
+                                                        llmp_platform)
+  llmp_gpu_gtest(ggml_step_program_gpu_test DISCRETE ALL)
 
   # Qwen3.8's routed experts over the CUTLASS layout (kernels/ggml/
   # moe_layout.h): the conversion, routing, CUTLASS's grouped GEMM, the
@@ -1208,7 +1214,7 @@ add_executable(owner_products_test owner_products_test.cc)
 target_link_libraries(owner_products_test PRIVATE llmp_planner llmp_ir)
 llmp_gtest(owner_products_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-add_executable(planner_test planner_test.cc)
+add_executable(planner_test planner_test.cc planner_report_test.cc)
 target_link_libraries(planner_test PRIVATE llmp_planner llmp_ir)
 llmp_gtest(planner_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 

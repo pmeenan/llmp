@@ -37,6 +37,7 @@
 #include <utility>
 #include <vector>
 
+#include "expected_error.h"
 #include "platform/crash_policy.h"
 #include "platform/files.h"
 #include "platform/lock_file.h"
@@ -130,6 +131,21 @@ TEST(RuntimeArguments, Parse) {
     EXPECT_FALSE(llmp::runtime::ParseArguments(bad).has_value());
   }
   EXPECT_EQ(defaults->command.command, llmp::runtime::Command::kService);
+}
+
+TEST(RuntimeArguments, DebugPlansIsExplicitForServiceAndServingCommands) {
+  const auto plain = llmp::runtime::ParseArguments({});
+  ASSERT_TRUE(plain);
+  EXPECT_FALSE(plain->command.serving.debug_plans);
+  for (const std::vector<std::string_view>& args :
+       {std::vector<std::string_view>{"--debug-plans"},
+        {"--debug-plans", "chat", "--turn", "m", "secret prompt"},
+        {"chat", "--debug-plans", "--turn", "m", "secret prompt"},
+        {"swap-table", "--debug-plans"}}) {
+    const auto parsed = llmp::runtime::ParseArguments(args);
+    ASSERT_TRUE(parsed) << llmp::test_support::Failed(parsed).value_or("");
+    EXPECT_TRUE(parsed->command.serving.debug_plans);
+  }
 }
 
 // The serving commands (D-096): everything after the command's name is its.
@@ -1327,6 +1343,41 @@ TEST(ServiceDiagnostics, EnvironmentPreservesLocalCommandOptionsAndRefusesPartia
 
 // The retired per-architecture selector (LLMP_DIAGNOSTIC_COMPONENT_QWEN) no
 // longer narrows or funds anything: the funded pair alone decides.
+TEST(ServiceDiagnostics, TargetNumericalCandidatePolicyNeedsPaymentAndCanonicalText) {
+  const int status = CrashChild([] {
+    // NOLINTBEGIN(concurrency-mt-unsafe): isolated child before serving threads
+    constexpr const char* policy = "max_decode_rows 16\ncandidate_numerics q8_vector_reduction\n";
+    if (::setenv("LLMP_DIAGNOSTIC_TARGET_POLICY", policy, 1) != 0 ||
+        ::unsetenv("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES") != 0 ||
+        ::unsetenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES") != 0 ||
+        ::unsetenv("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY") != 0)
+      std::_Exit(2);
+    llmp::runtime::ServingOptions options;
+    options.plain = true;
+    if (llmp::runtime::ApplyServiceDiagnosticEnvironment(options) ||
+        options.diagnostic_target_policy || !options.plain)
+      std::_Exit(3);
+    if (::setenv("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES", "auto", 1) != 0 ||
+        ::setenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES", "8388608", 1) != 0)
+      std::_Exit(4);
+    if (!llmp::runtime::ApplyServiceDiagnosticEnvironment(options) ||
+        options.diagnostic_target_policy != policy || !options.diagnostic_auto_startup ||
+        !options.plain)
+      std::_Exit(5);
+    if (::setenv("LLMP_DIAGNOSTIC_TARGET_POLICY", "max_decode_rows 16\ncandidate_numerics all\n",
+                 1) != 0)
+      std::_Exit(6);
+    llmp::runtime::ServingOptions refused;
+    if (llmp::runtime::ApplyServiceDiagnosticEnvironment(refused) ||
+        refused.diagnostic_target_policy || refused.diagnostic_auto_startup)
+      std::_Exit(7);
+    // NOLINTEND(concurrency-mt-unsafe)
+    std::_Exit(0);
+  });
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
 TEST(ServiceDiagnostics, TheRetiredComponentSelectorIsIgnored) {
   const int status = CrashChild([] {
     // NOLINTBEGIN(concurrency-mt-unsafe): isolated child before serving threads

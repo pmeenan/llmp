@@ -40,7 +40,9 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "base/json.h"
 #include "components/step.h"
+#include "engine/execution_contract.h"
 #include "execution/registry.h"
 #include "ggml.h"
 #include "ir/builder.h"
@@ -56,6 +58,7 @@
 #include "kernels/ggml/tensors.h"
 #include "planner/pattern.h"
 #include "planner/plan.h"
+#include "platform/host_probe.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
 #include "providers/device_runtime.h"
@@ -1706,6 +1709,8 @@ struct Program {
 };
 
 struct Environment {
+  std::shared_ptr<llmp::catalog::Catalog> metadata_catalog;
+  std::shared_ptr<llmp::engine::ExecutionMetadataAllowance> metadata_paid;
   std::unique_ptr<DeviceExecution> execution;
   StreamId stream{};
   bool stream_ready = false, retained = false;
@@ -1728,7 +1733,7 @@ struct Environment {
     ADD_FAILURE() << what;
     return false;
   }
-  std::uint64_t declaration_bytes = 0, pool_base = 0;
+  std::uint64_t pool_base = 0;
   kg::SelectedWorkspace selected_state{};
   bool Finish() {
     if (retained) return false;
@@ -1840,19 +1845,28 @@ struct Environment {
                                 {.lower = {.index_scratch_limit = 1U << 20}, .lanes = lanes});
     ASSERT_TRUE(made_backend) << (made_backend ? "" : made_backend.error());
     backend = std::move(*made_backend);
+    const auto available = llmp::platform::AvailableMemoryBytes();
+    ASSERT_TRUE(available);
+    ASSERT_GE(*available, kHost + kDevice + (6ULL << 30U));
+    metadata_catalog = std::make_shared<llmp::catalog::Catalog>();
+    const auto metadata_domain = metadata_catalog->AddDomain("HC native host inventory");
+    auto paid = llmp::engine::ExecutionMetadataAllowance::Admit(
+        *metadata_catalog, metadata_domain, 16U << 20U, *available, 6ULL << 30U);
+    ASSERT_TRUE(paid) << (paid ? "" : paid.error());
+    metadata_paid = *paid;
+    const auto charge = [paid = metadata_paid, keep = metadata_catalog](std::uint64_t bytes) {
+      (void)keep;
+      return paid->Charge(bytes);
+    };
+    const auto refund = [paid = metadata_paid, keep = metadata_catalog](std::uint64_t bytes) {
+      (void)keep;
+      EXPECT_LE(bytes, paid->used());
+      paid->Release(bytes);
+    };
+    ASSERT_TRUE(backend->FundConstruction(charge, refund));
     if (declared) {
-      const auto charge = [this](std::uint64_t bytes) {
-        constexpr std::uint64_t ceiling = 16U << 20;
-        if (bytes > ceiling - declaration_bytes) return false;
-        declaration_bytes += bytes;
-        return true;
-      };
-      const auto refund = [this](std::uint64_t bytes) {
-        EXPECT_LE(bytes, declaration_bytes);
-        declaration_bytes -= bytes;
-      };
-      // This allowance is inside the existing 64MiB whole host inventory;
-      // the fixed pinned payload plus 32MiB metadata still leave headroom.
+      // Both declaration and actual native demand use the same 16MiB category
+      // inside this fixture's pre-admitted 64MiB complete host envelope.
       ASSERT_TRUE(backend->Declare({}, cublas_bytes.value(), charge, refund));
       auto owner = backend->Backend().owner;
       ASSERT_NE(owner, nullptr);
@@ -1998,6 +2012,8 @@ struct Environment {
     const auto table = backend->Backend();
     const auto& native = table.owner ? table.owner->backend() : table;
     pl::Policy policy{.enabled = {"hc_prep", "owner_row_invariant"}, .disabled = {"rms_norm_mul"}};
+    // Synthetic operand/lane control; no production quality evidence is claimed.
+    policy.numerical_candidates = {pl::NumericalChange::kBf16HyperConnectionIntermediates};
     pl::Canonicalize(policy);
     std::vector<ir::TensorId> staged;
     for (const auto& input : p.step.inputs) staged.push_back(input.tensor);
@@ -2137,7 +2153,7 @@ struct Environment {
     std::size_t products = 0;
     for (std::size_t op = 0; op < p.program->bound()->size(); ++op) {
       const auto& implementation = p.program->bound()->at(op);
-      if (implementation.operation == llmp::execution::Operation::kMatMul) {
+      if (implementation.operation == llmp::ir::Primitive(llmp::ir::Op::kMatMul)) {
         ASSERT_EQ(implementation.name, kg::kGemmBf16Name);
         ++products;
       }
@@ -2264,6 +2280,61 @@ TEST_F(SelectedHcStepProgramTest, JoinedSelectedRowsMatchScalarProgramsAndReplay
   ASSERT_TRUE(e.Finish());
 }
 
+TEST_F(SelectedHcStepProgramTest, PhysicalReportCountFillMatchesConcreteLaunchesAndStorage) {
+  auto& e = *environment;
+  ASSERT_NO_FATAL_FAILURE(e.Open(true));
+  ASSERT_NO_FATAL_FAILURE(e.Build(0, std::array{1U, 3U}, e.features, e.host_outputs));
+  const auto& program = *e.programs[0]->program;
+  std::size_t count = 0;
+  program.StreamPlanReport([&](std::string_view part) { count += part.size(); });
+  ASSERT_GT(count, 0U);
+  std::string filled(count, '\0');
+  std::size_t at = 0;
+  program.StreamPlanReport([&](std::string_view part) {
+    ASSERT_LE(part.size(), filled.size() - at);
+    std::memcpy(filled.data() + at, part.data(), part.size());
+    at += part.size();
+  });
+  ASSERT_EQ(at, count);
+  std::uint64_t recipes = 0, roots = 0;
+  bool physical = false;
+  std::string_view records = filled;
+  while (!records.empty()) {
+    const auto end = records.find('\n');
+    ASSERT_NE(end, std::string_view::npos);
+    const auto record = records.substr(0, end);
+    auto parsed = llmp::base::json::Parse(record);
+    ASSERT_TRUE(parsed) << record;
+    const auto object = parsed->root();
+    const auto kind = object.find("kind")->string();
+    if (kind == "physical_plan") {
+      physical = true;
+      EXPECT_EQ(object.find("physical_activation_bytes")->number(),
+                std::to_string(program.scratch_bytes()));
+      EXPECT_EQ(object.find("logical_activation_bytes")->number(),
+                std::to_string(program.plan_coverage().logical_activation_bytes));
+      EXPECT_EQ(object.find("launches")->number(), std::to_string(program.launches()));
+    } else if (kind == "launch_recipe") {
+      ++recipes;
+      EXPECT_FALSE(object.find("implementation")->string().empty());
+      EXPECT_EQ(object.find("identity")->string().size(), 64U);
+    } else if (kind == "physical_root") {
+      ++roots;
+      EXPECT_EQ(object.find("shape")->size(), 4U);
+      EXPECT_EQ(object.find("strides")->size(), 4U);
+      EXPECT_FALSE(object.find("encoding")->string().empty());
+      EXPECT_GT(object.find("bytes")->int64().value_or(0), 0);
+    }
+    EXPECT_FALSE(object.find("address"));
+    records.remove_prefix(end + 1);
+  }
+  EXPECT_TRUE(physical);
+  EXPECT_GT(recipes, 0U);
+  EXPECT_LE(recipes, program.launches());
+  EXPECT_GT(roots, 0U);
+  ASSERT_TRUE(e.Finish());
+}
+
 TEST_F(SelectedHcStepProgramTest, DeclaredLaneResourcesBindAndCaptureChangedInputs) {
   auto& e = *environment;
   constexpr kn::LaneConfiguration lanes{.count = 4, .scratch_bytes_per_lane = 1U << 20};
@@ -2281,6 +2352,86 @@ TEST_F(SelectedHcStepProgramTest, DeclaredLaneResourcesBindAndCaptureChangedInpu
   ASSERT_NO_FATAL_FAILURE(
       e.Build(2, std::array{1U}, e.features + 3 * kRowBytes, e.host_outputs + 3 * kW));
   for (int variant = 0; variant < 3; ++variant) ASSERT_NO_FATAL_FAILURE(e.Execute(variant, rows));
+  ASSERT_TRUE(e.Finish());
+}
+
+TEST_F(SelectedHcStepProgramTest, LaneScratchUsesTheReservedTailWithoutDuplicatingSerialAllowance) {
+  auto& e = *environment;
+  constexpr kn::LaneConfiguration lanes{.count = 4, .scratch_bytes_per_lane = 1U << 20};
+  ASSERT_NO_FATAL_FAILURE(e.Open(true, lanes));
+  ir::Builder builder;
+  // Product groups stay on the serial stream because another concrete
+  // member can use cuBLAS. The token path supports VisibleTopK with typed
+  // owner counts and uses two scratch slices without a serial auxiliary.
+  builder.SetOwner(0);
+  const auto x = builder.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({4096, 1})));
+  const auto counts = builder.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({1})));
+  const auto out = builder.VisibleTopK(x, counts, 8);
+  builder.Output(out);
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+  co::StepGraph step{.graph = std::move(*graph),
+                     .inputs = {{.tensor = x, .kind = co::InputKind::kFeatures, .segment = 0},
+                                {.tensor = counts,
+                                 .kind = co::InputKind::kVisibleCells,
+                                 .segment = 0,
+                                 .cells = {.capacity = 4096, .block = 1, .positions = true},
+                                 .read = 4096,
+                                 .visible_capacity = 4096}},
+                     .weights = {},
+                     .state = {}};
+  const pl::StepShape shape{
+      .segments = {
+          {.rows = 1, .past = 4095, .read_cells = 4096, .outputs = 0, .want_head = false}}};
+  const auto visible = co::InputValues(step.inputs[1], shape, {});
+  ASSERT_TRUE(visible) << (visible ? "" : visible.error());
+  EXPECT_EQ(*visible, std::vector<std::int64_t>{4096});
+  const auto table = e.backend->Backend();
+  const auto& native = table.owner ? table.owner->backend() : table;
+  kn::Addresses addresses{.weight = {},
+                          .weight_rows = {},
+                          .state = {},
+                          .save = {},
+                          .activations = e.activations,
+                          .activation_bytes = kActivation,
+                          .activation_alignment = 256};
+  std::array<std::uint64_t, 2> ordinary{};
+  for (const bool lane : {false, true}) {
+    pl::LaneTags tags;
+    if (lane) tags.push_back({step.graph.producer(out), {.lane = 1, .region = 1}});
+    auto plan =
+        pl::Plan(step.graph.Clone(), *native.registry, native.device, {},
+                 {.staged = std::vector(step.graph.inputs().begin(), step.graph.inputs().end()),
+                  .lanes = std::move(tags),
+                  .on_stream = native.on_stream,
+                  .written = native.written,
+                  .within = native.within,
+                  .shape = &shape,
+                  .activation_alignment = 256});
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    ASSERT_EQ(plan->steps.size(), 1U);
+    EXPECT_EQ(plan->steps.front().lane, lane ? 1U : 0U);
+    auto program = e.backend->Lower({*plan, step, shape, addresses, 4096});
+    ASSERT_TRUE(program) << (program ? "" : program.error());
+    ordinary[lane ? 1 : 0] = (*program)->pool_bytes();
+    ASSERT_TRUE((*program)->Bind(*e.launch));
+  }
+  EXPECT_EQ(ordinary[0], 256U);  // Two slices * eight I32 IDs, aligned to 256.
+  EXPECT_EQ(ordinary[1], 0U);    // The same draw now uses only the reserved lane tail.
+  EXPECT_EQ(e.backend->lane_pool_reserve(), lanes.count * lanes.scratch_bytes_per_lane);
+  auto& context = static_cast<kg::GgmlStepLaunch&>(*e.launch).context();
+  EXPECT_EQ(context.scratch_size(0).value(), kPool - e.backend->lane_pool_reserve());
+  for (std::uint32_t lane = 1; lane <= lanes.count; ++lane)
+    EXPECT_EQ(context.scratch_size(lane).value(), lanes.scratch_bytes_per_lane);
+  auto independent =
+      kg::GgmlBackend::Create(0, *e.execution, e.stream, e.cublas.get(), {.lanes = lanes});
+  ASSERT_TRUE(independent);
+  const auto too_small =
+      (*independent)
+          ->Launch({.base = e.pool_base, .size = Bytes((*independent)->lane_pool_reserve() - 256)},
+                   e.selected_state);
+  ASSERT_FALSE(too_small);
+  EXPECT_NE(too_small.error().find("exceed"), std::string::npos) << too_small.error();
   ASSERT_TRUE(e.Finish());
 }
 
@@ -2341,7 +2492,7 @@ TEST_F(SelectedHcStepProgramTest, OwnedBackendChecksPreparationAndRecordedReadin
   EXPECT_FALSE(owner->Ready());
   EXPECT_FALSE(e.programs[0]->program->Run(*e.launch, *native));
   EXPECT_FALSE(e.launch->Launch(*native, *e.programs[0]->graph));
-  EXPECT_GT(e.declaration_bytes, 0U);
+  EXPECT_GT(e.metadata_paid->used(), 0U);
   ASSERT_TRUE(e.backend->LendCublas(e.cublas.get()));
   EXPECT_EQ(owner->Ready(), identity);
   auto replacement =
@@ -2376,7 +2527,7 @@ TEST_F(SelectedHcStepProgramTest, OwnedBackendChecksPreparationAndRecordedReadin
   EXPECT_FALSE(e.launch->Launch(*native, *e.programs[0]->graph));
   owner.reset();
   ASSERT_TRUE(e.Close());
-  EXPECT_EQ(e.declaration_bytes, 0U);
+  EXPECT_EQ(e.metadata_paid->used(), 0U);
 }
 
 }  // namespace hc_step

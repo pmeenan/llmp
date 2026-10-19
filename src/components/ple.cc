@@ -196,7 +196,6 @@ constexpr std::array kPleRoles{
     WeightRole{.name = "norm_conv", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "conv", .encodings = kNormEncodings},
 };
-constexpr std::array<std::string_view, 1> kPlePatterns{"prepared_products"};
 
 struct PleDims {
   std::uint64_t width, hc, conv, dil;
@@ -234,13 +233,6 @@ model::StateContract PleState(const Instance& in) {
                        .window_or_ratio = 1,
                        .rollback = model::Rollback::kCommit}}};
 }
-
-constexpr std::array kPleBatch{
-    BatchClass{.op = ir::Op::kMatMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kRmsNorm, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kConcat, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kCacheStore, .batch = ir::Batch::kPerOwner},
-};
 
 std::expected<FragmentOut, std::string> PleEmit(Fragment& f) {
   ir::Builder& b = f.b;
@@ -563,11 +555,6 @@ std::expected<void, std::string> MtpReference(RefIO& io) {
   return {};
 }
 
-constexpr std::array kMtpBatch{
-    BatchClass{.op = ir::Op::kGetRows, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMatMul, .batch = ir::Batch::kJoined},
-};
-
 }  // namespace
 
 const ComponentDef& SideNgram() {
@@ -579,7 +566,7 @@ const ComponentDef& SideNgram() {
       .params = kNgramParams,
       .roles = kNgramRoles,
       .shapes = NgramShapes,
-      .batch_classes = std::span(kMtpBatch).first(1),
+
       .emit = NgramEmit,
       .reference = NgramReference,
       .side_rows = NgramRows,
@@ -598,8 +585,7 @@ const ComponentDef& ResidualPle() {
       .shapes = PleShapes,
       .state = PleState,
       .max_state_tensors = 1,
-      .batch_classes = kPleBatch,
-      .patterns = kPlePatterns,
+
       .emit = PleEmit,
       .reference = PleReference,
       .commit = PleCommit,
@@ -618,7 +604,7 @@ const ComponentDef& EmbeddingMtp() {
       .shapes = MtpShapes,
       .state = MtpState,
       .max_state_tensors = 1,
-      .batch_classes = kMtpBatch,
+
       .emit = MtpEmit,
       .reference = MtpReference,
   };

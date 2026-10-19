@@ -1,10 +1,10 @@
 {
  "digests": {
-  "heads.0": "294db80b73f033e5bedf7ef29e95cff536583297c1ed9ee90ceed3ae41d926f8",
+  "heads.0": "731183c1c139c07109435c7680c44306058c3a9798820a283292955d5c46f7ba",
   "heads.1": "29624115af1996ebb1e0016988ce0bba314e433e4bb94e2365e1ecd13fb34de4",
   "history.0": "28e299c73b382738c810c5eb1d256e2bf4f65f9c96195a548177b6305bf1f13e",
   "history.1": "41eea46d2254f1a21b098b6df39081a6eab5dd6c10afd9d979050b17f7590473",
-  "logits.0": "0e3bf3b80783cb9ed403c0963933ddec522c7ec5c740b3fc026eb34795b056c1",
+  "logits.0": "c2d9f2dc75912362705593acdbc08fe261b30315d733578f7760cc6d9edc3518",
   "logits.1": "7dc0ad5dade04ee665e265b834c8613565a111944df275df302cc2201c9153dd",
   "state.0": "caa01204c8a4939fa2ab8effa377e4291ece6d73e9079060e7a3fcf89790eabc:2567:35",
   "state.1": "caa01204c8a4939fa2ab8effa377e4291ece6d73e9079060e7a3fcf89790eabc:2567:35",
@@ -13,5 +13,5 @@
   "tokens.1": "3648,303,1300,5719,4715,1959,428,666"
  },
  "family": "dsv4_iq2xxs",
- "provenance": "spark-b (GB10), worktree m36-v1only-b on main c0aec365 with slice 4b uncommitted, 2026-10-16; v1 e7c0d0e453aab30765c884ab610835936e80312646f18383538bd4d9b428dc59 (llmp import of antirez/deepseek-v4-gguf@f71f23d5 DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf; its M3 v0 artifact cd39d504dc2dbfe911a4a521fa8efc8053dc3e80e99738a9b25fa6b70c97a1ac); v1 alone, no v0 comparison"
+ "provenance": "Reviewed numerical refresh 2026-10-18 on Spark B (spark-c4e2, GB10) from r7-model-controls-30c789d8-B.raw.log; v1 e7c0d0e453aab30765c884ab610835936e80312646f18383538bd4d9b428dc59 (llmp import of antirez/deepseek-v4-gguf@f71f23d5 DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf; its M3 v0 artifact cd39d504dc2dbfe911a4a521fa8efc8053dc3e80e99738a9b25fa6b70c97a1ac). Only heads.0 and logits.0 (whose first row is heads.0) change from the narrowed single-row output head using the qualified single-row Q8_1 vector reduction; all generated tokens, histories, continuation head/logits, and complete state/spill/restore digests remain exact."
 }

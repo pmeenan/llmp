@@ -138,25 +138,12 @@ constexpr std::array kRequirements{
                      .value = {.flag = false}},
 };
 
-// The pipeline's planning policy (planner/policy.h canonical text), every
-// stage's, its serving recipe's rule: the graphs' layout round trips removed (layout_sinking); the
-// QK norms and rotations in one pass (rms_norm_mul_rope_sections); the MLP in BF16 (bf16_glu); the
-// attention over BF16 heads with a mask and rotation table made once a step (qk_attention); the
-// modulations and gated residuals over their conditioning vectors (split_modulate,
-// split_gated_residual), each residual joined with the modulation of its
-// sum (split_gated_residual_modulate); the products a residual adds in
-// BF16 (bf16_branch) and a sum only later residuals carry kept in BF16
-// (bf16_residual): the BF16 activations the image path has always used, at
-// the same quality against the reference (docs/experiments/
-// m36-runtime-fusion); each product input converted to BF16 once
-// (bf16_inputs) and the GB10's pinned cuBLASLt products first.
-constexpr PolicyRule kPolicy{
-    .text =
-        "max_decode_rows 16\nenable bf16_branch\nenable bf16_glu\n"
-        "enable bf16_inputs\nenable bf16_residual\nenable layout_sinking\n"
-        "enable qk_attention\nenable rms_norm_mul_rope_sections\n"
-        "enable split_gated_residual\nenable split_gated_residual_modulate\n"
-        "enable split_modulate\nrank sm_121 llmp.gemm.bf16_lt 0\n"};
+// The measured concrete product preference. Structural graph rewrites use
+// shared defaults; the admitted exact-geometry numerical evidence separately
+// authorizes the existing BF16 intermediate and residual recipes.
+constexpr PolicyRule kPolicy{.text =
+                                 "max_decode_rows 16\n"
+                                 "rank sm_121 llmp.gemm.bf16_lt 0\n"};
 
 // Serving: the settings' names, and the policy above as its serving rule.
 constexpr ServingRecipe kServing{

@@ -292,15 +292,6 @@ std::vector<MaskUse> Masks(const Instance& in) {
   return {{.tensor = 0, .window = DimsOf(in).window}};
 }
 
-constexpr std::array kBatchClasses{
-    BatchClass{.op = ir::Op::kRmsNorm, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMatMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kRope, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMaskBuild, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kAttention, .batch = ir::Batch::kPerOwner},
-    BatchClass{.op = ir::Op::kCacheStore, .batch = ir::Batch::kPerOwner},
-};
-
 // By heads: Q, K and V by their output rows (whole heads, a query head's
 // group with its KV head), the K and V caches by their cells' heads, the
 // output product by its input columns; its partial sums reduce before the
@@ -334,12 +325,6 @@ constexpr std::array kBorrowedSplits{SplitOption{.kind = SplitKind::kHeads,
                                                  .bytes_per_step = StreamBytes,
                                                  .weights = kBorrowedRoles,
                                                  .state = kHeadState}};
-
-constexpr std::array<std::string_view, 7> kPatterns{
-    "rms_norm_mul",    "rms_norm_mul_rope", "rope_store",      "grouped_stores",
-    "owner_attention", "prepared_inputs",   "rms_norm_mul_add"};
-constexpr std::array<std::string_view, 4> kBorrowedPatterns{"rms_norm_mul", "rms_norm_mul_rope",
-                                                            "owner_attention", "rms_norm_mul_add"};
 
 ir::RopeParams Rotation(const Instance& in, const Dims& d) {
   return {.mode = d.neox ? ir::RopeMode::kNeox : ir::RopeMode::kNormal,
@@ -677,10 +662,10 @@ const ComponentDef& AttentionDense() {
       .shapes = Shapes,
       .state = State,
       .max_state_tensors = 2,
-      .batch_classes = kBatchClasses,
+
       .batching = nullptr,
       .splits = kSplits,
-      .patterns = kPatterns,
+
       .masks = Masks,
       .emit = Emit,
       .reference = Reference,
@@ -698,10 +683,10 @@ const ComponentDef& AttentionBorrowed() {
       .shapes = Shapes,
       .state = State,
       .max_state_tensors = 2,
-      .batch_classes = std::span(kBatchClasses).first(5),  // no stores
+
       .batching = nullptr,
       .splits = kBorrowedSplits,
-      .patterns = kBorrowedPatterns,
+
       .masks = Masks,
       .emit = Emit,
       .reference = Reference,

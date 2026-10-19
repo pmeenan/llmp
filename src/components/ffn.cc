@@ -66,12 +66,6 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   return out;
 }
 
-constexpr std::array kBatchClasses{
-    BatchClass{.op = ir::Op::kRmsNorm, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMatMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kGlu, .batch = ir::Batch::kJoined},
-};
-
 // By the hidden columns: the gate and up products by their output rows, the
 // down product by its input columns (whole blocks of its encoding, which the
 // partitioner checks); the down product's partial sums reduce.
@@ -86,9 +80,6 @@ constexpr std::array kSplits{SplitOption{.kind = SplitKind::kColumns,
                                          },
                                          .weights = kColumnRoles,
                                          .state = {}}};
-
-constexpr std::array<std::string_view, 4> kPatterns{"rms_norm_mul", "rms_norm_mul_add",
-                                                    "mul_mat_glu", "prepared_inputs"};
 
 ir::GluKind Kind(const Instance& in) {
   return in.params.Name("activation") == "silu" ? ir::GluKind::kSwiGlu : ir::GluKind::kGeGluTanh;
@@ -167,10 +158,10 @@ const ComponentDef& FfnGlu() {
       .roles = kRoles,
       .shapes = Shapes,
       .state = nullptr,
-      .batch_classes = kBatchClasses,
+
       .batching = nullptr,
       .splits = kSplits,
-      .patterns = kPatterns,
+
       .masks = nullptr,
       .emit = Emit,
       .reference = Reference,

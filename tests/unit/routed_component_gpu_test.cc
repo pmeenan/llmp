@@ -19,6 +19,9 @@
 #include <vector>
 
 #include "artifact_writer.h"
+#include "base/json.h"
+#include "base/sha256.h"
+#include "compiler_inventory.h"
 #include "components/moe.h"
 #include "components/step.h"
 #include "engine/component_source.h"
@@ -67,16 +70,252 @@ constexpr std::uint64_t kCompiler = 256 * kMiB, kOwner = 64 * kMiB;
 // temporary copies and native descriptors are prepaid before construction.
 constexpr std::uint64_t kNodes = 2048, kTensors = 8192;
 constexpr std::uint64_t kDescriptors = kTensors + 16 + 16 * kNodes;
-constexpr std::uint64_t kGraphBytes = 4 * 3 * (kNodes * 480 + kTensors * 192);
+constexpr std::uint64_t kGraphBytes =
+    llmp::test_support::compiler_inventory::GraphBytes(kNodes, kTensors);
 constexpr std::uint64_t kWorkBytes = 4096 * (kNodes + kTensors);
-constexpr std::uint64_t kNativeBytes = kDescriptors * (512 + 1024 + 32);
+constexpr std::uint64_t kNativeBytes =
+    llmp::test_support::compiler_inventory::NativeBytes(kDescriptors, kTensors);
 static_assert(kGraphBytes + kWorkBytes + kNativeBytes + 64 * kMiB <= kCompiler);
-static_assert(sizeof(ir::Node) + 96 <= 480 && sizeof(ir::TensorDesc) <= 192);
+static_assert(sizeof(ir::Node) + 96 <= llmp::test_support::compiler_inventory::kGraphNodeBytes &&
+              sizeof(ir::TensorDesc) <= 192);
 constexpr std::uint64_t kProgram = 8 * kMiB, kLaunches = 512;
 static_assert(kCompiler + kOwner + 2 * (kProgram + kLaunches * en::kGraphNodeHostBytes) <
               kMetadata);
 
 en::Status Error(std::string s) { return std::unexpected(std::move(s)); }
+
+// A separate prepaid fixture category covers this bounded transient report
+// observer: 1MiB text, descriptor facts and one small JSON line at a time.
+// It retains no payloads/addresses and does not become production storage.
+constexpr std::size_t kReportBytes = 1U << 20U;
+struct ReportDescriptor {
+  bool seen = false;
+  std::uint64_t producer = UINT64_MAX, tensor = UINT64_MAX, storage = UINT64_MAX;
+  std::array<std::uint64_t, ir::kMaxSources> sources{};
+  std::size_t source_count = 0;
+};
+constexpr std::uint64_t ReportObserverBytes(std::uint64_t descriptors) {
+  return kReportBytes + descriptors * (sizeof(ReportDescriptor) + sizeof(std::uint64_t)) + 4 * kMiB;
+}
+constexpr std::uint64_t kOrderedDescriptors = 16384 + 16 + 16 * 4096ULL;
+static_assert(kCompiler + kOwner + ReportObserverBytes(kDescriptors) +
+                  2 * (kProgram + kLaunches * en::kGraphNodeHostBytes) <
+              kMetadata);
+
+std::expected<llmp::base::Sha256Digest, std::string> CheckRoutedReport(
+    const kn::StepProgram& program, std::size_t groups, const pl::StepPlan* plan = nullptr) {
+  std::string text;
+  const auto descriptor_limit = groups == 2 ? kOrderedDescriptors : kDescriptors;
+  text.reserve(kReportBytes);
+  bool overflow = false;
+  program.StreamPlanReport([&](std::string_view fragment) {
+    if (fragment.size() > kReportBytes - text.size())
+      overflow = true;
+    else if (!overflow)
+      text.append(fragment);
+  });
+  if (overflow || text.find("0x") != std::string::npos ||
+      text.find("\"address\"") != std::string::npos ||
+      text.find("\"payload\"") != std::string::npos)
+    return std::unexpected("routed report exceeded paid/private static metadata domain");
+  std::vector<ReportDescriptor> descriptors;
+  std::vector<std::uint64_t> first_step;
+  std::vector<llmp::base::json::Document> routed;
+  std::uint64_t graph_steps = 0, activation_bytes = 0;
+  bool valid = true, arena = false;
+  const auto number = [&](llmp::base::json::Value value, std::string_view name) {
+    const auto field = value.find(name);
+    const auto n = field ? field->int64() : std::nullopt;
+    if (!n || *n < 0) {
+      valid = false;
+      return UINT64_MAX;
+    }
+    return static_cast<std::uint64_t>(*n);
+  };
+  for (std::size_t begin = 0; begin < text.size();) {
+    const auto end = text.find('\n', begin);
+    if (end == std::string::npos || end - begin > 16 * 1024)
+      return std::unexpected("routed report line exceeds bounded JSON observer");
+    const auto line = std::string_view(text).substr(begin, end - begin);
+    if (llmp::base::json::ParseWorkingBytes(line) > kMiB)
+      return std::unexpected("routed report parser exceeds paid observer category");
+    auto parsed = llmp::base::json::Parse(line);
+    if (!parsed) return std::unexpected("routed report is not complete JSON lines");
+    const auto record = parsed->root();
+    const auto kind_field = record.find("kind");
+    if (!kind_field) return std::unexpected("routed report omitted kind");
+    const auto kind = kind_field->string();
+    if (kind == "physical_plan") activation_bytes = number(record, "physical_activation_bytes");
+    if (kind == "routed_arena") {
+      const auto count = number(record, "descriptors"),
+                 bound = number(record, "paid_descriptor_bound");
+      if (arena || count == 0 || count > bound || bound > descriptor_limit ||
+          number(record, "groups") != groups)
+        return std::unexpected("final routed descriptor count exceeds actual paid arena bound");
+      descriptors.resize(static_cast<std::size_t>(count));
+      first_step.assign(static_cast<std::size_t>(count), UINT64_MAX);
+      arena = true;
+    }
+    if (kind == "launch_recipe") {
+      if (!arena || number(record, "step") != graph_steps++)
+        return std::unexpected("routed graph recipe order differs");
+      const auto nodes = record.find("nodes");
+      if (!nodes) return std::unexpected("routed graph launch omitted descriptors");
+      for (std::size_t i = 0; i < nodes->size(); ++i) {
+        const auto id = nodes->at(i).int64();
+        if (!id || *id < 0 || static_cast<std::uint64_t>(*id) >= descriptors.size())
+          return std::unexpected("routed graph launch descriptor escaped final arena");
+        auto& first = first_step[static_cast<std::size_t>(*id)];
+        first = std::min(first, graph_steps - 1);
+      }
+    }
+    if (kind == "routed_group") {
+      if (routed.size() >= groups || number(record, "group") != routed.size() ||
+          number(record, "cut") != graph_steps)
+        return std::unexpected("routed preparation was not reported at its actual prefix cut");
+      routed.push_back(std::move(*parsed));
+    }
+    if (kind == "physical_node") {
+      const auto id = number(record, "id");
+      if (!arena || id >= descriptors.size() || descriptors[static_cast<std::size_t>(id)].seen)
+        return std::unexpected("missing/duplicate routed arena descriptor");
+      auto& d = descriptors[static_cast<std::size_t>(id)];
+      d.seen = true;
+      for (const auto& [name, destination] :
+           {std::pair{"ir_node", &d.producer}, std::pair{"tensor", &d.tensor}}) {
+        const auto field = record.find(name);
+        if (!field) return std::unexpected("physical descriptor omitted graph correspondence");
+        if (!field->is_null()) *destination = number(record, name);
+      }
+      d.storage = number(record, "storage");
+      const auto sources = record.find("sources");
+      if (!sources || sources->size() > d.sources.size())
+        return std::unexpected("physical descriptor source inventory differs");
+      d.source_count = sources->size();
+      for (std::size_t i = 0; i < sources->size(); ++i) {
+        const auto source = sources->at(i);
+        d.sources[i] =
+            source.is_null() ? UINT64_MAX : static_cast<std::uint64_t>(source.int64().value_or(-1));
+      }
+    }
+    begin = end + 1;
+  }
+  if (!valid || !arena || routed.size() != groups || !program.routed() ||
+      program.routed()->groups() != groups)
+    return std::unexpected("routed executable/cut inventory incomplete");
+  for (const auto& d : descriptors) {
+    if (!d.seen || d.storage >= descriptors.size())
+      return std::unexpected("routed final arena omitted descriptor/storage");
+    for (std::size_t i = 0; i < d.source_count; ++i)
+      if (d.sources[i] != UINT64_MAX && d.sources[i] >= descriptors.size())
+        return std::unexpected("routed final arena omitted source edge");
+  }
+  std::uint64_t previous_cut = 0, host_end = 0;
+  for (std::size_t group = 0; group < groups; ++group) {
+    const auto record = routed[group].root();
+    const auto cut = number(record, "cut");
+    const auto& layout = program.routed()->layout(group);
+    const auto preparation = record.find("preparation");
+    if (!preparation || cut < previous_cut || cut >= graph_steps ||
+        number(record, "begin") != previous_cut || number(record, "segment") != group ||
+        number(record, "continuation_segment") != group + 1 ||
+        number(record, "experts") != kExperts || number(record, "used") != kUsed ||
+        number(record, "tokens") != kRows || number(record, "host_offset") != host_end ||
+        number(record, "host_offset") != layout.host_offset ||
+        number(record, "host_bytes") != layout.host_bytes)
+      return std::unexpected("routed group/continuation/host slice does not match actual program");
+    previous_cut = cut;
+    host_end += layout.host_bytes;
+    const auto prep = number(*preparation, "descriptor"),
+               ids = number(*preparation, "ids_descriptor");
+    if (prep >= descriptors.size() || ids >= descriptors.size())
+      return std::unexpected("real preparation or original IDs missing from physical table");
+    const auto& p = descriptors[static_cast<std::size_t>(prep)];
+    const auto& source = descriptors[static_cast<std::size_t>(ids)];
+    const auto reads = preparation->find("reads"), writes = preparation->find("writes"),
+               implementation = preparation->find("implementation"),
+               identity = preparation->find("identity");
+    if (p.producer != UINT64_MAX || p.source_count != 1 || p.sources[0] != ids ||
+        source.producer == UINT64_MAX || source.tensor == UINT64_MAX ||
+        first_step[static_cast<std::size_t>(prep)] != UINT64_MAX || !reads || !writes ||
+        reads->size() != 1 || writes->size() != 1 ||
+        static_cast<std::uint64_t>(reads->at(0).int64().value_or(-1)) != source.storage ||
+        static_cast<std::uint64_t>(writes->at(0).int64().value_or(-1)) != p.storage ||
+        !implementation || implementation->string() != "llmp.moe.route" || !identity ||
+        identity->string().size() != 64)
+      return std::unexpected("preparation/source/storage/recipe correspondence differs");
+    if (plan) {
+      if (source.tensor >= plan->graph.tensor_count() ||
+          source.producer >= plan->graph.nodes().size() ||
+          plan->graph.producer(ir::TensorId{static_cast<std::uint32_t>(source.tensor)}).v !=
+              source.producer)
+        return std::unexpected("routed IDs do not name their actual planned producer");
+      const auto& tensor =
+          plan->graph.tensor(ir::TensorId{static_cast<std::uint32_t>(source.tensor)});
+      if (tensor.format.encoding != fmt::Encoding::kI32 || tensor.ne(0) != kUsed ||
+          tensor.ne(1) != kRows)
+        return std::unexpected("routed original IDs semantic geometry differs");
+    }
+    const auto at = number(record, "activation_offset"), bytes = number(record, "activation_bytes");
+    if (at > activation_bytes || bytes == 0 || bytes > activation_bytes - at)
+      return std::unexpected("routed preparation tail exceeds paid activation extent");
+    const auto readback = record.find("readback"), uploads = record.find("uploads"),
+               selected = record.find("selected_descriptors"),
+               scratch = record.find("validation_scratch");
+    if (!readback || readback->size() != 5 || !uploads || uploads->size() != 5 || !selected ||
+        selected->size() != 2 || !scratch ||
+        number(*scratch, "host_offset") != layout.host_offset + layout.seen ||
+        number(*scratch, "bytes") != kUsed * kRows)
+      return std::unexpected("routed complete symbolic buffer inventory differs");
+    for (std::size_t i = 0; i < readback->size(); ++i) {
+      const auto copy = readback->at(i);
+      const auto& actual = layout.readback[i];
+      const auto direction = copy.find("direction"), after = copy.find("after");
+      if (number(copy, "ordinal") != i || !direction || direction->string() != "device_to_host" ||
+          !after || after->string() != "prefix_completion" ||
+          number(copy, "source_descriptor") != (i == 0 ? ids : prep) ||
+          number(copy, "source_storage") != (i == 0 ? source.storage : p.storage) ||
+          number(copy, "host_offset") != layout.host_offset + actual.host_offset ||
+          number(copy, "bytes") != actual.bytes || number(copy, "rows") != actual.rows ||
+          number(copy, "device_stride") != actual.device_stride ||
+          number(copy, "host_stride") != actual.bytes)
+        return std::unexpected("routed pitched readback/source inventory differs");
+      if (i == 0 && (number(copy, "source_offset") != 0 || actual.rows != kRows ||
+                     actual.bytes != kUsed * 4 || actual.device_stride != kExperts * 4))
+        return std::unexpected("original top-k IDs lost their actual pitched storage");
+    }
+    for (std::size_t i = 0; i < uploads->size(); ++i) {
+      const auto copy = uploads->at(i);
+      const auto direction = copy.find("direction"), before = copy.find("before");
+      const auto device_offset = number(copy, "activation_offset"), size = number(copy, "bytes"),
+                 host = number(copy, "host_offset");
+      if (!direction || direction->string() != "host_to_device" || !before ||
+          before->string() != "continuation_graph" || number(copy, "ordinal") != i ||
+          number(copy, "rows") != 1 || device_offset > activation_bytes ||
+          size > activation_bytes - device_offset || host < layout.host_offset || host > host_end ||
+          size > host_end - host)
+        return std::unexpected("routed continuation upload escaped owned buffers");
+      if (i < 3) {
+        const std::array expected{layout.work_offsets, layout.work_tokens, layout.work_slots};
+        if (host != layout.host_offset + expected[i])
+          return std::unexpected("routed worklist upload order differs");
+      } else {
+        const auto descriptor = selected->at(i - 3);
+        const auto physical = number(descriptor, "descriptor");
+        if (physical >= descriptors.size() || number(descriptor, "host_offset") != host ||
+            number(descriptor, "bytes") != size ||
+            first_step[static_cast<std::size_t>(physical)] < cut ||
+            first_step[static_cast<std::size_t>(physical)] == UINT64_MAX)
+          return std::unexpected("selected products precede their route/upload continuation");
+      }
+    }
+  }
+  if (!valid || host_end != program.routed()->pinned_bytes())
+    return std::unexpected("routed aggregate pinned owner inventory differs");
+  llmp::base::Sha256 hash;
+  hash.Update(text);
+  return hash.Finish();
+}
 pl::StepShape Shape(std::uint32_t past = 0) {
   return {.phase = pl::Phase::kScore,
           .segments =
@@ -309,10 +548,14 @@ constexpr FixtureLimits kOrderedLimits{.domain = 1024 * kMiB,
                                        .workspace = 64 * kMiB,
                                        .weight_reads = 16 * en::kPagedExtent,
                                        .weights = 32};
-static_assert(12 * (4096 * 480ULL + 16384 * 192ULL) + 4096 * (4096 + 16384ULL) +
-                  (16384 + 16 + 16 * 4096ULL) * (512 + 1024 + 32) + 64 * kMiB <
+static_assert(llmp::test_support::compiler_inventory::GraphBytes(4096, 16384) +
+                  4096 * (4096 + 16384ULL) +
+                  llmp::test_support::compiler_inventory::NativeBytes((16384 + 16 + 16 * 4096ULL),
+                                                                      16384) +
+                  64 * kMiB <
               kOrderedLimits.compiler);
 static_assert(kOrderedLimits.compiler + kOrderedLimits.owner +
+                  ReportObserverBytes(kOrderedDescriptors) +
                   2 * (kOrderedLimits.program + kOrderedLimits.launches * en::kGraphNodeHostBytes) <
               kOrderedLimits.metadata);
 struct Lifetime {
@@ -336,6 +579,7 @@ struct Lifetime {
   std::filesystem::path root;
   bool opened = false, retirement_attempted = false;
   std::size_t builds = 0, measured = 0;
+  llmp::base::Sha256Digest report_identity{};
 };
 // One unknown retirement is terminal for this process's finite serial budget.
 // An owned-flight cycle must not defer the first explicit teardown until after
@@ -393,7 +637,14 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
                                                     *available, 6ULL << 30);
   if (!paid) return Error(paid.error());
   life->paid = *paid;
-  if (!life->paid->Charge(limits.compiler + limits.owner)) return Error("preconstruction payment");
+  // The original compiler envelope included native storage. Its actual
+  // inventory is now admitted independently from this same catalog allowance.
+  const auto native_category = llmp::test_support::compiler_inventory::NativeBytes(
+      limits.tensors + 16 + 16 * limits.nodes, limits.tensors);
+  const auto report_observer = ReportObserverBytes(limits.tensors + 16 + 16 * limits.nodes);
+  if (native_category > limits.compiler ||
+      !life->paid->Charge(limits.compiler - native_category + limits.owner + report_observer))
+    return Error("preconstruction payment");
   // One directory per test: CTest runs this file's tests in parallel from
   // one working directory, and each removes its artifact when it ends.
   life->root = std::filesystem::path("scratch") /
@@ -439,6 +690,11 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
                                          {.selected = *selected});
   if (!backend) return Error(backend.error());
   life->kernel->backend = std::move(*backend);
+  if (auto r = life->kernel->backend->FundConstruction(
+          [paid = life->paid](std::uint64_t n) { return paid->Charge(n); },
+          [paid = life->paid](std::uint64_t n) { paid->Release(n); });
+      !r)
+    return Error(r.error());
   if (auto r = life->kernel->resources.OpenSelectedWorkspace(
           "selected kernel state", life->kernel->backend->persistent_bytes());
       !r)
@@ -449,8 +705,9 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
   if (workspace.value() > 64 * kMiB) return Error("handle workspace bound");
   auto* held = life.get();
   if (auto r = life->kernel->backend->Declare(
-          {}, workspace.value(), [held](std::uint64_t bytes) { return held->paid->Charge(bytes); },
-          [held](std::uint64_t bytes) { held->paid->Release(bytes); });
+          {}, workspace.value(),
+          [paid = life->paid](std::uint64_t bytes) { return paid->Charge(bytes); },
+          [paid = life->paid](std::uint64_t bytes) { paid->Release(bytes); });
       !r)
     return Error(r.error());
   if (auto r = life->kernel->resources.OpenCublas("routed shared handle"); !r) return r;
@@ -484,6 +741,9 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
              program.routed()->groups() != held->route_groups ||
              program.routed()->pinned_bytes() > held->route_groups * 16 * 1024)
            return Error("actual lowered program exceeded paid routed domain");
+         const auto report = CheckRoutedReport(program, held->route_groups, &input.plan);
+         if (!report) return Error(report.error());
+         if (!input.addresses.measuring()) held->report_identity = *report;
          std::size_t attention = 0;
          for (const auto& op : input.token->step.graph.nodes()) {
            if (op.key != ir::Primitive(ir::Op::kAttention)) continue;
@@ -671,6 +931,11 @@ TEST(RoutedComponentGpu, RealSharedStepDiscoversOnlySelectedExpertsAndReplaysCha
                                      .work = std::span(&work, 1),
                                      .ahead = {}});
           if (!ran) return Error(ran.error().what);
+          if (!life->program) return Error("actual routed program disappeared");
+          const auto report = CheckRoutedReport(*life->program, life->route_groups);
+          if (!report || *report != life->report_identity)
+            return Error(
+                "eager/captured/replayed routed report changed or lost its complete inventory");
           if (ran->path != path[turn] || ran->outputs.size() != 1 ||
               ran->outputs[0].size() != kRows * kWidth * sizeof(float))
             return Error("step path/coverage");
@@ -734,6 +999,8 @@ TEST(RoutedComponentGpu, RealSharedStepDiscoversOnlySelectedExpertsAndReplaysCha
   RecordProperty("retained_programs", 1);
   RecordProperty("state_frontier", 9);
   RecordProperty("deferred_part_descriptors", 6);
+  RecordProperty("reported_preparation_launches", 1);
+  RecordProperty("reported_readbacks_uploads", 10);
   // Explicitly break the complete-owner retention cycle only on proven teardown.
   const auto retired = RetireLifetime(*life);
   ASSERT_TRUE(retired) << llmp::test_support::Failed(retired).value_or("");
@@ -797,6 +1064,9 @@ TEST(RoutedComponentGpu, TwoOrderedGroupsReacquireChangedRoutesBeforeFinalOutput
             return Error("ordered step path or final output coverage");
           if (!life->program || !life->program->routed() || life->program->routed()->groups() != 2)
             return Error("actual two-group program disappeared");
+          const auto report = CheckRoutedReport(*life->program, life->route_groups);
+          if (!report || *report != life->report_identity)
+            return Error("ordered eager/captured/replayed routed report changed or lost inventory");
           for (std::size_t group = 0; group != 2; ++group) {
             // No device read after scratch reuse: the runner copied each actual
             // route at its completed boundary into its stable, retained slice.
@@ -861,6 +1131,8 @@ TEST(RoutedComponentGpu, TwoOrderedGroupsReacquireChangedRoutesBeforeFinalOutput
   RecordProperty("retained_programs", 1);
   RecordProperty("state_frontier", 9);
   RecordProperty("deferred_part_descriptors", 12);
+  RecordProperty("reported_preparation_launches", 2);
+  RecordProperty("reported_readbacks_uploads", 20);
   const auto retired = RetireLifetime(*life);
   ASSERT_TRUE(retired) << llmp::test_support::Failed(retired).value_or("");
 }
@@ -946,11 +1218,13 @@ TEST(RoutedComponentGpu, OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitu
                                          {.selected = source});
   ASSERT_TRUE(backend);
   life->kernel->backend = std::move(*backend);
+  ASSERT_TRUE(life->kernel->backend->FundConstruction(
+      [paid = life->paid](std::uint64_t n) { return paid->Charge(n); },
+      [paid = life->paid](std::uint64_t n) { paid->Release(n); }));
   const auto declare = [&] {
     return life->kernel->backend->Declare(
-        {}, workspace.value(),
-        [held = life.get()](std::uint64_t n) { return held->paid->Charge(n); },
-        [held = life.get()](std::uint64_t n) { held->paid->Release(n); });
+        {}, workspace.value(), [paid = life->paid](std::uint64_t n) { return paid->Charge(n); },
+        [paid = life->paid](std::uint64_t n) { paid->Release(n); });
   };
   EXPECT_FALSE(declare());  // Default/absent selected identity remains refused.
   source->identity = (*real)->ExecutionIdentity();
@@ -1075,8 +1349,8 @@ TEST(RoutedComponentGpu, OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitu
                                        {.selected = source});
   ASSERT_TRUE(other);
   ASSERT_TRUE((*other)->Declare(
-      {}, workspace.value(), [held = life.get()](std::uint64_t n) { return held->paid->Charge(n); },
-      [held = life.get()](std::uint64_t n) { held->paid->Release(n); }));
+      {}, workspace.value(), [paid = life->paid](std::uint64_t n) { return paid->Charge(n); },
+      [paid = life->paid](std::uint64_t n) { paid->Release(n); }));
   ASSERT_TRUE((*other)->LendCublas(&life->kernel->resources.cublas()));
   auto second = (*other)->Backend().owner->Ready();
   ASSERT_TRUE(second);

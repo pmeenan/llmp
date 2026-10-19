@@ -123,6 +123,7 @@ constinit std::array kTagGdnStep = std::to_array("llmp.gdn.step");
 constinit std::array kTagGdnGates = std::to_array("llmp.gdn.gates");
 constinit std::array kTagVisibleTopK = std::to_array("llmp.visible_top_k");
 constinit std::array kTagSelectedMask = std::to_array("llmp.selected_mask");
+constinit std::array kTagSelect = std::to_array("llmp.select");
 constinit std::array kTagPrefixOverwrite = std::to_array("llmp.prefix_overwrite");
 constinit std::array kTagRoundedIndexScore = std::to_array("llmp.rounded_index_score");
 constinit std::array kTagDsv4LidTopK = std::to_array("llmp.dsv4.lid_topk");
@@ -214,7 +215,7 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return LlmpOp::kArgmax;
   }
-  const std::array<std::pair<const char*, LlmpOp>, 61> fused = {{
+  const auto fused = std::to_array<std::pair<const char*, LlmpOp>>({
       {kTagDupUpAdd.data(), LlmpOp::kDupUpAdd},
       {kTagConv1x1.data(), LlmpOp::kConv1x1},
       {kTagLayerNormModulateSplit.data(), LlmpOp::kLayerNormModulateSplit},
@@ -235,6 +236,7 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
       {kTagVisibleTopK.data(), LlmpOp::kVisibleTopK},
       {kTagSelectedMask.data(), LlmpOp::kSelectedMask},
       {kTagPrefixOverwrite.data(), LlmpOp::kPrefixOverwrite},
+      {kTagSelect.data(), LlmpOp::kSelect},
       {kTagRoundedIndexScore.data(), LlmpOp::kRoundedIndexScore},
       {kTagDsv4LidTopK.data(), LlmpOp::kDsv4LidTopK},
       {kTagDsv4SparseMask.data(), LlmpOp::kDsv4SparseMask},
@@ -276,7 +278,7 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
       {kTagMoeGluQuantize.data(), LlmpOp::kMoeGluQuantize},
       {kTagMoeCombineSorted.data(), LlmpOp::kMoeCombineSorted},
       {kTagMoeGemv.data(), LlmpOp::kMoeGemv},
-  }};
+  });
   for (const auto& [tag, op] : fused) {
     if (params.userdata == tag) {
       return op;
@@ -3158,6 +3160,35 @@ std::expected<void, KernelFailure> CheckRoundedIndexScore(const ggml_tensor* nod
     return Rejected("rounded index score dimensions, pitches, alignment or launch bounds");
   for (const auto* input : {tensors[0], tensors[1], tensors[2], tensors[3]})
     if (!Disjoint(node, input, false)) return Rejected("rounded index score overlaps an input");
+  return {};
+}
+
+ggml_tensor* Select(ggml_context* context, ggml_tensor* condition, ggml_tensor* yes,
+                    ggml_tensor* no) {
+  return Custom(context, yes->type, {yes->ne[0], yes->ne[1], yes->ne[2], yes->ne[3]},
+                {condition, yes, no}, kTagSelect.data());
+}
+
+std::expected<void, KernelFailure> CheckSelect(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, LlmpOp::kSelect, 3); !checked) return checked;
+  const auto* condition = node->src[0];
+  const auto* yes = node->src[1];
+  const auto* no = node->src[2];
+  if (AnyEmpty({node, condition, yes, no}) || !AllSane({node, condition, yes, no}) ||
+      !AllCurrent({node, condition, yes, no}) || condition->type != GGML_TYPE_I32 ||
+      yes->type != no->type || node->type != yes->type || ggml_blck_size(node->type) != 1 ||
+      !Packed(node) || ggml_nelements(node) > INT32_MAX || !Aligned(condition, 4))
+    return Rejected("select requires bounded current dense scalar branches and I32 predicate");
+  const auto unit = ggml_type_size(node->type);
+  if (unit != 1 && unit != 2 && unit != 4 && unit != 8)
+    return Rejected("select requires 1, 2, 4 or 8 byte scalar elements");
+  for (std::size_t axis = 0; axis < 4; ++axis) {
+    if (node->ne[axis] != yes->ne[axis] || yes->ne[axis] % no->ne[axis] ||
+        yes->ne[axis] % condition->ne[axis] || condition->nb[axis] % 4)
+      return Rejected("select branches/predicate do not broadcast over the exact true shape");
+  }
+  for (const auto* input : {condition, yes, no})
+    if (!Disjoint(node, input, false)) return Rejected("select output overlaps an input");
   return {};
 }
 

@@ -106,7 +106,8 @@ struct Tiny {
 // Six Gemma 2-like layers (sliding and global, sandwich norms, Q and K
 // norms, softcaps), F32 weights unless the feed-forward blocks' encoding is
 // given; the head tied to the embedding or its own.
-Tiny TinyGemma(bool tied, Encoding ffn = Encoding::kF32, std::uint64_t hidden = kHidden) {
+Tiny TinyGemma(bool tied, Encoding ffn = Encoding::kF32, std::uint64_t hidden = kHidden,
+               std::uint64_t dim = kDim, Encoding kv = Encoding::kF16) {
   Tiny t;
   const auto bind = [&](std::string name, std::initializer_list<std::uint64_t> ne,
                         Encoding e = Encoding::kF32) {
@@ -124,18 +125,19 @@ Tiny TinyGemma(bool tied, Encoding ffn = Encoding::kF32, std::uint64_t hidden = 
     layer.components.push_back(
         C("attention.dense",
           {P("placement", N("sandwich")), P("eps", R(1e-6)), P("heads", I(kHeads)),
-           P("kv_heads", I(kKvHeads)), P("key_dim", I(kDim)), P("value_dim", I(kDim)),
-           P("scale", R(0.5)), P("softcap", R(30.0)), P("window", I(l % 2 == 0 ? 4 : 0)),
-           P("rotation", N("neox")), P("rope_dims", I(kDim)), P("rope_base", R(10000.0)),
-           P("rope_scale", R(1.0)), P("qk_norm", ParamValue(true))},
+           P("kv_heads", I(kKvHeads)), P("key_dim", I(dim)), P("value_dim", I(dim)),
+           P("scale", R(0.5)), P("softcap", R(kv == Encoding::kQ8_0 ? 0.0 : 30.0)),
+           P("kv_encoding", N(kv == Encoding::kQ8_0 ? "q8_0" : "f16")),
+           P("window", I(l % 2 == 0 ? 4 : 0)), P("rotation", N("neox")), P("rope_dims", I(dim)),
+           P("rope_base", R(10000.0)), P("rope_scale", R(1.0)), P("qk_norm", ParamValue(true))},
           {{"norm", bind(p + "attn_norm.weight", {kWidth})},
-           {"q", bind(p + "attn_q.weight", {kWidth, kHeads * kDim})},
-           {"k", bind(p + "attn_k.weight", {kWidth, kKvHeads * kDim})},
-           {"v", bind(p + "attn_v.weight", {kWidth, kKvHeads * kDim})},
-           {"output", bind(p + "attn_output.weight", {kHeads * kDim, kWidth})},
+           {"q", bind(p + "attn_q.weight", {kWidth, kHeads * dim})},
+           {"k", bind(p + "attn_k.weight", {kWidth, kKvHeads * dim})},
+           {"v", bind(p + "attn_v.weight", {kWidth, kKvHeads * dim})},
+           {"output", bind(p + "attn_output.weight", {kHeads * dim, kWidth})},
            {"post_norm", bind(p + "post_attention_norm.weight", {kWidth})},
-           {"q_norm", bind(p + "attn_q_norm.weight", {kDim})},
-           {"k_norm", bind(p + "attn_k_norm.weight", {kDim})}}));
+           {"q_norm", bind(p + "attn_q_norm.weight", {dim})},
+           {"k_norm", bind(p + "attn_k_norm.weight", {dim})}}));
     layer.components.push_back(
         C("ffn.glu",
           {P("placement", N("sandwich")), P("eps", R(1e-6)), P("activation", N("gelu_tanh")),
@@ -925,7 +927,7 @@ TEST(PartitionTest, ExpertParallelOverFourAndSixDevices) {
 
 // With each slot's learned scale gathered before the reduce (ffn.moe's
 // Gemma 4 form, op.h kExpertReduce's [1, U, T] scale): each device's
-// experts masked in the gathered scale.
+// foreign products/weights/scales selected before the reduction.
 TEST(PartitionTest, ExpertParallelWithGatheredScales) {
   const StageModel model = moe::Model(true);
   for (const std::uint32_t n : {4U, 6U}) {
@@ -940,6 +942,103 @@ TEST(PartitionTest, ExpertParallelWithGatheredScales) {
     a->per_layer[0][0].option = 1;
     a->per_layer[0][0].split = SplitKind::kColumns;
     MoeStep(*a, 1e-5, true);
+  }
+}
+
+TEST(PartitionTest, ExpertOwnershipSelectsForeignNonfiniteContributionsToLiteralZero) {
+  const float inf = std::numeric_limits<float>::infinity();
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  for (bool gathered : {false, true}) {
+    for (const auto& values :
+         std::array{std::array{nan, 3.0F, 2.0F, 1.0F, 12.0F}, std::array{inf, 3.0F, inf, 1.0F, inf},
+                    std::array{inf, 3.0F, 2.0F, inf, inf}, std::array{0.0F, inf, 2.0F, 1.0F, inf},
+                    std::array{0.0F, nan, 2.0F, 1.0F, nan}}) {
+      SCOPED_TRACE(std::format("gathered {}, foreign {}, own {}, weight {}, scale {}", gathered,
+                               values[0], values[1], values[2], values[3]));
+      ir::Builder builder;
+      builder.SetComponent(1);
+      const auto matrix = builder.Weight(Format(Encoding::kF32, {1, 1, moe::kExperts}),
+                                         {.component = 1, .role = moe::kGate});
+      const auto input = builder.Input(Format(Encoding::kF32, {1, 1, 1}));
+      const auto ids = builder.Input(Format(Encoding::kI32, {1, 1}));
+      const auto weights = builder.Input(Format(Encoding::kF32, {1, 1}));
+      const auto scales = builder.Input(gathered ? Format(Encoding::kF32, {1, 1, 1})
+                                                 : Format(Encoding::kF32, {moe::kExperts}));
+      const auto products = builder.MatMulId(matrix, input, ids);
+      const auto result = builder.ExpertReduce(products, weights, ids, scales);
+      builder.Output(result);
+      auto graph = std::move(builder).Finish();
+      ASSERT_TRUE(graph) << graph.error().detail;
+      Assignment assignment{
+          .topology = Uniform(2, kAmple), .stages = {{0, 1}}, .stage_of_layer = {0}};
+      assignment.per_layer.push_back({ComponentPlacement{.component = 1,
+                                                         .def = &moe::Def(),
+                                                         .split = SplitKind::kExperts,
+                                                         .option = 0,
+                                                         .devices = {0, 1}}});
+      auto partition = Partition(*graph, assignment);
+      ASSERT_TRUE(partition) << partition.error();
+      Leaves leaves;
+      leaves.floats[matrix.v] = std::vector<float>(moe::kExperts, 1.0F);
+      leaves.floats[matrix.v][0] = values[0];  // foreign rank's fallback expert
+      leaves.floats[matrix.v][7] = values[1];  // selected expert belongs to rank 1
+      leaves.floats[input.v] = {2};
+      leaves.ints[ids.v] = {7};
+      leaves.floats[weights.v] = {values[2]};
+      leaves.floats[scales.v] = std::vector<float>(gathered ? 1 : moe::kExperts, values[3]);
+      std::vector<ref::Executor> executors;
+      for (const auto& device : partition->devices) {
+        auto executor = ref::Executor::Create(device.graph);
+        ASSERT_TRUE(executor) << executor.error().detail;
+        for (const auto& leaf : device.leaves)
+          Bind(*executor, leaf.local, leaves, leaf.source, graph->tensor(leaf.source).shape(),
+               leaf.slice);
+        for (const auto& constant : device.constants) {
+          if (!constant.ints.empty())
+            ASSERT_TRUE(executor->BindInts(constant.local, constant.ints));
+          else
+            ASSERT_TRUE(executor->BindValues(constant.local, constant.values));
+        }
+        executors.push_back(std::move(*executor));
+      }
+      std::vector<ref::Executor*> devices;
+      for (auto& executor : executors) devices.push_back(&executor);
+      std::vector<ref::DeviceGroup> groups;
+      for (const auto& group : partition->groups)
+        groups.push_back({.group = group.group, .devices = group.devices});
+      auto run = ref::RunDevices(devices, groups);
+      ASSERT_TRUE(run) << run.error().detail;
+      ASSERT_EQ(partition->outputs.size(), 1U);
+      const auto& output = partition->outputs[0];
+      auto got = executors[output.device].Values(output.local);
+      ASSERT_TRUE(got);
+      ASSERT_EQ(got->size(), 1U);
+      if (std::isnan(values[4]))
+        EXPECT_TRUE(std::isnan((*got)[0]));
+      else
+        EXPECT_EQ((*got)[0], values[4]);
+      // Every neutralized product/weight on the foreign rank is literal zero;
+      // every neutralized scale is one, even when its source is nonfinite.
+      std::size_t selections = 0;
+      for (const auto& node : partition->devices[0].graph.nodes()) {
+        if (node.key.op != ir::Op::kSelect) continue;
+        auto selected = executors[0].Values(node.out[0]);
+        ASSERT_TRUE(selected);
+        const auto foreign_values = selections == 2 && !gathered
+                                        ? std::span(*selected).last(moe::kExperts / 2)
+                                        : std::span(*selected);
+        EXPECT_TRUE(std::ranges::all_of(
+            foreign_values, [&](float value) { return value == (selections == 2 ? 1.0F : 0.0F); }));
+        if (selections == 2 && !gathered) {
+          const auto owned_values = std::span(*selected).first(moe::kExperts / 2);
+          EXPECT_TRUE(std::ranges::all_of(owned_values, [&](float value) {
+            return std::isnan(values[3]) ? std::isnan(value) : value == values[3];
+          }));
+        }
+        ++selections;
+      }
+      EXPECT_EQ(selections, 3U);
+    }
   }
 }
 
@@ -1046,7 +1145,7 @@ TEST(PartitionTest, MemoryNoPlacementHoldsIsRefused) {
   auto p = AssignPipeline(*model, Uniform(2, kLayer1), Mix(),
                           {.stages = {{0}, {1}}, .first_layer = {0, 3}});
   ASSERT_FALSE(p.has_value());
-  EXPECT_NE(p.error().find("past its"), std::string::npos) << p.error();
+  EXPECT_NE(p.error().find("memory"), std::string::npos) << p.error();
 }
 
 TEST(PartitionTest, RoutedExpertsArePlacedWhole) {
@@ -1154,7 +1253,9 @@ std::vector<std::uint32_t> RingOrder(const Topology& t, std::vector<std::uint32_
     if (cls[i] != n) continue;
     cls[i] = i;
     for (std::size_t j = i + 1; j < n; ++j) {
-      if (cls[j] != n || t.devices[i].memory != t.devices[j].memory) continue;
+      if (cls[j] != n || t.devices[i].memory != t.devices[j].memory ||
+          t.devices[i].performance != t.devices[j].performance)
+        continue;
       bool twin = true;
       for (std::size_t k = 0; k < n; ++k) {
         if (k != i && k != j) twin = twin && link(i, k) == link(j, k);
@@ -1529,6 +1630,427 @@ TEST(PartitionTest, MakeFullDoesNotEmitDuplicateAllGather) {
         d.graph.nodes(), [](const ir::Node& n) { return n.key.op == ir::Op::kAllGather; });
     EXPECT_EQ(gathers, 1U);
   }
+}
+
+// Synthetic described rates below are test inputs, not measurements of any GPU.
+namespace cost {
+constexpr std::array kRoles{components::WeightRole{.name = "matrix"}};
+constexpr std::array kWeightSplit{components::RoleSplit{.role = 0, .dim = 1}};
+constexpr std::array kSplits{components::SplitOption{.kind = SplitKind::kColumns,
+                                                     .collective = ir::Op::kAllGather,
+                                                     .bytes_per_step =
+                                                         [](const components::SplitStep& step) {
+                                                           return step.instance->stage.width *
+                                                                  step.rows * 4;
+                                                         },
+                                                     .weights = kWeightSplit}};
+const components::ComponentDef& Def() {
+  static const components::ComponentDef def{
+      .kind = "cost.test",
+      .roles = kRoles,
+      .shapes = [](const components::Instance& in)
+          -> std::expected<std::vector<components::RoleShape>, std::string> {
+        return std::vector{moe::Role(0, {in.stage.width, in.stage.width})};
+      },
+      .splits = kSplits,
+      .emit = [](components::Fragment& f) -> std::expected<components::FragmentOut, std::string> {
+        return components::FragmentOut{.stream = f.b.MatMul(f.Weight(0), f.stream)};
+      }};
+  return def;
+}
+StageModel Model(std::uint32_t layers = 1) {
+  StageModel model;
+  for (std::uint32_t layer = 0; layer < layers; ++layer) {
+    const auto index = static_cast<std::uint16_t>(layer);
+    model.instances.layers.push_back({components::Instance{.def = &Def(),
+                                                           .params = {},
+                                                           .stage = {.width = kWidth},
+                                                           .site = components::Site::kLayer,
+                                                           .layer = layer,
+                                                           .index = index}});
+    model.roles.push_back({RoleTensor{.name = std::format("matrix.{}", layer),
+                                      .format = Format(Encoding::kF32, {kWidth, kWidth})}});
+  }
+  return model;
+}
+Topology Described(std::size_t devices = 2, double bandwidth = 1e12, double rate = 1e6,
+                   double link_bandwidth = 1e12) {
+  auto topology = Uniform(devices, kAmple, link_bandwidth, 0);
+  topology.cost_model = CostModel::kExecution;
+  for (auto& device : topology.devices) {
+    device.performance =
+        DevicePerformance{.memory_bytes_per_s = bandwidth,
+                          .rates = {{.op = ir::Primitive(ir::Op::kMatMul), .units_per_s = rate}},
+                          .provenance = "synthetic planner test input; not a hardware measurement"};
+  }
+  return topology;
+}
+Workload Work() {
+  return {.prefill_rows = 8, .decode_rows = 1, .decode_share = 0.5, .context = 64, .slots = 1};
+}
+}  // namespace cost
+
+TEST(PartitionTest, ExecutionCostsUseActualSplitShapesAndReportedObjective) {
+  const auto model = cost::Model();
+  const auto topology = cost::Described();
+  const auto workload = cost::Work();
+  const Pipeline whole{.stages = {{0}}, .first_layer = {0}};
+  const Pipeline split{.stages = {{0, 1}}, .first_layer = {0}};
+  auto one = AssignPipeline(model, topology, workload, whole);
+  auto two = AssignPipeline(model, topology, workload, split);
+  ASSERT_TRUE(one) << one.error();
+  ASSERT_TRUE(two) << two.error();
+  ASSERT_TRUE(one->prefill_execution_seconds);
+  ASSERT_TRUE(two->prefill_execution_seconds);
+  // 2*K*N*M FLOPs; local N halves, while every rank reads all input rows.
+  EXPECT_DOUBLE_EQ(*one->prefill_execution_seconds, 2.0 * 32 * 32 * 8 / 1e6);
+  EXPECT_DOUBLE_EQ(*two->prefill_execution_seconds, 2.0 * 32 * 16 * 8 / 1e6);
+  EXPECT_DOUBLE_EQ(*two->decode_execution_seconds, 2.0 * 32 * 16 / 1e6);
+  EXPECT_NEAR(two->modelled_seconds_per_step,
+              0.5 * (*two->prefill_execution_seconds + two->prefill.seconds) +
+                  0.5 * (*two->decode_execution_seconds + two->decode.seconds),
+              1e-15);
+  auto chosen = Assign(model, topology, workload);
+  ASSERT_TRUE(chosen) << chosen.error();
+  EXPECT_EQ(chosen->stages, split.stages);
+  EXPECT_DOUBLE_EQ(chosen->modelled_seconds_per_step, two->modelled_seconds_per_step);
+}
+
+TEST(PartitionTest, ExecutionBandwidthIncludesReusedWeightsAndPerStepReadsWrites) {
+  const auto model = cost::Model();
+  const auto topology = cost::Described(2, 1e3, 1e12);
+  auto one = AssignPipeline(model, topology, cost::Work(), {.stages = {{0}}, .first_layer = {0}});
+  auto two =
+      AssignPipeline(model, topology, cost::Work(), {.stages = {{0, 1}}, .first_layer = {0}});
+  ASSERT_TRUE(one) << one.error();
+  ASSERT_TRUE(two) << two.error();
+  EXPECT_DOUBLE_EQ(*one->prefill_execution_seconds, (4096.0 + 256 * 8) / 1e3);
+  EXPECT_DOUBLE_EQ(*one->decode_execution_seconds, (4096.0 + 256) / 1e3);
+  EXPECT_DOUBLE_EQ(*two->prefill_execution_seconds, (2048.0 + 192 * 8) / 1e3);
+}
+
+TEST(PartitionTest, ExecutionWholeAndSplitCompeteWithJointCapacityFeasibility) {
+  const auto model = cost::Model();
+  auto topology = cost::Described(2, 1e12, 1e6, 1);
+  const Pipeline both{.stages = {{0, 1}}, .first_layer = {0}};
+  auto whole = AssignPipeline(model, topology, cost::Work(), both);
+  ASSERT_TRUE(whole) << whole.error();
+  EXPECT_EQ(whole->per_layer[0][0].option, kWhole);
+  // Communication makes whole cheaper, but only split fits this exact budget.
+  for (auto& device : topology.devices) device.memory = 2048;
+  auto split = AssignPipeline(model, topology, cost::Work(), both);
+  ASSERT_TRUE(split) << split.error();
+  EXPECT_EQ(split->per_layer[0][0].option, 0);
+  EXPECT_EQ(split->memory[0].second, 2048);
+  EXPECT_EQ(split->memory[1].second, 2048);
+  auto searched = Assign(model, topology, cost::Work());
+  ASSERT_TRUE(searched) << searched.error();
+  EXPECT_DOUBLE_EQ(searched->modelled_seconds_per_step, split->modelled_seconds_per_step);
+}
+
+TEST(PartitionTest, ExecutionFactsPreventFalseTopologyTwinsAndWeightBothPhases) {
+  const auto model = cost::Model();
+  auto topology = cost::Described(2, 1e3, 1e9, 1e-9);
+  topology.devices[1].performance->memory_bytes_per_s = 1e9;
+  topology.devices[1].performance->rates[0].units_per_s = 1e3;
+  auto workload = cost::Work();
+  workload.decode_share = 1;
+  auto decode = Assign(model, topology, workload);
+  ASSERT_TRUE(decode) << decode.error();
+  EXPECT_EQ(decode->stages, (std::vector<std::vector<std::uint32_t>>{{1}}));
+  workload.decode_share = 0;
+  auto prefill = Assign(model, topology, workload);
+  ASSERT_TRUE(prefill) << prefill.error();
+  EXPECT_EQ(prefill->stages, (std::vector<std::vector<std::uint32_t>>{{0}}));
+  workload.decode_share = 0.5;
+  auto mix = Assign(model, topology, workload);
+  ASSERT_TRUE(mix) << mix.error();
+  EXPECT_EQ(mix->stages, prefill->stages);
+  EXPECT_NEAR(mix->modelled_seconds_per_step,
+              0.5 * ((4096.0 + 256 * 8) / 1e3 + (4096.0 + 256) / 1e3), 1e-12);
+}
+
+TEST(PartitionTest, UnknownExecutionFactsAreExplicitAndTypedRatesAreRequired) {
+  const auto model = cost::Model();
+  auto topology = Uniform(1, kAmple);
+  auto traffic = Assign(model, topology, cost::Work());
+  ASSERT_TRUE(traffic) << traffic.error();
+  EXPECT_FALSE(traffic->prefill_execution_seconds);
+  EXPECT_FALSE(traffic->decode_execution_seconds);
+  topology.cost_model = CostModel::kExecution;
+  EXPECT_FALSE(Validate(topology));
+  EXPECT_FALSE(Assign(model, topology, cost::Work()));
+  topology = cost::Described(1);
+  topology.devices[0].performance->rates.clear();
+  auto missing = Assign(model, topology, cost::Work());
+  ASSERT_FALSE(missing);
+  EXPECT_NE(missing.error().find("lacks described rate"), std::string::npos);
+  topology = cost::Described(1);
+  topology.devices[0].performance->rates[0].accumulate = ir::Accumulate::kF32;
+  EXPECT_FALSE(Assign(model, topology, cost::Work()));
+  topology = cost::Described(1);
+  topology.devices[0].performance->rates[0].encoding = Encoding::kBF16;
+  EXPECT_FALSE(Assign(model, topology, cost::Work()));
+  topology = cost::Described(1);
+  topology.devices[0].performance->rates[0].params[0] = std::byte{1};
+  EXPECT_FALSE(Assign(model, topology, cost::Work()));
+}
+
+TEST(PartitionTest, DescribedPerformanceRejectsInvalidMetricsAndProvenance) {
+  for (double invalid : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                         std::numeric_limits<double>::quiet_NaN()}) {
+    auto topology = cost::Described(1);
+    topology.devices[0].performance->memory_bytes_per_s = invalid;
+    EXPECT_FALSE(Validate(topology));
+    topology = cost::Described(1);
+    topology.devices[0].performance->rates[0].units_per_s = invalid;
+    EXPECT_FALSE(Validate(topology));
+  }
+  auto topology = cost::Described(1);
+  topology.devices[0].performance->provenance.clear();
+  EXPECT_FALSE(Validate(topology));
+  topology = cost::Described(1);
+  topology.devices[0].performance->rates.push_back(topology.devices[0].performance->rates.front());
+  EXPECT_FALSE(Validate(topology));
+}
+
+TEST(PartitionTest, ExecutionSearchMatchesConfiguredPipelineEnumeration) {
+  const auto model = cost::Model(3);
+  auto topology = cost::Described(3, 1e5, 1e7, 2e4);
+  topology.devices[1].performance->rates[0].units_per_s *= 2;
+  topology.devices[2].performance->memory_bytes_per_s *= 3;
+  for (auto& device : topology.devices) device.memory = 6144;
+  ExpectSearchExact(model, topology, cost::Work(), 3);
+}
+
+TEST(PartitionTest, ExecutionReadsStateAndCapacityRetainsEverySlot) {
+  const components::ComponentDef definition{
+      .kind = "cost.state.test",
+      .shapes = [](const components::Instance&)
+          -> std::expected<std::vector<components::RoleShape>, std::string> {
+        return std::vector<components::RoleShape>{};
+      },
+      .state =
+          [](const components::Instance&) {
+            return model::StateContract{.tensors = {{.name = "fixed",
+                                                     .kind = model::StateKind::kFeatures,
+                                                     .encoding = Encoding::kF32,
+                                                     .cell_bytes = 128,
+                                                     .cells = model::CellRule::kFixed,
+                                                     .window_or_ratio = 1,
+                                                     .cell_pad = 1,
+                                                     .rollback = model::Rollback::kSnapshot}}};
+          },
+      .max_state_tensors = 1,
+      .emit = [](components::Fragment& fragment)
+          -> std::expected<components::FragmentOut, std::string> {
+        return components::FragmentOut{.stream =
+                                           fragment.b.Add(fragment.stream, fragment.State(0, 0))};
+      }};
+  StageModel model;
+  model.instances.layers.push_back({components::Instance{.def = &definition,
+                                                         .params = {},
+                                                         .stage = {.width = kWidth},
+                                                         .site = components::Site::kLayer}});
+  model.roles.resize(1);
+  auto topology = cost::Described(1, 1e3, 1e30);
+  topology.devices[0].performance->rates[0].op = ir::Primitive(ir::Op::kAdd);
+  auto workload = cost::Work();
+  workload.slots = 3;
+  auto assignment = Assign(model, topology, workload);
+  ASSERT_TRUE(assignment) << assignment.error();
+  EXPECT_EQ(assignment->memory[0].second, 3 * 128U);
+  EXPECT_DOUBLE_EQ(*assignment->prefill_execution_seconds, (128.0 + 256 * 8) / 1e3);
+  EXPECT_DOUBLE_EQ(*assignment->decode_execution_seconds, (128.0 + 256) / 1e3);
+}
+
+// Describe the actual synthetic graph's typed operations, including the EP
+// ownership/select auxiliaries. These are test rates, not measured capabilities.
+void AddSyntheticRates(Topology& topology, const ir::Graph& graph) {
+  for (const auto& node : graph.nodes()) {
+    if (node.nout == 0) continue;
+    OperationRate rate{.op = node.key,
+                       .params = node.params,
+                       .encoding = graph.tensor(node.out[0]).format.encoding,
+                       .units_per_s = 1e30};
+    if (node.key.op == ir::Op::kMatMul || node.key.op == ir::Op::kMatMulId) {
+      rate.encoding = graph.tensor(node.src[0]).format.encoding;
+      rate.accumulate = node.Params<ir::ProductParams>().accumulate;
+      if (node.key.op == ir::Op::kMatMulId) rate.units_per_s = 1e3;
+    } else if (node.key.op == ir::Op::kAttention) {
+      rate.encoding = graph.tensor(node.src[1]).format.encoding;
+      rate.accumulate = node.Params<ir::AttnParams>().accumulate;
+    }
+    for (auto& device : topology.devices) {
+      auto& rates = device.performance->rates;
+      if (std::ranges::none_of(rates, [&](const auto& existing) {
+            return existing.op == rate.op && existing.params == rate.params &&
+                   existing.encoding == rate.encoding && existing.accumulate == rate.accumulate;
+          }))
+        rates.push_back(rate);
+    }
+  }
+}
+
+TEST(PartitionTest, ExpertParallelCostKeepsEveryRoutedSlotOnEveryRank) {
+  auto definition = moe::Def();
+  definition.splits = definition.splits.first(1);  // whole-expert placement only
+  auto model = moe::Model(true);
+  model.instances.layers[0][0].def = &definition;
+  auto topology = cost::Described(2, 1e30, 1e30);
+  for (auto& device : topology.devices) device.performance->rates.clear();
+  auto workload = cost::Work();
+  workload.decode_share = 1;
+  const StepShape shape{.phase = Phase::kDecode,
+                        .segments = {{.rows = 1, .past = 63, .read_cells = 256, .outputs = 1}}};
+  auto fragment =
+      components::BuildComponent(model.instances.layers[0][0], shape, moe::Formats(), {});
+  ASSERT_TRUE(fragment) << fragment.error();
+  for (std::uint32_t ways : {1U, 2U}) {
+    Assignment assignment{.topology = Uniform(ways, kAmple)};
+    std::vector<std::uint32_t> group;
+    for (std::uint32_t rank = 0; rank < ways; ++rank) group.push_back(rank);
+    assignment.per_layer.push_back(
+        {ComponentPlacement{.component = 1,
+                            .def = &definition,
+                            .split = ways == 1 ? SplitKind::kNone : SplitKind::kExperts,
+                            .option = ways == 1 ? kWhole : std::uint8_t{0},
+                            .devices = group}});
+    auto partition = Partition(fragment->step.graph, assignment);
+    ASSERT_TRUE(partition) << partition.error();
+    for (const auto& device : partition->devices) AddSyntheticRates(topology, device.graph);
+  }
+  auto one = AssignPipeline(model, topology, workload, {.stages = {{0}}, .first_layer = {0}});
+  ASSERT_TRUE(one) << one.error();
+  // Determine exact EP capacity independently using the traffic-only inventory.
+  auto capacity =
+      AssignPipeline(model, Uniform(2, kAmple), workload, {.stages = {{0, 1}}, .first_layer = {0}});
+  ASSERT_TRUE(capacity) << capacity.error();
+  for (auto& device : topology.devices) device.memory = capacity->memory[0].second;
+  auto experts =
+      AssignPipeline(model, topology, workload, {.stages = {{0, 1}}, .first_layer = {0}});
+  ASSERT_TRUE(experts) << experts.error();
+  ASSERT_EQ(experts->per_layer[0][0].split, SplitKind::kExperts);
+  const double routed = 3.0 * 2 * kWidth * moe::kExpertHidden * 3 / 1e3;
+  EXPECT_NEAR(*one->decode_execution_seconds, routed, 1e-12);
+  EXPECT_NEAR(*experts->decode_execution_seconds, routed, 1e-12);
+}
+
+TEST(PartitionTest, ExecutionSourceWorkIncludesFrameworkMasksAndActualNarrowing) {
+  const Tiny tiny = TinyGemma(true);
+  auto model = ModelOf(tiny.spec, 0, tiny.tensors);
+  ASSERT_TRUE(model) << model.error();
+  auto workload = cost::Work();
+  auto topology = cost::Described(1, 1e3, 1e30);
+  topology.devices[0].performance->rates.clear();
+  auto layout = components::StageLayout(tiny.spec, 0, workload.context, workload.prefill_rows);
+  ASSERT_TRUE(layout) << layout.error();
+  for (const auto rows : {workload.prefill_rows, workload.decode_rows}) {
+    const bool prefill = rows == workload.prefill_rows;
+    const StepShape shape{.phase = prefill ? Phase::kPrefill : Phase::kDecode,
+                          .segments = {{.rows = rows,
+                                        .past = workload.context - rows,
+                                        .read_cells = 256,
+                                        .outputs = prefill ? 1U : rows}}};
+    auto step =
+        components::BuildStep(tiny.spec, 0, shape, {.tensors = tiny.tensors, .state = &*layout});
+    ASSERT_TRUE(step) << step.error();
+    AddSyntheticRates(topology, step->graph);
+    for (const auto& node : step->graph.nodes()) {
+      if (node.component == model->instances.output->index && node.key.op == ir::Op::kMatMul)
+        EXPECT_EQ(step->graph.tensor(node.out[0]).ne(1), 1U);
+    }
+  }
+  auto assignment = Assign(*model, topology, workload);
+  ASSERT_TRUE(assignment) << assignment.error();
+  ASSERT_TRUE(assignment->prefill_execution_seconds);
+  EXPECT_GT(*assignment->prefill_execution_seconds, *assignment->decode_execution_seconds);
+  // Mask construction must be priced, even though its nodes are framework
+  // dependencies rather than members of the attention's component ordinal.
+  std::erase_if(topology.devices[0].performance->rates,
+                [](const auto& rate) { return rate.op.op == ir::Op::kMaskBuild; });
+  auto missing = Assign(*model, topology, workload);
+  ASSERT_FALSE(missing);
+  EXPECT_NE(missing.error().find("mask_build"), std::string::npos);
+}
+
+TEST(PartitionTest, ExecutionCostsPreserveTheActualQuantizedCacheLayout) {
+  std::array<double, 2> decode{};
+  std::size_t encoding_index = 0;
+  for (const auto encoding : {Encoding::kF16, Encoding::kQ8_0}) {
+    SCOPED_TRACE(static_cast<unsigned>(encoding));
+    // D64 is a supported quantized attention domain. The producer submits F32
+    // rows, while the cache stores either dense F16 or GGML Q8_0 blocks.
+    auto tiny = TinyGemma(true, Encoding::kF32, kHidden, 64, encoding);
+    // Match all arithmetic across the representation comparison.
+    for (auto& layer : tiny.spec.stages[0].layers)
+      for (auto& param : layer.components[0].params)
+        if (param.name == "softcap") param.value = R(0.0);
+    auto model = ModelOf(tiny.spec, 0, tiny.tensors);
+    ASSERT_TRUE(model) << model.error();
+    const auto workload = cost::Work();
+    auto topology = cost::Described(1, 1e6, 1e30);
+    topology.devices[0].performance->rates.clear();
+    auto layout = components::StageLayout(tiny.spec, 0, workload.context, workload.prefill_rows);
+    ASSERT_TRUE(layout) << layout.error();
+    std::size_t stores = 0;
+    for (const auto rows : {workload.prefill_rows, workload.decode_rows}) {
+      const bool prefill = rows == workload.prefill_rows;
+      const StepShape shape{.phase = prefill ? Phase::kPrefill : Phase::kDecode,
+                            .segments = {{.rows = rows,
+                                          .past = workload.context - rows,
+                                          .read_cells = 256,
+                                          .outputs = prefill ? 1U : rows}}};
+      auto step =
+          components::BuildStep(tiny.spec, 0, shape, {.tensors = tiny.tensors, .state = &*layout});
+      ASSERT_TRUE(step) << step.error();
+      AddSyntheticRates(topology, step->graph);
+      for (const auto& node : step->graph.nodes()) {
+        if (node.key != ir::Primitive(ir::Op::kCacheStore)) continue;
+        const auto& destination = step->graph.tensor(node.src[0]).format;
+        const auto& submitted = step->graph.tensor(node.src[1]).format;
+        EXPECT_EQ(destination.encoding, encoding);
+        EXPECT_EQ(submitted.encoding, Encoding::kF32);
+        auto written = destination;
+        written.shape = submitted.shape;
+        auto parts = format::PartsOf(written);
+        ASSERT_TRUE(parts);
+        if (encoding == Encoding::kQ8_0) {
+          EXPECT_EQ(written.layout, format::Layout::kGgmlBlocks);
+          EXPECT_EQ(parts->parts()[0].bytes, ir::Elements(submitted.shape) / 32 * 34);
+        }
+        ++stores;
+      }
+    }
+    EXPECT_GT(stores, 0U);
+    auto assignment = Assign(*model, topology, workload);
+    ASSERT_TRUE(assignment) << assignment.error();
+    ASSERT_TRUE(assignment->prefill_execution_seconds);
+    ASSERT_TRUE(assignment->decode_execution_seconds);
+    decode.at(encoding_index++) = *assignment->decode_execution_seconds;
+  }
+  EXPECT_GT(decode[0], decode[1]);  // Both cache reads and stores use their real representations.
+}
+
+TEST(PartitionTest, CapacityInventoryCannotWrapOrAliasConflictingFormats) {
+  auto model = cost::Model(5);
+  constexpr std::uint64_t width = std::uint64_t{1} << 30;
+  for (auto& layer : model.instances.layers) layer[0].stage.width = width;
+  for (auto& roles : model.roles) roles[0].format = Format(Encoding::kF32, {width, width});
+  // Each tensor fits the byte type and each is distinct; their sum does not.
+  EXPECT_FALSE(Assign(model, Uniform(1, std::numeric_limits<std::uint64_t>::max()), cost::Work()));
+  model.instances.layers.resize(3);
+  model.roles.resize(3);
+  auto feasible =
+      Assign(model, Uniform(1, std::numeric_limits<std::uint64_t>::max()), cost::Work());
+  ASSERT_TRUE(feasible) << feasible.error();
+  EXPECT_EQ(feasible->memory[0].second, 3 * (std::uint64_t{1} << 62));
+  model = cost::Model(2);
+  model.roles[1][0].name = model.roles[0][0].name;
+  model.roles[1][0].format.encoding = Encoding::kF16;
+  auto conflict = Assign(model, Uniform(1, kAmple), cost::Work());
+  ASSERT_FALSE(conflict);
+  EXPECT_NE(conflict.error().find("conflicting formats"), std::string::npos);
 }
 
 }  // namespace

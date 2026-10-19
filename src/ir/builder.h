@@ -160,6 +160,7 @@ class Builder {
   TensorId Add(TensorId a, TensorId b);
   TensorId Sub(TensorId a, TensorId b);
   TensorId Mul(TensorId a, TensorId b);
+  TensorId Select(TensorId condition, TensorId yes, TensorId no);
   TensorId Div(TensorId a, TensorId b);
   TensorId Scale(TensorId x, float scale, float bias = 0.0f);
   TensorId Unary(TensorId x, UnaryFn fn);

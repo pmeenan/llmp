@@ -98,6 +98,8 @@ std::string_view OpName(Op op) {
       return "rounded_index_score";
     case Op::kPrefixOverwrite:
       return "prefix_overwrite";
+    case Op::kSelect:
+      return "select";
     case Op::kRoute:
       return "route";
     case Op::kExpertReduce:
@@ -247,6 +249,18 @@ std::string OpKeyName(OpKey key) {
     return std::string(OpName(key.op));
   }
   return std::string(OpName(key.op)) + "." + std::string(FusedKindName(key.fused));
+}
+
+std::string_view ProductArithmeticName(ProductArithmetic arithmetic) {
+  switch (arithmetic) {
+    case ProductArithmetic::kImplementation:
+      return "implementation";
+    case ProductArithmetic::kBf16F32:
+      return "bf16_rne_f32";
+    case ProductArithmetic::kGgmlQ8_1F32:
+      return "ggml_q8_1_f32";
+  }
+  return "unknown";
 }
 
 }  // namespace llmp::ir

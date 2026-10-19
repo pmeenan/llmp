@@ -81,14 +81,8 @@ constexpr std::uint32_t kGb10 = 121;
 
 ex::Registry PlanningRegistry() {
   std::vector<ex::Implementation> v;
-  for (const kg::CapabilityDeclaration& d : kg::CapabilityDeclarations()) {
-    v.push_back({.name = std::string(d.name),
-                 .operation = d.operation,
-                 .source = "ggml",
-                 .revision = "planning",
-                 .build = "cpu",
-                 .variant = std::string(kg::AcceptsTextOf(d.name)),
-                 .capability = *d.capability});
+  for (auto d : kg::PlanningImplementations()) {
+    v.push_back(std::move(d));
   }
   return std::move(ex::Registry::Create(std::move(v)).value());
 }
@@ -129,27 +123,20 @@ kg::DeviceChoices Device() {
 
 // ------------------------------------------------------------ the recipes
 
-// A serving envelope and the recipe there (the candidate within a context
-// of 8,192 and four owners, bounded at 4,096 and two).
+// Serving envelopes spanning bounded, joined and owners-alone scheduling.
 struct Recipe {
   std::string name;
   std::uint32_t context = 0;
   std::uint32_t slots = 0;
   std::uint32_t max_rows = 0;
-  bool candidate = false;
   bool bounded = false;
 };
 
 std::vector<Recipe> Recipes(std::uint32_t size) {
   const std::uint32_t rows = size == 26 ? 1024 : 256;  // the envelope's chunks
   return {
-      {.name = "bounded",
-       .context = 4096,
-       .slots = 2,
-       .max_rows = rows,
-       .candidate = true,
-       .bounded = true},
-      {.name = "envelope", .context = 8192, .slots = 4, .max_rows = rows, .candidate = true},
+      {.name = "bounded", .context = 4096, .slots = 2, .max_rows = rows, .bounded = true},
+      {.name = "envelope", .context = 8192, .slots = 4, .max_rows = rows},
       {.name = "outside", .context = 16384, .slots = 2, .max_rows = 128},
   };
 }
@@ -423,9 +410,11 @@ TEST_P(GgmlLowerGemma4, ServingRecipesLowerEverySetupShape) {
   for (const Recipe& r : Recipes(size)) {
     Ir ir_ = TargetIr(size, r);
     ASSERT_EQ(ir_.layouts[0].context, r.context);
-    // The policy is the recipe's: narrowing only outside the envelope.
-    EXPECT_EQ(pl::Disabled(ir_.policy, "narrow_final"), r.candidate) << r.name;
-    EXPECT_EQ(pl::Disabled(ir_.policy, "owner_attention"), !r.candidate) << r.name;
+    // Structural eligibility is common to all serving envelopes; concrete
+    // owner/row geometry determines the implementations below.
+    EXPECT_FALSE(pl::Disabled(ir_.policy, "narrow_final")) << r.name;
+    EXPECT_FALSE(pl::Disabled(ir_.policy, "owner_attention")) << r.name;
+    EXPECT_TRUE(pl::Disabled(ir_.policy, "owner_padded_reads")) << r.name;
     for (const Case& c : SetupCases(p, r)) {
       for (const bool device_masks : {true, false}) {
         SCOPED_TRACE(std::format("{} {}{}", r.name, c.Name(), device_masks ? "" : ", host masks"));
@@ -435,8 +424,12 @@ TEST_P(GgmlLowerGemma4, ServingRecipesLowerEverySetupShape) {
         if (::testing::Test::HasFatalFailure()) return;
         ExpectInputs(w, device_masks);
         if (::testing::Test::HasFatalFailure()) return;
-        // The owner forms only within the envelope.
-        if (!r.candidate) EXPECT_EQ(w.owners, 0U);
+        // Gemma 4's native owner-attention domain is one returned row
+        // per owner, independent of the mapping's scheduling envelope.
+        const bool decode = std::ranges::all_of(c.ir.segments, [](const auto& segment) {
+          return segment.rows == 1 && segment.outputs == 1;
+        });
+        EXPECT_EQ(w.owners, c.ir.segments.size() > 1 && decode ? 1U : 0U);
         // Each owner's own outputs.
         std::uint32_t outputs = 0;
         for (const kn::OutputSlot& o : w.lowered->outputs) {
@@ -445,8 +438,7 @@ TEST_P(GgmlLowerGemma4, ServingRecipesLowerEverySetupShape) {
         }
         EXPECT_EQ(outputs, c.state_only ? 0U : c.ir.segments.size());
         // The 26B-A4B's routing and scaled reduce, one pair a layer, as
-        // their fused launches within the envelope and on their primitives
-        // outside it.
+        // their fused launches wherever the graph matches.
         const auto fused = [&](std::string_view name) {
           return std::ranges::count_if(w.lowered->plan.steps, [&](const kg::PlanStep& step) {
             return step.implementation == name;
@@ -454,8 +446,7 @@ TEST_P(GgmlLowerGemma4, ServingRecipesLowerEverySetupShape) {
         };
         // A state-only step has no use for the last layer's feed-forward
         // (nothing reads its rows), so it is not run.
-        const std::ptrdiff_t pairs =
-            r.candidate && size == 26 ? p.layers - (c.state_only ? 1U : 0U) : 0;
+        const std::ptrdiff_t pairs = size == 26 ? p.layers - (c.state_only ? 1U : 0U) : 0;
         EXPECT_EQ(fused(kg::kGemmaRouteName), pairs);
         EXPECT_EQ(fused(kg::kGemmaReduceName), pairs);
         owner_forms += w.owners != 0 ? 1 : 0;

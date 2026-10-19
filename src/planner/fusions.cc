@@ -247,6 +247,16 @@ class Building {
   std::optional<Match> Finish(std::vector<std::pair<NodeId, int>> places,
                               std::function<void(RewriteContext&, int)> emit,
                               std::vector<TensorId> sources = {}) {
+    // These compound substitutions have no transfer proof for an already
+    // constrained product recipe. Keep its explicit preparation/product chain;
+    // neither another fusion nor a different decomposition may erase the seal.
+    for (const auto id : nodes_) {
+      const auto& node = c_.node(id);
+      if ((node.key.op == Op::kMatMul || node.key.op == Op::kMatMulId ||
+           node.key == ir::Fused(FusedKind::kGroupedMatMul)) &&
+          node.Params<ir::ProductParams>().arithmetic != ir::ProductArithmetic::kImplementation)
+        return std::nullopt;
+    }
     std::ranges::sort(nodes_);
     // These patterns emit at several places and bypass the primitive
     // patterns' order check. Conservatively reject an intervening access
@@ -331,8 +341,7 @@ bool Undisturbed(const MatchContext& c, const Building& m, NodeId from, NodeId t
 
 // Whether caching a read at `from` is safe until `to`. Pure views do
 // not write; stores and fused in-place outputs do.
-bool Unwritten(const MatchContext& c, NodeId from, NodeId to, TensorId tensor) {
-  const ir::Graph& g = c.graph();
+bool Unwritten(const ir::Graph& g, NodeId from, NodeId to, TensorId tensor) {
   const TensorId root = g.root(tensor);
   for (std::uint32_t k = from.v + 1; k < to.v; ++k) {
     const ir::Node& n = g.node(NodeId{k});
@@ -345,6 +354,10 @@ bool Unwritten(const MatchContext& c, NodeId from, NodeId to, TensorId tensor) {
     }
   }
   return true;
+}
+
+bool Unwritten(const MatchContext& c, NodeId from, NodeId to, TensorId tensor) {
+  return Unwritten(c.graph(), from, to, tensor);
 }
 
 // ------------------------------------------------------- hyper-connections
@@ -2282,7 +2295,12 @@ std::optional<Match> QsaGateMatch(const MatchContext& c, NodeId anchor) {
     const std::array<ir::TensorDesc, 1> req = {g.tensor(q.out[0])};
     r.Set(q.out[0], bl.Emit(q.key, q.params, src, req)[0]);
   };
-  return b.Finish({{anchor, 0}, {product, 1}}, emit);
+  auto match = b.Finish({{anchor, 0}, {product, 1}}, emit);
+  if (match) {
+    match->numerical_change = NumericalChange::kMxfp8ProductInput;
+    match->numerical_sites = {product};
+  }
+  return match;
 }
 
 // --------------------------------------------------------------------- MoE
@@ -2616,11 +2634,13 @@ ir::TensorDesc Q8Rows(const ir::TensorDesc& x) {
 
 // Products of input `x`, each with a candidate over it prepared as
 // `prepared`: the anchor the first.
-std::optional<Match> PreparedInputs(const MatchContext& c, NodeId anchor, TensorId x,
-                                    const ir::TensorDesc& prepared,
-                                    const std::function<bool(const ir::Node&)>& takes,
-                                    Encoding encoding, format::Layout layout) {
-  std::vector<NodeId> products;
+std::optional<Match> PreparedInputs(
+    const MatchContext& c, NodeId anchor, TensorId x, const ir::TensorDesc& prepared,
+    const std::function<bool(const ir::Node&)>& takes, Encoding encoding, format::Layout layout,
+    ir::ProductArithmetic arithmetic = ir::ProductArithmetic::kImplementation) {
+  std::vector<NodeId> products, unqualified;
+  const auto change = encoding == Encoding::kMxfp8 ? NumericalChange::kMxfp8ProductInput
+                                                   : NumericalChange::kQ8VectorReduction;
   for (const NodeId r : c.readers(x)) {
     if (r < anchor || c.taken(r) || std::ranges::contains(products, r)) {
       continue;
@@ -2630,6 +2650,23 @@ std::optional<Match> PreparedInputs(const MatchContext& c, NodeId anchor, Tensor
     if (!takes(q)) {
       continue;
     }
+    ir::ParamBytes params = q.params;
+    if (arithmetic != ir::ProductArithmetic::kImplementation) {
+      // Sharing a preparation requires the selected incumbent's complete
+      // arithmetic fact, not a candidate for a different prepared algorithm.
+      if (q.key != Prim(Op::kMatMul) || c.view().IncumbentArithmetic(c.graph(), q) != arithmetic)
+        continue;
+      auto product = q.Params<ir::ProductParams>();
+      // A qualified numerical recipe must reach its own candidate selection,
+      // rather than first being sealed to the ordinary incumbent's arithmetic.
+      // Explicit product contracts still constrain every prepared competitor.
+      if (product.arithmetic == ir::ProductArithmetic::kImplementation &&
+          (c.view().Qualification(change, c.graph(), q) ||
+           std::ranges::contains(c.view().policy().numerical_candidates, change)))
+        continue;
+      product.arithmetic = arithmetic;
+      params = ir::ToBytes(product);
+    }
     std::vector<const ir::TensorDesc*> s;
     for (std::size_t i = 0; i < q.nsrc; ++i) {
       const TensorId t = q.src.at(i);
@@ -2637,7 +2674,13 @@ std::optional<Match> PreparedInputs(const MatchContext& c, NodeId anchor, Tensor
     }
     std::vector<const ir::TensorDesc*> o;
     for (const TensorId t : q.outputs()) o.push_back(&c.tensor(t));
-    if (!c.view().Candidates(q.key, s, o, q.params).empty()) {
+    if (!c.view().Candidates(q.key, s, o, params).empty()) {
+      if (arithmetic == ir::ProductArithmetic::kImplementation && r != anchor &&
+          !c.view().NumericallyQualified(change, c.graph(), q) &&
+          !std::ranges::contains(c.view().policy().numerical_candidates, change)) {
+        unqualified.push_back(r);
+        continue;
+      }
       products.push_back(r);
     }
   }
@@ -2654,7 +2697,7 @@ std::optional<Match> PreparedInputs(const MatchContext& c, NodeId anchor, Tensor
   Building b(c);
   for (const NodeId n : products) b.Add(n);
   const std::vector<NodeId> nodes = products;
-  auto emit = [x, nodes, encoding, layout](RewriteContext& r, int id) {
+  auto emit = [x, nodes, encoding, layout, arithmetic](RewriteContext& r, int id) {
     const ir::Graph& g = r.original();
     const ir::Node& q = g.node(nodes.at(static_cast<std::size_t>(id)));
     ContextOf(r, q);
@@ -2669,14 +2712,25 @@ std::optional<Match> PreparedInputs(const MatchContext& c, NodeId anchor, Tensor
     }
     std::vector<ir::TensorDesc> req;
     for (const TensorId o : q.outputs()) req.push_back(g.tensor(o));
-    const ir::Outputs out = b.Emit(q.key, q.params, src, req);
+    ir::ParamBytes params = q.params;
+    if (arithmetic != ir::ProductArithmetic::kImplementation) {
+      auto product = q.Params<ir::ProductParams>();
+      product.arithmetic = arithmetic;
+      params = ir::ToBytes(product);
+    }
+    const ir::Outputs out = b.Emit(q.key, params, src, req);
     for (std::size_t i = 0; i < q.nout; ++i) r.Set(q.out.at(i), out[i]);
   };
   std::vector<std::pair<NodeId, int>> places;
   for (std::size_t i = 0; i < products.size(); ++i) {
     places.emplace_back(products[i], static_cast<int>(i));
   }
-  return b.Finish(std::move(places), emit, {x});
+  auto match = b.Finish(std::move(places), emit, {x});
+  if (match && arithmetic == ir::ProductArithmetic::kImplementation) {
+    match->numerical_sites = products;
+    match->unqualified_sites = std::move(unqualified);
+  }
+  return match;
 }
 
 }  // namespace
@@ -2727,6 +2781,14 @@ std::optional<Match> VecQGluMatch(const MatchContext& c, NodeId anchor) {
   }
   const ir::Node& gn = c.node(pg);
   const ir::Node& un = c.node(pu);
+  const auto default_product = [](const ir::Node& node) {
+    const auto params = node.Params<ir::ProductParams>();
+    return params.accumulate == ir::Accumulate::kDefault && params.hint == ir::ProductHint::kNone &&
+           params.arithmetic == ir::ProductArithmetic::kImplementation;
+  };
+  // The fused GLU encodes default products. Numerical authority for an input
+  // preparation cannot erase a separate requested accumulation or recipe seal.
+  if (!default_product(gn) || !default_product(un)) return std::nullopt;
   if (gn.src[1] != un.src[1] || (routed && gn.src[2] != un.src[2]) ||
       !(c.tensor(gn.src[0]).format == c.tensor(un.src[0]).format)) {
     return std::nullopt;
@@ -2791,7 +2853,9 @@ std::optional<Match> VecQGluMatch(const MatchContext& c, NodeId anchor) {
       const std::array<TensorId, 3> src = {r.Map(s[0]), r.Map(s[1]), r.Map(s[2])};
       r.Set(g.node(anchor).out[0], r.builder().Fused(FusedKind::kMatMulGlu, src, glu)[0]);
     };
-    return b.Finish({{anchor, 0}}, emit);
+    auto match = b.Finish({{anchor, 0}}, emit);
+    if (match) match->numerical_sites = {pg, pu};
+    return match;
   }
   // Routed: the reshape of x read by both products only.
   for (const NodeId rd : c.readers(c.node(reshape).out[0])) {
@@ -2815,7 +2879,9 @@ std::optional<Match> VecQGluMatch(const MatchContext& c, NodeId anchor) {
     const std::array<TensorId, 4> src = {r.Map(s[0]), r.Map(s[1]), r.Map(s[2]), r.Map(s[3])};
     r.Set(g.node(anchor).out[0], r.builder().Fused(FusedKind::kMatMulIdGlu, src, params)[0]);
   };
-  return b.Finish({{anchor, 0}}, emit);
+  auto match = b.Finish({{anchor, 0}}, emit);
+  if (match) match->numerical_sites = {pg, pu};
+  return match;
 }
 
 // ----------------------------------------------------------------- round 1
@@ -2847,7 +2913,7 @@ std::optional<Match> HcFoldInputsMatch(const MatchContext& c, NodeId anchor) {
              od.format.encoding == Encoding::kBF16) {
     stands = rounded;
   }
-  if (stands.valid()) {
+  if (stands.valid() && c.tensor(stands).format == od.format) {
     Building b(c);
     b.Add(anchor);
     auto emit = [=](RewriteContext& r, int) {
@@ -2859,13 +2925,14 @@ std::optional<Match> HcFoldInputsMatch(const MatchContext& c, NodeId anchor) {
       c.tensor(n.src[0]).format.encoding != Encoding::kBF16) {
     return std::nullopt;
   }
-  const std::uint64_t rows = c.tensor(x).ne(1);
-  if (rows <= 16U) {
+  if (c.tensor(rounded).format.encoding != Encoding::kBF16 ||
+      c.view().IncumbentArithmetic(c.graph(), n) != ir::ProductArithmetic::kBf16F32)
     return std::nullopt;
-  }
+  auto params = n.Params<ir::ProductParams>();
+  params.arithmetic = ir::ProductArithmetic::kBf16F32;
   const std::array<const ir::TensorDesc*, 2> s = {&c.tensor(n.src[0]), &c.tensor(rounded)};
   const std::array<const ir::TensorDesc*, 1> o = {&od};
-  if (!Has(c, Prim(Op::kMatMul), s, o, n.params)) {
+  if (!Has(c, Prim(Op::kMatMul), s, o, ir::ToBytes(params))) {
     return std::nullopt;
   }
   Building b(c);
@@ -2876,15 +2943,15 @@ std::optional<Match> HcFoldInputsMatch(const MatchContext& c, NodeId anchor) {
     ContextOf(r, q);
     const std::array<TensorId, 2> src = {r.Map(q.src[0]), r.Map(rounded)};
     const std::array<ir::TensorDesc, 1> req = {g.tensor(q.out[0])};
-    r.Set(q.out[0], r.builder().Emit(q.key, q.params, src, req)[0]);
+    r.Set(q.out[0], r.builder().Emit(q.key, ir::ToBytes(params), src, req)[0]);
   };
   return b.Finish({{anchor, 0}}, emit);
 }
 
-// bf16_inputs: BF16 products past 16 rows over one F32 input read it
-// rounded to BF16 once (llmp.bf16, then llmp.gemm.bf16: the conversion
-// GGML's cuBLAS product makes, shared). A step's outputs (a head) and a
-// fold's reader (hc_fold_inputs) are not.
+// Share an incumbent's authenticated BF16 RNE input conversion and F32
+// accumulation. The selected source declares these facts for its actual path;
+// neither dtype, row count nor a prepared candidate alone proves equivalence.
+// A step's outputs (a head) and a fold's reader are separate contracts.
 std::optional<Match> Bf16InputsMatch(const MatchContext& c, NodeId anchor) {
   const ir::Node& p = c.node(anchor);
   if (p.key != Prim(Op::kMatMul) || c.taken(anchor)) {
@@ -2892,7 +2959,7 @@ std::optional<Match> Bf16InputsMatch(const MatchContext& c, NodeId anchor) {
   }
   const TensorId x = p.src[1];
   const ir::TensorDesc& xd = c.tensor(x);
-  if (xd.format.encoding != Encoding::kF32 || xd.ne(1) <= 16 || xd.ne(2) != 1 || xd.ne(3) != 1) {
+  if (xd.format.encoding != Encoding::kF32 || xd.ne(2) != 1 || xd.ne(3) != 1) {
     return std::nullopt;
   }
   // (A fold's rounded rows are hc_fold_inputs' to give.)
@@ -2919,10 +2986,13 @@ std::optional<Match> Bf16InputsMatch(const MatchContext& c, NodeId anchor) {
     if (r < anchor || c.taken(r) || std::ranges::contains(products, r)) continue;
     if (!Unwritten(c, anchor, r, x)) continue;
     const ir::Node& q = c.node(r);
-    if (!bf16(q)) continue;
+    if (!bf16(q) || c.view().IncumbentArithmetic(c.graph(), q) != ir::ProductArithmetic::kBf16F32)
+      continue;
+    auto params = q.Params<ir::ProductParams>();
+    params.arithmetic = ir::ProductArithmetic::kBf16F32;
     const std::array<const ir::TensorDesc*, 2> s = {&c.tensor(q.src[0]), &rounded};
     const std::array<const ir::TensorDesc*, 1> o = {&c.tensor(q.out[0])};
-    if (!c.view().Candidates(q.key, s, o, q.params).empty()) products.push_back(r);
+    if (!c.view().Candidates(q.key, s, o, ir::ToBytes(params)).empty()) products.push_back(r);
   }
   if (products.empty() || products.front() != anchor) {
     return std::nullopt;
@@ -2949,7 +3019,9 @@ std::optional<Match> Bf16InputsMatch(const MatchContext& c, NodeId anchor) {
     }
     const std::array<TensorId, 2> src = {r.Map(q.src[0]), r.local()[0]};
     const std::array<ir::TensorDesc, 1> req = {g.tensor(q.out[0])};
-    r.Set(q.out[0], b.Emit(q.key, q.params, src, req)[0]);
+    auto params = q.Params<ir::ProductParams>();
+    params.arithmetic = ir::ProductArithmetic::kBf16F32;
+    r.Set(q.out[0], b.Emit(q.key, ir::ToBytes(params), src, req)[0]);
   };
   std::vector<std::pair<NodeId, int>> places;
   for (std::size_t i = 0; i < products.size(); ++i)
@@ -3076,54 +3148,116 @@ std::optional<Match> VecQInputsMatch(const MatchContext& c, NodeId anchor) {
   // itself in their sources (kMatMulIdGlu's x [W, T]; kMatMulId's b, which
   // is the activations [F, U, T] a slot: prepared per slot).
   const ir::TensorDesc prepared = Q8Rows(xd);
-  return PreparedInputs(c, anchor, x, prepared, takes, Encoding::kQ8_1,
-                        format::Layout::kGgmlBlocks);
+  if (auto equivalent =
+          PreparedInputs(c, anchor, x, prepared, takes, Encoding::kQ8_1,
+                         format::Layout::kGgmlBlocks, ir::ProductArithmetic::kGgmlQ8_1F32))
+    return equivalent;
+  auto changed =
+      PreparedInputs(c, anchor, x, prepared, takes, Encoding::kQ8_1, format::Layout::kGgmlBlocks);
+  if (changed) changed->numerical_change = NumericalChange::kQ8VectorReduction;
+  return changed;
+}
+
+std::optional<GroupedProduct> GroupedProductOf(const ir::Graph& g, NodeId product_id) {
+  const auto is = [&](NodeId n, Op op) {
+    return n.valid() && n.v < g.nodes().size() && g.node(n).key == Prim(op);
+  };
+  const auto made = [&](TensorId t) {
+    return t.valid() && t.v < g.tensor_count() ? g.producer(t) : NodeId{};
+  };
+  const auto only = [&](TensorId t) -> std::optional<NodeId> {
+    if (!t.valid() || std::ranges::contains(g.outputs(), t) || std::ranges::contains(g.keep(), t))
+      return std::nullopt;
+    std::optional<NodeId> found;
+    for (std::uint32_t i = 0; i < g.nodes().size(); ++i) {
+      for (const TensorId s : g.nodes()[i].sources()) {
+        if (s != t) continue;
+        if (found) return std::nullopt;
+        found = NodeId{i};
+      }
+    }
+    return found;
+  };
+  if (!is(product_id, Op::kMatMul)) return std::nullopt;
+  constexpr std::array<std::uint8_t, 4> swap{0, 2, 1, 3};
+  const auto& product = g.node(product_id);
+  const auto params = product.Params<ir::ProductParams>();
+  if (params.accumulate != ir::Accumulate::kDefault || params.hint != ir::ProductHint::kNone ||
+      params.arithmetic != ir::ProductArithmetic::kImplementation)
+    return std::nullopt;
+  const auto output_id = only(product.out[0]);
+  if (!output_id || !is(*output_id, Op::kPermute)) return std::nullopt;
+  const auto& output = g.node(*output_id);
+  if (output.Params<ir::PermuteParams>().axes != swap) return std::nullopt;
+  const auto input_id = made(product.src[1]);
+  const auto weight_id = made(product.src[0]);
+  if (!is(input_id, Op::kPermute) || !is(weight_id, Op::kReshape) ||
+      g.node(input_id).Params<ir::PermuteParams>().axes != swap ||
+      only(product.src[1]) != product_id)
+    return std::nullopt;
+  const auto assembly = only(output.out[0]);
+  if (!assembly || !is(*assembly, Op::kCont)) return std::nullopt;
+  const auto x = g.node(input_id).src[0];
+  const auto w = product.src[0];
+  const auto leaf = g.node(weight_id).src[0];
+  const auto& original = g.tensor(leaf);
+  const auto& grouped = g.tensor(w);
+  const auto& input = g.tensor(x);
+  const auto& packed = g.tensor(g.node(*assembly).out[0]);
+  const auto* reference = std::get_if<ir::WeightRef>(&original.binding);
+  if (!reference || reference->expert_array ||
+      g.tensor(product.out[0]).format.encoding != Encoding::kF32 ||
+      g.tensor(output.out[0]).format.encoding != Encoding::kF32 ||
+      packed.format.encoding != Encoding::kF32 || !is(made(leaf), Op::kWeight) ||
+      original.is_view() || original.format.shape.rank != 2 || original.format.stacked != 1 ||
+      original.format.layout != format::Layout::kGgmlBlocks || grouped.view_offset != 0 ||
+      grouped.format.shape.rank != 3 || grouped.ne(3) != 1 || grouped.ne(0) != original.ne(0) ||
+      grouped.ne(2) < 2 || original.ne(1) / grouped.ne(2) != grouped.ne(1) ||
+      original.ne(1) % grouped.ne(2) != 0 || !ir::IsContiguous(grouped) ||
+      input.format.encoding != Encoding::kF32 || !ir::IsContiguous(input) ||
+      input.ne(0) != grouped.ne(0) || input.ne(1) != grouped.ne(2) || input.ne(3) != 1 ||
+      packed.ne(3) != 1 ||
+      !((packed.ne(0) == original.ne(1) && packed.ne(1) == input.ne(2) && packed.ne(2) == 1) ||
+        (packed.ne(0) == grouped.ne(1) && packed.ne(1) == grouped.ne(2) &&
+         packed.ne(2) == input.ne(2))) ||
+      product.component != g.node(weight_id).component ||
+      product.component != g.node(made(leaf)).component ||
+      product.component != g.node(input_id).component || product.component != output.component ||
+      product.component != g.node(*assembly).component || !Unwritten(g, input_id, *output_id, x))
+    return std::nullopt;
+  const auto parts = format::PartsOf(original.format);
+  if (!parts || parts->size() != 1 || (*parts)[0].role != format::PartRole::kData)
+    return std::nullopt;
+  return GroupedProduct{.product = product_id,
+                        .input_permute = input_id,
+                        .output_permute = *output_id,
+                        .assembly = *assembly,
+                        .leaf = leaf,
+                        .weight = w,
+                        .input = x};
 }
 
 // A grouped product's actual layout chain, over an immutable 2D weight
 // resource reshaped into its complete groups. No equal-shape authority.
 std::optional<Match> GroupedVecQMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, anchor, Op::kPermute) || c.taken(anchor)) return std::nullopt;
-  constexpr std::array<std::uint8_t, 4> swap{0, 2, 1, 3};
   const auto& output = c.node(anchor);
-  if (output.Params<ir::PermuteParams>().axes != swap) return std::nullopt;
   const auto product_id = Made(c, output.src[0]);
-  if (!Is(c, product_id, Op::kMatMul) || Only(c, output.src[0]) != anchor) return std::nullopt;
-  const auto& product = c.node(product_id);
-  const auto input_id = Made(c, product.src[1]);
-  const auto weight_id = Made(c, product.src[0]);
-  if (!Is(c, input_id, Op::kPermute) || !Is(c, weight_id, Op::kReshape) ||
-      c.node(input_id).Params<ir::PermuteParams>().axes != swap ||
-      Only(c, product.src[1]) != product_id)
+  const auto grouped_product = GroupedProductOf(c.graph(), product_id);
+  if (!grouped_product || grouped_product->output_permute != anchor ||
+      Only(c, output.src[0]) != anchor || Only(c, c.node(product_id).src[1]) != product_id)
     return std::nullopt;
-  const auto x = c.node(input_id).src[0];
-  const auto w = product.src[0];
-  const auto leaf = c.node(weight_id).src[0];
-  const auto& original = c.tensor(leaf);
+  const auto& product = c.node(product_id);
+  const auto input_id = grouped_product->input_permute;
+  const auto x = grouped_product->input;
+  const auto w = grouped_product->weight;
   const auto& grouped = c.tensor(w);
   const auto& input = c.tensor(x);
   const auto params = product.Params<ir::ProductParams>();
-  const auto* reference = std::get_if<ir::WeightRef>(&original.binding);
-  if (!reference || reference->expert_array ||
-      c.tensor(product.out[0]).format.encoding != Encoding::kF32 ||
-      c.tensor(output.out[0]).format.encoding != Encoding::kF32 ||
-      c.producer(leaf).key != Prim(Op::kWeight) || original.is_view() ||
-      original.format.shape.rank != 2 || original.format.stacked != 1 ||
-      original.format.layout != format::Layout::kGgmlBlocks || grouped.view_offset != 0 ||
-      grouped.ne(0) != original.ne(0) || grouped.ne(2) == 0 ||
-      original.ne(1) / grouped.ne(2) != grouped.ne(1) || original.ne(1) % grouped.ne(2) != 0 ||
-      !ir::IsContiguous(grouped) || input.format.encoding != Encoding::kF32 ||
-      !ir::IsContiguous(input) || params.accumulate != ir::Accumulate::kDefault ||
-      params.hint != ir::ProductHint::kNone)
-    return std::nullopt;
-  const auto parts = format::PartsOf(original.format);
-  if (!parts || parts->size() != 1 || (*parts)[0].role != format::PartRole::kData)
-    return std::nullopt;
   // The final packed assembly remains an ordinary Cont when it is a graph
   // output; otherwise its contiguous grouped result reshapes in place.
   const auto consumer = Only(c, output.out[0]);
-  if (!consumer || !Is(c, *consumer, Op::kCont) || !Unwritten(c, input_id, anchor, x))
-    return std::nullopt;
+  if (!consumer || *consumer != grouped_product->assembly) return std::nullopt;
   const std::array<TensorId, 2> sources{w, x};
   const auto result = DenseDesc(Encoding::kF32, {grouped.ne(1), grouped.ne(2), input.ne(2)});
   const std::array<const ir::TensorDesc*, 1> outputs{&result};
@@ -3150,7 +3284,12 @@ std::optional<Match> GroupedVecQMatch(const MatchContext& c, NodeId anchor) {
       const TensorId grouped_out = r.builder().Fused(FusedKind::kGroupedMatMul, src, params)[0];
       r.Set(cont_out, r.builder().Reshape(grouped_out, shape));
     };
-    return b.Finish({{*consumer, 0}}, emit, {w, x});
+    auto match = b.Finish({{*consumer, 0}}, emit, {w, x});
+    if (match) {
+      match->numerical_change = NumericalChange::kQ8VectorReduction;
+      match->numerical_sites = {product_id};
+    }
+    return match;
   }
   if (!b.Add({input_id, product_id, anchor}) || !b.Closed(std::array{output.out[0]}))
     return std::nullopt;
@@ -3159,7 +3298,12 @@ std::optional<Match> GroupedVecQMatch(const MatchContext& c, NodeId anchor) {
     const std::array src{r.Map(w), r.Map(x)};
     r.Set(output.out[0], r.builder().Fused(FusedKind::kGroupedMatMul, src, params)[0]);
   };
-  return b.Finish({{anchor, 0}}, emit, {w, x});
+  auto match = b.Finish({{anchor, 0}}, emit, {w, x});
+  if (match) {
+    match->numerical_change = NumericalChange::kQ8VectorReduction;
+    match->numerical_sites = {product_id};
+  }
+  return match;
 }
 
 // ---------------------------------------------------------------- rewrite

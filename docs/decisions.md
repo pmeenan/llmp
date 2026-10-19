@@ -2028,6 +2028,17 @@ input fits. Existing request shapes remain valid; API version stays 1
 
 ## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057; its engine's CUDA use moved behind the device runtime on 2026-09-29, noted below; engine structure amended by D-107 (one runner of shared components, one serving adapter per pipeline kind); its engine core builds in every profile since 2026-10-08, amended below)
 
+**Amended 2026-10-18** (review follow-up R7). The service and serving
+commands accept explicit `--debug-plans`, off by default. It logs a paid
+plan report after each successful cache installation, including a later
+reinstallation after eviction; cache hits do not log another report. Model
+registration reports aggregate implementation coverage. Reports describe
+operations, implementations, fusion/fallback choices and physical storage,
+never prompt, KV or tensor payloads. Internal on-demand access uses the same
+paid report contract. This adds a diagnostic CLI option in the unreleased
+0.2.0 product line; no configuration, inference or artifact surface version
+changes (D-062).
+
 **Decision.** M3's swap path leaves the harnesses for `llmp-runtime`
 ([runtime-serving.md](runtime-serving.md)):
 - **Layers.** The task programs a driver posts (run, call, evict, a full

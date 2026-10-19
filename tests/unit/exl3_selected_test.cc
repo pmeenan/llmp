@@ -696,8 +696,11 @@ TEST(Exl3SelectedTest, BiasCandidatesRequireTheSamePackedGeometryAsLowering) {
       const auto packed = desc.nb;
       desc.nb[dimension] += 2;
       operands[index].memory->nb = desc.nb;
-      EXPECT_TRUE(execution::Candidates(registry, query).empty());
-      EXPECT_FALSE((*source)->Lower(*bias, node, inputs, output));
+      // A singleton axis never advances the address. Its stride is not a
+      // physical packing requirement; every live axis remains exact.
+      const bool observable = desc.ne(dimension) > 1;
+      EXPECT_EQ(execution::Candidates(registry, query).empty(), observable);
+      EXPECT_EQ((*source)->Lower(*bias, node, inputs, output).has_value(), !observable);
       desc.nb = packed;
       operands[index].memory->nb = packed;
     }

@@ -40,7 +40,7 @@ namespace {
 using execution::Capability;
 using execution::Implementation;
 using execution::OperandRule;
-using execution::Operation;
+
 using format::Encoding;
 using format::Layout;
 
@@ -327,7 +327,7 @@ Implementation Declaration(const Declared& d) {
   c.capturable = true;
   c.shape.k_multiple = std::max(DecoderKMultiple(d.bound.gate), DecoderKMultiple(d.bound.up));
   c.accepts = &AcceptsProduct;
-  Operation operation = Operation::kMatMul;
+  llmp::ir::OpKey operation = llmp::ir::Primitive(llmp::ir::Op::kMatMul);
   switch (d.bound.tmpl) {
     case Template::kVector:
       c.op = ir::Primitive(ir::Op::kMatMul);
@@ -352,19 +352,19 @@ Implementation Declaration(const Declared& d) {
       c.fusion_needs_measurement = DecoderEncoding(d.bound.gate) != Encoding::kAffine;
       c.shape.max_rows = kMaxVectorRows;
       c.accepts = &AcceptsVector;
-      operation = Operation::kMulMatGlu;
+      operation = llmp::ir::Fused(llmp::ir::FusedKind::kMatMulGlu);
       break;
     case Template::kGrouped:
       c.op = ir::Primitive(ir::Op::kMatMulId);
       c.accepts = &AcceptsGrouped;
       c.device.min_arch = 80;
       c.device.needs = execution::kBf16Mma;
-      operation = Operation::kMulMatId;
+      operation = llmp::ir::Primitive(llmp::ir::Op::kMatMulId);
       break;
     case Template::kRows:
       c.op = ir::Primitive(ir::Op::kGetRows);
       c.accepts = &AcceptsRows;
-      operation = Operation::kGetRows;
+      operation = llmp::ir::Primitive(llmp::ir::Op::kGetRows);
       break;
     case Template::kCount:
       break;

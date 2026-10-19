@@ -131,6 +131,8 @@ class FakeProgram final : public kn::StepProgram {
   void SetExtra(std::vector<std::size_t> extra) { extra_ = std::move(extra); }
 
   std::uint64_t scratch_bytes() const override { return scratch_; }
+  std::uint64_t pool_bytes() const override { return options_->pool_bytes; }
+  kn::PlanCoverage plan_coverage() const override { return options_->plan_coverage; }
   std::uint64_t host_bytes() const override { return host_; }
   std::uint64_t launches() const override { return launches_; }
   std::span<const kn::InputSlot> inputs() const override { return inputs_; }
@@ -608,6 +610,12 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
   }
   if (options_.stray_use) {
     uses.push_back({.address = 4096, .bytes = 64, .role = ir::Role::kWeight});
+  }
+  if (options_.extra_activation_bytes != 0) {
+    const auto activation_tail = place(options_.extra_activation_bytes);
+    uses.push_back({.address = activation_tail,
+                    .bytes = options_.extra_activation_bytes,
+                    .role = ir::Role::kActivation});
   }
   const std::uint64_t scratch = at - addresses.activations;
   if (!addresses.measuring() && scratch > addresses.activation_bytes) {

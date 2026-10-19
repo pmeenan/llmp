@@ -109,7 +109,7 @@ constexpr std::array kFolds = {FoldRule{.fold = "norm.plus_one", .container = "g
 // GeGLU, shared Q8 preparation, grouped KV stores, owner attention with
 // bounded roots and the four-root carriers). One rule: every checkpoint.
 constexpr std::array kPolicies = {
-    PolicyRule{.text = "max_decode_rows 16\ndisable rope_store\n"},
+    PolicyRule{.text = "max_decode_rows 16\n"},
 };
 
 // Its bounded serving route: 4,096 tokens by default (a wider context is an

@@ -1396,6 +1396,15 @@ performance qualification remain separate.
 
 ## Rejected kernels: pieces worth retaining
 
+Gemma26's [normalized scaled expert combine](experiments/gemma26-normalized-combine/README.md)
+was rejected on Spark B (2026-10-18): actual width 2,816/top8, rows 1–4,
+complete incumbent dense-normalization cost included, zero scratch in both
+paths. Candidate means were 0.097–2.213% slower than the incumbent bookend
+means, with no cell meeting the preregistered 5% benefit screen. Independent
+FP64, changed-capture, guard/refusal and original row-3 VecQ/GeGLU controls
+passed. The unselected candidate source was removed; no serving adoption,
+numerical grant or broader MoE verdict follows.
+
 Gemma's [grouped independent cache-write experiment](experiments/gemma-grouped-cache-writes/README.md)
 was rejected without adopting its source or defaults. Both six-control proofs
 retain four original outputs/dependencies and exact full padded destinations;

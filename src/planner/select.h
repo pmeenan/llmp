@@ -160,13 +160,51 @@ class SelectionView {
   std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
                                       bool automatic_fusion = false) const;
 
+  // Borrow the same immutable typed query used for this node's selection.
+  // The callback is synchronous and does not retain descriptors or reselect.
+  using QueryInspector = std::function<void(const execution::CapabilityQuery&)>;
+  void Inspect(const ir::Graph& graph, const ir::Node& node, const QueryInspector& inspect) const;
+  ir::ProductArithmetic IncumbentArithmetic(const ir::Graph& graph, const ir::Node& node) const;
+  // A compound GLU changes two independent product contracts. Its operands
+  // are priced/qualified as primitive products, each with its own weight role.
+  static std::uint8_t NumericalOperands(const ir::Node& node) {
+    return node.key == ir::Fused(ir::FusedKind::kMatMulGlu) ||
+                   node.key == ir::Fused(ir::FusedKind::kMatMulIdGlu)
+               ? 2
+               : 1;
+  }
+  struct WeightOperand {
+    ir::WeightRef reference{};
+    ir::TensorId leaf{};
+  };
+  // The one canonical traversal used by qualification and report observation:
+  // follow only this operand's source0 chain inside its component. Resolution
+  // observes a WeightRef; matching stage/component/role and permission remain
+  // Qualification's separate checks. Unknown/foreign facts grant nothing.
+  static std::optional<WeightOperand> ResolveWeightOperand(const ir::Graph& graph,
+                                                           const ir::Node& node,
+                                                           std::uint8_t operand);
+  std::optional<NumericalQualification> Qualification(NumericalChange change,
+                                                      const ir::Graph& graph, const ir::Node& node,
+                                                      std::uint8_t weight_operand = 0) const;
+  bool NumericallyQualified(NumericalChange change, const ir::Graph& graph,
+                            const ir::Node& node) const {
+    for (std::uint8_t operand = 0; operand < NumericalOperands(node); ++operand)
+      if (!Qualification(change, graph, node, operand)) return false;
+    return true;
+  }
+
  private:
+  std::vector<std::size_t> CandidatesForNode(const ir::Graph& graph, const ir::Node& node,
+                                             ir::OpKey key, bool automatic_fusion,
+                                             const QueryInspector& inspect = {}) const;
   std::vector<std::size_t> ForOperands(ir::OpKey key,
                                        std::span<const ir::TensorDesc* const> sources,
                                        std::span<const ir::TensorDesc* const> outputs,
                                        std::span<const std::byte> params, bool state_span,
                                        std::span<const std::uint64_t> alignments,
-                                       bool automatic_fusion = false) const;
+                                       bool automatic_fusion = false,
+                                       const QueryInspector& inspect = {}) const;
   const execution::Registry& registry_;
   const DeviceFacts& device_;
   const Policy& policy_;
@@ -176,6 +214,7 @@ class SelectionView {
   RootAlignment root_alignment_{};
   ActivationAlignment activation_{};
   std::vector<execution::MeasuredRank> ranks_;
+  std::vector<std::string_view> enabled_options_;
 };
 
 // One step of a plan: an implementation over one node, or over a batch of

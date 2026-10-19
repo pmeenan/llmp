@@ -34,6 +34,7 @@
 #include <utility>
 #include <vector>
 
+#include "compiler_inventory.h"
 #include "components/step.h"
 #include "engine/component_source.h"
 #include "execution/registry.h"
@@ -78,14 +79,8 @@ constexpr std::uint32_t kDraftRows = 2;  // Qwen38Options::draft_rows
 
 ex::Registry PlanningRegistry() {
   std::vector<ex::Implementation> v;
-  for (const kg::CapabilityDeclaration& d : kg::CapabilityDeclarations()) {
-    v.push_back({.name = std::string(d.name),
-                 .operation = d.operation,
-                 .source = "ggml",
-                 .revision = "planning",
-                 .build = "cpu",
-                 .variant = std::string(kg::AcceptsTextOf(d.name)),
-                 .capability = *d.capability});
+  for (auto d : kg::PlanningImplementations()) {
+    v.push_back(std::move(d));
   }
   return std::move(ex::Registry::Create(std::move(v)).value());
 }
@@ -215,6 +210,15 @@ const Import& ImportOf(fx::Form form) {
   im.policy = pl::ParsePolicy(sp::DefaultPolicy(sp::mappings::Qwen38Mapping(), values, envelope) |
                               Must(__LINE__)) |
               Must(__LINE__);
+  // Descriptor-only operand controls propose the selected numerical recipe
+  // explicitly. They carry no production source receipt or same-quality grant.
+  im.policy.numerical_candidates =
+      gguf ? std::vector{pl::NumericalChange::kQ8VectorReduction}
+           : std::vector{pl::NumericalChange::kBf16HyperConnectionIntermediates,
+                         pl::NumericalChange::kBf16ProductInputAndResult,
+                         pl::NumericalChange::kMxfp8ProductInput,
+                         pl::NumericalChange::kNvfp4ExpertIntermediates};
+  pl::Canonicalize(im.policy);
   im.layouts.push_back(co::StageLayoutUniform(*im.spec, 0, kContext, kMaxRows, kExtent) |
                        Must(__LINE__));
   if (form == fx::Form::kCutlass) {
@@ -234,6 +238,8 @@ const Import& ImportOf(fx::Form form) {
         pl::ParsePolicy(sp::DefaultPolicy(sp::mappings::Qwen38MtpMapping(), mtp_values, envelope) |
                         Must(__LINE__)) |
         Must(__LINE__);
+    im.mtp_policy.numerical_candidates = im.policy.numerical_candidates;
+    pl::Canonicalize(im.mtp_policy);
     for (std::uint16_t s = 0; s < 2; ++s) {
       im.layouts_mtp.push_back(
           co::StageLayoutUniform(*im.spec_mtp, s, kContext, kMaxRows, kExtent) | Must(__LINE__));
@@ -594,6 +600,19 @@ INSTANTIATE_TEST_SUITE_P(Qwen38, GgmlLowerQwen38,
 // QSA's custom kernels infer positions, pooling cells and selection masks.
 // The lowering must prove their typed staging contract; diagnostic leaf names
 // alone cannot make arbitrary caller-supplied values satisfy that contract.
+TEST(GgmlLowerQwen38Test, QsaProofOnlyMasksDoNotReceivePhysicalBacking) {
+  const Import& im = ImportOf(fx::Form::kCutlass);
+  const auto registry = PlanningRegistry();
+  const auto lowered = Lower(im, {.kind = Kind::kHead, .past = 7000, .rows = 3}, registry);
+  ASSERT_TRUE(lowered.lowered) << lowered.refusal;
+  EXPECT_EQ(lowered.lowered->logical_extent, lowered.plan->placement.extent);
+  EXPECT_GT(lowered.lowered->unmaterialized_roots, 0U);
+  EXPECT_GT(lowered.lowered->unmaterialized_logical_bytes, 0U);
+  // Omitted logical sizes overlap in time and space; they are not subtracted
+  // from a peak. The program funds its independently placed physical extent.
+  EXPECT_GT(lowered.lowered->extent, 0U);
+}
+
 TEST(GgmlLowerQwen38Test, QsaRefusesInputsWithoutItsStagingContract) {
   const Import& im = ImportOf(fx::Form::kCutlass);
   const ex::Registry registry = PlanningRegistry();
@@ -961,7 +980,7 @@ TEST(GgmlLowerQwen38Test, CommitsOfKeptRowsLower) {
   }
 }
 
-// Without llmp.gdn.conv (a policy that does not enable it), Gated
+// With llmp.gdn.conv explicitly disabled, Gated
 // DeltaNet's convolution is GGML's, its input padded to whole 32-token
 // windows past 32 tokens (RE-032), as the unfused builder pads it.
 TEST(GgmlLowerQwen38Test, GgmlsConvolutionPadsPartialWindows) {
@@ -969,6 +988,8 @@ TEST(GgmlLowerQwen38Test, GgmlsConvolutionPadsPartialWindows) {
   const ex::Registry registry = PlanningRegistry();
   pl::Policy policy = im.policy;
   std::erase(policy.enabled, std::string("gdn_conv"));
+  policy.disabled.emplace_back("gdn_conv");
+  pl::Canonicalize(policy);
   ASSERT_TRUE(pl::Disabled(policy, "gdn_conv"));
   for (const std::uint32_t rows : {8U, 32U, 40U, 64U}) {
     SCOPED_TRACE(rows);
@@ -995,15 +1016,15 @@ TEST(GgmlLowerQwen38Test, DefaultPoliciesFollowTheImportsForm) {
   const Import& ggml = ImportOf(fx::Form::kGgmlExperts);
   const Import& gguf = ImportOf(fx::Form::kGguf);
   EXPECT_FALSE(pl::Disabled(cutlass.policy, "moe_experts"));
-  EXPECT_TRUE(pl::Disabled(cutlass.policy, "moe_glu"));
-  EXPECT_TRUE(pl::Disabled(ggml.policy, "moe_experts"));
+  EXPECT_FALSE(pl::Disabled(cutlass.policy, "moe_glu"));
+  EXPECT_FALSE(pl::Disabled(ggml.policy, "moe_experts"));
   EXPECT_FALSE(pl::Disabled(ggml.policy, "moe_glu"));
   EXPECT_FALSE(pl::Disabled(gguf.policy, "vecq_glu"));
-  EXPECT_TRUE(pl::Disabled(gguf.policy, "hc_prep"));
+  EXPECT_FALSE(pl::Disabled(gguf.policy, "hc_prep"));
   EXPECT_FALSE(pl::Disabled(gguf.policy, "hc_mix"));
   for (const Import* im : {&cutlass, &ggml, &gguf}) {
-    EXPECT_TRUE(pl::Disabled(im->policy, "rms_norm_mul"));
-    EXPECT_TRUE(pl::Disabled(im->policy, "owner_attention"));
+    EXPECT_FALSE(pl::Disabled(im->policy, "rms_norm_mul"));
+    EXPECT_FALSE(pl::Disabled(im->policy, "owner_attention"));
     EXPECT_FALSE(pl::Disabled(im->policy, "qsa_select"));
     // Production QSA selects its own fused attention, so it never enabled
     // the old generic sparse-attention product bundle. Keep that arithmetic.
@@ -1011,7 +1032,7 @@ TEST(GgmlLowerQwen38Test, DefaultPoliciesFollowTheImportsForm) {
     EXPECT_EQ(im->mtp_policy.products, pl::ProductPolicy{});
   }
   EXPECT_FALSE(pl::Disabled(cutlass.mtp_policy, "bf16_inputs"));
-  EXPECT_TRUE(pl::Disabled(cutlass.mtp_policy, "mxfp8_inputs"));
+  EXPECT_FALSE(pl::Disabled(cutlass.mtp_policy, "mxfp8_inputs"));
   // No step rules: a solo prompt tail of 9 to 16 rows keeps the GGUF
   // form's vector GLU and inputs (no other model's row gates apply).
   for (const Import* im : {&cutlass, &ggml, &gguf}) EXPECT_TRUE(im->policy.rules.empty());
@@ -1137,7 +1158,8 @@ TEST(GgmlLowerQwen38Test, FastCapabilitiesPreserveTheOperationsParameters) {
 // A refusal destroys an unsubmitted program; it never provides a replacement.
 class ValidationProgram final : public kn::StepProgram {
  public:
-  explicit ValidationProgram(std::uint32_t& destroyed) : destroyed_(destroyed) {}
+  ValidationProgram(std::uint32_t& destroyed, std::uint32_t& positioned)
+      : destroyed_(destroyed), positioned_(positioned) {}
   ~ValidationProgram() override { ++destroyed_; }
   std::uint64_t scratch_bytes() const override { return 0; }
   std::uint64_t host_bytes() const override { return sizeof(*this); }
@@ -1146,6 +1168,10 @@ class ValidationProgram final : public kn::StepProgram {
   std::span<const kn::OutputSlot> outputs() const override { return {}; }
   std::span<const kn::TensorUse> tensors() const override { return {}; }
   std::expected<void, kn::StepFailure> Bind(kn::StepLaunch&) override { return {}; }
+  std::expected<void, kn::StepFailure> Position(std::span<const std::uint32_t>) override {
+    ++positioned_;
+    return {};
+  }
   std::expected<void, kn::StepFailure> Run(kn::StepLaunch&,
                                            llmp::providers::NativeStream) const override {
     return std::unexpected(kn::StepFailure{.detail = "validation control never executes"});
@@ -1153,14 +1179,45 @@ class ValidationProgram final : public kn::StepProgram {
 
  private:
   std::uint32_t& destroyed_;
+  std::uint32_t& positioned_;
+};
+
+struct ValidationFunding {
+  std::uint64_t control_bytes = 0, capacity = 0, used = 0;
+  std::uint32_t charges = 0, releases = 0;
+  bool Charge(std::uint64_t bytes) {
+    if (used > capacity || bytes > capacity - used) return false;
+    used += bytes;
+    ++charges;
+    return true;
+  }
+  void Release(std::uint64_t bytes) {
+    EXPECT_LE(control_bytes, used);
+    if (used < control_bytes) return;
+    EXPECT_LE(bytes, used - control_bytes);
+    if (bytes <= used - control_bytes) used -= bytes;
+    ++releases;
+  }
 };
 
 TEST(GgmlLowerQwen38Test, ReadOnlyValidationSeesRealProgramAndRefusesBothAddressModes) {
   const auto& im = ImportOf(fx::Form::kCutlass);
   auto registry = PlanningRegistry();
-  std::uint32_t lowers = 0, validations = 0, destroyed = 0;
+  std::uint32_t lowers = 0, validations = 0, destroyed = 0, positioned = 0;
   bool refuse = false, lower_refuses = false;
   const kn::StepProgram* produced = nullptr;
+  // This fake lowerer allocates no native arena. Its real report loan borrows
+  // the reviewed compiler inventory for the actual planned graph; the payer
+  // and its shared control blocks have their own explicit fixture payment.
+  constexpr auto control_bytes =
+      sizeof(ValidationFunding) + sizeof(kn::ConstructionFunder) + 2 * 64;
+  static_assert(llmp::test_support::compiler_inventory::GraphBytes(
+                    ir::Graph::kMaxNodes, ir::Graph::kMaxTensors) <= UINT64_MAX - control_bytes);
+  auto funding = std::make_shared<ValidationFunding>();
+  funding->control_bytes = funding->capacity = funding->used = control_bytes;
+  auto payer = std::make_shared<kn::ConstructionFunder>(kn::ConstructionFunder{
+      .charge = [funding](std::uint64_t bytes) { return funding->Charge(bytes); },
+      .release = [funding](std::uint64_t bytes) { funding->Release(bytes); }});
   kn::Addresses addresses{};
   pl::StepShape shape{.phase = pl::Phase::kScore,
                       .segments = {{.rows = 2, .read_cells = 256, .outputs = 2}}};
@@ -1172,14 +1229,19 @@ TEST(GgmlLowerQwen38Test, ReadOnlyValidationSeesRealProgramAndRefusesBothAddress
        .backend = {.registry = &registry,
                    .device = Gb10(),
                    .written = kg::WrittenBytes,
-                   .lower = [&](const kn::LowerInput&)
+                   .lower = [&](const kn::LowerInput& input)
                        -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
                      ++lowers;
                      if (lower_refuses) return std::unexpected("real lower refused");
-                     auto result = std::make_unique<ValidationProgram>(destroyed);
+                     funding->capacity =
+                         control_bytes +
+                         llmp::test_support::compiler_inventory::GraphBytes(
+                             input.plan.graph.nodes().size(), input.plan.graph.tensor_count());
+                     auto result = std::make_unique<ValidationProgram>(destroyed, positioned);
                      produced = result.get();
                      return result;
-                   }},
+                   },
+                   .construction_funder = payer},
        .validate_program = [&](const kn::LowerInput& input,
                                const kn::StepProgram& program) -> std::expected<void, std::string> {
          ++validations;
@@ -1198,21 +1260,32 @@ TEST(GgmlLowerQwen38Test, ReadOnlyValidationSeesRealProgramAndRefusesBothAddress
     {
       auto accepted = (*source)->Build(shape, addresses);
       ASSERT_TRUE(accepted) << (accepted ? "" : accepted.error());
-      EXPECT_EQ(accepted->get(), produced);
+      EXPECT_GT(funding->used, control_bytes);
+      EXPECT_LE(funding->used, funding->capacity);
+      // The paid report decorator forwards to that same validated program.
+      EXPECT_TRUE((*accepted)->Position({}));
+      EXPECT_GT((*accepted)->host_bytes(), produced->host_bytes());
+      EXPECT_EQ(destroyed, validations - 1);
     }
+    EXPECT_EQ(funding->used, control_bytes);
     refuse = true;
     auto rejected = (*source)->Build(shape, addresses);
     ASSERT_FALSE(rejected);
     EXPECT_EQ(rejected.error(), "full-head observer refused");
+    EXPECT_EQ(funding->used, control_bytes);
   }
   EXPECT_EQ(lowers, 4U);
   EXPECT_EQ(validations, 4U);
   EXPECT_EQ(destroyed, 4U);
+  EXPECT_EQ(positioned, 2U);
   lower_refuses = true;
   auto rejected = (*source)->Build(shape, addresses);
   ASSERT_FALSE(rejected);
   EXPECT_EQ(rejected.error(), "real lower refused");
   EXPECT_EQ(validations, 4U);
+  EXPECT_EQ(funding->used, control_bytes);
+  EXPECT_EQ(funding->charges, 2U);
+  EXPECT_EQ(funding->releases, funding->charges);
 }
 
 // Actual component emission and selection, with synthetic reserved addresses:

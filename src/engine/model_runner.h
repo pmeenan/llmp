@@ -167,6 +167,8 @@ struct RunnerConfig {
   // activations: the workspace, the staging and the plan floor are their
   // largest needs with a quarter's margin. At least one.
   std::vector<planner::StepShape> setup_shapes;
+  // Detailed debug observer of successful paid cache installation only.
+  kernels::PlanRecordSink plan_report_sink{};
   // Graphs on (D-090), and the phases a shape is captured in on its second
   // run (bit 1 << Phase; a hinted repeat or a capture ahead is the step's
   // own request). Qwen3.8 and DeepSeek capture prefill only from a hint.
@@ -413,6 +415,12 @@ class ModelRunner final : public PagedModel {
   // unit ownership, side inputs or admission. An unqualified repeat-pending
   // model accepts one owner per submission, including target-only work.
   Status CheckOwners(std::size_t owners) const;
+  // Compile the exact selected shape and admit any additional activation
+  // prefix before state preparation or model work. Stable reservation places
+  // alone permit construction, never execution. Pool and staging growth are
+  // unsupported here and refuse before mutation. A completed request's lease
+  // is extended atomically; clean capacity refusal preserves its old closure.
+  Status PrepareStep(const planner::StepShape& shape);
   std::expected<StepReport, StepRefusal> RunStep(const StepRequest& request);
   // A segment's owner admitted to a step on `stage`: active, its rows where
   // the stage's steps may run, and its state backed through every cell the
@@ -449,6 +457,8 @@ class ModelRunner final : public PagedModel {
   void set_graphs(bool on) { programs_.runs().set_graphs(on); }
   // Its counts, as one JSON object (the runtime's report).
   std::string report_json() const;
+  std::string plan_report() const;
+  void ReportPlans(const kernels::PlanRecordSink& sink) const;
 
  private:
   friend class llmp::test_support::RoutedComponentInspection;
@@ -614,6 +624,10 @@ class ModelRunner final : public PagedModel {
 
   GraphStats graph_stats_;
   Coverage coverage_;
+  kernels::PlanCoverage setup_plan_coverage_{};
+  std::uint64_t measured_plan_shapes_ = 0;
+  void ObservePlanCoverage(const kernels::StepProgram& program);
+  void EmitPlanReport(const Plans::Entry& entry, const kernels::PlanRecordSink& sink) const;
   StepLookaheadStats lookahead_;
   bool setup_ = false, registered_ = false, bound_ = false, released_ = false;
 };

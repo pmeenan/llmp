@@ -27,9 +27,11 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "compiler_inventory.h"
 #include "components/step.h"
 #include "dsv4_fixture.h"
 #include "engine/component_source.h"
+#include "engine/execution_contract.h"
 #include "engine/paged_node.h"
 #include "execution/registry.h"
 #include "families/dsv4.h"
@@ -318,7 +320,7 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
     pl::Policy policy;
     for (const auto& pattern : pl::Patterns())
       if (pattern.name != "state_bank_attention") policy.disabled.emplace_back(pattern.name);
-    if (enabled) policy.enabled = {"state_bank_attention"};
+    if (!enabled) policy.disabled.emplace_back("state_bank_attention");
     pl::Canonicalize(policy);
     std::vector<ir::TensorId> staged;
     for (const auto& input : step.inputs) staged.push_back(input.tensor);
@@ -424,7 +426,9 @@ class HcPostGpuOwner final : public GgmlLowerDsv4Gpu {
                                     .parts = {{"weight", llmp::format::PartRole::kData}}}},
                        .state = {}};
     pl::Policy policy;
-    policy.enabled = {"grouped_vecq"};
+    // Operator comparison only: propose this reduction explicitly, without a
+    // checkpoint-quality grant or a blanket diagnostic numerical bypass.
+    policy.numerical_candidates = {pl::NumericalChange::kQ8VectorReduction};
     pl::Canonicalize(policy);
     const pl::StepShape shape{.segments = {{.rows = tokens, .outputs = 0, .want_head = false}}};
     auto plan =
@@ -643,7 +647,7 @@ TEST_F(GgmlHcPostGpu, UngatedExpertCombinePreservesOrderedFmaAndCapturedTupleBit
         auto graph = std::move(b).Finish();
         ASSERT_TRUE(graph);
         pl::Policy policy;
-        if (native) policy.enabled = {"moe_combine"};
+        if (!native) policy.disabled = {"moe_combine"};
         pl::Canonicalize(policy);
         const pl::StepShape shape{.segments = {{.rows = rows, .outputs = 0, .want_head = false}}};
         auto* step = owner->Lower(std::move(*graph),
@@ -995,7 +999,7 @@ TEST_F(GgmlBiasedRouteGpu, CompleteCapturedAndMultirowNativeRouteMatchesLegacyAn
       auto graph = std::move(b).Finish();
       ASSERT_TRUE(graph);
       pl::Policy policy;
-      if (native) policy.enabled = {"biased_route"};
+      if (!native) policy.disabled = {"biased_route"};
       pl::Canonicalize(policy);
       const pl::StepShape shape{
           .segments = {{.rows = scenario.rows, .outputs = 0, .want_head = false}}};
@@ -1177,7 +1181,7 @@ TEST_F(GgmlHcPostGpu, SelectedHashRouteMatchesAllLegacyBitsAndSeparatesPrimitive
       auto graph = std::move(b).Finish();
       ASSERT_TRUE(graph);
       pl::Policy policy;
-      if (native) policy.enabled = {"hash_route"};
+      if (!native) policy.disabled = {"hash_route"};
       pl::Canonicalize(policy);
       const pl::StepShape shape{.segments = {{.rows = rows, .outputs = 0, .want_head = false}}};
       auto* step = owner->Lower(std::move(*graph),
@@ -1201,6 +1205,189 @@ TEST_F(GgmlHcPostGpu, SelectedHashRouteMatchesAllLegacyBitsAndSeparatesPrimitive
       if (!native) EXPECT_NE(weights, legacy_bits);
     }
   }
+}
+
+// Explicit prepared IR: independently decoded exact Q8_0 weights and integral
+// inputs (each block has max127, hence Q8_1 scale1) give an FP64 scalar oracle.
+// This tests the actual selected/lowered recipe, not a hand-built VecQ helper.
+TEST_F(GgmlHcPostGpu, PreparedRoutedTailBroadcastAndPerSlotMatchIndependentScalar) {
+  constexpr std::uint64_t k = 64, n = 16, experts = 4, used = 8;
+  for (const bool per_slot : {false, true})
+    for (const std::uint32_t tokens : {1U, 2U, 3U, 4U}) {
+      SCOPED_TRACE(per_slot);
+      SCOPED_TRACE(tokens);
+      ir::Builder b;
+      const auto w = b.Input({.encoding = Encoding::kQ8_0,
+                              .layout = llmp::format::Layout::kGgmlBlocks,
+                              .shape = ir::ShapeOf({k, n, experts})});
+      const auto x =
+          b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({k, per_slot ? used : 1, tokens})));
+      const auto ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({used, tokens})));
+      b.Output(
+          b.MatMulId(w, b.Prepare(x, Encoding::kQ8_1, llmp::format::Layout::kGgmlBlocks), ids));
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+      pl::Policy policy;
+      policy.vector_rows = 4;
+      const pl::StepShape shape{.segments = {{.rows = tokens, .outputs = 0, .want_head = false}}};
+      auto* step = owner->Lower(std::move(*graph),
+                                {{.tensor = w, .kind = co::InputKind::kFeatures},
+                                 {.tensor = x, .kind = co::InputKind::kFeatures},
+                                 {.tensor = ids, .kind = co::InputKind::kFeatures}},
+                                shape, nullptr, false, policy);
+      ASSERT_NE(step, nullptr);
+      std::vector<std::byte> weights(k * n * experts / 32 * 34);
+      for (std::size_t block = 0; block < weights.size() / 34; ++block) {
+        weights[block * 34] = std::byte{0};
+        weights[block * 34 + 1] = std::byte{0x1c};  // half1/256
+        for (std::size_t j = 0; j < 32; ++j)
+          weights[block * 34 + 2 + j] = std::bit_cast<std::byte>(
+              static_cast<std::int8_t>(static_cast<int>((block * 3 + j * 5) % 15) - 7));
+      }
+      std::vector<std::int32_t> routes(used * tokens);
+      for (std::size_t i = 0; i < routes.size(); ++i)
+        routes[i] = static_cast<std::int32_t>((i * 3 + i / used) % experts);
+      owner->Upload(owner->Leaf(*step, w), weights);
+      owner->Upload(owner->Leaf(*step, ids), routes);
+      ASSERT_FALSE(HasFatalFailure());
+      for (const int revision : {0, 1}) {
+        std::vector<float> values(k * (per_slot ? used : 1) * tokens);
+        for (std::size_t i = 0; i < values.size(); ++i)
+          values[i] =
+              i % 32 == 0
+                  ? 127.0F
+                  : static_cast<float>(
+                        static_cast<int>((i * 7 + static_cast<std::size_t>(revision) * 3) % 17) -
+                        8);
+        owner->Upload(owner->Leaf(*step, x), values);
+        ASSERT_FALSE(HasFatalFailure());
+        std::vector<double> expected(n * used * tokens);
+        for (std::size_t t = 0; t < tokens; ++t)
+          for (std::size_t u = 0; u < used; ++u)
+            for (std::size_t row = 0; row < n; ++row) {
+              double sum = 0;
+              const auto expert = static_cast<std::size_t>(routes[t * used + u]);
+              for (std::size_t j = 0; j < k; ++j) {
+                const auto block = (expert * n + row) * (k / 32) + j / 32;
+                const double weight = static_cast<double>(std::bit_cast<std::int8_t>(
+                                          weights[block * 34 + 2 + j % 32])) /
+                                      256.0;
+                sum += weight * values[(t * (per_slot ? used : 1) + (per_slot ? u : 0)) * k + j];
+              }
+              expected[(t * used + u) * n + row] = sum;
+            }
+        owner->RunAndReplay(*step);
+        ASSERT_FALSE(HasFatalFailure());
+        ASSERT_EQ(step->keep.size(), 1U);
+        const auto actual = owner->Read(step->keep[0]);
+        ASSERT_EQ(actual.size(), expected.size());
+        for (std::size_t i = 0; i < actual.size(); ++i)
+          EXPECT_NEAR(actual[i], expected[i], 1e-6) << i;
+      }
+      EXPECT_EQ(owner->ReadTyped<std::byte>(owner->Leaf(*step, w)), weights);
+    }
+}
+
+TEST_F(GgmlHcPostGpu, PreparedGluKindsMatchIndependentScalarOnTailRows) {
+  constexpr std::uint64_t k = 64, n = 16, used = 8;
+  for (const bool routed : {false, true})
+    for (const auto kind :
+         {ir::GluKind::kSwiGlu, ir::GluKind::kSwiGluClamp, ir::GluKind::kGeGluTanh})
+      for (const std::uint32_t tokens : {1U, 2U, 3U, 4U}) {
+        SCOPED_TRACE(routed);
+        SCOPED_TRACE(static_cast<unsigned>(kind));
+        SCOPED_TRACE(tokens);
+        const std::uint64_t experts = routed ? 4 : 1;
+        ir::Builder b;
+        const llmp::format::TensorFormat format{.encoding = Encoding::kQ8_0,
+                                                .layout = llmp::format::Layout::kGgmlBlocks,
+                                                .shape = ir::ShapeOf({k, n, experts})};
+        const auto gate = b.Input(format), up = b.Input(format);
+        const auto x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({k, tokens})));
+        const auto q8 = b.Prepare(x, Encoding::kQ8_1, llmp::format::Layout::kGgmlBlocks);
+        const ir::GluParams glu{.kind = kind,
+                                .limit = kind == ir::GluKind::kSwiGluClamp ? 0.7F : 0.0F};
+        std::vector<co::StepInput> inputs{{.tensor = gate, .kind = co::InputKind::kFeatures},
+                                          {.tensor = up, .kind = co::InputKind::kFeatures},
+                                          {.tensor = x, .kind = co::InputKind::kFeatures}};
+        ir::TensorId ids;
+        if (routed) {
+          ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({used, tokens})));
+          inputs.push_back({.tensor = ids, .kind = co::InputKind::kFeatures});
+          b.Output(b.Fused(ir::FusedKind::kMatMulIdGlu, std::array{gate, up, q8, ids},
+                           ir::MoeExpertsParams{.glu = glu, .hidden = n})[0]);
+        } else {
+          b.Output(b.Fused(ir::FusedKind::kMatMulGlu, std::array{gate, up, q8}, glu)[0]);
+        }
+        auto graph = std::move(b).Finish();
+        ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+        pl::Policy policy;
+        policy.vector_rows = 4;
+        const pl::StepShape shape{.segments = {{.rows = tokens, .outputs = 0, .want_head = false}}};
+        auto* step =
+            owner->Lower(std::move(*graph), std::move(inputs), shape, nullptr, false, policy);
+        ASSERT_NE(step, nullptr);
+        std::array<std::vector<std::byte>, 2> weights;
+        for (std::size_t which = 0; which < weights.size(); ++which) {
+          auto& bytes = weights[which];
+          bytes.resize(k * n * experts / 32 * 34);
+          for (std::size_t block = 0; block < bytes.size() / 34; ++block) {
+            bytes[block * 34] = std::byte{0};
+            bytes[block * 34 + 1] = std::byte{0x1c};
+            for (std::size_t j = 0; j < 32; ++j)
+              bytes[block * 34 + 2 + j] = std::bit_cast<std::byte>(static_cast<std::int8_t>(
+                  static_cast<int>((block * 3 + j * 5 + which * 7) % 15) - 7));
+          }
+          owner->Upload(owner->Leaf(*step, which == 0 ? gate : up), bytes);
+        }
+        std::vector<float> values(k * tokens);
+        for (std::size_t i = 0; i < values.size(); ++i)
+          values[i] = i % 32 == 0 ? 127.0F : static_cast<float>(static_cast<int>((i * 7) % 17) - 8);
+        owner->Upload(owner->Leaf(*step, x), values);
+        std::vector<std::int32_t> routes(used * tokens);
+        for (std::size_t i = 0; i < routes.size(); ++i)
+          routes[i] = static_cast<std::int32_t>((i * 3 + i / used) % experts);
+        if (routed) owner->Upload(owner->Leaf(*step, ids), routes);
+        ASSERT_FALSE(HasFatalFailure());
+        std::vector<double> expected(n * (routed ? used : 1) * tokens);
+        double separation_from_swiglu = 0;
+        for (std::size_t t = 0; t < tokens; ++t)
+          for (std::size_t u = 0; u < (routed ? used : 1); ++u)
+            for (std::size_t row = 0; row < n; ++row) {
+              std::array<double, 2> product{};
+              const auto expert = routed ? static_cast<std::size_t>(routes[t * used + u]) : 0;
+              for (std::size_t j = 0; j < k; ++j) {
+                const auto block = (expert * n + row) * (k / 32) + j / 32;
+                for (std::size_t which = 0; which < weights.size(); ++which)
+                  product[which] += static_cast<double>(std::bit_cast<std::int8_t>(
+                                        weights[which][block * 34 + 2 + j % 32])) /
+                                    256.0 * values[t * k + j];
+              }
+              double g = product[0], up_value = product[1];
+              const double swiglu = g / (1.0 + std::exp(-g)) * up_value;
+              if (kind == ir::GluKind::kSwiGluClamp) {
+                g = std::min(g, static_cast<double>(glu.limit));
+                up_value = std::clamp(up_value, -static_cast<double>(glu.limit),
+                                      static_cast<double>(glu.limit));
+              }
+              const double value = kind == ir::GluKind::kGeGluTanh
+                                       ? 0.5 * g *
+                                             (1.0 + std::tanh(std::sqrt(2.0 / std::acos(-1.0)) * g *
+                                                              (1.0 + 0.044715 * g * g))) *
+                                             up_value
+                                       : g / (1.0 + std::exp(-g)) * up_value;
+              separation_from_swiglu = std::max(separation_from_swiglu, std::abs(value - swiglu));
+              expected[(t * (routed ? used : 1) + u) * n + row] = value;
+            }
+        if (kind != ir::GluKind::kSwiGlu) EXPECT_GT(separation_from_swiglu, 1e-3);
+        owner->RunAndReplay(*step);
+        ASSERT_FALSE(HasFatalFailure());
+        ASSERT_EQ(step->keep.size(), 1U);
+        const auto actual = owner->Read(step->keep[0]);
+        ASSERT_EQ(actual.size(), expected.size());
+        for (std::size_t i = 0; i < actual.size(); ++i)
+          EXPECT_NEAR(actual[i], expected[i], 5e-5 * std::max(1.0, std::abs(expected[i]))) << i;
+      }
 }
 
 TEST_F(GgmlHcPostGpu, GroupedVecQMatchesOriginalHelperForAllOutputsAndChangedInputReplay) {
@@ -1564,7 +1751,7 @@ TEST_F(GgmlLowerDsv4Gpu, StateBanksMatchPrimitiveCopiesAndReplayChangedJoinedOpe
       for (const auto* program : {primitive, bank}) {
         std::size_t attention_steps = 0;
         for (const auto& selected : program->plan.steps) {
-          if (selected.operation != ex::Operation::kFlashAttn) continue;
+          if (selected.operation != llmp::ir::Primitive(llmp::ir::Op::kAttention)) continue;
           ++attention_steps;
           ASSERT_EQ(selected.implementation, kg::kFlashAttnMmaName);
           ASSERT_EQ(selected.nodes.size(), 1U);
@@ -2736,6 +2923,8 @@ constexpr std::uint64_t kHost = 64U << 20, kDevice = 192U << 20;
 constexpr std::uint64_t kActivation = 2U << 20, kPool = 16U << 20, kPinned = 1U << 20;
 static_assert(sizeof(ir::Node) <= 384 && sizeof(ir::TensorDesc) <= 192);
 struct Owner {
+  std::shared_ptr<llmp::catalog::Catalog> metadata_catalog;
+  std::shared_ptr<llmp::engine::ExecutionMetadataAllowance> metadata_paid;
   std::unique_ptr<pr::DeviceExecution> execution;
   pr::StreamId stream{};
   bool streaming = false, unknown = false;
@@ -2748,7 +2937,7 @@ struct Owner {
   std::unique_ptr<kn::Recorded> captured;
   std::array<void*, 4> allocations{};
   std::size_t allocation_count = 0;
-  std::uint64_t allocated = 0, metadata = 0, activation = 0;
+  std::uint64_t allocated = 0, activation = 0;
   kg::SelectedWorkspace selected_state{};
   void* pinned = nullptr;
   bool Finish() {
@@ -2867,18 +3056,24 @@ TEST(GgmlRoundedConsumerGpu, DeclaredCountsSelectOneFullMaskAcrossChangedCapture
                                          {.lower = {.index_scratch_limit = 1U << 20}});
   ASSERT_TRUE(backend);
   life->backend = std::move(*backend);
-  auto* owner = life.get();
-  ASSERT_TRUE(life->backend->Declare(
-      {}, workspace.value(),
-      [owner](std::uint64_t bytes) {
-        if (bytes > (16U << 20) - owner->metadata) return false;
-        owner->metadata += bytes;
-        return true;
-      },
-      [owner](std::uint64_t bytes) {
-        EXPECT_LE(bytes, owner->metadata);
-        owner->metadata -= bytes;
-      }));
+  life->metadata_catalog = std::make_shared<llmp::catalog::Catalog>();
+  const auto metadata_domain = life->metadata_catalog->AddDomain("corridor host inventory");
+  auto paid = llmp::engine::ExecutionMetadataAllowance::Admit(
+      *life->metadata_catalog, metadata_domain, 16U << 20U, *available, 6ULL << 30U);
+  ASSERT_TRUE(paid) << (paid ? "" : paid.error());
+  life->metadata_paid = *paid;
+  // The existing complete 64MiB host envelope includes this finite category.
+  const auto charge = [paid = *paid, keep = life->metadata_catalog](std::uint64_t bytes) {
+    (void)keep;
+    return paid->Charge(bytes);
+  };
+  const auto refund = [paid = *paid, keep = life->metadata_catalog](std::uint64_t bytes) {
+    (void)keep;
+    EXPECT_LE(bytes, paid->used());
+    paid->Release(bytes);
+  };
+  ASSERT_TRUE(life->backend->FundConstruction(charge, refund));
+  ASSERT_TRUE(life->backend->Declare({}, workspace.value(), charge, refund));
   ASSERT_FALSE(life->backend->Backend().owner->Ready());
   ASSERT_TRUE(life->backend->LendCublas(life->cublas.get()));
   const auto table = life->backend->Backend();
@@ -3079,13 +3274,16 @@ namespace fx = llmp::test_support::dsv4;
 // These are source-specific construction ceilings, not the global IR limits.
 constexpr std::uint64_t kNodes = 2048, kTensors = 8192;
 constexpr std::uint64_t kDescriptors = kTensors + 16 + 16 * kNodes;
-constexpr std::uint64_t kGraphs = 4 * 3 * (kNodes * 480 + kTensors * 192);
+constexpr std::uint64_t kGraphs =
+    llmp::test_support::compiler_inventory::GraphBytes(kNodes, kTensors);
 constexpr std::uint64_t kWorksets = 4096 * (kNodes + kTensors);
-constexpr std::uint64_t kNative = kDescriptors * (512 + 1024 + 32);
+constexpr std::uint64_t kNative =
+    llmp::test_support::compiler_inventory::NativeBytes(kDescriptors, kTensors);
 constexpr std::uint64_t kRetained = 32ULL << 20, kMisc = 32ULL << 20;
 constexpr std::uint64_t kHost = 256ULL << 20;
 static_assert(kGraphs + kWorksets + kNative + kRetained + kMisc <= kHost);
-static_assert(sizeof(ir::Node) + 96 <= 480 && sizeof(ir::TensorDesc) <= 192);
+static_assert(sizeof(ir::Node) + 96 <= llmp::test_support::compiler_inventory::kGraphNodeBytes &&
+              sizeof(ir::TensorDesc) <= 192);
 constexpr std::uint64_t kPacked = 64ULL << 20, kWeights = 16ULL << 20;
 constexpr std::uint64_t kStateOffset = kWeights, kActivationOffset = 32ULL << 20;
 constexpr std::uint64_t kActivationBytes = kPacked - kActivationOffset;
@@ -3232,18 +3430,24 @@ TEST(GgmlRoundedConsumerGpu, RealMappedSourceBuildsAndExecutesItsAttentionPipeli
                                          {.lower = {.index_scratch_limit = 1U << 20}});
   ASSERT_TRUE(backend);
   life->backend = std::move(*backend);
-  auto* owner = life.get();
-  ASSERT_TRUE(life->backend->Declare(
-      {}, workspace.value(),
-      [owner](std::uint64_t bytes) {
-        if (bytes > (16U << 20) - owner->metadata) return false;
-        owner->metadata += bytes;
-        return true;
-      },
-      [owner](std::uint64_t bytes) {
-        EXPECT_LE(bytes, owner->metadata);
-        owner->metadata -= bytes;
-      }));
+  life->metadata_catalog = std::make_shared<llmp::catalog::Catalog>();
+  const auto metadata_domain = life->metadata_catalog->AddDomain("corridor host inventory");
+  auto paid = llmp::engine::ExecutionMetadataAllowance::Admit(
+      *life->metadata_catalog, metadata_domain, 16U << 20U, *available, 6ULL << 30U);
+  ASSERT_TRUE(paid) << (paid ? "" : paid.error());
+  life->metadata_paid = *paid;
+  // The existing complete 64MiB host envelope includes this finite category.
+  const auto charge = [paid = *paid, keep = life->metadata_catalog](std::uint64_t bytes) {
+    (void)keep;
+    return paid->Charge(bytes);
+  };
+  const auto refund = [paid = *paid, keep = life->metadata_catalog](std::uint64_t bytes) {
+    (void)keep;
+    EXPECT_LE(bytes, paid->used());
+    paid->Release(bytes);
+  };
+  ASSERT_TRUE(life->backend->FundConstruction(charge, refund));
+  ASSERT_TRUE(life->backend->Declare({}, workspace.value(), charge, refund));
   ASSERT_TRUE(life->backend->LendCublas(life->cublas.get()));
   ASSERT_TRUE(life->backend->Backend().owner->Ready());
   ASSERT_LE(life->backend->persistent_bytes(), 32U << 20);
@@ -3298,7 +3502,7 @@ TEST(GgmlRoundedConsumerGpu, RealMappedSourceBuildsAndExecutesItsAttentionPipeli
        .bindings = {.tensors = life->tensors.tensors, .state = &life->layout},
        .bound_digest = life->spec.Digest(),
        .slots = 1,
-       .policy = pl::Policy{.enabled = {"rounded_indexer"}},
+       .policy = pl::Policy{.enabled = {"rounded_indexer"}, .disabled = {"dsv4_lid_mask"}},
        .backend = life->backend->Backend(),
        .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain))});
   ASSERT_TRUE(source) << source.error();
@@ -3308,7 +3512,10 @@ TEST(GgmlRoundedConsumerGpu, RealMappedSourceBuildsAndExecutesItsAttentionPipeli
   ASSERT_FALSE(life->source->CheckExecutionUse(en::NumericalUse::kSpeculative));
   auto identity = life->source->ExecutionIdentity();
   ASSERT_TRUE(identity && identity->has_value());
-  const auto state_address = [owner](const ir::StateRef& ref) -> std::uint64_t {
+  // Address lookups borrow the guarded test owner during synchronous Build.
+  // The native/declaration refund callbacks above retain their actual paid
+  // allowance and catalog independently; they never borrow this raw owner.
+  const auto state_address = [owner = life.get()](const ir::StateRef& ref) -> std::uint64_t {
     if (ref.stage != 0 || ref.segment != 0) return 0;
     const auto at = std::ranges::find_if(owner->layout.items, [&](const auto& item) {
       return item.layer == ref.layer && item.tensor == ref.tensor;
@@ -3316,7 +3523,8 @@ TEST(GgmlRoundedConsumerGpu, RealMappedSourceBuildsAndExecutesItsAttentionPipeli
     return at == owner->layout.items.end() ? 0 : owner->packed + mc::kStateOffset + at->offset;
   };
   const kn::Addresses addresses{
-      .weight = [owner](const ir::WeightRef& ref, llmp::format::PartRole role) -> std::uint64_t {
+      .weight = [owner = life.get()](const ir::WeightRef& ref,
+                                     llmp::format::PartRole role) -> std::uint64_t {
         const auto at = owner->weight_offsets.find(ref);
         return at == owner->weight_offsets.end() || at->second.first != role
                    ? 0

@@ -38,6 +38,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/json.h"
 #include "components/state_encoding.h"
 #include "components/step.h"
 #include "engine/support.h"
@@ -87,27 +88,12 @@ constexpr std::uint32_t kGb10 = 121;
 ex::Registry PlanningRegistry(bool hc_post = true, bool grouped = true,
                               std::string_view missing = {}) {
   std::vector<ex::Implementation> v;
-  for (const kg::CapabilityDeclaration& d : kg::CapabilityDeclarations()) {
+  for (auto d : kg::PlanningImplementations()) {
     if (!hc_post && d.name == kg::kHcPostName) continue;
     if (!grouped && d.name == "llmp.vecq.grouped") continue;
     if (d.name == missing) continue;
-    v.push_back({.name = std::string(d.name),
-                 .operation = d.operation,
-                 .source = "ggml",
-                 .revision = "planning",
-                 .build = "cpu",
-                 .variant = std::string(kg::AcceptsTextOf(d.name)),
-                 .capability = *d.capability});
+    v.push_back(std::move(d));
   }
-  // VecQ's executable primitive has no standalone IR capability. The
-  // planning registry still needs its availability for composite recipes.
-  if (missing != kg::kVecQName)
-    v.push_back({.name = std::string(kg::kVecQName),
-                 .operation = ex::Operation::kMatMul,
-                 .source = "ggml",
-                 .revision = "planning",
-                 .build = "cpu",
-                 .variant = "native VecQ launch"});
   return std::move(ex::Registry::Create(std::move(v)).value());
 }
 
@@ -482,6 +468,228 @@ void ExpectFamilyLowers() {
   EXPECT_GT(owner_forms, 0U);
 }
 
+TEST(GgmlLowerTest, PhysicalReportLinksRootsAndPreservesConcreteRepeatedSources) {
+  const auto registry = PlanningRegistry();
+  ir::Builder builder;
+  builder.SetComponent(9);
+  builder.SetOwner(0);
+  const auto x = builder.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({16})));
+  builder.Output(builder.Add(x, x));
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph);
+  auto plan = pl::Plan(graph->Clone(), registry, Gb10(), {});
+  ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+  const co::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), {}};
+  auto lowered = kg::LowerStep(kn::LowerInput(*plan, io, {}), registry, Device());
+  ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+  ASSERT_EQ(lowered->plan.steps.size(), 1U);
+  const auto& operation = lowered->plan.steps[0];
+  ASSERT_EQ(operation.nodes.size(), 1U);
+  const auto* concrete = operation.nodes[0];
+  ASSERT_EQ(concrete->op, GGML_OP_ADD);
+  ASSERT_EQ(concrete->src[0], concrete->src[1]);
+  const auto* add = kg::PhysicalTensorOf(*lowered, concrete);
+  const auto* a = kg::PhysicalTensorOf(*lowered, concrete->src[0]);
+  const auto* b = kg::PhysicalTensorOf(*lowered, concrete->src[1]);
+  ASSERT_NE(add, nullptr);
+  ASSERT_NE(a, nullptr);
+  ASSERT_NE(b, nullptr);
+  EXPECT_EQ(a->id, b->id);
+  EXPECT_NE(add->id, a->id);
+  const auto output = plan->graph.outputs()[0];
+  EXPECT_EQ(add->tensor, output);
+  EXPECT_EQ(add->producer, plan->graph.producer(output));
+  auto root = std::ranges::find(lowered->physical_roots, output, &kg::PhysicalRoot::root);
+  ASSERT_NE(root, lowered->physical_roots.end());
+  EXPECT_EQ(root->backend_tensor, add->id);
+  EXPECT_EQ(root->producer, add->producer);
+  EXPECT_EQ(root->operation, ir::Primitive(ir::Op::kAdd));
+  EXPECT_EQ(root->component, 9);
+  EXPECT_EQ(root->bytes, 16 * sizeof(float));
+  const auto count = lowered->physical_tensors.size();
+  auto moved = std::move(*lowered);
+  EXPECT_EQ(moved.physical_tensors.size(), count);
+  EXPECT_EQ(kg::PhysicalTensorOf(moved, concrete)->id, add->id);
+  EXPECT_EQ(kg::PhysicalTensorOf(moved, concrete->src[0])->id, a->id);
+  std::string records;
+  kg::StreamPhysicalPlanReport(moved, registry,
+                               [&](std::string_view fragment) { records.append(fragment); });
+  bool recipe = false, root_link = false, source_link = false;
+  for (std::size_t begin = 0; begin < records.size();) {
+    const auto end = records.find('\n', begin);
+    ASSERT_NE(end, std::string::npos);
+    auto parsed = llmp::base::json::Parse(std::string_view(records).substr(begin, end - begin));
+    ASSERT_TRUE(parsed);
+    const auto record = parsed->root();
+    const auto kind = record.find("kind")->string();
+    if (kind == "launch_recipe") {
+      const auto nodes = record.find("nodes"), reads = record.find("reads"),
+                 writes = record.find("writes");
+      ASSERT_TRUE(nodes && reads && writes);
+      ASSERT_EQ(nodes->size(), 1U);
+      EXPECT_EQ(nodes->at(0).int64(), add->id);
+      ASSERT_EQ(reads->size(), 2U);
+      EXPECT_EQ(reads->at(0).int64(), a->id);
+      EXPECT_EQ(reads->at(1).int64(), a->id);
+      ASSERT_EQ(writes->size(), 1U);
+      EXPECT_EQ(writes->at(0).int64(), add->id);
+      recipe = true;
+    }
+    if (kind == "physical_root" && record.find("root")->int64() == output.v) {
+      EXPECT_EQ(record.find("backend_tensor")->int64(), add->id);
+      EXPECT_EQ(record.find("producer")->int64(), add->producer.v);
+      root_link = true;
+    }
+    if (kind == "physical_node" && record.find("id")->int64() == add->id) {
+      const auto sources = record.find("sources");
+      ASSERT_TRUE(sources);
+      ASSERT_EQ(sources->size(), 2U);
+      EXPECT_EQ(sources->at(0).int64(), a->id);
+      EXPECT_EQ(sources->at(1).int64(), a->id);
+      EXPECT_EQ(record.find("ir_node")->int64(), add->producer.v);
+      source_link = true;
+    }
+    begin = end + 1;
+  }
+  EXPECT_TRUE(recipe);
+  EXPECT_TRUE(root_link);
+  EXPECT_TRUE(source_link);
+}
+
+TEST(GgmlLowerTest, ProductArithmeticDescribesActualRoutingAndExplicitF32Requests) {
+  const auto registry = PlanningRegistry();
+  const pl::Policy policy{};
+  const pl::SelectionView view(registry, Gb10(), policy, false, false);
+  for (std::uint64_t rows : {1U, 17U}) {
+    for (const auto accumulate : {ir::Accumulate::kDefault, ir::Accumulate::kF32}) {
+      ir::Builder builder;
+      const auto w =
+          builder.Weight(ir::Dense(llmp::format::Encoding::kBF16, ir::ShapeOf({64, 32})), {});
+      const auto x =
+          builder.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({64, rows})));
+      const auto product = builder.MatMul(w, x, {.accumulate = accumulate});
+      builder.Output(product);
+      auto graph = std::move(builder).Finish();
+      ASSERT_TRUE(graph);
+      EXPECT_EQ(view.IncumbentArithmetic(*graph, graph->node(graph->producer(product))),
+                rows > 16 && accumulate == ir::Accumulate::kDefault
+                    ? ir::ProductArithmetic::kBf16F32
+                    : ir::ProductArithmetic::kImplementation);
+    }
+  }
+}
+
+TEST(GgmlLowerTest, PreparedBf16KeepsF32AccumulationForBothRequestsAndOptionalHints) {
+  const auto registry = PlanningRegistry();
+  const pl::Policy policy{};
+  const pl::SelectionView view(registry, Gb10(), policy, false, false);
+  for (const auto accumulate : {ir::Accumulate::kDefault, ir::Accumulate::kF32}) {
+    for (const auto hint : {ir::ProductHint::kNone, ir::ProductHint::kHadamard}) {
+      ir::Builder builder;
+      const auto w =
+          builder.Weight(ir::Dense(llmp::format::Encoding::kBF16, ir::ShapeOf({64, 64})), {});
+      const auto x = builder.Input(ir::Dense(llmp::format::Encoding::kBF16, ir::ShapeOf({64, 17})));
+      const auto product = builder.MatMul(w, x, {.accumulate = accumulate, .hint = hint});
+      builder.Output(product);
+      auto graph = std::move(builder).Finish();
+      ASSERT_TRUE(graph);
+      EXPECT_EQ(view.IncumbentArithmetic(*graph, graph->node(graph->producer(product))),
+                ir::ProductArithmetic::kBf16F32);
+    }
+  }
+}
+
+TEST(GgmlLowerTest, PreparedBf16SealAllowsItsDeclaredBf16OutputWithoutWideningInputEquivalence) {
+  const auto registry = PlanningRegistry();
+  for (const auto input_encoding : {llmp::format::Encoding::kF32, llmp::format::Encoding::kBF16}) {
+    ir::Builder builder;
+    builder.SetOwner(0);
+    const auto weight =
+        builder.Input(ir::Dense(llmp::format::Encoding::kBF16, ir::ShapeOf({64, 64})));
+    const auto input = builder.Input(ir::Dense(input_encoding, ir::ShapeOf({64, 17})));
+    const std::array sources{weight, input};
+    ir::TensorDesc output;
+    output.format = ir::Dense(llmp::format::Encoding::kBF16, ir::ShapeOf({64, 17}));
+    output.nb = ir::NaturalStrides(output.format);
+    const std::array requested{output};
+    const ir::ProductParams params{.arithmetic = ir::ProductArithmetic::kBf16F32};
+    const auto product =
+        builder.Emit(ir::Primitive(ir::Op::kMatMul), ir::ToBytes(params), sources, requested)[0];
+    builder.Output(product);
+    auto graph = std::move(builder).Finish();
+    ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+    const pl::Policy policy{};
+    const pl::SelectionView view(registry, Gb10(), policy, false, false);
+    const auto& node = graph->node(graph->producer(product));
+    const auto candidates = view.Candidates(*graph, node);
+    if (input_encoding == llmp::format::Encoding::kF32) {
+      EXPECT_TRUE(candidates.empty());  // No F32-input/BF16-output equivalence was declared.
+      continue;
+    }
+    ASSERT_FALSE(candidates.empty());
+    EXPECT_EQ(view.IncumbentArithmetic(*graph, node), ir::ProductArithmetic::kBf16F32);
+    auto plan = pl::Plan(graph->Clone(), registry, Gb10(), policy);
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    ASSERT_EQ(plan->steps.size(), 1U);
+    EXPECT_EQ(registry.at(plan->steps[0].implementation).name, kg::kGemmBf16Name);
+    const co::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), {}};
+    const kn::Addresses addresses{};
+    auto lowered = kg::LowerStep({*plan, io, addresses}, registry, Device());
+    ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+    ASSERT_EQ(lowered->plan.steps.size(), 1U);
+    ASSERT_EQ(lowered->plan.steps[0].nodes.size(), 1U);
+    const auto* concrete = lowered->plan.steps[0].nodes[0];
+    EXPECT_EQ(kg::LlmpOpOf(concrete), kg::LlmpOp::kGemmBf16);
+    EXPECT_EQ(concrete->type, GGML_TYPE_BF16);
+    EXPECT_EQ(concrete->src[0]->type, GGML_TYPE_BF16);
+    EXPECT_EQ(concrete->src[1]->type, GGML_TYPE_BF16);
+    EXPECT_EQ(plan->graph.node(plan->steps[0].nodes[0]).Params<ir::ProductParams>().arithmetic,
+              ir::ProductArithmetic::kBf16F32);
+  }
+}
+
+TEST(GgmlLowerTest, MmvqSharingRequiresCanonicalQuantizerAndOriginalReduction) {
+  const auto registry = PlanningRegistry();
+  const pl::Policy policy{};
+  const pl::SelectionView view(registry, Gb10(), policy, false, false);
+  for (std::uint64_t rows : {1U, 8U, 17U}) {
+    // K96 has a partial physical pad512 row; K512 is already padded.
+    for (std::uint64_t k : {96U, 512U}) {
+      ir::Builder builder;
+      const auto w = builder.Weight({.encoding = llmp::format::Encoding::kQ8_0,
+                                     .layout = llmp::format::Layout::kGgmlBlocks,
+                                     .shape = ir::ShapeOf({k, 32})},
+                                    {});
+      const auto x = builder.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({k, rows})));
+      const auto output = builder.MatMul(w, x);
+      builder.Output(output);
+      auto graph = std::move(builder).Finish();
+      ASSERT_TRUE(graph);
+      const auto& node = graph->node(graph->producer(output));
+      EXPECT_EQ(
+          view.IncumbentArithmetic(*graph, node),
+          rows <= 8 ? ir::ProductArithmetic::kGgmlQ8_1F32 : ir::ProductArithmetic::kImplementation);
+      auto prepared = graph->tensor(x);
+      prepared.format.encoding = llmp::format::Encoding::kQ8_1;
+      prepared.format.layout = llmp::format::Layout::kGgmlBlocks;
+      prepared.nb = ir::NaturalStrides(prepared.format);
+      auto params = node.Params<ir::ProductParams>();
+      params.arithmetic = ir::ProductArithmetic::kGgmlQ8_1F32;
+      const std::array<const ir::TensorDesc*, 2> src{&graph->tensor(w), &prepared};
+      const std::array<const ir::TensorDesc*, 1> out{&graph->tensor(output)};
+      const auto candidates = view.Candidates(node.key, src, out, ir::ToBytes(params));
+      EXPECT_EQ(candidates.empty(), rows > 8);
+      for (const auto candidate : candidates)
+        EXPECT_EQ(registry.at(candidate).name, "llmp.mmvq.prepared");
+      prepared.nb[1] += 36;
+      EXPECT_TRUE(view.Candidates(node.key, src, out, ir::ToBytes(params)).empty());
+      prepared.nb = ir::NaturalStrides(prepared.format);
+      prepared.view_of = x;
+      EXPECT_TRUE(view.Candidates(node.key, src, out, ir::ToBytes(params)).empty());
+    }
+  }
+}
+
 TEST(GgmlLowerTest, GroupedVecQRejectsUnknownPhysicalAndArithmeticContracts) {
   const auto registry = PlanningRegistry();
   const pl::Policy policy{};
@@ -583,6 +791,186 @@ TEST(GgmlLowerTest, VectorRowsBoundTheVectorForms) {
   EXPECT_FALSE(vecq(17, {}));
 }
 
+// Explicit prepared IR exercises the native lowering contract without granting
+// any model numerical qualification. These are the serving tail's actual input
+// geometries, including the gate/up broadcast and the down product's slot rows.
+TEST(GgmlLowerTest, RoutedPreparedTailShapesPreserveBroadcastAndPerSlot) {
+  const auto registry = PlanningRegistry();
+  for (const bool per_slot : {false, true})
+    for (const std::uint64_t tokens : {1U, 2U, 3U, 4U}) {
+      SCOPED_TRACE(per_slot);
+      SCOPED_TRACE(tokens);
+      constexpr std::uint64_t used = 8, experts = 128;
+      const std::uint64_t k = per_slot ? 704 : 2816, n = per_slot ? 2816 : 1408;
+      ir::Builder b;
+      const auto w = b.Input(
+          {.encoding = per_slot ? llmp::format::Encoding::kQ5_1 : llmp::format::Encoding::kQ4_K,
+           .layout = llmp::format::Layout::kGgmlBlocks,
+           .shape = ir::ShapeOf({k, n, experts})});
+      const auto x = b.Input(
+          ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({k, per_slot ? used : 1, tokens})));
+      const auto ids =
+          b.Input(ir::Dense(llmp::format::Encoding::kI32, ir::ShapeOf({used, tokens})));
+      const auto q8 =
+          b.Prepare(x, llmp::format::Encoding::kQ8_1, llmp::format::Layout::kGgmlBlocks);
+      b.Output(b.MatMulId(w, q8, ids));
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+      std::vector<co::StepInput> inputs;
+      for (const auto id : graph->inputs())
+        inputs.push_back({.tensor = id, .kind = co::InputKind::kFeatures});
+      const co::StepGraph step{
+          .graph = graph->Clone(), .inputs = std::move(inputs), .weights = {}, .state = {}};
+      const pl::StepShape shape{
+          .segments = {
+              {.rows = static_cast<std::uint32_t>(tokens), .outputs = 0, .want_head = false}}};
+      pl::Policy policy;
+      policy.vector_rows = 4;
+      auto plan = pl::Plan(graph->Clone(), registry, Gb10(), policy);
+      ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+      auto lowered = kg::LowerStep({*plan, step, shape, {}}, registry, Device());
+      ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+      std::size_t products = 0;
+      for (const auto* node : lowered->nodes)
+        if (kg::LlmpOpOf(node) == kg::LlmpOp::kVecQ) {
+          ++products;
+          EXPECT_EQ(kg::LlmpOpInt(node, 0), tokens);
+          EXPECT_EQ(kg::LlmpOpInt(node, 1), per_slot ? 1 : 0);
+          ASSERT_NE(node->src[1], nullptr);
+          EXPECT_EQ(kg::LlmpOpInt(node->src[1], 1), tokens * (per_slot ? used : 1));
+        }
+      EXPECT_EQ(products, 1U);
+    }
+}
+
+TEST(GgmlLowerTest, PreparedGluPreservesExactFormulaAndRefusesUnsupportedKinds) {
+  const auto registry = PlanningRegistry();
+  for (const bool routed : {false, true})
+    for (const auto kind :
+         {ir::GluKind::kSwiGlu, ir::GluKind::kSwiGluClamp, ir::GluKind::kGeGluTanh}) {
+      SCOPED_TRACE(routed);
+      SCOPED_TRACE(static_cast<unsigned>(kind));
+      constexpr std::uint64_t k = 256, n = 16, tokens = 3;
+      ir::Builder b;
+      const llmp::format::TensorFormat weights{.encoding = llmp::format::Encoding::kQ8_0,
+                                               .layout = llmp::format::Layout::kGgmlBlocks,
+                                               .shape = ir::ShapeOf({k, n, routed ? 128U : 1U})};
+      const auto gate = b.Input(weights), up = b.Input(weights);
+      const auto x = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({k, tokens})));
+      const auto q8 =
+          b.Prepare(x, llmp::format::Encoding::kQ8_1, llmp::format::Layout::kGgmlBlocks);
+      const ir::GluParams glu{.kind = kind,
+                              .limit = kind == ir::GluKind::kSwiGluClamp ? 0.7F : 0.0F};
+      if (routed) {
+        const auto ids = b.Input(ir::Dense(llmp::format::Encoding::kI32, ir::ShapeOf({8, tokens})));
+        b.Output(b.Fused(ir::FusedKind::kMatMulIdGlu, std::array{gate, up, q8, ids},
+                         ir::MoeExpertsParams{.glu = glu, .hidden = n})[0]);
+      } else {
+        b.Output(b.Fused(ir::FusedKind::kMatMulGlu, std::array{gate, up, q8}, glu)[0]);
+      }
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+      std::vector<co::StepInput> inputs;
+      for (const auto id : graph->inputs())
+        inputs.push_back({.tensor = id, .kind = co::InputKind::kFeatures});
+      const co::StepGraph step{
+          .graph = graph->Clone(), .inputs = std::move(inputs), .weights = {}, .state = {}};
+      const pl::StepShape shape{
+          .segments = {
+              {.rows = static_cast<std::uint32_t>(tokens), .outputs = 0, .want_head = false}}};
+      auto plan = pl::Plan(graph->Clone(), registry, Gb10(), {});
+      ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+      auto lowered = kg::LowerStep({*plan, step, shape, {}}, registry, Device());
+      ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+      std::size_t products = 0;
+      for (const auto* node : lowered->nodes)
+        if (kg::LlmpOpOf(node) == kg::LlmpOp::kVecQ) {
+          ++products;
+          const auto expected = kind == ir::GluKind::kSwiGlu      ? kg::VecQGlu::kSwiglu
+                                : kind == ir::GluKind::kGeGluTanh ? kg::VecQGlu::kGeGlu
+                                                                  : kg::VecQGlu::kSwigluClamp;
+          EXPECT_EQ(kg::LlmpOpInt(node, 2), static_cast<std::int64_t>(expected));
+          EXPECT_FLOAT_EQ(kg::LlmpOpFloat(node, 3), glu.limit);
+        }
+      EXPECT_EQ(products, 1U);
+    }
+}
+
+TEST(GgmlLowerTest, RoutedPreparedCapabilityRefusesRepeatingSlotsAndUnsupportedGlu) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  const auto registry = PlanningRegistry();
+  std::array operands{
+      ex::OperandFormat{.operand = 0,
+                        .encoding = Encoding::kQ8_0,
+                        .layout = Layout::kGgmlBlocks,
+                        .ne = {64, 16, 128, 1}},
+      ex::OperandFormat{.operand = 1,
+                        .encoding = Encoding::kQ8_1,
+                        .layout = Layout::kGgmlBlocks,
+                        .ne = {64, 1, 3, 1}},
+      ex::OperandFormat{
+          .operand = 2, .encoding = Encoding::kI32, .layout = Layout::kDense, .ne = {8, 3, 1, 1}}};
+  ex::CapabilityQuery query{.op = ir::Primitive(ir::Op::kMatMulId),
+                            .operands = operands,
+                            .rows = 3,
+                            .k = 64,
+                            .n = 16,
+                            .arch = kGb10,
+                            .policy = {.vector_rows = 4}};
+  const auto routed = [&] {
+    return std::ranges::any_of(ex::Candidates(registry, query), [&](std::size_t i) {
+      return registry.at(i).name == "llmp.vecq.experts";
+    });
+  };
+  EXPECT_TRUE(routed());
+  operands[1].ne[1] = 8;
+  EXPECT_TRUE(routed());
+  operands[1].ne[1] = 2;  // valid modulo-slot IR, unsupported by this kernel
+  EXPECT_FALSE(routed());
+  operands[1].ne[1] = 1;
+  operands[1].ne[2] = 2;
+  EXPECT_FALSE(routed());
+  operands[1].ne[2] = 3;
+  operands[2].ne[1] = 2;
+  EXPECT_FALSE(routed());
+  operands[2].ne[1] = 3;
+  query.rows = 5;
+  EXPECT_FALSE(routed());  // policy's four-row boundary stays in force
+
+  std::array glu_operands{operands[0], operands[0], operands[1]};
+  glu_operands[0].ne[2] = glu_operands[1].ne[2] = 1;
+  glu_operands[1].operand = 1;
+  glu_operands[2].operand = 2;
+  glu_operands[2].ne = {64, 3, 1, 1};
+  query.op = ir::Fused(ir::FusedKind::kMatMulGlu);
+  query.operands = glu_operands;
+  query.rows = 3;
+  const auto fused = [&] {
+    return std::ranges::any_of(ex::Candidates(registry, query), [&](std::size_t i) {
+      return registry.at(i).name == "llmp.vecq.glu";
+    });
+  };
+  ir::GluParams params{.kind = ir::GluKind::kGeGluTanh};
+  auto params_bytes = ir::ToBytes(params);
+  query.params = params_bytes;
+  EXPECT_TRUE(fused());
+  params.kind = ir::GluKind::kGeGluErf;
+  params_bytes = ir::ToBytes(params);
+  query.params = params_bytes;
+  EXPECT_FALSE(fused());
+  params.kind = ir::GluKind::kGeGluTanh;
+  params.limit = 1;
+  params_bytes = ir::ToBytes(params);
+  query.params = params_bytes;
+  EXPECT_FALSE(fused());
+  params.limit = 0;
+  params.swapped = true;
+  params_bytes = ir::ToBytes(params);
+  query.params = params_bytes;
+  EXPECT_FALSE(fused());
+}
+
 TEST(GgmlLowerTest, GroupedVecQRequiresClosedSourceRecipeAndPaysBothLaunches) {
   // 0: native, 1: disabled, 2: missing implementation, 3: input weight,
   // 4: a weight view, 5: excess tokens, 6: wrong permutation despite equal
@@ -622,7 +1010,10 @@ TEST(GgmlLowerTest, GroupedVecQRequiresClosedSourceRecipeAndPaysBothLaunches) {
       step.weights.push_back(
           {.tensor = leaf, .ref = {}, .parts = {{"weight", llmp::format::PartRole::kData}}});
     pl::Policy policy;
-    if (scenario != 1) policy.enabled = {"grouped_vecq"};
+    // This operator diagnostic proposes the actual changed reduction; it is
+    // not a full-model numerical qualification.
+    policy.numerical_candidates = {pl::NumericalChange::kQ8VectorReduction};
+    if (scenario == 1) policy.disabled = {"grouped_vecq"};
     pl::Canonicalize(policy);
     std::vector<ir::TensorId> staged{input};
     if (scenario == 3) staged.push_back(leaf);
@@ -676,7 +1067,7 @@ TEST(GgmlLowerTest, DirectGroupedVecQRequiresPolicySourceAuthorityAndBothLaunche
     auto graph = std::move(b).Finish();
     ASSERT_TRUE(graph);
     pl::Policy policy;
-    if (scenario != 1) policy.enabled = {"grouped_vecq"};
+    if (scenario == 1) policy.disabled = {"grouped_vecq"};
     pl::Canonicalize(policy);
     std::vector<ir::TensorId> staged{input};
     if (scenario == 2) staged.push_back(leaf);
@@ -708,7 +1099,7 @@ TEST(GgmlLowerTest, UngatedExpertCombineRequiresOptInAndFallsBackCompletely) {
           SCOPED_TRACE(mode);
           const auto registry = PlanningRegistry(true, true, mode == 2 ? kg::kDsv4CombineName : "");
           pl::Policy policy;
-          if (mode != 0) policy.enabled = {"moe_combine"};
+          if (mode == 0) policy.disabled = {"moe_combine"};
           pl::Canonicalize(policy);
           ir::Builder b;
           const auto down =
@@ -973,7 +1364,7 @@ TEST(GgmlLowerTest, BiasedRouteRequiresOptInAndPaysBothPackedOutputPlanes) {
       SCOPED_TRACE(mode);
       const auto registry = PlanningRegistry(true, true, mode == 2 ? kg::kDsv4RouteName : "");
       pl::Policy policy;
-      if (mode != 0) policy.enabled = {"biased_route"};
+      if (mode == 0) policy.disabled = {"biased_route"};
       if (mode == 3) policy.disabled = {"route_reduce"};
       pl::Canonicalize(policy);
       ir::Builder b;
@@ -1184,7 +1575,7 @@ TEST(GgmlLowerTest, SelectedHashRouteRequiresOptInAndPaysBothPackedOutputPlanes)
       SCOPED_TRACE(mode);
       const auto registry = PlanningRegistry(true, true, mode == 2 ? kg::kDsv4RouteName : "");
       pl::Policy policy;
-      if (mode != 0) policy.enabled = {"hash_route"};
+      if (mode == 0) policy.disabled = {"hash_route"};
       if (mode == 3) policy.disabled = {"route_reduce"};
       pl::Canonicalize(policy);
       ir::Builder b;
@@ -1879,12 +2270,9 @@ TEST(GgmlLowerTest, RopeStoreUsesReadOperandStandInWithoutAliasingRetainedRotati
   }
 }
 
-// A selection PlanGraph would not make is refused, never run otherwise:
-// without the norm-mul pattern the IR selects the norm and its mul alone
-// (which unfused PlanGraph runs as one step of both launchers, the IR's two
-// steps), but on a device whose own choices fuse norms PlanGraph runs the
-// two as the fused RMSNorm-mul.
-TEST(GgmlLowerTest, RefusesASelectionPlanGraphDoesNotMake) {
+// Device preferences cannot rewrite an explicit primitive selection. The ordered
+// norm/mul recipe remains unfused even when another caller prefers fused norms.
+TEST(GgmlLowerTest, DirectLoweringPreservesPrimitiveSelectionAgainstDevicePreferences) {
   Ir ir_{.spec = Gemma2Family::Spec(), .source = Gemma2Family::Source()};
   const Cells state = Gemma2Family::State(8192, 128);
   auto layout = co::StageLayoutUniform(ir_.spec, 0, 8192, 128, kExtent);
@@ -1908,14 +2296,20 @@ TEST(GgmlLowerTest, RefusesASelectionPlanGraphDoesNotMake) {
   ASSERT_TRUE(plan.has_value());
   const kn::Addresses addresses{};
   const kn::LowerInput input{*plan, *step, shape, addresses, 8192};
-  // Unfused, the two run as PlanGraph's one step of both launchers.
-  ASSERT_TRUE(kg::LowerStep(input, ir_.registry, Device()).has_value());
+  const auto baseline = kg::LowerStep(input, ir_.registry, Device());
+  ASSERT_TRUE(baseline) << (baseline ? "" : baseline.error().detail);
   kg::DeviceChoices fusing = Device();
   fusing.fuse_norms = true;
-  auto lowered = kg::LowerStep(input, ir_.registry, fusing);
-  ASSERT_FALSE(lowered.has_value());
-  EXPECT_NE(lowered.error().detail.find("PlanGraph's step"), std::string::npos)
-      << lowered.error().detail;
+  const auto lowered = kg::LowerStep(input, ir_.registry, fusing);
+  ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+  ASSERT_EQ(lowered->plan.steps.size(), baseline->plan.steps.size());
+  std::size_t primitive_pairs = 0;
+  for (std::size_t i = 0; i < lowered->plan.steps.size(); ++i) {
+    EXPECT_EQ(lowered->plan.steps[i].implementation, baseline->plan.steps[i].implementation);
+    EXPECT_NE(lowered->plan.steps[i].implementation, kg::kRmsNormMulFused);
+    primitive_pairs += lowered->plan.steps[i].implementation == kg::kRmsNormMulUnfused;
+  }
+  EXPECT_GT(primitive_pairs, 0U);
 }
 
 // Upstream's routing as the capabilities model it (mmvq.cu
@@ -2145,6 +2539,295 @@ TEST(GgmlLowerTest, CapabilitiesRouteAsUpstream) {
                 d.capability->group == "ggml.gated_delta_net")
         << d.name;
   }
+}
+
+TEST(GgmlLowerTest, StructuralRegistryIncludesOnlyDeclaredConcreteRecipeContracts) {
+  const auto entries = kg::PlanningImplementations();
+  const auto registry = ex::Registry::Create(entries);
+  ASSERT_TRUE(registry) << registry.error().detail;
+  for (const auto& recipe : kg::RecipeDeclarations()) {
+    const auto at = registry->Find(recipe.name);
+    ASSERT_TRUE(at) << recipe.name;
+    const auto& entry = registry->at(*at);
+    const auto* capability = kg::CapabilityOf(recipe.name);
+    EXPECT_EQ(entry.operation, capability ? capability->op : recipe.operation) << recipe.name;
+    EXPECT_FALSE(recipe.numerical_contract.empty()) << recipe.name;
+    EXPECT_NE(entry.variant.find(recipe.numerical_contract), std::string::npos) << recipe.name;
+    EXPECT_EQ(entry.capability.has_value(), capability != nullptr) << recipe.name;
+  }
+  const auto helper = registry->Find(kg::kVecQName);
+  ASSERT_TRUE(helper);
+  EXPECT_FALSE(registry->at(*helper).capability);
+}
+
+// Descriptor-only lowering: no backend, launch or device work is created.
+// The direct view output is important: a later reshape cannot hide the view's
+// agreement with the IR. Q8 axis zero is singleton in storage blocks.
+TEST(GgmlLowerTest, SingletonStorageUnitAxesLowerWithCanonicalUnobservableStrides) {
+  const auto registry = PlanningRegistry();
+  for (const auto encoding : {llmp::format::Encoding::kF32, llmp::format::Encoding::kQ8_0}) {
+    for (const bool single_first : {false, true}) {
+      for (const bool reshape : {false, true}) {
+        SCOPED_TRACE(static_cast<unsigned>(encoding));
+        SCOPED_TRACE(single_first);
+        SCOPED_TRACE(reshape);
+        ir::Builder builder;
+        builder.SetOwner(0);
+        auto format = ir::Dense(
+            encoding, ir::ShapeOf({encoding == llmp::format::Encoding::kF32 ? 14U : 14U * 32U}));
+        if (encoding == llmp::format::Encoding::kQ8_0)
+          format.layout = llmp::format::Layout::kGgmlBlocks;
+        const auto per = ir::UnitElements(format);
+        const auto unit = ir::UnitBytes(format);
+        const auto root = builder.Input(format);
+        const auto shape = single_first ? ir::ShapeOf({per, 4, 3}) : ir::ShapeOf({4 * per, 1, 3});
+        const std::array<std::uint64_t, 4> strides =
+            single_first ? std::array<std::uint64_t, 4>{123456, unit, 4 * unit, 987655}
+                         : std::array<std::uint64_t, 4>{unit, 123456, 4 * unit, 987655};
+        const auto view = builder.View(root, shape, strides, unit);
+        ASSERT_TRUE(builder.ok());
+        EXPECT_TRUE(ir::IsContiguous(builder.tensor(view)));
+        // Moving the other singleton axis first must not introduce a fake
+        // native transposition, either, even when that view is returned directly.
+        const bool permute = !single_first && per == 1;
+        const auto value = permute ? builder.Permute(view, {1, 0, 2, 3}) : view;
+        builder.Output(reshape ? builder.Reshape(value, ir::ShapeOf({12 * per})) : value);
+        auto graph = std::move(builder).Finish();
+        ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+        const co::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), {}};
+        auto plan = pl::Plan(graph->Clone(), registry, Gb10(), {});
+        ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+        const kn::Addresses addresses{};
+        auto lowered = kg::LowerStep({*plan, io, addresses}, registry, Device());
+        ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+        ASSERT_EQ(lowered->inputs.size(), 1U);
+        ASSERT_EQ(lowered->outputs.size(), 1U);
+        EXPECT_EQ(lowered->outputs[0].device_address, lowered->inputs[0].device_address + unit);
+        EXPECT_EQ(lowered->outputs[0].bytes, 12 * unit);
+        EXPECT_TRUE(lowered->plan.steps.empty());  // No materialization was introduced.
+        const auto mapped = plan->tensors.at(view.v);
+        const auto found = std::ranges::find_if(lowered->physical_tensors, [&](const auto& value) {
+          return value.tensor == mapped && value.descriptor->op == GGML_OP_VIEW;
+        });
+        ASSERT_NE(found, lowered->physical_tensors.end());
+        const auto* native = found->descriptor;
+        EXPECT_TRUE(ggml_is_contiguous(native));
+        EXPECT_FALSE(ggml_is_permuted(native));
+        if (permute) {
+          const auto permuted = std::ranges::find_if(lowered->physical_tensors, [&](const auto& t) {
+            return t.tensor == plan->tensors.at(value.v) && t.descriptor->op == GGML_OP_PERMUTE;
+          });
+          ASSERT_NE(permuted, lowered->physical_tensors.end());
+          EXPECT_EQ(permuted->descriptor->nb[0], unit);
+          EXPECT_FALSE(ggml_is_permuted(permuted->descriptor));
+          EXPECT_TRUE(ggml_is_contiguous(permuted->descriptor));
+        }
+        // Preserve the representable trailing stride; only the inactive
+        // first axis or the false permutation at axis one needs adjustment.
+        const auto expected = std::array<std::uint64_t, 4>{unit, single_first ? unit : 4 * unit,
+                                                           4 * unit, strides[3]};
+        for (std::size_t axis = 0; axis < expected.size(); ++axis) {
+          EXPECT_EQ(native->ne[axis], static_cast<std::int64_t>(shape.ne[axis]));
+          EXPECT_EQ(native->nb[axis], expected[axis]);
+        }
+        // Compare every addressed storage unit, including a nonzero root
+        // offset. Both descriptors must identify exactly the same bytes.
+        for (std::uint64_t i2 = 0; i2 < shape.ne[2]; ++i2)
+          for (std::uint64_t i1 = 0; i1 < shape.ne[1]; ++i1)
+            for (std::uint64_t i0 = 0; i0 < shape.ne[0] / per; ++i0)
+              EXPECT_EQ(i0 * native->nb[0] + i1 * native->nb[1] + i2 * native->nb[2],
+                        i0 * strides[0] + i1 * strides[1] + i2 * strides[2]);
+      }
+    }
+  }
+}
+
+TEST(GgmlLowerTest, SingletonNormalizationPreservesHarmlessPaddedRouteIdPitches) {
+  const auto registry = PlanningRegistry();
+  for (const std::uint64_t rows : {1U, 3U}) {
+    SCOPED_TRACE(rows);
+    ir::Builder builder;
+    builder.SetOwner(0);
+    const auto root =
+        builder.Input(ir::Dense(llmp::format::Encoding::kI32, ir::ShapeOf({256, rows})));
+    const std::array<std::uint64_t, 4> strides{4, 1024, 1024 * rows, 1024 * rows};
+    const auto ids = builder.View(root, ir::ShapeOf({6, rows}), strides, 0);
+    // Spatial result ports are contiguous. Keep the single-row direct alias;
+    // explicitly copy the multirow padded view into its supported result port.
+    builder.Output(rows == 1 ? ids : builder.Cont(ids));
+    auto graph = std::move(builder).Finish();
+    ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+    const co::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), {}};
+    auto plan = pl::Plan(graph->Clone(), registry, Gb10(), {});
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    const kn::Addresses addresses{};
+    auto lowered = kg::LowerStep({*plan, io, addresses}, registry, Device());
+    ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+    const auto mapped = plan->tensors.at(ids.v);
+    const auto found = std::ranges::find_if(lowered->physical_tensors, [&](const auto& value) {
+      return value.tensor == mapped && value.descriptor->op == GGML_OP_VIEW;
+    });
+    ASSERT_NE(found, lowered->physical_tensors.end());
+    const auto* native = found->descriptor;
+    for (std::size_t axis = 0; axis < strides.size(); ++axis)
+      EXPECT_EQ(native->nb[axis], strides[axis]);
+    EXPECT_FALSE(ggml_is_permuted(native));
+    EXPECT_EQ(ggml_is_contiguous(native), rows == 1);
+    EXPECT_EQ(native->view_offs, 0U);
+    EXPECT_EQ(native->view_src, native->src[0]);
+    ASSERT_EQ(lowered->inputs.size(), 1U);
+    ASSERT_EQ(lowered->outputs.size(), 1U);
+    EXPECT_EQ(static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(native->data)),
+              lowered->inputs[0].device_address);
+    EXPECT_EQ(ggml_nbytes(native), 1024 * (rows - 1) + 24);
+    EXPECT_EQ(lowered->outputs[0].bytes, 24 * rows);
+    if (rows == 1) {
+      EXPECT_EQ(lowered->outputs[0].device_address, lowered->inputs[0].device_address);
+      EXPECT_TRUE(lowered->plan.steps.empty());
+    } else {
+      // Exactly the requested copy reads the original padded view: no hidden
+      // view materialization, and the second row still uses the1024-byte pitch.
+      ASSERT_EQ(lowered->plan.steps.size(), 1U);
+      ASSERT_EQ(lowered->plan.steps[0].nodes.size(), 1U);
+      const auto* copy = lowered->plan.steps[0].nodes[0];
+      EXPECT_EQ(copy->op, GGML_OP_CONT);
+      EXPECT_EQ(copy->src[0], native);
+      EXPECT_TRUE(ggml_is_contiguous(copy));
+      EXPECT_EQ(copy->nb[1], 24U);
+      EXPECT_EQ(static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(copy->data)),
+                lowered->outputs[0].device_address);
+    }
+  }
+}
+
+TEST(GgmlLowerTest, CanonicalSingletonStridesKeepLiveGapsAndRootBoundsExact) {
+  ir::Builder builder;
+  builder.SetOwner(0);
+  const auto format = ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({16}));
+  const auto root = builder.Input(format);
+  const auto gap = builder.View(root, ir::ShapeOf({4, 1, 3}), {4, 123456, 20, 987655}, 0);
+  ASSERT_TRUE(builder.ok());
+  EXPECT_FALSE(ir::IsContiguous(builder.tensor(gap)));
+  builder.Output(builder.Cont(gap));
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+  const auto registry = PlanningRegistry();
+  auto plan = pl::Plan(graph->Clone(), registry, Gb10(), {});
+  ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+  const co::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), {}};
+  const kn::Addresses addresses{};
+  auto lowered = kg::LowerStep({*plan, io, addresses}, registry, Device());
+  ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+  const auto mapped = plan->tensors.at(gap.v);
+  const auto found = std::ranges::find_if(lowered->physical_tensors, [&](const auto& value) {
+    return value.tensor == mapped && value.descriptor->op == GGML_OP_VIEW;
+  });
+  ASSERT_NE(found, lowered->physical_tensors.end());
+  EXPECT_EQ(found->descriptor->nb[0], 4U);
+  EXPECT_EQ(found->descriptor->nb[2], 20U);  // The live gap is never canonicalized away.
+  EXPECT_FALSE(ggml_is_contiguous(found->descriptor));
+  ASSERT_EQ(lowered->plan.steps.size(), 1U);
+  EXPECT_EQ(lowered->plan.steps[0].nodes[0]->op, GGML_OP_CONT);
+
+  ir::Builder bad_reshape;
+  const auto gap_root = bad_reshape.Input(format);
+  const auto gap_view =
+      bad_reshape.View(gap_root, ir::ShapeOf({4, 1, 3}), {4, 123456, 20, 987655}, 0);
+  bad_reshape.Reshape(gap_view, ir::ShapeOf({12}));
+  EXPECT_FALSE(bad_reshape.ok());  // Singleton tolerance does not permit a live-gap reshape.
+  ir::Builder out_of_bounds;
+  const auto short_root =
+      out_of_bounds.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({12})));
+  out_of_bounds.View(short_root, ir::ShapeOf({4, 1, 3}), {4, 123456, 20, 987655}, 0);
+  EXPECT_FALSE(out_of_bounds.ok());
+}
+
+// Pure inventory tests deliberately do not allocate an arena. The two graphs
+// have the same node/tensor counts, so changing used experts must change native
+// capacity from the real reduction source rather than a fixed imported bound.
+TEST(GgmlLowerConstruction, ReductionUsesActualWidthAndChecksOverflow) {
+  const auto graph = [](std::uint64_t used) {
+    ir::Builder b;
+    const auto x = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({16, used, 1})));
+    const auto w = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({used, 1})));
+    const auto ids = b.Input(ir::Dense(llmp::format::Encoding::kI32, ir::ShapeOf({used, 1})));
+    const auto scale = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({1, used, 1})));
+    b.Output(b.ExpertReduce(x, w, ids, scale));
+    return std::move(b).Finish();
+  };
+  std::array<std::size_t, 2> counts{};
+  for (const auto [index, width] : {std::pair{0U, 2U}, std::pair{1U, 10U}}) {
+    auto original = graph(width);
+    ASSERT_TRUE(original);
+    pl::StepPlan plan{.graph = original->Clone(),
+                      .steps = {},
+                      .regions = {},
+                      .placement = {},
+                      .applied = {},
+                      .from = {},
+                      .tensors = {},
+                      .decomposed = {}};
+    const co::GraphBuildIO io{*original, original->inputs(), original->outputs(), {}};
+    const kn::Addresses addresses{};
+    auto inventory = kg::LowerConstructionOf({plan, io, addresses});
+    ASSERT_TRUE(inventory) << (inventory ? "" : inventory.error().detail);
+    counts[index] = inventory->descriptors;
+    // An impossible source width is refused by inventory, before arena sizing
+    // can truncate it. Test corruption bypasses the normal graph verifier.
+    auto& source = const_cast<ir::TensorDesc&>(plan.graph.tensor(ir::TensorId{0}));
+    source.format.shape.ne[1] = UINT64_MAX;
+    EXPECT_FALSE(kg::LowerConstructionOf({plan, io, addresses}));
+    source.format.shape.ne[1] = UINT32_MAX;
+    EXPECT_FALSE(kg::LowerConstructionOf({plan, io, addresses}));  // Physical ID width.
+  }
+  EXPECT_EQ(counts[1] - counts[0], 16U);
+}
+
+TEST(GgmlLowerConstruction, ActualReplacedOutputsAndCommitSavesAreCounted) {
+  ir::Builder b;
+  const auto logits = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({8, 1})));
+  const auto route = b.Route(logits, {}, {}, {}, {.experts = 8, .used = 2});
+  const auto rows = b.Input(ir::Dense(llmp::format::Encoding::kI64, ir::ShapeOf({1})));
+  b.Output(route[0]);
+  b.Output(route[1]);
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph);
+  co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+  pl::StepPlan plan{.graph = step.graph.Clone(),
+                    .steps = {},
+                    .regions = {},
+                    .placement = {},
+                    .applied = {},
+                    .from = {},
+                    .tensors = {},
+                    .decomposed = {}};
+  const pl::StepShape shape{.phase = pl::Phase::kVerify, .segments = {{.rows = 1}}};
+  const kn::Addresses addresses{};
+  const kn::LowerInput input{plan, step, shape, addresses};
+  const auto initial = kg::LowerConstructionOf(input);
+  ASSERT_TRUE(initial);
+  pl::Applied replacement;
+  replacement.replaced.push_back(step.graph.producer(route[0]));
+  ASSERT_EQ(step.graph.node(replacement.replaced.front()).nout, 2U);
+  plan.applied.push_back(std::move(replacement));
+  const auto replaced = kg::LowerConstructionOf(input);
+  ASSERT_TRUE(replaced);
+  EXPECT_EQ(replaced->descriptors - initial->descriptors, 2U);
+  // Inventory follows actual save entries, independently of owner/row bounds.
+  for (std::uint32_t layer = 0; layer < 3; ++layer)
+    step.saves.push_back(
+        {.layer = layer, .what = "router weights", .tensor = route[1], .rows = rows});
+  const auto saves = kg::LowerConstructionOf(input);
+  ASSERT_TRUE(saves);
+  EXPECT_EQ(saves->descriptors - replaced->descriptors, 12U);
+  step.saves.clear();
+  const auto cleared = kg::LowerConstructionOf(input);
+  ASSERT_TRUE(cleared);
+  EXPECT_EQ(cleared->bytes, replaced->bytes);
+  plan.applied.back().replaced.front() = ir::NodeId{UINT32_MAX - 1};
+  EXPECT_FALSE(kg::LowerConstructionOf(input));
+  plan.applied.back().replaced.front() = ir::NodeId{};
+  EXPECT_FALSE(kg::LowerConstructionOf(input));
 }
 
 }  // namespace

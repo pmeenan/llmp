@@ -429,6 +429,65 @@ class StagingLifetime {
   bool live_ = true;
 };
 
+// A host allocation's paid lifetime, independent of the node's lifetime.
+// Exported buffers may be destroyed by consumer threads: release only appends
+// to this shared counter. The driver applies it to its normal host account.
+// The counter carries its own prepaid metadata receipt and outstanding result
+// total. If the node dies first, those original receipts remain with the last
+// result owner; destruction never calls a dead node or creates fresh funding.
+class HostPayment {
+ public:
+  HostPayment() = default;
+  HostPayment(const HostPayment&) = delete;
+  HostPayment& operator=(const HostPayment&) = delete;
+  HostPayment(HostPayment&& other) noexcept
+      : releases_(std::exchange(other.releases_, nullptr)),
+        bytes_(std::exchange(other.bytes_, 0)) {}
+  HostPayment& operator=(HostPayment&& other) noexcept {
+    if (this != &other) {
+      Reset();
+      releases_ = std::exchange(other.releases_, nullptr);
+      bytes_ = std::exchange(other.bytes_, 0);
+    }
+    return *this;
+  }
+  ~HostPayment() { Reset(); }
+  void Reset() {
+    if (releases_) {
+      releases_->paid.fetch_sub(bytes_, std::memory_order_release);
+      releases_->bytes.fetch_add(bytes_, std::memory_order_release);
+    }
+    if (releases_) releases_->Drop();
+    releases_ = nullptr;
+    bytes_ = 0;
+  }
+  std::uint64_t bytes() const { return bytes_; }
+  std::uint64_t accounted_bytes() const {
+    return releases_ ? releases_->paid.load(std::memory_order_acquire) : 0;
+  }
+
+ private:
+  friend class PagedNode;
+  struct Releases {
+    explicit Releases(std::uint64_t metadata_in) : paid(metadata_in) {}
+    void Drop() {
+      if (references.fetch_sub(1, std::memory_order_acq_rel) == 1) delete this;
+    }
+    std::atomic<std::size_t> references{1};  // the node's initial owner
+    std::atomic<std::uint64_t> bytes{0};     // refunds awaiting the live driver
+    std::atomic<std::uint64_t> paid;         // surviving receipts, including this counter
+  };
+  struct DropReleases {
+    void operator()(Releases* releases) const { releases->Drop(); }
+  };
+  HostPayment(Releases* releases, std::uint64_t bytes) : releases_(releases), bytes_(bytes) {
+    releases_->references.fetch_add(1, std::memory_order_relaxed);
+    releases_->paid.fetch_add(bytes_, std::memory_order_relaxed);
+  }
+  Releases* releases_ = nullptr;
+  std::uint64_t bytes_ = 0;
+};
+
 class PagedNode {
  public:
   explicit PagedNode(NodeSettings settings);
@@ -589,6 +648,7 @@ class PagedNode {
   // or a forced charge. Called before submitting preparation, outside Job.
   bool TryChargeHost(std::uint64_t bytes);
   void UnchargeHost(std::uint64_t bytes);
+  std::expected<HostPayment, std::string> PrepayHost(std::uint64_t bytes);
   // The chat route's request memory past the start's floor (runtime/
   // intake_limits.h, D-102), charged inside the budget as its own pinned
   // runtime extent in whole extents and set to `bytes` (on the driver's
@@ -600,7 +660,11 @@ class PagedNode {
   std::uint64_t token_charged() const { return token_charged_; }
   std::uint64_t request_charged() const { return request_charged_; }
   // Every model's counted bytes, and the part charged inside the budget.
-  std::uint64_t host_counted() const { return host_total_; }
+  std::uint64_t host_counted() const {
+    const auto released =
+        host_releases_ ? host_releases_->bytes.load(std::memory_order_acquire) : 0;
+    return released > host_total_ ? 0 : host_total_ - released;
+  }
   std::uint64_t host_charged() const { return host_charged_; }
   // How often a required charge went past the budget (the floor too small
   // for a step's plans), for the runtime's log.
@@ -723,6 +787,13 @@ class PagedNode {
   // If a request is open, replaces its lease between completed steps.
   // Growing state calls this only when its set of initialized extents changes.
   Status RefreshRequest(std::uint32_t stream, const catalog::Closure& closure);
+  // Completed-boundary replacement with no protection gap. Materialize the
+  // new closure while retaining the old authenticated lease; publish the new
+  // authority only after atomic scheduler/catalog replacement. A clean
+  // capacity refusal preserves the old request. Shrinking does not evict.
+  Status TryRefreshRequest(std::uint32_t stream, const catalog::Closure& closure,
+                           bool* over_budget = nullptr);
+
   // Ends it: its lease released (no step is in flight between Jobs), its
   // extents resident. Its task's failure, if it failed.
   Status EndRequest(std::uint32_t stream);
@@ -816,6 +887,8 @@ class PagedNode {
   Status Region(scheduler::RegionWork work, std::string_view what);
   Status RegionCatalog(std::function<Status()> mutation, std::string_view what);
   struct OpenRequest {
+    // Closure/catalog/held storage dies before its paid lifetime.
+    HostPayment replacement_payment;
     std::string what;
     catalog::Closure closure;
     std::uint64_t request = 0;
@@ -909,6 +982,8 @@ class PagedNode {
   catalog::ExtentId reserve_extent_;  // the handle reserve's charge
   std::uint64_t host_floor_ = std::numeric_limits<std::uint64_t>::max();
   std::uint64_t host_total_ = 0;
+  std::unique_ptr<HostPayment::Releases, HostPayment::DropReleases> host_releases_;
+  void CollectHostReleases();
   // Catalog/span vector capacity remains node-owned after geometry retirement.
   std::uint64_t region_metadata_bytes_ = 0;
   std::uint64_t host_charged_ = 0;  // the extent's size: whole extents past the floor

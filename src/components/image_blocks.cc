@@ -54,12 +54,6 @@ constexpr std::array kParams{
               .fallback = 0},
 };
 constexpr std::array kRoles{WeightRole{.name = "weight", .encodings = kNormEncodings}};
-constexpr std::array kBatch{
-    BatchClass{.op = ir::Op::kL2Norm, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kScale, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kUnary, .batch = ir::Batch::kJoined},
-};
 
 std::uint64_t Channels(const Instance& in) {
   const auto explicit_width = in.params.Int("channels");
@@ -177,16 +171,6 @@ constexpr std::array kAdaptiveParams{
               .fallback = 1e-6},
 };
 constexpr std::array kGatedParams{ParamSpec{.name = "side", .type = ParamType::kName}};
-constexpr std::array kAdaptiveBatch{
-    BatchClass{.op = ir::Op::kLayerNorm, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kScale, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMul, .batch = ir::Batch::kJoined},
-};
-constexpr std::array kGatedBatch{
-    BatchClass{.op = ir::Op::kUnary, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kAdd, .batch = ir::Batch::kJoined},
-};
 
 std::string_view Conditioning(const Instance& in) { return in.params.Name("side"); }
 
@@ -356,7 +340,7 @@ const ComponentDef& NormChannel() {
       .params = kParams,
       .roles = kRoles,
       .shapes = Shapes,
-      .batch_classes = kBatch,
+
       .spatial = &kSpatialNorm,
       .emit = Emit,
       .reference = Reference,
@@ -372,7 +356,7 @@ const ComponentDef& NormAdaptive() {
       .side_input = Conditioning,
       .params = kAdaptiveParams,
       .shapes = AdaptiveShapes,
-      .batch_classes = kAdaptiveBatch,
+
       .spatial = &kSpatialAdaptive,
       .emit = AdaptiveEmit,
       .reference = AdaptiveReference,
@@ -388,7 +372,7 @@ const ComponentDef& ResidualGated() {
       .side_input = Conditioning,
       .params = kGatedParams,
       .shapes = AdaptiveShapes,
-      .batch_classes = kGatedBatch,
+
       .spatial = &kSpatialGated,
       .emit = GatedEmit,
       .reference = GatedReference,

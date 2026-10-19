@@ -37,8 +37,7 @@ namespace {
 
 using llmp::execution::Choice;
 using llmp::execution::Implementation;
-using llmp::execution::Operation;
-using llmp::execution::OperationName;
+
 using llmp::execution::Plan;
 using llmp::execution::PlanError;
 using llmp::execution::PlanRejection;
@@ -47,7 +46,7 @@ using llmp::execution::Resolve;
 using llmp::test_support::Failed;
 using llmp::test_support::FailedCode;
 
-Implementation Fake(std::string name, Operation operation, std::string revision = "r1") {
+Implementation Fake(std::string name, llmp::ir::OpKey operation, std::string revision = "r1") {
   return {.name = std::move(name),
           .operation = operation,
           .source = "fake",
@@ -59,31 +58,43 @@ Implementation Fake(std::string name, Operation operation, std::string revision 
 // A core build: fused and unfused RMSNorm-mul, an add and one matrix
 // multiplication. A build with an optional module adds a second one.
 std::vector<Implementation> Core(std::string fused_revision = "r1") {
-  return {Fake("fake.rms_norm_mul.fused", Operation::kRmsNormMul, std::move(fused_revision)),
-          Fake("fake.rms_norm_mul.unfused", Operation::kRmsNormMul),
-          Fake("fake.add", Operation::kAdd), Fake("fake.mul_mat.gemm", Operation::kMatMul)};
+  return {Fake("fake.rms_norm_mul.fused", llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul),
+               std::move(fused_revision)),
+          Fake("fake.rms_norm_mul.unfused", llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul)),
+          Fake("fake.add", llmp::ir::Primitive(llmp::ir::Op::kAdd)),
+          Fake("fake.mul_mat.gemm", llmp::ir::Primitive(llmp::ir::Op::kMatMul))};
 }
 
 std::vector<Implementation> WithModule() {
   std::vector<Implementation> implementations = Core();
-  implementations.push_back(Fake("module.mul_mat.gemv", Operation::kMatMul));
+  implementations.push_back(
+      Fake("module.mul_mat.gemv", llmp::ir::Primitive(llmp::ir::Op::kMatMul)));
   return implementations;
 }
 
 std::vector<Choice> Layer(std::string norm, std::string mul_mat = "fake.mul_mat.gemm") {
-  return {{.operation = Operation::kRmsNormMul, .implementation = std::move(norm)},
-          {.operation = Operation::kMatMul, .implementation = std::move(mul_mat)},
-          {.operation = Operation::kAdd, .implementation = "fake.add"}};
+  return {{.operation = llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul),
+           .implementation = std::move(norm)},
+          {.operation = llmp::ir::Primitive(llmp::ir::Op::kMatMul),
+           .implementation = std::move(mul_mat)},
+          {.operation = llmp::ir::Primitive(llmp::ir::Op::kAdd), .implementation = "fake.add"}};
 }
 
 // An implementation's and a plan's identities hash the operation's name, so
 // no two operations share one.
 TEST(PlanRegistryTest, EveryOperationHasItsOwnName) {
-  std::set<std::string_view> names;
-  for (int i = 0; i <= static_cast<int>(Operation::kGatedResidualModulateSplit); ++i) {
-    const std::string_view name = OperationName(static_cast<Operation>(i));
+  std::set<std::string> names;
+  for (unsigned i = 0; i <= static_cast<unsigned>(llmp::ir::Op::kPrefixOverwrite); ++i) {
+    const auto op = static_cast<llmp::ir::Op>(i);
+    if (op == llmp::ir::Op::kFused) continue;
+    const auto name = llmp::ir::OpKeyName(llmp::ir::Primitive(op));
     EXPECT_NE(name, "unknown") << i;
-    EXPECT_TRUE(names.insert(name).second) << name;
+    EXPECT_TRUE(names.insert(std::string(name)).second) << name;
+  }
+  for (unsigned i = 1; i <= static_cast<unsigned>(llmp::ir::kLastFusedKind); ++i) {
+    const auto name = llmp::ir::OpKeyName(llmp::ir::Fused(static_cast<llmp::ir::FusedKind>(i)));
+    EXPECT_NE(name, "unknown") << i;
+    EXPECT_TRUE(names.insert(std::string(name)).second) << name;
   }
 }
 
@@ -128,15 +139,15 @@ TEST(PlanRegistryTest, PlanIdentityFollowsEachImplementationIdentity) {
 }
 
 TEST(PlanRegistryTest, IdentityFieldsCannotTradeBytes) {
-  Implementation a = Fake("fake.a", Operation::kAdd);
+  Implementation a = Fake("fake.a", llmp::ir::Primitive(llmp::ir::Op::kAdd));
   Implementation b = a;
   a.revision = "ab";
   a.build = "c";
   b.revision = "a";
   b.build = "bc";
   EXPECT_NE(llmp::execution::IdentityOf(a), llmp::execution::IdentityOf(b));
-  Implementation c = Fake("fake.a", Operation::kMul);
-  EXPECT_NE(llmp::execution::IdentityOf(Fake("fake.a", Operation::kAdd)),
+  Implementation c = Fake("fake.a", llmp::ir::Primitive(llmp::ir::Op::kMul));
+  EXPECT_NE(llmp::execution::IdentityOf(Fake("fake.a", llmp::ir::Primitive(llmp::ir::Op::kAdd))),
             llmp::execution::IdentityOf(c));
 }
 
@@ -183,7 +194,7 @@ TEST(PlanRegistryTest, AnImplementationThisBuildLacksIsUnsupported) {
 TEST(PlanRegistryTest, AnImplementationOfAnotherOperationDoesNotBind) {
   const auto registry = Registry::Create(Core()).value();
   const std::vector<Choice> choices = {
-      {.operation = Operation::kMul, .implementation = "fake.add"}};
+      {.operation = llmp::ir::Primitive(llmp::ir::Op::kMul), .implementation = "fake.add"}};
   const auto refused = Plan::Build(registry, choices);
   ASSERT_FALSE(refused.has_value());
   EXPECT_EQ(refused.error().error, PlanError::kWrongOperation);
@@ -191,7 +202,7 @@ TEST(PlanRegistryTest, AnImplementationOfAnotherOperationDoesNotBind) {
   // Nor when a later build reuses a name for another operation.
   const auto plan = Plan::Build(registry, Layer("fake.rms_norm_mul.fused")).value();
   std::vector<Implementation> renamed = Core();
-  renamed[2].operation = Operation::kMul;  // fake.add
+  renamed[2].operation = llmp::ir::Primitive(llmp::ir::Op::kMul);  // fake.add
   const auto later = Registry::Create(std::move(renamed)).value();
   const auto rejected = Resolve(later, plan);
   ASSERT_FALSE(rejected.has_value());
@@ -201,23 +212,26 @@ TEST(PlanRegistryTest, AnImplementationOfAnotherOperationDoesNotBind) {
 
 TEST(PlanRegistryTest, RefusesMalformedRegistriesAndPlans) {
   for (const char* name : {"", "Fake.upper", "fake add", "fake/add", "fake-add"}) {
-    const auto refused = Registry::Create({Fake(name, Operation::kAdd)});
+    const auto refused = Registry::Create({Fake(name, llmp::ir::Primitive(llmp::ir::Op::kAdd))});
     ASSERT_FALSE(refused.has_value()) << name;
     EXPECT_EQ(refused.error().error, PlanError::kInvalid);
   }
-  EXPECT_FALSE(Registry::Create({Fake(std::string(Registry::kMaxName + 1, 'a'), Operation::kAdd)})
+  EXPECT_FALSE(Registry::Create({Fake(std::string(Registry::kMaxName + 1, 'a'),
+                                      llmp::ir::Primitive(llmp::ir::Op::kAdd))})
                    .has_value());
-  EXPECT_TRUE(
-      Registry::Create({Fake(std::string(Registry::kMaxName, 'a'), Operation::kAdd)}).has_value());
+  EXPECT_TRUE(Registry::Create({Fake(std::string(Registry::kMaxName, 'a'),
+                                     llmp::ir::Primitive(llmp::ir::Op::kAdd))})
+                  .has_value());
   // Two declarations of one name, even of different operations.
   const auto duplicate =
-      Registry::Create({Fake("fake.x", Operation::kAdd), Fake("fake.y", Operation::kAdd),
-                        Fake("fake.x", Operation::kMul)});
+      Registry::Create({Fake("fake.x", llmp::ir::Primitive(llmp::ir::Op::kAdd)),
+                        Fake("fake.y", llmp::ir::Primitive(llmp::ir::Op::kAdd)),
+                        Fake("fake.x", llmp::ir::Primitive(llmp::ir::Op::kMul))});
   ASSERT_FALSE(duplicate.has_value());
   EXPECT_EQ(duplicate.error().error, PlanError::kInvalid);
   std::vector<Implementation> many;
   for (std::size_t i = 0; i <= Registry::kMaxImplementations; ++i) {
-    many.push_back(Fake("fake." + std::to_string(i), Operation::kAdd));
+    many.push_back(Fake("fake." + std::to_string(i), llmp::ir::Primitive(llmp::ir::Op::kAdd)));
   }
   EXPECT_FALSE(Registry::Create(many).has_value());
   many.pop_back();
@@ -225,10 +239,12 @@ TEST(PlanRegistryTest, RefusesMalformedRegistriesAndPlans) {
 
   const auto registry = Registry::Create(Core()).value();
   EXPECT_EQ(FailedCode(Plan::Build(registry, {})), PlanError::kInvalid);
-  const std::vector<Choice> too_many(Plan::kMaxOperations + 1,
-                                     {.operation = Operation::kAdd, .implementation = "fake.add"});
+  const std::vector<Choice> too_many(
+      Plan::kMaxOperations + 1,
+      {.operation = llmp::ir::Primitive(llmp::ir::Op::kAdd), .implementation = "fake.add"});
   EXPECT_EQ(FailedCode(Plan::Build(registry, too_many)), PlanError::kInvalid);
-  const std::vector<Choice> junk = {{.operation = Operation::kAdd, .implementation = "fake.add\n"}};
+  const std::vector<Choice> junk = {
+      {.operation = llmp::ir::Primitive(llmp::ir::Op::kAdd), .implementation = "fake.add\n"}};
   EXPECT_EQ(FailedCode(Plan::Build(registry, junk)), PlanError::kInvalid);
 }
 
@@ -252,17 +268,6 @@ TEST(CapabilityTest, EveryOperationHasAKeyInTheOpSet) {
     EXPECT_NE(name, "unknown") << i;
     EXPECT_TRUE(fused.insert(name).second) << name;
   }
-  for (int i = 0; i <= static_cast<int>(Operation::kGatedResidualModulateSplit); ++i) {
-    const auto operation = static_cast<Operation>(i);
-    const ir::OpKey key = ex::OpKeyOf(operation);
-    EXPECT_EQ(key.op == ir::Op::kFused, key.fused != ir::FusedKind::kNone)
-        << OperationName(operation);
-    EXPECT_NE(ir::OpKeyName(key), "unknown") << OperationName(operation);
-  }
-  EXPECT_EQ(ex::OpKeyOf(Operation::kRmsNormMul), ir::Fused(ir::FusedKind::kRmsNormMul));
-  EXPECT_EQ(ex::OpKeyOf(Operation::kMatMul), ir::Primitive(ir::Op::kMatMul));
-  EXPECT_EQ(ex::OpKeyOf(Operation::kQuantLinear), ir::Primitive(ir::Op::kMatMul));
-  EXPECT_EQ(ir::OpKeyName(ex::OpKeyOf(Operation::kRopeSetRows)), "fused.rope_store");
 }
 
 constexpr std::array kFp4 = {Encoding::kNvfp4};
@@ -276,7 +281,7 @@ constexpr std::array kDecodedOperands = {
 bool RefusesOddK(const ex::CapabilityQuery& q) { return q.k % 2 == 0; }
 
 Implementation Capable(std::string name, const ex::Capability& capability) {
-  Implementation implementation = Fake(std::move(name), Operation::kMatMul);
+  Implementation implementation = Fake(std::move(name), llmp::ir::Primitive(llmp::ir::Op::kMatMul));
   implementation.capability = capability;
   return implementation;
 }
@@ -307,7 +312,7 @@ std::vector<Implementation> Ladder() {
       Capable("fake.mm.lossy", {.op = mm, .rung = ex::Rung::kNative, .lossy = true}),
       Capable("fake.mm.primitive", {.op = mm, .rung = ex::Rung::kPrimitive, .capturable = false}),
       Capable("fake.add.any", {.op = ir::Primitive(ir::Op::kAdd)}),
-      Fake("fake.mm.undeclared", Operation::kMatMul),
+      Fake("fake.mm.undeclared", llmp::ir::Primitive(llmp::ir::Op::kMatMul)),
   };
 }
 
@@ -478,7 +483,7 @@ TEST(CapabilityTest, TuningFactsPreserveThePinnedOutputEncoding) {
 }
 
 TEST(CapabilityTest, ADeclaredCapabilityIsPartOfTheIdentity) {
-  const Implementation plain = Fake("fake.mm", Operation::kMatMul);
+  const Implementation plain = Fake("fake.mm", llmp::ir::Primitive(llmp::ir::Op::kMatMul));
   Implementation declared = plain;
   declared.capability = ex::Capability{.op = ir::Primitive(ir::Op::kMatMul)};
   EXPECT_NE(ex::IdentityOf(plain), ex::IdentityOf(declared));
@@ -520,10 +525,13 @@ TEST(CapabilityTest, RefusesMalformedCapabilities) {
 }
 
 TEST(PlanRegistryTest, SetDigestIsCanonicalAndCoversImplementationIdentity) {
-  auto a = Registry::Create({Fake("fake.a", Operation::kAdd), Fake("fake.b", Operation::kMatMul)});
-  auto b = Registry::Create({Fake("fake.b", Operation::kMatMul), Fake("fake.a", Operation::kAdd)});
+  auto a = Registry::Create({Fake("fake.a", llmp::ir::Primitive(llmp::ir::Op::kAdd)),
+                             Fake("fake.b", llmp::ir::Primitive(llmp::ir::Op::kMatMul))});
+  auto b = Registry::Create({Fake("fake.b", llmp::ir::Primitive(llmp::ir::Op::kMatMul)),
+                             Fake("fake.a", llmp::ir::Primitive(llmp::ir::Op::kAdd))});
   auto changed =
-      Registry::Create({Fake("fake.a", Operation::kAdd), Fake("fake.b", Operation::kMatMul, "r2")});
+      Registry::Create({Fake("fake.a", llmp::ir::Primitive(llmp::ir::Op::kAdd)),
+                        Fake("fake.b", llmp::ir::Primitive(llmp::ir::Op::kMatMul), "r2")});
   ASSERT_TRUE(a);
   ASSERT_TRUE(b);
   ASSERT_TRUE(changed);

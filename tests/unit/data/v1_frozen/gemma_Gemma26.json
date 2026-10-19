@@ -2,12 +2,12 @@
  "digests": {
   "continued.0": "b46a89084651612a8ec07a2143b1c56affe30fef6933522d38eab2a86c10b68c",
   "continued.1": "04d21e39b97393c1652ee7ddfffe4b97c91699cd3c4f31d53d90673e5a749cc7",
-  "heads.0": "fc5e202e0e502484b26bd64828b153e453d25d874ff0f356d7535dccae0362cb",
-  "heads.1": "16401b9159e5588f3a8f24c0ba2f6fcbcfca7c40d448018809a542d892160209",
+  "heads.0": "bd0586d36c8e8999d799ae003427edb6f1249fbce64a90f625b78bbc5c900d6d",
+  "heads.1": "f9ffc0802ab7142c7ad4dfef1790d53c7b652eb818612644de2982254a31f096",
   "history.0": "f34b8e0ffda7425698a6fae9ed25c36a7e583657b83c1cf4916384132845de18",
   "history.1": "870107af51139b2ac0511a824b5d77c6a5f1e86c7d639e4f48914ed6992be27e",
-  "logits.0": "ba5ce53c145e845cd14d3baebcb3451ae15d137f7620595e526ff5dd5ca2aaff",
-  "logits.1": "7413fbeafe04c9e4f230d36e9075ac41f120dbd8b1cca26c793cc5a7977d27d0",
+  "logits.0": "0b8e1d8d3a5e6c028087d25caaba96cfbe8dd64b24e16ba787d0da69db7f9874",
+  "logits.1": "b59ffbca757cb44c1f23ad598383102e661f9a62d07a284b3f3aab491a6e95f6",
   "restored.0": "55bf1c18b81cf1ee61a4b71a1300ef44fb5e83c0fd12b84e9ab609414624c067:125829120:10",
   "restored.1": "4cbeef539320638b1adf963d5e5401c50f5a390c8a69937806f04e3c5dcc8322:125829120:10",
   "resumed.0": "6b70c2b53ccc458eb4b53fbc9cf2f52d6ac10569ec43dc3beeaf9904646759d2:125829120:11",
@@ -18,5 +18,5 @@
   "tokens.1": "506,3640,4184,563"
  },
  "family": "gemma_Gemma26",
- "provenance": "Recorded 2026-10-15 on Spark A (GB10, spark-native build of main ba2d4b19 plus the v1-import slice) from the v0 arm, with the v1 arm compared bit for bit in the same run; v1 artifacts imported by llmp import from the staged, manifest-verified sources (IDs in the store's v1-ids.json). A change that legitimately moves bits re-records these."
+ "provenance": "Recorded 2026-10-18 on spark-c4e2 (GB10), integrated R8+R7 source manifest 1b0cab3369b4b8c195ccb4b581f4338be752b484f8b7a19431577204e1a18e03, from the original two-owner frozen fixture (.0/.1 identify owners). Changed selected reductions preserve the original finite-head, completed generation, prefix-reuse, spill/restore, checkpoint/restart and retirement checks. Bounded 1070-target and both fixed-reply controls match final R6 for Gemma2/26, or the independently retained historical accepted1facc957 Gemma3 record. Original per-key failures and raw Gemma3 final-R6 pair failure remain external evidence; no threshold, grant, token/state assertion or source encoding was relaxed."
 }

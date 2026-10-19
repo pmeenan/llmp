@@ -756,6 +756,52 @@ class Inputs(unittest.TestCase):
         self.assertNotIn("{share}", text)
 
 
+
+class StreamErrors(unittest.TestCase):
+    @staticmethod
+    def event(value):
+        return b"data: " + json.dumps(value).encode() + b"\n"
+
+    def request(self, lines):
+        connection = unittest.mock.MagicMock()
+        response = connection.getresponse.return_value
+        response.status = 200
+        response.__iter__.return_value = iter(lines)
+        with unittest.mock.patch.object(gate.http.client, "HTTPConnection", return_value=connection):
+            result = gate.stream_chat(1, {}, None)
+        connection.close.assert_called_once()
+        return result
+
+    def test_server_error_survives_missing_usage(self):
+        result = self.request([self.event({"error": {"message": "paid capacity refused"}})])
+        self.assertIn("paid capacity refused", result["error"])
+        self.assertTrue(result["error"].startswith("SSE error: "))
+        self.assertNotIn("usage", result)
+
+    def test_server_error_after_partial_output_and_usage_still_fails(self):
+        result = self.request([
+            self.event({"choices": [{"delta": {"content": "partial"}}]}),
+            self.event({"usage": {"completion_tokens": 1}}),
+            self.event({"error": {"message": "execution refused"}}),
+        ])
+        self.assertIn("execution refused", result["error"])
+        self.assertNotIn("t_end", result)
+
+    def test_normal_content_named_error_keeps_reply_and_usage(self):
+        result = self.request([
+            self.event({"choices": [{"delta": {"content": "error"}, "finish_reason": "length"}]}),
+            self.event({"usage": {"completion_tokens": 1}}),
+            b"data: [DONE]\n",
+        ])
+        self.assertIsNone(result["error"])
+        self.assertEqual(result["chunks"], 1)
+        self.assertEqual(result["reply_sha256"], gate.hashlib.sha256(b"error").hexdigest())
+        self.assertEqual(result["usage"]["completion_tokens"], 1)
+
+    def test_malformed_event_still_fails_and_closes(self):
+        self.assertTrue(self.request([b"data: malformed\n"])["error"].startswith("JSONDecodeError:"))
+
+
 class Service(unittest.TestCase):
     def test_a_runtime_already_on_the_port_is_refused(self):
         with socket.socket() as listener, tempfile.TemporaryDirectory() as tmp:

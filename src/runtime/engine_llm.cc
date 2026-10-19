@@ -138,6 +138,7 @@ Status EngineLlm::Setup() {
   if (context_margin_ != 0 && context_margin_ >= effective_context)
     return Error("the complete draft schedule does not fit the target context");
   verify_rows_ = speculate ? parts->mode.verify_rows() : 1;
+  if (plan_report_sink_) parts->config.plan_report_sink = plan_report_sink_;
   auto runner =
       en::ModelRunner::Create(node_ref_, std::move(parts->config), std::move(parts->source), index_,
                               static_cast<std::uint32_t>(index_));
@@ -193,6 +194,14 @@ std::uint64_t EngineLlm::host_input_bytes() const {
 }
 std::uint64_t EngineLlm::plan_floor_bytes() const {
   return runner_ ? runner_->plan_floor_bytes() : 0;
+}
+
+std::string EngineLlm::plan_report() const { return runner_ ? runner_->plan_report() : ""; }
+void EngineLlm::set_plan_report_sink(kernels::PlanRecordSink sink) {
+  plan_report_sink_ = std::move(sink);
+}
+void EngineLlm::ReportPlans(const kernels::PlanRecordSink& sink) const {
+  if (runner_) runner_->ReportPlans(sink);
 }
 
 std::string EngineLlm::slots_report() const {

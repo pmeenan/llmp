@@ -12,6 +12,8 @@
 #include <string>
 #include <system_error>
 
+#include "planner/policy.h"
+
 namespace llmp::runtime {
 namespace {
 
@@ -68,9 +70,20 @@ std::expected<void, std::string> ApplyServiceDiagnosticEnvironment(ServingOption
     const char* text = std::getenv(name);
     return text ? std::optional<std::string_view>(text) : std::nullopt;
   };
-  return ApplyServiceDiagnostics(options, value("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES"),
-                                 value("LLMP_DIAGNOSTIC_NODE_CAP_BYTES"),
-                                 value("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY"));
+  const auto startup = value("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES");
+  const auto cap = value("LLMP_DIAGNOSTIC_NODE_CAP_BYTES");
+  const auto target = value("LLMP_DIAGNOSTIC_TARGET_POLICY");
+  if (target) {
+    if (!startup || !cap)
+      return Error("a diagnostic target policy needs the complete paid startup tuple");
+    auto parsed = planner::ParsePolicy(*target);
+    if (!parsed) return Error(std::format("diagnostic target policy: {}", parsed.error()));
+  }
+  auto applied =
+      ApplyServiceDiagnostics(options, startup, cap, value("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY"));
+  if (!applied) return applied;
+  if (target) options.diagnostic_target_policy = std::string(*target);
+  return {};
 }
 
 const std::string_view kCommandUsage =
@@ -82,7 +95,8 @@ const std::string_view kCommandUsage =
     "      [--continue N] [--cycles N] [--zero-context on|off] [--handoff on|off]\n"
     "      [--short-prompt TEXT] [--image-expect SHA256] [SERVING]\n"
     "      M3's swap table: every ordered pair (or those named) A->B->A\n"
-    "  SERVING: [--plain] [--image-prompt TEXT] [--image-noise FILE] [--report FILE]\n"
+    "  SERVING: [--plain] [--debug-plans] [--image-prompt TEXT] [--image-noise FILE] [--report "
+    "FILE]\n"
     "  settings [--json]\n"
     "      every configured model's settings, each with its source (derived,\n"
     "      calibrated, override, fallback); reads only, beside a running service\n";
@@ -109,6 +123,10 @@ std::expected<CommandOptions, std::string> ParseCommand(std::string_view name,
   for (std::size_t i = 0; i < args.size(); ++i) {
     const std::string_view a = args[i];
     // Flags without a value.
+    if (a == "--debug-plans") {
+      o.serving.debug_plans = true;
+      continue;
+    }
     if (a == "--plain") {
       o.serving.plain = true;
       continue;

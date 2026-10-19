@@ -35,6 +35,7 @@
 
 #include "base/bytes.h"
 #include "components/spatial.h"
+#include "engine/execution_contract.h"
 #include "engine/graph_plan.h"
 #include "expected_error.h"
 #include "image_family.h"
@@ -46,7 +47,9 @@
 #include "kernels/ggml/step_program.h"
 #include "kernels/reference/exec.h"
 #include "model/qwen_image.h"
+#include "planner/pattern.h"
 #include "planner/policy.h"
+#include "platform/host_probe.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_runtime.h"
 #include "spec/image_spatial.h"
@@ -189,11 +192,17 @@ constexpr std::array<std::string_view, 12> kFused{kg::kSpatialChannelNormName,
                                                   kg::kConv1x1Name,
                                                   kg::kGemmBf16LtName};
 
-// The image's planning policy, as the served pipeline plans it.
+// Synthetic arithmetic diagnostics, using the image mapping plus exact
+// proposals. These proposals carry no source-quality evidence.
 llmp::planner::Policy ImagePolicy() {
   auto policy = llmp::planner::ParsePolicy(::llmp::test_support::QwenImagePolicy());
   EXPECT_TRUE(policy) << (policy ? "" : policy.error());
-  return policy.value_or(llmp::planner::Policy{});
+  auto result = policy.value_or(llmp::planner::Policy{});
+  result.numerical_candidates = {llmp::planner::NumericalChange::kBf16SwiGluIntermediates,
+                                 llmp::planner::NumericalChange::kBf16ProductInputAndResult,
+                                 llmp::planner::NumericalChange::kBf16AttentionIntermediates};
+  llmp::planner::Canonicalize(result);
+  return result;
 }
 
 class ImageFusionGpu : public ::testing::Test {
@@ -209,7 +218,7 @@ class ImageFusionGpu : public ::testing::Test {
     std::map<std::string, std::size_t> plan;  // implementation: steps
     std::map<ir::WeightRef, std::uint64_t> weight_addresses;
     std::unique_ptr<kn::StepProgram> program;
-    // The image's planning policy, as the served pipeline plans it.
+    // Explicit arithmetic diagnostics derived from the image mapping.
     llmp::planner::Policy policy = ImagePolicy();
     std::uint64_t activations = 0, activation_bytes = 0;
   };
@@ -233,6 +242,24 @@ class ImageFusionGpu : public ::testing::Test {
     auto made = kg::GgmlBackend::Create(0, *execution, stream, nullptr);
     ASSERT_TRUE(made) << Failed(made).value_or("");
     backend = std::move(*made);
+    const auto available = llmp::platform::AvailableMemoryBytes();
+    ASSERT_TRUE(available);
+    metadata_catalog = std::make_shared<llmp::catalog::Catalog>();
+    const auto domain = metadata_catalog->AddDomain("image fusion host inventory");
+    auto paid = en::ExecutionMetadataAllowance::Admit(*metadata_catalog, domain, 64 * kMiB,
+                                                      *available, 6ULL << 30U);
+    ASSERT_TRUE(paid) << Failed(paid).value_or("");
+    metadata_paid = *paid;
+    const auto charge = [paid = *paid, keep = metadata_catalog](std::uint64_t bytes) {
+      (void)keep;
+      return paid->Charge(bytes);
+    };
+    const auto refund = [paid = *paid, keep = metadata_catalog](std::uint64_t bytes) {
+      (void)keep;
+      EXPECT_LE(bytes, paid->used());
+      paid->Release(bytes);
+    };
+    ASSERT_TRUE(backend->FundConstruction(charge, refund));
     // As the image source declares its backend (component_image_build.cc):
     // the masked F32 attention tuned for each flow's joint rows.
     std::vector<llmp::execution::TunedShape> tuning;
@@ -257,8 +284,7 @@ class ImageFusionGpu : public ::testing::Test {
           }))
         tuning.push_back(key);
     }
-    auto declared = backend->Declare(
-        tuning, workspace.value(), [](std::uint64_t) { return true; }, [](std::uint64_t) {});
+    auto declared = backend->Declare(tuning, workspace.value(), charge, refund);
     ASSERT_TRUE(declared) << Failed(declared).value_or("");
     auto lent = backend->LendCublas(cublas.get());
     ASSERT_TRUE(lent) << Failed(lent).value_or("");
@@ -518,13 +544,18 @@ class ImageFusionGpu : public ::testing::Test {
   }
 
   // A flow of `shape.blocks` blocks: text rows then a square latent grid,
-  // as the image plans it (`primitive`: without patterns or layout
+  // with explicit arithmetic proposals (`primitive`: without patterns or layout
   // sinking).
   Case* FlowCase(const FlowShape& shape, bool primitive = false) {
     auto& c = *cases.emplace_back(std::make_unique<Case>());
     c.name = primitive ? shape.name + "_primitive" : shape.name;
     c.oracle = shape.oracle;
-    if (primitive) c.policy = llmp::planner::Policy{};
+    if (primitive) {
+      c.policy = llmp::planner::Policy{};
+      for (const auto& pattern : llmp::planner::Patterns())
+        c.policy.disabled.emplace_back(pattern.name);
+      llmp::planner::Canonicalize(c.policy);
+    }
     const auto profile = SmallDenoiser(shape.heads, shape.mlp, shape.blocks);
     const auto source =
         mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
@@ -569,6 +600,8 @@ class ImageFusionGpu : public ::testing::Test {
   static constexpr std::uint64_t kPool = 256 * kMiB;
   // The flows' joint rows (text + latent grid²), as FlowShape lists them.
   static constexpr std::array<std::uint64_t, 3> kFlowRows{8 + 16 * 16, 25 + 64 * 64, 8 + 6 * 6};
+  std::shared_ptr<llmp::catalog::Catalog> metadata_catalog;
+  std::shared_ptr<en::ExecutionMetadataAllowance> metadata_paid;
   std::unique_ptr<llmp::providers::DeviceExecution> execution;
   llmp::providers::StreamId stream{};
   bool stream_ready = false, retirement_failed = false;

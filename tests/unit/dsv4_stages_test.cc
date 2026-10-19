@@ -847,17 +847,17 @@ TEST_F(Dsv4StagesTest, TheIq2PairWritesItsActivationAndTheDownProductsInputExact
 TEST_F(Dsv4StagesTest, TheRegistryDeclaresAndBindsTheStageImplementations) {
   const std::vector<llmp::execution::Implementation> declared = kg::Implementations();
   const auto registry = llmp::execution::Registry::Create(declared).value();
-  using llmp::execution::Operation;
-  const std::array<std::tuple<std::string_view, Operation, std::size_t>, 9> expected = {{
-      {kg::kDsv4F16CopyName, Operation::kConvert, 1},
-      {kg::kDsv4HcNormF16Name, Operation::kRmsNorm, 1},
-      {kg::kDsv4HcPostNormF16Name, Operation::kHcPost, 2},
-      {kg::kDsv4HcPostExpertsNormF16Name, Operation::kHcPost, 4},
-      {kg::kDsv4OutAFastPackName, Operation::kMatMul, 1},
-      {kg::kMulMatQPairDense, Operation::kMatMul, 2},
-      {kg::kMulMatIdQPairGlu, Operation::kMulMatId, 3},
-      {kg::kMulMatIdQPairGluQ8, Operation::kMulMatId, 3},
-      {kg::kMulMatIdQCompactPrequant, Operation::kMulMatId, 1},
+
+  const std::array<std::tuple<std::string_view, llmp::ir::OpKey, std::size_t>, 9> expected = {{
+      {kg::kDsv4F16CopyName, llmp::ir::Primitive(llmp::ir::Op::kConvert), 1},
+      {kg::kDsv4HcNormF16Name, llmp::ir::Primitive(llmp::ir::Op::kRmsNorm), 1},
+      {kg::kDsv4HcPostNormF16Name, llmp::ir::Fused(llmp::ir::FusedKind::kHcNormPost), 2},
+      {kg::kDsv4HcPostExpertsNormF16Name, llmp::ir::Primitive(llmp::ir::Op::kHcPost), 4},
+      {kg::kDsv4OutAFastPackName, llmp::ir::Fused(llmp::ir::FusedKind::kDsv4OutA), 1},
+      {kg::kMulMatQPairDense, llmp::ir::Primitive(llmp::ir::Op::kMatMul), 2},
+      {kg::kMulMatIdQPairGlu, llmp::ir::Primitive(llmp::ir::Op::kMatMulId), 3},
+      {kg::kMulMatIdQPairGluQ8, llmp::ir::Primitive(llmp::ir::Op::kMatMulId), 3},
+      {kg::kMulMatIdQCompactPrequant, llmp::ir::Primitive(llmp::ir::Op::kMatMulId), 1},
   }};
   for (const auto& [name, operation, arity] : expected) {
     const std::size_t index = registry.Find(name).value_or(registry.size());

@@ -1,20 +1,20 @@
 {
  "digests": {
-  "continued.0": "b079168802b1796d0c7a63f8f89ef56d877020d2d72c54f6fc7a565d5a5b9105",
-  "continued.1": "5dd2f5704d2f73e9e6cd8030de69241b03d62f60170a8869ae3604f840a8a0dc",
-  "heads.0": "5f384b32194e994d7420ae78f86ac9390d9b9a63e04730a9336ab8beed74bb26",
-  "heads.1": "5456be7793da1d6c509ec5e385baed96afcda6e3ddfd9731dcccd6619b38e283",
+  "continued.0": "b327f64cd9b4183a75002b048a836155dbb29abf4db16a0de905830f9c909770",
+  "continued.1": "f5c9c0fffee08ed947234e37815bc0fd7ba2d73228bd04de22571904308d9cd4",
+  "heads.0": "ca6b246f131256ee8dfecb16b8638d31094f02415eb46bb3d2b63e6d389a4ad1",
+  "heads.1": "afec141a6ec46a3775c215b38b7cc41735cf81157adbf7970032d6ac463f4dd5",
   "history.0": "34934b56a74ca1a5db9d2de7294fcba041f076a3958025a0a2cbb2ad85c53ea7",
-  "history.1": "9ce681dc788fcdb6ded77de30e8840533ed5901c1aa90268321dfb245f035a13",
-  "logits.0": "fcb6950ceb65fa8d8ddeb7656986f0088731aea36b7bcc80050f1b0bb36c400f",
-  "logits.1": "e448873fc86c4a31d2d73dc4b27042a32084c4a9e571848ea31440b808a78337",
-  "resumed.0": "f4251483b4b69771ef1365f6f4058737edae1503d20aa39b3972c44fc0591f1b",
-  "resumed.1": "df41b02e8a40067ada039fe66c76395b568bbf327f4dabf315c6d0d18e5e948d",
-  "state.0": "1f2d40e90b86b05ba8150d87e0990d120d7e998f2e2de626f13394940ef4f410",
-  "state.1": "29150988e8f39eb9bc4763606086712656b6208fc379221a9bfe1431b3ae280d",
+  "history.1": "ce4de27fdc7e45d4bbf249be3d03812788bd9fbeeaaf8d2eb37d91807e46789e",
+  "logits.0": "3cc86db32bc912a258ee5f89d6aab71cc3b416dbb8242ca2948125825a4b823f",
+  "logits.1": "9d6b341e0daa1ae504f9c922db4f82137f2f571aa6519b430f4d8d028d4e71f8",
+  "resumed.0": "d386906e25e087ab345699bd53d2d4349426ffbf9df811919e3cbb773eed509f",
+  "resumed.1": "8a41250c1434122841382d2f4392a2636cb19eec511606bde364c0e2ae8df807",
+  "state.0": "e93584fdd4a30880734208beea3918887dff07634a1f45cea60cd6642a17674c",
+  "state.1": "c698cee79f2f1cd533637b755dbe82bcd2899142e3f3aac41f626aede0412417",
   "tokens.0": "235322,235279,235313,591",
-  "tokens.1": "529,235262,818,5279"
+  "tokens.1": "529,563,818,5279"
  },
  "family": "gemma_Gemma2",
- "provenance": "Recorded 2026-10-15 on Spark A (GB10, spark-native build of main ba2d4b19 plus the v1-import slice) from the v0 arm, with the v1 arm compared bit for bit in the same run; v1 artifacts imported by llmp import from the staged, manifest-verified sources (IDs in the store's v1-ids.json). A change that legitimately moves bits re-records these. Its state and resumed digests re-recorded 2026-10-16 on spark at f6442ebe with model::ExtentLayout's per-tensor state layout (each growing tensor of 2 MiB or more on its own extents, the rest packed); every other digest recorded unchanged"
+ "provenance": "Recorded 2026-10-18 on spark-c4e2 (GB10), integrated R8+R7 source manifest 1b0cab3369b4b8c195ccb4b581f4338be752b484f8b7a19431577204e1a18e03, from the original two-owner frozen fixture (.0/.1 identify owners). Changed selected reductions preserve the original finite-head, completed generation, prefix-reuse, spill/restore, checkpoint/restart and retirement checks. Bounded 1070-target and both fixed-reply controls match final R6 for Gemma2/26, or the independently retained historical accepted1facc957 Gemma3 record. Original per-key failures and raw Gemma3 final-R6 pair failure remain external evidence; no threshold, grant, token/state assertion or source encoding was relaxed."
 }

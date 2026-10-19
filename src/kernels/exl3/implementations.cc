@@ -47,7 +47,7 @@ enum class Path : std::uint8_t { kGemm, kGemv, kReconstruct, kReconstructFused, 
 
 struct Kernel::Entry {
   std::string_view name;
-  execution::Operation operation;
+  llmp::ir::OpKey operation;
   Path path;
   std::string_view variant;
 };
@@ -74,36 +74,36 @@ constexpr std::string_view kLibraryAsserts = "no libstdc++ assertions";
 
 constexpr std::array<Kernel::Entry, 6> kEntries = {{
     {.name = "exl3.linear.gemm",
-     .operation = execution::Operation::kQuantLinear,
+     .operation = llmp::ir::Primitive(llmp::ir::Op::kMatMul),
      .path = Path::kGemm,
      .variant = "exl3_gemm_kernel<K, false, fp32, 1, shape> at the plan's tile shape and grid, "
                 "cooperative, the context's zeroed lock slots; then add_kernel_hhh for a bias"},
     {.name = "exl3.linear.gemv",
-     .operation = execution::Operation::kQuantLinear,
+     .operation = llmp::ir::Primitive(llmp::ir::Op::kMatMul),
      .path = Path::kGemv,
      .variant = "exl3_gemv_kernel<4, fp32, 1, m == 1 ? 0 : 1, cfg, false> at the plan's "
                 "configuration and grid, cooperative; then add_kernel_hhh for a bias"},
     {.name = "exl3.linear.reconstruct",
-     .operation = execution::Operation::kQuantLinear,
+     .operation = llmp::ir::Primitive(llmp::ir::Op::kMatMul),
      .path = Path::kReconstruct,
      .variant = "had_hf_r_128_kernel<true, false>; per slice of at most 32768 columns "
                 "reconstruct_kernel<K, 1, false> and cublasLtMatmul (COMPUTE_32F, the plan's "
                 "pinned algorithm, no workspace); had_{hf,ff}_r_128_kernel<false, true>; then "
                 "add_kernel_hhh for a bias"},
     {.name = "exl3.linear.reconstruct_fused",
-     .operation = execution::Operation::kQuantLinear,
+     .operation = llmp::ir::Primitive(llmp::ir::Op::kMatMul),
      .path = Path::kReconstructFused,
      .variant = "per slice of at most 32768 columns reconstruct_had_kernel<K, 1, false> and "
                 "cublasLtMatmul (COMPUTE_32F, the plan's pinned algorithm, no workspace); then "
                 "add_kernel_hhh for a bias"},
     {.name = "exl3.multi_linear.mgemm",
-     .operation = execution::Operation::kQuantMultiLinear,
+     .operation = llmp::ir::Fused(llmp::ir::FusedKind::kPreparedProducts),
      .path = Path::kMultiGemm,
      .variant = "exl3_mgemm_kernel<K, false, fp32, 1, shape> for two matrices of one input at "
                 "the plan's tile shape, grid and concurrency, cooperative, no indices, weights, "
                 "range or slices"},
     {.name = "exl3.bias_add",
-     .operation = execution::Operation::kBiasAdd,
+     .operation = llmp::ir::Primitive(llmp::ir::Op::kAdd),
      .path = Path::kBias,
      .variant = "add_kernel_hhh as add_gr launches it (grid ceil(rows x columns / 1024), 1024 "
                 "threads): F16 + F16, one rounding; the linear's bias on every path, as its own "
@@ -441,6 +441,6 @@ std::expected<void, KernelFailure> Kernel::Run(LaunchContext& launch,
 
 std::string_view Kernel::name() const { return entry_->name; }
 
-execution::Operation Kernel::operation() const { return entry_->operation; }
+llmp::ir::OpKey Kernel::operation() const { return entry_->operation; }
 
 }  // namespace llmp::kernels::exl3

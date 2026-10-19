@@ -144,7 +144,7 @@ TEST(GemmaActivationPlanTest, PlansPrimitiveAndEligibleFusionWithSeparateOperati
       ASSERT_TRUE(ordinary);
       ASSERT_EQ(ordinary->steps.size(), 3U);
       EXPECT_EQ(ordinary->steps.back().implementation, kg::kGeGluName);
-      EXPECT_EQ(ordinary->steps.back().operation, llmp::execution::Operation::kGeGlu);
+      EXPECT_EQ(ordinary->steps.back().operation, llmp::ir::Primitive(llmp::ir::Op::kGlu));
       const auto default_off = kg::PlanGraph(nodes, true, ModelDevice());
       ASSERT_TRUE(default_off);
       EXPECT_EQ(default_off->steps.size(), 3U);
@@ -217,7 +217,7 @@ TEST(GemmaActivationPlanTest, AdversarialRetainedViewsAndReadersKeepProductsLive
     const auto read = kg::PlanGraph(extra_nodes, true, device);
     ASSERT_TRUE(read);
     ASSERT_EQ(read->steps.size(), 4U);
-    EXPECT_EQ(read->steps[2].operation, llmp::execution::Operation::kGeGlu);
+    EXPECT_EQ(read->steps[2].operation, llmp::ir::Primitive(llmp::ir::Op::kGlu));
     EXPECT_EQ(read->steps[3].implementation, kg::kContName);
   }
 }
@@ -618,7 +618,7 @@ TEST(GraphPlanTest, AnUnchangedPlanIsTheSamePlan) {
   const auto choices = a->Choices();
   ASSERT_EQ(choices.size(), a->steps.size());
   EXPECT_EQ(choices.front().implementation, "ggml.rms_norm_mul.fused");
-  EXPECT_EQ(choices.front().operation, llmp::execution::Operation::kRmsNormMul);
+  EXPECT_EQ(choices.front().operation, llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul));
 }
 
 }  // namespace

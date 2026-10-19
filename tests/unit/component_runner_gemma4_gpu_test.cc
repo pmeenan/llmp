@@ -69,6 +69,7 @@
 #include "base/bytes.h"
 #include "components/step.h"
 #include "engine/component_source.h"
+#include "engine/execution_contract.h"
 #include "engine/expert_slab.h"
 #include "engine/model_runner.h"
 #include "engine/paged_node.h"
@@ -77,6 +78,7 @@
 #include "engine/support.h"
 #include "kernels/ggml/step_program.h"
 #include "planner/step_shape.h"
+#include "platform/host_probe.h"
 #include "runtime/approvals.h"
 #include "runtime/component_admission.h"
 #include "spec/mapping.h"
@@ -464,6 +466,18 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
              }}});
     if (!made) return std::unexpected(made.error());
     source->backend = std::move(*made);
+    // Native construction has a separate finite fixture allowance. Retained
+    // plans still acquire the runner's ordinary paid ownership before transfer.
+    const auto available = llmp::platform::AvailableMemoryBytes();
+    if (!available) return std::unexpected("native construction physical headroom is unknown");
+    auto paid = en::ExecutionMetadataAllowance::Admit(node.catalog(), node.domain(), 128ULL << 20U,
+                                                      *available, 6ULL << 30U);
+    if (!paid) return std::unexpected(paid.error());
+    if (auto funded = source->backend->FundConstruction(
+            [paid = *paid](std::uint64_t n) { return paid->Charge(n); },
+            [paid = *paid](std::uint64_t n) { paid->Release(n); });
+        !funded)
+      return std::unexpected(funded.error());
     if (auto x = source->resources->OpenSelectedWorkspace("selected kernel state",
                                                           source->backend->persistent_bytes());
         !x)

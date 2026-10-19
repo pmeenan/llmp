@@ -41,6 +41,7 @@ namespace llmp::planner {
 struct Placement {
   std::vector<std::pair<ir::TensorId, std::uint64_t>> offsets{};  // root, offset
   std::uint64_t extent = 0;
+  std::uint64_t alignment = 256;
 };
 
 // The bytes a root tensor spans (its strides' reach, or its parts').
@@ -57,6 +58,17 @@ using RootBytesOf = std::function<std::uint64_t(const ir::Graph&, ir::TensorId)>
 // while it is read.
 using RootWithin = std::function<ir::TensorId(const ir::Graph&, ir::TensorId)>;
 
+// A lowering's authenticated physical contract, after its selected recipes
+// have checked their semantic operands. Semantic proof dependencies stay in
+// the IR even when no device allocation or read implements them. Every tensor
+// has a materialization bit; every node has its actual input reads, including
+// extra reads of a paired launch. Empty is a real empty set, not unknown.
+// Generic planning omits this contract and conservatively places the IR.
+struct PhysicalStorage {
+  std::vector<bool> materialized;
+  std::vector<std::vector<ir::TensorId>> reads;
+};
+
 // `alignment` is a power of two.
 // `preserved`: tensors kept in place between runs of the step (a plan's
 // prologue results the rest reads, its invariant inputs): each lives the
@@ -66,7 +78,7 @@ std::expected<Placement, std::string> PlaceActivations(
     const ir::Graph& graph, std::span<const Selected> steps, std::span<const Region> regions,
     std::span<const ir::TensorId> staged, std::uint64_t alignment = 256,
     const RootBytesOf& written = {}, const RootWithin& within = {},
-    std::span<const ir::TensorId> preserved = {});
+    std::span<const ir::TensorId> preserved = {}, const PhysicalStorage* physical = nullptr);
 
 }  // namespace llmp::planner
 

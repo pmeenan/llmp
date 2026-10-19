@@ -18,12 +18,14 @@
 #include "spec/image_family.h"
 
 namespace llmp::runtime {
+struct ImageApproval;
 // An admitted image composition's family: its mapping (its tensor names,
 // planning policy and recipe), its stored family spec and the profile it
 // gives (spec/image_family.h). Every request, geometry and graph reads it;
 // no family is compiled in.
 struct ImageFamily {
   const spec::ImageMapping* mapping = nullptr;
+  const ImageApproval* approval = nullptr;
   spec::ModelSpec spec{};
   model::ImageProfile profile{};
 };

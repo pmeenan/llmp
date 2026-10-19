@@ -76,6 +76,7 @@
 #include "engine/paged_node.h"
 #include "execution/adaptive_depth.h"
 #include "execution/sampling.h"
+#include "kernels/common/step_program.h"
 #include "memory/reclaim.h"
 #include "runtime/api.h"
 #include "runtime/calibration.h"
@@ -276,8 +277,12 @@ class Served {
   // What its kept graphs took of the device's free memory at their
   // captures (the count's check, for the teardown's log).
   virtual std::uint64_t graph_measured_bytes() const { return 0; }
-  // How plan_floor_bytes() is made up, for the start's log (empty: none).
+  // Bounded setup/registration coverage and physical-plan summary.
   virtual std::string plan_report() const { return {}; }
+  // Optional debug records, once per successfully installed paid cache entry.
+  // A disabled sink emits nothing. Cached details remain available on demand.
+  virtual void set_plan_report_sink(kernels::PlanRecordSink /*sink*/) {}
+  virtual void ReportPlans(const kernels::PlanRecordSink& /*sink*/) const {}
   // Why a model that batches concurrent requests serves this artifact one
   // at a time, for the start's log (empty: it batches as configured, or
   // never batches). A model is never refused only because its artifact
@@ -1896,7 +1901,8 @@ Status RunSwapTable(Server& server, const SwapTableOptions& options, const Servi
 // them, serves the loopback chat route until SIGTERM or SIGINT (which the
 // caller has blocked in every thread), and tears the node down. Returns
 // the process's exit status (runtime.h).
-int RunService(const config::NodeConfig& config, const config::RuntimeRoles& roles, std::FILE* log);
+int RunService(const config::NodeConfig& config, const config::RuntimeRoles& roles,
+               ServingOptions serving, std::FILE* log);
 
 }  // namespace llmp::runtime
 

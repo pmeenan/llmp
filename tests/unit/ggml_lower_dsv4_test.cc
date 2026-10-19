@@ -55,16 +55,10 @@ namespace sp = llmp::spec;
 
 ex::Registry Registry(bool indexer = true) {
   std::vector<ex::Implementation> v;
-  for (const auto& d : kg::CapabilityDeclarations()) {
+  for (auto d : kg::PlanningImplementations()) {
     if (!indexer && (d.name == kg::kLightningIndexerName || d.name == kg::kRoundedIndexScoreName))
       continue;
-    v.push_back({.name = std::string(d.name),
-                 .operation = d.operation,
-                 .source = "ggml",
-                 .revision = "planning",
-                 .build = "cpu",
-                 .variant = std::string(kg::AcceptsTextOf(d.name)),
-                 .capability = *d.capability});
+    v.push_back(std::move(d));
   }
   return std::move(ex::Registry::Create(std::move(v)).value());
 }
@@ -166,7 +160,20 @@ TEST(GgmlLowerDsv4Test, PlanKeysFollowCompressorDimensionsAndPreserveReuse) {
   EXPECT_NE(f.Key(a), f.Key(b));
   // The window-only injected drafter has no position-dependent dimensions.
   a.stage = b.stage = 1;
-  EXPECT_TRUE(f.Key(a).parameters.empty());
+  const auto parameters = f.Key(a).parameters;
+  // No position-dependent dimensions, but default state-bank attention
+  // still contributes its canonical layout identity.
+  ASSERT_EQ(parameters.size(), 5U);
+  EXPECT_EQ(parameters[0], 0x737461746562616eULL);
+  llmp::base::Sha256 layout_hash;
+  layout_hash.Update(md::KeptLayoutId({}, std::span(&f.layouts[1], 1)));
+  const auto identity = layout_hash.Finish();
+  for (std::size_t word = 0; word < 4; ++word) {
+    std::uint64_t value = 0;
+    for (std::size_t byte = 0; byte < 8; ++byte)
+      value |= std::uint64_t{identity[word * 8 + byte]} << (byte * 8);
+    EXPECT_EQ(parameters[1 + word], value);
+  }
   EXPECT_EQ(f.Key(a), f.Key(b));
   EXPECT_TRUE(f.source->ShapeParameters({.stage = 2, .segments = {}}).empty());
 }
@@ -181,7 +188,7 @@ TEST(GgmlLowerDsv4Test, StateBankLayoutIdentityChangesOnlyOptedInSourceKeys) {
   for (const bool enabled : {false, true}) {
     const auto source = [&](const md::StateLayoutDerived& layout) {
       pl::Policy policy;
-      if (enabled) policy.enabled = {"state_bank_attention"};
+      if (!enabled) policy.disabled.emplace_back("state_bank_attention");
       return en::ComponentStepSource::Create(
           {.spec = &f.spec,
            .bindings = {.state = &layout},
@@ -1120,15 +1127,9 @@ TEST(GgmlLowerDsv4Test, SinkhornHcMixKeepsUnsupportedFormsOnTheirPrimitiveFallba
     ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
     co::StepGraph step{.graph = std::move(*graph), .inputs = inputs, .weights = {}, .state = {}};
     std::vector<ex::Implementation> declarations;
-    for (const auto& d : kg::CapabilityDeclarations()) {
+    for (auto d : kg::PlanningImplementations()) {
       if (control == 6 && d.name == kg::kHcCombName) continue;
-      declarations.push_back({.name = std::string(d.name),
-                              .operation = d.operation,
-                              .source = "ggml",
-                              .revision = "test",
-                              .build = "test",
-                              .variant = "test",
-                              .capability = *d.capability});
+      declarations.push_back(std::move(d));
     }
     auto registry = ex::Registry::Create(std::move(declarations));
     ASSERT_TRUE(registry);
@@ -1269,15 +1270,9 @@ TEST(GgmlLowerDsv4Test, WeightedHcPreKeepsUnsupportedFormsOnTheirPrimitiveFallba
     ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
     co::StepGraph step{.graph = std::move(*graph), .inputs = inputs, .weights = {}, .state = {}};
     std::vector<ex::Implementation> declarations;
-    for (const auto& d : kg::CapabilityDeclarations()) {
+    for (auto d : kg::PlanningImplementations()) {
       if (control == 5 && d.name == kg::kHcPreName) continue;
-      declarations.push_back({.name = std::string(d.name),
-                              .operation = d.operation,
-                              .source = "ggml",
-                              .revision = "test",
-                              .build = "test",
-                              .variant = "test",
-                              .capability = *d.capability});
+      declarations.push_back(std::move(d));
     }
     auto made_registry = ex::Registry::Create(std::move(declarations));
     ASSERT_TRUE(made_registry);
@@ -2363,8 +2358,10 @@ TEST(GgmlLowerDsv4Test, DeepSeekServingPolicySelectsFastFormsAndDecodeThreshold)
   f.target.swiglu_limit_shared = 7.0f;
   ASSERT_TRUE(f.Init());
 
-  const auto policy = pl::ParsePolicy(sp::mappings::kDeepSeekServingPolicy);
-  ASSERT_TRUE(policy) << policy.error();
+  auto policy = pl::ParsePolicy(sp::mappings::kDeepSeekServingPolicy);
+  ASSERT_TRUE(policy) << (policy ? "" : policy.error());
+  // This descriptor-only recipe control has no admitted source evidence.
+  policy->numerical_candidates = {pl::NumericalChange::kQ8VectorReduction};
 
   auto spec = f.spec;
   spec.stages.resize(1);
@@ -2573,14 +2570,9 @@ TEST(GgmlLowerDsv4Test, ServingPolicyStepRulesAreTheFormerGates) {
   const auto former = [&](std::uint64_t rows, std::size_t segments) {
     pl::Policy step = *policy;
     step.rules.clear();
-    if (rows < 64U) std::erase(step.enabled, "dsv4_hc_post");
     if (segments == 1 && rows > 8U) {
-      if (std::ranges::contains(policy->enabled, "dsv4_lid_mask")) step.max_decode_rows = 8U;
-      for (const std::string_view p :
-           {"dsv4_hc_pre", "vecq_glu", "vecq_inputs", "grouped_vecq", "biased_route", "hash_route"})
-        std::erase(step.enabled, p);
-    } else if (rows > 16U) {
-      std::erase(step.enabled, "dsv4_hc_pre");
+      step.max_decode_rows = 8U;
+      step.vector_rows = 8U;
     }
     return step;
   };
@@ -2597,7 +2589,7 @@ TEST(GgmlLowerDsv4Test, ServingPolicyStepRulesAreTheFormerGates) {
         EXPECT_EQ(pl::Disabled(got, p), pl::Disabled(want, p)) << p;
       EXPECT_EQ(pl::PatternsDigest(got), pl::PatternsDigest(want));
       EXPECT_EQ(got.max_decode_rows, want.max_decode_rows);
-      EXPECT_EQ(got.vector_rows, want.max_decode_rows == 8 ? 8U : 0U);
+      EXPECT_EQ(got.vector_rows, want.vector_rows);
       EXPECT_EQ(got.row_invariant, want.row_invariant);
       EXPECT_EQ(got.allow_lossy, want.allow_lossy);
       EXPECT_EQ(got.ranks, want.ranks);

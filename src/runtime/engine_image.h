@@ -15,6 +15,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -38,6 +39,8 @@ struct ImagePort {
 };
 struct ImageStage {
   std::shared_ptr<const components::SpatialGraph> graph;
+  // Immutable source/geometry-bound arithmetic facts, independently paid.
+  std::shared_ptr<const planner::NumericalQualifications> numerical{};
   std::uint16_t weights = 0;
   std::uint32_t observation = 0;
   // Source role indices are local to this graph, even when component numbers
@@ -112,6 +115,8 @@ using EngineImageBuild =
 
 class EngineImage final : public Image, public engine::PagedModel {
  public:
+  // Exact hidden adapter/control objects for startup/current-candidate admission.
+  static std::uint64_t ControlMetadataBytes();
   EngineImage(engine::PagedNode& node, const config::ModelEntry& entry,
               const ModelSettings& settings, int index, EngineImageBuild build);
   EngineImage(const EngineImage&) = delete;
@@ -130,6 +135,9 @@ class EngineImage final : public Image, public engine::PagedModel {
   std::uint64_t host_input_bytes() const override;
   std::uint64_t startup_host_bytes() const override;
   std::uint64_t plan_floor_bytes() const override;
+  std::string plan_report() const override;
+  void set_plan_report_sink(kernels::PlanRecordSink sink) override;
+  void ReportPlans(const kernels::PlanRecordSink& sink) const override;
   void ReclaimCandidates(std::uint32_t owner, bool running,
                          std::vector<memory::ReclaimCandidate>& out) override;
   std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id) override;
@@ -161,6 +169,7 @@ class EngineImage final : public Image, public engine::PagedModel {
   engine::PagedNode& node_;
   int index_;
   EngineImageBuild build_;
+  kernels::PlanRecordSink plan_report_sink_{};
   struct State;
   std::shared_ptr<State> state_;
   std::vector<std::shared_ptr<State>> transitions_;

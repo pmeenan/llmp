@@ -1031,7 +1031,7 @@ Status RunSwapTable(Server& server, const SwapTableOptions& options, const Servi
 int RunServing(const config::NodeConfig& config, const config::RuntimeRoles& roles,
                const CommandOptions& command, std::FILE* out, std::FILE* log) {
   if (command.command == Command::kService) {
-    return RunService(config, roles, log);
+    return RunService(config, roles, command.serving, log);
   }
   const auto say = [log](std::string_view text) {
     const std::string line = std::format("llmp-runtime: {}\n", base::Printable(text));

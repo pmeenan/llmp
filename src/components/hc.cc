@@ -78,15 +78,6 @@
 namespace llmp::components::defs {
 namespace {
 
-constexpr std::array kJoined{
-    BatchClass{.op = ir::Op::kRmsNorm, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMatMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kAdd, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kRepeat, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kGetRows, .batch = ir::Batch::kJoined},
-};
-
 std::expected<void, std::string> Streams(const Instance& in) {
   if (in.stage.streams < 2) return std::unexpected("hyper-connections in a stage of one stream");
   return {};
@@ -177,8 +168,6 @@ constexpr std::array kMixRoles{
     WeightRole{.name = "scale", .encodings = kF32Only},
     WeightRole{.name = "post_norm", .encodings = kF32Only},
 };
-constexpr std::array<std::string_view, 4> kMixPatterns{"hc_mix", "hc_prep", "dsv4_hc_pre",
-                                                       "rms_norm_mul"};
 
 std::expected<std::vector<RoleShape>, std::string> MixShapes(const Instance& in) {
   if (NormOffsetContradictsFold(in))
@@ -531,7 +520,6 @@ constexpr std::array kCombineParams{
     ParamSpec{.name = "mix", .type = ParamType::kName, .required = false, .choices = kMixes},
 };
 constexpr std::array kCombineRoles{WeightRole{.name = "inject"}};
-constexpr std::array<std::string_view, 3> kCombinePatterns{"hc_combine", "hc_prep", "dsv4_hc_post"};
 
 std::expected<std::vector<RoleShape>, std::string> CombineShapes(const Instance& in) {
   if (auto ok = Streams(in); !ok) return std::unexpected(ok.error());
@@ -617,7 +605,7 @@ const ComponentDef& ResidualHc() {
       .mixing = true,
       .params = kResidualParams,
       .shapes = ResidualShapes,
-      .batch_classes = std::span(kJoined).subspan(4, 1),
+
       .emit = ResidualEmit,
       .reference = ResidualReference,
   };
@@ -632,8 +620,7 @@ const ComponentDef& HcMix() {
       .params = kMixParams,
       .roles = kMixRoles,
       .shapes = MixShapes,
-      .batch_classes = kJoined,
-      .patterns = kMixPatterns,
+
       .emit = MixEmit,
       .reference = MixReference,
   };
@@ -648,8 +635,7 @@ const ComponentDef& HcCombine() {
       .params = kCombineParams,
       .roles = kCombineRoles,
       .shapes = CombineShapes,
-      .batch_classes = kJoined,
-      .patterns = kCombinePatterns,
+
       .emit = CombineEmit,
       .reference = CombineReference,
   };

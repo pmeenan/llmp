@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "base/sha256.h"
+#include "compiler_inventory.h"
 #include "components/spatial.h"
 #include "engine/coverage.h"
 #include "engine/execution_contract.h"
@@ -71,9 +72,14 @@ constexpr std::array<std::uint64_t, 6> kWeightBytes{16384, 256, 2654208, 4608, 2
 constexpr std::uint64_t kTotalWeightBytes = 5662592;
 // Four copies of tiny IR/rewrite/placement inventories and native descriptors,
 // plus two retained programs and their captures, fit the fixed compiler owner.
-static_assert(12 * (32 * 480ULL + 64 * 192ULL) + 4096 * (32 + 64ULL) +
-                  (64 + 16 + 31 * 32ULL + 4) * (512 + 1024 + 32) + 2 * kProgram +
-                  32 * en::kGraphNodeHostBytes + 32 * kMiB <
+// This prior native category becomes available to actual backend charges;
+// it is no longer also held by the enclosing compiler payment.
+constexpr std::uint64_t kNativeConstruction =
+    llmp::test_support::compiler_inventory::NativeBytes((64 + 16 + 31 * 32ULL + 4), 64);
+static_assert(llmp::test_support::compiler_inventory::GraphBytes(32, 64) + 4096 * (32 + 64ULL) +
+                  llmp::test_support::compiler_inventory::NativeBytes((64 + 16 + 31 * 32ULL + 4),
+                                                                      64) +
+                  2 * kProgram + 32 * en::kGraphNodeHostBytes + 32 * kMiB <
               kCompilerAndOwner);
 
 en::Status Error(std::string what) { return std::unexpected(std::move(what)); }
@@ -248,7 +254,8 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
                                                     kMetadata, *available, 6ULL << 30U);
   if (!paid) return Error(paid.error());
   life.paid = *paid;
-  if (!life.paid->Charge(kCompilerAndOwner)) return Error("preconstruction payment");
+  if (!life.paid->Charge(kCompilerAndOwner - kNativeConstruction))
+    return Error("preconstruction payment");
   std::error_code ec;
   if (std::filesystem::file_size(path / "manifest.json", ec) != 1312 || ec ||
       std::filesystem::file_size(path / "index.json", ec) != 68162 || ec)
@@ -391,6 +398,11 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
                       .k = 576,
                       .n = 1152,
                       .output_encoding = fm::Encoding::kF32});
+  if (auto r = life.backend->FundConstruction(
+          [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
+          [paid = life.paid](std::uint64_t n) { paid->Release(n); });
+      !r)
+    return r;
   if (auto r = life.backend->Declare(
           tuning, workspace.value(),
           [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
@@ -440,6 +452,9 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
          .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
     if (!program) return Error(program.error());
     if (auto r = CheckProgram(item, **program, i); !r) return r;
+    // The enclosing compiler/owner charge already prepays two retained
+    // kProgram slots. Transfer only after that real bound has been checked.
+    (*program)->ConstructionPaid();
     item.program = std::move(*program);
     if (auto r = item.program->Bind(*life.launch); !r) return Error(r.error().detail);
     if (!item.program->bound()) return Error("actual program did not bind");

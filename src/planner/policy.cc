@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/json_stream.h"
 #include "base/sha256.h"
 #include "execution/registry.h"
 #include "planner/pattern.h"
@@ -107,6 +108,107 @@ std::vector<std::string_view> Words(std::string_view line) {
 
 }  // namespace
 
+std::string_view NumericalChangeName(NumericalChange change) {
+  switch (change) {
+    case NumericalChange::kBf16SwiGluIntermediates:
+      return "bf16_swiglu_intermediates";
+    case NumericalChange::kBf16ProductInputAndResult:
+      return "bf16_product_input_and_result";
+    case NumericalChange::kBf16AttentionIntermediates:
+      return "bf16_attention_intermediates";
+    case NumericalChange::kBf16ResidualCarry:
+      return "bf16_residual_carry";
+    case NumericalChange::kBf16HyperConnectionIntermediates:
+      return "bf16_hyper_connection_intermediates";
+    case NumericalChange::kMxfp8ProductInput:
+      return "mxfp8_product_input";
+    case NumericalChange::kQ8VectorReduction:
+      return "q8_vector_reduction";
+    case NumericalChange::kNvfp4ExpertIntermediates:
+      return "nvfp4_expert_intermediates";
+  }
+  return {};
+}
+std::expected<std::uint64_t, std::string> NumericalQualificationBytes(std::size_t count) {
+  // One immutable object/control block and its exact-sized entries allocation.
+  constexpr std::uint64_t control = sizeof(NumericalQualifications) + 3 * 64;
+  std::uint64_t bytes = 0;
+  if (__builtin_mul_overflow(static_cast<std::uint64_t>(count),
+                             static_cast<std::uint64_t>(sizeof(NumericalQualification)), &bytes) ||
+      __builtin_add_overflow(bytes, control, &bytes))
+    return Error("numerical qualification storage overflows");
+  return bytes;
+}
+std::uint64_t NumericalQualifications::host_bytes() const {
+  return NumericalQualificationBytes(entries_.capacity()).value_or(UINT64_MAX);
+}
+namespace {
+std::expected<void, std::string> ValidateNumericalEntries(
+    std::span<const NumericalQualification> entries, const base::Sha256Digest& active_source,
+    const base::Sha256Digest& active_semantic) {
+  const auto zero = base::Sha256Digest{};
+  if (active_source == zero || active_semantic == zero)
+    return Error("numerical qualifications need authenticated nonzero active identities");
+  if (!NumericalQualificationBytes(entries.size()))
+    return Error("numerical qualification storage overflows");
+  for (const auto& entry : entries) {
+    if (entry.source != active_source || entry.semantic != active_semantic ||
+        entry.evidence == zero || NumericalChangeName(entry.change).empty() || entry.arch == 0 ||
+        entry.min_rows == 0 || entry.min_rows > entry.max_rows ||
+        (entry.exact_shape && entry.min_rows != entry.max_rows) || entry.stage == UINT16_MAX ||
+        entry.component == UINT16_MAX ||
+        (entry.anchor.op == ir::Op::kFused && entry.anchor.fused == ir::FusedKind::kNone))
+      return Error("a numerical qualification differs from the active identity or domain");
+  }
+  return {};
+}
+}  // namespace
+std::expected<std::shared_ptr<const NumericalQualifications>, std::string>
+NumericalQualifications::Bind(std::span<const NumericalQualification> entries,
+                              const base::Sha256Digest& active_source,
+                              const base::Sha256Digest& active_semantic,
+                              std::shared_ptr<const void> paid_owner) {
+  if (auto valid = ValidateNumericalEntries(entries, active_source, active_semantic); !valid)
+    return std::unexpected(valid.error());
+  return Bind(std::vector<NumericalQualification>(entries.begin(), entries.end()), active_source,
+              active_semantic, std::move(paid_owner));
+}
+std::expected<std::shared_ptr<const NumericalQualifications>, std::string>
+NumericalQualifications::Bind(std::vector<NumericalQualification>&& entries,
+                              const base::Sha256Digest& active_source,
+                              const base::Sha256Digest& active_semantic,
+                              std::shared_ptr<const void> paid_owner) {
+  if (auto valid = ValidateNumericalEntries(entries, active_source, active_semantic); !valid)
+    return std::unexpected(valid.error());
+  // The trusted caller owns the prepaid construction allowance. No allocation
+  // occurs until every identity/domain above has passed.
+  auto bound = std::make_shared<NumericalQualifications>();
+  bound->paid_owner_ = std::move(paid_owner);
+  base::Sha256 hash;
+  hash.Update(std::string_view("llmp.numerical.qualification.v1\n"));
+  for (const auto& entry : entries) {
+    hash.Update(std::as_bytes(std::span(entry.evidence)));
+    hash.Update(std::as_bytes(std::span(entry.source)));
+    hash.Update(std::as_bytes(std::span(entry.semantic)));
+    // Allocation-free canonical scalar text excludes C++ object padding.
+    const base::json::FragmentSink sink = [&](std::string_view fragment) { hash.Update(fragment); };
+    const base::json::Stream out(sink);
+    for (const auto scalar : std::array<std::uint64_t, 14>{
+             static_cast<unsigned>(entry.change), entry.stage, entry.component,
+             static_cast<unsigned>(entry.anchor.op), static_cast<unsigned>(entry.anchor.fused),
+             entry.arch, entry.min_rows, entry.max_rows, entry.max_k, entry.max_n,
+             entry.exact_shape, entry.exact_dimensions, entry.incumbent_recipe,
+             entry.weight_role}) {
+      out.Number(scalar);
+      out.Raw(" ");
+    }
+    out.Raw("\n");
+  }
+  bound->digest_ = hash.Finish();
+  bound->entries_ = std::move(entries);
+  return bound;
+}
+
 bool Disabled(const Policy& policy, std::string_view pattern) {
   if (std::ranges::contains(policy.disabled, pattern)) {
     return true;
@@ -116,6 +218,7 @@ bool Disabled(const Policy& policy, std::string_view pattern) {
 }
 
 void Canonicalize(Policy& policy) {
+  std::ranges::sort(policy.numerical_candidates, {}, &NumericalChangeName);
   std::ranges::sort(policy.enabled);
   std::ranges::sort(policy.disabled);
   std::ranges::sort(policy.ranks, [](const ClassRank& a, const ClassRank& b) {
@@ -127,6 +230,14 @@ void Canonicalize(Policy& policy) {
 }
 
 std::expected<void, std::string> Validate(const Policy& policy) {
+  std::string_view previous;
+  for (const auto change : policy.numerical_candidates) {
+    const auto name = NumericalChangeName(change);
+    if (name.empty() || (!previous.empty() && name <= previous))
+      return Error("candidate numerical changes must be known, ascending and unique");
+    previous = name;
+  }
+
   if (!Bound(policy.products.compact_expert_min_rows))
     return Error("compact_expert_min_rows outside 1 to 65,536");
   if (policy.max_decode_rows == 0 || policy.max_decode_rows > kMaxDecodeRowsBound) {
@@ -144,8 +255,8 @@ std::expected<void, std::string> Validate(const Policy& policy) {
   for (std::size_t i = 0; i < policy.enabled.size(); ++i) {
     const std::string& name = policy.enabled[i];
     const Pattern* p = FindPattern(name);
-    if (p == nullptr || !p->opt_in) {
-      return Error(std::format("no opt-in pattern {} to enable", name));
+    if (p == nullptr) {
+      return Error(std::format("no pattern {} to enable", name));
     }
     if (i > 0 && policy.enabled[i - 1] >= name) {
       return Error("enabled patterns are not ascending and unique");
@@ -215,6 +326,8 @@ std::string ToText(const Policy& policy) {
     text += std::format("compact_expert_min_rows {}\n", policy.products.compact_expert_min_rows);
   for (const auto& [name, member] : kProducts)
     if (policy.products.*member) text += std::format("product {}\n", name);
+  for (const auto change : policy.numerical_candidates)
+    text += std::format("candidate_numerics {}\n", NumericalChangeName(change));
   for (const std::string& name : policy.enabled) {
     text += std::format("enable {}\n", name);
   }
@@ -296,6 +409,19 @@ std::expected<Policy, std::string> ParsePolicy(std::string_view text) {
           std::ranges::find_if(kProducts, [&](const auto& p) { return p.first == w[1]; });
       if (found == kProducts.end()) return Error("unknown product policy");
       policy.products.*(found->second) = true;
+    } else if (w.size() == 2 && w[0] == "candidate_numerics") {
+      bool found = false;
+      for (std::uint8_t value = 0;
+           value <= static_cast<std::uint8_t>(NumericalChange::kNvfp4ExpertIntermediates);
+           ++value) {
+        const auto change = static_cast<NumericalChange>(value);
+        if (NumericalChangeName(change) == w[1]) {
+          policy.numerical_candidates.push_back(change);
+          found = true;
+          break;
+        }
+      }
+      if (!found) return Error("unknown candidate numerical change");
     } else if (w.size() == 2 && w[0] == "enable") {
       if (policy.enabled.size() == kMaxDisabled) {
         return Error("more enabled patterns than a policy holds");
@@ -363,6 +489,13 @@ base::Sha256Digest Digest(const Policy& policy) {
   base::Sha256 hash;
   hash.Update(std::string_view("llmp.planner.policy.v1\n"));
   hash.Update(ToText(policy));
+  if (policy.numerical) {
+    hash.Update(std::string_view("authenticated-numerical-facts\n"));
+    hash.Update(std::as_bytes(std::span(policy.numerical->digest())));
+    const std::array<std::uint8_t, 2> stage{static_cast<std::uint8_t>(policy.active_stage),
+                                            static_cast<std::uint8_t>(policy.active_stage >> 8U)};
+    hash.Update(std::as_bytes(std::span(stage)));
+  }
   return hash.Finish();
 }
 

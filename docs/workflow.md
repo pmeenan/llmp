@@ -56,6 +56,34 @@ the main agent to).
 The human may explicitly waive step 2 for a specific trivial change (a typo, a
 doc-only status update). Agents never waive it themselves.
 
+## Agent coordination and escalation
+
+Keep one builder responsible for its complete isolated worktree; the orchestrator
+assigns ownership and resolves cross-worktree overlap at integration. Submit a
+coherent buildable checkpoint, run its native build and focused regressions, then
+open whole-change review. Review fixes target the changed delta and affected
+invariants; reopen broader review when architecture, ownership or numerical
+contracts change. Every slice still receives its required independent whole
+review, adversarial challenge where required, and final checks on integrated
+source.
+
+Executors follow bounded, host-locked recipes with explicit stop conditions and
+retain compact evidence plus full machine-readable receipts. Ask the orchestrator
+promptly about unclear contracts or ownership, consequential architectural
+uncertainty, or investigations repeating without new evidence; include the exact
+question, compact evidence, attempts and recommendation, and continue independent
+work. Mechanical executors send nonmechanical failures to the assigned builder or
+debugger and notify the orchestrator instead of speculative repairs or blind
+retries. This adds no arbitrary token/time quota or user-permission step.
+
+The builder normally runs its own bounded build and focused-check loop, including
+source verification and guarded synchronization to its assigned Spark. Use a
+separate executor when it saves substantial work, such as an independent measurement
+queue or a long check set; do not split each routine repair into builder/executor
+handoffs. Neither path needs an orchestrator acknowledgment for an in-scope repair.
+The orchestrator owns architectural decisions, independent review, integration and
+commits. Preserve host/source ownership, job locking and the required final checks.
+
 ## Blast-radius changes get the heavy path by default
 
 Some areas are where an externally consumed runtime earns or loses trust. A

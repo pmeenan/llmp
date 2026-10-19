@@ -6,17 +6,22 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <iterator>
+#include <limits>
 #include <map>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "base/json_stream.h"
 #include "base/sha256.h"
 #include "execution/registry.h"
 #include "format/encoding.h"
@@ -530,6 +535,7 @@ std::string_view PlanErrorName(PlanError error) {
 std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::Registry& registry,
                                           const DeviceFacts& device, const Policy& policy,
                                           const PlanOptions& options) {
+  const auto primitive_digest = primitive.Digest();
   if (auto valid = Validate(policy); !valid) {
     return Failed(PlanError::kPolicy, valid.error());
   }
@@ -580,11 +586,20 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
         PlanError::kPattern,
         std::format("a rewrite at node {}: {}", rewritten.error().node, rewritten.error().detail));
   }
+  // Observations do not participate in matching, qualification, selection or
+  // keys. Attach the actual source context only after all rewrites completed.
+  for (auto& applied : rewritten->applied)
+    for (auto& proof : applied.numerical_proofs) {
+      proof.observed.bound_model = options.observed_bound_model;
+      proof.observed.model_spec = options.observed_model_spec;
+    }
   view.Forward(pattern_input, rewritten->graph, rewritten->tensors);
   for (auto& scope : scopes) scope.result = rewritten->tensors.at(scope.result.v);
   if (owners) {
-    for (auto& a : rewritten->applied)
+    for (auto& a : rewritten->applied) {
       for (auto& n : a.replaced) n = owners->rewrite.from.at(n.v);
+      for (auto& proof : a.numerical_proofs) proof.site = owners->rewrite.from.at(proof.site.v);
+    }
     std::size_t max_from = 0;
     for (const auto& nid : rewritten->from) {
       if (nid.v >= max_from) max_from = nid.v + 1;
@@ -814,6 +829,9 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
     }
   }
   return StepPlan{
+      .primitive_digest = primitive_digest,
+      .graph_digest = graph.Digest(),
+      .policy_digest = Digest(policy),
       .graph = std::move(graph),
       .steps = std::move(steps),
       .regions = std::move(regions),
@@ -822,6 +840,7 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
       .from = std::move(from),
       .tensors = std::move(tensors),
       .decomposed = std::move(decomposed),
+      .missing_numerical = std::move(rewritten->missing_numerical),
       .owner_row_invariant =
           !Disabled(policy, "owner_row_invariant") && options.shape != nullptr &&
           options.shape->segments.size() > 1 &&
@@ -841,6 +860,602 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
           options.owner_products ? options.owner_products->digest() : base::Sha256Digest{},
       .invariant = std::move(invariant),
       .prologue = std::move(prologue.steps)};
+}
+
+std::expected<std::uint64_t, std::string> PlanReportInventory::Layout(
+    const StepPlan& plan, const execution::Registry& registry, std::byte* storage) {
+  std::uint64_t at = 0;
+  bool overflow = false;
+  // The same checked layout is measured before payment and filled afterwards.
+  // Placement construction starts every typed object's lifetime in the buffer.
+  const auto array = [&]<class T>(std::size_t count) -> std::span<T> {
+    static_assert(std::is_trivially_destructible_v<T>);
+    static_assert(alignof(T) <= alignof(std::max_align_t));
+    std::uint64_t aligned = 0, bytes = 0, end = 0;
+    if (__builtin_add_overflow(at, static_cast<std::uint64_t>(alignof(T) - 1), &aligned) ||
+        __builtin_mul_overflow(static_cast<std::uint64_t>(count),
+                               static_cast<std::uint64_t>(sizeof(T)), &bytes)) {
+      overflow = true;
+      return {};
+    }
+    aligned &= ~(static_cast<std::uint64_t>(alignof(T)) - 1);
+    if (__builtin_add_overflow(aligned, bytes, &end) ||
+        end > std::numeric_limits<std::size_t>::max()) {
+      overflow = true;
+      return {};
+    }
+    at = end;
+    if (!storage || overflow || count == 0) return {};
+    auto* data = reinterpret_cast<T*>(storage + aligned);
+    for (std::size_t i = 0; i < count; ++i) std::construct_at(data + i);
+    return {data, count};
+  };
+  const auto text = [&](std::string_view source) -> std::string_view {
+    auto bytes = array.template operator()<char>(source.size());
+    if (!storage || source.empty() || overflow) return {};
+    std::memcpy(bytes.data(), source.data(), source.size());
+    return {bytes.data(), bytes.size()};
+  };
+  primitive_ = plan.primitive_digest;
+  graph_ = plan.graph_digest;
+  policy_ = plan.policy_digest;
+  registry_ = registry.Digest();
+  activation_bytes_ = plan.placement.extent;
+  // Registry entries are indexed directly by selections. Their immutable
+  // names and hashes are copied once, regardless of the graph's step count.
+  implementations_ = array.template operator()<Implementation>(registry.size());
+  for (std::size_t i = 0; i < registry.size(); ++i) {
+    const auto& impl = registry.at(i);
+    const auto name = text(impl.name);
+    if (storage && !overflow)
+      implementations_[i] = {
+          name, registry.identity(i),
+          impl.capability ? static_cast<unsigned>(impl.capability->rung) : 0,
+          impl.capability ? static_cast<unsigned>(impl.capability->expansion) : 0};
+  }
+  selections_ = array.template operator()<Selection>(plan.steps.size());
+  for (std::size_t i = 0; i < plan.steps.size(); ++i) {
+    const auto& selected = plan.steps[i];
+    const auto group = text(selected.group);
+    auto nodes = array.template operator()<Node>(selected.nodes.size());
+    if (storage && !overflow)
+      selections_[i] = {selected.implementation, selected.lane, group, nodes};
+    for (std::size_t j = 0; j < selected.nodes.size(); ++j) {
+      const auto id = selected.nodes[j];
+      const auto& node = plan.graph.node(id);
+      auto sources = array.template operator()<ir::TensorId>(node.nsrc);
+      auto outputs = array.template operator()<ir::TensorId>(node.nout);
+      if (!storage || overflow) continue;
+      std::ranges::copy(node.sources(), sources.begin());
+      std::ranges::copy(node.outputs(), outputs.begin());
+      nodes[j] = {.id = id,
+                  .key = node.key,
+                  .component = node.component,
+                  .sources = sources,
+                  .outputs = outputs};
+      if (node.key.op == ir::Op::kMatMul || node.key.op == ir::Op::kMatMulId ||
+          node.key == ir::Fused(ir::FusedKind::kGroupedMatMul))
+        nodes[j].arithmetic = node.Params<ir::ProductParams>().arithmetic;
+    }
+  }
+  patterns_ = array.template operator()<PatternRecord>(plan.applied.size());
+  for (std::size_t i = 0; i < plan.applied.size(); ++i) {
+    const auto& applied = plan.applied[i];
+    const auto name = text(applied.pattern);
+    auto proofs = array.template operator()<NumericalProof>(applied.numerical_proofs.size());
+    if (storage && !overflow) {
+      std::ranges::copy(applied.numerical_proofs, proofs.begin());
+      patterns_[i] = {name,
+                      applied.replaced.size(),
+                      applied.made.size(),
+                      applied.numerical_change,
+                      applied.numerical_evidence,
+                      applied.numerical_source,
+                      applied.numerical_semantic,
+                      applied.numerical_candidate,
+                      applied.numerical_incumbent,
+                      proofs};
+    }
+  }
+  fallbacks_ = array.template operator()<std::string_view>(plan.decomposed.size());
+  for (std::size_t i = 0; i < plan.decomposed.size(); ++i) {
+    const auto name = text(plan.decomposed[i]);
+    if (storage && !overflow) fallbacks_[i] = name;
+  }
+  activations_ = array.template operator()<Activation>(plan.placement.offsets.size());
+  if (storage && !overflow) {
+    for (std::size_t i = 0; i < plan.placement.offsets.size(); ++i) {
+      const auto [root, offset] = plan.placement.offsets[i];
+      const auto& tensor = plan.graph.tensor(root);
+      auto& target = activations_[i];
+      target.root = root;
+      target.producer = plan.graph.producer(root);
+      target.operation = plan.graph.node(target.producer).key;
+      target.component = plan.graph.node(target.producer).component;
+      target.offset = offset;
+      target.bytes = RootBytes(tensor).value_or(0);
+      for (std::size_t axis = 0; axis < 4; ++axis) {
+        target.shape[axis] = tensor.ne(axis);
+        target.strides[axis] = tensor.nb[axis];
+      }
+    }
+  }
+  missing_ =
+      array.template operator()<MissingNumericalQualification>(plan.missing_numerical.size());
+  if (storage && !overflow) std::ranges::copy(plan.missing_numerical, missing_.begin());
+  if (overflow) return std::unexpected("the plan report resource layout overflows");
+  return at;
+}
+
+std::expected<std::uint64_t, std::string> PlanReportInventory::StorageBytes(
+    const StepPlan& plan, const execution::Registry& registry) {
+  PlanReportInventory report;
+  return report.Layout(plan, registry, nullptr);
+}
+
+std::expected<PlanReportInventory, std::string> PlanReportInventory::Capture(
+    const StepPlan& plan, const execution::Registry& registry, std::uint64_t bytes) {
+  // Reject a stale measurement before allocating or filling anything.
+  auto measured = StorageBytes(plan, registry);
+  if (!measured) return std::unexpected(measured.error());
+  if (*measured != bytes) return std::unexpected("the paid plan report layout changed");
+  PlanReportInventory report;
+  report.storage_.reset(new (std::nothrow) std::byte[static_cast<std::size_t>(bytes)]);
+  if (!report.storage_) return std::unexpected("allocating the paid plan report inventory failed");
+  report.storage_bytes_ = bytes;
+  auto filled = report.Layout(plan, registry, report.storage_.get());
+  if (!filled) return std::unexpected(filled.error());
+  return report;
+}
+
+namespace {
+void StreamTensorIds(const base::json::Stream& out, std::span<const ir::TensorId> ids) {
+  out.Raw("[");
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    if (i) out.Raw(",");
+    if (ids[i].valid())
+      out.Number(ids[i].v);
+    else
+      out.Raw("null");
+  }
+  out.Raw("]");
+}
+}  // namespace
+
+namespace {
+void StreamNumericalProofs(const base::json::Stream& out, std::span<const NumericalProof> proofs) {
+  if (proofs.empty()) return;
+  out.Raw(R"(,"numerical_recipients":[)");
+  bool first = true;
+  for (const auto& proof : proofs) {
+    if (!first) out.Raw(",");
+    first = false;
+    const auto& grant = proof.qualification;
+    out.Raw(R"({"primitive_site":)");
+    out.Number(proof.site.v);
+    out.Raw(R"(,"weight_operand":)");
+    out.Number(proof.weight_operand);
+    out.Raw(R"(,"stage":)");
+    out.Number(grant.stage);
+    out.Raw(R"(,"component":)");
+    out.Number(grant.component);
+    out.Raw(R"(,"weight_role":)");
+    out.Number(grant.weight_role);
+    out.Raw(R"(,"rows":)");
+    out.Number(proof.actual.rows);
+    out.Raw(R"(,"k":)");
+    out.Number(proof.actual.k);
+    out.Raw(R"(,"n":)");
+    out.Number(proof.actual.n);
+    out.Raw(R"(,"qualified_envelope":[)");
+    out.Number(grant.min_rows);
+    out.Raw(",");
+    out.Number(grant.max_rows);
+    out.Raw(",");
+    out.Number(grant.max_k);
+    out.Raw(",");
+    out.Number(grant.max_n);
+    out.Raw("]");
+    if (proof.grouped_projection) {
+      out.Raw(R"(,"grouped_projection":true,"qualified_leaf_envelope":[)");
+      out.Number(grant.min_rows);
+      out.Raw(",");
+      out.Number(grant.max_rows);
+      out.Raw(",");
+      out.Number(proof.observed.leaf_format.shape.ne[0]);
+      out.Raw(",");
+      out.Number(proof.observed.leaf_format.shape.ne[1]);
+      out.Raw("]");
+    }
+    out.Raw(R"(,"exact_shape":)");
+    out.Boolean(grant.exact_shape);
+    out.Raw(R"(,"exact_dimensions":)");
+    out.Boolean(grant.exact_dimensions);
+    out.Raw(R"(,"status":)");
+    out.Quoted(proof.candidate          ? "UNQUALIFIED_CANDIDATE"
+               : grant.incumbent_recipe ? "ACCEPTED_INCUMBENT_RECIPE"
+                                        : "MEASURED_SAME_QUALITY");
+    out.Raw(R"(,"change":)");
+    out.Quoted(NumericalChangeName(grant.change));
+    out.Raw(R"(,"evidence":")");
+    out.Hex(grant.evidence);
+    out.Raw(R"(","source":")");
+    out.Hex(grant.source);
+    out.Raw(R"(","semantic":")");
+    out.Hex(grant.semantic);
+    const auto& observed = proof.observed;
+    out.Raw(R"(","observed":{"status":)");
+    out.Quoted(!observed.weight                      ? "NO_WEIGHT_REF"
+               : observed.active_stage == UINT16_MAX ? "ACTIVE_STAGE_UNAVAILABLE"
+               : observed.weight->stage != observed.active_stage ||
+                       observed.weight->component != grant.component
+                   ? "FOREIGN_STAGE_OR_COMPONENT"
+                   : "BOUND_WEIGHT_REF");
+    out.Raw(R"(,"source_status":)");
+    out.Quoted(observed.bound_model != base::Sha256Digest{} &&
+                       observed.model_spec != base::Sha256Digest{}
+                   ? "BOUND_MODEL_IDENTITY"
+                   : "UNAVAILABLE");
+    out.Raw(R"(,"active_stage":)");
+    out.Number(observed.active_stage);
+    out.Raw(R"(,"bound_model":")");
+    out.Hex(observed.bound_model);
+    out.Raw(R"(","model_spec":")");
+    out.Hex(observed.model_spec);
+    out.Raw("\"");
+    if (observed.weight) {
+      out.Raw(R"(,"stage":)");
+      out.Number(observed.weight->stage);
+      out.Raw(R"(,"component":)");
+      out.Number(observed.weight->component);
+      out.Raw(R"(,"weight_role":)");
+      out.Number(observed.weight->role);
+      out.Raw(R"(,"layer":)");
+      out.Number(observed.weight->layer);
+      out.Raw(R"(,"expert_array":)");
+      out.Boolean(observed.weight->expert_array);
+      const auto tensor = [&](std::string_view name, const format::TensorFormat& tensor_format,
+                              const std::array<std::uint64_t, 4>& strides) {
+        out.Raw(",");
+        out.Quoted(name);
+        out.Raw(R"(:{"encoding":)");
+        out.Quoted(format::Info(tensor_format.encoding).name);
+        out.Raw(R"(,"layout":)");
+        out.Quoted(format::Info(tensor_format.layout).name);
+        out.Raw(R"(,"rank":)");
+        out.Number(tensor_format.shape.rank);
+        out.Raw(R"(,"stacked":)");
+        out.Number(tensor_format.stacked);
+        out.Raw(R"(,"encoding_params":[)");
+        out.Number(tensor_format.params.k_bits);
+        out.Raw(",");
+        out.Number(static_cast<std::uint8_t>(tensor_format.params.codebook));
+        out.Raw(",");
+        out.Boolean(tensor_format.params.tensor_scale);
+        out.Raw(",");
+        out.Number(tensor_format.params.bits);
+        out.Raw(",");
+        out.Number(tensor_format.params.group);
+        out.Raw(",");
+        out.Number(static_cast<std::uint8_t>(tensor_format.params.scale));
+        out.Raw(",");
+        out.Boolean(tensor_format.params.zero_point);
+        out.Raw("]");
+        out.Raw(R"(,"shape":[)");
+        for (std::size_t k = 0; k < 4; ++k) {
+          if (k) out.Raw(",");
+          out.Number(tensor_format.shape.ne[k]);
+        }
+        out.Raw(R"(],"strides":[)");
+        for (std::size_t k = 0; k < 4; ++k) {
+          if (k) out.Raw(",");
+          out.Number(strides[k]);
+        }
+        out.Raw("]}");
+      };
+      tensor("weight_operand", observed.operand_format, observed.operand_strides);
+      tensor("weight_leaf", observed.leaf_format, observed.leaf_strides);
+      tensor("input", observed.input_format, observed.input_strides);
+    }
+    out.Raw("}}");
+  }
+  out.Raw("]");
+}
+}  // namespace
+
+void PlanReportInventory::Stream(const PlanReportSink& sink) const {
+  if (!sink) return;
+  const base::json::Stream out(sink);
+  out.Raw(R"({"kind":"plan","version":1,"primitive":")");
+  out.Hex(primitive_);
+  out.Raw(R"(","graph":")");
+  out.Hex(graph_);
+  out.Raw(R"(","policy":")");
+  out.Hex(policy_);
+  out.Raw(R"(","registry":")");
+  out.Hex(registry_);
+  out.Raw(R"(","steps":)");
+  out.Number(selections_.size());
+  out.Raw(R"(,"activation_bytes":)");
+  out.Number(activation_bytes_);
+  out.Raw(R"(,"missing_numerical_qualifications":)");
+  out.Number(missing_.size());
+  out.Raw("}\n");
+  const auto op = [&](ir::OpKey key) {
+    out.Raw(ir::OpName(key.op));
+    if (key.op == ir::Op::kFused) {
+      out.Raw(".");
+      out.Raw(ir::FusedKindName(key.fused));
+    }
+  };
+  for (std::size_t i = 0; i < selections_.size(); ++i) {
+    const auto& step = selections_[i];
+    const auto& impl = implementations_[step.implementation];
+    out.Raw(R"({"kind":"selection","step":)");
+    out.Number(i);
+    out.Raw(R"(,"implementation":)");
+    out.Quoted(impl.name);
+    out.Raw(R"(,"identity":")");
+    out.Hex(impl.identity);
+    out.Raw(R"(","lane":)");
+    out.Number(step.lane);
+    out.Raw(R"(,"rung":)");
+    out.Number(impl.rung);
+    out.Raw(R"(,"expansion_rule":)");
+    out.Number(impl.expansion);
+    out.Raw(R"(,"group":)");
+    out.Quoted(step.group);
+    out.Raw(R"(,"nodes":[)");
+    for (std::size_t j = 0; j < step.nodes.size(); ++j) {
+      const auto& node = step.nodes[j];
+      if (j != 0) out.Raw(",");
+      out.Raw(R"({"id":)");
+      out.Number(node.id.v);
+      out.Raw(R"(,"op":")");
+      op(node.key);
+      out.Raw("\"");
+      if (node.arithmetic) {
+        out.Raw(R"(,"product_arithmetic":)");
+        out.Quoted(ir::ProductArithmeticName(*node.arithmetic));
+      }
+      out.Raw(R"(,"component":)");
+      out.Number(node.component);
+      out.Raw(R"(,"sources":)");
+      StreamTensorIds(out, node.sources);
+      out.Raw(R"(,"outputs":)");
+      StreamTensorIds(out, node.outputs);
+      out.Raw("}");
+    }
+    out.Raw("]}\n");
+  }
+  for (const auto& pattern : patterns_) {
+    out.Raw(R"({"kind":"pattern","name":)");
+    out.Quoted(pattern.name);
+    out.Raw(R"(,"replaced":)");
+    out.Number(pattern.replaced);
+    out.Raw(R"(,"made":)");
+    out.Number(pattern.made);
+    if (pattern.numerical_change) {
+      out.Raw(R"(,"numerical_status":)");
+      out.Quoted(pattern.numerical_candidate   ? "UNQUALIFIED_CANDIDATE"
+                 : pattern.numerical_incumbent ? "ACCEPTED_INCUMBENT_RECIPE"
+                                               : "MEASURED_SAME_QUALITY");
+      out.Raw(R"(,"numerical_change":)");
+      out.Quoted(NumericalChangeName(*pattern.numerical_change));
+      out.Raw(R"(,"numerical_evidence":")");
+      out.Hex(pattern.evidence);
+      out.Raw(R"(","numerical_source":")");
+      out.Hex(pattern.source);
+      out.Raw(R"(","numerical_semantic":")");
+      out.Hex(pattern.semantic);
+      out.Raw("\"");
+    }
+    StreamNumericalProofs(out, pattern.numerical_proofs);
+    out.Raw("}\n");
+  }
+  for (const auto key : fallbacks_) {
+    out.Raw(R"({"kind":"fallback","op":)");
+    out.Quoted(key);
+    out.Raw(R"(,"reason":"no_eligible_implementation"})");
+    out.Raw("\n");
+  }
+  for (const auto& root : activations_) {
+    out.Raw(R"({"kind":"activation","root":)");
+    out.Number(root.root.v);
+    out.Raw(R"(,"producer":)");
+    out.Number(root.producer.v);
+    out.Raw(R"(,"op":")");
+    op(root.operation);
+    out.Raw(R"(","component":)");
+    out.Number(root.component);
+    out.Raw(R"(,"offset":)");
+    out.Number(root.offset);
+    out.Raw(R"(,"logical_bytes":)");
+    out.Number(root.bytes);
+    out.Raw(R"(,"shape":[)");
+    for (std::size_t d = 0; d < 4; ++d) {
+      if (d != 0) out.Raw(",");
+      out.Number(root.shape[d]);
+    }
+    out.Raw(R"(],"strides":[)");
+    for (std::size_t d = 0; d < 4; ++d) {
+      if (d != 0) out.Raw(",");
+      out.Number(root.strides[d]);
+    }
+    out.Raw("]}\n");
+  }
+  for (const auto& missing : missing_) {
+    out.Raw(R"({"kind":"missing_numerical_qualification","change":)");
+    out.Quoted(NumericalChangeName(missing.change));
+    out.Raw(R"(,"component":)");
+    out.Number(missing.component);
+    out.Raw(R"(,"anchor":")");
+    op(missing.anchor);
+    out.Raw("\"}\n");
+  }
+}
+
+void StreamPlanReport(const StepPlan& plan, const execution::Registry& registry,
+                      const PlanReportSink& sink) {
+  if (!sink) return;
+  const base::json::Stream out(sink);
+  out.Raw(R"({"kind":"plan","version":1,"primitive":")");
+  out.Hex(plan.primitive_digest);
+  out.Raw(R"(","graph":")");
+  out.Hex(plan.graph_digest);
+  out.Raw(R"(","policy":")");
+  out.Hex(plan.policy_digest);
+  out.Raw(R"(","registry":")");
+  out.Hex(registry.Digest());
+  out.Raw(R"(","steps":)");
+  out.Number(plan.steps.size());
+  out.Raw(R"(,"activation_bytes":)");
+  out.Number(plan.placement.extent);
+  out.Raw(R"(,"missing_numerical_qualifications":)");
+  out.Number(plan.missing_numerical.size());
+  out.Raw("}\n");
+  for (std::size_t i = 0; i < plan.steps.size(); ++i) {
+    const auto& step = plan.steps[i];
+    const auto& impl = registry.at(step.implementation);
+    out.Raw(R"({"kind":"selection","step":)");
+    out.Number(i);
+    out.Raw(R"(,"implementation":)");
+    out.Quoted(impl.name);
+    out.Raw(R"(,"identity":")");
+    out.Hex(registry.identity(step.implementation));
+    out.Raw(R"(","lane":)");
+    out.Number(step.lane);
+    out.Raw(R"(,"rung":)");
+    out.Number(impl.capability ? static_cast<unsigned>(impl.capability->rung) : 0);
+    out.Raw(R"(,"expansion_rule":)");
+    out.Number(impl.capability ? static_cast<unsigned>(impl.capability->expansion) : 0);
+    out.Raw(R"(,"group":)");
+    out.Quoted(step.group);
+    out.Raw(R"(,"nodes":[)");
+    for (std::size_t j = 0; j < step.nodes.size(); ++j) {
+      const auto id = step.nodes[j];
+      if (j != 0) out.Raw(",");
+      out.Raw(R"({"id":)");
+      out.Number(id.v);
+      out.Raw(R"(,"op":")");
+      const auto key = plan.graph.node(id).key;
+      out.Raw(ir::OpName(key.op));
+      if (key.op == ir::Op::kFused) {
+        out.Raw(".");
+        out.Raw(ir::FusedKindName(key.fused));
+      }
+      out.Raw("\"");
+      if (key.op == ir::Op::kMatMul || key.op == ir::Op::kMatMulId ||
+          key == ir::Fused(ir::FusedKind::kGroupedMatMul)) {
+        const auto params = plan.graph.node(id).Params<ir::ProductParams>();
+        out.Raw(R"(,"product_arithmetic":)");
+        out.Quoted(ir::ProductArithmeticName(params.arithmetic));
+      }
+      const auto& node = plan.graph.node(id);
+      out.Raw(R"(,"component":)");
+      out.Number(node.component);
+      out.Raw(R"(,"sources":)");
+      StreamTensorIds(out, node.sources());
+      out.Raw(R"(,"outputs":)");
+      StreamTensorIds(out, node.outputs());
+      out.Raw("}");
+    }
+    out.Raw("]}\n");
+  }
+  for (const auto& applied : plan.applied) {
+    out.Raw(R"({"kind":"pattern","name":)");
+    out.Quoted(applied.pattern);
+    out.Raw(R"(,"replaced":)");
+    out.Number(applied.replaced.size());
+    out.Raw(R"(,"made":)");
+    out.Number(applied.made.size());
+    if (applied.numerical_change) {
+      out.Raw(R"(,"numerical_status":)");
+      out.Quoted(applied.numerical_candidate   ? "UNQUALIFIED_CANDIDATE"
+                 : applied.numerical_incumbent ? "ACCEPTED_INCUMBENT_RECIPE"
+                                               : "MEASURED_SAME_QUALITY");
+      out.Raw(R"(,"numerical_change":)");
+      out.Quoted(NumericalChangeName(*applied.numerical_change));
+      out.Raw(R"(,"numerical_evidence":")");
+      out.Hex(applied.numerical_evidence);
+      out.Raw(R"(","numerical_source":")");
+      out.Hex(applied.numerical_source);
+      out.Raw(R"(","numerical_semantic":")");
+      out.Hex(applied.numerical_semantic);
+      out.Raw("\"");
+    }
+    StreamNumericalProofs(out, applied.numerical_proofs);
+    out.Raw("}\n");
+  }
+  for (const auto& key : plan.decomposed) {
+    out.Raw(R"({"kind":"fallback","op":)");
+    out.Quoted(key);
+    out.Raw(R"(,"reason":"no_eligible_implementation"})");
+    out.Raw("\n");
+  }
+  for (const auto& [root, offset] : plan.placement.offsets) {
+    const auto& t = plan.graph.tensor(root);
+    const auto bytes = RootBytes(t);
+    out.Raw(R"({"kind":"activation","root":)");
+    out.Number(root.v);
+    const auto producer = plan.graph.producer(root);
+    const auto& node = plan.graph.node(producer);
+    out.Raw(R"(,"producer":)");
+    out.Number(producer.v);
+    out.Raw(R"(,"op":")");
+    out.Raw(ir::OpName(node.key.op));
+    if (node.key.op == ir::Op::kFused) {
+      out.Raw(".");
+      out.Raw(ir::FusedKindName(node.key.fused));
+    }
+    out.Raw(R"(","component":)");
+    out.Number(node.component);
+    out.Raw(R"(,"offset":)");
+    out.Number(offset);
+    out.Raw(R"(,"logical_bytes":)");
+    out.Number(bytes.value_or(0));
+    out.Raw(R"(,"shape":[)");
+    for (std::size_t d = 0; d < 4; ++d) {
+      if (d != 0) out.Raw(",");
+      out.Number(t.ne(d));
+    }
+    out.Raw(R"(],"strides":[)");
+    for (std::size_t d = 0; d < 4; ++d) {
+      if (d != 0) out.Raw(",");
+      out.Number(t.nb[d]);
+    }
+    out.Raw("]}\n");
+  }
+  for (const auto& missing : plan.missing_numerical) {
+    out.Raw(R"({"kind":"missing_numerical_qualification","change":)");
+    out.Quoted(NumericalChangeName(missing.change));
+    out.Raw(R"(,"component":)");
+    out.Number(missing.component);
+    out.Raw(R"(,"anchor":")");
+    out.Raw(ir::OpName(missing.anchor.op));
+    if (missing.anchor.op == ir::Op::kFused) {
+      out.Raw(".");
+      out.Raw(ir::FusedKindName(missing.anchor.fused));
+    }
+    out.Raw("\"}\n");
+  }
+}
+
+void ReportPlan(const StepPlan& plan, const execution::Registry& registry,
+                const PlanReportSink& sink) {
+  if (!sink) return;
+  std::string record;
+  StreamPlanReport(plan, registry, [&](std::string_view fragment) {
+    auto newline = fragment.find('\n');
+    while (newline != std::string_view::npos) {
+      record.append(fragment.substr(0, newline));
+      sink(record);
+      record.clear();
+      fragment.remove_prefix(newline + 1);
+      newline = fragment.find('\n');
+    }
+    record.append(fragment);
+  });
 }
 
 PlanKey KeyOf(const base::Sha256Digest& spec, const StepShape& shape, const Policy& policy,

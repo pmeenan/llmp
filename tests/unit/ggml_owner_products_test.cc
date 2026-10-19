@@ -41,14 +41,7 @@ using llmp::test_support::Failed;
 
 ex::Registry Registry() {
   std::vector<ex::Implementation> all;
-  for (const auto& d : kg::CapabilityDeclarations())
-    all.push_back({.name = std::string(d.name),
-                   .operation = d.operation,
-                   .source = "ggml",
-                   .revision = "planning",
-                   .build = "cpu",
-                   .variant = std::string(kg::AcceptsTextOf(d.name)),
-                   .capability = *d.capability});
+  for (auto d : kg::PlanningImplementations()) all.push_back(std::move(d));
   return ex::Registry::Create(std::move(all)).value();
 }
 kg::DeviceChoices Device(kg::MulMatPath path = kg::MulMatPath::kTensorCore) {
@@ -113,7 +106,7 @@ Fixture Make(std::span<const std::uint32_t> widths, bool annotated = true,
           .indices = indices};
 }
 void Plan(Fixture& f, const ex::Registry& registry, bool fuse_preparation = false) {
-  pl::Policy policy{.enabled = {"bf16_inputs", "owner_row_invariant"}};
+  pl::Policy policy{.enabled = {"owner_row_invariant"}};
   // The initial backend domain authenticates unchanged primitive preparation.
   // A fused preparation is an explicit refusal control below, not a positive.
   if (!fuse_preparation) policy.disabled = {"rms_norm_mul"};
@@ -404,12 +397,13 @@ TEST(GgmlOwnerProductsTest, SuppliedAddressesKeepOffsetsAndRefuseOverlapOrMisali
   Plan(f, registry);
   ASSERT_TRUE(f.plan);
   constexpr std::uint64_t activation_base = 0x200000000ULL, weight_base = 0x400000000ULL;
+  const auto measured = Lower(f, registry);
+  ASSERT_TRUE(measured) << Failed(measured, &kg::KernelFailure::detail).value_or("");
   const auto placed = [&](ir::TensorId t) {
     const auto root = f.plan->graph.root(t);
-    const auto at = std::ranges::find(f.plan->placement.offsets, root,
-                                      &std::pair<ir::TensorId, std::uint64_t>::first);
-    EXPECT_NE(at, f.plan->placement.offsets.end());
-    return at == f.plan->placement.offsets.end() ? 0 : activation_base + at->second;
+    const auto at = std::ranges::find(measured->physical_roots, root, &kg::PhysicalRoot::root);
+    EXPECT_NE(at, measured->physical_roots.end());
+    return at == measured->physical_roots.end() ? 0 : activation_base + at->offset;
   };
   const auto input_base = placed(f.plan->tensors[f.step.owner_products.products()[0].input.v]);
   const auto output_base = placed(f.plan->owner_products[0].result);
@@ -539,8 +533,15 @@ Fixture MakeSelectedHc(std::span<const std::uint32_t> widths, std::uint64_t widt
                   {.tensor = up, .ref = ur, .parts = {{"up", llmp::format::PartRole::kData}}}};
   return {.step = std::move(step), .shape = std::move(shape), .indices = stores};
 }
-void PlanSelectedHc(Fixture& f, const ex::Registry& registry, bool enabled = true) {
-  pl::Policy policy{.enabled = {"hc_prep"}, .disabled = {"rms_norm_mul"}};
+void PlanSelectedHc(Fixture& f, const ex::Registry& registry, bool enabled = true,
+                    bool numerical_candidate = true) {
+  // Keep the wide HC fallback's normalization primitive. The independent
+  // exact hc_mix fusion would otherwise replace that MUL with HcNorm.
+  pl::Policy policy{.enabled = {"hc_prep"}, .disabled = {"hc_mix", "rms_norm_mul"}};
+  // This synthetic arithmetic audit proposes only the HC BF16 boundary; it
+  // supplies no source-quality grant. The no-proposal control stays primitive.
+  if (numerical_candidate)
+    policy.numerical_candidates = {pl::NumericalChange::kBf16HyperConnectionIntermediates};
   if (enabled)
     policy.enabled.push_back("owner_row_invariant");
   else
@@ -581,7 +582,8 @@ void CheckHcProducts(const Fixture& f, const kg::LoweredStep& lowered, const ex:
             fused ? 2 : 0);
   std::vector<const kg::PlanStep*> operations;
   for (const auto& operation : lowered.plan.steps)
-    if (operation.operation == ex::Operation::kMatMul) operations.push_back(&operation);
+    if (operation.operation == llmp::ir::Primitive(llmp::ir::Op::kMatMul))
+      operations.push_back(&operation);
   ASSERT_EQ(operations.size(), 4U);
   products.clear();
   for (std::size_t i = 0; i < operations.size(); ++i) {
@@ -649,6 +651,26 @@ void CheckHcProducts(const Fixture& f, const kg::LoweredStep& lowered, const ex:
       EXPECT_EQ(node->src[1]->op, i % 2 == 0 ? GGML_OP_MUL : GGML_OP_UNARY);
     }
     products.push_back(node);
+  }
+}
+
+TEST(GgmlOwnerProductsTest, HcArithmeticRequiresAnExplicitProposalOrGrant) {
+  const auto registry = Registry();
+  for (const bool proposal : {false, true}) {
+    auto f = MakeSelectedHc(std::array{3U, 3U});
+    PlanSelectedHc(f, registry, true, proposal);
+    ASSERT_TRUE(f.plan);
+    EXPECT_EQ(std::ranges::count_if(
+                  f.plan->graph.nodes(),
+                  [](const auto& n) { return n.key == ir::Fused(ir::FusedKind::kHcPrep); }),
+              proposal ? 2 : 0);
+    const auto proofs = std::ranges::count_if(f.plan->applied, [](const auto& a) {
+      return a.numerical_candidate &&
+             a.numerical_change == pl::NumericalChange::kBf16HyperConnectionIntermediates;
+    });
+    EXPECT_EQ(proofs, proposal ? 2 : 0);
+    auto lowered = Lower(f, registry);
+    ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
   }
 }
 

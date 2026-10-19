@@ -4,6 +4,7 @@
 #include "engine/slot_lifecycle.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <format>
 #include <string>
@@ -210,6 +211,108 @@ Status SlotLifecycle::Bind(std::vector<ExtentId> shared, std::vector<const Paged
     bound_ = false;
     return refreshed;
   }
+  return {};
+}
+
+Status SlotLifecycle::TryExtendShared(std::span<const ExtentId> additional, bool* over_budget) {
+  if (over_budget) *over_budget = false;
+  if (!bound_ || released_ || cohort_.faulted()) return Refuse("shared growth needs usable slots");
+  if (!node_.InRequest(stream_) && std::popcount(cohort_.active()) > 1) {
+    cohort_.Fault(AllStates());
+    return Refuse("multiple active owners need a held request before shared growth");
+  }
+  // Pay before copying either the old or candidate closure inventory. Bounds
+  // include geometrically grown temporary vectors, closure extent/generation
+  // pairs, domain-map nodes and allocation headers. State reservations bound
+  // initialized extents without allocating a temporary extent list.
+  std::uint64_t shared = 0, states = 0, bytes = 0, state_bytes = 0;
+  if (__builtin_add_overflow(std::uint64_t{shared_.size()}, std::uint64_t{additional.size()},
+                             &shared))
+    return Refuse("shared growth inventory overflows");
+  for (const Slot& slot : slots_)
+    for (const Stage& stage : slot.stages)
+      for (std::size_t region = 0; region < stage.live->regions(); ++region)
+        if (__builtin_add_overflow(states, stage.live->mapped_bytes(region) / kPagedExtent,
+                                   &states))
+          return Refuse("shared growth state inventory overflows");
+  // Eight shared and sixteen state extent/generation units cover simultaneous
+  // candidate/output inventories plus the temporary lists in Cohort::Build.
+  constexpr auto unit = sizeof(decltype(catalog::Closure::extents)::value_type);
+  constexpr std::uint64_t metadata = (2 * kMaxRequestSlots + 24) * 256;
+  if (__builtin_mul_overflow(shared, std::uint64_t{8 * unit}, &bytes) ||
+      __builtin_mul_overflow(states, std::uint64_t{16 * unit}, &state_bytes) ||
+      __builtin_add_overflow(bytes, state_bytes, &bytes) ||
+      __builtin_add_overflow(bytes, metadata, &bytes))
+    return Refuse("shared growth metadata overflows");
+  auto paid = node_.PrepayHost(bytes);
+  if (!paid) {
+    if (over_budget) *over_budget = true;
+    return Refuse(paid.error());
+  }
+  auto payment = std::make_shared<HostPayment>(std::move(*paid));
+  std::vector<ExtentId> next;
+  next.reserve(static_cast<std::size_t>(shared));
+  next.insert(next.end(), shared_.begin(), shared_.end());
+  next.insert(next.end(), additional.begin(), additional.end());
+  std::ranges::sort(next);
+  next.erase(std::ranges::unique(next).begin(), next.end());
+  RequestCohort::Closures candidate;
+  auto built = node_.Call(
+      [&]() -> Status {
+        std::array<std::vector<ExtentId>, kMaxRequestSlots> extents;
+        std::array<const std::vector<ExtentId>*, kMaxRequestSlots> of{};
+        for (const Slot& slot : slots_) {
+          if (slot.spilled) continue;
+          for (const Stage& stage : slot.stages) {
+            const auto live = stage.live->extents();
+            extents[slot.index].insert(extents[slot.index].end(), live.begin(), live.end());
+          }
+          of[slot.index] = &extents[slot.index];
+        }
+        auto made = cohort_.Build(node_.catalog(), next, of, cohort_.active());
+        if (!made) return Refuse(made.error());
+        candidate = std::move(*made);
+        return {};
+      },
+      "preparing grown workspace closures");
+  if (!built) return built;
+  if (node_.InRequest(stream_)) {
+    bool capacity = false;
+    if (auto admitted = node_.TryRefreshRequest(stream_, candidate.execution, &capacity);
+        !admitted) {
+      if (over_budget) *over_budget = capacity;
+      if (!capacity) cohort_.Fault(AllStates());
+      return admitted;
+    }
+  } else {
+    // A single active owner may execute without a persistent request lease.
+    // Its new workspace still needs actual physical admission before any
+    // closure or high-water publication. Acquire protects the stable shared
+    // workspace and refuses while earlier device work is unretired.
+    scheduler::AcquireReport report;
+    bool capacity = false;
+    if (auto admitted = node_.Acquire(candidate.execution, report,
+                                      "admitting a single-owner workspace", &capacity);
+        !admitted) {
+      if (over_budget) *over_budget = capacity;
+      if (!capacity) cohort_.Fault(AllStates());
+      return admitted;
+    }
+  }
+  // No failure follows replacement. Old vectors die before their old payment.
+  {
+    auto old_shared = std::move(shared_);
+    auto old_everything = std::move(everything_);
+    auto old_fence = std::move(fence_);
+    auto old_execution = std::move(execution_);
+    shared_ = std::move(next);
+    everything_ = std::move(candidate.everything);
+    fence_ = std::move(candidate.fence);
+    execution_ = std::move(candidate.execution);
+    for (Slot& slot : slots_) slot.fence = std::move(candidate.slot_fences[slot.index]);
+  }
+  shared_payment_ = std::move(payment);
+  places_clean_.reset();
   return {};
 }
 

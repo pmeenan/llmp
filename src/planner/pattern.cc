@@ -49,7 +49,22 @@ bool SameShape(const ir::TensorDesc& a, const ir::TensorDesc& b) {
 
 bool DefaultProduct(const ir::Node& n) {
   const auto p = n.Params<ir::ProductParams>();
-  return p.accumulate == ir::Accumulate::kDefault && p.hint == ir::ProductHint::kNone;
+  return p.accumulate == ir::Accumulate::kDefault && p.hint == ir::ProductHint::kNone &&
+         p.arithmetic == ir::ProductArithmetic::kImplementation;
+}
+
+// Round-1 precision rewrites keep an earlier preparation's explicit BF16
+// arithmetic seal. Only the same already-BF16 operands and authenticated F32
+// accumulation contract may carry it through; emitters preserve ProductParams.
+// The changed output storage still requires the pattern's numerical authority.
+bool Bf16Round1Product(const MatchContext& c, const ir::Node& node) {
+  if (DefaultProduct(node)) return true;
+  const auto params = node.Params<ir::ProductParams>();
+  return params.accumulate == ir::Accumulate::kDefault && params.hint == ir::ProductHint::kNone &&
+         params.arithmetic == ir::ProductArithmetic::kBf16F32 &&
+         c.tensor(node.src[0]).format.encoding == format::Encoding::kBF16 &&
+         c.tensor(node.src[1]).format.encoding == format::Encoding::kBF16 &&
+         c.view().IncumbentArithmetic(c.graph(), node) == ir::ProductArithmetic::kBf16F32;
 }
 
 // The candidates for a result of `key` over `sources` (absent ones
@@ -533,7 +548,7 @@ std::optional<Match> QkAttentionMatch(const MatchContext& c, NodeId anchor) {
     const NodeId at = g.producer(t);
     const ir::Node& n = c.node(at);
     if (c.taken(at) || c.OnlyReader(t) != reader || n.key != Prim(Op::kMatMul) ||
-        !DefaultProduct(n) || !bf16_weight(n.src[0]) ||
+        !Bf16Round1Product(c, n) || !bf16_weight(n.src[0]) ||
         c.tensor(n.out[0]).format.encoding != format::Encoding::kF32)
       return std::nullopt;
     const ir::TensorDesc& x = c.tensor(n.src[1]);
@@ -807,9 +822,9 @@ std::optional<SplitSide> SplitSideOf(const MatchContext& c, TensorId v, NodeId r
   return side;
 }
 
-// Whether only products of BF16 weights read `t` (through reshapes) as
-// their input, each with a candidate from a BF16 input: then it may be
-// recorded in BF16.
+// Every observer must already round this input to BF16 under its selected
+// numerical recipe. A possible BF16 consumer alone is not authority.
+// Copy() transfers the fact to each changed product's final selection.
 bool OnlyBf16Products(const MatchContext& c, TensorId t) {
   std::vector<TensorId> frontier{t};
   while (!frontier.empty()) {
@@ -832,9 +847,13 @@ bool OnlyBf16Products(const MatchContext& c, TensorId t) {
       x.nb = ir::NaturalStrides(x.format);
       x.view_of = {};
       x.view_offset = 0;
+      if (c.view().IncumbentArithmetic(c.graph(), n) != ir::ProductArithmetic::kBf16F32)
+        return false;
+      auto params = n.Params<ir::ProductParams>();
+      params.arithmetic = ir::ProductArithmetic::kBf16F32;
       const std::array<const ir::TensorDesc*, 2> src{&w, &x};
       const std::array<const ir::TensorDesc*, 1> o{&c.tensor(n.out[0])};
-      if (c.view().Candidates(n.key, src, o, n.params).empty()) return false;
+      if (c.view().Candidates(n.key, src, o, ir::ToBytes(params)).empty()) return false;
     }
   }
   return true;
@@ -845,9 +864,9 @@ struct SplitModulatePlan final : MatchDetail {
 };
 
 // split_modulate: a layer norm times one plus a conditioning split between
-// two row ranges (SplitSideOf): fused.layer_norm_modulate_split, in BF16
-// where only products of BF16 weights read it (rounding there: a policy
-// enables it, the image's).
+// two row ranges (SplitSideOf): fused.layer_norm_modulate_split. BF16
+// output is legal only when all selected consumers already perform that
+// same conversion; otherwise the exact F32 result remains.
 std::optional<Match> SplitModulateMatch(const MatchContext& c, NodeId anchor) {
   const ir::Node& m = c.node(anchor);
   if (m.key != Prim(Op::kMul) || c.taken(anchor)) return std::nullopt;
@@ -1096,10 +1115,20 @@ std::optional<Match> SplitGatedResidualModulateMatch(const MatchContext& c, Node
     }
     if (readers) {
       const std::array<const ir::TensorDesc*, 2> o{&bf16, &modulated};
-      plan->bf16_sum =
+      const bool supported =
           !c.view()
                .Candidates(ir::Fused(FusedKind::kGatedResidualModulateSplit), src, o, match.params)
                .empty();
+      if (supported) {
+        if (c.view().Qualification(NumericalChange::kBf16ResidualCarry, c.graph(), m) ||
+            std::ranges::contains(c.view().policy().numerical_candidates,
+                                  NumericalChange::kBf16ResidualCarry)) {
+          plan->bf16_sum = true;
+          match.numerical_change = NumericalChange::kBf16ResidualCarry;
+        } else {
+          match.unqualified_numerical = NumericalChange::kBf16ResidualCarry;
+        }
+      }
     }
   }
   match.detail = std::move(plan);
@@ -1135,7 +1164,7 @@ void SplitGatedResidualModulateRewrite(RewriteContext& c, const Match& m, std::s
 // input (rounding there: a policy enables it, the image's).
 std::optional<Match> Bf16BranchMatch(const MatchContext& c, NodeId anchor) {
   const ir::Node& p = c.node(anchor);
-  if (p.key != Prim(Op::kMatMul) || c.taken(anchor) || !DefaultProduct(p)) return std::nullopt;
+  if (p.key != Prim(Op::kMatMul) || c.taken(anchor)) return std::nullopt;
   const TensorId branch = p.out[0];
   const auto reader = c.OnlyReader(branch);
   if (!reader || c.node(*reader).key != ir::Fused(FusedKind::kGatedResidualSplit) ||
@@ -1148,6 +1177,7 @@ std::optional<Match> Bf16BranchMatch(const MatchContext& c, NodeId anchor) {
       w.is_view() || c.producer(p.src[0]).key != Prim(Op::kWeight) || !ir::IsContiguous(x) ||
       (x.format.encoding != format::Encoding::kF32 && x.format.encoding != format::Encoding::kBF16))
     return std::nullopt;
+  if (!Bf16Round1Product(c, p)) return std::nullopt;
   const auto in_bf16 = [](ir::TensorDesc d) {
     d.format.encoding = format::Encoding::kBF16;
     d.nb = ir::NaturalStrides(d.format);
@@ -1525,9 +1555,16 @@ std::optional<Match> PreparedInputsMatch(const MatchContext& c, NodeId anchor) {
         std::ranges::contains(products, r)) {
       continue;
     }
+    if (c.view().IncumbentArithmetic(c.graph(), q) != ir::ProductArithmetic::kGgmlQ8_1F32 ||
+        c.view().Qualification(NumericalChange::kQ8VectorReduction, c.graph(), q) ||
+        std::ranges::contains(c.view().policy().numerical_candidates,
+                              NumericalChange::kQ8VectorReduction))
+      continue;
+    auto params = q.Params<ir::ProductParams>();
+    params.arithmetic = ir::ProductArithmetic::kGgmlQ8_1F32;
     const std::array<const ir::TensorDesc*, 2> s = {&c.tensor(q.src[0]), &pd};
     const std::array<const ir::TensorDesc*, 1> o = {&c.tensor(q.out[0])};
-    if (!c.view().Candidates(Prim(Op::kMatMul), s, o, q.params).empty()) {
+    if (!c.view().Candidates(Prim(Op::kMatMul), s, o, ir::ToBytes(params)).empty()) {
       products.push_back(r);
     }
   }
@@ -2092,8 +2129,9 @@ void PreparedRewrite(RewriteContext& c, const Match& m, std::size_t index) {
     c.local()[0] =
         b.Prepare(c.Map(m.sources.front()), format::Encoding::kQ8_1, format::Layout::kGgmlBlocks);
   }
-  c.Set(product.out[0],
-        b.MatMul(c.Map(product.src[0]), c.local()[0], product.Params<ir::ProductParams>()));
+  auto params = product.Params<ir::ProductParams>();
+  params.arithmetic = ir::ProductArithmetic::kGgmlQ8_1F32;
+  c.Set(product.out[0], b.MatMul(c.Map(product.src[0]), c.local()[0], params));
 }
 
 // owner_attention (OwnerPlan): the masks kept, and after the last one each
@@ -2226,177 +2264,158 @@ constexpr std::array kRouteReduce = {ir::Primitive(Op::kRoute), ir::Primitive(Op
 // The table (see the header): its order is priority; where two patterns
 // meet at a node (the RMS norm), the order PlanGraph tries them today.
 constexpr std::array kPatterns = {
-    // The fast forms' fusions (fusions.h), opt-in: a model's policy enables
-    // them. Before the norms', which they take precedence over where a
-    // policy enables both.
+    // Closed structural fusions are available by default. Their own checks
+    // and replacement capability queries preserve the numerical, state and
+    // automatic-performance contracts before a graph is changed.
     Pattern{.name = "dsv4_lid_mask",
             .result = ir::Fused(FusedKind::kDsv4LidMask),
             .anchors = kSelectedMaskAnchors,
             .match = &fusions::Dsv4LidMaskMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "state_bank_attention",
             .result = ir::Fused(FusedKind::kStateBankAttention),
             .anchors = kAttentionAnchors,
             .match = &fusions::StateBankAttentionMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "dsv4_qhead",
             .result = ir::Fused(FusedKind::kDsv4QHead),
             .anchors = kRopeAnchors,
             .match = &fusions::Dsv4QHeadMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "dsv4_out_a",
             .result = ir::Fused(FusedKind::kDsv4OutA),
             .anchors = kContAnchors,
             .match = &fusions::Dsv4OutAMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "dsv4_compress",
             .result = ir::Fused(FusedKind::kDsv4Compress),
             .anchors = kPoolAnchors,
             .match = &fusions::Dsv4CompressMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "dsv4_hc_pre",
             .result = ir::Fused(FusedKind::kDsv4HcPre),
             .anchors = kMulAnchors,
             .match = &fusions::Dsv4HcPreMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "dsv4_hc_post",
             .result = ir::Fused(FusedKind::kHcNormPost),
             .anchors = kNormAnchors,
             .match = &fusions::Dsv4HcPostMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "hc_prep",
             .result = ir::Fused(FusedKind::kHcPrep),
             .anchors = kNormAnchors,
             .match = &fusions::HcPrepMatch,
             .own_checks = true,
             .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .numerical_change = NumericalChange::kBf16HyperConnectionIntermediates},
     Pattern{.name = "hc_mix",
             .result = ir::Fused(FusedKind::kHcMixNorm),
             .anchors = kNormAnchors,
             .match = &fusions::HcMixMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "hc_combine",
             .result = ir::Fused(FusedKind::kHcCombine),
             .anchors = kAddAnchors,
             .match = &fusions::HcCombineMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "gdn_conv",
             .result = ir::Fused(FusedKind::kGdnConv),
             .anchors = kGdnConvAnchors,
             .match = &fusions::GdnConvMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "gdn_gates",
             .result = ir::Fused(FusedKind::kGdnGates),
             .anchors = kAddAnchors,
             .match = &fusions::GdnGatesMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "gdn_step",
             .result = ir::Fused(FusedKind::kGdnStep),
             .anchors = kDeltaAnchors,
             .match = &fusions::GdnStepMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "gdn_norm_gate",
             .result = ir::Fused(FusedKind::kNormGate),
             .anchors = kNormAnchors,
             .match = &fusions::GdnNormGateMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "qsa_prep",
             .result = ir::Fused(FusedKind::kRmsNormMulRope),
             .anchors = kRopeAnchors,
             .match = &fusions::QsaPrepMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "qsa_pool",
             .result = ir::Fused(FusedKind::kQsaPool),
             .anchors = kStoreAnchors,
             .match = &fusions::QsaPoolMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "qsa_select",
             .result = ir::Fused(FusedKind::kQsaAttention),
             .anchors = kAttentionAnchors,
             .match = &fusions::QsaSelectMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "qsa_gate",
             .result = ir::Fused(FusedKind::kHeadGate),
             .anchors = kMulAnchors,
             .match = &fusions::QsaGateMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "moe_router",
             .result = ir::Fused(FusedKind::kMoeRouter),
             .anchors = kRouteAnchors,
             .match = &fusions::MoeRouterMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "moe_experts",
             .result = ir::Fused(FusedKind::kMoeExperts),
             .anchors = kReduceAnchors,
             .match = &fusions::MoeExpertsMatch,
             .own_checks = true,
             .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .numerical_change = NumericalChange::kNvfp4ExpertIntermediates},
     Pattern{.name = "moe_glu",
             .result = ir::Fused(FusedKind::kMoeGlu),
             .anchors = kGluAnchors,
             .match = &fusions::MoeGluMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "moe_combine",
             .result = ir::Fused(FusedKind::kMoeCombine),
             .anchors = kReduceAnchors,
             .match = &fusions::MoeCombineMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "vecq_glu",
+            .version = 2,
             .result = ir::Fused(FusedKind::kMatMulGlu),
             .anchors = kGluAnchors,
             .match = &fusions::VecQGluMatch,
             .own_checks = true,
             .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .numerical_change = NumericalChange::kQ8VectorReduction},
     Pattern{.name = "mxfp8_inputs",
             .result = ir::Primitive(Op::kPrepare),
             .anchors = kProductAnchors,
             .match = &fusions::Mxfp8InputsMatch,
             .own_checks = true,
             .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .numerical_change = NumericalChange::kMxfp8ProductInput},
     // Round 1: over round 0's fused nodes.
     Pattern{.name = "hc_fold_inputs",
             .result = ir::Fused(FusedKind::kHcFold),
@@ -2404,15 +2423,15 @@ constexpr std::array kPatterns = {
             .match = &fusions::HcFoldInputsMatch,
             .own_checks = true,
             .rewrite = &fusions::Rewrite,
-            .opt_in = true,
             .round = 1},
     Pattern{.name = "qk_attention",
+            .version = 2,
             .result = ir::Fused(FusedKind::kQkAttention),
             .anchors = kAttentionAnchors,
             .match = &QkAttentionMatch,
             .own_checks = true,
             .rewrite = &QkAttentionRewrite,
-            .opt_in = true,
+            .numerical_change = NumericalChange::kBf16AttentionIntermediates,
             .round = 1},
     Pattern{.name = "split_gated_residual_modulate",
             .version = 2,
@@ -2421,15 +2440,15 @@ constexpr std::array kPatterns = {
             .match = &SplitGatedResidualModulateMatch,
             .own_checks = true,
             .rewrite = &SplitGatedResidualModulateRewrite,
-            .opt_in = true,
             .round = 1},
     Pattern{.name = "bf16_branch",
+            .version = 2,
             .result = ir::Primitive(Op::kMatMul),
             .anchors = kProductAnchors,
             .match = &Bf16BranchMatch,
             .own_checks = true,
             .rewrite = &Bf16BranchRewrite,
-            .opt_in = true,
+            .numerical_change = NumericalChange::kBf16ProductInputAndResult,
             .round = 1},
     Pattern{.name = "bf16_inputs",
             .result = ir::Primitive(Op::kConvert),
@@ -2437,7 +2456,6 @@ constexpr std::array kPatterns = {
             .match = &fusions::Bf16InputsMatch,
             .own_checks = true,
             .rewrite = &fusions::Rewrite,
-            .opt_in = true,
             .round = 1},
     Pattern{.name = "bf16_rows",
             .result = ir::Primitive(Op::kMatMul),
@@ -2445,22 +2463,21 @@ constexpr std::array kPatterns = {
             .match = &fusions::Bf16RowsMatch,
             .own_checks = true,
             .rewrite = &fusions::Rewrite,
-            .opt_in = true,
+            .numerical_change = NumericalChange::kBf16ProductInputAndResult,
             .round = 1},
     Pattern{.name = "grouped_vecq",
             .result = ir::Fused(FusedKind::kGroupedMatMul),
             .anchors = kGroupedProductAnchors,
             .match = &fusions::GroupedVecQMatch,
             .own_checks = true,
-            .rewrite = &fusions::Rewrite,
-            .opt_in = true},
+            .rewrite = &fusions::Rewrite},
     Pattern{.name = "vecq_inputs",
+            .version = 2,
             .result = ir::Primitive(Op::kPrepare),
             .anchors = kQuantProductAnchors,
             .match = &fusions::VecQInputsMatch,
             .own_checks = true,
             .rewrite = &fusions::Rewrite,
-            .opt_in = true,
             .round = 1},
     Pattern{.name = "spatial_channel_norm",
             .result = ir::Fused(FusedKind::kSpatialChannelNorm),
@@ -2477,8 +2494,7 @@ constexpr std::array kPatterns = {
             .anchors = kNormAnchors,
             .match = &NormRopeSectionsMatch,
             .own_checks = true,
-            .rewrite = &Fused<FusedKind::kRmsNormMulRopeSections>,
-            .opt_in = true},
+            .rewrite = &Fused<FusedKind::kRmsNormMulRopeSections>},
     Pattern{.name = "rms_norm_mul_add",
             .result = ir::Fused(FusedKind::kRmsNormMulAdd),
             .anchors = kNormAnchors,
@@ -2490,34 +2506,30 @@ constexpr std::array kPatterns = {
             .anchors = kMulAnchors,
             .match = &SplitModulateMatch,
             .own_checks = true,
-            .rewrite = &SplitModulateRewrite,
-            .opt_in = true},
+            .rewrite = &SplitModulateRewrite},
     Pattern{.name = "split_gated_residual",
             .result = ir::Fused(FusedKind::kGatedResidualSplit),
             .anchors = kAddAnchors,
             .match = &SplitGatedResidualMatch,
             .own_checks = true,
-            .rewrite = &Fused<FusedKind::kGatedResidualSplit>,
-            .opt_in = true},
+            .rewrite = &Fused<FusedKind::kGatedResidualSplit>},
     Pattern{.name = "bf16_glu",
             .result = ir::Primitive(Op::kGlu),
             .anchors = kGluAnchors,
             .match = &Bf16GluMatch,
             .own_checks = true,
             .rewrite = &Bf16GluRewrite,
-            .opt_in = true},
+            .numerical_change = NumericalChange::kBf16SwiGluIntermediates},
     Pattern{.name = "float_mul_mat_glu",
             .result = ir::Fused(FusedKind::kMatMulGlu),
             .anchors = kProductAnchors,
             .match = &FloatMulMatGluMatch,
-            .rewrite = &Fused<FusedKind::kMatMulGlu>,
-            .opt_in = true},
+            .rewrite = &Fused<FusedKind::kMatMulGlu>},
     Pattern{.name = "float_mul_mat_add",
             .result = ir::Fused(FusedKind::kMatMulAdd),
             .anchors = kProductAnchors,
             .match = &FloatMulMatAddMatch,
-            .rewrite = &Fused<FusedKind::kMatMulAdd>,
-            .opt_in = true},
+            .rewrite = &Fused<FusedKind::kMatMulAdd>},
     Pattern{.name = "mul_mat_glu",
             .result = ir::Fused(FusedKind::kMatMulGlu),
             .anchors = kProductAnchors,
@@ -2554,8 +2566,8 @@ constexpr std::array kPatterns = {
             .result = ir::Fused(FusedKind::kGroupedStores),
             .anchors = kStoreAnchors,
             .match = &GroupedStoresMatch},
-    Pattern{.name = "biased_route", .kind = PatternKind::kOption, .opt_in = true},
-    Pattern{.name = "hash_route", .kind = PatternKind::kOption, .opt_in = true},
+    Pattern{.name = "biased_route", .kind = PatternKind::kOption},
+    Pattern{.name = "hash_route", .kind = PatternKind::kOption},
     Pattern{.name = "route_reduce", .kind = PatternKind::kComposite, .composites = kRouteReduce},
     Pattern{
         .name = "owner_bounded_roots", .kind = PatternKind::kOption, .parent = "owner_attention"},
@@ -2570,11 +2582,11 @@ constexpr std::array kPatterns = {
     // StepPlan::owner_row_invariant). Opt-in.
     Pattern{.name = "owner_row_invariant", .kind = PatternKind::kOption, .opt_in = true},
     // The step's builder removes its layout round trips (ir/layout.h,
-    // components/spatial.h sink_layouts). Opt-in.
-    Pattern{.name = "layout_sinking", .kind = PatternKind::kOption, .opt_in = true},
+    // components/spatial.h sink_layouts), subject to layout capability checks.
+    Pattern{.name = "layout_sinking", .kind = PatternKind::kOption},
     // split_gated_residual_modulate records a residual's sum in BF16 where
-    // only later residuals read it. Opt-in.
-    Pattern{.name = "bf16_residual", .kind = PatternKind::kOption, .opt_in = true},
+    // only later residuals read it and its numerical change is qualified.
+    Pattern{.name = "bf16_residual", .kind = PatternKind::kOption},
 };
 
 bool Anchored(const Pattern& p, Op op) { return std::ranges::contains(p.anchors, op); }
@@ -2648,8 +2660,17 @@ ir::Outputs RewriteContext::Copy(const ir::Node& node) {
                     "elements");
     return {};
   }
+  ir::ParamBytes params = node.params;
+  if (view_ && node.key == Prim(Op::kMatMul) && node.nsrc == 2 && sources[1].valid() &&
+      original_.tensor(node.src[1]).format.encoding == format::Encoding::kF32 &&
+      builder_.tensor(sources[1]).format.encoding == format::Encoding::kBF16 &&
+      view_->IncumbentArithmetic(original_, node) == ir::ProductArithmetic::kBf16F32) {
+    auto product = node.Params<ir::ProductParams>();
+    product.arithmetic = ir::ProductArithmetic::kBf16F32;
+    params = ir::ToBytes(product);
+  }
   const ir::Outputs outs =
-      builder_.Emit(node.key, node.params, sources, requested,
+      builder_.Emit(node.key, params, sources, requested,
                     node.nout > 0 ? original_.name(node.out[0]) : std::string_view());
   for (std::size_t i = 0; i < node.nout && i < outs.n; ++i) {
     Set(node.out.at(i), outs[i]);
@@ -2703,8 +2724,15 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
   struct Found {
     const Pattern* pattern = nullptr;
     Match match;
+    std::vector<NumericalProof> numerical{};
   };
   std::vector<Found> found;
+  std::vector<MissingNumericalQualification> missing_numerical;
+  const auto missing = [&](NumericalChange change, const ir::Node& node) {
+    const MissingNumericalQualification record{
+        .change = change, .component = node.component, .anchor = node.key};
+    if (!std::ranges::contains(missing_numerical, record)) missing_numerical.push_back(record);
+  };
   // The table's order is priority: each pattern over the whole graph, in
   // node order, before the next.
   for (const Pattern& p : kPatterns) {
@@ -2728,8 +2756,88 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
            ((p.result.op == Op::kFused && !ElidesF32(context, *m)) || !KeepsOrder(context, *m)))) {
         continue;
       }
+      const auto change = m->numerical_change ? m->numerical_change : p.numerical_change;
+      std::vector<NumericalProof> numerical;
+      if (change) {
+        for (const auto site : m->unqualified_sites) missing(*change, graph.node(site));
+        const std::array anchor_site{id};
+        const std::span<const NodeId> sites = m->numerical_sites.empty()
+                                                  ? std::span<const NodeId>(anchor_site)
+                                                  : std::span<const NodeId>(m->numerical_sites);
+        bool authorized = true;
+        for (const auto site : sites) {
+          const auto& recipient = graph.node(site);
+          for (std::uint8_t operand = 0; operand < SelectionView::NumericalOperands(recipient);
+               ++operand) {
+            const auto grant = view.Qualification(*change, graph, recipient, operand);
+            if (!grant) {
+              missing(*change, recipient);
+              if (!std::ranges::contains(view.policy().numerical_candidates, *change)) {
+                authorized = false;
+                continue;
+              }
+            }
+            std::array<const ir::TensorDesc*, ir::kMaxSources> sources{};
+            std::array<const ir::TensorDesc*, ir::kMaxOutputs> outputs{};
+            for (std::size_t j = 0; j < recipient.nsrc; ++j)
+              if (recipient.src[j].valid()) sources[j] = &graph.tensor(recipient.src[j]);
+            for (std::size_t j = 0; j < recipient.nout; ++j)
+              outputs[j] = &graph.tensor(recipient.out[j]);
+            auto actual = ShapeOfNode(recipient.key, std::span(sources).first(recipient.nsrc),
+                                      std::span(outputs).first(recipient.nout));
+            if (SelectionView::NumericalOperands(recipient) == 2) {
+              const auto& weight = graph.tensor(recipient.source(operand));
+              actual.k = weight.ne(0);
+              actual.n = weight.ne(1);
+            }
+            NumericalProof proof{.site = site,
+                                 .weight_operand = operand,
+                                 .actual = actual,
+                                 .candidate = !grant.has_value()};
+            const bool product = recipient.key == ir::Primitive(Op::kMatMul) ||
+                                 recipient.key == ir::Primitive(Op::kMatMulId) ||
+                                 SelectionView::NumericalOperands(recipient) == 2;
+            proof.observed.active_stage = view.policy().active_stage;
+            if (product) {
+              if (const auto weight =
+                      SelectionView::ResolveWeightOperand(graph, recipient, operand)) {
+                proof.observed.weight = weight->reference;
+                const auto& leaf = graph.tensor(weight->leaf);
+                const auto& actual_weight = graph.tensor(recipient.source(operand));
+                const std::size_t input_at =
+                    SelectionView::NumericalOperands(recipient) == 2 ? 2U : 1U;
+                const auto& input = graph.tensor(recipient.source(input_at));
+                proof.observed.operand_format = actual_weight.format;
+                proof.observed.operand_strides = actual_weight.nb;
+                proof.observed.leaf_format = leaf.format;
+                proof.observed.leaf_strides = leaf.nb;
+                proof.observed.input_format = input.format;
+                proof.observed.input_strides = input.nb;
+              }
+            }
+            if (grant) {
+              proof.qualification = *grant;
+              proof.grouped_projection = recipient.key == ir::Primitive(Op::kMatMul) &&
+                                         operand == 0 &&
+                                         fusions::GroupedProductOf(graph, site).has_value();
+            } else {
+              proof.qualification.change = *change;
+              proof.qualification.stage = view.policy().active_stage;
+              proof.qualification.component = recipient.component;
+              proof.qualification.anchor =
+                  SelectionView::NumericalOperands(recipient) == 2
+                      ? ir::Primitive(recipient.key.fused == FusedKind::kMatMulGlu ? Op::kMatMul
+                                                                                   : Op::kMatMulId)
+                      : recipient.key;
+            }
+            numerical.push_back(std::move(proof));
+          }
+        }
+        if (!authorized) continue;
+      }
+      if (m->unqualified_numerical) missing(*m->unqualified_numerical, node);
       context.Take(m->nodes);
-      found.push_back({.pattern = &p, .match = std::move(*m)});
+      found.push_back({.pattern = &p, .match = std::move(*m), .numerical = std::move(numerical)});
     }
   }
   // Recorded in node order (of each match's first node).
@@ -2746,10 +2854,24 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
   std::vector<Applied> applied(found.size());
   std::vector<NodeId> from;
   std::vector<std::vector<TensorId>> locals(found.size());
-  RewriteContext rc(graph, b, tensors);
+  RewriteContext rc(graph, b, tensors, &view);
   for (std::size_t f = 0; f < found.size(); ++f) {
     applied[f].pattern = found[f].pattern->name;
     applied[f].replaced = found[f].match.nodes;
+    applied[f].numerical_proofs = std::move(found[f].numerical);
+    if (!applied[f].numerical_proofs.empty()) {
+      const auto& first = applied[f].numerical_proofs.front().qualification;
+      applied[f].numerical_change = first.change;
+      applied[f].numerical_evidence = first.evidence;
+      applied[f].numerical_source = first.source;
+      applied[f].numerical_semantic = first.semantic;
+      applied[f].numerical_candidate =
+          std::ranges::any_of(applied[f].numerical_proofs, &NumericalProof::candidate);
+      applied[f].numerical_incumbent =
+          std::ranges::all_of(applied[f].numerical_proofs, [](const auto& proof) {
+            return !proof.candidate && proof.qualification.incumbent_recipe;
+          });
+    }
   }
   for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
     const std::size_t before = b.node_count();
@@ -2784,7 +2906,8 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
   return Rewritten{.graph = std::move(*g),
                    .applied = std::move(applied),
                    .from = std::move(from),
-                   .tensors = std::move(tensors)};
+                   .tensors = std::move(tensors),
+                   .missing_numerical = std::move(missing_numerical)};
 }
 
 }  // namespace
@@ -2817,7 +2940,14 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
   // The maps composed: the primitive graph's tensors and nodes through
   // round 0's graph into round 1's; round 0's nodes it made, as round 1
   // copied them.
-  Rewritten out{.graph = std::move(second->graph), .applied = {}, .from = {}, .tensors = {}};
+  Rewritten out{.graph = std::move(second->graph),
+                .applied = {},
+                .from = {},
+                .tensors = {},
+                .missing_numerical = std::move(first->missing_numerical)};
+  for (const auto& missing : second->missing_numerical)
+    if (!std::ranges::contains(out.missing_numerical, missing))
+      out.missing_numerical.push_back(missing);
   out.tensors.assign(first->tensors.size(), TensorId{});
   for (std::size_t t = 0; t < first->tensors.size(); ++t) {
     const TensorId mid = first->tensors[t];
@@ -2844,6 +2974,7 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
   // Round 1's: its replaced nodes as the primitive nodes they stood for.
   for (Applied& a : second->applied) {
     for (NodeId& r : a.replaced) r = first->from.at(r.v);
+    for (auto& proof : a.numerical_proofs) proof.site = first->from.at(proof.site.v);
     out.applied.push_back(std::move(a));
   }
   return out;

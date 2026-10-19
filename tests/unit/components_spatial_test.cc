@@ -15,11 +15,14 @@
 #include <utility>
 #include <vector>
 
+#include "base/json.h"
 #include "components/spatial.h"
+#include "components/step.h"
 #include "engine/graph_plan.h"
 #include "execution/registry.h"
 #include "expected_error.h"
 #include "image_family.h"
+#include "ir/builder.h"
 #include "kernels/reference/exec.h"
 #include "spec/image_spatial.h"
 
@@ -69,6 +72,322 @@ struct Budget {
   }
 };
 constexpr std::array kOwners{SpatialOwner{1, {3, 2, 2, 1}}, SpatialOwner{4, {2, 3, 2, 1}}};
+
+class ReportProbeProgram final : public kernels::StepProgram {
+ public:
+  explicit ReportProbeProgram(int* alive = nullptr, bool unstable = false,
+                              unsigned* calls = nullptr)
+      : alive_(alive), unstable_(unstable), calls_(calls) {
+    if (alive_) ++*alive_;
+  }
+  ~ReportProbeProgram() override {
+    if (alive_) --*alive_;
+  }
+  std::uint64_t scratch_bytes() const override { return 16; }
+  std::uint64_t host_bytes() const override { return 100; }
+  std::uint64_t launches() const override { return 2; }
+  std::span<const kernels::InputSlot> inputs() const override { return {}; }
+  std::span<const kernels::OutputSlot> outputs() const override { return {}; }
+  std::span<const kernels::TensorUse> tensors() const override { return {}; }
+  std::expected<void, kernels::StepFailure> Bind(kernels::StepLaunch&) override { return {}; }
+  std::expected<void, kernels::StepFailure> Run(kernels::StepLaunch&,
+                                                providers::NativeStream) const override {
+    return {};
+  }
+  void ReportPlan(const kernels::PlanReportSink& sink) const override {
+    if (sink) {
+      if (calls_) ++*calls_;
+      if (unstable_) {
+        sink(report_calls_++ == 0 ? "x" : "xx");
+        return;
+      }
+      sink(R"({"kind":"test_physical","physical_activation_bytes":16})");
+    }
+  }
+  kernels::PlanCoverage plan_coverage() const override {
+    return {.logical_activation_bytes = 32, .physical_activation_bytes = 16};
+  }
+
+ private:
+  int* alive_;
+  bool unstable_;
+  unsigned* calls_;
+  mutable unsigned report_calls_ = 0;
+};
+class ReportProbeOwner final : public kernels::BackendOwner {
+ public:
+  explicit ReportProbeOwner(const execution::Registry& registry) {
+    table.registry = &registry;
+    table.lower = [this](const kernels::LowerInput&)
+        -> std::expected<std::unique_ptr<kernels::StepProgram>, std::string> {
+      return std::make_unique<ReportProbeProgram>(&alive, unstable, &report_calls);
+    };
+  }
+  const kernels::StepBackend& backend() const override { return table; }
+  bool Charge(std::uint64_t bytes) const override {
+    if (bytes > limit - used) return false;
+    used += bytes;
+    ++charges;
+    return true;
+  }
+  void Release(std::uint64_t bytes) const override {
+    EXPECT_LE(bytes, used);
+    used -= bytes;
+    ++releases;
+  }
+  std::expected<execution::BackendDeclaration, std::string> Ready() const override {
+    return execution::BackendDeclaration{};
+  }
+  kernels::StepBackend table;
+  std::uint64_t limit = UINT64_MAX;
+  mutable std::uint64_t used = 0, charges = 0, releases = 0;
+  int alive = 0;
+  unsigned report_calls = 0;
+  bool unstable = false;
+};
+TEST(SpatialComponentsTest, ExactReportFundingTransfersOrReleasesAcrossEveryFailurePath) {
+  ir::Builder builder;
+  builder.Output(builder.Fill(ir::ShapeOf({4}), 1.0F));
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph);
+  auto registry = execution::Registry::Create({execution::Implementation{
+      .name = "test.fill",
+      .operation = ir::Primitive(ir::Op::kFill),
+      .source = "test",
+      .revision = "test",
+      .build = "host",
+      .variant = "checked",
+      .capability = execution::Capability{.op = ir::Primitive(ir::Op::kFill)}}});
+  ASSERT_TRUE(registry);
+  auto owner = std::make_shared<ReportProbeOwner>(*registry);
+  engine::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), {}};
+  const auto build = [&]() {
+    return engine::BuildComponentProgram(io, owner->backend(), {}, {}, {}, std::nullopt, {}, owner);
+  };
+  auto measured = build();
+  ASSERT_TRUE(measured) << Failed(measured).value_or("");
+  EXPECT_GT(owner->used, 0U);
+  EXPECT_EQ(owner->report_calls, 0U);
+  EXPECT_EQ(owner->alive, 1);
+  measured->reset();
+  EXPECT_EQ(owner->used, 0U);
+  EXPECT_EQ(owner->alive, 0);
+  auto installed = build();
+  ASSERT_TRUE(installed);
+  const auto host = (*installed)->host_bytes();
+  (*installed)->ConstructionPaid();
+  EXPECT_EQ(owner->used, 0U);
+  EXPECT_EQ(owner->alive, 1);
+  EXPECT_EQ((*installed)->host_bytes(), host);
+  (*installed)->ConstructionPaid();
+  installed->reset();
+  EXPECT_EQ(owner->used, 0U);
+  EXPECT_EQ(owner->alive, 0);
+  owner->limit = 0;
+  EXPECT_FALSE(build());
+  EXPECT_EQ(owner->used, 0U);
+  EXPECT_EQ(owner->alive, 0);
+  owner->limit = UINT64_MAX;
+  owner->unstable = true;
+  auto lazy = build();
+  ASSERT_TRUE(lazy);  // Physical reports are never counted/serialized at compile.
+  EXPECT_EQ(owner->report_calls, 0U);
+  std::string first, second;
+  (*lazy)->StreamPlanReport([&](std::string_view part) { first.append(part); });
+  (*lazy)->StreamPlanReport([&](std::string_view part) { second.append(part); });
+  EXPECT_EQ(owner->report_calls, 2U);
+  EXPECT_NE(first, second);  // Each request consults the physical inventory.
+  lazy->reset();
+  EXPECT_EQ(owner->used, 0U);
+  EXPECT_EQ(owner->alive, 0);
+  EXPECT_EQ(owner->charges, owner->releases);
+}
+
+TEST(SpatialComponentsTest, UndeclaredReportsRequireAnIndependentRetainedPayer) {
+  ir::Builder builder;
+  builder.Output(builder.Fill(ir::ShapeOf({4}), 1.0F));
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph);
+  auto registry = execution::Registry::Create({execution::Implementation{
+      .name = "test.fill",
+      .operation = ir::Primitive(ir::Op::kFill),
+      .source = "test",
+      .revision = "test",
+      .build = "host",
+      .variant = "checked",
+      .capability = execution::Capability{.op = ir::Primitive(ir::Op::kFill)}}});
+  ASSERT_TRUE(registry);
+  auto probe = std::make_shared<ReportProbeOwner>(*registry);
+  auto backend = probe->backend();  // Deliberately no BackendOwner/declaration.
+  engine::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), {}};
+  const auto build = [&] { return engine::BuildComponentProgram(io, backend, {}, {}, {}); };
+  auto absent = build();
+  ASSERT_FALSE(absent);
+  EXPECT_NE(absent.error().find("paid construction funder"), std::string::npos);
+  EXPECT_EQ(probe->alive, 0);
+  EXPECT_EQ(probe->charges, 0U);
+  auto payer = std::make_shared<kernels::ConstructionFunder>(
+      kernels::ConstructionFunder{.charge = [probe](std::uint64_t n) { return probe->Charge(n); },
+                                  .release = [probe](std::uint64_t n) { probe->Release(n); }});
+  backend.construction_funder = payer;
+  probe->limit = 0;
+  auto refused = build();
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().find("could not be funded"), std::string::npos);
+  EXPECT_EQ(probe->used, 0U);
+  EXPECT_EQ(probe->alive, 0);
+  probe->limit = UINT64_MAX;
+  auto abandoned = build();
+  ASSERT_TRUE(abandoned) << Failed(abandoned).value_or("");
+  EXPECT_GT(probe->used, 0U);
+  backend.construction_funder.reset();
+  payer.reset();  // Only the uninstalled returned program retains its payer.
+  abandoned->reset();
+  EXPECT_EQ(probe->used, 0U);
+  EXPECT_EQ(probe->alive, 0);
+  EXPECT_EQ(probe->charges, probe->releases);
+}
+
+TEST(SpatialComponentsTest, RecordEventsFrameLogicalAndPhysicalJsonWithoutEagerSerialization) {
+  ir::Builder builder;
+  builder.Output(builder.Fill(ir::ShapeOf({4}), 1.0F));
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph);
+  auto registry = execution::Registry::Create({execution::Implementation{
+      .name = "test.fill",
+      .operation = ir::Primitive(ir::Op::kFill),
+      .source = "test",
+      .revision = "test",
+      .build = "host",
+      .variant = "checked",
+      .capability = execution::Capability{.op = ir::Primitive(ir::Op::kFill)}}});
+  ASSERT_TRUE(registry);
+  auto owner = std::make_shared<ReportProbeOwner>(*registry);
+  engine::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), {}};
+  auto program =
+      engine::BuildComponentProgram(io, owner->backend(), {}, {}, {}, std::nullopt, {}, owner);
+  ASSERT_TRUE(program);
+  EXPECT_EQ(owner->report_calls, 0U);
+  (*program)->ReportPlanRecords({});
+  EXPECT_EQ(owner->report_calls, 0U);
+  bool open = false;
+  unsigned begins = 0, ends = 0;
+  std::string record;
+  std::vector<std::string> records;
+  (*program)->ReportPlanRecords([&](kernels::PlanReportEvent event, std::string_view fragment) {
+    if (event == kernels::PlanReportEvent::kBegin) {
+      EXPECT_FALSE(open);
+      open = true;
+      ++begins;
+      record.clear();
+    } else if (event == kernels::PlanReportEvent::kFragment) {
+      EXPECT_TRUE(open);
+      EXPECT_EQ(fragment.find('\n'), std::string_view::npos);
+      record.append(fragment);  // Consumer-owned test storage.
+    } else {
+      EXPECT_TRUE(open);
+      open = false;
+      ++ends;
+      EXPECT_TRUE(base::json::Parse(record)) << record;
+      records.push_back(record);
+    }
+  });
+  EXPECT_FALSE(open);
+  EXPECT_EQ(begins, ends);
+  EXPECT_GE(records.size(), 3U);
+  EXPECT_EQ(owner->report_calls, 1U);
+  EXPECT_NE(records.back().find("test_physical"), std::string::npos);
+  const auto paid = owner->used;
+  EXPECT_GT(paid, 0U);
+  program->reset();
+  EXPECT_EQ(owner->used, 0U);
+  EXPECT_EQ(owner->charges, owner->releases);
+}
+
+TEST(SpatialComponentsTest, CoverageCountsActualConditionalExpansionRatherThanDeclaration) {
+  ir::Builder builder;
+  builder.Output(builder.Fill(ir::ShapeOf({4}), 1.0F));
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph);
+  StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+  auto registry = execution::Registry::Create({execution::Implementation{
+      .name = "test.fill",
+      .operation = ir::Primitive(ir::Op::kFill),
+      .source = "test",
+      .revision = "test",
+      .build = "host",
+      .variant = "conditionally no expansion",
+      .capability = execution::Capability{
+          .op = ir::Primitive(ir::Op::kFill),
+          .expansion = execution::Expansion::kTransientWorkspace,
+          .expands = +[](const execution::CapabilityQuery&) { return false; }}}});
+  ASSERT_TRUE(registry);
+  auto owner = std::make_shared<ReportProbeOwner>(*registry);
+  planner::StepShape shape{
+      .stage = 0, .phase = planner::Phase::kDecode, .segments = {{.rows = 1, .read_cells = 1}}};
+  engine::GraphBuildIO io{step.graph, step.graph.inputs(), step.graph.outputs(), {}};
+  auto program =
+      engine::BuildComponentProgram(io, owner->backend(), {}, {}, {.shape = &shape},
+                                    kernels::TokenLowerInput{step, shape, 1, {}}, {}, owner);
+  ASSERT_TRUE(program) << Failed(program).value_or("");
+  EXPECT_EQ((*program)->plan_coverage().decode_expansion_rules, 0U);
+}
+
+TEST(SpatialComponentsTest, CommonCompilerRetainsPaidPrivateSafeLogicalAndPhysicalReports) {
+  ir::Builder b;
+  const auto input =
+      b.Input(ir::Dense(format::Encoding::kF32, ir::ShapeOf({4})), "private_prompt_tensor");
+  const auto constant = b.Fill(ir::ShapeOf({4}), 1234.625F);
+  b.Output(b.Add(input, constant));
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph)
+      << Failed(graph).transform([](const auto& error) { return error.detail; }).value_or("");
+  std::vector<execution::Implementation> declarations;
+  for (const auto op : {ir::Op::kFill, ir::Op::kAdd})
+    declarations.push_back({.name = std::string(ir::OpName(op)),
+                            .operation = ir::Primitive(op),
+                            .source = "reference",
+                            .revision = "test",
+                            .build = "host",
+                            .variant = "checked",
+                            .capability = execution::Capability{.op = ir::Primitive(op)}});
+  auto registry = execution::Registry::Create(std::move(declarations));
+  ASSERT_TRUE(registry);
+  kernels::StepBackend backend{
+      .registry = &*registry,
+      .lower = [](const kernels::LowerInput&)
+          -> std::expected<std::unique_ptr<kernels::StepProgram>, std::string> {
+        return std::make_unique<ReportProbeProgram>();
+      }};
+  Budget report_budget;
+  auto payment = report_budget.Payment();
+  backend.construction_funder = std::make_shared<kernels::ConstructionFunder>(
+      kernels::ConstructionFunder{payment.charge, payment.release});
+  engine::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), {}};
+  auto program = engine::BuildComponentProgram(io, backend, {}, {}, {});
+  ASSERT_TRUE(program) << Failed(program).value_or("");
+  std::string report;
+  (*program)->ReportPlan([&](std::string_view record) {
+    auto parsed = base::json::Parse(record);
+    ASSERT_TRUE(parsed) << record;
+    ASSERT_TRUE(parsed->root().find("kind"));
+    report.append(record);
+    report += '\n';
+  });
+  EXPECT_NE(report.find("selection"), std::string::npos);
+  EXPECT_NE(report.find("test_physical"), std::string::npos);
+  EXPECT_EQ(report.find("private_prompt_tensor"), std::string::npos);
+  EXPECT_EQ(report.find("1234.625"), std::string::npos);
+  EXPECT_GT((*program)->host_bytes(), 100U);
+  EXPECT_EQ((*program)->scratch_bytes(), 16U);
+  EXPECT_EQ((*program)->plan_coverage().physical_activation_bytes, 16U);
+  std::string again;
+  (*program)->ReportPlan([&](std::string_view record) {
+    again.append(record);
+    again += '\n';
+  });
+  EXPECT_EQ(again, report);
+}
 
 TEST(SpatialComponentsTest, PointwiseProductsPreserveWHCNBiasBatchAndOwnerIsolation) {
   for (const auto encoding : {format::Encoding::kF32, format::Encoding::kBF16}) {
@@ -190,7 +509,7 @@ TEST(SpatialComponentsTest, RaggedUpsampleAndChannelChangingConvolutionUseShared
     std::vector implementations{
         execution::Implementation{
             .name = "test.conv",
-            .operation = execution::Operation::kConv2d,
+            .operation = llmp::ir::Primitive(llmp::ir::Op::kConv2d),
             .source = "reference_control",
             .revision = "v1",
             .build = "host",
@@ -198,7 +517,7 @@ TEST(SpatialComponentsTest, RaggedUpsampleAndChannelChangingConvolutionUseShared
             .capability = execution::Capability{.op = ir::Primitive(ir::Op::kConv2d)}},
         execution::Implementation{
             .name = "test.upsample",
-            .operation = execution::Operation::kUpsample,
+            .operation = llmp::ir::Primitive(llmp::ir::Op::kUpsample),
             .source = "reference_control",
             .revision = "v1",
             .build = "host",

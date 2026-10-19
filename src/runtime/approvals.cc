@@ -382,6 +382,90 @@ constexpr std::uint32_t kGemma4Owners = 12;
 
 constexpr std::uint32_t kAnyOwners = std::numeric_limits<std::uint32_t>::max();
 
+// Same-source/spec historical arithmetic. These records preserve the
+// accepted recipe inside its actual envelope; they do not qualify a new
+// format, source, implementation reduction or unrelated smaller graph.
+using NC = planner::NumericalChange;
+constexpr std::array kProductAnchor{ir::Primitive(ir::Op::kMatMul)};
+constexpr std::array kNormAnchor{ir::Primitive(ir::Op::kRmsNorm)};
+constexpr std::array kReduceAnchor{ir::Primitive(ir::Op::kExpertReduce)};
+constexpr std::array kVectorAnchors{
+    ir::Primitive(ir::Op::kMatMul), ir::Primitive(ir::Op::kMatMulId), ir::Primitive(ir::Op::kGlu),
+    ir::Fused(ir::FusedKind::kMatMulGlu), ir::Fused(ir::FusedKind::kMatMulIdGlu)};
+constexpr std::array<std::uint64_t, 4> kQualifiedGgufVectorRows{1, 2, 3, 4};
+constexpr std::string_view kNativeNumericalEvidence =
+    "114d79515017285c44735f85c40795b2444d7c7694064e7f6f1ac8103b21b29a";
+constexpr std::string_view kFinalNumericalEvidence =
+    "62bcea419709532e745efe404cbe1f938ec869d1657cad0797ce42266b51f07d";
+constexpr std::array kNativeNumerics{
+    NumericalEvidenceDomain{.change = NC::kBf16HyperConnectionIntermediates,
+                            .evidence = kNativeNumericalEvidence,
+                            .component_kind = "hc.mix",
+                            .anchors = kNormAnchor,
+                            .max_context = 262144,
+                            .max_slots = 4,
+                            .max_rows = 4096,
+                            .stream_rows = true},
+    NumericalEvidenceDomain{.change = NC::kBf16ProductInputAndResult,
+                            .evidence = kNativeNumericalEvidence,
+                            .component_kind = "attention.gdn",
+                            .anchors = kProductAnchor,
+                            .max_context = 262144,
+                            .max_slots = 4,
+                            .max_rows = 4096},
+    NumericalEvidenceDomain{.change = NC::kMxfp8ProductInput,
+                            .evidence = kNativeNumericalEvidence,
+                            .anchors = kProductAnchor,
+                            .max_context = 262144,
+                            .max_slots = 4,
+                            .max_rows = 4096},
+    NumericalEvidenceDomain{.change = NC::kNvfp4ExpertIntermediates,
+                            .evidence = kNativeNumericalEvidence,
+                            .component_kind = "ffn.moe",
+                            .anchors = kReduceAnchor,
+                            .max_context = 262144,
+                            .max_slots = 4,
+                            .max_rows = 4096,
+                            .row_parameter = "used"},
+};
+constexpr std::array kGgufVectorNumerics{
+    NumericalEvidenceDomain{
+        .change = NC::kQ8VectorReduction,
+        .evidence = "8b9e1298f0e1759cfae0c3f1c792fe79052a1af02c9b9d4e93e9aca137512041",
+        .anchors = kVectorAnchors,
+        .max_context = 262144,
+        .max_slots = 4,
+        .max_rows = 4,
+        .rows = kQualifiedGgufVectorRows},
+};
+// Final accepted DeepSeek numerics used this selected VecQ schedule. The
+// unchanged route/owner/native predicates remain required by every candidate.
+constexpr std::array<std::uint64_t, 5> kQualifiedDeepSeekVectorRows{1, 2, 3, 4, 5};
+constexpr std::array kDeepSeekNumerics{
+    NumericalEvidenceDomain{.change = NC::kQ8VectorReduction,
+                            .evidence = kFinalNumericalEvidence,
+                            .anchors = kVectorAnchors,
+                            .max_context = 1048576,
+                            .max_slots = 4,
+                            .max_rows = 5,
+                            .rows = kQualifiedDeepSeekVectorRows,
+                            .incumbent_recipe = true},
+};
+
+// This checkpoint's exact scalar passage/reference retained the incumbent.
+// The configured four-slot envelope does not qualify a multirow execution.
+constexpr std::array<std::uint64_t, 1> kIq2xxsIncumbentRows{1};
+constexpr std::array kIq2xxsIncumbentNumerics{
+    NumericalEvidenceDomain{
+        .change = NC::kQ8VectorReduction,
+        .evidence = "7fcb199e34863bd80f0076ee36296c5382a8da190a5cef04c6f85dc9936ad449",
+        .anchors = kVectorAnchors,
+        .max_context = 262144,
+        .max_slots = 4,
+        .max_rows = 1,
+        .rows = kIq2xxsIncumbentRows},
+};
+
 constexpr std::array kApprovals{
     Approval{.name = "gemma-2-2b-it-q8_0",
              .label = "Gemma2",
@@ -499,7 +583,8 @@ constexpr std::array kApprovals{
              .inventory = "a580f533d1b0ffe53e0650a17e5e479328cc8f3d1dd5aaeedb2987f7d0f1d01a",
              .spec = "dbbce592f38d0ec8c5fc96b1255e0821b3bf80600a6ad89e068cd39cd90fa72b",
              .max_context = 262144,
-             .max_slots = kAnyOwners},
+             .max_slots = kAnyOwners,
+             .numerical = kGgufVectorNumerics},
     // The native import (`llmp import`), its experts and n-gram table relaid
     // out and its norms and A folded; served beside its drafter below bit for
     // bit as the v0 pair (docs/experiments/m36-numerical-audit/
@@ -520,7 +605,8 @@ constexpr std::array kApprovals{
              .max_context = 262144,
              .max_slots = kAnyOwners,
              .gates = kModelOptGates,
-             .mapping = &spec::mappings::Qwen38NativeMapping},
+             .mapping = &spec::mappings::Qwen38NativeMapping,
+             .numerical = kNativeNumerics},
     // Its MTP drafter (`llmp import --component mtp --draft-head`), with
     // Mia's selected head; composed with the approved native target.
     Approval{.name = "qwen3.8-flash-next-modelopt-mtp-mia47172",
@@ -540,7 +626,8 @@ constexpr std::array kApprovals{
              .max_slots = kAnyOwners,
              .policy = ApprovedPolicy::kNone,
              .target = "qwen3.8-flash-next-modelopt",
-             .mapping = &spec::mappings::Qwen38MtpNativeMapping},
+             .mapping = &spec::mappings::Qwen38MtpNativeMapping,
+             .numerical = kNativeNumerics},
     Approval{.name = "qwen3.8-flash-next-mlx",
              .label = "Qwen3.8 MLX",
              .architecture = "qwen4exp",
@@ -569,7 +656,8 @@ constexpr std::array kApprovals{
              .spec = "ddaaa1d38bd6a501b9ef891bc0f639a70f41b19ff85a85674be5d77470e7a8e8",
              .max_context = 1048576,
              .max_slots = kAnyOwners,
-             .policy = ApprovedPolicy::kMappingOrNone},
+             .policy = ApprovedPolicy::kMappingOrNone,
+             .numerical = kDeepSeekNumerics},
     // antirez/deepseek-v4-gguf@f71f23d5's community GGUF (IQ2_XXS gate/up
     // experts, Q2_K down, F16 compressor APE, mixing and router tables),
     // imported natively as v1 e7c0d0e4. It lists no shared-expert clamps, so
@@ -580,9 +668,10 @@ constexpr std::array kApprovals{
     // and deepseek-batching): plain greedy through 128,817 prompt tokens in
     // the native harness (one owner); through the runtime at context 16,384,
     // and at context 262,144 in four-slot plain waves of 7K prompts. The v1
-    // artifact's own evidence is the frozen-digest smoke test alone
-    // (dsv4_engine_target_gpu_test PublishedIq2xxs*); no v0 comparison or
-    // speed gate ran on it, and no drafter approval names it.
+    // artifact's initial evidence was its frozen-digest smoke test alone.
+    // The scalar incumbent domain below adds its exact same-checkpoint
+    // passage/reference evidence; it does not qualify a multirow recipe.
+    // No drafter approval names this target.
     Approval{.name = "deepseek-v4-flash-iq2xxs-w2q2k-chat-v2-imatrix-0731",
              .label = "DeepSeek V4 Flash IQ2_XXS",
              .architecture = "deepseek4",
@@ -594,7 +683,8 @@ constexpr std::array kApprovals{
              .spec = "ddaaa1d38bd6a501b9ef891bc0f639a70f41b19ff85a85674be5d77470e7a8e8",
              .max_context = 262144,
              .max_slots = 4,
-             .policy = ApprovedPolicy::kMappingOrNone},
+             .policy = ApprovedPolicy::kMappingOrNone,
+             .numerical = kIq2xxsIncumbentNumerics},
     Approval{.name = "dspark-deepseek-v4-flash-0731-q8_0",
              .label = "DSpark",
              .architecture = "dflash",
@@ -608,7 +698,8 @@ constexpr std::array kApprovals{
              .max_context = 1048576,
              .max_slots = kAnyOwners,
              .policy = ApprovedPolicy::kNone,
-             .target = "deepseek-v4-flash-0731-ud-q2_k_xl"},
+             .target = "deepseek-v4-flash-0731-ud-q2_k_xl",
+             .numerical = kDeepSeekNumerics},
 };
 
 // Qwen-Image-2.1 (Qwen/Qwen-Image-2.1@790c9263): the pipeline's kept files
@@ -711,13 +802,37 @@ constexpr std::array kQwenImageComponents{
              .policy = ApprovedPolicy::kNone},
 };
 
+constexpr std::array kImageGluAnchor{ir::Primitive(ir::Op::kGlu)};
+constexpr std::array kImageAttentionAnchor{ir::Primitive(ir::Op::kAttention)};
+constexpr std::array kImageCarryAnchor{ir::Fused(ir::FusedKind::kLayerNormModulateSplit)};
+constexpr std::string_view kImageNumericalEvidence =
+    "9999175c760fd4a25601978f592daa63dae329ce5efadeae50dc1b3c26a65d6a";
+constexpr std::array kImageNumerics{
+    NumericalEvidenceDomain{.change = NC::kBf16SwiGluIntermediates,
+                            .evidence = kImageNumericalEvidence,
+                            .anchors = kImageGluAnchor},
+    NumericalEvidenceDomain{.change = NC::kBf16ProductInputAndResult,
+                            .evidence = kImageNumericalEvidence,
+                            .anchors = kProductAnchor},
+    NumericalEvidenceDomain{.change = NC::kBf16AttentionIntermediates,
+                            .evidence = kImageNumericalEvidence,
+                            .anchors = kImageAttentionAnchor},
+    NumericalEvidenceDomain{.change = NC::kBf16ResidualCarry,
+                            .evidence = kImageNumericalEvidence,
+                            .anchors = kImageCarryAnchor},
+};
+
 constexpr std::array kImageApprovals{
     ImageApproval{.name = "qwen-image-2.1",
                   .label = "QwenImage21",
                   .architecture = "QwenImage21Pipeline",
                   .sources = kQwenImageSources,
                   .spec = "ef266ac1b35803f731982a027d31e3656eb31ddd7fde94f4d549bc70ef70a88a",
-                  .components = kQwenImageComponents},
+                  .components = kQwenImageComponents,
+                  .numerical = kImageNumerics,
+                  .numerical_width = 1024,
+                  .numerical_height = 1024,
+                  .numerical_prompt_rows = 25},
 };
 
 }  // namespace

@@ -62,8 +62,13 @@ bool Current(const ggml_tensor* t, std::uint64_t limit) {
 }
 bool Shape(const ggml_tensor* t, ggml_type type, std::array<std::int64_t, 4> ne,
            std::array<std::size_t, 4> nb, std::uint64_t limit = kMaxSpan) {
-  return t && t->type == type && std::equal(ne.begin(), ne.end(), t->ne) &&
-         std::equal(nb.begin(), nb.end(), t->nb) && Current(t, limit);
+  if (!t || t->type != type || !std::equal(ne.begin(), ne.end(), t->ne)) return false;
+  // A singleton coordinate is always zero. Lowering may canonicalize its
+  // unused pitch without changing the packed addresses the launcher reads.
+  // Keep every observable pitch exact, along with the full current-view check.
+  for (std::size_t axis = 0; axis < ne.size(); ++axis)
+    if (ne[axis] != 1 && t->nb[axis] != nb[axis]) return false;
+  return Current(t, limit);
 }
 bool Overlap(const ggml_tensor* a, const ggml_tensor* b, std::uint64_t a_limit,
              std::uint64_t b_limit) {

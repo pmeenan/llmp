@@ -205,7 +205,7 @@ int main(int argc, char** argv) {
   std::array<std::optional<RmsNormMulKernel>, 2> kernels;  // unfused, fused
   for (const bool fused : {false, true}) {
     const std::vector<llmp::execution::Choice> choices = {
-        {.operation = llmp::execution::Operation::kRmsNormMul,
+        {.operation = llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul),
          .implementation = fused ? "ggml.rms_norm_mul.fused" : "ggml.rms_norm_mul.unfused"}};
     const auto plan = llmp::execution::Plan::Build(*registry, choices);
     if (!plan) {

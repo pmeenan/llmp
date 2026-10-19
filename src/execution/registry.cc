@@ -53,8 +53,9 @@ bool ValidName(std::string_view name) {
 
 // The registry index of the implementation a plan names for its operation
 // at `position`: never another implementation, whatever the registry has.
-std::expected<std::size_t, PlanRejection> Lookup(const Registry& registry, Operation operation,
-                                                 std::string_view name, std::size_t position) {
+std::expected<std::size_t, PlanRejection> Lookup(const Registry& registry,
+                                                 llmp::ir::OpKey operation, std::string_view name,
+                                                 std::size_t position) {
   if (!ValidName(name)) {
     return Rejected(PlanError::kInvalid, position, "not an implementation name");
   }
@@ -65,9 +66,10 @@ std::expected<std::size_t, PlanRejection> Lookup(const Registry& registry, Opera
   }
   const Implementation& implementation = registry.at(*found);
   if (implementation.operation != operation) {
-    return Rejected(PlanError::kWrongOperation, position,
-                    std::format("{} implements {}, not {}", name,
-                                OperationName(implementation.operation), OperationName(operation)));
+    return Rejected(
+        PlanError::kWrongOperation, position,
+        std::format("{} implements {}, not {}", name, llmp::ir::OpKeyName(implementation.operation),
+                    llmp::ir::OpKeyName(operation)));
   }
   return *found;
 }
@@ -98,6 +100,7 @@ std::string CapabilityText(const Capability& c) {
   if (c.expands) text += "; concrete expansion predicate";
   if (c.fusion_needs_measurement) text += "; automatic fusion requires measurement";
   if (c.rung_for) text += "; concrete operand rung";
+  if (c.product_arithmetic) text += "; authenticated product arithmetic recipe";
   if (c.needs_tuning) {
     text += "; needs tuning";
   }
@@ -183,17 +186,15 @@ bool Computes(const Capability& c, const CapabilityQuery& q) {
       q.n % c.shape.n_multiple != 0) {
     return false;
   }
-  // D-108: a decode-shaped product reads each weight once, compressed.
-  bool expands = c.expansion == Expansion::kTransientWorkspace;
-  if (c.expansion == Expansion::kDenseF32Accumulation) {
+  if (q.op.op == ir::Op::kMatMul || q.op.op == ir::Op::kMatMulId ||
+      q.op == ir::Fused(ir::FusedKind::kGroupedMatMul)) {
     ir::ProductParams product{};
     if (q.params.size() >= sizeof(product)) std::memcpy(&product, q.params.data(), sizeof(product));
-    const auto weight = std::ranges::find(q.operands, std::uint8_t{0}, &OperandFormat::operand);
-    expands =
-        product.accumulate == ir::Accumulate::kF32 && weight != q.operands.end() &&
-        (weight->encoding == format::Encoding::kF16 || weight->encoding == format::Encoding::kBF16);
+    if (product.arithmetic != ir::ProductArithmetic::kImplementation &&
+        (!c.product_arithmetic || c.product_arithmetic(q) != product.arithmetic))
+      return false;
   }
-  if (expands && c.expands) expands = c.expands(q);
+  const bool expands = Expands(c, q);
   if (expands && q.rows <= q.policy.max_decode_rows) {
     return false;
   }
@@ -224,280 +225,24 @@ bool Tuned(const Implementation& implementation, const CapabilityQuery& q) {
 
 }  // namespace
 
-std::string_view OperationName(Operation operation) {
-  switch (operation) {
-    case Operation::kLayerNorm:
-      return "layer_norm";
-    case Operation::kL2Norm:
-      return "l2_norm";
-    case Operation::kRmsNorm:
-      return "rms_norm";
-    case Operation::kRmsNormMul:
-      return "rms_norm_mul";
-    case Operation::kRmsNormMulRope:
-      return "rms_norm_mul_rope";
-    case Operation::kRmsNormMulAdd:
-      return "rms_norm_mul_add";
-    case Operation::kGemmaRoute:
-      return "gemma_route";
-    case Operation::kGemmaScaledReduce:
-      return "gemma_scaled_reduce";
-    case Operation::kAdd:
-      return "add";
-    case Operation::kMul:
-      return "mul";
-    case Operation::kMatMul:
-      return "mul_mat";
-    case Operation::kGetRows:
-      return "get_rows";
-    case Operation::kSetRows:
-      return "set_rows";
-    case Operation::kRope:
-      return "rope";
-    case Operation::kRopeSetRows:
-      return "rope_set_rows";
-    case Operation::kSoftMax:
-      return "soft_max";
-    case Operation::kCont:
-      return "cont";
-    case Operation::kSwiGlu:
-      return "swiglu";
-    case Operation::kGeGlu:
-      return "geglu";
-    case Operation::kMulMatGeGlu:
-      return "mul_mat_geglu";
-    case Operation::kMulMatAdd:
-      return "mul_mat_add";
-    case Operation::kMulMatGlu:
-      return "mul_mat_glu";
-    case Operation::kQuantLinear:
-      return "quant_linear";
-    case Operation::kQuantMultiLinear:
-      return "quant_multi_linear";
-    case Operation::kConvert:
-      return "convert";
-    case Operation::kFlashAttn:
-      return "flash_attn";
-    case Operation::kBiasAdd:
-      return "bias_add";
-    case Operation::kMulMatId:
-      return "mul_mat_id";
-    case Operation::kSub:
-      return "sub";
-    case Operation::kDiv:
-      return "div";
-    case Operation::kScale:
-      return "scale";
-    case Operation::kUnary:
-      return "unary";
-    case Operation::kClamp:
-      return "clamp";
-    case Operation::kFill:
-      return "fill";
-    case Operation::kRepeat:
-      return "repeat";
-    case Operation::kConcat:
-      return "concat";
-    case Operation::kSumRows:
-      return "sum_rows";
-    case Operation::kArgsort:
-      return "argsort";
-    case Operation::kTopK:
-      return "top_k";
-    case Operation::kSwiGluClamp:
-      return "swiglu_clamp";
-    case Operation::kSsmConv:
-      return "ssm_conv";
-    case Operation::kGatedDeltaNet:
-      return "gated_delta_net";
-    case Operation::kLightningIndexer:
-      return "lightning_indexer";
-    case Operation::kHcComb:
-      return "dsv4_hc_comb";
-    case Operation::kHcPre:
-      return "dsv4_hc_pre";
-    case Operation::kHcPost:
-      return "dsv4_hc_post";
-    case Operation::kHcCombine:
-      return "hc_combine";
-    case Operation::kHcNorm:
-      return "hc_norm";
-    case Operation::kHcMix:
-      return "hc_mix";
-    case Operation::kMoeGlu:
-      return "moe_glu";
-    case Operation::kMoeCombine:
-      return "moe_combine";
-    case Operation::kMoeRoute:
-      return "moe_route";
-    case Operation::kQuantize:
-      return "quantize";
-    case Operation::kNormGate:
-      return "norm_gate";
-    case Operation::kConv2d:
-      return "conv2d";
-    case Operation::kUpsample:
-      return "upsample";
-    case Operation::kDupUpAdd:
-      return "dup_up_add";
-    case Operation::kSpatialChannelNorm:
-      return "spatial_channel_norm";
-    case Operation::kRmsNormMulRopeSections:
-      return "rms_norm_mul_rope_sections";
-    case Operation::kAttentionMaskPack:
-      return "attention_mask_pack";
-    case Operation::kRopeTable:
-      return "rope_table";
-    case Operation::kQkAttention:
-      return "qk_attention";
-    case Operation::kLayerNormModulateSplit:
-      return "layer_norm_modulate_split";
-    case Operation::kGatedResidualSplit:
-      return "gated_residual_split";
-    case Operation::kGatedResidualModulateSplit:
-      return "gated_residual_modulate_split";
+bool Expands(const Capability& c, const CapabilityQuery& q) {
+  bool expands = c.expansion == Expansion::kTransientWorkspace;
+  if (c.expansion == Expansion::kDenseF32Accumulation) {
+    ir::ProductParams product{};
+    if (q.params.size() >= sizeof(product)) std::memcpy(&product, q.params.data(), sizeof(product));
+    const auto weight = std::ranges::find(q.operands, std::uint8_t{0}, &OperandFormat::operand);
+    expands =
+        product.accumulate == ir::Accumulate::kF32 && weight != q.operands.end() &&
+        (weight->encoding == format::Encoding::kF16 || weight->encoding == format::Encoding::kBF16);
   }
-  return "unknown";
-}
-
-ir::OpKey OpKeyOf(Operation operation) {
-  using ir::Fused;
-  using ir::FusedKind;
-  using ir::Op;
-  using ir::Primitive;
-  switch (operation) {
-    case Operation::kLayerNorm:
-      return Primitive(Op::kLayerNorm);
-    case Operation::kL2Norm:
-      return Primitive(Op::kL2Norm);
-    case Operation::kRmsNorm:
-      return Primitive(Op::kRmsNorm);
-    case Operation::kRmsNormMul:
-      return Fused(FusedKind::kRmsNormMul);
-    case Operation::kAdd:
-    case Operation::kBiasAdd:
-      return Primitive(Op::kAdd);
-    case Operation::kMul:
-      return Primitive(Op::kMul);
-    case Operation::kMatMul:
-    case Operation::kQuantLinear:
-      return Primitive(Op::kMatMul);
-    case Operation::kGetRows:
-      return Primitive(Op::kGetRows);
-    case Operation::kSetRows:
-      return Primitive(Op::kCacheStore);
-    case Operation::kRope:
-      return Primitive(Op::kRope);
-    case Operation::kRopeSetRows:
-      return Fused(FusedKind::kRopeStore);
-    case Operation::kSoftMax:
-      return Primitive(Op::kSoftMax);
-    case Operation::kCont:
-      return Primitive(Op::kCont);
-    case Operation::kSwiGlu:
-    case Operation::kSwiGluClamp:
-    case Operation::kGeGlu:
-      return Primitive(Op::kGlu);
-    case Operation::kMulMatAdd:
-      return Fused(FusedKind::kMatMulAdd);
-    case Operation::kMulMatGlu:
-    case Operation::kMulMatGeGlu:
-      return Fused(FusedKind::kMatMulGlu);
-    case Operation::kQuantMultiLinear:
-      return Fused(FusedKind::kPreparedProducts);
-    case Operation::kConvert:
-      return Primitive(Op::kConvert);
-    case Operation::kFlashAttn:
-      return Primitive(Op::kAttention);
-    case Operation::kMulMatId:
-      return Primitive(Op::kMatMulId);
-    case Operation::kSub:
-      return Primitive(Op::kSub);
-    case Operation::kDiv:
-      return Primitive(Op::kDiv);
-    case Operation::kScale:
-      return Primitive(Op::kScale);
-    case Operation::kUnary:
-      return Primitive(Op::kUnary);
-    case Operation::kClamp:
-      return Primitive(Op::kClamp);
-    case Operation::kFill:
-      return Primitive(Op::kFill);
-    case Operation::kRepeat:
-      return Primitive(Op::kRepeat);
-    case Operation::kConcat:
-      return Primitive(Op::kConcat);
-    case Operation::kSumRows:
-      return Primitive(Op::kSumRows);
-    case Operation::kArgsort:
-      return Primitive(Op::kArgsort);
-    case Operation::kTopK:
-      return Primitive(Op::kTopK);
-    case Operation::kSsmConv:
-      return Primitive(Op::kSsmConv);
-    case Operation::kGatedDeltaNet:
-      return Primitive(Op::kGatedDeltaNet);
-    case Operation::kLightningIndexer:
-      return Primitive(Op::kIndexScore);
-    case Operation::kHcComb:
-      return Primitive(Op::kHcMix);
-    case Operation::kHcPre:
-    case Operation::kHcMix:  // Qwen3.8's: gated streams folded into one
-      return Primitive(Op::kHcPre);
-    case Operation::kHcPost:
-    case Operation::kHcCombine:  // Qwen3.8's: an output added to each stream, gated
-      return Primitive(Op::kHcPost);
-    case Operation::kHcNorm:
-      return Fused(FusedKind::kHcNorm);
-    case Operation::kMoeGlu:
-      return Fused(FusedKind::kMoeGlu);
-    case Operation::kMoeCombine:
-      return Fused(FusedKind::kMoeCombine);
-    case Operation::kMoeRoute:
-      return Primitive(Op::kExpertSort);
-    case Operation::kQuantize:
-      return Primitive(Op::kPrepare);
-    case Operation::kNormGate:
-      return Fused(FusedKind::kNormGate);
-    case Operation::kConv2d:
-      return Primitive(Op::kConv2d);
-    case Operation::kUpsample:
-      return Primitive(Op::kUpsample);
-    case Operation::kDupUpAdd:
-      return Fused(FusedKind::kDupUpAdd);
-    case Operation::kSpatialChannelNorm:
-      return Fused(FusedKind::kSpatialChannelNorm);
-    case Operation::kRmsNormMulRopeSections:
-      return Fused(FusedKind::kRmsNormMulRopeSections);
-    case Operation::kAttentionMaskPack:
-      return Fused(FusedKind::kAttentionMaskPack);
-    case Operation::kRopeTable:
-      return Fused(FusedKind::kRopeTable);
-    case Operation::kQkAttention:
-      return Fused(FusedKind::kQkAttention);
-    case Operation::kLayerNormModulateSplit:
-      return Fused(FusedKind::kLayerNormModulateSplit);
-    case Operation::kGatedResidualSplit:
-      return Fused(FusedKind::kGatedResidualSplit);
-    case Operation::kGatedResidualModulateSplit:
-      return Fused(FusedKind::kGatedResidualModulateSplit);
-    case Operation::kRmsNormMulRope:
-      return Fused(FusedKind::kRmsNormMulRope);
-    case Operation::kRmsNormMulAdd:
-      return Fused(FusedKind::kRmsNormMulAdd);
-    case Operation::kGemmaRoute:
-      return Primitive(Op::kRoute);
-    case Operation::kGemmaScaledReduce:
-      return Primitive(Op::kExpertReduce);
-  }
-  base::Fatal("execution::OpKeyOf of an operation outside the enum");
+  return expands && (!c.expands || c.expands(q));
 }
 
 base::Sha256Digest IdentityOf(const Implementation& implementation) {
   base::Sha256 hash;
-  Field(hash, "llmp.implementation.v0");
+  Field(hash, "llmp.implementation.v1.ir-key");
   Field(hash, implementation.name);
-  Field(hash, OperationName(implementation.operation));
+  Field(hash, llmp::ir::OpKeyName(implementation.operation));
   Field(hash, implementation.source);
   Field(hash, implementation.revision);
   Field(hash, implementation.build);
@@ -532,7 +277,7 @@ std::expected<Registry, PlanRejection> Registry::Create(
   identities.reserve(implementations.size());
   std::vector<std::size_t> by_name(implementations.size());
   for (std::size_t i = 0; i < implementations.size(); ++i) {
-    if (!ValidName(implementations[i].name)) {
+    if (!ValidOpKey(implementations[i].operation) || !ValidName(implementations[i].name)) {
       return Rejected(PlanError::kInvalid, 0,
                       "an implementation name that is empty, too long "
                       "or not lower-case letters, digits, '.' and '_'");
@@ -597,7 +342,7 @@ std::expected<Plan, PlanRejection> Plan::Build(const Registry& registry,
     }
     const Implementation& implementation = registry.at(*found);
     const base::Sha256Digest& identity = registry.identity(*found);
-    Field(hash, OperationName(choice.operation));
+    Field(hash, llmp::ir::OpKeyName(choice.operation));
     Field(hash, implementation.name);
     hash.Update(std::as_bytes(std::span(identity)));
     steps.push_back({.operation = choice.operation,

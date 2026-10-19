@@ -336,96 +336,18 @@ constexpr std::array kParams = {
     RequireInt("qwen4exp.full_attention_interval", 4, false),
 };
 
-// The default planning policies (planner/policy.h, slice G3b): the
-// fast forms (the fused graph, not exact),
-// each a form's own fusions enabled and the norms' and owners' patterns
-// (which Qwen3.8 graphs do not take) off; the same in every
-// serving envelope. The ModelOpt import with its experts in the CUTLASS
-// layout (stacked), in GGML's NVFP4 blocks (scaled, not stacked), and a
-// GGUF quantization's (neither).
+// The caller's owner-row arithmetic requirement. Graph patterns default by
+// semantic/capability proof; changed rounding needs admitted numerical facts.
+// This policy is shared by the stacked, scaled and ordinary representations.
 constexpr std::array kPolicies = {
     PolicyRule{.gate = kStacked,
                .text = "max_decode_rows 16\n"
-                       "enable bf16_rows\n"
-                       "enable gdn_conv\n"
-                       "enable gdn_gates\n"
-                       "enable gdn_norm_gate\n"
-                       "enable gdn_step\n"
-                       "enable hc_combine\n"
-                       "enable hc_fold_inputs\n"
-                       "enable hc_prep\n"
-                       "enable moe_experts\n"
-                       "enable moe_router\n"
-                       "enable mxfp8_inputs\n"
-                       "enable owner_row_invariant\n"
-                       "enable qsa_gate\n"
-                       "enable qsa_pool\n"
-                       "enable qsa_prep\n"
-                       "enable qsa_select\n"
-                       "disable grouped_stores\n"
-                       "disable mul_mat_glu\n"
-                       "disable narrow_final\n"
-                       "disable owner_attention\n"
-                       "disable prepared_inputs\n"
-                       "disable rms_norm_mul\n"
-                       "disable rms_norm_mul_add\n"
-                       "disable rms_norm_mul_rope\n"
-                       "disable rope_store\n"
-                       "disable route_reduce\n"},
+                       "enable owner_row_invariant\n"},
     PolicyRule{.gate = kScaled,
                .text = "max_decode_rows 16\n"
-                       "enable bf16_rows\n"
-                       "enable gdn_conv\n"
-                       "enable gdn_gates\n"
-                       "enable gdn_norm_gate\n"
-                       "enable gdn_step\n"
-                       "enable hc_combine\n"
-                       "enable hc_fold_inputs\n"
-                       "enable hc_prep\n"
-                       "enable moe_combine\n"
-                       "enable moe_glu\n"
-                       "enable moe_router\n"
-                       "enable mxfp8_inputs\n"
-                       "enable owner_row_invariant\n"
-                       "enable qsa_gate\n"
-                       "enable qsa_pool\n"
-                       "enable qsa_prep\n"
-                       "enable qsa_select\n"
-                       "disable grouped_stores\n"
-                       "disable mul_mat_glu\n"
-                       "disable narrow_final\n"
-                       "disable owner_attention\n"
-                       "disable prepared_inputs\n"
-                       "disable rms_norm_mul\n"
-                       "disable rms_norm_mul_add\n"
-                       "disable rms_norm_mul_rope\n"
-                       "disable rope_store\n"
-                       "disable route_reduce\n"},
+                       "enable owner_row_invariant\n"},
     PolicyRule{.text = "max_decode_rows 16\n"
-                       "enable bf16_inputs\n"
-                       "enable gdn_conv\n"
-                       "enable gdn_norm_gate\n"
-                       "enable gdn_step\n"
-                       "enable hc_combine\n"
-                       "enable hc_mix\n"
-                       "enable moe_combine\n"
-                       "enable moe_router\n"
-                       "enable owner_row_invariant\n"
-                       "enable qsa_pool\n"
-                       "enable qsa_prep\n"
-                       "enable qsa_select\n"
-                       "enable vecq_glu\n"
-                       "enable vecq_inputs\n"
-                       "disable grouped_stores\n"
-                       "disable mul_mat_glu\n"
-                       "disable narrow_final\n"
-                       "disable owner_attention\n"
-                       "disable prepared_inputs\n"
-                       "disable rms_norm_mul\n"
-                       "disable rms_norm_mul_add\n"
-                       "disable rms_norm_mul_rope\n"
-                       "disable rope_store\n"
-                       "disable route_reduce\n"},
+                       "enable owner_row_invariant\n"},
 };
 
 // Its serving: the derived shared route, qualified by its plain or joined
@@ -622,33 +544,7 @@ constexpr auto kNativeParams = [] {
 constexpr std::array kNativePolicies = {
     PolicyRule{.gate = kActivationScales, .text = kPolicies[0].text},
     PolicyRule{.text = "max_decode_rows 16\n"
-                       "enable bf16_rows\n"
-                       "enable gdn_conv\n"
-                       "enable gdn_gates\n"
-                       "enable gdn_norm_gate\n"
-                       "enable gdn_step\n"
-                       "enable hc_combine\n"
-                       "enable hc_fold_inputs\n"
-                       "enable hc_prep\n"
-                       "enable moe_combine\n"
-                       "enable moe_router\n"
-                       "enable mxfp8_inputs\n"
-                       "enable owner_row_invariant\n"
-                       "enable qsa_gate\n"
-                       "enable qsa_pool\n"
-                       "enable qsa_prep\n"
-                       "enable qsa_select\n"
-                       "disable grouped_stores\n"
-                       "disable moe_glu\n"
-                       "disable mul_mat_glu\n"
-                       "disable narrow_final\n"
-                       "disable owner_attention\n"
-                       "disable prepared_inputs\n"
-                       "disable rms_norm_mul\n"
-                       "disable rms_norm_mul_add\n"
-                       "disable rms_norm_mul_rope\n"
-                       "disable rope_store\n"
-                       "disable route_reduce\n"},
+                       "enable owner_row_invariant\n"},
 };
 constexpr auto kNativeMapping = [] {
   auto mapping = kMapping;
@@ -767,26 +663,7 @@ constexpr std::array kMtpParams = {
 // QSA layer's and MoE's fast forms (its experts in the CUTLASS layout).
 constexpr std::array kMtpPolicies = {
     PolicyRule{.text = "max_decode_rows 16\n"
-                       "enable bf16_inputs\n"
-                       "enable hc_combine\n"
-                       "enable hc_fold_inputs\n"
-                       "enable hc_prep\n"
-                       "enable moe_experts\n"
-                       "enable moe_router\n"
-                       "enable owner_row_invariant\n"
-                       "enable qsa_pool\n"
-                       "enable qsa_prep\n"
-                       "enable qsa_select\n"
-                       "disable grouped_stores\n"
-                       "disable mul_mat_glu\n"
-                       "disable narrow_final\n"
-                       "disable owner_attention\n"
-                       "disable prepared_inputs\n"
-                       "disable rms_norm_mul\n"
-                       "disable rms_norm_mul_add\n"
-                       "disable rms_norm_mul_rope\n"
-                       "disable rope_store\n"
-                       "disable route_reduce\n"},
+                       "enable owner_row_invariant\n"},
 };
 
 constexpr std::array kMtpReads = {

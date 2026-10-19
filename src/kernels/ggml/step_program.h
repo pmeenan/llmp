@@ -95,6 +95,15 @@ class GgmlBackend {
   GgmlBackend& operator=(GgmlBackend&&) = delete;
   ~GgmlBackend();
 
+  // Required independently of Declare, before producing/lending a backend or
+  // launch. Charge/refund retain the real enclosing allowance, never a raw
+  // source borrower. Installation prepays the callback owner/control metadata;
+  // each Lower separately admits the checked actual native inventory. The
+  // incoming callback captures use their caller's prepaid control inventory;
+  // installation moves them without allocating another callback payload.
+  std::expected<void, std::string> FundConstruction(std::function<bool(std::uint64_t)> charge,
+                                                    std::function<void(std::uint64_t)> release);
+
   // Opt-in immutable configuration for a required shared source. The caller
   // pays counted metadata before it is allocated; the backend retains its
   // charge through all source/program borrowers. No tuning is installed by
@@ -140,6 +149,8 @@ class GgmlBackend {
   GgmlBackend(int device, providers::DeviceExecution& execution, providers::StreamId stream,
               CublasHandle* cublas, GgmlBackendOptions options);
 
+  std::shared_ptr<const ConstructionFunder> construction_funder_{};
+  bool construction_started_ = false;
   struct Declaration;
   std::shared_ptr<Declaration> declaration_{};
   kernels::StepBackend PlainBackend();

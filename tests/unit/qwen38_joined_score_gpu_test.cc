@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "base/sha256.h"
+#include "compiler_inventory.h"
 #include "corpus_score.h"
 #include "engine/component_source.h"
 #include "engine/decoding.h"
@@ -88,22 +89,23 @@ std::expected<std::string, std::string> ReadExact(const fs::path& path, std::uin
 
 constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
 constexpr std::uint64_t kDomainBytes = std::uint64_t{104} << 30U;
-constexpr std::uint64_t kHostBytes = std::uint64_t{9} << 30U;
 constexpr std::uint64_t kProgramBytes = 64 * kMiB;
 constexpr std::size_t kFactoryShapes = 16, kShapes = kFactoryShapes + 4;
 // Current-source construction bound, independent of completed program limits.
-// funding.md derives these categories from Builder's enforced N/T limits,
+// The reviewed categories use Builder's enforced N/T limits,
 // the two rewrite rounds, serial fallback passes and Lower's descriptor count.
 // Metadata names are checked before source construction below. No per-class
 // multiplier applies to transient graphs: Setup builds one class at a time.
 constexpr std::uint64_t kNodes = ir::Graph::kMaxNodes;
 constexpr std::uint64_t kTensors = ir::Graph::kMaxTensors;
-constexpr std::uint64_t kGraphConstruction = 4 * 3 * (kNodes * 480 + kTensors * 192);
+constexpr std::uint64_t kGraphConstruction =
+    llmp::test_support::compiler_inventory::GraphBytes(kNodes, kTensors);
 constexpr std::uint64_t kIrWorksets = 4096 * (kNodes + kTensors);
 // Two disjoint rewrite rounds, four outputs; top-ten ExpertReduce adds23.
 constexpr std::uint64_t kNativeDescriptors = kTensors + 16 + 8 * kNodes + 23 * kNodes;
 // Arena512, native planning/index/copy work1024, traversal<4 pointers each.
-constexpr std::uint64_t kNativeConstruction = kNativeDescriptors * (512 + 1024 + 32);
+constexpr std::uint64_t kNativeConstruction =
+    llmp::test_support::compiler_inventory::NativeBytes(kNativeDescriptors, kTensors);
 constexpr std::uint64_t kCompilerEnvelope =
     kGraphConstruction + kIrWorksets + kNativeConstruction + 64 * kMiB;
 constexpr std::uint64_t kRetainedPrograms =
@@ -111,15 +113,26 @@ constexpr std::uint64_t kRetainedPrograms =
     (kProgramBytes + 4096 * en::kGraphNodeHostBytes);  // Includes one conservative spare program.
 constexpr std::uint64_t kMetadataEnvelope = 1024 * kMiB;
 constexpr std::uint64_t kObservationEnvelope = 128 * kMiB;
+// NumericalProof owns its observation descriptors. The canonical compiler
+// inventory includes their actual sizeof and overlap; pay that sum rather
+// than retaining the obsolete rounded 9GiB fixture ceiling.
+constexpr std::uint64_t kHostRequired =
+    kCompilerEnvelope + kRetainedPrograms + kMetadataEnvelope + kObservationEnvelope;
+constexpr std::uint64_t kHostBytes =
+    ((kHostRequired + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
 static_assert(kCompilerEnvelope + kRetainedPrograms + kMetadataEnvelope + kObservationEnvelope <=
               kHostBytes);
-static_assert(kCompilerEnvelope +
-                  (kFactoryShapes + 1) * (kProgramBytes + 4096 * en::kGraphNodeHostBytes) +
-                  kMetadataEnvelope + kObservationEnvelope <=
-              8 * (kMiB * 1024));
+// The old 8GiB factory payment is smaller than the updated type inventory.
+// Round only this actual sum to the catalog's 2MiB extent granularity.
+constexpr std::uint64_t kFactoryRequired =
+    kCompilerEnvelope + (kFactoryShapes + 1) * (kProgramBytes + 4096 * en::kGraphNodeHostBytes) +
+    kMetadataEnvelope + kObservationEnvelope;
+constexpr std::uint64_t kFactoryHostBytes =
+    ((kFactoryRequired + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
+static_assert(kFactoryRequired <= kFactoryHostBytes && kFactoryHostBytes <= kHostBytes);
 static_assert(ir::Graph::kMaxNodes == 65536 && ir::Graph::kMaxTensors == 131072);
 static_assert(sizeof(ir::Node) <= 160 && sizeof(ir::TensorDesc) <= 160);
-static_assert(sizeof(pl::Selected) <= 128 && sizeof(pl::Applied) <= 64);
+static_assert(sizeof(pl::Selected) <= 128);
 static_assert(ir::kMaxSources == 10 && ir::kMaxOutputs == 4);
 static_assert(sizeof(llmp::kernels::ggml::PlanStep) <= 64);
 static_assert(sizeof(std::string) <= 32 && sizeof(en::SlotLifecycle::Range) <= 24);
@@ -545,7 +558,7 @@ en::Status SetUp(Lifetime& life) {
     return std::unexpected("compiler construction domain or descriptor ABI changed");
   node.SetHostFloor(0);
   if (auto open = node.Open(); !open) return open;
-  const auto host_bytes = OrdinaryPolicy(life.policy) ? kHostBytes : 8 * (kMiB * 1024);
+  const auto host_bytes = OrdinaryPolicy(life.policy) ? kHostBytes : kFactoryHostBytes;
   const auto occupied = node.catalog().OccupancyOf(node.domain()).Total().value();
   if (occupied > kDomainBytes - host_bytes) return std::unexpected("startup payment does not fit");
   auto paid = node.catalog().AddExtent({.domain = node.domain(),

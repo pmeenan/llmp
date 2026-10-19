@@ -489,15 +489,6 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   return out;
 }
 
-constexpr std::array kBatchClasses{
-    BatchClass{.op = ir::Op::kRmsNorm, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMatMul, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kRoute, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kMatMulId, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kGlu, .batch = ir::Batch::kJoined},
-    BatchClass{.op = ir::Op::kExpertReduce, .batch = ir::Batch::kJoined},
-};
-
 // Expert parallelism: the expert arrays by their experts (each device its
 // experts whole, with their products' scales); the routing and the dense
 // GLU whole on every device.
@@ -517,10 +508,6 @@ constexpr std::array kSplits{SplitOption{
     },
     .weights = kExpertRoles,
     .state = {}}};
-
-constexpr std::array<std::string_view, 7> kPatterns{
-    "rms_norm_mul", "rms_norm_mul_add", "mul_mat_glu", "prepared_inputs",
-    "route_reduce", "moe_router",       "moe_combine"};
 
 std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
@@ -687,7 +674,6 @@ constexpr std::array kHashParams{
 constexpr std::array<format::Encoding, 1> kI32{format::Encoding::kI32};
 constexpr std::array kHashRoles{
     WeightRole{.name = "table", .encodings = kI32, .rows_on_demand = true}};
-constexpr std::array kHashBatch{BatchClass{.op = ir::Op::kGetRows, .batch = ir::Batch::kJoined}};
 
 std::expected<std::vector<RoleShape>, std::string> HashShapes(const Instance& in) {
   if (in.params.Int("used") > in.params.Int("experts")) {
@@ -745,7 +731,7 @@ const ComponentDef& SideHash() {
       .params = kHashParams,
       .roles = kHashRoles,
       .shapes = HashShapes,
-      .batch_classes = kHashBatch,
+
       .emit = HashEmit,
       .reference = HashReference,
       .side_rows = HashRows,
@@ -764,10 +750,10 @@ const ComponentDef& FfnMoe() {
       .roles = kRoles,
       .shapes = Shapes,
       .state = nullptr,
-      .batch_classes = kBatchClasses,
+
       .batching = nullptr,
       .splits = kSplits,
-      .patterns = kPatterns,
+
       .masks = nullptr,
       .emit = Emit,
       .reference = Reference,

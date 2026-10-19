@@ -17,7 +17,9 @@
 #include "engine/support.h"
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/cublas.h"
+#include "kernels/ggml/lower.h"
 #include "kernels/ggml/step_program.h"
+#include "planner/construction.h"
 #include "planner/policy.h"
 #include "platform/files.h"
 #include "platform/host_probe.h"
@@ -147,34 +149,49 @@ struct ImageGeometryOwner {
 // Two complete owner/return representations, doubled vector capacities for
 // three stages/eleven input ports, and fixed shared/control blocks.
 // Kernel declaration storage is independently charged by Declare below.
+// Current and candidate runtime controls include the hidden State and Model,
+// coverage counters and report callback. The bounded registration summary has
+// its own temporary category; detailed reports charge their exact counted size.
 std::uint64_t SourceOwnerBytes(const md::ImageProfile& p) {
   return SourceMappingBytes(p) + 2 * sizeof(ImageGenerationModel) + 2 * sizeof(EngineImageParts) +
-         6 * sizeof(ImageStage) + 22 * sizeof(std::optional<std::uint32_t>) + 4096;
+         6 * sizeof(ImageStage) + 22 * sizeof(std::optional<std::uint32_t>) + 4096 +
+         2 * EngineImage::ControlMetadataBytes() + kernels::kRegistrationPlanReportMetadataBytes;
 }
 
-// Same lower construction categories as the complete-flow proof, derived from
-// this mapped stage's declared primitive/role/port inventory before graph emit.
-// This includes two simultaneous program descriptors; retained capture nodes
-// are separately measured/charged by EngineImage's normal PlanAccount.
+// Graph/rewrite/workset and reader inventories before graph emission. Native
+// descriptors and their physical report tables are independently admitted from
+// each actual LowerInput by the backend funder, including replacement geometry.
+// Reports stream lazily from the retained typed inventory; no serialized report
+// copy is constructed. Captures retain EngineImage's separate PlanAccount.
 std::expected<std::uint64_t, std::string> CompilerBound(const spec::SpatialComposition& mapping,
                                                         std::size_t roles, std::size_t ports) {
   std::uint64_t primitives = 0, components = 0;
+  const auto add = [](std::uint64_t a, std::uint64_t b, std::uint64_t& out) {
+    return !__builtin_add_overflow(a, b, &out);
+  };
+  const auto mul = [](std::uint64_t a, std::uint64_t b, std::uint64_t& out) {
+    return !__builtin_mul_overflow(a, b, &out);
+  };
+  if (mapping.spec.stages.empty()) return Error("image compiler inventory has no stage");
   for (const auto& layer : mapping.spec.stages[0].layers)
     for (const auto& component : layer.components) {
       const auto* def = co::Find(component.kind, component.version);
       if (!def || !def->spatial) return Error("image compiler inventory has no spatial component");
-      primitives += def->spatial->max_nodes;
-      ++components;
+      if (!add(primitives, def->spatial->max_nodes, primitives) || !add(components, 1, components))
+        return Error("image component inventory overflows");
     }
-  // These inventories are already bounded by spec/value-ID representation.
-  const auto nodes = primitives + 1 + ports + 2 * components;
-  const auto tensors = 2 * nodes + roles;
-  std::uint64_t result = 0;
-  for (const auto term :
-       {12 * (nodes * 480 + tensors * 192), 4096 * (nodes + tensors),
-        (tensors + roles + 31 * nodes + ports) * (512 + 1024 + 32), 2 * (nodes + tensors) * 4096})
-    if (__builtin_add_overflow(result, term, &result))
-      return Error("image compiler bound overflow");
+  std::uint64_t nodes = 0, tensors = 0, graph = 0, tensor_bytes = 0, work = 0, result = 0;
+  if (!mul(components, 2, nodes) || !add(nodes, primitives, nodes) || !add(nodes, 1, nodes) ||
+      !add(nodes, ports, nodes) || !mul(nodes, 2, tensors) || !add(tensors, roles, tensors) ||
+      !mul(nodes, planner::kConstructionGraphNodeBytes, graph) ||
+      !mul(tensors, planner::kConstructionGraphTensorBytes, tensor_bytes) ||
+      !add(graph, tensor_bytes, graph) || !mul(graph, 12, result) || !add(nodes, tensors, work) ||
+      !mul(work, 4096, work) || !add(result, work, result) || !mul(work, 2, work) ||
+      !add(result, work, result))
+    return Error("image compiler bound overflows");
+  const auto numerical = planner::NumericalConstructionBytes(nodes);
+  if (!numerical || !add(result, *numerical, result))
+    return Error("image numerical compiler bound overflows");
   return result;
 }
 std::expected<std::vector<co::BoundTensor>, std::string> Table(
@@ -403,6 +420,7 @@ std::expected<std::shared_ptr<const ImageFamily>, std::string> ReadImageFamily(
   if (!admitted) return std::unexpected(admitted.error());
   auto family = std::make_shared<ImageFamily>();
   family->mapping = admitted->mapping;
+  family->approval = admitted->approval;
   family->profile = std::move(admitted->profile);
   family->spec = std::move(admitted->family);
   return family;
@@ -457,7 +475,10 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
       std::vector{co::SpatialInput{0, 0, {1, 2, channels, 1}}}};
   for (std::size_t i = 0; i < 3; ++i) {
     if (!mappings[i]) return Error(mappings[i].error());
-    auto compiler = CompilerBound(*mappings[i], source_tensors[i].size(), inputs[i].size() + 1);
+    std::size_t ports = 0;
+    if (__builtin_add_overflow(inputs[i].size(), std::size_t{1}, &ports))
+      return Error("image compiler port inventory overflows");
+    auto compiler = CompilerBound(*mappings[i], source_tensors[i].size(), ports);
     if (!compiler) return Error(compiler.error());
     // Compilation is serial on the model owner. Retained old/candidate graph
     // descriptors each have their own BuildSpatialStep payment; this common
@@ -500,11 +521,16 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
   base::Sha256 identity;
   identity.Update(source->composition->id());
   for (const auto& graph : held->graphs) identity.Update(base::ToHex(graph->graph().Digest()));
-  out.identity = identity.Finish();
   out.request = std::move(*prepared_request);
   for (std::size_t i = 0; i < 3; ++i) {
     ImageStage stage;
     stage.graph = held->graphs[i];
+    auto numerical = AdmittedImageNumerics(
+        model->family->spec, model->family->approval, *source->composition, stage.graph->graph(),
+        static_cast<std::uint16_t>(i), geometry.width, geometry.height, geometry.text_rows,
+        model->backend->Backend().ConstructionFunding());
+    if (!numerical) return Error(numerical.error());
+    stage.numerical = std::move(*numerical);
     stage.weights = static_cast<std::uint16_t>(i);
     stage.addresses.weight = [held, i](const ir::WeightRef& ref, format::PartRole part) {
       const auto at = held->resources[i].find(ref);
@@ -530,8 +556,10 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
       stage.inputs = {1, {}};
       stage.outputs = {{}};
     }
+    if (stage.numerical) identity.Update(std::as_bytes(std::span(stage.numerical->digest())));
     out.stages.push_back(std::move(stage));
   }
+  out.identity = identity.Finish();
   return out;
 }
 
@@ -632,6 +660,13 @@ EngineImageBuild ComponentImageGenerationBuild(
         },
         [construction](std::uint64_t bytes) { construction->Release(bytes); });
     if (!declared) return Error(declared.error());
+    auto funded = held->backend->FundConstruction(
+        [construction, source](std::uint64_t bytes) {
+          return ChargeExecutionMetadata(construction, bytes, source->construction_node,
+                                         source->construction_cap);
+        },
+        [construction](std::uint64_t bytes) { construction->Release(bytes); });
+    if (!funded) return Error(funded.error());
     source->prepared = held;
     auto geometry_parts = ComponentImageGenerationGeometry(source,
                                                            {.prompt = std::move(source->prompt),

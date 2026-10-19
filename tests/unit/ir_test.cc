@@ -148,6 +148,62 @@ TEST(IrTest, BuildsAndVerifiesALayer) {
   EXPECT_TRUE(Verify(*g).has_value());
 }
 
+TEST(IrTest, ProductArithmeticConstraintsAreCheckedAndEnterTheGraphDigest) {
+  Builder malformed;
+  malformed.Fused(FusedKind::kGroupedMatMul, std::span<const TensorId>{}, ProductParams{});
+  EXPECT_FALSE(malformed.ok());
+  const auto build = [](ProductParams params) {
+    Builder b;
+    const auto w = b.Weight(ir::Dense(Encoding::kBF16, ShapeOf({4, 4})), {});
+    b.Output(b.MatMul(w, b.Input(ir::Dense(Encoding::kBF16, ShapeOf({4, 2}))), params));
+    return std::move(b).Finish();
+  };
+  const auto ordinary = build({});
+  const auto constrained = build({.arithmetic = ProductArithmetic::kBf16F32});
+  ASSERT_TRUE(ordinary);
+  ASSERT_TRUE(constrained);
+  EXPECT_NE(ordinary->Digest(), constrained->Digest());
+  ProductParams invalid;
+  invalid.arithmetic = static_cast<ProductArithmetic>(255);
+  EXPECT_FALSE(build(invalid));
+  invalid = {};
+  invalid.arithmetic_reserved[2] = 1;
+  EXPECT_FALSE(build(invalid));
+}
+
+TEST(IrTest, PackedSingletonAxesReshapeWithoutCopiesButLiveGapsRefuse) {
+  for (const bool single_first : {false, true}) {
+    Builder b;
+    const auto root = b.Input(F32({12}));
+    const auto shape = ShapeOf(single_first ? std::initializer_list<std::uint64_t>{1, 4, 3}
+                                            : std::initializer_list<std::uint64_t>{4, 1, 3});
+    const std::array<std::uint64_t, 4> strides =
+        single_first ? std::array<std::uint64_t, 4>{123456, 4, 16, 987654}
+                     : std::array<std::uint64_t, 4>{4, 123456, 16, 987654};
+    const auto view = b.View(root, shape, strides, 0);
+    ASSERT_TRUE(b.ok());
+    EXPECT_TRUE(IsContiguous(b.tensor(view)));
+    const auto reshaped = b.Reshape(view, ShapeOf({12}));
+    ASSERT_TRUE(b.ok());
+    EXPECT_TRUE(b.tensor(reshaped).is_view());
+    EXPECT_TRUE(IsContiguous(b.tensor(reshaped)));
+    b.Output(reshaped);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph);
+    EXPECT_EQ(std::ranges::count(graph->nodes(), Primitive(Op::kCont), &Node::key), 0);
+  }
+  Builder bad;
+  const auto root = bad.Input(F32({16}));
+  const auto gap = bad.View(root, ShapeOf({4, 1, 3}), {4, 123456, 20, 987654}, 0);
+  ASSERT_TRUE(bad.ok());
+  EXPECT_FALSE(IsContiguous(bad.tensor(gap)));
+  bad.Reshape(gap, ShapeOf({12}));
+  EXPECT_EQ(ErrorOf(bad), GraphError::kShape);
+  TensorDesc overflow;
+  overflow.format = F32({UINT64_MAX, 2});
+  EXPECT_FALSE(IsContiguous(overflow));
+}
+
 TEST(IrTest, InfersShapesAsGgmlDoes) {
   Builder b;
   const TensorId q = b.Input(F32({64, 5, 8, 1}));
@@ -421,6 +477,19 @@ TEST(IrTest, RoundedIndexScoreAndPrefixOverwriteHaveStrictTypedContracts) {
     x.PrefixOverwrite(values, n, {.fill_bits = 0xff800000});
     EXPECT_FALSE(std::move(x).Finish()) << bad;
   }
+}
+
+TEST(IrTest, SelectRequiresIntegerPredicateAndExactBranchEncodingsAndBroadcasts) {
+  for (unsigned bad = 0; bad < 4; ++bad) {
+    Builder b;
+    const auto condition = b.Input(
+        Dense(bad == 1 ? Encoding::kF32 : Encoding::kI32, ShapeOf({1, bad == 2 ? 3U : 2U})));
+    const auto yes = b.Input(Dense(Encoding::kF16, ShapeOf({4, 2})));
+    const auto no = b.Input(Dense(bad == 3 ? Encoding::kF32 : Encoding::kF16, ShapeOf({1})));
+    b.Output(b.Select(condition, yes, no));
+    EXPECT_EQ(std::move(b).Finish().has_value(), bad == 0);
+  }
+  EXPECT_FALSE(HasDecomposition(Primitive(Op::kSelect)));
 }
 
 TEST(IrTest, PrefixOverwriteLiteralBitsArePartOfItsDigest) {

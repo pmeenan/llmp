@@ -141,7 +141,8 @@ std::uint64_t UnitElements(const format::TensorFormat& format);
 // A root's natural strides: units in order, rows packed (all zero where
 // UnitBytes is 0).
 std::array<std::uint64_t, format::kMaxDims> NaturalStrides(const format::TensorFormat& format);
-// Whether its strides are its shape's natural ones (a packed tensor).
+// Whether its addressed units are packed in logical order. Strides of
+// singleton axes (one block on axis zero) are unobservable and may differ.
 bool IsContiguous(const TensorDesc& tensor);
 // Whether a kView re-emitted over `now` in place of its original source
 // `was` (a copy pass's substituted source: an expansion's, a rewrite's)

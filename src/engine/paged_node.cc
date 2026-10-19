@@ -1230,6 +1230,7 @@ bool PagedNode::ChargeRuntime(catalog::ExtentId& held, std::uint64_t& charged, s
 }
 
 bool PagedNode::ChargeHost(std::uint64_t bytes, bool required) {
+  CollectHostReleases();
   if (bytes == 0) {
     return true;
   }
@@ -1327,12 +1328,45 @@ void PagedNode::ReturnStaging(void* pointer, bool proven) {
   staging_taken_ = false;
 }
 
+void PagedNode::CollectHostReleases() {
+  if (!host_releases_) return;
+  const auto bytes = host_releases_->bytes.exchange(0, std::memory_order_acq_rel);
+  if (bytes != 0) UnchargeHost(bytes);
+}
+
+std::expected<HostPayment, std::string> PagedNode::PrepayHost(std::uint64_t bytes) {
+  if (job_active_ || torn_down_ || !memory_)
+    return Error("host result payment needs a live node outside a job");
+  if (bytes == 0) return HostPayment{};
+  if (!host_releases_) {
+    // Allocate once, on the first nonempty result. Its original metadata
+    // receipt stays with this shared owner even when a result outlives the
+    // node. No node methods are needed to destroy that residual paid account.
+    constexpr std::uint64_t kAllocationMetadataBytes = 64;
+    constexpr auto kMetadata = sizeof(HostPayment::Releases) + kAllocationMetadataBytes;
+    std::uint64_t charge = 0;
+    if (__builtin_add_overflow(bytes, std::uint64_t{kMetadata}, &charge) ||
+        !ChargeHost(charge, false))
+      return Error("owned host result bytes do not fit");
+    auto* counter = new (std::nothrow) HostPayment::Releases(kMetadata);
+    if (!counter) {
+      UnchargeHost(charge);
+      return Error("allocating paid host result release metadata failed");
+    }
+    host_releases_.reset(counter);
+  } else if (!ChargeHost(bytes, false)) {
+    return Error("owned host result bytes do not fit");
+  }
+  return HostPayment(host_releases_.get(), bytes);
+}
+
 void PagedNode::UnchargeHost(std::uint64_t bytes) {
   host_total_ -= std::min(bytes, host_total_);
   (void)Recharge(host_total_, true, nullptr);
 }
 
 std::expected<std::uint64_t, std::string> PagedNode::FreeBytes() {
+  CollectHostReleases();
   std::uint64_t free = 0;
   auto read = Call(
       [&]() -> Status {
@@ -2044,10 +2078,100 @@ Status PagedNode::RefreshRequest(std::uint32_t stream, const catalog::Closure& c
   return BeginRequest(stream, closure, what);
 }
 
+Status PagedNode::TryRefreshRequest(std::uint32_t stream, const catalog::Closure& closure,
+                                    bool* over_budget) {
+  if (over_budget) *over_budget = false;
+  const auto found = requests_.find(stream);
+  if (found == requests_.end()) return Error("request replacement needs an open owner");
+  OpenRequest& open = *found->second;
+  if (job_active_ || supplemental_ || open.unproven || open.cancelled || open.done.gone.load() ||
+      !open.channel.held.load(std::memory_order_acquire))
+    return Error("request replacement needs a healthy completed boundary");
+  // A node admits one physical domain. Validate source facts before any
+  // payment or materialization, including the no-reclaimer acquisition path.
+  // The supplied occupancy map is a consistency check, never authority.
+  auto valid = CallMetadata(
+      [&]() -> Status {
+        base::Bytes actual;
+        std::optional<catalog::ExtentId> previous;
+        for (const auto& [extent, generation] : closure.extents) {
+          const auto view = catalog_.Describe(extent);
+          if (!view || view->descriptor.domain != domain_ ||
+              view->content_generation != generation || view->discarded ||
+              view->state == catalog::ExtentState::kQuarantined ||
+              (previous && extent <= *previous))
+            return Error("replacement closure is foreign, stale or noncanonical");
+          auto total = actual.Plus(view->descriptor.size);
+          if (!total) return Error("replacement physical occupancy overflows");
+          actual = *total;
+          previous = extent;
+        }
+        if (closure.extents.empty() ? !closure.bytes_by_domain.empty()
+                                    : closure.bytes_by_domain.size() != 1 ||
+                                          closure.bytes_by_domain.begin()->first != domain_ ||
+                                          closure.bytes_by_domain.begin()->second != actual)
+          return Error("replacement closure occupancy disagrees with its actual extents");
+        return {};
+      },
+      "checking replacement request authority");
+  if (!valid) return valid;
+  if (open.closure.extents == closure.extents) return {};
+  // The three new vectors (driver closure, catalog lease and Held), the
+  // closure's domain-map nodes, and named allocation headers.
+  // Old capacities remain paid until the successful replacement destroys them.
+  constexpr std::uint64_t kAllocationMetadata = 64;
+  constexpr std::uint64_t kPerExtent =
+      sizeof(decltype(closure.extents)::value_type) + 2 * sizeof(catalog::ExtentId);
+  constexpr std::uint64_t kDomainNode = sizeof(decltype(closure.bytes_by_domain)::value_type) +
+                                        3 * sizeof(void*) + kAllocationMetadata;
+  std::uint64_t bytes = 0, domains = 0;
+  if (__builtin_mul_overflow(std::uint64_t{closure.extents.size()}, kPerExtent, &bytes) ||
+      __builtin_mul_overflow(std::uint64_t{closure.bytes_by_domain.size()}, kDomainNode,
+                             &domains) ||
+      __builtin_add_overflow(bytes, domains, &bytes) ||
+      __builtin_add_overflow(bytes, 3 * kAllocationMetadata, &bytes))
+    return Error("request replacement metadata extent overflows");
+  auto payment = PrepayHost(bytes);
+  if (!payment) {
+    if (over_budget) *over_budget = true;
+    return Error(payment.error());
+  }
+  catalog::Closure next = closure;
+  std::ranges::sort(next.extents);
+  AcquireReport acquired;
+  if (auto admitted = Acquire(next, acquired, "admitting a replacement request", over_budget);
+      !admitted)
+    return admitted;
+  // Canonical Held::Drained checks scheduled operations and direct external
+  // work. Neither a result wake nor a step count is used as retirement proof.
+  bool applied = false;
+  auto replaced = CallMetadata(
+      [&]() -> Status {
+        auto result = scheduler_->ReplaceRequestLease(open.request, open.channel.lease, next);
+        if (!result) return Error(sc::ToString(result.error()));
+        applied = true;
+        return {};
+      },
+      "replacing a completed request lease");
+  if (applied) {
+    // Commit even if the control wait was cancelled after applying the atomic
+    // mutation. Such a cancellation is a real request failure, never a clean
+    // capacity backoff under stale driver authority.
+    {
+      auto previous = std::move(open.closure);
+      open.closure = std::move(next);
+    }  // Old vector/map capacities die before their previous payment.
+    open.replacement_payment = std::move(*payment);
+    if (!replaced) open.cancelled = true;
+  }
+  return replaced;
+}
+
 Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::Closure& closure,
                        sc::DeviceJob job, std::string_view what,
                        const std::function<void()>& meanwhile) {
-  if (open.unproven || open.cancelled || open.done.gone.load())
+  if (open.unproven) return Error(std::format("{}: its request retains unproven work", what));
+  if (open.cancelled || open.done.gone.load())
     return Ended(stream, what, "the request cannot continue after failed work");
   // Within the request's lease, exactly: the same entries, or each an
   // extent it holds at the contents it recorded (a whole model's closure
@@ -2130,6 +2254,12 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
     ++hang_cancels_;
   }
   Note(stream, called, timing);
+  // The acquire steps load orders this immutable dispatch proof. A result
+  // wake may report quarantine, so it alone never authenticates retirement.
+  if (!open.channel.step_retired.load(std::memory_order_relaxed)) {
+    open.unproven = true;
+    return Error(std::format("{}: its step's end could not be proven", what));
+  }
   if (open.channel.step_failed.load(std::memory_order_relaxed)) {
     const int error = open.channel.step_error.load(std::memory_order_relaxed);
     return Error(std::format(
@@ -2320,11 +2450,13 @@ Status PagedNode::EndRequest(std::uint32_t stream) {
     // wait cannot be for a signal; a lease under unproven work stays held.
     Cancel(open.request);
     auto ended = Await(open.done, open.what, open.request);
-    const bool unproven = open.unproven;
-    requests_.erase(found);
-    if (unproven) {
+    if (open.unproven) {
+      // The canonical Held/catalog inventories still own these capacities.
+      // Keep their payment and poisoned admission owner until true drain;
+      // task retirement alone cannot refund memory retained by external work.
       return Error("the request's step never proved its end; its lease is kept");
     }
+    requests_.erase(found);
     return ended;
   }
   open.channel.end = true;

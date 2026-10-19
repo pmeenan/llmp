@@ -358,7 +358,8 @@ bool AcceptsBias(const execution::CapabilityQuery& query) {
     if (!value.memory) return true;
     std::uint64_t stride = 2;
     for (std::size_t dimension = 0; dimension < 4; ++dimension) {
-      if (value.memory->nb[dimension] != stride ||
+      if (value.ne[dimension] == 0 ||
+          (value.ne[dimension] > 1 && value.memory->nb[dimension] != stride) ||
           __builtin_mul_overflow(stride, value.ne[dimension], &stride))
         return false;
     }

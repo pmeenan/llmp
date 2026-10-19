@@ -252,7 +252,7 @@ TEST_F(GemmaNormTest, ResidualGatherStaysPaidAndPlacedRawInputLivesUntilDeferred
     const auto plan = kg::PlanGraph(nodes, false, on);
     ASSERT_TRUE(plan);
     ASSERT_EQ(plan->steps.size(), 3);
-    EXPECT_EQ(plan->steps[1].operation, llmp::execution::Operation::kGetRows);
+    EXPECT_EQ(plan->steps[1].operation, llmp::ir::Primitive(llmp::ir::Op::kGetRows));
     EXPECT_EQ(plan->steps[1].nodes[0], gather);
     EXPECT_EQ(plan->steps[2].implementation, kg::kGemmaNormAddName);
     EXPECT_EQ(plan->steps[2].nodes[0], t.norm);

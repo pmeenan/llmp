@@ -330,6 +330,7 @@ int main(int argc, char** argv) {
   rt::ModelSettings settings;
   settings.name = entry.name;
   settings.architecture = "gemma4";
+  settings.container = "gguf";
   settings.context.value = 4096;
   settings.prefill_chunk.value = 128;
   settings.max_slots.value = 1;

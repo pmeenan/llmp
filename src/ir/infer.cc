@@ -276,9 +276,9 @@ std::expected<void, VerifyError> InRoot(const Ctx& c, const TensorDesc& view,
       view.format.params != root.format.params) {
     return Fail(GraphError::kFormat, c, "a view's encoding and layout are its root's");
   }
-  if (view.nb[0] != unit || view.format.shape.ne[0] % per != 0) {
+  if ((view.ne(0) != per && view.nb[0] != unit) || view.ne(0) % per != 0) {
     return Fail(GraphError::kShape, c,
-                std::format("a view's first stride is one unit ({} bytes) over whole units", unit));
+                std::format("a view steps by one unit ({} bytes) over whole units", unit));
   }
   const auto parts = format::PartsOf(root.format);
   if (!parts) {
@@ -489,6 +489,10 @@ bool Finite(float v) { return std::isfinite(v); }
 std::expected<void, VerifyError> CheckProduct(const Ctx& c, const TensorDesc& a) {
   const auto p = c.params<ProductParams>();
   LLMP_TRY(Zero(c, 2, 2));
+  LLMP_TRY(Zero(c, 5, 3));
+  if (static_cast<std::uint8_t>(p.arithmetic) >
+      static_cast<std::uint8_t>(ProductArithmetic::kGgmlQ8_1F32))
+    return Fail(GraphError::kParams, c, "an unknown product arithmetic recipe");
   if (static_cast<std::uint8_t>(p.accumulate) > static_cast<std::uint8_t>(Accumulate::kF32) ||
       static_cast<std::uint8_t>(p.hint) > static_cast<std::uint8_t>(ProductHint::kHadamard)) {
     return Fail(GraphError::kParams, c, "an unknown accumulation or hint");
@@ -1023,6 +1027,25 @@ Out InferPrimitive(const Ctx& c) {
       return RopeOf(c, p, 0, 1, 2);
     }
 
+    case Op::kSelect: {
+      LLMP_TRY(Arity(c, 3, 3));
+      LLMP_TRY(IndexSrc(c, 0));
+      LLMP_TRY(Readable(c, 1));
+      LLMP_TRY(Readable(c, 2));
+      const auto& condition = *c.src(0);
+      const auto& yes = *c.src(1);
+      const auto& no = *c.src(2);
+      LLMP_TRY(Want(
+          yes.format.layout == format::Layout::kDense &&
+              no.format.layout == format::Layout::kDense &&
+              yes.format.encoding == no.format.encoding &&
+              static_cast<unsigned>(yes.format.encoding) <= static_cast<unsigned>(Encoding::kE8M0),
+          c, "select branches need the same dense scalar encoding"));
+      LLMP_TRY(
+          Want(Broadcasts(yes.shape(), condition.shape()) && Broadcasts(yes.shape(), no.shape()), c,
+               "select predicate and false branch must broadcast over true branch"));
+      return One(Fresh(yes.shape(), yes.format.encoding), false);
+    }
     case Op::kAdd:
     case Op::kSub:
     case Op::kMul:
@@ -1536,7 +1559,12 @@ Out InferFused(const Ctx& c) {
   // before its decomposition reads a flag as a bool.
   switch (c.key().fused) {
     case FusedKind::kGroupedMatMul:  // ProductParams
-    case FusedKind::kHcCombine:      // HcParams
+      LLMP_TRY(Arity(c, 2, 2));
+      if (!c.src(0) || !c.src(1))
+        return Fail(GraphError::kArity, c, "grouped products need both operands");
+      LLMP_TRY(CheckProduct(c, *c.src(0)));
+      break;
+    case FusedKind::kHcCombine:  // HcParams
       LLMP_TRY(Zero(c, 2, 2));
       break;
     case FusedKind::kMatMulGlu:  // GluParams

@@ -1,17 +1,17 @@
 {
  "digests": {
-  "heads.0": "c7ca9ba4a6dad835b782fb53e3b05e6e0e03a87db5268b2a121dc26b2cb24253",
-  "heads.1": "f36d410d1c26df9adf2bfee19238045331fdf8a90671cde968173cd031236f41",
-  "history.0": "191d466a178125f34d6c3889c6a015b88c0b78503e357317484223eebac4e431",
-  "history.1": "1ccd00ab09d887e21ae6c9dad8f51c97f844ac2b1894da48cfffd1681f256c0a",
-  "logits.0": "106c877337a64baeb00fbf880b63c8607852b6cd687419afed95f3ff53cee377",
-  "logits.1": "51926f62f0909bbde18a71422074c4aea67f2ccae6eded3f69543f5538d8d454",
-  "state.0": "5727302fd10bad9ebb48fb9c1eef5fd5198620ac3401ecf723806553e726b736:14:64",
-  "state.1": "5727302fd10bad9ebb48fb9c1eef5fd5198620ac3401ecf723806553e726b736:14:64",
-  "state.2": "63979f2f4cf30c8566071b623abab394c57f36de69de2a6a3b79205fd7222a5d:22:64",
-  "tokens.0": "5628,59,77,63,30,632,12,12626",
-  "tokens.1": "11069,8032,30,6558,728,1716,25,1510"
+  "heads.0": "03dbc76485c368cc1554739502e2ae2b6d881c07d41694b955077fd4f4936a3b",
+  "heads.1": "54437e384a80717f2dd06f4182441cf844b42800417c0d486f27e4a77f9c40ed",
+  "history.0": "67e89a52b9f4479483a827a35ad640d9ffa1d5b7ec74dc8a29be03f20e54c12a",
+  "history.1": "aed7848b3e510b508c51e96490298836bb6288dd1a2fa011cc574430869b91ce",
+  "logits.0": "a3704b0d4d21dd1f574c59853e62ad9b15033c3db325c091c3efed8b486fe458",
+  "logits.1": "b38051fe32b3985f896a73326c09afad2bd92669c02d2b5d9fd42821cb9faffe",
+  "state.0": "b508306fbfd4f474544eab40b2a70f8a8418b1a1a2a89c3f51d2c98d111532b5:14:64",
+  "state.1": "b508306fbfd4f474544eab40b2a70f8a8418b1a1a2a89c3f51d2c98d111532b5:14:64",
+  "state.2": "8b42b3415cc84739f71a5ee41c40477fcaef27c5ac52bb3e6b827971c7ea1648:22:64",
+  "tokens.0": "30,220,248046,198,248045,74455,198,248068",
+  "tokens.1": "198,760,1156,579,1876,369,4847,7132"
  },
  "family": "qwen38_gguf",
- "provenance": "Recorded 2026-10-15 on Spark A (GB10, spark-native build of main ba2d4b19 plus the v1-import slice) from the v0 arm, with the v1 arm compared bit for bit in the same run; v1 artifacts imported by llmp import from the staged, manifest-verified sources (IDs in the store's v1-ids.json). A change that legitimately moves bits re-records these."
+ "provenance": "Reviewed numerical refresh 2026-10-18 from integrated R7+R8 on Spark B (spark-c4e2, GB10), verified in r7-model-controls-30c789d8-B.raw.log. Original frozen assertions and raw failures retained outside the repository. Existing same-checkpoint bounded quality classification, changed reduction/selection evidence and live spill/restore/continuation checks support this refresh; generated token/history changes are explicit. No numerical grant broadened. Qwen GGUF Prompt7 ranking ambiguity and all six raw quality-pair failures remain retained; no seven-row VecQ grant."
 }

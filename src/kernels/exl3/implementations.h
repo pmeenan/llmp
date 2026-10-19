@@ -106,7 +106,7 @@ class Kernel {
   std::expected<void, KernelFailure> Run(LaunchContext& launch, const BiasOperands& operands) const;
 
   std::string_view name() const;
-  execution::Operation operation() const;
+  llmp::ir::OpKey operation() const;
 
   struct Entry;
 

@@ -267,7 +267,7 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::BindImpl(
     }
     const auto cached = std::ranges::find(wrappers, &implementation, &CachedWrapper::first);
     std::vector<const ggml_tensor*> view(planned.nodes.begin(), planned.nodes.end());
-    if (planned.operation == execution::Operation::kRmsNormMul) {
+    if (planned.operation == llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul)) {
       auto kernel = cached == wrappers.end()
                         ? RmsNormMulKernel::Bind(implementation)
                         : std::expected<RmsNormMulKernel, KernelFailure>(

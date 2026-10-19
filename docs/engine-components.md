@@ -90,7 +90,7 @@ The owner's requirements (2026-10-08):
 | --- | --- | --- |
 | Importer (native C++) | Container readers, format recognition, the architecture mappings, folds, the prepared artifact with its model spec | Per-checkpoint Python importers |
 | Artifact | Encodings and layouts of every tensor, dependency groups, the model spec, per-target layout variants | v0's library-named representation families |
-| Component catalog | Each component's graph fragment, weight roles, state contract, batching capability, partitioning options and participating patterns | Per-family profiles, bindings and graph builders |
+| Component catalog | Each component's graph fragment, weight roles, state contract, batching capability and partitioning options | Per-family profiles, bindings and graph builders |
 | Graph IR and planner | One model graph from the spec; fusion patterns; implementation selection; activation placement; partitioning; capture keys | GGML-graph planning, per-family plan files |
 | Execution | One runner over the skeleton: slot and state lifecycle, wave composition, prefill orchestration, decoding-mode orchestration, graph runs | Per-family runners and wave planners |
 | Serving | One adapter per pipeline kind (LLM, image, embedding, speech, decision) | One serving class per family |
@@ -343,10 +343,91 @@ primitive ids). It is deterministic. The steps:
   primitives); `owner_bounded_roots`, `owner_padded_reads` and
   `owner_chained_masks` (owner_attention's forms, below); and
   `narrow_final` (the step builder's narrowed final layer, below).
-  Slice G3b added opt-in rewrites (`Pattern::opt_in`: a policy runs one
-  only where it enables it, `enable <name>`, since each changes rounding
-  as a fast form does) and a second round over the first round's fused
-  nodes (`Pattern::round`), in `fusions.cc`. A rewrite may emit at several
+  Slice G3b added initially opt-in rewrites (`Pattern::opt_in`) and a
+  second round over the first round's fused nodes (`Pattern::round`), in
+  `fusions.cc`. Opt-in is not a synonym for changed bits or lower-precision
+  storage: same-quality recipes can become defaults after qualification.
+  The current table has 59 patterns: 57 are available by default;
+  `rounded_indexer` and the caller's `owner_row_invariant` requirement remain
+  explicit. Availability always requires the complete semantic matcher,
+  observer closure, capability, device, shape and final-selection checks.
+  The mappings retain independent product choices and measured row bounds,
+  rather than inherited per-family fusion enable/disable lists.
+
+  Exact structural rewrites and sharing of an incumbent's already mandatory
+  preparation need no model-specific quality grant. BF16 input sharing asks
+  the actual incumbent for its BF16 RNE input conversion and F32 accumulation.
+  Q8 sharing additionally fixes the original MMVQ reduction, 32-value
+  quantizer grouping, FP16 scales/sums, `roundf` conversion and padded row
+  geometry; VecQ's different reduction cannot claim that equivalence.
+  `ProductParams::arithmetic` seals these facts through graph copies, CSE and
+  final selection. Priority or another source cannot bypass the constraint.
+
+  Newly rounded intermediate stores or a different reduction require typed
+  `NumericalQualification` facts, attached once during admission. These bind
+  nonzero source-receipt, semantic-spec and accepted-evidence identities to
+  an actual stage, component, anchor, architecture, role and exact K/N, with
+  explicit row bounds or sets. Retaining an accepted incumbent recipe over
+  its established pipeline envelope is reported as
+  `ACCEPTED_INCUMBENT_RECIPE`; it is not a claim that every tail shape had an
+  independent quality measurement. Native chunk limits derive from 4096
+  rows times admitted owners and actual stream/expert multiplicities. Its
+  existing 262144-context path remains covered. GGUF VecQ retention names
+  only full-model rows 1/2/3/4 (and row 5 on DeepSeek V4 solo steps),
+  excluding the separate row-16 operand witness. The separate community IQ2
+  checkpoint retains only actual rows={1}; its context/slot configuration
+  never multiplies that explicit row set.
+  Image retention requires the accepted 1024-square, 25-text-row geometry.
+  Facts use counted, prepaid immutable storage and remain alive with their
+  source owners. A shared weight in an unavailable other artifact receives
+  no guessed geometry grant.
+
+  Shared-input preparations qualify every changed product separately; a
+  qualified sibling does not authorize another role, stage or geometry.
+  Eligible readers may share preparation while unqualified siblings keep their
+  original path. Grouped VecQ and fused QSA gating qualify the actual product
+  whose input/reduction changes, rather than a reshape, permutation or Mul
+  anchor. When a full-leaf weight qualification is read through a proven
+  closed canonical grouped product (`fusions::GroupedProductOf`), lookup
+  projects a copied qualification to the per-group K/N while retaining the
+  original full-leaf authority (`qualified_leaf_envelope`) alongside the
+  derived operation dimensions (`qualified_envelope`). Applied records retain
+  each original product site, actual geometry and complete grant; paid compact
+  reports copy that inventory and stream its individual evidence/source/semantic
+  identities on demand. Separate report-only
+  observations use the same weight-operand resolver as qualification to retain
+  actual WeightRefs, input/weight formats and the source's bound-model/spec
+  identities. Unknown or foreign observations remain explicit; these facts
+  never authorize a candidate or fill its zero grant evidence. Equivalent Q8/BF16
+  preparations retain their incumbent arithmetic constraints through CSE and
+  final selection. Prepared ordinary MMVQ may prefetch only proven immutable
+  dense weights before its existing dependency wait; predecessor-written
+  activations, IDs, biases and scales remain after the wait. A programmatic launch
+  signal after the unchanged dot loop permits dependent launch overlap while
+  preserving reduction/write order. Execution leases retain the weights;
+  existing CUDA/PTX capability checks preserve pre-Hopper fallback
+  ([upstream adaptation](upstream/ggml.md#prepared-ordinary-mmvq-dependency-overlap)).
+
+  Missing qualification preserves the original arithmetic and appears in
+  coverage and detailed reports. An explicit typed diagnostic
+  `candidate_numerics <change>` may propose only that transformation after
+  the same complete matching and R6 automatic-qualification gates. Applied
+  proposals are reported as `UNQUALIFIED_CANDIDATE`, with an ordinary
+  registration warning and no evidence grant. They require fresh quality
+  and speed evidence before adoption. Policy text alone cannot manufacture
+  authenticated facts. Source/output value IDs and root producer IDs link
+  logical placement to concrete launches. Routed preparations enter the final
+  owned descriptor inventory before its paid bound is checked. Their ordered
+  continuation records identify each actual preparation at its graph cut,
+  original IDs descriptor and storage, complete readback/upload copies with
+  source-relative offsets and pitched rows, pinned slices and validation
+  scratch; they never serialize addresses or route values. Backend descriptor ordinals, source
+  edges and storage IDs preserve concrete node/read order and multiplicity;
+  they expose no process addresses, source tensor names or payload values.
+  Effective production policy is compiled from the
+  current mapping; v1 artifacts store their semantic specs rather than old
+  fusion policy text, so these defaults need no artifact migration.
+  A rewrite may emit at several
   of its nodes' places (`Emissions`) and pull leaves made after its
   first place. Round 0: `hc_prep` (a mix as `llmp.hc.prep`, the BF16
   products, `llmp.hc.lo` and `llmp.hc.mix_bf16`, with the combine before
@@ -375,6 +456,12 @@ primitive ids). It is deterministic. The steps:
   recorded prepared (`ir::PreparedRows`: MXFP8 rows in CUTLASS's scale
   atoms), and capability queries see a node's outputs as operands from
   `execution::kOutputOperand`.
+  Prepared routed vector products preserve the primitive's input geometry:
+  `[K,1,T]` broadcasts one row to selected experts; `[K,U,T]` reads a separate
+  row per selected slot. Other repeating-slot counts retain their ordinary
+  fallback. Native fused vector GLUs preserve the exact SwiGLU, clamped SwiGLU
+  or GELU-tanh formula; GELU-erf and unsupported variants retain primitives.
+  These implementation contracts do not grant any new source or row envelope.
 - **Policy** (`policy.h`): disabled patterns, the decode-row bound, the
   vector forms' row bound, row-invariant plans (D-092), the lossy opt-in,
   independent product choices (`product <choice>`: expert and GLU pairing,
@@ -392,34 +479,18 @@ primitive ids). It is deterministic. The steps:
   shape before lowering. DeepSeek mappings select their eligible
   schedules explicitly; Qwen retains its ordinary product choices. A
   neighboring attention or routing operation does not enable them.
-  Existing artifact spec identities are unchanged. The
-  first migrations' selections are policies: Gemma 2 serves with
-  `disable grouped_stores`, `disable rms_norm_mul_rope` and `disable
-  rope_store`, Gemma 3 with `disable rope_store`. Each family's default
-  policy text lives in its architecture mapping (`spec::Mapping::policies`,
-  slice G1a; rules gated by a source key as slots are, G2a: Gemma 2 and
-  Gemma 3 one ungated rule each, Gemma 4's 26B-A4B, 31B and assistant
-  their own), each rule's text printable lines; the component step
-  source parses the rule `spec::DefaultPolicy` picks for the source's
-  values and the serving envelope (the layout's context and the runner's
-  owners: a rule may hold only within a context and owner bound, slice
-  G2b) unless it is given another policy (an alias's settings, later).
-  Gemma 4's rules are the recipes its M3 class served (deleted in
-  G2d, the rules now the only record): within 4,096 cells
-  and two owners, every row to the head (`narrow_final` off), the fused
-  norm-mul, norm-rope and norm-add, `route_reduce` on 26B-A4B, the
-  quantized GeGLU on 31B, owner attention with bounded roots and masks
-  joined in pairs; within 8,192 and four owners the same without bounded
-  roots (owners of equal reads only); outside, the narrowed final layer
-  and the fused norm-mul alone. The assistant's is plain primitives.
-  Qwen3.8's (slice G3b) are today's fast form in every envelope, gated
-  by the import's form (`experts_stacked`: the ModelOpt import with its
-  experts in the CUTLASS layout; `scaled`: in GGML's NVFP4 blocks; else
-  a GGUF quantization's), each enabling its form's fusions and disabling
-  the norms' and owners' patterns today's Qwen3.8 graphs do not take; the
-  MTP drafter's its BF16 inputs, its mixes', QSA's and the CUTLASS
-  experts' forms. A gate holds for a flag value too (a v0 binding's
-  fact).
+  Existing artifact spec identities are unchanged. Each family's default
+  policy text lives in its architecture mapping (`spec::Mapping::policies`),
+  selected by source values and the serving context/owner envelope unless an
+  alias supplies an override. Gemma 2/3 retain the decode-row bound rather
+  than per-family fusion disables. Gemma 4 retains declarative context/owner
+  rules for prompt scheduling, lookahead and owners-alone execution, plus
+  `disable owner_padded_reads` (which added 20 serial `concat_cont` KV-padding
+  launches per C4 decode wave across the 5 global layers at unequal owner
+  reads, slowing Gemma 4 26B C4 decode by +4.715% before disabling it). Qwen3.8
+  and its MTP drafter retain the explicit `owner_row_invariant` requirement.
+  Shared matchers, capabilities, physical formats and numerical facts choose
+  the applicable fast forms; mappings no longer enumerate their fusion lists.
   Owner attention's Gemma 4 forms (16 or 32 heads, D 512) are selectable
   on the GB10 alone, as the M3 runner kept independent attention on
   other devices (`llmp.flash_attn.owner_roots`' capability).
@@ -897,10 +968,11 @@ route/reduce shape (128 experts, top-8, width 2816), the gated delta net's
 compiled catalog (`Catalog`, `Find`): a `ComponentDef` per kind and
 version with its parameters (typed, ranged, defaulted; `Params`), weight
 roles with the encodings each accepts and, per instance, the roles in use
-and their shapes; a per-instance `model::StateContract`; its ops' batch
-classes and its own `model::Batching` limits; split options as data (the
+and their shapes; a per-instance `model::StateContract`; its own
+`model::Batching` limits (the emitted IR nodes carry their batch ownership);
+split options as data (the
 roles and state tensors each divides, its collective and the bytes it
-joins per step, [Partitioning](#partitioning)); the pattern names it takes part in; the
+joins per step, [Partitioning](#partitioning)); the
 masks it reads; `emit`, its primitive IR fragment for a step; and
 `reference`, a scalar CPU implementation written from the op set's
 definitions, independent of `emit`. `step.h` makes a spec usable:
@@ -1614,6 +1686,17 @@ required configuration refuses instead of becoming an absent legacy identity.
 Recorded and direct execution validate the same live backend, and a retired
 launch cannot be revived by recreating an equal configuration. Physical
 addresses remain live binding checks, outside durable identities.
+
+Startup measurements are an initial token workspace, not a proof that equal
+full-context reads maximize every selected plan. Before state preparation or
+model work, each uncached selected shape is constructed over owned stable
+virtual places and its exact program envelope is checked. Additional activation
+extents are cataloged and admitted through a completed-boundary atomic request
+lease replacement before the model's high-water prefix changes. Virtual capacity
+never proves physical backing or permits submission. Clean capacity refusal keeps
+the old closure usable; unknown replacement faults the cohort. Cached addresses
+and the existing launch pool remain fixed. This path does not support pool or
+host-staging growth; those requirements still refuse before model progress.
 
 Configuration metadata uses an explicitly admitted, pinned node-catalog allowance
 before construction, independent of the pre-start host counter. Its bounded local

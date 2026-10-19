@@ -74,11 +74,16 @@ struct Turn {
 struct ServingOptions {
   // Decode plainly even where a model has a drafter.
   bool plain = false;
+  // Debug: detailed plan records once per paid cache installation.
+  bool debug_plans = false;
   // Internal default-off experiment, only with the paid shared service route.
   bool diagnostic_capture_first_verify = false;
   // Internal: a drafter stage's planning policy in place of its mapping's
   // (ComponentBuildOptions::drafter_policy), absent from CLI/TOML/HTTP.
   std::optional<std::string> diagnostic_drafter_policy{};
+  // Internal matched target candidate policy, from the paid diagnostic
+  // environment only; absent from CLI/TOML/HTTP and never a quality grant.
+  std::optional<std::string> diagnostic_target_policy{};
   // Internal prepared-image migration route, absent from CLI/TOML/HTTP. Each
   // owner was paid on this Server's stopped node; legacy defaults are unchanged.
   std::vector<std::shared_ptr<const PreparedImageGeneration>> diagnostic_prepared_images;
