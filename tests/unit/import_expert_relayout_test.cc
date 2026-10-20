@@ -25,6 +25,7 @@
 #include "import/expert_relayout.h"
 #include "import/indexed_parts.h"
 #include "kernels/reference/decode.h"
+#include "spec/spec.h"
 
 namespace llmp::import {
 namespace {
@@ -58,7 +59,11 @@ TEST(ImportExpertRelayoutTest, RelaysOutOnlyLosslessBlockScaledTables) {
   auto mx = Split(2560, 640, 512);
   mx.encoding = Encoding::kMxfp8;
   mx.params.tensor_scale = false;
-  EXPECT_FALSE(RelaysOut(mx));  // not yet among the relayout's encodings
+  EXPECT_TRUE(RelaysOut(mx));
+  auto mx4 = Split(2560, 640, 512);
+  mx4.encoding = Encoding::kMxfp4;
+  mx4.params.tensor_scale = false;
+  EXPECT_TRUE(RelaysOut(mx4));
   auto atoms = Split(2560, 640, 512);
   atoms.layout = Layout::kScaleAtoms;
   EXPECT_FALSE(RelaysOut(atoms));
@@ -383,6 +388,39 @@ TEST(ImportExpertRelayoutTest, KeepsTablesItCannotRelayLosslesslyAndRefusesBadLi
   EXPECT_FALSE(RelayoutExpertTables(outputs, twice));
   const std::array<ExpertTable, 1> outside{{{.output = 1, .name = "x"}}};
   EXPECT_FALSE(RelayoutExpertTables(outputs, outside));
+}
+
+TEST(ImportExpertRelayoutTest, RelayoutExpertTablesWithNullSpec) {
+  std::vector<TensorAssembly> outputs(1);
+  outputs[0] = {.name = "blk.0.ffn_gate_exps.weight", .format = Split(64, 128, 2)};
+  for (const auto role : {PartRole::kCodes, PartRole::kBlockScales, PartRole::kTensorScale})
+    outputs[0].parts.push_back(
+        {.part = role, .kind = PartAssemblyKind::kMatrices, .sources = {0, 1}});
+  auto relaid = RelayoutExpertTables(outputs, nullptr);
+  ASSERT_TRUE(relaid);
+  EXPECT_EQ(relaid->tables, 1U);
+}
+
+TEST(ImportExpertRelayoutTest, RelayoutExpertTablesWithSpec) {
+  std::vector<TensorAssembly> outputs(1);
+  outputs[0] = {.name = "custom.gate.weight", .format = Split(64, 128, 2)};
+  for (const auto role : {PartRole::kCodes, PartRole::kBlockScales, PartRole::kTensorScale})
+    outputs[0].parts.push_back(
+        {.part = role, .kind = PartAssemblyKind::kMatrices, .sources = {0, 1}});
+  spec::ModelSpec spec;
+  spec::Stage stage;
+  spec::Layer layer;
+  spec::ComponentRef comp;
+  comp.kind = "ffn.moe";
+  comp.weights.push_back({.role = "gate_experts", .tensor = "custom.gate.weight"});
+  layer.components.push_back(std::move(comp));
+  stage.layers.push_back(std::move(layer));
+  spec.stages.push_back(std::move(stage));
+
+  auto relaid = RelayoutExpertTables(outputs, &spec);
+  ASSERT_TRUE(relaid);
+  EXPECT_EQ(relaid->tables, 1U);
+  EXPECT_EQ(outputs[0].format.layout, Layout::kScaleAtoms);
 }
 
 }  // namespace

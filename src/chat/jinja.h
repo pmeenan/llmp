@@ -143,11 +143,23 @@ struct TextRange {
   std::size_t length = 0;
 };
 
+enum class BoundaryKind : std::uint8_t {
+  kPrefixEnd,         // end of the leading system and tool-definition segment
+  kMessageEnd,        // end of a message's rendering
+  kGenerationPrompt,  // where the generation prompt starts
+};
+
+struct Boundary {
+  BoundaryKind kind = BoundaryKind::kMessageEnd;
+  std::size_t offset = 0;  // in Rendered::text
+};
+
 struct Rendered {
   std::string text;
   // Byte ranges of `text` that came only from the template, in order, not
   // overlapping or touching. With the text, within Limits::max_output_bytes.
   std::vector<TextRange> trusted;
+  std::vector<Boundary> boundaries;
 };
 
 // Steps and work bytes renderings used.

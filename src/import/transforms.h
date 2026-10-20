@@ -20,12 +20,17 @@ namespace llmp::import {
 
 enum class ScalarFold : std::uint8_t { kNormPlusOne, kANegExp };
 
-// Little-endian BF16 -> F32, N whole scalars -> exactly 4*N bytes. Uses
-// binary64 arithmetic then integer nearest-even F32 encoding, like the
-// historical converter, without hardware F32 flush-to-zero on conversion.
+// Little-endian BF16/F16/F32 -> F32. Uses binary64 arithmetic then integer
+// nearest-even F32 encoding, without hardware F32 flush-to-zero on conversion.
 // Refusal leaves all output unchanged (including on a later input's exp
 // overflow). No allocation. Spans must be disjoint and stable for the call.
-// No other source dtype is accepted by this API. Empty spans are permitted.
+// Empty spans are permitted.
+double F16Double(std::uint16_t bits) noexcept;
+
+std::expected<void, Error> FoldScalar(ScalarFold fold, format::Encoding source_encoding,
+                                      std::span<const std::byte> input,
+                                      std::span<std::byte> output);
+
 std::expected<void, Error> FoldBf16(ScalarFold fold, std::span<const std::byte> input,
                                     std::span<std::byte> output);
 

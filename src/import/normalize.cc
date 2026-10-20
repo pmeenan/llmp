@@ -262,8 +262,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   }
   Arithmetic a;
   std::uint64_t metadata_bytes = 0, layers = 0, width = 0, selected = 0;
-  std::array<std::string_view, 64> selected_keys{};
-  std::array<const MetaValue*, 64> selected_values{};
+  std::array<std::string_view, kRuleLimit> selected_keys{};
+  std::array<const MetaValue*, kRuleLimit> selected_values{};
   bool architecture = false;
   std::optional<std::int64_t> split_no, split_count, split_tensors;
   for (std::size_t i = 0; i < s.metadata.size(); ++i) {
@@ -624,7 +624,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   charge(a.Add(a.Mul(3, V(T, 256)), a.Mul(2, Str(T))));
   charge(a.Add(a.Mul(4, V(T, 8)), V(F, 256)));
   charge(a.Mul(2, V(M, 256)));
-  charge(a.Add(V(64, 256), a.Mul(2, Str(64))));
+  charge(a.Add(V(kRuleLimit, 256), a.Mul(2, Str(kRuleLimit))));
   // Owned selected lists plus overlapping ParamValue copies in Synthesis::Param.
   // Per-layer extraction leaves scalars in components, not retained layer lists.
   charge(a.Mul(68, V(std::max<std::uint64_t>(layers, list_elements), 8)));
@@ -632,7 +632,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   // lists can coexist in source values, synthesis, validated Instances and
   // temporary parameter values; conservatively fund all 64 per component.
   if (t.extended_components) charge(a.Mul(a.Mul(a.Mul(4, C), 64), V(list_elements, 8)));
-  charge(a.Add(a.Add(a.Mul(2, Tree(T)), Str(T)), Tree(64)));
+  charge(a.Add(a.Add(a.Mul(2, Tree(T)), Str(T)), Tree(kRuleLimit)));
   charge(a.Add(a.Mul(8, Tree(1024)), a.Mul(4, Str(1024))));
   charge(a.Add(a.Add(V(layers, 32), V(C, 256)), a.Add(layers * 64, Str(C))));
   charge(a.Mul(C, a.Add(V(64, 128), a.Mul(2, Str(64)))));
@@ -739,7 +739,7 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
       return Bad("tensor payloads overlap in their physical source file", ItemKind::kTensor,
                  plan.order_[i]);
   }
-  plan.values_.reserve(64);
+  plan.values_.reserve(kRuleLimit);
   plan.metadata_.reserve(input.metadata.size());
   plan.auxiliary_.reserve(table.auxiliary.size() + 1);
   for (const auto& aux : table.auxiliary)

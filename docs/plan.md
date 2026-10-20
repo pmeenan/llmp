@@ -279,7 +279,7 @@ before new families land; each item lands as one reviewed commit.
       side-channel in `conditioning_blocks.cc`/`image_blocks.cc`, replace
       hardcoded component-name ladders in `spatial.cc`, and extend
       `conv.spatial` to arbitrary kernel/stride/padding)
-- [ ] R18 Mapping-driven importer, role-driven expert relayout and
+- [x] R18 Mapping-driven importer, role-driven expert relayout and
       tokenizer/chat generalization (D-123: extend `SourceMapping` and
       `normalize.cc` with `Layout::kSplit` multipart expansion, `mlx` and
       ModelOpt `safetensors` support, `{layer}` + `{index}` assembly kinds,

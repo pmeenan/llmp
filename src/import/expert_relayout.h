@@ -31,6 +31,10 @@
 #include "import/error.h"
 #include "import/indexed_parts.h"
 
+namespace llmp::spec {
+struct ModelSpec;
+}
+
 namespace llmp::import {
 
 enum class ExpertProjection : std::uint8_t { kGate, kUp, kDown, kOther };
@@ -56,6 +60,13 @@ struct ExpertTable {
 // layer index that is not a canonical decimal below 2^16 among them.
 std::optional<ExpertTable> ExpertTableOf(std::string_view name, std::uint32_t output);
 
+// An expert table identified from a component's role in spec when available,
+// falling back to canonical name parsing.
+std::expected<std::optional<ExpertTable>, Error> ExpertTableOf(
+    const TensorAssembly& tensor, const spec::ModelSpec* spec = nullptr);
+std::expected<std::optional<ExpertTable>, Error> ExpertTableOf(
+    const TensorAssembly& tensor, std::uint32_t output, const spec::ModelSpec* spec = nullptr);
+
 struct ExpertRelayoutSummary {
   std::uint32_t tables = 0;         // relaid out
   std::uint32_t stacked = 0;        // gate-and-up stacks among them
@@ -75,6 +86,10 @@ bool RelaysOut(const format::TensorFormat& table);
 // expert table or one listed twice.
 std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
     std::vector<TensorAssembly>& outputs, std::span<const ExpertTable> tables);
+
+// Overload identifying expert tables from spec or naming.
+std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
+    std::vector<TensorAssembly>& outputs, const spec::ModelSpec* spec = nullptr);
 
 // A row-gathered table (an embedding or side table: the caller names it by
 // role) of a block-scaled encoding, gathered from split row blocks (kRows

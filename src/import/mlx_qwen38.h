@@ -25,6 +25,15 @@ std::expected<ModelOptTargetPlan, Error> NormalizeMlxTarget(Checkpoint&& source,
 // Canonical native source for the approved MLX Qwen3.8 target profile (2,274 tensors).
 spec::Source ApprovedMlxTargetSource();
 
+// Metadata-only admission for the closed MLX Qwen3.8 drafter source domain.
+std::expected<NormalizationCost, Error> MlxDrafterBound(const Checkpoint& source,
+                                                        std::size_t head_ids);
+
+// Normalization for the closed MLX Qwen3.8 drafter source domain.
+std::expected<ModelOptDrafterPlan, Error> NormalizeMlxDrafter(
+    const Checkpoint& source, std::optional<DraftHeadList> head, NormalizationLimits prepaid,
+    const NormalizationTarget* target = nullptr);
+
 }  // namespace llmp::import
 
 #endif  // LLMP_IMPORT_MLX_QWEN38_H_

@@ -8,6 +8,7 @@
 #include <cfenv>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <string_view>
@@ -165,6 +166,37 @@ TEST(ImportTransformsTest, ScalarChunksKeepTheirMeaningAndGuardBytes) {
     EXPECT_EQ(guarded.front(), std::byte{0x6B});
     EXPECT_EQ(guarded.back(), std::byte{0x6B});
   }
+}
+
+TEST(ImportTransformsTest, FoldScalarSupportsF16AndF32) {
+  // F16: 1.0 is 0x3C00. NormPlusOne -> 2.0f.
+  const std::array<std::byte, 2> f16_one = {std::byte{0x00}, std::byte{0x3C}};
+  std::array<std::byte, 4> out_f32{};
+  ASSERT_TRUE(FoldScalar(ScalarFold::kNormPlusOne, Encoding::kF16, f16_one, out_f32).has_value());
+  float val = 0.0f;
+  std::memcpy(&val, out_f32.data(), 4);
+  EXPECT_EQ(val, 2.0f);
+
+  // F16: 0.0 is 0x0000. ANegExp -> -1.0f.
+  const std::array<std::byte, 2> f16_zero = {std::byte{0x00}, std::byte{0x00}};
+  ASSERT_TRUE(FoldScalar(ScalarFold::kANegExp, Encoding::kF16, f16_zero, out_f32).has_value());
+  std::memcpy(&val, out_f32.data(), 4);
+  EXPECT_EQ(val, -1.0f);
+
+  // F32: 1.0f is 0x3F800000. NormPlusOne -> 2.0f.
+  float one_f32 = 1.0f;
+  std::array<std::byte, 4> in_f32{};
+  std::memcpy(in_f32.data(), &one_f32, 4);
+  ASSERT_TRUE(FoldScalar(ScalarFold::kNormPlusOne, Encoding::kF32, in_f32, out_f32).has_value());
+  std::memcpy(&val, out_f32.data(), 4);
+  EXPECT_EQ(val, 2.0f);
+
+  // F32: 0.0f. ANegExp -> -1.0f.
+  float zero_f32 = 0.0f;
+  std::memcpy(in_f32.data(), &zero_f32, 4);
+  ASSERT_TRUE(FoldScalar(ScalarFold::kANegExp, Encoding::kF32, in_f32, out_f32).has_value());
+  std::memcpy(&val, out_f32.data(), 4);
+  EXPECT_EQ(val, -1.0f);
 }
 
 format::TensorFormat Matrix(Encoding encoding, std::uint64_t columns, std::uint64_t rows) {
@@ -478,9 +510,12 @@ TEST(ImportTransformsTest, HeadFactoryRefusesUnprovablePermutations) {
   EXPECT_FALSE(HeadPermutationPlan::Make(f, static_cast<HeadAxis>(255), 2, 6, 1).has_value());
   f.shape.ne[0] = 191;
   EXPECT_FALSE(HeadPermutationPlan::Make(f, HeadAxis::kRows, 2, 6, 1).has_value());
-  f = Matrix(Encoding::kF16, 192, 16);
+  f = Matrix(Encoding::kI32, 192, 16);
   f.layout = Layout::kDense;
   EXPECT_FALSE(HeadPermutationPlan::Make(f, HeadAxis::kRows, 2, 6, 1).has_value());
+  f = Matrix(Encoding::kF16, 192, 16);
+  f.layout = Layout::kDense;
+  EXPECT_TRUE(HeadPermutationPlan::Make(f, HeadAxis::kRows, 2, 6, 1).has_value());
   f = Matrix(Encoding::kMxfp8, 192, 16);
   f.params.tensor_scale = true;
   EXPECT_FALSE(HeadPermutationPlan::Make(f, HeadAxis::kRows, 2, 6, 1).has_value());

@@ -131,16 +131,8 @@ struct Conversation {
   std::size_t max_live_bytes = 0;
 };
 
-enum class BoundaryKind : std::uint8_t {
-  kPrefixEnd,         // end of the leading system and tool-definition segment
-  kMessageEnd,        // end of a message's rendering
-  kGenerationPrompt,  // where the generation prompt starts
-};
-
-struct Boundary {
-  BoundaryKind kind = BoundaryKind::kMessageEnd;
-  std::size_t offset = 0;  // in Rendered::text
-};
+using jinja::Boundary;
+using jinja::BoundaryKind;
 
 struct Rendered {
   std::string text;

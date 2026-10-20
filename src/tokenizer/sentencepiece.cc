@@ -193,7 +193,7 @@ struct Trainer {
 std::expected<Trainer, Error> ReadTrainer(const Field& message) {
   Wire wire(message.bytes, message.offset);
   Trainer trainer;
-  std::array<bool, 55> seen{};
+  std::array<bool, 128> seen{};
   for (;;) {
     auto read = wire.Next();
     if (!read) return std::unexpected(read.error());
@@ -201,6 +201,10 @@ std::expected<Trainer, Error> ReadTrainer(const Field& message) {
     const auto& f = **read;
     if (f.number >= seen.size())
       return Fail(Rule::kUnsupported, "SentencePiece trainer extension", f.offset);
+    if (f.number >= 55) {
+      seen[f.number] = true;
+      continue;
+    }
     const bool repeated = f.number == 1 || f.number == 5 || f.number == 30 || f.number == 31;
     if (!repeated && seen[f.number])
       return Fail(Rule::kFormat, "repeated SentencePiece trainer field", f.offset);

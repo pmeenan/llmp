@@ -1379,7 +1379,8 @@ std::string ProtoPiece(std::string_view text, unsigned type, float score = 0) {
   return ProtoBytes(1, piece + ProtoScalar(3, type));
 }
 
-std::string SentencePieceModel(std::string_view normalizer = {}, std::string_view extra = {}) {
+std::string SentencePieceModel(std::string_view normalizer = {}, std::string_view extra = {},
+                               std::string_view trainer_extra = {}) {
   auto spec = SpmSpec();
   const auto unknown = SpmAdd(spec, "<unk>", 0, TokenKind::kControl);
   const auto eos = SpmAdd(spec, "<eos>", 0, TokenKind::kControl);
@@ -1395,7 +1396,8 @@ std::string SentencePieceModel(std::string_view normalizer = {}, std::string_vie
   model += ProtoBytes(2, ProtoScalar(3, 2) + ProtoScalar(35, 1) +
                              ProtoScalar(40, static_cast<std::uint64_t>(unknown)) +
                              ProtoScalar(41, static_cast<std::uint64_t>(*spec.bos)) +
-                             ProtoScalar(42, static_cast<std::uint64_t>(eos)));
+                             ProtoScalar(42, static_cast<std::uint64_t>(eos)) +
+                             std::string(trainer_extra));
   return model + std::string(extra);
 }
 
@@ -2666,10 +2668,12 @@ TEST(HfTokenizer, GenericNestedSplitsAndFaithfulByteLevelOptions) {
   auto gpt2 = tok::ReadHfTokenizer(with(R"({"type":"ByteLevel","add_prefix_space":false})"));
   ASSERT_TRUE(gpt2);
   EXPECT_EQ(gpt2->split_expressions, tok::ReadPreTokenizerPreset("gpt-2")->expressions);
+  auto prefix_space = tok::ReadHfTokenizer(with(R"({"type":"ByteLevel","add_prefix_space":true})"));
+  ASSERT_TRUE(prefix_space);
+  EXPECT_TRUE(prefix_space->add_space_prefix);
   for (
       const auto pre :
-      {R"({"type":"ByteLevel","add_prefix_space":true})",
-       R"({"type":"ByteLevel","add_prefix_space":false,"use_regex":"false"})",
+      {R"({"type":"ByteLevel","add_prefix_space":false,"use_regex":"false"})",
        R"({"type":"Sequence","pretokenizers":[{"type":"ByteLevel","add_prefix_space":false,"use_regex":false},)"
        R"({"type":"Split","pattern":{"Regex":"."},"behavior":"Isolated"}]})"}) {
     EXPECT_FALSE(tok::ReadHfTokenizer(with(pre))) << pre;
@@ -2879,11 +2883,41 @@ TEST(HfTokenizer, ReadsASupportedFile) {
   EXPECT_EQ(Encode(*t, "ab<think>"), (std::vector<TokenId>{256, 258}));
 }
 
+TEST(SentencePieceModel, SkipsUnknownTrainerFieldsAbove54Cleanly) {
+  auto spec = tok::ReadSentencePieceTokenizer(SentencePieceModel({}, {}, ProtoScalar(60, 42)));
+  EXPECT_TRUE(spec);
+  auto spec_too_high =
+      tok::ReadSentencePieceTokenizer(SentencePieceModel({}, {}, ProtoScalar(130, 42)));
+  EXPECT_EQ(Failed(spec_too_high, &tok::Error::rule), Rule::kUnsupported);
+}
+
+TEST(HfTokenizer, AcceptsRstripAndDigits) {
+  auto rstrip_spec = tok::ReadHfTokenizer(
+      HfJson(R"({"type": "NFC"})", kQwen35Regex,
+             R"([{"id": 257, "content": "<|end|>", "rstrip": true, "special": true}])"));
+  ASSERT_TRUE(rstrip_spec);
+  EXPECT_FALSE(rstrip_spec->rstrip.empty());
+  EXPECT_TRUE(rstrip_spec->rstrip[257]);
+
+  auto digits_json = HfWithPre(R"({"type": "Sequence", "pretokenizers": [
+      {"type": "Digits", "individual_digits": true},
+      {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false, "use_regex": false}
+  ]})");
+  auto digits_spec = tok::ReadHfTokenizer(digits_json);
+  ASSERT_TRUE(digits_spec);
+  ASSERT_EQ(digits_spec->split_expressions.size(), 1U);
+  EXPECT_EQ(digits_spec->split_expressions[0], R"(\p{N})");
+  auto tok_digits = tok::Tokenizer::Create(*digits_spec);
+  ASSERT_TRUE(tok_digits) << tok_digits.error().ToString();
+  EXPECT_EQ(Encode(*tok_digits, "12"), (std::vector<TokenId>{'1', '2'}));
+}
+
 TEST(HfTokenizer, RefusesWhatItDoesNotImplement) {
   auto rule = [](const std::string& json) {
     return Failed(tok::ReadHfTokenizer(json), &tok::Error::rule);
   };
   EXPECT_EQ(rule(HfJson(R"({"type": "NFKC"})")), Rule::kUnsupported);
+  EXPECT_EQ(rule(HfJson(R"({"type": "UnsupportedType"})")), Rule::kUnsupported);
   EXPECT_TRUE(tok::ReadHfTokenizer(HfJson(R"({"type": "NFC"})", R"(\\p{L}+)")));
   EXPECT_EQ(rule(HfJson(R"({"type": "NFC"})", kQwen35Regex, "[]", R"("byte_fallback": true)")),
             Rule::kUnsupported);

@@ -169,6 +169,15 @@ TEST(ImportMlxNormalizeTest, UnknownSourceRefusalKeepsSourceOwnership) {
   EXPECT_EQ(source.tensors[0].name, "owned source");
 }
 
+TEST(ImportMlxNormalizeTest, DrafterBoundRefusesInvalidCheckpoint) {
+  Checkpoint source;
+  source.container = "safetensors";
+  source.architecture = "qwen4_exp";
+  source.quantization = "mlx affine";
+  EXPECT_FALSE(MlxDrafterBound(source, 0));
+  EXPECT_FALSE(NormalizeMlxDrafter(source, std::nullopt, {}, nullptr));
+}
+
 TEST(ImportMlxNormalizeModelsTest,
      RealStagedCheckpointNormalizesPublishesAdmitsAndPlansAffineSplitWeights) {
   const char* env_path = std::getenv("LLMP_MLX_QWEN38_SOURCE");
@@ -285,6 +294,39 @@ TEST(ImportMlxNormalizeModelsTest,
   RecordProperty("published_tensors", std::to_string(admission->source.tensors.size()));
 
   std::filesystem::remove_all(scratch, ec);
+}
+
+TEST(ImportMlxNormalizeModelsTest, RealStagedCheckpointNormalizesMlxDrafter) {
+  const char* env_path = std::getenv("LLMP_MLX_QWEN38_SOURCE");
+  const std::filesystem::path path =
+      env_path != nullptr ? std::filesystem::path(env_path)
+                          : std::filesystem::path(test_support::ModelsDir()) /
+                                "models/Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80";
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec)) {
+    GTEST_FAIL() << "no staged MLX Qwen3.8 source: " << path;
+  }
+  auto checkpoint = ReadCheckpoint(path);
+  ASSERT_TRUE(checkpoint) << checkpoint.error().ToString();
+
+  auto f = fx::NativeMlx();
+  NormalizationTarget target{.mapping = &spec::mappings::Qwen38NativeMapping(),
+                             .model = std::move(f.model),
+                             .source = std::move(f.source)};
+
+  auto bound = MlxDrafterBound(*checkpoint, 0);
+  ASSERT_TRUE(bound) << bound.error().ToString();
+
+  NormalizationLimits limits{bound->metadata_bytes, bound->work_units};
+  auto plan = NormalizeMlxDrafter(*checkpoint, std::nullopt, limits, &target);
+  ASSERT_TRUE(plan) << plan.error().ToString();
+  EXPECT_EQ(plan->canonical().architecture, "qwen4exp-mtp");
+  EXPECT_EQ(plan->canonical().container, "mlx");
+  EXPECT_EQ(plan->canonical().tensors.size(), 76U);
+  EXPECT_EQ(plan->canonical().folds, std::vector<std::string>{"norm.plus_one"});
+  ASSERT_EQ(plan->spec().stages.size(), 2U);
+  EXPECT_EQ(plan->spec().stages[0].role, spec::StageRole::kTarget);
+  EXPECT_EQ(plan->spec().stages[1].role, spec::StageRole::kDrafter);
 }
 
 }  // namespace

@@ -106,7 +106,7 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& mapping);
 
 namespace normalization_detail {
 inline constexpr std::uint32_t kLayerLimit = 1024;
-inline constexpr std::size_t kRuleLimit = 64;
+inline constexpr std::size_t kRuleLimit = 256;
 // Bits for the accepted source scalar and layer-list alternatives. Int and Real intersect
 // when one key supplies both; a bool is never an integer.
 inline constexpr std::uint8_t kInteger = 1, kReal = 2, kFlag = 4, kText = 8, kIntegers = 16,

@@ -42,14 +42,19 @@ std::expected<PartRoutePlan, Error> PartRoutePlan::Permute(const HeadPermutation
   out.permutation_ = *cursor;
   return out;
 }
-std::expected<PartRoutePlan, Error> PartRoutePlan::Fold(ScalarFold fold, std::uint64_t elements) {
+std::expected<PartRoutePlan, Error> PartRoutePlan::Fold(ScalarFold fold, std::uint64_t elements,
+                                                        format::Encoding source_encoding) {
   if ((fold != ScalarFold::kNormPlusOne && fold != ScalarFold::kANegExp) || elements == 0 ||
+      (source_encoding != format::Encoding::kBF16 && source_encoding != format::Encoding::kF16 &&
+       source_encoding != format::Encoding::kF32) ||
       elements > std::numeric_limits<std::uint64_t>::max() / 4)
     return Bad("invalid scalar route or byte product");
+  const std::uint64_t elem_size = (source_encoding == format::Encoding::kF32) ? 4 : 2;
   PartRoutePlan out;
-  out.input_bytes_ = elements * 2;
+  out.input_bytes_ = elements * elem_size;
   out.output_bytes_ = elements * 4;
   out.fold_ = fold;
+  out.source_encoding_ = source_encoding;
   return out;
 }
 std::expected<PartRoutePlan, Error> PartRoutePlan::PermuteFold(const HeadPermutationPlan& plan,
@@ -57,12 +62,17 @@ std::expected<PartRoutePlan, Error> PartRoutePlan::PermuteFold(const HeadPermuta
                                                                ScalarFold fold) {
   auto out = Permute(plan, part);
   if (!out) return out;
+  const auto enc = plan.format().encoding;
   if ((fold != ScalarFold::kNormPlusOne && fold != ScalarFold::kANegExp) ||
-      plan.format().encoding != format::Encoding::kBF16 || out->input_bytes_ % 2 != 0 ||
-      out->input_bytes_ > 2 * 8192)
-    return Bad("a permuted fold needs a small whole BF16 part");
-  out->output_bytes_ = out->input_bytes_ * 2;
+      (enc != format::Encoding::kBF16 && enc != format::Encoding::kF16 &&
+       enc != format::Encoding::kF32))
+    return Bad("a permuted fold needs a small whole BF16/F16/F32 part");
+  const std::uint64_t elem_size = (enc == format::Encoding::kF32) ? 4 : 2;
+  if (out->input_bytes_ % elem_size != 0 || out->input_bytes_ > elem_size * 8192)
+    return Bad("a permuted fold needs a small whole BF16/F16/F32 part");
+  out->output_bytes_ = (out->input_bytes_ / elem_size) * 4;
   out->fold_ = fold;
+  out->source_encoding_ = enc;
   return out;
 }
 std::expected<PartRoutePlan, Error> PartRoutePlan::ScaleAtoms(std::uint64_t rows,
@@ -107,6 +117,7 @@ std::expected<PartRouteExecution, Error> PartRoutePlan::Start(
   out.row_bytes_ = row_bytes_;
   out.stride_ = stride_;
   out.lane_ = lane_;
+  out.source_encoding_ = source_encoding_;
   if (fold_) out.workspace_ = workspace.first(std::min<std::size_t>(workspace.size(), 65536));
   if (atom_blocks_ != 0) out.workspace_ = workspace.first(static_cast<std::size_t>(2 * band));
   return out;
@@ -128,6 +139,7 @@ PartRouteExecution& PartRouteExecution::operator=(PartRouteExecution&& other) no
   acknowledged_ = other.acknowledged_;
   permutation_ = other.permutation_;
   fold_ = other.fold_;
+  source_encoding_ = other.source_encoding_;
   atom_blocks_ = other.atom_blocks_;
   row_bytes_ = other.row_bytes_;
   stride_ = other.stride_;
@@ -195,19 +207,23 @@ std::expected<void, Error> PartRouteExecution::Consume(std::uint64_t offset,
           std::span<const std::byte>(workspace_).first(static_cast<std::size_t>(input_bytes_));
       auto output = workspace_.subspan(static_cast<std::size_t>(input_bytes_),
                                        static_cast<std::size_t>(output_bytes_));
+      const auto elem_size = (source_encoding_ == format::Encoding::kF32) ? 4U : 2U;
       for (std::uint64_t at = 0; at < input_bytes_;) {
         auto next = permutation_->Next(input_bytes_ - at);
         if (!next) return std::unexpected(next.error());
-        if (!*next || (**next).source != at || (**next).bytes == 0 || (**next).bytes % 2 != 0 ||
-            (**next).destination % 2 != 0 || (**next).bytes > input_bytes_ - at ||
+        if (!*next || (**next).source != at || (**next).bytes == 0 ||
+            (**next).bytes % elem_size != 0 || (**next).destination % elem_size != 0 ||
+            (**next).bytes > input_bytes_ - at ||
             (**next).destination > input_bytes_ - (**next).bytes)
           return Bad("permuted fold lost source coverage");
         const auto& run = **next;
-        if (auto ok = FoldBf16(*fold_,
-                               whole.subspan(static_cast<std::size_t>(run.source),
-                                             static_cast<std::size_t>(run.bytes)),
-                               output.subspan(static_cast<std::size_t>(run.destination * 2),
-                                              static_cast<std::size_t>(run.bytes * 2)));
+        const std::uint64_t out_dest = (run.destination / elem_size) * 4;
+        const std::uint64_t out_bytes = (run.bytes / elem_size) * 4;
+        if (auto ok = FoldScalar(*fold_, source_encoding_,
+                                 whole.subspan(static_cast<std::size_t>(run.source),
+                                               static_cast<std::size_t>(run.bytes)),
+                                 output.subspan(static_cast<std::size_t>(out_dest),
+                                                static_cast<std::size_t>(out_bytes)));
             !ok)
           return ok;
         at += run.bytes;
@@ -259,27 +275,40 @@ std::expected<void, Error> PartRouteExecution::Consume(std::uint64_t offset,
       input = input.subspan(piece.size());
       continue;
     }
-    if (carried_) {
-      carry_[1] = input.front();
+    const auto elem_size = (source_encoding_ == format::Encoding::kF32) ? 4U : 2U;
+    if (carried_ > 0) {
+      const auto need = elem_size - carried_;
+      if (input.size() < need) {
+        std::memcpy(carry_.data() + carried_, input.data(), input.size());
+        carried_ += static_cast<std::uint8_t>(input.size());
+        received_ += input.size();
+        input = {};
+        continue;
+      }
+      std::memcpy(carry_.data() + carried_, input.data(), need);
       auto output = workspace_.first(4);
-      if (auto ok = FoldBf16(*fold_, carry_, output); !ok) return ok;
+      if (auto ok = FoldScalar(*fold_, source_encoding_,
+                               std::span<const std::byte>(carry_).first(elem_size), output);
+          !ok)
+        return ok;
       if (auto ok = emit(acknowledged_, output); !ok) return ok;
-      ++received_;
+      received_ += need;
       acknowledged_ += 4;
-      carried_ = false;
-      input = input.subspan(1);
+      carried_ = 0;
+      input = input.subspan(need);
       continue;
     }
-    const auto count = std::min(input.size(), workspace_.size() / 2) & ~std::size_t{1};
+    const auto max_elements = std::min(input.size() / elem_size, workspace_.size() / 4);
+    const auto count = max_elements * elem_size;
     if (count == 0) {
-      carry_[0] = input.front();
-      carried_ = true;
-      ++received_;
-      input = input.subspan(1);
+      std::memcpy(carry_.data(), input.data(), input.size());
+      carried_ = static_cast<std::uint8_t>(input.size());
+      received_ += input.size();
+      input = {};
       continue;
     }
-    auto output = workspace_.first(count * 2);
-    if (auto ok = FoldBf16(*fold_, input.first(count), output); !ok) return ok;
+    auto output = workspace_.first(max_elements * 4);
+    if (auto ok = FoldScalar(*fold_, source_encoding_, input.first(count), output); !ok) return ok;
     if (auto ok = emit(acknowledged_, output); !ok) return ok;
     received_ += count;
     acknowledged_ += output.size();
@@ -289,7 +318,8 @@ std::expected<void, Error> PartRouteExecution::Consume(std::uint64_t offset,
   return {};
 }
 std::expected<void, Error> PartRouteExecution::Finish() const {
-  if (failed_ || busy_ || carried_ || received_ != input_bytes_ || acknowledged_ != output_bytes_)
+  if (failed_ || busy_ || carried_ != 0 || received_ != input_bytes_ ||
+      acknowledged_ != output_bytes_)
     return Bad("part route has not acknowledged complete input and output");
   return {};
 }

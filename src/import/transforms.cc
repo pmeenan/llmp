@@ -57,6 +57,27 @@ double Bf16Double(std::uint32_t bits) {
   return std::bit_cast<double>(encoded);
 }
 
+double F32Double(std::uint32_t bits) noexcept {
+  const std::uint64_t sign = static_cast<std::uint64_t>(bits & 0x80000000U) << 32U;
+  const std::uint32_t exponent = (bits >> 23U) & 0xFFU;
+  const std::uint32_t fraction = bits & 0x007FFFFFU;
+  std::uint64_t encoded = sign;
+  if (exponent == 255) {
+    encoded |= 0x7FF0000000000000ULL;
+    if (fraction != 0) {
+      encoded |= (static_cast<std::uint64_t>(fraction) << 29U) | (1ULL << 51U);
+    }
+  } else if (exponent != 0) {
+    encoded |= (static_cast<std::uint64_t>(exponent + 896U) << 52U) |
+               (static_cast<std::uint64_t>(fraction) << 29U);
+  } else if (fraction != 0) {
+    const auto high = static_cast<unsigned>(31 - std::countl_zero(fraction));
+    encoded |= (static_cast<std::uint64_t>(high + 874U) << 52U) |
+               (static_cast<std::uint64_t>(fraction ^ (1U << high)) << (52U - high));
+  }
+  return std::bit_cast<double>(encoded);
+}
+
 std::uint64_t RoundRight(std::uint64_t significand, unsigned shift) {
   const std::uint64_t whole = significand >> shift;
   const std::uint64_t remainder = significand & ((1ULL << shift) - 1U);
@@ -97,32 +118,52 @@ std::uint32_t F32Bits(double value) {
          (static_cast<std::uint32_t>(rounded) & 0x007FFFFFU);
 }
 
-// Python's float loads quiet a signaling BF16 NaN, preserving payload and
-// sign; neg_exp's final negation flips its sign. Handle it without relying
-// on a compiler's NaN propagation through arithmetic/libm.
-std::uint32_t FoldBits(ScalarFold fold, std::uint32_t bits) {
-  if ((bits & 0x7F800000U) == 0x7F800000U && (bits & 0x007FFFFFU) != 0) {
-    return (bits | 0x00400000U) ^ (fold == ScalarFold::kANegExp ? 0x80000000U : 0U);
-  }
-  const double value = Bf16Double(bits);
-  const double result = fold == ScalarFold::kNormPlusOne ? value + 1.0 : -std::exp(value);
-  return F32Bits(result);
-}
-
 bool ProductFits(std::uint64_t a, std::uint64_t b) {
   return b == 0 || a <= std::numeric_limits<std::uint64_t>::max() / b;
 }
 
 }  // namespace
 
-std::expected<void, Error> FoldBf16(ScalarFold fold, std::span<const std::byte> input,
-                                    std::span<std::byte> output) {
+double F16Double(std::uint16_t bits) noexcept {
+  const std::uint64_t sign = static_cast<std::uint64_t>(bits & 0x8000U) << 48U;
+  const std::uint32_t exponent = (bits >> 10U) & 0x1FU;
+  const std::uint32_t fraction = bits & 0x03FFU;
+  std::uint64_t encoded = sign;
+  if (exponent == 31) {
+    encoded |= 0x7FF0000000000000ULL;
+    if (fraction != 0) {
+      encoded |= (static_cast<std::uint64_t>(fraction) << 42U) | (1ULL << 51U);
+    }
+  } else if (exponent != 0) {
+    encoded |= (static_cast<std::uint64_t>(exponent + 1008U) << 52U) |
+               (static_cast<std::uint64_t>(fraction) << 42U);
+  } else if (fraction != 0) {
+    const auto high =
+        static_cast<unsigned>(31 - std::countl_zero(static_cast<std::uint32_t>(fraction)));
+    encoded |= (static_cast<std::uint64_t>(high + 999U) << 52U) |
+               (static_cast<std::uint64_t>(fraction ^ (1U << high)) << (52U - high));
+  }
+  return std::bit_cast<double>(encoded);
+}
+
+std::expected<void, Error> FoldScalar(ScalarFold fold, format::Encoding source_encoding,
+                                      std::span<const std::byte> input,
+                                      std::span<std::byte> output) {
   if (fold != ScalarFold::kNormPlusOne && fold != ScalarFold::kANegExp) {
     return Refuse("unknown scalar fold");
   }
-  if (input.size() % 2 != 0 || input.size() > std::numeric_limits<std::size_t>::max() / 2 ||
-      output.size() != input.size() * 2) {
-    return Refuse("scalar fold spans do not hold whole BF16 and F32 values");
+  const std::size_t elem_size =
+      (source_encoding == format::Encoding::kF32) ? 4
+      : (source_encoding == format::Encoding::kBF16 || source_encoding == format::Encoding::kF16)
+          ? 2
+          : 0;
+  if (elem_size == 0) {
+    return Refuse("unsupported scalar fold source encoding");
+  }
+  if (input.size() % elem_size != 0 ||
+      input.size() > std::numeric_limits<std::size_t>::max() / (4 / elem_size) ||
+      output.size() != (input.size() / elem_size) * 4) {
+    return Refuse("scalar fold spans do not hold whole elements and F32 output");
   }
   if (std::fegetround() != FE_TONEAREST)
     return Refuse("scalar folds require nearest-even rounding");
@@ -132,23 +173,81 @@ std::expected<void, Error> FoldBf16(ScalarFold fold, std::span<const std::byte> 
       less(output.data(), input.data() + input.size())) {
     return Refuse("scalar fold spans overlap");
   }
-  // Preflight the entire call: a later overflowing A_log must not leave
-  // earlier output changed. This rereads caller RAM, never checkpoint I/O.
+
+  const auto read_double = [&](std::size_t offset) -> double {
+    if (source_encoding == format::Encoding::kBF16) {
+      return Bf16Double(InputBits(input, offset));
+    }
+    if (source_encoding == format::Encoding::kF16) {
+      const auto b =
+          static_cast<std::uint16_t>(std::to_integer<std::uint16_t>(input[offset]) |
+                                     (std::to_integer<std::uint16_t>(input[offset + 1]) << 8U));
+      return F16Double(b);
+    }
+    const auto b = std::to_integer<std::uint32_t>(input[offset]) |
+                   (std::to_integer<std::uint32_t>(input[offset + 1]) << 8U) |
+                   (std::to_integer<std::uint32_t>(input[offset + 2]) << 16U) |
+                   (std::to_integer<std::uint32_t>(input[offset + 3]) << 24U);
+    return F32Double(b);
+  };
+
+  const auto fold_element = [&](std::size_t offset) -> std::uint32_t {
+    if (source_encoding == format::Encoding::kBF16) {
+      const auto bits = InputBits(input, offset);
+      if ((bits & 0x7F800000U) == 0x7F800000U && (bits & 0x007FFFFFU) != 0) {
+        return (bits | 0x00400000U) ^ (fold == ScalarFold::kANegExp ? 0x80000000U : 0U);
+      }
+      const double value = Bf16Double(bits);
+      const double result = fold == ScalarFold::kNormPlusOne ? value + 1.0 : -std::exp(value);
+      return F32Bits(result);
+    }
+    if (source_encoding == format::Encoding::kF16) {
+      const auto bits =
+          static_cast<std::uint16_t>(std::to_integer<std::uint16_t>(input[offset]) |
+                                     (std::to_integer<std::uint16_t>(input[offset + 1]) << 8U));
+      if ((bits & 0x7C00U) == 0x7C00U && (bits & 0x03FFU) != 0) {
+        const auto sign = static_cast<std::uint32_t>(bits & 0x8000U) << 16U;
+        const auto frac = static_cast<std::uint32_t>(bits & 0x03FFU) << 13U;
+        return (sign | 0x7F800000U | frac | 0x00400000U) ^
+               (fold == ScalarFold::kANegExp ? 0x80000000U : 0U);
+      }
+      const double value = F16Double(bits);
+      const double result = fold == ScalarFold::kNormPlusOne ? value + 1.0 : -std::exp(value);
+      return F32Bits(result);
+    }
+    const auto bits = std::to_integer<std::uint32_t>(input[offset]) |
+                      (std::to_integer<std::uint32_t>(input[offset + 1]) << 8U) |
+                      (std::to_integer<std::uint32_t>(input[offset + 2]) << 16U) |
+                      (std::to_integer<std::uint32_t>(input[offset + 3]) << 24U);
+    if ((bits & 0x7F800000U) == 0x7F800000U && (bits & 0x007FFFFFU) != 0) {
+      return (bits | 0x00400000U) ^ (fold == ScalarFold::kANegExp ? 0x80000000U : 0U);
+    }
+    const double value = F32Double(bits);
+    const double result = fold == ScalarFold::kNormPlusOne ? value + 1.0 : -std::exp(value);
+    return F32Bits(result);
+  };
+
   if (fold == ScalarFold::kANegExp) {
-    for (std::size_t i = 0; i < input.size(); i += 2) {
-      const double value = Bf16Double(InputBits(input, i));
+    for (std::size_t i = 0; i < input.size(); i += elem_size) {
+      const double value = read_double(i);
       if (std::isfinite(value) && std::isinf(std::exp(value))) {
         return Refuse("negative exponential overflows binary64");
       }
     }
   }
-  for (std::size_t i = 0; i < input.size(); i += 2) {
-    const std::uint32_t bits = FoldBits(fold, InputBits(input, i));
+
+  for (std::size_t i = 0, out_idx = 0; i < input.size(); i += elem_size, out_idx += 4) {
+    const std::uint32_t bits = fold_element(i);
     for (std::size_t j = 0; j < 4; ++j) {
-      output[i * 2 + j] = static_cast<std::byte>((bits >> (j * 8)) & 0xFFU);
+      output[out_idx + j] = static_cast<std::byte>((bits >> (j * 8)) & 0xFFU);
     }
   }
   return {};
+}
+
+std::expected<void, Error> FoldBf16(ScalarFold fold, std::span<const std::byte> input,
+                                    std::span<std::byte> output) {
+  return FoldScalar(fold, format::Encoding::kBF16, input, output);
 }
 
 std::expected<HeadPermutationPlan, Error> HeadPermutationPlan::Make(
@@ -158,7 +257,8 @@ std::expected<HeadPermutationPlan, Error> HeadPermutationPlan::Make(
   using format::Layout;
   using format::PartRole;
   const auto parts = format::PartsOf(format);
-  const bool dense = format.encoding == Encoding::kF32 || format.encoding == Encoding::kBF16;
+  const bool dense = format.encoding == Encoding::kF32 || format.encoding == Encoding::kBF16 ||
+                     format.encoding == Encoding::kF16;
   // This finite affine domain preserves the source code packing and both
   // BF16 parameter planes; no value decoding or implicit zero-point conversion.
   const bool affine = format.encoding == Encoding::kAffine && format.layout == Layout::kSplit &&
@@ -172,7 +272,7 @@ std::expected<HeadPermutationPlan, Error> HeadPermutationPlan::Make(
          !format.params.tensor_scale) ||
         affine)) {
     return Refuse(
-        "head permutation needs unstacked dense F32/BF16, split MXFP8 or affine4/BF16/group32");
+        "head permutation needs unstacked dense F32/F16/BF16, split MXFP8 or affine4/BF16/group32");
   }
   if ((dense && (parts->size() != 1 || !parts->Find(PartRole::kData))) ||
       (format.encoding == Encoding::kMxfp8 &&

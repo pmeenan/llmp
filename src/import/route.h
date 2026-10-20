@@ -44,12 +44,14 @@ class PartRouteExecution {
   std::uint64_t input_bytes_ = 0, output_bytes_ = 0, received_ = 0, acknowledged_ = 0;
   std::optional<HeadPermutationCursor> permutation_{};
   std::optional<ScalarFold> fold_{};
+  format::Encoding source_encoding_ = format::Encoding::kBF16;
   std::uint64_t atom_blocks_ = 0;  // a scale-atom route's scales a row
   // A strided route's row bytes, output row stride and offset in a row.
   std::uint64_t row_bytes_ = 0, stride_ = 0, lane_ = 0;
   std::span<std::byte> workspace_{};
-  std::array<std::byte, 2> carry_{};
-  bool carried_ = false, failed_ = false, busy_ = false;
+  std::array<std::byte, 4> carry_{};
+  std::uint8_t carried_ = 0;
+  bool failed_ = false, busy_ = false;
 };
 
 // Constant-size checked geometry, without a source identity or permission to
@@ -61,10 +63,12 @@ class PartRoutePlan {
   static std::expected<PartRoutePlan, Error> Copy(std::uint64_t bytes);
   static std::expected<PartRoutePlan, Error> Permute(const HeadPermutationPlan& plan,
                                                      format::PartRole part);
-  // Historical BF16->F32 conversion, not a native resident-weight expansion
-  // policy. Reuses FoldBf16's exact numerical and refusal contract.
-  static std::expected<PartRoutePlan, Error> Fold(ScalarFold fold, std::uint64_t elements);
-  // A fold under a head permutation of the BF16 source (`plan`'s format):
+  // Scalar fold to F32 (kBF16, kF16, or kF32 source). Reuses FoldScalar's
+  // exact numerical and refusal contract.
+  static std::expected<PartRoutePlan, Error> Fold(
+      ScalarFold fold, std::uint64_t elements,
+      format::Encoding source_encoding = format::Encoding::kBF16);
+  // A fold under a head permutation of the source (`plan`'s format):
   // a small part (at most 8192 elements) buffered whole in the workspace,
   // then each permuted run folded to its F32 place (the fold commutes with
   // the reorder).
@@ -93,18 +97,20 @@ class PartRoutePlan {
   }
   std::uint64_t lane() const { return lane_; }
   // No allocation: caller owns/funds workspace and keeps it alive through
-  // execution. A fold needs >=4 bytes and uses at most64KiB; a permuted
-  // fold its input and output (at most 48 KiB); a scale-atom
+  // execution. A fold needs >=4 bytes and uses at most 64 KiB; a permuted
+  // fold its input and output (4 * 16 KiB = 64 KiB); a scale-atom
   // route two bands (at most 64 KiB) and keeps a partial band there between
   // Consume calls, so no other route may use the workspace until it
   // finishes (the writer streams one route at a time); other routes 0.
   std::expected<PartRouteExecution, Error> Start(std::span<std::byte> workspace = {}) const;
+  format::Encoding source_encoding() const { return source_encoding_; }
 
  private:
   PartRoutePlan() = default;
   std::uint64_t input_bytes_ = 0, output_bytes_ = 0;
   std::optional<HeadPermutationCursor> permutation_{};
   std::optional<ScalarFold> fold_{};
+  format::Encoding source_encoding_ = format::Encoding::kBF16;
   std::uint64_t atom_blocks_ = 0;
   std::uint64_t row_bytes_ = 0, stride_ = 0, lane_ = 0;
 };

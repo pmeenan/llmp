@@ -344,11 +344,13 @@ TEST(ChatTemplates, InterpretedRenderingsMarkOnlyTemplateTokens) {
   for (const auto& s : r->specials) {
     EXPECT_FALSE(s.offset >= forged && s.offset < forged + 31) << s.offset;
   }
-  ASSERT_EQ(r->boundaries.size(), 1U);
-  EXPECT_EQ(r->boundaries[0].kind, chat::BoundaryKind::kGenerationPrompt);
-  EXPECT_EQ(std::string_view(r->text).substr(r->boundaries[0].offset),
+  ASSERT_EQ(r->boundaries.size(), 3U);
+  EXPECT_EQ(r->boundaries[0].kind, chat::BoundaryKind::kPrefixEnd);
+  EXPECT_EQ(r->boundaries[1].kind, chat::BoundaryKind::kMessageEnd);
+  EXPECT_EQ(r->boundaries[2].kind, chat::BoundaryKind::kGenerationPrompt);
+  EXPECT_EQ(std::string_view(r->text).substr(r->boundaries[2].offset),
             "<|im_start|>assistant\n<think>\n");
-  EXPECT_EQ(r->specials.back().offset, r->boundaries[0].offset);
+  EXPECT_EQ(r->specials.back().offset, r->boundaries[2].offset);
   // The same conversation natively: the same text and the same tokens.
   auto native = chat::ChatTemplate::ForText(Template("qwen3.8"), QwenFacts());
   ASSERT_TRUE(native.has_value());

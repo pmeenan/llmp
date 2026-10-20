@@ -726,19 +726,102 @@ constexpr auto kMtpReplayMapping = [] {
 // target's head rows. The mapping names no fold of its own: the source
 // records the importer's (Source::folds).
 constexpr auto kMtpNativeTensors = [] {
-  auto rules = kMtpTensors;
-  for (auto& rule : rules) {
-    if (rule.pattern == "blk.{layer}.ffn_gate_up_exps.codes")
+  constexpr auto ExpertScales = [](std::string_view pattern, std::string_view slot,
+                                   std::string_view role) {
+    auto r = Scales(pattern, slot, role);
+    r.experts = true;
+    return r;
+  };
+  constexpr auto ExpertBiases = [](std::string_view pattern, std::string_view slot,
+                                   std::string_view role) {
+    auto r = Biases(pattern, slot, role);
+    r.experts = true;
+    return r;
+  };
+  std::array<TensorRule, kMtpTensors.size() + 51> rules{};
+  std::size_t next = 0;
+  for (auto rule : kMtpTensors) {
+    if (rule.pattern == "blk.{layer}.ffn_gate_up_exps.codes") {
       rule.pattern = "blk.{layer}.ffn_gate_up_exps.weight";
-    if (rule.pattern == "blk.{layer}.ffn_gate_up_exps.scales")
+      rule.optional = true;
+    } else if (rule.pattern == "blk.{layer}.ffn_gate_up_exps.scales") {
       rule.pattern = "blk.{layer}.ffn_gate_up_exps.weight_scale";
-    if (rule.pattern == "blk.{layer}.ffn_down_exps.codes")
+      rule.optional = true;
+    } else if (rule.pattern == "blk.{layer}.ffn_down_exps.codes") {
       rule.pattern = "blk.{layer}.ffn_down_exps.weight";
-    if (rule.pattern == "blk.{layer}.ffn_down_exps.scales")
+      rule.optional = true;
+    } else if (rule.pattern == "blk.{layer}.ffn_down_exps.scales") {
       rule.pattern = "blk.{layer}.ffn_down_exps.weight_scale";
+      rule.optional = true;
+    }
+    rules[next++] = rule;
   }
+  // Linear scale and bias rules
+  rules[next++] = Scales("fc_embd.weight_scale", "embedding", "fc_embd");
+  rules[next++] = Biases("fc_embd.weight_bias", "embedding", "fc_embd");
+  rules[next++] = Scales("fc_hidden.weight_scale", "embedding", "fc_hidden");
+  rules[next++] = Biases("fc_hidden.weight_bias", "embedding", "fc_hidden");
+  rules[next++] = Scales("blk.{layer}.hc_attn_down.weight_scale", "attn_mix", "down");
+  rules[next++] = Biases("blk.{layer}.hc_attn_down.weight_bias", "attn_mix", "down");
+  rules[next++] = Scales("blk.{layer}.hc_attn_up.weight_scale", "attn_mix", "up");
+  rules[next++] = Biases("blk.{layer}.hc_attn_up.weight_bias", "attn_mix", "up");
+  rules[next++] = Scales("blk.{layer}.hc_attn_inject.weight_scale", "attn_combine", "inject");
+  rules[next++] = Biases("blk.{layer}.hc_attn_inject.weight_bias", "attn_combine", "inject");
+  rules[next++] = Scales("blk.{layer}.hc_ffn_down.weight_scale", "ffn_mix", "down");
+  rules[next++] = Biases("blk.{layer}.hc_ffn_down.weight_bias", "ffn_mix", "down");
+  rules[next++] = Scales("blk.{layer}.hc_ffn_up.weight_scale", "ffn_mix", "up");
+  rules[next++] = Biases("blk.{layer}.hc_ffn_up.weight_bias", "ffn_mix", "up");
+  rules[next++] = Scales("blk.{layer}.hc_ffn_inject.weight_scale", "ffn_combine", "inject");
+  rules[next++] = Biases("blk.{layer}.hc_ffn_inject.weight_bias", "ffn_combine", "inject");
+  rules[next++] = Scales("blk.{layer}.attn_q.weight_scale", "attention", "q");
+  rules[next++] = Biases("blk.{layer}.attn_q.weight_bias", "attention", "q");
+  rules[next++] = Scales("blk.{layer}.attn_k.weight_scale", "attention", "k");
+  rules[next++] = Biases("blk.{layer}.attn_k.weight_bias", "attention", "k");
+  rules[next++] = Scales("blk.{layer}.attn_v.weight_scale", "attention", "v");
+  rules[next++] = Biases("blk.{layer}.attn_v.weight_bias", "attention", "v");
+  rules[next++] = Scales("blk.{layer}.attn_output.weight_scale", "attention", "output");
+  rules[next++] = Biases("blk.{layer}.attn_output.weight_bias", "attention", "output");
+  rules[next++] = Scales("blk.{layer}.indexer.qk_proj.weight_scale", "attention", "indexer_qk");
+  rules[next++] = Biases("blk.{layer}.indexer.qk_proj.weight_bias", "attention", "indexer_qk");
+  rules[next++] = Scales("blk.{layer}.ffn_gate_inp.weight_scale", "moe", "router");
+  rules[next++] = Biases("blk.{layer}.ffn_gate_inp.weight_bias", "moe", "router");
+  rules[next++] = Scales("blk.{layer}.ffn_gate_inp_shexp.weight_scale", "moe", "shared_gate");
+  rules[next++] = Biases("blk.{layer}.ffn_gate_inp_shexp.weight_bias", "moe", "shared_gate");
+  rules[next++] = Scales("blk.{layer}.ffn_gate_shexp.weight_scale", "moe", "gate");
+  rules[next++] = Biases("blk.{layer}.ffn_gate_shexp.weight_bias", "moe", "gate");
+  rules[next++] = Scales("blk.{layer}.ffn_up_shexp.weight_scale", "moe", "up");
+  rules[next++] = Biases("blk.{layer}.ffn_up_shexp.weight_bias", "moe", "up");
+  rules[next++] = Scales("blk.{layer}.ffn_down_shexp.weight_scale", "moe", "down");
+  rules[next++] = Biases("blk.{layer}.ffn_down_shexp.weight_bias", "moe", "down");
+  rules[next++] = Scales("output_hc_down.weight_scale", "output_mix", "down");
+  rules[next++] = Biases("output_hc_down.weight_bias", "output_mix", "down");
+  rules[next++] = Scales("output_hc_up.weight_scale", "output_mix", "up");
+  rules[next++] = Biases("output_hc_up.weight_bias", "output_mix", "up");
+  rules[next++] = Scales("draft_output.weight_scale", "selected", "weight");
+  rules[next++] = Biases("draft_output.weight_bias", "selected", "weight");
+  rules[next++] = Scales("output.weight_scale", "output", "weight");
+  rules[next++] = Biases("output.weight_bias", "output", "weight");
+  // Unstacked expert rules
+  rules[next++] = TensorRule{.pattern = "blk.{layer}.ffn_gate_exps.weight",
+                             .slot = "moe",
+                             .role = "gate_experts",
+                             .part = PartRole::kCodes,
+                             .experts = true,
+                             .optional = true};
+  rules[next++] = ExpertScales("blk.{layer}.ffn_gate_exps.weight_scale", "moe", "gate_experts");
+  rules[next++] = ExpertBiases("blk.{layer}.ffn_gate_exps.weight_bias", "moe", "gate_experts");
+  rules[next++] = TensorRule{.pattern = "blk.{layer}.ffn_up_exps.weight",
+                             .slot = "moe",
+                             .role = "up_experts",
+                             .part = PartRole::kCodes,
+                             .experts = true,
+                             .optional = true};
+  rules[next++] = ExpertScales("blk.{layer}.ffn_up_exps.weight_scale", "moe", "up_experts");
+  rules[next++] = ExpertBiases("blk.{layer}.ffn_up_exps.weight_bias", "moe", "up_experts");
+  rules[next++] = ExpertBiases("blk.{layer}.ffn_down_exps.weight_bias", "moe", "down_experts");
   return rules;
 }();
+static_assert(kMtpNativeTensors.size() == kMtpTensors.size() + 51);
 // Its norms zero-centered, as the checkpoint holds them, unless the
 // importer stored 1 + w in F32 (norm.plus_one, as the converted drafter's).
 template <std::size_t N>
@@ -833,8 +916,12 @@ constexpr std::array kMtpValues = {
               .origin = ValueOrigin::kLayerCount,
               .tensor = "blk.{layer}.attn_q.weight"},
     ValueRule{.key = kIndexer, .value = {.text = "fused"}, .type = kString},
-    ValueRule{.key = kStacked, .value = {.flag = true}, .type = kBool},
-    ValueRule{.key = kScaled, .value = {.flag = true}, .type = kBool},
+    ValueRule{
+        .key = kStacked, .origin = ValueOrigin::kComponent, .kind = "ffn.moe", .param = "stacked"},
+    ValueRule{.key = kScaled,
+              .origin = ValueOrigin::kComponent,
+              .kind = "ffn.moe",
+              .param = "projection_scales"},
     ValueRule{.key = kDraftRows,
               .origin = ValueOrigin::kTensor,
               .tensor = "draft_output.weight",

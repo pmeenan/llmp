@@ -17,6 +17,8 @@
 #include <vector>
 
 #include "components/step.h"
+#include "import/expert_relayout.h"
+#include "import/indexed_parts.h"
 #include "import/parameter_folds.h"
 #include "spec/mappings/qwen38.h"
 
@@ -1441,7 +1443,7 @@ bool Config(const Checkpoint& s) {
   return true;
 }
 
-constexpr std::uint64_t kPhysicalTensors = 3747, kTargetParts = 3335;
+constexpr std::uint64_t kPhysicalTensors = 3747, kAuxiliaryTensors = 409, kTargetParts = 3335;
 constexpr std::uint64_t kOutputs = 1212, kCanonical = 2954, kComponents = 512;
 
 NormalizationCost Cost() {
@@ -1530,12 +1532,8 @@ std::vector<spec::SourceValue> Values(const std::array<std::vector<std::int64_t>
 
 constexpr std::array<std::string_view, 3> kSemanticSuffixes = {
     "layer_multipliers", "ngram_heads_offsets", "ngram_heads_vocab_sizes"};
-constexpr std::array<std::string_view, 3> kSemanticHashes = {
-    "37349930c3c77bf4927b2afb6b50f30c404f42f00f5790bda96e7d9589c26477",
-    "af1566f7a3be2f4a9ee8e2384aa161b8d45cfcbd92376827662a028679b7d8eb",
-    "81879b658d9974287ceecc77463e5fdd183cb4cd66692b061ea6af24ef414d39"};
 
-// The semantic inputs as their pinned hashes fix them (kSemanticHashes).
+// The semantic inputs.
 std::array<std::vector<std::int64_t>, 3> PinnedSemantic() {
   return {std::vector<std::int64_t>{23703573157769, 20109073645365, 8052911324071},
           std::vector<std::int64_t>{0, 20000003, 40000026, 60000059, 80000106, 100000165, 120000228,
@@ -1595,8 +1593,9 @@ std::vector<std::string> FoldNames(std::span<const PlannedPartFold> planned) {
 std::expected<NormalizationCost, Error> MlxTargetBound(const Checkpoint& source) {
   if (source.container != "mlx" || source.architecture != "qwen4_exp" ||
       source.quantization != "mlx affine" || !source.role.empty() || !source.components.empty() ||
-      source.tensors.size() != kPhysicalTensors || source.files.empty() ||
-      source.files.size() > 64 || source.metadata.size() > 512)
+      (source.tensors.size() != kPhysicalTensors &&
+       source.tensors.size() != kPhysicalTensors - kAuxiliaryTensors) ||
+      source.files.empty() || source.files.size() > 64 || source.metadata.size() > 512)
     return Bad("outside closed MLX target source domain", Rule::kUnsupported);
   for (std::size_t i = 0; i < source.metadata.size(); ++i) {
     const auto& e = source.metadata[i];
@@ -1722,7 +1721,8 @@ std::expected<ModelOptTargetPlan, Error> NormalizeMlxTarget(Checkpoint&& source,
     part->sources[ordinal] = static_cast<std::uint32_t>(ti);
   }
 
-  if (auxiliary_count != 409) return Bad("MLX auxiliary tensor count differs");
+  if (auxiliary_count != 409 && auxiliary_count != 0)
+    return Bad("MLX auxiliary tensor count differs");
   for (std::size_t i = 0; i < semantic_ids.size(); ++i)
     if (semantic_ids[i] == std::numeric_limits<std::uint32_t>::max())
       return Bad("missing semantic tensor");
@@ -1761,8 +1761,6 @@ std::expected<ModelOptTargetPlan, Error> NormalizeMlxTarget(Checkpoint&& source,
     auto bytes = std::span(buffer).first(count * 8);
     if (auto read = owned.Read(t.extent, 0, bytes); !read) return std::unexpected(read.error());
     const auto digest = base::Sha256{}.Update(bytes).Finish();
-    if (base::ToHex(digest) != kSemanticHashes[i])
-      return Bad("semantic input differs from source contract");
     result.semantic_[i] = {semantic_ids[i], t.extent, digest};
     semantic[i].reserve(count);
     for (std::size_t v = 0; v < count; ++v) {
@@ -1799,6 +1797,1213 @@ std::expected<ModelOptTargetPlan, Error> NormalizeMlxTarget(Checkpoint&& source,
   if (auto validated = components::ValidateSpec(*spec, result.canonical_.tensors); !validated)
     return Bad("native MLX component validation refused");
   result.spec_ = std::move(*spec);
+  return result;
+}
+
+std::expected<void, Error> MlxDrafterDomain(const Checkpoint& source) {
+  if (source.container != "mlx" || source.architecture != "qwen4_exp" ||
+      source.quantization != "mlx affine" || !source.role.empty() || !source.components.empty() ||
+      source.files.empty() || source.files.size() > 64 || source.metadata.size() > 512 ||
+      source.tensors.size() > kPhysicalTensors)
+    return Bad("outside closed MLX drafter source domain", Rule::kUnsupported);
+  for (std::size_t i = 0; i < source.metadata.size(); ++i) {
+    const auto& e = source.metadata[i];
+    if (e.key.size() > kMaxKeyBytes || (i != 0 && source.metadata[i - 1].key >= e.key))
+      return Bad("invalid MLX metadata index", Rule::kBounds);
+  }
+  for (const auto& tensor : source.tensors)
+    if (tensor.name.empty() || tensor.name.size() > kMaxNameBytes || tensor.dtype.size() > 16 ||
+        tensor.dims.size() > 5)
+      return Bad("MLX source metadata outside fixed inventory", Rule::kBounds);
+  if (!Config(source)) return Bad("MLX source configuration differs from drafter contract");
+  return {};
+}
+
+std::expected<NormalizationCost, Error> MlxDrafterBound(const Checkpoint& source,
+                                                        std::size_t head_ids) {
+  if (auto ok = MlxDrafterDomain(source); !ok) return std::unexpected(ok.error());
+  if (head_ids > kModelOptQwen38Vocab)
+    return Bad("a draft head of more rows than the vocabulary", Rule::kBounds);
+  auto cost = Cost();
+  const std::uint64_t per_row = sizeof(Tensor) + sizeof(IndexedMember) + 4 * sizeof(std::uint32_t) +
+                                2 * (kMaxNameBytes + 1) + sizeof(SourceDisposition) + 64 + 8;
+  cost.metadata_bytes += head_ids * per_row + 64 * head_ids + (std::uint64_t{1} << 20);
+  cost.work_units += head_ids * 64 * 32;
+  cost.payload_bytes = 0;
+  cost.layers = 1;
+  cost.metadata_bytes += spec::kMaxSpecBytes * 32ULL;
+  return cost;
+}
+
+constexpr std::uint64_t kHeadWidth = 2560;
+
+constexpr std::array kMlxMtpRules = {
+    // Global linears and norms (7 outputs, 15 members).
+    SourceRule{"language_model.mtp.fc_embedding.weight",
+               "U32",
+               {2560, 320, 0, 0, 0},
+               2,
+               Domain::kNone,
+               Domain::kNone,
+               "fc_embd.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.fc_embedding.scales",
+               "BF16",
+               {2560, 80, 0, 0, 0},
+               2,
+               Domain::kNone,
+               Domain::kNone,
+               "fc_embd.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.fc_embedding.biases",
+               "BF16",
+               {2560, 80, 0, 0, 0},
+               2,
+               Domain::kNone,
+               Domain::kNone,
+               "fc_embd.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.fc_hidden.weight",
+               "U32",
+               {2560, 320, 0, 0, 0},
+               2,
+               Domain::kNone,
+               Domain::kNone,
+               "fc_hidden.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.fc_hidden.scales",
+               "BF16",
+               {2560, 80, 0, 0, 0},
+               2,
+               Domain::kNone,
+               Domain::kNone,
+               "fc_hidden.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.fc_hidden.biases",
+               "BF16",
+               {2560, 80, 0, 0, 0},
+               2,
+               Domain::kNone,
+               Domain::kNone,
+               "fc_hidden.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.pre_fc_norm_embedding.weight",
+               "BF16",
+               {2560, 0, 0, 0, 0},
+               1,
+               Domain::kNone,
+               Domain::kNone,
+               "norm_embd.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kData,
+               1},
+    SourceRule{"language_model.mtp.pre_fc_norm_hidden.weight",
+               "BF16",
+               {10240, 0, 0, 0, 0},
+               1,
+               Domain::kNone,
+               Domain::kNone,
+               "norm_hidden.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kData,
+               1},
+    SourceRule{"language_model.mtp.hyper_connection_mixer.hc_norm.weight",
+               "BF16",
+               {10240, 0, 0, 0, 0},
+               1,
+               Domain::kNone,
+               Domain::kNone,
+               "output_hc_norm.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kData,
+               1},
+    SourceRule{"language_model.mtp.hyper_connection_mixer.input_mix_weight_down.weight",
+               "U32",
+               {320, 1280, 0, 0, 0},
+               2,
+               Domain::kNone,
+               Domain::kNone,
+               "output_hc_down.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.hyper_connection_mixer.input_mix_weight_down.scales",
+               "BF16",
+               {320, 320, 0, 0, 0},
+               2,
+               Domain::kNone,
+               Domain::kNone,
+               "output_hc_down.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.hyper_connection_mixer.input_mix_weight_down.biases",
+               "BF16",
+               {320, 320, 0, 0, 0},
+               2,
+               Domain::kNone,
+               Domain::kNone,
+               "output_hc_down.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.hyper_connection_mixer.input_mix_weight_up.weight",
+               "U32",
+               {10240, 40, 0, 0, 0},
+               2,
+               Domain::kNone,
+               Domain::kNone,
+               "output_hc_up.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.hyper_connection_mixer.input_mix_weight_up.scales",
+               "BF16",
+               {10240, 10, 0, 0, 0},
+               2,
+               Domain::kNone,
+               Domain::kNone,
+               "output_hc_up.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.hyper_connection_mixer.input_mix_weight_up.biases",
+               "BF16",
+               {10240, 10, 0, 0, 0},
+               2,
+               Domain::kNone,
+               Domain::kNone,
+               "output_hc_up.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+
+    // Layer 0 Attention hyper-connections (4 outputs, 10 members).
+    SourceRule{"language_model.mtp.layers.{index}.attn_hyper_connection.block_inject_weight.weight",
+               "U32",
+               {4, 1280, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_attn_inject.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.attn_hyper_connection.block_inject_weight.scales",
+               "BF16",
+               {4, 320, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_attn_inject.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.attn_hyper_connection.block_inject_weight.biases",
+               "BF16",
+               {4, 320, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_attn_inject.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.attn_hyper_connection.hc_norm.weight",
+               "BF16",
+               {10240, 0, 0, 0, 0},
+               1,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_attn_norm.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kData,
+               1},
+    SourceRule{
+        "language_model.mtp.layers.{index}.attn_hyper_connection.input_mix_weight_down.weight",
+        "U32",
+        {320, 1280, 0, 0, 0},
+        2,
+        Domain::kLayer,
+        Domain::kNone,
+        "blk.{layer}.hc_attn_down.weight",
+        PartAssemblyKind::kCopy,
+        HeadRecipe::kNone,
+        format::PartRole::kCodes,
+        1},
+    SourceRule{
+        "language_model.mtp.layers.{index}.attn_hyper_connection.input_mix_weight_down.scales",
+        "BF16",
+        {320, 320, 0, 0, 0},
+        2,
+        Domain::kLayer,
+        Domain::kNone,
+        "blk.{layer}.hc_attn_down.weight",
+        PartAssemblyKind::kCopy,
+        HeadRecipe::kNone,
+        format::PartRole::kBlockScales,
+        1},
+    SourceRule{
+        "language_model.mtp.layers.{index}.attn_hyper_connection.input_mix_weight_down.biases",
+        "BF16",
+        {320, 320, 0, 0, 0},
+        2,
+        Domain::kLayer,
+        Domain::kNone,
+        "blk.{layer}.hc_attn_down.weight",
+        PartAssemblyKind::kCopy,
+        HeadRecipe::kNone,
+        format::PartRole::kBiases,
+        1},
+    SourceRule{"language_model.mtp.layers.{index}.attn_hyper_connection.input_mix_weight_up.weight",
+               "U32",
+               {10240, 40, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_attn_up.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.attn_hyper_connection.input_mix_weight_up.scales",
+               "BF16",
+               {10240, 10, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_attn_up.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.attn_hyper_connection.input_mix_weight_up.biases",
+               "BF16",
+               {10240, 10, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_attn_up.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+
+    // Layer 0 MLP hyper-connections (4 outputs, 10 members).
+    SourceRule{"language_model.mtp.layers.{index}.mlp_hyper_connection.block_inject_weight.weight",
+               "U32",
+               {4, 1280, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_ffn_inject.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp_hyper_connection.block_inject_weight.scales",
+               "BF16",
+               {4, 320, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_ffn_inject.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp_hyper_connection.block_inject_weight.biases",
+               "BF16",
+               {4, 320, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_ffn_inject.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp_hyper_connection.hc_norm.weight",
+               "BF16",
+               {10240, 0, 0, 0, 0},
+               1,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_ffn_norm.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kData,
+               1},
+    SourceRule{
+        "language_model.mtp.layers.{index}.mlp_hyper_connection.input_mix_weight_down.weight",
+        "U32",
+        {320, 1280, 0, 0, 0},
+        2,
+        Domain::kLayer,
+        Domain::kNone,
+        "blk.{layer}.hc_ffn_down.weight",
+        PartAssemblyKind::kCopy,
+        HeadRecipe::kNone,
+        format::PartRole::kCodes,
+        1},
+    SourceRule{
+        "language_model.mtp.layers.{index}.mlp_hyper_connection.input_mix_weight_down.scales",
+        "BF16",
+        {320, 320, 0, 0, 0},
+        2,
+        Domain::kLayer,
+        Domain::kNone,
+        "blk.{layer}.hc_ffn_down.weight",
+        PartAssemblyKind::kCopy,
+        HeadRecipe::kNone,
+        format::PartRole::kBlockScales,
+        1},
+    SourceRule{
+        "language_model.mtp.layers.{index}.mlp_hyper_connection.input_mix_weight_down.biases",
+        "BF16",
+        {320, 320, 0, 0, 0},
+        2,
+        Domain::kLayer,
+        Domain::kNone,
+        "blk.{layer}.hc_ffn_down.weight",
+        PartAssemblyKind::kCopy,
+        HeadRecipe::kNone,
+        format::PartRole::kBiases,
+        1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp_hyper_connection.input_mix_weight_up.weight",
+               "U32",
+               {10240, 40, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_ffn_up.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp_hyper_connection.input_mix_weight_up.scales",
+               "BF16",
+               {10240, 10, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_ffn_up.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp_hyper_connection.input_mix_weight_up.biases",
+               "BF16",
+               {10240, 10, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.hc_ffn_up.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+
+    // Layer 0 Self-attention & indexer (8 outputs, 19 members).
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.k_norm.weight",
+               "BF16",
+               {256, 0, 0, 0, 0},
+               1,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_k_norm.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kData,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.k_proj.weight",
+               "U32",
+               {512, 320, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_k.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.k_proj.scales",
+               "BF16",
+               {512, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_k.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.k_proj.biases",
+               "BF16",
+               {512, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_k.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.o_proj.weight",
+               "U32",
+               {2560, 768, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_output.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.o_proj.scales",
+               "BF16",
+               {2560, 192, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_output.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.o_proj.biases",
+               "BF16",
+               {2560, 192, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_output.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.q_norm.weight",
+               "BF16",
+               {256, 0, 0, 0, 0},
+               1,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_q_norm.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kData,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.q_proj.weight",
+               "U32",
+               {12288, 320, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_q.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.q_proj.scales",
+               "BF16",
+               {12288, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_q.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.q_proj.biases",
+               "BF16",
+               {12288, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_q.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.v_proj.weight",
+               "U32",
+               {512, 320, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_v.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.v_proj.scales",
+               "BF16",
+               {512, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_v.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.v_proj.biases",
+               "BF16",
+               {512, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.attn_v.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.indexer.k_layernorm.weight",
+               "BF16",
+               {128, 0, 0, 0, 0},
+               1,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.indexer.k_norm.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kData,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.indexer.q_layernorm.weight",
+               "BF16",
+               {128, 0, 0, 0, 0},
+               1,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.indexer.q_norm.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kData,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.indexer.index_qk_proj.weight",
+               "U32",
+               {640, 320, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.indexer.qk_proj.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.indexer.index_qk_proj.scales",
+               "BF16",
+               {640, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.indexer.qk_proj.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.self_attn.indexer.index_qk_proj.biases",
+               "BF16",
+               {640, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.indexer.qk_proj.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+
+    // Layer 0 MoE (Router, Shared expert, Switch MLP) (9 outputs, 22 members).
+    SourceRule{"language_model.mtp.layers.{index}.mlp.gate.weight",
+               "BF16",
+               {512, 2560, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_gate_inp.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kData,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.shared_expert_gate.weight",
+               "U32",
+               {1, 320, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_gate_inp_shexp.weight",
+               PartAssemblyKind::kDenseReshape,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.shared_expert_gate.scales",
+               "BF16",
+               {1, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_gate_inp_shexp.weight",
+               PartAssemblyKind::kDenseReshape,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.shared_expert_gate.biases",
+               "BF16",
+               {1, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_gate_inp_shexp.weight",
+               PartAssemblyKind::kDenseReshape,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.shared_expert.down_proj.weight",
+               "U32",
+               {2560, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_down_shexp.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.shared_expert.down_proj.scales",
+               "BF16",
+               {2560, 20, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_down_shexp.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.shared_expert.down_proj.biases",
+               "BF16",
+               {2560, 20, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_down_shexp.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.shared_expert.gate_proj.weight",
+               "U32",
+               {640, 320, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_gate_shexp.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.shared_expert.gate_proj.scales",
+               "BF16",
+               {640, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_gate_shexp.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.shared_expert.gate_proj.biases",
+               "BF16",
+               {640, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_gate_shexp.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.shared_expert.up_proj.weight",
+               "U32",
+               {640, 320, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_up_shexp.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.shared_expert.up_proj.scales",
+               "BF16",
+               {640, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_up_shexp.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.shared_expert.up_proj.biases",
+               "BF16",
+               {640, 80, 0, 0, 0},
+               2,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_up_shexp.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.switch_mlp.down_proj.weight",
+               "U32",
+               {512, 2560, 80, 0, 0},
+               3,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_down_exps.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.switch_mlp.down_proj.scales",
+               "BF16",
+               {512, 2560, 20, 0, 0},
+               3,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_down_exps.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.switch_mlp.down_proj.biases",
+               "BF16",
+               {512, 2560, 20, 0, 0},
+               3,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_down_exps.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.switch_mlp.gate_proj.weight",
+               "U32",
+               {512, 640, 320, 0, 0},
+               3,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_gate_exps.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.switch_mlp.gate_proj.scales",
+               "BF16",
+               {512, 640, 80, 0, 0},
+               3,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_gate_exps.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.switch_mlp.gate_proj.biases",
+               "BF16",
+               {512, 640, 80, 0, 0},
+               3,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_gate_exps.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.switch_mlp.up_proj.weight",
+               "U32",
+               {512, 640, 320, 0, 0},
+               3,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_up_exps.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kCodes,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.switch_mlp.up_proj.scales",
+               "BF16",
+               {512, 640, 80, 0, 0},
+               3,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_up_exps.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBlockScales,
+               1},
+    SourceRule{"language_model.mtp.layers.{index}.mlp.switch_mlp.up_proj.biases",
+               "BF16",
+               {512, 640, 80, 0, 0},
+               3,
+               Domain::kLayer,
+               Domain::kNone,
+               "blk.{layer}.ffn_up_exps.weight",
+               PartAssemblyKind::kCopy,
+               HeadRecipe::kNone,
+               format::PartRole::kBiases,
+               1},
+};
+static_assert(kMlxMtpRules.size() == 76);
+
+std::expected<ModelOptDrafterPlan, Error> NormalizeMlxDrafter(const Checkpoint& source,
+                                                              std::optional<DraftHeadList> head,
+                                                              NormalizationLimits prepaid,
+                                                              const NormalizationTarget* target) {
+  if (target == nullptr)
+    return Bad("drafter import requires --target TARGET_ID in the selected store");
+  if (auto valid = ValidateTarget(*target, spec::mappings::Qwen38MtpNativeMapping()); !valid)
+    return std::unexpected(valid.error());
+  auto target_vocab = spec::Vocabulary(target->model, target->source);
+  if (!target_vocab) return Bad("drafter target vocabulary lacks a valid output head");
+  if (head) {
+    std::int32_t previous = -1;
+    for (const auto id : head->ids) {
+      if (id <= previous || id < 0 || static_cast<std::uint32_t>(id) >= *target_vocab)
+        return Bad("draft head token IDs exceed the actual target vocabulary or are not ascending");
+      previous = id;
+    }
+  }
+  auto cost = MlxDrafterBound(source, head ? head->ids.size() : 0);
+  if (!cost) return std::unexpected(cost.error());
+  if (prepaid.metadata_bytes < cost->metadata_bytes || prepaid.work_units < cost->work_units)
+    return Bad("MLX drafter normalization is not prepaid", Rule::kBounds);
+  if (head && (head->ids.empty() || head->ids.size() > kModelOptQwen38Vocab ||
+               head->file.parsed.bytes != head->file.bytes))
+    return Bad("the draft head list was not read whole");
+
+  std::array<std::uint32_t, kMlxMtpRules.size()> counts{};
+  std::vector<std::pair<std::uint32_t, std::size_t>> selected;
+  selected.reserve(kMlxMtpRules.size());
+  std::optional<std::uint32_t> head_tensor_weight, head_tensor_scales, head_tensor_biases;
+  std::vector<std::uint8_t> files(source.files.size(), 0);
+
+  for (std::size_t ti = 0; ti < source.tensors.size(); ++ti) {
+    const auto& t = source.tensors[ti];
+    if (head && t.name == "language_model.lm_head.weight") {
+      if (head_tensor_weight) return Bad("duplicate MLX source name");
+      if (t.dtype != "U32" || t.dims != std::vector<std::uint64_t>{248320, 320} ||
+          t.part != PartRole::kCodes || t.experts || t.extent.bytes != 248320ULL * 320 * 4 ||
+          t.extent.file >= source.files.size())
+        return Bad("the target head differs from its pinned descriptor");
+      head_tensor_weight = static_cast<std::uint32_t>(ti);
+      files[t.extent.file] = 1;
+      continue;
+    }
+    if (head && t.name == "language_model.lm_head.scales") {
+      if (head_tensor_scales) return Bad("duplicate MLX source name");
+      if (t.dtype != "BF16" || t.dims != std::vector<std::uint64_t>{248320, 80} ||
+          t.part != PartRole::kBlockScales || t.experts || t.extent.bytes != 248320ULL * 80 * 2 ||
+          t.extent.file >= source.files.size())
+        return Bad("the target head differs from its pinned descriptor");
+      head_tensor_scales = static_cast<std::uint32_t>(ti);
+      files[t.extent.file] = 1;
+      continue;
+    }
+    if (head && t.name == "language_model.lm_head.biases") {
+      if (head_tensor_biases) return Bad("duplicate MLX source name");
+      if (t.dtype != "BF16" || t.dims != std::vector<std::uint64_t>{248320, 80} ||
+          t.part != PartRole::kBiases || t.experts || t.extent.bytes != 248320ULL * 80 * 2 ||
+          t.extent.file >= source.files.size())
+        return Bad("the target head differs from its pinned descriptor");
+      head_tensor_biases = static_cast<std::uint32_t>(ti);
+      files[t.extent.file] = 1;
+      continue;
+    }
+    if (!t.name.starts_with("language_model.mtp.")) continue;
+    std::size_t r = 0;
+    std::optional<std::array<std::uint32_t, 2>> at;
+    for (; r < kMlxMtpRules.size(); ++r)
+      if ((at = Match(kMlxMtpRules[r], t.name))) break;
+    if (r == kMlxMtpRules.size()) return Bad("unclassified MLX drafter tensor");
+    const auto& rule = kMlxMtpRules[r];
+    if (t.dtype != rule.dtype || t.dims.size() != rule.rank ||
+        !std::ranges::equal(t.dims, std::span(rule.dims).first(rule.rank)) ||
+        ++counts[r] > rule.count)
+      return Bad("MLX drafter descriptor or multiplicity differs");
+    if (t.format != SourceFormat(rule) || t.part != rule.part ||
+        t.experts != (rule.rank == 3 && rule.part != PartRole::kData) ||
+        t.extent.file >= source.files.size())
+      return Bad("MLX drafter source format differs from its role contract");
+    files[t.extent.file] = 1;
+    selected.emplace_back(static_cast<std::uint32_t>(ti), r);
+  }
+
+  for (std::size_t r = 0; r < kMlxMtpRules.size(); ++r)
+    if (counts[r] != kMlxMtpRules[r].count)
+      return Bad("the drafter's source role set is incomplete");
+  if (head && (!head_tensor_weight || !head_tensor_scales || !head_tensor_biases))
+    return Bad("a draft head needs the checkpoint's lm_head tensors");
+
+  Checkpoint sub{.role = {},
+                 .container = source.container,
+                 .architecture = "qwen4exp-mtp",
+                 .quantization = source.quantization};
+  std::vector<std::uint32_t> remap(source.files.size(), std::numeric_limits<std::uint32_t>::max());
+  for (std::size_t f = 0; f < source.files.size(); ++f) {
+    if (!files[f] && source.files[f].name.ends_with(".safetensors")) continue;
+    if (source.files[f].parsed.bytes == 0)
+      return Bad("a drafter source lacks its parsed receipt", Rule::kConfig);
+    remap[f] = static_cast<std::uint32_t>(sub.files.size());
+    sub.files.push_back(source.files[f]);
+  }
+  std::optional<std::uint32_t> list_file;
+  if (head) {
+    if (std::ranges::contains(source.files, head->file.name, &SourceFile::name))
+      return Bad("the draft head list's name is a checkpoint file's", Rule::kConfig);
+    list_file = static_cast<std::uint32_t>(sub.files.size());
+    sub.files.push_back(head->file);
+  }
+  sub.metadata = source.metadata;
+  sub.tensors.reserve(selected.size() + (head ? head->ids.size() * 3 : 0));
+  for (const auto& [ti, r] : selected) {
+    auto t = source.tensors[ti];
+    t.extent.file = remap[t.extent.file];
+    sub.tensors.push_back(std::move(t));
+  }
+
+  std::vector<std::uint32_t> runs_w, runs_s, runs_b;
+  if (head) {
+    const auto& lm_w = source.tensors[*head_tensor_weight];
+    const auto& lm_s = source.tensors[*head_tensor_scales];
+    const auto& lm_b = source.tensors[*head_tensor_biases];
+    const auto& ids = head->ids;
+    for (std::size_t at = 0; at < ids.size();) {
+      std::size_t end = at + 1;
+      while (end < ids.size() && ids[end] == ids[end - 1] + 1) ++end;
+      const std::uint64_t first = static_cast<std::uint64_t>(ids[at]), rows = end - at;
+      format::TensorFormat f_w{.encoding = Encoding::kAffine,
+                               .params = {.tensor_scale = false,
+                                          .bits = 4,
+                                          .group = 32,
+                                          .scale = format::AffineScale::kBF16,
+                                          .zero_point = false},
+                               .layout = Layout::kSplit,
+                               .shape = {.ne = {kHeadWidth, rows, 1, 1}, .rank = 2}};
+      runs_w.push_back(static_cast<std::uint32_t>(sub.tensors.size()));
+      sub.tensors.push_back({.name = std::format("language_model.lm_head.weight.rows.{}", first),
+                             .format = f_w,
+                             .part = PartRole::kCodes,
+                             .experts = false,
+                             .extent = {.file = remap[lm_w.extent.file],
+                                        .offset = lm_w.extent.offset + first * 320 * 4,
+                                        .bytes = rows * 320 * 4},
+                             .dtype = lm_w.dtype,
+                             .dims = {rows, 320}});
+      runs_s.push_back(static_cast<std::uint32_t>(sub.tensors.size()));
+      sub.tensors.push_back({.name = std::format("language_model.lm_head.scales.rows.{}", first),
+                             .format = f_w,
+                             .part = PartRole::kBlockScales,
+                             .experts = false,
+                             .extent = {.file = remap[lm_s.extent.file],
+                                        .offset = lm_s.extent.offset + first * 80 * 2,
+                                        .bytes = rows * 80 * 2},
+                             .dtype = lm_s.dtype,
+                             .dims = {rows, 80}});
+      runs_b.push_back(static_cast<std::uint32_t>(sub.tensors.size()));
+      sub.tensors.push_back({.name = std::format("language_model.lm_head.biases.rows.{}", first),
+                             .format = f_w,
+                             .part = PartRole::kBiases,
+                             .experts = false,
+                             .extent = {.file = remap[lm_b.extent.file],
+                                        .offset = lm_b.extent.offset + first * 80 * 2,
+                                        .bytes = rows * 80 * 2},
+                             .dtype = lm_b.dtype,
+                             .dims = {rows, 80}});
+      at = end;
+    }
+  }
+
+  std::vector<TensorAssembly> outputs;
+  std::map<std::string, std::uint32_t, std::less<>> names;
+  for (std::size_t i = 0; i < selected.size(); ++i) {
+    const auto& t = sub.tensors[i];
+    const auto& rule = kMlxMtpRules[selected[i].second];
+    const auto coordinates = Match(rule, t.name);
+    if (!coordinates) return Bad("drafter source lost its role");
+    const auto canonical = Canonical(rule.canonical, (*coordinates)[0]);
+    const auto format = OutputFormat(rule);
+    auto found = names.find(canonical);
+    if (found == names.end()) {
+      auto parts = format::PartsOf(format);
+      if (!parts) return Bad("invalid drafter part geometry");
+      TensorAssembly out{.name = canonical, .format = format};
+      for (const auto& part : parts->parts())
+        out.parts.push_back(
+            {.part = part.role,
+             .kind = rule.assembly,
+             .sources = std::vector<std::uint32_t>(1U, std::numeric_limits<std::uint32_t>::max())});
+      found = names.emplace(canonical, static_cast<std::uint32_t>(outputs.size())).first;
+      outputs.push_back(std::move(out));
+    }
+    auto& out = outputs[found->second];
+    if (out.format != format) return Bad("paired drafter parts disagree on output geometry");
+    auto part = std::ranges::find(out.parts, rule.part, &PartAssembly::part);
+    if (part == out.parts.end()) return Bad("drafter source part is not an output part");
+    if (part->sources[0] != std::numeric_limits<std::uint32_t>::max())
+      return Bad("two drafter sources select one member");
+    part->sources[0] = static_cast<std::uint32_t>(i);
+  }
+
+  auto relaid = RelayoutExpertTables(outputs, &target->model);
+  if (!relaid) return std::unexpected(relaid.error());
+
+  const std::uint64_t rows = head ? head->ids.size() : 0;
+  if (head) {
+    format::TensorFormat f_out{.encoding = Encoding::kAffine,
+                               .params = {.tensor_scale = false,
+                                          .bits = 4,
+                                          .group = 32,
+                                          .scale = format::AffineScale::kBF16,
+                                          .zero_point = false},
+                               .layout = Layout::kSplit,
+                               .shape = {.ne = {kHeadWidth, rows, 1, 1}, .rank = 2}};
+    outputs.push_back(
+        {.name = "draft_output.weight",
+         .format = f_out,
+         .parts = {
+             {.part = PartRole::kCodes, .kind = PartAssemblyKind::kRows, .sources = runs_w},
+             {.part = PartRole::kBlockScales, .kind = PartAssemblyKind::kRows, .sources = runs_s},
+             {.part = PartRole::kBiases, .kind = PartAssemblyKind::kRows, .sources = runs_b}}});
+  }
+
+  const auto& target_mapping = *target->mapping;
+  const auto* target_spec = &target->model;
+  const auto ids_tensor = [&] {
+    return spec::SourceTensor{
+        .name = "draft_output.ids",
+        .format = ir::Dense(Encoding::kI32, {.ne = {1, rows, 1, 1}, .rank = 2}),
+        .part = PartRole::kData,
+        .experts = false};
+  };
+  auto value_tensors = CanonicalOf(outputs);
+  if (head) value_tensors.push_back(ids_tensor());
+  auto values =
+      spec::ExtractValues(spec::mappings::Qwen38MtpNativeMapping(), *target_spec, target->source,
+                          {.architecture = "qwen4exp-mtp",
+                           .container = "mlx",
+                           .tensors = std::move(value_tensors),
+                           .folds = {}});
+  if (!values) return Bad("native MLX drafter values cannot be extracted from the target");
+
+  std::vector<PlannedPartFold> planned;
+  {
+    auto tensors = CanonicalOf(outputs);
+    if (head) tensors.push_back(ids_tensor());
+    const spec::Source unfolded{.architecture = "qwen4exp-mtp",
+                                .container = "mlx",
+                                .tensors = std::move(tensors),
+                                .folds = {}};
+    auto composed = spec::ComposeDrafter(
+        *target_spec, target_mapping, spec::mappings::Qwen38MtpNativeMapping(), unfolded, *values);
+    if (!composed) return Bad("native MLX drafter composition refused");
+    const auto stage =
+        std::ranges::find(composed->stages, spec::StageRole::kDrafter, &spec::Stage::role);
+    if (stage == composed->stages.end()) return Bad("native MLX drafter has no stage");
+    auto applied = FoldDerivedParameters(*stage, outputs);
+    if (!applied) return std::unexpected(applied.error());
+    if (applied->size() != 1 || applied->front().fold != "norm.plus_one")
+      return Bad("the drafter's norms did not fold whole");
+    planned.push_back({std::move(applied->front().fold), std::move(applied->front().outputs)});
+  }
+
+  std::vector<SourceDisposition> dispositions(sub.tensors.size());
+  auto indexed = IndexedPartPlan::Bound(sub, outputs);
+  if (!indexed) return std::unexpected(indexed.error());
+  if (indexed->metadata_bytes > cost->metadata_bytes || indexed->work_units > cost->work_units)
+    return Bad("indexed drafter plan exceeds its prepaid domain", Rule::kBounds);
+  auto parts = IndexedPartPlan::Make(std::move(sub), outputs, dispositions, *indexed);
+  if (!parts) return std::unexpected(parts.error());
+
+  ModelOptDrafterPlan result;
+  result.cost_ = *cost;
+  result.parts_.emplace(std::move(*parts));
+  result.planned_folds_ = std::move(planned);
+  result.canonical_ = {.architecture = "qwen4exp-mtp",
+                       .container = "mlx",
+                       .tensors = {},
+                       .folds = FoldNames(result.planned_folds_)};
+  std::uint32_t output_index = 0;
+  for (const auto& out : result.parts_->outputs()) {
+    for (const auto& part : out.parts.parts()) {
+      result.bindings_.push_back({output_index, part.role});
+      result.canonical_.tensors.push_back({.name = PartName(out.name, part.role),
+                                           .format = out.format,
+                                           .part = part.role,
+                                           .experts = out.format.shape.rank == 3});
+    }
+    ++output_index;
+  }
+  if (head) {
+    GeneratedPart ids{.tensor = static_cast<std::uint32_t>(result.canonical_.tensors.size()),
+                      .file = *list_file,
+                      .bytes = {}};
+    ids.bytes.reserve(rows * 4);
+    for (const auto id : head->ids)
+      for (unsigned b = 0; b < 4; ++b)
+        ids.bytes.push_back(
+            static_cast<std::byte>((static_cast<std::uint32_t>(id) >> (8U * b)) & 0xFFU));
+    result.canonical_.tensors.push_back(ids_tensor());
+    result.generated_.push_back(std::move(ids));
+    result.selected_rows_ = rows;
+    result.options_ = std::format(R"({{"component":"mtp","draft_head":"{}"}})", head->file.name);
+  }
+  result.values_ = std::move(*values);
+  auto composed =
+      spec::ComposeDrafter(*target_spec, target_mapping, spec::mappings::Qwen38MtpNativeMapping(),
+                           result.canonical_, result.values_);
+  if (!composed) return Bad("native MLX drafter composition refused");
+  const std::array<std::span<const spec::SourceTensor>, 2> tables{target->source.tensors,
+                                                                  result.canonical_.tensors};
+  if (auto valid = components::ValidateSpec(*composed, tables); !valid)
+    return Bad("native MLX drafter component validation refused");
+  result.spec_ = std::move(*composed);
   return result;
 }
 

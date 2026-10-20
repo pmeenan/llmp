@@ -217,6 +217,11 @@ class Renderer {
       }
     }
     StrBuilder out(arena_.limits().max_output_bytes);
+    top_level_out_ = &out;
+    prefix_end_set_ = false;
+    generation_prompt_offset_.reset();
+    boundaries_.clear();
+
     std::shared_ptr<Scope> scope = globals;
     auto flow = Exec(program_.body, scope, out);
     if (!flow) {
@@ -228,11 +233,23 @@ class Renderer {
     if (out.over()) {
       return Fail(Code::kLimit, "the rendering is longer than its bound");
     }
+
+    if (!prefix_end_set_) {
+      const std::size_t prefix_offset = generation_prompt_offset_.value_or(out.raw().text.size());
+      auto it = boundaries_.begin();
+      while (it != boundaries_.end() && it->kind != BoundaryKind::kGenerationPrompt) {
+        ++it;
+      }
+      boundaries_.insert(it, {BoundaryKind::kPrefixEnd, prefix_offset});
+      prefix_end_set_ = true;
+    }
+
     // The output's text and ranges, within the output bound together, pass
     // to the rendering as they are: no copy of the ranges.
     Rendered r;
     r.text = std::move(out.raw().text);
     r.trusted = std::move(out.raw().trusted);
+    r.boundaries = std::move(boundaries_);
     return r;
   }
 
@@ -518,12 +535,22 @@ class Renderer {
       }
       case StmtKind::kIf:
         for (const auto& [cond, branch] : s.branches) {
+          const bool is_gen_prompt =
+              (&out == top_level_out_) && cond && ReadsName(*cond, "add_generation_prompt");
           auto c = Eval(*cond, *scope);
           if (!c) {
             return std::unexpected(c.error());
           }
           if (Truthy(*c)) {
-            return Exec(branch, scope, out);
+            const std::size_t branch_start = out.raw().text.size();
+            auto flow = Exec(branch, scope, out);
+            if (!flow) return flow;
+            if (is_gen_prompt && out.raw().text.size() > branch_start &&
+                !generation_prompt_offset_) {
+              generation_prompt_offset_ = branch_start;
+              boundaries_.push_back({BoundaryKind::kGenerationPrompt, branch_start});
+            }
+            return flow;
           }
         }
         return Exec(s.else_body, scope, out);
@@ -754,6 +781,15 @@ class Renderer {
     if (items.empty()) {
       return Exec(s.else_body, scope, out);
     }
+    bool is_messages_loop = false;
+    if (&out == top_level_out_ && s.expr) {
+      if (s.expr->kind == ExprKind::kName && s.expr->name == "messages") {
+        is_messages_loop = true;
+      } else if (s.expr->kind == ExprKind::kFilter && !s.expr->args.empty() && s.expr->args[0] &&
+                 s.expr->args[0]->kind == ExprKind::kName && s.expr->args[0]->name == "messages") {
+        is_messages_loop = true;
+      }
+    }
     for (std::size_t i = 0; i < items.size(); ++i) {
       if (!arena_.Step()) {
         return Bound();
@@ -781,10 +817,30 @@ class Renderer {
       if (!iteration->Set("loop", Value::MakeLoop(std::move(loop)), arena_)) {
         return Bound();
       }
+      if (is_messages_loop) {
+        std::string_view role = "";
+        if (items[i].is_dict()) {
+          for (const auto& [k, v] : items[i].dict().members) {
+            if (k == "role" && v.is_string()) {
+              role = v.str().text;
+              break;
+            }
+          }
+        }
+        if (role != "system" && !prefix_end_set_) {
+          boundaries_.push_back({BoundaryKind::kPrefixEnd, out.raw().text.size()});
+          prefix_end_set_ = true;
+        }
+      }
+      const std::size_t iter_start = out.raw().text.size();
       std::shared_ptr<Scope> inner = iteration;
       auto flow = Exec(s.body, inner, out);
       if (!flow) {
         return flow;
+      }
+      const std::size_t iter_end = out.raw().text.size();
+      if (is_messages_loop && prefix_end_set_ && iter_end > iter_start) {
+        boundaries_.push_back({BoundaryKind::kMessageEnd, iter_end});
       }
       if (*flow == Flow::kBreak) {
         break;
@@ -3853,6 +3909,17 @@ class Renderer {
     return Compare(op, v, **a);
   }
 
+  static bool ReadsName(const Expr& e, std::string_view target_name) {
+    if (e.kind == ExprKind::kName && e.name == target_name) return true;
+    for (const auto& a : e.args) {
+      if (a && ReadsName(*a, target_name)) return true;
+    }
+    for (const auto& [_, a] : e.kwargs) {
+      if (a && ReadsName(*a, target_name)) return true;
+    }
+    return false;
+  }
+
   const Program& program_;
   Arena arena_;  // the program's limits, this rendering's budget and cancellation
   const std::optional<CivilTime>& now_;
@@ -3864,6 +3931,10 @@ class Renderer {
   std::vector<std::weak_ptr<Namespace>> namespaces_;
   std::size_t depth_ = 0;
   std::size_t macro_depth_ = 0;
+  const StrBuilder* top_level_out_ = nullptr;
+  bool prefix_end_set_ = false;
+  std::optional<std::size_t> generation_prompt_offset_;
+  std::vector<Boundary> boundaries_;
 };
 
 std::expected<Value, Error> Renderer::FromInput(const Input& in, std::size_t depth) {

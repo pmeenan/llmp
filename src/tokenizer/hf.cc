@@ -62,22 +62,33 @@ std::expected<Normalization, Error> ReadNormalizer(json::Value root) {
   if (!n || n->is_null()) {
     return Normalization::kNone;
   }
-  const auto type = StringMember(*n, "type");
-  if (type == "NFC") {
-    return Normalization::kNfc;
-  }
-  if (type == "Sequence") {
-    const auto list = n->find("normalizers");
-    if (list && list->is_array()) {
-      if (list->size() == 0) {
-        return Normalization::kNone;
+  std::vector<json::Value> pending{*n};
+  bool has_nfc = false;
+  while (!pending.empty()) {
+    const auto value = pending.back();
+    pending.pop_back();
+    const auto type = StringMember(value, "type");
+    if (!type) return Fail(Rule::kFormat, "normalizer missing type");
+    if (*type == "Sequence") {
+      const auto list = value.find("normalizers");
+      if (list && list->is_array()) {
+        for (std::size_t i = list->size(); i > 0; --i) {
+          pending.push_back(list->at(i - 1));
+        }
       }
-      if (list->size() == 1 && StringMember(list->at(0), "type") == "NFC") {
-        return Normalization::kNfc;
-      }
+    } else if (*type == "NFC") {
+      has_nfc = true;
+    } else if (*type == "Strip") {
+      const auto left = value.find("strip_left");
+      const auto right = value.find("strip_right");
+      const bool strip_left = left && left->is_bool() && left->boolean();
+      const bool strip_right = right && right->is_bool() && right->boolean();
+      if (strip_left || strip_right) return Fail(Rule::kUnsupported, "normalizer");
+    } else {
+      return Fail(Rule::kUnsupported, "normalizer");
     }
   }
-  return Fail(Rule::kUnsupported, "normalizer");
+  return has_nfc ? Normalization::kNfc : Normalization::kNone;
 }
 
 bool Only(json::Value value, std::initializer_list<std::string_view> names) {
@@ -119,8 +130,9 @@ std::expected<void, Error> ReadPreTokenizer(json::Value root, TokenizerSpec& spe
         if (flag && !flag->is_bool()) return Fail(Rule::kFormat, "ByteLevel flag is not boolean");
       }
       const auto prefix = value.find("add_prefix_space");
-      if (!prefix || prefix->boolean())
-        return Fail(Rule::kUnsupported, "ByteLevel add_prefix_space");
+      if (prefix && prefix->boolean()) {
+        spec.add_space_prefix = true;
+      }
       const auto regex = value.find("use_regex");
       if (!regex || regex->boolean()) {
         auto preset = ReadPreTokenizerPreset("gpt-2");
@@ -131,14 +143,23 @@ std::expected<void, Error> ReadPreTokenizer(json::Value root, TokenizerSpec& spe
     } else if (type == "Split") {
       const auto pattern = value.find("pattern");
       const auto regex = pattern ? StringMember(*pattern, "Regex") : std::nullopt;
+      const auto behavior = StringMember(value, "behavior");
       if (!Only(value, {"type", "pattern", "behavior", "invert"}) || !pattern ||
-          !Only(*pattern, {"Regex"}) || !regex || StringMember(value, "behavior") != "Isolated" ||
+          !Only(*pattern, {"Regex"}) || !regex || behavior != "Isolated" ||
           !FalseFlag(value, "invert"))
         return Fail(Rule::kUnsupported, "pre-tokenizer stage other than isolated regex Split");
       if (byte_level) return Fail(Rule::kUnsupported, "Split after byte alphabet conversion");
       if (Regex::ConstructionBytes(regex->size()) == UINT64_MAX)
         return Fail(Rule::kBounds, "regex construction representation overflows");
       spec.split_expressions.emplace_back(*regex);
+    } else if (type == "Digits") {
+      if (!Only(value, {"type", "individual_digits"}))
+        return Fail(Rule::kUnsupported, "Digits pre-tokenizer fields");
+      const auto ind = value.find("individual_digits");
+      if (ind && !ind->is_bool())
+        return Fail(Rule::kFormat, "Digits individual_digits flag is not boolean");
+      if (byte_level) return Fail(Rule::kUnsupported, "Digits after byte alphabet conversion");
+      spec.split_expressions.emplace_back((ind && ind->boolean()) ? R"(\p{N})" : R"(\p{N}+)");
     } else
       return Fail(Rule::kUnsupported, "pre-tokenizer stage");
   }
@@ -475,6 +496,8 @@ std::expected<TokenizerSpec, Error> ReadHfTokenizer(std::string_view text) {
   std::vector<TokenKind> kinds(total, TokenKind::kNormal);
   std::vector<bool> model_tokens(raw ? total : 0, false);
   std::vector<bool> normalized_tokens(raw ? total : 0, false);
+  std::vector<bool> rstrips(total, false);
+  bool has_rstrip = false;
   std::size_t count = 0;
   for (std::size_t i = 0; i < vocab->size(); ++i) {
     const auto id = vocab->member(i).int64();
@@ -505,7 +528,9 @@ std::expected<TokenizerSpec, Error> ReadHfTokenizer(std::string_view text) {
         !special->is_bool()) {
       return Fail(Rule::kFormat, "added token without an ID, content or special flag", i);
     }
-    if (!Off(a, "lstrip") || !Off(a, "rstrip") || !Off(a, "single_word")) {
+    const auto rstrip_val = a.find("rstrip");
+    const bool rstrip = rstrip_val && rstrip_val->is_bool() && rstrip_val->boolean();
+    if (!Off(a, "lstrip") || (rstrip_val && !rstrip_val->is_bool()) || !Off(a, "single_word")) {
       return Fail(Rule::kUnsupported, "added token stripping or single-word matching", i);
     }
     const auto normalized = a.find("normalized");
@@ -524,6 +549,10 @@ std::expected<TokenizerSpec, Error> ReadHfTokenizer(std::string_view text) {
       if (special->boolean()) model_tokens[slot] = false;
       normalized_tokens[slot] = normalized && normalized->boolean();
     }
+    if (rstrip) {
+      rstrips[slot] = true;
+      has_rstrip = true;
+    }
     count = std::max(count, slot + 1);
   }
   for (std::size_t id = 0; id < count; ++id) {
@@ -535,6 +564,10 @@ std::expected<TokenizerSpec, Error> ReadHfTokenizer(std::string_view text) {
   spec.tokens = std::move(texts);
   kinds.resize(count);
   spec.kinds = std::move(kinds);
+  if (has_rstrip) {
+    rstrips.resize(count);
+    spec.rstrip = std::move(rstrips);
+  }
   if (raw) {
     model_tokens.resize(count);
     spec.model_tokens = std::move(model_tokens);
@@ -601,6 +634,7 @@ std::expected<void, Error> ApplyHfTokenizerConfig(std::string_view text, Tokeniz
     if (!spec.normalized_tokens.empty() || spec.pre_tokenizer == PreTokenizer::kRawBpe)
       spec.normalized_tokens.resize(count, false);
     if (!spec.scores.empty()) spec.scores.resize(count, 0);
+    if (!spec.rstrip.empty()) spec.rstrip.resize(count, false);
     for (std::size_t i = 0; i < added->size(); ++i) {
       const auto id = *id_of(added->key(i));
       const auto token = added->member(i);
@@ -609,7 +643,10 @@ std::expected<void, Error> ApplyHfTokenizerConfig(std::string_view text, Tokeniz
       if (!content || !special || !special->is_bool())
         return Fail(Rule::kFormat, "added_tokens_decoder token without content or special flag",
                     id);
-      if (!Off(token, "lstrip") || !Off(token, "rstrip") || !Off(token, "single_word"))
+      const auto rstrip_val = token.find("rstrip");
+      const bool rstrip = rstrip_val && rstrip_val->is_bool() && rstrip_val->boolean();
+      if (!Off(token, "lstrip") || (rstrip_val && !rstrip_val->is_bool()) ||
+          !Off(token, "single_word"))
         return Fail(Rule::kUnsupported, "added token stripping or single-word matching", id);
       const auto normalized = token.find("normalized");
       if (normalized && !normalized->is_bool())
@@ -623,6 +660,10 @@ std::expected<void, Error> ApplyHfTokenizerConfig(std::string_view text, Tokeniz
       if (!spec.tokens[id].empty() && spec.tokens[id] != *content)
         return Fail(Rule::kVocabulary, "added_tokens_decoder changes a token's text", id);
       spec.tokens[id] = std::string(*content);
+      if (rstrip) {
+        if (spec.rstrip.empty()) spec.rstrip.resize(count, false);
+        spec.rstrip[id] = true;
+      }
       if (!spec.added_tokens.empty()) spec.added_tokens[id] = true;
       spec.kinds[id] = special->boolean() ? TokenKind::kControl : TokenKind::kUserDefined;
       if (!spec.model_tokens.empty() && special->boolean()) spec.model_tokens[id] = false;
@@ -639,8 +680,10 @@ std::expected<void, Error> ApplyHfTokenizerConfig(std::string_view text, Tokeniz
   const auto find_special = [&](json::Value value) -> std::expected<TokenId, Error> {
     const auto content = token_text(value);
     if (!content) return Fail(Rule::kFormat, "special token without text");
-    if (value.is_object() &&
-        (!Off(value, "lstrip") || !Off(value, "rstrip") || !Off(value, "single_word")))
+    const auto rstrip_val = value.is_object() ? value.find("rstrip") : std::nullopt;
+    const bool rstrip = rstrip_val && rstrip_val->is_bool() && rstrip_val->boolean();
+    if (value.is_object() && (!Off(value, "lstrip") || (rstrip_val && !rstrip_val->is_bool()) ||
+                              !Off(value, "single_word")))
       return Fail(Rule::kUnsupported, "special token stripping or single-word matching");
     const auto found = std::ranges::lower_bound(by_text, *content, {},
                                                 &std::pair<std::string_view, TokenId>::first);
@@ -648,6 +691,10 @@ std::expected<void, Error> ApplyHfTokenizerConfig(std::string_view text, Tokeniz
       return Fail(Rule::kVocabulary, "named special token is absent");
     const auto id = static_cast<std::size_t>(found->second);
     spec.kinds[id] = TokenKind::kControl;
+    if (rstrip) {
+      if (spec.rstrip.empty()) spec.rstrip.resize(spec.tokens.size(), false);
+      spec.rstrip[id] = true;
+    }
     if (!spec.added_tokens.empty()) spec.added_tokens[id] = true;
     if (!spec.model_tokens.empty()) spec.model_tokens[id] = false;
     return static_cast<TokenId>(id);

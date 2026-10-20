@@ -15,6 +15,7 @@
 
 #include "format/encoding.h"
 #include "format/layout.h"
+#include "spec/spec.h"
 
 namespace llmp::import {
 namespace {
@@ -26,7 +27,7 @@ using format::PartRole;
 // The encodings whose routed experts are relaid out: those whose grouped
 // products read the scale atoms today (NVFP4's W4A4 grouped GEMM and the
 // format ladder's atom decoders).
-constexpr std::array kEncodings = {Encoding::kNvfp4};
+constexpr std::array kEncodings = {Encoding::kNvfp4, Encoding::kMxfp8, Encoding::kMxfp4};
 constexpr std::uint64_t kMaxBlocks = 256;  // PartRoutePlan::ScaleAtoms
 
 std::unexpected<Error> Bad(std::string_view why) {
@@ -67,12 +68,39 @@ TensorAssembly Relaid(const TensorAssembly& gate, const TensorAssembly* up, std:
   return out;
 }
 
+std::string StackedNameOf(std::string_view name) {
+  if (const auto at = name.find("ffn_gate"); at != std::string_view::npos) {
+    std::string s(name);
+    s.replace(at, 8, "ffn_gate_up");
+    return s;
+  }
+  if (const auto at = name.find("gate"); at != std::string_view::npos) {
+    std::string s(name);
+    s.replace(at, 4, "gate_up");
+    return s;
+  }
+  return {};
+}
+
 }  // namespace
 
 std::optional<ExpertTable> ExpertTableOf(std::string_view name, std::uint32_t output) {
-  constexpr std::string_view kPrefix = "blk.", kSuffix = "_exps.weight";
-  if (!name.starts_with(kPrefix) || !name.ends_with(kSuffix)) return std::nullopt;
-  auto rest = name.substr(kPrefix.size(), name.size() - kPrefix.size() - kSuffix.size());
+  constexpr std::string_view kSuffix = "_exps.weight";
+  if (!name.ends_with(kSuffix)) return std::nullopt;
+  std::string_view prefix = "";
+  std::uint32_t moe_base = 0;
+  if (name.starts_with("blk.")) {
+    prefix = "blk.";
+  } else if (name.starts_with("mtp.blk.")) {
+    prefix = "mtp.blk.";
+    moe_base = 10000;
+  } else if (name.starts_with("mtp.")) {
+    prefix = "mtp.";
+    moe_base = 10000;
+  } else {
+    return std::nullopt;
+  }
+  auto rest = name.substr(prefix.size(), name.size() - prefix.size() - kSuffix.size());
   const auto dot = rest.find('.');
   if (dot == std::string_view::npos || dot == 0 || dot > 5 || (dot > 1 && rest[0] == '0'))
     return std::nullopt;
@@ -81,10 +109,10 @@ std::optional<ExpertTable> ExpertTableOf(std::string_view name, std::uint32_t ou
   if (parsed.ec != std::errc{} || parsed.ptr != rest.data() + dot || layer >= (1U << 16U))
     return std::nullopt;
   const auto projection = rest.substr(dot + 1);
-  ExpertTable t{.output = output, .moe = layer, .name = std::string(name)};
+  ExpertTable t{.output = output, .moe = moe_base + layer, .name = std::string(name)};
   if (projection == "ffn_gate") {
     t.projection = ExpertProjection::kGate;
-    t.stacked = std::format("blk.{}.ffn_gate_up_exps.weight", layer);
+    t.stacked = std::format("{}{}.ffn_gate_up_exps.weight", prefix, layer);
   } else if (projection == "ffn_up") {
     t.projection = ExpertProjection::kUp;
   } else if (projection == "ffn_down") {
@@ -94,6 +122,77 @@ std::optional<ExpertTable> ExpertTableOf(std::string_view name, std::uint32_t ou
   }
   t.scales = std::string(name) + "_scale_2";
   return t;
+}
+
+std::expected<std::optional<ExpertTable>, Error> ExpertTableOf(const TensorAssembly& tensor,
+                                                               std::uint32_t output,
+                                                               const spec::ModelSpec* spec) {
+  if (spec != nullptr) {
+    std::uint32_t moe_id = 0;
+    for (const auto& stage : spec->stages) {
+      for (std::size_t l = 0; l < stage.layers.size(); ++l) {
+        for (const auto& c : stage.layers[l].components) {
+          if (c.kind != "ffn.moe") continue;
+          const std::uint32_t current_moe = moe_id++;
+          for (const auto& w : c.weights) {
+            if (w.tensor != tensor.name) continue;
+            if (!w.stage.empty() ||
+                (w.part != format::PartRole::kData && w.part != format::PartRole::kCodes))
+              continue;
+            ExpertProjection proj = ExpertProjection::kOther;
+            if (w.role == "gate_experts" || w.role == "routed_gate")
+              proj = ExpertProjection::kGate;
+            else if (w.role == "up_experts" || w.role == "routed_up")
+              proj = ExpertProjection::kUp;
+            else if (w.role == "down_experts" || w.role == "routed_down")
+              proj = ExpertProjection::kDown;
+            if (proj == ExpertProjection::kOther) continue;
+            ExpertTable t{
+                .output = output,
+                .projection = proj,
+                .moe = current_moe,
+                .name = tensor.name,
+                .stacked = proj == ExpertProjection::kGate ? StackedNameOf(tensor.name) : "",
+                .scales = tensor.name + "_scale_2"};
+            return t;
+          }
+        }
+      }
+      for (std::size_t m = 0; m < stage.heads.mtp.size(); ++m) {
+        const auto& c = stage.heads.mtp[m];
+        if (c.kind != "ffn.moe") continue;
+        const std::uint32_t current_moe = moe_id++;
+        for (const auto& w : c.weights) {
+          if (w.tensor != tensor.name) continue;
+          if (!w.stage.empty() ||
+              (w.part != format::PartRole::kData && w.part != format::PartRole::kCodes))
+            continue;
+          ExpertProjection proj = ExpertProjection::kOther;
+          if (w.role == "gate_experts" || w.role == "routed_gate")
+            proj = ExpertProjection::kGate;
+          else if (w.role == "up_experts" || w.role == "routed_up")
+            proj = ExpertProjection::kUp;
+          else if (w.role == "down_experts" || w.role == "routed_down")
+            proj = ExpertProjection::kDown;
+          if (proj == ExpertProjection::kOther) continue;
+          ExpertTable t{
+              .output = output,
+              .projection = proj,
+              .moe = current_moe,
+              .name = tensor.name,
+              .stacked = proj == ExpertProjection::kGate ? StackedNameOf(tensor.name) : "",
+              .scales = tensor.name + "_scale_2"};
+          return t;
+        }
+      }
+    }
+  }
+  return ExpertTableOf(tensor.name, output);
+}
+
+std::expected<std::optional<ExpertTable>, Error> ExpertTableOf(const TensorAssembly& tensor,
+                                                               const spec::ModelSpec* spec) {
+  return ExpertTableOf(tensor, 0, spec);
 }
 
 bool RelaysOut(const format::TensorFormat& t) {
@@ -172,6 +271,17 @@ std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
   for (auto& v : scales) rewritten.push_back(std::move(v));
   outputs = std::move(rewritten);
   return summary;
+}
+
+std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
+    std::vector<TensorAssembly>& outputs, const spec::ModelSpec* spec) {
+  std::vector<ExpertTable> tables;
+  for (std::size_t i = 0; i < outputs.size(); ++i) {
+    auto table = ExpertTableOf(outputs[i], static_cast<std::uint32_t>(i), spec);
+    if (!table) return std::unexpected(table.error());
+    if (*table) tables.push_back(std::move(**table));
+  }
+  return RelayoutExpertTables(outputs, tables);
 }
 
 std::expected<bool, Error> RelayoutRowTable(TensorAssembly& table) {

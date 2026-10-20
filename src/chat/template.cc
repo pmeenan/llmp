@@ -425,10 +425,23 @@ std::optional<std::string> EndOfTurn(const jinja::Template& program, const Token
   if (at == std::string::npos) {
     return std::nullopt;
   }
+  std::string stop;
+  std::size_t next_offset = 0;
   for (const tokenizer::SpecialSpan& s : r->specials) {
-    if (s.offset >= at + kProbe.size()) {
-      return r->text.substr(s.offset, s.length);
+    if (stop.empty()) {
+      if (s.offset >= at + kProbe.size()) {
+        stop = r->text.substr(s.offset, s.length);
+        next_offset = s.offset + s.length;
+      }
+    } else if (s.offset == next_offset) {
+      stop.append(r->text.substr(s.offset, s.length));
+      next_offset = s.offset + s.length;
+    } else {
+      break;
     }
+  }
+  if (!stop.empty()) {
+    return stop;
   }
   return std::nullopt;
 }
@@ -511,15 +524,7 @@ std::expected<Rendered, Error> RenderInterpreted(const jinja::Template& program,
   }
   std::vector<jinja::TextRange>().swap(rendered->trusted);  // released before the next rendering
   out.text = std::move(rendered->text);
-  if (conversation.add_generation_prompt) {
-    // Where the generation prompt starts: the end of the rendering without
-    // it, when that is a prefix of this one (a rendering of its own bounds).
-    auto without = program.Render(Variables(conversation, tokens, false), now, budget);
-    if (without && without->text.size() < out.text.size() &&
-        std::string_view(out.text).starts_with(without->text)) {
-      out.boundaries.push_back({BoundaryKind::kGenerationPrompt, without->text.size()});
-    }
-  }
+  out.boundaries = std::move(rendered->boundaries);
   return out;
 }
 

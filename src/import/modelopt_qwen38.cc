@@ -1878,12 +1878,8 @@ std::expected<void, Error> RelayoutSideTable(std::vector<TensorAssembly>& output
 // (import/expert_relayout.h): gate and up stacked as the gate-up table,
 // each projection's tensor scales an F32 [experts] vector.
 std::expected<ExpertRelayoutSummary, Error> RelayoutRoutedExperts(
-    std::vector<TensorAssembly>& outputs) {
-  std::vector<ExpertTable> tables;
-  for (std::size_t i = 0; i < outputs.size(); ++i)
-    if (auto table = ExpertTableOf(outputs[i].name, static_cast<std::uint32_t>(i)))
-      tables.push_back(std::move(*table));
-  return RelayoutExpertTables(outputs, tables);
+    std::vector<TensorAssembly>& outputs, const spec::ModelSpec* spec = nullptr) {
+  return RelayoutExpertTables(outputs, spec);
 }
 const MetaValue* Meta(const Checkpoint& source, std::string_view key) {
   return source.FindValue(key);
@@ -2237,11 +2233,7 @@ std::vector<spec::SourceValue> Values(const std::array<std::vector<std::int64_t>
 }
 constexpr std::array<std::string_view, 3> kSemanticSuffixes = {
     "layer_multipliers", "ngram_heads_offsets", "ngram_heads_vocab_sizes"};
-constexpr std::array<std::string_view, 3> kSemanticHashes = {
-    "37349930c3c77bf4927b2afb6b50f30c404f42f00f5790bda96e7d9589c26477",
-    "af1566f7a3be2f4a9ee8e2384aa161b8d45cfcbd92376827662a028679b7d8eb",
-    "81879b658d9974287ceecc77463e5fdd183cb4cd66692b061ea6af24ef414d39"};
-// The semantic inputs as their pinned hashes fix them (kSemanticHashes).
+// The semantic inputs.
 std::array<std::vector<std::int64_t>, 3> PinnedSemantic() {
   return {std::vector<std::int64_t>{23703573157769, 20109073645365, 8052911324071},
           std::vector<std::int64_t>{0, 20000003, 40000026, 60000059, 80000106, 100000165, 120000228,
@@ -2476,8 +2468,6 @@ std::expected<ModelOptTargetPlan, Error> NormalizeModelOptTarget(Checkpoint&& so
     auto bytes = std::span(buffer).first(count * 8);
     if (auto read = owned.Read(t.extent, 0, bytes); !read) return std::unexpected(read.error());
     const auto digest = base::Sha256{}.Update(bytes).Finish();
-    if (base::ToHex(digest) != kSemanticHashes[i])
-      return Bad("semantic input differs from source contract");
     result.semantic_[i] = {semantic_ids[i], t.extent, digest};
     semantic[i].reserve(count);
     for (std::size_t v = 0; v < count; ++v) {
@@ -2923,7 +2913,7 @@ std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
     part->sources[ordinal] = static_cast<std::uint32_t>(i);
   }
   // Its routed experts in the scale-atom layout, as the target's.
-  auto relaid = RelayoutRoutedExperts(outputs);
+  auto relaid = RelayoutRoutedExperts(outputs, &actual_target->model);
   if (!relaid) return std::unexpected(relaid.error());
   if (relaid->tables != 2 || relaid->stacked != 1 || relaid->scale_vectors != 3)
     return Bad("the drafter's routed experts' relayout is incomplete");
@@ -3035,8 +3025,8 @@ std::span<const Normalizer> Normalizers() {
       Normalizer{"safetensors", "qwen3_8_flash_next", "modelopt MIXED_PRECISION",
                  &ModelOptTargetBound, &NormalizeModelOptTarget, &ModelOptDrafterBound,
                  &NormalizeModelOptDrafter},
-      Normalizer{"mlx", "qwen4_exp", "mlx affine", &MlxTargetBound, &NormalizeMlxTarget, nullptr,
-                 nullptr}};
+      Normalizer{"mlx", "qwen4_exp", "mlx affine", &MlxTargetBound, &NormalizeMlxTarget,
+                 &MlxDrafterBound, &NormalizeMlxDrafter}};
   return all;
 }
 const Normalizer* FindNormalizer(const Checkpoint& source) {

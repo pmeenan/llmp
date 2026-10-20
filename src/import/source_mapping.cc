@@ -107,6 +107,7 @@ constexpr std::array kQwen2SafetensorsKeys{
     KeyAlias{"num_key_value_heads", "qwen2.attention.head_count_kv"},
     KeyAlias{"rms_norm_eps", "qwen2.attention.layer_norm_rms_epsilon"},
     KeyAlias{"rope_theta", "qwen2.rope.freq_base"},
+    KeyAlias{"rope_parameters.rope_theta", "qwen2.rope.freq_base"},
     KeyAlias{"use_sliding_window", "qwen2.use_sliding_window"},
 };
 constexpr std::array kSafetensorsAuxiliary{
@@ -124,6 +125,8 @@ constexpr std::array kSafetensorsAuxiliary{
     AuxiliaryNamespace{"use_cache", "transformers generation cache default"},
     AuxiliaryNamespace{"vocab_size", "vocabulary size stated by embedding table",
                        "model.embed_tokens.weight", 1},
+    AuxiliaryNamespace{"layer_types", "transformer block layer types"},
+    AuxiliaryNamespace{"text_config.layer_types", "text transformer block layer types"},
 };
 
 // Gemma owns its mathematical keys rather than inheriting Qwen's auxiliary windows.
@@ -297,7 +300,7 @@ constexpr std::array kDsparkLists{
 constexpr std::array<std::string_view, 2> kHfIgnored{
     "model.rotary_emb.inv_freq", "model.layers.{layer}.self_attn.rotary_emb.inv_freq"};
 constexpr std::array<std::string_view, 2> kHfNullSemantics{"rope_scaling", "rope_parameters"};
-constexpr std::array<std::string_view, 20> kHfSemantic{"qwen2.",
+constexpr std::array<std::string_view, 19> kHfSemantic{"qwen2.",
                                                        "rope_*",
                                                        "rotary_*",
                                                        "quantization*",
@@ -313,7 +316,6 @@ constexpr std::array<std::string_view, 20> kHfSemantic{"qwen2.",
                                                        "activation*",
                                                        "query_*",
                                                        "head_dim",
-                                                       "layer_types",
                                                        "use_bidirectional_attention",
                                                        "attn_logit_softcapping",
                                                        "final_logit_softcapping"};
@@ -345,10 +347,23 @@ constexpr std::array kMistralAuxiliary{
       KeyAlias{"rope_scaling.original_max_position_embeddings",                           \
                P "rope.scaling.original_context_length"},                                 \
       KeyAlias{"rope_scaling.beta_fast", P "rope.scaling.yarn_beta_fast"},                \
-      KeyAlias{"rope_scaling.beta_slow", P "rope.scaling.yarn_beta_slow"}
+      KeyAlias{"rope_scaling.beta_slow", P "rope.scaling.yarn_beta_slow"},                \
+      KeyAlias{"rope_parameters.rope_theta", P "rope.freq_base"},                         \
+      KeyAlias{"rope_parameters.rope_type", P "rope.scaling.type"},                       \
+      KeyAlias{"rope_parameters.factor", P "rope.scaling.factor"}
 constexpr std::array kLlamaSafetensorsKeys{LLMP_DENSE_SAFETENSORS_KEYS("llama.")};
 constexpr std::array kMistralSafetensorsKeys{LLMP_DENSE_SAFETENSORS_KEYS("mistral.")};
 #undef LLMP_DENSE_SAFETENSORS_KEYS
+constexpr std::array kGemma2SafetensorsKeys{
+    KeyAlias{"rope_parameters.rope_theta", "rope_theta"},
+};
+constexpr std::array kGemma3SafetensorsKeys{
+    KeyAlias{"rope_parameters.rope_theta", "rope_theta"},
+};
+constexpr std::array kGemma3ConditionalKeys{
+    KeyAlias{"text_config.rope_parameters.rope_theta", "text_config.rope_theta"},
+    KeyAlias{"rope_parameters.rope_theta", "text_config.rope_theta"},
+};
 constexpr std::array<std::string_view, 3> kDenseHfNulls{"rope_scaling", "rope_parameters",
                                                         "sliding_window"};
 
@@ -394,6 +409,7 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
       SourceMapping{.container = "safetensors",
                     .architecture = &spec::mappings::Gemma3ConditionalSafetensorsMapping(),
                     .tensors = kGemma3ConditionalTensors,
+                    .keys = kGemma3ConditionalKeys,
                     .auxiliary = kGemma3ConditionalAuxiliary,
                     .requirements = kGemma3ConditionalRequirements,
                     .semantic = kGemma3ConditionalSemantic,
@@ -403,6 +419,7 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
       SourceMapping{.container = "safetensors",
                     .architecture = &spec::mappings::Gemma2SafetensorsMapping(),
                     .tensors = kGemmaHfTensors,
+                    .keys = kGemma2SafetensorsKeys,
                     .auxiliary = kGemmaHfAuxiliary,
                     .requirements = kGemma2HfRequirements,
                     .semantic = kHfSemantic,
@@ -412,6 +429,7 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
       SourceMapping{.container = "safetensors",
                     .architecture = &spec::mappings::Gemma3SafetensorsMapping(),
                     .tensors = kGemma3HfTensors,
+                    .keys = kGemma3SafetensorsKeys,
                     .auxiliary = kGemmaHfAuxiliary,
                     .requirements = kGemmaHfRequirements,
                     .semantic = kHfSemantic,
@@ -616,7 +634,7 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
   if ((table.container != "gguf" && table.container != "exl3" &&
        table.container != "safetensors") ||
       table.version == 0 || !table.architecture || table.route != RouteOperation::kCopyPart ||
-      table.tensors.size() > nd::kRuleLimit || table.keys.size() > 64 ||
+      table.tensors.size() > nd::kRuleLimit || table.keys.size() > 256 ||
       table.auxiliary.size() > nd::kRuleLimit || table.requirements.size() > 16 ||
       table.ignored_tensor_prefixes.size() > 8 || table.tensor_presence.size() > 8 ||
       ((table.container == "exl3" || table.container == "safetensors") && table.auxiliary.empty()))
@@ -672,7 +690,7 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
                : !m.stage.empty() || !m.reads.empty()))
     return Invalid();
   if (m.slots.empty() || m.slots.size() > (table.extended_components ? 16U : 8U) ||
-      m.tensors.size() > nd::kRuleLimit || m.params.size() > 128 || m.folds.size() > 8 ||
+      m.tensors.size() > nd::kRuleLimit || m.params.size() > 512 || m.folds.size() > 8 ||
       m.policies.size() > 8 || m.pipeline != spec::PipelineKind::kLlm ||
       (!table.extended_components && !m.layer_type_key.empty()) ||
       !spec::IsSourceKey(m.layer_count_key))

@@ -99,9 +99,9 @@ TEST(ImportParameterFoldsTest, AFoldCoversAllItsTensorsOrNone) {
     ASSERT_TRUE(applied);
     EXPECT_TRUE(applied->empty());
   }
-  {  // one governed norm not a whole dense BF16 copy: no norm fold, A still
+  {  // one governed norm not a foldable copy: no norm fold, A still
     auto c = Make(true, true);
-    c.outputs[3].format.encoding = Encoding::kF32;
+    c.outputs[3].format.encoding = Encoding::kI32;
     auto applied = FoldDerivedParameters(c.stage, c.outputs);
     ASSERT_TRUE(applied);
     ASSERT_EQ(applied->size(), 1U);

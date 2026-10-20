@@ -136,6 +136,9 @@ class ModelOptDrafterPlan {
   friend std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
       const Checkpoint& source, std::optional<DraftHeadList> head, NormalizationLimits prepaid,
       const NormalizationTarget* target);
+  friend std::expected<ModelOptDrafterPlan, Error> NormalizeMlxDrafter(
+      const Checkpoint& source, std::optional<DraftHeadList> head, NormalizationLimits prepaid,
+      const NormalizationTarget* target);
   ModelOptDrafterPlan() = default;
   std::optional<IndexedPartPlan> parts_{};
   spec::Source canonical_{};

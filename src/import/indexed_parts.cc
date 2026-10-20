@@ -22,6 +22,9 @@ bool Add(std::uint64_t& a, std::uint64_t b) {
   a += b;
   return true;
 }
+bool IsFoldSourceEncoding(format::Encoding e) {
+  return e == format::Encoding::kF32 || e == format::Encoding::kF16 || e == format::Encoding::kBF16;
+}
 bool SameEncoding(const format::TensorFormat& a, const format::TensorFormat& b) {
   return a.encoding == b.encoding && a.params == b.params && a.layout == b.layout &&
          a.stacked == b.stacked;
@@ -30,11 +33,12 @@ bool DenseReshape(const format::TensorFormat& a, const format::TensorFormat& b) 
   if (!SameEncoding(a, b)) return false;
   const bool ok_dense =
       a.layout == format::Layout::kDense &&
-      (a.encoding == format::Encoding::kBF16 || a.encoding == format::Encoding::kF32);
+      (a.encoding == format::Encoding::kBF16 || a.encoding == format::Encoding::kF32 ||
+       a.encoding == format::Encoding::kF16);
   const bool ok_split =
       a.layout == format::Layout::kSplit &&
       (a.encoding == format::Encoding::kAffine || a.encoding == format::Encoding::kMxfp8 ||
-       a.encoding == format::Encoding::kNvfp4);
+       a.encoding == format::Encoding::kMxfp4 || a.encoding == format::Encoding::kNvfp4);
   if (!ok_dense && !ok_split) return false;
   // Only remove/insert singleton axes, retaining the order of actual axes.
   std::array<std::uint64_t, 4> left{}, right{};
@@ -49,7 +53,7 @@ bool GatherEncoding(const format::TensorFormat& f) {
   return f.layout == format::Layout::kDense ||
          (f.layout == format::Layout::kSplit &&
           (f.encoding == format::Encoding::kNvfp4 || f.encoding == format::Encoding::kMxfp8 ||
-           f.encoding == format::Encoding::kAffine));
+           f.encoding == format::Encoding::kMxfp4 || f.encoding == format::Encoding::kAffine));
 }
 }  // namespace
 
@@ -193,9 +197,15 @@ std::expected<IndexedPartPlan, Error> IndexedPartPlan::Make(
                           kind == PartAssemblyKind::kDenseReshape ||
                           kind == PartAssemblyKind::kSharedTensorScale;
       const bool relaid = out.relayout_from.has_value();
-      // A folded output's permutation reorders its BF16 source.
+      // A folded output's permutation reorders its source.
       auto unfolded = out.format;
-      if (out.fold) unfolded.encoding = format::Encoding::kBF16;
+      if (out.fold) {
+        if (assembly.sources.empty() || assembly.sources.front() >= tensors.size())
+          return std::unexpected(Bad("indexed fold source missing"));
+        unfolded.encoding = tensors[assembly.sources.front()].format.encoding;
+        if (!IsFoldSourceEncoding(unfolded.encoding))
+          return std::unexpected(Bad("invalid indexed fold source encoding"));
+      }
       const bool interleaved = kind == PartAssemblyKind::kInterleavedRows;
       const bool atom_table = relaid && out.format.layout == format::Layout::kScaleAtoms;
       const bool row_table = relaid && out.format.layout == format::Layout::kRowInterleaved;
@@ -243,9 +253,9 @@ std::expected<IndexedPartPlan, Error> IndexedPartPlan::Make(
         const auto& t = tensors[si];
         // A relayout's sources: the output's encoding in the source layout,
         // one matrix each (their tensor scales gathered elsewhere).
-        // A fold's BF16 source becomes its F32 output, the shape unchanged.
+        // A fold's source becomes its F32 output, the shape unchanged.
         auto as_output = t.format;
-        if (out.fold && t.format.encoding == format::Encoding::kBF16)
+        if (out.fold && IsFoldSourceEncoding(t.format.encoding))
           as_output.encoding = format::Encoding::kF32;
         if (atom_table) {
           as_output.layout = out.format.layout;
@@ -266,10 +276,12 @@ std::expected<IndexedPartPlan, Error> IndexedPartPlan::Make(
         bool valid = false;
         switch (kind) {
           case PartAssemblyKind::kCopy:
-            valid = out.fold
-                        ? (t.format.encoding == format::Encoding::kBF16 &&
-                           t.format.layout == format::Layout::kDense && as_output == out.format)
-                        : t.format == out.format;
+            valid = out.fold ? (IsFoldSourceEncoding(t.format.encoding) &&
+                                out.format.encoding == format::Encoding::kF32 &&
+                                SameEncoding(as_output, out.format) &&
+                                t.format.layout == format::Layout::kDense &&
+                                as_output.shape == out.format.shape)
+                             : t.format == out.format;
             break;
           case PartAssemblyKind::kDenseReshape:
             valid = DenseReshape(t.format, out.format);
@@ -316,17 +328,20 @@ std::expected<IndexedPartPlan, Error> IndexedPartPlan::Make(
           if (auto bytes = format::RowBytes(t.format, t.part)) row_bytes = *bytes;
         if (interleaved && !row_bytes)
           return std::unexpected(Bad("invalid indexed row interleave"));
+        const std::uint64_t elem_size = (t.format.encoding == format::Encoding::kF32) ? 4U : 2U;
         auto route =
             interleaved ? PartRoutePlan::Strided(t.format.shape.ne[1], *row_bytes, *stride,
                                                  ordinal % 2 == 0 ? 0 : *stride - *row_bytes)
             : out.permutation && out.fold
                 ? PartRoutePlan::PermuteFold(*out.permutation, assembly.part, *out.fold)
             : out.permutation ? PartRoutePlan::Permute(*out.permutation, assembly.part)
-            : out.fold        ? PartRoutePlan::Fold(*out.fold, t.extent.bytes / 2)
+            : out.fold
+                ? PartRoutePlan::Fold(*out.fold, t.extent.bytes / elem_size, t.format.encoding)
             : atoms ? PartRoutePlan::ScaleAtoms(t.format.shape.ne[1],
                                                 block == 0 ? 0 : t.format.shape.ne[0] / block)
                     : PartRoutePlan::Copy(t.extent.bytes);
-        const std::uint64_t produced = out.fold ? t.extent.bytes * 2 : t.extent.bytes;
+        const std::uint64_t produced =
+            out.fold ? (t.extent.bytes / elem_size) * 4U : t.extent.bytes;
         // The output range it writes in (an interleaved lane's rows' span).
         const std::uint64_t span = route ? route->span() : 0;
         if (!route || route->input_bytes() != t.extent.bytes || route->output_bytes() != produced ||

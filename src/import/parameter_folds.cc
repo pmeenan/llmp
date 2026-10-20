@@ -38,10 +38,13 @@ bool FlagSet(const spec::ComponentRef& ref, std::string_view flag) {
 // weight (the header's "bulk weights never widen").
 constexpr std::uint64_t kMaxFoldedBytes = std::uint64_t{1} << 20U;
 
-// Whether the output is a whole dense BF16 vector of one copied source,
+// Whether the output is a whole dense BF16, F16 or F32 vector of one copied source,
 // small enough to widen.
 bool Foldable(const TensorAssembly& out) {
-  return !out.fold && !out.relayout_from && out.format.encoding == format::Encoding::kBF16 &&
+  return !out.fold && !out.relayout_from &&
+         (out.format.encoding == format::Encoding::kBF16 ||
+          out.format.encoding == format::Encoding::kF16 ||
+          out.format.encoding == format::Encoding::kF32) &&
          out.format.layout == format::Layout::kDense && out.format.stacked == 1 &&
          out.format.shape.rank == 1 && out.format.shape.ne[0] != 0 &&
          out.format.shape.ne[0] <= kMaxFoldedBytes / 4 && out.parts.size() == 1 &&
