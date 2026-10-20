@@ -24,6 +24,16 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Unpin runtime numerical qualifications, planner policies, kernel capability
+  predicates, on-chip decode formats and importer normalizers from specific
+  checkpoint receipts and model dimensions (D-123, R14–R19): derive fusion and
+  kernel eligibility from component roles, operand formats/encodings and
+  hardware limits; support `placement = "pre"`/`"sandwich"` across `gdn`, `mqa`
+  and `qsa`, `F16`/`F32` scalar parameter folds, role-driven expert relayout,
+  MLX MTP drafter normalization and single-pass interpreted chat boundaries;
+  and share `BackingService` 2 MiB handle reserves across `CarryRegion` and
+  `PageInRegion` while skipping redundant routed-expert catalog closures when
+  all selected pages are covered by the base lease.
 - Serve `llama`, `mistral` and `qwen2` pre-norm dense decoders on the shared
   component engine (`EngineLlm`) across GGUF, safetensors and EXL3 containers
   through a parametrized mapping and default `ServingRecipe`, including Llama

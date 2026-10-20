@@ -381,12 +381,58 @@ memory drops by `−4.30 GiB` on `qwen38`, `−4.44 GiB` on `qwen38-gguf`, and
 `−1.68 GiB` on `gemma31`; and every served family confirms speed against the
 M3.6 final table and M3 baseline.
 
+A subsequent whole-tree review against `origin/main` (2026-10-20, D-123) added
+six capability-unification and defect-fix slices (`R14`–`R19`):
+- `575b04a4` (R14): IR `Decompose` contiguity and role/view/rounding checks,
+  `Graph::Digest` trellis parameters, `Partitioner` 32-bit constant sizes,
+  `planner::KeyOf` full `PlanKey` initialization, `attention.dense` stateless
+  gates/sinks and `scale_scores`, `StepContext` builder segment preservation,
+  `kF16`/`kQ4_0` KV cache encoding rules, `CheckApplied` fold validation,
+  disjoint `layer_types`, `kScaleAtoms` stacked alignment, `GrowMapped` host
+  charge rollback, multi-model `TearDown` detach, per-shape fallback flags,
+  per-segment routed capture, runner-scoped `PlanStep`, and gate-tool fixes.
+- `c0cdf812` (R15, D-123): capability- and format-derived `AdmittedNumerics`
+  and `AdmittedImageNumerics` (no `approvals.cc` SHA-256 or `1024x1024`
+  geometry gates), unified `AdmittedPolicy` and `ResolveSettings` over
+  `spec::Mapping` and `ServingRecipe`, multi-encoding `ReadImageAdmission`,
+  deduplicated staging helpers, and multi-drafter `ComponentLlmBuild`.
+- `d1356730` (R16, D-123): hardware/algorithmic GGML capability predicates
+  (owner attention on any 32-lane Turing+ arch, unpinned `Bf16VectorProduct`
+  and `Dsv4HcPre`/`CheckDsv4HcMix`), wildcard `DeviceRank` rules, on-chip
+  decode `AffineScale::kF32` and `zero_point`, generalized mixed-encoding
+  `fused.mul_mat_glu` and paged `kGetRows`, shape-generic `exl3.device.*`
+  `gemv`/`bias_add`, SM-derived multi-GEMM concurrency, and device-kernel
+  `WritePointerTable` replacing pageable `cudaMemcpyAsync`.
+- `8936e175` (R17): `placement = "pre"` and `"sandwich"` on `attention.gdn`,
+  `attention.mqa` and `attention.qsa`, conditional `gdn.value_heads_tiled`,
+  generalized `attention.mqa` sparse options, `attention.dense` `target_layer`
+  KV borrowing, `{kF32, kBF16, kF16}` and `kNormZeroCentered` across `ffn.moe`,
+  `hc.mix` and `attention.mqa`, string-valued `layer_type_key` ($>64$ layers)
+  and declarative `Mapping::companion` synthesis, explicit
+  `Fragment::spatial_layout`, and arbitrary kernel/stride/padding in
+  `conv.spatial`.
+- `8b3eafdd` (R18, D-123): `FoldScalar` across `kBF16`/`kF16`/`kF32`,
+  role-driven `RelayoutExpertTables` over `spec::ModelSpec` including
+  `kMxfp8`/`kMxfp4`, unpinned semantic tensor digests, `NormalizeMlxDrafter`
+  (`--component mtp` on MLX), lifted `kRuleLimit` (`256`), nested
+  `rope_parameters` and `layer_types` in HF `safetensors` import, HF
+  `tokenizer.json` `ByteLevel`/`Digits`/`rstrip` and SentencePiece trainer
+  fields, and single-pass `kPrefixEnd`/`kMessageEnd`/`kGenerationPrompt`
+  boundary tracking in `RenderInterpreted`.
+- `fa1d9073` (R19): `CarryRegion` and `UndoCarry` unified with `HandleReserve`
+  and `BackingCreateCounters` (`RE-059`), 16 GiB default workspace virtual
+  capacity in `MapWorkspace`, skipped redundant catalog closure RPCs in
+  `ContinueRouted` when all selected expert pages are held in the base lease,
+  and deduplicated `FormatPlanCoverageReport` and `SetupRowTables`. All `3,410`
+  shared `spark-native` tests (`432` GPU, `2,948` unit, `21` toolchain, `10`
+  timing, `5` sources, `4` smoke, `2` version) pass on `spark`.
+
 ## Deferred items from the reviews
 
 The reviews' follow-up queue (the main agent's notes, formerly in the
 temporary handoff file, deleted at closeout), classified at closeout and updated
-after the post-gate M3.6 commits (`c1dcc8c1`–`7283b964`) and the M3.5 review
-follow-up slices (`R1`–`R12`, `aba73a61`–`aa92bd1f`). Remaining open items are tracked in
+after the post-gate M3.6 commits (`c1dcc8c1`–`7283b964`) and the M3.5/M3.6 review
+follow-up slices (`R1`–`R19`, `aba73a61`–`fa1d9073`). Remaining open items are tracked in
 [plan.md](plan.md) and [rough-edges.md](rough-edges.md).
 
 **Fixed or moot in M3.6**
