@@ -195,6 +195,14 @@ class LiveState {
   // A named spill file's identity (device, inode, generation); none while
   // it is unnamed.
   const std::optional<platform::FileIdentity>& spill_identity() const { return spill_identity_; }
+  // What its spill file occupies on disk now (the file is sparse: only what
+  // a spill wrote, until a clear); 0 without one.
+  std::uint64_t spill_file_bytes() const;
+  // Gives its spill file's disk back (holes again, at its size) while every
+  // extent the state uses is resident and none is being evicted, so nothing
+  // reads the file before a spill writes the state again whole (the caller
+  // loses its SpillTrack). Refused, nothing changed, otherwise.
+  Status ReleaseSpillFile(PagedNode& node);
   // Why a named spill place was not used (empty when it was, or none was
   // asked for).
   const std::string& spill_note() const { return spill_note_; }

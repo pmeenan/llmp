@@ -425,6 +425,11 @@ class PagedModel {
   // Only the node calls this after real stream fences and before eviction.
   // Host callback status, a caller boolean or a destructor cannot grant it.
   virtual Status RetireAfterFence() { return {}; }
+  // Only the node calls this, after a real fence of stream() outside
+  // teardown (RecoverAfterFence): the work an earlier failure left
+  // unproven has ended. The model stays in service: it drops what that
+  // work retained (its flights, its plans), so its next step is admitted.
+  virtual Status AcknowledgeFence() { return {}; }
 };
 
 // Embedded in an adopted runner's paid root, so registration needs no second
@@ -729,8 +734,9 @@ class PagedNode {
   // each `owner`'s or shared; returns that class. Normally also requires
   // residency. A live-state tensor may describe its entire virtual cache:
   // resident=false checks that reservation, while its model materializes
-  // the actual read/write ranges before dispatch. Read without concurrent
-  // page-in or eviction.
+  // the actual read/write ranges before dispatch, and reads no catalog
+  // state (the driver may ask it beside the scheduler's page-ins). With
+  // residency, read without concurrent page-in or eviction.
   std::optional<catalog::MemoryClass> Covered(std::uint64_t address, std::uint64_t bytes, int owner,
                                               bool resident = true) const;
 
@@ -859,6 +865,18 @@ class PagedNode {
   // Ends it: its lease released (no step is in flight between Jobs), its
   // extents resident. Its task's failure, if it failed.
   Status EndRequest(std::uint32_t stream);
+  // Proof that nothing queued on `stream` still runs: a request still open
+  // there ended (its failure ignored: it may have ended with a hang's
+  // cancellation), a withdrawn supplemental operation and the state
+  // preparations drained, then a fence job on the stream that completed.
+  // Refused when any of that cannot be proven.
+  Status FenceStream(std::uint32_t stream);
+  // D-102's hang recovery, rung 2: FenceStream on `model`'s stream, then the
+  // fence acknowledged (PagedModel::AcknowledgeFence) by every private batch
+  // retained on that stream and by `model`, which may step again: work an
+  // earlier failure left unproven no longer refuses its steps and plan
+  // drops. Nothing is acknowledged when the fence is refused.
+  Status RecoverAfterFence(PagedModel& model);
   bool InRequest(std::uint32_t stream) const { return requests_.contains(stream); }
   // `body` run as one request on `stream` over `closure` (BeginRequest,
   // then EndRequest whatever `body` returned): its failure, else the end's.
@@ -969,6 +987,14 @@ class PagedNode {
     // follow), or a step's end can never be proven (its lease kept).
     bool cancelled = false;
     bool unproven = false;
+    // Of those, the direct steps whose external work (each counted on the
+    // channel) was never seen to end, which a later stream fence can prove
+    // (ProveDirectStep); a supplemental operation's, which its retirement
+    // proves (FinishSupplemental); and other work's (a scheduled step's),
+    // which nothing short of teardown does.
+    std::uint32_t direct_unproven = 0;
+    bool supplemental_unproven = false;
+    bool other_unproven = false;
   };
   Status ApplyRequestReplacement(OpenRequest& open, catalog::Closure& next,
                                  scheduler::Scheduler::LeaseReplacementStorage* prepared,
@@ -998,6 +1024,12 @@ class PagedNode {
   Status DirectStep(std::uint32_t stream, OpenRequest& open, scheduler::DeviceJob job,
                     std::string_view what, const std::function<void()>& meanwhile,
                     JobReport* report);
+  // Direct steps whose end could not be proven (their request's lease
+  // kept), and nothing else unproven: a later fence on their stream,
+  // recorded and seen complete on the driver, proves they ended (stream
+  // order). Their external work is then counted retired and the request
+  // cancelled, so EndRequest releases its lease.
+  Status ProveDirectStep(std::uint32_t stream, OpenRequest& open);
   // A request that can take no further step: awaited and erased, with the
   // error `why`.
   Status Ended(std::uint32_t stream, std::string_view what, std::string_view why);

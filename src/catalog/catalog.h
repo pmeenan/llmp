@@ -317,6 +317,10 @@ class Catalog {
   // Its next materialization starts a new content generation. An owner
   // replaces its external source before making it readable again.
   std::expected<void, CatalogError> ForgetPreserved(ExtentId extent);
+  // Its place no longer holds what a write-back last saved there (its owner
+  // gave the place's storage back): from now on no eviction of this RESIDENT
+  // kPreserve extent may skip writing it (scheduler::EvictOptions::unchanged).
+  std::expected<void, CatalogError> ForgetSaved(ExtentId extent);
   // Its owner takes back an unheld RESIDENT kPreserve extent it invalidated
   // after filling it with its initial contents (a cleared conversation's
   // zeroed state, kept for reuse): since a discarded extent can be neither

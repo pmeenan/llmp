@@ -1661,6 +1661,28 @@ class UnprovenDraftProbe final : public DecodingTest {
     ASSERT_GT(held, 0U);
     runner_->DropPlans();
     EXPECT_EQ(runner_->plans().size(), held);  // Unproven transaction still protects its plans.
+    if (!node_.direct()) return;               // the scheduler faulted: nothing less than a restart
+    // D-102's rung 2: a later fence of the stream, seen complete, proves the
+    // lost step's end. Acknowledged, the runner drops its plans and steps
+    // again; the recovery discards the slot the failed work touched.
+    source_->options().fail_run.reset();
+    source_->options().fail_phase.reset();
+    source_->options().on_build = {};
+    auto fenced = node_.RecoverAfterFence(*runner_);
+    ASSERT_TRUE(fenced) << fenced.error();
+    EXPECT_FALSE(node_.InRequest(0));
+    EXPECT_EQ(runner_->plans().size(), 0U);
+    auto recovered = slots().RecoverInPlace({});
+    ASSERT_TRUE(recovered.has_value()) << recovered.error();
+    EXPECT_EQ(*recovered & 1U, 1U);
+    ASSERT_TRUE(slots().SelectSlots(std::vector<std::uint32_t>{0, 1, 2}));
+    ASSERT_TRUE(node_.BeginRequest(0, slots().execution(), "test request"));
+    const std::array<std::uint32_t, 1> again{40};
+    Prefill(again, &decoder);
+    if (HasFatalFailure()) return;
+    const auto next = Unit(decoder, {0, 1, 2});
+    for (std::uint32_t slot = 0; slot < kSlots; ++slot)
+      ASSERT_FALSE(next.outcomes[slot].refusal.has_value()) << next.outcomes[slot].refusal->what;
   }
 };
 

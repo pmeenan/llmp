@@ -1159,6 +1159,18 @@ Status ModelRunner::RetireAfterFence() {
   return {};
 }
 
+Status ModelRunner::AcknowledgeFence() {
+  // As RetireAfterFence, without closing: a recovery's fence proved that the
+  // work an unproven step or route left queued has ended, so their owners
+  // go, and the plans that work may have used are dropped with them.
+  if (released_ || closing_) return {};
+  if (batch_active_) return Error("a private batch still holds the runner after its fence");
+  routed_flight_.reset();
+  step_flight_.reset();
+  DropPlans();
+  return {};
+}
+
 Status ModelRunner::Release() {
   if (released_) return {};
   if (resource_leases_.load(std::memory_order_acquire) != 0)

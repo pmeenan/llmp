@@ -1249,6 +1249,15 @@ std::uint64_t EngineLlm::SpilledBytesFor(const Branch& branch) const {
   return runner_ ? runner_->slots().spilled_bytes(Slot(branch)) : 0;
 }
 
+std::uint64_t EngineLlm::RetainedSpillBytesFor(const Branch& branch) const {
+  return runner_ ? runner_->slots().retained_spill_bytes(Slot(branch)) : 0;
+}
+
+Status EngineLlm::ReleaseRetainedSpillFor(Branch& branch) {
+  if (auto built = Built(); !built) return built;
+  return runner_->slots().ReleaseSpillFiles(Slot(branch));
+}
+
 bool EngineLlm::LeasedFor(const Branch& branch) const {
   return runner_ && runner_->slots().held(Slot(branch));
 }

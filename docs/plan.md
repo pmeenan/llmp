@@ -297,6 +297,18 @@ before new families land; each item lands as one reviewed commit.
       expert pages; deduplicate runner boilerplate between `ModelRunner`,
       `StagedExecution` and `SetupRowTables`; run Spark verification and update
       the M3.6 record and docs)
+- [x] R20 Engine and runtime correctness fixes from the 2026-10-20 review
+      (hang recovery rung 2 acknowledges its stream fence so an unproven
+      step or route no longer disables the model, `PagedNode::FenceStream`
+      proving a lost direct step's end; a routed flight counts as started
+      only once queued; the cooperative cohort's drain and switch follow the
+      current queue head; idle state priced as spill or drop as its take
+      does, with deleted spills charged; restored conversations' retained
+      spill files counted against and released for `spill_budget_gib`; a
+      capacity-refused restore keeps its D-105 record; a partly failed spill
+      credited by measured catalog gain; departed clients' waiting parses
+      freed; one activation/hang helper; catalog reads in `PagedNode::Load`
+      on the scheduler thread)
 
 **Gemma31 gap closing, 2026-10-06:** [state reuse across Clear, capture beside
 eager execution and the fused decode FFN](experiments/gemma-gap-closing/README.md)

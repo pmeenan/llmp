@@ -1721,6 +1721,18 @@ TEST_P(PageInTest, AnUnchangedWriteBackWritesNothingAndStillRestores) {
   Settle();
   ASSERT_EQ(restored_again.outcome, TaskOutcome::kSucceeded);
   EXPECT_TRUE(StateIs(0));
+  // Its place given back (ForgetSaved): the owner's word no longer skips
+  // the write.
+  ASSERT_TRUE(catalog_.ForgetSaved(state).has_value());
+  EXPECT_EQ(View(state).saved_generation, 0U);
+  EvictProgram::Report forgotten;
+  ASSERT_TRUE(
+      scheduler_->Start(5, std::make_unique<EvictProgram>(forgotten, std::vector{state}, unchanged))
+          .has_value());
+  Settle();
+  ASSERT_EQ(forgotten.outcome, TaskOutcome::kSucceeded);
+  EXPECT_GT(Writes().size(), written);
+  EXPECT_EQ(scheduler_->stats().unchanged_writebacks, 1U);
   EXPECT_FALSE(scheduler_->fault().has_value());
 }
 

@@ -652,6 +652,16 @@ std::uint64_t Llm::SpilledStateBytes(const Branch& branch) const {
   return SpilledBytesFor(branch);
 }
 
+std::uint64_t Llm::RetainedSpillBytes(const Branch& branch) const {
+  CheckBranch(branch);
+  return RetainedSpillBytesFor(branch);
+}
+
+Status Llm::ReleaseRetainedSpill(Branch& branch) {
+  CheckBranch(branch);
+  return ReleaseRetainedSpillFor(branch);
+}
+
 Clock::time_point Llm::LastUsed(const Branch& branch) const {
   CheckBranch(branch);
   return branch.history_used_.at;
@@ -1023,14 +1033,19 @@ Status Llm::RestoreSpilled(Branch& branch, bool& refused) {
   if (!SpilledFor(branch)) {
     return {};
   }
-  // Live again: its file may change from here on (D-105).
-  Unkeep(branch);
   const std::uint64_t bytes = SpilledBytesFor(branch);
   const auto started = Clock::now();
   if (auto restored = RestoreFor(branch); !restored) {
     refused = StateRefusedFor(branch) && StateUsableFor(branch);
+    // Refused for room, it is still wholly spilled and its record (D-105)
+    // stands for a restart; anything else may have changed its files.
+    if (!refused || !SpilledFor(branch)) {
+      Unkeep(branch);
+    }
     return restored;
   }
+  // Live again: its file may change from here on (D-105).
+  Unkeep(branch);
   ++spill_stats_.restores;
   spill_stats_.restored_bytes += bytes;
   spill_stats_.restore_seconds += Seconds(Clock::now() - started);

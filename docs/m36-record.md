@@ -426,6 +426,24 @@ six capability-unification and defect-fix slices (`R14`–`R19`):
   and deduplicated `FormatPlanCoverageReport` and `SetupRowTables`. All `3,410`
   shared `spark-native` tests (`432` GPU, `2,948` unit, `21` toolchain, `10`
   timing, `5` sources, `4` smoke, `2` version) pass on `spark`.
+- R20: engine/runtime correctness fixes from the same review. Hang
+  recovery's rung 2 (`Server::RecoverModel`) now acknowledges its stream
+  fence to the runner (`PagedNode::RecoverAfterFence`,
+  `PagedModel::AcknowledgeFence`), so a step or routed continuation whose
+  end was unproven no longer refuses every later step and plan drop until
+  node teardown; on the direct path a later fence of the stream proves a
+  lost step's end (`PagedNode::FenceStream`). A routed flight counts as
+  started only once work was queued. The cooperative cohort's drain and
+  switch are recomputed from the queue's head each pass. Idle state is
+  priced as what its take does (spill with the deleted spills'
+  recomputation charged, or drop); a restored conversation's retained
+  spill files count toward `spill_budget_gib` and are released first under
+  it (the catalog then forgets what they saved, `Catalog::ForgetSaved`); a restore refused for capacity keeps its D-105 record; a partly
+  failed spill is credited by measured catalog gain; a waiting parse whose
+  client left is freed; the three activation/hang copies are one
+  `NodeBackend::ActivateFor`; `PagedNode::Load` reads the catalog on the
+  scheduler thread and `PagedNode::Covered` without residency reads no
+  catalog state.
 
 ## Deferred items from the reviews
 

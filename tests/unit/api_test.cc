@@ -2584,6 +2584,26 @@ TEST_F(GrowingServerTest, AParseWaitingForGrowthHoldsUpNoOther) {
   }
 }
 
+// A parse waiting for growth whose client left is given up at once, not
+// when the memory grows: its body's charge goes back while the driver is
+// still held.
+TEST_F(GrowingServerTest, AWaitingParseWhoseClientLeftFreesItsBody) {
+  StartGrowing(8 * kMiB, {});
+  const int running = Connect(Post(Chat("hang")));
+  WaitStarted();
+  const std::uint64_t before = backend_.memory->used();
+  const std::string text(std::size_t{2} << 20U, 'w');
+  const int leaving = Connect(Post(Chat(text)));
+  ASSERT_TRUE(WaitFor([&] { return backend_.memory->used() >= before + 2 * kMiB; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));  // its parse waits
+  (void)::close(leaving);
+  EXPECT_TRUE(WaitFor([&] { return backend_.memory->used() < before + kMiB; }));
+  backend_.release.store(true);
+  std::string pending;
+  EXPECT_THAT(ReadResponse(running, pending), StartsWith("HTTP/1.1 200 "));
+  (void)::close(running);
+}
+
 // A body that arrived whole with its head, pipelined bytes behind it, and
 // then waited for the driver to grow the request memory is served once the
 // memory grows (the bytes it still owed were none, not a wrapped count that
@@ -3661,6 +3681,40 @@ TEST_F(ServerTest, ALiteralAndChatCohortResumeAfterAModelSwitch) {
   (void)::close(chat);
   EXPECT_EQ(backend_.literal_calls.load(), 0U);
   EXPECT_EQ(cooperative_->cancelled.load(), 0U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+// A different model's request that reached the queue's head and left
+// again neither keeps the cohort draining nor pauses it: a later request for
+// the cohort's model joins it while the first still runs.
+TEST_F(ServerTest, ADepartedOtherModelHeadLetsTheCohortRefill) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::seconds(30);  // no switch in this test
+  StartCooperative(options);
+  cooperative_->capacity.store(2);
+  const int first = Connect(Post(Chat("long", R"(,"max_tokens":300)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int other = Connect(Post(Chat("other", R"(,"other_head":true)", "tiny")));
+  ASSERT_TRUE(WaitFor([&] {
+    return BodyOf(Exchange("GET /llmp/v1/ignored-fields HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"))
+        .contains("other_head");
+  }));
+  // Passes that saw it at the head.
+  const unsigned seen = cooperative_->advances.load();
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() >= seen + 3; }));
+  (void)::close(other);
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));  // it leaves the queue
+  const int joining = Connect(Post(Chat("short", R"(,"max_tokens":4)")));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(joining, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("content":"xxxx")")));
+  (void)::close(joining);
+  EXPECT_EQ(cooperative_->peak.load(), 2U);  // it joined the running cohort
+  EXPECT_EQ(cooperative_->yielded.load(), 0U);
+  EXPECT_THAT(ReadResponse(first, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":300)")));
+  (void)::close(first);
+  EXPECT_EQ(backend_.chat_calls.load(), 0U);
   EXPECT_FALSE(cooperative_->early_destruction.load());
 }
 

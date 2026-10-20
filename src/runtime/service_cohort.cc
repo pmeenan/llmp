@@ -336,27 +336,18 @@ std::expected<void, std::string> NodeBackend::Advance(
       return {};
     }
     swapped_ = server_.resident() != cohort_model_;
-    if (auto activated = server_.Activate(*cohort_model_, parts_); !activated) {
-      swapped_ = false;
-      if (server_.node().TakeHangCancelled()) {
-        Say(log_,
-            "hang recovery: the swap's hung work was cancelled; the swap failed and only "
-            "the requests that needed it fail");
-        (void)AwaitDrained();  // a read still in the drive: rung 3
+    if (auto refused = ActivateFor(*cohort_model_, "the cooperative chat model"); refused) {
+      if (!server_.NodeHealthy()) {
+        return std::unexpected(refused->message);  // the service stops (ActivateFor failed it)
       }
-      if (server_.NodeHealthy()) {
-        // Recovery first (D-102): a swap refused for room, or failed and
-        // undone (or not: no model resident, the next activation loads one
-        // whole), fails only these requests. The cohort posted no native
-        // work, so its retirement has no references to fence.
-        for (auto* base : work) {
-          auto& frame = static_cast<ChatWork&>(*base);
-          frame.error = Failure(503, "the model could not be made resident: " + activated.error());
-        }
-        return {};
+      // Recovery first (D-102): a swap refused for room, or failed and
+      // undone (or not: no model resident, the next activation loads one
+      // whole), fails only these requests. The cohort posted no native
+      // work, so its retirement has no references to fence.
+      for (auto* base : work) {
+        static_cast<ChatWork&>(*base).error = *refused;
       }
-      Fail("making the cooperative chat model resident: " + activated.error());
-      return activated;
+      return {};
     }
     // Resident: the cohort's native work begins, whose references its
     // retirement fences.

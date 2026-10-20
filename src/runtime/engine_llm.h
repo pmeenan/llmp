@@ -272,6 +272,8 @@ class EngineLlm final : public Llm {
   Status RestoreFor(Branch& branch) override;
   bool SpilledFor(const Branch& branch) const override;
   std::uint64_t SpilledBytesFor(const Branch& branch) const override;
+  std::uint64_t RetainedSpillBytesFor(const Branch& branch) const override;
+  Status ReleaseRetainedSpillFor(Branch& branch) override;
   bool LeasedFor(const Branch& branch) const override;
   std::uint64_t RefusedBytesFor(const Branch& branch) const override;
   std::uint64_t SpillWriteBytesFor(const Branch& branch) const override;

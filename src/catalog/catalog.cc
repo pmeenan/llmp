@@ -658,6 +658,19 @@ std::expected<void, CatalogError> Catalog::ForgetPreserved(ExtentId extent) {
   return {};
 }
 
+std::expected<void, CatalogError> Catalog::ForgetSaved(ExtentId extent) {
+  ExtentRecord* record = Extent(extent);
+  if (record == nullptr) {
+    return std::unexpected(CatalogError::kUnknownId);
+  }
+  ExtentView& view = record->view;
+  if (view.state != ExtentState::kResident || view.descriptor.recovery != Recovery::kPreserve) {
+    return std::unexpected(CatalogError::kWrongState);
+  }
+  view.saved_generation = 0;
+  return {};
+}
+
 std::expected<void, CatalogError> Catalog::ReviveDiscarded(ExtentId extent) {
   ExtentRecord* record = Extent(extent);
   if (record == nullptr) {

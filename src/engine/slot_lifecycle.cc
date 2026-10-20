@@ -611,6 +611,13 @@ std::uint64_t SlotLifecycle::spilled_bytes(std::uint32_t slot) const {
   }
   return total;
 }
+std::uint64_t SlotLifecycle::retained_spill_bytes(std::uint32_t slot) const {
+  const Slot& s = slots_.at(slot);
+  if (s.spilled) return 0;
+  std::uint64_t total = 0;
+  for (const Stage& stage : s.stages) total += stage.live->spill_file_bytes();
+  return total;
+}
 std::uint64_t SlotLifecycle::spill_write_bytes(std::uint32_t slot) const {
   const Slot& s = slots_.at(slot);
   if (s.spilled) return 0;
@@ -924,6 +931,23 @@ Status SlotLifecycle::Spill(std::uint32_t index) {
     }
     // An empty stage's file holds nothing either.
     FileHolds(Settled(slot), slot.stages[s].track);
+  }
+  return {};
+}
+
+Status SlotLifecycle::ReleaseSpillFiles(std::uint32_t index) {
+  auto found = Find(index);
+  if (!found) return std::unexpected(found.error());
+  Slot& slot = **found;
+  if (!bound_ || cohort_.faulted()) return Refuse("cohort requires retirement");
+  if (slot.spilled || slot.restoring) return Refuse("a spilled state's files hold it");
+  if (Borrowed(slot) || verify_pending(index)) {
+    return Refuse("state cannot change files while borrowed or while a verify awaits its Accept");
+  }
+  for (Stage& stage : slot.stages) {
+    // Lost first: whatever the release leaves, the next spill writes whole.
+    stage.track.Lost();
+    if (auto released = stage.live->ReleaseSpillFile(node_); !released) return released;
   }
   return {};
 }

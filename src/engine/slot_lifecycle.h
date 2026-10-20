@@ -257,6 +257,9 @@ class SlotLifecycle {
   std::uint64_t refused_bytes(std::uint32_t slot) const;
   // What its spill files hold while spilled (whole extents).
   std::uint64_t spilled_bytes(std::uint32_t slot) const;
+  // What its spill files occupy on disk while it is not spilled: an
+  // incremental spill keeps them past a restore (0 while spilled).
+  std::uint64_t retained_spill_bytes(std::uint32_t slot) const;
   // What a Spill now would write (0 while spilled).
   std::uint64_t spill_write_bytes(std::uint32_t slot) const;
 
@@ -279,6 +282,11 @@ class SlotLifecycle {
   // slot whose verify still owes a restore or commit (in any stage) is
   // written whole by the next spill (what runs it may record no write).
   Status Spill(std::uint32_t slot);
+  // A slot not spilled gives back the disk its spill files hold
+  // (LiveState::ReleaseSpillFile); its state stays, and its next spill
+  // writes it whole. Refused while spilled, restoring, borrowed or while a
+  // verify awaits its Accept.
+  Status ReleaseSpillFiles(std::uint32_t slot);
   // A spilled slot's state back, at the generations it was written at, or
   // an adopted one read from its kept files; a clean capacity refusal
   // leaves it spilled (state_refused). Refused while a restore is pending.

@@ -422,6 +422,32 @@ TEST_F(SlotLifecycleTest, AllStagesGrowSpillIncrementallyAndRestoreExactly) {
   EXPECT_TRUE(slots().CheckPlaces());
 }
 
+// A restored slot's spill files stay for its next incremental spill and
+// occupy disk, which the spill budget counts; released, they hold nothing,
+// the state stays as it was, and the next spill writes it whole.
+TEST_F(SlotLifecycleTest, ARestoredSlotsRetainedFilesCountAndCanBeReleased) {
+  Select({0});
+  ASSERT_TRUE(slots().ReserveStateThrough(0, 300));
+  ASSERT_TRUE(slots().SetPositions(0, 300));
+  const auto used = Used(0);
+  Fill(0, used, 0xC3);
+  EXPECT_EQ(slots().retained_spill_bytes(0), 0U);  // nothing written back yet
+  ASSERT_TRUE(slots().Spill(0));
+  EXPECT_EQ(slots().retained_spill_bytes(0), 0U);  // spilled: spilled_bytes counts it
+  ASSERT_TRUE(slots().Restore(0));
+  EXPECT_GE(slots().retained_spill_bytes(0), kExtent);
+  EXPECT_EQ(slots().spill_write_bytes(0), 0U);
+  ASSERT_TRUE(slots().ReleaseSpillFiles(0));
+  EXPECT_EQ(slots().retained_spill_bytes(0), 0U);
+  EXPECT_TRUE(All(0, used, 0xC3));
+  EXPECT_FALSE(slots().kept_whole(0));
+  EXPECT_EQ(slots().spill_write_bytes(0), 5 * kExtent);
+  ASSERT_TRUE(slots().Spill(0));
+  ASSERT_TRUE(slots().Restore(0));
+  EXPECT_TRUE(All(0, used, 0xC3));
+  EXPECT_TRUE(slots().CheckPlaces());
+}
+
 TEST_F(SlotLifecycleTest, ACheckpointRestoresInThreeStepsAndRefusesOutOfOrder) {
   Select({0});
   ASSERT_TRUE(slots().ReserveStateThrough(0, 300));

@@ -182,22 +182,18 @@ std::expected<std::vector<catalog::ExtentId>, std::string> Server::SpareWorkspac
 }
 
 Status Server::FenceModel(Served& m) {
-  const std::uint32_t stream = m.paged().stream();
-  if (node_.InRequest(stream)) {
-    // Its task may have ended with the cancellation: ending it only frees
-    // what it held.
-    std::ignore = node_.EndRequest(stream);
-  }
-  return node_.Job(
-      catalog::Closure{}, [](providers::NativeStream) { return scheduler::JobResult::kQueued; },
-      "fencing a model's stream after a hang", stream);
+  // A request still open on its stream may have ended with the
+  // cancellation: ending it only frees what it held (PagedNode::FenceStream).
+  return node_.FenceStream(m.paged().stream());
 }
 
 Status Server::RecoverModel(Served& m) {
   if (!NodeHealthy()) {
     return Error("the node's scheduler faulted");
   }
-  if (auto fenced = FenceModel(m); !fenced) {
+  // The fence, acknowledged by the model's runner: a step or route the hang
+  // left unproven no longer refuses its next steps, and its plans go.
+  if (auto fenced = node_.RecoverAfterFence(m.paged()); !fenced) {
     return Error(std::format("its stream could not be fenced: {}", fenced.error()));
   }
   if (auto recovered = m.RecoverInPlace(); !recovered) {

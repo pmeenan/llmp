@@ -232,9 +232,7 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
   active.reserve(kMaxActiveRequests);
   std::deque<Pending> suspended;
   auto turn_since = Clock::now();
-  bool switching = false;
   bool substitute_formed = false;
-  bool drain = false;
   std::string fatal;
   // False means deferred with no effects. The caller still owns the frame
   // and either restores it to the FIFO or uses the serial path alone.
@@ -363,10 +361,16 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     }
     // Look even when every slot is occupied: an incompatible head must
     // neither refill the old cohort nor wait for every response to end.
-    drain = drain || other_model || (substitute && substitute_formed);
-    if (!substitute && other_model && Clock::now() - turn_since >= options_.model_turn) {
-      switching = true;
-    }
+    // Both follow the queue's current head, pass by pass: a different
+    // model's request that left again neither keeps the cohort from
+    // refilling nor pauses its members. Members already set aside for a
+    // switch keep it draining, so they resume before later arrivals.
+    bool drain = other_model || (substitute && substitute_formed) || !suspended.empty();
+    // Once members paused for a switch, the rest follow (they resume
+    // together), even if the request that asked for it has left since.
+    const bool switching =
+        (!substitute && other_model && Clock::now() - turn_since >= options_.model_turn) ||
+        !suspended.empty();
     if (switching) {
       for (const auto& frame : active) {
         if (!frame->exchange.Yielding() && frame->work->YieldForSwitch()) {

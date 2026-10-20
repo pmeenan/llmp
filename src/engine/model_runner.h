@@ -593,7 +593,7 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   Status BeginRouted(kernels::StepProgram& program, StepPlanRuns& runs, const Copies& inputs,
                      const Copies& outputs, const Copies& carries, bool capture,
                      std::shared_ptr<RoutedFlight> prepared = {}, const PromptBatch& batch = {});
-  void ForgetUnstartedRouted();
+  void ForgetRouted(bool retired);
   void ForgetCompletedRouting();
   // Private test-support observation of already completed retained host copies.
   // This grants no routed access token or execution authority.
@@ -613,7 +613,8 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   std::shared_ptr<RoutedState> routed_;
   std::shared_ptr<RoutedFlight> routed_flight_;
   // A submitted transaction's paid witnesses survive unproven retirement.
-  // Release clears this only after its existing whole-node drain contract.
+  // Release clears this only after its existing whole-node drain contract,
+  // AcknowledgeFence after a recovery's fence of the runner's stream.
   std::shared_ptr<StepTransaction> step_flight_;
   // Whether a target's verify saves in, or commits, a slot's stage.
   bool Verifies(std::uint32_t slot, std::size_t stage) const;
@@ -624,6 +625,7 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   bool Frozen(std::size_t stage) const { return frozen_.at(stage); }
 
   Status RetireAfterFence() override;
+  Status AcknowledgeFence() override;
   void RetireRoot();
   friend class RunnerOwner;
   struct Lifetime;

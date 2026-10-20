@@ -71,7 +71,14 @@ std::uint64_t Server::SpilledBytes(SpillView view) {
         (m.get() == view.out || std::ranges::find(spilled_, m.get()) != spilled_.end());
     for (std::size_t i = 0; i < l.branches(); ++i) {
       if (auto b = l.branch(i); b) {
-        bytes += written_back ? l.StateBytes(**b) : l.SpilledStateBytes(**b);
+        // Otherwise its spilled conversations, and the files restored ones
+        // keep for their next (incremental) spill: not the incoming model's
+        // (its conversations stop counting once it is resident), nor those
+        // of the one about to spill, whose whole state the caller counts.
+        const bool retained = m.get() != view.in && *b != view.spilling;
+        bytes += written_back
+                     ? l.StateBytes(**b)
+                     : l.SpilledStateBytes(**b) + (retained ? l.RetainedSpillBytes(**b) : 0);
       }
     }
   }
@@ -80,7 +87,8 @@ std::uint64_t Server::SpilledBytes(SpillView view) {
 
 void Server::ForEachDeletableSpill(
     SpillView view, std::optional<Clock::time_point> older_than,
-    const std::function<void(Llm& model, Llm::Branch& branch, std::uint64_t counted)>& each) {
+    const std::function<void(Llm& model, Llm::Branch& branch, std::uint64_t counted,
+                             bool retained)>& each) {
   for (const auto& m : models_) {
     if (!m->llm() || m.get() == view.in) {
       continue;  // the incoming model's stop counting once it is resident
@@ -96,7 +104,11 @@ void Server::ForEachDeletableSpill(
       }
       const std::uint64_t counted = written_back ? l.StateBytes(**b) : l.SpilledStateBytes(**b);
       if (counted != 0) {
-        each(l, **b, counted);
+        each(l, **b, counted, false);
+      } else if (const std::uint64_t retained =
+                     written_back || *b == view.spilling ? 0 : l.RetainedSpillBytes(**b);
+                 retained != 0) {
+        each(l, **b, retained, true);
       }
     }
   }
@@ -106,8 +118,9 @@ bool Server::SpillBudgetFits(std::uint64_t extra, SpillView view,
                              std::optional<Clock::time_point> older_than) {
   const std::uint64_t held = SpilledBytes(view);
   std::uint64_t deletable = 0;
-  ForEachDeletableSpill(view, older_than,
-                        [&](Llm&, Llm::Branch&, std::uint64_t counted) { deletable += counted; });
+  ForEachDeletableSpill(view, older_than, [&](Llm&, Llm::Branch&, std::uint64_t counted, bool) {
+    deletable += counted;
+  });
   const std::uint64_t left = held - std::min(held, deletable);
   // Eligible checkpoints may go before spilled conversations, but those
   // a request holds cannot: they consume disk at either admission point.
@@ -195,23 +208,42 @@ bool Server::DeleteSpilledPast(std::uint64_t extra, SpillView view,
   std::size_t deleted = 0;
   std::uint64_t deleted_bytes = 0;
   bool fits = false;
+  std::vector<const Llm::Branch*> tried;  // retained files released, or refused
   for (;;) {
     const std::uint64_t held = SpilledBytes(view);
     if (TurnCheckpointFits(spill_budget_, held, TurnCheckpointBytes(), extra)) {
       fits = true;
       break;
     }
-    // The least recently used spilled conversation no request holds.
+    // The least recently used spilled conversation no request holds; first
+    // the files restored conversations kept, which cost only their next
+    // spill's whole write.
     Llm* oldest = nullptr;
     Llm::Branch* branch = nullptr;
-    ForEachDeletableSpill(view, older_than, [&](Llm& l, Llm::Branch& b, std::uint64_t) {
-      if (branch == nullptr || l.LastUsed(b) < oldest->LastUsed(*branch)) {
-        oldest = &l;
-        branch = &b;
-      }
-    });
+    bool file_only = false;
+    ForEachDeletableSpill(
+        view, older_than, [&](Llm& l, Llm::Branch& b, std::uint64_t, bool retained) {
+          if (retained && std::ranges::find(tried, &b) != tried.end()) {
+            return;  // released (or refused) once already
+          }
+          if (branch == nullptr || (retained && !file_only) ||
+              (retained == file_only && l.LastUsed(b) < oldest->LastUsed(*branch))) {
+            oldest = &l;
+            branch = &b;
+            file_only = retained;
+          }
+        });
     if (branch == nullptr) {
       break;  // nothing more to delete: still short
+    }
+    if (file_only) {
+      // Once each: one refused (its state not wholly resident) stays counted.
+      tried.push_back(branch);
+      if (auto released = oldest->ReleaseRetainedSpill(*branch); !released) {
+        Log(std::format("{}'s retained spill file could not be released: {}", oldest->name(),
+                        released.error()));
+      }
+      continue;
     }
     const std::uint64_t bytes = oldest->StateBytes(*branch);
     if (auto released = branch->ReleaseIdleState(); !released) {
@@ -231,6 +263,43 @@ bool Server::DeleteSpilledPast(std::uint64_t extra, SpillView view,
   return fits;
 }
 
+std::optional<double> SpillRoomCost(std::vector<SpillVictim> victims, std::uint64_t spilled,
+                                    std::uint64_t checkpoints, std::uint64_t budget,
+                                    std::uint64_t extra) {
+  std::ranges::sort(victims, {},
+                    [](const SpillVictim& v) { return std::pair(v.conversation, v.used); });
+  double seconds = 0;
+  for (const SpillVictim& v : victims) {
+    if (TurnCheckpointFits(budget, spilled, checkpoints, extra)) {
+      return seconds;
+    }
+    spilled -= std::min(spilled, v.counted);
+    seconds += v.seconds;
+  }
+  if (TurnCheckpointFits(budget, spilled, checkpoints, extra)) {
+    return seconds;
+  }
+  return std::nullopt;
+}
+
+std::optional<double> Server::SpillRoomSeconds(std::uint64_t extra, SpillView view) {
+  // DeleteSpilledPast's victims, without deleting; every eligible turn
+  // checkpoint is trimmed before any of them (only held ones count).
+  std::vector<SpillVictim> victims;
+  ForEachDeletableSpill(
+      view, std::nullopt, [&](Llm& l, Llm::Branch& b, std::uint64_t counted, bool retained) {
+        victims.push_back({.conversation = !retained,
+                           .used = l.LastUsed(b),
+                           .counted = counted,
+                           .seconds = retained ? 0.0
+                                               : static_cast<double>(b.history().size()) *
+                                                     l.settings().recompute_ms_per_token.value /
+                                                     1000.0});
+      });
+  return SpillRoomCost(std::move(victims), SpilledBytes(view), TurnCheckpointBytes(true),
+                       spill_budget_, extra);
+}
+
 void AddIdleStateCandidates(Llm& model, std::uint32_t owner, bool running, const Llm::Branch* spare,
                             const IdleStateRates& rates,
                             std::vector<memory::ReclaimCandidate>& out) {
@@ -243,9 +312,15 @@ void AddIdleStateCandidates(Llm& model, std::uint32_t owner, bool running, const
     if (bytes == 0) {
       continue;
     }
-    // Spilled whole within the budget (Server::Reclaim); past all of it,
-    // dropped, which a continuation holding it refuses.
-    const bool dropped = bytes > rates.spill_budget;
+    // Priced as what its take does (Server::Reclaim): spilled when the
+    // budget makes room for it, the spilled conversations that room deletes
+    // charged to it; otherwise dropped, which a continuation holding it
+    // refuses.
+    std::optional<double> room;
+    if (bytes <= rates.spill_budget) {
+      room = rates.spill_room ? rates.spill_room(**b, bytes) : std::optional<double>(0.0);
+    }
+    const bool dropped = !room.has_value();
     if (dropped && (*b)->HeldByContinuation()) {
       continue;
     }
@@ -259,9 +334,10 @@ void AddIdleStateCandidates(Llm& model, std::uint32_t owner, bool running, const
          .id = slot,
          .bytes = bytes,
          .last_use = static_cast<std::uint64_t>(model.LastUsed(**b).time_since_epoch().count()),
-         .restore_seconds = dropped ? static_cast<double>((*b)->history().size()) *
-                                          model.settings().recompute_ms_per_token.value / 1000.0
-                                    : (writes / rates.spill_rate) + (size / rates.restore_rate),
+         .restore_seconds = dropped
+                                ? static_cast<double>((*b)->history().size()) *
+                                      model.settings().recompute_ms_per_token.value / 1000.0
+                                : (writes / rates.spill_rate) + (size / rates.restore_rate) + *room,
          .running = running});
     memory::SetUse(out.back(), model.LastStamp(**b));
   }
@@ -472,10 +548,15 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
     memory::ProtectFloor(candidates, running != nullptr ? running->plan_floor_bytes() : 0);
     if (states && resident_ != nullptr && resident_->llm()) {
       idle_owner = static_cast<Llm*>(resident_);
-      AddIdleStateCandidates(
-          *idle_owner, resident_index, resident_ == running, spare,
-          {.spill_rate = spill_rate, .restore_rate = restore_rate, .spill_budget = spill_budget_},
-          candidates);
+      AddIdleStateCandidates(*idle_owner, resident_index, resident_ == running, spare,
+                             {.spill_rate = spill_rate,
+                              .restore_rate = restore_rate,
+                              .spill_budget = spill_budget_,
+                              .spill_room =
+                                  [this](const Llm::Branch& branch, std::uint64_t bytes) {
+                                    return SpillRoomSeconds(bytes, {.spilling = &branch});
+                                  }},
+                             candidates);
     }
     cost = memory::KindCosts(candidates);
     if (below_kind) {
@@ -487,6 +568,20 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
       }
       below = memory::ReclaimInflation() + charged;
     }
+  };
+  // What the catalog charges in the node's domain now (none when it cannot
+  // be read): a take's gain, measured rather than assumed.
+  const auto occupancy = [&]() -> std::optional<std::uint64_t> {
+    std::optional<std::uint64_t> total;
+    if (!node_.Call(
+            [&]() -> Status {
+              total = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+              return {};
+            },
+            "sizing a reclaim's catalog charge")) {
+      return std::nullopt;
+    }
+    return total;
   };
   const auto take = [&](const memory::ReclaimCandidate& c) -> std::uint64_t {
     const SwapPhaseTimer timer(diagnostic ? &swap_host_phases_.take_seconds : nullptr);
@@ -542,13 +637,18 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
       if (held == 0) {
         return 0;  // gone meanwhile: nothing to give back
       }
-      if (held <= spill_budget_ && KeepWithinSpillBudget(held)) {
+      if (held <= spill_budget_ && KeepWithinSpillBudget(held, {.spilling = *b})) {
+        const auto before = occupancy();
         if (auto spilled = idle_owner->SpillIdle(**b); spilled) {
           got = c.bytes;
         } else {
           Log(std::format("{}'s idle conversation in slot {}: {}", idle_owner->name(), c.id,
                           spilled.error()));
-          got = idle_owner->ResidentStateBytes(**b) == 0 ? c.bytes : 0;
+          // A spill that failed part way counts as spilled (its slot is out
+          // of every closure) though some of it stays resident: what it
+          // actually freed, never its whole state.
+          const auto after = occupancy();
+          got = before && after ? *before - std::min(*before, *after) : 0;
         }
       } else if (auto released = (*b)->ReleaseIdleState(); released) {
         got = c.bytes;
@@ -557,23 +657,12 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
     } else {
       std::optional<std::uint64_t> before_charge;
       if (options_.partial_weight_eviction) {
-        std::ignore = node_.Call(
-            [&]() -> Status {
-              before_charge = node_.catalog().OccupancyOf(node_.domain()).Total().value();
-              return {};
-            },
-            "sizing a cache reclaim's catalog charge");
+        before_charge = occupancy();
       }
       got = models_[c.owner]->Reclaim(c.kind, c.id);
       if (before_charge) {
-        const auto measured = node_.Call(
-            [&]() -> Status {
-              const auto after = node_.catalog().OccupancyOf(node_.domain()).Total().value();
-              got = *before_charge - std::min(*before_charge, after);
-              return {};
-            },
-            "measuring a cache reclaim's catalog gain");
-        if (!measured) got = 0;
+        const auto after = occupancy();
+        got = after ? *before_charge - std::min(*before_charge, *after) : 0;
       }
     }
     if (got != 0) {

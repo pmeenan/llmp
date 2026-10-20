@@ -5,6 +5,8 @@
 #ifndef LLMP_RUNTIME_SERVICE_BACKEND_H_
 #define LLMP_RUNTIME_SERVICE_BACKEND_H_
 #include <array>
+#include <optional>
+#include <string_view>
 
 #include "base/check.h"
 #include "runtime/cohort_capacity.h"
@@ -257,6 +259,13 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
 
   void Fail(std::string what);
 
+  // Makes `m` resident for requests' work (Server::Activate; D-102,
+  // recovery first): nothing, or the error those requests get. A swap whose
+  // hung work was cancelled waits for the cancellation to drain (when it
+  // does not, rung 3: a HungFailure); a node that cannot go on fails the
+  // service (`what` names the model); otherwise only these requests fail,
+  // with a 503 to retry.
+  std::optional<api::Error> ActivateFor(Served& m, std::string_view what);
   // D-102's hang recovery, rung 2: a unit's work hung and its cancellation
   // drained (the node's waits flag it). The requests that needed it fail
   // with a 503 to retry, and the model is reset in place (Server::

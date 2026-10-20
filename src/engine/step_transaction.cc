@@ -731,7 +731,7 @@ std::expected<StepReport, StepRefusal> StepTransaction::Run(const StepRequest& r
     if (!FinishPreparations()) result.error().clean = false;
     if (lookahead_) lookahead_->Abandon();
   }
-  runner_.ForgetUnstartedRouted();
+  runner_.ForgetRouted(releasable());
   if (batch_) {
     auto& batch = *batch_.data_;
     if (releasable()) {

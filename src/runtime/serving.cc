@@ -1171,7 +1171,7 @@ void Server::Persist(Clock::time_point deadline, const std::function<void()>& pr
       // Its whole state counts once spilled, not only what the spill
       // writes.
       if (held == 0 || held > spill_budget_ ||
-          !KeepWithinSpillBudget(held, {}, l.LastUsed(*branch))) {
+          !KeepWithinSpillBudget(held, {.spilling = branch}, l.LastUsed(*branch))) {
         continue;
       }
       if (auto r = l.SpillIdle(*branch); r) {

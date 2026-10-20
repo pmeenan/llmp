@@ -629,6 +629,11 @@ class Llm : public Served {
   std::uint64_t StateBytes(const Branch& branch) const;
   std::uint64_t ResidentStateBytes(const Branch& branch) const;
   std::uint64_t SpilledStateBytes(const Branch& branch) const;
+  // What a branch's spill files still occupy on disk while it is not
+  // spilled (an incremental spill keeps them past a restore), and that
+  // disk given back, its state kept (its next spill writes it whole).
+  std::uint64_t RetainedSpillBytes(const Branch& branch) const;
+  Status ReleaseRetainedSpill(Branch& branch);
   // What a branch's state would hold once it has run through `positions`,
   // from empty, as ResidentStateBytes counts it: an admission's estimate
   // (docs/runtime-serving.md#request-slots). 0 when the model keeps no
@@ -1284,6 +1289,8 @@ class Llm : public Served {
   virtual Status RestoreFor(Branch& /*branch*/) { return {}; }
   virtual bool SpilledFor(const Branch& /*branch*/) const { return false; }
   virtual std::uint64_t SpilledBytesFor(const Branch& /*branch*/) const { return 0; }
+  virtual std::uint64_t RetainedSpillBytesFor(const Branch& /*branch*/) const { return 0; }
+  virtual Status ReleaseRetainedSpillFor(Branch& /*branch*/) { return {}; }
   virtual bool LeasedFor(const Branch& /*branch*/) const { return true; }
   virtual std::uint64_t RefusedBytesFor(const Branch& /*branch*/) const { return 0; }
   // What a spill of its resident state would write (SpillWriteBytes); by
@@ -1575,7 +1582,30 @@ struct IdleStateRates {
   // `[memory] spill_budget_gib`: state larger is dropped, not spilled, and
   // recomputed at its next turn (all of it with a budget of 0).
   std::uint64_t spill_budget = std::numeric_limits<std::uint64_t>::max();
+  // Whether a spill of so many bytes fits the budget, and what the spilled
+  // conversations it deletes then cost (Server::SpillRoomSeconds); unset,
+  // any spill within spill_budget fits at no further cost.
+  std::function<std::optional<double>(const Llm::Branch& branch, std::uint64_t bytes)> spill_room =
+      {};
 };
+// One spill Server::DeleteSpilledPast may delete for room: a restored
+// conversation's retained files (released, its state kept) or a spilled
+// conversation, its bytes as SpilledBytes counts them, and what deleting it
+// costs (a deleted conversation's recomputation).
+struct SpillVictim {
+  bool conversation = true;
+  Clock::time_point used;
+  std::uint64_t counted = 0;
+  double seconds = 0;
+};
+// DeleteSpilledPast's order over `victims` (retained files first, then
+// conversations, the least recently used first) until `extra` more bytes
+// fit beside `spilled` and the held `checkpoints` within `budget`
+// (TurnCheckpointFits): what those deletions cost, or nullopt when even all
+// of them leave too little room.
+std::optional<double> SpillRoomCost(std::vector<SpillVictim> victims, std::uint64_t spilled,
+                                    std::uint64_t checkpoints, std::uint64_t budget,
+                                    std::uint64_t extra);
 void AddIdleStateCandidates(Llm& model, std::uint32_t owner, bool running, const Llm::Branch* spare,
                             const IdleStateRates& rates,
                             std::vector<memory::ReclaimCandidate>& out);
@@ -1589,6 +1619,10 @@ void AddIdleStateCandidates(Llm& model, std::uint32_t owner, bool running, const
 struct SpillView {
   const Served* out = nullptr;
   const Served* in = nullptr;
+  // The conversation about to spill: the files it kept past its last
+  // restore are part of the whole state the caller's `extra` counts, so
+  // they are neither counted again nor released to make its room.
+  const Llm::Branch* spilling = nullptr;
 };
 
 // Whether `needed` bytes are free (`free`, unknown: yes), or `reclaim` of
@@ -1747,7 +1781,9 @@ class Server {
   // request still open on it ended first: proof that nothing it queued
   // still runs (a fence that never completes is the hang ladder's to
   // escalate). RecoverModel, rung 2, after a hang's cancellation drained:
-  // fenced, recovered in place (Served::RecoverInPlace) and evicted, its
+  // fenced, the fence acknowledged by its runner (PagedNode::
+  // RecoverAfterFence: unproven steps and routes no longer refuse its
+  // next steps), recovered in place (Served::RecoverInPlace) and evicted, its
   // weights and the state it kept written back, so its next activation
   // loads it whole; an error when nothing less than a restart frees it.
   Status FenceModel(Served& m);
@@ -1790,10 +1826,19 @@ class Server {
                          std::optional<Clock::time_point> older_than = std::nullopt);
   // Each spilled conversation the budget may delete (idle, no request
   // holding it, never `view.in`'s, last used before `older_than` when
-  // given) with what it counts on disk as SpilledBytes(view) does.
-  void ForEachDeletableSpill(
-      SpillView view, std::optional<Clock::time_point> older_than,
-      const std::function<void(Llm& model, Llm::Branch& branch, std::uint64_t counted)>& each);
+  // given) with what it counts on disk as SpilledBytes(view) does; and,
+  // `retained`, each such resident conversation's spill files kept past
+  // its restore, which go (Llm::ReleaseRetainedSpill) before any spilled
+  // conversation is deleted.
+  void ForEachDeletableSpill(SpillView view, std::optional<Clock::time_point> older_than,
+                             const std::function<void(Llm& model, Llm::Branch& branch,
+                                                      std::uint64_t counted, bool retained)>& each);
+  // What spilling `extra` more bytes costs besides its own write and
+  // restore (C3, the reclaim order's price): the recomputation of the
+  // spilled conversations DeleteSpilledPast would delete to make room, in
+  // its order; nullopt when even deleting every one leaves too little, so
+  // the state would be dropped instead.
+  std::optional<double> SpillRoomSeconds(std::uint64_t extra, SpillView view = {});
   // What every model's spilled conversations hold on disk now (or as
   // `view` will leave them).
   std::uint64_t SpilledBytes(SpillView view = {});

@@ -1602,9 +1602,13 @@ std::optional<MemoryClass> PagedNode::Covered(std::uint64_t address, std::uint64
         (found && *found != span->memory_class)) {
       return std::nullopt;
     }
-    const auto view = catalog_.Describe(span->extent);
-    if (!view || (resident && view->state != catalog::ExtentState::kResident)) {
-      return std::nullopt;
+    // Residency is the catalog's; the reservation alone is the spans' (a
+    // span leaves with its extent), which the driver may read at any time.
+    if (resident) {
+      const auto view = catalog_.Describe(span->extent);
+      if (!view || view->state != catalog::ExtentState::kResident) {
+        return std::nullopt;
+      }
     }
     found = span->memory_class;
     at = span->base + span->size;
@@ -1839,14 +1843,24 @@ Status PagedNode::Load(std::vector<ExtentId> extents, std::string what,
     return files;
   }
   LoadStats stats{.what = std::move(what), .extents = 0, .seconds = 0, .requests = 0, .pieces = 0};
-  for (const ExtentId extent : extents) {
-    if (catalog_.Describe(extent).value().state != catalog::ExtentState::kResident) {
-      ++stats.extents;
-    }
-  }
-  auto closure = catalog_.ClosureOfExtents(extents);
-  if (!closure) {
-    return Error("a load's closure");
+  // The catalog is the scheduler's: read on its thread, where no eviction
+  // or page-in changes it meanwhile.
+  std::optional<catalog::Closure> closure;
+  if (auto described = Call(
+          [&]() -> Status {
+            for (const ExtentId extent : extents) {
+              const auto view = catalog_.Describe(extent);
+              if (!view) return Error("a load names an extent the catalog does not hold");
+              if (view->state != catalog::ExtentState::kResident) ++stats.extents;
+            }
+            auto of = catalog_.ClosureOfExtents(extents);
+            if (!of) return Error("a load's closure");
+            closure = std::move(*of);
+            return {};
+          },
+          "describing a load");
+      !described) {
+    return described;
   }
   Done done;
   const std::uint64_t requests = counting_->requests.load(std::memory_order_relaxed);
@@ -2092,6 +2106,7 @@ Status PagedNode::SupplementalJob(const catalog::Closure& selected, sc::DeviceJo
       "checking supplemental operation retirement");
   if (!proof || !retired) {
     open.unproven = true;
+    open.supplemental_unproven = true;
     return Error("supplemental completion is unproven; complete payload and base lease retained");
   }
   if (report) report->retirement = JobReport::Retirement::kRetired;
@@ -2705,6 +2720,7 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
   }
   if (!retired) {
     open.unproven = true;
+    open.other_unproven = true;
     return Error(std::format("{}: its step's end could not be proven", what));
   }
   if (open.channel.step_failed.load(std::memory_order_relaxed)) {
@@ -2713,6 +2729,55 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
         "{} failed{}", what,
         error >= 0 ? ": " + sc::ToString(static_cast<sc::WorkError>(error)) : std::string()));
   }
+  return {};
+}
+
+Status PagedNode::ProveDirectStep(std::uint32_t stream, OpenRequest& open) {
+  const providers::StreamId id = streams_[stream];
+  const auto fence = execution_->Record(id);
+  if (!fence) {
+    return Error(
+        std::format("an unproven step's stream could not be fenced: {}", fence.error().detail));
+  }
+  bool seen = false;
+  {
+    Waiter wait(*this, "proving an unproven step's end");
+    std::uint32_t refusals = 0;
+    while (true) {
+      const auto state = execution_->Query(*fence);
+      if (state && *state == providers::FenceState::kComplete) {
+        seen = true;
+        break;
+      }
+      if (state) {
+        refusals = 0;
+      } else if (state.error().error == providers::ProviderError::kUnknown ||
+                 ++refusals >= kFenceRefusals) {
+        break;  // a device fault, or a refusal that persists: still unproven
+      }
+      // Its request is cancelled already: a hang here has nothing more to
+      // cancel, and giving up is the patience's last resort.
+      if (wait.Poll(std::chrono::steady_clock::now()) == WaitVerdict::kGiveUp) {
+        GiveUp("proving an unproven step's end");
+      }
+      if (threads_.empty()) {
+        Round();
+      } else {
+        std::this_thread::sleep_for(kDirectNap);
+      }
+    }
+  }
+  if (!seen) return Error("an unproven step's stream fence was not seen complete");
+  for (std::uint32_t tries = 0; tries < kFenceRefusals; ++tries) {
+    const auto released = execution_->Release(*fence);
+    if (released || released.error().error != providers::ProviderError::kFailed) break;
+  }
+  // DirectStep counted each such step's external work and never saw it end.
+  open.channel.external->fetch_sub(open.direct_unproven, std::memory_order_acq_rel);
+  open.direct_unproven = 0;
+  open.unproven = false;
+  open.cancelled = true;
+  wake_.Signal();
   return {};
 }
 
@@ -2771,6 +2836,7 @@ Status PagedNode::DirectStep(std::uint32_t stream, OpenRequest& open, sc::Device
   if (!fence && queued) {
     // Nothing can show when the queued work ends: its lease is kept.
     open.unproven = true;
+    ++open.direct_unproven;
     return Error(
         std::format("{}: its step's fence could not be recorded: {}", what, fence.error().detail));
   }
@@ -2834,6 +2900,7 @@ Status PagedNode::DirectStep(std::uint32_t stream, OpenRequest& open, sc::Device
   wait.reset();  // seen, or given up as unproven
   if (!seen) {
     open.unproven = true;  // its lease is kept: the step may still touch it
+    ++open.direct_unproven;
     open.cancelled = open.cancelled || cancelled;
     if (cancelled) {
       hang_cancelled_ = true;
@@ -3153,6 +3220,60 @@ void PagedNode::RetireModelRoot(RetainedModelRoot& root) {
   auto keep = std::move(root.keep);
   // The visiting teardown reference outlives this callback, including when
   // the frontend and private view already dropped every other root reference.
+}
+
+Status PagedNode::FenceStream(std::uint32_t stream) {
+  if (!scheduler_ || torn_down_) return Error("a stream fence needs a started node");
+  if (job_active_) return Error("a stream fence cannot overlap a device job");
+  // A Job refuses while a supplemental operation is unretired, and only a
+  // direct step's own external count is the stream fence's to settle.
+  if (auto drained = FinishSupplemental(); !drained) return drained;
+  if (const auto open = requests_.find(stream);
+      open != requests_.end() && open->second->supplemental_unproven) {
+    // Its supplemental operation proved its end just now (the node holds
+    // one at a time), which balanced its own count: only the rest remains.
+    auto& request = *open->second;
+    request.supplemental_unproven = false;
+    if (request.direct_unproven == 0 && !request.other_unproven) {
+      request.unproven = false;
+      request.cancelled = true;
+    }
+  }
+  if (const auto open = requests_.find(stream); open != requests_.end() && open->second->unproven &&
+                                                open->second->direct_unproven != 0 &&
+                                                !open->second->other_unproven) {
+    if (auto proven = ProveDirectStep(stream, *open->second); !proven) return proven;
+  }
+  if (InRequest(stream)) (void)EndRequest(stream);
+  if (InRequest(stream)) return Error("a request is still open on the stream");
+  // Withdrawn preparations would otherwise outlive the work that asked for
+  // them.
+  while (preparing_state_ != nullptr) {
+    auto* owner = preparing_state_;
+    if (auto ended = owner->FinishPreparation(true); !ended && preparing_state_ == owner)
+      return Error(ended.error());
+  }
+  return Job(
+      catalog::Closure{}, [](providers::NativeStream) { return sc::JobResult::kQueued; },
+      "fencing a model's stream after a failure", stream);
+}
+
+Status PagedNode::RecoverAfterFence(PagedModel& model) {
+  const std::uint32_t stream = model.stream();
+  if (auto fenced = FenceStream(stream); !fenced) return fenced;
+  // Private batches first: their close clears the runner's active batch.
+  std::vector<std::string> errors;
+  for (auto* root = model_roots_; root;) {
+    auto* next = root->next;
+    auto keep = root->keep;  // Close may detach the root
+    if (root->model != &model && root->model->stream() == stream) {
+      if (auto acknowledged = root->model->AcknowledgeFence(); !acknowledged)
+        errors.push_back(acknowledged.error());
+    }
+    root = next;
+  }
+  if (!errors.empty()) return Joined(errors);
+  return model.AcknowledgeFence();
 }
 
 Status PagedNode::TearDown(std::span<PagedModel* const> models) {

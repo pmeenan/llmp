@@ -115,22 +115,8 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
     swapped_ = false;
     return so_far(0);
   }
-  (void)server_.node().TakeHangCancelled();  // asked after the work (D-102)
-  if (auto r = server_.Activate(*m, parts_); !r) {
-    if (server_.node().TakeHangCancelled()) {
-      Say(log_,
-          "hang recovery: the swap's hung work was cancelled; the swap failed and only "
-          "the request that needed it fails");
-      if (!AwaitDrained()) {  // a read still in the drive: rung 3
-        swapped_ = false;
-        return std::unexpected(HungFailure());
-      }
-    }
-    if (!server_.NodeHealthy()) {  // otherwise recovered (D-102): this request only
-      Fail(std::format("making {} resident: {}", m->name(), r.error()));
-    }
-    swapped_ = false;
-    return std::unexpected(Failure(503, "the model could not be made resident: " + r.error()));
+  if (auto refused = ActivateFor(*m, m->name()); refused) {
+    return std::unexpected(std::move(*refused));
   }
   // A swap is one program (about 10 s on a Spark), watched as one unit
   // at its bytes; whatever ended the request meanwhile (the client gone,
@@ -312,20 +298,8 @@ std::expected<api::Completion, api::Error> NodeBackend::Complete(
     swapped_ = false;
     return api::Completion{};
   }
-  (void)server_.node().TakeHangCancelled();  // asked after the work (D-102)
-  if (auto activated = server_.Activate(*model, parts_); !activated) {
-    if (server_.node().TakeHangCancelled()) {
-      Say(log_,
-          "hang recovery: the swap's hung work was cancelled; the swap failed and only "
-          "the request that needed it fails");
-      (void)AwaitDrained();  // a read still in the drive: rung 3
-    }
-    if (!server_.NodeHealthy()) {  // otherwise recovered (D-102): this request only
-      Fail("making the literal completion model resident: " + activated.error());
-    }
-    swapped_ = false;
-    return std::unexpected(
-        Failure(503, "the model could not be made resident: " + activated.error()));
+  if (auto refused = ActivateFor(*model, "the literal completion model"); refused) {
+    return std::unexpected(std::move(*refused));
   }
   if (!exchange.Continue()) {
     return api::Completion{};
@@ -531,6 +505,27 @@ void NodeBackend::Fail(std::string what) {
   if (failure_.empty()) {
     failure_ = std::move(what);
   }
+}
+
+std::optional<api::Error> NodeBackend::ActivateFor(Served& m, std::string_view what) {
+  (void)server_.node().TakeHangCancelled();  // asked after the work (D-102)
+  auto activated = server_.Activate(m, parts_);
+  if (activated) {
+    return std::nullopt;
+  }
+  swapped_ = false;
+  if (server_.node().TakeHangCancelled()) {
+    Say(log_,
+        "hang recovery: the swap's hung work was cancelled; the swap failed and only "
+        "the requests that needed it fail");
+    if (!AwaitDrained()) {  // a read still in the drive: rung 3
+      return HungFailure();
+    }
+  }
+  if (!server_.NodeHealthy()) {  // otherwise recovered (D-102): these requests only
+    Fail(std::format("making {} resident: {}", what, activated.error()));
+  }
+  return Failure(503, "the model could not be made resident: " + activated.error());
 }
 
 api::Error NodeBackend::RecoverFromHang(Served& m, std::string_view what) {

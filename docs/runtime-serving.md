@@ -583,7 +583,10 @@ plan or graph unused for three reclaims or a quarter of an hour falls
 behind a conversation used just now; recomputing state (its tokens at the
 model's `recompute_ms_per_token`, 1.4 ms until calibrated: 23 s for
 16,384 tokens) is never chosen while spill has room
-([memory-pressure](experiments/memory-pressure/README.md)). Within a kind
+([memory-pressure](experiments/memory-pressure/README.md)). An idle
+conversation is priced as what taking it will do: a spill when the spill
+budget can make room for it, the recomputation of the spilled
+conversations that room deletes added to its cost; otherwise its drop. Within a kind
 the least recently used goes first, the running model's last; never its
 in-use floor (its most recently used plans up to its `plan_floor_bytes`,
 with their graphs) nor anything a step under way holds. A reclaim takes
@@ -635,13 +638,19 @@ saves writes for Qwen3.8 today. DeepSeek with DSpark writes everything:
 its write ranges and the whole drafter region cover every used extent.
 A spill that fails partway (an I/O error) leaves the state not exactly
 known, so the conversation is cleared instead, the log says so, and its
-next turn prefills.
+next turn prefills; the reclaim counts only what the catalog shows it
+freed. A restored conversation's spill files stay for its next spill and
+count toward the spill budget (below), except the incoming model's during
+a swap and, while it spills, the conversation's own (its whole state is
+counted instead).
 
 **Retention, the spill budget and pressure** (`[memory]`, below).
 Between units and while idle, the driver deletes idle conversations,
 resident or spilled, unused for `retention_hours`, and while the spilled
-state (a swap's written-back conversations included) passes
-`spill_budget_gib`, the least recently used spilled one; a spill that
+state (a swap's written-back conversations included, and the spill files
+restored conversations keep) passes `spill_budget_gib`, first those kept
+files (the conversation stays; its next spill writes it whole), then the
+least recently used spilled conversation; a spill that
 would pass the budget deletes those first, counting the whole state it
 will hold on disk, not only what it writes (and deletes none when even
 all of them would not make room), and with a budget of 0 (or a
@@ -1841,7 +1850,10 @@ native generation waves retain their ordinary serial entry points.
 When a different model reaches the queue's head, the running cohort stops
 refilling. After `[client] model_turn_seconds` of resident work (default
 30, configurable from 1 to 2,592,000 seconds), its members pause at their
-next completed unit. Initial swap time is excluded from that turn. The
+next completed unit. Both follow the queue's current head, pass by pass:
+once that request leaves (its client gone), the cohort refills again and
+pauses no member for it, unless members already paused for it: then the
+rest pause too, and all resume together. Initial swap time is excluded from that turn. The
 30-second fallback is a scheduling policy, not a measured throughput knee
 or a request deadline. A full set of slots is still checked for a pending
 other model; same-model newcomers wait for a slot without preempting a
@@ -2084,7 +2096,12 @@ job (a wide prefill chunk) is allowed its expected time at the floors.
 2. **Reset the model in place**, only once the cancellation drained. The
    requests that needed the work fail (a 503 `backend_hung` to retry; a
    cohort's members all), and once they retire the model's stream is
-   fenced (proof that nothing it queued still runs), every slot the
+   fenced (proof that nothing it queued still runs; on the direct path a
+   step whose end could not be proven is proven ended by that later
+   fence) and the fence acknowledged by its runner, so a step or route
+   whose end went unproven (a lost fence, not a faulted launch, which
+   still ends in rung 3's restart) no longer refuses its next steps,
+   every slot the
    failure may have touched has its state discarded (one spilled before
    it is kept), its cohort's fault lifts, its plans and graphs are
    dropped, its calibration samples not yet recorded are dropped (the

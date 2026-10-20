@@ -529,20 +529,25 @@ ModelRunner::CompletedRoute(const kn::RoutedProgram& program, std::size_t group)
   return std::pair{routed_->epoch, std::span<const std::int32_t>(ids, count)};
 }
 
-void ModelRunner::ForgetUnstartedRouted() {
-  if (routed_flight_ && !routed_flight_->started) routed_flight_.reset();
+void ModelRunner::ForgetRouted(bool retired) {
+  // A started flight's owners outlive its step only while that step's
+  // retirement is unproven (a failed continuation forces that).
+  if (routed_flight_ && (!routed_flight_->started || retired)) routed_flight_.reset();
 }
 
 StepQueued ModelRunner::QueueRoutedPrefix(providers::NativeStream native) {
   auto flight = routed_flight_;
   if (!flight) return {.result = std::unexpected(kn::StepFailure{.detail = "no routed flight"})};
-  flight->started = true;
   const auto bytes = flight->program->layout().host_bytes;
   flight->prefix = flight->execution.QueueRouted(
       *flight->runs, flight->access, *flight->program, flight->inputs, {},
       flight->pinned.first(static_cast<std::size_t>(bytes)), flight->capture, graph_stats_, native);
   flight->unknown =
       !flight->prefix.result && flight->prefix.result.error().error == kn::StepError::kUnknown;
+  // Started only once work was (or may have been) queued: a prefix refused
+  // before it queued anything leaves an unstarted flight, which goes with its
+  // transaction (ForgetRouted) instead of refusing every later step.
+  flight->started = flight->prefix.before || flight->prefix.result.has_value() || flight->unknown;
   return flight->prefix;
 }
 

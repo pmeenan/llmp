@@ -3,6 +3,7 @@
 
 #include "engine/live_state.h"
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -338,6 +339,44 @@ void LiveState::SplitExtents(std::span<const Range> changed, std::vector<ExtentI
       (touched ? written : unchanged).push_back(r.mapped.extents[i]);
     }
   }
+}
+
+std::uint64_t LiveState::spill_file_bytes() const {
+  struct stat st{};
+  if (spill_fd_ < 0 || ::fstat(spill_fd_, &st) != 0 || st.st_blocks <= 0) return 0;
+  return static_cast<std::uint64_t>(st.st_blocks) * 512U;
+}
+
+LiveState::Status LiveState::ReleaseSpillFile(PagedNode& node) {
+  if (auto finished = FinishPreparation(); !finished) return finished;
+  if (spill_fd_ < 0) return {};
+  std::uint64_t file_bytes = 0;
+  for (const Region& r : regions_) file_bytes += r.mapped.bytes;
+  const auto used = extents();
+  // On the scheduler's thread, where every eviction begins: none can start
+  // writing the file back between the check and the truncation.
+  return node.Call(
+      [&]() -> Status {
+        for (const ExtentId id : used) {
+          const auto view = node.catalog().Describe(id);
+          if (!view || view->state != catalog::ExtentState::kResident) {
+            return Error("a state its spill file may hold is not resident");
+          }
+        }
+        // The file no longer holds what a write-back saved: no eviction may
+        // trust it (EvictOptions::unchanged), whatever its owner says.
+        for (const ExtentId id : used) {
+          if (!node.catalog().ForgetSaved(id)) {
+            return Error("forgetting what a resident state's spill file saved");
+          }
+        }
+        if (::ftruncate(spill_fd_, 0) != 0 ||
+            ::ftruncate(spill_fd_, static_cast<off_t>(file_bytes)) != 0) {
+          return Error("releasing a resident state's spill file");
+        }
+        return {};
+      },
+      "releasing a resident state's spill file");
 }
 
 std::vector<ExtentId> LiveState::kept_extents() const {

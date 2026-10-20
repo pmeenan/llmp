@@ -24,6 +24,17 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Hang recovery's in-place reset (D-102 rung 2) now clears a step or routed
+  continuation whose end was unproven (a lost fence; a faulted launch still
+  restarts), so the model serves again instead of refusing every step until
+  a restart; a cooperative cohort no longer stops
+  refilling or pauses its members for another model's request that has
+  already left the queue; the spill budget now counts the files restored
+  conversations keep for their next spill (released first when the budget
+  is passed), the reclaim order prices idle state as the spill or drop it
+  will actually take, a restore refused for room keeps the conversation's
+  record for a restart, and a request body waiting for request memory is
+  freed when its client leaves (R20).
 - Unpin runtime numerical qualifications, planner policies, kernel capability
   predicates, on-chip decode formats and importer normalizers from specific
   checkpoint receipts and model dimensions (D-123, R14–R19): derive fusion and

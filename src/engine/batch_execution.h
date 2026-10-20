@@ -86,6 +86,9 @@ struct PromptBatch::Data final : kernels::ResourceDependency, PagedModel {
  private:
   // This callback is inaccessible as a caller-asserted drain override.
   Status RetireAfterFence() override;
+  // A recovery's fence (PagedNode::RecoverAfterFence) retires it the same
+  // way: the batch closes, its runner stays in service.
+  Status AcknowledgeFence() override { return RetireAfterFence(); }
 };
 }  // namespace llmp::engine
 #endif  // LLMP_ENGINE_BATCH_EXECUTION_H_

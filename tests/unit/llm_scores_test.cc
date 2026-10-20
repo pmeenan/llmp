@@ -1792,6 +1792,50 @@ TEST(LlmScores, AdmissionsReclaimSparesTheChosenBranch) {
   std::vector<llmp::memory::ReclaimCandidate> unheld;
   rt::AddIdleStateCandidates(model, 0, true, nullptr, none, unheld);
   EXPECT_THAT(ids(unheld), ElementsAre(0U, 1U, 3U));
+  // Priced as what its take does: a spill the budget cannot make room for
+  // even past every deletable spill is a drop (a held one no candidate), and
+  // one it can is charged the recomputation of the spills it deletes.
+  rt::IdleStateRates full = rates;
+  full.spill_room = [](const rt::Llm::Branch&, std::uint64_t) { return std::optional<double>(); };
+  (*held)->HoldContinuation();
+  std::vector<llmp::memory::ReclaimCandidate> no_room;
+  rt::AddIdleStateCandidates(model, 0, true, nullptr, full, no_room);
+  EXPECT_THAT(ids(no_room), ElementsAre(0U, 1U));
+  (*held)->ReleaseContinuation();
+  rt::IdleStateRates deleting = rates;
+  deleting.spill_room = [](const rt::Llm::Branch&, std::uint64_t) {
+    return std::optional<double>(5.0);
+  };
+  std::vector<llmp::memory::ReclaimCandidate> charged;
+  rt::AddIdleStateCandidates(model, 0, true, nullptr, deleting, charged);
+  ASSERT_EQ(charged.size(), spilled.size());
+  for (std::size_t i = 0; i < charged.size(); ++i) {
+    EXPECT_DOUBLE_EQ(charged[i].restore_seconds, spilled[i].restore_seconds + 5.0);
+  }
+}
+
+// What a spill's room costs, in DeleteSpilledPast's order: nothing while it
+// fits; retained files (free) before spilled conversations, the least
+// recently used of those first; none at all when even deleting every one
+// leaves too little.
+TEST(LlmScores, SpillRoomCostFollowsTheDeletionOrder) {
+  const auto at = [](int seconds) { return rt::Clock::time_point(std::chrono::seconds(seconds)); };
+  const std::vector<rt::SpillVictim> victims = {
+      {.conversation = true, .used = at(20), .counted = 30, .seconds = 7.0},
+      {.conversation = false, .used = at(30), .counted = 10, .seconds = 0.0},
+      {.conversation = true, .used = at(10), .counted = 30, .seconds = 3.0},
+  };
+  // 70 spilled within 100: 30 more fit as they are.
+  EXPECT_EQ(rt::SpillRoomCost(victims, 70, 0, 100, 30), 0.0);
+  // 40 more: the retained file goes first, at no cost.
+  EXPECT_EQ(rt::SpillRoomCost(victims, 70, 0, 100, 40), 0.0);
+  // 50 more: then the older conversation (3 s), not the newer.
+  EXPECT_EQ(rt::SpillRoomCost(victims, 70, 0, 100, 50), 3.0);
+  // 90 more: both conversations.
+  EXPECT_EQ(rt::SpillRoomCost(victims, 70, 0, 100, 90), 10.0);
+  // Held checkpoints stay: 95 cannot fit beside 10 of them.
+  EXPECT_EQ(rt::SpillRoomCost(victims, 70, 10, 100, 95), std::nullopt);
+  EXPECT_EQ(rt::SpillRoomCost({}, 0, 0, 100, 101), std::nullopt);
 }
 
 // Room for a request slot: free bytes, else a reclaim that frees all of the

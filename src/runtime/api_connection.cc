@@ -654,6 +654,25 @@ void Server::ParseLoop(const std::stop_token& stop) {
         waiting.push_back(std::move(parse));
       }
     }
+    if (!waiting.empty()) {
+      // A departed client's parse waits no longer: handed back, it answers
+      // no one (TakeParsed) and its body and charges are freed.
+      std::vector<std::unique_ptr<Parse>> departed;
+      {
+        const std::scoped_lock lock(mutex_);
+        for (auto it = waiting.begin(); it != waiting.end();) {
+          if ((*it)->channel != nullptr && (*it)->channel->gone) {
+            departed.push_back(std::move(*it));
+            it = waiting.erase(it);
+          } else {
+            ++it;
+          }
+        }
+      }
+      for (auto& gone : departed) {
+        hand_back(std::move(gone));
+      }
+    }
     if (const std::uint64_t epoch = memory_->epoch(); epoch != seen && !waiting.empty()) {
       seen = epoch;
       const std::uint64_t denials = memory_->denials();
