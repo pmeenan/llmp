@@ -252,7 +252,11 @@ Dims DimsOf(const Instance& in) {
   const std::uint32_t yarn_ctx = p.Given("yarn_context")
                                      ? static_cast<std::uint32_t>(p.Int("yarn_context"))
                                      : in.stage.context;
-  return {.kv_encoding = p.Name("kv_encoding") == "q8_0" ? Encoding::kQ8_0 : Encoding::kF16,
+  const auto enc_name = p.Name("kv_encoding");
+  const Encoding kv_enc = enc_name == "q8_0"   ? Encoding::kQ8_0
+                          : enc_name == "q4_0" ? Encoding::kQ4_0
+                                               : Encoding::kF16;
+  return {.kv_encoding = kv_enc,
           .width = in.stage.width,
           .heads = static_cast<std::uint64_t>(p.Int("heads")),
           .kv_heads = static_cast<std::uint64_t>(p.Int("kv_heads")),
@@ -302,14 +306,14 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   if ((d.rope_axes[1] != 0 || d.rope_axes[2] != 0) && (!d.stateless || d.freqs)) {
     return std::unexpected("multi-axis rope requires stateless attention without rope_freqs");
   }
-  if (d.stateless && d.kv_encoding == Encoding::kQ8_0) {
-    return std::unexpected("stateless attention does not use Q8_0 KV state");
+  if (d.stateless && (d.kv_encoding == Encoding::kQ8_0 || d.kv_encoding == Encoding::kQ4_0)) {
+    return std::unexpected("stateless attention does not use quantized KV state");
   }
-  if (d.kv_encoding == Encoding::kQ8_0 &&
+  if ((d.kv_encoding == Encoding::kQ8_0 || d.kv_encoding == Encoding::kQ4_0) &&
       (d.kd != d.vd || (d.kd != 64 && d.kd != 256 && d.kd != 512) || d.explicit_scores ||
        (d.kd != 256 && d.softcap != 0.0F)))
     return std::unexpected(
-        "Q8_0 KV requires owned D64/D256/D512 attention, equal K/V, "
+        "quantized KV requires owned D64/D256/D512 attention, equal K/V, "
         "no explicit scores and softcap only at D256");
   if (d.heads % d.kv_heads != 0) return std::unexpected("heads are not a multiple of kv_heads");
   if (d.rope_dims % 2 != 0 || d.rope_offset + d.rope_dims > d.kd) {
@@ -502,7 +506,10 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
       }
       return t;
     };
-    ir::TensorId q = rotate(q_product, d.heads, kQNorm);
+    const ir::TensorId q_in =
+        d.output_gate ? EmitInterleavedHeadSlice(b, q_product, d.kd, d.kd + d.vd, d.heads, rows, 0)
+                      : q_product;
+    ir::TensorId q = rotate(q_in, d.heads, kQNorm);
     if (!d.scale_scores && d.scale != 1.0F) q = b.Scale(q, d.scale);
     ir::TensorId v = b.Reshape(v_product, Shape({d.vd, d.kv_heads, rows}));
     if (d.v_norm) v = b.RmsNorm(v, d.eps);
@@ -511,9 +518,12 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     const ir::TensorId keys = b.Cont(b.Permute(k, {0, 2, 1, 3}));
     const ir::TensorId values = b.Permute(v, {0, 2, 1, 3});
     const float scale = d.scale_scores ? d.scale : 1.0F;
+    const ir::TensorId sinks = d.sinks ? w(kSinks) : ir::TensorId{};
     const ir::TensorId attention =
-        b.Attention(queries, keys, values, mask, {}, {.scale = scale, .softcap = d.softcap});
-    const ir::TensorId att_rows = b.Reshape(attention, Shape({d.vd * d.heads, rows}));
+        b.Attention(queries, keys, values, mask, sinks, {.scale = scale, .softcap = d.softcap});
+    ir::TensorId att_rows = b.Reshape(attention, Shape({d.vd * d.heads, rows}));
+    if (d.output_gate)
+      att_rows = EmitSigmoidOutputGate(b, att_rows, q_product, d.kd, d.vd, d.heads, rows);
     const ir::TensorId projected = b.MatMul(w(kOutput), att_rows);
     if (d.bare) return FragmentOut{.stream = projected};
     if (!d.sandwich) return FragmentOut{.stream = b.Add(projected, x)};
@@ -572,7 +582,7 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     if (!d.borrowed && !d.stateless) {
       const ir::TensorId store = f.step.StoreCells(s, cells);
       if (!k_rows.valid()) k_rows = b.Reshape(k, Shape({k_width, rows}));
-      EmitKvCacheStore(b, f.State(s, 0), slice(k_rows, k_width), store, Encoding::kF16);
+      EmitKvCacheStore(b, f.State(s, 0), slice(k_rows, k_width), store, d.kv_encoding);
       if (!v_rows.valid()) v_rows = b.Reshape(v, Shape({v_width, rows}));
       EmitKvCacheStore(b, f.State(s, 1), slice(v_rows, v_width), store, d.kv_encoding);
     }
@@ -732,12 +742,19 @@ std::expected<void, std::string> Reference(RefIO& io) {
     };
     rotate_stateless(q, d.heads);
     rotate_stateless(k, d.kv_heads);
+    if (!d.scale_scores && d.scale != 1.0F) {
+      for (double& val : q) val *= static_cast<double>(d.scale);
+    }
+    const double score_mult = d.scale_scores ? static_cast<double>(d.scale) : 1.0;
     std::vector<double> score(rows);
     for (std::uint64_t r = 0; r < rows; ++r) {
       for (std::uint64_t h = 0; h < d.heads; ++h) {
         const std::uint64_t kh = h / group;
         const double* qh = &q[(r * d.heads + h) * d.kd];
-        double top = -std::numeric_limits<double>::infinity();
+        const double sink_logit = (d.sinks && !sinks.empty())
+                                      ? static_cast<double>(sinks[h])
+                                      : -std::numeric_limits<double>::infinity();
+        double top = sink_logit;
         for (std::uint64_t c = 0; c < rows; ++c) {
           const double mask = io.carry[(r * rows) + c];
           if (std::isinf(mask) && mask < 0.0) {
@@ -746,14 +763,14 @@ std::expected<void, std::string> Reference(RefIO& io) {
           }
           double dot = 0.0;
           for (std::uint64_t j = 0; j < d.kd; ++j) {
-            dot += qh[j] * static_cast<double>(d.scale) * k[(c * d.kv_heads + kh) * d.kd + j];
+            dot += qh[j] * score_mult * k[(c * d.kv_heads + kh) * d.kd + j];
           }
           if (d.softcap > 0.0F) dot = d.softcap * std::tanh(dot / d.softcap);
           dot += mask;
           score[c] = dot;
           top = std::max(top, dot);
         }
-        double sum = 0.0;
+        double sum = (d.sinks && !sinks.empty()) ? std::exp(sink_logit - top) : 0.0;
         for (double& sc : score) {
           sc = std::isinf(sc) ? 0.0 : std::exp(sc - top);
           sum += sc;
@@ -803,7 +820,9 @@ std::expected<void, std::string> Reference(RefIO& io) {
         }
         AttendCacheRow(std::span(q).subspan(r * d.heads * d.kd, d.heads * d.kd), seg_k, seg_v,
                        seg.rows, visible, d.heads, d.kv_heads, d.kd, d.vd,
-                       static_cast<double>(d.scale), 1.0, static_cast<double>(d.softcap), sinks,
+                       !d.scale_scores ? static_cast<double>(d.scale) : 1.0,
+                       d.scale_scores ? static_cast<double>(d.scale) : 1.0,
+                       static_cast<double>(d.softcap), sinks,
                        std::span(attended).subspan(r * d.heads * d.vd, d.heads * d.vd));
       }
       first += seg.rows;
@@ -858,10 +877,11 @@ std::expected<void, std::string> Reference(RefIO& io) {
         }
         visible[c] = held >= 0 && held <= p && (d.window == 0 || p - held < d.window) ? 1U : 0U;
       }
-      AttendCacheRow(std::span(q).subspan(r * d.heads * d.kd, d.heads * d.kd), kc, vc, read,
-                     visible, d.heads, d.kv_heads, d.kd, d.vd, static_cast<double>(d.scale), 1.0,
-                     static_cast<double>(d.softcap), sinks,
-                     std::span(attended).subspan(r * d.heads * d.vd, d.heads * d.vd));
+      AttendCacheRow(
+          std::span(q).subspan(r * d.heads * d.kd, d.heads * d.kd), kc, vc, read, visible, d.heads,
+          d.kv_heads, d.kd, d.vd, !d.scale_scores ? static_cast<double>(d.scale) : 1.0,
+          d.scale_scores ? static_cast<double>(d.scale) : 1.0, static_cast<double>(d.softcap),
+          sinks, std::span(attended).subspan(r * d.heads * d.vd, d.heads * d.vd));
     }
     first += seg.rows;
   }

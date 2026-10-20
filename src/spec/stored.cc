@@ -81,7 +81,7 @@ std::expected<void, std::string> CheckApplied(const artifact::Artifact& a, std::
             where, std::format("applied by the importer but not among stage {}'s folds", s.name));
       }
     }
-    if (std::ranges::none_of(f.tensors, [&](const std::string& t) { return bound.contains(t); })) {
+    if (std::ranges::any_of(f.tensors, [&](const std::string& t) { return !bound.contains(t); })) {
       return Refuse(where, "names no tensor a stage of the spec binds from the artifact");
     }
   }

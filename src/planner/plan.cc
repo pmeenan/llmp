@@ -138,7 +138,14 @@ std::expected<std::optional<ir::Graph>, ir::VerifyError> CompactRouteReaders(
     if (registry.at(step.implementation).name != "ggml.gemma.route.fused") continue;
     for (const auto id : step.nodes) {
       const auto& node = graph.node(id);
-      if (node.key == ir::Primitive(ir::Op::kRoute)) pitched[node.out[0].v] = true;
+      if (node.key == ir::Primitive(ir::Op::kRoute) && node.nout > 0 && node.nsrc > 0 &&
+          node.out[0].valid() && node.src[0].valid()) {
+        const auto& ids_desc = graph.tensor(node.out[0]);
+        const auto& gate_desc = graph.tensor(node.src[0]);
+        if (ids_desc.shape().ne[0] < gate_desc.shape().ne[0]) {
+          pitched[node.out[0].v] = true;
+        }
+      }
     }
   }
   const auto byte_layout = [](const ir::Node& node) {
@@ -1464,6 +1471,16 @@ PlanKey KeyOf(const base::Sha256Digest& spec, const StepShape& shape, const Poli
                  .shape = shape,
                  .patterns = PatternsDigest(policy),
                  .policy = Digest(policy),
+                 .partition = partition};
+}
+
+PlanKey KeyOf(const base::Sha256Digest& spec, const StepShape& shape,
+              const base::Sha256Digest& policy_digest, const base::Sha256Digest& patterns_digest,
+              std::uint32_t partition) {
+  return PlanKey{.spec = spec,
+                 .shape = shape,
+                 .patterns = patterns_digest,
+                 .policy = policy_digest,
                  .partition = partition};
 }
 

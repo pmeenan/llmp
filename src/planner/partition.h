@@ -273,7 +273,7 @@ struct LeafBinding {
 // in logical order: integers for an I32 constant, else floats.
 struct ConstantValues {
   ir::TensorId local{};
-  std::vector<std::int64_t> ints{};
+  std::vector<std::int32_t> ints{};
   std::vector<float> values{};
 };
 struct DeviceGraph {

@@ -3,6 +3,7 @@
 
 #include "engine/step_runs.h"
 
+#include <algorithm>
 #include <format>
 #include <utility>
 
@@ -119,6 +120,19 @@ StepQueued StepRuns::QueueRouted(StepPlanRuns& runs, const kn::RoutedAccess& acc
     return result;
   }
   auto& recording = runs.routed_graphs[index];
+  if (index == 0 && ((graphs_ && recording) || (capture && !runs.copies.empty()))) {
+    if (runs.copies != inputs) {
+      result.result = std::unexpected(Unknown("routed input staging changed"));
+      return result;
+    }
+  }
+  if (index == program.groups() &&
+      ((graphs_ && recording) || (capture && !runs.routed_outputs.empty()))) {
+    if (!std::ranges::equal(runs.routed_outputs, outputs)) {
+      result.result = std::unexpected(Unknown("routed output staging changed"));
+      return result;
+    }
+  }
   const auto body = [&]() -> std::expected<void, kn::StepFailure> {
     result.before = true;  // conservative once the first launch/copy is attempted
     if (index == 0) {
@@ -167,7 +181,10 @@ StepQueued StepRuns::QueueRouted(StepPlanRuns& runs, const kn::RoutedAccess& acc
     result.result = program.ReplaySegment(access, *launch_, native, *recording);
     return result;
   }
-  if (capture && !runs.uncapturable) {
+  const bool segment_uncapturable = index < runs.routed_uncapturable.size()
+                                        ? runs.routed_uncapturable[index] != 0
+                                        : runs.uncapturable;
+  if (capture && !segment_uncapturable) {
     const auto free_before =
         providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
     (void)base::Pulse();
@@ -185,6 +202,8 @@ StepQueued StepRuns::QueueRouted(StepPlanRuns& runs, const kn::RoutedAccess& acc
       runs.seconds += (*captured)->capture_seconds() + (*captured)->instantiate_seconds();
       runs.measured_bytes += free_before > free_after ? free_before - free_after : 0;
       recording = std::move(*captured);
+      if (index == 0) runs.copies = inputs;
+      if (index == program.groups()) runs.routed_outputs.assign(outputs.begin(), outputs.end());
       result.path = RunPath::kCaptured;
       result.before = true;
       result.result = program.ReplaySegment(access, *launch_, native, *recording);
@@ -196,7 +215,19 @@ StepQueued StepRuns::QueueRouted(StepPlanRuns& runs, const kn::RoutedAccess& acc
     }
     // Capture produced no runnable graph. Keep any other successfully captured
     // segment; this segment stays eager on this plan's subsequent runs.
-    runs.uncapturable = true;
+    if (index < runs.routed_uncapturable.size()) {
+      runs.routed_uncapturable[index] = 1;
+      bool all_uncapturable = true;
+      for (const auto u : runs.routed_uncapturable) {
+        if (u == 0) {
+          all_uncapturable = false;
+          break;
+        }
+      }
+      if (all_uncapturable) runs.uncapturable = true;
+    } else {
+      runs.uncapturable = true;
+    }
     if (stats.refused++ == 0) stats.first_refusal = captured.error().detail;
   }
   result.result = body();

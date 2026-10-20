@@ -244,8 +244,12 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
                                           const PlanOptions& options = {});
 
 // A plan's key: `spec` the model's bound digest (spec.h BoundDigest).
-PlanKey KeyOf(const base::Sha256Digest& spec, const StepShape& shape, const Policy& policy,
-              std::uint32_t partition = 0);
+PlanKey KeyOf(const base::Sha256Digest& spec = {}, const StepShape& shape = {},
+              const Policy& policy = {}, std::uint32_t partition = 0);
+
+PlanKey KeyOf(const base::Sha256Digest& spec, const StepShape& shape,
+              const base::Sha256Digest& policy_digest,
+              const base::Sha256Digest& patterns_digest = {}, std::uint32_t partition = 0);
 
 }  // namespace llmp::planner
 

@@ -55,6 +55,7 @@ struct StepPlanRuns {
   bool capture_on_use = false;
   std::unique_ptr<kernels::Recorded> graph;
   std::vector<std::unique_ptr<kernels::RoutedRecording>> routed_graphs;
+  std::vector<std::uint8_t> routed_uncapturable;
   Copies copies;
   Copies routed_outputs;
   double seconds = 0;                // its capture and instantiation: what capturing it again costs
@@ -75,6 +76,8 @@ struct StepPlanRuns {
   void DropGraph() {
     graph.reset();
     for (auto& segment : routed_graphs) segment.reset();
+    routed_uncapturable.clear();
+    uncapturable = false;
     copies.clear();
     routed_outputs.clear();
   }

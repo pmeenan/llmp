@@ -449,14 +449,14 @@ __global__ void GatedResidualLayerNormModulateRowsKernel(
 
   float var = 0.0f;
   for (int c = threadIdx.x; c < cols; c += 256) {
-    const float u = cache_x ? s_x[c] : u_row[c];
+    const float u = cache_x ? s_x[c] : (kOutIsBf16 ? __bfloat162float(u_row_bf16[c]) : u_row[c]);
     const float d = u - mean;
     var += d * d;
   }
   const float inv_std = rsqrtf(ReduceBlockSum256(var, shared) / static_cast<float>(cols) + eps);
 
   for (int c = threadIdx.x; c < cols; c += 256) {
-    const float u = cache_x ? s_x[c] : u_row[c];
+    const float u = cache_x ? s_x[c] : (kOutIsBf16 ? __bfloat162float(u_row_bf16[c]) : u_row[c]);
     const float s =
         (s_vec != nullptr)
             ? __ldg(&s_vec[c])

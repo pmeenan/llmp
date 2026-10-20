@@ -17,12 +17,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -540,6 +542,49 @@ TEST(PlanCacheTest, PlansAreCandidatesOnceNoStepHoldsThem) {
   EXPECT_EQ(cache.Reclaim(ReclaimKind::kPlan, candidates[0].id), 100U);
   EXPECT_EQ(cache.size(), 0U);
   EXPECT_EQ(ledger.charged, 0U);
+}
+
+TEST(PlanCacheTest, PlanStepProtectsPlansAcrossThreads) {
+  Ledger ledger;
+  Cache cache(&ledger.account);
+  cache.Add(1, Plan(1), 100, 0, 0.02);
+  cache.Add(2, Plan(2), 300, 0, 0.05);
+
+  std::atomic<bool> step_ready{false};
+  std::atomic<bool> check_done{false};
+
+  std::thread worker([&] {
+    const en::PlanStep step;
+    EXPECT_NE(en::PlanStepStart(), en::kNoStep);
+    EXPECT_NE(cache.Find(1), nullptr);
+    step_ready.store(true, std::memory_order_release);
+    while (!check_done.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+  });
+
+  while (!step_ready.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+
+  // From a second thread, PlanStepStart() sees the worker's active step.
+  EXPECT_NE(en::PlanStepStart(), en::kNoStep);
+
+  // Collect from the second thread excludes plan 1 (held by worker's step).
+  std::vector<ReclaimCandidate> candidates;
+  cache.Collect(7, true, candidates);
+  ASSERT_EQ(candidates.size(), 1U);
+  EXPECT_EQ(candidates[0].bytes, 300U);
+
+  // Reclaim from the second thread refuses plan 1 while worker holds its step.
+  Cache::Entry* held = cache.Find(1);
+  ASSERT_NE(held, nullptr);
+  EXPECT_EQ(cache.Reclaim(ReclaimKind::kPlan, held->serial), 0U);
+
+  check_done.store(true, std::memory_order_release);
+  worker.join();
+
+  EXPECT_EQ(en::PlanStepStart(), en::kNoStep);
 }
 
 TEST(PlanCacheTest, AReclaimFindsItsPlanAmongARunnersCaches) {

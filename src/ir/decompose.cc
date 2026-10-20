@@ -199,7 +199,7 @@ Outputs HcPost(D& d, const HcParams& p) {
     const TensorId stream = b.Reshape(acc, S(w, 1, t));
     out = out.valid() ? b.Concat(out, stream, 1) : stream;
   }
-  return One(out);
+  return One(hc == 1 ? b.Cont(out) : out);
 }
 
 Outputs HcMix(D& d, const HcParams& p) {
@@ -403,7 +403,7 @@ Outputs Pool(D& d, const PoolParams& p) {
     }
     out = out.valid() ? b.Concat(out, sum, 3) : sum;
   }
-  return One(out);
+  return One(b.tensor(out).is_view() ? b.Cont(out) : out);
 }
 
 Outputs Route(D& d, const RouteParams& p) {
@@ -445,7 +445,8 @@ Outputs Route(D& d, const RouteParams& p) {
     // routed reads take back at that pitch). The fused node records packed
     // ids, so an expansion refuses a later view of them (SameViewSource)
     // rather than read the sort's other elements.
-    ids = b.View(order, S(u, t), Nb{ot.nb[0], ot.nb[1], ot.nb[1] * t, ot.nb[1] * t}, 0);
+    ids = u == e ? order
+                 : b.View(order, S(u, t), Nb{ot.nb[0], ot.nb[1], ot.nb[1] * t, ot.nb[1] * t}, 0);
   }
   TensorId w = b.Reshape(b.GetRows(rows, ids), S(u, t));
   if (p.normalize) {

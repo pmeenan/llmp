@@ -59,7 +59,7 @@ STYLE_BY_NAME = {
 }
 STYLE_BY_SUFFIX = {
     **dict.fromkeys((".py", ".sh", ".cmake", ".toml", ".yml", ".yaml", ".service", ".sysusers", ".tmpfiles"), HASH),
-    **dict.fromkeys((".cc", ".cpp", ".cxx", ".c", ".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp", ".cu", ".cuh"),
+    **dict.fromkeys((".cc", ".cpp", ".cxx", ".c", ".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp", ".inc", ".cu", ".cuh"),
                     SLASH),
     **dict.fromkeys((".md", ".html", ".xml", ".svg"), HTML),
 }

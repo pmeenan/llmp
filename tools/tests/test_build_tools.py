@@ -125,7 +125,7 @@ class Presets(unittest.TestCase):
         def excludes_gpu(name):
             preset = tests[name]
             while True:
-                if preset.get("filter", {}).get("exclude", {}).get("label") == "gpu":
+                if "gpu" in preset.get("filter", {}).get("exclude", {}).get("label", ""):
                     return True
                 if "inherits" not in preset:
                     return False

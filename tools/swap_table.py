@@ -232,8 +232,27 @@ def common_options(args: argparse.Namespace) -> list[str]:
     return options
 
 
+def resolve_store(store: str | None, share: pathlib.Path) -> str:
+    if not store:
+        canonical = share / "artifacts"
+        legacy = share / "m36-v1-artifacts"
+        if not canonical.is_dir() and legacy.is_dir():
+            return str(legacy)
+        return str(canonical)
+    path = pathlib.Path(store).expanduser()
+    if not path.is_absolute():
+        path = share / path
+    if not path.is_dir() and path.name == "artifacts":
+        legacy = path.parent / "m36-v1-artifacts"
+        if legacy.is_dir():
+            return str(legacy)
+    return str(path)
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     case = CASES[args.case]
+    share = pathlib.Path(args.share).expanduser().resolve()
+    args.store = resolve_store(args.store, share)
     me = shlex.quote(str(pathlib.Path(__file__).resolve()))
     options = " ".join(shlex.quote(o) for o in common_options(args))
     jobs = job_pairs(case, args.pairs_per_job)
@@ -273,6 +292,7 @@ def swap_command(case: Case, args: argparse.Namespace, run_dir: pathlib.Path, pa
 def cmd_run(args: argparse.Namespace) -> int:
     case = CASES[args.case]
     share = pathlib.Path(args.share).expanduser().resolve()
+    args.store = resolve_store(args.store, share)
     inputs = pathlib.Path(args.inputs).expanduser().resolve() if args.inputs else (
         share / "m36-baselines" / "inputs")
     runtime = pathlib.Path(args.runtime).expanduser().resolve()
@@ -548,7 +568,7 @@ def main(argv: list[str] | None = None) -> int:
     def add_run_options(p):
         p.add_argument("--case", required=True, choices=sorted(CASES))
         p.add_argument("--runtime", required=True)
-        p.add_argument("--store", required=True, help="the installed-artifacts directory")
+        p.add_argument("--store", help="the installed-artifacts directory")
         p.add_argument("--out", required=True)
         p.add_argument("--ids", help="JSON of artifact IDs by model name, over the defaults")
         p.add_argument("--v0-ids", action="store_true",

@@ -169,7 +169,9 @@ Dims DimsOf(const Instance& in) {
          .eps = F32(p.Real("eps")),
          .base = F32(p.Real("rope_base")),
          .context = in.stage.context,
-         .kv_encoding = p.Name("kv_encoding") == "q8_0" ? Encoding::kQ8_0 : Encoding::kF16};
+         .kv_encoding = p.Name("kv_encoding") == "q8_0"
+                            ? Encoding::kQ8_0
+                            : (p.Name("kv_encoding") == "q4_0" ? Encoding::kQ4_0 : Encoding::kF16)};
   const auto s = p.Ints("rope_sections");
   for (std::size_t i = 0; i < s.size() && i < 4; ++i)
     d.sections.at(i) = static_cast<std::uint32_t>(s[i]);
@@ -180,8 +182,9 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   if (NormOffsetContradictsFold(in))
     return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
   const Dims d = DimsOf(in);
-  if (d.kv_encoding == Encoding::kQ8_0 && (d.d != 64 && d.d != 256 && d.d != 512)) {
-    return std::unexpected("Q8_0 KV requires head_dim 64, 256, or 512");
+  if ((d.kv_encoding == Encoding::kQ8_0 || d.kv_encoding == Encoding::kQ4_0) &&
+      (d.d != 64 && d.d != 256 && d.d != 512)) {
+    return std::unexpected("quantized KV requires head_dim 64, 256, or 512");
   }
   if (d.heads % d.kvh != 0) return std::unexpected("heads are not a multiple of kv_heads");
   if (in.params.Ints("rope_sections").size() != 4) return std::unexpected("four rope sections");
@@ -360,7 +363,7 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   for (std::size_t s = 0; s < segments.size(); ++s) {
     b.SetOwner(static_cast<std::uint8_t>(s));
     const ir::TensorId seg_k = rows_of(k_rows, s);
-    EmitKvCacheStore(b, f.State(s, kCacheK), seg_k, f.step.StoreCells(s, kv_cells), Encoding::kF16);
+    EmitKvCacheStore(b, f.State(s, kCacheK), seg_k, f.step.StoreCells(s, kv_cells), d.kv_encoding);
     b.SetJoined();
   }
   const ir::TensorId v_rows = b.Reshape(v, Shape({kv, rows}));

@@ -128,7 +128,7 @@ class ExllamaV3Component(unittest.TestCase):
         self.assertEqual(comp["archive"]["sha256"],
                          "63c3c7fe4adc281753d1dfd37110f772775a77a6dce72be068b3c23e07a915b0")
         self.assertEqual(comp["archive"]["size"], 8628152)
-        self.assertEqual((comp["category"], comp["tier"], comp["use"]), ("implementation", "core", "test"))
+        self.assertEqual((comp["category"], comp["tier"], comp["use"]), ("implementation", "core", "product"))
         self.assertNotIn("module", comp)
         self.assertEqual(comp["license"]["expression"], "MIT")
         self.assertEqual(comp["cmake"]["targets"], ["llmp_exl3_headers", "llmp_exl3_cuda"])

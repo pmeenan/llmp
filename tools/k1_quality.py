@@ -39,6 +39,17 @@ QUALITY_PROMPTS = (
 
 # The v1 imports of every family (D-118), served from one store.
 V1_STORE = "m36-v1-artifacts"
+
+
+def resolve_store(store: str, share: pathlib.Path) -> str:
+    """Resolve `store` under `share`, falling back to `artifacts` for v1 stores."""
+    if store == V1_STORE and os.environ.get("LLMP_TEST_V1_STORE"):
+        return os.environ["LLMP_TEST_V1_STORE"]
+    if (share / store).is_dir():
+        return store
+    if store == V1_STORE and (share / "artifacts").is_dir():
+        return "artifacts"
+    return store
 DSV4 = "698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd"
 DSPARK = "5c9d95e24769c4d0a06088b0b6a8cc4afd4979b5ffc6d9357b4116f26fa583aa"
 QWEN = "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d"
@@ -231,9 +242,10 @@ def arm_env(runtime_env: dict[str, str]) -> dict[str, str]:
 def make_config(
     family: Family, encoding: str, share: pathlib.Path, data: pathlib.Path, port: int
 ) -> str:
+    store = resolve_store(family.store, share)
     template = (
         'schema_version = 2\n[storage]\ndata_dir = "{data}"\n'
-        f'installed = "{{share}}/{family.store}"\n'
+        f'installed = "{{share}}/{store}"\n'
         "[client]\nbind = [\"loopback\"]\nport = {port}\n"
         + family.models_toml.rstrip()
         + f'\nkv_cache_encoding = "{encoding}"\n'
@@ -364,6 +376,8 @@ def stream_chat(port: int, body: dict) -> dict:
                 record["t_end"] = now
                 break
             event = json.loads(data)
+            if "error" in event:
+                raise RuntimeError(str(event["error"]))
             if event.get("usage"):
                 record["usage"] = event["usage"]
             for choice in event.get("choices", []):

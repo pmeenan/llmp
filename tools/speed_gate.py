@@ -225,6 +225,17 @@ IMAGE_V1 = "2170db12b295d308b4ec071765a8c1b9fb6651b45b210aeaa3976603de82e3ac"
 V1_STORE = "m36-v1-artifacts"
 
 
+def resolve_store(store: str, share: pathlib.Path) -> str:
+    """Resolve `store` under `share`, falling back to `artifacts` for v1 stores."""
+    if store == V1_STORE and os.environ.get("LLMP_TEST_V1_STORE"):
+        return os.environ["LLMP_TEST_V1_STORE"]
+    if (share / store).is_dir():
+        return store
+    if store == V1_STORE and (share / "artifacts").is_dir():
+        return "artifacts"
+    return store
+
+
 def _qwen_files() -> str:
     return (f'tokenizer = "{{share}}/{QWEN_TOKENIZER}/tokenizer.json"\n'
             f'chat_template = "{{share}}/{QWEN_TOKENIZER}/chat_template.jinja"\n')
@@ -351,6 +362,9 @@ def render_config(template: str, share: pathlib.Path, data: pathlib.Path, port: 
     for key in ("{data}", "{port}"):
         if key not in template:
             raise SystemExit(f"the configuration template has no {key}")
+    resolved_v1 = resolve_store(V1_STORE, share)
+    if resolved_v1 != V1_STORE:
+        template = template.replace(f"{{share}}/{V1_STORE}", f"{{share}}/{resolved_v1}")
     return (template.replace("{share}", str(share)).replace("{data}", str(data))
             .replace("{port}", str(port)))
 

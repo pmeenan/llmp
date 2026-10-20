@@ -1296,9 +1296,9 @@ void StepContext::Save(const Instance& in, std::string_view what, ir::TensorId t
     // Lowerings store saves after the IR launches; the indices stay live
     // through those stores even though no IR node reads them.
     b_.Keep(rows);
-    // The save's explicitly named owner also applies to subsequent emission.
-    if (segment != ir::kJoinedSegment) b_.SetOwner(segment);
   }
+  // The save's explicitly named owner also applies to subsequent emission.
+  if (segment != ir::kJoinedSegment) b_.SetOwner(segment);
   saves_.push_back({.layer = in.layer,
                     .component = in.index,
                     .what = std::string(what),
@@ -1380,11 +1380,12 @@ ir::TensorId StepContext::HostInput(const HostInputSpec& spec, std::size_t segme
 
 ir::TensorId StepContext::Hadamard(std::uint64_t n) {
   if (const auto at = hadamard_.find(n); at != hadamard_.end()) return at->second;
+  const auto saved = b_.context();
   b_.SetComponent(kFrameworkComponent);
   b_.SetJoined();
   const ir::TensorId id = b_.Constant(ir::Dense(format::Encoding::kF32, ir::ShapeOf({n, n})),
                                       std::format("hadamard.{}", n));
-  b_.SetComponent(component_);
+  b_.SetContext(saved);
   inputs_.push_back({.tensor = id, .kind = InputKind::kHadamard, .read = n});
   hadamard_.emplace(n, id);
   return id;

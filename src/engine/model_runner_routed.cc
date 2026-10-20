@@ -407,6 +407,7 @@ ModelRunner::PrepareBatchRouting(Plans::Entry& planned, const kn::ExecutionResou
   flight->carries.reserve(carry_copies);
   flight->selected.reserve(routed_->pages.size());
   runs.routed_graphs.resize(route->groups() + 1);
+  runs.routed_uncapturable.resize(route->groups() + 1, 0);
   runs.copies.reserve(input_copies);
   runs.routed_outputs.reserve(output_copies);
   auto capacity =
@@ -495,10 +496,13 @@ Status ModelRunner::BeginRouted(kn::StepProgram& program, StepPlanRuns& runs, co
     return Error("routed recording inventory changed for this cached program");
   // The program's host account includes these retained recording slots.
   runs.routed_graphs.resize(slots);
+  runs.routed_uncapturable.resize(slots, 0);
   // Copies retained by recordings are the actual immutable staging layout,
   // distinct from the newly prepared routing values at those same addresses.
-  runs.copies = inputs;
-  runs.routed_outputs = outputs;
+  if (!runs.has_routed_graph()) {
+    runs.copies = inputs;
+    runs.routed_outputs = outputs;
+  }
   routed_flight_ = std::move(flight);
   return {};
 }

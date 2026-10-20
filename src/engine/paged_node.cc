@@ -999,7 +999,8 @@ Status PagedNode::GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::Bac
       },
       "admitting owned-region growth");
   if (!admitted) {
-    UnchargeHost(metadata);
+    region_metadata_bytes_ -= growth;
+    UnchargeHost(charge);
     return admitted;
   }
   const auto repay = [&] {
@@ -1010,7 +1011,8 @@ Status PagedNode::GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::Bac
         },
         "undoing untouched owned-region growth");
     base::Check(canceled.has_value(), "paid owned growth rollback");
-    UnchargeHost(metadata);
+    region_metadata_bytes_ -= growth;
+    UnchargeHost(charge);
   };
   const bool fresh = !mapped.reservation.valid();
   if (fresh) {
@@ -3145,24 +3147,28 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
   // and every model's retained-resource check permit destruction. A refusal
   // here must allow dropping an external view and retrying the same node.
   auto visit_models = [&](auto&& visit) -> Status {
+    std::vector<std::string> errors;
     for (std::size_t i = 0; i < models.size(); ++i) {
       auto* model = models[i];
-      if (!model) return Error("node teardown received an absent model");
+      if (!model) {
+        errors.push_back("node teardown received an absent model");
+        continue;
+      }
       bool registered = false;
       for (auto* root = model_roots_; root; root = root->next)
         registered = registered || root->model == model;
       if (registered || std::find(models.begin(), models.begin() + static_cast<std::ptrdiff_t>(i),
                                   model) != models.begin() + static_cast<std::ptrdiff_t>(i))
         continue;
-      if (auto visited = visit(*model); !visited) return visited;
+      if (auto visited = visit(*model); !visited) errors.push_back(visited.error());
     }
     for (auto* root = model_roots_; root;) {
       auto* next = root->next;
       auto keep = root->keep;  // Node's actual complete owner survives Release's detach.
-      if (auto visited = visit(*root->model); !visited) return visited;
+      if (auto visited = visit(*root->model); !visited) errors.push_back(visited.error());
       root = next;
     }
-    return {};
+    return errors.empty() ? Status{} : Joined(errors);
   };
   auto retire_models = [&]() -> Status {
     return visit_models([](PagedModel& model) { return model.RetireAfterFence(); });

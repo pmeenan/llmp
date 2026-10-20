@@ -35,7 +35,7 @@ class PromptBatchInventory {
   }
   std::span<const planner::StepShape> shapes() const { return shapes_; }
   bool fallback(std::size_t index) const {
-    return index < 64 && ((fallback_mask_ >> index) & 1U) != 0;
+    return index < fallback_.size() && fallback_[index] != 0;
   }
   // No state is changed and no rights are minted. A competing operation or
   // changed source requires a new preview before any compound Begin/progress.
@@ -58,7 +58,7 @@ class PromptBatchInventory {
     std::swap(payment_, other.payment_);
     std::swap(owner_, other.owner_);
     std::swap(identity_, other.identity_);
-    std::swap(fallback_mask_, other.fallback_mask_);
+    fallback_.swap(other.fallback_);
     shapes_.swap(other.shapes_);
     consumers_.swap(other.consumers_);
     target_.swap(other.target_);
@@ -67,7 +67,7 @@ class PromptBatchInventory {
   HostPayment payment_;
   RunnerOwner owner_;
   std::optional<base::Sha256Digest> identity_;
-  std::uint64_t fallback_mask_ = 0;
+  std::vector<std::uint8_t> fallback_;
   std::vector<planner::StepShape> shapes_;
   std::vector<Consumer> consumers_;
   std::vector<PendingWork> target_;

@@ -528,6 +528,33 @@ class PlanAndRun(Fixture):
                      "--name", "x"])
         self.assertFalse((self.dir / "out").exists())
 
+    def test_resolve_store_fallback(self):
+        share = self.dir / "share_test"
+        share.mkdir()
+        # Default with no directories
+        self.assertEqual(st.resolve_store(None, share), str(share / "artifacts"))
+        # Fallback to m36-v1-artifacts when artifacts doesn't exist
+        (share / "m36-v1-artifacts").mkdir()
+        self.assertEqual(st.resolve_store(None, share), str(share / "m36-v1-artifacts"))
+        self.assertEqual(st.resolve_store("artifacts", share), str(share / "m36-v1-artifacts"))
+        # artifacts takes precedence when it exists
+        (share / "artifacts").mkdir()
+        self.assertEqual(st.resolve_store(None, share), str(share / "artifacts"))
+        self.assertEqual(st.resolve_store("artifacts", share), str(share / "artifacts"))
+        # Custom non-artifact store
+        self.assertEqual(st.resolve_store("/custom/store", share), "/custom/store")
+
+    def test_plan_with_default_store(self):
+        share = self.dir / "share"
+        (share / "m36-v1-artifacts").mkdir(parents=True, exist_ok=True)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            st.main(["plan", "--case", "gemma31", "--runtime", "/r",
+                     "--share", str(share), "--out", "/o"])
+        lines = out.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn(f"--store {share / 'm36-v1-artifacts'}", lines[0])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -436,8 +436,14 @@ std::expected<bool, std::string> Holds(std::string_view gate, bool absent, const
 }
 
 // Two slots of which a checkpoint (or a layer) has at most one: gated by
-// one key oppositely, or at the layers on either side of one count.
+// one key oppositely, at the layers on either side of one count, or disjoint
+// in layer types.
 bool Exclusive(const SlotRule& a, const SlotRule& b) {
+  if (a.site == Site::kLayer && b.site == Site::kLayer && !a.layer_types.empty() &&
+      !b.layer_types.empty() &&
+      std::ranges::none_of(a.layer_types, [&](char c) { return b.layer_types.contains(c); })) {
+    return true;
+  }
   return (!a.gate.empty() && a.gate == b.gate && a.gate_absent != b.gate_absent) ||
          (!a.count_key.empty() && a.count_key == b.count_key && a.count_above != b.count_above);
 }
@@ -547,11 +553,9 @@ class Synthesis {
         if (!layer) {
           continue;
         }
-        // A count's slot binds only at its own layers (its counterpart's
-        // rule takes the others').
         const SlotRule& at = *FindSlot(m_, rule.slot);
-        if (!at.count_key.empty() && at.site == Site::kLayer && Layered(rule.pattern) &&
-            !At(at, *layer)) {
+        if (at.site == Site::kLayer && Layered(rule.pattern) &&
+            (!At(at, *layer) || !Applies(rule.layer_types, Type(*layer)))) {
           continue;
         }
         if (match) {
@@ -1286,8 +1290,8 @@ Status ValidateMapping(const Mapping& m) {
       }
     }
   }
-  std::map<std::string_view, const SlotRule*> patterns;
-  std::map<std::string_view, const SlotRule*> target_patterns;
+  std::map<std::string_view, std::vector<const SlotRule*>> patterns;
+  std::map<std::string_view, std::vector<const SlotRule*>> target_patterns;
   // The layer types each (slot, role, part) is bound at so far.
   std::map<std::tuple<std::string_view, std::string_view, format::PartRole>, std::string> roles;
   for (const TensorRule& t : m.tensors) {
@@ -1305,14 +1309,27 @@ Status ValidateMapping(const Mapping& m) {
     // A pattern twice only in two slots of which a checkpoint has one; a
     // target's tensor names its target's checkpoint, not the source's.
     auto& names = t.target ? target_patterns : patterns;
-    const auto [seen, fresh] = names.emplace(t.pattern, slot);
-    if (!valid || (!fresh && !Exclusive(*seen->second, *slot))) {
+    auto& seen_slots = names[t.pattern];
+    const bool exclusive_with_all = std::ranges::all_of(seen_slots, [&](const SlotRule* prior) {
+      if (!Exclusive(*prior, *slot)) return false;
+      if (prior->site == Site::kLayer && slot->site == Site::kLayer &&
+          !prior->layer_types.empty() && !slot->layer_types.empty() && !Layered(t.pattern)) {
+        return false;
+      }
+      return true;
+    });
+    if (!valid || !exclusive_with_all) {
       return Refuse(at, "not a pattern of its slot's site, or twice");
     }
+    seen_slots.push_back(slot);
     if (!t.fallback.empty() && !IsPattern(t.fallback, Layered(t.pattern))) {
       return Refuse(at, "a fallback that is not a pattern of its rule's form");
     }
-    if (layered ? !TypesWithin(t.layer_types, m.layer_types) : !t.layer_types.empty()) {
+    const std::string_view slot_types =
+        slot->layer_types.empty() ? m.layer_types : slot->layer_types;
+    if (layered ? (!TypesWithin(t.layer_types, m.layer_types) ||
+                   !TypesWithin(t.layer_types, slot_types))
+                : !t.layer_types.empty()) {
       return Refuse(at, "layer types off a layer slot, or not the mapping's");
     }
     if (t.target && (!drafter || !t.fallback.empty() || t.optional)) {
@@ -1332,7 +1349,7 @@ Status ValidateMapping(const Mapping& m) {
       return Refuse(at, "an invalid role or part, or one bound twice");
     }
     std::string& bound = roles[{t.slot, t.role, t.part}];
-    const std::string_view types = t.layer_types.empty() ? m.layer_types : t.layer_types;
+    const std::string_view types = t.layer_types.empty() ? slot_types : t.layer_types;
     if (std::ranges::any_of(types, [&](char c) { return bound.contains(c); })) {
       return Refuse(at, "an invalid role or part, or one bound twice");
     }

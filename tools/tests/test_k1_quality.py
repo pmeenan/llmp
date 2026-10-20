@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import math
+import os
 import pathlib
 import sys
 import tempfile
@@ -239,6 +240,29 @@ class TestK1Quality(unittest.TestCase):
                             keep_data=False, arms=("q8_0",))
                     self.assertIsNone(again["error"])
                     self.assertEqual(again["prompt_sha256"], record["prompt_sha256"])
+
+    def test_default_v1_store_fallback(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = pathlib.Path(tmpdir)
+            with mock.patch.dict(os.environ, {"LLMP_TEST_V1_STORE": ""}):
+                self.assertEqual(k1.resolve_store("m36-v1-artifacts", base), "m36-v1-artifacts")
+                (base / "artifacts").mkdir()
+                self.assertEqual(k1.resolve_store("m36-v1-artifacts", base), "artifacts")
+                (base / "m36-v1-artifacts").mkdir()
+                self.assertEqual(k1.resolve_store("m36-v1-artifacts", base), "m36-v1-artifacts")
+
+    def test_stream_chat_raises_on_sse_error(self):
+        with mock.patch("http.client.HTTPConnection") as mock_conn_cls:
+            mock_conn = mock.MagicMock()
+            mock_resp = mock.MagicMock()
+            mock_resp.status = 200
+            mock_resp.__iter__.return_value = [
+                b'data: {"error": {"message": "GPU failure"}}\n\n'
+            ]
+            mock_conn.getresponse.return_value = mock_resp
+            mock_conn_cls.return_value = mock_conn
+            record = k1.stream_chat(18114, {"model": "gemma2", "messages": [{"role": "user", "content": "hello"}]})
+            self.assertIn("GPU failure", record["error"])
 
 
 if __name__ == "__main__":

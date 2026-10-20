@@ -59,13 +59,13 @@ std::expected<std::uint64_t, std::string> KvCacheEncodingBytes(const spec::Model
       model.stages.front().role != spec::StageRole::kTarget ||
       !model.stages.front().reads.empty() ||
       (model.stages.size() == 1 && !model.stages.front().taps.empty()))
-    return std::unexpected("Q8_0 KV requires a single independent LLM target");
+    return std::unexpected("KV encoding requires a single independent LLM target");
   if (model.stages.size() == 2 && model.stages.back().role != spec::StageRole::kDrafter)
     return std::unexpected("second stage must be a drafter");
   for (const auto& stage : model.stages) {
     if (stage.layers.size() > kMaxStageLayers || stage.stream.streams > 4 ||
         !stage.heads.mtp.empty())
-      return std::unexpected("Q8_0 KV source is outside the dense stage bounds");
+      return std::unexpected("KV source is outside the dense stage bounds");
   }
   std::uint64_t bytes = kValidationBytes;
   std::size_t count = 0;
@@ -80,18 +80,18 @@ std::expected<std::uint64_t, std::string> KvCacheEncodingBytes(const spec::Model
           if (has_kv_encoding) {
             if (!layer || component.params.size() >= spec::kMaxParams ||
                 ++count > spec::kMaxComponents)
-              return std::unexpected("Q8_0 KV parameter inventory exceeds the catalog bound");
+              return std::unexpected("KV parameter inventory exceeds the catalog bound");
             // Current vector and its replacement can coexist during reserve; copied
             // scalar parameter strings are in the fixed serial validation allowance.
             const auto added = (component.params.size() + 1) * sizeof(spec::Param) + 512;
             if (__builtin_add_overflow(bytes, added, &bytes))
-              return std::unexpected("Q8_0 KV parameter payment overflows");
+              return std::unexpected("KV parameter payment overflows");
           }
           return {};
         });
     if (!visited) return std::unexpected(visited.error());
   }
-  if (count == 0) return std::unexpected("Q8_0 KV source has no owned dense attention");
+  if (count == 0) return std::unexpected("KV source has no owned dense attention");
   return bytes;
 }
 
@@ -100,7 +100,7 @@ std::expected<void, std::string> ApplyKvCacheEncoding(spec::ModelSpec& model,
                                                       std::uint64_t metadata_bytes) {
   auto bytes = KvCacheEncodingBytes(model, encoding);
   if (!bytes) return std::unexpected(bytes.error());
-  if (metadata_bytes < *bytes) return std::unexpected("Q8_0 KV metadata is not admitted");
+  if (metadata_bytes < *bytes) return std::unexpected("KV metadata is not admitted");
   if (encoding == format::Encoding::kF16) {
     for (const auto& stage : model.stages) {
       auto checked = Visit(

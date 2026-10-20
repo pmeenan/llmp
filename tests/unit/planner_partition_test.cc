@@ -561,7 +561,8 @@ void Equivalent(const ir::Graph& graph, const Leaves& leaves, const Assignment& 
     }
     for (const ConstantValues& c : d.constants) {
       if (!c.ints.empty()) {
-        ASSERT_TRUE(e->BindInts(c.local, c.ints));
+        const std::vector<std::int64_t> i64(c.ints.begin(), c.ints.end());
+        ASSERT_TRUE(e->BindInts(c.local, i64));
       } else {
         ASSERT_TRUE(e->BindValues(c.local, c.values));
       }
@@ -994,10 +995,15 @@ TEST(PartitionTest, ExpertOwnershipSelectsForeignNonfiniteContributionsToLiteral
           Bind(*executor, leaf.local, leaves, leaf.source, graph->tensor(leaf.source).shape(),
                leaf.slice);
         for (const auto& constant : device.constants) {
-          if (!constant.ints.empty())
-            ASSERT_TRUE(executor->BindInts(constant.local, constant.ints));
-          else
+          if (!constant.ints.empty()) {
+            EXPECT_EQ(std::as_bytes(std::span(constant.ints)).size(),
+                      constant.ints.size() * sizeof(std::int32_t));
+            EXPECT_EQ(constant.ints.size(), moe::kExperts);
+            const std::vector<std::int64_t> i64(constant.ints.begin(), constant.ints.end());
+            ASSERT_TRUE(executor->BindInts(constant.local, i64));
+          } else {
             ASSERT_TRUE(executor->BindValues(constant.local, constant.values));
+          }
         }
         executors.push_back(std::move(*executor));
       }

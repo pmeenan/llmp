@@ -157,7 +157,8 @@ std::expected<PromptBatchInventory, kn::ResourceFailure> PromptBatchInventory::P
   });
   if (!counted) return Refused(kn::ResourceError::kBounds, counted.error());
   std::uint64_t bytes = 0;
-  if (!AddStorage(bytes, shapes, sizeof(pl::StepShape) + kAllocationMetadata) ||
+  if (!AddStorage(bytes, shapes,
+                  sizeof(pl::StepShape) + sizeof(std::uint8_t) + kAllocationMetadata) ||
       !AddStorage(bytes, segments, sizeof(pl::Segment)) ||
       !AddStorage(bytes, consumers, sizeof(Consumer)) ||
       !AddStorage(bytes, target.size(), sizeof(PendingWork)) ||
@@ -170,12 +171,12 @@ std::expected<PromptBatchInventory, kn::ResourceFailure> PromptBatchInventory::P
   result.owner_ = std::move(root);
   result.identity_ = *identity;
   result.shapes_.reserve(static_cast<std::size_t>(shapes));
+  result.fallback_.reserve(static_cast<std::size_t>(shapes));
   result.consumers_.assign(witnesses.begin(), witnesses.end());
   result.target_.assign(target.begin(), target.end());
   const auto filled = emit([&](const pl::StepShape& shape, bool is_fallback) -> Status {
     if (result.shapes_.size() == shapes) return std::unexpected("batch count/fill differs");
-    if (is_fallback && result.shapes_.size() < 64)
-      result.fallback_mask_ |= std::uint64_t{1} << result.shapes_.size();
+    result.fallback_.push_back(is_fallback ? 1 : 0);
     result.shapes_.push_back(shape);
     return {};
   });

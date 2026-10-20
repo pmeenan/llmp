@@ -2288,7 +2288,7 @@ std::expected<TensorId, std::string> Partitioner::LocalIds(TensorId ids, std::si
   ConstantValues values{.local = {}, .ints = {}, .values = {}};
   const std::uint32_t own = experts / parts;
   for (std::uint32_t e = 0; e < experts; ++e) {
-    values.ints.push_back(e / own == rank ? e - (rank * own) : 0);
+    values.ints.push_back(static_cast<std::int32_t>(e / own == rank ? e - (rank * own) : 0));
   }
   // Each rank's table digests by its values (ir Builder::Constant).
   const TensorId table = b.Constant(ir::Dense(format::Encoding::kI32, ir::ShapeOf({1, experts})),
@@ -2311,7 +2311,9 @@ std::expected<std::pair<TensorId, TensorId>, std::string> Partitioner::ExpertMas
   b.SetJoined();
   ConstantValues values;
   const auto own = experts / parts;
-  for (std::uint32_t e = 0; e < experts; ++e) values.ints.push_back(e / own == rank ? 1 : 0);
+  for (std::uint32_t e = 0; e < experts; ++e) {
+    values.ints.push_back(static_cast<std::int32_t>(e / own == rank ? 1 : 0));
+  }
   const auto table = b.Constant(ir::Dense(format::Encoding::kI32, ir::ShapeOf({experts})),
                                 "expert_ownership", std::as_bytes(std::span(values.ints)));
   values.local = table;

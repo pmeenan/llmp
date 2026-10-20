@@ -227,7 +227,7 @@ before new families land; each item lands as one reviewed commit.
       "how to add" checklists, `AGENTS.md` trimmed, the record's carried items
       triaged, and closeout verification recorded
       ([m35-r13-closeout](experiments/m35-r13-closeout/README.md))
-- [ ] R14 Concrete correctness fixes across IR, planner, spec, components,
+- [x] R14 Concrete correctness fixes across IR, planner, spec, components,
       format, engine and gate tools (`Op::kRoute` contiguity in `Decompose`
       and `CompactRouteReaders`; `Decompose` role/view/rounding invariants in
       `Route`, `HcPost`, `Pool`, `kGatedResidualModulateSplit`; `Graph::Digest`
