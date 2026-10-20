@@ -119,7 +119,6 @@ constexpr std::array kSafetensorsAuxiliary{
     AuxiliaryNamespace{"initializer_range", "weight initializer scale"},
     AuxiliaryNamespace{"max_window_layers", "sliding window layer count"},
     AuxiliaryNamespace{"sliding_window", "sliding window length"},
-    AuxiliaryNamespace{"tie_word_embeddings", "embedding tying flag"},
     AuxiliaryNamespace{"torch_dtype", "checkpoint nominal dtype"},
     AuxiliaryNamespace{"dtype", "checkpoint nominal dtype"},
     AuxiliaryNamespace{"use_cache", "transformers generation cache default"},
@@ -131,16 +130,20 @@ constexpr std::array kSafetensorsAuxiliary{
 
 // Gemma owns its mathematical keys rather than inheriting Qwen's auxiliary windows.
 constexpr auto kGemmaHfAuxiliary = [] {
-  std::array<AuxiliaryNamespace, kSafetensorsAuxiliary.size() - 3> out{};
+  std::array<AuxiliaryNamespace, kSafetensorsAuxiliary.size() - 2> out{};
   std::size_t next = 0;
   for (const auto& rule : kSafetensorsAuxiliary)
-    if (rule.prefix != "sliding_window" && rule.prefix != "max_window_layers" &&
-        rule.prefix != "tie_word_embeddings")
-      out[next++] = rule;
+    if (rule.prefix != "sliding_window" && rule.prefix != "max_window_layers") out[next++] = rule;
   return out;
 }();
-constexpr std::array kGemmaHeadPresence{
+// transformers' tying flag: untied, the checkpoint must hold its own head
+// (the output rule would otherwise fall back to the token table). EXL3
+// quantizes the head even when tied, so its tables require it anyway; the
+// flag still selects, and an untied one without the head is refused.
+constexpr std::array kHfHeadPresence{
     TensorPresenceRequirement{.flag = "tie_word_embeddings", .tensor = "output.weight"}};
+constexpr std::array kExl3HeadPresence{
+    TensorPresenceRequirement{.flag = "tie_word_embeddings", .tensor = "lm_head.trellis"}};
 constexpr std::array kGemmaConditionalHeadPresence{
     TensorPresenceRequirement{.flag = "text_config.tie_word_embeddings", .tensor = "output.weight"},
     TensorPresenceRequirement{.flag = "tie_word_embeddings", .tensor = "output.weight"}};
@@ -238,7 +241,9 @@ constexpr std::array kQwenAuxiliary{
                        "image input placeholder outside the text pipeline"}};
 constexpr std::array kQwenLists{
     ListRequirement{.key = "qwen4exp.ple.layers", .size = nd::kLayerLimit, .min_size = 1},
-    ListRequirement{.key = "qwen4exp.rope.dimension_sections", .size = 4},
+    ListRequirement{.key = "qwen4exp.rope.dimension_sections",
+                    .size = 4,
+                    .sections_of = "qwen4exp.rope.dimension_count"},
     ListRequirement{.key = "qwen4exp.attention.compress_ratios",
                     .size = nd::kLayerLimit,
                     .min_size = 1,
@@ -319,8 +324,6 @@ constexpr std::array<std::string_view, 19> kHfSemantic{"qwen2.",
                                                        "use_bidirectional_attention",
                                                        "attn_logit_softcapping",
                                                        "final_logit_softcapping"};
-constexpr std::array<std::string_view, 8> kGgufSemantic{
-    "gemma2.", "gemma3.", "gemma4.", "qwen2.", "llama.", "mistral.", "qwen4exp.", "deepseek4."};
 constexpr std::array kLlamaAuxiliary{
     kAuxiliary[0], kAuxiliary[1], kAuxiliary[2],
     AuxiliaryNamespace{"llama.vocab_size", "the vocabulary the token table states",
@@ -425,7 +428,7 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                     .semantic = kHfSemantic,
                     .ignored_tensors = kHfIgnored,
                     .null_semantics = kGemmaHfNulls,
-                    .tensor_presence = kGemmaHeadPresence},
+                    .tensor_presence = kHfHeadPresence},
       SourceMapping{.container = "safetensors",
                     .architecture = &spec::mappings::Gemma3SafetensorsMapping(),
                     .tensors = kGemma3HfTensors,
@@ -435,29 +438,24 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                     .semantic = kHfSemantic,
                     .ignored_tensors = kHfIgnored,
                     .null_semantics = kGemmaHfNulls,
-                    .tensor_presence = kGemmaHeadPresence},
+                    .tensor_presence = kHfHeadPresence},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Gemma2Mapping(),
                     .auxiliary = kAuxiliary,
-                    .requirements = kGemma2Requirements,
-                    .semantic = kGgufSemantic},
+                    .requirements = kGemma2Requirements},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Gemma3Mapping(),
                     .auxiliary = kAuxiliary,
-                    .requirements = kGemma3Requirements,
-                    .semantic = kGgufSemantic},
+                    .requirements = kGemma3Requirements},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Gemma4Mapping(),
-                    .auxiliary = kAuxiliary,
-                    .semantic = kGgufSemantic},
+                    .auxiliary = kAuxiliary},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Gemma4AssistantMapping(),
-                    .auxiliary = kAuxiliary,
-                    .semantic = kGgufSemantic},
+                    .auxiliary = kAuxiliary},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Qwen2GgufMapping(),
-                    .auxiliary = kAuxiliary,
-                    .semantic = kGgufSemantic},
+                    .auxiliary = kAuxiliary},
       SourceMapping{.container = "exl3",
                     .architecture = &spec::mappings::Qwen2Exl3Mapping(),
                     .tensors = kQwen2Exl3Tensors,
@@ -465,7 +463,8 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                     .auxiliary = kSafetensorsAuxiliary,
                     .semantic = kHfSemantic,
                     .ignored_tensors = kHfIgnored,
-                    .null_semantics = kHfNullSemantics},
+                    .null_semantics = kHfNullSemantics,
+                    .tensor_presence = kExl3HeadPresence},
       SourceMapping{
           .container = "safetensors",
           .architecture = &spec::mappings::Qwen2SafetensorsMapping(),
@@ -475,11 +474,11 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
           .semantic = kHfSemantic,
           .ignored_tensors = kHfIgnored,
           .null_semantics = kHfNullSemantics,
+          .tensor_presence = kHfHeadPresence,
       },
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::LlamaGgufMapping(),
-                    .auxiliary = kLlamaAuxiliary,
-                    .semantic = kGgufSemantic},
+                    .auxiliary = kLlamaAuxiliary},
       SourceMapping{.container = "exl3",
                     .architecture = &spec::mappings::LlamaExl3Mapping(),
                     .tensors = kQwen2Exl3Tensors,
@@ -487,7 +486,8 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                     .auxiliary = kGemmaHfAuxiliary,
                     .semantic = kHfSemantic,
                     .ignored_tensors = kHfIgnored,
-                    .null_semantics = kDenseHfNulls},
+                    .null_semantics = kDenseHfNulls,
+                    .tensor_presence = kExl3HeadPresence},
       SourceMapping{.container = "safetensors",
                     .architecture = &spec::mappings::LlamaSafetensorsMapping(),
                     .tensors = kQwen2HfTensors,
@@ -496,11 +496,10 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                     .semantic = kHfSemantic,
                     .ignored_tensors = kHfIgnored,
                     .null_semantics = kDenseHfNulls,
-                    .tensor_presence = kGemmaHeadPresence},
+                    .tensor_presence = kHfHeadPresence},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::MistralGgufMapping(),
-                    .auxiliary = kMistralAuxiliary,
-                    .semantic = kGgufSemantic},
+                    .auxiliary = kMistralAuxiliary},
       SourceMapping{.container = "exl3",
                     .architecture = &spec::mappings::MistralExl3Mapping(),
                     .tensors = kQwen2Exl3Tensors,
@@ -508,7 +507,8 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                     .auxiliary = kGemmaHfAuxiliary,
                     .semantic = kHfSemantic,
                     .ignored_tensors = kHfIgnored,
-                    .null_semantics = kDenseHfNulls},
+                    .null_semantics = kDenseHfNulls,
+                    .tensor_presence = kExl3HeadPresence},
       SourceMapping{.container = "safetensors",
                     .architecture = &spec::mappings::MistralSafetensorsMapping(),
                     .tensors = kQwen2HfTensors,
@@ -517,29 +517,26 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                     .semantic = kHfSemantic,
                     .ignored_tensors = kHfIgnored,
                     .null_semantics = kDenseHfNulls,
-                    .tensor_presence = kGemmaHeadPresence},
+                    .tensor_presence = kHfHeadPresence},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Qwen38GgufMapping(),
                     .auxiliary = kQwenAuxiliary,
                     .requirements = kQwenRequirements,
                     .lists = kQwenLists,
                     .extended_components = true,
-                    .row_indices = kQwenRows,
-                    .semantic = kGgufSemantic},
+                    .row_indices = kQwenRows},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Dsv4Mapping(),
                     .auxiliary = kDsv4Auxiliary,
                     .requirements = kDsv4Requirements,
                     .lists = kDsv4Lists,
-                    .extended_components = true,
-                    .semantic = kGgufSemantic},
+                    .extended_components = true},
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::DsparkMapping(),
                     .auxiliary = kAuxiliary,
                     .requirements = kDsparkRequirements,
                     .lists = kDsparkLists,
-                    .extended_components = true,
-                    .semantic = kGgufSemantic}};
+                    .extended_components = true}};
   for (const auto& table : tables)
     if (container == table.container && architecture == table.architecture->architecture)
       return &table;
@@ -670,7 +667,8 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
     if (a.key != b.key || a.size != b.size || a.size > nd::kLayerLimit ||
         a.min_size != b.min_size || a.min_size > a.size || a.optional != b.optional ||
         a.per_layer != b.per_layer || a.extra_layers_key != b.extra_layers_key ||
-        a.allow_unstated_extra != b.allow_unstated_extra ||
+        a.allow_unstated_extra != b.allow_unstated_extra || a.sections_of != b.sections_of ||
+        (!a.sections_of.empty() && (nd::KeyTypes(m, a.sections_of) & nd::kInteger) == 0) ||
         (!a.exact.empty() && a.exact.size() != a.size) || !std::ranges::equal(a.exact, b.exact) ||
         (nd::KeyTypes(m, a.key) & (nd::kIntegers | nd::kReals)) == 0)
       return Invalid();

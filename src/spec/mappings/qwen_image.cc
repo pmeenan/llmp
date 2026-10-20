@@ -24,12 +24,23 @@ constexpr std::array<std::string_view, 1> kFlowArchitectures{"QwenImage21Transfo
 constexpr std::array<std::string_view, 2> kVaeArchitectures{"AutoencoderKLQwenImage21",
                                                             "AutoencoderKLQwenImage"};
 
+// What text-to-image generation does not run (each stage reads the
+// tensors model/image_pipeline.h's lists give it, and no others):
+// Qwen3-VL's vision tower, output head and final norm; the VAE's encoder,
+// and its up blocks' temporal convolutions, which a one-frame decode never
+// applies (the first frame skips them).
+constexpr std::array<std::string_view, 3> kTextIgnored{"model.visual.", "lm_head.weight",
+                                                       "model.language_model.norm.weight"};
+constexpr std::array<std::string_view, 3> kVaeIgnored{
+    "encoder.", "quant_conv.", "decoder.up_blocks.{layer}.upsampler.time_conv."};
+
 constexpr std::array kComponents{
     ImageComponentRule{.role = kText,
                        .stage = "text_encoder",
                        .stage_role = StageRole::kTextEncoder,
                        .kinds = kTextKinds,
-                       .architectures = kTextArchitectures},
+                       .architectures = kTextArchitectures,
+                       .ignored_tensors = kTextIgnored},
     ImageComponentRule{.role = kFlow,
                        .stage = "denoiser",
                        .stage_role = StageRole::kDenoiser,
@@ -39,7 +50,8 @@ constexpr std::array kComponents{
                        .stage = "vae",
                        .stage_role = StageRole::kVae,
                        .kinds = kVaeKinds,
-                       .architectures = kVaeArchitectures},
+                       .architectures = kVaeArchitectures,
+                       .ignored_tensors = kVaeIgnored},
 };
 
 constexpr ImageParamRule Text(std::string_view param, std::string_view key) {

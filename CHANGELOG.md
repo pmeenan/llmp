@@ -35,6 +35,17 @@ The entries below record each change; the record of the milestone is
   will actually take, a restore refused for room keeps the conversation's
   record for a restart, and a request body waiting for request memory is
   freed when its client leaves (R20).
+- `llmp import` refuses ambiguous or inconsistent checkpoints it used to
+  import with wrong results: an empty (zero-element) EXL3, ModelOpt or MLX
+  quantization part; `tie_word_embeddings: false` without a head (Qwen2
+  safetensors and every EXL3 table); an image component's tensor its mapping
+  neither reads nor declares as left out; a config member named `""` (and
+  dotted member names are no longer flattened as if nested); an EXL3 marker
+  that contradicts `quantization_config.codebook`; an MLX
+  `quantization_config` that disagrees with `quantization`; an
+  hf_quant_config.json beside an EXL3 or MLX checkpoint; a pipeline file that
+  cannot be inspected; and unconsumed keys in a GGUF's own architecture
+  namespace, now derived from the mapping rather than a hand-kept list.
 - Unpin runtime numerical qualifications, planner policies, kernel capability
   predicates, on-chip decode formats and importer normalizers from specific
   checkpoint receipts and model dimensions (D-123, R14–R19): derive fusion and

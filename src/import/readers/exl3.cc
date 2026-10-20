@@ -5,6 +5,8 @@
 
 #include <sys/types.h>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -54,7 +56,44 @@ std::uint64_t Elements(const Tensor& t) {
   return n;
 }
 
-std::expected<void, Error> Apply(std::vector<Tensor>& tensors) {
+// An EXL3 part (a trellis, its sign vectors or a codebook marker) the
+// safetensors reader recorded as empty: present, so its linear's decode
+// would change with it read as absent (an empty marker as 3inst).
+bool EmptyPart(std::span<const SkippedTensor> skipped) {
+  return std::ranges::any_of(skipped, [](const SkippedTensor& t) {
+    return std::ranges::any_of(
+        std::array<std::string_view, 5>{".trellis", ".suh", ".svh", ".mcg", ".mul1"},
+        [&](std::string_view suffix) { return t.name.ends_with(suffix); });
+  });
+}
+
+// config.json's `codebook` (exllamav3's one for every linear), when it
+// gives one.
+std::expected<std::optional<Exl3Codebook>, Error> StatedCodebook(json::Value root) {
+  const auto q = root.find("quantization_config");
+  const auto codebook = q && q->is_object() ? q->find("codebook") : std::nullopt;
+  if (!codebook) {
+    return std::optional<Exl3Codebook>();
+  }
+  const std::string_view name = codebook->is_string() ? codebook->string() : std::string_view{};
+  if (name == "mcg") {
+    return Exl3Codebook::kMcg;
+  }
+  if (name == "mul1") {
+    return Exl3Codebook::kMul1;
+  }
+  if (name == "3inst") {
+    return Exl3Codebook::k3Inst;
+  }
+  return Refuse(Rule::kUnsupported, "an EXL3 codebook other than mcg, mul1 and 3inst");
+}
+
+std::expected<void, Error> Apply(std::vector<Tensor>& tensors,
+                                 std::span<const SkippedTensor> skipped,
+                                 std::optional<Exl3Codebook> stated) {
+  if (EmptyPart(skipped)) {
+    return Refuse(Rule::kQuantization, "an EXL3 linear with an empty part");
+  }
   std::map<std::string_view, std::size_t> index;
   for (std::size_t i = 0; i < tensors.size(); ++i) {
     index.emplace(tensors[i].name, i);
@@ -100,11 +139,16 @@ std::expected<void, Error> Apply(std::vector<Tensor>& tensors) {
       return refuse(Rule::kQuantization, "an EXL3 linear with both mcg and mul1 markers");
     }
     const std::optional<std::size_t> marker = mcg ? mcg : mul1;
+    const Exl3Codebook codebook = mcg    ? Exl3Codebook::kMcg
+                                  : mul1 ? Exl3Codebook::kMul1
+                                         : Exl3Codebook::k3Inst;
+    if (stated && *stated != codebook) {
+      return refuse(Rule::kQuantization,
+                    "an EXL3 linear whose codebook marker is not the config's codebook");
+    }
     format::TensorFormat f{.encoding = Encoding::kExl3Trellis,
                            .params = {.k_bits = static_cast<std::uint8_t>(last / 16),
-                                      .codebook = mcg    ? Exl3Codebook::kMcg
-                                                  : mul1 ? Exl3Codebook::kMul1
-                                                         : Exl3Codebook::k3Inst,
+                                      .codebook = codebook,
                                       .tensor_scale = false},
                            .layout = format::Layout::kExl3Tiles,
                            .shape = {.ne = {k, n, 1, 1}, .rank = 2}};
@@ -151,9 +195,18 @@ std::expected<Checkpoint, Error> Quantized(HfDirectory dir) {
   if (const auto mlx = dir.config.root().find("quantization"); mlx && mlx->is_object()) {
     return Refuse(Rule::kConfig, "config.json has both EXL3's and MLX's quantization");
   }
+  // ModelOpt's description beside EXL3's: which describes the tensors is
+  // ambiguous.
+  if (dir.hf_quant) {
+    return Refuse(Rule::kConfig, "an EXL3 checkpoint with an hf_quant_config.json");
+  }
+  const auto stated = StatedCodebook(dir.config.root());
+  if (!stated) {
+    return std::unexpected(stated.error());
+  }
   Checkpoint& c = dir.checkpoint;
   c.container = "exl3";
-  if (auto ok = Apply(c.tensors); !ok) {
+  if (auto ok = Apply(c.tensors, c.skipped_tensors, *stated); !ok) {
     return std::unexpected(ok.error());
   }
   c.quantization = "exl3";

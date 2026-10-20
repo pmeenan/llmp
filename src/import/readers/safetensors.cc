@@ -173,21 +173,33 @@ MetaValue ListOf(json::Value list) {
   return {};
 }
 
-std::expected<void, Error> Flatten(json::Value v, const std::string& key,
+// `v` flattened under `key` (the root, with `skip`'s members left out,
+// when `at_root`). A member named "" is refused: it has no dotted key. A
+// member whose name holds a '.' is left out with everything beneath it:
+// its dotted key could not be told from a nested member's (transformers
+// reads it only under its literal name, never as a nested value, as in
+// the `base_model_ep_plan` patterns some configs carry).
+std::expected<void, Error> Flatten(json::Value v, const std::string& key, bool at_root,
                                    std::span<const std::string_view> skip,
                                    std::map<std::string, MetaValue, std::less<>>& out) {
   switch (v.kind()) {
     case json::Kind::kObject:
       for (std::size_t i = 0; i < v.size(); ++i) {
-        if (key.empty() && std::ranges::contains(skip, v.key(i))) {
+        const std::string_view name = v.key(i);
+        if (at_root && std::ranges::contains(skip, name)) {
           continue;
         }
-        std::string member =
-            key.empty() ? std::string(v.key(i)) : key + "." + std::string(v.key(i));
+        if (name.empty()) {
+          return Fail(Rule::kConfig, "a configuration member with an empty name");
+        }
+        if (name.contains('.')) {
+          continue;
+        }
+        std::string member = at_root ? std::string(name) : key + "." + std::string(name);
         if (member.size() > kMaxKeyBytes) {
           return Fail(Rule::kBounds, "a config.json key longer than the reader's cap");
         }
-        if (auto ok = Flatten(v.member(i), member, skip, out); !ok) {
+        if (auto ok = Flatten(v.member(i), member, false, skip, out); !ok) {
           return ok;
         }
       }
@@ -637,7 +649,7 @@ std::expected<std::vector<MetaEntry>, Error> FlattenMetadata(
     return Fail(Rule::kConfig, "a configuration document that is not an object");
   }
   std::map<std::string, MetaValue, std::less<>> flat;
-  if (auto ok = Flatten(root, {}, skip, flat); !ok) {
+  if (auto ok = Flatten(root, {}, true, skip, flat); !ok) {
     return std::unexpected(ok.error());
   }
   std::vector<MetaEntry> out;
@@ -912,7 +924,7 @@ std::expected<Checkpoint, Error> Quantized(HfDirectory dir) {
     return std::unexpected(quantization.error());
   }
   Checkpoint& c = dir.checkpoint;
-  if (auto ok = ApplyQuantization(*quantization, c.tensors); !ok) {
+  if (auto ok = ApplyQuantization(*quantization, c.tensors, c.skipped_tensors); !ok) {
     return std::unexpected(ok.error());
   }
   if (*quantization) {

@@ -7,7 +7,8 @@
 // quant_method "exl3", as a checkpoint (checkpoint.h) with each quantized
 // linear's tensors paired into one trellis format (format::kExl3Trellis in
 // kExl3Tiles). ExLlamaV3's quantization_config.json beside it repeats what
-// the tensors say and is not read.
+// the tensors say and is not read; ModelOpt's hf_quant_config.json beside
+// it is refused (which describes the tensors is ambiguous).
 //
 // A linear M is quantized when M.trellis is present, as ExLlamaV3's
 // LinearEXL3 reads it (exllamav3/modules/quant/exl3.py at the pin):
@@ -23,7 +24,13 @@
 //   - the codebook: mcg when M.mcg is present, mul1 when M.mul1 is, 3inst
 //     when neither (both: refused, ambiguous); the marker is the format's
 //     kCodebookMarker part, 4 bytes of any dtype, whose value upstream does
-//     not read.
+//     not read. quantization_config's `codebook` ("mcg", "mul1" or
+//     "3inst"; another is refused), when given, is every linear's: a
+//     linear whose marker says otherwise is refused.
+//
+// A trellis, sign vector or marker of zero elements (which the safetensors
+// reader records as skipped rather than as a tensor) is refused: read as
+// absent, it would change its linear's decode.
 //
 // Every part carries the trellis's format, {exl3_trellis, k_bits = k,
 // codebook, kExl3Tiles, [K, N]}, and its role. Everything else (the

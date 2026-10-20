@@ -58,6 +58,7 @@ struct Scheme {
   const ModeInfo* mode = nullptr;
   std::uint32_t bits = 0;
   std::uint32_t group = 0;
+  bool operator==(const Scheme&) const = default;
 };
 
 // A module's override: not quantized (false), the default (true), or a
@@ -65,12 +66,14 @@ struct Scheme {
 struct Override {
   bool quantized = true;
   std::optional<Scheme> scheme{};
+  bool operator==(const Override&) const = default;
 };
 
 struct Quantization {
   std::optional<Scheme> fallback{};  // the default, when config gives one
   std::string_view mode{};           // the default's mode name
   std::map<std::string, Override, std::less<>> modules{};
+  bool operator==(const Quantization&) const = default;
 };
 
 std::unexpected<Error> Refuse(Rule rule, std::string_view reason) {
@@ -290,7 +293,8 @@ std::expected<format::TensorFormat, Error> Describe(const Scheme& scheme,
   return f;
 }
 
-std::expected<void, Error> Apply(const Quantization& q, std::vector<Tensor>& tensors) {
+std::expected<void, Error> Apply(const Quantization& q, std::vector<Tensor>& tensors,
+                                 std::span<const SkippedTensor> skipped) {
   std::map<std::string_view, std::size_t> index;
   for (std::size_t i = 0; i < tensors.size(); ++i) {
     index.emplace(tensors[i].name, i);
@@ -300,6 +304,17 @@ std::expected<void, Error> Apply(const Quantization& q, std::vector<Tensor>& ten
     return found == index.end() ? std::nullopt : std::optional(found->second);
   };
   constexpr std::string_view kScales = ".scales";
+  // A part of zero elements (skipped by the safetensors reader) would read
+  // as absent and change the pairing: empty scales or biases, or empty
+  // codes beside scales.
+  for (const SkippedTensor& t : skipped) {
+    const std::string_view name = t.name;
+    const bool weight = name.ends_with(".weight") &&
+                        find(std::string(name.substr(0, name.size() - 7)) + std::string(kScales));
+    if (name.ends_with(kScales) || name.ends_with(".biases") || weight) {
+      return Refuse(Rule::kQuantization, "an MLX quantized module with an empty part");
+    }
+  }
   for (std::size_t i = 0; i < tensors.size(); ++i) {
     const std::string_view name = tensors[i].name;
     if (!name.ends_with(kScales) || name.size() == kScales.size()) {
@@ -358,10 +373,21 @@ void MarkExpertArrays(std::vector<Tensor>& tensors) {
 }  // namespace
 
 std::expected<Checkpoint, Error> MlxCheckpoint(HfDirectory dir) {
+  // ModelOpt's description beside MLX's: which describes the tensors is
+  // ambiguous.
+  if (dir.hf_quant) {
+    return Refuse(Rule::kConfig, "an MLX checkpoint with an hf_quant_config.json");
+  }
   Checkpoint& c = dir.checkpoint;
   c.container = "mlx";
   const auto q = dir.config.root().find("quantization");
+  const auto copy = dir.config.root().find("quantization_config");
+  const bool has_copy = copy && !copy->is_null();
   if (!q || q->is_null()) {
+    if (has_copy) {
+      return Refuse(Rule::kConfig,
+                    "an MLX checkpoint with a quantization_config and no MLX quantization");
+    }
     MarkExpertArrays(c.tensors);  // an unquantized MLX checkpoint: every tensor dense
     return std::move(c);
   }
@@ -369,7 +395,17 @@ std::expected<Checkpoint, Error> MlxCheckpoint(HfDirectory dir) {
   if (!quantization) {
     return std::unexpected(quantization.error());
   }
-  if (auto ok = Apply(*quantization, c.tensors); !ok) {
+  // mlx-lm writes quantization_config as a copy of `quantization`: one
+  // that says otherwise makes which describes the tensors ambiguous.
+  if (has_copy) {
+    auto stated = ParseQuantization(*copy);
+    if (!stated || *stated != *quantization) {
+      return Refuse(Rule::kConfig,
+                    "config.json's quantization and quantization_config describe different "
+                    "quantizations");
+    }
+  }
+  if (auto ok = Apply(*quantization, c.tensors, c.skipped_tensors); !ok) {
     return std::unexpected(ok.error());
   }
   MarkExpertArrays(c.tensors);

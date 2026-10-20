@@ -15,8 +15,10 @@
 // dotted keys ("text_config.num_hidden_layers"): numbers as integers
 // (written without fraction or exponent and within 64 bits) or finite
 // reals, strings, flags, lists of integers, of numbers or of strings, and
-// JSON null, and none for any other list. Two members flattening to one key are
-// refused.
+// JSON null, and none for any other list. A member named "" is refused; a
+// member whose name holds a '.' is left out with its contents (its dotted
+// key could not be told from a nested member's, and transformers reads it
+// only under its literal name).
 // `quantization_config` (and MLX's `quantization` object) is not
 // metadata: hf_quant.h reads it, and hf_quant_config.json beside it (the
 // MLX and EXL3 readers read theirs).

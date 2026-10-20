@@ -2402,7 +2402,9 @@ and named in `Checkpoint::skipped`, never refused.
 - *safetensors with config.json* (`readers/safetensors.h`) reads
   config.json (strict RFC 8259, 16 MiB, nesting 32, `model_type` the
   architecture, or a diffusers component's `_class_name` without one;
-  objects flattened into dotted keys, typed) and either
+  objects flattened into dotted keys, typed; a member named "" refused, a
+  member whose own name holds a '.' left out with its contents, since its
+  key could not be told from a nested member's) and either
   `model.safetensors` or the shards `model.safetensors.index.json` names
   (plain file names, every tensor in exactly the shard the index gives);
   a diffusers component's `diffusion_pytorch_model` files likewise
@@ -2430,8 +2432,12 @@ and named in `Checkpoint::skipped`, never refused.
   table), and an NVFP4 weight without its own `weight_scale_2` takes the
   nearest ancestor module's lone one (the n-gram table's 128 row shards
   share one, which is then the tensor-scale part of each); exclusion
-  patterns are matched within a fixed budget of steps, so hostile ones
-  cannot stall a read. A scaled weight of an excluded module is described
+  patterns are matched within a fixed budget of steps (literal comparisons
+  and the walk up a module's ancestors charged by the bytes they read), so
+  hostile ones cannot stall a read. Under a quantization, an empty
+  (zero-element) `weight_scale` or `weight_scale_2`, or empty codes beside
+  their scales, is refused: read as absent it would change the pairing
+  (an empty tensor scale would take an ancestor's). A scaled weight of an excluded module is described
   by its dtypes; a weight without block scales, even in a configured
   module, and block scales without a weight are dense tensors. Refused,
   naming why: a pair whose dtypes match neither scheme, or not its
@@ -2457,8 +2463,10 @@ and named in `Checkpoint::skipped`, never refused.
   match; three-dimensional weights (mlx-lm's `switch_mlp`) are expert
   arrays. Refused: a module with scales whose override says false, a
   missing or incomplete scheme, a mode MLX does not have, a group the
-  encoding does not take, and parts of other dtypes, ranks or sizes.
-  `quantization_config` (mlx-lm writes a copy) is not read. An
+  encoding does not take, parts of other dtypes, ranks or sizes, and an
+  empty (zero-element) part. `quantization_config` (mlx-lm writes a copy)
+  must describe the same quantization, and is refused without
+  `quantization`; an hf_quant_config.json beside it is refused. An
   unquantized MLX checkpoint has no `quantization` and is known by its
   shards' format ("mlx"). MLX keeps its own axis orders, described as
   stored: a convolution is channels-last (mlx.nn.Conv1d's [out, kernel,
@@ -2472,10 +2480,14 @@ and named in `Checkpoint::skipped`, never refused.
   rates refused: no format), F16 M.suh and M.svh of K and N values (the
   packed M.su and M.sv alone are refused: they need an unpacking fold),
   and the codebook by marker presence (M.mcg, M.mul1, neither for 3inst;
-  both refused), each part with the trellis's format and its role.
+  both refused), each part with the trellis's format and its role; an
+  empty (zero-element) trellis, sign vector or marker is refused (an empty
+  marker would otherwise read as 3inst), and config.json's
+  `quantization_config.codebook`, when given, must be every linear's.
   quantization_config.json is not read; biases, norms and embeddings are
-  dense. A config.json with MLX's `quantization` too is refused (which
-  describes the tensors is ambiguous).
+  dense. A config.json with MLX's `quantization` too, or an
+  hf_quant_config.json beside it, is refused (which describes the tensors
+  is ambiguous).
 - *diffusers* (`readers/diffusers.h`, container `diffusers`) reads a
   pipeline as a `Checkpoint` of components (D-089): model_index.json
   (1 MiB, strict; `_class_name` the architecture, every member the
@@ -2485,7 +2497,8 @@ and named in `Checkpoint::skipped`, never refused.
   config.json is read by the reader that claims it (never as a pipeline
   itself), one to 16 of them, each a checkpoint with its own files and
   metadata; another's regular files (a scheduler's, a processor's; at
-  most 4,096 directory entries, subdirectories left out) are the
+  most 4,096 directory entries, subdirectories left out, an entry that
+  cannot be inspected or links to nothing refused) are the
   pipeline's own files, `<role>/<name>`, at most 256 and within a
   composition's 64 MiB a file and 128 MiB in all, after model_index.json;
   a kept file that resolves outside the pipeline is skipped and named
@@ -2548,10 +2561,15 @@ Unknown tensors (except declared rotary-buffer patterns), duplicate
 aliases, invalid scalar or per-layer list types, unsupported container/family
 pairs, inconsistent formats or file extents, and overlaps through physical
 file aliases refuse. Unread metadata outside declared semantic namespaces is
-retained as provenance with an import warning. Keys in an architecture's
-semantic namespace, or HF rotary/quantization/attention-scale namespaces,
-must be consumed or refused; adding a converter provenance field is allowed.
-Zero-element tensors are recorded and skipped unless a mapping needs them.
+retained as provenance with an import warning. Keys in the mapping's own
+architecture namespace (`<architecture>.`, derived from the mapping rather
+than listed), or HF rotary/quantization/attention-scale namespaces, must be
+consumed or refused; adding a converter provenance field is allowed.
+Transformers' `tie_word_embeddings` is read by every Hugging Face table:
+untied, the head must be present (safetensors' `lm_head.weight`, EXL3's
+`lm_head.trellis`) rather than fall back to the token table.
+Zero-element tensors are recorded and skipped unless a mapping needs them;
+the quantization readers refuse an empty part of a quantized weight.
 Safetensors, MLX and EXL3 retain tokenizer, generation and chat-template
 documents within the existing metadata bounds. Serving already prefers a
 kept tokenizer.json when no external tokenizer is needed, and can obtain its
@@ -2587,7 +2605,8 @@ Component catalog entries declare their maximum state tensor count, checked
 against constructed contracts and used for normalization's storage bound.
 
 Layer lists cover the declared layers. Rotary section lists have four
-nonnegative entries covering the rotary dimension; compression codes must
+nonnegative entries covering the rotary dimension (the key the table's list
+rule names, `sections_of`); compression codes must
 be in the mapping/component domain. N-gram row ranges fit the encoded table
 and signed I32 addressing; component parameter/shape checks relate the
 embedding width, vocabulary and n-gram table. Drafter tap layers are checked
@@ -3224,8 +3243,11 @@ stage a component, each one layer of family components
 `image.flow_schedule`, `image.vae_decoder`) whose parameters the schema
 reads as its types and range-checks; the composition keeps it as its
 `spec.json` (D-113). Each component artifact keeps the tensors its mapping
-names (not the text encoder's vision tower and output head, nor the VAE's
-encoder, which text to image never runs) and a spec of itself at a minimal
+names; the ones it names as left out (`ImageComponentRule::ignored_tensors`:
+the text encoder's vision tower, output head and final norm, the VAE's
+encoder and its up blocks' temporal convolutions, which text to image never
+runs) are not imported, and any other tensor is refused, as on the LLM
+route. Each also keeps a spec of itself at a minimal
 geometry; since that spec binds every tensor in one spatial layer, the
 importer groups the tensors as the component's structure divides them
 (`import::ComponentPlan::groups`: the text encoder's token table and one

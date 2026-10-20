@@ -79,8 +79,11 @@ std::optional<Key> Classify(const SourceMapping& t, std::string_view key, bool i
             : (key == semantic || (key.starts_with(semantic) && key.size() > semantic.size() &&
                                    key[semantic.size()] == '.')))
       return std::nullopt;
-  if (key.starts_with("llmp.") || key.starts_with("dflash.") ||
-      key.starts_with("gemma4-assistant."))
+  // The architecture's own namespace (a GGUF's "<general.architecture>.")
+  // and llmpalooza's are math-bearing wherever a table maps them.
+  const std::string_view own = t.architecture->architecture;
+  if ((key.size() > own.size() && key.starts_with(own) && key[own.size()] == '.') ||
+      key.starts_with("llmp."))
     return std::nullopt;
   return Key{.auxiliary = static_cast<std::uint32_t>(t.auxiliary.size())};
 }
@@ -421,13 +424,13 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
           return Bad("source layer ratio is outside its components' domain");
       }
     }
-    if (list && rule.key.ends_with("rope.dimension_sections")) {
+    if (list && !rule.sections_of.empty()) {
       std::uint64_t pairs = 0;
       for (auto n : *list) {
         if (n < 0 || n > 1024) return Bad("invalid rotary section width");
         pairs += static_cast<std::uint64_t>(n);
       }
-      const auto* dims = value_for("qwen4exp.rope.dimension_count");
+      const auto* dims = value_for(rule.sections_of);
       const auto* n = dims ? std::get_if<std::int64_t>(dims) : nullptr;
       if (!n || *n < 0 || pairs * 2 != static_cast<std::uint64_t>(*n))
         return Bad("rotary sections do not cover the rotary dimension");

@@ -1716,7 +1716,12 @@ TEST(ImportNormalizeSafetensorsTest, RealisticTransformersConfigNormalizesWithEi
 }
 
 TEST(ImportNormalizeSafetensorsTest, EmptyFallbackRoleMatchesAbsentButRequiredEmptyStillRefuses) {
-  const auto config = fixtures::TinyQwen2HfConfig();
+  // Tied: the head falls back to the token table.
+  auto config = fixtures::TinyQwen2HfConfig();
+  const std::string_view untied = R"("tie_word_embeddings":false)";
+  const auto at = config.find(untied);
+  ASSERT_NE(at, std::string::npos);
+  config.replace(at, untied.size(), R"("tie_word_embeddings":true)");
   auto entries = fixtures::TinyQwen2HfEntries();
   std::erase_if(entries, [](const auto& entry) { return entry.name == "lm_head.weight"; });
   auto absent = ParseSafetensors(fixtures::Shard(entries), config);
@@ -1736,6 +1741,59 @@ TEST(ImportNormalizeSafetensorsTest, EmptyFallbackRoleMatchesAbsentButRequiredEm
   ASSERT_TRUE(required);
   EXPECT_TRUE(NormalizationBound(*required));
   EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(*required), kFunded));
+}
+
+TEST(ImportNormalizeSafetensorsTest, UntiedFlagWithoutAHeadRefusesForQwen2AndExl3) {
+  // Qwen2 safetensors: an untied checkpoint without lm_head would otherwise
+  // fall back to the token table, tying what config.json says is untied.
+  auto entries = fixtures::TinyQwen2HfEntries();
+  std::erase_if(entries, [](const auto& entry) { return entry.name == "lm_head.weight"; });
+  auto untied = ParseSafetensors(fixtures::Shard(entries), fixtures::TinyQwen2HfConfig());
+  ASSERT_TRUE(untied);
+  EXPECT_FALSE(NormalizationBound(*untied));
+  EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(*untied), kFunded));
+  // The flag is read as a flag, whatever the table.
+  auto config = fixtures::TinyQwen2HfConfig();
+  const std::string_view flag = R"("tie_word_embeddings":false)";
+  config.replace(config.find(flag), flag.size(), R"("tie_word_embeddings":"no")");
+  auto text = ParseSafetensors(fixtures::Shard(fixtures::TinyQwen2HfEntries()), config);
+  ASSERT_TRUE(text);
+  EXPECT_FALSE(NormalizationBound(*text));
+  // EXL3: the head's trellis must be there when untied.
+  auto exl3 = test_support::Qwen2Exl3Checkpoint();
+  Value(exl3, "tie_word_embeddings", false);
+  std::erase_if(exl3.tensors, [](const Tensor& t) { return t.name.starts_with("lm_head."); });
+  EXPECT_FALSE(NormalizationBound(exl3));
+}
+
+TEST(ImportNormalizeTest, SemanticNamespaceIsTheArchitecturesOwn) {
+  // Another architecture's keys are not this mapping's math (llama.cpp reads
+  // only "<general.architecture>."): retained as provenance.
+  auto input = Tiny();
+  Value(input, "llama.rope.freq_base", 500000.0);
+  Value(input, "gemma3.attention.scale", 0.5);
+  auto plan = test_support::NormalizeWithFixtureTarget(input, kFunded);
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  for (const std::string_view key : {"llama.rope.freq_base", "gemma3.attention.scale"}) {
+    const auto entry = std::ranges::find(plan->source().metadata, key, &MetaEntry::key);
+    ASSERT_NE(entry, plan->source().metadata.end()) << key;
+    EXPECT_EQ(plan->metadata()[static_cast<std::size_t>(entry - plan->source().metadata.begin())]
+                  .classification,
+              MetadataClass::kAuxiliary)
+        << key;
+  }
+  // Its own unconsumed keys refuse, for every registered GGUF table.
+  for (const std::string_view arch : {"gemma4-assistant", "dflash", "qwen4exp", "deepseek4"}) {
+    const auto* table = FindSourceMapping("gguf", arch);
+    ASSERT_NE(table, nullptr) << arch;
+    auto other = Tiny();
+    other.architecture = std::string(arch);
+    Value(other, "general.architecture", std::string(arch));
+    Value(other, std::string(arch) + ".unknown_semantics", std::int64_t{1});
+    EXPECT_EQ(test_support::Failed(NormalizationBound(other), &Error::reason),
+              "unconsumed semantic metadata changes unsupported mapping semantics")
+        << arch;
+  }
 }
 
 TEST(ImportNormalizeTest, UnreadProvenanceIsRetainedWhileUnconsumedSemanticsRefuse) {

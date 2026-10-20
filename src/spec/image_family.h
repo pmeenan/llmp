@@ -58,6 +58,12 @@ struct ImageComponentRule {
   StageRole stage_role = StageRole::kTextEncoder;
   std::span<const std::string_view> kinds{};  // the family components its stage holds
   std::span<const std::string_view> architectures{};
+  // The checkpoint's tensors the stage does not run (a text encoder's vision
+  // tower and output head, a VAE's encoder), left out of the import: a name
+  // ending in '.' covers every tensor under it, another one whole name; a
+  // "{layer}" (once) stands for a block index. Any other tensor its kinds
+  // do not read is refused.
+  std::span<const std::string_view> ignored_tensors{};
 };
 
 // How a family parameter is read: from a component's config (by role) or
@@ -128,6 +134,8 @@ struct ImageMapping {
 
 std::span<const ImageMapping* const> ImageMappings();
 const ImageMapping* FindImageMapping(std::string_view architecture);
+// Whether `name` is one of a component's ignored_tensors (`rule`).
+bool IgnoredImageTensor(std::string_view rule, std::string_view name);
 // Its own rules: components unique and sorted, every schema parameter of
 // its components' kinds read by exactly one rule naming one of them, keys
 // source keys, names present, one policy.

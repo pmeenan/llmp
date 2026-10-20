@@ -198,6 +198,21 @@ const ImageMapping* FindImageMapping(std::string_view architecture) {
   return nullptr;
 }
 
+bool IgnoredImageTensor(std::string_view rule, std::string_view name) {
+  const auto rest_matches = [](std::string_view rest, std::string_view tail) {
+    return rest.ends_with('.') ? tail.starts_with(rest) : tail == rest;
+  };
+  const auto at = rule.find(kLayerField);
+  if (at == std::string_view::npos) return rest_matches(rule, name);
+  const auto prefix = rule.substr(0, at);
+  if (!name.starts_with(prefix)) return false;
+  const auto tail = name.substr(prefix.size());
+  std::size_t digits = 0;
+  while (digits < tail.size() && digits < 5 && tail[digits] >= '0' && tail[digits] <= '9') ++digits;
+  return digits > 0 && digits < 5 && !(digits > 1 && tail[0] == '0') &&
+         rest_matches(rule.substr(at + kLayerField.size()), tail.substr(digits));
+}
+
 std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
   if (m.architecture.empty() || m.components.empty() || m.components.size() > kMaxStages)
     return Refused("an architecture and one to sixteen components");
@@ -211,6 +226,14 @@ std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
                       i));
     for (const auto kind : c.kinds)
       if (!KnownKind(kind)) return Refused(std::format("{}: an unknown kind {}", c.role, kind));
+    for (const auto ignored : c.ignored_tensors) {
+      // At most one "{layer}", with a source key around it.
+      std::string text(ignored);
+      if (const auto at = text.find(kLayerField); at != std::string::npos)
+        text.replace(at, kLayerField.size(), "0");
+      if (ignored.empty() || text.contains('{') || !IsSourceKey(text))
+        return Refused(std::format("{}: an ignored tensor name that is not a source key", c.role));
+    }
   }
   if (m.host_inputs.empty()) return Refused("declared image host inputs");
   for (std::size_t i = 0; i < m.host_inputs.size(); ++i) {

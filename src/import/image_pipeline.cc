@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -100,10 +101,10 @@ std::expected<spec::ModelSpec, Error> Family(const Checkpoint& source,
 }
 
 // A component's plan: the tensors its family names (at the family's
-// dtype and shape), each copied whole; the checkpoint's others (a text
-// encoder's vision tower and output head, a VAE's encoder: what text to
-// image generation does not run) are not imported, as a target's import
-// leaves its drafter's tensors.
+// dtype and shape), each copied whole; the checkpoint's others its mapping
+// names as left out (a text encoder's vision tower and output head, a
+// VAE's encoder: what text to image generation does not run) are not
+// imported, and any other is refused.
 // Each tensor's group, as the component's own structure divides it (its
 // spec binds every tensor in one spatial layer): the text encoder's token
 // table and one group a layer; the denoiser's globals and one group a
@@ -147,9 +148,28 @@ bool IsImagePipeline(const Checkpoint& source) {
 namespace image_pipeline_detail {
 std::expected<ComponentPlan, Error> PlanComponent(
     const Checkpoint& comp, std::span<const model::ImageTensor> expected_tensors,
-    const spec::ModelSpec& spec, std::vector<ComponentGroup> groups) {
+    std::span<const std::string_view> ignored, const spec::ModelSpec& spec,
+    std::vector<ComponentGroup> groups) {
   if (comp.container != "safetensors") {
     return Bad("component container must be safetensors", Rule::kContainer);
+  }
+  // Every tensor is one the stage reads or one its mapping leaves out by
+  // name: another (an extra norm or bias of a variant) would run with
+  // different math than the checkpoint's, as the LLM route refuses.
+  std::set<std::string_view> read;
+  for (const auto& need : expected_tensors) read.insert(need.name);
+  for (std::size_t i = 0; i < comp.tensors.size(); ++i) {
+    const std::string_view name = comp.tensors[i].name;
+    if (read.contains(name) || std::ranges::any_of(ignored, [&](std::string_view rule) {
+          return spec::IgnoredImageTensor(rule, name);
+        }))
+      continue;
+    return std::unexpected(Error{.rule = Rule::kContainer,
+                                 .reason = "a component tensor its image mapping neither reads "
+                                           "nor leaves out",
+                                 .file = comp.tensors[i].extent.file,
+                                 .kind = ItemKind::kTensor,
+                                 .item = i});
   }
   spec::Source canonical{.architecture = comp.architecture, .container = comp.container};
   canonical.tensors.reserve(expected_tensors.size());
@@ -257,7 +277,8 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
     const auto* comp = FindComponent(source, rule.role);
     const auto kind = rule.kinds.front();
     const std::size_t at = kind == spec::kImageTextKind ? 0 : kind == spec::kImageFlowKind ? 1 : 2;
-    auto plan = image_pipeline_detail::PlanComponent(*comp, *by_kind[at].first, *by_kind[at].second,
+    auto plan = image_pipeline_detail::PlanComponent(*comp, *by_kind[at].first,
+                                                     rule.ignored_tensors, *by_kind[at].second,
                                                      GroupsOf(kind, *by_kind[at].first, p, names));
     if (!plan) return std::unexpected(plan.error());
     out.payload_bytes += plan->payload_bytes;

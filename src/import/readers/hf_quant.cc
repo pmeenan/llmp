@@ -4,11 +4,13 @@
 #include "import/readers/hf_quant.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -32,7 +34,8 @@ constexpr std::size_t kMaxQuantizedLayers = std::size_t{1} << 18U;
 constexpr std::size_t kMaxExclusions = 4096;
 constexpr std::size_t kMaxPatternBytes = kMaxKeyBytes;
 // The steps all exclusion matching of one checkpoint may take (a literal
-// pattern's comparison one): a wildcard pattern against a name backtracks,
+// comparison and a module look-up charged by the bytes they read): a
+// wildcard pattern against a name backtracks,
 // quadratic in the name at worst, so many hostile patterns against many
 // scaled weights could otherwise run for hours; real configurations take
 // at most a few hundred million.
@@ -251,16 +254,26 @@ struct Covered {
   std::optional<QuantScheme> scheme{};  // none: excluded, or no module configured
 };
 
+// Charges `steps` to `budget`: false when it does not hold them.
+bool Charge(std::uint64_t& budget, std::uint64_t steps) {
+  if (steps > budget) {
+    budget = 0;
+    return false;
+  }
+  budget -= steps;
+  return true;
+}
+
 // The configured scheme of module `m` (none when matching spent the budget).
 std::optional<Covered> Configured(const Quantization& q, std::string_view m,
                                   std::uint64_t& budget) {
   if (q.scheme) {
     for (const std::string& p : q.exclude) {
       if (!p.contains('*') && !p.contains('?')) {
-        if (budget == 0) {
+        // A comparison reads up to the shorter name and one byte more.
+        if (!Charge(budget, std::min(p.size(), m.size()) + 1)) {
           return std::nullopt;
         }
-        --budget;
         if (p == m) {
           return Covered{};
         }
@@ -276,9 +289,14 @@ std::optional<Covered> Configured(const Quantization& q, std::string_view m,
     }
     return Covered{.scheme = q.scheme};
   }
-  // The longest configured module that is m or an ancestor of it.
+  // The longest configured module that is m or an ancestor of it: each
+  // look-up builds the prefix and compares it down the map's depth.
+  const std::uint64_t depth = static_cast<std::uint64_t>(std::bit_width(q.layers.size())) + 1;
   std::string_view prefix = m;
   while (true) {
+    if (!Charge(budget, (prefix.size() + 1) * depth)) {
+      return std::nullopt;
+    }
     if (const auto found = q.layers.find(std::string(prefix)); found != q.layers.end()) {
       return Covered{.scheme = found->second};
     }
@@ -405,7 +423,8 @@ std::expected<std::optional<Quantization>, Error> RecognizeQuantization(json::Va
 }
 
 std::expected<void, Error> ApplyQuantization(const std::optional<Quantization>& quantization,
-                                             std::vector<Tensor>& tensors) {
+                                             std::vector<Tensor>& tensors,
+                                             std::span<const SkippedTensor> skipped) {
   if (!quantization) {
     return {};
   }
@@ -419,6 +438,19 @@ std::expected<void, Error> ApplyQuantization(const std::optional<Quantization>& 
     return found == index.end() ? std::nullopt : std::optional(found->second);
   };
   constexpr std::string_view kScale = ".weight_scale";
+  // A part recorded as empty (zero elements: skipped by the safetensors
+  // reader) would read as absent, and change the pairing: an empty block
+  // scale would leave its weight dense, an empty tensor scale would drop
+  // it or take an ancestor's. Each is refused.
+  for (const SkippedTensor& t : skipped) {
+    const std::string_view name = t.name;
+    const bool scale = name.ends_with(kScale) || name.ends_with(".weight_scale_2");
+    const bool weight = name.ends_with(".weight") &&
+                        find(std::string(name.substr(0, name.size() - 7)) + std::string(kScale));
+    if (scale || weight) {
+      return Refuse(Rule::kQuantization, "a quantized weight with an empty part");
+    }
+  }
   // An NVFP4 weight without a tensor scale of its own takes its nearest
   // ancestor module's, when that module has one and no block scales (a
   // table stored as row shards under one scale, as Qwen3.8's n-gram

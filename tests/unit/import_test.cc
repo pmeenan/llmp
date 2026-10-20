@@ -1192,8 +1192,14 @@ TEST(ImportSafetensorsTest, RefusesConfigs) {
   EXPECT_EQ(rule(std::format(R"({{"model_type":"{}"}})", std::string(201, 'a'))), Rule::kConfig);
   EXPECT_EQ(rule(R"({"model_type":"t","a":1,"a":2})"), Rule::kConfig);
   EXPECT_EQ(rule("{\"model_type\":\"t\",\"x\":\"\xFF\"}"), Rule::kConfig);
-  // Two members flattening to one key.
-  EXPECT_EQ(rule(R"({"model_type":"t","a.b":1,"a":{"b":2}})"), Rule::kConfig);
+  // A dotted member name cannot pose as a nested member: it is left out
+  // (transformers reads it only under its literal name), so "a.b" is the
+  // nested member's; a member named "" is refused.
+  const auto dotted = ParseSafetensors(shard, R"({"model_type":"t","a.b":1,"a":{"b":2}})");
+  ASSERT_TRUE(dotted);
+  ASSERT_NE(dotted->FindValue("a.b"), nullptr);
+  EXPECT_EQ(std::get<std::int64_t>(*dotted->FindValue("a.b")), 2);
+  EXPECT_EQ(rule(R"({"model_type":"t","":{"a":1}})"), Rule::kConfig);
   // Nesting at most 32.
   const auto nested = [](std::size_t inner) {  // the root and `inner` objects in it
     std::string s = R"({"model_type":"t","x":)";

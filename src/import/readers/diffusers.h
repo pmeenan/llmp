@@ -29,7 +29,8 @@
 // kMaxPipelineComponents such components. Without a config.json (a
 // scheduler's, a tokenizer's or a processor's), its regular files, read
 // from at most kMaxPipelineDirectoryEntries entries (subdirectories and
-// what is not a regular file are left out), are the pipeline's own files,
+// what is not a regular file are left out; an entry that cannot be
+// inspected, or a link to nothing, is refused), are the pipeline's own files,
 // named "<role>/<file name>" (UTF-8 without control characters), at most
 // kMaxPipelineFiles of them, each at most kMaxPipelineFileBytes and all at
 // most kMaxPipelineFilesBytes (a composition's caps for the metadata it

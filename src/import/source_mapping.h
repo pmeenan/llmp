@@ -55,6 +55,9 @@ struct ListRequirement {
   std::string_view extra_layers_key{};
   // Some converters append type labels for unimported layers without a depth key.
   bool allow_unstated_extra = false;
+  // Nonempty: the entries are widths in pairs (rotary sections) of this
+  // selected integer key's value, which twice their sum must equal.
+  std::string_view sections_of{};
 };
 struct TensorShapeRequirement {
   std::string_view name{};
@@ -89,7 +92,8 @@ struct SourceMapping {
   bool extended_components = false;
   std::span<const TensorShapeRequirement> shapes{};
   std::span<const RowIndexRequirement> row_indices{};
-  // Unknown metadata in these math-bearing namespaces cannot be ignored.
+  // Unknown metadata in these math-bearing namespaces cannot be ignored,
+  // nor in the architecture's own ("<architecture>.", a GGUF's).
   std::span<const std::string_view> semantic{};
   std::span<const std::string_view> ignored_tensors{};
   // These explicit JSON nulls mean that an optional semantic feature is absent.

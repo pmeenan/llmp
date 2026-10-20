@@ -25,7 +25,10 @@
 // (group_size and bits required, since MLX's own defaults for them differ
 // between its versions; mode "affine" when absent), `false` (not
 // quantized) or `true` (the default). config.json's `quantization_config`
-// (mlx-lm writes a copy there) is not read. A module M is quantized
+// (mlx-lm writes a copy there) must describe the same quantization when
+// present, and is refused without `quantization` (which of the two
+// describes the tensors is ambiguous), as is an hf_quant_config.json
+// beside the checkpoint. A module M is quantized
 // exactly when M.weight and M.scales are both present (mlx-lm's own test);
 // its scheme is its override's, else the default's. Its tensors:
 //
@@ -46,7 +49,9 @@
 // `experts` component an expert array); a stray M.scales or M.biases with
 // no weight is dense too, and an fp mode's M.biases is left dense. Refused:
 // a quantized module whose override says false or whose scheme is missing
-// or incomplete, a mode MLX does not have, a group the affine encoding
+// or incomplete, a part of zero elements (M.scales, M.biases, or M.weight
+// beside M.scales: the safetensors reader records it as skipped, and read
+// as absent it would change the pairing), a mode MLX does not have, a group the affine encoding
 // does not take (a multiple of 8), parts of other dtypes, ranks or sizes,
 // and too many overrides (kMaxQuantizedLayers) or override keys past
 // kMaxKeyBytes.

@@ -29,7 +29,8 @@
 // name that is M or an ancestor of it), or the single algorithm's unless an
 // exclusion pattern (`ignore`, `exclude_modules`; '*' and '?' wildcards)
 // names M (at most 4,096 patterns of at most 1,024 bytes, all matching of
-// a checkpoint within a fixed budget of steps). A scaled weight no scheme
+// a checkpoint, literal comparisons and the walk up M's ancestors
+// included, within a fixed budget of steps). A scaled weight no scheme
 // covers (excluded, or in no configured module) takes the scheme its
 // dtypes and shapes match under ModelOpt's conventions (Qwen3.8's n-gram
 // table, which the config leaves out); one that matches neither is
@@ -56,6 +57,7 @@
 #include <expected>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -83,9 +85,13 @@ std::expected<std::optional<Quantization>, Error> RecognizeQuantization(
     base::json::Value config, const base::json::Value* hf);
 
 // Pairs the tensors' parts as `quantization` says (formats and parts set
-// in place).
+// in place). Under a quantization, a part of zero elements among `skipped`
+// (any `weight_scale` or `weight_scale_2`, or a `weight` whose
+// `weight_scale` is present) is refused: read as absent, it would change
+// the pairing.
 std::expected<void, Error> ApplyQuantization(const std::optional<Quantization>& quantization,
-                                             std::vector<Tensor>& tensors);
+                                             std::vector<Tensor>& tensors,
+                                             std::span<const SkippedTensor> skipped);
 
 }  // namespace llmp::import
 

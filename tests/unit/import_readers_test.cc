@@ -264,6 +264,9 @@ TEST(ImportMlxTest, KnowsUnquantizedCheckpointsByTheirShards) {
 constexpr std::string_view kExl3Config =
     R"({"model_type":"qwen2","quantization_config":{"quant_method":"exl3","bits":4.0,
         "codebook":"mcg"}})";
+// Without a stated codebook, each linear's markers give its own.
+constexpr std::string_view kExl3MixedConfig =
+    R"({"model_type":"qwen2","quantization_config":{"quant_method":"exl3","bits":4.0}})";
 
 // An EXL3 linear of K inputs and N outputs at k bits a weight.
 std::vector<Entry> Linear(const std::string& m, std::uint64_t k, std::uint64_t n,
@@ -283,7 +286,7 @@ TEST(ImportExl3Test, PairsTrellisesWithEachCodebook) {
                   Linear("lm_head", 16, 64, 8, ""),
                   {E("l.q_proj.bias", "F16", {48}), E("embed.weight", "BF16", {10, 32}),
                    E("orphan.suh", "F16", {8})}}));
-  const auto c = ParseExl3(shard, kExl3Config);
+  const auto c = ParseExl3(shard, kExl3MixedConfig);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->container, "exl3");
   EXPECT_EQ(c->quantization, "exl3");
@@ -345,11 +348,12 @@ TEST(ImportExl3Test, RefusesWhatItCannotDescribe) {
 
 TEST(ImportExl3Test, EveryPrefixAndCorruptionIsRefusedOrConsistent) {
   const auto shard = Shard(Join({Linear("a", 32, 16, 4), Linear("b", 16, 32, 2, "")}));
-  ASSERT_TRUE(ParseExl3(shard, kExl3Config).has_value());
+  ASSERT_TRUE(ParseExl3(shard, kExl3MixedConfig).has_value());
   for (std::size_t n = 0; n < shard.size(); ++n) {
-    EXPECT_EQ(RuleOf(ParseExl3(View(shard).first(n), kExl3Config)), Rule::kContainer) << n;
+    EXPECT_EQ(RuleOf(ParseExl3(View(shard).first(n), kExl3MixedConfig)), Rule::kContainer) << n;
   }
-  Corrupt(shard, [](const std::vector<std::byte>& bytes) { return ParseExl3(bytes, kExl3Config); });
+  Corrupt(shard,
+          [](const std::vector<std::byte>& bytes) { return ParseExl3(bytes, kExl3MixedConfig); });
 }
 
 // ---------------------------------------------------------------- diffusers

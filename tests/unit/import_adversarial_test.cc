@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "artifact/artifact.h"
@@ -34,7 +35,10 @@
 #include "import/indexed_parts.h"
 #include "import/normalize.h"
 #include "import/reader.h"
+#include "import/readers/diffusers.h"
+#include "import/readers/exl3.h"
 #include "import/readers/gguf.h"
+#include "import/readers/mlx.h"
 #include "import/readers/safetensors.h"
 #include "import/stream.h"
 #include "import/writer.h"
@@ -837,6 +841,199 @@ TEST_F(ImportAdversarialTest, ArchiveManifestHashMismatchRefused) {
   for (const auto& entry : std::filesystem::directory_iterator(options.store)) {
     EXPECT_EQ(entry.path().filename(), ".staging");
   }
+}
+
+// ============================================================================
+// 7. Ambiguous or inconsistent checkpoints the readers once accepted
+// ============================================================================
+
+using fixtures::E;
+using fixtures::Entry;
+using fixtures::Shard;
+
+std::vector<Entry> Joined(std::vector<Entry> a, const std::vector<Entry>& b) {
+  a.insert(a.end(), b.begin(), b.end());
+  return a;
+}
+
+constexpr std::string_view kExl3NoCodebook =
+    R"({"model_type":"qwen2","quantization_config":{"quant_method":"exl3","bits":4.0}})";
+
+// An EXL3 linear of 32 inputs and 16 outputs at 4 bits.
+std::vector<Entry> Exl3Linear() {
+  return {E("w.trellis", "I16", {2, 1, 64}), E("w.suh", "F16", {32}), E("w.svh", "F16", {16})};
+}
+
+TEST_F(ImportAdversarialTest, Exl3EmptyPartIsNotReadAsAbsent) {
+  // Without a marker the linear is 3inst; an empty marker must not make it so.
+  ASSERT_TRUE(ParseExl3(Shard(Exl3Linear()), kExl3NoCodebook));
+  for (const auto* marker : {"w.mcg", "w.mul1"}) {
+    EXPECT_EQ(
+        RuleOf(ParseExl3(Shard(Joined(Exl3Linear(), {E(marker, "I32", {0})})), kExl3NoCodebook)),
+        Rule::kQuantization)
+        << marker;
+  }
+  // An empty sign vector is no vector at all.
+  auto signs = Exl3Linear();
+  signs[1] = E("w.suh", "F16", {0, 32});
+  EXPECT_EQ(RuleOf(ParseExl3(Shard(signs), kExl3NoCodebook)), Rule::kQuantization);
+}
+
+TEST_F(ImportAdversarialTest, Exl3StatedCodebookMustMatchEveryMarker) {
+  const auto config = [](std::string_view codebook) {
+    return std::format(
+        R"({{"model_type":"qwen2","quantization_config":{{"quant_method":"exl3","codebook":"{}"}}}})",
+        codebook);
+  };
+  const auto mcg = Joined(Exl3Linear(), {E("w.mcg", "I32", {})});
+  const auto mul1 = Joined(Exl3Linear(), {E("w.mul1", "I32", {})});
+  EXPECT_EQ(RuleOf(ParseExl3(Shard(mcg), config("mcg"))), std::nullopt);
+  EXPECT_EQ(RuleOf(ParseExl3(Shard(mul1), config("mul1"))), std::nullopt);
+  EXPECT_EQ(RuleOf(ParseExl3(Shard(Exl3Linear()), config("3inst"))), std::nullopt);
+  // A marker the stated codebook contradicts, or a missing one.
+  EXPECT_EQ(RuleOf(ParseExl3(Shard(mul1), config("mcg"))), Rule::kQuantization);
+  EXPECT_EQ(RuleOf(ParseExl3(Shard(Exl3Linear()), config("mcg"))), Rule::kQuantization);
+  EXPECT_EQ(RuleOf(ParseExl3(Shard(mcg), config("3inst"))), Rule::kQuantization);
+  EXPECT_EQ(RuleOf(ParseExl3(Shard(mcg), config("trellis9"))), Rule::kUnsupported);
+  // ModelOpt's description beside EXL3's.
+  Write(dir_ / "exl3" / "config.json", config("mcg"));
+  Write(dir_ / "exl3" / "model.safetensors", Shard(mcg));
+  ASSERT_TRUE(ReadExl3(dir_ / "exl3"));
+  Write(dir_ / "exl3" / "hf_quant_config.json",
+        std::string_view(R"({"quantization":{"quant_algo":"NVFP4"}})"));
+  EXPECT_EQ(RuleOf(ReadExl3(dir_ / "exl3")), Rule::kConfig);
+}
+
+constexpr std::string_view kNvfp4Config =
+    R"({"model_type":"t","quantization_config":{"quant_method":"modelopt","quant_algo":"NVFP4"}})";
+
+// An NVFP4 weight of 32 values a row, 16 rows.
+std::vector<Entry> Nvfp4(const std::string& m) {
+  return {E(m + ".weight", "U8", {16, 16}), E(m + ".weight_scale", "F8_E4M3", {16, 2})};
+}
+
+TEST_F(ImportAdversarialTest, HfQuantEmptyScalesAreNotReadAsAbsent) {
+  const auto scale2 = [](const std::string& m, std::vector<std::uint64_t> shape) {
+    return E(m + ".weight_scale_2", "F32", std::move(shape));
+  };
+  const auto parse = [](const std::vector<Entry>& e) {
+    return ParseSafetensors(Shard(e), kNvfp4Config);
+  };
+  ASSERT_TRUE(parse(Joined(Nvfp4("w"), {scale2("w", {})})));
+  // An empty tensor scale would silently drop the weight's tensor scale.
+  EXPECT_EQ(RuleOf(parse(Joined(Nvfp4("w"), {scale2("w", {0})}))), Rule::kQuantization);
+  // ... or take an ancestor's in its place.
+  const auto shared = Joined(Nvfp4("a.b"), {scale2("a", {})});
+  const auto inherited = parse(shared);
+  ASSERT_TRUE(inherited);
+  EXPECT_EQ(inherited->FindTensor("a.weight_scale_2")->part, format::PartRole::kTensorScale);
+  EXPECT_EQ(RuleOf(parse(Joined(shared, {scale2("a.b", {0})}))), Rule::kQuantization);
+  // An empty block scale would leave the codes dense; empty codes beside
+  // their scales likewise.
+  EXPECT_EQ(RuleOf(parse({E("w.weight", "U8", {16, 16}), E("w.weight_scale", "F8_E4M3", {16, 0})})),
+            Rule::kQuantization);
+  EXPECT_EQ(RuleOf(parse({E("w.weight", "U8", {0, 16}), E("w.weight_scale", "F8_E4M3", {16, 2})})),
+            Rule::kQuantization);
+  // Unquantized, an empty tensor is only that.
+  EXPECT_TRUE(ParseSafetensors(Shard({E("w.weight_scale_2", "F32", {0}), E("x", "F32", {1})}),
+                               R"({"model_type":"t"})"));
+}
+
+TEST_F(ImportAdversarialTest, HfQuantLiteralExclusionsChargeTheirComparisons) {
+  // Literal exclusions of a name's length, each compared in full against
+  // every scaled weight: about 2 million steps a weight, so a thousand-odd
+  // weights spend the budget that charging one step a pattern never did.
+  const auto module = [](std::size_t i) { return std::string(484, 'm') + std::format("{:06}", i); };
+  std::string excluded;
+  for (std::size_t j = 0; j < 4096; ++j)
+    excluded += std::format(R"({}"{}x")", j == 0 ? "" : ",",
+                            std::string(484, 'm') + std::format("{:05}", j));
+  const std::string config = std::format(
+      R"({{"model_type":"t","quantization_config":{{"quant_method":"modelopt","quant_algo":"NVFP4","exclude_modules":[{}]}}}})",
+      excluded);
+  const auto weights = [&](std::size_t n) {
+    std::vector<Entry> out;
+    for (std::size_t i = 0; i < n; ++i) {
+      out.push_back(E(module(i) + ".weight", "U8", {1, 8}));
+      out.push_back(E(module(i) + ".weight_scale", "F8_E4M3", {1, 1}));
+    }
+    return out;
+  };
+  EXPECT_EQ(RuleOf(ParseSafetensors(Shard(weights(4)), config)), std::nullopt);
+  EXPECT_EQ(RuleOf(ParseSafetensors(Shard(weights(1100)), config)), Rule::kBounds);
+}
+
+constexpr std::string_view kMlxAffine =
+    R"({"model_type":"qwen3","quantization":{"group_size":32,"bits":4}})";
+
+// An affine 4-bit module of 64 values a row, group 32, 4 rows.
+std::vector<Entry> MlxAffine() {
+  return {E("m.weight", "U32", {4, 8}), E("m.scales", "BF16", {4, 2}),
+          E("m.biases", "BF16", {4, 2})};
+}
+
+TEST_F(ImportAdversarialTest, MlxEmptyPartsAndDisagreeingConfigsAreRefused) {
+  const auto parse = [](const std::vector<Entry>& e, std::string_view config = kMlxAffine) {
+    return ParseMlx(Shard(e), config);
+  };
+  ASSERT_TRUE(parse(MlxAffine()));
+  for (std::size_t i = 0; i < 3; ++i) {
+    auto empty = MlxAffine();
+    empty[i].shape[0] = 0;
+    empty[i].bytes = 0;
+    EXPECT_EQ(RuleOf(parse(empty)), Rule::kQuantization) << empty[i].name;
+  }
+  // mlx-lm's copy in quantization_config must say the same.
+  EXPECT_TRUE(parse(MlxAffine(), R"({"model_type":"qwen3","quantization":{"group_size":32,"bits":4},
+                                    "quantization_config":{"bits":4,"group_size":32}})"));
+  EXPECT_EQ(RuleOf(parse(MlxAffine(), R"({"model_type":"qwen3",
+      "quantization":{"group_size":32,"bits":4},"quantization_config":{"group_size":64,"bits":4}})")),
+            Rule::kConfig);
+  EXPECT_EQ(RuleOf(parse(MlxAffine(), R"({"model_type":"qwen3",
+      "quantization":{"group_size":32,"bits":4},"quantization_config":{"quant_method":"fp8"}})")),
+            Rule::kConfig);
+  // MLX-written shards with a quantization_config but no `quantization`.
+  const auto dense = Shard({E("x", "BF16", {4})}, R"({"format":"mlx"})");
+  EXPECT_TRUE(ParseSafetensors(dense, R"({"model_type":"qwen3"})"));
+  EXPECT_EQ(
+      RuleOf(ParseSafetensors(
+          dense, R"({"model_type":"qwen3","quantization_config":{"group_size":32,"bits":4}})")),
+      Rule::kConfig);
+  // ModelOpt's description beside MLX's.
+  auto dir = ParseHfShard(Shard(MlxAffine()), kMlxAffine, R"({"quant_algo":"NVFP4"})");
+  ASSERT_TRUE(dir);
+  EXPECT_EQ(RuleOf(MlxCheckpoint(std::move(*dir))), Rule::kConfig);
+}
+
+TEST_F(ImportAdversarialTest, ConfigMemberNamesCannotForgeNestedKeys) {
+  const auto shard = Shard({E("w", "F32", {1})});
+  // A root member named "" once made its members look top-level.
+  EXPECT_EQ(RuleOf(ParseSafetensors(shard, R"({"model_type":"t","":{"num_hidden_layers":5}})")),
+            Rule::kConfig);
+  EXPECT_EQ(RuleOf(ParseSafetensors(shard, R"({"model_type":"t","a":{"":1}})")), Rule::kConfig);
+  // A dotted name is not a nested member: transformers reads it only as
+  // itself, so it is left out, whatever it spells.
+  auto dotted = ParseSafetensors(shard, R"({"model_type":"t","text_config.num_hidden_layers":99,
+      "text_config":{"num_hidden_layers":4,"base_model_ep_plan":{"layers.*.mlp.experts":"ep"}},
+      "rope_parameters.rope_theta":1})");
+  ASSERT_TRUE(dotted) << dotted.error().ToString();
+  const auto* layers = dotted->FindValue("text_config.num_hidden_layers");
+  ASSERT_NE(layers, nullptr);
+  EXPECT_EQ(std::get<std::int64_t>(*layers), 4);
+  EXPECT_EQ(dotted->FindValue("rope_parameters.rope_theta"), nullptr);
+  EXPECT_EQ(dotted->FindValue("text_config.base_model_ep_plan.layers.*.mlp.experts"), nullptr);
+}
+
+TEST_F(ImportAdversarialTest, UninspectablePipelineFileIsRefusedNotDropped) {
+  const auto p = dir_ / "pipeline";
+  Write(p / "model_index.json", R"({"_class_name":"P","vae":["d","V"],"scheduler":["d","S"]})");
+  Write(p / "vae" / "config.json", R"({"_class_name":"V"})");
+  Write(p / "vae" / "diffusion_pytorch_model.safetensors", Shard({E("y", "F32", {3})}));
+  Write(p / "scheduler" / "scheduler_config.json", std::string_view("{}"));
+  ASSERT_TRUE(ReadDiffusers(p));
+  // A link to itself: stat fails with ELOOP, not ENOENT.
+  std::filesystem::create_symlink("loop.json", p / "scheduler" / "loop.json");
+  EXPECT_EQ(RuleOf(ReadDiffusers(p)), Rule::kIo);
 }
 
 }  // namespace

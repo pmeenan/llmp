@@ -1502,13 +1502,65 @@ TEST_F(ImportWriterTest, ImageComponentMetadataPreservesF16AndBf16VaeWeights) {
            .dtype = encoding == Encoding::kF16 ? "F16" : "BF16",
            .dims = tensor.shape});
     }
-    auto planned = image_pipeline_detail::PlanComponent(component, tensors, built->spec, {});
+    auto planned = image_pipeline_detail::PlanComponent(component, tensors, {}, built->spec, {});
     ASSERT_TRUE(planned) << test_support::Failed(planned, &Error::ToString).value_or("");
     EXPECT_EQ(planned->canonical.tensors.size(), tensors.size());
     for (const auto& tensor : planned->canonical.tensors)
       EXPECT_EQ(tensor.format.encoding, encoding);
     EXPECT_EQ(planned->spec, built->spec);
   }
+}
+
+TEST_F(ImportWriterTest, ImageComponentRefusesTensorsItsMappingNeitherReadsNorLeavesOut) {
+  const auto& family = test_support::QwenImage();
+  const auto tensors = model::VaeDecoderTensors(family.profile.vae, family.mapping->names.vae);
+  auto built = spec::ImageDecodeSpec(family.profile.vae, 64, 64, tensors);
+  ASSERT_TRUE(built) << test_support::Failed(built).value_or("");
+  Checkpoint component{
+      .role = "vae", .container = "safetensors", .architecture = "AutoencoderKLQwenImage21"};
+  const auto add = [&](std::string name, const std::vector<std::uint64_t>& dims) {
+    format::Shape shape;
+    shape.rank = static_cast<std::uint8_t>(dims.size());
+    for (std::size_t d = 0; d < dims.size(); ++d) shape.ne[d] = dims[dims.size() - d - 1];
+    const auto format = ir::Dense(Encoding::kBF16, shape);
+    component.tensors.push_back(
+        {.name = std::move(name),
+         .format = format,
+         .extent = {.bytes = format::PartsOf(format)->Find(format::PartRole::kData)->bytes},
+         .dtype = "BF16",
+         .dims = dims});
+  };
+  for (const auto& tensor : tensors) add(tensor.name, tensor.shape);
+  const auto rule = std::ranges::find(family.mapping->components, std::string_view("vae"),
+                                      &spec::ImageComponentRule::role);
+  ASSERT_NE(rule, family.mapping->components.end());
+  const auto plan = [&] {
+    return image_pipeline_detail::PlanComponent(component, tensors, rule->ignored_tensors,
+                                                built->spec, {});
+  };
+  ASSERT_TRUE(plan());
+  // What the mapping leaves out by name: the encoder, its quant_conv, the up
+  // blocks' temporal convolutions (any block, by its index).
+  for (const auto* name : {"encoder.conv_in.weight", "quant_conv.bias",
+                           "decoder.up_blocks.2.upsampler.time_conv.weight"})
+    add(name, {4});
+  auto planned = plan();
+  ASSERT_TRUE(planned) << test_support::Failed(planned, &Error::ToString).value_or("");
+  EXPECT_EQ(planned->canonical.tensors.size(), tensors.size());
+  // A variant's extra norm or bias, or a near miss of an ignored name, is
+  // refused rather than dropped.
+  const auto base = component;
+  for (const auto* name :
+       {"decoder.norm_out.bias", "decoder.up_blocks.x.upsampler.time_conv.weight",
+        "decoder.up_blocks.02.upsampler.time_conv.weight", "quant_conv", "encoderx.weight"}) {
+    component = base;
+    add(name, {4});
+    EXPECT_EQ(test_support::Failed(plan(), &Error::rule), Rule::kContainer) << name;
+  }
+  EXPECT_TRUE(spec::IgnoredImageTensor("a.{layer}.b", "a.17.b"));
+  EXPECT_FALSE(spec::IgnoredImageTensor("a.{layer}.b", "a..b"));
+  EXPECT_FALSE(spec::IgnoredImageTensor("a.{layer}.b", "a.17.bc"));
+  EXPECT_TRUE(spec::IgnoredImageTensor("a.{layer}.", "a.3.c.d"));
 }
 
 TEST_F(ImportWriterTest, ImagePipelineValidationAndBound) {

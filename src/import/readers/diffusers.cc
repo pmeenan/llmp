@@ -73,7 +73,12 @@ std::expected<std::vector<std::string>, Error> FileNames(const std::filesystem::
       // pipeline without it. (status() reports ENOENT as an error too.)
       return Fail(Rule::kFileType, "a pipeline file is a link to nothing");
     }
-    if (!status_error && std::filesystem::is_regular_file(status)) {
+    if (status_error) {
+      // Listed but not inspectable (a link loop, no permission): leaving it
+      // out would make a pipeline without it, as above.
+      return Fail(Rule::kIo, "cannot inspect a pipeline component's file");
+    }
+    if (std::filesystem::is_regular_file(status)) {
       std::string name = it->path().filename().string();
       if (name.empty() || name.size() > kMaxFileName || json::FirstInvalidUtf8(name) ||
           !NoControlCharacters(name)) {
