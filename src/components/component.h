@@ -59,6 +59,7 @@ namespace llmp::components {
 
 struct ComponentDef;
 struct SpatialOps;
+struct StepOptions;
 class StepContext;
 
 // ---------------------------------------------------------------- parameters
@@ -467,6 +468,10 @@ struct ComponentDef {
   // position-dependent key word, including changes in emitted cardinality.
   // New/older emitters default Unknown even when they emit no words here.
   bool shape_parameter_intervals = false;
+  // Admits requested step options (e.g. rounded_indexer) for this component
+  // instance, checking its own mathematical/feature geometry.
+  std::expected<void, std::string> (*admit_options)(const Instance& instance,
+                                                    const StepOptions& options) = nullptr;
   // The rows of each segment an injection writes: its last min(rows, this).
   std::uint32_t (*inject_rows)(const Instance& instance) = nullptr;
 };

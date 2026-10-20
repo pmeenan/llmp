@@ -46,7 +46,7 @@
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/step_program.h"
 #include "kernels/reference/exec.h"
-#include "model/qwen_image.h"
+#include "model/image_pipeline.h"
 #include "planner/pattern.h"
 #include "planner/policy.h"
 #include "platform/host_probe.h"
@@ -105,7 +105,7 @@ co::SpatialPayment Unbounded() {
   return {[](std::uint64_t) { return true; }, [](std::uint64_t) {}};
 }
 
-std::vector<co::BoundTensor> Bound(std::span<const mo::QwenImageTensor> source, fm::Encoding e) {
+std::vector<co::BoundTensor> Bound(std::span<const mo::ImageTensor> source, fm::Encoding e) {
   std::vector<co::BoundTensor> tensors;
   for (const auto& tensor : source) {
     fm::Shape shape;
@@ -119,8 +119,8 @@ std::vector<co::BoundTensor> Bound(std::span<const mo::QwenImageTensor> source, 
 
 // A denoiser of the source's head geometry (head_dim 128, its three rotary
 // axes) at a small width: two heads, one block.
-mo::QwenImageDenoiserProfile SmallDenoiser(std::uint32_t heads, std::uint32_t mlp,
-                                           std::uint32_t blocks = 1) {
+mo::ImageDenoiserProfile SmallDenoiser(std::uint32_t heads, std::uint32_t mlp,
+                                       std::uint32_t blocks = 1) {
   auto p = ::llmp::test_support::QwenImageProfile().denoiser;
   p.blocks = blocks;
   p.heads = heads;
@@ -142,7 +142,7 @@ void FlowInputs(const co::SpatialGraph& graph, std::uint32_t text, std::uint32_t
     std::vector<float> values(count);
     if (format.encoding == fm::Encoding::kI32) {
       for (std::uint32_t r = 0; r < rows; ++r) {
-        const auto position = mo::QwenImageDenoiserPosition(text, grid, grid, r);
+        const auto position = mo::ImageDenoiserPosition(text, grid, grid, r);
         for (std::uint32_t a = 0; a < 3; ++a)
           values[r + std::size_t{rows} * a] = static_cast<float>(position[a]);
       }
@@ -160,7 +160,7 @@ void FlowInputs(const co::SpatialGraph& graph, std::uint32_t text, std::uint32_t
 
 // A decoder of the source's structure at base 16: a 4×4 latent to 64×64.
 constexpr std::uint32_t kDecoderGrid = 4;
-mo::QwenImageVaeProfile SmallVae() {
+mo::ImageVaeProfile SmallVae() {
   auto profile = ::llmp::test_support::QwenImageProfile().vae;
   profile.z_dim = 16;
   profile.base = 16;

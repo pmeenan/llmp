@@ -421,7 +421,7 @@ TEST(GgmlSpatialTest, FullSourceConditionedBlockUsesSharedProductsMaskAndThreeNo
   std::vector<co::BoundTensor> tensors;
   for (const auto& component : mapped->spec.stages[0].layers[0].components)
     for (const auto& binding : component.weights) {
-      const auto found = std::ranges::find(source, binding.tensor, &mo::QwenImageTensor::name);
+      const auto found = std::ranges::find(source, binding.tensor, &mo::ImageTensor::name);
       ASSERT_NE(found, source.end());
       fm::Shape shape;
       shape.rank = static_cast<std::uint8_t>(found->shape.size());
@@ -550,7 +550,7 @@ TEST(GgmlSpatialTest, LayoutSunkBlockPlansAndLowersWithFewerCopies) {
   std::vector<co::BoundTensor> tensors;
   for (const auto& component : mapped->spec.stages[0].layers[0].components)
     for (const auto& binding : component.weights) {
-      const auto found = std::ranges::find(source, binding.tensor, &mo::QwenImageTensor::name);
+      const auto found = std::ranges::find(source, binding.tensor, &mo::ImageTensor::name);
       ASSERT_NE(found, source.end());
       fm::Shape shape;
       shape.rank = static_cast<std::uint8_t>(found->shape.size());
@@ -833,7 +833,7 @@ TEST(GgmlSpatialTest, Whole32BlockFlowPreservesPhysicalPlansAndFinalEulerPorts) 
   std::vector<co::BoundTensor> tensors;
   for (const auto& component : mapped->spec.stages[0].layers[0].components)
     for (const auto& binding : component.weights) {
-      const auto found = std::ranges::find(source, binding.tensor, &mo::QwenImageTensor::name);
+      const auto found = std::ranges::find(source, binding.tensor, &mo::ImageTensor::name);
       ASSERT_NE(found, source.end());
       fm::Shape shape;
       shape.rank = static_cast<std::uint8_t>(found->shape.size());

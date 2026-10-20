@@ -78,7 +78,7 @@ StateTensorContract GemmaKv(std::string name, std::uint32_t width, bool local,
           .encoding = Encoding::kF16,
           .cell_bytes = std::uint64_t{width} * 2,
           .cells = local ? CellRule::kRing : CellRule::kPerPosition,
-          .window_or_ratio = local ? window : 0,
+          .window = local ? window : 0,
           .rollback = local ? Rollback::kNone : Rollback::kTruncate};
 }
 
@@ -230,26 +230,26 @@ TEST(StateContractTest, ExtentLayoutPlacesLargeTensorsOnExtentsAndPacksTheRest) 
                                   .kind = StateKind::kConvolution,
                                   .cell_bytes = 4096,
                                   .cells = CellRule::kFixed,
-                                  .window_or_ratio = 3};
+                                  .fixed_cells = 3};
   const StateTensorContract large{.name = "kv", .kind = StateKind::kKv, .cell_bytes = 1024};
   StateTensorContract raw{.name = "kv",
                           .kind = StateKind::kRing,
                           .cell_bytes = 1024,
                           .cells = CellRule::kRing,
-                          .window_or_ratio = 128,
+                          .window = 128,
                           .ring_reads_whole = true};
   StateTensorContract compressed{.name = "compressed",
                                  .kind = StateKind::kCompressed,
                                  .cell_bytes = 1024,
                                  .cells = CellRule::kPerBlock,
-                                 .window_or_ratio = 4,
+                                 .block_ratio = 4,
                                  .bank_with_previous = true};
   // Used whole from the first position: packed whatever its size.
   const StateTensorContract whole{.name = "recurrent",
                                   .kind = StateKind::kRecurrent,
                                   .cell_bytes = 3 << 20,
                                   .cells = CellRule::kFixed,
-                                  .window_or_ratio = 1};
+                                  .fixed_cells = 1};
   const Layers layers = {{0, StateContract{.tensors = {small, large}}},
                          {1, StateContract{.tensors = {small, small}}},
                          {2, StateContract{.tensors = {raw, compressed}}},
@@ -294,7 +294,8 @@ TEST(StateContractTest, ExtentLayoutPlacesLargeTensorsOnExtentsAndPacksTheRest) 
   EXPECT_EQ(md::ExtentLayout(whole_end, 4096, 128, kExtent).value().items[1].offset % 256, 0U)
       << "256 cells of 384 bytes end on 256";
   StateTensorContract three = odd;
-  three.window_or_ratio = 1;
+  three.window = 0;
+  three.fixed_cells = 1;
   three.cells = CellRule::kFixed;
   three.ring_reads_whole = false;
   const Layers gap = {{0, StateContract{.tensors = {three, odd_bank}}}};
@@ -338,7 +339,7 @@ Layers QwenContracts(const fam::Qwen38Profile& p) {
                                .encoding = Encoding::kF32,
                                .cell_bytes = bytes,
                                .cells = CellRule::kFixed,
-                               .window_or_ratio = 1,
+                               .fixed_cells = 1,
                                .rollback = Rollback::kCommit};
   };
   for (std::uint32_t il = 0; il < p.layers; ++il) {
@@ -372,7 +373,7 @@ Layers QwenContracts(const fam::Qwen38Profile& p) {
                            .encoding = Encoding::kBF16,
                            .cell_bytes = std::uint64_t{p.indexer_head_dim} * 2,
                            .cells = CellRule::kPerBlock,
-                           .window_or_ratio = p.indexer_ratio,
+                           .block_ratio = p.indexer_ratio,
                            .basis = md::BlockBasis::kReadCells,
                            .rollback = Rollback::kSnapshot});
     }
@@ -397,14 +398,14 @@ Layers QwenMtpContracts(const fam::Qwen38Profile& p) {
                          .encoding = Encoding::kBF16,
                          .cell_bytes = std::uint64_t{p.indexer_head_dim} * 2,
                          .cells = CellRule::kPerBlock,
-                         .window_or_ratio = p.indexer_ratio,
+                         .block_ratio = p.indexer_ratio,
                          .basis = md::BlockBasis::kReadCells},
                         {.name = "streams",
                          .kind = StateKind::kFeatures,
                          .encoding = Encoding::kF32,
                          .cell_bytes = std::uint64_t{p.hc_width()} * 4,
                          .cells = CellRule::kPerRow,
-                         .window_or_ratio = 1,
+                         .row_carry = 1,
                          .rollback = Rollback::kSnapshot,
                          .target_writes = true}}}}};
 }
@@ -593,7 +594,7 @@ Layers Dsv4Contracts(const fam::Dsv4Profile& p, fam::Dsv4Window window) {
                                .kind = kind,
                                .cell_bytes = cell,
                                .cells = CellRule::kPerBlock,
-                               .window_or_ratio = ratio,
+                               .block_ratio = ratio,
                                .basis = md::BlockBasis::kPositions,
                                .dummy_last = true,
                                .rollback = Rollback::kSnapshot};
@@ -606,7 +607,7 @@ Layers Dsv4Contracts(const fam::Dsv4Profile& p, fam::Dsv4Window window) {
                                .encoding = Encoding::kF32,
                                .cell_bytes = cell,
                                .cells = CellRule::kPositionRing,
-                               .window_or_ratio = rows,
+                               .fixed_cells = rows,
                                .rollback = Rollback::kSnapshot};
   };
   for (std::uint32_t il = 0; il < p.layers; ++il) {
@@ -622,7 +623,7 @@ Layers Dsv4Contracts(const fam::Dsv4Profile& p, fam::Dsv4Window window) {
                            .kind = StateKind::kRing,
                            .cell_bytes = raw,
                            .cells = CellRule::kRing,
-                           .window_or_ratio = p.window,
+                           .window = p.window,
                            .ring_reads_whole = true,
                            .rollback = Rollback::kSnapshot});
     }
@@ -914,14 +915,14 @@ md::StateLayoutDerived Mixed() {
                      .kind = StateKind::kRing,
                      .cell_bytes = 256,
                      .cells = CellRule::kRing,
-                     .window_or_ratio = 64,
+                     .window = 64,
                      .cell_pad = 1,
                      .rollback = Rollback::kSnapshot},
                     {.name = "blocks",
                      .kind = StateKind::kCompressed,
                      .cell_bytes = 256,
                      .cells = CellRule::kPerBlock,
-                     .window_or_ratio = 4,
+                     .block_ratio = 4,
                      .cell_pad = 1,
                      .dummy_last = true,
                      .partial_blocks = true,
@@ -931,7 +932,7 @@ md::StateLayoutDerived Mixed() {
                      .encoding = Encoding::kF32,
                      .cell_bytes = 1024,
                      .cells = CellRule::kFixed,
-                     .window_or_ratio = 1,
+                     .fixed_cells = 1,
                      .rollback = Rollback::kSnapshot},
                     {.name = "target_k", .cell_bytes = 512, .borrowed_from_target = true}}}}};
   return md::Layout(layers, 1024, 16).value();
@@ -1011,7 +1012,7 @@ TEST(StateContractTest, AVerifySavesEachRowsCellsAndBlocksAndRestoresScratchWhat
                                            .kind = StateKind::kRing,
                                            .cell_bytes = 256,
                                            .cells = CellRule::kRing,
-                                           .window_or_ratio = 64,
+                                           .window = 64,
                                            .rollback = Rollback::kNone}}}}};
   auto refusing = md::Layout(ring_only, 1024, 16);
   ASSERT_TRUE(refusing.has_value());
@@ -1030,7 +1031,8 @@ TEST(StateContractTest, AVerifySavesEachRowsCellsAndBlocksAndRestoresScratchWhat
                                 .kind = partial ? StateKind::kBlockKeys : StateKind::kRecurrent,
                                 .cell_bytes = 256,
                                 .cells = partial ? CellRule::kPerBlock : CellRule::kFixed,
-                                .window_or_ratio = partial ? 4U : 1U,
+                                .block_ratio = partial ? 4U : 0U,
+                                .fixed_cells = partial ? 0U : 1U,
                                 .partial_blocks = partial,
                                 .rollback = rollback};
       const Layers own = {{0, {.tensors = {t}}}};
@@ -1063,20 +1065,20 @@ TEST(StateContractTest, VerifyScopesCommitsPositionRingsAndTheTargetsWritesIntoA
                                         .encoding = Encoding::kF32,
                                         .cell_bytes = 1024,
                                         .cells = CellRule::kFixed,
-                                        .window_or_ratio = 1,
+                                        .fixed_cells = 1,
                                         .rollback = Rollback::kCommit},
                                        {.name = "compressor",
                                         .kind = StateKind::kCompressor,
                                         .encoding = Encoding::kF32,
                                         .cell_bytes = 512,
                                         .cells = CellRule::kPositionRing,
-                                        .window_or_ratio = 8,
+                                        .fixed_cells = 8,
                                         .rollback = Rollback::kSnapshot},
                                        {.name = "tap",
                                         .kind = StateKind::kFeatures,
                                         .cell_bytes = 256,
                                         .cells = CellRule::kPerRow,
-                                        .window_or_ratio = 1,
+                                        .row_carry = 1,
                                         .rollback = Rollback::kSnapshot,
                                         .target_writes = true}}}}};
   auto layout = md::Layout(layers, 4096, 16);
@@ -1195,7 +1197,7 @@ TEST(StateContractTest, DsparkVerifySavesAreItsContractsWritesByteForByte) {
                                     .kind = StateKind::kDrafterRing,
                                     .cell_bytes = std::uint64_t{dp.blocks.head_dim} * 2,
                                     .cells = CellRule::kPositionRing,
-                                    .window_or_ratio = dp.ring,
+                                    .fixed_cells = dp.ring,
                                     .rollback = Rollback::kSnapshot,
                                     .target_writes = true}}}});
   }
@@ -1236,14 +1238,14 @@ TEST(StateContractTest, ReadCellsBoundFollowsWhatReadsThem) {
                                .kind = StateKind::kDrafterRing,
                                .cell_bytes = 256,
                                .cells = CellRule::kPositionRing,
-                               .window_or_ratio = cells,
+                               .fixed_cells = cells,
                                .rollback = Rollback::kSnapshot};
   };
   const StateTensorContract whole{.name = "window",
                                   .kind = StateKind::kRing,
                                   .cell_bytes = 256,
                                   .cells = CellRule::kRing,
-                                  .window_or_ratio = 128,
+                                  .window = 128,
                                   .ring_reads_whole = true,
                                   .rollback = Rollback::kSnapshot};
   EXPECT_EQ(md::ReadCellsBound(layout({ring("injected", 384)})), 384U);
@@ -1328,7 +1330,7 @@ TEST(StateContractTest, BlockEncodedCellsAreWholeBlocksAndRangesStartAtBlocks) {
                                  .encoding = encoding,
                                  .cell_bytes = cell,
                                  .cells = local ? CellRule::kRing : CellRule::kPerPosition,
-                                 .window_or_ratio = local ? 1024U : 0U,
+                                 .window = local ? 1024U : 0U,
                                  .rollback = local ? Rollback::kNone : Rollback::kTruncate};
     };
     const Layers layers = {{0, {.tensors = {kv("k", false), kv("v", false)}}},
@@ -1407,6 +1409,40 @@ TEST(StateContractTest, LayoutsRefuseInconsistentBoundsAndEmptyTensors) {
   const Layers no_ratio = {
       {0, {.tensors = {{.name = "b", .cell_bytes = 2, .cells = CellRule::kPerBlock}}}}};
   EXPECT_FALSE(md::Layout(no_ratio, 16, 16).has_value());
+  // Mismatched geometry fields for each cell rule are refused.
+  const Layers kv_with_window = {
+      {0,
+       {.tensors = {
+            {.name = "k", .cell_bytes = 2, .cells = CellRule::kPerPosition, .window = 8}}}}};
+  EXPECT_FALSE(md::Layout(kv_with_window, 16, 16).has_value());
+  const Layers ring_with_fixed = {{0,
+                                   {.tensors = {{.name = "r",
+                                                 .cell_bytes = 2,
+                                                 .cells = CellRule::kRing,
+                                                 .window = 8,
+                                                 .fixed_cells = 1}}}}};
+  EXPECT_FALSE(md::Layout(ring_with_fixed, 16, 16).has_value());
+  const Layers fixed_with_window = {{0,
+                                     {.tensors = {{.name = "f",
+                                                   .cell_bytes = 2,
+                                                   .cells = CellRule::kFixed,
+                                                   .window = 1,
+                                                   .fixed_cells = 1}}}}};
+  EXPECT_FALSE(md::Layout(fixed_with_window, 16, 16).has_value());
+  const Layers block_with_carry = {{0,
+                                    {.tensors = {{.name = "b",
+                                                  .cell_bytes = 2,
+                                                  .cells = CellRule::kPerBlock,
+                                                  .block_ratio = 4,
+                                                  .row_carry = 1}}}}};
+  EXPECT_FALSE(md::Layout(block_with_carry, 16, 16).has_value());
+  const Layers row_with_ratio = {{0,
+                                  {.tensors = {{.name = "w",
+                                                .cell_bytes = 2,
+                                                .cells = CellRule::kPerRow,
+                                                .block_ratio = 4,
+                                                .row_carry = 1}}}}};
+  EXPECT_FALSE(md::Layout(row_with_ratio, 16, 16).has_value());
   const Layers whole_kv = {
       {0, {.tensors = {{.name = "k", .cell_bytes = 2, .ring_reads_whole = true}}}}};
   EXPECT_FALSE(md::Layout(whole_kv, 16, 16).has_value());

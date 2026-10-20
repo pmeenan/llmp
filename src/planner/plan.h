@@ -114,7 +114,7 @@ struct PlanOptions {
   std::vector<ir::TensorId> invariant{};
   // Proved physical owner columns, expanded before width-sensitive patterns.
   // Null keeps existing planning unchanged. The proof outlives this call.
-  const components::OwnerProducts* owner_products = nullptr;
+  const OwnerProducts* owner_products = nullptr;
   // Report-only identities supplied by the actual component source, never
   // inspected by selection/qualification or parsed as policy permission.
   base::Sha256Digest observed_bound_model{}, observed_model_spec{};

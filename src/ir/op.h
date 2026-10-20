@@ -99,7 +99,7 @@
 //   kIndexScore (q [D, H, T, S], k [D, 1, C, S], w [H, T, 1, S], mask? [C,
 //       T, 1, M3]): [C, T, 1, S] = Σ_h w[h, t] · max(q_h · k_c, 0) + mask
 //       (ggml_lightning_indexer, DeepSeek V4's lightning indexer).
-//   kRoundedIndexScore (q F32 [128,64,T], k F16 [128,1,C], w F32 [64,T],
+//   kRoundedIndexScore (q F32 [D,H,T], k F16 [D,1,C], w F32 [H,T],
 //       counts I32 [T]): RoundedIndexScoreParams, exact F32 [C,T]. Round q
 //       to F16, then sum head weights times ReLU(dot(q_head,k_cell));
 //       ReLU maps a NaN dot to +0. Clamp count to [0,C]; cells outside its
@@ -115,7 +115,7 @@
 //       F32 bit pattern, including signaling NaNs and signed zero, is valid.
 //   kPool     (x [C, R · N, A2, A3], scores? like x): PoolParams: [C, N, A2,
 //       A3], each run of R = ratio rows pooled: kMean their sum / R
-//       (Qwen3.8's QSA block keys, llmp.qsa.pool), kSoftmax their sum
+//       (block keys, llmp.qsa.pool), kSoftmax their sum
 //       weighted by softmax(scores) over the run per channel (DeepSeek V4's
 //       CSA/HCA compressor, deepseek4.cpp's build_*_compressed_kv; a run of
 //       -inf scores pools to 0).
@@ -347,9 +347,11 @@ enum class Op : std::uint16_t {
 // decomposition (ir/decompose.h) is its meaning.
 enum class FusedKind : std::uint16_t {
   kNone,
-  kRmsNormMul,      // (x, w): NormParams: rms_norm(x) · w
-  kRmsNormMulRope,  // (x, w, pos, freq?): NormRopeParams: ... then rope
-  kRmsNormMulAdd,   // (x, w, r): NormParams: rms_norm(x) · w + r
+  kRmsNormMul,  // (x, w): NormParams: rms_norm(x) · w
+  // (x [D, H, T], pos [T]) or (x [D, H, T], w [D], pos [T], freq?):
+  // NormRopeParams: rope(rms_norm(x, eps) [· w]).
+  kRmsNormMulRope,
+  kRmsNormMulAdd,  // (x, w, r): NormParams: rms_norm(x) · w + r
   // (x [D, H, T], pos, cache [D · H, C], idx [T], freq?): RopeParams: the
   // rotated rows stored; the output is a view of cache.
   kRopeStore,
@@ -403,25 +405,13 @@ enum class FusedKind : std::uint16_t {
   // (w0, w1, ..., x): an output per product wi · x, up to four; the
   // weights first, as kMatMulGlu's and kMatMulAdd's.
   kPreparedProducts,
-  kNormGate,           // (x, w, z): NormParams: rms_norm(x) · w · sigmoid(z)
-  kLayerNormModulate,  // (x, s): NormParams: layer_norm(x) · (1 + s)
-  kGatedResidual,      // (x, gate, y): x + tanh(gate) · y
-  // (x, gate, y, s): NormParams: two outputs, x' = x + tanh(gate) · y and
-  // layer_norm(x') · (1 + s).
-  kGatedResidualNorm,
+  kNormGate,   // (x, w, z): NormParams: rms_norm(x) · w · sigmoid(z)
   kEulerStep,  // (sample, noise, dt [1]): sample + dt · noise
   // (x [2W, 2H, Co], shortcut [W, H, Ci]): DupUpParams: x plus Qwen-Image's
   // DupUp3D of the shortcut at its last kept frame (kernels/ggml/ops_ext.h
   // DupUpAddF32): output channel o's sub-pixel (b, d) reads input channel
   // (((o · ft + ft - 1) · 2 + b) · 2 + d) / (Co · ft · 4 / Ci).
   kDupUpAdd,
-  // Qwen3.8's fast form (slice G3b, 2026-10-10; still op set v1, nothing
-  // released): the hyper-connections, Gated DeltaNet, QSA and MoE pieces
-  // llmpalooza's kernels fuse (kernels/ggml/llmp_ops.h), each defined by its
-  // decomposition. Several round their outputs where the decomposition's are
-  // F32 (a result's recorded encoding, the builder's `encodings`): kHcPrep's
-  // normed streams and kScaledUnary's result in BF16 for BF16 products.
-  //
   // (x [W, hc, T], norm [W · hc], inject? [W · hc, hc], out? [W, T],
   // logits? [hc, T]): HcNormPostParams: the streams s = x, or with out and
   // logits x combined with the last block's output first (kHcCombine); the
@@ -431,19 +421,16 @@ enum class FusedKind : std::uint16_t {
   kHcPrep,
   // (x): ScaledUnaryParams: fn(x · scale).
   kScaledUnary,
-  // (xn [W · hc, T], gate [W · hc, T]): HcFoldParams: (1 / hc) Σ_k xn_k ·
-  // sigmoid(gate_k) over the streams in order (kHcPre's gated fold of xn
-  // as [W, hc, T]), [W, T]; with `prepared` also the result prepared into
-  // MXFP8 rows (kPrepare's), with `rounded` also rounded to BF16, in that
-  // order after it.
+  // (xn [W · hc, T], gate [W · hc, T]) or (x [W, hc, T], norm [W · hc],
+  // gate [W · hc, T]): HcFoldParams: (1 / hc) Σ_k xn_k · sigmoid(gate_k)
+  // over the streams in order (kHcPre's gated fold of xn as [W, hc, T], or
+  // of kHcNorm(x, norm, eps)), [W, T]; with `prepared` also the result
+  // prepared into MXFP8 rows (kPrepare's), with `rounded` also rounded to
+  // BF16, in that order after it.
   kHcFold,
   // (x [W, hc, T], out [W, T], logits [hc, T]): HcParams: x + out ·
   // 2 · sigmoid(logits / hc) on each stream (hc.combine's).
   kHcCombine,
-  // (x [W, hc, T], norm [W · hc], gate [W · hc, T]): HcNormPostParams:
-  // kHcFold of kHcNorm(x, norm) and gate (the norm recomputed: GGML-form
-  // checkpoints' llmp.hc.mix).
-  kHcMixNorm,
   // (rows [C, T], history [(K - 1) · C], w [K, C]): GdnConvParams: the
   // causal depthwise convolution of the rows after the history (tap j of
   // channel c at c · (K - 1) + j) and SiLU, [C, T]; its first qk_channels
@@ -467,21 +454,21 @@ enum class FusedKind : std::uint16_t {
   // sigmoid of each head's gate (q's second d of each head's 2 · d).
   kHeadGate,
   // (raw [D, C], blocks [D, N], w [D], block_pos [4 · B], cells [B],
-  // positions? [4 · T]): QsaPoolParams: the block keys of the first B
+  // positions? [4 · T]): BlockPoolParams: the block keys of the first B
   // blocks of `ratio` raw rows, each their mean, rms_norm · w, rotated at
   // its block's position and rounded to BF16, stored in blocks at cells:
   // a view of blocks. An implementation may write only the blocks the
   // step's positions complete (the others hold what earlier steps stored):
   // a block's key never changes once its rows are written.
-  kQsaPool,
+  kMeanPoolNormRopeStore,
   // (q [d, H, T], k [d, C, Hk], v [d, C, Hk], qi [Di, Hi, T], blocks [Di,
   // B], causal [C, T] F32, seen [B, T] F32, mask [C, >= T], positions? [4 ·
-  // T]): QsaAttnParams: QSA's selection and attention (components/qsa.cc):
+  // T]): BlockSparseAttnParams: block-sparse selection and attention:
   // each block's score Σ_h relu(bf16(qi_h) · block), plus 1e9 where `seen`
   // hides the block's last position, spread over its `ratio` cells, plus
   // `causal`; the `width` best cells kept; attention of q over k and v
   // under `mask` and -inf but at the kept cells. [d · H, T].
-  kQsaAttention,
+  kBlockSparseAttention,
   // (logits [E, T], x [W, T], gate [W]): RouteParams: kRoute's ids and
   // weights, and the shared expert's gate logit Σ x · gate [1, T].
   kMoeRouter,
@@ -494,11 +481,6 @@ enum class FusedKind : std::uint16_t {
   // (gate [W, F, E], up [W, F, E], x [W, T], ids [U, T]): MoeExpertsParams:
   // glu(gate[ids] · x, up[ids] · x), [F, U, T].
   kMatMulIdGlu,
-  // (q [D, H, T], positions [T]): NormRopeParams: the Q heads'
-  // rope(rms_norm(q, eps)); no learned norm weight. The primitive formula
-  // is general; the fast implementation's capability restricts its rotary
-  // tail and head width.
-  kDsv4QHead,
   // (state_kv [C, S], state_score [C, S], kv [C, T], score [C, T],
   // read_idxs [ratio * B * (overlap ? 2 : 1)] I32): CompressorParams:
   // each block's rows from [state | current] softmax pooled per channel.
@@ -506,29 +488,29 @@ enum class FusedKind : std::uint16_t {
   // previous rows' first D channels, then its current rows' second D.
   // Overlap's source also has a final zero row with score -inf. The
   // indices address this source; [D, 1, B] F32 before norm or rotation.
-  kDsv4Compress,
+  kSoftmaxPoolCompress,
   // (x [W, hc, T], fn [W * hc, (2 + hc) * hc], scale [3],
   // base [(2 + hc) * hc], norm [W]): SinkhornPreParams: the full-carry
   // Sinkhorn block mix. Outputs are the folded stream's weighted RMSNorm
   // [W, T], post [hc, T], and combination [hc, hc, T], all packed F32.
-  kDsv4HcPre,
+  kSinkhornHcPre,
   // (q [D, T, H], raw [D, 1, A], compressed [D, 1, B], mask?, sinks?):
   // AttnParams, unchanged: Attention(q, permute(concat(raw, compressed, 2)),
   // the same K as V, mask, sinks). The formula needs no layout fact;
   // only zero-copy implementations require a proven contiguous state span.
   kStateBankAttention,
   // (q [D,H,T], k [D,1,C], weights [H,T], visible I32 [T], raw F16 [W,T]):
-  // LidMaskParams. RoundedIndexScore -> VisibleTopK -> SelectedMask, with
-  // the same visible operand throughout. Neither score nor selected IDs
+  // RoundedIndexMaskParams. RoundedIndexScore -> VisibleTopK -> SelectedMask,
+  // with the same visible operand throughout. Neither score nor selected IDs
   // escape this formula. It does not fuse generic IndexScore/TopK semantics.
-  kDsv4LidMask,
+  kRoundedIndexMask,
   // (w [K,N,G], x [K,G,T]): ProductParams. Each group uses its own
   // matrix on its input rows; packed F32 [N,G,T]. The decomposition
   // permutes x to [K,T,G], multiplies, permutes back and makes contiguous.
   kGroupedMatMul,
-  // (out_a, heads, positions): RopeParams: inverse tail-64 RoPE and staged
+  // (out_a, heads, positions): RopeParams: inverse tail RoPE and staged
   // grouped output-A matrix product.
-  kDsv4OutA,
+  kInverseRopeGroupedMatMul,
   // (x [W, H, C, N], gamma [C]): SpatialNormParams: each pixel's channels
   // L2-normed (over C, eps the norm's floor), times scale and gamma, and
   // with silu SiLU: the decomposition takes x to channel rows ([C, W, H,
@@ -557,17 +539,18 @@ enum class FusedKind : std::uint16_t {
   // mask's first R rows and columns, scaled: [D · H, R], each row's heads
   // in order (the channel rows a projection reads).
   kQkAttention,
-  // (x [C, R], a [C], b [C]): SplitModulateParams: LayerNorm(x) · (1 + s),
-  // s row r a where r < split, else b (a conditioning split between two
-  // row ranges: the image's text and latent rows).
+  // (x [C, R], s [C]) or (x [C, R], a [C], b [C]): SplitModulateParams:
+  // LayerNorm(x) · (1 + s), where s is unsplit (2 sources) or row r is a
+  // where r < split, else b (3 sources).
   kLayerNormModulateSplit,
-  // (carry [C, R], branch [C, R], a [C], b [C]): SplitModulateParams (eps
-  // unused): carry + branch · tanh(g), g row r a where r < split, else b.
+  // (carry [C, R], branch [C, R], g [C]) or (carry [C, R], branch [C, R],
+  // a [C], b [C]): SplitModulateParams (eps unused): carry + branch · tanh(g),
+  // where g is unsplit (3 sources) or row r is a where r < split, else b.
   kGatedResidualSplit,
-  // (carry [C, R], branch [C, R], ga [C], gb [C], ma [C], mb [C]):
-  // SplitModulateParams: x = kGatedResidualSplit(carry, branch, ga, gb),
-  // then kLayerNormModulateSplit(x, ma, mb) (eps): [x, modulated], both
-  // split at one row.
+  // (carry [C, R], branch [C, R], g [C], m [C]) or (carry [C, R], branch
+  // [C, R], ga [C], gb [C], ma [C], mb [C]): SplitModulateParams:
+  // x = kGatedResidualSplit, then kLayerNormModulateSplit(x) (eps):
+  // [x, modulated].
   kGatedResidualModulateSplit,
 };
 // The op set's last fused kind (the kinds are 1 to it).
@@ -754,7 +737,7 @@ struct TopKParams {
   std::uint32_t k = 0;
 };
 
-struct LidMaskParams {
+struct RoundedIndexMaskParams {
   std::uint32_t top = 0;
   std::uint32_t raw_cells = 0;
   std::uint32_t cells = 0;
@@ -786,9 +769,11 @@ struct HcParams {
   HcFold fold = HcFold::kWeights;       // kHcPre's
   std::array<std::uint8_t, 2> reserved{};
   std::uint32_t streams = 0;
-  std::uint32_t iterations = 0;  // kSinkhorn's
-  float eps = 0.0f;              // kHcMix's
-  float scale = 1.0f;            // kHcPre kGated's
+  std::uint32_t iterations = 0;   // kSinkhorn's
+  float eps = 0.0f;               // kHcMix's
+  float scale = 1.0f;             // kHcPre's
+  std::uint16_t mix_offset = 0;   // kHcMix's offset in mixes/base (0: auto)
+  std::uint16_t scale_index = 0;  // kHcMix's index in scale (0: auto)
 };
 
 struct ConcatParams {
@@ -914,6 +899,7 @@ struct HcFoldParams {
   bool prepared = false;  // an output in MXFP8 rows (format::kMxfp8 scale atoms)
   bool rounded = false;   // an output in BF16
   std::array<std::uint8_t, 2> reserved{};
+  float eps = 0.0f;  // 3-source norm's eps
 };
 
 struct GdnConvParams {
@@ -936,13 +922,13 @@ struct HeadGateParams {
   std::uint32_t head = 0;
 };
 
-struct QsaPoolParams {
+struct BlockPoolParams {
   float eps = 0.0f;
   std::uint32_t ratio = 0;
   RopeParams rope{};
 };
 
-struct QsaAttnParams {
+struct BlockSparseAttnParams {
   AttnParams attn{};
   std::uint32_t width = 0;  // cells kept
   std::uint32_t ratio = 0;  // cells a block
@@ -961,24 +947,25 @@ static_assert(kIsParams<NormParams> && kIsParams<RopeParams> && kIsParams<MaskPa
               kIsParams<GluParams> && kIsParams<ScaleParams> && kIsParams<ClampParams> &&
               kIsParams<FillParams> && kIsParams<SoftcapParams> && kIsParams<SoftMaxParams> &&
               kIsParams<ArgmaxParams> && kIsParams<ArgsortParams> && kIsParams<TopKParams> &&
-              kIsParams<SelectedMaskParams> && kIsParams<RoundedIndexScoreParams> &&
-              kIsParams<PrefixOverwriteParams> && kIsParams<ExpertSortParams> &&
-              kIsParams<RouteParams> && kIsParams<HcParams> && kIsParams<ConcatParams> &&
-              kIsParams<PermuteParams> && kIsParams<Conv2dParams> && kIsParams<UpsampleParams> &&
-              kIsParams<PoolParams> && kIsParams<SampleParams> && kIsParams<CollectiveParams> &&
-              kIsParams<NormRopeParams> && kIsParams<OwnerAttnParams> &&
-              kIsParams<HcNormPostParams> && kIsParams<DupUpParams> &&
+              kIsParams<RoundedIndexMaskParams> && kIsParams<SelectedMaskParams> &&
+              kIsParams<RoundedIndexScoreParams> && kIsParams<PrefixOverwriteParams> &&
+              kIsParams<ExpertSortParams> && kIsParams<RouteParams> && kIsParams<HcParams> &&
+              kIsParams<ConcatParams> && kIsParams<PermuteParams> && kIsParams<Conv2dParams> &&
+              kIsParams<UpsampleParams> && kIsParams<PoolParams> && kIsParams<SampleParams> &&
+              kIsParams<CollectiveParams> && kIsParams<NormRopeParams> &&
+              kIsParams<OwnerAttnParams> && kIsParams<HcNormPostParams> && kIsParams<DupUpParams> &&
               kIsParams<ScaledUnaryParams> && kIsParams<HcFoldParams> && kIsParams<GdnConvParams> &&
               kIsParams<GdnHistoryParams> && kIsParams<GdnStepParams> &&
-              kIsParams<HeadGateParams> && kIsParams<QsaPoolParams> && kIsParams<QsaAttnParams> &&
-              kIsParams<MoeExpertsParams> && kIsParams<CompressorParams> &&
-              kIsParams<SinkhornPreParams> && kIsParams<SpatialNormParams> &&
-              kIsParams<RopeSectionsParams> && kIsParams<MaskPackParams> &&
-              kIsParams<QkAttentionParams> && kIsParams<SplitModulateParams>);
+              kIsParams<HeadGateParams> && kIsParams<BlockPoolParams> &&
+              kIsParams<BlockSparseAttnParams> && kIsParams<MoeExpertsParams> &&
+              kIsParams<CompressorParams> && kIsParams<SinkhornPreParams> &&
+              kIsParams<SpatialNormParams> && kIsParams<RopeSectionsParams> &&
+              kIsParams<MaskPackParams> && kIsParams<QkAttentionParams> &&
+              kIsParams<SplitModulateParams>);
 static_assert(sizeof(CompressorParams) == 8 && sizeof(ScaledUnaryParams) == 8 &&
-              sizeof(HcFoldParams) == 8 && sizeof(GdnConvParams) == 16 &&
-              sizeof(GdnStepParams) == 4 && sizeof(QsaPoolParams) == 8 + sizeof(RopeParams) &&
-              sizeof(QsaAttnParams) == sizeof(AttnParams) + 8 &&
+              sizeof(HcFoldParams) == 12 && sizeof(GdnConvParams) == 16 &&
+              sizeof(GdnStepParams) == 4 && sizeof(BlockPoolParams) == 8 + sizeof(RopeParams) &&
+              sizeof(BlockSparseAttnParams) == sizeof(AttnParams) + 8 &&
               sizeof(MoeExpertsParams) == sizeof(GluParams) + 4);
 static_assert(sizeof(SinkhornPreParams) == 16 && sizeof(SpatialNormParams) == 12 &&
               sizeof(RopeSectionsParams) == 24 && sizeof(MaskPackParams) == 8 &&
@@ -991,7 +978,7 @@ static_assert(sizeof(ProductParams) == 8);
 static_assert(sizeof(AttnParams) == (4 * 4) + 4 + 4);
 static_assert(sizeof(GluParams) == 4 + 4);
 static_assert(sizeof(RouteParams) == 4 + (3 * 4));
-static_assert(sizeof(HcParams) == 4 + (4 * 4));
+static_assert(sizeof(HcParams) == 4 + (5 * 4));
 static_assert(sizeof(PoolParams) == 4 + 4);
 static_assert(sizeof(SampleParams) == 4 + (4 * 4));
 static_assert(sizeof(CollectiveParams) == (2 * 4) + 4);

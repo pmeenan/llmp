@@ -962,8 +962,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           case LlmpOp::kFlashAttnOwners:
             add(llmp::ir::Primitive(llmp::ir::Op::kAttention), kFlashAttnOwnersName, i, {node}, 1);
             break;
-          case LlmpOp::kGemma4Mask:
-            add(llmp::ir::Primitive(llmp::ir::Op::kFill), kGemma4MaskName, i, {node}, 1);
+          case LlmpOp::kCausalMask:
+            add(llmp::ir::Primitive(llmp::ir::Op::kFill), kCausalMaskName, i, {node}, 1);
             break;
           case LlmpOp::kDsv4SparseMask:
             add(llmp::ir::Primitive(llmp::ir::Op::kFill), kDsv4SparseMaskName, i, {node}, 1);

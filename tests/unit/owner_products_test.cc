@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "components/owner_products.h"
+#include "planner/owner_products.h"
 
 #include <gtest/gtest.h>
 
@@ -21,7 +21,6 @@
 #include "ir/builder.h"
 #include "ir/graph.h"
 #include "ir/op.h"
-#include "planner/owner_products.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
 
@@ -96,7 +95,7 @@ Fixture Make(std::uint32_t a, std::uint32_t c, Variant variant = Variant::kHidde
 }
 
 auto Prove(const Fixture& f) {
-  return components::ProveOwnerProducts(f.graph, f.inputs, f.segments, std::array{f.product});
+  return ProveOwnerProducts(f.graph, f.inputs, f.segments, std::array{f.product});
 }
 
 execution::Registry Registry() {
@@ -130,7 +129,7 @@ TEST(OwnerProductsTest, RaggedRowsDerivePhysicalColumnsAndStableSlots) {
     ASSERT_EQ(proved->products().size(), 1U);
     const auto& p = proved->products()[0];
     EXPECT_EQ(p.columns_per_row, 4U);
-    EXPECT_EQ(p.basis, components::RowBasis::kInput);
+    EXPECT_EQ(p.basis, RowBasis::kInput);
     ASSERT_EQ(p.owners.size(), 2U);
     EXPECT_EQ(p.owners[0].slot, 5);
     EXPECT_EQ(p.owners[1].slot, 2);
@@ -172,12 +171,12 @@ TEST(OwnerProductsTest, LongTopologicalLineageHasNoRecursiveProofPath) {
     b.Output(product);
     const auto graph = std::move(b).Finish();
     ASSERT_TRUE(graph) << test_support::Failed(graph, &ir::VerifyError::detail).value_or("");
-    const auto proof = components::ProveOwnerProducts(
-        *graph,
-        std::array{
-            components::StepInput{.tensor = feature, .kind = components::InputKind::kFeatures}},
-        std::array{components::SegmentRows{.slot = 5, .rows = 4, .outputs = 1}},
-        std::array{product});
+    const auto proof =
+        ProveOwnerProducts(*graph,
+                           std::array{components::StepInput{
+                               .tensor = feature, .kind = components::InputKind::kFeatures}},
+                           std::array{components::SegmentRows{.slot = 5, .rows = 4, .outputs = 1}},
+                           std::array{product});
     if (unknown_tail) {
       ASSERT_FALSE(proof);
       EXPECT_EQ(proof.error(), "owner products: unproved row lineage");
@@ -358,9 +357,16 @@ TEST(OwnerProductsTest, ComponentOptInAddsProofWithoutChangingPrimitiveGraphOrDe
       *in, shape, formats, std::array<std::uint64_t, 1>{16}, {.owner_products = true});
   ASSERT_TRUE(annotated) << annotated.error();
   EXPECT_EQ(plain->step.graph.Digest(), annotated->step.graph.Digest());
-  EXPECT_TRUE(plain->step.owner_products.products().empty());
-  ASSERT_EQ(annotated->step.owner_products.products().size(), 1U);
-  EXPECT_EQ(annotated->step.owner_products.products()[0].owners[1].columns, 12U);
+  EXPECT_TRUE(plain->step.owner_products.empty());
+  ASSERT_EQ(annotated->step.owner_products.size(), 1U);
+  const std::array segments{
+      components::SegmentRows{.slot = 5, .first_row = 0, .rows = 1, .outputs = 1},
+      components::SegmentRows{.slot = 2, .first_row = 1, .rows = 3, .outputs = 1}};
+  const auto proved = ProveOwnerProducts(annotated->step.graph, annotated->step.inputs, segments,
+                                         annotated->step.owner_products);
+  ASSERT_TRUE(proved) << proved.error();
+  ASSERT_EQ(proved->products().size(), 1U);
+  EXPECT_EQ(proved->products()[0].owners[1].columns, 12U);
 }
 
 TEST(OwnerProductsTest, WiderOwnerRefusesRatherThanUsingAggregateOrRoundedRecipe) {
@@ -420,7 +426,7 @@ TEST(OwnerProductsTest, AlignmentSelectionSurvivesOwnerPatternAndFallbackMaps) {
   b.Output(misaligned_result);
   auto graph = std::move(b).Finish();
   ASSERT_TRUE(graph) << test_support::Failed(graph, &ir::VerifyError::detail).value_or("");
-  const auto proof = components::ProveOwnerProducts(
+  const auto proof = ProveOwnerProducts(
       *graph,
       std::array{
           components::StepInput{.tensor = feature, .kind = components::InputKind::kFeatures}},

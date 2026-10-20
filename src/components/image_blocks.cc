@@ -14,7 +14,6 @@
 
 #include "components/component.h"
 #include "components/defs.h"
-#include "components/spatial.h"
 #include "components/step.h"
 #include "ir/op.h"
 
@@ -82,64 +81,16 @@ ir::TensorId Normalized(ir::Builder& builder, const Instance& in, ir::TensorId i
 }
 std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
-  if (Channels(f.instance) != f.instance.stage.width)
-    return std::unexpected("token channel norm must retain its stage width");
+  if (f.b.tensor(f.stream).ne(0) != Channels(f.instance))
+    return std::unexpected("token channel norm must retain its configured channel width");
   return FragmentOut{.stream = Normalized(f.b, f.instance, f.stream, f.Weight(0))};
 }
-std::expected<SpatialShape, std::string> SpatialNormShape(const Instance& in, SpatialShape shape,
-                                                          std::optional<SpatialShape> auxiliary) {
-  if (!SpatialElements(shape))
-    return std::unexpected("spatial channel norm dimensions exceed representable storage");
-  if (auxiliary || shape.channels != Channels(in))
-    return std::unexpected("spatial channel norm input or auxiliary differs");
-  return shape;
-}
-std::expected<SpatialValue, std::string> SpatialNorm(SpatialFragment& f) {
-  auto shape = SpatialNormShape(f.instance, f.shape,
-                                f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!shape || f.weights.size() != 1)
-    return std::unexpected("spatial channel norm needs one actual gamma source");
-  // Reuse the same channel-first fragment. No numerical cast at the layout boundary.
-  auto rows = f.builder.Cont(f.builder.Permute(f.input, {1, 2, 0, 3}));
-  auto out = Normalized(f.builder, f.instance, rows, f.weights[0]);
-  return SpatialValue{f.builder.Cont(f.builder.Permute(out, {2, 0, 1, 3})), *shape};
-}
-std::expected<void, std::string> SpatialNormReference(SpatialRefIO& io) {
-  if (!SpatialNormShape(io.instance, io.shape, io.auxiliary_shape) || !io.auxiliary.empty() ||
-      !io.bias.empty() || io.shape.channels != Channels(io.instance) ||
-      io.kernel.size() != io.shape.channels ||
-      io.input.size() != io.shape.width * io.shape.height * io.shape.channels * io.shape.images)
-    return std::unexpected("spatial channel norm reference sizes differ");
-  const auto pixels = io.shape.width * io.shape.height;
-  const auto channels = io.shape.channels;
-  const double eps = F32(io.instance.params.Real("eps"));
-  const double factor = F32(std::sqrt(static_cast<double>(channels)));
-  std::vector<double> out(io.input.size());
-  for (std::uint64_t image = 0; image < io.shape.images; ++image)
-    for (std::uint64_t pixel = 0; pixel < pixels; ++pixel) {
-      double squares = 0;
-      for (std::uint64_t c = 0; c < channels; ++c) {
-        const double value = io.input[pixel + pixels * (c + channels * image)];
-        squares += value * value;
-      }
-      const double denominator = std::max(std::sqrt(squares), eps);
-      for (std::uint64_t c = 0; c < channels; ++c) {
-        const auto index = pixel + pixels * (c + channels * image);
-        double value = io.input[index] / denominator * factor * io.kernel[c];
-        if (io.instance.params.Flag("silu")) value /= 1 + std::exp(-value);
-        out[index] = value;
-      }
-    }
-  io.output = std::move(out);
-  return {};
-}
-const SpatialOps kSpatialNorm{SpatialNormShape, SpatialNorm, SpatialNormReference, 12};
 
 std::expected<void, std::string> Reference(RefIO& io) {
-  const auto width = io.instance->stage.width;
-  if (Channels(*io.instance) != width || width == 0 || width > kMaxStreamWidth ||
-      io.stream.size() % width != 0 || io.stream.size() / width != io.rows() ||
-      io.weights.size() != 1 || io.weights[0].size() != width)
+  const auto width = Channels(*io.instance);
+  if (width == 0 || width > kMaxStreamWidth || io.stream.size() % width != 0 ||
+      io.stream.size() / width != io.rows() || io.weights.size() != 1 ||
+      io.weights[0].size() != width)
     return std::unexpected("channel norm reference: stream or scale shape differs");
   const double eps = F32(io.instance->params.Real("eps"));
   const double scale = F32(std::sqrt(static_cast<double>(width)));
@@ -185,9 +136,19 @@ std::expected<std::vector<RoleShape>, std::string> AdaptiveShapes(const Instance
 bool JoinedRows(const Fragment& f, ir::TensorId id) {
   if (!id.valid()) return false;
   const auto t = f.b.tensor(id);
-  return t.format.encoding == format::Encoding::kF32 && t.shape().rank == 2 &&
-         t.ne(0) == f.instance.stage.width && t.ne(1) == f.step.rows() && t.ne(2) == 1 &&
-         t.ne(3) == 1 && t.segment == ir::kJoinedSegment;
+  return t.format.encoding == format::Encoding::kF32 && t.ne(0) == f.instance.stage.width &&
+         t.ne(1) == f.step.rows() && t.ne(2) == 1 && t.ne(3) == 1 &&
+         t.segment == f.b.tensor(f.stream).segment;
+}
+
+bool MatchingElementwise(const Fragment& f, ir::TensorId a, ir::TensorId b) {
+  if (!a.valid() || !b.valid()) return false;
+  const auto ta = f.b.tensor(a);
+  const auto tb = f.b.tensor(b);
+  return ta.format.encoding == format::Encoding::kF32 && ta.format == tb.format &&
+         ta.segment == tb.segment &&
+         (f.b.segment() == ir::kJoinedSegment ? JoinedRows(f, a)
+                                              : ta.ne(2) == f.instance.stage.width);
 }
 
 ir::TensorId AdaptiveMath(ir::Builder& b, ir::TensorId x, ir::TensorId side, float eps) {
@@ -210,7 +171,7 @@ std::expected<FragmentOut, std::string> AdaptiveEmit(Fragment& f) {
 std::expected<FragmentOut, std::string> GatedEmit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
   const auto gate = f.Side(Conditioning(f.instance));
-  if (!JoinedRows(f, f.stream) || !JoinedRows(f, gate) || !JoinedRows(f, f.carry))
+  if (!MatchingElementwise(f, f.stream, gate) || !MatchingElementwise(f, f.stream, f.carry))
     return std::unexpected(
         "gated residual requires matching F32 branch, gate and saved owner rows");
   return FragmentOut{.stream = GatedMath(f.b, f.stream, gate, f.carry)};
@@ -255,81 +216,6 @@ std::expected<void, std::string> GatedReference(RefIO& io) {
   return {};
 }
 
-std::optional<std::uint64_t> Count(SpatialShape shape) { return SpatialElements(shape); }
-std::expected<SpatialShape, std::string> AdaptiveSpatialShape(
-    const Instance& in, SpatialShape shape, std::optional<SpatialShape> auxiliary) {
-  if (!Count(shape) || shape.channels != in.stage.width || !auxiliary || *auxiliary != shape)
-    return std::unexpected("adaptive spatial operands must have identical owner geometry");
-  return shape;
-}
-ir::TensorId ChannelRows(ir::Builder& b, ir::TensorId x, SpatialShape shape) {
-  return b.Reshape(b.Cont(b.Permute(x, {1, 2, 0, 3})),
-                   ir::ShapeOf({shape.channels, shape.width * shape.height * shape.images}));
-}
-ir::TensorId FromChannelRows(ir::Builder& b, ir::TensorId x, SpatialShape shape) {
-  return b.Cont(b.Permute(
-      b.Reshape(x, ir::ShapeOf({shape.channels, shape.width, shape.height, shape.images})),
-      {2, 0, 1, 3}));
-}
-std::expected<SpatialValue, std::string> AdaptiveSpatialEmit(SpatialFragment& f) {
-  auto shape = AdaptiveSpatialShape(f.instance, f.shape,
-                                    f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!shape || !f.weights.empty() || f.carry) return std::unexpected("adaptive spatial operands");
-  auto out = AdaptiveMath(f.builder, ChannelRows(f.builder, f.input, f.shape),
-                          ChannelRows(f.builder, f.auxiliary->tensor, f.shape),
-                          F32(f.instance.params.Real("eps")));
-  return SpatialValue{FromChannelRows(f.builder, out, f.shape), f.shape};
-}
-std::expected<SpatialValue, std::string> GatedSpatialEmit(SpatialFragment& f) {
-  auto shape = AdaptiveSpatialShape(f.instance, f.shape,
-                                    f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!shape || !f.weights.empty() || !f.carry || f.carry->shape != f.shape)
-    return std::unexpected("gated spatial original carry or operands differ");
-  return SpatialValue{GatedMath(f.builder, f.input, f.auxiliary->tensor, f.carry->tensor), f.shape};
-}
-std::expected<void, std::string> AdaptiveSpatialReference(SpatialRefIO& io) {
-  if (!AdaptiveSpatialShape(io.instance, io.shape, io.auxiliary_shape) ||
-      io.input.size() != *Count(io.shape) || io.auxiliary.size() != io.input.size() ||
-      !io.kernel.empty() || !io.bias.empty() || !io.carry.empty())
-    return std::unexpected("adaptive spatial reference extents differ");
-  const auto rows = io.shape.width * io.shape.height * io.shape.images, width = io.shape.channels;
-  std::vector<double> channels(io.input.size()), side(io.input.size());
-  for (std::uint64_t n = 0; n < io.shape.images; ++n)
-    for (std::uint64_t row = 0; row < io.shape.width * io.shape.height; ++row)
-      for (std::uint64_t c = 0; c < width; ++c) {
-        const auto dst = c + width * (row + n * io.shape.width * io.shape.height);
-        const auto src = row + io.shape.width * io.shape.height * (c + width * n);
-        channels[dst] = io.input[src];
-        side[dst] = io.auxiliary[src];
-      }
-  AdaptiveScalar(channels, side, width, F32(io.instance.params.Real("eps")));
-  io.output.resize(rows * width);
-  for (std::uint64_t n = 0; n < io.shape.images; ++n)
-    for (std::uint64_t row = 0; row < io.shape.width * io.shape.height; ++row)
-      for (std::uint64_t c = 0; c < width; ++c)
-        io.output[row + io.shape.width * io.shape.height * (c + width * n)] =
-            channels[c + width * (row + n * io.shape.width * io.shape.height)];
-  return {};
-}
-std::expected<void, std::string> GatedSpatialReference(SpatialRefIO& io) {
-  if (!AdaptiveSpatialShape(io.instance, io.shape, io.auxiliary_shape) ||
-      io.input.size() != *Count(io.shape) || io.auxiliary.size() != io.input.size() ||
-      !io.carry_shape || *io.carry_shape != io.shape || io.carry.size() != io.input.size() ||
-      !io.kernel.empty() || !io.bias.empty())
-    return std::unexpected("gated spatial reference original carry or extents differ");
-  io.output.resize(io.input.size());
-  for (std::size_t i = 0; i < io.output.size(); ++i)
-    io.output[i] = io.carry[i] + std::tanh(io.auxiliary[i]) * io.input[i];
-  return {};
-}
-const SpatialOps kSpatialAdaptive{AdaptiveSpatialShape, AdaptiveSpatialEmit,
-                                  AdaptiveSpatialReference, 16};
-const SpatialOps kSpatialGated{.infer_shape = AdaptiveSpatialShape,
-                               .emit = GatedSpatialEmit,
-                               .reference = GatedSpatialReference,
-                               .max_nodes = 3,
-                               .needs_carry = true};
-
 }  // namespace
 
 const ComponentDef& NormChannel() {
@@ -340,8 +226,6 @@ const ComponentDef& NormChannel() {
       .params = kParams,
       .roles = kRoles,
       .shapes = Shapes,
-
-      .spatial = &kSpatialNorm,
       .emit = Emit,
       .reference = Reference,
   };
@@ -356,8 +240,6 @@ const ComponentDef& NormAdaptive() {
       .side_input = Conditioning,
       .params = kAdaptiveParams,
       .shapes = AdaptiveShapes,
-
-      .spatial = &kSpatialAdaptive,
       .emit = AdaptiveEmit,
       .reference = AdaptiveReference,
   };
@@ -372,8 +254,6 @@ const ComponentDef& ResidualGated() {
       .side_input = Conditioning,
       .params = kGatedParams,
       .shapes = AdaptiveShapes,
-
-      .spatial = &kSpatialGated,
       .emit = GatedEmit,
       .reference = GatedReference,
   };

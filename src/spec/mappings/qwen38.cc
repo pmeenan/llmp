@@ -700,13 +700,13 @@ constexpr Mapping kMtpMapping{
 constexpr auto kMtpReplaySlots = [] {
   auto slots = kMtpSlots;
   slots[0].version = 2;
-  slots[3].version = 2;
   return slots;
 }();
 constexpr auto kMtpReplayParams = [] {
-  std::array<ParamRule, kMtpParams.size() + 1> params{};
+  std::array<ParamRule, kMtpParams.size() + 2> params{};
   std::ranges::copy(kMtpParams, params.begin());
-  params.back() = Int("embedding", "token_offset", 1);
+  params[kMtpParams.size()] = Int("embedding", "token_offset", 1);
+  params[kMtpParams.size() + 1] = Flag("attention", "replayable", true);
   return params;
 }();
 constexpr auto kMtpReplayMapping = [] {

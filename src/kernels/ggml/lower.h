@@ -21,7 +21,7 @@
 //      routing and scaled reduce). Node order is the planned graph's,
 //      which keeps the builders' (GraphOrder) order the components emit, so
 //      the graph is the one today's builders make for the same step;
-//   2. makes each mask (kMaskBuild) on the device (llmp.gemma4.mask, whose
+//   2. makes each mask (kMaskBuild) on the device (llmp.causal.mask, whose
 //      producer derives the cells' positions, so the step stages none; a
 //      frozen read's under its frozen policy) or, with device masks off, a
 //      host-built input (step_program.h kMask);
@@ -97,7 +97,7 @@ std::expected<LowerConstructionInventory, KernelFailure> LowerConstructionOf(
 struct LowerOptions {
   // Actual backend allowance; used before allocating ordered routed metadata.
   std::shared_ptr<const kernels::BackendOwner> routed_funder{};
-  // kMaskBuild on the device (llmp.gemma4.mask), or built on the host.
+  // kMaskBuild on the device (llmp.causal.mask), or built on the host.
   bool device_masks = true;
   // Optional build-time source for operations the IR planner selected.
   const SelectedSource* selected_source = nullptr;

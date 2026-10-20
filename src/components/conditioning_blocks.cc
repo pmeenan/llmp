@@ -19,12 +19,6 @@ std::expected<std::vector<RoleShape>, std::string> NoRoles(const Instance& in) {
   if (in.site != Site::kLayer) return std::unexpected("conditioning fragments require a layer");
   return std::vector<RoleShape>{};
 }
-std::expected<FragmentOut, std::string> NoToken(Fragment&) {
-  return std::unexpected("conditioning fragment requires typed spatial ports");
-}
-std::expected<void, std::string> NoTokenRef(RefIO&) {
-  return std::unexpected("conditioning reference requires explicit spatial operands");
-}
 constexpr std::array kSelectParams{
     ParamSpec{.name = "quarter", .type = ParamType::kInt, .least = 0, .most = 3},
     ParamSpec{.name = "prefix_rows", .type = ParamType::kInt, .least = 0, .most = 4294967295.0},
@@ -34,48 +28,53 @@ constexpr std::array kSelectParams{
               .least = 1,
               .most = 4,
               .fallback = 4}};
-std::expected<SpatialShape, std::string> SelectShape(const Instance& in, SpatialShape x,
-                                                     std::optional<SpatialShape> aux) {
-  if (!Count(x) || x.width != 1 || x.images != 1 || !aux || aux->width != 1 || aux->height != 2 ||
-      aux->channels != static_cast<std::uint64_t>(in.params.Int("quarters")) * x.channels ||
-      aux->images != 1 || static_cast<std::uint64_t>(in.params.Int("prefix_rows")) > x.height ||
-      in.params.Int("quarter") >= in.params.Int("quarters"))
-    return std::unexpected("conditioning row selection geometry differs");
-  return x;
-}
-std::expected<SpatialValue, std::string> SelectEmit(SpatialFragment& f) {
-  auto out = SelectShape(f.instance, f.shape,
-                         f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!out || !f.weights.empty() || f.carry) return std::unexpected("conditioning row operands");
-  const auto c = out->channels, rows = out->height;
+std::expected<FragmentOut, std::string> SelectTokenEmit(Fragment& f) {
+  if (!f.stream_needed) return FragmentOut{.stream = f.stream};
+  const auto aux = f.carry.valid() ? f.carry : f.Side("conditioning");
+  if (!f.stream.valid() || !aux.valid() ||
+      f.b.tensor(f.stream).format.encoding != format::Encoding::kF32 ||
+      f.b.tensor(aux).format.encoding != format::Encoding::kF32 ||
+      f.b.tensor(f.stream).segment != f.b.tensor(aux).segment)
+    return std::unexpected("conditioning row operands");
+  const auto& x = f.b.tensor(f.stream);
+  const auto& a = f.b.tensor(aux);
+  const bool spatial = f.b.segment() != ir::kJoinedSegment;
+  const auto c = spatial ? x.ne(2) : x.ne(0);
+  const auto rows = x.ne(1);
+  const auto quarters = static_cast<std::uint64_t>(f.instance.params.Int("quarters"));
   const auto prefix = static_cast<std::uint64_t>(f.instance.params.Int("prefix_rows"));
   const auto quarter = static_cast<std::uint64_t>(f.instance.params.Int("quarter"));
+  if ((spatial && (x.ne(0) != 1 || x.ne(3) != 1 || a.ne(0) != 1 || a.ne(1) != 2 ||
+                   a.ne(2) != quarters * c || a.ne(3) != 1)) ||
+      (!spatial && (x.shape().rank > 2 || a.ne(0) * a.ne(1) < 2 * quarters * c)) || prefix > rows ||
+      quarter >= quarters)
+    return std::unexpected("conditioning row selection geometry differs");
   const std::array<std::uint64_t, 4> stride{4, 8, 8 * c, 8 * c};
   const auto select = [&](std::uint64_t row, std::uint64_t count) {
-    auto v = f.builder.View(f.auxiliary->tensor, ir::ShapeOf({1, c}), stride,
-                            (2 * quarter * c + row) * 4);
-    return f.builder.Repeat(f.builder.Cont(v), ir::ShapeOf({count, c}));
+    auto v = f.b.View(aux, ir::ShapeOf({1, c}), stride, (2 * quarter * c + row) * 4);
+    return f.b.Repeat(f.b.Cont(v), ir::ShapeOf({count, c}));
   };
-  const auto values = prefix == 0 ? select(0, rows)
-                      : prefix == rows
-                          ? select(1, rows)
-                          : f.builder.Concat(select(1, prefix), select(0, rows - prefix), 0);
-  return SpatialValue{f.builder.Reshape(values, ir::ShapeOf({1, rows, c, 1})), *out};
+  const auto values = prefix == 0      ? select(0, rows)
+                      : prefix == rows ? select(1, rows)
+                                       : f.b.Concat(select(1, prefix), select(0, rows - prefix), 0);
+  return FragmentOut{.stream = spatial ? f.b.Reshape(values, ir::ShapeOf({1, rows, c, 1}))
+                                       : f.b.Cont(f.b.Transpose(values))};
 }
-std::expected<void, std::string> SelectReference(SpatialRefIO& io) {
-  auto out = SelectShape(io.instance, io.shape, io.auxiliary_shape);
-  if (!out || io.input.size() != *Count(io.shape) ||
-      io.auxiliary.size() != *Count(*io.auxiliary_shape) || !io.kernel.empty() ||
-      !io.bias.empty() || !io.carry.empty())
+std::expected<void, std::string> SelectTokenReference(RefIO& io) {
+  const auto& in = *io.instance;
+  const auto& aux = !io.carry.empty() ? io.carry : io.side;
+  const auto rows = static_cast<std::uint64_t>(io.rows());
+  const auto quarters = static_cast<std::uint64_t>(in.params.Int("quarters"));
+  const auto prefix = static_cast<std::uint64_t>(in.params.Int("prefix_rows"));
+  const auto quarter = static_cast<std::uint64_t>(in.params.Int("quarter"));
+  if (rows == 0 || io.stream.empty() || io.stream.size() % rows != 0 || !io.weights.empty() ||
+      prefix > rows || quarter >= quarters)
     return std::unexpected("conditioning row reference extents");
-  const auto c = out->channels, rows = out->height;
-  const auto prefix = static_cast<std::uint64_t>(io.instance.params.Int("prefix_rows"));
-  const auto quarter = static_cast<std::uint64_t>(io.instance.params.Int("quarter"));
-  io.output.resize(rows * c);
-  for (std::uint64_t channel = 0; channel < c; ++channel)
-    for (std::uint64_t row = 0; row < rows; ++row)
-      io.output[row + rows * channel] =
-          io.auxiliary[2 * (quarter * c + channel) + (row < prefix ? 1U : 0U)];
+  const auto c = io.stream.size() / rows;
+  if (aux.size() != 2 * quarters * c) return std::unexpected("conditioning row reference extents");
+  for (std::uint64_t row = 0; row < rows; ++row)
+    for (std::uint64_t channel = 0; channel < c; ++channel)
+      io.stream[row * c + channel] = aux[2 * (quarter * c + channel) + (row < prefix ? 1U : 0U)];
   return {};
 }
 constexpr std::array kConcatParams{ParamSpec{.name = "axis",
@@ -84,176 +83,54 @@ constexpr std::array kConcatParams{ParamSpec{.name = "axis",
                                              .least = 1,
                                              .most = 2,
                                              .fallback = 2}};
-std::expected<SpatialShape, std::string> ConcatShape(const Instance& in, SpatialShape x,
-                                                     std::optional<SpatialShape> aux) {
-  if (!Count(x) || !aux || !Count(*aux) || x.width != aux->width || x.images != aux->images)
-    return std::unexpected("spatial concatenation geometry differs");
-  if (in.params.Int("axis") == 1) {
-    if (x.channels != aux->channels || __builtin_add_overflow(x.height, aux->height, &x.height))
-      return std::unexpected("row concatenation geometry differs");
-  } else if (x.height != aux->height ||
-             __builtin_add_overflow(x.channels, aux->channels, &x.channels)) {
-    return std::unexpected("channel concatenation geometry differs");
-  }
-  if (!Count(x)) return std::unexpected("concatenation output exceeds the value bound");
-  return x;
-}
-std::expected<SpatialValue, std::string> ConcatEmit(SpatialFragment& f) {
-  auto out = ConcatShape(f.instance, f.shape,
-                         f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!out || !f.weights.empty() || f.carry)
+std::expected<FragmentOut, std::string> ConcatTokenEmit(Fragment& f) {
+  if (!f.stream_needed) return FragmentOut{.stream = f.stream};
+  const auto aux = f.carry.valid() ? f.carry : f.Side("other");
+  const bool spatial = f.b.segment() != ir::kJoinedSegment;
+  if (!f.stream.valid() || !aux.valid() ||
+      f.b.tensor(f.stream).format.encoding != format::Encoding::kF32 ||
+      f.b.tensor(aux).format.encoding != format::Encoding::kF32 ||
+      f.b.tensor(f.stream).segment != f.b.tensor(aux).segment)
     return std::unexpected("channel concatenation operands");
-  return SpatialValue{f.builder.Concat(f.input, f.auxiliary->tensor,
-                                       static_cast<std::uint8_t>(f.instance.params.Int("axis"))),
-                      *out};
+  const auto& x = f.b.tensor(f.stream);
+  const auto& a = f.b.tensor(aux);
+  const auto axis = f.instance.params.Int("axis");
+  if (spatial) {
+    if (x.ne(0) != a.ne(0) || x.ne(3) != a.ne(3) || (axis == 1 && x.ne(2) != a.ne(2)) ||
+        (axis == 2 && x.ne(1) != a.ne(1)))
+      return std::unexpected("spatial concatenation geometry differs");
+    return FragmentOut{.stream = f.b.Concat(f.stream, aux, static_cast<std::uint8_t>(axis))};
+  }
+  if (x.ne(2) != 1 || x.ne(3) != 1 || a.ne(2) != 1 || a.ne(3) != 1)
+    return std::unexpected("token concatenation geometry differs");
+  const std::uint8_t token_axis = axis == 1 ? 1U : 0U;
+  if ((token_axis == 0 && x.ne(1) != a.ne(1)) || (token_axis == 1 && x.ne(0) != a.ne(0)))
+    return std::unexpected("token concatenation geometry differs");
+  return FragmentOut{.stream = f.b.Concat(f.stream, aux, token_axis)};
 }
-std::expected<void, std::string> ConcatReference(SpatialRefIO& io) {
-  auto out = ConcatShape(io.instance, io.shape, io.auxiliary_shape);
-  if (!out || io.input.size() != *Count(io.shape) ||
-      io.auxiliary.size() != *Count(*io.auxiliary_shape) || !io.kernel.empty() ||
-      !io.bias.empty() || !io.carry.empty())
+std::expected<void, std::string> ConcatTokenReference(RefIO& io) {
+  const auto& aux = !io.carry.empty() ? io.carry : io.side;
+  const auto rows = static_cast<std::size_t>(io.rows());
+  if (rows == 0 || io.stream.empty() || aux.empty() || !io.weights.empty())
     return std::unexpected("channel concatenation reference extents");
-  io.output.resize(*Count(*out));
-  const auto batches =
-      io.shape.images * (io.instance.params.Int("axis") == 1 ? io.shape.channels : 1);
-  const auto a = io.input.size() / batches, b = io.auxiliary.size() / batches;
-  for (std::size_t n = 0; n < batches; ++n) {
-    std::ranges::copy(io.input.subspan(n * a, a),
-                      io.output.begin() + static_cast<std::ptrdiff_t>(n * (a + b)));
-    std::ranges::copy(io.auxiliary.subspan(n * b, b),
-                      io.output.begin() + static_cast<std::ptrdiff_t>(n * (a + b) + a));
+  if (io.instance->params.Int("axis") == 1) {
+    if (io.stream.size() % rows != 0) return std::unexpected("row concatenation reference extents");
+    const auto width = io.stream.size() / rows;
+    if (aux.size() % width != 0) return std::unexpected("row concatenation reference extents");
+    io.stream.insert(io.stream.end(), aux.begin(), aux.end());
+    return {};
   }
-  return {};
-}
-std::expected<SpatialShape, std::string> GluShape(const Instance&, SpatialShape x,
-                                                  std::optional<SpatialShape> aux) {
-  if (!Count(x) || !aux || *aux != x) return std::unexpected("spatial GLU operands differ");
-  return x;
-}
-std::expected<SpatialValue, std::string> GluEmit(SpatialFragment& f) {
-  auto out =
-      GluShape(f.instance, f.shape, f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!out || !f.weights.empty() || f.carry) return std::unexpected("spatial GLU operands");
-  return SpatialValue{f.builder.Glu(f.input, f.auxiliary->tensor, {.kind = ir::GluKind::kSwiGlu}),
-                      *out};
-}
-std::expected<void, std::string> GluReference(SpatialRefIO& io) {
-  if (!GluShape(io.instance, io.shape, io.auxiliary_shape) || io.input.size() != *Count(io.shape) ||
-      io.auxiliary.size() != io.input.size() || !io.kernel.empty() || !io.bias.empty() ||
-      !io.carry.empty())
-    return std::unexpected("spatial GLU reference extents");
-  io.output.resize(io.input.size());
-  for (std::size_t i = 0; i < io.output.size(); ++i)
-    io.output[i] = io.input[i] / (1 + std::exp(-io.input[i])) * io.auxiliary[i];
-  return {};
-}
-constexpr std::array kRopeParams{
-    ParamSpec{.name = "heads", .type = ParamType::kInt, .least = 1, .most = 65536},
-    ParamSpec{.name = "axis0", .type = ParamType::kInt, .least = 2, .most = 512},
-    ParamSpec{.name = "axis1", .type = ParamType::kInt, .least = 0, .most = 512},
-    ParamSpec{.name = "axis2", .type = ParamType::kInt, .least = 0, .most = 512},
-    ParamSpec{.name = "base", .type = ParamType::kReal, .least = 1, .most = 1e10},
-    ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 1e-30, .most = 1},
-    ParamSpec{.name = "neox",
-              .type = ParamType::kBool,
-              .required = false,
-              .least = 0,
-              .most = 1,
-              .fallback = 0}};
-constexpr std::array kRopeRoles{WeightRole{.name = "weight", .encodings = kNormEncodings}};
-std::array<std::uint64_t, 3> Axes(const Instance& in) {
-  return {static_cast<std::uint64_t>(in.params.Int("axis0")),
-          static_cast<std::uint64_t>(in.params.Int("axis1")),
-          static_cast<std::uint64_t>(in.params.Int("axis2"))};
-}
-std::expected<std::vector<RoleShape>, std::string> RopeRoles(const Instance& in) {
-  const auto axes = Axes(in);
-  const auto heads = static_cast<std::uint64_t>(in.params.Int("heads"));
-  const auto dim = axes[0] + axes[1] + axes[2];
-  if (in.site != Site::kLayer || dim > 512 || dim * heads > 65536 ||
-      (!in.params.Flag("neox") && (dim * heads != in.stage.width || axes[1] < 2 || axes[2] < 2)) ||
-      (in.params.Flag("neox") && (axes[1] != 0 || axes[2] != 0)) ||
-      std::ranges::any_of(axes, [](auto v) { return v % 2 != 0; }))
-    return std::unexpected("three-axis head normalization geometry differs");
-  return std::vector{Role(0, {dim})};
-}
-std::expected<SpatialShape, std::string> RopeShape(const Instance& in, SpatialShape x,
-                                                   std::optional<SpatialShape> aux) {
-  if (!RopeRoles(in) || !Count(x) || x.width != 1 || x.images != 1 ||
-      x.channels != (Axes(in)[0] + Axes(in)[1] + Axes(in)[2]) *
-                        static_cast<std::uint64_t>(in.params.Int("heads")) ||
-      !aux || *aux != SpatialShape{x.height, in.params.Flag("neox") ? 1U : 3U, 1, 1})
-    return std::unexpected("three-axis rotation input or position geometry differs");
-  return x;
-}
-std::expected<SpatialValue, std::string> RopeEmit(SpatialFragment& f) {
-  auto out = RopeShape(f.instance, f.shape,
-                       f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!out || f.weights.size() != 1 || f.carry)
-    return std::unexpected("three-axis rotation operands");
-  const auto axes = Axes(f.instance);
-  const auto rows = out->height;
-  const auto dim = axes[0] + axes[1] + axes[2], heads = out->channels / dim;
-  auto x = f.builder.Cont(f.builder.Permute(f.input, {1, 2, 0, 3}));
-  x = f.builder.Reshape(x, ir::ShapeOf({dim, heads, rows}));
-  x = f.builder.Mul(f.builder.RmsNorm(x, F32(f.instance.params.Real("eps"))),
-                    NormScale(f.builder, f.weights[0]));
-  std::uint32_t offset = 0;
-  for (std::size_t axis = 0; axis < axes.size(); ++axis) {
-    if (axes[axis] == 0) continue;
-    auto pos = f.builder.Cont(f.builder.View(f.auxiliary->tensor, ir::ShapeOf({rows}),
-                                             {4, rows * 4, rows * 4, rows * 4}, axis * rows * 4));
-    x = f.builder.Rope(
-        x, pos, {},
-        {.mode = f.instance.params.Flag("neox") ? ir::RopeMode::kNeox : ir::RopeMode::kNormal,
-         .dims = static_cast<std::uint32_t>(axes[axis]),
-         .offset = offset,
-         .base = F32(f.instance.params.Real("base"))});
-    offset += static_cast<std::uint32_t>(axes[axis]);
+  if (io.stream.size() % rows != 0 || aux.size() % rows != 0)
+    return std::unexpected("channel concatenation reference extents");
+  const auto a = io.stream.size() / rows, b = aux.size() / rows;
+  std::vector<double> out(io.stream.size() + aux.size());
+  for (std::size_t r = 0; r < rows; ++r) {
+    std::ranges::copy(std::span(io.stream).subspan(r * a, a),
+                      out.begin() + static_cast<std::ptrdiff_t>(r * (a + b)));
+    std::ranges::copy(std::span(aux).subspan(r * b, b),
+                      out.begin() + static_cast<std::ptrdiff_t>(r * (a + b) + a));
   }
-  x = f.builder.Reshape(x, ir::ShapeOf({out->channels, 1, rows, 1}));
-  return SpatialValue{f.builder.Cont(f.builder.Permute(x, {2, 0, 1, 3})), *out};
-}
-std::expected<void, std::string> RopeReference(SpatialRefIO& io) {
-  auto shape = RopeShape(io.instance, io.shape, io.auxiliary_shape);
-  if (!shape || io.input.size() != *Count(io.shape) ||
-      io.auxiliary.size() != (io.instance.params.Flag("neox") ? 1U : 3U) * shape->height ||
-      !io.bias.empty() || !io.carry.empty())
-    return std::unexpected("three-axis reference extents");
-  const auto axes = Axes(io.instance);
-  const auto rows = shape->height;
-  const auto dim = axes[0] + axes[1] + axes[2], heads = shape->channels / dim;
-  if (io.kernel.size() != dim || !std::ranges::all_of(io.auxiliary, [](double v) {
-        return std::isfinite(v) && v == std::trunc(v) && v >= INT32_MIN && v <= INT32_MAX;
-      }))
-    return std::unexpected("three-axis reference gamma or actual positions differ");
-  io.output.resize(io.input.size());
-  for (std::uint64_t row = 0; row < rows; ++row)
-    for (std::uint64_t head = 0; head < heads; ++head) {
-      double square = 0;
-      for (std::uint64_t c = 0; c < dim; ++c) {
-        const auto v = io.input[row + rows * (head * dim + c)];
-        square += v * v;
-      }
-      const double norm =
-          std::sqrt(square / static_cast<double>(dim) + F32(io.instance.params.Real("eps")));
-      std::uint64_t offset = 0;
-      for (std::size_t axis = 0; axis < axes.size(); ++axis) {
-        for (std::uint64_t c = 0; c < axes[axis]; c += 2) {
-          const double angle = io.auxiliary[row + rows * axis] *
-                               std::pow(F32(io.instance.params.Real("base")),
-                                        -static_cast<double>(c) / static_cast<double>(axes[axis]));
-          const auto c0 = offset + (io.instance.params.Flag("neox") ? c / 2 : c);
-          const auto c1 = c0 + (io.instance.params.Flag("neox") ? axes[axis] / 2 : 1);
-          const auto i0 = row + rows * (head * dim + c0), i1 = row + rows * (head * dim + c1);
-          const double a = io.input[i0] / norm * io.kernel[c0],
-                       b = io.input[i1] / norm * io.kernel[c1];
-          io.output[i0] = a * std::cos(angle) - b * std::sin(angle);
-          io.output[i1] = a * std::sin(angle) + b * std::cos(angle);
-        }
-        offset += axes[axis];
-      }
-    }
+  io.stream = std::move(out);
   return {};
 }
 constexpr std::array kSliceParams{
@@ -265,140 +142,69 @@ constexpr std::array kSliceParams{
               .least = 0,
               .most = 4294967295.0,
               .fallback = 0}};
-std::expected<SpatialShape, std::string> SliceShape(const Instance& in, SpatialShape x,
-                                                    std::optional<SpatialShape> aux) {
+std::expected<FragmentOut, std::string> SliceTokenEmit(Fragment& f) {
+  if (!f.stream_needed) return FragmentOut{.stream = f.stream};
+  if (!f.stream.valid()) return std::unexpected("spatial row slice operands");
+  const bool spatial = f.b.segment() != ir::kJoinedSegment;
+  const auto& x = f.b.tensor(f.stream);
+  const auto start = static_cast<std::uint64_t>(f.instance.params.Int("start"));
+  const auto rows = static_cast<std::uint64_t>(f.instance.params.Int("rows"));
+  const auto in_rows = x.ne(1);
+  if (start >= in_rows || rows > in_rows - start ||
+      (f.instance.params.Int("input_rows") != 0 &&
+       static_cast<std::uint64_t>(f.instance.params.Int("input_rows")) != in_rows))
+    return std::unexpected("spatial row slice lies outside its input");
+  if (spatial) {
+    const auto view =
+        f.b.View(f.stream, ir::ShapeOf({x.ne(0), rows, x.ne(2), x.ne(3)}),
+                 {4, 4 * x.ne(0), 4 * x.ne(0) * x.ne(1), 4 * x.ne(0) * x.ne(1) * x.ne(2)},
+                 start * x.ne(0) * 4);
+    return FragmentOut{.stream = f.b.Cont(view)};
+  }
+  const auto view =
+      f.b.View(f.stream, ir::ShapeOf({x.ne(0), rows}),
+               {4, 4 * x.ne(0), 4 * x.ne(0) * in_rows, 4 * x.ne(0) * in_rows}, start * x.ne(0) * 4);
+  return FragmentOut{.stream = f.b.Cont(view)};
+}
+std::expected<void, std::string> SliceTokenReference(RefIO& io) {
+  const auto& in = *io.instance;
+  const auto in_rows = static_cast<std::uint64_t>(io.rows());
   const auto start = static_cast<std::uint64_t>(in.params.Int("start"));
   const auto rows = static_cast<std::uint64_t>(in.params.Int("rows"));
-  if (!Count(x) || aux || start >= x.height || rows > x.height - start ||
+  if (in_rows == 0 || io.stream.empty() || io.stream.size() % in_rows != 0 || !io.weights.empty() ||
+      start >= in_rows || rows > in_rows - start ||
       (in.params.Int("input_rows") != 0 &&
-       static_cast<std::uint64_t>(in.params.Int("input_rows")) != x.height))
-    return std::unexpected("spatial row slice lies outside its input");
-  x.height = rows;
-  return x;
-}
-std::expected<SpatialValue, std::string> SliceEmit(SpatialFragment& f) {
-  auto shape = SliceShape(f.instance, f.shape,
-                          f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!shape || !f.weights.empty() || f.carry) return std::unexpected("spatial row slice operands");
-  const auto x = f.shape;
-  const auto start = static_cast<std::uint64_t>(f.instance.params.Int("start"));
-  const auto view =
-      f.builder.View(f.input, ir::ShapeOf({x.width, shape->height, x.channels, x.images}),
-                     {4, 4 * x.width, 4 * x.width * x.height, 4 * x.width * x.height * x.channels},
-                     start * x.width * 4);
-  return SpatialValue{f.builder.Cont(view), *shape};
-}
-std::expected<void, std::string> SliceReference(SpatialRefIO& io) {
-  auto shape = SliceShape(io.instance, io.shape, io.auxiliary_shape);
-  if (!shape || io.input.size() != *Count(io.shape) || !io.kernel.empty() || !io.bias.empty() ||
-      !io.auxiliary.empty() || !io.carry.empty())
+       static_cast<std::uint64_t>(in.params.Int("input_rows")) != in_rows))
     return std::unexpected("spatial row slice reference extents");
-  const auto start = static_cast<std::uint64_t>(io.instance.params.Int("start"));
-  const auto rows = shape->height, width = shape->width;
-  io.output.resize(*Count(*shape));
-  for (std::uint64_t outer = 0; outer < shape->channels * shape->images; ++outer)
-    for (std::uint64_t v = 0; v < width * rows; ++v)
-      io.output[outer * width * rows + v] = io.input[(outer * io.shape.height + start) * width + v];
+  const auto width = io.stream.size() / in_rows;
+  std::vector<double> out(static_cast<std::size_t>(width * rows));
+  std::ranges::copy(std::span(io.stream).subspan(static_cast<std::size_t>(start * width),
+                                                 static_cast<std::size_t>(rows * width)),
+                    out.begin());
+  io.stream = std::move(out);
   return {};
 }
-constexpr std::array kSpatialRmsParams{
-    ParamSpec{.name = "channels", .type = ParamType::kInt, .least = 1, .most = 65536},
-    ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 1e-30, .most = 1},
-    kNormZeroCentered};
-constexpr std::array kSpatialRmsRoles{
-    WeightRole{.name = "weight", .encodings = kNormEncodings, .derived = kZeroCenteredNorm}};
-std::expected<std::vector<RoleShape>, std::string> SpatialRmsRoles(const Instance& in) {
-  if (in.site != Site::kLayer || NormOffsetContradictsFold(in))
-    return std::unexpected("spatial RMS role or source gamma convention differs");
-  return std::vector{Role(0, {static_cast<std::uint64_t>(in.params.Int("channels"))})};
-}
-std::expected<SpatialShape, std::string> SpatialRmsShape(const Instance& in, SpatialShape x,
-                                                         std::optional<SpatialShape> aux) {
-  if (!Count(x) || aux || x.channels != static_cast<std::uint64_t>(in.params.Int("channels")) ||
-      !SpatialRmsRoles(in))
-    return std::unexpected("spatial RMS channel geometry differs");
-  return x;
-}
-std::expected<SpatialValue, std::string> SpatialRmsEmit(SpatialFragment& f) {
-  auto shape = SpatialRmsShape(f.instance, f.shape,
-                               f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!shape || f.weights.size() != 1 || f.carry) return std::unexpected("spatial RMS operands");
-  auto x = f.builder.Cont(f.builder.Permute(f.input, {1, 2, 0, 3}));
-  x = f.builder.Reshape(
-      x, ir::ShapeOf({shape->channels, shape->width * shape->height * shape->images}));
-  auto gamma = NormScale(f.builder, f.weights[0]);
-  if (f.instance.params.Flag("norm_zero_centered")) gamma = f.builder.Scale(gamma, 1.F, 1.F);
-  x = f.builder.Mul(f.builder.RmsNorm(x, F32(f.instance.params.Real("eps"))), gamma);
-  x = f.builder.Reshape(x,
-                        ir::ShapeOf({shape->channels, shape->width, shape->height, shape->images}));
-  return SpatialValue{f.builder.Cont(f.builder.Permute(x, {2, 0, 1, 3})), *shape};
-}
-std::expected<void, std::string> SpatialRmsReference(SpatialRefIO& io) {
-  auto shape = SpatialRmsShape(io.instance, io.shape, io.auxiliary_shape);
-  if (!shape || io.input.size() != *Count(io.shape) || io.kernel.size() != shape->channels ||
-      !io.bias.empty() || !io.auxiliary.empty() || !io.carry.empty())
-    return std::unexpected("spatial RMS reference extents");
-  const auto pixels = shape->width * shape->height, channels = shape->channels;
-  io.output.resize(io.input.size());
-  for (std::uint64_t n = 0; n < shape->images; ++n)
-    for (std::uint64_t row = 0; row < pixels; ++row) {
-      double square = 0;
-      for (std::uint64_t c = 0; c < channels; ++c) {
-        const auto value = io.input[row + pixels * (c + channels * n)];
-        square += value * value;
-      }
-      const double denominator =
-          std::sqrt(square / static_cast<double>(channels) + F32(io.instance.params.Real("eps")));
-      for (std::uint64_t c = 0; c < channels; ++c) {
-        const auto at = row + pixels * (c + channels * n);
-        io.output[at] = io.input[at] / denominator *
-                        (static_cast<double>(io.kernel[c]) +
-                         (io.instance.params.Flag("norm_zero_centered") ? 1.0 : 0.0));
-      }
-    }
-  return {};
-}
-std::expected<SpatialShape, std::string> ScaledShape(const Instance&, SpatialShape x,
-                                                     std::optional<SpatialShape> aux) {
-  if (!Count(x) || !aux || *aux != SpatialShape{1, 1, 1, 1})
-    return std::unexpected("scaled residual requires an explicit scalar");
-  return x;
-}
-std::expected<SpatialValue, std::string> ScaledEmit(SpatialFragment& f) {
-  auto shape = ScaledShape(f.instance, f.shape,
-                           f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!shape || !f.weights.empty() || !f.carry || f.carry->shape != *shape)
+std::expected<FragmentOut, std::string> ScaledTokenEmit(Fragment& f) {
+  if (!f.stream_needed) return FragmentOut{.stream = f.stream};
+  const auto scale = f.Side("scale").valid() ? f.Side("scale") : f.carry2;
+  if (!f.stream.valid() || !f.carry.valid() || !scale.valid() ||
+      f.b.tensor(f.stream).format != f.b.tensor(f.carry).format ||
+      f.b.tensor(f.stream).segment != f.b.tensor(f.carry).segment ||
+      f.b.tensor(scale).format.encoding != format::Encoding::kF32 ||
+      f.b.tensor(scale).segment != f.b.tensor(f.stream).segment)
     return std::unexpected("scaled residual requires its complete original carry");
-  return SpatialValue{f.builder.Add(f.carry->tensor, f.builder.Mul(f.input, f.auxiliary->tensor)),
-                      *shape};
+  return FragmentOut{.stream = f.b.Add(f.carry, f.b.Mul(f.stream, scale))};
 }
-std::expected<void, std::string> ScaledReference(SpatialRefIO& io) {
-  auto shape = ScaledShape(io.instance, io.shape, io.auxiliary_shape);
-  if (!shape || io.input.size() != *Count(*shape) || io.auxiliary.size() != 1 || !io.carry_shape ||
-      *io.carry_shape != *shape || io.carry.size() != io.input.size() || !io.kernel.empty() ||
-      !io.bias.empty())
+std::expected<void, std::string> ScaledTokenReference(RefIO& io) {
+  const auto& scale = !io.side.empty() ? io.side : io.carry2;
+  if (io.stream.empty() || io.carry.size() != io.stream.size() ||
+      (scale.size() != 1 && scale.size() != io.rows()) || !io.weights.empty())
     return std::unexpected("scaled residual reference operands differ");
-  io.output.resize(io.input.size());
-  for (std::size_t i = 0; i < io.output.size(); ++i)
-    io.output[i] = io.carry[i] + io.auxiliary[0] * io.input[i];
+  const auto width = io.stream.size() / std::max<std::size_t>(1, io.rows());
+  for (std::size_t i = 0; i < io.stream.size(); ++i)
+    io.stream[i] = io.carry[i] + (scale.size() == 1 ? scale[0] : scale[i / width]) * io.stream[i];
   return {};
 }
-const SpatialOps kSlice{SliceShape, SliceEmit, SliceReference, 2};
-const SpatialOps kSpatialRms{SpatialRmsShape, SpatialRmsEmit, SpatialRmsReference, 10};
-const SpatialOps kScaled{.infer_shape = ScaledShape,
-                         .emit = ScaledEmit,
-                         .reference = ScaledReference,
-                         .max_nodes = 2,
-                         .needs_carry = true};
-
-const SpatialOps kSelect{SelectShape, SelectEmit, SelectReference, 8};
-const SpatialOps kConcat{ConcatShape, ConcatEmit, ConcatReference, 1};
-const SpatialOps kGlu{GluShape, GluEmit, GluReference, 1};
-const SpatialOps kRope{.infer_shape = RopeShape,
-                       .emit = RopeEmit,
-                       .reference = RopeReference,
-                       .max_nodes = 24,
-                       .auxiliary_encoding = format::Encoding::kI32};
 constexpr std::array kReshapeParams{
     ParamSpec{.name = "width", .type = ParamType::kInt, .least = 1, .most = 4294967295.0},
     ParamSpec{.name = "height", .type = ParamType::kInt, .least = 1, .most = 4294967295.0}};
@@ -463,82 +269,44 @@ const SpatialOps kAffine{AffineShape, AffineEmit, AffineReference, 4};
 }  // namespace
 const ComponentDef& ConditionRows() {
   static const ComponentDef d{.kind = "condition.rows",
+                              .row_local = true,
                               .params = kSelectParams,
                               .shapes = NoRoles,
-                              .spatial = &kSelect,
-                              .emit = NoToken,
-                              .reference = NoTokenRef};
+                              .emit = SelectTokenEmit,
+                              .reference = SelectTokenReference};
   return d;
 }
 const ComponentDef& ConcatSpatial() {
   static const ComponentDef d{.kind = "concat.spatial",
                               .params = kConcatParams,
                               .shapes = NoRoles,
-                              .spatial = &kConcat,
-                              .emit = NoToken,
-                              .reference = NoTokenRef};
-  return d;
-}
-const ComponentDef& GluSpatial() {
-  static const ComponentDef d{.kind = "glu.spatial",
-                              .shapes = NoRoles,
-                              .spatial = &kGlu,
-                              .emit = NoToken,
-                              .reference = NoTokenRef};
-  return d;
-}
-const ComponentDef& NormRopeAxes() {
-  static const ComponentDef d{.kind = "norm.rope_axes",
-                              .params = kRopeParams,
-                              .roles = kRopeRoles,
-                              .shapes = RopeRoles,
-                              .spatial = &kRope,
-                              .emit = NoToken,
-                              .reference = NoTokenRef};
+                              .emit = ConcatTokenEmit,
+                              .reference = ConcatTokenReference};
   return d;
 }
 const ComponentDef& SliceSpatial() {
   static const ComponentDef d{.kind = "slice.spatial",
                               .params = kSliceParams,
                               .shapes = NoRoles,
-                              .spatial = &kSlice,
-                              .emit = NoToken,
-                              .reference = NoTokenRef};
-  return d;
-}
-const ComponentDef& NormRmsSpatial() {
-  static const ComponentDef d{.kind = "norm.rms_spatial",
-                              .params = kSpatialRmsParams,
-                              .roles = kSpatialRmsRoles,
-                              .shapes = SpatialRmsRoles,
-                              .spatial = &kSpatialRms,
-                              .emit = NoToken,
-                              .reference = NoTokenRef};
+                              .emit = SliceTokenEmit,
+                              .reference = SliceTokenReference};
   return d;
 }
 const ComponentDef& ResidualScaled() {
   static const ComponentDef d{.kind = "residual.scaled",
+                              .row_local = true,
                               .shapes = NoRoles,
-                              .spatial = &kScaled,
-                              .emit = NoToken,
-                              .reference = NoTokenRef};
+                              .emit = ScaledTokenEmit,
+                              .reference = ScaledTokenReference};
   return d;
 }
 const ComponentDef& ReshapeSpatial() {
-  static const ComponentDef d{.kind = "reshape.spatial",
-                              .params = kReshapeParams,
-                              .shapes = NoRoles,
-                              .spatial = &kReshape,
-                              .emit = NoToken,
-                              .reference = NoTokenRef};
+  static const ComponentDef d{
+      .kind = "reshape.spatial", .params = kReshapeParams, .shapes = NoRoles, .spatial = &kReshape};
   return d;
 }
 const ComponentDef& AffineChannel() {
-  static const ComponentDef d{.kind = "affine.channel",
-                              .shapes = NoRoles,
-                              .spatial = &kAffine,
-                              .emit = NoToken,
-                              .reference = NoTokenRef};
+  static const ComponentDef d{.kind = "affine.channel", .shapes = NoRoles, .spatial = &kAffine};
   return d;
 }
 

@@ -836,13 +836,19 @@ TEST(ComponentAdmissionQwen2Exl3Test,
     auto normalized =
         llmp::import::Normalize(std::move(checkpoint), {bound->metadata_bytes, bound->work_units});
     ASSERT_TRUE(normalized) << (normalized ? "" : normalized.error().ToString());
-    std::array<llmp::artifact::Source, 2> origins{
+    std::array<llmp::artifact::Source, 5> origins{
         Origins("config.json", rate_4_5 ? 923ULL : 996ULL,
                 rate_4_5 ? "dcd945f38ba6e7835c8c281a45c03d9a20759d03afe5761d09def8c62aa11f3c"
                          : "966657b7e8c331ea16127a868eb6d6ff16ad0b16a5ee39d26279e12de0a3205c")[0],
+        Origins("generation_config.json", 242ULL,
+                "e558847a8b4402616f1273797b015104dc266fe4b520056fca88823ba8f8ebe6")[0],
         Origins("model.safetensors", rate_4_5 ? 611257914ULL : 588951098ULL,
                 rate_4_5 ? "94c45f9838a56fbf23f43d0a04c47e187d840dd97f17b4a027a69a20339762bc"
-                         : "66b61bd1ca3ebb0fc1cea29148eda8bdaca45d232c6a7e319c6d2835b65c066b")[0]};
+                         : "66b61bd1ca3ebb0fc1cea29148eda8bdaca45d232c6a7e319c6d2835b65c066b")[0],
+        Origins("tokenizer.json", 7031645ULL,
+                "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539")[0],
+        Origins("tokenizer_config.json", 7305ULL,
+                "5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583")[0]};
     const auto& model = normalized->spec();
     const auto& source = normalized->canonical();
     const auto admitted = rt::CheckComponentAdmission(model, source, origins);

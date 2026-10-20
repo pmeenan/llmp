@@ -790,7 +790,7 @@ first's place, `WithinRoot`, which placement honours), `llmp.hc.lo`,
 place), `.gates` and `.norm_gate` (its I8 rows the output product's
 MXFP8 input), `llmp.qsa.prep`, `.pool` (its marker past the positions'
 bytes), `.topk` and `.attn` (the selection's two kernels for one
-`kQsaAttention`), `llmp.qsa.gate_quantize`, `llmp.moe.router`, the
+`kBlockSparseAttention`), `llmp.qsa.gate_quantize`, `llmp.moe.router`, the
 CUTLASS experts' gemv or grouped-GEMM chains for one `kMoeExperts`,
 `llmp.moe.glu` and `.combine`, and `llmp.vecq`. A weight of several
 parts (MXFP8 codes and scales, the NVFP4 table's rows and scale, the

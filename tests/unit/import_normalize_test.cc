@@ -1426,10 +1426,10 @@ TEST(ImportNormalizeQwen2Test, CompleteCapturedTargetMatchesV0SpecWithOmittedOrE
     ASSERT_EQ(plan->spec().stages.size(), 1U);
     EXPECT_EQ(plan->spec().stages[0].layers.size(), 24U);
     EXPECT_EQ(plan->spec().stages[0].heads.output->weights[0].tensor, "output.weight");
-    // The spec the approved artifact stores (runtime/approvals.cc), which
-    // the retired profile's synthesis made, with or without the keys.
+    // The spec the approved artifact stores (runtime/approvals.cc), with or
+    // without the optional keys.
     EXPECT_EQ(base::ToHex(plan->spec().Digest()),
-              "096ae62e7e4978ad74bdfd80d64ab61c4ae662df1dc393fc6ad76f59f324f2b5");
+              "d673370e16b0b37fe06a16305abcf032842a8d792afa6b9e30f77e10027f5403");
     EXPECT_TRUE(plan->applied_folds().empty());
     EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(
         input, {cost->metadata_bytes - 1, cost->work_units}));
@@ -1473,10 +1473,10 @@ TEST(ImportNormalizeQwen2Exl3Test, CompleteCaptured40And45TargetsMatchV0SpecAndP
     ASSERT_EQ(plan->routes().size(), 798U);
     ASSERT_EQ(plan->spec().stages.size(), 1U);
     EXPECT_EQ(plan->spec().stages[0].layers.size(), 24U);
-    // The spec both approved artifacts store (runtime/approvals.cc), which
-    // the retired profile's synthesis made.
+    // The spec both approved EXL3 artifacts store (runtime/approvals.cc),
+    // identical to the tied GGUF spec above.
     EXPECT_EQ(base::ToHex(plan->spec().Digest()),
-              "1b982d73ad42ab6a92cd224a1ff3995825cef4af8c8e4a3f83e3059f5068c274");
+              "b2cf6f15206be2712e20fe080df11f7edcbf8aaeda23f830755f767f11433d6a");
     EXPECT_TRUE(plan->applied_folds().empty());
     EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(
         input, {cost->metadata_bytes - 1, cost->work_units}));

@@ -213,9 +213,19 @@ TEST_F(ExecTest, VisibleTopKHasExactPrefixTieNanAndPaddingSemantics) {
   std::vector<float> values;
   for (int row = 0; row < 7; ++row)
     for (const auto value : bits) values.push_back(std::bit_cast<float>(value));
+  const std::vector<std::int64_t> visible{-7, 0, 1, 2, 6, 12, INT32_MAX};
   Set(scores, values);
-  SetInts(counts, {-7, 0, 1, 2, 6, 12, INT32_MAX});
+  SetInts(counts, visible);
   ASSERT_TRUE(Run());
+  std::vector<TensorId> mapped;
+  auto primitive = ir::Expand(*graph, true, &mapped);
+  ASSERT_TRUE(primitive) << primitive.error().detail;
+  for (const auto& node : primitive->nodes()) EXPECT_FALSE(ir::HasDecomposition(node.key));
+  auto split = Executor::Create(*primitive);
+  ASSERT_TRUE(split) << split.error().detail;
+  ASSERT_TRUE(split->BindValues(mapped[scores.v], values));
+  ASSERT_TRUE(split->BindInts(mapped[counts.v], visible));
+  ASSERT_TRUE(split->Run());
   const std::array<std::vector<std::int64_t>, 7> ranked{std::vector<std::int64_t>{},
                                                         {},
                                                         {0},
@@ -233,6 +243,7 @@ TEST_F(ExecTest, VisibleTopKHasExactPrefixTieNanAndPaddingSemantics) {
       expected.insert(expected.end(), row.begin(), row.end());
     }
     EXPECT_EQ(GetInts(output), expected);
+    EXPECT_EQ(*split->Ints(mapped[output.v]), expected);
   }
 }
 
@@ -253,22 +264,37 @@ TEST_F(ExecTest, SelectedMaskCopiesHalfBitsAndAcceptsArbitraryAliasedIds) {
                                           0, 0xfd21, 0, 0x7c00, 0, 0xfc00, 0, 0};
   std::vector<std::byte> bytes(halves.size() * 2);
   std::memcpy(bytes.data(), halves.data(), bytes.size());
+  const std::vector<std::int64_t> id_values{99, -2, 1, 1,  4,         INT32_MAX, 99, 99,
+                                            99, 3,  0, -1, INT32_MIN, 3,         99, 99};
   SetBytes(raw_root, bytes);
-  SetInts(ids_root, {99, -2, 1, 1, 4, INT32_MAX, 99, 99, 99, 3, 0, -1, INT32_MIN, 3, 99, 99});
+  SetInts(ids_root, id_values);
   ASSERT_TRUE(Run());
-  const auto read = [&](TensorId id) {
-    const auto data = exec->Bytes(id);
+  std::vector<TensorId> mapped;
+  auto primitive = ir::Expand(*graph, true, &mapped);
+  ASSERT_TRUE(primitive) << primitive.error().detail;
+  for (const auto& node : primitive->nodes()) EXPECT_FALSE(ir::HasDecomposition(node.key));
+  auto split = Executor::Create(*primitive);
+  ASSERT_TRUE(split) << split.error().detail;
+  const PartView raw_part{.role = format::PartRole::kData, .bytes = bytes};
+  ASSERT_TRUE(split->Bind(mapped[raw_root.v], std::span(&raw_part, 1)));
+  ASSERT_TRUE(split->BindInts(mapped[ids_root.v], id_values));
+  ASSERT_TRUE(split->Run());
+  const auto read_from = [](const Executor& e, TensorId id) {
+    const auto data = e.Bytes(id);
     std::vector<std::uint16_t> result(data.size() / 2);
     std::memcpy(result.data(), data.data(), data.size());
     return result;
   };
-  EXPECT_EQ(read(mask), (std::vector<std::uint16_t>{0x7d35, 0x8000, 1, 0xfc00, 0xfc00, 0xfc00, 0,
-                                                    0xfc00, 0xfc00, 0xfd21, 0x7c00, 0xfc00, 0xfc00,
-                                                    0xfc00, 0, 0xfc00, 0xfc00, 0}));
-  EXPECT_EQ(read(duplicate_mask),
-            (std::vector<std::uint16_t>{0x7d35, 0x8000, 1, 0xfc00, 0xfc00, 0xfc00, 0, 0xfc00,
-                                        0xfc00, 0xfd21, 0x7c00, 0xfc00, 0xfc00, 0xfc00, 0xfc00, 0,
-                                        0xfc00, 0xfc00}));
+  const std::vector<std::uint16_t> want_mask{0x7d35, 0x8000, 1,      0xfc00, 0xfc00, 0xfc00,
+                                             0,      0xfc00, 0xfc00, 0xfd21, 0x7c00, 0xfc00,
+                                             0xfc00, 0xfc00, 0,      0xfc00, 0xfc00, 0};
+  const std::vector<std::uint16_t> want_dup{0x7d35, 0x8000, 1,      0xfc00, 0xfc00, 0xfc00,
+                                            0,      0xfc00, 0xfc00, 0xfd21, 0x7c00, 0xfc00,
+                                            0xfc00, 0xfc00, 0xfc00, 0,      0xfc00, 0xfc00};
+  EXPECT_EQ(read_from(*exec, mask), want_mask);
+  EXPECT_EQ(read_from(*split, mapped[mask.v]), want_mask);
+  EXPECT_EQ(read_from(*exec, duplicate_mask), want_dup);
+  EXPECT_EQ(read_from(*split, mapped[duplicate_mask.v]), want_dup);
 }
 
 TEST_F(ExecTest, PrefixOverwritePreservesEveryBitAcrossStridedAndRepeatedViews) {
@@ -976,7 +1002,7 @@ TEST_F(ExecTest, Dsv4CompressorPoolsPreviousAndCurrentHalvesAndMasksDummyRows) {
   const TensorId current = F({4, 2});
   const TensorId current_score = F({4, 2});
   const TensorId indices = I({8});
-  const TensorId out = b.Fused(ir::FusedKind::kDsv4Compress,
+  const TensorId out = b.Fused(ir::FusedKind::kSoftmaxPoolCompress,
                                std::array{state, state_score, current, current_score, indices},
                                ir::CompressorParams{.ratio = 2, .overlap = true})[0];
   b.Output(out);
@@ -1000,7 +1026,7 @@ TEST_F(ExecTest, Dsv4CompressorDummyDoesNotReadAMaskedFirstScore) {
   const TensorId current = F({2, 1});
   const TensorId current_score = F({2, 1});
   const TensorId indices = I({2});
-  const TensorId out = b.Fused(ir::FusedKind::kDsv4Compress,
+  const TensorId out = b.Fused(ir::FusedKind::kSoftmaxPoolCompress,
                                std::array{state, state_score, current, current_score, indices},
                                ir::CompressorParams{.ratio = 1, .overlap = true})[0];
   b.Output(out);
@@ -1033,7 +1059,7 @@ TEST_F(ExecTest, Dsv4CompressorWithoutOverlapUsesWeightedWholeRows) {
   const TensorId current = F({2, 2});
   const TensorId current_score = F({2, 2});
   const TensorId indices = I({4});
-  const TensorId out = b.Fused(ir::FusedKind::kDsv4Compress,
+  const TensorId out = b.Fused(ir::FusedKind::kSoftmaxPoolCompress,
                                std::array{state, state_score, current, current_score, indices},
                                ir::CompressorParams{.ratio = 2})[0];
   b.Output(out);
@@ -2261,8 +2287,21 @@ TEST(ReferenceDecompositionTest, CompositeOpsEqualTheirDecompositions) {
   b.Output(b.HcMix(
       mixes, scale, base,
       ir::HcParams{.mix = ir::HcMixKind::kSinkhorn, .streams = 4, .iterations = 5, .eps = 1e-6f}));
+  b.Output(b.HcMix(
+      in({16, 3}), in({1}), in({16}),
+      ir::HcParams{.mix = ir::HcMixKind::kSinkhorn, .streams = 4, .iterations = 5, .eps = 1e-6f}));
+  b.Output(b.HcMix(mixes, scale, base,
+                   ir::HcParams{.mix = ir::HcMixKind::kSinkhorn,
+                                .streams = 4,
+                                .iterations = 5,
+                                .eps = 1e-6f,
+                                .mix_offset = 4,
+                                .scale_index = 1}));
   b.Output(b.HcMix(mixes, scale, base, ir::HcParams{.streams = 4, .eps = 1e-6f}));
+  b.Output(b.HcMix(mixes, scale, base,
+                   ir::HcParams{.streams = 4, .eps = 1e-6f, .mix_offset = 4, .scale_index = 1}));
   b.Output(b.HcPre(x, in({4, 3}), ir::HcParams{.streams = 4}));
+  b.Output(b.HcPre(x, in({4, 3}), ir::HcParams{.streams = 4, .scale = 0.5f}));
   b.Output(b.HcPre(x, in({8, 4, 3}),
                    ir::HcParams{.fold = ir::HcFold::kGated, .streams = 4, .scale = 0.25f}));
   b.Output(b.HcPost(in({8, 3}), x, in({4, 3}), in({4, 4, 3}), ir::HcParams{.streams = 4}));
@@ -2363,7 +2402,7 @@ TEST(ReferenceDecompositionTest, FusedKindsRunAsThePrimitivesTheyName) {
        b.Rope(b.Mul(b.RmsNorm(heads, 1e-6f), hw), pos, {}, rope));
   const TensorId k = in({4, 2, 3});
   const TensorId kw = in({4});
-  pair(b.Fused(ir::FusedKind::kDsv4QHead, std::array{heads, pos},
+  pair(b.Fused(ir::FusedKind::kRmsNormMulRope, std::array{heads, pos},
                ir::NormRopeParams{.eps = 1e-6F, .rope = rope})[0],
        b.Rope(b.RmsNorm(heads, 1e-6F), pos, {}, rope));
   const ir::Outputs qk = b.Fused(ir::FusedKind::kQkPrep, std::array{heads, hw, k, kw, pos},
@@ -2387,21 +2426,13 @@ TEST(ReferenceDecompositionTest, FusedKindsRunAsThePrimitivesTheyName) {
   const TensorId z = in({8, 3});
   pair(b.Fused(ir::FusedKind::kNormGate, std::array{x, w, z}, ir::NormParams{1e-5f})[0],
        b.Mul(b.Mul(b.RmsNorm(x, 1e-5f), w), b.Unary(z, ir::UnaryFn::kSigmoid)));
-  const TensorId mod = in({8, 1});
-  pair(b.Fused(ir::FusedKind::kLayerNormModulate, std::array{x, mod}, ir::NormParams{1e-6f})[0],
-       b.Mul(b.LayerNorm(x, 1e-6f), b.Scale(mod, 1.0f, 1.0f)));
-  const ir::Outputs grn =
-      b.Fused(ir::FusedKind::kGatedResidualNorm, std::array{x, mod, r, mod}, ir::NormParams{1e-6f});
-  const TensorId gres = b.Fused(ir::FusedKind::kGatedResidual, std::array{x, mod, r})[0];
-  pair(grn[0], gres);
-  pair(gres, b.Add(x, b.Mul(r, b.Unary(mod, ir::UnaryFn::kTanh))));
   const TensorId dt = in({1});
   pair(b.Fused(ir::FusedKind::kEulerStep, std::array{x, r, dt})[0], b.Add(x, b.Mul(r, dt)));
   // Full Sinkhorn pre carries and the following post's two outputs.
   const TensorId hx = in({8, 4, 3}), hfn = in({32, 24});
   const TensorId hs = in({3}), hb = in({24}), hn = in({8});
   const ir::SinkhornPreParams hp{.streams = 4, .eps = 1e-6F, .hc_eps = 1e-5F, .iterations = 5};
-  const auto hpre = b.Fused(ir::FusedKind::kDsv4HcPre, std::array{hx, hfn, hs, hb, hn}, hp);
+  const auto hpre = b.Fused(ir::FusedKind::kSinkhornHcPre, std::array{hx, hfn, hs, hb, hn}, hp);
   const TensorId mixes = b.MatMul(hfn, b.RmsNorm(b.Reshape(hx, ir::ShapeOf({32, 3})), hp.eps));
   const auto run = [&](std::uint64_t first) {
     return b.View(mixes, ir::ShapeOf({4, 3}), {4, 96, 288, 288}, first * 4);

@@ -191,8 +191,9 @@ std::expected<std::uint64_t, std::string> CompilerBound(const spec::SpatialCompo
   for (const auto& layer : mapping.spec.stages[0].layers)
     for (const auto& component : layer.components) {
       const auto* def = co::Find(component.kind, component.version);
-      if (!def || !def->spatial) return Error("image compiler inventory has no spatial component");
-      if (!add(primitives, def->spatial->max_nodes, primitives) || !add(components, 1, components))
+      const auto max_nodes = def ? co::MaxSpatialNodes(*def) : 0U;
+      if (!def || max_nodes == 0) return Error("image compiler inventory has no spatial component");
+      if (!add(primitives, max_nodes, primitives) || !add(components, 1, components))
         return Error("image component inventory overflows");
     }
   std::uint64_t nodes = 0, tensors = 0, graph = 0, tensor_bytes = 0, work = 0, result = 0;

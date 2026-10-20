@@ -375,6 +375,14 @@ ComponentStepSource::ExecutionIdentity() const {
   return std::optional{execution_->identity};
 }
 
+StageExecutionFacts ComponentStepSource::StageFacts(std::uint16_t stage) const {
+  return {.uses_side_rows = UsesSideRows(stage),
+          .joined_repeat_pending = JoinedRepeatPending(stage),
+          .commit_buffers = [this, stage](std::uint32_t max_rows) {
+            return CommitBuffers(stage, max_rows);
+          }};
+}
+
 bool ComponentStepSource::JoinedRepeatPending(std::uint16_t stage) const {
   if (stage != o_.stage || !execution_ || !execution_->joined_repeat_pending) return false;
   const auto identity = ExecutionIdentity();
@@ -602,7 +610,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
                         *o_.spec, o_.stage, shape, o_.bindings,
                         {.narrow = !planner::Disabled(policy_, "narrow_final"),
                          .rounded_indexer = !planner::Disabled(policy_, "rounded_indexer"),
-                         .dsv4_lid_mask = !planner::Disabled(policy_, "dsv4_lid_mask")});
+                         .rounded_index_mask = !planner::Disabled(policy_, "rounded_index_mask")});
   if (!step) return std::unexpected(std::move(step.error()));
   // Keep the existing placement set. Cell positions are synthesized by
   // masks; commit rows retain their legacy reserved place but are bound to
@@ -753,6 +761,14 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> StagedStepSour
     return std::unexpected(std::format("a step of stage {}, which the model lacks", shape.stage));
   }
   return stages_[shape.stage]->Build(shape, addresses);
+}
+
+StageExecutionFacts StagedStepSource::StageFacts(std::uint16_t stage) const {
+  if (stage < stages_.size()) return stages_[stage]->StageFacts(stage);
+  return {
+      .commit_buffers = [](std::uint32_t) -> std::expected<std::vector<CommitBuffer>, std::string> {
+        return std::unexpected("a commit names no stage");
+      }};
 }
 
 bool StagedStepSource::JoinedRepeatPending(std::uint16_t stage) const {

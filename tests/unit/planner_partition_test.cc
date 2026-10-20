@@ -1837,7 +1837,7 @@ TEST(PartitionTest, ExecutionReadsStateAndCapacityRetainsEverySlot) {
                                                      .encoding = Encoding::kF32,
                                                      .cell_bytes = 128,
                                                      .cells = model::CellRule::kFixed,
-                                                     .window_or_ratio = 1,
+                                                     .fixed_cells = 1,
                                                      .cell_pad = 1,
                                                      .rollback = model::Rollback::kSnapshot}}};
           },

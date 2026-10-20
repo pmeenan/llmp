@@ -73,7 +73,7 @@ __global__ void PrefixOverwriteKernel(const std::uint32_t* values, const std::in
 // The entire padded output is initialized. Position data is fresh at replay;
 // invalid positions produce -inf rather than being cast to a large index.
 template <typename Bits>
-__global__ void Gemma4MaskKernel(const std::int32_t* positions, Bits* mask, std::int64_t elements,
+__global__ void CausalMaskKernel(const std::int32_t* positions, Bits* mask, std::int64_t elements,
                                  int cells, int first, int rows, int capacity, int window,
                                  int limit, int policy) {
   const std::int64_t index = std::int64_t{blockIdx.x} * blockDim.x + threadIdx.x;
@@ -1012,13 +1012,13 @@ std::expected<void, KernelFailure> RunPrefixOverwrite(LaunchContext& launch, ggm
   });
 }
 
-std::expected<void, KernelFailure> RunGemma4Mask(LaunchContext& launch, ggml_tensor* node) {
-  if (auto checked = CheckGemma4Mask(node); !checked) return checked;
+std::expected<void, KernelFailure> RunCausalMask(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckCausalMask(node); !checked) return checked;
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
     const auto elements = ggml_nelements(node);
     constexpr int threads = 256;
     const auto queue = [&]<typename Bits>() {
-      Gemma4MaskKernel<<<static_cast<unsigned>((elements + threads - 1) / threads), threads, 0,
+      CausalMaskKernel<<<static_cast<unsigned>((elements + threads - 1) / threads), threads, 0,
                          context.stream()>>>(
           static_cast<const std::int32_t*>(node->src[0]->data), static_cast<Bits*>(node->data),
           elements, static_cast<int>(node->ne[0]), LlmpOpInt(node, 0), LlmpOpInt(node, 1),

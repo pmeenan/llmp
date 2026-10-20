@@ -54,6 +54,7 @@
 
 #include "base/sha256.h"
 #include "format/encoding.h"
+#include "spec/graph_links.h"
 
 namespace llmp::spec {
 
@@ -190,6 +191,12 @@ struct Stage {
   // folds (Validate). A binding to another stage's tensor
   // (WeightBinding::stage) carries that stage's folds (HoldingStage).
   std::vector<std::string> folds{};
+  // Optional non-sequential component wiring and multi-value stage exports
+  // (1-based component value IDs across layers, 0 = stage input stream).
+  // Empty for sequential stages; serialized in canonical JSON only when
+  // non-empty (D-122).
+  std::vector<GraphLink> links{};
+  std::vector<std::uint16_t> exports{};
   bool operator==(const Stage&) const = default;
 };
 

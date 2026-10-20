@@ -429,7 +429,7 @@ TEST(SpatialComponentsTest, PointwiseProductsPreserveWHCNBiasBatchAndOwnerIsolat
     for (std::size_t o = 0; o < owners.size(); ++o) {
       const std::vector<double> original(input[o].begin(), input[o].end());
       SpatialRefIO oracle{instances->layers[0][0], owners[o].shape, original, kernel, bias, {}};
-      ASSERT_TRUE(instances->layers[0][0].def->spatial->reference(oracle));
+      ASSERT_TRUE(RunSpatialReference(oracle));
       auto actual = executor->Values(graph->graph().outputs()[o]);
       ASSERT_TRUE(actual);
       ASSERT_EQ(actual->size(), oracle.output.size());
@@ -494,10 +494,10 @@ TEST(SpatialComponentsTest, RaggedUpsampleAndChannelChangingConvolutionUseShared
     for (std::size_t owner = 0; owner < inputs.size(); ++owner) {
       std::vector<double> original(inputs[owner].begin(), inputs[owner].end());
       SpatialRefIO first{up, kOwners[owner].shape, original, {}, {}, {}};
-      ASSERT_TRUE(up.def->spatial->reference(first));
-      SpatialRefIO second{
-          conv, *up.def->spatial->infer(up, first.shape), first.output, kernel, bias, {}};
-      ASSERT_TRUE(conv.def->spatial->reference(second));
+      ASSERT_TRUE(RunSpatialReference(first));
+      SpatialRefIO second{conv, *InferSpatialShape(up, first.shape), first.output, kernel, bias,
+                          {}};
+      ASSERT_TRUE(RunSpatialReference(second));
       auto actual = executor->Values(built->graph().outputs()[owner]);
       ASSERT_TRUE(actual);
       ASSERT_EQ(actual->size(), second.output.size());
@@ -648,7 +648,7 @@ TEST(SpatialComponentsTest, BackwardResidualEdgesPreserveOwnersGammaEncodingAndR
   for (std::size_t owner = 0; owner < inputs.size(); ++owner) {
     std::vector<double> input(inputs[owner].begin(), inputs[owner].end());
     SpatialRefIO norm{instances->layers[0][0], kOwners[owner].shape, input, gamma, {}, {}};
-    ASSERT_TRUE(norm.instance.def->spatial->reference(norm));
+    ASSERT_TRUE(RunSpatialReference(norm));
     auto actual = exec->Values(graph->graph().outputs()[owner]);
     ASSERT_TRUE(actual);
     for (std::size_t at = 0; at < actual->size(); ++at)
@@ -727,8 +727,8 @@ TEST(SpatialComponentsTest, CompleteReducedDecoderSharesAllFragmentsAndIndepende
       oracle.auxiliary = values[*link.auxiliary];
       oracle.auxiliary_shape = shapes[*link.auxiliary];
     }
-    ASSERT_TRUE(instance.def->spatial->reference(oracle)) << i;
-    auto shape = instance.def->spatial->infer(instance, oracle.shape, oracle.auxiliary_shape);
+    ASSERT_TRUE(RunSpatialReference(oracle)) << i;
+    auto shape = InferSpatialShape(instance, oracle.shape, oracle.auxiliary_shape);
     ASSERT_TRUE(shape);
     shapes.push_back(*shape);
     values.push_back(std::move(oracle.output));
@@ -740,7 +740,7 @@ TEST(SpatialComponentsTest, CompleteReducedDecoderSharesAllFragmentsAndIndepende
     EXPECT_NEAR((*actual)[i], values.back()[i], 2e-5);
 }
 
-std::vector<BoundTensor> TimestepTensors(std::span<const model::QwenImageTensor> source) {
+std::vector<BoundTensor> TimestepTensors(std::span<const model::ImageTensor> source) {
   std::vector<BoundTensor> out;
   for (const auto& tensor : source) {
     if (tensor.name != "time_text_embed.timestep_embedder.linear_1.weight" &&
@@ -843,8 +843,13 @@ TEST(SpatialComponentsTest, TimestepBranchesKeepBothOutputsAndChangedMultiownerI
     ASSERT_TRUE(other);
     EXPECT_FALSE(std::ranges::equal(graph->parameters(), other->parameters()));
     EXPECT_EQ(other->outputs()[0].shape.channels, 4U);
-    auto legacy = BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
-                                   {.links = mapping->links});
+    auto from_stage = BuildSpatialStep(mapping->spec, tables, owners, budget.Payment());
+    ASSERT_TRUE(from_stage);
+    EXPECT_EQ(from_stage->graph().Digest(), graph->graph().Digest());
+    auto single_spec = mapping->spec;
+    single_spec.stages[0].exports.clear();
+    auto legacy =
+        BuildSpatialStep(single_spec, tables, owners, budget.Payment(), {.links = mapping->links});
     ASSERT_TRUE(legacy);
     EXPECT_EQ(legacy->graph().outputs().size(), owners.size());
     EXPECT_EQ(legacy->outputs()[0].shape.channels, 4U);
@@ -936,7 +941,7 @@ TEST(SpatialComponentsTest, TimestepRefusesMalformedSourcesExportsAndPaymentBefo
                                 {.links = mapping->links, .exports = mapping->exports}));
 }
 
-std::vector<BoundTensor> BlockTensors(std::span<const model::QwenImageTensor> source) {
+std::vector<BoundTensor> BlockTensors(std::span<const model::ImageTensor> source) {
   auto out = TimestepTensors(source);
   for (const auto& tensor : source) {
     if (!tensor.name.starts_with("transformer_blocks.0.")) continue;
@@ -961,7 +966,7 @@ std::vector<SpatialInput> BlockPorts(std::span<const SpatialOwner> owners, std::
 using BlockWeights = std::map<std::string, std::vector<float>>;
 // Independent complete block equations over channel-major double vectors.
 // Neither GraphLink nor component emit/reference code computes this expectation.
-std::array<std::vector<double>, 2> BlockOracle(const model::QwenImageDenoiserProfile& p,
+std::array<std::vector<double>, 2> BlockOracle(const model::ImageDenoiserProfile& p,
                                                std::uint64_t rows, std::span<const double> stream,
                                                std::span<const double> sinusoid,
                                                std::span<const double> positions,
@@ -1184,26 +1189,46 @@ TEST(SpatialComponentsTest, SourceAxesUseNormalOffsetsAndIndependentNegativePosi
   const auto& p = ::llmp::test_support::QwenImageProfile().denoiser;
   spec::Stage stage{.name = "rotation", .role = spec::StageRole::kDenoiser, .artifact = 0};
   stage.stream.width = 128;
-  spec::ComponentRef rotate{.kind = "norm.rope_axes",
+  spec::ComponentRef rotate{.kind = "attention.dense",
                             .version = 1,
-                            .params = {{"heads", std::int64_t{1}},
-                                       {"axis0", std::int64_t{16}},
-                                       {"axis1", std::int64_t{56}},
-                                       {"axis2", std::int64_t{56}},
-                                       {"base", double{p.rope_theta}},
-                                       {"eps", double{p.eps}}},
-                            .weights = {{.role = "weight", .tensor = "gamma"}}};
+                            .params = {{"eps", double{p.eps}},
+                                       {"heads", std::int64_t{1}},
+                                       {"key_dim", std::int64_t{128}},
+                                       {"kv_heads", std::int64_t{1}},
+                                       {"placement", std::string("bare")},
+                                       {"qk_norm", true},
+                                       {"rope_axis0", std::int64_t{16}},
+                                       {"rope_axis1", std::int64_t{56}},
+                                       {"rope_axis2", std::int64_t{56}},
+                                       {"rope_base", double{p.rope_theta}},
+                                       {"rope_dims", std::int64_t{128}},
+                                       {"rope_scale", 1.0},
+                                       {"rotation", std::string("normal")},
+                                       {"scale", 1.0 / std::sqrt(128.0)},
+                                       {"scale_scores", true},
+                                       {"stateless", true},
+                                       {"value_dim", std::int64_t{128}},
+                                       {"window", std::int64_t{0}}},
+                            .weights = {{.role = "k", .tensor = "k"},
+                                        {.role = "k_norm", .tensor = "k_norm"},
+                                        {.role = "output", .tensor = "output"},
+                                        {.role = "q", .tensor = "q"},
+                                        {.role = "q_norm", .tensor = "q_norm"},
+                                        {.role = "v", .tensor = "v"}}};
   spec::Layer layer;
   layer.components.push_back(std::move(rotate));
   stage.layers.push_back(std::move(layer));
   spec::ModelSpec model{.pipeline = spec::PipelineKind::kImage, .stages = {std::move(stage)}};
   spec::Canonicalize(model);
-  const std::vector<BoundTensor> tensors{
-      {"gamma", ir::Dense(format::Encoding::kBF16, ir::ShapeOf({128}))}};
+  const auto mat = ir::Dense(format::Encoding::kBF16, ir::ShapeOf({128, 128}));
+  const auto vec = ir::Dense(format::Encoding::kBF16, ir::ShapeOf({128}));
+  const std::vector<BoundTensor> tensors{{"k", mat}, {"k_norm", vec}, {"output", mat},
+                                         {"q", mat}, {"q_norm", vec}, {"v", mat}};
   const std::array<std::span<const BoundTensor>, 1> tables{tensors};
   const std::array owners{SpatialOwner{0, {1, 6, 128, 1}}};
-  const std::array ports{SpatialInput{0, 0, {6, 3, 1, 1}, format::Encoding::kI32}};
-  const std::array links{SpatialLink{.auxiliary_port = 0}};
+  const std::array ports{SpatialInput{0, 0, {6, 3, 1, 1}, format::Encoding::kI32},
+                         SpatialInput{0, 1, {6, 6, 1, 1}}};
+  const std::array links{SpatialLink{.auxiliary_port = 0, .carry_port = 1}};
   Budget budget;
   auto graph =
       BuildSpatialStep(model, tables, owners, budget.Payment(), {.links = links, .inputs = ports});
@@ -1211,18 +1236,26 @@ TEST(SpatialComponentsTest, SourceAxesUseNormalOffsetsAndIndependentNegativePosi
   auto exec = ref::Executor::Create(graph->graph());
   ASSERT_TRUE(exec);
   const std::vector<float> gamma(128, 1.0F);
+  std::vector<float> identity(128 * 128, 0.0F);
+  for (std::size_t i = 0; i < 128; ++i) identity[i * 128 + i] = 1.0F;
   std::vector<float> input(768);
   for (std::size_t i = 0; i < input.size(); ++i)
     input[i] = static_cast<float>(static_cast<int>((i * 17) % 29) - 14) / 16;
   const std::array<std::int64_t, 18> positions{0,  1, 2, 2, 2, 2,  0, 1,  -1,
                                                -1, 0, 0, 0, 1, -1, 0, -1, 0};
-  ASSERT_TRUE(exec->BindValues(graph->weights()[0].tensor, gamma));
+  const std::vector<float> mask(36, 0.0F);
+  for (const auto& w : graph->weights()) {
+    const bool is_norm = w.parts[0].first == "q_norm" || w.parts[0].first == "k_norm";
+    ASSERT_TRUE(exec->BindValues(w.tensor, is_norm ? gamma : identity));
+  }
   ASSERT_TRUE(exec->BindValues(graph->graph().inputs()[0], input));
   ASSERT_TRUE(exec->BindInts(graph->graph().inputs()[1], positions));
+  ASSERT_TRUE(exec->BindValues(graph->graph().inputs()[2], mask));
   ASSERT_TRUE(exec->Run());
   auto actual = exec->Values(graph->graph().outputs()[0]);
   ASSERT_TRUE(actual);
-  const auto source_table = model::QwenImageDenoiserRotary(p, 2, 2);
+  const auto source_table = model::ImageDenoiserRotary(p, 2, 2);
+  std::vector<double> rotated(768);
   for (std::uint64_t row = 0; row < 6; ++row) {
     double square = 0;
     for (std::uint64_t c = 0; c < 128; ++c)
@@ -1238,24 +1271,54 @@ TEST(SpatialComponentsTest, SourceAxesUseNormalOffsetsAndIndependentNegativePosi
         EXPECT_NEAR(source_table[(row * 64 + pair) * 2 + 1], std::sin(angle), 3e-7);
         const double a = input[row + 6 * (offset + c)] * scale;
         const double b = input[row + 6 * (offset + c + 1)] * scale;
-        EXPECT_NEAR((*actual)[row + 6 * (offset + c)], a * std::cos(angle) - b * std::sin(angle),
-                    2e-6);
-        EXPECT_NEAR((*actual)[row + 6 * (offset + c + 1)],
-                    a * std::sin(angle) + b * std::cos(angle), 2e-6);
+        rotated[row + 6 * (offset + c)] = a * std::cos(angle) - b * std::sin(angle);
+        rotated[row + 6 * (offset + c + 1)] = a * std::sin(angle) + b * std::cos(angle);
       }
       offset += p.rope_axes[axis];
+    }
+  }
+  for (std::uint64_t q = 0; q < 6; ++q) {
+    std::array<double, 6> scores{};
+    for (std::uint64_t k = 0; k < 6; ++k) {
+      double dot = 0;
+      for (std::uint64_t c = 0; c < 128; ++c) dot += rotated[q + 6 * c] * rotated[k + 6 * c];
+      scores[k] = dot / std::sqrt(128.0);
+    }
+    const double hi = *std::ranges::max_element(scores);
+    double sum = 0;
+    for (double& s : scores) {
+      s = std::exp(s - hi);
+      sum += s;
+    }
+    for (std::uint64_t c = 0; c < 128; ++c) {
+      double acc = 0;
+      for (std::uint64_t k = 0; k < 6; ++k) acc += (scores[k] / sum) * input[k + 6 * c];
+      EXPECT_NEAR((*actual)[q + 6 * c], acc, 2e-6);
     }
   }
   auto instances = InstancesOf(model, 0);
   ASSERT_TRUE(instances);
   std::vector<double> x(input.begin(), input.end()),
-      invalid_positions(positions.begin(), positions.end());
-  SpatialRefIO oracle{instances->layers[0][0], owners[0].shape, x, gamma, {}, {},
-                      invalid_positions,       ports[0].shape};
+      valid_positions(positions.begin(), positions.end()), valid_mask(mask.begin(), mask.end());
+  const std::array<std::span<const float>, 6> weight_spans{identity, gamma, identity,
+                                                           identity, gamma, identity};
+  SpatialRefIO oracle{.instance = instances->layers[0][0],
+                      .shape = owners[0].shape,
+                      .input = x,
+                      .auxiliary = valid_positions,
+                      .auxiliary_shape = ports[0].shape,
+                      .carry = valid_mask,
+                      .carry_shape = ports[1].shape,
+                      .weights = weight_spans};
+  ASSERT_TRUE(RunSpatialReference(oracle));
+  for (std::size_t i = 0; i < actual->size(); ++i)
+    EXPECT_NEAR(oracle.output[i], (*actual)[i], 2e-6);
+  auto invalid_positions = valid_positions;
+  oracle.auxiliary = invalid_positions;
   invalid_positions[2] = double{INT32_MAX} + 1;
-  EXPECT_FALSE(oracle.instance.def->spatial->reference(oracle));
+  EXPECT_FALSE(RunSpatialReference(oracle));
   invalid_positions[2] = 0.5;
-  EXPECT_FALSE(oracle.instance.def->spatial->reference(oracle));
+  EXPECT_FALSE(RunSpatialReference(oracle));
 }
 
 TEST(SpatialComponentsTest, ConditionedBlockPaysFullSourcesAndRefusesMalformedPortsAndCarries) {
@@ -1325,7 +1388,7 @@ TEST(SpatialComponentsTest, ConditionedBlockPaysFullSourcesAndRefusesMalformedPo
   EXPECT_EQ(budget.used, 0U);
   auto wrong = source;
   auto role = std::ranges::find(wrong, "transformer_blocks.0.attn.norm_q.weight",
-                                &model::QwenImageTensor::name);
+                                &model::ImageTensor::name);
   ASSERT_NE(role, wrong.end());
   role->shape[0] = 64;
   EXPECT_FALSE(spec::ImageTransformerBlockSpec(p, 0, 2, wrong));
@@ -1335,7 +1398,7 @@ TEST(SpatialComponentsTest, ConditionedBlockPaysFullSourcesAndRefusesMalformedPo
   EXPECT_FALSE(spec::ImageTransformerBlockSpec(invalid, 0, 2, source));
 }
 
-std::vector<BoundTensor> FlowTensors(std::span<const model::QwenImageTensor> source) {
+std::vector<BoundTensor> FlowTensors(std::span<const model::ImageTensor> source) {
   std::vector<BoundTensor> out;
   for (const auto& tensor : source) {
     format::Shape shape;
@@ -1347,7 +1410,7 @@ std::vector<BoundTensor> FlowTensors(std::span<const model::QwenImageTensor> sou
   return out;
 }
 std::vector<SpatialInput> FlowPorts(std::span<const SpatialOwner> owners,
-                                    const model::QwenImageDenoiserProfile& p) {
+                                    const model::ImageDenoiserProfile& p) {
   std::vector<SpatialInput> out;
   for (const auto& owner : owners) {
     out.push_back({owner.owner, 0, {1, 4, p.in_channels, 1}});
@@ -1360,7 +1423,7 @@ std::vector<SpatialInput> FlowPorts(std::span<const SpatialOwner> owners,
 }
 // Independent complete forward and Euler equations. The block oracle evaluates
 // its own equations, never component references or graph links.
-std::array<std::vector<double>, 2> FlowOracle(const model::QwenImageDenoiserProfile& p,
+std::array<std::vector<double>, 2> FlowOracle(const model::ImageDenoiserProfile& p,
                                               std::span<const double> text,
                                               std::span<const double> latent,
                                               std::span<const double> sinusoid,
@@ -1429,7 +1492,7 @@ TEST(SpatialComponentsTest, CompleteFlowUsesAllBlocksAndIndependentBoundaryMathF
   const auto source = model::DenoiserTensors(p, ::llmp::test_support::QwenImageNames().denoiser);
   auto mapping = spec::ImageFlowSpec(p, 2, 4, source);
   ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
-  ASSERT_EQ(mapping->links.size(), 53U);
+  ASSERT_EQ(mapping->links.size(), 31U);
   const auto tensors = FlowTensors(source);
   const std::array<std::span<const BoundTensor>, 1> tables{tensors};
   const std::array owners{SpatialOwner{2, {1, 2, 16, 1}}, SpatialOwner{5, {1, 2, 16, 1}}};
@@ -1524,7 +1587,7 @@ TEST(SpatialComponentsTest, FullFlowPays563ComponentsAndRefusesDecodedReferenceB
   ASSERT_EQ(source.size(), 297U);
   auto mapping = spec::ImageFlowSpec(p, 2, 4, source);
   ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
-  ASSERT_EQ(mapping->links.size(), 563U);
+  ASSERT_EQ(mapping->links.size(), 211U);
   const auto tensors = FlowTensors(source);
   const std::array<std::span<const BoundTensor>, 1> tables{tensors};
   const std::array owners{SpatialOwner{0, {1, 2, 4096, 1}}};
@@ -1544,17 +1607,17 @@ TEST(SpatialComponentsTest, FullFlowPays563ComponentsAndRefusesDecodedReferenceB
     for (const auto& component : layer.components) {
       const auto* def = Find(component.kind, component.version);
       ASSERT_NE(def, nullptr);
-      ASSERT_NE(def->spatial, nullptr);
-      primitive_count += def->spatial->max_nodes;
+      ASSERT_GT(MaxSpatialNodes(*def), 0U);
+      primitive_count += MaxSpatialNodes(*def);
     }
   }
-  EXPECT_EQ(primitive_count, 32U * 169U + 137U);
+  EXPECT_EQ(primitive_count, 32U * 122U + 137U);
   const auto metadata_nodes =
       owners.size() * (primitive_count + 1) + ports.size() + 2 * mapping->links.size();
   const auto metadata_bytes =
       4096ULL * (2 * metadata_nodes + source.size() + 4 * mapping->links.size() + 16 +
                  owners.size() * mapping->exports.size() + 2 * ports.size());
-  EXPECT_EQ(metadata_bytes, 65253376U);
+  EXPECT_EQ(metadata_bytes, 41398272U);
   EXPECT_EQ(graph->metadata_bytes(), metadata_bytes);
   RecordProperty("full_flow_primitive_ceiling", std::to_string(primitive_count));
   RecordProperty("full_flow_metadata_bytes", std::to_string(graph->metadata_bytes()));
@@ -1651,7 +1714,7 @@ TEST(SpatialComponentsTest, TypedTextEncoderUsesIndependentGatherGqaAndNeoxRefer
       std::vector<double>(positions.begin(), positions.end()),
       std::vector<double>(mask.begin(), mask.end())};
   const auto& components = mapping->spec.stages[0].layers[0].components;
-  ASSERT_EQ(components.size(), 17U * p.layers + 2);
+  ASSERT_EQ(components.size(), 2U * p.layers + 2);
   for (std::size_t i = 0; i < components.size(); ++i) {
     const auto& in = instances->layers[0][i];
     const auto& link = mapping->links[i];
@@ -1665,11 +1728,27 @@ TEST(SpatialComponentsTest, TypedTextEncoderUsesIndependentGatherGqaAndNeoxRefer
       aux = values[*link.auxiliary];
       aux_shape = shapes[*link.auxiliary];
     }
-    std::span<const float> weight;
-    if (!components[i].weights.empty()) weight = weights.at(components[i].weights[0].tensor);
-    SpatialRefIO oracle{in, shape, values[link.input], weight, {}, {}, aux, aux_shape};
-    ASSERT_TRUE(in.def->spatial->reference(oracle)) << i << " " << components[i].kind;
-    auto output_shape = in.def->spatial->infer(in, shape, aux_shape);
+    std::span<const double> carry;
+    std::optional<SpatialShape> carry_shape;
+    if (link.carry_port) {
+      carry = extra[*link.carry_port];
+      carry_shape = ports[*link.carry_port].shape;
+    } else if (link.carry) {
+      carry = values[*link.carry];
+      carry_shape = shapes[*link.carry];
+    }
+    std::vector<std::span<const float>> component_weights;
+    for (const auto& w : components[i].weights) component_weights.push_back(weights.at(w.tensor));
+    SpatialRefIO oracle{.instance = in,
+                        .shape = shape,
+                        .input = values[link.input],
+                        .auxiliary = aux,
+                        .auxiliary_shape = aux_shape,
+                        .carry = carry,
+                        .carry_shape = carry_shape,
+                        .weights = component_weights};
+    ASSERT_TRUE(RunSpatialReference(oracle)) << i << " " << components[i].kind;
+    auto output_shape = InferSpatialShape(in, shape, aux_shape);
     ASSERT_TRUE(output_shape);
     values.push_back(std::move(oracle.output));
     shapes.push_back(*output_shape);
@@ -1684,11 +1763,11 @@ TEST(SpatialComponentsTest, TypedTextEncoderUsesIndependentGatherGqaAndNeoxRefer
   std::vector<double> bad_ids{-1, 1, 2};
   SpatialRefIO bad{
       embedding, owners[0].shape, bad_ids, weights.at(components[0].weights[0].tensor), {}, {}};
-  EXPECT_FALSE(embedding.def->spatial->reference(bad));
+  EXPECT_FALSE(RunSpatialReference(bad));
   bad_ids[0] = p.vocab;
-  EXPECT_FALSE(embedding.def->spatial->reference(bad));
+  EXPECT_FALSE(RunSpatialReference(bad));
   bad_ids[0] = 0.5;
-  EXPECT_FALSE(embedding.def->spatial->reference(bad));
+  EXPECT_FALSE(RunSpatialReference(bad));
   Budget wrong_type;
   EXPECT_FALSE(
       BuildSpatialStep(mapping->spec, tables, owners, wrong_type.Payment(),
@@ -1745,7 +1824,7 @@ TEST(SpatialComponentsTest, RealTextAnd1024FlowMetadataArePaidWithoutReferencePa
   ASSERT_TRUE(flow_graph) << Failed(flow_graph).value_or("");
   EXPECT_EQ(flow_graph->weights().size(), 297U);
   EXPECT_EQ(flow_graph->outputs()[1].shape, (SpatialShape{1, 4096, 64, 1}));
-  EXPECT_EQ(flow_graph->metadata_bytes(), 65253376U);
+  EXPECT_EQ(flow_graph->metadata_bytes(), 41398272U);
   EXPECT_EQ(flow_graph->reference_bytes(), 0U);
   RecordProperty("text_metadata_bytes", std::to_string(text_graph->metadata_bytes()));
   RecordProperty("real_flow_metadata_bytes", std::to_string(flow_graph->metadata_bytes()));

@@ -62,6 +62,7 @@
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec_fixtures.h"
+#include "state_layouts.h"
 
 namespace llmp::planner {
 namespace {
@@ -490,8 +491,8 @@ void ExpectFamilyPlans(std::string_view policy_text) {
         EXPECT_GT(CountApplied(*p.plan, "rms_norm_mul_add"), 0U);
         // Gemma3 normalizes Q/K before rotation. Gemma2 has no Q/K
         // normalization, so its rotations cannot match either norm fusion.
-        const auto norm_rope =
-            CountApplied(*p.plan, "rms_norm_mul_rope") + CountApplied(*p.plan, "qsa_prep");
+        const auto norm_rope = CountApplied(*p.plan, "rms_norm_mul_rope") +
+                               CountApplied(*p.plan, "interleaved_norm_rope");
         if constexpr (F::kGemma3) {
           EXPECT_GT(norm_rope, 0U);
         } else {

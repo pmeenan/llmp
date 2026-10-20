@@ -358,7 +358,7 @@ TEST_F(GgmlExtOpsTest, Gemma3DeviceMasksMatchEveryHostByteAcrossWrapAndTrainedMa
         const auto& input = host.owners[segment];
         const auto cells = local ? input.local_n_kv : input.global_n_kv;
         auto* mask =
-            kg::Gemma4Mask(c(), positions, cells, static_cast<std::int32_t>(segment * rows),
+            kg::CausalMask(c(), positions, cells, static_cast<std::int32_t>(segment * rows),
                            static_cast<std::int32_t>(rows),
                            static_cast<std::int32_t>(local ? local_cells : global_cells),
                            local ? static_cast<std::int32_t>(window) : 0, 131072);
@@ -390,11 +390,11 @@ TEST_F(GgmlExtOpsTest, Gemma3DeviceMasksMatchEveryHostByteAcrossWrapAndTrainedMa
           EXPECT_EQ(before, after);
         };
         poison();
-        ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+        ASSERT_TRUE(kg::RunCausalMask(launch(), mask));
         const auto eager = Download<std::uint16_t>(mask);
         EXPECT_EQ(eager, expected(host));
         auto captured =
-            launch().Capture([&](auto& context) { return kg::RunGemma4Mask(context, mask); });
+            launch().Capture([&](auto& context) { return kg::RunCausalMask(context, mask); });
         ASSERT_TRUE(captured);
         poison();
         ASSERT_TRUE(launch().Launch(*captured));
@@ -415,7 +415,7 @@ TEST_F(GgmlExtOpsTest, Gemma3DeviceMasksMatchEveryHostByteAcrossWrapAndTrainedMa
         const auto replay = Download<std::uint16_t>(mask);
         EXPECT_EQ(replay, expected(fresh));
         poison();
-        ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+        ASSERT_TRUE(kg::RunCausalMask(launch(), mask));
         EXPECT_EQ(Download<std::uint16_t>(mask), replay);
         EXPECT_EQ(Download<std::int32_t>(positions), fresh.positions);
         guards();
@@ -426,7 +426,7 @@ TEST_F(GgmlExtOpsTest, Gemma3DeviceMasksMatchEveryHostByteAcrossWrapAndTrainedMa
                   cudaSuccess);
         const auto saved = positions->type;
         positions->type = GGML_TYPE_F32;
-        EXPECT_FALSE(kg::RunGemma4Mask(launch(), mask));
+        EXPECT_FALSE(kg::RunCausalMask(launch(), mask));
         positions->type = saved;
         EXPECT_FALSE(launch().faulted());
       }
@@ -450,7 +450,7 @@ TEST_F(GgmlExtOpsTest, Gemma2DeviceMasksMatchEveryHostByteAcrossWrapAndEightKBou
         const auto& input = host.owners[segment];
         const auto cells = local ? input.local_n_kv : input.global_n_kv;
         auto* mask =
-            kg::Gemma4Mask(c(), positions, cells, static_cast<std::int32_t>(segment * rows),
+            kg::CausalMask(c(), positions, cells, static_cast<std::int32_t>(segment * rows),
                            static_cast<std::int32_t>(rows),
                            static_cast<std::int32_t>(local ? local_cells : global_cells),
                            local ? static_cast<std::int32_t>(window) : 0, 8192);
@@ -482,11 +482,11 @@ TEST_F(GgmlExtOpsTest, Gemma2DeviceMasksMatchEveryHostByteAcrossWrapAndEightKBou
           EXPECT_EQ(before, after);
         };
         poison();
-        ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+        ASSERT_TRUE(kg::RunCausalMask(launch(), mask));
         const auto eager = Download<std::uint16_t>(mask);
         EXPECT_EQ(eager, expected(host));
         auto captured =
-            launch().Capture([&](auto& context) { return kg::RunGemma4Mask(context, mask); });
+            launch().Capture([&](auto& context) { return kg::RunCausalMask(context, mask); });
         ASSERT_TRUE(captured);
         poison();
         ASSERT_TRUE(launch().Launch(*captured));
@@ -507,7 +507,7 @@ TEST_F(GgmlExtOpsTest, Gemma2DeviceMasksMatchEveryHostByteAcrossWrapAndEightKBou
         const auto replay = Download<std::uint16_t>(mask);
         EXPECT_EQ(replay, expected(fresh));
         poison();
-        ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+        ASSERT_TRUE(kg::RunCausalMask(launch(), mask));
         EXPECT_EQ(Download<std::uint16_t>(mask), replay);
         EXPECT_EQ(Download<std::int32_t>(positions), fresh.positions);
         guards();
@@ -518,7 +518,7 @@ TEST_F(GgmlExtOpsTest, Gemma2DeviceMasksMatchEveryHostByteAcrossWrapAndEightKBou
                   cudaSuccess);
         const auto saved = positions->type;
         positions->type = GGML_TYPE_F32;
-        EXPECT_FALSE(kg::RunGemma4Mask(launch(), mask));
+        EXPECT_FALSE(kg::RunCausalMask(launch(), mask));
         positions->type = saved;
         EXPECT_FALSE(launch().faulted());
       }
@@ -545,7 +545,7 @@ TEST_F(GgmlExtOpsTest, FrozenMasksSeeOnlyThePositionsBeforeTheSegment) {
           kg::CausalRingMask(c(), input, cells, first, rows, capacity, window, limit,
                              kg::CausalMaskRows::kPad32, GGML_TYPE_F16, kg::MaskPolicy::kFrozen);
       TensorArena::Bind(mask, Allocate(ggml_nbytes(mask)));
-      ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+      ASSERT_TRUE(kg::RunCausalMask(launch(), mask));
       std::vector<std::uint16_t> expected(static_cast<std::size_t>(mask->ne[0] * mask->ne[1]),
                                           0xfc00);
       for (std::int32_t row = 0; row < rows; ++row) {
@@ -625,10 +625,10 @@ TEST_F(GgmlExtOpsTest, SharedCausalMasksMatchF16AndF32AndRefreshCapturedPosition
           EXPECT_EQ(Download<std::int32_t>(input), positions);
         };
         ASSERT_EQ(poison(), cudaSuccess);
-        ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+        ASSERT_TRUE(kg::RunCausalMask(launch(), mask));
         check();
         auto graph =
-            launch().Capture([&](auto& context) { return kg::RunGemma4Mask(context, mask); });
+            launch().Capture([&](auto& context) { return kg::RunCausalMask(context, mask); });
         ASSERT_TRUE(graph);
         positions[first] = -1;
         positions[first + 1] = 512;
@@ -646,19 +646,19 @@ TEST_F(GgmlExtOpsTest, SharedCausalMasksMatchF16AndF32AndRefreshCapturedPosition
           const std::int32_t invalid = reserved == 6 ? 3 : 1, zero = 0;
           auto* parameter = reinterpret_cast<std::byte*>(mask->op_params) + 32 + reserved * 4;
           std::memcpy(parameter, &invalid, 4);
-          EXPECT_FALSE(kg::RunGemma4Mask(launch(), mask));
+          EXPECT_FALSE(kg::RunCausalMask(launch(), mask));
           std::memcpy(parameter, &zero, 4);
         }
         auto rejected = *mask;
         rejected.type = GGML_TYPE_I32;
-        EXPECT_FALSE(kg::RunGemma4Mask(launch(), &rejected));
+        EXPECT_FALSE(kg::RunCausalMask(launch(), &rejected));
         rejected = *mask;
         rejected.data = input->data;
-        EXPECT_FALSE(kg::RunGemma4Mask(launch(), &rejected));
+        EXPECT_FALSE(kg::RunCausalMask(launch(), &rejected));
         if (type == GGML_TYPE_F32) {
           rejected = *mask;
           rejected.data = reinterpret_cast<void*>(address + 258);
-          EXPECT_FALSE(kg::RunGemma4Mask(launch(), &rejected));
+          EXPECT_FALSE(kg::RunCausalMask(launch(), &rejected));
         }
         rejected = *mask;
         // Coherent cell/capacity endpoints that exceed the signed byte bound
@@ -667,7 +667,7 @@ TEST_F(GgmlExtOpsTest, SharedCausalMasksMatchF16AndF32AndRefreshCapturedPosition
         const auto oversized_capacity = static_cast<std::int32_t>(rejected.ne[0]);
         std::memcpy(reinterpret_cast<std::byte*>(rejected.op_params) + 32 + 2 * 4,
                     &oversized_capacity, 4);
-        EXPECT_FALSE(kg::Gemma4MaskFits(&rejected));
+        EXPECT_FALSE(kg::CausalMaskFits(&rejected));
         EXPECT_EQ(Download<std::uint8_t>(mask), before);
       }
     }
@@ -729,10 +729,10 @@ TEST_F(GgmlExtOpsTest, SharedBlockMasksMatchF16AndF32AndRefreshCapturedSegments)
           EXPECT_EQ(Download<std::int32_t>(input), positions);
         };
         ASSERT_EQ(poison(), cudaSuccess);
-        ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+        ASSERT_TRUE(kg::RunCausalMask(launch(), mask));
         check();
         auto graph =
-            launch().Capture([&](auto& context) { return kg::RunGemma4Mask(context, mask); });
+            launch().Capture([&](auto& context) { return kg::RunCausalMask(context, mask); });
         ASSERT_TRUE(graph);
         for (const auto start : {254, 300, INT32_MAX - rows, -1, INT32_MAX}) {
           for (std::int32_t row = 0; row < rows; ++row)
@@ -757,17 +757,17 @@ TEST_F(GgmlExtOpsTest, SharedBlockMasksMatchF16AndF32AndRefreshCapturedSegments)
         auto rejected = *mask;
         const std::int32_t zero = 0, unknown = 3;  // past kFrozen
         std::memcpy(reinterpret_cast<std::byte*>(rejected.op_params) + 32 + 3 * 4, &zero, 4);
-        EXPECT_FALSE(kg::RunGemma4Mask(launch(), &rejected));
+        EXPECT_FALSE(kg::RunCausalMask(launch(), &rejected));
         rejected = *mask;
         std::memcpy(reinterpret_cast<std::byte*>(rejected.op_params) + 32 + 6 * 4, &unknown, 4);
-        EXPECT_FALSE(kg::RunGemma4Mask(launch(), &rejected));
+        EXPECT_FALSE(kg::RunCausalMask(launch(), &rejected));
         rejected = *mask;
         const std::int32_t too_wide = cells;
         std::memcpy(reinterpret_cast<std::byte*>(rejected.op_params) + 32 + 3 * 4, &too_wide, 4);
-        EXPECT_FALSE(kg::RunGemma4Mask(launch(), &rejected));
+        EXPECT_FALSE(kg::RunCausalMask(launch(), &rejected));
         rejected = *mask;
         rejected.data = input->data;
-        EXPECT_FALSE(kg::RunGemma4Mask(launch(), &rejected));
+        EXPECT_FALSE(kg::RunCausalMask(launch(), &rejected));
       }
     }
   }
@@ -831,10 +831,10 @@ TEST_F(GgmlExtOpsTest, DeepSeekRawDeviceMasksKeepExactRowsAndRefreshCapturedRing
         TensorArena::Bind(mask, address + 256);
         ASSERT_EQ(cudaMemsetAsync(reinterpret_cast<void*>(address), 0xa5, bytes + 512, stream),
                   cudaSuccess);
-        ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+        ASSERT_TRUE(kg::RunCausalMask(launch(), mask));
         EXPECT_EQ(Download<std::uint16_t>(mask), chunk.mask);
         auto graph =
-            launch().Capture([&](auto& context) { return kg::RunGemma4Mask(context, mask); });
+            launch().Capture([&](auto& context) { return kg::RunCausalMask(context, mask); });
         ASSERT_TRUE(graph);
         // In full-window mode choose positions that keep the same padded cell
         // width; ring shapes retain their width at every position.
@@ -850,13 +850,13 @@ TEST_F(GgmlExtOpsTest, DeepSeekRawDeviceMasksKeepExactRowsAndRefreshCapturedRing
         auto* unexpected = ggml_new_tensor_1d(c(), GGML_TYPE_I32, 1);
         for (std::size_t parent = 1; parent < GGML_MAX_SRC; ++parent) {
           mask->src[parent] = unexpected;
-          EXPECT_FALSE(kg::Gemma4MaskFits(mask));
+          EXPECT_FALSE(kg::CausalMaskFits(mask));
           mask->src[parent] = nullptr;
         }
         std::int32_t unknown_layout = 2;
         std::memcpy(reinterpret_cast<std::byte*>(mask->op_params) + 32 + 5 * 4, &unknown_layout, 4);
         const auto before = Download<std::uint16_t>(mask);
-        EXPECT_FALSE(kg::RunGemma4Mask(launch(), mask));
+        EXPECT_FALSE(kg::RunCausalMask(launch(), mask));
         EXPECT_EQ(Download<std::uint16_t>(mask), before);
         std::array<std::uint8_t, 256> prefix{}, suffix{};
         Finish();
@@ -892,7 +892,7 @@ TEST_F(GgmlExtOpsTest, GemmaDeviceMasksFillEveryPaddedByteAndRefreshCapturedPosi
       for (int segment = 0; segment < segments; ++segment) {
         for (const bool local : {false, true}) {
           const int read_cells = local ? (segments == 1 ? 256 : capacity) : cells;
-          auto* node = kg::Gemma4Mask(c(), input, read_cells, segment * rows, rows,
+          auto* node = kg::CausalMask(c(), input, read_cells, segment * rows, rows,
                                       local ? capacity : 262144, local ? window : 0, 262144);
           const auto bytes = ggml_nbytes(node);
           const auto address = Allocate(bytes + 512);
@@ -920,13 +920,13 @@ TEST_F(GgmlExtOpsTest, GemmaDeviceMasksFillEveryPaddedByteAndRefreshCapturedPosi
             }
             return mask;
           };
-          ASSERT_TRUE(kg::CheckGemma4Mask(node));
+          ASSERT_TRUE(kg::CheckCausalMask(node));
           launch().ResetScratchPeak();
-          ASSERT_TRUE(kg::RunGemma4Mask(launch(), node));
+          ASSERT_TRUE(kg::RunCausalMask(launch(), node));
           EXPECT_EQ(Download<std::uint16_t>(node), expected());
           EXPECT_EQ(launch().scratch_peak().value(), 0);
           auto captured =
-              launch().Capture([&](auto& context) { return kg::RunGemma4Mask(context, node); });
+              launch().Capture([&](auto& context) { return kg::RunCausalMask(context, node); });
           ASSERT_TRUE(captured);
           // Every row is a fresh position value; address/shape/capture stay fixed.
           const int delta = segments == 16 ? -32 : 32;
@@ -960,7 +960,7 @@ TEST_F(GgmlExtOpsTest, GemmaDeviceMasksFillEveryPaddedByteAndRefreshCapturedPosi
           const auto old_type = input->type;
           input->type = GGML_TYPE_F32;
           const auto before = Download<std::uint16_t>(node);
-          EXPECT_FALSE(kg::RunGemma4Mask(launch(), node));
+          EXPECT_FALSE(kg::RunCausalMask(launch(), node));
           EXPECT_EQ(before, Download<std::uint16_t>(node));
           EXPECT_FALSE(launch().faulted());
           input->type = old_type;
@@ -986,9 +986,9 @@ TEST_F(GgmlExtOpsTest, GemmaDeviceMasksFillEveryPaddedByteAndRefreshCapturedPosi
   auto* input = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, rows), positions);
   for (const int window : {0, 1024}) {
     auto* mask = Place(
-        kg::Gemma4Mask(c(), input, cells, 0, rows, window == 0 ? 262144 : 2304, window, 262144));
+        kg::CausalMask(c(), input, cells, 0, rows, window == 0 ? 262144 : 2304, window, 262144));
     ASSERT_EQ(mask->ne[1], 1056);
-    ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+    ASSERT_TRUE(kg::RunCausalMask(launch(), mask));
     const auto actual = Download<std::uint16_t>(mask);
     for (int r = 0; r < 1056; ++r)
       for (int cell = 0; cell < cells; ++cell) {

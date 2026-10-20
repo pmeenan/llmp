@@ -341,7 +341,7 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
         const ir::TensorDesc* src = At(sources, 1);
         return src == nullptr ? QueryShape{} : QueryShape{.rows = Rows(*src), .k = src->ne(0)};
       }
-      case FusedKind::kDsv4OutA: {
+      case FusedKind::kInverseRopeGroupedMatMul: {
         const ir::TensorDesc* x = At(sources, 1);
         return x == nullptr ? QueryShape{}
                             : QueryShape{.rows = x->ne(2),

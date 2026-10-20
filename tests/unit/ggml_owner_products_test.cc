@@ -54,6 +54,7 @@ kg::DeviceChoices Device(kg::MulMatPath path = kg::MulMatPath::kTensorCore) {
 struct Fixture {
   co::StepGraph step;
   pl::StepShape shape;
+  pl::OwnerProducts proof{};
   std::optional<pl::StepPlan> plan{};
   ir::TensorId weight{}, extra_weight{}, input{}, product{}, extra{}, indices{};
 };
@@ -93,11 +94,14 @@ Fixture Make(std::span<const std::uint32_t> widths, bool annotated = true,
                    .parts = {{"extra", llmp::format::PartRole::kData}}}},
       .state = {}};
   if (store_indices) step.inputs.push_back({.tensor = indices, .kind = co::InputKind::kStoreCells});
-  if (annotated)
-    step.owner_products =
-        co::ProveOwnerProducts(step.graph, step.inputs, segments, std::array{product}).value();
+  pl::OwnerProducts proof;
+  if (annotated) {
+    step.owner_products = {product};
+    proof = pl::ProveOwnerProducts(step.graph, step.inputs, segments, step.owner_products).value();
+  }
   return {.step = std::move(step),
           .shape = std::move(shape),
+          .proof = std::move(proof),
           .weight = weight,
           .extra_weight = extra_weight,
           .input = input,
@@ -112,13 +116,11 @@ void Plan(Fixture& f, const ex::Registry& registry, bool fuse_preparation = fals
   if (!fuse_preparation) policy.disabled = {"rms_norm_mul"};
   std::vector<ir::TensorId> staged;
   for (const auto& input : f.step.inputs) staged.push_back(input.tensor);
-  auto p =
-      pl::Plan(f.step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, policy,
-               {.staged = std::move(staged),
-                .written = &kg::WrittenBytes,
-                .shape = &f.shape,
-                .owner_products =
-                    f.step.owner_products.products().empty() ? nullptr : &f.step.owner_products});
+  auto p = pl::Plan(f.step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, policy,
+                    {.staged = std::move(staged),
+                     .written = &kg::WrittenBytes,
+                     .shape = &f.shape,
+                     .owner_products = f.proof.products().empty() ? nullptr : &f.proof});
   ASSERT_TRUE(p) << p.error().detail;
   f.plan.emplace(std::move(*p));
 }
@@ -405,7 +407,7 @@ TEST(GgmlOwnerProductsTest, SuppliedAddressesKeepOffsetsAndRefuseOverlapOrMisali
     EXPECT_NE(at, measured->physical_roots.end());
     return at == measured->physical_roots.end() ? 0 : activation_base + at->offset;
   };
-  const auto input_base = placed(f.plan->tensors[f.step.owner_products.products()[0].input.v]);
+  const auto input_base = placed(f.plan->tensors[f.proof.products()[0].input.v]);
   const auto output_base = placed(f.plan->owner_products[0].result);
   for (int changed = 0; changed < 4; ++changed) {
     SCOPED_TRACE(changed);

@@ -100,7 +100,7 @@ std::vector<en::StageState> StageStates(bool drafters) {
                                       .encoding = md::Encoding::kF32,
                                       .cell_bytes = 256,
                                       .cells = md::CellRule::kPositionRing,
-                                      .window_or_ratio = 64,
+                                      .fixed_cells = 64,
                                       .rollback = md::Rollback::kSnapshot,
                                       .target_writes = true}}}}};
   const Layers block = {{0,
@@ -108,7 +108,7 @@ std::vector<en::StageState> StageStates(bool drafters) {
                                         .kind = md::StateKind::kDrafterRing,
                                         .cell_bytes = 256,
                                         .cells = md::CellRule::kPositionRing,
-                                        .window_or_ratio = 256,
+                                        .fixed_cells = 256,
                                         .rollback = md::Rollback::kSnapshot,
                                         .target_writes = true}}}}};
   std::vector<en::StageState> stages = {
@@ -249,7 +249,7 @@ class EngineLlmTest : public ::testing::Test {
                                             .encoding = md::Encoding::kF32,
                                             .cell_bytes = 256,
                                             .cells = md::CellRule::kPerRow,
-                                            .window_or_ratio = 1,
+                                            .row_carry = 1,
                                             .rollback = md::Rollback::kSnapshot,
                                             .target_writes = true},
                                           md::DraftProgressControl(

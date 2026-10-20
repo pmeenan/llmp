@@ -1660,7 +1660,7 @@ TEST_F(GgmlLowerDsv4Gpu, StateBanksMatchPrimitiveCopiesAndReplayChangedJoinedOpe
                         {.name = "compressed",
                          .cell_bytes = head * 2,
                          .cells = md::CellRule::kFixed,
-                         .window_or_ratio = static_cast<std::uint32_t>(compressed_capacity)}}}}};
+                         .fixed_cells = static_cast<std::uint32_t>(compressed_capacity)}}}}};
       const auto layout = md::Layout(contracts, 512, 128);
       ASSERT_TRUE(layout);
       ASSERT_EQ(layout->items[1].offset, 2048U);  // inside an extent, after unrelated state
@@ -1844,7 +1844,7 @@ TEST_F(GgmlLowerDsv4Gpu, QHeadsMatchExistingHelperAndReplayWithNewPositions) {
                                              .scale = 0.125F,
                                              .ext_factor = 1.0F,
                                              .attn_factor = 1.25F}};
-    const auto out = b.Fused(ir::FusedKind::kDsv4QHead, std::array{q, pos}, params)[0];
+    const auto out = b.Fused(ir::FusedKind::kRmsNormMulRope, std::array{q, pos}, params)[0];
     b.Output(out);
     auto graph = std::move(b).Finish();
     ASSERT_TRUE(graph) << graph.error().detail;
@@ -1899,7 +1899,7 @@ TEST_F(GgmlLowerDsv4Gpu, CompressorMaskedDummyMatchesFallbackAndExistingHelper) 
   const auto current = input(), current_scores = input();
   const auto ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2})));
   const ir::CompressorParams params{.ratio = 1, .overlap = true};
-  b.Output(b.Fused(ir::FusedKind::kDsv4Compress,
+  b.Output(b.Fused(ir::FusedKind::kSoftmaxPoolCompress,
                    std::array{state, scores, current, current_scores, ids}, params)[0]);
   auto graph = std::move(b).Finish();
   ASSERT_TRUE(graph) << graph.error().detail;
@@ -1910,9 +1910,10 @@ TEST_F(GgmlLowerDsv4Gpu, CompressorMaskedDummyMatchesFallbackAndExistingHelper) 
       {.tensor = current, .kind = co::InputKind::kFeatures},
       {.tensor = current_scores, .kind = co::InputKind::kFeatures},
       {.tensor = ids,
-       .kind = co::InputKind::kPoolReads,
+       .kind = co::InputKind::kHostComputed,
        .segment = 0,
        .cells = {.capacity = 2, .ring = true, .recent = true},
+       .host = {.def = &co::CompressorPoolReadsInput(), .ratio = 1, .overlap = true},
        .ratio = 1,
        .overlap = true,
        .ring = 2}};
@@ -2010,13 +2011,16 @@ TEST_F(GgmlLowerDsv4Gpu, CompressorReadsPitchedOwnerViewsAcrossBlockBoundaries) 
     }
     const auto ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({count})));
     inputs.push_back({.tensor = ids,
-                      .kind = co::InputKind::kPoolReads,
+                      .kind = co::InputKind::kHostComputed,
                       .segment = 0,
                       .cells = {.capacity = ring, .ring = true, .recent = true},
+                      .host = {.def = &co::CompressorPoolReadsInput(),
+                               .ratio = test.ratio,
+                               .overlap = test.overlap},
                       .ratio = test.ratio,
                       .overlap = test.overlap,
                       .ring = ring});
-    b.Output(b.Fused(ir::FusedKind::kDsv4Compress,
+    b.Output(b.Fused(ir::FusedKind::kSoftmaxPoolCompress,
                      std::array{views[0], views[1], views[2], views[3], ids},
                      ir::CompressorParams{.ratio = test.ratio, .overlap = test.overlap})[0]);
     auto graph = std::move(b).Finish();
@@ -2078,7 +2082,7 @@ TEST_F(GgmlLowerDsv4Gpu, HcCarriesAndDownstreamOwnersMatchExistingHelpers) {
       const ir::SinkhornPreParams params{
           .streams = 4, .eps = 1e-6F, .hc_eps = 1e-6F, .iterations = 20};
       const auto pre =
-          b.Fused(ir::FusedKind::kDsv4HcPre, std::array{x, fn, scale, base, norm}, params);
+          b.Fused(ir::FusedKind::kSinkhornHcPre, std::array{x, fn, scale, base, norm}, params);
       for (const auto output : pre.span()) b.Output(output);
       // A later activation beside the carry roots detects uncharged tail or
       // partial writes; unequal owners consume each packed carry independently.
@@ -3502,7 +3506,7 @@ TEST(GgmlRoundedConsumerGpu, RealMappedSourceBuildsAndExecutesItsAttentionPipeli
        .bindings = {.tensors = life->tensors.tensors, .state = &life->layout},
        .bound_digest = life->spec.Digest(),
        .slots = 1,
-       .policy = pl::Policy{.enabled = {"rounded_indexer"}, .disabled = {"dsv4_lid_mask"}},
+       .policy = pl::Policy{.enabled = {"rounded_indexer"}, .disabled = {"rounded_index_mask"}},
        .backend = life->backend->Backend(),
        .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain))});
   ASSERT_TRUE(source) << source.error();

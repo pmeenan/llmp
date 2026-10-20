@@ -330,25 +330,22 @@ std::size_t ParamSize(OpKey key) {
       case FusedKind::kRmsNormMulAdd:
       case FusedKind::kHcNorm:
       case FusedKind::kNormGate:
-      case FusedKind::kLayerNormModulate:
-      case FusedKind::kGatedResidualNorm:
         return sizeof(NormParams);
       case FusedKind::kRmsNormMulRope:
       case FusedKind::kQkPrep:
-      case FusedKind::kDsv4QHead:
         return sizeof(NormRopeParams);
-      case FusedKind::kDsv4Compress:
+      case FusedKind::kSoftmaxPoolCompress:
         return sizeof(CompressorParams);
-      case FusedKind::kDsv4LidMask:
-        return sizeof(LidMaskParams);
+      case FusedKind::kRoundedIndexMask:
+        return sizeof(RoundedIndexMaskParams);
       case FusedKind::kGroupedMatMul:
         return sizeof(ProductParams);
       case FusedKind::kStateBankAttention:
         return sizeof(AttnParams);
-      case FusedKind::kDsv4HcPre:
+      case FusedKind::kSinkhornHcPre:
         return sizeof(SinkhornPreParams);
       case FusedKind::kRopeStore:
-      case FusedKind::kDsv4OutA:
+      case FusedKind::kInverseRopeGroupedMatMul:
         return sizeof(RopeParams);
       case FusedKind::kMatMulGlu:
       case FusedKind::kMoeGlu:
@@ -373,7 +370,6 @@ std::size_t ParamSize(OpKey key) {
       case FusedKind::kGatedResidualModulateSplit:
         return sizeof(SplitModulateParams);
       case FusedKind::kHcPrep:
-      case FusedKind::kHcMixNorm:
         return sizeof(HcNormPostParams);
       case FusedKind::kScaledUnary:
         return sizeof(ScaledUnaryParams);
@@ -389,10 +385,10 @@ std::size_t ParamSize(OpKey key) {
         return sizeof(GdnStepParams);
       case FusedKind::kHeadGate:
         return sizeof(HeadGateParams);
-      case FusedKind::kQsaPool:
-        return sizeof(QsaPoolParams);
-      case FusedKind::kQsaAttention:
-        return sizeof(QsaAttnParams);
+      case FusedKind::kMeanPoolNormRopeStore:
+        return sizeof(BlockPoolParams);
+      case FusedKind::kBlockSparseAttention:
+        return sizeof(BlockSparseAttnParams);
       case FusedKind::kMoeRouter:
         return sizeof(RouteParams);
       case FusedKind::kMoeExperts:
@@ -403,7 +399,6 @@ std::size_t ParamSize(OpKey key) {
       case FusedKind::kGroupedStores:
       case FusedKind::kMoeCombine:
       case FusedKind::kPreparedProducts:
-      case FusedKind::kGatedResidual:
       case FusedKind::kEulerStep:
       case FusedKind::kGdnGates:
         return 0;
@@ -606,17 +601,12 @@ Out Leaf(const Ctx& c) {
   return One(t, false);
 }
 
-Out InferPrimitive(const Ctx& c) {
-  const Op op = c.key().op;
-  if (op != Op::kInput && op != Op::kWeight && op != Op::kState) {
-    LLMP_TRY(Tail(c, ParamSize(c.key())));  // a leaf's: Leaf
-  }
-  switch (op) {
+Out InferStructure(const Ctx& c) {
+  switch (c.key().op) {
     case Op::kInput:
     case Op::kWeight:
     case Op::kState:
       return Leaf(c);
-
     case Op::kView: {
       LLMP_TRY(Arity(c, 1, 1));
       const TensorDesc* r = c.req(0);
@@ -774,7 +764,13 @@ Out InferPrimitive(const Ctx& c) {
       }
       return FloatResult(out, Encoding::kF32);
     }
+    default:
+      return Fail(GraphError::kParams, c, "an op outside op set v1");
+  }
+}
 
+Out InferProducts(const Ctx& c) {
+  switch (c.key().op) {
     case Op::kMatMul: {
       LLMP_TRY(Arity(c, 2, 2));
       LLMP_TRY(FloatSrc(c, 0));
@@ -814,9 +810,6 @@ Out InferPrimitive(const Ctx& c) {
       t.format = r->format;
       t.format.shape = c.src(0)->shape();
       t.format.stacked = 1;
-      // A single-part value format, or the block-scaled MXFP8 rows a
-      // tensor-core product reads (codes, then the scales in CUTLASS's
-      // atoms, in one root: format/layout.h kScaleAtoms).
       const bool rows = t.format.encoding == Encoding::kMxfp8 &&
                         t.format.layout == format::Layout::kScaleAtoms &&
                         t.format.shape.ne[2] == 1 && t.format.shape.ne[3] == 1;
@@ -843,7 +836,13 @@ Out InferPrimitive(const Ctx& c) {
       r.nout = 2;
       return r;
     }
+    default:
+      return Fail(GraphError::kParams, c, "an op outside op set v1");
+  }
+}
 
+Out InferAttentionAndMasks(const Ctx& c) {
+  switch (c.key().op) {
     case Op::kAttention: {
       LLMP_TRY(Arity(c, 3, 5));
       const auto p = c.params<AttnParams>();
@@ -951,13 +950,13 @@ Out InferPrimitive(const Ctx& c) {
       const TensorDesc& k = *c.src(1);
       const TensorDesc& w = *c.src(2);
       const TensorDesc& counts = *c.src(3);
-      LLMP_TRY(Want(q.format.encoding == Encoding::kF32 && q.ne(0) == 128 && q.ne(1) == 64 &&
-                        q.ne(3) == 1 && k.format.encoding == Encoding::kF16 && k.ne(0) == 128 &&
-                        k.ne(1) == 1 && k.ne(2) <= INT32_MAX && k.ne(3) == 1 &&
-                        w.format.encoding == Encoding::kF32 && w.shape().ne == S(64, q.ne(2)).ne &&
-                        counts.format.encoding == Encoding::kI32 &&
-                        counts.shape().ne == S(q.ne(2)).ne,
-                    c, "Q F32 [128,64,T], K F16 [128,1,C], W F32 [64,T], counts I32 [T]"));
+      LLMP_TRY(
+          Want(q.format.encoding == Encoding::kF32 && q.ne(0) > 0 && q.ne(1) > 0 && q.ne(3) == 1 &&
+                   k.format.encoding == Encoding::kF16 && k.ne(0) == q.ne(0) && k.ne(1) == 1 &&
+                   k.ne(2) <= INT32_MAX && k.ne(3) == 1 && w.format.encoding == Encoding::kF32 &&
+                   w.shape().ne == S(q.ne(1), q.ne(2)).ne &&
+                   counts.format.encoding == Encoding::kI32 && counts.shape().ne == S(q.ne(2)).ne,
+               c, "Q F32 [D,H,T], K F16 [D,1,C], W F32 [H,T], counts I32 [T]"));
       return One(Fresh(S(k.ne(2), q.ne(2)), Encoding::kF32), false);
     }
     case Op::kPrefixOverwrite: {
@@ -1010,7 +1009,13 @@ Out InferPrimitive(const Ctx& c) {
       }
       return FloatResult(S(x.ne(0), x.ne(1) / p.ratio, x.ne(2), x.ne(3)), Encoding::kF32);
     }
+    default:
+      return Fail(GraphError::kParams, c, "an op outside op set v1");
+  }
+}
 
+Out InferNormsAndRotations(const Ctx& c) {
+  switch (c.key().op) {
     case Op::kRmsNorm:
     case Op::kL2Norm:
     case Op::kLayerNorm:
@@ -1026,7 +1031,14 @@ Out InferPrimitive(const Ctx& c) {
       LLMP_TRY(CheckRope(c, p, 0));
       return RopeOf(c, p, 0, 1, 2);
     }
+    default:
+      return Fail(GraphError::kParams, c, "an op outside op set v1");
+  }
+}
 
+Out InferElementwise(const Ctx& c) {
+  const Op op = c.key().op;
+  switch (op) {
     case Op::kSelect: {
       LLMP_TRY(Arity(c, 3, 3));
       LLMP_TRY(IndexSrc(c, 0));
@@ -1114,7 +1126,13 @@ Out InferPrimitive(const Ctx& c) {
       LLMP_TRY(Want(g.ne(0) % 2 == 0, c, "halves of even rows"));
       return FloatResult(S(g.ne(0) / 2, g.ne(1), g.ne(2), g.ne(3)), FloatOf(g));
     }
+    default:
+      return Fail(GraphError::kParams, c, "an op outside op set v1");
+  }
+}
 
+Out InferReductionsAndSelection(const Ctx& c) {
+  switch (c.key().op) {
     case Op::kSumRows: {
       LLMP_TRY(Arity(c, 1, 1));
       LLMP_TRY(FloatSrc(c, 0));
@@ -1171,7 +1189,6 @@ Out InferPrimitive(const Ctx& c) {
       }
       return One(Fresh(S(p.k, x.ne(1), x.ne(2), x.ne(3)), Encoding::kI32), false);
     }
-
     case Op::kVisibleTopK: {
       LLMP_TRY(Arity(c, 2, 2));
       const auto p = c.params<TopKParams>();
@@ -1201,7 +1218,13 @@ Out InferPrimitive(const Ctx& c) {
                     c, "F16 [window,T] raw mask and I32 [k,T] IDs"));
       return One(Fresh(S(std::uint64_t{p.raw_cells} + p.cells, raw.ne(1)), Encoding::kF16), false);
     }
+    default:
+      return Fail(GraphError::kParams, c, "an op outside op set v1");
+  }
+}
 
+Out InferRouting(const Ctx& c) {
+  switch (c.key().op) {
     case Op::kRoute: {
       LLMP_TRY(Arity(c, 1, 4));
       LLMP_TRY(FloatSrc(c, 0));
@@ -1239,7 +1262,6 @@ Out InferPrimitive(const Ctx& c) {
                           tokens->shape().ne == S(logits.ne(1)).ne,
                       c, "a table [used, vocabulary] and a token per row"));
       } else if (hash) {
-        // The ids looked up already (a token-hash side input's).
         LLMP_TRY(Want(table->shape().ne == S(p.used, logits.ne(1)).ne &&
                           table->format.encoding == Encoding::kI32,
                       c, "ids [used, rows] I32 without tokens"));
@@ -1263,8 +1285,6 @@ Out InferPrimitive(const Ctx& c) {
       const TensorDesc* scale = c.src(3);
       LLMP_TRY(Want(x.ne(3) == 1 && w.shape().ne == S(x.ne(1), x.ne(2)).ne, c,
                     std::format("experts {} with weights {}", Text(x.shape()), Text(w.shape()))));
-      // A scale gathered per slot [1, U, T], or one per expert [E] (a
-      // single expert's [1] is either: the one slot's expert is 0).
       const bool gathered = scale != nullptr && scale->ne(0) == 1 && scale->ne(1) == x.ne(1) &&
                             scale->ne(2) == x.ne(2) && scale->ne(3) == 1;
       if ((scale != nullptr) && !gathered && (ids == nullptr)) {
@@ -1279,7 +1299,13 @@ Out InferPrimitive(const Ctx& c) {
       }
       return FloatResult(S(x.ne(0), x.ne(2)), Encoding::kF32);
     }
+    default:
+      return Fail(GraphError::kParams, c, "an op outside op set v1");
+  }
+}
 
+Out InferRecurrencesAndConvolutions(const Ctx& c) {
+  switch (c.key().op) {
     case Op::kSsmConv: {
       LLMP_TRY(Arity(c, 2, 2));
       LLMP_TRY(FloatSrc(c, 0));
@@ -1360,143 +1386,226 @@ Out InferPrimitive(const Ctx& c) {
                     c, "an upsampled shape past 64 bits"));
       return FloatResult(S(x.ne(0) * f, x.ne(1) * f, x.ne(2), x.ne(3)), FloatOf(x));
     }
+    default:
+      return Fail(GraphError::kParams, c, "an op outside op set v1");
+  }
+}
 
+Out InferHyperConnections(const Ctx& c) {
+  const Op op = c.key().op;
+  const auto p = c.params<HcParams>();
+  LLMP_TRY(Zero(c, 2, 2));
+  if (static_cast<std::uint8_t>(p.mix) > 1 || static_cast<std::uint8_t>(p.fold) > 1 ||
+      p.streams == 0 || !Finite(p.eps) || !Finite(p.scale)) {
+    return Fail(GraphError::kParams, c, "known kinds, streams, finite eps and scale");
+  }
+  const std::uint64_t hc = p.streams;
+  if (op == Op::kHcPre) {
+    LLMP_TRY(Arity(c, 2, 2));
+    LLMP_TRY(FloatSrc(c, 0));
+    LLMP_TRY(FloatSrc(c, 1));
+    const TensorDesc& x = *c.src(0);
+    const TensorDesc& w = *c.src(1);
+    const std::uint64_t t = x.ne(2);
+    LLMP_TRY(Want(x.ne(1) == hc && x.ne(3) == 1, c, "x is [width, streams, tokens]"));
+    if (p.fold == HcFold::kWeights) {
+      LLMP_TRY(Want(w.shape().ne == S(hc, t).ne, c, "a weight per stream and token"));
+    } else {
+      LLMP_TRY(Want(w.shape().ne == x.shape().ne, c, "a gate per value"));
+    }
+    return FloatResult(S(x.ne(0), t), Encoding::kF32);
+  }
+  if (op == Op::kHcPost) {
+    LLMP_TRY(Arity(c, 3, 4));
+    for (std::size_t i = 0; i < 4; ++i) {
+      LLMP_TRY(FloatSrc(c, i));
+    }
+    const TensorDesc& y = *c.src(0);
+    const TensorDesc& x = *c.src(1);
+    const TensorDesc& post = *c.src(2);
+    const std::uint64_t w = y.ne(0);
+    const std::uint64_t t = y.ne(1);
+    LLMP_TRY(Want(
+        y.ne(2) == 1 && y.ne(3) == 1 && x.shape().ne == S(w, hc, t).ne &&
+            post.shape().ne == S(hc, t).ne,
+        c,
+        std::format("y {}, x {}, post {}", Text(y.shape()), Text(x.shape()), Text(post.shape()))));
+    if (const TensorDesc* comb = c.src(3); comb != nullptr) {
+      LLMP_TRY(Want(comb->shape().ne == S(hc, hc, t).ne, c, "comb is [hc, hc, tokens]"));
+    }
+    return FloatResult(S(w, hc, t), Encoding::kF32);
+  }
+  LLMP_TRY(Arity(c, 3, 3));
+  for (std::size_t i = 0; i < 3; ++i) {
+    LLMP_TRY(FloatSrc(c, i));
+  }
+  const TensorDesc& mixes = *c.src(0);
+  const TensorDesc& scale = *c.src(1);
+  const TensorDesc& base = *c.src(2);
+  const std::uint64_t m = mixes.ne(0);
+  const std::uint64_t t = mixes.ne(1);
+  const std::uint64_t off = p.mix == HcMixKind::kSinkhorn
+                                ? (p.mix_offset != 0 ? p.mix_offset : (m == hc * hc ? 0 : 2 * hc))
+                                : p.mix_offset;
+  const std::uint64_t sc_idx =
+      p.mix == HcMixKind::kSinkhorn
+          ? (p.scale_index != 0 ? p.scale_index : (scale.ne(0) == 1 ? 0 : 2))
+          : p.scale_index;
+  const std::uint64_t need_m = off + (p.mix == HcMixKind::kSinkhorn ? hc * hc : 2 * hc);
+  const std::uint64_t need_sc = sc_idx + (p.mix == HcMixKind::kSinkhorn ? 1 : 2);
+  LLMP_TRY(Want(mixes.shape().ne == S(m, t).ne && m >= need_m &&
+                    Elements(scale.shape()) == scale.ne(0) && scale.ne(0) >= need_sc &&
+                    base.shape().ne == S(m).ne,
+                c,
+                std::format("mixes {}, scale {}, base {} for {} streams", Text(mixes.shape()),
+                            Text(scale.shape()), Text(base.shape()), hc)));
+  if (p.mix == HcMixKind::kSinkhorn) {
+    if (p.iterations == 0) {
+      return Fail(GraphError::kParams, c, "Sinkhorn needs iterations");
+    }
+    return FloatResult(S(hc, hc, t), Encoding::kF32);
+  }
+  return FloatResult(S(hc, 2, t), Encoding::kF32);
+}
+
+Out InferSamplingAndCollectives(const Ctx& c) {
+  const Op op = c.key().op;
+  if (op == Op::kSample) {
+    LLMP_TRY(Arity(c, 1, 2));
+    LLMP_TRY(FloatSrc(c, 0));
+    const auto p = c.params<SampleParams>();
+    LLMP_TRY(Zero(c, 1, 3));
+    const TensorDesc& logits = *c.src(0);
+    const TensorDesc* keys = c.src(1);
+    if (static_cast<std::uint8_t>(p.kind) > 1 || !Finite(p.temperature) || p.temperature < 0.0f ||
+        !(p.top_p > 0.0f && p.top_p <= 1.0f) || !(p.min_p >= 0.0f && p.min_p <= 1.0f)) {
+      return Fail(GraphError::kParams, c, "sampling parameters out of range");
+    }
+    if ((p.kind == SampleKind::kSeeded) != (keys != nullptr)) {
+      return Fail(GraphError::kArity, c, "keys are the seeded kind's, only");
+    }
+    LLMP_TRY(Want(logits.ne(2) == 1 && logits.ne(3) == 1, c, "logits are [vocabulary, rows]"));
+    if (keys != nullptr) {
+      if (keys->format.encoding != Encoding::kI64 ||
+          keys->format.layout != format::Layout::kDense) {
+        return Fail(GraphError::kFormat, c, "keys are I64");
+      }
+      LLMP_TRY(Want(keys->shape().ne == S(3, logits.ne(1)).ne, c, "keys are [3, rows]"));
+    }
+    return One(Fresh(S(logits.ne(1)), Encoding::kI32), false);
+  }
+  const auto p = c.params<CollectiveParams>();
+  LLMP_TRY(Zero(c, 9, 3));
+  if (p.dim >= 4) {
+    return Fail(GraphError::kParams, c, "dim past 3");
+  }
+  if (op == Op::kRecv) {
+    LLMP_TRY(Arity(c, 0, 0));
+    const TensorDesc* r = c.req(0);
+    if (r == nullptr || r->format.layout != format::Layout::kDense ||
+        !format::Validate(r->format)) {
+      return Fail(GraphError::kArity, c, "a receive needs its dense format");
+    }
+    return One(Fresh(r->shape(), r->format.encoding), false);
+  }
+  LLMP_TRY(Arity(c, 1, 1));
+  LLMP_TRY(Readable(c, 0));
+  const TensorDesc& x = *c.src(0);
+  LLMP_TRY(Want(x.format.layout == format::Layout::kDense, c, "moves dense tensors"));
+  if (op == Op::kSend) {
+    return Inferred{};
+  }
+  if (op == Op::kAllGather) {
+    const TensorDesc* r = c.req(0);
+    if (r == nullptr) {
+      return Fail(GraphError::kArity, c, "a gather needs its shape");
+    }
+    bool ok = r->ne(p.dim) % x.ne(p.dim) == 0;
+    for (std::size_t d = 0; d < 4; ++d) {
+      ok = ok && (d == p.dim || r->ne(d) == x.ne(d));
+    }
+    LLMP_TRY(Want(ok, c, "gathers along dim a multiple of x"));
+    return One(Fresh(ShapeOf({r->ne(0), r->ne(1), r->ne(2), r->ne(3)}), x.format.encoding), false);
+  }
+  return One(Fresh(x.shape(), x.format.encoding), false);
+}
+
+Out InferPrimitive(const Ctx& c) {
+  const Op op = c.key().op;
+  if (op != Op::kInput && op != Op::kWeight && op != Op::kState) {
+    LLMP_TRY(Tail(c, ParamSize(c.key())));  // a leaf's: Leaf
+  }
+  switch (op) {
+    case Op::kInput:
+    case Op::kWeight:
+    case Op::kState:
+    case Op::kView:
+    case Op::kReshape:
+    case Op::kPermute:
+    case Op::kCont:
+    case Op::kConcat:
+    case Op::kRepeat:
+    case Op::kConvert:
+    case Op::kGetRows:
+      return InferStructure(c);
+    case Op::kMatMul:
+    case Op::kMatMulId:
+    case Op::kPrepare:
+    case Op::kExpertSort:
+      return InferProducts(c);
+    case Op::kAttention:
+    case Op::kMaskBuild:
+    case Op::kCacheStore:
+    case Op::kRoundedIndexScore:
+    case Op::kPrefixOverwrite:
+    case Op::kIndexScore:
+    case Op::kPool:
+      return InferAttentionAndMasks(c);
+    case Op::kRmsNorm:
+    case Op::kL2Norm:
+    case Op::kLayerNorm:
+    case Op::kChannelNorm:
+    case Op::kRope:
+      return InferNormsAndRotations(c);
+    case Op::kSelect:
+    case Op::kAdd:
+    case Op::kSub:
+    case Op::kMul:
+    case Op::kDiv:
+    case Op::kScale:
+    case Op::kUnary:
+    case Op::kClamp:
+    case Op::kSoftcap:
+    case Op::kFill:
+    case Op::kGlu:
+      return InferElementwise(c);
+    case Op::kSumRows:
+    case Op::kSoftMax:
+    case Op::kArgmax:
+    case Op::kArgsort:
+    case Op::kTopK:
+    case Op::kVisibleTopK:
+    case Op::kSelectedMask:
+      return InferReductionsAndSelection(c);
+    case Op::kRoute:
+    case Op::kExpertReduce:
+      return InferRouting(c);
+    case Op::kSsmConv:
+    case Op::kGatedDeltaNet:
+    case Op::kConv2d:
+    case Op::kUpsample:
+      return InferRecurrencesAndConvolutions(c);
     case Op::kHcPre:
     case Op::kHcPost:
-    case Op::kHcMix: {
-      const auto p = c.params<HcParams>();
-      LLMP_TRY(Zero(c, 2, 2));
-      if (static_cast<std::uint8_t>(p.mix) > 1 || static_cast<std::uint8_t>(p.fold) > 1 ||
-          p.streams == 0 || !Finite(p.eps) || !Finite(p.scale)) {
-        return Fail(GraphError::kParams, c, "known kinds, streams, finite eps and scale");
-      }
-      const std::uint64_t hc = p.streams;
-      if (op == Op::kHcPre) {
-        LLMP_TRY(Arity(c, 2, 2));
-        LLMP_TRY(FloatSrc(c, 0));
-        LLMP_TRY(FloatSrc(c, 1));
-        const TensorDesc& x = *c.src(0);
-        const TensorDesc& w = *c.src(1);
-        const std::uint64_t t = x.ne(2);
-        LLMP_TRY(Want(x.ne(1) == hc && x.ne(3) == 1, c, "x is [width, streams, tokens]"));
-        if (p.fold == HcFold::kWeights) {
-          if (p.scale != 1.0f) {
-            return Fail(GraphError::kParams, c, "the weighted fold has no scale");
-          }
-          LLMP_TRY(Want(w.shape().ne == S(hc, t).ne, c, "a weight per stream and token"));
-        } else {
-          LLMP_TRY(Want(w.shape().ne == x.shape().ne, c, "a gate per value"));
-        }
-        return FloatResult(S(x.ne(0), t), Encoding::kF32);
-      }
-      if (op == Op::kHcPost) {
-        LLMP_TRY(Arity(c, 3, 4));
-        for (std::size_t i = 0; i < 4; ++i) {
-          LLMP_TRY(FloatSrc(c, i));
-        }
-        const TensorDesc& y = *c.src(0);
-        const TensorDesc& x = *c.src(1);
-        const TensorDesc& post = *c.src(2);
-        const std::uint64_t w = y.ne(0);
-        const std::uint64_t t = y.ne(1);
-        LLMP_TRY(Want(y.ne(2) == 1 && y.ne(3) == 1 && x.shape().ne == S(w, hc, t).ne &&
-                          post.shape().ne == S(hc, t).ne,
-                      c,
-                      std::format("y {}, x {}, post {}", Text(y.shape()), Text(x.shape()),
-                                  Text(post.shape()))));
-        if (const TensorDesc* comb = c.src(3); comb != nullptr) {
-          LLMP_TRY(Want(comb->shape().ne == S(hc, hc, t).ne, c, "comb is [hc, hc, tokens]"));
-        }
-        return FloatResult(S(w, hc, t), Encoding::kF32);
-      }
-      LLMP_TRY(Arity(c, 3, 3));
-      for (std::size_t i = 0; i < 3; ++i) {
-        LLMP_TRY(FloatSrc(c, i));
-      }
-      const TensorDesc& mixes = *c.src(0);
-      const TensorDesc& scale = *c.src(1);
-      const TensorDesc& base = *c.src(2);
-      const std::uint64_t m = (2 + hc) * hc;
-      const std::uint64_t t = mixes.ne(1);
-      LLMP_TRY(Want(mixes.shape().ne == S(m, t).ne && Elements(scale.shape()) == scale.ne(0) &&
-                        scale.ne(0) >= 3 && base.shape().ne == S(m).ne,
-                    c,
-                    std::format("mixes {}, scale {}, base {} for {} streams", Text(mixes.shape()),
-                                Text(scale.shape()), Text(base.shape()), hc)));
-      if (p.mix == HcMixKind::kSinkhorn) {
-        if (p.iterations == 0) {
-          return Fail(GraphError::kParams, c, "Sinkhorn needs iterations");
-        }
-        return FloatResult(S(hc, hc, t), Encoding::kF32);
-      }
-      return FloatResult(S(hc, 2, t), Encoding::kF32);
-    }
-
-    case Op::kSample: {
-      LLMP_TRY(Arity(c, 1, 2));
-      LLMP_TRY(FloatSrc(c, 0));
-      const auto p = c.params<SampleParams>();
-      LLMP_TRY(Zero(c, 1, 3));
-      const TensorDesc& logits = *c.src(0);
-      const TensorDesc* keys = c.src(1);
-      if (static_cast<std::uint8_t>(p.kind) > 1 || !Finite(p.temperature) || p.temperature < 0.0f ||
-          !(p.top_p > 0.0f && p.top_p <= 1.0f) || !(p.min_p >= 0.0f && p.min_p <= 1.0f)) {
-        return Fail(GraphError::kParams, c, "sampling parameters out of range");
-      }
-      if ((p.kind == SampleKind::kSeeded) != (keys != nullptr)) {
-        return Fail(GraphError::kArity, c, "keys are the seeded kind's, only");
-      }
-      LLMP_TRY(Want(logits.ne(2) == 1 && logits.ne(3) == 1, c, "logits are [vocabulary, rows]"));
-      if (keys != nullptr) {
-        if (keys->format.encoding != Encoding::kI64 ||
-            keys->format.layout != format::Layout::kDense) {
-          return Fail(GraphError::kFormat, c, "keys are I64");
-        }
-        LLMP_TRY(Want(keys->shape().ne == S(3, logits.ne(1)).ne, c, "keys are [3, rows]"));
-      }
-      return One(Fresh(S(logits.ne(1)), Encoding::kI32), false);
-    }
+    case Op::kHcMix:
+      return InferHyperConnections(c);
+    case Op::kSample:
     case Op::kAllReduce:
     case Op::kAllGather:
     case Op::kAllToAll:
     case Op::kSend:
-    case Op::kRecv: {
-      const auto p = c.params<CollectiveParams>();
-      LLMP_TRY(Zero(c, 9, 3));
-      if (p.dim >= 4) {
-        return Fail(GraphError::kParams, c, "dim past 3");
-      }
-      if (op == Op::kRecv) {
-        LLMP_TRY(Arity(c, 0, 0));
-        const TensorDesc* r = c.req(0);
-        if (r == nullptr || r->format.layout != format::Layout::kDense ||
-            !format::Validate(r->format)) {
-          return Fail(GraphError::kArity, c, "a receive needs its dense format");
-        }
-        return One(Fresh(r->shape(), r->format.encoding), false);
-      }
-      LLMP_TRY(Arity(c, 1, 1));
-      LLMP_TRY(Readable(c, 0));
-      const TensorDesc& x = *c.src(0);
-      LLMP_TRY(Want(x.format.layout == format::Layout::kDense, c, "moves dense tensors"));
-      if (op == Op::kSend) {
-        return Inferred{};
-      }
-      if (op == Op::kAllGather) {
-        const TensorDesc* r = c.req(0);
-        if (r == nullptr) {
-          return Fail(GraphError::kArity, c, "a gather needs its shape");
-        }
-        bool ok = r->ne(p.dim) % x.ne(p.dim) == 0;
-        for (std::size_t d = 0; d < 4; ++d) {
-          ok = ok && (d == p.dim || r->ne(d) == x.ne(d));
-        }
-        LLMP_TRY(Want(ok, c, "gathers along dim a multiple of x"));
-        return One(Fresh(ShapeOf({r->ne(0), r->ne(1), r->ne(2), r->ne(3)}), x.format.encoding),
-                   false);
-      }
-      return One(Fresh(x.shape(), x.format.encoding), false);
-    }
+    case Op::kRecv:
+      return InferSamplingAndCollectives(c);
     case Op::kFused:
       break;
   }
@@ -1510,7 +1619,7 @@ static_assert(offsetof(GluParams, swapped) == 1 && offsetof(GluParams, reserved)
 static_assert(offsetof(RouteParams, normalize) == 1 && offsetof(RouteParams, reserved) == 2);
 static_assert(offsetof(AttnParams, sinks) == 16 && offsetof(AttnParams, sparse_any) == 18 &&
               offsetof(AttnParams, reserved) == 19 && offsetof(OwnerAttnParams, attn) == 0 &&
-              offsetof(QsaAttnParams, attn) == 0);
+              offsetof(BlockSparseAttnParams, attn) == 0);
 static_assert(offsetof(SpatialNormParams, silu) == 8 && offsetof(SpatialNormParams, reserved) == 9);
 static_assert(offsetof(RopeSectionsParams, sections) == 9 &&
               offsetof(RopeSectionsParams, reserved) == 10);
@@ -1524,22 +1633,22 @@ Out InferFused(const Ctx& c) {
   if (c.key().fused == FusedKind::kGroupedStores) {
     return Fail(GraphError::kParams, c, "grouped_stores is a batch key, not a node");
   }
-  if (c.key().fused == FusedKind::kRopeStore || c.key().fused == FusedKind::kDsv4OutA) {
+  if (c.key().fused == FusedKind::kRopeStore ||
+      c.key().fused == FusedKind::kInverseRopeGroupedMatMul) {
     LLMP_TRY(CheckRope(c, c.params<RopeParams>(), 0));
   }
-  if (c.key().fused == FusedKind::kRmsNormMulRope || c.key().fused == FusedKind::kQkPrep ||
-      c.key().fused == FusedKind::kDsv4QHead) {
+  if (c.key().fused == FusedKind::kRmsNormMulRope || c.key().fused == FusedKind::kQkPrep) {
     LLMP_TRY(CheckRope(c, c.params<NormRopeParams>().rope, 4));
   }
-  if (c.key().fused == FusedKind::kQsaPool) {
-    LLMP_TRY(CheckRope(c, c.params<QsaPoolParams>().rope, 8));
+  if (c.key().fused == FusedKind::kMeanPoolNormRopeStore) {
+    LLMP_TRY(CheckRope(c, c.params<BlockPoolParams>().rope, 8));
   }
   if (c.key().fused == FusedKind::kStateBankAttention) {
     LLMP_TRY(Bool(c, 16));
     LLMP_TRY(Bool(c, 18));
     LLMP_TRY(Zero(c, 19, 1));
   }
-  if (c.key().fused == FusedKind::kDsv4Compress) {
+  if (c.key().fused == FusedKind::kSoftmaxPoolCompress) {
     LLMP_TRY(Bool(c, 4));
     LLMP_TRY(Zero(c, 5, 3));
   }
@@ -1547,6 +1656,7 @@ Out InferFused(const Ctx& c) {
     LLMP_TRY(Bool(c, 4));
     LLMP_TRY(Bool(c, 5));
     LLMP_TRY(Zero(c, 6, 2));
+    LLMP_TRY(NormEps(c, c.params<HcFoldParams>().eps));
   }
   if (c.key().fused == FusedKind::kGdnStep) {
     LLMP_TRY(Bool(c, 0));
@@ -1576,7 +1686,7 @@ Out InferFused(const Ctx& c) {
       LLMP_TRY(Zero(c, 2, 2));
       break;
     case FusedKind::kOwnerAttention:  // AttnParams first
-    case FusedKind::kQsaAttention:
+    case FusedKind::kBlockSparseAttention:
       LLMP_TRY(Bool(c, 16));
       LLMP_TRY(Bool(c, 18));
       LLMP_TRY(Zero(c, 19, 1));

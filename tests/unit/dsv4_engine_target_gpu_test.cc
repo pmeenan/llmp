@@ -130,7 +130,7 @@ TEST(Dsv4EngineTargetInputs, ServingDomainUsesActualBlockStateAndOwnsItsPayment)
                       .kind = md::StateKind::kDrafterRing,
                       .cell_bytes = 256,
                       .cells = md::CellRule::kPositionRing,
-                      .window_or_ratio = 256,
+                      .fixed_cells = 256,
                       .rollback = md::Rollback::kSnapshot,
                       .target_writes = true}}}}};
   auto a = md::Layout(target, 8192, 512);
@@ -177,7 +177,7 @@ TEST(Dsv4EngineTargetInputs, ServingDomainUsesActualBlockStateAndOwnsItsPayment)
                       .encoding = md::Encoding::kF32,
                       .cell_bytes = 256,
                       .cells = md::CellRule::kPerRow,
-                      .window_or_ratio = 1,
+                      .row_carry = 1,
                       .rollback = md::Rollback::kSnapshot,
                       .target_writes = true},
                     md::DraftProgressControl("progress", md::DraftRelation::kTokenAfterCache)}}}};

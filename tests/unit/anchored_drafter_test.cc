@@ -90,7 +90,8 @@ std::vector<en::StageState> Stages(bool chunk = false) {
                       .encoding = md::Encoding::kF32,
                       .cell_bytes = 256,
                       .cells = chunk ? md::CellRule::kPerRow : md::CellRule::kPositionRing,
-                      .window_or_ratio = chunk ? 1U : kTapCells,
+                      .fixed_cells = chunk ? 0U : kTapCells,
+                      .row_carry = chunk ? 1U : 0U,
                       .rollback = chunk ? md::Rollback::kSnapshot : md::Rollback::kTruncate,
                       .target_writes = true}}}}};
   return {{.name = "target", .layout = md::Layout(target, kContext, kChunk).value()},

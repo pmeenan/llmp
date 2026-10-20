@@ -61,6 +61,7 @@
 #include "spec/mapping.h"
 #include "spec/mappings/qwen38.h"
 #include "spec/spec.h"
+#include "state_layouts.h"
 
 namespace llmp::components {
 namespace {
@@ -1300,9 +1301,14 @@ TEST(ComponentsQwen38Test, RepeatableMtpContractsCoexistWithTheOriginalLayout) {
   std::ranges::sort(drafter.embedding->params, {}, &Param::name);
   // Declaring only the input's policy cannot qualify an arbitrary cache.
   EXPECT_FALSE(StageLayout(*composed, 1, 8192, 512));
-  for (auto& layer : drafter.layers)
-    for (auto& component : layer.components)
-      if (component.kind == "attention.qsa") component.version = 2;
+  for (auto& layer : drafter.layers) {
+    for (auto& component : layer.components) {
+      if (component.kind == "attention.qsa") {
+        component.params.push_back(P("replayable", ParamValue(true)));
+        std::ranges::sort(component.params, {}, &Param::name);
+      }
+    }
+  }
   auto replay = StageLayout(*composed, 1, 8192, 512);
   ASSERT_TRUE(replay) << (replay ? "" : replay.error());
   auto bounds = model::DraftBounds(*replay);
@@ -1316,7 +1322,7 @@ TEST(ComponentsQwen38Test, RepeatableMtpContractsCoexistWithTheOriginalLayout) {
   ASSERT_NE(Find("embedding.mtp", 1), nullptr);
   ASSERT_NE(Find("attention.qsa", 1), nullptr);
   EXPECT_NE(Find("embedding.mtp", 2), nullptr);
-  EXPECT_NE(Find("attention.qsa", 2), nullptr);
+  EXPECT_EQ(Find("attention.qsa", 2), nullptr);
   EXPECT_EQ(replay->items.size(), original->items.size() + 1);
 }
 
@@ -1397,7 +1403,7 @@ TEST(ComponentsQwen38Test, VerifySavesAreTheRealContractsWritesByteForByte) {
         } else {
           ASSERT_EQ(c.name, "indexer_blocks");
           EXPECT_EQ(c.cell_bytes, block);
-          EXPECT_EQ(c.window_or_ratio, p.indexer_ratio);
+          EXPECT_EQ(c.block_ratio, p.indexer_ratio);
         }
       }
       std::uint32_t attention_layers = 0;
@@ -1412,7 +1418,7 @@ TEST(ComponentsQwen38Test, VerifySavesAreTheRealContractsWritesByteForByte) {
       ASSERT_NE(streams, nullptr);
       ASSERT_EQ(streams->contract.kind, model::StateKind::kFeatures);
       ASSERT_EQ(streams->contract.cell_bytes, stream);
-      const std::uint64_t carried = streams->contract.window_or_ratio;
+      const std::uint64_t carried = streams->contract.row_carry;
       ASSERT_EQ(carried, 1U);
       // Its linear layers' state needs the commit.
       EXPECT_FALSE(model::WritesFor(*t, 0, 4).has_value());
@@ -1618,7 +1624,7 @@ TEST(ComponentsQwen38Test, TheTargetWritesItsDraftersStreamsEveryRow) {
         std::pair{planner::StepShape{.segments = {Seg(0, 16, 0, 256, 0)}}, false}}) {
     auto step = BuildStep(*spec, 0, shape, target_bindings);
     ASSERT_TRUE(step.has_value()) << step.error();
-    auto indexed_policy = BuildStep(*spec, 0, shape, target_bindings, {.dsv4_lid_mask = true});
+    auto indexed_policy = BuildStep(*spec, 0, shape, target_bindings, {.rounded_index_mask = true});
     ASSERT_TRUE(indexed_policy) << indexed_policy.error();
     EXPECT_EQ(indexed_policy->graph.Digest(), step->graph.Digest());
     // Every owner's rows at their cells (the rows before the chunk first).

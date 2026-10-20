@@ -87,21 +87,14 @@ namespace llmp::engine {
 // What the runner asks for a step program: one virtual call per plan miss
 // (the planner and a lowering behind it: ComponentStepSource once the
 // components exist; FakeStepSource in the tests).
-struct CommitBuffer {
-  std::uint32_t layer = 0;
-  std::uint16_t component = 0;
-  std::string what;
-  std::uint64_t row_bytes = 0;
-};
-
-class StepSource : public SpecializationQuery {
+class StepSource : public ShapeExecutionFacts {
  public:
   StepSource() = default;
   StepSource(const StepSource&) = delete;
   StepSource& operator=(const StepSource&) = delete;
   StepSource(StepSource&&) = delete;
   StepSource& operator=(StepSource&&) = delete;
-  virtual ~StepSource() = default;
+  ~StepSource() override = default;
   // What every plan of this source shares in its key (the spec's digest,
   // the pattern set, the policy, the partition); the runner sets the shape.
   // Asked once, at Bind.
@@ -114,23 +107,15 @@ class StepSource : public SpecializationQuery {
   virtual std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const {
     return std::optional<base::Sha256Digest>{};
   }
-  // Canonical baked graph dimensions. The same allocation-free emitter counts
-  // before storage admission, then fills an exact paid span. It must be pure.
-  virtual void EmitShapeParameters(const planner::StepShape&, model::ShapeParameterSink&) const {}
-  std::expected<std::size_t, model::ShapeParameterSink::Error> CountShapeParameters(
-      const planner::StepShape& shape) const {
-    model::ShapeParameterSink sink;
-    EmitShapeParameters(shape, sink);
-    return sink.Finish();
-  }
-  std::expected<std::size_t, model::ShapeParameterSink::Error> FillShapeParameters(
-      const planner::StepShape& shape, std::span<std::uint64_t> into) const {
-    model::ShapeParameterSink sink(into);
-    EmitShapeParameters(shape, sink);
-    return sink.Finish();
-  }
   // Diagnostic convenience. Production key construction uses Count/Fill.
   std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const;
+  // Stage-level execution handshake queried by the runner per stage.
+  virtual StageExecutionFacts StageFacts(std::uint16_t stage) const {
+    return {
+        .uses_side_rows = UsesSideRows(stage),
+        .joined_repeat_pending = JoinedRepeatPending(stage),
+        .commit_buffers = [this, stage](std::uint32_t rows) { return CommitBuffers(stage, rows); }};
+  }
   // Immutable numerical qualification for this stage's contribution to a
   // multi-owner repeat-pending submission (including target, companions,
   // head-bearing replay and continuation). The runner requires every
@@ -141,11 +126,6 @@ class StepSource : public SpecializationQuery {
   // A side-table component's row IDs from the owner's complete token
   // history. Pure host work before any state admission or device writes.
   virtual bool UsesSideRows(std::uint16_t /*stage*/) const { return false; }
-  virtual Status SideRows(std::uint16_t /*stage*/, std::uint16_t /*component*/,
-                          std::span<const std::int32_t> /*history*/, std::uint32_t /*position*/,
-                          std::span<std::int32_t> /*out*/) const {
-    return std::unexpected("the step source cannot derive side rows");
-  }
   // The intermediates a stage's verify stores for its commit, per owner.
   // Empty for a source without commit-based state. Queried once at setup.
   virtual std::expected<std::vector<CommitBuffer>, std::string> CommitBuffers(
@@ -708,6 +688,7 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   std::vector<std::uint32_t> carry_rows_;              // by slot, then stage
   std::vector<TapRows> tap_rows_, previous_tap_rows_;  // per-row taps; by slot, then stage
   std::vector<bool> frozen_;                           // by stage
+  std::vector<StageExecutionFacts> stage_facts_;       // by stage, queried at Setup
   // RunnerConfig::kernel_memory's mappings (each at a stable address).
   std::vector<std::unique_ptr<Mapped>> kernel_mapped_;
   bool prepared_ = false;      // RunnerConfig::prepare was called

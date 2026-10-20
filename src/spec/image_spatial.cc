@@ -244,6 +244,7 @@ std::expected<SpatialComposition, std::string> VaeDecoderSpec(
   }
   if (layer.components.empty()) return std::unexpected("decoder has no computed output");
   stage.layers.push_back(std::move(layer));
+  stage.links = links;
   ModelSpec spec{.pipeline = PipelineKind::kImage, .stages = {std::move(stage)}};
   Canonicalize(spec);
   if (auto valid = Validate(spec); !valid) return std::unexpected(valid.error());
@@ -297,6 +298,8 @@ std::expected<SpatialComposition, std::string> ImageDecodeSpec(
   components.insert(components.begin() + 1, ComponentRef{.kind = "affine.channel", .version = 1});
   out->links.insert(out->links.begin(), GraphLink{0, {}});
   out->links.insert(out->links.begin() + 1, GraphLink{.input = 1, .auxiliary_port = 0});
+  out->spec.stages[0].links = out->links;
+  out->spec.stages[0].exports = out->exports;
   Canonicalize(out->spec);
   if (auto valid = Validate(out->spec); !valid) return std::unexpected(valid.error());
   return out;
@@ -337,10 +340,14 @@ std::expected<SpatialComposition, std::string> ImageTimestepSpec(
                     {"silu", roles[i] == kTimeLinear1Weight || roles[i] == kTimeLinear2Weight}},
          .weights = {{.role = "weight", .tensor = sources[i]->name}}});
   stage.layers.push_back(std::move(layer));
+  std::vector<GraphLink> links{{0, {}}, {1, {}}, {2, {}}, {2, {}}};
+  std::vector<std::uint16_t> exports{3, 4};
+  stage.links = links;
+  stage.exports = exports;
   ModelSpec spec{.pipeline = PipelineKind::kImage, .stages = {std::move(stage)}};
   Canonicalize(spec);
   if (auto valid = Validate(spec); !valid) return std::unexpected(valid.error());
-  return SpatialComposition{std::move(spec), {{0, {}}, {1, {}}, {2, {}}, {2, {}}}, {3, 4}};
+  return SpatialComposition{std::move(spec), std::move(links), std::move(exports)};
 }
 namespace {
 std::expected<std::uint16_t, std::string> AppendImageBlock(
@@ -379,21 +386,15 @@ std::expected<std::uint16_t, std::string> AppendImageBlock(
       return std::unexpected("image block source encoding or role geometry differs");
   }
   auto& components = out.spec.stages[0].layers[0].components;
-  if (components.size() > kMaxComponents - 17)
+  if (components.size() > kMaxComponents - 6)
     return std::unexpected("image blocks exceed value-ID capacity");
   const auto add = [&](ComponentRef c, GraphLink link) {
     components.push_back(std::move(c));
     out.links.push_back(link);
     return static_cast<std::uint16_t>(components.size());
   };
-  const auto projection = [&](model::BlockTensor role, std::uint16_t input) {
-    const auto idx = static_cast<std::size_t>(role);
-    return add({.kind = "projection.spatial",
-                .version = 1,
-                .params = {{"in_channels", static_cast<std::int64_t>(sources[idx]->shape[1])},
-                           {"out_channels", static_cast<std::int64_t>(sources[idx]->shape[0])}},
-                .weights = {{.role = "weight", .tensor = sources[idx]->name}}},
-               {input, {}});
+  const auto name = [&](model::BlockTensor role) {
+    return sources[static_cast<std::size_t>(role)]->name;
   };
   const auto adaptive = [&](std::uint16_t input, std::uint16_t side) {
     return add({.kind = "norm.adaptive",
@@ -406,32 +407,47 @@ std::expected<std::uint16_t, std::string> AppendImageBlock(
                {.input = input, .auxiliary = side, .carry = carry});
   };
   const auto normalized = adaptive(stream, condition[0]);
-  const auto q = projection(kQ, normalized), k = projection(kK, normalized),
-             v = projection(kV, normalized);
-  const auto rotated = [&](std::uint16_t input, model::BlockTensor role) {
-    const auto idx = static_cast<std::size_t>(role);
-    return add({.kind = "norm.rope_axes",
-                .version = 1,
-                .params = {{"heads", std::int64_t{p.heads}},
-                           {"axis0", std::int64_t{p.rope_axes[0]}},
-                           {"axis1", std::int64_t{p.rope_axes[1]}},
-                           {"axis2", std::int64_t{p.rope_axes[2]}},
-                           {"base", double{p.rope_theta}},
-                           {"eps", double{p.eps}}},
-                .weights = {{.role = "weight", .tensor = sources[idx]->name}}},
-               {.input = input, .auxiliary_port = position_port});
-  };
-  const auto rq = rotated(q, kQNorm), rk = rotated(k, kKNorm);
-  const auto qk = add({.kind = "concat.spatial", .version = 1}, {rq, rk});
-  const auto qkv = add({.kind = "concat.spatial", .version = 1}, {qk, v});
   const auto attention =
-      add({.kind = "attention.spatial", .version = 1, .params = {{"heads", std::int64_t{p.heads}}}},
-          {.input = qkv, .auxiliary_port = mask_port});
-  const auto residual = gated(projection(kOut, attention), condition[1], stream);
+      add({.kind = "attention.dense",
+           .version = 1,
+           .params = {{"eps", double{p.eps}},
+                      {"heads", std::int64_t{p.heads}},
+                      {"key_dim", std::int64_t{p.head_dim}},
+                      {"kv_heads", std::int64_t{p.heads}},
+                      {"placement", std::string("bare")},
+                      {"qk_norm", true},
+                      {"rope_axis0", std::int64_t{p.rope_axes[0]}},
+                      {"rope_axis1", std::int64_t{p.rope_axes[1]}},
+                      {"rope_axis2", std::int64_t{p.rope_axes[2]}},
+                      {"rope_base", double{p.rope_theta}},
+                      {"rope_dims", std::int64_t{p.head_dim}},
+                      {"rope_scale", 1.0},
+                      {"rotation", std::string("normal")},
+                      {"scale", 1.0 / std::sqrt(static_cast<double>(dim))},
+                      {"scale_scores", true},
+                      {"stateless", true},
+                      {"value_dim", std::int64_t{p.head_dim}},
+                      {"window", std::int64_t{0}}},
+           .weights = {{.role = "k", .tensor = name(kK)},
+                       {.role = "k_norm", .tensor = name(kKNorm)},
+                       {.role = "output", .tensor = name(kOut)},
+                       {.role = "q", .tensor = name(kQ)},
+                       {.role = "q_norm", .tensor = name(kQNorm)},
+                       {.role = "v", .tensor = name(kV)}}},
+          {.input = normalized, .auxiliary_port = position_port, .carry_port = mask_port});
+  const auto residual = gated(attention, condition[1], stream);
   const auto mlp_input = adaptive(residual, condition[2]);
-  const auto gate = projection(kGate, mlp_input), up = projection(kProj, mlp_input);
-  const auto glu = add({.kind = "glu.spatial", .version = 1}, {gate, up});
-  const auto result = gated(projection(kMlpOut, glu), condition[3], residual);
+  const auto mlp = add({.kind = "ffn.glu",
+                        .version = 1,
+                        .params = {{"activation", std::string("silu")},
+                                   {"eps", double{p.eps}},
+                                   {"hidden", std::int64_t{p.mlp}},
+                                   {"placement", std::string("bare")}},
+                        .weights = {{.role = "down", .tensor = name(kMlpOut)},
+                                    {.role = "gate", .tensor = name(kGate)},
+                                    {.role = "up", .tensor = name(kProj)}}},
+                       {mlp_input, {}});
+  const auto result = gated(mlp, condition[3], residual);
   return result;
 }
 }  // namespace
@@ -444,8 +460,8 @@ std::expected<SpatialComposition, std::string> ImageTransformerBlockSpec(
   stage.name = "conditioned";
   stage.stream.width = p.width;
   auto& components = stage.layers[0].components;
-  components.reserve(28);
-  out->links.reserve(28);
+  components.reserve(14);
+  out->links.reserve(14);
   out->links[0].input_port = 0;
   const auto add = [&](ComponentRef c, GraphLink link) {
     components.push_back(std::move(c));
@@ -462,6 +478,8 @@ std::expected<SpatialComposition, std::string> ImageTransformerBlockSpec(
   auto result = AppendImageBlock(*out, p, block, tensors, 0, condition, 1, 2);
   if (!result) return std::unexpected(result.error());
   out->exports = {*result, 4};
+  stage.links = out->links;
+  stage.exports = out->exports;
   Canonicalize(out->spec);
   if (auto valid = Validate(out->spec); !valid) return std::unexpected(valid.error());
   return out;
@@ -469,7 +487,7 @@ std::expected<SpatialComposition, std::string> ImageTransformerBlockSpec(
 
 std::expected<std::uint64_t, std::string> ImageTextSpecBound(
     const model::ImageTextProfile& p, std::span<const model::ImageTensor> tensors) {
-  const auto components = std::uint64_t{p.layers} * 17 + 2;
+  const auto components = std::uint64_t{p.layers} * 2 + 2;
   if (!p.layers || components > kMaxComponents || tensors.size() > 4096 ||
       std::uint64_t{p.layers} * 11 + 1 > tensors.size())
     return std::unexpected("text mapping exceeds component/source representation");
@@ -520,55 +538,42 @@ std::expected<SpatialComposition, std::string> ImageTextSpec(
   for (std::uint32_t layer = 0; layer < p.layers; ++layer) {
     using enum model::TextTensor;
     const auto name = [&](model::TextTensor role) { return TextOf(tensors, layer, role).name; };
-    const auto projection = [&](model::TextTensor role, std::uint32_t input, std::uint32_t output,
-                                std::uint16_t value) {
-      return add(
-          {.kind = "projection.spatial",
-           .version = 1,
-           .params = {{"in_channels", std::int64_t{input}}, {"out_channels", std::int64_t{output}}},
-           .weights = {{.role = "weight", .tensor = name(role)}}},
-          {value, {}});
-    };
-    const auto norm = [&](model::TextTensor role, std::uint16_t value) {
-      return add({.kind = "norm.rms_spatial",
-                  .version = 1,
-                  .params = {{"channels", std::int64_t{p.width}}, {"eps", double{p.rms_eps}}},
-                  .weights = {{.role = "weight", .tensor = name(role)}}},
-                 {value, {}});
-    };
-    const auto rotated = [&](model::TextTensor role, std::uint16_t value, std::uint32_t heads) {
-      return add({.kind = "norm.rope_axes",
-                  .version = 1,
-                  .params = {{"heads", std::int64_t{heads}},
-                             {"axis0", std::int64_t{p.head_dim}},
-                             {"axis1", std::int64_t{0}},
-                             {"axis2", std::int64_t{0}},
-                             {"base", double{p.rope_theta}},
-                             {"eps", double{p.rms_eps}},
-                             {"neox", true}},
-                  .weights = {{.role = "weight", .tensor = name(role)}}},
-                 {.input = value, .auxiliary_port = 0});
-    };
-    const auto normalized = norm(kInputNorm, current);
-    const auto q = rotated(kQNorm, projection(kQ, p.width, p.width, normalized), p.heads);
-    const auto k =
-        rotated(kKNorm, projection(kK, p.width, p.kv_heads * p.head_dim, normalized), p.kv_heads);
-    const auto v = projection(kV, p.width, p.kv_heads * p.head_dim, normalized);
-    const auto qk = add({.kind = "concat.spatial", .version = 1}, {q, k});
-    const auto qkv = add({.kind = "concat.spatial", .version = 1}, {qk, v});
-    const auto attention =
-        add({.kind = "attention.spatial",
-             .version = 1,
-             .params = {{"heads", std::int64_t{p.heads}}, {"kv_heads", std::int64_t{p.kv_heads}}}},
-            {.input = qkv, .auxiliary_port = 1});
-    const auto projected = projection(kO, p.width, p.width, attention);
-    const auto residual = add({.kind = "residual.spatial", .version = 1}, {projected, current});
-    const auto mlp = norm(kPostNorm, residual);
-    const auto gate = projection(kGate, p.width, p.ffn, mlp);
-    const auto up = projection(kUp, p.width, p.ffn, mlp);
-    const auto activated = add({.kind = "glu.spatial", .version = 1}, {gate, up});
-    const auto down = projection(kDown, p.ffn, p.width, activated);
-    current = add({.kind = "residual.spatial", .version = 1}, {down, residual});
+    current = add({.kind = "attention.dense",
+                   .version = 1,
+                   .params = {{"eps", double{p.rms_eps}},
+                              {"heads", std::int64_t{p.heads}},
+                              {"key_dim", std::int64_t{p.head_dim}},
+                              {"kv_heads", std::int64_t{p.kv_heads}},
+                              {"placement", std::string("pre")},
+                              {"qk_norm", true},
+                              {"rope_base", double{p.rope_theta}},
+                              {"rope_dims", std::int64_t{p.head_dim}},
+                              {"rope_scale", 1.0},
+                              {"rotation", std::string("neox")},
+                              {"scale", 1.0 / std::sqrt(static_cast<double>(p.head_dim))},
+                              {"scale_scores", true},
+                              {"stateless", true},
+                              {"value_dim", std::int64_t{p.head_dim}},
+                              {"window", std::int64_t{0}}},
+                   .weights = {{.role = "k", .tensor = name(kK)},
+                               {.role = "k_norm", .tensor = name(kKNorm)},
+                               {.role = "norm", .tensor = name(kInputNorm)},
+                               {.role = "output", .tensor = name(kO)},
+                               {.role = "q", .tensor = name(kQ)},
+                               {.role = "q_norm", .tensor = name(kQNorm)},
+                               {.role = "v", .tensor = name(kV)}}},
+                  {.input = current, .auxiliary_port = 0, .carry_port = 1});
+    current = add({.kind = "ffn.glu",
+                   .version = 1,
+                   .params = {{"activation", std::string("silu")},
+                              {"eps", double{p.rms_eps}},
+                              {"hidden", std::int64_t{p.ffn}},
+                              {"placement", std::string("pre")}},
+                   .weights = {{.role = "down", .tensor = name(kDown)},
+                               {.role = "gate", .tensor = name(kGate)},
+                               {.role = "norm", .tensor = name(kPostNorm)},
+                               {.role = "up", .tensor = name(kUp)}}},
+                  {current, {}});
   }
   current = add({.kind = "slice.spatial",
                  .version = 1,
@@ -577,6 +582,8 @@ std::expected<SpatialComposition, std::string> ImageTextSpec(
                             {"input_rows", std::int64_t{rows}}}},
                 {current, {}});
   out.exports = {current};
+  out.spec.stages[0].links = out.links;
+  out.spec.stages[0].exports = out.exports;
   Canonicalize(out.spec);
   if (auto checked = Validate(out.spec); !checked) return std::unexpected(checked.error());
   return out;
@@ -584,7 +591,7 @@ std::expected<SpatialComposition, std::string> ImageTextSpec(
 
 std::expected<std::uint64_t, std::string> ImageFlowSpecBound(
     const model::ImageDenoiserProfile& p, std::span<const model::ImageTensor> tensors) {
-  constexpr std::uint64_t fixed_components = 19, per_block = 17;
+  constexpr std::uint64_t fixed_components = 19, per_block = 6;
   const std::uint64_t components = fixed_components + per_block * std::uint64_t{p.blocks};
   if (!p.blocks || components > kMaxComponents || tensors.size() > 4096)
     return std::unexpected("image flow mapping exceeds spec value-ID or source inventory capacity");
@@ -628,7 +635,7 @@ std::expected<SpatialComposition, std::string> ImageFlowSpec(
   stage.name = "flow";
   stage.stream.width = p.context;
   auto& components = stage.layers[0].components;
-  components.reserve(19 + 17 * std::size_t{p.blocks});
+  components.reserve(19 + 6 * std::size_t{p.blocks});
   out->links.reserve(components.capacity());
   out->links[0].input_port = 1;
   const auto add = [&](ComponentRef c, GraphLink link) {
@@ -647,7 +654,7 @@ std::expected<SpatialComposition, std::string> ImageFlowSpec(
                {input, {}});
   };
   const auto text_norm =
-      add({.kind = "norm.rms_spatial",
+      add({.kind = "norm.rms",
            .version = 1,
            .params = {{"channels", std::int64_t{p.context}},
                       {"eps", double{p.eps}},
@@ -696,6 +703,8 @@ std::expected<SpatialComposition, std::string> ImageFlowSpec(
   const auto next = add({.kind = "residual.scaled", .version = 1},
                         {.input = noise, .auxiliary_port = 4, .carry = latent});
   out->exports = {noise, next};
+  stage.links = out->links;
+  stage.exports = out->exports;
   Canonicalize(out->spec);
   if (auto valid = Validate(out->spec); !valid) return std::unexpected(valid.error());
   return out;

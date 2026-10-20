@@ -177,8 +177,14 @@ Status ModelRunner::CheckOwners(std::size_t owners) const {
   if (!repeat) return {};
   // The declared layouts, not a hydrated mirror or current readiness,
   // determine this boundary. Every stage participates in the qualification.
+  if (!source_->ExecutionIdentity().has_value())
+    return Error("joined repeat-pending execution is not qualified by stage 0");
   for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
-    if (!source_->JoinedRepeatPending(static_cast<std::uint16_t>(stage)))
+    const bool qualified =
+        stage < stage_facts_.size()
+            ? stage_facts_[stage].joined_repeat_pending
+            : source_->StageFacts(static_cast<std::uint16_t>(stage)).joined_repeat_pending;
+    if (!qualified)
       return Error(
           std::format("joined repeat-pending execution is not qualified by stage {}", stage));
   }
@@ -545,6 +551,11 @@ Status ModelRunner::Setup() {
   auto execution_identity = source_->ExecutionIdentity();
   if (!execution_identity) return Error(execution_identity.error());
   if (auto sealed = slots_.SealExecutionIdentity(*execution_identity); !sealed) return sealed;
+  stage_facts_.clear();
+  stage_facts_.reserve(slots_.stages());
+  for (std::uint16_t stage = 0; stage < slots_.stages(); ++stage) {
+    stage_facts_.push_back(source_->StageFacts(stage));
+  }
   std::uint64_t activations = 0, pool = 0, inputs = 0, outputs = 0;
   std::vector<std::uint64_t> carry(slots_.stages(), 0);
   for (const pl::StepShape& shape : config_.setup_shapes) {
@@ -716,7 +727,7 @@ Status ModelRunner::EmitFeatureCopies(const kn::StepProgram& program, const Step
           for (std::uint32_t r = 0; r < seg.rows; ++r) {
             const std::uint64_t cell =
                 tap->contract.cells == model::CellRule::kPerRow
-                    ? std::uint64_t{tap->contract.window_or_ratio} + from.position + r - held.first
+                    ? std::uint64_t{tap->contract.row_carry} + from.position + r - held.first
                     : (std::uint64_t{from.position} + r) % tap->cells;
             const std::uint64_t dst = to + (r * row_bytes);
             const std::uint64_t src = base + (cell * tap->contract.cell_bytes);
@@ -780,12 +791,12 @@ Status ModelRunner::EmitTapCarries(const pl::StepShape& shape, CopySink& copies)
       const auto* tap = model::FeatureTap(slots_.layout(stage));
       if (tap == nullptr || tap->contract.cells != model::CellRule::kPerRow) continue;
       const TapRows held = HeldTapRows(seg.slot, stage);
-      const std::uint32_t count = std::min(held.count, tap->contract.window_or_ratio);
+      const std::uint32_t count = std::min(held.count, tap->contract.row_carry);
       if (count == 0 || std::uint64_t{held.first} + held.count != seg.past) continue;
       const std::uint64_t bytes = tap->contract.cell_bytes;
       const std::uint64_t base = slots_.live(seg.slot, stage).base(0) + tap->offset;
-      if (!copies.Push({base + ((tap->contract.window_or_ratio - count) * bytes),
-                        base + ((tap->contract.window_or_ratio + held.count - count) * bytes),
+      if (!copies.Push({base + ((tap->contract.row_carry - count) * bytes),
+                        base + ((tap->contract.row_carry + held.count - count) * bytes),
                         count * bytes}))
         return Error("tap carries exceed their paid capacity");
     }
@@ -890,7 +901,11 @@ Status ModelRunner::SetupCommits() {
   if (config_.max_verify_rows == 0) return {};
   std::uint64_t bytes = 0;
   for (std::uint16_t stage = 0; stage < slots_.stages(); ++stage) {
-    auto buffers = source_->CommitBuffers(stage, config_.max_verify_rows);
+    const auto facts = source_->StageFacts(stage);
+    auto buffers =
+        facts.commit_buffers
+            ? facts.commit_buffers(config_.max_verify_rows)
+            : std::expected<std::vector<CommitBuffer>, std::string>(std::vector<CommitBuffer>{});
     if (!buffers)
       return Error(std::format("stage {}'s commit buffers: {}", stage, buffers.error()));
     for (CommitBuffer& buffer : *buffers) {

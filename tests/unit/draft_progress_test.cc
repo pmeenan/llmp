@@ -143,7 +143,7 @@ md::StateContract RepeatableContract(DraftRelation relation = DraftRelation::kTo
                        .encoding = md::Encoding::kF32,
                        .cell_bytes = 16,
                        .cells = md::CellRule::kPerRow,
-                       .window_or_ratio = 1,
+                       .row_carry = 1,
                        .rollback = md::Rollback::kSnapshot,
                        .target_writes = true},
                       md::DraftProgressControl("progress", relation)}};
@@ -223,7 +223,7 @@ TEST(DraftProgressTest, LayoutRefusesControlMasqueradingAndUnqualifiedReplay) {
         c.tensors.front().replayable = false;
         break;
       case 6:
-        c.tensors[1].window_or_ratio = 0;
+        c.tensors[1].row_carry = 0;
         break;
       case 7:
         c.tensors[1].rollback = md::Rollback::kTruncate;
@@ -236,7 +236,7 @@ TEST(DraftProgressTest, LayoutRefusesControlMasqueradingAndUnqualifiedReplay) {
         break;
       case 9:
         c.tensors.front().cells = md::CellRule::kFixed;
-        c.tensors.front().window_or_ratio = 1;
+        c.tensors.front().fixed_cells = 1;
         break;
     }
     EXPECT_FALSE(Layout(std::move(c))) << variant;

@@ -55,7 +55,7 @@ std::vector<en::StageState> Stages() {
                  .encoding = md::Encoding::kF32,
                  .cell_bytes = 256,
                  .cells = md::CellRule::kPerRow,
-                 .window_or_ratio = 1,
+                 .row_carry = 1,
                  .rollback = md::Rollback::kSnapshot,
                  .target_writes = true},
                 md::DraftProgressControl("progress", md::DraftRelation::kTokenAfterCache)})}};
@@ -1753,7 +1753,7 @@ class PartialBlockDraftTest : public DraftCompanionsTest {
                                 .kind = md::StateKind::kBlockKeys,
                                 .cell_bytes = kExtent,
                                 .cells = md::CellRule::kPerBlock,
-                                .window_or_ratio = 4,
+                                .block_ratio = 4,
                                 .cell_pad = 1,
                                 .dummy_last = true,
                                 .partial_blocks = true,

@@ -141,7 +141,7 @@ enum class LlmpOp : std::uint8_t {
   kDsv4HcNormF16,
   kDsv4F16Copy,
   kQRows,
-  kGemma4Mask,
+  kCausalMask,
   kFlashAttnOwners,
   kVisibleTopK,
   kSelectedMask,
@@ -218,7 +218,7 @@ ggml_tensor* FlashAttnOwnersNode(ggml_context* context, ggml_tensor* q, ggml_ten
 // means global causal, otherwise capacity must retain window+whole chunk
 // (or the entire context). Padded query/cell rows and invalid positions are
 // always -inf. No host-built matrix or scratch is needed.
-// The dispatch tag is retained for existing Gemma plans. Exact rows also
+// The dispatch tag is retained for existing plans. Exact rows also
 // serve raw causal/ring masks whose consumers derive query count from ne[1].
 enum class CausalMaskRows : std::int32_t { kPad32 = 0, kExact = 1 };
 // Block visibility includes later positions in the current contiguous block.
@@ -228,18 +228,18 @@ enum class CausalMaskRows : std::int32_t { kPad32 = 0, kExact = 1 };
 // never store): a cell is seen where it holds such a position, causal and
 // within the window of the row's.
 enum class MaskPolicy : std::int32_t { kCausal = 0, kBlock = 1, kFrozen = 2 };
-inline constexpr const char* kGemma4MaskName = "llmp.gemma4.mask";
+inline constexpr const char* kCausalMaskName = "llmp.causal.mask";
 ggml_tensor* CausalRingMask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
                             std::int32_t first_row, std::int32_t rows, std::int32_t capacity,
                             std::int32_t window, std::int32_t context_limit,
                             CausalMaskRows row_layout, ggml_type output_type = GGML_TYPE_F16,
                             MaskPolicy policy = MaskPolicy::kCausal);
-ggml_tensor* Gemma4Mask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
+ggml_tensor* CausalMask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
                         std::int32_t first_row, std::int32_t rows, std::int32_t capacity,
                         std::int32_t window, std::int32_t context_limit);
-bool Gemma4MaskFits(const ggml_tensor* node);
-std::expected<void, KernelFailure> CheckGemma4Mask(const ggml_tensor* node);
-std::expected<void, KernelFailure> RunGemma4Mask(LaunchContext& launch, ggml_tensor* node);
+bool CausalMaskFits(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckCausalMask(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunCausalMask(LaunchContext& launch, ggml_tensor* node);
 
 // The operation a GGML_OP_CUSTOM node names, or kNone.
 LlmpOp LlmpOpOf(const ggml_tensor* node);

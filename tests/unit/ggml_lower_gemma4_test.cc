@@ -64,6 +64,7 @@
 #include "spec/mapping.h"
 #include "spec/mappings/gemma4.h"
 #include "spec_fixtures.h"
+#include "state_layouts.h"
 
 namespace {
 
@@ -270,7 +271,7 @@ std::map<std::uint32_t, std::string> StepLeaves(const co::StepGraph& step,
       const auto& item = target->items.at(st.item);
       out[st.tensor.v] =
           std::format("{}.{}.{}", item.contract.name,
-                      item.contract.window_or_ratio != 0 ? "local" : "global", st.ref.segment);
+                      item.contract.window != 0 ? "local" : "global", st.ref.segment);
       continue;
     }
     out[st.tensor.v] =
@@ -582,7 +583,7 @@ TEST(GgmlLowerGemma4Test, AssistantLowersItsDraftPasses) {
       ASSERT_TRUE(d.lowered.has_value());
       std::size_t producers = 0;
       for (const ggml_tensor* n : d.lowered->nodes) {
-        if (kg::LlmpOpOf(n) == kg::LlmpOp::kGemma4Mask) {
+        if (kg::LlmpOpOf(n) == kg::LlmpOp::kCausalMask) {
           EXPECT_EQ(kg::LlmpOpInt(n, 6), static_cast<std::int32_t>(kg::MaskPolicy::kFrozen));
           ++producers;
         }

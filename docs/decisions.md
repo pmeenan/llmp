@@ -39,6 +39,42 @@ one Spark and on two.
 
 ---
 
+## D-122: Optional stage graph links and exports in ModelSpec and token components in the image pipeline (2026-10-19, status: accepted; amends D-107 and D-109)
+
+**Decision.** `spec::Stage` carries optional `links` (`std::vector<GraphLink>`)
+and `exports` (`std::vector<std::uint16_t>`). When empty, a stage is sequential
+and `ToJson` omits both keys, keeping existing LLM and composition family spec
+JSON and SHA-256 digests unchanged. When non-empty, `links` has one entry per
+layer component in execution order (1-based backward value IDs, `0` for the
+stage input stream or a named input port, and optional `carry` or `carry_port`)
+and `exports` lists distinct 1-based component value IDs as stage outputs.
+Image text encoder layers and denoiser blocks compose higher-level token
+components (`attention.dense` and `ffn.glu`) directly alongside row-wise 1D
+token components (`embedding.token`, `norm.rms`, `norm.channel`,
+`norm.adaptive`, `residual.gated`, `projection.spatial`, `residual.spatial`,
+`condition.rows`, `concat.spatial`, `slice.spatial`, `residual.scaled`), all
+using `Def::emit` and `Def::reference` (`Def::spatial == nullptr`); single-op
+surrogates `glu.spatial` and `norm.rope_axes` are removed. Only genuinely
+multi-dimensional spatial operations (`conv.spatial`, `upsample.nearest`,
+`residual.upsample`, `reshape.spatial`, `affine.channel`, `attention.spatial`)
+use `Def::spatial`. No component in the catalog carries both `Def::spatial` and
+`Def::emit`, or stub callbacks that refuse token execution.
+
+**Context.** M3.6 review follow-up R9.5: `SpatialComposition` held `links` and
+`exports` beside `ModelSpec`, and the image pipeline decomposed attention and
+GLU FFN into 17 op-level components per block/layer instead of reusing the
+token catalog's `attention.dense` and `ffn.glu` components.
+
+**Consequences.** `spec::Validate`, `spec::ToJson`, and `spec::FromJson`
+validate and round-trip stage `links` and `exports`. `BuildSpatialStep` bridges
+token components (`Def::spatial == nullptr`) through `Def::emit` and
+`Def::reference` over the 2D row view of `[width, rows, 1, 1]` activations,
+collapsing each denoiser block from 17 to 6 components and each text encoder
+layer from 17 to 2 components (`attention.dense` + `ffn.glu`).
+
+**Reopen if.** Multi-dimensional spatial shape propagation is unified directly
+into `Fragment` and `RefIO`.
+
 ## D-121: Choose the better architecture and do the work it requires (2026-10-17, status: accepted at the owner's direction; clarifies D-016's review criterion and amends D-018/D-062 before first shipment)
 
 **Decision.** Choose the better architecture and do the work it requires.

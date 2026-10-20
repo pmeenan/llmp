@@ -42,6 +42,7 @@
 #include "artifact/format_map.h"
 #include "base/bytes.h"
 #include "base/json.h"
+#include "components/step.h"
 #include "engine/batch_inventory.h"
 #include "engine/component_source.h"
 #include "engine/copy_sink.h"
@@ -69,6 +70,7 @@
 
 namespace {
 
+namespace co = llmp::components;
 namespace en = llmp::engine;
 namespace kn = llmp::kernels;
 namespace md = llmp::model;
@@ -611,7 +613,7 @@ std::vector<en::StageState> Stages() {
                       .encoding = md::Encoding::kF32,
                       .cell_bytes = 4096,
                       .cells = md::CellRule::kFixed,
-                      .window_or_ratio = 1,
+                      .fixed_cells = 1,
                       .rollback = md::Rollback::kSnapshot}}}}};
   return {{.name = "target", .layout = md::Layout(layers, kContext, 256).value()}};
 }
@@ -1221,7 +1223,7 @@ class WholeRingKeyTest : public ModelRunnerTest {
                        .kind = md::StateKind::kRing,
                        .cell_bytes = 4096,
                        .cells = md::CellRule::kRing,
-                       .window_or_ratio = 128,
+                       .window = 128,
                        .ring_reads_whole = true,
                        .rollback = md::Rollback::kSnapshot}}}}};
     return {{.name = "target", .layout = md::Layout(layers, kContext, 256).value()}};
@@ -1843,49 +1845,59 @@ class CompressorInputsTest : public ModelRunnerTest {
   ts::FakeSourceOptions SourceOptions() override {
     auto o = ModelRunnerTest::SourceOptions();
     o.extra_inputs = [](const pl::StepShape&) {
-      return std::vector<kn::InputSlot>{
-          {.bytes = 8, .kind = kn::InputKind::kPositionPhases, .ratio = 4},
-          {.bytes = 8,
-           .segment = 0,
-           .kind = kn::InputKind::kKeptRows,
-           .cells = {.capacity = 4, .ring = true, .recent = true}},
-          {.bytes = 16,
-           .segment = 0,
-           .kind = kn::InputKind::kKeptCells,
-           .cells = {.capacity = 4, .ring = true, .recent = true}},
-          {.bytes = 16,
-           .segment = 0,
-           .kind = kn::InputKind::kPoolReads,
-           .cells = {.capacity = 4, .ring = true, .recent = true},
-           .ratio = 4,
-           .ring = 4},
-          {.bytes = 8,
-           .segment = 0,
-           .kind = kn::InputKind::kBlockCells,
-           .cells = {.capacity = 16, .block = 4, .positions = true},
-           .ratio = 4},
-          {.bytes = 4, .segment = 0, .kind = kn::InputKind::kBlockStarts, .ratio = 4},
-          {.bytes = 16, .kind = kn::InputKind::kHadamard, .read = 2},
-          {.bytes = 4 * 32 * 2,
-           .segment = 0,
-           .kind = kn::InputKind::kMask,
-           .cells = {.capacity = 4, .ring = true, .recent = true},
-           .read = 4,
-           .window = 3,
-           .mask_rows = 32,
-           .ahead = true},
-          {.bytes = 16 * 32 * 2,
-           .segment = 0,
-           .kind = kn::InputKind::kMask,
-           .cells = {.capacity = 16, .block = 4, .positions = true},
-           .read = 16,
-           .mask_rows = 32},
-          {.bytes = 8,
-           .segment = 0,
-           .kind = kn::InputKind::kVisibleCells,
-           .cells = {.capacity = 16, .block = 4, .positions = true},
-           .read = 16,
-           .visible_capacity = 3}};
+      return std::vector<kn::InputSlot>{{.bytes = 8,
+                                         .kind = kn::InputKind::kHostComputed,
+                                         .host = &co::CompressorPhasesInput(),
+                                         .ratio = 4},
+                                        {.bytes = 8,
+                                         .segment = 0,
+                                         .kind = kn::InputKind::kHostComputed,
+                                         .cells = {.capacity = 4, .ring = true, .recent = true},
+                                         .host = &co::CompressorKeptRowsInput()},
+                                        {.bytes = 16,
+                                         .segment = 0,
+                                         .kind = kn::InputKind::kHostComputed,
+                                         .cells = {.capacity = 4, .ring = true, .recent = true},
+                                         .host = &co::CompressorKeptCellsInput()},
+                                        {.bytes = 16,
+                                         .segment = 0,
+                                         .kind = kn::InputKind::kHostComputed,
+                                         .cells = {.capacity = 4, .ring = true, .recent = true},
+                                         .host = &co::CompressorPoolReadsInput(),
+                                         .ratio = 4,
+                                         .ring = 4},
+                                        {.bytes = 8,
+                                         .segment = 0,
+                                         .kind = kn::InputKind::kHostComputed,
+                                         .cells = {.capacity = 16, .block = 4, .positions = true},
+                                         .host = &co::CompressorBlockCellsInput(),
+                                         .ratio = 4},
+                                        {.bytes = 4,
+                                         .segment = 0,
+                                         .kind = kn::InputKind::kHostComputed,
+                                         .host = &co::CompressorBlockStartsInput(),
+                                         .ratio = 4},
+                                        {.bytes = 16, .kind = kn::InputKind::kHadamard, .read = 2},
+                                        {.bytes = 4 * 32 * 2,
+                                         .segment = 0,
+                                         .kind = kn::InputKind::kMask,
+                                         .cells = {.capacity = 4, .ring = true, .recent = true},
+                                         .read = 4,
+                                         .window = 3,
+                                         .mask_rows = 32,
+                                         .ahead = true},
+                                        {.bytes = 16 * 32 * 2,
+                                         .segment = 0,
+                                         .kind = kn::InputKind::kMask,
+                                         .cells = {.capacity = 16, .block = 4, .positions = true},
+                                         .read = 16,
+                                         .mask_rows = 32},
+                                        {.bytes = 8,
+                                         .segment = 0,
+                                         .kind = kn::InputKind::kVisibleCells,
+                                         .cells = {.capacity = 16, .block = 4, .positions = true},
+                                         .read = 16,
+                                         .visible_capacity = 3}};
     };
     return o;
   }
@@ -2539,13 +2551,13 @@ std::vector<en::StageState> BlockStages() {
                       .encoding = md::Encoding::kF32,
                       .cell_bytes = 4096,
                       .cells = md::CellRule::kFixed,
-                      .window_or_ratio = 1,
+                      .fixed_cells = 1,
                       .rollback = md::Rollback::kSnapshot},
                     C{.name = "blocks",
                       .kind = md::StateKind::kCompressed,
                       .cell_bytes = 65536,
                       .cells = md::CellRule::kPerBlock,
-                      .window_or_ratio = 4,
+                      .block_ratio = 4,
                       .cell_pad = 1,
                       .basis = md::BlockBasis::kPositions,
                       .rollback = md::Rollback::kSnapshot}}}}};

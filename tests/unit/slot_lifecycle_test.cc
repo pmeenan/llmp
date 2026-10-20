@@ -77,7 +77,7 @@ std::vector<en::StageState> Stages() {
                           .encoding = md::Encoding::kF32,
                           .cell_bytes = 4096,
                           .cells = md::CellRule::kFixed,
-                          .window_or_ratio = 1,
+                          .fixed_cells = 1,
                           .rollback = md::Rollback::kSnapshot}})},
       {.name = "mtp",
        .layout = layout({{.name = "kv", .kind = md::StateKind::kKv, .cell_bytes = 4096}})},
@@ -87,7 +87,7 @@ std::vector<en::StageState> Stages() {
                           .encoding = md::Encoding::kF32,
                           .cell_bytes = 65536,
                           .cells = md::CellRule::kFixed,
-                          .window_or_ratio = 1,
+                          .fixed_cells = 1,
                           .rollback = md::Rollback::kSnapshot}})},
   };
 }
@@ -1127,7 +1127,7 @@ class GemmaFootprintTest : public SlotLifecycleTest {
                .encoding = md::Encoding::kF16,
                .cell_bytes = 2048,
                .cells = local ? md::CellRule::kRing : md::CellRule::kPerPosition,
-               .window_or_ratio = local ? kWindow : 0,
+               .window = local ? kWindow : 0,
                .rollback = local ? md::Rollback::kNone : md::Rollback::kTruncate};
     };
     const std::vector<std::pair<std::uint32_t, md::StateContract>> layers = {
@@ -1202,18 +1202,18 @@ class StateBankFootprintTest : public SlotLifecycleTest {
          {.tensors = {{.name = "prefix",
                        .cell_bytes = 3 * kExtent / 4,
                        .cells = md::CellRule::kFixed,
-                       .window_or_ratio = 1},
+                       .fixed_cells = 1},
                       {.name = "raw",
                        .kind = md::StateKind::kRing,
                        .cell_bytes = 1024,
                        .cells = md::CellRule::kRing,
-                       .window_or_ratio = 128,
+                       .window = 128,
                        .ring_reads_whole = true},
                       {.name = "compressed",
                        .kind = md::StateKind::kCompressed,
                        .cell_bytes = 1024,
                        .cells = md::CellRule::kPerBlock,
-                       .window_or_ratio = 4,
+                       .block_ratio = 4,
                        .basis = md::BlockBasis::kPositions,
                        .dummy_last = true}}}}};
     return {{.name = "target", .layout = md::Layout(layers, 65536, 512).value()}};
@@ -1278,12 +1278,12 @@ class IndexKeyFootprintTest : public SlotLifecycleTest {
          {.tensors = {{.name = "prefix",
                        .cell_bytes = kExtent - 256,
                        .cells = md::CellRule::kFixed,
-                       .window_or_ratio = 1},
+                       .fixed_cells = 1},
                       {.name = "index",
                        .kind = md::StateKind::kIndex,
                        .cell_bytes = 256,
                        .cells = md::CellRule::kPerBlock,
-                       .window_or_ratio = 4,
+                       .block_ratio = 4,
                        .basis = md::BlockBasis::kPositions,
                        .dummy_last = true}}}}};
     return {{.name = "target", .layout = md::Layout(layers, 131072, 512).value()}};

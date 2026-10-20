@@ -96,8 +96,10 @@
 #include <vector>
 
 #include "base/check.h"
+#include "components/attention_core.h"
 #include "components/component.h"
 #include "components/defs.h"
+#include "components/rotation_reference.h"
 #include "components/step.h"
 #include "ir/graph.h"
 #include "ir/op.h"
@@ -217,7 +219,7 @@ struct Dims {
   Cache cache;
   std::uint64_t cells;
   float eps, base;
-  Yarn yarn;
+  YarnParams yarn;
   Encoding kv_encoding;
 };
 Dims DimsOf(const Instance& in) {
@@ -246,7 +248,8 @@ Dims DimsOf(const Instance& in) {
           .yarn = {.factor = F32(p.Real("rope_factor")),
                    .context = static_cast<std::uint32_t>(p.Int("yarn_context")),
                    .beta_fast = F32(p.Real("beta_fast")),
-                   .beta_slow = F32(p.Real("beta_slow"))},
+                   .beta_slow = F32(p.Real("beta_slow")),
+                   .inverse_attn_scale = true},
           .kv_encoding = p.Name("kv_encoding") == "q8_0" ? Encoding::kQ8_0 : Encoding::kF16};
 }
 
@@ -333,7 +336,7 @@ model::StateContract State(const Instance& in) {
                            .encoding = d.kv_encoding,
                            .cell_bytes = *kv_cell_bytes,
                            .cells = model::CellRule::kRing,
-                           .window_or_ratio = static_cast<std::uint32_t>(d.window),
+                           .window = static_cast<std::uint32_t>(d.window),
                            .ring_reads_whole = true,
                            .rollback = model::Rollback::kSnapshot});
       break;
@@ -344,7 +347,7 @@ model::StateContract State(const Instance& in) {
                            .encoding = d.kv_encoding,
                            .cell_bytes = *kv_cell_bytes,
                            .cells = model::CellRule::kPositionRing,
-                           .window_or_ratio = static_cast<std::uint32_t>(d.cells),
+                           .fixed_cells = static_cast<std::uint32_t>(d.cells),
                            .rollback = model::Rollback::kSnapshot,
                            .target_writes = true});
       break;
@@ -358,7 +361,7 @@ model::StateContract State(const Instance& in) {
                          .encoding = enc,
                          .cell_bytes = *bytes,
                          .cells = model::CellRule::kPerBlock,
-                         .window_or_ratio = d.ratio,
+                         .block_ratio = d.ratio,
                          .cell_pad = CompressedCellPad(),
                          .basis = model::BlockBasis::kPositions,
                          .dummy_last = true,
@@ -372,7 +375,7 @@ model::StateContract State(const Instance& in) {
                            .encoding = Encoding::kF32,
                            .cell_bytes = coff * dim * 4,
                            .cells = model::CellRule::kPositionRing,
-                           .window_or_ratio = static_cast<std::uint32_t>(coff * d.ratio),
+                           .fixed_cells = static_cast<std::uint32_t>(coff * d.ratio),
                            .rollback = model::Rollback::kSnapshot});
     }
   };
@@ -399,31 +402,9 @@ std::vector<MaskUse> Masks(const Instance& in) {
 // a factor, its attention factor reciprocal to YaRN's magnitude), over
 // `head` values from head - rope_dims.
 ir::RopeParams Rotation(const Dims& d, std::uint64_t head, bool inverse = false) {
-  if (!Yarned(d)) {
-    return {.mode = ir::RopeMode::kNormal,
-            .inverse = inverse,
-            .dims = static_cast<std::uint32_t>(d.rope_dims),
-            .offset = static_cast<std::uint32_t>(head - d.rope_dims),
-            .original_context = 0,
-            .base = d.base,
-            .scale = 1.0F,
-            .ext_factor = 0.0F,
-            .attn_factor = 1.0F,
-            .beta_fast = 0.0F,
-            .beta_slow = 0.0F};
-  }
-  const float scale = 1.0F / d.yarn.factor;
-  return {.mode = ir::RopeMode::kNormal,
-          .inverse = inverse,
-          .dims = static_cast<std::uint32_t>(d.rope_dims),
-          .offset = static_cast<std::uint32_t>(head - d.rope_dims),
-          .original_context = d.yarn.context,
-          .base = d.base,
-          .scale = scale,
-          .ext_factor = 1.0F,
-          .attn_factor = 1.0F / (1.0F + (0.1F * std::log(1.0F / scale))),
-          .beta_fast = d.yarn.beta_fast,
-          .beta_slow = d.yarn.beta_slow};
+  return MakeRopeParams(ir::RopeMode::kNormal, static_cast<std::uint32_t>(d.rope_dims),
+                        static_cast<std::uint32_t>(head - d.rope_dims), 0, d.base, 1.0F, d.yarn, {},
+                        inverse, 0.0F, 0.0F);
 }
 
 // ------------------------------------------------------------------ emit
@@ -534,7 +515,7 @@ void Emitter::Compressor(const Comp& c, std::size_t s) {
     const SegmentRows& seg = f_.step.segments()[s];
     b_.SetOwner(static_cast<std::uint8_t>(s));
     const CellKey ring = KeyOf(s, c.ring_kv);
-    const std::uint64_t blocks = f_.step.Blocks(s, ratio, overlap);
+    const std::uint64_t blocks = CompressorBlocks(seg.rows, seg.past, ratio, overlap);
     const std::uint64_t reads = ratio * blocks;
     // [ring | the segment's rows (| a zero row)] of one side's values.
     const auto source = [&](std::uint16_t tensor, bool scores) {
@@ -546,7 +527,8 @@ void Emitter::Compressor(const Comp& c, std::size_t s) {
       if (scores && !score.valid()) {
         b_.SetJoined();
         const ir::TensorId gate = b_.MatMul(f_.Weight(c.gate), x);
-        const ir::TensorId ape = b_.GetRows(f_.Weight(c.ape), f_.step.PositionPhases(ratio));
+        const ir::TensorId ape = b_.GetRows(
+            f_.Weight(c.ape), f_.step.HostInput({.def = &CompressorPhasesInput(), .ratio = ratio}));
         score = b_.Add(gate, ape);
         b_.SetOwner(static_cast<std::uint8_t>(s));
       } else if (!scores && !kv.valid()) {
@@ -563,7 +545,10 @@ void Emitter::Compressor(const Comp& c, std::size_t s) {
                     Encoding::kF32);
         joined = b_.Concat(joined, row, 1);
       }
-      const ir::TensorId picked = b_.GetRows(joined, f_.step.PoolReads(s, ring, ratio, overlap));
+      const ir::TensorId picked = b_.GetRows(
+          joined,
+          f_.step.HostInput(
+              {.def = &CompressorPoolReadsInput(), .ratio = ratio, .overlap = overlap}, s, ring));
       if (!overlap) return b_.Reshape(picked, Shape({dim, ratio, blocks}));
       // The previous blocks' first halves, then the blocks' own second
       // halves, side by side per block.
@@ -582,26 +567,28 @@ void Emitter::Compressor(const Comp& c, std::size_t s) {
     ir::TensorId pooled = b_.Pool(
         values, scores,
         {.ratio = static_cast<std::uint32_t>(coff * ratio), .kind = ir::PoolKind::kSoftmax});
-    pooled = b_.Mul(b_.RmsNorm(pooled, d_.eps), f_.Weight(c.norm));
-    pooled = b_.Rope(pooled, f_.step.BlockStarts(s, ratio, overlap), {}, rope);
+    pooled = EmitHeadNormRope(
+        b_, pooled, d_.eps, f_.Weight(c.norm),
+        f_.step.HostInput(
+            {.def = &CompressorBlockStartsInput(), .ratio = ratio, .overlap = overlap}, s),
+        {}, rope);
     if (c.hadamard) pooled = Hadamard(pooled, dim);
     const ir::TensorDesc cd = Desc(b_, pooled);
     const format::Shape rows_shape = Shape({cd.ne(0) * cd.ne(1), cd.ne(2)});
-    ir::TensorId stored =
+    const ir::TensorId stored =
         b_.View(pooled, rows_shape, ViewStrides(cd.nb[0], cd.nb[2], 0, rows_shape), 0);
-    if (c.cache == kCompressed && d_.kv_encoding == Encoding::kQ8_0 &&
-        b_.tensor(stored).format.encoding != Encoding::kF32) {
-      stored = b_.Convert(stored, Encoding::kF32);
-    }
-    b_.CacheStore(f_.State(s, c.cache), stored,
-                  f_.step.BlockCells(s, KeyOf(s, c.cache), ratio, overlap));
+    EmitKvCacheStore(
+        b_, f_.State(s, c.cache), stored,
+        f_.step.HostInput({.def = &CompressorBlockCellsInput(), .ratio = ratio, .overlap = overlap},
+                          s, KeyOf(s, c.cache)),
+        c.cache == kCompressed ? d_.kv_encoding : Encoding::kF16);
     // The segment's last rows kept in the ring.
-    b_.CacheStore(f_.State(s, c.ring_kv), b_.GetRows(Rows(kv, s), f_.step.KeptRows(s, ring)),
-                  f_.step.KeptCells(s, ring));
-    b_.CacheStore(f_.State(s, c.ring_score), b_.GetRows(Rows(score, s), f_.step.KeptRows(s, ring)),
-                  f_.step.KeptCells(s, ring));
+    const ir::TensorId kept_rows = f_.step.HostInput({.def = &CompressorKeptRowsInput()}, s, ring);
+    const ir::TensorId kept_cells =
+        f_.step.HostInput({.def = &CompressorKeptCellsInput()}, s, ring);
+    b_.CacheStore(f_.State(s, c.ring_kv), b_.GetRows(Rows(kv, s), kept_rows), kept_cells);
+    b_.CacheStore(f_.State(s, c.ring_score), b_.GetRows(Rows(score, s), kept_rows), kept_cells);
     b_.SetJoined();
-    (void)seg;
   }
 }
 
@@ -610,29 +597,26 @@ void Emitter::StoreWindow(std::size_t s) {
   const SegmentRows& seg = f_.step.segments()[s];
   b_.SetOwner(static_cast<std::uint8_t>(s));
   const format::Shape shape = Shape({d_.d, seg.rows});
-  ir::TensorId rows_of = b_.View(kv_, shape, ViewStrides(kd.nb[0], kd.nb[2], 0, shape),
-                                 std::uint64_t{seg.first_row} * kd.nb[2]);
-  if (d_.kv_encoding == Encoding::kQ8_0 && b_.tensor(rows_of).format.encoding != Encoding::kF32) {
-    rows_of = b_.Convert(rows_of, Encoding::kF32);
-  }
-  b_.CacheStore(f_.State(s, kWindowKv), rows_of, f_.step.StoreCells(s, KeyOf(s, kWindowKv)));
+  const ir::TensorId rows_of = b_.View(kv_, shape, ViewStrides(kd.nb[0], kd.nb[2], 0, shape),
+                                       std::uint64_t{seg.first_row} * kd.nb[2]);
+  EmitKvCacheStore(b_, f_.State(s, kWindowKv), rows_of, f_.step.StoreCells(s, KeyOf(s, kWindowKv)),
+                   d_.kv_encoding);
   b_.SetJoined();
 }
 
 ir::TensorId Emitter::Query() {
   const std::uint64_t rows = f_.step.rows();
-  qr_ = b_.MatMul(f_.Weight(kQa), f_.stream);
-  qr_ = b_.Mul(b_.RmsNorm(qr_, d_.eps), f_.Weight(kQNorm));
-  ir::TensorId q = b_.Reshape(b_.MatMul(f_.Weight(kQb), qr_), Shape({d_.d, d_.heads, rows}));
-  q = b_.RmsNorm(q, d_.eps);
-  return b_.Rope(q, f_.step.Positions(), {}, Rotation(d_, d_.d));
+  qr_ = EmitHeadNorm(b_, b_.MatMul(f_.Weight(kQa), f_.stream), d_.eps, f_.Weight(kQNorm));
+  const ir::TensorId q = b_.Reshape(b_.MatMul(f_.Weight(kQb), qr_), Shape({d_.d, d_.heads, rows}));
+  return EmitHeadNormRope(b_, q, d_.eps, {}, f_.step.Positions(), {}, Rotation(d_, d_.d));
 }
 
 ir::TensorId Emitter::Key() {
   const std::uint64_t rows = f_.step.rows();
-  ir::TensorId kv = b_.MatMul(f_.Weight(kKv), f_.stream);
-  kv = b_.Reshape(b_.Mul(b_.RmsNorm(kv, d_.eps), f_.Weight(kKvNorm)), Shape({d_.d, 1, rows}));
-  return b_.Rope(kv, f_.step.Positions(), {}, Rotation(d_, d_.d));
+  const ir::TensorId kv =
+      EmitHeadNorm(b_, b_.MatMul(f_.Weight(kKv), f_.stream), d_.eps, f_.Weight(kKvNorm));
+  return b_.Rope(b_.Reshape(kv, Shape({d_.d, 1, rows})), f_.step.Positions(), {},
+                 Rotation(d_, d_.d));
 }
 
 ir::TensorId Emitter::IndexerQueries() {
@@ -681,7 +665,8 @@ std::expected<ir::TensorId, std::string> Emitter::Selection(std::size_t s, ir::T
   if (rounded) {
     // Completed blocks exclude the logical tail and all padding/dummy cells.
     // The selected IDs belong to these scores, not to the ordinary TopK path.
-    auto counts = f_.step.VisibleCells(s, cells, read, f_.step.rounded_indexer_context() / 4);
+    auto counts =
+        f_.step.VisibleCells(s, cells, read, f_.step.rounded_indexer_context() / d_.ratio);
     if (!counts) return std::unexpected(counts.error());
     const auto score = b_.RoundedIndexScore(q, keys, weights, *counts);
     const auto best = b_.VisibleTopK(score, *counts, static_cast<std::uint32_t>(top));
@@ -709,11 +694,8 @@ std::expected<ir::TensorId, std::string> Emitter::Attend(std::size_t s) {
   const SegmentRows& seg = f_.step.segments()[s];
   b_.SetOwner(static_cast<std::uint8_t>(s));
   // Its rows' queries.
-  const ir::TensorDesc qd = Desc(b_, q_);
-  const ir::TensorId q = b_.View(q_, Shape({d_.d, d_.heads, seg.rows, 1}),
-                                 {qd.nb[0], qd.nb[1], qd.nb[2], qd.nb[2] * seg.rows},
-                                 std::uint64_t{seg.first_row} * qd.nb[2]);
-  const ir::TensorId queries = b_.Permute(q, {0, 2, 1, 3});
+  const ir::TensorId queries =
+      EmitSegmentQueries(b_, q_, d_.d, d_.heads, seg, /*elide_single=*/false, /*rank4_view=*/true);
   // Its window cells, then its compressed rows, as one K (and V).
   const CellKey window_cells = KeyOf(s, kWindowKv);
   const std::uint64_t window_read = f_.step.ReadCells(s, window_cells);
@@ -765,13 +747,13 @@ std::expected<ir::TensorId, std::string> Emitter::Attend(std::size_t s) {
     n_kv_max = static_cast<std::uint32_t>(std::min(window_read, d_.window));
   }
   const bool sparse_any = rounded && d_.d == 512 && n_kv_max != 0;
-  const ir::TensorId attention = b_.Attention(queries, keys, values, mask, f_.Weight(kSinks),
-                                              {.scale = 1.0F / std::sqrt(static_cast<float>(d_.d)),
-                                               .sinks = true,
-                                               .accumulate = ir::Accumulate::kF32,
-                                               .sparse_any = sparse_any,
-                                               .n_kv_max = n_kv_max});
-  return b_.Reshape(attention, Shape({d_.d * d_.heads, seg.rows}));
+  return EmitSegmentAttention(b_, queries, keys, values, mask, f_.Weight(kSinks),
+                              {.scale = 1.0F / std::sqrt(static_cast<float>(d_.d)),
+                               .sinks = true,
+                               .accumulate = ir::Accumulate::kF32,
+                               .sparse_any = sparse_any,
+                               .n_kv_max = n_kv_max},
+                              d_.d, d_.heads, seg.rows);
 }
 
 std::expected<FragmentOut, std::string> Emitter::Emit() {
@@ -802,13 +784,17 @@ std::expected<FragmentOut, std::string> Emitter::Emit() {
     if (d_.ratio != 0) {
       comp_kv_ = b_.MatMul(f_.Weight(kCompKv), f_.stream);
       const ir::TensorId gate = b_.MatMul(f_.Weight(kCompGate), f_.stream);
-      const ir::TensorId ape = b_.GetRows(f_.Weight(kCompApe), f_.step.PositionPhases(d_.ratio));
+      const ir::TensorId ape =
+          b_.GetRows(f_.Weight(kCompApe),
+                     f_.step.HostInput({.def = &CompressorPhasesInput(), .ratio = d_.ratio}));
       comp_score_ = b_.Add(gate, ape);
     }
     if (d_.indexer) {
       idx_kv_ = b_.MatMul(f_.Weight(kIdxKv), f_.stream);
       const ir::TensorId gate = b_.MatMul(f_.Weight(kIdxGate), f_.stream);
-      const ir::TensorId ape = b_.GetRows(f_.Weight(kIdxApe), f_.step.PositionPhases(d_.ratio));
+      const ir::TensorId ape =
+          b_.GetRows(f_.Weight(kIdxApe),
+                     f_.step.HostInput({.def = &CompressorPhasesInput(), .ratio = d_.ratio}));
       idx_score_ = b_.Add(gate, ape);
     }
     if (f_.stream_needed) q_ = Query();
@@ -843,10 +829,7 @@ std::expected<FragmentOut, std::string> Emitter::Emit() {
     if (!one) return std::unexpected(one.error());
     outs.push_back(*one);
   }
-  ir::TensorId joined = outs.front();
-  for (std::size_t s = 1; s < outs.size(); ++s) {
-    joined = b_.Concat(joined, outs[s], 1);
-  }
+  const ir::TensorId joined = JoinSegmentOutputs(b_, outs);
   // Each head rotated back, then the grouped output product.
   ir::TensorId out = b_.Reshape(joined, Shape({d_.d, d_.heads, rows}));
   out = b_.Rope(out, f_.step.Positions(), {}, Rotation(d_, d_.d, true));
@@ -868,7 +851,7 @@ std::expected<FragmentOut, std::string> Emitter::Inject() {
   std::uint64_t total = 0;
   std::vector<std::uint64_t> kept(segments.size());
   for (std::size_t s = 0; s < segments.size(); ++s) {
-    kept[s] = f_.step.Kept(s, KeyOf(s, kWindowKv).capacity);
+    kept[s] = std::min<std::uint64_t>(segments[s].rows, KeyOf(s, kWindowKv).capacity);
     total += kept[s];
   }
   if (total != injected) return std::unexpected("an injected input of other rows than its rings'");
@@ -884,21 +867,19 @@ std::expected<FragmentOut, std::string> Emitter::Inject() {
     }
     positions = joined;
   }
-  ir::TensorId kv = b_.MatMul(f_.Weight(kKv), input);
-  kv = b_.Reshape(b_.Mul(b_.RmsNorm(kv, d_.eps), f_.Weight(kKvNorm)), Shape({d_.d, 1, injected}));
-  kv = b_.Rope(kv, positions, {}, Rotation(d_, d_.d));
+  ir::TensorId kv = EmitHeadNorm(b_, b_.MatMul(f_.Weight(kKv), input), d_.eps, f_.Weight(kKvNorm));
+  kv = b_.Rope(b_.Reshape(kv, Shape({d_.d, 1, injected})), positions, {}, Rotation(d_, d_.d));
   const ir::TensorDesc kd = Desc(b_, kv);
   std::uint64_t first = 0;
   for (std::size_t s = 0; s < segments.size(); ++s) {
     b_.SetOwner(static_cast<std::uint8_t>(s));
     const format::Shape shape = Shape({d_.d, kept[s]});
-    ir::TensorId rows =
+    const ir::TensorId rows =
         b_.View(kv, shape, ViewStrides(kd.nb[0], kd.nb[2], 0, shape), first * kd.nb[2]);
-    if (d_.kv_encoding == Encoding::kQ8_0 && b_.tensor(rows).format.encoding != Encoding::kF32) {
-      rows = b_.Convert(rows, Encoding::kF32);
-    }
     const CellKey ring = KeyOf(s, kWindowKv);
-    b_.CacheStore(f_.State(s, kWindowKv), rows, f_.step.KeptCells(s, ring));
+    EmitKvCacheStore(b_, f_.State(s, kWindowKv), rows,
+                     f_.step.HostInput({.def = &CompressorKeptCellsInput()}, s, ring),
+                     d_.kv_encoding);
     b_.SetJoined();
     first += kept[s];
   }
@@ -951,9 +932,7 @@ std::expected<void, std::string> CompressorReference(
     bool overlap, bool hadamard, std::span<const float> norm, const RefSegment& seg,
     std::vector<double>& cache, std::uint64_t cache_cells, std::vector<double>& ring_kv,
     std::vector<double>& ring_score, std::uint64_t ring_cells,
-    Encoding cache_encoding = Encoding::kF16,
-    std::expected<void, std::string> (*store_row)(Encoding, std::span<const double>,
-                                                  std::span<double>) = nullptr) {
+    Encoding cache_encoding = Encoding::kF16, RowCodecFn store_row = nullptr) {
   const std::uint64_t ratio = d.ratio;
   const std::uint64_t width = (overlap ? 2 : 1) * dim;
   const std::uint64_t past = seg.past;
@@ -987,6 +966,7 @@ std::expected<void, std::string> CompressorReference(
   } else if (blocks.size() != want) {
     return std::unexpected("compressor reference: the blocks are not the plan's");
   }
+  const ir::RopeParams rope = Rotation(d, dim);
   for (const Block& block : blocks) {
     if (block.cell >= cache_cells) return std::unexpected("compressor reference: past the cache");
     std::vector<double> pooled(dim);
@@ -1020,19 +1000,15 @@ std::expected<void, std::string> CompressorReference(
       pooled[c] = acc / sum;
     }
     RmsRows(pooled, dim, d.eps, norm);
-    RotateNormal(pooled, 1, dim, dim - d.rope_dims, static_cast<std::uint32_t>(d.rope_dims), d.base,
-                 d.yarn, block.start);
+    RotateHeads(pooled, 1, dim, rope, block.start);
     if (hadamard) HadamardRows(pooled, dim);
-    if (cache_encoding == Encoding::kQ8_0) {
-      if (store_row == nullptr) {
-        return std::unexpected("Q8_0 compressor reference state requires the block row codec");
-      }
-      auto dst = std::span(cache).subspan(block.cell * dim, dim);
-      if (auto stored = store_row(cache_encoding, pooled, dst); !stored) return stored;
-    } else {
-      for (std::uint64_t c = 0; c < dim; ++c) {
-        cache[(block.cell * dim) + c] = Stored(cache_encoding, pooled[c]);
-      }
+    if (cache_encoding == Encoding::kQ8_0 && store_row == nullptr) {
+      return std::unexpected("Q8_0 compressor reference state requires the block row codec");
+    }
+    if (auto stored =
+            StoreKvCacheRow(cache, block.cell, pooled, 0, 1, dim, cache_encoding, store_row);
+        !stored) {
+      return stored;
     }
   }
   // The segment's last rows into the ring.
@@ -1096,6 +1072,10 @@ std::expected<void, std::string> Reference(RefIO& io) {
     const double scale = 1.0F / std::sqrt(static_cast<float>(d.idim * d.ih));
     for (double& v : iw) v *= scale;
   }
+  const ir::RopeParams rope_d = Rotation(d, d.d);
+  const ir::RopeParams rope_inv = Rotation(d, d.d, true);
+  const ir::RopeParams rope_idim = Rotation(d, d.idim);
+  const double attn_scale = 1.0 / std::sqrt(static_cast<double>(d.d));
   std::vector<double> attended(rows * d.heads * d.d, 0.0);
   std::uint64_t first = 0;
   for (std::size_t si = 0; si < io.segments.size(); ++si) {
@@ -1125,14 +1105,12 @@ std::expected<void, std::string> Reference(RefIO& io) {
     for (std::uint64_t t = 0; t < seg.rows; ++t) {
       const std::uint64_t r = first + t;
       const auto pos = static_cast<std::int64_t>(seg.past + t);
-      RotateNormal(std::span(q).subspan(r * d.heads * d.d, d.heads * d.d), d.heads, d.d,
-                   d.d - d.rope_dims, static_cast<std::uint32_t>(d.rope_dims), d.base, d.yarn, pos);
-      RotateNormal(std::span(kv).subspan(r * d.d, d.d), 1, d.d, d.d - d.rope_dims,
-                   static_cast<std::uint32_t>(d.rope_dims), d.base, d.yarn, pos);
+      RotateHeads(std::span(q).subspan(r * d.heads * d.d, d.heads * d.d), d.heads, d.d, rope_d,
+                  pos);
+      RotateHeads(std::span(kv).subspan(r * d.d, d.d), 1, d.d, rope_d, pos);
       if (d.indexer) {
         const auto row = std::span(iq).subspan(r * d.ih * d.idim, d.ih * d.idim);
-        RotateNormal(row, d.ih, d.idim, d.idim - d.rope_dims,
-                     static_cast<std::uint32_t>(d.rope_dims), d.base, d.yarn, pos);
+        RotateHeads(row, d.ih, d.idim, rope_idim, pos);
         HadamardRows(row, d.idim);
       }
       const std::uint64_t cell =
@@ -1140,14 +1118,10 @@ std::expected<void, std::string> Reference(RefIO& io) {
       if (d.cache == Cache::kFull && cell >= window_cap) {
         return std::unexpected("mqa reference: a row past the cache");
       }
-      if (d.kv_encoding == Encoding::kQ8_0) {
-        const auto src = std::span(kv).subspan(r * d.d, d.d);
-        auto dst = std::span(st.at(kWindowKv)).subspan(cell * d.d, d.d);
-        if (auto stored = io.store_row(d.kv_encoding, src, dst); !stored) return stored;
-      } else {
-        for (std::uint64_t j = 0; j < d.d; ++j) {
-          st.at(kWindowKv)[(cell * d.d) + j] = Stored(Encoding::kF16, kv[(r * d.d) + j]);
-        }
+      if (auto stored =
+              StoreKvCacheRow(st.at(kWindowKv), cell, kv, r, 1, d.d, d.kv_encoding, io.store_row);
+          !stored) {
+        return stored;
       }
     }
     // The cells each row reads: its window's, then its compressed rows'.
@@ -1198,32 +1172,10 @@ std::expected<void, std::string> Reference(RefIO& io) {
           if (keep[c]) cells.emplace_back(&st.at(kCompressed), c);
         }
       }
-      for (std::uint64_t h = 0; h < d.heads; ++h) {
-        const double* qh = &q[(r * d.heads * d.d) + (h * d.d)];
-        const double sink = static_cast<double>(weight(kSinks)[h]);
-        std::vector<double> scores;
-        double top = sink;
-        for (const auto& [cache, c] : cells) {
-          double dot = 0.0;
-          for (std::uint64_t j = 0; j < d.d; ++j) dot += qh[j] * (*cache)[(c * d.d) + j];
-          scores.push_back(dot / std::sqrt(static_cast<double>(d.d)));
-          top = std::max(top, scores.back());
-        }
-        double sum = std::exp(sink - top);
-        for (double& sc : scores) {
-          sc = std::exp(sc - top);
-          sum += sc;
-        }
-        double* out = &attended[(r * d.heads * d.d) + (h * d.d)];
-        for (std::size_t i = 0; i < cells.size(); ++i) {
-          const auto& [cache, c] = cells[i];
-          for (std::uint64_t j = 0; j < d.d; ++j)
-            out[j] += scores[i] / sum * (*cache)[(c * d.d) + j];
-        }
-      }
-      RotateNormal(std::span(attended).subspan(r * d.heads * d.d, d.heads * d.d), d.heads, d.d,
-                   d.d - d.rope_dims, static_cast<std::uint32_t>(d.rope_dims), d.base, d.yarn,
-                   static_cast<std::int64_t>(pos), true);
+      const auto out_row = std::span(attended).subspan(r * d.heads * d.d, d.heads * d.d);
+      AttendGatheredCellsRow(std::span(q).subspan(r * d.heads * d.d, d.heads * d.d), cells, d.heads,
+                             d.d, attn_scale, weight(kSinks), out_row);
+      RotateHeads(out_row, d.heads, d.d, rope_inv, static_cast<std::int64_t>(pos));
     }
     first += seg.rows;
   }
@@ -1248,49 +1200,6 @@ std::expected<void, std::string> Reference(RefIO& io) {
 
 }  // namespace
 
-// rope.cu's rope_yarn and rope_yarn_ramp, ggml.c's ggml_rope_yarn_corr_dims.
-std::pair<double, double> YarnRotation(float base, std::uint32_t dims, std::uint64_t pair,
-                                       std::int64_t position, const Yarn& y) {
-  const float theta_scale = static_cast<float>(
-      std::pow(static_cast<double>(base), static_cast<double>(-2.0F / static_cast<float>(dims))));
-  const float power =
-      static_cast<float>(std::pow(static_cast<double>(theta_scale), static_cast<double>(pair)));
-  const float extrap = static_cast<float>(position) * power;
-  if (!(y.factor > 1.0F)) return {extrap, 1.0};
-  const float scale = 1.0F / y.factor;
-  const float interp = scale * extrap;
-  const auto corr = [&](float beta) {
-    return static_cast<float>(dims) *
-           std::log(static_cast<float>(y.context) / (beta * 2.0F * std::numbers::pi_v<float>)) /
-           (2.0F * std::log(base));
-  };
-  const float lo = std::max(0.0F, std::floor(corr(y.beta_fast)));
-  const float hi = std::min(static_cast<float>(dims - 1), std::ceil(corr(y.beta_slow)));
-  const float t = (static_cast<float>(pair) - lo) / std::max(0.001F, hi - lo);
-  const float ramp = 1.0F - std::min(1.0F, std::max(0.0F, t));
-  const float theta = (interp * (1.0F - ramp)) + (extrap * ramp);
-  const float attn = 1.0F / (1.0F + (0.1F * std::log(1.0F / scale)));
-  const float magnitude = attn * (1.0F + (0.1F * std::log(1.0F / scale)));
-  return {theta, magnitude};
-}
-
-void RotateNormal(std::span<double> row, std::uint64_t heads, std::uint64_t dim,
-                  std::uint64_t offset, std::uint32_t dims, float base, const Yarn& yarn,
-                  std::int64_t position, bool inverse) {
-  for (std::uint64_t h = 0; h < heads; ++h) {
-    double* x = &row[(h * dim) + offset];
-    for (std::uint64_t i = 0; i < dims / 2; ++i) {
-      const auto [theta, m] = YarnRotation(base, dims, i, position, yarn);
-      const double c = std::cos(theta) * m;
-      const double s = (inverse ? -std::sin(theta) : std::sin(theta)) * m;
-      const double x0 = x[2 * i];
-      const double x1 = x[(2 * i) + 1];
-      x[2 * i] = (x0 * c) - (x1 * s);
-      x[(2 * i) + 1] = (x0 * s) + (x1 * c);
-    }
-  }
-}
-
 void ShapeParameters(const Instance& in, std::uint32_t rows, std::uint32_t past,
                      std::uint32_t /*read_align*/, model::ShapeParameterSink& out) {
   const Dims d = DimsOf(in);
@@ -1299,6 +1208,19 @@ void ShapeParameters(const Instance& in, std::uint32_t rows, std::uint32_t past,
   auto read = CompressedReadParameter(std::uint64_t{past} + rows, d.ratio, CompressedCellPad());
   if (read.next) *read.next -= rows;  // The same end cutoff, in candidate past coordinates.
   out.push_back(read);
+}
+
+std::expected<void, std::string> AdmitOptions(const Instance& in, const StepOptions& options) {
+  if (!options.rounded_indexer) return {};
+  const Dims d = DimsOf(in);
+  if (d.cache == Cache::kInjected) {
+    return std::unexpected("rounded indexer does not admit injected attention");
+  }
+  if (!d.indexer) return {};
+  if (d.ratio != 4 || !d.overlap || d.idim != 128 || d.ih != 64 || d.top_k == 0 || d.top_k > 512) {
+    return std::unexpected("rounded indexer requires the bounded ratio-four CSA geometry");
+  }
+  return {};
 }
 
 const ComponentDef& AttentionMqa() {
@@ -1317,6 +1239,7 @@ const ComponentDef& AttentionMqa() {
       .inject = Inject,
       .shape_parameters = ShapeParameters,
       .shape_parameter_intervals = true,
+      .admit_options = AdmitOptions,
   };
   return def;
 }
@@ -1370,6 +1293,8 @@ std::uint64_t CompressedReadCells(std::uint64_t end, std::uint32_t ratio, std::u
   return CompressedReadParameter(end, ratio, cell_pad).value;
 }
 
+namespace {
+
 // llama.cpp's dsv4_build_comp_plan.
 std::expected<void, std::string> EmitCompressor(std::uint32_t rows, std::uint32_t past,
                                                 std::uint32_t ratio, bool overlap,
@@ -1421,14 +1346,203 @@ std::expected<void, std::string> EmitCompressor(std::uint32_t rows, std::uint32_
       if (auto done = sink->Finish(); !done) return done;
   return {};
 }
-std::expected<CompressorPlan, std::string> PlanCompressor(std::uint32_t rows, std::uint32_t past,
-                                                          std::uint32_t ratio, bool overlap,
-                                                          std::uint64_t ring, std::uint64_t cache) {
-  CompressorPlan result;
-  InputValueSink reads(result.reads), cells(result.cells), starts(result.starts);
-  auto emitted = EmitCompressor(rows, past, ratio, overlap, ring, cache, &reads, &cells, &starts);
-  if (!emitted) return std::unexpected(emitted.error());
-  return result;
+
+std::uint64_t CountAllRows(const HostInputSpec&, std::span<const SegmentRows> segments,
+                           std::uint8_t, const CellKey&) {
+  std::uint64_t rows = 0;
+  for (const SegmentRows& s : segments) rows += s.rows;
+  return rows;
+}
+
+std::expected<void, std::string> EmitPhases(const StepInput& input, const planner::StepShape& shape,
+                                            InputValueSink& out) {
+  if (input.ratio == 0) return std::unexpected("phases of no ratio");
+  for (const planner::Segment& s : shape.segments) {
+    for (std::uint32_t i = 0; i < s.rows; ++i) {
+      out.push_back(static_cast<std::int64_t>((std::uint64_t{s.past} + i) % input.ratio));
+    }
+  }
+  return out.Finish();
+}
+
+std::uint64_t CountKept(const HostInputSpec&, std::span<const SegmentRows> segments,
+                        std::uint8_t segment, const CellKey& cells) {
+  return std::min<std::uint64_t>(segments[segment].rows, cells.capacity);
+}
+
+std::expected<void, std::string> EmitKeptRows(const StepInput& input,
+                                              const planner::StepShape& shape,
+                                              InputValueSink& out) {
+  if (input.segment >= shape.segments.size() || input.cells.capacity == 0) {
+    return std::unexpected("an input of no segment of the shape");
+  }
+  const planner::Segment& s = shape.segments[input.segment];
+  const std::uint64_t kept = std::min<std::uint64_t>(s.rows, input.cells.capacity);
+  for (std::uint64_t i = s.rows - kept; i < s.rows; ++i) {
+    out.push_back(static_cast<std::int64_t>(i));
+  }
+  return out.Finish();
+}
+
+std::expected<void, std::string> EmitKeptCells(const StepInput& input,
+                                               const planner::StepShape& shape,
+                                               InputValueSink& out) {
+  if (input.segment >= shape.segments.size() || input.cells.capacity == 0) {
+    return std::unexpected("an input of no segment of the shape");
+  }
+  const planner::Segment& s = shape.segments[input.segment];
+  const std::uint64_t cap = input.cells.capacity;
+  const std::uint64_t kept = std::min<std::uint64_t>(s.rows, cap);
+  for (std::uint64_t i = s.rows - kept; i < s.rows; ++i) {
+    out.push_back(static_cast<std::int64_t>((std::uint64_t{s.past} + i) % cap));
+  }
+  return out.Finish();
+}
+
+std::uint64_t CountPoolReads(const HostInputSpec& spec, std::span<const SegmentRows> segments,
+                             std::uint8_t segment, const CellKey&) {
+  const SegmentRows& seg = segments[segment];
+  return std::uint64_t{spec.ratio} *
+         CompressorBlocks(seg.rows, seg.past, spec.ratio, spec.overlap) * (spec.overlap ? 2 : 1);
+}
+
+std::expected<void, std::string> EmitPoolReads(const StepInput& input,
+                                               const planner::StepShape& shape,
+                                               InputValueSink& out) {
+  if (input.segment >= shape.segments.size()) return std::unexpected("an input of no segment");
+  const planner::Segment& s = shape.segments[input.segment];
+  return EmitCompressor(s.rows, s.past, input.ratio, input.overlap, input.cells.capacity,
+                        std::numeric_limits<std::uint32_t>::max(), &out, nullptr, nullptr);
+}
+
+std::uint64_t CountCompressorBlocks(const HostInputSpec& spec,
+                                    std::span<const SegmentRows> segments, std::uint8_t segment,
+                                    const CellKey&) {
+  const SegmentRows& seg = segments[segment];
+  return CompressorBlocks(seg.rows, seg.past, spec.ratio, spec.overlap);
+}
+
+std::expected<void, std::string> EmitBlockCells(const StepInput& input,
+                                                const planner::StepShape& shape,
+                                                InputValueSink& out) {
+  if (input.segment >= shape.segments.size()) return std::unexpected("an input of no segment");
+  const planner::Segment& s = shape.segments[input.segment];
+  return EmitCompressor(s.rows, s.past, input.ratio, input.overlap,
+                        std::uint64_t{input.ratio} * (input.overlap ? 2 : 1), input.cells.capacity,
+                        nullptr, &out, nullptr);
+}
+
+std::expected<void, std::string> EmitBlockStarts(const StepInput& input,
+                                                 const planner::StepShape& shape,
+                                                 InputValueSink& out) {
+  if (input.segment >= shape.segments.size()) return std::unexpected("an input of no segment");
+  const planner::Segment& s = shape.segments[input.segment];
+  return EmitCompressor(s.rows, s.past, input.ratio, input.overlap,
+                        std::uint64_t{input.ratio} * (input.overlap ? 2 : 1),
+                        std::numeric_limits<std::uint32_t>::max(), nullptr, nullptr, &out);
+}
+
+std::expected<void, std::string> ValidateCompressorInput(const StepInput& input,
+                                                         const planner::StepShape& shape) {
+  const HostInputDef* def = input.host.def;
+  const bool phases = def == &CompressorPhasesInput();
+  const bool kept = def == &CompressorKeptRowsInput() || def == &CompressorKeptCellsInput();
+  const bool pool = def == &CompressorPoolReadsInput();
+  const bool block_cells = def == &CompressorBlockCellsInput();
+  const auto& cells = input.cells;
+  constexpr auto max = static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+  if (input.read != 0 || input.sections != 1 ||
+      (phases ? input.segment != ir::kJoinedSegment : input.segment >= shape.segments.size()) ||
+      cells.capacity > max || input.ring != cells.capacity || cells.frozen || cells.fixed ||
+      cells.per_row || cells.first_row != 0 ||
+      (kept ? input.ratio != 0 || input.overlap : input.ratio == 0 || input.ratio > max) ||
+      (kept || pool
+           ? !cells.ring || !cells.recent || cells.positions || cells.block != 0 ||
+                 cells.capacity == 0
+           : cells.ring || cells.recent ||
+                 (block_cells
+                      ? !cells.positions || cells.block != input.ratio || cells.capacity == 0
+                      : cells.positions || cells.block != 0 || cells.capacity != 0)) ||
+      (phases && input.overlap)) {
+    return std::unexpected<std::string>("a compressor input has invalid typed metadata");
+  }
+  if (!phases) {
+    const auto& segment = shape.segments[input.segment];
+    if (std::uint64_t{segment.past} + segment.rows > max ||
+        (pool && cells.capacity + segment.rows > max)) {
+      return std::unexpected<std::string>("a compressor input exceeds I32 positions or rows");
+    }
+  }
+  return {};
+}
+
+}  // namespace
+
+const HostInputDef& CompressorPhasesInput() {
+  static constexpr HostInputDef kDef{
+      .name = "phases",
+      .encoding = format::Encoding::kI32,
+      .joined = true,
+      .count = CountAllRows,
+      .validate = ValidateCompressorInput,
+      .emit = EmitPhases,
+  };
+  return kDef;
+}
+
+const HostInputDef& CompressorKeptRowsInput() {
+  static constexpr HostInputDef kDef{
+      .name = "kept_rows",
+      .encoding = format::Encoding::kI32,
+      .count = CountKept,
+      .validate = ValidateCompressorInput,
+      .emit = EmitKeptRows,
+  };
+  return kDef;
+}
+
+const HostInputDef& CompressorKeptCellsInput() {
+  static constexpr HostInputDef kDef{
+      .name = "kept_cells",
+      .encoding = format::Encoding::kI64,
+      .count = CountKept,
+      .validate = ValidateCompressorInput,
+      .emit = EmitKeptCells,
+  };
+  return kDef;
+}
+
+const HostInputDef& CompressorPoolReadsInput() {
+  static constexpr HostInputDef kDef{
+      .name = "pool_reads",
+      .encoding = format::Encoding::kI32,
+      .count = CountPoolReads,
+      .validate = ValidateCompressorInput,
+      .emit = EmitPoolReads,
+  };
+  return kDef;
+}
+
+const HostInputDef& CompressorBlockCellsInput() {
+  static constexpr HostInputDef kDef{
+      .name = "block_cells",
+      .encoding = format::Encoding::kI64,
+      .count = CountCompressorBlocks,
+      .validate = ValidateCompressorInput,
+      .emit = EmitBlockCells,
+  };
+  return kDef;
+}
+
+const HostInputDef& CompressorBlockStartsInput() {
+  static constexpr HostInputDef kDef{
+      .name = "block_starts",
+      .encoding = format::Encoding::kI32,
+      .count = CountCompressorBlocks,
+      .validate = ValidateCompressorInput,
+      .emit = EmitBlockStarts,
+  };
+  return kDef;
 }
 
 }  // namespace llmp::components

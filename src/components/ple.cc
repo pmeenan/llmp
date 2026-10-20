@@ -230,7 +230,7 @@ model::StateContract PleState(const Instance& in) {
                        .encoding = format::Encoding::kF32,
                        .cell_bytes = d.history() * d.hw() * 4,
                        .cells = model::CellRule::kFixed,
-                       .window_or_ratio = 1,
+                       .fixed_cells = 1,
                        .rollback = model::Rollback::kCommit}}};
 }
 
@@ -470,7 +470,7 @@ model::StateContract MtpState(const Instance& in) {
                        .encoding = format::Encoding::kF32,
                        .cell_bytes = in.stage.width * in.stage.streams * 4,
                        .cells = model::CellRule::kPerRow,
-                       .window_or_ratio = 1,
+                       .row_carry = 1,
                        .rollback = model::Rollback::kSnapshot,
                        .target_writes = true}}};
 }

@@ -105,8 +105,6 @@ struct ImageProfile {
   ImageDenoiserProfile denoiser;
   ImageVaeProfile vae;
   ImageSchedulerProfile scheduler;
-
-  static ImageProfile Default() { return ImageProfile{}; }
 };
 
 // The checkpoint's tensor names, by structural role: its mapping's data
@@ -149,8 +147,6 @@ struct ImageNames {
   ImageTextNames text;
   ImageDenoiserNames denoiser;
   ImageVaeNames vae;
-
-  static ImageNames Default() { return ImageNames{}; }
 };
 
 // ---------------------------------------------------------------- binding
@@ -302,18 +298,6 @@ inline constexpr std::uint8_t kVaeBuffers = 6;
 std::vector<VaeStep> VaeDecoderPlan(const ImageVaeProfile& p, std::uint32_t height,
                                     std::uint32_t width);
 
-struct VaePlan {
-  static std::vector<VaeStep> Build(const ImageVaeProfile& p, std::uint32_t height,
-                                    std::uint32_t width) {
-    return VaeDecoderPlan(p, height, width);
-  }
-};
-
-struct ImageLatentGrid {
-  std::uint32_t height = 0;
-  std::uint32_t width = 0;
-};
-
 // ---------------------------------------------------------------- host arithmetic
 
 // The scheduler's sigmas (steps + 1, the terminal 0 appended) and
@@ -371,65 +355,6 @@ float FromBf16(std::uint16_t bits);
 std::vector<std::uint8_t> ImagePixels(std::span<const std::uint16_t> decoded,
                                       std::uint32_t channels, std::uint32_t height,
                                       std::uint32_t width);
-
-// ------------------------------------------------ backwards-compatible aliases
-
-using QwenImageTextProfile = ImageTextProfile;
-using QwenImageDenoiserProfile = ImageDenoiserProfile;
-using QwenImageVaeProfile = ImageVaeProfile;
-using QwenImageSchedulerProfile = ImageSchedulerProfile;
-using QwenImageProfile = ImageProfile;
-using QwenImageTextNames = ImageTextNames;
-using QwenImageDenoiserNames = ImageDenoiserNames;
-using QwenImageVaeNames = ImageVaeNames;
-using QwenImageNames = ImageNames;
-using QwenImageTensor = ImageTensor;
-using QwenImageResource = ImageResource;
-using QwenImageSchedule = ImageSchedule;
-
-inline std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
-    std::span<const ImageTensor> tensors, std::string_view want, std::string_view architecture,
-    std::span<const ImageResource> resources) {
-  return BindImageComponent(tensors, want, architecture, resources);
-}
-
-inline std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
-    std::span<const ImageTensor> tensors, std::string_view want,
-    const artifact::Artifact& artifact) {
-  return BindImageComponent(tensors, want, artifact);
-}
-
-inline std::expected<ImageSchedule, std::string> QwenImageSchedulerSigmas(
-    const ImageSchedulerProfile& p, std::uint32_t steps, std::uint32_t image_tokens) {
-  return ImageSchedulerSigmas(p, steps, image_tokens);
-}
-
-inline std::vector<std::uint16_t> QwenImageTimestepSinusoid(const ImageDenoiserProfile& p,
-                                                            float t) {
-  return ImageTimestepSinusoid(p, t);
-}
-
-inline RotaryTables QwenImageTextRotary(const ImageTextProfile& p, std::uint32_t rows) {
-  return ImageTextRotary(p, rows);
-}
-
-inline std::array<std::int32_t, 3> QwenImageDenoiserPosition(std::uint32_t text_rows,
-                                                             std::uint32_t height,
-                                                             std::uint32_t width,
-                                                             std::uint32_t row) {
-  return ImageDenoiserPosition(text_rows, height, width, row);
-}
-
-inline std::vector<float> QwenImageDenoiserRotary(const ImageDenoiserProfile& p,
-                                                  std::uint32_t text_rows, std::uint32_t grid) {
-  return ImageDenoiserRotary(p, text_rows, grid);
-}
-
-inline std::vector<std::uint8_t> QwenImagePixels(std::span<const std::uint16_t> decoded,
-                                                 std::uint32_t channels, std::uint32_t height,
-                                                 std::uint32_t width) {
-  return ImagePixels(decoded, channels, height, width);
-}
 
 }  // namespace llmp::model
 

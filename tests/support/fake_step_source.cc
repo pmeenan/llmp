@@ -60,7 +60,7 @@ CellTensor TensorOf(std::uint64_t address, const model::StateLayoutDerived::Item
       break;
     case model::CellRule::kPerRow:
       t.rule = CellTensor::Rule::kRow;
-      t.carry = item.contract.window_or_ratio;
+      t.carry = item.contract.row_carry;
       break;
     default:
       break;

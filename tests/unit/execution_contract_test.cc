@@ -799,7 +799,7 @@ struct JoinedSourceIdentityTest : SourceIdentityTest {
                              .encoding = md::Encoding::kF32,
                              .cell_bytes = 32,
                              .cells = md::CellRule::kPerRow,
-                             .window_or_ratio = 1,
+                             .row_carry = 1,
                              .rollback = md::Rollback::kSnapshot,
                              .target_writes = true});
     draft.tensors.push_back(

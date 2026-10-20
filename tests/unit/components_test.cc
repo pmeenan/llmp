@@ -47,6 +47,7 @@
 #include "spec/mappings/gemma4.h"
 #include "spec/spec.h"
 #include "spec_fixtures.h"
+#include "state_layouts.h"
 
 namespace llmp::components {
 namespace {
@@ -82,23 +83,49 @@ TEST(InputValueSinkTest, TypedCapacityAndNarrowingRefuseWithoutWideningOrLosingP
 TEST(InputValueSinkTest, CanonicalCompressorCountAndFillPreserveIndependentOverlapOrder) {
   const std::array<std::int64_t, 16> expected{16, 16, 16, 16, 8,  9,  10, 11,
                                               8,  9,  10, 11, 12, 13, 14, 15};
+  const planner::StepShape shape{.segments = {{.rows = 8, .past = 0}}};
+  const StepInput pool_in{.kind = InputKind::kHostComputed,
+                          .segment = 0,
+                          .cells = {.capacity = 8, .ring = true, .recent = true},
+                          .host = {.def = &CompressorPoolReadsInput(), .ratio = 4, .overlap = true},
+                          .ratio = 4,
+                          .overlap = true,
+                          .ring = 8};
+  const StepInput cell_in{
+      .kind = InputKind::kHostComputed,
+      .segment = 0,
+      .cells = {.capacity = 16, .block = 4, .positions = true},
+      .host = {.def = &CompressorBlockCellsInput(), .ratio = 4, .overlap = true},
+      .ratio = 4,
+      .overlap = true,
+      .ring = 16};
+  const StepInput start_in{
+      .kind = InputKind::kHostComputed,
+      .segment = 0,
+      .host = {.def = &CompressorBlockStartsInput(), .ratio = 4, .overlap = true},
+      .ratio = 4,
+      .overlap = true};
   InputValueSink count;
-  ASSERT_TRUE(EmitCompressor(8, 0, 4, true, 8, 16, &count, nullptr, nullptr));
+  ASSERT_TRUE(CompressorPoolReadsInput().emit(pool_in, shape, count));
   ASSERT_EQ(count.size(), expected.size());
   std::array<std::int64_t, 16> reads{};
   std::array<std::int64_t, 2> cells{}, starts{};
   InputValueSink read_sink(std::as_writable_bytes(std::span(reads)), sizeof(std::int64_t));
   InputValueSink cell_sink(std::as_writable_bytes(std::span(cells)), sizeof(std::int64_t));
   InputValueSink start_sink(std::as_writable_bytes(std::span(starts)), sizeof(std::int64_t));
-  ASSERT_TRUE(EmitCompressor(8, 0, 4, true, 8, 16, &read_sink, &cell_sink, &start_sink));
+  ASSERT_TRUE(CompressorPoolReadsInput().emit(pool_in, shape, read_sink));
+  ASSERT_TRUE(CompressorBlockCellsInput().emit(cell_in, shape, cell_sink));
+  ASSERT_TRUE(CompressorBlockStartsInput().emit(start_in, shape, start_sink));
   EXPECT_EQ(reads, expected);
   EXPECT_EQ(cells, (std::array<std::int64_t, 2>{0, 1}));
   EXPECT_EQ(starts, (std::array<std::int64_t, 2>{0, 4}));
   std::array<std::int64_t, 15> short_storage{};
   InputValueSink short_sink(std::as_writable_bytes(std::span(short_storage)), sizeof(std::int64_t));
-  EXPECT_FALSE(EmitCompressor(8, 0, 4, true, 8, 16, &short_sink, nullptr, nullptr));
-  // Even an omitted read array cannot suppress validation of an invalid cache.
-  EXPECT_FALSE(EmitCompressor(8, 0, 4, true, 8, 1, nullptr, nullptr, nullptr));
+  EXPECT_FALSE(CompressorPoolReadsInput().emit(pool_in, shape, short_sink));
+  StepInput small_cache = cell_in;
+  small_cache.cells.capacity = 1;
+  InputValueSink unused;
+  EXPECT_FALSE(CompressorBlockCellsInput().emit(small_cache, shape, unused));
 }
 
 constexpr std::uint64_t kExtent = 2ULL << 20U;
@@ -132,8 +159,13 @@ TEST(ComponentsTest, CatalogIsSortedUniqueAndHasReferences) {
   std::vector<std::pair<std::string_view, std::uint16_t>> kinds;
   for (const ComponentDef* def : Catalog()) {
     kinds.emplace_back(def->kind, def->version);
-    EXPECT_NE(def->emit, nullptr) << def->kind;
-    EXPECT_NE(def->reference, nullptr) << def->kind;
+    if (def->spatial != nullptr) {
+      EXPECT_EQ(def->emit, nullptr) << def->kind;
+      EXPECT_EQ(def->reference, nullptr) << def->kind;
+    } else {
+      EXPECT_NE(def->emit, nullptr) << def->kind;
+      EXPECT_NE(def->reference, nullptr) << def->kind;
+    }
     EXPECT_NE(def->shapes, nullptr) << def->kind;
     EXPECT_EQ(Find(def->kind, def->version), def);
     EXPECT_EQ(def->state != nullptr, def->max_state_tensors != 0) << def->kind;
@@ -720,25 +752,6 @@ TEST(ComponentsTest, BiasedAttentionAndExplicitScoresMatchTheirReference) {
   }
 }
 
-TEST(ComponentsTest, HalfProjectionAttentionRoundsBeforeBiasAndRotation) {
-  auto r = Attention(0, 0.0, false, "neox", "pre");
-  r.params.push_back(P("qkv_bias", true));
-  r.params.push_back(P("scale_scores", true));
-  r.params.push_back(P("f16_projections", true));
-  std::ranges::sort(r.params, {}, &Param::name);
-  auto in = MakeInstance(r, kFacts, Site::kLayer, 0, 1);
-  ASSERT_TRUE(in.has_value()) << in.error();
-  auto formats = AttentionFormats(Encoding::kF16);
-  formats[0] = ir::Dense(Encoding::kBF16, ir::ShapeOf({kWidth}));
-  formats.push_back(ir::Dense(Encoding::kF16, ir::ShapeOf({128})));
-  formats.push_back(ir::Dense(Encoding::kF16, ir::ShapeOf({64})));
-  formats.push_back(ir::Dense(Encoding::kF16, ir::ShapeOf({64})));
-  const std::array<std::uint64_t, 2> cells{32, 32};
-  // Several rounded intermediates: four F16 ulps of normalized output;
-  // this scalar check is not the pinned model's Tier C qualification.
-  Compare(*in, formats, cells, AttentionSteps(32), 4 * kF16StateTolerance, 4 * kF16StateTolerance);
-}
-
 TEST(ComponentsTest, ARingTooSmallForItsRowsAndWindowIsRefused) {
   const ComponentRef r = Attention(8, 0.0, false, "neox", "pre");
   auto in = MakeInstance(r, kFacts, Site::kLayer, 0, 1);
@@ -1176,7 +1189,6 @@ TEST(ComponentsTest, Q8CacheViewsPreserveWholeHeadBlocksAndRefuseUnsupportedGeom
     for (auto& p : component.params)
       if (p.name == "key_dim" || p.name == "value_dim" || p.name == "rope_dims") p.value = I(dim);
     component.params.push_back(P("kv_encoding", N("q8_0")));
-    component.params.push_back(P("f16_projections", true));
     std::ranges::sort(component.params, {}, &Param::name);
     auto instance = MakeInstance(component, kFacts, Site::kLayer, 0, 1);
     ASSERT_TRUE(instance) << instance.error();
@@ -1313,11 +1325,12 @@ TEST(ComponentsTest, LazyFrameworkInputsPreserveCallerContextOnMissAndHit) {
     const CellKey ring{.capacity = 8, .ring = true, .recent = true};
     std::array<ir::TensorId, 2> reads{}, phases{}, outputs{};
     for (std::size_t i = 0; i < 2; ++i) {
-      // Cold PoolReads used to reset this owner's following computation;
-      // its cache hit did not. PositionPhases has a joined input declaration.
-      reads[i] = ctx.PoolReads(1, ring, 4, true);
+      // Cold HostInput used to reset this owner's following computation;
+      // its cache hit did not. CompressorPhasesInput has a joined input declaration.
+      reads[i] =
+          ctx.HostInput({.def = &CompressorPoolReadsInput(), .ratio = 4, .overlap = true}, 1, ring);
       EXPECT_EQ(b.context(), context);
-      phases[i] = ctx.PositionPhases(4);
+      phases[i] = ctx.HostInput({.def = &CompressorPhasesInput(), .ratio = 4});
       EXPECT_EQ(b.context(), context);
       outputs[i] = b.Scale(x, 2.0F);
       b.Output(outputs[i]);
@@ -1459,7 +1472,7 @@ TEST(ComponentsTest, BuildStepMakesTheGemmaStepsFromTheirSpecs) {
     const planner::StepShape two{.segments = {Seg(3, 3, 4351, 4608, 1), Seg(1, 1, 7, 256, 1)}};
     auto step = BuildStep(m.spec, 0, two, bindings);
     ASSERT_TRUE(step.has_value()) << step.error();
-    auto indexed_policy = BuildStep(m.spec, 0, two, bindings, {.dsv4_lid_mask = true});
+    auto indexed_policy = BuildStep(m.spec, 0, two, bindings, {.rounded_index_mask = true});
     ASSERT_TRUE(indexed_policy) << indexed_policy.error();
     EXPECT_EQ(indexed_policy->graph.Digest(), step->graph.Digest());
     const ir::Graph& g = step->graph;
@@ -1750,7 +1763,7 @@ TEST(ComponentsTest, Gemma4BlocksMatchTheirReferences) {
   ASSERT_EQ(tap.tensors.size(), 1U);
   EXPECT_TRUE(tap.tensors[0].target_writes);
   EXPECT_EQ(tap.tensors[0].cells, model::CellRule::kPositionRing);
-  EXPECT_EQ(tap.tensors[0].window_or_ratio, 16U);
+  EXPECT_EQ(tap.tensors[0].fixed_cells, 16U);
   EXPECT_EQ(tap.tensors[0].cell_bytes, 48U * 4);
   const std::vector<format::TensorFormat> pf{Matrix(Encoding::kQ8_0, 64, 20),
                                              Matrix(Encoding::kQ8_0, 96, kWidth)};
@@ -2108,7 +2121,7 @@ TEST(ComponentsTest, Gemma4AssistantStageReadsItsTarget) {
                                    .state = &*drafter_layout,
                                    .stages = layouts,
                                    .artifacts = artifacts},
-                                  {.dsv4_lid_mask = true});
+                                  {.rounded_index_mask = true});
   ASSERT_TRUE(indexed_policy) << indexed_policy.error();
   EXPECT_EQ(indexed_policy->graph.Digest(), step->graph.Digest());
   EXPECT_EQ(CountIn(step->graph, ir::Op::kAttention), 8U);
@@ -2454,6 +2467,63 @@ TEST(ComponentsTest, ApplyKvCacheEncodingLeavesNonAttentionComponentsUnchanged) 
   }
   auto no_attn_bytes = KvCacheEncodingBytes(no_attn, format::Encoding::kQ8_0);
   EXPECT_FALSE(no_attn_bytes.has_value());
+}
+
+TEST(ComponentsTest, DenseAttentionComposableOptionsMatchTheirReference) {
+  constexpr std::uint16_t kRopeFreqs = 8;
+  std::vector<format::TensorFormat> formats{
+      Vector(kWidth),
+      Matrix(Encoding::kF32, kWidth, 256),
+      Matrix(Encoding::kF32, kWidth, 64),
+      Matrix(Encoding::kF32, kWidth, 64),
+      Matrix(Encoding::kF32, 128, kWidth),
+      Vector(kWidth),
+      Vector(32),
+      Vector(32),
+      Vector(8),
+      Vector(256),
+      Vector(64),
+      Vector(64),
+      Vector(4),
+  };
+  for (const bool stateless : {false, true}) {
+    for (const std::int64_t window : {std::int64_t{0}, std::int64_t{8}}) {
+      SCOPED_TRACE(std::format("stateless {} window {}", stateless, window));
+      ComponentRef r = C("attention.dense", {P("placement", N("sandwich")),
+                                             P("eps", R(1e-6)),
+                                             P("heads", I(4)),
+                                             P("kv_heads", I(2)),
+                                             P("key_dim", I(32)),
+                                             P("value_dim", I(32)),
+                                             P("scale", R(1.0 / std::sqrt(32.0))),
+                                             P("softcap", R(30.0)),
+                                             P("window", I(window)),
+                                             P("rotation", N("normal")),
+                                             P("rope_dims", I(16)),
+                                             P("rope_offset", I(16)),
+                                             P("rope_base", R(10000.0)),
+                                             P("rope_scale", R(0.25)),
+                                             P("yarn", ParamValue(true)),
+                                             P("rope_factor", R(4.0)),
+                                             P("yarn_context", I(64)),
+                                             P("beta_fast", R(32.0)),
+                                             P("beta_slow", R(1.0)),
+                                             P("qk_norm", ParamValue(true)),
+                                             P("rope_freqs", ParamValue(true)),
+                                             P("sinks", ParamValue(true)),
+                                             P("output_gate", ParamValue(true)),
+                                             P("stateless", ParamValue(stateless))});
+      auto in = MakeInstance(r, kFacts, Site::kLayer, 0, 1);
+      ASSERT_TRUE(in.has_value()) << in.error();
+      EXPECT_EQ(in->def->state(*in).tensors.empty(), stateless);
+      EXPECT_EQ(in->def->masks(*in).empty(), stateless);
+      const std::uint64_t cells = window != 0 ? 20 : 32;
+      const std::vector<std::uint64_t> state_cells =
+          stateless ? std::vector<std::uint64_t>{} : std::vector<std::uint64_t>{cells, cells};
+      Compare(*in, formats, state_cells, AttentionSteps(32), kOutputTolerance, kF16StateTolerance,
+              {{kRopeFreqs, {1.0F, 1.5F}}});
+    }
+  }
 }
 
 }  // namespace

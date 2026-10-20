@@ -224,7 +224,7 @@ const ImageMapping& QwenImage21Mapping() {
       .serving = &kServing,
       .attention_rows = kAttentionRows,
       .attention_image_rows = kAttentionImageRows,
-      .tokenizer = "tokenizer/tokenizer.json",
+      .tokenizer = "processor/tokenizer.json",
       .prompt = "qwen_image_2_1",
       .host_inputs = kHostInputs};
   return kMapping;

@@ -1001,10 +1001,10 @@ LLMP_GGML_RECIPE(kFlashAttnOwnersName, llmp::ir::Primitive(llmp::ir::Op::kAttent
                  }))
 
 LLMP_GGML_RECIPE(
-    kGemma4MaskName, llmp::ir::Primitive(llmp::ir::Op::kFill),
+    kCausalMaskName, llmp::ir::Primitive(llmp::ir::Op::kFill),
     "packed F16/F32 causal/ring or noncausal block mask from fresh segment I32 positions", 1,
-    ([](ConstNodes n) { return CheckGemma4Mask(n[0]); }),
-    ([](LaunchContext& launch, Nodes n) { return RunGemma4Mask(launch, n[0]); }))
+    ([](ConstNodes n) { return CheckCausalMask(n[0]); }),
+    ([](LaunchContext& launch, Nodes n) { return RunCausalMask(launch, n[0]); }))
 
 LLMP_GGML_RECIPE("llmp.dsv4.sparse_mask", llmp::ir::Primitive(llmp::ir::Op::kFill),
                  "SparseMaskKernel: a block a row, the window's mask copied, -inf, then the "

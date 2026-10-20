@@ -63,8 +63,10 @@
 #include <vector>
 
 #include "base/check.h"
+#include "components/attention_core.h"
 #include "components/component.h"
 #include "components/defs.h"
+#include "components/rotation_reference.h"
 #include "components/step.h"
 #include "ir/graph.h"
 #include "ir/op.h"
@@ -104,6 +106,8 @@ constexpr std::array kParams{
               .type = ParamType::kName,
               .required = false,
               .choices = kKvEncodings},
+    ParamSpec{
+        .name = "replayable", .type = ParamType::kBool, .required = false, .least = 0, .most = 1},
 };
 
 enum : std::uint16_t {
@@ -142,7 +146,7 @@ constexpr float kKeep = 1e9F;
 struct Dims {
   std::uint64_t width, heads, kvh, d, rope_dims, ih, idim, ratio, budget;
   std::array<std::uint32_t, 4> sections;
-  bool fused, snapshot;
+  bool fused, snapshot, replayable;
   float eps, base;
   std::uint32_t context;
   Encoding kv_encoding;
@@ -161,6 +165,7 @@ Dims DimsOf(const Instance& in) {
          .sections = {},
          .fused = p.Name("indexer") == "fused",
          .snapshot = p.Name("rollback") == "snapshot",
+         .replayable = p.Flag("replayable"),
          .eps = F32(p.Real("eps")),
          .base = F32(p.Real("rope_base")),
          .context = in.stage.context,
@@ -207,25 +212,29 @@ model::StateContract State(const Instance& in) {
                        .kind = model::StateKind::kKv,
                        .encoding = d.kv_encoding,
                        .cell_bytes = *kv,
-                       .rollback = rollback},
+                       .rollback = rollback,
+                       .replayable = d.replayable},
                       {.name = "v",
                        .kind = model::StateKind::kKv,
                        .encoding = d.kv_encoding,
                        .cell_bytes = *kv,
-                       .rollback = rollback},
+                       .rollback = rollback,
+                       .replayable = d.replayable},
                       {.name = "indexer_k",
                        .kind = model::StateKind::kIndex,
                        .encoding = Encoding::kF32,
                        .cell_bytes = d.idim * 4,
-                       .rollback = rollback},
+                       .rollback = rollback,
+                       .replayable = d.replayable},
                       {.name = "indexer_blocks",
                        .kind = model::StateKind::kBlockKeys,
                        .encoding = Encoding::kBF16,
                        .cell_bytes = d.idim * 2,
                        .cells = model::CellRule::kPerBlock,
-                       .window_or_ratio = static_cast<std::uint32_t>(d.ratio),
+                       .block_ratio = static_cast<std::uint32_t>(d.ratio),
                        .basis = model::BlockBasis::kReadCells,
-                       .rollback = rollback}}};
+                       .rollback = rollback,
+                       .replayable = d.replayable}}};
 }
 
 std::vector<MaskUse> Masks(const Instance& in) {
@@ -257,16 +266,8 @@ constexpr std::array kSplits{SplitOption{
     .state = kHeadState}};
 
 ir::RopeParams Rotation(const Dims& d) {
-  return {.mode = ir::RopeMode::kInterleavedMulti,
-          .dims = static_cast<std::uint32_t>(d.rope_dims),
-          .original_context = d.context,
-          .base = d.base,
-          .scale = 1.0F,
-          .ext_factor = 0.0F,
-          .attn_factor = 1.0F,
-          .beta_fast = 32.0F,
-          .beta_slow = 1.0F,
-          .sections = d.sections};
+  return MakeRopeParams(ir::RopeMode::kInterleavedMulti, static_cast<std::uint32_t>(d.rope_dims), 0,
+                        d.context, d.base, 1.0F, {}, d.sections);
 }
 
 // Whether the read cells pass the indexer's budget (plus the tail block).
@@ -333,8 +334,7 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
         b.View(stored, cells_shape, ViewStrides(4, d.idim * 4, 0, cells_shape), 0);
     ir::TensorId keys = b.Pool(
         read, {}, {.ratio = static_cast<std::uint32_t>(d.ratio), .kind = ir::PoolKind::kMean});
-    const ir::TensorId normed = b.RmsNorm(keys, d.eps);
-    keys = b.Mul(normed, w(kIndexerKNorm));
+    keys = EmitHeadNorm(b, keys, d.eps, w(kIndexerKNorm));
     const ir::TensorId heads = b.Reshape(keys, Shape({d.idim, 1, blocks}));
     const ir::TensorId block_positions = f.step.BlockPositions(s, block_cells, blocks, 4);
     keys = b.Rope(heads, block_positions, {}, rope);
@@ -349,30 +349,25 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   ir::TensorId q{};
   if (f.stream_needed) {
     q_full = b.MatMul(w(kQ), x);
-    const format::Shape shape = Shape({d.d, d.heads, rows});
-    q = b.Cont(b.View(q_full, shape,
-                      {4, 2 * d.d * 4, 2 * d.d * d.heads * 4, 2 * d.d * d.heads * 4 * rows}, 0));
-    q = b.Rope(b.Mul(b.RmsNorm(q, d.eps), w(kQNorm)), positions, {}, rope);
+    q = EmitInterleavedHeadSlice(b, q_full, d.d, 2 * d.d, d.heads, rows, 0);
+    q = EmitHeadNormRope(b, q, d.eps, w(kQNorm), positions, {}, rope);
   }
   const ir::TensorId v = b.Reshape(b.MatMul(w(kV), x), Shape({d.d, d.kvh, rows}));
   ir::TensorId k = b.Reshape(b.MatMul(w(kK), x), Shape({d.d, d.kvh, rows}));
-  k = b.Rope(b.Mul(b.RmsNorm(k, d.eps), w(kKNorm)), positions, {}, rope);
+  k = EmitHeadNormRope(b, k, d.eps, w(kKNorm), positions, {}, rope);
   const std::uint64_t kv = d.d * d.kvh;
   const ir::TensorId k_rows = b.Reshape(k, Shape({kv, rows}));
   for (std::size_t s = 0; s < segments.size(); ++s) {
     b.SetOwner(static_cast<std::uint8_t>(s));
     const ir::TensorId seg_k = rows_of(k_rows, s);
-    b.CacheStore(f.State(s, kCacheK), seg_k, f.step.StoreCells(s, kv_cells));
+    EmitKvCacheStore(b, f.State(s, kCacheK), seg_k, f.step.StoreCells(s, kv_cells), Encoding::kF16);
     b.SetJoined();
   }
   const ir::TensorId v_rows = b.Reshape(v, Shape({kv, rows}));
   for (std::size_t s = 0; s < segments.size(); ++s) {
     b.SetOwner(static_cast<std::uint8_t>(s));
-    ir::TensorId seg_v = rows_of(v_rows, s);
-    if (d.kv_encoding == Encoding::kQ8_0 && b.tensor(seg_v).format.encoding != Encoding::kF32) {
-      seg_v = b.Convert(seg_v, Encoding::kF32);
-    }
-    b.CacheStore(f.State(s, kCacheV), seg_v, f.step.StoreCells(s, kv_cells));
+    const ir::TensorId seg_v = rows_of(v_rows, s);
+    EmitKvCacheStore(b, f.State(s, kCacheV), seg_v, f.step.StoreCells(s, kv_cells), d.kv_encoding);
     b.SetJoined();
   }
   if (!f.stream_needed) return FragmentOut{.stream = x};
@@ -389,7 +384,7 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     } else {
       heads = b.Reshape(b.MatMul(w(kIndexerQ), x), Shape({d.idim, d.ih, rows}));
     }
-    heads = b.Rope(b.Mul(b.RmsNorm(heads, d.eps), w(kIndexerQNorm)), positions, {}, rope);
+    heads = EmitHeadNormRope(b, heads, d.eps, w(kIndexerQNorm), positions, {}, rope);
     index_q = b.Convert(heads, Encoding::kBF16);
     return index_q;
   };
@@ -458,39 +453,18 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
       b.SetJoined();
     }
     b.SetOwner(static_cast<std::uint8_t>(s));
-    const ir::TensorDesc qn = Desc(b, q);
-    const format::Shape q_shape = Shape({d.d, d.heads, seg.rows});
-    const ir::TensorId mine =
-        one ? q
-            : b.View(q, q_shape, ViewStrides(qn.nb[0], qn.nb[1], qn.nb[2], q_shape),
-                     std::uint64_t{seg.first_row} * qn.nb[2]);
-    const ir::TensorId queries = b.Permute(mine, {0, 2, 1, 3});
-    const auto cache_view = [&](ir::TensorId cache) {
-      if (d.kv_encoding == Encoding::kQ8_0) {
-        const format::Shape shape = Shape({d.d, d.kvh, read});
-        auto format = b.tensor(cache).format;
-        format.shape = shape;
-        return b.Permute(b.View(cache, shape, ir::NaturalStrides(format), 0), {0, 2, 1, 3});
-      }
-      const std::uint64_t el = 2;
-      return b.View(cache, Shape({d.d, read, d.kvh}), {el, kv * el, d.d * el, d.d * el * d.kvh}, 0);
-    };
-    const ir::TensorId keys_view = cache_view(f.State(s, kCacheK));
-    const ir::TensorId values_view = cache_view(f.State(s, kCacheV));
-    const ir::TensorId attention =
-        b.Attention(queries, keys_view, values_view, attn_mask, {}, params);
-    outputs.push_back(b.Reshape(attention, Shape({d.d * d.heads, seg.rows})));
+    const ir::TensorId queries = EmitSegmentQueries(b, q, d.d, d.heads, seg, /*elide_single=*/one);
+    const ir::TensorId keys_view =
+        EmitKvCacheView(b, f.State(s, kCacheK), d.d, d.kvh, read, /*direct_3d_f16=*/true);
+    const ir::TensorId values_view =
+        EmitKvCacheView(b, f.State(s, kCacheV), d.d, d.kvh, read, /*direct_3d_f16=*/true);
+    outputs.push_back(EmitSegmentAttention(b, queries, keys_view, values_view, attn_mask, {},
+                                           params, d.d, d.heads, seg.rows));
     b.SetJoined();
   }
-  ir::TensorId joined = outputs.front();
-  for (std::size_t s = 1; s < outputs.size(); ++s) joined = b.Concat(joined, outputs[s], 1);
+  const ir::TensorId joined = JoinSegmentOutputs(b, outputs);
   // Each head's output times sigmoid(its gate).
-  const format::Shape gate_shape = Shape({d.d, d.heads, rows});
-  const ir::TensorId gate =
-      b.Cont(b.View(q_full, gate_shape,
-                    {4, 2 * d.d * 4, 2 * d.d * d.heads * 4, 2 * d.d * d.heads * 4 * rows}, d.d * 4),
-             Shape({d.d * d.heads, rows}));
-  const ir::TensorId gated = b.Mul(joined, b.Unary(gate, ir::UnaryFn::kSigmoid));
+  const ir::TensorId gated = EmitSigmoidOutputGate(b, joined, q_full, d.d, d.d, d.heads, rows);
   return FragmentOut{.stream = b.MatMul(w(kOutput), gated)};
 }
 
@@ -508,25 +482,6 @@ double Bf16(double x) {
   float r = 0.0F;
   std::memcpy(&r, &u, 4);
   return static_cast<double>(r);
-}
-
-// The interleaved multi-section rotation (GGML's IMROPE) of `heads` heads
-// of `dim` values at `position`: pair i (of rope_dims / 2) rotates (i, i +
-// rope_dims / 2) by its section's angle (every section the position here).
-void Rotate(std::span<double> row, std::uint64_t heads, std::uint64_t dim, const Dims& d,
-            std::int64_t position) {
-  const std::uint64_t pairs = d.rope_dims / 2;
-  for (std::uint64_t h = 0; h < heads; ++h) {
-    double* x = &row[h * dim];
-    for (std::uint64_t i = 0; i < pairs; ++i) {
-      const double theta =
-          RopeAngle(d.base, static_cast<std::uint32_t>(d.rope_dims), 1.0F, i, position);
-      const double x0 = x[i];
-      const double x1 = x[i + pairs];
-      x[i] = (x0 * std::cos(theta)) - (x1 * std::sin(theta));
-      x[i + pairs] = (x0 * std::sin(theta)) + (x1 * std::cos(theta));
-    }
-  }
 }
 
 std::expected<void, std::string> Reference(RefIO& io) {
@@ -585,8 +540,8 @@ std::expected<void, std::string> Reference(RefIO& io) {
     iq[j] = static_cast<double>(
         static_cast<float>(iq[j] * static_cast<double>(weight(kIndexerQNorm)[j % d.idim])));
   }
+  const ir::RopeParams rope = Rotation(d);
   const std::uint64_t kv = d.kvh * d.d;
-  const std::uint64_t group = d.heads / d.kvh;
   std::vector<double> attended(rows * d.heads * d.d, 0.0);
   std::uint64_t first = 0;
   for (std::size_t si = 0; si < io.segments.size(); ++si) {
@@ -598,27 +553,19 @@ std::expected<void, std::string> Reference(RefIO& io) {
     for (std::uint64_t t = 0; t < seg.rows; ++t) {
       const std::uint64_t r = first + t;
       const auto pos = static_cast<std::int64_t>(seg.past + t);
-      Rotate(std::span(q).subspan(r * d.heads * d.d, d.heads * d.d), d.heads, d.d, d, pos);
-      Rotate(std::span(k).subspan(r * kv, kv), d.kvh, d.d, d, pos);
-      Rotate(std::span(iq).subspan(r * d.ih * d.idim, d.ih * d.idim), d.ih, d.idim, d, pos);
+      RotateHeads(std::span(q).subspan(r * d.heads * d.d, d.heads * d.d), d.heads, d.d, rope, pos);
+      RotateHeads(std::span(k).subspan(r * kv, kv), d.kvh, d.d, rope, pos);
+      RotateHeads(std::span(iq).subspan(r * d.ih * d.idim, d.ih * d.idim), d.ih, d.idim, rope, pos);
       const std::uint64_t cell = seg.past + t;
       if (cell >= capacity) return std::unexpected("qsa reference: a row past the cache");
-      const auto store =
-          [&](std::vector<double>& cache,
-              const std::vector<double>& values) -> std::expected<void, std::string> {
-        for (std::uint64_t head = 0; head < d.kvh; ++head) {
-          auto dst = std::span(cache).subspan(cell * kv + head * d.d, d.d);
-          const auto src = std::span(values).subspan(r * kv + head * d.d, d.d);
-          if (d.kv_encoding == Encoding::kQ8_0) {
-            if (auto stored = io.store_row(d.kv_encoding, src, dst); !stored) return stored;
-          } else {
-            for (std::size_t j = 0; j < dst.size(); ++j) dst[j] = Stored(d.kv_encoding, src[j]);
-          }
-        }
-        return {};
-      };
-      if (auto stored = store(kc, k); !stored) return stored;
-      if (auto stored = store(vc, v); !stored) return stored;
+      if (auto stored = StoreKvCacheRow(kc, cell, k, r, d.kvh, d.d, d.kv_encoding, io.store_row);
+          !stored) {
+        return stored;
+      }
+      if (auto stored = StoreKvCacheRow(vc, cell, v, r, d.kvh, d.d, d.kv_encoding, io.store_row);
+          !stored) {
+        return stored;
+      }
       for (std::uint64_t j = 0; j < d.idim; ++j) {
         ic[(cell * d.idim) + j] = Stored(Encoding::kF32, raw[(r * d.idim) + j]);
       }
@@ -655,8 +602,8 @@ std::expected<void, std::string> Reference(RefIO& io) {
       }
       f32(keys);
       for (std::uint64_t bl = 0; bl < pooled; ++bl) {
-        Rotate(std::span(keys).subspan(bl * d.idim, d.idim), 1, d.idim, d,
-               static_cast<std::int64_t>(bl * d.ratio));
+        RotateHeads(std::span(keys).subspan(bl * d.idim, d.idim), 1, d.idim, rope,
+                    static_cast<std::int64_t>(bl * d.ratio));
       }
       f32(keys);
       for (std::size_t j = 0; j < keys.size(); ++j) {
@@ -700,47 +647,21 @@ std::expected<void, std::string> Reference(RefIO& io) {
         kept[t] = std::move(keep);
       }
     }
-    std::vector<double> score(read);
+    const double score_scale = 1.0 / std::sqrt(static_cast<double>(d.d));
+    std::vector<std::uint8_t> visible(read);
     for (std::uint64_t t = 0; t < seg.rows; ++t) {
       const std::uint64_t r = first + t;
       const std::uint64_t pos = seg.past + t;
-      for (std::uint64_t h = 0; h < d.heads; ++h) {
-        const std::uint64_t kh = h / group;
-        const double* qh = &q[(r * d.heads * d.d) + (h * d.d)];
-        double top = -std::numeric_limits<double>::infinity();
-        for (std::uint64_t c = 0; c < read; ++c) {
-          if (c > pos || c >= end || !kept[t][c]) {
-            score[c] = -std::numeric_limits<double>::infinity();
-            continue;
-          }
-          double dot = 0.0;
-          for (std::uint64_t j = 0; j < d.d; ++j) dot += qh[j] * kc[(c * kv) + (kh * d.d) + j];
-          score[c] = dot / std::sqrt(static_cast<double>(d.d));
-          top = std::max(top, score[c]);
-        }
-        double sum = 0.0;
-        for (double& sc : score) {
-          sc = std::isinf(sc) ? 0.0 : std::exp(sc - top);
-          sum += sc;
-        }
-        double* out = &attended[(r * d.heads * d.d) + (h * d.d)];
-        for (std::uint64_t c = 0; c < read && sum > 0.0; ++c) {
-          if (score[c] == 0.0) continue;
-          for (std::uint64_t j = 0; j < d.d; ++j)
-            out[j] += score[c] / sum * vc[(c * kv) + (kh * d.d) + j];
-        }
+      for (std::uint64_t c = 0; c < read; ++c) {
+        visible[c] = c <= pos && c < end && kept[t][c] ? 1U : 0U;
       }
+      AttendCacheRow(std::span(q).subspan(r * d.heads * d.d, d.heads * d.d), kc, vc, read, visible,
+                     d.heads, d.kvh, d.d, d.d, 1.0, score_scale, 0.0, {},
+                     std::span(attended).subspan(r * d.heads * d.d, d.heads * d.d));
     }
     first += seg.rows;
   }
-  for (std::uint64_t r = 0; r < rows; ++r) {
-    for (std::uint64_t h = 0; h < d.heads; ++h) {
-      for (std::uint64_t i = 0; i < d.d; ++i) {
-        const double g = qg[(r * 2 * d.heads * d.d) + (h * 2 * d.d) + d.d + i];
-        attended[(((r * d.heads) + h) * d.d) + i] *= 1.0 / (1.0 + std::exp(-g));
-      }
-    }
-  }
+  ApplySigmoidOutputGateRef(attended, qg, rows, d.heads, d.d, d.d);
   io.stream = Product(weight(kOutput), d.heads * d.d, w, attended);
   return {};
 }
@@ -764,22 +685,6 @@ const ComponentDef& AttentionQsa() {
       .emit = Emit,
       .reference = Reference,
   };
-  return def;
-}
-
-const ComponentDef& AttentionQsaReplay() {
-  static const ComponentDef def = [] {
-    ComponentDef value = AttentionQsa();
-    value.version = 2;
-    value.state = [](const Instance& in) {
-      auto state = State(in);
-      // K/V/index rows are replaced at their cache positions, and block
-      // keys are regenerated from those rows before selection reads them.
-      for (auto& tensor : state.tensors) tensor.replayable = true;
-      return state;
-    };
-    return value;
-  }();
   return def;
 }
 

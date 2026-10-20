@@ -255,7 +255,7 @@ std::expected<PreparedPlacement, std::string> PrepareComponentPlacement(
                                          .state = &hold.layouts.at(s.stage),
                                          .stages = hold.stages,
                                          .artifacts = hold.tables},
-                                        {.narrow = true, .dsv4_lid_mask = indexed_masks});
+                                        {.narrow = true, .rounded_index_mask = indexed_masks});
       if (!step) return Error(step.error());
       for (const components::StepWeight& weight : step->weights) {
         // A stored target's weights are placed above from its validated

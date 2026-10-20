@@ -68,6 +68,7 @@
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec_fixtures.h"
+#include "state_layouts.h"
 
 namespace {
 

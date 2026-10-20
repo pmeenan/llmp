@@ -85,24 +85,47 @@ sp::Source Source(bool exl3) {
 }
 
 TEST(ComponentsQwen2, BothEncodingsUseTheSharedCatalogAndPhysicalShapes) {
-  const auto& mapping = sp::mappings::Qwen2Mapping();
-  ASSERT_TRUE(sp::ValidateMapping(mapping));
-  EXPECT_EQ(sp::FindMapping("qwen2"), &mapping);
+  ASSERT_TRUE(sp::ValidateMapping(sp::mappings::Qwen2Mapping()));
+  EXPECT_EQ(sp::FindMapping("qwen2"), &sp::mappings::Qwen2Mapping());
   for (const bool exl3 : {false, true}) {
     SCOPED_TRACE(exl3);
     const auto& p = exl3 ? fam::Qwen25Instruct05BExl3() : fam::Qwen25Instruct05B();
     auto values = fam::Qwen2Values(p);
     ASSERT_TRUE(values.has_value()) << values.error();
     const auto source = Source(exl3);
+    const auto& mapping =
+        exl3 ? sp::mappings::Qwen2Exl3Mapping() : sp::mappings::Qwen2GgufMapping();
+    ASSERT_TRUE(sp::ValidateMapping(mapping));
+    EXPECT_EQ(sp::FindMapping("qwen2", source.container), &mapping);
     auto spec = sp::Synthesize(mapping, source, *values);
     ASSERT_TRUE(spec.has_value()) << spec.error();
+    const auto other =
+        sp::Synthesize(exl3 ? sp::mappings::Qwen2GgufMapping() : sp::mappings::Qwen2Exl3Mapping(),
+                       Source(!exl3), *values);
+    ASSERT_TRUE(other.has_value()) << other.error();
+    ASSERT_TRUE(spec->stages[0].embedding.has_value());
+    ASSERT_TRUE(other->stages[0].embedding.has_value());
+    EXPECT_EQ(spec->stages[0].embedding->kind, other->stages[0].embedding->kind);
+    EXPECT_EQ(spec->stages[0].embedding->params, other->stages[0].embedding->params);
+    ASSERT_TRUE(spec->stages[0].heads.final_norm.has_value());
+    ASSERT_TRUE(other->stages[0].heads.final_norm.has_value());
+    EXPECT_EQ(spec->stages[0].heads.final_norm->params, other->stages[0].heads.final_norm->params);
+    ASSERT_TRUE(spec->stages[0].heads.output.has_value());
+    ASSERT_TRUE(other->stages[0].heads.output.has_value());
+    EXPECT_EQ(spec->stages[0].heads.output->params, other->stages[0].heads.output->params);
     const std::array<std::span<const co::BoundTensor>, 1> artifacts{source.tensors};
     ASSERT_TRUE(co::ValidateSpec(*spec, artifacts));
     ASSERT_EQ(spec->stages[0].layers.size(), 24U);
-    for (const auto& layer : spec->stages[0].layers) {
+    ASSERT_EQ(other->stages[0].layers.size(), 24U);
+    for (std::size_t l = 0; l < spec->stages[0].layers.size(); ++l) {
+      const auto& layer = spec->stages[0].layers[l];
+      const auto& other_layer = other->stages[0].layers[l];
       ASSERT_EQ(layer.components.size(), 2U);
+      ASSERT_EQ(other_layer.components.size(), 2U);
       EXPECT_EQ(layer.components[0].kind, "attention.dense");
       EXPECT_EQ(layer.components[1].kind, "ffn.glu");
+      EXPECT_EQ(layer.components[0].params, other_layer.components[0].params);
+      EXPECT_EQ(layer.components[1].params, other_layer.components[1].params);
     }
     auto layout = co::StageLayout(*spec, 0, 2048, 1024);
     ASSERT_TRUE(layout.has_value()) << layout.error();
@@ -134,7 +157,6 @@ TEST(ComponentsQwen2, BothEncodingsUseTheSharedCatalogAndPhysicalShapes) {
         if (node.key.op == ir::Op::kMatMul &&
             step->graph.tensor(node.out[0]).format.encoding == Encoding::kF16) {
           ++half_products;
-          EXPECT_EQ(step->graph.tensor(node.src[1]).format.encoding, Encoding::kF16);
         }
         if (node.key.op == ir::Op::kAttention) {
           ++attention;
@@ -145,8 +167,8 @@ TEST(ComponentsQwen2, BothEncodingsUseTheSharedCatalogAndPhysicalShapes) {
           EXPECT_EQ(node.Params<ir::SoftMaxParams>().scale, 0.125F);
         }
       }
-      EXPECT_EQ(norm_scales, exl3 ? 49U : 0U);    // two norms per layer and final norm
-      EXPECT_EQ(half_products, exl3 ? 73U : 0U);  // Q,K,V a layer and the head
+      EXPECT_EQ(norm_scales, exl3 ? 49U : 0U);  // two norms per layer and final norm
+      EXPECT_EQ(half_products, 0U);             // primitive graph emits F32 products
       EXPECT_EQ(attention, 24U);
       EXPECT_EQ(softmax, 0U);
       EXPECT_EQ(step->graph.tensor(step->logits).format.encoding, Encoding::kF32);
@@ -158,7 +180,7 @@ TEST(ComponentsQwen2, RefusesMissingBiasAndTrellisParts) {
   auto source = Source(true);
   const auto values = fam::Qwen2Values(fam::Qwen25Instruct05BExl3());
   ASSERT_TRUE(values.has_value());
-  const auto& mapping = sp::mappings::Qwen2Mapping();
+  const auto& mapping = sp::mappings::Qwen2Exl3Mapping();
   const auto intact = sp::Synthesize(mapping, source, *values);
   ASSERT_TRUE(intact) << (intact ? "" : intact.error());
   for (const auto purpose : {co::ValidationPurpose::kExecution, co::ValidationPurpose::kImport}) {

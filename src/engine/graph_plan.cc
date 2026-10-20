@@ -244,6 +244,29 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponent
     return std::unexpected("token lowering metadata differs from the planned graph or shape");
   if (!token && (options.shape != nullptr || options.state_spans))
     return std::unexpected("a spatial graph cannot borrow token shape or state facts");
+  std::optional<planner::OwnerProducts> proved_owners;
+  if (token && !token->step.owner_products.empty() && options.owner_products == nullptr) {
+    if (token->shape.segments.empty() || token->shape.segments.size() > components::kMaxSegments)
+      return std::unexpected("owner products: missing or excessive segments");
+    std::vector<components::SegmentRows> segments;
+    std::uint64_t first = 0;
+    for (const auto& s : token->shape.segments) {
+      if (first > std::numeric_limits<std::uint32_t>::max())
+        return std::unexpected("owner products: row partition overflow");
+      segments.push_back({.slot = s.slot,
+                          .first_row = static_cast<std::uint32_t>(first),
+                          .rows = s.rows,
+                          .past = s.past,
+                          .read_cells = s.read_cells,
+                          .outputs = s.outputs});
+      first += s.rows;
+    }
+    auto proved = planner::ProveOwnerProducts(io.graph, token->step.inputs, segments,
+                                              token->step.owner_products);
+    if (!proved) return std::unexpected(std::move(proved.error()));
+    proved_owners = std::move(*proved);
+    options.owner_products = &*proved_owners;
+  }
   auto plan = PlanComponentGraph(io, backend, policy, addresses, std::move(options));
   if (!plan) return std::unexpected(std::move(plan.error()));
   const kernels::LowerInput input{*plan, io, addresses, token};

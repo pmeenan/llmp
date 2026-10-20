@@ -267,7 +267,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
     return Error("opened VAE inventory");
   const auto tensors = mo::VaeDecoderTensors(::llmp::test_support::QwenImageProfile().vae,
                                              ::llmp::test_support::QwenImageNames().vae);
-  auto bound = mo::BindQwenImageComponent(tensors, "AutoencoderKLQwenImage21", artifact);
+  auto bound = mo::BindImageComponent(tensors, "AutoencoderKLQwenImage21", artifact);
   if (!bound) return Error(bound.error());
   auto source = sp::SourceOf(artifact);
   if (!source) return Error(source.error());
@@ -543,8 +543,8 @@ en::Status Reference(Lifetime& life, SpanCase& item) {
               n * 0x1p-52 * (max_input * sum_abs + max_bias);
     }
     co::SpatialRefIO ref{instance, shape, item.reference, kernel, bias, {}};
-    if (auto r = instance.def->spatial->reference(ref); !r) return Error(r.error());
-    auto next = instance.def->spatial->infer(instance, shape);
+    if (auto r = co::RunSpatialReference(ref); !r) return Error(r.error());
+    auto next = co::InferSpatialShape(instance, shape);
     if (!next) return Error(next.error());
     shape = *next;
     item.reference = std::move(ref.output);

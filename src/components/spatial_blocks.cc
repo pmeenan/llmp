@@ -22,32 +22,20 @@ std::expected<std::vector<RoleShape>, std::string> NoRoles(const Instance& in) {
   if (in.site != Site::kLayer) return std::unexpected("spatial blocks require a layer");
   return std::vector<RoleShape>{};
 }
-std::expected<FragmentOut, std::string> NoToken(Fragment&) {
-  return std::unexpected("spatial blocks require typed graph inputs");
-}
-std::expected<void, std::string> NoTokenRef(RefIO&) {
-  return std::unexpected("spatial blocks require explicit geometry");
-}
-std::expected<SpatialShape, std::string> AddShape(const Instance&, SpatialShape x,
-                                                  std::optional<SpatialShape> auxiliary) {
-  if (!Count(x) || !auxiliary || x != *auxiliary)
+std::expected<FragmentOut, std::string> AddTokenEmit(Fragment& f) {
+  if (!f.stream_needed) return FragmentOut{.stream = f.stream};
+  const auto other = f.carry.valid() ? f.carry : f.Side("residual");
+  if (!f.stream.valid() || !other.valid() ||
+      f.b.tensor(f.stream).format != f.b.tensor(other).format ||
+      f.b.tensor(f.stream).segment != f.b.tensor(other).segment)
     return std::unexpected("spatial residual requires equal owner-local operand geometry");
-  return x;
+  return FragmentOut{.stream = f.b.Add(f.stream, other)};
 }
-std::expected<SpatialValue, std::string> AddEmit(SpatialFragment& f) {
-  auto shape =
-      AddShape(f.instance, f.shape, f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!shape || !f.weights.empty()) return std::unexpected("spatial residual operands differ");
-  return SpatialValue{f.builder.Add(f.input, f.auxiliary->tensor), *shape};
-}
-std::expected<void, std::string> AddReference(SpatialRefIO& io) {
-  auto shape = AddShape(io.instance, io.shape, io.auxiliary_shape);
-  if (!shape || io.input.size() != *Count(*shape) || io.auxiliary.size() != io.input.size() ||
-      !io.kernel.empty() || !io.bias.empty())
+std::expected<void, std::string> AddTokenReference(RefIO& io) {
+  const auto& other = !io.carry.empty() ? io.carry : io.side;
+  if (io.stream.empty() || other.size() != io.stream.size() || !io.weights.empty())
     return std::unexpected("spatial residual reference sizes differ");
-  std::vector<double> out(io.input.size());
-  for (std::size_t i = 0; i < out.size(); ++i) out[i] = io.input[i] + io.auxiliary[i];
-  io.output = std::move(out);
+  for (std::size_t i = 0; i < io.stream.size(); ++i) io.stream[i] += other[i];
   return {};
 }
 constexpr std::array kDupParams{
@@ -211,59 +199,45 @@ constexpr std::array kProjectionParams{
 };
 constexpr std::array kProjectionRoles{WeightRole{.name = "weight", .encodings = kNormEncodings}};
 std::expected<std::vector<RoleShape>, std::string> ProjectionRoles(const Instance& in) {
-  if (in.site != Site::kLayer) return std::unexpected("spatial projection requires a layer");
+  if (in.site != Site::kLayer || (in.params.Flag("silu") && in.params.Flag("gelu")))
+    return std::unexpected("spatial projection requires a layer and at most one activation");
   return std::vector{Role(0, {static_cast<std::uint64_t>(in.params.Int("in_channels")),
                               static_cast<std::uint64_t>(in.params.Int("out_channels"))})};
 }
-std::expected<SpatialShape, std::string> ProjectionShape(const Instance& in, SpatialShape shape,
-                                                         std::optional<SpatialShape> auxiliary) {
-  if (auxiliary || !Count(shape) || (in.params.Flag("silu") && in.params.Flag("gelu")) ||
-      shape.channels != static_cast<std::uint64_t>(in.params.Int("in_channels")))
-    return std::unexpected("spatial projection input channels or auxiliary differ");
-  shape.channels = static_cast<std::uint64_t>(in.params.Int("out_channels"));
-  if (!Count(shape)) return std::unexpected("spatial projection output exceeds value bound");
-  return shape;
+std::expected<FragmentOut, std::string> ProjectionTokenEmit(Fragment& f) {
+  if (!f.stream_needed) return FragmentOut{.stream = f.stream};
+  const auto in_channels = static_cast<std::uint64_t>(f.instance.params.Int("in_channels"));
+  if (!f.stream.valid() || (f.instance.params.Flag("silu") && f.instance.params.Flag("gelu")) ||
+      f.b.tensor(f.stream).ne(0) != in_channels)
+    return std::unexpected("spatial projection input channels or activation flags differ");
+  auto output = f.b.MatMul(f.Weight(0), f.stream);
+  if (f.instance.params.Flag("silu")) output = f.b.Unary(output, ir::UnaryFn::kSilu);
+  if (f.instance.params.Flag("gelu")) output = f.b.Unary(output, ir::UnaryFn::kGeluTanh);
+  return FragmentOut{.stream = output};
 }
-std::expected<SpatialValue, std::string> ProjectionEmit(SpatialFragment& f) {
-  auto shape = ProjectionShape(f.instance, f.shape,
-                               f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!shape || f.weights.size() != 1)
-    return std::unexpected("spatial projection needs its validated source weight");
-  auto rows = f.builder.Cont(f.builder.Permute(f.input, {1, 2, 0, 3}));
-  rows = f.builder.Reshape(
-      rows, ir::ShapeOf({f.shape.channels, f.shape.width * f.shape.height * f.shape.images}));
-  auto output = f.builder.MatMul(f.weights[0], rows);
-  if (f.instance.params.Flag("silu")) output = f.builder.Unary(output, ir::UnaryFn::kSilu);
-  if (f.instance.params.Flag("gelu")) output = f.builder.Unary(output, ir::UnaryFn::kGeluTanh);
-  output = f.builder.Reshape(
-      output, ir::ShapeOf({shape->channels, shape->width, shape->height, shape->images}));
-  return SpatialValue{f.builder.Cont(f.builder.Permute(output, {2, 0, 1, 3})), *shape};
-}
-std::expected<void, std::string> ProjectionReference(SpatialRefIO& io) {
-  auto shape = ProjectionShape(io.instance, io.shape, io.auxiliary_shape);
-  if (!shape || !io.auxiliary.empty() || !io.bias.empty() || io.input.size() != *Count(io.shape) ||
-      io.kernel.size() != io.shape.channels * shape->channels)
+std::expected<void, std::string> ProjectionTokenReference(RefIO& io) {
+  const auto& in = *io.instance;
+  const auto in_c = static_cast<std::uint64_t>(in.params.Int("in_channels"));
+  const auto out_c = static_cast<std::uint64_t>(in.params.Int("out_channels"));
+  if ((in.params.Flag("silu") && in.params.Flag("gelu")) || io.rows() == 0 ||
+      io.stream.size() != in_c * io.rows() || io.weights.size() != 1 ||
+      io.weights[0].size() != in_c * out_c)
     return std::unexpected("spatial projection reference source extents differ");
-  std::vector<double> output(static_cast<std::size_t>(*Count(*shape)));
-  const auto pixels = io.shape.width * io.shape.height;
-  for (std::uint64_t n = 0; n < shape->images; ++n)
-    for (std::uint64_t c = 0; c < shape->channels; ++c)
-      for (std::uint64_t p = 0; p < pixels; ++p) {
-        double value = 0;
-        for (std::uint64_t k = 0; k < io.shape.channels; ++k)
-          value += io.input[p + pixels * (k + io.shape.channels * n)] *
-                   io.kernel[k + io.shape.channels * c];
-        if (io.instance.params.Flag("silu")) value /= 1 + std::exp(-value);
-        if (io.instance.params.Flag("gelu"))
-          value *= 0.5 *
-                   (1 + std::tanh(0.7978845608028654 * (value + 0.044715 * value * value * value)));
-        output[p + pixels * (c + shape->channels * n)] = value;
-      }
-  io.output = std::move(output);
+  std::vector<double> output(static_cast<std::size_t>(out_c * io.rows()));
+  for (std::uint64_t r = 0; r < io.rows(); ++r)
+    for (std::uint64_t c = 0; c < out_c; ++c) {
+      double value = 0;
+      for (std::uint64_t k = 0; k < in_c; ++k)
+        value += io.stream[r * in_c + k] * io.weights[0][k + in_c * c];
+      if (in.params.Flag("silu")) value /= 1 + std::exp(-value);
+      if (in.params.Flag("gelu"))
+        value *=
+            0.5 * (1 + std::tanh(0.7978845608028654 * (value + 0.044715 * value * value * value)));
+      output[r * out_c + c] = value;
+    }
+  io.stream = std::move(output);
   return {};
 }
-const SpatialOps kProjection{ProjectionShape, ProjectionEmit, ProjectionReference, 8};
-const SpatialOps kAdd{AddShape, AddEmit, AddReference};
 const SpatialOps kDup{DupShape, DupEmit, DupReference, 24};
 std::uint64_t AttentionTemporaries(const Instance& in, SpatialShape shape) {
   const auto pixels = shape.width * shape.height;
@@ -275,38 +249,32 @@ const SpatialOps kAttention{AttentionShape, AttentionEmit, AttentionReference, 2
 
 const ComponentDef& ProjectionSpatial() {
   static const ComponentDef def{.kind = "projection.spatial",
+                                .row_local = true,
                                 .params = kProjectionParams,
                                 .roles = kProjectionRoles,
                                 .shapes = ProjectionRoles,
-                                .spatial = &kProjection,
-                                .emit = NoToken,
-                                .reference = NoTokenRef};
+                                .emit = ProjectionTokenEmit,
+                                .reference = ProjectionTokenReference};
   return def;
 }
 const ComponentDef& ResidualSpatial() {
   static const ComponentDef def{.kind = "residual.spatial",
+                                .row_local = true,
                                 .shapes = NoRoles,
-                                .spatial = &kAdd,
-                                .emit = NoToken,
-                                .reference = NoTokenRef};
+                                .emit = AddTokenEmit,
+                                .reference = AddTokenReference};
   return def;
 }
 const ComponentDef& ResidualUpsample() {
-  static const ComponentDef def{.kind = "residual.upsample",
-                                .params = kDupParams,
-                                .shapes = NoRoles,
-                                .spatial = &kDup,
-                                .emit = NoToken,
-                                .reference = NoTokenRef};
+  static const ComponentDef def{
+      .kind = "residual.upsample", .params = kDupParams, .shapes = NoRoles, .spatial = &kDup};
   return def;
 }
 const ComponentDef& AttentionSpatial() {
   static const ComponentDef def{.kind = "attention.spatial",
                                 .params = kAttentionParams,
                                 .shapes = NoRoles,
-                                .spatial = &kAttention,
-                                .emit = NoToken,
-                                .reference = NoTokenRef};
+                                .spatial = &kAttention};
   return def;
 }
 }  // namespace llmp::components::defs

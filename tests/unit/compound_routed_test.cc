@@ -513,7 +513,7 @@ class CompoundRoutedTest : public ::testing::Test {
                      .encoding = fm::Encoding::kF32,
                      .cell_bytes = sizeof(ts::FakeCell),
                      .cells = md::CellRule::kPerRow,
-                     .window_or_ratio = 1,
+                     .row_carry = 1,
                      .rollback = md::Rollback::kSnapshot,
                      .target_writes = true},
                     md::DraftProgressControl("progress", md::DraftRelation::kTokenAfterCache)}}}};

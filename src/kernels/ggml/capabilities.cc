@@ -354,6 +354,10 @@ constexpr std::array<Rule, 3> kHcCombineRules = {
 constexpr std::array<Rule, 2> kHcNormRules = {
     {{.operand = 0, .encodings = kF32, .layouts = kDense},
      {.operand = 1, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 3> kHcMixRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense}}};
 constexpr std::array<Rule, 3> kGdnConvRules = {
     {{.operand = 0, .encodings = kF32Bf16, .layouts = kDense},
      {.operand = 1, .encodings = kF32, .layouts = kDense},
@@ -851,7 +855,7 @@ bool AcceptsAttention256(const ex::CapabilityQuery& q) {
   return Built(q) && q.k == 256 && q.n == 256;
 }
 
-// llmp.gemma4.mask (llmp_ops.h Gemma4Mask): a causal or window mask; its
+// llmp.causal.mask (llmp_ops.h CausalMask): a causal or window mask; its
 // producer derives the cells' positions from the ring's capacity.
 bool AcceptsMask(const ex::CapabilityQuery& q) {
   const auto m = ParamsOf<ir::MaskParams>(q);
@@ -1055,7 +1059,7 @@ bool AcceptsRoundedIndexScore(const ex::CapabilityQuery& q) {
 }
 
 bool AcceptsDsv4LidMask(const ex::CapabilityQuery& q) {
-  const auto p = ParamsOf<ir::LidMaskParams>(q);
+  const auto p = ParamsOf<ir::RoundedIndexMaskParams>(q);
   if (!Built(q) || q.arch < 80 || !p || p->top == 0 || p->top > 65536 || p->cells == 0 ||
       p->cells > INT32_MAX / 4 || p->raw_cells == 0)
     return false;
@@ -1236,6 +1240,7 @@ bool AcceptsSinkhornHcMix(const ex::CapabilityQuery& q) {
   constexpr auto max = static_cast<std::uint64_t>(INT32_MAX) * 256 - 1;
   if (!Built(q) || !p || p->mix != ir::HcMixKind::kSinkhorn || p->streams != 4 ||
       p->iterations < 1 || p->iterations > 100 || !std::isfinite(p->eps) || p->eps < 0 ||
+      (p->mix_offset != 0 && p->mix_offset != 8) || (p->scale_index != 0 && p->scale_index != 2) ||
       tokens == 0 || tokens > max || !ShapedOperand(q, 0, {24, tokens, 1, 1}) ||
       !ShapedOperand(q, 1, {3, 1, 1, 1}) || !ShapedOperand(q, 2, {24, 1, 1, 1}) ||
       !ShapedOperand(q, kOut, {4, 4, tokens, 1}))
@@ -1490,7 +1495,7 @@ bool AcceptsHcLo(const ex::CapabilityQuery& q) {
 }
 bool AcceptsHcFold(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::HcFoldParams>(q);
-  if (!Built(q) || !p || p->streams < 2 || p->streams > 8) return false;
+  if (!Built(q) || Has(q, 2) || !p || p->streams < 2 || p->streams > 8) return false;
   const std::uint64_t width = Ne(q, 0, 0) / p->streams;
   const std::uint64_t rows = Ne(q, 0, 1);
   // The prepared and rounded rows past the vector product's columns, of
@@ -1504,6 +1509,14 @@ bool AcceptsHcCombine(const ex::CapabilityQuery& q) {
 }
 bool AcceptsHcNorm(const ex::CapabilityQuery& q) {
   return Built(q) && Ne(q, 0, 0) >= 1024 && Ne(q, 0, 1) >= 2;
+}
+bool AcceptsHcMix(const ex::CapabilityQuery& q) {
+  if (!AcceptsHcNorm(q) || !Has(q, 2)) return false;
+  if (const auto p = ParamsOf<ir::HcFoldParams>(q)) {
+    return p->streams == Ne(q, 0, 1) && std::isfinite(p->eps) && p->eps >= 0.0F && !p->prepared &&
+           !p->rounded;
+  }
+  return q.params.empty();
 }
 // llmp.gdn.conv: 128-wide heads, a kernel of 4 (3 taps).
 // GGML's convolution of one sequence (past 32 tokens not whole windows, the
@@ -1544,10 +1557,11 @@ bool QsaRope(const ir::RopeParams& r) {
 bool AcceptsQsaPrep(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::NormRopeParams>(q);
   const std::uint64_t d = Ne(q, 0, 0);
-  return Built(q) && p && QsaRope(p->rope) && !Has(q, 3) && d >= 64 && d <= 512 && d % 32 == 0;
+  return Built(q) && p && QsaRope(p->rope) && Has(q, 2) && !Has(q, 3) && d >= 64 && d <= 512 &&
+         d % 32 == 0;
 }
 bool AcceptsQsaPool(const ex::CapabilityQuery& q) {
-  const auto p = ParamsOf<ir::QsaPoolParams>(q);
+  const auto p = ParamsOf<ir::BlockPoolParams>(q);
   const std::uint64_t d = Ne(q, 0, 0);
   return Built(q) && p && p->ratio >= 1 && p->ratio <= 32 && QsaRope(p->rope) && d >= 64 &&
          d <= 512 && d % 32 == 0 && Has(q, 5);
@@ -1555,7 +1569,7 @@ bool AcceptsQsaPool(const ex::CapabilityQuery& q) {
 // llmp.qsa.topk and llmp.qsa.attn: 256-wide heads at most 16 to a KV head,
 // an indexer of 4 heads of 128, the selection within its tiles.
 bool AcceptsQsaAttention(const ex::CapabilityQuery& q) {
-  const auto p = ParamsOf<ir::QsaAttnParams>(q);
+  const auto p = ParamsOf<ir::BlockSparseAttnParams>(q);
   const ex::OperandFormat* k_op = Operand(q, 1);
   const ex::OperandFormat* v_op = Operand(q, 2);
   if (!Built(q) || !p || !Has(q, 8) || p->attn.softcap != 0.0F || p->attn.max_bias != 0.0F ||
@@ -2463,24 +2477,25 @@ const std::array kEntries = {
           "cohorts, head sizes, cells and rows over independent F16 caches, a softcap of 0 or "
           "50, and bounded roots for two owners alone; 16 or 32 heads or D 512 (Gemma 4's) on "
           "sm_121 only"},
-    Entry{kGemma4MaskName, Cap(P(Op::kMaskBuild), kMaskPositions, &AcceptsMask, true),
+    Entry{kCausalMaskName, Cap(P(Op::kMaskBuild), kMaskPositions, &AcceptsMask, true),
           "; selectable for the build's SASS architectures: causal, window and ahead masks"},
     Entry{"llmp.argmax", Cap(P(Op::kArgmax), kF32In, &AcceptsArgmax, true), kBuilt},
     Entry{"llmp.dsv4.lid_mask",
-          Cap(F(FusedKind::kDsv4LidMask), kDsv4LidMaskRules, &AcceptsDsv4LidMask, false, {}, 0, {},
-              0, kDsv4LidMaskSteps),
+          Cap(F(FusedKind::kRoundedIndexMask), kDsv4LidMaskRules, &AcceptsDsv4LidMask, false, {}, 0,
+              {}, 0, kDsv4LidMaskSteps),
           "; closed rounded-query score, visible selection and complete sparse mask"},
-    Entry{kDsv4QHeadName, Cap(F(FusedKind::kDsv4QHead), kDsv4QHeadRules, &AcceptsDsv4QHead, true),
+    Entry{kDsv4QHeadName,
+          Cap(F(FusedKind::kRmsNormMulRope), kDsv4QHeadRules, &AcceptsDsv4QHead, true),
           "; packed F32 [512, 64, 16..8192] Q heads and normal rotary tail"},
     Entry{kDsv4CompressName,
-          Cap(F(FusedKind::kDsv4Compress), kDsv4CompressRules, &AcceptsDsv4Compress, true),
+          Cap(F(FusedKind::kSoftmaxPoolCompress), kDsv4CompressRules, &AcceptsDsv4Compress, true),
           "; F32 compressor values/scores, ratio 1..1024, at most 65535 blocks"},
     Entry{kHcCombName, Cap(P(Op::kHcMix), kSinkhornHcMixRules, &AcceptsSinkhornHcMix, true),
           "; packed F32 four-stream Sinkhorn, 1..100 iterations; native ordered reductions"},
     Entry{kHcPreName, Cap(P(Op::kHcPre), kWeightedHcPreRules, &AcceptsWeightedHcPre, true),
           "; packed F32 weighted fold of four streams; the original native ordered reduction"},
     Entry{kDsv4HcPrePackedName,
-          Cap(F(FusedKind::kDsv4HcPre), kDsv4HcPreRules, &AcceptsDsv4HcPre, true, {}, 0, {}, 0,
+          Cap(F(FusedKind::kSinkhornHcPre), kDsv4HcPreRules, &AcceptsDsv4HcPre, true, {}, 0, {}, 0,
               kDsv4HcPreSteps),
           "; full Sinkhorn carry, four F32 streams, width 4096 or 8192; packed carry copies"},
     Entry{kHcPostName, Cap(P(Op::kHcPost), kHcPostRules, &AcceptsHcPost, true),
@@ -2489,7 +2504,7 @@ const std::array kEntries = {
           Cap(F(FusedKind::kHcNormPost), kDsv4HcPostRules, &AcceptsDsv4HcPost, true),
           "; four 4096-value streams, post and flat F32 norm"},
     Entry{kDsv4OutAFastPackName,
-          Cap(F(FusedKind::kDsv4OutA), kDsv4OutARules, &AcceptsDsv4OutA, true),
+          Cap(F(FusedKind::kInverseRopeGroupedMatMul), kDsv4OutARules, &AcceptsDsv4OutA, true),
           "; paid raw-Q8 packing, inverse tail64 RoPE, staged F16/HMMA grouped output-A"},
     // Qwen3.8's fast forms (slice G3b): the MXFP8 and BF16
     // products, the n-gram tables' rows, the hyper-connections, Gated
@@ -2528,7 +2543,7 @@ const std::array kEntries = {
           kBuilt},
     Entry{kHcNormName, Cap(F(FusedKind::kHcNorm), kHcNormRules, &AcceptsHcNorm, true),
           "; selectable for the build's SASS architectures: streams of at least 1,024"},
-    Entry{kHcMixName, Cap(F(FusedKind::kHcMixNorm), kHcNormRules, &AcceptsHcNorm, true),
+    Entry{kHcMixName, Cap(F(FusedKind::kHcFold), kHcMixRules, &AcceptsHcMix, true),
           "; selectable for the build's SASS architectures: streams of at least 1,024"},
     Entry{kSsmConvName,
           Cap(P(Op::kSsmConv), kSsmConvRules, &AcceptsSsmConv, true, {}, 0, {}, 0, kSsmConvSteps),
@@ -2559,13 +2574,14 @@ const std::array kEntries = {
           "; selectable for the build's SASS architectures: the interleaved multi-section "
           "rotation of 64 dimensions over heads of 64 to 512, without frequency or amplitude "
           "scaling; lowering requires typed replicated position sections"},
-    Entry{kQsaPoolName, Cap(F(FusedKind::kQsaPool), kQsaPoolRules, &AcceptsQsaPool, true),
+    Entry{kQsaPoolName,
+          Cap(F(FusedKind::kMeanPoolNormRopeStore), kQsaPoolRules, &AcceptsQsaPool, true),
           "; selectable for the build's SASS architectures: blocks of 1 to 32 cells, with a "
           "forward unscaled 64-dimension interleaved rotation; lowering requires canonical "
           "typed block positions/cells and stored raw keys"},
     Entry{kQsaAttentionName,
-          Cap(F(FusedKind::kQsaAttention), kQsaAttnRules, &AcceptsQsaAttention, false, {}, 0, {}, 0,
-              kQsaAttentionSteps),
+          Cap(F(FusedKind::kBlockSparseAttention), kQsaAttnRules, &AcceptsQsaAttention, false, {},
+              0, {}, 0, kQsaAttentionSteps),
           "; selectable for the build's SASS architectures: heads of 256, at most 16 a KV head, "
           "an indexer of 4 heads of 128, the selection within its tiles; lowering requires "
           "canonical typed position tables, stores and causal masks"},

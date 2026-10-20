@@ -23,7 +23,7 @@
 #include <string_view>
 #include <vector>
 
-#include "model/qwen_image.h"
+#include "model/image_pipeline.h"
 #include "spec/image_family.h"
 #include "spec/mappings/qwen_image.h"
 #include "spec/spec.h"
@@ -33,7 +33,7 @@ namespace llmp::test_support {
 struct QwenImageFamily {
   const spec::ImageMapping* mapping = nullptr;
   spec::ModelSpec spec{};
-  model::QwenImageProfile profile{};
+  model::ImageProfile profile{};
 };
 
 inline std::string QwenImageSpecPath() {
@@ -70,20 +70,20 @@ inline const QwenImageFamily& QwenImage() {
   }();
   return family;
 }
-inline const model::QwenImageProfile& QwenImageProfile() { return QwenImage().profile; }
-inline const model::QwenImageNames& QwenImageNames() { return QwenImage().mapping->names; }
+inline const model::ImageProfile& QwenImageProfile() { return QwenImage().profile; }
+inline const model::ImageNames& QwenImageNames() { return QwenImage().mapping->names; }
 // The pipeline's planning policy (its mapping's).
 inline std::string_view QwenImagePolicy() {
   return QwenImage().mapping->serving->serving_rule->text;
 }
 
-inline std::vector<model::QwenImageTensor> QwenImageTextTensors() {
+inline std::vector<model::ImageTensor> QwenImageTextTensors() {
   return model::TextEncoderTensors(QwenImageProfile().text, QwenImageNames().text);
 }
-inline std::vector<model::QwenImageTensor> QwenImageDenoiserTensors() {
+inline std::vector<model::ImageTensor> QwenImageDenoiserTensors() {
   return model::DenoiserTensors(QwenImageProfile().denoiser, QwenImageNames().denoiser);
 }
-inline std::vector<model::QwenImageTensor> QwenImageVaeTensors() {
+inline std::vector<model::ImageTensor> QwenImageVaeTensors() {
   return model::VaeDecoderTensors(QwenImageProfile().vae, QwenImageNames().vae);
 }
 

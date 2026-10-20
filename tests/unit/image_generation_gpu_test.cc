@@ -35,7 +35,7 @@
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/cublas.h"
-#include "model/qwen_image.h"
+#include "model/image_pipeline.h"
 #include "platform/host_probe.h"
 #include "platform/kept_files.h"
 #include "providers/device_runtime.h"
@@ -156,7 +156,8 @@ struct Lifetime {
       options.expected_id = std::string(kIds[i]);
       if (auto opened = source->weights[i]->Open(store / kIds[i], options); !opened) return opened;
     }
-    const auto json = source->composition->Metadata("tokenizer.json");
+    const auto json = source->composition->Metadata(
+        source->composition->format_version() >= 2 ? "processor/tokenizer.json" : "tokenizer.json");
     if (!json || json->size() != 11422654) return Error("image tokenizer source extent differs");
     startup_parser = llmp::base::json::ParseWorkingBytes(*json);
     // The exact authenticated source parser plus its simultaneously retained

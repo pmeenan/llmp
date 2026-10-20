@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "components/input_values.h"
+#include "components/step.h"
 #include "engine/batch_execution.h"
 #include "engine/copy_sink.h"
 #include "engine/prefill_lookahead.h"
@@ -864,8 +865,10 @@ std::expected<void, StepRefusal> StepTransaction::Plan(Frame& frame) {
   // Planning binds stable virtual addresses only; PlanStep pins the plan
   // across admission and the eventual job.
   std::expected<ModelRunner::Plans::Entry*, std::string> entry_of = nullptr;
-  if (!runner_.row_tables_.empty() || !request.side_rows.empty() ||
-      runner_.source_->UsesSideRows(shape.stage)) {
+  const bool uses_side_rows = shape.stage < runner_.stage_facts_.size()
+                                  ? runner_.stage_facts_[shape.stage].uses_side_rows
+                                  : runner_.source_->StageFacts(shape.stage).uses_side_rows;
+  if (!runner_.row_tables_.empty() || !request.side_rows.empty() || uses_side_rows) {
     entry_of = runner_.Planned(shape);
     if (!entry_of) return Refused(entry_of.error());
     frame.entry = *entry_of;
@@ -1040,16 +1043,12 @@ std::expected<void, StepRefusal> StepTransaction::Stage(Frame& frame) {
       case kn::InputKind::kMask:
       case kn::InputKind::kBlockPositions:
       case kn::InputKind::kVisibleCells:
-      case kn::InputKind::kPositionPhases:
-      case kn::InputKind::kKeptRows:
-      case kn::InputKind::kKeptCells:
-      case kn::InputKind::kPoolReads:
-      case kn::InputKind::kBlockCells:
-      case kn::InputKind::kBlockStarts:
+      case kn::InputKind::kHostComputed:
       case kn::InputKind::kHadamard:
         // A fixed tensor's cell, and a verify's whole step's rows, are
         // every segment's.
-        if (in.kind != kn::InputKind::kOutputRows && in.kind != kn::InputKind::kPositionPhases &&
+        if (in.kind != kn::InputKind::kOutputRows &&
+            !(in.kind == kn::InputKind::kHostComputed && in.host != nullptr && in.host->joined) &&
             in.kind != kn::InputKind::kHadamard && joined && !in.cells.fixed && !in.cells.per_row)
           return Error("an input names no segment");
         if (in.commit_save) {
@@ -1822,12 +1821,11 @@ std::expected<StepReport, StepRefusal> StepTransaction::Publish(Frame& frame) {
         const std::size_t at = (std::size_t{seg.slot} * runner_.slots_.stages()) + stage;
         const TapRows held = runner_.HeldTapRows(seg.slot, stage);
         runner_.previous_tap_rows_[at] = verify ? held : TapRows{};
-        runner_.tap_rows_[at] = {
-            .first = seg.past,
-            .count = seg.rows,
-            .preceding = std::uint64_t{held.first} + held.count == seg.past
-                             ? std::min(held.count, tap->contract.window_or_ratio)
-                             : 0};
+        runner_.tap_rows_[at] = {.first = seg.past,
+                                 .count = seg.rows,
+                                 .preceding = std::uint64_t{held.first} + held.count == seg.past
+                                                  ? std::min(held.count, tap->contract.row_carry)
+                                                  : 0};
       }
     }
   }

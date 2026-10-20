@@ -266,7 +266,8 @@ class Building {
     const auto written = [&](const ir::Node& n, auto&& f) {
       if (n.key == Prim(Op::kCacheStore)) f(g.root(n.src[0]));
       if (n.key == ir::Fused(FusedKind::kGdnStep) && n.src[5].valid()) f(g.root(n.src[5]));
-      if (n.key == ir::Fused(FusedKind::kQsaPool) && n.src[3].valid()) f(g.root(n.src[3]));
+      if (n.key == ir::Fused(FusedKind::kMeanPoolNormRopeStore) && n.src[3].valid())
+        f(g.root(n.src[3]));
       for (std::size_t i = 0; i < n.nout; ++i) {
         if (const auto alias = ir::AliasedSource(n.key, i); alias && n.src.at(*alias).valid())
           f(g.root(n.src.at(*alias)));
@@ -787,7 +788,7 @@ std::optional<Match> HcMixMatch(const MatchContext& c, NodeId anchor) {
     return std::nullopt;
   }
   const ir::NormParams norm{.eps = m.eps};
-  const ir::HcNormPostParams fold{.eps = m.eps, .streams = static_cast<std::uint32_t>(m.hc)};
+  const ir::HcFoldParams fold{.streams = static_cast<std::uint32_t>(m.hc), .eps = m.eps};
   {
     const std::array<TensorId, 2> s = {m.x, m.w_norm};
     const std::array<const ir::TensorDesc*, 1> o = {&c.tensor(xn)};
@@ -796,7 +797,7 @@ std::optional<Match> HcMixMatch(const MatchContext& c, NodeId anchor) {
     }
     const std::array<TensorId, 3> s2 = {m.x, m.w_norm, c.node(m.p).out[0]};
     const std::array<const ir::TensorDesc*, 1> o2 = {&c.tensor(mixed)};
-    if (!Has(c, ir::Fused(FusedKind::kHcMixNorm), Descs(c, s2), o2, ir::ToBytes(fold))) {
+    if (!Has(c, ir::Fused(FusedKind::kHcFold), Descs(c, s2), o2, ir::ToBytes(fold))) {
       return std::nullopt;
     }
   }
@@ -812,7 +813,7 @@ std::optional<Match> HcMixMatch(const MatchContext& c, NodeId anchor) {
     }
     ContextOf(r, g.node(mm.s2));
     const std::array<TensorId, 3> s = {r.Map(mm.x), r.Map(mm.w_norm), r.Map(g.node(mm.p).out[0])};
-    r.Set(g.node(mm.s2).out[0], b.Fused(FusedKind::kHcMixNorm, s, fold)[0]);
+    r.Set(g.node(mm.s2).out[0], b.Fused(FusedKind::kHcFold, s, fold)[0]);
   };
   return b.Finish({{m.m1, 0}, {m.s2, 1}}, emit);
 }
@@ -1428,11 +1429,11 @@ std::optional<Match> GdnNormGateMatch(const MatchContext& c, NodeId anchor) {
 
 // --------------------------------------------------------------------- QSA
 
-// qsa_prep: a head's norm, weight and rotation (llmp.qsa.prep), reading a
+// interleaved_norm_rope: a head's norm, weight and rotation (llmp.qsa.prep), reading a
 // strided view of its product's rows where the components copy them packed
 // first (each head's query before its gate; the indexer's query heads
 // before its key).
-std::optional<Match> QsaPrepMatch(const MatchContext& c, NodeId anchor) {
+std::optional<Match> InterleavedNormRopeMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, anchor, Op::kRope) || c.taken(anchor)) {
     return std::nullopt;
   }
@@ -1519,7 +1520,7 @@ bool PrimitiveDefinition(const MatchContext& c, Building& match, const ir::Graph
 // The explicit rounded recipe only: generic IndexScore/TopK is a different
 // numerical/visibility contract. Closed() authenticates all eliminated
 // observers and the original read/write ordering, including aliases/stores.
-std::optional<Match> Dsv4LidMaskMatch(const MatchContext& c, NodeId anchor) {
+std::optional<Match> RoundedIndexMaskMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, anchor, Op::kSelectedMask) || c.taken(anchor)) return std::nullopt;
   const auto& mask = c.node(anchor);
   const auto top = Made(c, mask.src[1]);
@@ -1536,16 +1537,16 @@ std::optional<Match> Dsv4LidMaskMatch(const MatchContext& c, NodeId anchor) {
       select.component != scored.component || mask.batch != scored.batch ||
       select.batch != scored.batch)
     return std::nullopt;
-  const ir::LidMaskParams params{.top = select.Params<ir::TopKParams>().k,
-                                 .raw_cells = selected.raw_cells,
-                                 .cells = selected.cells};
+  const ir::RoundedIndexMaskParams params{.top = select.Params<ir::TopKParams>().k,
+                                          .raw_cells = selected.raw_cells,
+                                          .cells = selected.cells};
   const std::array sources{scored.src[0], scored.src[1], scored.src[2], scored.src[3], mask.src[0]};
   const std::array outputs{mask.out[0]};
   // These are existing boundary tensors, so preserve their authenticated
   // graph roots when querying the native recipe. Descriptor-only queries
   // deliberately have unknown alignment and cannot select this kernel.
   ir::Node candidate = mask;
-  candidate.key = ir::Fused(FusedKind::kDsv4LidMask);
+  candidate.key = ir::Fused(FusedKind::kRoundedIndexMask);
   candidate.SetParams(params);
   candidate.src = {};
   std::ranges::copy(sources, candidate.src.begin());
@@ -1560,7 +1561,7 @@ std::optional<Match> Dsv4LidMaskMatch(const MatchContext& c, NodeId anchor) {
         ContextOf(r, r.original().node(anchor));
         std::array<TensorId, 5> mapped{};
         for (std::size_t i = 0; i < sources.size(); ++i) mapped[i] = r.Map(sources[i]);
-        r.Set(mask.out[0], r.builder().Fused(FusedKind::kDsv4LidMask, mapped, params)[0]);
+        r.Set(mask.out[0], r.builder().Fused(FusedKind::kRoundedIndexMask, mapped, params)[0]);
       },
       std::vector<TensorId>(sources.begin(), sources.end()));
 }
@@ -1619,7 +1620,7 @@ std::optional<Match> StateBankAttentionMatch(const MatchContext& c, NodeId ancho
       std::vector<TensorId>(sources.begin(), sources.end()));
 }
 
-std::optional<Match> Dsv4QHeadMatch(const MatchContext& c, NodeId anchor) {
+std::optional<Match> RmsNormRopeTailMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, anchor, Op::kRope) || c.taken(anchor)) return std::nullopt;
   const ir::Node& ro = c.node(anchor);
   const NodeId norm = Made(c, ro.src[0]);
@@ -1644,17 +1645,17 @@ std::optional<Match> Dsv4QHeadMatch(const MatchContext& c, NodeId anchor) {
   const std::array<TensorId, 1> outputs{ro.out[0]};
   const std::array<const ir::TensorDesc*, 1> descs{&c.tensor(ro.out[0])};
   if (!b.Add({norm, anchor}) || !b.Closed(outputs) ||
-      !Has(c, ir::Fused(FusedKind::kDsv4QHead), Descs(c, sources), descs, ir::ToBytes(p)))
+      !Has(c, ir::Fused(FusedKind::kRmsNormMulRope), Descs(c, sources), descs, ir::ToBytes(p)))
     return std::nullopt;
   const auto emit = [=](RewriteContext& r, int) {
     ContextOf(r, r.original().node(anchor));
     const std::array<TensorId, 2> mapped{r.Map(sources[0]), r.Map(sources[1])};
-    r.Set(outputs[0], r.builder().Fused(FusedKind::kDsv4QHead, mapped, p)[0]);
+    r.Set(outputs[0], r.builder().Fused(FusedKind::kRmsNormMulRope, mapped, p)[0]);
   };
   return b.Finish({{anchor, 0}}, emit, std::vector<TensorId>(sources.begin(), sources.end()));
 }
 
-std::optional<Match> Dsv4OutAMatch(const MatchContext& c, NodeId anchor) {
+std::optional<Match> InverseRopeGroupedMatMulMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, anchor, Op::kCont) || c.taken(anchor)) return std::nullopt;
   const ir::Node& cont = c.node(anchor);
   const NodeId perm2 = Made(c, cont.src[0]);
@@ -1702,7 +1703,8 @@ std::optional<Match> Dsv4OutAMatch(const MatchContext& c, NodeId anchor) {
   const std::array<TensorId, 1> outputs = {cont.out[0]};
   const std::array<const ir::TensorDesc*, 1> descs = {&c.tensor(cont.out[0])};
 
-  if (!Has(c, ir::Fused(FusedKind::kDsv4OutA), Descs(c, sources), descs, ir::ToBytes(rp))) {
+  if (!Has(c, ir::Fused(FusedKind::kInverseRopeGroupedMatMul), Descs(c, sources), descs,
+           ir::ToBytes(rp))) {
     return std::nullopt;
   }
   // Authenticate the complete assembly: valid overall input/output sizes
@@ -1711,8 +1713,9 @@ std::optional<Match> Dsv4OutAMatch(const MatchContext& c, NodeId anchor) {
   std::array<TensorId, 3> inputs{};
   for (std::size_t i = 0; i < sources.size(); ++i)
     inputs[i] = definition_builder.Input(c.tensor(sources[i]).format);
-  const auto expanded = ir::Decompose(definition_builder, ir::Fused(FusedKind::kDsv4OutA),
-                                      ir::ToBytes(rp), inputs, {});
+  const auto expanded =
+      ir::Decompose(definition_builder, ir::Fused(FusedKind::kInverseRopeGroupedMatMul),
+                    ir::ToBytes(rp), inputs, {});
   if (!definition_builder.ok() || expanded.n != 1) return std::nullopt;
   definition_builder.Output(expanded[0]);
   auto definition = std::move(definition_builder).Finish();
@@ -1728,7 +1731,7 @@ std::optional<Match> Dsv4OutAMatch(const MatchContext& c, NodeId anchor) {
     ContextOf(r, r.original().node(anchor));
     const std::array<TensorId, 3> mapped = {r.Map(sources[0]), r.Map(sources[1]),
                                             r.Map(sources[2])};
-    r.Set(outputs[0], r.builder().Fused(FusedKind::kDsv4OutA, mapped, rp)[0]);
+    r.Set(outputs[0], r.builder().Fused(FusedKind::kInverseRopeGroupedMatMul, mapped, rp)[0]);
   };
   return b.Finish({{anchor, 0}}, emit, std::vector<TensorId>(sources.begin(), sources.end()));
 }
@@ -1818,7 +1821,7 @@ bool PrimitiveDefinition(const MatchContext& c, Building& match, const ir::Graph
 
 }  // namespace
 
-std::optional<Match> Dsv4CompressMatch(const MatchContext& c, NodeId anchor) {
+std::optional<Match> SoftmaxPoolCompressMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, anchor, Op::kPool) || c.taken(anchor)) return std::nullopt;
   const ir::Node& pool = c.node(anchor);
   const auto pp = pool.Params<ir::PoolParams>();
@@ -1833,13 +1836,14 @@ std::optional<Match> Dsv4CompressMatch(const MatchContext& c, NodeId anchor) {
                                         scores->current, values->indices};
   const std::array<TensorId, 1> outputs{pool.out[0]};
   const std::array<const ir::TensorDesc*, 1> descs{&c.tensor(outputs[0])};
-  if (!Has(c, ir::Fused(FusedKind::kDsv4Compress), Descs(c, sources), descs, ir::ToBytes(params)))
+  if (!Has(c, ir::Fused(FusedKind::kSoftmaxPoolCompress), Descs(c, sources), descs,
+           ir::ToBytes(params)))
     return std::nullopt;
   ir::Builder b;
   std::array<TensorId, 5> inputs{};
   for (std::size_t i = 0; i < sources.size(); ++i) inputs[i] = b.Input(c.tensor(sources[i]).format);
   const auto expanded =
-      ir::Decompose(b, ir::Fused(FusedKind::kDsv4Compress), ir::ToBytes(params), inputs, {});
+      ir::Decompose(b, ir::Fused(FusedKind::kSoftmaxPoolCompress), ir::ToBytes(params), inputs, {});
   if (!b.ok() || expanded.n != 1) return std::nullopt;
   b.Output(expanded[0]);
   auto definition = std::move(b).Finish();
@@ -1854,12 +1858,13 @@ std::optional<Match> Dsv4CompressMatch(const MatchContext& c, NodeId anchor) {
     ContextOf(r, r.original().node(anchor));
     std::array<TensorId, 5> mapped_sources{};
     for (std::size_t i = 0; i < sources.size(); ++i) mapped_sources[i] = r.Map(sources[i]);
-    r.Set(outputs[0], r.builder().Fused(FusedKind::kDsv4Compress, mapped_sources, params)[0]);
+    r.Set(outputs[0],
+          r.builder().Fused(FusedKind::kSoftmaxPoolCompress, mapped_sources, params)[0]);
   };
   return match.Finish({{anchor, 0}}, emit, std::vector<TensorId>(sources.begin(), sources.end()));
 }
 
-std::optional<Match> Dsv4HcPreMatch(const MatchContext& c, NodeId anchor) {
+std::optional<Match> SinkhornHcPreMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, anchor, Op::kMul) || c.taken(anchor)) return std::nullopt;
   const ir::Node& last = c.node(anchor);
   const NodeId norm = Made(c, last.src[0]);
@@ -1903,7 +1908,7 @@ std::optional<Match> Dsv4HcPreMatch(const MatchContext& c, NodeId anchor) {
     for (std::size_t i = 0; i < sources.size(); ++i)
       inputs[i] = b.Input(c.tensor(sources[i]).format);
     const auto expanded =
-        ir::Decompose(b, ir::Fused(FusedKind::kDsv4HcPre), ir::ToBytes(params), inputs, {});
+        ir::Decompose(b, ir::Fused(FusedKind::kSinkhornHcPre), ir::ToBytes(params), inputs, {});
     if (!b.ok() || expanded.n != 3) continue;
     for (const TensorId out : expanded.span()) b.Output(out);
     auto definition = std::move(b).Finish();
@@ -1924,14 +1929,14 @@ std::optional<Match> Dsv4HcPreMatch(const MatchContext& c, NodeId anchor) {
       for (const TensorId out : outputs)
         for (const NodeId reader : c.readers(out))
           if (reader < anchor && !match.Has(reader)) matches = false;
-      if (!matches || !Has(c, ir::Fused(FusedKind::kDsv4HcPre), Descs(c, sources),
+      if (!matches || !Has(c, ir::Fused(FusedKind::kSinkhornHcPre), Descs(c, sources),
                            Descs(c, outputs), ir::ToBytes(params)))
         continue;
       const auto emit = [=](RewriteContext& r, int) {
         ContextOf(r, r.original().node(anchor));
         std::array<TensorId, 5> mapped_sources{};
         for (std::size_t i = 0; i < sources.size(); ++i) mapped_sources[i] = r.Map(sources[i]);
-        const auto out = r.builder().Fused(FusedKind::kDsv4HcPre, mapped_sources, params);
+        const auto out = r.builder().Fused(FusedKind::kSinkhornHcPre, mapped_sources, params);
         for (std::size_t i = 0; i < outputs.size(); ++i) r.Set(outputs[i], out[i]);
       };
       return match.Finish({{anchor, 0}}, emit,
@@ -1941,7 +1946,7 @@ std::optional<Match> Dsv4HcPreMatch(const MatchContext& c, NodeId anchor) {
   return std::nullopt;
 }
 
-std::optional<Match> Dsv4HcPostMatch(const MatchContext& c, NodeId anchor) {
+std::optional<Match> HcPostFlatNormMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, anchor, Op::kRmsNorm) || c.taken(anchor)) return std::nullopt;
   const ir::Node& norm = c.node(anchor);
   const NodeId flat_id = Made(c, norm.src[0]);
@@ -1986,10 +1991,10 @@ std::optional<Match> Dsv4HcPostMatch(const MatchContext& c, NodeId anchor) {
   return match.Finish({{post_id, 0}}, emit, sources);
 }
 
-// qsa_pool: an owner's block keys (their raw rows pooled, normed, rotated
+// mean_pool_norm_rope_store: an owner's block keys (their raw rows pooled, normed, rotated
 // and rounded, stored at their cells) as llmp.qsa.pool, which writes only
 // the blocks the step completes.
-std::optional<Match> QsaPoolMatch(const MatchContext& c, NodeId anchor) {
+std::optional<Match> MeanPoolNormRopeStoreMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, anchor, Op::kCacheStore) || c.taken(anchor)) {
     return std::nullopt;
   }
@@ -2025,13 +2030,13 @@ std::optional<Match> QsaPoolMatch(const MatchContext& c, NodeId anchor) {
   if (!positions.valid()) {
     return std::nullopt;
   }
-  const ir::QsaPoolParams params{.eps = c.node(n).Params<ir::NormParams>().eps,
-                                 .ratio = pool.ratio,
-                                 .rope = c.node(ro).Params<ir::RopeParams>()};
+  const ir::BlockPoolParams params{.eps = c.node(n).Params<ir::NormParams>().eps,
+                                   .ratio = pool.ratio,
+                                   .rope = c.node(ro).Params<ir::RopeParams>()};
   const std::array<TensorId, 6> s = {c.node(po).src[0], blocks,    c.node(m).src[1],
                                      c.node(ro).src[1], cs.src[2], positions};
   const std::array<const ir::TensorDesc*, 1> o = {&c.tensor(blocks)};
-  if (!Has(c, ir::Fused(FusedKind::kQsaPool), Descs(c, s), o, ir::ToBytes(params))) {
+  if (!Has(c, ir::Fused(FusedKind::kMeanPoolNormRopeStore), Descs(c, s), o, ir::ToBytes(params))) {
     return std::nullopt;
   }
   const StepShape* shape = c.shape();
@@ -2043,15 +2048,16 @@ std::optional<Match> QsaPoolMatch(const MatchContext& c, NodeId anchor) {
     ContextOf(r, g.node(anchor));
     const std::array<TensorId, 6> src = {r.Map(s[0]), r.Map(s[1]), r.Map(s[2]),
                                          r.Map(s[3]), r.Map(s[4]), pos};
-    r.Set(g.node(anchor).out[0], r.builder().Fused(FusedKind::kQsaPool, src, params)[0]);
+    r.Set(g.node(anchor).out[0],
+          r.builder().Fused(FusedKind::kMeanPoolNormRopeStore, src, params)[0]);
   };
   return b.Finish({{anchor, 0}}, emit);
 }
 
-// qsa_select: an owner's selection past the indexer's budget and its
+// block_sparse_attention: an owner's selection past the indexer's budget and its
 // attention as llmp.qsa.topk and llmp.qsa.attn: the kept cells listed and
 // attended alone (no mask of every cell by every row).
-std::optional<Match> QsaSelectMatch(const MatchContext& c, NodeId anchor) {
+std::optional<Match> BlockSparseAttentionMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, anchor, Op::kAttention) || c.taken(anchor)) {
     return std::nullopt;
   }
@@ -2150,7 +2156,7 @@ std::optional<Match> QsaSelectMatch(const MatchContext& c, NodeId anchor) {
   const TensorId mask = c.node(vm).src[0];
   const auto tkp = c.node(tk).Params<ir::TopKParams>();
   const auto rpd = c.tensor(c.node(rp).out[0]);
-  const ir::QsaAttnParams params{
+  const ir::BlockSparseAttnParams params{
       .attn = ap, .width = tkp.k, .ratio = static_cast<std::uint32_t>(rpd.ne(0))};
   // The index queries in F32 (the selection rounds them): the prep's rows,
   // or the owner's view of them.
@@ -2184,7 +2190,7 @@ std::optional<Match> QsaSelectMatch(const MatchContext& c, NodeId anchor) {
     }
     sd[3] = &qv;
     sd[4] = &kv;
-    if (!Has(c, ir::Fused(FusedKind::kQsaAttention), sd, o, ir::ToBytes(params))) {
+    if (!Has(c, ir::Fused(FusedKind::kBlockSparseAttention), sd, o, ir::ToBytes(params))) {
       return std::nullopt;
     }
   }
@@ -2216,15 +2222,15 @@ std::optional<Match> QsaSelectMatch(const MatchContext& c, NodeId anchor) {
                                      {kv.nb[0], kv.nb[1], kv.nb[2], kv.nb[3]}, offset);
     const std::array<TensorId, 9> src = {r.Map(s[0]), r.Map(s[1]), r.Map(s[2]), qi_in, key_rows,
                                          r.Map(s[5]), r.Map(s[6]), r.Map(s[7]), pos};
-    r.Set(g.node(ran).out[0], b.Fused(FusedKind::kQsaAttention, src, params)[0]);
+    r.Set(g.node(ran).out[0], b.Fused(FusedKind::kBlockSparseAttention, src, params)[0]);
   };
   return b.Finish({{ran, 0}}, emit);
 }
 
-// qsa_gate: each head's output times sigmoid of its gate, for an output
+// prepared_head_gate: each head's output times sigmoid of its gate, for an output
 // product past the vector product's rows (its input prepared from it:
 // llmp.qsa.gate_quantize), as kHeadGate.
-std::optional<Match> QsaGateMatch(const MatchContext& c, NodeId anchor) {
+std::optional<Match> PreparedHeadGateMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, anchor, Op::kMul) || c.taken(anchor)) {
     return std::nullopt;
   }
@@ -3304,6 +3310,241 @@ std::optional<Match> GroupedVecQMatch(const MatchContext& c, NodeId anchor) {
     match->numerical_sites = {product_id};
   }
   return match;
+}
+
+// exl3_products: an EXL3 trellis product's F16 input conversion, its F16
+// bias addition (with F16 KV-cache views when only an F16 store reads them,
+// or widened back to F32 otherwise), or a step output's F16 product widened
+// back to F32.
+std::optional<Match> Exl3ProductsMatch(const MatchContext& c, NodeId anchor) {
+  const ir::Node& p = c.node(anchor);
+  if (p.key != Prim(Op::kMatMul) || c.taken(anchor)) {
+    return std::nullopt;
+  }
+  const TensorId x = p.src[1];
+  const ir::TensorDesc& xd = c.tensor(x);
+  if (xd.format.encoding != Encoding::kF32 || xd.ne(2) != 1 || xd.ne(3) != 1 ||
+      !ir::IsContiguous(xd)) {
+    return std::nullopt;
+  }
+  const auto exl3_mm = [&](const ir::Node& q) {
+    return q.key == Prim(Op::kMatMul) && q.src[1] == x && Weight(c, q.src[0]) &&
+           c.tensor(q.src[0]).format.encoding == Encoding::kExl3Trellis &&
+           c.tensor(q.src[0]).format.layout == format::Layout::kExl3Tiles &&
+           c.tensor(q.out[0]).format.encoding == Encoding::kF32;
+  };
+  if (!exl3_mm(p)) {
+    return std::nullopt;
+  }
+  ir::TensorDesc x_f16 = xd;
+  x_f16.format.encoding = Encoding::kF16;
+  x_f16.nb = ir::NaturalStrides(x_f16.format);
+  x_f16.view_of = {};
+  x_f16.view_offset = 0;
+  if (!Has(c, Prim(Op::kConvert), std::array<const ir::TensorDesc*, 1>{&xd},
+           std::array<const ir::TensorDesc*, 1>{&x_f16}, {})) {
+    return std::nullopt;
+  }
+  enum class Kind : std::uint8_t { kF32Out, kF16Widen, kBiasedF16 };
+  struct Item {
+    NodeId matmul{};
+    Kind kind = Kind::kF32Out;
+    NodeId add{};
+    bool store_f16 = false;
+    std::vector<NodeId> shaped{};
+  };
+  std::vector<Item> items;
+  for (const NodeId r : c.readers(x)) {
+    if (r < anchor || c.taken(r) ||
+        std::ranges::any_of(items, [&](const Item& it) { return it.matmul == r; })) {
+      continue;
+    }
+    if (!Unwritten(c, anchor, r, x)) continue;
+    const ir::Node& q = c.node(r);
+    if (!exl3_mm(q)) continue;
+    const ir::TensorDesc& wd = c.tensor(q.src[0]);
+    const ir::TensorDesc& out_f32 = c.tensor(q.out[0]);
+    ir::TensorDesc out_f16 = out_f32;
+    out_f16.format.encoding = Encoding::kF16;
+    out_f16.nb = ir::NaturalStrides(out_f16.format);
+    out_f16.view_of = {};
+    out_f16.view_offset = 0;
+    if (const auto add_id = OnlyOf(c, q.out[0], Op::kAdd);
+        add_id && !c.taken(*add_id) && c.node(*add_id).src[0] == q.out[0] &&
+        Weight(c, c.node(*add_id).src[1]) &&
+        c.tensor(c.node(*add_id).src[1]).format.encoding == Encoding::kF16) {
+      const TensorId bias_id = c.node(*add_id).src[1];
+      const TensorId add_out = c.node(*add_id).out[0];
+      if (!Has(c, Prim(Op::kMatMul), std::array<const ir::TensorDesc*, 2>{&wd, &x_f16},
+               std::array<const ir::TensorDesc*, 1>{&out_f16}, q.params) ||
+          !Has(c, Prim(Op::kAdd),
+               std::array<const ir::TensorDesc*, 2>{&out_f16, &c.tensor(bias_id)},
+               std::array<const ir::TensorDesc*, 1>{&out_f16}, {})) {
+        continue;
+      }
+      std::vector<TensorId> frontier = {add_out};
+      std::vector<NodeId> shaped;
+      bool store_f16 = true;
+      bool any_store = false;
+      while (!frontier.empty() && store_f16) {
+        const TensorId t = frontier.back();
+        frontier.pop_back();
+        if (c.external(t) || c.kept(t)) {
+          store_f16 = false;
+          break;
+        }
+        for (const NodeId nr : c.readers(t)) {
+          if (c.taken(nr)) {
+            store_f16 = false;
+            break;
+          }
+          const ir::Node& nq = c.node(nr);
+          if (nq.key == Prim(Op::kReshape) || nq.key == Prim(Op::kView)) {
+            if (!std::ranges::contains(shaped, nr)) shaped.push_back(nr);
+            frontier.push_back(nq.out[0]);
+          } else if (nq.key == Prim(Op::kCacheStore) && nq.src[1] == t &&
+                     c.tensor(nq.src[0]).format.encoding == Encoding::kF16) {
+            any_store = true;
+          } else {
+            store_f16 = false;
+            break;
+          }
+        }
+      }
+      store_f16 = store_f16 && any_store;
+      if (!store_f16 && !Has(c, Prim(Op::kConvert), std::array<const ir::TensorDesc*, 1>{&out_f16},
+                             std::array<const ir::TensorDesc*, 1>{&c.tensor(add_out)}, {})) {
+        continue;
+      }
+      std::ranges::sort(shaped);
+      items.push_back({.matmul = r,
+                       .kind = Kind::kBiasedF16,
+                       .add = *add_id,
+                       .store_f16 = store_f16,
+                       .shaped = std::move(shaped)});
+      continue;
+    }
+    const bool feeds_glu =
+        c.readers(q.out[0]).size() == 1 && c.node(c.readers(q.out[0])[0]).key == Prim(Op::kGlu);
+    const bool can_f32 =
+        Has(c, Prim(Op::kMatMul), std::array<const ir::TensorDesc*, 2>{&wd, &x_f16},
+            std::array<const ir::TensorDesc*, 1>{&out_f32}, q.params) ||
+        (feeds_glu && Has(c, ir::Fused(FusedKind::kPreparedProducts),
+                          std::array<const ir::TensorDesc*, 3>{&wd, &wd, &x_f16},
+                          std::array<const ir::TensorDesc*, 2>{&out_f32, &out_f32}, q.params));
+    const bool can_f16 =
+        Has(c, Prim(Op::kMatMul), std::array<const ir::TensorDesc*, 2>{&wd, &x_f16},
+            std::array<const ir::TensorDesc*, 1>{&out_f16}, q.params) &&
+        Has(c, Prim(Op::kConvert), std::array<const ir::TensorDesc*, 1>{&out_f16},
+            std::array<const ir::TensorDesc*, 1>{&out_f32}, {});
+    if (!c.external(q.out[0]) && can_f32) {
+      items.push_back({.matmul = r, .kind = Kind::kF32Out});
+    } else if (can_f16) {
+      items.push_back({.matmul = r, .kind = Kind::kF16Widen});
+    } else if (can_f32) {
+      items.push_back({.matmul = r, .kind = Kind::kF32Out});
+    }
+  }
+  if (items.empty() || items.front().matmul != anchor) {
+    return std::nullopt;
+  }
+  enum class ActKind : std::uint8_t {
+    kMatMulF32,
+    kMatMulF16Widen,
+    kMatMulF16ForBias,
+    kBiasAddWiden,
+    kBiasAddF16,
+    kShapedF16,
+  };
+  struct Action {
+    NodeId node{};
+    ActKind kind = ActKind::kMatMulF32;
+  };
+  Building b(c);
+  std::vector<Action> actions;
+  std::vector<TensorId> sources = {x};
+  for (const Item& it : items) {
+    if (!b.Add(it.matmul)) return std::nullopt;
+    sources.push_back(c.node(it.matmul).src[0]);
+    if (it.kind == Kind::kF32Out) {
+      actions.push_back({.node = it.matmul, .kind = ActKind::kMatMulF32});
+    } else if (it.kind == Kind::kF16Widen) {
+      actions.push_back({.node = it.matmul, .kind = ActKind::kMatMulF16Widen});
+    } else {
+      if (!b.Add(it.add)) return std::nullopt;
+      sources.push_back(c.node(it.add).src[1]);
+      actions.push_back({.node = it.matmul, .kind = ActKind::kMatMulF16ForBias});
+      actions.push_back(
+          {.node = it.add, .kind = it.store_f16 ? ActKind::kBiasAddF16 : ActKind::kBiasAddWiden});
+      for (const NodeId s : it.shaped) {
+        if (!b.Add(s)) return std::nullopt;
+        actions.push_back({.node = s, .kind = ActKind::kShapedF16});
+      }
+    }
+  }
+  std::vector<std::pair<NodeId, int>> places;
+  places.reserve(actions.size());
+  for (std::size_t i = 0; i < actions.size(); ++i) {
+    places.emplace_back(actions[i].node, static_cast<int>(i));
+  }
+  auto emit = [x, actions](RewriteContext& r, int id) {
+    const ir::Graph& g = r.original();
+    const Action& act = actions.at(static_cast<std::size_t>(id));
+    const ir::Node& q = g.node(act.node);
+    ContextOf(r, q);
+    ir::Builder& bl = r.builder();
+    if (r.local().empty()) {
+      const TensorId mx = r.Map(x);
+      r.local().push_back(
+          bl.tensor(mx).format.encoding == Encoding::kF16 ? mx : bl.Convert(mx, Encoding::kF16));
+    }
+    switch (act.kind) {
+      case ActKind::kMatMulF32: {
+        const std::array<TensorId, 2> src = {r.Map(q.src[0]), r.local()[0]};
+        const std::array<ir::TensorDesc, 1> req = {g.tensor(q.out[0])};
+        r.Set(q.out[0], bl.Emit(q.key, q.params, src, req)[0]);
+        return;
+      }
+      case ActKind::kMatMulF16Widen:
+      case ActKind::kMatMulF16ForBias: {
+        ir::TensorDesc out_f16 = g.tensor(q.out[0]);
+        out_f16.format.encoding = Encoding::kF16;
+        out_f16.nb = ir::NaturalStrides(out_f16.format);
+        out_f16.view_of = {};
+        out_f16.view_offset = 0;
+        const std::array<TensorId, 2> src = {r.Map(q.src[0]), r.local()[0]};
+        const std::array<ir::TensorDesc, 1> req = {out_f16};
+        const TensorId mm = bl.Emit(q.key, q.params, src, req)[0];
+        r.Set(q.out[0], act.kind == ActKind::kMatMulF16Widen ? bl.Convert(mm, Encoding::kF32) : mm);
+        return;
+      }
+      case ActKind::kBiasAddWiden: {
+        const TensorId biased = bl.Add(r.Map(q.src[0]), r.Map(q.src[1]));
+        r.Set(q.out[0], bl.Convert(biased, Encoding::kF32));
+        return;
+      }
+      case ActKind::kBiasAddF16: {
+        r.Set(q.out[0], bl.Add(r.Map(q.src[0]), r.Map(q.src[1])));
+        return;
+      }
+      case ActKind::kShapedF16: {
+        const ir::TensorDesc& qd = g.tensor(q.out[0]);
+        const TensorId src = r.Map(q.src[0]);
+        if (q.key == Prim(Op::kReshape)) {
+          r.Set(q.out[0], bl.Reshape(src, qd.shape()));
+          return;
+        }
+        const ir::TensorDesc& sd = g.tensor(q.src[0]);
+        const std::uint64_t base = sd.is_view() ? sd.view_offset : 0;
+        std::array<std::uint64_t, 4> nb{};
+        for (std::size_t d = 0; d < 4; ++d) nb.at(d) = qd.nb.at(d) / 2;
+        const std::uint64_t offset = (qd.view_offset - base) / 2;
+        r.Set(q.out[0], bl.View(src, qd.shape(), nb, offset));
+        return;
+      }
+    }
+  };
+  return b.Finish(std::move(places), emit, std::move(sources));
 }
 
 // ---------------------------------------------------------------- rewrite

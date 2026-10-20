@@ -44,6 +44,7 @@
 
 #include "components/component.h"
 #include "components/defs.h"
+#include "components/rotation_reference.h"
 #include "components/step.h"
 #include "dsv4_fixture.h"
 #include "families/dsv4.h"
@@ -56,6 +57,7 @@
 #include "spec/mapping.h"
 #include "spec/mappings/dsv4.h"
 #include "spec/spec.h"
+#include "state_layouts.h"
 
 namespace llmp::components {
 namespace {
@@ -545,7 +547,7 @@ TEST(ComponentsDsv4Test, CompressedSparseAttentionMatchesItsReference) {
   EXPECT_EQ(contract.tensors[1].cells, model::CellRule::kPerBlock);
   EXPECT_TRUE(contract.tensors[1].dummy_last);
   EXPECT_EQ(contract.tensors[2].cells, model::CellRule::kPositionRing);
-  EXPECT_EQ(contract.tensors[2].window_or_ratio, 8U);
+  EXPECT_EQ(contract.tensors[2].fixed_cells, 8U);
   EXPECT_EQ(contract.tensors[2].cell_bytes, 2U * kHead * 4U);
   EXPECT_EQ(contract.tensors[5].cell_bytes, 2U * kIndexDim * 4U);
 }
@@ -1161,7 +1163,7 @@ TEST(ComponentsDsv4Test, IndexerPolicyKeepsMasksForUnselectedCompressedAttention
   const planner::StepShape shape{.segments = {Seg(0, 4, 2, 256, 4)}};
   auto ordinary = BuildStep(*spec, 0, shape, bindings);
   ASSERT_TRUE(ordinary) << ordinary.error();
-  auto selected = BuildStep(*spec, 0, shape, bindings, {.dsv4_lid_mask = true});
+  auto selected = BuildStep(*spec, 0, shape, bindings, {.rounded_index_mask = true});
   ASSERT_TRUE(selected) << selected.error();
   const auto count = [](const ir::Graph& graph, ir::Op op) {
     return std::ranges::count_if(graph.nodes(),
@@ -1465,8 +1467,12 @@ TEST(ComponentsDsv4Test, ATargetsStepInjectsItsFeaturesIntoItsDraftersRing) {
     for (std::uint64_t k = 0; k < kept; ++k) {
       const std::uint64_t pos = seg.past + seg.rows - kept + k;
       std::span<double> row = std::span(kv).subspan(k * p.head_dim, p.head_dim);
-      defs::RotateNormal(row, 1, p.head_dim, p.head_dim - p.rope_dims, p.rope_dims, p.rope_base, {},
-                         static_cast<std::int64_t>(pos));
+      defs::RotateHeads(row, 1, p.head_dim,
+                        {.mode = ir::RopeMode::kNormal,
+                         .dims = p.rope_dims,
+                         .offset = static_cast<std::uint32_t>(p.head_dim - p.rope_dims),
+                         .base = static_cast<float>(p.rope_base)},
+                        static_cast<std::int64_t>(pos));
       const std::uint64_t cell = pos % d.ring;
       for (std::uint64_t j = 0; j < p.head_dim; ++j) {
         want.push_back(row[j]);

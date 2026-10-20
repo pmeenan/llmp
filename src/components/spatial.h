@@ -76,13 +76,14 @@ struct SpatialRefIO {
   const Instance& instance;
   SpatialShape shape;
   std::span<const double> input;
-  std::span<const float> kernel;
-  std::span<const float> bias;
-  std::vector<double> output;
+  std::span<const float> kernel{};
+  std::span<const float> bias{};
+  std::vector<double> output{};
   std::span<const double> auxiliary{};
   std::optional<SpatialShape> auxiliary_shape{};
   std::span<const double> carry{};
   std::optional<SpatialShape> carry_shape{};
+  std::span<const std::span<const float>> weights{};
 };
 struct SpatialOps {
   std::expected<SpatialShape, std::string> (*infer_shape)(const Instance&, SpatialShape,
@@ -147,6 +148,11 @@ class SpatialGraph {
   std::vector<std::uint64_t> parameters_;
   std::uint64_t metadata_bytes_ = 0, reference_bytes_ = 0;
 };
+
+std::uint16_t MaxSpatialNodes(const ComponentDef& def);
+std::expected<SpatialShape, std::string> InferSpatialShape(
+    const Instance& instance, SpatialShape shape, std::optional<SpatialShape> auxiliary = {});
+std::expected<void, std::string> RunSpatialReference(SpatialRefIO& io);
 
 // One stateless image stage, up to the spec/value-ID component limit and 16 distinct owners.
 // Complete checked trajectories/roles are validated before graph emission; branch edges are

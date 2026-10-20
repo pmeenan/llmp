@@ -56,22 +56,21 @@ std::optional<std::uint64_t> CellsOf(const StateTensorContract& t, std::uint32_t
     case CellRule::kPerPosition:
       return Pad(context, t.cell_pad);
     case CellRule::kRing:
-      return Pad(std::min<std::uint64_t>(context, std::uint64_t{t.window_or_ratio} + max_rows),
-                 t.cell_pad);
+      return Pad(std::min<std::uint64_t>(context, std::uint64_t{t.window} + max_rows), t.cell_pad);
     case CellRule::kPerBlock:
       if (t.basis == BlockBasis::kPositions) {
-        return Pad(std::max<std::uint64_t>(1, CeilDiv(context, t.window_or_ratio)), t.cell_pad);
+        return Pad(std::max<std::uint64_t>(1, CeilDiv(context, t.block_ratio)), t.cell_pad);
       } else {
         const auto read = Pad(context, t.cell_pad);
         if (!read) return std::nullopt;
-        return CeilDiv(*read, t.window_or_ratio);
+        return CeilDiv(*read, t.block_ratio);
       }
     case CellRule::kFixed:
-      return t.window_or_ratio;
+      return t.fixed_cells;
     case CellRule::kPerRow:
-      return std::uint64_t{max_rows} + t.window_or_ratio;
+      return std::uint64_t{max_rows} + t.row_carry;
     case CellRule::kPositionRing:
-      return t.window_or_ratio;
+      return t.fixed_cells;
   }
   return std::nullopt;
 }
@@ -87,7 +86,7 @@ std::optional<std::string> Invalid(const StateTensorContract& t) {
   if (t.kind == StateKind::kDrafterProgress) {
     if (!ValidDraftPolicy(t.draft) || t.draft.progress != DraftProgressPolicy::kRepeatPending ||
         t.encoding != Encoding::kI64 || t.cell_bytes != kDraftProgressBytes ||
-        t.cells != CellRule::kFixed || t.window_or_ratio != 1 || t.rollback != Rollback::kNone ||
+        t.cells != CellRule::kFixed || t.fixed_cells != 1 || t.rollback != Rollback::kNone ||
         t.target_writes || t.borrowed_from_target || t.ring_reads_whole || t.dummy_last ||
         t.partial_blocks || t.replayable) {
       return "invalid drafter progress control contract";
@@ -116,18 +115,30 @@ std::optional<std::string> Invalid(const StateTensorContract& t) {
   if (t.partial_blocks && t.cells != CellRule::kPerBlock) {
     return "only a block tensor writes partial blocks";
   }
+  if (t.window != 0 && t.cells != CellRule::kRing) {
+    return "only a ring declares a window";
+  }
+  if (t.block_ratio != 0 && t.cells != CellRule::kPerBlock) {
+    return "only a block tensor declares a block ratio";
+  }
+  if (t.fixed_cells != 0 && t.cells != CellRule::kFixed && t.cells != CellRule::kPositionRing) {
+    return "only fixed state or a position ring declares fixed cells";
+  }
+  if (t.row_carry != 0 && t.cells != CellRule::kPerRow) {
+    return "only per-row state declares a row carry";
+  }
   switch (t.cells) {
     case CellRule::kRing:
-      if (t.window_or_ratio == 0) return "a ring has no window";
+      if (t.window == 0) return "a ring has no window";
       return std::nullopt;
     case CellRule::kPositionRing:
-      if (t.window_or_ratio == 0) return "a position ring has no cells";
+      if (t.fixed_cells == 0) return "a position ring has no cells";
       return std::nullopt;
     case CellRule::kPerBlock:
-      if (t.window_or_ratio == 0) return "a block tensor has no ratio";
+      if (t.block_ratio == 0) return "a block tensor has no ratio";
       return std::nullopt;
     case CellRule::kFixed:
-      if (t.window_or_ratio == 0) return "fixed state has no cells";
+      if (t.fixed_cells == 0) return "fixed state has no cells";
       return std::nullopt;
     case CellRule::kPerPosition:
     case CellRule::kPerRow:
@@ -157,12 +168,11 @@ std::uint64_t UsedCells(const StateLayoutDerived& layout, const Item& item, std:
       return t.ring_reads_whole ? item.cells : std::min(item.cells, aligned);
     case CellRule::kPerBlock:
       if (t.basis == BlockBasis::kPositions) {
-        const std::uint64_t blocks =
-            std::max<std::uint64_t>(1, CeilDiv(positions, t.window_or_ratio));
+        const std::uint64_t blocks = std::max<std::uint64_t>(1, CeilDiv(positions, t.block_ratio));
         return std::min(item.cells, CeilDiv(blocks, t.cell_pad) * t.cell_pad);
       } else {
         const std::uint64_t padded = CeilDiv(layout.context, t.cell_pad) * t.cell_pad;
-        return std::min(item.cells, CeilDiv(std::min(padded, aligned), t.window_or_ratio));
+        return std::min(item.cells, CeilDiv(std::min(padded, aligned), t.block_ratio));
       }
     case CellRule::kFixed:
     case CellRule::kPerRow:
@@ -226,7 +236,7 @@ StateTensorContract DraftProgressControl(std::string name, DraftRelation relatio
           .encoding = Encoding::kI64,
           .cell_bytes = kDraftProgressBytes,
           .cells = CellRule::kFixed,
-          .window_or_ratio = 1,
+          .fixed_cells = 1,
           .rollback = Rollback::kNone,
           .draft = {.relation = relation, .progress = DraftProgressPolicy::kRepeatPending}};
 }
@@ -443,8 +453,7 @@ std::optional<std::uint64_t> ReadCellsBound(const StateLayoutDerived& layout) {
   std::uint64_t bound = 0;
   const auto add = [&](const StateTensorContract& c, std::optional<std::uint64_t> cells) {
     if (reads_whole(c)) return false;
-    if (c.cells == CellRule::kPositionRing)
-      bound = std::max<std::uint64_t>(bound, c.window_or_ratio);
+    if (c.cells == CellRule::kPositionRing) bound = std::max<std::uint64_t>(bound, c.fixed_cells);
     if (c.cells == CellRule::kRing) {
       if (!cells) return false;
       bound = std::max(bound, *cells);
@@ -492,9 +501,9 @@ std::expected<std::optional<DraftProgressBounds>, std::string> DraftBounds(
         borrowed.contract.replayable)
       return Refused("repeatable drafter borrowed state must be a read-only target view");
   const Item* tap = FeatureTap(layout);
-  if (tap == nullptr || tap->contract.cells != CellRule::kPerRow ||
-      tap->contract.window_or_ratio == 0 || tap->contract.rollback != Rollback::kSnapshot ||
-      tap->cells != std::uint64_t{layout.max_rows} + tap->contract.window_or_ratio) {
+  if (tap == nullptr || tap->contract.cells != CellRule::kPerRow || tap->contract.row_carry == 0 ||
+      tap->contract.rollback != Rollback::kSnapshot ||
+      tap->cells != std::uint64_t{layout.max_rows} + tap->contract.row_carry) {
     return Refused("repeatable drafter needs one snapshot chunk tap with preceding carry");
   }
   for (const Item& item : layout.items) {
@@ -506,7 +515,7 @@ std::expected<std::optional<DraftProgressBounds>, std::string> DraftBounds(
   }
   return std::optional{DraftProgressBounds{.context = layout.context,
                                            .max_rows = layout.max_rows,
-                                           .carry = tap->contract.window_or_ratio,
+                                           .carry = tap->contract.row_carry,
                                            .relation = control->contract.draft.relation}};
 }
 
@@ -584,9 +593,9 @@ std::expected<std::vector<StateRange>, std::string> ChunkWrites(const StateLayou
         break;
       }
       case CellRule::kPerBlock: {
-        const std::uint64_t first = past / t.window_or_ratio;
+        const std::uint64_t first = past / t.block_ratio;
         const std::uint64_t last = std::min<std::uint64_t>(
-            (std::uint64_t{past} + rows - 1) / t.window_or_ratio, item.cells - 1);
+            (std::uint64_t{past} + rows - 1) / t.block_ratio, item.cells - 1);
         if (first <= last) out.push_back(Cells(item, first, last - first + 1));
         if (t.dummy_last) out.push_back(Dummy(item));
         break;
@@ -698,18 +707,18 @@ std::expected<StateWrites, std::string> WritesFor(const StateLayoutDerived& layo
           out.rows[i].push_back(Cells(item, position % item.cells, 1));
           break;
         case CellRule::kPerRow:
-          out.rows[i].push_back(Cells(item, std::uint64_t{t.window_or_ratio} + i, 1));
+          out.rows[i].push_back(Cells(item, std::uint64_t{t.row_carry} + i, 1));
           break;
         case CellRule::kPerBlock: {
-          const std::uint64_t block = position / t.window_or_ratio;
-          const bool completes = (position + 1) % t.window_or_ratio == 0;
+          const std::uint64_t block = position / t.block_ratio;
+          const bool completes = (position + 1) % t.block_ratio == 0;
           completed += completes ? 1 : 0;
           // The row completing a block writes it; with partial blocks, the
           // chunk's last row in each block too (its key is wrong once that
           // row is rejected).
           const bool writes =
               completes ||
-              (t.partial_blocks && (i + 1 == rows || (position + 1) / t.window_or_ratio != block));
+              (t.partial_blocks && (i + 1 == rows || (position + 1) / t.block_ratio != block));
           if (writes && block < item.cells) out.rows[i].push_back(Cells(item, block, 1));
           break;
         }
@@ -722,12 +731,12 @@ std::expected<StateWrites, std::string> WritesFor(const StateLayoutDerived& layo
     // tail. The runner carries those before the next target step, so a
     // discarded verify must restore them beside its component writes.
     if (t.cells == CellRule::kPerRow && t.target_writes && t.kind == StateKind::kFeatures &&
-        t.window_or_ratio != 0) {
-      out.rows[0].push_back(Cells(item, 0, t.window_or_ratio));
+        t.row_carry != 0) {
+      out.rows[0].push_back(Cells(item, 0, t.row_carry));
     }
     // The dummy row: written by a chunk that completes fewer blocks than
     // ceil(rows / ratio), each missing block a dummy into its last row.
-    if (t.dummy_last && completed < CeilDiv(rows, t.window_or_ratio)) {
+    if (t.dummy_last && completed < CeilDiv(rows, t.block_ratio)) {
       out.scratch.push_back(Dummy(item));
     }
   }
@@ -765,8 +774,8 @@ std::expected<SaveBound, std::string> VerifySaveBound(const StateLayoutDerived& 
       case CellRule::kPerRow:
         add(rows, t.cell_bytes);
         if (t.cells == CellRule::kPerRow && t.target_writes && t.kind == StateKind::kFeatures &&
-            t.window_or_ratio != 0) {
-          const auto tail = Mul(t.window_or_ratio, t.cell_bytes);
+            t.row_carry != 0) {
+          const auto tail = Mul(t.row_carry, t.cell_bytes);
           if (!tail) {
             overflow = true;
           } else {
@@ -779,7 +788,7 @@ std::expected<SaveBound, std::string> VerifySaveBound(const StateLayoutDerived& 
         // positions, and with partial blocks the last one besides; then
         // the dummy row.
         add(std::min<std::uint64_t>(item.cells,
-                                    CeilDiv(rows, t.window_or_ratio) + (t.partial_blocks ? 1 : 0)),
+                                    CeilDiv(rows, t.block_ratio) + (t.partial_blocks ? 1 : 0)),
             t.cell_bytes);
         if (t.dummy_last) add(1, t.cell_bytes);
         break;
@@ -809,7 +818,7 @@ std::expected<std::vector<StateRange>, std::string> CheckpointWrites(
       first = first_position;
     } else if (t.cells == CellRule::kPerBlock) {
       // A partly filled block is mutable; every chunk writes the dummy row.
-      first = first_position / t.window_or_ratio;
+      first = first_position / t.block_ratio;
       if (t.dummy_last) out.push_back(Dummy(item));
     }
     first = std::min(first, item.cells);
@@ -870,12 +879,13 @@ std::string KeptLayoutId(const base::Sha256Digest& spec,
       const StateTensorContract& t = item.contract;
       // The name length-prefixed: no separator in it can collide.
       hash.Update(std::format(
-          "item {} {} {}:{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n", item.layer,
+          "item {} {} {}:{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n", item.layer,
           item.tensor, t.name.size(), t.name, KindName(t.kind), format::Info(t.encoding).name,
-          t.cell_bytes, static_cast<unsigned>(t.cells), t.window_or_ratio, t.cell_pad,
-          t.ring_reads_whole ? 1 : 0, static_cast<unsigned>(t.basis), t.dummy_last ? 1 : 0,
-          t.partial_blocks ? 1 : 0, static_cast<unsigned>(t.rollback), t.target_writes ? 1 : 0,
-          item.cells, item.offset, item.bytes, t.borrowed_from_target ? 1 : 0));
+          t.cell_bytes, static_cast<unsigned>(t.cells), t.window, t.block_ratio, t.fixed_cells,
+          t.row_carry, t.cell_pad, t.ring_reads_whole ? 1 : 0, static_cast<unsigned>(t.basis),
+          t.dummy_last ? 1 : 0, t.partial_blocks ? 1 : 0, static_cast<unsigned>(t.rollback),
+          t.target_writes ? 1 : 0, item.cells, item.offset, item.bytes,
+          t.borrowed_from_target ? 1 : 0));
       // Preserve IDs of existing contracts. New opt-in semantics are part
       // of this layout's identity, even if every numeric byte stays put.
       if (t.kind == StateKind::kDrafterProgress) {

@@ -24,7 +24,7 @@
 namespace llmp::components::defs {
 namespace {
 
-constexpr std::array<std::string_view, 2> kPlacements{"sandwich", "pre"};
+constexpr std::array<std::string_view, 3> kPlacements{"sandwich", "pre", "bare"};
 constexpr std::array<std::string_view, 2> kActivations{"gelu_tanh", "silu"};
 
 constexpr std::array kParams{
@@ -33,12 +33,6 @@ constexpr std::array kParams{
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
     ParamSpec{.name = "activation", .type = ParamType::kName, .choices = kActivations},
     ParamSpec{.name = "hidden", .type = ParamType::kInt, .least = 1, .most = 1 << 20},
-    ParamSpec{.name = "f16_inputs",
-              .type = ParamType::kBool,
-              .required = false,
-              .least = 0,
-              .most = 1,
-              .fallback = 0.0},
 };
 
 enum : std::uint16_t { kNorm, kGate, kUp, kDown, kPostNorm };
@@ -51,6 +45,7 @@ constexpr std::array kRoles{
 };
 
 bool Sandwich(const Instance& in) { return in.params.Name("placement") == "sandwich"; }
+bool Bare(const Instance& in) { return in.params.Name("placement") == "bare"; }
 std::uint64_t Hidden(const Instance& in) {
   return static_cast<std::uint64_t>(in.params.Int("hidden"));
 }
@@ -60,6 +55,8 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
     return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
   const std::uint64_t w = in.stage.width;
   const std::uint64_t h = Hidden(in);
+  if (Bare(in))
+    return std::vector<RoleShape>{Role(kGate, {w, h}), Role(kUp, {w, h}), Role(kDown, {h, w})};
   std::vector<RoleShape> out{Role(kNorm, {w}), Role(kGate, {w, h}), Role(kUp, {w, h}),
                              Role(kDown, {h, w})};
   if (Sandwich(in)) out.push_back(Role(kPostNorm, {w}));
@@ -94,17 +91,9 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     return role == kNorm || role == kPostNorm ? parameters.Norm(role) : f.Weight(role);
   };
   const ir::TensorId x = f.stream;
-  ir::TensorId h = b.Mul(b.RmsNorm(x, eps), NormScale(b, w(kNorm)));
-  ir::TensorId down;
-  if (f.instance.params.Flag("f16_inputs")) {
-    h = b.Convert(h, format::Encoding::kF16);
-    const auto gate = b.MatMul(w(kGate), h);
-    const auto up = b.MatMul(w(kUp), h);
-    const auto glu = b.Glu(gate, up, {.kind = Kind(f.instance)});
-    down = b.MatMul(w(kDown), b.Convert(glu, format::Encoding::kF16));
-  } else {
-    down = moe::EmitGlu(b, h, w(kGate), w(kUp), w(kDown), Kind(f.instance));
-  }
+  const ir::TensorId h = Bare(f.instance) ? x : b.Mul(b.RmsNorm(x, eps), NormScale(b, w(kNorm)));
+  const ir::TensorId down = moe::EmitGlu(b, h, w(kGate), w(kUp), w(kDown), Kind(f.instance));
+  if (Bare(f.instance)) return FragmentOut{.stream = down};
   if (!Sandwich(f.instance)) return FragmentOut{.stream = b.Add(down, x)};
   return FragmentOut{.stream = b.Add(b.Mul(b.RmsNorm(down, eps), w(kPostNorm)), x)};
 }
@@ -116,8 +105,9 @@ std::expected<void, std::string> Reference(RefIO& io) {
   if (io.stream.size() != width * io.rows()) {
     return std::unexpected("ffn reference: a stream of another shape");
   }
+  const bool bare = Bare(in);
   std::array<std::vector<float>, kRoles.size()> adjusted;
-  if (in.params.Flag("norm_zero_centered")) {
+  if (!bare && in.params.Flag("norm_zero_centered")) {
     for (const auto role : {kNorm, kPostNorm}) {
       adjusted[role] = io.weights.at(role);
       for (float& value : adjusted[role]) value += 1.0F;
@@ -128,19 +118,12 @@ std::expected<void, std::string> Reference(RefIO& io) {
   };
   const double eps = F32(in.params.Real("eps"));
   std::vector<double> h = io.stream;
-  RmsRows(h, width, eps, weight(kNorm));
-  std::vector<double> down;
-  if (in.params.Flag("f16_inputs")) {
-    for (double& value : h) value = RoundF16(value);
-    const auto gate = Product(io.weights.at(kGate), width, hidden, h);
-    auto up = Product(io.weights.at(kUp), width, hidden, h);
-    for (std::size_t i = 0; i < up.size(); ++i) {
-      up[i] = RoundF16(moe::GluOf(Kind(in), gate[i], up[i], 0.0F));
-    }
-    down = Product(io.weights.at(kDown), hidden, width, up);
-  } else {
-    down = moe::GluReference(h, io.weights.at(kGate), io.weights.at(kUp), io.weights.at(kDown),
-                             width, hidden, Kind(in));
+  if (!bare) RmsRows(h, width, eps, weight(kNorm));
+  std::vector<double> down = moe::GluReference(h, io.weights.at(kGate), io.weights.at(kUp),
+                                               io.weights.at(kDown), width, hidden, Kind(in));
+  if (bare) {
+    io.stream = std::move(down);
+    return {};
   }
   if (Sandwich(in)) RmsRows(down, width, eps, weight(kPostNorm));
   for (std::size_t i = 0; i < down.size(); ++i) io.stream[i] += down[i];

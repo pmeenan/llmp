@@ -128,8 +128,6 @@ struct ImageMapping {
 
 std::span<const ImageMapping* const> ImageMappings();
 const ImageMapping* FindImageMapping(std::string_view architecture);
-const ImageMapping* ImageFamilyMapping(std::string_view architecture);
-const ImageMapping& QwenImage21Mapping();
 // Its own rules: components unique and sorted, every schema parameter of
 // its components' kinds read by exactly one rule naming one of them, keys
 // source keys, names present, one policy.

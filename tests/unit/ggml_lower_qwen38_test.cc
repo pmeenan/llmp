@@ -57,6 +57,7 @@
 #include "qwen38_fixture.h"
 #include "spec/mapping.h"
 #include "spec/mappings/qwen38.h"
+#include "state_layouts.h"
 
 namespace {
 
@@ -1025,7 +1026,7 @@ TEST(GgmlLowerQwen38Test, DefaultPoliciesFollowTheImportsForm) {
   for (const Import* im : {&cutlass, &ggml, &gguf}) {
     EXPECT_FALSE(pl::Disabled(im->policy, "rms_norm_mul"));
     EXPECT_FALSE(pl::Disabled(im->policy, "owner_attention"));
-    EXPECT_FALSE(pl::Disabled(im->policy, "qsa_select"));
+    EXPECT_FALSE(pl::Disabled(im->policy, "block_sparse_attention"));
     // Production QSA selects its own fused attention, so it never enabled
     // the old generic sparse-attention product bundle. Keep that arithmetic.
     EXPECT_EQ(im->policy.products, pl::ProductPolicy{});
@@ -1116,11 +1117,11 @@ TEST(GgmlLowerQwen38Test, FastCapabilitiesPreserveTheOperationsParameters) {
   norm.rope.mode = ir::RopeMode::kInterleavedMulti;
   norm.rope.dims = 64;
   const std::array operands{ex::OperandFormat{.operand = 0, .ne = {128, 4, 3, 1}},
-                            ex::OperandFormat{.operand = 5}};
+                            ex::OperandFormat{.operand = 2}, ex::OperandFormat{.operand = 5}};
   q.operands = operands;
   q.params = std::as_bytes(std::span(&norm, 1));
   EXPECT_TRUE(prep->accepts(q));
-  ir::QsaPoolParams pooled{.ratio = 16, .rope = norm.rope};
+  ir::BlockPoolParams pooled{.ratio = 16, .rope = norm.rope};
   q.params = std::as_bytes(std::span(&pooled, 1));
   EXPECT_TRUE(pool->accepts(q));
   const ir::RopeParams plain = norm.rope;

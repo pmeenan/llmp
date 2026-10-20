@@ -1007,7 +1007,7 @@ void PagedCase(int malformed) {
                       .encoding = md::Encoding::kF32,
                       .cell_bytes = 4,
                       .cells = md::CellRule::kFixed,
-                      .window_or_ratio = 1,
+                      .fixed_cells = 1,
                       .rollback = md::Rollback::kSnapshot}}}}}};
   auto layout = md::Layout(state, kContext, kRows);
   ASSERT_TRUE(layout) << layout.error();
@@ -1302,7 +1302,7 @@ TEST(DecodeSelectedRowsGpu, RetainedExl3ModelsOwnStateAcrossSwitchAndScratchRema
                       .encoding = md::Encoding::kF32,
                       .cell_bytes = 4,
                       .cells = md::CellRule::kFixed,
-                      .window_or_ratio = 1,
+                      .fixed_cells = 1,
                       .rollback = md::Rollback::kSnapshot}}}}}};
   const auto layout = md::Layout(state, kContext, 1);
   ASSERT_TRUE(layout) << layout.error();

@@ -31,15 +31,12 @@
 
 namespace llmp::components::defs {
 
-const ComponentDef& NormRmsSpatial();
 const ComponentDef& SliceSpatial();
 const ComponentDef& ReshapeSpatial();
 const ComponentDef& AffineChannel();
 const ComponentDef& ResidualScaled();
 const ComponentDef& ConditionRows();
 const ComponentDef& ConcatSpatial();
-const ComponentDef& GluSpatial();
-const ComponentDef& NormRopeAxes();
 const ComponentDef& Conv2d();
 const ComponentDef& ProjectionSpatial();
 const ComponentDef& UpsampleNearest();
@@ -63,7 +60,6 @@ const ComponentDef& HcMix();
 const ComponentDef& HcCombine();
 const ComponentDef& AttentionGdn();
 const ComponentDef& AttentionQsa();
-const ComponentDef& AttentionQsaReplay();
 const ComponentDef& SideNgram();
 const ComponentDef& ResidualPle();
 const ComponentDef& EmbeddingMtp();
@@ -151,19 +147,6 @@ class F32Parameters {
   Fragment& f_;
   std::array<std::array<ir::TensorId, 3>, Roles> results_{};
 };
-
-// A product whose rounding is part of the component's arithmetic. Request
-// the output encoding on the product itself, so the planner/lowering must
-// choose a kernel that writes it (not an F32 product with an implicit cast).
-inline ir::TensorId MatMulOutput(ir::Builder& b, ir::TensorId a, ir::TensorId x,
-                                 format::Encoding encoding) {
-  if (encoding == format::Encoding::kF32) return b.MatMul(a, x);
-  ir::TensorDesc output;
-  output.format.encoding = encoding;
-  const std::array sources{a, x};
-  return b.Emit(ir::Primitive(ir::Op::kMatMul), ir::ToBytes(ir::ProductParams{}), sources,
-                std::span(&output, 1))[0];
-}
 
 // A role's shape.
 inline RoleShape Role(std::uint16_t role, std::initializer_list<std::uint64_t> ne) {
@@ -278,48 +261,6 @@ inline double GeluTanh(double x) {
   return 0.5 * x * (1.0 + std::tanh(c * (x + (0.044715 * x * x * x))));
 }
 inline double Silu(double x) { return x / (1.0 + std::exp(-x)); }
-
-// The rotation angle of pair `pair` at `position` as op.h defines it (each
-// step rounded to F32), for an unscaled-extrapolation rotation, divided by
-// the pair's frequency factor `freq` (1: none).
-inline float RopeAngle(float base, std::uint32_t dims, float scale, std::uint64_t pair,
-                       std::int64_t position, float freq = 1.0F) {
-  const float theta_scale = static_cast<float>(
-      std::pow(static_cast<double>(base), static_cast<double>(-2.0F / static_cast<float>(dims))));
-  const float power =
-      static_cast<float>(std::pow(static_cast<double>(theta_scale), static_cast<double>(pair)));
-  const float extrap = (static_cast<float>(position) * power) / freq;
-  return scale * extrap;
-}
-
-// A rotation's YaRN extension (factor above 1; else none): the interpolation
-// factor, the original context and the ramp's betas.
-struct Yarn {
-  float factor = 1.0F;
-  std::uint32_t context = 0;
-  float beta_fast = 0.0F;
-  float beta_slow = 0.0F;
-};
-
-// The angle of pair `pair` of a `dims`-value rotation at `position`, and
-// its magnitude, as op.h defines a rotation (each step rounded to F32):
-// with YaRN, the interpolated angle (scale · t, scale = 1 / factor) mixed
-// with the extrapolated one (t) by the ramp over the pairs between the
-// correction dimensions of the betas (YaRN's: d(beta) = dims · ln(context
-// / (2π · beta)) / (2 · ln(base)), floored and ceiled into [0, dims - 1]),
-// and the magnitude attn · (1 + 0.1 · ln(1 / scale)) with attn its
-// reciprocal (DeepSeek V4's: the two cancel up to rounding).
-// (Both in attention.mqa's file: rope.cu's rope_yarn and ggml.c's
-// ggml_rope_yarn_corr_dims, ported.)
-std::pair<double, double> YarnRotation(float base, std::uint32_t dims, std::uint64_t pair,
-                                       std::int64_t position, const Yarn& y);
-
-// Rotates (or `inverse`, back) each of `heads` heads of `dim` values in
-// `row`: the NORMAL pairs (offset + 2i, offset + 2i + 1) of its `dims`
-// values from `offset` (GGML's rope_ext with ggml_rope_set_offset).
-void RotateNormal(std::span<double> row, std::uint64_t heads, std::uint64_t dim,
-                  std::uint64_t offset, std::uint32_t dims, float base, const Yarn& yarn,
-                  std::int64_t position, bool inverse = false);
 
 }  // namespace llmp::components::defs
 

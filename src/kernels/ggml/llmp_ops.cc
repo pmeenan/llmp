@@ -127,7 +127,7 @@ constinit std::array kTagSelect = std::to_array("llmp.select");
 constinit std::array kTagPrefixOverwrite = std::to_array("llmp.prefix_overwrite");
 constinit std::array kTagRoundedIndexScore = std::to_array("llmp.rounded_index_score");
 constinit std::array kTagDsv4LidTopK = std::to_array("llmp.dsv4.lid_topk");
-constinit std::array kTagGemma4Mask = std::to_array("llmp.gemma4.mask");
+constinit std::array kTagCausalMask = std::to_array("llmp.causal.mask");
 constinit std::array kTagFlashAttnOwners = std::to_array("llmp.flash_attn.owner_roots");
 constinit std::array kTagDsv4SparseMask = std::to_array("llmp.dsv4.sparse_mask");
 
@@ -240,7 +240,7 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
       {kTagRoundedIndexScore.data(), LlmpOp::kRoundedIndexScore},
       {kTagDsv4LidTopK.data(), LlmpOp::kDsv4LidTopK},
       {kTagDsv4SparseMask.data(), LlmpOp::kDsv4SparseMask},
-      {kTagGemma4Mask.data(), LlmpOp::kGemma4Mask},
+      {kTagCausalMask.data(), LlmpOp::kCausalMask},
       {kTagFlashAttnOwners.data(), LlmpOp::kFlashAttnOwners},
       {kTagQsaPool.data(), LlmpOp::kQsaPool},
       {kTagQsaTopK.data(), LlmpOp::kQsaTopK},
@@ -2973,20 +2973,20 @@ ggml_tensor* CausalRingMask(ggml_context* context, ggml_tensor* positions, std::
                                ? std::int64_t{rows}
                                : (std::int64_t{rows} + 31) / 32 * 32;
   return WithInts(
-      Custom(context, output_type, {cells, output_rows, 1, 1}, {positions}, kTagGemma4Mask.data()),
+      Custom(context, output_type, {cells, output_rows, 1, 1}, {positions}, kTagCausalMask.data()),
       {first_row, rows, capacity, window, context_limit, static_cast<std::int32_t>(row_layout),
        static_cast<std::int32_t>(policy), 0});
 }
 
-ggml_tensor* Gemma4Mask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
+ggml_tensor* CausalMask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
                         std::int32_t first_row, std::int32_t rows, std::int32_t capacity,
                         std::int32_t window, std::int32_t context_limit) {
   return CausalRingMask(context, positions, cells, first_row, rows, capacity, window, context_limit,
                         CausalMaskRows::kPad32);
 }
 
-bool Gemma4MaskFits(const ggml_tensor* node) {
-  if (node == nullptr || LlmpOpOf(node) != LlmpOp::kGemma4Mask || node->src[0] == nullptr ||
+bool CausalMaskFits(const ggml_tensor* node) {
+  if (node == nullptr || LlmpOpOf(node) != LlmpOp::kCausalMask || node->src[0] == nullptr ||
       std::ranges::any_of(std::span(node->src).subspan(1),
                           [](const auto* parent) { return parent != nullptr; }))
     return false;
@@ -3023,9 +3023,9 @@ bool Gemma4MaskFits(const ggml_tensor* node) {
   return true;
 }
 
-std::expected<void, KernelFailure> CheckGemma4Mask(const ggml_tensor* node) {
-  if (auto checked = CheckCustom(node, LlmpOp::kGemma4Mask, 1); !checked) return checked;
-  if (!Gemma4MaskFits(node) || !AllCurrent({node, node->src[0]}) ||
+std::expected<void, KernelFailure> CheckCausalMask(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, LlmpOp::kCausalMask, 1); !checked) return checked;
+  if (!CausalMaskFits(node) || !AllCurrent({node, node->src[0]}) ||
       !Aligned(node, node->type == GGML_TYPE_F16 ? 2 : 4) || !Aligned(node->src[0], 4) ||
       !Disjoint(node, node->src[0], false))
     return Rejected("packed F16/F32 causal/ring mask from current disjoint I32 positions");

@@ -40,6 +40,9 @@
 #include "ir/graph.h"
 #include "providers/device_execution.h"
 
+namespace llmp::components {
+struct HostInputDef;
+}
 namespace llmp::execution {
 class BoundPlan;
 }
@@ -51,7 +54,7 @@ namespace llmp::kernels {
 class StepLaunch;
 class RoutedProgram;
 
-// Why queueing, binding or recording failed: refused with nothing queued
+// What fails when queueing, binding or recording: refused with nothing queued
 // (the step may be retried or run otherwise), or of unknown effect
 // (something was or may have been queued: the job fences it).
 enum class StepError : std::uint8_t { kRejected, kUnknown };
@@ -113,14 +116,10 @@ enum class InputKind : std::uint8_t {
   kFeatures,
   kSideRows,
   kBlockPositions,
-  // Typed compressor and constant inputs; components/step.h defines their
-  // values. Never opaque caller bytes: the shape and metadata determine them.
-  kPositionPhases,
-  kKeptRows,
-  kKeptCells,
-  kPoolReads,
-  kBlockCells,
-  kBlockStarts,
+  // Component-declared host-computed and constant inputs; components/step.h
+  // defines their values. Never opaque caller bytes: the shape and metadata
+  // determine them.
+  kHostComputed,
   kHadamard,
   kVisibleCells,  // I32 owner rows: completed blocks capped by real/scored capacity
 };
@@ -161,7 +160,8 @@ struct InputSlot {
   // kPositions' and kBlockPositions' copies; kSideRows' rows a step row.
   std::uint32_t sections = 1;
   std::uint64_t count = 0;
-  // Compressor inputs (components/step.h StepInput).
+  // Host-computed inputs (components/step.h StepInput).
+  const components::HostInputDef* host = nullptr;
   std::uint32_t ratio = 0;
   bool overlap = false;
   std::uint64_t ring = 0;

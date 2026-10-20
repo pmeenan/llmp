@@ -694,8 +694,9 @@ TEST(IrTest, EveryFusedKindAndCompositeDecomposes) {
         << k;
   }
   EXPECT_FALSE(HasDecomposition(Fused(FusedKind::kNone)));
-  for (const Op op : {Op::kHcPre, Op::kHcPost, Op::kHcMix, Op::kIndexScore, Op::kPool, Op::kRoute,
-                      Op::kExpertReduce, Op::kSsmConv, Op::kGatedDeltaNet}) {
+  for (const Op op : {Op::kHcPre, Op::kHcPost, Op::kHcMix, Op::kIndexScore, Op::kRoundedIndexScore,
+                      Op::kVisibleTopK, Op::kSelectedMask, Op::kPool, Op::kRoute, Op::kExpertReduce,
+                      Op::kSsmConv, Op::kGatedDeltaNet}) {
     EXPECT_TRUE(HasDecomposition(Primitive(op))) << OpName(op);
   }
   EXPECT_FALSE(HasDecomposition(Primitive(Op::kMatMul)));
@@ -726,15 +727,16 @@ TEST(IrTest, HyperConnectionFusionsRefuseInvalidStreamShapes) {
     b.Fused(FusedKind::kHcFold, std::array{xn, gate}, HcFoldParams{.streams = streams});
     EXPECT_EQ(ErrorOf(b), GraphError::kShape);
   }
-  for (FusedKind kind : {FusedKind::kHcPrep, FusedKind::kHcMixNorm}) {
+  for (FusedKind kind : {FusedKind::kHcPrep, FusedKind::kHcFold}) {
     Builder b;
     const TensorId x = b.Input(F32({4, 2, 3}));
     const TensorId norm = b.Input(F32({8}));
     const TensorId gate = b.Input(F32({8, 3}));
-    const std::vector<TensorId> src = kind == FusedKind::kHcPrep
-                                          ? std::vector<TensorId>{x, norm}
-                                          : std::vector<TensorId>{x, norm, gate};
-    b.Fused(kind, src, HcNormPostParams{.eps = 1e-6F, .streams = 1});
+    if (kind == FusedKind::kHcPrep) {
+      b.Fused(kind, std::array{x, norm}, HcNormPostParams{.eps = 1e-6F, .streams = 1});
+    } else {
+      b.Fused(kind, std::array{x, norm, gate}, HcFoldParams{.streams = 1, .eps = 1e-6F});
+    }
     EXPECT_EQ(ErrorOf(b), GraphError::kShape);
   }
   Builder b;
@@ -783,8 +785,8 @@ TEST(IrTest, NewHyperConnectionAndGdnFusionsExpandStridedSources) {
   const auto streams = b.Input(F32({4, 2, 3}));
   const auto norm = b.Input(F32({8}));
   const auto gate = b.Input(F32({8, 3}));
-  b.Fused(FusedKind::kHcMixNorm, std::array{streams, norm, gate},
-          HcNormPostParams{.eps = -1.0F, .streams = 2});
+  b.Fused(FusedKind::kHcFold, std::array{streams, norm, gate},
+          HcFoldParams{.streams = 2, .eps = -1.0F});
   EXPECT_FALSE(b.ok());
 }
 
@@ -890,8 +892,8 @@ TEST(IrTest, ConstantContentIsPartOfTheDigest) {
   EXPECT_NE(digest(std::as_bytes(std::span(a))), digest({}));
 }
 
-// DeepSeek's output-A takes a weight of exactly the rows' groups.
-TEST(IrTest, Dsv4OutARefusesAWeightOfAnotherGroupCount) {
+// Inverse-RoPE grouped matmul takes a weight of exactly the rows' groups.
+TEST(IrTest, InverseRopeGroupedMatMulRefusesAWeightOfAnotherGroupCount) {
   const RopeParams rope{.mode = RopeMode::kNormal, .dims = 64};
   for (const auto& [ne, ok] : {std::pair{std::array<std::uint64_t, 3>{128, 16, 4}, true},
                                std::pair{std::array<std::uint64_t, 3>{128, 16, 2}, false},
@@ -901,7 +903,7 @@ TEST(IrTest, Dsv4OutARefusesAWeightOfAnotherGroupCount) {
     const TensorId w = b.Input(ne[2] == 1 ? F32({ne[0], ne[1]}) : F32({ne[0], ne[1], ne[2]}));
     const TensorId x = b.Input(F32({64, 8, 2}));
     const TensorId pos = b.Input(I32({2}));
-    const Outputs out = b.Fused(FusedKind::kDsv4OutA, std::array{w, x, pos}, rope);
+    const Outputs out = b.Fused(FusedKind::kInverseRopeGroupedMatMul, std::array{w, x, pos}, rope);
     EXPECT_EQ(b.ok(), ok) << ne[1] << " " << ne[2];
     if (ok) {
       b.Output(out[0]);
@@ -910,6 +912,25 @@ TEST(IrTest, Dsv4OutARefusesAWeightOfAnotherGroupCount) {
       EXPECT_EQ(ErrorOf(b), GraphError::kShape);
     }
   }
+}
+
+TEST(IrTest, RoundedIndexScoreSupportsGeneralHeadDimensionsAndHeadCounts) {
+  Builder b;
+  const TensorId q = b.Input(F32({64, 16, 3}));
+  const TensorId k = b.Input(Dense(Encoding::kF16, ShapeOf({64, 1, 5})));
+  const TensorId w = b.Input(F32({16, 3}));
+  const TensorId counts = b.Input(I32({3}));
+  const TensorId out = b.RoundedIndexScore(q, k, w, counts);
+  ASSERT_TRUE(b.ok());
+  EXPECT_EQ(b.tensor(out).ne(0), 5U);
+  EXPECT_EQ(b.tensor(out).ne(1), 3U);
+  b.Output(out);
+  auto g = std::move(b).Finish();
+  ASSERT_TRUE(g.has_value()) << g.error().detail;
+  auto expanded = Expand(*g, true);
+  ASSERT_TRUE(expanded.has_value()) << expanded.error().detail;
+  EXPECT_TRUE(std::ranges::none_of(
+      expanded->nodes(), [](const Node& n) { return n.key.op == Op::kRoundedIndexScore; }));
 }
 
 TEST(IrTest, ConcatSupportsDenseAndGgmlBlocks) {
@@ -953,6 +974,92 @@ TEST(IrTest, ConcatSupportsDenseAndGgmlBlocks) {
     const TensorId y = b.Input(f);
     b.Concat(x, y, 0);
     EXPECT_EQ(ErrorOf(b), GraphError::kFormat);
+  }
+}
+
+TEST(IrTest, VisibleTopKAndSelectedMaskDecomposeToPrimitives) {
+  Builder b;
+  const TensorId scores = b.Input(F32({12, 3}));
+  const TensorId counts = b.Input(I32({3}));
+  const TensorId raw = b.Input(Dense(Encoding::kF16, ShapeOf({4, 3})));
+  const TensorId top = b.VisibleTopK(scores, counts, 5);
+  const TensorId wide_top = b.VisibleTopK(scores, counts, 16);
+  const TensorId mask = b.SelectedMask(raw, top, {.raw_cells = 6, .cells = 12});
+  ASSERT_TRUE(b.ok()) << b.error()->detail;
+  b.Output(wide_top);
+  b.Output(mask);
+  auto g = std::move(b).Finish();
+  ASSERT_TRUE(g.has_value()) << g.error().detail;
+  auto expanded = Expand(*g, true);
+  ASSERT_TRUE(expanded.has_value()) << expanded.error().detail;
+  for (const Node& n : expanded->nodes()) {
+    EXPECT_FALSE(HasDecomposition(n.key)) << OpKeyName(n.key);
+  }
+}
+
+TEST(IrTest, HyperConnectionsSupportUnpackedAndOffsetPackingAndWeightedScale) {
+  Builder b;
+  const TensorId x = b.Input(F32({8, 3, 2}));
+  const TensorId w = b.Input(F32({3, 2}));
+  const TensorId pre =
+      b.HcPre(x, w, HcParams{.fold = HcFold::kWeights, .streams = 3, .scale = 0.5f});
+  const TensorId unpacked_mixes = b.Input(F32({9, 2}));
+  const TensorId unpacked_scale = b.Input(F32({1}));
+  const TensorId unpacked_base = b.Input(F32({9}));
+  const TensorId comb_unpacked =
+      b.HcMix(unpacked_mixes, unpacked_scale, unpacked_base,
+              HcParams{.mix = HcMixKind::kSinkhorn, .streams = 3, .iterations = 4, .eps = 1e-5f});
+  const TensorId custom_mixes = b.Input(F32({20, 2}));
+  const TensorId custom_scale = b.Input(F32({5}));
+  const TensorId custom_base = b.Input(F32({20}));
+  const TensorId comb_custom = b.HcMix(custom_mixes, custom_scale, custom_base,
+                                       HcParams{.mix = HcMixKind::kSinkhorn,
+                                                .streams = 3,
+                                                .iterations = 4,
+                                                .eps = 1e-5f,
+                                                .mix_offset = 5,
+                                                .scale_index = 3});
+  const TensorId sig_custom = b.HcMix(custom_mixes, custom_scale, custom_base,
+                                      HcParams{.mix = HcMixKind::kSigmoid,
+                                               .streams = 3,
+                                               .eps = 1e-5f,
+                                               .mix_offset = 2,
+                                               .scale_index = 1});
+  ASSERT_TRUE(b.ok()) << b.error()->detail;
+  for (const TensorId o : {pre, comb_unpacked, comb_custom, sig_custom}) {
+    b.Output(o);
+  }
+  auto g = std::move(b).Finish();
+  ASSERT_TRUE(g.has_value()) << g.error().detail;
+  auto expanded = Expand(*g, true);
+  ASSERT_TRUE(expanded.has_value()) << expanded.error().detail;
+  for (const Node& n : expanded->nodes()) {
+    EXPECT_FALSE(HasDecomposition(n.key)) << OpKeyName(n.key);
+  }
+}
+
+TEST(IrTest, GatedDeltaNetExpandsAt4096TokensWithinNodeLimit) {
+  constexpr std::uint64_t kTokens = 4096;
+  Builder b;
+  const TensorId q = b.Input(F32({16, 2, kTokens, 1}));
+  const TensorId k = b.Input(F32({16, 2, kTokens, 1}));
+  const TensorId v = b.Input(F32({16, 4, kTokens, 1}));
+  const TensorId g = b.Input(F32({1, 4, kTokens, 1}));
+  const TensorId beta = b.Input(F32({1, 4, kTokens, 1}));
+  const TensorId state = b.State(F32({16 * 16 * 4, 1}), StateRef{.tensor = 0});
+  const TensorId slot = b.Input(I32({1}));
+  const Outputs out = b.Fused(FusedKind::kGdnStep, std::array{q, k, v, g, beta, state, slot},
+                              GdnStepParams{.write = true});
+  ASSERT_TRUE(b.ok()) << b.error()->detail;
+  b.Output(out[0]);
+  b.Output(out[1]);
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph.has_value()) << graph.error().detail;
+  auto expanded = Expand(*graph, true);
+  ASSERT_TRUE(expanded.has_value()) << expanded.error().detail;
+  EXPECT_LT(expanded->nodes().size(), Graph::kMaxNodes);
+  for (const Node& n : expanded->nodes()) {
+    EXPECT_FALSE(HasDecomposition(n.key)) << OpKeyName(n.key);
   }
 }
 

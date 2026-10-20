@@ -94,9 +94,8 @@ inline const Qwen2Profile& Qwen25Instruct05BExl3() {
   return kProfile;
 }
 
-// The profile as the keys the qwen2 mapping reads (its EXL3 arithmetic the
-// llmp.qwen2.exl3 flag). Refused for another weight type or inconsistent
-// attention dimensions.
+// The profile as the keys the qwen2 mapping reads. Refused for another
+// weight type or inconsistent attention dimensions.
 inline std::expected<std::vector<spec::SourceValue>, std::string> Qwen2Values(
     const Qwen2Profile& p) {
   using spec::mappings::FlagValue;
@@ -118,7 +117,8 @@ inline std::expected<std::vector<spec::SourceValue>, std::string> Qwen2Values(
       Value("qwen2.attention.key_length", p.head_dim),
       Value("qwen2.attention.layer_norm_rms_epsilon", p.rms_eps),
       Value("qwen2.rope.freq_base", p.rope_base),
-      FlagValue("llmp.qwen2.exl3", p.weight_type == "exl3"),
+      Value("qwen2.hidden_act", "silu"),
+      FlagValue("qwen2.use_sliding_window", false),
   };
 }
 

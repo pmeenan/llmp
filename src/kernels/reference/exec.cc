@@ -788,19 +788,97 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
     case Op::kPermute:
       return {};
 
-    case Op::kCont:
+    case Op::kCont: {
+      const TensorDesc& src_desc = g.tensor(node.src[0]);
+      const TensorDesc& dst_desc = g.tensor(out);
+      const Root& src_root = RootOf(node.src[0]);
+      Root& dst_root = RootOf(out);
+      if (src_desc.format.layout == format::Layout::kDense &&
+          dst_desc.format.layout == format::Layout::kDense &&
+          src_desc.format.encoding == dst_desc.format.encoding) {
+        if (src_root.parts.empty()) {
+          return Fail(ExecError::kUnbound, std::format("tensor {} has no bytes", node.src[0].v));
+        }
+        const std::byte* src_data = src_root.parts[0].data();
+        std::byte* dst_data = dst_root.parts[0].data() + dst_desc.view_offset;
+        const std::uint64_t unit = dst_desc.nb[0];
+        const Ne& an = ne(0);
+        std::uint64_t k = 0;
+        for (std::uint64_t i3 = 0; i3 < an[3]; ++i3) {
+          for (std::uint64_t i2 = 0; i2 < an[2]; ++i2) {
+            for (std::uint64_t i1 = 0; i1 < an[1]; ++i1) {
+              for (std::uint64_t i0 = 0; i0 < an[0]; ++i0) {
+                const std::uint64_t s_off = src_desc.view_offset + (i0 * src_desc.nb[0]) +
+                                            (i1 * src_desc.nb[1]) + (i2 * src_desc.nb[2]) +
+                                            (i3 * src_desc.nb[3]);
+                std::memcpy(dst_data + (k++ * unit), src_data + s_off,
+                            static_cast<std::size_t>(unit));
+              }
+            }
+          }
+        }
+        return {};
+      }
+      LLMP_LOAD(a, node.src[0]);
+      return Store(out, a);
+    }
     case Op::kConvert:
     case Op::kPrepare: {
       LLMP_LOAD(a, node.src[0]);
       return Store(out, a);
     }
     case Op::kConcat: {
-      LLMP_LOAD(a, node.src[0]);
-      LLMP_LOAD(b, node.src[1]);
+      const TensorDesc& a_desc = g.tensor(node.src[0]);
+      const TensorDesc& b_desc = g.tensor(node.src[1]);
+      const TensorDesc& dst_desc = g.tensor(out);
+      const Root& a_root = RootOf(node.src[0]);
+      const Root& b_root = RootOf(node.src[1]);
+      Root& dst_root = RootOf(out);
       const auto dim = node.Params<ir::ConcatParams>().dim;
       const Ne& an = ne(0);
       const Ne& bn = ne(1);
       const Ne& on = out_ne();
+      if (a_desc.format.layout == format::Layout::kDense &&
+          b_desc.format.layout == format::Layout::kDense &&
+          dst_desc.format.layout == format::Layout::kDense &&
+          a_desc.format.encoding == dst_desc.format.encoding &&
+          b_desc.format.encoding == dst_desc.format.encoding) {
+        if (a_root.parts.empty()) {
+          return Fail(ExecError::kUnbound, std::format("tensor {} has no bytes", node.src[0].v));
+        }
+        if (b_root.parts.empty()) {
+          return Fail(ExecError::kUnbound, std::format("tensor {} has no bytes", node.src[1].v));
+        }
+        const std::byte* a_data = a_root.parts[0].data();
+        const std::byte* b_data = b_root.parts[0].data();
+        std::byte* dst_data = dst_root.parts[0].data();
+        const std::uint64_t unit = dst_desc.nb[0];
+        for (std::uint64_t i3 = 0; i3 < on[3]; ++i3) {
+          for (std::uint64_t i2 = 0; i2 < on[2]; ++i2) {
+            for (std::uint64_t i1 = 0; i1 < on[1]; ++i1) {
+              for (std::uint64_t i0 = 0; i0 < on[0]; ++i0) {
+                std::array<std::uint64_t, 4> i{i0, i1, i2, i3};
+                const bool first = i.at(dim) < an.at(dim);
+                if (!first) {
+                  i.at(dim) -= an.at(dim);
+                }
+                const TensorDesc& s_desc = first ? a_desc : b_desc;
+                const std::byte* s_data = first ? a_data : b_data;
+                const std::uint64_t s_off = s_desc.view_offset + (i[0] * s_desc.nb[0]) +
+                                            (i[1] * s_desc.nb[1]) + (i[2] * s_desc.nb[2]) +
+                                            (i[3] * s_desc.nb[3]);
+                const std::uint64_t d_off = dst_desc.view_offset + (i0 * dst_desc.nb[0]) +
+                                            (i1 * dst_desc.nb[1]) + (i2 * dst_desc.nb[2]) +
+                                            (i3 * dst_desc.nb[3]);
+                std::memcpy(dst_data + d_off, s_data + s_off, static_cast<std::size_t>(unit));
+              }
+            }
+          }
+        }
+        return {};
+      }
+      LLMP_LOAD(a, node.src[0]);
+      LLMP_LOAD(b, node.src[1]);
       Vec r(Count(on));
       for (std::uint64_t i3 = 0; i3 < on[3]; ++i3) {
         for (std::uint64_t i2 = 0; i2 < on[2]; ++i2) {
@@ -1905,7 +1983,7 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
             s += p.fold == ir::HcFold::kWeights ? val * w[(t * hc) + h]
                                                 : val * Sigmoid(w[Ix(xn, i, h, t, 0)]);
           }
-          r[(t * width) + i] = p.fold == ir::HcFold::kGated ? s * p.scale : s;
+          r[(t * width) + i] = p.scale == 1.0f ? s : s * p.scale;
         }
       }
       return Store(out, r);
@@ -1946,29 +2024,35 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
       LLMP_LOAD(scale, node.src[1]);
       LLMP_LOAD(base, node.src[2]);
       const std::uint64_t hc = p.streams;
-      const std::uint64_t m = (2 + hc) * hc;
+      const std::uint64_t m = ne(0)[0];
       const std::uint64_t t_count = ne(0)[1];
       const double eps = p.eps;
       if (p.mix == ir::HcMixKind::kSigmoid) {
+        const std::uint64_t off = p.mix_offset;
+        const std::uint64_t sc_idx = p.scale_index;
         Vec r(hc * 2 * t_count);
         for (std::uint64_t t = 0; t < t_count; ++t) {
           for (std::uint64_t d = 0; d < hc; ++d) {
-            const double pre = Sigmoid((mixes[(t * m) + d] * scale[0]) + base[d]) + eps;
-            const double post = 2.0 * Sigmoid((mixes[(t * m) + hc + d] * scale[1]) + base[hc + d]);
+            const double pre =
+                Sigmoid((mixes[(t * m) + off + d] * scale[sc_idx]) + base[off + d]) + eps;
+            const double post = 2.0 * Sigmoid((mixes[(t * m) + off + hc + d] * scale[sc_idx + 1]) +
+                                              base[off + hc + d]);
             r[(t * 2 * hc) + d] = pre;
             r[(t * 2 * hc) + hc + d] = post;
           }
         }
         return Store(out, r);
       }
+      const std::uint64_t off = p.mix_offset != 0 ? p.mix_offset : (m == hc * hc ? 0 : 2 * hc);
+      const std::uint64_t sc_idx = p.scale_index != 0 ? p.scale_index : (ne(1)[0] == 1 ? 0 : 2);
       Vec r(hc * hc * t_count);
       std::vector<double> c(static_cast<std::size_t>(hc * hc));  // c[dst + hc · src]
       for (std::uint64_t t = 0; t < t_count; ++t) {
         for (std::uint64_t src = 0; src < hc; ++src) {
           std::span<double> col(&c[hc * src], static_cast<std::size_t>(hc));
           for (std::uint64_t dst = 0; dst < hc; ++dst) {
-            const std::uint64_t at = (2 * hc) + dst + (hc * src);
-            col[dst] = (mixes[(t * m) + at] * scale[2]) + base[at];
+            const std::uint64_t at = off + dst + (hc * src);
+            col[dst] = (mixes[(t * m) + at] * scale[sc_idx]) + base[at];
           }
           SoftmaxRow(col, std::nullopt);
           for (double& v : col) {

@@ -157,6 +157,9 @@ Outputs HcPre(D& d, const HcParams& p) {
       const TensorId term = b.Mul(xh, wh);
       acc = acc.valid() ? b.Add(acc, term) : term;
     }
+    if (p.scale != 1.0f) {
+      acc = b.Scale(acc, p.scale);
+    }
     return One(acc);
   }
   const TensorId m = b.Mul(x, b.Unary(d.s(1), UnaryFn::kSigmoid));
@@ -211,25 +214,29 @@ Outputs HcMix(D& d, const HcParams& p) {
   const TensorDesc& mt = d.t(mixes);
   const std::uint64_t t = mt.ne(1);
   if (p.mix == HcMixKind::kSigmoid) {
+    const std::uint64_t off = p.mix_offset;
+    const std::uint64_t sc_idx = p.scale_index;
     const auto weights = [&](std::uint64_t at, std::uint64_t which) {
       TensorId v = d.View2(mixes, hc, t, mt.nb[0], mt.nb[1], at * mt.nb[0]);
       v = b.Add(b.Mul(v, Element(d, scale, which)), Range(d, base, at, hc));
       return b.Unary(v, UnaryFn::kSigmoid);
     };
-    const TensorId pre = b.Scale(weights(0, 0), 1.0f, p.eps);
-    const TensorId post = b.Scale(weights(hc, 1), 2.0f, 0.0f);
+    const TensorId pre = b.Scale(weights(off, sc_idx), 1.0f, p.eps);
+    const TensorId post = b.Scale(weights(off + hc, sc_idx + 1), 2.0f, 0.0f);
     const TensorId pre_rows = b.Reshape(pre, S(hc, 1, t));
     const TensorId post_rows = b.Reshape(post, S(hc, 1, t));
     return One(b.Concat(pre_rows, post_rows, 1));
   }
-  // Sinkhorn: [dst, src, t] from the last hc² mixes.
+  // Sinkhorn: [dst, src, t] from the hc² mixes at mix_offset (or 2·hc when packed).
   const std::uint64_t e = mt.nb[0];
-  TensorId m = b.View(mixes, S(hc, hc, t), Nb{e, e * hc, mt.nb[1], mt.nb[1] * t}, 2 * hc * e);
-  m = b.Mul(m, Element(d, scale, 2));
+  const std::uint64_t off = p.mix_offset != 0 ? p.mix_offset : (mt.ne(0) == hc * hc ? 0 : 2 * hc);
+  const std::uint64_t sc_idx = p.scale_index != 0 ? p.scale_index : (d.t(scale).ne(0) == 1 ? 0 : 2);
+  TensorId m = b.View(mixes, S(hc, hc, t), Nb{e, e * hc, mt.nb[1], mt.nb[1] * t}, off * e);
+  m = b.Mul(m, Element(d, scale, sc_idx));
   const TensorDesc& bt = d.t(base);
   m = b.Add(m, b.View(base, S(hc, hc),
                       Nb{bt.nb[0], bt.nb[0] * hc, bt.nb[0] * hc * hc, bt.nb[0] * hc * hc},
-                      2 * hc * bt.nb[0]));
+                      off * bt.nb[0]));
   m = b.SoftMax(m, {}, {}, SoftMaxParams{});
   m = b.Scale(m, 1.0f, p.eps);
   const auto cols = [&] {
@@ -302,6 +309,62 @@ Outputs RoundedIndexScore(D& d, const RoundedIndexScoreParams& p) {
   const TensorId sum = b.SumRows(b.Cont(b.Permute(weighted, {1, 0, 2, 3})));
   return One(
       b.PrefixOverwrite(b.Reshape(sum, S(cells, q.ne(2))), d.s(3), {.fill_bits = 0xff800000U}));
+}
+
+Outputs VisibleTopK(D& d, const TopKParams& p) {
+  if (!d.need(2, 2)) {
+    return {};
+  }
+  Builder& b = d.b();
+  const TensorDesc& x = d.t(d.s(0));
+  const std::uint64_t c = x.ne(0);
+  const std::uint64_t t = x.ne(1);
+  const std::uint64_t keep = std::min<std::uint64_t>(p.k, c);
+  // Overwrite invisible tail columns (>= visible_len) with quiet NaN so every
+  // visible score (finite, -inf, or NaN at a lower column index) ranks ahead
+  // of every invisible column under stable descending TopK.
+  const TensorId prefixed = b.PrefixOverwrite(d.s(0), d.s(1), {.fill_bits = 0x7fc00000U});
+  const TensorId top_ids = b.TopK(prefixed, static_cast<std::uint32_t>(keep));
+  const TensorId top_f32 = b.Convert(top_ids, format::Encoding::kF32);
+  const TensorId order = b.Argsort(top_f32, false);
+  const TensorId sorted =
+      b.Reshape(b.GetRows(b.Reshape(top_f32, S(1, keep, t)), order), S(keep, t));
+  TensorId masked = b.PrefixOverwrite(sorted, d.s(1), {.fill_bits = 0xbf800000U});
+  if (p.k > keep) {
+    masked = b.Concat(masked, b.Fill(S(p.k - keep, t), -1.0f), 0);
+  }
+  return One(b.Convert(masked, format::Encoding::kI32));
+}
+
+Outputs SelectedMask(D& d, const SelectedMaskParams& p) {
+  if (!d.need(2, 2)) {
+    return {};
+  }
+  Builder& b = d.b();
+  const TensorDesc& raw = d.t(d.s(0));
+  const TensorDesc& ids = d.t(d.s(1));
+  const std::uint64_t window = raw.ne(0);
+  const std::uint64_t t = raw.ne(1);
+  const std::uint64_t k = ids.ne(0);
+  const std::uint64_t cells = p.cells;
+  const float neg_inf = -std::numeric_limits<float>::infinity();
+  TensorId raw_part = d.s(0);
+  if (window < p.raw_cells) {
+    const TensorId pad = b.Fill(S(p.raw_cells - window, t), neg_inf, format::Encoding::kF16);
+    raw_part = b.Concat(raw_part, pad, 0);
+  }
+  const TensorId iota_i32 = b.Argsort(b.Fill(S(cells), 0.0f), false);
+  const TensorId iota_f32 = b.Reshape(b.Convert(iota_i32, format::Encoding::kF32), S(cells, 1, 1));
+  const TensorId grid = b.Repeat(iota_f32, S(cells, k, t));
+  const TensorId ids_f32 = b.Reshape(b.Convert(d.s(1), format::Encoding::kF32), S(1, k, t));
+  const TensorId diff = b.Sub(grid, ids_f32);
+  const TensorId match = b.Scale(b.Unary(b.Unary(diff, UnaryFn::kAbs), UnaryFn::kSgn), -1.0f, 1.0f);
+  const TensorId hits = b.Reshape(b.SumRows(b.Cont(b.Permute(match, {1, 0, 2, 3}))), S(cells, t));
+  const TensorId cond = b.Convert(hits, format::Encoding::kI32);
+  const TensorId zero_f16 = b.Fill(S(cells, t), 0.0f, format::Encoding::kF16);
+  const TensorId ninf_f16 = b.Fill(S(cells, t), neg_inf, format::Encoding::kF16);
+  const TensorId comp_part = b.Select(cond, zero_f16, ninf_f16);
+  return One(b.Concat(raw_part, comp_part, 0));
 }
 
 Outputs Pool(D& d, const PoolParams& p) {
@@ -473,45 +536,52 @@ Outputs GatedDeltaNet(D& d) {
     return b.View(x, S(xt.ne(0), 1, xt.ne(1), xt.ne(3)), Nb{xt.nb[0], xt.nb[1], xt.nb[1], xt.nb[3]},
                   i * xt.nb[2]);
   };
-  // q's or k's token i for every value head and sequence: head h reads h %
-  // Hk and sequence s reads s / (B / Bq). Their [Sk, Hk, 1, Bq] view tiled
-  // to [Sk, H, B / Bq, Bq] holds (h, s = j · (B / Bq) + r) at (h, r, j),
-  // which is s's place in [Sk, H, B].
-  const auto spread = [&](TensorId x, std::uint64_t i) {
-    const TensorDesc& xt = d.t(x);
-    const TensorId one =
-        b.View(x, S(sk, hk, 1, bq), Nb{xt.nb[0], xt.nb[1], xt.nb[2], xt.nb[3]}, i * xt.nb[2]);
-    return b.Reshape(b.Repeat(one, S(sk, h, seqs / bq, bq)), S(sk, 1, h, seqs));
+  // Spread q or k across all tokens at once: head h reads h % Hk and sequence
+  // s reads s / (B / Bq), producing [Sk, H, T, B].
+  const auto spread_all = [&](TensorId x) {
+    TensorId y = x;
+    if (hk != h) {
+      y = b.Repeat(y, S(sk, h, t, bq));
+    }
+    if (bq != seqs) {
+      y = b.Reshape(d.Packed(y), S(sk * h * t, 1, bq));
+      y = b.Reshape(b.Repeat(y, S(sk * h * t, seqs / bq, bq)), S(sk, h, t, seqs));
+    }
+    return y;
   };
-  // Each token's output, [Sv, 1, H, B] and so one row of Sv · H · B values,
-  // is stored at its own row of one [Sv · H · B, T] buffer: a store copies
-  // only that row, where joining the outputs would copy every earlier one
-  // again. Token i goes to row rows[i] and is gathered back from it, so any
-  // permutation serves as rows: an argsort's order of T equal values (0 to
-  // T - 1 for a stable sort, but an unstable one's order is as good).
-  const std::uint64_t width = sv * h * seqs;
-  TensorId buffer = b.Fill(S(width, t), 0.0f);
-  const TensorId rows = b.Argsort(b.Fill(S(t), 0.0f), false);
+  const TensorId q_all = spread_all(d.s(0));
+  const TensorId k_all = spread_all(d.s(1));
+  const TensorId kb_all = b.Mul(k_all, d.s(4));
+  const TensorId decay_all = b.Unary(d.s(3), UnaryFn::kExp);
+  const TensorDesc& kbt = d.t(kb_all);
   TensorId state = d.s(5);
   const float scale = 1.0f / std::sqrt(static_cast<float>(sk));
+  std::vector<TensorId> outs;
+  outs.reserve(static_cast<std::size_t>(t));
   for (std::uint64_t i = 0; i < t && b.ok(); ++i) {
-    const TensorId qt = spread(d.s(0), i);
-    const TensorId kt = spread(d.s(1), i);
-    const TensorId decay = b.Unary(token(d.s(3), i), UnaryFn::kExp);  // [1 or Sk, 1, H, B]
+    const TensorId qt = token(q_all, i);
+    const TensorId kt = token(k_all, i);
+    const TensorId decay = token(decay_all, i);  // [1 or Sk, 1, H, B]
     state = b.Mul(state, decay);
     const TensorId kv = b.MatMul(state, kt);  // [Sv, 1, H, B]
     const TensorId diff = b.Sub(token(d.s(2), i), kv);
-    const TensorId delta = b.Mul(diff, token(d.s(4), i));
-    const TensorId kt_rows = b.Reshape(kt, S(1, sk, h, seqs));
-    const TensorId outer = b.MatMul(kt_rows, b.Reshape(delta, S(1, sv, h, seqs)));
-    state = b.Add(state, outer);                               // [Sk, Sv, H, B]
-    const TensorId out = b.Scale(b.MatMul(state, qt), scale);  // [Sv, 1, H, B]
-    buffer = b.CacheStore(buffer, b.Reshape(out, S(width, 1)), Element(d, rows, i));
+    const TensorId kbt_rows = b.View(kb_all, S(1, sk, h, seqs),
+                                     Nb{kbt.nb[0], kbt.nb[0], kbt.nb[1], kbt.nb[3]}, i * kbt.nb[2]);
+    const TensorId outer = b.MatMul(kbt_rows, b.Reshape(diff, S(1, sv, h, seqs)));
+    state = b.Add(state, outer);          // [Sk, Sv, H, B]
+    outs.push_back(b.MatMul(state, qt));  // [Sv, 1, H, B]
   }
-  // [Sv · H · B, T] in token order, as [Sv, H, B, T], then [Sv, H, T, B].
-  const TensorId tokens = b.Reshape(b.GetRows(buffer, rows), S(sv, h, seqs, t));
+  while (outs.size() > 1 && b.ok()) {
+    std::vector<TensorId> next;
+    next.reserve((outs.size() + 1) / 2);
+    for (std::size_t i = 0; i < outs.size() && b.ok(); i += 2) {
+      next.push_back(i + 1 < outs.size() ? b.Concat(outs[i], outs[i + 1], 1) : outs[i]);
+    }
+    outs = std::move(next);
+  }
+  const TensorId joined = outs.empty() ? TensorId{} : outs.front();  // [Sv, T, H, B]
   Outputs o;
-  o.ids[0] = b.Cont(b.Permute(tokens, {0, 1, 3, 2}));
+  o.ids[0] = b.Scale(b.Cont(b.Permute(joined, {0, 2, 1, 3})), scale);
   o.ids[1] = state;
   o.n = 2;
   return o;
@@ -622,7 +692,7 @@ TensorId Columns(D& d, TensorId rows) {
   return b.Cont(b.Transpose(b.Reshape(d.Packed(r), S(rt.ne(0), rt.ne(1), 1))));
 }
 
-Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
+Outputs DecomposeNormRopeFused(D& d, FusedKind kind, const ParamBytes& params) {
   Builder& b = d.b();
   switch (kind) {
     case FusedKind::kRmsNormMul: {
@@ -633,159 +703,17 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       return One(b.Mul(b.RmsNorm(d.s(0), p.eps), d.s(1)));
     }
     case FusedKind::kRmsNormMulRope: {
+      if (!d.need(2, 4)) {
+        return {};
+      }
+      const auto p = Get<NormRopeParams>(params);
+      if (d.count() == 2) {
+        return One(b.Rope(b.RmsNorm(d.s(0), p.eps), d.s(1), {}, p.rope));
+      }
       if (!d.need(3, 4)) {
         return {};
       }
-      const auto p = Get<NormRopeParams>(params);
       return One(b.Rope(b.Mul(b.RmsNorm(d.s(0), p.eps), d.s(1)), d.s(2), d.s(3), p.rope));
-    }
-    case FusedKind::kDsv4LidMask: {
-      if (!d.need(5, 5)) return {};
-      const auto p = Get<LidMaskParams>(params);
-      if (!d.check(p.cells == d.t(d.s(1)).ne(2), GraphError::kShape,
-                   "the selected mask and rounded score have the same compressed cells"))
-        return {};
-      const auto scores = b.RoundedIndexScore(d.s(0), d.s(1), d.s(2), d.s(3));
-      const auto selected = b.VisibleTopK(scores, d.s(3), p.top);
-      return One(b.SelectedMask(d.s(4), selected, {.raw_cells = p.raw_cells, .cells = p.cells}));
-    }
-    case FusedKind::kStateBankAttention: {
-      if (!d.need(3, 5)) return {};
-      const auto p = Get<AttnParams>(params);
-      const TensorId joined = b.Concat(d.s(1), d.s(2), 2);
-      const TensorId keys = b.Permute(joined, {0, 2, 1, 3});
-      const TensorId values = b.Permute(joined, {0, 2, 1, 3});
-      return One(b.Attention(d.s(0), keys, values, d.s(3), d.s(4), p));
-    }
-    case FusedKind::kDsv4QHead: {
-      if (!d.need(2, 2)) return {};
-      const auto p = Get<NormRopeParams>(params);
-      return One(b.Rope(b.RmsNorm(d.s(0), p.eps), d.s(1), {}, p.rope));
-    }
-    case FusedKind::kDsv4OutA: {
-      if (!d.need(3, 3)) return {};
-      const auto p = Get<RopeParams>(params);
-      const TensorDesc w = d.t(d.s(0));
-      const TensorDesc x = d.t(d.s(1));
-      // The weight's groups: [per, o_rank, groups], or [per, o_rank ·
-      // groups] for the rotated rows' features split into groups of `per`.
-      const std::uint64_t per = w.ne(0);
-      const std::uint64_t total_features = x.ne(0) * x.ne(1);
-      const bool stacked = w.shape().rank == 3;
-      const std::uint64_t groups = per > 0 ? total_features / per : 0;
-      if (!d.check(per > 0 && groups > 0 && total_features % per == 0 && x.ne(3) == 1 &&
-                       w.ne(3) == 1 &&
-                       (stacked ? w.ne(2) == groups : w.ne(2) == 1 && w.ne(1) % groups == 0),
-                   GraphError::kShape,
-                   "a weight of groups of the rows' features, each `per` wide, as many groups "
-                   "as the weight holds"))
-        return {};
-      const std::uint64_t o_rank = stacked ? w.ne(1) : w.ne(1) / groups;
-      const std::uint64_t rows = x.ne(2);
-      TensorId rotated = b.Rope(d.s(1), d.s(2), {}, p);
-      TensorId out = b.Permute(b.Reshape(rotated, S(per, groups, rows)), {0, 2, 1, 3});
-      TensorId g = stacked ? d.s(0) : b.Reshape(d.Packed(d.s(0)), S(per, o_rank, groups));
-      TensorId low = b.Permute(b.MatMul(g, out), {0, 2, 1, 3});
-      return One(b.Cont(low, S(o_rank * groups, rows)));
-    }
-    case FusedKind::kDsv4Compress: {
-      if (!d.need(5, 5)) return {};
-      const auto p = Get<CompressorParams>(params);
-      const TensorDesc sk = d.t(d.s(0));
-      const TensorDesc ss = d.t(d.s(1));
-      const TensorDesc kv = d.t(d.s(2));
-      const TensorDesc sc = d.t(d.s(3));
-      const TensorDesc ids = d.t(d.s(4));
-      const auto matrix = [](const TensorDesc& t) {
-        return t.format.encoding == format::Encoding::kF32 && t.ne(2) == 1 && t.ne(3) == 1;
-      };
-      if (!d.check(p.ratio > 0 && p.ratio <= std::numeric_limits<std::uint32_t>::max() / 2,
-                   GraphError::kParams, "a bounded positive compressor ratio") ||
-          !d.check(matrix(sk) && matrix(ss) && matrix(kv) && matrix(sc), GraphError::kShape,
-                   "compressor values and scores are F32 matrices") ||
-          !d.check(sk.shape().ne == ss.shape().ne && kv.shape().ne == sc.shape().ne &&
-                       sk.ne(0) == kv.ne(0) && (!p.overlap || sk.ne(0) % 2 == 0),
-                   GraphError::kShape, "matching compressor channels, states and current rows") ||
-          !d.check(ids.format.encoding == format::Encoding::kI32 && ids.ne(1) == 1 &&
-                       ids.ne(2) == 1 && ids.ne(3) == 1,
-                   GraphError::kShape, "compressor read indices are an I32 vector")) {
-        return {};
-      }
-      const std::uint64_t halves = p.overlap ? 2 : 1;
-      const std::uint64_t per_block = halves * p.ratio;
-      if (!d.check(ids.ne(0) % per_block == 0, GraphError::kShape,
-                   "one complete compressor index run per block"))
-        return {};
-      const std::uint64_t blocks = ids.ne(0) / per_block;
-      const std::uint64_t dim = sk.ne(0) / halves;
-      const std::uint64_t reads = std::uint64_t{p.ratio} * blocks;
-      const auto rows = [&](std::size_t state, std::size_t current, bool scores) {
-        TensorId source = b.Concat(d.s(state), d.s(current), 1);
-        if (!b.ok()) return TensorId{};
-        if (p.overlap) {
-          const TensorDesc sd = d.t(source);
-          // A true constant: 0 * a masked score (-inf) would produce NaN.
-          const TensorId zero = b.Fill(ShapeOf({sd.ne(0), 1}),
-                                       scores ? -std::numeric_limits<float>::infinity() : 0.0F,
-                                       format::Encoding::kF32);
-          source = b.Concat(source, zero, 1);
-        }
-        const TensorId picked = b.GetRows(source, d.s(4));
-        if (!b.ok()) return TensorId{};
-        if (!p.overlap) return b.Reshape(picked, ShapeOf({dim, p.ratio, blocks}));
-        const TensorDesc pd = d.t(picked);
-        const auto half = [&](std::uint64_t offset) {
-          const TensorId v = d.View2(picked, dim, reads, pd.nb[0], pd.nb[1], offset);
-          return b.Reshape(b.Cont(v), ShapeOf({dim, p.ratio, blocks}));
-        };
-        const TensorId previous = half(0);
-        const TensorId current_half = half(reads * pd.nb[1] + dim * pd.nb[0]);
-        return b.Concat(previous, current_half, 1);
-      };
-      const TensorId values = rows(0, 2, false);
-      const TensorId scores = rows(1, 3, true);
-      return One(
-          b.Pool(values, scores,
-                 {.ratio = static_cast<std::uint32_t>(per_block), .kind = PoolKind::kSoftmax}));
-    }
-    case FusedKind::kDsv4HcPre: {
-      if (!d.need(5, 5)) return {};
-      const auto p = Get<SinkhornPreParams>(params);
-      const TensorId x = d.s(0);
-      const TensorDesc xd = d.t(x);
-      const std::uint64_t width = xd.ne(0);
-      const std::uint64_t hc = p.streams;
-      const std::uint64_t tokens = xd.ne(2);
-      const auto shape = [&](std::size_t at, const Shape& wanted) {
-        const TensorDesc td = d.t(d.s(at));
-        return td.shape().ne == wanted.ne && td.format.encoding == format::Encoding::kF32;
-      };
-      if (!d.check(hc >= 2 && hc <= 64 && p.iterations >= 1 && p.iterations <= 1024,
-                   GraphError::kParams, "bounded Sinkhorn streams and iterations") ||
-          !d.check(shape(0, S(width, hc, tokens)) && shape(2, S(3)) && shape(3, S((2 + hc) * hc)) &&
-                       shape(4, S(width)) &&
-                       d.t(d.s(1)).shape().ne == S(width * hc, (2 + hc) * hc).ne,
-                   GraphError::kShape, "Sinkhorn streams, mixing weights, scales, bases and norm"))
-        return {};
-      const TensorId flat = b.Reshape(d.Packed(x), S(width * hc, tokens));
-      const TensorId mixes = b.MatMul(d.s(1), b.RmsNorm(flat, p.eps));
-      if (!b.ok()) return {};
-      const TensorDesc md = d.t(mixes);
-      const auto run = [&](std::uint64_t first) {
-        return d.View2(mixes, hc, tokens, md.nb[0], md.nb[1], first * md.nb[0]);
-      };
-      TensorId post = b.Mul(run(hc), Element(d, d.s(2), 1));
-      post = b.Scale(b.Unary(b.Add(post, Range(d, d.s(3), hc, hc)), UnaryFn::kSigmoid), 2.0F);
-      const TensorId comb = b.HcMix(mixes, d.s(2), d.s(3),
-                                    {.mix = HcMixKind::kSinkhorn,
-                                     .streams = p.streams,
-                                     .iterations = p.iterations,
-                                     .eps = p.hc_eps});
-      TensorId pre = b.Mul(run(0), Element(d, d.s(2), 0));
-      pre =
-          b.Scale(b.Unary(b.Add(pre, Range(d, d.s(3), 0, hc)), UnaryFn::kSigmoid), 1.0F, p.hc_eps);
-      const TensorId folded = b.HcPre(x, pre, {.fold = HcFold::kWeights, .streams = p.streams});
-      return Many({b.Mul(b.RmsNorm(folded, p.eps), d.s(4)), post, comb});
     }
     case FusedKind::kRmsNormMulAdd: {
       if (!d.need(3, 3)) {
@@ -807,104 +735,6 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       const TensorId rows = b.Reshape(r, S(rt.ne(0) * rt.ne(1), rt.ne(2), rt.ne(3)));
       return One(b.CacheStore(d.s(2), rows, d.s(3)));
     }
-    case FusedKind::kMatMulGlu: {
-      if (!d.need(3, 3)) {
-        return {};
-      }
-      const auto p = Get<GluParams>(params);
-      const TensorId gate = b.MatMul(d.s(0), d.s(2));
-      const TensorId up = b.MatMul(d.s(1), d.s(2));
-      return One(b.Glu(gate, up, p));
-    }
-    case FusedKind::kMatMulAdd: {
-      if (!d.need(3, 3)) {
-        return {};
-      }
-      return One(b.Add(b.MatMul(d.s(0), d.s(1)), d.s(2)));
-    }
-    case FusedKind::kOwnerAttention: {
-      const auto p = Get<OwnerAttnParams>(params);
-      const std::uint64_t n = p.owners;
-      const std::uint64_t cohort = p.cohort == 0 ? n : p.cohort;
-      if (!d.check(n >= 1 && n <= 4 && !p.attn.sinks, GraphError::kParams,
-                   "one to four owners, no sinks") ||
-          !d.check(cohort <= kMaxOwnerCohort && std::uint64_t{p.offset} + n <= cohort,
-                   GraphError::kParams, "a group within its cohort") ||
-          !d.need(2 + (2 * n), 2 + (2 * n))) {
-        return {};
-      }
-      // Owners on dim 3 (op.h): each owner's queries and mask are its own
-      // matrix, the mask's rows padded as its producer padded them.
-      const TensorDesc& q = d.t(d.s(0));
-      const TensorDesc& mask = d.t(d.s(1));
-      if (!d.check(q.ne(3) == n && mask.ne(3) == n && mask.ne(2) == 1, GraphError::kShape,
-                   "one query and mask matrix an owner, on dim 3")) {
-        return {};
-      }
-      const std::uint64_t r = q.ne(1);
-      TensorId out{};
-      for (std::uint64_t o = 0; o < n && b.ok(); ++o) {
-        const TensorId k = d.s(2 + o);
-        const TensorId v = d.s(2 + n + o);
-        const std::uint64_t cells = d.t(k).ne(1);
-        if (!d.check(cells <= mask.ne(0) && r <= mask.ne(1), GraphError::kShape,
-                     "each owner's mask covers its cells and rows")) {
-          return {};
-        }
-        const TensorId qo = b.View(d.s(0), S(q.ne(0), r, q.ne(2), 1), q.nb, o * q.nb[3]);
-        const TensorId mo = b.View(d.s(1), S(cells, r, 1, 1), mask.nb, o * mask.nb[3]);
-        const TensorId a = b.Attention(qo, k, v, mo, {}, p.attn);  // [Dv, H, R, 1]
-        out = out.valid() ? b.Concat(out, a, 3) : a;
-      }
-      return One(out);
-    }
-    case FusedKind::kMoeGlu: {
-      if (!d.need(5, 5)) {
-        return {};
-      }
-      const auto p = Get<GluParams>(params);
-      const TensorId gate = b.Mul(d.s(0), ScaleRows(d, d.s(3), d.s(2)));
-      const TensorId up = b.Mul(d.s(1), ScaleRows(d, d.s(4), d.s(2)));
-      return One(b.Glu(gate, up, p));
-    }
-    case FusedKind::kMoeCombine: {
-      if (!d.need(4, 6)) {
-        return {};
-      }
-      // A gate is [1, T]: s_down in its place (a source short) would
-      // broadcast over the shared expert's output unnoticed.
-      if (d.s(4).valid() &&
-          !d.check(d.t(d.s(4)).ne(0) == 1 && d.t(d.s(4)).ne(1) == d.t(d.s(3)).ne(1),
-                   GraphError::kShape, "the shared expert's gate is [1, T]")) {
-        return {};
-      }
-      const TensorId routed = b.ExpertReduce(d.s(0), d.s(2), d.s(1), d.s(5));
-      const TensorId shared =
-          d.s(4).valid() ? b.Mul(d.s(3), b.Unary(d.s(4), UnaryFn::kSigmoid)) : d.s(3);
-      return One(b.Add(routed, shared));
-    }
-    case FusedKind::kHcNorm: {
-      if (!d.need(2, 2)) {
-        return {};
-      }
-      const auto p = Get<NormParams>(params);
-      const TensorDesc& x = d.t(d.s(0));
-      const TensorId n = b.Reshape(b.RmsNorm(d.s(0), p.eps), S(x.ne(0) * x.ne(1), x.ne(2)));
-      return One(b.Mul(n, d.s(1)));
-    }
-    case FusedKind::kHcNormPost: {
-      if (!d.need(3, 4)) {
-        return {};
-      }
-      const auto p = Get<HcNormPostParams>(params);
-      const TensorId post =
-          b.HcPost(d.s(0), d.s(1), d.s(2), d.s(3), HcParams{.streams = p.streams});
-      if (!b.ok()) {
-        return {};
-      }
-      const TensorDesc& pt = d.t(post);
-      return Many({post, b.RmsNorm(b.Reshape(post, S(pt.ne(0) * pt.ne(1), pt.ne(2))), p.eps)});
-    }
     case FusedKind::kQkPrep: {
       if (!d.need(5, 6)) {
         return {};
@@ -914,35 +744,6 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       const TensorId k = b.Rope(b.Mul(b.RmsNorm(d.s(2), p.eps), d.s(3)), d.s(4), d.s(5), p.rope);
       return Many({q, k});
     }
-    case FusedKind::kGroupedMatMul: {
-      if (!d.need(2, 2)) return {};
-      const auto& w = d.t(d.s(0));
-      const auto& x = d.t(d.s(1));
-      if (!d.check(w.ne(0) == x.ne(0) && w.ne(2) == x.ne(1) && w.ne(3) == 1 && x.ne(3) == 1,
-                   GraphError::kShape, "grouped product requires [K,N,G] and [K,G,T]"))
-        return {};
-      const auto product =
-          b.MatMul(d.s(0), b.Permute(d.s(1), {0, 2, 1, 3}), Get<ProductParams>(params));
-      return One(b.Cont(b.Permute(product, {0, 2, 1, 3})));
-    }
-    case FusedKind::kPreparedProducts: {
-      if (!d.need(2, 5)) {
-        return {};
-      }
-      // The weights first, the input last.
-      const std::size_t products = d.count() - 1;
-      const TensorId x = d.s(products);
-      Outputs o;
-      for (std::size_t i = 0; i < products; ++i) {
-        if (!d.check(d.s(i).valid() && x.valid(), GraphError::kArity,
-                     "every product's weight, and the input")) {
-          return {};
-        }
-        o.ids.at(i) = b.MatMul(d.s(i), x);
-      }
-      o.n = static_cast<std::uint8_t>(products);
-      return o;
-    }
     case FusedKind::kNormGate: {
       if (!d.need(3, 3)) {
         return {};
@@ -951,29 +752,15 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       const TensorId n = b.Mul(b.RmsNorm(d.s(0), p.eps), d.s(1));
       return One(b.Mul(n, b.Unary(d.s(2), UnaryFn::kSigmoid)));
     }
-    case FusedKind::kLayerNormModulate: {
-      if (!d.need(2, 2)) {
-        return {};
-      }
-      const auto p = Get<NormParams>(params);
-      const TensorId normed = b.LayerNorm(d.s(0), p.eps);
-      return One(b.Mul(normed, b.Scale(d.s(1), 1.0f, 1.0f)));
-    }
-    case FusedKind::kGatedResidual: {
-      if (!d.need(3, 3)) {
-        return {};
-      }
-      return One(b.Add(d.s(0), b.Mul(d.s(2), b.Unary(d.s(1), UnaryFn::kTanh))));
-    }
-    case FusedKind::kGatedResidualNorm: {
-      if (!d.need(4, 4)) {
-        return {};
-      }
-      const auto p = Get<NormParams>(params);
-      const TensorId x = b.Add(d.s(0), b.Mul(d.s(2), b.Unary(d.s(1), UnaryFn::kTanh)));
-      const TensorId normed = b.LayerNorm(x, p.eps);
-      return Many({x, b.Mul(normed, b.Scale(d.s(3), 1.0f, 1.0f))});
-    }
+    default:
+      b.Refuse(GraphError::kParams, "an unknown fused kind");
+      return {};
+  }
+}
+
+Outputs DecomposeSpatialAndModulateFused(D& d, FusedKind kind, const ParamBytes& params) {
+  Builder& b = d.b();
+  switch (kind) {
     case FusedKind::kEulerStep: {
       if (!d.need(3, 3)) {
         return {};
@@ -989,14 +776,10 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       const auto p = Get<SpatialNormParams>(params);
       const TensorDesc& x = d.t(d.s(0));
       const TensorDesc& gamma = d.t(d.s(1));
-      // Ranks are canonical (a trailing extent of one drops one): gamma's
-      // extents, not its rank, say it is a vector.
       if (!d.check(gamma.shape().ne == ShapeOf({x.ne(2)}).ne, GraphError::kShape,
                    "a [W, H, C, N] input and a [C] gamma")) {
         return {};
       }
-      // As the spatial channel norm component emits it (components/
-      // image_blocks.cc SpatialNorm): channel rows, normed, back.
       const TensorId rows = b.Cont(b.Permute(d.s(0), {1, 2, 0, 3}));
       TensorId out = b.Mul(b.Scale(b.L2Norm(rows, p.eps), p.scale), d.s(1));
       if (p.silu) {
@@ -1021,8 +804,6 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
                    "one to three sections covering the head and a [D] weight")) {
         return {};
       }
-      // The weight read as F32 (a widening, exact), as components/defs.h
-      // NormScale converts it.
       TensorId w = d.s(1);
       if (d.t(w).format.encoding != format::Encoding::kF32) {
         w = b.Convert(w, format::Encoding::kF32);
@@ -1037,10 +818,19 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       return One(out);
     }
     case FusedKind::kGatedResidualModulateSplit: {
-      if (!d.need(6, 6)) return {};
-      // The two kinds it joins (a BF16 modulation is cast at the end).
-      const std::array gated{d.s(0), d.s(1), d.s(2), d.s(3)};
+      if (!d.need(4, 6) || !d.check(d.count() == 4 || d.count() == 6, GraphError::kArity,
+                                    "takes 4 (unsplit) or 6 (split) sources")) {
+        return {};
+      }
       const std::array f32{format::Encoding::kF32};
+      if (d.count() == 4) {
+        const std::array gated{d.s(0), d.s(1), d.s(2)};
+        const TensorId x = b.FusedBytes(FusedKind::kGatedResidualSplit, gated, params, f32)[0];
+        const std::array modulated{x, d.s(3)};
+        return Many(
+            {x, b.FusedBytes(FusedKind::kLayerNormModulateSplit, modulated, params, f32)[0]});
+      }
+      const std::array gated{d.s(0), d.s(1), d.s(2), d.s(3)};
       const TensorId x = b.FusedBytes(FusedKind::kGatedResidualSplit, gated, params, f32)[0];
       const std::array modulated{x, d.s(4), d.s(5)};
       return Many({x, b.FusedBytes(FusedKind::kLayerNormModulateSplit, modulated, params, f32)[0]});
@@ -1048,32 +838,37 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
     case FusedKind::kLayerNormModulateSplit:
     case FusedKind::kGatedResidualSplit: {
       const bool gated = kind == FusedKind::kGatedResidualSplit;
-      if (!d.need(gated ? 4 : 3, gated ? 4 : 3)) return {};
+      if (!d.need(gated ? 3 : 2, gated ? 4 : 3)) return {};
       const auto p = Get<SplitModulateParams>(params);
-      const TensorDesc& x = d.t(d.s(0));
-      const std::uint64_t cols = x.ne(0), rows = x.ne(1);
-      const TensorId a = d.s(gated ? 2 : 1), bv = d.s(gated ? 3 : 2);
-      if (!d.check(x.shape().rank <= 2 && p.split <= rows &&
-                       d.t(a).shape().ne == ShapeOf({cols}).ne &&
-                       d.t(bv).shape().ne == ShapeOf({cols}).ne &&
-                       (!gated || d.t(d.s(1)).shape().ne == x.shape().ne),
-                   GraphError::kShape, "rows [C, R] and two [C] vectors split within R"))
-        return {};
-      // Each vector repeated over its rows.
-      const auto rows_of = [&](TensorId v, std::uint64_t n) {
-        return b.Repeat(b.Reshape(d.Packed(v), ShapeOf({cols, 1})), ShapeOf({cols, n}));
+      const auto f32 = [&](TensorId t) {
+        return d.t(t).format.encoding == format::Encoding::kF32
+                   ? t
+                   : b.Convert(t, format::Encoding::kF32);
       };
-      const TensorId side = p.split == 0 ? rows_of(bv, rows)
-                            : p.split == rows
-                                ? rows_of(a, rows)
-                                : b.Concat(rows_of(a, p.split), rows_of(bv, rows - p.split), 1);
-      if (gated) {
-        // A BF16 carry or branch widened (exact).
-        const auto f32 = [&](TensorId t) {
-          return d.t(t).format.encoding == format::Encoding::kF32
-                     ? t
-                     : b.Convert(t, format::Encoding::kF32);
+      TensorId side{};
+      if (d.count() == (gated ? 3u : 2u)) {
+        if (!d.check(p.split == 0, GraphError::kParams, "unsplit form requires split == 0")) {
+          return {};
+        }
+        side = f32(d.s(gated ? 2 : 1));
+      } else {
+        const TensorDesc& x = d.t(d.s(0));
+        const std::uint64_t cols = x.ne(0), rows = x.ne(1);
+        const TensorId a = d.s(gated ? 2 : 1), bv = d.s(gated ? 3 : 2);
+        if (!d.check(x.shape().rank <= 2 && p.split <= rows &&
+                         d.t(a).shape().ne == ShapeOf({cols}).ne &&
+                         d.t(bv).shape().ne == ShapeOf({cols}).ne &&
+                         (!gated || d.t(d.s(1)).shape().ne == x.shape().ne),
+                     GraphError::kShape, "rows [C, R] and two [C] vectors split within R"))
+          return {};
+        const auto rows_of = [&](TensorId v, std::uint64_t n) {
+          return b.Repeat(b.Reshape(d.Packed(v), ShapeOf({cols, 1})), ShapeOf({cols, n}));
         };
+        side = p.split == 0      ? rows_of(bv, rows)
+               : p.split == rows ? rows_of(a, rows)
+                                 : b.Concat(rows_of(a, p.split), rows_of(bv, rows - p.split), 1);
+      }
+      if (gated) {
         return One(b.Add(f32(d.s(0)), b.Mul(f32(d.s(1)), b.Unary(side, UnaryFn::kTanh))));
       }
       return One(b.Mul(b.LayerNorm(d.s(0), p.eps), b.Scale(side, 1.0F, 1.0F)));
@@ -1106,7 +901,6 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
                        dims % 2 == 0,
                    GraphError::kParams, "one to three normal sections of an even head"))
         return {};
-      // (1, 0) in every pair, rotated: each pair's cos and sin.
       const TensorId pairs = b.Concat(b.Fill(ShapeOf({1, dims / 2, rows}), 1.0F),
                                       b.Fill(ShapeOf({1, dims / 2, rows}), 0.0F), 0);
       TensorId out = b.Reshape(b.Cont(pairs), ShapeOf({dims, 1, rows}));
@@ -1146,8 +940,6 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
           b.Permute(b.Reshape(d.Packed(d.s(2)), ShapeOf({dim, kv_heads, rows})), {0, 2, 1, 3}));
       const TensorId va =
           b.Permute(b.Reshape(d.Packed(d.s(3)), ShapeOf({dim, kv_heads, rows})), {0, 2, 1, 3});
-      // The mask's first rows and cells, viewed by its extents: of a packed
-      // copy where it is strided.
       const TensorId masks = d.Packed(d.s(4));
       const TensorDesc packed = d.t(masks);
       const std::uint64_t unit = UnitBytes(packed.format);
@@ -1157,241 +949,103 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       const TensorId out = b.Attention(qa, ka, va, mask, {}, {.scale = p.scale});
       return One(b.Reshape(out, ShapeOf({dim * heads, rows})));
     }
-    case FusedKind::kHcPrep: {
+    default:
+      b.Refuse(GraphError::kParams, "an unknown fused kind");
+      return {};
+  }
+}
+Outputs DecomposeProductAndMoeFused(D& d, FusedKind kind, const ParamBytes& params) {
+  Builder& b = d.b();
+  switch (kind) {
+    case FusedKind::kMatMulGlu: {
+      if (!d.need(3, 3)) {
+        return {};
+      }
+      const auto p = Get<GluParams>(params);
+      const TensorId gate = b.MatMul(d.s(0), d.s(2));
+      const TensorId up = b.MatMul(d.s(1), d.s(2));
+      return One(b.Glu(gate, up, p));
+    }
+    case FusedKind::kMatMulAdd: {
+      if (!d.need(3, 3)) {
+        return {};
+      }
+      return One(b.Add(b.MatMul(d.s(0), d.s(1)), d.s(2)));
+    }
+    case FusedKind::kGroupedMatMul: {
+      if (!d.need(2, 2)) return {};
+      const auto& w = d.t(d.s(0));
+      const auto& x = d.t(d.s(1));
+      if (!d.check(w.ne(0) == x.ne(0) && w.ne(2) == x.ne(1) && w.ne(3) == 1 && x.ne(3) == 1,
+                   GraphError::kShape, "grouped product requires [K,N,G] and [K,G,T]"))
+        return {};
+      const auto product =
+          b.MatMul(d.s(0), b.Permute(d.s(1), {0, 2, 1, 3}), Get<ProductParams>(params));
+      return One(b.Cont(b.Permute(product, {0, 2, 1, 3})));
+    }
+    case FusedKind::kInverseRopeGroupedMatMul: {
+      if (!d.need(3, 3)) return {};
+      const auto p = Get<RopeParams>(params);
+      const TensorDesc w = d.t(d.s(0));
+      const TensorDesc x = d.t(d.s(1));
+      const std::uint64_t per = w.ne(0);
+      const std::uint64_t total_features = x.ne(0) * x.ne(1);
+      const bool stacked = w.shape().rank == 3;
+      const std::uint64_t groups = per > 0 ? total_features / per : 0;
+      if (!d.check(per > 0 && groups > 0 && total_features % per == 0 && x.ne(3) == 1 &&
+                       w.ne(3) == 1 &&
+                       (stacked ? w.ne(2) == groups : w.ne(2) == 1 && w.ne(1) % groups == 0),
+                   GraphError::kShape,
+                   "a weight of groups of the rows' features, each `per` wide, as many groups "
+                   "as the weight holds"))
+        return {};
+      const std::uint64_t o_rank = stacked ? w.ne(1) : w.ne(1) / groups;
+      const std::uint64_t rows = x.ne(2);
+      TensorId rotated = b.Rope(d.s(1), d.s(2), {}, p);
+      TensorId out = b.Permute(b.Reshape(rotated, S(per, groups, rows)), {0, 2, 1, 3});
+      TensorId g = stacked ? d.s(0) : b.Reshape(d.Packed(d.s(0)), S(per, o_rank, groups));
+      TensorId low = b.Permute(b.MatMul(g, out), {0, 2, 1, 3});
+      return One(b.Cont(low, S(o_rank * groups, rows)));
+    }
+    case FusedKind::kPreparedProducts: {
       if (!d.need(2, 5)) {
         return {};
       }
-      const auto p = Get<HcNormPostParams>(params);
-      if (!d.check(p.streams != 0 && d.t(d.s(0)).ne(1) == p.streams && d.t(d.s(0)).ne(3) == 1,
-                   GraphError::kShape, "a tensor of its declared streams"))
-        return {};
-      const bool combine = d.s(3).valid();
-      if (!d.check(combine == d.s(4).valid(), GraphError::kArity,
-                   "the last block's output and its logits together")) {
-        return {};
-      }
-      const TensorId streams = combine ? HcCombineOf(d, d.s(0), d.s(3), d.s(4), p.streams) : d.s(0);
-      const TensorId xn = HcNormOf(d, streams, d.s(1), p.eps);
+      const std::size_t products = d.count() - 1;
+      const TensorId x = d.s(products);
       Outputs o;
-      o.ids.at(o.n++) = xn;
-      if (d.s(2).valid()) {
-        o.ids.at(o.n++) = b.MatMul(d.s(2), xn);
+      for (std::size_t i = 0; i < products; ++i) {
+        if (!d.check(d.s(i).valid() && x.valid(), GraphError::kArity,
+                     "every product's weight, and the input")) {
+          return {};
+        }
+        o.ids.at(i) = b.MatMul(d.s(i), x);
       }
-      if (combine) {
-        o.ids.at(o.n++) = streams;
-      }
+      o.n = static_cast<std::uint8_t>(products);
       return o;
     }
-    case FusedKind::kScaledUnary: {
-      if (!d.need(1, 1)) {
+    case FusedKind::kMoeGlu: {
+      if (!d.need(5, 5)) {
         return {};
       }
-      const auto p = Get<ScaledUnaryParams>(params);
-      return One(b.Unary(b.Scale(d.s(0), p.scale), p.fn));
+      const auto p = Get<GluParams>(params);
+      const TensorId gate = b.Mul(d.s(0), ScaleRows(d, d.s(3), d.s(2)));
+      const TensorId up = b.Mul(d.s(1), ScaleRows(d, d.s(4), d.s(2)));
+      return One(b.Glu(gate, up, p));
     }
-    case FusedKind::kHcFold: {
-      if (!d.need(2, 2)) {
+    case FusedKind::kMoeCombine: {
+      if (!d.need(4, 6)) {
         return {};
       }
-      const auto p = Get<HcFoldParams>(params);
-      const TensorId mixed = HcFoldOf(d, d.s(0), d.s(1), p.streams);
-      Outputs o = One(mixed);
-      if (p.prepared && b.ok()) {
-        o.ids.at(o.n++) = b.Prepare(mixed, format::Encoding::kMxfp8, format::Layout::kScaleAtoms);
-      }
-      if (p.rounded && b.ok()) {
-        o.ids.at(o.n++) = b.Convert(mixed, format::Encoding::kBF16);
-      }
-      return o;
-    }
-    case FusedKind::kHcCombine: {
-      if (!d.need(3, 3)) {
+      if (d.s(4).valid() &&
+          !d.check(d.t(d.s(4)).ne(0) == 1 && d.t(d.s(4)).ne(1) == d.t(d.s(3)).ne(1),
+                   GraphError::kShape, "the shared expert's gate is [1, T]")) {
         return {};
       }
-      return One(HcCombineOf(d, d.s(0), d.s(1), d.s(2), Get<HcParams>(params).streams));
-    }
-    case FusedKind::kHcMixNorm: {
-      if (!d.need(3, 3)) {
-        return {};
-      }
-      const auto p = Get<HcNormPostParams>(params);
-      if (!d.check(p.streams != 0 && d.t(d.s(0)).ne(1) == p.streams && d.t(d.s(0)).ne(3) == 1,
-                   GraphError::kShape, "a tensor of its declared streams"))
-        return {};
-      return One(HcFoldOf(d, HcNormOf(d, d.s(0), d.s(1), p.eps), d.s(2), p.streams));
-    }
-    case FusedKind::kGdnConv: {
-      if (!d.need(3, 3)) {
-        return {};
-      }
-      const auto p = Get<GdnConvParams>(params);
-      const TensorDesc rt = d.t(d.s(0));
-      const TensorDesc wt = d.t(d.s(2));
-      const std::uint64_t c = rt.ne(0);
-      const std::uint64_t t = rt.ne(1);
-      if (!d.check(p.head != 0 && p.qk_channels % p.head == 0 && p.qk_channels <= c &&
-                       wt.ne(1) == c && wt.ne(0) >= 2,
-                   GraphError::kShape, "a convolution of whole heads over its channels")) {
-        return {};
-      }
-      const std::uint64_t taps = wt.ne(0) - 1;
-      const TensorId history = b.Reshape(d.Packed(d.s(1)), S(taps, c, 1));
-      const TensorId input = b.Concat(history, Columns(d, d.s(0)), 0);
-      const TensorId conv = b.Unary(b.SsmConv(input, d.s(2)), UnaryFn::kSilu);  // [C, T, 1]
-      if (!b.ok()) {
-        return {};
-      }
-      if (p.qk_channels == 0) {
-        return One(b.Reshape(conv, S(c, t)));
-      }
-      const std::uint64_t e = 4;
-      const std::uint64_t heads = p.qk_channels / p.head;
-      TensorId qk =
-          b.Cont(b.View(conv, S(p.head, heads, t), Nb{e, p.head * e, c * e, c * t * e}, 0));
-      qk = b.Reshape(b.Scale(b.RmsNorm(qk, p.eps), p.scale), S(p.qk_channels, t));
-      if (p.qk_channels == c) {
-        return One(qk);
-      }
-      const std::uint64_t rest = c - p.qk_channels;
-      const TensorId tail =
-          b.Cont(b.View(conv, S(rest, t), Nb{e, c * e, c * t * e, c * t * e}, p.qk_channels * e));
-      return One(b.Concat(qk, tail, 0));
-    }
-    case FusedKind::kGdnHistory: {
-      if (!d.need(1, 2)) {
-        return {};
-      }
-      const auto p = Get<GdnHistoryParams>(params);
-      const TensorDesc rt = d.t(d.s(0));
-      const std::uint64_t c = rt.ne(0);
-      const std::uint64_t t = rt.ne(1);
-      if (!d.check(p.taps != 0 && (d.s(1).valid() || t >= p.taps), GraphError::kShape,
-                   "a history of rows, or of the old history and the rows")) {
-        return {};
-      }
-      TensorId input = Columns(d, d.s(0));  // [T, C, 1]
-      if (d.s(1).valid()) {
-        input = b.Concat(b.Reshape(d.Packed(d.s(1)), S(p.taps, c, 1)), input, 0);
-      }
-      if (!b.ok()) {
-        return {};
-      }
-      const TensorDesc it = d.t(input);
-      const TensorId tail =
-          b.View(input, S(p.taps, c, 1), Nb{it.nb[0], it.nb[1], it.nb[2], it.nb[2]},
-                 (it.ne(0) - p.taps) * it.nb[0]);
-      return One(b.Reshape(b.Cont(tail), S(p.taps * c, 1)));
-    }
-    case FusedKind::kGdnStep: {
-      const auto p = Get<GdnStepParams>(params);
-      const std::size_t n = p.write ? 7 : 6;
-      if (!d.need(n, n)) {
-        return {};
-      }
-      const TensorDesc q = d.t(d.s(0));
-      const TensorDesc v = d.t(d.s(2));
-      const TensorDesc st = d.t(d.s(5));
-      if (!d.check(q.ne(0) * v.ne(0) * v.ne(1) == st.ne(0) * st.ne(1) * st.ne(2) * st.ne(3),
-                   GraphError::kShape, "a state of every value head's matrix")) {
-        return {};
-      }
-      const TensorId state = b.Reshape(d.Packed(d.s(5)), S(q.ne(0), v.ne(0), v.ne(1), 1));
-      const Outputs ran = b.GatedDeltaNet(d.s(0), d.s(1), d.s(2), d.s(3), d.s(4), state);
-      if (!p.write || !b.ok()) {
-        return One(ran[0]);
-      }
-      const TensorId rows = b.Reshape(ran[1], S(st.ne(0), st.ne(1), st.ne(2), st.ne(3)));
-      return Many({ran[0], b.CacheStore(d.s(5), rows, d.s(6))});
-    }
-    case FusedKind::kGdnGates: {
-      if (!d.need(4, 4)) {
-        return {};
-      }
-      const TensorDesc at = d.t(d.s(0));
-      const std::uint64_t h = at.ne(0);
-      const std::uint64_t t = at.ne(1);
-      TensorId gate = b.Reshape(d.Packed(d.s(0)), S(h, t, 1));
-      gate = b.Mul(b.Unary(b.Add(gate, d.s(2)), UnaryFn::kSoftplus), d.s(3));
-      gate = b.Reshape(gate, S(1, h, t, 1));
-      const TensorId beta = b.Unary(b.Reshape(d.Packed(d.s(1)), S(1, h, t, 1)), UnaryFn::kSigmoid);
-      return Many({gate, beta});
-    }
-    case FusedKind::kHeadGate: {
-      if (!d.need(2, 2)) {
-        return {};
-      }
-      const auto p = Get<HeadGateParams>(params);
-      const TensorDesc at = d.t(d.s(0));
-      const TensorDesc qt = d.t(d.s(1));
-      const std::uint64_t dh = p.head;
-      if (!d.check(
-              dh != 0 && at.ne(0) % dh == 0 && qt.ne(0) == 2 * at.ne(0) && qt.ne(1) == at.ne(1),
-              GraphError::kShape, "a gate of each head of the attention")) {
-        return {};
-      }
-      const std::uint64_t heads = at.ne(0) / dh;
-      const std::uint64_t t = at.ne(1);
-      const std::uint64_t e = qt.nb[0];
-      const TensorId gate =
-          b.Cont(b.View(d.s(1), S(dh, heads, t), Nb{e, 2 * dh * e, qt.nb[1], qt.nb[1] * t}, dh * e),
-                 S(dh * heads, t));
-      return One(b.Mul(d.s(0), b.Unary(gate, UnaryFn::kSigmoid)));
-    }
-    case FusedKind::kQsaPool: {
-      if (!d.need(5, 6)) {
-        return {};
-      }
-      const auto p = Get<QsaPoolParams>(params);
-      const TensorDesc raw = d.t(d.s(0));
-      const TensorDesc bp = d.t(d.s(3));
-      const std::uint64_t dim = raw.ne(0);
-      const std::uint64_t blocks = bp.ne(0) / 4;
-      if (!d.check(p.ratio != 0 && raw.ne(1) == blocks * p.ratio && d.t(d.s(4)).ne(0) == blocks,
-                   GraphError::kShape, "every block of the raw rows, a position and a cell each")) {
-        return {};
-      }
-      TensorId keys = b.Pool(d.s(0), {}, PoolParams{.ratio = p.ratio, .kind = PoolKind::kMean});
-      keys = b.Mul(b.RmsNorm(keys, p.eps), d.s(2));
-      keys = b.Rope(b.Reshape(keys, S(dim, 1, blocks)), d.s(3), {}, p.rope);
-      keys = b.Reshape(b.Convert(keys, format::Encoding::kBF16), S(dim, blocks));
-      return One(b.CacheStore(d.s(1), keys, d.s(4)));
-    }
-    case FusedKind::kQsaAttention: {
-      if (!d.need(8, 9)) {
-        return {};
-      }
-      const auto p = Get<QsaAttnParams>(params);
-      const TensorDesc q = d.t(d.s(0));
-      const TensorDesc k = d.t(d.s(1));
-      const TensorDesc qi = d.t(d.s(3));
-      const TensorDesc bl = d.t(d.s(4));
-      const std::uint64_t t = q.ne(2);
-      const std::uint64_t cells = k.ne(1);
-      const std::uint64_t blocks = bl.ne(1);
-      if (!d.check(p.ratio != 0 && cells == blocks * p.ratio && p.width != 0 && p.width <= cells &&
-                       qi.ne(2) == t,
-                   GraphError::kShape, "a selection over every block of the attended cells")) {
-        return {};
-      }
-      const TensorId keys = b.Reshape(d.Packed(d.s(4)), S(bl.ne(0), 1, blocks, 1));
-      const TensorId bias = b.Scale(b.Clamp(d.s(6), -1e9f, 0.0f), -1.0f);
-      const TensorId ones = b.Fill(S(qi.ne(1), t, 1, 1), 1.0f);
-      const TensorId queries = b.Convert(d.s(3), format::Encoding::kBF16);
-      TensorId score = b.IndexScore(queries, keys, ones, b.Reshape(bias, S(blocks, t, 1, 1)));
-      score = b.Repeat(b.Reshape(score, S(1, blocks, t)), S(p.ratio, blocks, t));
-      score = b.Add(b.Reshape(score, S(cells, t)), d.s(5));
-      const TensorId kept = b.TopK(score, p.width);
-      TensorId selected = b.Fill(S(1, cells, t, 1), -std::numeric_limits<float>::infinity());
-      const TensorId zeros = b.Fill(S(1, p.width, t, 1), 0.0f);
-      selected = b.CacheStore(selected, zeros, kept);
-      const TensorDesc mt = d.t(d.s(7));
-      selected = b.Reshape(selected, S(cells, t));
-      const TensorId mask =
-          b.Add(selected,
-                b.View(d.s(7), S(cells, t), Nb{mt.nb[0], mt.nb[1], mt.nb[1] * t, mt.nb[1] * t}, 0));
-      const TensorId a =
-          b.Attention(b.Permute(d.s(0), {0, 2, 1, 3}), d.s(1), d.s(2), mask, {}, p.attn);
-      return One(b.Reshape(a, S(q.ne(0) * q.ne(1), t)));
+      const TensorId routed = b.ExpertReduce(d.s(0), d.s(2), d.s(1), d.s(5));
+      const TensorId shared =
+          d.s(4).valid() ? b.Mul(d.s(3), b.Unary(d.s(4), UnaryFn::kSigmoid)) : d.s(3);
+      return One(b.Add(routed, shared));
     }
     case FusedKind::kMoeRouter: {
       if (!d.need(3, 3)) {
@@ -1442,11 +1096,503 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       const TensorId up = b.MatMulId(d.s(1), x, d.s(3));
       return One(b.Glu(gate, up, p.glu));
     }
+    default:
+      b.Refuse(GraphError::kParams, "an unknown fused kind");
+      return {};
+  }
+}
+
+Outputs DecomposeAttentionAndPoolFused(D& d, FusedKind kind, const ParamBytes& params) {
+  Builder& b = d.b();
+  switch (kind) {
+    case FusedKind::kOwnerAttention: {
+      const auto p = Get<OwnerAttnParams>(params);
+      const std::uint64_t n = p.owners;
+      const std::uint64_t cohort = p.cohort == 0 ? n : p.cohort;
+      if (!d.check(n >= 1 && n <= 4 && !p.attn.sinks, GraphError::kParams,
+                   "one to four owners, no sinks") ||
+          !d.check(cohort <= kMaxOwnerCohort && std::uint64_t{p.offset} + n <= cohort,
+                   GraphError::kParams, "a group within its cohort") ||
+          !d.need(2 + (2 * n), 2 + (2 * n))) {
+        return {};
+      }
+      const TensorDesc& q = d.t(d.s(0));
+      const TensorDesc& mask = d.t(d.s(1));
+      if (!d.check(q.ne(3) == n && mask.ne(3) == n && mask.ne(2) == 1, GraphError::kShape,
+                   "one query and mask matrix an owner, on dim 3")) {
+        return {};
+      }
+      const std::uint64_t r = q.ne(1);
+      TensorId out{};
+      for (std::uint64_t o = 0; o < n && b.ok(); ++o) {
+        const TensorId k = d.s(2 + o);
+        const TensorId v = d.s(2 + n + o);
+        const std::uint64_t cells = d.t(k).ne(1);
+        if (!d.check(cells <= mask.ne(0) && r <= mask.ne(1), GraphError::kShape,
+                     "each owner's mask covers its cells and rows")) {
+          return {};
+        }
+        const TensorId qo = b.View(d.s(0), S(q.ne(0), r, q.ne(2), 1), q.nb, o * q.nb[3]);
+        const TensorId mo = b.View(d.s(1), S(cells, r, 1, 1), mask.nb, o * mask.nb[3]);
+        const TensorId a = b.Attention(qo, k, v, mo, {}, p.attn);
+        out = out.valid() ? b.Concat(out, a, 3) : a;
+      }
+      return One(out);
+    }
+    case FusedKind::kStateBankAttention: {
+      if (!d.need(3, 5)) return {};
+      const auto p = Get<AttnParams>(params);
+      const TensorId joined = b.Concat(d.s(1), d.s(2), 2);
+      const TensorId keys = b.Permute(joined, {0, 2, 1, 3});
+      const TensorId values = b.Permute(joined, {0, 2, 1, 3});
+      return One(b.Attention(d.s(0), keys, values, d.s(3), d.s(4), p));
+    }
+    case FusedKind::kRoundedIndexMask: {
+      if (!d.need(5, 5)) return {};
+      const auto p = Get<RoundedIndexMaskParams>(params);
+      if (!d.check(p.cells == d.t(d.s(1)).ne(2), GraphError::kShape,
+                   "the selected mask and rounded score have the same compressed cells"))
+        return {};
+      const auto scores = b.RoundedIndexScore(d.s(0), d.s(1), d.s(2), d.s(3));
+      const auto selected = b.VisibleTopK(scores, d.s(3), p.top);
+      return One(b.SelectedMask(d.s(4), selected, {.raw_cells = p.raw_cells, .cells = p.cells}));
+    }
+    case FusedKind::kSoftmaxPoolCompress: {
+      if (!d.need(5, 5)) return {};
+      const auto p = Get<CompressorParams>(params);
+      const TensorDesc sk = d.t(d.s(0));
+      const TensorDesc ss = d.t(d.s(1));
+      const TensorDesc kv = d.t(d.s(2));
+      const TensorDesc sc = d.t(d.s(3));
+      const TensorDesc ids = d.t(d.s(4));
+      const auto matrix = [](const TensorDesc& t) {
+        return t.format.encoding == format::Encoding::kF32 && t.ne(2) == 1 && t.ne(3) == 1;
+      };
+      if (!d.check(p.ratio > 0 && p.ratio <= std::numeric_limits<std::uint32_t>::max() / 2,
+                   GraphError::kParams, "a bounded positive compressor ratio") ||
+          !d.check(matrix(sk) && matrix(ss) && matrix(kv) && matrix(sc), GraphError::kShape,
+                   "compressor values and scores are F32 matrices") ||
+          !d.check(sk.shape().ne == ss.shape().ne && kv.shape().ne == sc.shape().ne &&
+                       sk.ne(0) == kv.ne(0) && (!p.overlap || sk.ne(0) % 2 == 0),
+                   GraphError::kShape, "matching compressor channels, states and current rows") ||
+          !d.check(ids.format.encoding == format::Encoding::kI32 && ids.ne(1) == 1 &&
+                       ids.ne(2) == 1 && ids.ne(3) == 1,
+                   GraphError::kShape, "compressor read indices are an I32 vector")) {
+        return {};
+      }
+      const std::uint64_t halves = p.overlap ? 2 : 1;
+      const std::uint64_t per_block = halves * p.ratio;
+      if (!d.check(ids.ne(0) % per_block == 0, GraphError::kShape,
+                   "one complete compressor index run per block"))
+        return {};
+      const std::uint64_t blocks = ids.ne(0) / per_block;
+      const std::uint64_t dim = sk.ne(0) / halves;
+      const std::uint64_t reads = std::uint64_t{p.ratio} * blocks;
+      const auto rows = [&](std::size_t state, std::size_t current, bool scores) {
+        TensorId source = b.Concat(d.s(state), d.s(current), 1);
+        if (!b.ok()) return TensorId{};
+        if (p.overlap) {
+          const TensorDesc sd = d.t(source);
+          const TensorId zero = b.Fill(ShapeOf({sd.ne(0), 1}),
+                                       scores ? -std::numeric_limits<float>::infinity() : 0.0F,
+                                       format::Encoding::kF32);
+          source = b.Concat(source, zero, 1);
+        }
+        const TensorId picked = b.GetRows(source, d.s(4));
+        if (!b.ok()) return TensorId{};
+        if (!p.overlap) return b.Reshape(picked, ShapeOf({dim, p.ratio, blocks}));
+        const TensorDesc pd = d.t(picked);
+        const auto half = [&](std::uint64_t offset) {
+          const TensorId v = d.View2(picked, dim, reads, pd.nb[0], pd.nb[1], offset);
+          return b.Reshape(b.Cont(v), ShapeOf({dim, p.ratio, blocks}));
+        };
+        const TensorId previous = half(0);
+        const TensorId current_half = half(reads * pd.nb[1] + dim * pd.nb[0]);
+        return b.Concat(previous, current_half, 1);
+      };
+      const TensorId values = rows(0, 2, false);
+      const TensorId scores = rows(1, 3, true);
+      return One(
+          b.Pool(values, scores,
+                 {.ratio = static_cast<std::uint32_t>(per_block), .kind = PoolKind::kSoftmax}));
+    }
+    case FusedKind::kHeadGate: {
+      if (!d.need(2, 2)) {
+        return {};
+      }
+      const auto p = Get<HeadGateParams>(params);
+      const TensorDesc at = d.t(d.s(0));
+      const TensorDesc qt = d.t(d.s(1));
+      const std::uint64_t dh = p.head;
+      if (!d.check(
+              dh != 0 && at.ne(0) % dh == 0 && qt.ne(0) == 2 * at.ne(0) && qt.ne(1) == at.ne(1),
+              GraphError::kShape, "a gate of each head of the attention")) {
+        return {};
+      }
+      const std::uint64_t heads = at.ne(0) / dh;
+      const std::uint64_t t = at.ne(1);
+      const std::uint64_t e = qt.nb[0];
+      const TensorId gate =
+          b.Cont(b.View(d.s(1), S(dh, heads, t), Nb{e, 2 * dh * e, qt.nb[1], qt.nb[1] * t}, dh * e),
+                 S(dh * heads, t));
+      return One(b.Mul(d.s(0), b.Unary(gate, UnaryFn::kSigmoid)));
+    }
+    case FusedKind::kMeanPoolNormRopeStore: {
+      if (!d.need(5, 6)) {
+        return {};
+      }
+      const auto p = Get<BlockPoolParams>(params);
+      const TensorDesc raw = d.t(d.s(0));
+      const TensorDesc bp = d.t(d.s(3));
+      const std::uint64_t dim = raw.ne(0);
+      const std::uint64_t blocks = bp.ne(0) / 4;
+      if (!d.check(p.ratio != 0 && raw.ne(1) == blocks * p.ratio && d.t(d.s(4)).ne(0) == blocks,
+                   GraphError::kShape, "every block of the raw rows, a position and a cell each")) {
+        return {};
+      }
+      TensorId keys = b.Pool(d.s(0), {}, PoolParams{.ratio = p.ratio, .kind = PoolKind::kMean});
+      keys = b.Mul(b.RmsNorm(keys, p.eps), d.s(2));
+      keys = b.Rope(b.Reshape(keys, S(dim, 1, blocks)), d.s(3), {}, p.rope);
+      keys = b.Reshape(b.Convert(keys, format::Encoding::kBF16), S(dim, blocks));
+      return One(b.CacheStore(d.s(1), keys, d.s(4)));
+    }
+    case FusedKind::kBlockSparseAttention: {
+      if (!d.need(8, 9)) {
+        return {};
+      }
+      const auto p = Get<BlockSparseAttnParams>(params);
+      const TensorDesc q = d.t(d.s(0));
+      const TensorDesc k = d.t(d.s(1));
+      const TensorDesc qi = d.t(d.s(3));
+      const TensorDesc bl = d.t(d.s(4));
+      const std::uint64_t t = q.ne(2);
+      const std::uint64_t cells = k.ne(1);
+      const std::uint64_t blocks = bl.ne(1);
+      if (!d.check(p.ratio != 0 && cells == blocks * p.ratio && p.width != 0 && p.width <= cells &&
+                       qi.ne(2) == t,
+                   GraphError::kShape, "a selection over every block of the attended cells")) {
+        return {};
+      }
+      const TensorId keys = b.Reshape(d.Packed(d.s(4)), S(bl.ne(0), 1, blocks, 1));
+      const TensorId bias = b.Scale(b.Clamp(d.s(6), -1e9f, 0.0f), -1.0f);
+      const TensorId ones = b.Fill(S(qi.ne(1), t, 1, 1), 1.0f);
+      const TensorId queries = b.Convert(d.s(3), format::Encoding::kBF16);
+      TensorId score = b.IndexScore(queries, keys, ones, b.Reshape(bias, S(blocks, t, 1, 1)));
+      score = b.Repeat(b.Reshape(score, S(1, blocks, t)), S(p.ratio, blocks, t));
+      score = b.Add(b.Reshape(score, S(cells, t)), d.s(5));
+      const TensorId kept = b.TopK(score, p.width);
+      TensorId selected = b.Fill(S(1, cells, t, 1), -std::numeric_limits<float>::infinity());
+      const TensorId zeros = b.Fill(S(1, p.width, t, 1), 0.0f);
+      selected = b.CacheStore(selected, zeros, kept);
+      const TensorDesc mt = d.t(d.s(7));
+      selected = b.Reshape(selected, S(cells, t));
+      const TensorId mask =
+          b.Add(selected,
+                b.View(d.s(7), S(cells, t), Nb{mt.nb[0], mt.nb[1], mt.nb[1] * t, mt.nb[1] * t}, 0));
+      const TensorId a =
+          b.Attention(b.Permute(d.s(0), {0, 2, 1, 3}), d.s(1), d.s(2), mask, {}, p.attn);
+      return One(b.Reshape(a, S(q.ne(0) * q.ne(1), t)));
+    }
+    default:
+      b.Refuse(GraphError::kParams, "an unknown fused kind");
+      return {};
+  }
+}
+
+Outputs DecomposeHyperConnectionFused(D& d, FusedKind kind, const ParamBytes& params) {
+  Builder& b = d.b();
+  switch (kind) {
+    case FusedKind::kHcNorm: {
+      if (!d.need(2, 2)) {
+        return {};
+      }
+      const auto p = Get<NormParams>(params);
+      const TensorDesc& x = d.t(d.s(0));
+      const TensorId n = b.Reshape(b.RmsNorm(d.s(0), p.eps), S(x.ne(0) * x.ne(1), x.ne(2)));
+      return One(b.Mul(n, d.s(1)));
+    }
+    case FusedKind::kHcNormPost: {
+      if (!d.need(3, 4)) {
+        return {};
+      }
+      const auto p = Get<HcNormPostParams>(params);
+      const TensorId post =
+          b.HcPost(d.s(0), d.s(1), d.s(2), d.s(3), HcParams{.streams = p.streams});
+      if (!b.ok()) {
+        return {};
+      }
+      const TensorDesc& pt = d.t(post);
+      return Many({post, b.RmsNorm(b.Reshape(post, S(pt.ne(0) * pt.ne(1), pt.ne(2))), p.eps)});
+    }
+    case FusedKind::kSinkhornHcPre: {
+      if (!d.need(5, 5)) return {};
+      const auto p = Get<SinkhornPreParams>(params);
+      const TensorId x = d.s(0);
+      const TensorDesc xd = d.t(x);
+      const std::uint64_t width = xd.ne(0);
+      const std::uint64_t hc = p.streams;
+      const std::uint64_t tokens = xd.ne(2);
+      const auto shape = [&](std::size_t at, const Shape& wanted) {
+        const TensorDesc td = d.t(d.s(at));
+        return td.shape().ne == wanted.ne && td.format.encoding == format::Encoding::kF32;
+      };
+      if (!d.check(hc >= 2 && hc <= 64 && p.iterations >= 1 && p.iterations <= 1024,
+                   GraphError::kParams, "bounded Sinkhorn streams and iterations") ||
+          !d.check(shape(0, S(width, hc, tokens)) && shape(2, S(3)) && shape(3, S((2 + hc) * hc)) &&
+                       shape(4, S(width)) &&
+                       d.t(d.s(1)).shape().ne == S(width * hc, (2 + hc) * hc).ne,
+                   GraphError::kShape, "Sinkhorn streams, mixing weights, scales, bases and norm"))
+        return {};
+      const TensorId flat = b.Reshape(d.Packed(x), S(width * hc, tokens));
+      const TensorId mixes = b.MatMul(d.s(1), b.RmsNorm(flat, p.eps));
+      if (!b.ok()) return {};
+      const TensorDesc md = d.t(mixes);
+      const auto run = [&](std::uint64_t first) {
+        return d.View2(mixes, hc, tokens, md.nb[0], md.nb[1], first * md.nb[0]);
+      };
+      TensorId post = b.Mul(run(hc), Element(d, d.s(2), 1));
+      post = b.Scale(b.Unary(b.Add(post, Range(d, d.s(3), hc, hc)), UnaryFn::kSigmoid), 2.0F);
+      const TensorId comb = b.HcMix(mixes, d.s(2), d.s(3),
+                                    {.mix = HcMixKind::kSinkhorn,
+                                     .streams = p.streams,
+                                     .iterations = p.iterations,
+                                     .eps = p.hc_eps});
+      TensorId pre = b.Mul(run(0), Element(d, d.s(2), 0));
+      pre =
+          b.Scale(b.Unary(b.Add(pre, Range(d, d.s(3), 0, hc)), UnaryFn::kSigmoid), 1.0F, p.hc_eps);
+      const TensorId folded = b.HcPre(x, pre, {.fold = HcFold::kWeights, .streams = p.streams});
+      return Many({b.Mul(b.RmsNorm(folded, p.eps), d.s(4)), post, comb});
+    }
+    case FusedKind::kHcPrep: {
+      if (!d.need(2, 5)) {
+        return {};
+      }
+      const auto p = Get<HcNormPostParams>(params);
+      if (!d.check(p.streams != 0 && d.t(d.s(0)).ne(1) == p.streams && d.t(d.s(0)).ne(3) == 1,
+                   GraphError::kShape, "a tensor of its declared streams"))
+        return {};
+      const bool combine = d.s(3).valid();
+      if (!d.check(combine == d.s(4).valid(), GraphError::kArity,
+                   "the last block's output and its logits together")) {
+        return {};
+      }
+      const TensorId streams = combine ? HcCombineOf(d, d.s(0), d.s(3), d.s(4), p.streams) : d.s(0);
+      const TensorId xn = HcNormOf(d, streams, d.s(1), p.eps);
+      Outputs o;
+      o.ids.at(o.n++) = xn;
+      if (d.s(2).valid()) {
+        o.ids.at(o.n++) = b.MatMul(d.s(2), xn);
+      }
+      if (combine) {
+        o.ids.at(o.n++) = streams;
+      }
+      return o;
+    }
+    case FusedKind::kScaledUnary: {
+      if (!d.need(1, 1)) {
+        return {};
+      }
+      const auto p = Get<ScaledUnaryParams>(params);
+      return One(b.Unary(b.Scale(d.s(0), p.scale), p.fn));
+    }
+    case FusedKind::kHcFold: {
+      if (!d.need(2, 3)) {
+        return {};
+      }
+      const auto p = Get<HcFoldParams>(params);
+      TensorId xn = d.s(0);
+      TensorId gate = d.s(1);
+      if (d.count() == 3) {
+        if (!d.check(p.streams != 0 && d.t(d.s(0)).ne(1) == p.streams && d.t(d.s(0)).ne(3) == 1,
+                     GraphError::kShape, "a tensor of its declared streams"))
+          return {};
+        xn = HcNormOf(d, d.s(0), d.s(1), p.eps);
+        gate = d.s(2);
+      }
+      const TensorId mixed = HcFoldOf(d, xn, gate, p.streams);
+      Outputs o = One(mixed);
+      if (p.prepared && b.ok()) {
+        o.ids.at(o.n++) = b.Prepare(mixed, format::Encoding::kMxfp8, format::Layout::kScaleAtoms);
+      }
+      if (p.rounded && b.ok()) {
+        o.ids.at(o.n++) = b.Convert(mixed, format::Encoding::kBF16);
+      }
+      return o;
+    }
+    case FusedKind::kHcCombine: {
+      if (!d.need(3, 3)) {
+        return {};
+      }
+      return One(HcCombineOf(d, d.s(0), d.s(1), d.s(2), Get<HcParams>(params).streams));
+    }
+    default:
+      b.Refuse(GraphError::kParams, "an unknown fused kind");
+      return {};
+  }
+}
+
+Outputs DecomposeGdnFused(D& d, FusedKind kind, const ParamBytes& params) {
+  Builder& b = d.b();
+  switch (kind) {
+    case FusedKind::kGdnConv: {
+      if (!d.need(3, 3)) {
+        return {};
+      }
+      const auto p = Get<GdnConvParams>(params);
+      const TensorDesc rt = d.t(d.s(0));
+      const TensorDesc wt = d.t(d.s(2));
+      const std::uint64_t c = rt.ne(0);
+      const std::uint64_t t = rt.ne(1);
+      if (!d.check(p.head != 0 && p.qk_channels % p.head == 0 && p.qk_channels <= c &&
+                       wt.ne(1) == c && wt.ne(0) >= 2,
+                   GraphError::kShape, "a convolution of whole heads over its channels")) {
+        return {};
+      }
+      const std::uint64_t taps = wt.ne(0) - 1;
+      const TensorId history = b.Reshape(d.Packed(d.s(1)), S(taps, c, 1));
+      const TensorId input = b.Concat(history, Columns(d, d.s(0)), 0);
+      const TensorId conv = b.Unary(b.SsmConv(input, d.s(2)), UnaryFn::kSilu);
+      if (!b.ok()) {
+        return {};
+      }
+      if (p.qk_channels == 0) {
+        return One(b.Reshape(conv, S(c, t)));
+      }
+      const std::uint64_t e = 4;
+      const std::uint64_t heads = p.qk_channels / p.head;
+      TensorId qk =
+          b.Cont(b.View(conv, S(p.head, heads, t), Nb{e, p.head * e, c * e, c * t * e}, 0));
+      qk = b.Reshape(b.Scale(b.RmsNorm(qk, p.eps), p.scale), S(p.qk_channels, t));
+      if (p.qk_channels == c) {
+        return One(qk);
+      }
+      const std::uint64_t rest = c - p.qk_channels;
+      const TensorId tail =
+          b.Cont(b.View(conv, S(rest, t), Nb{e, c * e, c * t * e, c * t * e}, p.qk_channels * e));
+      return One(b.Concat(qk, tail, 0));
+    }
+    case FusedKind::kGdnHistory: {
+      if (!d.need(1, 2)) {
+        return {};
+      }
+      const auto p = Get<GdnHistoryParams>(params);
+      const TensorDesc rt = d.t(d.s(0));
+      const std::uint64_t c = rt.ne(0);
+      const std::uint64_t t = rt.ne(1);
+      if (!d.check(p.taps != 0 && (d.s(1).valid() || t >= p.taps), GraphError::kShape,
+                   "a history of rows, or of the old history and the rows")) {
+        return {};
+      }
+      TensorId input = Columns(d, d.s(0));
+      if (d.s(1).valid()) {
+        input = b.Concat(b.Reshape(d.Packed(d.s(1)), S(p.taps, c, 1)), input, 0);
+      }
+      if (!b.ok()) {
+        return {};
+      }
+      const TensorDesc it = d.t(input);
+      const TensorId tail =
+          b.View(input, S(p.taps, c, 1), Nb{it.nb[0], it.nb[1], it.nb[2], it.nb[2]},
+                 (it.ne(0) - p.taps) * it.nb[0]);
+      return One(b.Reshape(b.Cont(tail), S(p.taps * c, 1)));
+    }
+    case FusedKind::kGdnStep: {
+      const auto p = Get<GdnStepParams>(params);
+      const std::size_t n = p.write ? 7 : 6;
+      if (!d.need(n, n)) {
+        return {};
+      }
+      const TensorDesc q = d.t(d.s(0));
+      const TensorDesc v = d.t(d.s(2));
+      const TensorDesc st = d.t(d.s(5));
+      if (!d.check(q.ne(0) * v.ne(0) * v.ne(1) == st.ne(0) * st.ne(1) * st.ne(2) * st.ne(3),
+                   GraphError::kShape, "a state of every value head's matrix")) {
+        return {};
+      }
+      const TensorId state = b.Reshape(d.Packed(d.s(5)), S(q.ne(0), v.ne(0), v.ne(1), 1));
+      const Outputs ran = b.GatedDeltaNet(d.s(0), d.s(1), d.s(2), d.s(3), d.s(4), state);
+      if (!p.write || !b.ok()) {
+        return One(ran[0]);
+      }
+      const TensorId rows = b.Reshape(ran[1], S(st.ne(0), st.ne(1), st.ne(2), st.ne(3)));
+      return Many({ran[0], b.CacheStore(d.s(5), rows, d.s(6))});
+    }
+    case FusedKind::kGdnGates: {
+      if (!d.need(4, 4)) {
+        return {};
+      }
+      const TensorDesc at = d.t(d.s(0));
+      const std::uint64_t h = at.ne(0);
+      const std::uint64_t t = at.ne(1);
+      TensorId gate = b.Reshape(d.Packed(d.s(0)), S(h, t, 1));
+      gate = b.Mul(b.Unary(b.Add(gate, d.s(2)), UnaryFn::kSoftplus), d.s(3));
+      gate = b.Reshape(gate, S(1, h, t, 1));
+      const TensorId beta = b.Unary(b.Reshape(d.Packed(d.s(1)), S(1, h, t, 1)), UnaryFn::kSigmoid);
+      return Many({gate, beta});
+    }
+    default:
+      b.Refuse(GraphError::kParams, "an unknown fused kind");
+      return {};
+  }
+}
+
+Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
+  switch (kind) {
+    case FusedKind::kRmsNormMul:
+    case FusedKind::kRmsNormMulRope:
+    case FusedKind::kRmsNormMulAdd:
+    case FusedKind::kRopeStore:
+    case FusedKind::kQkPrep:
+    case FusedKind::kNormGate:
+      return DecomposeNormRopeFused(d, kind, params);
+    case FusedKind::kMatMulGlu:
+    case FusedKind::kMatMulAdd:
+    case FusedKind::kGroupedMatMul:
+    case FusedKind::kInverseRopeGroupedMatMul:
+    case FusedKind::kPreparedProducts:
+    case FusedKind::kMoeGlu:
+    case FusedKind::kMoeCombine:
+    case FusedKind::kMoeRouter:
+    case FusedKind::kMoeExperts:
+    case FusedKind::kMatMulIdGlu:
+      return DecomposeProductAndMoeFused(d, kind, params);
+    case FusedKind::kOwnerAttention:
+    case FusedKind::kStateBankAttention:
+    case FusedKind::kRoundedIndexMask:
+    case FusedKind::kSoftmaxPoolCompress:
+    case FusedKind::kHeadGate:
+    case FusedKind::kMeanPoolNormRopeStore:
+    case FusedKind::kBlockSparseAttention:
+      return DecomposeAttentionAndPoolFused(d, kind, params);
+    case FusedKind::kHcNorm:
+    case FusedKind::kHcNormPost:
+    case FusedKind::kSinkhornHcPre:
+    case FusedKind::kHcPrep:
+    case FusedKind::kScaledUnary:
+    case FusedKind::kHcFold:
+    case FusedKind::kHcCombine:
+      return DecomposeHyperConnectionFused(d, kind, params);
+    case FusedKind::kGdnConv:
+    case FusedKind::kGdnHistory:
+    case FusedKind::kGdnStep:
+    case FusedKind::kGdnGates:
+      return DecomposeGdnFused(d, kind, params);
+    case FusedKind::kEulerStep:
+    case FusedKind::kDupUpAdd:
+    case FusedKind::kSpatialChannelNorm:
+    case FusedKind::kRmsNormMulRopeSections:
+    case FusedKind::kAttentionMaskPack:
+    case FusedKind::kRopeTable:
+    case FusedKind::kQkAttention:
+    case FusedKind::kLayerNormModulateSplit:
+    case FusedKind::kGatedResidualSplit:
+    case FusedKind::kGatedResidualModulateSplit:
+      return DecomposeSpatialAndModulateFused(d, kind, params);
     case FusedKind::kGroupedStores:  // a batch key (op.h), never a node
     case FusedKind::kNone:
       break;
   }
-  b.Refuse(GraphError::kParams, "an unknown fused kind");
+  d.b().Refuse(GraphError::kParams, "an unknown fused kind");
   return {};
 }
 
@@ -1484,6 +1630,8 @@ bool Composite(Op op) {
     case Op::kHcMix:
     case Op::kIndexScore:
     case Op::kRoundedIndexScore:
+    case Op::kVisibleTopK:
+    case Op::kSelectedMask:
     case Op::kPool:
     case Op::kRoute:
     case Op::kExpertReduce:
@@ -1582,7 +1730,7 @@ std::optional<std::size_t> AliasedSource(OpKey key, std::size_t output) {
   if (key.fused == FusedKind::kGdnStep && output == 1) {
     return 5;  // its state, written in place (`write`)
   }
-  if (key.fused == FusedKind::kQsaPool && output == 0) {
+  if (key.fused == FusedKind::kMeanPoolNormRopeStore && output == 0) {
     return 1;  // the block keys
   }
   return std::nullopt;
@@ -1613,6 +1761,12 @@ Outputs Decompose(Builder& b, OpKey key, const ParamBytes& params,
         break;
       case Op::kRoundedIndexScore:
         o = RoundedIndexScore(d, Get<RoundedIndexScoreParams>(params));
+        break;
+      case Op::kVisibleTopK:
+        o = VisibleTopK(d, Get<TopKParams>(params));
+        break;
+      case Op::kSelectedMask:
+        o = SelectedMask(d, Get<SelectedMaskParams>(params));
         break;
       case Op::kPool:
         o = Pool(d, Get<PoolParams>(params));

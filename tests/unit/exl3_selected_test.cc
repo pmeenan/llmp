@@ -524,7 +524,7 @@ TEST(Exl3SelectedTest, SharedGraphKeepsEveryWeightPartAndExactSelectedOperation)
   auto registry = llmp::execution::Registry::Create(std::move(declarations));
   ASSERT_TRUE(registry.has_value()) << registry.error().detail;
   const auto source = Source(true);
-  const auto& mapping = sp::mappings::Qwen2Mapping();
+  const auto& mapping = sp::mappings::Qwen2Exl3Mapping();
   const auto values = fam::Qwen2Values(fam::Qwen25Instruct05BExl3());
   ASSERT_TRUE(values.has_value());
   const auto spec = sp::Synthesize(mapping, source, *values);
@@ -720,7 +720,7 @@ TEST(Exl3SelectedTest, UncapturedComponentSelectionIsExplicitAndKeyed) {
   auto registry = llmp::execution::Registry::Create(std::move(declarations));
   ASSERT_TRUE(registry.has_value());
   const auto source = Source(true);
-  const auto& mapping = sp::mappings::Qwen2Mapping();
+  const auto& mapping = sp::mappings::Qwen2Exl3Mapping();
   const auto values = fam::Qwen2Values(fam::Qwen25Instruct05BExl3());
   ASSERT_TRUE(values.has_value());
   const auto spec = sp::Synthesize(mapping, source, *values);

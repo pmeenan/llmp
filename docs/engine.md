@@ -284,7 +284,7 @@ modes are the shared ones, each slot with its own target state, DSpark ring,
 verify snapshot, output staging and plans. A wave holds at most 16 rows. The fast plan's
 row-local operations (quantized products, routed experts, HC mixes, routing,
 norms, the head) run once over every slot's rows through the planner's
-owner-row products (`components/owner_products.h`), while each slot's
+owner-row products (`planner/owner_products.h`), while each slot's
 compressors, indexer, attention, cache writes and DSpark injection run on its
 own state. The joined kernels keep each token's sums equal to a one-token
 step's (`Dsv4FastTest.WaveLaunchesKeepEachTokensSumsBitForBit`); whole-model

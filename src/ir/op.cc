@@ -172,12 +172,6 @@ std::string_view FusedKindName(FusedKind kind) {
       return "prepared_products";
     case FusedKind::kNormGate:
       return "norm_gate";
-    case FusedKind::kLayerNormModulate:
-      return "layer_norm_modulate";
-    case FusedKind::kGatedResidual:
-      return "gated_residual";
-    case FusedKind::kGatedResidualNorm:
-      return "gated_residual_norm";
     case FusedKind::kEulerStep:
       return "euler_step";
     case FusedKind::kDupUpAdd:
@@ -206,8 +200,6 @@ std::string_view FusedKindName(FusedKind kind) {
       return "hc_fold";
     case FusedKind::kHcCombine:
       return "hc_combine";
-    case FusedKind::kHcMixNorm:
-      return "hc_mix_norm";
     case FusedKind::kGdnConv:
       return "gdn_conv";
     case FusedKind::kGdnHistory:
@@ -218,28 +210,26 @@ std::string_view FusedKindName(FusedKind kind) {
       return "gdn_gates";
     case FusedKind::kHeadGate:
       return "head_gate";
-    case FusedKind::kQsaPool:
-      return "qsa_pool";
-    case FusedKind::kQsaAttention:
-      return "qsa_attention";
+    case FusedKind::kMeanPoolNormRopeStore:
+      return "mean_pool_norm_rope_store";
+    case FusedKind::kBlockSparseAttention:
+      return "block_sparse_attention";
     case FusedKind::kMoeRouter:
       return "moe_router";
     case FusedKind::kMoeExperts:
       return "moe_experts";
     case FusedKind::kMatMulIdGlu:
       return "mul_mat_id_glu";
-    case FusedKind::kDsv4QHead:
-      return "dsv4_qhead";
-    case FusedKind::kDsv4Compress:
-      return "dsv4_compress";
-    case FusedKind::kDsv4HcPre:
-      return "dsv4_hc_pre";
-    case FusedKind::kDsv4LidMask:
-      return "dsv4_lid_mask";
+    case FusedKind::kSoftmaxPoolCompress:
+      return "softmax_pool_compress";
+    case FusedKind::kSinkhornHcPre:
+      return "sinkhorn_hc_pre";
+    case FusedKind::kRoundedIndexMask:
+      return "rounded_index_mask";
     case FusedKind::kStateBankAttention:
       return "state_bank_attention";
-    case FusedKind::kDsv4OutA:
-      return "dsv4_out_a";
+    case FusedKind::kInverseRopeGroupedMatMul:
+      return "inverse_rope_grouped_mul_mat";
   }
   return "unknown";
 }

@@ -198,12 +198,6 @@ const ImageMapping* FindImageMapping(std::string_view architecture) {
   return nullptr;
 }
 
-const ImageMapping* ImageFamilyMapping(std::string_view architecture) {
-  return FindImageMapping(architecture);
-}
-
-const ImageMapping& QwenImage21Mapping() { return mappings::QwenImage21Mapping(); }
-
 std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
   if (m.architecture.empty() || m.components.empty() || m.components.size() > kMaxStages)
     return Refused("an architecture and one to sixteen components");
@@ -470,7 +464,7 @@ std::expected<model::ImageProfile, std::string> ProfileOf(const ModelSpec& spec,
         stage.layers.size() != 1 || stage.layers.front().components.size() != rule.kinds.size() ||
         stage.embedding || stage.stream.streams != 1 || !stage.side.empty() ||
         !stage.taps.empty() || !stage.reads.empty() || !stage.folds.empty() ||
-        stage.heads != Heads{})
+        !stage.links.empty() || !stage.exports.empty() || stage.heads != Heads{})
       return Refused(std::format("stage {} is not the mapping's {}", i, rule.stage));
     for (std::size_t k = 0; k < rule.kinds.size(); ++k) {
       const ComponentRef& ref = stage.layers.front().components[k];

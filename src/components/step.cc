@@ -51,9 +51,6 @@ std::uint64_t Pad(std::uint64_t value, std::uint64_t align) {
   return (value + align - 1) / align * align;
 }
 
-// A compressor input of every segment's rows (InputKind::kPositionPhases).
-constexpr std::size_t kJoinedCompressor = ~std::size_t{0};
-
 std::string Where(const spec::Stage& stage, Site site, std::uint32_t layer) {
   switch (site) {
     case Site::kEmbedding:
@@ -225,19 +222,13 @@ class StepBuilder {
                                                ir::TensorId features) && {
     auto inputs = ctx_.TakeInputs();
     auto saves = ctx_.TakeSaves();
+    auto owners = ctx_.TakeOwnerProducts();
     for (const CommitSave& save : saves) b_.Output(save.tensor);
     auto graph = std::move(b_).Finish();
     if (!graph) {
       return Refused(std::format("the step's graph does not verify at node {}: {} ({})",
                                  graph.error().node, graph.error().detail,
                                  ir::GraphErrorName(graph.error().error)));
-    }
-    OwnerProducts owners;
-    const auto requests = ctx_.TakeOwnerProducts();
-    if (!requests.empty()) {
-      auto proved = ProveOwnerProducts(*graph, inputs, ctx_.segments(), requests);
-      if (!proved) return std::unexpected(proved.error());
-      owners = std::move(*proved);
     }
     StepGraph step{.graph = std::move(*graph),
                    .inputs = std::move(inputs),
@@ -606,8 +597,9 @@ std::expected<void, std::string> CheckReads(const spec::ModelSpec& spec,
       }
       const model::StateTensorContract& o = found->contract;
       if (o.borrowed_from_target || o.kind != c.kind || o.encoding != c.encoding ||
-          o.cell_bytes != c.cell_bytes || o.cells != c.cells ||
-          o.window_or_ratio != c.window_or_ratio) {
+          o.cell_bytes != c.cell_bytes || o.cells != c.cells || o.window != c.window ||
+          o.block_ratio != c.block_ratio || o.fixed_cells != c.fixed_cells ||
+          o.row_carry != c.row_carry) {
         return Refused(at + ": not the tensor of that name of the stage it reads");
       }
     }
@@ -688,7 +680,7 @@ std::expected<void, std::string> CheckReads(const spec::ModelSpec& spec,
 
 }  // namespace
 
-// --------------------------------------------------------------- compressors
+// --------------------------------------------------------------- hadamard
 
 namespace {
 template <class Emit>
@@ -850,7 +842,7 @@ std::expected<StageInstances, std::string> InstancesOf(const spec::ModelSpec& sp
     // Stateless image compositions bind dynamic operands by typed owner-local
     // graph edges, not token side-table declarations. Their spatial builder
     // validates every required auxiliary/carry before allocating the graph.
-    if (spec.pipeline == spec::PipelineKind::kImage && s.side.empty() && in->def->spatial) continue;
+    if (spec.pipeline == spec::PipelineKind::kImage && s.side.empty()) continue;
     const std::string_view name = in->def->side_input(*in);
     if (!name.empty() && !std::ranges::contains(s.side, name, &spec::SideInput::name)) {
       return Refused(std::format("{}: no side input {}", Where(s, in->site, in->layer), name));
@@ -942,14 +934,6 @@ std::expected<model::StateLayoutDerived, std::string> StageLayout(const spec::Mo
   return model::ExtentLayout(*contracts, context, max_rows, model::kStateExtent);
 }
 
-std::expected<model::StateLayoutDerived, std::string> StageLayoutUniform(
-    const spec::ModelSpec& spec, std::size_t stage, std::uint32_t context, std::uint32_t max_rows,
-    std::uint64_t tensor_align) {
-  auto contracts = StageContracts(spec, stage);
-  if (!contracts) return std::unexpected(contracts.error());
-  return model::Layout(*contracts, context, max_rows, tensor_align);
-}
-
 std::expected<std::uint32_t, std::string> StagePrefillRows(const spec::ModelSpec& model,
                                                            std::size_t stage, std::uint32_t context,
                                                            std::uint32_t requested,
@@ -969,6 +953,7 @@ std::expected<std::uint32_t, std::string> StagePrefillRows(const spec::ModelSpec
     if (!in->def->masks) continue;
     if (!in->def->state) return Refused("a mask declaration has no state contract");
     Geometry g{in->def->state(*in), in->def->masks(*in), in->def->exact_masks};
+    if (g.masks.empty()) continue;
     for (const MaskUse& mask : g.masks)
       if (mask.tensor >= g.contract.tensors.size() || !mask.plane_bytes ||
           g.contract.tensors[mask.tensor].borrowed_from_target)
@@ -1203,14 +1188,15 @@ std::expected<ir::TensorId, std::string> StepContext::VisibleCells(std::size_t s
 ir::TensorId StepContext::SegmentPositions(std::size_t segment) {
   if (!segment_positions_.at(segment).valid()) {
     const SegmentRows& seg = segments_.at(segment);
+    const auto context = b_.context();
     b_.SetComponent(kFrameworkComponent);
+    b_.SetJoined();
     const ir::TensorId all = Positions();
-    b_.SetComponent(kFrameworkComponent);
     const format::Shape shape = ir::ShapeOf({seg.rows});
     segment_positions_[segment] =
         b_.View(all, shape, {4, 4ULL * seg.rows, 4ULL * seg.rows, 4ULL * seg.rows},
                 std::uint64_t{seg.first_row} * 4);
-    b_.SetComponent(component_);
+    b_.SetContext(context);
   }
   return segment_positions_[segment];
 }
@@ -1364,66 +1350,32 @@ void StepContext::DeclareMasks(std::span<const MaskKey> masks) {
   }
 }
 
-std::uint64_t StepContext::Blocks(std::size_t segment, std::uint32_t ratio, bool overlap) const {
-  const SegmentRows& seg = segments_.at(segment);
-  return CompressorBlocks(seg.rows, seg.past, ratio, overlap);
-}
-
-std::uint64_t StepContext::Kept(std::size_t segment, std::uint64_t capacity) const {
-  return std::min<std::uint64_t>(segments_.at(segment).rows, capacity);
-}
-
-ir::TensorId StepContext::Compressor(InputKind kind, std::size_t segment, const CellKey& cells,
-                                     std::uint32_t ratio, bool overlap, std::uint64_t count,
-                                     format::Encoding encoding, std::string_view name) {
-  const auto key = std::tuple{kind, segment, cells, ratio, overlap};
-  if (const auto at = compressor_.find(key); at != compressor_.end()) return at->second;
-  const ir::TensorId id = Input(
-      kind, segment == kJoinedCompressor ? ir::kJoinedSegment : static_cast<std::uint8_t>(segment),
-      ir::Dense(encoding, ir::ShapeOf({count})), cells, 0, name);
-  inputs_.back().ratio = ratio;
-  inputs_.back().overlap = overlap;
+ir::TensorId StepContext::HostInput(const HostInputSpec& spec, std::size_t segment,
+                                    const CellKey& cells) {
+  base::Check(spec.def != nullptr && spec.def->count != nullptr && spec.def->emit != nullptr,
+              "a host-computed input has a provider");
+  const std::uint8_t seg =
+      segment >= segments_.size() ? ir::kJoinedSegment : static_cast<std::uint8_t>(segment);
+  const auto key = std::tuple{spec, static_cast<std::size_t>(seg), cells};
+  if (const auto at = host_inputs_.find(key); at != host_inputs_.end()) return at->second;
+  const std::uint64_t count = spec.def->count(spec, segments_, seg, cells);
+  const std::string label =
+      seg == ir::kJoinedSegment
+          ? std::format("{}.{}", spec.def->name, spec.ratio)
+          : (cells.capacity != 0
+                 ? (spec.ratio != 0 ? std::format("{}.{}.{}.{}", spec.def->name, seg, spec.ratio,
+                                                  cells.capacity)
+                                    : std::format("{}.{}.{}", spec.def->name, seg, cells.capacity))
+                 : std::format("{}.{}.{}", spec.def->name, seg, spec.ratio));
+  const ir::TensorId id =
+      Input(InputKind::kHostComputed, seg, ir::Dense(spec.def->encoding, ir::ShapeOf({count})),
+            cells, 0, label);
+  inputs_.back().host = spec;
+  inputs_.back().ratio = spec.ratio;
+  inputs_.back().overlap = spec.overlap;
   inputs_.back().ring = cells.capacity;
-  compressor_.emplace(key, id);
+  host_inputs_.emplace(key, id);
   return id;
-}
-
-ir::TensorId StepContext::PositionPhases(std::uint32_t ratio) {
-  return Compressor(InputKind::kPositionPhases, kJoinedCompressor, {}, ratio, false, rows_,
-                    format::Encoding::kI32, std::format("phases.{}", ratio));
-}
-
-ir::TensorId StepContext::KeptRows(std::size_t segment, const CellKey& ring) {
-  return Compressor(InputKind::kKeptRows, segment, ring, 0, false, Kept(segment, ring.capacity),
-                    format::Encoding::kI32, std::format("kept_rows.{}.{}", segment, ring.capacity));
-}
-
-ir::TensorId StepContext::KeptCells(std::size_t segment, const CellKey& ring) {
-  return Compressor(InputKind::kKeptCells, segment, ring, 0, false, Kept(segment, ring.capacity),
-                    format::Encoding::kI64,
-                    std::format("kept_cells.{}.{}", segment, ring.capacity));
-}
-
-ir::TensorId StepContext::PoolReads(std::size_t segment, const CellKey& ring, std::uint32_t ratio,
-                                    bool overlap) {
-  const std::uint64_t reads =
-      std::uint64_t{ratio} * Blocks(segment, ratio, overlap) * (overlap ? 2 : 1);
-  return Compressor(InputKind::kPoolReads, segment, ring, ratio, overlap, reads,
-                    format::Encoding::kI32,
-                    std::format("pool_reads.{}.{}.{}", segment, ratio, ring.capacity));
-}
-
-ir::TensorId StepContext::BlockCells(std::size_t segment, const CellKey& cache, std::uint32_t ratio,
-                                     bool overlap) {
-  return Compressor(InputKind::kBlockCells, segment, cache, ratio, overlap,
-                    Blocks(segment, ratio, overlap), format::Encoding::kI64,
-                    std::format("block_cells.{}.{}.{}", segment, ratio, cache.capacity));
-}
-
-ir::TensorId StepContext::BlockStarts(std::size_t segment, std::uint32_t ratio, bool overlap) {
-  return Compressor(InputKind::kBlockStarts, segment, {}, ratio, overlap,
-                    Blocks(segment, ratio, overlap), format::Encoding::kI32,
-                    std::format("block_starts.{}.{}", segment, ratio));
 }
 
 ir::TensorId StepContext::Hadamard(std::uint64_t n) {
@@ -1464,13 +1416,13 @@ CellKey KeyOf(const model::StateTensorContract& c, std::uint64_t cells) {
       key.fixed = true;
       break;
     case model::CellRule::kPerBlock:
-      key.block = c.window_or_ratio;
+      key.block = c.block_ratio;
       key.positions = c.basis == model::BlockBasis::kPositions;
       key.cell_pad = c.cell_pad;
       break;
     case model::CellRule::kPerRow:
       key.per_row = true;
-      key.first_row = c.window_or_ratio;
+      key.first_row = c.row_carry;
       break;
     case model::CellRule::kPerPosition:
       break;
@@ -1623,6 +1575,130 @@ std::expected<std::vector<Injection>, std::string> Injections(const spec::ModelS
   return out;
 }
 
+std::expected<void, std::string> AdmitStepOptions(const spec::ModelSpec& spec, std::uint16_t stage,
+                                                  const StageInstances& instances,
+                                                  const planner::StepShape& shape,
+                                                  const Bindings& bindings,
+                                                  const StepOptions& options) {
+  const spec::Stage& self = spec.stages[stage];
+  if (options.rounded_indexer) {
+    if (stage != 0 || spec.stages.size() != 1 || self.role != spec::StageRole::kTarget ||
+        !self.reads.empty() || !self.taps.empty() || bindings.state == nullptr ||
+        !bindings.state->borrowed.empty() || bindings.state->context < 4 ||
+        bindings.state->context > 4096 || shape.segments.size() != 1 || shape.row_invariant ||
+        (shape.phase != planner::Phase::kPrefill && shape.phase != planner::Phase::kDecode &&
+         shape.phase != planner::Phase::kScore)) {
+      return Refused("rounded indexer requires one ordinary bounded target");
+    }
+    const auto& own = shape.segments.front();
+    if (own.slot != 0 || own.rows > 8 || own.past > bindings.state->context ||
+        own.rows > bindings.state->context - own.past || own.read_cells == 0 ||
+        own.read_cells > bindings.state->context) {
+      return Refused("rounded indexer owner exceeds its admitted context or rows");
+    }
+    if (!IndexedMasks(instances))
+      return Refused("rounded indexer policy names no indexed attention");
+  }
+  for (const Instance* in : All(instances)) {
+    if (in->def->admit_options == nullptr) continue;
+    if (auto ok = in->def->admit_options(*in, options); !ok) return ok;
+  }
+  return {};
+}
+
+// Each layer's stateful instances: their contracts, first tensor and
+// layout items (a borrowed tensor's that of the stage it reads).
+struct Stateful {
+  model::StateContract contract;
+  std::uint16_t first = 0;
+  std::vector<std::uint64_t> cells;
+  std::vector<std::size_t> items;
+  std::vector<std::uint16_t> sources;
+};
+
+std::expected<std::vector<std::vector<std::optional<Stateful>>>, std::string> BindLayerState(
+    const spec::ModelSpec& spec, std::uint16_t stage, const StageInstances& instances,
+    const Bindings& bindings, const StepOptions& options, StepContext& ctx) {
+  const spec::Stage& self = spec.stages[stage];
+  std::vector<std::vector<std::optional<Stateful>>> stateful(instances.layers.size());
+  std::vector<StepContext::MaskKey> masks;
+  for (std::size_t l = 0; l < instances.layers.size(); ++l) {
+    // The embedding's state comes first in layer 0's contract (a tap
+    // another stage writes; the stage's own steps neither read nor write
+    // it).
+    std::uint16_t first = 0;
+    if (l == 0 && instances.embedding && instances.embedding->def->state != nullptr) {
+      first = static_cast<std::uint16_t>(
+          instances.embedding->def->state(*instances.embedding).tensors.size());
+    }
+    for (const Instance& in : instances.layers[l]) {
+      auto& slot = stateful[l].emplace_back();
+      if (in.def->state == nullptr) continue;
+      model::StateContract contract = in.def->state(in);
+      if (contract.tensors.empty()) continue;
+      if (bindings.state == nullptr) return Refused("a stateful stage without its state layout");
+      Stateful st{
+          .contract = std::move(contract), .first = first, .cells = {}, .items = {}, .sources = {}};
+      for (std::size_t t = 0; t < st.contract.tensors.size(); ++t) {
+        const model::StateTensorContract& c = st.contract.tensors[t];
+        const auto index = static_cast<std::uint32_t>(first + t);
+        if (c.borrowed_from_target) {
+          // The tensor it reads of the stage it reads: its cells.
+          const auto borrowed = std::ranges::find_if(bindings.state->borrowed, [&](const auto& b) {
+            return b.layer == in.layer && b.tensor == index;
+          });
+          if (borrowed == bindings.state->borrowed.end() || borrowed->contract != c) {
+            return Refused(std::format("layer {}: the state layout is not this spec's", in.layer));
+          }
+          const auto source = ReadSource(spec, self, spec::ReadKind::kState, c.name);
+          const model::StateLayoutDerived* target = source ? LayoutOf(bindings, *source) : nullptr;
+          if (target == nullptr) {
+            return Refused(std::format(
+                "layer {} borrows {} without the layout of the stage it reads", in.layer, c.name));
+          }
+          const auto* item = model::BorrowedItem(*target, *borrowed);
+          if (item == nullptr) {
+            return Refused(std::format("layer {}: the stage it reads has no {} in layer {}",
+                                       in.layer, c.name, c.target_layer));
+          }
+          st.items.push_back(static_cast<std::size_t>(item - target->items.data()));
+          st.cells.push_back(item->cells);
+          st.sources.push_back(*source);
+        } else {
+          const auto item = ItemOf(*bindings.state, in.layer, index);
+          if (!item || bindings.state->items[*item].contract != c) {
+            return Refused(std::format("layer {}: the state layout is not this spec's", in.layer));
+          }
+          st.items.push_back(*item);
+          st.cells.push_back(bindings.state->items[*item].cells);
+          st.sources.push_back(stage);
+        }
+        const CellKey key = KeyOf(c, st.cells.back());
+        for (const SegmentRows& seg : ctx.segments()) {
+          if (auto ok = CheckCells(seg, key, c.window); !ok) {
+            return Refused(std::format("layer {} state {}: {}", in.layer, c.name, ok.error()));
+          }
+        }
+      }
+      if (in.def->masks != nullptr) {
+        for (const MaskUse& m : in.def->masks(in)) {
+          if ((options.rounded_indexer || options.rounded_index_mask) && m.indexer_selected) {
+            continue;
+          }
+          masks.push_back({.cells = KeyOf(st.contract.tensors.at(m.tensor), st.cells.at(m.tensor)),
+                           .window = m.window,
+                           .ahead = m.ahead,
+                           .exact = in.def->exact_masks});
+        }
+      }
+      first = static_cast<std::uint16_t>(first + st.contract.tensors.size());
+      slot = std::move(st);
+    }
+  }
+  ctx.DeclareMasks(masks);
+  return stateful;
+}
+
 }  // namespace
 
 std::expected<void, std::string> CheckStateWrites(const ir::Graph& g,
@@ -1686,44 +1762,19 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
   auto instances = InstancesOf(spec, stage);
   if (!instances) return std::unexpected(instances.error());
   if (!instances->embedding) return Refused("a stage without an embedding");
-  const spec::Stage& self = spec.stages[stage];
-  if (options.rounded_indexer) {
-    if (stage != 0 || spec.stages.size() != 1 || self.role != spec::StageRole::kTarget ||
-        !self.reads.empty() || !self.taps.empty() || bindings.state == nullptr ||
-        !bindings.state->borrowed.empty() || bindings.state->context < 4 ||
-        bindings.state->context > 4096 || shape.segments.size() != 1 || shape.row_invariant ||
-        (shape.phase != planner::Phase::kPrefill && shape.phase != planner::Phase::kDecode &&
-         shape.phase != planner::Phase::kScore))
-      return Refused("rounded indexer requires one ordinary bounded target");
-    const auto& own = shape.segments.front();
-    if (own.slot != 0 || own.rows > 8 || own.past > bindings.state->context ||
-        own.rows > bindings.state->context - own.past || own.read_cells == 0 ||
-        own.read_cells > bindings.state->context)
-      return Refused("rounded indexer owner exceeds its admitted context or rows");
-    bool indexed = false;
-    for (const auto& layer : instances->layers) {
-      for (const auto& in : layer) {
-        if (in.def->kind != "attention.mqa") continue;
-        if (in.params.Name("cache") == "injected")
-          return Refused("rounded indexer does not admit injected attention");
-        if (!in.params.Flag("indexer")) continue;
-        indexed = true;
-        if (in.params.Int("ratio") != 4 || !in.params.Flag("overlap") ||
-            in.params.Int("index_dim") != 128 || in.params.Int("indexer_heads") != 64 ||
-            in.params.Int("top_k") <= 0 || in.params.Int("top_k") > 512)
-          return Refused("rounded indexer requires the bounded ratio-four CSA geometry");
-      }
-    }
-    if (!indexed) return Refused("rounded indexer policy names no indexed attention");
+  if (auto admitted = AdmitStepOptions(spec, stage, *instances, shape, bindings, options);
+      !admitted) {
+    return std::unexpected(admitted.error());
   }
+  const spec::Stage& self = spec.stages[stage];
   // Same canonical component declaration as serving policy, reusing the
   // instances already paid and materialized for this graph.
-  const bool has_indexer = options.dsv4_lid_mask && IndexedMasks(*instances);
+  const bool has_indexer = options.rounded_index_mask && IndexedMasks(*instances);
   StepBuilder sb(stage, shape);
   StepContext& ctx = sb.ctx();
   ctx.EnableOwnerProducts(options.owner_products);
   if (options.rounded_indexer ||
-      (options.dsv4_lid_mask && has_indexer && bindings.state != nullptr)) {
+      (options.rounded_index_mask && has_indexer && bindings.state != nullptr)) {
     ctx.SetRoundedIndexerContext(bindings.state->context);
   }
   const bool head = ctx.outputs() > 0;
@@ -1737,90 +1788,9 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
   // The taps other stages read of this one.
   auto taps = TapWrites(spec, stage);
   if (!taps) return std::unexpected(taps.error());
-
-  // Each layer's stateful instances: their contracts, first tensor and
-  // layout items (a borrowed tensor's that of the stage it reads).
-  struct Stateful {
-    model::StateContract contract;
-    std::uint16_t first = 0;
-    std::vector<std::uint64_t> cells;
-    std::vector<std::size_t> items;
-    std::vector<std::uint16_t> sources;
-  };
-  std::vector<std::vector<std::optional<Stateful>>> stateful(instances->layers.size());
-  std::vector<StepContext::MaskKey> masks;
-  for (std::size_t l = 0; l < instances->layers.size(); ++l) {
-    // The embedding's state comes first in layer 0's contract (a tap
-    // another stage writes; the stage's own steps neither read nor write
-    // it).
-    std::uint16_t first = 0;
-    if (l == 0 && instances->embedding && instances->embedding->def->state != nullptr) {
-      first = static_cast<std::uint16_t>(
-          instances->embedding->def->state(*instances->embedding).tensors.size());
-    }
-    for (const Instance& in : instances->layers[l]) {
-      auto& slot = stateful[l].emplace_back();
-      if (in.def->state == nullptr) continue;
-      if (bindings.state == nullptr) return Refused("a stateful stage without its state layout");
-      Stateful st{
-          .contract = in.def->state(in), .first = first, .cells = {}, .items = {}, .sources = {}};
-      for (std::size_t t = 0; t < st.contract.tensors.size(); ++t) {
-        const model::StateTensorContract& c = st.contract.tensors[t];
-        const auto index = static_cast<std::uint32_t>(first + t);
-        if (c.borrowed_from_target) {
-          // The tensor it reads of the stage it reads: its cells.
-          const auto borrowed = std::ranges::find_if(bindings.state->borrowed, [&](const auto& b) {
-            return b.layer == in.layer && b.tensor == index;
-          });
-          if (borrowed == bindings.state->borrowed.end() || borrowed->contract != c) {
-            return Refused(std::format("layer {}: the state layout is not this spec's", in.layer));
-          }
-          const auto source = ReadSource(spec, self, spec::ReadKind::kState, c.name);
-          const model::StateLayoutDerived* target = source ? LayoutOf(bindings, *source) : nullptr;
-          if (target == nullptr) {
-            return Refused(std::format(
-                "layer {} borrows {} without the layout of the stage it reads", in.layer, c.name));
-          }
-          const auto* item = model::BorrowedItem(*target, *borrowed);
-          if (item == nullptr) {
-            return Refused(std::format("layer {}: the stage it reads has no {} in layer {}",
-                                       in.layer, c.name, c.target_layer));
-          }
-          st.items.push_back(static_cast<std::size_t>(item - target->items.data()));
-          st.cells.push_back(item->cells);
-          st.sources.push_back(*source);
-        } else {
-          const auto item = ItemOf(*bindings.state, in.layer, index);
-          if (!item || bindings.state->items[*item].contract != c) {
-            return Refused(std::format("layer {}: the state layout is not this spec's", in.layer));
-          }
-          st.items.push_back(*item);
-          st.cells.push_back(bindings.state->items[*item].cells);
-          st.sources.push_back(stage);
-        }
-        const CellKey key = KeyOf(c, st.cells.back());
-        for (const SegmentRows& seg : ctx.segments()) {
-          if (auto ok = CheckCells(seg, key, c.window_or_ratio); !ok) {
-            return Refused(std::format("layer {} state {}: {}", in.layer, c.name, ok.error()));
-          }
-        }
-      }
-      if (in.def->masks != nullptr) {
-        for (const MaskUse& m : in.def->masks(in)) {
-          if ((options.rounded_indexer || options.dsv4_lid_mask) && m.indexer_selected) {
-            continue;
-          }
-          masks.push_back({.cells = KeyOf(st.contract.tensors.at(m.tensor), st.cells.at(m.tensor)),
-                           .window = m.window,
-                           .ahead = m.ahead,
-                           .exact = in.def->exact_masks});
-        }
-      }
-      first = static_cast<std::uint16_t>(first + st.contract.tensors.size());
-      slot = std::move(st);
-    }
-  }
-  ctx.DeclareMasks(masks);
+  auto bound_state = BindLayerState(spec, stage, *instances, bindings, options, ctx);
+  if (!bound_state) return std::unexpected(bound_state.error());
+  auto& stateful = *bound_state;
 
   std::map<std::string, ir::TensorId, std::less<>> sides;
   struct Flow {
@@ -1880,6 +1850,7 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
                .carry2 = flow.carry2,
                .side = side,
                .carry_needed = carry_needed};
+    if (hook == nullptr) return Refused("spatial component has no token fragment");
     auto out = hook(f);
     if (!out) return std::unexpected(out.error());
     sb.b().SetJoined();
@@ -2296,8 +2267,8 @@ std::expected<ComponentGraph, std::string> BuildComponent(
     // A tap another stage writes: the instance's own steps never touch it.
     if (contract.tensors[t].target_writes) continue;
     for (const SegmentRows& seg : ctx.segments()) {
-      if (auto c = CheckCells(seg, KeyOf(contract.tensors[t], cells[t]),
-                              contract.tensors[t].window_or_ratio);
+      if (auto c =
+              CheckCells(seg, KeyOf(contract.tensors[t], cells[t]), contract.tensors[t].window);
           !c) {
         return std::unexpected(c.error());
       }
@@ -2361,6 +2332,7 @@ std::expected<ComponentGraph, std::string> BuildComponent(
              .carry = out.carry_in,
              .carry2 = out.carry2_in,
              .side = [&](std::string_view) -> ir::TensorId { return out.side_in; }};
+  if (in.def->emit == nullptr) return Refused("spatial component has no token fragment");
   auto emitted = in.def->emit(f);
   if (!emitted) return std::unexpected(emitted.error());
   sb.b().SetJoined();
@@ -2484,39 +2456,15 @@ std::expected<void, std::string> EmitInputValues(const StepInput& input,
       break;
     case InputKind::kHadamard:
       return Refused("a Hadamard matrix's values are floats (HadamardValues)");
-    case InputKind::kPositionPhases:
-      if (input.ratio == 0) return Refused("phases of no ratio");
-      for (const planner::Segment& s : shape.segments) {
-        for (std::uint32_t i = 0; i < s.rows; ++i) {
-          out.push_back(static_cast<std::int64_t>((std::uint64_t{s.past} + i) % input.ratio));
-        }
+    case InputKind::kHostComputed:
+      if (input.host.def == nullptr || input.host.def->emit == nullptr) {
+        return Refused("a host-computed input without a provider");
       }
-      return out.Finish();
+      return input.host.def->emit(input, shape, out);
     case InputKind::kCellPositions:
     case InputKind::kOutputCells:
     case InputKind::kBlockPositions:
-    case InputKind::kKeptRows:
-    case InputKind::kKeptCells:
-    case InputKind::kPoolReads:
-    case InputKind::kBlockCells:
-    case InputKind::kBlockStarts:
       break;
-  }
-  if (input.kind == InputKind::kBlockStarts || input.kind == InputKind::kPoolReads ||
-      input.kind == InputKind::kBlockCells) {
-    if (input.segment >= shape.segments.size()) return Refused("an input of no segment");
-    const planner::Segment& s = shape.segments[input.segment];
-    // kBlockStarts names no cache: any cell count past the blocks plans it.
-    const std::uint64_t cache = input.kind == InputKind::kBlockCells
-                                    ? input.cells.capacity
-                                    : std::numeric_limits<std::uint32_t>::max();
-    const std::uint64_t ring = input.kind == InputKind::kPoolReads
-                                   ? input.cells.capacity
-                                   : std::uint64_t{input.ratio} * (input.overlap ? 2 : 1);
-    return EmitCompressor(s.rows, s.past, input.ratio, input.overlap, ring, cache,
-                          input.kind == InputKind::kPoolReads ? &out : nullptr,
-                          input.kind == InputKind::kBlockCells ? &out : nullptr,
-                          input.kind == InputKind::kBlockStarts ? &out : nullptr);
   }
   if (input.segment >= shape.segments.size() || input.cells.capacity == 0) {
     return Refused("an input of no segment of the shape");
@@ -2529,16 +2477,6 @@ std::expected<void, std::string> EmitInputValues(const StepInput& input,
       for (std::uint64_t b = 0; b < input.read; ++b) {
         out.push_back(static_cast<std::int64_t>(b * input.cells.block));
       }
-    }
-    return out.Finish();
-  }
-  if (input.kind == InputKind::kKeptRows || input.kind == InputKind::kKeptCells) {
-    // A recent ring's last min(rows, capacity) rows, in row order.
-    const std::uint64_t kept = std::min<std::uint64_t>(s.rows, cap);
-    for (std::uint64_t i = s.rows - kept; i < s.rows; ++i) {
-      out.push_back(input.kind == InputKind::kKeptRows
-                        ? static_cast<std::int64_t>(i)
-                        : static_cast<std::int64_t>((std::uint64_t{s.past} + i) % cap));
     }
     return out.Finish();
   }

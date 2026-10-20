@@ -148,6 +148,27 @@ TEST(SpecTest, CanonicalJsonRoundTrips) {
   ModelSpec other = spec;
   other.stages[0].layers[1].components[0].params[0].value = 1e-5;
   EXPECT_NE(other.Digest(), spec.Digest());
+  // Image stage links and exports round-trip canonically and validate.
+  Stage vae{.name = "vae", .role = StageRole::kVae, .artifact = 0};
+  vae.stream = {.width = 16};
+  vae.layers.push_back(Layer{.components = {C("norm.rms", {{"eps", 1e-6}}, {W("weight", "w")}),
+                                            C("residual.spatial", {}, {})}});
+  vae.links = {GraphLink{.input = 0}, GraphLink{.input = 1, .auxiliary = 0}};
+  vae.exports = {2};
+  ModelSpec img{.pipeline = PipelineKind::kImage, .stages = {vae}};
+  Canonicalize(img);
+  ASSERT_TRUE(Validate(img).has_value()) << Validate(img).error();
+  const std::string img_json = ToJson(img);
+  auto img_back = FromJson(img_json);
+  ASSERT_TRUE(img_back.has_value()) << img_back.error();
+  EXPECT_EQ(*img_back, img);
+  EXPECT_EQ(ToJson(*img_back), img_json);
+  ModelSpec bad_links = img;
+  bad_links.stages[0].links.pop_back();
+  EXPECT_FALSE(Validate(bad_links).has_value());
+  ModelSpec bad_exports = img;
+  bad_exports.stages[0].exports = {0};
+  EXPECT_FALSE(Validate(bad_exports).has_value());
 }
 
 TEST(SpecTest, RefusesWhatIsNotCanonicalOrValid) {

@@ -15,8 +15,10 @@ struct GraphLink {
   // Slot numbers are local to the same owner; slot zero is its first extra root.
   std::optional<std::uint16_t> input_port{};
   std::optional<std::uint16_t> auxiliary_port{};
-  // Original pre-branch value, independently live through a gated residual.
+  // Original pre-branch value, independently live through a gated residual,
+  // or a typed extra root such as a spatial attention mask.
   std::optional<std::uint16_t> carry{};
+  std::optional<std::uint16_t> carry_port{};
   bool operator==(const GraphLink&) const = default;
 };
 }  // namespace llmp::spec

@@ -963,7 +963,7 @@ llmp_gtest(composition_test TEST_PREFIX unit.
              PROPERTIES LABELS unit
                         ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-# The Qwen-Image-2.1 adapter (model/qwen_image.h) over its frozen family
+# The Qwen-Image-2.1 adapter (model/image_pipeline.h) over its frozen family
 # (tests/support/image_family.h): schedule, tensor lists and binding, the
 # VAE's plan, rotary tables, sinusoid and pixels; the published v1
 # components bound where the v1 store holds them (a Spark).

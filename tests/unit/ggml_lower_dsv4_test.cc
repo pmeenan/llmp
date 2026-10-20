@@ -39,6 +39,7 @@
 #include "planner/plan.h"
 #include "planner/policy.h"
 #include "spec/mappings/dsv4.h"
+#include "state_layouts.h"
 
 namespace {
 namespace co = llmp::components;
@@ -783,7 +784,7 @@ TEST(GgmlLowerDsv4Test, PrimitiveTargetAndDraftStepsLowerWithTypedInputs) {
           std::expected<void, kg::KernelFailure> valid;
           switch (node->op) {
             case GGML_OP_CUSTOM:
-              if (kg::LlmpOpOf(node) == kg::LlmpOp::kGemma4Mask) valid = kg::CheckGemma4Mask(node);
+              if (kg::LlmpOpOf(node) == kg::LlmpOp::kCausalMask) valid = kg::CheckCausalMask(node);
               break;
             case GGML_OP_ADD:
               valid = kg::CheckBinary(node, GGML_OP_ADD);
@@ -810,7 +811,8 @@ TEST(GgmlLowerDsv4Test, PrimitiveTargetAndDraftStepsLowerWithTypedInputs) {
         EXPECT_TRUE(std::ranges::any_of(lowered->inputs,
                                         [&](const kn::InputSlot& in) {
                                           return shape.stage == 0
-                                                     ? in.kind == kn::InputKind::kPoolReads
+                                                     ? (in.kind == kn::InputKind::kHostComputed &&
+                                                        in.host == &co::CompressorPoolReadsInput())
                                                      : in.kind == kn::InputKind::kMask && in.ahead;
                                         }) ||
                     (shape.stage == 1 && device_masks));
@@ -825,8 +827,8 @@ TEST(GgmlLowerDsv4Test, OptInLocalFormsLowerActualTargetAndDraftFragments) {
   const std::array<const md::StateLayoutDerived*, 2> layouts{&f.layouts[0], &f.layouts[1]};
   const std::array<std::span<const co::BoundTensor>, 2> tensors{f.target_source.tensors,
                                                                 f.draft_source.tensors};
-  const std::array<std::string, 4> forms{"dsv4_qhead", "dsv4_compress", "dsv4_hc_pre",
-                                         "dsv4_hc_post"};
+  const std::array<std::string, 4> forms{"rms_norm_rope_tail", "softmax_pool_compress",
+                                         "sinkhorn_hc_pre", "hc_post_flat_norm"};
   for (const auto& shape : std::vector<pl::StepShape>{
            {.segments = {{.rows = 16, .read_cells = 768, .outputs = 1}}},
            {.segments = {{.rows = 130, .past = 127, .read_cells = 768, .outputs = 1}}},
@@ -856,9 +858,9 @@ TEST(GgmlLowerDsv4Test, OptInLocalFormsLowerActualTargetAndDraftFragments) {
     // Test each form independently: HC pre includes the flat norm that
     // HC post can pair with, so enabling both gives the earlier pattern priority.
     for (const auto& form : forms) {
-      if (shape.stage == 1 && form == "dsv4_compress") continue;
-      if (shape.rows() < 16 && form == "dsv4_qhead") continue;
-      if (shape.rows() > 16 && form == "dsv4_hc_pre") continue;
+      if (shape.stage == 1 && form == "softmax_pool_compress") continue;
+      if (shape.rows() < 16 && form == "rms_norm_rope_tail") continue;
+      if (shape.rows() > 16 && form == "sinkhorn_hc_pre") continue;
       SCOPED_TRACE(form);
       pl::Policy policy;
       policy.enabled = {form};
@@ -1155,15 +1157,19 @@ TEST(GgmlLowerDsv4Test, FusedCompressorRequiresGeneratedReadsForItsExactOwnerGeo
     };
     const auto state = f32(2), score = f32(2), current = f32(1), current_score = f32(1);
     const auto ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2})));
-    inputs.push_back({.tensor = ids,
-                      .kind = mutation == 1 ? co::InputKind::kFeatures : co::InputKind::kPoolReads,
-                      .segment = static_cast<std::uint8_t>(mutation == 5 ? 1 : 0),
-                      .cells = {.capacity = 2, .ring = true, .recent = true},
-                      .ratio = mutation == 2 ? 2U : 1U,
-                      .overlap = mutation != 3,
-                      .ring = mutation == 4 ? 4U : 2U});
+    inputs.push_back(
+        {.tensor = ids,
+         .kind = mutation == 1 ? co::InputKind::kFeatures : co::InputKind::kHostComputed,
+         .segment = static_cast<std::uint8_t>(mutation == 5 ? 1 : 0),
+         .cells = {.capacity = 2, .ring = true, .recent = true},
+         .host = {.def = &co::CompressorPoolReadsInput(),
+                  .ratio = mutation == 2 ? 2U : 1U,
+                  .overlap = mutation != 3},
+         .ratio = mutation == 2 ? 2U : 1U,
+         .overlap = mutation != 3,
+         .ring = mutation == 4 ? 4U : 2U});
     const auto reads = mutation == 6 ? b.View(ids, ir::ShapeOf({2}), {4, 8, 8, 8}, 0) : ids;
-    b.Output(b.Fused(ir::FusedKind::kDsv4Compress,
+    b.Output(b.Fused(ir::FusedKind::kSoftmaxPoolCompress,
                      std::array{state, score, current, current_score, reads},
                      ir::CompressorParams{.ratio = 1, .overlap = true})[0]);
     auto graph = std::move(b).Finish();
@@ -1689,9 +1695,9 @@ TEST(GgmlLowerDsv4Test, StridedHcPostBoundariesRetainThePrimitiveFallback) {
     const pl::StepShape shape{.segments = {{.rows = 3, .outputs = 0, .want_head = false}}};
     auto registry = Registry();
     pl::Policy policy;
-    policy.enabled = {"dsv4_hc_post"};
+    policy.enabled = {"hc_post_flat_norm"};
     for (const auto& pattern : pl::Patterns())
-      if (pattern.name != "dsv4_hc_post") policy.disabled.emplace_back(pattern.name);
+      if (pattern.name != "hc_post_flat_norm") policy.disabled.emplace_back(pattern.name);
     pl::Canonicalize(policy);
     std::vector<ir::TensorId> staged;
     for (const auto& in : inputs) staged.push_back(in.tensor);
@@ -1766,9 +1772,10 @@ TEST(GgmlLowerDsv4Test, OutAFusionKeepsUnsupportedShapesAndFrequenciesPrimitive)
     const pl::StepShape shape{.segments = {{.rows = 64, .outputs = 0, .want_head = false}}};
     auto registry = Registry();
     pl::Policy policy;
-    policy.enabled = {"dsv4_out_a"};
+    policy.enabled = {"inverse_rope_grouped_mul_mat"};
     for (const auto& pattern : pl::Patterns())
-      if (pattern.name != "dsv4_out_a") policy.disabled.emplace_back(pattern.name);
+      if (pattern.name != "inverse_rope_grouped_mul_mat")
+        policy.disabled.emplace_back(pattern.name);
     pl::Canonicalize(policy);
     std::vector<ir::TensorId> staged;
     for (const auto& in : inputs) staged.push_back(in.tensor);
@@ -2075,26 +2082,38 @@ TEST(GgmlLowerDsv4Test, RejectsMalformedCompressorInputsAndMaskMetadata) {
   auto plan = pl::Plan(step->graph.Clone(), f.registry, {.device_class = "sm_121", .arch = 121},
                        policy, {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
   ASSERT_TRUE(plan) << plan.error().detail;
-  for (const auto kind :
-       {co::InputKind::kPoolReads, co::InputKind::kBlockCells, co::InputKind::kPositionPhases,
-        co::InputKind::kHadamard, co::InputKind::kCellPositions}) {
-    SCOPED_TRACE(static_cast<int>(kind));
+  for (int index = 0; index < 5; ++index) {
+    SCOPED_TRACE(index);
     auto at = std::ranges::find_if(step->inputs, [&](const auto& in) {
-      return in.kind == kind && (kind != co::InputKind::kCellPositions || in.cells.positions);
+      switch (index) {
+        case 0:
+          return in.kind == co::InputKind::kHostComputed &&
+                 in.host.def == &co::CompressorPoolReadsInput();
+        case 1:
+          return in.kind == co::InputKind::kHostComputed &&
+                 in.host.def == &co::CompressorBlockCellsInput();
+        case 2:
+          return in.kind == co::InputKind::kHostComputed &&
+                 in.host.def == &co::CompressorPhasesInput();
+        case 3:
+          return in.kind == co::InputKind::kHadamard;
+        default:
+          return in.kind == co::InputKind::kCellPositions && in.cells.positions;
+      }
     });
     ASSERT_NE(at, step->inputs.end());
     const auto original = *at;
-    switch (kind) {
-      case co::InputKind::kPoolReads:
+    switch (index) {
+      case 0:
         at->ratio = std::numeric_limits<std::uint32_t>::max();
         break;
-      case co::InputKind::kBlockCells:
+      case 1:
         at->cells.capacity = 0;
         break;
-      case co::InputKind::kPositionPhases:
+      case 2:
         at->segment = 0;
         break;
-      case co::InputKind::kHadamard:
+      case 3:
         at->read = 3;
         break;
       default:
@@ -2230,8 +2249,9 @@ TEST(GgmlLowerDsv4Test, ClosedLidMaskLowersExactlyTwoNativeHelpersAndFundedIds) 
         ir::TensorId output;
         if (direct) {
           const std::array sources{q, k, w, counts, raw};
-          output = b.Fused(ir::FusedKind::kDsv4LidMask, sources,
-                           ir::LidMaskParams{.top = top, .raw_cells = 640, .cells = cells})[0];
+          output =
+              b.Fused(ir::FusedKind::kRoundedIndexMask, sources,
+                      ir::RoundedIndexMaskParams{.top = top, .raw_cells = 640, .cells = cells})[0];
         } else {
           const auto scores = b.RoundedIndexScore(q, k, w, counts);
           const auto ids = b.VisibleTopK(scores, counts, top);
@@ -2246,7 +2266,7 @@ TEST(GgmlLowerDsv4Test, ClosedLidMaskLowersExactlyTwoNativeHelpersAndFundedIds) 
           step.inputs.push_back({.tensor = tensor, .kind = co::InputKind::kFeatures, .segment = 0});
         const pl::StepShape shape{.segments = {{.rows = rows, .read_cells = 3072, .outputs = 1}}};
         pl::Policy policy;
-        policy.enabled = {"dsv4_lid_mask"};
+        policy.enabled = {"rounded_index_mask"};
         auto plan =
             pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, policy,
                      {.staged = staged,
@@ -2257,7 +2277,7 @@ TEST(GgmlLowerDsv4Test, ClosedLidMaskLowersExactlyTwoNativeHelpersAndFundedIds) 
         ASSERT_EQ(plan->steps.size(), 1U);
         EXPECT_EQ(registry.at(plan->steps[0].implementation).name, "llmp.dsv4.lid_mask");
         ASSERT_EQ(plan->graph.node(plan->steps[0].nodes[0]).key,
-                  ir::Fused(ir::FusedKind::kDsv4LidMask));
+                  ir::Fused(ir::FusedKind::kRoundedIndexMask));
         auto lowered = kg::LowerStep({*plan, step, shape, {}, 3072}, registry, Device());
         ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
         ASSERT_EQ(lowered->plan.steps.size(), 2U);
@@ -2595,7 +2615,7 @@ TEST(GgmlLowerDsv4Test, DeepSeekServingPolicySelectsFastFormsAndDecodeThreshold)
     ASSERT_TRUE(plan) << plan.error().detail;
 
     const auto hc_pre_count = std::ranges::count_if(
-        plan->applied, [](const auto& a) { return a.pattern == "dsv4_hc_pre"; });
+        plan->applied, [](const auto& a) { return a.pattern == "sinkhorn_hc_pre"; });
     const auto vecq_glu_count =
         std::ranges::count_if(plan->applied, [](const auto& a) { return a.pattern == "vecq_glu"; });
     EXPECT_GT(hc_pre_count, 0);
@@ -2629,7 +2649,7 @@ TEST(GgmlLowerDsv4Test, DeepSeekServingPolicySelectsFastFormsAndDecodeThreshold)
     EXPECT_TRUE(found_direct_hc_post);
   }
 
-  // A step with rows = 130 lowers dsv4_hc_post instead of dsv4_hc_pre.
+  // A step with rows = 130 lowers dsv4_hc_post instead of sinkhorn_hc_pre.
   {
     const pl::StepShape shape{
         .segments = {{.rows = 130, .past = 127, .read_cells = 768, .outputs = 1}}};
@@ -2646,9 +2666,9 @@ TEST(GgmlLowerDsv4Test, DeepSeekServingPolicySelectsFastFormsAndDecodeThreshold)
     ASSERT_TRUE(plan) << plan.error().detail;
 
     const auto hc_pre_count = std::ranges::count_if(
-        plan->applied, [](const auto& a) { return a.pattern == "dsv4_hc_pre"; });
+        plan->applied, [](const auto& a) { return a.pattern == "sinkhorn_hc_pre"; });
     const auto hc_post_count = std::ranges::count_if(
-        plan->applied, [](const auto& a) { return a.pattern == "dsv4_hc_post"; });
+        plan->applied, [](const auto& a) { return a.pattern == "hc_post_flat_norm"; });
     EXPECT_EQ(hc_pre_count, 0);
     EXPECT_GT(hc_post_count, 0);
 
@@ -2718,7 +2738,7 @@ TEST(GgmlLowerDsv4Test, MultiSlotDecodeLowersSuccessfully) {
                                      .want_head = true},
                                 },
                             .read_align = 256};
-  auto step = co::BuildStep(spec, 0, shape, bindings, {.narrow = true, .dsv4_lid_mask = true});
+  auto step = co::BuildStep(spec, 0, shape, bindings, {.narrow = true, .rounded_index_mask = true});
   ASSERT_TRUE(step) << step.error();
 
   std::vector<ir::TensorId> staged;
@@ -2834,7 +2854,7 @@ TEST(GgmlLowerDsv4Test, Prefill4096LowersWithExpertFusions) {
                                      .want_head = false},
                                 },
                             .read_align = 256};
-  auto step = co::BuildStep(spec, 0, shape, bindings, {.narrow = true, .dsv4_lid_mask = true});
+  auto step = co::BuildStep(spec, 0, shape, bindings, {.narrow = true, .rounded_index_mask = true});
   ASSERT_TRUE(step) << step.error();
 
   std::vector<ir::TensorId> staged;

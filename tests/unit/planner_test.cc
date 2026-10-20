@@ -593,7 +593,7 @@ TEST(PlannerPolicyTest, ScalarIncumbentCannotAuthorizeMoreRowsOtherRolesOrGeomet
 }
 
 TEST(PlannerPolicyTest, DefaultAvailabilityDoesNotTurnEnableIntoNumericalAuthority) {
-  EXPECT_FALSE(Disabled({}, "dsv4_qhead"));
+  EXPECT_FALSE(Disabled({}, "rms_norm_mul_rope"));
   EXPECT_FALSE(Disabled({}, "bf16_glu"));
   EXPECT_TRUE(Disabled({}, "rounded_indexer"));
   EXPECT_TRUE(Disabled({}, "owner_row_invariant"));
@@ -877,7 +877,7 @@ TEST(PlannerPatternTest, GroupedOutputShapeComesFromItsWeightRatherThanACheckpoi
   weight.format = F32({128, 384, 2});
   heads.format = F32({64, 4, 5});
   const std::array<const ir::TensorDesc*, 2> sources{&weight, &heads};
-  const auto shape = ShapeOfNode(ir::Fused(FusedKind::kDsv4OutA), sources, {});
+  const auto shape = ShapeOfNode(ir::Fused(FusedKind::kInverseRopeGroupedMatMul), sources, {});
   EXPECT_EQ(shape.rows, 5U);
   EXPECT_EQ(shape.k, 256U);
   EXPECT_EQ(shape.n, 768U);
@@ -885,7 +885,7 @@ TEST(PlannerPatternTest, GroupedOutputShapeComesFromItsWeightRatherThanACheckpoi
 
 TEST(PlannerPatternTest, GroupedOutputMatcherDelegatesSpecializedDimensionsToTheCandidate) {
   auto implementations = Everything();
-  implementations.push_back(Fake("t.outa", Any(ir::Fused(FusedKind::kDsv4OutA))));
+  implementations.push_back(Fake("t.outa", Any(ir::Fused(FusedKind::kInverseRopeGroupedMatMul))));
   const auto registry = Registry(std::move(implementations));
   const Policy policy{};
   const SelectionView selection(registry, kDevice, policy, false, false);
@@ -902,16 +902,16 @@ TEST(PlannerPatternTest, GroupedOutputMatcherDelegatesSpecializedDimensionsToThe
   b.Output(out);
   const auto graph = std::move(b).Finish();
   ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
-  const auto match =
-      fusions::Dsv4OutAMatch(MatchContext(*graph, selection, nullptr), graph->producer(out));
+  const auto match = fusions::InverseRopeGroupedMatMulMatch(
+      MatchContext(*graph, selection, nullptr), graph->producer(out));
   EXPECT_TRUE(match);
 }
 
 TEST(PlannerPatternTest, Dsv4QHeadChecksTailOwnershipSideReadersAndInterveningWrites) {
   auto implementations = Everything();
-  implementations.push_back(Fake("t.dsv4_qhead", Any(ir::Fused(FusedKind::kDsv4QHead))));
+  implementations.push_back(Fake("t.dsv4_qhead", Any(ir::Fused(FusedKind::kRmsNormMulRope))));
   const auto registry = Registry(std::move(implementations));
-  const Policy policy{.disabled = {"dsv4_qhead"}};
+  const Policy policy{.disabled = {"rms_norm_rope_tail"}};
   const SelectionView selection(registry, kDevice, policy, false, false);
   for (int mutation = 0; mutation <= 10; ++mutation) {
     SCOPED_TRACE(mutation);
@@ -956,18 +956,18 @@ TEST(PlannerPatternTest, Dsv4QHeadChecksTailOwnershipSideReadersAndInterveningWr
     auto g = std::move(b).Finish();
     ASSERT_TRUE(g) << (g ? "" : g.error().detail);
     const MatchContext c(*g, selection, nullptr);
-    EXPECT_EQ(fusions::Dsv4QHeadMatch(c, g->producer(out)).has_value(), mutation == 0);
+    EXPECT_EQ(fusions::RmsNormRopeTailMatch(c, g->producer(out)).has_value(), mutation == 0);
     if (mutation != 0) continue;
     Policy on;
-    on.enabled = {"dsv4_qhead"};
+    on.enabled = {"rms_norm_rope_tail"};
     const SelectionView enabled(registry, kDevice, on, false, false);
     auto rewritten = ApplyPatterns(*g, enabled, nullptr);
     ASSERT_TRUE(rewritten) << (rewritten ? "" : rewritten.error().detail);
     ASSERT_EQ(rewritten->applied.size(), 1U);
-    EXPECT_EQ(rewritten->applied[0].pattern, "dsv4_qhead");
+    EXPECT_EQ(rewritten->applied[0].pattern, "rms_norm_rope_tail");
     const auto& result =
         rewritten->graph.node(rewritten->graph.producer(rewritten->graph.outputs()[0]));
-    EXPECT_EQ(result.key, ir::Fused(FusedKind::kDsv4QHead));
+    EXPECT_EQ(result.key, ir::Fused(FusedKind::kRmsNormMulRope));
     const auto params = result.Params<ir::NormRopeParams>();
     EXPECT_EQ(ir::ToBytes(params.rope), g->node(g->producer(out)).params);
     EXPECT_EQ(params.eps, 1e-6F);
@@ -976,13 +976,14 @@ TEST(PlannerPatternTest, Dsv4QHeadChecksTailOwnershipSideReadersAndInterveningWr
     EXPECT_TRUE(disabled->applied.empty());
     const auto primitive_registry = Registry();
     const SelectionView unavailable(primitive_registry, kDevice, on, false, false);
-    EXPECT_FALSE(fusions::Dsv4QHeadMatch(MatchContext(*g, unavailable, nullptr), g->producer(out)));
+    EXPECT_FALSE(
+        fusions::RmsNormRopeTailMatch(MatchContext(*g, unavailable, nullptr), g->producer(out)));
   }
 }
 
 TEST(PlannerPatternTest, Dsv4HcPreChecksTheFullCarryAndPrimitiveArithmetic) {
   auto implementations = Everything();
-  implementations.push_back(Fake("t.dsv4_hc_pre", Any(ir::Fused(FusedKind::kDsv4HcPre))));
+  implementations.push_back(Fake("t.dsv4_hc_pre", Any(ir::Fused(FusedKind::kSinkhornHcPre))));
   const auto registry = Registry(std::move(implementations));
   const Policy policy{};
   const SelectionView selection(registry, kDevice, policy, false, false);
@@ -1030,18 +1031,18 @@ TEST(PlannerPatternTest, Dsv4HcPreChecksTheFullCarryAndPrimitiveArithmetic) {
     auto g = std::move(b).Finish();
     ASSERT_TRUE(g) << (g ? "" : g.error().detail);
     const MatchContext c(*g, selection, nullptr);
-    EXPECT_EQ(fusions::Dsv4HcPreMatch(c, g->producer(out)).has_value(), mutation == 0);
+    EXPECT_EQ(fusions::SinkhornHcPreMatch(c, g->producer(out)).has_value(), mutation == 0);
     if (mutation != 0) continue;
     Policy on;
-    on.enabled = {"dsv4_hc_pre"};
+    on.enabled = {"sinkhorn_hc_pre"};
     const SelectionView enabled(registry, kDevice, on, false, false);
     auto rewritten = ApplyPatterns(*g, enabled, nullptr);
     ASSERT_TRUE(rewritten) << (rewritten ? "" : rewritten.error().detail);
     ASSERT_EQ(rewritten->applied.size(), 1U);
-    EXPECT_EQ(rewritten->applied[0].pattern, "dsv4_hc_pre");
+    EXPECT_EQ(rewritten->applied[0].pattern, "sinkhorn_hc_pre");
     const auto& node =
         rewritten->graph.node(rewritten->graph.producer(rewritten->graph.outputs()[0]));
-    EXPECT_EQ(node.key, ir::Fused(FusedKind::kDsv4HcPre));
+    EXPECT_EQ(node.key, ir::Fused(FusedKind::kSinkhornHcPre));
     EXPECT_EQ(node.nout, 3);
     for (const TensorId t : node.outputs())
       EXPECT_TRUE(ir::IsContiguous(rewritten->graph.tensor(t)));
@@ -1084,17 +1085,17 @@ TEST(PlannerPatternTest, Dsv4HcPostPreservesBothOutputsAcrossComponentBoundaries
     b.Output(norm);
     auto g = std::move(b).Finish();
     ASSERT_TRUE(g) << (g ? "" : g.error().detail);
-    EXPECT_EQ(fusions::Dsv4HcPostMatch(MatchContext(*g, selection, nullptr), g->producer(norm))
+    EXPECT_EQ(fusions::HcPostFlatNormMatch(MatchContext(*g, selection, nullptr), g->producer(norm))
                   .has_value(),
               mutation == 0);
     if (mutation != 0) continue;
     Policy on;
-    on.enabled = {"dsv4_hc_post"};
+    on.enabled = {"hc_post_flat_norm"};
     const SelectionView enabled(registry, kDevice, on, false, false);
     auto rewritten = ApplyPatterns(*g, enabled, nullptr);
     ASSERT_TRUE(rewritten) << (rewritten ? "" : rewritten.error().detail);
     ASSERT_EQ(rewritten->applied.size(), 1U);
-    EXPECT_EQ(rewritten->applied[0].pattern, "dsv4_hc_post");
+    EXPECT_EQ(rewritten->applied[0].pattern, "hc_post_flat_norm");
     EXPECT_EQ(rewritten->graph.producer(rewritten->graph.outputs()[0]),
               rewritten->graph.producer(rewritten->graph.outputs()[1]));
   }
@@ -1116,7 +1117,7 @@ TEST(PlannerPatternTest, Dsv4CompressorDefinitionRejectsMalformedTypedOperands) 
     ir::ParamBytes raw = ir::ToBytes(params);
     if (mutation == 6) raw[4] = std::byte{2};  // noncanonical bool
     if (mutation == 7) raw[5] = std::byte{1};  // reserved byte
-    b.FusedBytes(FusedKind::kDsv4Compress,
+    b.FusedBytes(FusedKind::kSoftmaxPoolCompress,
                  std::array{state, state_score, current, current_score, indices}, raw, {});
     EXPECT_FALSE(b.ok());
   }
@@ -1124,9 +1125,10 @@ TEST(PlannerPatternTest, Dsv4CompressorDefinitionRejectsMalformedTypedOperands) 
 
 TEST(PlannerPatternTest, Dsv4CompressorChecksTheEntireCanonicalAssemblyAndReadOrder) {
   auto implementations = Everything();
-  implementations.push_back(Fake("t.dsv4_compress", Any(ir::Fused(FusedKind::kDsv4Compress))));
+  implementations.push_back(
+      Fake("t.dsv4_compress", Any(ir::Fused(FusedKind::kSoftmaxPoolCompress))));
   const auto registry = Registry(std::move(implementations));
-  const Policy policy{.disabled = {"dsv4_compress"}};
+  const Policy policy{.disabled = {"softmax_pool_compress"}};
   const SelectionView selection(registry, kDevice, policy, false, false);
   for (bool overlap : {false, true}) {
     for (int mutation = 0; mutation <= 9; ++mutation) {
@@ -1194,18 +1196,18 @@ TEST(PlannerPatternTest, Dsv4CompressorChecksTheEntireCanonicalAssemblyAndReadOr
       }
       ASSERT_TRUE(g) << (g ? "" : g.error().detail);
       const MatchContext c(*g, selection, nullptr);
-      EXPECT_EQ(fusions::Dsv4CompressMatch(c, g->producer(out)).has_value(), mutation == 0);
+      EXPECT_EQ(fusions::SoftmaxPoolCompressMatch(c, g->producer(out)).has_value(), mutation == 0);
       if (mutation != 0) continue;
       Policy on;
-      on.enabled = {"dsv4_compress"};
+      on.enabled = {"softmax_pool_compress"};
       const SelectionView enabled(registry, kDevice, on, false, false);
       auto rewritten = ApplyPatterns(*g, enabled, nullptr);
       ASSERT_TRUE(rewritten) << (rewritten ? "" : rewritten.error().detail);
       ASSERT_EQ(rewritten->applied.size(), 1U);
-      EXPECT_EQ(rewritten->applied[0].pattern, "dsv4_compress");
+      EXPECT_EQ(rewritten->applied[0].pattern, "softmax_pool_compress");
       const auto& result =
           rewritten->graph.node(rewritten->graph.producer(rewritten->graph.outputs()[0]));
-      EXPECT_EQ(result.key, ir::Fused(FusedKind::kDsv4Compress));
+      EXPECT_EQ(result.key, ir::Fused(FusedKind::kSoftmaxPoolCompress));
       EXPECT_EQ(result.Params<ir::CompressorParams>().ratio, kRatio);
       EXPECT_EQ(result.Params<ir::CompressorParams>().overlap, overlap);
       EXPECT_EQ(result.nsrc, 5U);
@@ -1219,7 +1221,7 @@ TEST(PlannerPatternTest, Dsv4CompressorChecksTheEntireCanonicalAssemblyAndReadOr
 TEST(PlannerPatternTest, HyperConnectionMixChecksItsStreamViewsAndFinalScale) {
   auto implementations = Everything();
   implementations.push_back(Fake("t.hc_norm", Any(ir::Fused(FusedKind::kHcNorm))));
-  implementations.push_back(Fake("t.hc_mix_norm", Any(ir::Fused(FusedKind::kHcMixNorm))));
+  implementations.push_back(Fake("t.hc_fold", Any(ir::Fused(FusedKind::kHcFold))));
   const auto registry = Registry(std::move(implementations));
   const Policy policy{};
   const SelectionView selection(registry, kDevice, policy, false, false);
@@ -1432,7 +1434,8 @@ TEST(PlannerPatternTest, GdnHistoryChecksStandaloneCommitTail) {
 
 TEST(PlannerPatternTest, QsaSelectionChecksItsFixedWeightsMasksAndBias) {
   auto implementations = Everything();
-  implementations.push_back(Fake("t.qsa_attention", Any(ir::Fused(FusedKind::kQsaAttention))));
+  implementations.push_back(
+      Fake("t.qsa_attention", Any(ir::Fused(FusedKind::kBlockSparseAttention))));
   const auto registry = Registry(std::move(implementations));
   const Policy policy{};
   const SelectionView selection(registry, kDevice, policy, false, false);
@@ -1467,13 +1470,13 @@ TEST(PlannerPatternTest, QsaSelectionChecksItsFixedWeightsMasksAndBias) {
     b.Output(b.Reshape(attn, ir::ShapeOf({4, 1})));
     const auto g = Finish(b);
     const MatchContext c(g, selection, nullptr);
-    EXPECT_EQ(fusions::QsaSelectMatch(c, g.producer(attn)).has_value(), mutation == 0);
+    EXPECT_EQ(fusions::BlockSparseAttentionMatch(c, g.producer(attn)).has_value(), mutation == 0);
   }
 }
 
 TEST(PlannerPatternTest, QsaPoolingDoesNotDropRotationFrequencyFactors) {
   auto implementations = Everything();
-  implementations.push_back(Fake("t.qsa_pool", Any(ir::Fused(FusedKind::kQsaPool))));
+  implementations.push_back(Fake("t.qsa_pool", Any(ir::Fused(FusedKind::kMeanPoolNormRopeStore))));
   const auto registry = Registry(std::move(implementations));
   const Policy policy{};
   const SelectionView selection(registry, kDevice, policy, false, false);
@@ -1497,7 +1500,7 @@ TEST(PlannerPatternTest, QsaPoolingDoesNotDropRotationFrequencyFactors) {
     b.Keep(stored);
     const auto g = Finish(b);
     const MatchContext c(g, selection, nullptr);
-    EXPECT_EQ(fusions::QsaPoolMatch(c, g.producer(stored)).has_value(), !frequencies);
+    EXPECT_EQ(fusions::MeanPoolNormRopeStoreMatch(c, g.producer(stored)).has_value(), !frequencies);
   }
 }
 
@@ -2293,7 +2296,7 @@ TEST(PlannerPatternTest, QsaGateQualifiesItsDownstreamProductRatherThanItsMulAnc
       policy = RoleNumericalPolicy(graph, policy, NumericalChange::kMxfp8ProductInput, role);
     if (authority == 2) policy.numerical_candidates = {NumericalChange::kMxfp8ProductInput};
     const auto plan = PlanOf(graph.Clone(), registry, policy);
-    const auto found = std::ranges::find(plan.applied, "qsa_gate", &Applied::pattern);
+    const auto found = std::ranges::find(plan.applied, "prepared_head_gate", &Applied::pattern);
     EXPECT_EQ(found != plan.applied.end(), authority != 0);
     if (found != plan.applied.end()) {
       ASSERT_EQ(found->numerical_proofs.size(), 1U);
@@ -2834,17 +2837,18 @@ TEST(PlannerPatternTest, DisablingNormRopeIsNotUndoneByTheSectionedForm) {
     return Finish(b);
   };
   // Both fused fakes take this graph.
-  EXPECT_EQ(Patterns(PlanOf(graph(), r, Disabling({"qsa_prep"}))),
+  EXPECT_EQ(Patterns(PlanOf(graph(), r, Disabling({"interleaved_norm_rope"}))),
             std::vector<std::string_view>{"rms_norm_mul_rope"});
   const StepPlan off = PlanOf(
-      graph(), r, Disabling({"qsa_prep", "rms_norm_mul_rope", "rms_norm_mul_rope_sections"}));
+      graph(), r,
+      Disabling({"interleaved_norm_rope", "rms_norm_mul_rope", "rms_norm_mul_rope_sections"}));
   EXPECT_EQ(Patterns(off), std::vector<std::string_view>{"rms_norm_mul"});
   EXPECT_EQ(Keys(off.graph),
             (std::vector{ir::Fused(FusedKind::kRmsNormMul), ir::Primitive(Op::kRope)}));
   EXPECT_EQ(Names(off, r), (std::vector<std::string>{"t.rms_norm_mul", "t.rope"}));
   // Leaving the sectioned matcher available selects that exact alternative.
   Policy image{.enabled = {"rms_norm_mul_rope_sections"},
-               .disabled = {"qsa_prep", "rms_norm_mul_rope"}};
+               .disabled = {"interleaved_norm_rope", "rms_norm_mul_rope"}};
   Canonicalize(image);
   EXPECT_EQ(Patterns(PlanOf(graph(), r, image)),
             std::vector<std::string_view>{"rms_norm_mul_rope_sections"});
@@ -3333,15 +3337,16 @@ TEST(PlannerPatternTest, TheLongerChainComesFirst) {
     return Finish(b);
   };
   const ex::Registry r = Registry();
-  EXPECT_EQ(Patterns(PlanOf(graph(64), r, Disabling({"qsa_prep"}))),
+  EXPECT_EQ(Patterns(PlanOf(graph(64), r, Disabling({"interleaved_norm_rope"}))),
             std::vector<std::string_view>{"rms_norm_mul_rope"});
-  EXPECT_EQ(Keys(PlanOf(graph(64), r, Disabling({"qsa_prep"})).graph),
+  EXPECT_EQ(Keys(PlanOf(graph(64), r, Disabling({"interleaved_norm_rope"})).graph),
             std::vector{ir::Fused(FusedKind::kRmsNormMulRope)});
   // Disabled, or at a width its implementation does not take: the norm and
   // its weight still fuse, the rotation stays.
-  EXPECT_EQ(Patterns(PlanOf(graph(64), r, Disabling({"qsa_prep", "rms_norm_mul_rope"}))),
-            std::vector<std::string_view>{"rms_norm_mul"});
-  const StepPlan wide = PlanOf(graph(128), r, Disabling({"qsa_prep"}));
+  EXPECT_EQ(
+      Patterns(PlanOf(graph(64), r, Disabling({"interleaved_norm_rope", "rms_norm_mul_rope"}))),
+      std::vector<std::string_view>{"rms_norm_mul"});
+  const StepPlan wide = PlanOf(graph(128), r, Disabling({"interleaved_norm_rope"}));
   EXPECT_EQ(Patterns(wide), std::vector<std::string_view>{"rms_norm_mul"});
   EXPECT_EQ(Keys(wide.graph),
             (std::vector{ir::Fused(FusedKind::kRmsNormMul), ir::Primitive(Op::kRope)}));

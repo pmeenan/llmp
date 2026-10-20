@@ -7,11 +7,33 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <optional>
+#include <span>
+#include <string>
+#include <vector>
 
 #include "execution/step_shape.h"
+#include "model/shape_parameters.h"
 
 namespace llmp::engine {
+
+// The intermediates a stage's verify stores for its commit, per owner.
+struct CommitBuffer {
+  std::uint32_t layer = 0;
+  std::uint16_t component = 0;
+  std::string what;
+  std::uint64_t row_bytes = 0;
+};
+
+// Stage-level execution facts exchanged between a step source and the model
+// runner at setup, without family-named source inspection methods.
+struct StageExecutionFacts {
+  bool uses_side_rows = false;
+  bool joined_repeat_pending = false;
+  std::function<std::expected<std::vector<CommitBuffer>, std::string>(std::uint32_t max_rows)>
+      commit_buffers;
+};
 
 // Pure shape facts, not contents, residency, a mutable ledger or execution
 // authority. The immutable source owns the provider/state geometry revision.
@@ -43,6 +65,38 @@ class SpecializationQuery {
     return SpecializationChange{};
   }
 };
+
+// Shape-level execution facts exchanged per step shape: canonical baked
+// dimensions, position-dependent specialization boundaries, and side-row
+// derivation from token history.
+class ShapeExecutionFacts : public SpecializationQuery {
+ public:
+  // Canonical baked graph dimensions. The same allocation-free emitter counts
+  // before storage admission, then fills an exact paid span. It must be pure.
+  virtual void EmitShapeParameters(const execution::StepShape&, model::ShapeParameterSink&) const {}
+  std::expected<std::size_t, model::ShapeParameterSink::Error> CountShapeParameters(
+      const execution::StepShape& shape) const {
+    model::ShapeParameterSink sink;
+    EmitShapeParameters(shape, sink);
+    return sink.Finish();
+  }
+  std::expected<std::size_t, model::ShapeParameterSink::Error> FillShapeParameters(
+      const execution::StepShape& shape, std::span<std::uint64_t> into) const {
+    model::ShapeParameterSink sink(into);
+    EmitShapeParameters(shape, sink);
+    return sink.Finish();
+  }
+  // A side-table component's row IDs from the owner's complete token
+  // history. Pure host work before any state admission or device writes.
+  virtual std::expected<void, std::string> SideRows(std::uint16_t /*stage*/,
+                                                    std::uint16_t /*component*/,
+                                                    std::span<const std::int32_t> /*history*/,
+                                                    std::uint32_t /*position*/,
+                                                    std::span<std::int32_t> /*out*/) const {
+    return std::unexpected("the step source cannot derive side rows");
+  }
+};
+
 inline bool ValidSpecializationRequest(const SpecializationRequest& request) {
   return request.owner < request.shape.segments.size() &&
          request.shape.segments[request.owner].past == request.after &&

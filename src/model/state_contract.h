@@ -102,15 +102,15 @@ enum class CellRule : std::uint8_t {
   // in cell p mod cells, so a chunk's rows and each row's window are always
   // in it. Uses min(cells, align(n)), or every cell if ring_reads_whole.
   kRing,
-  // A cell per `window_or_ratio` positions (BlockBasis).
+  // A cell per `block_ratio` positions (BlockBasis).
   kPerBlock,
-  // `window_or_ratio` cells whatever the context, every one used.
+  // `fixed_cells` cells whatever the context, every one used.
   kFixed,
-  // max_rows + `window_or_ratio` cells (a chunk's streams), every one used:
-  // the first `window_or_ratio` carry the rows before the chunk, and its
-  // row i is cell window_or_ratio + i.
+  // max_rows + `row_carry` cells (a chunk's streams), every one used:
+  // the first `row_carry` carry the rows before the chunk, and its
+  // row i is cell row_carry + i.
   kPerRow,
-  // `window_or_ratio` cells whatever the context, position p in cell
+  // `fixed_cells` cells whatever the context, position p in cell
   // p mod cells, every one used (a compressor's ring of recent positions,
   // a block drafter's ring).
   kPositionRing,
@@ -132,7 +132,10 @@ struct StateTensorContract {
   Encoding encoding = Encoding::kF16;
   std::uint64_t cell_bytes = 0;  // one cell (one position's row, one block's)
   CellRule cells = CellRule::kPerPosition;
-  std::uint32_t window_or_ratio = 0;  // kRing's window, kPerBlock's ratio, kFixed/kPerRow cells
+  std::uint32_t window = 0;       // kRing's window
+  std::uint32_t block_ratio = 0;  // kPerBlock's positions per cell
+  std::uint32_t fixed_cells = 0;  // kFixed's or kPositionRing's cells
+  std::uint32_t row_carry = 0;    // kPerRow's leading carry cells
   std::uint32_t cell_pad = 256;
   bool ring_reads_whole = false;  // kRing: attention reads every cell
   BlockBasis basis = BlockBasis::kPositions;

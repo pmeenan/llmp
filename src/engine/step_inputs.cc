@@ -55,25 +55,11 @@ std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl
     case kn::InputKind::kVisibleCells:
       input.kind = co::InputKind::kVisibleCells;
       break;
-    case kn::InputKind::kPositionPhases:
-      input.kind = co::InputKind::kPositionPhases;
-      break;
-    case kn::InputKind::kKeptRows:
-      input.kind = co::InputKind::kKeptRows;
-      break;
-    case kn::InputKind::kKeptCells:
-      input.kind = co::InputKind::kKeptCells;
-      width = sizeof(std::int64_t);
-      break;
-    case kn::InputKind::kPoolReads:
-      input.kind = co::InputKind::kPoolReads;
-      break;
-    case kn::InputKind::kBlockCells:
-      input.kind = co::InputKind::kBlockCells;
-      width = sizeof(std::int64_t);
-      break;
-    case kn::InputKind::kBlockStarts:
-      input.kind = co::InputKind::kBlockStarts;
+    case kn::InputKind::kHostComputed:
+      if (in.host == nullptr) return Error("a host-computed input lacks its definition");
+      input.kind = co::InputKind::kHostComputed;
+      input.host = {.def = in.host, .ratio = in.ratio, .overlap = in.overlap};
+      if (in.host->encoding == format::Encoding::kI64) width = sizeof(std::int64_t);
       break;
     case kn::InputKind::kOutputRows:
       input.kind = co::InputKind::kOutputRows;

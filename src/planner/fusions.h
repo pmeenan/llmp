@@ -34,13 +34,13 @@ std::optional<GroupedProduct> GroupedProductOf(const ir::Graph& graph, ir::NodeI
 
 // Round 0 (over the step's primitive graph).
 std::optional<Match> GroupedVecQMatch(const MatchContext& c, ir::NodeId anchor);
-std::optional<Match> Dsv4LidMaskMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> RoundedIndexMaskMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> StateBankAttentionMatch(const MatchContext& c, ir::NodeId anchor);
-std::optional<Match> Dsv4QHeadMatch(const MatchContext& c, ir::NodeId anchor);
-std::optional<Match> Dsv4OutAMatch(const MatchContext& c, ir::NodeId anchor);
-std::optional<Match> Dsv4CompressMatch(const MatchContext& c, ir::NodeId anchor);
-std::optional<Match> Dsv4HcPreMatch(const MatchContext& c, ir::NodeId anchor);
-std::optional<Match> Dsv4HcPostMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> RmsNormRopeTailMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> InverseRopeGroupedMatMulMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> SoftmaxPoolCompressMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> SinkhornHcPreMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> HcPostFlatNormMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> HcPrepMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> HcMixMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> HcCombineMatch(const MatchContext& c, ir::NodeId anchor);
@@ -49,16 +49,17 @@ std::optional<Match> GdnHistoryMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> GdnGatesMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> GdnStepMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> GdnNormGateMatch(const MatchContext& c, ir::NodeId anchor);
-std::optional<Match> QsaPrepMatch(const MatchContext& c, ir::NodeId anchor);
-std::optional<Match> QsaPoolMatch(const MatchContext& c, ir::NodeId anchor);
-std::optional<Match> QsaSelectMatch(const MatchContext& c, ir::NodeId anchor);
-std::optional<Match> QsaGateMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> InterleavedNormRopeMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> MeanPoolNormRopeStoreMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> BlockSparseAttentionMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> PreparedHeadGateMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> MoeRouterMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> MoeExpertsMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> MoeGluMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> MoeCombineMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> VecQGluMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> Mxfp8InputsMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> Exl3ProductsMatch(const MatchContext& c, ir::NodeId anchor);
 // Round 1 (over round 0's result).
 std::optional<Match> HcFoldInputsMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> Bf16InputsMatch(const MatchContext& c, ir::NodeId anchor);

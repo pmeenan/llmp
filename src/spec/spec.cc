@@ -223,6 +223,15 @@ void WriteStage(std::string& out, const Stage& s) {
     Key(out, "embedding", first);
     WriteComponent(out, *s.embedding);
   }
+  if (!s.exports.empty()) {
+    Key(out, "exports", first);
+    out += '[';
+    for (std::size_t i = 0; i < s.exports.size(); ++i) {
+      out += i > 0 ? "," : "";
+      out += std::to_string(s.exports[i]);
+    }
+    out += ']';
+  }
   Key(out, "folds", first);
   out += '[';
   for (std::size_t i = 0; i < s.folds.size(); ++i) {
@@ -266,6 +275,39 @@ void WriteStage(std::string& out, const Stage& s) {
     out += ']';
   }
   out += ']';
+  if (!s.links.empty()) {
+    Key(out, "links", first);
+    out += '[';
+    for (std::size_t i = 0; i < s.links.size(); ++i) {
+      const GraphLink& link = s.links[i];
+      out += i > 0 ? ",{" : "{";
+      bool l_first = true;
+      if (link.auxiliary) {
+        Key(out, "auxiliary", l_first);
+        out += std::to_string(*link.auxiliary);
+      }
+      if (link.auxiliary_port) {
+        Key(out, "auxiliary_port", l_first);
+        out += std::to_string(*link.auxiliary_port);
+      }
+      if (link.carry) {
+        Key(out, "carry", l_first);
+        out += std::to_string(*link.carry);
+      }
+      if (link.carry_port) {
+        Key(out, "carry_port", l_first);
+        out += std::to_string(*link.carry_port);
+      }
+      Key(out, "input", l_first);
+      out += std::to_string(link.input);
+      if (link.input_port) {
+        Key(out, "input_port", l_first);
+        out += std::to_string(*link.input_port);
+      }
+      out += '}';
+    }
+    out += ']';
+  }
   Key(out, "name", first);
   Quoted(out, s.name);
   Key(out, "reads", first);
@@ -518,7 +560,7 @@ std::expected<Stage, std::string> ReadStage(json::Value v, const std::string& wh
   if (auto k = Keys(v, where,
                     {"artifact", "context", "folds", "heads", "layers", "name", "reads", "role",
                      "side", "stream", "taps"},
-                    {"embedding"});
+                    {"embedding", "exports", "links"});
       !k) {
     return std::unexpected(k.error());
   }
@@ -582,6 +624,58 @@ std::expected<Stage, std::string> ReadStage(json::Value v, const std::string& wh
       layer.components.push_back(std::move(*c));
     }
     s.layers.push_back(std::move(layer));
+  }
+
+  if (const auto lk = v.find("links"); lk) {
+    LLMP_SPEC_TRY(links, Array(*lk, where + ".links", kMaxComponents));
+    if (links->size() == 0) {
+      return Refuse(where + ".links", "present only when non-empty");
+    }
+    for (std::size_t i = 0; i < links->size(); ++i) {
+      const json::Value e = links->at(i);
+      const std::string at = std::format("{}.links[{}]", where, i);
+      if (auto k = Keys(e, at, {"input"},
+                        {"auxiliary", "auxiliary_port", "carry", "carry_port", "input_port"});
+          !k) {
+        return std::unexpected(k.error());
+      }
+      GraphLink link;
+      LLMP_SPEC_TRY(in_id, Unsigned(Member(e, "input"), at + ".input", kMaxComponents));
+      link.input = static_cast<std::uint16_t>(*in_id);
+      if (const auto aux = e.find("auxiliary"); aux) {
+        LLMP_SPEC_TRY(id, Unsigned(*aux, at + ".auxiliary", kMaxComponents));
+        link.auxiliary = static_cast<std::uint16_t>(*id);
+      }
+      if (const auto aux_p = e.find("auxiliary_port"); aux_p) {
+        LLMP_SPEC_TRY(id, Unsigned(*aux_p, at + ".auxiliary_port", kMaxNamed - 1));
+        link.auxiliary_port = static_cast<std::uint16_t>(*id);
+      }
+      if (const auto carry = e.find("carry"); carry) {
+        LLMP_SPEC_TRY(id, Unsigned(*carry, at + ".carry", kMaxComponents));
+        link.carry = static_cast<std::uint16_t>(*id);
+      }
+      if (const auto carry_p = e.find("carry_port"); carry_p) {
+        LLMP_SPEC_TRY(id, Unsigned(*carry_p, at + ".carry_port", kMaxNamed - 1));
+        link.carry_port = static_cast<std::uint16_t>(*id);
+      }
+      if (const auto in_p = e.find("input_port"); in_p) {
+        LLMP_SPEC_TRY(id, Unsigned(*in_p, at + ".input_port", kMaxNamed - 1));
+        link.input_port = static_cast<std::uint16_t>(*id);
+      }
+      s.links.push_back(link);
+    }
+  }
+
+  if (const auto ex = v.find("exports"); ex) {
+    LLMP_SPEC_TRY(exports, Array(*ex, where + ".exports", kMaxNamed));
+    if (exports->size() == 0) {
+      return Refuse(where + ".exports", "present only when non-empty");
+    }
+    for (std::size_t i = 0; i < exports->size(); ++i) {
+      LLMP_SPEC_TRY(
+          id, Unsigned(exports->at(i), std::format("{}.exports[{}]", where, i), kMaxComponents));
+      s.exports.push_back(static_cast<std::uint16_t>(*id));
+    }
   }
 
   LLMP_SPEC_TRY(taps, Array(Member(v, "taps"), where + ".taps", kMaxNamed));
@@ -798,6 +892,48 @@ Status CheckStage(const ModelSpec& spec, const Stage& s, const std::string& wher
   }
   if (components > kMaxComponents) {
     return Refuse(where, std::format("more than {} components", kMaxComponents));
+  }
+  std::size_t layer_components = 0;
+  for (const Layer& l : s.layers) {
+    layer_components += l.components.size();
+  }
+  if (!s.links.empty()) {
+    if (s.links.size() != layer_components) {
+      return Refuse(where + ".links", "must match the stage's layer components");
+    }
+    for (std::size_t i = 0; i < s.links.size(); ++i) {
+      const GraphLink& link = s.links[i];
+      const std::string at = std::format("{}.links[{}]", where, i);
+      if (link.input > i || (link.auxiliary && *link.auxiliary > i) ||
+          (link.carry && *link.carry > i)) {
+        return Refuse(at, "a link must name an earlier component or stage input");
+      }
+      if (link.input_port && (link.input != 0 || *link.input_port >= kMaxNamed)) {
+        return Refuse(at, "input_port requires input 0 and a bounded port index");
+      }
+      if (link.auxiliary_port &&
+          (link.auxiliary.has_value() || *link.auxiliary_port >= kMaxNamed)) {
+        return Refuse(at, "auxiliary_port cannot combine with auxiliary or exceed port bounds");
+      }
+      if (link.carry_port && (link.carry.has_value() || *link.carry_port >= kMaxNamed)) {
+        return Refuse(at, "carry_port cannot combine with carry or exceed port bounds");
+      }
+    }
+  }
+  if (!s.exports.empty()) {
+    if (s.exports.size() > kMaxNamed) {
+      return Refuse(where + ".exports", std::format("more than {} exports", kMaxNamed));
+    }
+    for (std::size_t i = 0; i < s.exports.size(); ++i) {
+      const std::uint16_t id = s.exports[i];
+      const std::string at = std::format("{}.exports[{}]", where, i);
+      if (id == 0 || id > layer_components) {
+        return Refuse(at, "an export out of range");
+      }
+      if (std::ranges::count(s.exports, id) != 1) {
+        return Refuse(at, "an export named twice");
+      }
+    }
   }
   if (!StrictlySorted(s.taps, [](const FeatureTap& t) -> std::string_view { return t.name; })) {
     return Refuse(where + ".taps", "not sorted by name, or a name twice");

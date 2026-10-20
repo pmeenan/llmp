@@ -29,7 +29,7 @@
 #include "ir/layout.h"
 #include "ir/op.h"
 #include "kernels/reference/exec.h"
-#include "model/qwen_image.h"
+#include "model/image_pipeline.h"
 #include "spec/image_spatial.h"
 
 namespace {
@@ -180,7 +180,7 @@ void ExpectSunkExact(const ir::Graph& g, Filler fill, std::size_t conts, const c
 co::SpatialPayment Unbounded() {
   return {[](std::uint64_t) { return true; }, [](std::uint64_t) {}};
 }
-std::vector<co::BoundTensor> Bound(std::span<const mo::QwenImageTensor> source, fm::Encoding e) {
+std::vector<co::BoundTensor> Bound(std::span<const mo::ImageTensor> source, fm::Encoding e) {
   std::vector<co::BoundTensor> tensors;
   for (const auto& tensor : source) {
     fm::Shape shape;
@@ -199,7 +199,7 @@ void FlowFill(const ir::Graph& g, TensorId t, std::vector<float>& values,
   Draw draw{7 + t.v};
   if (!ints.empty()) {
     for (std::uint32_t r = 0; r < kRows; ++r) {
-      const auto position = mo::QwenImageDenoiserPosition(kText, kGrid, kGrid, r);
+      const auto position = mo::ImageDenoiserPosition(kText, kGrid, kGrid, r);
       for (std::uint32_t a = 0; a < 3 && r + kRows * a < ints.size(); ++a)
         ints[r + std::size_t{kRows} * a] = position[a];
     }

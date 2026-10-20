@@ -185,7 +185,7 @@ bool PackedProductPair(const ir::Graph& graph, const ir::Node& n) {
 }
 
 bool DirectHcPreCarries(const ir::Graph& graph, const ir::Node& n) {
-  if (n.key != ir::Fused(FusedKind::kDsv4HcPre) || n.nsrc < 1 || n.nout != 3) {
+  if (n.key != ir::Fused(FusedKind::kSinkhornHcPre) || n.nsrc < 1 || n.nout != 3) {
     return false;
   }
   for (const ir::TensorId out : {n.out[1], n.out[2]}) {
@@ -335,10 +335,11 @@ class Lowering {
   // Temporary build-time audit tables, bounded by the graph's products and
   // owners. They never enter the returned program or capture lifetime.
   struct OwnerProduct {
-    const co::OwnerProduct* original = nullptr;
-    const co::OwnerColumns* owner = nullptr;
+    const planner::OwnerProduct* original = nullptr;
+    const planner::OwnerColumns* owner = nullptr;
     TensorId result{};
   };
+  planner::OwnerProducts owner_proof_{};
   std::vector<OwnerProduct> owner_products_;
   std::map<const ggml_tensor*, std::string_view> owner_recipes_;
 
@@ -621,11 +622,12 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
       exact_mask_positions_[n.out[0].v] =
           multi == 1 && candidate.valid() ? candidate : p_.root(n.src[0]);
     }
-    if (n.key == ir::Fused(FusedKind::kDsv4Compress)) {
+    if (n.key == ir::Fused(FusedKind::kSoftmaxPoolCompress)) {
       const auto p = n.Params<ir::CompressorParams>();
       const auto* reads = input(n.src[4]);
       const auto owner = p_.tensor(n.out[0]).segment;
-      if (reads == nullptr || reads->kind != co::InputKind::kPoolReads || reads->segment != owner ||
+      if (reads == nullptr || reads->kind != co::InputKind::kHostComputed ||
+          reads->host.def != &co::CompressorPoolReadsInput() || reads->segment != owner ||
           owner >= in_.token->shape.segments.size() || reads->ratio != p.ratio ||
           reads->overlap != p.overlap || n.src[4] != p_.root(n.src[4]) ||
           reads->ring != p_.tensor(n.src[0]).ne(1) ||
@@ -639,13 +641,14 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
         return Refused("QSA prep requires typed replicated position sections for its rows");
       }
     }
-    if (n.key != ir::Fused(FusedKind::kQsaPool) && n.key != ir::Fused(FusedKind::kQsaAttention))
+    if (n.key != ir::Fused(FusedKind::kMeanPoolNormRopeStore) &&
+        n.key != ir::Fused(FusedKind::kBlockSparseAttention))
       continue;
     const std::uint8_t segment = p_.tensor(n.out[0]).segment;
     if (segment >= in_.token->shape.segments.size())
       return Refused("QSA requires one declared owner");
-    if (n.key == ir::Fused(FusedKind::kQsaPool)) {
-      const auto pp = n.Params<ir::QsaPoolParams>();
+    if (n.key == ir::Fused(FusedKind::kMeanPoolNormRopeStore)) {
+      const auto pp = n.Params<ir::BlockPoolParams>();
       const ir::TensorDesc& raw = p_.tensor(n.src[0]);
       const ir::TensorDesc& blocks = p_.tensor(n.src[1]);
       const co::StepInput* starts = input(n.src[3]);
@@ -670,7 +673,7 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
       }
       continue;
     }
-    const auto ap = n.Params<ir::QsaAttnParams>();
+    const auto ap = n.Params<ir::BlockSparseAttnParams>();
     const ir::TensorDesc& keys = p_.tensor(n.src[1]);
     const ir::TensorDesc& values = p_.tensor(n.src[2]);
     const ir::TensorDesc& blocks = p_.tensor(n.src[4]);
@@ -688,8 +691,8 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
              td.nb[1] == root.nb[1] && td.nb[2] == head_bytes;
     };
     if (!positions(n.source(8), segment, false) || pool == nullptr ||
-        pool->key != ir::Fused(FusedKind::kQsaPool) ||
-        pool->Params<ir::QsaPoolParams>().ratio != ap.ratio ||
+        pool->key != ir::Fused(FusedKind::kMeanPoolNormRopeStore) ||
+        pool->Params<ir::BlockPoolParams>().ratio != ap.ratio ||
         p_.tensor(pool->out[0]).segment != segment || p_.root(pool->src[5]) != p_.root(n.src[8]) ||
         p_.tensor(pool->src[5]).view_offset != p_.tensor(n.src[8]).view_offset ||
         p_.tensor(pool->src[5]).shape().ne != p_.tensor(n.src[8]).shape().ne ||
@@ -850,12 +853,12 @@ std::expected<void, KernelFailure> Lowering::Matches(const ir::TensorDesc& want,
                                                      const ggml_tensor* got,
                                                      std::string_view what) const {
   const auto type = TypeOf(want.format.encoding);
-  // Cross-layer contract: FusedKind::kDsv4QHead keeps DataType::kF32 in the IR
-  // so the CPU reference executor uses F32, while the GGML lowering allocates
-  // and writes GGML_TYPE_F16 in the physical buffer for the downstream
-  // flash-attention consumer (MakeDirect's kDsv4QHead). That tensor, its views,
-  // reshapes, permutations, and contiguous copies are the only tensors Matches
-  // takes in a type differing from the IR's.
+  // Cross-layer contract: 2-source FusedKind::kRmsNormMulRope keeps
+  // DataType::kF32 in the IR so the CPU reference executor uses F32, while the
+  // GGML lowering allocates and writes GGML_TYPE_F16 in the physical buffer for
+  // the downstream flash-attention consumer (MakeDirect's kDsv4QHead). That
+  // tensor, its views, reshapes, permutations, and contiguous copies are the
+  // only tensors Matches takes in a type differing from the IR's.
   const bool f16_q = want.format.encoding == Encoding::kF32 && got->type == GGML_TYPE_F16 &&
                      f16_queries_.contains(got);
   const std::uint64_t scale = f16_q ? 2 : 1;
@@ -984,82 +987,46 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
         slot.visible_capacity = input.visible_capacity;
         break;
       }
-      case co::InputKind::kPositionPhases:
-      case co::InputKind::kKeptRows:
-      case co::InputKind::kKeptCells:
-      case co::InputKind::kPoolReads:
-      case co::InputKind::kBlockCells:
-      case co::InputKind::kBlockStarts: {
+      case co::InputKind::kHostComputed: {
         // These are computed inputs, never caller-supplied byte buffers.
         // Validate both their geometry and their complete value count before
         // exposing a slot the runner will stage.
-        const bool phases = input.kind == co::InputKind::kPositionPhases;
-        const bool kept =
-            input.kind == co::InputKind::kKeptRows || input.kind == co::InputKind::kKeptCells;
-        const bool pool = input.kind == co::InputKind::kPoolReads;
-        const bool block_cells = input.kind == co::InputKind::kBlockCells;
-        const auto& cells = input.cells;
-        constexpr auto max = static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
-        if (input.read != 0 || input.sections != 1 ||
-            (phases ? input.segment != ir::kJoinedSegment
-                    : input.segment >= in_.token->shape.segments.size()) ||
-            cells.capacity > max || input.ring != cells.capacity || cells.frozen || cells.fixed ||
-            cells.per_row || cells.first_row != 0 ||
-            (kept ? input.ratio != 0 || input.overlap : input.ratio == 0 || input.ratio > max) ||
-            (kept || pool
-                 ? !cells.ring || !cells.recent || cells.positions || cells.block != 0 ||
-                       cells.capacity == 0
-                 : cells.ring || cells.recent ||
-                       (block_cells
-                            ? !cells.positions || cells.block != input.ratio || cells.capacity == 0
-                            : cells.positions || cells.block != 0 || cells.capacity != 0)) ||
-            (phases && input.overlap)) {
-          return Refused("a compressor input has invalid typed metadata");
+        const co::HostInputDef* def = input.host.def;
+        if (def == nullptr || def->count == nullptr || def->emit == nullptr || input.read != 0 ||
+            input.sections != 1 ||
+            (def->joined ? input.segment != ir::kJoinedSegment
+                         : input.segment >= in_.token->shape.segments.size())) {
+          return Refused("a host-computed input has invalid typed metadata");
         }
-        std::uint64_t count = in_.token->shape.rows();
-        if (!phases) {
-          const auto& segment = in_.token->shape.segments[input.segment];
-          if (std::uint64_t{segment.past} + segment.rows > max ||
-              (pool && cells.capacity + segment.rows > max))
-            return Refused("a compressor input exceeds I32 positions or rows");
-          count =
-              kept ? std::min<std::uint64_t>(segment.rows, cells.capacity)
-                   : co::CompressorBlocks(segment.rows, segment.past, input.ratio, input.overlap);
-          if (pool) count *= std::uint64_t{input.ratio} * (input.overlap ? 2 : 1);
+        if (def->validate != nullptr) {
+          if (auto ok = def->validate(input, in_.token->shape); !ok) {
+            return Refused(ok.error());
+          }
         }
+        std::vector<co::SegmentRows> segments;
+        segments.reserve(in_.token->shape.segments.size());
+        std::uint32_t first_row = 0;
+        for (const auto& s : in_.token->shape.segments) {
+          segments.push_back({.first_row = first_row,
+                              .rows = s.rows,
+                              .past = s.past,
+                              .read_cells = s.read_cells,
+                              .outputs = s.outputs});
+          first_row += s.rows;
+        }
+        const co::HostInputSpec spec{.def = def, .ratio = input.ratio, .overlap = input.overlap};
         // Check the count before computing values, so malformed metadata cannot
         // request an allocation larger than the tensor the planner placed.
+        const std::uint64_t count = def->count(spec, segments, input.segment, input.cells);
         if (d.shape().ne != ir::ShapeOf({count}).ne)
-          return Refused("a compressor input disagrees with its typed geometry");
+          return Refused("a host-computed input disagrees with its typed geometry");
         const auto values = co::InputValues(input, in_.token->shape, {});
-        const bool wide =
-            input.kind == co::InputKind::kKeptCells || input.kind == co::InputKind::kBlockCells;
         if (!values || d.shape().ne != ir::ShapeOf({values ? values->size() : 0}).ne ||
-            d.format.encoding != (wide ? Encoding::kI64 : Encoding::kI32)) {
-          return Refused("a compressor input disagrees with its typed geometry");
+            d.format.encoding != def->encoding) {
+          return Refused("a host-computed input disagrees with its typed geometry");
         }
-        switch (input.kind) {
-          case co::InputKind::kPositionPhases:
-            slot.kind = InputKind::kPositionPhases;
-            break;
-          case co::InputKind::kKeptRows:
-            slot.kind = InputKind::kKeptRows;
-            break;
-          case co::InputKind::kKeptCells:
-            slot.kind = InputKind::kKeptCells;
-            break;
-          case co::InputKind::kPoolReads:
-            slot.kind = InputKind::kPoolReads;
-            break;
-          case co::InputKind::kBlockCells:
-            slot.kind = InputKind::kBlockCells;
-            break;
-          case co::InputKind::kBlockStarts:
-            slot.kind = InputKind::kBlockStarts;
-            break;
-          default:
-            break;
-        }
+        slot.kind = InputKind::kHostComputed;
+        slot.host = def;
         slot.cells = {.capacity = input.cells.capacity,
                       .ring = input.cells.ring,
                       .frozen = input.cells.frozen,
@@ -1395,11 +1362,11 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
         to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
         to_int(cells.cells.capacity), to_int(window), to_int(in_.token->context),
         CausalMaskRows::kPad32, GGML_TYPE_F16, ahead ? MaskPolicy::kBlock : MaskPolicy::kFrozen);
-    if (ahead && !Gemma4MaskFits(mask))
+    if (ahead && !CausalMaskFits(mask))
       return Refused("an ahead mask exceeds the device block mask's geometry");
     return mask;
   }
-  return Gemma4Mask(c_, positions, static_cast<std::int64_t>(out.ne(0)),
+  return CausalMask(c_, positions, static_cast<std::int64_t>(out.ne(0)),
                     to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
                     to_int(cells.cells.capacity), to_int(window), to_int(in_.token->context));
 }
@@ -1513,7 +1480,8 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
     case Op::kHcMix: {
       const auto p = n.Params<ir::HcParams>();
       if (p.mix != ir::HcMixKind::kSinkhorn || p.streams != 4 || p.iterations < 1 ||
-          p.iterations > 100)
+          p.iterations > 100 || (p.mix_offset != 0 && p.mix_offset != 8) ||
+          (p.scale_index != 0 && p.scale_index != 2))
         return Refused("native HC combination requires four-stream Sinkhorn");
       return ggml_dsv4_hc_comb(c_, s[0], s[1], s[2], p.eps,
                                static_cast<std::int32_t>(p.iterations));
@@ -2743,15 +2711,13 @@ std::expected<void, KernelFailure> Lowering::CheckOwnerProducts() {
       return Refused("owner-product proof requires token metadata");
     return {};
   }
-  const auto& proof = in_.token->step.owner_products;
-  const auto products = proof.products();
-  if (products.empty()) {
+  const auto& requests = in_.token->step.owner_products;
+  if (requests.empty()) {
     if (!plan_.owner_products.empty() || plan_.owner_digest != base::Sha256Digest{})
       return Refused("owner products: scopes without a proof");
     return {};
   }
-  if (plan_.owner_digest != proof.digest() || proof.graph_digest() != co::OwnerGraphIdentity(g_) ||
-      plan_.tensors.size() != g_.tensor_count() || in_.token->shape.segments.empty() ||
+  if (plan_.tensors.size() != g_.tensor_count() || in_.token->shape.segments.empty() ||
       in_.token->shape.segments.size() > co::kMaxSegments)
     return Refused("owner products: proof, shape or original graph differs");
   const auto mapped = [&](TensorId t) {
@@ -2769,11 +2735,12 @@ std::expected<void, KernelFailure> Lowering::CheckOwnerProducts() {
                         .outputs = s.outputs});
     first += s.rows;
   }
-  std::vector<TensorId> requests;
-  for (const auto& p : products) requests.push_back(p.output);
-  auto repeated = co::ProveOwnerProducts(g_, in_.token->step.inputs, segments, requests);
-  if (!repeated || repeated->digest() != proof.digest())
+  auto repeated = planner::ProveOwnerProducts(g_, in_.token->step.inputs, segments, requests);
+  if (!repeated || repeated->digest() != plan_.owner_digest ||
+      repeated->graph_digest() != planner::OwnerGraphIdentity(g_))
     return Refused("owner products: typed inputs or owner partition differ");
+  owner_proof_ = std::move(*repeated);
+  const auto products = owner_proof_.products();
 
   using OwnerKey = std::pair<std::uint32_t, std::uint8_t>;
   std::map<OwnerKey, const planner::OwnerProductScope*> scopes;
@@ -3224,7 +3191,7 @@ std::expected<void, KernelFailure> Lowering::EmitSchedule() {
     if (want.empty()) {
       const bool quiet = std::ranges::all_of(s.nodes, [&](NodeId id) { return quiet_[id.v]; });
       if (!quiet && std::ranges::any_of(gp.steps, [](const auto& prior) {
-            return prior.implementation != kGemma4MaskName;
+            return prior.implementation != kCausalMaskName;
           }))
         return Refused("a host mask follows computed work");
       launches_nothing[i] = true;
@@ -3610,16 +3577,14 @@ bool Lowering::Direct(NodeId id) const {
   switch (n.key.fused) {
     case FusedKind::kGroupedMatMul:
     case FusedKind::kStateBankAttention:
-    case FusedKind::kDsv4LidMask:
-    case FusedKind::kDsv4QHead:
-    case FusedKind::kDsv4Compress:
-    case FusedKind::kDsv4HcPre:
+    case FusedKind::kRoundedIndexMask:
+    case FusedKind::kSoftmaxPoolCompress:
+    case FusedKind::kSinkhornHcPre:
     case FusedKind::kHcNormPost:
     case FusedKind::kHcPrep:
     case FusedKind::kScaledUnary:
     case FusedKind::kHcFold:
     case FusedKind::kHcCombine:
-    case FusedKind::kHcMixNorm:
     case FusedKind::kHcNorm:
     case FusedKind::kGdnConv:
     case FusedKind::kGdnHistory:
@@ -3627,14 +3592,14 @@ bool Lowering::Direct(NodeId id) const {
     case FusedKind::kGdnGates:
     case FusedKind::kNormGate:
     case FusedKind::kHeadGate:
-    case FusedKind::kQsaPool:
-    case FusedKind::kQsaAttention:
+    case FusedKind::kMeanPoolNormRopeStore:
+    case FusedKind::kBlockSparseAttention:
     case FusedKind::kMoeRouter:
     case FusedKind::kMoeExperts:
     case FusedKind::kMoeGlu:
     case FusedKind::kMoeCombine:
     case FusedKind::kMatMulIdGlu:
-    case FusedKind::kDsv4OutA:
+    case FusedKind::kInverseRopeGroupedMatMul:
     case FusedKind::kSpatialChannelNorm:
     case FusedKind::kRmsNormMulRopeSections:
     case FusedKind::kAttentionMaskPack:
@@ -3647,7 +3612,7 @@ bool Lowering::Direct(NodeId id) const {
     case FusedKind::kDupUpAdd:
       return Selected(id) == kDupUpAddName;
     case FusedKind::kRmsNormMulRope:
-      return Selected(id) == kQsaPrepName;
+      return Selected(id) == kQsaPrepName || Selected(id) == kDsv4QHeadName;
     case FusedKind::kMatMulGlu:
       return Selected(id).starts_with("llmp.vecq");
     default:
@@ -3720,11 +3685,11 @@ void Lowering::Needed() {
     for (std::size_t i = 0; i < n.nsrc; ++i) {
       const TensorId s = n.src.at(i);
       if (!s.valid()) continue;
-      if (n.key == ir::Fused(FusedKind::kQsaAttention) && i >= 4 && i <= 7) {
+      if (n.key == ir::Fused(FusedKind::kBlockSparseAttention) && i >= 4 && i <= 7) {
         if (i == 4) need(p_.root(s));  // the block keys' leaf
         continue;
       }
-      if (n.key == ir::Fused(FusedKind::kQsaPool) && (i == 3 || i == 4)) continue;
+      if (n.key == ir::Fused(FusedKind::kMeanPoolNormRopeStore) && (i == 3 || i == 4)) continue;
       // Stage the exact mask's proved equivalent positions, which may be
       // the original plain root rather than a replicated input.
       if (n.key == ir::Primitive(Op::kMaskBuild) && i == 0 &&
@@ -3761,11 +3726,11 @@ std::expected<void, KernelFailure> Lowering::PlacePhysical() {
     for (std::size_t j = 0; j < n.nsrc; ++j) {
       const auto t = n.src[j];
       if (!t.valid()) continue;
-      if (n.key == ir::Fused(FusedKind::kQsaAttention) && j >= 4 && j <= 7) {
+      if (n.key == ir::Fused(FusedKind::kBlockSparseAttention) && j >= 4 && j <= 7) {
         if (j == 4) reads.push_back(p_.root(t));
         continue;
       }
-      if (n.key == ir::Fused(FusedKind::kQsaPool) && (j == 3 || j == 4)) continue;
+      if (n.key == ir::Fused(FusedKind::kMeanPoolNormRopeStore) && (j == 3 || j == 4)) continue;
       if (n.key == ir::Primitive(Op::kMaskBuild) && j == 0 &&
           n.Params<ir::MaskParams>().exact_rows && options_.device_masks) {
         reads.push_back(exact_mask_positions_.at(n.out[0].v));
@@ -4038,8 +4003,8 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
   for (std::size_t i = 0; i < n.nsrc; ++i) {
     // (The sources its kernels do not read are made where needed.)
     if (n.src.at(i).valid() && made_.at(n.src.at(i).v) == nullptr &&
-        !(n.key == ir::Fused(FusedKind::kQsaAttention) && i >= 4 && i <= 7) &&
-        !(n.key == ir::Fused(FusedKind::kQsaPool) && (i == 3 || i == 4))) {
+        !(n.key == ir::Fused(FusedKind::kBlockSparseAttention) && i >= 4 && i <= 7) &&
+        !(n.key == ir::Fused(FusedKind::kMeanPoolNormRopeStore) && (i == 3 || i == 4))) {
       return Refused(std::format("{}'s source {} was not made", ir::OpKeyName(n.key), i));
     }
   }
@@ -4127,50 +4092,8 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       set(0, out);
       return {};
     }
-    case FusedKind::kDsv4QHead: {
-      const auto p = n.Params<ir::NormRopeParams>();
-      const auto& r = p.rope;
-      const bool f16_q =
-          src(0)->ne[0] == 512 && src(0)->ne[2] >= 64 && !readers_.at(n.out[0].v).empty() &&
-          std::ranges::all_of(readers_.at(n.out[0].v), [&](NodeId v_id) {
-            const ir::Node& v = p_.node(v_id);
-            return v.key == ir::Primitive(Op::kView) && !readers_.at(v.out[0].v).empty() &&
-                   std::ranges::all_of(readers_.at(v.out[0].v), [&](NodeId perm_id) {
-                     const ir::Node& perm = p_.node(perm_id);
-                     return perm.key == ir::Primitive(Op::kPermute) &&
-                            !readers_.at(perm.out[0].v).empty() &&
-                            std::ranges::all_of(readers_.at(perm.out[0].v), [&](NodeId attn_id) {
-                              const ir::Node& attn = p_.node(attn_id);
-                              if (attn.key == ir::Fused(FusedKind::kStateBankAttention)) {
-                                return attn.src[0] == perm.out[0];
-                              }
-                              if (attn.key == ir::Primitive(Op::kAttention)) {
-                                return attn.src[0] == perm.out[0] &&
-                                       p_.tensor(attn.src[1]).format.encoding == Encoding::kF16 &&
-                                       p_.tensor(attn.src[2]).format.encoding == Encoding::kF16;
-                              }
-                              return false;
-                            });
-                   });
-          });
-      ggml_tensor* out =
-          Dsv4QHead(c_, src(0), src(1),
-                    {.eps = p.eps,
-                     .original_context = static_cast<std::int32_t>(r.original_context),
-                     .base = r.base,
-                     .scale = r.scale,
-                     .extension = r.ext_factor,
-                     .attention = r.attn_factor,
-                     .beta_fast = r.beta_fast,
-                     .beta_slow = r.beta_slow},
-                    f16_q ? GGML_TYPE_F16 : GGML_TYPE_F32);
-      if (f16_q) f16_queries_.insert(out);
-      Node(out, id);
-      set(0, out);
-      return {};
-    }
-    case FusedKind::kDsv4LidMask: {
-      const auto p = n.Params<ir::LidMaskParams>();
+    case FusedKind::kRoundedIndexMask: {
+      const auto p = n.Params<ir::RoundedIndexMaskParams>();
       ggml_tensor* keys = ggml_view_2d(c_, src(1), src(1)->ne[0], src(1)->ne[2], src(1)->nb[2], 0);
       ggml_tensor* ids = Dsv4LidTopK(c_, src(0), keys, src(2), src(3), p.top);
       ggml_tensor* mask = Dsv4SparseMask(c_, src(4), ids, nullptr, p.raw_cells, p.cells);
@@ -4183,7 +4106,7 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       set(0, mask);
       return {};
     }
-    case FusedKind::kDsv4Compress: {
+    case FusedKind::kSoftmaxPoolCompress: {
       const auto p = n.Params<ir::CompressorParams>();
       ggml_tensor* out =
           Dsv4Compress(c_, src(0), src(1), src(2), src(3), src(4), p.ratio, p.overlap);
@@ -4191,7 +4114,7 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       set(0, out);
       return {};
     }
-    case FusedKind::kDsv4HcPre: {
+    case FusedKind::kSinkhornHcPre: {
       const auto p = n.Params<ir::SinkhornPreParams>();
       const auto width = src(0)->ne[0];
       const auto tokens = src(0)->ne[2];
@@ -4287,6 +4210,12 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
     }
     case FusedKind::kHcFold: {
       const auto p = n.Params<ir::HcFoldParams>();
+      if (n.nsrc == 3) {
+        ggml_tensor* t = HcMix(c_, src(0), src(1), src(2), p.eps);
+        Node(t, id);
+        set(0, t);
+        return {};
+      }
       const auto hc = static_cast<std::int64_t>(p.streams);
       const ir::TensorDesc& od = p_.tensor(n.out[0]);
       const auto width = static_cast<std::int64_t>(od.ne(0));
@@ -4331,13 +4260,6 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       ggml_tensor* t = HcNorm(
           c_, src(0), src(1), p.eps,
           p_.tensor(n.out[0]).format.encoding == Encoding::kBF16 ? GGML_TYPE_BF16 : GGML_TYPE_F32);
-      Node(t, id);
-      set(0, t);
-      return {};
-    }
-    case FusedKind::kHcMixNorm: {
-      const auto p = n.Params<ir::HcNormPostParams>();
-      ggml_tensor* t = HcMix(c_, src(0), src(1), src(2), p.eps);
       Node(t, id);
       set(0, t);
       return {};
@@ -4418,8 +4340,49 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       return {};
     }
     case FusedKind::kRmsNormMulRope: {
-      // llmp.qsa.prep: the heads of x's root at x's stride.
       const auto p = n.Params<ir::NormRopeParams>();
+      if (Selected(id) == kDsv4QHeadName) {
+        const auto& r = p.rope;
+        const bool f16_q =
+            src(0)->ne[0] == 512 && src(0)->ne[2] >= 64 && !readers_.at(n.out[0].v).empty() &&
+            std::ranges::all_of(readers_.at(n.out[0].v), [&](NodeId v_id) {
+              const ir::Node& v = p_.node(v_id);
+              return v.key == ir::Primitive(Op::kView) && !readers_.at(v.out[0].v).empty() &&
+                     std::ranges::all_of(readers_.at(v.out[0].v), [&](NodeId perm_id) {
+                       const ir::Node& perm = p_.node(perm_id);
+                       return perm.key == ir::Primitive(Op::kPermute) &&
+                              !readers_.at(perm.out[0].v).empty() &&
+                              std::ranges::all_of(readers_.at(perm.out[0].v), [&](NodeId attn_id) {
+                                const ir::Node& attn = p_.node(attn_id);
+                                if (attn.key == ir::Fused(FusedKind::kStateBankAttention)) {
+                                  return attn.src[0] == perm.out[0];
+                                }
+                                if (attn.key == ir::Primitive(Op::kAttention)) {
+                                  return attn.src[0] == perm.out[0] &&
+                                         p_.tensor(attn.src[1]).format.encoding == Encoding::kF16 &&
+                                         p_.tensor(attn.src[2]).format.encoding == Encoding::kF16;
+                                }
+                                return false;
+                              });
+                     });
+            });
+        ggml_tensor* out =
+            Dsv4QHead(c_, src(0), src(1),
+                      {.eps = p.eps,
+                       .original_context = static_cast<std::int32_t>(r.original_context),
+                       .base = r.base,
+                       .scale = r.scale,
+                       .extension = r.ext_factor,
+                       .attention = r.attn_factor,
+                       .beta_fast = r.beta_fast,
+                       .beta_slow = r.beta_slow},
+                      f16_q ? GGML_TYPE_F16 : GGML_TYPE_F32);
+        if (f16_q) f16_queries_.insert(out);
+        Node(out, id);
+        set(0, out);
+        return {};
+      }
+      // llmp.qsa.prep: the heads of x's root at x's stride.
       ggml_tensor* x = src(0);
       ggml_tensor* root = x->view_src != nullptr ? x->view_src : x;
       const ir::TensorDesc& xd = desc(0);
@@ -4433,8 +4396,8 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       set(0, t);
       return {};
     }
-    case FusedKind::kQsaPool: {
-      const auto p = n.Params<ir::QsaPoolParams>();
+    case FusedKind::kMeanPoolNormRopeStore: {
+      const auto p = n.Params<ir::BlockPoolParams>();
       ggml_tensor* blocks = src(1);
       ggml_tensor* positions = SegmentPositions(n, 5, id);
       ggml_tensor* raw_leaf = made_.at(p_.root(n.src[0]).v);
@@ -4452,8 +4415,8 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       pools_[blocks] = t;
       return {};
     }
-    case FusedKind::kQsaAttention: {
-      const auto p = n.Params<ir::QsaAttnParams>();
+    case FusedKind::kBlockSparseAttention: {
+      const auto p = n.Params<ir::BlockSparseAttnParams>();
       ggml_tensor* blocks = made_.at(p_.root(n.src[4]).v);
       const auto pool = pools_.find(blocks);
       ggml_tensor* k = StoredInto(made_.at(p_.root(n.src[1]).v));
@@ -4623,7 +4586,7 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       set(0, t);
       return {};
     }
-    case FusedKind::kDsv4OutA: {
+    case FusedKind::kInverseRopeGroupedMatMul: {
       const auto p = n.Params<ir::RopeParams>();
       const Dsv4OutAParams outa_params{
           .original_context = static_cast<std::int32_t>(p.original_context),
@@ -5180,7 +5143,7 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   // then authenticate every final address before publishing the program.
   if (auto placed = PlacePhysical(); !placed) return std::unexpected(placed.error());
   for (const auto& node : p_.nodes()) {
-    if (node.key != ir::Fused(FusedKind::kDsv4HcPre) || !needed_[p_.producer(node.out[0]).v])
+    if (node.key != ir::Fused(FusedKind::kSinkhornHcPre) || !needed_[p_.producer(node.out[0]).v])
       continue;
     const bool inside = DirectHcPreCarries(p_, node);
     const auto blob = placed_root_.find(node.out[0].v);
@@ -5451,8 +5414,8 @@ std::uint64_t KernelBytes(const ir::Graph& graph, const ir::Node& n) {
       add(MoeCombineSorted(c, d2, a2, route, scale, weights, shared, gate));
       for (ggml_tensor* t : {route, a1, d1, a2, d2}) add(t);
     }
-  } else if (n.key == ir::Fused(FusedKind::kQsaAttention)) {
-    const auto p = n.Params<ir::QsaAttnParams>();
+  } else if (n.key == ir::Fused(FusedKind::kBlockSparseAttention)) {
+    const auto p = n.Params<ir::BlockSparseAttnParams>();
     const ir::TensorDesc& q = graph.tensor(n.src[0]);
     add(leaf(n.out[0], GGML_TYPE_F32));
     total += Round(static_cast<std::uint64_t>(QsaTopKRow(p.width)) * q.ne(2) * sizeof(std::int32_t),
@@ -5522,7 +5485,8 @@ std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root) {
     // (MakeDirect's llmp.qsa.pool).
     if (made.key.op == Op::kInput) {
       for (const ir::Node& r : graph.nodes()) {
-        if (r.key == ir::Fused(FusedKind::kQsaPool) && r.nsrc > 5 && graph.root(r.src[5]) == root) {
+        if (r.key == ir::Fused(FusedKind::kMeanPoolNormRopeStore) && r.nsrc > 5 &&
+            graph.root(r.src[5]) == root) {
           return Round(planner::RootBytes(t).value_or(0), 256) + 256;
         }
       }
@@ -5544,12 +5508,12 @@ std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root) {
         return UINT64_MAX;
       return offset + static_cast<std::uint64_t>(prepared);
     }
-    if (made.key == ir::Fused(FusedKind::kDsv4LidMask)) {
-      const auto p = made.Params<ir::LidMaskParams>();
+    if (made.key == ir::Fused(FusedKind::kRoundedIndexMask)) {
+      const auto p = made.Params<ir::RoundedIndexMaskParams>();
       return Round(planner::RootBytes(t).value_or(0), 256) +
              Round(std::uint64_t{p.top} * t.ne(1) * sizeof(std::int32_t), 256);
     }
-    if (made.key == ir::Fused(FusedKind::kDsv4HcPre)) {
+    if (made.key == ir::Fused(FusedKind::kSinkhornHcPre)) {
       const auto x = rows(0);
       // First output's root: normalized values and pitched carry tails,
       // followed by the mix partials. Packed carry copies have own roots.
@@ -5582,13 +5546,13 @@ std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root) {
     if (made.key == ir::Fused(FusedKind::kGdnGates)) {
       return rows(0).ne(0) * rows(0).ne(1) * 2 * sizeof(float);
     }
-    if (made.key == ir::Fused(FusedKind::kDsv4OutA)) {
+    if (made.key == ir::Fused(FusedKind::kInverseRopeGroupedMatMul)) {
       return 8192 * static_cast<std::uint64_t>(Dsv4OutARows(static_cast<std::int64_t>(t.ne(1)))) *
              sizeof(float);
     }
     if ((made.key == ir::Primitive(Op::kSsmConv) && SsmConvPad(graph, made) != 0) ||
         made.key == ir::Fused(FusedKind::kMoeExperts) ||
-        made.key == ir::Fused(FusedKind::kQsaAttention) ||
+        made.key == ir::Fused(FusedKind::kBlockSparseAttention) ||
         made.key == ir::Primitive(Op::kGatedDeltaNet) ||
         (made.key == ir::Primitive(Op::kMatMul) &&
          graph.tensor(made.src[0]).format.encoding == Encoding::kMxfp8 &&

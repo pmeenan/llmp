@@ -22,7 +22,7 @@
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
 #include "ir/graph.h"
-#include "model/qwen_image.h"
+#include "model/image_pipeline.h"
 #include "planner/policy.h"
 #include "runtime/approvals.h"
 #include "spec/image_family.h"
@@ -176,7 +176,7 @@ struct ImageAdmission {
   const spec::ImageMapping* mapping = nullptr;
   const ImageApproval* approval = nullptr;
   spec::ModelSpec family;
-  model::QwenImageProfile profile;
+  model::ImageProfile profile;
 };
 std::expected<ImageAdmission, std::string> ReadImageAdmission(
     const artifact::Composition& composition,

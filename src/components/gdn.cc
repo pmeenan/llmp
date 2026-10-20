@@ -136,7 +136,7 @@ model::StateTensorContract Fixed(std::string name, model::StateKind kind, std::u
           .encoding = format::Encoding::kF32,
           .cell_bytes = bytes,
           .cells = model::CellRule::kFixed,
-          .window_or_ratio = 1,
+          .fixed_cells = 1,
           .rollback = model::Rollback::kCommit};
 }
 

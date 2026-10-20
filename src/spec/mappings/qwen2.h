@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Qwen2's approved FP16 GGUF and EXL3 fixtures as shared components: the
-// mapping their stored specs were made by (the EXL3 arithmetic a flag,
-// llmp.qwen2.exl3), and the importer's closed normalizations of the GGUF
-// and the EXL3 checkpoints.
+// mapping their stored specs were made by, and the importer's closed
+// normalizations of the GGUF and the EXL3 checkpoints.
 #ifndef LLMP_SPEC_MAPPINGS_QWEN2_H_
 #define LLMP_SPEC_MAPPINGS_QWEN2_H_
 

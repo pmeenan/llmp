@@ -128,7 +128,7 @@ constexpr Limits kFlow{16ULL << 30U, 1024 * kMiB, 768 * kMiB, 16 * kMiB, 32 * kM
                        32 * kMiB,    65536,       5948,       11896,     66072576,
                        5948,         297,         6818,       6818,      {1024, 1024}};
 constexpr std::uint64_t kFlowSourceBytes = 14230249472ULL;
-constexpr std::uint64_t kFlowMappingBytes = 2675712;
+constexpr std::uint64_t kFlowMappingBytes = 1233920;
 static_assert(llmp::test_support::compiler_inventory::GraphBytes(5948, 11896) +
                   4096 * (5948 + 11896ULL) +
                   llmp::test_support::compiler_inventory::NativeBytes(
@@ -309,20 +309,20 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   const auto& profile = ::llmp::test_support::QwenImageProfile().denoiser;
   const auto all_tensors =
       mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
-  std::vector<mo::QwenImageTensor> tensors;
+  std::vector<mo::ImageTensor> tensors;
   for (const auto name : kNames) {
-    const auto found = std::ranges::find(all_tensors, name, &mo::QwenImageTensor::name);
+    const auto found = std::ranges::find(all_tensors, name, &mo::ImageTensor::name);
     if (found == all_tensors.end()) return Error("fixed timestep source role");
     tensors.push_back(*found);
   }
   if (life.block)
     for (const auto name : kBlockNames) {
-      const auto found = std::ranges::find(all_tensors, name, &mo::QwenImageTensor::name);
+      const auto found = std::ranges::find(all_tensors, name, &mo::ImageTensor::name);
       if (found == all_tensors.end()) return Error("fixed block source role");
       tensors.push_back(*found);
     }
   if (life.flow) tensors = all_tensors;
-  auto ids = mo::BindQwenImageComponent(tensors, "QwenImage21Transformer2DModel", artifact);
+  auto ids = mo::BindImageComponent(tensors, "QwenImage21Transformer2DModel", artifact);
   if (!ids) return Error(ids.error());
   auto source = sp::SourceOf(artifact);
   if (!source) return Error(source.error());
@@ -515,7 +515,7 @@ en::Status Execute(Lifetime& life) {
         "timestep catalog coverage");
     if (!coverage) return coverage;
     for (std::size_t repeat = 0; repeat < (life.block ? 7U : 5U); ++repeat) {
-      const auto input = mo::QwenImageTimestepSinusoid(
+      const auto input = mo::ImageTimestepSinusoid(
           ::llmp::test_support::QwenImageProfile().denoiser, repeat == 3 ? 500.F : 1000.F);
       if (input.size() != 512) return Error("source sinusoid size");
       bool unequal = false;

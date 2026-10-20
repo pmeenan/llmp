@@ -1131,6 +1131,13 @@ The entries below record each change; the record of the milestone is
 
 ### Changed
 
+- Unify dense, borrowed, MQA and QSA attention around one shared IR and scalar
+  reference core; merge duplicate fused kinds and name IR and planner operations
+  by mechanism; make Qwen2 specs format-independent across GGUF and EXL3 with
+  planner-level EXL3 precision matching; and store spatial stage links and
+  exports in `spec::Stage` while mapping image text and denoiser blocks onto
+  `attention.dense` and `ffn.glu` (D-122; re-import Qwen2 and Qwen-Image-2.1 v1
+  artifacts).
 - Select common F16 GQA attention kernels at head widths 64, 80, 96,
   112, 128 and 192; gate norm and MoE fusions by their launch limits;
   and expose an alias-specific compact-expert crossover while retaining

@@ -38,7 +38,6 @@
 
 #include "components/component.h"
 #include "components/defs.h"
-#include "components/spatial.h"
 #include "components/step.h"
 #include "format/encoding.h"
 #include "ir/graph.h"
@@ -52,45 +51,52 @@ namespace {
 
 constexpr std::array kNormParams{
     kNormZeroCentered,
-    ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
-    ParamSpec{.name = "f16_output",
-              .type = ParamType::kBool,
+    ParamSpec{.name = "channels",
+              .type = ParamType::kInt,
               .required = false,
               .least = 0,
-              .most = 1,
-              .fallback = 0.0},
+              .most = 65536,
+              .fallback = 0},
+    ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
 };
 constexpr std::array kNormRoles{
     WeightRole{.name = "weight", .encodings = kNormEncodings, .derived = kZeroCenteredNorm}};
 
+std::uint64_t NormChannels(const Instance& in) {
+  const auto explicit_width = in.params.Int("channels");
+  return explicit_width == 0 ? in.stage.width : static_cast<std::uint64_t>(explicit_width);
+}
+
 std::expected<std::vector<RoleShape>, std::string> NormShapes(const Instance& in) {
   if (NormOffsetContradictsFold(in))
     return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
-  return std::vector<RoleShape>{Role(0, {in.stage.width})};
+  const auto width = NormChannels(in);
+  if (width == 0 || width > kMaxStreamWidth)
+    return std::unexpected("norm channels exceed stream width bound");
+  return std::vector<RoleShape>{Role(0, {width})};
 }
 
 std::expected<FragmentOut, std::string> NormEmit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
+  if (f.b.tensor(f.stream).ne(0) != NormChannels(f.instance))
+    return std::unexpected("norm stream width does not match configured channels");
   const float eps = F32(f.instance.params.Real("eps"));
   const ir::TensorId normed = f.b.RmsNorm(f.stream, eps);
-  F32Parameters<kNormRoles.size()> parameters(f);
-  const ir::TensorId weight = parameters.Norm(0);
-  ir::TensorId out = f.b.Mul(normed, weight);
-  if (f.instance.params.Flag("f16_output")) out = f.b.Convert(out, format::Encoding::kF16);
-  return FragmentOut{.stream = out};
+  ir::TensorId weight = NormScale(f.b, f.Weight(0));
+  if (f.instance.params.Flag("norm_zero_centered")) weight = f.b.Scale(weight, 1.0F, 1.0F);
+  return FragmentOut{.stream = f.b.Mul(normed, weight)};
 }
 
 std::expected<void, std::string> NormReference(RefIO& io) {
   const Instance& in = *io.instance;
-  if (io.stream.size() != in.stage.width * io.rows()) {
+  const auto width = NormChannels(in);
+  if (width == 0 || io.stream.size() != width * io.rows() || io.weights.at(0).size() != width) {
     return std::unexpected("norm reference: a stream of another shape");
   }
   auto weight = io.weights.at(0);
   if (in.params.Flag("norm_zero_centered"))
     for (float& value : weight) value += 1.0F;
-  RmsRows(io.stream, in.stage.width, F32(in.params.Real("eps")), weight);
-  if (in.params.Flag("f16_output"))
-    for (double& value : io.stream) value = RoundF16(value);
+  RmsRows(io.stream, width, F32(in.params.Real("eps")), weight);
   return {};
 }
 
@@ -135,7 +141,8 @@ std::expected<std::vector<RoleShape>, std::string> EmbeddingShapes(const Instanc
 
 std::expected<FragmentOut, std::string> EmbeddingEmit(Fragment& f) {
   const ir::TensorId table = f.Weight(0);
-  const ir::TensorId tokens = f.step.Tokens();
+  const ir::TensorId tokens =
+      f.stream.valid() ? f.b.Reshape(f.stream, Shape({f.step.rows()})) : f.step.Tokens();
   const ir::TensorId rows = f.b.GetRows(table, tokens);
   // A scale of 1 is no node (Qwen3.8's rows are the stream as they are).
   const float scale = F32(f.instance.params.Real("scale"));
@@ -167,52 +174,6 @@ std::expected<void, std::string> EmbeddingReference(RefIO& io) {
   io.stream = std::move(*rows);
   return {};
 }
-
-// The same table lookup in a typed stateless graph. Integer IDs are the
-// actual primary input, not a fabricated token-step descriptor.
-std::expected<SpatialShape, std::string> EmbeddingSpatialShape(
-    const Instance& in, SpatialShape input, std::optional<SpatialShape> auxiliary) {
-  if (!SpatialElements(input) || input.width != 1 || input.channels != 1 || input.images != 1 ||
-      auxiliary || in.stage.width == 0)
-    return std::unexpected("embedding spatial IDs must be one I32 row vector");
-  input.channels = in.stage.width;
-  if (!SpatialElements(input)) return std::unexpected("embedding spatial output overflows");
-  return input;
-}
-std::expected<SpatialValue, std::string> EmbeddingSpatialEmit(SpatialFragment& f) {
-  auto shape = EmbeddingSpatialShape(
-      f.instance, f.shape, f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!shape || f.weights.size() != 1 || f.carry)
-    return std::unexpected("embedding spatial operands differ");
-  auto ids = f.builder.Reshape(f.input, ir::ShapeOf({f.shape.height}));
-  auto rows = f.builder.GetRows(f.weights[0], ids);
-  const auto scale = F32(f.instance.params.Real("scale"));
-  if (scale != 1.F) rows = f.builder.Scale(rows, scale);
-  rows = f.builder.Reshape(rows, ir::ShapeOf({shape->channels, 1, shape->height, 1}));
-  return SpatialValue{f.builder.Cont(f.builder.Permute(rows, {2, 0, 1, 3})), *shape};
-}
-std::expected<void, std::string> EmbeddingSpatialReference(SpatialRefIO& io) {
-  auto shape = EmbeddingSpatialShape(io.instance, io.shape, io.auxiliary_shape);
-  if (!shape || io.input.size() != io.shape.height || !io.bias.empty() || !io.auxiliary.empty() ||
-      io.kernel.size() % shape->channels)
-    return std::unexpected("embedding spatial reference extents differ");
-  const auto vocab = io.kernel.size() / shape->channels;
-  for (const auto id : io.input)
-    if (!std::isfinite(id) || id < 0 || id != std::trunc(id) || id >= static_cast<double>(vocab))
-      return std::unexpected("embedding spatial reference ID is outside its table");
-  io.output.resize(*SpatialElements(*shape));
-  for (std::size_t row = 0; row < io.input.size(); ++row)
-    for (std::size_t channel = 0; channel < shape->channels; ++channel)
-      io.output[row + io.input.size() * channel] =
-          io.kernel[static_cast<std::size_t>(io.input[row]) * shape->channels + channel] *
-          static_cast<double>(F32(io.instance.params.Real("scale")));
-  return {};
-}
-const SpatialOps kSpatialEmbedding{.infer_shape = EmbeddingSpatialShape,
-                                   .emit = EmbeddingSpatialEmit,
-                                   .reference = EmbeddingSpatialReference,
-                                   .max_nodes = 6,
-                                   .input_encoding = format::Encoding::kI32};
 
 // ------------------------------------------------------- embedding.projected
 
@@ -249,7 +210,7 @@ model::StateContract ProjectedState(const Instance& in) {
                        .encoding = format::Encoding::kF32,
                        .cell_bytes = f * 4,
                        .cells = model::CellRule::kPositionRing,
-                       .window_or_ratio = static_cast<std::uint32_t>(in.params.Int("tap_cells")),
+                       .fixed_cells = static_cast<std::uint32_t>(in.params.Int("tap_cells")),
                        // A rejected row's cell is never read: a unit reads
                        // only its committed last position's.
                        .rollback = model::Rollback::kTruncate,
@@ -289,13 +250,6 @@ std::expected<void, std::string> ProjectedReference(RefIO& io) {
 // --------------------------------------------------------------- head.linear
 
 constexpr std::array kHeadParams{
-    // The product rounds to F16, then widens for the runner's F32 logits.
-    ParamSpec{.name = "f16_output",
-              .type = ParamType::kBool,
-              .required = false,
-              .least = 0,
-              .most = 1,
-              .fallback = 0.0},
     // The output rows gathered (each segment's last `outputs`); false: every
     // row is an output (a drafter's).
     ParamSpec{.name = "gather",
@@ -431,7 +385,8 @@ std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
   }
   // Its rows, unless it reads every row or what came before narrowed the
   // stream to them.
-  ir::TensorId rows = gather && !f.narrowed ? b.GetRows(f.stream, f.step.OutputRows()) : f.stream;
+  const ir::TensorId rows =
+      gather && !f.narrowed ? b.GetRows(f.stream, f.step.OutputRows()) : f.stream;
   // A prefix of the weight's rows.
   ir::TensorId weight = f.Weight(kHeadWeight);
   const auto prefix = static_cast<std::uint64_t>(f.instance.params.Int("rows"));
@@ -441,15 +396,7 @@ std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
     const format::Shape shape = Shape({wd.ne(0), prefix});
     weight = b.View(weight, shape, ViewStrides(wd.nb[0], wd.nb[1], 0, shape), 0);
   }
-  const bool f16 = f.instance.params.Flag("f16_output");
-  // GetRows widens to F32 when narrowing is disabled; preserve the head's
-  // F16 operand contract after gathering too.
-  if (f16 && Desc(b, rows).format.encoding != format::Encoding::kF16) {
-    rows = b.Convert(rows, format::Encoding::kF16);
-  }
-  ir::TensorId logits =
-      MatMulOutput(b, weight, rows, f16 ? format::Encoding::kF16 : format::Encoding::kF32);
-  if (f16) logits = b.Convert(logits, format::Encoding::kF32);
+  ir::TensorId logits = b.MatMul(weight, rows);
   if (f.instance.stage.softcap.has_value()) {
     const float cap = F32(*f.instance.stage.softcap);
     logits = b.Scale(logits, 1.0F / cap);
@@ -511,12 +458,7 @@ std::expected<void, std::string> HeadReference(RefIO& io) {
     }
     first += s.rows;
   }
-  if (in.params.Flag("f16_output")) {
-    for (double& value : selected) value = RoundF16(value);
-  }
   io.logits = Product(w, width, vocab, selected);
-  if (in.params.Flag("f16_output"))
-    for (double& value : io.logits) value = RoundF16(value);
   if (in.stage.softcap.has_value()) {
     const double cap = *in.stage.softcap;
     for (double& l : io.logits) l = cap * std::tanh(l / cap);
@@ -622,7 +564,6 @@ const ComponentDef& EmbeddingToken() {
       .roles = kEmbeddingRoles,
       .shapes = EmbeddingShapes,
 
-      .spatial = &kSpatialEmbedding,
       .emit = EmbeddingEmit,
       .reference = EmbeddingReference,
   };

@@ -27,6 +27,16 @@
 
 namespace llmp::test_support {
 
+// A uniform-alignment state layout (`align` for every non-bank tensor), for
+// tests comparing against the per-tensor rule.
+inline std::expected<model::StateLayoutDerived, std::string> StageLayoutUniform(
+    const spec::ModelSpec& spec, std::size_t stage, std::uint32_t context, std::uint32_t max_rows,
+    std::uint64_t align) {
+  auto contracts = components::StageContracts(spec, stage);
+  if (!contracts) return std::unexpected(contracts.error());
+  return model::Layout(*contracts, context, max_rows, align);
+}
+
 // One layout's footprint, in extents of model::kStateExtent.
 struct StateFootprint {
   std::uint64_t region = 0;   // the region's extents (a slot's virtual state)
@@ -77,8 +87,8 @@ inline StateFootprints ExpectServingLayout(std::string_view name, const spec::Mo
                                            std::uint32_t rows, std::uint32_t prompt = 8192) {
   constexpr std::uint64_t kExtent = model::kStateExtent;
   const auto rule = components::StageLayout(spec, stage, context, rows);
-  const auto packed = components::StageLayoutUniform(spec, stage, context, rows, 256);
-  const auto spread = components::StageLayoutUniform(spec, stage, context, rows, kExtent);
+  const auto packed = StageLayoutUniform(spec, stage, context, rows, 256);
+  const auto spread = StageLayoutUniform(spec, stage, context, rows, kExtent);
   EXPECT_TRUE(rule.has_value() && packed.has_value() && spread.has_value()) << name;
   if (!rule || !packed || !spread) return {};
   EXPECT_EQ(rule->extent, kExtent);
@@ -116,5 +126,9 @@ inline StateFootprints ExpectServingLayout(std::string_view name, const spec::Mo
 }
 
 }  // namespace llmp::test_support
+
+namespace llmp::components {
+using test_support::StageLayoutUniform;
+}  // namespace llmp::components
 
 #endif  // LLMP_TESTS_SUPPORT_STATE_LAYOUTS_H_
