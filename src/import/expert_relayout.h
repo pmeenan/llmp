@@ -92,7 +92,8 @@ std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
     std::vector<TensorAssembly>& outputs, const spec::ModelSpec* spec = nullptr);
 
 // A row-gathered table (an embedding or side table: the caller names it by
-// role) of a block-scaled encoding, gathered from split row blocks (kRows
+// role) of a block-scaled encoding a device kernel reads row-interleaved
+// (NVFP4 alone today), gathered from split row blocks (kRows
 // codes and block scales, a shared tensor scale), into
 // format::Layout::kRowInterleaved: each row's codes then its scales, so a
 // paged row is one read (the row lookups' kernels read it so). The same

@@ -5,8 +5,11 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <format>
 #include <fstream>
 #include <map>
+#include <optional>
+#include <utility>
 #include <variant>
 
 #include "artifact_writer.h"
@@ -16,6 +19,7 @@
 #include "components/step.h"
 #include "dsv4_gguf_normalization_fixture.h"
 #include "expected_error.h"
+#include "format/tensor_format.h"
 #include "image_family.h"
 #include "import/archive_input.h"
 #include "import/image_pipeline.h"
@@ -879,7 +883,10 @@ struct PartCase {
 };
 class ImportPartWriterTest : public ImportWriterTest {
  protected:
-  std::expected<PartCase, Error> Parts() {
+  // `poison`: an undefined block scale (format::ScaleCode) written into
+  // one scale byte of every source part of that encoding.
+  std::expected<PartCase, Error> Parts(
+      std::optional<std::pair<Encoding, std::uint8_t>> poison = std::nullopt) {
     auto tiny = TinyGemma4(true);
     auto old_tensors = std::move(tiny.tensors);
     tiny.tensors.clear();
@@ -953,6 +960,15 @@ class ImportPartWriterTest : public ImportWriterTest {
       for (std::size_t i = 0; i < payload.size(); ++i)
         payload[i] = static_cast<std::byte>((seed * 13 + i * 29) % 251);
       ++seed;
+      // Block scales hold finite scales, as a checkpoint's (format::ScaleCode).
+      const auto scales = format::ScaleBytesOf(format, part);
+      if (scales.code != format::ScaleCode::kNone) {
+        for (std::byte& b : payload)
+          b = static_cast<std::byte>(std::to_integer<unsigned>(b) %
+                                     (scales.code == format::ScaleCode::kUe4m3 ? 0x7FU : 0xFFU));
+        if (poison && poison->first == format.encoding && payload.size() > 3)
+          payload[3] = std::byte{poison->second};
+      }
       bytes.insert(bytes.end(), payload.begin(), payload.end());
       bytes.insert(bytes.end(), 7, std::byte{0xB5});
       return std::pair(index, std::move(payload));
@@ -1191,6 +1207,37 @@ TEST_F(ImportPartWriterTest, SemanticMutationAndUnfundedOrMalformedOwnersCannotP
     if (std::filesystem::exists(options.store))
       for (const auto& entry : std::filesystem::directory_iterator(options.store))
         EXPECT_EQ(entry.path().filename(), ".staging");
+  }
+}
+// A block scale that readers decode apart (NVFP4's UE4M3 past 0x7E, an
+// E8M0 0xFF: format::ScaleCode) is refused as it streams; nothing publishes.
+TEST_F(ImportPartWriterTest, UndefinedBlockScalesCannotPublish) {
+  for (const auto& [encoding, byte] :
+       std::vector<std::pair<Encoding, std::uint8_t>>{{Encoding::kNvfp4, 0x7F},
+                                                      {Encoding::kNvfp4, 0x80},
+                                                      {Encoding::kNvfp4, 0xFF},
+                                                      {Encoding::kMxfp8, 0xFF}}) {
+    SCOPED_TRACE(std::format("{} {:#04x}", format::Info(encoding).name, byte));
+    auto fixture = Parts(std::pair(encoding, byte));
+    ASSERT_TRUE(fixture) << test_support::Failed(fixture, &Error::ToString).value_or("");
+    auto options = Options(std::format("scale{}{}", static_cast<int>(encoding), byte));
+    const auto result = WriteArtifact(fixture->plan, options);
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error().rule, Rule::kQuantization) << result.error().ToString();
+    EXPECT_EQ(result.error().kind, ItemKind::kByte);
+    if (std::filesystem::exists(options.store))
+      for (const auto& entry : std::filesystem::directory_iterator(options.store))
+        EXPECT_EQ(entry.path().filename(), ".staging");
+  }
+  // The finite extremes publish.
+  for (const auto& [encoding, byte] : std::vector<std::pair<Encoding, std::uint8_t>>{
+           {Encoding::kNvfp4, 0x7E}, {Encoding::kMxfp8, 0xFE}, {Encoding::kNvfp4, 0x00}}) {
+    SCOPED_TRACE(std::format("{} {:#04x}", format::Info(encoding).name, byte));
+    auto fixture = Parts(std::pair(encoding, byte));
+    ASSERT_TRUE(fixture);
+    const auto result = WriteArtifact(
+        fixture->plan, Options(std::format("fine{}{}", static_cast<int>(encoding), byte)));
+    EXPECT_TRUE(result) << test_support::Failed(result, &Error::ToString).value_or("");
   }
 }
 TEST_F(ImportWriterTest, QwenSideTablePlacementAndCompleteExpertCoverageAreFundedBeforeEffects) {

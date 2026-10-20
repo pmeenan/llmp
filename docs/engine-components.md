@@ -335,7 +335,16 @@ primitive ids). It is deterministic. The steps:
   capability of it describes one member store (GGML's quantizing group
   declares `batch` 16). A rewrite is refused where emitting it at its
   last node's place would move a read past a store into the same bytes
-  (a cache, or an activation a store targets). Slice G2b added a
+  (a cache, or an activation a store targets); every pass that orders
+  reads against writes takes a node's write set from one definition,
+  `ir::ForEachWrittenSource` (a cache store's cache and each fused kind's
+  `AliasedSource`). A match whose emission the builder refuses is
+  dropped and its round applied again without it, so its nodes stay
+  primitive and the step still plans (`StepPlan::dropped_rewrites`
+  reports it); only an error no match made fails the plan. Matchers find
+  typed step inputs by their `ir::InputParams` fact (QSA's four-section
+  positions: `InputFact::kPositions`, 4 sections), which the graph's
+  digest holds, never by name. Slice G2b added a
   composite kind and option entries, which a policy disables by name as
   any pattern: `route_reduce` (the selection may take an implementation
   of `kRoute` and `kExpertReduce` themselves, GGML's fused Gemma routing
@@ -758,7 +767,9 @@ and the composites where the plan selected their own implementation
 (`route_reduce`): `kRoute` as the ten nodes GGML's fused Gemma routing
 takes (`ggml.gemma.route.fused`: a normalized softmax top 8 of 128,
 scale 1, at most 8,192 rows; its ids a view of the whole sort, which
-their place holds, `WrittenBytes`) and `kExpertReduce` with each slot's
+their place holds, `WrittenBytes`, and which its capability declares,
+`Capability::pitched_output`, so the planner gives byte-layout readers
+and exposed ids a compact copy without knowing its name) and `kExpertReduce` with each slot's
 gathered scale as the seventeen the fused scaled reduce takes
 (`ggml.gemma.scaled_reduce.fused`: 8 slots of 2,816; its products and
 partial sums take its place); otherwise the planner decomposed them into
@@ -1529,7 +1540,12 @@ dimensions reuses the plan, including lookahead and capture decisions.
 Fragments, scalar references and keys derive compressed reads from the
 state contract's cell padding (256 in production), independently of the
 outer raw read alignment. Contract-backed ranges cover those views even
-when joined raw reads align to 2,048 cells.
+when joined raw reads align to 2,048 cells. A plan key holds a segment's
+past only through these words, so `components_test`'s
+`EmissionDependsOnPastOnlyThroughShapeParameters` emits every catalog
+component at each past its case's read cells allow and fails where two
+pasts with equal words emit different graphs or step inputs: a component
+whose emission depends on the position must declare it here.
 
 The GGML primitive lowering now stages the typed compressor inputs and
 Hadamard constants, builds compressed masks on the host and ahead masks
@@ -2010,12 +2026,28 @@ reference decoders read the layout (`kernels/reference`), and
 split sources' values element for element. Only NVFP4 joins today;
 another block-scaled encoding of one-byte scales (MXFP8, MXFP4) joins by
 entering the relayout's encoding list once a grouped product reads its
-atoms, and dense NVFP4 linears are not relaid out. A row-gathered table
-of the same encodings (an embedding or side table, by role) is relaid out
-from split row blocks into `row_interleaved` (`RelayoutRowTable`: each
-row's codes then its scales, so a paged row is one read and GGML's
-`llmp.nvfp4.get_rows` reads it), its blocks routed into their lanes
-(`PartRoutePlan::Strided`).
+atoms, and dense NVFP4 linears are not relaid out. A row-gathered NVFP4
+table (an embedding or side table, by role) is relaid out from split row
+blocks into `row_interleaved` (`RelayoutRowTable`: each row's codes then
+its scales, so a paged row is one read and `llmp.nvfp4.get_rows` and the
+`nvfp4.row_interleaved` decoder read it), its blocks routed into their
+lanes (`PartRoutePlan::Strided`); MXFP8 and MXFP4 tables stay split until
+a kernel reads them interleaved.
+
+**Block scales** (2026-10-20). NVFP4's block scale is UE4M3 (NVIDIA's
+PTX `.ue4m3`, CUTLASS's `float_ue4m3_t`: E4M3 without a sign bit,
+0x00–0x7E finite, 0x7F NaN); MXFP4's and MXFP8's is OCP Microscaling's
+E8M0 (0x00–0xFE, 0xFF NaN). Only the finite bytes mean one value to every
+reader: GGML's CPU reference ignores bit 7 and reads 0x7F as 0, its CUDA
+dequantizers honour bit 7 and read 0x7F and 0xFF as 0, and tensor cores
+take the raw byte. So llmp's own decoders, the CPU reference
+(`Ue4m3ToF32`, `E8m0ToF32`) and the format ladder's device decoders and
+`llmp.nvfp4.get_rows` (`precision::Ue4m3`, `E8m0`), read every other byte
+as NaN in every layout (split, scale atoms, row-interleaved, GGML's
+blocks), and the importer refuses a source part holding one as it
+streams (`format::FirstUndefinedScale`, rule `quantization`): an artifact
+never holds a scale its readers decode apart. ModelOpt, MLX and GGML's
+quantizers write only finite scales.
 
 **Quantized state.** KV caches and other state take encodings like weights,
 per component. Lossy state encodings are configured per alias, through

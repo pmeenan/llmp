@@ -354,6 +354,13 @@ base::Sha256Digest Graph::Digest() const {
         std::ranges::any_of(node.params, [](std::byte b) { return b != std::byte{0}; })) {
       leaf.Bytes(std::as_bytes(std::span(node.params).first(kConstantDigestBytes)));
     }
+    // A step input's fact (InputParams), likewise only where it has one:
+    // what a pass may read it as, which its name never decides.
+    if (t.role == Role::kInput &&
+        std::ranges::any_of(node.params, [](std::byte b) { return b != std::byte{0}; })) {
+      leaf.U8(0x1F);
+      leaf.Bytes(std::as_bytes(std::span(node.params).first(sizeof(InputParams))));
+    }
     leaves.push_back(leaf.Finish());
   }
   std::ranges::sort(leaves);

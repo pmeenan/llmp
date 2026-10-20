@@ -12,7 +12,7 @@
 //   Mma                    the element the matrix templates decode it to
 //                          for mma.sync: BF16 where every decoded value is
 //                          exactly a BF16 (BF16 itself, NVFP4's code times
-//                          its E4M3 scale, MXFP8's E4M3 code times a power
+//                          its UE4M3 scale, MXFP8's E4M3 code times a power
 //                          of two), which also keeps the activations'
 //                          range; F16 where the weights need F16's
 //                          precision (F16 itself, Q8_0's F16 d times an
@@ -26,8 +26,9 @@
 // The tensor scale is the templates' (RowScale), applied once per output.
 //
 // Element formats as the reference's: E2M1 ±{0, 0.5, 1, 1.5, 2, 3, 4, 6};
-// OCP E4M3 (bias 7, subnormals, 0x7F and 0xFF NaN); E8M0 2^(x - 127), 0xFF
-// NaN. Every Load reads only its segment's bytes: the host launch code
+// OCP E4M3 (bias 7, subnormals, 0x7F and 0xFF NaN); NVFP4's UE4M3 scale
+// (E4M3's value for 0x00-0x7E, NaN from 0x7F up: format::ScaleCode); E8M0
+// 2^(x - 127), 0xFF NaN. Every Load reads only its segment's bytes: the host launch code
 // (products.cc) checks each part's extent and alignment before a launch.
 
 #ifndef LLMP_KERNELS_DECODE_DECODERS_CUH_
@@ -49,6 +50,7 @@ using precision::E2m1;
 using precision::E4m3;
 using precision::E8m0;
 using precision::Nan;
+using precision::Ue4m3;
 
 __device__ __forceinline__ std::uint32_t Byte(const std::uint8_t* p) { return __ldg(p); }
 
@@ -133,7 +135,7 @@ struct Nvfp4Split {
   using Mma = __nv_bfloat16;
   __device__ static void Load(const Operand& p, std::uint32_t row, std::uint32_t seg, Values& v) {
     const float s =
-        E4m3(Byte(p.scales + (row * static_cast<std::uint64_t>(p.k / kNvfp4Block)) + seg));
+        Ue4m3(Byte(p.scales + (row * static_cast<std::uint64_t>(p.k / kNvfp4Block)) + seg));
     Nvfp4Codes(p, row, seg, s, v);
   }
 };
@@ -142,7 +144,7 @@ struct Nvfp4Atoms {
   static constexpr DecoderId kId = DecoderId::kNvfp4Atoms;
   using Mma = __nv_bfloat16;
   __device__ static void Load(const Operand& p, std::uint32_t row, std::uint32_t seg, Values& v) {
-    const float s = E4m3(Byte(p.scales + AtomOffset(row, seg, p.k / kNvfp4Block)));
+    const float s = Ue4m3(Byte(p.scales + AtomOffset(row, seg, p.k / kNvfp4Block)));
     Nvfp4Codes(p, row, seg, s, v);
   }
 };
@@ -154,7 +156,7 @@ struct Nvfp4Interleaved {
   using Mma = __nv_bfloat16;
   __device__ static void Load(const Operand& p, std::uint32_t row, std::uint32_t seg, Values& v) {
     const std::uint8_t* base = p.data + (row * p.row_bytes);
-    const float s = E4m3(Byte(base + (p.k / 2U) + seg));
+    const float s = Ue4m3(Byte(base + (p.k / 2U) + seg));
     const std::uint8_t* c = base + (seg * 8U);
     const std::uint32_t lo =
         Byte(c) | (Byte(c + 1) << 8U) | (Byte(c + 2) << 16U) | (Byte(c + 3) << 24U);
@@ -164,7 +166,7 @@ struct Nvfp4Interleaved {
   }
 };
 
-// block_nvfp4: 64 values, four E4M3 scales, then 32 bytes, byte j of a
+// block_nvfp4: 64 values, four UE4M3 scales, then 32 bytes, byte j of a
 // 16-value sub-block holding values j (low nibble) and j + 8 (high). A
 // segment is a sub-block; blocks are 36 bytes, so four-byte loads align.
 struct Nvfp4GgmlBlocks {
@@ -174,7 +176,7 @@ struct Nvfp4GgmlBlocks {
     const std::uint8_t* block = p.data + (row * p.row_bytes) +
                                 (static_cast<std::uint64_t>(seg / 4U) * kGgmlNvfp4BlockBytes);
     const std::uint32_t sub = seg & 3U;
-    const float s = E4m3(Byte(block + sub));
+    const float s = Ue4m3(Byte(block + sub));
     const auto* c = reinterpret_cast<const std::uint32_t*>(block + 4 + (sub * 8U));
     const std::uint32_t w[2] = {__ldg(c), __ldg(c + 1)};
 #pragma unroll

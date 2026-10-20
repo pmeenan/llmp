@@ -125,17 +125,20 @@ std::expected<ir::Graph, ir::VerifyError> ExpandNodes(
   return std::move(b).Finish();
 }
 
-// GGML's selected top-k fusion writes IDs at the full sort's expert pitch.
-// Direct products and Cont understand that pitch. Byte-layout operations
-// and exposed values need the IR's compact IDs instead: make that copy an
-// explicit, placed step, shared by those readers only. Other implementations
-// retain their own layout contract and do not acquire a copy here.
+// A routing implementation that declares a pitched output
+// (Capability::pitched_output: GGML's selected top-k writes IDs at the full
+// sort's expert pitch) leaves its IDs in that pitch. Direct products and
+// Cont understand it. Byte-layout operations and exposed values need the
+// IR's compact IDs instead: make that copy an explicit, placed step, shared
+// by those readers only. Other implementations retain their own layout
+// contract and do not acquire a copy here.
 std::expected<std::optional<ir::Graph>, ir::VerifyError> CompactRouteReaders(
     const ir::Graph& graph, std::span<const Selected> steps, const execution::Registry& registry,
     std::vector<TensorId>& map, std::vector<NodeId>& from) {
   std::vector<bool> pitched(graph.tensor_count(), false);
   for (const auto& step : steps) {
-    if (registry.at(step.implementation).name != "ggml.gemma.route.fused") continue;
+    const auto& capability = registry.at(step.implementation).capability;
+    if (!capability || !capability->pitched_output) continue;
     for (const auto id : step.nodes) {
       const auto& node = graph.node(id);
       if (node.key == ir::Primitive(ir::Op::kRoute) && node.nout > 0 && node.nsrc > 0 &&
@@ -209,9 +212,7 @@ bool Effect(const ir::Node& n) {
     case ir::Op::kRecv:
       return true;
     case ir::Op::kFused:
-      for (std::size_t i = 0; i < n.nout; ++i)
-        if (ir::AliasedSource(n.key, i)) return true;
-      return false;
+      return ir::WritesInPlace(n);
     default:
       return false;
   }
@@ -231,9 +232,7 @@ std::vector<bool> WrittenRoots(const ir::Graph& graph) {
     if (!Effect(n) || n.key.op == ir::Op::kInput || n.key.op == ir::Op::kWeight) continue;
     for (const TensorId t : n.sources()) mark(t);
     for (const TensorId t : n.outputs()) mark(t);
-    if (n.key.op == ir::Op::kFused)
-      for (std::size_t i = 0; i < n.nout; ++i)
-        if (const auto alias = ir::AliasedSource(n.key, i)) mark(n.src.at(*alias));
+    ir::ForEachWrite(graph, n, mark);
   }
   return written;
 }
@@ -607,6 +606,7 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
       for (auto& n : a.replaced) n = owners->rewrite.from.at(n.v);
       for (auto& proof : a.numerical_proofs) proof.site = owners->rewrite.from.at(proof.site.v);
     }
+    for (auto& d : rewritten->dropped) d.anchor = owners->rewrite.from.at(d.anchor.v);
     std::size_t max_from = 0;
     for (const auto& nid : rewritten->from) {
       if (nid.v >= max_from) max_from = nid.v + 1;
@@ -848,6 +848,7 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
       .tensors = std::move(tensors),
       .decomposed = std::move(decomposed),
       .missing_numerical = std::move(rewritten->missing_numerical),
+      .dropped_rewrites = std::move(rewritten->dropped),
       .owner_row_invariant =
           !Disabled(policy, "owner_row_invariant") && options.shape != nullptr &&
           options.shape->segments.size() > 1 &&

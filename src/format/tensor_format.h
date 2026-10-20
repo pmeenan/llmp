@@ -108,6 +108,21 @@ std::expected<std::uint64_t, FormatError> RowBytes(const TensorFormat& format, P
 // are multiples of it).
 std::uint64_t Matrices(const TensorFormat& format);
 
+// Where a part of `format` holds block scales (encoding.h ScaleCode):
+// `count` bytes at `offset` of every `period` bytes of the part (all of a
+// split or atom layout's kBlockScales; each row's scales after its codes
+// in kRowInterleaved; each GGML block's leading scales). `code` kNone: the
+// part holds none of them.
+struct ScaleBytes {
+  ScaleCode code = ScaleCode::kNone;
+  std::uint64_t period = 0, offset = 0, count = 0;
+};
+ScaleBytes ScaleBytesOf(const TensorFormat& format, PartRole part);
+// The index in `bytes` (which start at byte `at` of such a part) of the
+// first scale that is not a finite one of its code, if any.
+std::optional<std::uint64_t> FirstUndefinedScale(const ScaleBytes& where, std::uint64_t at,
+                                                 std::span<const std::byte> bytes);
+
 }  // namespace llmp::format
 
 #endif  // LLMP_FORMAT_TENSOR_FORMAT_H_

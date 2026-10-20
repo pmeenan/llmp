@@ -787,6 +787,34 @@ and current upstream master has not been checked.
   and test fixtures. No runtime ID validation or new duplicate-routing
   semantics is claimed by the llmpalooza port.
 
+## UE4M3 and E8M0 scale bytes decode differently by path
+
+- **Status:** documented; llmpalooza refuses such scales at import; no
+  upstream patch proposed.
+- **Pin and source:** the locked GGML (`v0.6.0`,
+  `d81235049384534c167caea52b85a694f6103d14`): `ggml/src/ggml-impl.h`
+  `ggml_ue4m3_to_fp32` and `ggml_e8m0_to_fp32`,
+  `ggml/src/ggml-cuda/common.cuh` `ggml_cuda_ue4m3_to_fp32` and
+  `ggml_cuda_e8m0_to_fp32`, and the Blackwell MMQ path's raw `ue4m3`
+  scale operand (`mma.cuh`).
+- **What:** NVFP4's block scale is UE4M3 (no sign; 0x7F NaN) and MX's
+  E8M0 (0xFF NaN). For bytes outside the finite range GGML's readers
+  disagree with each other: the CPU reference masks bit 7 (0x80 reads as
+  0x00, 0xFF as 240 before its ×0.5) and reads 0x7F as 0; the CUDA
+  dequantizers with FP8 support read bytes from 0x80 as negative E4M3 and
+  0x7F and 0xFF as 0; the fallback CUDA path masks bit 7 like the CPU but
+  still zeroes only 0x7F; tensor cores receive the raw byte. The CPU
+  E8M0 reader turns 0xFF into +Inf, CUDA's (CUDA 12.8+) into NaN. Bytes
+  GGML's own quantizers write (0x00–0x7E, 0x00–0xFE) decode alike
+  everywhere.
+- **Llmpalooza handling:** its decoders read every non-finite byte as NaN
+  and its importer refuses a checkpoint holding one
+  ([engine-components.md](../engine-components.md#weight-and-state-formats),
+  "Block scales"), so GGML's kernels never see one.
+- **Proposed action:** one definition across the CPU and CUDA readers
+  (UE4M3 per NVIDIA, NaN or a documented zero for non-finite bytes), or a
+  documented domain that `ggml_validate_row_data` checks.
+
 ## Flash-attention signed iteration and efficiency bounds
 
 - **Source:** pinned `fattn-common.cuh` launcher and `fattn-mma-f16.cuh`

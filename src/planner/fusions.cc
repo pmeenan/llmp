@@ -263,16 +263,7 @@ class Building {
     // that could change a cached read or observe a moved write.
     const ir::Graph& g = c_.graph();
     std::set<TensorId> reads, writes;
-    const auto written = [&](const ir::Node& n, auto&& f) {
-      if (n.key == Prim(Op::kCacheStore)) f(g.root(n.src[0]));
-      if (n.key == ir::Fused(FusedKind::kGdnStep) && n.src[5].valid()) f(g.root(n.src[5]));
-      if (n.key == ir::Fused(FusedKind::kMeanPoolNormRopeStore) && n.src[3].valid())
-        f(g.root(n.src[3]));
-      for (std::size_t i = 0; i < n.nout; ++i) {
-        if (const auto alias = ir::AliasedSource(n.key, i); alias && n.src.at(*alias).valid())
-          f(g.root(n.src.at(*alias)));
-      }
-    };
+    const auto written = [&](const ir::Node& n, auto&& f) { ir::ForEachWrite(g, n, f); };
     for (const NodeId id : nodes_) {
       const ir::Node& n = g.node(id);
       for (const TensorId s : n.sources()) {
@@ -326,16 +317,15 @@ bool Undisturbed(const MatchContext& c, const Building& m, NodeId from, NodeId t
       continue;
     }
     const ir::Node& n = g.node(id);
+    // A read of it; every write in place reads its target too.
     for (const TensorId s : n.sources()) {
       if (s.valid() && g.root(s) == root) {
         return false;
       }
     }
-    for (const TensorId o : n.outputs()) {
-      if (g.root(o) == root && o != root) {
-        return false;
-      }
-    }
+    bool written = false;
+    ir::ForEachWrite(g, n, [&](TensorId r) { written = written || r == root; });
+    if (written) return false;
   }
   return true;
 }
@@ -345,14 +335,9 @@ bool Undisturbed(const MatchContext& c, const Building& m, NodeId from, NodeId t
 bool Unwritten(const ir::Graph& g, NodeId from, NodeId to, TensorId tensor) {
   const TensorId root = g.root(tensor);
   for (std::uint32_t k = from.v + 1; k < to.v; ++k) {
-    const ir::Node& n = g.node(NodeId{k});
-    if (n.key == Prim(Op::kCacheStore) && g.root(n.src[0]) == root) return false;
-    for (std::size_t i = 0; i < n.nout; ++i) {
-      if (const auto alias = ir::AliasedSource(n.key, i);
-          alias && n.src.at(*alias).valid() && g.root(n.src.at(*alias)) == root) {
-        return false;
-      }
-    }
+    bool written = false;
+    ir::ForEachWrite(g, g.node(NodeId{k}), [&](TensorId r) { written = written || r == root; });
+    if (written) return false;
   }
   return true;
 }
@@ -1482,11 +1467,16 @@ std::optional<Match> InterleavedNormRopeMatch(const MatchContext& c, NodeId anch
 
 namespace {
 
-// The step's positions in four sections (QSA's rotations'), found by name.
+// The step's positions in four sections (QSA's rotations'): the input
+// whose typed fact says so (ir::InputParams, which the digest holds; never
+// its name).
 TensorId Positions4(const MatchContext& c) {
   const ir::Graph& g = c.graph();
+  constexpr ir::InputParams kFour{.fact = ir::InputFact::kPositions, .sections = 4};
   for (const TensorId t : g.inputs()) {
-    if (g.name(t) == "positions.4") {
+    const ir::Node& leaf = g.node(g.producer(t));
+    if (g.tensor(t).role == ir::Role::kInput && leaf.key == Prim(Op::kInput) &&
+        leaf.Params<ir::InputParams>() == kFour) {
       return t;
     }
   }

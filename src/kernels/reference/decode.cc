@@ -91,7 +91,7 @@ float Code(const format::EncodingInfo& info, Bytes codes, std::uint64_t j) {
 }
 
 float BlockScale(Encoding e, std::uint8_t bits) {
-  return e == Encoding::kNvfp4 ? E4m3ToF32(bits) : E8m0ToF32(bits);
+  return e == Encoding::kNvfp4 ? Ue4m3ToF32(bits) : E8m0ToF32(bits);
 }
 
 // Where one matrix's share of each part starts.
@@ -258,7 +258,7 @@ std::expected<void, DecodeError> DecodeRow(const TensorFormat& f, const Parts& p
       return {};
     }
     case Layout::kGgmlNvfp4Blocks: {
-      // block_nvfp4: four E4M3 scales, then 32 bytes, byte j of a 16-value
+      // block_nvfp4: four UE4M3 scales, then 32 bytes, byte j of a 16-value
       // sub-block holding values j (low nibble) and j + 8.
       const std::uint64_t row_bytes = k / 64 * 36;
       const Bytes row = p.data.subspan(r * row_bytes, row_bytes);
@@ -266,7 +266,7 @@ std::expected<void, DecodeError> DecodeRow(const TensorFormat& f, const Parts& p
         const Bytes x = row.subspan(j / 64 * 36, 36);
         const std::uint64_t s = (j % 64) / 16;
         const std::uint64_t t = j % 16;
-        y[j] = E2m1ToF32(Nibble(U8(x, 4 + (s * 8) + (t % 8)), t >= 8)) * E4m3ToF32(U8(x, s));
+        y[j] = E2m1ToF32(Nibble(U8(x, 4 + (s * 8) + (t % 8)), t >= 8)) * Ue4m3ToF32(U8(x, s));
       }
       return {};
     }
@@ -386,6 +386,12 @@ float E4m3ToF32(std::uint8_t bits) {
     return sign * std::ldexp(static_cast<float>(mantissa), -9);
   }
   return sign * std::ldexp(static_cast<float>(8U + mantissa), static_cast<int>(exponent) - 10);
+}
+
+float Ue4m3ToF32(std::uint8_t bits) {
+  return format::DefinedScale(format::ScaleCode::kUe4m3, bits)
+             ? E4m3ToF32(bits)
+             : std::numeric_limits<float>::quiet_NaN();
 }
 
 float E5m2ToF32(std::uint8_t bits) {

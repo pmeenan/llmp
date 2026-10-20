@@ -588,9 +588,18 @@ Out Leaf(const Ctx& c) {
   if (r == nullptr) {
     return Fail(GraphError::kArity, c, "a leaf needs its description");
   }
-  // Only a plan constant's parameters hold anything: its content's digest.
-  LLMP_TRY(
-      Tail(c, c.key().op == Op::kInput && r->role == Role::kConstant ? kConstantDigestBytes : 0));
+  // Only a plan constant's parameters hold anything (its content's digest)
+  // and a step input's (its InputParams).
+  const bool constant = c.key().op == Op::kInput && r->role == Role::kConstant;
+  const bool input = c.key().op == Op::kInput && r->role == Role::kInput;
+  LLMP_TRY(Tail(c, constant ? kConstantDigestBytes : input ? sizeof(InputParams) : 0));
+  if (input) {
+    const auto p = c.params<InputParams>();
+    if (static_cast<std::uint8_t>(p.fact) > static_cast<std::uint8_t>(kLastInputFact) ||
+        (p.fact == InputFact::kNone) != (p.sections == 0) || p.reserved != decltype(p.reserved){}) {
+      return Fail(GraphError::kParams, c, "an input's fact is not one the op set has");
+    }
+  }
   if (!format::Validate(r->format)) {
     return Fail(GraphError::kFormat, c, "a leaf's format is not valid");
   }

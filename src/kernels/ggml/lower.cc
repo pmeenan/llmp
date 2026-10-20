@@ -443,11 +443,7 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
   // declaration is not a proof once another node overwrites its bytes.
   std::set<TensorId> overwritten;
   for (const ir::Node& n : p_.nodes()) {
-    if (n.key == ir::Primitive(Op::kCacheStore)) overwritten.insert(p_.root(n.src[0]));
-    for (std::size_t i = 0; i < n.nout; ++i) {
-      if (const auto alias = ir::AliasedSource(n.key, i); alias && n.src.at(*alias).valid())
-        overwritten.insert(p_.root(n.src.at(*alias)));
-    }
+    ir::ForEachWrite(p_, n, [&](TensorId r) { overwritten.insert(r); });
   }
   const auto input = [&](TensorId t) -> const co::StepInput* {
     if (!t.valid()) return nullptr;
@@ -505,12 +501,9 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
     const ir::Node* found = nullptr;
     for (std::uint32_t k = 0; k < before.v; ++k) {
       const ir::Node& n = p_.node(NodeId{k});
-      if (n.key == ir::Primitive(Op::kCacheStore) && p_.root(n.src[0]) == root) found = &n;
-      for (std::size_t i = 0; i < n.nout; ++i) {
-        if (const auto alias = ir::AliasedSource(n.key, i);
-            alias && n.src.at(*alias).valid() && p_.root(n.src.at(*alias)) == root)
-          found = &n;
-      }
+      ir::ForEachWrite(p_, n, [&](TensorId r) {
+        if (r == root) found = &n;
+      });
     }
     return found;
   };
@@ -1939,10 +1932,14 @@ std::expected<void, KernelFailure> Lowering::MakeSelected(NodeId id, const ir::N
     if (n.key == ir::Primitive(Op::kMatMulId) && i == 2) {
       const auto producer = p_.producer(tensor);
       const auto& route = p_.node(producer);
-      // Only our selected Route owns this layout change. External IDs and
-      // byte views keep their exact declared strides at the source boundary.
-      if (route.key == ir::Primitive(Op::kRoute) && route.out[0] == tensor &&
-          registry_.at(impl_of_.at(producer.v)).name == "ggml.gemma.route.fused") {
+      // Only our selected Route owns this layout change (its capability
+      // declares the pitch). External IDs and byte views keep their exact
+      // declared strides at the source boundary.
+      const auto pitched = [&] {
+        const auto& routing = registry_.at(impl_of_.at(producer.v)).capability;
+        return routing && routing->pitched_output;
+      };
+      if (route.key == ir::Primitive(Op::kRoute) && route.out[0] == tensor && pitched()) {
         const auto params = route.Params<ir::RouteParams>();
         const auto root = placed_root_.find(tensor.v);
         const auto* ids = operand.tensor;
@@ -1961,12 +1958,7 @@ std::expected<void, KernelFailure> Lowering::MakeSelected(NodeId id, const ir::N
       const auto& producer = p_.node(p_.producer(tensor));
       bool unchanged = p_.root(tensor) == tensor;
       for (const auto& node : p_.nodes()) {
-        if (node.key == ir::Primitive(Op::kCacheStore) && p_.root(node.src[0]) == tensor)
-          unchanged = false;
-        for (std::size_t output = 0; output < node.nout; ++output)
-          if (const auto alias = ir::AliasedSource(node.key, output);
-              alias && node.src.at(*alias).valid() && p_.root(node.src.at(*alias)) == tensor)
-            unchanged = false;
+        ir::ForEachWrite(p_, node, [&](TensorId r) { unchanged = unchanged && r != tensor; });
       }
       if (unchanged) {
         const auto original = primitive_.at(tensor.v);
@@ -2380,10 +2372,7 @@ std::expected<void, KernelFailure> Lowering::CheckSelectedHc() {
     std::vector<std::uint8_t> written;
     explicit GraphCheck(const ir::Graph& g) : graph(g), written(g.tensor_count(), 0) {
       for (const auto& n : g.nodes()) {
-        if (n.key == ir::Primitive(Op::kCacheStore)) written[g.root(n.src[0]).v] = 1;
-        for (std::size_t o = 0; o < n.nout; ++o)
-          if (const auto a = ir::AliasedSource(n.key, o); a && n.src[*a].valid())
-            written[g.root(n.src[*a]).v] = 1;
+        ir::ForEachWrite(g, n, [&](TensorId r) { written[r.v] = 1; });
       }
     }
     bool Clean(TensorId t) const {
@@ -3667,13 +3656,11 @@ void Lowering::Needed() {
     }
   for (std::uint32_t i = 0; i < p_.nodes().size(); ++i) {
     const ir::Node& n = p_.nodes()[i];
+    // A write in place: a fused node's always, a cache store's into state.
     bool writes = false;
-    if (n.key == ir::Primitive(Op::kCacheStore)) {
-      writes = p_.tensor(p_.root(n.src[0])).role == ir::Role::kState;
-    }
-    for (std::size_t o = 0; o < n.nout; ++o) {
-      writes = writes || (n.key.op == Op::kFused && ir::AliasedSource(n.key, o).has_value());
-    }
+    ir::ForEachWrite(p_, n, [&](TensorId r) {
+      writes = writes || n.key.op == Op::kFused || p_.tensor(r).role == ir::Role::kState;
+    });
     if (writes && !needed_.at(i)) {
       needed_.at(i) = true;
       work.push_back(NodeId{i});
@@ -4895,12 +4882,9 @@ std::expected<void, KernelFailure> Lowering::MakeRouting() {
   for (const auto& group : groups) {
     if (!group.original.valid()) return Refused("routed group lacks primitive source authority");
     for (const auto& node : g_.nodes()) {
-      if (node.key == ir::Primitive(Op::kCacheStore) && g_.root(node.src[0]) == group.original)
-        return Refused("routed IDs are overwritten");
-      for (std::size_t o = 0; o != node.nout; ++o)
-        if (const auto alias = ir::AliasedSource(node.key, o);
-            alias && node.src[*alias].valid() && g_.root(node.src[*alias]) == group.original)
-          return Refused("routed IDs have an alias writer");
+      bool written = false;
+      ir::ForEachWrite(g_, node, [&](TensorId r) { written = written || r == group.original; });
+      if (written) return Refused("routed IDs are overwritten in place");
     }
   }
   std::uint64_t device = Round(out_.extent, 256);

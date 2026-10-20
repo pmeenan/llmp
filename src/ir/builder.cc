@@ -166,8 +166,11 @@ TensorId Builder::Leaf(Op op, Role role, const format::TensorFormat& format, Bin
   return Emit(Primitive(op), params, {}, std::span(&r, 1), name)[0];
 }
 
-TensorId Builder::Input(const format::TensorFormat& format, std::string_view name) {
-  return Leaf(Op::kInput, Role::kInput, format, {}, segment_, name);
+TensorId Builder::Input(const format::TensorFormat& format, std::string_view name,
+                        const InputParams& fact) {
+  ParamBytes params{};
+  std::memcpy(params.data(), &fact, sizeof(fact));
+  return Leaf(Op::kInput, Role::kInput, format, {}, segment_, name, params);
 }
 
 TensorId Builder::Constant(const format::TensorFormat& format, std::string_view name,

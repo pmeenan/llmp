@@ -323,6 +323,29 @@ TEST(ImportExpertRelayoutTest, RowTablesInterleaveToTheSplitBlocksValues) {
 
 // Canonical expert-table names by role; anything else, a malformed layer
 // index among them, names none.
+// Only an encoding a device kernel reads row-interleaved (NVFP4) is relaid
+// out; an MXFP8 or MXFP4 row table keeps its split blocks, which its row
+// lookups read.
+TEST(ImportExpertRelayoutTest, RowTablesRelayOutOnlyWhatAKernelReadsInterleaved) {
+  for (const auto encoding : {Encoding::kNvfp4, Encoding::kMxfp8, Encoding::kMxfp4}) {
+    SCOPED_TRACE(static_cast<int>(encoding));
+    TensorFormat f{
+        .encoding = encoding, .layout = Layout::kSplit, .shape = {.ne = {64, 8, 1, 1}, .rank = 2}};
+    TensorAssembly table{.name = "table.weight", .format = f};
+    for (const auto role : {PartRole::kCodes, PartRole::kBlockScales})
+      table.parts.push_back({.part = role, .kind = PartAssemblyKind::kRows, .sources = {0}});
+    const auto before = table.format;
+    auto relaid = RelayoutRowTable(table);
+    ASSERT_TRUE(relaid);
+    EXPECT_EQ(*relaid, encoding == Encoding::kNvfp4);
+    if (encoding != Encoding::kNvfp4) {
+      EXPECT_EQ(table.format, before);
+      EXPECT_FALSE(table.relayout_from);
+      EXPECT_EQ(table.parts.size(), 2U);
+    }
+  }
+}
+
 TEST(ImportExpertRelayoutTest, NamesExpertTablesByCanonicalRole) {
   const auto gate = ExpertTableOf("blk.12.ffn_gate_exps.weight", 3);
   ASSERT_TRUE(gate);

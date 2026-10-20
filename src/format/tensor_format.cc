@@ -387,4 +387,61 @@ std::uint64_t Matrices(const TensorFormat& format) {
   return format.shape.ne[2] * format.shape.ne[3];
 }
 
+ScaleBytes ScaleBytesOf(const TensorFormat& format, PartRole part) {
+  const ScaleCode code = ScaleCodeOf(format.encoding);
+  if (code == ScaleCode::kNone || !Validate(format)) return {};
+  const EncodingInfo& info = Info(format.encoding);
+  switch (format.layout) {
+    case Layout::kSplit:
+    case Layout::kScaleAtoms:
+      if (part != PartRole::kBlockScales) return {};
+      return {.code = code, .period = 1, .offset = 0, .count = 1};
+    case Layout::kRowInterleaved: {
+      if (part != PartRole::kData) return {};
+      const std::uint64_t k = format.shape.ne[0];
+      const std::uint64_t codes = CodeRowBytes(k, info);
+      const std::uint64_t blocks = k / info.block_elements;
+      return {.code = code, .period = codes + blocks, .offset = codes, .count = blocks};
+    }
+    case Layout::kGgmlBlocks:
+    case Layout::kGgmlNvfp4Blocks: {
+      // block_mxfp4: its E8M0 scale, then 16 bytes; block_nvfp4: four
+      // UE4M3 scales, then 32 bytes.
+      if (part != PartRole::kData || !info.ggml) return {};
+      if (format.encoding == Encoding::kMxfp4 && format.layout == Layout::kGgmlBlocks)
+        return {.code = code, .period = info.ggml->block_bytes, .offset = 0, .count = 1};
+      if (format.encoding == Encoding::kNvfp4 && format.layout == Layout::kGgmlNvfp4Blocks)
+        return {.code = code, .period = info.ggml->block_bytes, .offset = 0, .count = 4};
+      return {};
+    }
+    default:
+      return {};
+  }
+}
+
+std::optional<std::uint64_t> FirstUndefinedScale(const ScaleBytes& where, std::uint64_t at,
+                                                 std::span<const std::byte> bytes) {
+  if (where.code == ScaleCode::kNone || where.period == 0 || where.count == 0 ||
+      where.offset >= where.period || where.count > where.period - where.offset)
+    return std::nullopt;
+  // Run by run of scale bytes, skipping the bytes between.
+  std::uint64_t i = 0;
+  while (i < bytes.size()) {
+    const std::uint64_t in = (at + i) % where.period;
+    if (in < where.offset) {
+      i += where.offset - in;
+      continue;
+    }
+    if (in >= where.offset + where.count) {
+      i += where.period - in;
+      continue;
+    }
+    const std::uint64_t end =
+        std::min<std::uint64_t>(bytes.size(), i + (where.offset + where.count - in));
+    for (; i < end; ++i)
+      if (!DefinedScale(where.code, std::to_integer<std::uint8_t>(bytes[i]))) return i;
+  }
+  return std::nullopt;
+}
+
 }  // namespace llmp::format

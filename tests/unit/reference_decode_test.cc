@@ -399,6 +399,90 @@ TEST(ReferenceDecodeTest, Nvfp4LayoutsHoldTheSameValues) {
   EXPECT_EQ(ggml_nan[0], 0.0f);
 }
 
+// NVFP4's scales are UE4M3 and MX's E8M0 (format::ScaleCode): every layout
+// decodes a finite scale byte to E4M3's (or 2^(x - 127)) and every other
+// byte (UE4M3's 0x7F and sign-bit bytes, E8M0's 0xFF) to NaN, as the device
+// decoders do (decode_gpu_test's EdgeCodesDecodeAsTheReference) and the
+// importer refuses them (format::FirstUndefinedScale).
+TEST(ReferenceDecodeTest, UndefinedBlockScalesAreNanInEveryLayout) {
+  for (unsigned b = 0; b < 256; ++b) {
+    const auto byte = static_cast<std::uint8_t>(b);
+    EXPECT_EQ(std::isnan(ref::Ue4m3ToF32(byte)),
+              !format::DefinedScale(format::ScaleCode::kUe4m3, byte))
+        << b;
+    EXPECT_EQ(std::isnan(ref::E8m0ToF32(byte)),
+              !format::DefinedScale(format::ScaleCode::kE8m0, byte))
+        << b;
+    if (b < 0x7F) EXPECT_TRUE(SameBits(ref::Ue4m3ToF32(byte), ref::E4m3ToF32(byte))) << b;
+  }
+  constexpr std::array<std::uint8_t, 8> kScales = {0x00, 0x01, 0x38, 0x7E, 0x7F, 0x80, 0xB8, 0xFF};
+  constexpr std::uint64_t kK = 128;
+  constexpr std::uint64_t kN = 4;
+  constexpr std::uint64_t kBlocks = kK / 16;
+  const std::vector<std::byte> codes(kN * kK / 2, std::byte{0x22});  // 1.0 everywhere
+  std::vector<std::byte> scales(kN * kBlocks);
+  for (std::size_t i = 0; i < scales.size(); ++i)
+    scales[i] = std::byte{kScales[i % kScales.size()]};
+  std::vector<std::byte> interleaved;
+  std::vector<std::byte> atoms(128 * kBlocks);
+  std::vector<std::byte> ggml(kN * (kK / 64) * 36);
+  for (std::uint64_t r = 0; r < kN; ++r) {
+    interleaved.insert(interleaved.end(), codes.begin() + static_cast<std::ptrdiff_t>(r * kK / 2),
+                       codes.begin() + static_cast<std::ptrdiff_t>((r + 1) * kK / 2));
+    interleaved.insert(interleaved.end(), scales.begin() + static_cast<std::ptrdiff_t>(r * kBlocks),
+                       scales.begin() + static_cast<std::ptrdiff_t>((r + 1) * kBlocks));
+    for (std::uint64_t b = 0; b < kBlocks; ++b)
+      atoms[format::ScaleAtomOffset(r, b, kBlocks)] = scales[(r * kBlocks) + b];
+    for (std::uint64_t g = 0; g < kK / 64; ++g) {
+      std::byte* block = ggml.data() + (((r * (kK / 64)) + g) * 36);
+      for (std::uint64_t s = 0; s < 4; ++s) block[s] = scales[(r * kBlocks) + (g * 4) + s];
+      std::fill_n(block + 4, 32, std::byte{0x22});
+    }
+  }
+  struct Case {
+    Layout layout;
+    std::vector<ref::PartView> parts;
+  };
+  const std::vector<Case> cases = {
+      {Layout::kSplit, {{PartRole::kCodes, codes}, {PartRole::kBlockScales, scales}}},
+      {Layout::kRowInterleaved, {{PartRole::kData, interleaved}}},
+      {Layout::kScaleAtoms, {{PartRole::kCodes, codes}, {PartRole::kBlockScales, atoms}}},
+      {Layout::kGgmlNvfp4Blocks, {{PartRole::kData, ggml}}},
+  };
+  for (const Case& c : cases) {
+    SCOPED_TRACE(std::string(format::Info(c.layout).name));
+    const std::vector<float> got =
+        Decode(Matrix(Encoding::kNvfp4, c.layout, kK, kN), c.parts, 0, 0, kN);
+    for (std::uint64_t i = 0; i < got.size(); ++i) {
+      const auto s = std::to_integer<std::uint8_t>(scales[i / 16]);
+      if (s >= 0x7F) {
+        ASSERT_TRUE(std::isnan(got[i])) << i << " scale " << unsigned{s};
+      } else {
+        ASSERT_EQ(static_cast<double>(got[i]), E4m3(s)) << i << " scale " << unsigned{s};
+      }
+    }
+  }
+  // E8M0: 0xFF is NaN in MXFP4's split layout and in GGML's block_mxfp4.
+  const std::vector<std::byte> fp4(kK / 2, std::byte{0x22});
+  const std::array<std::byte, 4> e8m0 = {std::byte{0x00}, std::byte{0x7F}, std::byte{0xFE},
+                                         std::byte{0xFF}};
+  std::vector<std::byte> blocks;
+  for (std::uint64_t g = 0; g < kK / 32; ++g) {
+    blocks.push_back(e8m0[g]);
+    blocks.insert(blocks.end(), 16, std::byte{0x22});
+  }
+  const std::vector<ref::PartView> split = {{PartRole::kCodes, fp4},
+                                            {PartRole::kBlockScales, e8m0}};
+  const ref::PartView block_view{.role = PartRole::kData, .bytes = blocks};
+  for (const auto& got :
+       {Decode(Matrix(Encoding::kMxfp4, Layout::kSplit, kK, 1), split, 0, 0, 1),
+        Decode(Matrix(Encoding::kMxfp4, Layout::kGgmlBlocks, kK, 1), {&block_view, 1}, 0, 0, 1)}) {
+    for (std::uint64_t i = 0; i < kK; ++i) {
+      EXPECT_EQ(std::isnan(got[i]), i / 32 == 3) << i;
+    }
+  }
+}
+
 // MXFP4: GGML's block_mxfp4 and the split layout of the same values; and
 // GGML's dequantization for every scale but 0xFF.
 TEST(ReferenceDecodeTest, Mxfp4LayoutsHoldTheSameValues) {

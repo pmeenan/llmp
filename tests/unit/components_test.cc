@@ -22,6 +22,7 @@
 #include <map>
 #include <optional>
 #include <random>
+#include <set>
 #include <span>
 #include <string>
 #include <tuple>
@@ -42,6 +43,7 @@
 #include "kernels/reference/exec.h"
 #include "model/host_mask.h"
 #include "model/state_contract.h"
+#include "past_dependence.h"
 #include "planner/step_shape.h"
 #include "spec/mapping.h"
 #include "spec/mappings/gemma2.h"
@@ -2882,6 +2884,30 @@ TEST(ComponentsTest, EveryCatalogComponentHasAReferenceAndIsTested) {
       }
     }
   }
+}
+
+// A plan key holds each segment's past only through the components'
+// shape_parameters words (past_dependence.h): every catalog component,
+// emitted at the pasts each token case's read cells allow, emits the same
+// graph and step inputs wherever its words are the same.
+TEST(ComponentsTest, EmissionDependsOnPastOnlyThroughShapeParameters) {
+  std::size_t compared = 0;
+  for (const auto& recipe : test_catalog::CatalogTokenRecipes()) {
+    for (const auto& tc : recipe.cases) {
+      SCOPED_TRACE(std::format("{} v{} ({})", tc.ref.kind, recipe.version, tc.label));
+      auto in = MakeInstance(tc.ref, tc.stage, tc.site, 0, 1);
+      ASSERT_TRUE(in.has_value()) << in.error();
+      std::set<std::uint32_t> pasts = {0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 63, 64, 100};
+      for (const planner::Segment& s : tc.shape.segments) {
+        pasts.insert(s.past);
+        if (s.read_cells >= s.rows) pasts.insert(s.read_cells - s.rows);
+      }
+      const auto r = test_past::EmitAtPasts(*in, tc.shape, tc.formats, tc.cells, tc.inputs, pasts);
+      EXPECT_GT(r.built, 0U) << "no past built";
+      compared += r.compared;
+    }
+  }
+  EXPECT_GT(compared, 0U);
 }
 
 }  // namespace

@@ -482,7 +482,8 @@ class StepContext {
 
  private:
   ir::TensorId Input(InputKind kind, std::uint8_t segment, const format::TensorFormat& format,
-                     const CellKey& cells, std::uint64_t read, std::string_view name);
+                     const CellKey& cells, std::uint64_t read, std::string_view name,
+                     const ir::InputParams& fact = {});
   ir::Builder& b_;
   std::vector<SegmentRows> segments_;
   std::uint32_t rows_ = 0;

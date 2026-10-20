@@ -179,6 +179,12 @@ struct Capability {
   // Absent or unspecified facts cannot justify input-preparation sharing.
   // The module's variant identifies the concrete numerical definition.
   ir::ProductArithmetic (*product_arithmetic)(const CapabilityQuery&) = nullptr;
+  // Its output 0 holds source 0's rows' pitch (source 0's ne[0] elements a
+  // row) rather than its own ne[0]: a selected routing whose ids are a view
+  // of the whole sort (GGML's fused top-k). Readers that address its bytes
+  // (views, reshapes, permutes) and values the step returns or keeps then
+  // read a compact copy, which the planner makes.
+  bool pitched_output = false;
 };
 
 // An output's format in a capability query: the operand at this index

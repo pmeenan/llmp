@@ -53,6 +53,7 @@
 #include "ir/op.h"
 #include "kernels/reference/exec.h"
 #include "model/state_contract.h"
+#include "past_dependence.h"
 #include "planner/step_shape.h"
 #include "spec/mapping.h"
 #include "spec/mappings/dsv4.h"
@@ -525,6 +526,37 @@ TEST(ComponentsDsv4Test, FirstAndCachedCompressorAssembliesKeepTheirOwner) {
     for (const auto source : pool.sources()) check(source, check);
   }
   EXPECT_EQ(pools, 4U);  // main + indexer, each of two owners
+}
+
+// A compressor's emission depends on its owners' positions (blocks a
+// non-overlapping compressor completes, compressed cells read): its
+// shape_parameters words declare it, so pasts with the same words emit
+// alike and others apart (past_dependence.h).
+TEST(ComponentsDsv4Test, CompressorPositionDependenceIsInItsPlanKeyWords) {
+  std::set<std::uint32_t> pasts;
+  for (std::uint32_t p = 0; p <= 13; ++p) pasts.insert(p);
+  // HCA: ten rows complete one block of eight, or two from a past of six.
+  auto hca = MakeInstance(Mqa("ring", 8), kFacts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(hca) << (hca ? "" : hca.error());
+  const std::array<std::uint64_t, 4> hca_cells{16, 16, 8, 8};
+  const auto blocks = test_past::EmitAtPasts(*hca, {.segments = {Seg(0, 10, 0, 16, 10)}},
+                                             MqaFormats(Encoding::kF32, 1), hca_cells, {}, pasts);
+  EXPECT_GT(blocks.compared, 0U);
+  EXPECT_GT(blocks.distinct, 1U);  // the dependence is real, and declared
+  // CSA (overlapping, with its indexer): one block per four rows anywhere.
+  auto csa = MakeInstance(
+      Mqa("ring", 4,
+          {P("overlap", B(true)), P("indexer", B(true)), P("indexer_heads", I(kIndexHeads)),
+           P("index_dim", I(kIndexDim)), P("top_k", I(3))}),
+      kFacts, Site::kLayer, 2, 18);
+  ASSERT_TRUE(csa) << (csa ? "" : csa.error());
+  const std::array<std::uint64_t, 7> csa_cells{16, 32, 8, 8, 32, 8, 8};
+  for (const std::uint32_t rows : {1U, 3U}) {
+    SCOPED_TRACE(rows);
+    const auto r = test_past::EmitAtPasts(*csa, {.segments = {Seg(0, rows, 0, 16, rows)}},
+                                          MqaFormats(Encoding::kF32, 2), csa_cells, {}, pasts);
+    EXPECT_GT(r.compared, 0U);
+  }
 }
 
 TEST(ComponentsDsv4Test, CompressedSparseAttentionMatchesItsReference) {

@@ -101,6 +101,7 @@ std::string CapabilityText(const Capability& c) {
   if (c.fusion_needs_measurement) text += "; automatic fusion requires measurement";
   if (c.rung_for) text += "; concrete operand rung";
   if (c.product_arithmetic) text += "; authenticated product arithmetic recipe";
+  if (c.pitched_output) text += "; output 0 at source 0's row pitch";
   if (c.needs_tuning) {
     text += "; needs tuning";
   }

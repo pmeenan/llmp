@@ -28,6 +28,12 @@ using format::PartRole;
 // products read the scale atoms today (NVFP4's W4A4 grouped GEMM and the
 // format ladder's atom decoders).
 constexpr std::array kEncodings = {Encoding::kNvfp4, Encoding::kMxfp8, Encoding::kMxfp4};
+// The encodings a row-gathered table is relaid out to row_interleaved for:
+// those a device kernel reads in that layout (NVFP4's llmp.nvfp4.get_rows
+// and the format ladder's nvfp4.row_interleaved decoder). Another joins
+// with its readers; until then its table stays split, which its row
+// lookups read.
+constexpr std::array kRowTableEncodings = {Encoding::kNvfp4};
 constexpr std::uint64_t kMaxBlocks = 256;  // PartRoutePlan::ScaleAtoms
 
 std::unexpected<Error> Bad(std::string_view why) {
@@ -290,9 +296,10 @@ std::expected<bool, Error> RelayoutRowTable(TensorAssembly& table) {
   const PartAssembly* scales = PartOf(table, PartRole::kBlockScales);
   const PartAssembly* tensor_scale = PartOf(table, PartRole::kTensorScale);
   if (f.layout != Layout::kSplit || f.shape.rank != 2 || f.stacked != 1 ||
-      !std::ranges::contains(kEncodings, f.encoding) || table.permutation || table.relayout_from ||
-      codes == nullptr || scales == nullptr || codes->kind != PartAssemblyKind::kRows ||
-      scales->kind != PartAssemblyKind::kRows || codes->sources.size() != scales->sources.size() ||
+      !std::ranges::contains(kRowTableEncodings, f.encoding) || table.permutation ||
+      table.relayout_from || codes == nullptr || scales == nullptr ||
+      codes->kind != PartAssemblyKind::kRows || scales->kind != PartAssemblyKind::kRows ||
+      codes->sources.size() != scales->sources.size() ||
       table.parts.size() != (tensor_scale != nullptr ? 3U : 2U) ||
       (tensor_scale != nullptr && tensor_scale->kind != PartAssemblyKind::kSharedTensorScale))
     return false;

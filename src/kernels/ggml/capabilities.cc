@@ -2194,6 +2194,12 @@ constexpr ex::Capability Cap(ir::OpKey op, std::span<const Rule> rules,
   return result;
 }
 
+// Its output 0 at source 0's row pitch (ex::Capability::pitched_output).
+constexpr ex::Capability Pitched(ex::Capability cap) {
+  cap.pitched_output = true;
+  return cap;
+}
+
 constexpr ex::Capability NativeBlockScaled(ex::Capability cap, std::uint32_t features) {
   cap.rung = ex::Rung::kNative;
   cap.device.needs = features;
@@ -2382,7 +2388,7 @@ const std::array kEntries = {
     Entry{kDsv4RouteName, Cap(P(Op::kRoute), kSelectedRouteRules, &AcceptsSelectedRoute, true),
           "; typed selected routing of 1..256 experts, used 1..min(experts,32): hash rows <=8, "
           "biased rows <=min(16,native vector bound), under the supplied arithmetic policy"},
-    Entry{kGemmaRouteName, Cap(P(Op::kRoute), kRouteLogits, &AcceptsGemmaRoute, true),
+    Entry{kGemmaRouteName, Pitched(Cap(P(Op::kRoute), kRouteLogits, &AcceptsGemmaRoute, true)),
           "; compiled expert counts, valid top-k, scale1 and int-bounded row offsets"},
     Entry{kGemmaReduceName, Cap(P(Op::kExpertReduce), kScaledReduce, &AcceptsGemmaReduce, true),
           "; F32 expert slots, each scale gathered, within the 2-D grid and uint64 indexing"},

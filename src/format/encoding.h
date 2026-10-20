@@ -199,6 +199,33 @@ bool Lossless(Encoding from, Encoding to);
 std::span<const Encoding> StateEncodings();
 bool IsStateEncoding(Encoding encoding);
 
+// A block-scaled encoding's scale byte. NVFP4's is UE4M3 (NVIDIA's PTX
+// `.ue4m3`, CUTLASS's float_ue4m3_t): E4M3's exponent and mantissa, bias 7,
+// without a sign bit; 0x00-0x7E are its finite values (E4M3's for those
+// bytes) and 0x7F its NaN. MXFP4's and MXFP8's is E8M0 (OCP Microscaling):
+// 0x00-0xFE are 2^(x - 127) and 0xFF NaN. Only those finite bytes mean one
+// value to every reader: GGML's CPU reference ignores bit 7 and reads 0x7F
+// as 0, its CUDA dequantizers honour bit 7 and read 0x7F and 0xFF as 0, and
+// tensor cores take the raw byte. So llmp's own decoders (the CPU reference
+// and the format ladder's device decoders, in every layout) read every
+// other byte as NaN, and the importer refuses a checkpoint that holds one
+// (docs/engine-components.md, "Block scales").
+enum class ScaleCode : std::uint8_t { kNone, kUe4m3, kE8m0 };
+// The scale code of `encoding`'s block scales (kNone: it has none of these).
+ScaleCode ScaleCodeOf(Encoding encoding);
+// Whether `byte` is a finite scale of `code` (every byte for kNone).
+constexpr bool DefinedScale(ScaleCode code, std::uint8_t byte) {
+  switch (code) {
+    case ScaleCode::kUe4m3:
+      return byte < 0x7F;
+    case ScaleCode::kE8m0:
+      return byte != 0xFF;
+    case ScaleCode::kNone:
+      return true;
+  }
+  return true;
+}
+
 }  // namespace llmp::format
 
 #endif  // LLMP_FORMAT_ENCODING_H_

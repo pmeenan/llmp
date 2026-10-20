@@ -46,6 +46,38 @@ Outputs Decompose(Builder& b, OpKey key, const ParamBytes& params,
 // cache), if any.
 std::optional<std::size_t> AliasedSource(OpKey key, std::size_t output);
 
+// Calls `f` with the index of each source a node writes in place: a cache
+// store's cache (source 0) and the source of each aliased output
+// (AliasedSource). The one definition of a node's write set; every pass
+// that orders reads against writes reads it here.
+template <typename F>
+void ForEachWrittenSource(const Node& node, F&& f) {
+  if (node.key == Primitive(Op::kCacheStore)) {
+    if (node.nsrc > 0 && node.src[0].valid()) f(std::size_t{0});
+    return;
+  }
+  if (node.key.op != Op::kFused) return;
+  for (std::size_t i = 0; i < node.nout; ++i) {
+    if (const auto alias = AliasedSource(node.key, i);
+        alias && *alias < node.nsrc && node.src.at(*alias).valid()) {
+      f(*alias);
+    }
+  }
+}
+
+// Calls `f` with each root `node` of `graph` writes in place.
+template <typename F>
+void ForEachWrite(const Graph& graph, const Node& node, F&& f) {
+  ForEachWrittenSource(node, [&](std::size_t s) { f(graph.root(node.src.at(s))); });
+}
+
+// Whether `node` writes anything in place.
+inline bool WritesInPlace(const Node& node) {
+  bool any = false;
+  ForEachWrittenSource(node, [&](std::size_t) { any = true; });
+  return any;
+}
+
 // `graph` with every fused node, and with `composites` every composite op,
 // replaced by its decomposition. `map`, when given, receives the new id of
 // each of graph's tensors (a decomposed node's outputs map to its

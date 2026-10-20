@@ -13,7 +13,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -398,6 +400,81 @@ TEST(FormatTest, StateEncodingsAreGgmlsAttentionTypes) {
   }
   EXPECT_TRUE(format::Lossless(Encoding::kBF16, Encoding::kF32));
   EXPECT_FALSE(format::Lossless(Encoding::kBF16, Encoding::kF16));
+}
+
+// Block scales (format::ScaleCode): NVFP4's UE4M3 is finite below 0x7F,
+// MX's E8M0 below 0xFF; each layout says where its scale bytes are, and
+// the scan finds the first undefined one wherever a stream's piece starts.
+TEST(FormatTest, BlockScaleBytesAndTheirDomain) {
+  using format::ScaleCode;
+  EXPECT_EQ(format::ScaleCodeOf(Encoding::kNvfp4), ScaleCode::kUe4m3);
+  EXPECT_EQ(format::ScaleCodeOf(Encoding::kMxfp4), ScaleCode::kE8m0);
+  EXPECT_EQ(format::ScaleCodeOf(Encoding::kMxfp8), ScaleCode::kE8m0);
+  EXPECT_EQ(format::ScaleCodeOf(Encoding::kQ8_0), ScaleCode::kNone);
+  for (unsigned b = 0; b < 256; ++b) {
+    const auto byte = static_cast<std::uint8_t>(b);
+    EXPECT_EQ(format::DefinedScale(ScaleCode::kUe4m3, byte), b <= 0x7E) << b;
+    EXPECT_EQ(format::DefinedScale(ScaleCode::kE8m0, byte), b != 0xFF) << b;
+    EXPECT_TRUE(format::DefinedScale(ScaleCode::kNone, byte));
+  }
+  const auto at = [](Encoding e, Layout l, std::uint64_t k, std::uint64_t n) {
+    return TensorFormat{.encoding = e, .layout = l, .shape = {.ne = {k, n, 1, 1}, .rank = 2}};
+  };
+  const auto split =
+      format::ScaleBytesOf(at(Encoding::kNvfp4, Layout::kSplit, 64, 2), PartRole::kBlockScales);
+  EXPECT_EQ(split.code, ScaleCode::kUe4m3);
+  EXPECT_EQ(split.period, 1U);
+  EXPECT_EQ(
+      format::ScaleBytesOf(at(Encoding::kNvfp4, Layout::kSplit, 64, 2), PartRole::kCodes).code,
+      ScaleCode::kNone);
+  EXPECT_EQ(format::ScaleBytesOf(at(Encoding::kMxfp8, Layout::kScaleAtoms, 128, 128),
+                                 PartRole::kBlockScales)
+                .code,
+            ScaleCode::kE8m0);
+  const auto rows =
+      format::ScaleBytesOf(at(Encoding::kNvfp4, Layout::kRowInterleaved, 64, 2), PartRole::kData);
+  EXPECT_EQ(rows.period, 36U);  // 32 code bytes, then 4 scales
+  EXPECT_EQ(rows.offset, 32U);
+  EXPECT_EQ(rows.count, 4U);
+  const auto nvfp4_blocks =
+      format::ScaleBytesOf(at(Encoding::kNvfp4, Layout::kGgmlNvfp4Blocks, 64, 2), PartRole::kData);
+  EXPECT_EQ(nvfp4_blocks.period, 36U);
+  EXPECT_EQ(nvfp4_blocks.offset, 0U);
+  EXPECT_EQ(nvfp4_blocks.count, 4U);
+  const auto mxfp4_blocks =
+      format::ScaleBytesOf(at(Encoding::kMxfp4, Layout::kGgmlBlocks, 64, 2), PartRole::kData);
+  EXPECT_EQ(mxfp4_blocks.code, ScaleCode::kE8m0);
+  EXPECT_EQ(mxfp4_blocks.period, 17U);
+  EXPECT_EQ(mxfp4_blocks.count, 1U);
+  EXPECT_EQ(
+      format::ScaleBytesOf(at(Encoding::kQ8_0, Layout::kGgmlBlocks, 64, 2), PartRole::kData).code,
+      ScaleCode::kNone);
+
+  // Row-interleaved rows of 36 bytes: codes (any byte) then scales.
+  std::vector<std::byte> data(3 * 36, std::byte{0xFF});
+  for (std::size_t r = 0; r < 3; ++r)
+    for (std::size_t s = 32; s < 36; ++s) data[(r * 36) + s] = std::byte{0x38};
+  EXPECT_FALSE(format::FirstUndefinedScale(rows, 0, data));
+  data[(2 * 36) + 33] = std::byte{0x80};
+  EXPECT_EQ(format::FirstUndefinedScale(rows, 0, data), std::uint64_t{(2 * 36) + 33});
+  // A piece that starts mid-row, as a stream hands it over.
+  const auto piece = std::span(data).subspan(50);
+  EXPECT_EQ(format::FirstUndefinedScale(rows, 50, piece), std::uint64_t{(2 * 36) + 33 - 50});
+  EXPECT_FALSE(format::FirstUndefinedScale(rows, 50, piece.first(20)));
+  // GGML blocks: the leading scales of each 36 bytes.
+  std::vector<std::byte> blocks(2 * 36, std::byte{0xFF});
+  for (std::size_t b = 0; b < 2; ++b)
+    for (std::size_t s = 0; s < 4; ++s) blocks[(b * 36) + s] = std::byte{0x7E};
+  EXPECT_FALSE(format::FirstUndefinedScale(nvfp4_blocks, 0, blocks));
+  blocks[36 + 3] = std::byte{0x7F};
+  EXPECT_EQ(format::FirstUndefinedScale(nvfp4_blocks, 0, blocks), 36U + 3U);
+  EXPECT_EQ(format::FirstUndefinedScale(nvfp4_blocks, 5, std::span(blocks).subspan(5)),
+            36U + 3U - 5U);
+  // A scales part: every byte.
+  const std::array<std::byte, 3> e8m0 = {std::byte{0x00}, std::byte{0xFE}, std::byte{0xFF}};
+  const auto mx =
+      format::ScaleBytesOf(at(Encoding::kMxfp8, Layout::kSplit, 64, 1), PartRole::kBlockScales);
+  EXPECT_EQ(format::FirstUndefinedScale(mx, 7, e8m0), 2U);
 }
 
 }  // namespace

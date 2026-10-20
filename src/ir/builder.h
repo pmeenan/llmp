@@ -103,7 +103,10 @@ class Builder {
                std::span<const TensorDesc> requested = {}, std::string_view name = {});
 
   // ---- leaves
-  TensorId Input(const format::TensorFormat& format, std::string_view name = {});
+  // `fact`: what the input holds beyond its values (op.h InputParams),
+  // which passes read in place of its name.
+  TensorId Input(const format::TensorFormat& format, std::string_view name = {},
+                 const InputParams& fact = {});
   // A plan constant: its values are bound once, outside the graph. Given,
   // `content` (the values' bytes, as the binder holds them) is recorded by
   // its SHA-256 in the leaf's parameters, so two constants of one shape but

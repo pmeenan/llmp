@@ -439,7 +439,7 @@ __global__ void Nvfp4RowsKernel(const std::uint8_t* __restrict__ table, std::int
   const std::uint8_t byte = row[j / 2];
   const std::uint8_t code = (j % 2 == 0) ? (byte & 0x0f) : (byte >> 4);
   const std::uint8_t scale_code = row[values / 2 + j / 16];
-  const float scale = precision::E4m3(scale_code);
+  const float scale = precision::Ue4m3(scale_code);
   *dst = precision::E2m1(code) * scale * global[0];
 }
 

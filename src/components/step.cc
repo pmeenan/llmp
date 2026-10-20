@@ -1038,7 +1038,8 @@ void StepContext::SetComponent(std::uint16_t component) { component_ = component
 
 ir::TensorId StepContext::Input(InputKind kind, std::uint8_t segment,
                                 const format::TensorFormat& format, const CellKey& cells,
-                                std::uint64_t read, std::string_view name) {
+                                std::uint64_t read, std::string_view name,
+                                const ir::InputParams& fact) {
   // Cached and newly emitted framework inputs must leave the caller's
   // component and row ownership identical. Otherwise a first lazy input
   // silently makes the remainder of an owner's fragment joined.
@@ -1049,7 +1050,7 @@ ir::TensorId StepContext::Input(InputKind kind, std::uint8_t segment,
   } else {
     b_.SetOwner(segment);
   }
-  const ir::TensorId id = b_.Input(format, name);
+  const ir::TensorId id = b_.Input(format, name, fact);
   b_.SetContext(context);
   inputs_.push_back({.tensor = id, .kind = kind, .segment = segment, .cells = cells, .read = read});
   return id;
@@ -1207,7 +1208,8 @@ ir::TensorId StepContext::Positions(std::uint8_t sections) {
   const ir::TensorId id =
       Input(InputKind::kPositions, ir::kJoinedSegment,
             ir::Dense(format::Encoding::kI32, ir::ShapeOf({std::uint64_t{sections} * rows_})), {},
-            0, std::format("positions.{}", sections));
+            0, std::format("positions.{}", sections),
+            {.fact = ir::InputFact::kPositions, .sections = sections});
   inputs_.back().sections = sections;
   sectioned_.emplace(sections, id);
   return id;

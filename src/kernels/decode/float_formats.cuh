@@ -27,6 +27,13 @@ __device__ __forceinline__ float E4m3(std::uint32_t bits) {
   return (bits & 0x80U) != 0 ? -v : v;
 }
 
+// NVFP4's block scale, UE4M3 (format::ScaleCode::kUe4m3): E4M3's value for
+// 0x00-0x7E, NaN for 0x7F and every byte with bit 7 set (no sign), as the
+// CPU reference (kernels/reference/decode.h Ue4m3ToF32).
+__device__ __forceinline__ float Ue4m3(std::uint32_t bits) {
+  return (bits & 0xFFU) >= 0x7FU ? Nan() : E4m3(bits);
+}
+
 __device__ __forceinline__ float E8m0(std::uint32_t bits) {
   if (bits == 0xFFU) {
     return Nan();

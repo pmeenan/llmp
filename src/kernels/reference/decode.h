@@ -124,6 +124,10 @@ std::uint16_t F32ToBf16(float value);  // round to nearest even; NaN stays NaN
 float E4m3ToF32(std::uint8_t bits);
 float E5m2ToF32(std::uint8_t bits);
 float E8m0ToF32(std::uint8_t bits);
+// NVFP4's block scale (format::ScaleCode::kUe4m3): E4M3's value for
+// 0x00-0x7E, NaN for 0x7F and for every byte with bit 7 set (UE4M3 has no
+// sign); the device decoders read it alike.
+float Ue4m3ToF32(std::uint8_t bits);
 float E2m1ToF32(std::uint8_t code);  // the low four bits
 
 }  // namespace llmp::kernels::reference

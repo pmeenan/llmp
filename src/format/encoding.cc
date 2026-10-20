@@ -350,4 +350,16 @@ bool IsStateEncoding(Encoding encoding) {
   return std::ranges::find(kStateEncodings, encoding) != kStateEncodings.end();
 }
 
+ScaleCode ScaleCodeOf(Encoding encoding) {
+  switch (encoding) {
+    case Encoding::kNvfp4:
+      return ScaleCode::kUe4m3;
+    case Encoding::kMxfp4:
+    case Encoding::kMxfp8:
+      return ScaleCode::kE8m0;
+    default:
+      return ScaleCode::kNone;
+  }
+}
+
 }  // namespace llmp::format

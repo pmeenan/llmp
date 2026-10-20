@@ -25,6 +25,7 @@
 #include "base/json.h"
 #include "components/step.h"
 #include "format/layout.h"
+#include "format/tensor_format.h"
 #include "import/indexed_parts.h"
 #include "import/route.h"
 #include "import/source_mapping.h"
@@ -166,7 +167,9 @@ bool IsDrafter(const spec::ModelSpec& model) {
          model.stages[1].artifact == 1;
 }
 struct Copy {
-  std::uint32_t file = 0, tensor = 0;
+  // `source_tensor`: the checkpoint's tensor it streams, whose block scales
+  // are checked as they stream (format::FirstUndefinedScale).
+  std::uint32_t file = 0, tensor = 0, source_tensor = 0;
   // `span`: the output range its writes lie in (an interleaved lane's rows,
   // beside its sibling lanes; otherwise its output bytes).
   std::uint64_t source = 0, destination = 0, bytes = 0, output_bytes = 0, span = 0;
@@ -305,7 +308,7 @@ std::expected<void, Error> Transfers(const PublicationView& plan, Layout& layout
       return Bad("part publication route destination bounds", Rule::kConfig);
     auto cursor = route.Start(layout.workspace);
     if (!cursor) return std::unexpected(cursor.error());
-    layout.copies.push_back({extent.file, ti, extent.offset, destination, extent.bytes,
+    layout.copies.push_back({extent.file, ti, si, extent.offset, destination, extent.bytes,
                              route.output_bytes(), route.span(), std::move(*cursor)});
     return {};
   };
@@ -806,6 +809,18 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
             if (first < last) {
               const auto piece = bytes.subspan(static_cast<std::size_t>(first - at),
                                                static_cast<std::size_t>(last - first));
+              // A scale only some readers agree on (format::ScaleCode):
+              // NVFP4's above 0x7E, an E8M0 0xFF.
+              const Tensor& from = source.tensors[c.source_tensor];
+              if (const auto bad = format::FirstUndefinedScale(
+                      format::ScaleBytesOf(from.format, from.part), first - c.source, piece))
+                return std::unexpected(
+                    Error{.rule = Rule::kQuantization,
+                          .reason = "a block scale is NaN or outside its code (UE4M3 "
+                                    "0x00-0x7E, E8M0 0x00-0xFE), which readers decode apart",
+                          .file = f,
+                          .kind = ItemKind::kByte,
+                          .item = first + *bad});
               if (!c.route) return Bad("copy route lacks its checked cursor");
               base::Check(!active_cursor || *active_cursor == i,
                           "only one publication cursor may borrow the shared workspace");

@@ -939,6 +939,23 @@ struct MoeExpertsParams {
   std::uint32_t hidden = 0;  // F
 };
 
+// What a step input (a kInput leaf of Role::kInput) holds where a pass
+// reads it as more than its values: its parameters, which the graph's
+// digest includes (names it does not). kNone: nothing beyond its format.
+enum class InputFact : std::uint8_t {
+  kNone,
+  // I32 [sections · rows]: each row's position, `sections` copies one
+  // after another (a multi-section rotation's positions).
+  kPositions,
+};
+inline constexpr InputFact kLastInputFact = InputFact::kPositions;
+struct InputParams {
+  InputFact fact = InputFact::kNone;
+  std::uint8_t sections = 0;
+  std::array<std::uint8_t, 2> reserved{};
+  bool operator==(const InputParams&) const = default;
+};
+
 template <typename P>
 inline constexpr bool kIsParams = std::is_trivially_copyable_v<P> && sizeof(P) <= kMaxParamBytes;
 
@@ -961,7 +978,7 @@ static_assert(kIsParams<NormParams> && kIsParams<RopeParams> && kIsParams<MaskPa
               kIsParams<CompressorParams> && kIsParams<SinkhornPreParams> &&
               kIsParams<SpatialNormParams> && kIsParams<RopeSectionsParams> &&
               kIsParams<MaskPackParams> && kIsParams<QkAttentionParams> &&
-              kIsParams<SplitModulateParams>);
+              kIsParams<SplitModulateParams> && kIsParams<InputParams>);
 static_assert(sizeof(CompressorParams) == 8 && sizeof(ScaledUnaryParams) == 8 &&
               sizeof(HcFoldParams) == 12 && sizeof(GdnConvParams) == 16 &&
               sizeof(GdnStepParams) == 4 && sizeof(BlockPoolParams) == 8 + sizeof(RopeParams) &&
@@ -984,6 +1001,7 @@ static_assert(sizeof(SampleParams) == 4 + (4 * 4));
 static_assert(sizeof(CollectiveParams) == (2 * 4) + 4);
 static_assert(sizeof(NormRopeParams) == 4 + sizeof(RopeParams));
 static_assert(sizeof(OwnerAttnParams) == sizeof(AttnParams) + (3 * 4));
+static_assert(sizeof(InputParams) == 4);
 
 }  // namespace llmp::ir
 

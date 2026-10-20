@@ -97,23 +97,6 @@ bool ElidesF32(const MatchContext& c, const Match& m) {
   return true;
 }
 
-// Calls `f` with each root `n` writes in place: a cache store's target, a
-// fused kind's aliased outputs' (ir/decompose.h AliasedSource).
-template <typename F>
-void ForEachWrite(const ir::Graph& g, const ir::Node& n, F&& f) {
-  if (n.key == Prim(Op::kCacheStore)) {
-    f(g.root(n.src[0]));
-    return;
-  }
-  if (n.key.op == Op::kFused) {
-    for (std::size_t i = 0; i < n.nout; ++i) {
-      if (const auto alias = ir::AliasedSource(n.key, i); alias && n.src.at(*alias).valid()) {
-        f(g.root(n.src.at(*alias)));
-      }
-    }
-  }
-}
-
 // Whether the rewrite keeps every read of state ordered against every
 // write to it. Its replacement reads what a match node read at the match's
 // last node (prepared_inputs: the input at its first product), so no other
@@ -132,14 +115,14 @@ bool KeepsOrder(const MatchContext& c, const Match& m) {
       }
     }
     std::vector<TensorId> writes;
-    ForEachWrite(g, node, [&](TensorId r) { writes.push_back(r); });
+    ir::ForEachWrite(g, node, [&](TensorId r) { writes.push_back(r); });
     for (std::uint32_t k = m.nodes[i].v + 1; k < last.v; ++k) {
       if (std::ranges::contains(m.nodes, NodeId{k})) {
         continue;
       }
       const ir::Node& other = g.node(NodeId{k});
       bool hazard = false;
-      ForEachWrite(g, other, [&](TensorId r) {
+      ir::ForEachWrite(g, other, [&](TensorId r) {
         hazard = hazard || std::ranges::contains(reads, r) || std::ranges::contains(writes, r);
       });
       for (const TensorId s : other.sources()) {
@@ -2723,13 +2706,25 @@ std::optional<Match> BatchAt(const Pattern& pattern, const MatchContext& context
 
 namespace {
 
-// One round of the table's rewrite patterns over `graph`.
+// A pattern's match at an anchor that a round leaves out.
+struct Excluded {
+  const Pattern* pattern = nullptr;
+  NodeId anchor{};
+  bool operator==(const Excluded&) const = default;
+};
+
+// One round of the table's rewrite patterns over `graph`, but the
+// `excluded` matches. When a rewrite (or a copy reading what a rewrite
+// made) fails, `failed` receives that match.
 std::expected<Rewritten, ir::VerifyError> ApplyRound(
     const ir::Graph& graph, const SelectionView& view, const StepShape* shape,
-    const StateSpans& state_spans, std::uint8_t round, std::span<const NodeId> preserve) {
+    const StateSpans& state_spans, std::uint8_t round, std::span<const NodeId> preserve,
+    std::span<const Pattern> table, std::span<const Excluded> excluded,
+    std::optional<Excluded>& failed) {
   MatchContext context(graph, view, shape, state_spans);
   struct Found {
     const Pattern* pattern = nullptr;
+    NodeId anchor{};
     Match match;
     std::vector<NumericalProof> numerical{};
   };
@@ -2742,7 +2737,7 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
   };
   // The table's order is priority: each pattern over the whole graph, in
   // node order, before the next.
-  for (const Pattern& p : kPatterns) {
+  for (const Pattern& p : table) {
     if (p.kind != PatternKind::kRewrite || p.round != round || Disabled(view.policy(), p.name)) {
       continue;
     }
@@ -2752,7 +2747,7 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
       // Round 0 anchors at primitives; a later round at another's results
       // too.
       if (context.taken(id) || (round == 0 && node.key.fused != FusedKind::kNone) ||
-          !Anchored(p, node.key.op)) {
+          !Anchored(p, node.key.op) || std::ranges::contains(excluded, Excluded{&p, id})) {
         continue;
       }
       auto m = p.match(context, id);
@@ -2844,7 +2839,8 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
       }
       if (m->unqualified_numerical) missing(*m->unqualified_numerical, node);
       context.Take(m->nodes);
-      found.push_back({.pattern = &p, .match = std::move(*m), .numerical = std::move(numerical)});
+      found.push_back(
+          {.pattern = &p, .anchor = id, .match = std::move(*m), .numerical = std::move(numerical)});
     }
   }
   // Recorded in node order (of each match's first node).
@@ -2896,6 +2892,15 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
     if (!b.ok()) {
       ir::VerifyError e = *b.error();
       e.node = i;
+      // The match that failed: this node's, or for a copied node the
+      // match that made what it reads (a view over a changed layout).
+      std::size_t blamed = f;
+      for (const TensorId src : graph.nodes()[i].sources()) {
+        if (blamed == ~std::size_t{0} && src.valid()) blamed = at[graph.producer(src).v].first;
+      }
+      if (blamed != ~std::size_t{0}) {
+        failed = Excluded{found[blamed].pattern, found[blamed].anchor};
+      }
       return std::unexpected(std::move(e));
     }
     from.resize(b.node_count(), NodeId{i});
@@ -2917,6 +2922,29 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
                    .missing_numerical = std::move(missing_numerical)};
 }
 
+// ApplyRound until no rewrite fails: each failed match is dropped and the
+// round applied again without it (finitely often: each retry excludes
+// another of the round's matches). An error no match made is returned.
+std::expected<Rewritten, ir::VerifyError> ApplyRoundDropping(
+    const ir::Graph& graph, const SelectionView& view, const StepShape* shape,
+    const StateSpans& state_spans, std::uint8_t round, std::span<const NodeId> preserve,
+    std::span<const Pattern> table) {
+  std::vector<Excluded> excluded;
+  std::vector<DroppedRewrite> dropped;
+  for (;;) {
+    std::optional<Excluded> failed;
+    auto r = ApplyRound(graph, view, shape, state_spans, round, preserve, table, excluded, failed);
+    if (r) {
+      r->dropped = std::move(dropped);
+      return r;
+    }
+    if (!failed || std::ranges::contains(excluded, *failed)) return r;
+    excluded.push_back(*failed);
+    dropped.push_back(
+        {.pattern = failed->pattern->name, .anchor = failed->anchor, .detail = r.error().detail});
+  }
+}
+
 }  // namespace
 
 std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
@@ -2924,11 +2952,17 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
                                                         const StepShape* shape,
                                                         StateSpans state_spans,
                                                         std::span<const NodeId> preserve) {
-  auto first = ApplyRound(graph, view, shape, state_spans, 0, preserve);
+  return ApplyPatternTable(kPatterns, graph, view, shape, state_spans, preserve);
+}
+
+std::expected<Rewritten, ir::VerifyError> ApplyPatternTable(
+    std::span<const Pattern> table, const ir::Graph& graph, const SelectionView& view,
+    const StepShape* shape, StateSpans state_spans, std::span<const NodeId> preserve) {
+  auto first = ApplyRoundDropping(graph, view, shape, state_spans, 0, preserve, table);
   if (!first) {
     return first;
   }
-  const bool later = std::ranges::any_of(kPatterns, [&](const Pattern& p) {
+  const bool later = std::ranges::any_of(table, [&](const Pattern& p) {
     return p.kind == PatternKind::kRewrite && p.round == 1 && !Disabled(view.policy(), p.name);
   });
   if (!later) {
@@ -2940,7 +2974,8 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
   for (std::uint32_t i = 0; i < first->from.size(); ++i) {
     if (std::ranges::contains(preserve, first->from[i])) next_preserve.push_back(NodeId{i});
   }
-  auto second = ApplyRound(first->graph, next_view, shape, state_spans, 1, next_preserve);
+  auto second =
+      ApplyRoundDropping(first->graph, next_view, shape, state_spans, 1, next_preserve, table);
   if (!second) {
     return second;
   }
@@ -2951,7 +2986,13 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
                 .applied = {},
                 .from = {},
                 .tensors = {},
-                .missing_numerical = std::move(first->missing_numerical)};
+                .missing_numerical = std::move(first->missing_numerical),
+                .dropped = std::move(first->dropped)};
+  // Round 1's anchors as the primitive nodes they stood for.
+  for (auto& d : second->dropped) {
+    d.anchor = first->from.at(d.anchor.v);
+    out.dropped.push_back(std::move(d));
+  }
   for (const auto& missing : second->missing_numerical)
     if (!std::ranges::contains(out.missing_numerical, missing))
       out.missing_numerical.push_back(missing);

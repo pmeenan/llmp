@@ -46,6 +46,18 @@ The entries below record each change; the record of the milestone is
   hf_quant_config.json beside an EXL3 or MLX checkpoint; a pipeline file that
   cannot be inspected; and unconsumed keys in a GGUF's own architecture
   namespace, now derived from the mapping rather than a hand-kept list.
+- Planner and kernel correctness from the M3.6 review: a fusion whose
+  emission fails falls back to primitives instead of failing the step;
+  QSA's four-section positions are a typed, digested input fact rather
+  than a name; every write-set check derives from one definition (the
+  mean-pool store's was mis-indexed); pitched routing ids come from a
+  declared capability fact; a catalog test proves components declare
+  position-dependent emission in their plan-key words; MXFP8 and MXFP4 row
+  tables are no longer relaid out to a layout no kernel reads. NVFP4 block
+  scales are read as UE4M3 and MX scales as E8M0 by every llmpalooza
+  decoder, and `llmp import` refuses a checkpoint whose block scales are
+  NaN or outside their code (bytes GGML's readers and tensor cores decode
+  differently).
 - Unpin runtime numerical qualifications, planner policies, kernel capability
   predicates, on-chip decode formats and importer normalizers from specific
   checkpoint receipts and model dimensions (D-123, R14–R19): derive fusion and

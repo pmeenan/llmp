@@ -381,6 +381,16 @@ struct MissingNumericalQualification {
   bool operator==(const MissingNumericalQualification&) const = default;
 };
 
+// A match whose rewrite the builder refused (an emission's shape or format
+// rule): dropped, so its nodes stay primitive, and the round retried
+// without it. `anchor` is the node the pattern matched at, of the graph its
+// round rewrote (composed onto the primitive graph by Plan).
+struct DroppedRewrite {
+  std::string_view pattern{};
+  ir::NodeId anchor{};
+  std::string detail{};
+};
+
 struct Rewritten {
   ir::Graph graph;
   std::vector<Applied> applied;
@@ -391,15 +401,25 @@ struct Rewritten {
   // intermediate).
   std::vector<ir::TensorId> tensors;
   std::vector<MissingNumericalQualification> missing_numerical{};
+  std::vector<DroppedRewrite> dropped{};
 };
 
 // The enabled rewrite patterns applied over `graph` (see the header), for
-// a step of `shape` where it is given.
+// a step of `shape` where it is given. A match whose rewrite fails is
+// dropped (Rewritten::dropped) and its round applied again without it, so
+// a bad fusion leaves its nodes to the primitives instead of failing the
+// step; an error no match made fails.
 std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
                                                         const SelectionView& view,
                                                         const StepShape* shape = nullptr,
                                                         StateSpans state_spans = {},
                                                         std::span<const ir::NodeId> preserve = {});
+// ApplyPatterns with `table`'s rewrites in place of the built-in table's
+// (a test's own patterns).
+std::expected<Rewritten, ir::VerifyError> ApplyPatternTable(
+    std::span<const Pattern> table, const ir::Graph& graph, const SelectionView& view,
+    const StepShape* shape = nullptr, StateSpans state_spans = {},
+    std::span<const ir::NodeId> preserve = {});
 
 // The batch a batch pattern makes at `anchor` of `graph`, where it matches
 // and is enabled.

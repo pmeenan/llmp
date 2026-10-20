@@ -1432,6 +1432,8 @@ TEST(PlannerPatternTest, GdnHistoryChecksStandaloneCommitTail) {
   }
 }
 
+constexpr ir::InputParams kPositions4{.fact = ir::InputFact::kPositions, .sections = 4};
+
 TEST(PlannerPatternTest, QsaSelectionChecksItsFixedWeightsMasksAndBias) {
   auto implementations = Everything();
   implementations.push_back(
@@ -1442,7 +1444,7 @@ TEST(PlannerPatternTest, QsaSelectionChecksItsFixedWeightsMasksAndBias) {
   for (int mutation : {0, 1, 2, 3, 4, 5, 6}) {
     SCOPED_TRACE(mutation);
     ir::Builder b;
-    b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({4})), "positions.4");
+    b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({4})), {}, kPositions4);
     const TensorId q = b.Input(F32({2, 2, 1}));
     const TensorId k = b.Input(F32({2, 4, 1}));
     const TensorId v = b.Input(F32({2, 4, 1}));
@@ -1483,7 +1485,7 @@ TEST(PlannerPatternTest, QsaPoolingDoesNotDropRotationFrequencyFactors) {
   for (bool frequencies : {false, true}) {
     SCOPED_TRACE(frequencies);
     ir::Builder b;
-    b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({4})), "positions.4");
+    b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({4})), {}, kPositions4);
     const TensorId raw = b.Input(F32({2, 4}));
     const TensorId blocks =
         b.State(ir::Dense(Encoding::kBF16, ir::ShapeOf({2, 2})), ir::StateRef{});
@@ -1501,6 +1503,165 @@ TEST(PlannerPatternTest, QsaPoolingDoesNotDropRotationFrequencyFactors) {
     const auto g = Finish(b);
     const MatchContext c(g, selection, nullptr);
     EXPECT_EQ(fusions::MeanPoolNormRopeStoreMatch(c, g.producer(stored)).has_value(), !frequencies);
+  }
+}
+
+// The four-section positions a QSA pool reads are the input whose typed
+// fact says so (ir::InputParams, in the digest), never the one named so: two
+// graphs that digest alike plan alike.
+TEST(PlannerPatternTest, QsaPositionsAreTheTypedInputNotANamedOne) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.qsa_pool", Any(ir::Fused(FusedKind::kMeanPoolNormRopeStore))));
+  const auto registry = Registry(std::move(implementations));
+  const Policy policy{};
+  const SelectionView selection(registry, kDevice, policy, false, false);
+  struct Built {
+    ir::Graph graph;
+    TensorId stored;
+  };
+  const auto build = [](std::string_view name, ir::InputParams fact) {
+    ir::Builder b;
+    b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({4})), name, fact);
+    const TensorId raw = b.Input(F32({2, 4}));
+    const TensorId blocks =
+        b.State(ir::Dense(Encoding::kBF16, ir::ShapeOf({2, 2})), ir::StateRef{});
+    const TensorId norm = b.Weight(F32({2}), W(0));
+    const TensorId positions = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2})));
+    const TensorId cells = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2})));
+    const TensorId pooled = b.Pool(raw, {}, {.ratio = 2, .kind = ir::PoolKind::kMean});
+    const TensorId weighted = b.Mul(b.RmsNorm(pooled, 1e-6F), norm);
+    const TensorId rotated =
+        b.Rope(b.Reshape(weighted, ir::ShapeOf({2, 1, 2})), positions, {}, {.dims = 2});
+    const TensorId rounded = b.Convert(rotated, Encoding::kBF16);
+    const TensorId stored = b.CacheStore(blocks, b.Reshape(rounded, ir::ShapeOf({2, 2})), cells);
+    b.Keep(stored);
+    return Built{Finish(b), stored};
+  };
+  const auto matches = [&](const Built& built) {
+    const MatchContext c(built.graph, selection, nullptr);
+    return fusions::MeanPoolNormRopeStoreMatch(c, built.graph.producer(built.stored)).has_value();
+  };
+  const Built typed = build("", kPositions4);
+  const Built named = build("positions.4", {});
+  const Built other = build("anything", {});
+  const Built two = build("positions.4", {.fact = ir::InputFact::kPositions, .sections = 2});
+  EXPECT_TRUE(matches(typed));
+  EXPECT_TRUE(matches(build("renamed", kPositions4)));
+  EXPECT_FALSE(matches(named));
+  EXPECT_FALSE(matches(two));
+  // Names stay out of the digest; the fact is in it.
+  EXPECT_EQ(named.graph.Digest(), other.graph.Digest());
+  EXPECT_EQ(typed.graph.Digest(), build("renamed", kPositions4).graph.Digest());
+  EXPECT_NE(typed.graph.Digest(), named.graph.Digest());
+  EXPECT_NE(typed.graph.Digest(), two.graph.Digest());
+}
+
+TEST(PlannerIrTest, InputFactsAreChecked) {
+  for (const auto fact :
+       {ir::InputParams{.fact = ir::InputFact::kNone, .sections = 1},
+        ir::InputParams{.fact = ir::InputFact::kPositions, .sections = 0},
+        ir::InputParams{.fact = static_cast<ir::InputFact>(9), .sections = 1},
+        ir::InputParams{.fact = ir::InputFact::kPositions, .sections = 4, .reserved = {1, 0}}}) {
+    ir::Builder b;
+    b.Output(b.Scale(b.Input(F32({4}), {}, fact), 1.0F, 0.0F));
+    EXPECT_FALSE(std::move(b).Finish().has_value());
+  }
+}
+
+// A rewrite whose builder refuses it drops that match alone: the round runs
+// again without it, its node stays primitive, and the other matches apply.
+constexpr std::array kScaleAnchors = {Op::kScale};
+constexpr std::array kRefusingTable = {Pattern{
+    .name = "t.refusing",
+    .kind = PatternKind::kRewrite,
+    .result = ir::Primitive(Op::kScale),
+    .anchors = kScaleAnchors,
+    .match = [](const MatchContext&, ir::NodeId anchor) -> std::optional<Match> {
+      return Match{.nodes = {anchor}};
+    },
+    .rewrite =
+        [](RewriteContext& r, const Match& m, std::size_t) {
+          const ir::Node& node = r.original().node(m.nodes[0]);
+          if (node.Params<ir::ScaleParams>().scale == 2.0F) {
+            r.builder().Refuse(ir::GraphError::kFormat, "a test's refused emission");
+            return;
+          }
+          r.Copy(node);
+        },
+}};
+
+TEST(PlannerPatternTest, ARefusedRewriteFallsBackToItsPrimitives) {
+  const auto registry = Registry();
+  const Policy policy{};
+  const SelectionView view(registry, kDevice, policy, false, false);
+  ir::Builder b;
+  const TensorId x = b.Input(F32({8}));
+  const TensorId first = b.Scale(x, 3.0F);
+  const TensorId refused = b.Scale(first, 2.0F);
+  b.Output(b.Scale(refused, 5.0F));
+  const ir::Graph g = Finish(b);
+  const auto out = ApplyPatternTable(kRefusingTable, g, view);
+  ASSERT_TRUE(out.has_value()) << out.error().detail;
+  ASSERT_EQ(out->dropped.size(), 1U);
+  EXPECT_EQ(out->dropped[0].pattern, "t.refusing");
+  EXPECT_EQ(out->dropped[0].anchor, g.producer(refused));
+  EXPECT_NE(out->dropped[0].detail.find("refused emission"), std::string::npos);
+  EXPECT_EQ(out->applied.size(), 2U);
+  for (const Applied& a : out->applied) EXPECT_NE(a.replaced.front(), g.producer(refused));
+  EXPECT_EQ(out->graph.Digest(), g.Digest());
+  // The built-in table refuses none of it (StepPlan::dropped_rewrites).
+  const auto plan = PlanOf(g.Clone(), registry);
+  EXPECT_TRUE(plan.dropped_rewrites.empty());
+}
+
+// One write set (ir::ForEachWrittenSource): a cache store writes its cache,
+// a fused node each aliased output's source (a mean-pool store its blocks,
+// source 1, not its rotation's source 3).
+TEST(PlannerIrTest, WriteSetsAreTheStoresAndAliasedSources) {
+  const auto written = [](ir::OpKey key, std::uint8_t nsrc, std::uint8_t nout) {
+    ir::Node n{.key = key, .nsrc = nsrc, .nout = nout};
+    for (std::uint32_t i = 0; i < nsrc; ++i) n.src.at(i) = TensorId{i};
+    for (std::uint32_t i = 0; i < nout; ++i) n.out.at(i) = TensorId{100 + i};
+    std::vector<std::size_t> out;
+    ir::ForEachWrittenSource(n, [&](std::size_t s) { out.push_back(s); });
+    EXPECT_EQ(ir::WritesInPlace(n), !out.empty());
+    return out;
+  };
+  using V = std::vector<std::size_t>;
+  EXPECT_EQ(written(ir::Primitive(Op::kCacheStore), 3, 1), V{0});
+  EXPECT_EQ(written(ir::Fused(FusedKind::kMeanPoolNormRopeStore), 6, 1), V{1});
+  EXPECT_EQ(written(ir::Fused(FusedKind::kGdnStep), 7, 2), V{5});
+  EXPECT_EQ(written(ir::Fused(FusedKind::kRopeStore), 4, 1), V{2});
+  EXPECT_EQ(written(ir::Primitive(Op::kAdd), 2, 1), V{});
+  EXPECT_EQ(written(ir::Fused(FusedKind::kRmsNormMul), 2, 1), V{});
+  // An absent aliased source writes nothing.
+  ir::Node absent{.key = ir::Fused(FusedKind::kGdnStep), .nsrc = 7, .nout = 2};
+  EXPECT_FALSE(ir::WritesInPlace(absent));
+}
+
+// A routing implementation's pitched IDs (Capability::pitched_output) get
+// the compact copy their byte-layout readers need; the planner reads the
+// declared fact, never an implementation's name.
+TEST(PlannerPlanTest, PitchedRouteIdsGetACompactCopyByTheirCapability) {
+  for (const bool pitched : {false, true}) {
+    SCOPED_TRACE(pitched);
+    auto implementations = Everything();
+    implementations.push_back(
+        Fake("ggml.gemma.route.fused",
+             ex::Capability{.op = ir::Primitive(Op::kRoute), .pitched_output = pitched},
+             ir::Primitive(Op::kRoute)));
+    implementations.push_back(
+        Fake("t.cont", Any(ir::Primitive(Op::kCont)), ir::Primitive(Op::kCont)));
+    const auto registry = Registry(std::move(implementations));
+    ir::Builder b;
+    const auto logits = b.Input(F32({4, 3}));
+    const auto route = b.Route(logits, {}, {}, {}, {.normalize = true, .experts = 4, .used = 2});
+    b.Output(b.Reshape(route[0], ir::ShapeOf({6})));
+    b.Output(route[1]);
+    const auto plan = PlanOf(Finish(b), registry);
+    const auto names = Names(plan, registry);
+    EXPECT_EQ(std::ranges::count(names, "ggml.gemma.route.fused"), 1);
+    EXPECT_EQ(std::ranges::count(names, "t.cont"), pitched ? 1 : 0);
   }
 }
 

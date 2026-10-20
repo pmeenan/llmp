@@ -139,6 +139,9 @@ struct StepPlan {
   // keys' names), in order.
   std::vector<std::string> decomposed;
   std::vector<MissingNumericalQualification> missing_numerical{};
+  // Matches whose rewrite failed, left to the primitives (pattern.h
+  // ApplyPatterns), anchored at the primitive graph's nodes.
+  std::vector<DroppedRewrite> dropped_rewrites{};
   // Several one-row owners retain each owner's scalar product arithmetic
   // (the policy's owner_row_invariant option). Multirow input products retain
   // ordinary batched arithmetic; a selected-output basis may be proved below.
