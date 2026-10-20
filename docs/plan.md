@@ -244,7 +244,7 @@ before new families land; each item lands as one reviewed commit.
       flags; `StepRuns::QueueRouted` per-segment capture and `routed_outputs`
       check; runner-scoped `PlanStep`; Python gate tool store fallback and SSE
       error check)
-- [ ] R15 Unpinning runtime admission, numerical qualifications, policies and
+- [x] R15 Unpinning runtime admission, numerical qualifications, policies and
       settings (D-123: derive `NumericalQualifications` and changed-arithmetic
       fusion eligibility from component roles, tensor formats/encodings and op
       shapes rather than `approvals.cc` SHA-256 receipts, envelope bounds or

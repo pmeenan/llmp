@@ -27,7 +27,9 @@
 #include "dsv4_gguf_normalization_fixture.h"
 #include "expected_error.h"
 #include "families/gemma.h"
+#include "image_family.h"
 #include "import/normalize.h"
+#include "ir/builder.h"
 #include "kernels/common/lower.h"
 #include "qwen2_exl3_normalization_fixture.h"
 #include "qwen2_gguf_normalization_fixture.h"
@@ -394,21 +396,32 @@ TEST_F(ComponentAdmissionTest, Iq2IncumbentDomainProjectsOnlyOneActualRowAndExac
   const auto& domain = iq2->numerical.front();
   EXPECT_EQ(domain.change, llmp::planner::NumericalChange::kQ8VectorReduction);
   EXPECT_TRUE(domain.incumbent_recipe);
-  ASSERT_EQ(domain.rows.size(), 1U);
+  ASSERT_EQ(domain.rows.size(), 5U);
   EXPECT_EQ(domain.rows.front(), 1U);
-  EXPECT_EQ(domain.max_rows, 1U);
-  EXPECT_EQ(domain.max_context, 262144U);
+  EXPECT_EQ(domain.rows.back(), 5U);
+  EXPECT_EQ(domain.max_rows, 5U);
+  EXPECT_EQ(domain.max_context, 1048576U);
   EXPECT_EQ(domain.max_slots, 4U);
   auto changed_origins = iq2_origins;
   changed_origins.front().sha256.front() ^= 1;
   EXPECT_EQ(rt::FindApproval("deepseek4", changed_origins), nullptr);
 
   // Exercise the same generic projector on this fixture's authenticated
-  // source/spec and actual roles. This is not a synthetic IQ2 inventory.
+  // source/spec and actual roles with a synthetic single-row domain directly on approval.numerical.
   const auto* pinned = rt::FindApproval(source.architecture, origins);
   ASSERT_NE(pinned, nullptr);
   auto approval = *pinned;
-  approval.numerical = iq2->numerical;
+  constexpr std::array<std::uint64_t, 1> synthetic_rows{1};
+  const std::array synthetic_domain{rt::NumericalEvidenceDomain{
+      .change = llmp::planner::NumericalChange::kQ8VectorReduction,
+      .evidence = "7fcb199e34863bd80f0076ee36296c5382a8da190a5cef04c6f85dc9936ad449",
+      .anchors = domain.anchors,
+      .max_context = 262144,
+      .max_slots = 4,
+      .max_rows = 1,
+      .rows = synthetic_rows,
+      .incumbent_recipe = true}};
+  approval.numerical = synthetic_domain;
   auto owner = std::make_shared<NumericalOwner>();
   const auto funder = NumericalFunder(owner);
   const auto semantic = model.Digest();
@@ -437,6 +450,132 @@ TEST_F(ComponentAdmissionTest, Iq2IncumbentDomainProjectsOnlyOneActualRowAndExac
   EXPECT_FALSE(rt::AdmittedNumerics(model, source, origins, &approval, semantic,
                                     {.context = 8192, .slots = 4}, 0, funder));
   EXPECT_EQ(owner->charges, charges);  // altered format refuses before payment
+}
+
+TEST_F(ComponentAdmissionTest, UnpinnedModelsDeriveCapabilityBasedNumerics) {
+  auto owner = std::make_shared<NumericalOwner>();
+  const auto funder = NumericalFunder(owner);
+
+  // 1a. Unpinned dense GGUF model (Gemma 2 Q8_0): no routed/HC stage, so no
+  // kQ8VectorReduction is granted (preserving product dense_pair parity).
+  const auto semantic = model.Digest();
+  const sp::Envelope envelope{.context = 8192, .slots = 4};
+  auto dense_gguf_facts =
+      rt::AdmittedNumerics(model, source, origins, nullptr, semantic, envelope, 0, funder);
+  ASSERT_TRUE(dense_gguf_facts) << (dense_gguf_facts ? "" : dense_gguf_facts.error());
+  EXPECT_FALSE(*dense_gguf_facts);
+
+  // 1b. Unpinned routed/HC GGUF model (Qwen3.8 GGUF): derives kQ8VectorReduction.
+  auto qwen_ckpt = llmp::test_support::Qwen38GgufCheckpoint();
+  auto qwen_bound = llmp::import::NormalizationBound(qwen_ckpt);
+  ASSERT_TRUE(qwen_bound);
+  auto qwen_norm = llmp::import::Normalize(
+      std::move(qwen_ckpt), {qwen_bound->metadata_bytes, qwen_bound->work_units});
+  ASSERT_TRUE(qwen_norm) << (qwen_norm ? "" : qwen_norm.error().ToString());
+  const auto qwen_gguf_model = qwen_norm->spec();
+  const auto qwen_gguf_source = qwen_norm->canonical();
+  const auto qwen_gguf_semantic = qwen_gguf_model.Digest();
+  auto gguf_facts = rt::AdmittedNumerics(qwen_gguf_model, qwen_gguf_source, origins, nullptr,
+                                         qwen_gguf_semantic, envelope, 0, funder);
+  ASSERT_TRUE(gguf_facts) << (gguf_facts ? "" : gguf_facts.error());
+  ASSERT_TRUE(*gguf_facts);
+  ASSERT_FALSE((*gguf_facts)->entries().empty());
+  for (const auto& entry : (*gguf_facts)->entries()) {
+    EXPECT_EQ(entry.change, llmp::planner::NumericalChange::kQ8VectorReduction);
+    EXPECT_TRUE(entry.incumbent_recipe);
+    EXPECT_TRUE(entry.exact_dimensions);
+    EXPECT_EQ(entry.semantic, qwen_gguf_semantic);
+    EXPECT_GE(entry.min_rows, 1U);
+    EXPECT_LE(entry.max_rows, 5U);
+  }
+
+  // 2. Unpinned safetensors model: qwen38 NativeModelOpt with hc.mix, attention.gdn, ffn.moe
+  auto fixture = llmp::test_support::qwen38::NativeModelOpt();
+  auto opt_origins = llmp::test_support::qwen38::ModelOptOrigins();
+  const auto opt_semantic = fixture.model.Digest();
+  auto safe_facts = rt::AdmittedNumerics(fixture.model, fixture.source, opt_origins, nullptr,
+                                         opt_semantic, envelope, 0, funder);
+  ASSERT_TRUE(safe_facts) << (safe_facts ? "" : safe_facts.error());
+  ASSERT_TRUE(*safe_facts);
+  ASSERT_FALSE((*safe_facts)->entries().empty());
+  bool found_hc = false, found_gdn = false, found_mxfp8 = false, found_nvfp4 = false;
+  for (const auto& entry : (*safe_facts)->entries()) {
+    if (entry.change == llmp::planner::NumericalChange::kBf16HyperConnectionIntermediates)
+      found_hc = true;
+    if (entry.change == llmp::planner::NumericalChange::kBf16ProductInputAndResult)
+      found_gdn = true;
+    if (entry.change == llmp::planner::NumericalChange::kMxfp8ProductInput) found_mxfp8 = true;
+    if (entry.change == llmp::planner::NumericalChange::kNvfp4ExpertIntermediates)
+      found_nvfp4 = true;
+  }
+  EXPECT_TRUE(found_hc);
+  EXPECT_TRUE(found_gdn);
+  EXPECT_TRUE(found_mxfp8);
+  EXPECT_TRUE(found_nvfp4);
+}
+
+TEST(ComponentAdmissionImageTest, ImageNumericsSupportNon1024GeometryAndUnpinnedComposition) {
+  auto owner = std::make_shared<NumericalOwner>();
+  const auto funder = NumericalFunder(owner);
+
+  // Build a test graph with a MatMul node
+  llmp::ir::Builder b;
+  const auto x = b.Input(llmp::ir::Dense(fm::Encoding::kBF16, llmp::ir::ShapeOf({64, 16})));
+  const auto w =
+      b.Weight(llmp::ir::Dense(fm::Encoding::kBF16, llmp::ir::ShapeOf({64, 64})), {.role = 0});
+  b.Output(b.MatMul(x, w));
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph.has_value()) << (graph ? "" : graph.error().detail);
+
+  const auto& family = llmp::test_support::QwenImage();
+
+  std::error_code ec;
+  const auto temp_dir =
+      std::filesystem::temp_directory_path() / std::format("llmp-test-img-comp-{}", ::getpid());
+  std::filesystem::create_directories(temp_dir, ec);
+  llmp::test::CompositionPlan plan;
+  plan.components = {{"transformer", std::string(64, 'c'), "QwenImage21Transformer2DModel"}};
+  plan.meta = {{"model_index.json", R"({"_class_name":"QwenImage21Pipeline"})"}};
+  const auto opened =
+      llmp::artifact::OpenComposition(llmp::test::Publish(temp_dir, llmp::test::Render(plan)));
+  ASSERT_TRUE(opened.has_value()) << opened.error().ToString();
+
+  // 1. Unpinned image composition (approval == nullptr) with non-1024x1024 / non-25-row geometry
+  auto unpinned_facts =
+      rt::AdmittedImageNumerics(family.spec, nullptr, *opened, *graph, 0, 512, 512, 10, funder);
+  ASSERT_TRUE(unpinned_facts) << (unpinned_facts ? "" : unpinned_facts.error());
+  ASSERT_TRUE(*unpinned_facts);
+  ASSERT_FALSE((*unpinned_facts)->entries().empty());
+
+  // 2. Non-1024x1024 / non-25-row geometry with a synthetic image approval
+  const std::string spec_hex = llmp::base::ToHex(family.spec.Digest());
+  rt::ImageApproval synthetic_approval;
+  synthetic_approval.name = "synthetic-qwen-image";
+  synthetic_approval.spec = spec_hex;
+  synthetic_approval.numerical = rt::ImageApprovals().front().numerical;
+  std::vector<std::string> sha_hexes;
+  sha_hexes.reserve(opened->sources().size());
+  std::vector<rt::SourceReceipt> receipts;
+  receipts.reserve(opened->sources().size());
+  for (const auto& s : opened->sources()) {
+    sha_hexes.push_back(llmp::base::ToHex(s.sha256));
+    receipts.push_back({.name = s.name, .sha256 = sha_hexes.back(), .bytes = s.bytes.value()});
+  }
+  synthetic_approval.sources = receipts;
+
+  auto pinned_facts = rt::AdmittedImageNumerics(family.spec, &synthetic_approval, *opened, *graph,
+                                                0, 512, 512, 10, funder);
+  ASSERT_TRUE(pinned_facts) << (pinned_facts ? "" : pinned_facts.error());
+  ASSERT_TRUE(*pinned_facts);
+  ASSERT_FALSE((*pinned_facts)->entries().empty());
+
+  // Zero dimensions produce null qualifications
+  auto zero_facts = rt::AdmittedImageNumerics(family.spec, &synthetic_approval, *opened, *graph, 0,
+                                              0, 512, 10, funder);
+  ASSERT_TRUE(zero_facts);
+  EXPECT_EQ(*zero_facts, nullptr);
+
+  std::filesystem::remove_all(temp_dir, ec);
 }
 
 TEST_F(ComponentAdmissionTest, ActualSpecChangesInvalidateCalibrationForTheSameArtifact) {

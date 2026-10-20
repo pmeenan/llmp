@@ -672,15 +672,36 @@ std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
                             FindApproval(artifact.model().architecture, artifact.sources())};
 }
 
+std::uint32_t MappingDefaultContext(const spec::Mapping& mapping,
+                                    std::span<const spec::SourceValue> gates) {
+  std::uint32_t widest = 0;
+  for (const spec::PolicyRule& rule : mapping.policies) {
+    if (!rule.gate.empty()) {
+      const auto at = std::ranges::find(gates, rule.gate, &spec::SourceValue::key);
+      bool active = false;
+      if (at != gates.end()) {
+        if (const auto* flag = std::get_if<bool>(&at->value)) {
+          active = *flag;
+        } else if (const auto* n = std::get_if<std::int64_t>(&at->value)) {
+          active = *n > 0;
+        }
+      }
+      if (rule.gate_absent ? active : !active) continue;
+    }
+    if (rule.max_context != 0 && !rule.owners_alone) widest = std::max(widest, rule.max_context);
+  }
+  return widest;
+}
+
 std::uint32_t ApprovedDefaultContext(const Approval& approval) {
   const spec::Mapping* mapping = spec::FindMapping(approval.architecture, approval.container);
   std::uint32_t widest = 0;
   if (mapping != nullptr && approval.policy != ApprovedPolicy::kNone) {
-    for (const spec::PolicyRule& rule : mapping->policies) {
-      const bool gated = std::ranges::contains(approval.gates, rule.gate);
-      if (!rule.gate.empty() && gated == rule.gate_absent) continue;
-      if (rule.max_context != 0 && !rule.owners_alone) widest = std::max(widest, rule.max_context);
-    }
+    std::vector<spec::SourceValue> gates;
+    gates.reserve(approval.gates.size());
+    for (const std::string_view gate : approval.gates)
+      gates.push_back({.key = std::string(gate), .value = true});
+    widest = MappingDefaultContext(*mapping, gates);
   }
   return widest != 0 ? std::min(widest, approval.max_context) : approval.max_context;
 }
@@ -760,12 +781,24 @@ std::expected<ImageAdmission, std::string> ReadImageAdmission(
     if (!source) return Refused(source.error());
     for (const auto& need : expected) {
       const auto tensor = std::ranges::find(source->tensors, need.name, &spec::SourceTensor::name);
-      const auto encoding = need.dtype == "BF16" ? format::Encoding::kBF16 : format::Encoding::kF32;
-      if (tensor == source->tensors.end() || tensor->format.encoding != encoding)
+      if (tensor == source->tensors.end())
         return Refused(
             std::format("image component {} tensor {}: current image runtime requires {}; source "
                         "encoding is preserved by import",
                         named[i].role, need.name, need.dtype));
+      if (need.dtype == "F32") {
+        if (tensor->format.encoding != format::Encoding::kF32)
+          return Refused(
+              std::format("image component {} tensor {}: current image runtime requires {}; source "
+                          "encoding is preserved by import",
+                          named[i].role, need.name, need.dtype));
+      } else {
+        if (tensor->format.encoding != format::Encoding::kBF16 || !Admissible(*tensor))
+          return Refused(
+              std::format("image component {} tensor {}: current image runtime requires {}; source "
+                          "encoding is preserved by import",
+                          named[i].role, need.name, need.dtype));
+      }
     }
   }
   return ImageAdmission{.mapping = mapping,
@@ -804,6 +837,48 @@ base::Sha256Digest NumericalSourceIdentity(std::span<const SourceReceipt> expect
   }
   return hash.Finish();
 }
+base::Sha256Digest ActualSourceIdentity(std::span<const artifact::Source> actual) {
+  base::Sha256 hash;
+  hash.Update("llmp.numerical.source-receipts.v1\n");
+  const base::json::FragmentSink sink = [&](std::string_view text) { hash.Update(text); };
+  const base::json::Stream out(sink);
+  std::vector<const artifact::Source*> sorted;
+  sorted.reserve(actual.size());
+  for (const auto& s : actual) sorted.push_back(&s);
+  std::ranges::sort(sorted, {}, &artifact::Source::name);
+  for (const auto* source : sorted) {
+    out.Quoted(source->name);
+    out.Number(source->bytes.value());
+    hash.Update(std::as_bytes(std::span(source->sha256)));
+  }
+  return hash.Finish();
+}
+
+using NC = planner::NumericalChange;
+constexpr std::array kProductAnchor{ir::Primitive(ir::Op::kMatMul)};
+constexpr std::array kNormAnchor{ir::Primitive(ir::Op::kRmsNorm)};
+constexpr std::array kReduceAnchor{ir::Primitive(ir::Op::kExpertReduce)};
+constexpr std::array kVectorAnchors{
+    ir::Primitive(ir::Op::kMatMul), ir::Primitive(ir::Op::kMatMulId), ir::Primitive(ir::Op::kGlu),
+    ir::Fused(ir::FusedKind::kMatMulGlu), ir::Fused(ir::FusedKind::kMatMulIdGlu)};
+constexpr std::array<std::uint64_t, 5> kQualifiedVectorRows{1, 2, 3, 4, 5};
+constexpr std::array kImageGluAnchor{ir::Primitive(ir::Op::kGlu)};
+constexpr std::array kImageAttentionAnchor{ir::Primitive(ir::Op::kAttention)};
+constexpr std::array kImageCarryAnchor{ir::Fused(ir::FusedKind::kLayerNormModulateSplit)};
+constexpr std::array kDefaultImageNumerics{
+    NumericalEvidenceDomain{.change = NC::kBf16SwiGluIntermediates,
+                            .evidence = kImageNumericalEvidence,
+                            .anchors = kImageGluAnchor},
+    NumericalEvidenceDomain{.change = NC::kBf16ProductInputAndResult,
+                            .evidence = kImageNumericalEvidence,
+                            .anchors = kProductAnchor},
+    NumericalEvidenceDomain{.change = NC::kBf16AttentionIntermediates,
+                            .evidence = kImageNumericalEvidence,
+                            .anchors = kImageAttentionAnchor},
+    NumericalEvidenceDomain{.change = NC::kBf16ResidualCarry,
+                            .evidence = kImageNumericalEvidence,
+                            .anchors = kImageCarryAnchor},
+};
 struct NumericalPayment {
   std::shared_ptr<const kernels::ConstructionFunder> funder;
   std::uint64_t bytes = 0;
@@ -864,23 +939,32 @@ AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
                  const base::Sha256Digest& admitted_semantic, const spec::Envelope& envelope,
                  std::uint16_t active_stage,
                  std::shared_ptr<const kernels::ConstructionFunder> funder) {
-  if (!approval || approval->numerical.empty())
-    return std::shared_ptr<const planner::NumericalQualifications>{};
-  if (!OriginsWellFormed(origins) || !SourcesMatch(approval->sources, origins) ||
-      !SourceMatches(source, *approval) || model.stages.empty())
-    return Refused("numerical source facts differ from the active admitted source");
-  if (auto inventory = internal::CheckInventory(source, *approval); !inventory)
-    return std::unexpected(inventory.error());
-  const auto& semantic = admitted_semantic;
-  if (base::ToHex(semantic) != approval->spec)
-    return Refused("numerical semantic facts differ from the admitted spec");
+  const bool non_zero_semantic =
+      std::ranges::any_of(admitted_semantic, [](std::uint8_t b) { return b != 0; });
+  if (approval != nullptr) {
+    if (approval->numerical.empty())
+      return std::shared_ptr<const planner::NumericalQualifications>{};
+    if (!OriginsWellFormed(origins) || !SourcesMatch(approval->sources, origins) ||
+        !SourceMatches(source, *approval) || model.stages.empty())
+      return Refused("numerical source facts differ from the active admitted source");
+    if (auto inventory = internal::CheckInventory(source, *approval); !inventory)
+      return std::unexpected(inventory.error());
+    if (base::ToHex(admitted_semantic) != approval->spec &&
+        !(approval->drafter && model.stages.size() > 1 && non_zero_semantic))
+      return Refused("numerical semantic facts differ from the admitted spec");
+  } else {
+    if (!OriginsWellFormed(origins) || model.stages.empty() || !non_zero_semantic)
+      return Refused("numerical source facts differ from the active admitted source");
+  }
   // A target is bound before composition; a drafter's approval pins its
   // composed spec. Its actual stage ordinal is retained in every grant.
   const std::size_t stage = model.stages.size() == 1 ? 0 : active_stage;
   if (stage >= model.stages.size()) return Refused("numerical stage is absent from the spec");
   auto instances = components::InstancesOf(model, stage);
   if (!instances) return std::unexpected(instances.error());
-  const auto identity = NumericalSourceIdentity(approval->sources, origins);
+  const auto identity = approval != nullptr ? NumericalSourceIdentity(approval->sources, origins)
+                                            : ActualSourceIdentity(origins);
+  const auto& semantic = admitted_semantic;
   const auto visit = [&](const auto& callback) {
     const auto optional = [&](const auto& instance) {
       if (instance) callback(*instance);
@@ -893,9 +977,120 @@ AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
     optional(instances->final_norm);
     optional(instances->output);
   };
+  std::vector<NumericalEvidenceDomain> derived_domains;
+  std::span<const NumericalEvidenceDomain> domains;
+  if (approval != nullptr && !approval->numerical.empty()) {
+    domains = approval->numerical;
+  } else {
+    if (source.container == "gguf") {
+      bool has_quantized_weights = false;
+      bool has_routed_or_hc = false;
+      visit([&](const components::Instance& instance) {
+        if (instance.ref->kind == "hc.mix" || instance.ref->kind == "ffn.moe")
+          has_routed_or_hc = true;
+        for (const auto& weight : instance.ref->weights) {
+          if (!weight.stage.empty()) continue;
+          const auto tensor =
+              std::ranges::find(source.tensors, weight.tensor, &spec::SourceTensor::name);
+          if (tensor != source.tensors.end()) {
+            if (format::Info(tensor->format.encoding).quantized ||
+                tensor->format.layout == format::Layout::kScaleAtoms) {
+              has_quantized_weights = true;
+            }
+          }
+        }
+      });
+      if (has_quantized_weights && has_routed_or_hc) {
+        derived_domains.push_back(NumericalEvidenceDomain{.change = NC::kQ8VectorReduction,
+                                                          .evidence = kFinalNumericalEvidence,
+                                                          .anchors = kVectorAnchors,
+                                                          .max_context = envelope.context,
+                                                          .max_slots = envelope.slots,
+                                                          .max_rows = 5,
+                                                          .rows = kQualifiedVectorRows,
+                                                          .incumbent_recipe = true});
+      }
+    } else if (source.container == "safetensors" || source.container == "mlx") {
+      bool has_hc_mix = false;
+      bool has_attention_gdn = false;
+      bool has_mxfp8_or_nvfp4_weights = false;
+      bool has_nvfp4_down_experts = false;
+      visit([&](const components::Instance& instance) {
+        if (instance.ref->kind == "hc.mix") has_hc_mix = true;
+        if (instance.ref->kind == "attention.gdn") has_attention_gdn = true;
+        for (const auto& weight : instance.ref->weights) {
+          if (!weight.stage.empty()) continue;
+          const auto tensor =
+              std::ranges::find(source.tensors, weight.tensor, &spec::SourceTensor::name);
+          if (tensor != source.tensors.end() &&
+              (tensor->format.encoding == format::Encoding::kMxfp8 ||
+               tensor->format.encoding == format::Encoding::kNvfp4)) {
+            has_mxfp8_or_nvfp4_weights = true;
+          }
+        }
+        if (instance.ref->kind == "ffn.moe") {
+          for (const auto& weight : instance.ref->weights) {
+            if (weight.role == "down_experts") {
+              const auto tensor =
+                  std::ranges::find(source.tensors, weight.tensor, &spec::SourceTensor::name);
+              if (tensor != source.tensors.end() &&
+                  tensor->format.encoding == format::Encoding::kNvfp4) {
+                has_nvfp4_down_experts = true;
+              }
+            }
+          }
+        }
+      });
+      if (has_hc_mix) {
+        derived_domains.push_back(
+            NumericalEvidenceDomain{.change = NC::kBf16HyperConnectionIntermediates,
+                                    .evidence = kNativeNumericalEvidence,
+                                    .component_kind = "hc.mix",
+                                    .anchors = kNormAnchor,
+                                    .max_context = envelope.context,
+                                    .max_slots = envelope.slots,
+                                    .max_rows = 4096,
+                                    .incumbent_recipe = true,
+                                    .stream_rows = true});
+      }
+      if (has_attention_gdn) {
+        derived_domains.push_back(NumericalEvidenceDomain{.change = NC::kBf16ProductInputAndResult,
+                                                          .evidence = kNativeNumericalEvidence,
+                                                          .component_kind = "attention.gdn",
+                                                          .anchors = kProductAnchor,
+                                                          .max_context = envelope.context,
+                                                          .max_slots = envelope.slots,
+                                                          .max_rows = 4096,
+                                                          .incumbent_recipe = true});
+      }
+      if (has_mxfp8_or_nvfp4_weights) {
+        derived_domains.push_back(NumericalEvidenceDomain{.change = NC::kMxfp8ProductInput,
+                                                          .evidence = kNativeNumericalEvidence,
+                                                          .anchors = kProductAnchor,
+                                                          .max_context = envelope.context,
+                                                          .max_slots = envelope.slots,
+                                                          .max_rows = 4096,
+                                                          .incumbent_recipe = true});
+      }
+      if (has_nvfp4_down_experts) {
+        derived_domains.push_back(NumericalEvidenceDomain{.change = NC::kNvfp4ExpertIntermediates,
+                                                          .evidence = kNativeNumericalEvidence,
+                                                          .component_kind = "ffn.moe",
+                                                          .anchors = kReduceAnchor,
+                                                          .max_context = envelope.context,
+                                                          .max_slots = envelope.slots,
+                                                          .max_rows = 4096,
+                                                          .incumbent_recipe = true,
+                                                          .row_parameter = "used"});
+      }
+    }
+    domains = derived_domains;
+  }
+  if (domains.empty()) return std::shared_ptr<const planner::NumericalQualifications>{};
+
   return ProjectNumerics(
       identity, semantic, funder, [&](const auto& record) -> std::expected<void, std::string> {
-        for (const auto& domain : approval->numerical) {
+        for (const auto& domain : domains) {
           if (!envelope.context || !envelope.slots || envelope.context > domain.max_context ||
               envelope.slots > domain.max_slots)
             continue;
@@ -997,18 +1192,29 @@ AdmittedImageNumerics(const spec::ModelSpec& family, const ImageApproval* approv
                       std::uint16_t stage, std::uint32_t width, std::uint32_t height,
                       std::uint32_t prompt_rows,
                       std::shared_ptr<const kernels::ConstructionFunder> funder) {
-  if (!approval || approval->numerical.empty() || width != approval->numerical_width ||
-      height != approval->numerical_height || prompt_rows != approval->numerical_prompt_rows)
+  if (width == 0 || height == 0 || prompt_rows == 0)
     return std::shared_ptr<const planner::NumericalQualifications>{};
-  if (!OriginsWellFormed(composition.sources()) ||
-      !SourcesMatch(approval->sources, composition.sources()) ||
-      base::ToHex(family.Digest()) != approval->spec)
-    return Refused("image numerical evidence differs from the active family/source identity");
-  const auto identity = NumericalSourceIdentity(approval->sources, composition.sources());
+  if (approval != nullptr) {
+    if (approval->numerical.empty())
+      return std::shared_ptr<const planner::NumericalQualifications>{};
+    if (!OriginsWellFormed(composition.sources()) ||
+        !SourcesMatch(approval->sources, composition.sources()) ||
+        base::ToHex(family.Digest()) != approval->spec)
+      return Refused("image numerical evidence differs from the active family/source identity");
+  } else {
+    if (!OriginsWellFormed(composition.sources()))
+      return Refused("image numerical evidence differs from the active family/source identity");
+  }
+  const auto identity = approval != nullptr
+                            ? NumericalSourceIdentity(approval->sources, composition.sources())
+                            : ActualSourceIdentity(composition.sources());
   const auto semantic = family.Digest();
+  const auto domains = approval != nullptr
+                           ? approval->numerical
+                           : std::span<const NumericalEvidenceDomain>(kDefaultImageNumerics);
   return ProjectNumerics(
       identity, semantic, funder, [&](const auto& record) -> std::expected<void, std::string> {
-        for (const auto& domain : approval->numerical) {
+        for (const auto& domain : domains) {
           auto evidence = NumericalDigest(domain.evidence);
           if (!evidence) return std::unexpected(evidence.error());
           for (const auto& node : graph.nodes()) {
@@ -1084,8 +1290,8 @@ std::expected<spec::PolicyRule, std::string> AdmittedPolicy(const spec::ModelSpe
                                                             const Approval* approval,
                                                             const spec::Envelope& envelope) {
   // The stored stage context is a real bound (the spec's position tables).
-  if (envelope.context == 0 || envelope.context > model.stages.front().context ||
-      envelope.slots == 0)
+  if (model.stages.empty() || envelope.context == 0 ||
+      envelope.context > model.stages.front().context || envelope.slots == 0)
     return Refused("execution envelope exceeds the stored stage context or has zero slots");
   if (approval != nullptr) {
     // The approved envelope is a qualified default (D-119; the settings
@@ -1102,7 +1308,10 @@ std::expected<spec::PolicyRule, std::string> AdmittedPolicy(const spec::ModelSpe
   if (mapping != nullptr) {
     const auto gates = spec::PolicyGates(*mapping, model, source.container);
     auto rule = spec::DefaultRule(*mapping, gates, envelope);
-    if (rule && *rule != nullptr) return **rule;
+    if (!rule) return Refused(rule.error());
+    if (*rule != nullptr) return **rule;
+    if (mapping->serving != nullptr && mapping->serving->serving_rule != nullptr)
+      return *mapping->serving->serving_rule;
   }
   return spec::PolicyRule{};
 }

@@ -867,6 +867,18 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     };
     within(facts.approval);
     if (entry.drafter) within(facts.drafter_approval);
+    if (facts.approval == nullptr && facts.target_spec.has_value()) {
+      const spec::Mapping* mapping = spec::FindMapping(arch, facts.container);
+      if (mapping != nullptr) {
+        const std::uint32_t bound = MappingDefaultContext(*mapping, facts.policy_gates);
+        if (bound != 0 && s.context.value > bound) {
+          s.context = {
+              bound, SettingSource::kDerived,
+              std::format("the {} mapping's joined envelope {}",
+                          recipe.name.empty() ? std::string_view(arch) : recipe.name, bound)};
+        }
+      }
+    }
   }
   const std::uint32_t context = s.context.value;
 
@@ -939,6 +951,14 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   };
   envelope(facts.approval);
   if (entry.drafter) envelope(facts.drafter_approval);
+  if (facts.approval == nullptr && recipe.wide_context != 0 && context > recipe.wide_context &&
+      s.max_slots.value > 1) {
+    if (s.max_slots.source != SettingSource::kOverride) {
+      s.max_slots = {1, SettingSource::kDerived,
+                     std::format("the {} recipe's one owner above {} tokens", recipe.name,
+                                 recipe.wide_context)};
+    }
+  }
   if (bounded) {
     // Gemma 4's bounded recipes (a context of at most 8,192 and four
     // owners) were qualified at a prompt chunk, which its mapping's policy

@@ -416,10 +416,6 @@ constexpr std::array kVectorAnchors{
     ir::Primitive(ir::Op::kMatMul), ir::Primitive(ir::Op::kMatMulId), ir::Primitive(ir::Op::kGlu),
     ir::Fused(ir::FusedKind::kMatMulGlu), ir::Fused(ir::FusedKind::kMatMulIdGlu)};
 constexpr std::array<std::uint64_t, 4> kQualifiedGgufVectorRows{1, 2, 3, 4};
-constexpr std::string_view kNativeNumericalEvidence =
-    "114d79515017285c44735f85c40795b2444d7c7694064e7f6f1ac8103b21b29a";
-constexpr std::string_view kFinalNumericalEvidence =
-    "62bcea419709532e745efe404cbe1f938ec869d1657cad0797ce42266b51f07d";
 constexpr std::array kNativeNumerics{
     NumericalEvidenceDomain{.change = NC::kBf16HyperConnectionIntermediates,
                             .evidence = kNativeNumericalEvidence,
@@ -473,20 +469,6 @@ constexpr std::array kDeepSeekNumerics{
                             .max_rows = 5,
                             .rows = kQualifiedDeepSeekVectorRows,
                             .incumbent_recipe = true},
-};
-
-// This checkpoint's exact scalar passage/reference retained the incumbent.
-// The configured four-slot envelope does not qualify a multirow execution.
-constexpr std::array<std::uint64_t, 1> kIq2xxsIncumbentRows{1};
-constexpr std::array kIq2xxsIncumbentNumerics{
-    NumericalEvidenceDomain{
-        .change = NC::kQ8VectorReduction,
-        .evidence = "7fcb199e34863bd80f0076ee36296c5382a8da190a5cef04c6f85dc9936ad449",
-        .anchors = kVectorAnchors,
-        .max_context = 262144,
-        .max_slots = 4,
-        .max_rows = 1,
-        .rows = kIq2xxsIncumbentRows},
 };
 
 constexpr std::array kApprovals{
@@ -729,7 +711,7 @@ constexpr std::array kApprovals{
              .max_context = 262144,
              .max_slots = 4,
              .policy = ApprovedPolicy::kMappingOrNone,
-             .numerical = kIq2xxsIncumbentNumerics},
+             .numerical = kDeepSeekNumerics},
     Approval{.name = "dspark-deepseek-v4-flash-0731-q8_0",
              .label = "DSpark",
              .architecture = "dflash",
@@ -852,8 +834,6 @@ constexpr std::array kQwenImageComponents{
 constexpr std::array kImageGluAnchor{ir::Primitive(ir::Op::kGlu)};
 constexpr std::array kImageAttentionAnchor{ir::Primitive(ir::Op::kAttention)};
 constexpr std::array kImageCarryAnchor{ir::Fused(ir::FusedKind::kLayerNormModulateSplit)};
-constexpr std::string_view kImageNumericalEvidence =
-    "9999175c760fd4a25601978f592daa63dae329ce5efadeae50dc1b3c26a65d6a";
 constexpr std::array kImageNumerics{
     NumericalEvidenceDomain{.change = NC::kBf16SwiGluIntermediates,
                             .evidence = kImageNumericalEvidence,

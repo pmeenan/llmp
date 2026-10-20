@@ -104,6 +104,44 @@ inline bool ChargeExecutionMetadata(
   return (completed ? *completed : posted).has_value();
 }
 
+// A caller-retained execution metadata charge: tracks its paid bytes and
+// releases them on destruction.
+struct Paid {
+  std::shared_ptr<engine::ExecutionMetadataAllowance> allowance;
+  std::uint64_t bytes = 0;
+  engine::PagedNode* node = nullptr;
+  std::uint64_t cap = 0;
+  Paid() = default;
+  Paid(std::shared_ptr<engine::ExecutionMetadataAllowance> a, std::uint64_t b = 0,
+       engine::PagedNode* n = nullptr, std::uint64_t c = 0)
+      : allowance(std::move(a)), bytes(b), node(n), cap(c) {}
+  Paid(const Paid&) = delete;
+  Paid& operator=(const Paid&) = delete;
+  Paid(Paid&& other) noexcept
+      : allowance(std::exchange(other.allowance, {})),
+        bytes(std::exchange(other.bytes, 0)),
+        node(std::exchange(other.node, nullptr)),
+        cap(std::exchange(other.cap, 0)) {}
+  Paid& operator=(Paid&& other) noexcept {
+    if (this != &other) {
+      if (allowance) allowance->Release(bytes);
+      allowance = std::exchange(other.allowance, {});
+      bytes = std::exchange(other.bytes, 0);
+      node = std::exchange(other.node, nullptr);
+      cap = std::exchange(other.cap, 0);
+    }
+    return *this;
+  }
+  ~Paid() {
+    if (allowance) allowance->Release(bytes);
+  }
+  bool Add(std::uint64_t n) {
+    if (n > UINT64_MAX - bytes || !ChargeExecutionMetadata(allowance, n, node, cap)) return false;
+    bytes += n;
+    return true;
+  }
+};
+
 inline double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
 
 inline std::string Errno(int error) { return std::system_category().message(error); }

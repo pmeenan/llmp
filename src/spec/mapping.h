@@ -346,6 +346,7 @@ struct ServingRecipe {
   // The serving composition in place of the admitted one (its policy
   // text and how it composes steps); null: the admitted one.
   const PolicyRule* serving_rule = nullptr;
+  std::uint32_t wide_context = 0;
 };
 
 // The default serving recipe an unqualified target LLM mapping gets when

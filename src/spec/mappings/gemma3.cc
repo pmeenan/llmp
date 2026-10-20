@@ -119,7 +119,8 @@ constexpr ServingRecipe kServing{.family = "Gemma",
                                  .bounded = true,
                                  .prefill_rows = 128,
                                  .default_context = 4096,
-                                 .drafters = false};
+                                 .drafters = false,
+                                 .wide_context = 4096};
 
 constexpr Mapping kMapping{
     .architecture = "gemma3",

@@ -435,6 +435,18 @@ TEST(ModelSettings, AnApprovedEnvelopeIsADefaultAnOverridePassesWithAWarning) {
   EXPECT_TRUE(alone.warnings.empty());
 }
 
+TEST(ModelSettings, UnpinnedGemma3ClampsMaxSlotsToOneAboveWideContext) {
+  auto facts = Facts("gemma3");
+  facts.approval = nullptr;
+  auto entry = Model("gemma3-unpinned");
+  entry.overrides["context"] = std::int64_t{8192};
+  const ModelSettings settings = Resolved(entry, facts);
+  EXPECT_EQ(settings.context.value, 8192U);
+  EXPECT_EQ(settings.max_slots.value, 1U);
+  EXPECT_EQ(settings.max_slots.source, SettingSource::kDerived);
+  EXPECT_THAT(settings.max_slots.basis, HasSubstr("Gemma3 recipe's one owner above 4096 tokens"));
+}
+
 TEST(ModelSettings, GemmaDefaultsKeepAnUncalibratedFourOwnerPreference) {
   auto entry = Model("gemma");
   auto facts = Facts("gemma4");

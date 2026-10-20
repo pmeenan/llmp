@@ -55,20 +55,7 @@ std::uint64_t SourceMappingBytes(const md::ImageProfile& p) {
   return roles * 4096 + components * 8192;
 }
 using serving_support::ChargeExecutionMetadata;
-struct Paid {
-  std::shared_ptr<en::ExecutionMetadataAllowance> allowance;
-  std::uint64_t bytes = 0;
-  en::PagedNode* node = nullptr;
-  std::uint64_t cap = 0;
-  ~Paid() {
-    if (allowance) allowance->Release(bytes);
-  }
-  bool Add(std::uint64_t n) {
-    if (n > UINT64_MAX - bytes || !ChargeExecutionMetadata(allowance, n, node, cap)) return false;
-    bytes += n;
-    return true;
-  }
-};
+using serving_support::Paid;
 struct RequestGeometry {
   std::uint32_t width = 0, height = 0, grid_width = 0, grid_height = 0;
   std::uint32_t rows = 0, prompt_rows = 0, text_rows = 0, steps = 0;

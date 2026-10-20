@@ -160,6 +160,11 @@ std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
 std::expected<ComponentDrafterAdmission, std::string> ReadComponentDrafterAdmission(
     const artifact::Artifact& drafter);
 
+// The default context a mapping's rules select across its non-owners-alone
+// policies matching `gates`; 0 when none.
+std::uint32_t MappingDefaultContext(const spec::Mapping& mapping,
+                                    std::span<const spec::SourceValue> gates);
+
 // The context a configuration that names none takes within an approval:
 // the widest context of its mapping's rule domains that its gates select
 // and that join owners (a rule bounded by context, not an owners-alone

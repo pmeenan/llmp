@@ -58,6 +58,13 @@ struct ApprovedTransform {
   std::string_view digest{};
 };
 
+inline constexpr std::string_view kNativeNumericalEvidence =
+    "114d79515017285c44735f85c40795b2444d7c7694064e7f6f1ac8103b21b29a";
+inline constexpr std::string_view kFinalNumericalEvidence =
+    "62bcea419709532e745efe404cbe1f938ec869d1657cad0797ce42266b51f07d";
+inline constexpr std::string_view kImageNumericalEvidence =
+    "9999175c760fd4a25601978f592daa63dae329ce5efadeae50dc1b3c26a65d6a";
+
 // Historical evidence for an actual rounding/reduction transformation.
 // The enclosing approval binds exact receipts and semantic spec; matching
 // component kinds/anchors identify semantic sites, never model-name branches.

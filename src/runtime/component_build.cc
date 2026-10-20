@@ -56,11 +56,7 @@ using serving_support::kExtent;
 namespace fs = std::filesystem;
 namespace ja = llmp::artifact;
 
-struct ConstructionCharge {
-  std::shared_ptr<engine::ExecutionMetadataAllowance> allowance;
-  std::uint64_t bytes = 0;
-  ~ConstructionCharge() { allowance->Release(bytes); }
-};
+using ConstructionCharge = serving_support::Paid;
 
 // PlanGraph owns one temporary reader index per synchronous lowering; current
 // and future retained programs do not retain that index. This named category
@@ -882,31 +878,29 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error("the complete drafter verify exceeds its actual stage row bounds");
     const std::uint32_t read_align = serving_policy->read_align();
     engine::DecodingMode mode;
-    if (speculate) {
-      mode = {
-          .kind = engine::DecodingMode::Kind::kSpeculative,
-          .drafters = {{.stage = 1,
-                        .shape = block ? engine::DrafterSpec::Shape::kBlock
-                                       : engine::DrafterSpec::Shape::kAutoregressive,
-                        .max_depth = depth,
-                        .shared_wave_depth =
-                            mtp ? std::min(settings.shared_wave_depth.value, depth) : 0,
-                        .draft_wave_max = mtp ? settings.draft_wave_max.value : 0,
-                        .catch_up = mtp,
-                        .fill = block_fill,
-                        .borrows_target = !mtp && !block,
-                        .anchored = !mtp && !block,
-                        .features = !block,
-                        .adaptive = mtp && depth >= 3,
-                        .depth_cost = mtp ? settings.depth_cost_ratio.value
-                                          : (draft != nullptr ? draft->default_depth_cost : 1.16),
-                        .device_tokens = serving_policy->device_tokens(),
-                        .draft_before_limit = true,
-                        .head_ids = hold->draft_head_ids,
-                        .head_rows = hold->draft_head_rows}},
-          .combine = engine::DecodingMode::Drafters::kCascade,
-          .row_invariant = false};
-    }
+    if (speculate)
+      mode = {.kind = engine::DecodingMode::Kind::kSpeculative,
+              .drafters = {engine::DrafterSpec{
+                  .stage = 1,
+                  .shape = block ? engine::DrafterSpec::Shape::kBlock
+                                 : engine::DrafterSpec::Shape::kAutoregressive,
+                  .max_depth = depth,
+                  .shared_wave_depth = mtp ? std::min(settings.shared_wave_depth.value, depth) : 0,
+                  .draft_wave_max = mtp ? settings.draft_wave_max.value : 0,
+                  .catch_up = mtp,
+                  .fill = block_fill,
+                  .borrows_target = !mtp && !block,
+                  .anchored = !mtp && !block,
+                  .features = !block,
+                  .adaptive = mtp && depth >= 3,
+                  .depth_cost = mtp ? settings.depth_cost_ratio.value
+                                    : (draft != nullptr ? draft->default_depth_cost : 1.16),
+                  .device_tokens = serving_policy->device_tokens(),
+                  .draft_before_limit = true,
+                  .head_ids = hold->draft_head_ids,
+                  .head_rows = hold->draft_head_rows}},
+              .combine = engine::DecodingMode::Drafters::kCascade,
+              .row_invariant = false};
     auto execution_domain = options.execution_domain;
     if (!execution_domain && !metadata) {
       auto admitted = admit_metadata();
