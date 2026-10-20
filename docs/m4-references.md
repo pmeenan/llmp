@@ -61,3 +61,15 @@ M4's final target, as well as the affine checkpoint's cross-quantization
 speed/memory result. Re-pin at entry: M3's audited version is
 `71377a5373ed7b394f1b480ba2a6a3986b03af1c`; the observed 2026-09-29
 HEAD was `9cd52ab4daba68ddd09be89be8f23ad43175e821`.
+
+## DeepInfer (DeepSeek, 2026-10-20)
+
+DeepSeek's own production engine
+([DeepInfer](https://github.com/deepseek-ai/DeepInfer), Apache-2.0,
+reviewed at `774ce24`) runs `deepseek-ai/DeepSeek-V4.1-Flash-1017`, M4's
+V4.1 target. It is the readable reference for V4.1's architecture: what
+it adds over V4 Flash and how each shape lands in llmpalooza's shared
+components. It needs SM100 or Ascend, so it is not a runnable oracle on our
+hosts. Its findings, the techniques taken and the parts deliberately not
+taken are in the [DeepInfer assessment](deepinfer-assessment.md). Every
+number from DeepInfer is DeepSeek-reported.

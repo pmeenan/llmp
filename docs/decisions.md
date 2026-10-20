@@ -1530,7 +1530,7 @@ after an audit of about 70 limits):
   bound. The template interpreter's step and work budgets become
   cancellation points, not caps; its memory and depth bounds stay.
   Node configuration drops the 16-model and generic 1M-context caps.
-- **Kept:** retention expiry with its 24-hour default (the owner's
+- **Kept:** retention expiry with its 24-hour default (7 days by D-055's 2026-10-20 amendment, the runtime's default following with M3.5's retention item; the owner's
   configurable cache timeout, 2026-10-02), idle keep-alive, descriptor
   and memory bounds, format and arithmetic bounds, Jinja2's own
   `MAX_RANGE` refusal, and wire-protocol value ranges (TypeSafe's option
@@ -6499,7 +6499,7 @@ provider's backing cannot take a group from a 4 KiB-aligned run; tooling or
 parser evidence favours another container; or D-018's gate records a
 compatibility policy.
 
-## D-055: Capacity-driven state retention with a 24-hour idle cap; M4's named workload is the Qwen2.5-0.5B FP16/EXL3 pair  (2026-09-22, status: accepted; specializes D-024, D-031 and D-036; its M3, M4, M5 and M7 are M5, M6, M7 and M9 under D-087; its initial victim order replaced on 2026-10-02 by one reclaim order by measured restore cost, with plans and graphs registered, idle state spilled rather than cleared and `[memory]` retention and spill-budget keys (below); the service's spill files named and kept across a restart by D-105, 2026-10-03)
+## D-055: Capacity-driven state retention with a long idle cap (24 hours, 7 days since 2026-10-20); M4's named workload is the Qwen2.5-0.5B FP16/EXL3 pair  (2026-09-22, status: accepted; specializes D-024, D-031 and D-036; its M3, M4, M5 and M7 are M5, M6, M7 and M9 under D-087; its initial victim order replaced on 2026-10-02 by one reclaim order by measured restore cost, with plans and graphs registered, idle state spilled rather than cleared and `[memory]` retention and spill-budget keys (below); the service's spill files named and kept across a restart by D-105, 2026-10-03; idle cap raised to 7 days by the owner, 2026-10-20)
 
 **Decision.** Reusable conversation state follows the
 [retention policy](retention-policy.md):
@@ -6520,8 +6520,8 @@ compatibility policy.
   requests do neither. Other requests may reuse matching blocks and refresh
   shared prefixes, never another branch's continuation.
 - **Capacity-driven expiry with a long cap.** An entry ends through capacity,
-  a per-class maximum idle age (`T_cont` and `T_prefix`, 24 hours each by
-  default, configurable downward), release (close, final requests or
+  a per-class maximum idle age (`T_cont` and `T_prefix`, 7 days each by
+  default since 2026-10-20, 24 hours before; configurable downward), release (close, final requests or
   compaction signals), invalidation or restart. No-retain suppresses only the
   current request's publication. Hints nominate boundaries or lower
   retention; hosted-cache TTLs are ignored.
@@ -6679,7 +6679,7 @@ entries yet); M6's entry classes keep the rules above.
   of 0.
 - **Retention and the spill budget are configuration** (`[memory]`, a
   public surface; schema version 2, compatible keys): `retention_hours`
-  (1 to 8,760, default 24, the cap above) bounds idle conversations,
+  (1 to 8,760, default 24 as built, the cap above; 168 once M3.5's retention item lands) bounds idle conversations,
   resident or spilled, and their turn checkpoints, enforced between units
   and while idle; `spill_budget_gib` (0 to 1,048,576, default 128) bounds
   the spilled state on disk, a swap's write-back included (past it, the
@@ -6719,6 +6719,15 @@ fallback when the runtime reclaimer is installed. Standalone harness behavior
 is unchanged. Pending selected backing is not free credit, and rollback
 retains preexisting caches. Prepared savings do not close the cold-switch
 adoption gate; see the [final factor](experiments/partial-weight-eviction/README.md#final-current-source-selection).
+
+**Amended by the owner, 2026-10-20 (idle cap).** The per-class maximum
+idle age (`T_cont`, `T_prefix`) and `[memory] retention_hours` default to
+7 days (168 hours) instead of 24 hours, so a conversation survives an idle
+weekend (DeepSeek's deployment keeps 3 to 7 days; see the
+[DeepInfer assessment](deepinfer-assessment.md#owner-decisions-and-open-questions)).
+The range, the spill budget and its least-recently-used deletion are
+unchanged; the spill budget, not the age cap, stays the binding limit. The
+runtime's default moves with M3.5's retention item; until then it is 24.
 
 
 ## D-054: Installed artifacts stay node-local; optional long-term store; one import per cluster with peer replication  (2026-09-22, status: accepted; specializes D-009, D-018, D-034 and D-041; role paths and keys in D-063; its identity rule, staging default and artifact archive amended by D-114's model archive, 2026-10-10)

@@ -408,6 +408,40 @@ family" guide, and its long-context scaling work.
       - **re-gate** DeepSeek DSpark's C4 wall, the Qwen-Image generation and
         Gemma 2's prefill with it, and retire M3.6's accepted DSpark exception
         when the first passes ([record](m36-record.md#accepted-exceptions)).
+- [ ] **Drafter confidence calibration screen (owner, 2026-10-20): early
+      M3.5, beside the memory modes** (independent of them, and light: a
+      diagnostic, no default changes). Bind DSpark's `conf_proj` (imported
+      but unbound today, `src/spec/mappings/dsv4.cc`) through the shared
+      drafter mapping as a per-row confidence output, and record predicted
+      against realised acceptance (cumulative per row, calibration buckets,
+      mean |confidence − acceptance|) on the `--check greedy` prompts and
+      longer agentic prompts, C1 and C4. If it is calibrated, land
+      **confidence-budgeted verification** in the shared speculation
+      scheduler here: verify rows per request per step from the drafter's
+      confidence, costed by the calibrated wave and depth costs (no clock
+      reads), allowing depths past today's 3 up to `dflash.block_size`,
+      replacing the whole-wave speculate/plain switch with per-request
+      budgets, adopted on measured C1/C2/C4 decode gains under D-085.
+      Greedy output is unchanged. Caution: Qwen3.8's confidence stopping
+      was neutral (optimization-inventory.md, T81), while its counted
+      adaptive depth 2–3 (T45) stays the selected policy there
+      ([assessment](deepinfer-assessment.md#1-confidence-budgeted-verification)).
+- [ ] **Sampled speculation** (moved from M9 by the owner, 2026-10-20;
+      with the calibration screen, which touches the same drafter outputs
+      and verify path): in the shared verify path for every drafter
+      (DSpark, Qwen3.8's MTP and later ones), drafts are sampled from the
+      drafter's own distribution q at the request's settings and accepted
+      by min(1, p/q) with residual resampling, on the device, replacing
+      the greedy-drafter verdict (a greedy drafter stays the point-mass
+      case). Today temperature 1 costs speculative decode 26% on Qwen3.8
+      (32.2 against greedy's 43.5 tok/s) and 9% on DeepSeek (27.1 against
+      29.8; tokenizer.md, "Sampling", which attributes the loss to sampled
+      drafts being accepted less often; acceptance itself is unmeasured). Exact in distribution, so no quality mode: M9's
+      speculative-sampling criterion (exact acceptance and residual rule
+      against a reference implementation under fixed seeds, sampled
+      outputs within declared statistical bounds, the PIT/KS check) applies
+      here. Adopt on measured C1/C2/C4 sampled decode
+      ([assessment](deepinfer-assessment.md#2-speculative-sampling-with-the-drafters-distribution)).
 - [x] **Family selection** (approved by the owner 2026-09-29: all 13
       checkpoints of [m35-families.md](m35-families.md), with the answers
       recorded there). The goal is
@@ -545,6 +579,93 @@ family" guide, and its long-context scaling work.
       Preserve exact configured funding and shape/selector distinctions; the
       selected T96 placement shortcut does not remove graph sizing/building.
       Qualify equivalent descriptor/template reuse before dropping any probes.
+- [ ] **Reference-free quality tripwires** (owner, 2026-10-20, from
+      [DeepInfer](deepinfer-assessment.md#9-reference-free-quality-tripwires)),
+      shared tooling that every served family runs unchanged: a
+      decode-against-prefill check (teacher-force about 1K tokens through
+      decode, speculation included, rescore by chunked prefill, and bound
+      the KL and top-1 disagreement, the bound declared from a measured
+      baseline); a PIT/KS uniformity check of the sampler on live rollouts
+      beside the 256-seed total-variation check; and a debug-build
+      tripwire in the CUDA provider that fails a blocking driver call
+      (stream, event or context synchronize, synchronous copy) inside a
+      step's submit region. No default changes.
+- [ ] **Seven-day retention default** (owner, 2026-10-20; D-055 as
+      amended): idle conversations and turn checkpoints survive an idle
+      weekend. Move `[memory] retention_hours`' default from 24 to 168
+      (`kDefaultRetentionHours` in `src/config/node_config.h`, the
+      `kTurnCheckpointRetention` constant and its comment in
+      `src/runtime/turn_reuse.h` (the checkpoint cache's own default, which
+      `tests/unit/turn_reuse_test.cc` reads), `packaging/llmp.example.toml`
+      and the default asserted in `tests/unit/config_test.cc`) and the
+      runtime docs that state 24 (runtime-serving.md, engine.md, D-055's
+      configuration bullet). The
+      spill budget (`spill_budget_gib`, least recently used first) stays
+      the binding limit; check its default against a week of idle
+      conversations' spills and say whether it changes.
+- [ ] **Tool calls on the chat route** (moved from M5 by the owner,
+      2026-10-20): `tools`/`functions` and `tool_choice` (`auto`, `none`,
+      `required`, a named function) accepted on Chat Completions, assistant
+      `tool_calls` returned, with streamed argument fragments and tool-result
+      messages rendered back by D-067's renderers. The parser is one engine
+      driven by each chat format's data (its tool-call begin and end
+      sequences, from the renderer and tokenizer), in the trigger shape
+      M7's constrained output reuses: free text until the begin sequence,
+      and a bound token that forces it for `tool_choice: required` or a
+      named function; no per-model parser code
+      ([assessment](deepinfer-assessment.md#8-tool-calls-and-structured-output)).
+      Qwen's tool-call and thinking markers are user-defined tokens, which
+      match in message content for reference parity, unlike control tokens
+      (tokenizer.md); the parser reads only generated output, never rendered
+      input, and the item records whether content forging a marker needs a
+      renderer-side guard. Every served LLM whose template declares tools
+      (lifting Gemma 4's refusal of tool declarations, runtime-serving.md);
+      checked with OpenCode, the named client on this route. The
+      Responses and Messages routes, and with them Codex and Claude Code,
+      stay M5's; strict tool arguments stay M7's constrained output.
+- [ ] **Shared-prefix reuse across conversations, minimal** (moved from
+      M6 by the owner, 2026-10-20): a new conversation whose rendered
+      tokens begin with a retained boundary's (the renderer-reported end of
+      the leading system/tool segment, D-055's declared boundary, saved like
+      a turn checkpoint) starts from a copy of that state and prefills only
+      the rest. Generic over the state contract: whatever a turn checkpoint
+      holds (full and compressed KV, windows, recurrent state, compressor
+      carries, drafter state) is what is copied. Exact: identity as D-055
+      (same artifact, state-producing plan, rendered tokens and caller
+      scope). As D-031 requires, the retained boundary is its own entry
+      with its own reuse count and expiry (`T_prefix`), neither a
+      conversation's identity nor its lifetime, and a hit refreshes only it.
+      First measure, with OpenCode and recorded Claude Code and Codex
+      prompts, how long the shared prefixes are and whether they stay
+      byte-stable across conversations (dates or repository status inside a
+      system prompt break reuse); build only if the hit rate pays. At
+      DeepSeek's measured ~460 tok/s prefill a hit saves about 2 s per 1K
+      tokens. Block sharing, reference counting and the full retention
+      policy stay M6's
+      ([assessment](deepinfer-assessment.md#7-shared-prefix-cache-generic-over-state-contracts)).
+- [ ] **Token-keyed row read-ahead, measure first** (moved from M4 by the
+      owner, 2026-10-20): measure the share of Qwen3.8's prefill and
+      decode step time spent in its synchronous n-gram row reads
+      (`src/engine/ple_rows.h`), and if it is material, build the pager
+      capability M4's Engram then inherits: a mapping declares a row table
+      whose indices depend only on token IDs; the pager computes indices
+      at intake, reads rows ahead of the first consuming layer, overlapping
+      earlier layers and, in prefill, the previous chunk (in decode a step's
+      rows depend on the previous token, so only that overlap is possible);
+      a read-ahead landing and its row slots are charged whole while in
+      flight (D-006, D-007), as today's per-chunk ones are
+      ([assessment](deepinfer-assessment.md#4-token-keyed-row-read-ahead)).
+- [ ] **Dependency audits for adopted DeepInfer items** (owner,
+      2026-10-20), source and license only, no integration:
+      - **xgrammar** (structured output for M7's constrained output and
+        the tool-call trigger shape): pin a revision, confirm its license
+        and its dependencies' (D-017), and whether its C++ core builds with
+        `-fno-exceptions` (D-066) or needs an isolated unit; record the
+        result in the source lock's notes or licensing.md;
+      - **TileKernels** (`deepseek-ai/TileKernels`, the Engram hash and
+        gate kernels V4.1 needs): pin a revision, record its license, and
+        write down the hash and gate formulas with their sources, so M4's
+        Engram component is not blocked on them.
 - [x] **Scalar DS/Qwen nonfinal state-only dependency cuts**
       ([evidence](experiments/ds-qwen-state-only/README.md)): ordinary plain DS and
       native/GGUF Qwen select checked cuts; DSpark/MTP head-only opt-ins remain
@@ -1677,7 +1798,17 @@ once.
 **Entry:** M3.5 exit (M3 exit before 2026-09-29). By entry, model-parallel artifact partitioning is
 decided ([artifact-format.md](artifact-format.md#deliberately-open); moved
 from M8's entry), and each model's checkpoint, recipe and baselines are
-pinned and audited as in M3.
+pinned and audited as in M3. That decision includes the partitioning
+choice the planner costs for every MoE it places (moved ahead of entry by
+the owner, 2026-10-20): expert parallelism with replicated attention (one
+all-reduce a layer, at the cost of replicated attention weights) against
+TP (two collectives a layer). Before entry, lift M3.6's rule that a TP
+stage never mixes split and replicated layers, give DeepSeek's attention
+component split options (V4.1 has one KV head, so by query heads with that
+head replicated), and estimate both layouts for V4.1 and GLM-5.3 from
+measured collective latency on the two Sparks and each model's weights
+and state; M4 then confirms the choice end to end
+([assessment](deepinfer-assessment.md#6-expert-parallelism-with-replicated-attention)).
 
 **Models, in this order:**
 
@@ -1708,6 +1839,19 @@ quantized drafters matched to EXL3 targets (M3.5's EXL3 work).
    if re-made from 1017, else one of the card's linked quants) with its
    same-format reference, and keep the original V4.1 Flash only as a
    fallback if no 1017 quant fits.
+   *DeepInfer, 2026-10-20:* DeepSeek's own engine runs 1017; its
+   [assessment](deepinfer-assessment.md#v41-flash-as-deepinfer-implements-it)
+   lists the shapes V4.1 adds over V4 Flash. Each lands as a parameter or
+   capability of a shared component, never a V4.1 path (D-107;
+   [generalization](deepinfer-assessment.md#generalization)): compression
+   ratio, position embedding and overlap as compressor parameters, the
+   indexer's key source, head count and transform as parameters,
+   cross-layer KV and top-k sharing as graph edges any mapping may
+   declare, hierarchical candidate blocks as an indexer stage, YOCO
+   consumer layers as a mapping of shared KV sources, shifted
+   hyper-connections as an HC variant, Engram as a token-keyed row-table
+   component, a per-modality routing bias, and DSpark stored as `mtp.*`
+   through the existing drafter mapping.
 
 *Owner addition, 2026-10-16:* a second GLM-5.3 Flash quant,
 [`nvidia/GLM-5.3-Flash-FP4-Local`](https://huggingface.co/nvidia/GLM-5.3-Flash-FP4-Local)
@@ -1762,6 +1906,8 @@ requantization from optimizations at unchanged quality.
       communication-buffer pool that honors NCCL's registration and
       threading contracts, ordered collective submission and completion
       fences, and per-step collective latency measured before bandwidth.
+      Each model runs the expert-parallel or TP layout chosen at entry,
+      confirmed end to end.
 - [ ] **Coordinated readiness, minimal** (the start of M8's coordinated
       admission): no collective or execution of B begins until both ranks
       report ready, their shard loaded and its memory obtained. A
@@ -1775,7 +1921,20 @@ requantization from optimizations at unchanged quality.
 - [ ] **Kernels:** EXL3 MoE, the codebooks and rates these checkpoints use,
       sparse MLA decode and prefill on `sm_121`, KDA, the DSA indexer, CSA2
       and Engram row gathers, each the fastest correct implementation under
-      D-053, chosen by a quick A/B.
+      D-053, chosen by a quick A/B. Also, as shared capabilities:
+      - **Engram on the token-keyed row read-ahead** M3.5 measures and
+        builds for Qwen3.8 (or, if Qwen3.8's share did not justify it,
+        built here for Engram's 190 GiB tables): Engram's key function
+        declared in its mapping, with the hash and gate formulas from
+        M3.5's TileKernels audit and the compressed-vocabulary table built
+        at import; under TP, rows sharded across the nodes' SSDs
+        ([assessment](deepinfer-assessment.md#4-token-keyed-row-read-ahead)).
+      - **FP4 indexer scoring** (e2m1, UE8M0 per 32, BF16 logits;
+        DeepSeek's production numerics) as an operand encoding of the
+        shared sparse-scoring operation, selectable for every indexer that
+        uses it (V4, V4.1, GLM-5.3's DSA), qualified per model against F16:
+        the default only at the same quality, otherwise a per-alias mode
+        (D-085; [assessment](deepinfer-assessment.md#5-fp4-indexer-scoring)).
 - [ ] **Per model,** as in M3: graphs, state adapters, templates, the
       resident expert layout for EXL3 MoE, and speculation with M3's
       forced-rejection checks where the model supports it (for GLM, MTP or the
@@ -1783,6 +1942,35 @@ requantization from optimizations at unchanged quality.
       and correct; the
       nextn layers or DSpark head for v4.1). ReconGemm prepares its
       cuBLASLt descriptors once per bound GEMM (M2's hand-off).
+      Two shared capabilities this needs:
+      - **Confidence-budgeted verification** (M3.5's calibration screen
+        decides whether the shared speculation scheduler has it by then):
+        V4.1's DSpark reports its head's per-row confidence from its first
+        run through the shared drafter mapping, and uses the scheduler's
+        budgeting if it landed; if V4's head failed calibration, screen
+        V4.1's head the same way
+        ([assessment](deepinfer-assessment.md#1-confidence-budgeted-verification)).
+      - **Row-liveness pruning of prompt rows** in the planner,
+        generalizing T54: from the graph's own dependencies (which layers'
+        KV each layer reads, windowed attention's reach, drafter taps and
+        requested outputs, scores and in-prompt state snapshots), compute
+        per layer the rows any later consumer needs and execute only
+        those, exact against full prefill (no approximation). V4.1's
+        YOCO consumer layers (20–39, about 2.5K rows at layer 20 narrowing
+        to about 134 at layer 39; estimated up to about 2× long-prompt
+        prefill) are the large case; trailing windowed layers after a
+        model's last global layer (Gemma) are screened when it lands
+        ([assessment](deepinfer-assessment.md#3-row-liveness-pruning-exact-yoco-truncation)).
+        The same pass also offers an approximate mode, opt-in per alias
+        and off by default (owner, 2026-10-20; D-085, AGENTS.md rule 11):
+        a configured keep count replaces the exact cone, so windowed
+        layers past the cut see only the kept rows (DeepInfer's YOCO
+        truncation, which DeepSeek runs in production). It applies to any
+        model the exact pass applies to, is qualified per model (long-
+        context quality against the exact pass, and measured speed), and
+        is offered only where it is measurably faster than the exact cone
+        at an acceptable quality cost
+        ([assessment](deepinfer-assessment.md#3-row-liveness-pruning-exact-yoco-truncation)).
 - [ ] **Media inputs** (D-101), on M3.5's intake:
       - GLM-5.3 Flash's images and video: the GLM ViT (24 layers, patch
         14, 2D RoPE inside), video at 2 fps with per-frame timestamps;
@@ -1791,7 +1979,11 @@ requantization from optimizations at unchanged quality.
 
       Both checkpoints keep their towers. Mia's V4.1 build says vision was
       not its validation target, and llama.cpp has no V4.1 architecture,
-      so V4.1's oracle is its repository's own inference code.
+      so V4.1's oracle is its repository's own inference code. That code
+      is now [DeepInfer](deepinfer-assessment.md), which runs only on SM100
+      and Ascend: at entry, either obtain teacher-forced references from it
+      on such hardware or use it as read-only reference code beside Mia's
+      configuration, and say which.
 - [ ] The minimal `/v1/chat/completions` serves the sharded models.
 - [ ] **Concurrent models and the shared workspace** (deferred from M3.6,
       [record](m36-record.md#deferred-items-from-the-reviews)): the node's
@@ -1801,7 +1993,8 @@ requantization from optimizations at unchanged quality.
       node. Revisit with placement: a workspace per executing model, or
       disjoint ranges of one, before the conductor places two models' work on
       one node at once (D-019 to D-025). Also from M3.6's partitioning: a TP
-      stage never mixes split and replicated layers, the device cap is 16, no
+      stage never mixes split and replicated layers (lifted before entry,
+      per Entry), the device cap is 16, no
       embedding split by vocabulary, expert parallelism is local experts plus
       a mask plus one all-reduce (no all-to-all, no DP-attention mode), and
       the lowering's per-runner backend and stream assumptions
@@ -1870,8 +2063,10 @@ M3.
       and their relocation proof come from M3.
 - [ ] **Tokenization and output:** D-067 renderers for both fixture
       template hashes on M3's native tokenizer, stop rules and sampling
-      (moved to M3), and the tool-call parser; host versus device sampling
-      is settled against D-052's decode gates.
+      (moved to M3), and the tool-call parser (moved to M3.5 by the owner,
+      2026-10-20; here it serves the Responses and Messages routes too);
+      host versus device sampling is settled against D-052's decode
+      gates.
 - [ ] **Front door** ([M5 surface](client-api-baseline.md#m5-surface)),
       growing from M3's minimal Chat Completions:
       Chat Completions, stateless Responses, Messages with token counting,
@@ -1966,9 +2161,19 @@ new matched controls ([exl3-bringup.md](exl3-bringup.md)).
 - [ ] **Retention** ([policy](retention-policy.md); D-024, D-031, D-055):
       prefix and continuation entries with their identity, restore
       boundaries, branches, sharing and refresh; capacity-driven expiry with
-      24-hour idle caps; the victim-order baseline; spill with its protected
+      7-day idle caps; the victim-order baseline; spill with its protected
       directory, preallocation, direct I/O, digest check on restore and
-      deletion at startup; miss reasons and fallback reporting.
+      deletion at startup; miss reasons and fallback reporting. Prefix
+      sharing grows from M3.5's minimal copy-based reuse; it is generic
+      over the state contract, after DeepInfer's split
+      for compressed attention: state a contract marks immutable once
+      written (full and compressed KV, indexer keys) is shared in blocks
+      keyed by a token hash chain at the contract's grain, reference-counted
+      and charged once (D-006, D-007); mutable state (windows, recurrent
+      state, compressor carries) is snapshotted per boundary; a fork copies
+      only the tail block; and a prefill chunk may end at a shared prefix's
+      end. Continuations keep their exact-position checkpoints
+      ([assessment](deepinfer-assessment.md#7-shared-prefix-cache-generic-over-state-contracts)).
 - [ ] **Partial eviction** of a quiescent model, reloading only missing
       dependencies (D-008).
 - [ ] **Swap pipelining and load order** (owner, 2026-10-02): explore
@@ -2146,6 +2351,14 @@ sustained-use schedule and duration.
 - [ ] **Constrained output** (D-043): `response_format` JSON object and
       schema, strict tool arguments and vLLM's `structured_outputs.json`,
       over a documented schema subset with explicit rejection of the rest.
+      Design from [DeepInfer](deepinfer-assessment.md#8-tool-calls-and-structured-output),
+      model-independent: xgrammar's C++ core as the first candidate
+      (Apache-2.0; checked against D-066's no-exceptions build);
+      asynchronous compilation that fails only its request; a compile cache
+      bounded by bytes; constraint starting at the chat format's trigger
+      sequence so reasoning stays free; the mask filled while the step
+      runs; and one mask per draft step with rollback, in the shared
+      sampler and verify path.
 - [ ] **Sustained use:** a bounded multi-hour agent/subagent session on the
       pair with repeated switches, branches, cancellations (during I/O and
       while paused included), expiry by capacity and by test-shortened idle
@@ -2273,7 +2486,17 @@ partial-retention benefit workload are pinned before acceptance runs
       admitting each owner twice), the roughly 0.25 s workspace mapping in a
       Qwen3.8 swap, the decode-template leads, the per-technique structural
       adoption audit and a full-context Q8_0 KV scoring path for Qwen3.8 and
-      DeepSeek.
+      DeepSeek. DeepInfer's leads, each as a shared pattern selected by
+      capability for every attention kind whose chain matches, not one
+      model's ([assessment](deepinfer-assessment.md#10-fusion-patterns-m9-leads)):
+      inverse RoPE and quantization in the decode attention epilogue (T91
+      covers DeepSeek prefill only); one fused norm/RoPE/rotation/cast/store
+      transform for KV and compressor writers; and merged same-input
+      projections as an import relayout chosen by tensor role. Measure
+      first, adopt only on a material share: two decode steps in flight,
+      decode graphs keyed without context length, and wave costs
+      calibrated by context depth
+      ([measure first](deepinfer-assessment.md#11-measure-first)).
 - [ ] **Evaluate lossless weight compression with fused on-chip decode**
       (owner, 2026-10-17): M9 candidate, with a bounded experiment eligible
       earlier after M3.6 if measured weight-bandwidth pressure justifies it.
@@ -2308,7 +2531,13 @@ partial-retention benefit workload are pinned before acceptance runs
 - [ ] **Speculative decoding** (D-068), beyond M3's and M4's: stored MTP
       layers for Ornith (and MiMo's once it runs sharded under M8) and
       Gemma 4 companion drafters, with speculative sampling at every
-      supported setting, and draft-length and acceptance tuning.
+      supported setting (M3.5's shared sampled-draft verify,
+      [assessment](deepinfer-assessment.md#2-speculative-sampling-with-the-drafters-distribution)),
+      and draft-length and acceptance tuning; and confidence-budgeted
+      verification for the remaining drafters that report a confidence
+      (it lands with M3.5's calibration screen if DSpark's head is
+      calibrated;
+      [assessment](deepinfer-assessment.md#1-confidence-budgeted-verification)).
 - [ ] **Block diffusion** (D-068): DiffusionGemma-26B-A4B.
 - [ ] **Execution speed:** CUDA graphs beyond M3's decode graphs, further
       kernels and plans (D-053), and target-assisted import tuning as an

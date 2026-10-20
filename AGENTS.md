@@ -338,8 +338,10 @@ the commit gate.
       first.* Starting order: inactive read-only weights, then state that can
       be persisted (spilled, not cleared), then what cannot be (graphs);
       measured costs override the tiers. LRU within a kind; plan and graph
-      caches have no fixed count caps; spilled state is kept ~24 h
-      (configurable). docs/runtime-serving.md ("The reclaim order"), D-055.
+      caches have no fixed count caps; spilled state is kept 7 days
+      (configurable; owner 2026-10-20, to survive an idle weekend; the
+      runtime's 24 h default moves with M3.5's retention item).
+      docs/runtime-serving.md ("The reclaim order"), D-055.
     - *Limits come from real resources only* (RAM, disk, descriptors,
       context, format bounds): no time caps or abuse-motivated count caps;
       keep long work cancellable and recover a genuine hang; defaults are
@@ -411,7 +413,7 @@ baseline, bar the accepted exceptions listed in the record, serves from format-v
 (D-118) and has its legacy code deleted
 ([design](docs/engine-components.md), D-107 to D-118; results, owner
 decisions, exceptions and handed-on work in the
-[M3.6 record](docs/m36-record.md)). M3.5's first item is physical memory modes (the fix for M3.6's DSpark C4 wall exception); then its remaining families, formats, the importer's per-family normalizers, MLX serving
+[M3.6 record](docs/m36-record.md)). M3.5's first item is physical memory modes (the fix for M3.6's DSpark C4 wall exception), beside the drafter confidence calibration screen; the items taken from [DeepInfer](docs/deepinfer-assessment.md) (sampled speculation, chat-route tool calls, minimal prefix reuse, row read-ahead, 7-day retention) join its remaining families, formats, the importer's per-family normalizers, MLX serving
 qualification, batching gaps, media inputs, Clef/Jev and media generation
 routes (D-101) resume on that engine; M3.5's status at `cc70d69` is in
 [plan.md](docs/plan.md) and [model-support.md](docs/model-support.md).

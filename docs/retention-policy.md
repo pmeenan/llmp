@@ -165,7 +165,8 @@ An entry lasts until one of these ends it:
 1. **Capacity:** victim selection drops or spills it (below).
 2. **Idle cap:** it goes unrefreshed for longer than its class's maximum idle
    age: `T_cont` for continuations, `T_prefix` for shared prefixes. Both
-   default to 24 hours, are configured separately, may be lowered and apply
+   default to 7 days (owner, 2026-10-20: state survives an idle weekend;
+   24 hours before), are configured separately, may be lowered and apply
    to resident and spilled copies alike. Bounded maintenance processes expiry
    within a pinned interval, so spilled prompts do not linger until the next
    pressure event, and deallocates spill ranges no other entry claims.
@@ -367,7 +368,7 @@ their provenance.
 
 | Parameter | Meaning | Rule | Pinned |
 | --- | --- | --- | --- |
-| `T_cont`, `T_prefix` | Maximum idle age per class | 24 hours each (owner decision); configurable: M3's runtime has `[memory] retention_hours`, 1 to 8,760, default 24, for its conversations and their turn checkpoints | Now |
+| `T_cont`, `T_prefix` | Maximum idle age per class | 7 days each (owner decision, 2026-10-20; 24 hours before); configurable: M3's runtime has `[memory] retention_hours`, 1 to 8,760, for its conversations and their turn checkpoints, whose default is still 24 until M3.5's retention item moves it to 168 | Now |
 | `M_state` | Resident retained-state cap | At most `B − F − J − max_m(R_m + E_m)`, so idle state never stops the node from holding its largest supported request | M5 exit |
 | `S_spill` | Spill capacity | Within the spill filesystem's free space less a fixed reserve; held back from installs (D-054). M3's runtime: `[memory] spill_budget_gib`, default 128 GiB, the least recently used deleted past it | M5 exit |
 | Spill write budget | Bytes spilled per rolling 24 hours | From the drive's rated endurance, with its source recorded, and the measured M6 workload; past it, entries are dropped instead of spilled and the event is reported | M6 entry |

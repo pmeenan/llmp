@@ -61,7 +61,7 @@
   Prefix matching enables bounded state reuse; it identifies neither a
   conversation nor its lifetime. Shared prompt prefixes and conversation
   continuations have independent reuse/expiry policies (D-024, D-031),
-  capacity-driven with a 24-hour idle cap under D-055's
+  capacity-driven with a 7-day idle cap under D-055's
   [retention policy](retention-policy.md), which also names M6's acceptance
   workload. Sessions and hints are optional extensions (D-022). M5 serves Chat
   Completions, Responses and Messages with model listing and token counting
@@ -924,7 +924,7 @@ entries have separate reuse statistics and retention/expiry decisions within
 common bounds. Shared-prefix value comes from reuse across conversations;
 continuation value comes from reuse of that history. A hit on the shared
 prefix does not refresh unrelated continuations. Retention is
-capacity-driven with a per-class maximum idle age of 24 hours by default.
+capacity-driven with a per-class maximum idle age of 7 days by default.
 The capacity values (resident state, spill bytes, entry counts, minimum
 prefix length) are pinned at M5 exit from measured state sizes and headroom.
 Spill-full or expiry invalidates only eligible reusable entries; active work
