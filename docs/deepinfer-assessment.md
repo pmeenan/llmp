@@ -292,7 +292,7 @@ Adopt each of these only if its measured share is material:
 
 - **Retention (decided).** DeepSeek's deployment keeps KV for 72 h or more (3 days for agent traffic, 7 for chatbot); a 3-day lifetime costs chatbot traffic 0.5–1% of its hit rate (deployment Q&A). The owner raised our idle cap from 24 hours to 7 days on 2026-10-20, so state survives an idle weekend (D-055 as amended). The spill budget stays the binding limit.
 - **Approximate prompt-row skipping (decided):** an opt-in quality mode ([item 3](#3-row-liveness-pruning-exact-yoco-truncation)).
-- **Moved earlier (decided).** Tool calls on the chat route, sampled speculation, minimal prefix reuse, Qwen3.8's row read-ahead and the dependency audits go to M3.5. The partitioning analysis goes ahead of M4's entry. Claude Code and Codex use the Messages and Responses routes, which stay M5's, so the chat route's tool calls unblock OpenCode first (Cursor stays an M5 validation gap).
+- **Moved earlier (decided).** Tool calls on the chat route, the Messages route with the Claude Code profile, sampled speculation, minimal prefix reuse, Qwen3.8's row read-ahead and the dependency audits go to M3.5. The partitioning analysis goes ahead of M4's entry. M3.5's tool calls reach OpenCode on the chat route and Claude Code on Messages; Codex's Responses route stays M5's, and Cursor stays an M5 validation gap.
 
 ## Not adopted
 
@@ -318,7 +318,7 @@ Adopt each of these only if its measured share is material:
 | 5. FP4 indexer | Sparse-scoring operand encoding | M4, kernels (qualified per model) |
 | 6. Expert parallelism with replicated attention | Partitioning planner | Before M4's entry, with the partitioning decision (V4.1 and GLM; moved by the owner, 2026-10-20) |
 | 7. Shared-prefix cache | State contracts and retention | M3.5, minimal copy-based reuse after measuring real clients' prefixes (moved by the owner, 2026-10-20); M6, block sharing and the full policy |
-| 8. Tool calls and structured output | Chat-format data, sampler | M3.5, tool calls on the chat route (moved from M5 by the owner, 2026-10-20); M5, the Responses and Messages routes; M7, constrained output |
+| 8. Tool calls and structured output | Chat-format data, sampler | M3.5, tool calls on the chat route and the Messages route (moved from M5 by the owner, 2026-10-20); M5, the Responses route; M7, constrained output |
 | 9. Quality tripwires | Shared tooling | M3.5 |
 | 10, 11. Fusions and measure-first leads | Planner patterns, engine | M9, full-engine optimization pass |
 | Dependency audits: xgrammar, TileKernels | Source lock, licensing | M3.5 (owner, 2026-10-20) |

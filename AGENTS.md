@@ -413,7 +413,7 @@ baseline, bar the accepted exceptions listed in the record, serves from format-v
 (D-118) and has its legacy code deleted
 ([design](docs/engine-components.md), D-107 to D-118; results, owner
 decisions, exceptions and handed-on work in the
-[M3.6 record](docs/m36-record.md)). M3.5's first item is physical memory modes (the fix for M3.6's DSpark C4 wall exception), beside the drafter confidence calibration screen; the items taken from [DeepInfer](docs/deepinfer-assessment.md) (sampled speculation, chat-route tool calls, minimal prefix reuse, row read-ahead, 7-day retention) join its remaining families, formats, the importer's per-family normalizers, MLX serving
+[M3.6 record](docs/m36-record.md)). M3.5's first item is physical memory modes (the fix for M3.6's DSpark C4 wall exception), beside the drafter confidence calibration screen; the items taken from [DeepInfer](docs/deepinfer-assessment.md) (sampled speculation, tool calls on the chat route, the Messages route with the Claude Code profile, minimal prefix reuse, row read-ahead, 7-day retention) join its remaining families, formats, the importer's per-family normalizers, MLX serving
 qualification, batching gaps, media inputs, Clef/Jev and media generation
 routes (D-101) resume on that engine; M3.5's status at `cc70d69` is in
 [plan.md](docs/plan.md) and [model-support.md](docs/model-support.md).

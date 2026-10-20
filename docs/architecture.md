@@ -64,8 +64,8 @@
   capacity-driven with a 7-day idle cap under D-055's
   [retention policy](retention-policy.md), which also names M6's acceptance
   workload. Sessions and hints are optional extensions (D-022). M5 serves Chat
-  Completions, Responses and Messages with model listing and token counting
-  under the [D-040 client contract](client-api-baseline.md); client compatibility
+  Completions, Responses and Messages (Messages arrives in M3.5) with model
+  listing and token counting under the [D-040 client contract](client-api-baseline.md); client compatibility
   requires per-version execution evidence, including Cursor reachability.
   D-041 adds discovery, targeted continuation close, download/warm jobs and
   a tested Ollama subset; [scope and design guidance](api-capabilities.md) keep

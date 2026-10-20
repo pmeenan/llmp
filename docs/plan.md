@@ -621,8 +621,48 @@ family" guide, and its long-context scaling work.
       renderer-side guard. Every served LLM whose template declares tools
       (lifting Gemma 4's refusal of tool declarations, runtime-serving.md);
       checked with OpenCode, the named client on this route. The
-      Responses and Messages routes, and with them Codex and Claude Code,
-      stay M5's; strict tool arguments stay M7's constrained output.
+      Responses route, and with it Codex, stays M5's; Messages moves with
+      the next item; strict tool arguments stay M7's constrained output.
+- [ ] **Messages route and the Claude Code profile** (moved from M5 by the
+      owner, 2026-10-20), on the same front door and the tool-call engine
+      above, as [client-api-baseline.md](client-api-baseline.md#messages)
+      specifies them:
+      - `POST /v1/messages` (beta query handled independently of routing)
+        with system blocks kept apart from roles, `tool_use` and
+        `tool_result` blocks linked by `tool_use_id`, stop reasons and
+        truthful usage, and its SSE events (`message_start` on admission,
+        indexed content blocks, `input_json_delta` tool inputs, `ping`
+        during long silences including model switches, in-stream errors);
+      - `POST /v1/messages/count_tokens` from the model's own tokenizer and
+        rendering, with no decode or residency;
+      - `/v1/models` and `/v1/models/{id}` in the Anthropic list shape
+        (chosen by `anthropic-version` or `x-api-key`) for Claude Code's
+        opt-in discovery, with `display_name` and `description` (both
+        shapes stay M5's in full, with D-046's metadata);
+      - the Claude Code profile: bearer or `x-api-key` credentials accepted
+        and ignored on the anonymous listener (the optional API key stays
+        M5's), `anthropic-version` and bounded beta headers, and each
+        default field's handling: `thinking` rejected with the documented
+        400 naming it on every model without a reasoning contract (D-043;
+        all, until M7's); `context_management` and the beta tool-schema
+        fields disabled in the pinned setup
+        (`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`), since the client does
+        not retry their rejection; `output_config` rejected naming the
+        field; the prompt-too-long 400; `cache_control` advisory; the
+        attribution block stripped when it stands alone as the first
+        `system` entry, so shared-prefix identity excludes it; the hint
+        headers tolerated, default policy until M6's release semantics;
+        background requests aliased to the main model; `image` blocks with
+        the media-input item;
+      - the protocol's error shapes and wording with `retry-after` and
+        `x-should-retry` (D-045), inside D-097's listener and intake
+        bounds.
+
+      Done when a pinned Claude Code build, with the pinned profile's
+      settings, completes an agentic session with tool use against a served
+      LLM. M5 keeps the Responses
+      route, the rest of D-045's front-door rules and its acceptance, which
+      re-verifies Messages.
 - [ ] **Shared-prefix reuse across conversations, minimal** (moved from
       M6 by the owner, 2026-10-20): a new conversation whose rendered
       tokens begin with a retained boundary's (the renderer-reported end of
@@ -2064,16 +2104,18 @@ M3.
 - [ ] **Tokenization and output:** D-067 renderers for both fixture
       template hashes on M3's native tokenizer, stop rules and sampling
       (moved to M3), and the tool-call parser (moved to M3.5 by the owner,
-      2026-10-20; here it serves the Responses and Messages routes too);
+      2026-10-20, with Messages; here it serves the Responses route too);
       host versus device sampling is settled against D-052's decode
       gates.
 - [ ] **Front door** ([M5 surface](client-api-baseline.md#m5-surface)),
       growing from M3's minimal Chat Completions:
-      Chat Completions, stateless Responses, Messages with token counting,
-      `/v1/models` in both shapes with D-046's metadata, and the discovery
+      Chat Completions, stateless Responses, Messages with token counting
+      and the Claude Code profile (both moved to M3.5 by the owner,
+      2026-10-20; re-verified here), `/v1/models` in both shapes with
+      D-046's metadata, and the discovery
       document (D-041); D-045's listener, authentication, CORS, `Host`,
       status and keepalive rules; D-047's non-streaming and storage rules;
-      the Claude Code profile; and explicit rejection of `transforms` and
+      and explicit rejection of `transforms` and
       `plugins`. Numeric intake bounds are fixed before any external input
       is accepted, with the total input limit reconciled with named-client
       tests ([cluster design](cluster-design.md)).
