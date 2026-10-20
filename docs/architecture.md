@@ -296,13 +296,13 @@ substitute a fake at any provider boundary.
 | Resource core | `catalog`, `memory`, `retention`, `scheduler` | Resources, ledgers, victim selection, retention, tasks and admission |
 | Model | `tokenizer`, `chat`, `format`, `artifact`, `ir`, `model`, `execution`, `spec`, `components`, `planner` | The tokenizer; the chat renderers and, later, output parsers; tensor formats (encodings, layouts and the size rule, D-108); the artifact reader and verifier; the graph IR: op set, graphs, builder, verifier, canonical digest and primitive decompositions (D-107); state adapters, state contracts with the layouts, ranges and kept-layout identities derived from them, and a model's batching capability (what may join across requests); the operation contract with implementation capabilities and the format ladder, step shapes and plan keys (`step_shape.h`), planner and dispatcher, and sampling; the model spec, its canonical JSON and digest, and the architecture mappings that make specs from checkpoints (D-109), and its reading from a v1 artifact or composition (D-113), the only spec serving reads (D-118, D-119); the component catalog: each component's parameters, weight roles, state contract, batching capability, splits (as data), patterns, IR fragment and scalar CPU reference, and from a spec its validated instances, a stage's state layout and a step's primitive graph, the planner's input (D-107); `model/` holds state representations with their capabilities, state contracts (`state_contract.h`), live state, draft progress, model contexts, and image pipeline profile types (`image_pipeline.h`); no family code lives in `model/`: a model's spec is its v1 artifact's or composition's (D-118, D-119); the planner: the policy, the pattern table (fused rewrites and batches), implementation selection over the registry's capabilities with the primitive fallback, lanes and activation placement, from a step's primitive graph to a step plan, and partitioning: the least-traffic memory-feasible tensor, pipeline and expert parallel assignment for a described topology and the per-device graphs with their collectives (D-107) |
 | Kernels | `kernels/common`, `kernels/<source>` | The vendor-free step interface every kernel source lowers to (`common`: step programs, their launch and recording, a launch over the device runtime's recorded work, and what a kernel source gives the engine to plan and lower steps, its `StepBackend`, D-107); build-time implementations of operations: `ggml` and `exl3` first (D-053), with `llmp.image.*` operations inside `ggml`; `paging`, the engine's fill, row-gather, draft-id and range-copy kernels (CUDA, and host loops for the fake device runtime); `reference`, the CPU decoders of every tensor format that device implementations are checked against (D-108) and the reference executor of every IR op, the oracle of components and backend ports (every profile, D-107); `decode`, a block decoder per encoding and layout under shared vector, GLU, matrix, grouped and rows templates, which decode on chip and never expand a weight into device memory (CUDA, D-108) |
-| Engine | `engine` | The paged node, which composes the providers, the resource core and its lanes on one GPU; the runner skeleton every model is built from: weights as extents, live state with its spill and a verify's snapshot, runner memory, plan accounting, prefill lookahead, the request cohort, the shared slot lifecycle over the stages' state contracts (`slot_lifecycle.h`), and the one model runner over step programs (`model_runner.h`) with its step runs, wave composer, prefill orchestrator and decoding modes with any number of drafters (D-096, D-107, [engine.md](engine.md), [runtime-serving.md](runtime-serving.md)). It reaches the device only through the providers, the device runtime among them, and the kernels, and is built without CUDA's headers. Its core (`llmp_engine_core`: the node, weights, live state, runner memory, plan accounting and plan cache, prefill lookahead, the cohort, the shared slot lifecycle, and the one model runner over step programs with its step runs, wave composer, prefill orchestrator, decoding modes, and the component step source, which plans a spec's steps over a kernel source's `StepBackend`) names no kernel library and builds in every profile, where its tests run on the fake device runtime; in CUDA builds, `llmp_engine` adds GGML plan caches, graph runs, runner resources, and expert slabs (`planned.h`, `graph_runs.h`, `runner_resources.h`, `expert_slab.h`). No per-family runner code exists in the engine |
+| Engine | `engine` | The paged node, which composes the providers, the resource core and its lanes on one GPU; the runner skeleton every model is built from: weights as extents, live state with its spill and a verify's snapshot, runner memory, plan accounting, prefill lookahead, the request cohort, the shared slot lifecycle over the stages' state contracts (`slot_lifecycle.h`), and the one model runner over step programs (`model_runner.h`) with its step runs, wave composer, prefill orchestrator and decoding modes with any number of drafters (D-096, D-107, [engine.md](engine.md), [runtime-serving.md](runtime-serving.md)). It reaches the device only through the providers, the device runtime among them, and the kernels, and is built without CUDA's headers. Its core (`llmp_engine_core`: the node, weights, live state, runner memory, plan accounting and plan cache, prefill lookahead, the cohort, the shared slot lifecycle, the one model runner over step programs with its step runs, wave composer, prefill orchestrator, decoding modes, the component step source (`component_source.h`) and the staged execution runner (`staged_execution.h`: `StagedExecution`)) names no kernel library and builds in every profile, where its tests run on the fake device runtime; in CUDA builds, `llmp_engine` adds runner resources and expert slabs (`runner_resources.h`, `expert_slab.h`). No per-family runner code exists in the engine |
 | Services | `config`, `import`, `api`, `cluster`, `management`, `jobs` | The node's configuration, storage roles and served models (D-073, D-096); the native importer's container readers (GGUF, safetensors, MLX, EXL3, and diffusers pipelines), which read checkpoints as untrusted input into tensor formats, extents and source metadata for the architecture mappings (D-009, D-109; never the engine or a kernel module); owned normalization, bounded v1 publication and archive verification; protocol adapters, conductor and sessions, the management API, job processes |
 | Programs | `runtime`, job executables, `cli`, `tools` | Process wiring, startup and shutdown; `llmp-runtime`, the node runtime process (D-074), its serving commands `chat` and `swap-table` over the engine (D-096), the reference fleet's pinned checkpoints (`approvals.cc`) and direct stored-spec admission (`component_admission.cc`, D-118, D-119), model settings in three layers with calibration and `settings` command (D-103), hang recovery (D-102), kept conversations across restarts (D-105, D-112), chat HTTP server and listeners (D-097), and one serving adapter per pipeline kind over the shared runner (`EngineLlm` in `engine_llm.h` and `EngineImage` in `engine_image.h`), with the component engine's parts of an LLM (`component_build.h`, D-107); the import, install and archive processes; the CLI; build and diagnostic tools |
 
 - The resource core and the model layer hold no vendor types. The CPU-only
   build compiles and tests every module except the CUDA provider, the CUDA
-  kernel units and the engine's GGML plans and graph units, with no CUDA SDK visible
+  kernel units and `llmp_engine` (`runner_resources.cc`, `expert_slab.cc`), with no CUDA SDK visible
   (D-026, D-061's `check` tier); the engine core runs there on the fake
   device runtime and the host paging kernels; its runtime refuses the
   serving commands.
@@ -890,7 +890,7 @@ combined:
 | Commitments: `F`, `R(G)`, `J` and the active envelopes | Commitment ledger |
 | Occupancy by class: weights (leased, eligible), admitted state, retained entries, workspace and activations, I/O and communication buffers, runtime metadata, loading, evicting or awaiting write-back, quarantined, pool-held, and non-evictable backend or unknown allocations | Occupancy ledger, with shared backing counted once |
 | Spill: bytes held and bytes written in the rolling window | Retention cache and storage service |
-| Plans and captured graphs (host heap and driver memory outside extents) | Each runner's account, counted (`engine/planned.h`); past one step's floor, a pinned runtime extent in the occupancy ledger (D-090 as amended 2026-10-02) |
+| Plans and captured graphs (host heap and driver memory outside extents) | Each runner's account, counted (`engine/plan_account.h`, `engine/plan_cache.h`); past one step's floor, a pinned runtime extent in the occupancy ledger (D-090 as amended 2026-10-02) |
 | The runtime process's ordinary allocations | OS accounting for the process (RSS, its cgroup), which on the Spark misses VMM backing: device backing never appears, and host backing only while mapped with access |
 | Driver bookkeeping for the backing | Derived: the kernel's unreclaimable slab, about 34 KiB per 2 MiB extent while it exists and more while mapped on the Spark; charged to `F` |
 | Unattributed: the drop in `MemAvailable` not explained by cataloged occupancy, driver bookkeeping, ordinary allocations or page cache | Derived; a discrepancy to explain, never free memory |
@@ -1860,19 +1860,21 @@ Tests follow §18's layers, and D-061's local tiers decide where each runs:
 
 | Layer | Covers | Tier |
 | --- | --- | --- |
-| Native CPU | Catalog and aliasing, ledgers, victim selection, retention identity, parsers, artifact verification, renderers against golden fixtures | `check`: x86-64, and AArch64 under qemu-user |
-| Deterministic simulation | Fake providers with scripted delays, reordering, short reads, errors, unknown outcomes, full queues and cancellation races; the D-050, D-055 and cluster adversarial matrices | `check` |
+| Native CPU | Catalog and aliasing, ledgers, victim selection, retention identity, parsers, artifact verification, renderers against golden fixtures, every catalog component against its scalar CPU reference (`components_test`), planner and partitioning | `check`: x86-64, and AArch64 under qemu-user |
+| Deterministic simulation | Fake providers and the fake device runtime with scripted delays, reordering, short reads, errors, unknown outcomes, full queues and cancellation races; the D-050, D-055 and cluster adversarial matrices; `ModelRunner`, `SlotLifecycle` and decoding modes over fake step sources | `check` |
 | Sanitizers and packaging | ASan and UBSan, the copyleft-disabled build, offline source gates, `.deb` install | `check:full` |
-| Spark device and I/O | Map, load, verify, evict, restore; leases across streams; actual kernel reads; direct I/O on the target NVMe; memory-ordering stress; LSan and TSan | `check:spark` |
-| Model semantics | Teacher-forced logits and intermediates on the oracle ladder, before and after restoration ([backend-proof.md](backend-proof.md#numerical-oracles)); M3 adds the speculative contract and M9 the diffusion one ([model shapes](#model-shapes)) | `check:spark` |
-| Multi-model pressure | Partial eviction, reuse, fairness, the M6 A→B→A workload | `check:spark` |
+| Spark device and I/O | Map, load, verify, evict, restore; leases across streams; actual kernel reads; direct I/O on the target NVMe; memory-ordering stress; LSan and TSan; every catalog component × weight format against its CPU reference on synthetic weights (`components_catalog_gpu_test`) | `check:spark` |
+| Model semantics | Layer and end-to-end component/runner checks against the CPU reference and reference tolerances (`components_models_gpu_test`, `components_gemma4_models_gpu_test`, `component_runner_gpu_test`, `component_runner_qwen2_gpu_test`, `component_runner_qwen2_exl3_gpu_test`, `fp16_benchmark_gpu_test`, `dense_decoder_serving_gpu_test`), plus same-binary determinism, state-save/restore and speculative verify controls (`tests/support/v1_frozen.h`); M9 adds the diffusion contract ([model shapes](#model-shapes)) | `check:spark` |
+| Multi-model pressure | Partial eviction, reuse, fairness, the 32-row swap table and the M6 A→B→A workload | `check:spark` |
 | Two-node | Placement, routing, fencing and failure; later sharding and collectives | `check:spark` on both Sparks |
 | Client acceptance | Named clients against pinned profiles ([client-api-baseline.md](client-api-baseline.md#acceptance-owed-in-m5)) | Recorded runs; aggregate evidence in Git |
 
-Every pager invariant has tests on the fake backend and on hardware. A test
-that injects a fault asserts bounded occupancy and either eventual
-completion or an explicit, safe failure; the absence of an out-of-memory
-error is not a pass (D-050).
+Every pager invariant has tests on the fake backend and on hardware. GPU tests
+in CTest carry `RESOURCE_LOCK llmp_gpu` so parallel CTest workers serialize GPU
+context and unified-memory use while keeping CPU tests parallel. A test that
+injects a fault asserts bounded occupancy and either eventual completion or an
+explicit, safe failure; the absence of an out-of-memory error is not a pass
+(D-050).
 
 ## Build, repository and installation
 
@@ -1895,31 +1897,30 @@ excludes them before any source is fetched. `llmp --version` and the build
 receipt carry the product version, commit, license profile and SDK identity
 (D-062).
 
-### Repository shape (§20; a proposal for M1)
+### Repository shape
 
 ```text
 CMakeLists.txt  CMakePresets.json  mise.toml  mise.lock  .devcontainer/
 LICENSE  LICENSES/  NOTICE  CHANGELOG.md
-toolchains/{manifest.toml, artifacts.lock.json, provenance.toml}   cmake/toolchains/
-src/base/  src/platform/  src/providers/{fake,cuda}/
-src/catalog/  src/memory/  src/retention/  src/scheduler/
-src/artifact/  src/model/  src/execution/  src/kernels/{ggml,exl3}/
-src/api/  src/cluster/  src/management/  src/jobs/  src/runtime/  src/cli/
-modules/      optional implementation modules, each under its own license
+toolchains/{manifest.toml, artifacts.lock.json, provenance.toml}   cmake/
+src/base/  src/platform/  src/providers/{fake,cuda}/  src/config/
+src/catalog/  src/memory/  src/scheduler/
+src/tokenizer/  src/chat/  src/format/  src/ir/  src/spec/  src/components/
+src/model/  src/execution/  src/artifact/  src/planner/
+src/kernels/{common,reference,decode,ggml,exl3,paging}/
+src/engine/  src/runtime/  src/import/  src/cli/
 third_party/  curated vendored sources and patches with provenance (D-057)
 packaging/    Debian package, systemd units, sysusers and tmpfiles (D-063)
-tools/        setup, check, doctor and build-time tooling
-tests/{toolchain,unit,simulation,cuda,model,distributed,packaging}/   benchmarks/
-dashboard/ (M10)  docs/
+tools/        setup, check, doctor, spark-job, archive and build-time tooling
+tests/{toolchain,jobs,unit,version,smoke,sources,support}/   benchmarks/
+docs/
 ```
 
-The toolchain file set was confirmed on 2026-09-21. File metadata uses
-embedded headers and `.license` sidecars, not REUSE.toml (D-071). The source directories
-follow the [layers](#layers-and-dependency-rules), and M1 may rename them.
-There is no public `include/` tree (D-064). `docs/` keeps this scaffold's
-single-file decision and findings logs rather than §20's `docs/decisions/`
-directory. Directory names do not establish legal isolation; each module's
-license is explicit.
+File metadata uses embedded headers and `.license` sidecars, not REUSE.toml
+(D-071). The source directories follow the
+[layers](#layers-and-dependency-rules). There is no public `include/` tree
+(D-064). `docs/` keeps single-file decision and findings logs. Directory names
+do not establish legal isolation; each module's license is explicit.
 
 ### Conceptual native API (§20; confirmed 2026-09-21 as the starting shape; a sketch, not compilable)
 

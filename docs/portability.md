@@ -145,13 +145,16 @@ The engine (`src/engine/`) is above all four and holds no vendor code: it
 is built without CUDA's include path, so a CUDA header reaching it fails
 the build, and the boundary check fails a CUDA name. Its core
 (`llmp_engine_core`: the node, weights, live state, runner memory, plan
-accounting, prefill lookahead, the cohort) names no kernel library either,
+accounting and plan cache, prefill lookahead, the cohort, the shared slot
+lifecycle, the one model runner over step programs with its step runs,
+wave composer, prefill orchestrator and decoding modes, the component step
+source and the spatial graph executor) names no kernel library either,
 reaching the device through the device runtime and the paging kernels
 (`kernels/paging/`, which have CUDA kernels and host loops for the fake
 runtime), and builds in every profile; a program links one backend's
-runtime and paging kernels. The GGML plans, runs and family runners
-(`llmp_engine`) stay CUDA builds only, because they link the CUDA kernel
-modules and GGML graphs (D-096 as amended 2026-10-08).
+runtime and paging kernels. In CUDA builds, `llmp_engine` adds runner
+resources (`runner_resources.h`) and the expert slab (`expert_slab.h`)
+(D-096 as amended 2026-10-08).
 
 ### What moved out of the engine (2026-09-29)
 
@@ -178,12 +181,14 @@ rounds; `spark`, 2026-09-29): DeepSeek V4 Flash 22.13 and 22.21 tok/s on
 main, 22.10 and 22.16 on the slice; Qwen3.8 Flash Next 27.60 and 27.67 on
 main, 27.64 and 27.72 on the slice.
 
-**Left as it is:** the decode graphs of DeepSeek and Qwen3.8 are captured
-by the GGML kernel module's launch context (`kernels/ggml/launch.h`,
-`CapturedGraph`), which is kernel-layer code and may use CUDA; a backend
-without graphs replays launch by launch, the path those runners already
-take when graphs are off. `RecordedWork` is the same concept at the
-provider seam, which the kernel layer could adopt later.
+**Graph capture and replay:** step programs record and replay through
+`StepRuns` (`engine/step_runs.h`) and `StepLaunch::Record`
+(`kernels/common/step_program.h`) over `RecordedWork` (implemented on CUDA
+through the launch context in `kernels/ggml/launch.h` and
+`providers/cuda/cuda_device_runtime.cc`, and on the fake runtime in
+`providers/fake/fake_device_runtime.cc`); a backend without graphs (or a
+step whose bound implementations opt out of capture) replays launch by
+launch through `StepProgram::Launch`.
 
 ### What a new GPU backend supplies
 
@@ -273,31 +278,35 @@ provider: the rest is POSIX. Neither is started.
 
 ## The registry rule
 
-(D-053's note of 2026-09-29.) Every fused or fast operation has a fallback
-composed of primitive operations in the registry, so a new backend can run
-a model with primitives alone, and fused kernels are optional speedups.
+(D-053's note of 2026-09-29; updated for M3.6/M3.5, D-107.) Every fused or
+fast operation has a fallback composed of primitive operations in the
+registry, so a new backend can run a model with primitives alone, and fused
+kernels are optional speedups.
 
-**How plans choose today.** The registry's `Operation` enum
-(`execution/registry.h`) lists 57 operations, primitives and fusions
-alike, unmarked; an `Implementation` records nothing about what it is
-equivalent to, and `Resolve` binds exactly the names a plan records. Only
-one operation declares a fused and an unfused implementation
-(`ggml.rms_norm_mul.fused` and `.unfused`). Most fusion choices are not the
-registry's but the graph builders': which nodes they emit
-(`Dsv4GraphOptions::fused`, `Qwen38GraphOptions::fused`, `exact`,
-`experts`), plus `PlanGraph`'s `DeviceChoices` and upstream's four fusion
-gates (`kernels/ggml/fusion.h`). So "the fallback" is, per model, a graph
-built another way, not a registry entry.
+**How plans choose today.** Every model's step builds a primitive IR graph
+from the component catalog (`components::BuildStep`, `src/components/step.h`).
+`planner::Plan` (`src/planner/plan.h`) rewrites matched subgraphs using
+`planner::StandardPatterns()` (`src/planner/fusions.h`) under `planner::Policy`
+(`src/planner/policy.h`, unless `planner::PolicyMode::kPrimitive` or
+`DisabledPatterns` disables them), then selects an implementation per node from
+`execution::Registry` (`src/execution/registry.h`) using `CapabilityQuery`
+(carrying `ir::OpKey` (`ir::Op` and `ir::FusedKind`, `src/ir/op.h`), operand
+and output `TensorFormat`s, logical shapes, `StepShape`, `DeviceFacts`, node
+parameters and `automatic_rewrite` intent) and `Registry::Candidates`
+(`src/execution/registry.h`, ranked via `src/execution/measured_ranks.h`). When
+a fused or composite node finds no eligible implementation, the planner
+decomposes it via `ir::Decompose` (`src/ir/decompose.h`) into primitive IR ops
+before re-selecting.
 
-**Audit (2026-09-29):**
+**Audit across model families:**
 
-| Model | Primitive path today | Where the rule fails |
+| Model | Primitive path today | Where the rule still needs backend primitives |
 | --- | --- | --- |
-| Qwen2 FP16 fixture | Yes: the FP16-U plan, fusion off (`mul_mat`, `soft_max` attention, NEOX RoPE, `rms_norm`, SwiGLU, `get_rows`, `set_rows`) | none |
-| EXL3 fixture | No: its plan table admits `ggml.rms_norm_mul.fused` and `ggml.flash_attn_ext.vec` but not `.unfused`, and the EXL3 linear has only ExLlamaV3's kernels | the EXL3 trellis dequant and GEMM (any backend needs its own) |
-| DeepSeek V4 Flash | Mostly: the exact plan (`--exact on`) is llama.cpp's graph node for node, the unfused form of every fast-plan operation (`llmp.vecq`, `.dsv4.route`, `.combine`, `.hc_mix`, `.compress`, the fused norm, `mmvf_rows`) | `dsv4_hc_comb` (Sinkhorn), `dsv4_hc_post` and `lightning_indexer` have no composition of primitives; `mul_mat.fwht` is forced by its hint though the dense rotation matrix is at hand; attention is `flash_attn_ext` with sinks at D 512 only; the DSpark drafter's `llmp.argmax` has no alternative |
-| Qwen3.8 Flash Next | In the harness only (`llmp_qwen38_exec --unfused` on the GGML-layout artifact): MXFP8 dequant + `mul_mat`, `mul_mat_id` experts, GGML nodes for hyper-connections, routing and QSA | serving is always fused and fast from the CUTLASS-layout artifact, and the MTP drafter and batched verify exist only in the fast form; `ssm_conv`, `gated_delta_net`, `llmp.nvfp4.get_rows` and `llmp.argmax` have no alternative; `llmp.mxfp8.mul_mat_vec` is always chosen at 8 rows or fewer though dequant + `mul_mat` would do |
-| Qwen-Image-2.1 | No: the legacy plan is llmpalooza's own CUDA too, differing from the fast plan in five roles (cuBLAS instead of cuBLASLt, unfused gated residual, im2col convolution, unfused attention norm, plain conversion); no role is GGML's | every one of its 30 roles is a llmpalooza kernel or a cuBLAS product; 25 are declared for one implementation only |
+| Dense decoders (Llama, Mistral, Qwen2, Gemma 2/3) | Yes: `planner::Policy{.mode = planner::PolicyMode::kPrimitive}` (`kMatMul`, `kAttention`, `kRope`, `kRmsNorm`, `kUnary`, `kAdd`, `kMul`, `kGlu`, `kGetRows`, `kCacheStore`) | none |
+| EXL3 fixtures | `planner::Policy{.mode = planner::PolicyMode::kPrimitive}` for norms, attention and GLU; EXL3 linear uses the selected EXL3 source (`kernels/exl3/selected_source.h`) | the EXL3 trellis dequant and GEMM (any backend needs its own trellis decoder) |
+| DeepSeek V4 Flash | `planner::Policy{.mode = planner::PolicyMode::kPrimitive}` plus `ir::Decompose` for `Op::kHcMix` (`HcKind::kSinkhorn`) / `FusedKind::kSinkhornHcPre`, `FusedKind::kHcPre`, `FusedKind::kHcPost`, and `Op::kIndexScore` / `FusedKind::kRoundedIndexScore` | `kMatMul` with `Hint::kHadamard` (Hadamard rotation, or a dense `kMatMul` fallback), `kAttention` with sinks at D 512, `kVisibleTopK`, `kSelectedMask`, `kPrefixOverwrite` and `kArgmax` |
+| Qwen3.8 Flash Next | `planner::Policy{.mode = planner::PolicyMode::kPrimitive}` plus `ir::Decompose` for `FusedKind::kHcCombine`, `FusedKind::kHcPre`, `FusedKind::kHcPost`, `Op::kIndexScore`, `Op::kGatedDeltaNet` (`FusedKind::kGdnStep`) and `Op::kSsmConv` (`FusedKind::kGdnConv`), and `kernels/decode`'s on-chip decode templates (or GGML quantized products on GGUF) | `kAttention` at D 256 and 512, IMROPE, `kArgmax`, and a block decoder for NVFP4/MXFP8 (or short-block row gathers on GGUF) |
+| Qwen-Image-2.1 | `planner::Policy{.mode = planner::PolicyMode::kPrimitive}` plus `ir::Decompose` for the spatial fused kinds (`kSpatialChannelNorm`, `kRmsNormMulRopeSections`, `kLayerNormModulateSplit`, `kGatedResidualSplit`, `kGatedResidualModulateSplit`, `kDupUpAdd`) and primitive `Op::kGlu` and `Op::kConv2d` | BF16 GEMM, 3×3/1×1 `kConv2d`, non-causal and causal `kAttention` at D 128, 2D complex RoPE, `kChannelNorm`, `kUpsample` and `kConvert` |
 
 **Minimum primitive set a new backend needs**, taking each model's most
 unfused path that exists:
@@ -445,39 +454,33 @@ near-duplicates: weight paging (DeepSeek kept its own copy of
 `PagedWeights`), setup, plan caches and `PlaceAndPlan`, graph capture and
 replay, speculation's snapshot and rollback, state spill and restore,
 teardown (copied six times with the node and two harness runners) and the
-request's lease. They are now one skeleton in `src/engine/`
-([engine.md](engine.md)), which a runner holds as members, in the order of
-value the audit recommended:
+request's lease. M3.6 (D-107) replaced the per-family runners, plans and
+serving classes with one skeleton and one runner in `src/engine/`
+([engine.md](engine.md)):
 
 | Concern | Now | Was |
 | --- | --- | --- |
-| Graph capture and replay (D-090) | `step_runs.h`: `StepRuns` over step programs (staging, input and output copies, capture, replay, the launch-by-launch fallback), `StepPlanRuns`; `run_stats.h`: `GraphStats`, `RunPath` | two `QueueRuns`, `Stage`, graph eviction inline, path counting copied three times; `Dsv4Path` and `Dsv4GraphStats` (the harnesses keep those names as aliases) |
-| State spill and restore | `live_state.h`: `LiveState` regions, spill file, clear, read, places, quarantine | byte-identical `RegisterState`, `Clear`, `ReadState` in each |
-| Plans and shape caches | `plan_cache.h`: `BasicPlanCache` (indexed by the key's hash); `model_runner.h`: one plan per step shape over the step source; `coverage.h` | four identical `Planned` structs, `PlaceAndPlan` and `PlanPlaced`, four planning bodies, three coverage checks |
-| Speculation mechanics | `LiveState`'s snapshot: saves, `Accept`, the owed restore and a commit hook (Qwen3.8's kernel), `Rollback`, `Settle`; queued as the paging kernels' range copies on the job's stream, or through a GGML runner's launch context (`live_state_launch.h`) | the same semantics written twice |
-| Setup and teardown | `runner_memory.h` (own memory, staging) and `runner_resources.h` (cuBLAS, the launch context and registry), their ordered release; `ReleaseMapped` for the node, the runners and the FP16 and EXL3 harness runners | copied per runner |
-| Weight paging | `paged_weights.h` for every runner: host groups (DeepSeek's token table), `ExpertSlab`, per-extent groups, place checks; `LayOutSlab` moved here | DeepSeek's own `ReservePart`/`Register` |
+| Graph capture and replay (D-090) | `step_runs.h`: `StepRuns` over step programs (staging, input and output copies, capture, replay, the launch-by-launch fallback), `StepPlanRuns`; `run_stats.h`: `GraphStats`, `RunPath` | two `QueueRuns`, `Stage`, graph eviction inline, path counting copied three times; `Dsv4Path` and `Dsv4GraphStats` |
+| State spill and restore | `live_state.h`: `LiveState` regions, spill file, clear, read, places, quarantine; `slot_lifecycle.h`: `SlotLifecycle` derived from each stage's `StateContract` | byte-identical `RegisterState`, `Clear`, `ReadState` in each |
+| Plans and shape caches | `plan_cache.h`: `BasicPlanCache` (indexed by the key's hash); `model_runner.h`: one plan per step shape over `ComponentStepSource` (`component_source.h`); `coverage.h`: `CheckCoverage` | four identical `Planned` structs, `PlaceAndPlan` and `PlanPlaced`, four planning bodies, three coverage checks |
+| Speculation mechanics | `slot_lifecycle.h` (`SlotLifecycle::Accept`, `DiscardVerify`, `Settle`) over `LiveState`'s verify snapshot (`live_state.h`: `Save`, `Accept`, `Rollback`, `Settle`), queued as the paging kernels' range copies on the job's stream; `decoding.h` (`DecodingOrchestrator`) and `execution/program.h` (`DecodingMode`) | the same semantics written twice |
+| Setup and teardown | `runner_memory.h` (own memory, staging) and `runner_resources.h` (cuBLAS, the launch context and registry), their ordered release; `ReleaseMapped` for the node, `ModelRunner`, `StagedExecution` and the FP16 benchmark runner (`benchmarks/fp16_runner.h`) | copied per runner |
+| Weight paging | `paged_weights.h` for every runner: host groups, `ExpertSlab` (`expert_slab.h`), `PleTable` / `PleRead` / `PleRowPlan` / `PlanPleRows` (`ple_rows.h`), per-extent groups, place checks; `LayOutSlab` | DeepSeek's own `ReservePart`/`Register` |
 | The request's lease (D-093) | `PagedNode::WithRequest` | three copies of begin-body-end |
 
-What stays each family's own is its plan builder, state layout and steps
-(`*_plan.h`, `*_runner.h`); M3.6 removes that too, replacing the runners
-with one engine of shared components over llmpalooza's own graph IR
-([engine-components.md](engine-components.md), D-107). The image runner shares the weights, the
-resources and the pinned places; it holds no conversation state or GGML
-plans and records its one step through the device runtime, which the
-skeleton does not force on it. The serving classes in `runtime/serving.cc`
-(the audit's seventh item) stay as they are until each family moves to
-M3.6's one adapter per pipeline kind (`runtime/engine_llm.h`,
-`engine_image.h`), which with `Llm`'s conversation code (`runtime/llm.cc`)
-builds in every profile. A port changes the skeleton
-once: a backend without recorded work is `GraphRuns`' fallback, and a
-platform's spill file is `LiveState`'s. Both LLMs now check their places
-after a swap, still registered where they were and pinned (Qwen3.8 did
-not before); the image's are checked only as pinned, by the swap's
-check of every managed extent.
-
-Behaviour on the GB10 is unchanged, bit for bit where it was
-deterministic (the evidence is in plan.md's item for this slice).
+Every LLM runs on `ModelRunner` (`engine/model_runner.h`) over
+`ComponentStepSource` (`engine/component_source.h`) and `SlotLifecycle`
+(`engine/slot_lifecycle.h`), served through `EngineLlm`
+(`runtime/engine_llm.h`, assembled by `ComponentLlmBuild` in
+`runtime/component_build.h`) over `Llm`'s conversation logic
+(`runtime/llm.cc`), which builds in every profile. Image pipelines run on
+`StagedExecution` (`engine/staged_execution.h`), served through
+`EngineImage` (`runtime/engine_image.h`, assembled by
+`ComponentImageGenerationBuild` and `ComponentImageServingBuild` in
+`runtime/component_image_build.h`). A port changes the skeleton once: a
+backend without recorded work uses `StepRuns`' launch-by-launch fallback,
+and a platform's spill file is `LiveState`'s. Both LLMs and image pipelines
+verify their registered places after every swap.
 
 ## Distribution
 

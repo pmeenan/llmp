@@ -2309,10 +2309,12 @@ cache; these are reported tradeoffs, not a new quality threshold.
 Native C++, part of the distribution; no Python (D-109).
 
 - **Containers by capability**: GGUF, safetensors with `config.json`
-  (Hugging Face, including AWQ, GPTQ, ModelOpt NVFP4/MXFP8 and compressed
-  tensors), diffusers pipelines (each component an artifact in a D-089
-  composition), MLX, EXL3. Each reader normalizes tensors to encodings,
-  layouts and shapes and exposes the source metadata.
+  (Hugging Face: dense, ModelOpt NVFP4/MXFP8 and `compressed-tensors`
+  `dense` today; AWQ, GPTQ and non-dense `compressed-tensors` are
+  recognized and refused until their column-packed layout or scale fold
+  lands, see below), diffusers pipelines (each component an artifact in a
+  D-089 composition), MLX, EXL3. Each reader normalizes tensors to
+  encodings, layouts and shapes and exposes the source metadata.
 - **Architectures as data.** Tensor names and some semantics are
   architecture-specific: names differ between families, and some facts
   (Gemma's `(1 + w)` norm, which GGUF conversion folds into the weights and
@@ -2333,13 +2335,19 @@ Native C++, part of the distribution; no Python (D-109).
   records and the importer's identity in the manifest, compositions of
   version 1 that may carry a model's spec; the groups, chunks and page-in
   are v0's, and the reader takes both versions.
-- **Admission.** <a id="admitting-a-checkpoint"></a>A checkpoint of a known
-  architecture is supported once it passes a standard automated gate:
-  logits and perplexity against a reference engine on a fixed corpus, and
-  the state, spill and swap controls every model passes. The approved list
-  is data. The owner still approves which checkpoints are claimed in
-  [model-support.md](model-support.md) (AGENTS.md: agents never invent
-  supported combinations).
+- **Admission.** <a id="admitting-a-checkpoint"></a>The runtime admits any
+  format-v1 artifact or composition of a supported architecture directly from
+  its stored `spec.json`, its native tensor inventory, and its architecture's
+  declarative mapping (`runtime/component_admission.h`, D-119), without
+  requiring a compiled entry in `runtime/approvals.cc`. `runtime/approvals.cc`
+  pins the qualified reference fleet (D-118, D-119): when an artifact's source
+  receipts match a pinned row, admission additionally verifies its inventory
+  digest, transform records and spec digest and applies the row's qualified
+  envelope defaults and policy gates. Claiming a checkpoint as supported in
+  [model-support.md](model-support.md) still requires passing the quality gate
+  (logits and perplexity against a reference engine on a fixed corpus, and the
+  state, spill and swap controls every model passes) and owner approval
+  (AGENTS.md: agents never invent supported combinations).
 
 **As built: the container readers** (`src/import`, 2026-10-09). A reader
 turns a checkpoint into a `Checkpoint`: its files, opened as any file is
@@ -2672,26 +2680,31 @@ produce different math from the head-dimension default. Structural import and
 component-reference tests establish this route, not full-model numerical or
 performance qualification of these additional checkpoints.
 
-**Approval as data** (`runtime/approvals.h`, D-118, slice 4a, 2026-10-15).
-The approved checkpoints are one table, reviewed as a lock file: each
-entry's source receipts, complete native tensor inventory digest,
-the SHA-256 of the spec it executes (a target's stored `spec.json`; a
-stored drafter's composition with its named approved target, the
+**Approval as data** (`runtime/approvals.h`, D-118, slice 4a, 2026-10-15;
+amended by D-119, 2026-10-17).
+The reference fleet's pinned checkpoints are one table (`runtime/approvals.cc`),
+reviewed as a lock file: each entry's source receipts, complete native tensor
+inventory digest, the SHA-256 of the spec it executes (a target's stored
+`spec.json`; a stored drafter's composition with its named approved target, the
 drafter's values read from the GGUF metadata it keeps, `spec::SourceKeys`,
 or where it keeps none by its `DraftRecipe::values`: declarative facts from
-the actual target spec and its own tensor geometry),
-its envelope (context, owners, the context above which one owner; a
-default context is cut to it) and the gate keys that select its mapping's
-policy rule. The inventory digest covers every tensor's name, encoding,
+the actual target spec and its own tensor geometry), its qualified envelope
+defaults (`max_context`, `max_slots`, `wide_context`; an override past them is
+served with a warning in the log and in `llmp-runtime settings`) and the gate
+keys that select its mapping's policy rule. Under D-119, unpinned format-v1
+artifacts and compositions of supported architectures are admitted directly by
+structural and capability validation against their stored `spec.json`, native
+tensor inventory and declarative mapping (`runtime/component_admission.h`),
+deriving their envelope and policy gates from the stored spec and mapping.
+The inventory digest covers every tensor's name, encoding,
 layout, part, stacking, parameters and shape. Expert counts and affine
-quantization parameters are checkpoint properties pinned by that digest,
-not constants in admission's format checks; execution capabilities still
-decide which implementations support them. Receipts are the importer's
-declared ones, not re-hashed. Admission compares digests; it no longer
-synthesizes an expected spec from a compiled profile (every row pins one;
-Qwen3.8's ModelOpt and MLX rows since their native imports of 2026-10-15,
-which also record their applied folds and relayouts and the mapping their
-spec was synthesized by, `Approval::fold_tensors`, `relayouts`, `mapping`). A stored drafter's inventory and envelope are checked wherever it
+quantization parameters are checkpoint properties, not constants in admission's
+format checks; execution capabilities still decide which implementations support
+them. Receipts are the importer's declared ones, not re-hashed. Nothing is
+synthesized from a compiled profile to admit a v1 artifact (every pinned row
+names its spec digest, and Qwen3.8's ModelOpt and MLX rows also record their
+applied folds, relayouts and mapping, `Approval::fold_tensors`, `relayouts`,
+`mapping`). A stored drafter's inventory and envelope are checked wherever it
 composes, and a block drafter's bound and fill token come from its kept
 metadata. What serving does per architecture is its
 mapping's `ServingRecipe` (settings defaults, owner bounds, the shared
@@ -3217,12 +3230,17 @@ geometry; since that spec binds every tensor in one spatial layer, the
 importer groups the tensors as the component's structure divides them
 (`import::ComponentPlan::groups`: the text encoder's token table and one
 group a layer, the denoiser's globals and one a block, the VAE decoder's
-up blocks one each and the rest of it one). The pipeline's approval (`runtime/approvals.cc`,
-`ImageApprovals`) pins the composition's kept files and family digest and
-each component's sources, dense inventory and spec digest;
-`ReadImageAdmission` checks them all, then reads the family back through
-the schema as the profile every request's graphs are built from. Serving
-finds the mapping by the composition's architecture and takes the
+up blocks one each and the rest of it one). The reference pipeline's entry in
+`runtime/approvals.cc` (`ImageApprovals`) pins the composition's kept files and
+family digest and each component's sources, dense inventory and spec digest;
+`ReadImageAdmission` (`runtime/component_admission.h`, D-119) verifies those
+pins when the source receipts match, or admits an unpinned v1 composition of a
+registered `ImageMapping` directly by validating its stored family spec and
+each component's stored spec and tensor inventory, then reads the family back
+through the schema as the profile every request's graphs are built from (with
+each stage's DAG wiring carried in `spec::Stage::links` and `exports`, D-122,
+and executed through `engine::StagedExecution` in `engine/staged_execution.h`).
+Serving finds the mapping by the composition's architecture and takes the
 components' roles, the tokenizer, the prompt renderer, the policy and the
 default tuned attention rows from it.
 

@@ -170,14 +170,17 @@ history and evidence stay valid as recorded. The transfer item is retired.
 Kernel-level work behind the per-operation contract may continue meanwhile.
 
 **Carried in from M3.6** ([record](m36-record.md#deferred-items-from-the-reviews)): the importer's family-specific
-native normalizers (Qwen3.8's ModelOpt and MLX readers and the CLI dispatch),
+native normalizers (Qwen3.8's ModelOpt and MLX normalizers),
 generalized into mapping-driven normalizers when Nemotron NVFP4 brings a second
 ModelOpt model; MLX serving qualification (imported and admitted, not
 qualified for serving); the split NVFP4 experts' own fast products; the
 MXFP4/MXFP8 relayout of routed experts and dense NVFP4 linears;
 Nemotron 3.5 Super VL ([m35-families.md](m35-families.md)); the stored per-geometry
-image spec; EXL3 serving (RE-058's lock slots); and the carried review list
-of the record.
+image spec; EXL3 lock slots outside the shared pool base before an EXL3 model
+serves alongside GGML models ([RE-058](rough-edges.md)); masking head rows past
+`tokenizer_vocab` ([RE-050](rough-edges.md)); `Q4_0` as a KV cache encoding
+setting; full-weight Gemma 2/3 27B qualification; `native` preset test binaries'
+cuBLAS `RUNPATH`; and the remaining open items in the record's carried list.
 
 **M3.6 review follow-ups (owner, 2026-10-17).** A whole-milestone review of
 M3.6 found the one-engine structure sound but family knowledge moved into
@@ -186,43 +189,44 @@ branches, duplicated attention components and an unwired decode ladder,
 plus a set of correctness defects. The owner asked for all of it to be fixed
 before new families land; each item lands as one reviewed commit.
 
-- [x] R1 Runtime and engine correctness (HTTP intake, hang-ladder drain,
+- [x] R1 Runtime and engine correctness (`aba73a61`: HTTP intake, hang-ladder drain,
       approvals envelopes as defaults, kept-state and calibration fixes,
       spill-range growth, plan-cache index, the `Llm` interface, legacy code)
-- [x] R2 Kernel, decode and IR correctness (validator gaps, CUTLASS and EXL3
+- [x] R2 Kernel, decode and IR correctness (`40bf23e3`: validator gaps, CUTLASS and EXL3
       error paths, alignment, per-device opt-ins, latent IR rewrite bugs,
       dead kernel code)
-- [x] R3 Importer correctness and structural normalization (safetensors
+- [x] R3 Importer correctness and structural normalization (`f5ebd16a`, D-120: safetensors
       metadata, composition roles, open-world keys, no encoding or shape pins,
       kept tokenizer documents, reproducible artifact identity)
-- [x] R4 Mapping-driven admission and spec-derived bounds (no architecture
+- [x] R4 Mapping-driven admission and spec-derived bounds (`fe17e4ae`, D-121: no architecture
       branches in the runtime or CLI, container variants, gates and folds as
       mapping data, row and vocabulary bounds from the spec, admissible
       formats from capabilities; native Gemma 2/3 HF mappings and tokenizer
       assets, with 27B structural/tokenizer checks and full-weight qualification
       still pending)
-- [x] R5 Kernel gates by real limits (F16 GQA attention at head sizes
+- [x] R5 Kernel gates by real limits (`80ede618`: F16 GQA attention at head sizes
       64–192, parametric norm and MoE fusions, EXL3 beyond one fixture)
-- [x] R6 The decode ladder in every backend (dense NVFP4, MXFP8 grouped,
+- [x] R6 The decode ladder in every backend (`43f2f50a`: dense NVFP4, MXFP8 grouped,
       MXFP4; honest rungs, feature bits and measured ranks)
-- [ ] R7 Planner: quality-preserving fusions on by default, plan and
+- [x] R7 Planner (`d3374c67`: quality-preserving fusions on by default, plan and
       coverage reports, family constants out of the planner, `Operation`
-      retired
-- [x] R8 Tokenizer: GGUF and `tokenizer.json` pre-tokenizers from their
-      regexes, post-processors
-- [ ] R9 Components: one attention core (YaRN, sections, gate, sinks,
-      compression, selection), merged fused kinds, format-independent specs,
-      the image text encoder from token components
-- [ ] R10 Serving: one LLM route (every model batches by default), prefill
+      retired, activation memory reduced)
+- [x] R8 Tokenizer (`09ffb557`: GGUF and `tokenizer.json` pre-tokenizers from their
+      regexes, post-processors)
+- [x] R9 Components (`0d28a553`, D-122: one attention core with YaRN, sections, gate, sinks,
+      compression and selection, merged fused kinds, format-independent specs,
+      the image text encoder and denoiser from token components)
+- [x] R10 Serving (`e6c3617a`: one LLM route, every model batches by default, prefill
       policy in the engine, build and step phases, the image staged executor
-      in the engine
-- [ ] R11 Generality canary: a generic dense-decoder mapping and default
-      serving recipe; Llama 3.2 served
-- [ ] R12 Test coverage: layer-level reference-against-GPU checks per family,
-      the Qwen2/EXL3 controls, maintainable frozen expectations
-- [ ] R13 Docs: engine.md and portability.md describe the current code,
-      "how to add" checklists, AGENTS.md trimmed, the record's carried items
-      triaged
+      in the engine)
+- [x] R11 Generality canary (`b003c9a5`: a generic dense-decoder mapping and default
+      serving recipe; Llama 3.2 1B Instruct and Qwen2 served)
+- [x] R12 Test coverage (`aa92bd1f`: layer-level reference-against-GPU checks per family,
+      the Qwen2/EXL3 controls, `RESOURCE_LOCK llmp_gpu`, maintainable frozen expectations)
+- [x] R13 Docs: `engine.md` and `portability.md` describe the current code,
+      "how to add" checklists, `AGENTS.md` trimmed, the record's carried items
+      triaged, and closeout verification recorded
+      ([m35-r13-closeout](experiments/m35-r13-closeout/README.md))
 
 **Gemma31 gap closing, 2026-10-06:** [state reuse across Clear, capture beside
 eager execution and the fused decode FFN](experiments/gemma-gap-closing/README.md)

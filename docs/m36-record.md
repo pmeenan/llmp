@@ -340,12 +340,54 @@ evidence. The nested scope text, verbatim, is
   gate's verdict can differ between a cold and a soaked host. The final gates
   logged the GPU temperature before every session and after every run.
 
+## Post-gate changes
+
+Four M3.6 review commits landed immediately after the gated candidate
+`53c2610b` (`c1dcc8c1`, `fa1f7cad`, `235ff8e4`, `7283b964`), changing 95 `src`
+files (`c1dcc8c1`: component mask metadata, output-A fast-path geometry checks
+and format-rule inventory validation; `fa1f7cad`: partitioner `StreamBytes` and
+`MakeFull` deduplication, `PrologueOf` and written-state root checks,
+`QuantAttention` and `selected_grouped`/`decode::Accepts` gates, `ffn.moe`
+`hidden = 0` and `"pre"` placement, data-driven `KvCacheEncodingBytes` /
+`ApplyKvCacheEncoding`, `FromRatio`/`FromOrRatio` mapping rules, and deleting
+orphaned `live_state_launch.{h,cc}`; `235ff8e4`: D-119 direct admission of
+unpinned v1 artifacts, family-neutral `model/image_pipeline.{h,cc}` and
+retiring `src/kernels/image/`, Qwen2 safetensors mapping, unified indexed-part
+normalizer dispatch, atomic `RenameNoReplace` publication, `execution/step_shape.h`,
+and `sigmoid_topk` routing; `7283b964`: effective draft vocabulary in settings
+and factory identities, 64-bit gathered-row offsets, partitioner side-source and
+shared-weight deduplication, shared MoE branch clamp, VAE bounds from levels,
+and independent product policy choices). At `7283b964` the shared (`2,899/2,899`)
+and `models` (`214` entries: `190` passed, `24` skipped, `0` failed) sets were
+rerun on `spark-b` with frozen digests unchanged; speed was not re-gated at
+`7283b964`.
+
+The M3.5 review follow-up campaign (`R1`–`R13`, tracked in [plan.md](plan.md))
+then resolved the remaining review items across `aba73a61` (R1), `40bf23e3` (R2),
+`f5ebd16a` (R3, D-120), `80ede618` (R5), `fe17e4ae` (R4, D-121), `43f2f50a` (R6),
+`09ffb557` (R8), `d3374c67` (R7), `e6c3617a` (R10), `0d28a553` (R9, D-122),
+`b003c9a5` (R11: generic dense-decoder mapping and `kDefaultServingRecipe`; Llama 3.2 1B
+Instruct and Qwen2 served through `EngineLlm`), and `aa92bd1f` (R12: `components_catalog_gpu_test`,
+wired Qwen2/EXL3/FP16 controls, `record_to_json.py` re-record workflow,
+configurable `LLMP_TEST_V1_STORE`, and `RESOURCE_LOCK llmp_gpu`). Two-block
+ABBA tier-1 speed and teacher-corpus quality screens ran in R6 (`43f2f50a`),
+R7 (`d3374c67`), R10 (`e6c3617a`), and R9 (`0d28a553`), followed by a full
+closeout verification on `aa92bd1f` against `53c2610b`
+([m35-r13-closeout](experiments/m35-r13-closeout/README.md)): all `3,375` shared
+tests, `2,789` CPU-only guardrail tests (`LLMP_CUDA=OFF`), and `216`
+`models|timing` tests pass; all 32 M3 swap-table rows (`image -> deepseek`
+first use `27.354 s → 8.733 s`) and 24 Gemma near-8K switch rows pass; peak
+memory drops by `−4.30 GiB` on `qwen38`, `−4.44 GiB` on `qwen38-gguf`, and
+`−1.68 GiB` on `gemma31`; and every served family confirms speed against the
+M3.6 final table and M3 baseline.
+
 ## Deferred items from the reviews
 
 The reviews' follow-up queue (the main agent's notes, formerly in the
-temporary handoff file, deleted at closeout), classified at closeout. Items not marked "verified" were
-classified by topic from the review's own words and must be re-checked against
-the tree before they are taken.
+temporary handoff file, deleted at closeout), classified at closeout and updated
+after the post-gate M3.6 commits (`c1dcc8c1`–`7283b964`) and the M3.5 review
+follow-up slices (`R1`–`R12`, `aba73a61`–`aa92bd1f`). Remaining open items are tracked in
+[plan.md](plan.md) and [rough-edges.md](rough-edges.md).
 
 **Fixed or moot in M3.6**
 
@@ -382,86 +424,118 @@ the tree before they are taken.
 
 **Carried to M3.5** (the family, importer and formats track)
 
-- Importer and mapping language: the family-specific native readers
-  (generalize into mapping-driven ModelOpt and MLX normalizers with Nemotron
-  NVFP4); layer-count-dependent query-scale rules (Gemma 2 46-layer and
-  Gemma 3 62-layer 27B models); Gemma 2's `rsqrt(key_length)` rule below 27B;
-  requiring the target stage first and refusing stage-read cycles; Gemma 3's
-  `sliding_window 0`; verifying mappings against the pinned llama.cpp; stacked
-  experts' tensor scale as one F32 part, `Exl3Codebook` names and member
-  alignment in artifact placement; v0 `Q8_1` size 40 against GGML's 36 in
-  `format_map`; the spec JSON's nesting limit; split-NVFP4 experts' own fast
-  products (a grouped vector product for decode rows and the block-scaled
-  grouped GEMM over split scales); MXFP4 and MXFP8 routed experts and dense
-  NVFP4 linears are not relaid out; MLX serving qualification; a Qwen3.8
-  drafter with another head list.
-- Components and lifecycle: the heads component masking logit rows past the
-  tokenizer (RE-050); `fused.mul_mat_glu`'s operand order (gate 0, up 1,
-  input 2) defined by the IR rather than assumed by the decode declarations;
-  `Admit` with `advance=false` not checking `past` against slot positions
-  (drafter stages) and `PrefillOutcome` dropping a step's joined outputs;
-  the prefill future's join check also needing equal `want_head`; failed-job
-  quarantine counting owed work as written (over-quarantine only); multi-level
-  verification (the cascade runs on the fake backend only); whether the
-  Gemma 4 assistant needs every row's feature (`narrow_final` stays off with
-  taps); a longer independent Gemma 2/3 numerical reference; the unexplained
-  0.46 to 0.70 logit gap between the reference and production Gemma 3 paths
-  (investigate if a quality control disagrees); `CapabilityQuery` carrying no
-  node parameters or output encodings (GGML fused capabilities cannot refuse
-  rotation mode, dims or a softcap other than 50; `llmp.q8_1` cannot tell
-  targets apart), `PlanKey` omitting capturability; `SlotLifecycle`'s missing DiscardVerify/Settle verb,
-  mid-restore `CheckActive` and borrow tokens; all-or-nothing widening
-  acquisition across owners; `CheckReads` accepting only post-final-norm taps
-  and stage 0 as target (MTP pre-norm hidden state, drafter cascades);
-  borrowed-state store refusals and clamping reads to the target's committed
-  positions; `ffn.moe`'s `gemma_route_reduce` and the `kView` of an
-  expert-local value; MTP catch-up stale rows; the Gemma 4 assistant's fixed
-  depth 3 (no adaptive depth, no device verdict); node order depending on
-  argument-evaluation order (sequence builder calls into locals before a
-  second compiler matters).
-- EXL3 serving: capabilities declaring nothing row-invariant or capturable;
-  reconstruction limited to `sm_121` pinned shapes (planner must drop candidates
-  without a pin); priority order against upstream; RE-058's lock slots before an
-  EXL3 model serves.
-- Lossy KV: Q4_0 as a setting, and borrowed or specialized state at other
-  shapes than D-117's bounds (a convert-then-tensor-core prefill path for
-  quantized caches is M9's measurement).
-- Licensing sweep residue: untagged `src/kernels/ggml` files that restate GGML
-  asserts (`validate.cc`, `validate_ext.cc`), the ExLlamaV3 notice guard for
-  `decode_exl3.cc`, the YaRN attribution comment; the owner's open question
-  whether `src/components` carries llama.cpp's MIT notice (docs/licensing.md).
-- Test infrastructure: `CudaPageIn.RepeatedCancellationsNeverCorruptAReassignedSlot`
-  segfaulted once under concurrent load (2026-10-15, main `5b21fe48`) and
-  passed 15 times alone; it did not recur in the final check set, but
-  investigate if it does; the `native` preset's test binaries lack the cuBLAS
-  RUNPATH (the sm_86 proof needed `LD_LIBRARY_PATH`); GPU test flakes under `--parallel 20` (CUDA "no context"
-  under memory pressure; a `RESOURCE_LOCK` or parallel cap for all `gpu`
-  tests); cpu-asan's `-fsanitize=function` failures on GGML `to_float` calls;
-  an ASan run of the importer mutation test; v1 has no independent oracle until
-  M5's verifier; `CheckImporter` duplicated in `artifact.cc` and
-  `composition.cc`.
+- Importer and mapping language:
+  - *Closed in `c1dcc8c1`–`b003c9a5`:* indexed-part normalizer dispatch
+    unified in `src/cli/import.cc` (`235ff8e4`) and central recognition/dispatch
+    registry in `import/source_mapping.cc` (`fe17e4ae`, R4); `FromRatio` /
+    `FromOrRatio` ratio rules (`fa1f7cad`) and native Gemma 2/3 HF import with
+    explicit `query_pre_attn_scalar` and GGUF `<arch>.attention.scale`
+    (`fe17e4ae`, R4); requiring stage 0 as target, refusing stage-read cycles,
+    Gemma 3 `sliding_window` handling, and verifying mappings against the pinned
+    converter/source (`fe17e4ae`, R4); structural metadata normalization,
+    `Exl3Codebook` marker/format validation, member alignment, `Q8_1` block size,
+    spec JSON bounds, and `PartsOf` multipart expert placement (`f5ebd16a`, R3;
+    `fe17e4ae`, R4); dense NVFP4, MXFP8 grouped, and MXFP4 decode-ladder paths
+    wired (`43f2f50a`, R6); unpinned v1 artifacts and drafters with another head
+    list or none admitted structurally (`235ff8e4`, D-119; `aba73a61`, R1;
+    `fe17e4ae`, R4); generic dense-decoder mapping covering `qwen2`, `llama` and
+    `mistral` across GGUF, safetensors and EXL3 (`b003c9a5`, R11).
+  - *Still open in M3.5 ([plan.md](plan.md)):* generalizing the retained
+    Qwen3.8 ModelOpt and MLX normalizers into mapping-driven normalizers when
+    Nemotron NVFP4 brings a second ModelOpt model; split-NVFP4 experts' own
+    fast products (a grouped vector product for decode rows and the
+    block-scaled grouped GEMM over split scales); MXFP4 and MXFP8 routed-expert
+    and dense-NVFP4 relayout; MLX serving qualification; full-weight Gemma 2/3
+    27B qualification.
+- Components and lifecycle:
+  - *Closed in `c1dcc8c1`–`aa92bd1f`:* vocabulary bounds derived from
+    the stored target head and enforced (`fe17e4ae`, R4; `0d28a553`, R9);
+    `fused.mul_mat_glu` operand order (gate 0, up 1, input 2) defined and
+    verified by the IR (`40bf23e3`, R2); `SlotLifecycle` `Admit` position
+    checks, `Settle`/`DiscardVerify`, mid-restore `CheckActive`, borrow tokens,
+    all-or-nothing widening acquisition, `PrefillOutcome` joined outputs,
+    `want_head` join checks, failed-job quarantine accounting, and feature copy
+    coalescing (`aba73a61`, R1; `e6c3617a`, R10); multi-level verification and
+    engine-owned `PrefillOrchestrator`, `PrefillLookahead`, `WaveComposer`,
+    `DecodingOrchestrator` and `StepTransaction` (`e6c3617a`, R10); layer-level
+    CPU reference vs GPU checks across every catalog component and family
+    (`components_catalog_gpu_test`, `aa92bd1f`, R12) and Gemma 3 grouped cache-store /
+    shared planner pattern qualification (`43f2f50a`, R6; `d3374c67`, R7);
+    parametric `CapabilityQuery` node/format predicates and capture-aware
+    `PlanKey` (`80ede618`, R5; `43f2f50a`, R6; `d3374c67`, R7); general
+    `CheckReads` stage taps, borrowed-state store refusals and committed-position
+    clamping (`fa1f7cad`; `aba73a61`, R1; `fe17e4ae`, R4; `0d28a553`, R9);
+    `ffn.moe` `gemma_route_reduce`, `kView` of expert-local values and MTP
+    catch-up rows (`fa1f7cad`; `40bf23e3`, R2; `80ede618`, R5; `e6c3617a`, R10);
+    builder evaluation-order independence and unified `attention.dense` v1 with
+    merged fused kinds and format-independent specs (`40bf23e3`, R2; `0d28a553`,
+    R9).
+  - *Still open ([plan.md](plan.md), [rough-edges.md](rough-edges.md)):* RE-050
+    (masking logit rows between `tokenizer_vocab` and `vocab_size` when a head is
+    wider than its tokenizer); adaptive depth / device verdict for the Gemma 4
+    assistant (M9).
+- EXL3 serving:
+  - *Closed in R5 (`80ede618`), R6 (`43f2f50a`) and R11 (`b003c9a5`):* EXL3 fallback launch geometry derived from
+    device facts (`80ede618`, R5); EXL3 sources wired through capability
+    queries, capture-aware `PlanKey` and separately paid backend state, dropping
+    reconstruction candidates without a pin (`43f2f50a`, R6); EXL3 Qwen2 served
+    end-to-end through `rt::Server` / `EngineLlm` (`dense_decoder_serving_gpu_test`,
+    `b003c9a5`, R11).
+  - *Still open ([rough-edges.md](rough-edges.md), [plan.md](plan.md)):* RE-058
+    (allocating `SelectedSource`'s device barrier slots outside the shared pool
+    base before an EXL3 model serves alongside GGML models in production).
+- Lossy KV:
+  - *Closed in `fa1f7cad` and R9:* `KvCacheEncodingBytes` and
+    `ApplyKvCacheEncoding` made data-driven over component parameter
+    declarations (`fa1f7cad`), and attention unified onto `attention.dense` v1
+    (`0d28a553`, R9).
+  - *Still open ([plan.md](plan.md)):* `Q4_0` as a setting (M3.5), and a
+    convert-then-tensor-core prefill path for quantized caches (M9).
+- Licensing sweep residue:
+  - *Closed in `c1dcc8c1`, `235ff8e4`, `40bf23e3` (R2) and `0d28a553` (R9):*
+    SPDX sidecars and attribution comments added for M3.6 preregistration files,
+    CUTLASS BSD-3-Clause headers, `validate.cc`/`validate_ext.cc`,
+    `decode_exl3.cc` and YaRN/component sources; REUSE and header gates clean.
+- Test infrastructure:
+  - *Closed in R3 (`f5ebd16a`) and R12 (`aa92bd1f`):* `CheckImporter` deduplicated into shared bounded
+    validation in `src/artifact/` (`f5ebd16a`, R3); `RESOURCE_LOCK llmp_gpu`
+    applied to all `gpu`-labeled CTest targets to prevent concurrent GPU context
+    exhaustion under `--parallel` (`aa92bd1f`, R12); all 19 Qwen2/EXL3/FP16 fixture tests,
+    importer model tests, tokenizer/chat model tests, and `gemma_engine_greedy`
+    wired to published v1 artifacts and `LLMP_TEST_V1_STORE` with `0` skips in
+    the shared 3,373-test suite (`aa92bd1f`, R12).
+  - *Still open ([plan.md](plan.md)):* `CudaPageIn.RepeatedCancellationsNeverCorruptAReassignedSlot`
+    (monitor if the one-off `5b21fe48` segfault recurs); `native` preset test
+    binaries' cuBLAS `RUNPATH`; `cpu-asan` `-fsanitize=function` on GGML
+    `to_float` calls and running the importer mutation test under ASan (`check:full`
+    / `check:spark` shipment tiers); M5's standalone artifact verifier.
 
 **Carried to M4** (two Sparks)
 
 - A shared pageable workspace rules out two models executing concurrently on
   one node: revisit with placement (a workspace per executing model, or
   disjoint ranges of one).
-- Partitioning: a TP stage never mixes split and replicated layers; the device
-  cap is 16; no embedding split by vocabulary; EP is local experts plus a mask
-  plus one all-reduce (no all-to-all, no DP-attention mode); EP with one expert
-  per device is refused at device-graph verification; EP's mask-by-zero turns a
-  non-finite other-device product into NaN (use select).
-- Lowering with several devices: `GgmlStepLaunch` ignoring the stream it is
-  given (the backend must be built on the runner's job stream), one backend per
-  runner across swaps, `MmvqRouted`'s 3-D count, capabilities that accept more
-  than the lowering builds.
+- Partitioning: side sources and stream mixing, `StreamBytes` scaling by
+  `max(1, stage.streams)`, `MakeFull` collective deduplication, sparse side
+  transfers, shared-weight deduplication in search budgets, and device
+  bandwidth/compute accounting were closed in `fa1f7cad`, `7283b964` and
+  `d3374c67` (R7). Remaining for M4 ([plan.md](plan.md)): mixing split and
+  replicated layers within a TP stage; raising the 16-device cap if needed;
+  vocabulary-split embeddings; EP all-to-all / DP-attention mode, single-expert-per-device
+  device-graph verification, and `select` in place of mask-by-zero for
+  non-finite other-device products.
+- Lowering with several devices: `GgmlStepLaunch` stream binding, one backend
+  per runner across swaps, `MmvqRouted`'s 3-D count, and any remaining
+  multi-device lowering checks remain M4's ([plan.md](plan.md)).
 
 **Carried to M9** (the full-engine optimization pass)
 
-- Performance leads: Qwen3.8 MTP activation sizing (8.05 GiB at four slots
-  against 1.42 GB in M3); plan building about 12 against 9 ms a shape
-  (BuildStep, Plan, lower, bind; joined steps admit each owner twice) and the
-  decode-first lookahead for a new shape; the 0.25 s that a swap into
+- Performance leads: Qwen3.8 MTP activation memory was reduced by −4.53 GiB on
+  `qwen38` and −4.37 GiB on `qwen38-gguf` in `d3374c67` (R7: backend aliasing
+  and liveness facts in backend placement), and duplicate per-owner step builds
+  in joined prompt batches were collapsed to a single build in `e6c3617a` (R10).
+  Remaining for M9 ([plan.md](plan.md)): further MTP activation and plan-build
+  reductions and decode-first lookahead for a new shape; the 0.25 s that a swap into
   Qwen3.8 loses to mapping the workspace after the reads; decode
   template leads (vector template register blocking at 16 rows, a grouped
   warp-per-row decode variant, multi-stage tiles); one-shape-per-band probes
@@ -486,10 +560,9 @@ the tree before they are taken.
   slowed image swaps 1.4 to 2.5 s); (b) the **dedicated physical handle
   pool** (promoted to M3.5's first work item, above) beside the shared-machine mode ([features.md](features.md), the
   "Physical-memory mode per node" row, proposed on the owner's direction
-  and amended in `be5c4db6`); (c) **Qwen3.8 MTP's 8.05 GiB of activations**
-  at four slots (1.42 GB in M3), which is what forces the paged workspace in
-  M3's swap configuration and explains the +7.7 to +7.9 GiB peak of both
-  Qwen gates; (d) the **image to deepseek first-use swap at 27.354 s** (the
+  and amended in `be5c4db6`); (c) **Qwen3.8 MTP's activation footprint**
+  at four slots (8.05 GiB at `53c2610b`, reduced by 4.53 / 4.37 GiB in R7
+  `d3374c67`; 1.42 GB in M3); (d) the **image to deepseek first-use swap at 27.354 s** (the
   workspace pages for the first load beside DeepSeek; inside the 40 s
   first-use bound, its prepared return 8.804 s).
 - The remaining Qwen and DeepSeek speed gaps accepted at M3 (m3-record.md)
@@ -498,12 +571,15 @@ the tree before they are taken.
 ## Work handed on
 
 - **M3.5 resumes** on this engine: a family is an architecture mapping, any
-  components its shape lacks, and an approvals row with its evidence. First
-  work item: physical memory modes (below). Then Nemotron 3.5 Super VL
-  (owner-requested), the importer's per-family
-  normalizers generalized, MLX serving qualification, split-NVFP4 fast
-  products, MXFP4/MXFP8 relayout. The carried list above is its starting
-  queue, with [m35-families.md](m35-families.md).
+  components its shape lacks, and (for the reference fleet) an approvals row
+  with its evidence (unpinned v1 artifacts of supported architectures admit
+  directly under D-119, `235ff8e4`). Following the `R1`–`R13` review follow-up
+  campaign (which added the generic dense-decoder mapping and served Llama 3.2
+  1B Instruct and Qwen2 in R11, `b003c9a5`), the next work items are physical memory modes
+  (below), Nemotron 3.5 Super VL (owner-requested), generalizing the importer's
+  ModelOpt and MLX normalizers, MLX serving qualification, split-NVFP4 fast
+  products, and MXFP4/MXFP8 relayout. The remaining open items in the carried
+  list above and [m35-families.md](m35-families.md) form its queue.
 - **M4:** two-Spark execution of the planner's partitions; concurrent models
   on one node need the placement work above.
 - **M9:** the optimization leads above, on top of the shared engine.
@@ -512,20 +588,20 @@ the tree before they are taken.
   `confirmed`), the fix for the DSpark C4 wall exception above (RE-059).
 - **Workspace and memory modes (the rest, M9):** the per-extent mapping
   hypothesis, the dedicated physical handle pool beside the shared-machine
-  mode (features.md), and Qwen3.8 MTP's 8.05 GiB of activations; the image to
-  deepseek first-use swap at 27.354 s; RE-057 (drop the artifact stores' page
-  cache before timing) and RE-058 (EXL3's lock slots before an EXL3 model
-  serves); the heat-soak note above.
+  mode (features.md), and any remaining Qwen3.8 MTP activation gap after R7
+  (`d3374c67`); the image to deepseek first-use swap at 27.354 s; RE-057 (drop
+  the artifact stores' page cache before timing) and RE-058 (EXL3's lock slots
+  before an EXL3 model serves alongside GGML models); the heat-soak note above.
 - **Tooling and environment:** the `native` preset's test binaries lack the
   cuBLAS RUNPATH (they run only with `LD_LIBRARY_PATH` set); the
   workstation's NVIDIA driver is mismatched, kernel 595.91.07 against
   userspace 595.99.02 (the owner's to fix; the sm_86 proof ran through it).
-- **Skipped tests:** 19 Qwen2/EXL3/FP16 fixture tests need sealed inputs
-  (the corpus, trajectory and held-out oracles) that were not wired to the
-  final run, five importer tests need real source checkpoints, two Qwen3.8
-  head tests need the authenticated head fixture, and
-  `ImageGenerationGpu.SameSourceMigrationScreen` needs its explicit screen;
-  all env-gated, none failed.
+- **Skipped tests (resolved in R12, `aa92bd1f`):** the 19 Qwen2/EXL3/FP16 fixture tests,
+  importer model tests, and `gemma_engine_greedy` are now wired to the
+  published v1 store (`LLMP_TEST_V1_STORE`) and deterministic controls (`aa92bd1f`, R12);
+  only opt-in full-checkpoint publication tests and explicit diagnostic screens
+  remain env-gated in `models|timing`, and the shared suite (`-LE 'models|timing'`)
+  runs 3,373/3,373 with 0 skips.
 - **Shipment:** the tiers `check`, `check:full` (sanitizers, container,
   offline copyleft-disabled), `check:spark` (cross, ASan, TSan) and the
   package install fixture, plus the confined-job proof, are owed before

@@ -29,8 +29,9 @@ Its MLX import (`Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80`, its norms
 and A folded as ModelOpt's) has a pinned approval row and is admitted, but
 is not qualified for serving yet: no serving comparison or speed gate has
 run on it, a separate later task. Qwen3.8's v0 GGML-experts form has no v1
-import and is no longer served. The Qwen-Image composition keeps its v0 ID until the image
-slice moves it to stored spec data with its approval row.
+import and is no longer served. Qwen-Image-2.1 is served from its v1
+composition (`ecd27c74…`) with its stored family spec (`ef266ac1…`) and
+component `spec.json` files.
 
 Plain target-only greedy decode now publishes a device I32 token by default
 for DeepSeek V4 and native/GGUF Qwen3.8, as for Gemma. Short scalar/joined own
@@ -775,10 +776,9 @@ controls, not a held-out PPL, all-context or HTTP parity qualification.
 
   | Mode | Where |
   | --- | --- |
-  | Greedy, plain | runtime (`--plain`) and harnesses |
-  | Greedy, speculative with MTP (adaptive depth 2–3; fallback cap 65,536, selected artifacts capped at their physical rows) | runtime (the default with a drafter) and `llmp_qwen38_spec --draft 3 --adaptive-depth on` |
-  | Seeded sampling, plain and speculative | `llmp_qwen38_spec` and the runtime's chat/literal routes; shared sampler and branch/key/resume mapping reviewed ([mapping](experiments/qwen38-concurrent-oracle/README.md#sampling-evidence-applicability)); no new HTTP histogram measurement |
-  | Exact (reference) form, `--exact` | harness only (`llmp_qwen38_exec`); speculation has no exact mode |
+  | Greedy, plain | runtime (`--plain`) |
+  | Greedy, speculative with MTP (adaptive depth 2–3; fallback cap 65,536, selected artifacts capped at their physical rows) | runtime (the default with a drafter) |
+  | Seeded sampling, plain and speculative | the runtime's chat/literal routes; shared sampler and branch/key/resume mapping reviewed ([mapping](experiments/qwen38-concurrent-oracle/README.md#sampling-evidence-applicability)); no new HTTP histogram measurement |
 
 - **Context:** exercised to 8,704 (8,192-token prefill and the swap
   table's 8K conversation); since the long-context baseline, through the
@@ -834,10 +834,10 @@ controls, not a held-out PPL, all-context or HTTP parity qualification.
     ([qwen38-native](experiments/qwen38-native/README.md#results-second-pass)).
   - The near-tie bound was set after the first comparison with the
     oracle, not pre-registered.
-  - The reference and unfused graphs' QSA top-k is not repeatable past
-    2,051 attended cells (RE-031), and their chunks stay bounded by
-    RE-037; the default fast form breaks ties by cell and repeats at any
-    depth.
+  - The retired harness reference and unfused modes' QSA top-k was not
+    repeatable past 2,051 attended cells (RE-031), and their chunks stayed
+    bounded by RE-037; the runtime's default fast form breaks ties by cell
+    and repeats at any depth.
   - The NVFP4 `tokenizer.json` normalizes to NFC, llama.cpp's Qwen3.8 GGUF
     does not (6 corpus items differ); llmpalooza follows the NVFP4 file, as
     vLLM does.
@@ -953,9 +953,10 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   stores ([engine-components](engine-components.md#image-pipelines)).
 - **Checkpoint:** `Qwen/Qwen-Image-2.1@790c9263`, BF16
   ([pins.json](experiments/fast-swap/pins.json)).
-- **Artifacts:** v1 composition `2170db12…` (D-089, D-113, `llmp import`
-  of the pipeline) naming text encoder `a7c279d2…`, denoiser `3ee9bd00…`
-  and VAE `2ef349d5…`, each the tensors text to image runs; its approval
+- **Artifacts:** v1 composition `ecd27c74…` (D-089, D-113, `llmp import`
+  of the pipeline) naming text encoder `45a2bb33…` (spec `b815577c…`),
+  denoiser `aca990f3…` (spec `c43b66a6…`) and VAE `d747e8b3…` (spec
+  `fe40715a…`), each the tensors text to image runs; its approval
   pins the family spec `ef266ac1…`. The v0 composition `eca21baa…`
   ([qwen-image-native](experiments/qwen-image-native/README.md#what-runs))
   is no longer served.
@@ -982,8 +983,9 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   resident. Other sizes, step counts, prompts and seeds: not verified; the
   products' pinned algorithms are the GB10's at this prompt's shapes.
 - **Known divergences:** Llmpalooza rounds differently from diffusers'
-  BF16 (bounded, above). The operations run through a plan bound against
-  the implementation registry (D-053, `kernels/image/pipeline.h`).
+  BF16 (bounded, above). The operations run through step plans bound against
+  the implementation registry (D-053, D-107, `engine/staged_execution.h` and
+  `runtime/engine_image.h`).
 
 ## Gemma 2 2B
 
@@ -1129,12 +1131,13 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 
 - **Architecture:** `llama` (`spec/mappings/qwen2.*`, shared pre-norm dense
   decoder mapping covering `qwen2`, `llama` and `mistral` across GGUF,
-  safetensors and EXL3 containers; `norm.rms`, `attn.causal` with normal or
-  NeoX RoPE and optional per-dimension `rope_freqs.weight`, `ffn.DenseSwiGLU`,
-  and tied or untied `head.Output`). No new component or kernel was written:
-  serves through `EngineLlm` under `kDefaultServingRecipe`
-  (`spec/mapping.h`: `prefill_rows = 4096`) and `kDensePolicies`
-  (`max_decode_rows 16`, `vector_rows 16`, `product dense_pair`).
+  safetensors and EXL3 containers; `embedding.token`, `norm.rms`,
+  `attention.dense` with normal or NeoX RoPE and optional per-dimension
+  `rope_freqs.weight`, `ffn.glu` (`silu`), and tied or untied `head.linear`).
+  No new component or kernel was written: serves through `EngineLlm` under
+  `kDefaultServingRecipe` (`spec/mapping.h`: `prefill_rows = 4096`) and
+  `kDensePolicies` (`max_decode_rows 16`, `vector_rows 16`,
+  `product dense_pair`).
 - **Checkpoints:** `bartowski/Llama-3.2-1B-Instruct-GGUF@067b946c`:
   - `Llama-3.2-1B-Instruct-Q8_0.gguf` (1,321,079,200 bytes, SHA-256
     `d6ac9be1a1da4cd9ffbe2de7efca4efe8fd8dcceacdc9bd1faabdcfe3dc49fb8`)
@@ -1192,7 +1195,7 @@ in the table below describe the historical implementations.
 | --- | --- | --- |
 | Architecture | `qwen2` (`spec/mappings/qwen2.*`), GGML FP16 | `qwen2` with EXL3 linears (same mapping) |
 | Checkpoint | `Qwen/Qwen2.5-0.5B-Instruct-GGUF@9217f5db` `qwen2.5-0.5b-instruct-fp16.gguf` ([pins](experiments/first-slice/pins.json)) | `blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.0bpw@7009334d` and `-4.5bpw@030d3a41` ([pins](experiments/exl3-reference/pins.json)) |
-| Artifact | v0 `b93cdc32…`; v1 `a96092c9…` | v0 `6e96e499…` / `00d77caf…` ([artifact-layout](experiments/artifact-layout/README.md)); v1 `ce8defd9…` / `b62e2d22…` |
+| Artifact | v0 `b93cdc32…`; v1 `3354b95f…` | v0 `6e96e499…` / `00d77caf…` ([artifact-layout](experiments/artifact-layout/README.md)); v1 `ea87de21…` / `cc8ce88c…` |
 | v0 against v1 | bit-identical ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)) | bit-identical (same) |
 | Template | `d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4`, the GGUF's `tokenizer.chat_template` ([first-slice](first-slice.md)), through the interpreter | `cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f`, `tokenizer_config.json`'s `chat_template`, both rates ([runtime.json](experiments/exl3-reference/runtime.json)), through the interpreter |
 | Tokenizer | the GGUF's Qwen2 BPE | `tokenizer.json` |
