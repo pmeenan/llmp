@@ -289,7 +289,7 @@ TEST(ImportDrafterNormalizeTest,
      SyntheticGemma4AssistantNormalizesPublishesAndAdmitsWithTargetComposition) {
   auto cp = SyntheticAssistantCheckpoint(26);
   if (!cp.has_value()) {
-    GTEST_SKIP() << "no synthetic assistant fixture in " << TestDataDir();
+    GTEST_FAIL() << "no synthetic assistant fixture in " << TestDataDir();
   }
   const std::string kept_gguf = KeptGgufHeader(*cp);
 
@@ -444,7 +444,7 @@ TEST(ImportDrafterNormalizeTest, AssistantParentDimensionsMustMatchTheSuppliedTa
         std::tuple<std::int64_t, std::int64_t, bool>{2816, 5376, true}}) {
     SCOPED_TRACE(std::to_string(out) + "/" + std::to_string(parent));
     auto cp = SyntheticAssistantCheckpoint(26);
-    if (!cp.has_value()) GTEST_SKIP() << "no synthetic assistant fixture in " << TestDataDir();
+    if (!cp.has_value()) GTEST_FAIL() << "no synthetic assistant fixture in " << TestDataDir();
     Value(*cp, "gemma4-assistant.embedding_length_out", out);
     if (parent != 0) Value(*cp, "gemma4-assistant.Parent.embedding_length", parent);
     auto cost = NormalizationBound(*cp);
@@ -484,7 +484,7 @@ TEST(ImportDrafterNormalizeModelsTest,
                                          : "reference-models/mtp-gemma-4-31B-it.gguf");
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {
-      GTEST_SKIP() << "no Gemma 4 " << size << "B assistant GGUF: " << path;
+      GTEST_FAIL() << "no Gemma 4 " << size << "B assistant GGUF: " << path;
     }
 
     auto checkpoint = ReadGguf(path);
@@ -573,9 +573,7 @@ TEST(ImportDrafterNormalizeModelsTest,
 
     std::filesystem::remove_all(scratch, ec);
   }
-  if (unpublished)
-    GTEST_SKIP() << "normalization checked; publication and admission need "
-                    "LLMP_TEST_PUBLICATION_STORE (a scratch store for v1 artifacts)";
+  if (unpublished) RecordProperty("published", "false");
 }
 
 TEST(ImportDrafterNormalizeModelsTest,
@@ -588,7 +586,7 @@ TEST(ImportDrafterNormalizeModelsTest,
                                   "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf";
   std::error_code ec;
   if (!std::filesystem::exists(path, ec)) {
-    GTEST_SKIP() << "no DSpark GGUF: " << path;
+    GTEST_FAIL() << "no DSpark GGUF: " << path;
   }
 
   auto checkpoint = ReadGguf(path);
@@ -619,9 +617,10 @@ TEST(ImportDrafterNormalizeModelsTest,
   EXPECT_EQ(plan->spec().stages[1].artifact, 1U);
 
   const char* store_root = std::getenv("LLMP_TEST_PUBLICATION_STORE");
-  if (store_root == nullptr || *store_root == '\0')
-    GTEST_SKIP() << "normalization checked; publication and admission need "
-                    "LLMP_TEST_PUBLICATION_STORE (a scratch store for a v1 artifact)";
+  if (store_root == nullptr || *store_root == '\0') {
+    RecordProperty("published", "false");
+    return;
+  }
   const std::filesystem::path scratch =
       std::filesystem::path(store_root) / "import-dspark-models-test";
   std::filesystem::remove_all(scratch, ec);

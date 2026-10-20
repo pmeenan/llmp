@@ -242,8 +242,7 @@ constexpr std::uint64_t kObservationOwners =
 // The obsolete fixed 4GiB fixture ceiling cannot cover current proof metadata.
 constexpr std::uint64_t kHostRequired =
     kInheritedCompiler + kMetadataOwners + kObservationOwners + 8 * kMiB;
-constexpr std::uint64_t kHostAllowance =
-    ((kHostRequired + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
+constexpr std::uint64_t kHostAllowance = ((kHostRequired + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
 static_assert(kInheritedCompiler < kHostAllowance);
 static_assert(kMetadataOwners <= 1024 * kMiB);
 static_assert(kObservationOwners <= 512 * kMiB);
@@ -463,15 +462,27 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
   std::uint32_t token_rows = heldout ? 577U : 76U;
   const auto checkpoint_positions = heldout ? 33U : 32U;
   const auto oracle_bytes = heldout ? kHeldoutOracleBytes : kOracleBytes;
-  const std::string tokens_path =
+  std::string tokens_path =
       Env((corpus || (same_plan && !heldout))
               ? "LLMP_QWEN2_CORPUS_IDS"
               : (heldout ? "LLMP_QWEN2_FP16_HELDOUT_IDS" : "LLMP_QWEN2_FP16_TOKENS"));
-  const std::string oracle_path = Env(
+  if (tokens_path.empty()) {
+    tokens_path = ts::Qwen2OraclePath(
+        corpus
+            ? "natural-43.i32le"
+            : ((same_plan && !heldout) ? "control-76.i32le"
+                                       : (heldout ? "heldout-ids.i64le" : "control-tokens.txt")));
+  }
+  std::string oracle_path = Env(
       heldout ? (fusion ? "LLMP_QWEN2_FP16_HELDOUT_ORACLE_F" : "LLMP_QWEN2_FP16_HELDOUT_ORACLE_U")
               : (fusion ? "LLMP_QWEN2_FP16_ORACLE_F" : "LLMP_QWEN2_FP16_ORACLE_U"));
+  if (oracle_path.empty() && !corpus && !same_plan) {
+    oracle_path = ts::Qwen2OraclePath(
+        heldout ? (fusion ? "fp16-heldout-fused.f32le" : "fp16-heldout-unfused.f32le")
+                : (fusion ? "fp16-logits-fused.f32le" : "fp16-logits-unfused.f32le"));
+  }
   if (tokens_path.empty() || (!corpus && !same_plan && oracle_path.empty()))
-    GTEST_SKIP() << "requires the frozen FP16 trajectory IDs and fused/unfused oracle";
+    GTEST_FAIL() << "requires the frozen FP16 trajectory IDs and fused/unfused oracle";
   const auto available = llmp::platform::AvailableMemoryBytes();
   ASSERT_TRUE(available.has_value()) << "unknown physical availability";
   ASSERT_TRUE(FitsDomain(*available, domain_cap))
@@ -498,7 +509,11 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
   life->tokens_bytes = std::move(*token_read);
   auto& tokens = life->tokens;
   if (corpus || (same_plan && !heldout)) {
-    const auto seal = Env("LLMP_QWEN2_CORPUS_IDS_SHA256");
+    auto seal = Env("LLMP_QWEN2_CORPUS_IDS_SHA256");
+    if (seal.empty()) {
+      seal = corpus ? "1b1c01818993d60cad3b4046c2ba22c24d81af32434fc65977a3faf12a4a9e40"
+                    : "9103929b9f263293d64c46d20bb22937cca01172aa03d76b81707e07e2c5be7a";
+    }
     ASSERT_EQ(seal.size(), 64U);
     ASSERT_EQ(Hash(life->tokens_bytes), seal);
     ASSERT_EQ(life->tokens_bytes.size() % 4, 0U);

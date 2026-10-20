@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 
+#include "component_catalog_cases.h"
 #include "components/component.h"
 #include "components/moe.h"
 #include "components/state_encoding.h"
@@ -2522,6 +2523,45 @@ TEST(ComponentsTest, DenseAttentionComposableOptionsMatchTheirReference) {
           stateless ? std::vector<std::uint64_t>{} : std::vector<std::uint64_t>{cells, cells};
       Compare(*in, formats, state_cells, AttentionSteps(32), kOutputTolerance, kF16StateTolerance,
               {{kRopeFreqs, {1.0F, 1.5F}}});
+    }
+  }
+}
+
+TEST(ComponentsTest, EveryCatalogComponentHasAReferenceAndIsTested) {
+  const auto token_recipes = test_catalog::CatalogTokenRecipes();
+  const auto spatial_recipes = test_catalog::CatalogSpatialRecipes();
+  for (const ComponentDef* def : Catalog()) {
+    SCOPED_TRACE(std::format("{} v{}", def->kind, def->version));
+    const bool has_ref = def->reference != nullptr ||
+                         (def->spatial != nullptr && def->spatial->reference != nullptr);
+    ASSERT_TRUE(has_ref) << def->kind << " v" << def->version
+                         << " is missing a scalar CPU reference function";
+
+    const auto tok_it =
+        std::ranges::find_if(token_recipes, [&](const test_catalog::CatalogTokenRecipe& r) {
+          return r.kind == def->kind && r.version == def->version;
+        });
+    const auto spa_it =
+        std::ranges::find_if(spatial_recipes, [&](const test_catalog::CatalogSpatialRecipe& r) {
+          return r.kind == def->kind && r.version == def->version;
+        });
+    ASSERT_TRUE(tok_it != token_recipes.end() || spa_it != spatial_recipes.end())
+        << def->kind << " v" << def->version
+        << " is not covered by CatalogTokenRecipes() or CatalogSpatialRecipes()";
+
+    if (tok_it != token_recipes.end()) {
+      ASSERT_FALSE(tok_it->cases.empty());
+      for (const auto& tc : tok_it->cases) {
+        SCOPED_TRACE(tc.label);
+        test_catalog::RunCatalogTokenCpuCase(tc);
+      }
+    }
+    if (spa_it != spatial_recipes.end()) {
+      ASSERT_FALSE(spa_it->cases.empty());
+      for (const auto& sc : spa_it->cases) {
+        SCOPED_TRACE(sc.label);
+        test_catalog::RunCatalogSpatialCpuCase(sc);
+      }
     }
   }
 }

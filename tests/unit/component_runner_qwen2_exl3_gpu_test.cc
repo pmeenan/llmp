@@ -927,14 +927,27 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   std::uint32_t token_rows = full ? 161 : 145;
   const auto oracle_bytes = full ? kFullOracleBytes : kOracleBytes;
   const auto runtime_plans = (full || corpus) ? kFullRuntimePlans : kRuntimePlans;
-  const auto ids_path =
+  auto ids_path =
       Env(corpus ? (corpus_chunk_rows == 8 ? "LLMP_EXL3_CORPUS256_IDS" : "LLMP_QWEN2_CORPUS_IDS")
                  : "LLMP_EXL3_SCREEN_IDS");
-  const auto oracle_path = Env(full ? "LLMP_EXL3_TRAJECTORY_ORACLE" : "LLMP_EXL3_SCREEN_ORACLE");
-  const auto oracle_hash =
+  if (ids_path.empty()) {
+    ids_path = ts::Qwen2OraclePath(
+        corpus ? (corpus_chunk_rows == 8 ? "corpus256.i32le" : "natural-43.i32le")
+               : "exl3-screen-ids.i64le");
+  }
+  auto oracle_path = Env(full ? "LLMP_EXL3_TRAJECTORY_ORACLE" : "LLMP_EXL3_SCREEN_ORACLE");
+  if (oracle_path.empty() && !corpus && !lifecycle) {
+    oracle_path =
+        ts::Qwen2OraclePath(full ? "exl3-trajectory-oracle.f32le" : "exl3-screen-oracle.f32le");
+  }
+  auto oracle_hash =
       Env(full ? "LLMP_EXL3_TRAJECTORY_ORACLE_SHA256" : "LLMP_EXL3_SCREEN_ORACLE_SHA256");
+  if (oracle_hash.empty() && !corpus && !lifecycle) {
+    oracle_hash = full ? "17f007a66fa3dd5e09afc7b1b1b51b2c441feba67b80f8876f96e1fcfdd4186e"
+                       : "ea491bc54c1259dc935cd6131fc3684033b0974490048b6a214dd35b5da1710d";
+  }
   if (ids_path.empty() || (!corpus && !lifecycle && (oracle_path.empty() || oracle_hash.empty())))
-    GTEST_SKIP() << "sealed legacy EXL3 IDs and oracle required";
+    GTEST_FAIL() << "sealed legacy EXL3 IDs and oracle required";
   if (!corpus && !lifecycle) {
     ASSERT_EQ(oracle_hash.size(), 64U);
     ASSERT_TRUE(std::ranges::all_of(
@@ -967,8 +980,13 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   ASSERT_TRUE(ids_read.has_value()) << ids_read.error();
   life->tokens_bytes = std::move(*ids_read);
   if (corpus) {
-    const auto seal = Env(corpus_chunk_rows == 8 ? "LLMP_EXL3_CORPUS256_IDS_SHA256"
-                                                 : "LLMP_QWEN2_CORPUS_IDS_SHA256");
+    auto seal = Env(corpus_chunk_rows == 8 ? "LLMP_EXL3_CORPUS256_IDS_SHA256"
+                                           : "LLMP_QWEN2_CORPUS_IDS_SHA256");
+    if (seal.empty()) {
+      seal = corpus_chunk_rows == 8
+                 ? "095ed5e255b9d67baa66c1a2e08b37c21ccf03631a35fc4dff292575b6b14942"
+                 : "1b1c01818993d60cad3b4046c2ba22c24d81af32434fc65977a3faf12a4a9e40";
+    }
     ASSERT_EQ(seal.size(), 64U);
     ASSERT_EQ(Hash(life->tokens_bytes), seal);
     ASSERT_EQ(life->tokens_bytes.size() % 4, 0U);

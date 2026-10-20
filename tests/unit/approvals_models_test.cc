@@ -3,7 +3,8 @@
 
 // The approved checkpoints as data (runtime/approvals.h, D-109) against the
 // published v1 store (LLMP_TEST_V1_STORE; by default the models directory's
-// m36-v1-artifacts, whose absence fails: a models run needs it):
+// `artifacts`, falling back to `m36-v1-artifacts`, whose absence fails: a
+// models run needs it):
 //
 //   - every pinned spec digest is the stored one, and every drafter pin the
 //     composition the drafter's kept metadata gives;
@@ -43,12 +44,6 @@ namespace {
 namespace rt = llmp::runtime;
 namespace sp = llmp::spec;
 
-std::string Store() {
-  if (auto named = llmp::test_support::V1Store(); !named.empty()) return named;
-  const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
-  return std::string(home != nullptr ? home : "") + "/.local/share/llmp/m36-v1-artifacts";
-}
-
 // A model entry with its defaults: the artifact and drafter alone.
 llmp::config::ModelEntry DefaultEntry(std::string id, std::string drafter = {}) {
   llmp::config::ModelEntry entry;
@@ -59,7 +54,7 @@ llmp::config::ModelEntry DefaultEntry(std::string id, std::string drafter = {}) 
 }
 
 TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
-  const auto store = Store();
+  const auto store = llmp::test_support::V1Store();
   // The IDs and pairs are the pinned in-tree map's; only the artifacts come
   // from the store.
   const auto pinned = llmp::test_support::V1IdsPath();

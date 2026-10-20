@@ -39,11 +39,12 @@ if(LLMP_CUDA)
   add_test(NAME smoke.doctor.gpu
            COMMAND ${CMAKE_COMMAND} -DBINARY=$<TARGET_FILE:llmp> "-DEMULATOR=${emulator}" -DMODE=gb10
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/check_doctor.cmake)
-  set_tests_properties(smoke.doctor.gpu PROPERTIES LABELS "smoke;gpu")
+  set_tests_properties(smoke.doctor.gpu PROPERTIES LABELS "smoke;gpu" RESOURCE_LOCK llmp_gpu)
 endif()
 if(LLMP_CUDA_DISCRETE_SASS)
   add_test(NAME smoke.doctor.discrete
            COMMAND ${CMAKE_COMMAND} -DBINARY=$<TARGET_FILE:llmp> "-DEMULATOR=${emulator}"
                    -DMODE=discrete -P ${CMAKE_CURRENT_SOURCE_DIR}/check_doctor.cmake)
-  set_tests_properties(smoke.doctor.discrete PROPERTIES LABELS "smoke;gpu;gpu-discrete")
+  set_tests_properties(smoke.doctor.discrete PROPERTIES LABELS "smoke;gpu;gpu-discrete"
+                                                        RESOURCE_LOCK llmp_gpu)
 endif()

@@ -1547,7 +1547,7 @@ TEST_P(GemmaEngineGemma3Gpu, Admitted8448ContextKeepsAPromptItsContinuationAndAS
   const auto input = Models() / "references/gemma3-depth/ids.i32";
   std::error_code error;
   const auto bytes = fs::file_size(input, error);
-  if (error) GTEST_SKIP() << "no Gemma3 depth reference at " << input;
+  if (error) GTEST_FAIL() << "no Gemma3 depth reference at " << input;
   ASSERT_EQ(bytes, 33024U);
   std::vector<std::int32_t> ids(8256);
   std::ifstream stream(input, std::ios::binary);

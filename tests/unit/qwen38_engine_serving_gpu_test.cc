@@ -1933,7 +1933,7 @@ class Qwen38GgufKeptGpu : public testing::Test {
       GTEST_FAIL() << "no Qwen3.8 GGUF artifact " << kGguf << " in " << Store();
     if (!fs::exists(checkpoint / "tokenizer.json", error) ||
         !fs::exists(checkpoint / "chat_template.jinja", error))
-      GTEST_SKIP() << "no Qwen3.8 tokenizer assets in " << checkpoint;
+      GTEST_FAIL() << "no Qwen3.8 tokenizer assets in " << checkpoint;
     const auto fixed = CheckFixture(kGguf, false);
     ASSERT_TRUE(fixed) << (fixed ? "" : fixed.error());
     // Spill files need direct I/O: scratch in the build tree.

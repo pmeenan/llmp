@@ -178,7 +178,7 @@ TEST(ImportMlxNormalizeModelsTest,
                                 "models/Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80";
   std::error_code ec;
   if (!std::filesystem::exists(path, ec)) {
-    GTEST_SKIP() << "no staged MLX Qwen3.8 source: " << path;
+    GTEST_FAIL() << "no staged MLX Qwen3.8 source: " << path;
   }
   auto checkpoint = ReadCheckpoint(path);
   ASSERT_TRUE(checkpoint) << checkpoint.error().ToString();
@@ -242,9 +242,10 @@ TEST(ImportMlxNormalizeModelsTest,
 
   // NOLINTNEXTLINE(concurrency-mt-unsafe): read-only test environment.
   const char* store_root = std::getenv("LLMP_TEST_MLX_PUBLICATION_STORE");
-  if (store_root == nullptr || *store_root == '\0')
-    GTEST_SKIP() << "normalization checked; publication and admission need "
-                    "LLMP_TEST_MLX_PUBLICATION_STORE (a scratch store for a v1 artifact)";
+  if (store_root == nullptr || *store_root == '\0') {
+    RecordProperty("published", "false");
+    return;
+  }
   const std::filesystem::path scratch(store_root);
   std::filesystem::remove_all(scratch, ec);
   std::filesystem::create_directories(scratch, ec);

@@ -5,8 +5,7 @@
 // in tests/unit/data, on the real vocabularies. Label `models`: the model
 // files live on the Sparks (under LLMP_TEST_MODELS, by default
 // ~/.local/share/llmp, as docs/tokenizer.md lists), and a test whose files
-// are absent skips. A file that is present but differs from the one the
-// fixture was generated from fails.
+// are absent or differ from the fixture fails.
 
 #include <gtest/gtest.h>
 
@@ -34,6 +33,7 @@
 #include "tokenizer/tokenizer.h"
 #include "tokenizer/unicode.h"
 #include "tokenizer_fixtures.h"
+#include "v1_frozen.h"
 
 namespace {
 
@@ -187,7 +187,7 @@ TEST_P(Agreement, TokenForTokenWithTheReference) {
   const Config& config = GetParam();
   const Loaded loaded = Load(config.name, config.kind);
   if (!loaded.skip.empty()) {
-    GTEST_SKIP() << loaded.skip;
+    GTEST_FAIL() << loaded.skip;
   }
   ASSERT_NE(loaded.tokenizer, nullptr);
   const tok::Tokenizer& t = *loaded.tokenizer;
@@ -343,7 +343,7 @@ TEST(Vocabularies, SpecialTokensCannotSplitDifferently) {
     ++checked;
   }
   if (checked == 0) {
-    GTEST_SKIP() << "no model files under " << ModelsDir();
+    GTEST_FAIL() << "no model files under " << ModelsDir();
   }
 }
 
@@ -356,7 +356,7 @@ TEST(Vocabularies, DeepSeek0731TokenizerEqualsE3aa0d6a) {
                "/reference-models/D/UD-Q2_K_XL/DeepSeek-V4-Flash-UD-Q2_K_XL-00001-of-00003.gguf");
   const auto current = ReadFile(now.path);
   if (!before || !current) {
-    GTEST_SKIP() << "no DeepSeek GGUFs under " << ModelsDir();
+    GTEST_FAIL() << "no DeepSeek GGUFs under " << ModelsDir();
   }
   const auto a = tok::ReadGgufTokenizer(std::as_bytes(std::span(*current)));
   const auto b = tok::ReadGgufTokenizer(std::as_bytes(std::span(*before)));
@@ -375,16 +375,21 @@ TEST(Vocabularies, DeepSeek0731TokenizerEqualsE3aa0d6a) {
 // The community IQ2_XXS GGUF (antirez/deepseek-v4-gguf@f71f23d5) as its v1
 // import (e7c0d0e4…, in the published v1 store) keeps its metadata: the 0731
 // GGUF's tokenizer with another chat template, chat-v2.
-constexpr std::string_view kCommunityKv =
-    "m36-v1-artifacts/e7c0d0e453aab30765c884ab610835936e80312646f18383538bd4d9b428dc59/meta/"
+constexpr std::string_view kCommunityKvRel =
+    "e7c0d0e453aab30765c884ab610835936e80312646f18383538bd4d9b428dc59/meta/"
     "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.kv.gguf";
+
+std::string CommunityKvPath() {
+  return llmp::test_support::V1Store() + "/" + std::string(kCommunityKvRel);
+}
 
 TEST(Vocabularies, DeepSeekCommunityTokenizerEquals0731) {
   const Loaded now = Load("deepseek-v4-0731-gguf", "gguf");
-  const auto community = ReadFile(ModelsDir() + "/" + std::string(kCommunityKv));
+  const auto community = ReadFile(CommunityKvPath());
   const auto current = ReadFile(now.path);
   if (!community || !current) {
-    GTEST_SKIP() << "no community artifact or 0731 GGUF under " << ModelsDir();
+    GTEST_FAIL() << "no community artifact in " << llmp::test_support::V1Store()
+                 << " or 0731 GGUF under " << ModelsDir();
   }
   const auto a = tok::ReadGgufTokenizer(std::as_bytes(std::span(*current)));
   const auto b = tok::ReadGgufTokenizer(std::as_bytes(std::span(*community)));
@@ -433,7 +438,7 @@ void CheckChatTokens(const tok::Tokenizer& t, std::string_view fixture_name,
 TEST(ChatTokens, DeepSeekV4OnTheGguf) {
   const Loaded loaded = Load("deepseek-v4-0731-gguf", "gguf");
   if (!loaded.skip.empty()) {
-    GTEST_SKIP() << loaded.skip;
+    GTEST_FAIL() << loaded.skip;
   }
   ASSERT_NE(loaded.tokenizer, nullptr);
   // The GGUF's own template is the one whose hash selects the renderer.
@@ -445,9 +450,9 @@ TEST(ChatTokens, DeepSeekV4OnTheGguf) {
 // chat-v2's fixture against llama.cpp on the community GGUF itself, here
 // through the tokenizer its artifact keeps.
 TEST(ChatTokens, DeepSeekV4ChatV2OnTheCommunityGguf) {
-  const auto bytes = ReadFile(ModelsDir() + "/" + std::string(kCommunityKv));
+  const auto bytes = ReadFile(CommunityKvPath());
   if (!bytes) {
-    GTEST_SKIP() << "no community artifact under " << ModelsDir();
+    GTEST_FAIL() << "no community artifact in " << llmp::test_support::V1Store();
   }
   auto g = tok::ReadGgufTokenizer(std::as_bytes(std::span(*bytes)));
   ASSERT_TRUE(g.has_value()) << g.error().ToString();
@@ -461,7 +466,7 @@ TEST(ChatTokens, DeepSeekV4ChatV2OnTheCommunityGguf) {
 TEST(ChatTokens, DeepSeekV4ChatV2OnItsTokenizerJson) {
   const Loaded loaded = Load("deepseek-v4-0731-hf", "hf");
   if (!loaded.skip.empty()) {
-    GTEST_SKIP() << loaded.skip;
+    GTEST_FAIL() << loaded.skip;
   }
   ASSERT_NE(loaded.tokenizer, nullptr);
   CheckChatTokens(*loaded.tokenizer, "deepseek-v4-chat-v2", "hf_ids");
@@ -470,7 +475,7 @@ TEST(ChatTokens, DeepSeekV4ChatV2OnItsTokenizerJson) {
 TEST(ChatTokens, DeepSeekV4OnItsTokenizerJson) {
   const Loaded loaded = Load("deepseek-v4-0731-hf", "hf");
   if (!loaded.skip.empty()) {
-    GTEST_SKIP() << loaded.skip;
+    GTEST_FAIL() << loaded.skip;
   }
   ASSERT_NE(loaded.tokenizer, nullptr);
   CheckChatTokens(*loaded.tokenizer, "deepseek-v4-0731", "hf_ids");
@@ -479,7 +484,7 @@ TEST(ChatTokens, DeepSeekV4OnItsTokenizerJson) {
 TEST(ChatTokens, Qwen38OnTheNvfp4TokenizerJson) {
   const Loaded loaded = Load("qwen3.8-nvfp4", "hf");
   if (!loaded.skip.empty()) {
-    GTEST_SKIP() << loaded.skip;
+    GTEST_FAIL() << loaded.skip;
   }
   ASSERT_NE(loaded.tokenizer, nullptr);
   // The checkpoint's template is the one whose hash selects the renderer.
@@ -494,7 +499,7 @@ TEST(ChatTokens, Qwen38OnTheNvfp4TokenizerJson) {
 TEST(ChatTokens, QwenImagePrompt) {
   const Loaded loaded = Load("qwen-image-2.1", "hf");
   if (!loaded.skip.empty()) {
-    GTEST_SKIP() << loaded.skip;
+    GTEST_FAIL() << loaded.skip;
   }
   ASSERT_NE(loaded.tokenizer, nullptr);
   const json::Document image = LoadJson("chat/qwen-image-2.1.json");
@@ -543,7 +548,7 @@ TEST(Nfc, ConformsToNormalizationTest) {
   const std::string path = ModelsDir() + "/ucd/15.1.0/NormalizationTest.txt";
   const auto file = ReadFile(path);
   if (!file) {
-    GTEST_SKIP() << "no " << path;
+    GTEST_FAIL() << "no " << path;
   }
   const std::string& bytes = *file;
   ASSERT_EQ(Sha256(bytes), "871238e37e3be0696ec2bd0891119a041b052da1a84485eda05a5438724b223e");

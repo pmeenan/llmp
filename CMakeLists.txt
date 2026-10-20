@@ -172,11 +172,10 @@ function(llmp_gpu_gtest target)
   set(labels gpu)
   if(arg_MODELS)
     list(APPEND labels models)
-    # Each process loads its own weights into the Spark's physical budget.
-    # Serialize full-model GPU tests while other checks remain parallel.
-    set_tests_properties(${tests} PROPERTIES RESOURCE_LOCK llmp_gpu_model)
   endif()
-  set_tests_properties(${tests} PROPERTIES LABELS "${labels}")
+  # Serialize GPU tests across processes so parallel ctest runs do not contend
+  # for CUDA contexts or the unified physical memory budget.
+  set_tests_properties(${tests} PROPERTIES LABELS "${labels}" RESOURCE_LOCK llmp_gpu)
   if(arg_ENVIRONMENT)
     set_tests_properties(${tests} PROPERTIES ENVIRONMENT "${arg_ENVIRONMENT}")
   endif()

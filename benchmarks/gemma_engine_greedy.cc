@@ -335,6 +335,7 @@ int main(int argc, char** argv) {
   settings.prefill_chunk.value = 128;
   settings.max_slots.value = 1;
   settings.speculation.value = speculate;
+  settings.wave_read_align.value = 256;
 
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
   // What the runner's sources and launch borrow, kept until it is gone.

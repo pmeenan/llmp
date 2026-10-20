@@ -83,7 +83,7 @@
       "name": "no-gpu",
       "hidden": true,
       "inherits": "base",
-      "filter": {"exclude": {"label": "gpu"}}
+      "filter": {"exclude": {"label": "gpu|models"}}
     },
     {
       "name": "no-gpu-cuda",

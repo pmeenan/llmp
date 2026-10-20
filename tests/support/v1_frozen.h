@@ -15,14 +15,19 @@
 // (or LLMP_TEST_V1_FROZEN_DIR/<family>.json). Recording: with
 // LLMP_TEST_V1_RECORD=<file> set, Expect appends "<family> <key> <value>"
 // lines to the file instead of asserting; tests/unit/data/v1_frozen/
-// record_to_json.py turns the lines into the JSON files. A digest is bound to
-// the selected plans and kernels of the binary that recorded it, so a change
-// that legitimately moves bits re-records the file and says so.
+// record_to_json.py turns the lines into the JSON files (or runs CTest and
+// updates the JSON files in one command:
+//   python3 tests/unit/data/v1_frozen/record_to_json.py \
+//       --ctest 'GemmaNativeV1ServingGpu' --provenance '...'
+// ). A digest is bound to the selected plans and kernels of the binary that
+// recorded it, so a change that legitimately moves bits re-records the file
+// and says so; same-binary invariants (finite logits, greedy token argmax,
+// spill/restore state equality) are asserted alongside the frozen digests.
 //
 // The published v1 artifacts' IDs for the tests that take a store: the
 // store's v1-ids.json maps each v0 artifact ID to its v1 ID and names them
 // (LLMP_TEST_V1_STORE names the store; by default the Sparks' models
-// directory's m36-v1-artifacts).
+// directory's `artifacts`, falling back to `m36-v1-artifacts`).
 
 #ifndef LLMP_TESTS_SUPPORT_V1_FROZEN_H_
 #define LLMP_TESTS_SUPPORT_V1_FROZEN_H_
@@ -33,6 +38,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <optional>
@@ -40,6 +46,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 #include "base/bytes.h"
 #include "base/json.h"
@@ -154,13 +161,38 @@ class FrozenDigests {
   bool loaded_ = false;
 };
 
+// The standing models directory: LLMP_TEST_MODELS, else $HOME/.local/share/llmp.
+inline std::string StandingModelsDir() {
+  const char* models = std::getenv("LLMP_TEST_MODELS");  // NOLINT(concurrency-mt-unsafe)
+  if (models != nullptr && models[0] != '\0') return models;
+  const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
+  return home != nullptr ? std::string(home) + "/.local/share/llmp" : "";
+}
+
+// Standing Qwen2 FP16 and EXL3 trajectory inputs and sealed oracles on the Sparks.
+inline std::string Qwen2OraclePath(std::string_view file) {
+  const auto base = StandingModelsDir();
+  if (base.empty()) return "";
+  const std::filesystem::path raw =
+      std::filesystem::path(base) / "references" / "qwen2-oracles" / file;
+  std::error_code ec;
+  const auto canon = std::filesystem::canonical(raw, ec);
+  return ec ? raw.string() : canon.string();
+}
+
 // The published v1 store: LLMP_TEST_V1_STORE, else the models directory's
-// (~/.local/share/llmp/m36-v1-artifacts on the Sparks).
+// `artifacts` store (falling back to `m36-v1-artifacts` on the Sparks).
 inline std::string V1Store() {
   const char* store = std::getenv("LLMP_TEST_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
-  if (store != nullptr) return store;
-  const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
-  return home != nullptr ? std::string(home) + "/.local/share/llmp/m36-v1-artifacts" : "";
+  if (store != nullptr && store[0] != '\0') return store;
+  const auto base = StandingModelsDir();
+  if (base.empty()) return "";
+  std::error_code ec;
+  const std::string canonical = base + "/artifacts";
+  if (std::filesystem::is_directory(canonical, ec)) return canonical;
+  const std::string legacy = base + "/m36-v1-artifacts";
+  if (std::filesystem::is_directory(legacy, ec)) return legacy;
+  return canonical;
 }
 // The published v1 IDs, pinned in-tree: tests/unit/data/v1_frozen/v1-ids.json
 // (a copy of the store's), read from LLMP_TEST_DATA (else ctest's working
@@ -176,8 +208,8 @@ inline std::string V1IdsPath() {
 // "gemma3", "gemma26", "gemma26-assistant", "gemma31", "gemma31-assistant",
 // "qwen38-gguf", "qwen38-modelopt", "qwen38-modelopt-mtp", "qwen38-mlx",
 // "deepseek", "deepseek-iq2xxs", "dspark", "qwen2-fp16", "qwen2-exl3-4.0",
-// "qwen2-exl3-4.5", and the Qwen-Image composition "qwen-image" with its
-// "qwen-image-text-encoder", "qwen-image-transformer" and "qwen-image-vae"),
+// "qwen2-exl3-4.5", "llama32-1b-q8_0", "llama32-1b-q4_k_m", and the Qwen-Image composition
+// "qwen-image" with its "qwen-image-text-encoder", "qwen-image-transformer" and "qwen-image-vae"),
 // nullopt for a name it does not have.
 inline std::optional<std::string> V1IdNamed(std::string_view name) {
   const auto path = V1IdsPath();

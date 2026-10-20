@@ -52,8 +52,13 @@ void Exercise(bool heldout) {
   if (artifact.empty()) {
     if (const auto id = ts::V1IdNamed("qwen2-fp16"); id) artifact = ts::V1Store() + "/" + *id;
   }
-  const auto tokens = Env(heldout ? "LLMP_QWEN2_FP16_HELDOUT_IDS" : "LLMP_QWEN2_FP16_TOKENS");
-  if (artifact.empty() || tokens.empty()) GTEST_SKIP() << "requires approved FP16 benchmark inputs";
+  auto tokens = Env(heldout ? "LLMP_QWEN2_FP16_HELDOUT_IDS" : "LLMP_QWEN2_FP16_TOKENS");
+  if (tokens.empty()) {
+    tokens = ts::Qwen2OraclePath(heldout ? "heldout-ids.i64le" : "control-tokens.txt");
+  }
+  if (artifact.empty() || !fs::is_regular_file(tokens))
+    GTEST_FAIL() << "missing approved FP16 benchmark inputs: artifact=" << artifact
+                 << " tokens=" << tokens;
   auto lifetime = std::make_unique<Lifetime>();
   auto& life = *lifetime;
   life.options.artifact = artifact;

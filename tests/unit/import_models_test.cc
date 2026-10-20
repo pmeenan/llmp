@@ -133,7 +133,7 @@ TEST(ImportGemmaMetadataTest, Official27BConfigsAndIndexNamesProduceTheDeclaredT
     if (!Exists(directory / "config.json") || !Exists(directory / "model.safetensors.index.json")) {
       // NOLINTNEXTLINE(concurrency-mt-unsafe): tests read, never set, the environment
       ASSERT_EQ(std::getenv("LLMP_REQUIRE_GEMMA27_METADATA"), nullptr) << directory;
-      GTEST_SKIP() << "pinned Gemma 27B config/index metadata is absent: " << directory;
+      GTEST_FAIL() << "pinned Gemma 27B config/index metadata is absent: " << directory;
     }
     const auto read = [&](std::string_view name) {
       auto file = OpenCheckpointFile(directory / name, 0);
@@ -257,7 +257,7 @@ TEST_P(ImportGemmaTest, SourceGgufGivesTheV1ArtifactsSpec) {
   const std::filesystem::path gguf = Models() / c.gguf;
   const auto id = test_support::V1IdNamed(c.artifact);
   if (!Exists(gguf) || !id) {
-    GTEST_SKIP() << "no " << gguf << " or published v1 " << c.artifact << " in "
+    GTEST_FAIL() << "no " << gguf << " or published v1 " << c.artifact << " in "
                  << test_support::V1Store();
   }
   const std::filesystem::path path = std::filesystem::path(test_support::V1Store()) / *id;
@@ -378,7 +378,7 @@ TEST_P(ImportGgufTest, ReadsWhole) {
   const GgufCase& c = GetParam();
   const std::filesystem::path path = Models() / c.path;
   if (!Exists(path)) {
-    GTEST_SKIP() << "no " << path;
+    GTEST_FAIL() << "no " << path;
   }
   const auto checkpoint = ReadGguf(path);
   ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().ToString();
@@ -450,7 +450,7 @@ TEST_P(ImportV1FormatsTest, SourceFormatsAreTheArtifacts) {
   const std::filesystem::path gguf = Models() / c.gguf;
   const auto id = test_support::V1IdNamed(c.artifact);
   if (!Exists(gguf) || !id) {
-    GTEST_SKIP() << "no " << gguf << " or published v1 " << c.artifact << " in "
+    GTEST_FAIL() << "no " << gguf << " or published v1 " << c.artifact << " in "
                  << test_support::V1Store();
   }
   const std::filesystem::path path = std::filesystem::path(test_support::V1Store()) / *id;
@@ -578,7 +578,7 @@ constexpr std::string_view kMlx = "models/Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP
 TEST(ImportSafetensorsModelsTest, Qwen38ModelOptPairsEveryWeight) {
   const std::filesystem::path path = Models() / kQwen38;
   if (!Exists(path)) {
-    GTEST_SKIP() << "no " << path;
+    GTEST_FAIL() << "no " << path;
   }
   const auto checkpoint = ReadCheckpoint(path);
   ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().ToString();
@@ -630,7 +630,7 @@ TEST(ImportSafetensorsModelsTest, Qwen38ModelOptPairsEveryWeight) {
 TEST(ImportSafetensorsModelsTest, ReadsQwenImagesTextEncoder) {
   const std::filesystem::path path = Models() / "models/Qwen/Qwen-Image-2.1@790c9263/text_encoder";
   if (!Exists(path)) {
-    GTEST_SKIP() << "no " << path;
+    GTEST_FAIL() << "no " << path;
   }
   const auto checkpoint = ReadSafetensors(path);
   ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().ToString();
@@ -659,7 +659,7 @@ TEST(ImportSafetensorsModelsTest, LeavesOtherReadersCheckpointsToThem) {
     EXPECT_EQ(c->quantization, "mlx affine");
   }
   if (!Exists(transformer) && !Exists(mlx)) {
-    GTEST_SKIP() << "no diffusers or MLX checkpoint";
+    GTEST_FAIL() << "no diffusers or MLX checkpoint";
   }
 }
 
@@ -749,7 +749,7 @@ TEST(ImportPipelineModelsTest, QwenImageComponentsAreTheV0Imports) {
   const std::filesystem::path composition =
       store / "eca21baad38229e471a44cb2479d392ffcf745fb812e8a41668f336139fa1acd";
   if (!Exists(path) || !Exists(composition)) {
-    GTEST_SKIP() << "no " << path << " or " << composition;
+    GTEST_FAIL() << "no " << path << " or " << composition;
   }
   const auto c = ReadCheckpoint(path);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
@@ -825,7 +825,7 @@ TEST_P(ImportExl3ModelsTest, FixturesAreTheirV1Imports) {
   const std::filesystem::path path = Models() / e.source;
   const auto id = test_support::V1IdNamed(e.artifact);
   if (!Exists(path) || !id) {
-    GTEST_SKIP() << "no " << path << " or published v1 " << e.artifact << " in "
+    GTEST_FAIL() << "no " << path << " or published v1 " << e.artifact << " in "
                  << test_support::V1Store();
   }
   const std::filesystem::path root = std::filesystem::path(test_support::V1Store()) / *id;
@@ -899,7 +899,7 @@ INSTANTIATE_TEST_SUITE_P(Fixtures, ImportExl3ModelsTest,
 TEST(ImportMlxModelsTest, Qwen38MlxPairsEveryWeight) {
   const std::filesystem::path path = Models() / kMlx;
   if (!Exists(path)) {
-    GTEST_SKIP() << "no " << path;
+    GTEST_FAIL() << "no " << path;
   }
   const auto c = ReadCheckpoint(path);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
@@ -1006,7 +1006,7 @@ TEST(ImportMlxModelsTest, DecodesLikeTheNativeCheckpoint) {
   const std::filesystem::path mlx_path = Models() / kMlx;
   const std::filesystem::path native_path = Models() / kQwen38;
   if (!Exists(mlx_path) || !Exists(native_path)) {
-    GTEST_SKIP() << "no " << mlx_path << " or " << native_path;
+    GTEST_FAIL() << "no " << mlx_path << " or " << native_path;
   }
   const auto mlx = ReadCheckpoint(mlx_path);
   ASSERT_TRUE(mlx.has_value()) << mlx.error().ToString();
@@ -1096,7 +1096,7 @@ TEST(ImportGgufModelsTest, NormalizesClosedQwen38TargetHeadersWithoutPayloadRead
           ? std::filesystem::path(selected)
           : Models() /
                 "reference-models/Q/UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf";
-  if (selected == nullptr && !Exists(path)) GTEST_SKIP() << "no staged Qwen3.8 GGUF: " << path;
+  if (selected == nullptr && !Exists(path)) GTEST_FAIL() << "no staged Qwen3.8 GGUF: " << path;
   ASSERT_TRUE(Exists(path));
   auto source = ReadGguf(path);
   ASSERT_TRUE(source) << test_support::Failed(source, &Error::ToString).value_or("");

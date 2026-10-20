@@ -458,9 +458,10 @@ llmp_gtest(chat_corpus_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;models"
 
 # The tokenizer and renderers against the references' token IDs on the real
 # vocabularies, and NFC against UCD's NormalizationTest: label `models` too,
-# since the files live on the Sparks; each test skips where they are absent.
+# since the files live on the Sparks.
 add_executable(tokenizer_models_test tokenizer_models_test.cc)
-target_link_libraries(tokenizer_models_test PRIVATE llmp_chat llmp_tokenizer llmp_json llmp_base)
+target_link_libraries(tokenizer_models_test PRIVATE llmp_chat llmp_tokenizer llmp_json llmp_base
+                                                    llmp_test_v1_frozen)
 llmp_gtest(tokenizer_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;models"
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
@@ -1017,10 +1018,12 @@ if(LLMP_CUDA)
 
   add_executable(decode_selected_grouped_test decode_selected_grouped_test.cc)
   target_link_libraries(decode_selected_grouped_test PRIVATE llmp_decode_selected llmp_planner)
+  target_link_options(decode_selected_grouped_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
   llmp_gtest(decode_selected_grouped_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
   add_executable(decode_selected_products_test decode_selected_products_test.cc)
   target_link_libraries(decode_selected_products_test PRIVATE llmp_decode_selected llmp_fake_providers)
+  target_link_options(decode_selected_products_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
   llmp_gtest(decode_selected_products_test TEST_PREFIX unit. PROPERTIES LABELS unit)
   add_executable(routed_component_gpu_test routed_component_gpu_test.cc)
   target_link_libraries(routed_component_gpu_test PRIVATE llmp_decode_selected llmp_engine
@@ -1115,6 +1118,7 @@ target_link_libraries(component_bindings_test PRIVATE llmp_runtime_llm llmp_comp
 if(LLMP_CUDA)
   target_compile_definitions(component_bindings_test PRIVATE LLMP_BINDING_CUDA=1)
   target_link_libraries(component_bindings_test PRIVATE llmp_ggml_kernels)
+  target_link_options(component_bindings_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
 endif()
 llmp_gtest(component_bindings_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
@@ -1174,6 +1178,15 @@ target_link_libraries(components_test PRIVATE llmp_components llmp_reference_ker
                                               llmp_model llmp_artifact llmp_json)
 llmp_gtest(components_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
+if(LLMP_CUDA)
+  add_executable(components_catalog_gpu_test components_catalog_gpu_test.cc)
+  target_include_directories(components_catalog_gpu_test SYSTEM PRIVATE
+                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
+  target_link_libraries(components_catalog_gpu_test PRIVATE llmp_components llmp_planner
+                                                            llmp_reference_kernels llmp_ggml_kernels
+                                                            llmp_cuda_device_memory)
+  llmp_gpu_gtest(components_catalog_gpu_test)
+endif()
 
 # Typed spatial component fragments use the common planner and CPU reference;
 # no token phase or separate execution backend is introduced.
@@ -1343,6 +1356,7 @@ llmp_gtest(components_state_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
 if(LLMP_CUDA)
   add_executable(expert_slab_test expert_slab_test.cc)
   target_link_libraries(expert_slab_test PRIVATE llmp_engine llmp_test_artifact_writer)
+  target_link_options(expert_slab_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
   llmp_gtest(expert_slab_test TEST_PREFIX unit. PROPERTIES LABELS unit
                ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 endif()
@@ -1505,14 +1519,22 @@ target_link_libraries(import_mlx_normalize_test PRIVATE llmp_import llmp_compone
 if(LLMP_CUDA)
   target_link_libraries(import_mlx_normalize_test PRIVATE llmp_decode_selected)
   target_compile_definitions(import_mlx_normalize_test PRIVATE LLMP_HAS_CUDA=1)
+  target_link_options(import_mlx_normalize_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
 endif()
-llmp_gtest(import_mlx_normalize_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")
+llmp_gtest(import_mlx_normalize_test TEST_PREFIX unit. TEST_FILTER "-*ModelsTest.*"
+             PROPERTIES LABELS unit)
+gtest_discover_tests(import_mlx_normalize_test DISCOVERY_MODE PRE_TEST TEST_PREFIX unit.
+                     TEST_FILTER "*ModelsTest.*" PROPERTIES LABELS "unit\;models")
 
 # Native v1 drafter normalization, publication and target composition.
 add_executable(import_drafter_normalize_test import_drafter_normalize_test.cc)
 target_link_libraries(import_drafter_normalize_test PRIVATE llmp_cli llmp_import llmp_components llmp_model llmp_spec llmp_artifact llmp_runtime llmp_test_artifact_writer llmp_json llmp_base)
-llmp_gtest(import_drafter_normalize_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models"
+llmp_gtest(import_drafter_normalize_test TEST_PREFIX unit. TEST_FILTER "-*ModelsTest.*"
+             PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${CMAKE_CURRENT_SOURCE_DIR}/data")
+gtest_discover_tests(import_drafter_normalize_test DISCOVERY_MODE PRE_TEST TEST_PREFIX unit.
+                     TEST_FILTER "*ModelsTest.*" PROPERTIES LABELS "unit\;models"
+                     ENVIRONMENT "LLMP_TEST_DATA=${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 add_executable(import_modelopt_models_test import_modelopt_models_test.cc)
 target_link_libraries(import_modelopt_models_test PRIVATE llmp_cli llmp_import llmp_components llmp_platform)

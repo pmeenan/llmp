@@ -97,7 +97,7 @@ TEST(ChatCorpus, EveryTemplateRendersAsTransformersDoes) {
   const auto manifest_bytes = ReadFile(dir + "/manifest.json");
   const auto reference_bytes = ReadFile(dir + "/references.json");
   if (!manifest_bytes || !reference_bytes) {
-    GTEST_SKIP() << "no chat-template corpus under " << dir;
+    GTEST_FAIL() << "no chat-template corpus under " << dir;
   }
   auto manifest = json::Parse(*manifest_bytes);
   auto references = json::Parse(*reference_bytes);
@@ -179,7 +179,7 @@ TEST(ChatCorpus, LongConversationsStayWithinBounds) {
   const std::string dir = ModelsDir() + "/chat-templates/templates";
   const auto manifest_bytes = ReadFile(ModelsDir() + "/chat-templates/manifest.json");
   if (!manifest_bytes) {
-    GTEST_SKIP() << "no chat-template corpus";
+    GTEST_FAIL() << "no chat-template corpus";
   }
   auto manifest = json::Parse(*manifest_bytes);
   ASSERT_TRUE(manifest.has_value());
@@ -238,7 +238,7 @@ TEST(ChatCorpus, StopTokensComeFromTheTemplate) {
   for (const auto& [name, stop] : expected) {
     const auto text = ReadFile(std::format("{}/{}.jinja", dir, name));
     if (!text) {
-      GTEST_SKIP() << "no chat-template corpus under " << dir;
+      GTEST_FAIL() << "no chat-template corpus under " << dir;
     }
     auto chosen = chat::ChatTemplate::ForText(text.value_or(std::string()), facts);
     ASSERT_TRUE(chosen.has_value()) << name << ": " << chosen.error();
@@ -367,7 +367,7 @@ TEST(ChatCorpus, GemmaRenderersEqualTheirTemplatesOnRandomConversations) {
   const std::string dir = ModelsDir() + "/chat-templates";
   const auto manifest_bytes = ReadFile(dir + "/manifest.json");
   if (!manifest_bytes) {
-    GTEST_SKIP() << "no chat-template corpus under " << dir;
+    GTEST_FAIL() << "no chat-template corpus under " << dir;
   }
   auto manifest = json::Parse(*manifest_bytes);
   ASSERT_TRUE(manifest.has_value());
