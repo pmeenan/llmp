@@ -39,6 +39,62 @@ one Spark and on two.
 
 ---
 
+## D-123: Capability-driven optimization and normalization; no checkpoint or shape pins in runtime, planner, kernel or importer selection (2026-10-20, status: accepted at the owner's direction; amends D-107, D-109, D-118 and D-119)
+
+**Decision.** Runtime admission, numerical qualifications, planning policies,
+default settings, kernel capability gates, on-chip decode selection, EXL3
+selection, and checkpoint normalization are driven by declared component,
+format, encoding, and hardware capabilities—never by pinned checkpoint SHA-256
+receipts, hardcoded benchmark prompt/image dimensions, or single-model shape
+whitelists. Specifically:
+
+- **Numerical qualifications and changed-arithmetic fusions are capability- and
+  format-driven.** Changed-arithmetic rewrites (`hc_prep`, `mxfp8_inputs`,
+  `prepared_head_gate`, `moe_experts`, `bf16_rows`, `bf16_glu`, `bf16_branch`,
+  `qk_attention`, `bf16_residual`, `vecq_glu`, `grouped_vecq`, `vecq_inputs`)
+  and `ProductPolicy` choices are selected from the model's component roles,
+  tensor formats/encodings, step shapes, and mapping policy rules, not gated on
+  matching `runtime/approvals.cc` source-file SHA-256 receipts, envelope bounds,
+  or fixed image/prompt dimensions (`1024x1024`, `prompt_rows == 25`).
+- **Policies and default settings come from the mapping and spec.** Pinned and
+  unpinned checkpoints of the same architecture and format receive the same
+  planning policy, default context bounds, and wide-context slot clamping from
+  `spec::Mapping` and `ServingRecipe`.
+- **Kernel and backend gates test real algorithmic and hardware limits.**
+  `src/kernels/ggml/capabilities.cc`, `src/kernels/decode/`,
+  `src/kernels/exl3/`, and `src/execution/measured_ranks.h` check actual head
+  divisibility, alignment, shared-memory, encoding, and SM/ISA requirements
+  rather than hardcoded family dimensions (such as Gemma 4's GQA ratio, Qwen3.8
+  or DeepSeek V4 matrix dimensions, Qwen-Image VAE shapes, or the 5-shape Qwen2.5
+  EXL3 table). Bit-for-bit output identity with a legacy un-fused path is not a
+  reason to pin or disable a capability-valid optimization when quality and
+  speed hold; differences are understood to rule out calculation bugs, then
+  adopted generally.
+- **Normalization and relayout are mapping-, role-, and encoding-driven.**
+  Multipart split tensors, indexed expert/row assembly, head permutations,
+  derived parameter folds, and expert scale-atom relayouts operate from
+  `SourceMapping` and `spec::Model` component roles rather than single-checkpoint
+  normalizers or hardcoded GGUF tensor names.
+
+**Context.** A post-R13 review of M3.6 (`origin/main..29b61b0e`) found that
+while the structural engine was unified, changed-arithmetic fusions in
+`AdmittedNumerics` / `AdmittedImageNumerics` were still locked to exact
+checkpoint SHA-256 receipts in `approvals.cc` (and exact 25-token / `1024x1024`
+image benchmark geometry), kernel capabilities still checked exact family
+dimensions, EXL3's generic source disabled GEMV and reconstruction outside 5
+Qwen2.5 shapes, and Qwen3.8 ModelOpt/MLX import still relied on single-checkpoint
+normalizers. Owner direction (2026-10-20): remove hard ties to specific models
+or pins in favor of shared capability-based decisions across the engine.
+
+**Consequences.** M3.6 review follow-up slices `R14`–`R19` in [plan.md](plan.md)
+fix the concrete defects uncovered by the review and replace the remaining
+checkpoint, geometry, kernel-shape, and importer pins with capability-driven
+rules.
+
+**Reopen if.** A capability-selected fusion or kernel produces a verified
+quality regression on a supported encoding/shape class that requires a narrower
+format or shape guard.
+
 ## D-122: Optional stage graph links and exports in ModelSpec and token components in the image pipeline (2026-10-19, status: accepted; amends D-107 and D-109)
 
 **Decision.** `spec::Stage` carries optional `links` (`std::vector<GraphLink>`)
@@ -146,7 +202,7 @@ flattening its names. No payload encoding or served numerical result changes.
 by its importer version, options, transforms or produced files, or a future
 pipeline needs a deeper metadata tree.
 
-## D-119: Runtime admission validates v1 artifacts by stored spec and architecture mapping; approvals.cc pins the reference fleet, not admission  (2026-10-17, status: accepted at the owner's direction of 2026-10-17; amends D-118's lock-file admission requirement and restores D-109's rule that a new checkpoint or size of a known architecture requires no C++ edit or rebuild)
+## D-119: Runtime admission validates v1 artifacts by stored spec and architecture mapping; approvals.cc pins the reference fleet, not admission  (2026-10-17, status: accepted at the owner's direction of 2026-10-17; amends D-118's lock-file admission requirement and restores D-109's rule that a new checkpoint or size of a known architecture requires no C++ edit or rebuild; amended by D-123, 2026-10-20, so numerical qualifications, policies and settings defaults derive from mapping and format capabilities rather than approval pins)
 
 **Decision.** The runtime admits any format-v1 artifact or composition of a
 supported architecture by structural and capability validation against its
@@ -205,7 +261,7 @@ than its approved one is pinned by its own inventory and its composition
 checked structurally; beside its approved target, its composition is
 still the pinned one.
 
-## D-118: Serving is v1-only; v0 artifacts are re-imported, not migrated; approval is data  (2026-10-15, status: accepted by the owner, 2026-10-15 (v1-only serving); in effect since slice 4b (2026-10-16); amends D-113's "v0 stays readable" for serving; implements D-109's "the approved list is data, not a profile in code"; amended by D-119, 2026-10-17, so unpinned v1 artifacts of supported architectures are admitted by stored spec and mapping validation)
+## D-118: Serving is v1-only; v0 artifacts are re-imported, not migrated; approval is data  (2026-10-15, status: accepted by the owner, 2026-10-15 (v1-only serving); in effect since slice 4b (2026-10-16); amends D-113's "v0 stays readable" for serving; implements D-109's "the approved list is data, not a profile in code"; amended by D-119, 2026-10-17, so unpinned v1 artifacts of supported architectures are admitted by stored spec and mapping validation, and by D-123, 2026-10-20, removing checkpoint pins from numerical, policy and kernel selection)
 
 **Decision.** The runtime serves format-v1 artifacts only, from slice 4b
 (which deletes v0 synthesis, the binders and v0 serving; slice 4a, below,

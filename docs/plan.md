@@ -51,7 +51,7 @@ Each milestone leaves a usable, testable result. None has a promised date.
 | M2 Resource core | Catalog, admission and leases on a fake backend and a Spark; the backend proof settles the operation contract | M1 (done) |
 | M3 Single-Spark fast swap | DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1 swap A→B→A on one Spark, aiming at ~10 s to first token, as correct, fast and lean as their references | M2 |
 | M3.5 Model families | The core engine runs the major open model families, MoE and dense (Gemma, Llama, MiMo and the other top-tier families), each correct, as fast as its reference and flat with context, before the system is built around it; image, video and audio file inputs on the models that take them, decision models over the Jev API, and image, video and speech generation routes (D-101) | M3; parked 2026-10-08, resumed on M3.6's exit |
-| M3.6 Engine components | One engine of shared components over llmpalooza's own graph IR: the format layer, one runner and serving adapter, the native importer, every current model migrated within 1% of its current speed (D-107 to D-110); done, see the [record](m36-record.md) | M3 |
+| M3.6 Engine components | One engine of shared components over llmpalooza's own graph IR: the format layer, one runner and serving adapter, the native importer, every current model migrated within 1% of its current speed, and capability-driven optimization/normalization without checkpoint pins (D-107 to D-110, D-123); `in progress` (R14–R19), see the [record](m36-record.md) | M3 |
 | M4 Two-Spark fast swap | GLM-5.3 Flash, then DeepSeek v4.1 Flash, sharded over both Sparks in the same cycle, with their image (and GLM's video) inputs | M3.5 |
 | M5 One resident model | Importer, verifier, the three client protocols plus the Gemini API and code completion, TLS and management on the small fixtures | M4 |
 | M6 First useful product | A→B→A with partial retention; switching policy chosen from measurement | M5 |
@@ -227,6 +227,79 @@ before new families land; each item lands as one reviewed commit.
       "how to add" checklists, `AGENTS.md` trimmed, the record's carried items
       triaged, and closeout verification recorded
       ([m35-r13-closeout](experiments/m35-r13-closeout/README.md))
+- [ ] R14 Concrete correctness fixes across IR, planner, spec, components,
+      format, engine and gate tools (`Op::kRoute` contiguity in `Decompose`
+      and `CompactRouteReaders`; `Decompose` role/view/rounding invariants in
+      `Route`, `HcPost`, `Pool`, `kGatedResidualModulateSplit`; `Graph::Digest`
+      `kExl3Trellis` params; `Partitioner::LocalIds`/`ExpertMask` `int32_t`
+      constant bytes; `planner::KeyOf` full `PlanKey` initialization;
+      `attention.dense` `explicit_stateless` `output_gate`/`sinks` and
+      `Reference` `scale_scores`; `StepContext::Save`/`Hadamard` builder
+      segment preservation; `EmitKvCacheStore` `d.kv_encoding` and
+      `ApplyKvCacheEncoding`/`KvCacheEncodingBytes` `kF16`/`kQ4_0`;
+      `CheckApplied` fold tensor validation; `Exclusive`/`ValidateMapping`
+      disjoint `layer_types` and `FindMapping` collision; `kScaleAtoms`
+      stacked row atom alignment; `GrowMapped` host charge rollback;
+      `TearDown` multi-model detach; `PromptBatchInventory` per-shape fallback
+      flags; `StepRuns::QueueRouted` per-segment capture and `routed_outputs`
+      check; runner-scoped `PlanStep`; Python gate tool store fallback and SSE
+      error check)
+- [ ] R15 Unpinning runtime admission, numerical qualifications, policies and
+      settings (D-123: derive `NumericalQualifications` and changed-arithmetic
+      fusion eligibility from component roles, tensor formats/encodings and op
+      shapes rather than `approvals.cc` SHA-256 receipts, envelope bounds or
+      fixed `1024x1024` / 25-token image geometry; unify `AdmittedPolicy`,
+      `ProductPolicy` defaults, `ResolveSettings` default context and
+      `wide_context` slot clamping onto `spec::Mapping` and `ServingRecipe`
+      for pinned and unpinned checkpoints alike; admit supported encodings in
+      `ReadImageAdmission`; deduplicate staging helpers across
+      `component_build.cc` and `component_image_build.cc`; wire multi-drafter
+      configurations in `ComponentLlmBuild`)
+- [ ] R16 Capability-driven kernel gates, on-chip decode ladder and EXL3
+      (D-123: replace family-specific shape, head-count, GQA-ratio and
+      `sm_121` whitelists in `src/kernels/ggml/capabilities.cc`, `lower.cc`,
+      `validate_ext.cc` and `fattn_owner.cu` with true hardware/algorithmic
+      predicates; replace the 2-entry shape-pinned `kDeviceMeasuredRanks` with
+      capability rules; enable `zero_point` and `AffineScale::kF32` and use
+      `__half` MMA for `AffineScale::kF16` in `src/kernels/decode/`;
+      generalize mixed-encoding `fused.mul_mat_glu` and paged `kGetRows`;
+      keep shape-generic `exl3.linear.gemv` and reconstruction active in
+      `DeviceSelectedSource`, derive default `GemmPlan` concurrency from device
+      SMs, and remove pageable `cudaMemcpyAsync` in `Bound::Run`)
+- [ ] R17 Component unification, hybrid layer mappings and spatial/token bridge
+      (support `placement = "pre"` and `"sandwich"` on `attention.gdn`,
+      `attention.mqa` and `attention.qsa`; make `gdn.value_heads_tiled`
+      conditional and remove hardcoded DeepSeek V4 `idim`/`ih`/`ratio` checks
+      in `attention.mqa`; deduplicate `attention.borrowed` into
+      `attention.dense`; allow `{kF32, kBF16, kF16}` and `kNormZeroCentered`
+      across all norm roles in `ffn.moe`, `hc.mix` and `defs.h`; support
+      character-per-layer hybrid pattern strings and $>64$ layers in
+      `LayerTypes()` and declarative drafter stage synthesis in
+      `spec/mapping.cc`; remove the `f.b.segment() != kJoinedSegment`
+      side-channel in `conditioning_blocks.cc`/`image_blocks.cc`, replace
+      hardcoded component-name ladders in `spatial.cc`, and extend
+      `conv.spatial` to arbitrary kernel/stride/padding)
+- [ ] R18 Mapping-driven importer, role-driven expert relayout and
+      tokenizer/chat generalization (D-123: extend `SourceMapping` and
+      `normalize.cc` with `Layout::kSplit` multipart expansion, `mlx` and
+      ModelOpt `safetensors` support, `{layer}` + `{index}` assembly kinds,
+      declarative `HeadPermutationPlan`, 1D tensor-to-`SourceValue` promotion,
+      lifted rule caps, automatic `FoldDerivedParameters` across `F32`/`F16`/`BF16`
+      and role-driven `RelayoutExpertTables` over `spec::Model`, retiring
+      single-checkpoint hardcoding in `modelopt_qwen38.cc` and `mlx_qwen38.cc`
+      and supporting `--component mtp` on MLX; accept nested `rope_parameters`
+      and `layer_types` in HF `safetensors` import; broaden HF `tokenizer.json`
+      pre-tokenizer/normalizer/added-token support and `sentencepiece.cc`
+      `kMaxVocab`; emit `kPrefixEnd`/`kMessageEnd` boundaries, single-pass
+      `kGenerationPrompt` and multi-token stop discovery in `RenderInterpreted`)
+- [ ] R19 Engine simplification, `BackingService` unification (`RE-059`),
+      per-model workspace VAs and closeout verification (route `CarryRegion`
+      and `MapWorkspace` 2 MiB handles through `BackingService` `creates_`/`stash_`;
+      give each registered model its own virtual reservation for `activations`
+      and `pool`; skip redundant catalog closure RPCs in `ContinueRouted` for
+      base-leased expert pages; deduplicate runner boilerplate between
+      `ModelRunner` and `StagedExecution` and `SetupRowTables`; run full Spark
+      and CPU-only verification and update the M3.6 record and docs)
 
 **Gemma31 gap closing, 2026-10-06:** [state reuse across Clear, capture beside
 eager execution and the fused decode FFN](experiments/gemma-gap-closing/README.md)
@@ -1451,9 +1524,12 @@ TensorFold comparisons report speed, memory and separate quality controls.
   in a chat turn.
 - The support matrix lists every approved family with its evidence.
 
-## M3.6 — Engine components  `done`
+## M3.6 — Engine components  `in progress`
 
-Completed 2026-10-17. Every model M3 served (Gemma 2, Gemma 3, Gemma 4
+Initial migration completed 2026-10-17; reopened 2026-10-20 for the R14–R19
+post-review capability-unification and defect-fix slices (D-123, listed under
+[M3.6 review follow-ups](#m35--model-families--in-progress) above and below).
+Every model M3 served (Gemma 2, Gemma 3, Gemma 4
 26B-A4B and 31B with their assistants, Qwen3.8 native with MTP and GGUF,
 DeepSeek V4 Flash with DSpark, Qwen-Image-2.1) and the Qwen2 FP16 and EXL3
 fixtures run from a stored spec on one engine of shared components over
@@ -1463,7 +1539,7 @@ weights in their source encoding and decodes on-chip, the native importer
 publishes format-v1 artifacts from every migrated model's verified source,
 serving is v1-only with approval as data (D-118), the legacy runners,
 plans, graph builders, bindings and serving classes are deleted, and the
-Python importers are out of the production path. The [frozen M3.6 record](m36-record.md) retains the task history,
+Python importers are out of the production path. The [M3.6 record](m36-record.md) retains the task history,
 the exit criteria with their evidence, the owner's decisions, the accepted
 exceptions, the classified review follow-ups and the work handed on. The
 design is [engine-components.md](engine-components.md); the protocol and
@@ -1562,6 +1638,20 @@ is [retained there](m36-record.md#retained-scope-history)):
       settings, applicability and defaults derived from the spec and its mapping
       (R1, `e3d7be83`; serving from data, `47cde2ed`, `d918ada4`); no
       per-architecture selector remains.
+- [ ] **Post-review capability unification and defect fixes (D-123, R14–R19):**
+      fix the concrete IR, planner, component, spec, format, engine, importer
+      and gate-tool defects found in the post-R13 review (R14); replace
+      SHA-256 and geometry pins in `AdmittedNumerics`, `AdmittedImageNumerics`,
+      `AdmittedPolicy` and `ResolveSettings` with capability-, format- and
+      mapping-driven rules (R15); replace family-specific dimension and `sm_121`
+      whitelists in GGML capabilities, the on-chip decode ladder and EXL3 with
+      true hardware/algorithmic predicates (R16); unify attention placement,
+      norm encodings, hybrid layer mappings and the 1D/4D spatial/token bridge
+      (R17); generalize `SourceMapping`/`Normalize` and `RelayoutExpertTables`
+      to retire single-checkpoint ModelOpt/MLX normalizers and broaden
+      tokenizer/chat fallbacks (R18); and unify `BackingService` 2 MiB handle
+      pooling (`RE-059`), per-model workspace VAs and engine runner boilerplate
+      with full closeout verification (R19).
 
 **Exit criteria:** met, with the accepted exceptions (DeepSeek DSpark's C4 wall and the Gemma 3, Qwen3.8 GGUF and Qwen3.8 native quality tripwires), each with its evidence, in the
 [record's mapping](m36-record.md#final-gate-and-evidence-mapping): one engine;
