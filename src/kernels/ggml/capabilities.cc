@@ -802,6 +802,13 @@ bool AcceptsStateBankAttention(const ex::CapabilityQuery& q) {
          cells % 256 == 0 && mask->ne[0] == cells && mask->ne[1] >= query->ne[1] &&
          mask->ne[2] == 1 && mask->ne[3] == 1;
 }
+// The policy's bound on the row-at-a-time forms (SelectionPolicy
+// vector_rows), where it sets one.
+std::uint64_t VectorRows(const ex::CapabilityQuery& q) {
+  return q.policy.vector_rows == 0 ? std::numeric_limits<std::uint64_t>::max()
+                                   : q.policy.vector_rows;
+}
+bool CommonAttention(const ex::CapabilityQuery& q, bool vector);
 bool AcceptsAttention64(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::AttnParams>(q);
   const auto* query = Operand(q, 0);
@@ -814,9 +821,9 @@ bool AcceptsAttention64(const ex::CapabilityQuery& q) {
       !(p->scale < std::numeric_limits<float>::infinity()) || p->n_kv_max != 0)
     return false;
   return query->ne[0] == 64 && key->ne[0] == 64 && value->ne == key->ne && query->ne[1] > 0 &&
-         query->ne[2] > 0 && key->ne[2] > 0 && query->ne[2] % key->ne[2] == 0 &&
-         query->ne[3] == 1 && key->ne[3] == 1 && key->ne[1] > 0 && key->ne[1] % 256 == 0 &&
-         mask->ne[0] == key->ne[1] &&
+         (query->ne[1] <= VectorRows(q) || !CommonAttention(q, false)) && query->ne[2] > 0 &&
+         key->ne[2] > 0 && query->ne[2] % key->ne[2] == 0 && query->ne[3] == 1 && key->ne[3] == 1 &&
+         key->ne[1] > 0 && key->ne[1] % 256 == 0 && mask->ne[0] == key->ne[1] &&
          mask->ne[1] >= query->ne[1] + (query->ne[1] >= 1024 ? query->ne[1] % 2 : 0) &&
          mask->ne[2] == 1 && mask->ne[3] == 1;
 }
@@ -849,7 +856,7 @@ bool CommonAttention(const ex::CapabilityQuery& q, bool vector) {
 bool AcceptsCommonAttention(const ex::CapabilityQuery& q) { return CommonAttention(q, false); }
 bool AcceptsCommonVectorAttention(const ex::CapabilityQuery& q) {
   return CommonAttention(q, true) && (q.k == 64 || q.k == 128 || q.k == 192) &&
-         Operand(q, 1)->ne[1] % 256 == 0;
+         Operand(q, 0)->ne[1] <= VectorRows(q) && Operand(q, 1)->ne[1] % 256 == 0;
 }
 bool AcceptsAttention256(const ex::CapabilityQuery& q) {
   return Built(q) && q.k == 256 && q.n == 256;
@@ -1593,12 +1600,6 @@ bool AcceptsQsaAttention(const ex::CapabilityQuery& q) {
 bool AcceptsHeadGate(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::HeadGateParams>(q);
   return Built(q) && q.arch == kCutlassArch && p && p->head % 32 == 0;
-}
-// The policy's bound on the row-at-a-time forms (SelectionPolicy
-// vector_rows), where it sets one.
-std::uint64_t VectorRows(const ex::CapabilityQuery& q) {
-  return q.policy.vector_rows == 0 ? std::numeric_limits<std::uint64_t>::max()
-                                   : q.policy.vector_rows;
 }
 bool OptionEnabled(const ex::CapabilityQuery& q, std::string_view name) {
   return !q.policy.options || std::ranges::contains(*q.policy.options, name);

@@ -377,6 +377,14 @@ if(LLMP_CUDA)
   llmp_gpu_gtest(gemma_native_v1_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
                                "LLMP_TEST_DATA=${tokenizer_data}")
+  # Dense decoder canaries (Llama 3.2 1B Q8_0 and Q4_K_M, Qwen2.5 0.5B FP16
+  # and EXL3 4.0) served on the shared engine under kDefaultServingRecipe.
+  add_executable(dense_decoder_serving_gpu_test dense_decoder_serving_gpu_test.cc)
+  target_link_libraries(dense_decoder_serving_gpu_test PRIVATE llmp_runtime_serving
+                                                               llmp_test_v1_frozen)
+  llmp_gpu_gtest(dense_decoder_serving_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
+                               "LLMP_TEST_DATA=${tokenizer_data}")
   # Gemma 4 with its assistant as the drafter: published v1 artifacts against
   # the frozen digests (tests/support/v1_frozen.h).
   add_executable(gemma_assistant_v1_gpu_test gemma_assistant_v1_gpu_test.cc)

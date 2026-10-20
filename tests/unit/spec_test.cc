@@ -999,6 +999,80 @@ TEST(MappingTest, FromOrRatioEvaluatesMissingKeyOnNonHalfBillionQwen) {
   EXPECT_DOUBLE_EQ(std::get<double>(P(attn, "scale").value), want_scale);
 }
 
+TEST(MappingTest, GenericDenseDecoderSynthesizesLlamaAndMistralWithRopeFreqsAndYarn) {
+  Source llama_source{.architecture = "llama", .container = "gguf"};
+  const auto add = [&](Source& s, std::string name) {
+    s.tensors.push_back({.name = std::move(name)});
+  };
+  add(llama_source, "token_embd.weight");
+  add(llama_source, "output_norm.weight");
+  add(llama_source, "rope_freqs.weight");
+  add(llama_source, "blk.0.attn_norm.weight");
+  add(llama_source, "blk.0.attn_q.weight");
+  add(llama_source, "blk.0.attn_k.weight");
+  add(llama_source, "blk.0.attn_v.weight");
+  add(llama_source, "blk.0.attn_output.weight");
+  add(llama_source, "blk.0.ffn_norm.weight");
+  add(llama_source, "blk.0.ffn_gate.weight");
+  add(llama_source, "blk.0.ffn_up.weight");
+  add(llama_source, "blk.0.ffn_down.weight");
+
+  const std::vector<SourceValue> llama_values{
+      {.key = "llama.context_length", .value = std::int64_t{131072}},
+      {.key = "llama.embedding_length", .value = std::int64_t{2048}},
+      {.key = "llama.block_count", .value = std::int64_t{1}},
+      {.key = "llama.feed_forward_length", .value = std::int64_t{8192}},
+      {.key = "llama.attention.head_count", .value = std::int64_t{32}},
+      {.key = "llama.attention.head_count_kv", .value = std::int64_t{8}},
+      {.key = "llama.attention.key_length", .value = std::int64_t{64}},
+      {.key = "llama.attention.value_length", .value = std::int64_t{64}},
+      {.key = "llama.attention.layer_norm_rms_epsilon", .value = 1e-5},
+      {.key = "llama.rope.dimension_count", .value = std::int64_t{64}},
+      {.key = "llama.rope.freq_base", .value = 500000.0},
+  };
+  const auto llama_spec = Synthesize(mappings::LlamaGgufMapping(), llama_source, llama_values);
+  ASSERT_TRUE(llama_spec.has_value()) << llama_spec.error();
+  const ComponentRef& llama_attn = llama_spec->stages[0].layers[0].components[0];
+  EXPECT_EQ(P(llama_attn, "rotation").value, ParamValue(std::string("normal")));
+  EXPECT_EQ(P(llama_attn, "qkv_bias").value, ParamValue(false));
+  EXPECT_EQ(P(llama_attn, "rope_freqs").value, ParamValue(true));
+  EXPECT_EQ(Tensor(llama_attn, "rope_freqs"), "rope_freqs.weight");
+  EXPECT_EQ(llama_spec->stages[0].heads.output->weights[0].tensor, "token_embd.weight");
+
+  Source mistral_source = llama_source;
+  mistral_source.architecture = "mistral";
+  mistral_source.container = "safetensors";
+  std::erase_if(mistral_source.tensors,
+                [](const SourceTensor& t) { return t.name == "rope_freqs.weight"; });
+  add(mistral_source, "output.weight");
+  const std::vector<SourceValue> mistral_values{
+      {.key = "mistral.context_length", .value = std::int64_t{32768}},
+      {.key = "mistral.embedding_length", .value = std::int64_t{4096}},
+      {.key = "mistral.block_count", .value = std::int64_t{1}},
+      {.key = "mistral.feed_forward_length", .value = std::int64_t{14336}},
+      {.key = "mistral.attention.head_count", .value = std::int64_t{32}},
+      {.key = "mistral.attention.head_count_kv", .value = std::int64_t{8}},
+      {.key = "mistral.attention.sliding_window", .value = std::int64_t{4096}},
+      {.key = "mistral.attention.layer_norm_rms_epsilon", .value = 1e-5},
+      {.key = "mistral.rope.freq_base", .value = 10000.0},
+      {.key = "mistral.rope.scaling.type", .value = std::string("yarn")},
+      {.key = "mistral.rope.scaling.factor", .value = 4.0},
+      {.key = "mistral.rope.scaling.original_context_length", .value = std::int64_t{8192}},
+      {.key = "mistral.rope.scaling.yarn_beta_fast", .value = 32.0},
+      {.key = "mistral.rope.scaling.yarn_beta_slow", .value = 1.0},
+  };
+  const auto mistral_spec =
+      Synthesize(mappings::MistralSafetensorsMapping(), mistral_source, mistral_values);
+  ASSERT_TRUE(mistral_spec.has_value()) << mistral_spec.error();
+  const ComponentRef& mistral_attn = mistral_spec->stages[0].layers[0].components[0];
+  EXPECT_EQ(P(mistral_attn, "rotation").value, ParamValue(std::string("neox")));
+  EXPECT_EQ(P(mistral_attn, "window").value, ParamValue(std::int64_t{4096}));
+  EXPECT_EQ(P(mistral_attn, "yarn").value, ParamValue(true));
+  EXPECT_DOUBLE_EQ(std::get<double>(P(mistral_attn, "rope_factor").value), 4.0);
+  EXPECT_EQ(P(mistral_attn, "yarn_context").value, ParamValue(std::int64_t{8192}));
+  EXPECT_EQ(mistral_spec->stages[0].heads.output->weights[0].tensor, "output.weight");
+}
+
 TEST(MappingTest, CheckLayerFlagsRefusesFlagWhenScheduleResolvesToAllA) {
   Mapping m = mappings::Gemma4Mapping();
   m.layer_flag_type = 'g';

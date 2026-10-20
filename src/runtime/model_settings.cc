@@ -260,15 +260,16 @@ std::string Grouped(std::uint64_t n) {
 const spec::ServingRecipe* RecipeOf(std::string_view architecture, std::string_view container) {
   if (!container.empty()) {
     const spec::Mapping* mapping = spec::FindMapping(architecture, container);
-    return mapping ? mapping->serving : nullptr;
+    return mapping ? spec::ServingRecipeOf(*mapping) : nullptr;
   }
   // Recipe discovery for architecture-only UI/synthetic facts does not select
   // a mapping variant. All variants must share the same serving recipe.
   const spec::ServingRecipe* recipe = nullptr;
   for (const auto* mapping : spec::Mappings()) {
-    if (mapping->architecture != architecture || !mapping->serving) continue;
-    if (recipe && recipe != mapping->serving) return nullptr;
-    recipe = mapping->serving;
+    const spec::ServingRecipe* m_recipe = spec::ServingRecipeOf(*mapping);
+    if (mapping->architecture != architecture || !m_recipe) continue;
+    if (recipe && recipe != m_recipe) return nullptr;
+    recipe = m_recipe;
   }
   return recipe;
 }
@@ -485,7 +486,7 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
   const auto shared_model = [](const ja::Artifact& artifact) {
     const auto* mapping =
         spec::FindMapping(artifact.model().architecture, artifact.model().container);
-    return mapping && (mapping->serving || mapping->draft);
+    return mapping && (spec::ServingRecipeOf(*mapping) != nullptr || mapping->draft);
   };
   if (quantized_kv && (!shared_model(target) || (drafter != nullptr && !shared_model(*drafter))))
     return Error("Q8_0 KV requires a supported shared model");
@@ -553,9 +554,10 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
         if (auto approved = CheckComposedAdmission(*composed, target, *drafter); !approved)
           return Error(approved.error());
         if (draft_mapping->draft != nullptr && !draft_mapping->draft->vocab_key.empty()) {
-          if (target_mapping->serving == nullptr)
+          const auto* serving_ptr = spec::ServingRecipeOf(*target_mapping);
+          if (serving_ptr == nullptr)
             return Error("component calibration has no target serving recipe");
-          const auto& serving = *target_mapping->serving;
+          const auto& serving = *serving_ptr;
           auto map = DraftHeadRows(*drafter, draft_mapping->draft->head_ids, facts.vocabulary);
           if (!map) return Error(map.error());
           const auto selected =

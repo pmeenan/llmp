@@ -544,13 +544,16 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{},
           stored_metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{}](
              const ModelSettings& settings) mutable -> std::expected<EngineLlmParts, std::string> {
-    // The architecture's serving recipe (its mapping's data, spec/mapping.h).
+    // The architecture's serving recipe (its mapping's data or the default
+    // target LLM recipe, spec/mapping.h).
     const spec::Mapping* recipe_mapping =
         spec::FindMapping(settings.architecture, settings.container);
-    if (recipe_mapping == nullptr || recipe_mapping->serving == nullptr)
+    const spec::ServingRecipe* recipe_ptr =
+        recipe_mapping != nullptr ? spec::ServingRecipeOf(*recipe_mapping) : nullptr;
+    if (recipe_ptr == nullptr)
       return Error(
           std::format("the component engine serves no architecture {}", settings.architecture));
-    const spec::ServingRecipe& recipe = *recipe_mapping->serving;
+    const spec::ServingRecipe& recipe = *recipe_ptr;
     const auto metadata_cap =
         [&node, startup_cap =
                     options.automatic_startup_cap]() -> std::expected<std::uint64_t, std::string> {

@@ -784,7 +784,7 @@ std::expected<std::unique_ptr<Llm::PromptSession>, std::string> NodeBackend::Wor
     return budgeted(frame.branch.BeginScoringPrompt(
         frame.rendered.tokens(),
         [&frame](std::int32_t id, std::span<const float> row) {
-          return frame.literal->PromptRow(frame.prompt_session->run().end, id, row) &&
+          return frame.literal->PromptRow(frame.prompt_session->run().published, id, row) &&
                  frame.exchange.Continue();
         },
         frame.literal->prompt_started()));

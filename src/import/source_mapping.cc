@@ -317,8 +317,40 @@ constexpr std::array<std::string_view, 20> kHfSemantic{"qwen2.",
                                                        "use_bidirectional_attention",
                                                        "attn_logit_softcapping",
                                                        "final_logit_softcapping"};
-constexpr std::array<std::string_view, 6> kGgufSemantic{"gemma2.", "gemma3.",   "gemma4.",
-                                                        "qwen2.",  "qwen4exp.", "deepseek4."};
+constexpr std::array<std::string_view, 8> kGgufSemantic{
+    "gemma2.", "gemma3.", "gemma4.", "qwen2.", "llama.", "mistral.", "qwen4exp.", "deepseek4."};
+constexpr std::array kLlamaAuxiliary{
+    kAuxiliary[0], kAuxiliary[1], kAuxiliary[2],
+    AuxiliaryNamespace{"llama.vocab_size", "the vocabulary the token table states",
+                       "token_embd.weight", 1}};
+constexpr std::array kMistralAuxiliary{
+    kAuxiliary[0], kAuxiliary[1], kAuxiliary[2],
+    AuxiliaryNamespace{"mistral.vocab_size", "the vocabulary the token table states",
+                       "token_embd.weight", 1}};
+#define LLMP_DENSE_SAFETENSORS_KEYS(P)                                                    \
+  KeyAlias{"head_dim", P "attention.key_length"}, KeyAlias{"hidden_act", P "hidden_act"}, \
+      KeyAlias{"hidden_size", P "embedding_length"},                                      \
+      KeyAlias{"intermediate_size", P "feed_forward_length"},                             \
+      KeyAlias{"max_position_embeddings", P "context_length"},                            \
+      KeyAlias{"num_attention_heads", P "attention.head_count"},                          \
+      KeyAlias{"num_hidden_layers", P "block_count"},                                     \
+      KeyAlias{"num_key_value_heads", P "attention.head_count_kv"},                       \
+      KeyAlias{"rms_norm_eps", P "attention.layer_norm_rms_epsilon"},                     \
+      KeyAlias{"rope_theta", P "rope.freq_base"},                                         \
+      KeyAlias{"sliding_window", P "attention.sliding_window"},                           \
+      KeyAlias{"attention_bias", P "attention_bias"},                                     \
+      KeyAlias{"rope_scaling.rope_type", P "rope.scaling.type"},                          \
+      KeyAlias{"rope_scaling.type", P "rope.scaling.type"},                               \
+      KeyAlias{"rope_scaling.factor", P "rope.scaling.factor"},                           \
+      KeyAlias{"rope_scaling.original_max_position_embeddings",                           \
+               P "rope.scaling.original_context_length"},                                 \
+      KeyAlias{"rope_scaling.beta_fast", P "rope.scaling.yarn_beta_fast"},                \
+      KeyAlias{"rope_scaling.beta_slow", P "rope.scaling.yarn_beta_slow"}
+constexpr std::array kLlamaSafetensorsKeys{LLMP_DENSE_SAFETENSORS_KEYS("llama.")};
+constexpr std::array kMistralSafetensorsKeys{LLMP_DENSE_SAFETENSORS_KEYS("mistral.")};
+#undef LLMP_DENSE_SAFETENSORS_KEYS
+constexpr std::array<std::string_view, 3> kDenseHfNulls{"rope_scaling", "rope_parameters",
+                                                        "sliding_window"};
 
 bool SameShape(std::string_view a, std::string_view b) {
   return (a.find(spec::kLayerField) == std::string_view::npos) ==
@@ -427,6 +459,48 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
           .null_semantics = kHfNullSemantics,
       },
       SourceMapping{.container = "gguf",
+                    .architecture = &spec::mappings::LlamaGgufMapping(),
+                    .auxiliary = kLlamaAuxiliary,
+                    .semantic = kGgufSemantic},
+      SourceMapping{.container = "exl3",
+                    .architecture = &spec::mappings::LlamaExl3Mapping(),
+                    .tensors = kQwen2Exl3Tensors,
+                    .keys = kLlamaSafetensorsKeys,
+                    .auxiliary = kGemmaHfAuxiliary,
+                    .semantic = kHfSemantic,
+                    .ignored_tensors = kHfIgnored,
+                    .null_semantics = kDenseHfNulls},
+      SourceMapping{.container = "safetensors",
+                    .architecture = &spec::mappings::LlamaSafetensorsMapping(),
+                    .tensors = kQwen2HfTensors,
+                    .keys = kLlamaSafetensorsKeys,
+                    .auxiliary = kGemmaHfAuxiliary,
+                    .semantic = kHfSemantic,
+                    .ignored_tensors = kHfIgnored,
+                    .null_semantics = kDenseHfNulls,
+                    .tensor_presence = kGemmaHeadPresence},
+      SourceMapping{.container = "gguf",
+                    .architecture = &spec::mappings::MistralGgufMapping(),
+                    .auxiliary = kMistralAuxiliary,
+                    .semantic = kGgufSemantic},
+      SourceMapping{.container = "exl3",
+                    .architecture = &spec::mappings::MistralExl3Mapping(),
+                    .tensors = kQwen2Exl3Tensors,
+                    .keys = kMistralSafetensorsKeys,
+                    .auxiliary = kGemmaHfAuxiliary,
+                    .semantic = kHfSemantic,
+                    .ignored_tensors = kHfIgnored,
+                    .null_semantics = kDenseHfNulls},
+      SourceMapping{.container = "safetensors",
+                    .architecture = &spec::mappings::MistralSafetensorsMapping(),
+                    .tensors = kQwen2HfTensors,
+                    .keys = kMistralSafetensorsKeys,
+                    .auxiliary = kGemmaHfAuxiliary,
+                    .semantic = kHfSemantic,
+                    .ignored_tensors = kHfIgnored,
+                    .null_semantics = kDenseHfNulls,
+                    .tensor_presence = kGemmaHeadPresence},
+      SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Qwen38GgufMapping(),
                     .auxiliary = kQwenAuxiliary,
                     .requirements = kQwenRequirements,
@@ -478,7 +552,7 @@ std::uint8_t KeyTypes(const spec::Mapping& m, std::string_view key) {
         add(rule.per_layer ? kInteger | kReal | kReals : kInteger | kReal);
         break;
       case spec::ValueType::kBool:
-        add(kFlag);
+        add(!rule.value.text.empty() ? kText : kFlag);
         break;
       case spec::ValueType::kString:
         add(kText);

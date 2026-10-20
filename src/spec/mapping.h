@@ -175,6 +175,8 @@ struct ParamRule {
   std::string_view key{};  // the source key; empty: `value` is the parameter
   std::string_view numerator_key{};
   std::string_view divisor_key{};
+  std::string_view
+      tensor{};  // an optional kBool parameter set true when this source tensor is present
   ValueType type = ValueType::kInt;
   Transform transform = Transform::kNone;
   Literal value{};
@@ -258,10 +260,29 @@ struct SourceValue;
 // defaults differ: the architecture's serving recipe as data (D-109: "the
 // approved list is data, not a profile in code"), which the runtime's
 // settings (runtime/model_settings.cc) and component build
-// (runtime/component_build.cc) read instead of naming architectures. A
-// mapping without one is not served (Qwen2's correctness recipe). What one
+// (runtime/component_build.cc) read instead of naming architectures. What one
 // checkpoint is approved for (its envelope, its policy gates) is the
 // approval table's (runtime/approvals.h), not this.
+//
+// An unqualified LLM target mapping (`Mapping::serving == nullptr`) receives
+// `kDefaultServingRecipe` via `ServingRecipeOf(mapping)`: batching on
+// (the mapping's own `policies` govern `max_decode_rows` and step composition),
+// shared route, drafters allowed when configured, `default_draft_rows = 3`,
+// `default_wave_read_align = 256`, `chat_thinking = true`, `chat_tools = true`,
+// and `frozen_host_masks = true`.
+//
+// When adding a new family, consider overriding `Mapping::serving` only when:
+// - `bounded`, `prefill_rows`, `deep_context` / `deep_prefill_rows`, or
+//   `default_context`: the family has a measured context/chunking envelope or
+//   attention mask memory bound (e.g., Gemma 3/4, Qwen 3.8, DeepSeek V4).
+// - `drafters`, `draft_rows`, `block_drafts`, `adaptive_waves`, `mtp_waves`,
+//   and the `default_*` wave priors: the family uses built-in MTP or block
+//   speculative drafting with GB10-calibrated wave costs.
+// - `chat_thinking`, `chat_tools`, `chat_stops`, `default_thinking`: the
+//   family's chat template requires extra stop openers or a non-default
+//   thinking channel policy.
+// - `serving_rule`: serving uses a step-composition policy distinct from the
+//   mapping's admitted default `policies`.
 struct ServingRecipe {
   // Settings. `family` and `name` name its bounded envelope in the
   // settings' bases and refusals ("Gemma", "Gemma3").
@@ -325,6 +346,16 @@ struct ServingRecipe {
   // The serving composition in place of the admitted one (its policy
   // text and how it composes steps); null: the admitted one.
   const PolicyRule* serving_rule = nullptr;
+};
+
+// The default serving recipe an unqualified target LLM mapping gets when
+// `Mapping::serving` is null: batching on (governed by the mapping's own
+// `policies`), shared route, and measured defaults (4,096 prefill rows,
+// `docs/runtime-serving.md#model-settings`).
+inline constexpr ServingRecipe kDefaultServingRecipe{
+    .family = "generic",
+    .name = "default",
+    .prefill_rows = 4096,
 };
 
 // How missing drafter metadata is extracted from the actual target spec and
@@ -420,7 +451,8 @@ struct Mapping {
   // '\n'); none: the planner's default policy (every pattern).
   std::span<const PolicyRule> policies{};
   // How serving runs its models (a target's) or drafts (a drafter's);
-  // null: not served.
+  // when `serving` is null on a target LLM mapping, `ServingRecipeOf`
+  // supplies `kDefaultServingRecipe`.
   const ServingRecipe* serving = nullptr;
   const DraftRecipe* draft = nullptr;
   // Empty only for the container-neutral synthesis fixture; serving always
@@ -428,6 +460,16 @@ struct Mapping {
   std::span<const std::string_view> containers{};
   std::span<const GateRule> gates{};
 };
+
+// The effective serving recipe for `mapping`: its explicit `serving` recipe
+// when set, or `kDefaultServingRecipe` for any target LLM mapping.
+constexpr const ServingRecipe* ServingRecipeOf(const Mapping& mapping) {
+  if (mapping.serving != nullptr) return mapping.serving;
+  if (mapping.role == StageRole::kTarget && mapping.pipeline == PipelineKind::kLlm) {
+    return &kDefaultServingRecipe;
+  }
+  return nullptr;
+}
 inline constexpr std::size_t kMaxPolicyText = 4096;
 
 // The target's facts a drafter mapping's parameters may read, as source

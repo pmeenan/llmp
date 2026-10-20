@@ -125,6 +125,32 @@ constexpr ParamRule RequireInt(std::string_view key, std::int64_t value, bool op
   return {.key = key, .type = ValueType::kInt, .value = {.integer = value}, .optional = optional};
 }
 
+// A boolean parameter set true when `tensor` is present in the source;
+// absent when the tensor is absent, so a subsequent rule or optional omission
+// applies.
+constexpr ParamRule FromTensor(std::string_view slot, std::string_view param,
+                               std::string_view tensor, std::string_view layer_types = {}) {
+  return {.slot = slot,
+          .param = param,
+          .layer_types = layer_types,
+          .tensor = tensor,
+          .type = ValueType::kBool,
+          .optional = true};
+}
+
+// An optional boolean parameter set true when `key` equals `value` (and left
+// out when `key` is absent or `"none"`, or refused for any other string).
+constexpr ParamRule KeyEquals(std::string_view slot, std::string_view param, std::string_view key,
+                              std::string_view value, std::string_view layer_types = {}) {
+  return {.slot = slot,
+          .param = param,
+          .layer_types = layer_types,
+          .key = key,
+          .type = ValueType::kBool,
+          .value = {.flag = true, .text = value},
+          .optional = true};
+}
+
 // A profile's value under a source key: integers as integers, floats as the
 // reals they are.
 inline SourceValue Value(std::string_view key, std::uint32_t v) {

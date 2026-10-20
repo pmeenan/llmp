@@ -119,8 +119,9 @@ are recorded separately as they complete.
 | [Gemma 3 4B QAT](#gemma-3-4b-qat) Q4_0 | target | Served (M3.5, bounded; on the shared engine since M3.6): context 4,096 with one or two slots, or 8,448 with one | not verified; bounded controls only (below) |
 | [Gemma 4 26B-A4B](#gemma-4-26b-a4b-and-31b) UD-Q4_K_M and [31B](#gemma-4-26b-a4b-and-31b) UD-Q4_K_XL | target, with its assistant as drafter | Served (M3.5, bounded; on the shared engine since M3.6, with the assistant): optimized recipe at context 8,192 and four slots; scalar route beyond | not verified; bounded controls only (below) |
 | [Gemma 4 assistants](#gemma-4-26b-a4b-and-31b) for 26B-A4B and 31B (Q8_0) | drafter | Served (M3.6, on the shared engine), with its target | not verified; the 31B screen's transactions byte-exact (below) |
-| [Qwen2.5-0.5B-Instruct FP16](#m2-fixtures) | fixture | Fixture | paged-correct |
-| [Qwen2.5-0.5B-Instruct EXL3](#m2-fixtures) 4.0 and 4.5 bpw | fixtures | Fixture | paged-correct |
+| [Llama 3.2 1B Instruct](#llama-32-1b-instruct) Q8_0 and Q4_K_M | target | Served (M3.5, on the shared engine) | paged-correct; decode faster than llama.cpp v0.6.0 (below) |
+| [Qwen2.5-0.5B-Instruct FP16](#m2-fixtures) | target | Served (M3.5, on the shared engine) | paged-correct |
+| [Qwen2.5-0.5B-Instruct EXL3](#m2-fixtures) 4.0 and 4.5 bpw | target | Served (M3.5, on the shared engine) | paged-correct |
 
 Nothing is distributed-correct: two-node execution is M4's.
 
@@ -1124,18 +1125,67 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   26B-A4B's C1/C4 within 0.6% of stock. Earlier scalar screens' quality
   failures stay recorded in [gemma4.md](gemma4.md).
 
-## M2 fixtures
+## Llama 3.2 1B Instruct
 
-Small dense models from the backend proof, kept as unserved fixtures. All three
+- **Architecture:** `llama` (`spec/mappings/qwen2.*`, shared pre-norm dense
+  decoder mapping covering `qwen2`, `llama` and `mistral` across GGUF,
+  safetensors and EXL3 containers; `norm.rms`, `attn.causal` with normal or
+  NeoX RoPE and optional per-dimension `rope_freqs.weight`, `ffn.DenseSwiGLU`,
+  and tied or untied `head.Output`). No new component or kernel was written:
+  serves through `EngineLlm` under `kDefaultServingRecipe`
+  (`spec/mapping.h`: `prefill_rows = 4096`) and `kDensePolicies`
+  (`max_decode_rows 16`, `vector_rows 16`, `product dense_pair`).
+- **Checkpoints:** `bartowski/Llama-3.2-1B-Instruct-GGUF@067b946c`:
+  - `Llama-3.2-1B-Instruct-Q8_0.gguf` (1,321,079,200 bytes, SHA-256
+    `d6ac9be1a1da4cd9ffbe2de7efca4efe8fd8dcceacdc9bd1faabdcfe3dc49fb8`)
+  - `Llama-3.2-1B-Instruct-Q4_K_M.gguf` (807,694,464 bytes, SHA-256
+    `6d5b20d1bb2fbbe0fb392bf2377d70194b457ef9544bb5a076251dbcd59fb1ff`)
+- **Artifacts:** v1 `fae45ab254176070d2a94db8bea65d0049a0dd5f9469a5fabd4b805dbc6c5c41`
+  (`llama32-1b-q8_0`) and `6a83d84f3e80ce4ffeb7d4cbca4564aaf3eb54cca18954113b38c6a7dcb845c8`
+  (`llama32-1b-q4_k_m`) by `llmp import`, pinned in `runtime/approvals.cc`
+  (spec digest `cbf7950a9a03027877b4ff8fe5d60d0abb2ada79a3dd397b710a5b405ebc6357`).
+- **Template:** `a1a2df5d…`, through the Jinja-subset interpreter (`<|eot_id|>`
+  stop token `128009`).
+- **Tokenizer:** byte-level BPE from the GGUF (128,256 tokens, `llama-bpe`
+  pre-tokenizer).
+- **Decoding:** greedy, plain; chat and literal completions and target
+  likelihoods; joined decode waves up to 16 rows.
+- **Verified (spark-b, GB10 `sm_121`, 2026-10-20 against `llama.cpp` v0.6.0 `d8123504`):**
+  - **Quality (924-token corpus passage, 923 scored targets):**
+    - `Q8_0`: `llmp` NLL `4.260130` (PPL `70.8192`) vs `llama.cpp` NLL `4.258337`
+      (PPL `70.6923`), `|ΔNLL| = 0.00179` (`+0.18%` PPL). Greedy 128-token match:
+      `128/128` on prompt 0, `128/128` on prompt 2, `5/128` on prompt 1.
+    - `Q4_K_M`: `llmp` NLL `4.292454` (PPL `73.1458`) vs `llama.cpp` NLL `4.294595`
+      (PPL `73.3026`), `|ΔNLL| = 0.00214` (`-0.21%` PPL). Greedy 128-token match:
+      `42/128` on prompt 0, `127/128` on prompt 1, `8/128` on prompt 2.
+  - **Speed (3,880-token uncached prompts, 128 generated tokens):**
+    - `Q8_0`: C1 decode **150.0 tok/s** vs `llama.cpp` **144.6 tok/s** (**+3.8% faster**);
+      C4 decode **448.2 tok/s** vs `llama.cpp` **413.7 tok/s** (**+8.3% faster**);
+      C1 prefill **13,415 tok/s** (`0.289 s` over HTTP SSE) vs `llama.cpp` **16,865 tok/s**
+      (`0.228 s` in-process `llama_decode`); C4 prefill **12,888 tok/s** (`1.204 s`,
+      including D-105 slot checkpointing) vs `llama.cpp` **16,908 tok/s** (`0.910 s`);
+      C1 cycle **1.138 s** vs **1.106 s**; C4 cycle **2.322 s** vs **2.138 s**.
+    - `Q4_K_M`: C1 decode **212.7 tok/s** vs `llama.cpp` **198.4 tok/s** (**+7.2% faster**);
+      C4 decode **589.9 tok/s** vs `llama.cpp` **518.1 tok/s** (**+13.9% faster**);
+      C1 prefill **13,156 tok/s** (`0.295 s` over HTTP SSE) vs `llama.cpp` **16,295 tok/s**
+      (`0.236 s`); C4 prefill **12,890 tok/s** (`1.204 s`) vs `llama.cpp` **16,286 tok/s**
+      (`0.945 s`); C1 cycle **0.894 s** vs **0.877 s**; C4 cycle **2.034 s** vs **1.925 s**.
+  - **Serving controls (`dense_decoder_serving_gpu_test`):** two-slot prompt
+    prefill, multi-row prompt scoring, joined decode waves, idle state spill,
+    zero-step restore with bit-identical state image, and continuation pass.
+
+## M2 fixtures (served on the shared engine)
+
+Small dense models from the backend proof, now served through `rt::Server`
+(`EngineLlm`) under `kDefaultServingRecipe` (`spec/mapping.h`,
+`dense_decoder_serving_gpu_test`). All three
 use shared components, planning and operation dispatch on fixed teacher IDs.
 FP16 has original-model scoring and checkpoint/spill/repeated-execution controls
 ([FP16 evidence](experiments/m36-qwen2/README.md)); both EXL3 fixtures execute G
 and O profiles with original-model scoring, checkpoint/spill, kept-file adoption
 into a fresh owner and weight backing reload
-([EXL3 evidence](experiments/m36-exl3-selected/README.md)). These are bounded
-fixture controls, not serving qualification. Fresh-owner adoption is in one
-process, and backing reload preserves virtual addresses. M5 serves them end to
-end and completes their rows ([plan](plan.md)). The backend-proof comparisons
+([EXL3 evidence](experiments/m36-exl3-selected/README.md)). Fresh-owner adoption is in one
+process, and backing reload preserves virtual addresses. The backend-proof comparisons
 in the table below describe the historical implementations.
 
 | | Qwen2.5-0.5B-Instruct FP16 | Qwen2.5-0.5B-Instruct EXL3 4.0 / 4.5 bpw |
@@ -1144,11 +1194,11 @@ in the table below describe the historical implementations.
 | Checkpoint | `Qwen/Qwen2.5-0.5B-Instruct-GGUF@9217f5db` `qwen2.5-0.5b-instruct-fp16.gguf` ([pins](experiments/first-slice/pins.json)) | `blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.0bpw@7009334d` and `-4.5bpw@030d3a41` ([pins](experiments/exl3-reference/pins.json)) |
 | Artifact | v0 `b93cdc32…`; v1 `a96092c9…` | v0 `6e96e499…` / `00d77caf…` ([artifact-layout](experiments/artifact-layout/README.md)); v1 `ce8defd9…` / `b62e2d22…` |
 | v0 against v1 | bit-identical ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)) | bit-identical (same) |
-| Template hash (no renderer) | `d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4`, the GGUF's `tokenizer.chat_template` ([first-slice](first-slice.md)) | `cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f`, `tokenizer_config.json`'s `chat_template`, both rates ([runtime.json](experiments/exl3-reference/runtime.json)) |
-| Tokenizer | the GGUF's Qwen2 BPE; the native tokenizer not verified on it | `tokenizer.json`; the native tokenizer not verified on it |
-| Decoding | teacher-forced trajectories only | teacher-forced trajectories only |
-| Context | short trajectories; the GGUF declares 8,192 | short trajectories; the config declares 32,768 |
-| Verified | bit-identical to the FP16 bridge (llama.cpp's GGML rebuilt with llmpalooza's SDK) on all four arms, resident and paged, evicted, restored and relocated ([P2](experiments/backend-proof-p2/README.md), [aggregate](experiments/backend-proof/README.md)) | every linear byte-equal to ExLlamaV3 `6b84a21b` at a forced plan; end to end within Tier C's bounds; paged and restored bit-identical ([P3](experiments/backend-proof-p3/README.md)) |
+| Template | `d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4`, the GGUF's `tokenizer.chat_template` ([first-slice](first-slice.md)), through the interpreter | `cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f`, `tokenizer_config.json`'s `chat_template`, both rates ([runtime.json](experiments/exl3-reference/runtime.json)), through the interpreter |
+| Tokenizer | the GGUF's Qwen2 BPE | `tokenizer.json` |
+| Decoding | greedy, plain; chat and literal completions and target likelihoods (`EngineLlm`) | greedy, plain; chat and literal completions and target likelihoods (`EngineLlm`) |
+| Context | the GGUF declares 8,192 | the config declares 32,768 |
+| Verified | bit-identical to the FP16 bridge (llama.cpp's GGML rebuilt with llmpalooza's SDK) on all four arms, resident and paged, evicted, restored and relocated ([P2](experiments/backend-proof-p2/README.md), [aggregate](experiments/backend-proof/README.md)); served through `rt::Server` (`dense_decoder_serving_gpu_test`: multi-row prompt scoring, greedy decode, idle state spill, zero-step restore, bit-identical state image and continuation) | every linear byte-equal to ExLlamaV3 `6b84a21b` at a forced plan; end to end within Tier C's bounds; paged and restored bit-identical ([P3](experiments/backend-proof-p3/README.md)); served through `rt::Server` (`dense_decoder_serving_gpu_test`: multi-row prompt scoring, greedy decode, idle state spill, zero-step restore, bit-identical state image and continuation) |
 | Known divergences | the GGUF's template differs from the base checkpoint's, and its context from the base's 32,768 | ExLlamaV3's autotuner is part of its numerical plan; the oracle runs a frozen tuning cache ([P0](experiments/backend-proof-p0/README.md)) |
 
 Resident speed against each fixture's reference (BP-F3) is M5's, under

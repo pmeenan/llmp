@@ -31,6 +31,10 @@ constexpr std::array kGgufTensors = {
     TensorRule{.pattern = "blk.{layer}.attn_q.bias", .slot = "attention", .role = "q_bias"},
     TensorRule{.pattern = "blk.{layer}.attn_k.bias", .slot = "attention", .role = "k_bias"},
     TensorRule{.pattern = "blk.{layer}.attn_v.bias", .slot = "attention", .role = "v_bias"},
+    TensorRule{.pattern = "rope_freqs.weight",
+               .slot = "attention",
+               .role = "rope_freqs",
+               .optional = true},
     TensorRule{.pattern = "blk.{layer}.attn_output.weight", .slot = "attention", .role = "output"},
     TensorRule{.pattern = "blk.{layer}.ffn_norm.weight", .slot = "ffn", .role = "norm"},
     TensorRule{.pattern = "blk.{layer}.ffn_gate.weight", .slot = "ffn", .role = "gate"},
@@ -199,41 +203,67 @@ constexpr std::array kExl3Tensors = {
                .optional = true},
 };
 
-constexpr std::array kParams = {
-    FromKey(kStageSlot, "context", "qwen2.context_length", kInt),
-    FromKey(kStreamSlot, "width", "qwen2.embedding_length", kInt),
-    Name("attention", "placement", "pre"),
-    FromKey("attention", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
-    FromKey("attention", "heads", "qwen2.attention.head_count", kInt),
-    FromKey("attention", "kv_heads", "qwen2.attention.head_count_kv", kInt),
-    FromOrRatio("attention", "key_dim", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kInt),
-    FromOrRatio("attention", "value_dim", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kInt),
-    FromOrRatio("attention", "scale", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kReal, Transform::kRsqrt),
-    Int("attention", "window", 0),
-    Name("attention", "rotation", "neox"),
-    FromOrRatio("attention", "rope_dims", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kInt),
-    FromKey("attention", "rope_base", "qwen2.rope.freq_base", kReal),
-    Real("attention", "rope_scale", 1.0),
+// Shared pre-norm dense decoder parameter skeleton parameterized by key prefix
+// (`"qwen2."`, `"llama."`, `"mistral."`), RMS-norm epsilon transform, and
+// container RoPE rotation convention (`"normal"` for Llama/Mistral GGUF,
+// `"neox"` for Qwen2 and HuggingFace/EXL3 checkpoints).
+#define LLMP_DENSE_DECODER_CORE_PARAMS(P, EPS_TRANSFORM, ROTATION)                                \
+  FromKey(kStageSlot, "context", P "context_length", kInt),                                       \
+      FromKey(kStreamSlot, "width", P "embedding_length", kInt),                                  \
+      Name("attention", "placement", "pre"),                                                      \
+      FromKey("attention", "eps", P "attention.layer_norm_rms_epsilon", kReal, EPS_TRANSFORM),    \
+      FromKey("attention", "heads", P "attention.head_count", kInt),                              \
+      FromKey("attention", "kv_heads", P "attention.head_count_kv", kInt),                        \
+      FromOrRatio("attention", "key_dim", P "attention.key_length", P "embedding_length",         \
+                  P "attention.head_count", kInt),                                                \
+      FromKey("attention", "value_dim", P "attention.value_length", kInt),                        \
+      FromOrRatio("attention", "value_dim", P "attention.key_length", P "embedding_length",       \
+                  P "attention.head_count", kInt),                                                \
+      FromOrRatio("attention", "scale", P "attention.key_length", P "embedding_length",           \
+                  P "attention.head_count", kReal, Transform::kRsqrt),                            \
+      FromKey("attention", "window", P "attention.sliding_window", kInt),                         \
+      Int("attention", "window", 0), Name("attention", "rotation", ROTATION),                     \
+      FromKey("attention", "rope_dims", P "rope.dimension_count", kInt),                          \
+      FromOrRatio("attention", "rope_dims", P "attention.key_length", P "embedding_length",       \
+                  P "attention.head_count", kInt),                                                \
+      FromKey("attention", "rope_base", P "rope.freq_base", kReal),                               \
+      Real("attention", "rope_base", 10000.0), Real("attention", "rope_scale", 1.0),              \
+      FromTensor("attention", "rope_freqs", "rope_freqs.weight"),                                 \
+      Flag("attention", "scale_scores", true), Flag("attention", "explicit_scores", false),       \
+      Name("ffn", "placement", "pre"),                                                            \
+      FromKey("ffn", "eps", P "attention.layer_norm_rms_epsilon", kReal, EPS_TRANSFORM),          \
+      Name("ffn", "activation", "silu"), FromKey("ffn", "hidden", P "feed_forward_length", kInt), \
+      FromKey("final_norm", "eps", P "attention.layer_norm_rms_epsilon", kReal, EPS_TRANSFORM)
+
+#define LLMP_DENSE_DECODER_YARN_PARAMS(P)                                                         \
+  KeyEquals("attention", "yarn", P "rope.scaling.type", "yarn"),                                  \
+      FromKey("attention", "rope_factor", P "rope.scaling.factor", kReal, Transform::kNone, {},   \
+              true),                                                                              \
+      FromKey("attention", "yarn_context", P "rope.scaling.original_context_length", kInt,        \
+              Transform::kNone, {}, true),                                                        \
+      FromKey("attention", "beta_fast", P "rope.scaling.yarn_beta_fast", kReal, Transform::kNone, \
+              {}, true),                                                                          \
+      FromKey("attention", "beta_slow", P "rope.scaling.yarn_beta_slow", kReal, Transform::kNone, \
+              {}, true)
+
+#define LLMP_DENSE_DECODER_OPTIONAL_QKV_BIAS(P)                                    \
+  FromKey("attention", "qkv_bias", P "attention_bias", kBool),                     \
+      FromTensor("attention", "qkv_bias", "blk.0.attn_q.bias"),                    \
+      FromTensor("attention", "qkv_bias", "model.layers.0.self_attn.q_proj.bias"), \
+      Flag("attention", "qkv_bias", false)
+
+constexpr std::array kQwen2Params = {
+    LLMP_DENSE_DECODER_CORE_PARAMS("qwen2.", Transform::kNone, "neox"),
     Flag("attention", "qkv_bias", true),
-    Flag("attention", "scale_scores", true),
-    Flag("attention", "explicit_scores", false),
-    Name("ffn", "placement", "pre"),
-    FromKey("ffn", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
-    Name("ffn", "activation", "silu"),
-    FromKey("ffn", "hidden", "qwen2.feed_forward_length", kInt),
-    FromKey("final_norm", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
 };
 
-// A correctness recipe, not a serving admission. No capture/row-invariance
-// claim is made for EXL3; the pinned shape controls precede such a claim.
-constexpr std::array kPolicies = {
+// Qwen2's single-slot policy preserves the frozen v1 digests of the approved
+// Qwen2.5-0.5B GGUF and EXL3 fixtures (no capture/row-invariance claim is made
+// for EXL3).
+constexpr std::array kQwen2Policies = {
     PolicyRule{.text = "max_decode_rows 1\n", .owners_alone = true, .capture_ahead = false},
 };
-constexpr Mapping kMapping{
+constexpr Mapping kQwen2Mapping{
     .architecture = "qwen2",
     .version = 1,
     .pipeline = PipelineKind::kLlm,
@@ -241,45 +271,19 @@ constexpr Mapping kMapping{
     .layer_types = "g",
     .slots = kSlots,
     .tensors = kGgufTensors,
-    .params = kParams,
-    .policies = kPolicies,
+    .params = kQwen2Params,
+    .policies = kQwen2Policies,
 };
 
 // The GGUF omits qwen2.attention.key_length when it equals width / heads
 // (896 / 14 = 64 in the approved Qwen2.5-0.5B-Instruct FP16 fixture).
-constexpr std::array kGgufParams = {
-    FromKey(kStageSlot, "context", "qwen2.context_length", kInt),
-    FromKey(kStreamSlot, "width", "qwen2.embedding_length", kInt),
-    Name("attention", "placement", "pre"),
-    FromKey("attention", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
-    FromKey("attention", "heads", "qwen2.attention.head_count", kInt),
-    FromKey("attention", "kv_heads", "qwen2.attention.head_count_kv", kInt),
-    FromOrRatio("attention", "key_dim", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kInt),
-    FromKey("attention", "value_dim", "qwen2.attention.value_length", kInt),
-    FromOrRatio("attention", "value_dim", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kInt),
-    FromOrRatio("attention", "scale", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kReal, Transform::kRsqrt),
-    Int("attention", "window", 0),
-    Name("attention", "rotation", "neox"),
-    FromKey("attention", "rope_dims", "qwen2.rope.dimension_count", kInt),
-    FromOrRatio("attention", "rope_dims", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kInt),
-    FromKey("attention", "rope_base", "qwen2.rope.freq_base", kReal),
-    Real("attention", "rope_scale", 1.0),
+constexpr std::array kQwen2GgufParams = {
+    LLMP_DENSE_DECODER_CORE_PARAMS("qwen2.", Transform::kNone, "neox"),
     Flag("attention", "qkv_bias", true),
-    Flag("attention", "scale_scores", true),
-    Flag("attention", "explicit_scores", false),
-    Name("ffn", "placement", "pre"),
-    FromKey("ffn", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
-    Name("ffn", "activation", "silu"),
-    FromKey("ffn", "hidden", "qwen2.feed_forward_length", kInt),
-    FromKey("final_norm", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
     Require("qwen2.rope.scaling.type", "none", true),
 };
 
-constexpr Mapping kGgufMapping{
+constexpr Mapping kQwen2GgufMapping{
     .architecture = "qwen2",
     .version = 1,
     .pipeline = PipelineKind::kLlm,
@@ -287,8 +291,8 @@ constexpr Mapping kGgufMapping{
     .layer_types = "g",
     .slots = kSlots,
     .tensors = kGgufTensors,
-    .params = kGgufParams,
-    .policies = kPolicies,
+    .params = kQwen2GgufParams,
+    .policies = kQwen2Policies,
     .containers = kGgufContainers,
 };
 
@@ -296,50 +300,14 @@ constexpr Mapping kGgufMapping{
 // num_attention_heads (896 / 14 = 64 in the approved 0.5B EXL3 fixtures).
 // Emit the approved float-rounded rms_eps in component parameters while
 // checking config.json's 1e-6 and all remaining profile keys.
-constexpr std::array kExl3Params = {
-    FromKey(kStageSlot, "context", "qwen2.context_length", kInt),
-    FromKey(kStreamSlot, "width", "qwen2.embedding_length", kInt),
-    Name("attention", "placement", "pre"),
-    ParamRule{.slot = "attention",
-              .param = "eps",
-              .key = "qwen2.attention.layer_norm_rms_epsilon",
-              .type = kReal,
-              .transform = Transform::kFloat32},
-    FromKey("attention", "heads", "qwen2.attention.head_count", kInt),
-    FromKey("attention", "kv_heads", "qwen2.attention.head_count_kv", kInt),
-    FromOrRatio("attention", "key_dim", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kInt),
-    FromOrRatio("attention", "value_dim", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kInt),
-    FromOrRatio("attention", "scale", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kReal, Transform::kRsqrt),
-    Int("attention", "window", 0),
-    Name("attention", "rotation", "neox"),
-    FromOrRatio("attention", "rope_dims", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kInt),
-    FromKey("attention", "rope_base", "qwen2.rope.freq_base", kReal),
-    Real("attention", "rope_scale", 1.0),
+constexpr std::array kQwen2Exl3Params = {
+    LLMP_DENSE_DECODER_CORE_PARAMS("qwen2.", Transform::kFloat32, "neox"),
     Flag("attention", "qkv_bias", true),
-    Flag("attention", "scale_scores", true),
-    Flag("attention", "explicit_scores", false),
-    Name("ffn", "placement", "pre"),
-    ParamRule{.slot = "ffn",
-              .param = "eps",
-              .key = "qwen2.attention.layer_norm_rms_epsilon",
-              .type = kReal,
-              .transform = Transform::kFloat32},
-    Name("ffn", "activation", "silu"),
-    FromKey("ffn", "hidden", "qwen2.feed_forward_length", kInt),
-    ParamRule{.slot = "final_norm",
-              .param = "eps",
-              .key = "qwen2.attention.layer_norm_rms_epsilon",
-              .type = kReal,
-              .transform = Transform::kFloat32},
     Require("qwen2.hidden_act", "silu", false),
     ParamRule{.key = "qwen2.use_sliding_window", .type = kBool, .value = {.flag = false}},
 };
 
-constexpr Mapping kExl3Mapping{
+constexpr Mapping kQwen2Exl3Mapping{
     .architecture = "qwen2",
     .version = 1,
     .pipeline = PipelineKind::kLlm,
@@ -347,42 +315,18 @@ constexpr Mapping kExl3Mapping{
     .layer_types = "g",
     .slots = kSlots,
     .tensors = kExl3Tensors,
-    .params = kExl3Params,
-    .policies = kPolicies,
+    .params = kQwen2Exl3Params,
+    .policies = kQwen2Policies,
     .containers = kExl3Containers,
 };
-constexpr std::array kSafetensorsParams = {
-    FromKey(kStageSlot, "context", "qwen2.context_length", kInt),
-    FromKey(kStreamSlot, "width", "qwen2.embedding_length", kInt),
-    Name("attention", "placement", "pre"),
-    FromKey("attention", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
-    FromKey("attention", "heads", "qwen2.attention.head_count", kInt),
-    FromKey("attention", "kv_heads", "qwen2.attention.head_count_kv", kInt),
-    FromOrRatio("attention", "key_dim", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kInt),
-    FromOrRatio("attention", "value_dim", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kInt),
-    FromOrRatio("attention", "scale", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kReal, Transform::kRsqrt),
-    Int("attention", "window", 0),
-    Name("attention", "rotation", "neox"),
-    FromOrRatio("attention", "rope_dims", "qwen2.attention.key_length", "qwen2.embedding_length",
-                "qwen2.attention.head_count", kInt),
-    FromKey("attention", "rope_base", "qwen2.rope.freq_base", kReal),
-    Real("attention", "rope_scale", 1.0),
+constexpr std::array kQwen2SafetensorsParams = {
+    LLMP_DENSE_DECODER_CORE_PARAMS("qwen2.", Transform::kNone, "neox"),
     Flag("attention", "qkv_bias", true),
-    Flag("attention", "scale_scores", true),
-    Flag("attention", "explicit_scores", false),
-    Name("ffn", "placement", "pre"),
-    FromKey("ffn", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
-    Name("ffn", "activation", "silu"),
-    FromKey("ffn", "hidden", "qwen2.feed_forward_length", kInt),
-    FromKey("final_norm", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
     Require("qwen2.hidden_act", "silu", false),
     ParamRule{.key = "qwen2.use_sliding_window", .type = kBool, .value = {.flag = false}},
 };
 
-constexpr Mapping kSafetensorsMapping{
+constexpr Mapping kQwen2SafetensorsMapping{
     .architecture = "qwen2",
     .version = 1,
     .pipeline = PipelineKind::kLlm,
@@ -390,14 +334,120 @@ constexpr Mapping kSafetensorsMapping{
     .layer_types = "g",
     .slots = kSlots,
     .tensors = kGgufTensors,
-    .params = kSafetensorsParams,
-    .policies = kPolicies,
+    .params = kQwen2SafetensorsParams,
+    .policies = kQwen2Policies,
     .containers = kSafetensorsContainers,
 };
+
+// Generic dense decoder policy: batched decode up to 16 rows with the shared
+// runner's default lookahead and graph capture, paired MMQ dense products, and
+// solo prompt chunks.
+constexpr std::array kDensePolicies = {
+    PolicyRule{.text = "max_decode_rows 16\nvector_rows 16\nproduct dense_pair\n",
+               .prompts_alone = true},
+};
+
+constexpr auto kDenseGgufTensors = [] {
+  auto out = kGgufTensors;
+  for (auto& t : out)
+    if (t.role == "q_bias" || t.role == "k_bias" || t.role == "v_bias") t.optional = true;
+  return out;
+}();
+
+constexpr auto kDenseExl3Tensors = [] {
+  auto out = kExl3Tensors;
+  for (auto& t : out)
+    if (t.role == "q_bias" || t.role == "k_bias" || t.role == "v_bias") t.optional = true;
+  return out;
+}();
+
+#define LLMP_DEFINE_DENSE_FAMILY_MAPPINGS(NAME, ARCH)                        \
+  constexpr std::array k##NAME##GgufParams = {                               \
+      LLMP_DENSE_DECODER_CORE_PARAMS(ARCH ".", Transform::kNone, "normal"),  \
+      LLMP_DENSE_DECODER_YARN_PARAMS(ARCH "."),                              \
+      LLMP_DENSE_DECODER_OPTIONAL_QKV_BIAS(ARCH "."),                        \
+  };                                                                         \
+  constexpr std::array k##NAME##SafetensorsParams = {                        \
+      LLMP_DENSE_DECODER_CORE_PARAMS(ARCH ".", Transform::kNone, "neox"),    \
+      LLMP_DENSE_DECODER_YARN_PARAMS(ARCH "."),                              \
+      LLMP_DENSE_DECODER_OPTIONAL_QKV_BIAS(ARCH "."),                        \
+      Require(ARCH ".hidden_act", "silu", true),                             \
+  };                                                                         \
+  constexpr std::array k##NAME##Exl3Params = {                               \
+      LLMP_DENSE_DECODER_CORE_PARAMS(ARCH ".", Transform::kFloat32, "neox"), \
+      LLMP_DENSE_DECODER_YARN_PARAMS(ARCH "."),                              \
+      LLMP_DENSE_DECODER_OPTIONAL_QKV_BIAS(ARCH "."),                        \
+      Require(ARCH ".hidden_act", "silu", true),                             \
+  };                                                                         \
+  constexpr Mapping k##NAME##Mapping{                                        \
+      .architecture = ARCH,                                                  \
+      .version = 1,                                                          \
+      .pipeline = PipelineKind::kLlm,                                        \
+      .layer_count_key = ARCH ".block_count",                                \
+      .layer_types = "g",                                                    \
+      .slots = kSlots,                                                       \
+      .tensors = kDenseGgufTensors,                                          \
+      .params = k##NAME##GgufParams,                                         \
+      .policies = kDensePolicies,                                            \
+  };                                                                         \
+  constexpr Mapping k##NAME##GgufMapping{                                    \
+      .architecture = ARCH,                                                  \
+      .version = 1,                                                          \
+      .pipeline = PipelineKind::kLlm,                                        \
+      .layer_count_key = ARCH ".block_count",                                \
+      .layer_types = "g",                                                    \
+      .slots = kSlots,                                                       \
+      .tensors = kDenseGgufTensors,                                          \
+      .params = k##NAME##GgufParams,                                         \
+      .policies = kDensePolicies,                                            \
+      .containers = kGgufContainers,                                         \
+  };                                                                         \
+  constexpr Mapping k##NAME##SafetensorsMapping{                             \
+      .architecture = ARCH,                                                  \
+      .version = 1,                                                          \
+      .pipeline = PipelineKind::kLlm,                                        \
+      .layer_count_key = ARCH ".block_count",                                \
+      .layer_types = "g",                                                    \
+      .slots = kSlots,                                                       \
+      .tensors = kDenseGgufTensors,                                          \
+      .params = k##NAME##SafetensorsParams,                                  \
+      .policies = kDensePolicies,                                            \
+      .containers = kSafetensorsContainers,                                  \
+  };                                                                         \
+  constexpr Mapping k##NAME##Exl3Mapping{                                    \
+      .architecture = ARCH,                                                  \
+      .version = 1,                                                          \
+      .pipeline = PipelineKind::kLlm,                                        \
+      .layer_count_key = ARCH ".block_count",                                \
+      .layer_types = "g",                                                    \
+      .slots = kSlots,                                                       \
+      .tensors = kDenseExl3Tensors,                                          \
+      .params = k##NAME##Exl3Params,                                         \
+      .policies = kDensePolicies,                                            \
+      .containers = kExl3Containers,                                         \
+  };
+
+LLMP_DEFINE_DENSE_FAMILY_MAPPINGS(Llama, "llama")
+LLMP_DEFINE_DENSE_FAMILY_MAPPINGS(Mistral, "mistral")
+
+#undef LLMP_DEFINE_DENSE_FAMILY_MAPPINGS
+#undef LLMP_DENSE_DECODER_OPTIONAL_QKV_BIAS
+#undef LLMP_DENSE_DECODER_YARN_PARAMS
+#undef LLMP_DENSE_DECODER_CORE_PARAMS
 }  // namespace
 
-const Mapping& Qwen2Mapping() { return kMapping; }
-const Mapping& Qwen2GgufMapping() { return kGgufMapping; }
-const Mapping& Qwen2Exl3Mapping() { return kExl3Mapping; }
-const Mapping& Qwen2SafetensorsMapping() { return kSafetensorsMapping; }
+const Mapping& Qwen2Mapping() { return kQwen2Mapping; }
+const Mapping& Qwen2GgufMapping() { return kQwen2GgufMapping; }
+const Mapping& Qwen2Exl3Mapping() { return kQwen2Exl3Mapping; }
+const Mapping& Qwen2SafetensorsMapping() { return kQwen2SafetensorsMapping; }
+
+const Mapping& LlamaMapping() { return kLlamaMapping; }
+const Mapping& LlamaGgufMapping() { return kLlamaGgufMapping; }
+const Mapping& LlamaExl3Mapping() { return kLlamaExl3Mapping; }
+const Mapping& LlamaSafetensorsMapping() { return kLlamaSafetensorsMapping; }
+
+const Mapping& MistralMapping() { return kMistralMapping; }
+const Mapping& MistralGgufMapping() { return kMistralGgufMapping; }
+const Mapping& MistralExl3Mapping() { return kMistralExl3Mapping; }
+const Mapping& MistralSafetensorsMapping() { return kMistralSafetensorsMapping; }
 }  // namespace llmp::spec::mappings

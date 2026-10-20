@@ -181,10 +181,15 @@ struct LayerAt {
 
 // The rule's value: its constant, or its key's converted (a per-layer
 // key's entry for the layer); nothing when the key is absent.
-std::expected<std::optional<ParamValue>, std::string> Evaluate(const ParamRule& r,
-                                                               const Values& values,
-                                                               std::string_view where,
-                                                               LayerAt layer = {}) {
+std::expected<std::optional<ParamValue>, std::string> Evaluate(
+    const ParamRule& r, const Values& values, std::string_view where, LayerAt layer = {},
+    const std::map<std::string_view, const SourceTensor*>* tensors = nullptr) {
+  if (!r.tensor.empty()) {
+    if (tensors != nullptr && tensors->contains(r.tensor)) {
+      return ParamValue(true);
+    }
+    return std::optional<ParamValue>();
+  }
   const auto eval_ratio = [&]() -> std::expected<std::optional<ParamValue>, std::string> {
     const auto num_found = values.find(r.numerator_key);
     const auto den_found = values.find(r.divisor_key);
@@ -309,6 +314,19 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(const ParamRule& 
       return ParamValue(*y);
     }
     case ValueType::kBool:
+      if (!r.value.text.empty()) {
+        const auto* s = std::get_if<std::string>(&v);
+        if (s == nullptr) {
+          return Refuse(at, "not a string");
+        }
+        if (*s == r.value.text) {
+          return ParamValue(r.value.flag);
+        }
+        if (*s == "none" || *s == "default") {
+          return std::optional<ParamValue>();
+        }
+        return Refuse(at, "not the value the mapping's components implement");
+      }
       if (const auto* b = std::get_if<bool>(&v)) {
         return ParamValue(*b);
       }
@@ -332,7 +350,8 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(const ParamRule& 
 // is optional. A rule unless a fold the source carries does not apply.
 std::expected<std::optional<ParamValue>, std::string> Resolve(
     const Mapping& m, std::string_view slot, std::string_view param, char type,
-    const Values& values, LayerAt layer = {}, std::span<const std::string> folds = {}) {
+    const Values& values, LayerAt layer = {}, std::span<const std::string> folds = {},
+    const std::map<std::string_view, const SourceTensor*>* tensors = nullptr) {
   const std::string where = std::format("{}.{}", slot, param);
   bool applied = false;
   bool optional = false;
@@ -343,7 +362,7 @@ std::expected<std::optional<ParamValue>, std::string> Resolve(
     }
     applied = true;
     optional = optional || r.optional;
-    auto v = Evaluate(r, values, where, layer);
+    auto v = Evaluate(r, values, where, layer, tensors);
     if (!v) {
       return std::unexpected(v.error());
     }
@@ -588,7 +607,7 @@ class Synthesis {
           !seen.insert(r.param).second) {
         continue;
       }
-      auto v = Resolve(m_, slot.slot, r.param, type, values_, at, folds_);
+      auto v = Resolve(m_, slot.slot, r.param, type, values_, at, folds_, &names_);
       if (!v) {
         return std::unexpected(v.error());
       }
@@ -954,7 +973,15 @@ std::span<const Mapping* const> Mappings() {
                                  &mappings::Qwen38MtpNativeReplayMapping(),
                                  &mappings::Qwen2GgufMapping(),
                                  &mappings::Qwen2SafetensorsMapping(),
-                                 &mappings::Qwen2Exl3Mapping()};
+                                 &mappings::Qwen2Exl3Mapping(),
+                                 &mappings::LlamaMapping(),
+                                 &mappings::LlamaGgufMapping(),
+                                 &mappings::LlamaSafetensorsMapping(),
+                                 &mappings::LlamaExl3Mapping(),
+                                 &mappings::MistralMapping(),
+                                 &mappings::MistralGgufMapping(),
+                                 &mappings::MistralSafetensorsMapping(),
+                                 &mappings::MistralExl3Mapping()};
   return all;
 }
 
@@ -1322,6 +1349,16 @@ Status ValidateMapping(const Mapping& m) {
     if (!r.key.empty() && !IsText(r.key)) {
       return Refuse(at, "an invalid key");
     }
+    if (!r.tensor.empty() &&
+        (!IsText(r.tensor) || r.slot.empty() || IsPseudo(r.slot) || !r.key.empty() ||
+         !r.numerator_key.empty() || !r.divisor_key.empty() || r.type != ValueType::kBool ||
+         r.transform != Transform::kNone || !r.optional || r.per_layer || !r.unless_fold.empty())) {
+      return Refuse(at, "an invalid tensor presence parameter rule");
+    }
+    if (!r.value.text.empty() && r.type == ValueType::kBool &&
+        (r.slot.empty() || r.key.empty() || !IsName(r.value.text) || !r.optional || r.per_layer)) {
+      return Refuse(at, "an invalid string-matched flag parameter rule");
+    }
     if (r.numerator_key.empty() != r.divisor_key.empty()) {
       return Refuse(at, "a ratio requires both numerator and divisor keys");
     }
@@ -1352,7 +1389,8 @@ Status ValidateMapping(const Mapping& m) {
     if (r.slot.empty()) {
       if (r.type == ValueType::kInts || r.key.empty() || !r.param.empty() ||
           !r.layer_types.empty() || !r.numerator_key.empty() || !r.divisor_key.empty() ||
-          r.transform != Transform::kNone || r.per_layer || !r.unless_fold.empty()) {
+          !r.tensor.empty() || r.transform != Transform::kNone || r.per_layer ||
+          !r.unless_fold.empty()) {
         return Refuse(at, "a requirement is a key and its value");
       }
       continue;

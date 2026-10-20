@@ -795,10 +795,18 @@ TEST_F(GgmlExtValidateTest, RopeTakesTheModelsModesOffsetsAndPositions) {
   Refused(kg::CheckRopeExt(
       Bound(ggml_rope_multi(c(), x, New(GGML_TYPE_I32, 20), nullptr, 64, empty.data(),
                             GGML_ROPE_TYPE_MROPE, 262144, 1e7f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
-  // Frequency factors remain refused for normal rotation; the checked
-  // forward NEOX factor extension is exercised by Gemma graph controls.
-  Refused(kg::CheckRopeExt(Bound(ggml_rope_ext(c(), q, positions, New(GGML_TYPE_F32, 32), 64, 0,
-                                               65536, 10000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
+  // Forward normal rotation without an offset accepts packed [n_dims / 2]
+  // frequency factors (Llama 3.1/3.2); offsets, backward rotation and MROPE
+  // refuse them.
+  Accepted(kg::CheckRopeExt(Bound(ggml_rope_ext(c(), q, positions, New(GGML_TYPE_F32, 32), 64, 0,
+                                                65536, 10000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
+  ggml_tensor* offset_factors = ggml_rope_ext(c(), q, positions, New(GGML_TYPE_F32, 32), 64, 0,
+                                              65536, 10000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+  Bound(ggml_rope_set_offset(offset_factors, 448));
+  Refused(kg::CheckRopeExt(offset_factors));
+  Refused(
+      kg::CheckRopeExt(Bound(ggml_rope_ext_back(c(), q, positions, New(GGML_TYPE_F32, 32), 64, 0,
+                                                65536, 10000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
 }
 
 TEST_F(GgmlExtValidateTest, LegacyProductsRequireReadablePaddingAndValidOperands) {

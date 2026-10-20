@@ -270,7 +270,8 @@ template std::expected<std::vector<std::int32_t>, std::string> ReadRecipeInteger
 
 bool OnComponentEngine(std::string_view architecture) {
   const spec::Mapping* mapping = spec::FindMapping(architecture);
-  return mapping != nullptr && (mapping->serving != nullptr || mapping->draft != nullptr);
+  return mapping != nullptr &&
+         (spec::ServingRecipeOf(*mapping) != nullptr || mapping->draft != nullptr);
 }
 
 const spec::Mapping* ComposedDrafterMapping(std::string_view architecture,

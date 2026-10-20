@@ -99,6 +99,17 @@ constexpr std::array kQwen2Exl345Sources{
                   "5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583", 7305ULL},
 };
 
+constexpr std::array kLlama32Q8Sources{
+    SourceReceipt{"Llama-3.2-1B-Instruct-Q8_0.gguf",
+                  "432f310a77f4650a88d0fd59ecdd7cebed8d684bafea53cbff0473542964f0c3",
+                  1321083008ULL},
+};
+
+constexpr std::array kLlama32Q4kmSources{
+    SourceReceipt{"Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+                  "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83", 807694464ULL},
+};
+
 constexpr std::array kQwen38GgufSources{
     SourceReceipt{"Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
                   "268f81fdedf3149a538f252308927a4d5d1f6e062c178568a51e3b519744f8a8", 10946624ULL},
@@ -582,6 +593,28 @@ constexpr std::array kApprovals{
              .spec = "b2cf6f15206be2712e20fe080df11f7edcbf8aaeda23f830755f767f11433d6a",
              .max_context = 8192,
              .max_slots = 1},
+    Approval{.name = "llama-3.2-1b-instruct-q8_0",
+             .label = "Llama 3.2 1B Q8_0",
+             .architecture = "llama",
+             .container = "gguf",
+             .sources = kLlama32Q8Sources,
+             .tensors = 147,
+             .inventory = "772f985544f2ab057c5fa4aa2dfa471469d9fc5cd3596ca20521843b34f99344",
+             .spec = "cbf7950a9a03027877b4ff8fe5d60d0abb2ada79a3dd397b710a5b405ebc6357",
+             .tied_output = true,
+             .max_context = 131072,
+             .max_slots = 4},
+    Approval{.name = "llama-3.2-1b-instruct-q4_k_m",
+             .label = "Llama 3.2 1B Q4_K_M",
+             .architecture = "llama",
+             .container = "gguf",
+             .sources = kLlama32Q4kmSources,
+             .tensors = 147,
+             .inventory = "cc4c942c3533a7560bc05826a844376e434c72c8cfa355821cf2d376d746806b",
+             .spec = "cbf7950a9a03027877b4ff8fe5d60d0abb2ada79a3dd397b710a5b405ebc6357",
+             .tied_output = true,
+             .max_context = 131072,
+             .max_slots = 4},
     // Three shards, UD-IQ3_XXS. The writer verified their whole streams while
     // publishing; admission checks their receipts and the complete stored
     // inventory and spec without rehashing payloads.

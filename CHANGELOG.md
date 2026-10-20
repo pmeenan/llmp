@@ -24,6 +24,12 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Serve `llama`, `mistral` and `qwen2` pre-norm dense decoders on the shared
+  component engine (`EngineLlm`) across GGUF, safetensors and EXL3 containers
+  through a parametrized mapping and default `ServingRecipe`, including Llama
+  3.2 1B Instruct (`Q8_0` and `Q4_K_M`) and Qwen2.5 0.5B Instruct (`FP16` and
+  `EXL3`). Accept per-dimension `freq_factors` on normal-pairing RoPE, and pass
+  each row's published index during multi-row prompt scoring.
 - Prepared ordinary quantized vector products may overlap immutable-weight
   prefetch and dependent launches while preserving their quantization,
   accumulation and reduction. Dependent inputs still wait for predecessor

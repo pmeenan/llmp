@@ -80,9 +80,8 @@ bool GetRowsVectorized(const ggml_tensor* node);
 // indices: the KV write (ggml_cuda_op_set_rows, set-rows.cu:376-398).
 std::expected<void, KernelFailure> CheckSetRows(const ggml_tensor* node);
 
-// Optional packed F32 factors [n_dims/2] for forward NEOX with no offset.
-// The family must check payload contents (positive/finite for Gemma) at admission;
-// this checks device descriptors, current binding and kernel bounds.
+// Optional packed F32 factors [n_dims/2] for forward normal or NEOX RoPE with
+// no offset. This checks device descriptors, current binding and kernel bounds.
 std::expected<void, KernelFailure> CheckRopeFrequencyFactors(const ggml_tensor* rope);
 // A forward ggml_rope_ext node in NEOX mode over F32, with optional checked
 // frequency factors and no rotation offset (rope.cu:536-694).

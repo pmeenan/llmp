@@ -3102,10 +3102,15 @@ std::expected<void, KernelFailure> Lowering::EmitSchedule() {
       return name;
     }
     const auto head = node->src[0]->ne[0];
+    const auto selected_name = registry_.at(selected.implementation).name;
     if (head == 128 && node->src[1]->type == GGML_TYPE_F32) return kAttentionF32;
-    if (head == 64 && node->src[1]->ne[1] % 256 == 0) return "ggml.flash_attn_ext.vec";
+    if (head == 64 && node->src[1]->ne[1] % 256 == 0 &&
+        selected_name != "ggml.flash_attn_ext.mma_common" &&
+        selected_name != "ggml.flash_attn_ext.vec_common")
+      return "ggml.flash_attn_ext.vec";
     if (head == 64 || head == 80 || head == 96 || head == 112 || head == 128 || head == 192)
-      return node->src[0]->ne[1] == 1 && CheckFlashAttnVecCommon(node)
+      return selected_name != "ggml.flash_attn_ext.mma_common" && node->src[0]->ne[1] == 1 &&
+                     CheckFlashAttnVecCommon(node)
                  ? "ggml.flash_attn_ext.vec_common"
                  : "ggml.flash_attn_ext.mma_common";
     if (head != 256 && head != 512) return Refused("unsupported attention group head");

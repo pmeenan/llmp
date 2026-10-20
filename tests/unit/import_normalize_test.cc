@@ -1646,6 +1646,13 @@ TEST(ImportNormalizeSafetensorsTest, Qwen2SafetensorsMappingValidatesAndGgufSynt
   const auto* qwen2_sf = FindSourceMapping("safetensors", "qwen2");
   ASSERT_NE(qwen2_sf, nullptr);
   EXPECT_TRUE(ValidateSourceMapping(*qwen2_sf));
+  for (const auto arch : {"llama", "mistral"}) {
+    for (const auto container : {"gguf", "safetensors", "exl3"}) {
+      const auto* table = FindSourceMapping(container, arch);
+      ASSERT_NE(table, nullptr) << container << " " << arch;
+      EXPECT_TRUE(ValidateSourceMapping(*table)) << container << " " << arch;
+    }
+  }
 
   spec::Source source;
   source.architecture = "qwen2";

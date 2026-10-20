@@ -106,6 +106,7 @@ TEST(Approvals, EveryServedArchitectureHasARecipeAndEveryDrafterADraftingOne) {
     SCOPED_TRACE(m->architecture);
     if (m->role == llmp::spec::StageRole::kDrafter) {
       EXPECT_EQ(m->serving, nullptr);
+      EXPECT_EQ(llmp::spec::ServingRecipeOf(*m), nullptr);
       ASSERT_NE(m->draft, nullptr);
       if (m->draft->shape == llmp::spec::DraftRecipe::Shape::kBlock) {
         EXPECT_FALSE(m->draft->depth_key.empty());
@@ -113,12 +114,16 @@ TEST(Approvals, EveryServedArchitectureHasARecipeAndEveryDrafterADraftingOne) {
       }
       if (m->draft->shape == llmp::spec::DraftRecipe::Shape::kAnchored)
         EXPECT_NE(m->draft->depth, 0U);
-    } else if (m->architecture != "qwen2") {
-      ASSERT_NE(m->serving, nullptr);
-      EXPECT_NE(m->serving->prefill_rows, 0U);
-      EXPECT_FALSE(m->serving->name.empty());
+    } else {
+      const llmp::spec::ServingRecipe* recipe = llmp::spec::ServingRecipeOf(*m);
+      ASSERT_NE(recipe, nullptr);
+      EXPECT_NE(recipe->prefill_rows, 0U);
+      EXPECT_FALSE(recipe->name.empty());
+      if (m->serving == nullptr) {
+        EXPECT_EQ(recipe, &llmp::spec::kDefaultServingRecipe);
+      }
     }
-    EXPECT_EQ(rt::OnComponentEngine(m->architecture), m->architecture != "qwen2");
+    EXPECT_TRUE(rt::OnComponentEngine(m->architecture));
   }
 }
 

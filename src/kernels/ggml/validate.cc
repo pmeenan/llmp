@@ -753,12 +753,14 @@ std::expected<void, KernelFailure> CheckRopeFrequencyFactors(const ggml_tensor* 
   if (rope == nullptr) return Rejected("no RoPE descriptor");
   const auto* f = rope->src[2];
   if (f == nullptr) return {};
-  if (rope->op != GGML_OP_ROPE || rope->op_params[2] != GGML_ROPE_TYPE_NEOX ||
+  const std::int32_t mode = rope->op_params[2];
+  if (rope->op != GGML_OP_ROPE || (mode != GGML_ROPE_TYPE_NORMAL && mode != GGML_ROPE_TYPE_NEOX) ||
       rope->op_params[15] != 0 || rope->op_params[1] <= 0 || rope->op_params[1] % 2 != 0 ||
       !Bound(f) || !IsF32(f) || !Extent(f) || !ggml_is_vector(f) ||
       f->ne[0] != rope->op_params[1] / 2 || !Packed(f) || Span(f) > kInt32Max ||
       !Aligned(f, sizeof(float)) || !Current(f)) {
-    return Rejected("forward NEOX RoPE takes a current packed F32 factor per rotated pair");
+    return Rejected(
+        "forward normal or NEOX RoPE takes a current packed F32 factor per rotated pair");
   }
   for (const auto* view = f; view->view_src != nullptr; view = view->view_src) {
     const auto* parent = view->view_src;

@@ -801,7 +801,7 @@ TEST(ComponentAdmissionQwen2Test, FullStoredTargetPreservesProfilePolicyAndClose
   const auto& source = normalized->canonical();
   const auto admitted = rt::CheckComponentAdmission(model, source, origins);
   ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
-  EXPECT_FALSE(rt::OnComponentEngine("qwen2"));
+  EXPECT_TRUE(rt::OnComponentEngine("qwen2"));
   auto policy = rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 1});
   ASSERT_TRUE(policy) << (policy ? "" : policy.error());
   EXPECT_TRUE(policy->text.contains("max_decode_rows 1"));
@@ -870,6 +870,52 @@ TEST(ComponentAdmissionQwen2Exl3Test,
       EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
           << mutation;
     }
+  }
+}
+
+TEST(ComponentAdmissionDenseCanaryTest,
+     LlamaAndMistralNormalizeAndAdmitAcrossGgufSafetensorsAndExl3) {
+  for (std::string_view arch : {"llama", "mistral"}) {
+    SCOPED_TRACE(arch);
+    EXPECT_TRUE(rt::OnComponentEngine(arch));
+    auto checkpoint = llmp::test_support::Qwen2GgufCheckpoint(/*untied=*/false);
+    checkpoint.architecture = std::string(arch);
+    checkpoint.metadata.clear();
+    checkpoint.metadata.push_back({"general.architecture", std::string(arch)});
+    checkpoint.metadata.push_back({std::string(arch) + ".attention.head_count", std::int64_t{14}});
+    checkpoint.metadata.push_back(
+        {std::string(arch) + ".attention.head_count_kv", std::int64_t{2}});
+    checkpoint.metadata.push_back(
+        {std::string(arch) + ".attention.layer_norm_rms_epsilon", static_cast<double>(1e-5F)});
+    checkpoint.metadata.push_back({std::string(arch) + ".block_count", std::int64_t{24}});
+    checkpoint.metadata.push_back({std::string(arch) + ".context_length", std::int64_t{8192}});
+    checkpoint.metadata.push_back({std::string(arch) + ".embedding_length", std::int64_t{896}});
+    checkpoint.metadata.push_back({std::string(arch) + ".feed_forward_length", std::int64_t{4864}});
+    checkpoint.metadata.push_back({std::string(arch) + ".rope.freq_base", 500000.0});
+    if (arch == "llama") {
+      checkpoint.metadata.push_back({"llama.rope.dimension_count", std::int64_t{64}});
+    }
+    std::ranges::sort(checkpoint.metadata, {}, &llmp::import::MetaEntry::key);
+    auto bound = llmp::import::NormalizationBound(checkpoint);
+    ASSERT_TRUE(bound) << (bound ? "" : bound.error().ToString());
+    auto normalized =
+        llmp::import::Normalize(std::move(checkpoint), {bound->metadata_bytes, bound->work_units});
+    ASSERT_TRUE(normalized) << (normalized ? "" : normalized.error().ToString());
+    const auto origins =
+        Origins("unpinned-dense-canary.gguf", 512000000ULL,
+                "1111111111111111111111111111111111111111111111111111111111111111");
+    const auto& model = normalized->spec();
+    const auto& source = normalized->canonical();
+    const auto admitted = rt::CheckComponentAdmission(model, source, origins);
+    ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
+    auto policy =
+        rt::ComponentAdmissionPolicy(model, source, origins, {.context = 4096, .slots = 2});
+    ASSERT_TRUE(policy) << (policy ? "" : policy.error());
+    EXPECT_TRUE(policy->prompts_alone);
+    EXPECT_FALSE(policy->owners_alone);
+    EXPECT_TRUE(policy->text.contains("max_decode_rows 16"));
+    EXPECT_TRUE(policy->text.contains("vector_rows 16"));
+    EXPECT_TRUE(policy->text.contains("product dense_pair"));
   }
 }
 
