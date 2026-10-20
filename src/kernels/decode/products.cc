@@ -171,8 +171,9 @@ std::expected<Operand, std::string> OperandOf(const Weight& weight) {
                                  f.params.group));
     }
     if (f.params.scale != format::AffineScale::kBF16 &&
-        f.params.scale != format::AffineScale::kF16) {
-      return Refused(std::format("{}: affine decoder supports BF16 or F16 scales", d.name));
+        f.params.scale != format::AffineScale::kF16 &&
+        f.params.scale != format::AffineScale::kF32) {
+      return Refused(std::format("{}: affine decoder supports BF16, F16, or F32 scales", d.name));
     }
   }
   Operand op;

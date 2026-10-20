@@ -939,7 +939,7 @@ TEST_F(DecodeGpuTest, RefusesWhatTheDecodersCannotRead) {
 
 TEST_F(DecodeGpuTest, DeclarationsBindAndSelect) {
   const std::vector<execution::Implementation> declared = decode::Implementations();
-  EXPECT_EQ(declared.size(), (kDecoders.size() * 6) + 2);
+  EXPECT_EQ(declared.size(), (kDecoders.size() * 6) + 6);
   const auto registry = execution::Registry::Create(declared);
   ASSERT_TRUE(registry.has_value()) << registry.error().detail;
   for (const execution::Implementation& impl : declared) {

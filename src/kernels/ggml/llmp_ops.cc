@@ -2917,10 +2917,13 @@ std::expected<void, KernelFailure> CheckDsv4HcMix(const ggml_tensor* node) {
   if (!IsF32(x) || !Dsv4HcMixWeightType(fn->type) || x->ne[1] != kDsv4HcStreams ||
       fn->ne[0] != flat || fn->ne[1] != kDsv4HcMixes ||
       !Shaped(node, kDsv4HcMixes + 1, kDsv4HcChunks, x->ne[2]) ||
-      flat % (kDsv4HcChunks * kDsv4HcChunkThreads) != 0 || std::cmp_greater(flat, kInt32Max) ||
-      x->ne[2] > 65535 || !Aligned(x, 16) || !Aligned(fn, 16)) {
+      flat < kDsv4HcChunks * kDsv4HcStreams || flat % (kDsv4HcChunks * kDsv4HcStreams) != 0 ||
+      std::cmp_greater(flat, kInt32Max) || x->ne[2] > 65535 || !Aligned(x, 16) ||
+      !Aligned(fn, 16)) {
     return Rejected(
-        "streams F32 [width, 4, tokens] and mixing weights F32, F16 or BF16 [4 · width, 24]");
+        "streams F32 [width, 4, tokens] with width a multiple of 256, and mixing weights F32, F16 "
+        "or "
+        "BF16 [4 · width, 24]");
   }
   return CheckDense(node, {x, fn});
 }
@@ -2936,8 +2939,8 @@ std::expected<void, KernelFailure> CheckDsv4HcPre(const ggml_tensor* node) {
   if (LlmpOpOf(partials) != LlmpOp::kDsv4HcMix || partials->src[0] != x || !IsF32(x) ||
       x->ne[1] != kDsv4HcStreams || !Vector(node->src[2], 3) ||
       !Vector(node->src[3], kDsv4HcMixes) || !Vector(node->src[4], width) ||
-      !Shaped(node, (width + kDsv4HcTail) * tokens, 1, 1) || width % 1024 != 0 || width > 8192 ||
-      LlmpOpInt(node, 2) < 1 || LlmpOpInt(node, 2) > 100 || tokens > 65535) {
+      !Shaped(node, (width + kDsv4HcTail) * tokens, 1, 1) || width < 256 || width > 8192 ||
+      (width % 256) != 0 || LlmpOpInt(node, 2) < 1 || LlmpOpInt(node, 2) > 100 || tokens > 65535) {
     return Rejected("a llmp.dsv4.hc_mix of the streams, their scales, bases and norm weight");
   }
   return CheckDense(node, {partials, x, node->src[2], node->src[3], node->src[4]});

@@ -510,7 +510,7 @@ TEST(GgmlLowerGemma4Test, OwnerAttentionOfGemma4FormsOnTheGb10Only) {
                           .params = std::as_bytes(std::span(&params, 1))};
     EXPECT_TRUE(owners->accepts(q));
     q.arch = 86;
-    EXPECT_EQ(owners->accepts(q), d == 256 && heads == 8 && kg::CompiledFor(86));
+    EXPECT_EQ(owners->accepts(q), kg::CompiledFor(86));
   }
 }
 

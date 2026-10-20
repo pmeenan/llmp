@@ -396,6 +396,7 @@ inline constexpr std::string_view kDsv4RouteName = "llmp.dsv4.route";
 inline constexpr std::string_view kDsv4CombineName = "llmp.dsv4.combine";
 inline constexpr std::string_view kDsv4HcMixName = "llmp.dsv4.hc_mix";
 inline constexpr std::string_view kDsv4HcPreName = "llmp.dsv4.hc_pre";
+inline constexpr std::string_view kDsv4HcPrePackedName = "llmp.dsv4.hc_pre_packed";
 inline constexpr std::string_view kDsv4CompressName = "llmp.dsv4.compress";
 inline constexpr std::string_view kVisibleTopKName = "llmp.visible_top_k";
 inline constexpr std::string_view kSelectedMaskName = "llmp.selected_mask";

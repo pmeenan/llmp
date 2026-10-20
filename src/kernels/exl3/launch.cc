@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "kernels/exl3/packed_tuning.h"
+#include "kernels/exl3/pointer_table.h"
 #include "kernels/exl3/upstream_gemv.h"
 #include "kernels/exl3/validate.h"
 #include "llmp_exl3_kernels.h"
@@ -484,6 +485,19 @@ std::expected<void, KernelFailure> LaunchContext::Bias(const BiasOperands& o) {
   auto args = Arguments(x, y, z, numel_x, numel_y);
   return End(Launched(cudaLaunchKernel(llmp_exl3::AddKernelHhh(), dim3(blocks), dim3(kAddThreads),
                                        args.data(), 0, static_cast<cudaStream_t>(*stream))));
+}
+
+std::expected<void, KernelFailure> LaunchContext::WritePointerTable(
+    std::uint64_t dst_device_ptr, std::span<const std::uint64_t> words) {
+  if (words.empty() || words.size() > 8 || dst_device_ptr == 0 ||
+      (dst_device_ptr % alignof(std::uint64_t)) != 0) {
+    return Rejected("invalid EXL3 pointer table arguments");
+  }
+  auto stream = Begin();
+  if (!stream) {
+    return std::unexpected(stream.error());
+  }
+  return End(LaunchWritePointerTable(*stream, dst_device_ptr, words));
 }
 
 std::expected<PackedCapacity, std::string> QueryPackedCapacity(int device) {

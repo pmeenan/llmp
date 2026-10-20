@@ -2911,4 +2911,70 @@ TEST(GgmlLowerDsv4Test, Prefill4096LowersWithExpertFusions) {
   EXPECT_EQ(f.registry.at(*prequant_at).capability->group, "ggml.mul_mat_id");
 }
 
+TEST(GgmlLowerDsv4Test, Dsv4HcPreAcceptsMultiplesOf256) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  const auto* cap = kg::CapabilityOf(kg::kDsv4HcPrePackedName);
+  ASSERT_NE(cap, nullptr);
+  const ir::SinkhornPreParams params{.streams = 4, .eps = 1e-5f, .hc_eps = 1e-5f, .iterations = 10};
+  const auto param_bytes = std::as_bytes(std::span(&params, 1));
+  for (const std::uint64_t width :
+       {128ULL, 256ULL, 512ULL, 1024ULL, 2048ULL, 4096ULL, 8192ULL, 8448ULL}) {
+    SCOPED_TRACE(width);
+    std::vector<ex::OperandFormat> operands{
+        {.operand = 0,
+         .encoding = Encoding::kF32,
+         .layout = Layout::kDense,
+         .ne = {width, 4, 1, 1}},
+        {.operand = 1,
+         .encoding = Encoding::kF32,
+         .layout = Layout::kDense,
+         .ne = {width * 4, 24, 1, 1}},
+        {.operand = 2, .encoding = Encoding::kF32, .layout = Layout::kDense, .ne = {3, 1, 1, 1}},
+        {.operand = 3, .encoding = Encoding::kF32, .layout = Layout::kDense, .ne = {24, 1, 1, 1}},
+        {.operand = 4,
+         .encoding = Encoding::kF32,
+         .layout = Layout::kDense,
+         .ne = {width, 1, 1, 1}},
+        {.operand = ex::kOutputOperand,
+         .encoding = Encoding::kF32,
+         .layout = Layout::kDense,
+         .ne = {width, 1, 1, 1}},
+        {.operand = ex::kOutputOperand + 1,
+         .encoding = Encoding::kF32,
+         .layout = Layout::kDense,
+         .ne = {4, 1, 1, 1}},
+        {.operand = ex::kOutputOperand + 2,
+         .encoding = Encoding::kF32,
+         .layout = Layout::kDense,
+         .ne = {4, 4, 1, 1}},
+    };
+    ex::CapabilityQuery query{
+        .op = cap->op, .operands = operands, .arch = 121, .params = param_bytes};
+    const bool valid = width >= 256 && width <= 8192 && (width % 256 == 0);
+    const bool valid_mix = width >= 256 && (width % 256 == 0);
+    EXPECT_EQ(cap->accepts(query), valid);
+
+    auto arena = kg::TensorArena::Create(16);
+    ASSERT_TRUE(arena);
+    auto* c = arena->context();
+    auto* xt = ggml_new_tensor_3d(c, GGML_TYPE_F32, static_cast<std::int64_t>(width), 4, 1);
+    auto* ft = ggml_new_tensor_2d(c, GGML_TYPE_F32, static_cast<std::int64_t>(width * 4), 24);
+    auto* st = ggml_new_tensor_1d(c, GGML_TYPE_F32, 3);
+    auto* bt = ggml_new_tensor_1d(c, GGML_TYPE_F32, 24);
+    auto* nt = ggml_new_tensor_1d(c, GGML_TYPE_F32, static_cast<std::int64_t>(width));
+    auto* mix = kg::Dsv4HcMix(c, xt, ft);
+    auto* pre = kg::Dsv4HcPre(c, mix, xt, st, bt, nt, 1e-5f, 1e-5f, 10);
+    kg::TensorArena::Bind(xt, 1ULL << 40);
+    kg::TensorArena::Bind(ft, 2ULL << 40);
+    kg::TensorArena::Bind(st, 3ULL << 40);
+    kg::TensorArena::Bind(bt, 4ULL << 40);
+    kg::TensorArena::Bind(nt, 5ULL << 40);
+    kg::TensorArena::Bind(mix, 6ULL << 40);
+    kg::TensorArena::Bind(pre, 7ULL << 40);
+    EXPECT_EQ(kg::CheckDsv4HcMix(mix).has_value(), valid_mix);
+    EXPECT_EQ(kg::CheckDsv4HcPre(pre).has_value(), valid);
+  }
+}
+
 }  // namespace

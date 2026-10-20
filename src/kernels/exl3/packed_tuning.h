@@ -28,6 +28,9 @@ std::expected<PackedCapacity, std::string> QueryPackedCapacity(int device);
 std::expected<GemmPlan, std::string> DefaultGemmPlan(const PackedCapacity& capacity, int rows,
                                                      int k, int n, int bits, Output output,
                                                      bool multi = false);
+std::expected<MultiGemmPlan, std::string> DefaultMultiGemmPlan(const PackedCapacity& capacity,
+                                                               int rows, int k, int n, int bits,
+                                                               Output output);
 std::expected<GemmPlan, std::string> FrozenGemmPlan(FrozenCache cache, std::uint32_t arch, int sms,
                                                     int rows, int k, int n, int bits,
                                                     Output output);

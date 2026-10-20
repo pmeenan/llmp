@@ -19,6 +19,18 @@ Launcher MixedGluLauncher(DecoderId gate, DecoderId up) {
   if (gate == DecoderId::kNvfp4Split && up == DecoderId::kQ8_0Blocks) {
     return &LaunchVectorGlu<Nvfp4Split, Q8_0Blocks>;
   }
+  if (gate == DecoderId::kNvfp4Split && up == DecoderId::kBf16Dense) {
+    return &LaunchVectorGlu<Nvfp4Split, Bf16Dense>;
+  }
+  if (gate == DecoderId::kMxfp4Split && up == DecoderId::kBf16Dense) {
+    return &LaunchVectorGlu<Mxfp4Split, Bf16Dense>;
+  }
+  if (gate == DecoderId::kMxfp4Split && up == DecoderId::kQ8_0Blocks) {
+    return &LaunchVectorGlu<Mxfp4Split, Q8_0Blocks>;
+  }
+  if (gate == DecoderId::kAffineSplit && up == DecoderId::kBf16Dense) {
+    return &LaunchVectorGlu<AffineSplit, Bf16Dense>;
+  }
   return nullptr;
 }
 

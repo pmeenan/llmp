@@ -56,8 +56,9 @@ inline constexpr std::array<DeviceMeasuredRank, 2> kDeviceMeasuredRanks{{
      .params = {.tensor_scale = true}},
 }};
 
-std::optional<std::uint32_t> DeviceRank(const CapabilityQuery& query,
-                                        std::string_view implementation);
+std::optional<std::uint32_t> DeviceRank(
+    const CapabilityQuery& query, std::string_view implementation,
+    std::span<const DeviceMeasuredRank> table = kDeviceMeasuredRanks);
 const base::Sha256Digest& MeasuredRanksDigest();
 }  // namespace llmp::execution
 #endif  // LLMP_EXECUTION_MEASURED_RANKS_H_

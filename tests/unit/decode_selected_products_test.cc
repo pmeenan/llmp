@@ -275,7 +275,7 @@ TEST(DecodeSelectedProducts, DeclaresAllAffineImplementations) {
   auto source = de::ProductsSelectedSource();
   ASSERT_TRUE(source);
   const auto implementations = (*source)->Implementations();
-  ASSERT_EQ(implementations.size(), static_cast<std::size_t>(de::DecoderId::kCount) * 4 + 2);
+  ASSERT_EQ(implementations.size(), static_cast<std::size_t>(de::DecoderId::kCount) * 4 + 6);
 
   EXPECT_TRUE((*source)->Owns("llmp.decode.vector.affine.split"));
   EXPECT_TRUE((*source)->Owns("llmp.decode.vector_glu.affine.split"));
@@ -288,11 +288,11 @@ TEST(DecodeSelectedProducts, DeclaresAllAffineImplementations) {
 
   auto affine_source = de::ProductsSelectedSource(fmt::Encoding::kAffine);
   ASSERT_TRUE(affine_source);
-  EXPECT_EQ((*affine_source)->Implementations().size(), 4U);
+  EXPECT_EQ((*affine_source)->Implementations().size(), 5U);
 
   auto nvfp4_source = de::ProductsSelectedSource(fmt::Encoding::kNvfp4);
   ASSERT_TRUE(nvfp4_source);
-  EXPECT_EQ((*nvfp4_source)->Implementations().size(), 4U * 4U + 1U);
+  EXPECT_EQ((*nvfp4_source)->Implementations().size(), 4U * 4U + 2U);
 }
 
 TEST(DecodeSelectedProducts, VectorAffineLowersSuccessfully) {
@@ -582,6 +582,41 @@ TEST(DecodeSelectedProducts, EveryResidentRowDecoderLowersBatchedTables) {
     auto call = (*source)->Lower(*at, node, inputs, outputs);
     ASSERT_TRUE(call) << call.error().detail;
     EXPECT_EQ((*call)->launches(), 2U);
+  }
+}
+
+TEST(DecodeSelectedProducts, AffineWithF32ScaleAndZeroPointLowersSuccessfully) {
+  auto source = de::ProductsSelectedSource();
+  ASSERT_TRUE(source);
+  const auto implementations = (*source)->Implementations();
+  const auto affine_impl = std::ranges::find(implementations, "llmp.decode.vector.affine.split",
+                                             &ex::Implementation::name);
+  ASSERT_NE(affine_impl, implementations.end());
+
+  for (const bool zero_point : {false, true}) {
+    for (const auto scale :
+         {fmt::AffineScale::kF16, fmt::AffineScale::kBF16, fmt::AffineScale::kF32}) {
+      SCOPED_TRACE(std::format("scale {} zero_point {}", static_cast<int>(scale), zero_point));
+      auto arena = kg::TensorArena::Create(16);
+      ASSERT_TRUE(arena);
+      auto* c = arena->context();
+      fmt::TensorFormat format{
+          .encoding = fmt::Encoding::kAffine,
+          .params = {.bits = 4, .group = 32, .scale = scale, .zero_point = zero_point},
+          .layout = fmt::Layout::kSplit,
+          .shape = ir::ShapeOf({256, 128})};
+      std::array inputs{
+          RawWeight(c, format, 0x100000),
+          Activation(c, ir::ShapeOf({256, 1}), fmt::Encoding::kF32, GGML_TYPE_F32, 0x1000000)};
+      std::array outputs{
+          Activation(c, ir::ShapeOf({128, 1}), fmt::Encoding::kF32, GGML_TYPE_F32, 0x2000000)};
+      ir::Node node;
+      node.key = ir::Primitive(ir::Op::kMatMul);
+      node.nsrc = 2;
+      node.nout = 1;
+      auto call = (*source)->Lower(*affine_impl, node, inputs, outputs);
+      ASSERT_TRUE(call) << call.error().detail;
+    }
   }
 }
 

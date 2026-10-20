@@ -71,9 +71,13 @@ constexpr std::array<Encoding, 1> kI32 = {Encoding::kI32};
 constexpr std::array<Layout, 1> kDense = {Layout::kDense};
 
 // The GLUs over two decoders that decode_mixed.cu instantiates.
-constexpr std::array<std::array<DecoderId, 2>, 2> kMixedGlu = {{
+constexpr std::array<std::array<DecoderId, 2>, 6> kMixedGlu = {{
     {DecoderId::kMxfp8Split, DecoderId::kBf16Dense},
     {DecoderId::kNvfp4Split, DecoderId::kQ8_0Blocks},
+    {DecoderId::kNvfp4Split, DecoderId::kBf16Dense},
+    {DecoderId::kMxfp4Split, DecoderId::kBf16Dense},
+    {DecoderId::kMxfp4Split, DecoderId::kQ8_0Blocks},
+    {DecoderId::kAffineSplit, DecoderId::kBf16Dense},
 }};
 
 constexpr std::array<std::string_view, static_cast<std::size_t>(Template::kCount)> kTemplateNames =
@@ -133,8 +137,9 @@ bool Accepts(const execution::CapabilityQuery& q) {
         !((o.params.bits == 4 || o.params.bits == 8) &&
           (o.params.group == 32 || o.params.group == 64 || o.params.group == 128) &&
           (o.params.scale == format::AffineScale::kBF16 ||
-           o.params.scale == format::AffineScale::kF16) &&
-          !o.params.zero_point && (q.k == 0 || q.k % o.params.group == 0)))
+           o.params.scale == format::AffineScale::kF16 ||
+           o.params.scale == format::AffineScale::kF32) &&
+          (q.k == 0 || q.k % o.params.group == 0)))
       return false;
     if (o.operand >= execution::kOutputOperand &&
         (o.encoding != Encoding::kF32 || o.layout != Layout::kDense || !Packed(o, 4)))
@@ -370,9 +375,19 @@ Implementation Declaration(const Declared& d) {
       break;
   }
   if (d.bound.gate != d.bound.up) {
-    c.accepts = d.bound.gate == DecoderId::kMxfp8Split
-                    ? &AcceptsMixed<DecoderId::kMxfp8Split, DecoderId::kBf16Dense>
-                    : &AcceptsMixed<DecoderId::kNvfp4Split, DecoderId::kQ8_0Blocks>;
+    if (d.bound.gate == DecoderId::kMxfp8Split && d.bound.up == DecoderId::kBf16Dense) {
+      c.accepts = &AcceptsMixed<DecoderId::kMxfp8Split, DecoderId::kBf16Dense>;
+    } else if (d.bound.gate == DecoderId::kNvfp4Split && d.bound.up == DecoderId::kQ8_0Blocks) {
+      c.accepts = &AcceptsMixed<DecoderId::kNvfp4Split, DecoderId::kQ8_0Blocks>;
+    } else if (d.bound.gate == DecoderId::kNvfp4Split && d.bound.up == DecoderId::kBf16Dense) {
+      c.accepts = &AcceptsMixed<DecoderId::kNvfp4Split, DecoderId::kBf16Dense>;
+    } else if (d.bound.gate == DecoderId::kMxfp4Split && d.bound.up == DecoderId::kBf16Dense) {
+      c.accepts = &AcceptsMixed<DecoderId::kMxfp4Split, DecoderId::kBf16Dense>;
+    } else if (d.bound.gate == DecoderId::kMxfp4Split && d.bound.up == DecoderId::kQ8_0Blocks) {
+      c.accepts = &AcceptsMixed<DecoderId::kMxfp4Split, DecoderId::kQ8_0Blocks>;
+    } else if (d.bound.gate == DecoderId::kAffineSplit && d.bound.up == DecoderId::kBf16Dense) {
+      c.accepts = &AcceptsMixed<DecoderId::kAffineSplit, DecoderId::kBf16Dense>;
+    }
   }
   const std::string build = std::format(
       "sdk {}; target {}; cuda architectures {}; build type {} ({}, {}); sanitize {}; module "

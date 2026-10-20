@@ -240,6 +240,60 @@ TEST(DecodeSelectedRows, AffineSplitRowsLowerSuccessfully) {
   EXPECT_LE((*call)->host_bytes(), 2048U);
 }
 
+TEST(DecodeSelectedRows, MxfpSplitPagedRowsLowerSuccessfully) {
+  auto source = de::RowsSelectedSource();
+  ASSERT_TRUE(source);
+  const auto impl = (*source)->Implementations();
+
+  for (const auto encoding : {fmt::Encoding::kMxfp4, fmt::Encoding::kMxfp8}) {
+    const std::string name = encoding == fmt::Encoding::kMxfp4 ? "llmp.decode.rows.mxfp4.split"
+                                                               : "llmp.decode.rows.mxfp8.split";
+    SCOPED_TRACE(name);
+    const auto at = std::ranges::find(impl, name, &llmp::execution::Implementation::name);
+    ASSERT_NE(at, impl.end());
+
+    kg::TensorArena arena(std::move(*kg::TensorArena::Create(8)));
+    auto* ctx = arena.context();
+    std::array<kg::SelectedOperand, 2> inputs;
+    std::array<kg::SelectedOperand, 1> outputs;
+    ir::Node node;
+
+    auto& w = inputs[0];
+    w.desc.format = {.encoding = encoding,
+                     .layout = fmt::Layout::kSplit,
+                     .shape = ir::ShapeOf({kWidth, kTableRows})};
+    w.paged_weight = kWeight;
+    const std::int64_t code_bytes = encoding == fmt::Encoding::kMxfp4 ? kWidth / 2 : kWidth;
+    w.parts = {{Role::kCodes, ggml_new_tensor_2d(ctx, GGML_TYPE_I8, code_bytes, kRows)},
+               {Role::kBlockScales, ggml_new_tensor_2d(ctx, GGML_TYPE_I8, kWidth / 32, kRows)}};
+    for (std::size_t i = 0; i < w.parts.size(); ++i) {
+      kg::TensorArena::Bind(w.parts[i].tensor, 0x100000ULL + i * 0x1000ULL);
+    }
+    w.tensor = w.parts.front().tensor;
+
+    auto& ids = inputs[1];
+    ids.desc.format = ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({kRows}));
+    ids.desc.nb = ir::NaturalStrides(ids.desc.format);
+    ids.tensor = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, kRows);
+    ids.side_rows_component = kWeight.component;
+    kg::TensorArena::Bind(ids.tensor, 0x200000ULL);
+
+    auto& out = outputs[0];
+    out.desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({kWidth, kRows}));
+    out.desc.nb = ir::NaturalStrides(out.desc.format);
+    out.tensor = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kWidth, kRows);
+    kg::TensorArena::Bind(out.tensor, 0x300000ULL);
+
+    node.key = ir::Primitive(ir::Op::kGetRows);
+    node.nsrc = 2;
+    node.nout = 1;
+
+    auto call = (*source)->Lower(*at, node, inputs, outputs);
+    ASSERT_TRUE(call) << call.error().detail;
+    EXPECT_EQ((*call)->launches(), 1U);
+  }
+}
+
 TEST(DecodeSelectedRows, SharedLoweringRetainsFourthDimensionPartsForEveryDecoder) {
   auto source = de::DecodeResidentSelectedSource().value();
   auto registry = llmp::execution::Registry::Create(source->Implementations()).value();

@@ -58,6 +58,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 
 #include "kernels/exl3/launch_contract.h"
 #include "kernels/exl3/upstream_gemv.h"
@@ -106,6 +107,11 @@ class LaunchContext {
   // add_kernel_hhh (grid ceil(rows × columns / 1024), 1024 threads), as
   // add_gr launches it.
   std::expected<void, KernelFailure> Bias(const BiasOperands& operands);
+
+  // Uploads up to 8 64-bit pointers/words to device memory on this context's
+  // stream using a small kernel launch, without pageable host-staging stalls.
+  std::expected<void, KernelFailure> WritePointerTable(std::uint64_t dst_device_ptr,
+                                                       std::span<const std::uint64_t> words);
 
   // Blocks of the kernel that fit on the device at once.
   std::expected<int, KernelFailure> GemmCoresident(int bits, int shape, Output output);

@@ -28,7 +28,7 @@ target_include_directories(llmp_exl3 PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_exl3 PUBLIC llmp_exl3_headers llmp_execution PRIVATE llmp_warnings)
 
 if(LLMP_CUDA)
-  add_library(llmp_exl3_kernels STATIC implementations.cc launch.cc linear.cc recon_gemm.cc)
+  add_library(llmp_exl3_kernels STATIC implementations.cc launch.cc linear.cc recon_gemm.cc pointer_table.cu)
   target_include_directories(llmp_exl3_kernels SYSTEM PUBLIC
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(llmp_exl3_kernels
@@ -64,6 +64,7 @@ if(LLMP_CUDA)
     message(FATAL_ERROR "llmp_exl3_cuda names no CUDA architectures for the registry's identities")
   endif()
   list(JOIN architectures "," architecture_text)
+  set_target_properties(llmp_exl3_kernels PROPERTIES CUDA_ARCHITECTURES "${architectures}")
   set_source_files_properties(implementations.cc PROPERTIES COMPILE_DEFINITIONS
     "LLMP_EXL3_SOURCE_TREE=\"${exl3_tree}\";LLMP_EXL3_SDK=\"${LLMP_SDK_IDENTITY}\";LLMP_EXL3_TARGET=\"${LLMP_TARGET_TRIPLE}\";LLMP_EXL3_CUDA_ARCHITECTURES=\"${architecture_text}\";LLMP_EXL3_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";LLMP_EXL3_SANITIZE=\"${sanitize}\"")
 
@@ -72,7 +73,7 @@ if(LLMP_CUDA)
   # the GGML module does. A file added here without being listed fails the
   # next configure.
   set(module_files CMakeLists.txt implementations.cc implementations.h launch.cc launch.h
-                   launch_contract.h linear.cc linear.h module_digest.cmake
+                   launch_contract.h linear.cc linear.h module_digest.cmake pointer_table.cu pointer_table.h
                    recon_gemm.cc recon_gemm.h reconstruction_tuning.cc reconstruction_tuning.h upstream_gemv.cc upstream_gemv.h validate.cc
                    validate.h packed_tuning.cc packed_tuning.h selected_source.cc selected_source.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"

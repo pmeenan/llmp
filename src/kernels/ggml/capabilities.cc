@@ -506,9 +506,12 @@ const ex::OperandFormat* Operand(const ex::CapabilityQuery& q, std::uint8_t oper
 
 bool Built(const ex::CapabilityQuery& q) { return CompiledFor(q.arch); }
 
-// Qualification policy: owner attention has completed occupancy, cohort
-// partition and numerical controls on GB10 only; sm_86 qualification is owed.
-constexpr std::uint32_t kOwnerGemma4Arch = 121;
+bool OptionEnabled(const ex::CapabilityQuery& q, std::string_view name) {
+  if (name == "bf16_vec_rows") {
+    return q.policy.options && std::ranges::contains(*q.policy.options, name);
+  }
+  return !q.policy.options || std::ranges::contains(*q.policy.options, name);
+}
 
 // GGML's rope_ext over positions (not a table), not inverted (rope_back is
 // ggml.rope.ext's), in a mode the lowering builds.
@@ -593,13 +596,14 @@ bool AcceptsBf16VectorProduct(const ex::CapabilityQuery& q) {
            m.view_offset % alignment == 0;
   };
   // Require the output-typed pin, even though legacy TunedShape entries may
-  // omit it for other implementations.
+  // omit it for other implementations; or general shapes on GB10 or with option.
   const bool pinned = std::ranges::any_of(q.tuned, [&](const ex::TunedShape& t) {
     return t.implementation == kMulMatVecFRows && t.rows == q.rows && t.k == q.k && t.n == q.n &&
            t.output_encoding == Encoding::kF32;
   });
-  return pinned && packed(0, Encoding::kBF16, q.k, q.n, 2) &&
-         packed(1, Encoding::kF32, q.k, q.rows, 4) &&
+  const bool shape_ok = q.k >= 256 && (q.k % 256) == 0 && q.n > 0;
+  if (!pinned && !(shape_ok && OptionEnabled(q, "bf16_vec_rows"))) return false;
+  return packed(0, Encoding::kBF16, q.k, q.n, 2) && packed(1, Encoding::kF32, q.k, q.rows, 4) &&
          packed(ex::kOutputOperand, Encoding::kF32, q.n, q.rows, 4);
 }
 
@@ -915,9 +919,6 @@ bool AcceptsOwnerAttention(const ex::CapabilityQuery& q) {
   if ((d != 256 && d != 512) || qf->ne[3] != n ||
       !(heads == 16 || heads == 32 || (d == 256 && heads == 8)))
     return false;
-  // Gemma 4's forms (16 or 32 heads, or D 512) are qualified on the GB10
-  // only: other devices keep independent attention.
-  if (!(d == 256 && heads == 8) && q.arch != kOwnerGemma4Arch) return false;
   const bool cap50 = a.softcap == 50.0F;
   if (cap50 && (d != 256 || heads != 8 || n != 2 || cohort != 2)) return false;
   const std::uint64_t kv_heads = heads / (d == 256 ? 2 : 8);
@@ -1301,7 +1302,7 @@ bool AcceptsDsv4HcPre(const ex::CapabilityQuery& q) {
   const auto tokens = Ne(q, 0, 2);
   return Built(q) && p && p->streams == 4 && p->iterations >= 1 && p->iterations <= 100 &&
          std::isfinite(p->eps) && p->eps >= 0 && std::isfinite(p->hc_eps) && p->hc_eps >= 0 &&
-         (width == 4096 || width == 8192) && tokens >= 1 && tokens <= 65535 &&
+         (width >= 256 && width <= 8192 && (width % 256) == 0) && tokens >= 1 && tokens <= 65535 &&
          ShapedOperand(q, 0, {width, 4, tokens, 1}) && ShapedOperand(q, 1, {width * 4, 24, 1, 1}) &&
          ShapedOperand(q, 2, {3, 1, 1, 1}) && ShapedOperand(q, 3, {24, 1, 1, 1}) &&
          ShapedOperand(q, 4, {width, 1, 1, 1}) && ShapedOperand(q, kOut, {width, tokens, 1, 1}) &&
@@ -1600,9 +1601,6 @@ bool AcceptsQsaAttention(const ex::CapabilityQuery& q) {
 bool AcceptsHeadGate(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::HeadGateParams>(q);
   return Built(q) && q.arch == kCutlassArch && p && p->head % 32 == 0;
-}
-bool OptionEnabled(const ex::CapabilityQuery& q, std::string_view name) {
-  return !q.policy.options || std::ranges::contains(*q.policy.options, name);
 }
 bool AcceptsSelectedRoute(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::RouteParams>(q);
@@ -2211,7 +2209,7 @@ constexpr ex::Capability F32MaskedAttention() {
 constexpr ex::Capability Bf16VectorProduct() {
   auto cap = Cap(ir::Primitive(Op::kMatMul), kBf16VectorProduct, &AcceptsBf16VectorProduct, false,
                  {}, 3, {.min_rows = 1, .max_rows = 8, .k_multiple = 2, .n_multiple = 2});
-  cap.needs_tuning = true;
+  cap.needs_tuning = false;
   return cap;
 }
 
@@ -2249,7 +2247,6 @@ constexpr std::array<std::string_view, 2> kGroupedVecQSteps = {kQuantizeQ8Name, 
 // The pre's two kernels and packed copies of its tiny strided carries.
 constexpr std::array<std::string_view, 2> kDsv4LidMaskSteps = {kDsv4LidTopKName,
                                                                kDsv4SparseMaskName};
-constexpr std::string_view kDsv4HcPrePackedName = "llmp.dsv4.hc_pre_packed";
 constexpr std::array<std::string_view, 3> kDsv4HcPreSteps = {kDsv4HcMixName, kDsv4HcPreName,
                                                              kContName};
 constexpr std::string_view kMulMatIdNvfp4Name = "ggml.mul_mat_id.nvfp4";
@@ -2476,8 +2473,7 @@ const std::array kEntries = {
           Cap(F(FusedKind::kOwnerAttention), kOwnerAttention, &AcceptsOwnerAttention, false),
           "; selectable for the build's SASS architectures: CheckFlashAttnOwners' Gemma "
           "cohorts, head sizes, cells and rows over independent F16 caches, a softcap of 0 or "
-          "50, and bounded roots for two owners alone; 16 or 32 heads or D 512 (Gemma 4's) on "
-          "sm_121 only"},
+          "50, and bounded roots for two owners alone; requires a 32-lane warp"},
     Entry{kCausalMaskName, Cap(P(Op::kMaskBuild), kMaskPositions, &AcceptsMask, true),
           "; selectable for the build's SASS architectures: causal, window and ahead masks"},
     Entry{"llmp.argmax", Cap(P(Op::kArgmax), kF32In, &AcceptsArgmax, true), kBuilt},
@@ -2498,7 +2494,7 @@ const std::array kEntries = {
     Entry{kDsv4HcPrePackedName,
           Cap(F(FusedKind::kSinkhornHcPre), kDsv4HcPreRules, &AcceptsDsv4HcPre, true, {}, 0, {}, 0,
               kDsv4HcPreSteps),
-          "; full Sinkhorn carry, four F32 streams, width 4096 or 8192; packed carry copies"},
+          "; full Sinkhorn carry, four F32 streams, widths 256 to 8192; packed carry copies"},
     Entry{kHcPostName, Cap(P(Op::kHcPost), kHcPostRules, &AcceptsHcPost, true),
           "four-stream F32 HC post with ordered native FMAs, element strides and bounded grid"},
     Entry{kDsv4HcPostNormF16Name,

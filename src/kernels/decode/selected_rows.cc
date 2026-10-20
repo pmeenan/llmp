@@ -91,9 +91,7 @@ std::expected<Geometry, Failure> Shape(const ir::Node& node,
     return g;
   }
   const auto parts = format::PartsOf(f);
-  if (!parts ||
-      (f.encoding != format::Encoding::kNvfp4 && f.encoding != format::Encoding::kAffine) ||
-      f.layout != format::Layout::kSplit || f.shape.ne[2] != 1 || f.shape.ne[3] != 1 ||
+  if (!parts || f.layout != format::Layout::kSplit || f.shape.ne[2] != 1 || f.shape.ne[3] != 1 ||
       f.stacked != 1 || f.shape.ne[0] >= (1ULL << 30) || f.shape.ne[1] >= (1ULL << 31) ||
       !w.paged_weight || w.paged_weight->expert_array || !ids.side_rows_component ||
       *ids.side_rows_component != w.paged_weight->component || w.parts.size() != parts->size())

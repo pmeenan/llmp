@@ -105,25 +105,10 @@ class Bound final : public kg::BoundSelectedCall {
         ran = kernel_.Run(*runtime_.launch, linear, gemv, 0);
         break;
       case Kind::kMulti:
-        ran = runtime_.launch->Run([&](void* stream_handle) -> std::expected<void, KernelFailure> {
-          // From pageable host memory: CUDA stages a pageable host-to-device
-          // copy before cudaMemcpyAsync returns, so `written` need not
-          // outlive the call, but stream capture refuses such a copy. That
-          // is one reason no EXL3 operation is declared capturable
-          // (implementations.cc); capturing this needs pinned staging whose
-          // lifetime follows the stream's completion.
-          const auto copied =
-              cudaMemcpyAsync(reinterpret_cast<void*>(multi.trellis_table), multi.written.data(),
-                              sizeof(multi.written), cudaMemcpyHostToDevice,
-                              static_cast<cudaStream_t>(stream_handle));
-          if (copied != cudaSuccess)
-            return std::unexpected(KernelFailure{.error = KernelError::kUnknown,
-                                                 .detail = cudaGetErrorString(copied)});
-          return {};
-        });
-        // The upload is queued: a refused product must fault, not refuse.
-        if (ran)
+        ran = runtime_.launch->WritePointerTable(multi.trellis_table, multi.written);
+        if (ran) {
           ran = runtime_.launch->AfterQueued(kernel_.Run(*runtime_.launch, multi, multi_plan));
+        }
         break;
       case Kind::kReconstruct:
       case Kind::kFused:
@@ -493,12 +478,20 @@ class Source final : public kg::SelectedSource {
     if (generic_) {
       for (std::size_t i = canonical_.size(); i-- > 0;) {
         if (canonical_[i].name == "exl3.linear.gemm" ||
-            canonical_[i].name == "exl3.multi_linear.mgemm")
+            canonical_[i].name == "exl3.multi_linear.mgemm" ||
+            (canonical_[i].name == "exl3.linear.gemv" && capacity_.has_value()) ||
+            canonical_[i].name == "exl3.bias_add")
           continue;
         canonical_.erase(canonical_.begin() + static_cast<std::ptrdiff_t>(i));
         declarations_.erase(declarations_.begin() + static_cast<std::ptrdiff_t>(i));
       }
-      for (auto& declaration : declarations_) declaration.capability->priority = 0;
+      for (auto& declaration : declarations_) {
+        declaration.capability->priority = declaration.name.ends_with(".linear.gemv") ? 1 : 0;
+        if (declaration.name.ends_with(".linear.gemm") ||
+            declaration.name.ends_with(".linear.gemv")) {
+          declaration.capability->needs_tuning = false;
+        }
+      }
     }
     base::Sha256 hash;
     hash.Update("llmp-exl3-selected-v1;exact-caches-and-device-capacity;deferred-bind-resources");
@@ -734,9 +727,8 @@ class Source final : public kg::SelectedSource {
       plan = FrozenMultiGemmPlan(cache_, arch, sms, call->rows, call->k, call->n, call->bits,
                                  call->output);
     if (!plan && defaults_) {
-      const auto fallback =
-          DefaultGemmPlan(*defaults_, call->rows, call->k, call->n, call->bits, call->output, true);
-      if (fallback) plan = MultiGemmPlan{fallback->shape, fallback->blocks, 1};
+      plan =
+          DefaultMultiGemmPlan(*defaults_, call->rows, call->k, call->n, call->bits, call->output);
     }
     if (!plan) return Reject(plan.error());
     call->multi_plan = *plan;
@@ -786,9 +778,9 @@ std::expected<GemvCapacity, std::string> QueryGemvCapacity(int device) {
   return result;
 }
 std::expected<std::shared_ptr<const kg::SelectedSource>, std::string> SelectedSource(
-    FrozenCache cache, std::optional<GemvCapacity> capacity,
-    std::optional<PackedCapacity> defaults) {
-  if (ProfileName(cache).empty() || Optimized(cache) != capacity.has_value())
+    FrozenCache cache, std::optional<GemvCapacity> capacity, std::optional<PackedCapacity> defaults,
+    bool generic) {
+  if (ProfileName(cache).empty() || (!generic && (Optimized(cache) != capacity.has_value())))
     return std::unexpected(
         "the frozen O profile requires queried GEMV capacities; G requires none");
   if (capacity) {
@@ -814,7 +806,7 @@ std::expected<std::shared_ptr<const kg::SelectedSource>, std::string> SelectedSo
               return std::unexpected("invalid packed EXL3 occupancy");
         }
   }
-  return std::make_shared<Source>(cache, capacity, defaults);
+  return std::make_shared<Source>(cache, capacity, defaults, generic);
 }
 std::expected<std::shared_ptr<const kg::SelectedSource>, std::string> DeviceSelectedSource(
     int device) {

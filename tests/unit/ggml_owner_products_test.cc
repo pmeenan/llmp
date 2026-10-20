@@ -1057,7 +1057,7 @@ TEST(GgmlBf16VectorSelectionTest, PhysicalBindingRechecksAlignmentAndAliasing) {
 TEST(GgmlBf16VectorSelectionTest, DescriptorAndTypedPinRefuseUnsupportedDomains) {
   const auto* capability = kg::CapabilityOf(kg::kMulMatVecFRows);
   ASSERT_NE(capability, nullptr);
-  EXPECT_TRUE(capability->needs_tuning);
+  EXPECT_FALSE(capability->needs_tuning);
   for (int change = 0; change < 16; ++change) {
     SCOPED_TRACE(change);
     ir::ProductParams params;
@@ -1136,6 +1136,41 @@ TEST(GgmlBf16VectorSelectionTest, DescriptorAndTypedPinRefuseUnsupportedDomains)
                                     .params = std::span(storage).first(count)};
     EXPECT_EQ(capability->accepts(query), change == 0 || change == 12);
   }
+}
+
+TEST(GgmlBf16VectorSelectionTest, OptionEnablesUnpinnedShapeWithoutTuning) {
+  const auto* capability = kg::CapabilityOf(kg::kMulMatVecFRows);
+  ASSERT_NE(capability, nullptr);
+  EXPECT_FALSE(capability->needs_tuning);
+
+  ir::ProductParams params{};
+  std::array operands{
+      ex::OperandFormat{.operand = 0,
+                        .encoding = Encoding::kBF16,
+                        .ne = {256, 256, 1, 1},
+                        .memory = ex::OperandMemory{{2, 512, 512 * 256, 512 * 256}, 0, 256}},
+      ex::OperandFormat{.operand = 1,
+                        .encoding = Encoding::kF32,
+                        .ne = {256, 1, 1, 1},
+                        .memory = ex::OperandMemory{{4, 1024, 1024, 1024}, 0, 256}},
+      ex::OperandFormat{.operand = ex::kOutputOperand,
+                        .encoding = Encoding::kF32,
+                        .ne = {256, 1, 1, 1},
+                        .memory = ex::OperandMemory{{4, 1024, 1024, 1024}, 0, 256}}};
+
+  ex::CapabilityQuery query{.op = ir::Primitive(ir::Op::kMatMul),
+                            .operands = operands,
+                            .rows = 1,
+                            .k = 256,
+                            .n = 256,
+                            .arch = 121,
+                            .tuned = {},
+                            .params = std::as_bytes(std::span(&params, 1))};
+  EXPECT_FALSE(capability->accepts(query));
+
+  std::array<std::string_view, 1> options{"bf16_vec_rows"};
+  query.policy.options = options;
+  EXPECT_TRUE(capability->accepts(query));
 }
 
 }  // namespace

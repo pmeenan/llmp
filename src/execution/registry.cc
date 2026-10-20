@@ -379,7 +379,8 @@ std::expected<BoundPlan, PlanRejection> Resolve(const Registry& registry, const 
 }
 
 std::optional<std::uint32_t> DeviceRank(const CapabilityQuery& query,
-                                        std::string_view implementation) {
+                                        std::string_view implementation,
+                                        std::span<const DeviceMeasuredRank> table) {
   const auto weight = std::ranges::find(query.operands, 0, &OperandFormat::operand);
   if (weight == query.operands.end() || weight->ne[0] != query.k || weight->ne[1] != query.n ||
       weight->ne[2] != 1 || weight->ne[3] != 1)
@@ -392,14 +393,15 @@ std::optional<std::uint32_t> DeviceRank(const CapabilityQuery& query,
   if (query.op == ir::Primitive(ir::Op::kGetRows) && input->ne[0] != query.rows) return {};
   for (const auto& operand : query.operands)
     if (operand.ne[2] != 1 || operand.ne[3] != 1) return {};
-  for (const auto& record : kDeviceMeasuredRanks) {
+  for (const auto& record : table) {
     if (record.implementation == implementation && record.op == query.op &&
-        record.device_class == query.device_class && record.device_model == query.device_model &&
+        record.device_class == query.device_class &&
+        (record.device_model.empty() || record.device_model == query.device_model) &&
         record.arch == query.arch && record.multiprocessors == query.multiprocessors &&
         record.encoding == weight->encoding && record.layout == weight->layout &&
         record.params == weight->params && record.stacked == weight->stacked &&
-        query.rows >= record.rows_min && query.rows <= record.rows_max && record.k == query.k &&
-        record.n == query.n)
+        query.rows >= record.rows_min && query.rows <= record.rows_max &&
+        (record.k == 0 || record.k == query.k) && (record.n == 0 || record.n == query.n))
       return record.rank;
   }
   return {};

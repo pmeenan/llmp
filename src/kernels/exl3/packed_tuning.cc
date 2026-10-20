@@ -163,8 +163,8 @@ std::expected<GemmPlan, std::string> DefaultGemmPlan(const PackedCapacity& capac
     const auto at = static_cast<std::size_t>(shape);
     if (k % kTileK[at] || n % kTileN[at] || counts[at - 1] <= 0) continue;
     const int slices = (k / kTileK[at]) * (n / kTileN[at]);
-    // Multi-GEMM concurrency1 permits the complete device occupancy.
-    const int blocks = std::min({counts[at - 1], slices, INT32_MAX / slices});
+    const int concurrency = (multi && slices * 2 <= counts[at - 1] && counts[at - 1] >= 2) ? 2 : 1;
+    const int blocks = std::min({counts[at - 1] / concurrency, slices, INT32_MAX / slices});
     if (blocks <= 0) continue;
     const auto serial = std::uint64_t((slices + blocks - 1) / blocks) *
                         static_cast<unsigned>(kTileK[at]) * static_cast<unsigned>(kTileN[at]);
@@ -175,6 +175,23 @@ std::expected<GemmPlan, std::string> DefaultGemmPlan(const PackedCapacity& capac
   }
   if (best.shape == 0) return std::unexpected("no resident packed EXL3 kernel divides this shape");
   return best;
+}
+
+std::expected<MultiGemmPlan, std::string> DefaultMultiGemmPlan(const PackedCapacity& capacity,
+                                                               int rows, int k, int n, int bits,
+                                                               Output output) {
+  const auto r = DefaultGemmPlan(capacity, rows, k, n, bits, output, true);
+  if (!r) return std::unexpected(r.error());
+  const auto at = static_cast<std::size_t>(r->shape);
+  const int slices = (k / kTileK[at]) * (n / kTileN[at]);
+  constexpr std::array rates{4, 5, 6, 8};
+  const auto rate = std::ranges::find(rates, bits);
+  if (rate == rates.end()) return std::unexpected("unsupported rate");
+  const auto& counts =
+      capacity
+          .multi[output == Output::kF32 ? 1 : 0][static_cast<std::size_t>(rate - rates.begin())];
+  const int concurrency = (slices * 2 <= counts[at - 1] && counts[at - 1] >= 2) ? 2 : 1;
+  return MultiGemmPlan{r->shape, r->blocks, concurrency};
 }
 
 std::expected<GemmPlan, std::string> FrozenGemmPlan(FrozenCache cache, std::uint32_t arch, int sms,

@@ -255,7 +255,7 @@ before new families land; each item lands as one reviewed commit.
       `ReadImageAdmission`; deduplicate staging helpers across
       `component_build.cc` and `component_image_build.cc`; wire multi-drafter
       configurations in `ComponentLlmBuild`)
-- [ ] R16 Capability-driven kernel gates, on-chip decode ladder and EXL3
+- [x] R16 Capability-driven kernel gates, on-chip decode ladder and EXL3
       (D-123: replace family-specific shape, head-count, GQA-ratio and
       `sm_121` whitelists in `src/kernels/ggml/capabilities.cc`, `lower.cc`,
       `validate_ext.cc` and `fattn_owner.cu` with true hardware/algorithmic

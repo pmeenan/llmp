@@ -34,7 +34,7 @@ std::expected<void, KernelFailure> Resources(int device, FlashAttnOwnersPlan& pl
   const bool q_in_reg = ggml_cuda_fattn_mma_get_Q_in_reg(D, D, cols, cc);
   const int stages = ggml_cuda_fattn_mma_get_nstages(D, D, Columns, Group, cc);
   const int warp = ggml_cuda_info().devices[device].warp_size;
-  if (warp != 32 || threads % warp != 0) return Rejected("owner MMA requires the GB10 warp");
+  if (warp != 32 || threads % warp != 0) return Rejected("owner MMA requires a 32-lane warp");
   const int warps = threads / warp;
   const bool swizzled = ggml_cuda_fattn_mma_get_swizzled(D, D, cols, cc);
   const int tile_k = swizzled ? k2 : k2 + 4;
@@ -74,7 +74,7 @@ std::expected<void, KernelFailure> ResourcesPartial(int device, FlashAttnOwnersP
   const bool q_in_reg = ggml_cuda_fattn_mma_get_Q_in_reg(D, D, cols, cc);
   const int stages = ggml_cuda_fattn_mma_get_nstages(D, D, Columns, Group, cc);
   const int warp = ggml_cuda_info().devices[device].warp_size;
-  if (warp != 32 || threads % warp != 0) return Rejected("owner MMA requires the GB10 warp");
+  if (warp != 32 || threads % warp != 0) return Rejected("owner MMA requires a 32-lane warp");
   const int warps = threads / warp;
   const bool swizzled = ggml_cuda_fattn_mma_get_swizzled(D, D, cols, cc);
   const int tile_k = swizzled ? k2 : k2 + 4;
@@ -263,7 +263,9 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
                                                                       const FlashAttnOwners& in) {
   if (auto checked = CheckFlashAttnOwners(in); !checked) return std::unexpected(checked.error());
   const auto& device = ggml_cuda_info().devices[launch.device()];
-  if (device.cc != 1210 || device.nsm <= 0) return Rejected("owner MMA diagnostic is GB10 only");
+  if (!GGML_CUDA_CC_IS_NVIDIA(device.cc) || !turing_mma_available(device.cc) || device.nsm <= 0) {
+    return Rejected("owner MMA requires Turing+ tensor cores");
+  }
   const int d = static_cast<int>(in.q->ne[0]);
   const bool prefill = in.q->ne[1] > 1;
   const int columns = d == 512            ? 1

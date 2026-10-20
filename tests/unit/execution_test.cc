@@ -682,6 +682,57 @@ TEST(CapabilityTest, DeviceRanksRequireEveryMeasuredFactAndUnbatchedOperands) {
   }
 }
 
+TEST(CapabilityTest, DeviceRanksSupportWildcardModelAndShape) {
+  const std::array custom_ranks{ex::DeviceMeasuredRank{.device_class = "sm_121",
+                                                       .device_model = "",  // wildcard
+                                                       .arch = 121,
+                                                       .multiprocessors = 48,
+                                                       .op = ir::Primitive(ir::Op::kMatMul),
+                                                       .encoding = Encoding::kQ8_0,
+                                                       .layout = Layout::kSplit,
+                                                       .rows_min = 1,
+                                                       .rows_max = 1,
+                                                       .k = 0,  // wildcard
+                                                       .n = 0,  // wildcard
+                                                       .implementation = "test.generic",
+                                                       .rank = 0}};
+  std::array operands{
+      ex::OperandFormat{.operand = 0,
+                        .encoding = Encoding::kQ8_0,
+                        .layout = Layout::kSplit,
+                        .ne = {1024, 4096, 1, 1}},
+      ex::OperandFormat{.operand = 1,
+                        .encoding = Encoding::kF32,
+                        .layout = Layout::kDense,
+                        .ne = {1024, 1, 1, 1}},
+      ex::OperandFormat{.operand = ex::kOutputOperand,
+                        .encoding = Encoding::kF32,
+                        .layout = Layout::kDense,
+                        .ne = {4096, 1, 1, 1}},
+  };
+  ex::CapabilityQuery query{.op = ir::Primitive(ir::Op::kMatMul),
+                            .operands = operands,
+                            .rows = 1,
+                            .k = 1024,
+                            .n = 4096,
+                            .arch = 121,
+                            .device_class = "sm_121",
+                            .device_model = "Any Device Model",
+                            .multiprocessors = 48};
+  EXPECT_EQ(ex::DeviceRank(query, "test.generic", custom_ranks), 0U);
+  query.device_model = "Different Model";
+  EXPECT_EQ(ex::DeviceRank(query, "test.generic", custom_ranks), 0U);
+  operands[0].ne[0] = 2048;
+  operands[0].ne[1] = 8192;
+  operands[1].ne[0] = 2048;
+  operands[2].ne[0] = 8192;
+  query.k = 2048;
+  query.n = 8192;
+  EXPECT_EQ(ex::DeviceRank(query, "test.generic", custom_ranks), 0U);
+  query.device_class = "sm_86";
+  EXPECT_FALSE(ex::DeviceRank(query, "test.generic", custom_ranks));
+}
+
 TEST(CapabilityTest, TuningPinsCannotBeBorrowedAcrossExl3Rates) {
   const auto op = ir::Primitive(ir::Op::kMatMul);
   auto registry = Registry::Create({Capable("fake.pin", {.op = op, .needs_tuning = true})}).value();

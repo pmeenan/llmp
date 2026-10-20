@@ -844,4 +844,73 @@ TEST(Exl3SelectedTest, AllProfilesCoverPackedPairsGemvAndReconstructionBoundarie
   }
 }
 
+TEST(Exl3SelectedTest, GenericSourceKeepsGemvAndBiasAdd) {
+  ex::PackedCapacity capacity{.arch = 121, .sms = 48};
+  for (auto* table : {&capacity.gemm, &capacity.multi}) {
+    for (auto& output : *table) {
+      for (auto& rate : output) {
+        rate.fill(capacity.sms);
+      }
+    }
+  }
+  ex::GemvCapacity gemv_capacity{.arch = 121, .sms = 48};
+  for (auto& output : gemv_capacity.blocks) {
+    for (auto& rows : output) {
+      rows.fill(gemv_capacity.sms);
+    }
+  }
+
+  auto generic_source =
+      ex::SelectedSource(ex::FrozenCache::k40G, gemv_capacity, capacity, /*generic=*/true);
+  ASSERT_TRUE(generic_source);
+  const auto impls = (*generic_source)->Implementations();
+  const auto has = [&](std::string_view name) {
+    return std::ranges::any_of(impls, [&](const auto& i) { return i.name == name; });
+  };
+  EXPECT_TRUE(has("exl3.device.linear.gemm"));
+  EXPECT_TRUE(has("exl3.device.multi_linear.mgemm"));
+  EXPECT_TRUE(has("exl3.device.linear.gemv"));
+  EXPECT_TRUE(has("exl3.device.bias_add"));
+  EXPECT_FALSE(has("exl3.device.linear.reconstruct"));
+
+  for (const auto& impl : impls) {
+    if (impl.name == "exl3.device.linear.gemv") {
+      EXPECT_EQ(impl.capability->priority, 1);
+    } else {
+      EXPECT_EQ(impl.capability->priority, 0);
+    }
+    if (impl.name == "exl3.device.linear.gemv" || impl.name == "exl3.device.linear.gemm") {
+      EXPECT_FALSE(impl.capability->needs_tuning);
+    }
+  }
+
+  namespace execution = llmp::execution;
+  auto arena = kg::TensorArena::Create(16).value();
+  auto product = Make(arena.context(), 1, 896, 896, Encoding::kF16, 4);
+  const auto operand = [](std::uint8_t index, const kg::SelectedOperand& value) {
+    const auto& f = value.desc.format;
+    return execution::OperandFormat{
+        .operand = index,
+        .encoding = f.encoding,
+        .layout = f.layout,
+        .params = f.params,
+        .ne = {value.desc.ne(0), value.desc.ne(1), value.desc.ne(2), value.desc.ne(3)}};
+  };
+  std::array operands{operand(0, product.inputs[0]), operand(1, product.inputs[1]),
+                      operand(execution::kOutputOperand, product.output)};
+  auto registry = execution::Registry::Create(impls);
+  ASSERT_TRUE(registry.has_value());
+  execution::CapabilityQuery query{
+      .op = product.node.key, .operands = operands, .rows = 1, .k = 896, .n = 896, .arch = 121};
+  const auto candidates = execution::Candidates(*registry, query);
+  ASSERT_GE(candidates.size(), 2U);
+  EXPECT_EQ(registry->at(candidates[0]).name, "exl3.device.linear.gemv");
+  EXPECT_EQ(registry->at(candidates[1]).name, "exl3.device.linear.gemm");
+
+  const auto plan = ex::DefaultMultiGemmPlan(capacity, 1, 2048, 6144, 4, ex::Output::kF32);
+  ASSERT_TRUE(plan);
+  EXPECT_GE(plan->concurrency, 1);
+  EXPECT_LE(plan->concurrency, 2);
+}
+
 }  // namespace
