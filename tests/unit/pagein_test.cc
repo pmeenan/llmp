@@ -2202,6 +2202,86 @@ TEST(VmmLaneTest, OwnedRegionGrowthPaysOnlyItsPrefixAndRollsBackKnownRefusal) {
   lane.Run();
 }
 
+TEST(VmmLaneTest, OwnedRegionGrowthUsesHandleReserveAndCounters) {
+  using llmp::scheduler::RegionResult;
+  using llmp::scheduler::RegionWork;
+  using llmp::scheduler::ReserveSettings;
+  FakeDeviceMemory memory{Bytes(kSize), Bytes(kSize * 8)};
+  llmp::base::WakeFlag wake;
+  CompletionBoard board{16, wake};
+  BackingService lane(&memory, board, QueueSettings{.capacity = 8, .reserved = 1, .batch = 8},
+                      ReserveSettings{.allocation_class = 0, .size = Bytes(kSize), .count = 2},
+                      true);
+  const auto run = [&](RegionWork work) {
+    const auto operation = board.Open();
+    EXPECT_EQ(lane.Submit({.operation = operation, .work = std::move(work)}),
+              PushResult::kAccepted);
+    EXPECT_TRUE(lane.Turn());
+    auto seen = board.Harvest(4);
+    EXPECT_EQ(seen.size(), 1U);
+    (void)board.Close(operation);
+    return seen.front();
+  };
+  // Idle turns fill the reserve.
+  EXPECT_TRUE(lane.Turn());
+  EXPECT_TRUE(lane.Turn());
+  EXPECT_FALSE(lane.Turn());
+  EXPECT_EQ(lane.reserved(), 2U);
+  EXPECT_EQ(lane.create_stats().reserve_attempts, 2U);
+  EXPECT_EQ(lane.create_stats().ordinary_attempts, 0U);
+
+  auto res = std::make_shared<RegionResult>();
+  auto reserved = run({.kind = RegionWork::Kind::kReserve,
+                       .size = Bytes(kSize * 4),
+                       .extent_size = Bytes(kSize),
+                       .offset = {},
+                       .allocation_class = 0,
+                       .reservation = {},
+                       .result = res});
+  ASSERT_TRUE(reserved.terminal);
+  ASSERT_EQ(reserved.terminal->outcome, llmp::scheduler::Outcome::kSucceeded);
+  const auto reservation = res->reservation;
+
+  // Grow 1 extent: should take from reserve, not create!
+  auto grow_res = std::make_shared<RegionResult>();
+  grow_res->backings.reserve(1);
+  auto grown = run({.kind = RegionWork::Kind::kGrow,
+                    .size = Bytes(kSize),
+                    .extent_size = Bytes(kSize),
+                    .offset = {},
+                    .allocation_class = 0,
+                    .reservation = reservation,
+                    .result = grow_res});
+  ASSERT_TRUE(grown.terminal);
+  ASSERT_EQ(grown.terminal->outcome, llmp::scheduler::Outcome::kSucceeded);
+  EXPECT_EQ(lane.reserved(), 1U);
+  EXPECT_EQ(lane.create_stats().ordinary_attempts, 0U);
+
+  // Retire 1 extent: should return handle to reserve!
+  auto retired = run({.kind = RegionWork::Kind::kRetire,
+                      .size = Bytes(kSize),
+                      .extent_size = Bytes(kSize),
+                      .offset = {},
+                      .allocation_class = 0,
+                      .reservation = reservation,
+                      .result = grow_res});
+  ASSERT_TRUE(retired.terminal);
+  ASSERT_EQ(retired.terminal->outcome, llmp::scheduler::Outcome::kSucceeded);
+  EXPECT_EQ(lane.reserved(), 2U);
+
+  ASSERT_TRUE(run({.kind = RegionWork::Kind::kFree,
+                   .size = {},
+                   .extent_size = Bytes(kSize),
+                   .offset = {},
+                   .allocation_class = 0,
+                   .reservation = reservation,
+                   .result = res})
+                  .terminal);
+  lane.Close();
+  lane.Run();
+  EXPECT_TRUE(lane.ReleaseReserve());
+}
+
 TEST(VmmLaneTest, UnknownOwnedRegionGrowthKeepsItsTransitionAndPoisonsReservation) {
   using llmp::scheduler::RegionResult;
   using llmp::scheduler::RegionWork;

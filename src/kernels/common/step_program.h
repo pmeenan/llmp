@@ -25,8 +25,10 @@
 #ifndef LLMP_KERNELS_COMMON_STEP_PROGRAM_H_
 #define LLMP_KERNELS_COMMON_STEP_PROGRAM_H_
 
+#include <algorithm>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -455,6 +457,51 @@ class StepProgram {
   ExecutionResources resources_;
   std::shared_ptr<void> construction_{};
 };
+
+inline void UpdatePlanCoverage(PlanCoverage& kept, const PlanCoverage& observed) {
+  kept.primitive_fallbacks = std::max(kept.primitive_fallbacks, observed.primitive_fallbacks);
+  kept.available_fast_fallbacks =
+      std::max(kept.available_fast_fallbacks, observed.available_fast_fallbacks);
+  kept.unqualified_numerical_candidates =
+      std::max(kept.unqualified_numerical_candidates, observed.unqualified_numerical_candidates);
+  kept.missing_numerical_qualifications =
+      std::max(kept.missing_numerical_qualifications, observed.missing_numerical_qualifications);
+  kept.decode_expansion_rules =
+      std::max(kept.decode_expansion_rules, observed.decode_expansion_rules);
+  kept.logical_activation_bytes =
+      std::max(kept.logical_activation_bytes, observed.logical_activation_bytes);
+  kept.physical_activation_bytes =
+      std::max(kept.physical_activation_bytes, observed.physical_activation_bytes);
+  kept.unmaterialized_logical_bytes =
+      std::max(kept.unmaterialized_logical_bytes, observed.unmaterialized_logical_bytes);
+  kept.unmaterialized_roots = std::max(kept.unmaterialized_roots, observed.unmaterialized_roots);
+}
+
+inline void ObservePlanCoverage(PlanCoverage& kept, const StepProgram& program) {
+  UpdatePlanCoverage(kept, program.plan_coverage());
+}
+
+inline std::string FormatPlanCoverageReport(std::size_t measured_shapes, const PlanCoverage& c) {
+  return std::format(
+      R"({{"measured_shapes":{},"max_primitive_fallbacks":{},"max_available_fast_fallbacks":{},"max_decode_expansion_rules":{},"max_missing_numerical_qualifications":{},"max_unqualified_numerical_candidates":{},"max_logical_activation_bytes":{},"max_physical_activation_bytes":{},"max_omitted_logical_bytes":{},"max_omitted_roots":{},"warning":"{}"}})",
+      measured_shapes, c.primitive_fallbacks, c.available_fast_fallbacks, c.decode_expansion_rules,
+      c.missing_numerical_qualifications, c.unqualified_numerical_candidates,
+      c.logical_activation_bytes, c.physical_activation_bytes, c.unmaterialized_logical_bytes,
+      c.unmaterialized_roots,
+      c.unqualified_numerical_candidates
+          ? "UNQUALIFIED CANDIDATE arithmetic is active; results are diagnostic only"
+      : c.missing_numerical_qualifications
+          ? "arithmetic opportunities lack qualification; enable --debug-plans for details"
+      : c.available_fast_fallbacks
+          ? (c.decode_expansion_rules
+                 ? "fast implementations are ineligible for some measured ops; decode products "
+                   "expand; enable --debug-plans for selected recipes"
+                 : "fast implementations are ineligible for some measured ops; enable "
+                   "--debug-plans for selected fallbacks")
+          : (c.decode_expansion_rules
+                 ? "decode products expand; enable --debug-plans for selected recipes"
+                 : ""));
+}
 
 }  // namespace llmp::kernels
 

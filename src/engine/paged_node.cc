@@ -55,6 +55,9 @@ using support::Error;
 using support::Joined;
 std::atomic<std::uint64_t> next_node_generation{0};
 
+// Carry / Region execution: CarryRegion now shares HandleReserve and
+// BackingCreateCounters with PageIn (RE-059 resolved).
+
 // A request's driver spins from this long before a step's expected end
 // until this long after it (the device lanes' defaults, DeviceSettings).
 constexpr auto kSpinAhead = std::chrono::microseconds(1000);
@@ -551,14 +554,39 @@ Status PagedNode::MapWorkspace(std::uint64_t activations, std::uint64_t pool,
   if (activations_.reservation.valid() || pool_.reservation.valid())
     return Error("the workspace is mapped once");
   workspace_pageable_ = pageable;
-  if (auto r = MapRegion(activations_, "the activations", activations,
-                         providers::BackingKind::kDevice, MemoryClass::kScratch,
-                         catalog::Recovery::kDiscardable, kShared, !pageable, virtual_capacity);
-      !r)
-    return r;
-  return MapRegion(pool_, "the GGML pool", pool, providers::BackingKind::kDevice,
-                   MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared, !pageable,
-                   virtual_capacity);
+  const std::uint64_t effective_virtual_capacity =
+      virtual_capacity == 0 ? (std::uint64_t{16} << 30U) : virtual_capacity;
+  if (auto r =
+          MapRegion(activations_, "the activations", activations, providers::BackingKind::kDevice,
+                    MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared, !pageable,
+                    effective_virtual_capacity);
+      !r) {
+    if (effective_virtual_capacity != virtual_capacity && !activations_.reservation.valid()) {
+      if (auto fallback =
+              MapRegion(activations_, "the activations", activations,
+                        providers::BackingKind::kDevice, MemoryClass::kScratch,
+                        catalog::Recovery::kDiscardable, kShared, !pageable, virtual_capacity);
+          !fallback)
+        return fallback;
+    } else {
+      return r;
+    }
+  }
+  if (auto r = MapRegion(pool_, "the GGML pool", pool, providers::BackingKind::kDevice,
+                         MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared, !pageable,
+                         effective_virtual_capacity);
+      !r) {
+    if (effective_virtual_capacity != virtual_capacity && !pool_.reservation.valid()) {
+      if (auto fallback = MapRegion(pool_, "the GGML pool", pool, providers::BackingKind::kDevice,
+                                    MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared,
+                                    !pageable, virtual_capacity);
+          !fallback)
+        return fallback;
+    } else {
+      return r;
+    }
+  }
+  return {};
 }
 
 std::vector<ExtentId> PagedNode::workspace_extents() const {
@@ -815,6 +843,7 @@ Status PagedNode::MapRegion(Mapped& mapped, std::string name, std::uint64_t byte
   mapped.base = memory_->RangeOf(*reservation).value().base;
   const std::size_t allocation_class =
       kind == providers::BackingKind::kDevice ? device_class_ : host_class_;
+  mapped.allocation_class = allocation_class;
   for (std::uint64_t at = 0; at < mapped.bytes; at += kPagedExtent) {
     if (resident) {
       auto backing = memory_->Create(allocation_class, Bytes(kPagedExtent));
@@ -1034,6 +1063,7 @@ Status PagedNode::GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::Bac
   }
   const auto allocation_class =
       kind == providers::BackingKind::kDevice ? device_class_ : host_class_;
+  mapped.allocation_class = allocation_class;
   auto grown = Region({.kind = sc::RegionWork::Kind::kGrow,
                        .size = Bytes(added),
                        .extent_size = Bytes(kPagedExtent),
@@ -1132,7 +1162,7 @@ Status PagedNode::RetireMapped(Mapped& mapped) {
                          .size = Bytes(mapped.bytes),
                          .extent_size = Bytes(kPagedExtent),
                          .offset = {},
-                         .allocation_class = 0,
+                         .allocation_class = mapped.allocation_class,
                          .reservation = mapped.reservation,
                          .result = result},
                         "retiring owned region");

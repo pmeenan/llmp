@@ -208,24 +208,7 @@ struct StagedExecution::State {
     return entry;
   }
   void ObservePlanCoverage(const kn::StepProgram& program) {
-    const auto observed = program.plan_coverage();
-    auto& kept = plan_coverage;
-    kept.primitive_fallbacks = std::max(kept.primitive_fallbacks, observed.primitive_fallbacks);
-    kept.available_fast_fallbacks =
-        std::max(kept.available_fast_fallbacks, observed.available_fast_fallbacks);
-    kept.unqualified_numerical_candidates =
-        std::max(kept.unqualified_numerical_candidates, observed.unqualified_numerical_candidates);
-    kept.missing_numerical_qualifications =
-        std::max(kept.missing_numerical_qualifications, observed.missing_numerical_qualifications);
-    kept.decode_expansion_rules =
-        std::max(kept.decode_expansion_rules, observed.decode_expansion_rules);
-    kept.logical_activation_bytes =
-        std::max(kept.logical_activation_bytes, observed.logical_activation_bytes);
-    kept.physical_activation_bytes =
-        std::max(kept.physical_activation_bytes, observed.physical_activation_bytes);
-    kept.unmaterialized_logical_bytes =
-        std::max(kept.unmaterialized_logical_bytes, observed.unmaterialized_logical_bytes);
-    kept.unmaterialized_roots = std::max(kept.unmaterialized_roots, observed.unmaterialized_roots);
+    kn::ObservePlanCoverage(plan_coverage, program);
   }
   static void EmitPlanReport(const Plans::Entry& entry, const kn::PlanRecordSink& sink) {
     if (!sink) return;
@@ -1099,26 +1082,7 @@ void StagedExecution::DropPlans() {
 }
 std::string StagedExecution::plan_report() const {
   if (!state_ || !state_->setup) return {};
-  const auto& c = state_->plan_coverage;
-  return std::format(
-      R"({{"measured_shapes":{},"max_primitive_fallbacks":{},"max_available_fast_fallbacks":{},"max_decode_expansion_rules":{},"max_missing_numerical_qualifications":{},"max_unqualified_numerical_candidates":{},"max_logical_activation_bytes":{},"max_physical_activation_bytes":{},"max_omitted_logical_bytes":{},"max_omitted_roots":{},"warning":"{}"}})",
-      state_->stage_envelopes.size(), c.primitive_fallbacks, c.available_fast_fallbacks,
-      c.decode_expansion_rules, c.missing_numerical_qualifications,
-      c.unqualified_numerical_candidates, c.logical_activation_bytes, c.physical_activation_bytes,
-      c.unmaterialized_logical_bytes, c.unmaterialized_roots,
-      c.unqualified_numerical_candidates
-          ? "UNQUALIFIED CANDIDATE arithmetic is active; results are diagnostic only"
-      : c.missing_numerical_qualifications
-          ? "arithmetic opportunities lack qualification; enable --debug-plans for details"
-      : c.available_fast_fallbacks
-          ? (c.decode_expansion_rules
-                 ? "fast implementations are ineligible for some measured ops; decode products "
-                   "expand; enable --debug-plans for selected recipes"
-                 : "fast implementations are ineligible for some measured ops; enable "
-                   "--debug-plans for selected fallbacks")
-          : (c.decode_expansion_rules
-                 ? "decode products expand; enable --debug-plans for selected recipes"
-                 : ""));
+  return kernels::FormatPlanCoverageReport(state_->stage_envelopes.size(), state_->plan_coverage);
 }
 void StagedExecution::SetPlanReportSink(kernels::PlanRecordSink sink) {
   plan_report_sink_ = std::move(sink);

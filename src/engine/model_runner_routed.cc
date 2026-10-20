@@ -594,63 +594,72 @@ Status ModelRunner::ContinueRouted(RunPath& path, std::shared_ptr<StepTransactio
     for (std::size_t i = 0; i < routed_->pages.size(); ++i)
       if (routed_->roles[i] != 0) flight->selected.push_back(routed_->pages[i]);
     if (flight->selected.empty()) return Error("routed group has no selected weight source");
-    // Only the scheduler's catalog thread mints current content generations.
-    // SupplementalJob then materializes/leases this exact closure under the
-    // still-held base request before invoking the captured payload below.
-    if (auto closure = node_.CallMetadata(
-            [this, flight]() -> Status {
-              auto checked = node_.catalog().ClosureOfExtents(flight->selected);
-              if (!checked) return Error("selected source closure is not current");
-              flight->closure = std::move(*checked);
-              return {};
-            },
-            "binding routed selected closure");
-        !closure)
-      return closure;
+    // Pages not in routed_->excluded are already held in the base lease (base_weight_extents()).
+    std::erase_if(flight->selected, [&](catalog::ExtentId id) {
+      return !std::ranges::binary_search(routed_->excluded, id);
+    });
+    const bool needs_lease = !flight->selected.empty();
+    if (needs_lease) {
+      if (auto closure = node_.CallMetadata(
+              [this, flight]() -> Status {
+                auto checked = node_.catalog().ClosureOfExtents(flight->selected);
+                if (!checked) return Error("selected source closure is not current");
+                flight->closure = std::move(*checked);
+                return {};
+              },
+              "binding routed selected closure");
+          !closure)
+        return closure;
+    }
     const auto segment = group + 1;
     flight->access = kn::RoutedAccess(flight->program, flight->access.epoch(), segment);
     const bool final = segment == flight->program->groups();
     JobReport retired;
-    const auto posted = node_.SupplementalJob(
-        flight->closure,
-        [this, flight, segment, final, transaction](providers::NativeStream native) {
-          const auto next_staging =
-              final ? std::span<std::byte>{}
-                    : flight->pinned.subspan(
-                          static_cast<std::size_t>(flight->program->layout(segment).host_offset),
-                          static_cast<std::size_t>(flight->program->layout(segment).host_bytes));
-          flight->continuation = flight->execution.QueueRouted(
-              *flight->runs, flight->access, *flight->program, {},
-              final ? std::span<const RunCopy>(flight->outputs) : std::span<const RunCopy>{},
-              next_staging, flight->capture, graph_stats_, native);
-          if (!flight->continuation.result) {
-            flight->unknown = flight->continuation.result.error().error == kn::StepError::kUnknown;
-            return flight->unknown ? scheduler::JobResult::kUnknown : scheduler::JobResult::kFailed;
+    const auto queue_continuation = [this, flight, segment, final,
+                                     transaction](providers::NativeStream native) {
+      const auto next_staging =
+          final ? std::span<std::byte>{}
+                : flight->pinned.subspan(
+                      static_cast<std::size_t>(flight->program->layout(segment).host_offset),
+                      static_cast<std::size_t>(flight->program->layout(segment).host_bytes));
+      flight->continuation = flight->execution.QueueRouted(
+          *flight->runs, flight->access, *flight->program, {},
+          final ? std::span<const RunCopy>(flight->outputs) : std::span<const RunCopy>{},
+          next_staging, flight->capture, graph_stats_, native);
+      if (!flight->continuation.result) {
+        flight->unknown = flight->continuation.result.error().error == kn::StepError::kUnknown;
+        return flight->unknown ? scheduler::JobResult::kUnknown : scheduler::JobResult::kFailed;
+      }
+      if (final)
+        for (const auto& [to, from, bytes] : flight->carries) {
+          const auto copied = providers::CopyAsync(native, Pointer(to), Pointer(from), bytes,
+                                                   providers::CopyKind::kDeviceToDevice);
+          if (!copied.ok()) {
+            flight->unknown = true;
+            flight->continuation.result = std::unexpected(
+                kn::StepFailure{.error = kn::StepError::kUnknown, .detail = copied.text()});
+            return scheduler::JobResult::kUnknown;
           }
-          if (final)
-            for (const auto& [to, from, bytes] : flight->carries) {
-              const auto copied = providers::CopyAsync(native, Pointer(to), Pointer(from), bytes,
-                                                       providers::CopyKind::kDeviceToDevice);
-              if (!copied.ok()) {
-                flight->unknown = true;
-                flight->continuation.result = std::unexpected(
-                    kn::StepFailure{.error = kn::StepError::kUnknown, .detail = copied.text()});
-                return scheduler::JobResult::kUnknown;
-              }
-            }
-          if (final) {
-            if (!transaction) return scheduler::JobResult::kUnknown;
-            if (auto tail = transaction->QueueCompoundTail(native); !tail) {
-              flight->unknown = true;
-              flight->continuation.result = std::unexpected(
-                  kn::StepFailure{.error = kn::StepError::kUnknown, .detail = tail.error()});
-              return scheduler::JobResult::kUnknown;
-            }
-          }
-          return scheduler::JobResult::kQueued;
-        },
-        flight, routed_->allowance, "routed selected continuation", stream_, &retired,
-        flight->capacity);
+        }
+      if (final) {
+        if (!transaction) return scheduler::JobResult::kUnknown;
+        if (auto tail = transaction->QueueCompoundTail(native); !tail) {
+          flight->unknown = true;
+          flight->continuation.result = std::unexpected(
+              kn::StepFailure{.error = kn::StepError::kUnknown, .detail = tail.error()});
+          return scheduler::JobResult::kUnknown;
+        }
+      }
+      return scheduler::JobResult::kQueued;
+    };
+    if (!needs_lease && !node_.InRequest(stream_))
+      return Error("supplemental work requires a live request");
+    const auto posted =
+        needs_lease ? node_.SupplementalJob(flight->closure, queue_continuation, flight,
+                                            routed_->allowance, "routed selected continuation",
+                                            stream_, &retired, flight->capacity)
+                    : node_.Job({}, queue_continuation, "routed selected continuation", stream_, {},
+                                &retired);
     if (final && transaction) transaction->CompoundTailRetired(retired);
     if (!posted || flight->unknown || !flight->continuation.result ||
         flight->execution.launch()->faulted()) {

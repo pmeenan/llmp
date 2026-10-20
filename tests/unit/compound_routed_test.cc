@@ -58,6 +58,7 @@ std::unexpected<kn::StepFailure> Unknown(std::string text) {
 struct RouteFacts {
   bool fail_final_complete = false;
   bool refuse_future_build = false, change_future_identity = false, refuse_recording = false;
+  bool base_leased_route = false;
   std::uint32_t numeric = 0, source_reads = 0, prefix_completions = 0, final_completions = 0;
   std::uint32_t builds = 0, companion_builds = 0, recordings = 0, replays = 0;
   std::uint32_t private_builds = 0, private_views = 0;
@@ -117,10 +118,17 @@ class TailProgram final : public kn::StepProgram, public kn::RoutedProgram {
     auto array_format = part_.format;
     array_format.shape.rank = 3;
     array_format.shape.ne[2] = 2;
-    reads_[0] = {.ref = {.expert_array = true},
-                 .format = array_format,
-                 .parts = {{std::string(kArray), part_.role}},
-                 .dynamic = true};
+    reads_.reserve(2);
+    reads_.push_back({.ref = {.expert_array = true},
+                      .format = array_format,
+                      .parts = {{std::string(kArray), part_.role}},
+                      .dynamic = true});
+    if (facts_->base_leased_route) {
+      reads_.push_back({.ref = {.component = 1, .expert_array = true},
+                        .format = array_format,
+                        .parts = {{std::string(kArray), part_.role}},
+                        .dynamic = false});
+    }
     layout_.shape = {.experts = 2, .used = 1, .tokens = 1, .input_lanes = 1};
     layout_.ids = 0;
     layout_.offsets = 4;
@@ -138,9 +146,13 @@ class TailProgram final : public kn::StepProgram, public kn::RoutedProgram {
   std::uint64_t host_bytes() const override {
     // Inner descriptors, concrete wrapper/control, vector payloads, names and
     // seven allocations' malloc/control metadata. No payload-sized guess.
+    std::uint64_t weight_bytes = 0;
+    for (const auto& w : reads_) {
+      weight_bytes += w.parts.capacity() * sizeof(w.parts[0]) + kArray.size() + 1;
+    }
     return inner_->host_bytes() + sizeof(TailProgram) + uses_.capacity() * sizeof(kn::TensorUse) +
            layout_.readback.capacity() * sizeof(kn::RoutedCopy) +
-           reads_[0].parts.capacity() * sizeof(reads_[0].parts[0]) + kArray.size() + 1 + 7 * 128;
+           reads_.capacity() * sizeof(kn::RoutedWeight) + weight_bytes + 7 * 128;
   }
   std::uint64_t launches() const override { return inner_->launches() + 2; }
   std::span<const kn::InputSlot> inputs() const override { return inner_->inputs(); }
@@ -281,7 +293,7 @@ class TailProgram final : public kn::StepProgram, public kn::RoutedProgram {
   llmp::base::Sha256Digest identity_;
   std::uint64_t route_device_ = 0, scratch_ = 0;
   std::vector<kn::TensorUse> uses_;
-  std::array<kn::RoutedWeight, 1> reads_;
+  std::vector<kn::RoutedWeight> reads_;
   std::array<std::size_t, 1> member_{0};
   kn::RoutedLayout layout_;
   kn::RoutedProgress progress_;
@@ -447,6 +459,7 @@ class CompoundRoutedTest : public ::testing::Test {
   virtual std::uint32_t CapturePhases() const { return 0x1F; }
   virtual std::uint32_t AutomaticCapturePhases() const { return 0x1F; }
   virtual std::uint32_t FirstCapturePhases() const { return 0; }
+  virtual bool BaseLeasedRoute() const { return false; }
   void SetUp() override {
     auto& life = *life_;
     ASSERT_TRUE(life.node.Open());
@@ -465,9 +478,9 @@ class CompoundRoutedTest : public ::testing::Test {
                                                  8 * sizeof(kn::TensorUse) +
                                                  4 * sizeof(kn::RoutedCopy) + 16 * 128;
     const std::uint64_t source_bytes = owner_bytes + construction_bytes;
-    constexpr std::uint64_t routing_bytes = 32768 + 2 * 256 + 4 * sizeof(kn::RoutedWeight) + 256 +
-                                            4 * kArray.size() +
-                                            4 * sizeof(llmp::base::Sha256Digest);
+    constexpr std::uint64_t routing_bytes = 32768 + 2 * 256 + 8 * sizeof(kn::RoutedWeight) + 512 +
+                                            8 * kArray.size() +
+                                            12 * sizeof(llmp::base::Sha256Digest);
     constexpr std::uint64_t flight_bytes = 4096 + 8 * 128 + 2 * 128;
     constexpr std::uint64_t supplemental_bytes = 4096 + 4096 + 2 * 256;
     const auto allowance = en::ExecutionMetadataAllowance::Admit(
@@ -479,6 +492,7 @@ class CompoundRoutedTest : public ::testing::Test {
     life.owner_payment = owner_bytes;
     ASSERT_TRUE(life.paid->Charge(life.owner_payment));
     life.facts = std::make_shared<RouteFacts>();
+    life.facts->base_leased_route = BaseLeasedRoute();
     // A deterministic shape-specific graph identity exists before setup. The
     // invariant variant is deliberately absent from ordinary route setup; its
     // actual successful private compilation must own its preparation authority.
@@ -699,6 +713,35 @@ TEST_F(CompoundRoutedTest, TailFollowsActualSelectedContinuationAndPublishesAtIt
       "inspect actual selected expert residency"));
   EXPECT_EQ(life.node.kept_pinned(), 0U);
   EXPECT_EQ(life.runner->lookahead_stats().cached, 1U);
+}
+
+class BaseLeasedRoutedTest : public CompoundRoutedTest {
+ protected:
+  bool BaseLeasedRoute() const override { return true; }
+};
+
+TEST_F(BaseLeasedRoutedTest, AllSelectedExpertsLeasedSkipsCatalogClosureRpcAndPageIn) {
+  auto& life = *life_;
+  const auto expert_pages = life.runner->weights();
+  ASSERT_EQ(expert_pages.size(), 2U);
+  EXPECT_EQ(life.runner->base_weights().size(), expert_pages.size());
+  auto report = Prompt(0, false, Future(1, true));
+  ASSERT_EQ(report.outcomes.size(), 1U);
+  ASSERT_FALSE(report.outcomes[0].refusal) << report.outcomes[0].refusal->what;
+  EXPECT_EQ(life.facts->prefix_completions, 1U);
+  EXPECT_EQ(life.facts->final_completions, 1U);
+  EXPECT_EQ(life.runner->slots().positions(0), 1U);
+  EXPECT_EQ(life.node.direct_steps(), 2U);
+  EXPECT_TRUE(life.node.Call(
+      [&]() -> en::Status {
+        const auto exp0 = life.node.catalog().Describe(expert_pages[0]);
+        const auto exp1 = life.node.catalog().Describe(expert_pages[1]);
+        if (!exp0 || !exp1 || exp0->state != llmp::catalog::ExtentState::kResident ||
+            exp1->state != llmp::catalog::ExtentState::kResident)
+          return std::unexpected("base-leased experts were unexpectedly nonresident");
+        return {};
+      },
+      "inspect base-leased expert residency"));
 }
 
 TEST_F(CompoundRoutedTest, GraphsOffStillReusesThePaidFutureAndRunsItsActualRoute) {

@@ -185,6 +185,7 @@ struct Mapped {
   std::uint64_t bytes = 0;           // backed/cataloged prefix, rounded to extents
   std::uint64_t capacity_bytes = 0;  // virtual reservation only
   std::uint64_t metadata_bytes = 0;  // runtime-grown host metadata charge
+  std::size_t allocation_class = 0;
   std::vector<providers::BackingId> backings;
   std::vector<catalog::ExtentId> extents;
 };

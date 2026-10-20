@@ -998,70 +998,33 @@ Status ModelRunner::SetupRowTables() {
     if (!valid) return Error(valid.error());
   }
   for (const auto& config : config_.row_tables) {
-    if (config.weight.stage >= config_.weights.size() || config.weight.expert_array ||
-        config.rows_per_token == 0 || config.format.shape.rank != 2) {
-      return Error("a row table's weights, shape or lookups");
-    }
-    if (std::ranges::any_of(row_tables_, [&](const auto& t) {
-          return t->config.weight == config.weight && t->config.part == config.part;
-        })) {
-      return Error("a row table was declared twice");
-    }
     auto& weights = config_.weights[config.weight.stage];
     const auto& artifact = weights.weights->artifact();
-    if (config.resource >= artifact.resources().size()) return Error("a row table's resource");
     const auto& resource = artifact.resources()[config.resource];
     const auto& group = artifact.groups()[resource.group];
-    auto parts = format::PartsOf(config.format);
-    const auto part = parts ? parts->Find(config.part) : std::nullopt;
-    if (!part) return Error("a row table's format has no such part");
-    if (part->bytes != resource.bytes.value()) {
-      return Error("a row table's format does not cover exactly its resource");
-    }
-    auto row_bytes = format::RowBytes(config.format, config.part);
-    if (!row_bytes || *row_bytes > std::numeric_limits<std::uint32_t>::max()) {
-      return Error("a row table's row size");
-    }
-    if (resource.group >= weights.places.size() ||
-        weights.places[resource.group] != GroupPlace::kNone) {
-      return Error("a row-paged table's group must not be resident");
-    }
-    for (std::uint32_t i = 0; i < artifact.resources().size(); ++i) {
-      if (i != config.resource && artifact.resources()[i].group == resource.group) {
-        return Error("a row-paged table shares its group with another resource");
-      }
-    }
-    auto first = artifact::ChunkRangeOf(artifact.layout(), {.group = resource.group, .chunk = 0});
-    if (!first) return Error("a row table's file range");
+    const auto row_bytes = *format::RowBytes(config.format, config.part);
+    const auto first =
+        *artifact::ChunkRangeOf(artifact.layout(), {.group = resource.group, .chunk = 0});
     auto table = std::make_unique<RowTableState>();
     table->config = config;
-    table->shard = first->shard;
-    table->table = {.file_offset = first->file_offset.value() + resource.offset.value(),
+    table->shard = first.shard;
+    table->table = {.file_offset = first.file_offset.value() + resource.offset.value(),
                     .rows = config.format.shape.ne[1],
-                    .row_bytes = *row_bytes,
-                    .chunk_file_offset = first->file_offset.value(),
-                    .file_bytes = first->file_offset.value() + group.stored.value()};
+                    .row_bytes = row_bytes,
+                    .chunk_file_offset = first.file_offset.value(),
+                    .file_bytes = first.file_offset.value() + group.stored.value()};
     for (const auto& shape : config_.setup_shapes) {
       if (shape.stage != config.weight.stage) continue;
       table->capacity =
           std::max(table->capacity, std::uint64_t{shape.rows()} * config.rows_per_token);
     }
-    // Slot IDs are I32 and counts are U32; byte offsets are U64. A lookup
-    // can span at most two blocks. Bound allocation arithmetic separately.
-    if (table->capacity == 0 ||
-        table->capacity > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
-      return Error("a row table's lookup count exceeds its slot IDs");
-    }
-    const auto valid =
-        PlanPleRows(table->table, {}, PleLandingBound(table->capacity), table->capacity);
-    if (!valid) return Error(valid.error());
     auto ring = providers::OpenStorage(64);
     if (!ring) return Error(std::format("row-table storage: {}", ring.error().message()));
     table->storage = std::move(*ring);
     row_tables_.push_back(std::move(table));
     auto& held = *row_tables_.back();  // stable through partial setup and release
     std::uint64_t slot_bytes = 0, source_bytes = 0;
-    if (__builtin_mul_overflow(held.capacity, *row_bytes, &slot_bytes) ||
+    if (__builtin_mul_overflow(held.capacity, row_bytes, &slot_bytes) ||
         __builtin_mul_overflow(held.capacity, std::uint64_t{sizeof(std::uint64_t)},
                                &source_bytes) ||
         __builtin_add_overflow(source_bytes, std::uint64_t{sizeof(std::uint32_t)}, &source_bytes))
@@ -1525,47 +1488,11 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
 
 void ModelRunner::ObservePlanCoverage(const kernels::StepProgram& program) {
   ++measured_plan_shapes_;
-  const auto observed = program.plan_coverage();
-  auto& kept = setup_plan_coverage_;
-  kept.primitive_fallbacks = std::max(kept.primitive_fallbacks, observed.primitive_fallbacks);
-  kept.available_fast_fallbacks =
-      std::max(kept.available_fast_fallbacks, observed.available_fast_fallbacks);
-  kept.unqualified_numerical_candidates =
-      std::max(kept.unqualified_numerical_candidates, observed.unqualified_numerical_candidates);
-  kept.missing_numerical_qualifications =
-      std::max(kept.missing_numerical_qualifications, observed.missing_numerical_qualifications);
-  kept.decode_expansion_rules =
-      std::max(kept.decode_expansion_rules, observed.decode_expansion_rules);
-  kept.logical_activation_bytes =
-      std::max(kept.logical_activation_bytes, observed.logical_activation_bytes);
-  kept.physical_activation_bytes =
-      std::max(kept.physical_activation_bytes, observed.physical_activation_bytes);
-  kept.unmaterialized_logical_bytes =
-      std::max(kept.unmaterialized_logical_bytes, observed.unmaterialized_logical_bytes);
-  kept.unmaterialized_roots = std::max(kept.unmaterialized_roots, observed.unmaterialized_roots);
+  kernels::ObservePlanCoverage(setup_plan_coverage_, program);
 }
 
 std::string ModelRunner::plan_report() const {
-  const auto& c = setup_plan_coverage_;
-  return std::format(
-      R"({{"measured_shapes":{},"max_primitive_fallbacks":{},"max_available_fast_fallbacks":{},"max_decode_expansion_rules":{},"max_missing_numerical_qualifications":{},"max_unqualified_numerical_candidates":{},"max_logical_activation_bytes":{},"max_physical_activation_bytes":{},"max_omitted_logical_bytes":{},"max_omitted_roots":{},"warning":"{}"}})",
-      measured_plan_shapes_, c.primitive_fallbacks, c.available_fast_fallbacks,
-      c.decode_expansion_rules, c.missing_numerical_qualifications,
-      c.unqualified_numerical_candidates, c.logical_activation_bytes, c.physical_activation_bytes,
-      c.unmaterialized_logical_bytes, c.unmaterialized_roots,
-      c.unqualified_numerical_candidates
-          ? "UNQUALIFIED CANDIDATE arithmetic is active; results are diagnostic only"
-      : c.missing_numerical_qualifications
-          ? "arithmetic opportunities lack qualification; enable --debug-plans for details"
-      : c.available_fast_fallbacks
-          ? (c.decode_expansion_rules
-                 ? "fast implementations are ineligible for some measured ops; decode products "
-                   "expand; enable --debug-plans for selected recipes"
-                 : "fast implementations are ineligible for some measured ops; enable "
-                   "--debug-plans for selected fallbacks")
-          : (c.decode_expansion_rules
-                 ? "decode products expand; enable --debug-plans for selected recipes"
-                 : ""));
+  return kernels::FormatPlanCoverageReport(measured_plan_shapes_, setup_plan_coverage_);
 }
 
 void ModelRunner::EmitPlanReport(const Plans::Entry& entry,

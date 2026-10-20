@@ -53,8 +53,34 @@ Outcome OutcomeOf(providers::ReadOutcome outcome) {
 
 // Run even virtual-only provider access on its owning lane: a background
 // physical-handle refill can otherwise race Reserve, Free, or RangeOf.
+// CarryRegion shares HandleReserve and BackingCreateCounters with CarryOut
+// so carried/workspace extents recycle pre-warmed physical handles (RE-059).
+std::expected<void, providers::Failure> UndoCarry(providers::DeviceMemory* memory,
+                                                  const RegionWork& work, RegionResult& result,
+                                                  std::uint64_t extent,
+                                                  HandleReserve* reserve = nullptr) {
+  while (result.mapped != 0) {
+    const auto at = work.offset.value() + (result.mapped - 1) * extent;
+    if (auto unmapped = memory->Unmap(work.reservation, Bytes(at), Bytes(extent)); !unmapped)
+      return std::unexpected(unmapped.error());
+    --result.mapped;
+  }
+  while (!result.backings.empty()) {
+    const auto backing = result.backings.back();
+    if (reserve != nullptr && reserve->Keep(work.allocation_class, Bytes(extent), backing)) {
+      result.backings.pop_back();
+      continue;
+    }
+    if (auto released = memory->Release(backing); !released)
+      return std::unexpected(released.error());
+    result.backings.pop_back();
+  }
+  return {};
+}
+
 void CarryRegion(providers::DeviceMemory* memory, CompletionBoard& board, OperationId operation,
-                 const RegionWork& work) {
+                 const RegionWork& work, HandleReserve* reserve = nullptr,
+                 BackingCreateCounters* creates = nullptr) {
   if (memory == nullptr || !work.result) {
     (void)board.Accept(operation, Acceptance::kNotStarted);
     return;
@@ -130,26 +156,25 @@ void CarryRegion(providers::DeviceMemory* memory, CompletionBoard& board, Operat
           operation, Terminal{.outcome = Outcome::kFailed, .bytes = 0, .no_further_access = false});
     };
     const auto undo = [&]() -> std::expected<void, providers::Failure> {
-      while (result.mapped != 0) {
-        const auto at = work.offset.value() + (result.mapped - 1) * extent;
-        if (auto unmapped = memory->Unmap(work.reservation, Bytes(at), Bytes(extent)); !unmapped)
-          return std::unexpected(unmapped.error());
-        --result.mapped;
-      }
-      while (!result.backings.empty()) {
-        if (auto released = memory->Release(result.backings.back()); !released)
-          return std::unexpected(released.error());
-        result.backings.pop_back();
-      }
-      return {};
+      return UndoCarry(memory, work, result, extent, reserve);
     };
     if (growing) {
       std::optional<providers::Failure> failure;
       for (std::uint64_t i = 0; i < count; ++i) {
-        auto backing = memory->Create(work.allocation_class, Bytes(extent));
+        std::optional<providers::BackingId> backing;
+        if (reserve != nullptr && reserve->Holds(work.allocation_class, Bytes(extent))) {
+          backing = reserve->Take(work.allocation_class, Bytes(extent));
+        }
         if (!backing) {
-          failure = backing.error();
-          break;
+          if (creates != nullptr) creates->Attempt(false);
+          auto created = memory->Create(work.allocation_class, Bytes(extent));
+          if (creates != nullptr) creates->Completed(false);
+          if (!created) {
+            if (creates != nullptr) creates->Failed(false, created.error());
+            failure = created.error();
+            break;
+          }
+          backing = *created;
         }
         result.backings.push_back(*backing);
         const auto at = Bytes(work.offset.value() + i * extent);
@@ -1056,7 +1081,7 @@ void BackingService::Handle(DeviceCommand& command) {
     return;
   }
   if (const auto* work = std::get_if<RegionWork>(&command.work)) {
-    CarryRegion(memory_, board_, command.operation, *work);
+    CarryRegion(memory_, board_, command.operation, *work, &reserve_, &creates_);
     return;
   }
   (void)board_.Accept(command.operation, Acceptance::kNotStarted);  // not VMM work
