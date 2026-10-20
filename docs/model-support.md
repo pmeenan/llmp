@@ -1130,8 +1130,11 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 ## Llama 3.2 1B Instruct
 
 - **Architecture:** `llama` (`spec/mappings/qwen2.*`, shared pre-norm dense
-  decoder mapping covering `qwen2`, `llama` and `mistral` across GGUF,
-  safetensors and EXL3 containers; `embedding.token`, `norm.rms`,
+  decoder mapping for `qwen2`, `llama` and `mistral`. Served and verified here
+  only from GGUF (this model) and, for `qwen2`, GGUF `FP16` and EXL3; the
+  safetensors and EXL3 forms of `llama`, and every `mistral` source, are
+  covered by synthetic-source normalization and admission tests only and are
+  not a supported model; `embedding.token`, `norm.rms`,
   `attention.dense` with normal or NeoX RoPE and optional per-dimension
   `rope_freqs.weight`, `ffn.glu` (`silu`), and tied or untied `head.linear`).
   No new component or kernel was written: serves through `EngineLlm` under

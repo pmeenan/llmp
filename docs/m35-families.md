@@ -216,7 +216,7 @@ checkpoints above by number.
 | Final logit softcap | Gemma 2 and 4, Muse | new | 1, 9 | |
 | SwiGLU; clamped SwiGLU | most; DeepSeek V4 | have | | |
 | Clamped (up+1) SwiGLU with α | gpt-oss | new | 2 | |
-| GeGLU (GELU tanh) | Gemma | new for LLMs (GELU exists in `kernels/image`) | 1 | |
+| GeGLU (GELU tanh) | Gemma | new for LLMs (GELU exists in the Qwen-Image components) | 1 | |
 | Squared ReLU | Nemotron, AFM | new | 4 | |
 
 ### MoE

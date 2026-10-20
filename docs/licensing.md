@@ -111,8 +111,14 @@ Llmpalooza's `src/kernels/ggml/ggml_support.cu`, adapted from GGML, and
 flash-attention case and copies `launch_fattn`'s host arithmetic, keep
 GGML's notice in their headers, as do the M3 units that instantiate or
 copy from GGML (`fattn_mma.cu` with `fattn.cu`'s sparse-mask kernel,
-`fattn_mma_d256.cu`, `fattn_mma_d512.cu`, `fattn_mma_shape.cuh`,
-`mul_mat_q.cu`, `ops_ext.cu`; the ds4 stage mechanisms' F16-Q copy of the
+`fattn_mma_d256.cu`, `fattn_mma_d512.cu`, `fattn_mma_shape.cuh` with its
+body `fattn_mma_shape_body.cuh`, `fattn_mma_common.cu`'s instances of GGML's
+group-one MMA cases, `fattn_vec_plan.h`'s recorded copy of `launch_fattn`'s
+host arithmetic, `fattn_vec_quant.cu`'s instances of GGML's quantized vector
+case, the lossy-KV units `kv_quant.cuh` (GGML's reference quantizers'
+arithmetic as intrinsics), `kv_quant_rope.cu` (rope.cu's NEOX RoPE copied
+into a quantizing store) and `kv_quant_store.cu` (set-rows.cu's
+`k_set_rows_quant` index decomposition), `mul_mat_q.cu`, `ops_ext.cu`; the ds4 stage mechanisms' F16-Q copy of the
 MMA flash attention and `launch_fattn`, `fattn_mma_q16.cuh` with
 `fattn_mma_d512_q16.cu`, their copy of the compact MMQ kernel,
 `mul_mat_q_glu.cu`, and the HC post and RMS arithmetic in
@@ -174,12 +180,15 @@ lock pin):
   `src/kernels/ggml/lower.cc` (the routing and scaled-reduce windows, built
   from `build_moe_ffn`'s GGML calls), `src/kernels/ggml/capabilities.cc`
   (`MmvqRouted`, mmvq.cu's `ggml_cuda_should_use_mmvq` tables),
-  `src/kernels/ggml/float_route.{h,cc}` (the locked NVIDIA branches of
+  `src/kernels/ggml/float_route.cc` (the locked NVIDIA branches of
   `ggml_cuda_should_use_mmf/mmvf`, with the 384-case compiled-selector
-  parity control kept in `tests/unit/ggml_ext_ops_test.cc`),
+  parity control kept in `tests/unit/ggml_ext_ops_test.cc`; its header
+  `float_route.h` only declares the entry point and is Apache-2.0 alone),
   `src/kernels/ggml/fusion.cc` (the fusion gates of ggml-cuda.cu, ggml.c and
   ggml-impl.h: `ggml_can_fuse_ext`, `ggml_can_fuse_subgraph_ext`,
   `ggml_cuda_should_fuse_mul_mat`, `ggml_cuda_should_fuse_rope_set_rows`),
+  `src/components/rotation_reference.{h,cc}` (the scalar reference rotation
+  of rope.cu's angle, YaRN ramp and section arithmetic),
   `src/kernels/reference/exec.cc` (rope.cu's YaRN rotation and
   multi-section angles, ggml.c's YaRN correction dims, the ALiBi slope) and
   `tests/unit/reference_exec_test.cc` (the same rotation as its expected

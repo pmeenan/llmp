@@ -39,8 +39,8 @@ CUDA one, or the fake device runtime (`providers/fake/fake_device_runtime.h`:
 host memory, work queued on fake streams that runs when a fence is queried) with
 the paging kernels' host loops (`llmp_fake_device_backend`), which the core's
 tests use in every profile. `llmp_engine` (CUDA builds only) adds the runners'
-cuBLAS and launch context (`runner_resources.h`) and `ExpertSlab`
-(`expert_slab.h`).
+cuBLAS and launch context (`runner_resources.h`) and the expert slabs
+(`ExpertSlabsOf`, `expert_slab.h`).
 
 ## The node
 
@@ -767,7 +767,7 @@ What the shared pieces reproduce of each family (completed in M3.6):
 | Gemma4 | Quads as `group_segments` 4, the 8/12 groups as `invariant_group_segments`/`group_segments`; one future without capture ahead (`prefill_lookahead` 1, `capture_ahead` false); per-group isolation in `RunWave`; the assistant's frozen borrows, tapped features and carry (decoding modes); prompts stepping alone and, outside the envelope, one owner a step (its mapping's rules, `prompts_alone`, `owners_alone`); bounded owner roots and common widths (the planner's owner-attention options) | Joined prompt admission (would change the routed products' arithmetic; M3 prefilled alone) |
 | Qwen3.8 | Groups of consecutive owners while rows fit 16 (`group_rows`), 2,048-aligned joined reads (`joined_read_align`), state backed through that alignment before the step (an owner out of capacity there steps alone at 256 rather than being refused), two futures and prepare ahead, state-only cuts; joined draft and verify waves with repeatable MTP progress (`draft_progress.h`, `draft_companions.h`); per-product joined limits (draft head 8, VecQ, MoE GEMV, MXFP8 columns, HC cuBLAS 16: planner patterns), BF16 head sharing by row count, on-demand n-gram row gather (`ple_rows.h`), prefill capture policy | — |
 | DeepSeek V4 | Total wave rows ≤ 16 (`max_step_rows`), joined row-local work with per-owner state (`planner/owner_products.h`), scalar prefill (`join_prefill` false), two futures and prepare ahead, state-only cuts; joined drafts and verifies (decoding modes); float products over groups of whole owners fitting 8 columns and `SetVecQOneToken` for one-row waves (planner, from the shape); HCA per-position patch (`Position`, uncapturable `PlanKey::capturable = false`) | — |
-| Qwen2, Llama, Mistral | Generic pre-norm dense decoder (`embedding.token`, `attention.dense` with GQA, RoPE / `rope_freqs` / YaRN, `ffn.glu` (`silu`), `norm.rms`, `head.linear` tied or untied) across GGUF, safetensors (including AWQ, GPTQ, compressed-tensors, ModelOpt), and EXL3 (`spec/mappings/qwen2.h`), served via `kDefaultServingRecipe` | — |
+| Qwen2, Llama, Mistral | Generic pre-norm dense decoder (`embedding.token`, `attention.dense` with GQA, RoPE / `rope_freqs` / YaRN, `ffn.glu` (`silu`), `norm.rms`, `head.linear` tied or untied) across GGUF, plain (unquantized) safetensors and EXL3 (`spec/mappings/qwen2.h`), served via `kDefaultServingRecipe` | Served and verified only for Llama 3.2 1B (GGUF) and Qwen2.5 0.5B (GGUF FP16, EXL3); Mistral and the safetensors/EXL3 forms of Llama are synthetic-source tested only. HF-quantized safetensors (AWQ, GPTQ, compressed-tensors, ModelOpt, MLX) have no import path for these families. Qwen2 serves single-owner (`max_decode_rows 1`, `owners_alone`) |
 
 ## The serving adapter
 
@@ -920,7 +920,10 @@ When a new model architecture uses existing components in `src/components/`
 1. **Declare the architecture mapping (`src/spec/mappings/`):**
    - Add or extend a mapping header/source (for example, `LlamaMapping()` and
      `MistralMapping()` alongside `Qwen2Mapping()` in
-     `src/spec/mappings/qwen2.{h,cc}`) declaring `SlotRule`s (`embedding.token`,
+     `src/spec/mappings/qwen2.{h,cc}`; `LLMP_DEFINE_DENSE_FAMILY_MAPPINGS`
+     defines four `Mapping` objects per family: the base one and one each for
+     the `gguf`, `safetensors` and `exl3` containers, all registered)
+     declaring `SlotRule`s (`embedding.token`,
      `attention.dense`, `ffn.glu`, `norm.rms`, `head.linear`), `TensorRule`s,
      `ParamRule`s (including RoPE scaling/frequency rules or sliding-window
      parameters), container `FoldRule`s, and default `PolicyRule`s.
@@ -929,13 +932,26 @@ When a new model architecture uses existing components in `src/components/`
      Override `Mapping::serving` only when the architecture requires a custom
      measured context/chunking envelope, built-in MTP/block drafting wave priors,
      or non-default chat stop/thinking policies.
-   - Register the mapping in `Mappings()` (`src/spec/mapping.cc`).
+   - Register every `Mapping` object in `Mappings()` (`src/spec/mapping.cc`).
+   - Numerical qualifications and schedule products are not inherited:
+     `PolicyRule`s must name any `product ...` option the family wants
+     (only DeepSeek's mapping enables the schedule products today), and
+     evidence-backed numerical changes are admitted by
+     `runtime/component_admission.cc` for GB10 (`arch = 121`) only.
 2. **Register container normalization tables (`src/import/source_mapping.cc`):**
    - Add `SourceMapping` entries in `FindSourceMapping` for each supported
-     source container (`gguf`, `safetensors`, `exl3`, `mlx`), wiring Hugging
-     Face `config.json` key aliases (`KeyAlias`), tensor name aliases
-     (`TensorAlias`), auxiliary metadata prefixes (`AuxiliaryNamespace`), and
-     tied-head presence rules (`TensorPresenceRequirement`).
+     source container (`gguf`, `safetensors`, `exl3`; `mlx` and HF-quantized
+     safetensors are served only by the pinned Qwen3.8 normalizers,
+     `ValidateSourceMapping` admits no other), wiring Hugging Face
+     `config.json` key aliases (`KeyAlias`), tensor name aliases
+     (`TensorAlias`), auxiliary metadata prefixes (`AuxiliaryNamespace`),
+     tied-head presence rules (`TensorPresenceRequirement`), and the GGUF
+     `<arch>.` prefix in the hand-kept `kGgufSemantic` list
+     (`source_mapping.cc`). **Omitting that prefix fails open:** unconsumed
+     `<arch>.*` keys become auxiliary metadata with only a warning
+     (`normalize.cc`), so a key the math needs is ignored instead of refused.
+     A family with bounded side or numeric-list components also sets
+     `extended_components`.
    - If `config.json` uses a new `model_type` string, map it to the canonical
      architecture name in the container readers (`src/import/readers/safetensors.cc`,
      `src/import/readers/exl3.cc`, `src/import/readers/mlx.cc`).

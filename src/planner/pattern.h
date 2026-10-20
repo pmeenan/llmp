@@ -29,34 +29,38 @@
 // (so a GLU's products fuse with it before a later pattern can share their
 // input). A match takes its nodes. Batch patterns are the selection's
 // (plan.h), over the rewritten graph. The table, with what each reproduces
-// of today's production plans (kernels/ggml/graph_plan.h DeviceChoices):
+// of today's production plans (kernels/ggml/graph_plan.h DeviceChoices).
+// A label says when a pattern applies: "qualified" only where its
+// NumericalChange is qualified for the site; "opt-in" (Pattern::opt_in) only
+// when selected explicitly (rounded_indexer, owner_row_invariant); no label
+// or "default" whenever it matches and an implementation exists:
 //
 //   spatial_channel_norm fused.spatial_channel_norm: a spatial tensor's
 //                      channels L2-normed through channel rows, scaled, times
 //                      a weight, SiLU or not, and back (the spatial
 //                      components' channel norm)
-//   split_modulate     opt-in: fused.layer_norm_modulate_split: a layer norm
+//   split_modulate     default: fused.layer_norm_modulate_split: a layer norm
 //                      times one plus conditioning rows that repeat one
 //                      vector over the first rows and another over the rest
 //                      (the image's text and latent rows), in BF16 where
 //                      only products of BF16 weights read it
-//   split_gated_residual opt-in: fused.gated_residual_split: carry plus a
+//   split_gated_residual default: fused.gated_residual_split: carry plus a
 //                      branch times tanh of such conditioning rows
-//   bf16_glu           opt-in: an MLP's gate and up products of BF16 weights
+//   bf16_glu           qualified: an MLP's gate and up products of BF16 weights
 //                      into BF16 from their input converted once, the
 //                      SwiGLU into BF16, the down product from it
 //   (round 1, over round 0's results:)
-//   split_gated_residual_modulate opt-in: a split residual and the split
+//   split_gated_residual_modulate default: a split residual and the split
 //                      modulation of its sum, one pass
 //                      (fused.gated_residual_modulate_split); the option
 //                      bf16_residual keeps a sum only later residuals carry
 //                      in BF16
-//   qk_attention       opt-in: the image's attention: BF16 Q/K/V products,
+//   qk_attention       qualified: the image's attention: BF16 Q/K/V products,
 //                      the key's sectioned norm and rotation in BF16, a
 //                      packed mask and a rotation table each made once a
 //                      step, and fused.qk_attention (the query's norm and
 //                      rotation inside the attention)
-//   bf16_branch        opt-in: a product of a BF16 weight only a split
+//   bf16_branch        qualified: a product of a BF16 weight only a split
 //                      residual adds, into BF16
 //   rms_norm_mul_rope  fused.rms_norm_mul_rope: an RMS norm, its weight and
 //                      the rotation of the result (fuse_norm_rope; QK norms)
@@ -112,7 +116,7 @@
 //                        most four owners)
 //   rounded_indexer      opt-in bounded CSA indexer recipe; the component
 //                        source requires an owned backend and explicit domain
-//   layout_sinking       opt-in: the step's builder removes its layout round
+//   layout_sinking       default: the step's builder removes its layout round
 //                        trips before planning (ir/layout.h SinkLayouts,
 //                        components/spatial.h sink_layouts): values followed
 //                        as views of their storage, materialized only where

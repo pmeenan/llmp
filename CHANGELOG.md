@@ -68,11 +68,14 @@ The entries below record each change; the record of the milestone is
   and share `BackingService` 2 MiB handle reserves across `CarryRegion` and
   `PageInRegion` while skipping redundant routed-expert catalog closures when
   all selected pages are covered by the base lease.
-- Serve `llama`, `mistral` and `qwen2` pre-norm dense decoders on the shared
-  component engine (`EngineLlm`) across GGUF, safetensors and EXL3 containers
-  through a parametrized mapping and default `ServingRecipe`, including Llama
-  3.2 1B Instruct (`Q8_0` and `Q4_K_M`) and Qwen2.5 0.5B Instruct (`FP16` and
-  `EXL3`). Accept per-dimension `freq_factors` on normal-pairing RoPE, and pass
+- Add a generic pre-norm dense-decoder mapping (`llama`, `mistral`, `qwen2`)
+  with a default `ServingRecipe`, normalizing and admitting GGUF, safetensors
+  and EXL3 sources. Served end to end on the shared component engine
+  (`EngineLlm`, `dense_decoder_serving_gpu_test`): Llama 3.2 1B Instruct
+  (GGUF `Q8_0` and `Q4_K_M`) and Qwen2.5 0.5B Instruct (GGUF `FP16` and
+  `EXL3`). Mistral, and Llama from safetensors or EXL3, are backed only by
+  synthetic-source normalization and admission tests, with no served
+  checkpoint. Accept per-dimension `freq_factors` on normal-pairing RoPE, and pass
   each row's published index during multi-row prompt scoring.
 - Prepared ordinary quantized vector products may overlap immutable-weight
   prefetch and dependent launches while preserving their quantization,

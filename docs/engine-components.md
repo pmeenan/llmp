@@ -121,7 +121,9 @@ the graph runtime.
   residual add then next norm, gate/up/GLU, attention with its masks and
   cache stores, routed experts with their reduction) and replace them with
   a fused node when an implementation exists for the matched encodings,
-  shapes and device. Component boundaries never block a pattern. A
+  shapes and device. Matching is by dataflow, not by component, so a
+  component boundary does not itself block a pattern (a match still needs
+  its intermediates unread outside it). A
   pattern that does not match leaves the primitive graph, which is always
   correct (the registry's primitive-fallback rule, portability.md).
 - **Selection** stays D-053's: per op, encoding and layout, shape range,
@@ -356,9 +358,11 @@ primitive ids). It is deterministic. The steps:
   second round over the first round's fused nodes (`Pattern::round`), in
   `fusions.cc`. Opt-in is not a synonym for changed bits or lower-precision
   storage: same-quality recipes can become defaults after qualification.
-  The current table has 59 patterns: 57 are available by default;
+  The current table has 60 patterns: 58 are available by default;
   `rounded_indexer` and the caller's `owner_row_invariant` requirement remain
-  explicit. Availability always requires the complete semantic matcher,
+  explicit (`Pattern::opt_in`). Patterns that carry a `NumericalChange`
+  (`bf16_glu`, `qk_attention`, `bf16_branch` and the other changed-arithmetic
+  rewrites) apply only where that change is qualified for the site. Availability always requires the complete semantic matcher,
   observer closure, capability, device, shape and final-selection checks.
   The mappings retain independent product choices and measured row bounds,
   rather than inherited per-family fusion enable/disable lists.
@@ -598,7 +602,9 @@ primitive ids). It is deterministic. The steps:
   implementations that stay on the stream (a borrowed library handle) are
   the caller's `on_stream`: unlike `AssignLanes`, which keeps cuBLAS and
   the BF16 GEMM there by default, the planner knows no module's names, so
-  a lowering with such implementations must pass it.
+  a lowering with such implementations must pass it. One exception remains:
+  `CompactRouteReaders` (`plan.cc`) finds `ggml.gemma.route.fused` by its
+  implementation name to patch its output pitch.
 - **Keys**: `KeyOf` makes `PlanKey` from the spec's bound digest, the
   shape, the enabled patterns' digest, the policy's and the partition, with the
   implementation registry, backend identity and capture requirements. Registry
@@ -2023,10 +2029,11 @@ resident grouped product decodes the same tables on chip
 (`llmp.decode.grouped.nvfp4.scale_atoms`, W4A16). The
 reference decoders read the layout (`kernels/reference`), and
 `import_expert_relayout_test` checks that a relaid table decodes to its
-split sources' values element for element. Only NVFP4 joins today;
-another block-scaled encoding of one-byte scales (MXFP8, MXFP4) joins by
-entering the relayout's encoding list once a grouped product reads its
-atoms, and dense NVFP4 linears are not relaid out. A row-gathered NVFP4
+split sources' values element for element. The relayout's encoding list
+(`expert_relayout.cc`) names NVFP4, MXFP8 and MXFP4 and the importer relays
+out any of them by tensor role, but only NVFP4 has a grouped product that
+reads the atoms; relaid MXFP8 and MXFP4 tables have no kernel yet (M3.5 owes
+the products), and dense NVFP4 linears are not relaid out. A row-gathered NVFP4
 table (an embedding or side table, by role) is relaid out from split row
 blocks into `row_interleaved` (`RelayoutRowTable`: each row's codes then
 its scales, so a paged row is one read and `llmp.nvfp4.get_rows` and the
@@ -2234,8 +2241,8 @@ the CPU reference encodes and decodes: F32, F16, BF16 and the blocks
 GGML's attention reads at the pin, Q4_0, Q4_1, Q5_0, Q5_1 and Q8_0.
 Membership is not a device claim: a state may use an encoding only where
 its plan finds an attention that reads it and a cache store that writes
-it, which today means F16 or F32 everywhere and, on CUDA, Q8_0 or Q4_0 at
-head sizes 64 and 256 (below). Whether one is
+it, which today means F16 or F32 everywhere and, on CUDA, Q8_0 at head
+sizes 64, 256 and 512 and Q4_0 at 64 and 256 (below). Whether one is
 exact for a state is `format::Lossless(the contract's encoding, the stored
 one)`: an F16 KV cache stores exactly as F16 or F32 and lossily as BF16 or
 any block. The CPU reference encodes and decodes each (`EncodeRows`
@@ -2246,8 +2253,9 @@ executor's cache stores can write them.
 `src/kernels/ggml/kv_quant.h` reads and writes block-quantized KV caches,
 declared with capabilities; the bounded dense Q8_0 opt-in below now consumes them:
 - *Attention.* GGML's vector kernel at the pin, compiled for K and V both
-  Q8_0 or both Q4_0 at D 64 and 256 only (`fattn_vec_quant.cu`, four
-  `ggml_cuda_flash_attn_ext_vec_case` instances with GGML's device flags),
+  Q8_0 (D 64, 256 and 512) or both Q4_0 (D 64 and 256 only)
+  (`fattn_vec_quant.cu`, five `ggml_cuda_flash_attn_ext_vec_case` instances
+  with GGML's device flags),
   as `ggml.flash_attn_ext.vec_q8_0` and `_q4_0`: Q F32, K and V in GGML's
   blocks, an F16 mask; GQA of any whole ratio, softcap at D 256, no sinks
   or ALiBi. The kernel reads the blocks directly at every number of query
@@ -2262,10 +2270,12 @@ declared with capabilities; the bounded dense Q8_0 opt-in below now consumes the
   (D-108: prefill only, where measured faster) and is not built; how much
   slower the vector kernel prefills than the F16 tensor-core kernels is
   not measured. D 64 serves Qwen2 and D 256 Gemma 2 and 3, Gemma 4's
-  local layers and Qwen3.8's head size; no current model's K or V has
-  D 128, and upstream has no quantized path above 256, so D 512 (Gemma
-  4's global layers, DeepSeek V4, DSpark) still needs a decoder under a
-  shared attention kernel. On spark-b the unit compiles in 19.0 s alone
+  local layers and Qwen3.8's head size, and Q8_0 at D 512 (Gemma 4's global
+  layers, DeepSeek V4, DSpark) was added by K1 beyond upstream's 256 limit.
+  No current model's K or V has D 128, the most common size elsewhere, and
+  the component validation (`attention.cc`) refuses a quantized cache at any
+  head size other than 64, 256 and 512 rather than falling back by
+  capability. On spark-b the unit compiles in 19.0 s alone
   (`fattn.cu`'s two F16 cases: 7.5 s) into a 1.77 MB object, and with the
   stores below `llmp-runtime` grows from 226.3 to 228.3 MB (sm_121a SASS
   only; the workstation's profile adds sm_86's).
@@ -2418,7 +2428,9 @@ and named in `Checkpoint::skipped`, never refused.
   MiB and their tensors 2^20 in all). general.alignment is a power of two
   (of any integer type); every GGML type of the pin is named by the
   format layer (removed and unknown types refused), rows are whole
-  blocks, no tensor is empty (the format layer has no empty shape); every
+  blocks, a zero-element tensor is not imported but recorded as skipped
+  (the format layer has no empty shape; a marker or scale tensor of that
+  shape therefore cannot take part in quant pairing); every
   tensor's bytes lie inside the file and overlap no other's. Where
   gguf.cpp is stricter without the description needing it (offsets packed
   in info order at the alignment, names up to 63 bytes, u16 split keys)
@@ -3376,8 +3388,13 @@ table fits each stage's devices whole).
   Bounds on its candidate groups (4,096: thirteen devices without twins
   are past it), states and work refuse a topology too irregular to search
   quickly; `AssignPipeline` still evaluates a configured placement on it.
-  Ties go to fewer devices, then fewer stages. Compute is not modelled:
-  under a traffic objective one device wins whenever the model fits it,
+  Ties go to fewer devices, then fewer stages. When the topology describes
+  device rates, the search minimizes modelled request latency: each local
+  node costs the larger of its bytes over bandwidth and its operations over
+  the described rate, summed in component order, then ordered communication
+  (`prefill_execution_seconds`, `decode_execution_seconds`). With unknown
+  device performance it is in traffic-only mode, where compute is not
+  modelled: under a traffic objective one device wins whenever the model fits it,
   pipeline cuts beat tensor splits (one stream transfer a boundary against
   two collectives a layer), and tensor parallelism appears where a layer
   does not fit a device, inside the fast-linked groups, with the pipeline

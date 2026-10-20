@@ -219,9 +219,13 @@ downgrade a heavy-path change to the light loop on their own.
   tokenizer and chat (`ChatTokens|ChatCorpus|Vocabularies|Nfc|ChatAssets|Agreement`),
   importer and formats (`Import|SpecModels|Exl3Trellis|DecodeProof`),
   Gemma 2/3 engine and serving
-  (`Gemma2|Gemma3|GemmaEngine|GemmaJoined|ComponentRunner|ComponentsModels|PlainTokens`),
-  Gemma 4 (`Gemma4|Gemma26|Gemma31`), Qwen3.8 and DeepSeek
-  (`Qwen38|Dspark|Dsv4|FourSlot`). A round that finds only low-severity
+  (`Gemma2|Gemma3|GemmaEngine|GemmaNativeV1|ComponentRunnerGpu|ComponentsModels`),
+  Gemma 4 and its assistants (`Gemma4|Gemma26|Gemma31|GemmaAssistantV1`),
+  Qwen3.8 and DeepSeek (`Qwen38|Dsv4`, DSpark runs under `Dsv4Engine*`),
+  the dense decoders (Llama, Qwen2, EXL3:
+  `DenseDecoder|Qwen2|Exl3|WeightFilesServing`) and Qwen-Image
+  (`ImageGeneration|ImageRequest|ImageSpatial|ImageWholeVae|ImageTimestep`).
+  Suite names, not file names: list them with `ctest -N -L models`. A round that finds only low-severity
   issues fixes them without another round.
   Never run two check tiers on one tree at once.
   *Owner override, 2026-09-29:* during the current M3 optimization run,

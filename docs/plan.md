@@ -169,18 +169,45 @@ builder are re-expressed against the shared engine when they resume. Their
 history and evidence stay valid as recorded. The transfer item is retired.
 Kernel-level work behind the per-operation contract may continue meanwhile.
 
-**Carried in from M3.6** ([record](m36-record.md#deferred-items-from-the-reviews)): the importer's family-specific
-native normalizers (Qwen3.8's ModelOpt and MLX normalizers),
-generalized into mapping-driven normalizers when Nemotron NVFP4 brings a second
-ModelOpt model; MLX serving qualification (imported and admitted, not
-qualified for serving); the split NVFP4 experts' own fast products; the
-MXFP4/MXFP8 relayout of routed experts and dense NVFP4 linears;
-Nemotron 3.5 Super VL ([m35-families.md](m35-families.md)); the stored per-geometry
-image spec; EXL3 lock slots outside the shared pool base before an EXL3 model
-serves alongside GGML models ([RE-058](rough-edges.md)); masking head rows past
-`tokenizer_vocab` ([RE-050](rough-edges.md)); `Q4_0` as a KV cache encoding
-setting; full-weight Gemma 2/3 27B qualification; `native` preset test binaries'
-cuBLAS `RUNPATH`; and the remaining open items in the record's carried list.
+**Carried in from M3.6** ([record](m36-record.md#deferred-items-from-the-reviews)
+holds the history; this list is the whole queue of what is still open, with
+nothing left to "the record's carried list"; RE-058 is fixed in R6 and not
+carried):
+
+- Importer and formats: Qwen3.8's ModelOpt and MLX normalizers, pinned to
+  single checkpoints (`modelopt_qwen38.cc`, `mlx_qwen38.cc`), generalized into
+  mapping-driven normalizers (when Nemotron NVFP4 brings a second ModelOpt
+  model), with a generic route for HF-quantized and HF-MoE sources (a
+  `{expert}` pattern field, quantized parts in safetensors and MLX tables,
+  folds and relayouts on every plan); MLX serving qualification (imported and
+  admitted, not qualified for serving); the split NVFP4 experts' own fast
+  products (a grouped vector product for decode rows and the block-scaled
+  grouped GEMM over split scales); the MXFP4/MXFP8 relayout of routed experts
+  and dense NVFP4 linears; the stored per-geometry image spec; full-weight
+  Gemma 2/3 27B qualification.
+- Families: Nemotron 3.5 Super VL ([m35-families.md](m35-families.md)).
+- Engine and runtime: masking head rows past `tokenizer_vocab`
+  ([RE-050](rough-edges.md)); `Q4_0` as a KV cache encoding setting; removing
+  Qwen2's single-owner policy (`max_decode_rows 1`, `owners_alone`) and
+  re-pinning its digests; the schedule products (`compact_experts`,
+  `pair_experts`, `pair_glu`, `dense_pair`, `vector_floats`, `d2r_experts`)
+  enabled only for DeepSeek, to be screened and enabled by capability on Gemma
+  26B-A4B and Qwen3.8 GGUF; kernel capability predicates that still name
+  DeepSeek, Qwen3.8 or Gemma dimensions (48-head `llmp.gdn.gates`, DeepSeek
+  Q-head/output-A/HC/QSA, Gemma owner attention); numerical qualification
+  scoped per device (it is `arch = 121` only, so `sm_86` gets no fused
+  qualified path) and the pinned/unpinned difference in
+  `component_admission.cc`.
+- Test and build infrastructure: the `native` preset test binaries' cuBLAS
+  `RUNPATH`; `cpu-asan` `-fsanitize=function` on GGML `to_float` calls and the
+  importer mutation test under ASan (both in the `check:full` and
+  `check:spark` shipment tiers, still owed); watching
+  `CudaPageIn.RepeatedCancellationsNeverCorruptAReassignedSlot` for a repeat of
+  the one-off `5b21fe48` segfault. M5 owns the standalone artifact verifier.
+
+M3.6's other hand-offs go on from here: M4 owns multi-device lowering and the
+partitioning residue (the record's "Carried to M4"), and M9's list below owns
+the performance leads.
 
 **M3.6 review follow-ups (owner, 2026-10-17).** A whole-milestone review of
 M3.6 found the one-engine structure sound but family knowledge moved into
@@ -2048,7 +2075,12 @@ requantization from optimizations at unchanged quality.
       embedding split by vocabulary, expert parallelism is local experts plus
       a mask plus one all-reduce (no all-to-all, no DP-attention mode), and
       the lowering's per-runner backend and stream assumptions
-      ([engine-components.md](engine-components.md#partitioning)).
+      ([engine-components.md](engine-components.md#partitioning)). The
+      single-resident-model assumption is wider than the workspace
+      (`Server::resident_`, the cohort model, one swapped model and its parts,
+      `SwapBytes`, `SpillView`; the M3.6 review of 2026-10-20), and the
+      partitioner is a CPU model nothing executes yet (no non-reference
+      collectives; mqa, hc and ple declare no splits).
 
 **Exit criteria:**
 
@@ -2532,13 +2564,30 @@ partial-retention benefit workload are pinned before acceptance runs
       in the shared engine and reach these models as they are found, not
       held for this pass (D-107, [workflow.md](workflow.md)'s "optimize
       once"); this pass takes what remains of the accepted M3 gaps.
-      M3.6 hands on its leads ([record](m36-record.md#deferred-items-from-the-reviews)):
-      Qwen3.8 MTP activation sizing (8.05 GiB at four slots against 1.42 GB
-      in M3), planning cost (about 12 against 9 ms a new shape, joined steps
-      admitting each owner twice), the roughly 0.25 s workspace mapping in a
-      Qwen3.8 swap, the decode-template leads, the per-technique structural
-      adoption audit and a full-context Q8_0 KV scoring path for Qwen3.8 and
-      DeepSeek. DeepInfer's leads, each as a shared pattern selected by
+      M3.6 hands on these leads, all still open ([record](m36-record.md#deferred-items-from-the-reviews)
+      holds their history): Qwen3.8 MTP activation sizing (8.05 GiB at four
+      slots at `53c2610b`, cut by 4.53 / 4.37 GiB for native / GGUF by R7,
+      `d3374c67`, against 1.42 GB in M3; the remainder), planning cost (R10
+      collapsed the duplicate per-owner step builds of joined prompt batches;
+      what remains is the per-new-shape plan build, about 12 against 9 ms,
+      and decode-first lookahead for a new shape), the roughly 0.25 s
+      workspace mapping in a Qwen3.8 swap, the decode-template leads (vector
+      template register blocking at 16 rows, a grouped warp-per-row decode
+      variant, multi-stage tiles), one-shape-per-band probes for the graph
+      reader index in place of the 25% margin, moving turn-checkpoint capture
+      off the first-token path, DeepSeek's budget cliff (about 1.1 GiB less
+      `MemAvailable` took qwen3.8 to deepseek 16.1 s against 8.15 s; it did
+      not recur in the final table), Qwen's long-context acceptance cost, the
+      per-technique structural adoption audit against
+      [optimization-inventory.md](optimization-inventory.md), kept-record
+      per-drafter adaptive depths, adaptive depth and a device verdict for the
+      Gemma 4 assistant, a convert-then-tensor-core prefill path for quantized
+      KV caches, a full-context Q8_0 KV scoring path for Qwen3.8 and
+      DeepSeek, the per-extent workspace mapping hypothesis (range-wide access
+      over runs of extents), the image to deepseek first-use swap at 27.354 s,
+      RE-057 (drop the artifact stores' page cache before timing) and the
+      heat-soak note on timing gates. (The dedicated physical handle pool is
+      M3.5's first item, not M9's.) DeepInfer's leads, each as a shared pattern selected by
       capability for every attention kind whose chain matches, not one
       model's ([assessment](deepinfer-assessment.md#10-fusion-patterns-m9-leads)):
       inverse RoPE and quantization in the decode attention epilogue (T91

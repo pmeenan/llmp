@@ -412,8 +412,8 @@ native importer; every model M3 served runs on it within 1% of its frozen
 baseline, bar the accepted exceptions listed in the record, serves from format-v1 artifacts only
 (D-118) and has its legacy code deleted
 ([design](docs/engine-components.md), D-107 to D-118; results, owner
-decisions, exceptions and handed-on work in the
-[M3.6 record](docs/m36-record.md)). M3.5's first item is physical memory modes (the fix for M3.6's DSpark C4 wall exception), beside the drafter confidence calibration screen; the items taken from [DeepInfer](docs/deepinfer-assessment.md) (sampled speculation, tool calls on the chat route, the Messages route with the Claude Code profile, minimal prefix reuse, row read-ahead, 7-day retention) join its remaining families, formats, the importer's per-family normalizers, MLX serving
+decisions, exceptions, retained limits (what is not yet family-neutral) and
+handed-on work in the [M3.6 record](docs/m36-record.md)). M3.5's first item is physical memory modes (the fix for M3.6's DSpark C4 wall exception), beside the drafter confidence calibration screen; the items taken from [DeepInfer](docs/deepinfer-assessment.md) (sampled speculation, tool calls on the chat route, the Messages route with the Claude Code profile, minimal prefix reuse, row read-ahead, 7-day retention) join its remaining families, formats, the importer's per-family normalizers, MLX serving
 qualification, batching gaps, media inputs, Clef/Jev and media generation
 routes (D-101) resume on that engine; M3.5's status at `cc70d69` is in
 [plan.md](docs/plan.md) and [model-support.md](docs/model-support.md).
@@ -422,7 +422,8 @@ The runtime serves Chat Completions and literal Completions with target
 likelihoods on loopback and the tailnet. DeepSeek V4 Flash, Qwen3.8 Flash
 Next (native NVFP4/MXFP8 and checked GGUF) and Qwen-Image-2.1 execute with
 paging, initialized-state spill/restore and stable-address graphs; Gemma2
-2B, Gemma3 4B QAT and Gemma4 26B-A4B/31B serve on bounded routes. LLMs
+2B, Gemma3 4B QAT, Gemma4 26B-A4B/31B, Llama 3.2 1B and Qwen2.5 0.5B (the
+generic dense-decoder mapping) serve on bounded routes. LLMs
 batch chat and literal completions; pending model switches time-slice at
 completed units and resume exact continuations. Request steps run on the
 driver (D-106), and plain greedy decode picks tokens on the GPU.

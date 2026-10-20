@@ -465,7 +465,7 @@ serving classes with one skeleton and one runner in `src/engine/`
 | Plans and shape caches | `plan_cache.h`: `BasicPlanCache` (indexed by the key's hash); `model_runner.h`: one plan per step shape over `ComponentStepSource` (`component_source.h`); `coverage.h`: `CheckCoverage` | four identical `Planned` structs, `PlaceAndPlan` and `PlanPlaced`, four planning bodies, three coverage checks |
 | Speculation mechanics | `slot_lifecycle.h` (`SlotLifecycle::Accept`, `DiscardVerify`, `Settle`) over `LiveState`'s verify snapshot (`live_state.h`: `Save`, `Accept`, `Rollback`, `Settle`), queued as the paging kernels' range copies on the job's stream; `decoding.h` (`DecodingOrchestrator`) and `execution/program.h` (`DecodingMode`) | the same semantics written twice |
 | Setup and teardown | `runner_memory.h` (own memory, staging) and `runner_resources.h` (cuBLAS, the launch context and registry), their ordered release; `ReleaseMapped` for the node, `ModelRunner`, `StagedExecution` and the FP16 benchmark runner (`benchmarks/fp16_runner.h`) | copied per runner |
-| Weight paging | `paged_weights.h` for every runner: host groups, `ExpertSlab` (`expert_slab.h`), `PleTable` / `PleRead` / `PleRowPlan` / `PlanPleRows` (`ple_rows.h`), per-extent groups, place checks; `LayOutSlab` | DeepSeek's own `ReservePart`/`Register` |
+| Weight paging | `paged_weights.h` for every runner: host groups, expert slabs (`ExpertSlabsOf`, `expert_slab.h`), `PleTable` / `PleRead` / `PleRowPlan` / `PlanPleRows` (`ple_rows.h`), per-extent groups, place checks; `LayOutSlab` | DeepSeek's own `ReservePart`/`Register` |
 | The request's lease (D-093) | `PagedNode::WithRequest` | three copies of begin-body-end |
 
 Every LLM runs on `ModelRunner` (`engine/model_runner.h`) over
@@ -477,7 +477,14 @@ Every LLM runs on `ModelRunner` (`engine/model_runner.h`) over
 `StagedExecution` (`engine/staged_execution.h`), served through
 `EngineImage` (`runtime/engine_image.h`, assembled by
 `ComponentImageGenerationBuild` and `ComponentImageServingBuild` in
-`runtime/component_image_build.h`). A port changes the skeleton once: a
+`runtime/component_image_build.h`). The serving adapters name no kernel
+library, but the two build units do: `component_build.cc` and
+`component_image_build.cc` construct `kernels::ggml::GgmlBackend`
+(`GgmlBackendOptions`) and `CublasHandle`, size the cuBLAS workspace from the
+compute capability and open device 0, and `engine/runner_resources.h` and
+`expert_slab.cc` include GGML headers. `llmp_boundaries.py` checks CUDA names,
+not kernel-library names, so nothing enforces this edge; a port needs an
+engine-side backend factory first. A port changes the skeleton once: a
 backend without recorded work uses `StepRuns`' launch-by-launch fallback,
 and a platform's spill file is `LiveState`'s. Both LLMs and image pipelines
 verify their registered places after every swap.

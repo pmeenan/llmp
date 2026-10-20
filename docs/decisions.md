@@ -91,6 +91,28 @@ fix the concrete defects uncovered by the review and replace the remaining
 checkpoint, geometry, kernel-shape, and importer pins with capability-driven
 rules.
 
+**State as built (review of 2026-10-20, ahead of M3.5).** The decision is the
+direction; R14 to R19 landed part of it, and the bullets above overstate the
+code in these places, each of which remains work under this decision
+([m36-record](m36-record.md#retained-limitations), [plan.md](plan.md) M3.5):
+
+- *Kernel gates:* `capabilities.cc`, `lower.cc` and the kernels still name
+  checkpoint dimensions for the GDN gates (48 value heads), the DeepSeek V4
+  Q-head, output-A, hyper-connection, weighted-reduce and QSA products, Gemma's
+  owner-attention head counts and one MXFP8 GEMV width. They are not yet "real
+  limits".
+- *One policy for pinned and unpinned:* a pinned approval with an empty
+  `numerical` list receives no qualifications, while an unpinned artifact
+  derives them from container and component-kind proxies; every numerical
+  evidence domain is `arch = 121`, so other devices (`sm_86`) get none.
+  Schedule products (`compact_experts`, `pair_experts`, `pair_glu`,
+  `dense_pair`, `vector_floats`, `d2r_experts`) are enabled by mapping policy
+  for DeepSeek only.
+- *Normalization:* the folds and expert relayouts are role-driven, but only
+  the two Qwen3.8 normalizers (ModelOpt, MLX) reach them for HF-quantized
+  sources, and both stay pinned to single checkpoints; other HF-quantized and
+  HF MoE sources are refused.
+
 **Reopen if.** A capability-selected fusion or kernel produces a verified
 quality regression on a supported encoding/shape class that requires a narrower
 format or shape guard.
