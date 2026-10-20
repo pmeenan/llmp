@@ -705,8 +705,24 @@ std::expected<std::string, std::string> LayerTypes(const Mapping& m, const Value
                                                    std::uint64_t layers) {
   if (m.layer_type_key.empty()) return std::string(m.layer_types);
   const auto found = values.find(m.layer_type_key);
-  const auto* list =
-      found == values.end() ? nullptr : std::get_if<std::vector<std::int64_t>>(found->second);
+  if (found != values.end() && found->second != nullptr) {
+    if (const auto* str = std::get_if<std::string>(found->second)) {
+      if (str->size() < layers) {
+        return Refuse(m.layer_type_key, std::format("not a value for each of {} layers", layers));
+      }
+      for (std::uint64_t il = 0; il < layers; ++il) {
+        if (!m.layer_types.contains((*str)[il])) {
+          return Refuse(
+              m.layer_type_key,
+              std::format("layer {}'s '{}' is none of the mapping's layer types", il, (*str)[il]));
+        }
+      }
+      return str->substr(0, layers);
+    }
+  }
+  const auto* list = (found == values.end() || found->second == nullptr)
+                         ? nullptr
+                         : std::get_if<std::vector<std::int64_t>>(found->second);
   if (list == nullptr || list->size() < layers) {
     return Refuse(m.layer_type_key, std::format("not a value for each of {} layers", layers));
   }
@@ -1164,6 +1180,12 @@ std::vector<std::string_view> SourceKeys(const Mapping& m) {
   }
   for (const ReadRule& r : m.reads) add(r.layers_key);
   for (const PolicyRule& p : m.policies) add(p.gate);
+  if (m.role == StageRole::kTarget && m.companion != nullptr &&
+      m.companion->role == StageRole::kDrafter) {
+    for (std::string_view k : SourceKeys(*m.companion)) {
+      add(k);
+    }
+  }
   return keys;
 }
 
@@ -1196,7 +1218,7 @@ Status ValidateMapping(const Mapping& m) {
       m.layer_types.size() > kMaxLayerTypes || !std::ranges::all_of(m.layer_types, Lower)) {
     return Refuse(where, "an invalid layer count key or layer types");
   }
-  if (m.layer_type_key.empty() != m.layer_type_codes.empty() ||
+  if ((m.layer_type_key.empty() && !m.layer_type_codes.empty()) ||
       (!m.layer_type_key.empty() &&
        (!IsText(m.layer_type_key) || !m.layer_flags_key.empty() ||
         !std::ranges::all_of(m.layer_type_codes, [&](const LayerTypeCode& c) {
@@ -1211,6 +1233,12 @@ Status ValidateMapping(const Mapping& m) {
   }
   if (m.role != StageRole::kTarget && m.role != StageRole::kDrafter) {
     return Refuse(where, "a role other than a target's or a drafter's");
+  }
+  if (m.companion != nullptr) {
+    if (m.role != StageRole::kTarget || m.companion->role != StageRole::kDrafter) {
+      return Refuse(where, "a companion must be a drafter mapping on a target mapping");
+    }
+    if (auto ok = ValidateMapping(*m.companion); !ok) return ok;
   }
   const bool drafter = m.role == StageRole::kDrafter;
   if (drafter ? !IsName(m.stage) || m.stage == "target" : !m.stage.empty() || !m.reads.empty()) {
@@ -1448,6 +1476,70 @@ std::expected<ModelSpec, std::string> Synthesize(const Mapping& mapping, const S
   if (mapping.role != StageRole::kTarget) {
     return Refuse(std::format("mapping {}", mapping.architecture),
                   "a drafter's mapping, which composes with its target");
+  }
+  if (mapping.companion != nullptr) {
+    const auto matches_companion = [&](const SourceTensor& t) {
+      for (const TensorRule& rule : mapping.companion->tensors) {
+        if (rule.target) continue;
+        if (Match(rule.pattern, t.name, kMaxLayers).has_value() ||
+            (!rule.fallback.empty() && Match(rule.fallback, t.name, kMaxLayers).has_value())) {
+          return true;
+        }
+      }
+      return false;
+    };
+    if (std::ranges::any_of(source.tensors, matches_companion)) {
+      Source target_source = source;
+      Source companion_source = source;
+      companion_source.architecture = mapping.companion->architecture;
+      target_source.tensors.clear();
+      companion_source.tensors.clear();
+      for (const SourceTensor& t : source.tensors) {
+        if (matches_companion(t)) {
+          companion_source.tensors.push_back(t);
+        } else {
+          target_source.tensors.push_back(t);
+        }
+      }
+      auto made = MakeStage(mapping, target_source, values, {}, {});
+      if (!made) {
+        return std::unexpected(made.error());
+      }
+      made->stage.name = "target";
+      made->stage.role = StageRole::kTarget;
+      ModelSpec target{.pipeline = mapping.pipeline};
+      target.stages.push_back(std::move(made->stage));
+      Canonicalize(target);
+      if (auto ok = Validate(target); !ok) {
+        return std::unexpected(ok.error());
+      }
+      auto composed = ComposeDrafter(target, mapping, *mapping.companion, companion_source, values);
+      if (!composed) {
+        return composed;
+      }
+      composed->stages.back().artifact = 0;
+      std::vector<std::string> shared_folds;
+      for (const Stage& s : composed->stages) {
+        if (s.artifact == 0) {
+          for (const std::string& f : s.folds) {
+            if (std::ranges::find(shared_folds, f) == shared_folds.end()) {
+              shared_folds.push_back(f);
+            }
+          }
+        }
+      }
+      std::ranges::sort(shared_folds);
+      for (Stage& s : composed->stages) {
+        if (s.artifact == 0) {
+          s.folds = shared_folds;
+        }
+      }
+      Canonicalize(*composed);
+      if (auto ok = Validate(*composed); !ok) {
+        return std::unexpected(ok.error());
+      }
+      return composed;
+    }
   }
   auto made = MakeStage(mapping, source, values, {}, {});
   if (!made) {

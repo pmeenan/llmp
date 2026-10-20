@@ -62,7 +62,12 @@
 namespace llmp::components::defs {
 namespace {
 
+constexpr std::array<std::string_view, 3> kPlacements{"none", "pre", "sandwich"};
+
 constexpr std::array kParams{
+    kNormZeroCentered,
+    ParamSpec{
+        .name = "placement", .type = ParamType::kName, .required = false, .choices = kPlacements},
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
     ParamSpec{.name = "k_heads", .type = ParamType::kInt, .least = 1, .most = 1024},
     ParamSpec{.name = "v_heads", .type = ParamType::kInt, .least = 1, .most = 1024},
@@ -79,7 +84,19 @@ constexpr std::array kParams{
     ParamSpec{.name = "conv", .type = ParamType::kInt, .least = 2, .most = 64},
 };
 
-enum : std::uint16_t { kQkv, kGate, kBeta, kAlpha, kDtBias, kA, kConv, kNorm, kOutput };
+enum : std::uint16_t {
+  kQkv,
+  kGate,
+  kBeta,
+  kAlpha,
+  kDtBias,
+  kA,
+  kConv,
+  kNorm,
+  kOutput,
+  kInputNorm,
+  kPostNorm,
+};
 constexpr std::array kRoles{
     WeightRole{.name = "qkv"},
     WeightRole{.name = "gate"},
@@ -90,11 +107,14 @@ constexpr std::array kRoles{
     WeightRole{.name = "conv", .encodings = kNormEncodings},
     WeightRole{.name = "norm", .encodings = kNormEncodings},
     WeightRole{.name = "output"},
+    WeightRole{.name = "input_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
+    WeightRole{.name = "post_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
 };
 
 struct Dims {
   std::uint64_t width, hk, hv, d, conv;
   float eps;
+  std::string_view placement;
   std::uint64_t channels() const { return (2 * hk * d) + (hv * d); }
 };
 Dims DimsOf(const Instance& in) {
@@ -104,7 +124,8 @@ Dims DimsOf(const Instance& in) {
           .hv = static_cast<std::uint64_t>(p.Int("v_heads")),
           .d = static_cast<std::uint64_t>(p.Int("head_dim")),
           .conv = static_cast<std::uint64_t>(p.Int("conv")),
-          .eps = F32(p.Real("eps"))};
+          .eps = F32(p.Real("eps")),
+          .placement = p.Name("placement")};
 }
 
 bool Folded(const Instance& in, std::string_view fold) {
@@ -114,20 +135,40 @@ bool Folded(const Instance& in, std::string_view fold) {
 std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   const Dims d = DimsOf(in);
   if (d.hv % d.hk != 0) return std::unexpected("v_heads are not a multiple of k_heads");
-  if (!Folded(in, "gdn.value_heads_tiled"))
+  if (d.hv != d.hk && !Folded(in, "gdn.value_heads_tiled"))
     return std::unexpected("a gated delta rule needs the gdn.value_heads_tiled fold");
   if (in.params.Flag("a_log") == Folded(in, "ssm.a_neg_exp"))
     return std::unexpected("logarithmic A and the ssm.a_neg_exp fold must be exclusive");
+  if (d.placement == "none") {
+    if (in.params.Flag("norm_zero_centered")) {
+      return std::unexpected(
+          "attention.gdn does not support norm_zero_centered when placement is none");
+    }
+  } else {
+    if (NormOffsetContradictsFold(in)) {
+      return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
+    }
+    if (d.eps <= 0.0F) {
+      return std::unexpected("placement requires eps > 0");
+    }
+  }
   const std::uint64_t w = d.width;
-  return std::vector<RoleShape>{Role(kQkv, {w, d.channels()}),
-                                Role(kGate, {w, d.hv * d.d}),
-                                Role(kBeta, {w, d.hv}),
-                                Role(kAlpha, {w, d.hv}),
-                                Role(kDtBias, {d.hv}),
-                                Role(kA, {d.hv}),
-                                Role(kConv, {d.conv, d.channels()}),
-                                Role(kNorm, {d.d}),
-                                Role(kOutput, {d.hv * d.d, w})};
+  std::vector<RoleShape> out{Role(kQkv, {w, d.channels()}),
+                             Role(kGate, {w, d.hv * d.d}),
+                             Role(kBeta, {w, d.hv}),
+                             Role(kAlpha, {w, d.hv}),
+                             Role(kDtBias, {d.hv}),
+                             Role(kA, {d.hv}),
+                             Role(kConv, {d.conv, d.channels()}),
+                             Role(kNorm, {d.d}),
+                             Role(kOutput, {d.hv * d.d, w})};
+  if (d.placement == "pre" || d.placement == "sandwich") {
+    out.push_back(Role(kInputNorm, {w}));
+  }
+  if (d.placement == "sandwich") {
+    out.push_back(Role(kPostNorm, {w}));
+  }
+  return out;
 }
 
 model::StateTensorContract Fixed(std::string name, model::StateKind kind, std::uint64_t bytes) {
@@ -161,11 +202,15 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   const Dims d = DimsOf(in);
   F32Parameters<kRoles.size()> parameters(f);
   const auto w = [&](std::uint16_t role) {
+    if (role == kInputNorm || role == kPostNorm) return parameters.Norm(role);
     return role >= kDtBias && role <= kNorm
                ? parameters.Get(role, role == kA && in.params.Flag("a_log"))
                : f.Weight(role);
   };
   const ir::TensorId x = f.stream;
+  const ir::TensorId in_stream = (d.placement == "pre" || d.placement == "sandwich")
+                                     ? b.Mul(b.RmsNorm(x, d.eps), parameters.Norm(kInputNorm))
+                                     : x;
   const std::uint64_t rows = f.step.rows();
   const std::uint64_t ch = d.channels();
   const std::uint64_t hist = d.conv - 1;
@@ -191,7 +236,7 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     history[s] = b.Reshape(f.State(s, 0), Shape({hist, ch, 1}));
     b.SetJoined();
   }
-  const ir::TensorId qkv = b.Reshape(b.MatMul(w(kQkv), x), Shape({ch, rows, 1}));
+  const ir::TensorId qkv = b.Reshape(b.MatMul(w(kQkv), in_stream), Shape({ch, rows, 1}));
   // Each owner's convolution input: its history, then its rows transposed
   // into packed rows; the new history its last `hist` columns.
   std::vector<ir::TensorId> inputs(segments.size());
@@ -249,10 +294,10 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     }
     b.SetJoined();
     if (!gate.valid()) {
-      const ir::TensorId alpha = b.Reshape(b.MatMul(w(kAlpha), x), Shape({d.hv, rows, 1}));
+      const ir::TensorId alpha = b.Reshape(b.MatMul(w(kAlpha), in_stream), Shape({d.hv, rows, 1}));
       gate = b.Mul(b.Unary(b.Add(alpha, w(kDtBias)), ir::UnaryFn::kSoftplus), w(kA));
       gate = b.Reshape(gate, Shape({1, d.hv, rows, 1}));
-      beta = b.Unary(b.Reshape(b.MatMul(w(kBeta), x), Shape({1, d.hv, rows, 1})),
+      beta = b.Unary(b.Reshape(b.MatMul(w(kBeta), in_stream), Shape({1, d.hv, rows, 1})),
                      ir::UnaryFn::kSigmoid);
     }
     b.SetOwner(static_cast<std::uint8_t>(s));
@@ -278,9 +323,16 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   for (std::size_t s = 1; s < outputs.size(); ++s) out = b.Concat(out, outputs[s], 2);
   // The gated norm: each head's RMS norm times the weight and sigmoid(z).
   const ir::TensorId normed = b.Mul(b.RmsNorm(out, d.eps), w(kNorm));
-  const ir::TensorId z = b.Reshape(b.MatMul(w(kGate), x), Shape({d.d, d.hv, rows, 1}));
+  const ir::TensorId z = b.Reshape(b.MatMul(w(kGate), in_stream), Shape({d.d, d.hv, rows, 1}));
   const ir::TensorId gated = b.Mul(normed, b.Unary(z, ir::UnaryFn::kSigmoid));
-  return FragmentOut{.stream = b.MatMul(w(kOutput), b.Reshape(gated, Shape({d.d * d.hv, rows})))};
+  ir::TensorId projected = b.MatMul(w(kOutput), b.Reshape(gated, Shape({d.d * d.hv, rows})));
+  if (d.placement == "sandwich") {
+    projected = b.Mul(b.RmsNorm(projected, d.eps), parameters.Norm(kPostNorm));
+  }
+  if (d.placement == "pre" || d.placement == "sandwich") {
+    projected = b.Add(projected, x);
+  }
+  return FragmentOut{.stream = projected};
 }
 
 // The commit of a verify's kept rows: from each owner's saves of them, its
@@ -339,13 +391,27 @@ std::expected<void, std::string> Reference(RefIO& io) {
   if (io.stream.size() != w * rows || io.state.size() != io.segments.size()) {
     return std::unexpected("gdn reference: a stream or state of another shape");
   }
+  std::array<std::vector<float>, kRoles.size()> adjusted;
+  if (in.params.Flag("norm_zero_centered")) {
+    for (const auto role : {kInputNorm, kPostNorm}) {
+      if (role < io.weights.size() && !io.weights.at(role).empty()) {
+        adjusted[role] = io.weights.at(role);
+        for (float& value : adjusted[role]) value += 1.0F;
+      }
+    }
+  }
   const auto weight = [&](std::uint16_t role) {
-    return std::span<const float>(io.weights.at(role));
+    return std::span<const float>(adjusted[role].empty() ? io.weights.at(role) : adjusted[role]);
   };
-  const std::vector<double> qkv = Product(weight(kQkv), w, ch, io.stream);
-  const std::vector<double> z = Product(weight(kGate), w, d.hv * d.d, io.stream);
-  const std::vector<double> braw = Product(weight(kBeta), w, d.hv, io.stream);
-  const std::vector<double> araw = Product(weight(kAlpha), w, d.hv, io.stream);
+  const std::vector<double> residual = io.stream;
+  std::vector<double> in_stream = io.stream;
+  if (d.placement == "pre" || d.placement == "sandwich") {
+    RmsRows(in_stream, w, d.eps, weight(kInputNorm));
+  }
+  const std::vector<double> qkv = Product(weight(kQkv), w, ch, in_stream);
+  const std::vector<double> z = Product(weight(kGate), w, d.hv * d.d, in_stream);
+  const std::vector<double> braw = Product(weight(kBeta), w, d.hv, in_stream);
+  const std::vector<double> araw = Product(weight(kAlpha), w, d.hv, in_stream);
   const auto conv_w = weight(kConv);  // [conv, ch]: tap j of channel c at c · conv + j
   std::vector<double> out(rows * d.hv * d.d, 0.0);
   std::uint64_t first = 0;
@@ -418,7 +484,16 @@ std::expected<void, std::string> Reference(RefIO& io) {
   }
   RmsRows(out, d.d, d.eps, weight(kNorm));
   for (std::size_t i = 0; i < out.size(); ++i) out[i] *= Sigmoid(z[i]);
-  io.stream = Product(weight(kOutput), d.hv * d.d, w, out);
+  std::vector<double> projected = Product(weight(kOutput), d.hv * d.d, w, out);
+  if (d.placement == "sandwich") {
+    RmsRows(projected, w, d.eps, weight(kPostNorm));
+  }
+  if (d.placement == "pre" || d.placement == "sandwich") {
+    for (std::size_t i = 0; i < projected.size(); ++i) {
+      projected[i] += residual[i];
+    }
+  }
+  io.stream = std::move(projected);
   return {};
 }
 

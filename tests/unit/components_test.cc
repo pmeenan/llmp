@@ -30,6 +30,7 @@
 
 #include "component_catalog_cases.h"
 #include "components/component.h"
+#include "components/defs.h"
 #include "components/moe.h"
 #include "components/state_encoding.h"
 #include "components/step.h"
@@ -2525,6 +2526,323 @@ TEST(ComponentsTest, DenseAttentionComposableOptionsMatchTheirReference) {
               {{kRopeFreqs, {1.0F, 1.5F}}});
     }
   }
+}
+
+static const std::array<std::string, 2> kGdnTestFolds{"norm.plus_one", "ssm.a_neg_exp"};
+static const std::array<std::string, 1> kNormTestFolds{"norm.plus_one"};
+
+void RunCatalogToken(test_catalog::CatalogTokenCase proto) {
+  std::vector<test_catalog::CatalogTokenCase> cases;
+  test_catalog::AppendFormatCases(std::move(proto), &cases);
+  for (const auto& c : cases) {
+    test_catalog::RunCatalogTokenCpuCase(c);
+  }
+}
+
+TEST(ComponentsTest, AttentionPlacementPreAndSandwichShapes) {
+  // 1. attention.gdn with placement = "pre" and "sandwich"
+  for (const std::string_view placement : {"pre", "sandwich"}) {
+    ComponentRef gdn = C("attention.gdn", {
+                                              P("placement", N(std::string(placement))),
+                                              P("conv", I(4)),
+                                              P("eps", R(1e-6)),
+                                              P("head_dim", I(16)),
+                                              P("k_heads", I(4)),
+                                              P("v_heads", I(4)),
+                                          });
+    StageFacts facts{.width = 64, .context = 4096, .streams = 4, .folds = kGdnTestFolds};
+    auto in = MakeInstance(gdn, facts, Site::kLayer, 0, 1);
+    ASSERT_TRUE(in.has_value()) << in.error();
+    auto shapes = in->def->shapes(*in);
+    ASSERT_TRUE(shapes.has_value()) << shapes.error();
+    bool has_input_norm = false;
+    bool has_post_norm = false;
+    for (const auto& r : *shapes) {
+      if (r.role == 9) has_input_norm = true;  // kInputNorm
+      if (r.role == 10) has_post_norm = true;  // kPostNorm
+    }
+    EXPECT_TRUE(has_input_norm);
+    EXPECT_EQ(has_post_norm, placement == "sandwich");
+
+    test_catalog::CatalogTokenCase proto{
+        .ref = test_catalog::MakeRef(
+            "attention.gdn", 1,
+            {P("placement", N(std::string(placement))), P("conv", I(4)), P("eps", R(1e-6)),
+             P("head_dim", I(16)), P("k_heads", I(4)), P("v_heads", I(4))}),
+        .stage = facts,
+        .cells = {1, 1},
+        .shape = {.segments = {Seg(0, 3, 0, 256, 3)}},
+        .ranges = {{4, {-0.5F, 0.5F}}, {5, {-1.2F, 0.5F}}, {6, {-0.6F, 0.6F}}},
+    };
+    RunCatalogToken(std::move(proto));
+  }
+
+  // 2. attention.qsa with placement = "pre" and "sandwich"
+  for (const std::string_view placement : {"pre", "sandwich"}) {
+    ComponentRef qsa =
+        C("attention.qsa",
+          {
+              P("placement", N(std::string(placement))),
+              P("budget", I(256)),
+              P("eps", R(1e-6)),
+              P("head_dim", I(64)),
+              P("heads", I(4)),
+              P("indexer", N("fused")),
+              P("indexer_dim", I(64)),
+              P("indexer_heads", I(2)),
+              P("kv_heads", I(2)),
+              P("ratio", I(4)),
+              P("rope_base", R(10000.0)),
+              P("rope_dims", I(64)),
+              P("rope_sections", ParamValue(std::vector<std::int64_t>{11, 11, 10, 0})),
+          });
+    StageFacts facts{.width = 64, .context = 4096, .streams = 4, .folds = test_catalog::GdnFolds()};
+    auto in = MakeInstance(qsa, facts, Site::kLayer, 0, 1);
+    ASSERT_TRUE(in.has_value()) << in.error();
+    auto shapes = in->def->shapes(*in);
+    ASSERT_TRUE(shapes.has_value()) << shapes.error();
+    bool has_norm = false;
+    bool has_post_norm = false;
+    for (const auto& r : *shapes) {
+      if (r.role == 11) has_norm = true;       // kNorm
+      if (r.role == 12) has_post_norm = true;  // kPostNorm
+    }
+    EXPECT_TRUE(has_norm);
+    EXPECT_EQ(has_post_norm, placement == "sandwich");
+
+    test_catalog::CatalogTokenCase proto{
+        .ref = test_catalog::MakeRef(
+            "attention.qsa", 1,
+            {P("placement", N(std::string(placement))), P("budget", I(256)), P("eps", R(1e-6)),
+             P("head_dim", I(64)), P("heads", I(4)), P("indexer", N("fused")),
+             P("indexer_dim", I(64)), P("indexer_heads", I(2)), P("kv_heads", I(2)),
+             P("ratio", I(4)), P("rope_base", R(10000.0)), P("rope_dims", I(64)),
+             P("rope_sections", ParamValue(std::vector<std::int64_t>{11, 11, 10, 0}))}),
+        .stage = facts,
+        .cells = {256, 256, 256, 64},
+        .shape = {.segments = {Seg(0, 4, 0, 256, 4)}},
+    };
+    RunCatalogToken(std::move(proto));
+  }
+
+  // 3. attention.mqa with placement = "pre" and "sandwich"
+  for (const std::string_view placement : {"pre", "sandwich"}) {
+    ComponentRef mqa = C("attention.mqa", {
+                                              P("placement", N(std::string(placement))),
+                                              P("cache", N("ring")),
+                                              P("eps", R(1e-6)),
+                                              P("head_dim", I(256)),
+                                              P("heads", I(8)),
+                                              P("o_groups", I(4)),
+                                              P("o_rank", I(64)),
+                                              P("q_rank", I(64)),
+                                              P("rope_base", R(10000.0)),
+                                              P("rope_dims", I(64)),
+                                              P("window", I(6)),
+                                          });
+    StageFacts facts{.width = 64, .context = 4096, .streams = 1, .folds = kNormTestFolds};
+    auto in = MakeInstance(mqa, facts, Site::kLayer, 0, 1);
+    ASSERT_TRUE(in.has_value()) << in.error();
+    auto shapes = in->def->shapes(*in);
+    ASSERT_TRUE(shapes.has_value()) << shapes.error();
+    bool has_norm = false;
+    bool has_post_norm = false;
+    for (const auto& r : *shapes) {
+      if (r.role == 18) has_norm = true;       // kNorm
+      if (r.role == 19) has_post_norm = true;  // kPostNorm
+    }
+    EXPECT_TRUE(has_norm);
+    EXPECT_EQ(has_post_norm, placement == "sandwich");
+
+    test_catalog::CatalogTokenCase proto{
+        .ref = test_catalog::MakeRef(
+            "attention.mqa", 1,
+            {P("placement", N(std::string(placement))), P("cache", N("ring")), P("eps", R(1e-6)),
+             P("head_dim", I(256)), P("heads", I(8)), P("o_groups", I(4)), P("o_rank", I(64)),
+             P("q_rank", I(64)), P("rope_base", R(10000.0)), P("rope_dims", I(64)),
+             P("window", I(6))}),
+        .stage = facts,
+        .cells = {256},
+        .shape = {.segments = {Seg(0, 3, 0, 256, 3)}},
+    };
+    RunCatalogToken(std::move(proto));
+  }
+
+  // 4. attention.mqa refuses zero q_rank or o_rank
+  StageFacts mqa_facts{.width = 64, .context = 4096, .streams = 1};
+  ComponentRef mqa_zero_q = C("attention.mqa", {
+                                                   P("cache", N("ring")),
+                                                   P("eps", R(1e-6)),
+                                                   P("head_dim", I(256)),
+                                                   P("heads", I(8)),
+                                                   P("o_groups", I(4)),
+                                                   P("o_rank", I(64)),
+                                                   P("q_rank", I(0)),
+                                                   P("rope_base", R(10000.0)),
+                                                   P("rope_dims", I(64)),
+                                                   P("window", I(6)),
+                                               });
+  EXPECT_FALSE(MakeInstance(mqa_zero_q, mqa_facts, Site::kLayer, 0, 1).has_value());
+  ComponentRef mqa_zero_o = C("attention.mqa", {
+                                                   P("cache", N("ring")),
+                                                   P("eps", R(1e-6)),
+                                                   P("head_dim", I(256)),
+                                                   P("heads", I(8)),
+                                                   P("o_groups", I(4)),
+                                                   P("o_rank", I(0)),
+                                                   P("q_rank", I(64)),
+                                                   P("rope_base", R(10000.0)),
+                                                   P("rope_dims", I(64)),
+                                                   P("window", I(6)),
+                                               });
+  EXPECT_FALSE(MakeInstance(mqa_zero_o, mqa_facts, Site::kLayer, 0, 1).has_value());
+}
+
+TEST(ComponentsTest, DenseAttentionWithTargetLayerActsAsBorrowed) {
+  auto r = Gemma4Attention("attention.borrowed", 0, false, false);
+  r.kind = "attention.dense";
+  for (auto& p : r.params) {
+    if (p.name == "target_layer") p.value = I(0);
+  }
+  auto in = MakeInstance(r, kFacts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in.has_value()) << in.error();
+  const auto contract = in->def->state(*in);
+  ASSERT_EQ(contract.tensors.size(), 2U);
+  for (const auto& t : contract.tensors) {
+    EXPECT_TRUE(t.borrowed_from_target);
+    EXPECT_EQ(t.target_layer, 0U);
+  }
+  const std::uint64_t cells = 64;
+  const std::array<std::uint64_t, 2> both{cells, cells};
+  const std::vector<Step> steps{
+      {.shape = {.segments = {Seg(0, 1, 5, 32, 1), Seg(2, 1, 17, 32, 1)}}},
+      {.shape = {.segments = {Seg(2, 1, 30, 64, 1)}}},
+      {.shape = {.segments = {Seg(0, 1, 9, 32, 1)}}},
+  };
+  Compare(*in, AttentionFormats(Encoding::kQ8_0), both, steps, kOutputTolerance, kF16StateTolerance,
+          {}, /*random_state=*/true);
+
+  // Dense-only contradictory flags are rejected when borrowed
+  auto r_stateless = r;
+  r_stateless.params.push_back(P("stateless", ParamValue(true)));
+  EXPECT_FALSE(MakeInstance(r_stateless, kFacts, Site::kLayer, 0, 1).has_value());
+  auto r_tie = r;
+  r_tie.params.push_back(P("kv_tie", ParamValue(true)));
+  EXPECT_FALSE(MakeInstance(r_tie, kFacts, Site::kLayer, 0, 1).has_value());
+  auto r_vnorm = r;
+  r_vnorm.params.push_back(P("v_norm", ParamValue(true)));
+  EXPECT_FALSE(MakeInstance(r_vnorm, kFacts, Site::kLayer, 0, 1).has_value());
+  auto r_rope = r;
+  r_rope.params.push_back(P("rope_axis0", I(16)));
+  EXPECT_FALSE(MakeInstance(r_rope, kFacts, Site::kLayer, 0, 1).has_value());
+}
+
+TEST(ComponentsTest, GdnOneToOneHeadsDoesNotTileValueHeads) {
+  ComponentRef gdn = C("attention.gdn", {
+                                            P("conv", I(4)),
+                                            P("eps", R(1e-6)),
+                                            P("head_dim", I(16)),
+                                            P("k_heads", I(4)),
+                                            P("v_heads", I(4)),
+                                        });
+  const std::array<std::string, 1> folds_single{"ssm.a_neg_exp"};
+  const std::array<std::string, 2> folds_tiled{"ssm.a_neg_exp", "gdn.value_heads_tiled"};
+  StageFacts facts{.width = 64, .context = 4096, .streams = 1, .folds = folds_single};
+  auto in = MakeInstance(gdn, facts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in.has_value()) << in.error();
+  auto shapes = in->def->shapes(*in);
+  ASSERT_TRUE(shapes.has_value()) << shapes.error();
+
+  // But when hk != hv, gdn.value_heads_tiled is required by Shapes:
+  ComponentRef gdn_mqa = C("attention.gdn", {
+                                                P("conv", I(4)),
+                                                P("eps", R(1e-6)),
+                                                P("head_dim", I(16)),
+                                                P("k_heads", I(2)),
+                                                P("v_heads", I(4)),
+                                            });
+  auto in_mqa_fail = MakeInstance(gdn_mqa, facts, Site::kLayer, 0, 1);
+  EXPECT_FALSE(in_mqa_fail.has_value());
+
+  facts.folds = folds_tiled;
+  auto in_mqa_ok = MakeInstance(gdn_mqa, facts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in_mqa_ok.has_value()) << in_mqa_ok.error();
+}
+
+TEST(ComponentsTest, MoeAndMqaAdmitF16NormsAndNormZeroCentered) {
+  // Test F16 / BF16 in kNormEncodings
+  EXPECT_TRUE(std::ranges::contains(defs::kNormEncodings, Encoding::kF16));
+  EXPECT_TRUE(std::ranges::contains(defs::kNormEncodings, Encoding::kBF16));
+  EXPECT_TRUE(std::ranges::contains(defs::kNormEncodings, Encoding::kF32));
+
+  // ffn.moe with norm_zero_centered
+  ComponentRef moe = C("ffn.moe", {
+                                      P("placement", N("pre")),
+                                      P("eps", R(1e-6)),
+                                      P("activation", N("silu")),
+                                      P("experts", I(4)),
+                                      P("used", I(2)),
+                                      P("expert_hidden", I(64)),
+                                      P("router", N("softmax_topk")),
+                                      P("router_input", N("rms_scaled")),
+                                      P("norm_zero_centered", ParamValue(true)),
+                                  });
+  StageFacts facts{.width = 64, .context = 4096, .streams = 1};
+  auto in_moe = MakeInstance(moe, facts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in_moe.has_value()) << in_moe.error();
+  auto shapes_moe = in_moe->def->shapes(*in_moe);
+  ASSERT_TRUE(shapes_moe.has_value()) << shapes_moe.error();
+
+  // attention.mqa with norm_zero_centered
+  ComponentRef mqa = C("attention.mqa", {
+                                            P("cache", N("ring")),
+                                            P("eps", R(1e-6)),
+                                            P("head_dim", I(256)),
+                                            P("heads", I(8)),
+                                            P("o_groups", I(4)),
+                                            P("o_rank", I(64)),
+                                            P("q_rank", I(64)),
+                                            P("rope_base", R(10000.0)),
+                                            P("rope_dims", I(64)),
+                                            P("window", I(6)),
+                                            P("norm_zero_centered", ParamValue(true)),
+                                        });
+  auto in_mqa = MakeInstance(mqa, facts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in_mqa.has_value()) << in_mqa.error();
+  auto shapes_mqa = in_mqa->def->shapes(*in_mqa);
+  ASSERT_TRUE(shapes_mqa.has_value()) << shapes_mqa.error();
+}
+
+TEST(ComponentsTest, ConvSpatialGeneralStridePaddingKernel) {
+  ComponentRef conv = C("conv.spatial", {
+                                            P("in_channels", I(2)),
+                                            P("out_channels", I(3)),
+                                            P("kernel", I(5)),
+                                            P("stride", I(2)),
+                                            P("padding", I(2)),
+                                        });
+  StageFacts facts{.width = 64, .context = 256, .streams = 1};
+  auto in = MakeInstance(conv, facts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in.has_value()) << in.error();
+  auto shapes = in->def->shapes(*in);
+  ASSERT_TRUE(shapes.has_value()) << shapes.error();
+  // Kernel shape: [out_channels, in_channels, kernel, kernel] = [3, 2, 5, 5]
+  EXPECT_EQ((*shapes)[0].ne, (std::array<std::uint64_t, 4>{5, 5, 2, 3}));
+
+  test_catalog::CatalogSpatialCase sc{
+      .label = "f32",
+      .ref = test_catalog::MakeRef(
+          "conv.spatial", 1,
+          {P("in_channels", I(2)), P("kernel", I(5)), P("out_channels", I(3)), P("padding", I(2)),
+           P("stride", I(2))},
+          {{.role = "kernel", .tensor = "kernel"}, {.role = "bias", .tensor = "bias"}}),
+      .owner = SpatialOwner{0, {8, 8, 2, 1}},
+      .inputs = {},
+      .links = {},
+      .tensors = {BoundTensor{"kernel", ir::Dense(Encoding::kF32, ir::ShapeOf({5, 5, 2, 3}))},
+                  BoundTensor{"bias", ir::Dense(Encoding::kF32, ir::ShapeOf({3}))}},
+  };
+  test_catalog::RunCatalogSpatialCpuCase(sc);
 }
 
 TEST(ComponentsTest, EveryCatalogComponentHasAReferenceAndIsTested) {

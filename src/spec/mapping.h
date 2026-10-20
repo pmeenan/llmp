@@ -73,7 +73,7 @@
 namespace llmp::spec {
 
 inline constexpr std::size_t kMaxMappingRules = 1024;
-inline constexpr std::size_t kMaxLayerTypes = 64;  // a layer-type pattern's letters
+inline constexpr std::size_t kMaxLayerTypes = 256;  // a layer-type pattern's letters
 // A source's bounds, as untrusted input: tensors (a ModelOpt checkpoint
 // keeps every expert's matrices and scales as tensors of their own:
 // Qwen3.8's has 301,730; the GGUF reader's own bound is 2^20) and values
@@ -456,6 +456,7 @@ struct Mapping {
   // supplies `kDefaultServingRecipe`.
   const ServingRecipe* serving = nullptr;
   const DraftRecipe* draft = nullptr;
+  const Mapping* companion = nullptr;
   // Empty only for the container-neutral synthesis fixture; serving always
   // selects an explicit architecture/container/version entry.
   std::span<const std::string_view> containers{};

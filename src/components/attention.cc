@@ -181,6 +181,12 @@ constexpr auto kParams = WithCommon(std::array{
     OptionalInt("rope_axis0", 512),
     OptionalInt("rope_axis1", 512),
     OptionalInt("rope_axis2", 512),
+    ParamSpec{.name = "target_layer",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = -1,
+              .most = 4095,
+              .fallback = -1},
 });
 
 constexpr auto kBorrowedParams = WithCommon(std::array{
@@ -236,7 +242,8 @@ struct Dims {
 };
 Dims DimsOf(const Instance& in) {
   const Params& p = in.params;
-  const bool borrowed = in.def->kind == "attention.borrowed";
+  const bool borrowed = in.def->kind == "attention.borrowed" ||
+                        (p.Given("target_layer") && p.Int("target_layer") >= 0);
   const auto rope_dims = static_cast<std::uint64_t>(p.Int("rope_dims"));
   const auto a0 = borrowed ? 0ULL : static_cast<std::uint64_t>(p.Int("rope_axis0"));
   const auto a1 = borrowed ? 0ULL : static_cast<std::uint64_t>(p.Int("rope_axis1"));
@@ -298,6 +305,12 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   if (NormOffsetContradictsFold(in))
     return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
   const Dims d = DimsOf(in);
+  if (in.def->kind == "attention.dense" && d.borrowed &&
+      (in.params.Flag("stateless") || in.params.Flag("kv_tie") || in.params.Flag("v_norm") ||
+       in.params.Int("rope_axis0") != 0 || in.params.Int("rope_axis1") != 0 ||
+       in.params.Int("rope_axis2") != 0)) {
+    return std::unexpected("borrowed attention does not admit dense-only state or rope options");
+  }
   if (d.bare && !d.stateless) return std::unexpected("bare placement requires stateless attention");
   if ((d.rope_axes[0] % 2) != 0 || (d.rope_axes[1] % 2) != 0 || (d.rope_axes[2] % 2) != 0 ||
       d.rope_axes[0] + d.rope_axes[1] + d.rope_axes[2] != d.rope_dims) {
@@ -417,18 +430,6 @@ constexpr std::array kSplits{SplitOption{.kind = SplitKind::kHeads,
                                          .bytes_per_step = StreamBytes,
                                          .weights = kHeadRoles,
                                          .state = kHeadState}};
-// Queries only: Q and the output product by heads, the borrowed caches by
-// their heads (the target's own split must agree; the partitioner places
-// both stages).
-constexpr std::array kBorrowedRoles{RoleSplit{.role = kQ, .dim = 1},
-                                    RoleSplit{.role = kOutput, .dim = 0},
-                                    RoleSplit{.role = kSinks, .dim = 0}};
-constexpr std::array kBorrowedSplits{SplitOption{.kind = SplitKind::kHeads,
-                                                 .collective = ir::Op::kAllReduce,
-                                                 .units = KvHeadUnits,
-                                                 .bytes_per_step = StreamBytes,
-                                                 .weights = kBorrowedRoles,
-                                                 .state = kHeadState}};
 
 ir::RopeParams Rotation(const Instance& in, const Dims& d) {
   return MakeRopeParams(
@@ -666,11 +667,14 @@ std::expected<void, std::string> Reference(RefIO& io) {
   if (in.params.Flag("norm_zero_centered")) {
     for (const auto role : {kNorm, kPostNorm, kQNorm, kKNorm}) {
       if (d.bare && role == kNorm) continue;
-      adjusted[role] = io.weights.at(role);
-      for (float& value : adjusted[role]) value += 1.0F;
+      if (role < io.weights.size() && !io.weights.at(role).empty()) {
+        adjusted[role] = io.weights.at(role);
+        for (float& value : adjusted[role]) value += 1.0F;
+      }
     }
   }
   const auto weight = [&](std::uint16_t role) -> std::span<const float> {
+    if (role >= io.weights.size() || io.weights.at(role).empty()) return {};
     return adjusted[role].empty() ? io.weights.at(role) : adjusted[role];
   };
   const std::span<const float> freqs = d.freqs ? weight(kRopeFreqs) : std::span<const float>{};
@@ -927,7 +931,7 @@ const ComponentDef& AttentionBorrowed() {
       .max_state_tensors = 2,
 
       .batching = nullptr,
-      .splits = kBorrowedSplits,
+      .splits = kSplits,
 
       .masks = Masks,
       .emit = Emit,

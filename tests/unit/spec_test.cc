@@ -25,6 +25,7 @@
 #include "artifact/json.h"
 #include "artifact/representation.h"
 #include "base/sha256.h"
+#include "components/step.h"
 #include "families/dsv4.h"
 #include "families/gemma.h"
 #include "spec/mapping.h"
@@ -1159,6 +1160,88 @@ TEST(MappingTest, IntegerListRequirementsCannotEnterAnUnsupportedSchema) {
   params.push_back({.key = "test.list", .type = ValueType::kInts});
   mapping.params = params;
   EXPECT_FALSE(ValidateMapping(mapping));
+}
+
+TEST(MappingTest, StringValuedLayerTypeKey) {
+  Mapping m = mappings::Gemma2Mapping();
+  m.layer_types = "lg";
+  m.layer_type_key = "test.layer_types";
+  m.layer_type_codes = {};
+  ASSERT_TRUE(ValidateMapping(m));
+
+  // Synthesize with 4 layers: "lglg"
+  std::vector<SourceValue> values = *fam::Gemma2Values(fam::Gemma2_2B());
+  std::ranges::find(values, "gemma2.block_count", &SourceValue::key)->value = std::int64_t{4};
+  values.push_back({.key = "test.layer_types", .value = ParamValue(std::string("lglg"))});
+
+  auto source = test_support::Gemma2Source();
+  std::erase_if(source.tensors, [](const SourceTensor& t) {
+    if (!t.name.starts_with("blk.")) return false;
+    for (int i = 0; i < 4; ++i) {
+      if (t.name.starts_with(std::format("blk.{}.", i))) return false;
+    }
+    return true;
+  });
+  auto spec = Synthesize(m, source, values);
+  ASSERT_TRUE(spec.has_value()) << spec.error();
+  EXPECT_EQ(spec->stages.front().layers.size(), 4U);
+
+  // Too short string is refused
+  values.back().value = ParamValue(std::string("lgl"));
+  EXPECT_FALSE(Synthesize(m, source, values));
+
+  // Invalid character is refused
+  values.back().value = ParamValue(std::string("lglx"));
+  EXPECT_FALSE(Synthesize(m, source, values));
+}
+
+TEST(MappingTest, DeclarativeCompanionSynthesisViaSynthesize) {
+  const std::uint32_t size = 26;
+  const auto& p = G4(size);
+  const auto& a = fam::Gemma4Assistant26();
+  auto target_values = *fam::Gemma4Values(p);
+  auto assistant_values = *fam::Gemma4AssistantValues(a, p);
+
+  std::vector<SourceValue> combined_values = target_values;
+  for (const auto& v : assistant_values) {
+    if (!std::ranges::contains(combined_values, v.key, &SourceValue::key)) {
+      combined_values.push_back(v);
+    }
+  }
+
+  const auto assistant_m = mappings::Gemma4AssistantMapping();
+  Mapping drafter_m = assistant_m;
+  drafter_m.architecture = "gemma4-drafter";
+  std::vector<std::string> pattern_strings;
+  std::vector<TensorRule> drafter_rules;
+  for (const TensorRule& r : assistant_m.tensors) {
+    auto rule = r;
+    if (!rule.target) {
+      pattern_strings.push_back("drafter." + std::string(rule.pattern));
+      rule.pattern = pattern_strings.back();
+    }
+    drafter_rules.push_back(rule);
+  }
+  drafter_m.tensors = drafter_rules;
+
+  Source combined_source = test_support::Gemma4Source(size);
+  Source as_source = test_support::Gemma4AssistantSource(size);
+  for (SourceTensor t : as_source.tensors) {
+    t.name = "drafter." + t.name;
+    combined_source.tensors.push_back(std::move(t));
+  }
+
+  Mapping m = mappings::Gemma4Mapping();
+  m.companion = &drafter_m;
+
+  auto synthesized = Synthesize(m, combined_source, combined_values);
+  ASSERT_TRUE(synthesized.has_value()) << synthesized.error();
+  ASSERT_EQ(synthesized->stages.size(), 2U);
+  EXPECT_EQ(synthesized->stages[0].name, "target");
+  EXPECT_EQ(synthesized->stages[1].name, "assistant");
+  EXPECT_EQ(synthesized->stages[1].role, StageRole::kDrafter);
+  EXPECT_EQ(synthesized->stages[1].artifact, 0U);
+  EXPECT_TRUE(components::ValidateSpec(*synthesized, combined_source.tensors).has_value());
 }
 
 TEST(SpecTest, ForwardReadsCyclesAndTargetAfterDrafterAreRefused) {

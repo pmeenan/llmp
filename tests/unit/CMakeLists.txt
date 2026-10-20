@@ -1149,7 +1149,7 @@ llmp_gtest(component_admission_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE
 # architecture mappings as data and applied to the Gemma tensor tables with
 # their profiles' values (tests/support/families/gemma.h).
 add_executable(spec_test spec_test.cc)
-target_link_libraries(spec_test PRIVATE llmp_spec llmp_artifact llmp_json)
+target_link_libraries(spec_test PRIVATE llmp_spec llmp_components llmp_artifact llmp_json)
 llmp_gtest(spec_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 

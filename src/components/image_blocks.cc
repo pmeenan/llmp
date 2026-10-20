@@ -145,10 +145,10 @@ bool MatchingElementwise(const Fragment& f, ir::TensorId a, ir::TensorId b) {
   if (!a.valid() || !b.valid()) return false;
   const auto ta = f.b.tensor(a);
   const auto tb = f.b.tensor(b);
+  const bool spatial = f.spatial_layout || f.b.tensor(f.stream).shape().rank > 2;
   return ta.format.encoding == format::Encoding::kF32 && ta.format == tb.format &&
          ta.segment == tb.segment &&
-         (f.b.segment() == ir::kJoinedSegment ? JoinedRows(f, a)
-                                              : ta.ne(2) == f.instance.stage.width);
+         (spatial ? ta.ne(2) == f.instance.stage.width : JoinedRows(f, a));
 }
 
 ir::TensorId AdaptiveMath(ir::Builder& b, ir::TensorId x, ir::TensorId side, float eps) {

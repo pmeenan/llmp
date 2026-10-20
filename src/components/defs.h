@@ -70,7 +70,9 @@ const ComponentDef& EmbeddingInject();
 
 // Source encodings admitted by the individual parameter-role contracts.
 inline constexpr std::array<format::Encoding, 1> kF32Only{format::Encoding::kF32};
-inline constexpr std::array kNormEncodings{format::Encoding::kF32, format::Encoding::kBF16};
+inline constexpr std::array kNormEncodings{format::Encoding::kF32, format::Encoding::kBF16,
+                                           format::Encoding::kF16};
+inline constexpr std::array kSpatialEncodings{format::Encoding::kF32, format::Encoding::kBF16};
 inline constexpr std::array kBiasEncodings{format::Encoding::kF32, format::Encoding::kF16};
 
 // Norm scales keep their source encoding resident. Widen a low-precision

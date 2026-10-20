@@ -38,7 +38,7 @@ std::expected<FragmentOut, std::string> SelectTokenEmit(Fragment& f) {
     return std::unexpected("conditioning row operands");
   const auto& x = f.b.tensor(f.stream);
   const auto& a = f.b.tensor(aux);
-  const bool spatial = f.b.segment() != ir::kJoinedSegment;
+  const bool spatial = f.spatial_layout || f.b.tensor(f.stream).shape().rank > 2;
   const auto c = spatial ? x.ne(2) : x.ne(0);
   const auto rows = x.ne(1);
   const auto quarters = static_cast<std::uint64_t>(f.instance.params.Int("quarters"));
@@ -86,7 +86,7 @@ constexpr std::array kConcatParams{ParamSpec{.name = "axis",
 std::expected<FragmentOut, std::string> ConcatTokenEmit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
   const auto aux = f.carry.valid() ? f.carry : f.Side("other");
-  const bool spatial = f.b.segment() != ir::kJoinedSegment;
+  const bool spatial = f.spatial_layout || f.b.tensor(f.stream).shape().rank > 2;
   if (!f.stream.valid() || !aux.valid() ||
       f.b.tensor(f.stream).format.encoding != format::Encoding::kF32 ||
       f.b.tensor(aux).format.encoding != format::Encoding::kF32 ||
@@ -145,7 +145,7 @@ constexpr std::array kSliceParams{
 std::expected<FragmentOut, std::string> SliceTokenEmit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
   if (!f.stream.valid()) return std::unexpected("spatial row slice operands");
-  const bool spatial = f.b.segment() != ir::kJoinedSegment;
+  const bool spatial = f.spatial_layout || f.b.tensor(f.stream).shape().rank > 2;
   const auto& x = f.b.tensor(f.stream);
   const auto start = static_cast<std::uint64_t>(f.instance.params.Int("start"));
   const auto rows = static_cast<std::uint64_t>(f.instance.params.Int("rows"));

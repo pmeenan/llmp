@@ -46,18 +46,29 @@ std::uint64_t Index(SpatialShape s, std::uint64_t x, std::uint64_t y, std::uint6
 constexpr std::array kConvParams{
     ParamSpec{.name = "in_channels", .type = ParamType::kInt, .least = 1, .most = 65536},
     ParamSpec{.name = "out_channels", .type = ParamType::kInt, .least = 1, .most = 65536},
-    ParamSpec{.name = "kernel", .type = ParamType::kInt, .least = 1, .most = 3},
-    ParamSpec{.name = "padding", .type = ParamType::kInt, .least = 0, .most = 1},
+    ParamSpec{.name = "kernel", .type = ParamType::kInt, .least = 1, .most = 16},
+    ParamSpec{.name = "stride",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 1,
+              .most = 16,
+              .fallback = 1},
+    ParamSpec{.name = "padding",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 0,
+              .most = 16,
+              .fallback = 0},
 };
-constexpr std::array kConvRoles{WeightRole{.name = "kernel", .encodings = defs::kNormEncodings},
-                                WeightRole{.name = "bias", .encodings = defs::kNormEncodings}};
+constexpr std::array kConvRoles{WeightRole{.name = "kernel", .encodings = defs::kSpatialEncodings},
+                                WeightRole{.name = "bias", .encodings = defs::kSpatialEncodings}};
 constexpr std::array kUpParams{
     ParamSpec{.name = "factor", .type = ParamType::kInt, .least = 2, .most = 2}};
 
 std::expected<std::vector<RoleShape>, std::string> ConvRoles(const Instance& in) {
   const auto k = static_cast<std::uint64_t>(in.params.Int("kernel"));
-  if (in.site != Site::kLayer || (k != 1 && k != 3))
-    return std::unexpected("spatial convolution requires a layer and a 1x1 or 3x3 kernel");
+  if (in.site != Site::kLayer || k < 1 || k > 16)
+    return std::unexpected("spatial convolution requires a layer and a kernel in [1, 16]");
   const auto ci = static_cast<std::uint64_t>(in.params.Int("in_channels"));
   const auto co = static_cast<std::uint64_t>(in.params.Int("out_channels"));
   if (!Values({k, k, ci, co}))
@@ -75,11 +86,15 @@ std::expected<SpatialShape, std::string> ConvShape(const Instance& in, SpatialSh
     return std::unexpected("spatial convolution input channels or dimensions differ");
   const auto k = static_cast<std::uint64_t>(in.params.Int("kernel"));
   const auto pad = static_cast<std::uint64_t>(in.params.Int("padding"));
+  const auto stride = static_cast<std::uint64_t>(in.params.Int("stride"));
+  if (stride == 0) return std::unexpected("spatial convolution stride must be positive");
   std::uint64_t w = 0, h = 0;
   if (__builtin_add_overflow(s.width, 2 * pad, &w) ||
       __builtin_add_overflow(s.height, 2 * pad, &h) || w < k || h < k)
     return std::unexpected("spatial convolution padding or kernel is invalid");
-  SpatialShape out{w - k + 1, h - k + 1, static_cast<std::uint64_t>(in.params.Int("out_channels")),
+  const std::uint64_t out_w = ((w - k) / stride) + 1;
+  const std::uint64_t out_h = ((h - k) / stride) + 1;
+  SpatialShape out{out_w, out_h, static_cast<std::uint64_t>(in.params.Int("out_channels")),
                    s.images};
   if (!Values(out)) return std::unexpected("spatial convolution output exceeds its value bound");
   return out;
@@ -101,7 +116,7 @@ std::expected<SpatialValue, std::string> ConvEmit(SpatialFragment& f) {
   // A 1x1 kernel too: its implementations (llmp.image.conv1x1) read the
   // pixel-contiguous layout directly.
   const ir::Conv2dParams params{
-      .stride = 1,
+      .stride = static_cast<std::uint32_t>(f.instance.params.Int("stride")),
       .padding = static_cast<std::uint32_t>(f.instance.params.Int("padding")),
       .dilation = 1};
   return SpatialValue{f.builder.Conv2d(f.weights[0], f.input, f.weights[1], params), *out};
@@ -123,6 +138,7 @@ std::expected<void, std::string> ConvReference(SpatialRefIO& io) {
     return std::unexpected("spatial convolution reference input/weight sizes differ");
   std::vector<double> result(static_cast<std::size_t>(*Values(*out)));
   const auto pad = io.instance.params.Int("padding");
+  const auto stride = static_cast<std::uint64_t>(io.instance.params.Int("stride"));
   // Independent scalar cross-correlation in WHCN order; no forced legacy casts.
   for (std::uint64_t n = 0; n < out->images; ++n)
     for (std::uint64_t c = 0; c < co; ++c)
@@ -132,8 +148,8 @@ std::expected<void, std::string> ConvReference(SpatialRefIO& io) {
           for (std::uint64_t ci = 0; ci < io.shape.channels; ++ci)
             for (std::uint64_t ky = 0; ky < k; ++ky)
               for (std::uint64_t kx = 0; kx < k; ++kx) {
-                const auto ix = static_cast<std::int64_t>(x + kx) - pad;
-                const auto iy = static_cast<std::int64_t>(y + ky) - pad;
+                const auto ix = static_cast<std::int64_t>(x * stride + kx) - pad;
+                const auto iy = static_cast<std::int64_t>(y * stride + ky) - pad;
                 if (ix < 0 || iy < 0 || static_cast<std::uint64_t>(ix) >= io.shape.width ||
                     static_cast<std::uint64_t>(iy) >= io.shape.height)
                   continue;
@@ -252,6 +268,7 @@ std::expected<SpatialValue, std::string> EmitSpatialFragment(SpatialFragment& f)
                 .step = ctx,
                 .stream = stream,
                 .weight = [&](std::uint16_t role) { return f.weights[role]; },
+                .spatial_layout = true,
                 .carry = carry,
                 .side = [side, mask_carry](
                             std::string_view name) { return name == "mask" ? mask_carry : side; }};

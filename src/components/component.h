@@ -249,6 +249,7 @@ struct Fragment {
   // rows (the head then gathers none).
   bool narrow = false;
   bool narrowed = false;
+  bool spatial_layout = false;
   // A stage of several streams (spec.h ResidualStream, hyper-connections):
   // the streams F32 [width, streams, rows] as this component finds them.
   // A block between a mix and its combine reads `stream` (the mix's

@@ -166,7 +166,7 @@ constexpr std::array kMixRoles{
     WeightRole{.name = "fn"},
     WeightRole{.name = "base", .encodings = kF32Only},
     WeightRole{.name = "scale", .encodings = kF32Only},
-    WeightRole{.name = "post_norm", .encodings = kF32Only},
+    WeightRole{.name = "post_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
 };
 
 std::expected<std::vector<RoleShape>, std::string> MixShapes(const Instance& in) {
@@ -224,6 +224,7 @@ ir::TensorId Values(ir::Builder& b, ir::TensorId w, std::uint64_t count, std::ui
 std::expected<FragmentOut, std::string> SinkhornEmit(Fragment& f) {
   ir::Builder& b = f.b;
   const Instance& in = f.instance;
+  F32Parameters<kMixRoles.size()> parameters(f);
   const std::uint64_t w = in.stage.width;
   const std::uint64_t hc = in.stage.streams;
   const float eps = F32(in.params.Real("eps"));
@@ -261,7 +262,7 @@ std::expected<FragmentOut, std::string> SinkhornEmit(Fragment& f) {
       const ir::TensorId wh = weight_of(h);
       sum = b.Add(sum, b.Mul(xh, wh));
     }
-    return FragmentOut{.stream = b.Mul(b.RmsNorm(sum, eps), f.Weight(kMixPostNorm)),
+    return FragmentOut{.stream = b.Mul(b.RmsNorm(sum, eps), parameters.Norm(kMixPostNorm)),
                        .narrowed = in.params.Flag("gather")};
   }
   const std::uint64_t rows = Desc(b, x).ne(2);
@@ -292,7 +293,7 @@ std::expected<FragmentOut, std::string> SinkhornEmit(Fragment& f) {
   pre = b.Scale(b.Unary(b.Add(pre, pre_base), ir::UnaryFn::kSigmoid), 1.0F, hc_eps);
   const ir::TensorId folded =
       b.HcPre(x, pre, {.fold = ir::HcFold::kWeights, .streams = static_cast<std::uint32_t>(hc)});
-  return FragmentOut{.stream = b.Mul(b.RmsNorm(folded, eps), f.Weight(kMixPostNorm)),
+  return FragmentOut{.stream = b.Mul(b.RmsNorm(folded, eps), parameters.Norm(kMixPostNorm)),
                      .carry = post,
                      .carry2 = comb};
 }
@@ -462,7 +463,11 @@ std::expected<void, std::string> SinkhornReference(RefIO& io) {
       std::ranges::copy(c, io.carry2.begin() + static_cast<std::ptrdiff_t>(t * hc * hc));
     }
   }
-  RmsRows(io.stream, w, eps, io.weights.at(kMixPostNorm));
+  std::vector<float> post_norm = io.weights.at(kMixPostNorm);
+  if (in.params.Flag("norm_zero_centered")) {
+    for (float& value : post_norm) value += 1.0F;
+  }
+  RmsRows(io.stream, w, eps, post_norm);
   return {};
 }
 

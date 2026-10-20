@@ -197,7 +197,7 @@ constexpr std::array kProjectionParams{
               .most = 1,
               .fallback = 0},
 };
-constexpr std::array kProjectionRoles{WeightRole{.name = "weight", .encodings = kNormEncodings}};
+constexpr std::array kProjectionRoles{WeightRole{.name = "weight", .encodings = kSpatialEncodings}};
 std::expected<std::vector<RoleShape>, std::string> ProjectionRoles(const Instance& in) {
   if (in.site != Site::kLayer || (in.params.Flag("silu") && in.params.Flag("gelu")))
     return std::unexpected("spatial projection requires a layer and at most one activation");

@@ -297,6 +297,7 @@ constexpr ParamSpec Flag(std::string_view name) {
 }
 
 constexpr std::array kParams{
+    defs::kNormZeroCentered,
     ParamSpec{.name = "placement", .type = ParamType::kName, .choices = kPlacements},
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
     ParamSpec{.name = "activation", .type = ParamType::kName, .choices = kActivations},
@@ -358,21 +359,29 @@ enum : std::uint16_t {
   kRouterBias,
 };
 constexpr std::array kRoles{
-    WeightRole{.name = "norm", .encodings = kF32Only},
+    WeightRole{
+        .name = "norm", .encodings = defs::kNormEncodings, .derived = defs::kZeroCenteredNorm},
     WeightRole{.name = "gate"},
     WeightRole{.name = "up"},
     WeightRole{.name = "down"},
-    WeightRole{.name = "dense_post_norm", .encodings = kF32Only},
+    WeightRole{.name = "dense_post_norm",
+               .encodings = defs::kNormEncodings,
+               .derived = defs::kZeroCenteredNorm},
     WeightRole{.name = "router"},
     WeightRole{.name = "router_scale", .encodings = kF32Only},
-    WeightRole{.name = "routed_norm", .encodings = kF32Only},
+    WeightRole{.name = "routed_norm",
+               .encodings = defs::kNormEncodings,
+               .derived = defs::kZeroCenteredNorm},
     WeightRole{.name = "gate_up_experts"},
     WeightRole{.name = "gate_experts"},
     WeightRole{.name = "up_experts"},
     WeightRole{.name = "down_experts"},
     WeightRole{.name = "expert_scale", .encodings = kF32Only},
-    WeightRole{.name = "routed_post_norm", .encodings = kF32Only},
-    WeightRole{.name = "post_norm", .encodings = kF32Only},
+    WeightRole{.name = "routed_post_norm",
+               .encodings = defs::kNormEncodings,
+               .derived = defs::kZeroCenteredNorm},
+    WeightRole{
+        .name = "post_norm", .encodings = defs::kNormEncodings, .derived = defs::kZeroCenteredNorm},
     WeightRole{.name = "gate_scale", .encodings = kF32Only},
     WeightRole{.name = "up_scale", .encodings = kF32Only},
     WeightRole{.name = "down_scale", .encodings = kF32Only},
@@ -430,6 +439,9 @@ std::string_view HashInput(const Instance& in) {
 }
 
 std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
+  if (defs::NormOffsetContradictsFold(in)) {
+    return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
+  }
   const Dims d = DimsOf(in);
   if (d.parallel && d.hidden == 0) {
     return std::unexpected("parallel MoE requires a dense GLU (hidden > 0)");
@@ -513,7 +525,14 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
   ir::Builder& b = f.b;
   const Dims d = DimsOf(f.instance);
-  const auto w = [&](std::uint16_t role) { return f.Weight(role); };
+  defs::F32Parameters<kRoles.size()> parameters(f);
+  const auto w = [&](std::uint16_t role) {
+    if (role == kNorm || role == kDensePostNorm || role == kRoutedNorm || role == kRoutedPostNorm ||
+        role == kPostNorm) {
+      return parameters.Norm(role);
+    }
+    return f.Weight(role);
+  };
   const ir::TensorId x = f.stream;
   const auto norm = [&](ir::TensorId t, std::uint16_t role) {
     return b.Mul(b.RmsNorm(t, d.eps), w(role));
@@ -586,7 +605,18 @@ std::expected<void, std::string> Reference(RefIO& io) {
   if (io.stream.size() != d.width * io.rows()) {
     return std::unexpected("moe reference: a stream of another shape");
   }
-  const auto w = [&](std::uint16_t role) -> std::span<const float> { return io.weights.at(role); };
+  std::array<std::vector<float>, kRoles.size()> adjusted;
+  if (in.params.Flag("norm_zero_centered")) {
+    for (const auto role : {kNorm, kDensePostNorm, kRoutedNorm, kRoutedPostNorm, kPostNorm}) {
+      if (role < io.weights.size() && !io.weights.at(role).empty()) {
+        adjusted[role] = io.weights.at(role);
+        for (float& value : adjusted[role]) value += 1.0F;
+      }
+    }
+  }
+  const auto w = [&](std::uint16_t role) -> std::span<const float> {
+    return adjusted[role].empty() ? io.weights.at(role) : adjusted[role];
+  };
   const auto normed = [&](std::span<const double> t, std::uint16_t role) {
     std::vector<double> out(t.begin(), t.end());
     RmsRows(out, d.width, d.eps, w(role));

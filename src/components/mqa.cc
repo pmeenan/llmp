@@ -110,6 +110,7 @@ namespace {
 
 using format::Encoding;
 
+constexpr std::array<std::string_view, 3> kPlacements{"none", "pre", "sandwich"};
 constexpr std::array<std::string_view, 3> kCaches{"ring", "full", "injected"};
 constexpr std::array<std::string_view, 2> kKvEncodings{"f16", "q8_0"};
 
@@ -124,6 +125,9 @@ constexpr ParamSpec Optional(std::string_view name, ParamType type, double least
 }
 
 constexpr std::array kParams{
+    kNormZeroCentered,
+    ParamSpec{
+        .name = "placement", .type = ParamType::kName, .required = false, .choices = kPlacements},
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
     ParamSpec{.name = "heads", .type = ParamType::kInt, .least = 1, .most = 1024},
     ParamSpec{.name = "head_dim", .type = ParamType::kInt, .least = 2, .most = 4096},
@@ -175,27 +179,31 @@ enum : std::uint16_t {
   kIdxGate,
   kIdxApe,
   kIdxNorm,
+  kNorm,
+  kPostNorm,
 };
 constexpr std::array<Encoding, 3> kApe{Encoding::kF32, Encoding::kF16, Encoding::kBF16};
 constexpr std::array kRoles{
     WeightRole{.name = "q_a"},
-    WeightRole{.name = "q_norm", .encodings = kF32Only},
+    WeightRole{.name = "q_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "q_b"},
     WeightRole{.name = "kv"},
-    WeightRole{.name = "kv_norm", .encodings = kF32Only},
+    WeightRole{.name = "kv_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "sinks", .encodings = kF32Only},
     WeightRole{.name = "out_a"},
     WeightRole{.name = "out_b"},
     WeightRole{.name = "comp_kv"},
     WeightRole{.name = "comp_gate"},
     WeightRole{.name = "comp_ape", .encodings = kApe},
-    WeightRole{.name = "comp_norm", .encodings = kF32Only},
+    WeightRole{.name = "comp_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "idx_q"},
     WeightRole{.name = "idx_proj"},
     WeightRole{.name = "idx_kv"},
     WeightRole{.name = "idx_gate"},
     WeightRole{.name = "idx_ape", .encodings = kApe},
-    WeightRole{.name = "idx_norm", .encodings = kF32Only},
+    WeightRole{.name = "idx_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
+    WeightRole{.name = "norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
+    WeightRole{.name = "post_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
 };
 
 // The state's tensors, in its contract's order.
@@ -219,6 +227,7 @@ struct Dims {
   Cache cache;
   std::uint64_t cells;
   float eps, base;
+  std::string_view placement;
   YarnParams yarn;
   Encoding kv_encoding;
 };
@@ -245,6 +254,7 @@ Dims DimsOf(const Instance& in) {
           .cells = static_cast<std::uint64_t>(p.Int("cells")),
           .eps = F32(p.Real("eps")),
           .base = F32(p.Real("rope_base")),
+          .placement = p.Name("placement"),
           .yarn = {.factor = F32(p.Real("rope_factor")),
                    .context = static_cast<std::uint32_t>(p.Int("yarn_context")),
                    .beta_fast = F32(p.Real("beta_fast")),
@@ -257,6 +267,9 @@ std::uint64_t Coff(const Dims& d) { return d.overlap ? 2 : 1; }
 bool Yarned(const Dims& d) { return d.yarn.factor > 1.0F; }
 
 std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
+  if (NormOffsetContradictsFold(in)) {
+    return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
+  }
   const Dims d = DimsOf(in);
   if (d.kv_encoding == Encoding::kQ8_0 && (d.d != 256 && d.d != 512)) {
     return std::unexpected("Q8_0 KV requires head_dim 256 or 512");
@@ -307,6 +320,12 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
     out.push_back(Role(kIdxGate, {w, 2 * d.idim}));
     out.push_back(Role(kIdxApe, {2 * d.idim, d.ratio}));
     out.push_back(Role(kIdxNorm, {d.idim}));
+  }
+  if (d.placement == "pre" || d.placement == "sandwich") {
+    out.push_back(Role(kNorm, {w}));
+  }
+  if (d.placement == "sandwich") {
+    out.push_back(Role(kPostNorm, {w}));
   }
   return out;
 }
@@ -411,7 +430,8 @@ ir::RopeParams Rotation(const Dims& d, std::uint64_t head, bool inverse = false)
 
 class Emitter {
  public:
-  explicit Emitter(Fragment& f) : f_(f), b_(f.b), d_(DimsOf(f.instance)) {}
+  explicit Emitter(Fragment& f)
+      : f_(f), b_(f.b), d_(DimsOf(f.instance)), parameters_(f), in_stream_(f_.stream) {}
 
   std::expected<FragmentOut, std::string> Emit();
   std::expected<FragmentOut, std::string> Inject();
@@ -488,6 +508,8 @@ class Emitter {
   Fragment& f_;
   ir::Builder& b_;
   Dims d_;
+  [[maybe_unused]] F32Parameters<kRoles.size()> parameters_;
+  ir::TensorId in_stream_{};
   ir::TensorId q_{}, qr_{}, kv_{}, iq_{}, iw_{}, comp_kv_{}, comp_score_{}, idx_kv_{}, idx_score_{};
 };
 
@@ -503,7 +525,7 @@ ir::TensorId Emitter::Hadamard(ir::TensorId t, std::uint64_t n) {
 }
 
 void Emitter::Compressor(const Comp& c, std::size_t s) {
-  const ir::TensorId x = f_.stream;
+  const ir::TensorId x = in_stream_;
   const std::uint32_t ratio = d_.ratio;
   const bool overlap = c.cache == kIndex || d_.overlap;
   const std::uint64_t coff = overlap ? 2 : 1;
@@ -568,7 +590,7 @@ void Emitter::Compressor(const Comp& c, std::size_t s) {
         values, scores,
         {.ratio = static_cast<std::uint32_t>(coff * ratio), .kind = ir::PoolKind::kSoftmax});
     pooled = EmitHeadNormRope(
-        b_, pooled, d_.eps, f_.Weight(c.norm),
+        b_, pooled, d_.eps, parameters_.Norm(c.norm),
         f_.step.HostInput(
             {.def = &CompressorBlockStartsInput(), .ratio = ratio, .overlap = overlap}, s),
         {}, rope);
@@ -606,7 +628,7 @@ void Emitter::StoreWindow(std::size_t s) {
 
 ir::TensorId Emitter::Query() {
   const std::uint64_t rows = f_.step.rows();
-  qr_ = EmitHeadNorm(b_, b_.MatMul(f_.Weight(kQa), f_.stream), d_.eps, f_.Weight(kQNorm));
+  qr_ = EmitHeadNorm(b_, b_.MatMul(f_.Weight(kQa), in_stream_), d_.eps, parameters_.Norm(kQNorm));
   const ir::TensorId q = b_.Reshape(b_.MatMul(f_.Weight(kQb), qr_), Shape({d_.d, d_.heads, rows}));
   return EmitHeadNormRope(b_, q, d_.eps, {}, f_.step.Positions(), {}, Rotation(d_, d_.d));
 }
@@ -614,7 +636,7 @@ ir::TensorId Emitter::Query() {
 ir::TensorId Emitter::Key() {
   const std::uint64_t rows = f_.step.rows();
   const ir::TensorId kv =
-      EmitHeadNorm(b_, b_.MatMul(f_.Weight(kKv), f_.stream), d_.eps, f_.Weight(kKvNorm));
+      EmitHeadNorm(b_, b_.MatMul(f_.Weight(kKv), in_stream_), d_.eps, parameters_.Norm(kKvNorm));
   return b_.Rope(b_.Reshape(kv, Shape({d_.d, 1, rows})), f_.step.Positions(), {},
                  Rotation(d_, d_.d));
 }
@@ -654,7 +676,7 @@ std::expected<ir::TensorId, std::string> Emitter::Selection(std::size_t s, ir::T
   const ir::TensorId keys = CacheView(f_.State(s, kIndex), read);
   if (!iw_.valid()) {
     b_.SetJoined();
-    iw_ = b_.Scale(b_.MatMul(f_.Weight(kIdxProj), f_.stream),
+    iw_ = b_.Scale(b_.MatMul(f_.Weight(kIdxProj), in_stream_),
                    1.0F / std::sqrt(static_cast<float>(d_.idim * d_.ih)));
     b_.SetOwner(static_cast<std::uint8_t>(s));
   }
@@ -746,7 +768,7 @@ std::expected<ir::TensorId, std::string> Emitter::Attend(std::size_t s) {
   } else if (rounded && d_.cache == Cache::kRing) {
     n_kv_max = static_cast<std::uint32_t>(std::min(window_read, d_.window));
   }
-  const bool sparse_any = rounded && d_.d == 512 && n_kv_max != 0;
+  const bool sparse_any = rounded && (d_.d == 256 || d_.d == 512) && n_kv_max != 0;
   return EmitSegmentAttention(b_, queries, keys, values, mask, f_.Weight(kSinks),
                               {.scale = 1.0F / std::sqrt(static_cast<float>(d_.d)),
                                .sinks = true,
@@ -757,6 +779,9 @@ std::expected<ir::TensorId, std::string> Emitter::Attend(std::size_t s) {
 }
 
 std::expected<FragmentOut, std::string> Emitter::Emit() {
+  if (d_.placement == "pre" || d_.placement == "sandwich") {
+    in_stream_ = b_.Mul(b_.RmsNorm(f_.stream, d_.eps), parameters_.Norm(kNorm));
+  }
   const std::uint64_t rows = f_.step.rows();
   const auto segments = f_.step.segments();
   const Comp comp_c{.kv = kCompKv,
@@ -782,16 +807,16 @@ std::expected<FragmentOut, std::string> Emitter::Emit() {
   if (segments.size() > 1) {
     b_.SetJoined();
     if (d_.ratio != 0) {
-      comp_kv_ = b_.MatMul(f_.Weight(kCompKv), f_.stream);
-      const ir::TensorId gate = b_.MatMul(f_.Weight(kCompGate), f_.stream);
+      comp_kv_ = b_.MatMul(f_.Weight(kCompKv), in_stream_);
+      const ir::TensorId gate = b_.MatMul(f_.Weight(kCompGate), in_stream_);
       const ir::TensorId ape =
           b_.GetRows(f_.Weight(kCompApe),
                      f_.step.HostInput({.def = &CompressorPhasesInput(), .ratio = d_.ratio}));
       comp_score_ = b_.Add(gate, ape);
     }
     if (d_.indexer) {
-      idx_kv_ = b_.MatMul(f_.Weight(kIdxKv), f_.stream);
-      const ir::TensorId gate = b_.MatMul(f_.Weight(kIdxGate), f_.stream);
+      idx_kv_ = b_.MatMul(f_.Weight(kIdxKv), in_stream_);
+      const ir::TensorId gate = b_.MatMul(f_.Weight(kIdxGate), in_stream_);
       const ir::TensorId ape =
           b_.GetRows(f_.Weight(kIdxApe),
                      f_.step.HostInput({.def = &CompressorPhasesInput(), .ratio = d_.ratio}));
@@ -801,7 +826,7 @@ std::expected<FragmentOut, std::string> Emitter::Emit() {
     kv_ = Key();
     if (f_.stream_needed && d_.ratio != 0 && d_.indexer) {
       (void)IndexerQueries();
-      iw_ = b_.Scale(b_.MatMul(f_.Weight(kIdxProj), f_.stream),
+      iw_ = b_.Scale(b_.MatMul(f_.Weight(kIdxProj), in_stream_),
                      1.0F / std::sqrt(static_cast<float>(d_.idim * d_.ih)));
     }
     for (std::size_t s = 0; s < segments.size(); ++s) {
@@ -838,7 +863,14 @@ std::expected<FragmentOut, std::string> Emitter::Emit() {
   const ir::TensorId groups = b_.Reshape(f_.Weight(kOutA), Shape({per, d_.o_rank, d_.groups}));
   ir::TensorId low = b_.Permute(b_.MatMul(groups, out), {0, 2, 1, 3});
   low = b_.Cont(low, Shape({d_.o_rank * d_.groups, rows}));
-  return FragmentOut{.stream = b_.MatMul(f_.Weight(kOutB), low)};
+  ir::TensorId projected = b_.MatMul(f_.Weight(kOutB), low);
+  if (d_.placement == "sandwich") {
+    projected = b_.Mul(b_.RmsNorm(projected, d_.eps), parameters_.Norm(kPostNorm));
+  }
+  if (d_.placement == "pre" || d_.placement == "sandwich") {
+    projected = b_.Add(projected, f_.stream);
+  }
+  return FragmentOut{.stream = projected};
 }
 
 std::expected<FragmentOut, std::string> Emitter::Inject() {
@@ -867,7 +899,8 @@ std::expected<FragmentOut, std::string> Emitter::Inject() {
     }
     positions = joined;
   }
-  ir::TensorId kv = EmitHeadNorm(b_, b_.MatMul(f_.Weight(kKv), input), d_.eps, f_.Weight(kKvNorm));
+  ir::TensorId kv =
+      EmitHeadNorm(b_, b_.MatMul(f_.Weight(kKv), input), d_.eps, parameters_.Norm(kKvNorm));
   kv = b_.Rope(b_.Reshape(kv, Shape({d_.d, 1, injected})), positions, {}, Rotation(d_, d_.d));
   const ir::TensorDesc kd = Desc(b_, kv);
   std::uint64_t first = 0;
@@ -1036,23 +1069,36 @@ std::expected<void, std::string> Reference(RefIO& io) {
       io.state_cells.size() != tensors) {
     return std::unexpected("mqa reference: a stream or state of another shape");
   }
+  std::array<std::vector<float>, kRoles.size()> adjusted;
+  if (in.params.Flag("norm_zero_centered")) {
+    for (std::uint16_t role : {kQNorm, kKvNorm, kCompNorm, kIdxNorm, kNorm, kPostNorm}) {
+      if (role >= io.weights.size() || io.weights.at(role).empty()) continue;
+      adjusted[role].assign(io.weights.at(role).begin(), io.weights.at(role).end());
+      for (float& value : adjusted[role]) value += 1.0F;
+    }
+  }
   const auto weight = [&](std::uint16_t role) {
-    return std::span<const float>(io.weights.at(role));
+    return std::span<const float>(adjusted[role].empty() ? io.weights.at(role) : adjusted[role]);
   };
+  const std::vector<double> residual = io.stream;
+  std::vector<double> in_stream = io.stream;
+  if (d.placement == "pre" || d.placement == "sandwich") {
+    RmsRows(in_stream, w, d.eps, weight(kNorm));
+  }
   // Every row's projections.
-  std::vector<double> qr = Product(weight(kQa), w, d.q_rank, io.stream);
+  std::vector<double> qr = Product(weight(kQa), w, d.q_rank, in_stream);
   RmsRows(qr, d.q_rank, d.eps, weight(kQNorm));
   std::vector<double> q = Product(weight(kQb), d.q_rank, d.heads * d.d, qr);
   RmsRows(q, d.d, d.eps, {});
-  std::vector<double> kv = Product(weight(kKv), w, d.d, io.stream);
+  std::vector<double> kv = Product(weight(kKv), w, d.d, in_stream);
   RmsRows(kv, d.d, d.eps, weight(kKvNorm));
   const std::uint64_t coff = Coff(d);
   std::vector<double> ckv, cscore, ikv, iscore, iq, iw;
   const auto projections = [&](std::uint16_t kv_role, std::uint16_t gate_role,
                                std::uint16_t ape_role, std::uint64_t width,
                                std::vector<double>& kv_out, std::vector<double>& score_out) {
-    kv_out = Product(weight(kv_role), w, width, io.stream);
-    score_out = Product(weight(gate_role), w, width, io.stream);
+    kv_out = Product(weight(kv_role), w, width, in_stream);
+    score_out = Product(weight(gate_role), w, width, in_stream);
     const std::span<const float> ape = weight(ape_role);
     std::uint64_t r = 0;
     for (const RefSegment& s : io.segments) {
@@ -1068,7 +1114,7 @@ std::expected<void, std::string> Reference(RefIO& io) {
   if (d.indexer) {
     projections(kIdxKv, kIdxGate, kIdxApe, 2 * d.idim, ikv, iscore);
     iq = Product(weight(kIdxQ), d.q_rank, d.ih * d.idim, qr);
-    iw = Product(weight(kIdxProj), w, d.ih, io.stream);
+    iw = Product(weight(kIdxProj), w, d.ih, in_stream);
     const double scale = 1.0F / std::sqrt(static_cast<float>(d.idim * d.ih));
     for (double& v : iw) v *= scale;
   }
@@ -1194,7 +1240,16 @@ std::expected<void, std::string> Reference(RefIO& io) {
       }
     }
   }
-  io.stream = Product(weight(kOutB), d.o_rank * d.groups, w, low);
+  std::vector<double> projected = Product(weight(kOutB), d.o_rank * d.groups, w, low);
+  if (d.placement == "sandwich") {
+    RmsRows(projected, w, d.eps, weight(kPostNorm));
+  }
+  if (d.placement == "pre" || d.placement == "sandwich") {
+    for (std::size_t i = 0; i < projected.size(); ++i) {
+      projected[i] += residual[i];
+    }
+  }
+  io.stream = std::move(projected);
   return {};
 }
 
@@ -1217,7 +1272,8 @@ std::expected<void, std::string> AdmitOptions(const Instance& in, const StepOpti
     return std::unexpected("rounded indexer does not admit injected attention");
   }
   if (!d.indexer) return {};
-  if (d.ratio != 4 || !d.overlap || d.idim != 128 || d.ih != 64 || d.top_k == 0 || d.top_k > 512) {
+  if (d.ratio == 0 || !d.overlap || d.idim == 0 || !std::has_single_bit(d.idim) || d.ih == 0 ||
+      d.top_k == 0 || d.top_k > 512) {
     return std::unexpected("rounded indexer requires the bounded ratio-four CSA geometry");
   }
   return {};

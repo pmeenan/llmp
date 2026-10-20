@@ -266,7 +266,7 @@ before new families land; each item lands as one reviewed commit.
       keep shape-generic `exl3.linear.gemv` and reconstruction active in
       `DeviceSelectedSource`, derive default `GemmPlan` concurrency from device
       SMs, and remove pageable `cudaMemcpyAsync` in `Bound::Run`)
-- [ ] R17 Component unification, hybrid layer mappings and spatial/token bridge
+- [x] R17 Component unification, hybrid layer mappings and spatial/token bridge
       (support `placement = "pre"` and `"sandwich"` on `attention.gdn`,
       `attention.mqa` and `attention.qsa`; make `gdn.value_heads_tiled`
       conditional and remove hardcoded DeepSeek V4 `idim`/`ih`/`ratio` checks
