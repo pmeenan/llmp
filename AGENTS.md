@@ -346,9 +346,14 @@ the commit gate.
       context, format bounds): no time caps or abuse-motivated count caps;
       keep long work cancellable and recover a genuine hang; defaults are
       permissive (D-102).
-    - *Throughput beats cancel latency:* size prefill chunks and similar knobs
-      for the fastest measured option within memory bounds; cancellation only
-      has to land between chunks.
+    - *Throughput beats cancel latency and cadence:* size prefill chunks and
+      similar knobs for the fastest measured option within memory bounds,
+      and with several streams choose what finishes all the work soonest
+      (aggregate utilization), not fair time-sharing; cancellation only has
+      to land between chunks. A starvation bound (judgment default 60 s of
+      calibrated unit time, configurable) keeps every admitted request on a
+      model's next unit coming so no client times out; it reorders work, never
+      refuses or cancels it (owner, 2026-10-20; D-102).
     - *Speed over bit-exactness, at the same quality.* Default paths may
       change bits (fusion, reduction order) but keep output quality; a
       bit-exact reference path may exist where cheap. Anything that trades
@@ -413,7 +418,7 @@ baseline, bar the accepted exceptions listed in the record, serves from format-v
 (D-118) and has its legacy code deleted
 ([design](docs/engine-components.md), D-107 to D-118; results, owner
 decisions, exceptions, retained limits (what is not yet family-neutral) and
-handed-on work in the [M3.6 record](docs/m36-record.md)). M3.5's first item is physical memory modes (the fix for M3.6's DSpark C4 wall exception), beside the drafter confidence calibration screen; the items taken from [DeepInfer](docs/deepinfer-assessment.md) (sampled speculation, tool calls on the chat route, the Messages route with the Claude Code profile, minimal prefix reuse, row read-ahead, 7-day retention) join its remaining families, formats, the importer's per-family normalizers, MLX serving
+handed-on work in the [M3.6 record](docs/m36-record.md)). M3.5's first item is physical memory modes (the fix for M3.6's DSpark C4 wall exception), beside the drafter confidence calibration screen; the items taken from [DeepInfer](docs/deepinfer-assessment.md) and [Flare](docs/flare-assessment.md) (plan.md) join its remaining families, formats, the importer's per-family normalizers, MLX serving
 qualification, batching gaps, media inputs, Clef/Jev and media generation
 routes (D-101) resume on that engine; M3.5's status at `cc70d69` is in
 [plan.md](docs/plan.md) and [model-support.md](docs/model-support.md).

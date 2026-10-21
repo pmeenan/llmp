@@ -1478,7 +1478,7 @@ name, so a record measured for another replaces its stale one in place;
 the record an earlier build kept as `<artifact>.json` is removed when one
 is written. Its format (`llmp-model-calibration-v1`) is unchanged.
 
-## D-102: Limits come from real resources, not time or abuse caps  (2026-10-03, status: accepted at the owner's direction of 2026-10-03; applies across the runtime; amends how D-067's interpreter bounds, D-097's intake bounds and deadlines, and D-101's starting bounds are chosen; each affected limit is changed in its own reviewed task)
+## D-102: Limits come from real resources, not time or abuse caps  (2026-10-03, status: accepted at the owner's direction of 2026-10-03; applies across the runtime; amends how D-067's interpreter bounds, D-097's intake bounds and deadlines, and D-101's starting bounds are chosen; each affected limit is changed in its own reviewed task; a scheduling starvation bound added by the owner, 2026-10-20)
 
 **Decision.** Llmpalooza is run locally by the hardware's owner, not offered
 as a service, so maximum flexibility and capability come before
@@ -1621,6 +1621,26 @@ after an audit of about 70 limits):
   and the stop spills and records, so healthy slow work is not cut off.
   `[client] hang_seconds` keeps its key and default; `schema_version`
   stays 2.
+
+**Amended by the owner, 2026-10-20 (scheduling starvation bound).** Work
+from concurrent streams on one resident model is scheduled for aggregate
+completion: the fastest measured prefill chunk and mixed prefill+decode
+waves, not fair time-sharing or decode cadence. A starvation bound keeps
+every admitted request's next unit (a prefill chunk or a decode step) from
+waiting longer than a configurable bound, default 60 s, measured in
+calibrated unit costs, not clock reads. The default is a judgment (D-085),
+not a measurement: a fifth of the shortest named client's 300 s idle
+timeout (Claude Code's and Codex's), leaving room for a long chunk after
+the bound is reached. Keepalives already count as traffic for those
+timeouts, so the bound mainly protects clients that wait silently
+(non-streaming requests) and keeps the worst inter-token gap finite. It is
+not a time cap under this decision: it reorders work and never refuses,
+cancels or shortens a request, and keepalives continue while a request
+waits. Request classes (D-042's priority, M6) may order work only within
+the bound, never past it. Waits between models stay D-050's and D-019's
+(run to completion, then a swap). The bound replaces the unit-count bounds
+of `src/runtime/cohort_schedule.h` (a generation waits at most one prompt
+unit; a prompt ages in after 12), which stretch with chunk length.
 
 ## D-101: Decision models through the Jev/SystemOne API, multimodal file inputs with each family's bring-up, and OpenAI-shaped media generation routes  (2026-10-02, status: accepted at the owner's request of 2026-10-02, with the owner's answers that day on DeepSeek V4 Flash Vision-Exp, the audio carrier, confidence and the TTS testbeds; scope and plan only, nothing built; moves D-042's file inputs from M10 to M3.5 and M4; makes decision heads an exception to D-044's classification deferral; schedules the image-output API features.md left unscheduled; adds public routes, D-016)
 

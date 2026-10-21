@@ -73,3 +73,14 @@ components. It needs SM100 or Ascend, so it is not a runnable oracle on our
 hosts. Its findings, the techniques taken and the parts deliberately not
 taken are in the [DeepInfer assessment](deepinfer-assessment.md). Every
 number from DeepInfer is DeepSeek-reported.
+
+## Flare (NVIDIA, 2026-10-20)
+
+NVIDIA's local inference server
+([Flare](https://github.com/NVIDIA/flare-local-inference), Apache-2.0,
+reviewed at `e7b8c01`) runs GLM-5.3 Flash at TP1/2/4 over its own one-shot
+RDMA collective, and DeepSeek V4.1 Flash at TP4 only (four Sparks). It
+publishes no speed numbers. For M4 it contributes the transport and
+failure-handling design, the Engram split by hash head, and a candidate
+comparator for GLM FP4-Local. The details, and what was not taken, are in
+the [Flare assessment](flare-assessment.md).
