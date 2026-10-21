@@ -753,6 +753,9 @@ constexpr auto kMtpNativeTensors = [] {
     } else if (rule.pattern == "blk.{layer}.ffn_down_exps.scales") {
       rule.pattern = "blk.{layer}.ffn_down_exps.weight_scale";
       rule.optional = true;
+    } else if (rule.pattern.ends_with("_exps.weight_scale_2")) {
+      // ModelOpt's tensor scales; an MLX drafter's affine experts have none.
+      rule.optional = true;
     }
     rules[next++] = rule;
   }
@@ -916,12 +919,16 @@ constexpr std::array kMtpValues = {
               .origin = ValueOrigin::kLayerCount,
               .tensor = "blk.{layer}.attn_q.weight"},
     ValueRule{.key = kIndexer, .value = {.text = "fused"}, .type = kString},
-    ValueRule{
-        .key = kStacked, .origin = ValueOrigin::kComponent, .kind = "ffn.moe", .param = "stacked"},
+    // The drafter's own expert layout: a relaid ModelOpt drafter is stacked
+    // and scaled whatever its target's (GGUF and MLX targets are neither).
+    ValueRule{.key = kStacked,
+              .origin = ValueOrigin::kTensorPresent,
+              .tensor = "blk.{layer}.ffn_gate_up_exps.weight",
+              .type = kBool},
     ValueRule{.key = kScaled,
-              .origin = ValueOrigin::kComponent,
-              .kind = "ffn.moe",
-              .param = "projection_scales"},
+              .origin = ValueOrigin::kTensorPresent,
+              .tensor = "blk.{layer}.ffn_gate_exps.weight_scale_2",
+              .type = kBool},
     ValueRule{.key = kDraftRows,
               .origin = ValueOrigin::kTensor,
               .tensor = "draft_output.weight",

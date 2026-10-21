@@ -1140,6 +1140,13 @@ std::expected<std::vector<SourceValue>, std::string> ExtractValues(const Mapping
             t != source.tensors.end() && rule.dimension < t->format.shape.rank)
           value = static_cast<std::int64_t>(t->format.shape.ne[rule.dimension]);
         break;
+      case ValueOrigin::kTensorPresent:
+        // The drafter's own layout, never the target's: a stacked or scaled
+        // drafter composes with any target of its geometry.
+        value = std::ranges::any_of(source.tensors, [&](const SourceTensor& tensor) {
+          return Match(rule.tensor, tensor.name, kMaxLayers).has_value();
+        });
+        break;
     }
     if (!value) {
       if (rule.optional) continue;
@@ -1207,11 +1214,13 @@ Status ValidateMapping(const Mapping& m) {
       return Refuse(where, "drafter lacks a target architecture");
     for (const ValueRule& rule : m.draft->values)
       if (!IsText(rule.key) || rule.dimension >= format::kMaxDims ||
-          static_cast<unsigned>(rule.origin) > static_cast<unsigned>(ValueOrigin::kLayerCount) ||
+          static_cast<unsigned>(rule.origin) > static_cast<unsigned>(ValueOrigin::kTensorPresent) ||
           static_cast<unsigned>(rule.type) > static_cast<unsigned>(ValueType::kInts) ||
           (rule.origin == ValueOrigin::kComponent && (!IsKind(rule.kind) || !IsName(rule.param))) ||
           (rule.origin == ValueOrigin::kTensor && !IsText(rule.tensor)) ||
-          (rule.origin == ValueOrigin::kLayerCount && !IsPattern(rule.tensor, true)))
+          (rule.origin == ValueOrigin::kLayerCount && !IsPattern(rule.tensor, true)) ||
+          (rule.origin == ValueOrigin::kTensorPresent &&
+           (!IsPattern(rule.tensor, true) || rule.type != ValueType::kBool)))
         return Refuse(where, "invalid drafter value extraction rule");
   }
   if (!IsText(m.layer_count_key) || m.layer_types.empty() ||

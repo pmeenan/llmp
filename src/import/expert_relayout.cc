@@ -220,13 +220,17 @@ std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
     if (t.output >= outputs.size() || listed[t.output] != nullptr || t.name.empty())
       return Bad("an expert table outside the outputs, listed twice or unnamed");
     const TensorAssembly& a = outputs[t.output];
+    listed[t.output] = &t;
+    // A table of another encoding or layout is kept as it is assembled (an
+    // MLX drafter's pre-stacked affine experts); only one relaid out must be
+    // gathered expert by expert.
+    if (!RelaysOut(a.format)) continue;
     if (a.permutation || a.relayout_from || a.format.shape.rank != 3 ||
         PartOf(a, PartRole::kCodes) == nullptr || PartOf(a, PartRole::kBlockScales) == nullptr ||
         std::ranges::any_of(a.parts, [&](const PartAssembly& p) {
           return p.kind != PartAssemblyKind::kMatrices || p.sources.size() != a.format.shape.ne[2];
         }))
       return Bad("an expert table that is not a whole gathered table");
-    listed[t.output] = &t;
   }
   // Each relaid gate's up, by output.
   std::vector<std::optional<std::uint32_t>> partner(outputs.size());

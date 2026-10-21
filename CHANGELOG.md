@@ -24,6 +24,12 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Qwen3.8 MTP drafters take their expert layout (stacked gate/up, tensor
+  scales) from their own tensors rather than the target's, so the relaid
+  ModelOpt drafter composes with the GGUF and MLX targets again; the MLX
+  drafter import no longer refuses its pre-stacked affine experts as an
+  ungathered relayout table, and composes without ModelOpt's per-expert
+  tensor scales (R18's MLX MTP import had never completed).
 - Hang recovery's in-place reset (D-102 rung 2) now clears a step or routed
   continuation whose end was unproven (a lost fence; a faulted launch still
   restarts), so the model serves again instead of refusing every step until

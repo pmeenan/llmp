@@ -369,7 +369,8 @@ enum class ValueOrigin : std::uint8_t {
   kVocabulary,
   kComponent,
   kTensor,
-  kLayerCount
+  kLayerCount,
+  kTensorPresent  // a flag: whether any of the drafter's own tensors matches `tensor`
 };
 struct ValueRule {
   std::string_view key{};

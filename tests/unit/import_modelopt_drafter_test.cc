@@ -623,5 +623,33 @@ TEST(ImportModelOptDrafterTest, MissingTargetRefusesAndPublishedMetadataExtracti
   EXPECT_EQ(std::get<std::int64_t>(Find(*values, "qwen4exp-mtp.draft_vocab")->value), 65536);
 }
 
+// The drafter's expert layout comes from its own tensors, never its target's:
+// a relaid ModelOpt drafter (stacked gate/up, tensor scales) composes with an
+// unstacked GGUF or MLX target of the same geometry.
+TEST(ImportModelOptDrafterTest, StackedAndScaledFollowTheDrafterTensors) {
+  const auto target = NativeTarget();
+  const auto flag = [](const std::vector<spec::SourceValue>& values, std::string_view key) {
+    const auto* v = Find(values, key);
+    return v != nullptr && std::get<bool>(v->value);
+  };
+  auto own = test_support::qwen38::MtpSource(test_support::families::Qwen38Flash(), 321);
+  std::erase_if(own.tensors, [](const spec::SourceTensor& tensor) {
+    return tensor.name.contains("ffn_gate_up_exps") ||
+           tensor.name.ends_with("_exps.weight_scale_2");
+  });
+  auto values = spec::ExtractValues(spec::mappings::Qwen38MtpNativeMapping(), target.model,
+                                    target.source, own);
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_FALSE(flag(*values, "llmp.qwen4exp.experts_stacked"));
+  EXPECT_FALSE(flag(*values, "llmp.qwen4exp.expert_scales"));
+  own.tensors.push_back({.name = "blk.0.ffn_gate_up_exps.weight"});
+  own.tensors.push_back({.name = "blk.0.ffn_gate_exps.weight_scale_2"});
+  values = spec::ExtractValues(spec::mappings::Qwen38MtpNativeMapping(), target.model,
+                               target.source, own);
+  ASSERT_TRUE(values) << values.error();
+  EXPECT_TRUE(flag(*values, "llmp.qwen4exp.experts_stacked"));
+  EXPECT_TRUE(flag(*values, "llmp.qwen4exp.expert_scales"));
+}
+
 }  // namespace
 }  // namespace llmp::import

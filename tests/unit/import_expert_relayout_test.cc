@@ -407,6 +407,20 @@ TEST(ImportExpertRelayoutTest, KeepsTablesItCannotRelayLosslesslyAndRefusesBadLi
   EXPECT_EQ(kept->tables, 0U);
   ASSERT_EQ(outputs.size(), 1U);
   EXPECT_EQ(outputs[0].format.layout, Layout::kSplit);
+  // A table that does not relay out need not be gathered expert by expert:
+  // an MLX drafter's pre-stacked affine experts are one source per part.
+  std::vector<TensorAssembly> stacked(1);
+  stacked[0] = {.name = "blk.0.ffn_down_exps.weight", .format = Split(64, 100, 2)};
+  stacked[0].format.encoding = Encoding::kAffine;
+  for (const auto role : {PartRole::kCodes, PartRole::kBlockScales})
+    stacked[0].parts.push_back({.part = role, .kind = PartAssemblyKind::kCopy, .sources = {0}});
+  const auto before = stacked[0].name;
+  auto whole = RelayoutExpertTables(stacked, down);
+  ASSERT_TRUE(whole) << whole.error().reason;
+  EXPECT_EQ(whole->tables, 0U);
+  ASSERT_EQ(stacked.size(), 1U);
+  EXPECT_EQ(stacked[0].name, before);
+  EXPECT_EQ(stacked[0].parts.size(), 2U);
   const std::array<ExpertTable, 2> twice{down[0], down[0]};
   EXPECT_FALSE(RelayoutExpertTables(outputs, twice));
   const std::array<ExpertTable, 1> outside{{{.output = 1, .name = "x"}}};

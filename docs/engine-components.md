@@ -2861,9 +2861,11 @@ complete inventory, the norms' fold and the relayout records, its
 composition with the approved native target), composes it through the
 row's mapping's drafting recipe (`spec::DraftRecipe`: the native
 repeat-pending form; its values extracted declaratively from the actual
-target's stored component parameters and context, with the layer count and
-selected head rows read from its own tensor inventory, under the pinned
-composition digest; the head's
+target's stored component parameters and context, with the layer count,
+selected head rows and expert layout (stacked gate/up, tensor scales:
+`ValueOrigin::kTensorPresent`) read from its own tensor inventory, so the
+relaid drafter composes with an unstacked GGUF or MLX target of its
+geometry, under the pinned composition digest; the head's
 token map read through its placement and checked), with no
 architecture-named branch.
 
