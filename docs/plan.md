@@ -1143,6 +1143,33 @@ D-122).
       Sparks and are not archived for this. Where a pin is also the
       FP4-Local weights, it doubles as that import's same-checkpoint
       reference.
+- [ ] **Humming screen** (owner, 2026-10-21; vLLM's Humming `5b500b4`,
+      Apache-2.0, as a build-time kernel source under D-053,
+      [assessment](humming-assessment.md)): a coarse D-085 screen before any
+      integration, with its thresholds written down before the run (rule 3).
+      Pin the revision as a screening-only entry in the source lock; the
+      harness lives in `benchmarks/` and instantiates Humming's headers with
+      NVCC, never its Python launcher, on a Spark (`sm_121a`):
+      - **NVFP4 W4A4 grouped GEMM** against the CUTLASS 79d kernel
+        (`moe_cutlass.cu`) at Qwen3.8's prefill shapes and routed row
+        counts, BF16 output, the routed working set rotated (cold L2), with
+        documented PTX formats only (cubin patching off);
+      - **MXFP4 expert products** (W4A8 and W4A4 over relaid scales) at
+        DSpark's decode and verify row counts against GGML's MXFP4 path,
+        the owed MXFP4/MXFP8 products' first candidate;
+      - **one W4A16 grouped decode comparison** (1 to 16 rows) against
+        `llmp.decode.grouped.nvfp4.scale_atoms`.
+      Each result checks the operands against the CPU references. An
+      operator win of 10% or more is followed by one model-level A/B, since
+      operator wins here have not always survived in the model; if Humming
+      loses or only ties, record that and stop. A win leads to a
+      per-shape-class instance in the registry with checked-in rank data
+      (U6), an import-time relayout recorded in the artifact (D-108, D-113)
+      and a provenance check of each file used (rule 12). `sm_86` coverage
+      goes to U7d only after Humming builds with our toolchain. The hidden
+      E0M3/E3M4 formats (cubin patching) and FP8 MoE activations are leads,
+      not part of this screen
+      ([assessment](humming-assessment.md#hidden-tensor-core-formats-a-research-lead)).
 - [x] **Scalar DS/Qwen nonfinal state-only dependency cuts**
       ([evidence](experiments/ds-qwen-state-only/README.md)): ordinary plain DS and
       native/GGUF Qwen select checked cuts; DSpark/MTP head-only opt-ins remain
@@ -2476,6 +2503,13 @@ requantization from optimizations at unchanged quality.
         uses it (V4, V4.1, GLM-5.3's DSA), qualified per model against F16:
         the default only at the same quality, otherwise a per-alias mode
         (D-085; [assessment](deepinfer-assessment.md#5-fp4-indexer-scoring)).
+      - **FP8 MoE activations and quantized all-to-all** (leads from
+        [Humming](humming-assessment.md#m4-leads-fp8-activations-for-moe-and-quantized-all-to-all);
+        vendor figures only): an MXFP4-expert product with an FP8
+        activation operand for V4.1-Flash, an opt-in per-alias activation
+        mode qualified against F16 (rule 11), measured after M3.5's MXFP4
+        screen; an FP8 dispatch only as a measured input to the EP-versus-TP
+        decision above.
 - [ ] **Per model,** as in M3: graphs, state adapters, templates, the
       resident expert layout for EXL3 MoE, and speculation with M3's
       forced-rejection checks where the model supports it (for GLM, MTP or the
