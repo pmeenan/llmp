@@ -236,8 +236,8 @@ en::Status SetupFixture(Lifetime& life, bool small) {
           [p = life.paid](auto n) { p->Release(n); });
       !r)
     return Error(r.error());
-  if (auto r = life.resources.OpenCublas("masked attention handle"); !r) return r;
-  if (auto r = life.backend->LendCublas(&life.resources.cublas()); !r) return Error(r.error());
+  if (auto r = life.resources.OpenLibrary("masked attention handle"); !r) return r;
+  if (auto r = life.backend->LendLibrary(&life.resources.library()); !r) return Error(r.error());
   const auto owned = life.backend->Backend();
   if (!owned.owner || !owned.owner->Ready()) return Error("backend ownership");
   const auto& table = owned.owner->backend();
@@ -277,7 +277,7 @@ en::Status SetupFixture(Lifetime& life, bool small) {
   }
   life.launch.reset();
   life.backend->LaunchReleased();
-  if (auto r = life.backend->LendCublas(&life.resources.cublas()); !r) return Error(r.error());
+  if (auto r = life.backend->LendLibrary(&life.resources.library()); !r) return Error(r.error());
   auto launch = life.backend->Launch({life.node.pool().base + kGuard, Bytes(kPool)},
                                      {.base = life.resources.selected_workspace().base,
                                       .bytes = life.resources.selected_workspace().bytes});

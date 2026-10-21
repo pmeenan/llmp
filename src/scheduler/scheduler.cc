@@ -99,6 +99,7 @@ Scheduler::Scheduler(catalog::Catalog& catalog, CompletionBoard& board, base::Wa
       wake_(wake),
       lanes_(lanes),
       settings_(settings),
+      budget_bytes_(settings.budget.value()),
       controls_(settings.controls, settings.controls_reserved),
       tasks_(settings.tasks, settings.priorities, settings.aging_limit),
       records_(settings.tasks),

@@ -26,6 +26,7 @@
 #include "kernels/exl3/launch.h"
 #include "kernels/exl3/recon_gemm.h"
 #include "kernels/exl3/reconstruction_tuning.h"
+#include "kernels/ggml/selected_operation.h"
 #include "llmp_exl3_kernels.h"
 #include "providers/device_runtime.h"
 

@@ -166,17 +166,17 @@ class GgmlConstructionGpu : public testing::TestWithParam<bool> {
     const auto charge = [probe = life->probe](std::uint64_t bytes) { return probe->Charge(bytes); };
     const auto release = [probe = life->probe](std::uint64_t bytes) { probe->Release(bytes); };
     if (declare) {
-      auto opened = life->resources.OpenCublas("construction test declaration workspace");
+      auto opened = life->resources.OpenLibrary("construction test declaration workspace");
       ASSERT_TRUE(opened) << (opened ? "" : opened.error());
       if (declare_first)
-        ASSERT_TRUE(life->backend->Declare({}, life->resources.cublas_bytes(), charge, release));
+        ASSERT_TRUE(life->backend->Declare({}, life->resources.library_bytes(), charge, release));
     }
     ASSERT_TRUE(life->backend->FundConstruction(charge, release));
     EXPECT_FALSE(life->backend->FundConstruction(charge, release));
     if (declare) {
       if (!declare_first)
-        ASSERT_TRUE(life->backend->Declare({}, life->resources.cublas_bytes(), charge, release));
-      ASSERT_TRUE(life->backend->LendCublas(&life->resources.cublas()));
+        ASSERT_TRUE(life->backend->Declare({}, life->resources.library_bytes(), charge, release));
+      ASSERT_TRUE(life->backend->LendLibrary(&life->resources.library()));
     }
   }
   std::unique_ptr<Life, Retire> life;

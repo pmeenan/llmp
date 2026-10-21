@@ -469,8 +469,8 @@ TEST_F(ComponentAdmissionTest, UnpinnedModelsDeriveCapabilityBasedNumerics) {
   auto qwen_ckpt = llmp::test_support::Qwen38GgufCheckpoint();
   auto qwen_bound = llmp::import::NormalizationBound(qwen_ckpt);
   ASSERT_TRUE(qwen_bound);
-  auto qwen_norm = llmp::import::Normalize(
-      std::move(qwen_ckpt), {qwen_bound->metadata_bytes, qwen_bound->work_units});
+  auto qwen_norm = llmp::import::Normalize(std::move(qwen_ckpt),
+                                           {qwen_bound->metadata_bytes, qwen_bound->work_units});
   ASSERT_TRUE(qwen_norm) << (qwen_norm ? "" : qwen_norm.error().ToString());
   const auto qwen_gguf_model = qwen_norm->spec();
   const auto qwen_gguf_source = qwen_norm->canonical();

@@ -8,12 +8,12 @@
 #include <string>
 
 #include "format/encoding.h"
-#include "kernels/ggml/selected_operation.h"
+#include "kernels/common/selected_operation.h"
 namespace llmp::kernels::decode {
 // Every decoder over resident tables; NVFP4/affine split over the runner's
 // authenticated multipart row slots. Batched resident IDs follow IR GetRows.
 // Does not admit models or advertise products. The source outlives all calls.
-std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> RowsSelectedSource(
+std::expected<std::shared_ptr<const kernels::SelectedSource>, std::string> RowsSelectedSource(
     std::optional<format::Encoding> encoding = std::nullopt);
 }  // namespace llmp::kernels::decode
 #endif  // LLMP_KERNELS_DECODE_SELECTED_ROWS_H_

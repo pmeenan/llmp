@@ -19,6 +19,7 @@
 #ifndef LLMP_KERNELS_GGML_STEP_PROGRAM_H_
 #define LLMP_KERNELS_GGML_STEP_PROGRAM_H_
 
+#include <concepts>
 #include <cstdint>
 #include <expected>
 #include <functional>
@@ -27,8 +28,10 @@
 #include <string>
 
 #include "execution/registry.h"
+#include "kernels/common/device_backend.h"
 #include "kernels/common/lower.h"
 #include "kernels/common/step_program.h"
+#include "kernels/ggml/cublas.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/lower.h"
 #include "planner/lanes.h"
@@ -98,6 +101,12 @@ class GgmlBackend {
   static std::expected<std::unique_ptr<GgmlBackend>, std::string> Create(
       int device, providers::DeviceExecution& execution, providers::StreamId stream,
       CublasHandle* cublas, GgmlBackendOptions options = {});
+  template <std::same_as<kernels::StreamLibrary> Lib>
+  static std::expected<std::unique_ptr<GgmlBackend>, std::string> Create(
+      int device, providers::DeviceExecution& execution, providers::StreamId stream, Lib* library,
+      GgmlBackendOptions options = {}) {
+    return CreateFromLibrary(device, execution, stream, library, std::move(options));
+  }
   GgmlBackend(const GgmlBackend&) = delete;
   GgmlBackend& operator=(const GgmlBackend&) = delete;
   GgmlBackend(GgmlBackend&&) = delete;
@@ -133,6 +142,7 @@ class GgmlBackend {
   // made. Its plans are built the same with or without one (only running a
   // cuBLAS product needs it).
   std::expected<void, std::string> LendCublas(CublasHandle* cublas);
+  std::expected<void, std::string> LendLibrary(kernels::StreamLibrary* library);
   // Exact source-owned state requirement, separate from discardable scratch.
   std::uint64_t persistent_bytes() const {
     return options_.selected ? options_.selected->persistent_bytes() : 0;
@@ -155,6 +165,9 @@ class GgmlBackend {
       const kernels::LowerInput& input) const;
 
  private:
+  static std::expected<std::unique_ptr<GgmlBackend>, std::string> CreateFromLibrary(
+      int device, providers::DeviceExecution& execution, providers::StreamId stream,
+      kernels::StreamLibrary* library, GgmlBackendOptions options);
   GgmlBackend(int device, providers::DeviceExecution& execution, providers::StreamId stream,
               CublasHandle* cublas, GgmlBackendOptions options);
 

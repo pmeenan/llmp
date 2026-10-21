@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -315,6 +316,56 @@ std::optional<Encoding> EncodingByName(std::string_view name) {
     return std::nullopt;
   }
   return found->id;
+}
+
+namespace {
+
+bool EqualsIgnoreCase(std::string_view a, std::string_view b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    const auto ca = static_cast<unsigned char>(a[i]);
+    const auto cb = static_cast<unsigned char>(b[i]);
+    if (std::tolower(ca) != std::tolower(cb)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+std::optional<std::uint32_t> BlockBytes(Encoding encoding) {
+  const EncodingInfo& info = Info(encoding);
+  if (info.ggml.has_value()) {
+    return info.ggml->block_bytes;
+  }
+  if (info.parts.empty() && info.block_elements == 1 && info.element_bits != 0 &&
+      info.element_bits % 8 == 0) {
+    return info.element_bits / 8;
+  }
+  return std::nullopt;
+}
+
+std::optional<Encoding> EncodingByTypeName(std::string_view name) {
+  for (const EncodingInfo& info : Encodings()) {
+    if (EqualsIgnoreCase(name, info.name)) {
+      return info.id;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<std::uint32_t> LegacyTypeBlockBytes(std::string_view name) {
+  const auto enc = EncodingByTypeName(name);
+  if (!enc) {
+    return std::nullopt;
+  }
+  if (*enc == Encoding::kQ8_1) {
+    return 40U;
+  }
+  return BlockBytes(*enc);
 }
 
 bool Lossless(Encoding from, Encoding to) {

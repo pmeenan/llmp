@@ -42,8 +42,6 @@
 #include "engine/paged_weights.h"
 #include "execution/adaptive_depth.h"
 #include "execution/adaptive_wave_mode.h"
-#include "kernels/ggml/cublas.h"
-#include "kernels/ggml/step_program.h"
 #include "memory/reclaim.h"
 #include "planner/step_shape.h"
 #include "platform/crash_policy.h"
@@ -191,7 +189,15 @@ Server::Server(const config::NodeConfig& config, const config::RuntimeRoles& rol
              .hold_reads = &hold_reads_,
              .hold_cancellable = options.hold_cancellable}),
       retention_(std::chrono::hours(config.memory.retention_hours)),
-      spill_budget_(std::uint64_t{config.memory.spill_budget_gib} << 30U) {}
+      spill_budget_(std::uint64_t{config.memory.spill_budget_gib} << 30U),
+      pressure_({
+          .low_bytes = config.memory.pressure_low_mib.value << 20U,
+          .headroom_bytes = config.memory.pressure_headroom_mib.value << 20U,
+          .full_stall_percent = config.memory.pressure_stall_percent.value,
+          .first_backoff = std::chrono::milliseconds(config.memory.pressure_first_backoff_ms.value),
+          .most_backoff = std::chrono::milliseconds(config.memory.pressure_max_backoff_ms.value),
+          .log_interval = std::chrono::seconds(config.memory.pressure_log_interval_seconds.value),
+      }) {}
 
 Server::~Server() {
   if (started_ && !torn_down_) {

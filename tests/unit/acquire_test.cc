@@ -246,12 +246,11 @@ TEST_F(AcquireTest, NoVictimAcquireRefusesPressureWithoutEvictingUsefulCache) {
   ts::Done first;
   ts::AcquireReport loaded;
   ASSERT_TRUE(
-      Run(std::make_unique<ts::AcquireProgram>(first, ModelClosure(0), domain_, budget_, loaded),
-          first));
+      Run(std::make_unique<ts::AcquireProgram>(first, ModelClosure(0), domain_, loaded), first));
   ts::Done done;
   ts::AcquireReport report;
-  EXPECT_FALSE(Run(std::make_unique<ts::AcquireProgram>(done, ModelClosure(1), domain_, budget_,
-                                                        report, std::vector<ExtentId>{}, false),
+  EXPECT_FALSE(Run(std::make_unique<ts::AcquireProgram>(done, ModelClosure(1), domain_, report,
+                                                        std::vector<ExtentId>{}, false),
                    done));
   EXPECT_EQ(done.error.load(), static_cast<int>(sc::WorkError::kOverBudget));
   EXPECT_TRUE(report.evicted.empty());
@@ -270,11 +269,11 @@ TEST_F(AcquireTest, FailedOptionalZeroAcquireRetiresPartialCompletions) {
   }
   ts::Done done;
   ts::AcquireReport report;
-  ASSERT_TRUE(scheduler_->Start(
-      ++request_,
-      std::make_unique<ts::AcquireProgram>(done, ModelClosure(0), domain_, budget_, report,
-                                           std::vector<ExtentId>{}, false),
-      1));
+  ASSERT_TRUE(
+      scheduler_->Start(++request_,
+                        std::make_unique<ts::AcquireProgram>(done, ModelClosure(0), domain_, report,
+                                                             std::vector<ExtentId>{}, false),
+                        1));
   // Stop immediately after one resident publication, before processing the
   // remaining device command. The next zero refuses with proven completion.
   for (int i = 0; i < 10000 && Resident(0) == 0; ++i) Round();
@@ -308,11 +307,11 @@ TEST_F(AcquireTest, CancelledOptionalAcquireKeepsItsOwnerUntilDeviceFenceRetires
   }
   ts::Done done;
   ts::AcquireReport report;
-  ASSERT_TRUE(scheduler_->Start(
-      ++request_,
-      std::make_unique<ts::AcquireProgram>(done, ModelClosure(0), domain_, budget_, report,
-                                           std::vector<ExtentId>{}, false),
-      1));
+  ASSERT_TRUE(
+      scheduler_->Start(++request_,
+                        std::make_unique<ts::AcquireProgram>(done, ModelClosure(0), domain_, report,
+                                                             std::vector<ExtentId>{}, false),
+                        1));
   for (int i = 0; i < 10000 && execution_.fences() == 0; ++i) {
     storage_lane_->Turn(false);
     device_lane_->SubmissionTurn();
@@ -368,8 +367,8 @@ TEST_F(AcquireTest, ScopedDrainIncludesQueuedLoadsAndDoesNotWaitForUnrelatedLoad
     requests[m] = ++request_;
     ASSERT_TRUE(scheduler_->Start(
         requests[m],
-        std::make_unique<ts::AcquireProgram>(acquired[m], ModelClosure(m), domain_, budget_,
-                                             reports[m], std::vector<ExtentId>{}, false),
+        std::make_unique<ts::AcquireProgram>(acquired[m], ModelClosure(m), domain_, reports[m],
+                                             std::vector<ExtentId>{}, false),
         1));
     scheduler_->Turn();
   }
@@ -450,8 +449,7 @@ TEST_F(AcquireTest, EachAcquisitionEvictsOnlyTheOtherModelsWeights) {
       ts::Done done;
       ts::AcquireReport report;
       ASSERT_TRUE(
-          Run(std::make_unique<ts::AcquireProgram>(done, ModelClosure(m), domain_, budget_, report),
-              done))
+          Run(std::make_unique<ts::AcquireProgram>(done, ModelClosure(m), domain_, report), done))
           << "round " << round << " model " << m;
       EXPECT_EQ(Resident(m), kPerModel);
       EXPECT_TRUE(Loaded(m));
@@ -486,8 +484,8 @@ TEST_F(AcquireTest, TheProtectedWorkspaceIsNeverAVictim) {
   {
     ts::Done done;
     ts::AcquireReport report;
-    ASSERT_TRUE(Run(std::make_unique<ts::AcquireProgram>(done, weights_only(0), domain_, budget_,
-                                                         report, std::vector{workspace_}),
+    ASSERT_TRUE(Run(std::make_unique<ts::AcquireProgram>(done, weights_only(0), domain_, report,
+                                                         std::vector{workspace_}),
                     done));
   }
   const auto unprotected =
@@ -497,8 +495,8 @@ TEST_F(AcquireTest, TheProtectedWorkspaceIsNeverAVictim) {
 
   ts::Done done;
   ts::AcquireReport report;
-  ASSERT_TRUE(Run(std::make_unique<ts::AcquireProgram>(done, weights_only(1), domain_, budget_,
-                                                       report, std::vector{workspace_}),
+  ASSERT_TRUE(Run(std::make_unique<ts::AcquireProgram>(done, weights_only(1), domain_, report,
+                                                       std::vector{workspace_}),
                   done));
   EXPECT_EQ(catalog_.Describe(workspace_).value().state, ExtentState::kResident);
   EXPECT_EQ(report.evicted.size(), 2U);
@@ -520,17 +518,41 @@ TEST_F(AcquireTest, AClosureThatCannotFitIsRefusedAndEvictsNothing) {
     ts::AcquireReport report;
     std::vector<ExtentId> two = {weights_[1][0], weights_[1][1]};
     ASSERT_TRUE(Run(std::make_unique<ts::AcquireProgram>(
-                        done, catalog_.ClosureOfExtents(two).value(), domain_, budget_, report),
+                        done, catalog_.ClosureOfExtents(two).value(), domain_, report),
                     done));
   }
   ts::Done done;
   ts::AcquireReport report;
-  EXPECT_FALSE(Run(
-      std::make_unique<ts::AcquireProgram>(done, ModelClosure(0), domain_, budget_, report), done));
+  EXPECT_FALSE(
+      Run(std::make_unique<ts::AcquireProgram>(done, ModelClosure(0), domain_, report), done));
   EXPECT_EQ(done.error.load(), static_cast<int>(sc::WorkError::kOverBudget));
   EXPECT_TRUE(report.evicted.empty());
   EXPECT_EQ(Resident(0), 0U);
   EXPECT_EQ(Resident(1), 2U);
+}
+
+// Updating the scheduler's budget live governs subsequent acquisitions without
+// recreating the scheduler.
+TEST_F(AcquireTest, LiveBudgetUpdateGovernsSubsequentAcquisitions) {
+  Build(kPerModel);
+  ts::Done failed;
+  ts::AcquireReport failed_report;
+  EXPECT_FALSE(
+      Run(std::make_unique<ts::AcquireProgram>(failed, ModelClosure(0), domain_, failed_report),
+          failed));
+  EXPECT_EQ(failed.error.load(), static_cast<int>(sc::WorkError::kOverBudget));
+  EXPECT_EQ(Resident(0), 0U);
+
+  scheduler_->SetBudget(Bytes((1 + kPerModel) * kSize));
+  EXPECT_EQ(scheduler_->budget(), Bytes((1 + kPerModel) * kSize));
+
+  ts::Done succeeded;
+  ts::AcquireReport succeeded_report;
+  EXPECT_TRUE(Run(
+      std::make_unique<ts::AcquireProgram>(succeeded, ModelClosure(0), domain_, succeeded_report),
+      succeeded));
+  EXPECT_EQ(Resident(0), kPerModel);
+  EXPECT_TRUE(Loaded(0));
 }
 
 }  // namespace

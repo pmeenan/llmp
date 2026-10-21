@@ -27,9 +27,8 @@
 #include "engine/expert_slab.h"
 #include "engine/paged_weights.h"
 #include "engine/ple_rows.h"
+#include "engine/runner_resources.h"
 #include "format/tensor_format.h"
-#include "kernels/ggml/cublas.h"
-#include "kernels/ggml/step_program.h"
 #include "planner/construction.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
@@ -65,7 +64,7 @@ using ConstructionCharge = serving_support::Paid;
 // The largest measured (below) is 26.9 MB, DeepSeek V4's.
 constexpr std::uint64_t kServingReaderScratchBytes = 128ULL << 20;
 
-// Each of a launch's concurrent lanes' scratch at most (GGML's
+// Each of a launch's concurrent lanes' scratch at most (the backend's
 // ConfigureLanes), carved from the end of the node's pool.
 constexpr std::uint64_t kLaneScratchBytes = 4ULL * 1024ULL * 1024ULL;
 
@@ -156,11 +155,7 @@ struct ComponentHold {
   using Place = ComponentWeightPlace;
   ComponentWeightPlaces place;
   std::map<ir::WeightRef, std::uint64_t> pitch;
-  // Before the backend, whose launch borrows it (the runner's Release
-  // destroys that launch, then retires the handle).
-  kernels::ggml::SelectedWorkspace selected_state{};
-  std::unique_ptr<kernels::ggml::CublasHandle> cublas;
-  std::unique_ptr<kernels::ggml::GgmlBackend> backend;
+  std::unique_ptr<kernels::DeviceBackend> backend;
 };
 static_assert(sizeof(ComponentHold) <= 4096);  // StoredBindingBytes fixed owner inventory.
 
@@ -392,12 +387,11 @@ struct PreparedServing {
   LlmServingPolicy policy;
   base::Sha256Digest bound;
   std::uint32_t logit_width = 0, verify_rows = 0, branch_depth = 0;
-  std::uint64_t cublas_bytes = 0;
 };
 
 std::expected<EngineLlmParts, std::string> AssembleComponentParts(
     engine::PagedNode& node, const fs::path& store, std::string_view id,
-    std::string_view drafter_id, int index, const ModelSettings& settings,
+    std::string_view drafter_id, [[maybe_unused]] int index, const ModelSettings& settings,
     const spec::ServingRecipe& recipe, const spec::Mapping* drafter_mapping,
     const ComponentBuildOptions& options,
     const std::shared_ptr<engine::ExecutionMetadataAllowance>& metadata, PreparedServing built) {
@@ -463,32 +457,12 @@ std::expected<EngineLlmParts, std::string> AssembleComponentParts(
     parts.wave_mode.emplace(costs, force);
   }
   parts.config.setup_shapes = std::move(built.setup);
-  // cuBLAS on the model's stream over the runner's workspace (D-053: the
-  // engine's handle, never one GGML makes).
-  parts.config.kernel_memory.push_back(
-      {.name = std::format("{} cuBLAS workspace", settings.name), .bytes = built.cublas_bytes});
-  const auto selected_bytes = held->backend->persistent_bytes();
-  if (selected_bytes)
-    parts.config.kernel_memory.push_back(
-        {.name = std::format("{} selected kernel state", settings.name), .bytes = selected_bytes});
+  parts.config.kernel_memory = engine::BackendKernelMemory(*held->backend, settings.name);
   parts.config.prepare =
-      [&node, held, index, selected_bytes, cublas_bytes = built.cublas_bytes](
-          std::span<const std::uint64_t> bases) -> std::expected<void, std::string> {
-    if (bases.size() != 1U + static_cast<std::size_t>(selected_bytes != 0))
-      return Error("the kernel workspaces are not mapped");
-    held->selected_state = {selected_bytes ? bases[1] : 0, selected_bytes};
-    auto cublas = kernels::ggml::CublasHandle::Create(
-        0, node.execution(), node.stream(static_cast<std::uint32_t>(index)),
-        {.base = bases.front(), .size = base::Bytes(cublas_bytes)});
-    if (!cublas) return Error(std::format("cuBLAS: {}", cublas.error().detail));
-    held->cublas = std::move(*cublas);
-    return held->backend->LendCublas(held->cublas.get());
+      [held](std::span<const std::uint64_t> bases) -> std::expected<void, std::string> {
+    return held->backend->BindWorkspaces(bases);
   };
-  parts.config.retire = [held] {
-    held->backend->LaunchReleased();
-    held->selected_state = {};
-    held->cublas.reset();
-  };
+  parts.config.retire = [held] { held->backend->ReleaseWorkspaces(); };
   // The backend's immutable future launch configuration also governs
   // measurement. Its lane pools are funded beside measured stream scratch.
   parts.config.launch_pool_reserve = held->backend->lane_pool_reserve();
@@ -496,8 +470,7 @@ std::expected<EngineLlmParts, std::string> AssembleComponentParts(
       -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
     if (pool_bytes == 0 || pool_bytes > node.pool().bytes)
       return Error("a launch's pool lies outside the node's workspace");
-    return held->backend->Launch({.base = node.pool().base, .size = base::Bytes(pool_bytes)},
-                                 held->selected_state);
+    return held->backend->Launch({.base = node.pool().base, .size = base::Bytes(pool_bytes)});
   };
   parts.config.weight_address = [held, paged, drafter_paged](
                                     const ir::WeightRef& ref,
@@ -803,7 +776,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (forced) composition = *recipe.serving_rule;
     auto indexed = components::StageIndexedMasks(hold->spec, 0);
     if (!indexed) return Error(indexed.error());
-    const auto backend_capabilities = kernels::ggml::GgmlBackend::Capabilities();
+    const auto backend_capabilities = engine::DeviceBackendCapabilities();
     const bool indexed_masks = *indexed && backend_capabilities.indexed_masks;
     // The actual stored/composed contracts and selected emission mode bound
     // every mask and index-score plane's signed int32 stride (RE-037).
@@ -962,7 +935,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error("a block drafter's fill token is outside the vocabulary");
     // A layer's routed experts in one slab (the M3 runners' pitch).
     ComponentHold* held = hold.get();
-    kernels::ggml::GgmlBackendOptions backend_options{
+    kernels::DeviceBackendOptions backend_options{
         .lower = {.device_masks = true,
                   // The runner stages a frozen read's host mask (its cells'
                   // positions before the rows); the device's are made
@@ -976,9 +949,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                     return at == held->pitch.end() ? 0 : at->second;
                   }},
         .lanes = serving_policy->lanes()};
-    auto backend = kernels::ggml::GgmlBackend::Create(
-        0, node.execution(), node.stream(static_cast<std::uint32_t>(index)), nullptr,
-        std::move(backend_options));
+    auto backend = engine::CreateDeviceBackend(node, static_cast<std::uint32_t>(index),
+                                               std::move(backend_options));
     if (!backend) return Error(backend.error());
     hold->backend = std::move(*backend);
     // Native construction is funded for every family, whether or not its
@@ -996,11 +968,6 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
             [metadata](std::uint64_t bytes) { metadata->Release(bytes); });
         !funded)
       return Error(funded.error());
-    const providers::DeviceFacts facts =
-        providers::QueryDeviceFacts(0).value_or(providers::DeviceFacts{});
-    const std::uint64_t cublas_bytes =
-        kernels::ggml::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture))
-            .value();
     {
       if (!metadata) {
         auto admitted = admit_metadata();
@@ -1011,7 +978,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           options.tuning ? std::span<const execution::TunedShape>(options.tuning->facts().tuned)
                          : std::span<const execution::TunedShape>{};
       if (auto declared = hold->backend->Declare(
-              tuning, cublas_bytes,
+              tuning,
               [metadata, charge_metadata](std::uint64_t bytes) {
                 return charge_metadata(metadata, bytes);
               },
@@ -1037,8 +1004,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                    .bound = *bound,
                                    .logit_width = logit_width,
                                    .verify_rows = verify_rows,
-                                   .branch_depth = mtp ? depth : 0,
-                                   .cublas_bytes = cublas_bytes});
+                                   .branch_depth = mtp ? depth : 0});
   };
 }
 

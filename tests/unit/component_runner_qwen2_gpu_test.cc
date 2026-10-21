@@ -733,9 +733,9 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
   auto& entered = life->entered;
   const auto ran = [&]() -> en::Status {
     entered.push_back(kernel.get());
-    if (auto x = kernel->resources->OpenCublas("FP16 shared cuBLAS workspace"); !x) return x;
+    if (auto x = kernel->resources->OpenLibrary("FP16 shared cuBLAS workspace"); !x) return x;
     auto backend =
-        kg::GgmlBackend::Create(0, node.execution(), node.stream(0), &kernel->resources->cublas(),
+        kg::GgmlBackend::Create(0, node.execution(), node.stream(0), &kernel->resources->library(),
                                 {.lower = {.index_scratch_limit = 32 * kMiB}});
     if (!backend) return std::unexpected(backend.error());
     kernel->backend = std::move(*backend);

@@ -1152,8 +1152,12 @@ Status ModelRunner::RetireAfterFence() {
   // environment alive and refuse physical teardown until their last drop.
   closing_ = true;
   if (programs_.launch()) programs_.launch()->Retire();
-  routed_flight_.reset();
-  step_flight_.reset();
+  unproven_.ClearAfterFence();
+  for (auto& table : row_tables_) {
+    if (table && (!table->storage || table->storage->in_flight() == 0)) {
+      table->unproven.ClearAfterFence();
+    }
+  }
   if (resource_leases_.load(std::memory_order_acquire) != 0)
     return Error("private resource views still retain this runner's launch and backing");
   return {};
@@ -1165,8 +1169,13 @@ Status ModelRunner::AcknowledgeFence() {
   // go, and the plans that work may have used are dropped with them.
   if (released_ || closing_) return {};
   if (batch_active_) return Error("a private batch still holds the runner after its fence");
-  routed_flight_.reset();
-  step_flight_.reset();
+  unproven_.ClearAfterFence();
+  slots_.AcknowledgeFence();
+  for (auto& table : row_tables_) {
+    if (table && (!table->storage || table->storage->in_flight() == 0)) {
+      table->unproven.ClearAfterFence();
+    }
+  }
   DropPlans();
   return {};
 }
@@ -1180,8 +1189,12 @@ Status ModelRunner::Release() {
   released_ = true;
   // Release's existing contract is node teardown after successful drain and
   // stream fences. Only that proof may break a retained routed-owner cycle.
-  routed_flight_.reset();
-  step_flight_.reset();
+  unproven_.ClearAfterFence();
+  for (auto& table : row_tables_) {
+    if (table && (!table->storage || table->storage->in_flight() == 0)) {
+      table->unproven.ClearAfterFence();
+    }
+  }
   // The recordings name the launch and the memory: they go first (D-090).
   DropPlans();
   programs_.ReleaseAfterDrain();
@@ -1207,7 +1220,8 @@ Status ModelRunner::Release() {
 // --------------------------------------------------------------------- plans
 
 void ModelRunner::DropPlans() {
-  if (!batch_active_ && !routed_flight_ && (!step_flight_ || !step_flight_->unproven())) {
+  if (!batch_active_ && !unproven_.has_routed() &&
+      (!unproven_.step() || !unproven_.step()->unproven())) {
     ForgetCompletedRouting();
     plans_.Clear();
   }
@@ -1221,8 +1235,8 @@ void ModelRunner::ReclaimCandidates(std::uint32_t owner, bool running,
 }
 
 std::uint64_t ModelRunner::Reclaim(memory::ReclaimKind kind, std::uint64_t id) {
-  if (released_ || slots_.faulted() || batch_active_ || routed_flight_ ||
-      (step_flight_ && step_flight_->unproven()))
+  if (released_ || slots_.faulted() || batch_active_ || unproven_.has_routed() ||
+      (unproven_.step() && unproven_.step()->unproven()))
     return 0;
   std::array<PlanCacheBase*, 1> caches{&plans_};
   ForgetCompletedRouting();
@@ -1484,13 +1498,13 @@ const StepAuthorization* ModelRunner::CompanionFor(std::span<const StepAuthoriza
 std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& request) {
   if (batch_active_ && request.batch.data_ != batch_active_)
     return Refused("the runner is inside another owned complete batch");
-  if (step_flight_) return Refused("a step retains unproven effects", false);
+  if (unproven_.has_step()) return Refused("a step retains unproven effects", false);
   auto transaction = StepTransaction::Begin(*this, request);
   if (!transaction) return std::unexpected(std::move(transaction.error()));
-  step_flight_ = std::move(*transaction);
-  auto result = step_flight_->Run(request);
-  if (step_flight_->releasable())
-    step_flight_.reset();
+  unproven_.RetainStep(std::move(*transaction));
+  auto result = unproven_.step()->Run(request);
+  if (unproven_.step()->releasable())
+    unproven_.ReleaseStep();
   else if (!result)
     result.error().clean = false;
   return result;

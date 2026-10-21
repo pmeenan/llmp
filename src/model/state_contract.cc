@@ -106,8 +106,9 @@ std::optional<std::string> Invalid(const StateTensorContract& t) {
   }
   // A block encoding stored as GGML's blocks (every block state encoding):
   // a cell is whole blocks, so every range of cells starts at a block.
-  if (info.block_elements > 1 && info.parts.empty() && info.ggml &&
-      t.cell_bytes % info.ggml->block_bytes != 0) {
+  const auto block_bytes = format::BlockBytes(t.encoding);
+  if (info.block_elements > 1 && info.parts.empty() && block_bytes &&
+      t.cell_bytes % *block_bytes != 0) {
     return "a state tensor's cell holds a partial block";
   }
   if (t.ring_reads_whole && t.cells != CellRule::kRing) return "only a ring reads whole";

@@ -530,15 +530,14 @@ class AcquireProgram final : public ReportingProgram {
   static constexpr std::uint64_t kRounds = 8;
 
   AcquireProgram(ProgramDone& done, catalog::Closure closure, catalog::DomainId domain,
-                 base::Bytes budget, AcquireReport& report,
-                 std::vector<catalog::ExtentId> protect = {}, bool select_victims = true)
+                 AcquireReport& report, std::vector<catalog::ExtentId> protect = {},
+                 bool evict = true)
       : ReportingProgram(done),
         closure_(std::move(closure)),
         domain_(domain),
-        budget_(budget),
         report_(report),
         protect_(std::move(protect)),
-        select_victims_(select_victims) {}
+        select_victims_(evict) {}
 
   scheduler::Step Advance(scheduler::TaskContext& context) override {
     if (context.TakeFailure()) {
@@ -566,7 +565,7 @@ class AcquireProgram final : public ReportingProgram {
         }
       }
       const memory::MaterializationPlan plan = memory::PlanMaterialization(
-          context.catalog(), domain_, budget_, closure_, protect_, select_victims_);
+          context.catalog(), domain_, context.budget(), closure_, protect_, select_victims_);
       ++report_.plans;
       if (!plan.feasible) {
         return Fail(plan.victims.sufficient || plan.shortfall.value() == 0
@@ -603,7 +602,6 @@ class AcquireProgram final : public ReportingProgram {
  private:
   catalog::Closure closure_;
   catalog::DomainId domain_;
-  base::Bytes budget_;
   AcquireReport& report_;
   std::vector<catalog::ExtentId> protect_;
   bool select_victims_ = true;

@@ -54,6 +54,7 @@
 
 #include "catalog/catalog.h"
 #include "engine/paged_node.h"
+#include "engine/unproven_work.h"
 #include "kernels/paging/paging.h"
 #include "platform/kept_files.h"
 #include "providers/device_execution.h"
@@ -255,9 +256,16 @@ class LiveState {
   // A failed copy may still own the DMA destination. Keep it until exit
   // and refuse subsequent reuse, even when the requested size is smaller.
   void HostCopyUnproven() {
-    host_copy_unproven_ = true;
+    host_copy_unproven_.Mark();
     if (host_node_ != nullptr) {
       host_node_->KeepPinned(host_copy_);
+    }
+  }
+  void AcknowledgeFence() noexcept {
+    if (host_copy_unproven_.active()) {
+      host_copy_unproven_.ClearAfterFence();
+      host_copy_ = nullptr;
+      host_capacity_ = 0;
     }
   }
 
@@ -379,7 +387,7 @@ class LiveState {
   void* host_copy_ = nullptr;
   PagedNode* host_node_ = nullptr;
   std::uint64_t host_capacity_ = 0;
-  bool host_copy_unproven_ = false;
+  UnprovenWork host_copy_unproven_;
   bool quarantined_ = false;
   std::uint64_t refused_bytes_ = 0;  // refused_bytes()
 

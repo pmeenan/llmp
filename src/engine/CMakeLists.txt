@@ -28,7 +28,8 @@
 #   (runner_resources.h) and the expert slab's device side (expert_slab.h)
 #   over the core. It is not given CUDA's headers (docs/portability.md).
 #   llmp-runtime links it, and so do the paged harnesses and their tests.
-add_library(llmp_engine_core STATIC paged_node.cc paged_weights.cc live_state.cc checkpoint_file.cc
+add_library(llmp_engine_core STATIC paged_node.cc paged_node_regions.cc paged_node_accounting.cc paged_node_requests.cc
+                                      paged_weights.cc live_state.cc checkpoint_file.cc
                                       request_cohort.cc slot_lifecycle.cc ple_rows.cc runner_memory.cc
                                       plan_account.cc coverage.cc program_lifecycle.cc step_runs.cc step_source.cc model_runner.cc runner_owner.cc
                                       step_transaction.cc step_inputs.cc

@@ -287,8 +287,8 @@ struct Life {
       std::memcpy(data.data(), values.data(), data.size());
       return {};
     };
-    parts.prepare_request =
-        [this](const rt::ImageInput& input, const llmp::base::Sha256Digest& layout)
+    parts.prepare_request = [this](const rt::ImageInput& input,
+                                   const llmp::base::Sha256Digest& layout)
         -> std::expected<std::variant<rt::ImageRequest, rt::ImageGeometry>, std::string> {
       ++trace->prepared_requests;
       if (input.prompt == "refuse") return std::unexpected("paid source refused input");

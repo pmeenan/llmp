@@ -8,8 +8,8 @@
 #include <optional>
 #include <string>
 
+#include "kernels/common/selected_operation.h"
 #include "kernels/exl3/packed_tuning.h"
-#include "kernels/ggml/selected_operation.h"
 namespace llmp::kernels::exl3 {
 // Occupancy for output F16/F32, row case one/multiple, narrow/wide config.
 // Queried without allocating payloads or submitting work. It is rechecked
@@ -26,12 +26,12 @@ std::expected<GemvCapacity, std::string> QueryGemvCapacity(int device);
 // no model graph and owns no runner: shared IR lowering supplies each exact
 // selected product/bias, physical parts, and global activation placement.
 // Packed tuning is the authenticated cache, never a new autotuning run.
-std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> SelectedSource(
+std::expected<std::shared_ptr<const kernels::SelectedSource>, std::string> SelectedSource(
     FrozenCache cache, std::optional<GemvCapacity> gemv = {},
     std::optional<PackedCapacity> defaults = {}, bool generic = false);
 // All existing frozen pin sets plus one distinct occupancy-derived packed source.
 // No model identity selects a profile; capabilities prove each physical problem.
-std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> DeviceSelectedSource(
+std::expected<std::shared_ptr<const kernels::SelectedSource>, std::string> DeviceSelectedSource(
     int device);
 }  // namespace llmp::kernels::exl3
 #endif  // LLMP_KERNELS_EXL3_SELECTED_SOURCE_H_

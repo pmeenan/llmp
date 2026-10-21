@@ -175,6 +175,15 @@ std::span<const EncodingInfo> Encodings();
 const EncodingInfo& Info(Encoding encoding);
 std::optional<Encoding> EncodingByName(std::string_view name);
 
+// The byte size of one block of a single-part encoding (1-element dense
+// encodings included); nullopt for multi-part encodings.
+std::optional<std::uint32_t> BlockBytes(Encoding encoding);
+// Case-insensitive lookup by encoding or container/GGML type name.
+std::optional<Encoding> EncodingByTypeName(std::string_view name);
+// Legacy v0 type block size lookup by type name ("Q8_1" is 40 in v0's
+// representation table, all other single-part types match BlockBytes).
+std::optional<std::uint32_t> LegacyTypeBlockBytes(std::string_view name);
+
 // Whether every value of `from` is exactly a value of `to`, so that
 // converting state from one to the other loses nothing. False where the
 // conversion rounds, or where exactness is not established (a quantized

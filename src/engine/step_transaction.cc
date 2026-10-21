@@ -94,7 +94,8 @@ Status StepTransaction::CheckDraftPermit(const ModelRunner& runner,
 }
 
 std::expected<void, StepRefusal> StepTransaction::Validate(const StepRequest& request) const {
-  if (runner_.routed_flight_) return Refused("a routed step retains unproven effects", false);
+  if (runner_.unproven_.has_routed())
+    return Refused("a routed step retains unproven effects", false);
   if (!runner_.bound_ || runner_.released_ || runner_.closing_)
     return Refused("the model runner is not bound");
   const pl::StepShape& shape = request.shape;
@@ -218,11 +219,15 @@ std::expected<std::shared_ptr<StepTransaction>, StepRefusal> StepTransaction::Be
   if (auto checked = validation.Validate(request); !checked)
     return std::unexpected(std::move(checked.error()));
   std::uint64_t consumers = 0;
+  std::size_t tail_count = 0;
   for (const auto& permit : request.authorization) {
+    if (permit.compound_tail_) ++tail_count;
     if (permit.consumers_.size() > runner.slots_.stages() ||
         __builtin_add_overflow(consumers, std::uint64_t{permit.consumers_.size()}, &consumers))
       return Refused("step permission inventory exceeds its authenticated stages");
   }
+  if (tail_count > validation.tails_.size())
+    return Refused("compound final publication exceeds cohort capacity");
   // The fixed allowance includes the shared control block, array cookies
   // and allocator bookkeeping in addition to the exact array payloads.
   std::uint64_t bytes = sizeof(StepTransaction) + 512;
@@ -738,7 +743,7 @@ std::expected<StepReport, StepRefusal> StepTransaction::Run(const StepRequest& r
       base::Check(batch.pending != 0, "a batch step publishes its retirement once");
       --batch.pending;
     } else {
-      batch.unknown = true;
+      batch.unproven.Mark();
     }
   }
   return result;
@@ -823,7 +828,8 @@ std::expected<void, StepRefusal> StepTransaction::PlanRows(Frame& frame) {
       if (table->config.weight.stage != shape.stage ||
           table->config.weight.component != input.component)
         continue;
-      if (table->stalled) return Refused("row-table reads have unproven completion", false);
+      if (table->unproven.active())
+        return Refused("row-table reads have unproven completion", false);
       auto plan = PlanPleRows(table->table, ids, PleLandingBound(table->capacity), table->capacity);
       if (!plan) return Refused(plan.error());
       // One side-row input is staged from its first part's remap. Every
@@ -1431,9 +1437,11 @@ std::expected<void, StepRefusal> StepTransaction::PrepareState(Frame& frame) {
       return Refused("a row table's shard is not open",
                      transaction.FinishPreparations().has_value());
     if (auto loaded = ReadPleRows(*table.storage, fd, read.plan, table.landing); !loaded) {
-      table.stalled = table.storage->in_flight() != 0;
+      if (table.storage->in_flight() != 0) {
+        table.unproven.Mark();
+      }
       const bool drained = transaction.FinishPreparations().has_value();
-      return Refused(loaded.error(), drained && !table.stalled);
+      return Refused(loaded.error(), drained && !table.unproven.active());
     }
     std::ranges::copy(read.plan.sources, table.sources);
     *table.count = static_cast<std::uint32_t>(read.plan.sources.size());
@@ -1657,7 +1665,8 @@ void StepTransaction::Queue(Frame& frame) {
   frame.prefix_retirement = job_report.retirement;
   if (!program.routed()) CompoundTailRetired(job_report);
   if (program.routed() && posted && failure.empty() && !frame.execution.launch()->faulted()) {
-    if (auto continued = runner_.ContinueRouted(report.path, runner_.step_flight_); !continued) {
+    if (auto continued = runner_.ContinueRouted(report.path, runner_.unproven_.step());
+        !continued) {
       failure = continued.error();
       unknown = true;  // prefix effects exist; no completion inferred from refusal
       posted = Error(continued.error());

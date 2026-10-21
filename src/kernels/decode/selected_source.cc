@@ -18,6 +18,7 @@
 #include "kernels/decode/selected_grouped.h"
 #include "kernels/decode/selected_products.h"
 #include "kernels/decode/selected_rows.h"
+#include "kernels/ggml/selected_operation.h"
 #include "providers/device_runtime.h"
 
 namespace llmp::kernels::decode {

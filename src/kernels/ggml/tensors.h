@@ -27,19 +27,22 @@
 #include <vector>
 
 #include "ggml.h"
+#include "kernels/common/selected_operation.h"
 
 namespace llmp::kernels::ggml {
 
-// Why a kernel-module call failed. kRejected: a precondition did not hold
-// and nothing was queued. kUnknown: a launch reported a device error, so
-// what was queued is undetermined (a fault, D-048): its operands stay
-// protected until recovery proves the stream quiescent.
-enum class KernelError : std::uint8_t { kRejected, kUnknown };
-
-struct KernelFailure {
-  KernelError error = KernelError::kRejected;
-  std::string detail;
-};
+using kernels::BoundSelectedCall;
+using kernels::KernelError;
+using kernels::KernelFailure;
+using kernels::SelectedCall;
+using kernels::SelectedLaunch;
+using kernels::SelectedNode;
+using kernels::SelectedOperand;
+using kernels::SelectedPart;
+using kernels::SelectedRoute;
+using kernels::SelectedRouteBuffers;
+using kernels::SelectedSource;
+using kernels::SelectedWorkspace;
 
 class TensorArena {
  public:

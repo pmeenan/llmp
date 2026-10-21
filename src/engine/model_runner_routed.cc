@@ -421,7 +421,7 @@ Status ModelRunner::BeginRouted(kn::StepProgram& program, StepPlanRuns& runs, co
                                 const Copies& outputs, const Copies& carries, bool capture,
                                 std::shared_ptr<RoutedFlight> prepared, const PromptBatch& batch) {
   if (!program.routed()) return {};
-  if (!routed_ || routed_flight_ || routed_->epoch == UINT64_MAX)
+  if (!routed_ || unproven_.has_routed() || routed_->epoch == UINT64_MAX)
     return Error("routed execution is unprepared, still retained or exhausted");
   if (prepared) {
     const bool private_view = bool(prepared->resources);
@@ -452,7 +452,7 @@ Status ModelRunner::BeginRouted(kn::StepProgram& program, StepPlanRuns& runs, co
     prepared->carries.assign(carries.begin(), carries.end());
     prepared->access = kn::RoutedAccess(prepared->program, ++routed_->epoch);
     routed_->completed_program = nullptr;
-    routed_flight_ = std::move(prepared);
+    unproven_.RetainRouted(std::move(prepared));
     return {};
   }
   if (batch) return Error("private batch route lacks its paid producer capability");
@@ -503,7 +503,7 @@ Status ModelRunner::BeginRouted(kn::StepProgram& program, StepPlanRuns& runs, co
     runs.copies = inputs;
     runs.routed_outputs = outputs;
   }
-  routed_flight_ = std::move(flight);
+  unproven_.RetainRouted(std::move(flight));
   return {};
 }
 
@@ -513,8 +513,8 @@ void ModelRunner::ForgetCompletedRouting() {
 
 std::expected<std::pair<std::uint64_t, std::span<const std::int32_t>>, std::string>
 ModelRunner::CompletedRoute(const kn::RoutedProgram& program, std::size_t group) const {
-  if (!routed_ || routed_flight_ || routed_->completed_program != &program || routed_->epoch == 0 ||
-      group >= program.groups() || !routed_->pinned)
+  if (!routed_ || unproven_.has_routed() || routed_->completed_program != &program ||
+      routed_->epoch == 0 || group >= program.groups() || !routed_->pinned)
     return std::unexpected("no completed current route to inspect");
   const auto& layout = program.layout(group);
   std::uint64_t count = 0, bytes = 0, offset = 0;
@@ -532,11 +532,12 @@ ModelRunner::CompletedRoute(const kn::RoutedProgram& program, std::size_t group)
 void ModelRunner::ForgetRouted(bool retired) {
   // A started flight's owners outlive its step only while that step's
   // retirement is unproven (a failed continuation forces that).
-  if (routed_flight_ && (!routed_flight_->started || retired)) routed_flight_.reset();
+  auto flight = unproven_.routed_as<RoutedFlight>();
+  if (flight && (!flight->started || retired)) unproven_.ReleaseProvenRouted();
 }
 
 StepQueued ModelRunner::QueueRoutedPrefix(providers::NativeStream native) {
-  auto flight = routed_flight_;
+  auto flight = unproven_.routed_as<RoutedFlight>();
   if (!flight) return {.result = std::unexpected(kn::StepFailure{.detail = "no routed flight"})};
   const auto bytes = flight->program->layout().host_bytes;
   flight->prefix = flight->execution.QueueRouted(
@@ -552,7 +553,7 @@ StepQueued ModelRunner::QueueRoutedPrefix(providers::NativeStream native) {
 }
 
 Status ModelRunner::ContinueRouted(RunPath& path, std::shared_ptr<StepTransaction> transaction) {
-  auto flight = routed_flight_;
+  auto flight = unproven_.routed_as<RoutedFlight>();
   if (!flight || !flight->started || !flight->prefix.result || flight->unknown)
     return Error("routed prefix has not completed successfully");
   if (auto current = CheckRoutingSource(); !current) return current;
@@ -684,7 +685,7 @@ Status ModelRunner::ContinueRouted(RunPath& path, std::shared_ptr<StepTransactio
   path = all_replayed ? RunPath::kReplayed : any_captured ? RunPath::kCaptured : RunPath::kEager;
   ++flight->runs->eager_runs;
   routed_->completed_program = flight->resources ? nullptr : flight->program;
-  routed_flight_.reset();
+  unproven_.ReleaseProvenRouted();
   return {};
 }
 

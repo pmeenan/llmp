@@ -114,6 +114,7 @@
 #include "base/wake.h"
 #include "catalog/catalog.h"
 #include "engine/supplemental_run.h"
+#include "engine/unproven_work.h"
 #include "kernels/common/execution_resources.h"
 #include "providers/device_execution.h"
 #include "providers/device_memory.h"
@@ -215,6 +216,7 @@ struct LoadStats {
 };
 
 struct NodeSettings {
+  int device_ordinal = 0;
   std::size_t compute_streams = 1;  // one per model: streams 0..n-1; the copy stream is n
   std::size_t slots = kPagedSlots;
   bool inline_lanes = false;
@@ -551,6 +553,7 @@ class PagedNode {
   ~PagedNode();
 
   Status Open();
+  int device_ordinal() const noexcept { return settings_.device_ordinal; }
   bool open_for_setup() const {
     return memory_ && execution_ && domain_.valid() && !scheduler_ && !torn_down_;
   }
@@ -614,7 +617,8 @@ class PagedNode {
   const catalog::Catalog& catalog() const { return catalog_; }
   catalog::DomainId domain() const { return domain_; }
   scheduler::Scheduler& scheduler() { return *scheduler_; }
-  base::Bytes budget() const { return budget_; }
+  [[nodiscard]] base::Bytes budget() const noexcept;
+  void SetBudget(base::Bytes budget) noexcept;
   // The physical bytes needed if all registered live-state ceilings were
   // used. A harness may budget this without mapping any unused state.
   std::uint64_t StateCapacity() const;
@@ -665,7 +669,11 @@ class PagedNode {
   // (storage.h); returns true then. Otherwise the ring is destroyed.
   bool RetireRing(std::unique_ptr<providers::Storage> ring, std::span<void* const> landings);
   // Pinned allocations RetireRing kept from Close's frees.
-  std::size_t kept_pinned() const { return kept_pinned_.size(); }
+  std::size_t kept_pinned() const noexcept { return unproven_.kept_pinned(); }
+  std::size_t unproven_storage_rings() const noexcept { return unproven_.unproven_storage_rings(); }
+  bool unproven() const noexcept { return unproven_.active(); }
+  NodeUnproven& unproven_work() noexcept { return unproven_; }
+  const NodeUnproven& unproven_work() const noexcept { return unproven_; }
 
   // Memory the node counts beside the catalog's extents (D-090 as amended
   // 2026-10-02): the models' plans and graphs (engine/plan_account.h
@@ -1072,9 +1080,7 @@ class PagedNode {
   Status GrowPageable(Mapped& mapped, std::uint64_t bytes);
   std::shared_ptr<StagingLifetime> staging_lifetime_ = std::make_shared<StagingLifetime>();
   std::vector<void*> pinned_;
-  // Left to the process's end on purpose (RetireRing): never freed.
-  std::vector<void*> kept_pinned_;
-  std::vector<providers::Storage*> kept_rings_;
+  NodeUnproven unproven_;
 
   // The host memory charged beside the catalog (ChargeHost).
   bool Recharge(std::uint64_t total, bool force, std::uint64_t* shortfall);

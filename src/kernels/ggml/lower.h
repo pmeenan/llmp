@@ -94,23 +94,7 @@ struct LowerConstructionInventory {
 std::expected<LowerConstructionInventory, KernelFailure> LowerConstructionOf(
     const LowerInput& input);
 
-struct LowerOptions {
-  // Actual backend allowance; used before allocating ordered routed metadata.
-  std::shared_ptr<const kernels::BackendOwner> routed_funder{};
-  // kMaskBuild on the device (llmp.causal.mask), or built on the host.
-  bool device_masks = true;
-  // Optional build-time source for operations the IR planner selected.
-  const SelectedSource* selected_source = nullptr;
-  // A frozen read's host-built mask (a drafter over its target's borrowed
-  // state): its slot's cells say so (step_program.h InputCells::frozen),
-  // which a stager must honour; off, such a step is refused with host masks.
-  bool frozen_host_masks = false;
-  // The selected recipe reader index allowance (graph_read_index.h).
-  std::uint64_t index_scratch_limit = std::numeric_limits<std::uint64_t>::max();
-  // The bytes between an expert array's experts as the runner placed them
-  // (a slab's pitch, engine/paged_weights.h SlabSpec); 0 or none: packed.
-  std::function<std::uint64_t(const ir::WeightRef&)> expert_stride{};
-};
+using kernels::LowerOptions;
 
 // A leaf of the lowered graph and the primitive step's tensor it stands for
 // (an input, a host-built mask's kMaskBuild output, a weight, a state).

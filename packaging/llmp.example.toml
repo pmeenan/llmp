@@ -223,6 +223,26 @@ schema_version = 2
 # false: nothing outlives the process (the spill files stay unnamed, and
 # what an earlier start kept is removed).
 # keep_across_restart = true
+# Physical-memory mode: "dedicated" (default) or "shared".
+# "dedicated": physical backing is acquired up front and held across models.
+# "shared": memory is allocated on demand and released when idle or under pressure.
+# mode = "dedicated"
+# In shared mode, seconds of inactivity before idle model working sets are
+# released (0 disables idle release).
+# idle_release_seconds = 300
+# Host memory pressure trim thresholds (runtime/pressure_trim.h).
+# pressure_low_mib: MemAvailable trigger mark below which pressure trimming activates.
+# pressure_low_mib = 512
+# pressure_headroom_mib: target headroom above pressure_low_mib to restore.
+# pressure_headroom_mib = 1024
+# pressure_stall_percent: percentage of time stalled on memory over 10 s to raise trigger.
+# pressure_stall_percent = 5.0
+# pressure_first_backoff_ms: initial backoff interval between trims in milliseconds.
+# pressure_first_backoff_ms = 1000
+# pressure_max_backoff_ms: maximum backoff interval between trims in milliseconds.
+# pressure_max_backoff_ms = 60000
+# pressure_log_interval_seconds: minimum interval in seconds between pressure trim log warnings.
+# pressure_log_interval_seconds = 60
 
 # A cluster member's keys (cluster_file, node_id, [credentials], [control])
 # are written by cluster enrollment, which arrives in M6a; this build

@@ -753,4 +753,159 @@ TEST(StepTransactionTest, AResultAndItsPrepaidReleaseAccountCanOutliveTheNode) {
   EXPECT_EQ(receipt.bytes(), 0U);
 }
 
+TEST(StepTransactionTest, UnprovenStepFailureRetainsWitnessesUntilFenceRecovery) {
+  en::PagedNode node(en::NodeSettings{
+      .compute_streams = 1, .slots = 1, .slot_bytes = en::kPagedExtent, .direct_steps = true});
+  ASSERT_TRUE(node.Open());
+  const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(llmp::base::Bytes(fixed + 16 * en::kPagedExtent)));
+  node.Run();
+
+  class TestModel final : public en::PagedModel {
+   public:
+    explicit TestModel(std::uint32_t stream) : stream_(stream) {}
+    std::uint32_t stream() const override { return stream_; }
+    const llmp::catalog::Closure& fence_closure() const override { return closure_; }
+    std::vector<llmp::catalog::ExtentId> managed_extents() const override { return {}; }
+    en::Status Release() override { return {}; }
+    en::Status AcknowledgeFence() override {
+      unproven.ClearAfterFence();
+      acknowledged = true;
+      return {};
+    }
+    en::UnprovenWork unproven;
+    bool acknowledged = false;
+
+   private:
+    std::uint32_t stream_ = 0;
+    llmp::catalog::Closure closure_;
+  };
+
+  TestModel model(0);
+  ASSERT_TRUE(node.BeginRequest(0, {}, "request with lost fence"));
+  static_cast<llmp::providers::fake::FakeDeviceExecution&>(node.execution())
+      .FailNextQuery(llmp::providers::ProviderError::kUnknown);
+  model.unproven.Mark();
+  en::JobReport failed_report;
+  auto step = node.Job(
+      {}, [](pr::NativeStream) { return sc::JobResult::kQueued; }, "unprovable step", 0, {},
+      &failed_report);
+  EXPECT_FALSE(step);
+  EXPECT_EQ(failed_report.retirement, en::JobReport::Retirement::kUnproven);
+  EXPECT_TRUE(model.unproven.active());
+  EXPECT_TRUE(node.unproven());
+  EXPECT_TRUE(node.InRequest(0));
+  EXPECT_FALSE(node.EndRequest(0));
+
+  // Stream fence recovery proves past work ended, clears tainted witness, and acknowledges model
+  // fence
+  auto recovered = node.RecoverAfterFence(model);
+  ASSERT_TRUE(recovered) << recovered.error();
+  EXPECT_TRUE(model.acknowledged);
+  EXPECT_FALSE(model.unproven.active());
+  EXPECT_FALSE(node.unproven());
+  EXPECT_FALSE(node.InRequest(0));
+
+  // Verify clean subsequent service
+  ASSERT_TRUE(node.BeginRequest(0, {}, "subsequent clean request"));
+  EXPECT_TRUE(node.InRequest(0));
+  en::JobReport clean_report;
+  ASSERT_TRUE(node.Job(
+      {}, [](pr::NativeStream) { return sc::JobResult::kQueued; }, "clean step", 0, {},
+      &clean_report));
+  EXPECT_EQ(clean_report.retirement, en::JobReport::Retirement::kRetired);
+  ASSERT_TRUE(node.EndRequest(0));
+  EXPECT_FALSE(node.InRequest(0));
+
+  auto& execution = static_cast<llmp::providers::fake::FakeDeviceExecution&>(node.execution());
+  const pr::FenceId leaked(0, 1);
+  ASSERT_EQ(execution.Query(leaked).value_or(pr::FenceState::kPending), pr::FenceState::kComplete);
+  ASSERT_TRUE(execution.Release(leaked));
+  ASSERT_TRUE(node.TearDown({}));
+}
+
+TEST(StepTransactionTest, UnprovenWorkLifecycle) {
+  en::UnprovenWork work;
+  EXPECT_FALSE(work.active());
+  EXPECT_FALSE(static_cast<bool>(work));
+
+  work.Mark();
+  EXPECT_TRUE(work.active());
+  EXPECT_TRUE(static_cast<bool>(work));
+
+  work.ClearAfterFence();
+  EXPECT_FALSE(work.active());
+
+  int dummy = 42;
+  work.KeepPinned(&dummy);
+  EXPECT_TRUE(work.active());
+  EXPECT_EQ(work.kept_pinned(), 1u);
+
+  // Cleared after fence retains kept pinned allocations
+  work.ClearAfterFence();
+  EXPECT_TRUE(work.active());
+  EXPECT_EQ(work.kept_pinned(), 1u);
+
+  // Full clear drops kept pinned allocations
+  work.Clear();
+  EXPECT_FALSE(work.active());
+  EXPECT_EQ(work.kept_pinned(), 0u);
+}
+
+TEST(StepTransactionTest, SupplementalJobReclaimsBeforeMaterializingSelectedExtents) {
+  en::PagedNode node(
+      en::NodeSettings{.compute_streams = 1, .slots = 1, .slot_bytes = en::kPagedExtent});
+  ASSERT_TRUE(node.Open());
+  ASSERT_TRUE(
+      node.MapWorkspace(2 * en::kPagedExtent, en::kPagedExtent, 8 * en::kPagedExtent, true));
+  auto allowance = en::ExecutionMetadataAllowance::Admit(node.catalog(), node.domain(), 65536,
+                                                         64 * en::kPagedExtent, en::kPagedExtent);
+  ASSERT_TRUE(allowance) << llmp::test_support::Failed(allowance).value_or("");
+  const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  // Start with budget equal to fixed + 2 extents (so 3 workspace extents exceed budget by 1
+  // extent).
+  ASSERT_TRUE(node.Start(llmp::base::Bytes(fixed + 2 * en::kPagedExtent)));
+  node.Run();
+  auto base_closure =
+      node.catalog().ClosureOfExtents(std::span{node.activations().extents}.first(1));
+  auto selected_closure = node.catalog().ClosureOfExtents(node.workspace_extents());
+  ASSERT_TRUE(base_closure);
+  ASSERT_TRUE(selected_closure);
+  ASSERT_TRUE(node.BeginRequest(0, *base_closure, "supplemental reclaim base"));
+
+  auto payload = std::make_shared<int>(0);
+  int reclaim_calls = 0;
+  bool allow_reclaim = false;
+  node.SetReclaimer([&](std::uint64_t needed, en::PagedNode::ReclaimFor what,
+                        std::span<const llmp::catalog::ExtentId> protect) -> std::uint64_t {
+    ++reclaim_calls;
+    EXPECT_GE(needed, en::kPagedExtent);
+    EXPECT_EQ(what, en::PagedNode::ReclaimFor::kMaterialize);
+    EXPECT_NE(std::ranges::find(protect, node.activations().extents.front()), protect.end());
+    if (!allow_reclaim) return 0;
+    node.SetBudget(llmp::base::Bytes(fixed + 4 * en::kPagedExtent));
+    return needed;
+  });
+
+  // When reclaimer returns 0, SupplementalJob refuses cleanly before offering the program.
+  auto refused = node.SupplementalJob(
+      *selected_closure, [](pr::NativeStream) { return sc::JobResult::kQueued; }, payload,
+      *allowance, "over-budget supplemental", 0);
+  EXPECT_FALSE(refused);
+  EXPECT_EQ(reclaim_calls, 1);
+
+  // When reclaimer frees budget, SupplementalJob succeeds and retires cleanly.
+  allow_reclaim = true;
+  en::JobReport report;
+  auto succeeded = node.SupplementalJob(
+      *selected_closure, [](pr::NativeStream) { return sc::JobResult::kQueued; }, payload,
+      *allowance, "reclaimed supplemental", 0, &report);
+  ASSERT_TRUE(succeeded) << llmp::test_support::Failed(succeeded).value_or("");
+  EXPECT_EQ(reclaim_calls, 2);
+  EXPECT_EQ(report.retirement, en::JobReport::Retirement::kRetired);
+
+  ASSERT_TRUE(node.EndRequest(0));
+  ASSERT_TRUE(node.TearDown({}));
+}
+
 }  // namespace

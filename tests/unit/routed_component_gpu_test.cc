@@ -710,8 +710,8 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
           [paid = life->paid](std::uint64_t bytes) { paid->Release(bytes); });
       !r)
     return Error(r.error());
-  if (auto r = life->kernel->resources.OpenCublas("routed shared handle"); !r) return r;
-  if (auto r = life->kernel->backend->LendCublas(&life->kernel->resources.cublas()); !r)
+  if (auto r = life->kernel->resources.OpenLibrary("routed shared handle"); !r) return r;
+  if (auto r = life->kernel->backend->LendLibrary(&life->kernel->resources.library()); !r)
     return Error(r.error());
   auto domain = en::NumericalDomain::Create({{.stage = 0,
                                               .name = "target",
@@ -1210,7 +1210,7 @@ TEST(RoutedComponentGpu, OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitu
   ASSERT_TRUE(facts);
   const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
   ASSERT_LE(workspace.value(), 64 * kMiB);
-  ASSERT_TRUE(life->kernel->resources.OpenCublas("declared native adapter control"));
+  ASSERT_TRUE(life->kernel->resources.OpenLibrary("declared native adapter control"));
   const auto real = de::GroupedSelectedSource();
   ASSERT_TRUE(real);
   auto source = std::make_shared<DeclarationSource>(*real);
@@ -1291,7 +1291,7 @@ TEST(RoutedComponentGpu, OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitu
       static_cast<unsigned long long>(payment->used()),
       static_cast<unsigned long long>(payment->capacity()),
       static_cast<unsigned long long>(life->kernel->backend->persistent_bytes()));
-  ASSERT_TRUE(life->kernel->backend->LendCublas(&life->kernel->resources.cublas()));
+  ASSERT_TRUE(life->kernel->backend->LendLibrary(&life->kernel->resources.library()));
   const auto owner = life->kernel->backend->Backend().owner;
   ASSERT_TRUE(owner);
   const auto& device = owner->backend().device;
@@ -1351,7 +1351,7 @@ TEST(RoutedComponentGpu, OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitu
   ASSERT_TRUE((*other)->Declare(
       {}, workspace.value(), [paid = life->paid](std::uint64_t n) { return paid->Charge(n); },
       [paid = life->paid](std::uint64_t n) { paid->Release(n); }));
-  ASSERT_TRUE((*other)->LendCublas(&life->kernel->resources.cublas()));
+  ASSERT_TRUE((*other)->LendLibrary(&life->kernel->resources.library()));
   auto second = (*other)->Backend().owner->Ready();
   ASSERT_TRUE(second);
   EXPECT_NE(first->recipe, second->recipe);

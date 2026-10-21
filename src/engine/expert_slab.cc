@@ -11,11 +11,10 @@
 #include <optional>
 #include <vector>
 
-#include "artifact/representation.h"
 #include "engine/support.h"
+#include "format/encoding.h"
+#include "format/layout.h"
 #include "format/tensor_format.h"
-#include "ggml.h"
-#include "kernels/ggml/tensors.h"  // GgmlTypeOf
 
 namespace llmp::engine {
 
@@ -34,11 +33,15 @@ std::expected<SlabSpec, std::string> ExpertSlab(
   std::optional<std::uint32_t> first_group;
   for (const auto& [index, type_name] : arrays) {
     const auto& a = artifact.expert_arrays()[index];
-    auto type = kernels::ggml::GgmlTypeOf(type_name);
-    if (!type) {
-      return Error(type.error().detail);
+    const auto encoding = format::EncodingByTypeName(type_name);
+    if (!encoding) {
+      return Error(std::format("unknown expert encoding: {}", type_name));
     }
-    unit = std::lcm(unit, static_cast<std::uint64_t>(ggml_type_size(*type)));
+    const auto block = format::BlockBytes(*encoding);
+    if (!block) {
+      return Error(std::format("expert encoding has no block bytes: {}", type_name));
+    }
+    unit = std::lcm(unit, *block);
     if (first_group && *first_group != a.first_group) {
       return Error(std::format("layer {}'s expert arrays do not share their groups", layer));
     }
@@ -79,8 +82,8 @@ std::expected<LayerSlabs, std::string> ExpertSlabsOf(const artifact::Artifact& a
         // tensor scale; an affine encoding's biases or zero points) are
         // separate arrays of one expert group: each part's
         // slice is placed at the writer's member alignment, read by the
-        // format's decoders or the block-scaled grouped GEMM, not as GGML
-        // blocks; the slab keeps 16-byte expert bases.
+        // format's decoders or the block-scaled grouped GEMM, not as
+        // legacy blocks; the slab keeps 16-byte expert bases.
         const bool split =
             array.format &&
             (array.format->layout == format::Layout::kSplit ||
@@ -91,23 +94,22 @@ std::expected<LayerSlabs, std::string> ExpertSlabsOf(const artifact::Artifact& a
              array.part == format::PartRole::kBiases || array.part == format::PartRole::kZeros);
         if (!array.format || !format::Validate(*array.format) || array.format->shape.rank != 2 ||
             (!split && (array.part != format::PartRole::kData ||
-                        (array.format->layout != format::Layout::kGgmlBlocks &&
-                         array.format->layout != format::Layout::kDense))))
-          return Error("native expert slab needs a valid GGML-compatible or split-part slice");
+                        !format::IsSinglePartBlockOrDense(array.format->layout))))
+          return Error("native expert slab needs a valid single-part block or split-part slice");
         if (split) {
           element_bytes = block_bytes = 16;
         } else {
-          const auto& info = format::Info(array.format->encoding);
-          if (!info.ggml) return Error("native expert slice has no GGML block geometry");
-          element_bytes = block_bytes = info.ggml->block_bytes;
+          const auto block = format::BlockBytes(array.format->encoding);
+          if (!block) return Error("native expert slice has no block geometry");
+          element_bytes = block_bytes = *block;
         }
       } else {
-        auto type = kernels::ggml::GgmlTypeOf(array.repr.type);
-        if (!type) return Error(type.error().detail);
-        const auto* info = artifact::FindGgmlType(array.repr.type);
-        if (!info) return Error("legacy expert slice has unknown GGML block geometry");
-        element_bytes = static_cast<std::uint64_t>(ggml_type_size(*type));
-        block_bytes = info->block_bytes;
+        const auto encoding = format::EncodingByTypeName(array.repr.type);
+        const auto elem = encoding ? format::BlockBytes(*encoding) : std::nullopt;
+        const auto blk = format::LegacyTypeBlockBytes(array.repr.type);
+        if (!elem || !blk) return Error("legacy expert slice has unknown block geometry");
+        element_bytes = *elem;
+        block_bytes = *blk;
       }
       const auto combine = [](std::uint64_t current,
                               std::uint64_t block) -> std::optional<std::uint64_t> {

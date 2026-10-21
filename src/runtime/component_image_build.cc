@@ -14,11 +14,8 @@
 #include "base/bytes.h"
 #include "base/json.h"
 #include "chat/chat.h"
+#include "engine/runner_resources.h"
 #include "engine/support.h"
-#include "kernels/ggml/attention_f32.h"
-#include "kernels/ggml/cublas.h"
-#include "kernels/ggml/lower.h"
-#include "kernels/ggml/step_program.h"
 #include "planner/construction.h"
 #include "planner/policy.h"
 #include "platform/files.h"
@@ -36,7 +33,6 @@ namespace {
 namespace en = engine;
 namespace co = components;
 namespace md = model;
-namespace kg = kernels::ggml;
 using en::support::Error;
 // Source descriptor/spec/input owner inventory, before any source-profile
 // vectors or copied names exist: the family's tensors (roles) at 4 KiB, its
@@ -136,9 +132,7 @@ struct ImageGenerationModel {
   std::array<std::vector<std::uint32_t>, 3> resource_ids;
   std::array<en::PagedWeights*, 3> weights{};
   std::array<std::uint64_t, 3> compiler_limits{};
-  kg::SelectedWorkspace selected_state{};
-  std::unique_ptr<kg::CublasHandle> cublas;
-  std::unique_ptr<kg::GgmlBackend> backend;
+  std::unique_ptr<kernels::DeviceBackend> backend;
 };
 namespace {
 struct ImageGeometryOwner {
@@ -654,37 +648,27 @@ EngineImageBuild ComponentImageGenerationBuild(
       held->tables[i] = std::move(*tensors);
       held->weights[i] = source->weights[i].get();
     }
-    auto backend = kg::GgmlBackend::Create(0, node.execution(),
-                                           node.stream(static_cast<std::uint32_t>(owner)), nullptr);
+    auto backend = engine::CreateDeviceBackend(node, static_cast<std::uint32_t>(owner));
     if (!backend) return Error(backend.error());
     held->backend = std::move(*backend);
-    const auto facts = providers::QueryDeviceFacts(0);
-    if (!facts) return Error("image device facts unavailable");
-    const auto blas_bytes =
-        kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture)).value();
     // The denoiser's F32 attention, tuned by default on the GB10 at the
     // mapping's qualified joint rows, and this request's where its image
     // rows are the qualified ones (its heads' width).
     const auto joint = std::uint64_t{request->text_rows} + request->rows;
     std::vector<execution::TunedShape> default_tuned;
-    if (!tuning && facts->architecture / 10 == 121) {
+    if (!tuning) {
       std::vector<std::uint64_t> rows(family.mapping->attention_rows.begin(),
                                       family.mapping->attention_rows.end());
       // A request at the qualified image rows, whatever its prompt's.
       if (std::ranges::contains(family.mapping->attention_image_rows, request->rows) &&
           !std::ranges::contains(rows, joint))
         rows.push_back(joint);
-      for (const auto r : rows)
-        default_tuned.push_back({.implementation = kg::kAttentionF32,
-                                 .rows = r,
-                                 .k = p.denoiser.head_dim,
-                                 .n = p.denoiser.head_dim,
-                                 .output_encoding = format::Encoding::kF32});
+      default_tuned = held->backend->DefaultImageAttentionTuning(rows, p.denoiser.head_dim);
     }
     const auto tuples = tuning ? std::span<const execution::TunedShape>(tuning->facts().tuned)
                                : std::span<const execution::TunedShape>(default_tuned);
     auto declared = held->backend->Declare(
-        tuples, blas_bytes,
+        tuples,
         [construction, source](std::uint64_t bytes) {
           return ChargeExecutionMetadata(construction, bytes, source->construction_node,
                                          source->construction_cap);
@@ -725,46 +709,28 @@ EngineImageBuild ComponentImageGenerationBuild(
                              .places = std::vector(count, en::GroupPlace::kDevice),
                              .slabs = {}});
     }
-    out.kernel_memory.push_back({.name = "image shared cuBLAS", .bytes = blas_bytes});
-    const auto selected_bytes = held->backend->persistent_bytes();
-    if (selected_bytes)
-      out.kernel_memory.push_back({.name = "image selected kernel state", .bytes = selected_bytes});
-    out.prepare = [&node, owner, held, blas_bytes,
-                   selected_bytes](std::span<const std::uint64_t> bases) -> Status {
-      if (bases.size() != 1U + static_cast<std::size_t>(selected_bytes != 0))
-        return Error("image kernel workspaces are absent");
-      held->selected_state = {selected_bytes ? bases[1] : 0, selected_bytes};
-      auto blas = kg::CublasHandle::Create(0, node.execution(),
-                                           node.stream(static_cast<std::uint32_t>(owner)),
-                                           {.base = bases[0], .size = base::Bytes(blas_bytes)});
-      if (!blas) return Error(blas.error().detail);
-      held->cublas = std::move(*blas);
-      return held->backend->LendCublas(held->cublas.get());
+    out.kernel_memory = engine::BackendKernelMemory(*held->backend, "image shared");
+    out.prepare = [held](std::span<const std::uint64_t> bases) -> Status {
+      if (auto b = held->backend->BindWorkspaces(bases); !b) return Error(b.error());
+      return {};
     };
     // The launch spans the pool's virtual capacity because one launch
     // serves every geometry the model takes (a growth needs no new launch,
     // and the program lifecycle binds one per model). What a step draws is
-    // bounded per operation by its planned scratch (LaunchContext::Begin
-    // limits the pool to it), within the stage's measured envelope, which
-    // EngineImage checks at bind against its geometry's pool prefix: no
-    // draw passes the prefix the image's closures name. It never runs
-    // concurrent lanes: their pools would come from the end of that virtual
-    // capacity, past anything the image's closures name (component_build.cc
-    // configures lanes for LLM recipes only, from each model's own prefix).
+    // bounded per operation by its planned scratch, within the stage's
+    // measured envelope, which EngineImage checks at bind against its
+    // geometry's pool prefix: no draw passes the prefix the image's closures
+    // name. It never runs concurrent lanes: their pools would come from the
+    // end of that virtual capacity, past anything the image's closures name
+    // (component_build.cc configures lanes for LLM recipes only, from each
+    // model's own prefix).
     out.launch = [&node,
                   held]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
-      auto made = held->backend->Launch(
+      return held->backend->Launch(
           {.base = node.pool().base, .size = base::Bytes(node.pool().capacity_bytes)},
-          held->selected_state);
-      if (made && static_cast<kg::GgmlStepLaunch*>(made->get())->context().lanes() != 0)
-        return std::unexpected("an image launch has concurrent lanes");
-      return made;
+          /*allow_lanes=*/false);
     };
-    out.retire = [held] {
-      held->backend->LaunchReleased();
-      held->selected_state = {};
-      held->cublas.reset();
-    };
+    out.retire = [held] { held->backend->ReleaseWorkspaces(); };
     return out;
   };
 }

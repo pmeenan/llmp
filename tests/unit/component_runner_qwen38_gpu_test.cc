@@ -451,9 +451,9 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
   std::vector<en::PagedModel*> entered;
   const auto started = [&]() -> en::Status {
     if (auto x = node.Open(); !x) return x;
-    if (auto x = source->resources->OpenCublas("lowered cuBLAS workspace"); !x) return x;
+    if (auto x = source->resources->OpenLibrary("lowered cuBLAS workspace"); !x) return x;
     auto made = kg::GgmlBackend::Create(
-        0, node.execution(), node.stream(0), &source->resources->cublas(),
+        0, node.execution(), node.stream(0), &source->resources->library(),
         {.lower = {.expert_stride = [&pitch_of](const llmp::ir::WeightRef& ref) -> std::uint64_t {
            const auto at = pitch_of.find(ref);
            return at == pitch_of.end() ? 0 : at->second;

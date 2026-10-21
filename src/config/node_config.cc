@@ -41,6 +41,17 @@
 #include "base/report.h"
 
 namespace llmp::config {
+
+std::string_view ToString(MemoryMode mode) {
+  switch (mode) {
+    case MemoryMode::kDedicated:
+      return "dedicated";
+    case MemoryMode::kShared:
+      return "shared";
+  }
+  return "dedicated";
+}
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -137,14 +148,41 @@ enum class Kind : std::uint8_t {
   kInterfaces,
   kPeerScopes,
   kProfile,
-  kClientBind,         // a bind entry or an array of them (D-097)
-  kClientPort,         // [client] port
-  kClientInteger,      // [client]'s counts, seconds and bytes (kClientIntegers)
-  kClientStallAction,  // [client] stall_action
-  kMemoryHours,        // [memory] retention_hours
-  kMemoryGib,          // [memory] spill_budget_gib
-  kMemoryKeep,         // [memory] keep_across_restart
+  kClientBind,          // a bind entry or an array of them (D-097)
+  kClientPort,          // [client] port
+  kClientInteger,       // [client]'s counts, seconds and bytes (kClientIntegers)
+  kClientStallAction,   // [client] stall_action
+  kMemoryHours,         // [memory] retention_hours
+  kMemoryGib,           // [memory] spill_budget_gib
+  kMemoryKeep,          // [memory] keep_across_restart
+  kMemoryMode,          // [memory] mode
+  kMemoryInteger,       // [memory] integer settings
+  kMemoryStallPercent,  // [memory] pressure_stall_percent
 };
+
+// [memory]'s integer settings and their ranges.
+struct MemoryIntegerSpec {
+  std::string_view key;
+  std::int64_t least;
+  std::int64_t most;
+};
+constexpr std::array<MemoryIntegerSpec, 6> kMemoryIntegers = {{
+    {"idle_release_seconds", 0, 86400},
+    {"pressure_low_mib", 64, 1048576},
+    {"pressure_headroom_mib", 64, 1048576},
+    {"pressure_first_backoff_ms", 100, 3600000},
+    {"pressure_max_backoff_ms", 100, 3600000},
+    {"pressure_log_interval_seconds", 1, 86400},
+}};
+
+const MemoryIntegerSpec* FindMemoryInteger(std::string_view key) {
+  for (const MemoryIntegerSpec& m : kMemoryIntegers) {
+    if (m.key == key) {
+      return &m;
+    }
+  }
+  return nullptr;
+}
 
 // [client]'s integer limits (D-102) and their ranges: counts and seconds
 // fit 32 bits; bytes start at a least that leaves the route usable.
@@ -222,6 +260,22 @@ const std::vector<KeySpec>& Schema() {
       {.path = {"memory", "retention_hours"}, .kind = Kind::kMemoryHours, .member = false},
       {.path = {"memory", "spill_budget_gib"}, .kind = Kind::kMemoryGib, .member = false},
       {.path = {"memory", "keep_across_restart"}, .kind = Kind::kMemoryKeep, .member = false},
+      {.path = {"memory", "mode"}, .kind = Kind::kMemoryMode, .member = false},
+      {.path = {"memory", "idle_release_seconds"}, .kind = Kind::kMemoryInteger, .member = false},
+      {.path = {"memory", "pressure_low_mib"}, .kind = Kind::kMemoryInteger, .member = false},
+      {.path = {"memory", "pressure_headroom_mib"}, .kind = Kind::kMemoryInteger, .member = false},
+      {.path = {"memory", "pressure_stall_percent"},
+       .kind = Kind::kMemoryStallPercent,
+       .member = false},
+      {.path = {"memory", "pressure_first_backoff_ms"},
+       .kind = Kind::kMemoryInteger,
+       .member = false},
+      {.path = {"memory", "pressure_max_backoff_ms"},
+       .kind = Kind::kMemoryInteger,
+       .member = false},
+      {.path = {"memory", "pressure_log_interval_seconds"},
+       .kind = Kind::kMemoryInteger,
+       .member = false},
       {.path = {"storage", "data_dir"}, .kind = Kind::kAbsolutePath, .member = false},
       {.path = {"storage", "installed"}, .kind = Kind::kRolePath, .member = false},
       {.path = {"storage", "spill"}, .kind = Kind::kRolePath, .member = false},
@@ -495,6 +549,12 @@ class Validator {
         return "an integer of GiB";
       case Kind::kMemoryKeep:
         return "a boolean";
+      case Kind::kMemoryMode:
+        return R"("dedicated" or "shared")";
+      case Kind::kMemoryInteger:
+        return "an integer";
+      case Kind::kMemoryStallPercent:
+        return "a number";
     }
     return "";
   }
@@ -662,6 +722,49 @@ class Validator {
           out_.At(leaf, std::format("{} must be a boolean, not {}", key, TypeName(node)));
         } else {
           keep_across_restart_ = value->get();
+        }
+        break;
+      }
+      case Kind::kMemoryMode: {
+        const auto* text = node.as_string();
+        if (text == nullptr) {
+          out_.At(leaf, std::format("{} must be a string, not {}", key, TypeName(node)));
+        } else if (text->get() != "dedicated" && text->get() != "shared") {
+          out_.At(leaf,
+                  std::format(R"({} must be "dedicated" or "shared", not "{}")", key, text->get()));
+        } else {
+          memory_mode_ = text->get() == "shared" ? MemoryMode::kShared : MemoryMode::kDedicated;
+        }
+        break;
+      }
+      case Kind::kMemoryInteger: {
+        const MemoryIntegerSpec* range = FindMemoryInteger(spec->path.back());
+        const auto* value = node.as_integer();
+        if (range == nullptr) {
+          out_.At(leaf, std::format("unknown key {}", key));
+        } else if (value == nullptr) {
+          out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
+        } else if (value->get() < range->least || value->get() > range->most) {
+          out_.At(leaf, std::format("{} must be from {} to {}, not {}", key, range->least,
+                                    range->most, value->get()));
+        } else {
+          memory_integers_[std::string(range->key)] = static_cast<std::uint64_t>(value->get());
+        }
+        break;
+      }
+      case Kind::kMemoryStallPercent: {
+        const auto* int_val = node.as_integer();
+        const auto* float_val = node.as_floating_point();
+        if (int_val == nullptr && float_val == nullptr) {
+          out_.At(leaf, std::format("{} must be a number, not {}", key, TypeName(node)));
+        } else {
+          const double v =
+              float_val != nullptr ? float_val->get() : static_cast<double>(int_val->get());
+          if (!std::isfinite(v) || v <= 0.0 || v > 100.0) {
+            out_.At(leaf, std::format("{} must be in (0.0, 100.0], not {}", key, v));
+          } else {
+            pressure_stall_percent_ = v;
+          }
         }
         break;
       }
@@ -1069,6 +1172,42 @@ class Validator {
     config.memory.retention_hours = retention_hours_.value_or(kDefaultRetentionHours);
     config.memory.spill_budget_gib = spill_budget_gib_.value_or(kDefaultSpillBudgetGib);
     config.memory.keep_across_restart = keep_across_restart_.value_or(true);
+    if (memory_mode_) {
+      config.memory.mode = {*memory_mode_, true};
+    }
+    const auto get_mem_int = [&](std::string_view key) -> std::optional<std::uint64_t> {
+      const auto it = memory_integers_.find(std::string(key));
+      return it == memory_integers_.end() ? std::nullopt : std::optional(it->second);
+    };
+    if (const auto v = get_mem_int("idle_release_seconds")) {
+      config.memory.idle_release_seconds = {*v, true};
+    }
+    if (const auto v = get_mem_int("pressure_low_mib")) {
+      config.memory.pressure_low_mib = {*v, true};
+    }
+    if (const auto v = get_mem_int("pressure_headroom_mib")) {
+      config.memory.pressure_headroom_mib = {*v, true};
+    }
+    if (pressure_stall_percent_) {
+      config.memory.pressure_stall_percent = {*pressure_stall_percent_, true};
+    }
+    if (const auto v = get_mem_int("pressure_first_backoff_ms")) {
+      config.memory.pressure_first_backoff_ms = {*v, true};
+    }
+    if (const auto v = get_mem_int("pressure_max_backoff_ms")) {
+      config.memory.pressure_max_backoff_ms = {*v, true};
+    }
+    if (const auto v = get_mem_int("pressure_log_interval_seconds")) {
+      config.memory.pressure_log_interval_seconds = {*v, true};
+    }
+    if (config.memory.pressure_max_backoff_ms.value <
+        config.memory.pressure_first_backoff_ms.value) {
+      KeyProblem({"memory", "pressure_max_backoff_ms"},
+                 std::format("memory.pressure_max_backoff_ms ({}) must be at least "
+                             "memory.pressure_first_backoff_ms ({})",
+                             config.memory.pressure_max_backoff_ms.value,
+                             config.memory.pressure_first_backoff_ms.value));
+    }
     if (config.membership && config.storage.long_term) {
       for (const KeyPath& path : {KeyPath{"cluster_file"}, KeyPath{"credentials", "ca_file"},
                                   KeyPath{"credentials", "certificate_file"},
@@ -1227,6 +1366,9 @@ class Validator {
   std::optional<std::uint32_t> retention_hours_;
   std::optional<std::uint32_t> spill_budget_gib_;
   std::optional<bool> keep_across_restart_;
+  std::optional<MemoryMode> memory_mode_;
+  std::map<std::string, std::uint64_t> memory_integers_;
+  std::optional<double> pressure_stall_percent_;
 };
 
 constexpr std::array<std::string_view, 3> kWaveForms = {"auto", "speculative", "plain"};

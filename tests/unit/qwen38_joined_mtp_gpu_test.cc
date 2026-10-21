@@ -74,8 +74,7 @@ constexpr std::uint64_t kMetadata = 2 * kGiB, kObservations = 256 * kMiB;
 // Actual proof descriptor storage is already counted by GraphBytes; retain
 // every reviewed category and round only the resulting paid total to extents.
 constexpr std::uint64_t kHostRequired = kCompiler + kRetained + kMetadata + kObservations;
-constexpr std::uint64_t kHost =
-    ((kHostRequired + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
+constexpr std::uint64_t kHost = ((kHostRequired + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
 static_assert(kCompiler + kRetained + kMetadata + kObservations <= kHost);
 static_assert(kNodes == 65536 && kTensors == 131072);
 static_assert(sizeof(llmp::ir::Node) <= 160 && sizeof(llmp::ir::TensorDesc) <= 160);

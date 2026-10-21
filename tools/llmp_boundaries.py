@@ -40,8 +40,22 @@ SCOPE = "src/"
 
 LINUX = "linux"
 CUDA = "cuda"
+KERNEL = "kernel"
 LINUX_HOMES = ("src/platform/", "src/providers/uring_storage.")
 CUDA_HOMES = ("src/providers/cuda/", "src/kernels/")
+KERNEL_HOMES = (
+    "src/kernels/",
+    "src/artifact/",
+    "src/format/",
+    "src/import/",
+    "src/spec/",
+    "src/tokenizer/",
+    "src/ir/",
+    "src/execution/",
+    "src/components/",
+    "src/model/",
+    "src/planner/",
+)
 
 # path -> {rule: why}. Kept empty when nothing needs one.
 EXCEPTIONS: dict[str, dict[str, str]] = {}
@@ -72,6 +86,9 @@ CUDA_WORDS = re.compile(
     r"__launch_bounds__)\b|\bcu[A-Z]\w*\s*\(|<<<")
 CUDA_INCLUDES = ("providers/cuda/",)
 CUDA_SUFFIXES = (".cu", ".cuh")
+
+KERNEL_HEADERS = re.compile(r"^(ggml|kernels/(ggml|exl3|cutlass)/|llmp_exl3)")
+KERNEL_WORDS = re.compile(r"\b(ggml\w*|exl3\w*|cublas\w*|cutlass\w*)\b", re.IGNORECASE)
 
 INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*([<"])([^>"]+)[>"]', re.MULTILINE)
 # Where split's plain code may end: a comment, a literal or a number.
@@ -187,18 +204,24 @@ def findings(name: str, text: str) -> list[tuple[str, str]]:
             add(LINUX, offset, f"includes {header}, which is Linux-specific")
         if CUDA_HEADERS.search(header) or header.startswith(CUDA_INCLUDES):
             add(CUDA, offset, f"includes {header}, which is CUDA's")
+        if KERNEL_HEADERS.search(header):
+            add(KERNEL, offset, f"includes {header}, which names a kernel library")
     for m in LINUX_WORDS.finditer(code):
         add(LINUX, m.start(), f"uses {m.group(0)}, which is Linux-specific")
     for m in LINUX_PATHS.finditer(strings):
         add(LINUX, m.start(), f"names /{m.group(2)}/, which is Linux's")
     for m in CUDA_WORDS.finditer(code):
         add(CUDA, m.start(), f"uses {m.group(0).rstrip('( ')}, which is CUDA's")
+    for m in KERNEL_WORDS.finditer(code):
+        add(KERNEL, m.start(), f"uses {m.group(0)}, which names a kernel library")
     if name.endswith(CUDA_SUFFIXES):
         found.append((CUDA, f"{name}: a CUDA source file"))
     return found
 
 
 def home(rule: str, name: str) -> bool:
+    if rule == KERNEL:
+        return name.startswith(KERNEL_HOMES)
     return name.startswith(LINUX_HOMES if rule == LINUX else CUDA_HOMES)
 
 

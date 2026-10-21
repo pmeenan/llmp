@@ -34,6 +34,7 @@ class Replay final : public en::PagedModel {
   const llmp::catalog::Closure& fence_closure() const override { return closure_; }
   std::vector<llmp::catalog::ExtentId> managed_extents() const override { return {}; }
   en::Status Release() override {
+    launch_.reset();
     graph_.reset();
     arena_.reset();
     std::vector<std::string> problems;
@@ -106,7 +107,11 @@ class Replay final : public en::PagedModel {
     auto closure = node_.catalog().ClosureOfExtents(extents);
     if (!closure) return Error(llmp::catalog::ToString(closure.error()));
     closure_ = std::move(*closure);
-    if (auto r = resources_.BindLaunch(16U << 20U); !r) return r;
+    auto launch = kg::LaunchContext::Create(
+        node_.device_ordinal(), node_.execution(), node_.stream(0),
+        {.base = node_.pool().base, .size = llmp::base::Bytes(16U << 20U)}, nullptr);
+    if (!launch) return Error(launch.error().detail);
+    launch_ = std::move(*launch);
     node_.Run();
     return {};
   }
@@ -156,7 +161,7 @@ class Replay final : public en::PagedModel {
         [&](llmp::providers::NativeStream) {
           for (auto* node : nodes_) {
             if (owners_) {
-              auto plan = kg::PlanFlashAttnOwners(resources_.launch(), owner_inputs_);
+              auto plan = kg::PlanFlashAttnOwners(*launch_, owner_inputs_);
               if (!plan) return llmp::scheduler::JobResult::kUnknown;
               std::cout << "REPLAY_PLAN owner_roots head=" << plan->original.head
                         << " blocks=" << plan->original.blocks
@@ -164,7 +169,7 @@ class Replay final : public en::PagedModel {
                         << " owner_blocks_per_sm=" << plan->owner_blocks_per_sm
                         << " scratch=" << plan->original.scratch << '\n';
             } else {
-              auto plan = kg::PlanFlashAttnMma(resources_.launch(), node);
+              auto plan = kg::PlanFlashAttnMma(*launch_, node);
               if (!plan) return llmp::scheduler::JobResult::kUnknown;
               std::cout << "REPLAY_PLAN packed head=" << plan->head << " blocks=" << plan->blocks
                         << " scratch=" << plan->scratch << '\n';
@@ -230,8 +235,7 @@ class Replay final : public en::PagedModel {
       auto r = node_.Job(
           closure_,
           [&](llmp::providers::NativeStream stream) {
-            auto launched =
-                captured ? resources_.launch().Launch(*graph_) : kernels(resources_.launch());
+            auto launched = captured ? launch_->Launch(*graph_) : kernels(*launch_);
             if (!launched) return llmp::scheduler::JobResult::kUnknown;
             std::size_t offset = 0;
             for (auto* tensor : nodes_) {
@@ -256,7 +260,7 @@ class Replay final : public en::PagedModel {
     auto capture_job = node_.Job(
         closure_,
         [&](llmp::providers::NativeStream) {
-          auto captured = resources_.launch().Capture(kernels);
+          auto captured = launch_->Capture(kernels);
           if (!captured) return llmp::scheduler::JobResult::kUnknown;
           graph_.emplace(std::move(*captured));
           return llmp::scheduler::JobResult::kQueued;
@@ -325,7 +329,7 @@ class Replay final : public en::PagedModel {
     std::cout << "ATTENTION_REPLAY seconds=" << seconds << " completed_units=128 api_groups=" << 32
               << " native_captured_nodes=" << graph_->nodes()
               << " output_bytes_per_wave=" << ar::kOutputBytes
-              << " scratch_peak=" << resources_.launch().scratch_peak().value()
+              << " scratch_peak=" << launch_->scratch_peak().value()
               << " known_host_allowance=" << ar::kHostAllowance
               << " device_mapped=" << resources_.mapped_bytes()
               << " pinned=" << resources_.pinned_bytes() << '\n';
@@ -335,6 +339,7 @@ class Replay final : public en::PagedModel {
  private:
   en::PagedNode& node_;
   en::RunnerResources resources_;
+  std::unique_ptr<kg::LaunchContext> launch_;
   en::Mapped storage_;
   ar::Inputs inputs_;
   std::optional<kg::TensorArena> arena_;

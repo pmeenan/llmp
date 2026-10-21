@@ -17,6 +17,7 @@
 #include "engine/graph_plan.h"
 #include "engine/program_lifecycle.h"
 #include "engine/support.h"
+#include "engine/unproven_work.h"
 #include "providers/device_runtime.h"
 #include "scheduler/programs.h"
 
@@ -122,7 +123,8 @@ struct StagedExecution::State {
   std::uint64_t plan_floor = 0;
   std::size_t next = 0;
   bool setup = false, registered = false, bound = false, released = false;
-  bool unknown = false, generation_complete = false;
+  UnprovenWork unproven;
+  bool generation_complete = false;
   // A pending job's source, captures, plan and storage survive a failed wait.
   // Release, called after actual node drain, is the only cycle-breaking path.
   std::shared_ptr<State> flight;
@@ -368,9 +370,22 @@ void StagedExecution::RetireRoot() {
 }
 Status StagedExecution::RetireAfterFence() {
   drained_ = true;
-  if (state_ && state_->programs.launch()) state_->programs.launch()->Retire();
+  if (state_) {
+    state_->unproven.ClearAfterFence();
+    if (state_->programs.launch()) state_->programs.launch()->Retire();
+  }
   return {};
 }
+
+Status StagedExecution::AcknowledgeFence() {
+  if (state_) {
+    state_->unproven.ClearAfterFence();
+    DropPlans();
+  }
+  return {};
+}
+
+bool StagedExecution::unproven() const noexcept { return state_ && state_->unproven.active(); }
 
 StagedExecution::StagedExecution(en::PagedNode& node, int owner) : node_(node), index_(owner) {}
 std::uint64_t StagedExecution::ControlMetadataBytes() {
@@ -567,7 +582,7 @@ Status StagedExecution::BindState(State& s) {
 }
 
 Status StagedExecution::RunThrough(std::size_t end, std::string& sha) {
-  if (!state_ || !state_->bound || state_->released || state_->unknown ||
+  if (!state_ || !state_->bound || state_->released || state_->unproven.active() ||
       end > state_->parts.request.sequence.size() || end <= state_->next)
     return Error("image execution order or completion is invalid");
   auto hold = state_;
@@ -586,14 +601,14 @@ Status StagedExecution::RunThrough(std::size_t end, std::string& sha) {
   // Any other return (a refusal before a stage's work is queued) settles the
   // lease too, and returns an unfinished generation to its start, so it can
   // run again or a later preparation or geometry change is not refused.
-  // Unknown work keeps its lease and position (s.unknown, s.flight).
+  // Unknown work keeps its lease and position (s.unproven, s.flight).
   struct Settle {
     const std::function<void()> run;
     ~Settle() { run(); }
   } settle_on_exit{[&] {
-    if (s.unknown) return;
+    if (s.unproven.active()) return;
     if (!settled && node_.InRequest(stream()) && !settle()) {
-      s.unknown = true;
+      s.unproven.Mark();
       return;
     }
     if (s.next < end && !s.generation_complete) s.next = 0;
@@ -637,7 +652,7 @@ Status StagedExecution::RunThrough(std::size_t end, std::string& sha) {
       // opened says so; a refreshed one (the caller's) or a lease still
       // held past a failure leaves it unknown.
       if (opened && !node_.InRequest(stream())) return admitted;
-      s.unknown = true;
+      s.unproven.Mark();
       s.flight = hold;
       return admitted;
     }
@@ -665,7 +680,7 @@ Status StagedExecution::RunThrough(std::size_t end, std::string& sha) {
           },
           "image initial ports", stream());
       if (!uploaded) {
-        s.unknown = true;
+        s.unproven.Mark();
         return uploaded;
       }
       s.flight.reset();
@@ -675,7 +690,7 @@ Status StagedExecution::RunThrough(std::size_t end, std::string& sha) {
     if (!checked) {
       auto ended = settle();
       if (!ended) {
-        s.unknown = true;
+        s.unproven.Mark();
         s.flight = hold;
       }
       return checked;
@@ -706,7 +721,7 @@ Status StagedExecution::RunThrough(std::size_t end, std::string& sha) {
     if (!checked) {
       auto ended = settle();
       if (!ended) {
-        s.unknown = true;
+        s.unproven.Mark();
         s.flight = hold;
       }
       return checked;
@@ -749,7 +764,7 @@ Status StagedExecution::RunThrough(std::size_t end, std::string& sha) {
     };
     const auto ran = node_.Job(*closure, std::move(job), "image typed program", stream());
     if (!ran || !queued->result || s.programs.launch()->faulted()) {
-      s.unknown = true;
+      s.unproven.Mark();
       return Error(!ran              ? ran.error()
                    : !queued->result ? queued->result.error().detail
                                      : "image launch faulted");
@@ -758,7 +773,7 @@ Status StagedExecution::RunThrough(std::size_t end, std::string& sha) {
     // leaves it for the next stage's refresh.
     auto ended = s.next + 1 < end ? Status{} : settle();
     if (!ended) {
-      s.unknown = true;
+      s.unproven.Mark();
       return ended;
     }
     s.flight.reset();
@@ -795,8 +810,9 @@ Status StagedExecution::RunThrough(std::size_t end, std::string& sha) {
 Status StagedExecution::AfterLoad() {
   // A pageable workspace is the active model's: recording while another
   // model is active would lease (and page in) this one's prefix of it.
-  if (!state_ || !state_->bound || state_->released || state_->unknown || state_->flight ||
-      node_.InRequest(stream()) || (node_.workspace_pageable() && !node_.active(index_)))
+  if (!state_ || !state_->bound || state_->released || state_->unproven.active() ||
+      state_->flight || node_.InRequest(stream()) ||
+      (node_.workspace_pageable() && !node_.active(index_)))
     return {};
   // Every plan made or found here is this step's until its recordings are
   // queued: nothing the charges below reclaim may be one of them, nor have
@@ -857,7 +873,7 @@ Status StagedExecution::AfterLoad() {
       },
       "image recordings ahead", stream());
   if (!ran || !failure->empty() || s.programs.launch()->faulted()) {
-    s.unknown = true;
+    s.unproven.Mark();
     return Error(std::format("recording the image's stages ahead: {}", !ran ? ran.error()
                                                                        : !failure->empty()
                                                                            ? *failure
@@ -868,8 +884,8 @@ Status StagedExecution::AfterLoad() {
 }
 
 Status StagedExecution::CheckRequestBoundary() const {
-  if (!state_ || !state_->bound || state_->released || state_->unknown || state_->flight ||
-      !transitions_.empty() || node_.InRequest(stream()) ||
+  if (!state_ || !state_->bound || state_->released || state_->unproven.active() ||
+      state_->flight || !transitions_.empty() || node_.InRequest(stream()) ||
       !(state_->next == 0 ||
         (state_->generation_complete && state_->next == state_->parts.request.sequence.size())))
     return Error("staged preparation requires an idle initial or completed request");
@@ -877,7 +893,8 @@ Status StagedExecution::CheckRequestBoundary() const {
 }
 
 Status StagedExecution::ReplaceRequest(StagedRequest request) {
-  if (!state_ || !state_->bound || state_->released || state_->unknown || state_->flight ||
+  if (!state_ || !state_->bound || state_->released || state_->unproven.active() ||
+      state_->flight ||
       !(state_->next == 0 ||
         (state_->generation_complete && state_->next == state_->parts.request.sequence.size())) ||
       node_.InRequest(stream()))
@@ -902,8 +919,8 @@ Status StagedExecution::ReplaceRequest(StagedRequest request) {
 }
 
 Status StagedExecution::ReplaceGeometry(StagedGeometry geometry) {
-  if (!state_ || !state_->bound || state_->released || state_->unknown || state_->flight ||
-      !transitions_.empty() ||
+  if (!state_ || !state_->bound || state_->released || state_->unproven.active() ||
+      state_->flight || !transitions_.empty() ||
       !(state_->next == 0 ||
         (state_->generation_complete && state_->next == state_->parts.request.sequence.size())) ||
       node_.InRequest(stream()))
@@ -915,7 +932,7 @@ Status StagedExecution::ReplaceGeometry(StagedGeometry geometry) {
   const auto refuse = [&](Status failure) -> Status {
     candidate->plans.Clear();
     if (auto retired = candidate->memory.Retire(); !retired) {
-      previous->unknown = true;
+      previous->unproven.Mark();
       previous->flight = previous;
       previous->transition_holds = transitions_;
       return Error(std::format("{}; candidate retirement: {}", failure.error(), retired.error()));
@@ -946,7 +963,7 @@ Status StagedExecution::ReplaceGeometry(StagedGeometry geometry) {
   // shared model/launch and node-wide workspace remain alive throughout.
   previous->plans.Clear();
   if (auto retired = previous->memory.Retire(); !retired) {
-    previous->unknown = true;
+    previous->unproven.Mark();
     previous->flight = previous;
     previous->transition_holds = transitions_;
     return retired;  // partial retirement is never represented as old usability
@@ -986,7 +1003,7 @@ Status StagedExecution::ReplaceGeometry(StagedGeometry geometry) {
 }
 
 Status StagedExecution::FirstOutput(std::string& sha) {
-  if (state_ && state_->generation_complete && !state_->unknown && !state_->flight &&
+  if (state_ && state_->generation_complete && !state_->unproven.active() && !state_->flight &&
       !state_->released) {
     state_->next = 0;
     state_->generation_complete = false;
@@ -1003,7 +1020,7 @@ Status StagedExecution::Finish(std::string& sha) {
 }
 
 Status StagedExecution::Abandon() {
-  if (!state_ || state_->unknown || state_->flight || state_->released)
+  if (!state_ || state_->unproven.active() || state_->flight || state_->released)
     return Error("image abandon requires an idle, known generation");
   // Only the position: what the stopped generation wrote is overwritten by
   // the next one's stages, from its initial ports on.
@@ -1025,11 +1042,11 @@ std::uint64_t StagedExecution::startup_host_bytes() const {
 std::uint64_t StagedExecution::plan_floor_bytes() const { return state_ ? state_->plan_floor : 0; }
 void StagedExecution::ReclaimCandidates(std::uint32_t owner, bool running,
                                         std::vector<memory::ReclaimCandidate>& out) {
-  if (state_ && !state_->unknown && !state_->flight && !state_->released)
+  if (state_ && !state_->unproven.active() && !state_->flight && !state_->released)
     state_->plans.Collect(owner, running, out);
 }
 std::uint64_t StagedExecution::Reclaim(memory::ReclaimKind kind, std::uint64_t id) {
-  return state_ && !state_->unknown && !state_->flight && !state_->released
+  return state_ && !state_->unproven.active() && !state_->flight && !state_->released
              ? state_->plans.Reclaim(kind, id)
              : 0;
 }
@@ -1078,7 +1095,7 @@ Status StagedExecution::CheckPlaces() {
   return {};
 }
 void StagedExecution::DropPlans() {
-  if (state_ && !state_->unknown && !state_->flight) state_->plans.Clear();
+  if (state_ && !state_->unproven.active() && !state_->flight) state_->plans.Clear();
 }
 std::string StagedExecution::plan_report() const {
   if (!state_ || !state_->setup) return {};

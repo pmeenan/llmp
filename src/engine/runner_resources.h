@@ -1,19 +1,16 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// What a GGML runner sets up for its life beside its weights and state
+// What a model runner sets up for its life beside its weights and state
 // (docs/engine.md): the engine core's runner memory (runner_memory.h: its
-// own device memory, a cuBLAS workspace among it, and pinned staging);
-// cuBLAS with upstream's workspace for the device on the model's stream;
-// and the K-C launch context over the node's pool and the registry its
-// plans bind against (D-053). CUDA builds only (llmp_engine).
+// own device memory, a stream library workspace among it, and pinned staging);
+// the stream library with upstream's workspace for the device on the model's stream.
 //
 // Lifetimes are completion-aware (AGENTS.md rule 6): Release runs only
 // after the node's teardown fenced the model's stream and stopped the
 // scheduler, and the runner destroys its plans and graphs first (they
-// name the launch context and this memory, D-090); then the launch
-// context, cuBLAS and the memory go, in that order. The staging is the
-// node's to free (PagedNode::Pinned), at its close.
+// name this memory, D-090); then the stream library and the memory go, in
+// that order. The staging is the node's to free (PagedNode::Pinned), at its close.
 
 #ifndef LLMP_ENGINE_RUNNER_RESOURCES_H_
 #define LLMP_ENGINE_RUNNER_RESOURCES_H_
@@ -22,15 +19,25 @@
 #include <expected>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "engine/model_runner.h"
 #include "engine/paged_node.h"
 #include "engine/runner_memory.h"
-#include "execution/registry.h"
-#include "kernels/ggml/cublas.h"
-#include "kernels/ggml/launch.h"
+#include "kernels/common/device_backend.h"
 
 namespace llmp::engine {
+
+inline kernels::BackendCapabilities DeviceBackendCapabilities() {
+  return kernels::DeviceBackend::Capabilities();
+}
+
+std::expected<std::unique_ptr<kernels::DeviceBackend>, std::string> CreateDeviceBackend(
+    PagedNode& node, std::uint32_t stream, kernels::DeviceBackendOptions options = {});
+
+std::vector<RunnerConfig::KernelMemory> BackendKernelMemory(const kernels::DeviceBackend& backend,
+                                                            std::string_view label);
 
 class RunnerResources : public RunnerMemory {
  public:
@@ -44,37 +51,27 @@ class RunnerResources : public RunnerMemory {
   RunnerResources& operator=(RunnerResources&&) = delete;
   ~RunnerResources() = default;
 
-  // cuBLAS on the model's stream, with upstream's workspace for the
+  // Stream library on the model's stream, with workspace for the
   // device mapped as `name` (runtime memory).
-  Status OpenCublas(std::string name);
-  kernels::ggml::CublasHandle& cublas() const { return *cublas_; }
-  const Mapped& cublas_workspace() const { return cublas_workspace_; }
-  std::uint64_t cublas_bytes() const { return cublas_bytes_; }
+  Status OpenLibrary(std::string name);
+  kernels::StreamLibrary& library() const { return *library_; }
+  const Mapped& library_workspace() const { return library_workspace_; }
+  std::uint64_t library_bytes() const { return library_bytes_; }
+
   // Kernel source state is private pinned runtime memory, never shared scratch.
   Status OpenSelectedWorkspace(std::string name, std::uint64_t bytes);
   const Mapped& selected_workspace() const { return selected_workspace_; }
 
-  // A launch context without a pool, to measure plans at setup.
-  std::expected<std::unique_ptr<kernels::ggml::LaunchContext>, std::string> MeasuringContext()
-      const;
-  // The launch context over the node's pool (its first `pool_bytes`) and
-  // the registry of GGML's implementations. After the node's workspace.
-  Status BindLaunch(std::uint64_t pool_bytes);
-  kernels::ggml::LaunchContext& launch() const { return *launch_; }
-  const execution::Registry& registry() const { return *registry_; }
-
-  // The launch context and cuBLAS destroyed, then every mapping released
+  // The stream library destroyed, then every mapping released
   // (the problems appended). Once, after the node's teardown fenced the
   // stream, and after the runner destroyed its plans and graphs.
   void Release(std::vector<std::string>& problems);
 
  private:
-  Mapped cublas_workspace_;
+  Mapped library_workspace_;
   Mapped selected_workspace_;
-  std::uint64_t cublas_bytes_ = 0;
-  std::unique_ptr<kernels::ggml::CublasHandle> cublas_;
-  std::unique_ptr<kernels::ggml::LaunchContext> launch_;
-  std::unique_ptr<execution::Registry> registry_;
+  std::uint64_t library_bytes_ = 0;
+  std::unique_ptr<kernels::StreamLibrary> library_;
 };
 
 }  // namespace llmp::engine

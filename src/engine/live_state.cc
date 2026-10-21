@@ -165,9 +165,9 @@ std::expected<bool, std::string> LiveState::Prepare(PagedNode& node,
   preparation_ = std::move(pending);
   next_preparing_ = node.preparing_state_;
   node.preparing_state_ = this;
-  preparation_->request = node.Submit(std::make_unique<sc::AcquireProgram>(
-      preparation_->done, preparation_->closure, node.domain(), node.budget(), preparation_->report,
-      std::vector<ExtentId>{}, false));
+  preparation_->request = node.Submit(
+      std::make_unique<sc::AcquireProgram>(preparation_->done, preparation_->closure, node.domain(),
+                                           preparation_->report, std::vector<ExtentId>{}, false));
   ++preparation_stats_.submitted;
   return true;
 }
@@ -1134,7 +1134,7 @@ LiveState::Status LiveState::Clear(PagedNode& node, const catalog::Closure& fenc
 }
 
 void* LiveState::HostCopy(PagedNode& node, std::uint64_t bytes) {
-  if (host_copy_unproven_) {
+  if (host_copy_unproven_.active()) {
     return nullptr;
   }
   bytes = bytes == 0 ? total_bytes() : bytes;
@@ -1433,7 +1433,7 @@ void LiveState::Release(providers::VmmProvider& memory, std::vector<std::string>
     }
   }
   if (host_copy_ != nullptr) {
-    if (host_copy_unproven_) {
+    if (host_copy_unproven_.active()) {
       problems.emplace_back("the state's pinned copy retained until exit: completion unproven");
     }
     host_copy_ = nullptr;

@@ -93,13 +93,13 @@ class Check(unittest.TestCase):
             "// epoll_wait, O_TMPFILE and cudaMalloc in a comment\n"
             "int g = ::open(\"x\", O_RDONLY | O_DIRECTORY | O_CLOEXEC);\n"
             "const char* url = \"https://example.com/sys/x\"; int io_uringish_count = 0;\n"
-            "int cuda_count = 0; auto s = providers::cuda::Open(); int cublas_bytes = 0;\n"
+            "int cuda_count = 0; auto s = providers::cuda::Open(); // int cublas_bytes = 0;\n"
             "Log(\"cudaMalloc failed\"); Log(\"CUDA_VISIBLE_DEVICES\");\n")}), [])
 
     def test_cuda_belongs_to_its_provider_and_the_kernels(self):
         cuda = ('#include <cuda_runtime.h>\n#include "providers/cuda/cuda_facts.h"\n'
                 "cudaStream_t s; CUevent_st* e; int r = cuMemcpyAsync (0, 0, 0, s);\n"
-                "__global__ void K() {}\nvoid L() { K<<<1, 1>>>(); cublasCreate(nullptr); }\n")
+                "__global__ void K() {}\nvoid L() { K<<<1, 1>>>(); cudaStreamSynchronize(s); }\n")
         self.assertEqual(self.check({"src/providers/cuda/a.cc": cuda, "src/kernels/x/a.cu": cuda}), [])
         problems = self.check({"src/engine/a.cc": cuda, "src/engine/b.cu": "int x;\n"})
         self.assertEqual(problems, [
@@ -110,8 +110,46 @@ class Check(unittest.TestCase):
             "src/engine/a.cc:3: uses cuMemcpyAsync, which is CUDA's",
             "src/engine/a.cc:4: uses __global__, which is CUDA's",
             "src/engine/a.cc:5: uses <<<, which is CUDA's",
-            "src/engine/a.cc:5: uses cublasCreate, which is CUDA's",
+            "src/engine/a.cc:5: uses cudaStreamSynchronize, which is CUDA's",
             "src/engine/b.cu: a CUDA source file",
+        ])
+
+    def test_kernel_libraries_stay_out_of_engine_and_runtime(self):
+        sample = (
+            '#include "kernels/ggml/cublas.h"\n'
+            '#include "kernels/exl3/packed_tuning.h"\n'
+            '#include "kernels/cutlass/gemm.h"\n'
+            'int f() {\n'
+            '  ggml_tensor* t = nullptr;\n'
+            '  CublasHandle* h = nullptr;\n'
+            '  int cublas_bytes = 0;\n'
+            '  Exl3Source s;\n'
+            '  cutlass_gemm g;\n'
+            '  return 0;\n'
+            '}\n'
+        )
+        self.assertEqual(self.check({"src/kernels/a.cc": sample}), [])
+        problems_engine = self.check({"src/engine/a.cc": sample})
+        self.assertEqual(problems_engine, [
+            "src/engine/a.cc:1: includes kernels/ggml/cublas.h, which names a kernel library",
+            "src/engine/a.cc:2: includes kernels/exl3/packed_tuning.h, which names a kernel library",
+            "src/engine/a.cc:3: includes kernels/cutlass/gemm.h, which names a kernel library",
+            "src/engine/a.cc:5: uses ggml_tensor, which names a kernel library",
+            "src/engine/a.cc:6: uses CublasHandle, which names a kernel library",
+            "src/engine/a.cc:7: uses cublas_bytes, which names a kernel library",
+            "src/engine/a.cc:8: uses Exl3Source, which names a kernel library",
+            "src/engine/a.cc:9: uses cutlass_gemm, which names a kernel library",
+        ])
+        problems_runtime = self.check({"src/runtime/a.cc": sample})
+        self.assertEqual(problems_runtime, [
+            "src/runtime/a.cc:1: includes kernels/ggml/cublas.h, which names a kernel library",
+            "src/runtime/a.cc:2: includes kernels/exl3/packed_tuning.h, which names a kernel library",
+            "src/runtime/a.cc:3: includes kernels/cutlass/gemm.h, which names a kernel library",
+            "src/runtime/a.cc:5: uses ggml_tensor, which names a kernel library",
+            "src/runtime/a.cc:6: uses CublasHandle, which names a kernel library",
+            "src/runtime/a.cc:7: uses cublas_bytes, which names a kernel library",
+            "src/runtime/a.cc:8: uses Exl3Source, which names a kernel library",
+            "src/runtime/a.cc:9: uses cutlass_gemm, which names a kernel library",
         ])
 
     def test_only_sources_under_src_are_checked(self):

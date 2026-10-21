@@ -64,7 +64,7 @@ void PromptBatch::Data::Destroy() {
 }
 bool PromptBatch::Data::ready() const {
   return published && !closed && !closing && owner && !owner->released_ && !owner->closing_ &&
-         backing && backing->open && !unknown;
+         backing && backing->open && !unproven.active();
 }
 std::uint32_t PromptBatch::Data::stream() const { return stream_index; }
 std::expected<std::size_t, std::string> PromptBatch::Data::Find(const ModelRunner& runner,
@@ -83,7 +83,7 @@ bool PromptBatch::Data::Matches(std::size_t index, const pl::StepShape& shape) c
 }
 Status PromptBatch::Data::Close() {
   if (closed) return {};
-  if (pending || unknown)
+  if (pending || unproven.active())
     return std::unexpected("private batch retains work without positive retirement");
   closing = true;
   // Keep every plan/view/backing intact if the canonical reverse exchange
@@ -127,9 +127,10 @@ Status PromptBatch::Data::RetireAfterFence() {
   // Called only by the node after actual stream fences. It can now break a
   // retained flight cycle; a public capability's Close cannot claim this fact.
   if (closed) return {};
-  owner->routed_flight_.reset();
-  owner->step_flight_.reset();
-  unknown = false;
+  if (owner) {
+    owner->unproven_.ClearAfterFence();
+  }
+  unproven.ClearAfterFence();
   pending = 0;
   return Close();
 }

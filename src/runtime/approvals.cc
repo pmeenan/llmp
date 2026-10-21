@@ -73,7 +73,7 @@ constexpr std::array kQwen2Fp16Sources{
                   1266425696ULL},
 };
 
-constexpr std::array kQwen2Exl340Sources{
+constexpr std::array kQwen2Trellis40Sources{
     SourceReceipt{"config.json", "966657b7e8c331ea16127a868eb6d6ff16ad0b16a5ee39d26279e12de0a3205c",
                   996ULL},
     SourceReceipt{"generation_config.json",
@@ -86,7 +86,7 @@ constexpr std::array kQwen2Exl340Sources{
                   "5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583", 7305ULL},
 };
 
-constexpr std::array kQwen2Exl345Sources{
+constexpr std::array kQwen2Trellis45Sources{
     SourceReceipt{"config.json", "dcd945f38ba6e7835c8c281a45c03d9a20759d03afe5761d09def8c62aa11f3c",
                   923ULL},
     SourceReceipt{"generation_config.json",
@@ -559,7 +559,7 @@ constexpr std::array kApprovals{
              .label = "Qwen2.5 EXL3 4.0",
              .architecture = "qwen2",
              .container = "exl3",
-             .sources = kQwen2Exl340Sources,
+             .sources = kQwen2Trellis40Sources,
              .tensors = 798,
              .inventory = "fac1aa40c2bd7e690872017f3cc02712f886fd411f726f601312d9201fffad3c",
              .spec = "b2cf6f15206be2712e20fe080df11f7edcbf8aaeda23f830755f767f11433d6a",
@@ -569,7 +569,7 @@ constexpr std::array kApprovals{
              .label = "Qwen2.5 EXL3 4.5",
              .architecture = "qwen2",
              .container = "exl3",
-             .sources = kQwen2Exl345Sources,
+             .sources = kQwen2Trellis45Sources,
              .tensors = 798,
              .inventory = "5d60dbe367c9e8dd7b5803bc69bf2d64cec762e4b65db795306e44cf0e46e426",
              .spec = "b2cf6f15206be2712e20fe080df11f7edcbf8aaeda23f830755f767f11433d6a",

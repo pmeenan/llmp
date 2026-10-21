@@ -677,6 +677,13 @@ class Scheduler {
   std::size_t copying() const;
   const SchedulerStats& stats() const { return stats_; }
 
+  base::Bytes budget() const noexcept {
+    return base::Bytes(budget_bytes_.load(std::memory_order_acquire));
+  }
+  void SetBudget(base::Bytes budget) noexcept {
+    budget_bytes_.store(budget.value(), std::memory_order_release);
+  }
+
  private:
   std::expected<void, WorkError> CheckRequestLease(std::uint64_t request, catalog::LeaseId lease);
   friend class TaskContext;
@@ -932,6 +939,7 @@ class Scheduler {
   base::WakeFlag& wake_;
   Lanes lanes_;
   SchedulerSettings settings_;
+  std::atomic<std::uint64_t> budget_bytes_{0};
   base::BoundedQueue<Control> controls_;
   // Requests with a cancellation queued and no start posted since: at most
   // one entry per queued control, allocated once. Held across a push, so
@@ -1008,6 +1016,7 @@ class TaskContext {
   TaskId task() const { return task_; }
   // The scheduler's turn counter, the logical tick of recorded uses.
   std::uint64_t tick() const { return scheduler_.turn_; }
+  base::Bytes budget() const noexcept { return scheduler_.budget(); }
   const catalog::Catalog& catalog() const { return scheduler_.catalog_; }
   // Whether a dependency (a page-in, an operation) failed since the last
   // call; clears it.

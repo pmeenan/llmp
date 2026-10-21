@@ -118,8 +118,7 @@ constexpr std::uint64_t kObservationEnvelope = 128 * kMiB;
 // than retaining the obsolete rounded 9GiB fixture ceiling.
 constexpr std::uint64_t kHostRequired =
     kCompilerEnvelope + kRetainedPrograms + kMetadataEnvelope + kObservationEnvelope;
-constexpr std::uint64_t kHostBytes =
-    ((kHostRequired + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
+constexpr std::uint64_t kHostBytes = ((kHostRequired + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
 static_assert(kCompilerEnvelope + kRetainedPrograms + kMetadataEnvelope + kObservationEnvelope <=
               kHostBytes);
 // The old 8GiB factory payment is smaller than the updated type inventory.

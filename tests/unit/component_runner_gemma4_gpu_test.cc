@@ -452,10 +452,10 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
   std::vector<en::PagedModel*> entered;
   const auto started = [&]() -> en::Status {
     if (auto x = node.Open(); !x) return x;
-    if (auto x = source->resources->OpenCublas("lowered cuBLAS workspace"); !x) return x;
+    if (auto x = source->resources->OpenLibrary("lowered cuBLAS workspace"); !x) return x;
     const auto pitch = slabs->pitch;
     auto made = kg::GgmlBackend::Create(
-        0, node.execution(), node.stream(0), &source->resources->cublas(),
+        0, node.execution(), node.stream(0), &source->resources->library(),
         {.lower = {
              .expert_stride = [&place, pitch](const llmp::ir::WeightRef& ref) -> std::uint64_t {
                const auto at = place.find(ref);

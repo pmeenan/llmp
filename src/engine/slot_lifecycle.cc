@@ -1482,6 +1482,7 @@ std::expected<SlotMask, std::string> SlotLifecycle::RecoverInPlace(
     const std::function<void(std::uint32_t slot)>& before_discard) {
   if (released_ || !bound_) return Refuse("slots are not bound");
   if (node_.InRequest(stream_)) return Refuse("a request is still open on the stream");
+  AcknowledgeFence();
   const bool faulted = cohort_.faulted();
   cohort_.Recover();
   SlotMask discarded = 0;
@@ -2234,6 +2235,16 @@ Status SlotLifecycle::CompleteCompoundTails(std::span<const CompoundTailOwner> o
     }
   for (std::size_t i = 0; i < owners.size(); ++i) slots_[owners[i].slot].positions = positions[i];
   return {};
+}
+
+void SlotLifecycle::AcknowledgeFence() noexcept {
+  for (Slot& slot : slots_) {
+    for (Stage& stage : slot.stages) {
+      if (stage.live) {
+        stage.live->AcknowledgeFence();
+      }
+    }
+  }
 }
 
 }  // namespace llmp::engine

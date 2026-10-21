@@ -41,6 +41,7 @@
 
 #include "base/bytes.h"
 #include "base/sha256.h"
+#include "kernels/common/device_backend.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/tensors.h"
 #include "providers/device_execution.h"
@@ -50,7 +51,7 @@ struct cublasContext;
 
 namespace llmp::kernels::ggml {
 
-class CublasHandle {
+class CublasHandle final : public kernels::StreamLibrary {
  public:
   // The workspace upstream gives each handle on a device of compute
   // capability `cc` (100 × major + 10 × minor): 32 MiB from Hopper on, else

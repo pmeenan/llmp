@@ -89,6 +89,11 @@ std::span<const LayoutInfo> Layouts();
 const LayoutInfo& Info(Layout layout);
 std::optional<Layout> LayoutByName(std::string_view name);
 
+// Whether `layout` is a single-part dense or block arrangement.
+constexpr bool IsSinglePartBlockOrDense(Layout layout) {
+  return layout == Layout::kDense || layout == Layout::kGgmlBlocks;
+}
+
 inline constexpr std::uint64_t kGgmlRowPadding = 512;  // MATRIX_ROW_PADDING at the pin
 
 // The scale atoms' geometry (kScaleAtoms).

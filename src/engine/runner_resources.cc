@@ -6,36 +6,52 @@
 #include <format>
 #include <utility>
 
+#include "base/bytes.h"
 #include "engine/support.h"
-#include "kernels/ggml/implementations.h"
-#include "providers/device_runtime.h"
 
 namespace llmp::engine {
 
 namespace {
 
-namespace kg = llmp::kernels::ggml;
 using base::Bytes;
 using support::Error;
 
 }  // namespace
 
-RunnerResources::Status RunnerResources::OpenCublas(std::string name) {
-  const providers::DeviceFacts facts =
-      providers::QueryDeviceFacts(0).value_or(providers::DeviceFacts{});
-  cublas_bytes_ = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture)).value();
+std::expected<std::unique_ptr<kernels::DeviceBackend>, std::string> CreateDeviceBackend(
+    PagedNode& node, std::uint32_t stream, kernels::DeviceBackendOptions options) {
+  return kernels::DeviceBackend::Create(node.device_ordinal(), node.execution(),
+                                        node.stream(stream), std::move(options));
+}
+
+std::vector<RunnerConfig::KernelMemory> BackendKernelMemory(const kernels::DeviceBackend& backend,
+                                                            std::string_view label) {
+  std::vector<RunnerConfig::KernelMemory> memory{
+      {.name = std::format("{} stream library workspace", label),
+       .bytes = backend.library_workspace_bytes()}};
+  if (backend.persistent_bytes() != 0) {
+    memory.push_back({.name = std::format("{} selected kernel state", label),
+                      .bytes = backend.persistent_bytes()});
+  }
+  return memory;
+}
+
+RunnerResources::Status RunnerResources::OpenLibrary(std::string name) {
+  auto bytes = kernels::StreamLibraryWorkspaceBytes(node().device_ordinal());
+  if (!bytes) return Error(bytes.error());
+  library_bytes_ = *bytes;
   if (auto r =
-          Map(cublas_workspace_, std::move(name), cublas_bytes_, catalog::MemoryClass::kRuntime);
+          Map(library_workspace_, std::move(name), library_bytes_, catalog::MemoryClass::kRuntime);
       !r) {
     return r;
   }
-  auto cublas =
-      kg::CublasHandle::Create(0, node().execution(), node().stream(stream()),
-                               {.base = cublas_workspace_.base, .size = Bytes(cublas_bytes_)});
-  if (!cublas) {
-    return Error(std::format("cuBLAS: {}", cublas.error().detail));
+  auto lib = kernels::CreateStreamLibrary(
+      node().device_ordinal(), node().execution(), node().stream(stream()),
+      {.base = library_workspace_.base, .size = Bytes(library_bytes_)});
+  if (!lib) {
+    return Error(lib.error());
   }
-  cublas_ = std::move(*cublas);
+  library_ = std::move(*lib);
   return {};
 }
 
@@ -45,35 +61,8 @@ RunnerResources::Status RunnerResources::OpenSelectedWorkspace(std::string name,
   return Map(selected_workspace_, std::move(name), bytes, catalog::MemoryClass::kRuntime);
 }
 
-std::expected<std::unique_ptr<kg::LaunchContext>, std::string> RunnerResources::MeasuringContext()
-    const {
-  auto measure = kg::LaunchContext::Create(0, node().execution(), node().stream(stream()),
-                                           {.base = 0, .size = Bytes(0)}, cublas_.get());
-  if (!measure) {
-    return Error(measure.error().detail);
-  }
-  return std::move(*measure);
-}
-
-RunnerResources::Status RunnerResources::BindLaunch(std::uint64_t pool_bytes) {
-  auto launch = kg::LaunchContext::Create(0, node().execution(), node().stream(stream()),
-                                          {.base = node().pool().base, .size = Bytes(pool_bytes)},
-                                          cublas_.get());
-  if (!launch) {
-    return Error(launch.error().detail);
-  }
-  launch_ = std::move(*launch);
-  auto registry = execution::Registry::Create(kg::Implementations());
-  if (!registry) {
-    return Error(registry.error().detail);
-  }
-  registry_ = std::make_unique<execution::Registry>(std::move(*registry));
-  return {};
-}
-
 void RunnerResources::Release(std::vector<std::string>& problems) {
-  launch_.reset();
-  cublas_.reset();
+  library_.reset();
   ReleaseMappings(problems);
 }
 

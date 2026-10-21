@@ -265,6 +265,114 @@ TEST(NodeConfigTest, MemoryKeepsConversationsAsConfigured) {
               ElementsAre(HasSubstr("unknown key memory.plans")));
 }
 
+TEST(NodeConfigTest, MemoryModeAndPressureDefaults) {
+  const NodeConfig defaults = Parsed("schema_version = 2\n");
+  EXPECT_EQ(defaults.memory.mode.value, llmp::config::MemoryMode::kDedicated);
+  EXPECT_FALSE(defaults.memory.mode.set);
+  EXPECT_EQ(ToString(defaults.memory.mode.value), "dedicated");
+  EXPECT_EQ(defaults.memory.idle_release_seconds.value, 300U);
+  EXPECT_FALSE(defaults.memory.idle_release_seconds.set);
+  EXPECT_EQ(defaults.memory.pressure_low_mib.value, 512U);
+  EXPECT_FALSE(defaults.memory.pressure_low_mib.set);
+  EXPECT_EQ(defaults.memory.pressure_headroom_mib.value, 1024U);
+  EXPECT_FALSE(defaults.memory.pressure_headroom_mib.set);
+  EXPECT_DOUBLE_EQ(defaults.memory.pressure_stall_percent.value, 5.0);
+  EXPECT_FALSE(defaults.memory.pressure_stall_percent.set);
+  EXPECT_EQ(defaults.memory.pressure_first_backoff_ms.value, 1000U);
+  EXPECT_FALSE(defaults.memory.pressure_first_backoff_ms.set);
+  EXPECT_EQ(defaults.memory.pressure_max_backoff_ms.value, 60000U);
+  EXPECT_FALSE(defaults.memory.pressure_max_backoff_ms.set);
+  EXPECT_EQ(defaults.memory.pressure_log_interval_seconds.value, 60U);
+  EXPECT_FALSE(defaults.memory.pressure_log_interval_seconds.set);
+}
+
+TEST(NodeConfigTest, MemoryModeAndPressureExplicitValidValues) {
+  const NodeConfig config = Parsed(R"(schema_version = 2
+[memory]
+mode = "shared"
+idle_release_seconds = 600
+pressure_low_mib = 1024
+pressure_headroom_mib = 2048
+pressure_stall_percent = 10.5
+pressure_first_backoff_ms = 2000
+pressure_max_backoff_ms = 120000
+pressure_log_interval_seconds = 30
+)");
+  EXPECT_EQ(config.memory.mode.value, llmp::config::MemoryMode::kShared);
+  EXPECT_TRUE(config.memory.mode.set);
+  EXPECT_EQ(ToString(config.memory.mode.value), "shared");
+  EXPECT_EQ(config.memory.idle_release_seconds.value, 600U);
+  EXPECT_TRUE(config.memory.idle_release_seconds.set);
+  EXPECT_EQ(config.memory.pressure_low_mib.value, 1024U);
+  EXPECT_TRUE(config.memory.pressure_low_mib.set);
+  EXPECT_EQ(config.memory.pressure_headroom_mib.value, 2048U);
+  EXPECT_TRUE(config.memory.pressure_headroom_mib.set);
+  EXPECT_DOUBLE_EQ(config.memory.pressure_stall_percent.value, 10.5);
+  EXPECT_TRUE(config.memory.pressure_stall_percent.set);
+  EXPECT_EQ(config.memory.pressure_first_backoff_ms.value, 2000U);
+  EXPECT_TRUE(config.memory.pressure_first_backoff_ms.set);
+  EXPECT_EQ(config.memory.pressure_max_backoff_ms.value, 120000U);
+  EXPECT_TRUE(config.memory.pressure_max_backoff_ms.set);
+  EXPECT_EQ(config.memory.pressure_log_interval_seconds.value, 30U);
+  EXPECT_TRUE(config.memory.pressure_log_interval_seconds.set);
+}
+
+TEST(NodeConfigTest, MemoryModeAndPressureRefusals) {
+  // Unknown mode string
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nmode = \"invalid\"\n"),
+              ElementsAre(HasSubstr(R"(memory.mode must be "dedicated" or "shared")")));
+  // Mode wrong type
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nmode = 123\n"),
+              ElementsAre(HasSubstr("memory.mode must be a string")));
+
+  // idle_release_seconds out of bounds (0..86400)
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nidle_release_seconds = -1\n"),
+              ElementsAre(HasSubstr("memory.idle_release_seconds must be from 0 to 86400")));
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nidle_release_seconds = 86401\n"),
+              ElementsAre(HasSubstr("memory.idle_release_seconds must be from 0 to 86400")));
+
+  // pressure_low_mib out of bounds (64..1048576)
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\npressure_low_mib = 63\n"),
+              ElementsAre(HasSubstr("memory.pressure_low_mib must be from 64 to 1048576")));
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\npressure_low_mib = 1048577\n"),
+              ElementsAre(HasSubstr("memory.pressure_low_mib must be from 64 to 1048576")));
+
+  // pressure_headroom_mib out of bounds (64..1048576)
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\npressure_headroom_mib = 63\n"),
+              ElementsAre(HasSubstr("memory.pressure_headroom_mib must be from 64 to 1048576")));
+
+  // pressure_stall_percent <= 0 or > 100
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\npressure_stall_percent = 0.0\n"),
+              ElementsAre(HasSubstr("memory.pressure_stall_percent must be in (0.0, 100.0]")));
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\npressure_stall_percent = -1.0\n"),
+              ElementsAre(HasSubstr("memory.pressure_stall_percent must be in (0.0, 100.0]")));
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\npressure_stall_percent = 100.1\n"),
+              ElementsAre(HasSubstr("memory.pressure_stall_percent must be in (0.0, 100.0]")));
+
+  // pressure_first_backoff_ms out of bounds (100..3600000)
+  EXPECT_THAT(
+      Failures("schema_version = 2\n[memory]\npressure_first_backoff_ms = 99\n"),
+      ElementsAre(HasSubstr("memory.pressure_first_backoff_ms must be from 100 to 3600000")));
+
+  // pressure_max_backoff_ms out of bounds (100..3600000)
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\npressure_max_backoff_ms = 3600001\n"),
+              ElementsAre(HasSubstr("memory.pressure_max_backoff_ms must be from 100 to 3600000")));
+
+  // pressure_max_backoff_ms < pressure_first_backoff_ms
+  EXPECT_THAT(Failures(R"(schema_version = 2
+[memory]
+pressure_first_backoff_ms = 5000
+pressure_max_backoff_ms = 1000
+)"),
+              ElementsAre(HasSubstr("memory.pressure_max_backoff_ms (1000) must be at least "
+                                    "memory.pressure_first_backoff_ms (5000)")));
+
+  // pressure_log_interval_seconds out of bounds (1..86400)
+  EXPECT_THAT(
+      Failures("schema_version = 2\n[memory]\npressure_log_interval_seconds = 0\n"),
+      ElementsAre(HasSubstr("memory.pressure_log_interval_seconds must be from 1 to 86400")));
+}
+
 TEST(NodeConfigTest, ReadsTheMemberExample) {
   const NodeConfig config = Parsed(kMember);
   ASSERT_TRUE(config.membership.has_value());

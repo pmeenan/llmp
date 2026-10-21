@@ -286,7 +286,7 @@ std::expected<void, KernelFailure> FlashAttnMmaGqa2(LaunchContext& launch, ggml_
 // 16, 32 or 64 as upstream's switch_ncols1 picks them for one query head
 // per tile, stream-k over the cells and its fixup buffer from the pool.
 std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMmaCommon(const LaunchContext& launch,
-                                                                   const ggml_tensor* node);
+                                                                      const ggml_tensor* node);
 std::expected<void, KernelFailure> FlashAttnMmaCommon(LaunchContext& launch, ggml_tensor* node);
 std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchContext& launch,
                                                                    const ggml_tensor* node);

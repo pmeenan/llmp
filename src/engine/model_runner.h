@@ -69,6 +69,7 @@
 #include "engine/specialization.h"
 #include "engine/step_ahead.h"
 #include "engine/step_runs.h"
+#include "engine/unproven_work.h"
 #include "format/encoding.h"
 #include "format/tensor_format.h"
 #include "ir/graph.h"
@@ -514,6 +515,9 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   std::string report_json() const;
   std::string plan_report() const;
   void ReportPlans(const kernels::PlanRecordSink& sink) const;
+  bool unproven() const noexcept { return unproven_.active(); }
+  UnprovenWork& unproven_work() noexcept { return unproven_; }
+  const UnprovenWork& unproven_work() const noexcept { return unproven_; }
 
  private:
   friend class StepTransaction;
@@ -611,11 +615,10 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   Status CheckRoutedWeightBindings(std::span<const kernels::RoutedWeight> reads) const;
   std::vector<catalog::ExtentId> base_weight_extents() const;
   std::shared_ptr<RoutedState> routed_;
-  std::shared_ptr<RoutedFlight> routed_flight_;
-  // A submitted transaction's paid witnesses survive unproven retirement.
+  // Unproven work retained until cleared only by a positive stream fence.
   // Release clears this only after its existing whole-node drain contract,
   // AcknowledgeFence after a recovery's fence of the runner's stream.
-  std::shared_ptr<StepTransaction> step_flight_;
+  UnprovenWork unproven_;
   // Whether a target's verify saves in, or commits, a slot's stage.
   bool Verifies(std::uint32_t slot, std::size_t stage) const;
   // The cells an owner of `past` positions and `rows` rows reads alone on
@@ -680,7 +683,7 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
     std::uint64_t* sources = nullptr;
     std::uint32_t* count = nullptr;
     std::unique_ptr<providers::Storage> storage;
-    bool stalled = false;
+    UnprovenWork unproven;
   };
   std::vector<std::unique_ptr<RowTableState>> row_tables_;
   // Every slot's carried features (by slot, then stage: carry_offset_ and

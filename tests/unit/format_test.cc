@@ -477,4 +477,50 @@ TEST(FormatTest, BlockScaleBytesAndTheirDomain) {
   EXPECT_EQ(format::FirstUndefinedScale(mx, 7, e8m0), 2U);
 }
 
+TEST(FormatTest, BlockBytesAndTypeLookups) {
+  // BlockBytes for single-part dense and GGML blocks.
+  EXPECT_EQ(format::BlockBytes(Encoding::kF32), 4U);
+  EXPECT_EQ(format::BlockBytes(Encoding::kF16), 2U);
+  EXPECT_EQ(format::BlockBytes(Encoding::kBF16), 2U);
+  EXPECT_EQ(format::BlockBytes(Encoding::kU8), 1U);
+  EXPECT_EQ(format::BlockBytes(Encoding::kI64), 8U);
+  EXPECT_EQ(format::BlockBytes(Encoding::kQ4_0), 18U);
+  EXPECT_EQ(format::BlockBytes(Encoding::kQ8_0), 34U);
+  EXPECT_EQ(format::BlockBytes(Encoding::kQ8_1), 36U);
+  EXPECT_EQ(format::BlockBytes(Encoding::kQ4_K), 144U);
+
+  // Multi-part encodings without GGML blocks have no single block byte size.
+  EXPECT_FALSE(format::BlockBytes(Encoding::kMxfp8).has_value());
+  EXPECT_FALSE(format::BlockBytes(Encoding::kExl3Trellis).has_value());
+  EXPECT_FALSE(format::BlockBytes(Encoding::kAffine).has_value());
+
+  // EncodingByTypeName: case-insensitive matching.
+  EXPECT_EQ(format::EncodingByTypeName("f32"), Encoding::kF32);
+  EXPECT_EQ(format::EncodingByTypeName("F32"), Encoding::kF32);
+  EXPECT_EQ(format::EncodingByTypeName("q4_k"), Encoding::kQ4_K);
+  EXPECT_EQ(format::EncodingByTypeName("Q4_K"), Encoding::kQ4_K);
+  EXPECT_EQ(format::EncodingByTypeName("Q8_1"), Encoding::kQ8_1);
+  EXPECT_EQ(format::EncodingByTypeName("q8_1"), Encoding::kQ8_1);
+  EXPECT_FALSE(format::EncodingByTypeName("invalid").has_value());
+  EXPECT_FALSE(format::EncodingByTypeName("").has_value());
+
+  // LegacyTypeBlockBytes: Q8_1 returns 40U, others match BlockBytes.
+  EXPECT_EQ(format::LegacyTypeBlockBytes("q8_1"), 40U);
+  EXPECT_EQ(format::LegacyTypeBlockBytes("Q8_1"), 40U);
+  EXPECT_EQ(format::LegacyTypeBlockBytes("q4_0"), 18U);
+  EXPECT_EQ(format::LegacyTypeBlockBytes("Q8_0"), 34U);
+  EXPECT_EQ(format::LegacyTypeBlockBytes("f32"), 4U);
+  EXPECT_FALSE(format::LegacyTypeBlockBytes("invalid").has_value());
+  EXPECT_FALSE(format::LegacyTypeBlockBytes("mxfp8").has_value());
+
+  // IsSinglePartBlockOrDense.
+  EXPECT_TRUE(format::IsSinglePartBlockOrDense(Layout::kDense));
+  EXPECT_TRUE(format::IsSinglePartBlockOrDense(Layout::kGgmlBlocks));
+  EXPECT_FALSE(format::IsSinglePartBlockOrDense(Layout::kGgmlNvfp4Blocks));
+  EXPECT_FALSE(format::IsSinglePartBlockOrDense(Layout::kSplit));
+  EXPECT_FALSE(format::IsSinglePartBlockOrDense(Layout::kRowInterleaved));
+  EXPECT_FALSE(format::IsSinglePartBlockOrDense(Layout::kScaleAtoms));
+  EXPECT_FALSE(format::IsSinglePartBlockOrDense(Layout::kExl3Tiles));
+}
+
 }  // namespace

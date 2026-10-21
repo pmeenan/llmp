@@ -16,6 +16,7 @@
 #include "engine/model_runner.h"
 #include "engine/program_lifecycle.h"
 #include "engine/runner_memory.h"
+#include "engine/unproven_work.h"
 
 namespace llmp::engine {
 class StepTransaction;
@@ -80,8 +81,9 @@ struct PromptBatch::Data final : kernels::ResourceDependency, PagedModel {
   const std::uint32_t stream_index;
   std::uint64_t output_first = 0, route_first = 0, route_bytes = 0, pinned_bytes = 0, pending = 0;
   std::byte* pinned = nullptr;
-  bool private_resources = true, owns_request = false, unknown = false, closing = false,
-       closed = false, published = false;
+  bool private_resources = true, owns_request = false, closing = false, closed = false,
+       published = false;
+  UnprovenWork unproven;
 
  private:
   // This callback is inaccessible as a caller-asserted drain override.

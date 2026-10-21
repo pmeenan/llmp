@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -25,7 +26,9 @@
 
 #include "components/graph_io.h"
 #include "execution/registry.h"
+#include "ir/graph.h"
 #include "kernels/common/execution_resources.h"
+#include "kernels/common/selected_operation.h"
 #include "kernels/common/step_program.h"
 #include "planner/plan.h"
 #include "planner/select.h"
@@ -79,6 +82,15 @@ struct ConstructionFunder {
 };
 
 class BackendOwner;
+
+struct LowerOptions {
+  std::shared_ptr<const BackendOwner> routed_funder{};
+  bool device_masks = true;
+  const SelectedSource* selected_source = nullptr;
+  bool frozen_host_masks = false;
+  std::uint64_t index_scratch_limit = std::numeric_limits<std::uint64_t>::max();
+  std::function<std::uint64_t(const ir::WeightRef&)> expert_stride{};
+};
 
 // Immutable future launch resources, also used while measuring without a
 // configured launch. Zero means every operation runs on the ordinary stream.

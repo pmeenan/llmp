@@ -529,7 +529,7 @@ D-113, D-120), U4 (numerical evidence as component data scoped by device
 class; amends D-123) and U8 (the image stage graph as spec data; amends
 D-122).
 
-- [ ] **U1 Engine seams for the memory modes** (the memory modes' first
+- [x] **U1 Engine seams for the memory modes** (the memory modes' first
       sub-slice): the node budget held live by the scheduler and reaching
       `PlanMaterialization`, `AcquireProgram` and `LiveState` (copied by
       value at `Start` today); `PressureTrimLimits` from the node
@@ -728,11 +728,11 @@ D-122).
 - [ ] **U10 Review leftovers** (small; re-verify each at HEAD first): the
       runtime's single `swapped_`/`parts_` fields measured against the
       wrong swap; `ChargeRuntime`'s count and catalog falling out of step
-      when `AddExtent` fails; `CheckOwners` testing the `expected` rather
+      when `AddExtent` fails (done in U1); `CheckOwners` testing the `expected` rather
       than its `optional`; a spill discarding the drafter's catch-up
       (`invalidate` where `content_changed` is meant);
       `StepTransaction::Begin` counting `pending` before a return that can
-      fail; HTTP's 503 for a render-time deadline (504), `102 Processing`
+      fail (done in U1); HTTP's 503 for a render-time deadline (504), `102 Processing`
       ahead of a stream's 200 after a half-close, and `malloc_trim` on the
       I/O thread; and the readers' hardening (open by `O_PATH` and re-open
       instead of `stat` then `open`, overlap checks by physical file, bounds

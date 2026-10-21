@@ -30,11 +30,13 @@ class GemmaMoe : public ::testing::Test {
     auto* root = ggml_argsort(c(), x, GGML_SORT_ORDER_DESC);
     kg::TensorArena::Bind(root, 0x300000000ULL);
     auto* ids = ggml_view_2d(c(), root, used, rows, root->nb[1], 0);
-    return {{x, Bytes(static_cast<std::uint64_t>(rows) * static_cast<std::uint64_t>(experts) * 4)},
-            {w, Bytes(static_cast<std::uint64_t>(rows) * static_cast<std::uint64_t>(used) * 4)},
-            {ids, Bytes(static_cast<std::uint64_t>(rows) * static_cast<std::uint64_t>(experts) * 4)}};
+    return {
+        {x, Bytes(static_cast<std::uint64_t>(rows) * static_cast<std::uint64_t>(experts) * 4)},
+        {w, Bytes(static_cast<std::uint64_t>(rows) * static_cast<std::uint64_t>(used) * 4)},
+        {ids, Bytes(static_cast<std::uint64_t>(rows) * static_cast<std::uint64_t>(experts) * 4)}};
   }
-  kg::GemmaScaledReduction Reduce(std::int64_t rows, std::int64_t width = 2816, std::int64_t used = 8) {
+  kg::GemmaScaledReduction Reduce(std::int64_t rows, std::int64_t width = 2816,
+                                  std::int64_t used = 8) {
     const std::array<std::array<std::int64_t, 4>, 4> shapes = {
         {{width, used, rows, 1}, {1, used, rows, 1}, {1, used, rows, 1}, {width, rows, 1, 1}}};
     std::array<kg::GemmaMoeOperand, 4> o{};

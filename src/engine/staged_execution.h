@@ -153,6 +153,8 @@ class StagedExecution final : public PagedModel {
   const catalog::Closure& fence_closure() const override;
   std::vector<catalog::ExtentId> managed_extents() const override;
   Status Release() override;
+  Status AcknowledgeFence() override;
+  bool unproven() const noexcept;
 
   // Before the first launch or after completed Finish, without a request lease.
   // Content replacement preserves maps; geometry uses measured admission.

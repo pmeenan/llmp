@@ -307,6 +307,26 @@ struct ClientConfig {
   std::optional<std::uint64_t> stream_buffer_bytes;
 };
 
+// Physical-memory mode for a node (features.md): dedicated node pool vs shared-machine mode.
+enum class MemoryMode : std::uint8_t { kDedicated, kShared };
+std::string_view ToString(MemoryMode mode);
+
+// A configuration setting with its value and whether it was explicitly set.
+template <typename T>
+struct Setting {
+  T value{};
+  bool set = false;
+
+  constexpr Setting() = default;
+  constexpr Setting(T v) : value(std::move(v)), set(false) {}
+  constexpr Setting(T v, bool s) : value(std::move(v)), set(s) {}
+
+  constexpr operator const T&() const noexcept { return value; }
+  constexpr const T& operator*() const noexcept { return value; }
+  constexpr const T* operator->() const noexcept { return &value; }
+  constexpr bool operator==(const Setting&) const = default;
+};
+
 // Conversation state under memory pressure ([memory]; D-055 as amended
 // 2026-10-02): how long an idle conversation's state, resident or spilled,
 // and its turn checkpoints stay reusable, and how much spilled state the
@@ -325,6 +345,17 @@ struct MemoryConfig {
   // until retention or the budget removes them. false: nothing outlives the
   // process (the spill files stay unnamed, as before D-105).
   bool keep_across_restart = true;
+
+  Setting<MemoryMode> mode{MemoryMode::kDedicated};
+  // Shared-machine mode idle working-set release timer in seconds (0 disables).
+  Setting<std::uint64_t> idle_release_seconds{300};
+  // Host pressure trim thresholds (runtime/pressure_trim.h).
+  Setting<std::uint64_t> pressure_low_mib{512};
+  Setting<std::uint64_t> pressure_headroom_mib{1024};
+  Setting<double> pressure_stall_percent{5.0};
+  Setting<std::uint64_t> pressure_first_backoff_ms{1000};
+  Setting<std::uint64_t> pressure_max_backoff_ms{60000};
+  Setting<std::uint64_t> pressure_log_interval_seconds{60};
 };
 
 // Parses one bind entry ("loopback", "tailscale", "127.0.0.1:8114",

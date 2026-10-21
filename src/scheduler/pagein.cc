@@ -313,7 +313,7 @@ std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
           }
           // Its bytes leave the occupancy and come back as the load's: the
           // load fits exactly when the occupancy is within B now.
-          if (catalog_.OccupancyOf(found->descriptor.domain).Total() > settings_.budget) {
+          if (catalog_.OccupancyOf(found->descriptor.domain).Total() > budget()) {
             return std::unexpected(WorkError::kOverBudget);
           }
           EndParked(extent);
@@ -347,7 +347,7 @@ std::expected<void, WorkError> Scheduler::BeginPageIn(TaskRecord& record, catalo
   // load is allowed that extent's bytes over B because the parked
   // eviction completes in the same step, moving the charge.
   std::optional<catalog::ExtentId> donor;
-  Bytes budget = settings_.budget;
+  Bytes budget = this->budget();
   // Only where the extent's charge is its backing's size, so that moving a
   // charge moves exactly the bytes kept.
   const auto view = catalog_.Describe(extent);

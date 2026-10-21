@@ -1205,7 +1205,7 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   ts::FrozenDigests frozen("qwen2_exl3");
   const auto ran = [&]() -> en::Status {
     entered.push_back(kernel.get());
-    if (auto x = kernel->resources->OpenCublas("EXL3 shared cuBLAS workspace"); !x) return x;
+    if (auto x = kernel->resources->OpenLibrary("EXL3 shared cuBLAS workspace"); !x) return x;
     std::optional<llmp::kernels::exl3::GemvCapacity> gemv;
     if (optimized) {
       auto queried = llmp::kernels::exl3::QueryGemvCapacity(0);
@@ -1225,7 +1225,7 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
     auto selected = llmp::kernels::exl3::SelectedSource(cache, gemv);
     if (!selected) return std::unexpected(selected.error());
     auto backend = kg::GgmlBackend::Create(
-        0, node.execution(), node.stream(0), &kernel->resources->cublas(),
+        0, node.execution(), node.stream(0), &kernel->resources->library(),
         {.lower = {.index_scratch_limit = 32 * kMiB}, .selected = std::move(*selected)});
     if (!backend) return std::unexpected(backend.error());
     kernel->backend = std::move(*backend);

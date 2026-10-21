@@ -332,8 +332,8 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
           [paid = life.paid](std::uint64_t n) { paid->Release(n); });
       !r)
     return Error(r.error());
-  if (auto r = life.resources.OpenCublas("spatial qualified handle"); !r) return r;
-  if (auto r = life.backend->LendCublas(&life.resources.cublas()); !r) return Error(r.error());
+  if (auto r = life.resources.OpenLibrary("spatial qualified handle"); !r) return r;
+  if (auto r = life.backend->LendLibrary(&life.resources.library()); !r) return Error(r.error());
   const auto owned = life.backend->Backend();
   if (!owned.owner || !owned.owner->Ready()) return Error("owned backend readiness");
   const auto& table = owned.owner->backend();

@@ -24,6 +24,21 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Engine seams for physical memory modes (M3.5 U1): `Scheduler` owns the live
+  node budget (`SetBudget`/`budget`) read by `AcquireProgram`, `LiveState` and
+  `PagedNode`; `[memory]` accepts `mode`, `idle_release_seconds` and
+  `pressure_*` trim thresholds wired to `Server::pressure_`; `RunnerResources`
+  owns one engine-side backend and stream-library factory (`DeviceBackend`,
+  `StreamLibrary`), `expert_slab.cc` sizes from the format layer, and
+  `tools/llmp_boundaries.py` enforces that `src/engine/` and `src/runtime/`
+  name no kernel libraries (`ggml`, `exl3`, `cublas`, `cutlass`); one
+  `UnprovenWork` type cleared only after a positive stream fence replaces the
+  separate unproven-launch flags across `ModelRunner`, `PromptBatch`,
+  `StagedExecution`, `LiveState` and `PagedNode`; `PagedNode` splits along its
+  driver-thread, region, accounting and request contracts; `SupplementalJob`
+  reclaims evictable extents before materializing selected experts; and
+  `ChargeRuntime` and `StepTransaction::Begin` close two accounting/validation
+  edge cases from U10.
 - Qwen3.8 MTP drafters take their expert layout (stacked gate/up, tensor
   scales) from their own tensors rather than the target's, so the relaid
   ModelOpt drafter composes with the GGUF and MLX targets again; the MLX
