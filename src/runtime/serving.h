@@ -1899,6 +1899,12 @@ class Server {
   // recovery's last resort: any thread). True if none is left.
   bool DrainKept(Clock::time_point deadline);
 
+  std::expected<api::ReleaseReport, std::string> ReleaseWorkingSet(
+      std::string_view reason = "manual");
+  bool HasActiveTurnWork() const;
+  void TouchActivity() noexcept { last_activity_ = Clock::now(); }
+  bool AnyResidentState();
+
  private:
   Status Make(const config::ModelEntry& entry, const ModelSettings& settings, int index);
   void Log(std::string_view text);
@@ -1966,6 +1972,8 @@ class Server {
   std::uint64_t budget_ = 0;
   std::uint64_t dynamic_budget_ = 0;  // ordinary guard-derived B before an internal cap
   std::uint64_t fixed_ = 0;
+  std::uint64_t configured_budget_ = 0;
+  Clock::time_point last_activity_{Clock::now()};
   std::uint64_t host_inputs_ = 0;
   std::uint64_t plans_ = 0;  // plan_floor_bytes()
   std::uint64_t request_memory_ = kRequestMemoryFloor;

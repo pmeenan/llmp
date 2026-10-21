@@ -304,6 +304,7 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   const StateKeeper::Quiet quiet(keeper_.get());
   parts = SwapParts{};
   parts.to = m.name();
+  last_activity_ = Clock::now();
   if (resident_ == &m) {
     return {};
   }
@@ -553,7 +554,8 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
         },
         "partitioning selected donor backing by actual class and size");
     if (!listed) return listed;
-    const auto partition = ReleaseForHandoff(node_.domain(), occupancy, budget_, missing, donors);
+    const auto partition =
+        ReleaseForHandoff(node_.domain(), occupancy, node_.budget().value(), missing, donors);
     if (!partition) return std::unexpected(partition.error());
     release = *partition;
     return {};

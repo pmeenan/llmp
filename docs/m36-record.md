@@ -304,10 +304,18 @@ evidence. The nested scope text, verbatim, is
     (fused against unfused) fails the 95%-within-0.1 agreement bound (92.9%).
     A future pre-registration should set per-target bounds from a measured
     same-reference noise floor.
-- **DeepSeek DSpark waves' C4 wall (owner decision, 2026-10-17).** NOT
-  PASSED at +0.94% mean, upper bound +1.20% (limit +0.995%), 6 blocks (the
-  registered maximum), on candidate `53c2610b`; every other DSpark metric
-  passes. The owner accepted it as an exception.
+- **DeepSeek DSpark waves' C4 wall (owner decision, 2026-10-17; retired in M3.5
+  D-124, 2026-10-21).** NOT PASSED at +0.94% mean, upper bound +1.20% (limit
+  +0.995%), 6 blocks (the registered maximum), on candidate `53c2610b`; every
+  other DSpark metric passes. The owner accepted it as an exception at M3.6
+  closeout, and M3.5's dedicated physical pool (D-124, `RE-059`) plus the
+  `PrefillOrchestrator::Predict` multi-slot speculative continuation lookahead
+  fix retired it on 2026-10-21: in a 2-block matched confirmation on `spark`
+  against `61f8426f`,
+  DSpark passed every metric (`C1/C2/C4 prefill_s` +0.12% / +0.97% / +0.47%,
+  `C4 wall_tok_s` −1.99% faster, `C1/C2/C4 decode_tok_s` −1.20% / −10.27% /
+  −17.57% faster), alongside `image` (`generation_s` −0.01%) and `gemma2`
+  (`C1/C2 prefill_s` +0.32% / −1.18%).
   - *Root cause:* the physical placement of the activations. `be5c4db6` maps
     the 2.6 GiB shared workspace resident at startup, and on a long-running
     host the driver backs it with about 51,000 scattered 64 KiB pieces taken

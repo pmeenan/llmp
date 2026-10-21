@@ -166,6 +166,38 @@ Clock::time_point ResidentTimes::Latest(std::span<const catalog::ExtentId> exten
 
 // ---------------------------------------------------------------- the server
 
+namespace {
+engine::NodeSettings MakeNodeSettings(const config::NodeConfig& config,
+                                      const ServingOptions& options,
+                                      scheduler::PageInObserver* observer,
+                                      const std::atomic<bool>* hold_reads) {
+  const auto mode = config.memory.mode.value;
+  const bool preallocate =
+      (mode == config::MemoryMode::kDedicated && !options.handle_reserve.has_value());
+  const std::size_t reserve = options.handle_reserve.value_or(0);
+  return engine::NodeSettings{
+      .compute_streams = std::max<std::size_t>(config.models.size(), 1),
+      .slots = engine::kPagedSlots,
+      .inline_lanes = false,
+      .coalesce = false,
+      .copy_lane = true,
+      .lazy_handoff = options.lazy_handoff,
+      .zero_state = options.zero_state,
+      .handle_reserve = reserve,
+      .memory_mode = (mode == config::MemoryMode::kShared) ? engine::MemoryMode::kShared
+                                                           : engine::MemoryMode::kDedicated,
+      .preallocate_pool = preallocate,
+      .slot_bytes = engine::kSlabSlotBytes,
+      .observer = observer,
+      .poll_window = std::nullopt,
+      .spin_ahead = std::nullopt,
+      .quiet = std::chrono::minutes(10),
+      .hold_reads = hold_reads,
+      .hold_cancellable = options.hold_cancellable,
+  };
+}
+}  // namespace
+
 Server::Server(const config::NodeConfig& config, const config::RuntimeRoles& roles,
                const ServingOptions& options, std::FILE* log)
     : config_(config),
@@ -173,21 +205,7 @@ Server::Server(const config::NodeConfig& config, const config::RuntimeRoles& rol
       options_(options),
       log_(log),
       times_(kObservedExtents),
-      node_({.compute_streams = std::max<std::size_t>(config.models.size(), 1),
-             .slots = engine::kPagedSlots,
-             .inline_lanes = false,
-             .coalesce = false,
-             .copy_lane = true,
-             .lazy_handoff = options.lazy_handoff,
-             .zero_state = options.zero_state,
-             .handle_reserve = options.handle_reserve.value_or(engine::kHandleReserve),
-             .slot_bytes = engine::kSlabSlotBytes,
-             .observer = &times_,
-             .poll_window = std::nullopt,
-             .spin_ahead = std::nullopt,
-             .quiet = std::chrono::minutes(10),
-             .hold_reads = &hold_reads_,
-             .hold_cancellable = options.hold_cancellable}),
+      node_(MakeNodeSettings(config, options, &times_, &hold_reads_)),
       retention_(std::chrono::hours(config.memory.retention_hours)),
       spill_budget_(std::uint64_t{config.memory.spill_budget_gib} << 30U),
       pressure_({
@@ -510,6 +528,8 @@ Status Server::Start(bool snapshot) {
   std::uint64_t pool = 0;
   std::uint64_t largest = 0;
   std::uint64_t largest_weights = 0;  // the largest weights alone
+  std::uint64_t total_weights = 0;
+  bool has_image = false;
   std::uint64_t host_inputs = 0;
   std::uint64_t plans = 0;
   for (const auto& m : models_) {
@@ -562,8 +582,13 @@ Status Server::Start(bool snapshot) {
     // the largest weights beside the largest workspace of any model.
     const std::uint64_t footprint =
         ActiveFootprint(m->weights().size() * kExtent, m->activations_needed(), m->pool_needed());
+    const std::uint64_t model_weights = m->weights().size() * kExtent;
     largest = std::max(largest, footprint);
-    largest_weights = std::max<std::uint64_t>(largest_weights, m->weights().size() * kExtent);
+    largest_weights = std::max<std::uint64_t>(largest_weights, model_weights);
+    if (__builtin_add_overflow(total_weights, model_weights, &total_weights)) {
+      total_weights = std::numeric_limits<std::uint64_t>::max();
+    }
+    has_image = has_image || !m->llm();
     std::string chunks;
     if (m->llm()) {
       const auto& l = static_cast<Llm&>(*m);
@@ -640,7 +665,8 @@ Status Server::Start(bool snapshot) {
   const std::uint64_t resident_need = GuardReserve(startup_guard) + resident_largest;
   const bool fits =
       startup_available == 0 || resident_need + (std::uint64_t{1} << 30U) <= startup_available;
-  const bool pageable = options_.pageable_workspace.value_or(!fits);
+  const bool shared_mode = config_.memory.mode.value == config::MemoryMode::kShared;
+  const bool pageable = options_.pageable_workspace.value_or(shared_mode ? true : !fits);
   Log(std::format(
       "workspace: {} ({:.2f} GiB of activations and {:.2f} GiB of pool); {}",
       pageable ? "paged with the active model" : "resident for the node's life",
@@ -684,6 +710,14 @@ Status Server::Start(bool snapshot) {
   if (!pageable) largest = largest_weights;
   workspace_ = activations + pool;
   snapshot_enabled_ = snapshot;
+  // The turn checkpoints' staging, set apart once so a budget full of
+  // reclaimable plans, graphs and idle state never starves a capture or a
+  // restore (they use it one at a time).
+  if (std::ranges::any_of(models_, [](const auto& m) { return m->llm(); })) {
+    if (auto r = node_.ReserveStaging(engine::CheckpointStagingBytes()); !r) {
+      return Error("setting apart the turn checkpoints' staging: " + r.error());
+    }
+  }
   // The budget (D-050's B): everything mapped for the node's life (the zone,
   // each model's own memory, the staging) and the largest active footprint
   // (a model's weights and its workspace), so a full swap is the only way in.
@@ -741,25 +775,45 @@ Status Server::Start(bool snapshot) {
     budget_ += node_.StateCapacity();
   }
   dynamic_budget_ = budget_;
+  if (config_.memory.budget_gib.value > 0 && !options_.diagnostic_budget_cap_bytes.has_value()) {
+    budget_ = std::min(budget_, std::uint64_t{config_.memory.budget_gib.value} << 30U);
+  }
+  if (budget_ < fixed_ + largest) {
+    return std::unexpected(std::format(
+        "configured memory budget ({} bytes) is less than the required footprint ({} bytes fixed "
+        "+ {} bytes largest model)",
+        budget_, fixed_, largest));
+  }
   if (options_.diagnostic_budget_cap_bytes) {
-    const auto reserve = options_.handle_reserve.value_or(engine::kHandleReserve);
-    if (reserve > std::numeric_limits<std::uint64_t>::max() / kExtent)
-      return Error("diagnostic budget cap handle reserve overflows");
     const auto requested = *options_.diagnostic_budget_cap_bytes;
     // An automatic startup ceiling cannot enlarge ordinary admission. Keep
     // extent alignment when current measured headroom selects a smaller budget.
     const auto cap =
         AutomaticStartup() ? std::min(requested, dynamic_budget_ / kExtent * kExtent) : requested;
-    if (auto checked = CheckDiagnosticBudgetCap(bounds, dynamic_budget_, cap, reserve * kExtent);
-        !checked)
+    if (auto checked = CheckDiagnosticBudgetCap(bounds, dynamic_budget_, cap, 0); !checked)
       return std::unexpected(checked.error());
     budget_ = cap;
     Log(std::format("diagnostic budget cap: dynamic={} selected={} bytes; requested={} bytes",
                     dynamic_budget_, budget_, requested));
   }
-  if (auto r = node_.Start(base::Bytes(budget_)); !r) {
+  const auto add_sat = [](std::uint64_t a, std::uint64_t b) {
+    std::uint64_t out = 0;
+    return __builtin_add_overflow(a, b, &out) ? std::numeric_limits<std::uint64_t>::max() : out;
+  };
+  const std::uint64_t image_growth = has_image ? (std::uint64_t{8} << 30U) : 0;
+  const std::uint64_t max_device_bytes = add_sat(add_sat(total_weights, pageable ? workspace_ : 0),
+                                                 add_sat(node_.StateCapacity(), image_growth));
+  const std::uint64_t avail_pool =
+      available != 0 ? (available > GuardReserve(bounds)
+                            ? (available - GuardReserve(bounds)) / kExtent * kExtent
+                            : 0)
+                     : max_device_bytes;
+  const std::uint64_t pool_ceiling = std::min(max_device_bytes, avail_pool);
+  if (auto r = node_.Start(base::Bytes(budget_), base::Bytes(pool_ceiling)); !r) {
     return r;
   }
+  configured_budget_ = budget_;
+  last_activity_ = Clock::now();
   StartProgress();
   // No model is active until its activation: none of its weight files
   // opens before.
@@ -800,14 +854,6 @@ Status Server::Start(bool snapshot) {
     }
     return Reclaim(needed, true, "pinned staging past the free budget");
   });
-  // The turn checkpoints' staging, set apart once so a budget full of
-  // reclaimable plans, graphs and idle state never starves a capture or a
-  // restore (they use it one at a time).
-  if (std::ranges::any_of(models_, [](const auto& m) { return m->llm(); })) {
-    if (auto r = node_.ReserveStaging(engine::CheckpointStagingBytes()); !r) {
-      return Error("setting apart the turn checkpoints' staging: " + r.error());
-    }
-  }
   // The state room: what the budget leaves the conversations beside the
   // fixed memory and the largest active footprint.
   const std::uint64_t room = budget_ > fixed_ + largest ? budget_ - fixed_ - largest : 0;
@@ -1563,16 +1609,48 @@ void Server::Maintain() {
   // As far as it can: what a request holds stays, the rest still goes.
   (void)DeleteSpilledPast(0);
   RecordCalibrations();
+  if (config_.memory.mode.value == config::MemoryMode::kShared &&
+      config_.memory.idle_release_seconds.value > 0 && !HasActiveTurnWork()) {
+    const auto idle_limit = std::chrono::seconds(config_.memory.idle_release_seconds.value);
+    if (now >= last_activity_ + idle_limit && (resident_ != nullptr || AnyResidentState())) {
+      (void)ReleaseWorkingSet("idle timeout");
+    }
+  }
   // Pressure from outside the runtime: other processes share the node's
   // memory (D-004). One reclaim of what would restore the target headroom,
   // spaced by a back-off while the pressure persists (PressureTrim), never
   // the running model's in-use floor (Reclaim).
   const platform::MemoryPressure pressure = platform::ReadMemoryPressure();
   const PressureTrim::Trim trim = pressure_.Observe(pressure, now);
+  if (config_.memory.mode.value == config::MemoryMode::kShared && pressure.available.has_value() &&
+      configured_budget_ > 0) {
+    const std::uint64_t avail = *pressure.available;
+    const std::uint64_t target_headroom = pressure_.limits().headroom_bytes;
+    if (avail < target_headroom) {
+      const std::uint64_t shortfall = target_headroom - avail;
+      const std::uint64_t lower =
+          configured_budget_ > shortfall ? configured_budget_ - shortfall : fixed_;
+      const std::uint64_t new_budget = std::max(fixed_, lower);
+      if (new_budget < node_.budget().value()) {
+        node_.SetBudget(base::Bytes(new_budget));
+        budget_ = new_budget;
+      }
+    } else if (avail >= target_headroom && node_.budget().value() < configured_budget_) {
+      node_.SetBudget(base::Bytes(configured_budget_));
+      budget_ = configured_budget_;
+    }
+  }
   if (!trim.now) {
     return;
   }
-  const std::uint64_t freed = Reclaim(trim.needed, true, trim.why, nullptr, std::nullopt, true);
+  std::uint64_t freed = Reclaim(trim.needed, true, trim.why, nullptr, std::nullopt, true);
+  if (config_.memory.mode.value == config::MemoryMode::kShared && freed < trim.needed &&
+      resident_ != nullptr && !HasActiveTurnWork()) {
+    auto rel = ReleaseWorkingSet("memory pressure");
+    if (rel) {
+      freed += rel->reclaimed_bytes;
+    }
+  }
   if (pressure_.Trimmed(freed, trim.needed, now)) {
     const auto mib = [](std::uint64_t b) { return static_cast<double>(b) / (1U << 20U); };
     Log(std::format(

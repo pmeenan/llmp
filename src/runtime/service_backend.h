@@ -205,6 +205,8 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   void Maintain() override;
   bool healthy() const override;
   std::string failure() const override;
+  std::expected<api::ReleaseReport, std::string> ReleaseWorkingSet(
+      std::string_view reason = "manual") override;
 
  private:
   Status AdvancePrefillWave();

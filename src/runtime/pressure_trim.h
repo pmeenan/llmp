@@ -66,6 +66,7 @@ class PressureTrim {
   // once a log interval.
   bool Trimmed(std::uint64_t freed, std::uint64_t needed, Clock::time_point now);
 
+  const PressureTrimLimits& limits() const noexcept { return limits_; }
   bool pressed() const { return pressed_; }
   Clock::duration backoff() const { return backoff_; }
   std::uint64_t trims() const { return trims_; }

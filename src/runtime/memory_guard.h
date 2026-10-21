@@ -110,7 +110,7 @@ std::expected<void, std::string> CheckStartupHostAllowance(std::uint64_t bytes, 
 std::expected<void, std::string> CheckDiagnosticBudgetCap(const MemoryGuard& guard,
                                                           std::uint64_t dynamic_budget,
                                                           std::uint64_t cap,
-                                                          std::uint64_t extra_pinned);
+                                                          std::uint64_t extra_pinned = 0);
 
 }  // namespace llmp::runtime
 

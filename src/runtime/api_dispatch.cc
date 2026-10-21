@@ -626,6 +626,37 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
       continue;
     }
     ready_.Drain();
+    std::optional<PendingRelease> release_req;
+    {
+      const std::scoped_lock lock(mutex_);
+      if (pending_release_.has_value()) {
+        release_req = std::move(pending_release_);
+        pending_release_.reset();
+      }
+    }
+    if (release_req.has_value()) {
+      auto report = backend_.ReleaseWorkingSet("http");
+      {
+        const std::scoped_lock lock(mutex_);
+        Channel& ch = *release_req->channel;
+        if (!report) {
+          ch.PutError(server_detail::Refusal(409, report.error(), "busy"));
+        } else {
+          const std::string body = std::format(
+              R"({{"evicted_model":"{}","spilled_bytes":{},"reclaimed_bytes":{},"released_backings":{}}})",
+              report->evicted_model, report->spilled_bytes, report->reclaimed_bytes,
+              report->released_backings);
+          ch.PutHead(200, server_detail::kJson, body.size());
+          ch.PutBody(body);
+          ch.PutEnd();
+        }
+        if (!ch.dirty) {
+          ch.dirty = true;
+          dirty_.push_back(ch.connection);
+        }
+      }
+      WakeIo();
+    }
     for (;;) {
       std::optional<Pending> next;
       {
@@ -683,6 +714,17 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
         channel.dirty = true;
         dirty_.push_back(channel.connection);
       }
+    }
+    if (pending_release_.has_value()) {
+      Channel& channel = *pending_release_->channel;
+      channel.keep_alive = false;
+      lines.push_back(std::format("request {}: 503, the runtime is stopping", channel.id));
+      channel.PutError(server_detail::Refusal(503, "the runtime is stopping"));
+      if (!channel.dirty) {
+        channel.dirty = true;
+        dirty_.push_back(channel.connection);
+      }
+      pending_release_.reset();
     }
     queue_.clear();
   }

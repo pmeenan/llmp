@@ -315,6 +315,7 @@ std::expected<api::CooperativeBackend::Unit, std::string> NodeBackend::NextUnit(
 
 std::expected<void, std::string> NodeBackend::Advance(
     std::span<api::CooperativeBackend::Work* const> work) {
+  server_.TouchActivity();
   if (auto valid = CheckCohort(work); !valid) {
     return valid;
   }
@@ -464,10 +465,12 @@ std::expected<void, std::string> NodeBackend::Advance(
     WaitForCapacity(refused);
   }
   Rebalance();
+  server_.TouchActivity();
   return {};
 }
 
 api::CooperativeBackend::Retirement NodeBackend::Retire(api::CooperativeBackend::Work& work) {
+  server_.TouchActivity();
   auto& frame = static_cast<ChatWork&>(work);
   if (&frame.owner != this || frame.retired || frame.slot >= cohort_.size() ||
       cohort_[frame.slot] != &frame || !frame.terminal()) {

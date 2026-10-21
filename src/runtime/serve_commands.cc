@@ -1000,24 +1000,32 @@ std::string Table::Json() const {
   if (stats) {
     const auto& c = stats->backing_creates;
     creates = std::format(
-        R"({{"reserve_attempts":{},"reserve_failures":{},"ordinary_attempts":{},)"
-        R"("ordinary_failures":{},"last_failure_monotonic_ns":{},"last_failure_reserve":{},)"
-        R"("last_failure_error":{},"last_failure_detail":{}}})",
-        c.reserve_attempts, c.reserve_failures, c.ordinary_attempts, c.ordinary_failures,
-        c.last_failure_monotonic_ns, c.last_failure_reserve ? "true" : "false",
+        R"({{"startup_pool_creates":{},"post_init_creates":{},"reserve_attempts":{},"reserve_failures":{},)"
+        R"("ordinary_attempts":{},"ordinary_failures":{},"last_failure_monotonic_ns":{},)"
+        R"("last_failure_reserve":{},"last_failure_error":{},"last_failure_detail":{}}})",
+        c.startup_pool_creates, c.post_init_creates(), c.reserve_attempts, c.reserve_failures,
+        c.ordinary_attempts, c.ordinary_failures, c.last_failure_monotonic_ns,
+        c.last_failure_reserve ? "true" : "false",
         Quoted(providers::ToString(c.last_failure_error)), Quoted(c.last_failure_detail));
   }
   return std::format(
       "{{\"command\":\"swap-table\",\"handoff\":{},\"context_tokens\":{},\"continue\":{},"
       "\"cycles\":{},\"context_sha256\":\"{}\",\"budget\":{},\"dynamic_budget\":{},\"fixed\":{},"
+      "\"memory_mode\":{},\"created_backings\":{},\"released_backings\":{},\"live_backings\":{},"
+      "\"reserve_available\":{},\"reserve_target\":{},"
       "\"native_token_history_bytes\":{},\"native_token_catalog_bytes\":{},"
       "\"backing_creates\":{},\"mem_available_start\":{},\"mem_available_low\":{},\n "
       "\"models\":{{\n  {}}},\n"
       " \"problems\":[{}],\n \"positioning\":[\n  {}],\n \"rows\":[\n  {}]}}\n",
       o_.handoff ? "true" : "false", o_.context_tokens, o_.continue_tokens, o_.cycles,
       Sha256(std::as_bytes(std::span(text_))), server_.budget(), server_.dynamic_budget(),
-      server_.fixed_bytes(), server_.token_history_bytes(), server_.token_catalog_bytes(), creates,
-      server_.memory().start(), server_.memory().all(), models, problems, positioning, rows);
+      server_.fixed_bytes(),
+      Quoted(server_.node().memory_mode() == engine::MemoryMode::kShared ? "shared" : "dedicated"),
+      server_.node().CreatedBackings(), server_.node().ReleasedBackings(),
+      server_.node().LiveBackings(), server_.node().ReserveAvailable(),
+      server_.node().ReserveTarget(), server_.token_history_bytes(), server_.token_catalog_bytes(),
+      creates, server_.memory().start(), server_.memory().all(), models, problems, positioning,
+      rows);
 }
 
 }  // namespace

@@ -270,6 +270,8 @@ TEST(NodeConfigTest, MemoryModeAndPressureDefaults) {
   EXPECT_EQ(defaults.memory.mode.value, llmp::config::MemoryMode::kDedicated);
   EXPECT_FALSE(defaults.memory.mode.set);
   EXPECT_EQ(ToString(defaults.memory.mode.value), "dedicated");
+  EXPECT_EQ(defaults.memory.budget_gib.value, 0U);
+  EXPECT_FALSE(defaults.memory.budget_gib.set);
   EXPECT_EQ(defaults.memory.idle_release_seconds.value, 300U);
   EXPECT_FALSE(defaults.memory.idle_release_seconds.set);
   EXPECT_EQ(defaults.memory.pressure_low_mib.value, 512U);
@@ -290,6 +292,7 @@ TEST(NodeConfigTest, MemoryModeAndPressureExplicitValidValues) {
   const NodeConfig config = Parsed(R"(schema_version = 2
 [memory]
 mode = "shared"
+budget_gib = 64
 idle_release_seconds = 600
 pressure_low_mib = 1024
 pressure_headroom_mib = 2048
@@ -301,6 +304,8 @@ pressure_log_interval_seconds = 30
   EXPECT_EQ(config.memory.mode.value, llmp::config::MemoryMode::kShared);
   EXPECT_TRUE(config.memory.mode.set);
   EXPECT_EQ(ToString(config.memory.mode.value), "shared");
+  EXPECT_EQ(config.memory.budget_gib.value, 64U);
+  EXPECT_TRUE(config.memory.budget_gib.set);
   EXPECT_EQ(config.memory.idle_release_seconds.value, 600U);
   EXPECT_TRUE(config.memory.idle_release_seconds.set);
   EXPECT_EQ(config.memory.pressure_low_mib.value, 1024U);
@@ -324,6 +329,12 @@ TEST(NodeConfigTest, MemoryModeAndPressureRefusals) {
   // Mode wrong type
   EXPECT_THAT(Failures("schema_version = 2\n[memory]\nmode = 123\n"),
               ElementsAre(HasSubstr("memory.mode must be a string")));
+
+  // budget_gib out of bounds (0..1048576)
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nbudget_gib = -1\n"),
+              ElementsAre(HasSubstr("memory.budget_gib must be from 0 to 1048576")));
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nbudget_gib = 1048577\n"),
+              ElementsAre(HasSubstr("memory.budget_gib must be from 0 to 1048576")));
 
   // idle_release_seconds out of bounds (0..86400)
   EXPECT_THAT(Failures("schema_version = 2\n[memory]\nidle_release_seconds = -1\n"),

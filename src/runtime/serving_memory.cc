@@ -804,6 +804,14 @@ Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out
                                PendingWeightEvictions* pending) {
   const SwapPhaseTimer timer(options_.diagnostic_budget_cap_bytes ? &swap_host_phases_.room_seconds
                                                                   : nullptr);
+  if (budget_ < configured_budget_) {
+    const auto pressure = platform::ReadMemoryPressure();
+    if (pressure.available.has_value() &&
+        *pressure.available >= pressure_.limits().headroom_bytes) {
+      node_.SetBudget(base::Bytes(configured_budget_));
+      budget_ = configured_budget_;
+    }
+  }
   // Size physical occupancy afresh, including required charges above B.
   const auto add = [](std::uint64_t& value, std::uint64_t bytes) {
     if (bytes > UINT64_MAX - value) return false;
@@ -838,7 +846,7 @@ Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out
                 !add(credit, view->descriptor.size.value()))
               return Error("a swap's outgoing credit overflows");
           }
-          need = after > budget_ ? after - budget_ : 0;
+          need = after > node_.budget().value() ? after - node_.budget().value() : 0;
           if (pending != nullptr) {
             std::erase_if(pending->selected, [&](const auto& selected) {
               const auto view = catalog.Describe(selected.extent);
@@ -872,6 +880,109 @@ Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out
   }
   return Error(std::format("{} to {}: the incoming closure cannot fit without held extents",
                            resident_ != nullptr ? resident_->name() : "a swap", m.name()));
+}
+
+bool Server::AnyResidentState() {
+  for (const auto& m : models_) {
+    if (m->llm()) {
+      auto& l = static_cast<Llm&>(*m);
+      for (std::size_t i = 0; i < l.branches(); ++i) {
+        if (auto b = l.branch(i); b && l.ResidentStateBytes(**b) > 0) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+bool Server::HasActiveTurnWork() const {
+  if (reclaiming_) {
+    return true;
+  }
+  for (const auto& m : models_) {
+    if (m->has_paged() && node_.InRequest(m->paged().stream())) {
+      return true;
+    }
+    if (m->llm()) {
+      auto& l = static_cast<Llm&>(*m);
+      for (std::size_t i = 0; i < l.branches(); ++i) {
+        if (auto b = l.branch(i); b) {
+          if (!l.BranchIdle(**b) || (*b)->HeldByContinuation()) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+std::expected<api::ReleaseReport, std::string> Server::ReleaseWorkingSet(std::string_view reason) {
+  if (HasActiveTurnWork()) {
+    return std::unexpected("busy");
+  }
+  api::ReleaseReport report;
+  const std::uint64_t before_occupancy =
+      node_.catalog().OccupancyOf(node_.domain()).Total().value();
+  for (const auto& m : models_) {
+    m->DropPlans();
+  }
+  for (const auto& m : models_) {
+    if (!m->llm()) continue;
+    auto& l = static_cast<Llm&>(*m);
+    for (std::size_t i = 0; i < l.branches(); ++i) {
+      auto b = l.branch(i);
+      if (!b || !l.BranchIdle(**b) || (*b)->HeldByContinuation() || (*b)->history().empty()) {
+        continue;
+      }
+      const std::uint64_t held = l.ResidentStateBytes(**b);
+      if (held == 0) continue;
+      if (spill_budget_ > 0 && held <= spill_budget_ &&
+          KeepWithinSpillBudget(held, {.spilling = *b})) {
+        if (auto spilled = l.SpillIdle(**b); spilled) {
+          report.spilled_bytes += held;
+        }
+      } else if (auto released = (*b)->ReleaseIdleState(); released) {
+        // State released on host/catalog
+      }
+    }
+  }
+  if (resident_ != nullptr) {
+    report.evicted_model = resident_->name();
+  }
+  for (const auto& m : models_) {
+    if (auto evicted = EvictPaged(*m); !evicted) {
+      return std::unexpected(std::format("evicting {}: {}", m->name(), evicted.error()));
+    }
+  }
+  resident_ = nullptr;
+  DeactivateIdleModels();
+
+  if (node_.workspace_pageable()) {
+    std::vector<catalog::ExtentId> workspace_to_evict;
+    for (const catalog::ExtentId extent : node_.workspace_extents()) {
+      if (const auto view = node_.catalog().Describe(extent);
+          view && view->state == catalog::ExtentState::kResident) {
+        workspace_to_evict.push_back(extent);
+      }
+    }
+    if (!workspace_to_evict.empty()) {
+      (void)node_.Evict(workspace_to_evict);
+    }
+  }
+  report.released_backings = node_.ReleaseUnusedBacking();
+  const std::uint64_t after_occupancy = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+  report.reclaimed_bytes =
+      before_occupancy > after_occupancy ? before_occupancy - after_occupancy : 0;
+  platform::ReleaseFreeHeap();
+  Log(std::format(
+      "released working set ({}) [evicted={}, spilled={:.1f} MiB, reclaimed={:.1f} MiB, "
+      "released_backings={}]",
+      reason, report.evicted_model.empty() ? "none" : report.evicted_model,
+      static_cast<double>(report.spilled_bytes) / (1ULL << 20U),
+      static_cast<double>(report.reclaimed_bytes) / (1ULL << 20U), report.released_backings));
+  return report;
 }
 
 }  // namespace llmp::runtime

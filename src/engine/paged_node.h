@@ -194,7 +194,8 @@ struct Mapped {
 // Unmaps and releases `mapped`'s backing (it holds none once the VMM lane
 // manages it, D-033) and frees its reservation; false if any step failed.
 // A mapped that holds nothing is left as it is.
-bool ReleaseMapped(providers::VmmProvider& memory, Mapped& mapped);
+bool ReleaseMapped(providers::VmmProvider& memory, Mapped& mapped,
+                   scheduler::BackingService* backing_lane = nullptr);
 
 // A model's places checked still where it registered them and pinned there
 // (D-090), on the scheduler's thread: how many are not, and the first.
@@ -213,6 +214,11 @@ struct LoadStats {
   double seconds = 0;
   std::uint64_t requests = 0;  // direct-I/O requests the load's reads took
   std::uint64_t pieces = 0;    // the chunks (segments) they carried
+};
+
+enum class MemoryMode : std::uint8_t {
+  kDedicated,
+  kShared,
 };
 
 struct NodeSettings {
@@ -242,6 +248,8 @@ struct NodeSettings {
   // the device-memory provider while idle, so once the lanes run nothing
   // else may call it until they have joined (device_memory.h).
   std::size_t handle_reserve = 0;
+  MemoryMode memory_mode = MemoryMode::kDedicated;
+  bool preallocate_pool = false;
   bool diagnostic_backing_timing = false;  // internal cap-only attribution, no public setting
   // Each slot's bytes (and the reader's largest request): 2 MiB, or more
   // for reads longer than their extent (a DeepSeek expert slab's pages,
@@ -593,7 +601,7 @@ class PagedNode {
   // Only the owning model's unreferenced pinned allocation, after positive
   // device completion and destruction of every plan/registration naming it.
   Status RetireMapped(Mapped& mapped);
-  Status Start(base::Bytes budget);
+  Status Start(base::Bytes budget, std::optional<base::Bytes> pool_ceiling = std::nullopt);
   void Run();
   // Every problem in one error. Once.
   Status TearDown(std::span<PagedModel* const> models);
@@ -805,6 +813,24 @@ class PagedNode {
     return backing_lane_ != nullptr ? backing_lane_->create_stats()
                                     : scheduler::BackingCreateStats{};
   }
+  MemoryMode memory_mode() const noexcept { return settings_.memory_mode; }
+  std::size_t ReserveAvailable() const {
+    return backing_lane_ != nullptr ? backing_lane_->ReserveAvailable() : 0;
+  }
+  std::size_t ReserveTarget() const {
+    return backing_lane_ != nullptr ? backing_lane_->ReserveTarget() : 0;
+  }
+  std::size_t LiveBackings() const { return memory_ != nullptr ? memory_->backings() : 0; }
+  std::uint64_t CreatedBackings() const {
+    return memory_ != nullptr ? memory_->created_backings() : 0;
+  }
+  std::uint64_t ReleasedBackings() const {
+    return memory_ != nullptr ? memory_->released_backings() : 0;
+  }
+  std::size_t ReleaseUnusedBacking() {
+    return backing_lane_ != nullptr ? backing_lane_->DrainReserve() : 0;
+  }
+  bool ReleaseMapped(Mapped& mapped);
   // Owner-only board counters become readable after teardown joins the
   // scheduler and lanes. Never read them concurrently with Harvest.
   std::optional<scheduler::HarvestStats> retired_harvest_stats() const {
@@ -1093,7 +1119,6 @@ class PagedNode {
   catalog::ExtentId token_extent_;
   std::uint64_t request_charged_ = 0;
   catalog::ExtentId request_extent_;
-  catalog::ExtentId reserve_extent_;  // the handle reserve's charge
   std::uint64_t host_floor_ = std::numeric_limits<std::uint64_t>::max();
   std::uint64_t host_total_ = 0;
   std::unique_ptr<HostPayment::Releases, HostPayment::DropReleases> host_releases_;

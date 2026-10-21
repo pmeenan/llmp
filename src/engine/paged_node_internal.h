@@ -161,7 +161,8 @@ inline Status CheckReplacementClosure(const catalog::Catalog& catalog, catalog::
   return {};
 }
 
-inline bool ReleaseMapped(providers::VmmProvider& memory, Mapped& mapped) {
+inline bool ReleaseMapped(providers::VmmProvider& memory, Mapped& mapped,
+                          scheduler::BackingService* backing_lane) {
   if (!mapped.reservation.valid()) {
     return true;
   }
@@ -170,6 +171,9 @@ inline bool ReleaseMapped(providers::VmmProvider& memory, Mapped& mapped) {
       memory.Unmap(mapped.reservation, Bytes(0), Bytes(mapped.backings.size() * kPagedExtent))
           .has_value();
   for (const auto backing : mapped.backings) {
+    if (backing_lane != nullptr && backing_lane->ReturnToReserve(backing)) {
+      continue;
+    }
     released = memory.Release(backing).has_value() && released;
   }
   if (!released || !memory.Free(mapped.reservation)) {

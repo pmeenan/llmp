@@ -183,6 +183,12 @@ class VmmProvider : public DeviceMemory {
   // What is live, for tests and leak checks at shutdown.
   std::size_t reservations() const { return reservations_.size(); }
   std::size_t backings() const { return backings_.size(); }
+  std::uint64_t created_backings() const {
+    return created_backings_.load(std::memory_order_relaxed);
+  }
+  std::uint64_t released_backings() const {
+    return released_backings_.load(std::memory_order_relaxed);
+  }
 
  protected:
   // The implementation's handle for a backing: an opaque number.
@@ -246,6 +252,8 @@ class VmmProvider : public DeviceMemory {
 
   Bytes granularity_;
   std::atomic<bool> changing_{false};
+  std::atomic<std::uint64_t> created_backings_{0};
+  std::atomic<std::uint64_t> released_backings_{0};
   base::SlotTable<ReservationTag, Reservation> reservations_;
   base::SlotTable<BackingTag, Backing> backings_;
 };

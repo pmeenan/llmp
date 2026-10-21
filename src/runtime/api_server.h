@@ -183,6 +183,7 @@ class Exchange {
   // request out of its next units until it is not; on the serial path the
   // calls above wait instead. Any thread; cheap.
   virtual bool Paused() const { return false; }
+  virtual bool timed_out() const { return false; }
   // Whether the request is to yield its place: paused for its client while
   // it keeps queued requests waiting (on the serial path, or a cohort that
   // must drain or is full), when one of the calls above returned false for
@@ -360,6 +361,13 @@ class Backend {
   // False once a failure left the backend unable to serve: Run returns.
   virtual bool healthy() const { return true; }
   virtual std::string failure() const { return {}; }
+
+  using ReleaseReport = api::ReleaseReport;
+  virtual std::expected<ReleaseReport, std::string> ReleaseWorkingSet(
+      std::string_view reason = "manual") {
+    (void)reason;
+    return std::unexpected("unsupported");
+  }
 };
 
 // The server's limits, each from [client] (config/node_config.h): every
@@ -481,6 +489,10 @@ class Server {
     MemoryCharge text_charge;
     std::uint64_t pauses = 0;
     std::optional<Clock::time_point> started;
+  };
+  struct PendingRelease {
+    std::uint64_t connection = 0;
+    std::shared_ptr<Channel> channel;
   };
   struct Parse;
   class Stream;
@@ -625,6 +637,7 @@ class Server {
   // queued again once their clients take their output (Flush), so they are
   // not taken up (and their models swapped in) only to yield again.
   std::deque<Pending> parked_;
+  std::optional<PendingRelease> pending_release_;
 
   // The parse thread's: bodies to parse and results to hand back (under
   // parse_mutex_), the I/O thread woken for each.

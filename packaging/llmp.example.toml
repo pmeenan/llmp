@@ -227,6 +227,8 @@ schema_version = 2
 # "dedicated": physical backing is acquired up front and held across models.
 # "shared": memory is allocated on demand and released when idle or under pressure.
 # mode = "dedicated"
+# Maximum physical memory budget in GiB (0 = auto / full device memory).
+# budget_gib = 0
 # In shared mode, seconds of inactivity before idle model working sets are
 # released (0 disables idle release).
 # idle_release_seconds = 300

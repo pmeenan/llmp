@@ -22,8 +22,28 @@ importers of the experiments are no longer in the production path).
 The entries below record each change; the record of the milestone is
 [docs/m36-record.md](docs/m36-record.md). Re-import any v0 artifact (D-118).
 
+### Added
+
+- Physical memory modes (D-124): `[memory] mode = "dedicated" | "shared"` and
+  `budget_gib` configuration support. In dedicated mode, physical memory handles
+  are pre-allocated synchronously up to the unmapped budget headroom into a
+  physical backing pool (`BackingService`) at node start, eliminating hot-path
+  driver allocation latency and recycling handles on eviction, with unmapped
+  handles separated from virtual catalog extent charges. In shared-machine mode,
+  unmapped handles are not pre-allocated, physical backing is allocated on demand
+  and released on eviction, workspace memory is pageable by default, two automatic
+  reclamation levers (idle timeout and external `PressureTrim`) drop resident
+  models and trim node budget/heap, and loopback clients can proactively trigger
+  immediate working set release via `POST /llmp/v1/memory/release`.
+
 ### Fixed
 
+- Speculative multi-slot prefill continuations (`src/engine/prefill.cc`):
+  `PrefillOrchestrator::Predict` now keeps ready decode peers in `cohort` for
+  speculative multi-slot continuations when `max_segments > 1`, preserves
+  `min_verify` row width when `min_verify > 1`, and scopes continuation `builds`
+  expansion to `!has_prompt_future`, avoiding late solo step re-captures during
+  multi-turn waves.
 - Engine seams for physical memory modes (M3.5 U1): `Scheduler` owns the live
   node budget (`SetBudget`/`budget`) read by `AcquireProgram`, `LiveState` and
   `PagedNode`; `[memory]` accepts `mode`, `idle_release_seconds` and

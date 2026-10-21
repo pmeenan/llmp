@@ -329,7 +329,7 @@ bool PagedNode::RetireRing(std::unique_ptr<providers::Storage> ring,
   return true;
 }
 
-Status PagedNode::Start(Bytes budget) {
+Status PagedNode::Start(Bytes budget, std::optional<Bytes> pool_ceiling) {
   budget_ = budget;
   board_ = std::make_unique<sc::CompletionBoard>(1024, wake_);
   // One request per 2 MiB chunk (the reader's default), or with coalesce
@@ -368,26 +368,35 @@ Status PagedNode::Start(Bytes budget) {
   // Managed backing's VMM work on a lane of its own, so the zone's copies
   // never wait behind it (docs/experiments/pagein-perf/); that lane alone
   // calls the device-memory provider (device_memory.h).
-  // Its handle reserve is charged in full before anything pages, as one
-  // pinned runtime extent, whatever it holds (services.h HandleReserve).
+  const std::size_t occupied = catalog_.OccupancyOf(domain_).Total().value();
+  std::size_t unmapped_budget_extents =
+      budget.value() > occupied ? (budget.value() - occupied) / kPagedExtent : 0;
+  if (pool_ceiling.has_value()) {
+    unmapped_budget_extents =
+        std::min<std::size_t>(unmapped_budget_extents, pool_ceiling->value() / kPagedExtent);
+  }
+  std::size_t target_handles = 0;
+  if (settings_.preallocate_pool) {
+    target_handles = unmapped_budget_extents;
+  } else if (settings_.memory_mode == MemoryMode::kShared && settings_.handle_reserve == 0) {
+    target_handles = 0;
+  } else {
+    target_handles = settings_.handle_reserve;
+  }
+
   sc::ReserveSettings reserve{.allocation_class = device_class_,
                               .size = Bytes(kPagedExtent),
-                              .count = memory_ != nullptr ? settings_.handle_reserve : 0};
-  if (reserve.count != 0) {
-    auto charged = catalog_.AddExtent({.domain = domain_,
-                                       .memory_class = MemoryClass::kRuntime,
-                                       .recovery = catalog::Recovery::kPinned,
-                                       .size = Bytes(reserve.count * kPagedExtent),
-                                       .content = {}},
-                                      true);
-    if (!charged) {
-      return Error("charging the handle reserve");
-    }
-    reserve_extent_ = *charged;
-  }
+                              .count = memory_ != nullptr ? target_handles : 0};
   backing_lane_ = std::make_unique<sc::BackingService>(
       memory_.get(), *board_, sc::QueueSettings{.capacity = 256, .reserved = 16, .batch = 32},
       reserve, settings_.diagnostic_backing_timing);
+  if (settings_.preallocate_pool && target_handles > 0 && memory_ != nullptr) {
+    auto preallocated = backing_lane_->SetReserve(device_class_, Bytes(kPagedExtent),
+                                                  target_handles, /*preallocate_now=*/true);
+    if (!preallocated) {
+      return Error(preallocated.error());
+    }
+  }
   sc::LandingZone landing{
       .slots = {},
       .slot_bytes = Bytes(settings_.slot_bytes),
@@ -837,7 +846,7 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
   events_.clear();
   if (memory_ != nullptr) {
     for (Mapped* mapped : {&zone_, &activations_, &pool_}) {
-      if (!ReleaseMapped(*memory_, *mapped)) {
+      if (!::llmp::engine::ReleaseMapped(*memory_, *mapped)) {
         problems.push_back(std::format("{} could not be released", mapped->name));
       }
     }
@@ -850,6 +859,11 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
   }
   pinned_.clear();
   return Joined(problems);
+}
+
+bool PagedNode::ReleaseMapped(Mapped& mapped) {
+  if (memory_ == nullptr) return true;
+  return llmp::engine::ReleaseMapped(*memory_, mapped, backing_lane_.get());
 }
 
 }  // namespace llmp::engine

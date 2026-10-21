@@ -347,6 +347,8 @@ struct MemoryConfig {
   bool keep_across_restart = true;
 
   Setting<MemoryMode> mode{MemoryMode::kDedicated};
+  // Maximum physical memory budget in GiB (0 = auto / full device memory).
+  Setting<std::uint64_t> budget_gib{0};
   // Shared-machine mode idle working-set release timer in seconds (0 disables).
   Setting<std::uint64_t> idle_release_seconds{300};
   // Host pressure trim thresholds (runtime/pressure_trim.h).

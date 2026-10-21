@@ -3138,6 +3138,45 @@ TEST_F(PrefillTest, KnownPeerBudgetsProduceTheActualExitOrderAndUnknownPeersStay
   EXPECT_EQ(final[0].past, 220U);  // Actual 20-row budget, never 128-generated.
 }
 
+TEST_F(PrefillTest, SpeculativeMultiSlotContinuationPredictsJoinedVerifyAndExitSurvivors) {
+  auto composer = en::WaveComposer::Make(Caps(), kContext, 256);
+  ASSERT_TRUE(composer);
+  en::PrefillOrchestrator prefill(*runner_, *composer, {});
+  const std::array<en::PrefillUnit, 1> units{{{.current = ::Prefill(0, 60, 4),
+                                               .work = {},
+                                               .next = {},
+                                               .prompt_end = 64,
+                                               .remaining = 20,
+                                               .verify_greedy = true,
+                                               .generation_expected = true}}};
+  const std::array<en::PrefillPeer, 2> peers{
+      {{.next = Decode(1, 300), .ready = true, .verify_greedy = true, .remaining = 8},
+       {.next = Decode(2, 200), .ready = true, .verify_greedy = true, .remaining = 16}}};
+  const en::PrefillContinuation continuation{
+      .speculate = true, .verify_rows = 4, .min_verify_rows = 4, .plain = [](std::uint32_t, bool) {
+        return false;
+      }};
+  auto ahead = prefill.Predict(units, peers, continuation, std::array<std::size_t, 1>{0});
+  ASSERT_TRUE(ahead) << ts::Failed(ahead).value_or("");
+  ASSERT_EQ(ahead->shapes().size(), 4U);
+  EXPECT_EQ(ahead->shapes()[0]->phase, pl::Phase::kVerify);
+  ASSERT_EQ(ahead->shapes()[0]->segments.size(), 3U);
+  EXPECT_EQ(ahead->shapes()[0]->segments[0].rows, 4U);
+  EXPECT_EQ(ahead->shapes()[1]->phase, pl::Phase::kVerify);
+  ASSERT_EQ(ahead->shapes()[1]->segments.size(), 2U);
+  EXPECT_EQ(ahead->shapes()[1]->segments[0].slot, 0U);
+  EXPECT_EQ(ahead->shapes()[1]->segments[0].past, 72U);
+  EXPECT_EQ(ahead->shapes()[1]->segments[1].slot, 2U);
+  EXPECT_EQ(ahead->shapes()[1]->segments[1].past, 208U);
+  EXPECT_EQ(ahead->shapes()[2]->phase, pl::Phase::kVerify);
+  ASSERT_EQ(ahead->shapes()[2]->segments.size(), 1U);
+  EXPECT_EQ(ahead->shapes()[2]->segments[0].slot, 0U);
+  EXPECT_EQ(ahead->shapes()[2]->segments[0].past, 80U);
+  EXPECT_EQ(ahead->shapes()[3]->phase, pl::Phase::kDecode);
+  ASSERT_EQ(ahead->shapes()[3]->segments.size(), 1U);
+  EXPECT_EQ(ahead->shapes()[3]->segments[0].slot, 0U);
+}
+
 TEST_F(PrefillTest, CanonicalSourceBoundaryReplacesFamilySpecificOffsets) {
   source_->options().specialization = [](const en::SpecializationRequest& request)
       -> std::expected<en::SpecializationChange, en::SpecializationError> {

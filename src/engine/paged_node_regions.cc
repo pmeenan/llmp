@@ -329,9 +329,16 @@ Status PagedNode::MapRegion(Mapped& mapped, std::string name, std::uint64_t byte
   mapped.allocation_class = allocation_class;
   for (std::uint64_t at = 0; at < mapped.bytes; at += kPagedExtent) {
     if (resident) {
-      auto backing = memory_->Create(allocation_class, Bytes(kPagedExtent));
+      std::optional<providers::BackingId> backing;
+      if (backing_lane_ != nullptr) {
+        backing = backing_lane_->TakeFromReserve(allocation_class, Bytes(kPagedExtent));
+      }
       if (!backing) {
-        return Error(std::format("backing {}: {}", mapped.name, backing.error().detail));
+        auto created = memory_->Create(allocation_class, Bytes(kPagedExtent));
+        if (!created) {
+          return Error(std::format("backing {}: {}", mapped.name, created.error().detail));
+        }
+        backing = *created;
       }
       mapped.backings.push_back(*backing);
       if (auto map = memory_->Map(*reservation, Bytes(at), *backing); !map) {

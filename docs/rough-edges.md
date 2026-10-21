@@ -54,7 +54,8 @@ See the [measured report](experiments/m36-review-kernel-gates/README.md),
 including queried resources and workspace allocation accounting. No sm86
 execution is established by this result.
 
-## RE-059: GB10 kernel speed depends on where the kernel's free memory puts a device allocation  (2026-10-17, status: open)
+## RE-059: GB10 kernel speed depends on where the kernel's free memory puts a device allocation  (2026-10-17, status: resolved in D-124)
+<a id="re-059-gb10-kernel-speed-depends-on-where-the-kernels-free-memory-puts-a-device-allocation--2026-10-17-status-open"></a>
 
 Environment: `spark` and `spark-b` (GB10, driver 580.178.04, CUDA 13.0,
 4 KiB kernel pages, THP `madvise`), DeepSeek V4 with DSpark at four
@@ -92,10 +93,22 @@ wall, −0.38%) in an investigation worktree and was **not landed**: the
 image's response to placement is not monotonic (−0.74% to +1.25%), so it
 would be a workaround for the measured cases, not a placement policy. The
 dedicated physical pool ([features.md](features.md), "Physical-memory mode
-per node"; M3.5's first work item) is where placement becomes
-deterministic: handles allocated once at start while memory is clean and
-recycled on eviction. This is the root cause of M3.6's accepted DSpark C4
-wall exception ([m36-record.md](m36-record.md)).
+per node"; D-124) resolves this: in dedicated mode (`mode = "dedicated"`),
+`PagedNode` allocates 2 MiB physical backing handles once at start up to the
+node's unmapped budget while host physical memory is clean, and recycles them via
+`BackingService::ReturnToReserve()` across swaps and model evictions. Post-init
+allocations remain at zero, guaranteeing deterministic physical placement.
+This resolves the root cause of M3.6's accepted DSpark C4 wall exception
+([m36-record.md](m36-record.md)): in a 2-block matched re-gate on `spark`
+against `61f8426f`, `gemma2` passed (`C1.prefill_s` +0.32%, `C2.prefill_s`
+−1.18%), `image` passed (`generation_s` −0.01%), and `dspark` passed every
+metric (`C1/C2/C4 prefill_s` +0.12% / +0.97% / +0.47%, `C4 wall_tok_s`
+−1.99% faster, `C2/C4 decode_tok_s` −10.27% / −17.57% faster after fixing a
+secondary bug in `PrefillOrchestrator::Predict` where ready decode peers were
+dropped from `cohort` during speculative multi-slot prefill continuation
+lookahead). In shared-machine mode (`mode = "shared"`),
+demand allocation with idle timeouts and pressure trimming releases working sets
+when idle or when competing workloads demand host memory.
 
 ## RE-058: EXL3 lock slots cannot live in shared discardable scratch (2026-10-16, status: fixed in R6)
 

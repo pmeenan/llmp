@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <functional>
@@ -50,6 +51,7 @@
 #include "config/node_config.h"
 #include "platform/interfaces.h"
 #include "runtime/api_server.h"
+#include "runtime/api_server_internal.h"
 #include "runtime/binding.h"
 #include "runtime/completion_tokens.h"
 #include "runtime/hang_ladder.h"
@@ -1335,6 +1337,47 @@ TEST(Binding, OriginsMustBeTheNodeOnItsPort) {
   EXPECT_TRUE(hosts.AllowsOrigin("https://spark-b.coati-puffin.ts.net"));
 }
 
+TEST(ApiServerTest, PeerIsLoopbackIdentifiesLoopbackAddresses) {
+  sockaddr_storage ss{};
+
+  // IPv4 127.0.0.1
+  auto* in4 = reinterpret_cast<sockaddr_in*>(&ss);
+  in4->sin_family = AF_INET;
+  ASSERT_EQ(::inet_pton(AF_INET, "127.0.0.1", &in4->sin_addr), 1);
+  EXPECT_TRUE(llmp::runtime::api::server_detail::PeerIsLoopback(ss));
+
+  // IPv4 127.42.0.1
+  ASSERT_EQ(::inet_pton(AF_INET, "127.42.0.1", &in4->sin_addr), 1);
+  EXPECT_TRUE(llmp::runtime::api::server_detail::PeerIsLoopback(ss));
+
+  // IPv4 non-loopback 192.168.1.100
+  ASSERT_EQ(::inet_pton(AF_INET, "192.168.1.100", &in4->sin_addr), 1);
+  EXPECT_FALSE(llmp::runtime::api::server_detail::PeerIsLoopback(ss));
+
+  // IPv6 ::1
+  std::memset(&ss, 0, sizeof ss);
+  auto* in6 = reinterpret_cast<sockaddr_in6*>(&ss);
+  in6->sin6_family = AF_INET6;
+  ASSERT_EQ(::inet_pton(AF_INET6, "::1", &in6->sin6_addr), 1);
+  EXPECT_TRUE(llmp::runtime::api::server_detail::PeerIsLoopback(ss));
+
+  // IPv6 non-loopback 2001:db8::1
+  ASSERT_EQ(::inet_pton(AF_INET6, "2001:db8::1", &in6->sin6_addr), 1);
+  EXPECT_FALSE(llmp::runtime::api::server_detail::PeerIsLoopback(ss));
+
+  // IPv4-mapped IPv6 loopback ::ffff:127.0.0.1
+  std::memset(&ss, 0, sizeof ss);
+  in6->sin6_family = AF_INET6;
+  ASSERT_EQ(::inet_pton(AF_INET6, "::ffff:127.0.0.1", &in6->sin6_addr), 1);
+  EXPECT_TRUE(llmp::runtime::api::server_detail::PeerIsLoopback(ss));
+
+  // IPv4-mapped IPv6 non-loopback ::ffff:192.168.1.1
+  std::memset(&ss, 0, sizeof ss);
+  in6->sin6_family = AF_INET6;
+  ASSERT_EQ(::inet_pton(AF_INET6, "::ffff:192.168.1.1", &in6->sin6_addr), 1);
+  EXPECT_FALSE(llmp::runtime::api::server_detail::PeerIsLoopback(ss));
+}
+
 // ---------------------------------------------------------------- the server
 
 // Runs requests as the test directs: "block" waits for release, making
@@ -1553,6 +1596,22 @@ class FakeBackend final : public api::Backend {
   std::atomic<unsigned> chat_calls{0};
   std::atomic<unsigned> yields{0};
   std::atomic<unsigned> resumes{0};
+  std::atomic<bool> fail_release_working_set{false};
+  std::string last_release_reason;
+
+  std::expected<api::ReleaseReport, std::string> ReleaseWorkingSet(
+      std::string_view reason = "manual") override {
+    last_release_reason = std::string(reason);
+    if (fail_release_working_set.load()) {
+      return std::unexpected("busy");
+    }
+    return api::ReleaseReport{
+        .evicted_model = "alpha",
+        .spilled_bytes = 1048576,
+        .reclaimed_bytes = 2097152,
+        .released_backings = 8,
+    };
+  }
   // "hangwait"'s ladder and the node's progress count it moves.
   llmp::runtime::HangLadder* ladder = nullptr;
   std::atomic<std::uint64_t>* activity = nullptr;
@@ -3107,6 +3166,49 @@ TEST_F(ServerTest, IgnoresUnknownFieldsAndCountsThem) {
   EXPECT_NE(text.find(line), std::string::npos) << text;
   EXPECT_EQ(text.find(line), text.rfind(line));
   EXPECT_THAT(text, Not(HasSubstr("secret-value")));
+}
+
+TEST_F(ServerTest, MemoryReleaseEndpoint) {
+  // GET is refused with 405 Method Not Allowed and Allow: POST header.
+  const std::string get =
+      Exchange("GET /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\n\r\n");
+  EXPECT_THAT(get, StartsWith("HTTP/1.1 405 "));
+  EXPECT_THAT(get, HasSubstr("Allow: POST"));
+
+  // Loopback POST succeeds and calls backend with reason "http".
+  const std::string post = Exchange(
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+  EXPECT_THAT(post, StartsWith("HTTP/1.1 200 OK\r\n"));
+  EXPECT_EQ(backend_.last_release_reason, "http");
+  auto doc = json::Parse(BodyOf(post));
+  ASSERT_TRUE(doc.has_value()) << post;
+  EXPECT_EQ(In(doc->root(), {"evicted_model"}).string(), "alpha");
+  EXPECT_EQ(In(doc->root(), {"spilled_bytes"}).int64(), 1048576);
+  EXPECT_EQ(In(doc->root(), {"reclaimed_bytes"}).int64(), 2097152);
+  EXPECT_EQ(In(doc->root(), {"released_backings"}).int64(), 8);
+
+  // When backend returns error (e.g. busy with requests), 409 is returned.
+  backend_.fail_release_working_set.store(true);
+  const std::string busy = Exchange(
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+  EXPECT_THAT(busy, StartsWith("HTTP/1.1 409 "));
+  EXPECT_THAT(busy, HasSubstr("conflict_error"));
+  EXPECT_THAT(busy, HasSubstr("busy"));
+
+  // When an active request is running, release is immediately rejected with 409 Conflict.
+  backend_.fail_release_working_set.store(false);
+  backend_.release.store(false);
+  const int fd = Connect(Post(Chat("block")));
+  WaitStarted();
+  const std::string active_busy = Exchange(
+      "POST /llmp/v1/memory/release HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n");
+  EXPECT_THAT(active_busy, StartsWith("HTTP/1.1 409 "));
+  EXPECT_THAT(active_busy, HasSubstr("server is busy with active work"));
+  EXPECT_THAT(active_busy, HasSubstr("conflict_error"));
+  backend_.release.store(true);
+  std::string ignored;
+  (void)ReadResponse(fd, ignored);
+  (void)::close(fd);
 }
 
 // The node's other names, as the resolution gives them (the tailnet's

@@ -370,6 +370,14 @@ class OutputText {
   bool stopped_ = false;
 };
 
+// Report from releasing the working set in shared-machine or manual mode (D-124).
+struct ReleaseReport {
+  std::string evicted_model;
+  std::uint64_t spilled_bytes = 0;
+  std::uint64_t reclaimed_bytes = 0;
+  std::size_t released_backings = 0;
+};
+
 }  // namespace llmp::runtime::api
 
 #endif  // LLMP_RUNTIME_API_H_

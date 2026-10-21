@@ -88,6 +88,11 @@ add_executable(pressure_trim_test pressure_trim_test.cc)
 target_link_libraries(pressure_trim_test PRIVATE llmp_runtime)
 llmp_gtest(pressure_trim_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# Physical memory modes (dedicated node pool + shared-machine mode).
+add_executable(memory_modes_test memory_modes_test.cc)
+target_link_libraries(memory_modes_test PRIVATE llmp_engine_core llmp_fake_device_backend llmp_runtime)
+llmp_gtest(memory_modes_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # D-102's hang ladder: what is and is not a hang, its rungs and its last
 # resort, on a clock of the test's own.
 add_executable(hang_ladder_test hang_ladder_test.cc)

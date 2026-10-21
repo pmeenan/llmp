@@ -488,6 +488,15 @@ std::optional<Server::HeadRefusal> Server::Screen(const Connection& c,
   const auto method_not_allowed = [&](std::string_view allow) {
     return refuse(Refusal(405, std::format("use {}", allow)), {std::format("Allow: {}", allow)});
   };
+  if (request.path == "/llmp/v1/memory/release") {
+    if (!c.peer_loopback) {
+      return refuse(Refusal(403, "/llmp/v1/memory/release is restricted to loopback"));
+    }
+    if (request.method != "POST") {
+      return method_not_allowed("POST");
+    }
+    return std::nullopt;
+  }
   if ((request.path == "/llmp/v1/ignored-fields" && c.peer_loopback) ||
       request.path == "/v1/models" || request.path.starts_with("/v1/models/")) {
     if (request.method != "GET") {
@@ -547,6 +556,26 @@ void Server::OnRequest(Connection& c, http::Request request) {
     }
     Flush(c);
   };
+  if (request.path == "/llmp/v1/memory/release") {
+    bool busy = false;
+    {
+      const std::scoped_lock lock(mutex_);
+      busy = !running_.empty() || !queue_.empty() || !parked_.empty() || suspended_requests_ != 0 ||
+             pending_release_.has_value();
+      if (!busy) {
+        pending_release_ = PendingRelease{
+            .connection = c.id,
+            .channel = channel,
+        };
+      }
+    }
+    if (busy) {
+      Refuse(c, Refusal(409, "server is busy with active work", "busy"));
+      return;
+    }
+    ready_.Signal();
+    return;
+  }
   if (request.path == "/llmp/v1/ignored-fields") {
     answer(ignored_.Json());
     return;
@@ -602,11 +631,6 @@ void Server::TakeParsed() {
     }
   }
   done.clear();
-  if (large) {
-    // A large request refused here (an unknown model, a prompt that cannot
-    // fit) leaves its many small allocations freed: back to the system.
-    platform::ReleaseFreeHeap();
-  }
 }
 
 void Server::ParseLoop(const std::stop_token& stop) {

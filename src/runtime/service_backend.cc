@@ -64,6 +64,7 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
                                                                    api::Exchange& exchange,
                                                                    ChatPrompt rendered,
                                                                    const ChatResume* resume) {
+  server_.TouchActivity();
   Served* const m = &l;
   // Continuing: the prompt and everything generated so far (the state
   // holds most of it), and the generation's remaining tokens.
@@ -147,6 +148,7 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
   Generation generation;
   std::optional<api::Error> token_problem;
   options.on_tokens = [&](std::span<const std::int32_t> fresh) {
+    server_.TouchActivity();
     const std::uint64_t held =
         (generation.tokens.capacity() + continued.capacity()) * sizeof(std::int32_t);
     token_problem = FundHistory(token_charge, *memory_, held, true);
@@ -230,6 +232,7 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
   if (ladder_ != nullptr) {
     ladder_->Served(m->name());  // a later hang may reset it again
   }
+  server_.TouchActivity();
   return api::Completion{
       .completion_tokens = done + static_cast<std::uint32_t>(generation.tokens.size()),
       .cached_tokens = resume != nullptr ? resume->reused : reused,
@@ -582,6 +585,16 @@ api::Error NodeBackend::HungFailure() {
                  "the model's work hung and was cancelled, and the model was reset: retry the "
                  "request",
                  "backend_hung");
+}
+
+std::expected<api::ReleaseReport, std::string> NodeBackend::ReleaseWorkingSet(
+    std::string_view reason) {
+  for (const ChatWork* w : cohort_) {
+    if (w != nullptr) {
+      return std::unexpected("busy");
+    }
+  }
+  return server_.ReleaseWorkingSet(reason);
 }
 
 }  // namespace llmp::runtime::service_detail

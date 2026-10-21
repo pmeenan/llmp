@@ -200,16 +200,11 @@ std::expected<StepAhead, std::string> PrefillOrchestrator::Predict(
   // One scenario for the ready cohort, then each actual known peer exit.
   // Unknown generation budgets never become a guessed death at 128 tokens.
   const bool predict_continuation = any_owner_in_cohort;
-  if (predict_continuation && cohort.size() > 1 && continuation.speculate) {
-    bool cohort_sampled = false;
-    for (const auto& peer : cohort) cohort_sampled |= peer.sampling;
-    if (!continuation.plain ||
-        !continuation.plain(static_cast<std::uint32_t>(cohort.size()), cohort_sampled)) {
-      std::erase_if(cohort, [&](const auto& peer) {
-        return !std::ranges::any_of(
-            owners, [&](auto owner) { return units[owner].current.slot == peer.next.slot; });
-      });
-    }
+  if (predict_continuation && cohort.size() > 1 && composer_.caps().max_segments <= 1) {
+    std::erase_if(cohort, [&](const auto& peer) {
+      return !std::ranges::any_of(
+          owners, [&](auto owner) { return units[owner].current.slot == peer.next.slot; });
+    });
   }
   std::uint32_t elapsed = 0;
   for (std::size_t scenario = 0; predict_continuation && scenario <= cohort.size(); ++scenario) {
@@ -237,7 +232,8 @@ std::expected<StepAhead, std::string> PrefillOrchestrator::Predict(
         auto next = peer.next;
         next.past += elapsed;
         next.rows = std::min(rows, composer_.context() - next.past);
-        if (peer.remaining) next.rows = std::min(next.rows, *peer.remaining - elapsed);
+        if (peer.remaining && (plain || min_verify == 1))
+          next.rows = std::min(next.rows, *peer.remaining - elapsed);
         next.outputs = next.rows;
         next.row_invariant = continuation.row_invariant;
         if (!plain) {
@@ -326,8 +322,8 @@ std::expected<StepAhead, std::string> PrefillOrchestrator::Predict(
   }
   for (std::size_t i = 0; i < filled; ++i) inventory.emplace_back(std::move(candidates[i]));
   const std::uint32_t builds =
-      predict_continuation && continuation.speculate && continuation.verify_rows > 1 &&
-              options_.lookahead > 0
+      !has_prompt_future && predict_continuation && continuation.speculate &&
+              continuation.verify_rows > 1 && options_.lookahead > 0
           ? std::max<std::uint32_t>(options_.lookahead,
                                     static_cast<std::uint32_t>(inventory.size()))
           : options_.lookahead;

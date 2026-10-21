@@ -717,15 +717,41 @@ uses one GPU, device 0. Two ledgers stay separate
   but not yet used.
 
 A budget reduction is a scheduler request. It waits for retirement or is
-refused; the budget never drops below outstanding claims (D-050).
+refused; the budget never drops below outstanding claims (D-050). Under
+external memory pressure (D-124), the runtime can dynamically trim its active
+node budget (`SetBudget(budget - needed)`) and restore the configured budget
+once pressure subsides.
+
+### Physical memory modes
+
+D-124 establishes two operational modes configured under `[memory]`:
+
+- **Dedicated node pool (`mode = "dedicated"`, default on Spark):** The
+  runtime assumes whole-node ownership. At `PagedNode::Start`, physical memory
+  handles are pre-allocated synchronously up to the unmapped budget headroom
+  into a physical backing pool (`BackingService`). Page-in operations recycle
+  these handles directly without driver allocation overhead on the hot path.
+  Page-outs return handles to the pool. The catalog accounts for mapped
+  virtual extents only, avoiding phantom extent charges for unmapped pool
+  handles.
+- **Shared-machine mode (`mode = "shared"`):** For workstations and shared
+  development hosts. Unmapped physical memory handles are not pre-allocated at
+  startup (`startup_pool_creates == 0`, `ReserveTarget() == 0`). Physical
+  memory is allocated on demand as extents are mapped and unmapped/released
+  back to the driver/OS upon eviction. Workspace is pageable by default. Two
+  reclamation levers operate automatically: Lever 1 (idle timeout releasing the
+  working set, evicting idle conversations, draining unused handles, and
+  trimming the heap via `platform::ReleaseFreeHeap()`) and Lever 2 (dynamic
+  budget reduction and working set release under `PressureTrim`). Local tools
+  can proactively trigger working set release via `POST /llmp/v1/memory/release`
+  on loopback.
 
 ### Backing and addresses
 
 D-033 starts with independent 2 MiB physical extents. Compatible backing is
-handed directly to admitted loads that need it; the only standing cache of
-unused handles is the runtime's bounded handle reserve (32 device handles,
-created while the VMM lane is idle and charged in full as one pinned
-extent; D-033 as amended 2026-10-07). A state's fresh extents are zeroed on
+handed directly to admitted loads that need it; in dedicated mode the pool
+holds pre-allocated backing handles, while in shared mode handles are created
+and destroyed on demand (D-124). A state's fresh extents are zeroed on
 the device rather than read from its sparse spill file, unless that file
 was kept across a restart (D-105), whose adopted extents are read. Weights and state are backed by device-located VMM:
 the GB10's L2 does not cache host-located memory (RE-022). On validated

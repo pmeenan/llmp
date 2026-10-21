@@ -132,8 +132,11 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
   }
   if (!rendered && failure == ChatRenderFailure::kCancelled) {
     // The exchange answers for why (the client gone, the runtime stopping).
-    return std::unexpected(
-        Failure(503, "the request ended while its conversation was rendered", "request_ended"));
+    return std::unexpected(Failure(exchange.timed_out() ? 504 : 503,
+                                   exchange.timed_out()
+                                       ? "the request timed out while its conversation was rendered"
+                                       : "the request ended while its conversation was rendered",
+                                   exchange.timed_out() ? "request_timeout" : "request_ended"));
   }
   if (!rendered) {
     return std::unexpected(

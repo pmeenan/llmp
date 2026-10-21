@@ -166,7 +166,8 @@ struct MemoryIntegerSpec {
   std::int64_t least;
   std::int64_t most;
 };
-constexpr std::array<MemoryIntegerSpec, 6> kMemoryIntegers = {{
+constexpr std::array<MemoryIntegerSpec, 7> kMemoryIntegers = {{
+    {"budget_gib", 0, 1048576},
     {"idle_release_seconds", 0, 86400},
     {"pressure_low_mib", 64, 1048576},
     {"pressure_headroom_mib", 64, 1048576},
@@ -261,6 +262,7 @@ const std::vector<KeySpec>& Schema() {
       {.path = {"memory", "spill_budget_gib"}, .kind = Kind::kMemoryGib, .member = false},
       {.path = {"memory", "keep_across_restart"}, .kind = Kind::kMemoryKeep, .member = false},
       {.path = {"memory", "mode"}, .kind = Kind::kMemoryMode, .member = false},
+      {.path = {"memory", "budget_gib"}, .kind = Kind::kMemoryInteger, .member = false},
       {.path = {"memory", "idle_release_seconds"}, .kind = Kind::kMemoryInteger, .member = false},
       {.path = {"memory", "pressure_low_mib"}, .kind = Kind::kMemoryInteger, .member = false},
       {.path = {"memory", "pressure_headroom_mib"}, .kind = Kind::kMemoryInteger, .member = false},
@@ -1179,6 +1181,9 @@ class Validator {
       const auto it = memory_integers_.find(std::string(key));
       return it == memory_integers_.end() ? std::nullopt : std::optional(it->second);
     };
+    if (const auto v = get_mem_int("budget_gib")) {
+      config.memory.budget_gib = {*v, true};
+    }
     if (const auto v = get_mem_int("idle_release_seconds")) {
       config.memory.idle_release_seconds = {*v, true};
     }

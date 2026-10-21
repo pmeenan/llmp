@@ -412,9 +412,9 @@ family" guide, and its long-context scaling work.
 
 **Scope:**
 
-- [ ] **Physical memory modes (owner, 2026-10-16/17): the first M3.5 work
-      item.** The accepted M3.6 exception for DeepSeek DSpark's C4 wall has
-      this as its fix ([RE-059](rough-edges.md#re-059-gb10-kernel-speed-depends-on-where-the-kernels-free-memory-puts-a-device-allocation--2026-10-17-status-open):
+- [x] **Physical memory modes (owner, 2026-10-16/17): the first M3.5 work
+      item.** Implemented under D-124 (2026-10-21). The accepted M3.6 exception
+      for DeepSeek DSpark's C4 wall has this as its fix ([RE-059](rough-edges.md#re-059-gb10-kernel-speed-depends-on-where-the-kernels-free-memory-puts-a-device-allocation--2026-10-17-status-open):
       the driver backs a resident workspace with scattered 64 KiB pieces on a
       long-running host, which costs big prefill steps about 1.3% GPU time),
       and the image's response to placement is not monotonic, so placement
@@ -428,14 +428,21 @@ family" guide, and its long-context scaling work.
         working set idled out after a configurable time, and physical backing
         released by manual, idle-timer and pressure-driven levers, re-acquired
         on demand;
-      - configuration per node, platform-neutral behind the provider
-        interfaces (D-110);
+      - configuration per node (`[memory] mode = "dedicated" | "shared"`, `budget_gib`),
+        platform-neutral behind the provider interfaces (D-110);
       - heavy-path design and review (workflow.md: it touches the pager, VMM
-        mapping and the catalog; a decision entry);
+        mapping and the catalog; D-124);
       - **re-gate** DeepSeek DSpark's C4 wall, the Qwen-Image generation and
         Gemma 2's prefill with it, and retire M3.6's accepted DSpark exception
-        when the first passes ([record](m36-record.md#accepted-exceptions)).
-      Its first sub-slice is U1's engine seams (the M3.6 generality
+        when the first passes ([record](m36-record.md#accepted-exceptions)):
+        passed on `spark` (2-block matched confirmation against `61f8426f`,
+        2026-10-21: `dspark` `C1/C2/C4 prefill_s` +0.12% / +0.97% / +0.47%,
+        `C4 wall_tok_s` −1.99% faster, `C2/C4 decode_tok_s` −10.27% / −17.57%
+        faster with the `PrefillOrchestrator::Predict` multi-slot speculative
+        continuation lookahead fix; `image` `generation_s` −0.01%; `gemma2`
+        `C1/C2 prefill_s` +0.32% / −1.18%, `decode_tok_s` −1.97% / −3.20%
+        faster), retiring M3.6's DSpark C4 wall exception.
+      Its first sub-slice was U1's engine seams (the M3.6 generality
       follow-ups below).
 - [ ] **Drafter confidence calibration screen (owner, 2026-10-20): early
       M3.5, beside the memory modes** (independent of them, and light: a

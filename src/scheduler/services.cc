@@ -578,6 +578,7 @@ void BackingCreateCounters::Failed(bool reserve, const providers::Failure& failu
 BackingCreateStats BackingCreateCounters::Snapshot() const {
   std::lock_guard lock(mutex_);
   BackingCreateStats result = failures_;
+  result.startup_pool_creates = startup_pool_creates_.load(std::memory_order_relaxed);
   result.reserve_attempts = reserve_attempts_.load(std::memory_order_relaxed);
   result.ordinary_attempts = ordinary_attempts_.load(std::memory_order_relaxed);
   result.timing.enabled = timing_enabled_;
@@ -585,7 +586,9 @@ BackingCreateStats BackingCreateCounters::Snapshot() const {
 }
 
 std::optional<providers::BackingId> HandleReserve::Take(std::size_t allocation_class, Bytes size) {
-  if (!Holds(allocation_class, size) || kept_.empty()) {
+  std::lock_guard lock(mutex_);
+  if (settings_.count == 0 || allocation_class != settings_.allocation_class ||
+      size != settings_.size || kept_.empty()) {
     return std::nullopt;
   }
   const providers::BackingId backing = kept_.back();
@@ -594,7 +597,9 @@ std::optional<providers::BackingId> HandleReserve::Take(std::size_t allocation_c
 }
 
 bool HandleReserve::Keep(std::size_t allocation_class, Bytes size, providers::BackingId backing) {
-  if (!Holds(allocation_class, size) || !short_of_count()) {
+  std::lock_guard lock(mutex_);
+  if (settings_.count == 0 || allocation_class != settings_.allocation_class ||
+      size != settings_.size || kept_.size() + lost_ >= settings_.count) {
     return false;
   }
   kept_.push_back(backing);
@@ -1089,12 +1094,14 @@ void BackingService::Handle(DeviceCommand& command) {
 
 bool BackingService::Refill() {
   // Closed and drained: the lane is stopping, and what it would create
-  // now would only be released.
-  if (memory_ == nullptr || !refill_ok_ || refill_lost_ || !reserve_.short_of_count() ||
+  // now would only be released. A startup-preallocated pool recycles handles
+  // as extents are evicted and never creates extra handles in the background
+  // while its handles are mapped.
+  if (memory_ == nullptr || !refill_ok_ || refill_lost_ || !reserve_.needs_refill() ||
       queue_.drained()) {
     return false;
   }
-  const ReserveSettings& settings = reserve_.settings();
+  const ReserveSettings settings = reserve_.settings();
   creates_.Attempt(true);
   const auto created = memory_->Create(settings.allocation_class, settings.size);
   creates_.Completed(true);
@@ -1110,16 +1117,87 @@ bool BackingService::Refill() {
     }
     return false;
   }
-  (void)reserve_.Keep(settings.allocation_class, settings.size, *created);
+  if (!reserve_.Keep(settings.allocation_class, settings.size, *created)) {
+    (void)memory_->Release(*created);
+    return false;
+  }
   return true;
 }
 
+std::expected<void, std::string> BackingService::SetReserve(std::size_t allocation_class,
+                                                            Bytes extent_bytes, std::size_t count,
+                                                            bool preallocate_now) {
+  const bool preallocate = preallocate_now && memory_ != nullptr && count > 0;
+  reserve_.SetSettings(
+      ReserveSettings{.allocation_class = allocation_class, .size = extent_bytes, .count = count},
+      preallocate);
+  if (preallocate) {
+    std::vector<providers::BackingId> allocated;
+    allocated.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+      auto created = memory_->Create(allocation_class, extent_bytes);
+      if (!created) {
+        for (const auto id : allocated) {
+          (void)memory_->Release(id);
+        }
+        creates_.StartupPoolRolledBack(allocated.size());
+        reserve_.SetSettings({}, false);
+        return std::unexpected(
+            std::format("preallocating backing pool: {}", created.error().detail));
+      }
+      allocated.push_back(*created);
+      creates_.StartupPoolCreated();
+    }
+    for (const auto id : allocated) {
+      reserve_.KeepUnchecked(id);
+    }
+  }
+  return {};
+}
+
+std::optional<providers::BackingId> BackingService::TakeFromReserve(std::size_t allocation_class,
+                                                                    Bytes size) {
+  return reserve_.Take(allocation_class, size);
+}
+
+bool BackingService::ReturnToReserve(providers::BackingId backing) {
+  const auto s = reserve_.settings();
+  return reserve_.Keep(s.allocation_class, s.size, backing);
+}
+
+std::size_t BackingService::DrainReserveWorkerLocked(std::size_t target) {
+  if (memory_ == nullptr) return 0;
+  const auto handles = reserve_.DrainDownTo(target);
+  std::size_t released_count = 0;
+  for (const providers::BackingId backing : handles) {
+    if (memory_->Release(backing)) {
+      ++released_count;
+    }
+  }
+  return released_count;
+}
+
+std::size_t BackingService::DrainReserve(std::optional<std::size_t> down_to) {
+  const std::size_t target = down_to.value_or(reserve_.target());
+  std::unique_lock lock(mu_);
+  if (!worker_running_) {
+    return DrainReserveWorkerLocked(target);
+  }
+  drain_requested_ = true;
+  drain_target_ = target;
+  (void)queue_.TryPush(DeviceCommand{}, base::PushKind::kCleanup);
+  cv_.wait(lock, [&] { return !drain_requested_; });
+  return drain_result_;
+}
+
 bool BackingService::ReleaseReserve() {
+  std::unique_lock lock(mu_);
+  if (memory_ == nullptr) return true;
+  const auto handles = reserve_.DrainDownTo(0);
   bool released = true;
-  for (const providers::BackingId backing : reserve_.kept()) {
+  for (const providers::BackingId backing : handles) {
     released = memory_->Release(backing).has_value() && released;
   }
-  reserve_.kept().clear();
   return released;
 }
 
@@ -1137,8 +1215,20 @@ bool BackingService::Turn() {
 }
 
 void BackingService::Run() {
+  {
+    std::lock_guard lock(mu_);
+    worker_running_ = true;
+  }
   const std::stop_token never;
   while (true) {
+    {
+      std::unique_lock lock(mu_);
+      if (drain_requested_) {
+        drain_result_ = DrainReserveWorkerLocked(drain_target_.value_or(reserve_.target()));
+        drain_requested_ = false;
+        cv_.notify_all();
+      }
+    }
     std::optional<DeviceCommand> command = queue_.TryPop();
     if (!command) {
       if (Refill()) {
@@ -1146,10 +1236,22 @@ void BackingService::Run() {
       }
       command = queue_.Pop(never);
       if (!command) {
-        return;
+        break;
+      }
+    }
+    {
+      std::unique_lock lock(mu_);
+      if (drain_requested_) {
+        drain_result_ = DrainReserveWorkerLocked(drain_target_.value_or(reserve_.target()));
+        drain_requested_ = false;
+        cv_.notify_all();
       }
     }
     Handle(*command);
+  }
+  {
+    std::lock_guard lock(mu_);
+    worker_running_ = false;
   }
 }
 

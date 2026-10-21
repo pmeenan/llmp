@@ -187,7 +187,12 @@ chat_template = "/path/to/chat_template.jinja"  # likewise
 [models.image]
 composition = "2170db12…"  # a pipeline (D-089)
 
-[memory]                     # D-055 as amended 2026-10-02 (below)
+[memory]                     # D-055 as amended 2026-10-02, D-124 (below)
+# mode = "dedicated"         # "dedicated" (default on DGX Spark) preallocates physical backing pool;
+                             #   "shared" (for workstations) demand-allocates backing and releases on idle
+# budget_gib = 0             # whole-node memory budget in GiB (0 = detected hardware capacity)
+# idle_release_seconds = 300 # in shared mode: seconds of inactivity before dropping resident models,
+                             #   freeing unused backings, and trimming heap
 # retention_hours = 24       # idle conversations, resident or spilled, and their
                              #   turn checkpoints stay reusable this long: 1 to 8,760
                              #   (across a restart too, D-105)

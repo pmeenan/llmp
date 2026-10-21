@@ -180,6 +180,7 @@ std::expected<BackingId, Failure> VmmProvider::Create(std::size_t allocation_cla
                                  : "the backing table is full, and releasing the backing failed: " +
                                        undone.error().detail});
   }
+  created_backings_.fetch_add(1, std::memory_order_relaxed);
   return id;
 }
 
@@ -202,6 +203,7 @@ std::expected<void, Failure> VmmProvider::Release(BackingId backing) {
     return released;
   }
   (void)backings_.Erase(backing);
+  released_backings_.fetch_add(1, std::memory_order_relaxed);
   return {};
 }
 

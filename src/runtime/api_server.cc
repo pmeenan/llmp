@@ -61,6 +61,8 @@ Error Refusal(int status, std::string message, std::string code) {
     type = "rate_limit_error";
   } else if (status == 403) {
     type = "permission_error";
+  } else if (status == 409) {
+    type = "conflict_error";
   } else if (status >= 500) {
     type = "server_error";
   }
@@ -120,7 +122,10 @@ bool PeerIsLoopback(const sockaddr_storage& peer) {
   if (peer.ss_family == AF_INET6) {
     sockaddr_in6 six{};
     std::memcpy(&six, &peer, sizeof six);
-    return std::memcmp(&six.sin6_addr, &in6addr_loopback, sizeof six.sin6_addr) == 0;
+    if (std::memcmp(&six.sin6_addr, &in6addr_loopback, sizeof six.sin6_addr) == 0) {
+      return true;
+    }
+    return IN6_IS_ADDR_V4MAPPED(&six.sin6_addr) && six.sin6_addr.s6_addr[12] == 127;
   }
   return false;
 }

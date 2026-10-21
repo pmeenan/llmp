@@ -84,6 +84,7 @@ static_assert(sizeof(BackingTimingStats) <= 512);
 // Actual device-memory provider Create outcomes on the backing lane. These
 // diagnostics do not imply that an internally retried driver call was clean.
 struct BackingCreateStats {
+  std::uint64_t startup_pool_creates = 0;
   std::uint64_t reserve_attempts = 0;
   std::uint64_t reserve_failures = 0;
   std::uint64_t ordinary_attempts = 0;
@@ -93,11 +94,17 @@ struct BackingCreateStats {
   providers::ProviderError last_failure_error = providers::ProviderError::kFailed;
   std::string last_failure_detail;
   BackingTimingStats timing;
+
+  std::uint64_t post_init_creates() const noexcept { return ordinary_attempts + reserve_attempts; }
 };
 
 class BackingCreateCounters {
  public:
   explicit BackingCreateCounters(bool timing = false) : timing_enabled_(timing) {}
+  void StartupPoolCreated() { startup_pool_creates_.fetch_add(1, std::memory_order_relaxed); }
+  void StartupPoolRolledBack(std::size_t count) {
+    startup_pool_creates_.fetch_sub(count, std::memory_order_relaxed);
+  }
   void Attempt(bool reserve);
   void Completed(bool reserve);
   void BeginPark();
@@ -108,6 +115,7 @@ class BackingCreateCounters {
   BackingCreateStats Snapshot() const;
 
  private:
+  std::atomic<std::uint64_t> startup_pool_creates_ = 0;
   std::atomic<std::uint64_t> reserve_attempts_ = 0;
   std::atomic<std::uint64_t> ordinary_attempts_ = 0;
   const bool timing_enabled_;
@@ -141,6 +149,7 @@ class HandleReserve {
  public:
   explicit HandleReserve(ReserveSettings settings) : settings_(settings) {}
   bool Holds(std::size_t allocation_class, Bytes size) const {
+    std::lock_guard lock(mutex_);
     return settings_.count != 0 && allocation_class == settings_.allocation_class &&
            size == settings_.size;
   }
@@ -148,18 +157,63 @@ class HandleReserve {
   std::optional<providers::BackingId> Take(std::size_t allocation_class, Bytes size);
   // Keeps `backing` (of that class and size) if the reserve is short.
   bool Keep(std::size_t allocation_class, Bytes size, providers::BackingId backing);
+  void KeepUnchecked(providers::BackingId backing) {
+    std::lock_guard lock(mutex_);
+    kept_.push_back(backing);
+  }
   // A create whose outcome is unknown: its backing may exist, uncounted
   // but beneath the reserve's charge, so the reserve keeps one fewer.
-  void Lose() { ++lost_; }
-  bool short_of_count() const { return kept_.size() + lost_ < settings_.count; }
-  const ReserveSettings& settings() const { return settings_; }
-  std::size_t size() const { return kept_.size(); }
-  std::vector<providers::BackingId>& kept() { return kept_; }
+  void Lose() {
+    std::lock_guard lock(mutex_);
+    ++lost_;
+  }
+  bool short_of_count() const {
+    std::lock_guard lock(mutex_);
+    return kept_.size() + lost_ < settings_.count;
+  }
+  bool needs_refill() const {
+    std::lock_guard lock(mutex_);
+    return !preallocated_ && kept_.size() + lost_ < settings_.count;
+  }
+  ReserveSettings settings() const {
+    std::lock_guard lock(mutex_);
+    return settings_;
+  }
+  std::size_t size() const {
+    std::lock_guard lock(mutex_);
+    return kept_.size();
+  }
+  std::size_t target() const {
+    std::lock_guard lock(mutex_);
+    return settings_.count;
+  }
+  void SetSettings(ReserveSettings settings, bool preallocated = false) {
+    std::lock_guard lock(mutex_);
+    settings_ = settings;
+    preallocated_ = preallocated;
+  }
+  std::vector<providers::BackingId> Drain() {
+    std::lock_guard lock(mutex_);
+    std::vector<providers::BackingId> result = std::move(kept_);
+    kept_.clear();
+    return result;
+  }
+  std::vector<providers::BackingId> DrainDownTo(std::size_t target) {
+    std::lock_guard lock(mutex_);
+    std::vector<providers::BackingId> excess;
+    while (kept_.size() > target) {
+      excess.push_back(kept_.back());
+      kept_.pop_back();
+    }
+    return excess;
+  }
 
  private:
+  mutable std::mutex mutex_;
   ReserveSettings settings_;
   std::vector<providers::BackingId> kept_;
   std::size_t lost_ = 0;
+  bool preallocated_ = false;
 };
 
 // Backing kept for a handoff and not yet mapped again or released
@@ -508,6 +562,13 @@ class BackingService {
   // The reserve's backing: read, or released, only while the lane is idle
   // and will run no more (teardown). False if any release failed.
   std::size_t reserved() const { return reserve_.size(); }
+  std::expected<void, std::string> SetReserve(std::size_t allocation_class, Bytes extent_bytes,
+                                              std::size_t count, bool preallocate_now = false);
+  std::optional<providers::BackingId> TakeFromReserve(std::size_t allocation_class, Bytes size);
+  bool ReturnToReserve(providers::BackingId backing);
+  std::size_t ReserveAvailable() const { return reserve_.size(); }
+  std::size_t ReserveTarget() const { return reserve_.target(); }
+  std::size_t DrainReserve(std::optional<std::size_t> down_to = std::nullopt);
   bool ReleaseReserve();
   BackingCreateStats create_stats() const { return creates_.Snapshot(); }
 
@@ -515,6 +576,14 @@ class BackingService {
   void Handle(DeviceCommand& command);
   // Creates one reserve backing if the reserve is short: true if it did.
   bool Refill();
+  std::size_t DrainReserveWorkerLocked(std::size_t target);
+
+  mutable std::mutex mu_;
+  std::condition_variable cv_;
+  bool worker_running_ = false;
+  bool drain_requested_ = false;
+  std::optional<std::size_t> drain_target_;
+  std::size_t drain_result_ = 0;
 
   providers::DeviceMemory* memory_;
   CompletionBoard& board_;

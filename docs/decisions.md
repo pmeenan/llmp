@@ -39,6 +39,31 @@ one Spark and on two.
 
 ---
 
+## D-124: Physical memory modes: dedicated node pool versus shared-machine mode (2026-10-21, status: proposed; implements memory pool preallocation and shared-workstation operational profiles; amends D-004, D-006, D-096, D-097)
+
+**Decision.** Physical memory management operates in two explicit operational modes configured via `[memory] mode = "dedicated" | "shared"` (with optional `[memory] budget_gib = <int>`, defaulting to 0 for full detected capacity):
+
+- **Dedicated mode (`mode = "dedicated"`, default on DGX Spark and dedicated nodes):**
+  The runtime owns the host's physical memory budget. At `PagedNode::Start`, physical memory handles are pre-allocated synchronously up to the unmapped budget headroom into a physical backing pool (`BackingService`). In this mode:
+  - Page-in operations acquire physical backing handles from the pool with zero driver-level allocation latency on the hot path (`startup_pool_creates > 0`, `post_init_creates == 0`).
+  - Page-outs (eviction or release) return physical handles directly to the pool for fast recycling.
+  - If physical handle allocation fails during startup pre-allocation, the creation cleanly rolls back all acquired handles and refuses startup without leaking driver state.
+  - Catalog accounting separates virtual/logical extent residency from physical backing handles: only mapped extents are charged against the catalog; unmapped handles in the reserve pool do not create phantom catalog extents, preventing admission starvation.
+
+- **Shared-machine mode (`mode = "shared"`, for workstations and multi-tenant nodes):**
+  The runtime shares physical memory courteously with concurrent workloads (e.g. host builds, browser runs, test suites). In this mode:
+  - Unmapped physical memory handles are neither pre-allocated nor hoarded at startup (`startup_pool_creates == 0`, `ReserveTarget() == 0`). Physical backing is allocated on demand when an extent is mapped and unmapped/released back to the OS and driver when evicted or idle.
+  - Workspace memory is pageable by default (`pageable_workspace = true`), allowing full eviction of scratch and KV buffers when the engine is not actively decoding.
+  - **Lever 1 (Idle Timeout):** When no requests have arrived for `[memory] idle_release_seconds` (defaulting to 300 s), the runtime automatically drops active execution plans, evicts idle conversation branches, unmaps and releases any resident model weights and workspace, drains all unused physical backing handles, and trims the process heap (`malloc_trim` / `platform::ReleaseFreeHeap()`).
+  - **Lever 2 (Memory Pressure Trim):** When external system memory pressure is detected via `PressureTrim` (`pressure_trim.h`), the runtime drops execution plans, trims unneeded state, dynamically lowers `node_.SetBudget(budget - needed)`, and invokes working set release (`ReleaseWorkingSet("memory pressure")`) if free headroom remains insufficient, restoring the configured budget when external pressure subsides.
+  - **Loopback HTTP Release Endpoint:** Local tooling (such as `hostlock`) can proactively command the runtime to immediately surrender its working set via `POST /llmp/v1/memory/release`. The route is strictly restricted to loopback connections (403 Forbidden for non-loopback, 405 Method Not Allowed for non-POST), returning a JSON report (`evicted_model`, `spilled_bytes`, `reclaimed_bytes`, `released_backings`) or 409 Conflict if active requests are currently executing.
+
+**Context.** On a dedicated DGX Spark, memory belongs entirely to the runtime, so preallocating backing eliminates kernel/driver allocation overhead and page faults during interactive turns. On a developer workstation or shared server, however, holding gigabytes of pinned or reserved physical memory starves compilers, linkers, and test suites (or trips `hostlock`). Operating in shared mode ensures zero idle footprint while preserving full execution performance when active.
+
+**Consequences.** `[memory]` in `llmp.toml` gains `mode = "dedicated" | "shared"` and `budget_gib`. Telemetry and `swap-table` reports display `memory_mode`, `created_backings`, `released_backings`, `live_backings`, `reserve_available`, and `reserve_target`.
+
+**Reopen if.** Dynamic paging performance in shared mode on unified memory (e.g. GB10) differs significantly from discrete GPUs, or if unified virtual memory primitives allow seamless kernel-level reclamation without explicit userland release hooks.
+
 ## D-123: Capability-driven optimization and normalization; no checkpoint or shape pins in runtime, planner, kernel or importer selection (2026-10-20, status: accepted at the owner's direction; amends D-107, D-109, D-118 and D-119)
 
 **Decision.** Runtime admission, numerical qualifications, planning policies,

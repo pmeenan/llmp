@@ -1681,10 +1681,8 @@ TEST_P(GemmaEngineServingGpu, DiagnosticBudgetCapLeavesDefaultsAndChecksActualAd
                 diagnostic.creates_loaded.timing.reserve.total_ns +
                 diagnostic.creates_loaded.timing.park.total_ns,
             0U);
-  EXPECT_GT(
-      diagnostic.creates_loaded.reserve_attempts + diagnostic.creates_loaded.ordinary_attempts,
-      diagnostic.creates_requested.reserve_attempts +
-          diagnostic.creates_requested.ordinary_attempts);
+  EXPECT_GT(diagnostic.creates_loaded.startup_pool_creates, 0U);
+  EXPECT_EQ(diagnostic.creates_loaded.post_init_creates(), 0U);
   EXPECT_GE(diagnostic.creates_ready.reserve_attempts, diagnostic.creates_loaded.reserve_attempts);
   EXPECT_EQ(diagnostic.creates_ready.reserve_failures, 0U);
   EXPECT_EQ(diagnostic.creates_ready.ordinary_failures, 0U);
