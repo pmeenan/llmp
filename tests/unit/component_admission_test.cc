@@ -1058,34 +1058,36 @@ TEST(ComponentAdmissionDenseCanaryTest,
   }
 }
 
-// Serving reads v1 artifacts only (D-118): a v0 artifact (the reader's
-// corpus golden) is refused, as a target and as a drafter, with what to do.
+// Serving reads v1 artifacts only (D-118, U2): a v0 artifact is refused at
+// open time with unsupported-version, while a v1 artifact passes the
+// version gate.
 TEST(ComponentAdmissionVersionTest, V0ArtifactsAreRefusedWithTheReimport) {
-  const char* configured =
-      std::getenv("LLMP_TEST_ARTIFACT_CORPUS");  // NOLINT(concurrency-mt-unsafe)
-  const std::filesystem::path corpus =
-      configured == nullptr ? std::filesystem::path("artifact-corpus") : configured;
-  std::error_code error;
-  std::filesystem::path root;
-  for (const auto& entry : std::filesystem::directory_iterator(corpus / "golden" / "tiny", error)) {
-    root = entry.path();
-  }
-  ASSERT_FALSE(root.empty()) << "no corpus at " << corpus;
-  const auto v0 = llmp::artifact::Artifact::Open(root);
-  ASSERT_TRUE(v0.has_value()) << (v0 ? "" : v0.error().ToString());
-  ASSERT_EQ(v0->format_version(), 0U);
-  const auto reimport = [](const std::string& message) {
-    return message.find("re-import its source checkpoint with `llmp import") != std::string::npos;
-  };
-  const auto served = rt::RequireServedVersion(*v0);
-  ASSERT_FALSE(served.has_value());
-  EXPECT_TRUE(reimport(served.error())) << served.error();
-  const auto admitted = rt::ReadComponentAdmission(*v0);
-  ASSERT_FALSE(admitted.has_value());
-  EXPECT_NE(admitted.error().find("re-import"), std::string::npos) << admitted.error();
-  const auto drafted = rt::ComponentDrafterValues(*v0, *v0);
-  ASSERT_FALSE(drafted.has_value());
-  EXPECT_TRUE(reimport(drafted.error())) << drafted.error();
+  const std::filesystem::path scratch =
+      std::filesystem::path(testing::TempDir()) / "component-admission-version";
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  std::filesystem::create_directories(scratch, ec);
+
+  llmp::test::V1Plan plan;
+  plan.architecture = "gemma2";
+  plan.groups = {
+      llmp::test::V1Group{.kind = llmp::artifact::GroupKind::kTable,
+                          .resources = {{.name = "token_embd.weight",
+                                         .format = {.encoding = fm::Encoding::kBF16,
+                                                    .layout = fm::Layout::kDense,
+                                                    .shape = {.ne = {64, 64, 1, 1}, .rank = 2}}}}}};
+  auto v0_rendered = llmp::test::Render(plan);
+  v0_rendered.manifest["format"] = llmp::test::Json("jitllm-artifact");
+  v0_rendered.manifest["format_version"] = llmp::test::Json(std::int64_t{0});
+  const auto v0 = llmp::artifact::Artifact::Open(llmp::test::Publish(scratch / "v0", v0_rendered));
+  ASSERT_FALSE(v0.has_value());
+  EXPECT_EQ(v0.error().rule, llmp::artifact::Rule::kFormat);
+
+  const auto v1 =
+      llmp::artifact::Artifact::Open(llmp::test::Publish(scratch / "v1", llmp::test::Render(plan)));
+  ASSERT_TRUE(v1.has_value()) << (v1 ? "" : v1.error().ToString());
+  EXPECT_EQ(v1->format_version(), 1U);
+  EXPECT_TRUE(rt::RequireServedVersion(*v1).has_value());
 }
 
 TEST(ComponentAdmissionDrafterTest, CheckComponentDrafterAdmissionApprovesGemma4Assistants) {

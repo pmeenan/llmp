@@ -5,10 +5,9 @@
 // D-113) through the reader (artifact/artifact.h, composition.h): valid
 // artifacts written by the test-only writer (tests/support/artifact_writer.h)
 // with every kind of format, part, fold, relayout, spec and expert array;
-// the formats' JSON both ways; v1 copies of the prototype's v0 goldens
-// placed, chunked and read exactly as the v0 originals; each rule broken
-// one at a time with the rule and reason it is refused under; seeded
-// mutations of the documents (ASan in check:full); and v1 compositions.
+// the formats' JSON both ways; each rule broken one at a time with the rule
+// and reason it is refused under; seeded mutations of the documents (ASan in
+// check:full); and v1 compositions.
 
 #include <gtest/gtest.h>
 
@@ -70,11 +69,6 @@ std::string Env(const char* name) {
   return value == nullptr ? std::string() : std::string(value);
 }
 
-fs::path Corpus() {
-  const std::string configured = Env("LLMP_TEST_ARTIFACT_CORPUS");
-  return configured.empty() ? fs::path("artifact-corpus") : fs::path(configured);
-}
-
 fs::path Scratch(std::string_view name) {
   const std::string base = Env("LLMP_TEST_SCRATCH");
   const fs::path root = base.empty() ? fs::path(::testing::TempDir()) : fs::path(base);
@@ -83,14 +77,6 @@ fs::path Scratch(std::string_view name) {
   fs::remove_all(dir, error);
   fs::create_directories(dir, error);
   return dir;
-}
-
-fs::path OnlyChild(const fs::path& dir) {
-  std::error_code error;
-  for (const auto& entry : fs::directory_iterator(dir, error)) {
-    return entry.path();
-  }
-  return {};
 }
 
 void WriteFile(const fs::path& path, std::string_view data) {
@@ -282,7 +268,6 @@ TEST(ArtifactV1Test, OpensEveryKindOfEntry) {
   EXPECT_EQ(a.model().architecture, "toy");
   EXPECT_EQ(a.model().container, "safetensors");
   EXPECT_EQ(a.model().expert_count, 4U);
-  EXPECT_TRUE(a.model().representation.empty());
   EXPECT_EQ(a.converter().name, "llmp-import-test");
   EXPECT_EQ(a.converter().build, "test");
   EXPECT_EQ(llmp::base::ToHex(a.converter().options_sha256), Hex(""));
@@ -432,151 +417,6 @@ TEST(ArtifactV1Test, ContainerViews) {
   EXPECT_EQ(codes.shape, (std::vector<std::uint64_t>{2048}));
 }
 
-// ------------------------------------------- v1 copies of the v0 goldens
-
-// A v1 artifact holding each v0 golden's groups, resources and expert
-// slices at the same places, with the formats v0's descriptors read as:
-// every group, chunk, placement, row lookup and read plan is the same, so
-// the pager does not depend on the version it read. (The shard headers
-// differ, so data sections may start elsewhere; reads are compared
-// relative to them.)
-TEST(ArtifactV1Test, PlacesAndReadsAsTheV0Goldens) {
-  for (const char* name : {"tiny", "exl3", "moe"}) {
-    SCOPED_TRACE(name);
-    const fs::path root = OnlyChild(Corpus() / "golden" / name);
-    ASSERT_FALSE(root.empty()) << "no corpus at " << Corpus();
-    const auto v0 = Artifact::Open(root);
-    ASSERT_TRUE(v0.has_value()) << Describe(v0);
-    V1Plan p;
-    p.architecture = v0->model().architecture;
-    p.expert_count = v0->model().expert_count;
-    const auto part_of = [](const TensorFormat& f, PartRole part) {
-      // v0's EXL3 side vectors read as dense F16 tensors of their own.
-      const auto parts = format::PartsOf(f);
-      return parts && parts->Find(part) ? part : PartRole::kData;
-    };
-    std::uint32_t shard = 0;
-    for (std::uint32_t g = 0; g < v0->groups().size(); ++g) {
-      const artifact::Group& group = v0->groups()[g];
-      if (group.kind == GroupKind::kExpert && group.expert != 0U) {
-        continue;  // the writer expands an expert layer
-      }
-      V1Group out{.kind = group.kind, .layer = group.layer, .new_shard = group.shard != shard};
-      shard = group.shard;
-      for (const artifact::Resource& r : v0->resources()) {
-        if (r.group != g) {
-          continue;
-        }
-        ASSERT_TRUE(r.format.has_value()) << r.name;
-        out.resources.push_back({.name = r.name,
-                                 .aliases = {r.roles.begin() + 1, r.roles.end()},
-                                 .format = *r.format,
-                                 .part = part_of(*r.format, r.part),
-                                 .rows = r.rows,
-                                 .offset = r.offset.value()});
-      }
-      for (const artifact::ExpertArray& x : v0->expert_arrays()) {
-        if (x.first_group != g) {
-          continue;
-        }
-        ASSERT_TRUE(x.format.has_value()) << x.name;
-        out.arrays.push_back({.name = x.name,
-                              .format = *x.format,
-                              .part = part_of(*x.format, x.part),
-                              .offset = x.group_offset.value()});
-      }
-      p.groups.push_back(std::move(out));
-    }
-    const auto v1 = Artifact::Open(Publish(Scratch(std::string("golden-") + name), Render(p)));
-    ASSERT_TRUE(v1.has_value()) << Describe(v1);
-    ASSERT_EQ(v1->shards().size(), v0->shards().size());
-    for (std::size_t s = 0; s < v0->shards().size(); ++s) {
-      EXPECT_EQ(v1->shards()[s].data_bytes, v0->shards()[s].data_bytes);
-    }
-    ASSERT_EQ(v1->groups().size(), v0->groups().size());
-    for (std::size_t g = 0; g < v0->groups().size(); ++g) {
-      const artifact::Group& a = v0->groups()[g];
-      const artifact::Group& b = v1->groups()[g];
-      EXPECT_EQ(std::tie(a.kind, a.layer, a.expert, a.shard, a.offset, a.used, a.stored,
-                         a.first_chunk, a.chunks),
-                std::tie(b.kind, b.layer, b.expert, b.shard, b.offset, b.used, b.stored,
-                         b.first_chunk, b.chunks))
-          << "group " << g;
-    }
-    EXPECT_EQ(v1->chunk_sha256().size(), v0->chunk_sha256().size());
-    ASSERT_EQ(v1->resources().size(), v0->resources().size());
-    for (std::uint32_t i = 0; i < v0->resources().size(); ++i) {
-      const auto& r = v0->resources()[i];
-      const auto j = v1->FindResource(r.name);
-      ASSERT_TRUE(j.has_value()) << r.name;
-      const auto a = v0->ResourcePlacement(i);
-      const auto b = v1->ResourcePlacement(*j);
-      ASSERT_TRUE(a && b) << r.name;
-      EXPECT_EQ(
-          std::tie(a->group, a->offset, a->bytes, a->readable, a->closure.first, a->closure.last),
-          std::tie(b->group, b->offset, b->bytes, b->readable, b->closure.first, b->closure.last))
-          << r.name;
-      if (r.rows) {
-        const auto ra = v0->Rows(i);
-        const auto rb = v1->Rows(*j);
-        ASSERT_TRUE(ra && rb) << r.name;
-        EXPECT_EQ(std::pair(ra->rows, ra->row_bytes), std::pair(rb->rows, rb->row_bytes));
-        const std::vector<std::uint64_t> ids = {0, ra->rows / 2, ra->rows - 1};
-        const auto ca = v0->RowChunks(i, ids);
-        const auto cb = v1->RowChunks(*j, ids);
-        ASSERT_TRUE(ca && cb) << r.name;
-        EXPECT_EQ(*ca, *cb) << r.name;
-      }
-    }
-    ASSERT_EQ(v1->expert_arrays().size(), v0->expert_arrays().size());
-    for (std::uint32_t i = 0; i < v0->expert_arrays().size(); ++i) {
-      const auto& x = v0->expert_arrays()[i];
-      const auto j = v1->FindExpertArray(x.name);
-      ASSERT_TRUE(j.has_value()) << x.name;
-      for (std::uint32_t e = 0; e < x.count; ++e) {
-        const auto a = v0->SlicePlacement(i, e);
-        const auto b = v1->SlicePlacement(*j, e);
-        ASSERT_TRUE(a && b);
-        EXPECT_EQ(
-            std::tie(a->group, a->offset, a->bytes, a->readable, a->closure.first, a->closure.last),
-            std::tie(b->group, b->offset, b->bytes, b->readable, b->closure.first, b->closure.last))
-            << x.name << "#" << e;
-      }
-    }
-    // Every chunk missing, then every other one resident.
-    std::vector<artifact::ChunkKey> all;
-    std::vector<artifact::ChunkKey> odd;
-    std::vector<artifact::ChunkKey> even;
-    for (std::uint32_t g = 0; g < v0->groups().size(); ++g) {
-      for (std::uint32_t k = 0; k < v0->groups()[g].chunks; ++k) {
-        all.push_back({.group = g, .chunk = k});
-        ((all.size() % 2 == 0) ? even : odd).push_back({.group = g, .chunk = k});
-      }
-    }
-    for (const auto& [missing, resident] :
-         {std::pair(all, std::vector<artifact::ChunkKey>{}), std::pair(odd, even)}) {
-      const auto a = v0->PlanReads(missing, resident, {.max_run = Bytes(std::uint64_t{4} << 20U)});
-      const auto b = v1->PlanReads(missing, resident, {.max_run = Bytes(std::uint64_t{4} << 20U)});
-      ASSERT_TRUE(a && b);
-      ASSERT_EQ(a->size(), b->size());
-      for (std::size_t r = 0; r < a->size(); ++r) {
-        const artifact::ReadRun& x = (*a)[r];
-        const artifact::ReadRun& y = (*b)[r];
-        EXPECT_EQ(x.shard, y.shard);
-        EXPECT_EQ(x.file_offset.value() - v0->shards()[x.shard].data_offset.value(),
-                  y.file_offset.value() - v1->shards()[y.shard].data_offset.value());
-        EXPECT_EQ(x.length, y.length);
-        ASSERT_EQ(x.segments.size(), y.segments.size());
-        for (std::size_t s = 0; s < x.segments.size(); ++s) {
-          EXPECT_EQ(x.segments[s].chunk, y.segments[s].chunk);
-          EXPECT_EQ(x.segments[s].length, y.segments[s].length);
-          EXPECT_EQ(x.segments[s].group_offset, y.segments[s].group_offset);
-        }
-      }
-    }
-  }
-}
-
 // ---------------------------------------------------------------- refusals
 
 struct Case {
@@ -607,9 +447,15 @@ std::vector<Case> Cases() {
       {"v1-format-version-0", [](V1Files& f, H&) { f.manifest["format_version"] = 0; },
        Rule::kUnsupportedVersion, "format_version is not one this build reads", 0},
       {"v0-format-version-1", [](V1Files& f, H&) { f.manifest["format"] = "jitllm-artifact"; },
-       Rule::kUnsupportedVersion, "format_version is not 0; re-import required"},
+       Rule::kFormat, "not a llmpalooza artifact"},
       {"unknown-format", [](V1Files& f, H&) { f.manifest["format"] = "llmp-artefact"; },
        Rule::kFormat, "not a llmpalooza artifact"},
+      {"spark-v0-profile",
+       [](V1Files& f, H&) {
+         f.manifest["layout"]["profile"] = "spark-v0";
+         f.manifest["layout"]["profile_version"] = 0;
+       },
+       Rule::kUnsupportedProfile, "layout is not spark v1; re-import required"},
       {"index-v0-header", [](V1Files& f, H&) { f.index["format"] = "jitllm-index"; },
        Rule::kUnsupportedVersion, "index header differs from the profile"},
       {"index-version-2", [](V1Files& f, H&) { f.index["format_version"] = 2; },
@@ -936,33 +782,6 @@ TEST(ArtifactV1Test, SpecFileMustBeTheListedOne) {
     ASSERT_FALSE(opened.has_value());
     EXPECT_EQ(opened.error().rule, Rule::kFileSet);
   }
-  {
-    // v0 knows no spec role.
-    const fs::path golden = OnlyChild(Corpus() / "golden" / "tiny");
-    ASSERT_FALSE(golden.empty());
-    std::string manifest;
-    {
-      std::ifstream in(golden / "manifest.json", std::ios::binary);
-      manifest.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    }
-    const std::string spec_entry = R"({"bytes":)" + std::to_string(kSpecJson.size()) +
-                                   R"(,"path":"spec.json","role":"spec","sha256":")" +
-                                   Hex(kSpecJson) + R"("})";
-    // After the last file entry (paths sort before "spec.json").
-    const auto end = manifest.find("],\"format\"");
-    ASSERT_NE(end, std::string::npos);
-    manifest.insert(end, "," + spec_entry);
-    const fs::path root = store / Hex(manifest);
-    std::error_code error;
-    fs::remove_all(root, error);
-    fs::copy(golden, root, fs::copy_options::recursive, error);
-    ASSERT_FALSE(error) << error.message();
-    WriteFile(root / "manifest.json", manifest);
-    WriteFile(root / "spec.json", kSpecJson);
-    const auto opened = Artifact::Open(root);
-    ASSERT_FALSE(opened.has_value());
-    EXPECT_EQ(opened.error().rule, Rule::kPath);
-  }
 }
 
 // Seeded mutations of the three documents: whatever they do, the reader
@@ -1108,8 +927,8 @@ TEST(CompositionV1Test, Refusals) {
       };
   refused([](auto& f, auto&) { f.manifest["format_version"] = 3; }, Rule::kUnsupportedVersion,
           "format_version is not one this build reads");
-  refused([](auto& f, auto&) { f.manifest["format"] = "jitllm-composition"; },
-          Rule::kUnsupportedVersion, "format_version is not 0");
+  refused([](auto& f, auto&) { f.manifest["format"] = "jitllm-composition"; }, Rule::kFormat,
+          "not a llmpalooza composition");
   refused(
       [](auto& f, auto&) {
         f.manifest["converter"] = f.manifest["importer"];

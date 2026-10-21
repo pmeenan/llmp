@@ -15,15 +15,12 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <deque>
 #include <format>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#include "artifact/json.h"
-#include "artifact/representation.h"
 #include "families/dsv4.h"
 #include "fixture_source.h"
 #include "spec/mapping.h"
@@ -162,29 +159,17 @@ inline std::vector<Dsv4Resource> DrafterResources(const DsparkProfile& d, const 
   return r;
 }
 
-// A resource's v0 representation (GGML's).
-inline artifact::Representation RepresentationOf(const Dsv4Resource& r) {
-  std::string ne;
-  for (const auto d : r.ne) ne += (ne.empty() ? "" : ",") + std::to_string(d);
-  const std::string text = std::format(R"({{"family":"ggml","ne":[{}],"type":"{}"}})", ne, r.type);
-  const auto doc = artifact::json::Parse(text);
-  EXPECT_TRUE(doc.has_value()) << text;
-  const auto rep = artifact::ParseRepresentation(doc->root());
-  EXPECT_TRUE(rep.has_value()) << text;
-  return rep.value_or(artifact::Representation{});
-}
-
 // The resources as a mapping's source (DeepSeek V4's GGUFs pair no parts
 // and its mappings fold nothing; `mapping` is kept for its callers).
 inline spec::Source SourceOf(std::string architecture, const std::vector<Dsv4Resource>& resources,
                              const spec::Mapping& /*mapping*/) {
-  std::deque<artifact::Representation> reps;
   std::vector<FixtureTensor> tensors;
   for (const Dsv4Resource& r : resources) {
-    reps.push_back(RepresentationOf(r));
     tensors.push_back({.name = r.roles.front(),
                        .roles = r.roles,
-                       .repr = &reps.back(),
+                       .plain = false,
+                       .type = r.type,
+                       .ne = r.ne,
                        .count = r.expert_array ? r.count : 0});
   }
   auto source = FixtureSource(std::move(architecture), "gguf", tensors);

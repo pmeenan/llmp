@@ -114,16 +114,8 @@ class StepSource : public ShapeExecutionFacts {
   virtual StageExecutionFacts StageFacts(std::uint16_t stage) const {
     return {
         .uses_side_rows = UsesSideRows(stage),
-        .joined_repeat_pending = JoinedRepeatPending(stage),
         .commit_buffers = [this, stage](std::uint32_t rows) { return CommitBuffers(stage, rows); }};
   }
-  // Immutable numerical qualification for this stage's contribution to a
-  // multi-owner repeat-pending submission (including target, companions,
-  // head-bearing replay and continuation). The runner requires every
-  // stage's source to qualify the entire shape domain it accepts. This is
-  // a backend proof, never a caller batching preference. Component sources
-  // remain unqualified until joined arithmetic has its exact GPU proof.
-  virtual bool JoinedRepeatPending(std::uint16_t /*stage*/) const { return false; }
   // A side-table component's row IDs from the owner's complete token
   // history. Pure host work before any state admission or device writes.
   virtual bool UsesSideRows(std::uint16_t /*stage*/) const { return false; }
@@ -223,7 +215,7 @@ struct RunnerConfig {
     format::TensorFormat format;
     format::PartRole part = format::PartRole::kData;
     std::uint64_t rows_per_token = 0;
-    // Complete logical v0 assembly, including non-row tensor scales. Empty
+    // Complete logical part assembly, including non-row tensor scales. Empty
     // retains ordinary resources whose recorded format already is logical.
     std::vector<std::pair<format::PartRole, std::uint32_t>> source_parts{};
   };
@@ -307,9 +299,8 @@ class StepAuthorization {
   friend class ModelRunner;
   friend class StepTransaction;
   friend class DecodingOrchestrator;
-  friend class PromptCompanions;
   friend class WaveComposer;
-  enum class Part : std::uint8_t { kNone, kOrigin, kDraft, kPre, kTarget, kPost };
+  enum class Part : std::uint8_t { kNone, kOrigin };
   const ModelRunner* runner_ = nullptr;
   std::uint32_t slot_ = 0;
   std::uint16_t stage_ = 0;
@@ -318,12 +309,7 @@ class StepAuthorization {
   bool want_head_ = false, greedy_ = false;
   FeatureFrom feature_;
   Part part_ = Part::kNone;
-  bool compound_tail_ = false;
-  DraftProgressLedger::Unit draft_;
   std::optional<StateBorrowPermit> borrowed_{};
-  // Conditional execution only behind this exact owed publication prefix.
-  std::optional<DraftProgressLedger::Transition> predecessor_{};
-  std::span<const std::pair<std::size_t, DraftProgressLedger::Unit>> consumers_{};
 };
 
 struct StepRequest {
@@ -466,10 +452,6 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
 
   // ------------------------------------------------------------- steps
 
-  // Pure preflight for an entire submitted operation, before settlement,
-  // unit ownership, side inputs or admission. An unqualified repeat-pending
-  // model accepts one owner per submission, including target-only work.
-  Status CheckOwners(std::size_t owners) const;
   // Compile the exact selected shape and admit any additional activation
   // prefix before state preparation or model work. Stable reservation places
   // alone permit construction, never execution. Pool and staging growth are
@@ -522,15 +504,12 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
  private:
   friend class StepTransaction;
   friend class llmp::test_support::RoutedComponentInspection;
-  friend class PromptCompanions;
   friend class PromptBatchInventory;
   friend class PromptBatch;
   friend class DecodingOrchestrator;
   std::expected<void, StepRefusal> CheckAdmission(const planner::Segment& segment,
                                                   std::uint16_t stage, bool advance,
                                                   const StepAuthorization* authorization);
-  const StepAuthorization* CompanionFor(std::span<const StepAuthorization> authorization,
-                                        std::uint32_t slot, std::uint16_t stage) const;
   ModelRunner(PagedNode& node, RunnerConfig config, std::unique_ptr<StepSource> source, int owner,
               std::uint32_t stream);
   static SlotLifecycleOptions LifecycleOptions(ModelRunner* self, SlotLifecycleOptions options);
@@ -547,14 +526,13 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   // The device copies filling a step's kFeatures input from where each
   // segment's work names it.
   std::expected<std::vector<RunCopy>, std::string> FeatureCopies(
-      const kernels::StepProgram& program, const StepRequest& request,
-      std::span<const StepAuthorization> authorization) const;
+      const kernels::StepProgram& program, const StepRequest& request) const;
   // The device copies carrying each segment's next features (a drafter
   // head's) to its slot's carry on the step's stage.
   std::expected<std::vector<RunCopy>, std::string> CarryCopies(
       const kernels::StepProgram& program, const planner::StepShape& shape) const;
   Status EmitFeatureCopies(const kernels::StepProgram& program, const StepRequest& request,
-                           std::span<const StepAuthorization> authorization, CopySink& into) const;
+                           CopySink& into) const;
   Status EmitCarryCopies(const kernels::StepProgram& program, const planner::StepShape& shape,
                          CopySink& into) const;
   std::uint64_t CarryAddress(std::uint32_t slot, std::size_t stage) const;
@@ -562,8 +540,7 @@ class ModelRunner final : public PagedModel, public SpecializationQuery {
   struct TapRows {
     std::uint32_t first = 0, count = 0, preceding = 0;
   };
-  TapRows HeldTapRows(std::uint32_t slot, std::size_t stage,
-                      const StepAuthorization* authorization = nullptr) const;
+  TapRows HeldTapRows(std::uint32_t slot, std::size_t stage) const;
   std::expected<std::vector<RunCopy>, std::string> TapCarries(
       const planner::StepShape& shape) const;
   Status EmitTapCarries(const planner::StepShape& shape, CopySink& into) const;

@@ -5,7 +5,7 @@
 // domain's arithmetic, the automatic serving envelope (the route's only one:
 // every other request is refused before its source is read), and the
 // publication screens (Published*) of the published v1 artifacts (the target
-// 698b1cd8 and the DSpark drafter 5c9d95e2; LLMP_DSV4_TARGET_STORE, else
+// d2046349 and the DSpark drafter 6b1b9dca; LLMP_DSV4_TARGET_STORE, else
 // tests/support/v1_frozen.h V1Store) against their frozen digests
 // (tests/unit/data/v1_frozen/dsv4_*.json). The serving tests
 // (dsv4_engine_serving_gpu_test.cc) cover the rest of its service.
@@ -54,10 +54,10 @@ constexpr std::uint32_t kContext = 3072, kChunk = 512, kPrefix = 2560;
 constexpr std::uint32_t kVocab = 129280;
 
 constexpr std::string_view kArtifact =
-    "698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd";
+    "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f";
 
 constexpr std::string_view kDsparkArtifact =
-    "5c9d95e24769c4d0a06088b0b6a8cc4afd4979b5ffc6d9357b4116f26fa583aa";
+    "6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41";
 
 // The store holding both: LLMP_DSV4_TARGET_STORE, else the published v1
 // store.
@@ -103,7 +103,7 @@ Status File(const fs::path& path, std::uint64_t bytes, std::string_view digest) 
   return {};
 }
 Status Metadata(const fs::path& artifact) {
-  if (auto s = File(artifact / "manifest.json", 14666, kArtifact); !s) return s;
+  if (auto s = File(artifact / "manifest.json", 14663, kArtifact); !s) return s;
   if (auto s = File(artifact / "index.json", 5058896,
                     "4f84772b3cfa5912e6a5ece00f438b9b8ac330679dd848a1896810f7d48a8e80");
       !s)
@@ -155,8 +155,6 @@ TEST(Dsv4EngineTargetInputs, ServingDomainUsesActualBlockStateAndOwnsItsPayment)
     EXPECT_GT((*allowance)->used(), 0U);
     EXPECT_TRUE((*domain)->CheckMode(en::NumericalUse::kPrompt));
     EXPECT_TRUE((*domain)->CheckMode(en::NumericalUse::kSpeculative));
-    EXPECT_TRUE((*domain)->CheckMode(en::NumericalUse::kPromptCompanions));
-    EXPECT_FALSE((*domain)->CheckMode(en::NumericalUse::kJoinedRepeatPending));
     EXPECT_EQ((*domain)->stages()[0].phases[2].max_owners, owners);
     EXPECT_EQ((*domain)->stages()[0].phases[2].max_owner_rows, 4U);
   }
@@ -169,40 +167,9 @@ TEST(Dsv4EngineTargetInputs, ServingDomainUsesActualBlockStateAndOwnsItsPayment)
   EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, batching, 4, invalid, *allowance));
   EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, batching, 4, mode, nullptr));
   EXPECT_EQ((*allowance)->used(), 0U);
-  const std::vector<std::pair<std::uint32_t, md::StateContract>> replay = {
-      {0,
-       {.tensors = {C{.name = "kv", .cell_bytes = 256, .replayable = true},
-                    C{.name = "tap",
-                      .kind = md::StateKind::kFeatures,
-                      .encoding = md::Encoding::kF32,
-                      .cell_bytes = 256,
-                      .cells = md::CellRule::kPerRow,
-                      .row_carry = 1,
-                      .rollback = md::Rollback::kSnapshot,
-                      .target_writes = true},
-                    md::DraftProgressControl("progress", md::DraftRelation::kTokenAfterCache)}}}};
-  auto replay_layout = md::Layout(replay, 8192, 512);
-  ASSERT_TRUE(replay_layout) << Failed(replay_layout).value_or("");
-  const std::array replay_layouts{*a, *replay_layout};
-  EXPECT_FALSE(rt::ComponentServingDomain(spec, replay_layouts, batching, 4, mode, *allowance));
   auto block_shared = mode;
   block_shared.drafters[0].shared_wave_depth = 2;
   EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, batching, 4, block_shared, *allowance));
-  auto autoregressive = mode;
-  autoregressive.drafters[0].shape = en::DrafterSpec::Shape::kAutoregressive;
-  autoregressive.drafters[0].catch_up = true;
-  autoregressive.drafters[0].features = true;
-  autoregressive.drafters[0].shared_wave_depth = 2;
-  {
-    auto joined =
-        rt::ComponentServingDomain(spec, replay_layouts, batching, 4, autoregressive, *allowance);
-    ASSERT_TRUE(joined) << Failed(joined).value_or("");
-    EXPECT_TRUE((*joined)->CheckMode(en::NumericalUse::kJoinedRepeatPending));
-  }
-  autoregressive.drafters[0].shared_wave_depth = 4;
-  EXPECT_FALSE(
-      rt::ComponentServingDomain(spec, replay_layouts, batching, 4, autoregressive, *allowance));
-  EXPECT_EQ((*allowance)->used(), 0U);
   spec.stages.resize(1);
   auto plain = rt::ComponentServingDomain(spec, std::span(layouts).first(1),
                                           std::span(batching).first(1), 4, {}, *allowance);

@@ -21,9 +21,7 @@
 #include <utility>
 #include <vector>
 
-#include "artifact/format_map.h"
 #include "artifact/json.h"
-#include "artifact/representation.h"
 #include "base/sha256.h"
 #include "components/step.h"
 #include "families/dsv4.h"

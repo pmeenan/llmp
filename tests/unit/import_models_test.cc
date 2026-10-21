@@ -7,7 +7,7 @@
 // tensor for tensor in the same formats, and the GGUFs of Gemma 4, its
 // assistants, DeepSeek V4, DSpark and Qwen3.8 the formats of theirs; the
 // split and single GGUFs read whole; Qwen3.8's ModelOpt checkpoint pairs
-// every NVFP4 and MXFP8 weight; Qwen-Image-2.1's pipeline is its v0
+// every NVFP4 and MXFP8 weight; Qwen-Image-2.1's pipeline is its v1
 // composition's components tensor for tensor and byte for byte; the Qwen2.5
 // EXL3 fixtures are their v1 imports; Qwen3.8's MLX checkpoint pairs every
 // quantized module and decodes within its quantization of the native
@@ -46,17 +46,16 @@
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
 #include "artifact/format_json.h"
-#include "artifact/format_map.h"
 #include "artifact/layout.h"
 #include "base/json.h"
 #include "base/sha256.h"
 #include "expected_error.h"
-#include "fixture_source.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
 #include "import/checkpoint.h"
 #include "import/error.h"
+#include "import/image_pipeline.h"
 #include "import/normalize.h"
 #include "import/reader.h"
 #include "import/readers/gguf.h"
@@ -739,15 +738,16 @@ std::uint64_t ExpectResourcesAreTheCheckpoints(const std::filesystem::path& root
 // ---------------------------------------------------------------- diffusers
 
 // Qwen-Image-2.1's pipeline as the diffusers reader gives it against the
-// v0 composition the Python importer made of the same directory (D-089):
-// the same components and architectures, the kept files the composition
-// keeps, and in each component every tensor the v0 artifact holds, in
-// v0's format and with its bytes (all ~33 GB compared).
+// published v1 composition of the same directory: the same components and
+// architectures, the kept files the composition keeps, and in each
+// component every tensor the v1 artifact holds, in its format and with its
+// bytes (all ~33 GB compared).
 TEST(ImportPipelineModelsTest, QwenImageComponentsAreTheV0Imports) {
   const std::filesystem::path path = Models() / "models/Qwen/Qwen-Image-2.1@790c9263";
-  const std::filesystem::path store = Models() / "m3-artifacts";
-  const std::filesystem::path composition =
-      store / "eca21baad38229e471a44cb2479d392ffcf745fb812e8a41668f336139fa1acd";
+  const std::filesystem::path store = test_support::V1Store();
+  const auto id = test_support::V1IdNamed("qwen-image");
+  ASSERT_TRUE(id.has_value());
+  const std::filesystem::path composition = store / *id;
   if (!Exists(path) || !Exists(composition)) {
     GTEST_FAIL() << "no " << path << " or " << composition;
   }
@@ -755,25 +755,29 @@ TEST(ImportPipelineModelsTest, QwenImageComponentsAreTheV0Imports) {
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->container, "diffusers");
   EXPECT_TRUE(c->tensors.empty());
-  const auto v0 = artifact::OpenComposition(composition);
-  ASSERT_TRUE(v0.has_value()) << v0.error().ToString();
-  EXPECT_EQ(c->architecture, v0->architecture());
+  const auto plan = PlanImagePipeline(*c);
+  ASSERT_TRUE(plan.has_value()) << plan.error().ToString();
+  const auto v1 = artifact::OpenComposition(composition);
+  ASSERT_TRUE(v1.has_value()) << v1.error().ToString();
+  EXPECT_EQ(c->architecture, v1->architecture());
   // The kept files: model_index.json, the scheduler's and the processor's,
   // by name and size.
   std::map<std::string, std::uint64_t> kept;
   for (const SourceFile& f : c->files) {
     kept.emplace(std::filesystem::path(f.name).filename().string(), f.bytes);
   }
-  std::map<std::string, std::uint64_t> v0_kept;
-  for (const artifact::Source& s : v0->sources()) {
-    v0_kept.emplace(s.name, s.bytes.value());
+  std::map<std::string, std::uint64_t> v1_kept;
+  for (const artifact::Source& s : v1->sources()) {
+    v1_kept.emplace(std::filesystem::path(s.name).filename().string(), s.bytes.value());
   }
-  EXPECT_EQ(kept, v0_kept);
-  ASSERT_EQ(c->components.size(), v0->components().size());
+  EXPECT_EQ(kept, v1_kept);
+  ASSERT_EQ(c->components.size(), v1->components().size());
+  ASSERT_EQ(plan->components.size(), c->components.size());
   std::uint64_t compared = 0;
   for (std::size_t i = 0; i < c->components.size(); ++i) {
     const Checkpoint& component = c->components[i];
-    const artifact::CompositionComponent& want = v0->components()[i];
+    const ComponentPlan& cp = plan->components[i];
+    const artifact::CompositionComponent& want = v1->components()[i];
     SCOPED_TRACE(component.role);
     EXPECT_EQ(component.role, want.role);
     EXPECT_EQ(component.architecture, want.architecture);
@@ -781,9 +785,8 @@ TEST(ImportPipelineModelsTest, QwenImageComponentsAreTheV0Imports) {
     const std::filesystem::path root = store / want.artifact;
     auto a = artifact::Artifact::Open(root, {.expected_id = {}});
     ASSERT_TRUE(a.has_value()) << a.error().ToString();
-    // Every shard the reader opened is a source v0 recorded, and every
-    // file both have is of one size (v0 also kept files the reader does
-    // not open, a generation config).
+    // Every shard the reader opened is a source the v1 artifact recorded,
+    // and every file both have is of one size.
     for (const SourceFile& f : component.files) {
       const auto s = std::ranges::find(a->sources(), f.name, &artifact::Source::name);
       if (s != a->sources().end()) {
@@ -792,16 +795,33 @@ TEST(ImportPipelineModelsTest, QwenImageComponentsAreTheV0Imports) {
         EXPECT_FALSE(f.name.ends_with(".safetensors")) << f.name;
       }
     }
-    const auto source = test_support::V0ArtifactSource(*a);
+    const auto stored = spec::StoredSpec(*a);
+    ASSERT_TRUE(stored.has_value()) << stored.error();
+    EXPECT_EQ(cp.spec, *stored);
+    const auto source = spec::SourceOf(*a);
     ASSERT_TRUE(source.has_value()) << source.error();
-    EXPECT_EQ(source->tensors.size(), component.tensors.size());
-    for (const spec::SourceTensor& t : source->tensors) {
-      const Tensor* got = component.FindTensor(t.name);
-      ASSERT_NE(got, nullptr) << t.name;
-      EXPECT_EQ(got->format, t.format) << t.name;
-      EXPECT_EQ(got->part, t.part) << t.name;
+    EXPECT_EQ(source->tensors.size(), cp.canonical.tensors.size());
+    std::map<std::string_view, const Tensor*> raw_by_canonical;
+    for (std::size_t j = 0; j < cp.canonical.tensors.size(); ++j) {
+      raw_by_canonical.emplace(cp.canonical.tensors[j].name,
+                               &cp.checkpoint.tensors[cp.routes[j].source_tensor]);
     }
-    compared += ExpectResourcesAreTheCheckpoints(root, *a, component);
+    for (const spec::SourceTensor& t : source->tensors) {
+      const auto found = raw_by_canonical.find(t.name);
+      ASSERT_NE(found, raw_by_canonical.end()) << t.name;
+      EXPECT_EQ(found->second->format, t.format) << t.name;
+      EXPECT_EQ(found->second->part, t.part) << t.name;
+    }
+    for (std::uint32_t r = 0; r < a->resources().size(); ++r) {
+      for (const std::string& role : a->resources()[r].roles) {
+        const auto found = raw_by_canonical.find(role);
+        EXPECT_NE(found, raw_by_canonical.end()) << role;
+        if (found != raw_by_canonical.end()) {
+          EXPECT_TRUE(SameResourceBytes(root, *a, r, cp.checkpoint, *found->second)) << role;
+          compared += found->second->extent.bytes;
+        }
+      }
+    }
   }
   RecordProperty("bytes_compared", std::to_string(compared));
 }

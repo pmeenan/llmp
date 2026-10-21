@@ -368,6 +368,82 @@ std::optional<std::uint32_t> LegacyTypeBlockBytes(std::string_view name) {
   return BlockBytes(*enc);
 }
 
+namespace {
+
+constexpr std::array<std::pair<std::string_view, Encoding>, 34> kGgmlNames = {{
+    {"F32", Encoding::kF32},         {"F16", Encoding::kF16},         {"Q4_0", Encoding::kQ4_0},
+    {"Q4_1", Encoding::kQ4_1},       {"Q5_0", Encoding::kQ5_0},       {"Q5_1", Encoding::kQ5_1},
+    {"Q8_0", Encoding::kQ8_0},       {"Q2_K", Encoding::kQ2_K},       {"Q3_K", Encoding::kQ3_K},
+    {"Q4_K", Encoding::kQ4_K},       {"Q5_K", Encoding::kQ5_K},       {"Q6_K", Encoding::kQ6_K},
+    {"Q8_K", Encoding::kQ8_K},       {"IQ2_XXS", Encoding::kIQ2_XXS}, {"IQ2_XS", Encoding::kIQ2_XS},
+    {"IQ3_XXS", Encoding::kIQ3_XXS}, {"IQ1_S", Encoding::kIQ1_S},     {"IQ4_NL", Encoding::kIQ4_NL},
+    {"IQ3_S", Encoding::kIQ3_S},     {"IQ2_S", Encoding::kIQ2_S},     {"IQ4_XS", Encoding::kIQ4_XS},
+    {"I8", Encoding::kI8},           {"I16", Encoding::kI16},         {"I32", Encoding::kI32},
+    {"I64", Encoding::kI64},         {"F64", Encoding::kF64},         {"IQ1_M", Encoding::kIQ1_M},
+    {"BF16", Encoding::kBF16},       {"TQ1_0", Encoding::kTQ1_0},     {"TQ2_0", Encoding::kTQ2_0},
+    {"MXFP4", Encoding::kMxfp4},     {"NVFP4", Encoding::kNvfp4},     {"Q1_0", Encoding::kQ1_0},
+    {"Q2_0", Encoding::kQ2_0},
+}};
+
+constexpr std::array<std::pair<std::string_view, Encoding>, 15> kDtypeNames = {{
+    {"BOOL", Encoding::kBool},
+    {"U8", Encoding::kU8},
+    {"I8", Encoding::kI8},
+    {"F8_E5M2", Encoding::kF8E5M2},
+    {"F8_E4M3", Encoding::kF8E4M3},
+    {"I16", Encoding::kI16},
+    {"U16", Encoding::kU16},
+    {"F16", Encoding::kF16},
+    {"BF16", Encoding::kBF16},
+    {"I32", Encoding::kI32},
+    {"U32", Encoding::kU32},
+    {"F32", Encoding::kF32},
+    {"I64", Encoding::kI64},
+    {"U64", Encoding::kU64},
+    {"F64", Encoding::kF64},
+}};
+
+std::optional<Encoding> LookupName(std::span<const std::pair<std::string_view, Encoding>> table,
+                                   std::string_view name) {
+  const auto found = std::ranges::find_if(table, [&](const auto& e) { return e.first == name; });
+  if (found == table.end()) {
+    return std::nullopt;
+  }
+  return found->second;
+}
+
+}  // namespace
+
+std::optional<Encoding> EncodingOfGgmlType(std::string_view type) {
+  return LookupName(kGgmlNames, type);
+}
+
+std::optional<std::string_view> GgmlTypeName(std::uint32_t type_id) {
+  if (type_id == 9U) {
+    return "Q8_1";
+  }
+  for (const auto& [name, enc] : kGgmlNames) {
+    const EncodingInfo& info = Info(enc);
+    if (info.ggml && info.ggml->type == type_id) {
+      return name;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<Encoding> EncodingOfDtype(std::string_view dtype) {
+  return LookupName(kDtypeNames, dtype);
+}
+
+std::optional<std::string_view> DtypeOfEncoding(Encoding encoding) {
+  const auto* found =
+      std::ranges::find_if(kDtypeNames, [&](const auto& e) { return e.second == encoding; });
+  if (found == kDtypeNames.end()) {
+    return std::nullopt;
+  }
+  return found->first;
+}
+
 bool Lossless(Encoding from, Encoding to) {
   if (from == to) {
     return true;

@@ -23,11 +23,12 @@ container, profile, groups, chunks and page-in, with each tensor's format
 (encoding, layout and shape, named independently of any kernel library) and part
 in the index, the model spec stored as a hashed document of its own
 (`spec.json`, D-113), the folds (`folds`) and relayouts (`relayouts`) the
-importer applied, and its identity in the manifest. While the artifact reader
-(`artifact/artifact.h`, `composition.h`) parses both versions for tooling and
-migration-baseline comparisons, **runtime serving is strictly v1-only** (D-118):
-`llmp-runtime` refuses v0 artifacts at registration ("re-import its source
-checkpoint with `llmp import`"); nothing migrates in place
+importer applied, and its identity in the manifest. The artifact and composition readers
+(`artifact/artifact.h`, `composition.h`) and runtime serving are **strictly
+v1-only** (D-118; the v0 reader and `spark-v0` profile name were retired in
+M3.5 U2 under D-121): `Open` refuses v0 artifacts and compositions
+(`jitllm-artifact`, `jitllm-composition`); re-import any v0 source checkpoint
+with `llmp import`, as nothing migrates in place
 ([engine-components.md](engine-components.md#weight-and-state-formats)).
 The sections up to [Version 1](#version-1) describe v0 as historical background,
 and v1 where it does not say otherwise.
@@ -769,8 +770,9 @@ global group with the encoder, 1.35 GB), and keeps model_index.json, the
 scheduler's config and the processor's nine files. The importer's grouping
 policy per component (the prototype's layer pattern and row tables) is
 `import_m3.py`'s, and the layout rules above are otherwise unchanged.
-Its native v1 import (`llmp import`, 2026-10-16) is composition
-`2170db12…`: each component keeps the tensors text to image runs (the
+Its native v1 import (`llmp import`, 2026-10-16; re-stamped for `"profile":
+"spark"` in M3.5 U2) is composition
+`95314e53…`: each component keeps the tensors text to image runs (the
 text encoder's token table and 36 layers, 15.14 GB in 37 groups; the
 denoiser's globals and 32 blocks, 14.23 GB in 33; the VAE decoder's up
 blocks and the rest of its decoder, 1.01 GB in 6), and the composition
@@ -876,17 +878,17 @@ one and removes it. The source must remain available (D-018).
 ## Version 1
 
 The native importer's format (D-113; D-108's formats, D-109's spec in
-the artifact). Experimental under D-018 like v0. The reader
-(`artifact/artifact.h`, `composition.h`) takes both versions, and gives
-v1 the same groups, chunks, placements, row lookups and read plans as
-v0, so nothing that pages an artifact in knows which version it read.
-However, runtime serving is strictly v1-only (D-118): the runtime refuses
-v0 artifacts at model registration.
+the artifact). Experimental under D-018 like v0. Since M3.5 U2, the reader
+(`artifact/artifact.h`, `composition.h`) accepts only v1 artifacts
+(`llmp-artifact`, `llmp-index`) and v1/v2 compositions (`llmp-composition`),
+refusing v0 (`jitllm-*`) as `format` and any other version as `unsupported-version`
+(D-118, D-121), while keeping the same groups, chunks, placements, row lookups
+and read plans that v0 introduced.
 
 **What stays v0's.** The directory layout, staging and one-rename publication, the walk's rules
 (only `data/` and `meta/`, regular files, no links inside, exactly the
 listed files), the safetensors shards and their header rules, the
-spark-v0 profile (`layout` exactly as in v0), groups tiling each shard,
+layout geometry (`file_alignment` 4096, `chunk_bytes` 2097152, `member_alignment` 256, renamed from `"profile": "spark-v0", "profile_version": 0` to `"profile": "spark", "profile_version": 1` in M3.5 U2), groups tiling each shard,
 4 KiB group alignment, 2 MiB chunks numbered in group order, 256-byte
 resource alignment, over-read reserved inside a resource's own group,
 tied resources stored once, expert arrays over uniform expert groups,
@@ -910,8 +912,8 @@ remain readable. What changes:
 
 | Key | Content |
 | --- | --- |
-| `format`, `format_version` | `"llmp-artifact"`, `1`. The format names the version family: `jitllm-artifact` only ever with 0, `llmp-artifact` with 1 and later. Any other version is `unsupported-version`, the error's item the version found: a later one needs a later runtime, an earlier one a re-import |
-| `experimental`, `layout` | As v0: `true`, and the spark-v0 profile exactly |
+| `format`, `format_version` | `"llmp-artifact"`, `1`. Any other format (including v0's `jitllm-artifact`, D-118 / M3.5 U2) is `format`; any version of `llmp-artifact` other than `1` is `unsupported-version`, the error's item the version found: a later one needs a later runtime, an earlier one a re-import |
+| `experimental`, `layout` | `true`, and `{profile: "spark", profile_version: 1, file_alignment: 4096, chunk_bytes: 2097152, member_alignment: 256, container: "safetensors", byte_order: "little"}` (renamed from v0's `spark-v0` profile in M3.5 U2, D-121) |
 | `model` | `{architecture, container, expert_count}`: the architecture and expert count as v0's; `container` the reader the importer read the checkpoint with, one of `exl3`, `gguf`, `mlx` and `safetensors` (a table, not a pattern: a mapping's folds depend on the container, so one this build does not know is `schema`, never read as another). No representation families |
 | `source` | As v0, with safe UTF-8 plain filenames (no separators, dot entries or control characters), JSON-quoted |
 | `transformations` | v0's `dedupe-identical` (ties) and `expert-slice`, which must describe the index exactly; and `fold` `{kind, fold, tensors}` and `relayout` `{kind, from, tensors}` (below). In canonical order by each record's canonical JSON |
@@ -1034,8 +1036,7 @@ artifact indexes count the components in their (role) order, and
 `spec::StoredSpec(composition, components)` checks them against the
 opened components, whose IDs and architectures must be the recorded ones
 and whose importers' folds must each be among the folds of every stage
-that runs from that component. Components may be
-of either version.
+that runs from that component. Every component is a v1 artifact.
 
 ### Scoped compositions (v2)
 
@@ -1090,8 +1091,8 @@ digests are shortened):
  "importer": {"build": "test", "name": "llmp-import-test", "options_sha256": "e3b0c442…",
               "version": "1"},
  "layout": {"byte_order": "little", "chunk_bytes": 2097152, "container": "safetensors",
-            "file_alignment": 4096, "member_alignment": 256, "profile": "spark-v0",
-            "profile_version": 0},
+            "file_alignment": 4096, "member_alignment": 256, "profile": "spark",
+            "profile_version": 1},
  "model": {"architecture": "toy", "container": "safetensors", "expert_count": 4},
  "source": [{"bytes": 14, "name": "model.safetensors", "sha256": "2ac572d2…"},
             {"bytes": 12, "name": "tokenizer.json", "sha256": "bf424d8d…"}],

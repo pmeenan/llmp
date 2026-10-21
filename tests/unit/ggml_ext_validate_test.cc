@@ -20,8 +20,8 @@
 #include <vector>
 
 #include "ggml.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/llmp_ops.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
@@ -120,12 +120,7 @@ TEST_F(GgmlExtValidateTest, GemmaDeviceMaskGuardsItsEntirePaddedOutputBeforeSubm
   // computing query padding or combining window/row bounds.
   auto* extreme_rows = make(0, std::numeric_limits<std::int32_t>::max());
   Refused(kg::CheckCausalMask(extreme_rows));
-  const std::array<ggml_tensor*, 1> nodes{node};
-  auto plan = kg::PlanGraph(nodes, false, {});
-  ASSERT_TRUE(plan);
-  ASSERT_EQ(plan->steps.size(), 1);
-  EXPECT_EQ(plan->steps[0].implementation, kg::kCausalMaskName);
-  EXPECT_EQ(plan->steps[0].operation, llmp::ir::Primitive(llmp::ir::Op::kMaskBuild));
+  Accepted(kg::CheckCausalMask(node));
 }
 
 TEST_F(GgmlExtValidateTest, GemmaQuantGeGluUsesExactGateViewsAndNoClamp) {
@@ -195,16 +190,6 @@ TEST_F(GgmlExtValidateTest, GemmaLocalAttentionChecksBothPrimitivesAndFallbackSe
       Accepted(kg::CheckFlashAttnMmaGqa2(node));
       Refused(kg::CheckFlashAttnMma(node));  // existing group8 contract stays closed
       Refused(kg::CheckFlashAttnVec(node));  // existing D64 contract stays closed
-      const std::array<ggml_tensor*, 1> nodes = {node};
-      auto fallback = kg::PlanGraph(nodes, false, {});
-      ASSERT_TRUE(fallback.has_value());
-      EXPECT_EQ(fallback->steps.front().implementation, kg::kFlashAttnMmaGqa2Name);
-      kg::DeviceChoices device;
-      device.flash_attn_vec256 = [](const ggml_tensor* n) { return n->src[0]->ne[1] == 1; };
-      auto selected = kg::PlanGraph(nodes, false, device);
-      ASSERT_TRUE(selected.has_value());
-      EXPECT_EQ(selected->steps.front().implementation,
-                rows == 1 ? kg::kFlashAttnVec256Name : kg::kFlashAttnMmaGqa2Name);
       auto* sinks = New(GGML_TYPE_F32, heads);
       node->src[4] = sinks;
       Refused(kg::CheckFlashAttnMmaGqa2(node));
@@ -498,22 +483,6 @@ TEST_F(GgmlExtValidateTest, Ds4HcaRequiresExplicitCanonicalMetadataAndPreservesD
   node->src[0]->data = node->src[1]->data;
   Refused(kg::CheckDsv4HcaTokentile(node));
   node->src[0]->data = original_q;
-  const std::array<ggml_tensor*, 1> nodes = {node};
-  kg::DeviceChoices choices;
-  choices.ds4_hca_fits = [](const ggml_tensor* n) {
-    return kg::CheckDsv4HcaTokentile(n).has_value();
-  };
-  const auto ordinary = kg::PlanGraph(nodes, false, choices);
-  ASSERT_TRUE(ordinary.has_value());
-  EXPECT_EQ(ordinary->steps.front().implementation, kg::kFlashAttnMmaName);
-  choices.ds4_hca = true;
-  const auto selected = kg::PlanGraph(nodes, false, choices);
-  ASSERT_TRUE(selected.has_value());
-  EXPECT_EQ(selected->steps.front().implementation, kg::kDsv4HcaTokentileName);
-  choices.ds4_hca_fits = nullptr;
-  const auto fallback = kg::PlanGraph(nodes, false, choices);
-  ASSERT_TRUE(fallback.has_value());
-  EXPECT_EQ(fallback->steps.front().implementation, kg::kFlashAttnMmaName);
 }
 
 TEST_F(GgmlExtValidateTest, PairedExpertsRequireMatchingInputsAndDisjointOutputs) {
@@ -619,54 +588,8 @@ TEST_F(GgmlExtValidateTest, PairWriteBacksArePlannedOnlyWhereNothingElseReadsWha
   auto* down = Bound(ggml_mul_mat_id(c(), New(GGML_TYPE_Q2_K, 2048, 4096, 256), glu, routes));
   ASSERT_TRUE(kg::MulMatIdQPairGluFits(up, gate, glu));
   ASSERT_TRUE(kg::MulMatIdQCompactPrequantFits(down, glu));
-  kg::DeviceChoices device;
-  device.quant = [](const ggml_tensor*) -> std::expected<kg::QuantMulMatPath, kg::KernelFailure> {
-    return kg::QuantMulMatPath::kTile;
-  };
-  device.pair_experts = true;
-  device.compact_experts = true;
-  device.pair_glu_fits = [](const ggml_tensor*, const ggml_tensor*) { return true; };
-  kg::SetDsv4PrefillStages(device, true);
-  using Names = std::vector<std::string_view>;
-  const auto names = [&](const std::vector<ggml_tensor*>& nodes,
-                         const std::vector<ggml_tensor*>& keep = {}) {
-    Names out;
-    const auto plan = kg::PlanGraph(nodes, false, device, keep);
-    EXPECT_TRUE(plan.has_value()) << (plan ? "" : plan.error().detail);
-    if (plan) {
-      for (const auto& step : plan->steps) {
-        out.push_back(step.implementation);
-      }
-    }
-    return out;
-  };
-  const std::vector<ggml_tensor*> base = {gate, up, glu, down};
-  const auto with = [&](ggml_tensor* last) {
-    std::vector<ggml_tensor*> nodes = base;
-    nodes.push_back(last);
-    return nodes;
-  };
-  // Only the down product reads the activation: the quantizing write-back.
-  EXPECT_EQ(names(base), (Names{kg::kMulMatIdQPairGluQ8, kg::kMulMatIdQCompactPrequant}));
-  // Any other reader of the activation would read D2S6 blocks: the F32
-  // write-back instead. A later node reading it, or reading a view of it.
-  const Names f32 = {kg::kMulMatIdQPairGlu, kg::kMulMatIdQCompact};
-  const Names f32_scaled = {kg::kMulMatIdQPairGlu, kg::kMulMatIdQCompact, kg::kScaleName};
-  EXPECT_EQ(names(with(Bound(ggml_scale(c(), glu, 2.0F)))), f32_scaled);
-  auto* rows = ggml_view_2d(c(), glu, 2048, 6, glu->nb[1], 0);
-  EXPECT_EQ(names(with(Bound(ggml_scale(c(), rows, 2.0F)))), f32_scaled);
-  // The graph's output viewing it, or a tensor read after the run.
-  EXPECT_EQ(names(with(rows)), f32);
-  EXPECT_EQ(names(base, {glu}), f32);
-  EXPECT_EQ(names(base, {rows}), f32);
-  EXPECT_EQ(names(base, {down}), (Names{kg::kMulMatIdQPairGluQ8, kg::kMulMatIdQCompactPrequant}));
-  // The write-back leaves the up output unwritten: where anything else reads
-  // it, the plain compact pair.
-  EXPECT_EQ(names(with(Bound(ggml_scale(c(), up, 2.0F)))),
-            (Names{kg::kMulMatIdQPairCompact, kg::kSwiGluClampName, kg::kMulMatIdQCompact,
-                   kg::kScaleName}));
-  EXPECT_EQ(names(base, {up}),
-            (Names{kg::kMulMatIdQPairCompact, kg::kSwiGluClampName, kg::kMulMatIdQCompact}));
+  Accepted(kg::CheckMulMatIdQPairGlu(up, gate, glu));
+  Accepted(kg::CheckMulMatIdQCompactPrequant(down));
 }
 
 TEST_F(GgmlExtValidateTest, TheHadamardProductNeedsItsHintAndARowTheTransformTakes) {

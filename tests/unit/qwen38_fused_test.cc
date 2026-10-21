@@ -31,20 +31,32 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "components/step.h"
 #include "execution/registry.h"
 #include "expected_error.h"
+#include "families/qwen.h"
 #include "ggml.h"
+#include "ir/builder.h"
+#include "ir/decompose.h"
+#include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/fusion.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
+#include "kernels/ggml/lower.h"
 #include "kernels/ggml/ops_ext.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
+#include "planner/plan.h"
+#include "planner/policy.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
+#include "qwen38_fixture.h"
+#include "spec/mapping.h"
+#include "spec/mappings/qwen38.h"
+#include "state_layouts.h"
 
 namespace {
 
@@ -58,6 +70,12 @@ using llmp::providers::FenceState;
 using llmp::providers::StreamId;
 using llmp::test_support::FailedCode;
 namespace kg = llmp::kernels::ggml;
+namespace co = llmp::components;
+namespace ir = llmp::ir;
+namespace pl = llmp::planner;
+namespace sp = llmp::spec;
+namespace fx = llmp::test_support::qwen38;
+namespace fam = llmp::test_support::families;
 
 constexpr double kDefaultNmse = 1e-7;
 constexpr std::uint64_t kWorkspace = 64ULL << 20;
@@ -196,6 +214,70 @@ class Qwen38FusedTest : public ::testing::Test {
 
   // Places every computed tensor the outputs need, binds the views, and
   // runs the plan the registry binds (fusion off), as the model does.
+  static std::string_view MapNode(const ggml_tensor* node) {
+    if (node == nullptr) return {};
+    if (node->op == GGML_OP_CUSTOM) {
+      switch (kg::LlmpOpOf(node)) {
+        case kg::LlmpOp::kHcCombine:
+          return kg::kHcCombineName;
+        case kg::LlmpOp::kHcNorm:
+          return kg::kHcNormName;
+        case kg::LlmpOp::kHcMix:
+          return kg::kHcMixName;
+        case kg::LlmpOp::kMoeGlu:
+          return kg::kMoeGluName;
+        case kg::LlmpOp::kMoeCombine:
+          return kg::kMoeCombineName;
+        case kg::LlmpOp::kBf16:
+          return kg::kBf16Name;
+        case kg::LlmpOp::kGemmBf16:
+          return kg::GemmBf16Pinned(node) ? kg::kGemmBf16LtName : kg::kGemmBf16Name;
+        case kg::LlmpOp::kGdnConv:
+          return kg::kGdnConvName;
+        case kg::LlmpOp::kGdnNormGate:
+          return kg::kGdnNormGateName;
+        default:
+          return {};
+      }
+    }
+    switch (node->op) {
+      case GGML_OP_MUL_MAT:
+        return (node->src[1] != nullptr && node->src[1]->ne[1] == 1) ? kg::kMulMatVector
+                                                                     : kg::kMulMatCublas;
+      case GGML_OP_GATED_DELTA_NET:
+        return kg::GatedDeltaNetLanesFits(node) ? kg::kGatedDeltaNetLanesName
+                                                : kg::kGatedDeltaNetColumnsName;
+      case GGML_OP_RMS_NORM:
+        return kg::kRmsNormName;
+      case GGML_OP_MUL:
+        return kg::kMulName;
+      case GGML_OP_ADD:
+        return kg::kAddName;
+      case GGML_OP_SUB:
+        return kg::kSubName;
+      case GGML_OP_DIV:
+        return kg::kDivName;
+      case GGML_OP_SCALE:
+        return kg::kScaleName;
+      case GGML_OP_GLU:
+        return kg::kSwiGluName;
+      case GGML_OP_UNARY:
+        return kg::kUnaryName;
+      case GGML_OP_REPEAT:
+        return kg::kRepeatName;
+      case GGML_OP_GET_ROWS:
+        return kg::kGetRowsName;
+      case GGML_OP_CONT:
+        return kg::kContName;
+      case GGML_OP_CONCAT:
+        return kg::kConcatName;
+      case GGML_OP_SSM_CONV:
+        return kg::kSsmConvName;
+      default:
+        return {};
+    }
+  }
+
   void Run(std::vector<ggml_tensor*> outputs) {
     const std::vector<ggml_tensor*> nodes = kg::GraphOrder(outputs);
     for (ggml_tensor* node : nodes) {
@@ -204,18 +286,166 @@ class Qwen38FusedTest : public ::testing::Test {
       }
     }
     kg::BindViews(nodes);
-    auto plan = kg::PlanGraph(nodes, false, kg::DeviceChoicesOf(launch()));
-    ASSERT_TRUE(plan.has_value()) << plan.error().detail;
-    auto bound = kg::BoundGraph::Bind(*registry_, *plan);
+    kg::GraphPlan plan;
+    for (ggml_tensor* node : nodes) {
+      if (kg::LaunchesNothing(node)) continue;
+      std::string_view name = MapNode(node);
+      ASSERT_FALSE(name.empty()) << ggml_op_desc(node);
+      const auto at = registry_->Find(name);
+      ASSERT_TRUE(at.has_value()) << name;
+      plan.steps.push_back(
+          {.operation = registry_->at(*at).operation, .implementation = name, .nodes = {node}});
+    }
+    auto bound = kg::BoundGraph::Bind(*registry_, plan);
     ASSERT_TRUE(bound.has_value()) << bound.error().detail;
     ASSERT_TRUE(bound->Run(launch()).has_value());
   }
 
   // The implementation the plan names for a lone node.
   std::string PlannedFor(ggml_tensor* node) {
-    auto plan =
-        kg::PlanGraph(std::vector<ggml_tensor*>{node}, false, kg::DeviceChoicesOf(launch()));
-    return plan && plan->steps.size() == 1 ? std::string(plan->steps[0].implementation) : "";
+    using llmp::format::Encoding;
+    const auto shape_of = [](const ggml_tensor* t) {
+      const auto n0 = static_cast<std::uint64_t>(t->ne[0]);
+      const auto n1 = static_cast<std::uint64_t>(t->ne[1]);
+      const auto n2 = static_cast<std::uint64_t>(t->ne[2]);
+      const auto n3 = static_cast<std::uint64_t>(t->ne[3]);
+      switch (ggml_n_dims(t)) {
+        case 1:
+          return ir::ShapeOf({n0});
+        case 2:
+          return ir::ShapeOf({n0, n1});
+        case 3:
+          return ir::ShapeOf({n0, n1, n2});
+        default:
+          return ir::ShapeOf({n0, n1, n2, n3});
+      }
+    };
+    const auto enc_of = [](ggml_type type) {
+      switch (type) {
+        case GGML_TYPE_I32:
+          return Encoding::kI32;
+        case GGML_TYPE_BF16:
+          return Encoding::kBF16;
+        case GGML_TYPE_F16:
+          return Encoding::kF16;
+        default:
+          return Encoding::kF32;
+      }
+    };
+    ir::Builder b;
+    b.SetOwner(0);
+    std::vector<ir::TensorId> staged;
+    const auto in = [&](const ggml_tensor* t) {
+      const ir::TensorId id = b.Input(ir::Dense(enc_of(t->type), shape_of(t)));
+      staged.push_back(id);
+      return id;
+    };
+    const std::array<Encoding, 1> out_enc = {enc_of(node->type)};
+    if (node->op == GGML_OP_CUSTOM) {
+      switch (kg::LlmpOpOf(node)) {
+        case kg::LlmpOp::kHcCombine: {
+          const std::array src{in(node->src[0]), in(node->src[1]), in(node->src[2])};
+          b.Output(b.Fused(ir::FusedKind::kHcCombine, src,
+                           ir::HcParams{.streams = static_cast<std::uint32_t>(node->ne[1])},
+                           out_enc)[0]);
+          break;
+        }
+        case kg::LlmpOp::kHcNorm: {
+          const std::array src{in(node->src[0]), in(node->src[1])};
+          b.Output(b.Fused(ir::FusedKind::kHcNorm, src, ir::NormParams{.eps = kEps}, out_enc)[0]);
+          break;
+        }
+        case kg::LlmpOp::kHcMix: {
+          const std::array src{in(node->src[0]), in(node->src[1]), in(node->src[2])};
+          b.Output(
+              b.Fused(ir::FusedKind::kHcFold, src,
+                      ir::HcFoldParams{.streams = static_cast<std::uint32_t>(node->src[0]->ne[1]),
+                                       .eps = kEps},
+                      out_enc)[0]);
+          break;
+        }
+        case kg::LlmpOp::kMoeGlu: {
+          const std::array src{in(node->src[0]), in(node->src[1]), in(node->src[2]),
+                               in(node->src[3]), in(node->src[4])};
+          b.Output(b.Fused(ir::FusedKind::kMoeGlu, src, ir::GluParams{.kind = ir::GluKind::kSwiGlu},
+                           out_enc)[0]);
+          break;
+        }
+        case kg::LlmpOp::kMoeCombine: {
+          const bool unscaled = kg::LlmpOpInt(node, 0) == 1;
+          const ir::TensorId down = in(node->src[0]);
+          const ir::TensorId ids = in(node->src[1]);
+          const ir::TensorId w_src = in(unscaled ? node->src[2] : node->src[3]);
+          const ir::TensorId w =
+              b.Reshape(w_src, ir::ShapeOf({static_cast<std::uint64_t>(node->src[1]->ne[0]),
+                                            static_cast<std::uint64_t>(node->src[1]->ne[1])}));
+          const ir::TensorId sh = in(unscaled ? node->src[3] : node->src[4]);
+          const ir::TensorId sg = in(unscaled ? node->src[4] : node->src[5]);
+          if (unscaled) {
+            const std::array src{down, ids, w, sh, sg};
+            b.Output(b.Fused(ir::FusedKind::kMoeCombine, src, out_enc)[0]);
+          } else {
+            const std::array src{down, ids, w, sh, sg, in(node->src[2])};
+            b.Output(b.Fused(ir::FusedKind::kMoeCombine, src, out_enc)[0]);
+          }
+          break;
+        }
+        case kg::LlmpOp::kGdnConv: {
+          const std::array src{in(node->src[0]), in(node->src[1]), in(node->src[2])};
+          b.Output(b.Fused(
+              ir::FusedKind::kGdnConv, src,
+              ir::GdnConvParams{.eps = std::bit_cast<float>(kg::LlmpOpInt(node, 2)),
+                                .scale = std::bit_cast<float>(kg::LlmpOpInt(node, 3)),
+                                .qk_channels = static_cast<std::uint32_t>(kg::LlmpOpInt(node, 0)),
+                                .head = static_cast<std::uint32_t>(kg::LlmpOpInt(node, 1))},
+              out_enc)[0]);
+          break;
+        }
+        case kg::LlmpOp::kGdnNormGate: {
+          const ir::TensorId o = in(node->src[0]);
+          const ir::TensorId w = in(node->src[1]);
+          const ir::TensorId z = b.Input(ir::Dense(
+              Encoding::kF32, ir::ShapeOf({static_cast<std::uint64_t>(node->src[0]->ne[0]),
+                                           static_cast<std::uint64_t>(node->src[0]->ne[1]),
+                                           static_cast<std::uint64_t>(node->src[0]->ne[2])})));
+          staged.push_back(z);
+          const std::array src{o, w, z};
+          b.Output(b.Fused(ir::FusedKind::kNormGate, src, ir::NormParams{.eps = kEps}, out_enc)[0]);
+          break;
+        }
+        default:
+          return {};
+      }
+    } else if (node->op == GGML_OP_MUL_MAT) {
+      b.Output(b.MatMul(in(node->src[0]), in(node->src[1])));
+    } else if (node->op == GGML_OP_GATED_DELTA_NET) {
+      const ir::Outputs outs =
+          b.GatedDeltaNet(in(node->src[0]), in(node->src[1]), in(node->src[2]), in(node->src[3]),
+                          in(node->src[4]), in(node->src[5]));
+      b.Output(outs[0]);
+      b.Output(outs[1]);
+    } else {
+      return {};
+    }
+    auto graph = std::move(b).Finish();
+    EXPECT_TRUE(graph.has_value()) << (graph ? "" : graph.error().detail);
+    if (!graph) return {};
+    co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+    for (const ir::TensorId id : staged) {
+      step.inputs.push_back({.tensor = id, .kind = co::InputKind::kFeatures});
+    }
+    const pl::DeviceFacts device{.device_class = "sm_121", .arch = 121};
+    auto plan = pl::Plan(step.graph.Clone(), *registry_, device, {},
+                         {.staged = staged, .written = &kg::WrittenBytes});
+    EXPECT_TRUE(plan.has_value()) << (plan ? "" : plan.error().detail);
+    if (!plan) return {};
+    const pl::StepShape shape{};
+    const llmp::kernels::Addresses addresses{};
+    auto lowered =
+        kg::LowerStep({*plan, step, shape, addresses}, *registry_, kg::DeviceChoicesOf(launch()));
+    EXPECT_TRUE(lowered.has_value()) << (lowered ? "" : lowered.error().detail);
+    if (!lowered || lowered->plan.steps.empty()) return {};
+    return std::string(lowered->plan.steps.back().implementation);
   }
 
   template <typename T = float>
@@ -889,6 +1119,93 @@ TEST_F(Qwen38FusedTest, TheChecksRefuseWhatTheKernelsCannotRun) {
   ggml_tensor* w =
       Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, 64, 8), std::vector<std::uint16_t>(512, 0));
   EXPECT_EQ(code(kg::GemmBf16(c(), w, f32(64, 4))), KernelError::kRejected);
+}
+
+TEST_F(Qwen38FusedTest, PlansPickFusedOpsOnlyWhenEnabledAndSupported) {
+  fam::Qwen38Profile p = fam::Qwen38Flash();
+  p.layers = 4;
+  std::vector<std::int64_t> offsets;
+  std::vector<std::int64_t> vocab;
+  for (std::int64_t h = 0; h < 16; ++h) {
+    offsets.push_back(h * 20000096);
+    vocab.push_back(20000096 - (h * 8));
+  }
+  const auto hash = fam::CheckQwen38PleHash(p, std::vector<std::int64_t>{3, 5, 7}, offsets, vocab,
+                                            fx::kTableRows);
+  ASSERT_TRUE(hash.has_value()) << hash.error();
+  const auto resources = fx::Resources(p, fx::Form::kGgmlExperts);
+  const sp::Source source = fx::SourceOf("qwen4exp", "safetensors", resources, fx::ModelOptFolds());
+  const auto values = fx::TargetValues(p, *hash, fx::Form::kGgmlExperts);
+  ASSERT_TRUE(values.has_value()) << values.error();
+  const auto spec = sp::Synthesize(sp::mappings::Qwen38Mapping(), source, *values);
+  ASSERT_TRUE(spec.has_value()) << spec.error();
+  const auto layout = co::StageLayoutUniform(*spec, 0, 8192, 512, 2ULL << 20U);
+  ASSERT_TRUE(layout.has_value()) << layout.error();
+  const pl::StepShape shape{
+      .phase = pl::Phase::kPrefill,
+      .segments = {
+          {.slot = 0, .rows = 8, .past = 40, .read_cells = 256, .outputs = 1, .want_head = true}}};
+  auto step = co::BuildStep(*spec, 0, shape, {.tensors = source.tensors, .state = &*layout});
+  ASSERT_TRUE(step.has_value()) << step.error();
+  std::vector<ir::TensorId> staged;
+  for (const co::StepInput& in : step->inputs) {
+    if (in.kind != co::InputKind::kCellPositions) staged.push_back(in.tensor);
+  }
+  const pl::DeviceFacts device{.device_class = "sm_121",
+                               .arch = 121,
+                               .features = llmp::execution::kBf16Mma | llmp::execution::kInt8Mma |
+                                           llmp::execution::kFp8Mma | llmp::execution::kFp4Mma |
+                                           llmp::execution::kBlockScaledMma};
+  const auto count_in = [&](std::span<const std::string_view> disabled,
+                            std::string_view implementation) -> std::size_t {
+    pl::Policy policy;
+    policy.disabled = {"hc_prep", "moe_experts", "gdn_step", "gdn_gates"};
+    for (const std::string_view d : disabled) policy.disabled.emplace_back(d);
+    pl::Canonicalize(policy);
+    auto plan = pl::Plan(step->graph.Clone(), *registry_, device, policy,
+                         {.staged = staged,
+                          .written = &kg::WrittenBytes,
+                          .within = &kg::WithinRoot,
+                          .shape = &shape});
+    EXPECT_TRUE(plan.has_value()) << (plan ? "" : plan.error().detail);
+    if (!plan) return 0;
+    const llmp::kernels::Addresses addresses{};
+    auto lowered = kg::LowerStep({*plan, *step, shape, addresses, 8192}, *registry_,
+                                 kg::DeviceChoicesOf(launch()),
+                                 {.device_masks = true, .frozen_host_masks = true});
+    EXPECT_TRUE(lowered.has_value()) << (lowered ? "" : lowered.error().detail);
+    if (!lowered) return 0;
+    return static_cast<std::size_t>(std::ranges::count_if(
+        lowered->plan.steps, [&](const auto& s) { return s.implementation == implementation; }));
+  };
+  for (const auto& [pattern, impl] : {std::pair{std::string_view{"hc_combine"}, kg::kHcCombineName},
+                                      {std::string_view{"hc_mix"}, kg::kHcNormName},
+                                      {std::string_view{"hc_mix"}, kg::kHcMixName},
+                                      {std::string_view{"moe_glu"}, kg::kMoeGluName},
+                                      {std::string_view{"moe_combine"}, kg::kMoeCombineName},
+                                      {std::string_view{"gdn_conv"}, kg::kGdnConvName},
+                                      {std::string_view{"gdn_norm_gate"}, kg::kGdnNormGateName}}) {
+    EXPECT_GT(count_in({}, impl), 0U) << pattern << " -> " << impl;
+    const std::array<std::string_view, 1> off = {pattern};
+    EXPECT_EQ(count_in(off, impl), 0U) << pattern << " -> " << impl;
+  }
+
+  // Unsupported shapes fall back to primitive decompositions in the planner.
+  const auto f32 = [&](std::int64_t a, std::int64_t b, std::int64_t d = 1) {
+    return ggml_new_tensor_3d(c(), GGML_TYPE_F32, a, b, d);
+  };
+  EXPECT_NE(PlannedFor(kg::HcCombine(c(), f32(1026, 4, 2), f32(1026, 2), f32(4, 2))),
+            kg::kHcCombineName);
+  EXPECT_NE(PlannedFor(kg::HcNorm(c(), f32(512, 4, 2), f32(2048, 1), kEps, GGML_TYPE_F32)),
+            kg::kHcNormName);
+  EXPECT_NE(PlannedFor(kg::HcMix(c(), f32(512, 4, 2), f32(2048, 1), f32(2048, 2), kEps)),
+            kg::kHcMixName);
+  EXPECT_NE(PlannedFor(kg::GdnConv(c(), f32(10240, 3), f32(20480, 1), f32(3, 10240), 4096, 128,
+                                   kEps / 128.0f, 1.0f / std::sqrt(128.0f))),
+            kg::kGdnConvName);
+  EXPECT_NE(PlannedFor(kg::GdnNormGate(c(), f32(64, 48, 3), f32(64, 1), f32(64 * 48, 3), kEps,
+                                       GGML_TYPE_F32)),
+            kg::kGdnNormGateName);
 }
 
 }  // namespace

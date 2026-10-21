@@ -188,7 +188,6 @@ struct ComponentStepSource::ExecutionState {
   std::vector<std::shared_ptr<const kernels::BackendOwner>> owners;
   std::vector<execution::BackendDeclaration> declarations;
   base::Sha256Digest identity{};
-  bool joined_repeat_pending = false;
 };
 
 std::expected<std::shared_ptr<ComponentStepSource::ExecutionState>, std::string>
@@ -246,70 +245,6 @@ ComponentStepSource::SealExecution(std::span<ComponentStepSource* const> stages)
         !add(declared.uses.size() * (sizeof(NumericalUse) + 64)))
       return std::unexpected("execution domain bound overflows");
   }
-  // Opt-in is a semantic use in the existing sealed domain, never a caller
-  // boolean. Validate the complete actual source/layout relationship before
-  // allocating its seal or allowing any joined runner effects.
-  const bool joined = std::ranges::any_of(domain->stages(), [](const auto& stage) {
-    return std::ranges::find(stage.uses, NumericalUse::kJoinedRepeatPending) != stage.uses.end();
-  });
-  if (joined) {
-    const auto& model_spec = *stages.front()->o_.spec;
-    if (stages.size() < 2 || model_spec.pipeline != spec::PipelineKind::kLlm ||
-        model_spec.stages.front().role != spec::StageRole::kTarget ||
-        !domain->CheckMode(NumericalUse::kJoinedRepeatPending) ||
-        !domain->CheckMode(NumericalUse::kSpeculative) ||
-        !domain->CheckMode(NumericalUse::kPromptCompanions))
-      return std::unexpected(
-          "joined pending replay needs a complete declared target/drafter composition");
-    for (std::size_t i = 0; i < stages.size(); ++i) {
-      const auto& options = stages[i]->o_;
-      if (*options.spec != model_spec || options.slots < 2 ||
-          options.slots != stages.front()->o_.slots ||
-          options.bindings.stages.size() != stages.size())
-        return std::unexpected(
-            "joined pending replay sources disagree on their actual composition");
-      for (std::size_t j = 0; j < stages.size(); ++j)
-        if (options.bindings.stages[j] != stages[j]->o_.bindings.state)
-          return std::unexpected("joined pending replay names another stage's state layout");
-      // Each holding artifact view must be the same immutable source table
-      // seen by the other stages, including borrowed/tied weight bindings.
-      const auto& artifacts = stages.front()->o_.bindings.artifacts;
-      if (options.bindings.artifacts.size() != artifacts.size() ||
-          model_spec.stages[i].artifact >= artifacts.size())
-        return std::unexpected("joined pending replay omits a holding artifact table");
-      const auto same_tensor = [](const auto& a, const auto& b) {
-        return a.name == b.name && a.format == b.format && a.part == b.part &&
-               a.experts == b.experts;
-      };
-      for (std::size_t a = 0; a < artifacts.size(); ++a)
-        if (!std::ranges::equal(options.bindings.artifacts[a], artifacts[a], same_tensor))
-          return std::unexpected("joined pending replay stages bind different artifact tables");
-      if (!std::ranges::equal(options.bindings.tensors, artifacts[model_spec.stages[i].artifact],
-                              same_tensor))
-        return std::unexpected("joined pending replay stage binds another holding artifact");
-      const auto bounds = model::DraftBounds(*options.bindings.state);
-      if (!bounds || (i == 0 && bounds->has_value()) ||
-          (i != 0 &&
-           (model_spec.stages[i].role != spec::StageRole::kDrafter || !bounds->has_value())))
-        return std::unexpected(
-            "joined pending replay needs replayable drafter progress and features");
-      const auto& declared = domain->stages()[i];
-      const auto admits = [&](planner::Phase phase) {
-        const auto at = std::ranges::find(declared.phases, phase, &NumericalPhase::phase);
-        return at != declared.phases.end() && at->max_owners >= 2;
-      };
-      if ((i == 0 && (!admits(planner::Phase::kPrefill) || !admits(planner::Phase::kVerify) ||
-                      !admits(planner::Phase::kCommit))) ||
-          (i != 0 && !admits(planner::Phase::kDraft)))
-        return std::unexpected("joined pending replay omits a required physical phase");
-      for (const auto& phase : declared.phases)
-        if (phase.max_owners > options.slots ||
-            phase.max_owner_rows > options.bindings.state->max_rows ||
-            phase.max_total_rows > std::uint64_t{phase.max_owners} * phase.max_owner_rows)
-          return std::unexpected(
-              "joined pending replay domain exceeds actual state/owner capacity");
-    }
-  }
   const auto funder = stages.front()->o_.backend.owner;
   if (!funder->Charge(bytes)) return std::unexpected("execution metadata was not funded");
   auto state =
@@ -350,7 +285,6 @@ ComponentStepSource::SealExecution(std::span<ComponentStepSource* const> stages)
         std::format("{}:{}:{};", stage->o_.stage, stage->o_.slots, stage->o_.require_capture));
   }
   state->identity = hash.Finish();
-  state->joined_repeat_pending = joined;
   return state;
 }
 
@@ -377,16 +311,9 @@ ComponentStepSource::ExecutionIdentity() const {
 
 StageExecutionFacts ComponentStepSource::StageFacts(std::uint16_t stage) const {
   return {.uses_side_rows = UsesSideRows(stage),
-          .joined_repeat_pending = JoinedRepeatPending(stage),
           .commit_buffers = [this, stage](std::uint32_t max_rows) {
             return CommitBuffers(stage, max_rows);
           }};
-}
-
-bool ComponentStepSource::JoinedRepeatPending(std::uint16_t stage) const {
-  if (stage != o_.stage || !execution_ || !execution_->joined_repeat_pending) return false;
-  const auto identity = ExecutionIdentity();
-  return identity && identity->has_value();
 }
 
 Status ComponentStepSource::CheckExecutionUse(NumericalUse use) const {
@@ -769,10 +696,6 @@ StageExecutionFacts StagedStepSource::StageFacts(std::uint16_t stage) const {
       .commit_buffers = [](std::uint32_t) -> std::expected<std::vector<CommitBuffer>, std::string> {
         return std::unexpected("a commit names no stage");
       }};
-}
-
-bool StagedStepSource::JoinedRepeatPending(std::uint16_t stage) const {
-  return stage < stages_.size() && stages_[stage]->JoinedRepeatPending(stage);
 }
 
 bool StagedStepSource::UsesSideRows(std::uint16_t stage) const {

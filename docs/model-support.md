@@ -30,7 +30,7 @@ and A folded as ModelOpt's) has a pinned approval row and is admitted, but
 is not qualified for serving yet: no serving comparison or speed gate has
 run on it, a separate later task. Qwen3.8's v0 GGML-experts form has no v1
 import and is no longer served. Qwen-Image-2.1 is served from its v1
-composition (`ecd27c74…`) with its stored family spec (`ef266ac1…`) and
+composition (`95314e53…`) with its stored family spec (`ef266ac1…`) and
 component `spec.json` files.
 
 Plain target-only greedy decode now publishes a device I32 token by default
@@ -110,7 +110,7 @@ are recorded separately as they complete.
 | Model | Role | Status | Level |
 | --- | --- | --- | --- |
 | [DeepSeek V4 Flash 0731](#deepseek-v4-flash-0731) UD-Q2_K_XL | target | Served (M3) | paged-correct |
-| [DeepSeek V4 community IQ2_XXS](#deepseek-v4-community-iq2_xxs) | target | Served (M3), four-request waves; matched HTTP cells; v1 `e7c0d0e4…` approved, smoke-tested | resident-correct, short oracle trajectories |
+| [DeepSeek V4 community IQ2_XXS](#deepseek-v4-community-iq2_xxs) | target | Served (M3), four-request waves; matched HTTP cells; v1 `a4fb10cc…` approved, smoke-tested | resident-correct, short oracle trajectories |
 | [DSpark](#dspark) for DeepSeek V4 Flash 0731 (Q8_0) | drafter | Served (M3), with its target | paged-correct |
 | [Qwen3.8 Flash Next](#qwen38-flash-next) NVFP4 | target | Served (M3) | paged-correct, one accepted greedy divergence (below) |
 | [Qwen3.8 MTP](#qwen38-mtp) | drafter | Served (M3), with its target | paged-correct |
@@ -494,7 +494,7 @@ hashes the model files on a Spark).
 | Model | SHA-256 the renderer is keyed on | The bytes hashed | Renderer, stop tokens |
 | --- | --- | --- | --- |
 | DeepSeek V4 Flash 0731 | `e643c31fcec17f342f72296e02c46d35846bf4c70f6a0271f23bad73fd4eb645` | The 0731 GGUF's `tokenizer.chat_template` (Unsloth's port of DeepSeek's `encoding_dsv4.py`), kept in the artifact's GGUF metadata | `deepseek-v4-flash-0731`; `<｜end▁of▁sentence｜>` |
-| DeepSeek V4 community IQ2_XXS | `872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27` | The community GGUF's `tokenizer.chat_template` ("chat-v2", 5,016 bytes), kept in artifact `cd39d504…`'s (v1 `e7c0d0e4…`'s) GGUF metadata | `deepseek-v4-flash-chat-v2`; `<｜end▁of▁sentence｜>` |
+| DeepSeek V4 community IQ2_XXS | `872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27` | The community GGUF's `tokenizer.chat_template` ("chat-v2", 5,016 bytes), kept in artifact `cd39d504…`'s (v1 `a4fb10cc…`'s) GGUF metadata | `deepseek-v4-flash-chat-v2`; `<｜end▁of▁sentence｜>` |
 | Qwen3.8 Flash Next | `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041` | `chat_template.jinja` of `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` (pinned in [pins.json](experiments/fast-swap/pins.json); the MLX baseline ships the same bytes) | `qwen3.8-flash-next`; `<\|im_end\|>`, `<\|endoftext\|>` |
 | Qwen3.8 Unsloth GGUFs (Flash Next, 27B) | none pinned; `12827f24…` today | The GGUFs' `tokenizer.chat_template`, Unsloth's variant | `qwen3.8-flash-next-unsloth` by probe equivalence; `<\|im_end\|>`, `<\|endoftext\|>` |
 | Gemma 2 2B Q8_0 | `ecd6ae513fe103f0eb62e8ab5bfa8d0fe45c1074fa398b089c93a7e70c15cfd6` (no renderer) | The approved GGUF's `tokenizer.chat_template` (591 bytes), kept in the artifact ([gemma2.md](gemma2.md#serving-admission-foundation)) | the Jinja-subset interpreter; end-of-turn 107 and EOS 1 |
@@ -522,7 +522,7 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
   UD-Q2_K_XL, three shards
   ([pins.json](experiments/fast-swap/pins.json)).
 - **Artifact:** v0 `8a355bfb…`, from the GGUF by `import_m3.py`
-  ([dsv4-native](experiments/dsv4-native/README.md#what-runs)); v1 `698b1cd8…`
+  ([dsv4-native](experiments/dsv4-native/README.md#what-runs)); v1 `d2046349…`
   from the staged, manifest-verified GGUF by `llmp import`, bit-identical to
   v0 ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)).
 - **Components:** the target; optionally [DSpark](#dspark) as its drafter
@@ -636,7 +636,7 @@ The [ds4 study](experiments/ds4-study/README.md) imports
 `antirez/deepseek-v4-gguf@f71f23d552d664e523b422157b2befbf74040380`'s
 `DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf`
 as artifact `cd39d504…` (v0, M3; the results below are its history). Since
-2026-10-16 it serves as v1 `e7c0d0e4…`, published by `llmp import` from the
+2026-10-16 it serves as v1 `a4fb10cc…`, published by `llmp import` from the
 staged, manifest-verified GGUF (24 minutes on `spark-b`), and admitted by its
 own approval row (`deepseek-v4-flash-iq2xxs-w2q2k-chat-v2-imatrix-0731`:
 contexts to 262,144 and four owners, from the M3 evidence below; DeepSeek's
@@ -713,7 +713,7 @@ seeded-sampling evidence in this study.
   pinned repository and revision.
 - **Artifact:** v0 `dd2d3f9c…`, its own artifact; it binds the target's
   token table and head at load (no composition document, D-089's note); v1
-  `5c9d95e2…`, equally its own, bit-identical to v0 with its target
+  `6b1b9dca…`, equally its own, bit-identical to v0 with its target
   ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)).
 - **Components:** drafter only; runs with DeepSeek V4 Flash 0731.
 - **Template and tokenizer:** its target's.
@@ -757,9 +757,9 @@ controls, not a held-out PPL, all-context or HTTP parity qualification.
   routed experts top-10 plus a shared expert.
 - **Checkpoint:** `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` (ModelOpt
   NVFP4 experts, MXFP8 linears; [pins.json](experiments/fast-swap/pins.json)).
-- **Artifact:** v1 `d145900e…` (`llmp import`; its routed experts relaid
+- **Artifact:** v1 `02354af1…` (`llmp import`; its routed experts relaid
   out into scale atoms, its norms and A folded, approved with its drafter
-  `316caa59…`: bit for bit as the v0 pair, the speed gate passed against the
+  `2cb4cdb8…`: bit for bit as the v0 pair, the speed gate passed against the
   frozen baseline, [qwen-modelopt-v1](experiments/m36-numerical-audit/qwen-modelopt-v1.md)),
   re-imported from v0 `c4fb47a9…`, routed experts in the CUTLASS layout
   (the earlier GGML-layout v0 `67617f87…` has no v1 import; it is no
@@ -859,7 +859,7 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   Q6_K and Q8_0 matrices, BF16 indexer projections, F32 norms and routers.
 - **Artifact:** v0 `5356b5b0…`, imported verbatim by `import_m3.py build`
   ([artifact-format](artifact-format.md#qwen38-flash-next-gguf)); v1
-  `18a67153…` by `llmp import`, bit-identical to v0
+  `f60d801a…` by `llmp import`, bit-identical to v0
   ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)); the
   n-gram hash and the hyperparameters come from its kept GGUF metadata,
   checked against the profile.
@@ -909,11 +909,11 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   stored target selected by `--target`. The qualified pairing uses its approved
   v1 target through `qwen4exp-mtp`'s native mapping and is admitted by its
   approval row ([artifact format](artifact-format.md#native-writer)).
-  With Mia's list it is `316caa59…`, whose every tensor equals
+  With Mia's list it is `2cb4cdb8…`, whose every tensor equals
   `8600a998…`'s byte for byte. Its experts take the W4A4 grouped GEMM
   although the checkpoint quantized them W4A16: verification bounds a
   drafter's quality, and W4A4 measured faster at equal acceptance. With the
-  native target `d145900e…` the v1 pair serves bit for bit as the v0 pair,
+  native target `02354af1…` the v1 pair serves bit for bit as the v0 pair,
   scores its NLL exactly and passes the speed gate against the frozen
   baseline (1.7 to 4.6% faster decode)
   ([qwen-modelopt-v1](experiments/m36-numerical-audit/qwen-modelopt-v1.md)).
@@ -953,9 +953,9 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   stores ([engine-components](engine-components.md#image-pipelines)).
 - **Checkpoint:** `Qwen/Qwen-Image-2.1@790c9263`, BF16
   ([pins.json](experiments/fast-swap/pins.json)).
-- **Artifacts:** v1 composition `ecd27c74…` (D-089, D-113, `llmp import`
-  of the pipeline) naming text encoder `45a2bb33…` (spec `b815577c…`),
-  denoiser `aca990f3…` (spec `c43b66a6…`) and VAE `d747e8b3…` (spec
+- **Artifacts:** v1 composition `95314e53…` (D-089, D-113, `llmp import`
+  of the pipeline) naming text encoder `32fa6658…` (spec `b815577c…`),
+  denoiser `eb8cea71…` (spec `c43b66a6…`) and VAE `3785dfca…` (spec
   `fe40715a…`), each the tensors text to image runs; its approval
   pins the family spec `ef266ac1…`. The v0 composition `eca21baa…`
   ([qwen-image-native](experiments/qwen-image-native/README.md#what-runs))
@@ -1001,7 +1001,7 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 - **Checkpoint:** `bartowski/gemma-2-2b-it-GGUF@855f67ca`,
   `gemma-2-2b-it-Q8_0.gguf`, 2,784,495,456 bytes.
 - **Artifact:** v0 `eb18d30d…`, deep-verified
-  ([gemma2-execution](experiments/gemma2-execution/README.md)); v1 `f176f912…`
+  ([gemma2-execution](experiments/gemma2-execution/README.md)); v1 `92bbb574…`
   by `llmp import`, bit-identical to v0
   ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)).
 - **Template:** `ecd6ae51…` (above), through the interpreter; it refuses a
@@ -1039,7 +1039,7 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   record version 2.
 - **Checkpoint:** `ggml-org/gemma-3-4b-it-qat-GGUF@bbcac0d0`,
   `gemma-3-4b-it-qat-Q4_0.gguf`, 2,526,080,992 bytes.
-- **Artifact:** v0 `8c710341…`, deep-verified; v1 `634bc193…` by `llmp import`,
+- **Artifact:** v0 `8c710341…`, deep-verified; v1 `5d4674ce…` by `llmp import`,
   bit-identical to v0 ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md))
   ([gemma3-execution](experiments/gemma3-execution/README.md)).
 - **Template:** `7de1c58e…` (above), native.
@@ -1072,9 +1072,9 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   `gemma-4-31B-it-UD-Q4_K_XL.gguf`.
 - **Artifacts:** v0 `4ddb360c…` (26B-A4B) and `32c92e07…` (31B)
   ([gemma31-serving](experiments/gemma31-serving/README.md#identities-and-memory));
-  v1 `f0f72ab3…` (26B-A4B) and `4d9a255a…` (31B) by `llmp import`, each
-  bit-identical to v0, and the assistants' v1 `23aa1c35…` (26B-A4B) and
-  `07067ae0…` (31B) bit-identical to their v0 with the targets
+  v1 `23f6b7c1…` (26B-A4B) and `91580585…` (31B) by `llmp import`, each
+  bit-identical to v0, and the assistants' v1 `2e376795…` (26B-A4B) and
+  `f931e7a0…` (31B) bit-identical to their v0 with the targets
   ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)).
 - **Template:** `845f1ee4…` (above), native by probe; plain chat disables
   thinking.
@@ -1146,8 +1146,8 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
     `d6ac9be1a1da4cd9ffbe2de7efca4efe8fd8dcceacdc9bd1faabdcfe3dc49fb8`)
   - `Llama-3.2-1B-Instruct-Q4_K_M.gguf` (807,694,464 bytes, SHA-256
     `6d5b20d1bb2fbbe0fb392bf2377d70194b457ef9544bb5a076251dbcd59fb1ff`)
-- **Artifacts:** v1 `fae45ab254176070d2a94db8bea65d0049a0dd5f9469a5fabd4b805dbc6c5c41`
-  (`llama32-1b-q8_0`) and `6a83d84f3e80ce4ffeb7d4cbca4564aaf3eb54cca18954113b38c6a7dcb845c8`
+- **Artifacts:** v1 `e2eec20839477a4b808710adb1994728a88002c0221ca816de8243a3f9e89626`
+  (`llama32-1b-q8_0`) and `48b0b695ec200a48f3f58bd035c6cc279e0749d9c2f324fc2302ed85e2d92976`
   (`llama32-1b-q4_k_m`) by `llmp import`, pinned in `runtime/approvals.cc`
   (spec digest `cbf7950a9a03027877b4ff8fe5d60d0abb2ada79a3dd397b710a5b405ebc6357`).
 - **Template:** `a1a2df5d…`, through the Jinja-subset interpreter (`<|eot_id|>`
@@ -1198,7 +1198,7 @@ in the table below describe the historical implementations.
 | --- | --- | --- |
 | Architecture | `qwen2` (`spec/mappings/qwen2.*`), GGML FP16 | `qwen2` with EXL3 linears (same mapping) |
 | Checkpoint | `Qwen/Qwen2.5-0.5B-Instruct-GGUF@9217f5db` `qwen2.5-0.5b-instruct-fp16.gguf` ([pins](experiments/first-slice/pins.json)) | `blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.0bpw@7009334d` and `-4.5bpw@030d3a41` ([pins](experiments/exl3-reference/pins.json)) |
-| Artifact | v0 `b93cdc32…`; v1 `3354b95f…` | v0 `6e96e499…` / `00d77caf…` ([artifact-layout](experiments/artifact-layout/README.md)); v1 `ea87de21…` / `cc8ce88c…` |
+| Artifact | v0 `b93cdc32…`; v1 `864ec30c…` | v0 `6e96e499…` / `00d77caf…` ([artifact-layout](experiments/artifact-layout/README.md)); v1 `4b995657…` / `a27ae586…` |
 | v0 against v1 | bit-identical ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)) | bit-identical (same) |
 | Template | `d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4`, the GGUF's `tokenizer.chat_template` ([first-slice](first-slice.md)), through the interpreter | `cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f`, `tokenizer_config.json`'s `chat_template`, both rates ([runtime.json](experiments/exl3-reference/runtime.json)), through the interpreter |
 | Tokenizer | the GGUF's Qwen2 BPE | `tokenizer.json` |

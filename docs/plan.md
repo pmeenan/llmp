@@ -556,23 +556,30 @@ D-122).
       design, no runtime or engine file naming a kernel library (checked),
       and a recovery test whose retirement is genuinely unprovable serving
       again.
-- [ ] **U2 Test-only paths and v0 removed:** delete `PlanGraph`
+- [x] **U2 Test-only paths and v0 removed:** delete `PlanGraph`
       (`kernels/ggml/graph_plan.cc`) and move its tests and
       `benchmarks/decode_templates.cc` onto the IR lowering production uses;
       delete `Qwen38Commit` (its tests become component tests); port
       `tests/support/families`, `V0ArtifactSource`, the tests that need
       `~/.local/share/llmp/m3-artifacts` and the v0 arms of `speed_gate.py`,
       `swap_table.py` and `assistant_gate.py` to v1, then delete the v0
-      reader, rename the `"spark-v0"` layout profile (D-121) and list the M3
-      v0 store for the owner to delete (rule 8); move `LLMP_TEST_HOLD_READS`
-      out of the production binary behind a test seam; delete the
-      repeat-pending drafter ledger (owner, 2026-10-20); extend
-      `benchmarks/import_fuzz.cc` through `spec::Synthesize`, the
-      normalized plan and the v1 artifact reader, with a checked-in seed
-      corpus and one recorded bounded run (D-085), and add the fuzz entry
-      to engine.md's "add a container" checklist. **Exit:** no production
-      source references v0 or `PlanGraph`, the shared suite passes without
-      `m3-artifacts`, and the fuzz run is recorded.
+      reader (`artifact/representation.{h,cc}`, `artifact/format_map.{h,cc}`,
+      `tests/unit/artifact_corpus.py`), rename the `"spark-v0"` layout
+      profile to `"profile": "spark", "profile_version": 1` (D-121) and list
+      the M3 v0 store (`~/.local/share/llmp/m3-artifacts` on `spark` and
+      `spark-b`) for the owner to delete (rule 8); move `LLMP_TEST_HOLD_READS`
+      out of the production binary (`NodeSettings::hold_reads` in unit tests);
+      delete the repeat-pending drafter ledger (owner, 2026-10-20); extend
+      `benchmarks/import_fuzz.cc` through `spec::Synthesize`, `import::Normalize`,
+      `planner::Plan` and the v1 artifact/composition readers, with a
+      checked-in seed corpus (`tests/unit/data/import_fuzz/`) and one
+      recorded bounded run (D-085: `llmp_import_fuzz
+      --corpus=tests/unit/data/import_fuzz --iterations=10000`, seed `20261021`,
+      9 seeds across branches 0..8, 2.36 s on `spark-b` `spark-native`, 2026-10-21,
+      0 failures), and add the fuzz entry to engine.md's
+      "add a container" checklist. **Exit:** no production source references
+      v0 or `PlanGraph`, the shared suite passes without `m3-artifacts`, and
+      the fuzz run is recorded.
 - [ ] **U3 One generic import route** (before Nemotron and every new
       family, owner 2026-10-20; three sub-slices). It retires the
       Qwen3.8 ModelOpt and MLX normalizers (`import/modelopt_qwen38.cc`,

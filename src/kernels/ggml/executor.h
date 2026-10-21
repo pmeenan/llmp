@@ -25,9 +25,9 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/selected_operation.h"
 #include "kernels/ggml/tensors.h"
 

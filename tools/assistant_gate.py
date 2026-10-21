@@ -4,16 +4,15 @@
 """The Gemma4 31B assistant screen's matched A/B (docs/experiments/m36-baselines/README.md,
 "The Gemma4 31B assistant", and "The gate's tools").
 
-ABBA blocks of processes: the frozen `llmp_gemma_greedy_reference` (old) against the
-migrated `llmp_gemma_engine_greedy` (new), each over its own arm's artifact store, so a
-re-imported (v1) target and assistant can be judged against the v0 ones. A process's value
+ABBA blocks of processes: an old and a new `llmp_gemma_engine_greedy` (or reference) binary,
+each over its own arm's v1 artifact store. A process's value
 is the mean of its two timed rounds' seconds for 32 committed tokens; a block's slowdown is
 ln(mean(new) / mean(old)); the verdict is speed_gate.py's rule (non-inferiority at the 1%
 margin, one-sided 97.5% t bound at every look from MIN blocks to MAX, the same code).
 
     assistant_gate.py steps --out DIR --old BIN --new BIN
                       --old-artifacts STORE --new-artifacts STORE
-                      --target ID --assistant ID --inputs FILE
+                      [--target ID] [--assistant ID] --inputs FILE
                       [--new-target ID --new-assistant ID]
                       [--first B] [--blocks N] [--profile 31] [--mode unit32] > FILE
     assistant_gate.py verdict DIR [--min 8] [--max 11] [--json]
@@ -23,9 +22,10 @@ margin, one-sided 97.5% t bound at every look from MIN blocks to MAX, the same c
 block pair: `--first 1 --blocks 2`, then `--first 3 --blocks 2`, ...): a priming old run
 no statistic reads, then blocks first..first+blocks-1, each old/new/new/old. Each arm runs
 its own `BIN TARGET ASSISTANT RUNDIR PROFILE INPUTS MODE`, TARGET and ASSISTANT being
-`STORE/ID` of that arm's store (`--new-target`/`--new-assistant` when the new store holds
+`STORE/ID` of that arm's store (defaulting to the published v1 Gemma31 target and assistant;
+`--new-target`/`--new-assistant` when the new store holds
 the same artifacts under other IDs). BIN is the benchmark executable, STORE the
-installed-artifacts directory (`~/.local/share/llmp/m3-artifacts`, or the store holding the
+installed-artifacts directory (`~/.local/share/llmp/artifacts`, or the store holding the
 re-imported ones). Each call also records `DIR/plan.json` (arms, artifact paths, the inputs'
 SHA-256 when readable) for the verdict to print.
 
@@ -57,6 +57,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import speed_gate  # noqa: E402  (the one implementation of the protocol's statistic)
 
 LIMIT = math.log1p(speed_gate.GATE)
+DEFAULT_TARGET = speed_gate.GEMMA31_V1
+DEFAULT_ASSISTANT = speed_gate.GEMMA31_ASSISTANT_V1
 ORDER = ("old", "new", "new", "old")
 RUN = "rm -rf {d} && CUDA_DISABLE_PTX_JIT=1 {bin} {t} {a} {d} {profile} {i} {mode} > {d}.log 2>&1"
 COMPLETED = re.compile(
@@ -228,8 +230,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--new", required=True, help="the new arm's benchmark executable")
     p.add_argument("--old-artifacts", required=True, help="the old arm's installed store")
     p.add_argument("--new-artifacts", required=True, help="the new arm's installed store")
-    p.add_argument("--target", required=True, help="the target artifact ID")
-    p.add_argument("--assistant", required=True, help="the assistant artifact ID")
+    p.add_argument("--target", default=DEFAULT_TARGET,
+                   help="the target artifact ID (default: the v1 Gemma31 target)")
+    p.add_argument("--assistant", default=DEFAULT_ASSISTANT,
+                   help="the assistant artifact ID (default: the v1 Gemma31 assistant)")
     p.add_argument("--new-target", help="the new store's target ID, if it differs")
     p.add_argument("--new-assistant", help="the new store's assistant ID, if it differs")
     p.add_argument("--inputs", required=True, help="the canonical query inputs (inputs.i32)")

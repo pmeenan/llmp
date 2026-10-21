@@ -181,13 +181,15 @@ inline std::string Qwen2OraclePath(std::string_view file) {
 }
 
 // The published v1 store: LLMP_TEST_V1_STORE, else the models directory's
-// `artifacts` store (falling back to `m36-v1-artifacts` on the Sparks).
+// `u2-v1-artifacts` store (falling back to `artifacts` and `m36-v1-artifacts`).
 inline std::string V1Store() {
   const char* store = std::getenv("LLMP_TEST_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
   if (store != nullptr && store[0] != '\0') return store;
   const auto base = StandingModelsDir();
   if (base.empty()) return "";
   std::error_code ec;
+  const std::string u2 = base + "/u2-v1-artifacts";
+  if (std::filesystem::is_directory(u2, ec)) return u2;
   const std::string canonical = base + "/artifacts";
   if (std::filesystem::is_directory(canonical, ec)) return canonical;
   const std::string legacy = base + "/m36-v1-artifacts";
@@ -224,13 +226,22 @@ inline std::optional<std::string> V1IdNamed(std::string_view name) {
   return std::nullopt;
 }
 
-// The v1 ID the pinned map records for a v0 artifact ID.
-inline std::optional<std::string> V1IdFor(std::string_view v0_id) {
-  const auto ids = ReadStringMap(V1IdsPath(), "artifacts");
-  const auto found = ids.find(std::string(v0_id));
-  if (found == ids.end()) return std::nullopt;
-  return found->second;
-}
+namespace v1_store {
+
+inline constexpr std::string_view kQwen38ModelOptTarget =
+    "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9";
+inline constexpr std::string_view kQwen38Gguf =
+    "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027";
+inline constexpr std::string_view kQwen38ModelOptDrafter =
+    "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef";
+inline constexpr std::string_view kDeepSeekV4Target =
+    "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f";
+inline constexpr std::string_view kDeepSeekV4Drafter =
+    "6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41";
+inline constexpr std::string_view kQwenImageComposition =
+    "95314e538fbe1251c23b46e1bb52f86dd34cfbf7f7509e80849472c2e2faa53a";
+
+}  // namespace v1_store
 
 }  // namespace llmp::test_support
 

@@ -32,8 +32,7 @@ en::NumericalStage Stage(std::uint16_t stage, std::string name) {
   return {
       .stage = stage,
       .name = std::move(name),
-      .uses = {en::NumericalUse::kPrompt, en::NumericalUse::kDecode, en::NumericalUse::kScore,
-               en::NumericalUse::kPromptCompanions},
+      .uses = {en::NumericalUse::kPrompt, en::NumericalUse::kDecode, en::NumericalUse::kScore},
       .phases = {
           {.phase = pl::Phase::kPrefill,
            .max_owners = 4,
@@ -146,7 +145,7 @@ TEST(ExecutionContractTest, DomainOwnsDeclarationsAndRefusesUnknownAndUnqualifie
   EXPECT_FALSE(domain->CheckShape(shape));
   std::array shapes{original, original};
   shapes[1].stage = 1;
-  EXPECT_TRUE(domain->CheckUse(en::NumericalUse::kPromptCompanions, shapes));
+  EXPECT_TRUE(domain->CheckUse(en::NumericalUse::kPrompt, shapes));
   // Adaptive policy choosing plain Single today cannot authorize this use.
   EXPECT_FALSE(domain->CheckUse(en::NumericalUse::kSpeculative, shapes));
   EXPECT_FALSE(domain->CheckUse(static_cast<en::NumericalUse>(255), shapes));
@@ -704,7 +703,6 @@ TEST_F(SourceIdentityTest, RoundedIndexerRequiresOwnedPreparedBoundedOrdinaryDom
   layout.context = 256;
   layout.max_rows = 8;
   auto stage = Stage(0, "target");
-  stage.uses.pop_back();  // No companion operation is being admitted.
   for (auto& phase : stage.phases) {
     phase.max_owners = 1;
     phase.max_owner_rows = phase.phase == pl::Phase::kDecode ? 1 : 8;
@@ -729,7 +727,7 @@ TEST_F(SourceIdentityTest, RoundedIndexerRequiresOwnedPreparedBoundedOrdinaryDom
   EXPECT_FALSE(make(stage, false, true));
   for (int bad = 0; bad != 5; ++bad) {
     auto changed = stage;
-    if (bad == 0) changed.uses.push_back(en::NumericalUse::kPromptCompanions);
+    if (bad == 0) changed.uses.push_back(en::NumericalUse::kBlock);
     if (bad == 1) changed.phases[0].max_owners = 2;
     if (bad == 2) changed.phases[0].max_owner_rows = 9;
     if (bad == 3) changed.phases[0].row_invariant = true;
@@ -779,161 +777,6 @@ TEST_F(SourceIdentityTest, OmittingACompanionOrMisnamingItsDomainRefuses) {
   ASSERT_TRUE(both);
   EXPECT_FALSE((*both)->PrepareExecution());
   EXPECT_EQ(owners[0]->paid, 0U);
-}
-
-struct JoinedSourceIdentityTest : SourceIdentityTest {
-  void Configure() {
-    namespace md = llmp::model;
-    spec.stages[0].role = llmp::spec::StageRole::kTarget;
-    spec.stages[1].role = llmp::spec::StageRole::kDrafter;
-    for (auto& stage : spec.stages) stage.context = 512;
-    md::StateContract target{.tensors = {{.name = "kv",
-                                          .kind = md::StateKind::kKv,
-                                          .encoding = md::Encoding::kF32,
-                                          .cell_bytes = 32,
-                                          .cells = md::CellRule::kPerPosition}}};
-    auto draft = target;
-    draft.tensors[0].replayable = true;
-    draft.tensors.push_back({.name = "features",
-                             .kind = md::StateKind::kFeatures,
-                             .encoding = md::Encoding::kF32,
-                             .cell_bytes = 32,
-                             .cells = md::CellRule::kPerRow,
-                             .row_carry = 1,
-                             .rollback = md::Rollback::kSnapshot,
-                             .target_writes = true});
-    draft.tensors.push_back(
-        md::DraftProgressControl("progress", md::DraftRelation::kTokenAfterCache));
-    for (std::size_t i = 0; i < 2; ++i) {
-      const std::array contracts{std::pair{0U, i == 0 ? target : draft}};
-      auto made = md::Layout(contracts, 512, 16, 256);
-      ASSERT_TRUE(made) << Failed(made).value_or("");
-      layouts[i] = std::move(*made);
-      layout_views[i] = &layouts[i];
-    }
-    declarations = {Stage(0, "target"), Stage(1, "companion")};
-    for (auto& declared : declarations) {
-      declared.uses = {en::NumericalUse::kPrompt, en::NumericalUse::kDecode,
-                       en::NumericalUse::kPromptCompanions, en::NumericalUse::kSpeculative,
-                       en::NumericalUse::kJoinedRepeatPending};
-      declared.phases = declared.stage == 0
-                            ? std::vector<en::NumericalPhase>{{.phase = pl::Phase::kPrefill,
-                                                               .max_owners = 2,
-                                                               .max_owner_rows = 16,
-                                                               .max_total_rows = 32},
-                                                              {.phase = pl::Phase::kDecode,
-                                                               .max_owners = 2,
-                                                               .max_owner_rows = 1,
-                                                               .max_total_rows = 2},
-                                                              {.phase = pl::Phase::kVerify,
-                                                               .max_owners = 2,
-                                                               .max_owner_rows = 3,
-                                                               .max_total_rows = 6,
-                                                               .row_invariant = true},
-                                                              {.phase = pl::Phase::kCommit,
-                                                               .max_owners = 2,
-                                                               .max_owner_rows = 3,
-                                                               .max_total_rows = 6}}
-                            : std::vector<en::NumericalPhase>{{.phase = pl::Phase::kDraft,
-                                                               .max_owners = 2,
-                                                               .max_owner_rows = 16,
-                                                               .max_total_rows = 32}};
-    }
-  }
-  std::expected<std::unique_ptr<en::StagedStepSource>, std::string> Joined(int fault = 0) {
-    auto made = en::NumericalDomain::Create(declarations);
-    if (!made) return std::unexpected(made.error());
-    domain = std::make_shared<const en::NumericalDomain>(std::move(*made));
-    divergent = spec;
-    divergent.stages[0].context += 1;
-    std::vector<std::unique_ptr<en::ComponentStepSource>> sources;
-    for (std::uint16_t i = 0; i < 2; ++i) {
-      auto source = en::ComponentStepSource::Create(
-          {.spec = fault == 1 && i == 1 ? &divergent : &spec,
-           .stage = i,
-           .bindings = {.tensors = tensors,
-                        .state = &layouts[i],
-                        .stages = layout_views,
-                        .artifacts =
-                            fault == 2
-                                ? std::span<const std::span<const llmp::components::BoundTensor>>{}
-                                : std::span<const std::span<const llmp::components::BoundTensor>>(
-                                      artifacts)},
-           .bound_digest = spec.Digest(),
-           .slots = 2,
-           .policy = pl::Policy{},
-           .backend = {.owner = owners[i]},
-           .execution_domain = domain});
-      if (!source) return std::unexpected(source.error());
-      sources.push_back(std::move(*source));
-    }
-    return en::StagedStepSource::Create(std::move(sources));
-  }
-  std::array<llmp::model::StateLayoutDerived, 2> layouts;
-  std::array<const llmp::model::StateLayoutDerived*, 2> layout_views;
-  std::vector<llmp::components::BoundTensor> tensors;
-  std::array<std::span<const llmp::components::BoundTensor>, 1> artifacts{tensors};
-  std::vector<en::NumericalStage> declarations;
-  llmp::spec::ModelSpec divergent;
-};
-
-TEST_F(JoinedSourceIdentityTest, JoinedReplayRequiresWholePreparedOwnerAndActualShapePermission) {
-  Configure();
-  auto both = Joined();
-  ASSERT_TRUE(both) << Failed(both).value_or("");
-  EXPECT_FALSE((*both)->JoinedRepeatPending(0));
-  EXPECT_FALSE((*both)->JoinedRepeatPending(1));
-  ASSERT_TRUE((*both)->PrepareExecution());
-  EXPECT_TRUE((*both)->JoinedRepeatPending(0));
-  EXPECT_TRUE((*both)->JoinedRepeatPending(1));
-  EXPECT_FALSE((*both)->JoinedRepeatPending(2));
-  pl::StepShape shape{.stage = 1,
-                      .phase = pl::Phase::kDraft,
-                      .segments = {{.slot = 0, .rows = 4}, {.slot = 1, .rows = 2}},
-                      .read_align = 256};
-  EXPECT_TRUE((*both)->CheckExecutionShape(shape));
-  shape.segments[0].rows = 17;
-  EXPECT_FALSE((*both)->CheckExecutionShape(shape));
-  shape.segments[0].rows = 4;
-  shape.phase = pl::Phase::kVerify;
-  EXPECT_FALSE((*both)->CheckExecutionShape(shape));
-  owners[1]->declaration.selection = Seal("changed actual backend");
-  EXPECT_FALSE((*both)->JoinedRepeatPending(0));
-  EXPECT_FALSE((*both)->JoinedRepeatPending(1));
-}
-
-TEST_F(JoinedSourceIdentityTest, PartialCompositionAndLayoutPromisesRefuseBeforePublication) {
-  for (int mode = 0; mode != 10; ++mode) {
-    Configure();
-    if (mode == 0) declarations[1].uses.pop_back();
-    if (mode == 1) declarations[0].uses.erase(declarations[0].uses.begin() + 3);
-    if (mode == 2) declarations[1].phases[0].phase = pl::Phase::kDecode;
-    if (mode == 3) declarations[0].phases.pop_back();
-    if (mode == 4) spec.stages[1].role = llmp::spec::StageRole::kEncoder;
-    if (mode == 5) layout_views[1] = &layouts[0];
-    if (mode == 6) layouts[1].items[0].contract.replayable = false;
-    if (mode == 7) declarations[1].phases[0].max_owner_rows = 17;
-    auto both = Joined(mode == 8 ? 1 : mode == 9 ? 2 : 0);
-    ASSERT_TRUE(both) << mode << ": " << Failed(both).value_or("");
-    const auto refused = (*both)->PrepareExecution();
-    EXPECT_FALSE(refused) << mode;
-    EXPECT_FALSE((*both)->JoinedRepeatPending(0));
-    EXPECT_FALSE((*both)->JoinedRepeatPending(1));
-    EXPECT_EQ(owners[0]->paid, 0U) << mode;
-    EXPECT_EQ(owners[1]->paid, 0U) << mode;
-    EXPECT_EQ(owners[0]->queries, 0U) << mode;
-    EXPECT_EQ(owners[1]->queries, 0U) << mode;
-  }
-}
-
-TEST_F(JoinedSourceIdentityTest, ExistingDomainDoesNotAcquireJoinedPermissionImplicitly) {
-  Configure();
-  for (auto& stage : declarations) stage.uses.pop_back();
-  auto ordinary = Joined();
-  ASSERT_TRUE(ordinary);
-  ASSERT_TRUE((*ordinary)->PrepareExecution());
-  EXPECT_FALSE((*ordinary)->JoinedRepeatPending(0));
-  EXPECT_FALSE((*ordinary)->JoinedRepeatPending(1));
 }
 
 TEST(ExecutionMetadataAllowanceTest, ConcurrentRefundAndDriverChargeConserveTheOriginalReceipt) {

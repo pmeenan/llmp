@@ -3,8 +3,8 @@
 
 // Single-slot screens through the real Server and Llm on the published v1
 // Qwen3.8 artifacts (tests/support/v1_frozen.h V1Store: the native ModelOpt
-// target d145900e with its MTP drafter 316caa59, and the GGUF import
-// 18a67153). Two arms of one binary draft and judge their own outputs and
+// target 02354af1 with its MTP drafter 2cb4cdb8, and the GGUF import
+// f60d801a). Two arms of one binary draft and judge their own outputs and
 // must agree bit for bit; the GGUF publication arm is asserted against its
 // frozen digests (tests/unit/data/v1_frozen/qwen38_gguf.json). No
 // graph/source wrapper or teacher-forced proposals. This small screen is
@@ -53,7 +53,7 @@
 #include "execution/registry.h"
 #include "kept_restart_serving_checks.h"
 #include "kernels/common/step_program.h"
-#include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/plan_step.h"
 #include "planner/plan.h"
 #include "platform/host_probe.h"
 #include "platform/kept_files.h"
@@ -185,12 +185,9 @@ static_assert(2 * kRetainedRows * kVocab * sizeof(float) + 18 * kMiB <= kResults
 
 // The published v1 artifacts (D-118): the native ModelOpt target, the GGUF
 // import, and the ModelOpt MTP drafter.
-constexpr std::string_view kModelOpt =
-    "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d";
-constexpr std::string_view kGguf =
-    "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2";
-constexpr std::string_view kMtp =
-    "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb";
+constexpr std::string_view kModelOpt = llmp::test_support::v1_store::kQwen38ModelOptTarget;
+constexpr std::string_view kGguf = llmp::test_support::v1_store::kQwen38Gguf;
+constexpr std::string_view kMtp = llmp::test_support::v1_store::kQwen38ModelOptDrafter;
 
 // The published v1 store, where all three are installed.
 fs::path Store() { return fs::path(llmp::test_support::V1Store()); }
@@ -206,41 +203,40 @@ struct FixtureFile {
   std::string_view digest;
 };
 constexpr std::array kFixtureFiles{
-    FixtureFile{"d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d",
-                "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d/index.json",
+    FixtureFile{kModelOpt,
+                "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9/index.json",
                 8236769ULL, "2b29dc0f905bd670522abda9d8ef5e17f0db328c1d4fcd9f8dae63e9079dc5dd"},
-    FixtureFile{"d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d",
-                "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d/manifest.json",
-                48495ULL, "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d"},
-    FixtureFile{"d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d",
-                "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d/meta/config.json",
+    FixtureFile{kModelOpt,
+                "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9/manifest.json",
+                48492ULL, kModelOpt},
+    FixtureFile{kModelOpt,
+                "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9/meta/config.json",
                 109897ULL, "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e"},
-    FixtureFile{"18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2",
-                "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2/index.json",
+    FixtureFile{kGguf,
+                "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027/index.json",
                 6391531ULL, "40803567725558418f1993e1c50948870d92ea7022fea40151846334fbd03d70"},
-    FixtureFile{"18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2",
-                "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2/manifest.json",
-                14606ULL, "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2"},
-    FixtureFile{"18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2",
-                "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2/"
+    FixtureFile{kGguf,
+                "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027/manifest.json",
+                14603ULL, kGguf},
+    FixtureFile{kGguf,
+                "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027/"
                 "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.kv.gguf",
                 10946618ULL, "7c1460a95eb2e95377c32b14deb92cf74fe504d4feb5a62a40d48f78e9e0dcb8"},
-    FixtureFile{"18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2",
-                "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2/"
+    FixtureFile{kGguf,
+                "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027/"
                 "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.kv.gguf",
                 106ULL, "0bd485a7f050b5ac258c3722f25f2be38a7ef3e597696f3e4d7e09ec461ff978"},
-    FixtureFile{"18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2",
-                "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2/"
+    FixtureFile{kGguf,
+                "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027/"
                 "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.kv.gguf",
                 106ULL, "2fd68e0dc3770fdd9e4d52a5e9570394855926807e0e020b879651ded2b004c6"},
-    FixtureFile{"316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb",
-                "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb/index.json",
+    FixtureFile{kMtp, "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef/index.json",
                 159859ULL, "c20f71e3c79ad0505f24a5f822a8a644d53a3cdfc4e962e4e34533a508cee316"},
-    FixtureFile{"316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb",
-                "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb/manifest.json",
-                2782ULL, "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb"},
-    FixtureFile{"316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb",
-                "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb/meta/config.json",
+    FixtureFile{kMtp,
+                "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef/manifest.json",
+                2779ULL, kMtp},
+    FixtureFile{kMtp,
+                "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef/meta/config.json",
                 109897ULL, "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e"},
     FixtureFile{"", "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json",
                 12809320ULL, "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"},
@@ -503,8 +499,6 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
       const auto& engine = *static_cast<rt::EngineLlm*>(model);
       if (engine.runner().coverage().violations != 0)
         return std::unexpected("shared program bound uncovered storage");
-      if (engine.runner().slots().stages() > 1 && engine.runner().slots().progress(0, 1) == nullptr)
-        return std::unexpected("the serving drafter has no durable replay contract");
     }
     return life->server->EndRequestBranches(*model);
   }();
@@ -751,7 +745,7 @@ TEST(Qwen38EngineServingGpu, GgufPlain) { Screen(kGguf, false, true, 2); }
 // scale-atom experts on chip (W4A16), as on a device without FP4.
 std::expected<std::string, std::string> LadderDrafterPolicy() {
   auto policy = llmp::planner::ParsePolicy(
-      llmp::spec::mappings::Qwen38MtpNativeReplayMapping().policies.front().text);
+      llmp::spec::mappings::Qwen38MtpNativeMapping().policies.front().text);
   if (!policy) return std::unexpected(policy.error());
   std::erase(policy->enabled, "moe_experts");
   if (!std::ranges::contains(policy->disabled, "moe_experts"))
@@ -860,7 +854,6 @@ struct Evidence {
   std::array<std::vector<std::int32_t>, 2> history;
   std::array<Digest, 2> boundary{}, end{};
   std::array<StateRanges, 2> boundary_ranges, end_ranges;
-  std::array<llmp::model::DraftProgress, 2> progress{};
   std::array<kept::Record, 2> records;
   kept::Identity identity;
 };
@@ -1023,13 +1016,11 @@ std::expected<rt::ComponentBuildOptions, std::string> Options(Owner& owner) {
   pl::Canonicalize(*policy);
   std::vector<en::NumericalStage> stages;
   for (std::uint16_t stage = 0; stage < 2; ++stage) {
-    en::NumericalStage s{
-        .stage = stage,
-        .name = stage ? "mtp" : "target",
-        .uses = {en::NumericalUse::kPrompt, en::NumericalUse::kDecode,
-                 en::NumericalUse::kPromptCompanions, en::NumericalUse::kSpeculative,
-                 en::NumericalUse::kJoinedRepeatPending},
-        .phases = {}};
+    en::NumericalStage s{.stage = stage,
+                         .name = stage ? "mtp" : "target",
+                         .uses = {en::NumericalUse::kPrompt, en::NumericalUse::kDecode,
+                                  en::NumericalUse::kSpeculative},
+                         .phases = {}};
     const auto add = [&](pl::Phase phase, std::uint32_t rows) {
       s.phases.push_back(
           {.phase = phase, .max_owners = 2, .max_owner_rows = rows, .max_total_rows = 2ULL * rows});
@@ -1058,7 +1049,7 @@ std::expected<rt::ComponentBuildOptions, std::string> Options(Owner& owner) {
   testing::Test::RecordProperty("c2_target_policy", *options.target_policy);
   testing::Test::RecordProperty(
       "c2_drafter_policy",
-      std::string(llmp::spec::mappings::Qwen38MtpReplayMapping().policies.front().text));
+      std::string(llmp::spec::mappings::Qwen38MtpMapping().policies.front().text));
   return options;
 }
 
@@ -1124,9 +1115,8 @@ rt::Status Setup(Owner& owner, const fs::path& directory, Evidence& evidence, bo
   }
   owner.entered.push_back(&owner.llm->paged());
   const auto identity = owner.llm->ExecutionIdentity();
-  if (!identity || !*identity || !owner.source->JoinedRepeatPending(0) ||
-      !owner.source->JoinedRepeatPending(1))
-    return std::unexpected("C2 source lacks prepared complete pending identity");
+  if (!identity || !*identity)
+    return std::unexpected("C2 source lacks prepared complete execution identity");
   std::uint64_t largest = 0;
   for (const auto& plan : owner.measured) {
     if (std::ranges::find(owner.runnable, plan.shape) == owner.runnable.end()) continue;
@@ -1349,12 +1339,6 @@ rt::Status Initial(Owner& owner, Evidence& evidence) {
       evidence.boundary[i] = *digest;
       evidence.boundary_ranges[i] = Coordinates(owner, i);
       evidence.history[i] = owner.Branch(i).history();
-      const auto* progress = owner.llm->runner().slots().progress(static_cast<std::uint32_t>(i), 1);
-      if (!progress || !progress->settled())
-        return std::unexpected("C2 draft progress is not settled");
-      evidence.progress[i] = progress->completed();
-      if (evidence.progress[i].pending_first >= evidence.progress[i].positions)
-        return std::unexpected("C2 boundary did not preserve a real repeat-pending interval");
     }
     evidence.final = evidence.prefix;
     if (auto s = Generate(owner, {}, evidence.final, 8, true); !s) return s;
@@ -1370,9 +1354,6 @@ rt::Status Initial(Owner& owner, Evidence& evidence) {
       if (!digest || *digest != evidence.boundary[i] ||
           Coordinates(owner, i) != evidence.boundary_ranges[i])
         return std::unexpected("C2 restored boundary initialized state differs");
-      const auto* progress = owner.llm->runner().slots().progress(static_cast<std::uint32_t>(i), 1);
-      if (!progress || progress->completed() != evidence.progress[i])
-        return std::unexpected("C2 restored pending progress differs");
     }
     if (!owner.llm->counts().joined_waves)
       return std::unexpected("C2 did not join generation owners");
@@ -1433,9 +1414,6 @@ rt::Status Reopen(Owner& owner, Evidence& evidence) {
       if (!digest || *digest != evidence.boundary[slot] ||
           Coordinates(owner, slot) != evidence.boundary_ranges[slot])
         return std::unexpected("C2 durable hydrated initialized state differs");
-      const auto* progress = owner.llm->runner().slots().progress(slot, 1);
-      if (!progress || !progress->settled() || progress->completed() != evidence.progress[slot])
-        return std::unexpected("C2 durable pending state differs");
     }
     const auto after = owner.llm->counts();
     const auto now = owner.llm->runner().graph_stats();
@@ -1532,7 +1510,6 @@ TEST(Qwen38EngineServingGpu, DerivedServerStartupExtentPaysCompleteConstruction)
 struct Evidence {
   std::array<rt::Generation, 2> generations;
   std::array<std::vector<std::int32_t>, 2> history;
-  std::array<llmp::model::DraftProgress, 2> progress{};
   llmp::base::Sha256Digest identity{};
 };
 struct Owner {
@@ -1660,11 +1637,6 @@ rt::Status Run(Owner& owner, bool reopen) {
     if (auto s = session->Finish(); !s) return s;
     if (owner.Branch(slot).turn_checkpoints() != 1)
       return std::unexpected("default Server turn checkpoint was not saved");
-    if (reopen) {
-      const auto* progress = llm.runner().slots().progress(slot, 1);
-      if (!progress || progress->completed() != evidence.progress[slot])
-        return std::unexpected("Server lost the hydrated pending-drafter boundary");
-    }
   }
   const auto after = llm.runner().graph_stats();
   if (reopen && (after.eager != before.eager || after.replayed != before.replayed))
@@ -1685,11 +1657,6 @@ rt::Status Run(Owner& owner, bool reopen) {
     testing::Test::RecordProperty("server_future_prepared", std::to_string(ahead.prepared));
     for (std::uint32_t slot = 0; slot < 2; ++slot) {
       evidence.history[slot] = owner.Branch(slot).history();
-      const auto* progress = llm.runner().slots().progress(slot, 1);
-      if (!progress || !progress->settled() ||
-          progress->completed().pending_first >= progress->completed().positions)
-        return std::unexpected("Server did not leave a real pending-drafter interval");
-      evidence.progress[slot] = progress->completed();
     }
   }
   if (auto s = server.EndRequestBranches(llm); !s) return s;

@@ -35,9 +35,9 @@
 #include "kernels/ggml/gemma_moe.h"
 #include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/kv_quant.h"
 #include "kernels/ggml/llmp_ops.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/rounded_index_score.h"
 #include "kernels/ggml/set_rows_group.h"
 

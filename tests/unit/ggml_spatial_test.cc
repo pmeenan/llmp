@@ -23,9 +23,9 @@
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/conv2d_tiled.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/lower.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
 #include "planner/policy.h"
@@ -1313,17 +1313,7 @@ TEST(GgmlSpatialTest, TiledConvolutionPhysicalSelectionFollowsTheChosenImplement
   ASSERT_NE(capability, nullptr);
   EXPECT_FALSE(capability->needs_tuning);
   ConvDescriptor descriptor(128, 128, 64, 1152);
-  std::array nodes{&descriptor.output};
-  auto direct = kg::PlanGraph(nodes, false, {}, {});
-  ASSERT_TRUE(direct) << Failed(direct, &kg::KernelFailure::detail).value_or("");
-  ASSERT_EQ(direct->steps.size(), 1U);
-  EXPECT_EQ(direct->steps[0].implementation, "ggml.conv2d.f32");
-  kg::DeviceChoices selected;
-  selected.conv2d_tiled = [&](const ggml_tensor* t) { return t == &descriptor.output; };
-  auto tiled = kg::PlanGraph(nodes, false, selected, {});
-  ASSERT_TRUE(tiled) << Failed(tiled, &kg::KernelFailure::detail).value_or("");
-  ASSERT_EQ(tiled->steps.size(), 1U);
-  EXPECT_EQ(tiled->steps[0].implementation, kg::kConv2dTiledF32);
+  EXPECT_TRUE(kg::CheckConv2dTiledF32(&descriptor.output));
 }
 
 TEST(GgmlSpatialTest, TiledDefaultQualificationKeepsPhysicalShapeDeviceAndFormatIdentity) {

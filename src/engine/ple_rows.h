@@ -13,7 +13,7 @@
 //   row crosses a block boundary); blocks of rows that touch or overlap
 //   are read together, up to `max_read` bytes a read (a read split at that
 //   limit starts at its row's first block, which may repeat the last block
-//   of the read before: a row lies within one read). The v0 format's reads
+//   of the read before: a row lies within one read). The artifact format's reads
 //   are whole 2 MiB chunks (docs/artifact-format.md); these reads are
 //   smaller, inside one chunk's stored range or across two consecutive
 //   chunks of the same shard, and read nothing the chunk does not store.

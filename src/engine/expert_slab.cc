@@ -75,41 +75,30 @@ std::expected<LayerSlabs, std::string> ExpertSlabsOf(const artifact::Artifact& a
       if (array.first_group != first.first_group || array.count != first.count)
         return Error(std::format("layer {}'s expert arrays differ in groups or experts", layer));
       std::uint64_t element_bytes = 0, block_bytes = 0;
-      if (artifact.format_version() == 1) {
-        // Native descriptors are authoritative. Never populate or consult the
-        // absent legacy Representation of a v1 expert array.
-        // A split or scale-atom encoding's parts (codes, block scales, a
-        // tensor scale; an affine encoding's biases or zero points) are
-        // separate arrays of one expert group: each part's
-        // slice is placed at the writer's member alignment, read by the
-        // format's decoders or the block-scaled grouped GEMM, not as
-        // legacy blocks; the slab keeps 16-byte expert bases.
-        const bool split =
-            array.format &&
-            (array.format->layout == format::Layout::kSplit ||
-             array.format->layout == format::Layout::kScaleAtoms) &&
-            (array.part == format::PartRole::kCodes ||
-             array.part == format::PartRole::kBlockScales ||
-             array.part == format::PartRole::kTensorScale ||
-             array.part == format::PartRole::kBiases || array.part == format::PartRole::kZeros);
-        if (!array.format || !format::Validate(*array.format) || array.format->shape.rank != 2 ||
-            (!split && (array.part != format::PartRole::kData ||
-                        !format::IsSinglePartBlockOrDense(array.format->layout))))
-          return Error("native expert slab needs a valid single-part block or split-part slice");
-        if (split) {
-          element_bytes = block_bytes = 16;
-        } else {
-          const auto block = format::BlockBytes(array.format->encoding);
-          if (!block) return Error("native expert slice has no block geometry");
-          element_bytes = block_bytes = *block;
-        }
+      // Native descriptors are authoritative.
+      // A split or scale-atom encoding's parts (codes, block scales, a
+      // tensor scale; an affine encoding's biases or zero points) are
+      // separate arrays of one expert group: each part's
+      // slice is placed at the writer's member alignment, read by the
+      // format's decoders or the block-scaled grouped GEMM, not as
+      // legacy blocks; the slab keeps 16-byte expert bases.
+      const bool split =
+          array.format &&
+          (array.format->layout == format::Layout::kSplit ||
+           array.format->layout == format::Layout::kScaleAtoms) &&
+          (array.part == format::PartRole::kCodes || array.part == format::PartRole::kBlockScales ||
+           array.part == format::PartRole::kTensorScale ||
+           array.part == format::PartRole::kBiases || array.part == format::PartRole::kZeros);
+      if (!array.format || !format::Validate(*array.format) || array.format->shape.rank != 2 ||
+          (!split && (array.part != format::PartRole::kData ||
+                      !format::IsSinglePartBlockOrDense(array.format->layout))))
+        return Error("native expert slab needs a valid single-part block or split-part slice");
+      if (split) {
+        element_bytes = block_bytes = 16;
       } else {
-        const auto encoding = format::EncodingByTypeName(array.repr.type);
-        const auto elem = encoding ? format::BlockBytes(*encoding) : std::nullopt;
-        const auto blk = format::LegacyTypeBlockBytes(array.repr.type);
-        if (!elem || !blk) return Error("legacy expert slice has unknown block geometry");
-        element_bytes = *elem;
-        block_bytes = *blk;
+        const auto block = format::BlockBytes(array.format->encoding);
+        if (!block) return Error("native expert slice has no block geometry");
+        element_bytes = block_bytes = *block;
       }
       const auto combine = [](std::uint64_t current,
                               std::uint64_t block) -> std::optional<std::uint64_t> {

@@ -24,9 +24,9 @@
 #include "ggml.h"
 #include "ir/builder.h"
 #include "kernels/ggml/capabilities.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/lower.h"
+#include "kernels/ggml/plan_step.h"
 #include "planner/pattern.h"
 #include "planner/plan.h"
 

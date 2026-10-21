@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // One owned target/MTP composition, two owners with different pending spans:
-// the published v1 ModelOpt target (d145900e) and its MTP drafter (316caa59)
+// the published v1 ModelOpt target (02354af1) and its MTP drafter (2cb4cdb8)
 // from the v1 store (skipped without them). This is same-implementation
 // state/capture evidence, not a quality comparison.
 #include <gtest/gtest.h>
@@ -34,7 +34,7 @@
 #include "engine/model_runner.h"
 #include "engine/paged_weights.h"
 #include "expected_error.h"
-#include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/plan_step.h"
 #include "planner/plan.h"
 #include "platform/host_probe.h"
 #include "runtime/component_build.h"
@@ -57,7 +57,7 @@ constexpr std::uint32_t kVocabulary = 248320, kDraftLimit = 32768;
 // script: two lone prompts + two companion tails + three joined shapes.
 // Commit: three possible accepted widths for each of two real slots.
 constexpr std::size_t kFactoryClasses = 2 * (1 + 2 + 4 + 4);
-constexpr std::size_t kClasses = kFactoryClasses + 2 * 2 + 3 + 2 * 3;
+constexpr std::size_t kClasses = kFactoryClasses + 2 * 2 + 5 + 2 * 3;
 constexpr std::uint64_t kProgram = 64 * kMiB;
 constexpr std::uint64_t kNodes = llmp::ir::Graph::kMaxNodes;
 constexpr std::uint64_t kTensors = llmp::ir::Graph::kMaxTensors;
@@ -82,9 +82,9 @@ static_assert(sizeof(pl::Selected) <= 128);
 static_assert(sizeof(llmp::kernels::ggml::PlanStep) <= 64);
 static_assert(sizeof(std::string) <= 32 && sizeof(en::SlotLifecycle::Range) <= 24);
 constexpr std::string_view kTarget =
-    "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d";
+    "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9";
 constexpr std::string_view kDrafter =
-    "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb";
+    "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef";
 
 std::string Env(const char* name) {
   const auto* value = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
@@ -137,7 +137,6 @@ struct Record {
 };
 struct Saved {
   std::uint32_t positions = 0;
-  llmp::model::DraftProgress progress;
   std::vector<en::SlotLifecycle::Range> pages, footprint;
   void* data = nullptr;
   std::uint64_t bytes = 0;
@@ -214,9 +213,6 @@ class RecordedSource final : public en::StepSource {
     return inner_->NextSpecializationChange(request);
   }
 
-  bool JoinedRepeatPending(std::uint16_t stage) const override {
-    return inner_->JoinedRepeatPending(stage);
-  }
   bool UsesSideRows(std::uint16_t stage) const override { return inner_->UsesSideRows(stage); }
   en::Status SideRows(std::uint16_t stage, std::uint16_t component, std::span<const std::int32_t> h,
                       std::uint32_t p, std::span<std::int32_t> out) const override {
@@ -312,7 +308,7 @@ en::Status SetUp(Lifetime& life) {
                       std::string_view{
                           "c20f71e3c79ad0505f24a5f822a8a644d53a3cdfc4e962e4e34533a508cee316"}}}) {
     if (auto x = Metadata(store / id / "index.json", bytes, hash, true); !x) return x;
-    if (auto x = Metadata(store / id / "manifest.json", id == kTarget ? 48495 : 2782, id, true); !x)
+    if (auto x = Metadata(store / id / "manifest.json", id == kTarget ? 48492 : 2779, id, true); !x)
       return x;
     if (auto x =
             Metadata(store / id / "meta/config.json", 109897,
@@ -322,13 +318,11 @@ en::Status SetUp(Lifetime& life) {
   }
   std::vector<en::NumericalStage> stages;
   for (std::uint16_t stage = 0; stage < 2; ++stage) {
-    en::NumericalStage s{
-        .stage = stage,
-        .name = stage ? "mtp" : "target",
-        .uses = {en::NumericalUse::kPrompt, en::NumericalUse::kDecode,
-                 en::NumericalUse::kPromptCompanions, en::NumericalUse::kSpeculative,
-                 en::NumericalUse::kJoinedRepeatPending},
-        .phases = {}};
+    en::NumericalStage s{.stage = stage,
+                         .name = stage ? "mtp" : "target",
+                         .uses = {en::NumericalUse::kPrompt, en::NumericalUse::kDecode,
+                                  en::NumericalUse::kSpeculative},
+                         .phases = {}};
     const auto add = [&](pl::Phase p, std::uint32_t rows) {
       s.phases.push_back(
           {.phase = p, .max_owners = 2, .max_owner_rows = rows, .max_total_rows = 2ULL * rows});
@@ -430,12 +424,14 @@ en::Status SetUp(Lifetime& life) {
   parts->config.slots.spill_directory = life.scratch / "spill";
   for (const auto& s : parts->config.setup_shapes)
     if (auto x = Add(life, s); !x) return x;
-  const auto actual = std::array{Shape(0, pl::Phase::kPrefill, {{0, 7}}, 1),
-                                 Shape(0, pl::Phase::kPrefill, {{1, 5}}, 1),
+  const auto actual = std::array{Shape(0, pl::Phase::kPrefill, {{0, 6}}, 0),
+                                 Shape(0, pl::Phase::kPrefill, {{1, 4}}, 0),
+                                 Shape(0, pl::Phase::kPrefill, {{0, 1}}, 1),
+                                 Shape(0, pl::Phase::kPrefill, {{1, 1}}, 1),
                                  Shape(1, pl::Phase::kDraft, {{0, 6}}, 0),
                                  Shape(1, pl::Phase::kDraft, {{1, 4}}, 0),
                                  Shape(1, pl::Phase::kDraft, {{0, 1}, {1, 1}}, 1),
-                                 Shape(1, pl::Phase::kDraft, {{0, 1}, {1, 3}}, 1),
+                                 Shape(1, pl::Phase::kDraft, {{0, 2}, {1, 4}}, 1),
                                  Shape(0, pl::Phase::kVerify, {{0, 3}, {1, 3}}, 3)};
   auto composition = en::WaveComposer::Make(
       parts->caps, std::vector<en::StageReads>{{.context = 512, .read_align = 256},
@@ -475,8 +471,6 @@ en::Status SetUp(Lifetime& life) {
   life.runner = std::move(*runner);
   life.entered.push_back(life.runner.get());
   if (auto x = life.runner->Setup(); !x) return x;
-  if (!life.source->JoinedRepeatPending(0) || !life.source->JoinedRepeatPending(1))
-    return std::unexpected("real composition did not seal joined permission");
   if (!std::ranges::all_of(std::span(life.records).first(life.count),
                            [](const auto& r) { return r.measured; }))
     return std::unexpected("an actual class was not measured");
@@ -608,23 +602,64 @@ en::Status Decoder(Lifetime& life) {
   life.decoder.emplace(std::move(*decoder));
   return {};
 }
-en::Status Prompt(Lifetime& life) {
+en::Status PromptPrefix(Lifetime& life) {
   auto& slots = life.runner->slots();
   for (std::uint32_t slot = 0; slot < 2; ++slot) {
-    const std::uint32_t rows = slot == 0 ? 7 : 5;
+    const std::uint32_t rows = slot == 0 ? 6 : 4;
     for (std::uint32_t i = 0; i < rows; ++i)
       life.history[slot].push_back(static_cast<std::int32_t>(17 + slot * 100 + i));
-    en::PendingWork pending{.slot = slot, .phase = pl::Phase::kPrefill, .rows = rows, .outputs = 1};
+    en::PendingWork pending{
+        .slot = slot, .phase = pl::Phase::kPrefill, .rows = rows, .outputs = 0, .want_head = false};
     en::SegmentWork work{.tokens = life.history[slot]};
+    const std::array<std::span<const std::int32_t>, 1> history{life.history[slot]};
+    auto report = en::RunPromptWave(*life.runner, *life.composer, std::span(&pending, 1),
+                                    std::span(&work, 1), history);
+    if (report.outcomes.size() != 1) return std::unexpected("prompt prefix result count differs");
+    if (report.outcomes[0].refusal) return std::unexpected(report.outcomes[0].refusal->what);
+    if (slots.positions(slot) != rows) return std::unexpected("prompt prefix frontier differs");
+    en::PendingWork companion{.slot = slot,
+                              .stage = 1,
+                              .phase = pl::Phase::kDraft,
+                              .past = 0,
+                              .rows = rows,
+                              .outputs = 0,
+                              .want_head = false};
+    en::SegmentWork companion_work{.tokens = life.history[slot],
+                                   .feature = {.kind = en::FeatureFrom::Kind::kTap, .position = 0},
+                                   .history = life.history[slot]};
+    auto c_report = en::RunWave(*life.runner, *life.composer, std::span(&companion, 1),
+                                std::span(&companion_work, 1), /*advance=*/false);
+    if (c_report.outcomes.size() != 1) return std::unexpected("companion result count differs");
+    if (c_report.outcomes[0].refusal) return std::unexpected(c_report.outcomes[0].refusal->what);
+  }
+  return {};
+}
+en::Status PromptTail(Lifetime& life, bool count_head, bool spill) {
+  auto& slots = life.runner->slots();
+  for (std::uint32_t slot = 0; slot < 2; ++slot) {
+    const std::uint32_t past = slot == 0 ? 6 : 4;
+    life.history[slot].push_back(static_cast<std::int32_t>(17 + slot * 100 + past));
+    en::PendingWork pending{
+        .slot = slot, .phase = pl::Phase::kPrefill, .past = past, .rows = 1, .outputs = 1};
+    en::SegmentWork work{.tokens = std::span(life.history[slot]).last(1)};
     const std::array<std::span<const std::int32_t>, 1> history{life.history[slot]};
     auto report = en::RunPromptWave(*life.runner, *life.composer, std::span(&pending, 1),
                                     std::span(&work, 1), history);
     if (report.outcomes.size() != 1) return std::unexpected("prompt result count differs");
     if (report.outcomes[0].refusal) return std::unexpected(report.outcomes[0].refusal->what);
+    const auto saved_finite = life.finite_rows;
     auto token = Head(life, report.outcomes[0].outputs, kVocabulary, 1);
+    if (!count_head) life.finite_rows = saved_finite;
     if (!token) return std::unexpected(token.error());
     life.history[slot].push_back(*token);
-    if (slots.positions(slot) != rows) return std::unexpected("prompt frontier differs");
+    if (slots.positions(slot) != past + 1) return std::unexpected("prompt frontier differs");
+    life.decoder->Reset(slot);
+    if (spill) {
+      if (auto x = slots.Spill(slot); !x) return x;
+      if (!slots.spilled(slot)) return std::unexpected("state did not spill");
+      if (auto x = slots.Restore(slot); !x) return x;
+      ++life.spilled_owners;
+    }
   }
   return {};
 }
@@ -632,12 +667,6 @@ en::Status Unit(Lifetime& life) {
   auto& slots = life.runner->slots();
   std::array<en::DecodeWork, 2> work{};
   for (std::uint32_t slot = 0; slot < 2; ++slot) {
-    const auto* progress = slots.progress(slot, 1);
-    auto bounds = llmp::model::DraftBounds(slots.layout(1));
-    if (!progress || !bounds || !*bounds) return std::unexpected("real pending progress missing");
-    auto first = llmp::model::DraftFirstPass(progress->completed(), **bounds);
-    if (!first || first->count != (life.warmup ? 1U : (slot == 0 ? 1U : 3U)))
-      return std::unexpected("actual unequal pending schedule differs");
     if (life.history[slot].size() != slots.positions(slot) + 1)
       return std::unexpected("history/frontier mismatch");
     work[slot] = {.slot = slot, .history = life.history[slot]};
@@ -692,7 +721,6 @@ en::Status Save(Lifetime& life) {
   for (std::uint32_t slot = 0; slot < 2; ++slot) {
     auto& saved = life.saved[slot];
     saved.positions = slots.positions(slot);
-    saved.progress = slots.progress(slot, 1)->completed();
     saved.history = life.history[slot];
     saved.footprint = Footprint(slots, slot);
     auto ranges = slots.CheckpointRanges(slot, saved.positions);
@@ -709,7 +737,7 @@ en::Status Save(Lifetime& life) {
   }
   return {};
 }
-en::Status Restore(Lifetime& life, bool spill) {
+en::Status Restore(Lifetime& life) {
   auto& slots = life.runner->slots();
   for (std::uint32_t slot = 0; slot < 2; ++slot) {
     const auto& saved = life.saved[slot];
@@ -719,17 +747,10 @@ en::Status Restore(Lifetime& life, bool spill) {
       return x;
     if (auto x = slots.CopyState(slot, saved.data, saved.pages, false); !x) return x;
     if (auto x = slots.CompleteRestore(slot, saved.positions); !x) return x;
-    if (spill) {
-      if (auto x = slots.Spill(slot); !x) return x;
-      if (!slots.spilled(slot)) return std::unexpected("state did not spill");
-      if (auto x = slots.Restore(slot); !x) return x;
-      ++life.spilled_owners;
-    }
     life.decoder->Reset(slot);
     life.history[slot] = saved.history;
-    if (slots.positions(slot) != saved.positions ||
-        slots.progress(slot, 1)->completed() != saved.progress)
-      return std::unexpected("restored positions/pending feature coordinates differ");
+    if (slots.positions(slot) != saved.positions)
+      return std::unexpected("restored positions differ");
     auto footprint = Footprint(slots, slot);
     if (footprint.size() != saved.footprint.size())
       return std::unexpected("restored used footprint differs");
@@ -741,7 +762,7 @@ en::Status Restore(Lifetime& life, bool spill) {
     if (auto x = slots.CopyState(slot, life.readback, saved.pages, true); !x) return x;
     if (std::memcmp(saved.data, life.readback, saved.bytes))
       return std::unexpected("restored initialized bytes differ");
-    ++life.restored_owners;
+    if (!life.warmup) ++life.restored_owners;
   }
   return {};
 }
@@ -749,8 +770,8 @@ Record* Unequal(Lifetime& life) {
   auto records = std::span(life.records).first(life.count);
   auto at = std::ranges::find_if(records, [](const auto& r) {
     return r.shape.stage == 1 && r.shape.phase == pl::Phase::kDraft &&
-           r.shape.segments.size() == 2 && r.shape.segments[0].rows == 1 &&
-           r.shape.segments[1].rows == 3;
+           r.shape.segments.size() == 2 && r.shape.segments[0].rows == 2 &&
+           r.shape.segments[1].rows == 4;
   });
   return at == records.end() ? nullptr : &*at;
 }
@@ -758,7 +779,7 @@ en::Status FinalState(Lifetime& life) {
   auto& slots = life.runner->slots();
   for (std::uint32_t slot = 0; slot < 2; ++slot) {
     if (slots.positions(slot) !=
-        life.saved[slot].positions + (life.pass == 3 ? 6U : 3U) * (slot == 0 ? 1U : 3U))
+        life.saved[slot].positions + 1U + (life.pass == 3 ? 6U : 3U) * (slot == 0 ? 1U : 3U))
       return std::unexpected("final owner frontier differs");
     auto ranges = Footprint(slots, slot);
     if (ranges.size() > 1024) return std::unexpected("final range inventory exceeded");
@@ -816,13 +837,17 @@ TEST(Qwen38JoinedMtpGpu, OwnedUnequalPendingRestoresAndChangedInputCapture) {
   ASSERT_TRUE(decoder) << Failed(decoder).value_or("");
   auto result = life->node.WithRequest(
       0, life->runner->slots().execution(), "owned joined MTP trajectory", [&]() -> en::Status {
-        if (auto x = Prompt(*life); !x) return x;
-        if (auto x = Unit(*life); !x) return x;  // keep1/3 creates actual unequal pending spans
-        life->warmup = false;
+        if (auto x = PromptPrefix(*life); !x) return x;
         if (auto x = Save(*life); !x) return x;
+        if (auto x = PromptTail(*life, true, false); !x) return x;
+        if (auto x = Unit(*life); !x) return x;
+        if (auto x = Restore(*life); !x) return x;
+        if (auto x = PromptTail(*life, false, false); !x) return x;
+        life->warmup = false;
         for (life->pass = 0; life->pass < 4; ++life->pass) {
           if (life->pass == 1 || life->pass == 2) {
-            if (auto x = Restore(*life, life->pass == 2); !x) return x;
+            if (auto x = Restore(*life); !x) return x;
+            if (auto x = PromptTail(*life, false, life->pass == 2); !x) return x;
           }
           // Continue from the completed replay without invalidating its plans.
           // Changed anchors must use the already-retained unequal capture.

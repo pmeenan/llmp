@@ -71,16 +71,11 @@ const Mapping& Qwen38NativeMapping();
 // Container-neutral canonical recipe for synthetic component/lowering tables.
 // Runtime resolves the native variants below from actual source provenance.
 const Mapping& Qwen38MtpMapping();
-// Same numerical recipe, with the durable repeat-pending position contract.
-// Explicit opt-in; existing v1 artifacts/specs keep their original identity.
-const Mapping& Qwen38MtpReplayMapping();
 // The native importer's MTP drafter (v1, import/modelopt_qwen38.h): source
 // encodings but its norms (the importer's applied norm.plus_one, its
 // source's fold), the routed experts' NVFP4 parts by projection, the
-// converted drafter's parameters and policy; and its repeat-pending form,
-// which serving composes.
+// converted drafter's parameters and policy.
 const Mapping& Qwen38MtpNativeMapping();
-const Mapping& Qwen38MtpNativeReplayMapping();
 
 }  // namespace llmp::spec::mappings
 

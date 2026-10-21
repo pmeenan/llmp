@@ -308,12 +308,6 @@ inline std::vector<CatalogTokenRecipe> CatalogTokenRecipes() {
       {.width = 64, .context = 4096, .streams = 4, .folds = GdnFolds()},
       {P("eps", R(1e-6)), P("tap", N("streams"))}, {}, {9}, Seg(0, 3, 0, 256, 3), {4, 0, 9});
 
-  // 10. embedding.mtp v2
-  add("embedding.mtp", 2, Site::kEmbedding,
-      {.width = 64, .context = 4096, .streams = 4, .folds = GdnFolds()},
-      {P("eps", R(1e-6)), P("tap", N("streams")), P("token_offset", I(0))}, {}, {9, 1},
-      Seg(0, 3, 0, 256, 3), {4, 0, 9});
-
   // 11. embedding.projected v1
   add("embedding.projected", 1, Site::kEmbedding, {.width = 64, .context = 4096},
       {P("feature", I(64)), P("scale", R(8.0)), P("tap", N("features"))}, {}, {16},

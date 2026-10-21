@@ -27,8 +27,8 @@
 
 #include "ggml.h"
 #include "kernels/ggml/fusion.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/graph_read_index.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
@@ -617,11 +617,6 @@ TEST_F(GgmlOpsValidateTest, GetRowsIsRefusedWhatItsLauncherAssertsOn) {
   auto* const from_half = Bound(ggml_get_rows(context(), Typed(GGML_TYPE_F16, kWidth, 8), ids));
   EXPECT_TRUE(CheckGetRows(from_half));
   EXPECT_FALSE(GetRowsVectorized(from_half));
-  const std::array<ggml_tensor*, 1> half_nodes = {from_half};
-  auto half_plan = llmp::kernels::ggml::PlanGraph(half_nodes, false, {});
-  ASSERT_TRUE(half_plan);
-  ASSERT_EQ(half_plan->steps.size(), 1U);
-  EXPECT_EQ(half_plan->steps.front().implementation, llmp::kernels::ggml::kGetRowsName);
   // An output over the rows it reads.
   ggml_tensor* over = ggml_get_rows(context(), rows, ids);
   TensorArena::Bind(over, reinterpret_cast<std::uintptr_t>(rows->data));
@@ -690,126 +685,6 @@ TEST_F(GgmlOpsValidateTest, GroupedStoresRequireWholeCrossStoreIndependence) {
   source->ne[2] = 1;
   Rejected(kg::CheckSetRowsForGrouping(c));  // finite but exceeds U32 maximum
   source->ne[1] = old_shape;
-}
-
-TEST(GroupedSetRowsPlan, SplitsLongRunsAndPreservesReadsKeepsAndAliasFallback) {
-  namespace kg = llmp::kernels::ggml;
-  auto arena = TensorArena::Create(256).value();
-  auto* ctx = arena.context();
-  std::uint64_t address = kBase;
-  const auto bound = [&](ggml_tensor* t) {
-    TensorArena::Bind(t, address);
-    address += kSlot;
-    return t;
-  };
-  std::vector<ggml_tensor*> stores;
-  for (std::size_t i = 0; i < kg::kSetRowsGroupMax + 2; ++i) {
-    const auto width = static_cast<std::int64_t>(17 + i);
-    const auto rows = static_cast<std::int64_t>(1 + i % 5);
-    stores.push_back(ggml_set_rows(ctx, bound(ggml_new_tensor_2d(ctx, GGML_TYPE_F16, width, 32)),
-                                   bound(ggml_new_tensor_2d(ctx, GGML_TYPE_F32, width, rows)),
-                                   bound(ggml_new_tensor_1d(ctx, GGML_TYPE_I64, rows))));
-  }
-  kg::DeviceChoices choices;
-  EXPECT_FALSE(choices.group_set_rows);
-  auto primitive = kg::PlanGraph(stores, false, choices);
-  ASSERT_TRUE(primitive);
-  EXPECT_EQ(primitive->steps.size(), stores.size());
-  choices.group_set_rows = true;
-  auto grouped = kg::PlanGraph(stores, false, choices);
-  ASSERT_TRUE(grouped);
-  ASSERT_EQ(grouped->steps.size(), 2U);
-  EXPECT_EQ(grouped->steps[0].nodes.size(), kg::kSetRowsGroupMax);
-  EXPECT_EQ(grouped->steps[1].nodes.size(), 2U);
-  std::vector<ggml_tensor*> covered;
-  for (const auto& step : grouped->steps) {
-    EXPECT_EQ(step.implementation, kg::kSetRowsGroupedName);
-    covered.insert(covered.end(), step.nodes.begin(), step.nodes.end());
-  }
-  EXPECT_EQ(covered, stores);
-  // A launchless view is traversed, but an actual read must split the run.
-  auto* view = ggml_view_2d(ctx, stores[0], stores[0]->ne[0], 1, stores[0]->nb[1], 0);
-  auto* read = bound(ggml_cont(ctx, view));
-  const std::array<ggml_tensor*, 5> barrier{stores[0], view, read, stores[1], stores[2]};
-  auto separated = kg::PlanGraph(barrier, false, choices);
-  ASSERT_TRUE(separated);
-  ASSERT_EQ(separated->steps.size(), 3U);
-  EXPECT_EQ(separated->steps[0].implementation, kg::kSetRowsName);
-  EXPECT_EQ(separated->steps[1].nodes.front(), read);
-  EXPECT_EQ(separated->steps[2].implementation, kg::kSetRowsGroupedName);
-  const std::array<ggml_tensor*, 3> with_view{stores[0], view, stores[1]};
-  auto through_view = kg::PlanGraph(with_view, false, choices);
-  ASSERT_TRUE(through_view);
-  ASSERT_EQ(through_view->steps.size(), 1U);
-  EXPECT_EQ(through_view->steps.front().nodes.size(), 2U);
-  const std::array<ggml_tensor*, 1> keep{view};
-  auto kept = kg::PlanGraph(with_view, false, choices, keep);
-  ASSERT_TRUE(kept);
-  EXPECT_EQ(kept->steps.size(), 2U);
-  const std::array<ggml_tensor*, 2> aliases{stores[0], stores[0]};
-  auto aliased = kg::PlanGraph(aliases, false, choices);
-  ASSERT_TRUE(aliased);
-  EXPECT_EQ(aliased->steps.size(), 2U);
-  auto same_tag = *through_view;
-  kg::AssignLanes(same_tag,
-                  {{stores[0], {.lane = 1, .region = 1}}, {stores[1], {.lane = 1, .region = 1}}});
-  ASSERT_EQ(same_tag.steps.size(), 1U);
-  EXPECT_EQ(same_tag.steps.front().implementation, kg::kSetRowsGroupedName);
-  EXPECT_EQ(same_tag.steps.front().lane, 1U);
-  auto partially_tagged = *through_view;
-  kg::AssignLanes(partially_tagged, {{stores[0], {.lane = 1, .region = 1}}});
-  ASSERT_EQ(partially_tagged.steps.size(), 2U);
-  EXPECT_EQ(partially_tagged.steps[0].implementation, kg::kSetRowsName);
-  EXPECT_EQ(partially_tagged.steps[0].lane, 1U);
-  EXPECT_EQ(partially_tagged.steps[1].lane, 0U);
-  auto mixed = kg::PlanGraph(std::span(stores).first(4), false, choices);
-  ASSERT_TRUE(mixed);
-  kg::AssignLanes(*mixed, {{stores[0], {.lane = 1, .region = 1}},
-                           {stores[1], {.lane = 1, .region = 1}},
-                           {stores[2], {.lane = 2, .region = 2}},
-                           {stores[3], {.lane = 2, .region = 2}}});
-  ASSERT_EQ(mixed->steps.size(), 2U);
-  EXPECT_EQ(mixed->steps[0].implementation, kg::kSetRowsGroupedName);
-  EXPECT_EQ(mixed->steps[1].implementation, kg::kSetRowsGroupedName);
-  EXPECT_EQ(mixed->steps[0].lane, 1U);
-  EXPECT_EQ(mixed->steps[1].lane, 2U);
-  // Regions and lane ownership cannot be erased by choosing the first tag.
-  kg::LaneTags tags{{stores[0], {.lane = 1, .region = 1}}, {stores[1], {.lane = 2, .region = 2}}};
-  kg::AssignLanes(*through_view, tags);
-  ASSERT_EQ(through_view->steps.size(), 2U);
-  EXPECT_EQ(through_view->steps[0].implementation, kg::kSetRowsName);
-  EXPECT_EQ(through_view->steps[0].lane, 1U);
-  EXPECT_EQ(through_view->steps[1].lane, 2U);
-  EXPECT_EQ(through_view->regions.size(), 2U);
-  // With the caller's groups (the IR's grouped stores), runs follow them:
-  // two pairs where the stores are adjacent (a joined step's two owners,
-  // grouped around an attention the GGML graph places elsewhere), a store
-  // of no group alone, and without groups the greedy run of four.
-  const auto four = std::span(stores).first(4);
-  const auto planned = [&](std::array<std::size_t, 4> groups) {
-    kg::DeviceChoices chosen = choices;
-    chosen.set_rows_group = [&](const ggml_tensor* node) {
-      const auto at = std::ranges::find(four, node);
-      return at == four.end() ? std::size_t{0}
-                              : groups.at(static_cast<std::size_t>(at - four.begin()));
-    };
-    auto plan = kg::PlanGraph(four, false, chosen);
-    EXPECT_TRUE(plan);
-    std::vector<std::pair<std::string_view, std::size_t>> out;
-    if (plan)
-      for (const auto& step : plan->steps) out.emplace_back(step.implementation, step.nodes.size());
-    return out;
-  };
-  using Steps = std::vector<std::pair<std::string_view, std::size_t>>;
-  EXPECT_EQ(planned({1, 1, 2, 2}),
-            (Steps{{kg::kSetRowsGroupedName, 2}, {kg::kSetRowsGroupedName, 2}}));
-  EXPECT_EQ(planned({1, 1, 1, 1}), (Steps{{kg::kSetRowsGroupedName, 4}}));
-  EXPECT_EQ(planned({0, 2, 2, 0}),
-            (Steps{{kg::kSetRowsName, 1}, {kg::kSetRowsGroupedName, 2}, {kg::kSetRowsName, 1}}));
-  auto greedy = kg::PlanGraph(four, false, choices);
-  ASSERT_TRUE(greedy);
-  ASSERT_EQ(greedy->steps.size(), 1U);
-  EXPECT_EQ(greedy->steps.front().nodes.size(), 4U);
 }
 
 TEST_F(GgmlOpsValidateTest, SetRowsWritesF32RowsIntoF16AtI64Indices) {

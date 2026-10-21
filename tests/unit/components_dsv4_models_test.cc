@@ -3,7 +3,7 @@
 
 // The DeepSeek V4 mappings on the published v1 artifacts (label `models`;
 // skipped when the store or the target is absent): DeepSeek V4 Flash 0731's
-// UD-Q2_K_XL (698b1cd8) and the DSpark drafter (5c9d95e2) composed with it.
+// UD-Q2_K_XL (d2046349) and the DSpark drafter (6b1b9dca) composed with it.
 // The target's stored spec is validated against its tensors and equals the
 // spec of the unit tests' fixture (dsv4_fixture.h, synthesized with the
 // family's values, tests/support/families/dsv4.h), so the unit tests'
@@ -13,7 +13,7 @@
 // runners' state (Dsv4State in both window modes, DsparkState); and each
 // step kind builds: the target's prefill with its drafter's injection, a
 // state-only chunk, joined greedy decodes, a verify, and the drafter's
-// blocks. (The community IQ2_XXS import, e7c0d0e4…, has its own frozen
+// blocks. (The community IQ2_XXS import, a4fb10cc…, has its own frozen
 // serving screen in dsv4_engine_target_gpu_test.)
 //
 // These build the steps, they do not run them (the reference executor

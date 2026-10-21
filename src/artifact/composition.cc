@@ -52,7 +52,6 @@ namespace {
 using schema::Fail;
 using Step = std::expected<void, Error>;
 
-constexpr std::string_view kFormat = "jitllm-composition";
 constexpr std::string_view kFormatV1 = "llmp-composition";
 constexpr std::size_t kMaxEntriesPerDirectory = 1024;
 
@@ -274,34 +273,23 @@ class CompositionOpener {
     doc_ = std::move(*parsed);
     const json::Value m = doc_->root();
     const auto format = m.find("format");
-    if (m.is_object() && format && schema::IsString(*format, kFormatV1)) {
-      v1_ = true;
-    } else if (!m.is_object() || !format || !schema::IsString(*format, kFormat)) {
+    if (!m.is_object() || !format || !schema::IsString(*format, kFormatV1)) {
       return Fail(Rule::kFormat, "not a llmpalooza composition");
     }
-    if (!v1_) {
-      const auto legacy = json::Parse(bytes_);
-      if (!legacy) return Pass(legacy);
-    }
-    // import_m3.py checks for data after the format, as here.
     if (has_data_) {
       return Fail(Rule::kFileSet, "a composition holds no data shards");
     }
     const auto version = m.find("format_version");
-    if (!v1_ && (!version || !schema::IsInt(*version, 0))) {
-      return Fail(Rule::kUnsupportedVersion, "format_version is not 0");
-    }
-    if (v1_ && (!version || (!schema::IsInt(*version, 1) && !schema::IsInt(*version, 2)))) {
+    if (!version || (!schema::IsInt(*version, 1) && !schema::IsInt(*version, 2))) {
       const auto found = version ? version->integer() : std::nullopt;
       return Fail(Rule::kUnsupportedVersion, "format_version is not one this build reads",
                   found && *found >= 0 ? static_cast<std::uint64_t>(*found) : kNoItem);
     }
-    out_.format_version_ = v1_ ? static_cast<std::uint32_t>(*version->integer()) : 0;
+    out_.format_version_ = static_cast<std::uint32_t>(*version->integer());
     if (!doc_->canonical()) {
       return Fail(Rule::kCanonical, "manifest.json is not in canonical form");
     }
-    if (out_.id_ != base::ToHex(v1_ ? schema::ManifestIdentity(m)
-                                    : base::Sha256().Update(bytes_).Finish()) &&
+    if (out_.id_ != base::ToHex(schema::ManifestIdentity(m)) &&
         (out_.format_version_ >= 2 ||
          out_.id_ != base::ToHex(base::Sha256().Update(bytes_).Finish()))) {
       return Fail(Rule::kIdentity, "the composition name is not the manifest digest");
@@ -316,7 +304,7 @@ class CompositionOpener {
     const json::Value m = doc_->root();
     if (auto ok = schema::Object(m,
                                  {"format", "format_version", "experimental", "model", "components",
-                                  "source", v1_ ? "importer" : "converter", "files"},
+                                  "source", "importer", "files"},
                                  {}, "composition keys");
         !ok) {
       return ok;
@@ -368,10 +356,9 @@ class CompositionOpener {
                                   .artifact = std::string(*id),
                                   .architecture = std::string(*carch)});
     }
-    // v1 may keep nothing (a target and its drafter), v0 keeps at least
-    // model_index.json.
+    // A composition may keep nothing (a target and its drafter).
     const json::Value sources = schema::Get(m, "source");
-    if (auto ok = schema::List(sources, v1_ ? 0 : 1, "source"); !ok) {
+    if (auto ok = schema::List(sources, 0, "source"); !ok) {
       return ok;
     }
     for (std::size_t i = 0; i < sources.size(); ++i) {
@@ -382,9 +369,7 @@ class CompositionOpener {
       auto name = schema::Str(
           schema::Get(s, "name"),
           [&](std::string_view name) {
-            return out_.format_version_ >= 2 ? schema::IsKeptName(name)
-                   : v1_                     ? schema::IsFileName(name)
-                                             : schema::IsName(name);
+            return out_.format_version_ >= 2 ? schema::IsKeptName(name) : schema::IsFileName(name);
           },
           "source.name", i);
       if (!name) {
@@ -405,27 +390,11 @@ class CompositionOpener {
                                .bytes = Bytes(*bytes),
                                .sha256 = schema::DigestFromHex(*sha).value_or(Digest{})});
     }
-    if (v1_) {
-      if (auto ok = CheckImporter(schema::Get(m, "importer")); !ok) {
-        return ok;
-      }
-    } else {
-      const json::Value conv = schema::Get(m, "converter");
-      if (auto ok = schema::Object(conv, {"name", "version"}, {}, "converter keys"); !ok) {
-        return ok;
-      }
-      auto name = schema::Str(schema::Get(conv, "name"), schema::IsText, "converter.name");
-      if (!name) {
-        return Pass(name);
-      }
-      auto version = schema::Str(schema::Get(conv, "version"), schema::IsText, "converter.version");
-      if (!version) {
-        return Pass(version);
-      }
-      out_.converter_ = {.name = std::string(*name), .version = std::string(*version)};
+    if (auto ok = CheckImporter(schema::Get(m, "importer")); !ok) {
+      return ok;
     }
     const json::Value files = schema::Get(m, "files");
-    if (auto ok = schema::List(files, v1_ ? 0 : 1, "files"); !ok) {
+    if (auto ok = schema::List(files, 0, "files"); !ok) {
       return ok;
     }
     for (std::size_t i = 0; i < files.size(); ++i) {
@@ -434,21 +403,20 @@ class CompositionOpener {
           !ok) {
         return ok;
       }
-      // v1's spec.json, the one file outside meta/ (its path sorts last).
-      const bool spec = v1_ && schema::IsString(schema::Get(f, "role"), "spec");
-      auto path = spec
-                      ? schema::Str(
-                            schema::Get(f, "path"),
-                            [](std::string_view p) { return p == "spec.json"; }, "file.path", i)
-                      : schema::Str(
-                            schema::Get(f, "path"),
-                            [&](std::string_view path) {
-                              return path.starts_with("meta/") &&
-                                     (out_.format_version_ >= 2 ? schema::IsKeptName(path.substr(5))
-                                      : v1_                     ? schema::IsFileName(path.substr(5))
-                                                                : schema::IsName(path.substr(5)));
-                            },
-                            "file.path", i);
+      // spec.json, the one file outside meta/ (its path sorts last).
+      const bool spec = schema::IsString(schema::Get(f, "role"), "spec");
+      auto path =
+          spec ? schema::Str(
+                     schema::Get(f, "path"), [](std::string_view p) { return p == "spec.json"; },
+                     "file.path", i)
+               : schema::Str(
+                     schema::Get(f, "path"),
+                     [&](std::string_view path) {
+                       return path.starts_with("meta/") &&
+                              (out_.format_version_ >= 2 ? schema::IsKeptName(path.substr(5))
+                                                         : schema::IsFileName(path.substr(5)));
+                     },
+                     "file.path", i);
       if (!path) {
         return Pass(path);
       }
@@ -477,10 +445,6 @@ class CompositionOpener {
   }
 
   Step CheckFiles() {
-    if (!v1_ && std::ranges::find(listed_, std::string("meta/model_index.json"),
-                                  &ListedFile::path) == listed_.end()) {
-      return Fail(Rule::kFileSet, "a composition keeps its model_index.json");
-    }
     std::vector<std::string> expected = {"manifest.json"};
     for (const ListedFile& f : listed_) {
       expected.push_back(f.path);
@@ -596,7 +560,6 @@ class CompositionOpener {
   FileDescriptor meta_;
   std::vector<std::string> present_;
   bool has_data_ = false;
-  bool v1_ = false;
   std::string bytes_;
   std::optional<json::Document> doc_;
   std::vector<ListedFile> listed_;

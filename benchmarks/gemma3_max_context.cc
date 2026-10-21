@@ -126,7 +126,7 @@ rt::Status Run(std::span<const std::string_view> args) {
   auto& llm = static_cast<rt::Llm&>(*target);
   if (llm.context() != kContext || llm.max_rows() != 128 || llm.speculative() ||
       config->models.front().artifact !=
-          "634bc193468f5968ac142c2e5547f72777b182f3f694873075d7a50660f46626")
+          "5d4674ce19e5783cea12775502f7ca23cbb2e6f2111efa2346c58bcd53482ece")
     return Error("maximum recipe differs");
   rt::SwapParts load;
   if (auto active = server.Activate(llm, load); !active) return active;

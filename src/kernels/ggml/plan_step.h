@@ -1,40 +1,14 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Planning a GGML graph's execution as upstream's CUDA backend would run
-// it (D-053; docs/backend-proof.md, Tier E): which of the module's
-// implementations (implementations.h) runs each node, fused or not, and
-// where each computed tensor lives.
-//
-// PlanGraph walks the nodes in order as ggml_cuda_graph_evaluate_and_capture
-// does (ggml-cuda.cu:4185-4360). Views and no-ops launch nothing. With
-// fusion on (FP16-F), each node is first offered to upstream's fusion
-// patterns in ggml_cuda_try_fuse's order, through fusion.h's gates; a graph
-// where a pattern llmpalooza does not implement might apply is refused, never
-// run differently. With fusion off (FP16-U, GGML_CUDA_DISABLE_FUSION),
-// upstream consults no pattern: an RMSNorm whose mul follows it runs as the
-// unfused RMSNorm-mul implementation (rms_norm's launcher, then mul's), and
-// everything else node by node. A matrix product's kernel family is
-// upstream's selection on the device (ggml_cuda_mul_mat), which the caller
-// supplies (ops.h on a CUDA build; a model of it in tests).
-//
-// Upstream's fusion gates compare the fused output's memory with its
-// inputs', so the plan depends on addresses, and the addresses on the plan
-// (what is live together). PlanActivations breaks the circle: plan with
-// every computed tensor at distinct addresses, place the tensors by that
-// plan's steps (a step's outputs never share memory with anything live
-// during it), bind them, plan again with the real addresses and require the
-// same plan (SamePlan). Every profile builds this; nothing here launches.
-
-#ifndef LLMP_KERNELS_GGML_GRAPH_PLAN_H_
-#define LLMP_KERNELS_GGML_GRAPH_PLAN_H_
+#ifndef LLMP_KERNELS_GGML_PLAN_STEP_H_
+#define LLMP_KERNELS_GGML_PLAN_STEP_H_
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
-#include <limits>
 #include <span>
 #include <string_view>
 #include <unordered_map>
@@ -43,7 +17,6 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
-#include "kernels/ggml/fusion.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
@@ -93,28 +66,11 @@ struct DeviceChoices {
   // Exact first nodes of IR-selected float product fusions. Empty by
   // default; it never enables fusion for other products in the graph.
   std::function<bool(const ggml_tensor*)> float_product_fusion{};
-  // Checked three-node norm fusions, separately requested and default off.
-  // Keep/view readers force the existing primitive steps.
-  bool fuse_norm_rope = false;
-  bool fuse_norm_add = false;
-  // Exact Gemma 128/top-eight routing and scaled ordered reduction.
-  // Explicit policies retain all descriptors/backing and primitive keep fallback.
-  bool fuse_gemma_route = false;
-  bool fuse_gemma_reduce = false;
-  // Explicit RoPE/direct-view/cache-store fusion without enabling upstream's
-  // other fusion gates. Full operand checks and diagnostic keep apply.
-  bool fuse_rope_store = false;
-  // Group independent consecutive physical KV stores; no producer fusion.
-  bool group_set_rows = false;
   // Where set, the groups a plan's caller already chose (the IR's grouped
   // stores): a store's group, zero for none; consecutive stores group only
   // within one nonzero group, never greedily past it (another owner's
   // attention between them in the IR may sit elsewhere in the graph).
   std::function<std::size_t(const ggml_tensor*)> set_rows_group = nullptr;
-  // Upstream's quantized gate/up/GLU MMVQ fusion without enabling its other
-  // fusion gates: where quant_glu_fusible (ops_ext.h MulMatVecQGluFusible)
-  // holds and only the GLU reads the products. Default off.
-  bool fuse_quant_glu = false;
   std::function<bool(const ggml_tensor*, const ggml_tensor*, const ggml_tensor*)>
       quant_glu_fusible = nullptr;
   // And float products of at most kRowInvariantColumns columns run GGML's
@@ -129,17 +85,6 @@ struct DeviceChoices {
   // loses. The predicate receives the up product; full structural, precision
   // and memory checks still apply. No current model enables this callback.
   std::function<bool(const ggml_tensor*)> geglu_fusible = nullptr;
-  // Fast plans may share preparation across adjacent ordinary MMQ expert
-  // products. The default keeps one primitive step per graph node.
-  bool pair_experts = false;
-  // Use a device-built expert-major MMQ tile list for measured fast
-  // quantized shapes. Reference/default plans retain upstream's grid.
-  bool compact_experts = false;
-  // Keep native Q8 preparation and raw weights, then use ds4's D2R
-  // arithmetic for the measured GB10 Q2_K down product (q2_d2r_fits). Not
-  // bit-identical; qualified by 32K perplexity
-  // (docs/experiments/ds4-prefill-stages). The fast DeepSeek plan's default.
-  bool d2r_experts = false;
   // Benchmark-only literal ds4 HCA comparison. Tagged causal metadata and
   // measured device/layout eligibility are both required; fallback is stable.
   bool ds4_hca = false;
@@ -151,40 +96,11 @@ struct DeviceChoices {
   // The shared IR can select the same recipe for individual operations.
   // This does not opt neighboring attention nodes into a different recipe.
   std::function<bool(const ggml_tensor*)> wide_sparse_attention_node = nullptr;
-  // The ds4 prefill stage mechanisms (docs/experiments/ds4-prefill-stages),
-  // each byte-identical to the plan without it and each under its own
-  // shape guard; the fast DeepSeek plan's defaults (SetDsv4PrefillStages).
-  // With compact experts, the measured GB10 IQ2 occupancy-two pair followed
-  // by its swiglu_clamp writes the activation from the up product's
-  // write-back instead of the up output (where nothing else reads it).
-  bool pair_glu = false;
-  // And with it, the activation written as the following Q2_K down product's
-  // D2S6 input, which that product then reads without quantizing (where
-  // nothing else reads the activation). Where d2r_experts takes that down
-  // product, the pair writes the F32 activation.
-  bool pair_glu_q8 = false;
   // Where an HC post with F16 rows reads the routed experts' ordered
   // reduction plus the shared expert, form that sum in the post's kernel
   // (dsv4_hc_norm.h Dsv4HcPostExpertsAt) instead of writing it.
   bool hc_post_experts = false;
-  // Output-A with a coalesced weight repack (identical bytes).
-  bool outa_fast_pack = false;
-  // Two dense MMQ products of one block-quantized type (not FP4) and one
-  // activation share one quantization; the later product runs at the
-  // earlier one's place.
-  bool dense_pair = false;
 };
-
-// The fast DeepSeek plan's device-side prefill stage mechanisms (above) and
-// the D2R down product, all on or all off. Reference plans keep them off.
-inline void SetDsv4PrefillStages(DeviceChoices& device, bool on) {
-  device.d2r_experts = on;
-  device.pair_glu = on;
-  device.pair_glu_q8 = on;
-  device.hc_post_experts = on;
-  device.outa_fast_pack = on;
-  device.dense_pair = on;
-}
 
 // One implementation's run over its nodes, in the order implementations.h
 // lists for it.
@@ -197,19 +113,6 @@ struct PlanStep {
   std::uint8_t lane = 0;
 };
 
-// Concurrent lanes. A graph builder may tag nodes that run independently of
-// one another (a wave's slots' attention and state operations) with a lane
-// and a region (LaneTag). AssignLanes gives each step its nodes' lane and
-// records each region's span of steps. Over a region's span, BoundGraph::Run
-// queues each lane's steps on a stream of its own (LaunchContext lanes): the
-// lanes wait for everything queued before the span, a step waits for the
-// steps on other lanes that last wrote what it reads or writes, or read
-// what it writes since (LaneOrder), and the context's stream waits for
-// every lane at the span's end. PlaceActivations keeps every
-// tensor a step in a span computes or reads live for the whole span, so
-// tensors of concurrent steps never share bytes. Each lane draws its scratch
-// from a pool of its own. The same kernels run with the same operands, so
-// each step computes what it computes on one stream, bit for bit.
 inline constexpr std::uint32_t kMaxLanes = 4;
 struct LaneTag {
   std::uint8_t lane = 0;     // 1 to kMaxLanes; 0 keeps the step on the stream
@@ -415,62 +318,10 @@ inline constexpr std::int64_t kRowInvariantColumns = 8;
 // Upstream's no-op nodes (ggml_cuda_is_view_or_noop).
 bool LaunchesNothing(const ggml_tensor* node);
 
-// Whether this invocation can query elided storage readers. Primitive plans
-// avoid constructing an unused host index.
-bool NeedsGraphReadIndex(bool fusion, const DeviceChoices& device);
-
-// The plan of `graph` (fusion.h's node order) with fusion on or off. The
-// tensors `keep` names (PlaceActivations's) are read after the run: an
-// implementation that leaves a tensor unwritten or overwrites it with
-// another form (pair_glu, pair_glu_q8) is planned only where nothing but its
-// consumer reads that tensor, in the graph or after it.
-std::expected<GraphPlan, KernelFailure> PlanGraph(
-    GraphNodes graph, bool fusion, const DeviceChoices& device,
-    std::span<ggml_tensor* const> keep = {},
-    std::uint64_t index_scratch_limit = std::numeric_limits<std::uint64_t>::max());
-
-// Whether two plans run the same implementations over the same nodes.
-bool SamePlan(const GraphPlan& a, const GraphPlan& b);
-
-// Where each computed tensor of a plan lives in one region.
-struct Placement {
-  std::vector<std::pair<ggml_tensor*, std::uint64_t>> offsets;  // tensor, offset
-  std::uint64_t extent = 0;        // the region's bytes the placement uses
-  bool measurement_bound = false;  // disjoint upper bound; never an executable layout
-};
-
-// Places every computed node of `graph` that is no view, and each of
-// `inputs` (leaves the region also holds), in one region at offsets
-// aligned to `alignment`, each rounded up to it (ggml-alloc's rule). A
-// tensor lives from the step that computes it (inputs from the start) to
-// the last step reading it or a view of it; the graph's last node, or the
-// tensor it views, lives to the end, as do the tensors `keep` names (or
-// the tensors they view), which a caller reads after the run. Tensors whose
-// lifetimes meet never share bytes, so a step's outputs share none with its
-// inputs. Placed largest first, each at the lowest offset free for its
-// whole lifetime.
-std::expected<Placement, KernelFailure> PlaceActivations(GraphNodes graph, const GraphPlan& plan,
-                                                         std::span<ggml_tensor* const> inputs,
-                                                         std::uint64_t alignment,
-                                                         std::span<ggml_tensor* const> keep = {});
-
-// Startup-only shortcut: use disjoint storage only if it fits an activation
-// maximum already established by exact measurement; otherwise place exactly.
-// The same root validation and selected plan apply to both branches.
-std::expected<Placement, KernelFailure> MeasureActivations(GraphNodes graph, const GraphPlan& plan,
-                                                           std::span<ggml_tensor* const> inputs,
-                                                           std::uint64_t alignment,
-                                                           std::span<ggml_tensor* const> keep,
-                                                           std::uint64_t exact_ceiling);
-
 // Points every view among `nodes` into its source's memory (the source's
 // address plus the view's offset), once the sources are bound.
 void BindViews(std::span<ggml_tensor* const> nodes);
 
-// Gives every computed node that is no view a distinct address from
-// `base` on (PlaceActivations's first pass), then binds the views.
-void BindDistinct(GraphNodes graph, std::uint64_t base);
-
 }  // namespace llmp::kernels::ggml
 
-#endif  // LLMP_KERNELS_GGML_GRAPH_PLAN_H_
+#endif  // LLMP_KERNELS_GGML_PLAN_STEP_H_

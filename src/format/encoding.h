@@ -183,6 +183,15 @@ std::optional<Encoding> EncodingByTypeName(std::string_view name);
 // Legacy v0 type block size lookup by type name ("Q8_1" is 40 in v0's
 // representation table, all other single-part types match BlockBytes).
 std::optional<std::uint32_t> LegacyTypeBlockBytes(std::string_view name);
+// A GGML type name of the pinned table, and a safetensors container dtype,
+// as encodings.
+std::optional<Encoding> EncodingOfGgmlType(std::string_view type);
+std::optional<std::string_view> GgmlTypeName(std::uint32_t type_id);
+std::optional<Encoding> EncodingOfDtype(std::string_view dtype);
+// The container dtype of a dense encoding (EncodingOfDtype's inverse);
+// nothing for an encoding safetensors has no dtype for (E8M0, every
+// quantized one).
+std::optional<std::string_view> DtypeOfEncoding(Encoding encoding);
 
 // Whether every value of `from` is exactly a value of `to`, so that
 // converting state from one to the other loses nothing. False where the

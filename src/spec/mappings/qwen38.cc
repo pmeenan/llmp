@@ -671,11 +671,10 @@ constexpr std::array kMtpReads = {
     ReadRule{.kind = ReadKind::kTap, .name = "streams", .point = TapPoint::kStreams},
 };
 
-// Autoregressive MTP passes, composed in their replay form; a selected
-// head's token map and the draft vocabulary's value.
+// Autoregressive MTP passes; a selected head's token map and the draft
+// vocabulary's value.
 constexpr std::string_view kHeadIds = "draft_output.ids";
 constexpr DraftRecipe kMtpDraft{.shape = DraftRecipe::Shape::kMtp,
-                                .composed_version = 2,
                                 .target_architecture = "qwen4exp",
                                 .head_ids = kHeadIds,
                                 .vocab_key = kDraftVocab};
@@ -696,26 +695,6 @@ constexpr Mapping kMtpMapping{
     .policies = kMtpPolicies,
     .draft = &kMtpDraft,
 };
-
-constexpr auto kMtpReplaySlots = [] {
-  auto slots = kMtpSlots;
-  slots[0].version = 2;
-  return slots;
-}();
-constexpr auto kMtpReplayParams = [] {
-  std::array<ParamRule, kMtpParams.size() + 2> params{};
-  std::ranges::copy(kMtpParams, params.begin());
-  params[kMtpParams.size()] = Int("embedding", "token_offset", 1);
-  params[kMtpParams.size() + 1] = Flag("attention", "replayable", true);
-  return params;
-}();
-constexpr auto kMtpReplayMapping = [] {
-  auto mapping = kMtpMapping;
-  mapping.version = 2;
-  mapping.slots = kMtpReplaySlots;
-  mapping.params = kMtpReplayParams;
-  return mapping;
-}();
 
 // The native importer's drafter (import/modelopt_qwen38.h, D-109): the
 // checkpoint's MTP tensors in their source encodings (its BF16 linears)
@@ -839,7 +818,6 @@ constexpr auto ZeroCentered(const std::array<ParamRule, N>& base) {
   return params;
 }
 constexpr auto kMtpNativeParams = ZeroCentered(kMtpParams);
-constexpr auto kMtpNativeReplayParams = ZeroCentered(kMtpReplayParams);
 // Missing kept metadata in published native MTP artifacts is reconstructed
 // from the actual target spec and this artifact's own selected-head tensor.
 constexpr std::array kMtpValues = {
@@ -945,7 +923,6 @@ constexpr std::array kMtpValues = {
               .at_most = kServing.default_draft_vocab},
 };
 constexpr DraftRecipe kMtpNativeDraft{.shape = DraftRecipe::Shape::kMtp,
-                                      .composed_version = 2,
                                       .target_architecture = "qwen4exp",
                                       .values = kMtpValues,
                                       .head_ids = kHeadIds,
@@ -969,16 +946,6 @@ constexpr auto kMtpNativeMapping = [] {
   mapping.folds = kNativeFolds;
   return mapping;
 }();
-constexpr auto kMtpNativeReplayMapping = [] {
-  auto mapping = kMtpReplayMapping;
-  mapping.containers = kNativeContainers;
-  mapping.draft = &kMtpNativeDraft;
-  mapping.tensors = kMtpNativeTensors;
-  mapping.params = kMtpNativeReplayParams;
-  mapping.folds = kNativeFolds;
-  return mapping;
-}();
-
 #undef LLMP_QWEN38_BLOCK_PARAMS
 
 }  // namespace
@@ -987,8 +954,6 @@ const Mapping& Qwen38Mapping() { return kMapping; }
 const Mapping& Qwen38GgufMapping() { return kGgufMapping; }
 const Mapping& Qwen38NativeMapping() { return kNativeMapping; }
 const Mapping& Qwen38MtpMapping() { return kMtpMapping; }
-const Mapping& Qwen38MtpReplayMapping() { return kMtpReplayMapping; }
 const Mapping& Qwen38MtpNativeMapping() { return kMtpNativeMapping; }
-const Mapping& Qwen38MtpNativeReplayMapping() { return kMtpNativeReplayMapping; }
 
 }  // namespace llmp::spec::mappings

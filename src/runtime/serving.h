@@ -1884,9 +1884,6 @@ class Server {
   std::uint64_t progress() const { return node_.progress(); }
   // The node's waits' patience (D-102's hang recovery; not owned).
   void SetPatience(engine::Patience* patience) { node_.SetPatience(patience); }
-  // A test hook (engine/paged_node.h CountingStorage): while set, the
-  // node's reads are held, as a stuck drive's would be. Any thread.
-  void HoldReads(bool hold) { hold_reads_.store(hold, std::memory_order_release); }
 
   // Conversations kept across a restart (D-105): at a graceful stop, the
   // resident model's idle conversations are settled and spilled (their
@@ -1931,7 +1928,6 @@ class Server {
   // Before the node and the models, so it outlives the files they name.
   RequestMemory token_memory_{0, std::numeric_limits<std::uint64_t>::max(), true};
   std::unique_ptr<StateKeeper> keeper_;
-  std::atomic<bool> hold_reads_{false};  // HoldReads; the node reads it
   std::function<void()> start_progress_;
   void StartProgress() const {
     if (start_progress_) {

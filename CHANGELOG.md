@@ -38,6 +38,23 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Test-only paths and v0 artifact reader retired (M3.5 U2): `PlanGraph`
+  (`kernels/ggml/graph_plan.{h,cc}`) and `Qwen38Commit` removed with their
+  tests and `benchmarks/decode_templates.cc` moved onto the production IR
+  lowering and component runners; the v0 artifact/composition reader
+  (`artifact/representation.{h,cc}`, `artifact/format_map.{h,cc}`,
+  `V0ArtifactSource`, `tests/unit/artifact_corpus.py`) removed and all model
+  fixtures, tests and gate scripts (`speed_gate.py`, `swap_table.py`,
+  `assistant_gate.py`, `k1_quality.py`) moved onto v1 artifacts; the layout
+  profile renamed from `"spark-v0"` (version 0) to `"spark"` (version 1, D-121);
+  `LLMP_TEST_HOLD_READS` retired from the production binary (`NodeSettings::hold_reads`
+  remains for unit tests); the repeat-pending drafter ledger removed; and
+  `llmp_import_fuzz` extended
+  through `spec::Synthesize`, `import::Normalize`, `planner::Plan`, and v1
+  artifact/composition opening with a seed corpus in
+  `tests/unit/data/import_fuzz/` (`llmp_import_fuzz
+  --corpus=tests/unit/data/import_fuzz --iterations=10000`, seed `20261021`,
+  0 failures on `spark-b`).
 - Speculative multi-slot prefill continuations (`src/engine/prefill.cc`):
   `PrefillOrchestrator::Predict` now keeps ready decode peers in `cohort` for
   speculative multi-slot continuations when `max_segments > 1`, preserves

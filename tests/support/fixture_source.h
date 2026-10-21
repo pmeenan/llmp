@@ -3,16 +3,11 @@
 
 // A test fixture's tensor table as a mapping's source (spec/mapping.h
 // Source), for tests that synthesize a spec without an artifact: each
-// tensor described as a v0 descriptor gives it (a GGML type and ne, a plain
-// dtype and shape, an EXL3 part; artifact/format_map.h FormatOf), and the
-// tensors that hold one tensor's parts (an MXFP8 matrix's codes and scales,
-// an EXL3 trellis's four parts, scale-atom expert tables) paired into it by
-// an assembly table, as the native importer pairs them.
-//
-// Also the same of a v0 artifact (its resources and expert arrays), which
-// the Qwen-Image component tests still read: the image slice moves that
-// pipeline to stored spec data (D-118) and retires that use. Serving reads
-// v1 artifacts only (spec/stored.h SourceOf).
+// tensor described by its GGML type or plain container dtype and shape in
+// GGML order (`ne`), and the tensors that hold one tensor's parts (an MXFP8
+// matrix's codes and scales, the n-gram table and its tensor scale,
+// scale-atom expert tables) paired into it by an assembly table, as the
+// native importer pairs them.
 
 #ifndef LLMP_TESTS_SUPPORT_FIXTURE_SOURCE_H_
 #define LLMP_TESTS_SUPPORT_FIXTURE_SOURCE_H_
@@ -31,10 +26,8 @@
 #include <utility>
 #include <vector>
 
-#include "artifact/artifact.h"
-#include "artifact/format_map.h"
-#include "artifact/representation.h"
 #include "format/encoding.h"
+#include "format/layout.h"
 #include "format/tensor_format.h"
 #include "spec/mapping.h"
 
@@ -85,21 +78,15 @@ inline constexpr std::array kQwen38ModelOptAssembly = {
                     .experts = true},
 };
 
-// An EXL3 trellis's four parts (the approved fixtures use the mcg marker).
-inline constexpr std::array kExl3Assembly = {
-    FixtureAssembly{.suffixes = {".trellis", ".suh", ".svh", ".mcg"},
-                    .roles = {format::PartRole::kCodes, format::PartRole::kInputSigns,
-                              format::PartRole::kOutputSigns, format::PartRole::kCodebookMarker},
-                    .encoding = format::Encoding::kExl3Trellis,
-                    .layout = format::Layout::kExl3Tiles},
-};
-
 // A fixture tensor: its name, the roles it binds as (its name and tied
-// aliases), its descriptor, and an expert array's expert count (0: none).
+// aliases), its plain dtype or GGML type and GGML-ordered `ne`, and an
+// expert array's expert count (0: none).
 struct FixtureTensor {
   std::string name{};
   std::vector<std::string> roles{};
-  const artifact::Representation* repr = nullptr;
+  bool plain = false;
+  std::string type{};
+  std::vector<std::uint64_t> ne{};
   std::uint32_t count = 0;
 };
 
@@ -121,6 +108,116 @@ inline bool Matches(std::string_view pattern, std::string_view name) {
 }
 inline std::unexpected<std::string> Refuse(std::string_view what, std::string_view why) {
   return std::unexpected(std::format("{}: {}", what, why));
+}
+
+inline std::expected<format::TensorFormat, format::FormatError> TensorFormatOf(
+    bool plain, std::string_view type, std::span<const std::uint64_t> ne) {
+  const auto encoding = plain ? format::EncodingOfDtype(type) : format::EncodingOfGgmlType(type);
+  const auto shape = format::ShapeOf(ne);
+  if (!encoding || !shape) {
+    return std::unexpected(!encoding ? format::FormatError::kUnknown : format::FormatError::kShape);
+  }
+  format::TensorFormat f{.encoding = *encoding, .layout = format::Layout::kDense, .shape = *shape};
+  if (!plain) {
+    const format::EncodingInfo& info = format::Info(*encoding);
+    if (info.quantized) {
+      f.layout = *encoding == format::Encoding::kNvfp4 ? format::Layout::kGgmlNvfp4Blocks
+                                                       : format::Layout::kGgmlBlocks;
+    }
+  }
+  if (auto ok = format::Validate(f); !ok) {
+    return std::unexpected(ok.error());
+  }
+  return f;
+}
+
+struct PartInput {
+  format::PartRole role = format::PartRole::kData;
+  const FixtureTensor* tensor = nullptr;
+};
+
+inline std::expected<format::TensorFormat, format::FormatError> AssembleParts(
+    format::Encoding encoding, format::Layout layout, std::span<const PartInput> parts,
+    std::uint8_t stacked = 1) {
+  if (static_cast<std::size_t>(encoding) >= format::Encodings().size() ||
+      static_cast<std::size_t>(layout) >= format::Layouts().size()) {
+    return std::unexpected(format::FormatError::kUnknown);
+  }
+  const auto find_part = [&](format::PartRole role) -> const FixtureTensor* {
+    const auto it = std::ranges::find_if(parts, [&](const PartInput& p) { return p.role == role; });
+    return it == parts.end() ? nullptr : it->tensor;
+  };
+  for (std::size_t i = 0; i < parts.size(); ++i) {
+    if (parts[i].tensor == nullptr) return std::unexpected(format::FormatError::kParts);
+    for (std::size_t j = i + 1; j < parts.size(); ++j) {
+      if (parts[i].role == parts[j].role) return std::unexpected(format::FormatError::kParts);
+    }
+  }
+  const format::EncodingInfo& info = format::Info(encoding);
+  format::TensorFormat f{.encoding = encoding, .layout = layout, .stacked = stacked};
+  f.params.tensor_scale = find_part(format::PartRole::kTensorScale) != nullptr;
+  switch (layout) {
+    case format::Layout::kSplit:
+    case format::Layout::kScaleAtoms:
+    case format::Layout::kRowInterleaved: {
+      if (info.element_bits == 0 || !info.quantized) {
+        return std::unexpected(format::FormatError::kLayout);
+      }
+      const format::PartRole role = layout == format::Layout::kRowInterleaved
+                                        ? format::PartRole::kData
+                                        : format::PartRole::kCodes;
+      const FixtureTensor* rep = find_part(role);
+      if (rep == nullptr) return std::unexpected(format::FormatError::kParts);
+      const auto own = TensorFormatOf(rep->plain, rep->type, rep->ne);
+      if (!own || own->layout != format::Layout::kDense ||
+          format::Info(own->encoding).element_bits != 8 || own->shape.rank != 2) {
+        return std::unexpected(format::FormatError::kParts);
+      }
+      const std::uint64_t row_bytes = own->shape.ne[0];
+      const std::uint64_t rows = own->shape.ne[1];
+      const std::uint64_t per_block = (info.block_elements * info.element_bits / 8) +
+                                      (layout == format::Layout::kRowInterleaved ? 1 : 0);
+      if (row_bytes % per_block != 0) {
+        return std::unexpected(format::FormatError::kBlock);
+      }
+      f.shape = {.ne = {row_bytes / per_block * info.block_elements, rows, 1, 1}, .rank = 2};
+      break;
+    }
+    case format::Layout::kDense:
+    case format::Layout::kGgmlBlocks:
+    case format::Layout::kGgmlNvfp4Blocks: {
+      const FixtureTensor* rep = find_part(format::PartRole::kData);
+      if (rep == nullptr) return std::unexpected(format::FormatError::kParts);
+      auto own = TensorFormatOf(rep->plain, rep->type, rep->ne);
+      if (!own) return own;
+      if (own->encoding != encoding || own->layout != layout) {
+        return std::unexpected(format::FormatError::kLayout);
+      }
+      f.shape = own->shape;
+      break;
+    }
+    case format::Layout::kExl3Tiles:
+      return std::unexpected(format::FormatError::kParts);
+  }
+  const auto extents = format::PartsOf(f);
+  if (!extents) return std::unexpected(extents.error());
+  if (extents->size() != parts.size()) return std::unexpected(format::FormatError::kParts);
+  for (const format::PartExtent& extent : extents->parts()) {
+    const FixtureTensor* rep = find_part(extent.role);
+    if (rep == nullptr) return std::unexpected(format::FormatError::kParts);
+    const auto own = TensorFormatOf(rep->plain, rep->type, rep->ne);
+    if (!own) return std::unexpected(format::FormatError::kParts);
+    const auto own_extents = format::PartsOf(*own);
+    if (!own_extents || own_extents->size() != 1 ||
+        own_extents->parts().front().bytes != extent.bytes) {
+      return std::unexpected(format::FormatError::kParts);
+    }
+    if (extent.role == format::PartRole::kTensorScale &&
+        (!rep->plain || format::EncodingOfDtype(rep->type) != format::Encoding::kF32)) {
+      return std::unexpected(format::FormatError::kParts);
+    }
+  }
+  return f;
 }
 }  // namespace fixture_detail
 
@@ -144,7 +241,7 @@ inline std::expected<spec::Source, std::string> FixtureSource(
       const std::string_view stem =
           std::string_view(t.name).substr(0, t.name.size() - a.suffixes[0].size());
       if (!a.stem.empty() && !fixture_detail::Matches(a.stem, stem)) continue;
-      std::vector<artifact::V0Part> parts;
+      std::vector<fixture_detail::PartInput> parts;
       std::vector<std::string> part_names;
       std::size_t wanted = 0;
       for (std::size_t i = 0; i < a.suffixes.size(); ++i) {
@@ -152,14 +249,12 @@ inline std::expected<spec::Source, std::string> FixtureSource(
         ++wanted;
         std::string name = std::format("{}{}", stem, a.suffixes.at(i));
         const auto found = by_name.find(name);
-        if (found == by_name.end() || (found->second->count != 0) != a.experts ||
-            found->second->repr == nullptr)
-          break;
-        parts.push_back({.role = a.roles.at(i), .rep = found->second->repr});
+        if (found == by_name.end() || (found->second->count != 0) != a.experts) break;
+        parts.push_back({.role = a.roles.at(i), .tensor = found->second});
         part_names.push_back(std::move(name));
       }
       if (parts.size() != wanted) continue;  // not every part: left as it is
-      auto f = artifact::Assemble(a.encoding, a.layout, parts, a.stacked);
+      auto f = fixture_detail::AssembleParts(a.encoding, a.layout, parts, a.stacked);
       if (!f)
         return Refuse(t.name, std::format("its parts do not assemble ({})",
                                           format::FormatErrorName(f.error())));
@@ -173,13 +268,12 @@ inline std::expected<spec::Source, std::string> FixtureSource(
     }
   }
   for (const FixtureTensor& t : tensors) {
-    if (t.repr == nullptr) return Refuse(t.name, "no representation");
-    auto f = artifact::FormatOf(*t.repr);
+    auto f = fixture_detail::TensorFormatOf(t.plain, t.type, t.ne);
     if (!f || (t.count != 0 && f->shape.rank > 2))
       return Refuse(t.name,
                     f ? std::string("no two-dimensional slice format")
                       : std::format("no tensor format ({})", format::FormatErrorName(f.error())));
-    format::PartRole part = artifact::V0PartRole(*t.repr);
+    format::PartRole part = format::PartRole::kData;
     if (const auto at = paired.find(t.name); at != paired.end()) {
       f = at->second.first;
       part = at->second.second;
@@ -195,33 +289,6 @@ inline std::expected<spec::Source, std::string> FixtureSource(
       s.tensors.push_back({.name = role, .format = *f, .part = part, .experts = false});
   }
   return s;
-}
-
-// A v0 artifact's resources and expert arrays as a source (the container
-// "gguf" when every source file is a GGUF, "safetensors" when every one is
-// a safetensors or JSON file, else "other"). The Qwen-Image component
-// tests' (the image slice's, until its components are stored v1 specs).
-inline std::expected<spec::Source, std::string> V0ArtifactSource(
-    const artifact::Artifact& artifact, std::span<const FixtureAssembly> assembly = {}) {
-  if (artifact.format_version() != 0)
-    return fixture_detail::Refuse(std::format("artifact {}", artifact.id()), "not format v0");
-  const auto sources = artifact.sources();
-  const auto all = [&](auto pred) {
-    return !sources.empty() && std::ranges::all_of(sources, pred);
-  };
-  std::string container = "other";
-  if (all([](const artifact::Source& f) { return f.name.ends_with(".gguf"); }))
-    container = "gguf";
-  else if (all([](const artifact::Source& f) {
-             return f.name.ends_with(".safetensors") || f.name.ends_with(".json");
-           }))
-    container = "safetensors";
-  std::vector<FixtureTensor> tensors;
-  for (const artifact::Resource& r : artifact.resources())
-    tensors.push_back({.name = r.name, .roles = r.roles, .repr = &r.repr, .count = 0});
-  for (const artifact::ExpertArray& a : artifact.expert_arrays())
-    tensors.push_back({.name = a.name, .roles = {a.name}, .repr = &a.repr, .count = a.count});
-  return FixtureSource(artifact.model().architecture, std::move(container), tensors, assembly);
 }
 
 }  // namespace llmp::test_support

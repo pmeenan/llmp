@@ -113,7 +113,7 @@ Status EngineLlm::Setup() {
                         : en::LiveState::SpillPlace{
                               .directory = directory, .dir = -1, .name = {}, .keep = false};
   };
-  slots.invalidate = [this, also = std::move(slots.invalidate)](std::uint32_t slot) {
+  slots.content_changed = [this, also = std::move(slots.content_changed)](std::uint32_t slot) {
     if (slot < reset_.size()) reset_[slot] = true;
     if (also) also(slot);
   };

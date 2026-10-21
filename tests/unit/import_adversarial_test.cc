@@ -763,7 +763,7 @@ TEST_F(ImportAdversarialTest, DamagedExistingArtifactMismatchedIdRefused) {
 
   // Overwrite manifest with a different valid manifest (which changes its ID).
   const std::string alt_manifest =
-      R"({"converter":{"build":"test","name":"llmp-import","options_sha256":"0000000000000000000000000000000000000000000000000000000000000000","version":1},"files":[],"groups":[],"layout":{"chunk_bytes":2097152,"format":"llmp-artifact","format_version":1,"member_alignment":4096,"profile":"spark-v0","profile_version":0},"model":{"architecture":"other","container":"gguf","expert_count":0},"source":[],"transformations":[]})" +
+      R"({"converter":{"build":"test","name":"llmp-import","options_sha256":"0000000000000000000000000000000000000000000000000000000000000000","version":1},"files":[],"groups":[],"layout":{"chunk_bytes":2097152,"format":"llmp-artifact","format_version":1,"member_alignment":4096,"profile":"spark","profile_version":1},"model":{"architecture":"other","container":"gguf","expert_count":0},"source":[],"transformations":[]})" +
       std::string("\n");
   Write(result->path / "manifest.json", alt_manifest);
 

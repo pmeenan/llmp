@@ -55,10 +55,10 @@
 #include "execution/registry.h"
 #include "ggml.h"
 #include "kernels/ggml/executor.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
 #include "paged_node.h"
 #include "paged_programs.h"
@@ -427,27 +427,51 @@ class GraphModel final : public ts::PagedModel {
     q_ = q;
     f_ = f;
     sum_ = a;
-    kg::BindDistinct(nodes_, act + kComputedAt);
-    ASSERT_LT(Address(out_->data) + ggml_nbytes(out_), act + node_.activations().bytes);
-    auto plan = kg::PlanGraph(nodes_, /*fusion=*/false, kg::DeviceChoicesOf(*launch_));
-    ASSERT_TRUE(plan.has_value()) << plan.error().detail;
-    steps_ = plan->steps.size();
-    std::vector<std::string_view> names;
-    for (const kg::PlanStep& step : plan->steps) {
-      names.push_back(step.implementation);
+    std::uint64_t next_act = act + kComputedAt;
+    for (ggml_tensor* node : nodes_) {
+      if (node->view_src == nullptr && node->data == nullptr) {
+        kg::TensorArena::Bind(node, next_act);
+        next_act += (ggml_nbytes(node) + 255) / 256 * 256 + 256;
+      }
     }
-    EXPECT_EQ(names,
-              (std::vector<std::string_view>{kg::kGetRowsName, kg::kRmsNormMulUnfused,
-                                             kg::kMulMatVecQ, kg::kMulMatVector, kg::kAddName,
-                                             kg::kMulMatVector, kg::kRopeName, kg::kSetRowsName}));
-    auto scratch = kg::PlanScratch(*launch_, *plan);
+    kg::BindViews(nodes_);
+    ASSERT_LT(Address(out_->data) + ggml_nbytes(out_), act + node_.activations().bytes);
+    kg::GraphPlan plan;
+    plan.steps = {
+        {.operation = llmp::ir::Primitive(llmp::ir::Op::kGetRows),
+         .implementation = kg::kGetRowsName,
+         .nodes = {x}},
+        {.operation = llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul),
+         .implementation = kg::kRmsNormMulUnfused,
+         .nodes = {n, s}},
+        {.operation = llmp::ir::Primitive(llmp::ir::Op::kMatMul),
+         .implementation = kg::kMulMatVecQ,
+         .nodes = {q}},
+        {.operation = llmp::ir::Primitive(llmp::ir::Op::kMatMul),
+         .implementation = kg::kMulMatVector,
+         .nodes = {f}},
+        {.operation = llmp::ir::Primitive(llmp::ir::Op::kAdd),
+         .implementation = kg::kAddName,
+         .nodes = {a}},
+        {.operation = llmp::ir::Primitive(llmp::ir::Op::kMatMul),
+         .implementation = kg::kMulMatVector,
+         .nodes = {scores_}},
+        {.operation = llmp::ir::Primitive(llmp::ir::Op::kRope),
+         .implementation = kg::kRopeName,
+         .nodes = {out_}},
+        {.operation = llmp::ir::Primitive(llmp::ir::Op::kCacheStore),
+         .implementation = kg::kSetRowsName,
+         .nodes = {write}},
+    };
+    steps_ = plan.steps.size();
+    auto scratch = kg::PlanScratch(*launch_, plan);
     ASSERT_TRUE(scratch.has_value());
     EXPECT_GT(*scratch, 0U);  // MMVQ's quantized activations: pool addresses in the graph
     ASSERT_LE(*scratch, pool_bytes);
-    auto bound = kg::BoundGraph::Bind(*registry_, *plan);
+    auto bound = kg::BoundGraph::Bind(*registry_, plan);
     ASSERT_TRUE(bound.has_value()) << bound.error().detail;
     bound_.emplace(std::move(*bound));
-    plan_ = std::move(*plan);
+    plan_ = std::move(plan);
   }
 
   // Concurrent lanes (graph_plan.h AssignLanes; executor.h BoundGraph::Run):

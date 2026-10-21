@@ -1,14 +1,10 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The v0 artifact reader (src/artifact): its strict JSON and hex digests, read
-// planning on hand-built layouts, and Artifact::Open against the corpus the
-// M0 prototype builds and judges (artifact_corpus.py): the prototype's views
-// of valid artifacts, its verdict on every mutated one, links and special
-// files made here, caps on sparse files, the owner policy, direct-read
-// opens and a mutation fuzz the prototype judges (ASan in check:full). The
-// real v0 fixtures are opened where they are installed (a Spark) and
-// skipped elsewhere.
+// The v1 artifact reader (src/artifact): its strict JSON and hex digests, read
+// planning on hand-built layouts, and Artifact::Open against filesystem edge
+// cases (links, special files, unreadable directories, sparse files, direct
+// reads, kept metadata).
 
 #include "artifact/artifact.h"
 
@@ -28,22 +24,17 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <map>
 #include <optional>
 #include <random>
-#include <set>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "artifact/error.h"
 #include "artifact/json.h"
 #include "artifact/layout.h"
-#include "artifact/representation.h"
 #include "artifact/schema.h"
 #include "base/bytes.h"
 #include "base/sha256.h"
@@ -71,13 +62,6 @@ std::string Env(const char* name) {
   return value == nullptr ? std::string() : std::string(value);
 }
 
-// The corpus is built beside the test, where CTest runs it; a manual run
-// elsewhere names it in LLMP_TEST_ARTIFACT_CORPUS.
-fs::path Corpus() {
-  const std::string configured = Env("LLMP_TEST_ARTIFACT_CORPUS");
-  return configured.empty() ? fs::path("artifact-corpus") : fs::path(configured);
-}
-
 fs::path Scratch(std::string_view name) {
   const std::string base = Env("LLMP_TEST_SCRATCH");
   const fs::path root = base.empty() ? fs::path(::testing::TempDir()) : fs::path(base);
@@ -98,30 +82,8 @@ void WriteFile(const fs::path& path, std::string_view data) {
   out.write(data.data(), static_cast<std::streamsize>(data.size()));
 }
 
-// A copy of an artifact directory under `into`, keeping its name.
-fs::path CopyArtifact(const fs::path& from, const fs::path& into) {
-  const fs::path to = into / from.filename();
-  std::error_code error;
-  fs::copy(from, to, fs::copy_options::recursive, error);
-  EXPECT_FALSE(error) << error.message();
-  return to;
-}
-
 std::string Verdict(const std::expected<Artifact, Error>& opened) {
   return opened ? std::string("ok") : std::string(RuleName(opened.error().rule));
-}
-
-std::string Describe(const std::expected<Artifact, Error>& opened) {
-  return opened ? std::string("ok") : opened.error().ToString();
-}
-
-// The single artifact directory under dir.
-fs::path OnlyChild(const fs::path& dir) {
-  std::error_code error;
-  for (const auto& entry : fs::directory_iterator(dir, error)) {
-    return entry.path();
-  }
-  return {};
 }
 
 // A small mutable JSON tree for editing documents in tests, written
@@ -297,174 +259,187 @@ void MakeSparse(const fs::path& path, std::uint64_t size) {
   EXPECT_FALSE(error) << error.message();
 }
 
-// ---------------------------------------------------------------- the view
-
-std::string Join(const std::vector<std::uint64_t>& values, std::string_view separator) {
-  std::string out;
-  for (std::size_t i = 0; i < values.size(); ++i) {
-    out += (i > 0 ? std::string(separator) : std::string()) + std::to_string(values[i]);
-  }
-  return out;
-}
-
-std::string ReprText(const artifact::Representation& r) {
-  if (r.family == artifact::Family::kGgml) {
-    return "ggml:" + std::string(r.type) + ":" + Join(r.dims, "x");
-  }
-  std::string text = std::string(artifact::FamilyName(r.family)) + ":" +
-                     (r.role.empty() ? std::string("-") : std::string(r.role)) + ":" +
-                     std::string(r.type) + ":" + Join(r.dims, "x");
-  if (r.role == "trellis") {
-    text += ":k" + std::to_string(r.k_bits) + ":in" + std::to_string(r.in_features) + ":out" +
-            std::to_string(r.out_features) + ":" + std::string(r.codebook);
-  }
-  return text;
-}
-
-std::string_view KindName(artifact::GroupKind kind) {
-  switch (kind) {
-    case artifact::GroupKind::kTable:
-      return "table";
-    case artifact::GroupKind::kLayer:
-      return "layer";
-    case artifact::GroupKind::kExpert:
-      return "expert";
-    case artifact::GroupKind::kGlobal:
-      return "global";
-    case artifact::GroupKind::kHead:
-      return "head";
-  }
-  return "?";
-}
-
-std::string_view RoleName(artifact::FileRole role) {
-  switch (role) {
-    case artifact::FileRole::kIndex:
-      return "index";
-    case artifact::FileRole::kShard:
-      return "shard";
-    case artifact::FileRole::kSourceMetadata:
-      return "source-metadata";
-    case artifact::FileRole::kSpec:
-      return "spec";
-  }
-  return "?";
-}
-
-std::string Dash(const std::optional<std::uint32_t>& v) {
-  return v ? std::to_string(*v) : std::string("-");
-}
-
-// The same facts, in the same form, as artifact_corpus.py's view().
-std::string View(const Artifact& a) {
-  std::ostringstream out;
-  out << "artifact " << a.id() << "\n";
-  std::string families;
-  for (const artifact::Family f : a.model().representation) {
-    families += (families.empty() ? "" : ",") + std::string(artifact::FamilyName(f));
-  }
-  out << "model " << a.model().architecture << " " << a.model().expert_count << " " << families
-      << "\n";
-  for (const auto& s : a.sources()) {
-    out << "source " << s.name << " " << s.bytes.value() << " " << llmp::base::ToHex(s.sha256)
-        << "\n";
-  }
-  for (const auto& f : a.files()) {
-    out << "file " << f.path << " " << RoleName(f.role) << " " << f.bytes.value() << " "
-        << llmp::base::ToHex(f.sha256) << "\n";
-  }
-  for (std::size_t i = 0; i < a.shards().size(); ++i) {
-    const auto& s = a.shards()[i];
-    out << "shard " << i << " " << s.path << " " << s.data_offset.value() << " "
-        << s.data_bytes.value() << " " << llmp::base::ToHex(s.header_sha256) << "\n";
-  }
-  std::vector<ChunkKey> everything;
-  for (std::uint32_t gid = 0; gid < a.groups().size(); ++gid) {
-    const auto& g = a.groups()[gid];
-    out << "group " << gid << " " << KindName(g.kind) << " " << Dash(g.layer) << " "
-        << Dash(g.expert) << " " << g.shard << " " << g.offset.value() << " " << g.used.value()
-        << " " << g.stored.value() << " " << g.first_chunk << " " << g.chunks << "\n";
-    for (std::uint32_t k = 0; k < g.chunks; ++k) {
-      const auto range = artifact::ChunkRangeOf(a.layout(), {.group = gid, .chunk = k});
-      EXPECT_TRUE(range.has_value());
-      out << "chunk " << gid << " " << k << " " << a.shards()[range->shard].path << " "
-          << range->file_offset.value() << " " << range->length.value() << " "
-          << llmp::base::ToHex(a.chunk_sha256()[g.first_chunk + k]) << "\n";
-      everything.push_back({.group = gid, .chunk = k});
+// Builds a small valid 3-shard v1 artifact under `into` and returns its path.
+fs::path WriteTinyV1Artifact(const fs::path& into) {
+  const auto make_shard = [](std::string_view entries, std::size_t data_bytes) {
+    std::string text(8, '\0');
+    text += R"({"__metadata__":{"format":"llmp-shard","format_version":"1"},)";
+    text += entries;
+    text += '}';
+    text.resize(4096, ' ');
+    const std::uint64_t length = 4096 - 8;
+    for (std::size_t k = 0; k < 8; ++k) {
+      text[k] = static_cast<char>((length >> (8U * k)) & 0xFFU);
     }
-  }
-  for (std::uint32_t i = 0; i < a.resources().size(); ++i) {
-    const auto& r = a.resources()[i];
-    std::string roles;
-    for (const auto& role : r.roles) {
-      roles += (roles.empty() ? "" : ",") + role;
-    }
-    const auto placement = a.ResourcePlacement(i);
-    EXPECT_TRUE(placement.has_value());
-    out << "resource " << r.name << " " << roles << " " << r.group << " " << r.offset.value() << " "
-        << r.bytes.value() << " " << r.readable.value() << " " << (r.rows ? "rows" : "-") << " "
-        << ReprText(r.repr) << " " << placement->closure.first << " " << placement->closure.last
-        << "\n";
-    if (r.rows) {
-      const auto geometry = a.Rows(i);
-      EXPECT_TRUE(geometry.has_value());
-      const std::set<std::uint64_t> unique = {0, geometry->rows / 2, geometry->rows - 1};
-      const std::vector<std::uint64_t> rows(unique.begin(), unique.end());
-      const auto keys = a.RowChunks(i, rows);
-      EXPECT_TRUE(keys.has_value());
-      std::string chunks;
-      for (const auto& key : *keys) {
-        chunks += (chunks.empty() ? "" : ",") + std::to_string(key.group) + ":" +
-                  std::to_string(key.chunk);
-      }
-      out << "rows " << r.name << " " << geometry->rows << " " << geometry->row_bytes << " "
-          << Join(rows, ",") << " " << chunks << "\n";
-    }
-  }
-  for (std::uint32_t i = 0; i < a.expert_arrays().size(); ++i) {
-    const auto& x = a.expert_arrays()[i];
-    out << "array " << x.name << " " << x.layer << " " << x.count << " " << x.first_group << " "
-        << x.group_offset.value() << " " << x.slice_bytes.value() << " " << x.readable.value()
-        << " " << ReprText(x.repr) << "\n";
-    for (std::uint32_t e = 0; e < x.count; ++e) {
-      const auto placement = a.SlicePlacement(i, e);
-      EXPECT_TRUE(placement.has_value());
-      out << "slice " << x.name << " " << e << " " << placement->group << " "
-          << placement->closure.first << " " << placement->closure.last << "\n";
-    }
-  }
-  std::vector<ChunkKey> odd;
-  std::vector<ChunkKey> even;
-  for (std::size_t i = 0; i < everything.size(); ++i) {
-    (i % 2 == 0 ? even : odd).push_back(everything[i]);
-  }
-  struct Plan {
-    std::string_view label;
-    const std::vector<ChunkKey>* missing;
-    const std::vector<ChunkKey>* resident;
-    std::uint64_t max_run;
-    std::size_t max_segments;
+    const std::string header_sha = Sha256Hex(text);
+    text.append(data_bytes, '\0');
+    return std::pair(std::move(text), header_sha);
   };
-  const std::vector<ChunkKey> none;
-  for (const Plan& p : {Plan{"all", &everything, &none, std::uint64_t{64} << 20U, 1024},
-                        Plan{"all", &everything, &none, std::uint64_t{4} << 20U, 3},
-                        Plan{"all", &everything, &none, 1, 1},
-                        Plan{"alternate", &even, &odd, std::uint64_t{64} << 20U, 1024}}) {
-    const auto runs = a.PlanReads(*p.missing, *p.resident,
-                                  {.max_run = Bytes(p.max_run), .max_segments = p.max_segments});
-    EXPECT_TRUE(runs.has_value());
-    for (const auto& run : *runs) {
-      out << "run " << p.label << " " << p.max_run << " " << p.max_segments << " "
-          << a.shards()[run.shard].path << " " << run.file_offset.value() << " "
-          << run.length.value();
-      for (const auto& s : run.segments) {
-        out << " " << s.chunk.group << ":" << s.chunk.chunk << ":" << s.length.value();
-        EXPECT_EQ(s.group_offset.value(), std::uint64_t{s.chunk.chunk} * artifact::kChunkBytes);
-      }
-      out << "\n";
+  const auto [s0_bytes, s0_sha] = make_shard(
+      R"("token_embd.weight":{"dtype":"F32","shape":[8,128],"data_offsets":[0,4096]})", 4096);
+  const auto [s1_bytes, s1_sha] = make_shard(
+      R"("output_norm.weight":{"dtype":"F32","shape":[1024],"data_offsets":[0,4096]})", 4096);
+  const auto [s2_bytes, s2_sha] = make_shard(
+      R"("blk.1.ffn_down_exps.weight#0":{"dtype":"F32","shape":[4,256],"data_offsets":[0,4096]},"blk.1.ffn_down_exps.weight#1":{"dtype":"F32","shape":[4,256],"data_offsets":[4096,8192]})",
+      8192);
+  const std::string zero_chunk_sha = Sha256Hex(std::string(4096, '\0'));
+
+  const auto f32_format = [](std::initializer_list<std::int64_t> ne) {
+    J f = J::Of(json::Kind::kObject);
+    f["encoding"] = J::Str("f32");
+    f["layout"] = J::Str("dense");
+    f["ne"] = J::Of(json::Kind::kArray);
+    for (std::int64_t d : ne) {
+      f["ne"].items.push_back(J::Int(d));
     }
+    f["params"] = J::Of(json::Kind::kObject);
+    f["stacked"] = J::Int(1);
+    return f;
+  };
+  const auto make_group = [](std::string_view kind, std::optional<std::int64_t> layer,
+                             std::optional<std::int64_t> expert, std::int64_t shard,
+                             std::int64_t offset, std::int64_t first_chunk) {
+    J g = J::Of(json::Kind::kObject);
+    g["expert"] = expert ? J::Int(*expert) : J::Of(json::Kind::kNull);
+    g["first_chunk"] = J::Int(first_chunk);
+    g["kind"] = J::Str(std::string(kind));
+    g["layer"] = layer ? J::Int(*layer) : J::Of(json::Kind::kNull);
+    g["offset"] = J::Int(offset);
+    g["shard"] = J::Int(shard);
+    g["stored_bytes"] = J::Int(4096);
+    g["used_bytes"] = J::Int(4096);
+    return g;
+  };
+  const auto make_shard_entry = [](std::string_view path, std::int64_t data_bytes,
+                                   const std::string& header_sha) {
+    J s = J::Of(json::Kind::kObject);
+    s["data_bytes"] = J::Int(data_bytes);
+    s["data_offset"] = J::Int(4096);
+    s["header_sha256"] = J::Str(header_sha);
+    s["path"] = J::Str(std::string(path));
+    return s;
+  };
+
+  J index = J::Of(json::Kind::kObject);
+  index["chunk_bytes"] = J::Int(static_cast<std::int64_t>(artifact::kChunkBytes));
+  index["chunk_sha256"] = J::Of(json::Kind::kArray);
+  for (int i = 0; i < 4; ++i) {
+    index["chunk_sha256"].items.push_back(J::Str(zero_chunk_sha));
   }
-  return out.str();
+  J arr = J::Of(json::Kind::kObject);
+  arr["count"] = J::Int(2);
+  arr["first_group"] = J::Int(2);
+  arr["format"] = f32_format({256, 4});
+  arr["group_offset"] = J::Int(0);
+  arr["layer"] = J::Int(1);
+  arr["name"] = J::Str("blk.1.ffn_down_exps.weight");
+  arr["part"] = J::Str("data");
+  arr["readable_bytes"] = J::Int(4096);
+  arr["slice_bytes"] = J::Int(4096);
+  index["expert_arrays"] = J::Of(json::Kind::kArray);
+  index["expert_arrays"].items.push_back(std::move(arr));
+  index["file_alignment"] = J::Int(4096);
+  index["format"] = J::Str("llmp-index");
+  index["format_version"] = J::Int(1);
+  index["groups"] = J::Of(json::Kind::kArray);
+  index["groups"].items.push_back(make_group("table", std::nullopt, std::nullopt, 0, 0, 0));
+  index["groups"].items.push_back(make_group("head", std::nullopt, std::nullopt, 1, 0, 1));
+  index["groups"].items.push_back(make_group("expert", 1, 0, 2, 0, 2));
+  index["groups"].items.push_back(make_group("expert", 1, 1, 2, 4096, 3));
+  index["member_alignment"] = J::Int(256);
+
+  J r0 = J::Of(json::Kind::kObject);
+  r0["access"] = J::Str("rows");
+  r0["bytes"] = J::Int(4096);
+  r0["format"] = f32_format({128, 8});
+  r0["group"] = J::Int(0);
+  r0["name"] = J::Str("token_embd.weight");
+  r0["offset"] = J::Int(0);
+  r0["part"] = J::Str("data");
+  r0["readable_bytes"] = J::Int(4096);
+  r0["roles"] = J::Of(json::Kind::kArray);
+  r0["roles"].items = {J::Str("token_embd.weight"), J::Str("output.weight")};
+
+  J r1 = J::Of(json::Kind::kObject);
+  r1["bytes"] = J::Int(4096);
+  r1["format"] = f32_format({1024});
+  r1["group"] = J::Int(1);
+  r1["name"] = J::Str("output_norm.weight");
+  r1["offset"] = J::Int(0);
+  r1["part"] = J::Str("data");
+  r1["readable_bytes"] = J::Int(4096);
+  r1["roles"] = J::Of(json::Kind::kArray);
+  r1["roles"].items = {J::Str("output_norm.weight")};
+
+  index["resources"] = J::Of(json::Kind::kArray);
+  index["resources"].items = {std::move(r0), std::move(r1)};
+  index["shards"] = J::Of(json::Kind::kArray);
+  index["shards"].items = {
+      make_shard_entry("data/00000.safetensors", 4096, s0_sha),
+      make_shard_entry("data/00001.safetensors", 4096, s1_sha),
+      make_shard_entry("data/00002.safetensors", 8192, s2_sha),
+  };
+
+  const fs::path stage = into / "staging";
+  std::error_code error;
+  fs::create_directories(stage / "data", error);
+  fs::create_directories(stage / "meta", error);
+  WriteFile(stage / "index.json", index.Canonical());
+  WriteFile(stage / "data" / "00000.safetensors", s0_bytes);
+  WriteFile(stage / "data" / "00001.safetensors", s1_bytes);
+  WriteFile(stage / "data" / "00002.safetensors", s2_bytes);
+  const std::string kv_bytes = "GGUF\x03\x00\x00\x00";
+  WriteFile(stage / "meta" / "tiny.kv.gguf", kv_bytes);
+
+  J manifest = J::Of(json::Kind::kObject);
+  manifest["experimental"] = J::Of(json::Kind::kTrue);
+  manifest["files"] = J::Of(json::Kind::kArray);
+  AddFile(manifest, "data/00000.safetensors", "shard", s0_bytes.size());
+  AddFile(manifest, "data/00001.safetensors", "shard", s1_bytes.size());
+  AddFile(manifest, "data/00002.safetensors", "shard", s2_bytes.size());
+  AddFile(manifest, "index.json", "index", 0);
+  AddFile(manifest, "meta/tiny.kv.gguf", "source-metadata", kv_bytes.size());
+  manifest["format"] = J::Str("llmp-artifact");
+  manifest["format_version"] = J::Int(1);
+  J importer = J::Of(json::Kind::kObject);
+  importer["build"] = J::Str("unknown");
+  importer["name"] = J::Str("llmp-import");
+  importer["options_sha256"] = J::Str(Sha256Hex(""));
+  importer["version"] = J::Str("0.0.0");
+  manifest["importer"] = std::move(importer);
+  J layout = J::Of(json::Kind::kObject);
+  layout["byte_order"] = J::Str("little");
+  layout["chunk_bytes"] = J::Int(static_cast<std::int64_t>(artifact::kChunkBytes));
+  layout["container"] = J::Str("safetensors");
+  layout["file_alignment"] = J::Int(4096);
+  layout["member_alignment"] = J::Int(256);
+  layout["profile"] = J::Str("spark");
+  layout["profile_version"] = J::Int(1);
+  manifest["layout"] = std::move(layout);
+  J model = J::Of(json::Kind::kObject);
+  model["architecture"] = J::Str("llama");
+  model["container"] = J::Str("gguf");
+  model["expert_count"] = J::Int(2);
+  manifest["model"] = std::move(model);
+  manifest["source"] = J::Of(json::Kind::kArray);
+  J src = J::Of(json::Kind::kObject);
+  src["bytes"] = J::Int(16);
+  src["name"] = J::Str("tiny.gguf");
+  src["sha256"] = J::Str(Sha256Hex("tiny-gguf-source"));
+  manifest["source"].items.push_back(std::move(src));
+  J t_slice = J::Of(json::Kind::kObject);
+  t_slice["count"] = J::Int(2);
+  t_slice["kind"] = J::Str("expert-slice");
+  t_slice["tensor"] = J::Str("blk.1.ffn_down_exps.weight");
+  J t_dedupe = J::Of(json::Kind::kObject);
+  t_dedupe["kind"] = J::Str("dedupe-identical");
+  t_dedupe["resource"] = J::Str("token_embd.weight");
+  t_dedupe["role"] = J::Str("output.weight");
+  t_dedupe["sha256"] = J::Str(zero_chunk_sha);
+  manifest["transformations"] = J::Of(json::Kind::kArray);
+  manifest["transformations"].items = {std::move(t_slice), std::move(t_dedupe)};
+  WriteFile(stage / "manifest.json", manifest.Canonical());
+  return Relist(stage, [](J&) {});
 }
 
 // ---------------------------------------------------------------- digests
@@ -619,7 +594,8 @@ TEST(ArtifactJsonTest, ExtendedFileNamesAndStableBuildIdentity) {
 
 TEST(ArtifactJsonTest, CanonicalDocumentsRoundTrip) {
   // Any document the parser calls canonical re-serializes to its own bytes.
-  const std::string index = ReadFile(OnlyChild(Corpus() / "golden" / "moe") / "index.json");
+  const fs::path root = WriteTinyV1Artifact(Scratch("roundtrip"));
+  const std::string index = ReadFile(root / "index.json");
   ASSERT_FALSE(index.empty());
   std::mt19937 random(11);  // NOLINT(bugprone-random-generator-seed): reproducible
   for (int i = 0; i < 2000; ++i) {
@@ -763,106 +739,13 @@ TEST(ArtifactLayoutTest, BoundsRunSizeAndSegments) {
   EXPECT_EQ((*split)[1].segments.size(), 1U);
 }
 
-// ---------------------------------------------------------------- the corpus
-
-TEST(ArtifactCorpusTest, TypeTablesMatchThePrototype) {
-  std::istringstream lines(ReadFile(Corpus() / "types.txt"));
-  ASSERT_FALSE(lines.str().empty()) << "no corpus at " << Corpus();
-  std::size_t ggml = 0;
-  std::size_t dtypes = 0;
-  std::size_t native = 0;
-  std::string kind;
-  while (lines >> kind) {
-    std::string name;
-    lines >> name;
-    if (kind == "ggml") {
-      std::uint32_t id = 0;
-      std::uint32_t block = 0;
-      std::uint32_t bytes = 0;
-      lines >> id >> block >> bytes;
-      const auto* type = artifact::FindGgmlType(name);
-      ASSERT_NE(type, nullptr) << name;
-      EXPECT_EQ(std::tuple(type->id, type->block_elements, type->block_bytes),
-                std::tuple(id, block, bytes))
-          << name;
-      ++ggml;
-    } else if (kind == "dtype") {
-      std::uint32_t bytes = 0;
-      lines >> bytes;
-      const auto* dtype = artifact::FindDtype(name);
-      ASSERT_NE(dtype, nullptr) << name;
-      EXPECT_EQ(dtype->bytes, bytes) << name;
-      ++dtypes;
-    } else {
-      EXPECT_TRUE(artifact::IsNativeContainerType(name)) << name;
-      ++native;
-    }
-  }
-  EXPECT_EQ(ggml, artifact::GgmlTypes().size());
-  EXPECT_EQ(dtypes, artifact::Dtypes().size());
-  EXPECT_EQ(native, 8U);
-}
-
-TEST(ArtifactCorpusTest, ViewsMatchThePrototype) {
-  for (const char* name : {"tiny", "exl3", "moe"}) {
-    const fs::path root = OnlyChild(Corpus() / "golden" / name);
-    ASSERT_FALSE(root.empty()) << "no corpus at " << Corpus();
-    const auto opened = Artifact::Open(root);
-    ASSERT_TRUE(opened.has_value()) << name << ": " << Describe(opened);
-    const std::string want = ReadFile(Corpus() / "golden" / (std::string(name) + ".view"));
-    EXPECT_EQ(View(*opened), want) << name;
-  }
-}
-
-// Where the reader's rule knowingly differs from the prototype's on the same
-// input (both refuse, or the reader accepts what it does not read):
-//   - a string escape is refused outright, whatever the field; the format's
-//     strings never contain `"` or `\`, while the prototype refuses the
-//     document under the first rule it reaches (`json`, `canonical`, or the
-//     field's rule);
-//   - the reader does not parse kept `.kv.gguf` metadata (artifact.h), which
-//     the prototype's loader-open does: it accepts what only that refuses,
-//     and refuses a manifest expert count that also disagrees with the
-//     expert arrays under the prototype's next rule.
-const std::map<std::string, std::string, std::less<>> kDivergences = {
-    {"manifest-escaped-newline", "canonical"},
-    {"meta-empty-kv", "ok"},
-    {"manifest-expert-count", "expert-array"},
-};
-
-TEST(ArtifactCorpusTest, VerdictsMatchThePrototype) {
-  std::istringstream lines(ReadFile(Corpus() / "cases.txt"));
-  std::string name;
-  std::string id;
-  std::string oracle;
-  std::size_t cases = 0;
-  std::set<std::string> rules;
-  while (lines >> name >> id >> oracle) {
-    const auto opened = Artifact::Open(Corpus() / "cases" / name / id);
-    const auto divergence = kDivergences.find(name);
-    const std::string want = divergence != kDivergences.end() ? divergence->second : oracle;
-    EXPECT_EQ(Verdict(opened), want)
-        << name << ": " << Describe(opened) << " (prototype: " << oracle << ")";
-    rules.insert(oracle);
-    ++cases;
-  }
-  EXPECT_GE(cases, 150U) << "no corpus at " << Corpus();
-  // Every rule the loader-open path can name has cases.
-  for (const char* rule :
-       {"ok", "unsupported-version", "unsupported-profile", "format", "json", "canonical",
-        "identity", "schema", "path", "file-set", "file-size", "hash", "bounds", "alignment",
-        "overlap", "repr", "expert-array", "container"}) {
-    EXPECT_TRUE(rules.contains(rule)) << rule;
-  }
-}
-
 // ---------------------------------------------------------------- the directory
 
 class ArtifactFilesTest : public ::testing::Test {
  protected:
   void SetUp() override {
     scratch_ = Scratch(::testing::UnitTest::GetInstance()->current_test_info()->name());
-    root_ = CopyArtifact(OnlyChild(Corpus() / "golden" / "tiny"), scratch_);
+    root_ = WriteTinyV1Artifact(scratch_);
     ASSERT_TRUE(Artifact::Open(root_).has_value());
   }
   void TearDown() override {
@@ -879,15 +762,20 @@ class ArtifactFilesTest : public ::testing::Test {
   fs::path root_;
 };
 
-TEST_F(ArtifactFilesTest, V0KeepsItsLegacySourceAndMetadataNameRules) {
-  root_ = Relist(root_, [](J& m) { m["source"].items[0]["name"] = J::Str("~source.gguf"); });
-  EXPECT_EQ(Open(root_), "schema");
+TEST_F(ArtifactFilesTest, RefusesV0FormatVersionAndProfile) {
+  root_ = Relist(root_, [](J& m) { m["format"] = J::Str("jitllm-artifact"); });
+  EXPECT_EQ(Open(root_), "format");
   root_ = Relist(root_, [](J& m) {
-    m["source"].items[0]["name"] = J::Str("tiny.gguf");
-    for (J& file : m["files"].items)
-      if (file["role"].text == "source-metadata") file["path"] = J::Str("meta/tiny metadata.gguf");
+    m["format"] = J::Str("llmp-artifact");
+    m["format_version"] = J::Int(0);
   });
-  EXPECT_EQ(Open(root_), "path");
+  EXPECT_EQ(Open(root_), "unsupported-version");
+  root_ = Relist(root_, [](J& m) {
+    m["format_version"] = J::Int(1);
+    m["layout"]["profile"] = J::Str("spark-v0");
+    m["layout"]["profile_version"] = J::Int(0);
+  });
+  EXPECT_EQ(Open(root_), "unsupported-profile");
 }
 
 TEST_F(ArtifactFilesTest, LinksInsideAndSpecialFilesAreRefused) {
@@ -1157,138 +1045,6 @@ TEST_F(ArtifactFilesTest, KeptMetadataIsReadAsListed) {
   differs = a.ReadMetadata("tiny.kv.gguf");
   ASSERT_FALSE(differs.has_value());
   EXPECT_EQ(differs.error().rule, Rule::kFileType);
-}
-
-// ---------------------------------------------------------------- fuzz
-
-// Seeded random mutations of the valid artifacts' documents, built and
-// judged by the prototype at build time (artifact_corpus.py fuzz_corpus):
-// trees re-hashed and re-listed so that they reach every validation step,
-// and raw byte damage, then fixed probes of the two divergences above. Open
-// must return the prototype's verdict (ASan and UBSan watch in check:full)
-// as the reader reads the artifact: past the prototype's `meta` checks of
-// kept GGUF metadata, which the reader does not parse (the corpus records
-// that verdict too); and where the reader refuses a string escape, only on
-// a document the prototype refuses too, under whatever rule.
-TEST(ArtifactCorpusTest, FuzzVerdictsMatchThePrototype) {
-  std::istringstream lines(ReadFile(Corpus() / "fuzz.txt"));
-  const fs::path scratch = Scratch("fuzz");
-  std::map<std::string, fs::path, std::less<>> roots;
-  std::map<std::string, std::string, std::less<>> indexes;
-  std::string n;
-  std::string base;
-  std::string oracle;
-  std::string unread;
-  std::size_t cases = 0;
-  std::size_t accepted = 0;
-  std::size_t meta = 0;
-  std::size_t escapes = 0;
-  std::set<std::string> rules;
-  while (lines >> n >> base >> oracle >> unread) {
-    if (!roots.contains(base)) {
-      const fs::path golden = OnlyChild(Corpus() / "golden" / base);
-      ASSERT_FALSE(golden.empty()) << base;
-      std::error_code error;
-      fs::create_directories(scratch / base, error);
-      roots[base] = CopyArtifact(golden, scratch / base);
-      indexes[base] = ReadFile(golden / "index.json");
-    }
-    fs::path& root = roots[base];
-    const fs::path stem = Corpus() / "fuzz" / n;
-    const std::string manifest = ReadFile(fs::path(stem.string() + ".manifest"));
-    std::error_code error;
-    const fs::path index_file(stem.string() + ".index");
-    const std::string index = fs::exists(index_file, error) ? ReadFile(index_file) : indexes[base];
-    WriteFile(root / "manifest.json", manifest);
-    WriteFile(root / "index.json", index);
-    const fs::path renamed = root.parent_path() / Sha256Hex(manifest);
-    fs::rename(root, renamed, error);
-    ASSERT_FALSE(error) << error.message();
-    root = renamed;
-    const auto opened = Artifact::Open(root);
-    const std::string got = Verdict(opened);
-    const bool escape = !opened && opened.error().rule == Rule::kCanonical &&
-                        opened.error().reason.starts_with("a string escape");
-    if (escape) {
-      EXPECT_TRUE(manifest.contains('\\') || index.contains('\\')) << "fuzz case " << n;
-      EXPECT_NE(unread, "ok") << "fuzz case " << n << " (" << base
-                              << "): the prototype accepts a string escape";
-      ++escapes;
-    } else {
-      EXPECT_EQ(got, unread) << "fuzz case " << n << " (" << base << "): " << Describe(opened)
-                             << " (prototype: " << oracle << ")";
-    }
-    EXPECT_TRUE(oracle == "meta" || unread == oracle) << "fuzz case " << n;
-    meta += oracle == "meta" ? 1 : 0;
-    accepted += opened.has_value() ? 1 : 0;
-    rules.insert(oracle);
-    ++cases;
-  }
-  EXPECT_GE(cases, 808U) << "no corpus at " << Corpus();
-  // The mutations reach well past the parser, and both divergences occur.
-  EXPECT_GE(accepted, 50U);
-  EXPECT_GE(meta, 4U);
-  EXPECT_GE(escapes, 4U);
-  for (const char* rule : {"json", "schema", "unsupported-version", "bounds", "repr"}) {
-    EXPECT_TRUE(rules.contains(rule)) << rule;
-  }
-}
-
-// ---------------------------------------------------------------- real fixtures
-
-// The v0 fixtures M0 built with the prototype (docs/experiments/artifact-layout),
-// where they are installed: on spark, and copied to spark-b. Each view's
-// digest is the prototype's (`artifact_corpus.py view`, run on spark on
-// 2026-09-27 against the same artifact); counts are the layout study's.
-struct Fixture {
-  std::string_view id;
-  std::string_view what;
-  std::size_t groups;
-  std::size_t chunks;
-  std::size_t placed;  // resources plus expert slices
-  std::string_view view_sha256;
-};
-
-constexpr std::array kFixtures = {
-    Fixture{"b93cdc326ba4f4c1c71da613503ecd848cd2a0caf122214f26e04588a12a9073", "Qwen2.5-0.5B FP16",
-            25, 490, 290, "994c1c493672169811834f70c03a5ec4e5257238903be2dca4d351940f58d03a"},
-    Fixture{"6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4",
-            "Qwen2.5-0.5B EXL3 4.0 bpw", 26, 292, 798,
-            "950da0fa77ae9a0b09b85e2eb272e5c373b295f4bdd7c34f9dea4a7f64c458ff"},
-    Fixture{"00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a",
-            "Qwen2.5-0.5B EXL3 4.5 bpw", 26, 302, 798,
-            "0be0fe43fbcbf24dda8b9a2f618a4f1e83a99f2ad5adbcdfbad15d791adad59c"},
-    Fixture{"d673bf28ab0016797432d65c8a888ee7e579c0ad65475e773ebfbdd1bf8e5cfa",
-            "Gemma 4 26B-A4B UD-Q4_K_M", 3872, 9059, 8278,
-            "ab798d22df74d40024056925a062c86c83911061c7bcf52d93f1b631c93114ca"},
-};
-
-TEST(ArtifactFixtureTest, RealArtifactsMatchThePrototype) {
-  const std::string home = Env("HOME");
-  const fs::path store = fs::path(home) / ".local/share/llmp/artifact-layout-20260922/installed";
-  std::size_t found = 0;
-  for (const Fixture& f : kFixtures) {
-    const fs::path root = store / f.id;
-    std::error_code error;
-    if (home.empty() || !fs::is_directory(root, error)) {
-      continue;
-    }
-    ++found;
-    const auto opened = Artifact::Open(root);
-    ASSERT_TRUE(opened.has_value()) << f.what << ": " << Describe(opened);
-    const Artifact& a = *opened;
-    std::size_t placed = a.resources().size();
-    for (const auto& x : a.expert_arrays()) {
-      placed += x.count;
-    }
-    EXPECT_EQ(a.groups().size(), f.groups) << f.what;
-    EXPECT_EQ(a.chunk_sha256().size(), f.chunks) << f.what;
-    EXPECT_EQ(placed, f.placed) << f.what;
-    EXPECT_EQ(Sha256Hex(View(a)), f.view_sha256) << f.what;
-  }
-  if (found == 0) {
-    GTEST_SKIP() << "no v0 fixture under " << store << " (they are on spark and spark-b)";
-  }
 }
 
 }  // namespace

@@ -20,6 +20,7 @@
 #include <thread>
 #include <vector>
 
+#include "ir/op.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/gemma_moe.h"
 #include "kernels/ggml/gemma_moe_fusion.h"
@@ -28,6 +29,7 @@
 #include "providers/cuda/cuda_device_execution.h"
 
 namespace {
+namespace ir = llmp::ir;
 namespace kg = llmp::kernels::ggml;
 namespace pr = llmp::providers;
 using llmp::base::Bytes;
@@ -235,16 +237,19 @@ TEST_F(GemmaMoeGpu, RegisteredBothOutputPlanPreservesTailAndFreshCapturedOperand
     for (auto* tensor : nodes)
       if (!tensor->view_src) Place(tensor);
     kg::BindViews(nodes);
-    kg::DeviceChoices choices;
-    choices.fuse_gemma_route = choices.fuse_gemma_reduce = true;
-    auto planned = kg::PlanGraph(nodes, false, choices);
-    ASSERT_TRUE(planned);
-    ASSERT_EQ(planned->steps.size(), 2U);
-    EXPECT_EQ(planned->steps[0].nodes.size(), 10U);
-    EXPECT_EQ(planned->steps[1].nodes.size(), 17U);
-    auto bound = kg::BoundGraph::Bind(*registry, *planned);
+    kg::GraphPlan planned;
+    planned.steps = {{.operation = ir::Primitive(ir::Op::kRoute),
+                      .implementation = kg::kGemmaRouteName,
+                      .nodes = std::vector<ggml_tensor*>(nodes.begin(), nodes.begin() + 10)},
+                     {.operation = ir::Primitive(ir::Op::kExpertReduce),
+                      .implementation = kg::kGemmaReduceName,
+                      .nodes = std::vector<ggml_tensor*>(nodes.begin() + 10, nodes.end())}};
+    ASSERT_EQ(planned.steps.size(), 2U);
+    EXPECT_EQ(planned.steps[0].nodes.size(), 10U);
+    EXPECT_EQ(planned.steps[1].nodes.size(), 17U);
+    auto bound = kg::BoundGraph::Bind(*registry, planned);
     ASSERT_TRUE(bound);
-    auto scratch = kg::PlanScratch(*launch, *planned);
+    auto scratch = kg::PlanScratch(*launch, planned);
     ASSERT_TRUE(scratch);
     EXPECT_EQ(*scratch, 0U);
     // Uniform logits exercise deterministic ties. Every expert is dyadic,

@@ -343,25 +343,18 @@ class Configuration(unittest.TestCase):
         self.assertTrue(q["tokenizer"].startswith("/share/models/"))
         self.assertEqual(cfg["models"]["image"], {"composition": st.sg.IMAGE_V1})
 
-    def test_the_default_ids_are_the_v1_imports_and_v0_ids_the_baselines(self):
-        v1 = {"gemma2": "f176f912", "gemma3": "634bc193", "gemma26": "f0f72ab3",
-              "gemma31": "4d9a255a"}
+    def test_the_default_ids_are_the_v1_imports(self):
+        v1 = {"gemma2": "92bbb574", "gemma3": "5d4674ce", "gemma26": "23f6b7c1",
+              "gemma31": "91580585"}
         for name, prefix in v1.items():
             self.assertTrue(st.load_ids(None)[name]["artifact"].startswith(prefix), name)
         ids = st.load_ids(None)
         self.assertEqual((ids["deepseek"]["artifact"][:8], ids["deepseek"]["drafter"][:8],
                           ids["qwen3.8"]["artifact"][:8], ids["qwen3.8"]["drafter"][:8]),
-                         ("698b1cd8", "5c9d95e2", "d145900e", "316caa59"))
-        old = st.load_ids(None, v0=True)
-        self.assertEqual((old["deepseek"]["artifact"], old["deepseek"]["drafter"],
-                          old["qwen3.8"]["artifact"], old["qwen3.8"]["drafter"]),
-                         (st.sg.DSV4_V0, st.sg.DSPARK_V0, st.sg.QWEN_V0, st.sg.QWEN_MTP_V0))
-        self.assertEqual([old[n]["artifact"] for n in v1],
-                         [st.sg.GEMMA2_V0, st.sg.GEMMA3_V0, st.sg.GEMMA26_V0, st.sg.GEMMA31_V0])
-        self.assertEqual((old["image"], ids["image"]),
-                         ({"composition": st.sg.IMAGE}, {"composition": st.sg.IMAGE_V1}))
-        cfg = tomllib.loads(st.render_config(st.CASES["m3"], old, "/store", "/data", "/share"))
-        self.assertEqual(cfg["models"]["deepseek"]["artifact"], st.sg.DSV4_V0)
+                         ("d2046349", "6b1b9dca", "02354af1", "2cb4cdb8"))
+        self.assertEqual(ids["image"], {"composition": st.sg.IMAGE_V1})
+        cfg = tomllib.loads(st.render_config(st.CASES["m3"], ids, "/store", "/data", "/share"))
+        self.assertEqual(cfg["models"]["deepseek"]["artifact"], st.sg.DSV4_V1)
 
     def test_gemma_cases_pair_with_a_one_slot_qwen(self):
         cfg = self.render("gemma3")
@@ -428,11 +421,6 @@ class PlanAndRun(Fixture):
         self.assertIn("--name m3 ", line)
         self.assertIn("--image-pin " + "f" * 64, line)
         self.assertIn("--ids /ids.json", line)
-        self.assertNotIn("--v0-ids", line)
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            st.main(self.argv("plan", "--v0-ids"))
-        self.assertTrue(all("--v0-ids" in line for line in out.getvalue().splitlines()))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             st.main(["plan", "--case", "gemma31", "--runtime", "/r", "--store", "/s",
@@ -533,10 +521,10 @@ class PlanAndRun(Fixture):
         share.mkdir()
         # Default with no directories
         self.assertEqual(st.resolve_store(None, share), str(share / "artifacts"))
-        # Fallback to m36-v1-artifacts when artifacts doesn't exist
-        (share / "m36-v1-artifacts").mkdir()
-        self.assertEqual(st.resolve_store(None, share), str(share / "m36-v1-artifacts"))
-        self.assertEqual(st.resolve_store("artifacts", share), str(share / "m36-v1-artifacts"))
+        # Fallback to u2-v1-artifacts when artifacts doesn't exist
+        (share / "u2-v1-artifacts").mkdir()
+        self.assertEqual(st.resolve_store(None, share), str(share / "u2-v1-artifacts"))
+        self.assertEqual(st.resolve_store("artifacts", share), str(share / "u2-v1-artifacts"))
         # artifacts takes precedence when it exists
         (share / "artifacts").mkdir()
         self.assertEqual(st.resolve_store(None, share), str(share / "artifacts"))
@@ -546,14 +534,14 @@ class PlanAndRun(Fixture):
 
     def test_plan_with_default_store(self):
         share = self.dir / "share"
-        (share / "m36-v1-artifacts").mkdir(parents=True, exist_ok=True)
+        (share / "u2-v1-artifacts").mkdir(parents=True, exist_ok=True)
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             st.main(["plan", "--case", "gemma31", "--runtime", "/r",
                      "--share", str(share), "--out", "/o"])
         lines = out.getvalue().splitlines()
         self.assertEqual(len(lines), 1)
-        self.assertIn(f"--store {share / 'm36-v1-artifacts'}", lines[0])
+        self.assertIn(f"--store {share / 'u2-v1-artifacts'}", lines[0])
 
 
 if __name__ == "__main__":

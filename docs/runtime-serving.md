@@ -165,8 +165,8 @@ A node names the models it serves in its configuration (D-073's document,
 
 ```toml
 [models.deepseek]
-artifact = "698b1cd8…"   # an installed v1 artifact's ID, under storage.installed
-drafter = "5c9d95e2…"    # optional: its speculative drafter (DSpark, MTP)
+artifact = "d2046349…"   # an installed v1 artifact's ID, under storage.installed
+drafter = "6b1b9dca…"    # optional: its speculative drafter (DSpark, MTP)
 # speculation = true     # the default when there is a drafter
 # wave_form = "auto"     # concurrent waves: "auto", "speculative" or "plain" (below)
 # context = 262144       # default tokens of conversation state (bounds below)
@@ -179,13 +179,13 @@ drafter = "5c9d95e2…"    # optional: its speculative drafter (DSpark, MTP)
 #     derived from the artifact, calibrated, or its measured fallback
 
 [models."qwen3.8"]
-artifact = "d145900e…"   # a v1 import's ID (D-118)
-drafter = "316caa59…"
+artifact = "02354af1…"   # a v1 import's ID (D-118)
+drafter = "2cb4cdb8…"
 tokenizer = "/path/to/tokenizer.json"          # when the artifact keeps none
 chat_template = "/path/to/chat_template.jinja"  # likewise
 
 [models.image]
-composition = "2170db12…"  # a pipeline (D-089)
+composition = "95314e53…"  # a pipeline (D-089)
 
 [memory]                     # D-055 as amended 2026-10-02, D-124 (below)
 # mode = "dedicated"         # "dedicated" (default on DGX Spark) preallocates physical backing pool;
@@ -393,7 +393,7 @@ directory or record found with another owner, modes or links is used and
 said once, D-105 as amended on 2026-10-09):
 
 ```json
-{"format":"llmp-model-calibration-v1","artifact":"698b1cd8…","drafter":"5c9d95e2…",
+{"format":"llmp-model-calibration-v1","artifact":"d2046349…","drafter":"6b1b9dca…",
  "device":"NVIDIA GB10 sm_121, driver 580.95.05, CUDA 13.0","build":"0.3.0-dev.12+g…",
  "settings":"speculation=true draft_rows=3 prefill_chunk=4096 max_slots=4 prefill_outa_hca=true/true wave_form=auto prefill_chunk_override=false max_slots_override=false context=262144 wave_costs=[2.08,2.52,2.81,2.4,2.12,2.21,2.23] wave_costs_override=false wave_costs_override_count=0",
  "values":{"prefill_floor_tok_s":333,"decode_floor_tok_s":7,
@@ -2136,7 +2136,8 @@ after ten minutes without progress and aborts after ten more.
 **Measured** (`spark-b`, GB10, 2026-10-03; [hang
 recovery](experiments/hang-recovery/README.md)). Through the service
 (Qwen3.8 and DeepSeek V4 Flash registered, `hang_seconds = 60`): with the
-node's reads held by a test hook (`LLMP_TEST_HOLD_READS`) in its
+node's reads held by a test hook (`NodeSettings::hold_reads`;
+formerly `LLMP_TEST_HOLD_READS`, retired from production in M3.5 U2) in its
 cancellable form (reads still queued), a new conversation's state growth
 made no progress; rung 1 cancelled it at 60 s and it drained at once;
 rung 2 failed its request (503 after 62.6 s) and reset and evicted

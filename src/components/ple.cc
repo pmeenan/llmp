@@ -436,15 +436,6 @@ constexpr std::array kMtpParams{
     ParamSpec{.name = "tap", .type = ParamType::kName},
     kNormZeroCentered,
 };
-// Version 2 declares the cache/token relation and repeatable progress;
-// version 1 retains its original layout and orchestration contract.
-constexpr std::array kMtpRepeatParams{
-    kMtpParams[0],
-    kMtpParams[1],
-    kNormZeroCentered,
-    ParamSpec{.name = "token_offset", .type = ParamType::kInt, .least = 0, .most = 1},
-};
-
 enum : std::uint16_t { kTable, kNormEmbd, kFcEmbd, kNormHidden, kFcHidden };
 constexpr std::array kMtpRoles{
     WeightRole{.name = "table"},
@@ -473,14 +464,6 @@ model::StateContract MtpState(const Instance& in) {
                        .row_carry = 1,
                        .rollback = model::Rollback::kSnapshot,
                        .target_writes = true}}};
-}
-
-model::StateContract MtpRepeatState(const Instance& in) {
-  auto state = MtpState(in);
-  state.tensors.push_back(model::DraftProgressControl(
-      "progress", in.params.Int("token_offset") == 0 ? model::DraftRelation::kTokenAtCache
-                                                     : model::DraftRelation::kTokenAfterCache));
-  return state;
 }
 
 std::expected<FragmentOut, std::string> MtpEmit(Fragment& f) {
@@ -608,18 +591,6 @@ const ComponentDef& EmbeddingMtp() {
       .emit = MtpEmit,
       .reference = MtpReference,
   };
-  return def;
-}
-
-const ComponentDef& EmbeddingMtpRepeat() {
-  static const ComponentDef def = [] {
-    ComponentDef value = EmbeddingMtp();
-    value.version = 2;
-    value.params = kMtpRepeatParams;
-    value.state = MtpRepeatState;
-    value.max_state_tensors = 2;
-    return value;
-  }();
   return def;
 }
 

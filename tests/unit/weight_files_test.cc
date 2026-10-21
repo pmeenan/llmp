@@ -37,11 +37,15 @@
 
 #include "artifact/artifact.h"
 #include "artifact/layout.h"
+#include "artifact_writer.h"
 #include "base/bytes.h"
 #include "catalog/catalog.h"
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
 #include "expected_error.h"
+#include "format/encoding.h"
+#include "format/layout.h"
+#include "format/tensor_format.h"
 #include "scheduler/files.h"
 #include "scheduler/programs.h"
 #include "scheduler/scheduler.h"
@@ -94,18 +98,28 @@ TEST(FileTable, InstallsOnceAndTakesBackOnlyWithNoReadInFlight) {
 
 // ------------------------------------------------------------ the node
 
-fs::path Corpus() {
-  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
-  const char* configured = std::getenv("LLMP_TEST_ARTIFACT_CORPUS");
-  return configured != nullptr ? fs::path(configured) : fs::path("artifact-corpus");
-}
-
-fs::path OnlyChild(const fs::path& dir) {
-  std::error_code error;
-  for (const auto& entry : fs::directory_iterator(dir, error)) {
-    return entry.path();
-  }
-  return {};
+llmp::test::V1Plan TwoShardPlan() {
+  namespace fm = llmp::format;
+  llmp::test::V1Plan p;
+  p.architecture = "toy";
+  p.container = "safetensors";
+  p.groups = {
+      llmp::test::V1Group{.kind = llmp::artifact::GroupKind::kTable,
+                          .resources = {{.name = "token_embd.weight",
+                                         .aliases = {"output.weight"},
+                                         .format = {.encoding = fm::Encoding::kQ8_0,
+                                                    .layout = fm::Layout::kGgmlBlocks,
+                                                    .shape = {.ne = {64, 512, 1, 1}, .rank = 2}},
+                                         .rows = true}}},
+      llmp::test::V1Group{.kind = llmp::artifact::GroupKind::kLayer,
+                          .layer = 0,
+                          .resources = {{.name = "blk.0.attn_q.weight",
+                                         .format = {.encoding = fm::Encoding::kQ8_0,
+                                                    .layout = fm::Layout::kGgmlBlocks,
+                                                    .shape = {.ne = {64, 512, 1, 1}, .rank = 2}}}},
+                          .new_shard = true},
+  };
+  return p;
 }
 
 // The descriptors of this process open on a file beneath `root`'s data/.
@@ -167,13 +181,10 @@ class WeightFilesTest : public ::testing::Test {
                ::testing::UnitTest::GetInstance()->current_test_info()->name();
     std::error_code error;
     fs::remove_all(scratch_, error);
-    const fs::path tiny = OnlyChild(Corpus() / "golden" / "tiny");
-    ASSERT_FALSE(tiny.empty()) << "no tiny golden in " << Corpus();
+    const auto rendered = llmp::test::Render(TwoShardPlan());
     for (const char* name : {"a", "b"}) {
       fs::create_directories(scratch_ / name);
-      fs::copy(tiny, scratch_ / name / tiny.filename(), fs::copy_options::recursive, error);
-      ASSERT_FALSE(error) << error.message();
-      roots_.push_back(scratch_ / name / tiny.filename());
+      roots_.push_back(llmp::test::Publish(scratch_ / name, rendered));
     }
     auto probe = llmp::artifact::Artifact::Open(roots_[0]);
     ASSERT_TRUE(probe.has_value()) << probe.error().ToString();

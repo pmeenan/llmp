@@ -276,9 +276,7 @@ bool OnComponentEngine(std::string_view architecture) {
 
 const spec::Mapping* ComposedDrafterMapping(std::string_view architecture,
                                             std::string_view container) {
-  const spec::Mapping* mapping = spec::FindMapping(architecture, container);
-  if (!mapping || !mapping->draft || !mapping->draft->composed_version) return mapping;
-  return spec::FindMapping(architecture, container, mapping->draft->composed_version);
+  return spec::FindMapping(architecture, container);
 }
 
 const spec::Mapping* ComposedDrafterMapping(const artifact::Artifact& drafter) {

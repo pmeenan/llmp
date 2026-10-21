@@ -206,7 +206,6 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Compo
     if (verify > UINT32_MAX) return Error("serving verify row bound overflows");
   }
   const auto verify_rows = static_cast<std::uint32_t>(verify);
-  bool repeat_pending = false;
   if (model_spec.pipeline != spec::PipelineKind::kLlm || model_spec.stages.empty() ||
       model_spec.stages.size() > std::uint64_t{UINT16_MAX} + 1 ||
       model_spec.stages.size() != layouts.size() || batching.size() != layouts.size() ||
@@ -219,9 +218,7 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Compo
   std::uint64_t bytes = sizeof(DerivedDomain) + sizeof(ConstructionCharge) + 512;
   for (std::size_t i = 0; i < layouts.size(); ++i) {
     const auto& stage = model_spec.stages[i];
-    auto progress = model::DraftBounds(layouts[i]);
-    if (!progress ||
-        (i == 0 ? stage.role != spec::StageRole::kTarget || progress->has_value()
+    if ((i == 0 ? stage.role != spec::StageRole::kTarget
                 : stage.role != spec::StageRole::kDrafter) ||
         layouts[i].max_rows == 0 || (i == 0 && verify_rows > layouts[i].max_rows))
       return Error("a serving domain needs the actual target and drafter bounds");
@@ -232,11 +229,8 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Compo
            draft.shape != engine::DrafterSpec::Shape::kAutoregressive) ||
           verify_rows > layouts[i].max_rows ||
           (!layouts[i].borrowed.empty() && !draft.borrows_target) ||
-          (draft.features && model::FeatureTap(layouts[i]) == nullptr) ||
-          (progress->has_value() && (draft.shape != engine::DrafterSpec::Shape::kAutoregressive ||
-                                     !draft.catch_up || !draft.features || draft.anchored)))
+          (draft.features && model::FeatureTap(layouts[i]) == nullptr))
         return Error("a serving domain disagrees with the actual drafter schedule");
-      repeat_pending |= progress->has_value();
     }
     // Input vectors, canonical domain, the retained shared owner and the
     // maximum temporary moved representation; no graph or tensor payload.
@@ -247,15 +241,6 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Compo
                                &copy_bytes) ||
         __builtin_add_overflow(bytes, copy_bytes, &bytes))
       return Error("serving domain construction bound overflows");
-  }
-  if (repeat_pending && slots > 1) {
-    // The existing joined replay contract requires every companion to own
-    // replay progress; block drafters use the ordinary speculative contract.
-    for (std::size_t i = 1; i < layouts.size(); ++i) {
-      auto progress = model::DraftBounds(layouts[i]);
-      if (!progress || !*progress)
-        return Error("joined replay requires complete companion progress contracts");
-    }
   }
   if (!(charge_metadata ? charge_metadata(bytes) : allowance->Charge(bytes)))
     return Error("serving domain metadata allowance is insufficient");
@@ -272,10 +257,7 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Compo
                  engine::NumericalUse::kScore},
         .phases = {}};
     if (composed) {
-      stage.uses.push_back(engine::NumericalUse::kPromptCompanions);
       stage.uses.push_back(engine::NumericalUse::kSpeculative);
-      if (repeat_pending && slots > 1)
-        stage.uses.push_back(engine::NumericalUse::kJoinedRepeatPending);
     }
     stage.phases.reserve(i == 0 ? (composed ? 5 : 3) : 1);
     const auto add = [&](planner::Phase phase, std::uint32_t rows) {

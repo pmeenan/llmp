@@ -60,11 +60,6 @@ fs::path Scratch(std::string_view name) {
   return dir;
 }
 
-fs::path Corpus() {
-  const std::string configured = Env("LLMP_TEST_ARTIFACT_CORPUS");
-  return configured.empty() ? fs::path("artifact-corpus") : fs::path(configured);
-}
-
 TensorFormat Format(Encoding e, Layout l, std::vector<std::uint64_t> ne) {
   return {.encoding = e, .layout = l, .shape = *format::ShapeOf(ne)};
 }
@@ -254,25 +249,15 @@ TEST(SpecStoredTest, RefusesWhatTheArtifactCannotHold) {
   }
 }
 
-// A v0 artifact (the prototype's goldens) stores no spec and is no source:
-// both refuse it with what to do, re-import it (D-118).
+// A v0 artifact is refused at open time by the v1-only artifact reader
+// (D-118, U2).
 TEST(SpecStoredTest, V0ArtifactsAsBefore) {
-  std::error_code error;
-  fs::path root;
-  for (const auto& entry : fs::directory_iterator(Corpus() / "golden" / "tiny", error)) {
-    root = entry.path();
-  }
-  ASSERT_FALSE(root.empty()) << "no corpus at " << Corpus();
-  const artifact::Artifact a = Open(root);
-  ASSERT_EQ(a.format_version(), 0U);
-  const auto stored = spec::StoredSpec(a);
-  ASSERT_FALSE(stored.has_value());
-  EXPECT_NE(stored.error().find("re-import it with llmp import"), std::string::npos)
-      << stored.error();
-  const auto source = spec::SourceOf(a);
-  ASSERT_FALSE(source.has_value());
-  EXPECT_NE(source.error().find("re-import it with llmp import"), std::string::npos)
-      << source.error();
+  auto rendered = Render(Plan(std::nullopt));
+  rendered.manifest["format"] = llmp::test::Json("jitllm-artifact");
+  rendered.manifest["format_version"] = llmp::test::Json(std::int64_t{0});
+  const auto opened = artifact::Artifact::Open(Publish(Scratch("v0"), rendered));
+  ASSERT_FALSE(opened.has_value());
+  EXPECT_EQ(opened.error().rule, artifact::Rule::kFormat);
 }
 
 // A target and its drafter: two artifacts, the drafter carrying no spec of

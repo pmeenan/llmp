@@ -15,9 +15,7 @@
 #include <utility>
 
 #include "artifact/error.h"
-#include "artifact/format_map.h"
 #include "artifact/json.h"
-#include "artifact/representation.h"
 #include "artifact/schema.h"
 #include "format/encoding.h"
 #include "format/layout.h"
@@ -256,7 +254,7 @@ std::optional<format::PartRole> PartRoleByName(std::string_view name) {
 ContainerView ContainerViewOf(const format::TensorFormat& f, format::PartRole part,
                               std::uint64_t bytes) {
   if (f.layout == format::Layout::kDense && part == PartRole::kData) {
-    if (const auto dtype = DtypeOfEncoding(f.encoding)) {
+    if (const auto dtype = format::DtypeOfEncoding(f.encoding)) {
       ContainerView view{.dtype = *dtype, .shape = {}};
       for (std::size_t i = f.shape.rank; i-- > 0;) {
         view.shape.push_back(f.shape.ne.at(i));

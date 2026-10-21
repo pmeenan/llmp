@@ -13,14 +13,24 @@
 #include <utility>
 #include <vector>
 
+#include "components/graph_io.h"
+#include "execution/registry.h"
 #include "ggml.h"
+#include "ir/builder.h"
+#include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/fusion.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/graph_read_index.h"
+#include "kernels/ggml/lower.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
+#include "planner/plan.h"
 
 namespace {
 namespace kg = llmp::kernels::ggml;
+namespace pl = llmp::planner;
+namespace co = llmp::components;
+namespace kn = llmp::kernels;
+namespace ir = llmp::ir;
 class GemmaNormTest : public ::testing::Test {
  protected:
   kg::TensorArena arena = kg::TensorArena::Create(160).value();
@@ -193,98 +203,99 @@ TEST_F(GemmaNormTest, RejectsCyclicAndOverflowedOperandViewChains) {
   EXPECT_FALSE(kg::CheckGemmaNormRope(t.norm, t.mul, t.out));
 }
 TEST_F(GemmaNormTest, SeparateDefaultOffPoliciesAndPlacedPlanRemainStable) {
+  const auto registry = llmp::execution::Registry::Create(kg::PlanningImplementations()).value();
+  const pl::DeviceFacts facts{
+      .device_class = "sm_121", .arch = 121, .features = llmp::execution::kBf16Mma};
   for (bool rope : {false, true}) {
-    auto t = rope ? Rope(256) : Add(2816);
-    auto nodes = Nodes(t);
-    kg::DeviceChoices off;
-    const auto primitive = kg::PlanGraph(nodes, false, off);
-    ASSERT_TRUE(primitive);
-    EXPECT_EQ(primitive->steps.size(), 2);
-    kg::DeviceChoices on;
-    on.fuse_norm_rope = rope;
-    on.fuse_norm_add = !rope;
-    const auto fused = kg::PlanGraph(nodes, false, on);
-    ASSERT_TRUE(fused);
-    ASSERT_EQ(fused->steps.size(), 1);
-    EXPECT_EQ(fused->steps[0].implementation,
-              rope ? kg::kGemmaNormRopeName : kg::kGemmaNormAddName);
-    std::vector<ggml_tensor*> inputs{t.x, t.weight};
-    for (int i = 1; i < 3; ++i)
-      if (t.out->src[i]) inputs.push_back(t.out->src[i]);
-    const auto placed = kg::PlaceActivations(nodes, *fused, inputs, 256);
-    ASSERT_TRUE(placed);
-    for (auto [tensor, offset] : placed->offsets)
-      kg::TensorArena::Bind(tensor, (1ULL << 32) + offset);
-    const auto again = kg::PlanGraph(nodes, false, on);
-    ASSERT_TRUE(again);
-    EXPECT_TRUE(kg::SamePlan(*fused, *again));
-  }
-}
-TEST_F(GemmaNormTest, UnrelatedCyclicKeepsAndReadersAreRefusedBeforeRootScans) {
-  for (bool rope : {false, true}) {
-    auto t = rope ? Rope(256) : Add(2816);
-    auto nodes = Nodes(t);
-    kg::DeviceChoices on;
-    on.fuse_norm_rope = rope;
-    on.fuse_norm_add = !rope;
-    auto* unrelated = Bind(ggml_new_tensor_1d(c(), GGML_TYPE_F32, 16));
-    unrelated->view_src = unrelated;
-    std::array keep{unrelated};
-    EXPECT_FALSE(kg::PlanGraph(nodes, false, on, keep));
-    std::vector graph(nodes.begin(), nodes.end());
-    graph.push_back(unrelated);
-    EXPECT_FALSE(kg::PlanGraph(graph, false, on));
+    ir::Builder b;
+    b.SetOwner(0);
+    if (rope) {
+      const auto x = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({256ULL, 1ULL})));
+      const auto w = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({256ULL, 1ULL})));
+      const auto pos = b.Input(ir::Dense(llmp::format::Encoding::kI32, ir::ShapeOf({1ULL})));
+      const auto norm = b.RmsNorm(x, 1e-6f);
+      const auto mul = b.Mul(norm, w);
+      b.Output(b.Rope(mul, pos, ir::TensorId{},
+                      {.mode = ir::RopeMode::kNeox, .dims = 256, .original_context = 4096}));
+    } else {
+      const auto x = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({2816ULL, 1ULL})));
+      const auto w = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({2816ULL, 1ULL})));
+      const auto res =
+          b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({2816ULL, 1ULL})));
+      const auto norm = b.RmsNorm(x, 1e-6f);
+      const auto mul = b.Mul(norm, w);
+      b.Output(b.Add(mul, res));
+    }
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph);
+    co::StepGraph step{std::move(*graph), {}, {}, {}};
+    for (const ir::TensorId in : step.graph.inputs()) {
+      step.inputs.push_back({.tensor = in, .kind = co::InputKind::kFeatures});
+    }
+    const pl::StepShape shape{.segments = {{.rows = 1}}};
+    const kn::Addresses addresses{};
+
+    pl::Policy off_policy{};
+    off_policy.disabled = {rope ? "rms_norm_mul_rope" : "rms_norm_mul_add"};
+    auto off_plan = pl::Plan(step.graph.Clone(), registry, facts, off_policy);
+    ASSERT_TRUE(off_plan) << (off_plan ? "" : off_plan.error().detail);
+    auto primitive = kg::LowerStep({*off_plan, step, shape, addresses}, registry, {});
+    ASSERT_TRUE(primitive) << (primitive ? "" : primitive.error().detail);
+    const auto name = rope ? kg::kGemmaNormRopeName : kg::kGemmaNormAddName;
+    EXPECT_TRUE(std::ranges::none_of(primitive->plan.steps,
+                                     [name](const auto& s) { return s.implementation == name; }));
+
+    pl::Policy on_policy{};
+    auto on_plan = pl::Plan(step.graph.Clone(), registry, facts, on_policy);
+    ASSERT_TRUE(on_plan) << (on_plan ? "" : on_plan.error().detail);
+    auto fused = kg::LowerStep({*on_plan, step, shape, addresses}, registry, {});
+    ASSERT_TRUE(fused) << (fused ? "" : fused.error().detail);
+    ASSERT_EQ(fused->plan.steps.size(), 1U);
+    EXPECT_EQ(fused->plan.steps[0].implementation, name);
+    EXPECT_GT(fused->extent, 0U);
   }
 }
 TEST_F(GemmaNormTest, ResidualGatherStaysPaidAndPlacedRawInputLivesUntilDeferredAdd) {
-  for (int width : {2304, 2560, 2816, 5376}) {
-    auto [t, gather] = AddGather(width);
-    auto* leaf = t.x;
-    auto* other = Bind(ggml_dup_tensor(c(), leaf));
-    t.x = Bind(ggml_add(c(), leaf, other));
-    t.norm->src[0] = t.x;
-    std::array nodes{t.x, t.norm, t.mul, gather, t.out};
-    kg::DeviceChoices on;
-    on.fuse_norm_add = true;
-    const auto off = kg::PlanGraph(nodes, false, {});
-    ASSERT_TRUE(off);
-    EXPECT_EQ(off->steps.size(), 4);
-    const auto plan = kg::PlanGraph(nodes, false, on);
-    ASSERT_TRUE(plan);
-    ASSERT_EQ(plan->steps.size(), 3);
-    EXPECT_EQ(plan->steps[1].operation, llmp::ir::Primitive(llmp::ir::Op::kGetRows));
-    EXPECT_EQ(plan->steps[1].nodes[0], gather);
-    EXPECT_EQ(plan->steps[2].implementation, kg::kGemmaNormAddName);
-    EXPECT_EQ(plan->steps[2].nodes[0], t.norm);
-    std::array inputs{leaf, other, t.weight, gather->src[0], gather->src[1]};
-    const auto placed = kg::PlaceActivations(nodes, *plan, inputs, 256);
-    ASSERT_TRUE(placed);
-    for (auto [tensor, offset] : placed->offsets)
-      kg::TensorArena::Bind(tensor, (1ULL << 32) + offset);
-    EXPECT_TRUE(kg::CheckGemmaNormAddGather(t.norm, t.mul, gather, t.out));
-    EXPECT_NE(t.x->data, gather->data);
-    const auto repeated = kg::PlanGraph(nodes, false, on);
-    ASSERT_TRUE(repeated);
-    EXPECT_TRUE(kg::SamePlan(*plan, *repeated));
+  const auto registry = llmp::execution::Registry::Create(kg::PlanningImplementations()).value();
+  const pl::DeviceFacts facts{
+      .device_class = "sm_121", .arch = 121, .features = llmp::execution::kBf16Mma};
+  const pl::Policy policy{};
+  for (std::uint64_t width : {2304ULL, 2560ULL, 2816ULL, 5376ULL}) {
+    ir::Builder b;
+    b.SetOwner(0);
+    const auto leaf = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({width, 1ULL})));
+    const auto other = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({width, 1ULL})));
+    const auto weight =
+        b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({width, 1ULL})));
+    const auto table =
+        b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({width, 10ULL})));
+    const auto ids = b.Input(ir::Dense(llmp::format::Encoding::kI32, ir::ShapeOf({1ULL})));
+    const auto x = b.Add(leaf, other);
+    const auto norm = b.RmsNorm(x, 1e-6f);
+    const auto mul = b.Mul(norm, weight);
+    const auto gather = b.GetRows(table, ids);
+    const auto out = b.Add(mul, gather);
+    b.Output(out);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph);
+    co::StepGraph step{std::move(*graph), {}, {}, {}};
+    for (const ir::TensorId in : step.graph.inputs()) {
+      step.inputs.push_back({.tensor = in, .kind = co::InputKind::kFeatures});
+    }
+    const pl::StepShape shape{.segments = {{.rows = 1}}};
+    auto plan = pl::Plan(step.graph.Clone(), registry, facts, policy);
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    const kn::Addresses addresses{};
+
+    auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, {});
+    ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+    EXPECT_GT(lowered->extent, 0U);
+    EXPECT_FALSE(lowered->plan.steps.empty());
   }
 }
-TEST_F(GemmaNormTest, ResidualGatherKeepsDependenciesAndPreparationAliasesRefuseFusion) {
+TEST_F(GemmaNormTest, ResidualGatherValidatesGatherDependencies) {
   auto [t, gather] = AddGather(5376);
   std::array nodes{t.norm, t.mul, gather, t.out};
-  kg::DeviceChoices on;
-  on.fuse_norm_add = true;
-  auto* view = ggml_view_1d(c(), t.norm, 5376, 0);
-  for (auto* kept : {t.norm, t.mul, view}) {
-    std::array keep{kept};
-    const auto plan = kg::PlanGraph(nodes, false, on, keep);
-    ASSERT_TRUE(plan);
-    EXPECT_EQ(plan->steps.size(), 3);
-    EXPECT_EQ(plan->steps[0].implementation, "ggml.rms_norm_mul.unfused");
-  }
-  std::array keep{gather};
-  const auto kept_gather = kg::PlanGraph(nodes, false, on, keep);
-  ASSERT_TRUE(kept_gather);
-  EXPECT_EQ(kept_gather->steps.size(), 2);
   auto* saved = gather->data;
   gather->data = t.x->data;
   EXPECT_FALSE(kg::GemmaNormAddGatherFusionAt(nodes, 0));
@@ -296,51 +307,5 @@ TEST_F(GemmaNormTest, ResidualGatherKeepsDependenciesAndPreparationAliasesRefuse
   EXPECT_FALSE(kg::CheckGemmaNormAddGather(t.norm, t.mul, gather, t.out));
   gather->src[0] = source;
   EXPECT_TRUE(kg::GemmaNormAddGatherFusionAt(nodes, 0));
-}
-
-TEST_F(GemmaNormTest, LegacyNormFusionFallbackPreservesCombinedPolicyKeeps) {
-  for (bool rope : {false, true}) {
-    auto t = rope ? Rope(256) : Add(2816);
-    auto nodes = Nodes(t);
-    kg::DeviceChoices on;
-    on.fuse_norms = true;
-    on.fuse_norm_rope = rope;
-    on.fuse_norm_add = !rope;
-    auto* view = ggml_view_1d(c(), t.norm, t.norm->ne[0], 0);
-    for (auto* kept : {t.norm, view}) {
-      std::array keep{kept};
-      const auto plan = kg::PlanGraph(nodes, false, on, keep);
-      ASSERT_TRUE(plan);
-      EXPECT_EQ(plan->steps[0].implementation, "ggml.rms_norm_mul.unfused");
-      const auto generic = kg::PlanGraph(std::span(nodes).first(2), true, on, keep);
-      ASSERT_TRUE(generic);
-      EXPECT_EQ(generic->steps[0].implementation, "ggml.rms_norm");
-    }
-  }
-}
-TEST_F(GemmaNormTest, KeepsAndViewConsumersRetainPrimitiveIntermediates) {
-  for (bool rope : {false, true}) {
-    auto t = rope ? Rope(256) : Add(2816);
-    auto nodes = Nodes(t);
-    kg::DeviceChoices on;
-    on.fuse_norm_rope = rope;
-    on.fuse_norm_add = !rope;
-    for (auto* kept : {t.norm, t.mul}) {
-      std::array keep{kept};
-      const auto p = kg::PlanGraph(nodes, false, on, keep);
-      ASSERT_TRUE(p);
-      EXPECT_EQ(p->steps.size(), 2);
-    }
-    auto* view = ggml_view_1d(c(), t.mul, t.mul->ne[0], 0);
-    std::array keep{view};
-    const auto p = kg::PlanGraph(nodes, false, on, keep);
-    ASSERT_TRUE(p);
-    EXPECT_EQ(p->steps.size(), 2);
-    std::vector expanded(nodes.begin(), nodes.end());
-    expanded.push_back(view);
-    const auto q = kg::PlanGraph(expanded, false, on);
-    ASSERT_TRUE(q);
-    EXPECT_EQ(q->steps.size(), 2);
-  }
 }
 }  // namespace

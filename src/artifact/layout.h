@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Where a v0 artifact's groups and chunks live, and how missing chunks are
+// Where an artifact's groups and chunks live, and how missing chunks are
 // read (docs/artifact-format.md, "Page-in contract"; D-056):
 //
 //   - A group is one contiguous, 4 KiB-aligned range of one shard's data
@@ -41,7 +41,7 @@ namespace llmp::artifact {
 using base::Bytes;
 using Digest = base::Sha256Digest;
 
-// The spark-v0 profile (manifest `layout`); any other is refused.
+// The spark v1 profile (manifest `layout`); any other is refused.
 inline constexpr std::uint64_t kFileAlignment = 4096;
 inline constexpr std::uint64_t kChunkBytes = std::uint64_t{2} << 20U;
 inline constexpr std::uint64_t kMemberAlignment = 256;

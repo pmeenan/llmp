@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Bounded target-only shared scoring of the fixed authenticated Qwen52 corpus
-// on the published v1 ModelOpt target (d145900e, from the v1 store).
+// on the published v1 ModelOpt target (02354af1, from the v1 store).
 // Source weights and histories match the independent quantized reference.
 #include <gtest/gtest.h>
 
@@ -39,7 +39,7 @@
 #include "engine/model_runner.h"
 #include "engine/paged_weights.h"
 #include "engine/prefill.h"
-#include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/plan_step.h"
 #include "planner/plan.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
@@ -141,7 +141,7 @@ static_assert(kShapes * (4096 * (32 + 129) + 64 * 1024) + 2 * 8 * kMiB +
               kObservationEnvelope);
 
 constexpr std::string_view kArtifact =
-    "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d";
+    "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9";
 
 bool AllowedShape(const pl::StepShape& shape) {
   if (shape.stage || shape.row_invariant || shape.read_align != 256 ||
@@ -249,9 +249,6 @@ class RecordedSource final : public en::StepSource {
     return inner_->NextSpecializationChange(request);
   }
 
-  bool JoinedRepeatPending(std::uint16_t stage) const override {
-    return inner_->JoinedRepeatPending(stage);
-  }
   bool UsesSideRows(std::uint16_t stage) const override { return inner_->UsesSideRows(stage); }
   en::Status SideRows(std::uint16_t stage, std::uint16_t component,
                       std::span<const std::int32_t> history, std::uint32_t position,
@@ -598,7 +595,7 @@ en::Status SetUp(Lifetime& life) {
   if (!paid) return std::unexpected("startup catalog payment refused");
   const fs::path artifact = fs::path(ts::V1Store()) / kArtifact;
   for (const auto& file : std::array{
-           std::tuple{"manifest.json", std::uint64_t{48495}, kArtifact},
+           std::tuple{"manifest.json", std::uint64_t{48492}, kArtifact},
            std::tuple{"index.json", std::uint64_t{8236769},
                       std::string_view{
                           "2b29dc0f905bd670522abda9d8ef5e17f0db328c1d4fcd9f8dae63e9079dc5dd"}},

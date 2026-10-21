@@ -27,14 +27,20 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "artifact/error.h"
 #include "artifact/json.h"
-#include "artifact/representation.h"
 #include "format/encoding.h"
 #include "format/tensor_format.h"
 
 namespace llmp::artifact {
+
+// The container entry's dtype and shape (informational; the index rules).
+struct ContainerView {
+  std::string_view dtype;
+  std::vector<std::uint64_t> shape;
+};
 
 inline constexpr std::uint64_t kMaxStacked = 255;
 

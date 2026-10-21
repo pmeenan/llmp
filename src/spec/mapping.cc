@@ -989,8 +989,6 @@ std::span<const Mapping* const> Mappings() {
                                  &mappings::Qwen38GgufMapping(),
                                  &mappings::Qwen38NativeMapping(),
                                  &mappings::Qwen38MtpNativeMapping(),
-                                 &mappings::Qwen38MtpReplayMapping(),
-                                 &mappings::Qwen38MtpNativeReplayMapping(),
                                  &mappings::Qwen2GgufMapping(),
                                  &mappings::Qwen2SafetensorsMapping(),
                                  &mappings::Qwen2Exl3Mapping(),

@@ -111,11 +111,6 @@ struct ServingOptions {
   // the commands, which measure from a known start, leave what the service
   // kept alone and spill to unnamed files as before.
   bool keep_conversations = false;
-  // A test hook (D-102's hang recovery; engine/paged_node.h
-  // CountingStorage): reads held by Server::HoldReads complete as
-  // cancelled when the lane cancels them. Otherwise, as a drive's, they
-  // do not.
-  bool hold_cancellable = false;
   // Internal maximum-context qualification only; no config/CLI/HTTP route:
   // a context up to the checkpoint's trained maximum (ResolveSettings).
   bool trained_max_context = false;

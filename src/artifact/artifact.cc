@@ -37,10 +37,8 @@
 
 #include "artifact/error.h"
 #include "artifact/format_json.h"
-#include "artifact/format_map.h"
 #include "artifact/json.h"
 #include "artifact/layout.h"
-#include "artifact/representation.h"
 #include "artifact/schema.h"
 #include "base/bytes.h"
 #include "base/check.h"
@@ -72,11 +70,6 @@ namespace {
 using schema::Fail;
 using Item = std::uint64_t;
 
-// v0's names (kept by D-111) and v1's.
-constexpr std::string_view kManifestFormat = "jitllm-artifact";
-constexpr std::string_view kIndexFormat = "jitllm-index";
-constexpr std::string_view kShardPrefix =
-    R"({"__metadata__":{"format":"jitllm-shard","format_version":"0"})";
 constexpr std::string_view kManifestFormatV1 = "llmp-artifact";
 constexpr std::string_view kIndexFormatV1 = "llmp-index";
 constexpr std::string_view kShardPrefixV1 =
@@ -355,38 +348,26 @@ class Opener {
     manifest_ = std::move(*parsed);
     const json::Value m = manifest_.root();
     const auto format = m.find("format");
-    // The format names the version family: v0's name only ever with
-    // version 0, v1's with 1 and whatever later versions follow.
-    if (m.is_object() && format && schema::IsString(*format, kManifestFormatV1)) {
-      v1_ = true;
-    } else if (!m.is_object() || !format || !schema::IsString(*format, kManifestFormat)) {
+    if (!m.is_object() || !format || !schema::IsString(*format, kManifestFormatV1)) {
       return Fail(Rule::kFormat, "not a llmpalooza artifact");
     }
     const auto version = m.find("format_version");
-    if (!v1_ && (!version || !schema::IsInt(*version, 0))) {
-      return Fail(Rule::kUnsupportedVersion, "format_version is not 0; re-import required");
-    }
-    if (v1_ && (!version || !schema::IsInt(*version, 1))) {
+    if (!version || !schema::IsInt(*version, 1)) {
       // A later version needs a later runtime, an earlier one a re-import;
       // the item says which version was found.
       const auto found = version ? version->integer() : std::nullopt;
       return Fail(Rule::kUnsupportedVersion, "format_version is not one this build reads",
                   found && *found >= 0 ? static_cast<Item>(*found) : kNoItem);
     }
-    artifact_.format_version_ = v1_ ? 1 : 0;
-    if (!v1_) {
-      const auto legacy = json::Parse(manifest_bytes_);
-      if (!legacy) return Pass(legacy);
-    }
+    artifact_.format_version_ = 1;
     const auto layout = m.find("layout");
     if (!layout || !IsProfile(*layout)) {
-      return Fail(Rule::kUnsupportedProfile, "layout is not spark-v0; re-import required");
+      return Fail(Rule::kUnsupportedProfile, "layout is not spark v1; re-import required");
     }
     if (!manifest_.canonical()) {
       return Fail(Rule::kCanonical, "manifest.json is not in canonical form");
     }
-    if (artifact_.id_ !=
-            base::ToHex(v1_ ? schema::ManifestIdentity(m) : Sha256Of(manifest_bytes_)) &&
+    if (artifact_.id_ != base::ToHex(schema::ManifestIdentity(m)) &&
         artifact_.id_ != base::ToHex(Sha256Of(manifest_bytes_))) {
       return Fail(Rule::kIdentity, "the artifact name is not the manifest digest");
     }
@@ -405,8 +386,8 @@ class Opener {
     const auto member = get("member_alignment");
     const auto container = get("container");
     const auto order = get("byte_order");
-    return profile && schema::IsString(*profile, "spark-v0") && version &&
-           schema::IsInt(*version, 0) && file_alignment &&
+    return profile && schema::IsString(*profile, "spark") && version &&
+           schema::IsInt(*version, 1) && file_alignment &&
            schema::IsInt(*file_alignment, static_cast<std::int64_t>(kFileAlignment)) && chunk &&
            schema::IsInt(*chunk, static_cast<std::int64_t>(kChunkBytes)) && member &&
            schema::IsInt(*member, static_cast<std::int64_t>(kMemberAlignment)) && container &&
@@ -416,14 +397,10 @@ class Opener {
 
   Step CheckManifest() {
     const json::Value m = manifest_.root();
-    if (auto ok = v1_ ? schema::Object(m,
-                                       {"format", "format_version", "experimental", "layout",
-                                        "model", "source", "transformations", "importer", "files"},
-                                       {}, "manifest keys")
-                      : schema::Object(m,
-                                       {"format", "format_version", "experimental", "layout",
-                                        "model", "source", "transformations", "converter", "files"},
-                                       {}, "manifest keys");
+    if (auto ok = schema::Object(m,
+                                 {"format", "format_version", "experimental", "layout", "model",
+                                  "source", "transformations", "importer", "files"},
+                                 {}, "manifest keys");
         !ok) {
       return ok;
     }
@@ -439,25 +416,9 @@ class Opener {
     if (auto ok = CheckTransformations(schema::Get(m, "transformations")); !ok) {
       return ok;
     }
-    if (v1_) {
-      if (auto ok = CheckImporter(schema::Get(m, "importer")); !ok) {
-        return ok;
-      }
-      return CheckFiles(schema::Get(m, "files"));
-    }
-    const json::Value conv = schema::Get(m, "converter");
-    if (auto ok = schema::Object(conv, {"name", "version"}, {}, "converter keys"); !ok) {
+    if (auto ok = CheckImporter(schema::Get(m, "importer")); !ok) {
       return ok;
     }
-    auto name = schema::Str(schema::Get(conv, "name"), schema::IsText, "converter.name");
-    if (!name) {
-      return Pass(name);
-    }
-    auto version = schema::Str(schema::Get(conv, "version"), schema::IsText, "converter.version");
-    if (!version) {
-      return Pass(version);
-    }
-    artifact_.converter_ = {.name = std::string(*name), .version = std::string(*version)};
     return CheckFiles(schema::Get(m, "files"));
   }
 
@@ -495,51 +456,6 @@ class Opener {
   }
 
   Step CheckModel(json::Value model) {
-    if (v1_) {
-      return CheckModelV1(model);
-    }
-    if (auto ok = schema::Object(model, {"architecture", "expert_count", "representation"}, {},
-                                 "model keys");
-        !ok) {
-      return ok;
-    }
-    auto arch =
-        schema::Str(schema::Get(model, "architecture"), schema::IsName, "model.architecture");
-    if (!arch) {
-      return Pass(arch);
-    }
-    auto experts = schema::Int(schema::Get(model, "expert_count"), 0,
-                               static_cast<std::int64_t>(kMaxExperts), "model.expert_count");
-    if (!experts) {
-      return Pass(experts);
-    }
-    const json::Value reps = schema::Get(model, "representation");
-    if (auto ok = schema::List(reps, 1, "model.representation"); !ok) {
-      return ok;
-    }
-    std::vector<std::string_view> names;
-    for (std::size_t i = 0; i < reps.size(); ++i) {
-      if (!reps.at(i).is_string()) {
-        return Fail(Rule::kSchema, "model.representation");
-      }
-      names.push_back(reps.at(i).string());
-    }
-    for (std::size_t i = 0; i < names.size(); ++i) {
-      if ((i > 0 && names[i - 1] >= names[i]) ||
-          (names[i] != "ggml" && names[i] != "exl3" && names[i] != "plain")) {
-        return Fail(Rule::kSchema, "model.representation");
-      }
-      artifact_.model_.representation.push_back(FamilyNamed(names[i]));
-      representation_names_.push_back(names[i]);
-    }
-    artifact_.model_.architecture = std::string(*arch);
-    artifact_.model_.expert_count = static_cast<std::uint32_t>(*experts);
-    return {};
-  }
-
-  // v1 names no representation families: each tensor's format says what
-  // it is. It names the container the importer read instead.
-  Step CheckModelV1(json::Value model) {
     if (auto ok =
             schema::Object(model, {"architecture", "container", "expert_count"}, {}, "model keys");
         !ok) {
@@ -566,13 +482,6 @@ class Opener {
     return {};
   }
 
-  static Family FamilyNamed(std::string_view name) {
-    if (name == "ggml") {
-      return Family::kGgml;
-    }
-    return name == "exl3" ? Family::kExl3 : Family::kPlain;
-  }
-
   Step CheckSources(json::Value sources) {
     if (auto ok = schema::List(sources, 1, "source"); !ok) {
       return ok;
@@ -582,8 +491,7 @@ class Opener {
       if (auto ok = schema::Object(s, {"name", "bytes", "sha256"}, {}, "source keys", i); !ok) {
         return ok;
       }
-      auto name = schema::Str(schema::Get(s, "name"), v1_ ? schema::IsFileName : schema::IsName,
-                              "source.name", i);
+      auto name = schema::Str(schema::Get(s, "name"), schema::IsFileName, "source.name", i);
       if (!name) {
         return Pass(name);
       }
@@ -651,7 +559,7 @@ class Opener {
           return Pass(count);
         }
         slices_.emplace_back(*tensor, *count);
-      } else if (v1_ && (k == "fold" || k == "relayout")) {
+      } else if (k == "fold" || k == "relayout") {
         if (auto ok = CheckApplied(t, k == "fold", i); !ok) {
           return ok;
         }
@@ -757,9 +665,8 @@ class Opener {
         fits = schema::IsShardPath(*path);
       } else if (*role == "source-metadata") {
         kind = FileRole::kSourceMetadata;
-        fits = v1_ ? schema::IsMetaPath(*path)
-                   : path->starts_with("meta/") && schema::IsName(path->substr(5));
-      } else if (v1_ && *role == "spec") {
+        fits = schema::IsMetaPath(*path);
+      } else if (*role == "spec") {
         kind = FileRole::kSpec;
         fits = *path == "spec.json";
       }
@@ -873,7 +780,7 @@ class Opener {
 
   Step ReadSpec() {
     const ListedFile* file = FindFile("spec.json");
-    if (!v1_ || file == nullptr) {
+    if (file == nullptr) {
       return {};
     }
     const Item item = static_cast<Item>(file - artifact_.files_.data());
@@ -933,8 +840,8 @@ class Opener {
         !ok) {
       return ok;
     }
-    if (!schema::IsString(schema::Get(index, "format"), v1_ ? kIndexFormatV1 : kIndexFormat) ||
-        !schema::IsInt(schema::Get(index, "format_version"), v1_ ? 1 : 0) ||
+    if (!schema::IsString(schema::Get(index, "format"), kIndexFormatV1) ||
+        !schema::IsInt(schema::Get(index, "format_version"), 1) ||
         !schema::IsInt(schema::Get(index, "file_alignment"),
                        static_cast<std::int64_t>(kFileAlignment)) ||
         !schema::IsInt(schema::Get(index, "chunk_bytes"), static_cast<std::int64_t>(kChunkBytes)) ||
@@ -1192,14 +1099,9 @@ class Opener {
   }
 
   Step CheckResource(json::Value r, std::size_t i) {
-    if (auto ok =
-            v1_ ? schema::Object(r,
-                                 {"name", "group", "offset", "bytes", "readable_bytes", "roles",
-                                  "format", "part"},
-                                 {"access"}, "resource keys", i)
-                : schema::Object(
-                      r, {"name", "group", "offset", "bytes", "readable_bytes", "roles", "repr"},
-                      {"access"}, "resource keys", i);
+    if (auto ok = schema::Object(
+            r, {"name", "group", "offset", "bytes", "readable_bytes", "roles", "format", "part"},
+            {"access"}, "resource keys", i);
         !ok) {
       return ok;
     }
@@ -1263,53 +1165,7 @@ class Opener {
     if (access && !schema::IsString(*access, "rows")) {
       return Fail(Rule::kSchema, "access must be rows", i);
     }
-    if (v1_) {
-      return CheckResourceV1(r, i, std::move(out), access.has_value());
-    }
-    auto rep = ParseRepresentation(schema::Get(r, "repr"));
-    if (!rep) {
-      return Pass(Error{.rule = rep.error().rule, .reason = rep.error().reason, .item = i});
-    }
-    families_.insert(FamilyName(rep->family));
-    auto bytes = schema::Int(schema::Get(r, "bytes"), 1, schema::kMaxInt, "resource.bytes", i);
-    if (!bytes) {
-      return Pass(bytes);
-    }
-    if (*bytes != rep->bytes) {
-      return Fail(Rule::kRepr, "bytes differ from what the representation implies", i);
-    }
-    auto readable = schema::Int(schema::Get(r, "readable_bytes"), 1, schema::kMaxInt,
-                                "resource.readable_bytes", i);
-    if (!readable) {
-      return Pass(readable);
-    }
-    if (*readable != rep->readable) {
-      return Fail(Rule::kRepr, "readable_bytes differ from the backend's over-read rule", i);
-    }
-    if (access && !RowGeometryOf(*rep)) {
-      return Fail(Rule::kRepr, "a row table must be 2-D", i);
-    }
-    auto offset = schema::Int(schema::Get(r, "offset"), 0, schema::kMaxInt, "resource.offset", i);
-    if (!offset) {
-      return Pass(offset);
-    }
-    out.offset = Bytes(*offset);
-    out.bytes = Bytes(*bytes);
-    out.readable = Bytes(*readable);
-    out.rows = access.has_value();
-    spans_.push_back({.group = out.group,
-                      .offset = *offset,
-                      .bytes = *bytes,
-                      .readable = *readable,
-                      .name = out.name,
-                      .view = ContainerViewOf(*rep)});
-    if (auto f = FormatOf(*rep)) {
-      out.format = *f;
-    }
-    out.part = V0PartRole(*rep);
-    out.repr = std::move(*rep);
-    artifact_.resources_.push_back(std::move(out));
-    return {};
+    return CheckResourceV1(r, i, std::move(out), access.has_value());
   }
 
   // A v1 entry's format and part (the size rule gives the part's bytes and
@@ -1397,14 +1253,10 @@ class Opener {
     const auto& groups = artifact_.layout_.groups;
     for (std::size_t i = 0; i < arrays.size(); ++i) {
       const json::Value a = arrays.at(i);
-      if (auto ok = v1_ ? schema::Object(a,
-                                         {"name", "layer", "count", "first_group", "group_offset",
-                                          "slice_bytes", "readable_bytes", "format", "part"},
-                                         {}, "expert array keys", i)
-                        : schema::Object(a,
-                                         {"name", "layer", "count", "first_group", "group_offset",
-                                          "slice_bytes", "readable_bytes", "repr"},
-                                         {}, "expert array keys", i);
+      if (auto ok = schema::Object(a,
+                                   {"name", "layer", "count", "first_group", "group_offset",
+                                    "slice_bytes", "readable_bytes", "format", "part"},
+                                   {}, "expert array keys", i);
           !ok) {
         return ok;
       }
@@ -1442,50 +1294,26 @@ class Opener {
       if (!first) {
         return Pass(first);
       }
-      // A slice's size: v0 by its representation (a 2-D GGML matrix), v1
-      // by its format (one matrix of at most two dimensions) and part.
+      // A slice's size: by its format (one matrix of at most two dimensions)
+      // and part.
       ExpertArray out;
       out.name = std::string(*name);
       out.layer = static_cast<std::uint32_t>(*layer);
       out.count = static_cast<std::uint32_t>(*count);
       out.first_group = static_cast<std::uint32_t>(*first);
-      std::uint64_t want_bytes = 0;
-      std::uint64_t want_readable = 0;
-      std::string_view disagree = "slice sizes disagree with the representation";
-      ContainerView view;
-      if (v1_) {
-        auto d = Describe(a, i);
-        if (!d) {
-          return Pass(d);
-        }
-        if (d->format.shape.rank > 2) {
-          return Fail(Rule::kExpertArray, "a slice must be one matrix of at most two dimensions",
-                      i);
-        }
-        want_bytes = d->extent.bytes;
-        want_readable = d->extent.readable;
-        disagree = "slice sizes disagree with the format";
-        view = ContainerViewOf(d->format, d->part, want_bytes);
-        out.format = d->format;
-        out.part = d->part;
-      } else {
-        auto rep = ParseRepresentation(schema::Get(a, "repr"));
-        if (!rep) {
-          return Pass(Error{.rule = rep.error().rule, .reason = rep.error().reason, .item = i});
-        }
-        if (rep->family != Family::kGgml || rep->dims.size() != 2) {
-          return Fail(Rule::kExpertArray, "a slice must be a 2-D ggml matrix", i);
-        }
-        families_.insert("ggml");
-        want_bytes = rep->bytes;
-        want_readable = rep->readable;
-        view = ContainerViewOf(*rep);
-        if (auto f = FormatOf(*rep)) {
-          out.format = *f;
-        }
-        out.part = V0PartRole(*rep);
-        out.repr = std::move(*rep);
+      auto d = Describe(a, i);
+      if (!d) {
+        return Pass(d);
       }
+      if (d->format.shape.rank > 2) {
+        return Fail(Rule::kExpertArray, "a slice must be one matrix of at most two dimensions", i);
+      }
+      const std::uint64_t want_bytes = d->extent.bytes;
+      const std::uint64_t want_readable = d->extent.readable;
+      const std::string_view disagree = "slice sizes disagree with the format";
+      const ContainerView view = ContainerViewOf(d->format, d->part, want_bytes);
+      out.format = d->format;
+      out.part = d->part;
       auto slice = schema::Int(schema::Get(a, "slice_bytes"), 1, schema::kMaxInt,
                                "expert_array.slice_bytes", i);
       if (!slice) {
@@ -1540,8 +1368,7 @@ class Opener {
     return {};
   }
 
-  // Roles against array names, expert coverage, EXL3 closure and the
-  // manifest's families.
+  // Roles against array names and expert coverage.
   Step CheckBindings() {
     for (const ExpertArray& a : artifact_.expert_arrays_) {
       if (roles_.contains(a.name)) {
@@ -1565,28 +1392,6 @@ class Opener {
     std::ranges::sort(covered_want);
     if (covered != covered_want) {
       return Fail(Rule::kExpertArray, "expert groups without a covering array");
-    }
-    if (v1_) {
-      // A v1 tensor's parts are entries of their own, each sized by the
-      // format they share; which entries make up one tensor is the spec's
-      // binding, which the component catalog checks (spec/stored.h).
-      return {};
-    }
-    std::vector<std::pair<std::string_view, const Representation*>> bound;
-    for (const Resource& r : artifact_.resources_) {
-      for (const std::string& role : r.roles) {
-        bound.emplace_back(role, &r.repr);
-      }
-    }
-    for (const ExpertArray& a : artifact_.expert_arrays_) {
-      bound.emplace_back(a.name, &a.repr);
-    }
-    if (!Exl3ClosureHolds(bound)) {
-      return Fail(Rule::kRepr, "an incomplete or misnamed EXL3 closure");
-    }
-    const std::vector<std::string_view> families(families_.begin(), families_.end());
-    if (families != representation_names_) {
-      return Fail(Rule::kSchema, "model.representation disagrees with the index");
     }
     return {};
   }
@@ -1712,7 +1517,7 @@ class Opener {
   std::expected<std::string, Error> ExpectedHeader(std::uint32_t shard) const {
     // The 8-byte length comes first; it is filled in at the end.
     std::string text(8, '\0');
-    text += v1_ ? kShardPrefixV1 : kShardPrefix;
+    text += kShardPrefixV1;
     std::uint64_t size = text.size() - 8 + 1;  // the JSON, with its closing brace
     std::uint64_t pads = 0;
     std::string piece;
@@ -1860,7 +1665,6 @@ class Opener {
 
   std::filesystem::path root_path_;
   OpenOptions options_;
-  bool v1_ = false;
   Artifact artifact_;
   FileDescriptor data_;
   FileDescriptor meta_;
@@ -1870,7 +1674,6 @@ class Opener {
   json::Document manifest_;
   std::string index_bytes_;
   json::Document index_;
-  std::vector<std::string_view> representation_names_;
   std::vector<std::pair<std::string_view, std::string_view>> dedupes_;
   std::vector<std::pair<std::string_view, std::uint64_t>> slices_;
   std::vector<Applied> applied_folds_;
@@ -1882,7 +1685,6 @@ class Opener {
   // could choose them to collide in a fixed hash and make each insert linear.
   std::set<std::string_view> names_;
   std::set<std::string_view> roles_;
-  std::set<std::string_view> families_;
   std::set<std::pair<std::uint64_t, std::uint64_t>> expert_seen_;
   std::map<std::uint64_t, std::vector<std::pair<std::uint64_t, std::uint64_t>>> arrays_by_layer_;
   std::vector<Span> spans_;
@@ -1954,23 +1756,16 @@ std::expected<RowGeometry, Error> Artifact::Rows(std::uint32_t resource) const {
     return Fail(Rule::kBounds, "not a row table", resource);
   }
   const Resource& r = resources_[resource];
-  if (format_version_ != 0) {
-    // One matrix of addressable rows (CheckResourceV1): ne[1] rows of the
-    // part's row bytes, which together are its bytes.
-    if (!r.format) {
-      return Fail(Rule::kBounds, "not a row table", resource);  // unreachable once validated
-    }
-    const auto row_bytes = format::RowBytes(*r.format, r.part);
-    if (!row_bytes) {
-      return Fail(Rule::kBounds, "not a row table", resource);  // unreachable once validated
-    }
-    return RowGeometry{.rows = r.format->shape.ne[1], .row_bytes = *row_bytes};
-  }
-  const auto geometry = RowGeometryOf(r.repr);
-  if (!geometry) {
+  // One matrix of addressable rows (CheckResourceV1): ne[1] rows of the
+  // part's row bytes, which together are its bytes.
+  if (!r.format) {
     return Fail(Rule::kBounds, "not a row table", resource);  // unreachable once validated
   }
-  return *geometry;
+  const auto row_bytes = format::RowBytes(*r.format, r.part);
+  if (!row_bytes) {
+    return Fail(Rule::kBounds, "not a row table", resource);  // unreachable once validated
+  }
+  return RowGeometry{.rows = r.format->shape.ne[1], .row_bytes = *row_bytes};
 }
 
 std::expected<std::vector<ChunkKey>, Error> Artifact::RowChunks(

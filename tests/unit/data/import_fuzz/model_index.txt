@@ -1,0 +1,1 @@
+1{"_class_name":"QwenImagePipeline","transformer":["diffusers","QwenImageTransformer2DModel"],"vae":["diffusers","AutoencoderKLQwenImage"],"text_encoder":["transformers","Qwen2_5_VLForConditionalGeneration"],"scheduler":["diffusers","FlowMatchEulerDiscreteScheduler"],"tokenizer":["transformers","Qwen2Tokenizer"]}

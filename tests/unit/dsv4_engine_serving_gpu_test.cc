@@ -3,8 +3,8 @@
 
 // DeepSeek V4 Flash served by the shared engine (D-107; runtime/engine_llm.h
 // over the component step source) on the published v1 artifacts (label
-// `models`; tests/support/v1_frozen.h V1Store: the target 698b1cd8 and the
-// DSpark drafter 5c9d95e2), through the runtime's server as the service drives it: the
+// `models`; tests/support/v1_frozen.h V1Store: the target d2046349 and the
+// DSpark drafter 6b1b9dca), through the runtime's server as the service drives it: the
 // coverage that the retired Dsv4Runner's serving tests held
 // (plain_tokens_serving_gpu_test, dsv4_prefill_plan_test's lookahead cases)
 // on the one engine every model now shares.
@@ -91,8 +91,8 @@ namespace en = llmp::engine;
 namespace cfg = llmp::config;
 namespace fs = std::filesystem;
 
-constexpr const char* kTarget = "698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd";
-constexpr const char* kDrafter = "5c9d95e24769c4d0a06088b0b6a8cc4afd4979b5ffc6d9357b4116f26fa583aa";
+constexpr const char* kTarget = "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f";
+constexpr const char* kDrafter = "6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41";
 constexpr std::uint32_t kVocab = 129280;
 // The speed gate's diagnostic tuple (its NEW arm): the node's cap (112 GiB,
 // 2 MiB aligned) with the automatic startup payment.
@@ -903,7 +903,7 @@ struct TopLogit {
 // The whole-model reference of one fixed prompt: Tokens(0, 1285) (a prompt
 // that crosses CSA and HCA blocks), its head and seven greedy steps' rows
 // (eight rows, the head's first), at the default 4,096-row chunk and 8,704
-// context on the artifact 8a355bfb... (v0), whose v1 import 698b1cd8...
+// context on the artifact 8a355bfb... (v0), whose v1 import d2046349...
 // executes bit for bit alike.
 //
 // kLegacy: the frozen M3 runner's (the baseline build

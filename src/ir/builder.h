@@ -91,7 +91,9 @@ class Builder {
   // A tensor made so far (a valid id of this builder), as a copy: the
   // builder's tensors move whenever it makes another, so it hands out no
   // reference into them (one kept across a later call would dangle).
-  TensorDesc tensor(TensorId id) const { return graph_.tensor(id); }
+  TensorDesc tensor(TensorId id) const {
+    return id.v < graph_.tensor_count() ? graph_.tensor(id) : TensorDesc{};
+  }
   std::size_t node_count() const { return graph_.nodes_.size(); }
   std::size_t tensor_count() const { return graph_.tensors_.size(); }
 

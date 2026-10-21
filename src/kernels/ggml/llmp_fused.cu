@@ -35,7 +35,6 @@
 #include "kernels/ggml/mul_mat_cublas_internal.h"
 #include "kernels/ggml/mxfp8_cutlass.h"
 #include "kernels/ggml/mxfp8_quant.cuh"
-#include "kernels/ggml/qwen38_commit.h"
 #include "kernels/ggml/validate.h"
 
 namespace llmp::kernels::ggml {
@@ -379,107 +378,6 @@ __global__ void __launch_bounds__(128)
     for (int r = 0; r < kRows; ++r) {
       s1[(static_cast<std::int64_t>(col0 + c) * kS) + (r * 32) + lane] = s[c][r];
     }
-  }
-}
-
-// A verify's commit (qwen38_commit.h): GdnColumnsKernel's state update, the
-// same operations in the same order, over the kept rows of every layer
-// (blockIdx.z), in place; no attention output.
-__global__ void __launch_bounds__(128) GdnCommitKernel(Qwen38CommitArgs a) {
-  constexpr int kS = 128;
-  constexpr int kRows = kS / 32;
-  const Qwen38CommitLayer& layer = a.layer[blockIdx.z];
-  const int lane = static_cast<int>(threadIdx.x);
-  const int h = static_cast<int>(blockIdx.x);
-  const int col0 =
-      ((static_cast<int>(blockIdx.y) * blockDim.y) + static_cast<int>(threadIdx.y)) * kGdnColumns;
-  const int hq = h % a.qk_heads;
-  float s[kGdnColumns][kRows];
-  float* s0 = layer.state + (static_cast<std::int64_t>(h) * kS * kS);
-#pragma unroll
-  for (int c = 0; c < kGdnColumns; ++c) {
-#pragma unroll
-    for (int r = 0; r < kRows; ++r) {
-      s[c][r] = s0[(static_cast<std::int64_t>(col0 + c) * kS) + (r * 32) + lane];
-    }
-  }
-  const int k_offset = a.qk_heads * kS;      // q heads, then k heads,
-  const int v_offset = 2 * a.qk_heads * kS;  // then v heads
-  for (int t = 0; t < a.keep; ++t) {
-    const float* row = layer.conv + (static_cast<std::int64_t>(t) * a.channels);
-    const float* kt = row + k_offset + (hq * kS);
-    const float* vt = row + v_offset + (h * kS);
-    float kr[kRows];
-    float vr[kGdnColumns];
-#pragma unroll
-    for (int r = 0; r < kRows; ++r) {
-      kr[r] = kt[(r * 32) + lane];
-    }
-#pragma unroll
-    for (int c = 0; c < kGdnColumns; ++c) {
-      vr[c] = vt[col0 + c];
-    }
-    const std::int64_t gb = (static_cast<std::int64_t>(t) * a.v_heads) + h;
-    const float beta_t = layer.beta[gb];
-    const float g_t = expf(layer.gate[gb]);
-    float kv[kGdnColumns];
-#pragma unroll
-    for (int c = 0; c < kGdnColumns; ++c) {
-      kv[c] = fmaf(kr[0], s[c][0], 0.0f);
-#pragma unroll
-      for (int r = 1; r < kRows; ++r) {
-        kv[c] = fmaf(kr[r], s[c][r], kv[c]);
-      }
-    }
-#pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1) {
-#pragma unroll
-      for (int c = 0; c < kGdnColumns; ++c) {
-        kv[c] = __fadd_rn(kv[c], __shfl_xor_sync(0xffffffffu, kv[c], offset, 32));
-      }
-    }
-#pragma unroll
-    for (int c = 0; c < kGdnColumns; ++c) {
-      const float delta = __fmul_rn(beta_t, fmaf(-g_t, kv[c], vr[c]));
-#pragma unroll
-      for (int r = 0; r < kRows; ++r) {
-        s[c][r] = fmaf(g_t, s[c][r], __fmul_rn(kr[r], delta));
-      }
-    }
-  }
-#pragma unroll
-  for (int c = 0; c < kGdnColumns; ++c) {
-#pragma unroll
-    for (int r = 0; r < kRows; ++r) {
-      s0[(static_cast<std::int64_t>(col0 + c) * kS) + (r * 32) + lane] = s[c][r];
-    }
-  }
-}
-
-// A convolution history after `keep` rows: tap j of channel c becomes the
-// (keep + j)-th of the old taps followed by the rows' inputs. A thread a
-// channel, blockIdx.y a layer (the last, past `layers`, the n-gram layer's),
-// in place: every old tap is read before any is written.
-__global__ void HistoryCommitKernel(Qwen38CommitArgs a) {
-  const int l = static_cast<int>(blockIdx.y);
-  const bool ple = l == a.layers;
-  float* history = ple ? a.ple_history : a.layer[l].history;
-  const float* rows = ple ? a.ple_rows : a.layer[l].qkv;
-  const int channels = ple ? a.ple_width : a.channels;
-  const int taps = ple ? a.ple_taps : a.taps;
-  const int c =
-      (static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x)) + static_cast<int>(threadIdx.x);
-  if (c >= channels) {
-    return;
-  }
-  float old[16];
-  for (int j = 0; j < taps; ++j) {
-    old[j] = history[(static_cast<std::int64_t>(c) * taps) + j];
-  }
-  for (int j = 0; j < taps; ++j) {
-    const int at = a.keep + j;  // in the old taps followed by the rows
-    history[(static_cast<std::int64_t>(c) * taps) + j] =
-        at < taps ? old[at] : rows[(static_cast<std::int64_t>(at - taps) * channels) + c];
   }
 }
 
@@ -2051,45 +1949,6 @@ std::expected<void, KernelFailure> RunGemmBf16(LaunchContext& launch, ggml_tenso
                               weights->data, CUDA_R_16BF, k, x->data, CUDA_R_16BF, k, &beta,
                               node->data, out, n, CUBLAS_COMPUTE_32F,
                               CUBLAS_GEMM_DEFAULT_TENSOR_OP));
-  });
-}
-
-std::expected<void, KernelFailure> Qwen38Commit(LaunchContext& launch,
-                                                const Qwen38CommitArgs& args) {
-  constexpr int kS = 128;
-  const auto aligned = [](const void* p) {
-    return p != nullptr && reinterpret_cast<std::uintptr_t>(p) % 16 == 0;
-  };
-  bool ok = args.layers >= 0 && args.layers <= kQwen38CommitLayers && args.keep >= 1 &&
-            args.keep <= 8 && args.taps >= 1 && args.taps <= 16 && args.qk_heads > 0 &&
-            args.v_heads > 0 && args.v_heads % args.qk_heads == 0 &&
-            args.channels == (2 * args.qk_heads * kS) + (args.v_heads * kS);
-  for (int l = 0; ok && l < args.layers; ++l) {
-    const Qwen38CommitLayer& layer = args.layer[l];
-    ok = aligned(layer.state) && aligned(layer.history) && aligned(layer.conv) &&
-         aligned(layer.qkv) && aligned(layer.gate) && aligned(layer.beta);
-  }
-  const bool ple = args.ple_history != nullptr;
-  if (ple) {
-    ok = ok && aligned(args.ple_history) && aligned(args.ple_rows) && args.ple_width > 0 &&
-         args.ple_taps >= 1 && args.ple_taps <= 16;
-  }
-  if (!ok) {
-    return Refused("a commit's extents are not its kernels' (128-wide heads, 1 to 8 rows)");
-  }
-  return launch.Run(base::Bytes(0), [&args, ple](ggml_backend_cuda_context& context) {
-    if (args.layers > 0) {
-      const dim3 block(32, 4);
-      const dim3 grid(static_cast<unsigned>(args.v_heads), kS / (4 * kGdnColumns),
-                      static_cast<unsigned>(args.layers));
-      GdnCommitKernel<<<grid, block, 0, context.stream()>>>(args);
-    }
-    const int widest = ple ? std::max(args.channels, args.ple_width) : args.channels;
-    const int histories = args.layers + (ple ? 1 : 0);
-    if (histories > 0) {
-      HistoryCommitKernel<<<dim3(Blocks(widest, kThreads), static_cast<unsigned>(histories)),
-                            kThreads, 0, context.stream()>>>(args);
-    }
   });
 }
 

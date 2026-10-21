@@ -44,24 +44,33 @@
 #include "components/step.h"
 #include "engine/execution_contract.h"
 #include "execution/registry.h"
+#include "families/qwen.h"
 #include "ggml.h"
 #include "ir/builder.h"
+#include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/executor.h"
-#include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/fusion.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
+#include "kernels/ggml/lower.h"
 #include "kernels/ggml/moe_cutlass.h"
 #include "kernels/ggml/mxfp8_cutlass.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/step_program.h"
 #include "kernels/ggml/tensors.h"
 #include "planner/pattern.h"
 #include "planner/plan.h"
+#include "planner/policy.h"
 #include "platform/host_probe.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
 #include "providers/device_runtime.h"
+#include "qwen38_fixture.h"
+#include "spec/mapping.h"
+#include "spec/mappings/qwen38.h"
+#include "state_layouts.h"
 
 namespace {
 
@@ -72,8 +81,14 @@ using llmp::kernels::ggml::TensorArena;
 using llmp::providers::DeviceExecution;
 using llmp::providers::FenceState;
 using llmp::providers::StreamId;
+namespace co = llmp::components;
+namespace fam = llmp::test_support::families;
+namespace fx = llmp::test_support::qwen38;
+namespace ir = llmp::ir;
 namespace kg = llmp::kernels::ggml;
 namespace mx = llmp::kernels::ggml::mxfp8;
+namespace pl = llmp::planner;
+namespace sp = llmp::spec;
 
 constexpr std::uint64_t kWorkspace = 64ULL << 20;
 constexpr std::int64_t kWidth = 2560;
@@ -294,6 +309,125 @@ class Qwen38FastTest : public ::testing::Test {
     return v;
   }
 
+  static std::string_view MapNode(const ggml_tensor* node) {
+    if (node == nullptr) return {};
+    if (node->op == GGML_OP_CUSTOM) {
+      switch (kg::LlmpOpOf(node)) {
+        case kg::LlmpOp::kMxfp8Quantize:
+          return kg::kMxfp8QuantizeName;
+        case kg::LlmpOp::kMxfp8Swizzle:
+          return kg::kMxfp8SwizzleName;
+        case kg::LlmpOp::kMxfp8Gemm:
+          return kg::kMxfp8GemmName;
+        case kg::LlmpOp::kMxfp8MulMatVec:
+          return kg::kMxfp8MulMatVecName;
+        case kg::LlmpOp::kHcPrep:
+          return kg::kHcPrepName;
+        case kg::LlmpOp::kHcLo:
+          return kg::kHcLoName;
+        case kg::LlmpOp::kHcMixBf16:
+          return kg::kHcMixBf16Name;
+        case kg::LlmpOp::kMoeRouter:
+          return kg::kMoeRouterName;
+        case kg::LlmpOp::kGdnHistory:
+          return kg::kGdnHistoryName;
+        case kg::LlmpOp::kGdnGates:
+          return kg::kGdnGatesName;
+        case kg::LlmpOp::kGdnStep:
+          return kg::kGdnStepName;
+        case kg::LlmpOp::kQsaPrep:
+          return kg::kQsaPrepName;
+        case kg::LlmpOp::kQsaGateQuantize:
+          return kg::kQsaGateQuantizeName;
+        case kg::LlmpOp::kQsaPool:
+          return kg::kQsaPoolName;
+        case kg::LlmpOp::kQsaTopK:
+          return kg::kQsaTopKName;
+        case kg::LlmpOp::kQsaAttn:
+          return kg::kQsaAttnName;
+        case kg::LlmpOp::kNvfp4Rows:
+          return kg::kNvfp4RowsName;
+        case kg::LlmpOp::kBf16:
+          return kg::kBf16Name;
+        case kg::LlmpOp::kGemmBf16:
+          return kg::GemmBf16Pinned(node) ? kg::kGemmBf16LtName : kg::kGemmBf16Name;
+        case kg::LlmpOp::kHcCombine:
+          return kg::kHcCombineName;
+        case kg::LlmpOp::kHcNorm:
+          return kg::kHcNormName;
+        case kg::LlmpOp::kHcMix:
+          return kg::kHcMixName;
+        case kg::LlmpOp::kMoeGlu:
+          return kg::kMoeGluName;
+        case kg::LlmpOp::kMoeCombine:
+          return kg::kMoeCombineName;
+        case kg::LlmpOp::kMoeRoute:
+          return kg::kMoeRouteName;
+        case kg::LlmpOp::kMoeGemv:
+          return kg::kMoeGemvName;
+        case kg::LlmpOp::kMoeQuantize:
+          return kg::kMoeQuantizeName;
+        case kg::LlmpOp::kMoeGemm:
+          return kg::kMoeGemmName;
+        case kg::LlmpOp::kGdnConv:
+          return kg::kGdnConvName;
+        case kg::LlmpOp::kGdnNormGate:
+          return kg::kGdnNormGateName;
+        default:
+          return {};
+      }
+    }
+    switch (node->op) {
+      case GGML_OP_GATED_DELTA_NET:
+        if (kg::GatedDeltaNetLanesFits(node)) {
+          return kg::kGatedDeltaNetLanesName;
+        }
+        return kg::GatedDeltaNetColumnsFits(node) ? kg::kGatedDeltaNetColumnsName
+                                                  : kg::kGatedDeltaNetName;
+      case GGML_OP_SSM_CONV:
+        return kg::kSsmConvName;
+      case GGML_OP_MUL_MAT:
+        return (node->src[1] != nullptr && node->src[1]->ne[1] <= 8) ? kg::kMulMatVector
+                                                                     : kg::kMulMatCublas;
+      case GGML_OP_RMS_NORM:
+        return kg::kRmsNormName;
+      case GGML_OP_MUL:
+        return kg::kMulName;
+      case GGML_OP_ADD:
+        return kg::kAddName;
+      case GGML_OP_SUB:
+        return kg::kSubName;
+      case GGML_OP_DIV:
+        return kg::kDivName;
+      case GGML_OP_SCALE:
+        return kg::kScaleName;
+      case GGML_OP_CLAMP:
+        return kg::kClampName;
+      case GGML_OP_UNARY:
+        return kg::kUnaryName;
+      case GGML_OP_ARGSORT:
+        return kg::kArgsortName;
+      case GGML_OP_TOP_K:
+        return kg::kTopKName;
+      case GGML_OP_LIGHTNING_INDEXER:
+        return kg::kLightningIndexerName;
+      case GGML_OP_GLU:
+        return kg::kSwiGluName;
+      case GGML_OP_SET_ROWS:
+        return kg::kSetRowsExtName;
+      case GGML_OP_REPEAT:
+        return kg::kRepeatName;
+      case GGML_OP_GET_ROWS:
+        return kg::kGetRowsName;
+      case GGML_OP_CONT:
+        return kg::kContName;
+      case GGML_OP_CONCAT:
+        return kg::kConcatName;
+      default:
+        return {};
+    }
+  }
+
   // Places every computed tensor the outputs need, binds the views, and
   // runs the plan the registry binds.
   void Run(std::vector<ggml_tensor*> outputs) {
@@ -304,17 +438,232 @@ class Qwen38FastTest : public ::testing::Test {
       }
     }
     kg::BindViews(nodes);
-    auto plan = kg::PlanGraph(nodes, false, kg::DeviceChoicesOf(launch()));
-    ASSERT_TRUE(plan.has_value()) << plan.error().detail;
-    auto bound = kg::BoundGraph::Bind(*registry_, *plan);
+    kg::GraphPlan plan;
+    for (ggml_tensor* node : nodes) {
+      if (kg::LaunchesNothing(node)) continue;
+      std::string_view name = MapNode(node);
+      ASSERT_FALSE(name.empty()) << ggml_op_desc(node);
+      const auto at = registry_->Find(name);
+      ASSERT_TRUE(at.has_value()) << name;
+      plan.steps.push_back(
+          {.operation = registry_->at(*at).operation, .implementation = name, .nodes = {node}});
+    }
+    auto bound = kg::BoundGraph::Bind(*registry_, plan);
     ASSERT_TRUE(bound.has_value()) << bound.error().detail;
     ASSERT_TRUE(bound->Run(launch()).has_value());
   }
 
-  std::string PlannedFor(ggml_tensor* node) {
-    auto plan =
-        kg::PlanGraph(std::vector<ggml_tensor*>{node}, false, kg::DeviceChoicesOf(launch()));
-    return plan && plan->steps.size() == 1 ? std::string(plan->steps[0].implementation) : "";
+  static pl::Policy FastPolicy() {
+    pl::Policy policy;
+    policy.numerical_candidates = {
+        pl::NumericalChange::kBf16HyperConnectionIntermediates,
+        pl::NumericalChange::kBf16ProductInputAndResult,
+        pl::NumericalChange::kMxfp8ProductInput,
+        pl::NumericalChange::kNvfp4ExpertIntermediates,
+    };
+    pl::Canonicalize(policy);
+    return policy;
+  }
+
+  std::optional<kg::LoweredStep> LowerModelStep(std::uint32_t rows, std::uint32_t past,
+                                                pl::Policy policy) {
+    fam::Qwen38Profile p = fam::Qwen38Flash();
+    p.layers = 4;
+    std::vector<std::int64_t> offsets;
+    std::vector<std::int64_t> vocab;
+    for (std::int64_t h = 0; h < 16; ++h) {
+      offsets.push_back(h * 20000096);
+      vocab.push_back(20000096 - (h * 8));
+    }
+    const auto hash = fam::CheckQwen38PleHash(p, std::vector<std::int64_t>{3, 5, 7}, offsets, vocab,
+                                              fx::kTableRows);
+    EXPECT_TRUE(hash.has_value()) << (hash ? "" : hash.error());
+    if (!hash) return std::nullopt;
+    auto resources = fx::Resources(p, fx::Form::kCutlass);
+    if (pl::Disabled(policy, "moe_router")) {
+      for (auto& r : resources) {
+        if (!r.roles.empty() && r.roles[0].ends_with("ffn_gate_inp_shexp.weight")) r.type = "F32";
+      }
+    }
+    const sp::Source source =
+        fx::SourceOf("qwen4exp", "safetensors", resources, fx::ModelOptFolds());
+    const auto values = fx::TargetValues(p, *hash, fx::Form::kCutlass);
+    EXPECT_TRUE(values.has_value()) << (values ? "" : values.error());
+    if (!values) return std::nullopt;
+    const auto spec = sp::Synthesize(sp::mappings::Qwen38Mapping(), source, *values);
+    EXPECT_TRUE(spec.has_value()) << (spec ? "" : spec.error());
+    if (!spec) return std::nullopt;
+    const auto layout = co::StageLayoutUniform(*spec, 0, 8192, 512, 2ULL << 20U);
+    EXPECT_TRUE(layout.has_value()) << (layout ? "" : layout.error());
+    if (!layout) return std::nullopt;
+    const std::uint32_t read_cells =
+        std::min<std::uint32_t>(8192U, ((past + rows + 255U) / 256U) * 256U);
+    const pl::StepShape shape{.phase = rows == 1
+                                           ? pl::Phase::kDecode
+                                           : (rows <= 8 ? pl::Phase::kVerify : pl::Phase::kPrefill),
+                              .segments = {{.slot = 0,
+                                            .rows = rows,
+                                            .past = past,
+                                            .read_cells = std::max<std::uint32_t>(256U, read_cells),
+                                            .outputs = 1,
+                                            .want_head = true}}};
+    auto step = co::BuildStep(*spec, 0, shape, {.tensors = source.tensors, .state = &*layout});
+    EXPECT_TRUE(step.has_value()) << (step ? "" : step.error());
+    if (!step) return std::nullopt;
+    std::vector<ir::TensorId> staged;
+    for (const co::StepInput& in : step->inputs) {
+      if (in.kind != co::InputKind::kCellPositions) staged.push_back(in.tensor);
+    }
+    const pl::DeviceFacts device{.device_class = "sm_121",
+                                 .arch = 121,
+                                 .features = llmp::execution::kBf16Mma | llmp::execution::kInt8Mma |
+                                             llmp::execution::kFp8Mma | llmp::execution::kFp4Mma |
+                                             llmp::execution::kBlockScaledMma};
+    pl::Canonicalize(policy);
+    auto plan = pl::Plan(step->graph.Clone(), *registry_, device, policy,
+                         {.staged = staged,
+                          .written = &kg::WrittenBytes,
+                          .within = &kg::WithinRoot,
+                          .shape = &shape});
+    EXPECT_TRUE(plan.has_value()) << (plan ? "" : plan.error().detail);
+    if (!plan) return std::nullopt;
+    const llmp::kernels::Addresses addresses{};
+    auto lowered = kg::LowerStep(
+        {*plan, *step, shape, addresses, 8192}, *registry_, kg::DeviceChoicesOf(launch()),
+        {.device_masks = true,
+         .frozen_host_masks = true,
+         .expert_stride = [](const ir::WeightRef&) { return std::uint64_t{1} << 20U; }});
+    EXPECT_TRUE(lowered.has_value()) << (lowered ? "" : lowered.error().detail);
+    if (!lowered) return std::nullopt;
+    return std::move(*lowered);
+  }
+
+  static bool NodeFitsFastOp(const ggml_tensor* node) {
+    switch (kg::LlmpOpOf(node)) {
+      case kg::LlmpOp::kMxfp8Quantize:
+        return kg::CheckMxfp8Quantize(node).has_value();
+      case kg::LlmpOp::kMxfp8Swizzle:
+        return kg::CheckMxfp8Swizzle(node).has_value();
+      case kg::LlmpOp::kMxfp8Gemm:
+        return kg::CheckMxfp8Gemm(node).has_value();
+      case kg::LlmpOp::kHcPrep:
+        return kg::CheckHcPrep(node).has_value();
+      case kg::LlmpOp::kHcLo:
+        return kg::CheckHcLo(node).has_value();
+      case kg::LlmpOp::kHcMixBf16:
+        return kg::CheckHcMixBf16(node).has_value();
+      case kg::LlmpOp::kMoeRouter:
+        return kg::CheckMoeRouter(node).has_value();
+      case kg::LlmpOp::kGdnHistory:
+        return kg::CheckGdnHistory(node).has_value();
+      case kg::LlmpOp::kGdnGates:
+        return kg::CheckGdnGates(node).has_value();
+      case kg::LlmpOp::kGdnStep:
+        return kg::CheckGdnStep(node).has_value();
+      case kg::LlmpOp::kQsaPrep:
+        return kg::CheckQsaPrep(node).has_value();
+      case kg::LlmpOp::kQsaGateQuantize:
+        return kg::CheckQsaGateQuantize(node).has_value();
+      case kg::LlmpOp::kQsaPool:
+        return kg::CheckQsaPool(node).has_value();
+      case kg::LlmpOp::kQsaTopK:
+        return kg::CheckQsaTopK(node).has_value();
+      case kg::LlmpOp::kQsaAttn:
+        return kg::CheckQsaAttn(node).has_value();
+      default:
+        return false;
+    }
+  }
+
+  std::string PlannedFor(ggml_tensor* node, const pl::Policy& policy = FastPolicy()) {
+    if (node->op == GGML_OP_CUSTOM) {
+      const std::array<ggml_tensor*, 1> outs = {node};
+      const std::vector<ggml_tensor*> nodes = kg::GraphOrder(outs);
+      for (ggml_tensor* t : nodes) {
+        if (t->view_src == nullptr && t->data == nullptr) {
+          TensorArena::Bind(t, Allocate(ggml_nbytes(t)));
+        }
+      }
+      kg::BindViews(nodes);
+      if (!NodeFitsFastOp(node)) return {};
+      const kg::LlmpOp op = kg::LlmpOpOf(node);
+      const std::uint32_t rows =
+          (op == kg::LlmpOp::kGdnGates || op == kg::LlmpOp::kGdnStep) ? 8U : 17U;
+      auto lowered = LowerModelStep(rows, 7000, policy);
+      if (!lowered.has_value()) return {};
+      for (const auto& step : lowered->plan.steps) {
+        if (!step.nodes.empty() && kg::LlmpOpOf(step.nodes.front()) == op) {
+          return std::string(step.implementation);
+        }
+      }
+      return {};
+    }
+    if (node->op == GGML_OP_GATED_DELTA_NET) {
+      using llmp::format::Encoding;
+      const auto shape_of = [](const ggml_tensor* t) {
+        const auto n0 = static_cast<std::uint64_t>(t->ne[0]);
+        const auto n1 = static_cast<std::uint64_t>(t->ne[1]);
+        const auto n2 = static_cast<std::uint64_t>(t->ne[2]);
+        const auto n3 = static_cast<std::uint64_t>(t->ne[3]);
+        switch (ggml_n_dims(t)) {
+          case 1:
+            return ir::ShapeOf({n0});
+          case 2:
+            return ir::ShapeOf({n0, n1});
+          case 3:
+            return ir::ShapeOf({n0, n1, n2});
+          default:
+            return ir::ShapeOf({n0, n1, n2, n3});
+        }
+      };
+      const auto enc_of = [](ggml_type type) {
+        switch (type) {
+          case GGML_TYPE_I32:
+            return Encoding::kI32;
+          case GGML_TYPE_BF16:
+            return Encoding::kBF16;
+          case GGML_TYPE_F16:
+            return Encoding::kF16;
+          default:
+            return Encoding::kF32;
+        }
+      };
+      ir::Builder b;
+      b.SetOwner(0);
+      std::vector<ir::TensorId> staged;
+      const auto in = [&](const ggml_tensor* t) {
+        const ir::TensorId id = b.Input(ir::Dense(enc_of(t->type), shape_of(t)));
+        staged.push_back(id);
+        return id;
+      };
+      const ir::Outputs outs =
+          b.GatedDeltaNet(in(node->src[0]), in(node->src[1]), in(node->src[2]), in(node->src[3]),
+                          in(node->src[4]), in(node->src[5]));
+      b.Output(outs[0]);
+      b.Output(outs[1]);
+      auto graph = std::move(b).Finish();
+      EXPECT_TRUE(graph.has_value()) << (graph ? "" : graph.error().detail);
+      if (!graph) return {};
+      co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+      for (const ir::TensorId id : staged) {
+        step.inputs.push_back({.tensor = id, .kind = co::InputKind::kFeatures});
+      }
+      const pl::DeviceFacts device{.device_class = "sm_121", .arch = 121};
+      pl::Policy p = policy;
+      pl::Canonicalize(p);
+      auto plan = pl::Plan(step.graph.Clone(), *registry_, device, p,
+                           {.staged = staged, .written = &kg::WrittenBytes});
+      EXPECT_TRUE(plan.has_value()) << (plan ? "" : plan.error().detail);
+      if (!plan) return {};
+      const pl::StepShape shape{};
+      const llmp::kernels::Addresses addresses{};
+      auto lowered =
+          kg::LowerStep({*plan, step, shape, addresses}, *registry_, kg::DeviceChoicesOf(launch()));
+      EXPECT_TRUE(lowered.has_value()) << (lowered ? "" : lowered.error().detail);
+      if (!lowered || lowered->plan.steps.empty()) return {};
+      return std::string(lowered->plan.steps.back().implementation);
+    }
+    return std::string(MapNode(node));
   }
 
   template <typename T = float>
@@ -1673,6 +2022,81 @@ TEST_F(Qwen38FastTest, TheChecksRefuseWhatTheKernelsCannotRun) {
   ggml_tensor* prep = kg::HcPrep(c(), streams, norm, nullptr, nullptr, nullptr, kEps);
   TensorArena::Bind(prep, Allocate(ggml_nbytes(prep)));
   EXPECT_NE(reason(kg::CheckHcPrep(prep)), "accepted");
+}
+
+TEST_F(Qwen38FastTest, ThePlanTakesTheFastOpsOnlyWhenItsOptionsSayTo) {
+  auto has_impl = [](const kg::LoweredStep& lowered, std::string_view name) {
+    for (const auto& step : lowered.plan.steps) {
+      if (step.implementation == name) return true;
+    }
+    return false;
+  };
+
+  const pl::Policy fast = FastPolicy();
+  auto prefill = LowerModelStep(17, 7000, fast);
+  ASSERT_TRUE(prefill.has_value());
+  EXPECT_TRUE(has_impl(*prefill, kg::kMxfp8QuantizeName));
+  EXPECT_TRUE(has_impl(*prefill, kg::kMxfp8SwizzleName));
+  EXPECT_TRUE(has_impl(*prefill, kg::kMxfp8GemmName));
+  EXPECT_TRUE(has_impl(*prefill, kg::kHcPrepName));
+  EXPECT_TRUE(has_impl(*prefill, kg::kHcLoName));
+  EXPECT_TRUE(has_impl(*prefill, kg::kHcMixBf16Name));
+  EXPECT_TRUE(has_impl(*prefill, kg::kMoeRouterName));
+  EXPECT_TRUE(has_impl(*prefill, kg::kGdnHistoryName));
+  EXPECT_TRUE(has_impl(*prefill, kg::kQsaPrepName));
+  EXPECT_TRUE(has_impl(*prefill, kg::kQsaGateQuantizeName));
+  EXPECT_TRUE(has_impl(*prefill, kg::kQsaPoolName));
+  EXPECT_TRUE(has_impl(*prefill, kg::kQsaTopKName));
+  EXPECT_TRUE(has_impl(*prefill, kg::kQsaAttnName));
+  EXPECT_TRUE(has_impl(*prefill, kg::kGatedDeltaNetLanesName));
+
+  auto short_step = LowerModelStep(8, 7000, fast);
+  ASSERT_TRUE(short_step.has_value());
+  EXPECT_TRUE(has_impl(*short_step, kg::kGdnGatesName));
+  EXPECT_TRUE(has_impl(*short_step, kg::kGdnStepName));
+  EXPECT_TRUE(has_impl(*short_step, kg::kMxfp8MulMatVecName));
+  EXPECT_FALSE(has_impl(*short_step, kg::kMxfp8QuantizeName));
+  EXPECT_FALSE(has_impl(*short_step, kg::kMxfp8GemmName));
+
+  auto without_pattern = [&](std::string_view pat, std::uint32_t rows) {
+    pl::Policy p = fast;
+    p.disabled.emplace_back(pat);
+    return LowerModelStep(rows, 7000, p);
+  };
+
+  auto no_hc = without_pattern("hc_prep", 17);
+  ASSERT_TRUE(no_hc.has_value());
+  EXPECT_FALSE(has_impl(*no_hc, kg::kHcPrepName));
+  EXPECT_FALSE(has_impl(*no_hc, kg::kHcLoName));
+  EXPECT_FALSE(has_impl(*no_hc, kg::kHcMixBf16Name));
+
+  pl::Policy no_bf16_hc = fast;
+  no_bf16_hc.numerical_candidates = {
+      pl::NumericalChange::kBf16ProductInputAndResult,
+      pl::NumericalChange::kMxfp8ProductInput,
+      pl::NumericalChange::kNvfp4ExpertIntermediates,
+  };
+  auto f32_hc = LowerModelStep(17, 7000, no_bf16_hc);
+  ASSERT_TRUE(f32_hc.has_value());
+  EXPECT_FALSE(has_impl(*f32_hc, kg::kHcMixBf16Name));
+  EXPECT_TRUE(has_impl(*f32_hc, kg::kHcMixName));
+
+  auto no_router = without_pattern("moe_router", 17);
+  ASSERT_TRUE(no_router.has_value());
+  EXPECT_FALSE(has_impl(*no_router, kg::kMoeRouterName));
+
+  auto no_gdn_step = without_pattern("gdn_step", 8);
+  ASSERT_TRUE(no_gdn_step.has_value());
+  EXPECT_FALSE(has_impl(*no_gdn_step, kg::kGdnStepName));
+  EXPECT_FALSE(has_impl(*no_gdn_step, kg::kGdnHistoryName));
+
+  auto no_gdn_gates = without_pattern("gdn_gates", 8);
+  ASSERT_TRUE(no_gdn_gates.has_value());
+  EXPECT_FALSE(has_impl(*no_gdn_gates, kg::kGdnGatesName));
+
+  auto no_qsa_gate = without_pattern("prepared_head_gate", 17);
+  ASSERT_TRUE(no_qsa_gate.has_value());
+  EXPECT_FALSE(has_impl(*no_qsa_gate, kg::kQsaGateQuantizeName));
 }
 
 // A model-free integration of the common component, typed row producer,

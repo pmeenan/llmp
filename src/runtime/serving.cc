@@ -169,8 +169,7 @@ Clock::time_point ResidentTimes::Latest(std::span<const catalog::ExtentId> exten
 namespace {
 engine::NodeSettings MakeNodeSettings(const config::NodeConfig& config,
                                       const ServingOptions& options,
-                                      scheduler::PageInObserver* observer,
-                                      const std::atomic<bool>* hold_reads) {
+                                      scheduler::PageInObserver* observer) {
   const auto mode = config.memory.mode.value;
   const bool preallocate =
       (mode == config::MemoryMode::kDedicated && !options.handle_reserve.has_value());
@@ -192,8 +191,6 @@ engine::NodeSettings MakeNodeSettings(const config::NodeConfig& config,
       .poll_window = std::nullopt,
       .spin_ahead = std::nullopt,
       .quiet = std::chrono::minutes(10),
-      .hold_reads = hold_reads,
-      .hold_cancellable = options.hold_cancellable,
   };
 }
 }  // namespace
@@ -205,7 +202,7 @@ Server::Server(const config::NodeConfig& config, const config::RuntimeRoles& rol
       options_(options),
       log_(log),
       times_(kObservedExtents),
-      node_(MakeNodeSettings(config, options, &times_, &hold_reads_)),
+      node_(MakeNodeSettings(config, options, &times_)),
       retention_(std::chrono::hours(config.memory.retention_hours)),
       spill_budget_(std::uint64_t{config.memory.spill_budget_gib} << 30U),
       pressure_({

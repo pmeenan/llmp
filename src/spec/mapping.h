@@ -399,8 +399,6 @@ struct DraftRecipe {
   std::uint32_t depth = 0;
   std::string_view depth_key{};
   std::string_view fill_key{};
-  // The registered mapping version used for composition (0: this version).
-  std::uint16_t composed_version = 0;
   std::string_view target_architecture{};
   // Only used when the stored drafter carries no kept metadata (old native
   // artifacts). New imports use the same target-spec extraction rules.

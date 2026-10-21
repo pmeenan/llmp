@@ -96,6 +96,20 @@ class Steps(unittest.TestCase):
                          "--new-assistant", "A1", "--inputs", "/i", "--blocks", "1"])
             self.assertIn("/s/new/T1 /s/new/A1", text.getvalue().splitlines()[2])
 
+    def test_defaults_to_the_v1_gemma31_target_and_assistant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = io.StringIO()
+            with contextlib.redirect_stdout(text):
+                ag.main(["steps", "--out", tmp, "--old", "/o", "--new", "/n",
+                         "--old-artifacts", "/s/old", "--new-artifacts", "/s/new",
+                         "--inputs", "/i", "--blocks", "1"])
+            self.assertIn(f"/s/old/{ag.DEFAULT_TARGET} /s/old/{ag.DEFAULT_ASSISTANT}",
+                          text.getvalue().splitlines()[1])
+            self.assertEqual(ag.DEFAULT_TARGET,
+                             "915805856724410ee650dd95e15b5815ceb08eedf1536007d11ce5bbebd8e01c")
+            self.assertEqual(ag.DEFAULT_ASSISTANT,
+                             "f931e7a0c9b995ac99062c3ae73bacb90960e6e1b8e155db5407c169663f0197")
+
 
 class Parse(unittest.TestCase):
     def test_a_complete_log(self):

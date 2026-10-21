@@ -15,29 +15,28 @@
 // (docs/experiments/artifact-layout/import_m3.py), in its order:
 //
 //   - the directory (itself possibly reached through a link): holding
-//     manifest.json, v1's spec.json and meta/ only, regular files, no links
+//     manifest.json, spec.json and meta/ only, regular files, no links
 //     inside it;
 //   - manifest.json (at most 1 MiB): strict JSON, format
-//     "jitllm-composition" and format_version 0, or "llmp-composition" and
-//     format_version 1 or 2 (one scoped role level under meta/),
-//     canonical bytes, the directory named by D-120's identity digest, every key and
-//     value typed and patterned, lists in canonical order; 1-16 components,
-//     each a role ([a-z][a-z0-9_]{0,63}), an artifact ID and that
-//     artifact's architecture;
+//     "llmp-composition" and format_version 1 or 2 (one scoped role level
+//     under meta/), canonical bytes, the directory named by D-120's identity
+//     digest, every key and value typed and patterned, lists in canonical
+//     order; 1-16 components, each a role ([a-z][a-z0-9_]{0,63}), an artifact
+//     ID and that artifact's architecture;
 //   - no data/ directory; exactly the listed files present; every kept file
-//     a recorded source and every source kept, model_index.json among them
-//     for v0 (v1 keeps whatever the pipeline has, possibly nothing: a
-//     target and its drafter are a composition with no files of its own);
+//     a recorded source and every source kept (keeps whatever the pipeline
+//     has, possibly nothing: a target and its drafter are a composition with
+//     no files of its own);
 //   - each kept file read whole (64 MiB each, 128 MiB in all) and its
 //     digest checked: the files are small, so the open is always deep;
-//   - v1's spec.json, when listed (D-113): read whole (kMaxSpecBytes), its
+//   - spec.json, when listed (D-113): read whole (kMaxSpecBytes), its
 //     digest checked, strict canonical JSON whose root is an object. It is
 //     the spec of the model the composition makes, whose stages' artifact
 //     indexes count its components in their (role) order; spec/stored.h
 //     parses and checks it.
 //
-// It does not open the components: each is an ordinary artifact, of
-// either version, the caller opens by ID (artifact.h, with
+// It does not open the components: each is an ordinary artifact
+// the caller opens by ID (artifact.h, with
 // OpenOptions::expected_id) and whose model architecture it compares with
 // the one recorded here.
 
@@ -74,10 +73,10 @@ struct KeptFile {
 class Composition {
  public:
   const std::string& id() const { return id_; }
-  // 0 or 1.
+  // 1 or 2.
   std::uint32_t format_version() const { return format_version_; }
   const std::string& architecture() const { return architecture_; }
-  // v0's converter, or v1's importer (artifact.h's Converter).
+  // The importer provenance (artifact.h's Converter).
   const Converter& converter() const { return converter_; }
   const std::vector<CompositionComponent>& components() const { return components_; }
   const std::vector<Source>& sources() const { return sources_; }
@@ -85,7 +84,7 @@ class Composition {
   const CompositionComponent* Find(std::string_view role) const;
   // A kept file's verified bytes.
   std::optional<std::string_view> Metadata(std::string_view name) const;
-  // v1: the spec.json bytes, checked as an artifact's, when it has one.
+  // The spec.json bytes, checked as an artifact's, when it has one.
   std::optional<std::string_view> spec_json() const {
     return spec_json_ ? std::optional<std::string_view>(*spec_json_) : std::nullopt;
   }
@@ -93,7 +92,7 @@ class Composition {
  private:
   friend class CompositionOpener;
   std::string id_;
-  std::uint32_t format_version_ = 0;
+  std::uint32_t format_version_ = 1;
   std::optional<std::string> spec_json_;
   std::string architecture_;
   Converter converter_;

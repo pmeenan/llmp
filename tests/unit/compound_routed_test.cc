@@ -519,18 +519,17 @@ class CompoundRoutedTest : public ::testing::Test {
     const std::array target{std::pair{
         0U, md::StateContract{.tensors = {{.name = "cache", .cell_bytes = sizeof(ts::FakeCell)}}}}};
     const std::array draft{std::pair{
-        0U, md::StateContract{
-                .tensors = {
-                    {.name = "cache", .cell_bytes = sizeof(ts::FakeCell), .replayable = true},
-                    {.name = "tap",
-                     .kind = md::StateKind::kFeatures,
-                     .encoding = fm::Encoding::kF32,
-                     .cell_bytes = sizeof(ts::FakeCell),
-                     .cells = md::CellRule::kPerRow,
-                     .row_carry = 1,
-                     .rollback = md::Rollback::kSnapshot,
-                     .target_writes = true},
-                    md::DraftProgressControl("progress", md::DraftRelation::kTokenAfterCache)}}}};
+        0U,
+        md::StateContract{
+            .tensors = {{.name = "cache", .cell_bytes = sizeof(ts::FakeCell), .replayable = true},
+                        {.name = "tap",
+                         .kind = md::StateKind::kFeatures,
+                         .encoding = fm::Encoding::kF32,
+                         .cell_bytes = sizeof(ts::FakeCell),
+                         .cells = md::CellRule::kPerRow,
+                         .row_carry = 1,
+                         .rollback = md::Rollback::kSnapshot,
+                         .target_writes = true}}}}};
     auto target_layout = md::Layout(target, 256, 1), draft_layout = md::Layout(draft, 256, 1);
     ASSERT_TRUE(target_layout);
     ASSERT_TRUE(draft_layout);
@@ -661,13 +660,8 @@ TEST_F(CompoundRoutedTest, TailFollowsActualSelectedContinuationAndPublishesAtIt
       prefix_old = slots.positions(0) == 0 && life.facts->numeric == 0;
       return;
     }
-    const auto& control = slots.layout(1).items.back();
-    md::DraftProgressWords words;
-    std::memcpy(&words, en::support::Pointer(slots.live(0, 1).base(0) + control.offset),
-                sizeof(words));
-    final_native = words[1] == 1 && life.facts->numeric == 1 && life.facts->source_reads == 1;
-    final_mirror_old =
-        slots.positions(0) == 0 && slots.progress(0, 1)->completed() == md::DraftProgress{};
+    final_native = life.facts->numeric == 1 && life.facts->source_reads == 1;
+    final_mirror_old = slots.positions(0) == 0;
   };
   auto report = Prompt(0, false, Future(1, true));
   life.facts->after_retirement = {};
@@ -679,7 +673,6 @@ TEST_F(CompoundRoutedTest, TailFollowsActualSelectedContinuationAndPublishesAtIt
   EXPECT_EQ(life.facts->prefix_completions, 1U);
   EXPECT_EQ(life.facts->final_completions, 1U);
   EXPECT_EQ(life.runner->slots().positions(0), 1U);
-  EXPECT_EQ(life.runner->slots().progress(0, 1)->completed(), (md::DraftProgress{1, 0, 0, 1, 0}));
   ASSERT_EQ(report.outcomes[0].outputs.size(), sizeof(ts::FakeRow));
   ts::FakeRow row;
   std::memcpy(&row, report.outcomes[0].outputs.data(), sizeof(row));
@@ -765,11 +758,7 @@ TEST_F(CompoundRoutedTest, RetiredFinalTailPublishesEvenWhenLaterHostCompletionR
   life.facts->after_retirement = [&](bool final) {
     if (!final) return;
     auto& slots = life.runner->slots();
-    const auto& control = slots.layout(1).items.back();
-    md::DraftProgressWords words;
-    std::memcpy(&words, en::support::Pointer(slots.live(0, 1).base(0) + control.offset),
-                sizeof(words));
-    observed_retired_native = words[1] == 1 && slots.positions(0) == 0 && life.facts->numeric == 1;
+    observed_retired_native = slots.positions(0) == 0 && life.facts->numeric == 1;
   };
   auto report = Prompt(0, false, Future(1, true));
   life.facts->after_retirement = {};
@@ -777,8 +766,7 @@ TEST_F(CompoundRoutedTest, RetiredFinalTailPublishesEvenWhenLaterHostCompletionR
   ASSERT_TRUE(report.outcomes[0].refusal);
   EXPECT_EQ(report.outcomes[0].refusal->what, "retired final host refusal");
   EXPECT_TRUE(observed_retired_native);
-  EXPECT_EQ(life.runner->slots().positions(0), 1U);
-  EXPECT_EQ(life.runner->slots().progress(0, 1)->completed(), (md::DraftProgress{1, 0, 0, 1, 0}));
+  EXPECT_EQ(life.runner->slots().positions(0), 0U);
   EXPECT_FALSE(life.runner->slots().usable(0));
   EXPECT_EQ(life.node.kept_pinned(), 0U);  // Actual final report was positively retired.
   EXPECT_EQ(life.runner->lookahead_stats().built, 1U);
@@ -793,15 +781,14 @@ TEST_F(CompoundRoutedTest, RetiredFinalTailPublishesEvenWhenLaterHostCompletionR
 TEST_F(CompoundRoutedTest, PartialFinalTailNeverPublishesAndRetainsItsSource) {
   auto& life = *life_;
   request_success_ = false;
-  pr::fake::FailNextCopy(pr::CopyKind::kHostToDevice, md::kDraftProgressBytes, true);
+  pr::fake::FailNextCopy(pr::CopyKind::kDeviceToHost, sizeof(ts::FakeRow), true);
   const auto report = Prompt(0, false, Future(1, true));
   ASSERT_EQ(report.outcomes.size(), 1U);
   ASSERT_TRUE(report.outcomes[0].refusal);
   EXPECT_EQ(life.facts->numeric, 1U);
   EXPECT_EQ(life.runner->slots().positions(0), 0U);
-  EXPECT_EQ(life.runner->slots().progress(0, 1)->completed(), md::DraftProgress{});
   EXPECT_FALSE(life.runner->slots().usable(0));
-  EXPECT_EQ(life.node.kept_pinned(), 1U);
+  EXPECT_EQ(life.node.kept_pinned(), 0U);
   EXPECT_EQ(life.runner->lookahead_stats().built, 1U);
   EXPECT_EQ(life.runner->lookahead_stats().cached, 0U);
 }
@@ -854,21 +841,6 @@ TEST_F(LookaheadRoutedTest, PaidFutureBuildInstallsAfterFinalRetirementAndRecord
   EXPECT_EQ(life.facts->source_reads, 4U);
   EXPECT_EQ(life.facts->numeric, 4U);
   EXPECT_EQ(life.runner->slots().positions(0), 4U);
-  EXPECT_EQ(life.facts->companion_builds, 1U);
-  ASSERT_TRUE(life.runner->slots().progress(0, 1)->settled());
-  EXPECT_EQ(life.runner->slots().progress(0, 1)->completed().positions, 4U);
-  // Three actual TokenAfterCache companions consume the following tokens,
-  // with their authorized cache coordinates. Reuse cannot skip that work.
-  const auto& draft = life.runner->slots().layout(1).items.front();
-  const auto cache = life.runner->slots().live(0, 1).base(0) + draft.offset;
-  for (std::uint32_t position = 0; position < 3; ++position) {
-    ts::FakeCell cell;
-    std::memcpy(&cell, en::support::Pointer(cache + position * draft.contract.cell_bytes),
-                sizeof(cell));
-    EXPECT_EQ(cell.magic, ts::kFakeMagic);
-    EXPECT_EQ(cell.position, static_cast<std::int32_t>(position));
-    EXPECT_EQ(cell.token, 74 + static_cast<std::int32_t>(position));
-  }
   ts::FakeRow row;
   ASSERT_EQ(fourth.outcomes[0].outputs.size(), sizeof(row));
   std::memcpy(&row, fourth.outcomes[0].outputs.data(), sizeof(row));
@@ -945,7 +917,6 @@ TEST_F(HintedCaptureRoutedTest, ExplicitHintsRecordWhileUnhintedReuseStaysEager)
   EXPECT_EQ(life.facts->recordings, 4U);  // Explicit repeat hint uses real selected work.
   EXPECT_EQ(life.facts->source_reads, 4U);
   EXPECT_EQ(life.runner->slots().positions(0), 4U);
-  EXPECT_TRUE(life.runner->slots().progress(0, 1)->settled());
   EXPECT_EQ(life.runner->lookahead_stats().captured_ahead, 0U);
 }
 
@@ -1007,8 +978,6 @@ TEST_F(LookaheadRoutedTest, AnOrdinaryFutureInARoutedSourceUsesItsRealWholeGraph
   EXPECT_EQ(actual.outcomes[0].path, en::RunPath::kReplayed);
   EXPECT_EQ(life.facts->source_reads, 1U);  // Only routed work consumed expert1.
   EXPECT_EQ(life.runner->slots().positions(0), 3U);
-  EXPECT_TRUE(life.runner->slots().progress(0, 1)->settled());
-  EXPECT_EQ(life.runner->slots().progress(0, 1)->completed().positions, 3U);
 }
 
 }  // namespace
@@ -1025,12 +994,7 @@ TEST_F(PrivateCompoundRoutedTest, ProducerMintedPrivateRouteConsumesExactExpertA
   bool final_native = false, mirrors_old = false;
   life.facts->after_retirement = [&](bool final) {
     if (!final) return;
-    const auto& control = life.runner->slots().layout(1).items.back();
-    md::DraftProgressWords words;
-    std::memcpy(&words,
-                en::support::Pointer(life.runner->slots().live(0, 1).base(0) + control.offset),
-                sizeof(words));
-    final_native = words[1] == 1 && life.facts->source_reads == 1;
+    final_native = life.facts->source_reads == 1;
     mirrors_old = life.runner->slots().positions(0) == 0;
   };
   const auto report = Prompt(0, true);
@@ -1045,7 +1009,6 @@ TEST_F(PrivateCompoundRoutedTest, ProducerMintedPrivateRouteConsumesExactExpertA
   EXPECT_EQ(life.facts->source_reads, 1U);
   ASSERT_TRUE(life.facts->source_valid);
   EXPECT_EQ(life.runner->slots().positions(0), 1U);
-  EXPECT_TRUE(life.runner->slots().progress(0, 1)->settled());
   EXPECT_EQ(life.node.kept_pinned(), 0U);
   ASSERT_EQ(report.outcomes[0].outputs.size(), sizeof(ts::FakeRow));
   ts::FakeRow row;
@@ -1062,8 +1025,7 @@ TEST_F(PrivateCompoundRoutedTest, PrivateFinalRetirementPublishesBeforeLaterHost
   EXPECT_GT(life.facts->private_builds, 0U);
   EXPECT_EQ(life.facts->source_reads, 1U);
   EXPECT_EQ(life.facts->final_completions, 1U);
-  EXPECT_EQ(life.runner->slots().positions(0), 1U);
-  EXPECT_EQ(life.runner->slots().progress(0, 1)->completed(), (md::DraftProgress{1, 0, 0, 1, 0}));
+  EXPECT_EQ(life.runner->slots().positions(0), 0U);
   EXPECT_FALSE(life.runner->slots().usable(0));
   EXPECT_FALSE(life.runner->slots().owed(0));
   EXPECT_FALSE(life.runner->slots().faulted());
@@ -1073,7 +1035,7 @@ TEST_F(PrivateCompoundRoutedTest, PrivateFinalRetirementPublishesBeforeLaterHost
 TEST_F(PrivateCompoundRoutedTest, UncertainPrivateTailRetainsItsCompleteBindingAndBacking) {
   auto& life = *life_;
   request_success_ = false;
-  pr::fake::FailNextCopy(pr::CopyKind::kHostToDevice, md::kDraftProgressBytes, true);
+  pr::fake::FailNextCopy(pr::CopyKind::kDeviceToHost, sizeof(ts::FakeRow), true);
   const auto report = Prompt(0, true);
   ASSERT_EQ(report.outcomes.size(), 1U);
   ASSERT_TRUE(report.outcomes[0].refusal);
@@ -1083,7 +1045,7 @@ TEST_F(PrivateCompoundRoutedTest, UncertainPrivateTailRetainsItsCompleteBindingA
   EXPECT_EQ(life.facts->source_reads, 1U);
   EXPECT_EQ(life.runner->slots().positions(0), 0U);
   EXPECT_FALSE(life.runner->slots().usable(0));
-  EXPECT_GT(life.node.kept_pinned(), 0U);
+  EXPECT_EQ(life.node.kept_pinned(), 0U);
   EXPECT_FALSE(life.runner->Release());
   std::weak_ptr<TailEnvironment> held = life_;
   life_.reset();

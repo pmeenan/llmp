@@ -373,10 +373,10 @@ TEST(Vocabularies, DeepSeek0731TokenizerEqualsE3aa0d6a) {
 }
 
 // The community IQ2_XXS GGUF (antirez/deepseek-v4-gguf@f71f23d5) as its v1
-// import (e7c0d0e4…, in the published v1 store) keeps its metadata: the 0731
+// import (a4fb10cc…, in the published v1 store) keeps its metadata: the 0731
 // GGUF's tokenizer with another chat template, chat-v2.
 constexpr std::string_view kCommunityKvRel =
-    "e7c0d0e453aab30765c884ab610835936e80312646f18383538bd4d9b428dc59/meta/"
+    "a4fb10ccdec2623b9e513dfaecfc3521540b112d91f84508c55511f8b97d62ee/meta/"
     "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.kv.gguf";
 
 std::string CommunityKvPath() {

@@ -19,7 +19,6 @@
 #include <array>
 #include <charconv>
 #include <cstdint>
-#include <deque>
 #include <expected>
 #include <format>
 #include <string>
@@ -29,8 +28,6 @@
 #include <vector>
 
 #include "artifact/artifact.h"
-#include "artifact/json.h"
-#include "artifact/representation.h"
 #include "base/bytes.h"
 #include "base/sha256.h"
 #include "families/qwen.h"
@@ -243,22 +240,6 @@ inline std::vector<families::Qwen38Resource> MtpResources(const families::Qwen38
   return r;
 }
 
-// A resource's v0 representation.
-inline artifact::Representation RepresentationOf(const families::Qwen38Resource& r) {
-  std::string ne;
-  std::vector<std::uint64_t> dims = r.ne;
-  if (r.plain) std::ranges::reverse(dims);  // a plain shape is row-major
-  for (const auto d : dims) ne += (ne.empty() ? "" : ",") + std::to_string(d);
-  const std::string text =
-      r.plain ? std::format(R"({{"dtype":"{}","family":"plain","shape":[{}]}})", r.type, ne)
-              : std::format(R"({{"family":"ggml","ne":[{}],"type":"{}"}})", ne, r.type);
-  const auto doc = artifact::json::Parse(text);
-  EXPECT_TRUE(doc.has_value()) << text;
-  const auto rep = artifact::ParseRepresentation(doc->root());
-  EXPECT_TRUE(rep.has_value()) << text;
-  return rep.value_or(artifact::Representation{});
-}
-
 // The folds the native ModelOpt importer records (sorted), which a
 // ModelOpt-form fixture's source carries; a GGUF's come from its mapping's
 // fold rules.
@@ -271,13 +252,13 @@ inline std::vector<std::string> ModelOptFolds() {
 inline spec::Source SourceOf(std::string architecture, std::string container,
                              const std::vector<families::Qwen38Resource>& resources,
                              std::vector<std::string> folds = {}) {
-  std::deque<artifact::Representation> reps;
   std::vector<FixtureTensor> tensors;
   for (const families::Qwen38Resource& r : resources) {
-    reps.push_back(RepresentationOf(r));
     tensors.push_back({.name = r.roles.front(),
                        .roles = r.roles,
-                       .repr = &reps.back(),
+                       .plain = r.plain,
+                       .type = r.type,
+                       .ne = r.ne,
                        .count = r.expert_array ? r.count : 0});
   }
   auto source = FixtureSource(std::move(architecture), std::move(container), tensors,

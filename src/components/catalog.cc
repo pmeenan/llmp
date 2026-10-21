@@ -28,7 +28,6 @@ std::span<const ComponentDef* const> Catalog() {
       &defs::Conv2d(),
       &defs::EmbeddingInject(),
       &defs::EmbeddingMtp(),
-      &defs::EmbeddingMtpRepeat(),
       &defs::EmbeddingProjected(),
       &defs::EmbeddingToken(),
       &defs::FfnGlu(),

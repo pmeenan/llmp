@@ -95,12 +95,6 @@ Status SlotLifecycle::Setup() {
     if (stage.read_align % 256 != 0) {
       return Refuse(std::format("stage {}'s read alignment is not of 256s", stage.name));
     }
-    auto progress = model::DraftBounds(stage.layout);
-    if (!progress) return std::unexpected(progress.error());
-    if (progress->has_value() && s == 0)
-      return Refuse("target stage cannot declare draft progress");
-    if (progress->has_value() && stage.layout.context != options_.stages.front().layout.context)
-      return Refuse("repeatable drafter and target need the same context bound");
     // A borrowed tensor is a drafter's view of the target's, which must
     // hold it.
     for (const auto& borrowed : stage.layout.borrowed) {
@@ -126,27 +120,6 @@ Status SlotLifecycle::Setup() {
               options_.stages[s].layout.bytes, owner_);
           !added) {
         return added;
-      }
-      auto bounds = model::DraftBounds(options_.stages[s].layout);
-      if (!bounds) return std::unexpected(bounds.error());
-      if (bounds->has_value()) {
-        Stage& stage = slot.stages[s];
-        stage.progress = std::make_unique<DraftProgressLedger>(**bounds);
-        for (const auto& item : options_.stages[s].layout.items)
-          if (item.contract.kind == model::StateKind::kDrafterProgress)
-            stage.control_offset = item.offset;
-        // Separate, cataloged allocations: KeepPinned can retain either
-        // exact allocation if publication or hydration retirement is lost.
-        auto publish = node_.Pinned(model::kDraftProgressBytes, owner_, progress_staging_);
-        if (!publish) return std::unexpected(publish.error());
-        stage.control_publish = static_cast<model::DraftProgressWords*>(*publish);
-        auto hydrate = node_.Pinned(model::kDraftProgressBytes, owner_, progress_staging_);
-        if (!hydrate) return std::unexpected(hydrate.error());
-        stage.control_hydrate = static_cast<model::DraftProgressWords*>(*hydrate);
-        // Tail and prefix can share one job; their immutable words cannot.
-        auto tail = node_.Pinned(model::kDraftProgressBytes, owner_, progress_staging_);
-        if (!tail) return std::unexpected(tail.error());
-        stage.control_tail = static_cast<model::DraftProgressWords*>(*tail);
       }
     }
   }
@@ -211,7 +184,6 @@ std::vector<ExtentId> SlotLifecycle::reserved_extents() const {
 Status SlotLifecycle::Bind(std::vector<ExtentId> shared, std::vector<const PagedWeights*> weights) {
   if (!registered_ || bound_ || released_) return Refuse("slot bind order");
   shared_ = std::move(shared);
-  shared_.insert(shared_.end(), progress_staging_.begin(), progress_staging_.end());
   weights_ = std::move(weights);
   bound_ = true;
   if (auto refreshed = RefreshClosures(); !refreshed) {
@@ -357,86 +329,6 @@ const LiveState& SlotLifecycle::live(std::uint32_t slot, std::size_t stage) cons
   return *slots_.at(slot).stages.at(stage).live;
 }
 
-DraftProgressLedger* SlotLifecycle::progress(std::uint32_t slot, std::size_t stage) {
-  return slots_.at(slot).stages.at(stage).progress.get();
-}
-
-const DraftProgressLedger* SlotLifecycle::progress(std::uint32_t slot, std::size_t stage) const {
-  return slots_.at(slot).stages.at(stage).progress.get();
-}
-
-std::expected<DraftProgressLedger::Unit, std::string> SlotLifecycle::BeginDraftUnit(
-    std::uint32_t index, std::size_t s) {
-  if (auto active = CheckActive(index); !active) return std::unexpected(active.error());
-  Slot& slot = slots_.at(index);
-  if (s >= slot.stages.size() || !slot.stages[s].progress)
-    return Refuse("stage has no repeatable draft progress");
-  Stage& stage = slot.stages[s];
-  auto unit = stage.progress->BeginUnit();
-  if (!unit) return std::unexpected(unit.error());
-  stage.progress_unit = *unit;
-  return unit;
-}
-
-std::expected<DraftProgressLedger::Successor, std::string> SlotLifecycle::BeginDraftSuccessor(
-    std::uint32_t index, std::size_t s) {
-  if (auto active = CheckActive(index); !active) return std::unexpected(active.error());
-  Slot& slot = slots_.at(index);
-  if (s >= slot.stages.size() || !slot.stages[s].progress)
-    return Refuse("stage has no repeatable draft progress");
-  Stage& stage = slot.stages[s];
-  auto successor = stage.progress->BeginSuccessor();
-  if (!successor) return std::unexpected(successor.error());
-  stage.progress_unit = successor->unit;
-  return successor;
-}
-
-Status SlotLifecycle::CancelDraftSuccessor(std::uint32_t index, std::size_t s,
-                                           DraftProgressLedger::Unit unit) {
-  auto found = Find(index);
-  if (!found) return std::unexpected(found.error());
-  if (s >= (*found)->stages.size() || !(*found)->stages[s].progress)
-    return Refuse("stage has no repeatable draft progress");
-  Stage& stage = (*found)->stages[s];
-  if (auto canceled = stage.progress->CancelSuccessor(unit); !canceled) return canceled;
-  stage.progress_unit.reset();
-  return {};
-}
-
-Status SlotLifecycle::CheckProgressVerify(std::uint32_t index, std::uint32_t rows) const {
-  auto found = Find(index);
-  if (!found) return std::unexpected(found.error());
-  for (const Stage& stage : (*found)->stages) {
-    if (!stage.progress) continue;
-    if (!stage.progress_unit) return Refuse("target verify has no drafter logical unit");
-    if (auto checked = stage.progress->CanVerify(*stage.progress_unit, rows); !checked)
-      return checked;
-  }
-  return {};
-}
-
-Status SlotLifecycle::BeginProgressVerify(std::uint32_t index, std::uint32_t rows) {
-  if (auto checked = CheckProgressVerify(index, rows); !checked) return checked;
-  for (Stage& stage : slots_.at(index).stages) {
-    if (!stage.progress) continue;
-    if (auto begun = stage.progress->BeginVerify(*stage.progress_unit, rows); !begun) {
-      Quarantine(slots_.at(index));
-      return begun;
-    }
-  }
-  return {};
-}
-
-void SlotLifecycle::ProgressVerifyFailed(std::uint32_t index) {
-  for (Stage& stage : slots_.at(index).stages) {
-    if (!stage.progress || stage.progress->state() != DraftProgressLedger::State::kVerify) continue;
-    if (stage.live->quarantined() || cohort_.faulted())
-      stage.progress->Quarantine();
-    else
-      stage.progress_discard = true;
-  }
-}
-
 std::vector<LiveState*> SlotLifecycle::AllStates() {
   std::vector<LiveState*> all;
   for (Slot& slot : slots_) {
@@ -511,10 +403,8 @@ bool SlotLifecycle::borrowed(std::uint32_t index, std::size_t stage) const {
   return readers != 0;
 }
 bool SlotLifecycle::verify_pending(std::uint32_t slot) const {
-  return std::ranges::any_of(slots_.at(slot).stages, [](const Stage& s) {
-    return s.live->verify_rows() != 0 ||
-           (s.progress && s.progress->state() == DraftProgressLedger::State::kVerify);
-  });
+  return std::ranges::any_of(slots_.at(slot).stages,
+                             [](const Stage& s) { return s.live->verify_rows() != 0; });
 }
 std::uint32_t SlotLifecycle::verify_rows(std::uint32_t slot) const {
   std::uint32_t rows = 0;
@@ -529,22 +419,11 @@ std::vector<std::size_t> SlotLifecycle::GrownBy(std::size_t stage) const {
   return out;
 }
 bool SlotLifecycle::owed(std::uint32_t slot) const {
-  return std::ranges::any_of(slots_.at(slot).stages, [](const Stage& s) {
-    return s.live->owed() || s.progress_discard || (s.progress && s.progress->owed());
-  });
+  return std::ranges::any_of(slots_.at(slot).stages, [](const Stage& s) { return s.live->owed(); });
 }
 bool SlotLifecycle::Settled(const Slot& slot) const {
-  return std::ranges::none_of(slot.stages, [](const Stage& s) {
-    return s.live->owed() || s.live->verify_rows() != 0 || (s.progress && !s.progress->settled());
-  });
-}
-bool SlotLifecycle::ProgressBusy(const Slot& slot) const {
-  return std::ranges::any_of(slot.stages, [](const Stage& s) {
-    if (!s.progress) return false;
-    const auto state = s.progress->state();
-    return s.progress->compound_owned() || state == DraftProgressLedger::State::kReplacing ||
-           state == DraftProgressLedger::State::kClearing;
-  });
+  return std::ranges::none_of(
+      slot.stages, [](const Stage& s) { return s.live->owed() || s.live->verify_rows() != 0; });
 }
 bool SlotLifecycle::state_refused(std::uint32_t slot) const {
   return slots_.at(slot).state_refused;
@@ -552,25 +431,17 @@ bool SlotLifecycle::state_refused(std::uint32_t slot) const {
 void SlotLifecycle::ForgetRefusal(std::uint32_t slot) { slots_.at(slot).state_refused = false; }
 
 bool SlotLifecycle::Usable(const Slot& slot) const {
-  return !cohort_.faulted() && std::ranges::none_of(slot.stages, [](const Stage& s) {
-    return s.live->quarantined() ||
-           (s.progress && s.progress->state() == DraftProgressLedger::State::kQuarantined);
-  });
+  return !cohort_.faulted() &&
+         std::ranges::none_of(slot.stages, [](const Stage& s) { return s.live->quarantined(); });
 }
 bool SlotLifecycle::usable(std::uint32_t slot) const {
   const Slot& s = slots_.at(slot);
-  return Usable(s) && !s.restoring && !ProgressBusy(s);
+  return Usable(s) && !s.restoring;
 }
 bool SlotLifecycle::restorable(std::uint32_t slot) const {
   const Slot& s = slots_.at(slot);
-  if (!s.spilled || s.positions == 0 || !Usable(s) || s.restoring || Borrowed(s) ||
-      verify_pending(slot) || owed(slot))
-    return false;
-  return std::ranges::all_of(s.stages, [](const Stage& stage) {
-    if (stage.restore_ticket)
-      return stage.progress && stage.progress->Replacing(*stage.restore_ticket);
-    return !stage.progress || stage.progress->settled();
-  });
+  return s.spilled && s.positions != 0 && Usable(s) && !s.restoring && !Borrowed(s) &&
+         !verify_pending(slot) && !owed(slot);
 }
 bool SlotLifecycle::held(std::uint32_t slot) const {
   return cohort_.IsActive(slot) && node_.InRequest(stream_);
@@ -687,7 +558,6 @@ Status SlotLifecycle::KeepFor(const Slot& slot, catalog::Closure& keep) {
 void SlotLifecycle::Quarantine(Slot& slot) {
   for (Stage& stage : slot.stages) {
     stage.live->Quarantine();
-    if (stage.progress) stage.progress->Quarantine();
   }
 }
 
@@ -713,24 +583,6 @@ Status SlotLifecycle::ResetSlot(Slot& slot) {
   slot.restore_needed.clear();
   slot.restored_bytes.clear();
   for (Stage& stage : slot.stages) stage.adopted.clear();
-  for (Stage& stage : slot.stages) {
-    if (!stage.progress) continue;
-    // ResetSlot follows a proven zero/discard, with no work in flight.
-    stage.progress->Quarantine();
-    auto clear = stage.progress->BeginClear();
-    if (!clear || !stage.progress->ClearCompleted(*clear)) {
-      Quarantine(slot);
-      return Refuse("cleared drafter progress could not reset");
-    }
-    stage.control_ticket.reset();
-    stage.tail_ticket.reset();
-    stage.tail_attempted = false;
-    stage.tail_queued = false;
-    stage.restore_ticket.reset();
-    stage.control_queued = false;
-    stage.progress_unit.reset();
-    stage.progress_discard = false;
-  }
   return {};
 }
 
@@ -750,13 +602,9 @@ Status SlotLifecycle::Ready(std::uint32_t index, bool within_restore) const {
   if (slot.restoring && !within_restore) {
     return Refuse(std::format("slot {} is mid-restore: complete it first", index));
   }
-  if (ProgressBusy(slot) && !within_restore && !slot.compound_access)
-    return Refuse("drafter progress has an owned compound or replacement transition");
   if (auto active = cohort_.Check(node_, stream_, index); !active) return active;
   for (const Stage& stage : slot.stages) {
     if (auto usable = stage.live->Usable(); !usable) return usable;
-    if (stage.progress && stage.progress->state() == DraftProgressLedger::State::kQuarantined)
-      return Refuse("drafter progress is quarantined");
   }
   return {};
 }
@@ -769,8 +617,7 @@ Status SlotLifecycle::SelectSlots(std::span<const std::uint32_t> slots) {
     if ((*mask & (SlotMask{1} << slot.index)) != 0) continue;
     // A cold kept peer owns only its hydration ticket, not active work.
     // It may remain unselected until that peer's own request restores it.
-    if (slot.restoring || Borrowed(slot) || verify_pending(slot.index) ||
-        (ProgressBusy(slot) && !restorable(slot.index))) {
+    if (slot.restoring || Borrowed(slot) || verify_pending(slot.index)) {
       return Refuse(std::format(
           "selection cannot drop slot {}: a restore, borrow or verify still needs it", slot.index));
     }
@@ -786,9 +633,7 @@ Status SlotLifecycle::Clear(std::uint32_t index) {
   auto found = Find(index);
   if (!found) return std::unexpected(found.error());
   Slot& slot = **found;
-  if (Borrowed(slot) || verify_pending(index) ||
-      std::ranges::any_of(
-          slot.stages, [](const Stage& s) { return s.progress && s.progress->compound_owned(); })) {
+  if (Borrowed(slot) || verify_pending(index)) {
     return Refuse("state cannot clear while borrowed or while a verify awaits its Accept");
   }
   if (!bound_ || cohort_.faulted()) return Refuse("cohort requires retirement");
@@ -833,9 +678,7 @@ Status SlotLifecycle::ClearIdle(std::uint32_t index) {
   if (!bound_ || cohort_.faulted()) return Refuse("cohort requires retirement");
   // Leased by the request open on the stream: cleared within it (Clear).
   if (held(index)) return Refuse("active slot is cleared within its own request");
-  if (Borrowed(slot) || verify_pending(index) ||
-      std::ranges::any_of(
-          slot.stages, [](const Stage& s) { return s.progress && s.progress->compound_owned(); })) {
+  if (Borrowed(slot) || verify_pending(index)) {
     return Refuse("state cannot clear while borrowed or while a verify awaits its Accept");
   }
   slot.state_refused = false;
@@ -890,7 +733,6 @@ Status SlotLifecycle::Spill(std::uint32_t index) {
   if (!bound_ || cohort_.faulted()) return Refuse("cohort requires retirement");
   if (slot.restoring) return Refuse("restore must complete before spill");
   if (Borrowed(slot)) return Refuse("borrowed state cannot spill");
-  if (ProgressBusy(slot)) return Refuse("owned drafter progress cannot spill");
   if (slot.spilled) return {};
   for (const Stage& stage : slot.stages) {
     if (auto usable = stage.live->Usable(); !usable) return usable;
@@ -961,8 +803,6 @@ Status SlotLifecycle::Restore(std::uint32_t index) {
   if (!Usable(slot)) return Refuse("quarantined state cannot restore");
   if (slot.restoring) return Refuse("restore must complete before a disk restore");
   if (!slot.spilled) return {};
-  const bool kept =
-      std::ranges::any_of(slot.stages, [](const Stage& s) { return s.restore_ticket.has_value(); });
   // Stages spilled here: read back at the generations they were written at
   // (invariant 4), under the budget. Their spill files still hold them as
   // they are, if the spill completed (SpillTrack).
@@ -1011,68 +851,6 @@ Status SlotLifecycle::Restore(std::uint32_t index) {
   }
   slot.spilled = false;
   if (auto refreshed = RefreshClosures(); !refreshed) return refreshed;
-  if (auto hydrated = HydrateProgress(slot, slot.positions); !hydrated) return hydrated;
-  if (kept)
-    for (Stage& stage : slot.stages) FileHolds(Settled(slot), stage.track);
-  return {};
-}
-
-Status SlotLifecycle::BeginProgressReplacement(Slot& slot) {
-  for (Stage& stage : slot.stages) {
-    if (!stage.progress) continue;
-    auto ticket = stage.progress->BeginReplacement();
-    if (!ticket) {
-      Quarantine(slot);
-      return std::unexpected(ticket.error());
-    }
-    stage.restore_ticket = *ticket;
-  }
-  return {};
-}
-
-Status SlotLifecycle::HydrateProgress(Slot& slot, std::uint32_t positions) {
-  // All records validate before any mirror is published. Required numeric
-  // pages have already materialized, and the closure leases them through
-  // each synchronous control read. Same-process ready/dirty mirrors are
-  // authoritative across ordinary spill and have no restore ticket.
-  for (std::size_t s = 0; s < slot.stages.size(); ++s) {
-    Stage& stage = slot.stages[s];
-    if (!stage.restore_ticket) continue;
-    *stage.control_hydrate = {};
-    if (positions != 0) {
-      const Range range{
-          .region = 0, .offset = stage.control_offset, .bytes = model::kDraftProgressBytes};
-      CopyRetirement retirement = CopyRetirement::kProven;
-      auto copied = stage.live->Copy(node_, slot.fence, stream_, stage.control_hydrate,
-                                     std::span(&range, 1), true, &retirement);
-      if (!copied) {
-        Quarantine(slot);
-        CheckFailedJob();
-        if (retirement == CopyRetirement::kUnproven) Fault();
-        return copied;
-      }
-    }
-    auto bounds = model::DraftBounds(options_.stages[s].layout);
-    if (!bounds || !bounds->has_value()) {
-      Quarantine(slot);
-      return Refuse("restored progress lost its declared bounds");
-    }
-    auto validated = model::DecodeDraftProgress(*stage.control_hydrate, positions, **bounds);
-    if (!validated) {
-      Quarantine(slot);
-      return std::unexpected(validated.error());
-    }
-  }
-  for (Stage& stage : slot.stages) {
-    if (!stage.restore_ticket) continue;
-    if (auto restored = stage.progress->RestoreCompleted(*stage.restore_ticket,
-                                                         *stage.control_hydrate, positions);
-        !restored) {
-      Quarantine(slot);
-      return restored;
-    }
-    stage.restore_ticket.reset();
-  }
   return {};
 }
 
@@ -1289,7 +1067,6 @@ Status SlotLifecycle::PrepareRestore(std::uint32_t index, std::uint32_t position
   }
   if (!slot.state_refused && options_.invalidate) options_.invalidate(index);
   if (!slot.state_refused && options_.content_changed) options_.content_changed(index);
-  if (prepared) prepared = BeginProgressReplacement(slot);
   if (prepared) {
     for (Stage& stage : slot.stages) stage.track.Lost();
     for (std::size_t s = 0; s < slot.stages.size() && prepared; ++s) {
@@ -1336,7 +1113,6 @@ Status SlotLifecycle::CompleteRestore(std::uint32_t index, std::uint32_t positio
   }
   if (options_.invalidate) options_.invalidate(index);
   if (options_.content_changed) options_.content_changed(index);
-  if (auto hydrated = HydrateProgress(slot, positions); !hydrated) return hydrated;
   slot.positions = positions;
   slot.restoring.reset();
   slot.restore_needed.clear();
@@ -1429,7 +1205,6 @@ Status SlotLifecycle::Adopt(std::uint32_t index, std::uint32_t positions,
                           [](const Stage& s) { return !s.live->kept_extents().empty(); })) {
     return Refuse("adopts kept state only into a slot holding no kept backing");
   }
-  if (auto replacing = BeginProgressReplacement(slot); !replacing) return replacing;
   for (std::size_t s = 0; s < slot.stages.size(); ++s) {
     slot.stages[s].adopted = OfStage(footprint, s);
     slot.stages[s].track.Lost();
@@ -1576,11 +1351,6 @@ Status SlotLifecycle::CheckPositions(std::uint32_t index, std::uint32_t position
   // Spilled (or adopted, not yet read back): no step ran on it; its
   // positions are what its files hold.
   if ((*found)->spilled) return Refuse("a spilled slot's positions are its files'");
-  for (const Stage& stage : (*found)->stages) {
-    if (stage.progress &&
-        (!stage.progress->settled() || stage.progress->completed().positions != positions))
-      return Refuse("positions require completed drafter progress publication");
-  }
   return {};
 }
 
@@ -1627,23 +1397,17 @@ std::expected<StateBorrow, std::string> SlotLifecycle::Borrow(std::uint32_t inde
   return borrow;
 }
 
-std::expected<StateBorrow, std::string> SlotLifecycle::BorrowAfterPrefix(
-    std::uint32_t index, std::size_t reader, const DraftProgressLedger::Successor& successor) {
-  return ReserveOrderedBorrow(index, reader, successor.replay.cache_first, successor.replay.count,
-                              successor);
-}
-
 std::expected<StateBorrow, std::string> SlotLifecycle::BorrowAfterOwed(std::uint32_t index,
                                                                        std::size_t reader,
                                                                        std::uint32_t past,
                                                                        std::uint32_t rows) {
-  return ReserveOrderedBorrow(index, reader, past, rows, std::nullopt);
+  return ReserveOrderedBorrow(index, reader, past, rows);
 }
 
-std::expected<StateBorrow, std::string> SlotLifecycle::ReserveOrderedBorrow(
-    std::uint32_t index, std::size_t reader, std::uint32_t past, std::uint32_t rows,
-    std::optional<DraftProgressLedger::Successor> successor,
-    std::optional<DraftProgressLedger::Unit> compound) {
+std::expected<StateBorrow, std::string> SlotLifecycle::ReserveOrderedBorrow(std::uint32_t index,
+                                                                            std::size_t reader,
+                                                                            std::uint32_t past,
+                                                                            std::uint32_t rows) {
   if (auto active = CheckActive(index); !active) return std::unexpected(active.error());
   Slot& slot = slots_.at(index);
   if (reader == 0 || reader >= slot.stages.size() || layout(reader).borrowed.empty())
@@ -1652,26 +1416,11 @@ std::expected<StateBorrow, std::string> SlotLifecycle::ReserveOrderedBorrow(
     return Refuse("ordered borrow needs one accepted, unsettled prefix");
   Stage& stage = slot.stages[reader];
   if (stage.ordered_borrow) return Refuse("ordered borrow reader already has a reservation");
-  if (successor) {
-    if (!stage.progress) return Refuse("successor borrow has no progress ledger");
-    if (auto exact = stage.progress->CheckSuccessor(successor->unit, successor->predecessor,
-                                                    successor->replay);
-        !exact)
-      return std::unexpected(exact.error());
-  } else if (compound) {
-    if (!stage.progress) return Refuse("compound borrow has no owned consumer ledger");
-    if (auto exact = stage.progress->CheckCompound(*compound); !exact)
-      return std::unexpected(exact.error());
-  } else if (stage.progress) {
-    return Refuse("repeat-pending reader requires its exact successor reservation");
-  }
   if (rows == 0 || past > context(reader) || rows > context(reader) - past)
     return Refuse("ordered borrow reader coordinates exceed its context");
   if (slot.stages[0].borrows == UINT32_MAX || borrow_identity_ == UINT64_MAX)
     return Refuse("state borrow identity or count overflows");
-  stage.ordered_borrow = Stage::OrderedBorrow{.successor = successor,
-                                              .compound = compound,
-                                              .identity = ++borrow_identity_,
+  stage.ordered_borrow = Stage::OrderedBorrow{.identity = ++borrow_identity_,
                                               .prefix_epoch = slot.accepted_epoch,
                                               .positions = slot.positions,
                                               .past = past,
@@ -1692,25 +1441,6 @@ std::expected<StateBorrow, std::string> SlotLifecycle::ReserveOrderedBorrow(
   return borrow;
 }
 
-std::expected<StateBorrow, std::string> SlotLifecycle::BorrowAfterCompoundPrefix(
-    std::uint32_t index, std::size_t reader, DraftProgressLedger::Unit unit, std::uint32_t past,
-    std::uint32_t rows) {
-  return ReserveOrderedBorrow(index, reader, past, rows, std::nullopt, unit);
-}
-
-Status SlotLifecycle::CompanionPrefixQueued(std::uint32_t index, std::size_t reader,
-                                            DraftProgressLedger::Unit unit) {
-  auto* ledger = progress(index, reader);
-  if (!ledger || !ledger->CheckCompound(unit))
-    return Refuse("compound prefix has no exact owned consumer");
-  if (!ledger->CompoundNeedsPrefix(unit)) return {};
-  const auto& stage = slots_.at(index).stages.at(reader);
-  if (!stage.control_queued || !stage.control_ticket ||
-      !ledger->CheckPublication(*stage.control_ticket))
-    return Refuse("compound execution has no fully queued control prefix");
-  return ledger->CompoundPrefixQueued(unit);
-}
-
 Status SlotLifecycle::CheckBorrowPermit(const StateBorrowPermit& permit, std::uint32_t index,
                                         std::size_t reader, std::uint32_t past,
                                         std::uint32_t rows) const {
@@ -1725,33 +1455,7 @@ Status SlotLifecycle::CheckBorrowPermit(const StateBorrowPermit& permit, std::ui
       reservation->positions != slot.positions || reservation->past != past ||
       reservation->rows != rows)
     return Refuse("ordered borrow permit differs from its exact accepted prefix and first reader");
-  if (reservation->successor)
-    return CheckBorrowAfterPrefix(index, reader, reservation->successor->unit,
-                                  reservation->successor->predecessor);
-  if (reservation->compound) {
-    const auto* ledger = slot.stages[reader].progress.get();
-    if (!ledger) return Refuse("compound borrow lost its progress ledger");
-    return ledger->CheckCompound(*reservation->compound);
-  }
   return {};
-}
-
-Status SlotLifecycle::CheckBorrowAfterPrefix(std::uint32_t index, std::size_t reader,
-                                             DraftProgressLedger::Unit unit,
-                                             DraftProgressLedger::Transition predecessor) const {
-  if (auto active = CheckActive(index); !active) return active;
-  const Slot& slot = slots_.at(index);
-  if (reader == 0 || reader >= slot.stages.size()) return Refuse("ordered reader has no stage");
-  const Stage& stage = slot.stages[reader];
-  if (!stage.ordered_borrow || stage.ordered_borrow->active || !stage.progress ||
-      !stage.ordered_borrow->successor || layout(reader).borrowed.empty())
-    return Refuse("reader has no exact pending target borrow");
-  const auto& successor = *stage.ordered_borrow->successor;
-  if (auto current =
-          stage.progress->CheckSuccessor(successor.unit, successor.predecessor, successor.replay);
-      !current)
-    return current;
-  return stage.progress->CheckSuccessor(unit, predecessor, successor.replay);
 }
 
 void SlotLifecycle::Return(std::uint32_t index, std::size_t stage, std::uint64_t epoch,
@@ -1812,11 +1516,6 @@ Status SlotLifecycle::Accept(std::uint32_t index, std::uint32_t keep) {
     if (stage.live->verify_rows() != 0 && stage.live->verify_rows() != rows) {
       return Refuse(std::format("slot {}'s stages verified different rows", index));
     }
-    if (stage.progress) {
-      if (!stage.progress_unit) return Refuse("accepted progress has no logical unit");
-      if (auto checked = stage.progress->AcceptCandidate(*stage.progress_unit, keep); !checked)
-        return std::unexpected(checked.error());
-    }
   }
   if (slot.spilled || slot.restoring || !Usable(slot)) {
     return Refuse(std::format("slot {} cannot accept now", index));
@@ -1836,14 +1535,6 @@ Status SlotLifecycle::Accept(std::uint32_t index, std::uint32_t keep) {
       return accepted;
     }
   }
-  for (Stage& stage : slot.stages) {
-    if (!stage.progress) continue;
-    if (auto accepted = stage.progress->Accept(*stage.progress_unit, keep); !accepted) {
-      Quarantine(slot);
-      return accepted;
-    }
-    stage.progress_unit.reset();
-  }
   slot.positions += keep;
   return {};
 }
@@ -1857,7 +1548,6 @@ Status SlotLifecycle::DiscardVerify(std::uint32_t index) {
     // Every saved range owed back, nothing committed.
     if (stage.live->verify_rows() != 0) (void)stage.live->Settle(true, false, false);
   }
-  ProgressVerifyFailed(index);
   return Settle(index);
 }
 
@@ -1927,20 +1617,7 @@ Status SlotLifecycle::PrepareOwed(std::uint32_t index) {
   }
   Slot& slot = slots_[index];
   for (Stage& stage : slot.stages) {
-    if (stage.control_queued) return Refuse("drafter control copy has not retired");
     if (auto prepared = stage.live->PrepareOwed(); !prepared) return prepared;
-  }
-  for (std::size_t s = 0; s < slot.stages.size(); ++s) {
-    Stage& stage = slot.stages[s];
-    stage.control_ticket.reset();
-    if (!stage.progress || !stage.progress->owed()) continue;
-    auto copy = stage.progress->Publication();
-    if (!copy) return std::unexpected(copy.error());
-    *stage.control_publish = copy->words;
-    stage.control_ticket = copy->ticket;
-    const Range range{
-        .region = s, .offset = stage.control_offset, .bytes = model::kDraftProgressBytes};
-    if (auto written = RecordWrite(index, std::span(&range, 1)); !written) return written;
   }
   return {};
 }
@@ -1954,29 +1631,13 @@ SlotLifecycle::OwedQueued SlotLifecycle::QueueOwed(std::uint32_t index,
         std::unexpected(LiveState::QueueFailure{.unknown = unknown, .detail = std::move(what)});
     return out;
   };
-  // Every control checked before the first numeric write. Preparation
-  // owns the exact publication generation and its distinct pinned words.
   for (const Stage& stage : slot.stages) {
     if (stage.ordered_borrow && !stage.ordered_borrow->active) {
       const auto& reservation = *stage.ordered_borrow;
       if (reservation.prefix_epoch != slot.accepted_epoch ||
           reservation.positions != slot.positions || !owed(index))
         return refuse("ordered target borrow lost its exact accepted prefix");
-      if (reservation.successor &&
-          (!stage.progress || !stage.progress->CheckSuccessor(reservation.successor->unit,
-                                                              reservation.successor->predecessor,
-                                                              reservation.successor->replay)))
-        return refuse("ordered target borrow lost its exact publication prefix");
-      if (reservation.compound &&
-          (!stage.progress || !stage.progress->CheckCompound(*reservation.compound)))
-        return refuse("ordered target borrow lost its exact compound predecessor");
     }
-    if (stage.control_queued) return refuse("drafter control copy has not retired");
-    if (stage.progress && stage.progress->owed() && !stage.control_ticket)
-      return refuse("drafter control publication was not prepared");
-    if (stage.control_ticket &&
-        (!stage.progress || !stage.progress->CheckPublication(*stage.control_ticket)))
-      return refuse("drafter control publication no longer names its prepared transition");
   }
   for (Stage& stage : slot.stages) {
     if (!stage.live->owed()) continue;
@@ -1984,16 +1645,6 @@ SlotLifecycle::OwedQueued SlotLifecycle::QueueOwed(std::uint32_t index,
       out.result = std::move(queued);
       return out;
     }
-    out.wrote = true;
-  }
-  for (Stage& stage : slot.stages) {
-    if (!stage.control_ticket) continue;
-    stage.control_queued = true;
-    const auto copied = providers::CopyAsync(
-        stream, support::Pointer(stage.live->base(0) + stage.control_offset), stage.control_publish,
-        model::kDraftProgressBytes, providers::CopyKind::kHostToDevice);
-    if (!copied.ok())
-      return refuse(std::format("drafter control publication: {}", copied.text()), true);
     out.wrote = true;
   }
   for (auto& stage : slot.stages)
@@ -2022,218 +1673,16 @@ Status SlotLifecycle::CompleteOwed(std::span<const std::uint32_t> indices, bool 
         failed = failed || !success || retirement == CopyRetirement::kUnproven ||
                  !reservation.prefix_queued || reservation.prefix_epoch != slot.accepted_epoch ||
                  reservation.positions != slot.positions;
-        if (reservation.successor)
-          failed = failed || !stage.control_queued || !stage.progress ||
-                   !stage.progress->CheckSuccessor(reservation.successor->unit,
-                                                   reservation.successor->predecessor,
-                                                   reservation.successor->replay);
-        if (reservation.compound)
-          failed =
-              failed || !stage.progress || !stage.progress->CheckCompound(*reservation.compound) ||
-              (stage.progress->CompoundNeedsPrefix(*reservation.compound) && !stage.control_queued);
       }
-      if (stage.control_queued) {
-        if (retirement == CopyRetirement::kUnproven) node_.KeepPinned(stage.control_publish);
-        failed = failed || !success || retirement == CopyRetirement::kUnproven ||
-                 !stage.control_ticket || !stage.progress ||
-                 !stage.progress->CheckPublication(*stage.control_ticket);
-      }
-      if (stage.progress_discard)
-        failed = failed || !success || retirement == CopyRetirement::kUnproven ||
-                 !stage.progress_unit || !stage.progress ||
-                 !stage.progress->CheckDiscard(*stage.progress_unit);
     }
   }
   if (failed) {
-    // The whole publication set was preflighted without mutation. No earlier
-    // owner/consumer may expose a newer mirror when a later ticket differs.
     for (const auto index : indices) Quarantine(slots_[index]);
     return Refuse("owed publication or discard has no matching completed transition");
-  }
-  for (const auto index : indices) {
-    Slot& slot = slots_[index];
-    for (Stage& stage : slot.stages) {
-      if (!stage.control_queued) continue;
-      // All tickets checked above; no callback or device wait occurs between
-      // validation and these deterministic host transitions.
-      if (!stage.progress->PublicationCompleted(*stage.control_ticket)) {
-        for (const auto owner : indices) Quarantine(slots_[owner]);
-        return Refuse("drafter publication changed after completion preflight");
-      }
-      stage.control_queued = false;
-      stage.control_ticket.reset();
-    }
-    for (Stage& stage : slot.stages) {
-      if (!stage.progress_discard) continue;
-      if (!stage.progress->DiscardCompleted(*stage.progress_unit)) {
-        for (const auto owner : indices) Quarantine(slots_[owner]);
-        return Refuse("drafter discard changed after completion preflight");
-      }
-      stage.progress_unit.reset();
-      stage.progress_discard = false;
-    }
   }
   for (const auto index : indices)
     for (auto& stage : slots_[index].stages)
       if (stage.ordered_borrow) stage.ordered_borrow->active = true;
-  return {};
-}
-
-namespace {
-DraftProgressLedger::CompoundClose TailClose(const SlotLifecycle::CompoundTailOwner& owner,
-                                             std::size_t consumer) {
-  using Close = DraftProgressLedger::CompoundClose;
-  return owner.closing_stage == 0          ? Close::kTarget
-         : owner.closing_stage == consumer ? Close::kPost
-                                           : Close::kEarlier;
-}
-}  // namespace
-
-Status SlotLifecycle::PrepareCompoundTail(const CompoundTailOwner& owner) {
-  if (auto active = CheckActive(owner.slot); !active) return active;
-  auto& slot = slots_.at(owner.slot);
-  if (owner.consumers.empty() || owner.closing_stage >= slot.stages.size())
-    return Refuse("compound final publication has no consumer or closing stage");
-  bool closing_found = owner.closing_stage == 0;
-  for (std::size_t i = 0; i < owner.consumers.size(); ++i) {
-    const auto& [stage, unit] = owner.consumers[i];
-    if (stage == 0 || stage >= slot.stages.size() ||
-        std::ranges::any_of(owner.consumers.first(i),
-                            [&](const auto& prior) { return prior.first == stage; }))
-      return Refuse("compound final publication consumer is invalid or duplicated");
-    auto& consumer = slot.stages[stage];
-    closing_found |= stage == owner.closing_stage;
-    if (!consumer.progress || consumer.tail_attempted || consumer.tail_queued)
-      return Refuse("compound final publication conflicts with a live tail");
-    if (auto candidate = consumer.progress->CompoundTailCandidate(unit, TailClose(owner, stage));
-        !candidate)
-      return std::unexpected(candidate.error());
-    else if (candidate->tap_first != slot.positions)
-      return Refuse("compound final publication no longer continues its original cursor");
-  }
-  if (!closing_found) return Refuse("compound final publication omits its closing stage");
-  for (std::size_t stage = 1; stage < slot.stages.size(); ++stage)
-    if (slot.stages[stage].progress &&
-        std::ranges::none_of(owner.consumers,
-                             [&](const auto& consumer) { return consumer.first == stage; }))
-      return Refuse("compound final publication omits a consumer");
-  for (const auto& [stage, unit] : owner.consumers) {
-    auto& consumer = slot.stages[stage];
-    auto prepared = consumer.progress->PrepareCompoundTail(unit, TailClose(owner, stage));
-    if (!prepared) return std::unexpected(prepared.error());
-    *consumer.control_tail = prepared->words;
-    consumer.tail_ticket = prepared->ticket;
-    const Range range{
-        .region = stage, .offset = consumer.control_offset, .bytes = model::kDraftProgressBytes};
-    if (auto tracked = RecordWrite(owner.slot, std::span(&range, 1)); !tracked) return tracked;
-  }
-  return {};
-}
-
-Status SlotLifecycle::QueueCompoundTail(const CompoundTailOwner& owner,
-                                        providers::NativeStream native) {
-  auto& slot = slots_.at(owner.slot);
-  for (const auto& [stage, unit] : owner.consumers) {
-    auto& consumer = slot.stages.at(stage);
-    if (!consumer.progress || !consumer.tail_ticket || consumer.tail_attempted ||
-        !consumer.progress->CheckCompoundTailQueued(unit, *consumer.tail_ticket,
-                                                    TailClose(owner, stage)))
-      return Refuse("compound final control lost its exact numeric/publication owner");
-  }
-  for (const auto& [stage, unit] : owner.consumers) {
-    (void)unit;
-    auto& consumer = slot.stages[stage];
-    consumer.tail_attempted = true;
-    const auto copied = providers::CopyAsync(
-        native, support::Pointer(consumer.live->base(0) + consumer.control_offset),
-        consumer.control_tail, model::kDraftProgressBytes, providers::CopyKind::kHostToDevice);
-    if (!copied.ok()) return Refuse(std::format("compound final control copy: {}", copied.text()));
-    consumer.tail_queued = true;
-  }
-  return {};
-}
-
-Status SlotLifecycle::CompleteCompoundTails(std::span<const CompoundTailOwner> owners,
-                                            JobReport::Retirement retirement) {
-  if (owners.empty()) return {};
-  constexpr auto kOwners = std::numeric_limits<SlotMask>::digits;
-  if (owners.size() > kOwners) return Refuse("compound final publication exceeds cohort capacity");
-  std::array<std::uint32_t, kOwners> positions{};
-  bool attempted = false, queued = true;
-  for (std::size_t i = 0; i < owners.size(); ++i) {
-    const auto& owner = owners[i];
-    if (owner.slot >= slots_.size() || std::ranges::any_of(owners.first(i), [&](const auto& prior) {
-          return prior.slot == owner.slot;
-        }))
-      return Refuse("compound final publication owner is invalid or duplicated");
-    for (const auto& [stage, unit] : owner.consumers) {
-      (void)unit;
-      if (stage == 0 || stage >= slots_[owner.slot].stages.size())
-        return Refuse("compound final publication consumer is invalid");
-      const auto& consumer = slots_[owner.slot].stages[stage];
-      attempted |= consumer.tail_attempted;
-      queued &= consumer.tail_queued;
-    }
-  }
-  // A rejected useful program may still retire input/prefix copies. That
-  // proof does not turn an entirely unattempted tail into submitted work.
-  if (!attempted) return {};
-  bool valid = queued && retirement == JobReport::Retirement::kRetired;
-  for (std::size_t i = 0; i < owners.size(); ++i) {
-    const auto& owner = owners[i];
-    const auto& slot = slots_[owner.slot];
-    valid = valid && !slot.spilled && !slot.restoring && Usable(slot) && !owner.consumers.empty();
-    bool first = true;
-    for (const auto& [stage, unit] : owner.consumers) {
-      const auto& consumer = slot.stages[stage];
-      const bool exact = consumer.progress && consumer.tail_ticket &&
-                         consumer.progress->CheckCompoundTailRetired(unit, *consumer.tail_ticket,
-                                                                     TailClose(owner, stage));
-      valid &= exact;
-      if (!exact) continue;
-      auto final = consumer.progress->CompoundTailPositions(unit, *consumer.tail_ticket);
-      if (!final || *final > options_.stages.front().layout.context ||
-          !consumer.progress->CheckCompoundTailCursor(unit, *consumer.tail_ticket,
-                                                      slot.positions)) {
-        valid = false;
-        continue;
-      }
-      if (first)
-        positions[i] = *final;
-      else
-        valid &= positions[i] == *final;
-      first = false;
-    }
-  }
-  if (!valid) {
-    for (const auto& owner : owners) {
-      auto& slot = slots_[owner.slot];
-      for (const auto& [stage, unit] : owner.consumers) {
-        (void)unit;
-        auto& consumer = slot.stages[stage];
-        if (consumer.tail_attempted && (retirement != JobReport::Retirement::kRetired || !queued))
-          node_.KeepPinned(consumer.control_tail);
-      }
-      Quarantine(slot);
-    }
-    return Refuse("compound final publication lacks complete matching retired work");
-  }
-  // All selected owners/consumers/cursors passed without mutation. The exact
-  // final companion may still hold its target borrow, but its reads retired:
-  // publish this authorized cursor with its mirrors before returning that guard.
-  for (const auto& owner : owners)
-    for (const auto& [stage, unit] : owner.consumers) {
-      auto& consumer = slots_[owner.slot].stages[stage];
-      if (!consumer.progress->CompleteCompoundTail(unit, *consumer.tail_ticket,
-                                                   TailClose(owner, stage))) {
-        for (const auto& selected : owners) Quarantine(slots_[selected.slot]);
-        return Refuse("compound final publication changed after preflight");
-      }
-      consumer.tail_ticket.reset();
-      consumer.tail_attempted = false;
-      consumer.tail_queued = false;
-    }
-  for (std::size_t i = 0; i < owners.size(); ++i) slots_[owners[i].slot].positions = positions[i];
   return {};
 }
 

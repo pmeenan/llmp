@@ -23,13 +23,13 @@
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/fattn_owner.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/kv_quant.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
 
 namespace llmp::kernels::ggml {

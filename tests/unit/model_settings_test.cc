@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "artifact/artifact.h"
+#include "artifact_writer.h"
 #include "config/node_config.h"
 #include "runtime/approvals.h"
 #include "runtime/component_admission.h"
@@ -661,28 +662,35 @@ TEST(ModelSettings, DerivesFromTheArtifact) {
   EXPECT_EQ(wider.value_or(ModelSettings{}).context.value, 262144U);
 }
 
-// A v0 artifact (the reader's corpus golden) has no facts to serve: it is
-// refused with the re-import (D-118), as a target and as a drafter.
+// A v0 artifact is refused at open time by the v1-only reader (D-118, U2),
+// and a v1 artifact without a stored spec is refused by ArtifactFactsOf.
 TEST(ModelSettings, ArtifactFactsRefuseV0Artifacts) {
-  const char* configured =
-      std::getenv("LLMP_TEST_ARTIFACT_CORPUS");  // NOLINT(concurrency-mt-unsafe)
-  const std::filesystem::path corpus =
-      configured == nullptr ? std::filesystem::path("artifact-corpus") : configured;
+  const std::filesystem::path scratch =
+      std::filesystem::path(testing::TempDir()) / "model-settings-v0";
   std::error_code error;
-  std::filesystem::path root;
-  for (const auto& entry : std::filesystem::directory_iterator(corpus / "golden" / "tiny", error)) {
-    root = entry.path();
-  }
-  ASSERT_FALSE(root.empty()) << "no corpus at " << corpus;
-  const auto v0 = llmp::artifact::Artifact::Open(root);
-  ASSERT_TRUE(v0.has_value()) << (v0 ? "" : v0.error().ToString());
-  ASSERT_EQ(v0->format_version(), 0U);
-  const auto alone = llmp::runtime::ArtifactFactsOf(*v0, nullptr);
+  std::filesystem::remove_all(scratch, error);
+  std::filesystem::create_directories(scratch, error);
+
+  llmp::test::V1Plan plan;
+  plan.architecture = "toy";
+  plan.groups = {
+      llmp::test::V1Group{.kind = llmp::artifact::GroupKind::kTable,
+                          .resources = {{.name = "token_embd.weight",
+                                         .format = {.encoding = llmp::format::Encoding::kF32,
+                                                    .layout = llmp::format::Layout::kDense,
+                                                    .shape = {.ne = {64, 64, 1, 1}, .rank = 2}}}}}};
+  auto v0_rendered = llmp::test::Render(plan);
+  v0_rendered.manifest["format"] = llmp::test::Json("jitllm-artifact");
+  v0_rendered.manifest["format_version"] = llmp::test::Json(std::int64_t{0});
+  const auto v0 = llmp::artifact::Artifact::Open(llmp::test::Publish(scratch / "v0", v0_rendered));
+  ASSERT_FALSE(v0.has_value());
+  EXPECT_EQ(v0.error().rule, llmp::artifact::Rule::kFormat);
+
+  const auto v1 =
+      llmp::artifact::Artifact::Open(llmp::test::Publish(scratch / "v1", llmp::test::Render(plan)));
+  ASSERT_TRUE(v1.has_value()) << (v1 ? "" : v1.error().ToString());
+  const auto alone = llmp::runtime::ArtifactFactsOf(*v1, nullptr);
   ASSERT_FALSE(alone.has_value());
-  EXPECT_THAT(alone.error(), HasSubstr("re-import its source checkpoint with `llmp import"));
-  const auto paired = llmp::runtime::ArtifactFactsOf(*v0, &*v0);
-  ASSERT_FALSE(paired.has_value());
-  EXPECT_THAT(paired.error(), HasSubstr("re-import its source checkpoint with `llmp import"));
 }
 
 // The facts kept metadata gives: DeepSeek V4 Flash's GGUF keys as its

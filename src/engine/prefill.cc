@@ -56,7 +56,7 @@ std::expected<StepAhead, std::string> PrefillOrchestrator::Predict(
     return StepAhead{};
   if (owners.empty()) return StepAhead{};
   const std::size_t n = units.size() + peers.size();
-  if (n < units.size() || !runner_.CheckOwners(n)) return std::unexpected("owner extent");
+  if (n < units.size()) return std::unexpected("owner extent");
   const std::uint32_t max_verify = continuation.speculate ? continuation.verify_rows : 1;
   const std::uint32_t min_verify = continuation.speculate ? continuation.min_verify_rows : 1;
   if (min_verify == 0 || max_verify < min_verify || max_verify > composer_.context())
@@ -409,10 +409,6 @@ PrefillReport PrefillOrchestrator::StepPrepared(std::span<const PrefillUnit> uni
     return report;
   }
   report.outcomes_.resize(units.size());
-  if (auto qualified = runner_.CheckOwners(units.size()); !qualified) {
-    for (auto& out : report.outcomes_) out.refusal = StepRefusal{.what = qualified.error()};
-    return report;
-  }
   std::vector<PendingWork> pending;
   std::vector<SegmentWork> work;
   std::vector<std::span<const std::int32_t>> histories;

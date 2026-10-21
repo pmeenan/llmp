@@ -28,9 +28,9 @@
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/executor.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/llmp_ops.h"
+#include "kernels/ggml/plan_step.h"
 #include "providers/device_runtime.h"
 
 namespace llmp::kernels::ggml {

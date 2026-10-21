@@ -63,7 +63,7 @@
 #include "kernels/common/lower.h"
 #include "kernels/common/routed_program.h"
 #include "kernels/common/step_program.h"
-#include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/selected_operation.h"
 #include "kernels/ggml/tensors.h"
 

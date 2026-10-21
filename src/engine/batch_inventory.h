@@ -38,29 +38,18 @@ class PromptBatchInventory {
     return index < fallback_.size() && fallback_[index] != 0;
   }
   // No state is changed and no rights are minted. A competing operation or
-  // changed source requires a new preview before any compound Begin/progress.
+  // changed source requires a new preview.
   Status Revalidate() const;
   Status CheckSource() const;
-  std::expected<model::DraftRows, std::string> CompanionRows(std::uint32_t slot, std::size_t stage,
-                                                             std::uint32_t past,
-                                                             std::uint32_t rows) const;
   std::uint64_t paid_bytes() const { return payment_.bytes(); }
 
  private:
-  struct Consumer {
-    std::uint32_t slot = 0, past = 0, rows = 0;
-    std::size_t stage = 0;
-    DraftProgressLedger::State state = DraftProgressLedger::State::kReady;
-    model::DraftProgress completed, after_owed;
-    model::DraftCompanions companions;
-  };
   void Swap(PromptBatchInventory& other) noexcept {
     std::swap(payment_, other.payment_);
     std::swap(owner_, other.owner_);
     std::swap(identity_, other.identity_);
     fallback_.swap(other.fallback_);
     shapes_.swap(other.shapes_);
-    consumers_.swap(other.consumers_);
     target_.swap(other.target_);
   }
   // Every copied descriptor/segment is destroyed before its original payment.
@@ -69,7 +58,6 @@ class PromptBatchInventory {
   std::optional<base::Sha256Digest> identity_;
   std::vector<std::uint8_t> fallback_;
   std::vector<planner::StepShape> shapes_;
-  std::vector<Consumer> consumers_;
   std::vector<PendingWork> target_;
 };
 }  // namespace llmp::engine

@@ -20,7 +20,6 @@
 #include <vector>
 
 #include "artifact/artifact.h"
-#include "artifact/representation.h"
 
 namespace llmp::model {
 namespace {

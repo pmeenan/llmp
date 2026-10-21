@@ -59,21 +59,25 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "components/graph_io.h"
 #include "execution/registry.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
 #include "ggml.h"
+#include "ir/builder.h"
 #include "ir/op.h"
 #include "kernels/decode/products.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/fusion.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
+#include "kernels/ggml/lower.h"
 #include "kernels/ggml/moe_layout.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
+#include "planner/plan.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
 
@@ -82,6 +86,10 @@ namespace {
 namespace kg = llmp::kernels::ggml;
 namespace decode = llmp::kernels::decode;
 namespace format = llmp::format;
+namespace pl = llmp::planner;
+namespace co = llmp::components;
+namespace kn = llmp::kernels;
+namespace ir = llmp::ir;
 using format::Encoding;
 using format::Layout;
 using format::PartRole;
@@ -182,27 +190,54 @@ class Bench {
     return Leaf(t, reinterpret_cast<std::uintptr_t>(address));
   }
 
-  // The GGML module's nodes for each set of outputs, planned, bound and
-  // captured: launch r runs set r mod sets.
-  Replay Tuned(const std::vector<std::vector<ggml_tensor*>>& sets) {
+  // Lowers an IR graph using the production planner and lowering engine.
+  kg::LoweredStep Lower(
+      const ir::Graph& graph, std::span<const co::StepWeight> weights = {},
+      const std::function<std::uint64_t(const ir::WeightRef&, PartRole)>& weight_addr = {},
+      const std::vector<const void*>& input_sources = {}, std::uint64_t activation_bytes = 0) {
+    pl::DeviceFacts facts{
+        .device_class = "sm_121", .arch = 121, .features = llmp::execution::kBf16Mma};
+    auto plan = pl::Plan(graph.Clone(), *registry_, facts, {});
+    if (!plan) Die(plan.error().detail);
+    const std::uint64_t extent = std::max(plan->placement.extent, activation_bytes);
+    const std::uint64_t act_base = Allocate(std::max<std::uint64_t>(extent, 256));
+    kn::Addresses addresses{
+        .weight = weight_addr,
+        .weight_rows = {},
+        .state = {},
+        .save = {},
+        .save_rows = 0,
+        .activations = act_base,
+        .activation_bytes = extent,
+        .activation_alignment = 256,
+        .state_alignment = {},
+        .expert_part = {},
+        .weight_alignment = {},
+    };
+    co::GraphBuildIO io{graph, graph.inputs(), graph.outputs(), weights};
+    auto lowered = kg::LowerStep({*plan, io, addresses}, *registry_, kg::DeviceChoicesOf(*launch_));
+    if (!lowered) Die(lowered.error().detail);
+    for (std::size_t i = 0; i < lowered->inputs.size(); ++i) {
+      if (i < input_sources.size() && input_sources[i] != nullptr) {
+        Cuda(cudaMemcpyAsync(reinterpret_cast<void*>(lowered->inputs[i].device_address),
+                             input_sources[i], lowered->inputs[i].bytes, cudaMemcpyDeviceToDevice,
+                             native_),
+             "input copy");
+      }
+    }
+    Cuda(cudaStreamSynchronize(native_), "input sync");
+    return std::move(*lowered);
+  }
+
+  // The lowered steps planned, bound and captured: launch r runs step r mod steps.
+  Replay Tuned(const std::vector<kg::LoweredStep>& steps) {
     std::vector<std::shared_ptr<kg::BoundGraph>> bound;
-    for (const std::vector<ggml_tensor*>& outputs : sets) {
-      const std::vector<ggml_tensor*> nodes = kg::GraphOrder(outputs);
-      for (ggml_tensor* node : nodes) {
-        if (node->view_src == nullptr && node->data == nullptr) {
-          kg::TensorArena::Bind(node, Allocate(ggml_nbytes(node)));
-        }
-      }
-      kg::BindViews(nodes);
-      auto plan = kg::PlanGraph(nodes, false, kg::DeviceChoicesOf(*launch_));
-      if (!plan) {
-        Die(plan.error().detail);
-      }
+    for (const auto& step : steps) {
       if (bound.empty()) {
-        for (const auto& step : plan->steps)
-          std::println(R"({{"kind":"resolved_route","implementation":"{}"}})", step.implementation);
+        for (const auto& s : step.plan.steps)
+          std::println(R"({{"kind":"resolved_route","implementation":"{}"}})", s.implementation);
       }
-      auto one = kg::BoundGraph::Bind(*registry_, *plan);
+      auto one = kg::BoundGraph::Bind(*registry_, step.plan);
       if (!one) {
         Die(one.error().detail);
       }
@@ -412,16 +447,25 @@ void VectorAndMatrix(Bench& b) {
                              .y = y,
                              .y_stride = kQkv};
     };
-    std::vector<std::vector<ggml_tensor*>> tuned;
+    std::vector<kg::LoweredStep> tuned;
     for (const Mxfp8& m : w) {
-      ggml_tensor* xt = b.Leaf(ggml_new_tensor_2d(b.c(), GGML_TYPE_F32, kWidth, rows), x);
-      if (rows <= 16) {
-        tuned.push_back({kg::Mxfp8MulMatVec(b.c(), m.Codes(b), m.Scales(b), xt)});
-      } else {
-        ggml_tensor* swizzled = kg::Mxfp8Swizzle(b.c(), m.Scales(b));
-        tuned.push_back({kg::Mxfp8Gemm(b.c(), kg::Mxfp8Quantize(b.c(), xt), m.Codes(b), swizzled,
-                                       GGML_TYPE_F32, rows)});
-      }
+      ir::Builder bld;
+      const auto xt = bld.Input(ir::Dense(
+          Encoding::kF32,
+          ir::ShapeOf({static_cast<std::uint64_t>(kWidth), static_cast<std::uint64_t>(rows)})));
+      const auto wt = bld.Weight(m.weight().format, ir::WeightRef{});
+      bld.Output(bld.MatMul(wt, xt));
+      auto g = std::move(bld).Finish();
+      if (!g) Die(g.error().detail);
+      const std::array w_spec{co::StepWeight{
+          .tensor = wt,
+          .ref = ir::WeightRef{},
+          .parts = {{"codes", PartRole::kCodes}, {"scales", PartRole::kBlockScales}}}};
+      tuned.push_back(b.Lower(*g, w_spec,
+                              [&](const ir::WeightRef&, PartRole role) {
+                                return role == PartRole::kCodes ? m.codes : m.scales;
+                              },
+                              {x}));
     }
     if (rows <= 16) {
       const auto incumbent = b.Tuned(tuned);
@@ -430,13 +474,19 @@ void VectorAndMatrix(Bench& b) {
                {incumbent, b.Ours([&](void* s, std::size_t r) {
                   return decode::RunVector(product(w[r % w.size()]), s);
                 })},
-               static_cast<const float*>(tuned.back().front()->data), y,
+               static_cast<const float*>(tuned.back().keep.front()->data), y,
                static_cast<std::size_t>(kQkv * rows));
       continue;
     }
-    std::vector<std::vector<ggml_tensor*>> swizzle;
+    std::vector<kg::LoweredStep> swizzle;
     for (const Mxfp8& m : w) {
-      swizzle.push_back({kg::Mxfp8Swizzle(b.c(), m.Scales(b))});
+      ir::Builder bld;
+      const auto sc = bld.Input(Format(Encoding::kMxfp8, Layout::kSplit, kWidth / 32, kQkv));
+      bld.Output(bld.Convert(sc, Encoding::kMxfp8));
+      auto g = std::move(bld).Finish();
+      if (!g) Die(g.error().detail);
+      swizzle.push_back(b.Lower(*g, {}, [&](const ir::WeightRef&, PartRole) { return 0ULL; },
+                                {Pointer<const void>(m.scales)}));
     }
     b.Report("matrix", "mxfp8.split K2560 N10240", rows,
              {"llmp.mxfp8.quantize+swizzle+gemm", "llmp.mxfp8.swizzle alone",
@@ -457,12 +507,38 @@ void Glu(Bench& b) {
     if (!b.RowsEnabled(rows)) continue;
     float* x = b.Upload(Normal(static_cast<std::size_t>(kWidth * rows), 2));
     auto* y = Pointer<float>(b.Allocate(static_cast<std::uint64_t>(kFfn * rows * 4)));
-    std::vector<std::vector<ggml_tensor*>> tuned;
+    std::vector<kg::LoweredStep> tuned;
     for (std::size_t i = 0; i < gate.size(); ++i) {
-      ggml_tensor* xt = b.Leaf(ggml_new_tensor_2d(b.c(), GGML_TYPE_F32, kWidth, rows), x);
-      auto* g = kg::Mxfp8MulMatVec(b.c(), gate[i].Codes(b), gate[i].Scales(b), xt);
-      auto* u = kg::Mxfp8MulMatVec(b.c(), up[i].Codes(b), up[i].Scales(b), xt);
-      tuned.push_back({ggml_swiglu_split(b.c(), g, u)});
+      ir::Builder bld;
+      const auto xt = bld.Input(ir::Dense(
+          Encoding::kF32,
+          ir::ShapeOf({static_cast<std::uint64_t>(kWidth), static_cast<std::uint64_t>(rows)})));
+      const auto wg =
+          bld.Weight(gate[i].weight().format,
+                     ir::WeightRef{.component = static_cast<std::uint16_t>(i), .layer = 0});
+      const auto wu =
+          bld.Weight(up[i].weight().format,
+                     ir::WeightRef{.component = static_cast<std::uint16_t>(i), .layer = 1});
+      const auto g = bld.MatMul(wg, xt);
+      const auto u = bld.MatMul(wu, xt);
+      bld.Output(bld.Glu(g, u, ir::GluParams{.kind = ir::GluKind::kSwiGlu}));
+      auto graph = std::move(bld).Finish();
+      if (!graph) Die(graph.error().detail);
+      const std::array w_spec{
+          co::StepWeight{
+              .tensor = wg,
+              .ref = ir::WeightRef{.component = static_cast<std::uint16_t>(i), .layer = 0},
+              .parts = {{"codes", PartRole::kCodes}, {"scales", PartRole::kBlockScales}}},
+          co::StepWeight{
+              .tensor = wu,
+              .ref = ir::WeightRef{.component = static_cast<std::uint16_t>(i), .layer = 1},
+              .parts = {{"codes", PartRole::kCodes}, {"scales", PartRole::kBlockScales}}}};
+      tuned.push_back(b.Lower(*graph, w_spec,
+                              [&](const ir::WeightRef& ref, PartRole role) {
+                                const auto& m = ref.layer == 0 ? gate[i] : up[i];
+                                return role == PartRole::kCodes ? m.codes : m.scales;
+                              },
+                              {x}));
     }
     const auto incumbent = b.Tuned(tuned);
     b.Report("vector_glu", "mxfp8.split K2560 N640 gate and up", rows,
@@ -479,7 +555,7 @@ void Glu(Bench& b) {
                                            .y_stride = kFfn};
                 return decode::RunVectorGlu(p, s);
               })},
-             static_cast<const float*>(tuned.back().front()->data), y,
+             static_cast<const float*>(tuned.back().keep.front()->data), y,
              static_cast<std::size_t>(kFfn * rows));
   }
 }
@@ -571,27 +647,48 @@ void Grouped(Bench& b) {
                                      .rows_hint = route.pairs / kExperts};
       return decode::RunGrouped(p, s);
     };
-    const auto experts = [&] {
-      return b.Leaf(
-          ggml_new_tensor_2d(b.c(), GGML_TYPE_I8, static_cast<std::int64_t>(stride), kExperts),
-          slab);
-    };
-    std::vector<std::vector<ggml_tensor*>> tuned;
-    std::vector<std::vector<ggml_tensor*>> route_only;
+    std::vector<kg::LoweredStep> tuned;
+    std::vector<kg::LoweredStep> route_only;
     for (const Routing& route : routings) {
-      ggml_tensor* idt = b.Leaf(ggml_new_tensor_2d(b.c(), GGML_TYPE_I32, kUsed, tokens), route.ids);
+      ir::Builder bld;
+      const auto wt = bld.Weight(f, ir::WeightRef{});
+      const auto idt = bld.Input(ir::Dense(
+          Encoding::kI32,
+          ir::ShapeOf({static_cast<std::uint64_t>(kUsed), static_cast<std::uint64_t>(tokens)})));
       if (tokens <= 16) {
-        ggml_tensor* x3 = b.Leaf(ggml_new_tensor_3d(b.c(), GGML_TYPE_F32, kWidth, 1, tokens), x);
-        tuned.push_back({kg::MoeGemv(b.c(), experts(), x3, idt, 2 * kFfn, 0, 2 * kFfn,
-                                     moe::ExpertLayout::gate_up_codes(), l.gate_up_scales())});
-        continue;
+        const auto x3 = bld.Input(
+            ir::Dense(Encoding::kF32, ir::ShapeOf({static_cast<std::uint64_t>(kWidth), 1ULL,
+                                                   static_cast<std::uint64_t>(tokens)})));
+        bld.Output(bld.MatMulId(wt, x3, idt));
+        auto g = std::move(bld).Finish();
+        if (!g) Die(g.error().detail);
+        const std::array w_spec{co::StepWeight{
+            .tensor = wt, .ref = ir::WeightRef{}, .parts = {{"slab", PartRole::kData}}}};
+        tuned.push_back(b.Lower(*g, w_spec, [&](const ir::WeightRef&, PartRole) { return slab; },
+                                {route.ids, x}));
+      } else {
+        const auto xt = bld.Input(ir::Dense(
+            Encoding::kF32,
+            ir::ShapeOf({static_cast<std::uint64_t>(kWidth), static_cast<std::uint64_t>(tokens)})));
+        bld.Output(bld.MatMulId(wt, xt, idt));
+        auto g = std::move(bld).Finish();
+        if (!g) Die(g.error().detail);
+        const std::array w_spec{co::StepWeight{
+            .tensor = wt, .ref = ir::WeightRef{}, .parts = {{"slab", PartRole::kData}}}};
+        tuned.push_back(b.Lower(*g, w_spec, [&](const ir::WeightRef&, PartRole) { return slab; },
+                                {route.ids, x}));
+        ir::Builder rbld;
+        const auto ridt = rbld.Input(ir::Dense(
+            Encoding::kI32,
+            ir::ShapeOf({static_cast<std::uint64_t>(kUsed), static_cast<std::uint64_t>(tokens)})));
+        const auto routed = rbld.ExpertSort(ridt, static_cast<std::uint32_t>(kExperts));
+        rbld.Output(routed[0]);
+        rbld.Output(routed[1]);
+        auto rg = std::move(rbld).Finish();
+        if (!rg) Die(rg.error().detail);
+        route_only.push_back(
+            b.Lower(*rg, {}, [&](const ir::WeightRef&, PartRole) { return 0ULL; }, {route.ids}));
       }
-      ggml_tensor* xt = b.Leaf(ggml_new_tensor_2d(b.c(), GGML_TYPE_F32, kWidth, tokens), x);
-      ggml_tensor* routed = kg::MoeRoute(b.c(), idt, kExperts);
-      tuned.push_back(
-          {kg::MoeGemm(b.c(), kg::MoeQuantize(b.c(), xt, routed), routed, experts(), 2 * kFfn,
-                       moe::ExpertLayout::gate_up_codes(), l.gate_up_scales())});
-      route_only.push_back({kg::MoeRoute(b.c(), idt, kExperts)});
     }
     if (tokens <= 16) {
       b.Report("grouped", shape, tokens, {"llmp.moe.gemv", "llmp.decode.grouped.nvfp4.scale_atoms"},
@@ -630,13 +727,26 @@ void Rows(Bench& b) {
       id_sets.push_back(b.Upload(ids));
     }
     auto* out = Pointer<float>(b.Allocate(static_cast<std::uint64_t>(count * kValues * 4)));
-    std::vector<std::vector<ggml_tensor*>> tuned;
+    std::vector<kg::LoweredStep> tuned;
     for (std::int32_t* ids : id_sets) {
-      ggml_tensor* tt =
-          b.Leaf(ggml_new_tensor_2d(b.c(), GGML_TYPE_I8, kRowBytes, kTableRows), table);
-      ggml_tensor* it = b.Leaf(ggml_new_tensor_1d(b.c(), GGML_TYPE_I32, count), ids);
-      ggml_tensor* st = b.Leaf(ggml_new_tensor_1d(b.c(), GGML_TYPE_F32, 1), scale);
-      tuned.push_back({kg::Nvfp4Rows(b.c(), tt, it, st, kValues)});
+      ir::Builder bld;
+      const auto wt = bld.Weight(f, ir::WeightRef{});
+      const auto it =
+          bld.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({static_cast<std::uint64_t>(count)})));
+      bld.Output(bld.GetRows(wt, it));
+      auto g = std::move(bld).Finish();
+      if (!g) Die(g.error().detail);
+      const std::array w_spec{
+          co::StepWeight{.tensor = wt,
+                         .ref = ir::WeightRef{},
+                         .parts = {{"data", PartRole::kData}, {"scale", PartRole::kTensorScale}}}};
+      tuned.push_back(b.Lower(*g, w_spec,
+                              [&](const ir::WeightRef&, PartRole role) {
+                                return role == PartRole::kData
+                                           ? table
+                                           : reinterpret_cast<std::uintptr_t>(scale);
+                              },
+                              {ids}));
     }
     const auto incumbent = b.Tuned(tuned);
     b.Report("rows", "nvfp4.row_interleaved 160 values, 16 ids a token", tokens,
@@ -649,7 +759,7 @@ void Rows(Bench& b) {
                                            .out_stride = kValues};
                 return decode::RunRows(g, s);
               })},
-             static_cast<const float*>(tuned.back().front()->data), out,
+             static_cast<const float*>(tuned.back().keep.front()->data), out,
              static_cast<std::size_t>(count * kValues), 0.0);
   }
 }
@@ -680,11 +790,26 @@ void Dense(Bench& b) {
                    bf16_sum);
     }
     auto* out = Pointer<float>(b.Allocate(n * static_cast<std::uint64_t>(rows) * 4));
-    std::vector<std::vector<ggml_tensor*>> tuned;
-    for (const auto& w : weights) {
-      auto* wt = b.Leaf(ggml_new_tensor_2d(b.c(), GGML_TYPE_BF16, k, n), w.address);
-      auto* xt = b.Leaf(ggml_new_tensor_2d(b.c(), GGML_TYPE_F32, k, rows), x);
-      tuned.push_back({ggml_mul_mat(b.c(), wt, xt)});
+    std::vector<kg::LoweredStep> tuned;
+    for (std::size_t i = 0; i < weights.size(); ++i) {
+      ir::Builder bld;
+      const auto xt = bld.Input(ir::Dense(
+          Encoding::kF32,
+          ir::ShapeOf({static_cast<std::uint64_t>(k), static_cast<std::uint64_t>(rows)})));
+      const auto wt = bld.Weight(Format(Encoding::kBF16, Layout::kDense, k, n),
+                                 ir::WeightRef{.layer = static_cast<std::uint32_t>(i)});
+      bld.Output(bld.MatMul(wt, xt));
+      auto g = std::move(bld).Finish();
+      if (!g) Die(g.error().detail);
+      const std::array w_spec{
+          co::StepWeight{.tensor = wt,
+                         .ref = ir::WeightRef{.layer = static_cast<std::uint32_t>(i)},
+                         .parts = {{"data", PartRole::kData}}}};
+      tuned.push_back(b.Lower(*g, w_spec,
+                              [&](const ir::WeightRef&, PartRole) {
+                                return reinterpret_cast<std::uintptr_t>(weights[i].address);
+                              },
+                              {x}));
     }
     const auto product = [&](std::size_t r) {
       return decode::Product{.weight = {.format = Format(Encoding::kBF16, Layout::kDense, k, n),
@@ -712,7 +837,7 @@ void Dense(Bench& b) {
     }
     for (std::size_t i = 1; i < arms.size(); ++i) {
       b.Report("dense", "bf16.dense K2304 N9216", rows, {names[0], names[i]}, {arms[0], arms[i]},
-               static_cast<const float*>(tuned.back().front()->data), out,
+               static_cast<const float*>(tuned.back().keep.front()->data), out,
                static_cast<std::size_t>(n * rows));
     }
   }

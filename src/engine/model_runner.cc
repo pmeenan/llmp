@@ -13,7 +13,6 @@
 #include <utility>
 #include <vector>
 
-#include "artifact/format_map.h"
 #include "base/check.h"
 #include "components/step.h"
 #include "engine/copy_sink.h"
@@ -51,33 +50,9 @@ Status CheckRowTableSource(const RunnerConfig::RowTable& table, std::uint32_t ve
                            std::span<const artifact::Resource> resources) {
   if (table.resource >= resources.size()) return Error("a row table's resource");
   const auto& resource = resources[table.resource];
-  if (version == 1 || table.source_parts.empty()) {
-    if ((version != 0 && version != 1) || !table.source_parts.empty() || !resource.format ||
-        *resource.format != table.format || resource.part != table.part)
-      return Error("a row table's format or part differs from its source resource");
-    return {};
-  }
-  if (version != 0 || table.source_parts.size() > format::PartList::kMax)
-    return Error("a row table's source assembly exceeds its format parts");
-  std::array<artifact::V0Part, format::PartList::kMax> parts{};
-  bool matched = false;
-  for (std::size_t i = 0; i < table.source_parts.size(); ++i) {
-    const auto [role, index] = table.source_parts[i];
-    if (index >= resources.size()) return Error("a row table's source part is absent");
-    for (std::size_t j = 0; j < i; ++j)
-      if (table.source_parts[j].first == role || table.source_parts[j].second == index)
-        return Error("a row table repeats a source part or resource");
-    const auto& source = resources[index];
-    if (source.repr.bytes != source.bytes.value())
-      return Error("a row table's source part extent differs from its representation");
-    parts[i] = {.role = role, .rep = &source.repr};
-    if (index == table.resource && role == table.part) matched = true;
-  }
-  const auto assembled =
-      artifact::Assemble(table.format.encoding, table.format.layout,
-                         std::span(parts).first(table.source_parts.size()), table.format.stacked);
-  if (!matched || !assembled || *assembled != table.format)
-    return Error("a row table's complete source assembly differs from its logical format");
+  if (version != 1 || !table.source_parts.empty() || !resource.format ||
+      *resource.format != table.format || resource.part != table.part)
+    return Error("a row table's format or part differs from its source resource");
   return {};
 }
 
@@ -167,35 +142,10 @@ std::vector<catalog::ExtentId> ModelRunner::managed_extents() const {
 
 // ------------------------------------------------------------------ its life
 
-Status ModelRunner::CheckOwners(std::size_t owners) const {
-  if (owners < 2) return {};
-  bool repeat = false;
-  for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
-    for (const auto& item : slots_.layout(stage).items)
-      repeat |= item.contract.draft.progress == model::DraftProgressPolicy::kRepeatPending;
-  }
-  if (!repeat) return {};
-  // The declared layouts, not a hydrated mirror or current readiness,
-  // determine this boundary. Every stage participates in the qualification.
-  if (!source_->ExecutionIdentity().has_value())
-    return Error("joined repeat-pending execution is not qualified by stage 0");
-  for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
-    const bool qualified =
-        stage < stage_facts_.size()
-            ? stage_facts_[stage].joined_repeat_pending
-            : source_->StageFacts(static_cast<std::uint16_t>(stage)).joined_repeat_pending;
-    if (!qualified)
-      return Error(
-          std::format("joined repeat-pending execution is not qualified by stage {}", stage));
-  }
-  return {};
-}
-
 std::expected<void, std::string> ModelRunner::CheckShape(const pl::StepShape& shape) const {
   if (auto identity = source_->ExecutionIdentity(); !identity) return Error(identity.error());
   if (auto qualified = source_->CheckExecutionShape(shape); !qualified) return qualified;
   if (shape.segments.empty()) return Error("a step has no segments");
-  if (auto qualified = CheckOwners(shape.segments.size()); !qualified) return qualified;
   if (shape.stage >= slots_.stages()) return Error("a step names no stage");
   if (shape.read_align == 0 || shape.read_align % 256 != 0) {
     return Error("a step's read alignment is not a multiple of 256");
@@ -663,17 +613,15 @@ void ModelRunner::ForgetCarry(std::uint32_t slot) {
 }
 
 std::expected<std::vector<RunCopy>, std::string> ModelRunner::FeatureCopies(
-    const kn::StepProgram& program, const StepRequest& request,
-    std::span<const StepAuthorization> authorization) const {
+    const kn::StepProgram& program, const StepRequest& request) const {
   Copies copies;
   CopySink into(copies);
-  if (auto emitted = EmitFeatureCopies(program, request, authorization, into); !emitted)
+  if (auto emitted = EmitFeatureCopies(program, request, into); !emitted)
     return Error(emitted.error());
   return copies;
 }
 
 Status ModelRunner::EmitFeatureCopies(const kn::StepProgram& program, const StepRequest& request,
-                                      std::span<const StepAuthorization> authorization,
                                       CopySink& copies) const {
   const pl::StepShape& shape = request.shape;
   for (const kn::InputSlot& in : program.inputs()) {
@@ -701,12 +649,7 @@ Status ModelRunner::EmitFeatureCopies(const kn::StepProgram& program, const Step
                 std::format("stage {} has no feature tap of its rows' features", shape.stage));
           }
           // Positions the target has committed and its ring still holds.
-          std::uint64_t committed = slots_.positions(seg.slot);
-          if (const auto* own = CompanionFor(authorization, seg.slot, shape.stage);
-              own && own->part_ == StepAuthorization::Part::kPost) {
-            if (const auto tap_span = slots_.progress(seg.slot, shape.stage)->compound_tap())
-              committed = tap_span->positions;
-          }
+          const std::uint64_t committed = slots_.positions(seg.slot);
           const std::uint64_t last = std::uint64_t{from.position} + seg.rows;
           if (last > committed || (tap->contract.cells == model::CellRule::kPositionRing &&
                                    committed - from.position > tap->cells)) {
@@ -714,8 +657,7 @@ Status ModelRunner::EmitFeatureCopies(const kn::StepProgram& program, const Step
                                      seg.slot, from.position, last - 1));
           }
           const std::uint64_t base = slots_.live(seg.slot, shape.stage).base(0) + tap->offset;
-          const TapRows held = HeldTapRows(seg.slot, shape.stage,
-                                           CompanionFor(authorization, seg.slot, shape.stage));
+          const TapRows held = HeldTapRows(seg.slot, shape.stage);
           if (tap->contract.cells == model::CellRule::kPerRow &&
               (held.count == 0 || std::uint64_t{from.position} + held.preceding < held.first ||
                last > std::uint64_t{held.first} + held.count)) {
@@ -753,18 +695,7 @@ Status ModelRunner::EmitFeatureCopies(const kn::StepProgram& program, const Step
   return {};
 }
 
-ModelRunner::TapRows ModelRunner::HeldTapRows(std::uint32_t slot, std::size_t stage,
-                                              const StepAuthorization* authorization) const {
-  if (const auto* progress = slots_.progress(slot, stage)) {
-    const auto provisional = authorization && authorization->runner_ == this &&
-                                     authorization->slot_ == slot &&
-                                     authorization->stage_ == stage &&
-                                     authorization->part_ == StepAuthorization::Part::kPost
-                                 ? progress->compound_tap()
-                                 : std::nullopt;
-    const model::DraftProgress& p = provisional ? *provisional : progress->after_owed();
-    return {.first = p.tap_first, .count = p.tap_rows, .preceding = p.preceding};
-  }
+ModelRunner::TapRows ModelRunner::HeldTapRows(std::uint32_t slot, std::size_t stage) const {
   const std::size_t at = (std::size_t{slot} * slots_.stages()) + stage;
   const std::uint32_t committed = slots_.positions(slot);
   TapRows held = tap_rows_.at(at);
@@ -1381,29 +1312,6 @@ std::expected<void, StepRefusal> ModelRunner::CheckAdmission(
       return Refused("mixed causal origin requires its exact decode execution permit", true, slot);
     }
   }
-  const bool companion = exact && (authorization->part_ == StepAuthorization::Part::kPre ||
-                                   authorization->part_ == StepAuthorization::Part::kTarget ||
-                                   authorization->part_ == StepAuthorization::Part::kPost);
-  if (companion) {
-    if (authorization->consumers_.empty())
-      return Refused("prompt companion has no owned consumers", true, slot);
-    for (const auto& [consumer, unit] : authorization->consumers_) {
-      if (consumer == 0 || consumer >= slots_.stages())
-        return Refused("prompt companion consumer stage is outside the runner", true, slot);
-      const auto* progress = slots_.progress(slot, consumer);
-      if (!progress || !progress->CheckCompound(unit))
-        return Refused("prompt companion no longer owns its ledger unit", true, slot);
-    }
-  }
-  if (stage != 0 && slots_.progress(slot, stage) && !companion) {
-    if (!exact || authorization->part_ != StepAuthorization::Part::kDraft ||
-        !StepTransaction::CheckDraftPermit(*this, *authorization))
-      return Refused("repeat-pending draft requires its owned decoding schedule", true, slot);
-  }
-  if (stage == 0 && advance && !companion)
-    for (std::size_t s = 1; s < slots_.stages(); ++s)
-      if (slots_.progress(slot, s))
-        return Refused("target step requires its shared prompt companions", true, slot);
   if (auto active = slots_.CheckActive(slot); !active) {
     // Compilation/admission may have exposed loss of the shared request.
     // Recheck canonical cohort authority before inviting any clean retry.
@@ -1427,13 +1335,9 @@ std::expected<void, StepRefusal> ModelRunner::CheckAdmission(
     // through the committed positions, a pass sits at or past them (an
     // anchored one at them), so a step wholly behind them (the last
     // committed position not among its rows or before them) re-runs
-    // positions its state already holds and drafts from none. A drafter
-    // with progress of its own (repeat-pending: its cache may trail the
-    // committed positions) runs exactly its owned schedule's rows, which
-    // authorized them above.
+    // positions its state already holds and drafts from none.
     if (advance) return Refused("a drafter's step never commits positions", true, slot);
-    if (slots_.progress(slot, stage) == nullptr &&
-        std::uint64_t{segment.past} + segment.rows < positions) {
+    if (std::uint64_t{segment.past} + segment.rows < positions) {
       return Refused(std::format("slot {}'s draft rows end at {}, behind its {} committed "
                                  "positions",
                                  slot, std::uint64_t{segment.past} + segment.rows, positions),
@@ -1447,11 +1351,9 @@ std::expected<void, StepRefusal> ModelRunner::CheckAdmission(
                      true, slot);
     }
     // Its view of the target's state is read only while that is frozen.
-    const bool ordered_borrow =
-        exact && (companion || authorization->part_ == StepAuthorization::Part::kDraft) &&
-        authorization->borrowed_ &&
-        slots_.CheckBorrowPermit(*authorization->borrowed_, slot, stage, segment.past,
-                                 segment.rows);
+    const bool ordered_borrow = exact && authorization->borrowed_ &&
+                                slots_.CheckBorrowPermit(*authorization->borrowed_, slot, stage,
+                                                         segment.past, segment.rows);
     if (!slots_.layout(stage).borrowed.empty() && !slots_.borrowed(slot, 0) && !ordered_borrow) {
       return Refused(std::format("slot {}'s drafter reads the target's state, which is not "
                                  "borrowed",
@@ -1482,17 +1384,6 @@ std::expected<void, StepRefusal> ModelRunner::Admit(const pl::Segment& segment, 
     return Refused(reserved.error(), refused || slots_.usable(slot), slot, refused);
   }
   return {};
-}
-
-const StepAuthorization* ModelRunner::CompanionFor(std::span<const StepAuthorization> authorization,
-                                                   std::uint32_t slot, std::uint16_t stage) const {
-  for (const auto& permit : authorization)
-    if (permit.runner_ == this && permit.slot_ == slot && permit.stage_ == stage &&
-        (permit.part_ == StepAuthorization::Part::kPre ||
-         permit.part_ == StepAuthorization::Part::kTarget ||
-         permit.part_ == StepAuthorization::Part::kPost))
-      return &permit;
-  return nullptr;
 }
 
 std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& request) {

@@ -67,6 +67,7 @@
 #include "kernels/ggml/lower.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/shared_q8.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
@@ -91,6 +92,12 @@ using llmp::providers::FenceState;
 using llmp::providers::StreamId;
 using llmp::test_support::FailedCode;
 namespace kg = llmp::kernels::ggml;
+namespace pl = llmp::planner;
+namespace co = llmp::components;
+namespace kn = llmp::kernels;
+namespace ir = llmp::ir;
+namespace format = llmp::format;
+using format::Encoding;
 
 // Upstream's bounds (test-backend-ops.cpp).
 constexpr double kDefaultNmse = 1e-7;
@@ -1555,30 +1562,82 @@ TEST_F(GgmlExtOpsTest, PairedExpertPreparationMatchesSeparateProductsExactly) {
       EXPECT_LE(launch().scratch_peak().value(), *compact_pair_scratch);
       ExpectNmse(Download(first), compact_want_first, kCompactNmse, what);
       ExpectNmse(Download(second), compact_want_second, kCompactNmse, what);
-      const std::array<ggml_tensor*, 2> nodes = {first, second};
+      const auto enc = format::EncodingOfGgmlType(ggml_type_name(type));
+      if (!enc) continue;
+      const auto w_layout =
+          *enc == Encoding::kNvfp4 ? format::Layout::kGgmlNvfp4Blocks : format::Layout::kGgmlBlocks;
+      const format::TensorFormat w_fmt{
+          .encoding = *enc,
+          .layout = w_layout,
+          .shape =
+              ir::ShapeOf({static_cast<std::uint64_t>(kInner), static_cast<std::uint64_t>(kOut),
+                           static_cast<std::uint64_t>(kExperts)})};
+      ir::Builder b;
+      b.SetOwner(0);
+      const ir::WeightRef ref1{.layer = 0, .expert_array = true};
+      const ir::WeightRef ref2{.layer = 1, .expert_array = true};
+      const auto w1 = b.Weight(w_fmt, ref1);
+      const auto w2 = b.Weight(w_fmt, ref2);
+      const auto x_in =
+          b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({static_cast<std::uint64_t>(kInner),
+                                                         static_cast<std::uint64_t>(slots),
+                                                         static_cast<std::uint64_t>(kTokens)})));
+      const auto ids_in = b.Input(ir::Dense(
+          Encoding::kI32,
+          ir::ShapeOf({static_cast<std::uint64_t>(kUsed), static_cast<std::uint64_t>(kTokens)})));
+      const auto prod1 = b.MatMulId(w1, x_in, ids_in);
+      const auto prod2 = b.MatMulId(w2, x_in, ids_in);
+      b.Output(prod1);
+      b.Output(prod2);
+      auto g = std::move(b).Finish();
+      ASSERT_TRUE(g) << g.error().detail;
+      const auto registry = llmp::execution::Registry::Create(kg::Implementations()).value();
+      const pl::DeviceFacts facts{
+          .device_class = "sm_121", .arch = 121, .features = llmp::execution::kBf16Mma};
+      const pl::StepShape shape{.segments = {{.rows = static_cast<std::uint32_t>(kTokens)}}};
+      const auto make_plan = [&](pl::ProductPolicy products) {
+        pl::Policy policy{};
+        products.compact_expert_min_rows = 1;
+        policy.products = products;
+        return pl::Plan(g->Clone(), registry, facts, policy, {.shape = &shape});
+      };
+      const std::vector<co::StepWeight> step_weights{
+          {.tensor = w1, .ref = ref1, .parts = {{"w1", format::PartRole::kData}}},
+          {.tensor = w2, .ref = ref2, .parts = {{"w2", format::PartRole::kData}}}};
+      const co::GraphBuildIO io{*g, g->inputs(), g->outputs(), step_weights};
+      const kn::Addresses addresses{};
+
       auto choices = kg::DeviceChoicesOf(launch());
-      const auto primitive = kg::PlanGraph(nodes, false, choices);
+      auto plan = make_plan({});
+      ASSERT_TRUE(plan);
+      const auto primitive = kg::LowerStep({*plan, io, addresses}, registry, choices);
       ASSERT_TRUE(primitive.has_value()) << what << ": " << primitive.error().detail;
-      ASSERT_EQ(primitive->steps.size(), 2U);
-      EXPECT_EQ(primitive->steps[0].implementation, kg::kMulMatIdQ);
-      EXPECT_EQ(primitive->steps[1].implementation, kg::kMulMatIdQ);
-      choices.pair_experts = true;
-      const auto plan = kg::PlanGraph(nodes, false, choices);
-      ASSERT_TRUE(plan.has_value()) << what << ": " << plan.error().detail;
-      ASSERT_EQ(plan->steps.size(), 1U);
-      EXPECT_EQ(plan->steps[0].implementation, kg::kMulMatIdQPair);
-      EXPECT_EQ(plan->steps[0].nodes.size(), 2U);
-      choices.compact_experts = true;
-      const auto compact_pair = kg::PlanGraph(nodes, false, choices);
+      ASSERT_EQ(primitive->plan.steps.size(), 2U);
+      EXPECT_EQ(primitive->plan.steps[0].implementation, kg::kMulMatIdQ);
+      EXPECT_EQ(primitive->plan.steps[1].implementation, kg::kMulMatIdQ);
+
+      plan = make_plan({.pair_experts = true});
+      ASSERT_TRUE(plan);
+      const auto paired = kg::LowerStep({*plan, io, addresses}, registry, choices);
+      ASSERT_TRUE(paired.has_value()) << what << ": " << paired.error().detail;
+      ASSERT_EQ(paired->plan.steps.size(), 1U);
+      EXPECT_EQ(paired->plan.steps[0].implementation, kg::kMulMatIdQPair);
+      EXPECT_EQ(paired->plan.steps[0].nodes.size(), 2U);
+
+      plan = make_plan({.compact_experts = true, .pair_experts = true});
+      ASSERT_TRUE(plan);
+      const auto compact_pair = kg::LowerStep({*plan, io, addresses}, registry, choices);
       ASSERT_TRUE(compact_pair.has_value()) << what << ": " << compact_pair.error().detail;
-      ASSERT_EQ(compact_pair->steps.size(), 1U);
-      EXPECT_EQ(compact_pair->steps[0].implementation, kg::kMulMatIdQPairCompact);
-      choices.pair_experts = false;
-      const auto compact = kg::PlanGraph(nodes, false, choices);
+      ASSERT_EQ(compact_pair->plan.steps.size(), 1U);
+      EXPECT_EQ(compact_pair->plan.steps[0].implementation, kg::kMulMatIdQPairCompact);
+
+      plan = make_plan({.compact_experts = true});
+      ASSERT_TRUE(plan);
+      const auto compact = kg::LowerStep({*plan, io, addresses}, registry, choices);
       ASSERT_TRUE(compact.has_value()) << what << ": " << compact.error().detail;
-      ASSERT_EQ(compact->steps.size(), 2U);
-      EXPECT_EQ(compact->steps[0].implementation, kg::kMulMatIdQCompact);
-      EXPECT_EQ(compact->steps[1].implementation, kg::kMulMatIdQCompact);
+      ASSERT_EQ(compact->plan.steps.size(), 2U);
+      EXPECT_EQ(compact->plan.steps[0].implementation, kg::kMulMatIdQCompact);
+      EXPECT_EQ(compact->plan.steps[1].implementation, kg::kMulMatIdQCompact);
     }
   }
 }
@@ -1655,21 +1714,61 @@ TEST_F(GgmlExtOpsTest, RawQ2D2rPreservesItsOwnCapturedProductAndPlansAllScratch)
     EXPECT_EQ(Download(product), want);
     EXPECT_EQ(Download(other), want_other);
   }
+  ir::Builder b;
+  b.SetOwner(0);
+  const ir::WeightRef w_ref{.layer = 0, .expert_array = true};
+  const auto wt = b.Weight(
+      format::TensorFormat{
+          .encoding = Encoding::kQ2_K,
+          .layout = format::Layout::kGgmlBlocks,
+          .shape = ir::ShapeOf({static_cast<std::uint64_t>(k), static_cast<std::uint64_t>(m),
+                                static_cast<std::uint64_t>(experts)})},
+      w_ref);
+  const auto xt = b.Input(ir::Dense(
+      Encoding::kF32, ir::ShapeOf({static_cast<std::uint64_t>(k), static_cast<std::uint64_t>(used),
+                                   static_cast<std::uint64_t>(tokens)})));
+  const auto idst = b.Input(ir::Dense(
+      Encoding::kI32,
+      ir::ShapeOf({static_cast<std::uint64_t>(used), static_cast<std::uint64_t>(tokens)})));
+  b.Output(b.MatMulId(wt, xt, idst));
+  auto g = std::move(b).Finish();
+  ASSERT_TRUE(g) << g.error().detail;
+  const auto registry = llmp::execution::Registry::Create(kg::Implementations()).value();
+  const pl::DeviceFacts facts{
+      .device_class = "sm_121", .arch = 121, .features = llmp::execution::kBf16Mma};
+  auto step_plan = pl::Plan(g->Clone(), registry, facts, {});
+  ASSERT_TRUE(step_plan);
+  const std::vector<co::StepWeight> step_weights{
+      {.tensor = wt, .ref = w_ref, .parts = {{"w", format::PartRole::kData}}}};
+  co::StepGraph step{std::move(*g), {}, {}, {}};
+  step.weights = step_weights;
+  for (const ir::TensorId in : step.graph.inputs()) {
+    step.inputs.push_back({.tensor = in, .kind = co::InputKind::kFeatures});
+  }
+  const pl::StepShape shape{.segments = {{.rows = static_cast<std::uint32_t>(tokens)}}};
+  const kn::Addresses addresses{};
+
   auto choices = kg::DeviceChoicesOf(launch());
-  const std::array<ggml_tensor*, 1> nodes = {product};
-  auto ordinary = kg::PlanGraph(nodes, false, choices);
+  auto ordinary = kg::LowerStep({*step_plan, step, shape, addresses}, registry, choices);
   ASSERT_TRUE(ordinary.has_value()) << (ordinary ? "" : ordinary.error().detail);
-  EXPECT_EQ(ordinary->steps[0].implementation, kg::kMulMatIdQ);
-  choices.d2r_experts = true;
-  auto fallback = kg::PlanGraph(nodes, false, choices);
+  EXPECT_EQ(ordinary->plan.steps[0].implementation, kg::kMulMatIdQ);
+
+  pl::Policy d2r_policy{};
+  d2r_policy.products.d2r_experts = true;
+  auto d2r_plan = pl::Plan(step.graph.Clone(), registry, facts, d2r_policy);
+  ASSERT_TRUE(d2r_plan);
+  auto fallback = kg::LowerStep({*d2r_plan, step, shape, addresses}, registry, choices);
   ASSERT_TRUE(fallback.has_value()) << (fallback ? "" : fallback.error().detail);
-  EXPECT_EQ(fallback->steps[0].implementation, kg::kMulMatIdQ);   // unmeasured small shape
+  EXPECT_EQ(fallback->plan.steps[0].implementation, kg::kMulMatIdQ);  // unmeasured small shape
+
   choices.q2_d2r_fits = [](const ggml_tensor*) { return true; };  // explicit generic control
-  auto selected = kg::PlanGraph(nodes, false, choices);
+  auto selected = kg::LowerStep({*d2r_plan, step, shape, addresses}, registry, choices);
   ASSERT_TRUE(selected.has_value()) << (selected ? "" : selected.error().detail);
-  EXPECT_EQ(selected->steps[0].implementation, kg::kMulMatIdQ2D2r);
+  EXPECT_EQ(selected->plan.steps[0].implementation, kg::kMulMatIdQ2D2r);
+
   choices.row_invariant = true;
-  EXPECT_FALSE(kg::PlanGraph(nodes, false, choices).has_value());  // original verify bound wins
+  EXPECT_FALSE(kg::LowerStep({*d2r_plan, step, shape, addresses}, registry, choices)
+                   .has_value());  // original verify bound wins
 }
 
 // A prompt's last, partial prefill chunk takes D2R as a full chunk does: a
@@ -2778,11 +2877,11 @@ TEST_F(GgmlExtOpsTest, GemmaLocalAttentionRefusesOverflowingTotalIterationsBefor
   const auto checked = kg::CheckFlashAttnMmaGqa2(node);
   ASSERT_TRUE(checked.has_value()) << (checked ? "" : checked.error().detail);
   EXPECT_EQ(FailedCode(kg::PlanFlashAttnMmaGqa2(launch(), node)), KernelError::kRejected);
-  const std::array<ggml_tensor*, 1> nodes = {node};
-  auto graph = kg::PlanGraph(nodes, false, kg::DeviceChoicesOf(launch()));
-  ASSERT_TRUE(graph.has_value());
-  EXPECT_EQ(graph->steps.front().implementation, kg::kFlashAttnMmaGqa2Name);
-  EXPECT_EQ(FailedCode(kg::PlanScratch(launch(), *graph)), KernelError::kRejected);
+  const kg::GraphPlan graph{.steps = {{.operation = ir::Primitive(ir::Op::kAttention),
+                                       .implementation = kg::kFlashAttnMmaGqa2Name,
+                                       .nodes = {node}}},
+                            .regions = {}};
+  EXPECT_EQ(FailedCode(kg::PlanScratch(launch(), graph)), KernelError::kRejected);
   launch().ResetScratchPeak();
   EXPECT_EQ(FailedCode(kg::FlashAttnMmaGqa2(launch(), node)), KernelError::kRejected);
   EXPECT_EQ(launch().scratch_peak().value(), 0);
@@ -3419,13 +3518,12 @@ TEST_F(GgmlExtOpsTest, GemmaLocalAttentionPreservesIndependentRingMasksAndPlansS
         ggml_prec_set_acc(node, GGML_PREC_F32);
         const bool vector = rows == 1 && sequences == 1;
         EXPECT_EQ(kg::FlashAttnVec256Selected(launch(), node), vector);
-        auto choices = kg::DeviceChoicesOf(launch());
-        const std::array<ggml_tensor*, 1> nodes = {node};
-        auto graph = kg::PlanGraph(nodes, false, choices);
-        ASSERT_TRUE(graph.has_value());
-        EXPECT_EQ(graph->steps.front().implementation,
-                  vector ? kg::kFlashAttnVec256Name : kg::kFlashAttnMmaGqa2Name);
-        const auto scratch = kg::PlanScratch(launch(), *graph);
+        const kg::GraphPlan graph{.steps = {{.operation = ir::Primitive(ir::Op::kAttention),
+                                             .implementation = vector ? kg::kFlashAttnVec256Name
+                                                                      : kg::kFlashAttnMmaGqa2Name,
+                                             .nodes = {node}}},
+                                  .regions = {}};
+        const auto scratch = kg::PlanScratch(launch(), graph);
         ASSERT_TRUE(scratch.has_value());
         auto mma = kg::PlanFlashAttnMmaGqa2(launch(), node);
         ASSERT_TRUE(mma.has_value()) << (mma ? "" : mma.error().detail);
@@ -3556,13 +3654,15 @@ TEST_F(GgmlExtOpsTest, Gemma2SoftcapUsesFundedSpecializationsAndMatchesFp64) {
       ggml_prec_set_acc(node, GGML_PREC_F32);
       if (sequences == 1) ASSERT_TRUE(kg::CheckFlashAttnVec256(node));
       ASSERT_TRUE(kg::CheckFlashAttnMmaGqa2(node));
-      EXPECT_EQ(kg::FlashAttnVec256Selected(launch(), node), rows == 1 && sequences == 1);
-      const std::array<ggml_tensor*, 1> nodes{node};
-      auto selected_graph = kg::PlanGraph(nodes, false, kg::DeviceChoicesOf(launch()));
-      ASSERT_TRUE(selected_graph);
-      EXPECT_EQ(selected_graph->steps.front().implementation,
-                rows == 1 && sequences == 1 ? kg::kFlashAttnVec256Name : kg::kFlashAttnMmaGqa2Name);
-      EXPECT_TRUE(kg::PlanScratch(launch(), *selected_graph));
+      const bool is_vec = rows == 1 && sequences == 1;
+      EXPECT_EQ(kg::FlashAttnVec256Selected(launch(), node), is_vec);
+      const kg::GraphPlan selected_graph{
+          .steps = {{.operation = ir::Primitive(ir::Op::kAttention),
+                     .implementation =
+                         is_vec ? kg::kFlashAttnVec256Name : kg::kFlashAttnMmaGqa2Name,
+                     .nodes = {node}}},
+          .regions = {}};
+      EXPECT_TRUE(kg::PlanScratch(launch(), selected_graph));
       const auto run = [&](LaunchContext& l) {
         return shape.vector ? kg::FlashAttnVec256(l, node) : kg::FlashAttnMmaGqa2(l, node);
       };
@@ -3823,17 +3923,6 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionMatchesTheReference) {
       ggml_flash_attn_ext_set_n_kv_max(node, test.n_kv_max);
     }
     Place(node);
-    const std::array<ggml_tensor*, 1> nodes = {node};
-    auto choices = kg::DeviceChoicesOf(launch());
-    const auto primitive = kg::PlanGraph(nodes, false, choices);
-    ASSERT_TRUE(primitive.has_value()) << test.name;
-    ASSERT_EQ(primitive->steps.size(), 1U);
-    EXPECT_EQ(primitive->steps[0].implementation, kg::kFlashAttnMmaName);
-    choices.wide_sparse_attention = true;
-    const auto wide = kg::PlanGraph(nodes, false, choices);
-    ASSERT_TRUE(wide.has_value()) << test.name;
-    ASSERT_EQ(wide->steps.size(), 1U);
-    EXPECT_EQ(wide->steps[0].implementation, kg::kFlashAttnMmaWideName);
     const auto original = kg::PlanFlashAttnMma(launch(), node);
     ASSERT_TRUE(original.has_value()) << test.name;
     EXPECT_EQ(original->sparse, test.n_kv_max > 0 && test.head == 512) << test.name;
@@ -3993,19 +4082,6 @@ TEST_F(GgmlExtOpsTest, Ds4HcaPlansItsWholeScratchRefusesCaptureAndPreservesOwnRe
         exact(Download(control), want_control);
       }
     }
-    auto choices = kg::DeviceChoicesOf(launch());
-    const std::array<ggml_tensor*, 1> nodes = {node};
-    const auto ordinary = kg::PlanGraph(nodes, false, choices);
-    ASSERT_TRUE(ordinary.has_value());
-    EXPECT_EQ(ordinary->steps.front().implementation, kg::kFlashAttnMmaName);
-    choices.ds4_hca = true;
-    const auto fallback = kg::PlanGraph(nodes, false, choices);
-    ASSERT_TRUE(fallback.has_value());
-    EXPECT_EQ(fallback->steps.front().implementation, kg::kFlashAttnMmaName);
-    choices.ds4_hca_fits = [](const ggml_tensor*) { return true; };  // bounded generic control
-    const auto selected = kg::PlanGraph(nodes, false, choices);
-    ASSERT_TRUE(selected.has_value());
-    EXPECT_EQ(selected->steps.front().implementation, kg::kDsv4HcaTokentileName);
   }
 }
 

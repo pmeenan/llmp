@@ -15,10 +15,10 @@
 #include <utility>
 #include <vector>
 
-#include "artifact/representation.h"
 #include "base/check.h"
 #include "base/json.h"
 #include "families/gemma.h"
+#include "fixture_source.h"
 namespace llmp::test_support::gemma2 {
 namespace md = llmp::test_support::families;
 namespace json = llmp::base::json;
@@ -50,25 +50,18 @@ inline std::vector<md::Gemma2Resource> Resources() {
     for (std::size_t dim = 0; dim < ne.size(); ++dim) {
       resource.ne.push_back(static_cast<std::uint64_t>(*ne.at(dim).int64()));
     }
-    std::string representation = "{\"family\":\"ggml\",\"type\":\"" + resource.type + "\",\"ne\":[";
-    for (const auto dim : resource.ne) {
-      if (representation.back() != '[') {
-        representation += ',';
-      }
-      representation += std::to_string(dim);
-    }
-    representation += "]}";
-    const auto doc = llmp::artifact::json::Parse(representation);
-    llmp::base::Check(doc.has_value(), "Gemma2 representation is invalid JSON");
-    const auto parsed = llmp::artifact::ParseRepresentation(doc->root());
-    llmp::base::Check(parsed.has_value(), "Gemma2 representation is invalid");
-    llmp::base::Check(parsed->bytes == static_cast<std::uint64_t>(*Get(tensor, "bytes").int64()),
+    const auto tf = fixture_detail::TensorFormatOf(false, resource.type, resource.ne);
+    llmp::base::Check(tf.has_value(), "Gemma2 tensor format is invalid");
+    const auto parts = llmp::format::PartsOf(*tf);
+    llmp::base::Check(parts.has_value() && parts->size() == 1, "Gemma2 tensor parts are invalid");
+    const auto& part = parts->parts().front();
+    llmp::base::Check(part.bytes == static_cast<std::uint64_t>(*Get(tensor, "bytes").int64()),
                       "Gemma2 recorded bytes differ from native type helpers");
-    const auto* traits = llmp::artifact::FindGgmlType(resource.type);
-    llmp::base::Check(traits != nullptr && static_cast<std::int64_t>(traits->id) ==
-                                               *Get(tensor, "ggml_type").int64(),
+    const auto& info = llmp::format::Info(tf->encoding);
+    llmp::base::Check(info.ggml.has_value() && static_cast<std::int64_t>(info.ggml->type) ==
+                                                   *Get(tensor, "ggml_type").int64(),
                       "Gemma2 recorded type ID differs from native helpers");
-    resource.readable = parsed->readable;
+    resource.readable = part.readable;
     resources.push_back(std::move(resource));
   }
   return resources;

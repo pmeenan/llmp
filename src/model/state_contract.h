@@ -46,7 +46,6 @@
 
 #include "base/sha256.h"
 #include "format/encoding.h"
-#include "model/draft_progress.h"
 #include "model/state.h"
 
 namespace llmp::model {
@@ -67,8 +66,7 @@ enum class StateKind : std::uint8_t {
   kCompressor,   // a compressor's ring of recent positions' projections
   kDrafterRing,  // a block drafter's ring
   kPrefixCache,
-  kFeatures,         // retained streams or features (a drafter's inputs)
-  kDrafterProgress,  // fixed I64 control; not numeric KV content
+  kFeatures,  // retained streams or features (a drafter's inputs)
 };
 std::string_view KindName(StateKind kind);
 
@@ -160,9 +158,6 @@ struct StateTensorContract {
   // target's state is borrowed (SlotLifecycle::Borrow).
   bool borrowed_from_target = false;
   std::uint32_t target_layer = 0;
-  // Only kDrafterProgress: the stage's declared coordinate/progress policy.
-  // Default tensors do not change the existing cursor-based orchestration.
-  DraftPolicy draft{};
   // A position/block cache may recompute an already completed interval
   // from the same inputs: every overwritten value is rebuilt before it
   // can influence a read. This is a component guarantee, not inferred from
@@ -176,11 +171,6 @@ struct StateTensorContract {
   bool bank_with_previous = false;
   bool operator==(const StateTensorContract&) const = default;
 };
-
-// The single control tensor that opts a stage into repeatable progress.
-// Layout validates the exact role/format and its cache/tap prerequisites.
-// I64 remains excluded from numeric CellBytes/StateEncodings.
-StateTensorContract DraftProgressControl(std::string name, DraftRelation relation);
 
 // The bytes of one cell holding `values` values of a state encoding
 // (format::StateEncodings()), by the format layer's size rule: dense
@@ -272,12 +262,6 @@ std::optional<std::uint64_t> ReadCellsBound(const StateLayoutDerived& layout);
 // writes, a position ring or chunk rows (a drafter's input features);
 // none if it has none or several.
 const StateLayoutDerived::Item* FeatureTap(const StateLayoutDerived& layout);
-
-// Derive the opt-in policy's bounds from its one control and one per-row
-// target tap. None for an ordinary stage; refusal for ambiguous controls,
-// missing carry/snapshot semantics or unqualified private numeric state.
-std::expected<std::optional<DraftProgressBounds>, std::string> DraftBounds(
-    const StateLayoutDerived& layout);
 
 // The region for `per_layer` contracts (layer index, contract) at a
 // context and chunk bound, every tensor at `tensor_align` (a reference

@@ -30,7 +30,7 @@ row tables (`ple_rows.h`), and the shared runners over step programs
 (`model_runner.h`, `staged_execution.h`, `step_runs.h`, `step_inputs.h`,
 `step_transaction.h`, `plan_cache.h`, `coverage.h`) with the wave composer
 (`wave_composer.h`), prefill orchestrator (`prefill.h`), decoding modes with
-any number of drafters (`decoding.h`, `draft_progress.h`, `draft_companions.h`),
+any number of drafters (`decoding.h`, `draft_companions.h`),
 and the component step source (`component_source.h`, `graph_plan.h`,
 `execution_contract.h`, `program_lifecycle.h`, `supplemental_run.h`). It reaches
 the device through the providers, the device runtime and the paging kernels
@@ -94,8 +94,7 @@ The module contains only shared engine code (no per-family code):
 | `copy_sink.h` | — | Output copy destination contracts |
 | `coverage.h` | `coverage.cc` | Tensor role and coverage checks |
 | `decoding.h` | `decoding.cc` | Decoding modes (`DecodingOrchestrator`): plain, sampled, speculative cascade/alternatives |
-| `draft_companions.h` | `draft_companions.cc` | Companion drafter orchestration before and after target prefill |
-| `draft_progress.h` | `draft_progress.cc` | Repeatable drafter progress and durable pending records |
+| `draft_companions.h` | `draft_companions.cc` | Shared prompt wave execution and batching |
 | `execution_contract.h` | `execution_contract.cc` | Execution contract validation and lifecycle |
 | `expert_slab.h` | `expert_slab.cc` | Expert slab layout and pitch (`llmp_engine`) |
 | `graph_plan.h` | `graph_plan.cc` | Planned step graph binding and lowering |
@@ -229,8 +228,8 @@ policy. [Bounds, native factors and startup cost](experiments/gemma-shared-q8/RE
 `ModelRunner` exposes stable request slots (`RunnerConfig::slots`, at most
 `kMaxRequestSlots`, 16, `request_cohort.h`) managed by `SlotLifecycle`
 (`slot_lifecycle.h`). Each slot owns one `LiveState` per stage (target, then
-each drafter), verify snapshots, component commit buffers, repeatable drafter
-progress state (`draft_progress.h`), and feature carries. The weights, launch
+each drafter), verify snapshots, component commit buffers,
+and feature carries. The weights, launch
 context, stream, staging, workspace and `BasicPlanCache` remain shared on the
 runner. The scalar runner methods use slot zero. `SelectSlots` selects an
 execution closure over the active slots at a completed unit boundary; the
@@ -563,58 +562,9 @@ verify restores the previous chunk. Ordinary same-process spill and
 restore retain this logical metadata. Existing position-ring taps derive
 their cells from positions alone.
 
-**Repeatable drafter progress** (`draft_progress.h`, `draft_companions.h`). A
-component may declare `DraftProgressPolicy::kRepeatPending` and the relation
-between cache, token and feature positions (`embedding.mtp` v1, paired with
-`attention.dense` v1's `replayable = true` parameter). With `kTokenAfterCache`,
-cache row `q` consumes token `q+1` and feature `q`; with `kTokenAtCache`, it
-consumes token `q` and feature `q-1`. The stage owns one fixed 64-byte I64
-control tensor containing its schema, committed positions, first pending cache
-row, chunk-tap span, preceding rows, relation and reserved zero. This is
-ordinary cataloged state, distinct from numeric KV encoding support. Layout
-validation binds the policy to the real tap, carry and context bounds and
-requires replayable private position/block caches; unsupported borrowed or
-recurrent private state refuses. Its contract contributes to the existing
-kept-layout digest.
-
-Multi-owner submissions require immutable numerical qualification from
-**every** stage's step source when any stage declares repeat-pending
-progress; both scalar and joined native MTP (`qwen38` target + `mtp` stage) and
-the fake backend qualify independent-owner arithmetic. Direct steps and their
-supplied lookahead shapes enforce the same boundary; a scalar prompt's
-lookahead is checked before its pre-prefill companion.
-
-A completed head-bearing catch-up leaves the durable pending interval
-unchanged. Whole discard therefore repeats its original K-row schedule,
-even after a changed anchor or restored checkpoint. Acceptance first
-retires numerical restore/commit work, then copies each stage's candidate
-control from its separate pinned buffer; only proven completion publishes
-all host mirrors. Terminal completions carry owner/transition identity.
-A late or unknown copy failure quarantines the owner and retains staging.
-Restore and new-runner adoption exclude use until actual device-to-host
-control reads complete and every stage's record validates. Clear resets
-the control only after old work retires. Checkpoints include the bounded
-private-cache tail starting at `max(0, positions - max_rows)`, rounded to
-blocks where needed, plus fixed state, taps and dummy cells. Every opted-in
-draft write requires an internal owner/unit permit for its exact cache,
-token and feature coordinates before admission; arbitrary historical
-writes cannot escape that checkpoint envelope.
-
-The shared prompt helper (`draft_companions.h`) runs headless companions before
-and after target prefill, using authoritative full token history. Compound
-ownership starts before the first companion and retains the old pending record
-until the whole sequence and control publication complete. A proven pre-only
-completion followed by a clean target refusal retries the original K;
-leading-carry or target mutation with incomplete work quarantines. An
-unchosen repeat-pending consumer also consumes its old features before the
-target replaces them. Stages that use the original cursor policy keep their
-existing orchestration. Without the durable policy, checkpoint replacement
-and kept adoption still clear a chunk tap's transient span; lookup refuses
-until a target step publishes it again.
-
 Components may derive side-row IDs from authenticated full history through
 immutable source metadata (`step_inputs.h`). Staging uses the declared token
-coordinate, including a repeat-pending drafter's offset from its cache row.
+coordinate.
 Explicit row inputs remain authoritative. Missing, malformed or partial inputs
 refuse before state admission for resident and on-demand tables alike;
 duplicate input slots for one table refuse before paging, while a joined
@@ -765,7 +715,7 @@ What the shared pieces reproduce of each family (completed in M3.6):
 | --- | --- | --- |
 | Gemma2/3 | Joined prompt waves with equal rows and reads (`equal_prefill`); two futures, first-run capture of a repeating shape, capture ahead, prepare ahead; head-or-state-only shapes and `max_head_rows`; second-run capture in every phase; independent outputs; owner attention (owner decode, owner and flexible owner prefill, bounded roots, padding to a common width, Gemma3's four-root carriers: the planner's `owner_attention` from the step's shape); cohort `max_segments` | The C12 bounded factor and the copying packed prefill are not ported |
 | Gemma4 | Quads as `group_segments` 4, the 8/12 groups as `invariant_group_segments`/`group_segments`; one future without capture ahead (`prefill_lookahead` 1, `capture_ahead` false); per-group isolation in `RunWave`; the assistant's frozen borrows, tapped features and carry (decoding modes); prompts stepping alone and, outside the envelope, one owner a step (its mapping's rules, `prompts_alone`, `owners_alone`); bounded owner roots and common widths (the planner's owner-attention options) | Joined prompt admission (would change the routed products' arithmetic; M3 prefilled alone) |
-| Qwen3.8 | Groups of consecutive owners while rows fit 16 (`group_rows`), 2,048-aligned joined reads (`joined_read_align`), state backed through that alignment before the step (an owner out of capacity there steps alone at 256 rather than being refused), two futures and prepare ahead, state-only cuts; joined draft and verify waves with repeatable MTP progress (`draft_progress.h`, `draft_companions.h`); per-product joined limits (draft head 8, VecQ, MoE GEMV, MXFP8 columns, HC cuBLAS 16: planner patterns), BF16 head sharing by row count, on-demand n-gram row gather (`ple_rows.h`), prefill capture policy | — |
+| Qwen3.8 | Groups of consecutive owners while rows fit 16 (`group_rows`), 2,048-aligned joined reads (`joined_read_align`), state backed through that alignment before the step (an owner out of capacity there steps alone at 256 rather than being refused), two futures and prepare ahead, state-only cuts; joined draft and verify waves; per-product joined limits (draft head 8, VecQ, MoE GEMV, MXFP8 columns, HC cuBLAS 16: planner patterns), BF16 head sharing by row count, on-demand n-gram row gather (`ple_rows.h`), prefill capture policy | — |
 | DeepSeek V4 | Total wave rows ≤ 16 (`max_step_rows`), joined row-local work with per-owner state (`planner/owner_products.h`), scalar prefill (`join_prefill` false), two futures and prepare ahead, state-only cuts; joined drafts and verifies (decoding modes); float products over groups of whole owners fitting 8 columns and `SetVecQOneToken` for one-row waves (planner, from the shape); HCA per-position patch (`Position`, uncapturable `PlanKey::capturable = false`) | — |
 | Qwen2, Llama, Mistral | Generic pre-norm dense decoder (`embedding.token`, `attention.dense` with GQA, RoPE / `rope_freqs` / YaRN, `ffn.glu` (`silu`), `norm.rms`, `head.linear` tied or untied) across GGUF, plain (unquantized) safetensors and EXL3 (`spec/mappings/qwen2.h`), served via `kDefaultServingRecipe` | Served and verified only for Llama 3.2 1B (GGUF) and Qwen2.5 0.5B (GGUF FP16, EXL3); Mistral and the safetensors/EXL3 forms of Llama are synthetic-source tested only. HF-quantized safetensors (AWQ, GPTQ, compressed-tensors, ModelOpt, MLX) have no import path for these families. Qwen2 serves single-owner (`max_decode_rows 1`, `owners_alone`) |
 
@@ -1081,6 +1031,10 @@ checkpoint container or quantization family:
      `tests/unit/import_normalize_test.cc`, `tests/unit/import_writer_test.cc`,
      and `tests/unit/artifact_v1_test.cc`, and adversarial malformed-input tests
      in `tests/unit/import_adversarial_test.cc`.
+   - Add a representative seed input (with its `.license` sidecar) to
+     `tests/unit/data/import_fuzz/`, wire the reader through
+     `benchmarks/import_fuzz.cc`, and verify that `llmp_import_fuzz --corpus`
+     and a bounded fuzz run pass.
 
 ## Where the long-context work goes
 

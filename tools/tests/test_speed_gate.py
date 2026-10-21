@@ -711,27 +711,18 @@ class Inputs(unittest.TestCase):
         for name, family in gate.FAMILIES.items():
             old = gate.arm_template(family, None, "old")
             new = gate.arm_template(family, None, "new")
-            self.assertEqual(old, gate.config_template(family))  # the frozen baseline's
-            self.assertIn(f'installed = "{{share}}/{family.store}"', old)
-            self.assertIn('installed = "{share}/m36-v1-artifacts"', new)
-            if name == "image":  # the v1 composition in place of the v0 one
+            self.assertEqual(old, gate.config_template(family))
+            self.assertEqual(old, new, name)
+            self.assertIn('installed = "{share}/u2-v1-artifacts"', old)
+            if name == "image":
                 self.assertIn(gate.IMAGE_V1, new)
-                self.assertIn(gate.IMAGE, old)
                 continue
-            self.assertNotEqual(old, new)
-            # The same settings, only the artifact and drafter IDs differ.
-            ids = {"artifact", "drafter"}
-            keep = lambda text: [line for line in text.splitlines()
-                                 if line.split(" = ")[0] not in ids
-                                 and not line.startswith("installed")]
-            self.assertEqual(keep(old), keep(new), name)
             self.assertEqual(gate.arm_template(family, None, "new"),
                              gate.config_template(family, "new"))
         v1 = gate.config_template(gate.FAMILIES["qwen38"], "new")
         self.assertIn(f'artifact = "{gate.QWEN_V1}"', v1)
         self.assertIn(f'drafter = "{gate.QWEN_MTP_V1}"', v1)
-        self.assertNotIn(gate.QWEN_V0, v1)
-        self.assertIn(gate.DSV4_V0, gate.config_template(gate.FAMILIES["deepseek"]))
+        self.assertIn(gate.DSV4_V1, gate.config_template(gate.FAMILIES["deepseek"]))
         self.assertIn(f'drafter = "{gate.DSPARK_V1}"',
                       gate.config_template(gate.FAMILIES["deepseek"], "new"))
         self.assertIn(gate.GEMMA31_V1, gate.config_text(
@@ -749,7 +740,7 @@ class Inputs(unittest.TestCase):
         text = gate.config_text(gate.FAMILIES["qwen38"], pathlib.Path("/s"), pathlib.Path("/d"),
                                 18114)
         self.assertIn('data_dir = "/d"', text)
-        self.assertIn('installed = "/s/m3-artifacts"', text)
+        self.assertIn('installed = "/s/u2-v1-artifacts"', text)
         self.assertIn('bind = ["loopback"]', text)
         self.assertIn("port = 18114", text)
         self.assertIn('tokenizer = "/s/models/', text)

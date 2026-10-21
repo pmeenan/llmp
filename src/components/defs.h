@@ -63,7 +63,6 @@ const ComponentDef& AttentionQsa();
 const ComponentDef& SideNgram();
 const ComponentDef& ResidualPle();
 const ComponentDef& EmbeddingMtp();
-const ComponentDef& EmbeddingMtpRepeat();
 const ComponentDef& AttentionMqa();
 const ComponentDef& SideHash();
 const ComponentDef& EmbeddingInject();

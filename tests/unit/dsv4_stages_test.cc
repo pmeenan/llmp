@@ -56,12 +56,12 @@
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/executor.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
@@ -664,22 +664,6 @@ TEST_F(Dsv4StagesTest, DenseQ8PairsShareOneQuantizationExactly) {
       EXPECT_LE(launch().scratch_peak().value(), *scratch) << what;
       ExpectSameBytes(Download(a), Download(ref1), what + " first");
       ExpectSameBytes(Download(b), Download(ref2), what + " second");
-      // The planner pairs them only when asked, as one step at the first's place.
-      const std::array<ggml_tensor*, 2> nodes = {a, b};
-      auto choices = kg::DeviceChoicesOf(launch());
-      const auto separate = kg::PlanGraph(nodes, false, choices);
-      ASSERT_TRUE(separate.has_value()) << what;
-      ASSERT_EQ(separate->steps.size(), 2U) << what;
-      EXPECT_EQ(separate->steps[0].implementation, kg::kMulMatQ);
-      choices.dense_pair = true;
-      const auto paired = kg::PlanGraph(nodes, false, choices);
-      ASSERT_TRUE(paired.has_value()) << what;
-      ASSERT_EQ(paired->steps.size(), 1U) << what;
-      EXPECT_EQ(paired->steps[0].implementation, kg::kMulMatQPairDense);
-      EXPECT_EQ(paired->steps[0].nodes, (std::vector<ggml_tensor*>{a, b}));
-      const auto planned = kg::PlanScratch(launch(), *paired);
-      ASSERT_TRUE(planned.has_value()) << what;
-      EXPECT_EQ(*planned, *scratch) << what;
     }
     auto* narrow = ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, 63);
     EXPECT_FALSE(
@@ -797,36 +781,6 @@ TEST_F(Dsv4StagesTest, TheIq2PairWritesItsActivationAndTheDownProductsInputExact
     } else {
       EXPECT_FALSE(kg::MulMatIdQPairGluQ8(launch(), up, gate, glu).has_value());
     }
-
-    // Selection: the plain compact plan; with the stage mechanisms, the
-    // write-back with D2R taking the Q2_K down product; without D2R, the
-    // quantizing write-back and the prequantized down.
-    const std::array<ggml_tensor*, 4> nodes = {gate, up, glu, down};
-    auto choices = kg::DeviceChoicesOf(launch());
-    choices.pair_experts = true;
-    choices.compact_experts = true;
-    const auto names = [&](const kg::DeviceChoices& device) {
-      auto plan = kg::PlanGraph(nodes, false, device);
-      EXPECT_TRUE(plan.has_value()) << (plan ? "" : plan.error().detail);
-      std::vector<std::string_view> out;
-      if (plan) {
-        for (const auto& step : plan->steps) {
-          out.push_back(step.implementation);
-        }
-        EXPECT_TRUE(kg::PlanScratch(launch(), *plan).has_value());
-      }
-      return out;
-    };
-    using Names = std::vector<std::string_view>;
-    EXPECT_EQ(names(choices),
-              (Names{kg::kMulMatIdQPairCompact, kg::kSwiGluClampName, kg::kMulMatIdQCompact}));
-    kg::SetDsv4PrefillStages(choices, true);
-    EXPECT_EQ(names(choices), (Names{kg::kMulMatIdQPairGlu, kg::kMulMatIdQ2D2r}));
-    choices.d2r_experts = false;
-    EXPECT_EQ(names(choices), occ2 ? (Names{kg::kMulMatIdQPairGluQ8, kg::kMulMatIdQCompactPrequant})
-                                   : (Names{kg::kMulMatIdQPairGlu, kg::kMulMatIdQCompact}));
-    choices.compact_experts = false;
-    EXPECT_EQ(names(choices), (Names{kg::kMulMatIdQPair, kg::kSwiGluClampName, kg::kMulMatIdQ}));
 
     // An activation over the pair's operands is refused before any launch.
     auto alias = *glu;

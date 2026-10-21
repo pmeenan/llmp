@@ -49,10 +49,10 @@
 #include "base/bytes.h"
 #include "expected_error.h"
 #include "ggml.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "launch_recorder.h"
@@ -458,13 +458,6 @@ TEST_F(GgmlExl3OpsTest, CommonHeadAttentionMatchesCpuWithGqaMasksAndOddKvTails) 
                 }
               }
             EXPECT_LT(std::sqrt(error / norm), .003);
-            const std::array nodes{node};
-            const auto selected = kg::PlanGraph(nodes, false, {});
-            ASSERT_TRUE(selected);
-            EXPECT_EQ(selected->steps.front().implementation,
-                      cells == 256 && head == 64 ? "ggml.flash_attn_ext.vec"
-                      : vector                   ? "ggml.flash_attn_ext.vec_common"
-                                                 : "ggml.flash_attn_ext.mma_common");
           }
 }
 

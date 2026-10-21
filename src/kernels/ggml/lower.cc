@@ -45,12 +45,12 @@
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/graph_read_index.h"
 #include "kernels/ggml/kv_quant.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/moe_layout.h"
 #include "kernels/ggml/mxfp8_cutlass.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
@@ -59,6 +59,190 @@
 #include "planner/select.h"
 
 namespace llmp::kernels::ggml {
+
+std::vector<execution::Choice> GraphPlan::Choices() const {
+  std::vector<execution::Choice> choices;
+  choices.reserve(steps.size());
+  for (const PlanStep& step : steps) {
+    choices.push_back(
+        {.operation = step.operation, .implementation = std::string(step.implementation)});
+  }
+  return choices;
+}
+
+bool LaunchesNothing(const ggml_tensor* node) {
+  return ggml_is_empty(node) || node->op == GGML_OP_RESHAPE || node->op == GGML_OP_TRANSPOSE ||
+         node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_NONE;
+}
+
+void BindViews(std::span<ggml_tensor* const> nodes) {
+  for (ggml_tensor* node : nodes) {
+    if (node->view_src != nullptr) {
+      TensorArena::Bind(node,
+                        reinterpret_cast<std::uintptr_t>(node->view_src->data) + node->view_offs);
+    }
+  }
+}
+
+void AssignLanes(GraphPlan& plan, const LaneTags& tags,
+                 const std::function<bool(std::string_view)>& on_stream) {
+  plan.regions.clear();
+  if (tags.empty()) {
+    return;
+  }
+  const auto stays = [&](std::string_view implementation) {
+    return on_stream ? on_stream(implementation)
+                     : implementation == kMulMatCublas || implementation == kGemmBf16Name ||
+                           implementation == kGemmBf16LtName;
+  };
+  std::unordered_map<const ggml_tensor*, LaneTag> tag;
+  tag.reserve(tags.size());
+  for (const auto& [tensor, t] : tags) {
+    tag.emplace(tensor, t);
+  }
+  // Grouping never joins separately scheduled regions/lanes. Split those
+  // groups before deriving region indices, retaining the original stores.
+  const auto tag_of = [&](const ggml_tensor* node) {
+    const auto found = tag.find(node);
+    return found == tag.end() ? LaneTag{} : found->second;
+  };
+  const auto split_group = [&](const PlanStep& step) {
+    if ((step.implementation != kSetRowsGroupedName &&
+         step.implementation != kSetRowsQuantGroupName) ||
+        step.nodes.empty())
+      return false;
+    const auto first = tag_of(step.nodes.front());
+    return std::ranges::any_of(step.nodes, [&](const auto* node) {
+      const auto next = tag_of(node);
+      return next.lane != first.lane || next.region != first.region;
+    });
+  };
+  if (std::ranges::any_of(plan.steps, split_group)) {
+    std::vector<PlanStep> separated;
+    separated.reserve(plan.steps.size());
+    for (auto& step : plan.steps) {
+      if (split_group(step)) {
+        const bool quantized = step.implementation == kSetRowsQuantGroupName;
+        const std::string_view grouped = quantized ? kSetRowsQuantGroupName : kSetRowsGroupedName;
+        const std::string_view single = quantized ? kSetRowsQuantName : kSetRowsName;
+        for (std::size_t first = 0; first < step.nodes.size();) {
+          const auto lane = tag_of(step.nodes[first]);
+          auto end = first + 1;
+          while (end < step.nodes.size()) {
+            const auto next = tag_of(step.nodes[end]);
+            if (next.lane != lane.lane || next.region != lane.region) break;
+            ++end;
+          }
+          separated.push_back({.operation = llmp::ir::Primitive(llmp::ir::Op::kCacheStore),
+                               .implementation = end - first > 1 ? grouped : single,
+                               .nodes = {step.nodes.begin() + static_cast<std::ptrdiff_t>(first),
+                                         step.nodes.begin() + static_cast<std::ptrdiff_t>(end)},
+                               .lane = 0});
+          first = end;
+        }
+      } else {
+        separated.push_back(std::move(step));
+      }
+    }
+    plan.steps = std::move(separated);
+  }
+  std::map<std::uint32_t, GraphPlan::Region> spans;
+  for (std::size_t s = 0; s < plan.steps.size(); ++s) {
+    PlanStep& step = plan.steps[s];
+    step.lane = 0;
+    for (const ggml_tensor* node : step.nodes) {
+      const auto found = tag.find(node);
+      if (found == tag.end() || found->second.region == 0) {
+        continue;
+      }
+      const LaneTag& t = found->second;
+      const auto at = static_cast<std::uint32_t>(s);
+      const auto [it, added] = spans.try_emplace(t.region, GraphPlan::Region{at, at});
+      if (!added) {
+        it->second.first = std::min(it->second.first, at);
+        it->second.last = std::max(it->second.last, at);
+      }
+      if (t.lane <= kMaxLanes && !stays(step.implementation)) {
+        step.lane = t.lane;
+      }
+      break;
+    }
+  }
+  std::vector<GraphPlan::Region> ordered;
+  ordered.reserve(spans.size());
+  for (const auto& [region, span] : spans) {
+    ordered.push_back(span);
+  }
+  std::ranges::sort(ordered, {}, &GraphPlan::Region::first);
+  for (const GraphPlan::Region& span : ordered) {
+    if (!plan.regions.empty() && span.first <= plan.regions.back().last) {
+      plan.regions.back().last = std::max(plan.regions.back().last, span.last);
+    } else {
+      plan.regions.push_back(span);
+    }
+  }
+  // A lane step outside every region would have no fork or join.
+  std::size_t r = 0;
+  for (std::size_t s = 0; s < plan.steps.size(); ++s) {
+    while (r < plan.regions.size() && plan.regions[r].last < s) {
+      ++r;
+    }
+    if (r == plan.regions.size() || s < plan.regions[r].first) {
+      plan.steps[s].lane = 0;
+    }
+  }
+}
+
+std::vector<std::uint8_t> LaneOrder::Before(std::uint8_t lane,
+                                            std::span<const ggml_tensor* const> reads,
+                                            std::span<const ggml_tensor* const> writes) const {
+  std::array<bool, kLanes> need{};
+  const auto after = [&](std::uint8_t other, std::uint64_t at) {
+    if (other != lane && at != 0 && seen_[lane][other] < at) {
+      need[other] = true;
+    }
+  };
+  for (const ggml_tensor* t : reads) {
+    if (const auto found = access_.find(t); found != access_.end()) {
+      after(found->second.writer, found->second.written);
+    }
+  }
+  for (const ggml_tensor* t : writes) {
+    if (const auto found = access_.find(t); found != access_.end()) {
+      after(found->second.writer, found->second.written);
+      for (std::size_t other = 0; other < kLanes; ++other) {
+        after(static_cast<std::uint8_t>(other), found->second.read[other]);
+      }
+    }
+  }
+  std::vector<std::uint8_t> out;
+  for (std::size_t other = 0; other < kLanes; ++other) {
+    if (need[other]) {
+      out.push_back(static_cast<std::uint8_t>(other));
+    }
+  }
+  return out;
+}
+
+void LaneOrder::Waited(std::uint8_t waiter, std::uint8_t on) { seen_[waiter][on] = queued_[on]; }
+
+void LaneOrder::Queued(std::uint8_t lane, std::span<const ggml_tensor* const> reads,
+                       std::span<const ggml_tensor* const> writes) {
+  const std::uint64_t at = ++queued_[lane];
+  for (const ggml_tensor* t : reads) {
+    access_[t].read[lane] = at;
+  }
+  // A write waited for every earlier reader and writer on other lanes, and
+  // follows its own lane's in order: only it is outstanding now.
+  for (const ggml_tensor* t : writes) {
+    Access& a = access_[t];
+    a = Access{};
+    a.writer = lane;
+    a.written = at;
+  }
+}
+
+void LaneOrder::Reset() { access_.clear(); }
 namespace {
 
 namespace co = llmp::components;
@@ -3049,7 +3233,14 @@ std::expected<void, KernelFailure> Lowering::EmitSchedule() {
     if (node->op == GGML_OP_MUL_MAT && node->op_params[1] == GGML_HINT_SRC0_IS_HADAMARD)
       return kMulMatHadamard;
     if (device_.row_invariant || plan_.owner_row_invariant) {
-      if (node->op == GGML_OP_MUL_MAT_ID) return kMulMatIdVecQRows;
+      if (node->op == GGML_OP_MUL_MAT_ID) {
+        if (device_.row_invariant && node->ne[2] > kRowInvariantColumns)
+          return Refused("a row-invariant plan takes expert products of at most 8 tokens");
+        return kMulMatIdVecQRows;
+      }
+      if (device_.row_invariant &&
+          (node->src[1] == nullptr || node->src[1]->ne[1] > kRowInvariantColumns))
+        return Refused("a row-invariant plan takes products of at most 8 columns");
       return IsQuantizedWeightType(node->src[0]->type) ? kMulMatVecQRows : kMulMatVecFRows;
     }
     if (IsQuantizedWeightType(node->src[0]->type)) {

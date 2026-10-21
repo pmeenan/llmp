@@ -43,15 +43,17 @@
 #include "base/bytes.h"
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/fusion.h"
-#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/moe_cutlass.h"
 #include "kernels/ggml/moe_layout.h"
+#include "kernels/ggml/ops_ext.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
 #include "providers/cuda/cuda_device_execution.h"
@@ -292,9 +294,51 @@ class Qwen38MoeTest : public ::testing::Test {
       }
     }
     kg::BindViews(nodes);
-    auto plan = kg::PlanGraph(nodes, false, kg::DeviceChoicesOf(launch()));
-    ASSERT_TRUE(plan.has_value()) << plan.error().detail;
-    auto bound = kg::BoundGraph::Bind(*registry_, *plan);
+    kg::GraphPlan plan;
+    for (ggml_tensor* node : nodes) {
+      if (kg::LaunchesNothing(node)) continue;
+      std::string_view name;
+      if (node->op == GGML_OP_MUL_MAT_ID) {
+        const auto path = kg::SelectMulMatQ(launch(), node);
+        ASSERT_TRUE(path.has_value()) << path.error().detail;
+        name = *path == kg::QuantMulMatPath::kVector ? kg::kMulMatIdVecQ : kg::kMulMatIdQ;
+      } else if (node->op == GGML_OP_CUSTOM) {
+        switch (kg::LlmpOpOf(node)) {
+          case kg::LlmpOp::kMoeCombine:
+            name = kg::kMoeCombineName;
+            break;
+          case kg::LlmpOp::kMoeCombineSorted:
+            name = kg::kMoeCombineSortedName;
+            break;
+          case kg::LlmpOp::kMoeGemm:
+            name = kg::kMoeGemmName;
+            break;
+          case kg::LlmpOp::kMoeGemv:
+            name = kg::kMoeGemvName;
+            break;
+          case kg::LlmpOp::kMoeGlu:
+            name = kg::kMoeGluName;
+            break;
+          case kg::LlmpOp::kMoeGluQuantize:
+            name = kg::kMoeGluQuantizeName;
+            break;
+          case kg::LlmpOp::kMoeQuantize:
+            name = kg::kMoeQuantizeName;
+            break;
+          case kg::LlmpOp::kMoeRoute:
+            name = kg::kMoeRouteName;
+            break;
+          default:
+            break;
+        }
+      }
+      ASSERT_FALSE(name.empty()) << ggml_op_name(node->op);
+      const auto index = registry_->Find(name);
+      ASSERT_TRUE(index.has_value()) << name;
+      plan.steps.push_back(
+          {.operation = registry_->at(*index).operation, .implementation = name, .nodes = {node}});
+    }
+    auto bound = kg::BoundGraph::Bind(*registry_, plan);
     ASSERT_TRUE(bound.has_value()) << bound.error().detail;
     auto ran = bound->Run(launch());
     ASSERT_TRUE(ran.has_value()) << ran.error().detail;

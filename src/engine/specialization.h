@@ -30,7 +30,6 @@ struct CommitBuffer {
 // runner at setup, without family-named source inspection methods.
 struct StageExecutionFacts {
   bool uses_side_rows = false;
-  bool joined_repeat_pending = false;
   std::function<std::expected<std::vector<CommitBuffer>, std::string>(std::uint32_t max_rows)>
       commit_buffers;
 };

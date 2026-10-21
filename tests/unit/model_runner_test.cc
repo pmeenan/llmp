@@ -39,7 +39,6 @@
 #include <utility>
 #include <vector>
 
-#include "artifact/format_map.h"
 #include "base/bytes.h"
 #include "base/json.h"
 #include "components/step.h"
@@ -201,105 +200,29 @@ TEST(PagedNodeWorkspaceTest,
   }
 }
 
-// Exercise the exact pre-allocation source gate with the physical v0 table
-// representation: 37 rows of 90 U8 bytes encode 160 NVFP4 values per row.
-TEST(RowTableSourceTest, CompletePhysicalPartsMustReconstructTheLogicalTable) {
+// Exercise the exact pre-allocation source gate for stored v1 table resources.
+TEST(RowTableSourceTest, StoredV1KeepsExactFormatAndPartChecks) {
   namespace ar = llmp::artifact;
   namespace fm = llmp::format;
-  std::array<ar::Resource, 2> resources{};
-  resources[0].repr = {.family = ar::Family::kPlain,
-                       .type = "U8",
-                       .dims = {37, 90},
-                       .role = {},
-                       .codebook = {},
-                       .bytes = 3330,
-                       .readable = 3330};
-  resources[1].repr = {.family = ar::Family::kPlain,
-                       .type = "F32",
-                       .dims = {1},
-                       .role = {},
-                       .codebook = {},
-                       .bytes = 4,
-                       .readable = 4};
-  for (auto& resource : resources) {
-    resource.bytes = Bytes(resource.repr.bytes);
-    auto physical = ar::FormatOf(resource.repr);
-    ASSERT_TRUE(physical);
-    resource.format = *physical;
-  }
-  const std::array parts{ar::V0Part{fm::PartRole::kData, &resources[0].repr},
-                         ar::V0Part{fm::PartRole::kTensorScale, &resources[1].repr}};
-  auto logical = ar::Assemble(fm::Encoding::kNvfp4, fm::Layout::kRowInterleaved, parts);
-  ASSERT_TRUE(logical);
-  EXPECT_EQ(logical->shape.ne[0], 160U);
-  EXPECT_EQ(logical->shape.ne[1], 37U);
-  EXPECT_NE(*resources[0].format, *logical);
-  en::RunnerConfig::RowTable table{
-      .weight = {},
-      .resource = 0,
-      .format = *logical,
-      .rows_per_token = 2,
-      .source_parts = {{fm::PartRole::kData, 0}, {fm::PartRole::kTensorScale, 1}}};
-  EXPECT_TRUE(en::CheckRowTableSource(table, 0, resources));
-  auto bad = table;
-  bad.source_parts.clear();
-  EXPECT_FALSE(en::CheckRowTableSource(bad, 0, resources));
-  bad = table;
-  bad.source_parts.pop_back();
-  EXPECT_FALSE(en::CheckRowTableSource(bad, 0, resources));
-  bad = table;
-  bad.source_parts.push_back(bad.source_parts.front());
-  EXPECT_FALSE(en::CheckRowTableSource(bad, 0, resources));
-  bad = table;
-  bad.source_parts[1].second = 99;
-  EXPECT_FALSE(en::CheckRowTableSource(bad, 0, resources));
-  bad = table;
-  bad.source_parts[1].second = 0;
-  EXPECT_FALSE(en::CheckRowTableSource(bad, 0, resources));
-  bad = table;
-  bad.resource = 1;
-  EXPECT_FALSE(en::CheckRowTableSource(bad, 0, resources));
-  bad = table;
-  --bad.format.shape.ne[1];
-  EXPECT_FALSE(en::CheckRowTableSource(bad, 0, resources));
-  resources[1].repr.type = "I32";
-  EXPECT_FALSE(en::CheckRowTableSource(table, 0, resources));
-  resources[1].repr.type = "F32";
-  resources[0].bytes = Bytes(3329);
-  EXPECT_FALSE(en::CheckRowTableSource(table, 0, resources));
-}
-
-TEST(RowTableSourceTest, OrdinaryV0AndStoredV1KeepExactFormatAndPartChecks) {
-  namespace ar = llmp::artifact;
-  namespace fm = llmp::format;
+  const fm::TensorFormat format{.encoding = fm::Encoding::kF32,
+                                .shape = fm::Shape{.ne = {8, 3, 1, 1}, .rank = 2}};
   ar::Resource resource;
-  resource.repr = {.family = ar::Family::kPlain,
-                   .type = "F32",
-                   .dims = {3, 8},
-                   .role = {},
-                   .codebook = {},
-                   .bytes = 96,
-                   .readable = 96};
-  auto format = ar::FormatOf(resource.repr);
-  ASSERT_TRUE(format);
-  resource.format = *format;
+  resource.format = format;
   resource.bytes = Bytes(96);
   const std::span resources(&resource, 1);
-  en::RunnerConfig::RowTable table{.weight = {}, .format = *format, .rows_per_token = 1};
-  for (const std::uint32_t version : {0U, 1U}) {
-    EXPECT_TRUE(en::CheckRowTableSource(table, version, resources));
-    auto bad = table;
-    bad.format.encoding = fm::Encoding::kI32;
-    EXPECT_FALSE(en::CheckRowTableSource(bad, version, resources));
-    bad = table;
-    bad.part = fm::PartRole::kBlockScales;
-    EXPECT_FALSE(en::CheckRowTableSource(bad, version, resources));
-    bad = table;
-    bad.resource = 1;
-    EXPECT_FALSE(en::CheckRowTableSource(bad, version, resources));
-  }
+  en::RunnerConfig::RowTable table{.weight = {}, .format = format, .rows_per_token = 1};
+  EXPECT_TRUE(en::CheckRowTableSource(table, 1, resources));
+  EXPECT_FALSE(en::CheckRowTableSource(table, 0, resources));
+  auto bad = table;
+  bad.format.encoding = fm::Encoding::kI32;
+  EXPECT_FALSE(en::CheckRowTableSource(bad, 1, resources));
+  bad = table;
+  bad.part = fm::PartRole::kBlockScales;
+  EXPECT_FALSE(en::CheckRowTableSource(bad, 1, resources));
+  bad = table;
+  bad.resource = 1;
+  EXPECT_FALSE(en::CheckRowTableSource(bad, 1, resources));
   table.source_parts = {{fm::PartRole::kData, 0}};
-  EXPECT_TRUE(en::CheckRowTableSource(table, 0, resources));
   EXPECT_FALSE(en::CheckRowTableSource(table, 1, resources));
 }
 

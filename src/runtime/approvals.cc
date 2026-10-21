@@ -648,7 +648,7 @@ constexpr std::array kApprovals{
              .tensors = 38,
              .arrays = 4,
              .inventory = "41743b0b88b63e1c6b48fdee328f06cb20f8442d86840369526287f6a98f1bfc",
-             .spec = "9465388a822375a1973526bcbeb8104072cedc39a7f1e4f4a3438c466d06450e",
+             .spec = "f85a3348251a8ffe2b8d0412a9e6ca12ec7b548f53d5ba17c61d88a83ad99a37",
              .max_context = 262144,
              .max_slots = kAnyOwners,
              .policy = ApprovedPolicy::kNone,

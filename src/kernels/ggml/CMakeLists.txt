@@ -7,8 +7,8 @@
 #   llmp_ggml_tensors  GGML tensor descriptors over llmpalooza memory
 #                        (tensors.h), the implementations' operand checks
 #                        (validate.h), upstream's fusion gates (fusion.h),
-#                        graph planning and activation placement
-#                        (graph_plan.h), the module's capabilities
+#                        lowered step planning (plan_step.h), the module's
+#                        capabilities (capabilities.h) and the lowering of planned IR
 #                        (capabilities.h) and the lowering of planned IR
 #                        steps (lower.h). Every profile.
 #   llmp_ggml_kernels  the K-C launch context (launch.h), llmpalooza's cuBLAS
@@ -36,7 +36,7 @@ else()
   set(architectures 121a-real)
 endif()
 list(JOIN architectures "," architecture_text)
-add_library(llmp_ggml_tensors STATIC float_route.cc fusion.cc graph_plan.cc llmp_ops.cc
+add_library(llmp_ggml_tensors STATIC float_route.cc fusion.cc llmp_ops.cc
                                        tensors.cc validate.cc
                                        validate_ext.cc)
 target_include_directories(llmp_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
@@ -196,7 +196,7 @@ if(LLMP_CUDA)
                    executor.h fattn.cu fattn_mma.cu
                    fattn_mma.h fattn_mma_common.cu fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu fattn_mma_q16.cuh
                    fattn_mma_shape.cuh fattn_mma_shape_body.cuh fattn_owner.h fattn_owner.cc fattn_owner.cu fattn_owner_kernel.cuh fattn_owner_partial_kernel.cuh fusion.cc
-                   fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
+                   fusion.h ggml_support.cu ggml_support.h plan_step.h implementations.cc
                    implementations.h llmp_fused.cu llmp_moe.cu llmp_ops.cc llmp_ops.cu
                    llmp_ops.h rounded_index_score.h launch.cu launch.h scratch_stack.h
                    mmvq_rows.cu module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
@@ -204,7 +204,7 @@ if(LLMP_CUDA)
                    conv2d_tiled.h conv2d_tiled.cc conv2d_tiled.cu mul_mat_cublas_internal.h
                    attention_f32.h attention_f32.cc attention_f32.cu
                    mul_mat_cublas.cu mul_mat_q.cu mul_mat_q2_d2r.cu ops.cu ops.h ops_ext.cu qsa_sparse.cu
-                   ops_ext.h qwen38_commit.h
+                   ops_ext.h
                    tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
                    validate_util.h shared_q8.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"

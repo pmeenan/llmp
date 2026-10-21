@@ -52,7 +52,6 @@ class NativeExpertSlabTest : public testing::TestWithParam<bool> {
 TEST_P(NativeExpertSlabTest, NativeMixedBlocksHaveExactAlignedNonoverlappingExpertPitch) {
   auto artifact = Open();
   ASSERT_TRUE(artifact) << (artifact ? "" : artifact.error().ToString());
-  for (const auto& array : artifact->expert_arrays()) EXPECT_TRUE(array.repr.type.empty());
   const auto slabs = en::ExpertSlabsOf(*artifact, 256);
   ASSERT_TRUE(slabs) << (slabs ? "" : slabs.error());
   ASSERT_EQ(slabs->slabs.size(), 1U);

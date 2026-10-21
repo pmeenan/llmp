@@ -647,15 +647,6 @@ Status ModelRunner::ContinueRouted(RunPath& path, std::shared_ptr<StepTransactio
             return scheduler::JobResult::kUnknown;
           }
         }
-      if (final) {
-        if (!transaction) return scheduler::JobResult::kUnknown;
-        if (auto tail = transaction->QueueCompoundTail(native); !tail) {
-          flight->unknown = true;
-          flight->continuation.result = std::unexpected(
-              kn::StepFailure{.error = kn::StepError::kUnknown, .detail = tail.error()});
-          return scheduler::JobResult::kUnknown;
-        }
-      }
       return scheduler::JobResult::kQueued;
     };
     if (!needs_lease && !node_.InRequest(stream_))
@@ -666,7 +657,6 @@ Status ModelRunner::ContinueRouted(RunPath& path, std::shared_ptr<StepTransactio
                                             stream_, &retired, flight->capacity)
                     : node_.Job({}, queue_continuation, "routed selected continuation", stream_, {},
                                 &retired);
-    if (final && transaction) transaction->CompoundTailRetired(retired);
     if (!posted || flight->unknown || !flight->continuation.result ||
         flight->execution.launch()->faulted()) {
       // No false inference from an error to retirement. The retained flight

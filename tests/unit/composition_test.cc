@@ -1,11 +1,10 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The v0 composition reader (artifact/composition.h, D-089): a valid
-// composition built here as the prototype writes it (import_m3.py compose),
-// and each rule the prototype's verify_composition names, broken one at a
-// time. The real Qwen-Image-2.1 composition is opened where it is installed
-// (a Spark) and skipped elsewhere.
+// The composition reader (artifact/composition.h, D-089, D-113): a valid
+// v1 composition built here, and each rule broken one at a time. The real
+// Qwen-Image-2.1 composition is opened where it is installed (a Spark) and
+// skipped elsewhere.
 
 #include "artifact/composition.h"
 
@@ -47,8 +46,8 @@ void Write(const fs::path& path, std::string_view bytes) {
 // The pieces of a composition's manifest; Manifest() writes them in
 // canonical form (sorted keys, no whitespace, one newline).
 struct Spec {
-  std::string format = "jitllm-composition";
-  std::string version = "0";
+  std::string format = "llmp-composition";
+  std::string version = "1";
   std::string experimental = "true";
   std::string architecture = "QwenImage21Pipeline";
   std::vector<std::pair<std::string, std::string>> components = {
@@ -75,7 +74,7 @@ struct Spec {
                              sources.empty() ? "" : ",", bytes.size(), name, Hex(bytes));
     }
     return std::format(
-        R"({{"components":[{}],"converter":{{"name":"artifact-layout/import_m3.py","version":"m3-2+layout-a0d1980a9eddd1ad"}},"experimental":{},{}"files":[{}],"format":"{}","format_version":{},"model":{{"architecture":"{}"}},"source":[{}]}})"
+        R"({{"components":[{}],"experimental":{},{}"files":[{}],"format":"{}","format_version":{},"importer":{{"build":"unknown","name":"llmp-import","options_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","version":"0.0.0"}},"model":{{"architecture":"{}"}},"source":[{}]}})"
         "\n",
         components_json, experimental, extra_key, files, format, version, architecture, sources);
   }
@@ -133,13 +132,17 @@ TEST_F(CompositionTest, OpensAValidCompositionAndItsKeptFiles) {
   EXPECT_EQ(c->Find("vae"), nullptr);
   EXPECT_EQ(c->Metadata("scheduler_config.json").value_or(""), R"({"shift": 1})");
   EXPECT_FALSE(c->Metadata("manifest.json").has_value());
-  EXPECT_EQ(c->converter().version, "m3-2+layout-a0d1980a9eddd1ad");
+  EXPECT_EQ(c->converter().name, "llmp-import");
+  EXPECT_EQ(c->converter().version, "0.0.0");
 }
 
-TEST_F(CompositionTest, V0KeepsItsLegacyMetadataNameRules) {
-  Spec spec;
-  spec.kept[1].first = "scheduler config.json";
-  EXPECT_EQ(RuleOf(Build(spec)), "schema");
+TEST_F(CompositionTest, RefusesV0CompositionFormatAndVersion) {
+  Spec v0_format;
+  v0_format.format = "jitllm-composition";
+  EXPECT_EQ(RuleOf(Build(v0_format)), "format");
+  Spec v0_version;
+  v0_version.version = "0";
+  EXPECT_EQ(RuleOf(Build(v0_version)), "unsupported-version");
 }
 
 TEST_F(CompositionTest, RefusesEachBrokenRuleByName) {
@@ -176,7 +179,7 @@ TEST_F(CompositionTest, RefusesEachBrokenRuleByName) {
   wrong_format.format = "jitllm-artifact";
   EXPECT_EQ(RuleOf(Build(wrong_format)), "format");
   Spec version;
-  version.version = "1";
+  version.version = "0";
   EXPECT_EQ(RuleOf(Build(version)), "unsupported-version");
   EXPECT_EQ(RuleOf(Build({},
                          [](const fs::path& r) {
@@ -232,9 +235,6 @@ TEST_F(CompositionTest, RefusesEachBrokenRuleByName) {
   }
   EXPECT_EQ(RuleOf(Build(many)), "schema");
   // The kept files.
-  Spec no_index;
-  no_index.kept = {{"scheduler_config.json", "{}"}};
-  EXPECT_EQ(RuleOf(Build(no_index)), "file-set");
   EXPECT_EQ(RuleOf(Build({},
                          [](const fs::path& r) {
                            Write(r / "meta" / "scheduler_config.json", R"({"shift": 2})");
@@ -251,23 +251,30 @@ TEST_F(CompositionTest, RefusesEachBrokenRuleByName) {
 }
 
 // The installed Qwen-Image-2.1 composition and its three components, where
-// the M3 store is (docs/experiments/qwen-image-native).
+// the v1 store is (a Spark).
 TEST(InstalledComposition, QwenImage) {
   const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
-  const fs::path store = fs::path(home != nullptr ? home : "/") / ".local/share/llmp/m3-artifacts";
-  std::error_code error;
-  std::optional<fs::path> found;
-  for (const auto& entry : fs::directory_iterator(store, error)) {
-    if (entry.path().filename().string().size() == 64 &&
-        fs::exists(entry.path() / "meta" / "model_index.json") &&
-        !fs::exists(entry.path() / "index.json")) {
-      found = entry.path();
+  const fs::path base = fs::path(home != nullptr ? home : "/") / ".local/share/llmp";
+  fs::path store = base / "m36-v1-artifacts";
+  fs::path found = store / "95314e538fbe1251c23b46e1bb52f86dd34cfbf7f7509e80849472c2e2faa53a";
+  for (const char* id : {"95314e538fbe1251c23b46e1bb52f86dd34cfbf7f7509e80849472c2e2faa53a",
+                         "2170db12b295d308b4ec071765a8c1b9fb6651b45b210aeaa3976603de82e3ac"}) {
+    for (const char* sub : {"u2-v1-artifacts", "artifacts", "m36-v1-artifacts"}) {
+      std::error_code ec;
+      if (fs::is_directory(base / sub / id, ec)) {
+        store = base / sub;
+        found = store / id;
+        break;
+      }
     }
+    std::error_code ec;
+    if (fs::is_directory(found, ec)) break;
   }
-  if (!found) {
-    GTEST_SKIP() << "no installed composition in " << store;
+  std::error_code error;
+  if (!fs::is_directory(found, error)) {
+    GTEST_SKIP() << "no installed composition at " << found;
   }
-  auto c = OpenComposition(*found);
+  auto c = OpenComposition(found);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->architecture(), "QwenImage21Pipeline");
   for (const auto& component : c->components()) {

@@ -21,10 +21,6 @@ bool AddStorage(std::uint64_t& bytes, std::uint64_t count, std::uint64_t size) {
   return !__builtin_mul_overflow(count, size, &added) &&
          !__builtin_add_overflow(bytes, added, &bytes) && bytes <= PTRDIFF_MAX;
 }
-bool Same(const model::DraftCompanions& a, const model::DraftCompanions& b) {
-  return a.before == b.before && a.after == b.after &&
-         a.final_pending_first == b.final_pending_first;
-}
 }  // namespace
 
 std::expected<PromptBatchInventory, kn::ResourceFailure> PromptBatchInventory::Preview(
@@ -32,8 +28,7 @@ std::expected<PromptBatchInventory, kn::ResourceFailure> PromptBatchInventory::P
   auto root = runner.RetainedOwner();
   if (!root)
     return Refused(kn::ResourceError::kOwnership, "batch preview needs its retained runner");
-  if (target.empty() || !runner.CheckOwners(target.size()) ||
-      composer.stages() != runner.slots().stages() ||
+  if (target.empty() || composer.stages() != runner.slots().stages() ||
       composer.stages() > std::uint64_t{UINT16_MAX} + 1)
     return Refused(kn::ResourceError::kBounds, "batch preview has no exact admitted owners/stages");
   auto identity = runner.ExecutionIdentity();
@@ -43,7 +38,6 @@ std::expected<PromptBatchInventory, kn::ResourceFailure> PromptBatchInventory::P
         composer.read_align(s) != runner.slots().read_align(s) ||
         composer.frozen(s) != (s != 0 && model::ReadsFrozen(runner.slots().layout(s))))
       return Refused(kn::ResourceError::kBounds, "batch composer differs from its source layouts");
-  std::uint64_t consumers = 0;
   for (std::size_t i = 0; i < target.size(); ++i) {
     const auto& p = target[i];
     if (p.slot >= runner.slots().slots() || p.stage != 0 || p.rows == 0 ||
@@ -53,14 +47,6 @@ std::expected<PromptBatchInventory, kn::ResourceFailure> PromptBatchInventory::P
         std::ranges::any_of(target.first(i),
                             [&](const auto& prior) { return prior.slot == p.slot; }))
       return Refused(kn::ResourceError::kBounds, "batch target does not continue one active owner");
-    for (std::size_t s = 1; s < composer.stages(); ++s) {
-      const auto* progress = runner.slots().progress(p.slot, s);
-      if (!progress) continue;
-      if (auto preview = progress->PreviewCompound(p.rows); !preview)
-        return Refused(kn::ResourceError::kBounds, preview.error());
-      if (__builtin_add_overflow(consumers, std::uint64_t{1}, &consumers))
-        return Refused(kn::ResourceError::kBounds, "batch consumer count overflows");
-    }
   }
   // Scratch capacity follows the actual simultaneous owner count. Composition
   // and all copies below reuse it; no stage/context-sized speculative loops.
@@ -71,7 +57,6 @@ std::expected<PromptBatchInventory, kn::ResourceFailure> PromptBatchInventory::P
                   sizeof(PendingWork) + sizeof(std::size_t) + sizeof(pl::StepShape) +
                       kAllocationMetadata) ||
       !AddStorage(scratch_bytes, target.size(), one_segments) ||
-      !AddStorage(scratch_bytes, consumers, sizeof(Consumer)) ||
       !AddStorage(scratch_bytes, 4, kAllocationMetadata))
     return Refused(kn::ResourceError::kBounds, "batch composition storage overflows");
   auto scratch_payment = runner.PayHostMetadata(scratch_bytes);
@@ -81,23 +66,7 @@ std::expected<PromptBatchInventory, kn::ResourceFailure> PromptBatchInventory::P
   std::vector<std::size_t> order(target.size());
   std::vector<pl::StepShape> scratch(target.size());
   for (auto& shape : scratch) shape.segments.reserve(target.size());
-  std::vector<Consumer> witnesses;
-  witnesses.reserve(static_cast<std::size_t>(consumers));
-  for (const auto& p : target)
-    for (std::size_t s = 1; s < composer.stages(); ++s) {
-      const auto* progress = runner.slots().progress(p.slot, s);
-      if (!progress) continue;
-      const auto preview = progress->PreviewCompound(p.rows);
-      if (!preview) return Refused(kn::ResourceError::kBounds, preview.error());
-      witnesses.push_back({.slot = p.slot,
-                           .past = p.past,
-                           .rows = p.rows,
-                           .stage = s,
-                           .state = progress->state(),
-                           .completed = progress->completed(),
-                           .after_owed = progress->after_owed(),
-                           .companions = *preview});
-    }
+
   // Count/fill share this canonical composition traversal. Singleton shapes
   // are explicit failure alternatives, avoiding exponentially many subsets.
   const auto emit = [&](const auto& output) -> Status {
@@ -118,34 +87,8 @@ std::expected<PromptBatchInventory, kn::ResourceFailure> PromptBatchInventory::P
         if (auto accepted = output(shape, true); !accepted) return accepted;
       return {};
     };
-    for (std::size_t stage = 1; stage < composer.stages(); ++stage) {
-      pending.clear();
-      for (const auto& c : witnesses)
-        if (c.stage == stage && c.companions.before.count != 0)
-          pending.push_back({.slot = c.slot,
-                             .stage = static_cast<std::uint16_t>(stage),
-                             .phase = pl::Phase::kDraft,
-                             .past = c.companions.before.cache_first,
-                             .rows = c.companions.before.count,
-                             .outputs = 0,
-                             .want_head = false});
-      if (auto accepted = wave(); !accepted) return accepted;
-    }
     pending.assign(target.begin(), target.end());
     if (auto accepted = wave(); !accepted) return accepted;
-    for (std::size_t stage = 1; stage < composer.stages(); ++stage) {
-      pending.clear();
-      for (const auto& c : witnesses)
-        if (c.stage == stage && c.companions.after.count != 0)
-          pending.push_back({.slot = c.slot,
-                             .stage = static_cast<std::uint16_t>(stage),
-                             .phase = pl::Phase::kDraft,
-                             .past = c.companions.after.cache_first,
-                             .rows = c.companions.after.count,
-                             .outputs = 0,
-                             .want_head = false});
-      if (auto accepted = wave(); !accepted) return accepted;
-    }
     return {};
   };
   std::uint64_t shapes = 0, segments = 0;
@@ -160,7 +103,6 @@ std::expected<PromptBatchInventory, kn::ResourceFailure> PromptBatchInventory::P
   if (!AddStorage(bytes, shapes,
                   sizeof(pl::StepShape) + sizeof(std::uint8_t) + kAllocationMetadata) ||
       !AddStorage(bytes, segments, sizeof(pl::Segment)) ||
-      !AddStorage(bytes, consumers, sizeof(Consumer)) ||
       !AddStorage(bytes, target.size(), sizeof(PendingWork)) ||
       !AddStorage(bytes, 3, kAllocationMetadata))
     return Refused(kn::ResourceError::kBounds, "batch immutable inventory overflows");
@@ -172,7 +114,6 @@ std::expected<PromptBatchInventory, kn::ResourceFailure> PromptBatchInventory::P
   result.identity_ = *identity;
   result.shapes_.reserve(static_cast<std::size_t>(shapes));
   result.fallback_.reserve(static_cast<std::size_t>(shapes));
-  result.consumers_.assign(witnesses.begin(), witnesses.end());
   result.target_.assign(target.begin(), target.end());
   const auto filled = emit([&](const pl::StepShape& shape, bool is_fallback) -> Status {
     if (result.shapes_.size() == shapes) return std::unexpected("batch count/fill differs");
@@ -185,16 +126,6 @@ std::expected<PromptBatchInventory, kn::ResourceFailure> PromptBatchInventory::P
   if (auto current = result.Revalidate(); !current)
     return Refused(kn::ResourceError::kFault, current.error());
   return result;
-}
-
-std::expected<model::DraftRows, std::string> PromptBatchInventory::CompanionRows(
-    std::uint32_t slot, std::size_t stage, std::uint32_t past, std::uint32_t rows) const {
-  for (const auto& consumer : consumers_) {
-    if (consumer.slot != slot || consumer.stage != stage) continue;
-    for (const auto& candidate : {consumer.companions.before, consumer.companions.after})
-      if (candidate.cache_first == past && candidate.count == rows) return candidate;
-  }
-  return std::unexpected("batch shape names no canonical companion rows");
 }
 
 Status PromptBatchInventory::CheckSource() const {
@@ -212,15 +143,6 @@ Status PromptBatchInventory::Revalidate() const {
     if (owner_->slots().positions(target.slot) != target.past ||
         !owner_->slots().CheckActive(target.slot))
       return std::unexpected("batch preview target changed before mint");
-  for (const auto& c : consumers_) {
-    const auto* progress = owner_->slots().progress(c.slot, c.stage);
-    if (!progress || owner_->slots().positions(c.slot) != c.past || progress->state() != c.state ||
-        progress->completed() != c.completed || progress->after_owed() != c.after_owed)
-      return std::unexpected("batch preview consumer changed before mint");
-    const auto preview = progress->PreviewCompound(c.rows);
-    if (!preview || !Same(*preview, c.companions))
-      return std::unexpected("batch preview companion geometry changed before mint");
-  }
   return {};
 }
 }  // namespace llmp::engine

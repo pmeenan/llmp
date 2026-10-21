@@ -188,15 +188,6 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
   // This thread is the driver: its long CPU work beats the ladder's pulse
   // and stops when rung 1 asks it to (base/work_pulse.h).
   base::SetThreadPulse(&ladder.pulse());
-  // The test hook below (LLMP_TEST_HOLD_READS): with
-  // LLMP_TEST_HOLD_READS_CANCELLABLE=1 a held read completes as cancelled
-  // when the lane cancels it (as a read still queued would); otherwise, as
-  // a read a drive holds, it does not.
-  // NOLINTNEXTLINE(concurrency-mt-unsafe): read before any thread starts
-  if (const char* cancellable = std::getenv("LLMP_TEST_HOLD_READS_CANCELLABLE");
-      cancellable != nullptr && std::string_view(cancellable) == "1") {
-    serving.hold_cancellable = true;
-  }
   // M3.6's speed gate's diagnostic (ServingOptions::diagnostic_skip_turn_
   // checkpoints; temporary, never in configuration).
   // NOLINTNEXTLINE(concurrency-mt-unsafe): read before any thread starts
@@ -214,24 +205,6 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
           std::format("EXTEND_TIMEOUT_USEC={}", kStartExtension.count()));
     });
     running.store(&server);
-    // A test hook (D-102's hang recovery, tested end to end): with
-    // LLMP_TEST_HOLD_READS naming a file, the node's reads are held while
-    // that file exists, as a stuck drive's would be. Unset in service.
-    std::jthread hold_watch;
-    // NOLINTNEXTLINE(concurrency-mt-unsafe): read before any thread starts
-    if (const char* path = std::getenv("LLMP_TEST_HOLD_READS"); path != nullptr && *path != 0) {
-      Say(log, std::format("test hook: the node's reads are held while {} exists ({})", path,
-                           serving.hold_cancellable ? "cancellable, as queued reads"
-                                                    : "not cancellable, as a drive's"));
-      hold_watch = std::jthread([&server, file = std::string(path)](const std::stop_token& stop) {
-        while (!stop.stop_requested()) {
-          std::error_code error;
-          server.HoldReads(std::filesystem::exists(file, error));
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        server.HoldReads(false);
-      });
-    }
     auto started = server.Start(false);
     // A cancellation drains only once nothing submitted before it is still
     // in flight (a read a drive holds does not end when cancelled).

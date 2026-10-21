@@ -62,37 +62,6 @@ std::unexpected<StepRefusal> Refused(std::string what, bool clean = true,
 }
 }  // namespace
 
-Status StepTransaction::CheckDraftPermit(const ModelRunner& runner,
-                                         const StepAuthorization& permit) {
-  if (permit.runner_ != &runner || permit.part_ != StepAuthorization::Part::kDraft ||
-      permit.slot_ >= runner.slots_.slots() || permit.stage_ == 0 ||
-      permit.stage_ >= runner.slots_.stages())
-    return Error("draft permit has no exact runner, owner and stage");
-  const auto* progress = runner.slots_.progress(permit.slot_, permit.stage_);
-  if (!progress) return Error("draft permit has no repeat-pending ledger");
-  if (!runner.slots_.layout(permit.stage_).borrowed.empty() &&
-      !runner.slots_.borrowed(permit.slot_, 0)) {
-    if (!permit.borrowed_) return Error("draft target state has no exact ordered borrow permit");
-    if (auto borrowed = runner.slots_.CheckBorrowPermit(*permit.borrowed_, permit.slot_,
-                                                        permit.stage_, permit.past_, permit.rows_);
-        !borrowed)
-      return borrowed;
-  }
-  // Another completed step may have published the reserved predecessor while
-  // preserving this unit. Its ordinary identity then remains authoritative.
-  if (!permit.predecessor_ || !progress->owed()) return progress->CheckUnit(permit.draft_);
-  auto bounds = model::DraftBounds(runner.slots_.layout(permit.stage_));
-  if (!bounds) return Error(bounds.error());
-  if (!*bounds) return Error("successor draft has no declared progress geometry");
-  auto replay = model::DraftFirstPass(progress->after_owed(), **bounds);
-  if (!replay) return Error(replay.error());
-  if (permit.past_ != replay->cache_first || permit.rows_ != replay->count ||
-      permit.feature_.kind != FeatureFrom::Kind::kTap ||
-      permit.feature_.position != replay->feature_first)
-    return Error("successor draft differs from its exact pending replay and tap");
-  return progress->CheckSuccessor(permit.draft_, *permit.predecessor_, *replay);
-}
-
 std::expected<void, StepRefusal> StepTransaction::Validate(const StepRequest& request) const {
   if (runner_.unproven_.has_routed())
     return Refused("a routed step retains unproven effects", false);
@@ -106,10 +75,6 @@ std::expected<void, StepRefusal> StepTransaction::Validate(const StepRequest& re
   if (!request.authorization.empty() && request.authorization.size() != shape.segments.size())
     return Refused("a step's authorization does not match its segments");
   for (const auto& future : request.ahead.shapes()) {
-    if (future) {
-      if (auto qualified = runner_.CheckOwners(future->segments.size()); !qualified)
-        return Refused(qualified.error());
-    }
     if (future && future->phase == pl::Phase::kCommit)
       return Refused("commits are internal and cannot be lookahead steps");
   }
@@ -134,7 +99,6 @@ std::expected<void, StepRefusal> StepTransaction::Validate(const StepRequest& re
 std::expected<void, StepRefusal> StepTransaction::ValidateAuthorization(
     const StepRequest& request, std::span<const StepAuthorization> authorization) const {
   const auto& shape = request.shape;
-  const bool verify = shape.phase == pl::Phase::kVerify;
   const bool mixed_origin = std::ranges::any_of(
       shape.segments, [](const pl::Segment& s) { return s.origin_phase.has_value(); });
   for (std::size_t segment_index = 0; segment_index < shape.segments.size(); ++segment_index) {
@@ -154,60 +118,12 @@ std::expected<void, StepRefusal> StepTransaction::ValidateAuthorization(
          permit->greedy_ != segment.greedy || permit->feature_.kind != feature.kind ||
          permit->feature_.position != feature.position))
       return Refused("step differs from its exact execution permit", true, segment.slot);
-    const auto* companion = runner_.CompanionFor(authorization, segment.slot, shape.stage);
-    if (companion) {
-      const bool target = companion->part_ == StepAuthorization::Part::kTarget;
-      if (request.advance || verify || target != (shape.stage == 0) ||
-          (!target && shape.phase != pl::Phase::kDraft) || companion->consumers_.empty() ||
-          (companion->compound_tail_ && companion->part_ == StepAuthorization::Part::kPre) ||
-          (!target && !companion->compound_tail_ &&
-           (companion->consumers_.size() != 1 ||
-            companion->consumers_.front().first != shape.stage)) ||
-          (!target && companion->compound_tail_ &&
-           std::ranges::none_of(companion->consumers_, [&](const auto& consumer) {
-             return consumer.first == shape.stage;
-           })))
-        return Refused("step differs from its owned prompt companion", true, segment.slot);
-      for (std::size_t i = 0; i < companion->consumers_.size(); ++i) {
-        const auto& [stage, unit] = companion->consumers_[i];
-        if (stage == 0 || stage >= runner_.slots_.stages() ||
-            std::ranges::any_of(companion->consumers_.first(i),
-                                [&](const auto& prior) { return prior.first == stage; }))
-          return Refused("prompt companion consumer identity differs", true, segment.slot);
-        const auto* progress = runner_.slots_.progress(segment.slot, stage);
-        if (!progress || !progress->CheckCompound(unit))
-          return Refused("prompt companion no longer owns its ledger unit", true, segment.slot);
-      }
-      if (target || companion->compound_tail_) {
-        for (std::size_t stage = 1; stage < runner_.slots_.stages(); ++stage)
-          if (runner_.slots_.progress(segment.slot, stage) &&
-              std::ranges::none_of(companion->consumers_,
-                                   [&](const auto& consumer) { return consumer.first == stage; }))
-            return Refused("target companion omits an owned consumer", true, segment.slot);
-      }
-    }
-    if (permit && permit->compound_tail_ && !companion)
-      return Refused("final publication has no owned compound step", true, segment.slot);
     if (shape.stage != 0 && !runner_.slots_.layout(shape.stage).borrowed.empty() &&
         !runner_.slots_.borrowed(segment.slot, 0) &&
         (!permit || !permit->borrowed_ ||
-         (!companion && permit->part_ != StepAuthorization::Part::kDraft) ||
          !runner_.slots_.CheckBorrowPermit(*permit->borrowed_, segment.slot, shape.stage,
                                            segment.past, segment.rows)))
       return Refused("draft target state has no exact ordered borrow permit", true, segment.slot);
-    if (shape.stage != 0 && !companion) {
-      if (runner_.slots_.progress(segment.slot, shape.stage)) {
-        if (shape.phase != pl::Phase::kDraft || !permit ||
-            permit->part_ != StepAuthorization::Part::kDraft || !CheckDraftPermit(runner_, *permit))
-          return Refused("repeat-pending draft requires its owned decoding schedule", true,
-                         segment.slot);
-      }
-    }
-    if (shape.stage == 0 && !verify && !companion) {
-      for (std::size_t s = 1; s < runner_.slots_.stages(); ++s)
-        if (runner_.slots_.progress(segment.slot, s))
-          return Refused("target step requires its shared prompt companions");
-    }
   }
   if (runner_.slots_.faulted()) return Refused("the cohort is faulted", false);
   return {};
@@ -218,16 +134,6 @@ std::expected<std::shared_ptr<StepTransaction>, StepRefusal> StepTransaction::Be
   StepTransaction validation(runner);
   if (auto checked = validation.Validate(request); !checked)
     return std::unexpected(std::move(checked.error()));
-  std::uint64_t consumers = 0;
-  std::size_t tail_count = 0;
-  for (const auto& permit : request.authorization) {
-    if (permit.compound_tail_) ++tail_count;
-    if (permit.consumers_.size() > runner.slots_.stages() ||
-        __builtin_add_overflow(consumers, std::uint64_t{permit.consumers_.size()}, &consumers))
-      return Refused("step permission inventory exceeds its authenticated stages");
-  }
-  if (tail_count > validation.tails_.size())
-    return Refused("compound final publication exceeds cohort capacity");
   // The fixed allowance includes the shared control block, array cookies
   // and allocator bookkeeping in addition to the exact array payloads.
   std::uint64_t bytes = sizeof(StepTransaction) + 512;
@@ -236,8 +142,7 @@ std::expected<std::shared_ptr<StepTransaction>, StepRefusal> StepTransaction::Be
     return !__builtin_mul_overflow(count, size, &storage) &&
            !__builtin_add_overflow(bytes, storage, &bytes) && bytes <= SIZE_MAX;
   };
-  if (!add(request.authorization.size(), sizeof(StepAuthorization)) ||
-      !add(consumers, sizeof(Consumer)))
+  if (!add(request.authorization.size(), sizeof(StepAuthorization)))
     return Refused("step permission inventory overflows");
   std::shared_ptr<StepTransaction> transaction;
   if (request.batch) {
@@ -247,7 +152,6 @@ std::expected<std::shared_ptr<StepTransaction>, StepRefusal> StepTransaction::Be
     auto& prepared = data.entries[*found];
     if (!prepared.transaction || !prepared.transaction->prepared_ ||
         request.authorization.size() > prepared.transaction->permits_capacity_ ||
-        consumers > prepared.transaction->consumers_capacity_ ||
         !prepared.transaction->PreparedInputsMatch(request))
       return Refused("step differs from its owned prepaid batch inputs or permission capacity");
     transaction = std::move(prepared.transaction);
@@ -263,31 +167,12 @@ std::expected<std::shared_ptr<StepTransaction>, StepRefusal> StepTransaction::Be
     transaction = std::shared_ptr<StepTransaction>(new StepTransaction(runner));
     transaction->charge_ = bytes;
     transaction->permits_capacity_ = request.authorization.size();
-    transaction->consumers_capacity_ = static_cast<std::size_t>(consumers);
     if (!request.authorization.empty())
       transaction->permits_ = std::make_unique<StepAuthorization[]>(request.authorization.size());
-    if (consumers) transaction->consumers_ = std::make_unique<Consumer[]>(consumers);
   }
   transaction->permits_count_ = request.authorization.size();
-  std::size_t at = 0;
   for (std::size_t i = 0; i < transaction->permits_count_; ++i) {
-    auto& own = transaction->permits_[i];
-    own = request.authorization[i];  // allocation-free opaque value copy
-    const auto count = own.consumers_.size();
-    if (count) {
-      std::ranges::copy(own.consumers_, transaction->consumers_.get() + at);
-      own.consumers_ = std::span(transaction->consumers_.get() + at, count);
-      at += count;
-    } else {
-      own.consumers_ = {};
-    }
-  }
-  for (const auto& own : transaction->authorization()) {
-    if (!own.compound_tail_) continue;
-    if (transaction->tail_count_ == transaction->tails_.size())
-      return Refused("compound final publication exceeds cohort capacity");
-    transaction->tails_[transaction->tail_count_++] = {
-        .slot = own.slot_, .closing_stage = own.stage_, .consumers = own.consumers_};
+    transaction->permits_[i] = request.authorization[i];
   }
   transaction->routed_owner_ = runner.config_.routed_owner.lock();
   return transaction;
@@ -314,12 +199,6 @@ std::expected<void, StepRefusal> StepTransaction::Admit(const StepRequest& reque
       return std::unexpected(std::move(admitted.error()));
     }
   }
-  return {};
-}
-
-Status StepTransaction::QueueCompoundTail(providers::NativeStream native) {
-  for (const auto& tail : tails())
-    if (auto queued = runner_.slots_.QueueCompoundTail(tail, native); !queued) return queued;
   return {};
 }
 
@@ -432,15 +311,13 @@ StepTransaction::~StepTransaction() {
   prepared_.reset();
   lookahead_.reset();
   permits_.reset();
-  consumers_.reset();
   if (charge_) runner_.node_.UnchargeHost(charge_);
 }
 
-Status StepTransaction::PrepareBatch(PromptBatch& batch, std::span<const PendingWork> pending,
-                                     std::span<const SegmentWork> work,
-                                     std::span<const std::span<const std::int32_t>> histories,
-                                     std::span<const std::byte> step_bytes, const BatchAhead& ahead,
-                                     bool* over_budget) {
+Status StepTransaction::PrepareBatch(
+    PromptBatch& batch, std::span<const PendingWork> pending, std::span<const SegmentWork> work,
+    [[maybe_unused]] std::span<const std::span<const std::int32_t>> histories,
+    std::span<const std::byte> step_bytes, const BatchAhead& ahead, bool* over_budget) {
   if (over_budget) *over_budget = false;
   if (!batch || batch.data_->published || work.size() != pending.size())
     return Error("batch input preflight needs its unpublished actual work");
@@ -453,9 +330,9 @@ Status StepTransaction::PrepareBatch(PromptBatch& batch, std::span<const Pending
       return opened;
     data.owns_request = true;
   }
-  // All owners/stages back their complete actual future reads BEFORE the first
-  // companion unit is minted. UsedThrough is the canonical state declaration;
-  // zeroed capacity may remain on a clean refusal, never numeric progress.
+  // All owners/stages back their complete actual future reads before execution.
+  // UsedThrough is the canonical state declaration; zeroed capacity may remain
+  // on a clean refusal, never unproven writes.
   for (const auto& shape : data.inventory.shapes())
     for (const auto& segment : shape.segments)
       if (auto grown = runner.slots_.ReserveStateThrough(
@@ -466,8 +343,6 @@ Status StepTransaction::PrepareBatch(PromptBatch& batch, std::span<const Pending
         return grown;
       }
   // Any initial restore/commit prefix is also part of this prepaid batch.
-  // Future prompt companions create only publications backed by the slots'
-  // existing distinct control words, not a new verify/restore program.
   for (const auto& target : pending)
     if (auto prepared = runner.slots_.PrepareOwed(target.slot); !prepared) return prepared;
   constexpr std::uint64_t kAllocatorMetadata = 64;
@@ -482,7 +357,7 @@ Status StepTransaction::PrepareBatch(PromptBatch& batch, std::span<const Pending
     const auto& shape = data.inventory.shapes()[i];
     const auto& program = *entry.selected().planned->program;
     const auto owners = shape.segments.size();
-    std::uint64_t consumers = 0, feature_ports = 0, carry_ports = 0, tap_ports = 0;
+    std::uint64_t feature_ports = 0, carry_ports = 0, tap_ports = 0;
     std::uint64_t proofs = 0, ranges = 0, largest_ranges = 0, side_bytes = 0, side_inputs = 0,
                   row_plans = 0;
     std::uint64_t retained_rows = 0, scratch_rows = 0;
@@ -508,8 +383,6 @@ Status StepTransaction::PrepareBatch(PromptBatch& batch, std::span<const Pending
           shape.stage == 0 && tap && tap->contract.cells == model::CellRule::kPerRow)
         ++tap_ports;
     for (const auto& segment : shape.segments) {
-      for (std::size_t stage = 1; stage < runner.slots_.stages(); ++stage)
-        consumers += runner.slots_.progress(segment.slot, stage) ? 1U : 0U;
       for (std::size_t stage = 0; stage < runner.slots_.stages(); ++stage) {
         if (shape.stage != 0 && stage != shape.stage) continue;
         auto through = std::max(segment.past + segment.rows, segment.read_cells);
@@ -531,7 +404,6 @@ Status StepTransaction::PrepareBatch(PromptBatch& batch, std::span<const Pending
       return Error("batch copy descriptor extent overflows");
     std::uint64_t bytes = sizeof(StepTransaction) + sizeof(Frame) + 512;
     if (!add(bytes, owners, sizeof(StepAuthorization) + sizeof(pl::Segment)) ||
-        !add(bytes, consumers, sizeof(Consumer)) ||
         !add(bytes, proofs, sizeof(Frame::Admission) + kAllocatorMetadata) ||
         !add(bytes, ranges, sizeof(LiveState::Range)) ||
         !add(bytes, program.inputs().size(), sizeof(std::vector<std::int32_t>) + sizeof(RunCopy)) ||
@@ -566,18 +438,10 @@ Status StepTransaction::PrepareBatch(PromptBatch& batch, std::span<const Pending
       const auto found = std::ranges::find(pending, segment.slot, &PendingWork::slot);
       if (found == pending.end()) return Error("batch shape names no original owner");
       const auto at = static_cast<std::size_t>(found - pending.begin());
-      if (shape.stage == 0)
+      if (shape.stage == 0) {
         inputs.push_back(work[at]);
-      else {
-        auto rows =
-            data.inventory.CompanionRows(segment.slot, shape.stage, segment.past, segment.rows);
-        if (!rows || at >= histories.size() || rows->token_first > histories[at].size() ||
-            rows->count > histories[at].size() - rows->token_first)
-          return Error("batch companion lacks its complete canonical token history");
-        inputs.push_back(
-            {.tokens = histories[at].subspan(rows->token_first, rows->count),
-             .feature = {.kind = FeatureFrom::Kind::kTap, .position = rows->feature_first},
-             .history = histories[at]});
+      } else {
+        return Error("batch shapes have no non-zero stage");
       }
     }
     request.work = inputs;
@@ -595,9 +459,7 @@ Status StepTransaction::PrepareBatch(PromptBatch& batch, std::span<const Pending
     }
     auto transaction = std::shared_ptr<StepTransaction>(new StepTransaction(runner));
     transaction->permits_capacity_ = owners;
-    transaction->consumers_capacity_ = static_cast<std::size_t>(consumers);
     if (owners) transaction->permits_ = std::make_unique<StepAuthorization[]>(owners);
-    if (consumers) transaction->consumers_ = std::make_unique<Consumer[]>(consumers);
     transaction->prepared_ = std::make_unique<Frame>(request);
     auto& frame = *transaction->prepared_;
     frame.entry = &entry.selected();
@@ -802,13 +664,7 @@ std::expected<void, StepRefusal> StepTransaction::PlanRows(Frame& frame) {
         if (input.segment != ir::kJoinedSegment && input.segment != i) continue;
         const auto& segment = shape.segments[i];
         const auto& work = request.work[i];
-        auto bounds = model::DraftBounds(runner_.slots_.layout(shape.stage));
-        if (!bounds) return Refused(bounds.error());
-        const std::uint64_t token_first =
-            std::uint64_t{segment.past} +
-            (bounds->has_value() && (**bounds).relation == model::DraftRelation::kTokenAfterCache
-                 ? 1U
-                 : 0U);
+        const std::uint64_t token_first = std::uint64_t{segment.past};
         if (token_first > work.history.size() || segment.rows > work.history.size() - token_first ||
             work.tokens.size() != segment.rows ||
             !std::ranges::equal(work.tokens, work.history.subspan(token_first, segment.rows)))
@@ -905,7 +761,6 @@ std::expected<void, StepRefusal> StepTransaction::Plan(Frame& frame) {
 }
 
 std::expected<void, StepRefusal> StepTransaction::Stage(Frame& frame) {
-  auto& transaction = *this;
   const auto& request = *frame.request;
   const auto& shape = request.shape;
   auto& entry = *frame.entry;
@@ -929,16 +784,12 @@ std::expected<void, StepRefusal> StepTransaction::Stage(Frame& frame) {
                     static_cast<std::size_t>(prepared.measured.inputs));
       // The immutable preflight layout already names the existing global
       // staging used by these cached recordings. No new layout allocation or
-      // optional capacity decision occurs between companion effects.
+      // optional capacity decision occurs between batch steps.
       frame.execution = ordinary;
     }
-    for (const auto& tail : transaction.tails())
-      if (auto prepared = runner_.slots_.PrepareCompoundTail(tail); !prepared)
-        return Refused(prepared.error());
     features->resize(frame.feature_capacity);
     CopySink feature_sink{std::span(*features)};
-    if (auto emitted = runner_.EmitFeatureCopies(program, request, authorization(), feature_sink);
-        !emitted)
+    if (auto emitted = runner_.EmitFeatureCopies(program, request, feature_sink); !emitted)
       return Refused(emitted.error());
     features->resize(feature_sink.size());
     carries->resize(frame.carry_capacity);
@@ -981,9 +832,6 @@ std::expected<void, StepRefusal> StepTransaction::Stage(Frame& frame) {
     return std::unexpected(StepRefusal{.what = owned.error(), .capacity_refused = over_budget});
   frame.report.outputs = std::move(*owned);
   frame.report.joined = frame.report.outputs.joined();
-  for (const auto& tail : transaction.tails())
-    if (auto prepared = runner_.slots_.PrepareCompoundTail(tail); !prepared)
-      return Refused(prepared.error());
   // Inputs, staged by slot.
   const auto fill = [&](std::size_t index,
                         std::span<std::byte> out) -> std::expected<void, std::string> {
@@ -1083,7 +931,7 @@ std::expected<void, StepRefusal> StepTransaction::Stage(Frame& frame) {
     carries = Copies(frame.carry_capacity);
     taps = Copies(frame.tap_capacity);
   } else {
-    features = runner_.FeatureCopies(program, request, transaction.authorization());
+    features = runner_.FeatureCopies(program, request);
     if (!features) return Refused(features.error());
   }
   if (!frame.preflight) {
@@ -1446,20 +1294,6 @@ std::expected<void, StepRefusal> StepTransaction::PrepareState(Frame& frame) {
     std::ranges::copy(read.plan.sources, table.sources);
     *table.count = static_cast<std::uint32_t>(read.plan.sources.size());
   }
-  if (verify) {
-    for (const pl::Segment& s : shape.segments) {
-      if (auto checked = runner_.slots_.CheckProgressVerify(s.slot, s.rows); !checked)
-        return Refused(checked.error(), transaction.FinishPreparations().has_value());
-    }
-    for (const pl::Segment& s : shape.segments) {
-      if (auto begun = runner_.slots_.BeginProgressVerify(s.slot, s.rows); !begun) {
-        (void)transaction.FinishPreparations();
-        for (const pl::Segment& owner : shape.segments)
-          runner_.slots_.ProgressVerifyFailed(owner.slot);
-        return Refused(begun.error(), false);
-      }
-    }
-  }
   return {};
 }
 
@@ -1513,25 +1347,6 @@ void StepTransaction::Queue(Frame& frame) {
           }
           frame.prefix_complete[frame.prefix_complete_count++] = s.slot;
         }
-        // Every prefix is fully queued before the successor can enter its own
-        // copies/numeric work. This is submission authority, not publication.
-        for (const auto& permit : transaction.authorization()) {
-          if (permit.part_ != StepAuthorization::Part::kDraft || !permit.predecessor_) continue;
-          auto* progress = runner_.slots_.progress(permit.slot_, permit.stage_);
-          if (!progress || !progress->owed()) continue;
-          auto bounds = model::DraftBounds(runner_.slots_.layout(permit.stage_));
-          auto replay = bounds && *bounds
-                            ? model::DraftFirstPass(progress->after_owed(), **bounds)
-                            : std::expected<model::DraftRows, std::string>(
-                                  std::unexpected("successor progress geometry disappeared"));
-          const auto marked =
-              replay ? progress->SuccessorQueued(permit.draft_, *permit.predecessor_, *replay)
-                     : Error(replay.error());
-          if (!marked) {
-            failure = marked.error();
-            return wrote ? sc::JobResult::kFailed : sc::JobResult::kNotStarted;
-          }
-        }
         for (Saving& sv : saving) {
           // Nothing to save (what it writes truncates, or a commit rebuilds
           // it): undone whole by nothing.
@@ -1546,31 +1361,6 @@ void StepTransaction::Queue(Frame& frame) {
             saves_queued = true;
           }
           sv.queued = true;
-        }
-        // This point precedes the first leading-tap copy or private cache
-        // write. Clean planning/admission refusals never enter it.
-        for (const auto& segment : shape.segments) {
-          const auto* companion =
-              runner_.CompanionFor(transaction.authorization(), segment.slot, shape.stage);
-          if (companion == nullptr) continue;
-          for (const auto& [stage, unit] : companion->consumers_) {
-            if (auto prefix = runner_.slots_.CompanionPrefixQueued(segment.slot, stage, unit);
-                !prefix) {
-              failure = prefix.error();
-              return wrote ? sc::JobResult::kFailed : sc::JobResult::kNotStarted;
-            }
-            auto* progress = runner_.slots_.progress(segment.slot, stage);
-            Status marked = companion->part_ == StepAuthorization::Part::kPre
-                                ? progress->PreQueued(unit)
-                            : companion->part_ == StepAuthorization::Part::kTarget
-                                ? progress->TargetQueued(unit)
-                                : Status{};
-            if (!marked) {
-              failure = marked.error();
-              unknown = true;
-              return sc::JobResult::kUnknown;
-            }
-          }
         }
         // Outside any recording: their sources move with the positions.
         for (const auto& [to, from, bytes] : *taps) {
@@ -1639,12 +1429,6 @@ void StepTransaction::Queue(Frame& frame) {
               return sc::JobResult::kUnknown;
             }
           }
-        if (!program.routed())
-          if (auto tail = transaction.QueueCompoundTail(native); !tail) {
-            failure = tail.error();
-            unknown = true;
-            return sc::JobResult::kUnknown;
-          }
         if (upcoming != nullptr) {
           auto captured = runner_.programs_.runs().CaptureAhead(
               upcoming->runs[0], upcoming_copies, *upcoming->planned->program, upcoming_outputs,
@@ -1663,7 +1447,6 @@ void StepTransaction::Queue(Frame& frame) {
   // Later routed jobs have their own effects/retirement. Their failure cannot
   // erase positive completion of this first job's ordered prefix.
   frame.prefix_retirement = job_report.retirement;
-  if (!program.routed()) CompoundTailRetired(job_report);
   if (program.routed() && posted && failure.empty() && !frame.execution.launch()->faulted()) {
     if (auto continued = runner_.ContinueRouted(report.path, runner_.unproven_.step());
         !continued) {
@@ -1679,7 +1462,6 @@ std::expected<void, StepRefusal> StepTransaction::Settle(Frame& frame) {
   auto& transaction = *this;
   const auto& request = *frame.request;
   const auto& shape = request.shape;
-  const bool verify = shape.phase == pl::Phase::kVerify;
   auto& saving = frame.saving;
   auto& unknown = frame.unknown;
   auto& own_wrote = frame.own_wrote;
@@ -1716,20 +1498,16 @@ std::expected<void, StepRefusal> StepTransaction::Settle(Frame& frame) {
     if (failure.empty()) failure = !prefixes ? prefixes.error() : "an owed prefix was only partial";
   }
   unknown = unknown || unproven;
-  const auto tail_publication =
-      runner_.slots_.CompleteCompoundTails(transaction.tails(), tail_retirement_);
-  if (!tail_publication && failure.empty()) failure = tail_publication.error();
-  if (!posted || !tail_publication || !failure.empty() || frame.execution.launch()->faulted()) {
+  if (!posted || !failure.empty() || frame.execution.launch()->faulted()) {
     runner_.slots_.CheckFailedJob();
     // A program can report uncertain numeric effects even though the fence
     // positively retired. Only that program's declared writes are uncertain
     // when every earlier publication completed. Lost retirement or an unknown
-    // copy, recording, tail, control transition or cohort remains broader.
-    const bool isolated_unknown = frame.own_program_unknown &&
-                                  job_report.retirement == JobReport::Retirement::kRetired &&
-                                  prefix_retired && prefixes.has_value() && partial.empty() &&
-                                  tail_publication.has_value() && preparation.has_value() &&
-                                  !runner_.slots_.faulted() && !frame.execution.launch()->faulted();
+    // copy, recording, control transition or cohort remains broader.
+    const bool isolated_unknown =
+        frame.own_program_unknown && job_report.retirement == JobReport::Retirement::kRetired &&
+        prefix_retired && prefixes.has_value() && partial.empty() && preparation.has_value() &&
+        !runner_.slots_.faulted() && !frame.execution.launch()->faulted();
     // What the step's own work may write: its stage, and on the target the
     // drafters' taps (Admit's rule). Another stage changed only by what it
     // owed, which ran whole or stays owed (a partial queueing is unknown).
@@ -1751,7 +1529,6 @@ std::expected<void, StepRefusal> StepTransaction::Settle(Frame& frame) {
         (void)live.Settle(sv != saving.end() && sv->queued, own_wrote && written(stage),
                           stage_unknown);
       }
-      if (verify) runner_.slots_.ProgressVerifyFailed(s.slot);
     }
     if (frame.execution.launch()->faulted()) runner_.slots_.Fault();
     if (lookahead_) lookahead_->Abandon();
@@ -1761,8 +1538,8 @@ std::expected<void, StepRefusal> StepTransaction::Settle(Frame& frame) {
     return Refused(!failure.empty() ? failure
                    : !posted        ? posted.error()
                                     : "the launch faulted",
-                   !own_wrote && !unknown && prefixes.has_value() && tail_publication.has_value() &&
-                       partial.empty() && !runner_.slots_.faulted() && preparation.has_value());
+                   !own_wrote && !unknown && prefixes.has_value() && partial.empty() &&
+                       !runner_.slots_.faulted() && preparation.has_value());
   }
   // The verify ran: its rows await their Accept in every stage it writes or
   // that commits.
@@ -1782,7 +1559,6 @@ std::expected<void, StepRefusal> StepTransaction::Settle(Frame& frame) {
 }
 
 std::expected<StepReport, StepRefusal> StepTransaction::Publish(Frame& frame) {
-  auto& transaction = *this;
   const auto& request = *frame.request;
   const auto& shape = request.shape;
   const bool verify = shape.phase == pl::Phase::kVerify;
@@ -1854,42 +1630,11 @@ std::expected<StepReport, StepRefusal> StepTransaction::Publish(Frame& frame) {
     runner_.slots_.QuarantineOwners(owners);
     return Refused(std::move(what), false);
   };
-  // All consumers and owners pass a pure check before the first mirror/cursor
-  // changes. No callback or device wait separates check and deterministic apply.
-  for (const auto& segment : shape.segments) {
-    const auto* companion =
-        runner_.CompanionFor(transaction.authorization(), segment.slot, shape.stage);
-    if (companion == nullptr || companion->compound_tail_) continue;
-    for (const auto& [stage, unit] : companion->consumers_) {
-      auto* progress = runner_.slots_.progress(segment.slot, stage);
-      Status checked = companion->part_ == StepAuthorization::Part::kPre
-                           ? progress->CheckPreCompletion(unit)
-                       : companion->part_ == StepAuthorization::Part::kTarget
-                           ? progress->CheckTargetCompletion(unit)
-                           : progress->CheckPostCompletion(unit);
-      if (!checked) return refuse_publication(checked.error());
-    }
-  }
   if (request.advance)
     for (const auto& segment : shape.segments)
       if (auto checked = runner_.slots_.CheckPositions(segment.slot, segment.past + segment.rows);
           !checked)
         return refuse_publication(checked.error());
-  for (const auto& segment : shape.segments) {
-    const auto* companion =
-        runner_.CompanionFor(transaction.authorization(), segment.slot, shape.stage);
-    if (companion == nullptr || companion->compound_tail_) continue;
-    for (const auto& [stage, unit] : companion->consumers_) {
-      auto* progress = runner_.slots_.progress(segment.slot, stage);
-      Status completed =
-          companion->part_ == StepAuthorization::Part::kPre      ? progress->PreCompleted(unit)
-          : companion->part_ == StepAuthorization::Part::kTarget ? progress->TargetCompleted(unit)
-                                                                 : progress->PostCompleted(unit);
-      if (!completed) {
-        return refuse_publication(completed.error());
-      }
-    }
-  }
   // Copy only into the prepaid exact views; no allocation or capacity growth
   // occurs after completion or after any owner publication.
   std::array<std::size_t, Frame::kOwners> copied{};

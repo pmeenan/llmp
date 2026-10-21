@@ -80,11 +80,9 @@ reads it. Every measured run records its session; a run without one, or
 whose session's priming run is missing, failed, recorded a problem or did
 not start before it, makes its family INVALID.
 
-The node configuration an arm gets is its label's default for the family
-(config_text): the old arm serves the frozen baseline's v0 artifacts from
-their stores, the new arm the v1 imports of the same models from
-`m36-v1-artifacts` (D-118; the image family is the image slice's and keeps
-one configuration for both). `run --config-template` gives an arm its own
+The node configuration an arm gets is the family's default (config_text): both
+arms serve the v1 imports from `m36-v1-artifacts` (falling back to `artifacts`,
+D-118). `run --config-template` gives an arm its own
 instead: the whole node configuration with {share}, {data} and {port} for the
 share directory, the run's data directory and its port. Use it when a newer runtime needs other keys or a
 re-imported artifact for the same work; `plan --old-config/--new-config`
@@ -198,31 +196,20 @@ class Family:
     score_chars: int = 4000
 
 
-# The old arm's v0 artifacts (the frozen baseline, `m3-artifacts`/`qgguf-artifacts`) and the
-# new arm's v1 imports of the same models (`m36-v1-artifacts`, D-118).
-DSV4_V0 = "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234"
-DSPARK_V0 = "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
-QWEN_V0 = "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93"
-QWEN_MTP_V0 = "8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40"
-QWEN_GGUF_V0 = "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78"
-GEMMA2_V0 = "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870"
-GEMMA3_V0 = "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"
-GEMMA26_V0 = "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
-GEMMA31_V0 = "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
-DSV4_V1 = "698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd"
-DSPARK_V1 = "5c9d95e24769c4d0a06088b0b6a8cc4afd4979b5ffc6d9357b4116f26fa583aa"
-QWEN_V1 = "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d"
-QWEN_MTP_V1 = "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb"
-QWEN_GGUF_V1 = "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2"
-GEMMA2_V1 = "f176f912bc7761beee21cda0c22aff2080b8b84ed99faa6b962846c7e1379076"
-GEMMA3_V1 = "634bc193468f5968ac142c2e5547f72777b182f3f694873075d7a50660f46626"
-GEMMA26_V1 = "f0f72ab3d6c733d15472ceeecd05fdf200c266101c537bd3253548fc38559ab7"
-GEMMA31_V1 = "4d9a255ab47519b8061fcbc38bb5e72b9008d8e3538aad5edf0e7530fa82adc8"
-# The image composition is the image slice's: both arms keep it as it is.
-IMAGE = "eca21baad38229e471a44cb2479d392ffcf745fb812e8a41668f336139fa1acd"
-# The image composition as v1 (the image family slice, D-118) and its frozen pixels there.
-IMAGE_V1 = "2170db12b295d308b4ec071765a8c1b9fb6651b45b210aeaa3976603de82e3ac"
-V1_STORE = "m36-v1-artifacts"
+# The v1 imports of every family (`u2-v1-artifacts` / `artifacts`, D-118).
+DSV4_V1 = "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f"
+DSPARK_V1 = "6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41"
+QWEN_V1 = "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9"
+QWEN_MTP_V1 = "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef"
+QWEN_GGUF_V1 = "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027"
+GEMMA2_V1 = "92bbb574ec219595d5942f05d1cce9480229b4bac5b7e22205af74499133ab4e"
+GEMMA3_V1 = "5d4674ce19e5783cea12775502f7ca23cbb2e6f2111efa2346c58bcd53482ece"
+GEMMA26_V1 = "23f6b7c1bfe2d80569107b07a1e3ddee7e310caca346b7937dfa3713a7e41027"
+GEMMA26_ASSISTANT_V1 = "2e3767959ef6ad30a86e7ccfcf5cb98db8d2b371100e81808e05bac49cefa70d"
+GEMMA31_V1 = "915805856724410ee650dd95e15b5815ceb08eedf1536007d11ce5bbebd8e01c"
+GEMMA31_ASSISTANT_V1 = "f931e7a0c9b995ac99062c3ae73bacb90960e6e1b8e155db5407c169663f0197"
+IMAGE_V1 = "95314e538fbe1251c23b46e1bb52f86dd34cfbf7f7509e80849472c2e2faa53a"
+V1_STORE = "u2-v1-artifacts"
 
 
 def resolve_store(store: str, share: pathlib.Path) -> str:
@@ -260,57 +247,39 @@ def _qwen_gguf(artifact: str) -> str:
 def _deepseek(artifact: str, drafter: str) -> str:
     return (f'[models.deepseek]\nartifact = "{artifact}"\ndrafter = "{drafter}"\n'
             "speculation = true\n"
-            # Plain cohort waves: DSpark waves of four 8K requests stop the
-            # first baseline's runtime (graph reader index past the startup
-            # scratch allowance); a lone request still speculates with DSpark.
-            # DSpark cohort waves run against 1facc957-fixed with a template
-            # (docs/experiments/m36-baselines/README.md).
             'wave_form = "plain"\ncontext = 262144\nprefill_chunk = 4096\nmax_slots = 4\n')
 
 
 FAMILIES = {f.name: f for f in (
-    Family("gemma2", "llm", "gemma2", "m3-artifacts",
-           _gemma("gemma2", GEMMA2_V0, 8192, 128, 2),
+    Family("gemma2", "llm", "gemma2", V1_STORE,
+           _gemma("gemma2", GEMMA2_V1, 8192, 128, 2),
            prompt_chars=26000, cells=(1, 2), repeats=6,
            min_blocks=5, max_blocks=10),
-    Family("gemma3", "llm", "gemma3", "m3-artifacts",
-           _gemma("gemma3", GEMMA3_V0, 4096, 128, 2),
+    Family("gemma3", "llm", "gemma3", V1_STORE,
+           _gemma("gemma3", GEMMA3_V1, 4096, 128, 2),
            prompt_chars=11500, cells=(1, 2), repeats=6,
            min_blocks=7, max_blocks=12),
-    Family("gemma26", "llm", "gemma26", "m3-artifacts",
-           _gemma("gemma26", GEMMA26_V0, 8192, 1024, 4),
+    Family("gemma26", "llm", "gemma26", V1_STORE,
+           _gemma("gemma26", GEMMA26_V1, 8192, 1024, 4),
            prompt_chars=26000, cells=(1, 4), min_blocks=9, max_blocks=12),
-    Family("gemma31", "llm", "gemma31", "m3-artifacts",
-           _gemma("gemma31", GEMMA31_V0, 8192, 256, 4),
+    Family("gemma31", "llm", "gemma31", V1_STORE,
+           _gemma("gemma31", GEMMA31_V1, 8192, 256, 4),
            prompt_chars=26000, cells=(1, 4), repeats=1,
            min_blocks=7, max_blocks=12),
-    Family("qwen38", "llm", "qwen3.8", "m3-artifacts", _qwen(QWEN_V0, QWEN_MTP_V0),
+    Family("qwen38", "llm", "qwen3.8", V1_STORE, _qwen(QWEN_V1, QWEN_MTP_V1),
            prompt_chars=30000, cells=(1, 2, 4), min_blocks=6, max_blocks=12),
-    Family("qwen38-gguf", "llm", "qwen3.8-gguf", "qgguf-artifacts", _qwen_gguf(QWEN_GGUF_V0),
+    Family("qwen38-gguf", "llm", "qwen3.8-gguf", V1_STORE, _qwen_gguf(QWEN_GGUF_V1),
            prompt_chars=30000, cells=(1, 2, 4), repeats=1,
            min_blocks=3, max_blocks=6),
-    Family("deepseek", "llm", "deepseek", "m3-artifacts", _deepseek(DSV4_V0, DSPARK_V0),
+    Family("deepseek", "llm", "deepseek", V1_STORE, _deepseek(DSV4_V1, DSPARK_V1),
            prompt_chars=30000, cells=(1, 2, 4), repeats=1,
            min_blocks=3, max_blocks=6),
-    # The image family is the image slice's (D-118): both arms keep today's composition and store.
-    Family("image", "image", "image", "m3-artifacts",
-           f'[models.image]\ncomposition = "{IMAGE}"\n',
+    Family("image", "image", "image", V1_STORE,
+           f'[models.image]\ncomposition = "{IMAGE_V1}"\n',
            min_blocks=6, max_blocks=12),
 )}
 
-# The new arm's [models.*] tables: the old arm's settings with the v1 imports' IDs, served from
-# V1_STORE (D-118). Kept beside FAMILIES, not in Family, so the protocol constants a record
-# carries (family_spec) stay the frozen ones.
-V1_MODELS = {
-    "gemma2": _gemma("gemma2", GEMMA2_V1, 8192, 128, 2),
-    "gemma3": _gemma("gemma3", GEMMA3_V1, 4096, 128, 2),
-    "gemma26": _gemma("gemma26", GEMMA26_V1, 8192, 1024, 4),
-    "gemma31": _gemma("gemma31", GEMMA31_V1, 8192, 256, 4),
-    "qwen38": _qwen(QWEN_V1, QWEN_MTP_V1),
-    "qwen38-gguf": _qwen_gguf(QWEN_GGUF_V1),
-    "deepseek": _deepseek(DSV4_V1, DSPARK_V1),
-    "image": f'[models.image]\ncomposition = "{IMAGE_V1}"\n',
-}
+V1_MODELS = {f.name: f.models_toml for f in FAMILIES.values()}
 
 TIME_METRICS = ("prefill_s", "generation_s", "peak_gib")  # lower is better; the rest are rates
 
@@ -350,12 +319,12 @@ def prompt(corpus: str, index: int, chars: int) -> str:
 
 def config_template(family: Family, label: str = "old") -> str:
     """The family's node configuration for an arm, with {share}, {data} and {port} left to
-    fill: the old arm's v0 artifacts, or the new arm's v1 imports (D-118)."""
-    new = label == "new" and family.name in V1_MODELS
+    fill: the v1 imports (D-118)."""
+    _ = label
     return ('schema_version = 2\n[storage]\ndata_dir = "{data}"\n'
-            f'installed = "{{share}}/{V1_STORE if new else family.store}"\n'
+            f'installed = "{{share}}/{family.store}"\n'
             '[client]\nbind = ["loopback"]\nport = {port}\n'
-            + (V1_MODELS[family.name] if new else family.models_toml))
+            + family.models_toml)
 
 
 def render_config(template: str, share: pathlib.Path, data: pathlib.Path, port: int) -> str:

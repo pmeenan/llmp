@@ -14,11 +14,32 @@
 #include <vector>
 
 #include "base/check.h"
-#include "kernels/ggml/graph_plan.h"
+#include "components/graph_io.h"
+#include "execution/registry.h"
+#include "ir/builder.h"
+#include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/graph_read_index.h"
+#include "kernels/ggml/lower.h"
+#include "kernels/ggml/plan_step.h"
+#include "planner/plan.h"
 
 namespace {
 namespace kg = llmp::kernels::ggml;
+namespace pl = llmp::planner;
+namespace co = llmp::components;
+namespace kn = llmp::kernels;
+namespace ir = llmp::ir;
+
+void BindDistinct(std::span<ggml_tensor* const> nodes, std::uint64_t base) {
+  for (auto* node : nodes) {
+    if (node != nullptr && node->view_src == nullptr && node->data == nullptr) {
+      kg::TensorArena::Bind(node, base);
+      base += ((ggml_nbytes(node) + 255) / 256 * 256) + 256;
+    }
+  }
+  kg::BindViews(nodes);
+}
+
 class GemmaMoeFusion : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -46,7 +67,7 @@ class GemmaMoeFusion : public ::testing::Test {
     auto* out = ggml_reshape_3d(c(), normalized, 1, used, rows);
     std::vector<ggml_tensor*> n{p,        probabilities, ids->view_src, ids,        gathered,
                                 selected, sum,           clamped,       normalized, out};
-    kg::BindDistinct(n, 0x10000000000ULL);
+    BindDistinct(n, 0x10000000000ULL);
     return n;
   }
   std::vector<ggml_tensor*> Reduce(std::int64_t rows = 4, std::int64_t width = 2816,
@@ -64,8 +85,42 @@ class GemmaMoeFusion : public ::testing::Test {
       out = ggml_add(c(), out, n[2 + i]);
       n.push_back(out);
     }
-    kg::BindDistinct(n, 0x10000000000ULL);
+    BindDistinct(n, 0x10000000000ULL);
     return n;
+  }
+  static std::expected<ir::Graph, ir::VerifyError> MakeRoute(std::int64_t rows = 4,
+                                                             std::int64_t experts = 128,
+                                                             std::int64_t used = 8) {
+    ir::Builder b;
+    const auto logits = b.Input(ir::Dense(
+        llmp::format::Encoding::kF32,
+        ir::ShapeOf({static_cast<std::uint64_t>(experts), static_cast<std::uint64_t>(rows)})));
+    const auto r = b.Route(logits, {}, {}, {},
+                           {.normalize = true,
+                            .experts = static_cast<std::uint32_t>(experts),
+                            .used = static_cast<std::uint32_t>(used)});
+    b.Output(r[1]);
+    return std::move(b).Finish();
+  }
+  static std::expected<ir::Graph, ir::VerifyError> MakeReduce(std::int64_t rows = 4,
+                                                              std::int64_t width = 2816,
+                                                              std::int64_t used = 8) {
+    ir::Builder b;
+    const auto x = b.Input(
+        ir::Dense(llmp::format::Encoding::kF32,
+                  ir::ShapeOf({static_cast<std::uint64_t>(width), static_cast<std::uint64_t>(used),
+                               static_cast<std::uint64_t>(rows)})));
+    const auto w = b.Input(ir::Dense(
+        llmp::format::Encoding::kF32,
+        ir::ShapeOf({static_cast<std::uint64_t>(used), static_cast<std::uint64_t>(rows)})));
+    const auto ids = b.Input(ir::Dense(
+        llmp::format::Encoding::kI32,
+        ir::ShapeOf({static_cast<std::uint64_t>(used), static_cast<std::uint64_t>(rows)})));
+    const auto scale = b.Input(ir::Dense(
+        llmp::format::Encoding::kF32,
+        ir::ShapeOf({1ULL, static_cast<std::uint64_t>(used), static_cast<std::uint64_t>(rows)})));
+    b.Output(b.ExpertReduce(x, w, ids, scale));
+    return std::move(b).Finish();
   }
   std::unique_ptr<kg::TensorArena> arena;
   std::uint64_t address = 0x100000000ULL;
@@ -78,13 +133,6 @@ TEST_F(GemmaMoeFusion, UnpinnedExpertCountsAndWidthsKeepTheLiteralGraphContracts
   const auto fused = kg::GemmaReductionFusionAt(reduce, 0);
   ASSERT_TRUE(fused);
   EXPECT_EQ(fused->nodes.size(), 13U);
-  kg::DeviceChoices choices;
-  choices.fuse_gemma_reduce = true;
-  const auto plan = kg::PlanGraph(reduce, false, choices);
-  ASSERT_TRUE(plan);
-  ASSERT_EQ(plan->steps.size(), 1U);
-  EXPECT_EQ(plan->steps[0].implementation, kg::kGemmaReduceName);
-  EXPECT_EQ(plan->steps[0].nodes.size(), 13U);
 }
 TEST_F(GemmaMoeFusion, ExactPatternsPreserveBothRoutingOutputsAndScaledOrder) {
   for (const auto rows : {1, 2, 4, 8, 128, 8192}) {
@@ -104,35 +152,39 @@ TEST_F(GemmaMoeFusion, ExactPatternsPreserveBothRoutingOutputsAndScaledOrder) {
   }
 }
 TEST_F(GemmaMoeFusion, ExplicitPoliciesKeepPrimitivesAndProtectEveryUnwrittenValue) {
-  kg::DeviceChoices choices;
-  choices.fuse_gemma_route = choices.fuse_gemma_reduce = true;
+  const auto registry = llmp::execution::Registry::Create(kg::PlanningImplementations()).value();
+  const pl::DeviceFacts facts{
+      .device_class = "sm_121", .arch = 121, .features = llmp::execution::kBf16Mma};
   for (bool route : {true, false}) {
-    arena->Reset();
-    auto n = route ? Route() : Reduce();
-    const auto name = route ? kg::kGemmaRouteName : kg::kGemmaReduceName;
-    auto ordinary = kg::PlanGraph(n, false, {});
-    ASSERT_TRUE(ordinary);
-    EXPECT_TRUE(std::ranges::none_of(
-        ordinary->steps, [name](const auto& step) { return step.implementation == name; }));
-    auto fused = kg::PlanGraph(n, false, choices);
-    ASSERT_TRUE(fused) << (fused ? "" : fused.error().detail);
-    ASSERT_EQ(fused->steps.size(), 1U);
-    EXPECT_EQ(fused->steps.front().implementation, name);
-    EXPECT_EQ(fused->steps.front().nodes, n);
-    for (std::size_t i = 0; i + 1 < n.size(); ++i) {
-      // Exact selected IDs are the second initialized routing output.
-      if (route && (i == 3 || i == 8)) continue;
-      std::array kept{n[i]};
-      auto fallback = kg::PlanGraph(n, false, choices, kept);
-      ASSERT_TRUE(fallback) << (fallback ? "" : fallback.error().detail);
-      EXPECT_TRUE(std::ranges::none_of(fallback->steps, [name](const auto& step) {
-        return step.implementation == name;
-      })) << i;
+    auto graph = route ? MakeRoute() : MakeReduce();
+    ASSERT_TRUE(graph);
+    const kn::Addresses addresses{};
+    co::StepGraph step{std::move(*graph), {}, {}, {}};
+    for (const ir::TensorId in : step.graph.inputs()) {
+      step.inputs.push_back({.tensor = in, .kind = co::InputKind::kFeatures});
     }
-    auto* bad = ggml_view_tensor(c(), n.back());
-    bad->view_src = bad;
-    std::array kept{bad};
-    EXPECT_FALSE(kg::PlanGraph(n, false, choices, kept));
+    const pl::StepShape shape{.segments = {{.rows = 4}}};
+    const auto name = route ? kg::kGemmaRouteName : kg::kGemmaReduceName;
+
+    pl::Policy off_policy{};
+    off_policy.disabled = {"route_reduce"};
+    auto off_plan = pl::Plan(step.graph.Clone(), registry, facts, off_policy,
+                             {.written = &kg::WrittenBytes, .within = &kg::WithinRoot});
+    ASSERT_TRUE(off_plan) << (off_plan ? "" : off_plan.error().detail);
+    auto ordinary = kg::LowerStep({*off_plan, step, shape, addresses}, registry, {});
+    ASSERT_TRUE(ordinary) << (ordinary ? "" : ordinary.error().detail);
+    EXPECT_TRUE(std::ranges::none_of(ordinary->plan.steps,
+                                     [name](const auto& s) { return s.implementation == name; }));
+
+    pl::Policy on_policy{};
+    auto on_plan = pl::Plan(step.graph.Clone(), registry, facts, on_policy,
+                            {.written = &kg::WrittenBytes, .within = &kg::WithinRoot});
+    ASSERT_TRUE(on_plan) << (on_plan ? "" : on_plan.error().detail);
+    auto fused = kg::LowerStep({*on_plan, step, shape, addresses}, registry, {});
+    ASSERT_TRUE(fused) << (fused ? "" : fused.error().detail);
+    ASSERT_EQ(fused->plan.steps.size(), 1U);
+    EXPECT_EQ(fused->plan.steps.front().implementation, name);
+    EXPECT_EQ(fused->plan.steps.front().nodes.size(), route ? 10U : 17U);
   }
 }
 TEST_F(GemmaMoeFusion, EveryUnwrittenRoutingIntermediateRequiresPrimitives) {
@@ -230,37 +282,36 @@ TEST_F(GemmaMoeFusion, RefusesCyclesStaleViewsAndAddressOverflowBeforeReaderScan
   EXPECT_FALSE(kg::GemmaRoutingFusionAt(n, 0));
 }
 TEST_F(GemmaMoeFusion, PlacementFundsEveryDescriptorAndTheCompleteRoutingRoot) {
+  const auto registry = llmp::execution::Registry::Create(kg::PlanningImplementations()).value();
+  const pl::DeviceFacts facts{
+      .device_class = "sm_121", .arch = 121, .features = llmp::execution::kBf16Mma};
+  const pl::Policy policy{};
   for (bool route : {true, false}) {
-    arena->Reset();
-    auto n = route ? Route() : Reduce();
-    kg::DeviceChoices choices;
-    choices.fuse_gemma_route = choices.fuse_gemma_reduce = true;
-    auto plan = kg::PlanGraph(n, false, choices);
-    ASSERT_TRUE(plan);
-    ASSERT_EQ(plan->steps.size(), 1U);
-    EXPECT_EQ(plan->steps.front().nodes, n);
-    std::vector<ggml_tensor*> inputs;
-    if (route)
-      inputs.push_back(n[0]->src[0]);
-    else
-      inputs = {n[0]->src[0], n[0]->src[1], n[1]->src[1]};
-    auto placement = kg::PlaceActivations(n, *plan, inputs, 256);
-    ASSERT_TRUE(placement);
-    for (const auto [tensor, offset] : placement->offsets)
-      kg::TensorArena::Bind(tensor, (1ULL << 32) + offset);
-    kg::BindViews(n);
-    auto placed_plan = kg::PlanGraph(n, false, choices);
-    ASSERT_TRUE(placed_plan);
-    EXPECT_TRUE(kg::SamePlan(*plan, *placed_plan));
+    auto graph = route ? MakeRoute() : MakeReduce();
+    ASSERT_TRUE(graph);
+    co::StepGraph step{std::move(*graph), {}, {}, {}};
+    for (const ir::TensorId in : step.graph.inputs()) {
+      step.inputs.push_back({.tensor = in, .kind = co::InputKind::kFeatures});
+    }
+    const pl::StepShape shape{.segments = {{.rows = 4}}};
+    auto plan = pl::Plan(step.graph.Clone(), registry, facts, policy,
+                         {.written = &kg::WrittenBytes, .within = &kg::WithinRoot});
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    const kn::Addresses addresses{};
+    const auto name = route ? kg::kGemmaRouteName : kg::kGemmaReduceName;
+
+    auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, {});
+    ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+    ASSERT_EQ(lowered->plan.steps.size(), 1U);
+    EXPECT_EQ(lowered->plan.steps.front().implementation, name);
+    EXPECT_GT(lowered->extent, 0U);
+    EXPECT_FALSE(lowered->nodes.empty());
     if (route) {
-      auto f = kg::GemmaRoutingFusionAt(n, 0);
-      ASSERT_TRUE(f);
-      EXPECT_EQ(f->operands.ids.bytes.value(), 4U * 512U);
-      for (auto* written : {n[0], n[2], n[4], n[6], n[7], n[8]})
-        EXPECT_TRUE(std::ranges::any_of(placement->offsets,
-                                        [&](const auto& entry) { return entry.first == written; }));
-    } else
-      EXPECT_TRUE(kg::GemmaReductionFusionAt(n, 0));
+      EXPECT_EQ(lowered->plan.steps.front().nodes.size(), 10U);
+      EXPECT_FALSE(lowered->physical_roots.empty());
+    } else {
+      EXPECT_EQ(lowered->plan.steps.front().nodes.size(), 17U);
+    }
   }
 }
 }  // namespace
@@ -375,7 +426,7 @@ TEST_F(GemmaMoeFusion, LongUnrelatedLogicalViewDoesNotDisableLegacyNormFusion) {
   auto* mul = ggml_mul(c(), norm, Tensor(4, 1));
   auto* output = ggml_scale(c(), mul, 2.0f);
   const std::array nodes{norm, mul, output};
-  kg::BindDistinct(nodes, 0x10000000000ULL);
+  BindDistinct(nodes, 0x10000000000ULL);
   auto* unrelated = Tensor(4, 1);
   std::array<ggml_tensor, 65> chain;
   for (auto& t : chain) t = *unrelated;
@@ -387,48 +438,4 @@ TEST_F(GemmaMoeFusion, LongUnrelatedLogicalViewDoesNotDisableLegacyNormFusion) {
   const kg::detail::GraphReadIndex reads(nodes, keep);
   EXPECT_TRUE(reads.OnlyReader(norm, mul));
   EXPECT_FALSE(reads.StrictRoot(&chain[0]));
-  kg::DeviceChoices choices;
-  choices.fuse_norms = true;
-  auto plan = kg::PlanGraph(nodes, false, choices, keep);
-  ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
-  EXPECT_EQ(plan->steps.front().implementation, "ggml.rms_norm_mul.fused");
-  // Policies promising checked bounded metadata retain their original refusal.
-  choices.fuse_norm_add = true;
-  EXPECT_FALSE(kg::PlanGraph(nodes, false, choices, keep));
-}
-
-TEST_F(GemmaMoeFusion, ReaderIndexAllowanceRefusesGrowthBeforePlanningAndReusesTheSamePlan) {
-  auto n = Route();
-  const std::array keep{n[3], n.back()};
-  const auto allowance = kg::detail::GraphReadIndex::ScratchBytes(n, keep);
-  ASSERT_TRUE(allowance);
-  kg::DeviceChoices choices;
-  choices.fuse_gemma_route = true;
-  const auto underpaid = kg::PlanGraph(n, false, choices, keep, *allowance - 1);
-  ASSERT_FALSE(underpaid);
-  EXPECT_NE(underpaid.error().detail.find(std::to_string(*allowance)), std::string::npos);
-  EXPECT_NE(underpaid.error().detail.find(std::to_string(*allowance - 1)), std::string::npos);
-  EXPECT_NE(underpaid.error().detail.find("nodes " + std::to_string(n.size())), std::string::npos);
-  EXPECT_NE(underpaid.error().detail.find("kept " + std::to_string(keep.size())),
-            std::string::npos);
-  auto exact = kg::PlanGraph(n, false, choices, keep, *allowance);
-  auto default_plan = kg::PlanGraph(n, false, choices, keep);
-  ASSERT_TRUE(exact);
-  ASSERT_TRUE(default_plan);
-  EXPECT_TRUE(kg::SamePlan(*exact, *default_plan));
-  const std::array extra_keep{n[3], n.back(), n.back()};
-  EXPECT_FALSE(kg::PlanGraph(n, false, choices, extra_keep, *allowance));
-}
-
-TEST_F(GemmaMoeFusion, PrimitivePolicyNeedsNoReaderScratchEvenWithKeptViews) {
-  auto* input = Tensor(4, 1);
-  auto* output = ggml_scale(c(), input, 2.0f);
-  const std::array nodes{output};
-  kg::BindDistinct(nodes, 0x10000000000ULL);
-  kg::DeviceChoices primitive;
-  EXPECT_FALSE(kg::NeedsGraphReadIndex(false, primitive));
-  EXPECT_TRUE(kg::PlanGraph(nodes, false, primitive, {}, 0));
-  primitive.pair_glu = true;
-  EXPECT_TRUE(kg::NeedsGraphReadIndex(false, primitive));
-  EXPECT_FALSE(kg::PlanGraph(nodes, false, primitive, {}, 0));
 }

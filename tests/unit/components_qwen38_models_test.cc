@@ -246,16 +246,9 @@ TEST(ComponentsQwen38Models, TheMtpDrafterComposesWithItsTargets) {
   const auto d_layout = co::StageLayoutUniform(*spec, 1, 8192, 512, 256);
   ASSERT_TRUE(t_layout.has_value() && d_layout.has_value());
   EXPECT_EQ(t_layout->bytes, fm::Qwen38StateBytes(p, 8192, 512));
-  // The M3 runner's drafter state and the serving (replay) composition's
-  // durable draft progress record, one 256-byte aligned item.
-  const auto progress = std::ranges::find(d_layout->items, std::string("progress"),
-                                          [](const auto& item) { return item.contract.name; });
-  ASSERT_NE(progress, d_layout->items.end());
-  EXPECT_LE(progress->bytes, 256U);
-  EXPECT_EQ(d_layout->bytes, fm::Qwen38MtpStateBytes(p, 8192, 512) + 256U);
+  EXPECT_EQ(d_layout->bytes, fm::Qwen38MtpStateBytes(p, 8192, 512));
   // The draft-vocabulary study's prepared manifests record these layouts'
-  // bytes at its context and 8,192-row chunks (benchmarks/qwen38_vocab.h),
-  // the drafter's without its progress record.
+  // bytes at its context and 8,192-row chunks (benchmarks/qwen38_vocab.h).
   {
     namespace dv = llmp::benchmarks::draft_vocab;
     const auto study_target = co::StageLayoutUniform(*spec, 0, dv::kContext, 8192, 256);
@@ -263,7 +256,7 @@ TEST(ComponentsQwen38Models, TheMtpDrafterComposesWithItsTargets) {
     ASSERT_TRUE(study_target.has_value()) << study_target.error();
     ASSERT_TRUE(study_drafter.has_value()) << study_drafter.error();
     EXPECT_EQ(study_target->bytes, dv::kTargetStateBytes);
-    EXPECT_EQ(study_drafter->bytes, dv::kMtpStateBytes + 256U);
+    EXPECT_EQ(study_drafter->bytes, dv::kMtpStateBytes);
   }
   const std::array<const md::StateLayoutDerived*, 2> layouts{&*t_layout, &*d_layout};
   // The target writes the drafter's streams; the drafter's pass and its

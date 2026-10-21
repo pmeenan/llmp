@@ -47,7 +47,7 @@ class TestK1Quality(unittest.TestCase):
 
         cfg_f16 = k1.make_config(family, "f16", share, data, port)
         self.assertIn('kv_cache_encoding = "f16"', cfg_f16)
-        self.assertIn('installed = "/share/m36-v1-artifacts"', cfg_f16)
+        self.assertIn('installed = "/share/u2-v1-artifacts"', cfg_f16)
         self.assertIn(k1.GEMMA2, cfg_f16)
         self.assertIn('data_dir = "/data"', cfg_f16)
         self.assertIn("port = 18114", cfg_f16)
@@ -56,31 +56,31 @@ class TestK1Quality(unittest.TestCase):
         self.assertIn('kv_cache_encoding = "q8_0"', cfg_q8)
 
     def test_every_family_serves_its_v1_import(self):
-        v1 = {"gemma2": "f176f912bc7761beee21cda0c22aff2080b8b84ed99faa6b962846c7e1379076",
-              "gemma3": "634bc193468f5968ac142c2e5547f72777b182f3f694873075d7a50660f46626",
-              "gemma26": "f0f72ab3d6c733d15472ceeecd05fdf200c266101c537bd3253548fc38559ab7",
-              "gemma31": "4d9a255ab47519b8061fcbc38bb5e72b9008d8e3538aad5edf0e7530fa82adc8",
-              "qwen38": "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d",
-              "qwen38-gguf": "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2",
-              "deepseek": "698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd"}
+        v1 = {"gemma2": "92bbb574ec219595d5942f05d1cce9480229b4bac5b7e22205af74499133ab4e",
+              "gemma3": "5d4674ce19e5783cea12775502f7ca23cbb2e6f2111efa2346c58bcd53482ece",
+              "gemma26": "23f6b7c1bfe2d80569107b07a1e3ddee7e310caca346b7937dfa3713a7e41027",
+              "gemma31": "915805856724410ee650dd95e15b5815ceb08eedf1536007d11ce5bbebd8e01c",
+              "qwen38": "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9",
+              "qwen38-gguf": "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027",
+              "deepseek": "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f"}
         for name, artifact in v1.items():
             with self.subTest(name=name):
-                self.assertEqual(k1.FAMILIES[name].store, "m36-v1-artifacts")
+                self.assertEqual(k1.FAMILIES[name].store, "u2-v1-artifacts")
                 self.assertIn(f'artifact = "{artifact}"', k1.FAMILIES[name].models_toml)
         for name in k1.FAMILIES:
-            self.assertEqual(k1.FAMILIES[name].store, "m36-v1-artifacts")
+            self.assertEqual(k1.FAMILIES[name].store, "u2-v1-artifacts")
 
     def test_assistant_families(self):
         fam26 = k1.FAMILIES["gemma26-assistant"]
         self.assertIn(k1.GEMMA26_ASSISTANT, fam26.models_toml)
         self.assertEqual(k1.GEMMA26_ASSISTANT,
-                         "23aa1c353091e1ce80309fe8dd55a90f679758525d4abaca2b974819aeae3ede")
+                         "2e3767959ef6ad30a86e7ccfcf5cb98db8d2b371100e81808e05bac49cefa70d")
         self.assertIn("speculation = true", fam26.models_toml)
 
         fam31 = k1.FAMILIES["gemma31-assistant"]
         self.assertIn(k1.GEMMA31_ASSISTANT, fam31.models_toml)
         self.assertEqual(k1.GEMMA31_ASSISTANT,
-                         "07067ae0547848e4dcf904148a917df300354f31eb9bed88c78d1b92c83602c0")
+                         "f931e7a0c9b995ac99062c3ae73bacb90960e6e1b8e155db5407c169663f0197")
         self.assertIn("speculation = true", fam31.models_toml)
 
     def test_passage(self):
@@ -245,11 +245,11 @@ class TestK1Quality(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = pathlib.Path(tmpdir)
             with mock.patch.dict(os.environ, {"LLMP_TEST_V1_STORE": ""}):
-                self.assertEqual(k1.resolve_store("m36-v1-artifacts", base), "m36-v1-artifacts")
+                self.assertEqual(k1.resolve_store("u2-v1-artifacts", base), "u2-v1-artifacts")
                 (base / "artifacts").mkdir()
-                self.assertEqual(k1.resolve_store("m36-v1-artifacts", base), "artifacts")
-                (base / "m36-v1-artifacts").mkdir()
-                self.assertEqual(k1.resolve_store("m36-v1-artifacts", base), "m36-v1-artifacts")
+                self.assertEqual(k1.resolve_store("u2-v1-artifacts", base), "artifacts")
+                (base / "u2-v1-artifacts").mkdir()
+                self.assertEqual(k1.resolve_store("u2-v1-artifacts", base), "u2-v1-artifacts")
 
     def test_stream_chat_raises_on_sse_error(self):
         with mock.patch("http.client.HTTPConnection") as mock_conn_cls:

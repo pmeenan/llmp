@@ -132,7 +132,6 @@ class ComponentStepSource final : public StepSource {
   std::expected<SpecializationChange, SpecializationError> NextSpecializationChange(
       const SpecializationRequest& request) const override;
   StageExecutionFacts StageFacts(std::uint16_t stage) const override;
-  bool JoinedRepeatPending(std::uint16_t stage) const override;
   bool UsesSideRows(std::uint16_t stage) const override;
   Status SideRows(std::uint16_t stage, std::uint16_t component,
                   std::span<const std::int32_t> history, std::uint32_t position,
@@ -202,7 +201,6 @@ class StagedStepSource final : public StepSource {
     return stages_[request.shape.stage]->NextSpecializationChange(request);
   }
   StageExecutionFacts StageFacts(std::uint16_t stage) const override;
-  bool JoinedRepeatPending(std::uint16_t stage) const override;
   bool UsesSideRows(std::uint16_t stage) const override;
   Status SideRows(std::uint16_t stage, std::uint16_t component,
                   std::span<const std::int32_t> history, std::uint32_t position,

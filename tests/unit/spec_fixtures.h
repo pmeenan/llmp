@@ -17,10 +17,8 @@
 #include <utility>
 #include <vector>
 
-#include "artifact/format_map.h"
-#include "artifact/json.h"
-#include "artifact/representation.h"
 #include "base/json.h"
+#include "fixture_source.h"
 #include "gemma2_fixture.h"
 #include "gemma3_fixture.h"
 #include "gemma4_assistant_fixture.h"
@@ -34,22 +32,8 @@ template <typename Resource>
 inline spec::Source SourceOf(std::string architecture, const std::vector<Resource>& resources) {
   spec::Source s{.architecture = std::move(architecture), .container = "gguf"};
   for (const Resource& r : resources) {
-    std::string text = std::format(
-        R"({{"family":"ggml","ne":[{}],"type":"{}"}})",
-        [&] {
-          std::string ne;
-          for (const auto d : r.ne) {
-            ne += (ne.empty() ? "" : ",") + std::to_string(d);
-          }
-          return ne;
-        }(),
-        r.type);
-    const auto doc = artifact::json::Parse(text);
-    EXPECT_TRUE(doc.has_value()) << text;
-    const auto rep = artifact::ParseRepresentation(doc->root());
-    EXPECT_TRUE(rep.has_value()) << text;
-    const auto f = artifact::FormatOf(*rep);
-    EXPECT_TRUE(f.has_value()) << text;
+    const auto f = fixture_detail::TensorFormatOf(false, r.type, r.ne);
+    EXPECT_TRUE(f.has_value()) << r.type;
     for (const std::string& role : r.roles) {
       s.tensors.push_back({.name = role, .format = *f});
     }

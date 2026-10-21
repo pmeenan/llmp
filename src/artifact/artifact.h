@@ -22,15 +22,14 @@
 // placements and read plans are the same for both, so nothing that pages
 // an artifact in depends on which version it read.
 //
-// Open checks what the prototype verifier checks when a loader opens a v0
-// artifact (layout.py's verify with deep=False), in its order, and the
-// same for v1 with v1's descriptors:
+// Open checks what the prototype verifier checks when a loader opens an
+// artifact (layout.py's verify with deep=False), in its order:
 //
 //   - the directory (itself possibly reached through a link): holding
 //     only data/ and meta/ and regular files, no links inside it, exactly
 //     the files the manifest lists plus manifest.json;
-//   - manifest.json (at most 1 MiB): strict JSON, a format and version
-//     this reader implements and the spark-v0 profile exactly, canonical
+//   - manifest.json (at most 1 MiB): strict JSON, the v1 format and
+//     the spark v1 profile exactly, canonical
 //     bytes, the directory named by their SHA-256; every key and value
 //     typed and patterned, lists in canonical order;
 //   - every listed file's size, before anything reads it; kept metadata
@@ -76,12 +75,17 @@
 
 #include "artifact/error.h"
 #include "artifact/layout.h"
-#include "artifact/representation.h"
 #include "base/bytes.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
 
 namespace llmp::artifact {
+
+// A row table's geometry: 2-D only.
+struct RowGeometry {
+  std::uint64_t rows = 0;
+  std::uint64_t row_bytes = 0;
+};
 
 inline constexpr std::uint64_t kMaxManifestBytes = std::uint64_t{1} << 20U;
 inline constexpr std::uint64_t kMaxIndexBytes = std::uint64_t{64} << 20U;
@@ -95,7 +99,7 @@ inline constexpr std::uint64_t kMaxLayer = std::uint64_t{1} << 20U;
 inline constexpr std::uint64_t kMaxDirectoryEntries = std::uint64_t{1} << 16U;
 // v1's spec.json; spec::kMaxSpecBytes (spec/stored.cc checks they agree).
 inline constexpr std::uint64_t kMaxSpecBytes = std::uint64_t{4} << 20U;
-// The newest artifact format version this build reads; it reads 0 too.
+// The artifact format version this build reads.
 inline constexpr std::uint32_t kFormatVersion = 1;
 
 // An owned file descriptor.
@@ -121,9 +125,7 @@ class FileDescriptor {
 struct Model {
   std::string architecture;
   std::uint32_t expert_count = 0;
-  std::vector<Family> representation;  // v0: sorted by name; v1: empty
-  // v1: the container the importer read ("gguf", "safetensors", "mlx",
-  // "exl3"); v0: empty.
+  // The container the importer read ("gguf", "safetensors", "mlx", "exl3").
   std::string container;
 };
 
@@ -142,9 +144,8 @@ struct ListedFile {
   Digest sha256{};
 };
 
-// v0's `converter`, or v1's `importer`: its name and version, and for v1
-// its build identity and the SHA-256 of the options it ran with (empty
-// and zero for v0).
+// The manifest's `importer`: its name, version, build identity and the
+// SHA-256 of the options it ran with.
 struct Converter {
   std::string name;
   std::string version;
@@ -158,11 +159,8 @@ struct Resource {
   std::uint32_t group = 0;
   Bytes offset;  // within the group, 256-byte aligned
   Bytes bytes;
-  Bytes readable;         // bytes plus the backend's over-read (zero pad)
-  Representation repr{};  // v0 only; a v1 resource's is empty
-  // The format of the tensor it holds a part of, and that part: v1's as
-  // recorded; v0's as format_map.h reads its representation (none where
-  // that has no format: Q8_1).
+  Bytes readable;  // bytes plus the backend's over-read (zero pad)
+  // The format of the tensor it holds a part of, and that part.
   std::optional<format::TensorFormat> format;
   format::PartRole part = format::PartRole::kData;
   bool rows = false;  // a row table (`access: "rows"`)
@@ -178,7 +176,6 @@ struct ExpertArray {
   Bytes group_offset;
   Bytes slice_bytes;
   Bytes readable;
-  Representation repr{};  // of one 2-D slice; v0 only
   // One slice's format (at most two dimensions) and the part each slice
   // holds, as for a resource.
   std::optional<format::TensorFormat> format;
@@ -227,7 +224,7 @@ class Artifact {
   ~Artifact() = default;
 
   const std::string& id() const { return id_; }
-  // 0 or 1.
+  // v1.
   std::uint32_t format_version() const { return format_version_; }
   const Model& model() const { return model_; }
   const Converter& converter() const { return converter_; }
@@ -247,7 +244,7 @@ class Artifact {
   std::optional<std::string_view> spec_json() const {
     return spec_json_ ? std::optional<std::string_view>(*spec_json_) : std::nullopt;
   }
-  // v1: what the importer applied; empty for v0.
+  // What the importer applied.
   std::span<const AppliedFold> folds() const { return folds_; }
   std::span<const Relayout> relayouts() const { return relayouts_; }
 
@@ -295,7 +292,7 @@ class Artifact {
 
   FileDescriptor root_;
   std::string id_;
-  std::uint32_t format_version_ = 0;
+  std::uint32_t format_version_ = 1;
   Model model_;
   Converter converter_;
   std::vector<Source> sources_;

@@ -77,22 +77,10 @@ std::optional<std::uint64_t> CellsOf(const StateTensorContract& t, std::uint32_t
 
 std::optional<std::string> Invalid(const StateTensorContract& t) {
   if (t.cell_bytes == 0 || t.cell_pad == 0) return "a state tensor has no cell bytes or padding";
-  // A numeric tensor's encoding is a state encoding (format::StateEncodings);
-  // the drafter progress control's I64 is checked with it below.
-  if (t.kind != StateKind::kDrafterProgress && !format::IsStateEncoding(t.encoding)) {
+  // A numeric tensor's encoding is a state encoding (format::StateEncodings).
+  if (!format::IsStateEncoding(t.encoding)) {
     return std::format("a state tensor's encoding ({}) is not a state encoding",
                        static_cast<std::uint16_t>(t.encoding));
-  }
-  if (t.kind == StateKind::kDrafterProgress) {
-    if (!ValidDraftPolicy(t.draft) || t.draft.progress != DraftProgressPolicy::kRepeatPending ||
-        t.encoding != Encoding::kI64 || t.cell_bytes != kDraftProgressBytes ||
-        t.cells != CellRule::kFixed || t.fixed_cells != 1 || t.rollback != Rollback::kNone ||
-        t.target_writes || t.borrowed_from_target || t.ring_reads_whole || t.dummy_last ||
-        t.partial_blocks || t.replayable) {
-      return "invalid drafter progress control contract";
-    }
-  } else if (t.draft != DraftPolicy{}) {
-    return "only a drafter progress control declares a draft policy";
   }
   if (t.replayable && t.cells != CellRule::kPerPosition && t.cells != CellRule::kPerBlock) {
     return "replayable private state needs position or block cells";
@@ -225,21 +213,8 @@ std::string_view KindName(StateKind kind) {
       return "prefix_cache";
     case StateKind::kFeatures:
       return "features";
-    case StateKind::kDrafterProgress:
-      return "drafter_progress";
   }
   return "unknown";
-}
-
-StateTensorContract DraftProgressControl(std::string name, DraftRelation relation) {
-  return {.name = std::move(name),
-          .kind = StateKind::kDrafterProgress,
-          .encoding = Encoding::kI64,
-          .cell_bytes = kDraftProgressBytes,
-          .cells = CellRule::kFixed,
-          .fixed_cells = 1,
-          .rollback = Rollback::kNone,
-          .draft = {.relation = relation, .progress = DraftProgressPolicy::kRepeatPending}};
 }
 
 std::expected<std::uint64_t, std::string> CellBytes(Encoding encoding, std::uint64_t values) {
@@ -345,7 +320,6 @@ std::expected<StateLayoutDerived, std::string> Place(
       s.bytes = *next;
     }
   }
-  if (auto progress = DraftBounds(s); !progress) return std::unexpected(progress.error());
   return s;
 }
 
@@ -480,44 +454,6 @@ const StateLayoutDerived::Item* FeatureTap(const StateLayoutDerived& layout) {
     found = &item;
   }
   return found;
-}
-
-std::expected<std::optional<DraftProgressBounds>, std::string> DraftBounds(
-    const StateLayoutDerived& layout) {
-  if (!Valid(layout)) return Refused("drafter progress is outside its layout");
-  const Item* control = nullptr;
-  for (const Item& item : layout.items) {
-    if (item.contract.kind != StateKind::kDrafterProgress) continue;
-    if (control != nullptr) return Refused("a stage has several drafter progress controls");
-    if (auto bad = Invalid(item.contract)) return Refused(*bad);
-    if (item.cells != 1 || item.bytes != kDraftProgressBytes)
-      return Refused("drafter progress control has the wrong footprint");
-    control = &item;
-  }
-  if (control == nullptr) return std::optional<DraftProgressBounds>{};
-  // Borrowed tensors are read-only views, guarded by the engine's exact
-  // accepted-prefix reservation. Only owned tensors declare private replay.
-  for (const auto& borrowed : layout.borrowed)
-    if (!borrowed.contract.borrowed_from_target || borrowed.contract.target_writes ||
-        borrowed.contract.replayable)
-      return Refused("repeatable drafter borrowed state must be a read-only target view");
-  const Item* tap = FeatureTap(layout);
-  if (tap == nullptr || tap->contract.cells != CellRule::kPerRow || tap->contract.row_carry == 0 ||
-      tap->contract.rollback != Rollback::kSnapshot ||
-      tap->cells != std::uint64_t{layout.max_rows} + tap->contract.row_carry) {
-    return Refused("repeatable drafter needs one snapshot chunk tap with preceding carry");
-  }
-  for (const Item& item : layout.items) {
-    if (&item == control || &item == tap) continue;
-    if (!item.contract.replayable || (item.contract.cells != CellRule::kPerPosition &&
-                                      item.contract.cells != CellRule::kPerBlock)) {
-      return Refused("repeatable drafter has private state without a replay guarantee");
-    }
-  }
-  return std::optional{DraftProgressBounds{.context = layout.context,
-                                           .max_rows = layout.max_rows,
-                                           .carry = tap->contract.row_carry,
-                                           .relation = control->contract.draft.relation}};
 }
 
 namespace {
@@ -807,19 +743,15 @@ std::expected<std::vector<StateRange>, std::string> CheckpointWrites(
   if (!Valid(layout) || positions > layout.context) {
     return Refused("checkpoint writes are outside their layout");
   }
-  auto progress = DraftBounds(layout);
-  if (!progress) return std::unexpected(progress.error());
-  const std::uint32_t first_position =
-      progress->has_value() ? DraftCheckpointFirst(positions, (*progress)->max_rows) : positions;
   std::vector<StateRange> out;
   for (const Item& item : layout.items) {
     const StateTensorContract& t = item.contract;
     std::uint64_t first = 0;
     if (t.cells == CellRule::kPerPosition) {
-      first = first_position;
+      first = positions;
     } else if (t.cells == CellRule::kPerBlock) {
       // A partly filled block is mutable; every chunk writes the dummy row.
-      first = first_position / t.block_ratio;
+      first = positions / t.block_ratio;
       if (t.dummy_last) out.push_back(Dummy(item));
     }
     first = std::min(first, item.cells);
@@ -887,12 +819,6 @@ std::string KeptLayoutId(const base::Sha256Digest& spec,
           t.dummy_last ? 1 : 0, t.partial_blocks ? 1 : 0, static_cast<unsigned>(t.rollback),
           t.target_writes ? 1 : 0, item.cells, item.offset, item.bytes,
           t.borrowed_from_target ? 1 : 0));
-      // Preserve IDs of existing contracts. New opt-in semantics are part
-      // of this layout's identity, even if every numeric byte stays put.
-      if (t.kind == StateKind::kDrafterProgress) {
-        hash.Update(std::format("draft {} {}\n", static_cast<unsigned>(t.draft.relation),
-                                static_cast<unsigned>(t.draft.progress)));
-      }
       if (t.replayable) hash.Update("replayable\n");
     }
     for (const auto& b : s.borrowed) {

@@ -54,9 +54,7 @@ llmp_gtest(runtime_test TEST_PREFIX unit. PROPERTIES LABELS unit
 # A model's settings in three layers (D-103): sources, precedence, refused
 # and ignored overrides, the reasoning markers, the listing.
 add_executable(model_settings_test model_settings_test.cc)
-target_link_libraries(model_settings_test PRIVATE llmp_runtime llmp_config)
-# v0 artifacts are refused (D-118): the reader's corpus golden, beside it.
-add_dependencies(model_settings_test artifact_corpus)
+target_link_libraries(model_settings_test PRIVATE llmp_runtime llmp_config llmp_test_artifact_writer)
 llmp_gtest(model_settings_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
              PROPERTIES LABELS unit)
 
@@ -539,13 +537,6 @@ add_executable(state_contract_test state_contract_test.cc)
 target_link_libraries(state_contract_test PRIVATE llmp_model)
 llmp_gtest(state_contract_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-add_executable(draft_progress_test draft_progress_test.cc)
-target_link_libraries(draft_progress_test PRIVATE llmp_model)
-llmp_gtest(draft_progress_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-add_executable(draft_progress_ledger_test draft_progress_ledger_test.cc)
-target_link_libraries(draft_progress_ledger_test PRIVATE llmp_engine_core llmp_fake_device_backend)
-llmp_gtest(draft_progress_ledger_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 add_executable(shapes_test shapes_test.cc)
 target_link_libraries(shapes_test PRIVATE llmp_execution llmp_scheduler llmp_fake_providers)
@@ -665,12 +656,11 @@ llmp_gtest(engine_llm_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 # Weight files open only while their model is active (engine/paged_node.h
-# SetActive, scheduler/files.h): copies of the artifact corpus's tiny golden
+# SetActive, scheduler/files.h): artifacts written for the test
 # paged on the fake device backend, the process's descriptors counted.
 add_executable(weight_files_test weight_files_test.cc)
 target_link_libraries(weight_files_test PRIVATE llmp_engine_core llmp_fake_device_backend
-                                                llmp_platform)
-add_dependencies(weight_files_test artifact_corpus)
+                                                llmp_platform llmp_test_artifact_writer)
 llmp_gtest(weight_files_test TEST_PREFIX unit.fake. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
              PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
@@ -905,14 +895,6 @@ if(LLMP_CUDA)
   target_link_libraries(qwen38_moe_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory)
   llmp_gpu_gtest(qwen38_moe_test)
 
-  # A Qwen3.8 speculative verify's commit (kernels/ggml/qwen38_commit.h):
-  # the kept rows' recurrence bit for bit the verify's own, the histories
-  # exact, and the launcher's refusals.
-  add_executable(qwen38_commit_test qwen38_commit_test.cc)
-  target_include_directories(qwen38_commit_test SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(qwen38_commit_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory)
-  llmp_gpu_gtest(qwen38_commit_test)
 
   add_executable(ggml_cublas_test ggml_cublas_test.cc)
   target_include_directories(ggml_cublas_test SYSTEM PRIVATE
@@ -921,36 +903,18 @@ if(LLMP_CUDA)
   llmp_gpu_gtest(ggml_cublas_test)
 endif()
 
-# The v0 artifact reader, in every profile, against a corpus the M0
-# prototype builds and judges at build time (artifact_corpus.py): its views
-# of valid artifacts and its verdicts on about 190 mutated ones and 800
-# seeded random mutations of their documents (with 8 divergence probes). The real
-# v0 fixtures are opened where they are installed (a Spark) and skipped
-# elsewhere.
-set(artifact_corpus "${CMAKE_CURRENT_BINARY_DIR}/artifact-corpus")
-set(artifact_prototype "${PROJECT_SOURCE_DIR}/docs/experiments/artifact-layout")
-add_custom_command(
-  OUTPUT "${artifact_corpus}/stamp"
-  COMMAND "${LLMP_PYTHON}" -B "${CMAKE_CURRENT_SOURCE_DIR}/artifact_corpus.py" "${artifact_corpus}"
-  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/artifact_corpus.py" "${artifact_prototype}/layout.py"
-          "${artifact_prototype}/test_layout.py"
-  COMMENT "Building the artifact reader's corpus with the M0 prototype"
-  VERBATIM)
-add_custom_target(artifact_corpus ALL DEPENDS "${artifact_corpus}/stamp")
+# The artifact reader: strict JSON and hex digests, read planning on
+# hand-built layouts, and Artifact::Open against filesystem edge cases.
 add_executable(artifact_test artifact_test.cc)
 target_link_libraries(artifact_test PRIVATE llmp_artifact)
-add_dependencies(artifact_test artifact_corpus)
-# CTest runs it here, beside the corpus (remote runs map this directory).
 llmp_gtest(artifact_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
              PROPERTIES LABELS unit ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 # The v1 artifact format (D-113) through the reader: valid artifacts the
-# test-only writer makes (tests/support/artifact_writer.h), v1 copies of the
-# corpus's v0 goldens placed and read as the originals, each rule refused
+# test-only writer makes (tests/support/artifact_writer.h), each rule refused
 # with its reason, seeded document mutations, v1 compositions.
 add_executable(artifact_v1_test artifact_v1_test.cc)
 target_link_libraries(artifact_v1_test PRIVATE llmp_artifact llmp_test_artifact_writer)
-add_dependencies(artifact_v1_test artifact_corpus)
 llmp_gtest(artifact_v1_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
              PROPERTIES LABELS unit ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
@@ -959,14 +923,6 @@ llmp_gtest(artifact_v1_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT
 add_executable(gguf_metadata_test gguf_metadata_test.cc)
 target_link_libraries(gguf_metadata_test PRIVATE llmp_artifact)
 llmp_gtest(gguf_metadata_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-# v0's descriptors as tensor formats (format_map.h, D-108): size parity with
-# the v0 rule, pairings, the corpus and the installed real artifacts.
-add_executable(artifact_format_map_test artifact_format_map_test.cc)
-target_link_libraries(artifact_format_map_test PRIVATE llmp_artifact)
-add_dependencies(artifact_format_map_test artifact_corpus)
-llmp_gtest(artifact_format_map_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-             PROPERTIES LABELS unit)
 
 # The composition reader (D-089): each rule of the prototype's
 # verify_composition on compositions built here, and the installed
@@ -1145,8 +1101,6 @@ llmp_gtest(approvals_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;mod
 add_executable(component_admission_test component_admission_test.cc)
 target_link_libraries(component_admission_test PRIVATE llmp_runtime llmp_components llmp_json
                                                        llmp_import llmp_test_artifact_writer)
-# v0 artifacts are refused (D-118): the reader's corpus golden, beside it.
-add_dependencies(component_admission_test artifact_corpus)
 llmp_gtest(component_admission_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
              PROPERTIES LABELS unit ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
@@ -1162,7 +1116,6 @@ llmp_gtest(spec_test TEST_PREFIX unit. PROPERTIES LABELS unit
 # artifacts the test-only writer makes, and v0's goldens refused (D-118).
 add_executable(spec_stored_test spec_stored_test.cc)
 target_link_libraries(spec_stored_test PRIVATE llmp_spec llmp_artifact llmp_test_artifact_writer)
-add_dependencies(spec_stored_test artifact_corpus)
 llmp_gtest(spec_stored_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
              PROPERTIES LABELS unit ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 

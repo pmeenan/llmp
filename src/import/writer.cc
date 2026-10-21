@@ -1060,8 +1060,8 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
                                          {"container", Q("safetensors")},
                                          {"file_alignment", N(artifact::kFileAlignment)},
                                          {"member_alignment", N(artifact::kMemberAlignment)},
-                                         {"profile", Q("spark-v0")},
-                                         {"profile_version", "0"}})},
+                                         {"profile", Q("spark")},
+                                         {"profile_version", "1"}})},
                            {"model", O({{"architecture", Q(source.architecture)},
                                         {"container", Q(source.container)},
                                         {"expert_count", N(layout->experts)}})},
@@ -1090,7 +1090,8 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   }
   if (auto ok = Deep(job, *opened); !ok) return std::unexpected(ok.error());
   for (const auto& directory : {job / "data", job / "meta", job}) {
-    ::chmod(directory.c_str(), 0755);
+    if (::chmod(directory.c_str(), 0755) != 0)
+      return Bad("cannot set artifact directory permissions");
     if (auto ok = Sync(directory); !ok) return std::unexpected(ok.error());
   }
   const auto destination = options.store / id;
@@ -1355,10 +1356,11 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
   }
 
   if (!options.files.empty()) {
-    ::chmod((job / "meta").c_str(), 0755);
+    if (::chmod((job / "meta").c_str(), 0755) != 0)
+      return Bad("cannot set metadata directory permissions");
     if (auto ok = Sync(job / "meta"); !ok) return std::unexpected(ok.error());
   }
-  ::chmod(job.c_str(), 0755);
+  if (::chmod(job.c_str(), 0755) != 0) return Bad("cannot set composition directory permissions");
   if (auto ok = Sync(job); !ok) return std::unexpected(ok.error());
 
   const auto destination = options.store / id;

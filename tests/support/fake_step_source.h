@@ -176,10 +176,7 @@ struct FakeSourceOptions {
 
 class FakeStepSource final : public engine::StepSource {
  public:
-  // This backend evaluates each owner independently. A constructor-only
-  // switch exercises the production default's unqualified boundary.
-  explicit FakeStepSource(FakeSourceOptions options, bool joined_repeat_pending = true)
-      : options_(std::move(options)), joined_repeat_pending_(joined_repeat_pending) {}
+  explicit FakeStepSource(FakeSourceOptions options) : options_(std::move(options)) {}
   std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const override {
     return options_.execution_identity
                ? options_.execution_identity()
@@ -187,9 +184,6 @@ class FakeStepSource final : public engine::StepSource {
   }
   engine::Status CheckExecutionUse(engine::NumericalUse use) const override {
     return options_.check_execution_use ? options_.check_execution_use(use) : engine::Status{};
-  }
-  bool JoinedRepeatPending(std::uint16_t /*stage*/) const override {
-    return joined_repeat_pending_;
   }
   planner::PlanKey KeyBase() const override;
   void EmitShapeParameters(const planner::StepShape& shape,
@@ -241,7 +235,6 @@ class FakeStepSource final : public engine::StepSource {
 
  private:
   FakeSourceOptions options_;
-  const bool joined_repeat_pending_;
   std::vector<Built> built_;
   // Shared with the programs; the device's host work counts on its thread.
   std::shared_ptr<std::atomic<std::uint64_t>> queued_ =
