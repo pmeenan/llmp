@@ -174,30 +174,21 @@ holds the history; this list is the whole queue of what is still open, with
 nothing left to "the record's carried list"; RE-058 is fixed in R6 and not
 carried):
 
-- Importer and formats: Qwen3.8's ModelOpt and MLX normalizers, pinned to
-  single checkpoints (`modelopt_qwen38.cc`, `mlx_qwen38.cc`), generalized into
-  mapping-driven normalizers (when Nemotron NVFP4 brings a second ModelOpt
-  model), with a generic route for HF-quantized and HF-MoE sources (a
-  `{expert}` pattern field, quantized parts in safetensors and MLX tables,
-  folds and relayouts on every plan); MLX serving qualification (imported and
-  admitted, not qualified for serving); the split NVFP4 experts' own fast
-  products (a grouped vector product for decode rows and the block-scaled
-  grouped GEMM over split scales); the MXFP4/MXFP8 relayout of routed experts
-  and dense NVFP4 linears; the stored per-geometry image spec; full-weight
-  Gemma 2/3 27B qualification.
+- Importer and formats: the generic import route for HF-quantized and HF-MoE
+  sources that retires Qwen3.8's checkpoint-pinned ModelOpt and MLX normalizers
+  (U3 below, before Nemotron: owner, 2026-10-20); MLX serving qualification
+  (imported and admitted, not qualified for serving); the split NVFP4 experts'
+  own fast products (a grouped vector product for decode rows and the
+  block-scaled grouped GEMM over split scales); the MXFP4/MXFP8 relayout of
+  routed experts and dense NVFP4 linears; the stored per-geometry image spec
+  (with U8); full-weight Gemma 2/3 27B qualification.
 - Families: Nemotron 3.5 Super VL ([m35-families.md](m35-families.md)).
 - Engine and runtime: masking head rows past `tokenizer_vocab`
-  ([RE-050](rough-edges.md)); `Q4_0` as a KV cache encoding setting; removing
-  Qwen2's single-owner policy (`max_decode_rows 1`, `owners_alone`) and
-  re-pinning its digests; the schedule products (`compact_experts`,
-  `pair_experts`, `pair_glu`, `dense_pair`, `vector_floats`, `d2r_experts`)
-  enabled only for DeepSeek, to be screened and enabled by capability on Gemma
-  26B-A4B and Qwen3.8 GGUF; kernel capability predicates that still name
-  DeepSeek, Qwen3.8 or Gemma dimensions (48-head `llmp.gdn.gates`, DeepSeek
-  Q-head/output-A/HC/QSA, Gemma owner attention); numerical qualification
-  scoped per device (it is `arch = 121` only, so `sm_86` gets no fused
-  qualified path) and the pinned/unpinned difference in
-  `component_admission.cc`.
+  ([RE-050](rough-edges.md)); `Q4_0` as a KV cache encoding setting; Qwen2's
+  single-owner policy, the DeepSeek-only schedule products and the kernel
+  capability predicates that name DeepSeek, Qwen3.8 or Gemma dimensions (U7
+  below); numerical qualification per device and the pinned/unpinned
+  difference in `component_admission.cc` (U4 below).
 - Test and build infrastructure: the `native` preset test binaries' cuBLAS
   `RUNPATH`; `cpu-asan` `-fsanitize=function` on GGML `to_float` calls and the
   importer mutation test under ASan (both in the `check:full` and
@@ -444,6 +435,8 @@ family" guide, and its long-context scaling work.
       - **re-gate** DeepSeek DSpark's C4 wall, the Qwen-Image generation and
         Gemma 2's prefill with it, and retire M3.6's accepted DSpark exception
         when the first passes ([record](m36-record.md#accepted-exceptions)).
+      Its first sub-slice is U1's engine seams (the M3.6 generality
+      follow-ups below).
 - [ ] **Drafter confidence calibration screen (owner, 2026-10-20): early
       M3.5, beside the memory modes** (independent of them, and light: a
       diagnostic, no default changes). Bind DSpark's `conf_proj` (imported
@@ -507,6 +500,245 @@ family" guide, and its long-context scaling work.
       agent transcripts (code edits, repeated tool output) first; then
       offer it to models with no drafter where their verify shapes and
       rollback contracts exist.
+**M3.6 generality follow-ups (owner, 2026-10-20).** The M3.6 review of
+2026-10-20 found the one-engine structure met but much family knowledge
+moved down a layer: kernel capabilities whitelist checkpoint shapes,
+numerical admission keys on container and component-kind proxies and on
+GB10 only, schedule products are opt-in per mapping, and HF-quantized and
+HF-MoE sources import only through C++ pinned to single Qwen3.8
+checkpoints. Its correctness defects landed in `101fde83`, `a2aa3b87`,
+`6840b1db` and `639583b9`; the items below are its architecture work, which
+makes D-107, D-110, D-123 and rule 11 true where the code does not yet meet
+them (no load-bearing constraint changes). The owner took the review's
+recommendations (2026-10-20): the generic import route comes before Nemotron
+and every other new family; an agent proposes the second-architecture proof
+checkpoints from the archive catalog and the owner approves; GB10 numerical
+evidence does not carry to `sm_86`; measured selection is checked-in rank
+data per device class, not autotuning; the second image model is chosen with
+the media routes item; the default-off repeat-pending drafter ledger is
+deleted. **Order:** U1 is the memory modes' first sub-slice; U2 and U3 run
+beside the memory modes (separate code; Spark check capacity is the limit);
+U4, U5 and U6 next; U7 after the memory-mode re-gate, so gates measure one
+change at a time; U8 before a second image model; U9 at M4 entry. Every
+item that touches selection keeps each M3.6 speed-table row within its band
+(the tiered two-block confirmation per family, the full gate only near the
+line), and a newly covered shape takes the fast path in its plan report.
+Decision entries land with U3 (one mapping per architecture, transforms
+planned by role and encoding, manifest mapping provenance; amends D-109,
+D-113, D-120), U4 (numerical evidence as component data scoped by device
+class; amends D-123) and U8 (the image stage graph as spec data; amends
+D-122).
+
+- [ ] **U1 Engine seams for the memory modes** (the memory modes' first
+      sub-slice): the node budget held live by the scheduler and reaching
+      `PlanMaterialization`, `AcquireProgram` and `LiveState` (copied by
+      value at `Start` today); `PressureTrimLimits` from the node
+      configuration; one engine-side backend factory owning the device
+      index, GGML backend, cuBLAS handle and workspace sizing (each of
+      `runtime/component_build.cc` and `component_image_build.cc` builds its
+      own on device 0), with `runner_resources.h` naming no GGML launch
+      types, `expert_slab.cc` sizing from the format layer, `SelectedSource`
+      out of `kernels/ggml/`, and `tools/llmp_boundaries.py` checking
+      kernel-library names; one unproven-work object cleared only by a
+      positive stream fence, replacing `step_flight_`, `routed_flight_`, the
+      row table's `stalled`, the batch's `unknown`, `HostCopyUnproven` and
+      `KeepPinned` (on R20's fence acknowledgement); `PagedNode` split along
+      its driver-thread and catalog-call contracts; `SupplementalJob`
+      reclaiming as `Acquire` does before on-demand experts are wired.
+      **Exit:** one budget owner and one backend factory in the memory-mode
+      design, no runtime or engine file naming a kernel library (checked),
+      and a recovery test whose retirement is genuinely unprovable serving
+      again.
+- [ ] **U2 Test-only paths and v0 removed:** delete `PlanGraph`
+      (`kernels/ggml/graph_plan.cc`) and move its tests and
+      `benchmarks/decode_templates.cc` onto the IR lowering production uses;
+      delete `Qwen38Commit` (its tests become component tests); port
+      `tests/support/families`, `V0ArtifactSource`, the tests that need
+      `~/.local/share/llmp/m3-artifacts` and the v0 arms of `speed_gate.py`,
+      `swap_table.py` and `assistant_gate.py` to v1, then delete the v0
+      reader, rename the `"spark-v0"` layout profile (D-121) and list the M3
+      v0 store for the owner to delete (rule 8); move `LLMP_TEST_HOLD_READS`
+      out of the production binary behind a test seam; delete the
+      repeat-pending drafter ledger (owner, 2026-10-20); extend
+      `benchmarks/import_fuzz.cc` through `spec::Synthesize`, the
+      normalized plan and the v1 artifact reader, with a checked-in seed
+      corpus and one recorded bounded run (D-085), and add the fuzz entry
+      to engine.md's "add a container" checklist. **Exit:** no production
+      source references v0 or `PlanGraph`, the shared suite passes without
+      `m3-artifacts`, and the fuzz run is recorded.
+- [ ] **U3 One generic import route** (before Nemotron and every new
+      family, owner 2026-10-20; three sub-slices). It retires the
+      Qwen3.8 ModelOpt and MLX normalizers (`import/modelopt_qwen38.cc`,
+      `mlx_qwen38.cc`, pinned to exact tensor counts, dimensions and the
+      string `"modelopt MIXED_PRECISION"`), and every HF quantization in the
+      formats item below (MXFP4, NVFP4, MXFP8, FP8, AWQ, GPTQ, MLX affine)
+      and every HF MoE, Nemotron's included, arrives through it.
+      - **U3a One mapping per architecture:** `import::SourceMapping`
+        merged into `spec::Mapping`; the semantic metadata namespace
+        derived from the architecture, failing closed on any unconsumed
+        `<arch>.*` key (the hand-kept `kGgufSemantic` fails open for a
+        family it omits); one HF↔GGUF key and tensor dialect table replacing
+        the `KeyAlias` tables, `gemma3.cc`'s rewriting lambdas and
+        `source_mapping.cc`'s `language_model.` loops, with a nesting-prefix
+        field; the family and kind names out of generic import code
+        (`normalize.cc`'s `qwen4exp.rope.dimension_count`, `dflash.` and
+        `gemma4-assistant.`, `writer.cc`'s `side.ngram`/`side.hash`,
+        `expert_relayout.cc`'s name fallbacks and `StackedNameOf`); mapping
+        provenance in the manifest (importer version, mapping architecture
+        and version) and a `spec.json` for drafter artifacts; the mapping
+        version no longer selecting a serving form (MTP replay is version 2
+        today); one artifact identity rule (the raw-manifest SHA form
+        dropped, D-121); serving reading the stored spec without
+        `FindMapping` for structure; startup composing and admitting once,
+        opening each artifact once and taking context and sampling from the
+        spec rather than re-parsing kept `config.json` and GGUF metadata.
+        **Exit:** a dense family of a known shape is one mapping file and one
+        registry line, and every published v1 artifact re-imports
+        content-identical apart from the new provenance fields.
+      - **U3b Quantized parts and experts:** an `{expert}` placeholder
+        gathering per-expert tensors into stacked tables; quantized part
+        kinds in safetensors and MLX rules (block, global and affine
+        scales, biases, zero points) from the `hf_quant` and `mlx` readers'
+        descriptors; the normalized plan's folds, permutations, scale-atom
+        relayouts and strided parts planned by tensor role and encoding on
+        every import (rule 11), so native Gemma HF imports store the 1 + w
+        fold (8% of decode when measured on Qwen); Qwen3.8 ModelOpt and MLX
+        expressed as mappings and both normalizers deleted. **Exit:** Qwen3.8
+        ModelOpt and MLX re-import with identical tensor content digests and
+        no checkpoint-named import code; a plain-NVFP4 ModelOpt checkpoint
+        and an MLX checkpoint of a second architecture (proposed from the
+        archive catalog, owner-approved) import and serve; the refusal and
+        adversarial tests cover the new part kinds.
+      - **U3c Llama 3 RoPE frequency scaling** (`rope_type: "llama3"`,
+        `low_freq_factor`, `high_freq_factor`, refused today) as a RoPE
+        component parameter. **Exit:** a Llama 3.1+ HF checkpoint from the
+        archive imports and matches its reference under D-085's quality
+        checks.
+- [ ] **U4 Numerics as component data, per device:** each
+      changed-arithmetic rewrite declares the qualification it needs and the
+      component roles and encodings it applies to, and admission derives
+      qualifications identically for pinned and unpinned checkpoints (no
+      `approval->numerical.empty()` early return, no container proxies, so
+      NVFP4 in GGUF qualifies as in safetensors, and no component-kind
+      proxies granting DeepSeek's evidence to any `hc.mix` or `ffn.moe`);
+      evidence is data naming the device class it was measured on, with no
+      `arch = 121` default, and a device without evidence runs the exact
+      unfused path and says so in its plan report (`sm_86` qualifies through
+      its own `gpu-discrete` evidence run, owner 2026-10-20). Image attention
+      tuning stops defaulting on by `architecture / 10 == 121`. **Exit:**
+      `component_admission.cc` has no container or kind branches; a pinned
+      and an unpinned artifact of one architecture and encoding set receive
+      identical qualifications (tested); an `sm_86` plan report names what
+      it lacks.
+- [ ] **U5 Front-door and scheduling seams** (the first sub-slice of the
+      tool-call and Messages items; heavy-path review, it touches the
+      serving loop): a per-route stream encoder (`Channel` stops hard-coding
+      OpenAI SSE; Messages owns `message_start`, indexed blocks,
+      `input_json_delta` and `ping`); structured message parts (text,
+      `tool_use`, `tool_result`, image) replacing the text-only
+      `chat::Message`; cohort, turn, drain and substitute policy lifted out
+      of `Server::ServeCooperative` into a scheduler-side policy object the
+      HTTP server only frames requests for, which the throughput-first
+      scheduling item below builds on and M4's conductor reuses, and which
+      time-slices a substitute cohort too (today it runs to completion while
+      the paused model waits unbounded); `Llm` (70 virtuals, one
+      implementation) collapsed to the concrete engine type or the narrow
+      interface its callers use; `Server::Activate` and `Server::Reclaim`
+      split into named phases. **Exit:** the tool-call and Messages items
+      build on these seams with no OpenAI-specific code in shared paths, and
+      the cohort policy has unit tests without a socket.
+- [ ] **U6 IR and planner structure:** one op-trait table (arity, write
+      set, layout class, splittability with no silent "unsplittable"
+      default, decomposition, reference) replacing the dozen-odd per-op edit
+      points and the separate write-set definitions; vendor facts out of the
+      vendor-neutral layers (`ProductArithmetic::kGgmlQ8_1F32` renamed,
+      GGML's int32 extent limits moved from the IR verifier to the GGML
+      backend's validation, `execution/measured_ranks.h`'s device and kernel
+      names turned into rank data keyed by device facts); checked-in rank
+      data per device class comparing each fusion with its own
+      decomposition per shape class (owner, 2026-10-20), so a fusion that
+      loses on a shape class is not selected there; a match and a no-match
+      synthetic test for each planner pattern (twelve are named in no test
+      today). **Exit:** adding an IR op edits the trait table, its kernels
+      and its tests only, and the boundary check finds no vendor or kernel
+      names under `ir/` or `execution/`.
+- [ ] **U7 Fast paths by capability** (after the memory-mode re-gate and
+      U4/U6; five sub-slices, each moving its fusions' patterns to matching
+      against their decompositions, which three of the sixty use today):
+      - **U7a:** parameterize the whitelisted kernels: GDN gates' heads (48
+        only, `h = i % 48` in the kernel), HC width and stream count, the
+        weighted reduce's width and slots, QSA's head and indexer sizes,
+        DeepSeek's Q-head and output-A shapes and encodings (output-A is Q8_0
+        only), owner attention's head counts, sizes and softcap, and the MXFP8
+        GEMV schedule by shape class (keyed on `ne[0] == 2560` today); move
+        `lower.cc`'s shape-literal sub-selections into capabilities as
+        separate implementations so plans and plan keys show them; merge or
+        select by capability the ops with one kernel per family (`kRoute`,
+        `kMoeCombine`, `kRmsNormMulRope`, the two HC sets); rename the
+        family-named kernel files and implementation IDs.
+      - **U7b:** a boundary-style lint rejecting model-dimension literals
+        in `capabilities.cc`, `lower.cc` and kernel sources (an allowlist
+        for hardware and algorithm constants), and "a fast path gated on one
+        model's dimensions" added to workflow.md's review criteria.
+      - **U7c:** screen the schedule products (`compact_experts`,
+        `pair_experts`, `pair_glu`, `pair_glu_q8`, `vector_floats`,
+        `d2r_experts`; only DeepSeek and DSpark enable them, and `dense_pair`
+        also the generic dense decoders) on Gemma 26B-A4B GGUF, Qwen3.8 GGUF
+        and NVFP4 and DeepSeek under D-085, and enable each by capability
+        where it does not lose; per-mapping settings remain only for measured
+        exceptions; `d2r` is not bit-identical and takes the same-quality
+        check (rule 11).
+      - **U7d:** encoding coverage (rule 11): a dequantize-to-F16 plus
+        cuBLAS rung for any GGML type without a tile kernel (IQ1_M and Q1_0
+        have no device path today); an FP8 E4M3 block-scaled product for the
+        DeepSeek and Qwen FP8 safetensors U3b imports; EXL3 device instances
+        for 3inst, mul1 and 2–3 bpw (MCG at 4/5/6/8 bpw only today);
+        quantized KV at head size 128 by capability fallback and kernel
+        instances instead of a refusal in component validation
+        (`components/attention.cc`); the MXFP8 scale swizzle done once at
+        import and recorded as a layout (D-108, D-113), not on every prefill
+        step.
+      - **U7e:** Qwen2 batches: remove its single-owner policy
+        (`max_decode_rows 1`, `owners_alone`, kept to preserve frozen v1
+        digests) and re-pin the digests (rule 11: every model batches, speed
+        over bit-exactness); record any remaining single-owner envelopes
+        (Gemma 4 outside its envelope) as exceptions with their reason.
+      **Exit:** a capability test on a synthetic non-reference shape takes
+      each formerly whitelisted fast path; the lint passes; the M3.6 speed
+      rows hold; the format coverage report lists a device path for every
+      encoding the importer accepts; Qwen2's C1/C2/C4 is measured against
+      its comparator.
+- [ ] **U8 Image pipeline as data** (before a second image model; two
+      sub-slices): the VAE decoder's and DiT block's wiring
+      (`model/image_pipeline.cc`'s `VaeDecoderTensors`/`VaeDecoderPlan`,
+      `spec/image_spatial.cc`'s `AppendImageBlock`) as stage-graph data in
+      the spec, extending D-122's links, and every spatial kind through the
+      `ComponentDef::spatial` hook instead of `components/spatial.cc`'s
+      kind-string switches; then the format layer in place of the BF16-only
+      checks, so a quantized Qwen-Image imports and runs, and the image
+      importer accounting for every source tensor through its mapping, as
+      the LLM route does (`a2aa3b87` refuses an unmapped one; this makes it
+      structural). The second model is chosen with the media generation
+      routes item (owner, 2026-10-20), and the stored per-geometry image spec
+      carried in from M3.6 lands here. **Exit:** Qwen-Image produces identical
+      images from data, and a second VAE/DiT configuration imports with no
+      C++ change.
+- [ ] **U9 Partitioning and per-model residency** (M4 entry; amends M4's
+      "Concurrent models and the shared workspace" item).
+- [ ] **U10 Review leftovers** (small; re-verify each at HEAD first): the
+      runtime's single `swapped_`/`parts_` fields measured against the
+      wrong swap; `ChargeRuntime`'s count and catalog falling out of step
+      when `AddExtent` fails; `CheckOwners` testing the `expected` rather
+      than its `optional`; a spill discarding the drafter's catch-up
+      (`invalidate` where `content_changed` is meant);
+      `StepTransaction::Begin` counting `pending` before a return that can
+      fail; HTTP's 503 for a render-time deadline (504), `102 Processing`
+      ahead of a stream's 200 after a half-close, and `malloc_trim` on the
+      I/O thread; and the readers' hardening (open by `O_PATH` and re-open
+      instead of `stat` then `open`, overlap checks by physical file, bounds
+      on `base::json`'s accessors, checked image payload sums, kept pipeline
+      JSON re-checked by identity, writer `chmod` results checked).
+
 - [x] **Family selection** (approved by the owner 2026-09-29: all 13
       checkpoints of [m35-families.md](m35-families.md), with the answers
       recorded there). The goal is
@@ -2298,7 +2530,14 @@ requantization from optimizations at unchanged quality.
       (`Server::resident_`, the cohort model, one swapped model and its parts,
       `SwapBytes`, `SpillView`; the M3.6 review of 2026-10-20), and the
       partitioner is a CPU model nothing executes yet (no non-reference
-      collectives; mqa, hc and ple declare no splits).
+      collectives; mqa, hc and ple declare no splits). M3.5's U9 (owner,
+      2026-10-20) lands here before entry: `PlanKey::partition` as a digest
+      of the assignment and device rank rather than a bare index,
+      non-reference collectives, split declarations for `attention.mqa`,
+      `hc.*`, GDN and the routing and pooling ops, rewrite rules for the ops
+      `planner/partition.cc` cannot split today (`kGatedDeltaNet`,
+      `kSsmConv`, `kPool`, `kIndexScore`, `kHc*`, `kRoute`), and per-model
+      residency records replacing the single-model fields above.
 
 **Exit criteria:**
 
