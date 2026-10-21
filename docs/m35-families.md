@@ -150,11 +150,15 @@ on DGX Spark under vLLM, with the n-gram table offloaded and an FP8 KV cache
 to 1M tokens.
 
 What it adds: NVIDIA's "new lossless compression format" for the NVFP4
-scale factors (undocumented on the card; the importer must decode it or
-relayout it at import, AGENTS.md rule 11's import bullet), the vision tower
+scale factors (undocumented on the card; probably the CSF that Flare
+describes with a reference decoder, unconfirmed,
+[assessment](flare-assessment.md#1-nvfp4-scale-compression-csf-for-fp4-local);
+the importer must decode it or relayout it at import, AGENTS.md rule 11's
+import bullet), the vision tower
 (M3.5's media inputs), and QAD numerics distinct from the Mia-AiLab NVFP4
 the engine serves today. At bring-up: pin a revision into the archive
-(D-114), identify the scale-compression format from ModelOpt's source,
+(D-114), confirm the scale-compression format against Flare's CSF
+documentation and reference decoder (or ModelOpt's source if they differ),
 use the latest TensorFold as the same-format reference (the owner reports
 it supports this checkpoint; confirm at M3.5's entry TensorFold re-pin, per
 AGENTS.md rule 3), with the card's vLLM container as a fallback, and compare

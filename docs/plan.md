@@ -423,6 +423,21 @@ family" guide, and its long-context scaling work.
       was neutral (optimization-inventory.md, T81), while its counted
       adaptive depth 2–3 (T45) stays the selected policy there
       ([assessment](deepinfer-assessment.md#1-confidence-budgeted-verification)).
+      Built with [Flare's](flare-assessment.md#3-speculation-details-calibration-screen-sampled-speculation)
+      shapes (owner, 2026-10-20): one per-request, per-depth, per-source
+      acceptance profile (conditional acceptance per depth, expected tokens
+      at width W = 1 + p1 + p1·p2 + …), carried with conversation state as
+      `AdaptiveDepth`'s is, replaces `AdaptiveDepth`'s two-depth choice and
+      `AdaptiveWaveMode`'s whole-wave average where it measures no worse
+      (T45 stays Qwen3.8's policy until then), and confidence refines it
+      once a proposal exists; a draft position is admitted on confidence
+      through that position only (causal prefix, so sampled drafts stay
+      unbiased); a drafter that exposes confidence (DSpark first) runs
+      draft and verify as two graphs so verify width follows confidence
+      (one host decision, D-106's 6–11 µs); and verify graphs are keyed
+      by total rows with per-request row counts and offsets as device
+      inputs, packed by a small dynamic program, so per-request widths
+      never multiply captured shapes.
 - [ ] **Sampled speculation** (moved from M9 by the owner, 2026-10-20;
       with the calibration screen, which touches the same drafter outputs
       and verify path): in the shared verify path for every drafter
@@ -439,6 +454,20 @@ family" guide, and its long-context scaling work.
       outputs within declared statistical bounds, the PIT/KS check) applies
       here. Adopt on measured C1/C2/C4 sampled decode
       ([assessment](deepinfer-assessment.md#2-speculative-sampling-with-the-drafters-distribution)).
+      Verify and commit state are also tested with acceptance forced by a
+      one-token constraint, which removes drafter noise
+      ([Flare](flare-assessment.md#3-speculation-details-calibration-screen-sampled-speculation)).
+- [ ] **History-copy drafts, measure first** (owner, 2026-10-20, from
+      [Flare](flare-assessment.md#7-history-copy-drafts)): a proposal source
+      in the shared speculation scheduler that suffix-matches the
+      request's own history (n-grams within a bounded window) and proposes
+      what followed, merged with any learned drafter under one verify
+      budget, acceptance tracked per source in the profile above. Its q is
+      a point mass, so it is exact under today's verify rule and under
+      sampled speculation. Measure acceptance and decode gain on recorded
+      agent transcripts (code edits, repeated tool output) first; then
+      offer it to models with no drafter where their verify shapes and
+      rollback contracts exist.
 - [x] **Family selection** (approved by the owner 2026-09-29: all 13
       checkpoints of [m35-families.md](m35-families.md), with the answers
       recorded there). The goal is
@@ -586,7 +615,28 @@ family" guide, and its long-context scaling work.
       beside the 256-seed total-variation check; and a debug-build
       tripwire in the CUDA provider that fails a blocking driver call
       (stream, event or context synchronize, synchronous copy) inside a
-      step's submit region. No default changes.
+      step's submit region. No default changes. From
+      [Flare](flare-assessment.md#10-poison-on-remap-diagnostic) (owner,
+      2026-10-20): the bounds use full-vocabulary KL, top-1 margin (a flip
+      under the measured noise margin is benign) and top-10 overlap, with
+      a three-way noise floor (reference against canonical) as their
+      measured basis; a diagnostic provider mode fills discardable
+      extents with a poison pattern on every (re)map and the swap, wave
+      and verify model tests run under it (the RE-058 class, where a value
+      prepared once in shared scratch is lost on re-backing); and
+      concurrent lanes (T15) get delay-injection stress.
+- [ ] **Small serving items from Flare** (owner, 2026-10-20,
+      [assessment](flare-assessment.md#11-smaller-items)):
+      - sampling defaults recorded at import from the model card for
+        artifacts whose checkpoint carries none (Qwen3.8 NVFP4 today),
+        since agent clients omit them; temperature 0 stays greedy and
+        requests are never clamped;
+      - XXH3 (BSD-2, source-locked) instead of SHA-256 for spill and
+        checkpoint integrity, hashed inline with the write (owner-only
+        files, torn or corrupt data, not an adversary; artifacts keep
+        SHA-256 under D-054), amending D-105's record format when it lands;
+      - registered io_uring buffers on the host-VMM landing zone, and
+        bounded batched copies on a low-priority stream for spills.
 - [ ] **Seven-day retention default** (owner, 2026-10-20; D-055 as
       amended): idle conversations and turn checkpoints survive an idle
       weekend. Move `[memory] retention_hours`' default from 24 to 168
@@ -611,11 +661,27 @@ family" guide, and its long-context scaling work.
       and a bound token that forces it for `tool_choice: required` or a
       named function; no per-model parser code
       ([assessment](deepinfer-assessment.md#8-tool-calls-and-structured-output)).
+      Each format's data also declares, after
+      [Flare](flare-assessment.md#5-tool-calls-and-the-messages-profile)
+      (owner, 2026-10-20), the per-call begin and end, where the name sits,
+      the argument encoding (a JSON object, or a tagged-parameter pattern
+      with its value-trimming rule: Qwen's `<parameter=…>`, GLM's key/value
+      tags, DeepSeek's DSML) and whether the tool opener ends reasoning;
+      one interpreter consumes it. Each call streams whole, as one
+      argument fragment, once it validates, so no incremental argument
+      parser is needed.
+      Flare's edge cases are the test suite: an unclosed parameter closed
+      by the next boundary, omitted outer tags, one wrapping newline
+      trimmed per side, schema-guided scalar conversion when not strict,
+      undeclared names returned in auto mode, a truncated call dropped
+      with a length finish, parallel tool results reordered into call
+      order before rendering, and calls without IDs tolerated.
       Qwen's tool-call and thinking markers are user-defined tokens, which
       match in message content for reference parity, unlike control tokens
       (tokenizer.md); the parser reads only generated output, never rendered
       input, and the item records whether content forging a marker needs a
-      renderer-side guard. Every served LLM whose template declares tools
+      renderer-side guard (Flare has none: its `rejected_tokens` refuses only
+      media placeholders a package cannot serve). Every served LLM whose template declares tools
       (lifting Gemma 4's refusal of tool declarations, runtime-serving.md);
       checked with OpenCode, the named client on this route. The
       Responses route, and with it Codex, stays M5's; Messages moves with
@@ -644,8 +710,14 @@ family" guide, and its long-context scaling work.
         all, until M7's); `context_management` and the beta tool-schema
         fields disabled in the pinned setup
         (`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`), since the client does
-        not retry their rejection; `output_config` rejected naming the
-        field; the prompt-too-long 400; `cache_control` advisory; the
+        not retry their rejection, unless a captured request shows
+        `context_management` is only `clear_thinking_20251015` with
+        `keep: "all"`, which is accepted as Flare does and drops the
+        switch; `output_config` effort mapped onto the template's effort
+        levels where it takes them (found by trial render) and otherwise
+        rejected naming the field; a mid-conversation system message the
+        template would drop rendered as a delimited user turn (trial
+        render); the prompt-too-long 400; `cache_control` advisory; the
         attribution block stripped when it stands alone as the first
         `system` entry, so shared-prefix identity excludes it; the hint
         headers tolerated, default policy until M6's release semantics;
@@ -657,7 +729,12 @@ family" guide, and its long-context scaling work.
 
       Done when a pinned Claude Code build, with the pinned profile's
       settings, completes an agentic session with tool use against a served
-      LLM. M5 keeps the Responses
+      LLM, in the shape of Flare's coding-client test (isolated settings
+      sources, an empty strict MCP config and a fixed tool list, normal and
+      `--bare`): it fixes a seeded bug in a temporary repository, the test
+      passes, the test file is untouched and a tool call ran; OpenCode runs
+      the same task on the chat route
+      ([Flare](flare-assessment.md#5-tool-calls-and-the-messages-profile)). M5 keeps the Responses
       route, the rest of D-045's front-door rules and its acceptance, which
       re-verifies Messages.
 - [ ] **Shared-prefix reuse across conversations, minimal** (moved from
@@ -680,6 +757,33 @@ family" guide, and its long-context scaling work.
       tokens. Block sharing, reference counting and the full retention
       policy stay M6's
       ([assessment](deepinfer-assessment.md#7-shared-prefix-cache-generic-over-state-contracts)).
+      Keys and boundaries follow
+      [Flare](flare-assessment.md#4-prefix-keys-and-boundaries-minimal-prefix-reuse)
+      (owner, 2026-10-20): chained 128-bit hashes over 64-token blocks,
+      independent of any contract's block grain and domain-separated by
+      D-055's whole identity above, not model identity alone as in Flare;
+      mid-block endpoints keyed exactly (parent digest,
+      tail tokens, count); per-block buckets so lookup costs about one
+      probe per 64 new tokens; conditioning inputs hashed at their
+      positions; one shared transfer for concurrent waiters. Boundaries
+      come from rendering each message prefix and keeping it only when it
+      is a strict token prefix of the full prompt, which works for every
+      template and locates D-055's declared boundary without per-template
+      rules (cross-conversation byte stability is still measured as above). A hit
+      check predicts how many prefill launches the hit leaves and compares
+      the runtime's counters.
+- [ ] **Checkpoints off the turn path, measure first** (owner,
+      2026-10-20, from [Flare](flare-assessment.md#9-checkpoints-off-the-turn-path)):
+      turn checkpoints are captured and restored synchronously on the turn
+      path at queue depth 1 through one 2 MiB staging buffer
+      (`src/engine/checkpoint_file.cc`), and every 2 MiB extent holding a
+      mutable byte is captured whole. Measure capture time alone and
+      mutable against captured bytes on Qwen3.8 and DeepSeek; then capture
+      by device copy into a cataloged, charged snapshot extent published
+      after a fence and written behind at queue depth above 1, pipeline
+      restores (read N+1 while copying N), and capture only the state
+      contract's mutable byte ranges. The prefix reuse above copies with
+      the same machinery.
 - [ ] **Token-keyed row read-ahead, measure first** (moved from M4 by the
       owner, 2026-10-20): measure the share of Qwen3.8's prefill and
       decode step time spent in its synchronous n-gram row reads
@@ -692,6 +796,16 @@ family" guide, and its long-context scaling work.
       a read-ahead landing and its row slots are charged whole while in
       flight (D-006, D-007), as today's per-chunk ones are
       ([assessment](deepinfer-assessment.md#4-token-keyed-row-read-ahead)).
+      The key function is also evaluable in the graph, after
+      [Flare](flare-assessment.md#2-device-keyed-row-delivery-the-token-keyed-row-read-ahead)
+      (owner, 2026-10-20), for decode and drafted rows whose keys the host
+      does not know: the graph writes row IDs and a sequence number to a
+      host-mapped mailbox, the pager's reader polls it (RE-017), issues
+      direct reads into the landing (no CPU copy, D-081) and raises a
+      flag, and the gather runs behind an event wait at the first
+      consuming layer. Host keys keep cross-chunk read-ahead in prefill.
+      A row cache only if the measurement shows reuse, as a reclaimable
+      catalog entry priced at its re-read cost.
 - [ ] **Dependency audits for adopted DeepInfer items** (owner,
       2026-10-20), source and license only, no integration:
       - **xgrammar** (structured output for M7's constrained output and
@@ -703,6 +817,47 @@ family" guide, and its long-context scaling work.
         gate kernels V4.1 needs): pin a revision, record its license, and
         write down the hash and gate formulas with their sources, so M4's
         Engram component is not blocked on them.
+- [ ] **NVFP4 scale compression (CSF) in the importer** (owner,
+      2026-10-20), for [Qwen3.8 FP4-Local](m35-families.md#owner-requested-addition-qwen38-flash-next-fp4-local):
+      Flare describes a lossless NVFP4 scale compression, CSF
+      (`csf_32x2_v1` and the slab variant), and ships an independent
+      reference decoder
+      ([assessment](flare-assessment.md#1-nvfp4-scale-compression-csf-for-fp4-local));
+      that it is the card's NVIDIA format is unconfirmed. Confirm the
+      FP4-Local tensors carry its names (otherwise identify the format from
+      ModelOpt's source), then decode the
+      encoded scale planes in the format layer into the native scale-atom
+      layout at import (AGENTS.md rule 11), checked byte for byte against
+      the reference decoder. Reused by M4's GLM FP4-Local. If FP4-Local
+      is not CSF, the Flare Qwen3.8 pin of the comparator item below is
+      the byte-for-byte test input.
+- [ ] **Flare's pinned checkpoints as same-checkpoint comparators**
+      (owner, 2026-10-20): archive the exact revisions Flare `e7b8c01`
+      pins (D-114; its recipes hash-pin them, so they are the only inputs
+      it takes) for every one that fits our hosts, and run each on both
+      engines: llmpalooza imports and serves it (every quant runs,
+      AGENTS.md rule 11), which also tests the format layer's flexibility
+      (CSF-compressed NVFP4 and MXFP4 scales, MXFP8, tensor-scaled and
+      block-128 FP8, MXFP4 experts, FP8 indexers), and Flare, pinned under
+      [reference comparisons](reference-comparisons.md), gives the
+      same-checkpoint speed and memory comparison, its default quality
+      trades (FP8 KV, GLM's 4-bit prefill activations) stated or matched
+      ([assessment](flare-assessment.md#as-a-comparator)):
+
+      | Checkpoint (Flare's pin) | Hosts | Milestone |
+      | --- | --- | --- |
+      | `local-inference-lab/Qwen3.8-Flash-Next-NVFP4-MXFP8-CSF-QAD@dc5b8ab2fa14bc4fecd6886273b7ebc6095662e2` | one Spark | M3.5 |
+      | `nvidia/Qwen3.8-27B-NVFP4@482ca0f3832238542f8f5295dde86b5f22711d80` | one Spark | M3.5 |
+      | `nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB@c6cc2e8ffa353403213d6b9b18aaf8eb684d705a`, and for its speculative runs the LiLiCorr drafter `nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-LiLiCorr@abd478065678ee83a93821c4b3f512da24e4cecb` | one Spark | M3.5, with Nemotron-H's components |
+      | `local-inference-lab/GLM-5.3-Flash-NVFP4-MXFP8-CSF-QAD@dec48abd33efa73c3bb7c95b74eee10cad34f9be` | two Sparks | M4 |
+      | `local-inference-lab/DeepSeek-V4-Flash-Vision-Exp-lossless-CSF@45fd997626821b131a904b1ae2304bb673c9458d` | two Sparks | M4 |
+
+      The one-Spark rows run in M3.5 as their families land; the
+      two-Spark rows join M4's comparisons. Flare's other pins (DeepSeek
+      V4.1 at TP4, Kimi K3, MiMo V2.6 Pro, Step-5) need four or more
+      Sparks and are not archived for this. Where a pin is also the
+      FP4-Local weights, it doubles as that import's same-checkpoint
+      reference.
 - [x] **Scalar DS/Qwen nonfinal state-only dependency cuts**
       ([evidence](experiments/ds-qwen-state-only/README.md)): ordinary plain DS and
       native/GGUF Qwen select checked cuts; DSpark/MTP head-only opt-ins remain
@@ -1205,7 +1360,8 @@ M3.5 is not closed. [Concrete handoff](experiments/ds-qwen-state-only/README.md#
       size, edit inputs and cancellation. Different input lengths or
       image sizes form compatible groups and interleave; they do not
       disable batching for the model. Admission follows memory, and
-      waiting groups age so compatible arrivals cannot starve them.
+      waiting groups age so compatible arrivals cannot starve them (by the
+      starvation bound of the throughput-first item below).
 
       The chat route's one-request-at-a-time queue (D-097) becomes a
       batch scheduler. Batching applies to requests for the same model;
@@ -1213,6 +1369,37 @@ M3.5 is not closed. [Concrete handoff](experiments/ds-qwen-state-only/README.md#
       M3's added concurrent-request comparisons now measure this gap;
       advance the necessary implementation into the optimization run
       where those comparisons require it (owner, 2026-10-01).
+- [ ] **Throughput-first scheduling of concurrent work, within a
+      starvation bound** (owner, 2026-10-20; AGENTS.md rule 11, D-102 as
+      amended; [Flare](flare-assessment.md#owner-decision-aggregate-completion-over-cadence)):
+      - **mixed prefill and generation waves for every model:** generating
+        streams' decode or verify rows ride inside each prefill chunk,
+        extending `RunCausalWave` (plain waves only today; a speculating
+        model refuses it, `src/runtime/llm_mixed.cc`) to speculative ones,
+        within each state contract's rules and on the verify shapes of the
+        speculation items above (total-rows-keyed graphs, per-request row
+        counts);
+      - **chunk size for aggregate completion:** the fastest measured chunk
+        stays the default; a smaller chunk is chosen only where a
+        measurement shows it shortens total completion, never for decode
+        cadence or fair time-sharing;
+      - **a starvation bound in calibrated unit time:** no admitted
+        request's next unit (a prefill chunk or a decode step) waits longer
+        than the bound, default 60 s (a judgment default under D-085: a
+        fifth of Claude Code's and Codex's 300 s idle timeouts; not
+        measured), configurable, from calibrated unit costs (no clock
+        reads). It applies among requests on one resident model; waits
+        between models stay D-050's and D-019's. Request classes (D-042,
+        M6) may order work within it, never past it. It replaces
+        `cohort_schedule.h`'s unit-count bounds (a generation waits at most
+        one prompt unit; a prompt ages in after 12), which stretch with
+        chunk length. It reorders work, never refuses or cancels it, and
+        keepalives continue meanwhile;
+      - **measured** as the total completion time of a multi-request agent
+        workload (C2/C4, long prompts arriving while others generate)
+        against today's schedule, with the worst wait and worst
+        inter-token gap reported and checked against the bound; adopted
+        on aggregate gain under D-085.
 - [ ] **Skeleton gaps the M3 cleanup's review named**
       ([engine.md](engine.md)), *moved to M3.6* (its IR, which names no
       kernel library, and its decoding-mode orchestration with any number
@@ -1847,6 +2034,17 @@ head replicated), and estimate both layouts for V4.1 and GLM-5.3 from
 measured collective latency on the two Sparks and each model's weights
 and state; M4 then confirms the choice end to end
 ([assessment](deepinfer-assessment.md#6-expert-parallelism-with-replicated-attention)).
+First measure captured in-graph NCCL all-reduce at 8–64 KiB against a
+minimal one-shot RDMA prototype on `spark` and `spark-b`
+([Flare](flare-assessment.md#6-two-node-transport-and-the-ep-vs-tp-decision-m4-entry)).
+If one-shot lands near the RDMA write latency (an estimate until that
+measurement), the collective count stops deciding, and the
+estimate prices bytes read per node (about 242 GB/s measured), the
+expected busiest node's routed experts from real routing traces, foreign
+expert slots, and paging granularity (EP keeps whole experts as paged
+groups; TP splits each), using the planner's execution-cost objective,
+not traffic alone. Entry also adds an intermediate-column split option
+to the MoE component, without which TP cannot be expressed.
 
 **Models, in this order:**
 
@@ -1898,7 +2096,10 @@ blocking, D-087), served in the same cycle as the EXL3 target (AGENTS.md
 rule 11: every quant runs). It is ModelOpt QAD: NVFP4 routed experts,
 MXFP8 decoder attention, NVFP4 MTP experts with BF16 activations, and a
 vision tower (MXFP8 attention, NVFP4 MLP and merger). It uses the same
-undocumented lossless compression of NVFP4 scale factors as M3.5's
+lossless compression of NVFP4 scale factors (probably CSF, as
+[Flare](flare-assessment.md#1-nvfp4-scale-compression-csf-for-fp4-local)
+describes it; unconfirmed)
+as M3.5's
 [Qwen3.8 FP4-Local](m35-families.md#owner-requested-addition-qwen38-flash-next-fp4-local)
 (that work lands first and is reused here). The card validates two DGX
 Sparks over ConnectX with an FP8 KV cache to 2M tokens (about 166 GiB of
@@ -1919,7 +2120,8 @@ requantization from optimizations at unchanged quality.
 | --- | --- | --- | --- |
 | GLM-5.3 Flash | Same-format EXL3 configuration, re-pinned at entry | Latest TensorFold where the EXL3 layout matches; Mia's configuration | TensorFold (MLX affine) |
 | DeepSeek v4.1 Flash | Mia's configuration | Mia's configuration | none |
-| GLM-5.3 Flash FP4-Local | The card's vLLM configuration, or TensorFold if it supports it at entry | Same; the EXL3 target's results | none |
+| GLM-5.3 Flash FP4-Local | The card's vLLM configuration, or TensorFold if it supports it at entry | Same; the EXL3 target's results; Flare at TP2 if its CSF-QAD checkpoint is the same weights, its default quality trades stated ([assessment](flare-assessment.md#as-a-comparator)) | none |
+| Flare's pinned GLM-5.3 CSF-QAD and DeepSeek V4 Flash lossless-CSF (M3.5's comparator item) | none: Flare's FP8 KV and 4-bit prefill activations make it a speed and memory comparator only | Flare at TP2 on the same checkpoint, quality trades stated | none |
 
 **Scope:**
 
@@ -1945,7 +2147,13 @@ requantization from optimizations at unchanged quality.
       threading contracts, ordered collective submission and completion
       fences, and per-step collective latency measured before bandwidth.
       Each model runs the expert-parallel or TP layout chosen at entry,
-      confirmed end to end.
+      confirmed end to end. Collectives go through a provider with NCCL
+      and, if entry's measurement shows collective latency above about 5%
+      of step time, a host-staged one-shot RDMA implementation, chosen per
+      op and size by quick A/B (D-053); one transport per node, registered
+      once at a stable address and bound by every model's graphs, so a
+      swap never pays NCCL or queue-pair setup; a vocabulary-parallel
+      greedy pick ([Flare](flare-assessment.md#6-two-node-transport-and-the-ep-vs-tp-decision-m4-entry)).
 - [ ] **Coordinated readiness, minimal** (the start of M8's coordinated
       admission): no collective or execution of B begins until both ranks
       report ready, their shard loaded and its memory obtained. A
@@ -1955,7 +2163,14 @@ requantization from optimizations at unchanged quality.
       rank enters a collective alone, and the swap reports failure cleanly.
       Memory a rank has not confirmed released stays counted as held; no
       timeout proves reclaim. General recovery, prepare/commit and the
-      broader pressure and failure matrix stay in M8.
+      broader pressure and failure matrix stay in M8. After Flare: ranks
+      agree on identity (artifact digest, graph I/O schema, state-layout
+      hash) and capacity (the minimum across ranks) before ready; a GPU
+      collective wait is bounded (D-102's hang detection, well above any
+      healthy wait) and writes an error word, so a dead peer becomes an
+      error, not a wedged GPU (with NCCL, an async-error
+      watchdog and `ncclCommAbort`); transport health is checked before
+      completions are published; rank 0 stops first.
 - [ ] **Kernels:** EXL3 MoE, the codebooks and rates these checkpoints use,
       sparse MLA decode and prefill on `sm_121`, KDA, the DSA indexer, CSA2
       and Engram row gathers, each the fastest correct implementation under
@@ -1965,8 +2180,11 @@ requantization from optimizations at unchanged quality.
         built here for Engram's 190 GiB tables): Engram's key function
         declared in its mapping, with the hash and gate formulas from
         M3.5's TileKernels audit and the compressed-vocabulary table built
-        at import; under TP, rows sharded across the nodes' SSDs
-        ([assessment](deepinfer-assessment.md#4-token-keyed-row-read-ahead)).
+        at import; across nodes, tables split by hash head, each node
+        reading only its heads' rows and joining one all-reduce, as Flare
+        does, so no rows cross nodes (a row-table split option)
+        ([assessment](deepinfer-assessment.md#4-token-keyed-row-read-ahead),
+        [Flare](flare-assessment.md#6-two-node-transport-and-the-ep-vs-tp-decision-m4-entry)).
       - **FP4 indexer scoring** (e2m1, UE8M0 per 32, BF16 logits;
         DeepSeek's production numerics) as an operand encoding of the
         shared sparse-scoring operation, selectable for every indexer that
@@ -2537,6 +2755,14 @@ partial-retention benefit workload are pinned before acceptance runs
       decode graphs keyed without context length, and wave costs
       calibrated by context depth
       ([measure first](deepinfer-assessment.md#11-measure-first)).
+      Flare's lead ([assessment](flare-assessment.md#8-overlapping-one-requests-independent-branches)):
+      a planner pass that runs one request's independent subgraphs on
+      lanes with join edges (the shared expert beside the routed experts,
+      an indexer beside QKV and the KV write, a compressor beside query
+      preparation), enabled per row band by measured gain with scratch
+      disjoint by lifetime; T79's fused shared expert lost 0.09% in the
+      model, so measure. A bounded C1/C4 decode screen is eligible before
+      M9.
 - [ ] **Evaluate lossless weight compression with fused on-chip decode**
       (owner, 2026-10-17): M9 candidate, with a bounded experiment eligible
       earlier after M3.6 if measured weight-bandwidth pressure justifies it.

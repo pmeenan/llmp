@@ -112,3 +112,20 @@ DeepSeek v4.1 Flash's M4 reference is likewise resolved at its own task.
 The historical [TensorFold assessment](tensorfold-assessment.md) and
 [M4 references](m4-references.md) retain their original pins and results;
 they do not override this refresh policy.
+
+## Flare
+
+[Flare](flare-assessment.md#as-a-comparator) (NVIDIA, reviewed at `e7b8c01`,
+2026-10-20) is a same-checkpoint comparator on the exact revisions its
+recipes hash-pin. Those revisions are archived and served by llmpalooza
+too (plan.md, M3.5's Flare comparator item):
+
+- on one Spark (M3.5): Qwen3.8 Flash Next CSF-QAD, Qwen3.8-27B NVFP4 and Nemotron 3.5 Bolt;
+- on two Sparks (M4): GLM-5.3 Flash CSF-QAD and DeepSeek V4 Flash lossless-CSF.
+
+A pin that is also the FP4-Local weights doubles as that import's reference.
+
+Pin and freeze it for matched runs like TensorFold. State or match its
+default quality trades: FP8 E4M3 KV with unit descales, and 4-bit prefill
+activations on GLM. It needs a PyTorch/FlashInfer preparation environment
+on the Spark, and preparation is long (the ten-minute rule applies).
