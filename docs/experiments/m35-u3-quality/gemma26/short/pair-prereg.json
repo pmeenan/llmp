@@ -1,0 +1,9 @@
+{
+  "format": "llmp-quality-prereg/1",
+  "name": "m35-u3-gemma26-short-first-pair",
+  "bounds": {
+    "expected_targets": 1023,
+    "min_targets": 1023,
+    "max_ppl_increase_pct": 1.0
+  }
+}
