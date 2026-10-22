@@ -61,6 +61,16 @@ resolved paths/hashes, ignoring only hexadecimal load addresses. Retain exact
 argv, environment, full raw score response/SSE and successful-use plans before
 validation. No retries, fallback, additional prompts or changed bounds.
 
+### Pre-launch metadata locality correction (2026-10-22)
+
+The first enrollment, `m35-u3-q8-scalar-repair-r1`, stopped in preflight before
+service launch because the registered A `audit.json` and `plans.json` existed
+only on the orchestrator. Preserve that failed job. Copy those exact already
+pinned files to their registered Spark B paths and authenticate their hashes.
+One fresh enrollment may then collect the first R sample. All original pins,
+inputs, bounds and retirement requirements remain; any service launch consumes
+that collection attempt, and no subsequent inference retry is authorized.
+
 Run once on Spark B in a fresh private output/data directory under installed
 exclusive `spark-job --gpu --timeout 600 --grace 30`. Use the parent's exact
 `capture.load_speed_gate` command with its committed private `REG` snapshot,
