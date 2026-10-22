@@ -574,12 +574,22 @@ const ComponentDef& SideNgram() {
 }
 
 const ComponentDef& ResidualPle() {
+  static constexpr std::array kProductRoles{std::string_view{"key"}, std::string_view{"value"}};
+  static constexpr std::array kProductEncodings{format::Encoding::kQ8_0};
+  static constexpr std::array kNumericalSites{
+      NumericalSite{.semantic = "product.block32_q8",
+                    .change = ir::NumericalChange::kQ8VectorReduction,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kProductRoles,
+                    .encodings = kProductEncodings},
+  };
   static const ComponentDef def{
       .kind = "residual.ple",
       .version = 1,
       .side_input = PleInput,
       .params = kPleParams,
       .roles = kPleRoles,
+      .numerical = kNumericalSites,
       .shapes = PleShapes,
       .state = PleState,
       .max_state_tensors = 1,

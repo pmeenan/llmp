@@ -121,10 +121,6 @@ struct ImageMapping {
   // rule, the planning policy every stage plans with (planner/policy.h
   // text).
   const ServingRecipe* serving = nullptr;
-  // Joint rows the denoiser's F32 attention is tuned for by default (the
-  // qualified geometry's), beside a request's own.
-  std::span<const std::uint64_t> attention_rows{};
-  std::span<const std::uint64_t> attention_image_rows{};  // a request's own rows too, at these
   // The tokenizer the composition keeps (a kept file's name) and the
   // pipeline's prompt renderer (chat/chat.h's, by name).
   std::string_view tokenizer{};

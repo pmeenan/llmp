@@ -720,6 +720,7 @@ std::expected<Instance, std::string> MakeInstance(const spec::ComponentRef& ref,
   if (def == nullptr) {
     return Refused(std::format("no component {} version {} in the catalog", ref.kind, ref.version));
   }
+  if (auto valid = ValidateNumericalSites(*def); !valid) return std::unexpected(valid.error());
   auto params = Params::Of(def->params, ref);
   if (!params) return std::unexpected(params.error());
   Instance in{.def = def,

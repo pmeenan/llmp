@@ -461,6 +461,43 @@ TEST(CapabilityTest, TuningDataGatesWhatNeedsIt) {
             std::vector<std::string>{"fake.mm.plain"});
 }
 
+TEST(CapabilityTest, AllRowsQualificationPreservesOtherKeysAndCapabilityBounds) {
+  const auto mm = ir::Primitive(ir::Op::kMatMul);
+  const auto registry =
+      Registry::Create(
+          {Capable("fake.rows", {.op = mm, .shape = {.max_rows = 16384}, .needs_tuning = true})})
+          .value();
+  std::array tuned{ex::TunedShape{.implementation = "fake.rows",
+                                  .rows = 1,
+                                  .k = 128,
+                                  .n = 128,
+                                  .output_encoding = Encoding::kF32,
+                                  .weight_bits = 4,
+                                  .all_rows = true}};
+  std::array operands{ex::OperandFormat{.operand = 0, .params = {.k_bits = 4}},
+                      ex::OperandFormat{.operand = ex::kOutputOperand, .encoding = Encoding::kF32}};
+  ex::CapabilityQuery query{
+      .op = mm, .operands = operands, .rows = 17, .k = 128, .n = 128, .tuned = tuned};
+  for (const auto rows : {1U, 17U, 4122U, 8193U, 16384U}) {
+    query.rows = rows;
+    EXPECT_EQ(ex::Candidates(registry, query).size(), 1U);
+  }
+  query.rows = 16385;
+  EXPECT_TRUE(ex::Candidates(registry, query).empty());
+  query.rows = 0;
+  EXPECT_TRUE(ex::Candidates(registry, query).empty());
+  query.rows = 17;
+  for (const auto mutation : {0, 1, 2, 3, 4, 5}) {
+    query.k = mutation == 0 ? 64 : 128;
+    query.n = mutation == 1 ? 64 : 128;
+    operands[0].params.k_bits = mutation == 2 ? 5 : 4;
+    operands[1].encoding = mutation == 3 ? Encoding::kF16 : Encoding::kF32;
+    tuned[0].all_rows = mutation != 4;
+    tuned[0].rows = mutation == 5 ? 2 : 1;
+    EXPECT_TRUE(ex::Candidates(registry, query).empty()) << mutation;
+  }
+}
+
 TEST(CapabilityTest, TuningFactsPreserveThePinnedOutputEncoding) {
   const ir::OpKey mm = ir::Primitive(ir::Op::kMatMul);
   const auto registry =

@@ -377,7 +377,13 @@ primitive ids). It is deterministic. The steps:
   final selection. Priority or another source cannot bypass the constraint.
 
   Newly rounded intermediate stores or a different reduction require typed
-  `NumericalQualification` facts, attached once during admission. These bind
+  `NumericalQualification` facts, attached once during admission. Components
+  declare semantic sites, anchors, roles, stored encodings and parameter
+  conditions; admission joins these to explicit measured device evidence
+  (`components/numerics.h`, `runtime/numerical_evidence.cc`, D-126). Pinned
+  approval rows, container names and component-kind proxies supply no grant.
+  Effective device facts include an owned backend; absent device evidence
+  preserves exact arithmetic and reports the missing requirement. These bind
   nonzero source-receipt, semantic-spec and accepted-evidence identities to
   an actual stage, component, anchor, architecture, role and exact K/N, with
   explicit row bounds or sets. Retaining an accepted incumbent recipe over
@@ -385,12 +391,16 @@ primitive ids). It is deterministic. The steps:
   `ACCEPTED_INCUMBENT_RECIPE`; it is not a claim that every tail shape had an
   independent quality measurement. Native chunk limits derive from 4096
   rows times admitted owners and actual stream/expert multiplicities. Its
-  existing 262144-context path remains covered. GGUF VecQ retention names
-  only full-model rows 1/2/3/4 (and row 5 on DeepSeek V4 solo steps),
-  excluding the separate row-16 operand witness. The separate community IQ2
-  checkpoint retains only actual rows={1}; its context/slot configuration
-  never multiplies that explicit row set.
-  Image retention requires the accepted 1024-square, 25-text-row geometry.
+  existing 262144-context path remains covered. Block-quantized product
+  evidence names explicit row sets: 1/2/3/4 for the vector record and 1–5
+  for the final M3.6 encoding inventory, excluding the separate row-16
+  operand witness. U4 transfers those semantic/encoding domains between
+  checkpoints, including GGUF's five-row Q6_K/Q8_0 control; context/slot
+  configuration never multiplies an explicit row set. Image evidence uses
+  algorithm-qualified row classes and actual device/head/layout limits,
+  rather than the historical 1024-square, 25-text-row benchmark geometry.
+  [U4 results](experiments/m35-component-numerics/LLM-RESULTS.md) retain the
+  transferred-domain controls and unchanged strict Mia failures explicitly.
   Facts use counted, prepaid immutable storage and remain alive with their
   source owners. A shared weight in an unavailable other artifact receives
   no guessed geometry grant.

@@ -612,7 +612,9 @@ std::optional<Strided> Sinker::Unjoin(TensorId t) {
       out = out.valid() ? b_.Concat(out, part, k) : part;
     }
   } else {
-    order = Order{.axes = NaturalAxes(j.ne), .logical = true};
+    // MaterializeStrided returns the original logical extents, including
+    // unit axes. Do not describe those bytes using a wide-axes-first shape.
+    order = Order{};
     for (const auto& [start, piece] : j.pieces) {
       ir::TensorDesc part_like = like;
       part_like.format.shape = ShapeOfNe(piece.ne);
@@ -818,7 +820,8 @@ std::optional<std::uint32_t> Sinker::CheapOf(const ir::Node& n) {
     case Op::kRepeat: {
       const TensorId src = n.src[0];
       const Ne sne = NeOf(g_.tensor(src));
-      if (sne == ne) return std::nullopt;
+      // Keep identity repeats in the cheap expression too: a singleton
+      // side of a split broadcast must compose with its repeated sibling.
       for (std::size_t d = 0; d < 4; ++d)
         if (sne[d] != ne[d] && sne[d] != 1) return std::nullopt;  // repeats of 1 only
       const auto small = Materialize(src, true);

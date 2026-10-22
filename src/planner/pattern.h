@@ -380,6 +380,7 @@ struct Applied {
 };
 struct MissingNumericalQualification {
   NumericalChange change{};
+  std::uint32_t device_arch = 0;
   std::uint16_t component = 0;
   ir::OpKey anchor{};
   bool operator==(const MissingNumericalQualification&) const = default;

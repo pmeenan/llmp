@@ -253,6 +253,41 @@ void PlainFill(const ir::Graph&, TensorId t, std::vector<float>& values,
   for (std::size_t i = 0; i < ints.size(); ++i) ints[i] = static_cast<std::int64_t>(i % 7);
 }
 
+TEST(IrLayoutTest, SingletonConcatPiecesRetainTheirLogicalAxes) {
+  for (const bool singleton_first : {false, true}) {
+    ir::Builder b;
+    const auto spatial = [&](std::uint64_t rows) {
+      auto x = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({8, rows})));
+      x = b.Cont(b.Permute(b.Cont(b.Permute(x, {1, 0, 2, 3})), {1, 0, 2, 3}));
+      return b.Cont(b.Permute(b.Reshape(x, ir::ShapeOf({8, 1, rows})), {2, 0, 1, 3}));
+    };
+    const auto a = spatial(singleton_first ? 1 : 4);
+    const auto c = spatial(singleton_first ? 4 : 1);
+    b.Output(b.Unary(b.Concat(a, c, 1), ir::UnaryFn::kTanh));
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << Failed(graph, &ir::VerifyError::detail).value_or("");
+    ExpectSunkExact(*graph, &PlainFill, 2, "singleton concat");
+  }
+}
+
+TEST(IrLayoutTest, IdentityRepeatComposesWithASplitBroadcast) {
+  for (const bool singleton_first : {false, true}) {
+    ir::Builder b;
+    const auto side = [&](std::uint64_t rows) {
+      const auto x = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({1, 8})));
+      return b.Repeat(x, ir::ShapeOf({rows, 8}));
+    };
+    const auto a = side(singleton_first ? 1 : 4);
+    const auto c = side(singleton_first ? 4 : 1);
+    const auto joined = b.Reshape(b.Concat(a, c, 0), ir::ShapeOf({1, 5, 8}));
+    const auto rows = b.Reshape(b.Cont(b.Permute(joined, {1, 2, 0, 3})), ir::ShapeOf({8, 5}));
+    b.Output(b.LayerNorm(rows, 1e-6F));
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << Failed(graph, &ir::VerifyError::detail).value_or("");
+    ExpectSunkExact(*graph, &PlainFill, 0, "singleton split broadcast");
+  }
+}
+
 TEST(IrLayoutTest, DecoderSinksExactly) {
   auto profile = ::llmp::test_support::QwenImageProfile().vae;
   profile.z_dim = 16;

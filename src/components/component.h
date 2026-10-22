@@ -45,6 +45,7 @@
 #include <string_view>
 #include <vector>
 
+#include "components/numerics.h"
 #include "format/encoding.h"
 #include "format/tensor_format.h"
 #include "ir/builder.h"
@@ -401,6 +402,7 @@ struct ComponentDef {
   std::string_view (*side_input)(const Instance& instance) = nullptr;
   std::span<const ParamSpec> params{};
   std::span<const WeightRole> roles{};
+  std::span<const NumericalSite> numerical{};
   // The roles an instance uses and their shapes, or why its parameters do
   // not make a valid instance (heads not a multiple of the KV heads).
   std::expected<std::vector<RoleShape>, std::string> (*shapes)(const Instance& instance) = nullptr;

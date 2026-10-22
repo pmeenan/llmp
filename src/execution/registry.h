@@ -144,10 +144,9 @@ struct Capability {
   // "ggml.mul_mat" (upstream's routing); empty when it stands alone.
   std::string_view group{};
   std::uint16_t priority = 0;  // higher first, until a measured rank decides
-  // It runs only with tuning data recorded for the exact shape it is asked
-  // for (EXL3's reconstruction runs cuBLASLt algorithms pinned per GEMM): a
-  // candidate only where the query's tuned shapes hold (its name, rows, k,
-  // n).
+  // It runs only with explicit tuning/algorithm qualification. Ordinary
+  // tuples pin the exact shape (EXL3's cuBLASLt algorithms per GEMM); an
+  // explicitly qualified row class can cover positive rows with exact K/N.
   bool needs_tuning = false;
   // The most consecutive nodes of its operation it runs as one launch (a
   // planner's batch, planner/pattern.h: grouped KV stores); 0, one node.
@@ -244,7 +243,7 @@ struct MeasuredRank {
   std::uint32_t rank = 0;
 };
 
-// A shape an implementation has tuning data for on this device (a pinned
+// A shape or explicitly declared row class qualified on this device (a pinned
 // algorithm, a measured launch configuration): what a capability that
 // needs_tuning requires of the query. The name points into the tuning
 // record, which outlives the query.
@@ -259,6 +258,10 @@ struct TunedShape {
   std::optional<format::Encoding> output_encoding{};
   // Exact EXL3 packed pin rate; zero keeps the format-independent contract.
   std::uint8_t weight_bits = 0;
+  // Qualification of the algorithm across positive row counts. The canonical
+  // key has rows==1; K/N, output type, rate and capability limits stay exact.
+  // This is a correctness/eligibility class, not a measured speed rank.
+  bool all_rows = false;
   bool operator==(const TunedShape&) const = default;
 };
 

@@ -92,10 +92,17 @@ TEST(PlannerReportInventoryTest, ActualCandidateWeightObservationNeverGrantsSele
   const PlanOptions options{.observed_bound_model = bound, .observed_model_spec = semantic};
   Policy policy;
   policy.active_stage = 2;
-  auto control = Plan(graph->Clone(), *registry, {}, policy, options);
+  auto control = Plan(graph->Clone(), *registry,
+                      {.device_class = "sm_86", .arch = 86, .device_model = "unqualified GPU"},
+                      policy, options);
   ASSERT_TRUE(control);
   EXPECT_TRUE(control->applied.empty());  // Observation identities cannot authorize a rewrite.
-  EXPECT_FALSE(control->missing_numerical.empty());
+  ASSERT_FALSE(control->missing_numerical.empty());
+  for (const auto& missing : control->missing_numerical) EXPECT_EQ(missing.device_arch, 86U);
+  std::string exact_report;
+  StreamPlanReport(*control, *registry, [&](std::string_view part) { exact_report.append(part); });
+  EXPECT_NE(exact_report.find("\"device_arch\":86"), std::string::npos);
+  EXPECT_NE(exact_report.find("no matching numerical evidence"), std::string::npos);
   policy.numerical_candidates = {NumericalChange::kQ8VectorReduction};
   auto candidate = Plan(graph->Clone(), *registry, {}, policy, options);
   ASSERT_TRUE(candidate);

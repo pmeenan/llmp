@@ -641,7 +641,17 @@ D-122).
         component parameter. **Exit:** a Llama 3.1+ HF checkpoint from the
         archive imports and matches its reference under D-085's quality
         checks.
-- [ ] **U4 Numerics as component data, per device:** each
+- [x] **U4 Numerics as component data, per device** (2026-10-22, D-126):
+      component sites join explicit device/encoding evidence identically for
+      pinned and unpinned artifacts; missing device evidence keeps exact
+      arithmetic and reports the requirement. Native focused/shared checks,
+      affected state/formula controls and both matched three-pair speed screens
+      pass. The [LLM results](experiments/m35-component-numerics/LLM-RESULTS.md)
+      retain both strict Mia failures and the registered unchanged-target
+      limitation; MTP has separate controls and no inherited exception.
+      [Image transfer](experiments/m35-component-numerics/IMAGE-RESULTS.md)
+      passes both registered geometries and all speed pairs. No sm86 numerical
+      evidence is claimed. The implemented contract follows: each
       changed-arithmetic rewrite declares the qualification it needs and the
       component roles and encodings it applies to, and admission derives
       qualifications identically for pinned and unpinned checkpoints (no

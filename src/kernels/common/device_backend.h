@@ -52,11 +52,11 @@ class DeviceBackend {
   virtual std::uint64_t library_workspace_bytes() const = 0;
   virtual std::uint64_t persistent_bytes() const = 0;
   virtual std::uint64_t lane_pool_reserve() const = 0;
-  virtual std::uint32_t arch() const = 0;
   virtual const execution::Registry& registry() const = 0;
+  // Physical provider facts, readable before declaration/construction begins.
+  virtual const planner::DeviceFacts& device() const = 0;
   virtual StepBackend Backend() = 0;
-  virtual std::vector<execution::TunedShape> DefaultImageAttentionTuning(
-      std::span<const std::uint64_t> rows, std::uint64_t head_dim) const = 0;
+  virtual std::vector<execution::TunedShape> ImageAttentionTuning(std::uint64_t head_dim) const = 0;
   virtual std::expected<void, std::string> FundConstruction(
       std::function<bool(std::uint64_t)> charge, std::function<void(std::uint64_t)> release) = 0;
   virtual std::expected<void, std::string> Declare(std::span<const execution::TunedShape> tuning,

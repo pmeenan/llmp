@@ -50,8 +50,8 @@ std::expected<std::uint64_t, std::string> OwnedDeviceFacts::Bound(const DeviceFa
     return std::unexpected("owned device facts byte bound overflows");
   for (std::size_t i = 0; i < facts.tuned.size(); ++i) {
     const auto& tune = facts.tuned[i];
-    if (tune.implementation.empty() || tune.rows == 0 || tune.k == 0 || tune.n == 0 ||
-        tune.weight_bits > 8 ||
+    if (tune.implementation.empty() || tune.rows == 0 || (tune.all_rows && tune.rows != 1) ||
+        tune.k == 0 || tune.n == 0 || tune.weight_bits > 8 ||
         (tune.output_encoding &&
          std::ranges::find(format::Encodings(), *tune.output_encoding, &format::EncodingInfo::id) ==
              format::Encodings().end()))
@@ -60,7 +60,8 @@ std::expected<std::uint64_t, std::string> OwnedDeviceFacts::Bound(const DeviceFa
       const auto& before = facts.tuned[j];
       if (before.implementation == tune.implementation && before.rows == tune.rows &&
           before.k == tune.k && before.n == tune.n &&
-          before.output_encoding == tune.output_encoding && before.weight_bits == tune.weight_bits)
+          before.output_encoding == tune.output_encoding &&
+          before.weight_bits == tune.weight_bits && before.all_rows == tune.all_rows)
         return std::unexpected("owned device facts repeat a tuning key");
     }
     if (!add(tune.implementation.size()) || !add(1))

@@ -233,12 +233,21 @@ const ComponentDef& NormChannel() {
 }
 
 const ComponentDef& NormAdaptive() {
+  static constexpr std::array kNumericalSites{
+      NumericalSite{.semantic = "residual.bf16_carry",
+                    .change = ir::NumericalChange::kBf16ResidualCarry,
+                    .anchors = numerics::kCarryAnchors,
+                    .encodings = numerics::kFloatEncodings,
+                    .origins = numerics::kMultiplyAnchors},
+  };
+
   static const ComponentDef def{
       .kind = "norm.adaptive",
       .version = 1,
       .row_local = true,
       .side_input = Conditioning,
       .params = kAdaptiveParams,
+      .numerical = kNumericalSites,
       .shapes = AdaptiveShapes,
       .emit = AdaptiveEmit,
       .reference = AdaptiveReference,

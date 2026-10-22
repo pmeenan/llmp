@@ -133,12 +133,38 @@ std::expected<void, std::string> Reference(RefIO& io) {
 }  // namespace
 
 const ComponentDef& FfnGlu() {
+  static constexpr std::array kNumericalProductRoles{
+      std::string_view{"gate"}, std::string_view{"up"}, std::string_view{"down"}};
+  static constexpr std::array kSwiGluNumerical{NumericalCondition{"activation", "silu"}};
+  static constexpr std::array kNumericalSites{
+      NumericalSite{.semantic = "product.block32_q8",
+                    .change = ir::NumericalChange::kQ8VectorReduction,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProductRoles,
+                    .encodings = numerics::kBlockWeightEncodings},
+      NumericalSite{.semantic = "product.mxfp8_input",
+                    .change = ir::NumericalChange::kMxfp8ProductInput,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProductRoles,
+                    .encodings = numerics::kPreparedWeightEncodings},
+      NumericalSite{.semantic = "product.bf16_input_and_result",
+                    .change = ir::NumericalChange::kBf16ProductInputAndResult,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProductRoles,
+                    .encodings = numerics::kFloatEncodings},
+      NumericalSite{.semantic = "glu.silu_bf16_intermediates",
+                    .change = ir::NumericalChange::kBf16SwiGluIntermediates,
+                    .anchors = numerics::kGluAnchors,
+                    .encodings = numerics::kFloatEncodings,
+                    .when = kSwiGluNumerical},
+  };
   static const ComponentDef def{
       .kind = "ffn.glu",
       .version = 1,
       .row_local = true,
       .params = kParams,
       .roles = kRoles,
+      .numerical = kNumericalSites,
       .shapes = Shapes,
       .state = nullptr,
 

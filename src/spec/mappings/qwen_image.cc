@@ -161,11 +161,6 @@ constexpr PolicyRule kPolicy{.text =
 constexpr ServingRecipe kServing{
     .family = "Qwen-Image", .name = "QwenImage21", .serving_rule = &kPolicy};
 
-// The qualified request's joint rows (a 25-token prompt and 1,024²), and
-// its image rows.
-constexpr std::array<std::uint64_t, 1> kAttentionRows{4121};
-constexpr std::array<std::uint64_t, 1> kAttentionImageRows{4096};
-
 constexpr std::array kHostInputs{
     ImageHostInput{0, 0, ImageInputValue::kPromptIds},
     ImageHostInput{0, 1, ImageInputValue::kTextPositions},
@@ -234,8 +229,6 @@ const ImageMapping& QwenImage21Mapping() {
                    .weight = ".weight",
                    .bias = ".bias"}},
       .serving = &kServing,
-      .attention_rows = kAttentionRows,
-      .attention_image_rows = kAttentionImageRows,
       .tokenizer = "processor/tokenizer.json",
       .prompt = "qwen_image_2_1",
       .host_inputs = kHostInputs};

@@ -39,6 +39,46 @@ one Spark and on two.
 
 ---
 
+## D-126: Component arithmetic sites joined to explicit device evidence (2026-10-22, status: accepted at the owner's direction; amends D-123)
+
+**Decision.** Components declare each changed-arithmetic site's semantic name,
+operation anchor, exact weight roles or activation encoding, and semantic
+conditions. These declarations establish applicability, not numerical permission.
+A separate evidence table names the measured device class/model/architecture,
+encoding and measured row/owner domain. Admission joins the two and binds grants
+to the active source/spec identity, stage, component and concrete dimensions.
+Pinned approvals, container names and component-kind proxies grant nothing.
+
+Device facts come from the actual execution owner, including an owned backend.
+Missing or different device evidence leaves the exact arithmetic path available;
+the plan report states the unmet requirement. There is no implicit GB10 device.
+Current accepted records name GB10 explicitly; synthetic sm86 refusal/report
+controls do not constitute sm86 numerical qualification.
+
+Image attention tuning uses the same explicit evidence/device match. An
+algorithm-qualified positive-row class is distinct from a measured speed rank:
+its class flag participates in selection and execution identity, and real head,
+layout, ISA and resource limits still apply. U6's shape-class performance
+measurements remain a separate obligation.
+
+**Context.** Approval-dependent numerical lists and component/container proxies
+made identical encodings receive different treatment, and could transfer an
+unrelated algorithm's evidence. Moving declarations exposed two incorrect
+transfer attempts: an absent owner device silently disabled evidence, and a
+GDN declaration described output BF16 rather than its stored MXFP8 weight role.
+The final join preserves semantic and encoding distinctions, including sigmoid
+versus Sinkhorn HC and stored MXFP8 weights versus BF16 product outputs.
+
+**Consequences.** New checkpoints with the same component semantics, encoding
+and evidenced device receive the same numerical grants. Changed arithmetic
+still requires independent numerical controls, affected state/quality checks
+and matched workload speed; target likelihood does not qualify a drafter.
+See the [U4 protocols and results](experiments/m35-component-numerics/README.md).
+No new target-quality exception is established by this change.
+
+**Reopen if.** A site's semantics or a device's arithmetic differ enough that
+the current component/evidence join cannot express the necessary distinction.
+
 ## D-125: Architecture-owned normalization and stored execution semantics (2026-10-21, status: accepted at the owner's direction; amends D-109, D-113 and D-120)
 
 **Decision.** An architecture mapping owns its source dialects as well as its

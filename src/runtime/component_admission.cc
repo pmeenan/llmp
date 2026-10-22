@@ -30,6 +30,7 @@
 #include "platform/direct_io.h"
 #include "runtime/approvals.h"
 #include "runtime/component_admission_internal.h"
+#include "runtime/numerical_evidence.h"
 #include "spec/image_family.h"
 #include "spec/stored.h"
 
@@ -778,22 +779,6 @@ std::expected<base::Sha256Digest, std::string> NumericalDigest(std::string_view 
   }
   return digest;
 }
-base::Sha256Digest NumericalSourceIdentity(std::span<const SourceReceipt> expected,
-                                           std::span<const artifact::Source> actual) {
-  base::Sha256 hash;
-  hash.Update("llmp.numerical.source-receipts.v1\n");
-  // The verified declaration's order canonicalizes the actual receipt set.
-  const base::json::FragmentSink sink = [&](std::string_view text) { hash.Update(text); };
-  const base::json::Stream out(sink);
-  for (const auto& want : expected) {
-    const auto source = std::ranges::find(actual, want.name, &artifact::Source::name);
-    if (source == actual.end()) return {};
-    out.Quoted(source->name);
-    out.Number(source->bytes.value());
-    hash.Update(std::as_bytes(std::span(source->sha256)));
-  }
-  return hash.Finish();
-}
 base::Sha256Digest ActualSourceIdentity(std::span<const artifact::Source> actual) {
   base::Sha256 hash;
   hash.Update("llmp.numerical.source-receipts.v1\n");
@@ -811,31 +796,6 @@ base::Sha256Digest ActualSourceIdentity(std::span<const artifact::Source> actual
   return hash.Finish();
 }
 
-using NC = planner::NumericalChange;
-constexpr std::array kProductAnchor{ir::Primitive(ir::Op::kMatMul)};
-constexpr std::array kNormAnchor{ir::Primitive(ir::Op::kRmsNorm)};
-constexpr std::array kReduceAnchor{ir::Primitive(ir::Op::kExpertReduce)};
-constexpr std::array kVectorAnchors{
-    ir::Primitive(ir::Op::kMatMul), ir::Primitive(ir::Op::kMatMulId), ir::Primitive(ir::Op::kGlu),
-    ir::Fused(ir::FusedKind::kMatMulGlu), ir::Fused(ir::FusedKind::kMatMulIdGlu)};
-constexpr std::array<std::uint64_t, 5> kQualifiedVectorRows{1, 2, 3, 4, 5};
-constexpr std::array kImageGluAnchor{ir::Primitive(ir::Op::kGlu)};
-constexpr std::array kImageAttentionAnchor{ir::Primitive(ir::Op::kAttention)};
-constexpr std::array kImageCarryAnchor{ir::Fused(ir::FusedKind::kLayerNormModulateSplit)};
-constexpr std::array kDefaultImageNumerics{
-    NumericalEvidenceDomain{.change = NC::kBf16SwiGluIntermediates,
-                            .evidence = kImageNumericalEvidence,
-                            .anchors = kImageGluAnchor},
-    NumericalEvidenceDomain{.change = NC::kBf16ProductInputAndResult,
-                            .evidence = kImageNumericalEvidence,
-                            .anchors = kProductAnchor},
-    NumericalEvidenceDomain{.change = NC::kBf16AttentionIntermediates,
-                            .evidence = kImageNumericalEvidence,
-                            .anchors = kImageAttentionAnchor},
-    NumericalEvidenceDomain{.change = NC::kBf16ResidualCarry,
-                            .evidence = kImageNumericalEvidence,
-                            .anchors = kImageCarryAnchor},
-};
 struct NumericalPayment {
   std::shared_ptr<const kernels::ConstructionFunder> funder;
   std::uint64_t bytes = 0;
@@ -892,39 +852,24 @@ std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::stri
 
 std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
 AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
-                 std::span<const artifact::Source> origins, const Approval* approval,
+                 std::span<const artifact::Source> origins, const Approval*,
                  const base::Sha256Digest& admitted_semantic, const spec::Envelope& envelope,
-                 std::uint16_t active_stage,
+                 std::uint16_t active_stage, const planner::DeviceFacts& device,
                  std::shared_ptr<const kernels::ConstructionFunder> funder) {
-  const bool non_zero_semantic =
-      std::ranges::any_of(admitted_semantic, [](std::uint8_t b) { return b != 0; });
-  if (approval != nullptr) {
-    if (approval->numerical.empty())
-      return std::shared_ptr<const planner::NumericalQualifications>{};
-    if (!OriginsWellFormed(origins) || !SourcesMatch(approval->sources, origins) ||
-        model.stages.empty() || !non_zero_semantic)
-      return Refused("numerical source facts differ from the active admitted source");
-    for (const auto& tensor : source.tensors)
-      if (!Admissible(tensor)) return Refused(kRefusedInventory);
-    // A historical qualification is an optimization overlay, not admission
-    // authority. Re-importing a valid stored spec must not require the old
-    // schema digest. Until re-qualified, changed semantics run exact kernels.
-    if (!SourceMatches(source, *approval) || !internal::CheckInventory(source, *approval) ||
-        base::ToHex(admitted_semantic) != approval->spec)
-      return std::shared_ptr<const planner::NumericalQualifications>{};
-  } else {
-    if (!OriginsWellFormed(origins) || model.stages.empty() || !non_zero_semantic)
-      return Refused("numerical source facts differ from the active admitted source");
-  }
-  // A target is bound before composition; a drafter's approval pins its
-  // composed spec. Its actual stage ordinal is retained in every grant.
+  // Origins bind a grant to the active source; historical approval membership
+  // supplies neither permission nor a numerical default.
+  if (!OriginsWellFormed(origins) || model.stages.empty() ||
+      std::ranges::none_of(admitted_semantic, [](std::uint8_t byte) { return byte != 0; }))
+    return Refused("numerical source facts differ from the active admitted source");
+  if (model.stages.size() == 1 && model.Digest() != admitted_semantic)
+    return Refused("numerical semantic identity differs from the admitted spec");
+  for (const auto& tensor : source.tensors)
+    if (!Admissible(tensor)) return Refused(kRefusedInventory);
   const std::size_t stage = model.stages.size() == 1 ? 0 : active_stage;
   if (stage >= model.stages.size()) return Refused("numerical stage is absent from the spec");
   auto instances = components::InstancesOf(model, stage);
   if (!instances) return std::unexpected(instances.error());
-  const auto identity = approval != nullptr ? NumericalSourceIdentity(approval->sources, origins)
-                                            : ActualSourceIdentity(origins);
-  const auto& semantic = admitted_semantic;
+  const auto identity = ActualSourceIdentity(origins);
   const auto visit = [&](const auto& callback) {
     const auto optional = [&](const auto& instance) {
       if (instance) callback(*instance);
@@ -937,278 +882,210 @@ AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
     optional(instances->final_norm);
     optional(instances->output);
   };
-  std::vector<NumericalEvidenceDomain> derived_domains;
-  std::span<const NumericalEvidenceDomain> domains;
-  if (approval != nullptr && !approval->numerical.empty()) {
-    domains = approval->numerical;
-  } else {
-    if (source.container == "gguf") {
-      bool has_quantized_weights = false;
-      bool has_routed_or_hc = false;
-      visit([&](const components::Instance& instance) {
-        if (instance.ref->kind == "hc.mix" || instance.ref->kind == "ffn.moe")
-          has_routed_or_hc = true;
-        for (const auto& weight : instance.ref->weights) {
-          if (!weight.stage.empty()) continue;
-          const auto tensor =
-              std::ranges::find(source.tensors, weight.tensor, &spec::SourceTensor::name);
-          if (tensor != source.tensors.end()) {
-            if (format::Info(tensor->format.encoding).quantized ||
-                tensor->format.layout == format::Layout::kScaleAtoms) {
-              has_quantized_weights = true;
-            }
-          }
-        }
-      });
-      if (has_quantized_weights && has_routed_or_hc) {
-        derived_domains.push_back(NumericalEvidenceDomain{.change = NC::kQ8VectorReduction,
-                                                          .evidence = kFinalNumericalEvidence,
-                                                          .anchors = kVectorAnchors,
-                                                          .max_context = envelope.context,
-                                                          .max_slots = envelope.slots,
-                                                          .max_rows = 5,
-                                                          .rows = kQualifiedVectorRows,
-                                                          .incumbent_recipe = true});
-      }
-    } else if (source.container == "safetensors" || source.container == "mlx") {
-      bool has_hc_mix = false;
-      bool has_attention_gdn = false;
-      bool has_mxfp8_or_nvfp4_weights = false;
-      bool has_nvfp4_down_experts = false;
-      visit([&](const components::Instance& instance) {
-        if (instance.ref->kind == "hc.mix") has_hc_mix = true;
-        if (instance.ref->kind == "attention.gdn") has_attention_gdn = true;
-        for (const auto& weight : instance.ref->weights) {
-          if (!weight.stage.empty()) continue;
-          const auto tensor =
-              std::ranges::find(source.tensors, weight.tensor, &spec::SourceTensor::name);
-          if (tensor != source.tensors.end() &&
-              (tensor->format.encoding == format::Encoding::kMxfp8 ||
-               tensor->format.encoding == format::Encoding::kNvfp4)) {
-            has_mxfp8_or_nvfp4_weights = true;
-          }
-        }
-        if (instance.ref->kind == "ffn.moe") {
-          for (const auto& weight : instance.ref->weights) {
-            if (weight.role == "down_experts") {
-              const auto tensor =
-                  std::ranges::find(source.tensors, weight.tensor, &spec::SourceTensor::name);
-              if (tensor != source.tensors.end() &&
-                  tensor->format.encoding == format::Encoding::kNvfp4) {
-                has_nvfp4_down_experts = true;
-              }
-            }
-          }
-        }
-      });
-      if (has_hc_mix) {
-        derived_domains.push_back(
-            NumericalEvidenceDomain{.change = NC::kBf16HyperConnectionIntermediates,
-                                    .evidence = kNativeNumericalEvidence,
-                                    .component_kind = "hc.mix",
-                                    .anchors = kNormAnchor,
-                                    .max_context = envelope.context,
-                                    .max_slots = envelope.slots,
-                                    .max_rows = 4096,
-                                    .incumbent_recipe = true,
-                                    .stream_rows = true});
-      }
-      if (has_attention_gdn) {
-        derived_domains.push_back(NumericalEvidenceDomain{.change = NC::kBf16ProductInputAndResult,
-                                                          .evidence = kNativeNumericalEvidence,
-                                                          .component_kind = "attention.gdn",
-                                                          .anchors = kProductAnchor,
-                                                          .max_context = envelope.context,
-                                                          .max_slots = envelope.slots,
-                                                          .max_rows = 4096,
-                                                          .incumbent_recipe = true});
-      }
-      if (has_mxfp8_or_nvfp4_weights) {
-        derived_domains.push_back(NumericalEvidenceDomain{.change = NC::kMxfp8ProductInput,
-                                                          .evidence = kNativeNumericalEvidence,
-                                                          .anchors = kProductAnchor,
-                                                          .max_context = envelope.context,
-                                                          .max_slots = envelope.slots,
-                                                          .max_rows = 4096,
-                                                          .incumbent_recipe = true});
-      }
-      if (has_nvfp4_down_experts) {
-        derived_domains.push_back(NumericalEvidenceDomain{.change = NC::kNvfp4ExpertIntermediates,
-                                                          .evidence = kNativeNumericalEvidence,
-                                                          .component_kind = "ffn.moe",
-                                                          .anchors = kReduceAnchor,
-                                                          .max_context = envelope.context,
-                                                          .max_slots = envelope.slots,
-                                                          .max_rows = 4096,
-                                                          .incumbent_recipe = true,
-                                                          .row_parameter = "used"});
-      }
-    }
-    domains = derived_domains;
-  }
-  if (domains.empty()) return std::shared_ptr<const planner::NumericalQualifications>{};
-
   return ProjectNumerics(
-      identity, semantic, funder, [&](const auto& record) -> std::expected<void, std::string> {
-        for (const auto& domain : domains) {
-          if (!envelope.context || !envelope.slots || envelope.context > domain.max_context ||
-              envelope.slots > domain.max_slots)
-            continue;
-          auto evidence = NumericalDigest(domain.evidence);
-          if (!evidence) return std::unexpected(evidence.error());
-          bool missing_weight = false;
-          visit([&](const components::Instance& instance) {
-            if (!domain.component_kind.empty() && instance.ref->kind != domain.component_kind)
-              return;
-            // Exact role geometry replaces a max-dimension box. A source/spec
-            // binding plus the complete semantic matcher authenticates the
-            // arithmetic site; equal-size unrelated roles are not authorized.
-            std::uint64_t rows = domain.max_rows;
-            if (domain.rows.empty()) {
-              if (__builtin_mul_overflow(rows, std::uint64_t{envelope.slots}, &rows) ||
-                  (domain.stream_rows &&
-                   __builtin_mul_overflow(rows, std::uint64_t{instance.stage.streams}, &rows))) {
-                missing_weight = true;
-                return;
-              }
-              if (!domain.row_parameter.empty() &&
-                  __builtin_mul_overflow(
-                      rows, static_cast<std::uint64_t>(instance.params.Int(domain.row_parameter)),
-                      &rows)) {
-                missing_weight = true;
-                return;
-              }
+      identity, admitted_semantic, funder,
+      [&](const auto& record) -> std::expected<void, std::string> {
+        bool invalid = false;
+        visit([&](const components::Instance& instance) {
+          for (const auto& binding : instance.ref->weights) {
+            // Foreign-stage roles need their own artifact's projection.
+            if (!binding.stage.empty()) continue;
+            const auto tensor =
+                std::ranges::find(source.tensors, binding.tensor, &spec::SourceTensor::name);
+            const auto ordinal = components::RoleIndex(*instance.def, binding.role);
+            if (tensor == source.tensors.end() || !ordinal) {
+              invalid = true;
+              continue;
             }
-            const auto emit = [&](ir::OpKey anchor, std::uint64_t k, std::uint64_t n,
-                                  std::uint16_t role) {
-              const auto at_rows = [&](std::uint64_t low, std::uint64_t high) {
-                record(planner::NumericalQualification{.change = domain.change,
-                                                       .evidence = *evidence,
-                                                       .source = identity,
-                                                       .semantic = semantic,
-                                                       .stage = active_stage,
-                                                       .component = instance.index,
-                                                       .anchor = anchor,
-                                                       .arch = domain.arch,
-                                                       .min_rows = low,
-                                                       .max_rows = high,
-                                                       .max_k = k,
-                                                       .max_n = n,
-                                                       .exact_dimensions = true,
-                                                       .incumbent_recipe = domain.incumbent_recipe,
-                                                       .weight_role = role});
-              };
-              if (domain.rows.empty())
-                at_rows(1, rows);
-              else
-                for (const auto row : domain.rows) at_rows(row, row);
-            };
-            for (const auto& weight : instance.ref->weights) {
-              // A different artifact's shared role needs that artifact's own
-              // authenticated grant. No guessed stream-width substitute.
-              if (!weight.stage.empty()) continue;
-              const auto tensor =
-                  std::ranges::find(source.tensors, weight.tensor, &spec::SourceTensor::name);
-              if (tensor == source.tensors.end()) {
-                missing_weight = true;
-                return;
-              }
-              const auto role = std::ranges::find(instance.def->roles, weight.role,
-                                                  &components::WeightRole::name);
-              if (role == instance.def->roles.end()) {
-                missing_weight = true;
-                return;
-              }
-              const auto ordinal = static_cast<std::uint16_t>(role - instance.def->roles.begin());
-              const auto& shape = tensor->format.shape;
-              for (const auto anchor : domain.anchors) {
-                if (anchor == ir::Primitive(ir::Op::kRmsNorm)) {
-                  if (shape.rank == 1 && role->name == "norm")
-                    emit(anchor,
-                         domain.stream_rows ? shape.ne[0] / instance.stage.streams : shape.ne[0], 0,
-                         UINT16_MAX);
-                } else if (anchor == ir::Primitive(ir::Op::kExpertReduce)) {
-                  if (shape.rank >= 2 && role->name == "down_experts")
-                    emit(anchor, shape.ne[1], 0, ordinal);
-                } else if (shape.rank >= 2) {
-                  if (anchor == ir::Primitive(ir::Op::kGlu))
-                    emit(anchor, shape.ne[1] / tensor->format.stacked, 0, ordinal);
+            for (const auto& site : instance.def->numerical) {
+              for (const auto anchor : site.anchors) {
+                if (!components::NumericalSiteApplies(site, instance, anchor, binding.role,
+                                                      tensor->format.encoding))
+                  continue;
+                for (const auto& evidence : ComponentNumericalEvidenceTable()) {
+                  if (evidence.pipeline != NumericalPipeline::kLlm ||
+                      evidence.change != site.change || evidence.semantic != site.semantic ||
+                      !EvidenceDeviceMatches(evidence, device) ||
+                      !std::ranges::contains(evidence.encodings, tensor->format.encoding))
+                    continue;
+                  if (evidence.rows.empty() &&
+                      (envelope.slots == 0 || envelope.slots > evidence.owners))
+                    continue;
+                  auto digest = NumericalDigest(evidence.digest);
+                  if (!digest) {
+                    invalid = true;
+                    continue;
+                  }
+                  std::uint64_t rows = evidence.rows_per_owner;
+                  if (evidence.rows.empty() &&
+                      (__builtin_mul_overflow(rows, std::uint64_t{envelope.slots}, &rows) ||
+                       (evidence.stream_rows &&
+                        __builtin_mul_overflow(rows, std::uint64_t{instance.stage.streams},
+                                               &rows)) ||
+                       (!evidence.row_parameter.empty() &&
+                        __builtin_mul_overflow(
+                            rows,
+                            static_cast<std::uint64_t>(instance.params.Int(evidence.row_parameter)),
+                            &rows)))) {
+                    invalid = true;
+                    continue;
+                  }
+                  const auto& shape = tensor->format.shape;
+                  std::uint64_t k = 0, n = 0;
+                  std::uint16_t role = *ordinal;
+                  if (anchor == ir::Primitive(ir::Op::kRmsNorm)) {
+                    if (shape.rank != 1 || instance.stage.streams == 0 ||
+                        (evidence.stream_rows && shape.ne[0] % instance.stage.streams != 0)) {
+                      invalid = true;
+                      continue;
+                    }
+                    k = evidence.stream_rows ? shape.ne[0] / instance.stage.streams : shape.ne[0];
+                    role = UINT16_MAX;
+                  } else if (anchor == ir::Primitive(ir::Op::kExpertReduce)) {
+                    if (shape.rank < 2) {
+                      invalid = true;
+                      continue;
+                    }
+                    k = shape.ne[1];
+                  } else {
+                    if (shape.rank < 2) {
+                      invalid = true;
+                      continue;
+                    }
+                    k = shape.ne[0];
+                    n = shape.ne[1];
+                  }
+                  const auto emit = [&](std::uint64_t low, std::uint64_t high) {
+                    record(planner::NumericalQualification{
+                        .change = site.change,
+                        .evidence = *digest,
+                        .source = identity,
+                        .semantic = admitted_semantic,
+                        .stage = active_stage,
+                        .component = instance.index,
+                        .anchor = anchor,
+                        .arch = evidence.arch,
+                        .min_rows = low,
+                        .max_rows = high,
+                        .max_k = k,
+                        .max_n = n,
+                        .exact_dimensions = true,
+                        .incumbent_recipe = evidence.incumbent_recipe,
+                        .weight_role = role});
+                  };
+                  if (evidence.rows.empty())
+                    emit(1, rows);
                   else
-                    emit(anchor, shape.ne[0], shape.ne[1], ordinal);
+                    for (const auto row : evidence.rows) emit(row, row);
                 }
               }
             }
-          });
-          if (missing_weight)
-            return Refused("numerical component binding or derived row bound is invalid");
-        }
+          }
+        });
+        if (invalid) return Refused("numerical component binding or evidence domain is invalid");
         return {};
       });
 }
 
 std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
-AdmittedImageNumerics(const spec::ModelSpec& family, const ImageApproval* approval,
+AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
+                 std::span<const artifact::Source> origins, const Approval* approval,
+                 const base::Sha256Digest& admitted_semantic, const spec::Envelope& envelope,
+                 std::uint16_t active_stage, const kernels::StepBackend& backend) {
+  const auto& effective = backend.owner ? backend.owner->backend() : backend;
+  return AdmittedNumerics(model, source, origins, approval, admitted_semantic, envelope,
+                          active_stage, effective.device, backend.ConstructionFunding());
+}
+
+std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
+AdmittedImageNumerics(const spec::ModelSpec& family, const ImageApproval*,
                       const artifact::Composition& composition, const ir::Graph& graph,
-                      std::uint16_t stage, std::uint32_t width, std::uint32_t height,
-                      std::uint32_t prompt_rows,
+                      const spec::ModelSpec& stage_spec, std::uint16_t stage,
+                      const planner::DeviceFacts& device,
                       std::shared_ptr<const kernels::ConstructionFunder> funder) {
-  if (width == 0 || height == 0 || prompt_rows == 0)
-    return std::shared_ptr<const planner::NumericalQualifications>{};
-  if (approval != nullptr) {
-    if (approval->numerical.empty())
-      return std::shared_ptr<const planner::NumericalQualifications>{};
-    if (!OriginsWellFormed(composition.sources()) ||
-        !SourcesMatch(approval->sources, composition.sources()) ||
-        base::ToHex(family.Digest()) != approval->spec)
-      return Refused("image numerical evidence differs from the active family/source identity");
-  } else {
-    if (!OriginsWellFormed(composition.sources()))
-      return Refused("image numerical evidence differs from the active family/source identity");
-  }
-  const auto identity = approval != nullptr
-                            ? NumericalSourceIdentity(approval->sources, composition.sources())
-                            : ActualSourceIdentity(composition.sources());
+  if (!OriginsWellFormed(composition.sources()))
+    return Refused("image numerical evidence has no valid active source identity");
+  if (stage_spec.stages.size() != 1)
+    return Refused("image numerical projection needs the generated stage spec");
+  auto instances = components::InstancesOf(stage_spec, 0);
+  if (!instances) return std::unexpected(instances.error());
+  std::vector<const components::Instance*> by_component;
+  const auto retain = [&](const auto& instance) {
+    if (by_component.size() <= instance.index) by_component.resize(instance.index + 1);
+    by_component[instance.index] = &instance;
+  };
+  if (instances->embedding) retain(*instances->embedding);
+  for (const auto& instance : instances->side) retain(instance);
+  if (instances->mixing) retain(*instances->mixing);
+  for (const auto& layer : instances->layers)
+    for (const auto& instance : layer) retain(instance);
+  if (instances->final_norm) retain(*instances->final_norm);
+  if (instances->output) retain(*instances->output);
+  const auto identity = ActualSourceIdentity(composition.sources());
   const auto semantic = family.Digest();
-  const auto domains = approval != nullptr
-                           ? approval->numerical
-                           : std::span<const NumericalEvidenceDomain>(kDefaultImageNumerics);
   return ProjectNumerics(
       identity, semantic, funder, [&](const auto& record) -> std::expected<void, std::string> {
-        for (const auto& domain : domains) {
-          auto evidence = NumericalDigest(domain.evidence);
-          if (!evidence) return std::unexpected(evidence.error());
-          for (const auto& node : graph.nodes()) {
-            if (node.key.op == ir::Op::kInput || node.key.op == ir::Op::kWeight ||
-                node.key.op == ir::Op::kState)
+        for (const auto& node : graph.nodes()) {
+          if (node.component >= by_component.size() || !by_component[node.component] ||
+              node.nsrc == 0 || !node.src[0].valid())
+            continue;
+          const auto& instance = *by_component[node.component];
+          for (const auto& site : instance.def->numerical) {
+            if (!std::ranges::contains(site.origins.empty() ? site.anchors : site.origins,
+                                       node.key))
               continue;
-            std::array<const ir::TensorDesc*, ir::kMaxSources> sources{};
-            std::array<const ir::TensorDesc*, ir::kMaxOutputs> outputs{};
-            for (std::size_t i = 0; i < node.nsrc; ++i)
-              sources[i] = node.src[i].valid() ? &graph.tensor(node.src[i]) : nullptr;
-            for (std::size_t i = 0; i < node.nout; ++i) outputs[i] = &graph.tensor(node.out[i]);
-            const auto shape = planner::ShapeOfNode(node.key, std::span(sources).first(node.nsrc),
-                                                    std::span(outputs).first(node.nout));
-            for (const auto anchor : domain.anchors) {
-              // The residual/modulation composite is introduced by the preceding
-              // structural round. Its primitive mul has the same row/width query.
-              if (anchor != node.key &&
-                  !(anchor == ir::Fused(ir::FusedKind::kLayerNormModulateSplit) &&
-                    node.key == ir::Primitive(ir::Op::kMul)))
+            const auto weight = planner::SelectionView::ResolveWeightOperand(graph, node, 0);
+            std::string_view role;
+            auto encoding = graph.tensor(node.src[0]).format.encoding;
+            std::uint16_t ordinal = UINT16_MAX;
+            if (!site.roles.empty()) {
+              if (!weight || weight->reference.stage != stage ||
+                  weight->reference.component != node.component ||
+                  weight->reference.role >= instance.def->roles.size())
                 continue;
-              record(planner::NumericalQualification{.change = domain.change,
-                                                     .evidence = *evidence,
-                                                     .source = identity,
-                                                     .semantic = semantic,
-                                                     .stage = stage,
-                                                     .component = node.component,
-                                                     .anchor = anchor,
-                                                     .arch = domain.arch,
-                                                     .min_rows = shape.rows,
-                                                     .max_rows = shape.rows,
-                                                     .max_k = shape.k,
-                                                     .max_n = shape.n,
-                                                     .exact_shape = true,
-                                                     .incumbent_recipe = domain.incumbent_recipe});
+              ordinal = weight->reference.role;
+              role = instance.def->roles[ordinal].name;
+              encoding = graph.tensor(weight->leaf).format.encoding;
+            }
+            for (const auto anchor : site.anchors) {
+              if (!components::NumericalSiteApplies(site, instance, anchor, role, encoding))
+                continue;
+              for (const auto& evidence : ComponentNumericalEvidenceTable()) {
+                if (evidence.pipeline != NumericalPipeline::kImage ||
+                    evidence.change != site.change || evidence.semantic != site.semantic ||
+                    !EvidenceDeviceMatches(evidence, device) ||
+                    !std::ranges::contains(evidence.encodings, encoding))
+                  continue;
+                auto digest = NumericalDigest(evidence.digest);
+                if (!digest) return std::unexpected(digest.error());
+                std::array<const ir::TensorDesc*, ir::kMaxSources> sources{};
+                std::array<const ir::TensorDesc*, ir::kMaxOutputs> outputs{};
+                for (std::size_t i = 0; i < node.nsrc; ++i)
+                  if (node.src[i].valid()) sources[i] = &graph.tensor(node.src[i]);
+                for (std::size_t i = 0; i < node.nout; ++i) outputs[i] = &graph.tensor(node.out[i]);
+                const auto shape =
+                    planner::ShapeOfNode(node.key, std::span(sources).first(node.nsrc),
+                                         std::span(outputs).first(node.nout));
+                if (evidence.attention_head_dim != 0 && (shape.k != evidence.attention_head_dim ||
+                                                         shape.n != evidence.attention_head_dim))
+                  continue;
+                record(
+                    planner::NumericalQualification{.change = site.change,
+                                                    .evidence = *digest,
+                                                    .source = identity,
+                                                    .semantic = semantic,
+                                                    .stage = stage,
+                                                    .component = node.component,
+                                                    .anchor = anchor,
+                                                    .arch = evidence.arch,
+                                                    .min_rows = shape.rows,
+                                                    .max_rows = shape.rows,
+                                                    .max_k = shape.k,
+                                                    .max_n = shape.n,
+                                                    .exact_shape = true,
+                                                    .incumbent_recipe = evidence.incumbent_recipe,
+                                                    .weight_role = ordinal});
+              }
             }
           }
         }

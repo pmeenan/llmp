@@ -325,8 +325,9 @@ std::expected<ExecutionContract, std::string> ExecutionContract::Create(
     }
     hash.Number(stage.device.tuned.size());
     for (const auto& tune : stage.device.tuned) {
-      if (tune.implementation.empty() || tune.rows == 0 || tune.k == 0 || tune.n == 0 ||
-          tune.weight_bits > 8 || !stage.registry->Find(tune.implementation) ||
+      if (tune.implementation.empty() || tune.rows == 0 || (tune.all_rows && tune.rows != 1) ||
+          tune.k == 0 || tune.n == 0 || tune.weight_bits > 8 ||
+          !stage.registry->Find(tune.implementation) ||
           (tune.output_encoding &&
            std::ranges::find(format::Encodings(), *tune.output_encoding,
                              &format::EncodingInfo::id) == format::Encodings().end())) {
@@ -337,6 +338,7 @@ std::expected<ExecutionContract, std::string> ExecutionContract::Create(
       hash.Number(tune.k);
       hash.Number(tune.n);
       hash.Number(tune.weight_bits);
+      hash.Number(tune.all_rows);
       hash.Number(tune.output_encoding.has_value());
       if (tune.output_encoding) hash.Number(static_cast<std::uint16_t>(*tune.output_encoding));
     }

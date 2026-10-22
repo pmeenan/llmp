@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/json.h"
@@ -72,6 +73,23 @@ struct Budget {
   }
 };
 constexpr std::array kOwners{SpatialOwner{1, {3, 2, 2, 1}}, SpatialOwner{4, {2, 3, 2, 1}}};
+
+TEST(SpatialComponentsTest, WeightReferencesRetainExplicitPipelineStage) {
+  const auto spec = SpatialSpec();
+  const auto tensors = Tensors(3, format::Encoding::kF32);
+  const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+  Budget budget;
+  auto graph = BuildSpatialStep(spec, tables, kOwners, budget.Payment(),
+                                {.reference_buffers = false, .stage = 2});
+  ASSERT_TRUE(graph);
+  ASSERT_FALSE(graph->weights().empty());
+  for (const auto& weight : graph->weights()) {
+    EXPECT_EQ(weight.ref.stage, 2U);
+    const auto* binding = std::get_if<ir::WeightRef>(&graph->graph().tensor(weight.tensor).binding);
+    ASSERT_NE(binding, nullptr);
+    EXPECT_EQ(binding->stage, 2U);
+  }
+}
 
 class ReportProbeProgram final : public kernels::StepProgram {
  public:

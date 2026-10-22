@@ -108,27 +108,6 @@ std::vector<std::string_view> Words(std::string_view line) {
 
 }  // namespace
 
-std::string_view NumericalChangeName(NumericalChange change) {
-  switch (change) {
-    case NumericalChange::kBf16SwiGluIntermediates:
-      return "bf16_swiglu_intermediates";
-    case NumericalChange::kBf16ProductInputAndResult:
-      return "bf16_product_input_and_result";
-    case NumericalChange::kBf16AttentionIntermediates:
-      return "bf16_attention_intermediates";
-    case NumericalChange::kBf16ResidualCarry:
-      return "bf16_residual_carry";
-    case NumericalChange::kBf16HyperConnectionIntermediates:
-      return "bf16_hyper_connection_intermediates";
-    case NumericalChange::kMxfp8ProductInput:
-      return "mxfp8_product_input";
-    case NumericalChange::kQ8VectorReduction:
-      return "q8_vector_reduction";
-    case NumericalChange::kNvfp4ExpertIntermediates:
-      return "nvfp4_expert_intermediates";
-  }
-  return {};
-}
 std::expected<std::uint64_t, std::string> NumericalQualificationBytes(std::size_t count) {
   // One immutable object/control block and its exact-sized entries allocation.
   constexpr std::uint64_t control = sizeof(NumericalQualifications) + 3 * 64;

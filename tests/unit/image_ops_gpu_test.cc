@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <format>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <random>
 #include <span>
@@ -32,13 +33,16 @@
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "kernels/ggml/attention_f32.h"
+#include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
+#include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/reference/exec.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
+#include "providers/device_runtime.h"
 
 namespace {
 
@@ -88,7 +92,7 @@ class ImageOpsGpu : public ::testing::Test {
         cublas_.get());
     ASSERT_TRUE(launch.has_value()) << (launch ? "" : launch.error().detail);
     launch_ = std::move(*launch);
-    arena_ = std::make_unique<kg::TensorArena>(kg::TensorArena::Create(512).value());
+    arena_ = std::make_unique<kg::TensorArena>(kg::TensorArena::Create(2048).value());
   }
   void TearDown() override {
     Finish();
@@ -384,103 +388,114 @@ TEST_F(ImageOpsGpu, RopeTableIsTheRotationOfOneZero) {
 // The attention over BF16 heads with the query's norm and rotation in the
 // kernel, against its decomposition (one packed mask and table for both).
 TEST_F(ImageOpsGpu, QkAttentionMatchesItsDecomposition) {
-  constexpr std::int64_t kD = 128, kH = 4, kHk = 2, kRows = 77, kText = 9;
-  const auto cells = static_cast<std::uint32_t>((kRows + 255) / 256 * 256);
-  const auto bf16 = [](std::vector<float>& v, std::vector<std::uint16_t>& bits) {
-    for (float& x : v) {
-      bits.push_back(Bf16(x));
-      x = std::bit_cast<float>(std::uint32_t{bits.back()} << 16U);
+  const auto check_rows = [this]<std::int64_t kRows>() {
+    SCOPED_TRACE(std::format("rows {}", kRows));
+    constexpr std::int64_t kD = 128, kH = 4, kHk = 2, kText = 9;
+    const auto cells = static_cast<std::uint32_t>((kRows + 255) / 256 * 256);
+    const auto bf16 = [](std::vector<float>& v, std::vector<std::uint16_t>& bits) {
+      for (float& x : v) {
+        bits.push_back(Bf16(x));
+        x = std::bit_cast<float>(std::uint32_t{bits.back()} << 16U);
+      }
+    };
+    std::vector<float> q = Normal(41, kD * kH * kRows), k = Normal(42, kD * kHk * kRows),
+                       v = Normal(43, kD * kHk * kRows), w = Normal(44, kD);
+    std::vector<std::uint16_t> qb, kb, vb, wb;
+    bf16(q, qb);
+    bf16(k, kb);
+    bf16(v, vb);
+    bf16(w, wb);
+    std::vector<float> mask(kRows * kRows, 0.0F);
+    for (std::int64_t r = 0; r < kText; ++r)
+      for (std::int64_t c = kText; c < kRows; ++c)
+        mask[static_cast<std::size_t>(c + kRows * r)] = -INFINITY;
+    std::vector<std::vector<std::int32_t>> positions(3);
+    for (std::size_t a = 0; a < 3; ++a)
+      for (std::int64_t r = 0; r < kRows; ++r)
+        positions[a].push_back(
+            static_cast<std::int32_t>((r * static_cast<std::int64_t>(a + 1)) % 31));
+    const std::array<std::uint32_t, 3> dims{16, 56, 56};
+    const ir::RopeSectionsParams rope{
+        .eps = 0.0F, .base = 10000.0F, .mode = ir::RopeMode::kNormal, .sections = 3, .dims = dims};
+    const ir::QkAttentionParams params{.eps = 1e-6F, .scale = 1.0F / std::sqrt(128.0F)};
+    for (const bool bf16_out : {false, true}) {
+      SCOPED_TRACE(bf16_out ? "BF16 out" : "F32 out");
+      ir::Builder b;
+      const auto in = [&](Encoding e, std::initializer_list<std::uint64_t> ne) {
+        return b.Input(ir::Dense(e, ir::ShapeOf(ne)));
+      };
+      const ir::TensorId tq = in(Encoding::kBF16, {kD * kH, kRows});
+      const ir::TensorId tw = in(Encoding::kBF16, {kD});
+      const ir::TensorId tk = in(Encoding::kBF16, {kD * kHk, kRows});
+      const ir::TensorId tv = in(Encoding::kBF16, {kD * kHk, kRows});
+      const ir::TensorId tm = in(Encoding::kF32, {kRows, kRows});
+      std::vector<ir::TensorId> tp;
+      for (std::size_t a = 0; a < 3; ++a) tp.push_back(in(Encoding::kI32, {kRows}));
+      const ir::MaskPackParams mp{.cells = cells, .rows = static_cast<std::uint32_t>(kRows)};
+      const ir::TensorId packed = b.Fused(ir::FusedKind::kAttentionMaskPack, std::array{tm}, mp)[0];
+      const ir::TensorId table = b.Fused(ir::FusedKind::kRopeTable, tp, rope)[0];
+      const std::array encodings{bf16_out ? Encoding::kBF16 : Encoding::kF32};
+      const ir::TensorId out =
+          b.Fused(ir::FusedKind::kQkAttention, std::array{tq, tw, tk, tv, packed, table}, params,
+                  encodings)[0];
+      b.Output(out);
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph) << graph.error().detail;
+      auto exec = ref::Executor::Create(*graph);
+      ASSERT_TRUE(exec) << exec.error().detail;
+      ASSERT_TRUE(exec->BindValues(tq, q));
+      ASSERT_TRUE(exec->BindValues(tw, w));
+      ASSERT_TRUE(exec->BindValues(tk, k));
+      ASSERT_TRUE(exec->BindValues(tv, v));
+      ASSERT_TRUE(exec->BindValues(tm, mask));
+      for (std::size_t a = 0; a < 3; ++a) {
+        const std::vector<std::int64_t> wide(positions[a].begin(), positions[a].end());
+        ASSERT_TRUE(exec->BindInts(tp[a], wide));
+      }
+      ASSERT_TRUE(exec->Run());
+      const auto want = exec->Values(out);
+      ASSERT_TRUE(want);
+
+      ggml_context* c = arena_->context();
+      ggml_tensor* gq = Place(ggml_new_tensor_2d(c, GGML_TYPE_BF16, kD * kH, kRows), qb);
+      ggml_tensor* gw = Place(ggml_new_tensor_1d(c, GGML_TYPE_BF16, kD), wb);
+      ggml_tensor* gk = Place(ggml_new_tensor_2d(c, GGML_TYPE_BF16, kD * kHk, kRows), kb);
+      ggml_tensor* gv = Place(ggml_new_tensor_2d(c, GGML_TYPE_BF16, kD * kHk, kRows), vb);
+      ggml_tensor* gm = Place(ggml_new_tensor_2d(c, GGML_TYPE_F32, kRows, kRows), mask);
+      std::vector<ggml_tensor*> gpos;
+      for (const auto& p : positions)
+        gpos.push_back(Place(ggml_new_tensor_1d(c, GGML_TYPE_I32, kRows), p));
+      ggml_tensor* gpacked =
+          Place(kg::AttentionMaskPack(c, gm, cells, kRows), std::vector<float>{});
+      ggml_tensor* gtable = Place(kg::RopeTable(c, gpos, dims, 10000.0F), std::vector<float>{});
+      ggml_tensor* node =
+          Place(kg::QkAttention(c, gq, gw, gk, gv, gpacked, gtable, params.eps, params.scale,
+                                bf16_out ? GGML_TYPE_BF16 : GGML_TYPE_F32),
+                std::vector<float>{});
+      ASSERT_TRUE(kg::RunAttentionMaskPack(*launch_, gpacked));
+      ASSERT_TRUE(kg::RunRopeTable(*launch_, gtable));
+      auto ran = kg::RunQkAttention(*launch_, node);
+      ASSERT_TRUE(ran) << ran.error().detail;
+      const std::vector<float> got = Read(node);
+      ASSERT_EQ(got.size(), want->size());
+      double err = 0, norm = 0;
+      for (std::size_t i = 0; i < got.size(); ++i) {
+        ASSERT_TRUE(std::isfinite(got[i]));
+        ASSERT_TRUE(std::isfinite((*want)[i]));
+        const double d = static_cast<double>(got[i]) - (*want)[i];
+        err += d * d;
+        norm += static_cast<double>((*want)[i]) * (*want)[i];
+      }
+      // The kernel's BF16 query after its norm and rotation, F16 scores and
+      // probabilities against the reference's F32.
+      EXPECT_LE(std::sqrt(err / norm), 1.5e-2);
     }
   };
-  std::vector<float> q = Normal(41, kD * kH * kRows), k = Normal(42, kD * kHk * kRows),
-                     v = Normal(43, kD * kHk * kRows), w = Normal(44, kD);
-  std::vector<std::uint16_t> qb, kb, vb, wb;
-  bf16(q, qb);
-  bf16(k, kb);
-  bf16(v, vb);
-  bf16(w, wb);
-  std::vector<float> mask(kRows * kRows, 0.0F);
-  for (std::int64_t r = 0; r < kText; ++r)
-    for (std::int64_t c = kText; c < kRows; ++c)
-      mask[static_cast<std::size_t>(c + kRows * r)] = -INFINITY;
-  std::vector<std::vector<std::int32_t>> positions(3);
-  for (std::size_t a = 0; a < 3; ++a)
-    for (std::int64_t r = 0; r < kRows; ++r)
-      positions[a].push_back(
-          static_cast<std::int32_t>((r * static_cast<std::int64_t>(a + 1)) % 31));
-  const std::array<std::uint32_t, 3> dims{16, 56, 56};
-  const ir::RopeSectionsParams rope{
-      .eps = 0.0F, .base = 10000.0F, .mode = ir::RopeMode::kNormal, .sections = 3, .dims = dims};
-  const ir::QkAttentionParams params{.eps = 1e-6F, .scale = 1.0F / std::sqrt(128.0F)};
-  for (const bool bf16_out : {false, true}) {
-    SCOPED_TRACE(bf16_out ? "BF16 out" : "F32 out");
-    ir::Builder b;
-    const auto in = [&](Encoding e, std::initializer_list<std::uint64_t> ne) {
-      return b.Input(ir::Dense(e, ir::ShapeOf(ne)));
-    };
-    const ir::TensorId tq = in(Encoding::kBF16, {kD * kH, kRows});
-    const ir::TensorId tw = in(Encoding::kBF16, {kD});
-    const ir::TensorId tk = in(Encoding::kBF16, {kD * kHk, kRows});
-    const ir::TensorId tv = in(Encoding::kBF16, {kD * kHk, kRows});
-    const ir::TensorId tm = in(Encoding::kF32, {kRows, kRows});
-    std::vector<ir::TensorId> tp;
-    for (std::size_t a = 0; a < 3; ++a) tp.push_back(in(Encoding::kI32, {kRows}));
-    const ir::MaskPackParams mp{.cells = cells, .rows = static_cast<std::uint32_t>(kRows)};
-    const ir::TensorId packed = b.Fused(ir::FusedKind::kAttentionMaskPack, std::array{tm}, mp)[0];
-    const ir::TensorId table = b.Fused(ir::FusedKind::kRopeTable, tp, rope)[0];
-    const std::array encodings{bf16_out ? Encoding::kBF16 : Encoding::kF32};
-    const ir::TensorId out =
-        b.Fused(ir::FusedKind::kQkAttention, std::array{tq, tw, tk, tv, packed, table}, params,
-                encodings)[0];
-    b.Output(out);
-    auto graph = std::move(b).Finish();
-    ASSERT_TRUE(graph) << graph.error().detail;
-    auto exec = ref::Executor::Create(*graph);
-    ASSERT_TRUE(exec) << exec.error().detail;
-    ASSERT_TRUE(exec->BindValues(tq, q));
-    ASSERT_TRUE(exec->BindValues(tw, w));
-    ASSERT_TRUE(exec->BindValues(tk, k));
-    ASSERT_TRUE(exec->BindValues(tv, v));
-    ASSERT_TRUE(exec->BindValues(tm, mask));
-    for (std::size_t a = 0; a < 3; ++a) {
-      const std::vector<std::int64_t> wide(positions[a].begin(), positions[a].end());
-      ASSERT_TRUE(exec->BindInts(tp[a], wide));
-    }
-    ASSERT_TRUE(exec->Run());
-    const auto want = exec->Values(out);
-    ASSERT_TRUE(want);
-
-    ggml_context* c = arena_->context();
-    ggml_tensor* gq = Place(ggml_new_tensor_2d(c, GGML_TYPE_BF16, kD * kH, kRows), qb);
-    ggml_tensor* gw = Place(ggml_new_tensor_1d(c, GGML_TYPE_BF16, kD), wb);
-    ggml_tensor* gk = Place(ggml_new_tensor_2d(c, GGML_TYPE_BF16, kD * kHk, kRows), kb);
-    ggml_tensor* gv = Place(ggml_new_tensor_2d(c, GGML_TYPE_BF16, kD * kHk, kRows), vb);
-    ggml_tensor* gm = Place(ggml_new_tensor_2d(c, GGML_TYPE_F32, kRows, kRows), mask);
-    std::vector<ggml_tensor*> gpos;
-    for (const auto& p : positions)
-      gpos.push_back(Place(ggml_new_tensor_1d(c, GGML_TYPE_I32, kRows), p));
-    ggml_tensor* gpacked = Place(kg::AttentionMaskPack(c, gm, cells, kRows), std::vector<float>{});
-    ggml_tensor* gtable = Place(kg::RopeTable(c, gpos, dims, 10000.0F), std::vector<float>{});
-    ggml_tensor* node =
-        Place(kg::QkAttention(c, gq, gw, gk, gv, gpacked, gtable, params.eps, params.scale,
-                              bf16_out ? GGML_TYPE_BF16 : GGML_TYPE_F32),
-              std::vector<float>{});
-    ASSERT_TRUE(kg::RunAttentionMaskPack(*launch_, gpacked));
-    ASSERT_TRUE(kg::RunRopeTable(*launch_, gtable));
-    auto ran = kg::RunQkAttention(*launch_, node);
-    ASSERT_TRUE(ran) << ran.error().detail;
-    const std::vector<float> got = Read(node);
-    ASSERT_EQ(got.size(), want->size());
-    double err = 0, norm = 0;
-    for (std::size_t i = 0; i < got.size(); ++i) {
-      const double d = static_cast<double>(got[i]) - (*want)[i];
-      err += d * d;
-      norm += static_cast<double>((*want)[i]) * (*want)[i];
-    }
-    // The kernel's BF16 query after its norm and rotation, F16 scores and
-    // probabilities against the reference's F32.
-    EXPECT_LE(std::sqrt(err / norm), 1.5e-2);
-  }
+  check_rows.operator()<17>();
+  ASSERT_FALSE(HasFatalFailure());
+  check_rows.operator()<77>();
+  ASSERT_FALSE(HasFatalFailure());
+  check_rows.operator()<264>();
 }
 
 // The worst relative error of `got` against `want`, by the larger
@@ -489,6 +504,8 @@ double WorstRelative(std::span<const float> got, std::span<const float> want, do
   EXPECT_EQ(got.size(), want.size());
   double worst = 0;
   for (std::size_t i = 0; i < got.size() && i < want.size(); ++i) {
+    if (!std::isfinite(got[i]) || !std::isfinite(want[i]))
+      return std::numeric_limits<double>::infinity();
     const double w = want[i];
     worst = std::max(worst, std::abs(got[i] - w) / std::max(std::abs(w), floor));
   }
@@ -499,8 +516,18 @@ TEST_F(ImageOpsGpu, SplitModulationsMatchTheirDecompositions) {
   constexpr float kEps = 1e-6F;
   // A narrow and the image's 4096 wide row (its kernel apart), a split
   // inside, at the end and at the start.
-  for (const auto [cols, rows, split] : std::array<std::array<std::int64_t, 3>, 4>{
-           {{320, 37, 12}, {4096, 9, 4}, {320, 7, 7}, {320, 7, 0}}}) {
+  for (const auto [cols, rows, split] :
+       std::array<std::array<std::int64_t, 3>, 11>{{{320, 37, 12},
+                                                    {4096, 9, 4},
+                                                    {320, 7, 7},
+                                                    {320, 7, 0},
+                                                    {256, 17, 1},
+                                                    {256, 77, 13},
+                                                    {256, 264, 8},
+                                                    {4096, 17, 1},
+                                                    {4096, 77, 13},
+                                                    {4096, 264, 8},
+                                                    {8192, 17, 1}}}) {
     const std::vector<float> x = Normal(51, static_cast<std::size_t>(cols * rows));
     const std::vector<float> branch = Normal(52, static_cast<std::size_t>(cols * rows));
     const std::vector<float> a = Normal(53, static_cast<std::size_t>(cols));
@@ -580,7 +607,6 @@ TEST_F(ImageOpsGpu, SplitModulationsMatchTheirDecompositions) {
     // run-time path's form too: a BF16 branch and carry and a BF16 sum.
     for (const ggml_type type : {GGML_TYPE_F32, GGML_TYPE_BF16}) {
       for (const bool bf16_rows : {false, true}) {
-        if (bf16_rows && cols > 8192) continue;
         SCOPED_TRACE(std::format("joined C {} R {} split {} {}{}", cols, rows, split,
                                  type == GGML_TYPE_F32 ? "F32" : "BF16",
                                  bf16_rows ? " BF16 rows" : ""));
@@ -648,6 +674,57 @@ TEST_F(ImageOpsGpu, SplitModulationsMatchTheirDecompositions) {
         EXPECT_LE(WorstRelative(Read(modulated), *want_out, 1.0),
                   type == GGML_TYPE_F32 ? 1e-4 : 8e-3);
       }
+    }
+  }
+}
+
+// The BF16 carry needs its unrounded sum cached across the joined norm.
+// Above the real shared-row bound, reject before any launch. F32 carry is
+// still supported at the same width, so this is not a general shape gate.
+TEST_F(ImageOpsGpu, JoinedBf16CarryRefusesBeyondCachedRowBound) {
+  constexpr std::int64_t kCols = 8193, kRows = 17;
+  const auto facts = llmp::providers::QueryDeviceFacts(0);
+  ASSERT_TRUE(facts);
+  const auto* capability = kg::CapabilityOf(kg::kGatedResidualModulateSplitName);
+  ASSERT_NE(capability, nullptr);
+  ASSERT_NE(capability->accepts, nullptr);
+  ggml_context* c = arena_->context();
+  for (const ggml_type carry : {GGML_TYPE_F32, GGML_TYPE_BF16}) {
+    const auto empty = std::vector<float>{};
+    auto* x = Place(ggml_new_tensor_2d(c, carry, kCols, kRows), empty);
+    auto* branch = Place(ggml_new_tensor_2d(c, carry, kCols, kRows), empty);
+    auto* a = Place(ggml_new_tensor_1d(c, GGML_TYPE_F32, kCols), empty);
+    auto* b = Place(ggml_new_tensor_1d(c, GGML_TYPE_F32, kCols), empty);
+    auto* residual = Place(kg::GatedResidualSplit(c, x, branch, a, b, 1, carry), empty);
+    auto* modulated =
+        Place(kg::LayerNormModulateSplit(c, residual, b, a, 1e-6F, 1, GGML_TYPE_BF16), empty);
+    kg::MarkJoined(modulated);
+    namespace ex = llmp::execution;
+    const std::array tensors{x, branch, a, b, b, a, residual, modulated};
+    std::array<ex::OperandFormat, 8> operands{};
+    for (std::size_t i = 0; i < tensors.size(); ++i) {
+      auto& operand = operands[i];
+      operand.operand = static_cast<std::uint8_t>(i < 6 ? i : ex::kOutputOperand + i - 6);
+      operand.encoding = tensors[i]->type == GGML_TYPE_BF16 ? Encoding::kBF16 : Encoding::kF32;
+      operand.memory.emplace();
+      for (std::size_t d = 0; d < 4; ++d) {
+        operand.ne[d] = static_cast<std::uint64_t>(tensors[i]->ne[d]);
+        operand.memory->nb[d] = tensors[i]->nb[d];
+      }
+    }
+    const ir::SplitModulateParams params{.eps = 1e-6F, .split = 1};
+    const ex::CapabilityQuery query{.op = capability->op,
+                                    .operands = operands,
+                                    .rows = kRows,
+                                    .arch = facts->architecture / 10,
+                                    .params = std::as_bytes(std::span(&params, 1))};
+    EXPECT_EQ(capability->accepts(query), carry == GGML_TYPE_F32);
+    const auto checked = kg::CheckGatedResidualModulateSplit(residual, modulated);
+    if (carry == GGML_TYPE_BF16) {
+      ASSERT_FALSE(checked);
+      EXPECT_NE(checked.error().detail.find("8192"), std::string::npos);
+    } else {
+      ASSERT_TRUE(checked) << checked.error().detail;
     }
   }
 }

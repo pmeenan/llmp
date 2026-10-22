@@ -3,12 +3,15 @@
 
 # M3.5 component numerical qualification
 
-Status: image-only quality and speed results are recorded in
-[U4 image transfer results](IMAGE-RESULTS.md). LLM transfer and the full U4 exit
-remain pending. The prospective protocol below retains its registered inputs
-and bounds. U4 remains unchecked until the integrated native build,
-focused/shared checks, independent review/challenge and required device/component
-transfer runs pass. D-123 remains binding.
+Status: U4's component/device evidence join is implemented and its bounded
+transfer checks pass: [image results](IMAGE-RESULTS.md) and
+[LLM results](LLM-RESULTS.md). Both strict Mia comparisons remain failures;
+unchanged target execution retains only the prospectively scoped existing
+interimplementation limitation. The changed drafter domain has separate
+formula, state, greedy and speed controls. Final integrated native/shared checks
+and independent whole/adversarial reviews pass. No sm86 numerical evidence or
+general M3.5/model-quality completion is claimed. D-123 and D-126 govern.
+The prospective protocol below retains its registered inputs and bounds.
 
 ## Contracts and existing evidence
 

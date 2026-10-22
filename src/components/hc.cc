@@ -618,12 +618,50 @@ const ComponentDef& ResidualHc() {
 }
 
 const ComponentDef& HcMix() {
+  static constexpr std::array kSigmoidNumerical{NumericalCondition{"mix", "sigmoid"}};
+  static constexpr std::array kSinkhornNumerical{NumericalCondition{"mix", "sinkhorn"}};
+  static constexpr std::array kSigmoidRoles{std::string_view{"down"}, std::string_view{"up"}};
+  static constexpr std::array kSinkhornRoles{std::string_view{"fn"}};
+  static constexpr std::array kNumericalNormRoles{std::string_view{"norm"}};
+  static constexpr std::array kNumericalSites{
+      NumericalSite{.semantic = "product.block32_q8",
+                    .change = ir::NumericalChange::kQ8VectorReduction,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kSigmoidRoles,
+                    .encodings = numerics::kBlockWeightEncodings,
+                    .when = kSigmoidNumerical},
+      NumericalSite{.semantic = "product.mxfp8_input",
+                    .change = ir::NumericalChange::kMxfp8ProductInput,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kSigmoidRoles,
+                    .encodings = numerics::kPreparedWeightEncodings,
+                    .when = kSigmoidNumerical},
+      NumericalSite{.semantic = "product.block32_q8",
+                    .change = ir::NumericalChange::kQ8VectorReduction,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kSinkhornRoles,
+                    .encodings = numerics::kBlockWeightEncodings,
+                    .when = kSinkhornNumerical},
+      NumericalSite{.semantic = "product.mxfp8_input",
+                    .change = ir::NumericalChange::kMxfp8ProductInput,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kSinkhornRoles,
+                    .encodings = numerics::kPreparedWeightEncodings,
+                    .when = kSinkhornNumerical},
+      NumericalSite{.semantic = "hc.sigmoid_per_stream_norm",
+                    .change = ir::NumericalChange::kBf16HyperConnectionIntermediates,
+                    .anchors = numerics::kNormAnchors,
+                    .roles = kNumericalNormRoles,
+                    .encodings = numerics::kFloatEncodings,
+                    .when = kSigmoidNumerical},
+  };
   static const ComponentDef def{
       .kind = "hc.mix",
       .version = 1,
       .row_local = true,
       .params = kMixParams,
       .roles = kMixRoles,
+      .numerical = kNumericalSites,
       .shapes = MixShapes,
 
       .emit = MixEmit,
@@ -633,12 +671,26 @@ const ComponentDef& HcMix() {
 }
 
 const ComponentDef& HcCombine() {
+  static constexpr std::array kNumericalProductRoles{std::string_view{"inject"}};
+  static constexpr std::array kNumericalSites{
+      NumericalSite{.semantic = "product.block32_q8",
+                    .change = ir::NumericalChange::kQ8VectorReduction,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProductRoles,
+                    .encodings = numerics::kBlockWeightEncodings},
+      NumericalSite{.semantic = "product.mxfp8_input",
+                    .change = ir::NumericalChange::kMxfp8ProductInput,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProductRoles,
+                    .encodings = numerics::kPreparedWeightEncodings},
+  };
   static const ComponentDef def{
       .kind = "hc.combine",
       .version = 1,
       .row_local = true,
       .params = kCombineParams,
       .roles = kCombineRoles,
+      .numerical = kNumericalSites,
       .shapes = CombineShapes,
 
       .emit = CombineEmit,

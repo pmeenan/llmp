@@ -183,6 +183,114 @@ TEST(ComponentsTest, CatalogIsSortedUniqueAndHasReferences) {
   EXPECT_FALSE(RoleIndex(*Find("ffn.glu", 1), "bias").has_value());
 }
 
+TEST(ComponentsTest, NumericalSitesValidateAgainstTheirComponentDomains) {
+  for (const auto* def : Catalog()) {
+    const auto valid = ValidateNumericalSites(*def);
+    EXPECT_TRUE(valid) << (valid ? std::string(def->kind) : valid.error());
+  }
+  const auto* original = Find("hc.mix", 1);
+  ASSERT_NE(original, nullptr);
+  ASSERT_FALSE(original->numerical.empty());
+  const std::array missing_role{std::string_view{"not_a_role"}};
+  const std::array unknown_encoding{static_cast<Encoding>(UINT16_MAX)};
+  const std::array unknown_origin{ir::Primitive(static_cast<ir::Op>(UINT16_MAX))};
+  const std::array missing_parameter{NumericalCondition{"not_a_parameter", "sigmoid"}};
+  const std::array unknown_choice{NumericalCondition{"mix", "not_a_mix"}};
+  const std::array wrong_parameter_type{NumericalCondition{"eps", "sigmoid"}};
+  for (const auto failure : {0, 1, 2, 3, 4, 5}) {
+    auto def = *original;
+    std::array sites{original->numerical.front()};
+    if (failure == 0) sites[0].roles = missing_role;
+    if (failure == 1) sites[0].encodings = unknown_encoding;
+    if (failure == 2) sites[0].when = missing_parameter;
+    if (failure == 3) sites[0].when = unknown_choice;
+    if (failure == 4) sites[0].when = wrong_parameter_type;
+    if (failure == 5) sites[0].origins = unknown_origin;
+    def.numerical = sites;
+    EXPECT_FALSE(ValidateNumericalSites(def));
+  }
+}
+
+TEST(ComponentsTest, NumericalSitesDistinguishHcSemanticsRolesAndEncodings) {
+  const auto* def = Find("hc.mix", 1);
+  ASSERT_NE(def, nullptr);
+  const auto norm =
+      std::ranges::find(def->numerical, ir::NumericalChange::kBf16HyperConnectionIntermediates,
+                        &NumericalSite::change);
+  ASSERT_NE(norm, def->numerical.end());
+  EXPECT_EQ(norm->semantic, "hc.sigmoid_per_stream_norm");
+  const auto product = std::ranges::find(def->numerical, ir::NumericalChange::kQ8VectorReduction,
+                                         &NumericalSite::change);
+  ASSERT_NE(product, def->numerical.end());
+  for (const auto mix : {"sigmoid", "sinkhorn"}) {
+    ComponentRef ref = C("hc.mix", {P("eps", R(1e-6)), P("mix", N(mix)), P("iterations", I(4))});
+    if (std::string_view(mix) == "sigmoid") ref.params.push_back(P("rank", I(2)));
+    std::ranges::sort(ref.params, {}, &Param::name);
+    auto instance = MakeInstance(ref, {.width = 4, .streams = 2}, Site::kLayer, 0, 0);
+    ASSERT_TRUE(instance) << (instance ? "" : instance.error());
+    const auto anchor = ir::Primitive(ir::Op::kRmsNorm);
+    EXPECT_EQ(NumericalSiteApplies(*norm, *instance, anchor, "norm", Encoding::kF32),
+              std::string_view(mix) == "sigmoid");
+    EXPECT_FALSE(NumericalSiteApplies(*norm, *instance, anchor, "post_norm", Encoding::kF32));
+    EXPECT_FALSE(NumericalSiteApplies(*norm, *instance, anchor, "norm", Encoding::kNvfp4));
+    EXPECT_FALSE(NumericalSiteApplies(*norm, *instance, ir::Primitive(ir::Op::kMatMul), "norm",
+                                      Encoding::kF32));
+    EXPECT_EQ(NumericalSiteApplies(*product, *instance, ir::Primitive(ir::Op::kMatMul), "down",
+                                   Encoding::kQ8_0),
+              std::string_view(mix) == "sigmoid");
+  }
+}
+
+TEST(ComponentsTest, NumericalSitesKeepActivationAndWeightContractsSeparate) {
+  const auto* def = Find("ffn.glu", 1);
+  ASSERT_NE(def, nullptr);
+  const auto activation = std::ranges::find(
+      def->numerical, ir::NumericalChange::kBf16SwiGluIntermediates, &NumericalSite::change);
+  const auto product = std::ranges::find(def->numerical, ir::NumericalChange::kMxfp8ProductInput,
+                                         &NumericalSite::change);
+  ASSERT_NE(activation, def->numerical.end());
+  ASSERT_NE(product, def->numerical.end());
+  for (const auto kind : {"silu", "gelu_tanh"}) {
+    ComponentRef ref = C("ffn.glu", {P("placement", N("bare")), P("eps", R(1e-6)),
+                                     P("activation", N(kind)), P("hidden", I(8))});
+    auto instance = MakeInstance(ref, {.width = 4}, Site::kLayer, 0, 0);
+    ASSERT_TRUE(instance) << (instance ? "" : instance.error());
+    EXPECT_EQ(NumericalSiteApplies(*activation, *instance, ir::Primitive(ir::Op::kGlu), "",
+                                   Encoding::kF32),
+              std::string_view(kind) == "silu");
+    EXPECT_FALSE(NumericalSiteApplies(*activation, *instance, ir::Primitive(ir::Op::kGlu), "gate",
+                                      Encoding::kF32));
+    EXPECT_TRUE(NumericalSiteApplies(*product, *instance, ir::Primitive(ir::Op::kMatMul), "gate",
+                                     Encoding::kNvfp4));
+    EXPECT_FALSE(NumericalSiteApplies(*product, *instance, ir::Primitive(ir::Op::kMatMul), "",
+                                      Encoding::kNvfp4));
+    EXPECT_FALSE(NumericalSiteApplies(*product, *instance, ir::Primitive(ir::Op::kMatMul), "norm",
+                                      Encoding::kNvfp4));
+    EXPECT_FALSE(NumericalSiteApplies(*product, *instance, ir::Primitive(ir::Op::kMatMul), "gate",
+                                      Encoding::kAffine));
+  }
+}
+
+TEST(ComponentsTest, AttentionNumericalSitesRequireTheirDeclaredStatelessFlag) {
+  const auto* def = Find("attention.dense", 1);
+  ASSERT_NE(def, nullptr);
+  const auto site = std::ranges::find(
+      def->numerical, ir::NumericalChange::kBf16AttentionIntermediates, &NumericalSite::change);
+  ASSERT_NE(site, def->numerical.end());
+  for (const bool stateless : {false, true}) {
+    auto ref = C("attention.dense",
+                 {P("placement", N("pre")), P("eps", R(1e-6)), P("heads", I(2)),
+                  P("kv_heads", I(1)), P("key_dim", I(4)), P("value_dim", I(4)), P("scale", R(0.5)),
+                  P("window", I(0)), P("rotation", N("neox")), P("rope_dims", I(4)),
+                  P("rope_base", I(10000)), P("rope_scale", R(1.0)), P("stateless", stateless)});
+    auto instance = MakeInstance(ref, {.width = 8}, Site::kLayer, 0, 0);
+    ASSERT_TRUE(instance) << (instance ? "" : instance.error());
+    EXPECT_EQ(NumericalSiteApplies(*site, *instance, ir::Primitive(ir::Op::kAttention), "",
+                                   Encoding::kF32),
+              stateless);
+  }
+}
+
 TEST(ComponentsTest, ParamsAreTypedRangedAndDefaulted) {
   const ComponentDef& def = *Find("attention.dense", 1);
   ComponentRef r = C("attention.dense",

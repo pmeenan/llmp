@@ -207,11 +207,12 @@ bool Computes(const Capability& c, const CapabilityQuery& q) {
   return c.accepts == nullptr || c.accepts(q);
 }
 
-// Tuning data for exactly the queried shape, where the capability needs it.
+// Explicit exact-shape or all-positive-rows algorithm qualification.
 bool Tuned(const Implementation& implementation, const CapabilityQuery& q) {
   return !implementation.capability->needs_tuning ||
          std::ranges::any_of(q.tuned, [&](const TunedShape& t) {
-           return t.implementation == implementation.name && t.rows == q.rows && t.k == q.k &&
+           return t.implementation == implementation.name &&
+                  (t.all_rows ? t.rows == 1 && q.rows > 0 : t.rows == q.rows) && t.k == q.k &&
                   t.n == q.n &&
                   (t.weight_bits == 0 ||
                    std::ranges::any_of(q.operands,

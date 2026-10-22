@@ -786,6 +786,40 @@ const ComponentDef& SideHash() {
 }
 
 const ComponentDef& FfnMoe() {
+  static constexpr std::array kNumericalProductRoles{
+      std::string_view{"gate"}, std::string_view{"up"}, std::string_view{"down"},
+      std::string_view{"router"}, std::string_view{"shared_gate"}};
+  static constexpr std::array kNumericalExpertRoles{
+      std::string_view{"gate_up_experts"}, std::string_view{"gate_experts"},
+      std::string_view{"up_experts"}, std::string_view{"down_experts"}};
+  static constexpr std::array kNumericalReduceRoles{std::string_view{"down_experts"}};
+  static constexpr std::array kNumericalSites{
+      NumericalSite{.semantic = "product.block32_q8",
+                    .change = ir::NumericalChange::kQ8VectorReduction,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProductRoles,
+                    .encodings = numerics::kBlockWeightEncodings},
+      NumericalSite{.semantic = "product.mxfp8_input",
+                    .change = ir::NumericalChange::kMxfp8ProductInput,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProductRoles,
+                    .encodings = numerics::kPreparedWeightEncodings},
+      NumericalSite{.semantic = "product.selected_block32_q8",
+                    .change = ir::NumericalChange::kQ8VectorReduction,
+                    .anchors = numerics::kExpertAnchors,
+                    .roles = kNumericalExpertRoles,
+                    .encodings = numerics::kBlockWeightEncodings},
+      NumericalSite{.semantic = "product.selected_mxfp8_input",
+                    .change = ir::NumericalChange::kMxfp8ProductInput,
+                    .anchors = numerics::kExpertAnchors,
+                    .roles = kNumericalExpertRoles,
+                    .encodings = numerics::kPreparedWeightEncodings},
+      NumericalSite{.semantic = "experts.nvfp4_intermediates",
+                    .change = ir::NumericalChange::kNvfp4ExpertIntermediates,
+                    .anchors = numerics::kReduceAnchors,
+                    .roles = kNumericalReduceRoles,
+                    .encodings = numerics::kNvfp4Encoding},
+  };
   static const ComponentDef def{
       .kind = "ffn.moe",
       .version = 1,
@@ -793,6 +827,7 @@ const ComponentDef& FfnMoe() {
       .side_input = HashInput,
       .params = kParams,
       .roles = kRoles,
+      .numerical = kNumericalSites,
       .shapes = Shapes,
       .state = nullptr,
 

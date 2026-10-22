@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "base/json.h"
 #include "components/spatial.h"
 #include "engine/execution_contract.h"
 #include "engine/graph_plan.h"
@@ -200,7 +201,8 @@ llmp::planner::Policy ImagePolicy() {
   auto result = policy.value_or(llmp::planner::Policy{});
   result.numerical_candidates = {llmp::planner::NumericalChange::kBf16SwiGluIntermediates,
                                  llmp::planner::NumericalChange::kBf16ProductInputAndResult,
-                                 llmp::planner::NumericalChange::kBf16AttentionIntermediates};
+                                 llmp::planner::NumericalChange::kBf16AttentionIntermediates,
+                                 llmp::planner::NumericalChange::kBf16ResidualCarry};
   llmp::planner::Canonicalize(result);
   return result;
 }
@@ -260,15 +262,15 @@ class ImageFusionGpu : public ::testing::Test {
       paid->Release(bytes);
     };
     ASSERT_TRUE(backend->FundConstruction(charge, refund));
-    // As the image source declares its backend (component_image_build.cc):
-    // the masked F32 attention tuned for each flow's joint rows.
-    std::vector<llmp::execution::TunedShape> tuning;
-    for (const std::uint64_t rows : kFlowRows)
-      tuning.push_back({.implementation = kg::kAttentionF32,
-                        .rows = rows,
-                        .k = 128,
-                        .n = 128,
-                        .output_encoding = fm::Encoding::kF32});
+    // Algorithm qualification covers every positive row count; exact D128
+    // geometry and output encoding remain capability constraints. These
+    // diagnostics must not manufacture a whitelist of their sample rows.
+    std::vector<llmp::execution::TunedShape> tuning{{.implementation = kg::kAttentionF32,
+                                                     .rows = 1,
+                                                     .k = 128,
+                                                     .n = 128,
+                                                     .output_encoding = fm::Encoding::kF32,
+                                                     .all_rows = true}};
     // And the tiled convolution the 1024 decoder takes by default, for the
     // small decoder's 3×3 shapes.
     for (const auto& step : mo::VaeDecoderPlan(SmallVae(), kDecoderGrid, kDecoderGrid)) {
@@ -597,9 +599,59 @@ class ImageFusionGpu : public ::testing::Test {
     Check(*c, shape.bound, reference);
   }
 
+  void TransferFlow(const FlowShape& shape) {
+    Case* c = FlowCase(shape);
+    ASSERT_NE(c, nullptr);
+    ASSERT_FALSE(HasFatalFailure());
+    // Each transfer case must execute all changed arithmetic paths. A plan
+    // falling back to primitives is not numerical evidence for the candidate.
+    for (const auto name : {kg::kQkAttentionName, kg::kGemmBf16LtName, kg::kSwiGluBf16Name,
+                            kg::kLayerNormModulateSplitName, kg::kGatedResidualModulateSplitName})
+      ASSERT_TRUE(c->plan.contains(std::string(name))) << shape.name << ": " << name;
+    // An implementation name alone does not prove the changed arithmetic:
+    // joined modulation also supports F32 carry, and a product elsewhere in
+    // the flow can have different rows. Require applied numerical recipients
+    // at this case's actual joint rows, with its head/carry geometry.
+    std::map<std::string, bool> selected;
+    for (const auto change : {llmp::planner::NumericalChange::kBf16SwiGluIntermediates,
+                              llmp::planner::NumericalChange::kBf16ProductInputAndResult,
+                              llmp::planner::NumericalChange::kBf16AttentionIntermediates,
+                              llmp::planner::NumericalChange::kBf16ResidualCarry})
+      selected.emplace(llmp::planner::NumericalChangeName(change), false);
+    const auto rows = static_cast<std::int64_t>(shape.text + shape.grid * shape.grid);
+    c->program->ReportPlan([&](std::string_view record) {
+      const auto parsed = llmp::base::json::Parse(record);
+      ASSERT_TRUE(parsed) << record;
+      const auto recipients = parsed->root().find("numerical_recipients");
+      if (!recipients) return;
+      for (std::size_t i = 0; i < recipients->size(); ++i) {
+        const auto recipient = recipients->at(i);
+        const auto change = recipient.find("change");
+        const auto actual_rows = recipient.find("rows");
+        const auto k = recipient.find("k");
+        const auto n = recipient.find("n");
+        const auto status = recipient.find("status");
+        ASSERT_TRUE(change && actual_rows && k && n && status);
+        const auto found = selected.find(std::string(change->string()));
+        if (found == selected.end() || actual_rows->int64() != rows) continue;
+        EXPECT_EQ(status->string(), "UNQUALIFIED_CANDIDATE");
+        if (change->string() == "bf16_attention_intermediates" &&
+            (k->int64() != 128 || n->int64() != 128))
+          continue;
+        if (change->string() == "bf16_residual_carry" &&
+            k->int64() != static_cast<std::int64_t>(shape.heads * 128))
+          continue;
+        found->second = true;
+      }
+    });
+    ASSERT_FALSE(HasFatalFailure());
+    for (const auto& [change, present] : selected)
+      ASSERT_TRUE(present) << shape.name << ": missing arithmetic at rows " << rows << ": "
+                           << change;
+    Check(*c, shape.bound);
+  }
+
   static constexpr std::uint64_t kPool = 256 * kMiB;
-  // The flows' joint rows (text + latent grid²), as FlowShape lists them.
-  static constexpr std::array<std::uint64_t, 3> kFlowRows{8 + 16 * 16, 25 + 64 * 64, 8 + 6 * 6};
   std::shared_ptr<llmp::catalog::Catalog> metadata_catalog;
   std::shared_ptr<en::ExecutionMetadataAllowance> metadata_paid;
   std::unique_ptr<llmp::providers::DeviceExecution> execution;
@@ -682,7 +734,29 @@ TEST_F(ImageFusionGpu, FlowsAndDecoderMatchTheOracle) {
 // Width 256 (two heads): where the run-time path's split broadcast and
 // gated residual miscomputed by 21% (README, "Findings" 2), the plan
 // matches the oracle.
-TEST_F(ImageFusionGpu, SmallWidthFlowMatchesTheOracle) {
-  Flow({"flow_w256", 2, 512, 8, 6});  // joint rows in kFlowRows
+TEST_F(ImageFusionGpu, SmallWidthFlowMatchesTheOracle) { Flow({"flow_w256", 2, 512, 8, 6}); }
+TEST_F(ImageFusionGpu, TransferWidth256Rows17MatchesTheOracle) {
+  TransferFlow({"transfer_w256_r17", 2, 512, 1, 4});
 }
+
+TEST_F(ImageFusionGpu, TransferWidth256Rows77MatchesTheOracle) {
+  TransferFlow({"transfer_w256_r77", 2, 512, 13, 8});
+}
+
+TEST_F(ImageFusionGpu, TransferWidth256Rows264MatchesTheOracle) {
+  TransferFlow({"transfer_w256_r264", 2, 512, 8, 16});
+}
+
+TEST_F(ImageFusionGpu, TransferWidth4096Rows17MatchesTheOracle) {
+  TransferFlow({"transfer_w4096_r17", 32, 1024, 1, 4});
+}
+
+TEST_F(ImageFusionGpu, TransferWidth4096Rows77MatchesTheOracle) {
+  TransferFlow({"transfer_w4096_r77", 32, 1024, 13, 8});
+}
+
+TEST_F(ImageFusionGpu, TransferWidth4096Rows264MatchesTheOracle) {
+  TransferFlow({"transfer_w4096_r264", 32, 1024, 8, 16});
+}
+
 }  // namespace

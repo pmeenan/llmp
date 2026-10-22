@@ -795,9 +795,11 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
         // activation cap separate; reference copies require checked payment below.
         if (__builtin_add_overflow(values, count, &values))
           return std::unexpected("spatial source/reference inventory overflows");
+        auto ref = role.ref;
+        ref.stage = options.stage;
         roles.push_back({role.use_component,
                          role.use_role,
-                         role.ref,
+                         ref,
                          role.format,
                          {role.parts.begin(), role.parts.end()},
                          {}});

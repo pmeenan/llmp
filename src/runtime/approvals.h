@@ -73,7 +73,7 @@ struct NumericalEvidenceDomain {
   std::string_view evidence{};  // SHA-256 of the authoritative accepted report
   std::string_view component_kind{};
   std::span<const ir::OpKey> anchors{};
-  std::uint32_t arch = 121;
+  std::uint32_t arch = 0;
   std::uint32_t max_context = 0, max_slots = 0;
   // Actual qualified source envelope; no inference for unrelated smaller
   // sources. Explicit rows lists constrain evidence established at those rows.

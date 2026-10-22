@@ -1282,6 +1282,11 @@ The entries below record each change; the record of the milestone is
 
 ### Changed
 
+- Numerical optimizations join component semantics and stored encodings to
+  explicit device evidence (M3.5 U4, D-126), consistently for pinned and new
+  checkpoints. Missing evidence preserves exact arithmetic and is reported;
+  image attention no longer infers qualification from the architecture number.
+
 - Unify dense, borrowed, MQA and QSA attention around one shared IR and scalar
   reference core; merge duplicate fused kinds and name IR and planner operations
   by mechanism; make Qwen2 specs format-independent across GGUF and EXL3 with

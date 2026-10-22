@@ -60,6 +60,8 @@ struct SpatialBuildOptions {
   // The graph's layout round trips removed (ir/layout.h SinkLayouts): what
   // a planning policy enabling layout_sinking asks of the builder.
   bool sink_layouts = false;
+  // Pipeline stage owning this graph's weights (standalone graphs use zero).
+  std::uint16_t stage = 0;
 };
 struct SpatialFragment {
   ir::Builder& builder;

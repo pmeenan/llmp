@@ -24,6 +24,7 @@
 #include "providers/device_runtime.h"
 #include "runtime/component_admission.h"
 #include "runtime/memory_guard.h"
+#include "runtime/numerical_evidence.h"
 #include "runtime/serving_support.h"
 #include "spec/image_spatial.h"
 #include "tokenizer/hf.h"
@@ -516,7 +517,8 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
          .input_encoding = i == 0 ? format::Encoding::kI32 : format::Encoding::kF32,
          .exports = mappings[i]->exports,
          .inputs = inputs[i],
-         .sink_layouts = SinksLayouts(model->policy)});
+         .sink_layouts = SinksLayouts(model->policy),
+         .stage = static_cast<std::uint16_t>(i)});
     if (!graph) return Error(std::format("image stage {}: {}", i, graph.error()));
     for (const auto& weight : graph->weights()) {
       if (weight.parts.size() != 1 || weight.parts[0].second != format::PartRole::kData)
@@ -541,7 +543,7 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
     stage.graph = held->graphs[i];
     auto numerical = AdmittedImageNumerics(
         model->family->spec, model->family->approval, *source->composition, stage.graph->graph(),
-        static_cast<std::uint16_t>(i), geometry.width, geometry.height, geometry.text_rows,
+        mappings[i]->spec, static_cast<std::uint16_t>(i), model->backend->device(),
         model->backend->Backend().ConstructionFunding());
     if (!numerical) return Error(numerical.error());
     stage.numerical = std::move(*numerical);
@@ -651,20 +653,9 @@ EngineImageBuild ComponentImageGenerationBuild(
     auto backend = engine::CreateDeviceBackend(node, static_cast<std::uint32_t>(owner));
     if (!backend) return Error(backend.error());
     held->backend = std::move(*backend);
-    // The denoiser's F32 attention, tuned by default on the GB10 at the
-    // mapping's qualified joint rows, and this request's where its image
-    // rows are the qualified ones (its heads' width).
-    const auto joint = std::uint64_t{request->text_rows} + request->rows;
     std::vector<execution::TunedShape> default_tuned;
-    if (!tuning) {
-      std::vector<std::uint64_t> rows(family.mapping->attention_rows.begin(),
-                                      family.mapping->attention_rows.end());
-      // A request at the qualified image rows, whatever its prompt's.
-      if (std::ranges::contains(family.mapping->attention_image_rows, request->rows) &&
-          !std::ranges::contains(rows, joint))
-        rows.push_back(joint);
-      default_tuned = held->backend->DefaultImageAttentionTuning(rows, p.denoiser.head_dim);
-    }
+    if (!tuning && HasImageAttentionEvidence(held->backend->device(), p.denoiser.head_dim))
+      default_tuned = held->backend->ImageAttentionTuning(p.denoiser.head_dim);
     const auto tuples = tuning ? std::span<const execution::TunedShape>(tuning->facts().tuned)
                                : std::span<const execution::TunedShape>(default_tuned);
     auto declared = held->backend->Declare(

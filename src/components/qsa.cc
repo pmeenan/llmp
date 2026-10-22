@@ -715,11 +715,28 @@ std::expected<void, std::string> Reference(RefIO& io) {
 }  // namespace
 
 const ComponentDef& AttentionQsa() {
+  static constexpr std::array kNumericalProductRoles{
+      std::string_view{"q"},        std::string_view{"k"},          std::string_view{"v"},
+      std::string_view{"output"},   std::string_view{"indexer_qk"}, std::string_view{"indexer_q"},
+      std::string_view{"indexer_k"}};
+  static constexpr std::array kNumericalSites{
+      NumericalSite{.semantic = "product.block32_q8",
+                    .change = ir::NumericalChange::kQ8VectorReduction,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProductRoles,
+                    .encodings = numerics::kBlockWeightEncodings},
+      NumericalSite{.semantic = "product.mxfp8_input",
+                    .change = ir::NumericalChange::kMxfp8ProductInput,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProductRoles,
+                    .encodings = numerics::kPreparedWeightEncodings},
+  };
   static const ComponentDef def{
       .kind = "attention.qsa",
       .version = 1,
       .params = kParams,
       .roles = kRoles,
+      .numerical = kNumericalSites,
       .shapes = Shapes,
       .state = State,
       .max_state_tensors = 4,

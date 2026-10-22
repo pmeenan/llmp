@@ -158,9 +158,9 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
   for (const auto& tune : source_backend.device.tuned) {
     facts.Update(std::format("{}:", tune.implementation.size()));
     facts.Update(tune.implementation);
-    facts.Update(std::format(":{}:{}:{}:{}:{};", tune.rows, tune.k, tune.n,
+    facts.Update(std::format(":{}:{}:{}:{}:{}:{};", tune.rows, tune.k, tune.n,
                              tune.output_encoding ? static_cast<int>(*tune.output_encoding) : -1,
-                             tune.weight_bits));
+                             tune.weight_bits, tune.all_rows));
   }
   key.backend = facts.Finish();
   source->key_base_ = std::move(key);

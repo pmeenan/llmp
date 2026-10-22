@@ -1280,11 +1280,29 @@ std::expected<void, std::string> AdmitOptions(const Instance& in, const StepOpti
 }
 
 const ComponentDef& AttentionMqa() {
+  static constexpr std::array kNumericalProductRoles{
+      std::string_view{"q_a"},       std::string_view{"q_b"},     std::string_view{"kv"},
+      std::string_view{"out_a"},     std::string_view{"out_b"},   std::string_view{"comp_kv"},
+      std::string_view{"comp_gate"}, std::string_view{"idx_q"},   std::string_view{"idx_proj"},
+      std::string_view{"idx_kv"},    std::string_view{"idx_gate"}};
+  static constexpr std::array kNumericalSites{
+      NumericalSite{.semantic = "product.block32_q8",
+                    .change = ir::NumericalChange::kQ8VectorReduction,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProductRoles,
+                    .encodings = numerics::kBlockWeightEncodings},
+      NumericalSite{.semantic = "product.mxfp8_input",
+                    .change = ir::NumericalChange::kMxfp8ProductInput,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProductRoles,
+                    .encodings = numerics::kPreparedWeightEncodings},
+  };
   static const ComponentDef def{
       .kind = "attention.mqa",
       .version = 1,
       .params = kParams,
       .roles = kRoles,
+      .numerical = kNumericalSites,
       .shapes = Shapes,
       .state = State,
       .max_state_tensors = 7,

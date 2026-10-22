@@ -3179,6 +3179,8 @@ TEST(PlannerPatternTest, SplitModulationAndGatedResidualFuseTheirConditioning) {
     bool one_side = false;     // one conditioning vector over every row
     bool norm_scaled = false;  // the modulation also read by a scale
     float bias = 1.0F;         // the conditioning's added one
+    std::uint32_t first = 12;  // layout sinking elides a one-row side's repeat
+    bool observe_side = false;
   };
   const auto graph = [](const Variant& v) {
     ir::Builder b;
@@ -3187,7 +3189,14 @@ TEST(PlannerPatternTest, SplitModulationAndGatedResidualFuseTheirConditioning) {
       const TensorId a = b.Input(F32({64}));
       if (v.one_side) return b.Repeat(a, ir::ShapeOf({64, 32}));
       const TensorId c = b.Input(F32({64}));
-      return b.Concat(b.Repeat(a, ir::ShapeOf({64, 12})), b.Repeat(c, ir::ShapeOf({64, 20})), 1);
+      if (v.observe_side) {
+        b.Output(a);
+        b.Output(c);
+      }
+      const auto repeated = [&](TensorId t, std::uint32_t rows) {
+        return rows == 1 ? t : b.Repeat(t, ir::ShapeOf({64, rows}));
+      };
+      return b.Concat(repeated(a, v.first), repeated(c, 32 - v.first), 1);
     };
     const TensorId m = b.Mul(b.LayerNorm(x, 1e-6F), b.Scale(side(), 1.0F, v.bias));
     const TensorId w = b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({64, 64})), W(0));
@@ -3225,6 +3234,17 @@ TEST(PlannerPatternTest, SplitModulationAndGatedResidualFuseTheirConditioning) {
     const StepPlan p = PlanOf(graph({.one_side = true}), r, on);
     EXPECT_EQ(split_of(p, FusedKind::kLayerNormModulateSplit), 32U);
     EXPECT_EQ(split_of(p, FusedKind::kGatedResidualSplit), 32U);
+  }
+  // Either side may be a direct vector after identity-repeat removal.
+  // Its original producer and independent observers must survive fusion.
+  for (const std::uint32_t first : {1U, 31U}) {
+    for (const bool observe : {false, true}) {
+      const StepPlan p = PlanOf(graph({.first = first, .observe_side = observe}), r, on);
+      EXPECT_EQ(split_of(p, FusedKind::kLayerNormModulateSplit), first);
+      EXPECT_EQ(split_of(p, FusedKind::kGatedResidualSplit), first);
+      EXPECT_EQ(modulation(p), Encoding::kBF16);
+      EXPECT_EQ(p.graph.outputs().size(), observe ? 5U : 1U);
+    }
   }
   // F32 where its product takes only F32 input, or another reads it.
   EXPECT_EQ(modulation(PlanOf(graph({}), f32_inputs, on)), Encoding::kF32);

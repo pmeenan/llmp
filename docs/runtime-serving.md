@@ -314,7 +314,12 @@ shapes; their calibration on the machine is later work.
 All LLM construction uses one declared backend and an immutable serving policy
 resolved from the admitted component batching, exact state layouts, configured
 preferences and compiled backend support. Source identity and numerical
-transformation qualifications remain separate requirements. Internal diagnostic
+transformation qualifications remain separate requirements. Changed-arithmetic
+qualification joins component semantic sites and stored encodings to explicit
+measured device evidence (D-126), identically for pinned and unpinned sources.
+An owned backend supplies its actual device facts. A device without applicable
+evidence retains exact arithmetic and reports the missing qualification;
+synthetic sm86 fallback checks do not qualify sm86 numerics. Internal diagnostic
 setup shapes must fit their explicit domain and physical geometry; a narrower
 measurement does not authorize a larger output or workspace. Literal scoring
 admits complete batches against the same node budget, including device head

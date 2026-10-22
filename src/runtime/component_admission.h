@@ -24,6 +24,7 @@
 #include "ir/graph.h"
 #include "model/image_pipeline.h"
 #include "planner/policy.h"
+#include "planner/select.h"
 #include "runtime/approvals.h"
 #include "spec/image_family.h"
 #include "spec/mapping.h"
@@ -31,7 +32,8 @@
 
 namespace llmp::kernels {
 struct ConstructionFunder;
-}
+struct StepBackend;
+}  // namespace llmp::kernels
 
 namespace llmp::runtime {
 
@@ -197,16 +199,23 @@ std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::stri
 AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
                  std::span<const artifact::Source> origins, const Approval* approval,
                  const base::Sha256Digest& admitted_semantic, const spec::Envelope& envelope,
-                 std::uint16_t active_stage,
+                 std::uint16_t active_stage, const planner::DeviceFacts& device,
                  std::shared_ptr<const kernels::ConstructionFunder> funder);
-// The current image graph is generated from its admitted family/profile.
-// Project only its exact retained-reference geometry, using actual generated
-// component ordinals and query dimensions; no generic shape transfer.
+// Serving boundary: declared owners supply the authoritative device facts and
+// existing construction payer. Mutable token fields cannot replace either.
+std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
+AdmittedNumerics(const spec::ModelSpec& model, const spec::Source& source,
+                 std::span<const artifact::Source> origins, const Approval* approval,
+                 const base::Sha256Digest& admitted_semantic, const spec::Envelope& envelope,
+                 std::uint16_t active_stage, const kernels::StepBackend& backend);
+// Join the generated stage's declared component semantics with accepted
+// component/device evidence, binding actual graph roles and query dimensions.
+// Historical checkpoint approval membership supplies no numerical grants.
 std::expected<std::shared_ptr<const planner::NumericalQualifications>, std::string>
 AdmittedImageNumerics(const spec::ModelSpec& family, const ImageApproval* approval,
                       const artifact::Composition& composition, const ir::Graph& graph,
-                      std::uint16_t stage, std::uint32_t width, std::uint32_t height,
-                      std::uint32_t prompt_rows,
+                      const spec::ModelSpec& stage_spec, std::uint16_t stage,
+                      const planner::DeviceFacts& device,
                       std::shared_ptr<const kernels::ConstructionFunder> funder);
 
 // The approval's planning policy rule for an envelope (its mapping's first

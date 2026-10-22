@@ -248,10 +248,19 @@ const SpatialOps kAttention{AttentionShape, AttentionEmit, AttentionReference, 2
 }  // namespace
 
 const ComponentDef& ProjectionSpatial() {
+  static constexpr std::array kNumericalProjectionRoles{std::string_view{"weight"}};
+  static constexpr std::array kNumericalSites{
+      NumericalSite{.semantic = "product.bf16_input_and_result",
+                    .change = ir::NumericalChange::kBf16ProductInputAndResult,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProjectionRoles,
+                    .encodings = kSpatialEncodings},
+  };
   static const ComponentDef def{.kind = "projection.spatial",
                                 .row_local = true,
                                 .params = kProjectionParams,
                                 .roles = kProjectionRoles,
+                                .numerical = kNumericalSites,
                                 .shapes = ProjectionRoles,
                                 .emit = ProjectionTokenEmit,
                                 .reference = ProjectionTokenReference};

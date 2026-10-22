@@ -24,6 +24,7 @@
 #include "artifact_writer.h"
 #include "base/bytes.h"
 #include "base/sha256.h"
+#include "components/step.h"
 #include "dsv4_gguf_normalization_fixture.h"
 #include "expected_error.h"
 #include "families/gemma.h"
@@ -31,12 +32,14 @@
 #include "import/normalize.h"
 #include "ir/builder.h"
 #include "kernels/common/lower.h"
+#include "planner/pattern.h"
 #include "qwen2_exl3_normalization_fixture.h"
 #include "qwen2_gguf_normalization_fixture.h"
 #include "qwen38_fixture.h"
 #include "qwen38_gguf_normalization_fixture.h"
 #include "runtime/calibration.h"
 #include "runtime/component_admission_internal.h"
+#include "runtime/numerical_evidence.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
@@ -296,301 +299,515 @@ std::shared_ptr<const llmp::kernels::ConstructionFunder> NumericalFunder(
       [owner](std::uint64_t bytes) { owner->Release(bytes); });
 }
 
-TEST_F(ComponentAdmissionTest, NumericalFactsAuthenticateBeforePaymentAndRetainExactRoleSites) {
+llmp::planner::DeviceFacts NumericalDevice() {
+  return {
+      .device_class = "sm_121", .arch = 121, .device_model = "NVIDIA GB10", .multiprocessors = 48};
+}
+
+TEST_F(ComponentAdmissionTest, NumericalContractsIgnoreApprovalMembershipAndContainerOrigin) {
+  auto owner = std::make_shared<NumericalOwner>();
+  const auto funder = NumericalFunder(owner);
+  const auto semantic = model.Digest();
   const auto* pinned = rt::FindApproval(source.architecture, origins);
   ASSERT_NE(pinned, nullptr);
-  ASSERT_TRUE(rt::internal::CheckInventory(source, *pinned));
-  constexpr std::array anchors{llmp::ir::Primitive(llmp::ir::Op::kMatMul)};
-  constexpr std::array<std::uint64_t, 2> rows{1, 4};
-  const std::array domains{rt::NumericalEvidenceDomain{
-      .change = llmp::planner::NumericalChange::kQ8VectorReduction,
-      .evidence = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      .anchors = anchors,
-      .max_context = 8192,
-      .max_slots = 4,
-      .max_rows = 4,
-      .rows = rows}};
-  auto approval = *pinned;
-  approval.numerical = domains;
+  auto empty_approval = *pinned;
+  empty_approval.numerical = {};
+  const auto bind = [&](const rt::Approval* approval) {
+    return rt::AdmittedNumerics(model, source, origins, approval, semantic,
+                                {.context = 8192, .slots = 4}, 0, NumericalDevice(), funder);
+  };
+  auto pinned_facts = bind(pinned);
+  auto empty_facts = bind(&empty_approval);
+  auto unpinned_facts = bind(nullptr);
+  ASSERT_TRUE(pinned_facts && *pinned_facts);
+  ASSERT_TRUE(empty_facts && *empty_facts);
+  ASSERT_TRUE(unpinned_facts && *unpinned_facts);
+  EXPECT_EQ((*pinned_facts)->digest(), (*empty_facts)->digest());
+  EXPECT_EQ((*pinned_facts)->digest(), (*unpinned_facts)->digest());
+  source.container = "safetensors";
+  auto other_container = bind(nullptr);
+  ASSERT_TRUE(other_container && *other_container);
+  EXPECT_EQ((*pinned_facts)->digest(), (*other_container)->digest());
+  for (const auto& entry : (*pinned_facts)->entries()) {
+    EXPECT_EQ(entry.change, llmp::planner::NumericalChange::kQ8VectorReduction);
+    EXPECT_TRUE(entry.exact_dimensions);
+    EXPECT_NE(entry.weight_role, UINT16_MAX);
+    EXPECT_EQ(entry.semantic, semantic);
+  }
+}
+
+TEST_F(ComponentAdmissionTest, MissingDeviceOrEncodingEvidenceKeepsExactPathWithoutPayment) {
+  auto owner = std::make_shared<NumericalOwner>();
+  const auto funder = NumericalFunder(owner);
+  const auto semantic = model.Digest();
+  for (const auto mutation : {0, 1, 2, 3}) {
+    auto device = NumericalDevice();
+    if (mutation == 0) {
+      device.device_class = "sm_86";
+      device.arch = 86;
+    }
+    if (mutation == 1) device.device_model = "another device";
+    if (mutation == 2) device.multiprocessors = 1;
+    if (mutation == 3) device = {};
+    auto facts = rt::AdmittedNumerics(model, source, origins, nullptr, semantic,
+                                      {.context = 8192, .slots = 4}, 0, device, funder);
+    ASSERT_TRUE(facts);
+    EXPECT_FALSE(*facts);
+  }
+  EXPECT_EQ(owner->charges, 0U);
+  for (auto& tensor : source.tensors)
+    if (tensor.format.encoding == fm::Encoding::kQ8_0) tensor.format.encoding = fm::Encoding::kQ2_0;
+  auto uncovered =
+      rt::AdmittedNumerics(model, source, origins, nullptr, semantic, {.context = 8192, .slots = 4},
+                           0, NumericalDevice(), funder);
+  ASSERT_TRUE(uncovered);
+  EXPECT_FALSE(*uncovered);
+  EXPECT_EQ(owner->charges, 0U);
+}
+
+TEST_F(ComponentAdmissionTest, NumericalProjectionAuthenticatesAndRetainsPaidStorage) {
   auto owner = std::make_shared<NumericalOwner>();
   auto funder = NumericalFunder(owner);
   const auto semantic = model.Digest();
-  const sp::Envelope envelope{.context = 8192, .slots = 4};
-  auto bind = [&] {
-    return rt::AdmittedNumerics(model, source, origins, &approval, semantic, envelope, 0, funder);
+  const auto bind = [&](std::shared_ptr<const llmp::kernels::ConstructionFunder> payment) {
+    return rt::AdmittedNumerics(model, source, origins, nullptr, semantic,
+                                {.context = 8192, .slots = 4}, 0, NumericalDevice(), payment);
   };
   auto wrong = semantic;
   wrong[0] ^= 1;
-  const auto stale =
-      rt::AdmittedNumerics(model, source, origins, &approval, wrong, envelope, 0, funder);
-  ASSERT_TRUE(stale);
-  EXPECT_FALSE(*stale);
-  EXPECT_EQ(owner->charges, 0U);
-  const auto receipt = origins[0].sha256;
-  origins[0].sha256[0] ^= 1;
-  EXPECT_FALSE(bind());
-  origins[0].sha256 = receipt;
-  EXPECT_EQ(owner->charges, 0U);
-  const auto original_tensor = source.tensors.front();
+  EXPECT_FALSE(rt::AdmittedNumerics(model, source, origins, nullptr, wrong,
+                                    {.context = 8192, .slots = 4}, 0, NumericalDevice(), funder));
+  const auto original = source.tensors.front();
   source.tensors.front().format.encoding = static_cast<fm::Encoding>(UINT16_MAX);
-  EXPECT_FALSE(bind());
-  source.tensors.front().format = {.encoding = fm::Encoding::kBF16,
-                                   .layout = fm::Layout::kDense,
-                                   .shape = original_tensor.format.shape};
-  source.tensors.front().part = fm::PartRole::kData;
-  ASSERT_TRUE(fm::Validate(source.tensors.front().format));
-  const auto changed_format = bind();
-  ASSERT_TRUE(changed_format);
-  EXPECT_FALSE(*changed_format);
-  source.tensors.front() = original_tensor;
+  EXPECT_FALSE(bind(funder));
+  source.tensors.front() = original;
   EXPECT_EQ(owner->charges, 0U);
-  auto outside = rt::AdmittedNumerics(model, source, origins, &approval, semantic,
-                                      {.context = 8193, .slots = 4}, 0, funder);
-  ASSERT_TRUE(outside);
-  EXPECT_FALSE(*outside);
-  EXPECT_EQ(owner->charges, 0U);
-  EXPECT_FALSE(rt::AdmittedNumerics(model, source, origins, &approval, semantic, envelope, 0, {}));
-  auto incomplete = std::make_shared<llmp::kernels::ConstructionFunder>();
-  incomplete->charge = [owner](std::uint64_t bytes) { return owner->Charge(bytes); };
-  EXPECT_FALSE(
-      rt::AdmittedNumerics(model, source, origins, &approval, semantic, envelope, 0, incomplete));
-  EXPECT_EQ(owner->charges, 0U);
+  EXPECT_FALSE(bind({}));
   owner->available = 0;
-  EXPECT_FALSE(bind());
+  EXPECT_FALSE(bind(funder));
   EXPECT_EQ(owner->used, 0U);
-  EXPECT_EQ(owner->available, 0U);
-  EXPECT_EQ(owner->releases, 0U);
   owner->available = UINT64_MAX;
-  auto facts = bind();
-  ASSERT_TRUE(facts) << (facts ? "" : facts.error());
-  ASSERT_TRUE(*facts);
-  ASSERT_FALSE((*facts)->entries().empty());
-  const auto used = owner->used;
-  EXPECT_GT(used, (*facts)->host_bytes());
-  for (const auto& entry : (*facts)->entries()) {
-    EXPECT_EQ(entry.min_rows, entry.max_rows);
-    EXPECT_TRUE(entry.min_rows == 1 || entry.min_rows == 4);
-    EXPECT_TRUE(entry.exact_dimensions);
-    EXPECT_TRUE(entry.incumbent_recipe);
-    EXPECT_NE(entry.weight_role, UINT16_MAX);
-    EXPECT_GT(entry.max_k, 0U);
-    EXPECT_GT(entry.max_n, 0U);
-    EXPECT_EQ(entry.semantic, semantic);
-  }
-  const std::weak_ptr<const llmp::kernels::ConstructionFunder> payer = funder;
+  auto facts = bind(funder);
+  ASSERT_TRUE(facts && *facts);
+  EXPECT_GT(owner->used, (*facts)->host_bytes());
+  std::weak_ptr<const llmp::kernels::ConstructionFunder> payer = funder;
   funder.reset();
   EXPECT_FALSE(payer.expired());
-  auto borrower = *facts;
   facts->reset();
-  EXPECT_EQ(owner->used, used);
-  borrower.reset();
   EXPECT_TRUE(payer.expired());
   EXPECT_EQ(owner->used, 0U);
   EXPECT_EQ(owner->releases, 1U);
-  auto invalid = domains;
-  invalid[0].evidence = "not a digest";
-  approval.numerical = invalid;
-  funder = NumericalFunder(owner);
-  const auto attempts = owner->charges;
-  EXPECT_FALSE(bind());
-  EXPECT_EQ(owner->charges, attempts);
 }
 
-TEST_F(ComponentAdmissionTest, Iq2IncumbentDomainProjectsOnlyOneActualRowAndExactBoundRoles) {
-  const auto iq2_origins =
-      Origins("DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf",
-              86720111488ULL, "ca22ae2f838e14077c22bc1c1417b71b45b5e5a3687bd96c2ac6e17fdb6261c0");
-  const auto* iq2 = rt::FindApproval("deepseek4", iq2_origins);
-  ASSERT_NE(iq2, nullptr);
-  ASSERT_EQ(iq2->numerical.size(), 1U);
-  const auto& domain = iq2->numerical.front();
-  EXPECT_EQ(domain.change, llmp::planner::NumericalChange::kQ8VectorReduction);
-  EXPECT_TRUE(domain.incumbent_recipe);
-  ASSERT_EQ(domain.rows.size(), 5U);
-  EXPECT_EQ(domain.rows.front(), 1U);
-  EXPECT_EQ(domain.rows.back(), 5U);
-  EXPECT_EQ(domain.max_rows, 5U);
-  EXPECT_EQ(domain.max_context, 1048576U);
-  EXPECT_EQ(domain.max_slots, 4U);
-  auto changed_origins = iq2_origins;
-  changed_origins.front().sha256.front() ^= 1;
-  EXPECT_EQ(rt::FindApproval("deepseek4", changed_origins), nullptr);
-
-  // Exercise the same generic projector on this fixture's authenticated
-  // source/spec and actual roles with a synthetic single-row domain directly on approval.numerical.
-  const auto* pinned = rt::FindApproval(source.architecture, origins);
-  ASSERT_NE(pinned, nullptr);
-  auto approval = *pinned;
-  constexpr std::array<std::uint64_t, 1> synthetic_rows{1};
-  const std::array synthetic_domain{rt::NumericalEvidenceDomain{
-      .change = llmp::planner::NumericalChange::kQ8VectorReduction,
-      .evidence = "7fcb199e34863bd80f0076ee36296c5382a8da190a5cef04c6f85dc9936ad449",
-      .anchors = domain.anchors,
-      .max_context = 262144,
-      .max_slots = 4,
-      .max_rows = 1,
-      .rows = synthetic_rows,
-      .incumbent_recipe = true}};
-  approval.numerical = synthetic_domain;
-  auto owner = std::make_shared<NumericalOwner>();
-  const auto funder = NumericalFunder(owner);
-  const auto semantic = model.Digest();
-  auto facts = rt::AdmittedNumerics(model, source, origins, &approval, semantic,
-                                    {.context = 8192, .slots = 4}, 0, funder);
-  ASSERT_TRUE(facts) << (facts ? "" : facts.error());
-  ASSERT_TRUE(*facts);
-  ASSERT_FALSE((*facts)->entries().empty());
-  for (const auto& grant : (*facts)->entries()) {
-    EXPECT_EQ(grant.min_rows, 1U);
-    EXPECT_EQ(grant.max_rows, 1U);  // no multiplication by the configured slots
-    EXPECT_TRUE(grant.exact_dimensions);
-    EXPECT_TRUE(grant.incumbent_recipe);
-    EXPECT_NE(grant.weight_role, UINT16_MAX);
-    EXPECT_GT(grant.max_k, 0U);
-    if (grant.anchor == llmp::ir::Primitive(llmp::ir::Op::kGlu))
-      EXPECT_EQ(grant.max_n, 0U);
-    else
-      EXPECT_GT(grant.max_n, 0U);
-    EXPECT_EQ(grant.semantic, semantic);
+class NumericalBackendOwner final : public llmp::kernels::BackendOwner {
+ public:
+  NumericalBackendOwner(llmp::kernels::StepBackend table, std::shared_ptr<NumericalOwner> payer)
+      : table_(std::move(table)), payer_(std::move(payer)) {}
+  const llmp::kernels::StepBackend& backend() const override { return table_; }
+  bool Charge(std::uint64_t bytes) const override { return payer_->Charge(bytes); }
+  void Release(std::uint64_t bytes) const override { payer_->Release(bytes); }
+  std::expected<llmp::execution::BackendDeclaration, std::string> Ready() const override {
+    return std::unexpected("admission-only owner has no executable declaration");
   }
-  const auto charges = owner->charges;
-  const auto original_tensor = source.tensors.front();
-  source.tensors.front().format = {.encoding = fm::Encoding::kF16,
-                                   .layout = fm::Layout::kDense,
-                                   .shape = original_tensor.format.shape};
-  source.tensors.front().part = fm::PartRole::kData;
-  ASSERT_TRUE(fm::Validate(source.tensors.front().format));
-  const auto changed_format = rt::AdmittedNumerics(model, source, origins, &approval, semantic,
-                                                   {.context = 8192, .slots = 4}, 0, funder);
-  ASSERT_TRUE(changed_format);
-  EXPECT_FALSE(*changed_format);
-  EXPECT_EQ(owner->charges, charges);  // changed format gets no stale evidence or payment
+
+ private:
+  const llmp::kernels::StepBackend table_;
+  const std::shared_ptr<NumericalOwner> payer_;
+};
+
+TEST(ComponentAdmissionModelOptTest, ServingNumericsUseOwnedFactsAndPayerInsteadOfTokenFields) {
+  const auto fixture = llmp::test_support::qwen38::NativeModelOpt();
+  const auto origins = llmp::test_support::qwen38::ModelOptOrigins();
+  const auto* approval = rt::FindApproval(fixture.source.architecture, origins);
+  ASSERT_NE(approval, nullptr);
+  auto payer = std::make_shared<NumericalOwner>();
+  llmp::kernels::StepBackend table{.device = NumericalDevice(),
+                                   .construction_funder = NumericalFunder(payer)};
+  const auto bind = [&](const llmp::kernels::StepBackend& backend, const rt::Approval* overlay) {
+    return rt::AdmittedNumerics(fixture.model, fixture.source, origins, overlay,
+                                fixture.model.Digest(), {.context = 8192, .slots = 4}, 0, backend);
+  };
+  const auto absent = bind({}, nullptr);
+  ASSERT_TRUE(absent);
+  EXPECT_FALSE(*absent);
+  auto direct = bind(table, nullptr);
+  ASSERT_TRUE(direct && *direct);
+  ASSERT_FALSE((*direct)->entries().empty());
+  for (const auto change : {llmp::planner::NumericalChange::kBf16HyperConnectionIntermediates,
+                            llmp::planner::NumericalChange::kMxfp8ProductInput,
+                            llmp::planner::NumericalChange::kBf16ProductInputAndResult,
+                            llmp::planner::NumericalChange::kNvfp4ExpertIntermediates})
+    EXPECT_GT(std::ranges::count((*direct)->entries(), change,
+                                 &llmp::planner::NumericalQualification::change),
+              0);
+  llmp::kernels::StepBackend token{.owner = std::make_shared<NumericalBackendOwner>(table, payer)};
+  EXPECT_EQ(token.device.arch, 0U);
+  EXPECT_TRUE(token.device.device_class.empty());
+  EXPECT_FALSE(token.construction_funder);
+  for (const auto* overlay : {approval, static_cast<const rt::Approval*>(nullptr)}) {
+    auto declared = bind(token, overlay);
+    ASSERT_TRUE(declared && *declared);
+    EXPECT_EQ((*declared)->entries().size(), (*direct)->entries().size());
+    EXPECT_EQ((*declared)->digest(), (*direct)->digest());
+  }
+  auto impostor = std::make_shared<NumericalOwner>();
+  impostor->available = 0;
+  token.device = {.device_class = "forged", .arch = 86};
+  token.construction_funder = NumericalFunder(impostor);
+  auto unchanged = bind(token, nullptr);
+  ASSERT_TRUE(unchanged && *unchanged);
+  EXPECT_EQ((*unchanged)->digest(), (*direct)->digest());
+  EXPECT_EQ(impostor->charges, 0U);
+  // Plausible wrapper facts cannot authorize an unqualified owned device.
+  auto unknown = table;
+  unknown.device = {};
+  token.owner = std::make_shared<NumericalBackendOwner>(std::move(unknown), payer);
+  token.device = NumericalDevice();
+  auto denied = bind(token, approval);
+  ASSERT_TRUE(denied);
+  EXPECT_FALSE(*denied);
+  // Nor can a wrapper's payer replace a missing authoritative payer.
+  auto unpaid = table;
+  unpaid.construction_funder.reset();
+  token.owner = std::make_shared<NumericalBackendOwner>(std::move(unpaid), payer);
+  token.construction_funder = table.construction_funder;
+  EXPECT_FALSE(bind(token, approval));
 }
 
-TEST_F(ComponentAdmissionTest, UnpinnedModelsDeriveCapabilityBasedNumerics) {
-  auto owner = std::make_shared<NumericalOwner>();
-  const auto funder = NumericalFunder(owner);
-
-  // 1a. Unpinned dense GGUF model (Gemma 2 Q8_0): no routed/HC stage, so no
-  // kQ8VectorReduction is granted (preserving product dense_pair parity).
-  const auto semantic = model.Digest();
-  const sp::Envelope envelope{.context = 8192, .slots = 4};
-  auto dense_gguf_facts =
-      rt::AdmittedNumerics(model, source, origins, nullptr, semantic, envelope, 0, funder);
-  ASSERT_TRUE(dense_gguf_facts) << (dense_gguf_facts ? "" : dense_gguf_facts.error());
-  EXPECT_FALSE(*dense_gguf_facts);
-
-  // 1b. Unpinned routed/HC GGUF model (Qwen3.8 GGUF): derives kQ8VectorReduction.
-  auto qwen_ckpt = llmp::test_support::Qwen38GgufCheckpoint();
-  auto qwen_bound = llmp::import::NormalizationBound(qwen_ckpt);
-  ASSERT_TRUE(qwen_bound);
-  auto qwen_norm = llmp::import::Normalize(std::move(qwen_ckpt),
-                                           {qwen_bound->metadata_bytes, qwen_bound->work_units});
-  ASSERT_TRUE(qwen_norm) << (qwen_norm ? "" : qwen_norm.error().ToString());
-  const auto qwen_gguf_model = qwen_norm->spec();
-  const auto qwen_gguf_source = qwen_norm->canonical();
-  const auto qwen_gguf_semantic = qwen_gguf_model.Digest();
-  auto gguf_facts = rt::AdmittedNumerics(qwen_gguf_model, qwen_gguf_source, origins, nullptr,
-                                         qwen_gguf_semantic, envelope, 0, funder);
-  ASSERT_TRUE(gguf_facts) << (gguf_facts ? "" : gguf_facts.error());
-  ASSERT_TRUE(*gguf_facts);
-  ASSERT_FALSE((*gguf_facts)->entries().empty());
-  for (const auto& entry : (*gguf_facts)->entries()) {
-    EXPECT_EQ(entry.change, llmp::planner::NumericalChange::kQ8VectorReduction);
-    EXPECT_TRUE(entry.incumbent_recipe);
-    EXPECT_TRUE(entry.exact_dimensions);
-    EXPECT_EQ(entry.semantic, qwen_gguf_semantic);
-    EXPECT_GE(entry.min_rows, 1U);
-    EXPECT_LE(entry.max_rows, 5U);
-  }
-
-  // 2. Unpinned safetensors model: qwen38 NativeModelOpt with hc.mix, attention.gdn, ffn.moe
+TEST_F(ComponentAdmissionTest, NativeNumericalContractsUseActualEncodingAcrossContainers) {
   auto fixture = llmp::test_support::qwen38::NativeModelOpt();
   auto opt_origins = llmp::test_support::qwen38::ModelOptOrigins();
-  const auto opt_semantic = fixture.model.Digest();
-  auto safe_facts = rt::AdmittedNumerics(fixture.model, fixture.source, opt_origins, nullptr,
-                                         opt_semantic, envelope, 0, funder);
-  ASSERT_TRUE(safe_facts) << (safe_facts ? "" : safe_facts.error());
-  ASSERT_TRUE(*safe_facts);
-  ASSERT_FALSE((*safe_facts)->entries().empty());
-  bool found_hc = false, found_gdn = false, found_mxfp8 = false, found_nvfp4 = false;
-  for (const auto& entry : (*safe_facts)->entries()) {
-    if (entry.change == llmp::planner::NumericalChange::kBf16HyperConnectionIntermediates)
-      found_hc = true;
-    if (entry.change == llmp::planner::NumericalChange::kBf16ProductInputAndResult)
-      found_gdn = true;
-    if (entry.change == llmp::planner::NumericalChange::kMxfp8ProductInput) found_mxfp8 = true;
-    if (entry.change == llmp::planner::NumericalChange::kNvfp4ExpertIntermediates)
-      found_nvfp4 = true;
-  }
-  EXPECT_TRUE(found_hc);
-  EXPECT_TRUE(found_gdn);
-  EXPECT_TRUE(found_mxfp8);
-  EXPECT_TRUE(found_nvfp4);
-}
-
-TEST(ComponentAdmissionImageTest, ImageNumericsSupportNon1024GeometryAndUnpinnedComposition) {
   auto owner = std::make_shared<NumericalOwner>();
   const auto funder = NumericalFunder(owner);
-
-  // Build a test graph with a MatMul node
-  llmp::ir::Builder b;
-  const auto x = b.Input(llmp::ir::Dense(fm::Encoding::kBF16, llmp::ir::ShapeOf({64, 16})));
-  const auto w =
-      b.Weight(llmp::ir::Dense(fm::Encoding::kBF16, llmp::ir::ShapeOf({64, 64})), {.role = 0});
-  b.Output(b.MatMul(x, w));
-  auto graph = std::move(b).Finish();
-  ASSERT_TRUE(graph.has_value()) << (graph ? "" : graph.error().detail);
-
-  const auto& family = llmp::test_support::QwenImage();
-
-  std::error_code ec;
-  const auto temp_dir =
-      std::filesystem::temp_directory_path() / std::format("llmp-test-img-comp-{}", ::getpid());
-  std::filesystem::create_directories(temp_dir, ec);
-  llmp::test::CompositionPlan plan;
-  plan.components = {{"transformer", std::string(64, 'c'), "QwenImage21Transformer2DModel"}};
-  plan.meta = {{"model_index.json", R"({"_class_name":"QwenImage21Pipeline"})"}};
-  const auto opened =
-      llmp::artifact::OpenComposition(llmp::test::Publish(temp_dir, llmp::test::Render(plan)));
-  ASSERT_TRUE(opened.has_value()) << opened.error().ToString();
-
-  // 1. Unpinned image composition (approval == nullptr) with non-1024x1024 / non-25-row geometry
-  auto unpinned_facts =
-      rt::AdmittedImageNumerics(family.spec, nullptr, *opened, *graph, 0, 512, 512, 10, funder);
-  ASSERT_TRUE(unpinned_facts) << (unpinned_facts ? "" : unpinned_facts.error());
-  ASSERT_TRUE(*unpinned_facts);
-  ASSERT_FALSE((*unpinned_facts)->entries().empty());
-
-  // 2. Non-1024x1024 / non-25-row geometry with a synthetic image approval
-  const std::string spec_hex = llmp::base::ToHex(family.spec.Digest());
-  rt::ImageApproval synthetic_approval;
-  synthetic_approval.name = "synthetic-qwen-image";
-  synthetic_approval.spec = spec_hex;
-  synthetic_approval.numerical = rt::ImageApprovals().front().numerical;
-  std::vector<std::string> sha_hexes;
-  sha_hexes.reserve(opened->sources().size());
-  std::vector<rt::SourceReceipt> receipts;
-  receipts.reserve(opened->sources().size());
-  for (const auto& s : opened->sources()) {
-    sha_hexes.push_back(llmp::base::ToHex(s.sha256));
-    receipts.push_back({.name = s.name, .sha256 = sha_hexes.back(), .bytes = s.bytes.value()});
+  const auto semantic = fixture.model.Digest();
+  const auto bind = [&] {
+    return rt::AdmittedNumerics(fixture.model, fixture.source, opt_origins, nullptr, semantic,
+                                {.context = 8192, .slots = 4}, 0, NumericalDevice(), funder);
+  };
+  auto native = bind();
+  ASSERT_TRUE(native && *native);
+  fixture.source.container = "gguf";
+  auto gguf_origin = bind();
+  ASSERT_TRUE(gguf_origin && *gguf_origin);
+  EXPECT_EQ((*native)->digest(), (*gguf_origin)->digest());
+  bool hc = false, prepared = false, experts = false;
+  for (const auto& entry : (*native)->entries()) {
+    hc |= entry.change == llmp::planner::NumericalChange::kBf16HyperConnectionIntermediates;
+    prepared |= entry.change == llmp::planner::NumericalChange::kMxfp8ProductInput;
+    experts |= entry.change == llmp::planner::NumericalChange::kNvfp4ExpertIntermediates;
   }
-  synthetic_approval.sources = receipts;
+  EXPECT_TRUE(hc);
+  EXPECT_TRUE(prepared);
+  EXPECT_TRUE(experts);
+}
 
-  auto pinned_facts = rt::AdmittedImageNumerics(family.spec, &synthetic_approval, *opened, *graph,
-                                                0, 512, 512, 10, funder);
-  ASSERT_TRUE(pinned_facts) << (pinned_facts ? "" : pinned_facts.error());
-  ASSERT_TRUE(*pinned_facts);
-  ASSERT_FALSE((*pinned_facts)->entries().empty());
+TEST(ComponentAdmissionModelOptTest, GdnMxfp8ResultRoundingReachesTheRegisteredRewrite) {
+  namespace ir = llmp::ir;
+  namespace pl = llmp::planner;
+  namespace co = llmp::components;
+  const auto fixture = llmp::test_support::qwen38::NativeModelOpt();
+  const auto origins = llmp::test_support::qwen38::ModelOptOrigins();
+  const auto instances = co::InstancesOf(fixture.model, 0);
+  ASSERT_TRUE(instances);
+  const co::Instance* gdn = nullptr;
+  for (const auto& layer : instances->layers)
+    for (const auto& instance : layer)
+      if (!gdn && instance.ref->kind == "attention.gdn") gdn = &instance;
+  ASSERT_NE(gdn, nullptr);
+  const auto site = std::ranges::find(gdn->def->numerical, "gdn.product_bf16_intermediates",
+                                      &co::NumericalSite::semantic);
+  ASSERT_NE(site, gdn->def->numerical.end());
+  for (const auto role : {"qkv", "gate", "alpha", "beta", "output", "norm"}) {
+    for (const auto encoding : {fm::Encoding::kMxfp8, fm::Encoding::kBF16, fm::Encoding::kF16,
+                                fm::Encoding::kF32, fm::Encoding::kNvfp4}) {
+      EXPECT_EQ(
+          co::NumericalSiteApplies(*site, *gdn, ir::Primitive(ir::Op::kMatMul), role, encoding),
+          encoding == fm::Encoding::kMxfp8 &&
+              (std::string_view(role) == "qkv" || std::string_view(role) == "gate"));
+    }
+  }
+  auto payer = std::make_shared<NumericalOwner>();
+  llmp::kernels::StepBackend table{.device = NumericalDevice(),
+                                   .construction_funder = NumericalFunder(payer)};
+  const llmp::kernels::StepBackend declared{
+      .owner = std::make_shared<NumericalBackendOwner>(table, payer)};
+  const auto numerical =
+      rt::AdmittedNumerics(fixture.model, fixture.source, origins, nullptr, fixture.model.Digest(),
+                           {.context = 8192, .slots = 4}, 0, declared);
+  ASSERT_TRUE(numerical && *numerical);
+  // This fake implementation only answers availability: authority comes from
+  // the real serving projection, never a fixture-created numerical grant.
+  auto registry = llmp::execution::Registry::Create({llmp::execution::Implementation{
+      .name = "test.gdn.product",
+      .operation = ir::Primitive(ir::Op::kMatMul),
+      .source = "fake",
+      .revision = "r1",
+      .build = "cpu",
+      .variant = "test",
+      .capability = llmp::execution::Capability{.op = ir::Primitive(ir::Op::kMatMul)}}});
+  ASSERT_TRUE(registry);
+  const auto* pattern = pl::FindPattern("bf16_rows");
+  ASSERT_NE(pattern, nullptr);
+  // The two observed prefill/scoring row counts, plus domain/ownership refusals.
+  for (const std::uint64_t rows : {61U, 997U}) {
+    for (const std::string_view role : {"qkv", "gate", "output"}) {
+      for (const unsigned refusal : {0U, 1U, 2U, 3U}) {
+        SCOPED_TRACE(std::string(role) + ":" + std::to_string(rows) + ":" +
+                     std::to_string(refusal));
+        const auto binding = std::ranges::find(gdn->ref->weights, role, &sp::WeightBinding::role);
+        ASSERT_NE(binding, gdn->ref->weights.end());
+        const auto source =
+            std::ranges::find(fixture.source.tensors, binding->tensor, &sp::SourceTensor::name);
+        ASSERT_NE(source, fixture.source.tensors.end());
+        const auto ordinal = co::RoleIndex(*gdn->def, role);
+        ASSERT_TRUE(ordinal);
+        const auto k = source->format.shape.ne[0], n = source->format.shape.ne[1];
+        const auto count = refusal == 3 ? 16385U : rows;  // beyond four owners' 4096 rows
+        ir::Builder b;
+        b.SetComponent(gdn->index);
+        const auto input =
+            b.Prepare(b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({k, count}))),
+                      fm::Encoding::kMxfp8, fm::Layout::kScaleAtoms);
+        const auto weight = b.Weight(
+            source->format, ir::WeightRef{.stage = static_cast<std::uint16_t>(refusal == 1 ? 1 : 0),
+                                          .component = gdn->index,
+                                          .role = *ordinal,
+                                          .layer = gdn->layer});
+        const auto product = b.MatMul(weight, input);
+        const auto shaped = b.Reshape(product, ir::ShapeOf({n, count}));
+        if (role == "gate") {
+          const auto heads = b.Reshape(shaped, ir::ShapeOf({128, n / 128, count}));
+          const auto values =
+              b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({128, n / 128, count})));
+          const auto norm = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({128})));
+          b.Output(b.Fused(ir::FusedKind::kNormGate, std::array{values, norm, heads},
+                           ir::NormParams{.eps = 1e-6F})[0]);
+        } else {
+          // Even the denied output role has a structurally eligible consumer:
+          // graph matching alone must not substitute for the component's role.
+          b.Output(b.Fused(ir::FusedKind::kGdnHistory, std::array{shaped},
+                           ir::GdnHistoryParams{.taps = 3})[0]);
+        }
+        const auto graph = std::move(b).Finish();
+        ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+        pl::Policy policy{.enabled = {"bf16_rows"}, .numerical = *numerical, .active_stage = 0};
+        auto device = NumericalDevice();
+        if (refusal == 2) device.arch = 86;
+        const pl::SelectionView selection(*registry, device, policy, false, false);
+        auto result = pl::ApplyPatternTable(std::span(pattern, 1), *graph, selection, nullptr);
+        ASSERT_TRUE(result) << (result ? "" : result.error().detail);
+        ASSERT_TRUE(result->dropped.empty());
+        const bool rounded = role != "output" && refusal == 0;
+        EXPECT_EQ(result->applied.size(), rounded ? 1U : 0U);
+        for (const auto id : {product, shaped}) {
+          const auto mapped = result->tensors.at(id.v);
+          ASSERT_TRUE(mapped.valid());
+          const auto& output = result->graph.tensor(mapped);
+          EXPECT_EQ(output.format.encoding, rounded ? fm::Encoding::kBF16 : fm::Encoding::kF32);
+          EXPECT_EQ(output.nb[0], rounded ? 2U : 4U);
+          EXPECT_EQ(output.nb[1], n * (rounded ? 2U : 4U));
+        }
+      }
+    }
+  }
+}
 
-  // Zero dimensions produce null qualifications
-  auto zero_facts = rt::AdmittedImageNumerics(family.spec, &synthetic_approval, *opened, *graph, 0,
-                                              0, 512, 10, funder);
-  ASSERT_TRUE(zero_facts);
-  EXPECT_EQ(*zero_facts, nullptr);
+TEST(ComponentAdmissionGgufTest, MixedExpertsAndPleBindOnlyTheirObservedSites) {
+  namespace co = llmp::components;
+  namespace pl = llmp::planner;
+  auto checkpoint = llmp::test_support::Qwen38GgufCheckpoint();
+  const auto bound = llmp::import::NormalizationBound(checkpoint);
+  ASSERT_TRUE(bound);
+  auto normalized =
+      llmp::import::Normalize(std::move(checkpoint), {bound->metadata_bytes, bound->work_units});
+  ASSERT_TRUE(normalized) << (normalized ? "" : normalized.error().ToString());
+  auto source = normalized->canonical();
+  const auto& model = normalized->spec();
+  const auto instances = co::InstancesOf(model, 0);
+  ASSERT_TRUE(instances);
+  auto owner = std::make_shared<NumericalOwner>();
+  const auto bind = [&] {
+    return rt::AdmittedNumerics(model, source, Origins(), nullptr, model.Digest(),
+                                {.context = 8192, .slots = 4}, 0, NumericalDevice(),
+                                NumericalFunder(owner));
+  };
+  const auto facts = bind();
+  ASSERT_TRUE(facts && *facts);
+  unsigned ple_products = 0, mixed_experts = 0;
+  for (const auto& layer : instances->layers) {
+    for (const auto& instance : layer) {
+      for (const auto& binding : instance.ref->weights) {
+        const auto tensor =
+            std::ranges::find(source.tensors, binding.tensor, &sp::SourceTensor::name);
+        ASSERT_NE(tensor, source.tensors.end());
+        const bool ple = instance.ref->kind == "residual.ple" &&
+                         (binding.role == "key" || binding.role == "value");
+        const bool mixed = instance.ref->kind == "ffn.moe" &&
+                           (binding.role == "gate_experts" || binding.role == "up_experts") &&
+                           tensor->format.encoding == fm::Encoding::kIQ3_S;
+        if (!ple && !mixed) continue;
+        if (ple) {
+          ++ple_products;
+          EXPECT_EQ(tensor->format.encoding, fm::Encoding::kQ8_0);
+          const auto& site = instance.def->numerical.front();
+          EXPECT_FALSE(co::NumericalSiteApplies(site, instance,
+                                                llmp::ir::Primitive(llmp::ir::Op::kMatMul), "conv",
+                                                fm::Encoding::kQ8_0));
+          EXPECT_FALSE(co::NumericalSiteApplies(site, instance,
+                                                llmp::ir::Primitive(llmp::ir::Op::kMatMul),
+                                                binding.role, fm::Encoding::kQ6_K));
+        } else {
+          ++mixed_experts;
+        }
+        const auto ordinal = co::RoleIndex(*instance.def, binding.role);
+        ASSERT_TRUE(ordinal);
+        unsigned vector_rows = 0;
+        for (const auto& grant : (*facts)->entries()) {
+          if (grant.component != instance.index || grant.weight_role != *ordinal ||
+              llmp::base::ToHex(grant.evidence) !=
+                  "8b9e1298f0e1759cfae0c3f1c792fe79052a1af02c9b9d4e93e9aca137512041")
+            continue;
+          ++vector_rows;
+          EXPECT_EQ(grant.change, pl::NumericalChange::kQ8VectorReduction);
+          EXPECT_EQ(grant.anchor,
+                    llmp::ir::Primitive(mixed ? llmp::ir::Op::kMatMulId : llmp::ir::Op::kMatMul));
+          EXPECT_GE(grant.min_rows, 1U);
+          EXPECT_LE(grant.max_rows, 4U);
+          EXPECT_EQ(grant.min_rows, grant.max_rows);
+          EXPECT_EQ(grant.max_k, tensor->format.shape.ne[0]);
+          EXPECT_EQ(grant.max_n, tensor->format.shape.ne[1]);
+          EXPECT_TRUE(grant.exact_dimensions);
+        }
+        EXPECT_EQ(vector_rows, 4U);
+      }
+    }
+  }
+  EXPECT_EQ(ple_products, 2U);
+  EXPECT_EQ(mixed_experts, 2U);
+  // The mixed expert observation cannot authorize a dense IQ3_S product.
+  ASSERT_TRUE(instances->output);
+  const auto& output = *instances->output;
+  ASSERT_FALSE(output.ref->weights.empty());
+  const auto head = std::ranges::find(source.tensors, output.ref->weights.front().tensor,
+                                      &sp::SourceTensor::name);
+  ASSERT_NE(head, source.tensors.end());
+  head->format.encoding = fm::Encoding::kIQ3_S;
+  const auto dense = bind();
+  ASSERT_TRUE(dense && *dense);
+  EXPECT_EQ(
+      std::ranges::count((*dense)->entries(), output.index, &pl::NumericalQualification::component),
+      0U);
+}
 
+TEST(ComponentAdmissionImageTest, NumericalContractsRequireDeclaredSiteStageDeviceAndEncoding) {
+  auto owner = std::make_shared<NumericalOwner>();
+  const auto funder = NumericalFunder(owner);
+  const auto& family = llmp::test_support::QwenImage();
+  const auto temp_dir =
+      std::filesystem::temp_directory_path() / std::format("llmp-test-img-contract-{}", ::getpid());
+  llmp::test::CompositionPlan publication;
+  publication.components = {{"transformer", std::string(64, 'c'), "QwenImage21Transformer2DModel"}};
+  publication.meta = {{"model_index.json", R"({"_class_name":"QwenImage21Pipeline"})"}};
+  auto opened = llmp::artifact::OpenComposition(
+      llmp::test::Publish(temp_dir, llmp::test::Render(publication)));
+  ASSERT_TRUE(opened) << (opened ? "" : opened.error().ToString());
+  sp::Stage stage{.name = "projection", .role = sp::StageRole::kDenoiser, .artifact = 0};
+  stage.stream.width = 4096;
+  stage.layers.push_back({.components = {{.kind = "projection.spatial",
+                                          .version = 1,
+                                          .params = {{"in_channels", std::int64_t{4096}},
+                                                     {"out_channels", std::int64_t{4096}}},
+                                          .weights = {{.role = "weight", .tensor = "w"}}}}});
+  sp::ModelSpec generated{.pipeline = sp::PipelineKind::kImage, .stages = {stage}};
+  const auto make_graph = [](std::uint16_t weight_stage, std::uint64_t rows = 25,
+                             std::uint64_t width = 4096,
+                             fm::Encoding encoding = fm::Encoding::kBF16) {
+    llmp::ir::Builder b;
+    b.SetComponent(1);
+    const auto x = b.Input(llmp::ir::Dense(fm::Encoding::kF32, llmp::ir::ShapeOf({width, rows})));
+    const auto w = b.Weight(llmp::ir::Dense(encoding, llmp::ir::ShapeOf({width, width})),
+                            {.stage = weight_stage, .component = 1, .role = 0});
+    b.Output(b.MatMul(w, x));
+    return std::move(b).Finish();
+  };
+  auto graph = make_graph(1);
+  ASSERT_TRUE(graph);
+  const auto bind = [&](const rt::ImageApproval* approval,
+                        const llmp::planner::DeviceFacts& device) {
+    return rt::AdmittedImageNumerics(family.spec, approval, *opened, *graph, generated, 1, device,
+                                     funder);
+  };
+  auto pinned = bind(&rt::ImageApprovals().front(), NumericalDevice());
+  rt::ImageApproval empty;
+  auto no_overlay = bind(&empty, NumericalDevice());
+  auto unpinned = bind(nullptr, NumericalDevice());
+  ASSERT_TRUE(pinned && *pinned);
+  ASSERT_TRUE(no_overlay && *no_overlay);
+  ASSERT_TRUE(unpinned && *unpinned);
+  EXPECT_EQ((*pinned)->digest(), (*unpinned)->digest());
+  EXPECT_EQ((*no_overlay)->digest(), (*unpinned)->digest());
+  for (const auto& entry : (*unpinned)->entries()) {
+    EXPECT_EQ(entry.stage, 1U);
+    EXPECT_EQ(entry.component, 1U);
+    EXPECT_EQ(entry.weight_role, 0U);
+    EXPECT_TRUE(entry.exact_shape);
+  }
+  auto sm86 = NumericalDevice();
+  sm86.device_class = "sm_86";
+  sm86.arch = 86;
+  for (const auto& device : {sm86, llmp::planner::DeviceFacts{}}) {
+    auto absent = bind(nullptr, device);
+    ASSERT_TRUE(absent);
+    EXPECT_FALSE(*absent);
+  }
+  // Structural eligibility does not depend on the retained benchmark geometry.
+  for (const auto [rows, width] : {std::pair{10U, 256U}, std::pair{77U, 4096U}}) {
+    generated.stages[0].stream.width = width;
+    generated.stages[0].layers[0].components[0].params = {{"in_channels", std::int64_t{width}},
+                                                          {"out_channels", std::int64_t{width}}};
+    graph = make_graph(1, rows, width);
+    ASSERT_TRUE(graph);
+    auto other_shape = bind(nullptr, NumericalDevice());
+    ASSERT_TRUE(other_shape && *other_shape);
+    for (const auto& entry : (*other_shape)->entries()) {
+      EXPECT_EQ(entry.min_rows, rows);
+      EXPECT_EQ(entry.max_k, width);
+      EXPECT_EQ(entry.max_n, width);
+    }
+  }
+  const auto covered_charges = owner->charges;
+  graph = make_graph(1, 25, 4096, fm::Encoding::kF32);
+  ASSERT_TRUE(graph);
+  auto wrong_encoding = bind(nullptr, NumericalDevice());
+  ASSERT_TRUE(wrong_encoding);
+  EXPECT_FALSE(*wrong_encoding);
+  graph = make_graph(0);
+  ASSERT_TRUE(graph);
+  auto wrong_stage = bind(nullptr, NumericalDevice());
+  ASSERT_TRUE(wrong_stage);
+  EXPECT_FALSE(*wrong_stage);
+  graph = make_graph(1);
+  // An unrelated component with the same operation and ordinal has no grant.
+  generated.stages[0].layers[0].components[0] = {.kind = "norm.rms",
+                                                 .version = 1,
+                                                 .params = {{"eps", 1e-6}},
+                                                 .weights = {{.role = "weight", .tensor = "w"}}};
+  auto unrelated = bind(nullptr, NumericalDevice());
+  ASSERT_TRUE(unrelated);
+  EXPECT_FALSE(*unrelated);
+  EXPECT_EQ(owner->charges, covered_charges);
+  std::error_code ec;
   std::filesystem::remove_all(temp_dir, ec);
+}
+
+TEST(ComponentAdmissionImageTest, AttentionTuningNeedsDeviceEvidenceAndActualAlgorithmHeadWidth) {
+  auto gb10 = NumericalDevice();
+  EXPECT_TRUE(rt::HasImageAttentionEvidence(gb10, 128));
+  EXPECT_FALSE(rt::HasImageAttentionEvidence(gb10, 64));
+  EXPECT_FALSE(rt::HasImageAttentionEvidence(gb10, 256));
+  gb10.arch = 86;
+  EXPECT_FALSE(rt::HasImageAttentionEvidence(gb10, 128));
+  EXPECT_FALSE(rt::HasImageAttentionEvidence({}, 128));
 }
 
 TEST_F(ComponentAdmissionTest, ActualSpecChangesInvalidateCalibrationForTheSameArtifact) {
@@ -1243,65 +1460,101 @@ TEST(ComponentAdmissionDrafterTest, ComponentDrafterValuesApprovesV1DraftersAndR
   EXPECT_FALSE(rt::CheckComposedAdmission(alone, *requant, *g26_asst));
 }
 
-TEST(ComponentAdmissionModelOptTest,
-     IncumbentHcProjectionUsesActualNormWidthStreamsAndLongContext) {
+TEST(ComponentAdmissionModelOptTest, EquivalentScaleDeclarationsHaveTheSameStructuralEligibility) {
   auto fixture = llmp::test_support::qwen38::NativeModelOpt();
-  // This test exercises the recorded incumbent recipe, whose stored spec
-  // predates independent projection scales. Reconstruct that exact shorthand;
-  // the new native spec has a different semantic identity and gets no stale grant.
-  const auto current_model = fixture.model;
-  for (auto& layer : fixture.model.stages.front().layers)
+  auto legacy = fixture.model;
+  auto independent = fixture.model;
+  for (auto& layer : legacy.stages[0].layers)
     for (auto& component : layer.components)
       if (component.kind == "ffn.moe") {
         std::erase_if(component.params, [](const auto& param) {
           return param.name == "gate_scale" || param.name == "up_scale" ||
                  param.name == "down_scale";
         });
-        const auto scales =
-            std::ranges::find(component.params, "projection_scales", &sp::Param::name);
+        auto scales = std::ranges::find(component.params, "projection_scales", &sp::Param::name);
         ASSERT_NE(scales, component.params.end());
         scales->value = true;
       }
-  ASSERT_NE(current_model.Digest(), fixture.model.Digest());
-  auto origins = llmp::test_support::qwen38::ModelOptOrigins();
+  for (auto& layer : independent.stages[0].layers)
+    for (auto& component : layer.components)
+      if (component.kind == "ffn.moe") {
+        std::erase_if(component.params, [](const auto& param) {
+          return param.name == "projection_scales" || param.name == "gate_scale" ||
+                 param.name == "up_scale" || param.name == "down_scale";
+        });
+        component.params.push_back({"gate_scale", true});
+        component.params.push_back({"up_scale", true});
+        component.params.push_back({"down_scale", true});
+      }
+  sp::Canonicalize(legacy);
+  sp::Canonicalize(independent);
+  ASSERT_NE(legacy.Digest(), independent.Digest());
+  const auto origins = llmp::test_support::qwen38::ModelOptOrigins();
   const auto* approval = rt::FindApproval(fixture.source.architecture, origins);
   ASSERT_NE(approval, nullptr);
   auto owner = std::make_shared<NumericalOwner>();
   auto funder = NumericalFunder(owner);
-  const auto semantic = fixture.model.Digest();
-  const auto stale =
-      rt::AdmittedNumerics(current_model, fixture.source, origins, approval, current_model.Digest(),
-                           {.context = 262144, .slots = 1}, 0, funder);
-  ASSERT_TRUE(stale) << (stale ? "" : stale.error());
-  EXPECT_FALSE(*stale);
-  EXPECT_EQ(owner->charges, 0U);
+  const auto bind = [&](const sp::ModelSpec& model, const rt::Approval* overlay, unsigned slots) {
+    return rt::AdmittedNumerics(model, fixture.source, origins, overlay, model.Digest(),
+                                {.context = 262144, .slots = slots}, 0, NumericalDevice(), funder);
+  };
   for (const auto slots : {1U, 4U}) {
-    auto facts = rt::AdmittedNumerics(fixture.model, fixture.source, origins, approval, semantic,
-                                      {.context = 262144, .slots = slots}, 0, funder);
-    ASSERT_TRUE(facts) << (facts ? "" : facts.error());
-    ASSERT_TRUE(*facts);
-    std::size_t hc = 0, experts = 0;
-    const auto& stage = fixture.model.stages.front();
-    for (const auto& grant : (*facts)->entries()) {
+    auto old = bind(legacy, approval, slots);
+    auto current = bind(independent, approval, slots);
+    auto unpinned = bind(independent, nullptr, slots);
+    ASSERT_TRUE(old && *old);
+    ASSERT_TRUE(current && *current);
+    ASSERT_TRUE(unpinned && *unpinned);
+    EXPECT_EQ((*current)->digest(), (*unpinned)->digest());
+    auto old_entries = std::vector((*old)->entries().begin(), (*old)->entries().end());
+    auto new_entries = std::vector((*current)->entries().begin(), (*current)->entries().end());
+    for (auto& entry : old_entries) entry.semantic = {};
+    for (auto& entry : new_entries) entry.semantic = {};
+    EXPECT_EQ(old_entries, new_entries);
+    bool hc = false, experts = false;
+    for (const auto& grant : (*current)->entries()) {
       if (grant.change == llmp::planner::NumericalChange::kBf16HyperConnectionIntermediates) {
-        ++hc;
-        EXPECT_EQ(grant.max_k, stage.stream.width);
-        EXPECT_EQ(grant.max_n, 0U);
-        EXPECT_EQ(grant.max_rows, std::uint64_t{4096} * slots * stage.stream.streams);
+        hc = true;
+        EXPECT_EQ(grant.max_k, independent.stages[0].stream.width);
+        EXPECT_EQ(grant.max_rows,
+                  std::uint64_t{4096} * slots * independent.stages[0].stream.streams);
         EXPECT_TRUE(grant.exact_dimensions);
-        EXPECT_TRUE(grant.incumbent_recipe);
       }
-      if (grant.change == llmp::planner::NumericalChange::kNvfp4ExpertIntermediates) {
-        ++experts;
-        EXPECT_EQ(grant.max_k, stage.stream.width);
-        EXPECT_GT(grant.max_rows, std::uint64_t{4096} * slots);
-        EXPECT_NE(grant.weight_role, UINT16_MAX);
-      }
+      experts |= grant.change == llmp::planner::NumericalChange::kNvfp4ExpertIntermediates;
     }
-    EXPECT_GT(hc, 0U);
-    EXPECT_GT(experts, 0U);
+    EXPECT_TRUE(hc);
+    EXPECT_TRUE(experts);
   }
-  EXPECT_EQ(owner->used, 0U);
+  // Equal source receipts cannot grant NVFP4 arithmetic to an F32 expert table.
+  for (auto& layer : independent.stages[0].layers)
+    for (auto& component : layer.components) {
+      // Replace the multipart table with one dense data binding, so this
+      // control reaches numerical eligibility with a coherent source/spec.
+      std::erase_if(component.weights, [&](const auto& binding) {
+        if (binding.role != "down_experts" || binding.part != fm::PartRole::kBlockScales)
+          return false;
+        std::erase_if(fixture.source.tensors,
+                      [&](const auto& tensor) { return tensor.name == binding.tensor; });
+        return true;
+      });
+      for (auto& binding : component.weights)
+        if (binding.role == "down_experts") {
+          auto tensor =
+              std::ranges::find(fixture.source.tensors, binding.tensor, &sp::SourceTensor::name);
+          ASSERT_NE(tensor, fixture.source.tensors.end());
+          tensor->format = llmp::ir::Dense(fm::Encoding::kF32, tensor->format.shape);
+          tensor->part = fm::PartRole::kData;
+          binding.part = fm::PartRole::kData;
+        }
+    }
+  sp::Canonicalize(independent);
+  const auto admitted = rt::CheckComponentAdmission(independent, fixture.source, origins);
+  ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
+  auto changed_encoding = bind(independent, nullptr, 1);
+  ASSERT_TRUE(changed_encoding) << (changed_encoding ? "" : changed_encoding.error());
+  if (*changed_encoding)
+    for (const auto& grant : (*changed_encoding)->entries())
+      EXPECT_NE(grant.change, llmp::planner::NumericalChange::kNvfp4ExpertIntermediates);
 }
 
 TEST(ComponentAdmissionModelOptTest,

@@ -250,10 +250,23 @@ TEST(ExecutionContractTest, TuningOutputPrecisionAndPresenceHaveDistinctIdentiti
   auto repeated = seal();
   ASSERT_TRUE(repeated) << Failed(repeated).value_or("");
   EXPECT_EQ(full->identity(), repeated->identity());
+  in.device.tuned[0].all_rows = true;
+  in.device.tuned[0].rows = 1;
+  auto all_rows = seal();
+  ASSERT_TRUE(all_rows);
+  in.device.tuned[0].all_rows = false;
+  auto exact_row = seal();
+  ASSERT_TRUE(exact_row);
+  EXPECT_NE(all_rows->identity(), exact_row->identity());
+  in.device.tuned[0].all_rows = true;
+  in.device.tuned[0].rows = 2;
+  EXPECT_FALSE(seal());
+  in.device.tuned[0].rows = 1;
   in.device.tuned[0].output_encoding = static_cast<llmp::format::Encoding>(65535);
   EXPECT_FALSE(seal());
   EXPECT_NE(full->identity(), half->identity());
   in.device.tuned[0].output_encoding.reset();
+  in.device.tuned[0].all_rows = false;
   auto absent_again = seal();
   ASSERT_TRUE(absent_again) << Failed(absent_again).value_or("");
   EXPECT_EQ(omitted->identity(), absent_again->identity());
@@ -301,6 +314,26 @@ TEST(OwnedDeviceFactsTest, CallerMutationAndMovesCannotChangeRetainedTuning) {
   EXPECT_EQ(moved.facts().tuned.front().implementation, "small");
   EXPECT_EQ(moved.facts().tuned.front().implementation.data(), retained);
   EXPECT_EQ(moved.facts().tuned.front().output_encoding, llmp::format::Encoding::kF32);
+}
+
+TEST(OwnedDeviceFactsTest, AllRowsClassIsExplicitCanonicalAndOwned) {
+  pl::DeviceFacts input{
+      .device_class = "fake",
+      .tuned = {
+          {.implementation = "native.attention", .rows = 8, .k = 128, .n = 128, .all_rows = true}}};
+  EXPECT_FALSE(pl::OwnedDeviceFacts::Bound(input));
+  input.tuned[0].rows = 1;
+  auto bytes = pl::OwnedDeviceFacts::Bound(input);
+  ASSERT_TRUE(bytes) << Failed(bytes).value_or("");
+  auto owned = pl::OwnedDeviceFacts::Create(input, *bytes);
+  ASSERT_TRUE(owned);
+  input.tuned[0].all_rows = false;
+  EXPECT_TRUE(owned->facts().tuned[0].all_rows);
+  // An exact row1 tuple and an all-positive-rows class have distinct keys.
+  input.tuned.push_back(owned->facts().tuned[0]);
+  EXPECT_TRUE(pl::OwnedDeviceFacts::Bound(input));
+  input.tuned.push_back(input.tuned.back());
+  EXPECT_FALSE(pl::OwnedDeviceFacts::Bound(input));
 }
 
 TEST(OwnedDeviceFactsTest, DuplicateAndUnknownOutputKeysRefuseBeforeCopy) {

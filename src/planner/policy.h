@@ -43,6 +43,7 @@
 
 #include "base/sha256.h"
 #include "execution/registry.h"
+#include "ir/numerics.h"
 
 namespace llmp::planner {
 
@@ -96,20 +97,9 @@ struct ProductPolicy {
   bool operator==(const ProductPolicy&) const = default;
 };
 
-// Arithmetic changes whose same-quality evidence is distinct from structural
-// fusion or sharing an incumbent's already mandatory conversion. The names
-// describe rounding/reduction boundaries, not matchers or model families.
-enum class NumericalChange : std::uint8_t {
-  kBf16SwiGluIntermediates,
-  kBf16ProductInputAndResult,
-  kBf16AttentionIntermediates,
-  kBf16ResidualCarry,
-  kBf16HyperConnectionIntermediates,
-  kMxfp8ProductInput,
-  kQ8VectorReduction,
-  kNvfp4ExpertIntermediates,
-};
-std::string_view NumericalChangeName(NumericalChange change);
+// Component declarations and planner requirements share one neutral vocabulary.
+using ir::NumericalChange;
+using ir::NumericalChangeName;
 struct NumericalQualification {
   NumericalChange change{};
   base::Sha256Digest evidence{}, source{}, semantic{};

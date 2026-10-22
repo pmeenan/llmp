@@ -768,8 +768,13 @@ std::optional<SplitSide> SplitSideOf(const MatchContext& c, TensorId v, NodeId r
   const ir::TensorDesc& vd = c.tensor(v);
   if (vd.shape().rank > 2 || c.external(v)) return std::nullopt;
   const std::uint64_t cols = vd.ne(0), rows = vd.ne(1);
-  // A [C] vector (or [C, 1]) repeated over n rows: its source.
+  // A [C] vector (or [C, 1]) repeated over n rows: its source. Layout
+  // sinking removes an identity repeat for a one-row side; that vector
+  // is already the complete side and its producer must remain intact.
   const auto repeated = [&](TensorId t, std::uint64_t n) -> std::optional<TensorId> {
+    if (n == 1 && c.tensor(t).format.encoding == format::Encoding::kF32 &&
+        c.tensor(t).shape().ne == ir::ShapeOf({cols}).ne)
+      return t;
     const ir::Node& r = c.producer(t);
     if (r.key != Prim(Op::kRepeat) || c.tensor(t).shape().ne != ir::ShapeOf({cols, n}).ne)
       return std::nullopt;
@@ -788,10 +793,12 @@ std::optional<SplitSide> SplitSideOf(const MatchContext& c, TensorId v, NodeId r
     const auto b = repeated(n.src[1], rows - first);
     if (!a || !b) return std::nullopt;
     side = {.nodes = {}, .a = *a, .b = *b, .split = static_cast<std::uint32_t>(first)};
-    chain = {{at, v}, {g.producer(n.src[0]), n.src[0]}, {g.producer(n.src[1]), n.src[1]}};
+    chain = {{at, v}};
+    if (*a != n.src[0]) chain.emplace_back(g.producer(n.src[0]), n.src[0]);
+    if (*b != n.src[1]) chain.emplace_back(g.producer(n.src[1]), n.src[1]);
   } else if (const auto a = repeated(v, rows)) {
     side = {.nodes = {}, .a = *a, .b = *a, .split = static_cast<std::uint32_t>(rows)};
-    chain = {{at, v}};
+    if (*a != v) chain = {{at, v}};
   } else {
     return std::nullopt;
   }
@@ -2731,8 +2738,10 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(
   std::vector<Found> found;
   std::vector<MissingNumericalQualification> missing_numerical;
   const auto missing = [&](NumericalChange change, const ir::Node& node) {
+    std::uint32_t arch = 0;
+    view.Inspect(graph, node, [&](const execution::CapabilityQuery& query) { arch = query.arch; });
     const MissingNumericalQualification record{
-        .change = change, .component = node.component, .anchor = node.key};
+        .change = change, .device_arch = arch, .component = node.component, .anchor = node.key};
     if (!std::ranges::contains(missing_numerical, record)) missing_numerical.push_back(record);
   };
   // The table's order is priority: each pattern over the whole graph, in

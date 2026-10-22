@@ -1295,6 +1295,9 @@ void PlanReportInventory::Stream(const PlanReportSink& sink) const {
   for (const auto& missing : missing_) {
     out.Raw(R"({"kind":"missing_numerical_qualification","change":)");
     out.Quoted(NumericalChangeName(missing.change));
+    out.Raw(R"(,"device_arch":)");
+    out.Number(missing.device_arch);
+    out.Raw(R"(,"reason":"no matching numerical evidence")");
     out.Raw(R"(,"component":)");
     out.Number(missing.component);
     out.Raw(R"(,"anchor":")");
@@ -1437,6 +1440,9 @@ void StreamPlanReport(const StepPlan& plan, const execution::Registry& registry,
   for (const auto& missing : plan.missing_numerical) {
     out.Raw(R"({"kind":"missing_numerical_qualification","change":)");
     out.Quoted(NumericalChangeName(missing.change));
+    out.Raw(R"(,"device_arch":)");
+    out.Number(missing.device_arch);
+    out.Raw(R"(,"reason":"no matching numerical evidence")");
     out.Raw(R"(,"component":)");
     out.Number(missing.component);
     out.Raw(R"(,"anchor":")");

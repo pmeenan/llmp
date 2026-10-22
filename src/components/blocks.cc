@@ -587,12 +587,28 @@ const ComponentDef& EmbeddingProjected() {
 }
 
 const ComponentDef& HeadLinear() {
+  static constexpr std::array kNumericalProductRoles{
+      std::string_view{"weight"}, std::string_view{"projection"}, std::string_view{"markov_w1"},
+      std::string_view{"markov_w2"}};
+  static constexpr std::array kNumericalSites{
+      NumericalSite{.semantic = "product.block32_q8",
+                    .change = ir::NumericalChange::kQ8VectorReduction,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProductRoles,
+                    .encodings = numerics::kBlockWeightEncodings},
+      NumericalSite{.semantic = "product.mxfp8_input",
+                    .change = ir::NumericalChange::kMxfp8ProductInput,
+                    .anchors = numerics::kProductAnchors,
+                    .roles = kNumericalProductRoles,
+                    .encodings = numerics::kPreparedWeightEncodings},
+  };
   static const ComponentDef def{
       .kind = "head.linear",
       .version = 1,
       .row_local = true,
       .params = kHeadParams,
       .roles = kHeadRoles,
+      .numerical = kNumericalSites,
       .shapes = HeadShapes,
 
       .splits = kHeadSplits,

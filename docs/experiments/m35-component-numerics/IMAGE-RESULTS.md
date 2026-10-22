@@ -5,8 +5,9 @@
 
 Both registered complete Qwen-Image cases pass source quality and the 10%
 speed bound on Spark B. Native A and B produce identical pixels in both cases.
-These results qualify the image transfer only; LLM transfer and the complete U4
-exit remain open. The [prospective protocol](README.md) fixes the inputs,
+These results qualify the image transfer only; the later
+[LLM results](LLM-RESULTS.md) and [U4 status](README.md) record the remaining
+transfer controls and final integrated checks. The prospective protocol fixes the inputs,
 comparison methods and bounds before these runs.
 
 ## Complete quality

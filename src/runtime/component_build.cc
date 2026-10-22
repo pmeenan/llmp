@@ -316,6 +316,7 @@ std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSou
     drafter_policy = target_policy;
     drafter_policy->products = own->products;
   }
+  const auto backend = hold.backend->Backend();
   std::vector<std::unique_ptr<engine::ComponentStepSource>> sources;
   for (std::uint16_t stage = 0; stage < hold.spec.stages.size(); ++stage) {
     auto stage_policy = stage == 0       ? std::optional(target_policy)
@@ -336,8 +337,7 @@ std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSou
     auto numerical = AdmittedNumerics(
         hold.spec, hold.sources.at(artifact_index), admitted_artifact.sources(),
         FindApproval(admitted_artifact.model().architecture, admitted_artifact.sources()),
-        hold.numerical_semantics[stage], {.context = context, .slots = slots}, stage,
-        hold.backend->Backend().ConstructionFunding());
+        hold.numerical_semantics[stage], {.context = context, .slots = slots}, stage, backend);
     if (!numerical) return Error(numerical.error());
     stage_policy->numerical = std::move(*numerical);
     auto made = engine::ComponentStepSource::Create(
@@ -355,7 +355,7 @@ std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSou
          // A drafter stage: the diagnostic's policy, else a forced
          // admitted recipe's (the target's), else its mapping's.
          .policy = std::move(stage_policy),
-         .backend = hold.backend->Backend(),
+         .backend = backend,
          .execution_domain = execution_domain,
          // Actual programs report capture safety; eager-only implementations
          // remain eligible without disabling capture of ordinary programs.

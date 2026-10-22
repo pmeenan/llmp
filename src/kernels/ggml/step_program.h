@@ -133,6 +133,7 @@ class GgmlBackend {
                                            std::function<void(std::uint64_t)> release);
 
   const execution::Registry& registry() const { return *registry_; }
+  const planner::DeviceFacts& device() const { return facts_; }
   // The registry, the device's facts, the cuBLAS products on the stream,
   // the prepared inputs' padded rows and the lowering, for a step source.
   // The backend outlives what it gives.
