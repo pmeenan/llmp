@@ -23,6 +23,13 @@ IDENTITY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(IDENTITY)
 
 
+def ownership_catalog(build, paths, generated=()):
+    path = build / 'ownership.json'
+    path.write_text(json.dumps({'schema': 1, 'owned_inputs': sorted(str(p) for p in paths),
+                               'declared_generated': sorted(str(p) for p in generated)}))
+    return str(path)
+
+
 class CompilerIdentityTest(unittest.TestCase):
     def test_paths_do_not_rewrite_semantic_flags(self):
         roots = [("/owner/source", "$SOURCE"), ("/owner/build", "$BUILD")]
@@ -60,6 +67,9 @@ class CompilerIdentityTest(unittest.TestCase):
             receipt = {"schema": 1, "object": str(obj), "object_record": IDENTITY.snapshot(obj),
                        "primary": primary, "identity": IDENTITY.sha(IDENTITY.canonical(primary)), "inputs": {},
                        "compiler_dependency_paths": [str(obj)]}
+            archive = Path(directory) / 'ownership.json'
+            archive.write_text('{}')
+            receipt['ownership'] = {'archive': str(archive), 'record': IDENTITY.snapshot(archive)}
             IDENTITY.receipt_path(obj).write_text(json.dumps(receipt))
             IDENTITY.validated_receipt(obj)
             obj.write_bytes(b"changed")
@@ -120,12 +130,14 @@ class CompilerIdentityTest(unittest.TestCase):
                 'if mode=="source": src.write_text("changed")\n'
                 'if mode=="header": header.write_text("changed")\n'
                 'obj.write_bytes(b"object")\n'
-                'if mode!="missing": dep.write_text(str(obj)+": "+str(src)+" "+str(header)+"\\n")\n')
+                'extra=" "+str(obj.parent/"ownership.json") if mode=="catalog_dependency" else ""\n'
+                'if mode!="missing": dep.write_text(str(obj)+": "+str(src)+" "+str(header)+extra+"\\n")\n')
             compiler.chmod(0o755)
             config = build / 'config.json'
             config.write_text(json.dumps({'schema': 1, 'source': str(source), 'build': str(build),
                 'sdk': str(sdk), 'prepared': str(root / 'prepared'), 'compilers': [str(compiler)],
-                'generated': {}, 'excluded_sources': [], 'identity': {}}))
+                'generated': {}, 'excluded_sources': [], 'identity': {},
+                'ownership_catalog': ownership_catalog(build, [src, header, source / 'flags.rsp'])}))
             obj, dep = build / 'file.o', build / 'file.o.d'
             flags = ['--no-default-config', '-Werror=date-time', '-D__DATE__="Jan  1 1970"',
                      '-D__TIME__="00:00:00"', '-D__TIMESTAMP__="Thu Jan  1 00:00:00 1970"']
@@ -144,6 +156,48 @@ class CompilerIdentityTest(unittest.TestCase):
                     dependencies = set(IDENTITY.depfile_paths(dep.read_text()))
                     self.assertEqual(dependencies, {str(p) for p in
                         (src, header, response, config, ROOT / 'tools/compiler_identity.py', sdk / 'sdk.json')})
+                    original_receipt = IDENTITY.validated_receipt(obj)
+                    catalog = build / 'ownership.json'
+                    original_catalog = catalog.read_bytes()
+                    report = source / 'unrelated-report.md'
+                    report.write_text('unrelated authored document')
+                    ownership_catalog(build, [src, header, response, report])
+                    current = IDENTITY.load_config(config)
+                    IDENTITY.validate_receipt_authority(original_receipt, config, current)
+                    self.assertEqual(IDENTITY.validated_receipt(obj), original_receipt)
+                    self.assertEqual(Path(original_receipt['ownership']['archive']).read_bytes(), original_catalog)
+                    self.assertNotEqual(current['_ownership_audit']['record']['sha256'],
+                                        original_receipt['ownership']['record']['sha256'])
+                    for paths, generated in (([src, response], []), ([src, header, response], [header])):
+                        ownership_catalog(build, paths, generated)
+                        with self.assertRaises(IDENTITY.Refusal):
+                            IDENTITY.validate_receipt_authority(original_receipt, config, IDENTITY.load_config(config))
+                    ownership_catalog(build, [src, header, response])
+                    current = IDENTITY.load_config(config)
+                    current['_build_outputs'] = {str(header)}
+                    with self.assertRaisesRegex(IDENTITY.Refusal, 'generated input has no declared recipe'):
+                        IDENTITY.validate_receipt_authority(original_receipt, config, current)
+                    # A catalog is control-only only if the compiler did not
+                    # consume it. A real dependency still needs a recipe.
+                    mode.write_text('catalog_dependency')
+                    with self.assertRaisesRegex(IDENTITY.Refusal, 'generated input has no declared recipe'):
+                        IDENTITY.compile_with_receipt(config, command)
+                    self.assertFalse(obj.exists())
+                    mode.write_text('normal')
+                    # Mutate authority during the actual compiler call. The
+                    # object is discarded even though all code bytes match.
+                    real_run = IDENTITY.subprocess.run
+                    def mutate_catalog(*args, **kwargs):
+                        result = real_run(*args, **kwargs)
+                        ownership_catalog(build, [src, header, response, report])
+                        return result
+                    with mock.patch.object(IDENTITY.subprocess, 'run', side_effect=mutate_catalog):
+                        with self.assertRaisesRegex(IDENTITY.Refusal, 'catalog/build graph changed'):
+                            IDENTITY.compile_with_receipt(config, command)
+                    self.assertFalse(obj.exists())
+                    self.assertFalse(IDENTITY.receipt_path(obj).exists())
+                    catalog.write_bytes(original_catalog)
+                    self.assertEqual(IDENTITY.compile_with_receipt(config, command), 0)
                     for override in (['-D', '__DATE__="override"'], ['-U__TIME__'],
                                      ['--define-macro=__TIMESTAMP__="override"'],
                                      ['-Xcompiler=-D__DATE__="override"'],
@@ -160,6 +214,7 @@ class CompilerIdentityTest(unittest.TestCase):
                     derived['derived'] = {str(src): {'inputs': [str(template), str(generator)],
                         'value_inputs': [str(template)], 'identity': 'test-constant',
                         'command': ['/usr/bin/python3', str(generator), str(template), '@OUTPUT@']}}
+                    ownership_catalog(build, [src, header, response, template, generator])
                     config.write_text(json.dumps(derived))
                     self.assertEqual(IDENTITY.compile_with_receipt(config, command), 0)
                     first = IDENTITY.validated_receipt(obj)['identity']
@@ -167,6 +222,13 @@ class CompilerIdentityTest(unittest.TestCase):
                     self.assertEqual(IDENTITY.compile_with_receipt(config, command), 0)
                     second = IDENTITY.validated_receipt(obj)['identity']
                     self.assertNotEqual(first, second)
+                    derived_receipt = IDENTITY.validated_receipt(obj)
+                    for paths, generated in (([src, header, response, generator], []),
+                                             ([src, header, response, template, generator], [template])):
+                        ownership_catalog(build, paths, generated)
+                        with self.assertRaises(IDENTITY.Refusal):
+                            IDENTITY.validate_receipt_authority(derived_receipt, config, IDENTITY.load_config(config))
+                    ownership_catalog(build, [src, header, response, template, generator])
                     template.write_text('new value')
                     src.write_text('new value')
                     self.assertEqual(IDENTITY.compile_with_receipt(config, command), 0)
@@ -213,7 +275,8 @@ def compiler_alias_fixture(work, compiler, sdk):
     config = build / 'config.json'
     config.write_text(json.dumps({'schema': 1, 'source': str(source), 'build': str(build),
         'sdk': str(sdk), 'prepared': str(work / 'prepared'), 'compilers': [compiler],
-        'generated': {}, 'excluded_sources': [], 'identity': {}}))
+        'generated': {}, 'excluded_sources': [], 'identity': {},
+        'ownership_catalog': ownership_catalog(build, [src, ordinary])}))
     obj, dep = build / 'object.o', build / 'object.o.d'
     flags = ['--target='+triple, '-march='+('x86-64' if arch == 'x86_64' else 'armv8-a'),
              '--gcc-install-dir='+str(sdk / 'gcc' / triple / 'lib/gcc' / triple / '16'),
@@ -442,6 +505,72 @@ add_dependencies(complete llmp_compiler_identity_ready)
     configure()
     assert compile() == initial, 'same-configuration regeneration changed identity'
     assert {p: IDENTITY.snapshot(p) for p in outputs} == before_reconfigure, 'no-op configure rewrote a compiled input/output'
+    # Catalog-only changes re-run provenance validation, never compilation.
+    # Include the constant TU and archive, receipts, and semantic config so the
+    # check cannot pass by merely producing equivalent replacement objects.
+    stable = outputs + list(build.rglob('*.llmp-compile.json')) + [build / 'compiler_identity.json']
+    stable += [p for p in build.rglob('*.o') if p not in stable]
+    catalog = build / 'compiler_ownership.json'
+    catalog_before = IDENTITY.snapshot(catalog)
+    stable_before = {p: IDENTITY.snapshot(p) for p in stable}
+    report = source / 'unrelated-report.md'
+    report.write_text('unrelated authored document\n')
+    assert compile() == initial, 'unrelated catalog addition changed implementation identity'
+    assert {p: IDENTITY.snapshot(p) for p in stable} == stable_before, 'catalog addition rebuilt a compiled object/input'
+    catalog_after = IDENTITY.snapshot(catalog)
+    assert catalog_after['sha256'] != catalog_before['sha256'], 'new report was not cataloged'
+    audit = json.loads((build / 'compiler_identity_receipt.json').read_text())['ownership']
+    assert audit['record'] == catalog_after and Path(audit['archive']).read_bytes() == catalog.read_bytes()
+    report.unlink()
+    assert compile() == initial, 'unrelated catalog removal changed implementation identity'
+    assert {p: IDENTITY.snapshot(p) for p in stable} == stable_before, 'catalog removal rebuilt a compiled object/input'
+    assert IDENTITY.snapshot(catalog)['sha256'] == catalog_before['sha256']
+    checker = [python, str(source / 'tools/compiler_identity.py'), 'check', '--config',
+               str(build / 'compiler_identity.json'), '--objects', str(build / 'compiler_objects.txt'),
+               '--output', str(build / 'identity.cc'), '--receipt', str(build / 'compiler_identity_receipt.json')]
+    catalog_bytes = catalog.read_bytes()
+    for operation in ('remove', 'generated', 'declaration'):
+        changed_catalog = json.loads(catalog_bytes)
+        header_path = str(source / 'src/common/value.h')
+        if operation in ('remove', 'declaration'):
+            changed_catalog['owned_inputs'].remove(header_path if operation == 'remove' else str(source / 'CMakeLists.txt'))
+        else:
+            changed_catalog['declared_generated'].append(header_path)
+        catalog.write_text(json.dumps(changed_catalog))
+        refused = run(*checker, success=False)
+        assert ('outside the frozen authored-source inventory' if operation in ('remove', 'declaration') else
+                'generated input has no declared recipe') in refused.stdout
+        assert {p: IDENTITY.snapshot(p) for p in stable} == stable_before
+        catalog.write_bytes(catalog_bytes)
+        run(*checker)
+    # Ninja also classifies generated inputs; no catalog edit or object change
+    # can hide a new generator edge for an already compiled source-root header.
+    graph = build / 'build.ninja'
+    original_graph = graph.read_bytes()
+    graph.write_bytes(original_graph + ('\nbuild '+str(source / 'src/common/value.h')+
+                                       ': CUSTOM_COMMAND\n  COMMAND = true\n').encode())
+    refused = run(*checker, success=False)
+    assert 'generated input has no declared recipe' in refused.stdout
+    graph.write_bytes(original_graph)
+    run(*checker)
+    # Exercise the full digest with an authority mutation after it has loaded
+    # the catalog, while object/source bytes and every receipt remain intact.
+    validate = IDENTITY.validated_receipt
+    def mutate_catalog_during_digest(obj):
+        receipt = validate(obj)
+        catalog.write_bytes(catalog_bytes + b' ')
+        return receipt
+    with mock.patch.object(IDENTITY, 'validated_receipt', side_effect=mutate_catalog_during_digest):
+        try:
+            IDENTITY.digest(build / 'compiler_identity.json', build / 'compiler_objects.txt',
+                            build / 'identity.cc', build / 'compiler_identity_receipt.json', True)
+        except IDENTITY.Refusal as error:
+            assert 'catalog/build graph changed' in str(error), error
+        else:
+            raise AssertionError('digest accepted a mid-operation catalog mutation')
+    catalog.write_bytes(catalog_bytes)
+    run(*checker)
+    print('Catalog addition/removal: zero object rebuilds, stable identity; actual dependency removal/reclassification refused', flush=True)
     if cuda:
         # A direct wrapper alteration is not a configured recipe. The new
         # object dependency must enter the launcher and refuse it automatically.

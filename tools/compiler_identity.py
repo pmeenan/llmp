@@ -211,13 +211,46 @@ def check_dependency_aliases(paths):
             directory = os.path.join(directory, component)
 
 
+def read_json_snapshot(path):
+    before = metadata(path)
+    data = path.read_bytes()
+    require(metadata(path) == before, f"input changed while reading: {path}")
+    return json.loads(data), {"sha256": sha(data), "stat": before}, data
+
+
 def load_config(path):
-    config = json.loads(path.read_text())
+    config, config_record, _ = read_json_snapshot(path)
     require(config["schema"] == 1, "unsupported compiler identity configuration")
     config["roots"] = [(os.path.normpath(config[name]), token) for name, token in
                        (("build", "$BUILD"), ("source", "$SOURCE"),
                         ("sdk", "$SDK"), ("prepared", "$PREPARED"))]
+    catalog_path = Path(config["ownership_catalog"])
+    catalog, record, data = read_json_snapshot(catalog_path)
+    require(catalog["schema"] == 1, "unsupported compiler ownership catalog")
+    for name in ("owned_inputs", "declared_generated"):
+        paths = catalog[name]
+        require(isinstance(paths, list) and all(isinstance(p, str) and os.path.isabs(p) and
+                os.path.normpath(p) == p for p in paths) and len(set(paths)) == len(paths),
+                f"malformed compiler ownership catalog: {name}")
+    require(set(catalog["declared_generated"]) <= set(catalog["owned_inputs"]),
+            "generated declarations are outside the authored catalog")
+    # Preserve the complete historical authority once per distinct catalog,
+    # rather than duplicating a large inventory in every object receipt.
+    archive = Path(config["build"]) / "compiler-ownership" / (record["sha256"] + ".json")
+    archive.parent.mkdir(mode=0o700, exist_ok=True)
+    if archive.exists():
+        require(archive.read_bytes() == data, f"corrupt archived ownership catalog: {archive}")
+    else:
+        write_if_changed(archive, data)
+    config["_ownership"] = {name: set(catalog[name]) for name in ("owned_inputs", "declared_generated")}
+    config["_ownership_audit"] = {"path": str(catalog_path), "record": record, "archive": str(archive)}
+    config["_controls"] = {path: config_record, catalog_path: record}
     return config
+
+
+def validate_controls(config):
+    require(all(snapshot(p) == record for p, record in config["_controls"].items()),
+            "configuration/ownership catalog/build graph changed during operation")
 
 
 def build_outputs(config):
@@ -323,8 +356,9 @@ def write_if_changed(path, data):
     temporary.replace(path)
 
 
-def source_record(path, config):
+def source_record(path, config, ancestors=()):
     """Generated inputs require a declared recipe, never a filename exemption."""
+    require(path not in ancestors, f"cyclic generated-input recipe: {path}")
     roots = config["roots"]
     name = normalized_path(str(path), roots)
     if path == Path(config["sdk"]) / "sdk.json":
@@ -332,10 +366,10 @@ def source_record(path, config):
         receipt.pop("created", None)  # installation time is receipt-only
         return {"sdk_receipt": receipt}
     if name.startswith("$SOURCE/"):
-        require(str(path) in config.get("owned_inputs", [str(path)]),
+        require(str(path) in config["_ownership"]["owned_inputs"],
                 f"input is outside the frozen authored-source inventory: {path}; register its generation recipe")
     generated = config["generated"]
-    is_generated = (name.startswith("$BUILD/") or str(path) in config.get("declared_generated", []) or
+    is_generated = (name.startswith("$BUILD/") or str(path) in config["_ownership"]["declared_generated"] or
                     str(path) in config.get("_build_outputs", set()))
     if is_generated:
         require(str(path) in generated,
@@ -343,12 +377,51 @@ def source_record(path, config):
         recipe = generated[str(path)]
         require(recipe["inputs"], f"empty generated-input provenance: {path}")
         require(snapshot(path)["sha256"] == recipe["sha256"], f"generated input differs from its configured recipe: {path}")
+        for dependency in recipe["inputs"]:
+            source_record(Path(dependency), config, (*ancestors, path))
         return {"recipe": {normalized_path(p, roots): snapshot(Path(p))["sha256"]
                            for p in recipe["inputs"]}, "parameters": config["identity"]["host_wrapper"]}
     require(name.startswith(("$SOURCE/", "$SDK/", "$PREPARED/", "/usr/include/")) or
             path == Path(__file__).resolve() or str(path) in config.get("declarations", []),
             f"unregistered external compiler input: {path}; add an explicit source/platform or generated-input contract")
     return {"sha256": snapshot(path)["sha256"]}
+
+
+def input_records(inputs, dependencies, source, config_path, config, derived, constant):
+    """Revalidate current authority, including inputs omitted only as data values."""
+    values = set()
+    if derived:
+        recipe = config["derived"][str(source)]
+        values.update(Path(p) for p in recipe.get("value_inputs", []))
+    records = {}
+    for path in sorted(inputs):
+        if path == config_path and path not in dependencies:
+            continue  # launcher control; actual compiler consumption is not exempt
+        if path == source and (derived or constant):
+            # These generated TUs have separate complete regeneration/literal
+            # integrity contracts; an authored fixture still needs ownership.
+            if normalized_path(str(path), config["roots"]).startswith("$SOURCE/"):
+                require(str(path) in config["_ownership"]["owned_inputs"],
+                        f"derived source is outside the frozen authored-source inventory: {path}")
+            continue
+        record = source_record(path, config)
+        if path not in values:
+            records[normalized_path(str(path), config["roots"])] = record
+    return records
+
+
+def validate_receipt_authority(receipt, config_path, config):
+    dependencies = {absolute(p, config["build"]) for p in receipt["compiler_dependency_paths"]}
+    source = Path(config["constant_source"]) if receipt.get("constant") else next(
+        (Path(p) for p in receipt["inputs"]
+         if normalized_path(p, config["roots"]) == receipt["primary"]["source"]), None)
+    require(source is not None, "compiler receipt omitted its source input")
+    derived = str(source) in config["excluded_sources"]
+    require(receipt.get("derived") == derived, "generated source classification changed")
+    records = input_records({Path(p) for p in receipt["inputs"]}, dependencies, source,
+                            config_path, config, derived, receipt.get("constant"))
+    if not receipt.get("constant"):
+        require(records == receipt["primary"]["inputs"], "compiler input authority changed; rebuild this object")
 
 
 def constant_bytes(identity):
@@ -447,6 +520,7 @@ def compile_with_receipt(config_path, argv):
     config = load_config(config_path)
     env = effective_environment(config)
     config["_build_outputs"], build_graph = build_outputs(config)
+    config["_controls"].update(build_graph)
     cwd = Path.cwd()
     require(cwd == Path(config["build"]), "identity launcher requires the configured build working directory")
     require(argv and argv[0] in config["compilers"], "unsupported compiler or launcher chain")
@@ -570,18 +644,13 @@ def compile_with_receipt(config_path, argv):
             else:
                 st = captured[str(path)]["stat"]
                 require(max(st[3], st[4]) <= started, f"new dependency changed during compilation: {path}")
-        values = {source, config_path}
-        if excluded:
-            values.update(Path(p) for p in recipe.get("value_inputs", []))
-        else:
-            values = {config_path}
+        records = input_records(inputs, dependencies, source, config_path, config, excluded, constant)
         primary = {"constant": context, "value": identity_receipt["identity"]} if constant else {
                    "schema": 1, "source": normalized_path(str(source), config["roots"]),
                    "directory": normalized_path(str(cwd), config["roots"]),
                    "arguments": normalized_arguments(args, config["roots"], str(source)),
                    "environment": environment_identity(env, config["roots"]),
-                   "inputs": {normalized_path(str(p), config["roots"]): source_record(p, config)
-                              for p in sorted(inputs) if p not in values},
+                   "inputs": records,
                    "configuration": config["identity"]}
         if excluded:
             primary["derivation"] = recipe["identity"]
@@ -592,7 +661,7 @@ def compile_with_receipt(config_path, argv):
         receipt = {"schema": 1, "primary": primary, "identity": sha(canonical(primary)),
                    "object": str(obj), "object_record": object_record, "inputs": captured,
                    "compiler_dependency_paths": dependency_paths,
-                   "derived": excluded, "constant": constant}
+                   "derived": excluded, "constant": constant, "ownership": config["_ownership_audit"]}
         check_dependency_aliases(dependency_paths)
         require(all(snapshot(p) == record for p, record in constant_control.items()),
                 "identity value changed while compiling its constant")
@@ -601,6 +670,7 @@ def compile_with_receipt(config_path, argv):
         # too; otherwise a normal incremental build merely encounters a stale
         # receipt at the downstream identity step. Keep the complete validated
         # compiler dependencies and add every authenticated launcher input.
+        validate_controls(config)
         write_if_changed(depfile, dependency_rule(operand(args, "-MT"), inputs).encode())
         write_if_changed(old, canonical(receipt) + b"\n")
     except Exception:
@@ -621,6 +691,9 @@ def validated_receipt(obj):
     require(snapshot(obj) == receipt["object_record"], f"stale object receipt: {obj}")
     require("compiler_dependency_paths" in receipt, f"missing compiler filename proof: {obj}; rebuild this object")
     check_dependency_aliases(receipt["compiler_dependency_paths"])
+    ownership = receipt.get("ownership")
+    require(ownership and sha(Path(ownership["archive"]).read_bytes()) == ownership["record"]["sha256"],
+            f"missing or corrupt ownership audit: {obj}; rebuild this object")
     for name, record in receipt["inputs"].items():
         require(snapshot(Path(name)) == record, f"stale compiler input: {name}; rebuild {obj}")
     return receipt
@@ -628,6 +701,8 @@ def validated_receipt(obj):
 
 def digest(config_path, objects_path, output, receipt_output, check=False):
     config = load_config(config_path)
+    config["_build_outputs"], graph = build_outputs(config)
+    config["_controls"].update(graph)
     commands_path = Path(config["build"]) / "compile_commands.json"
     control_inputs = {p: snapshot(p) for p in (config_path, objects_path, commands_path)}
     entries = json.loads((Path(config["build"]) / "compile_commands.json").read_text())
@@ -654,6 +729,7 @@ def digest(config_path, objects_path, output, receipt_output, check=False):
         require(obj in commands, f"missing effective compile command: {obj}")
         entry = commands[obj]
         receipt = validated_receipt(obj)
+        validate_receipt_authority(receipt, config_path, config)
         exported, _ = expand_responses(shlex.split(entry["command"]), entry["directory"])
         exported = normalized_arguments(exported, config["roots"], entry["file"])
         require(exported == without_dependency_options(receipt["primary"]["arguments"]),
@@ -669,6 +745,8 @@ def digest(config_path, objects_path, output, receipt_output, check=False):
         else:
             require(not receipt.get("derived"), f"unexpected derived object exclusion: {obj}")
         receipts[str(obj)] = receipt
+    for name in config["declarations"]:
+        source_record(Path(name), config)
     inventory = {normalized_path(p, config["roots"]): snapshot(Path(p))["sha256"]
                  for p in config["declarations"]}
     primary = {"schema": 1, "configuration": config["identity"], "declarations": inventory,
@@ -687,13 +765,16 @@ def digest(config_path, objects_path, output, receipt_output, check=False):
     if check:
         require(output.read_bytes() == generated, "generated implementation identity is stale")
         compiled_constant = validated_receipt(constant_object)
+        validate_receipt_authority(compiled_constant, config_path, config)
         require(compiled_constant.get("constant") and
                 compiled_constant["primary"] == {"constant": constant, "value": identity},
                 "compiled constant does not match its bound command/value")
-    else:
+    validate_controls(config)
+    if not check:
         write_if_changed(output, generated)
         write_if_changed(receipt_output, canonical({"identity": identity, "primary": primary,
-            "objects": {p: r["object_record"] for p, r in receipts.items()}}) + b"\n")
+            "objects": {p: r["object_record"] for p, r in receipts.items()},
+            "ownership": config["_ownership_audit"]}) + b"\n")
     print(identity)
 
 

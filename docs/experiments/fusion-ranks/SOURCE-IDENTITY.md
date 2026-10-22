@@ -49,8 +49,27 @@ supported way to build a measurement binary. Missing, stale, ambiguous or
 observably changing receipts fail the build. Ninja's historical `VALID` status
 is not used as current-source attestation.
 
-Configure/generate-time compiler configuration, object-list and CUDA host-wrapper
-files are
+The complete authored-file membership and explicit generated declarations live
+in `compiler_ownership.json`, separate from the compile semantics in
+`compiler_identity.json`. Each compile and identity operation snapshots the
+whole catalog; receipts reference a retained, content-addressed copy under
+`compiler-ownership/`. Catalog changes during an operation refuse. At identity
+validation, every actual receipt input and generator input is checked against
+the current catalog and current Ninja output classification, including inputs
+whose data values are deliberately excluded from implementation identity.
+Removing or reclassifying a consumed input cannot reuse its old authority.
+
+An unrelated catalog addition/removal schedules identity validation without
+changing the object command stamp or compiler dependencies. Catalog membership
+alone is audit provenance, not implementation identity. The catalog has no
+exemption if a compiler actually consumes it: ordinary generated-input recipe
+checks apply. Configuration, compiler-consumed bytes, generator recipes and
+build declarations retain their existing invalidation rules. This build-recipe
+change itself changes implementation identity; historical measurements retain
+their original identities and are not re-pinned.
+
+Configure/generate-time compiler configuration, ownership catalog, object-list
+and CUDA host-wrapper files are
 explicit `GENERATED`, noncompiled private sources of the identity target.
 The generic source inventory reads their ownership and declaration backtraces
 from CMake's current File API codemodel. It checks the source/build roots and
@@ -123,7 +142,8 @@ without feeding back into implementation identity. No broad version/report
 exception is assumed: the generated object inventory must demonstrate that
 report-only version code is outside the selected roots.
 
-The build emits `compiler_objects.txt`, `compiler_identity.json`, per-object
+The build emits `compiler_objects.txt`, `compiler_identity.json`,
+`compiler_ownership.json` and its retained catalog snapshots, per-object
 `.llmp-compile.json` receipts and `compiler_identity_receipt.json`. The benchmark,
 measurement launcher, full frozen source manifest and binary hash remain
 separate measurement provenance. Python controls cover operand normalization,

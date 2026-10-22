@@ -176,6 +176,7 @@ function(llmp_compiler_identity)
 
   get_filename_component(binary "${ARG_OUTPUT}" DIRECTORY)
   set(config "${binary}/compiler_identity.json")
+  set(catalog "${binary}/compiler_ownership.json")
   set(manifest "${binary}/compiler_objects.txt")
   set(receipt "${binary}/compiler_identity_receipt.json")
   set(json "{\"schema\":1}")
@@ -193,8 +194,12 @@ function(llmp_compiler_identity)
   if(NOT owned_inputs)
     message(FATAL_ERROR "Compiler identity requires llmp_identity_freeze_sources at the configure front door")
   endif()
+  # Membership is validation authority, not a compiler semantic input. Keep
+  # the complete catalog separate so unrelated authored files do not change
+  # every compile command/config dependency. The digest still depends on it.
+  set(ownership "{\"schema\":1}")
   llmp_identity_array(array ${owned_inputs})
-  string(JSON json SET "${json}" owned_inputs "${array}")
+  string(JSON ownership SET "${ownership}" owned_inputs "${array}")
   set(declared_generated "")
   foreach(path IN LISTS owned_inputs)
     get_source_file_property(generated "${path}" GENERATED)
@@ -203,7 +208,10 @@ function(llmp_compiler_identity)
     endif()
   endforeach()
   llmp_identity_array(array ${declared_generated})
-  string(JSON json SET "${json}" declared_generated "${array}")
+  string(JSON ownership SET "${ownership}" declared_generated "${array}")
+  llmp_identity_quote(value "${catalog}")
+  string(JSON json SET "${json}" ownership_catalog "${value}")
+  file(GENERATE OUTPUT "${catalog}" CONTENT "${ownership}\n")
   llmp_identity_quote(value "${CMAKE_MAKE_PROGRAM}")
   string(JSON json SET "${json}" ninja "${value}")
   foreach(pair IN ITEMS "source|${PROJECT_SOURCE_DIR}" "build|${PROJECT_BINARY_DIR}"
@@ -345,10 +353,10 @@ function(llmp_compiler_identity)
   file(GENERATE OUTPUT "${manifest}" CONTENT "$<JOIN:${objects},\n>\n")
   # These configure/generate-time products are compiler-launcher inputs, not
   # translation units. Declare their ownership so CMake exposes them in the
-  # current File API target inventory. Complete compiler
-  # depfiles must retain them; the generic source audit still rejects undeclared
-  # build-tree files.
-  set(configured_inputs "${config}" "${manifest}")
+  # current File API target inventory. Compile depfiles retain the semantic
+  # config; the ownership catalog belongs to the digest dependency edge. The
+  # generic source audit still rejects undeclared build-tree files.
+  set(configured_inputs "${config}" "${catalog}" "${manifest}")
   if(CMAKE_CUDA_HOST_COMPILER)
     list(APPEND configured_inputs "${CMAKE_CUDA_HOST_COMPILER}")
   endif()
@@ -358,7 +366,7 @@ function(llmp_compiler_identity)
   add_custom_command(OUTPUT "${ARG_OUTPUT}" "${receipt}"
     COMMAND "${LLMP_PYTHON}" "${tool}" digest --config "${config}"
             --objects "${manifest}" --output "${ARG_OUTPUT}" --receipt "${receipt}"
-    DEPENDS ${objects} ${files} "${config}" "${manifest}" "${PROJECT_BINARY_DIR}/compile_commands.json"
+    DEPENDS ${objects} ${files} "${config}" "${catalog}" "${manifest}" "${PROJECT_BINARY_DIR}/compile_commands.json"
     COMMENT "Checking compiler-owned implementation provenance"
     VERBATIM)
   # The public archive is declared in a child directory. An explicit target

@@ -784,10 +784,13 @@ D-122).
       and rank lookup is indexed by operation and exact query. The original twelve
       RMSNormMul measurements remain historical with unchanged IDs. The independently
       audited [fresh W5 matrix](experiments/fusion-ranks/FRESH-W5-RESULTS.md) has
-      eleven fusion wins and one neutral exact tuple. Native live-registry/planner
-      checks recognize all twelve current rows with unchanged compiler identity;
-      an unmeasured width retains the incumbent. Other fusion families/format
-      domains remain open.
+      eleven fusion wins and one neutral exact tuple. At that capture, native
+      live-registry/planner checks recognized all twelve rows; an unmeasured
+      width retained the incumbent. The later compiler ownership-catalog build
+      change gives the implementation a new identity, so those measurements
+      remain historical and current dispatch retains the incumbent until fresh
+      matching data exists. The historical rows are not re-pinned. Other fusion
+      families/format domains remain open.
       The 49-pattern synthetic
       match/refusal inventory already satisfies U6d; real-backend measured-veto
       integration coverage expands with the remaining fusion comparisons.
@@ -3029,6 +3032,92 @@ new matched controls ([exl3-bringup.md](exl3-bringup.md)).
       export and eviction explanations; management controls for priorities,
       residency policies and trace capture; Prometheus `/metrics` with
       compatible health and load queries (D-044).
+      - [ ] **vLLM-compatible Prometheus `/metrics` for sparkDash** (owner,
+            2026-10-22; D-044): this item's first slice.
+            [sparkDash](https://github.com/MiaAI-Lab/sparkDash) (read at
+            `df6a223`) has no plugin or push API. Its `LlmProbe` polls each LLM
+            port, identifies the engine by `owned_by` on `/v1/models` and by
+            endpoints unique to each engine, and otherwise treats it as vLLM,
+            whose `/metrics` it diffs per poll into decode and prefill tok/s,
+            requests, KV use and TTFT/ITL p95. Llmpalooza (`owned_by: "llmp"`)
+            already lands on that fallback but serves no `/metrics`, so its card
+            reads 0 tok/s; vLLM-named series fix that with no sparkDash change.
+            - **The route:** `GET /metrics` on the chat listener (the port
+              sparkDash probes), Prometheus text format 0.0.4, behind the
+              listener's authentication when it has one. Rendered on the I/O
+              thread from a snapshot the driver publishes at each completed unit:
+              no wait on the driver, no catalog or scheduler lock (D-007). Counts
+              and alias names only, never request or output text (D-014). Labels
+              are bounded: `model_name` takes the configured aliases (`[models]`),
+              and every registered LLM's series are written whether or not it is
+              resident, so counters never vanish across swaps.
+            - **vLLM-named series, only where the meaning matches vLLM's**
+              (D-044). Names, types and histogram buckets are checked against a
+              pinned vLLM release's metrics source when built, not from memory
+              (rule 3). Where each count comes from:
+              - `vllm:prompt_tokens_total` (counter): the turn's reused tokens at
+                admission (`Usage::cached_tokens`, `api.h`, set from the branch's
+                reuse in `service_backend.cc`), then each prefill chunk's rows as
+                it completes (`RunPrefillChunks`, `prefill.cc`; joined waves in
+                `llm_execution.cc`), so a long prefill shows a live rate rather
+                than a jump at its end. Its total is the prompt's tokens, cache
+                hits included, as vLLM counts them.
+              - `vllm:prefix_cache_queries_total`, `vllm:prefix_cache_hits_total`
+                (counters, in tokens): the turn's prompt tokens and its reused
+                tokens, at admission. sparkDash subtracts hits, so reuse never
+                reads as prefill speed.
+              - `vllm:generation_tokens_total` (counter): the tokens each unit
+                commits, counted at the driver's commit (a plain step's token, a
+                verify's `kept`, `llm_execution.cc`), not when the response ends.
+              - `vllm:num_requests_running`, `vllm:num_requests_waiting` (gauges):
+                `api::Server`'s `running_` and `queue_` (`api_server.h`); a
+                request yielded to a pending switch is queued again, so it counts
+                as waiting.
+              - `vllm:kv_cache_usage_perc` (gauge, a 0–1 fraction as vLLM's): for
+                each model with live state, its active branches' committed
+                positions over `slots_` × `usable_context()` (`serving.h`);
+                absent for a model without live state.
+              - `vllm:time_to_first_token_seconds`,
+                `vllm:inter_token_latency_seconds` (histograms): from the
+                channel's `queued_at` to the stream's first emission, and between
+                later emissions (`api_stream.cc`).
+              - `vllm:spec_decode_num_drafts_total`,
+                `vllm:spec_decode_num_draft_tokens_total`,
+                `vllm:spec_decode_num_accepted_tokens_total` (counters):
+                `Llm::Counts`' `speculative_units`, `drafted` and `accepted`
+                (`serving.h`), counted already.
+            - **Not published under vLLM names** (the meanings differ):
+              `num_preemptions_total` (a request yielded at a model switch keeps
+              its state; it is not evicted and recomputed), `cache_config_info`
+              (our KV backing commits lazily and has no fixed block pool), and
+              `iteration_tokens_total`.
+            - **Llmpalooza's own series** (`llmp_`, D-044's separate paging
+              measurements; sparkDash ignores them): `llmp_build_info{version}`;
+              `llmp_model_resident{model_name}`; `llmp_request_yields_total`;
+              `llmp_swaps_total`, a `llmp_swap_seconds` histogram and
+              `llmp_swap_read_bytes_total` (`SwapParts`, `serving.h`); spills,
+              restores, their bytes and seconds (`Llm::SpillStats`);
+              `llmp_page_in_events_total` (`Server::page_in_events()`); and the
+              node budget with the memory charged against it (`Server::budget()`
+              and its parts).
+            - **Known limits, left to sparkDash:** it sums every label set of a
+              series, so two models resident at once add their KV fractions, and
+              it names the port's model after the first `/v1/models` entry
+              rather than the resident one. An `llmp` backend in sparkDash keyed
+              on `owned_by`, as it has for Radiance, fixes both; contributing it
+              upstream is the owner's call, and the runtime's `/v1/models` order
+              does not change for it. The listener binds loopback and the tailnet
+              by default, so sparkDash's per-Spark `llmHost` names the tailnet
+              address unless the owner binds another (runtime-serving.md).
+            - **Checks:** unit tests on the exposition text (types, `HELP`, label
+              escaping, counters monotonic across a swap and a yield, no request
+              text), the counters against `Usage` on fixture turns, and a
+              `models` test that reads `/metrics` around a short chat and a swap
+              on a Spark. Heavy path: a public route on the listener.
+              **Done** when a sparkDash instance pointed at a Spark's runtime
+              shows decode and prefill tok/s, requests, KV use and TTFT/ITL p95
+              on its LLM card (recorded with the sparkDash commit), and
+              runtime-serving.md and the CHANGELOG describe the route.
 - [ ] **Storage scheduling:** demand reads mixed with spill write-back,
       inside the pinned write budget.
 - [ ] Add the A→B→A workload and its regression thresholds to `check:spark`.

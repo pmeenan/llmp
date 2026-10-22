@@ -90,6 +90,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Adding or removing unrelated reports no longer rebuilds unchanged compiler
+  inputs; current source ownership and generated-input checks remain enforced.
+
 - Refresh Gemma26 and Gemma31 target and paired spec metadata with their source
   sampling defaults, preserving all encoded payloads and assistant artifacts.
 
