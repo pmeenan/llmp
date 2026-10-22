@@ -12,6 +12,7 @@
 #include "base/surface_versions.h"
 #include "platform/memory_pressure.h"
 #include "runtime/api_server.h"
+#include "runtime/stream_encoder.h"
 namespace llmp::runtime::api {
 namespace server_detail {
 inline constexpr std::string_view kJson = "application/json";
@@ -69,7 +70,9 @@ struct Server::Channel {
   std::string id;                // the request's opaque ID
   std::string model;
   std::int64_t created = 0;
-  bool stream = false;  // SSE
+  bool stream = false;    // SSE
+  StreamEncoder encoder;  // selected by the route before admission
+  std::optional<Error> encoding_error;
   bool http10 = false;
   Clock::time_point queued_at;
   std::chrono::seconds idle_timeout{0};
@@ -120,16 +123,38 @@ struct Server::Channel {
     }
     last_out = Clock::now();
   }
-  void PutEvent(std::string_view json) {
-    std::string event = "data: ";
-    event += json;
-    event += "\n\n";
-    PutBody(event);
+  StreamIdentity identity() const { return {.id = id, .model = model, .created = created}; }
+  StreamEncoder::Sink sink() {
+    return [this](std::string_view event) { PutBody(event); };
   }
-  void PutStart() {
-    PutHead(200, "text/event-stream", std::nullopt);
-    PutEvent(ChunkJson(id, created, model, Delta::kRole, {}));
+  void Encoded(StreamEncoder::Status status) {
+    if (!status) {
+      encoding_error = server_detail::Refusal(500, std::string(status.error()), "internal");
+      PutError(*encoding_error);
+    }
   }
+  void PutStart(std::optional<Usage> usage = {}) {
+    if (!head_sent) {
+      PutHead(200, "text/event-stream", std::nullopt);
+    }
+    Encoded(encoder.Start(identity(), usage, sink()));
+  }
+  void PutText(StreamText kind, std::string_view text) {
+    if (!ended) {
+      Encoded(encoder.Text(identity(), kind, text, sink()));
+    }
+  }
+  void PutFinish(Finish finish, const Usage& usage, bool include_usage) {
+    if (!ended) {
+      Encoded(encoder.End(identity(),
+                          finish == Finish::kStop ? StreamStop::kStop : StreamStop::kLength, usage,
+                          include_usage, sink()));
+    }
+    if (!ended) {
+      PutEnd();
+    }
+  }
+  void PutKeepalive() { encoder.Keepalive(sink()); }
   void PutEnd() {
     if (chunked) {
       out += http::Chunk({});
@@ -137,10 +162,13 @@ struct Server::Channel {
     ended = true;
   }
   // An error: the whole response before the head, an in-stream error
-  // event after it (the stream then ends without [DONE]).
+  // event after it (without a successful protocol finish).
   void PutError(const Error& error, std::vector<std::string> extra = {}) {
+    if (ended) {
+      return;
+    }
     if (!head_sent) {
-      const std::string json = ErrorJson(error);
+      const std::string json = encoder.ErrorBody(error);
       if (error.status == 429 || error.status == 503) {
         extra.push_back(std::format("Retry-After: {}", kRetryAfterSeconds));
         extra.emplace_back("x-should-retry: true");
@@ -148,7 +176,7 @@ struct Server::Channel {
       PutHead(error.status, server_detail::kJson, json.size(), std::move(extra));
       PutBody(json);
     } else if (stream) {
-      PutEvent(ErrorJson(error));
+      encoder.Fail(error, sink());
     }
     PutEnd();
   }

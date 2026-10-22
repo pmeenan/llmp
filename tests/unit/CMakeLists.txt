@@ -113,7 +113,7 @@ llmp_gtest(swap_room_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The chat route (D-097): requests and their bounds, the bind resolution and
 # Host guard, and the server over real loopback sockets with a fake backend.
-add_executable(api_test api_test.cc)
+add_executable(api_test api_test.cc stream_encoder_test.cc)
 target_link_libraries(api_test PRIVATE llmp_runtime llmp_json)
 llmp_gtest(api_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 

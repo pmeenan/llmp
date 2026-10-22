@@ -594,6 +594,9 @@ void Server::OnRequest(Connection& c, http::Request request) {
     answer(ModelJson(*it, created_));
     return;
   }
+  // Both current routes use the Chat Completions stream shape. Messages
+  // selects its encoder here when its request/response contract is implemented.
+  channel->encoder = StreamEncoder(StreamRoute::kChatCompletions);
   const bool literal_route = request.path == "/v1/completions";
   auto parse = std::make_unique<Parse>();
   parse->connection = c.id;
@@ -976,7 +979,7 @@ void Server::InputClosed(Connection& c) {
         if (ch.stream && !ch.head_sent) {
           ch.PutStart();
         } else if (ch.stream) {
-          ch.PutBody(": keepalive\n\n");
+          ch.PutKeepalive();
         } else if (!ch.head_sent && !ch.http10) {
           ch.out += kProcessing;
         }
@@ -1110,7 +1113,7 @@ Clock::time_point Server::Sweep(Clock::time_point now) {
               // forever outside the generation's bounded output buffer.
               const bool pending = c.pending_output() || !ch.out.empty();
               if (!pending && now >= ch.last_out + options_.keepalive) {
-                ch.PutBody(": keepalive\n\n");
+                ch.PutKeepalive();
                 added = true;
               }
               soon(pending ? now + options_.keepalive : ch.last_out + options_.keepalive);

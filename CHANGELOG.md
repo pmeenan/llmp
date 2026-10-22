@@ -24,6 +24,8 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Route-owned streaming encoders for OpenAI-compatible and Messages events
+  (M3.5 U5a); the Messages request route remains disabled.
 - Generic architecture-owned normalization for native quantized tensor parts,
   expert gathers and shards (M3.5 U3, D-125), with import-time role-based
   transforms, mapping provenance and stored drafter specs. Llama 3 frequency

@@ -16,7 +16,7 @@
 # conversations kept across a restart with their keeper (kept_record.h,
 # state_keeper.h, D-105), all vendor-free.
 add_library(llmp_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc
-                api_connection.cc api_stream.cc api_dispatch.cc approvals.cc binding.cc
+                api_connection.cc api_stream.cc api_dispatch.cc stream_encoder.cc approvals.cc binding.cc
                                   calibration.cc cohort_capacity.cc cohort_schedule.cc
                                   completion_tokens.cc component_admission.cc hang_ladder.cc intake_limits.cc
                                   kept_record.cc memory_guard.cc model_settings.cc stored_binding_bound.cc

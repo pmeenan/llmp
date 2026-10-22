@@ -1393,6 +1393,17 @@ The inference responses advertise `llmp-inference-version: 1` (D-100).
 The following fields/output describe the chat route; literal completions
 have their own contract below.
 
+Streaming uses a route-owned native encoder (`runtime/stream_encoder.h`):
+the channel owns HTTP framing and the charged unread buffer; the encoder
+owns protocol events, including start, deltas, finish, errors and keepalive.
+The current routes retain their OpenAI event bytes. The Messages encoder
+provides indexed text/tool blocks and incremental JSON-input deltas, with
+at most three carried UTF-8 bytes and no retained argument document; it
+sends pings before prompt usage is available and `message_start` on
+admission. Messages request handling, structured message parts, tool
+extraction and signed reasoning remain future work; `/v1/messages` is
+not enabled by this seam.
+
 **Fields.** Honored: `model` (a configured name; unknown is a 404, the
 image pipeline a 400 `model_not_supported`), `messages` (system;
 developer, read as system; user; assistant, whose `reasoning` or

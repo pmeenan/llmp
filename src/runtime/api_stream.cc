@@ -57,8 +57,8 @@ bool Server::Stream::Admit(const Admission& admission) {
   }
   if (pending_.request.stream) {
     const std::scoped_lock lock(server_.mutex_);
-    if (!channel_.gone && !channel_.stalled && !channel_.head_sent) {
-      channel_.PutStart();
+    if (!channel_.gone && !channel_.stalled && !channel_.ended) {
+      channel_.PutStart(usage_);
       Dirty();
     }
   }
@@ -110,6 +110,9 @@ void Server::Stream::Carry(Pending& pending, bool taken_up) {
 int Server::Stream::End(const std::expected<Completion, Error>& result) {
   {
     const std::scoped_lock lock(server_.mutex_);
+    if (channel_.encoding_error) {
+      return channel_.encoding_error->status;
+    }
     if (channel_.stalled || channel_.gone) {
       return channel_.stalled ? 504 : 499;
     }
@@ -179,18 +182,14 @@ int Server::Stream::End(const std::expected<Completion, Error>& result) {
         status = error.status;
       } else {
         const Finish finish = result->stopped || text_.stopped() ? Finish::kStop : Finish::kLength;
-        const std::string& model = pending_.request.model;
         if (pending_.request.stream) {
           if (!channel_.head_sent) {
             channel_.PutStart();
           }
-          channel_.PutEvent(
-              ChunkJson(channel_.id, channel_.created, model, Delta::kFinish, {}, finish));
-          if (pending_.request.include_usage) {
-            channel_.PutEvent(UsageChunkJson(channel_.id, channel_.created, model, usage_));
+          channel_.PutFinish(finish, usage_, pending_.request.include_usage);
+          if (channel_.encoding_error) {
+            status = channel_.encoding_error->status;
           }
-          channel_.PutBody("data: [DONE]\n\n");
-          channel_.PutEnd();
         } else if (!body || !*body) {
           const Error error =
               body ? body->error() : Refusal(500, "the response was not made", "internal");
@@ -234,19 +233,18 @@ void Server::Stream::EmitLocked(const OutputText::Out& out) {
     }
     return;
   }
-  if (channel_.gone || channel_.stalled || (out.reasoning.empty() && out.content.empty())) {
+  if (channel_.gone || channel_.stalled || channel_.ended ||
+      (out.reasoning.empty() && out.content.empty())) {
     return;
   }
   if (!channel_.head_sent) {
     channel_.PutStart();
   }
   if (!out.reasoning.empty()) {
-    channel_.PutEvent(ChunkJson(channel_.id, channel_.created, pending_.request.model,
-                                Delta::kReasoning, out.reasoning));
+    channel_.PutText(StreamText::kReasoning, out.reasoning);
   }
   if (!out.content.empty()) {
-    channel_.PutEvent(ChunkJson(channel_.id, channel_.created, pending_.request.model,
-                                Delta::kContent, out.content));
+    channel_.PutText(StreamText::kContent, out.content);
   }
   // The unread output, charged as it grows (within the grant: this is
   // the middle of a unit, where the driver does not reclaim). What the
@@ -345,7 +343,7 @@ bool Server::Stream::Check(std::optional<Phase> next, double expected) {
   {
     const std::scoped_lock lock(server_.mutex_);
     stopping_ = stopping_ || server_.stopping_;
-    if (stopping_ || channel_.gone || channel_.stalled) {
+    if (stopping_ || channel_.gone || channel_.stalled || channel_.ended) {
       return false;
     }
   }

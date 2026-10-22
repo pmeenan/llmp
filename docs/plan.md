@@ -652,9 +652,14 @@ D-122).
       and an unpinned artifact of one architecture and encoding set receive
       identical qualifications (tested); an `sm_86` plan report names what
       it lacks.
-- [ ] **U5 Front-door and scheduling seams** (the first sub-slice of the
-      tool-call and Messages items; heavy-path review, it touches the
-      serving loop): a per-route stream encoder (`Channel` stops hard-coding
+- [ ] **U5 Front-door and scheduling seams** — **U5a complete (2026-10-22):**
+      Channel, Stream and I/O use route-owned start, delta,
+      finish, error and keepalive events; the Messages encoder has indexed
+      text/tool blocks and incremental JSON inputs. The Messages route is
+      not enabled. Structured message parts and the scheduling/engine seams
+      below remain open. This is the first sub-slice of the tool-call and
+      Messages items; the remaining serving-loop changes also take the
+      heavy review path: a per-route stream encoder (`Channel` stops hard-coding
       OpenAI SSE; Messages owns `message_start`, indexed blocks,
       `input_json_delta` and `ping`); structured message parts (text,
       `tool_use`, `tool_result`, image) replacing the text-only
