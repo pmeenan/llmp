@@ -1000,7 +1000,6 @@ class PagedNode {
   // Closes the files of inactive owners (all files with `every`, at the
   // end) that no read uses; true if none is left open that should not be.
   bool CloseWeightFiles(bool every);
-  std::vector<WeightFile> weight_files_;
   std::set<int> inactive_;
   bool files_unsettled_ = false;  // SyncWeightFiles has something to do
   // Driver-owned intrusive list. TearDown drains these tickets before model
@@ -1105,6 +1104,9 @@ class PagedNode {
   std::size_t host_class_ = 0;
 
   catalog::Catalog catalog_;
+  // Shard openers may own paid artifact metadata. The scheduler/lanes retire
+  // before these callbacks; their final payments must refund a live catalog.
+  std::vector<WeightFile> weight_files_;
   catalog::DomainId domain_;
   std::vector<Span> spans_;  // sorted by base once setup ends
   base::Bytes budget_;

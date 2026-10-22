@@ -138,6 +138,35 @@ std::expected<ModelSpec, std::string> StoredSpec(const artifact::Artifact& artif
   return spec;
 }
 
+std::expected<void, std::string> ConfigureComposedDraftVocabulary(ModelSpec& model,
+                                                                  std::uint32_t rows) {
+  if (rows == 0 || model.stages.size() != 2 || model.stages.back().role != StageRole::kDrafter)
+    return Refuse("draft vocabulary", "requires a positive extent and one composed drafter");
+  auto& drafter = model.stages.back();
+  const auto set_rows = [&](ComponentRef& c, bool add_if_missing) {
+    const auto it = std::ranges::find(c.params, "rows", &Param::name);
+    if (it != c.params.end()) {
+      it->value = static_cast<std::int64_t>(rows);
+    } else if (add_if_missing) {
+      c.params.push_back({.name = "rows", .value = ParamValue(static_cast<std::int64_t>(rows))});
+    }
+  };
+  if (drafter.heads.output.has_value()) {
+    set_rows(*drafter.heads.output, true);
+  }
+  for (Layer& layer : drafter.layers) {
+    for (ComponentRef& c : layer.components) {
+      const Param* sel = c.Find("selected");
+      const auto* is_sel = sel != nullptr ? std::get_if<bool>(&sel->value) : nullptr;
+      if (is_sel != nullptr && *is_sel) {
+        set_rows(c, false);
+      }
+    }
+  }
+  Canonicalize(model);
+  return Validate(model);
+}
+
 std::expected<ModelSpec, std::string> ComposeStoredDrafter(
     const ModelSpec& target_spec, const ModelSpec& drafter_spec,
     std::optional<std::uint32_t> draft_vocab) {
@@ -193,30 +222,11 @@ std::expected<ModelSpec, std::string> ComposeStoredDrafter(
       }
     }
   });
-  if (draft_vocab.has_value()) {
-    const auto set_rows = [&](ComponentRef& c, bool add_if_missing) {
-      const auto it = std::ranges::find(c.params, "rows", &Param::name);
-      if (it != c.params.end()) {
-        it->value = static_cast<std::int64_t>(*draft_vocab);
-      } else if (add_if_missing) {
-        c.params.push_back(
-            {.name = "rows", .value = ParamValue(static_cast<std::int64_t>(*draft_vocab))});
-      }
-    };
-    if (drafter.heads.output.has_value()) {
-      set_rows(*drafter.heads.output, true);
-    }
-    for (Layer& layer : drafter.layers) {
-      for (ComponentRef& c : layer.components) {
-        const Param* sel = c.Find("selected");
-        const auto* is_sel = sel != nullptr ? std::get_if<bool>(&sel->value) : nullptr;
-        if (is_sel != nullptr && *is_sel) {
-          set_rows(c, false);
-        }
-      }
-    }
-  }
   out.stages.push_back(std::move(drafter));
+  if (draft_vocab) {
+    auto configured = ConfigureComposedDraftVocabulary(out, *draft_vocab);
+    if (!configured) return std::unexpected(configured.error());
+  }
   Canonicalize(out);
   if (auto ok = Validate(out); !ok) {
     return std::unexpected(ok.error());

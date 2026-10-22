@@ -135,6 +135,50 @@ std::expected<std::uint64_t, std::string> StartupArtifactBytes(const artifact::A
   return bytes;
 }
 
+std::expected<std::uint64_t, std::string> StartupStructureBytes(const artifact::Artifact& target,
+                                                                const artifact::Artifact* drafter) {
+  auto bytes = ComponentAdmissionBytes(target);
+  if (!bytes) return std::unexpected(bytes.error());
+  if (drafter) {
+    auto draft_bytes = ComponentAdmissionBytes(*drafter);
+    if (!draft_bytes) return std::unexpected(draft_bytes.error());
+    if (__builtin_add_overflow(*bytes, *draft_bytes, &*bytes))
+      return std::unexpected("startup composition inventory overflows");
+    // Individual source/spec storage plus canonical and effective composition.
+    // Each composition is bounded by the two contributing admission inventories;
+    // their descriptor terms also cover legacy recipe-generated component records.
+    if (__builtin_mul_overflow(*bytes, std::uint64_t{3}, &*bytes))
+      return std::unexpected("startup composition copies overflow");
+    const auto* mapping = ComposedDrafterMapping(*drafter);
+    if (mapping && mapping->draft && !mapping->draft->head_ids.empty()) {
+      if (auto resource = drafter->FindResource(mapping->draft->head_ids)) {
+        std::uint64_t heads = 0;
+        if (__builtin_mul_overflow(drafter->resources()[*resource].bytes.value(), std::uint64_t{3},
+                                   &heads) ||
+            __builtin_add_overflow(*bytes, heads, &*bytes))
+          return std::unexpected("startup selected-head inventory overflows");
+      }
+    }
+  }
+  return *bytes;
+}
+
+std::expected<std::uint64_t, std::string> StartupModelBytes(const artifact::Artifact& target,
+                                                            const artifact::Artifact* drafter) {
+  auto bytes = StartupArtifactBytes(target);
+  if (!bytes) return std::unexpected(bytes.error());
+  if (drafter) {
+    auto draft_bytes = StartupArtifactBytes(*drafter);
+    auto structures = StartupStructureBytes(target, drafter);
+    if (!draft_bytes) return std::unexpected(draft_bytes.error());
+    if (!structures) return std::unexpected(structures.error());
+    if (__builtin_add_overflow(*bytes, *draft_bytes, &*bytes) ||
+        __builtin_add_overflow(*bytes, *structures, &*bytes))
+      return std::unexpected("retained startup model inventory overflows");
+  }
+  return *bytes;
+}
+
 std::expected<std::unique_ptr<StartupArtifactPayment>, std::string> StartupArtifactPayment::Admit(
     catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes, std::uint64_t cap,
     std::uint64_t available) {

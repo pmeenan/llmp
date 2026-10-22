@@ -119,6 +119,39 @@ struct ComponentDrafterAdmission {
   const Approval* approval = nullptr;
 };
 
+// Immutable structure prepared from admitted sources. The canonical numerical
+// identity precedes vocabulary narrowing; the effective model is pre-KV. A
+// shared owner may reuse this result across failed builds without re-admission.
+// Its caller prepays and retains artifact/admission/composition storage.
+class PreparedDrafterComposition {
+ public:
+  static std::expected<std::shared_ptr<const PreparedDrafterComposition>, std::string> Make(
+      const artifact::Artifact& target, const spec::ModelSpec& target_model,
+      const spec::Source& target_source, const artifact::Artifact& drafter,
+      const ComponentDrafterAdmission& admitted, std::uint32_t vocabulary,
+      std::uint32_t requested_vocabulary);
+  std::expected<void, std::string> CheckBinding(const artifact::Artifact& target,
+                                                const artifact::Artifact& drafter,
+                                                const spec::ModelSpec& target_model,
+                                                std::uint32_t vocabulary,
+                                                std::uint32_t requested_vocabulary) const;
+  const spec::ModelSpec& model() const { return model_; }
+  const base::Sha256Digest& numerical_semantic() const { return numerical_semantic_; }
+  const std::vector<spec::SourceValue>& values() const { return values_; }
+  std::optional<std::uint32_t> vocabulary() const { return vocabulary_; }
+  const std::shared_ptr<const std::vector<std::int32_t>>& head_ids() const { return head_ids_; }
+
+ private:
+  PreparedDrafterComposition() = default;
+  std::string target_, drafter_;
+  base::Sha256Digest target_semantic_{}, numerical_semantic_{};
+  std::uint32_t target_vocabulary_ = 0, available_vocabulary_ = 0;
+  std::optional<std::uint32_t> vocabulary_;
+  spec::ModelSpec model_;
+  std::vector<spec::SourceValue> values_;
+  std::shared_ptr<const std::vector<std::int32_t>> head_ids_;
+};
+
 // The same structural check used by artifact admission, exposed over values
 // for descriptor controls: valid provenance, complete stored spec, native
 // tensor roles/formats and consistent source/importer folds.

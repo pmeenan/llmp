@@ -25,6 +25,7 @@
 #include "artifact/composition.h"
 #include "artifact_writer.h"
 #include "base/sha256.h"
+#include "expected_error.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
@@ -435,6 +436,17 @@ TEST(SpecStoredTest, StandaloneDrafterStoredSpecAndComposeStoredDrafter) {
   const spec::Param* layer_rows = composed->stages[1].layers[0].components[0].Find("rows");
   ASSERT_NE(layer_rows, nullptr);
   EXPECT_EQ(std::get<std::int64_t>(layer_rows->value), 32);
+
+  auto reusable = spec::ComposeStoredDrafter(target_spec, *got_drafter);
+  ASSERT_TRUE(reusable) << llmp::test_support::Failed(reusable).value_or("");
+  const auto before_rows = *reusable;
+  EXPECT_FALSE(spec::ConfigureComposedDraftVocabulary(*reusable, 0));
+  EXPECT_EQ(*reusable, before_rows);
+  ASSERT_TRUE(spec::ConfigureComposedDraftVocabulary(*reusable, 32));
+  EXPECT_EQ(*reusable, *composed);
+  EXPECT_EQ(reusable->stages.front(), before_rows.stages.front());
+  EXPECT_EQ(reusable->stages.back().reads, before_rows.stages.back().reads);
+  EXPECT_FALSE(spec::ConfigureComposedDraftVocabulary(target_spec, 32));
 
   spec::ModelSpec bad_tap = *got_drafter;
   bad_tap.stages[0].layers.resize(3);

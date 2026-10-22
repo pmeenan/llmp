@@ -24,6 +24,10 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- LLM startup shares admitted artifact metadata and composed structure across
+  settings and runner construction; retries retain successful preparation while
+  each build keeps its own funded state and execution checks (M3.5 U3a).
+
 - Shared GDN gate fusion accepts positive head and row counts within checked
   storage bounds, preserving its original pointwise arithmetic (M3.5 U7a).
 

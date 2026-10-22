@@ -250,6 +250,31 @@ class WeightFilesTest : public ::testing::Test {
   std::vector<std::unique_ptr<Model>> models_;
 };
 
+TEST_F(WeightFilesTest, SharedMetadataSurvivesOwnersAndDoesNotReopenTheManifest) {
+  auto artifact = llmp::artifact::Artifact::Open(roots_[0]);
+  ASSERT_TRUE(artifact) << Failed(artifact, &llmp::artifact::Error::ToString).value_or("");
+  auto shared = std::make_shared<const llmp::artifact::Artifact>(std::move(*artifact));
+  std::weak_ptr<const llmp::artifact::Artifact> lifetime = shared;
+  const auto* address = shared.get();
+  en::PagedWeights first, second;
+  EXPECT_FALSE(first.Open(std::shared_ptr<const llmp::artifact::Artifact>{}, roots_[0]));
+  EXPECT_FALSE(first.opened());
+  // The label cannot redirect reads to a different valid artifact root.
+  ASSERT_TRUE(first.Open(shared, roots_[1]));
+  EXPECT_EQ(&first.artifact(), address);
+  // Subsequent metadata opens cannot succeed; the authenticated shared view
+  // remains reusable. Payload-shard access is still through its held root FD.
+  ASSERT_TRUE(fs::remove(roots_[0] / "manifest.json"));
+  ASSERT_TRUE(second.Open(shared, roots_[0]));
+  shared.reset();
+  EXPECT_FALSE(lifetime.expired());
+  EXPECT_EQ(&second.artifact(), address);
+  auto shard = first.artifact().OpenShardForDirectRead(0);
+  ASSERT_TRUE(shard) << Failed(shard, &llmp::artifact::Error::ToString).value_or("");
+  const auto actual = fs::read_symlink(std::format("/proc/self/fd/{}", shard->get()));
+  EXPECT_EQ(actual, roots_[0] / first.artifact().shards()[0].path);
+}
+
 TEST_F(WeightFilesTest, OpenOnFirstNeedAndClosedWhenInactive) {
   Start(1);
   ASSERT_FALSE(models_.empty());

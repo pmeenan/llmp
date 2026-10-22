@@ -15,7 +15,13 @@ historical evidence and are stale on this build; selection retains the incumbent
 until newly source-matched comparisons are measured. The subsequent
 [U7a GDN gate spike](../gdn-gates/RESULTS.md) produces compiler identity
 `374364310fbe78618b0f332a189bb8d9db18fde6eea5ea646892aa088429c50e`;
-its narrow GDN screen does not refresh these RMSNormMul rows. Full U6 remains open.
+its narrow GDN screen does not refresh these RMSNormMul rows. The subsequent
+W7 combined native builds on both Sparks report compiler identity
+`f8c1cd49468ef9ddc0ffa0e476b92faa0406c3cb98bc471270172d3eb3264ca6`.
+The W5 rows and the GDN screen retain their original identities as historical
+evidence; neither is relabeled as a measurement of this build. No new timing,
+reranking or source exclusion was performed, and source-stale rank selection
+retains its incumbent. Full U6 remains open.
 The [original results](RESULTS.md) and
 [historical data](historical-v11-v12.json) retain unchanged measurements and
 identities; they are stale for current source. The registrations below preserve

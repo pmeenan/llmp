@@ -476,14 +476,8 @@ Status Server::Start(bool snapshot) {
     const StartupArtifactFunder funder = [this](const artifact::Artifact& target,
                                                 const artifact::Artifact* drafter)
         -> std::expected<std::unique_ptr<StartupArtifactPayment>, std::string> {
-      auto bytes = StartupArtifactBytes(target);
+      auto bytes = StartupModelBytes(target, drafter);
       if (!bytes) return Error(bytes.error());
-      if (drafter != nullptr) {
-        auto draft_bytes = StartupArtifactBytes(*drafter);
-        if (!draft_bytes) return Error(draft_bytes.error());
-        if (__builtin_add_overflow(*bytes, *draft_bytes, &*bytes))
-          return Error("retained startup artifact inventory overflows");
-      }
       return StartupArtifactPayment::Admit(node_.catalog(), node_.domain(), *bytes, startup_cap_,
                                            MemorySampler::Available());
     };

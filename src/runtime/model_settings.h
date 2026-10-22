@@ -193,12 +193,13 @@ struct OpenedModelArtifacts {
   OpenedModelArtifacts(OpenedModelArtifacts&&) noexcept = default;
   OpenedModelArtifacts& operator=(OpenedModelArtifacts&&) = delete;
   // First: release only after every retained artifact/admission field dies.
-  // The active factory may transfer payloads while its parser loan is held.
+  // Published as shared const storage; factories and artifact views retain it.
   std::unique_ptr<StartupArtifactPayment> payment;
   std::optional<artifact::Artifact> target;
   std::optional<ComponentAdmission> target_admission;
   std::optional<artifact::Artifact> drafter;
   std::optional<ComponentDrafterAdmission> drafter_admission;
+  std::shared_ptr<const PreparedDrafterComposition> composition;
 };
 
 using StartupArtifactFunder =

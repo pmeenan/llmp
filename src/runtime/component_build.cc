@@ -11,6 +11,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -131,9 +132,25 @@ std::expected<ServingConstruction, std::string> ServingConstructionBytes(
   return result;
 }
 
-struct ComponentHold {
-  // First: refund only after all graph, binding and backend owners die.
+struct ComponentPreparation {
+  // Factory copies share one successful preparation. Serialize construction
+  // locally (including its mutable payments); never hold a global runtime lock.
+  std::mutex mutex;
+  std::shared_ptr<const OpenedModelArtifacts> model;
+  // These catalog extents are node-lifetime high-water reservations. Reuse
+  // them across retries/copies; each live build owns a separate local charge.
+  std::shared_ptr<engine::ExecutionMetadataAllowance> metadata;
+  std::shared_ptr<engine::ExecutionMetadataAllowance> stored_metadata;
   std::shared_ptr<engine::ExecutionMetadataAllowance> automatic_construction;
+};
+
+struct ComponentHold {
+  // Shared immutable preparation and per-build working storage outlive every
+  // source/spec copy below, including failures and independently held runners.
+  std::shared_ptr<const OpenedModelArtifacts> prepared;
+  std::unique_ptr<StartupArtifactPayment> structure_payment;
+  // Refund this build's charge only after its graph/binding/backend owners die.
+  std::shared_ptr<ConstructionCharge> automatic_construction;
   std::shared_ptr<engine::SharedCompilerAllowance> compiler;
   std::uint64_t compiler_bytes = 0;
   std::shared_ptr<ConstructionCharge> kv_encoding_charge;
@@ -388,7 +405,7 @@ struct PreparedServing {
   LlmServingPolicy policy;
   base::Sha256Digest bound;
   std::uint32_t logit_width = 0, verify_rows = 0, branch_depth = 0;
-  std::optional<ja::Artifact> target_artifact{};
+  std::shared_ptr<const ja::Artifact> target_artifact{};
 };
 
 std::expected<LlmBuildParts, std::string> AssembleComponentParts(
@@ -404,14 +421,15 @@ std::expected<LlmBuildParts, std::string> AssembleComponentParts(
   const auto chunk = target.max_rows;
   const bool speculate = built.mode.kind == engine::DecodingMode::Kind::kSpeculative;
   auto weights = std::make_unique<engine::PagedWeights>();
-  if (auto opened = weights->Open(store / id); !opened) return Error(opened.error());
+  if (auto opened = weights->Open(built.target_artifact, store / id); !opened)
+    return Error(opened.error());
   engine::PagedWeights* paged = weights.get();
   engine::PagedWeights* drafter_paged = nullptr;
   LlmBuildParts parts;
   parts.execution_metadata = metadata;
   if (built.hold->automatic_construction) {
-    parts.startup_host_bytes = built.hold->automatic_construction->capacity() +
-                               engine::ExecutionMetadataAllowance::OverheadBytes();
+    // Report this build's funded footprint, never the shared pool's aggregate.
+    parts.startup_host_bytes = built.hold->automatic_construction->bytes;
     parts.startup_cap = options.automatic_startup_cap;
   }
   parts.config.slots = {.model = settings.name,
@@ -437,7 +455,11 @@ std::expected<LlmBuildParts, std::string> AssembleComponentParts(
     parts.config.slots.stages.push_back(
         {.name = std::string(drafter_mapping->stage), .layout = built.hold->layouts.at(1)});
     auto dweights = std::make_unique<engine::PagedWeights>();
-    if (auto opened = dweights->Open(store / drafter_id); !opened) return Error(opened.error());
+    if (auto opened = dweights->Open(
+            std::shared_ptr<const ja::Artifact>(held->prepared, &*held->prepared->drafter),
+            store / drafter_id);
+        !opened)
+      return Error(opened.error());
     drafter_paged = dweights.get();
     parts.config.weights.push_back({.weights = std::move(dweights),
                                     .places = std::move(built.placements[1].places),
@@ -510,11 +532,15 @@ std::expected<LlmBuildParts, std::string> AssembleComponentParts(
 
 LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config::ModelEntry& entry,
                            int index, ComponentBuildOptions options) {
-  return [&node, store = std::move(store), id = entry.artifact.value_or(""),
-          drafter_id = entry.drafter.value_or(""), index, options = std::move(options),
-          metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{},
-          stored_metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{}](
+  auto preparation = std::make_shared<ComponentPreparation>();
+  preparation->model = std::move(options.prepared);
+  return [&node, store = std::move(store), entry, preparation = std::move(preparation),
+          id = entry.artifact.value_or(""), drafter_id = entry.drafter.value_or(""), index,
+          options = std::move(options)](
              const ModelSettings& settings) mutable -> std::expected<LlmBuildParts, std::string> {
+    std::lock_guard construction_lock(preparation->mutex);
+    auto& metadata = preparation->metadata;
+    auto& stored_metadata = preparation->stored_metadata;
     // The architecture's serving recipe (its mapping's data or the default
     // target LLM recipe, spec/mapping.h).
     const spec::Mapping* recipe_mapping =
@@ -568,17 +594,64 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
       return Error("component serving needs positive context/chunk and a bounded owner count");
     if (settings.speculation.value && drafter_id.empty())
       return Error("component speculation needs an owned drafter artifact");
-    auto prepared = std::exchange(options.prepared, nullptr);
-    std::optional<ja::Artifact> artifact;
-    std::optional<ComponentAdmission> pre_admitted;
-    if (prepared && prepared->target && prepared->target->id() == id) {
-      artifact = std::move(prepared->target);
-      pre_admitted = std::move(prepared->target_admission);
-    } else {
-      auto opened = OpenInstalled(store, id);
-      if (!opened) return Error(opened.error());
-      artifact.emplace(std::move(*opened));
+    auto prepared = preparation->model;
+    if (!prepared) {
+      // Diagnostics take the same path as Server::Start. A failed admission or
+      // funding attempt is not cached, so a later resource/I/O retry is valid.
+      // Diagnostic callers have no Server bootstrap. Pay the bounded artifact
+      // readers before Open; retained preparation receives its own payment
+      // before this transient parser loan is released.
+      auto parser_bytes = StartupBootstrapBytes(1);
+      auto parser_cap = metadata_cap();
+      if (!parser_bytes) return Error(parser_bytes.error());
+      if (!parser_cap) return Error(parser_cap.error());
+      auto parser =
+          StartupArtifactPayment::Admit(node.catalog(), node.domain(), *parser_bytes, *parser_cap,
+                                        platform::AvailableMemoryBytes().value_or(0));
+      if (!parser) return Error(parser.error());
+      auto owner = std::make_shared<OpenedModelArtifacts>();
+      auto configured = entry;
+      configured.overrides["kv_cache_encoding"] = settings.kv_cache_encoding.value;
+      configured.overrides["draft_vocab"] = std::int64_t{settings.draft_vocab.value};
+      const StartupArtifactFunder funder = [&](const ja::Artifact& target,
+                                               const ja::Artifact* drafter) {
+        auto bytes = StartupModelBytes(target, drafter);
+        auto cap = metadata_cap();
+        if (!bytes)
+          return std::expected<std::unique_ptr<StartupArtifactPayment>, std::string>(
+              Error(bytes.error()));
+        if (!cap)
+          return std::expected<std::unique_ptr<StartupArtifactPayment>, std::string>(
+              Error(cap.error()));
+        return StartupArtifactPayment::Admit(node.catalog(), node.domain(), *bytes, *cap,
+                                             platform::AvailableMemoryBytes().value_or(0));
+      };
+      auto facts = ReadArtifactFacts(configured, store, owner.get(), funder);
+      if (!facts) return Error(facts.error());
+      if (settings.speculation.value && !owner->composition)
+        return Error(facts->composed_spec_error);
+      // Plain serving may tolerate a drafter composition refusal. Use that
+      // target for this build, but do not memoize a failed optional preparation.
+      // A later speculative attempt can retry transient selected-head I/O.
+      prepared = owner;
+      if (!owner->drafter || owner->composition) preparation->model = std::move(owner);
     }
+    if (!prepared->payment || !prepared->target || prepared->target->id() != id ||
+        !prepared->target_admission ||
+        (!drafter_id.empty() && (!prepared->drafter || prepared->drafter->id() != drafter_id ||
+                                 !prepared->drafter_admission)))
+      return Error("prepared model differs from its configured artifacts/admissions");
+    const auto artifact = std::shared_ptr<const ja::Artifact>(prepared, &*prepared->target);
+    const auto* pre_admitted = &*prepared->target_admission;
+    auto structure_bytes = StartupStructureBytes(
+        *artifact, settings.speculation.value && prepared->drafter ? &*prepared->drafter : nullptr);
+    if (!structure_bytes) return Error(structure_bytes.error());
+    auto structure_cap = metadata_cap();
+    if (!structure_cap) return Error(structure_cap.error());
+    auto structure_payment =
+        StartupArtifactPayment::Admit(node.catalog(), node.domain(), *structure_bytes,
+                                      *structure_cap, platform::AvailableMemoryBytes().value_or(0));
+    if (!structure_payment) return Error(structure_payment.error());
 
     const spec::Mapping* mapping =
         spec::FindMapping(artifact->model().architecture, artifact->model().container);
@@ -588,41 +661,37 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
       return Error("resolved architecture/container differs from the opened artifact");
     // The artifact's prerequisites are admitted before its spec, component
     // parameters or role maps are parsed or copied (a v1 artifact's alone:
-    // D-118); those are admitted once read, below. Retain one catalog
-    // payment on retries.
+    // D-118); those are admitted once in preparation. Each independent
+    // build funds the mutable bindings it retains.
     std::unique_ptr<StoredBindingPayment> stored_payment;
     {
-      if (!pre_admitted) {
-        if (auto admitted = CheckArtifactPrerequisites(*artifact); !admitted)
-          return Error(admitted.error());
-      }
       auto bytes = StoredBindingBytes(*artifact);
       if (!bytes) return Error(bytes.error());
       if (!stored_metadata) {
-        std::uint64_t total = 0;
-        if (__builtin_add_overflow(*bytes, engine::ExecutionMetadataAllowance::OverheadBytes(),
-                                   &total))
-          return Error("stored construction catalog payment overflows");
-        auto paid = engine::ExecutionMetadataAllowance::Admit(
-            node.catalog(), node.domain(), total, platform::AvailableMemoryBytes().value_or(0),
-            kUncountedMargin);
+        auto paid = admit_metadata();
         if (!paid) return Error(paid.error());
         stored_metadata = std::move(*paid);
       }
+      // Reserve capacity for this build beside every still-live binding owner.
+      // Create takes the charge itself; the local mutex excludes another
+      // constructor between this capacity admission and that transfer.
+      if (!charge_metadata(stored_metadata, *bytes))
+        return Error("stored binding metadata allowance is insufficient");
+      stored_metadata->Release(*bytes);
       auto paid = StoredBindingPayment::Create(*artifact, stored_metadata);
       if (!paid) return Error(paid.error());
       stored_payment = std::move(*paid);
     }
     auto hold = std::make_shared<ComponentHold>();
+    hold->prepared = prepared;
+    hold->structure_payment = std::move(*structure_payment);
     hold->stored_payment = std::move(stored_payment);
     std::optional<StoredComponentBindings> stored_bindings;
     std::optional<spec::PolicyRule> stored_policy;
     std::expected<spec::ModelSpec, std::string> synthesized;
     {
       std::optional<std::pair<spec::ModelSpec, spec::Source>> pre_read;
-      if (pre_admitted) {
-        pre_read.emplace(std::move(pre_admitted->model), std::move(pre_admitted->source));
-      }
+      pre_read.emplace(pre_admitted->model, pre_admitted->source);
       auto bindings =
           ReadStoredComponents(*artifact, std::move(hold->stored_payment), std::move(pre_read));
       if (!bindings) return Error(bindings.error());
@@ -630,19 +699,12 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
       if (settings.context.value == 0 ||
           settings.context.value > stored_bindings->model.stages.front().context)
         return Error("resolved context exceeds the admitted stored spec");
-      // Admitted once, as read; its policy from that admission.
-      if (!pre_admitted) {
-        if (auto admitted = CheckComponentAdmission(stored_bindings->model, stored_bindings->source,
-                                                    artifact->sources());
-            !admitted)
-          return Error(admitted.error());
-      }
+      // Admission belongs to the immutable preparation; execution policy and
+      // physical placements still validate this build's actual envelope.
       hold->numerical_semantics[0] = stored_bindings->model.Digest();
-      auto policy = AdmittedPolicy(
-          stored_bindings->model, stored_bindings->source,
-          pre_admitted ? pre_admitted->approval
-                       : FindApproval(artifact->model().architecture, artifact->sources()),
-          {.context = settings.context.value, .slots = settings.max_slots.value});
+      auto policy =
+          AdmittedPolicy(stored_bindings->model, stored_bindings->source, pre_admitted->approval,
+                         {.context = settings.context.value, .slots = settings.max_slots.value});
       if (!policy) return Error(policy.error());
       stored_policy = *policy;
       if (auto checked = CheckStoredHashTables(*artifact, stored_bindings->model); !checked)
@@ -656,135 +718,31 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
     if (!target_vocabulary) return Error("target stored head has no vocabulary rows");
     // The drafter, a stage of its own, when the model speculates.
     const bool speculate = !drafter_id.empty() && settings.speculation.value;
-    std::optional<ja::Artifact> drafter;
+    const ja::Artifact* drafter = nullptr;
     const spec::Mapping* drafter_mapping = nullptr;
     if (speculate) {
-      std::optional<ComponentDrafterAdmission> drafter_admitted;
-      if (prepared && prepared->drafter && prepared->drafter->id() == drafter_id) {
-        drafter = std::move(prepared->drafter);
-        drafter_admitted = std::move(prepared->drafter_admission);
-      } else {
-        auto opened = OpenInstalled(store, drafter_id);
-        if (!opened) return Error(opened.error());
-        drafter.emplace(std::move(*opened));
-      }
-      if (!drafter_admitted) {
-        auto admitted = ReadComponentDrafterAdmission(*drafter);
-        if (!admitted) return Error(admitted.error());
-        drafter_admitted.emplace(std::move(*admitted));
-      }
-      // The drafter's mapping as composed (its drafting recipe's replay
-      // form; a stored one's by its approval).
+      drafter = &*prepared->drafter;
       drafter_mapping = ComposedDrafterMapping(*drafter);
-      if (drafter_mapping == nullptr || drafter_mapping->role != spec::StageRole::kDrafter) {
-        return Error(std::format("the drafter's architecture {} has no drafter mapping",
-                                 drafter->model().architecture));
-      }
+      if (!drafter_mapping || !prepared->composition)
+        return Error("prepared model has no admitted drafter composition");
       if (auto envelope = ComponentDrafterEnvelope(
               {.context = settings.context.value, .slots = settings.max_slots.value});
           !envelope)
         return Error(envelope.error());
-      spec::Source* dsource = &drafter_admitted->source;
-      if (drafter_admitted->model) {
-        if (drafter_mapping->draft != nullptr &&
-            drafter_mapping->draft->target_architecture != mapping->architecture)
-          return Error(std::format("drafter {} does not target architecture {}",
-                                   drafter->model().architecture, artifact->model().architecture));
-        if (const spec::DraftRecipe* draft = drafter_mapping->draft;
-            draft != nullptr && !draft->vocab_key.empty()) {
-          auto map = DraftHeadRows(*drafter, draft->head_ids, target_vocabulary);
-          if (!map) return Error(map.error());
-          const auto selected =
-              *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt;
-          const std::uint32_t available = selected.value_or(target_vocabulary);
-          const std::uint32_t requested = settings.draft_vocab.value;
-          const std::uint32_t width = requested == 0 ? available : std::min(requested, available);
-          if (width == 0 || available > target_vocabulary)
-            return Error("a draft head needs a positive row count within the target vocabulary");
-          hold->draft_head_rows = width;
-          if (*map) {
-            auto ids = ReadRecipeIntegers<std::int32_t>(*drafter, (*map)->resource, (*map)->rows);
-            if (!ids) return Error(ids.error());
-            for (std::size_t i = 0; i < ids->size(); ++i)
-              if ((*ids)[i] < 0 || std::cmp_greater_equal((*ids)[i], target_vocabulary) ||
-                  (i != 0 && (*ids)[i] <= (*ids)[i - 1]))
-                return Error("a selected draft head's token IDs are not strictly ascending");
-            ids->resize(width);
-            hold->draft_head_ids =
-                std::make_shared<const std::vector<std::int32_t>>(std::move(*ids));
-          }
-        }
-        auto pinned = spec::ComposeStoredDrafter(*synthesized, *drafter_admitted->model);
-        if (!pinned) return Error(pinned.error());
-        if (auto approved = CheckComposedAdmission(*pinned, hold->sources.front(), *dsource);
-            !approved)
-          return Error(approved.error());
-        hold->numerical_semantics[1] = pinned->Digest();
-        if (hold->draft_head_rows != 0) {
-          auto composed = spec::ComposeStoredDrafter(*synthesized, *drafter_admitted->model,
-                                                     hold->draft_head_rows);
-          if (!composed) return Error(composed.error());
-          hold->spec = std::move(*composed);
-        } else {
-          hold->spec = std::move(*pinned);
-        }
-      } else {
-        auto dvalues = ComponentDrafterValues(*artifact, *drafter);
-        if (!dvalues) return Error(dvalues.error());
-        // The values its approval's composition was pinned with, before a
-        // setting narrows the draft vocabulary.
-        const std::vector<spec::SourceValue> approved_values = *dvalues;
-        // The draft vocabulary (the recipe's vocab_key value): the configured
-        // draft_vocab, bounded by the selected head's rows (its token map, the
-        // recipe's head_ids) or, without a selected head, by the target's
-        // vocabulary; the head's token IDs are read and checked.
-        if (const spec::DraftRecipe* draft = drafter_mapping->draft;
-            draft != nullptr && !draft->vocab_key.empty()) {
-          auto map = DraftHeadRows(*drafter, draft->head_ids, target_vocabulary);
-          if (!map) return Error(map.error());
-          auto width = ConfigureDraftVocabulary(
-              *dvalues, *draft, settings.draft_vocab.value, target_vocabulary,
-              *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt);
-          if (!width) return Error(width.error());
-          hold->draft_head_rows = *width;
-          if (*map) {
-            auto ids = ReadRecipeIntegers<std::int32_t>(*drafter, (*map)->resource, (*map)->rows);
-            if (!ids) return Error(ids.error());
-            // Strictly ascending target token IDs.
-            for (std::size_t i = 0; i < ids->size(); ++i)
-              if ((*ids)[i] < 0 || std::cmp_greater_equal((*ids)[i], target_vocabulary) ||
-                  (i != 0 && (*ids)[i] <= (*ids)[i - 1]))
-                return Error("a selected draft head's token IDs are not strictly ascending");
-            ids->resize(*width);
-            hold->draft_head_ids =
-                std::make_shared<const std::vector<std::int32_t>>(std::move(*ids));
-          }
-        }
-        hold->drafter_values = std::move(*dvalues);
-        auto composed = spec::ComposeDrafter(*synthesized, *mapping, *drafter_mapping, *dsource,
-                                             hold->drafter_values);
-        if (!composed) return Error(composed.error());
-        if (approved_values == hold->drafter_values) {
-          if (auto approved = CheckComposedAdmission(*composed, hold->sources.front(), *dsource);
-              !approved)
-            return Error(approved.error());
-          hold->numerical_semantics[1] = composed->Digest();
-        } else {
-          auto pinned = spec::ComposeDrafter(*synthesized, *mapping, *drafter_mapping, *dsource,
-                                             approved_values);
-          if (!pinned) return Error(pinned.error());
-          if (auto approved = CheckComposedAdmission(*pinned, hold->sources.front(), *dsource);
-              !approved)
-            return Error(approved.error());
-          hold->numerical_semantics[1] = pinned->Digest();
-        }
-        hold->spec = std::move(*composed);
-      }
-      hold->sources.push_back(std::move(*dsource));
+      const auto& composition = *prepared->composition;
+      if (auto checked = composition.CheckBinding(*artifact, *drafter, *synthesized,
+                                                  target_vocabulary, settings.draft_vocab.value);
+          !checked)
+        return Error(checked.error());
+      hold->spec = composition.model();
+      hold->numerical_semantics[1] = composition.numerical_semantic();
+      hold->drafter_values = composition.values();
+      hold->draft_head_rows = composition.vocabulary().value_or(0);
+      hold->draft_head_ids = composition.head_ids();
+      hold->sources.push_back(prepared->drafter_admission->source);
     } else {
       hold->spec = std::move(*synthesized);
     }
-    prepared.reset();
     if (settings.kv_cache_encoding.value != "f16") {
       if (settings.kv_cache_encoding.value != "q8_0") return Error("unsupported KV encoding");
       auto bytes = components::KvCacheEncodingBytes(hold->spec, format::Encoding::kQ8_0);
@@ -832,10 +790,25 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
         return Error(paid.error());
       hold->compiler = options.shared_compiler;
       hold->compiler_bytes = bytes->compiler;
-      auto owner =
-          serving_support::AdmitStartup(node, bytes->retained, options.automatic_startup_cap);
-      if (!owner) return Error(owner.error());
-      hold->automatic_construction = std::move(*owner);
+      // Preserve the conservative whole-extent footprint for each live build,
+      // including its local charge owner. Pool capacity is a node-lifetime
+      // reservation; failures release local use so retries can reuse it.
+      if (__builtin_add_overflow(bytes->retained,
+                                 engine::ExecutionMetadataAllowance::OverheadBytes(), &total) ||
+          __builtin_add_overflow(total, kExtent - 1, &total))
+        return Error("automatic construction payment overflows");
+      total = total / kExtent * kExtent;
+      auto& pool = preparation->automatic_construction;
+      if (!pool) {
+        auto owner = admit_metadata();
+        if (!owner) return Error(owner.error());
+        pool = std::move(*owner);
+      }
+      if (!charge_metadata(pool, total))
+        return Error("automatic construction metadata allowance is insufficient");
+      hold->automatic_construction = std::make_shared<ConstructionCharge>();
+      hold->automatic_construction->allowance = pool;
+      hold->automatic_construction->bytes = total;
     }
     // The spec bound to the artifacts its stages run from (each stage's
     // index into them; D-105's layout identity and the plans' key): the
@@ -1082,7 +1055,7 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
                                    .logit_width = logit_width,
                                    .verify_rows = verify_rows,
                                    .branch_depth = mtp ? depth : 0,
-                                   .target_artifact = std::move(artifact)});
+                                   .target_artifact = artifact});
   };
 }
 

@@ -626,6 +626,15 @@ D-122).
       The separate Llama [512-token completion supplement](experiments/m35-u3-quality/FIBONACCI512-RESULTS.md)
       passes all four fresh observations; the original 256-token control remains
       failed/unresolved. General Gemma source qualification remains open.
+      Startup now retains each LLM target/drafter admission and pre-KV
+      composition in paid immutable storage shared by settings, factory copies
+      and artifact views. Retried builds fund their mutable state separately,
+      reuse authenticated metadata and recheck execution capabilities. This
+      startup slice changes no artifact bytes; mapping consolidation/provenance,
+      the four published legacy drafter specs, GGUF semantic metadata handling
+      and quantization ingress remain open U3 obligations. Repeated chat-asset
+      startup payment and tokenizer/template replacement ownership also remain
+      a separate bounded startup follow-up.
       - **U3a One mapping per architecture:** `import::SourceMapping`
         merged into `spec::Mapping`; the semantic metadata namespace
         derived from the architecture, failing closed on any unconsumed

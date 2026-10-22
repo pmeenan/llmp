@@ -28,6 +28,24 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-061: Permission-only source sync can invalidate compiler receipts without scheduling a rebuild  (2026-10-22, status: worked-around)
+
+On `spark` with the locked AArch64 SDK and Ninja native build, handing a warm
+build from a worktree to the main source copy changed an unchanged header from
+0664 to 0644. `rsync -rlpc` updated its permissions and ctime while leaving
+its content and mtime unchanged. Ninja therefore considered its consumers
+current, but the compiler-owned input receipt correctly refused their stale
+ctime during identity generation. An audit of all 195 owned object receipts
+found exactly four stale consumers of `src/components/rotation_reference.h`.
+
+Keep source permissions stable across worktrees and hosts. If the guard fires,
+verify the exact source hashes and changed input metadata, archive the affected
+receipts, and rebuild only the objects with stale recorded inputs. Removing
+those four object outputs and rebuilding their original targets refreshed the
+receipts; the ordinary native build then passed. Do not edit receipts, relax
+the input guard, edit input timestamps to bypass the receipt check or clean
+the entire build to hide the mismatch.
+
 ## RE-060: GGML MMA head 192 lacks an equal-width configuration  (2026-10-17, status: worked-around)
 
 On `spark`'s native `sm_121` build with the locked GGML

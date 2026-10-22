@@ -94,11 +94,20 @@ std::expected<std::uint64_t, std::string> StartupBootstrapBytes(
 // from immutable opened metadata, without parsing the spec or copying owners.
 std::expected<std::uint64_t, std::string> StartupArtifactBytes(const artifact::Artifact& artifact);
 
-// A pending alias's metadata loan, distinct from the reusable parser workspace.
-// Admit and destruction run only on the stopped startup catalog owner. Declare
+// Complete retained preparation (both artifact headers/admissions and the
+// canonical/effective composition working inventory), before parsing sources.
+std::expected<std::uint64_t, std::string> StartupModelBytes(const artifact::Artifact& target,
+                                                            const artifact::Artifact* drafter);
+// Mutable per-build source/spec copies, independent of the shared preparation.
+std::expected<std::uint64_t, std::string> StartupStructureBytes(const artifact::Artifact& target,
+                                                                const artifact::Artifact* drafter);
+
+// Retained alias metadata or a build's mutable structure, independently paid
+// beside the reusable parser workspace.
+// Admit and destruction run on the serialized construction/catalog owner. Declare
 // this payment before the payload it funds so that failure destroys that
-// payload first. The active setup may release it only while its parser loan
-// remains held; persistent source payments precede repayment of that loan.
+// payload first. Shared immutable preparation keeps its payment until its last
+// owner releases it; the catalog must outlive every such owner.
 class StartupArtifactPayment {
  public:
   static std::expected<std::unique_ptr<StartupArtifactPayment>, std::string> Admit(

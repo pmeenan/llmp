@@ -82,9 +82,12 @@ struct ComponentBuildOptions {
   // are part of the harness's prepaid lifetime, never an alternate backend.
   kernels::ProgramValidator validate_program{};
   // Already-opened artifacts and admissions from ReadArtifactFacts (Start),
-  // consumed on the first build call so startup does not open or admit them a
-  // second time.
-  std::shared_ptr<OpenedModelArtifacts> prepared{};
+  // retained across build retries. Each build funds its own mutable copies;
+  // shared metadata and its payment live until the last factory/runner releases them.
+  // Effective draft vocabulary is fixed by this alias preparation; changing
+  // that width requires a separately prepared alias/factory. Equal effective
+  // widths (including zero meaning all available rows) can reuse it.
+  std::shared_ptr<const OpenedModelArtifacts> prepared{};
 };
 
 // The parts of `entry`'s model (its artifact and drafter in `store`), made

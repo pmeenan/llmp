@@ -72,13 +72,13 @@ Status Llm::Setup() {
   // Its tokenizer and chat template, from its artifact (D-067); a model
   // without one (the tests') has no chat turns.
   if (entry_.artifact) {
-    std::optional<artifact::Artifact> artifact;
+    std::shared_ptr<const artifact::Artifact> artifact;
     if (parts->target_artifact && parts->target_artifact->id() == *entry_.artifact) {
       artifact = std::move(parts->target_artifact);
     } else {
       auto opened = OpenInstalled(store_, *entry_.artifact);
       if (!opened) return Error(opened.error());
-      artifact.emplace(std::move(*opened));
+      artifact = std::make_shared<const artifact::Artifact>(std::move(*opened));
     }
     if (auto used = UseChatAssets(*artifact, entry_, parts->startup_cap); !used) return used;
   }

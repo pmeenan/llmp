@@ -58,6 +58,12 @@ std::expected<ModelSpec, std::string> ComposeStoredDrafter(
     const ModelSpec& target_spec, const ModelSpec& drafter_spec,
     std::optional<std::uint32_t> draft_vocab = std::nullopt);
 
+// Change only an already-composed drafter's output/selected head row extent.
+// No stage, tap, source binding or canonical admission is rebuilt. Callers
+// retain the pre-change numerical identity and validate actual tensor capacity.
+std::expected<void, std::string> ConfigureComposedDraftVocabulary(ModelSpec& model,
+                                                                  std::uint32_t rows);
+
 // The spec a v1 composition carries, with its components opened in the
 // composition's order (components[i] the artifact components()[i] names,
 // whose ID and architecture must be the recorded ones): every stage's

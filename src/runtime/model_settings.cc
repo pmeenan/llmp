@@ -347,8 +347,9 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
                                                           std::string_view kv_cache_encoding,
                                                           std::optional<std::uint32_t> draft_vocab,
                                                           OpenedModelArtifacts* opened_out) {
-  if (opened_out != nullptr && (opened_out->target || opened_out->drafter ||
-                                opened_out->target_admission || opened_out->drafter_admission))
+  if (opened_out != nullptr &&
+      (opened_out->target || opened_out->drafter || opened_out->target_admission ||
+       opened_out->drafter_admission || opened_out->composition))
     return Error("artifact facts require an empty retained owner");
   ArtifactFacts facts;
   if (kv_cache_encoding != "f16" && kv_cache_encoding != "q8_0")
@@ -411,73 +412,22 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     });
     if (drafter != nullptr) {
       const auto compose = [&]() -> std::expected<base::Sha256Digest, std::string> {
-        const auto* target_mapping = spec::FindMapping(facts.architecture, facts.container);
-        if (target_mapping == nullptr) return Error("component calibration has no target mapping");
-        const auto* draft_mapping = ComposedDrafterMapping(*drafter);
-        if (draft_mapping == nullptr) return Error("component calibration has no drafter mapping");
-        std::expected<spec::ModelSpec, std::string> composed = std::unexpected(std::string());
-        if (drafter_admitted->model) {
-          if (draft_mapping->draft != nullptr &&
-              draft_mapping->draft->target_architecture != target_mapping->architecture)
-            return Error(std::format("drafter {} does not target architecture {}",
-                                     drafter->model().architecture, facts.architecture));
-          composed = spec::ComposeStoredDrafter(model, *drafter_admitted->model);
-          if (!composed) return Error(composed.error());
-          if (auto approved =
-                  CheckComposedAdmission(*composed, admitted->source, drafter_admitted->source);
-              !approved)
-            return Error(approved.error());
-          if (draft_mapping->draft != nullptr && !draft_mapping->draft->vocab_key.empty()) {
-            const auto* serving_ptr = spec::ServingRecipeOf(*target_mapping);
-            if (serving_ptr == nullptr)
-              return Error("component calibration has no target serving recipe");
-            const auto& serving = *serving_ptr;
-            auto map = DraftHeadRows(*drafter, draft_mapping->draft->head_ids, facts.vocabulary);
-            if (!map) return Error(map.error());
-            const auto selected =
-                *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt;
-            const std::uint32_t available = selected.value_or(facts.vocabulary);
-            const std::uint32_t requested = draft_vocab.value_or(serving.default_draft_vocab);
-            const std::uint32_t width = requested == 0 ? available : std::min(requested, available);
-            if (width == 0 || available > facts.vocabulary)
-              return Error("a draft head needs a positive row count within the target vocabulary");
-            facts.composed_draft_vocab = width;
-            composed = spec::ComposeStoredDrafter(model, *drafter_admitted->model, width);
-            if (!composed) return Error(composed.error());
-          }
-        } else {
-          auto draft_values = ComponentDrafterValues(target, *drafter);
-          if (!draft_values) return Error(draft_values.error());
-          const spec::Source* draft_source = &drafter_admitted->source;
-          composed = spec::ComposeDrafter(model, *target_mapping, *draft_mapping, *draft_source,
-                                          *draft_values);
-          if (!composed) return Error(composed.error());
-          if (auto approved =
-                  CheckComposedAdmission(*composed, admitted->source, drafter_admitted->source);
-              !approved)
-            return Error(approved.error());
-          if (draft_mapping->draft != nullptr && !draft_mapping->draft->vocab_key.empty()) {
-            const auto* serving_ptr = spec::ServingRecipeOf(*target_mapping);
-            if (serving_ptr == nullptr)
-              return Error("component calibration has no target serving recipe");
-            const auto& serving = *serving_ptr;
-            auto map = DraftHeadRows(*drafter, draft_mapping->draft->head_ids, facts.vocabulary);
-            if (!map) return Error(map.error());
-            const auto selected =
-                *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt;
-            auto width = ConfigureDraftVocabulary(*draft_values, *draft_mapping->draft,
-                                                  draft_vocab.value_or(serving.default_draft_vocab),
-                                                  facts.vocabulary, selected);
-            if (!width) return Error(width.error());
-            facts.composed_draft_vocab = *width;
-            composed = spec::ComposeDrafter(model, *target_mapping, *draft_mapping, *draft_source,
-                                            *draft_values);
-            if (!composed) return Error(composed.error());
-          }
-        }
-        if (auto configured = configure(*composed); !configured) return Error(configured.error());
+        const auto* serving = RecipeOf(facts.architecture, facts.container);
+        if (!serving) return Error("component calibration has no target serving recipe");
+        auto prepared = PreparedDrafterComposition::Make(
+            target, model, admitted->source, *drafter, *drafter_admitted, facts.vocabulary,
+            draft_vocab.value_or(serving->default_draft_vocab));
+        if (!prepared) return Error(prepared.error());
+        facts.composed_draft_vocab = (*prepared)->vocabulary();
+        // Per-alias state representation changes a paid working copy, never the
+        // reusable admitted structure or its canonical numerical identity.
+        auto effective = (*prepared)->model();
+        if (auto configured = configure(effective); !configured) return Error(configured.error());
         const std::array<std::string_view, 2> both{target.id(), drafter->id()};
-        return spec::BoundDigest(*composed, both);
+        auto digest = spec::BoundDigest(effective, both);
+        if (!digest) return Error(digest.error());
+        if (opened_out) opened_out->composition = std::move(*prepared);
+        return *digest;
       };
       auto composed = compose();
       if (composed)
@@ -528,8 +478,9 @@ std::expected<ArtifactFacts, std::string> ReadArtifactFacts(const config::ModelE
                                                             const fs::path& store,
                                                             OpenedModelArtifacts* opened_out,
                                                             const StartupArtifactFunder& funder) {
-  if (opened_out != nullptr && (opened_out->payment || opened_out->target || opened_out->drafter ||
-                                opened_out->target_admission || opened_out->drafter_admission))
+  if (opened_out != nullptr &&
+      (opened_out->payment || opened_out->target || opened_out->drafter ||
+       opened_out->target_admission || opened_out->drafter_admission || opened_out->composition))
     return Error("artifact facts require an empty retained owner");
   if (entry.composition) {
     ArtifactFacts pipeline;

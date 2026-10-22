@@ -524,6 +524,92 @@ std::expected<ComponentDrafterAdmission, std::string> ReadComponentDrafterAdmiss
       .approval = FindApproval(drafter.model().architecture, drafter.sources())};
 }
 
+std::expected<std::shared_ptr<const PreparedDrafterComposition>, std::string>
+PreparedDrafterComposition::Make(const artifact::Artifact& target,
+                                 const spec::ModelSpec& target_model,
+                                 const spec::Source& target_source,
+                                 const artifact::Artifact& drafter,
+                                 const ComponentDrafterAdmission& admitted,
+                                 std::uint32_t vocabulary, std::uint32_t requested_vocabulary) {
+  const auto* target_mapping =
+      spec::FindMapping(target.model().architecture, target.model().container);
+  const auto* mapping = ComposedDrafterMapping(drafter);
+  if (!target_mapping || !mapping || mapping->role != spec::StageRole::kDrafter || !mapping->draft)
+    return Refused("component composition needs target and drafter recipes");
+  const auto& recipe = *mapping->draft;
+  if (recipe.target_architecture != target_mapping->architecture)
+    return Refused(std::format("drafter {} does not target architecture {}",
+                               drafter.model().architecture, target.model().architecture));
+  auto out = std::shared_ptr<PreparedDrafterComposition>(new PreparedDrafterComposition);
+  out->target_ = target.id();
+  out->drafter_ = drafter.id();
+  out->target_semantic_ = target_model.Digest();
+  out->target_vocabulary_ = vocabulary;
+  std::expected<spec::ModelSpec, std::string> canonical = std::unexpected(std::string());
+  if (admitted.model) {
+    canonical = spec::ComposeStoredDrafter(target_model, *admitted.model);
+  } else {
+    auto values = ComponentDrafterValues(target, drafter);
+    if (!values) return Refused(values.error());
+    out->values_ = std::move(*values);
+    canonical = spec::ComposeDrafter(target_model, *target_mapping, *mapping, admitted.source,
+                                     out->values_);
+  }
+  if (!canonical) return Refused(canonical.error());
+  if (auto checked = CheckComposedAdmission(*canonical, target_source, admitted.source); !checked)
+    return Refused(checked.error());
+  out->numerical_semantic_ = canonical->Digest();
+  out->model_ = std::move(*canonical);
+  if (!recipe.vocab_key.empty()) {
+    auto map = DraftHeadRows(drafter, recipe.head_ids, vocabulary);
+    if (!map) return Refused(map.error());
+    const auto selected =
+        *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt;
+    const auto available = selected.value_or(vocabulary);
+    const auto width =
+        requested_vocabulary == 0 ? available : std::min(requested_vocabulary, available);
+    if (width == 0 || available > vocabulary)
+      return Refused("a draft head needs a positive row count within the target vocabulary");
+    out->available_vocabulary_ = available;
+    out->vocabulary_ = width;
+    if (*map) {
+      auto ids = ReadRecipeIntegers<std::int32_t>(drafter, (*map)->resource, (*map)->rows);
+      if (!ids) return Refused(ids.error());
+      for (std::size_t i = 0; i < ids->size(); ++i)
+        if ((*ids)[i] < 0 || std::cmp_greater_equal((*ids)[i], vocabulary) ||
+            (i != 0 && (*ids)[i] <= (*ids)[i - 1]))
+          return Refused("a selected draft head's token IDs are not strictly ascending");
+      ids->resize(width);
+      out->head_ids_ = std::make_shared<const std::vector<std::int32_t>>(std::move(*ids));
+    }
+    if (!admitted.model) {
+      auto configured = ConfigureDraftVocabulary(out->values_, recipe, requested_vocabulary,
+                                                 vocabulary, selected);
+      if (!configured) return Refused(configured.error());
+    }
+    // Canonical composition/admission above happens once. Only the head extent
+    // changes for the configured vocabulary; taps and stage bindings survive.
+    if (auto configured = spec::ConfigureComposedDraftVocabulary(out->model_, width); !configured)
+      return Refused(configured.error());
+  }
+
+  return std::shared_ptr<const PreparedDrafterComposition>(std::move(out));
+}
+
+std::expected<void, std::string> PreparedDrafterComposition::CheckBinding(
+    const artifact::Artifact& target, const artifact::Artifact& drafter,
+    const spec::ModelSpec& target_model, std::uint32_t vocabulary,
+    std::uint32_t requested_vocabulary) const {
+  if (target.id() != target_ || drafter.id() != drafter_ ||
+      target_model.Digest() != target_semantic_ || vocabulary != target_vocabulary_)
+    return Refused("prepared composition differs from its artifact or target structure binding");
+  if (vocabulary_ && *vocabulary_ != (requested_vocabulary == 0
+                                          ? available_vocabulary_
+                                          : std::min(requested_vocabulary, available_vocabulary_)))
+    return Refused("prepared composition differs from the effective draft vocabulary");
+  return {};
+}
+
 std::expected<void, std::string> CheckScaleAtomSlots(const artifact::Artifact& artifact) {
   std::map<std::uint32_t, std::vector<std::uint32_t>> layers;
   const auto arrays = artifact.expert_arrays();

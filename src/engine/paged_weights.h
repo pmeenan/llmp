@@ -128,6 +128,10 @@ class PagedWeights {
 
   // Opens the artifact (`options` its checks), not its shards. Once, first.
   Status Open(const std::filesystem::path& path, const artifact::OpenOptions& options = {});
+  // Reuse authenticated metadata and its lifetime owner. `label` is diagnostic
+  // only; shard reads stay bound to the artifact's already-open root descriptor.
+  Status Open(std::shared_ptr<const artifact::Artifact> artifact,
+              const std::filesystem::path& label);
   bool opened() const { return artifact_ != nullptr; }
   const artifact::Artifact& artifact() const { return *artifact_; }
   // A shard's direct-read descriptor while its model is active, else -1

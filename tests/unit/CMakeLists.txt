@@ -335,6 +335,9 @@ target_link_libraries(host_mask_test PRIVATE llmp_model)
 llmp_gtest(host_mask_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 if(LLMP_CUDA)
+  add_executable(component_startup_gpu_test component_startup_gpu_test.cc)
+  target_link_libraries(component_startup_gpu_test PRIVATE llmp_runtime_serving llmp_test_artifact_writer)
+  llmp_gpu_gtest(component_startup_gpu_test)
   add_executable(gemma_norm_gpu_test gemma_norm_gpu_test.cc)
   target_include_directories(gemma_norm_gpu_test SYSTEM PRIVATE
       "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")

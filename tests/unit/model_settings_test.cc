@@ -828,6 +828,20 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
   EXPECT_TRUE(opened.target_admission.has_value());
   ASSERT_TRUE(opened.drafter_admission.has_value());
   EXPECT_TRUE(opened.drafter_admission->model.has_value());
+  ASSERT_TRUE(opened.composition);
+  const auto shared_composition = opened.composition;
+  EXPECT_EQ(shared_composition->model().stages.size(), 2U);
+  const auto original_semantic = shared_composition->numerical_semantic();
+  auto changed_copy = shared_composition->model();
+  changed_copy.stages.front().context = 64;
+  EXPECT_NE(changed_copy, shared_composition->model());
+  EXPECT_EQ(shared_composition->numerical_semantic(), original_semantic);
+  EXPECT_FALSE(
+      shared_composition->CheckBinding(*opened.target, *opened.drafter, changed_copy, 64, 0));
+  EXPECT_FALSE(shared_composition->CheckBinding(*greedy_art, *opened.drafter,
+                                                opened.target_admission->model, 64, 0));
+  EXPECT_TRUE(shared_composition->CheckBinding(*opened.target, *opened.drafter,
+                                               opened.target_admission->model, 64, 0));
 
   // Source architecture spellings survive publication, while both native and
   // MLX MTP recipes name the canonical target. Stored drafter composition and
@@ -857,6 +871,12 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
         const auto settings = ResolveSettings(entry, *facts, &calibration, false);
         ASSERT_TRUE(settings) << settings.error();
         EXPECT_EQ(settings->bound_spec, facts->composed_spec);
+        ASSERT_TRUE(retained.composition);
+        EXPECT_EQ(retained.composition->vocabulary(), 64U);
+        EXPECT_TRUE(retained.composition->CheckBinding(*retained.target, *retained.drafter,
+                                                       retained.target_admission->model, 64, 0));
+        EXPECT_FALSE(retained.composition->CheckBinding(*retained.target, *retained.drafter,
+                                                        retained.target_admission->model, 64, 32));
         EXPECT_TRUE(settings->speculation.value);
       }
     }
@@ -903,13 +923,8 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
                                                const llmp::artifact::Artifact* draft)
       -> std::expected<std::unique_ptr<rt::StartupArtifactPayment>, std::string> {
     ++funding_calls;
-    auto bytes = rt::StartupArtifactBytes(target);
+    auto bytes = rt::StartupModelBytes(target, draft);
     if (!bytes) return std::unexpected(bytes.error());
-    if (draft != nullptr) {
-      auto draft_bytes = rt::StartupArtifactBytes(*draft);
-      if (!draft_bytes) return std::unexpected(draft_bytes.error());
-      *bytes += *draft_bytes;
-    }
     return rt::StartupArtifactPayment::Admit(catalog, domain, *bytes, cap, 128ULL << 30U);
   };
   std::vector<std::shared_ptr<rt::OpenedModelArtifacts>> pending;
@@ -949,7 +964,21 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
   }
   EXPECT_EQ(occupancy(), before_failure);
   EXPECT_EQ(funding_calls, 4U);
+  // An aliasing read-only artifact view carries the whole paid preparation.
+  // It remains usable after factory/alias scopes disappear, then releases the
+  // last payment after its artifacts, admissions and composition are destroyed.
+  auto view = std::shared_ptr<const llmp::artifact::Artifact>(factory, &*factory->target);
+  std::weak_ptr<const rt::OpenedModelArtifacts> owner_lifetime = factory;
+  const auto* composition_address = factory->composition.get();
+  auto second_factory = factory;
   factory.reset();
+  EXPECT_EQ(second_factory->composition.get(), composition_address);
+  second_factory.reset();
+  EXPECT_FALSE(owner_lifetime.expired());
+  EXPECT_EQ(view->id(), *composed_entry.artifact);
+  EXPECT_EQ(occupancy(), before_failure);
+  view.reset();
+  EXPECT_TRUE(owner_lifetime.expired());
   EXPECT_EQ(occupancy(), 0U);
 }
 

@@ -147,8 +147,15 @@ PagedWeights::Status PagedWeights::Open(const std::filesystem::path& path,
     return Error(
         std::format("the artifact {} was refused: {}", path.string(), opened.error().ToString()));
   }
-  artifact_ = std::make_shared<artifact::Artifact>(std::move(*opened));
-  path_ = path;
+  return Open(std::make_shared<artifact::Artifact>(std::move(*opened)), path);
+}
+
+PagedWeights::Status PagedWeights::Open(std::shared_ptr<const artifact::Artifact> artifact,
+                                        const std::filesystem::path& label) {
+  if (!artifact) return Error("the weights' shared artifact is absent");
+  checked_places_.reset();
+  artifact_ = std::move(artifact);
+  path_ = label;
   // Its shards open only while its model is active (Register).
   // The artifact's identity orders victim ties (catalog.h ContentKey).
   key_ = ArtifactKey(*artifact_);

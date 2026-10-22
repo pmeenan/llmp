@@ -553,6 +553,30 @@ budget, not set apart again from the guard's margin, so the DeepSeek
 DSpark beside Qwen3.8 configuration can take one). No weights are paged
 yet.
 
+**Reusable startup structure.** Settings retain the authenticated LLM artifact
+views, target/drafter admissions and their pre-KV composition together with a
+catalog payment. Canonical composition is admitted once; a configured draft
+vocabulary derives only the effective head extent. Calibration and the factory
+use that same prepared structure. Its effective draft vocabulary belongs to the
+alias: changing that width requires a separately prepared alias/factory.
+Factory copies share it, while each build
+pays for its mutable source/spec copies and applies its own KV encoding,
+context, placement and backend checks. Backend/binding and automatic-construction allowances keep one
+node-lifetime high-water reservation per shared factory; each live build has a
+separate charge, and released capacity is reused on retries. Diagnostic factories prepay their transient artifact-reader loan before lazy
+preparation and retain only successful preparation; transient I/O or funding
+failure can retry.
+A per-factory mutex serializes preparation/construction without holding a global
+catalog or scheduler lock over I/O. Construction still runs on the node's
+serialized construction owner. Authenticated artifact views also serve paging
+and chat metadata; payload shards reopen through the retained directory handle
+when activated, with their existing size checks. Diagnostic path labels never
+redirect those reads. Shared owners release their payment after their payloads;
+the node's catalog outlives its last retained shard-opener callback.
+This factory reuse does not yet cover repeated chat-asset construction payments
+in `Llm::UseChatAssets`; tokenizer/template replacement peak ownership and that
+retry accounting remain a separate U3 startup follow-up.
+
 **Startup's construction payment** (`Server::Start`, `ComponentLlmBuild`,
 `ComponentImageServingBuild`; the default for every model, with no setting
 or environment). Before any artifact is opened, a parser loan
