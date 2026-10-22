@@ -3,14 +3,15 @@
 
 # U3 Llama 3.3 NVFP4 prospective quality protocol
 
-**No governed quality requests have run or quality scores been collected.**
-The original pre-registration is `e73c968b`; its reference startup attempts
-loaded weights and reached warmup but never became ready. Independent review
-and the main agent's amendment pre-registration commit must precede inference
-with the FP16 reference recipe below. This is a bounded
-same-checkpoint quality screen. Successful publication or a 64-token smoke is
-not its quality verdict. Speed, batching, full-context and sustained serving
-qualification remain separate.
+**The bounded Llama screen has completed; see [results](RESULTS.md).**
+Both likelihood phases passed the registered comparisons. Five behavioral
+controls passed in both engines; both Fibonacci replies truncated, leaving
+that comparative control unresolved. The original pre-registration is
+`e73c968b`; independent review and amendment commit `483a5de9` preceded all
+quality requests using the FP16 reference recipe below. The amendment section
+retains the startup findings and prospective rationale as recorded before
+those requests. Speed, batching, full-context and sustained serving
+qualification remain separate; these results do not close all of U3.
 
 ## Immutable inputs and reference
 
