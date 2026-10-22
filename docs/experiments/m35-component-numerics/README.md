@@ -3,10 +3,12 @@
 
 # M3.5 component numerical qualification
 
-Status: pre-registration for the implementation checkpoint, 2026-10-22.
-No new quality or speed result is recorded here. U4 remains unchecked until the
-integrated native build, focused/shared checks, independent review/challenge and
-required device/component transfer runs pass. D-123 remains binding.
+Status: image-only quality and speed results are recorded in
+[U4 image transfer results](IMAGE-RESULTS.md). LLM transfer and the full U4 exit
+remain pending. The prospective protocol below retains its registered inputs
+and bounds. U4 remains unchecked until the integrated native build,
+focused/shared checks, independent review/challenge and required device/component
+transfer runs pass. D-123 remains binding.
 
 ## Contracts and existing evidence
 
