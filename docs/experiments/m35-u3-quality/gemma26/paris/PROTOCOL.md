@@ -3,10 +3,10 @@
 
 # Prospective Gemma26 source-template Paris control
 
-**Input-freeze registration candidate; no GPU arm is authorized by this file.**
-This commit registers the frozen input and the intended comparison. A separate
-prospective amendment must supply independently reviewed GPU collection helpers
-and authenticated runtime provenance before either arm can launch.
+**GPU collection preregistration; no arm has run.** Input-freeze registration
+`03655eaf` records the frozen input and intended comparison. The prospective
+collection amendment below adds the reviewed helpers and an explicit replacement
+runtime pin. It must be reviewed and committed before either arm launches.
 CPU-only metadata preparation froze the input before registration, preserving
 its first failed attempt below. This is one paired completion
 control, not representative quality qualification or closure of U3. The
@@ -33,7 +33,7 @@ count. The original raw-ID controls and results remain unchanged.
 | Source | `nvidia/Gemma-4-26B-A4B-NVFP4@a19cfe00be84568a6867111c9a68c9c44fdcffe6` |
 | Archive manifest | `4f36e82e02c29b3e99530efa38495459667a4c461a4d03bc9f610664db162ca1` |
 | Corrected artifact | `1d20ce879b2fe72c947699357da5e20d3f6388e9cc7858b9eb6fcc2516cd3875` |
-| Native runtime | `894ce8998791951fd9ae71afbb38cb263a384b726699369ce3afa9f770ca6e9b` |
+| Earlier native screen runtime | `894ce8998791951fd9ae71afbb38cb263a384b726699369ce3afa9f770ca6e9b` |
 | Reference image | `sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8` |
 | Source template | `94899c0f917d93f6fe81c95744d1e8ddab2d21d39228d2e4aec1fb2a25bff413` |
 | Tokenizer | `cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f` |
@@ -41,9 +41,8 @@ count. The original raw-ID controls and results remain unchanged.
 | Model config | `4e379cc809c617a49179a49140f553a2d6a5ec538ed480832b0c54f6ace43d98` |
 | Generation config | `d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de` |
 
-The native binary must be reauthenticated before launch. If unavailable, record
-and review a replacement binary, source identity and qualification evidence in a
-prospective amendment; never silently use a different build. No artifact repair,
+The collection amendment explicitly replaces the earlier native screen binary;
+the new executable must be reauthenticated before launch. No artifact repair,
 download, re-import, checkpoint transformation or backend substitution is part
 of this control. Reuse the verified source already staged on Spark A at
 `~/.local/share/llmp/models/nvidia/Gemma-4-26B-A4B-NVFP4@a19cfe00`.
@@ -240,6 +239,89 @@ The absence of BOS/chat in the old prompt is an observed difference, not a prove
 sole cause. This control changes the entire source-template context, so success
 cannot isolate BOS from role/turn/channel formatting. Preserve the original
 five-ID failures and both source-launch records.
+
+## Prospective collection and runtime amendment (2026-10-22)
+
+The earlier `894ce899…` runtime has no known retained executable. This pair
+prospectively uses Spark A's integrated runtime at
+`/home/pmeenan/src/llmp/build/spark-native/src/runtime/llmp-runtime`, SHA-256
+`d18c7b7a9c8c6cf383a6f607a8606d2ce2026c4b2a8cb47632ec424601704dff`.
+`control.py` enforces that exact binary before and after collection; the older
+screen and its binary identity remain historical evidence, not a paired result.
+
+The replacement's frozen source manifest contains 2,828 files and has SHA-256
+`d0c8f0023776b0994de9e97beff04cb7bcd3e77ddad78bf87390bb312794cff4`.
+Its base is `a21f9c1edb2894cba031ce669a451c9b427b6545`, with integrated patch
+SHA-256 `847571d9aee1c51263051508ea6fc3eb4718a48011e87c2671192446ef3f380e`.
+The remote Git-derived build version still names stale `61f8426`; it is not an
+authenticated source identity for this executable. The frozen source manifest
+and patch above, together with A's measured binary hash, are the provenance
+authority; the manifest's base does not mean an unmodified Git checkout was built.
+The manifest/patch/freeze receipt are retained outside Git at
+`/tmp/llmp-m35-orchestration/integration-wave-w6-r3/`. The launch records this
+source identity alongside the binary hash. A's build completed all 203 native
+test consumers and the CLI. Installed job `m35-w6-r3-shared-a` completed
+3,599 ordinary tests on A with no failures or skips. Spark B's later source
+differs only in the explicit 64-token fixture setting in
+`model_settings_test.cc`; that case was excluded from A's set and passed after
+correction on B, alongside 16 other focused passes. Independent reconciliation
+against the native CTest exclusion inventory confirms 3,616 unique ordinary
+passes, no missing cases, duplicate coverage or unresolved failures/skips. The
+original fixture failure remains recorded. A's XML SHA-256 is
+`fedb0f1460c0ef3fd1a2f0fe086bac481804379b054f82e9c4edb522cde1c76d`;
+the combined audit is `root-combined-final-audit.json` beside the source freeze.
+The production change subsequently landed in `b96e2ca6`.
+The product sources are identical across those two snapshots, but this control
+uses A's own binary hash, never B's executable as an interchangeable substitute.
+
+`source.py` authenticates the unchanged parent `reference.py` before import,
+then binds only its request-data `IDS` to the committed 35 integers. Its existing
+engine setup, official parser/callback validation, live dispatch checks,
+generation, complete returned-object capture and exact returned prompt-ID checks
+run unchanged. `source_launch.py` reuses the authenticated parent launcher
+`execute`/`retire` lifecycle and snapshots the new adapter plus the old reference
+module; the explicit helper PYTHONPATH also makes that module available to the
+worker callback. The loader and image pins remain those of the raw diagnostic.
+
+`native.py` uses the authenticated `tools/speed_gate.py` `Service` owner with
+a fresh state directory and loopback port 18976. It creates the registered
+configuration, authenticates source/artifact metadata, then saves the literal
+35-ID request before sending it to `/v1/completions`. Native source review
+confirmed that this API preserves integer prompts with special-token insertion
+disabled; the returned token count alone is not independent prompt-ID proof.
+`return_tokens_as_token_ids=true` and `logprobs=1` expose each generated ID and
+its selected-token score, including the final stop. Both collectors preserve raw
+responses before validation, check stops and scores, and retain well-formed
+negative answers with semantic `fail`. Both launch receipts bind the input,
+protocol, registration commit and helper hashes; post-checks detect changed
+protocol/helpers, native binary/configuration or reference loader snapshots.
+
+Independent whole-helper review was clean. The reviewer reran all 11 contract
+fixtures under the workstation's shared host lock and passed four additional
+mocked native cases: semantic failure, malformed JSON, HTTP 500 and interrupted
+startup, including raw capture and retirement. These are collector checks, not
+GPU execution evidence. Review receipt SHA-256:
+`6da9c6360facd7289264ef09870291aa9339e0c1924271c79dab70cefacb490a`,
+at `/tmp/llmp-gemma26-paris-collection-review-r1.json`. The subsequent amendment
+changes only the runtime/source pin and protocol-hash accounting; root review
+verified that exact delta before registration.
+
+| Collection helper | SHA-256 |
+| --- | --- |
+| `control.py` | `e01815d98d1395d631847211275e771ac208be7593689edba790564f00294ce9` |
+| `native.py` | `d346e56948736820e77603d8978dc4cc9ba6b407cd7f70e08716b58cb67ca8d2` |
+| `source.py` | `ad9bc4afe653ef1cb7a402853b58dd5fe952f2bc8a7a6c28dafb314445ab8cd4` |
+| `source_launch.py` | `b8d22551b8053b783edf4c5d496a5221b2f6a867a46ef885cdf0fcf451b064ee` |
+| `test_control.py` | `3a33edd7d8ce1db7604bde2db646bafa13fa401ff03738b9e9cd279a34a1948c` |
+
+Run `native.py` and `source_launch.py` in separate exclusive 600-second jobs,
+with fresh output directories and the full reviewed amendment commit supplied
+as `--registration`. The orchestrator authenticates that commit's contents;
+the helper's commit-syntax check is not proof of review. Source staging evidence
+is the existing successful `m35-u3-gemma26-stage-r1/log`, SHA-256
+`9fb846ebf68691cd63465c999d0a2e4ca9dd64037b09c2998bae230370a52593`.
+No restage, re-import, source/template change, new allowance or numerical bound
+is introduced. All original negative results remain intact.
 
 ## Execution ownership and retained evidence
 
