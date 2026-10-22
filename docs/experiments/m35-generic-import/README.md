@@ -58,7 +58,9 @@ The [original ModelOpt and MLX parity controls](original-parity.md) passed on
 independently of changed spec/provenance identities. Remaining controls:
 
 - Serve the new plain-NVFP4 and second-architecture MLX artifacts and compare
-  the Llama 3.1+ frequency-scaling path with its reference under D-085.
+  the Llama 3.1+ frequency-scaling path with its reference under D-085. Its
+  [prospective protocol](../m35-u3-quality/PROTOCOL.md) still requires review and
+  pre-registration before inference.
 - Preserve supported-family speed and quality qualifications; import success
   cannot supply numerical evidence for a new geometry or device.
 

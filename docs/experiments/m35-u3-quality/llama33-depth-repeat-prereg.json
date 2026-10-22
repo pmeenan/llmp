@@ -1,0 +1,8 @@
+{
+  "format": "llmp-quality-prereg/1",
+  "name": "u3-llama33-depth-own-repeat-v1",
+  "bounds": {
+    "expected_targets": 1024,
+    "max_abs_ppl_delta_pct": 0.1
+  }
+}
