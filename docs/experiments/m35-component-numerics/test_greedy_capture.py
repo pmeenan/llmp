@@ -138,6 +138,65 @@ class GreedyCaptureTest(unittest.TestCase):
             finally:
                 os.umask(old_umask)
 
+    def test_main_initializes_real_service_with_parsed_empty_environment(self):
+        pins = json.loads((collector.HERE / "llm-capture-pins.json").read_text())
+        repo = collector.HERE.parents[2]
+        sg = collector.load_speed_gate(repo, debug_plans=False)
+        reply = parse(events())
+        family = "qwen38"
+        template = pins["configs"][family]
+        expected_runtime = pins["arms"]["A"]["sha256"]
+        prior = {"error": None, "family": family, "label": "old",
+                 "runtime_sha256": expected_runtime, "config_template": template,
+                 "runtime_env": {}, "stop": {"returncode": 0},
+                 "replies": [{k: reply[k] for k in ("reply_sha256", "finish", "usage")}] * 2}
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            runtime = root / "runtime"
+            runtime.write_bytes(b"not an executable")
+            receipt = root / "qwen38-quality-old.json"
+            receipt.write_text(json.dumps(prior))
+            out = root / "output"
+            original_sha = collector.sha256_file
+
+            def digest(path):
+                if path == runtime:
+                    return expected_runtime
+                if path == receipt:
+                    return pins["greedy_baseline_receipts"][family]
+                return original_sha(path)
+
+            argv = ["greedy_capture.py", "--family", family, "--arm", "A", "--repo", str(repo),
+                    "--runtime", str(runtime), "--quality-receipt", str(receipt), "--out", str(out)]
+            old_umask = os.umask(0o022)
+            try:
+                with (mock.patch("sys.argv", argv),
+                      mock.patch.object(collector, "load_speed_gate", return_value=sg),
+                      mock.patch.object(collector, "sha256_file", side_effect=digest),
+                      mock.patch.object(collector, "verify_inputs", return_value=(template, {})),
+                      mock.patch.object(collector, "verify_score"),
+                      mock.patch.object(collector, "collect_reply", return_value=reply),
+                      mock.patch.object(sg, "load_corpus", return_value="corpus"),
+                      mock.patch.object(sg, "passage", return_value="passage"),
+                      mock.patch.object(sg, "port_open", return_value=False),
+                      mock.patch.object(sg.Service, "wait_ready", return_value=0),
+                      mock.patch.object(sg, "parse_runtime_env", wraps=sg.parse_runtime_env) as parsed,
+                      mock.patch.object(sg.subprocess, "Popen") as popen,
+                      mock.patch("sys.stdout", new_callable=io.StringIO)):
+                    popen.return_value.poll.return_value = 0
+                    popen.return_value.returncode = 0
+                    self.assertEqual(collector.main(), 0)
+                    parsed.assert_called_once_with(None)
+                    popen.assert_called_once()
+                    self.assertEqual(popen.call_args.kwargs["env"], sg.arm_env({}))
+                    self.assertNotIn("--debug-plans", popen.call_args.args[0])
+                    self.assertEqual(popen.call_args.args[0][0], str(runtime))
+                result = json.loads((out / "greedy-text.json").read_text())
+                self.assertTrue(result["qualified"])
+                self.assertEqual(result["stop"]["returncode"], 0)
+            finally:
+                os.umask(old_umask)
+
 
 if __name__ == "__main__":
     unittest.main()

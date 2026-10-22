@@ -195,7 +195,7 @@ def main():
               "replies": [], "error": None, "qualified": False}
     service = None
     try:
-        service = sg.Service(runtime, config, work, 18114, None)
+        service = sg.Service(runtime, config, work, 18114, sg.parse_runtime_env(None))
         service.wait_ready()
         for index, prompt in enumerate(sg.QUALITY_PROMPTS):
             body = {"model": family.model, "stream": True, "temperature": 0,

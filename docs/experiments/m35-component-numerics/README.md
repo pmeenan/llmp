@@ -517,3 +517,24 @@ For A, select its original frozen diagnostic executable and retained
 `qwen38-quality-old.json` (or the corresponding GGUF/DeepSeek receipt), with a
 distinct fresh output directory. These semantic checks neither overwrite the
 earlier captures nor change any independent-reference or speed obligation.
+
+### Supplementary launcher correction before retry (2026-10-22)
+
+The first supplementary job, `m35-u4-greedy-qwen38-gguf-A-r1`, failed before
+process launch or inference: the collector passed `None` to the service's
+environment argument, which requires the parsed override mapping. Its private
+output and failed receipt (`qualified:false`, no replies) remain retained; no
+other supplementary job ran before the failure was reported. The three C plan
+captures had already completed and are unaffected by this launcher failure.
+
+The collector now calls `parse_runtime_env(None)`, yielding the same empty
+override mapping used by the registered quality launcher. A regression invokes
+the collector's main entry through the actual pinned service adapter, with
+external inputs, readiness and process launch mocked; environment parsing and
+service initialization remain real. It verifies the parsed empty overrides and
+resulting process environment and completes the successful-retirement path
+without inference.
+This correction changes no runtime, request, configuration, corpus, input,
+parser, digest, quality bound or prior-receipt matching rule. It must be reviewed
+and committed before a retry in a new output directory; the failed `A-r1`
+directory is never reused.
