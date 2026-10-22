@@ -244,7 +244,23 @@ Status PagedNode::Load(std::vector<ExtentId> extents, std::string what,
   return {};
 }
 
+std::expected<std::shared_ptr<sc::EvictionReceipt>, std::string> PagedNode::NewEvictionReceipt(
+    std::uint64_t observer_bytes) {
+  struct PaidReceipt final : sc::EvictionReceipt {
+    explicit PaidReceipt(HostPayment paid) : payment(std::move(paid)) {}
+    HostPayment payment;
+  };
+  // Receipt/control block and observer allocation overhead, in addition to
+  // the concrete observer payload. Its payment survives task/node teardown.
+  constexpr std::uint64_t kMetadata = sizeof(PaidReceipt) + 128;
+  if (observer_bytes > UINT64_MAX - kMetadata) return Error("eviction receipt metadata overflows");
+  auto paid = PrepayHost(observer_bytes + kMetadata);
+  if (!paid) return std::unexpected(paid.error());
+  return std::make_shared<PaidReceipt>(std::move(*paid));
+}
+
 Status PagedNode::Evict(std::vector<ExtentId> extents, sc::EvictOptions options) {
+  if (!options.receipt) options.receipt = eviction_receipt_;
   if (auto ended = EndRequestsOver(extents); !ended) {
     return std::unexpected(ended.error());
   }
@@ -280,9 +296,10 @@ Status PagedNode::Swap(std::vector<ExtentId> out, const catalog::Closure& in, bo
     return std::unexpected(ended.error());
   }
   Done done;
-  auto swapped = Post(std::make_unique<SwapProgram>(done, std::move(out), in, handoff, report,
-                                                    std::move(release), std::move(weights)),
-                      done, "a swap");
+  auto swapped =
+      Post(std::make_unique<SwapProgram>(done, std::move(out), in, handoff, report,
+                                         std::move(release), std::move(weights), eviction_receipt_),
+           done, "a swap");
   report.requests_ended = *ended;
   return swapped;
 }

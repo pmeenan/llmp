@@ -265,8 +265,9 @@ class SwapProgram final : public EvictingProgram {
  public:
   SwapProgram(ProgramDone& done, std::vector<catalog::ExtentId> out, catalog::Closure in,
               bool handoff, SwapReport& report, std::vector<catalog::ExtentId> release = {},
-              catalog::Closure weights = {})
-      : EvictingProgram(done, std::move(out), scheduler::EvictOptions{.handoff = handoff},
+              catalog::Closure weights = {}, std::shared_ptr<EvictionReceipt> receipt = {})
+      : EvictingProgram(done, std::move(out),
+                        scheduler::EvictOptions{.handoff = handoff, .receipt = std::move(receipt)},
                         std::move(release)),
         in_(std::move(in)),
         weights_(std::move(weights)),
@@ -531,13 +532,14 @@ class AcquireProgram final : public ReportingProgram {
 
   AcquireProgram(ProgramDone& done, catalog::Closure closure, catalog::DomainId domain,
                  AcquireReport& report, std::vector<catalog::ExtentId> protect = {},
-                 bool evict = true)
+                 bool evict = true, std::shared_ptr<EvictionReceipt> receipt = {})
       : ReportingProgram(done),
         closure_(std::move(closure)),
         domain_(domain),
         report_(report),
         protect_(std::move(protect)),
-        select_victims_(evict) {}
+        select_victims_(evict),
+        receipt_(std::move(receipt)) {}
 
   scheduler::Step Advance(scheduler::TaskContext& context) override {
     if (context.TakeFailure()) {
@@ -551,7 +553,7 @@ class AcquireProgram final : public ReportingProgram {
           ++next_;  // gone already (an eviction this program waited for)
           continue;
         }
-        const auto evicted = context.Evict(extent);
+        const auto evicted = context.Evict(extent, {.receipt = receipt_});
         if (!evicted) {
           if (evicted.error() == scheduler::WorkError::kBusy) {
             return scheduler::Step::Yield();
@@ -605,6 +607,7 @@ class AcquireProgram final : public ReportingProgram {
   AcquireReport& report_;
   std::vector<catalog::ExtentId> protect_;
   bool select_victims_ = true;
+  std::shared_ptr<EvictionReceipt> receipt_;
   std::vector<catalog::ExtentId> victims_;
   std::size_t next_ = 0;
   bool materializing_ = false;

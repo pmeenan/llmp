@@ -716,7 +716,17 @@ incoming model's whole closure (its workspace prefix with it) paged in,
 its state restored if it had been spilled. Then the model's own
 checks (DeepSeek's hash-routing tables, Qwen3.8's n-gram hash) and its
 places checked still pinned (D-090). The backing no load took is released
-after the first output, off the swap's path. Each part is timed.
+after the first output, off the swap's path. Each part is timed. The
+service keeps a paid receipt for each actual activation. Its evictions and
+handed-off loads retain that owner through their release or unwind, including
+preparation, reclaim and rollback work. The scheduler records that owner's
+handoffs, unused releases and terminal timestamp; another activation can
+proceed while a prior receipt remains pending. The service collects completed
+receipts between units and responses without waiting for release, and reports
+failed activations separately. Same-model requests and cancelled switches
+cannot overwrite another activation's measurement. Host-phase diagnostics
+end with the activation; release endpoints come from its owned completion
+events, independent of when a response reads them.
 
 **Weight files are open only while their model is active** (owner,
 2026-10-09; `engine/paged_node.h` `SetActive`, `scheduler/files.h`). A

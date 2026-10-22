@@ -775,17 +775,23 @@ D-122).
       C++ change.
 - [ ] **U9 Partitioning and per-model residency** (M4 entry; amends M4's
       "Concurrent models and the shared workspace" item).
-- [ ] **U10 Review leftovers** (re-verified 2026-10-22).
+- [x] **U10 Review leftovers** (re-verified 2026-10-22).
       **Reader subspikes complete:** checkpoint, ordinary artifact and
       direct-I/O readers pin the selected regular object before opening it
       for I/O; a buffered retry uses the same object. Each caller's symlink
       policy remains in force. **Drafter carry subspike complete:** ordinary
       spill/restore preserves continuation features; logical state
       replacement still clears them.
-      **Kept-file and lock-file subspike complete:** existing regular files
-      are pinned before write/create I/O; deterministic race controls and
-      integrated shared checks pass.
-      **Remaining:** activation-owned asynchronous swap measurement.
+      **Swap ownership subspike complete:** each actual activation owns a paid receipt
+      retained by its asynchronous eviction and handoff work; the service
+      collects completed measurements without blocking subsequent switches.
+      Same-model requests and cancelled/failed switches preserve independent
+      accounting. Observer names and metadata are paid before allocation and
+      survive their storage; focused ownership controls, 3,458 shared checks and
+      all seven swap controls (five using real model artifacts) pass.
+      **Kept-file and lock-file subspike complete:** existing regular
+      files are pinned before write/create I/O; nine deterministic race
+      controls, integrated shared checks and real-artifact swap cases pass.
       The prior count/catalog and pending-counter failures, `CheckOwners`,
       HTTP deadline/half-close ordering and I/O-thread heap trim findings
       are fixed or retired. Physical-file overlap checks, JSON accessor

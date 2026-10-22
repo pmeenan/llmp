@@ -34,6 +34,7 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -52,6 +53,7 @@
 #include "scheduler/commands.h"
 #include "scheduler/completions.h"
 #include "scheduler/files.h"
+#include "scheduler/programs.h"
 #include "scheduler/scheduler.h"
 #include "scheduler/services.h"
 #include "scheduler/tasks.h"
@@ -2657,6 +2659,30 @@ TEST(VmmLaneTest, DiagnosticIntervalsAuthenticateBusyCompletionAndRefusalWithout
   EXPECT_EQ(unset.timing.park_publication.completed, 0U);
 }
 
+TEST(VmmLaneTest, ScalarCreateDiagnosticsDoNotOwnFailureText) {
+  using Counts = llmp::scheduler::BackingCreateCounts;
+  static_assert(std::is_trivially_copyable_v<Counts>);
+  llmp::scheduler::BackingCreateCounters counters(true);
+  counters.StartupPoolCreated();
+  counters.Attempt(false);
+  counters.Failed(false,
+                  {.error = ProviderError::kOutOfMemory, .detail = std::string(128 * 1024, 'x')});
+  counters.Completed(false);
+  const auto counts = counters.Counts();
+  const auto full = counters.Snapshot();
+  EXPECT_EQ(counts.startup_pool_creates, full.startup_pool_creates);
+  EXPECT_EQ(counts.ordinary_attempts, full.ordinary_attempts);
+  EXPECT_EQ(counts.ordinary_failures, full.ordinary_failures);
+  EXPECT_EQ(counts.last_failure_monotonic_ns, full.last_failure_monotonic_ns);
+  EXPECT_EQ(counts.last_failure_error, full.last_failure_error);
+  EXPECT_EQ(counts.timing.ordinary.last.serial, full.timing.ordinary.last.serial);
+  EXPECT_EQ(counts.timing.ordinary.last.end_ns, full.timing.ordinary.last.end_ns);
+  EXPECT_EQ(full.last_failure_detail.size(), 128 * 1024U);
+  counters.Failed(true, {.error = ProviderError::kFailed, .detail = "later"});
+  EXPECT_EQ(counts.reserve_failures, 0U);  // retained scalar snapshot is independent
+  EXPECT_EQ(counters.Counts().reserve_failures, 1U);
+}
+
 TEST(VmmLaneTest, TheHandleReserveFillsWhileIdleAndIsTakenBeforeCreating) {
   using llmp::scheduler::BackingWork;
   using llmp::scheduler::ReserveSettings;
@@ -3513,6 +3539,201 @@ TEST_P(PageInTest, ParkedBackingNoLoadTookIsReleasedWhenItsEvictorFinishes) {
   for (std::size_t i = 0; i < 3; ++i) {
     EXPECT_EQ(View(extents_[i]).state, ExtentState::kNonresident) << i;
   }
+}
+
+// Stop turning the backing lane exactly when the first SwapProgram retires:
+// its unused releases are queued, but have no completion yet. A disjoint
+// cached activation can finish meanwhile; neither its receipt nor the old
+// one's endpoint depends on the order observers read them.
+TEST_P(PageInTest, SwapReceiptsOutliveProgramsAndDoNotBlockDisjointActivation) {
+  Build();
+  LoadProgram::Report loaded;
+  ASSERT_TRUE(scheduler_->Start(1, Load(loaded, Of({0, 1, 2, 4}))));
+  Settle();
+  ASSERT_EQ(loaded.outcome, TaskOutcome::kSucceeded);
+  auto first = std::make_shared<llmp::scheduler::EvictionReceipt>();
+  llmp::scheduler::ProgramDone first_done;
+  llmp::scheduler::SwapReport first_report;
+  ASSERT_TRUE(scheduler_->Start(
+      2, std::make_unique<llmp::scheduler::SwapProgram>(
+             first_done, std::vector<ExtentId>{extents_[0], extents_[1], extents_[2]}, Of({3}),
+             true, first_report, std::vector<ExtentId>{}, Closure{}, first)));
+  for (int i = 0; i < 1000 && !first_done.gone.load(); ++i) (void)Round();
+  ASSERT_TRUE(first_done.gone.load());
+  first->Seal(Occupied().Total().value());
+  ASSERT_EQ(first->Read().pending, 2U);
+  EXPECT_EQ(first->Read().handed_off, 1U);
+  EXPECT_FALSE(first->Read().complete);
+  const auto waiting = first->Read();
+  constexpr auto quiet = std::chrono::milliseconds(100);
+  EXPECT_FALSE(waiting.Stalled(waiting.progressed + quiet - std::chrono::nanoseconds(1), quiet));
+
+  auto second = std::make_shared<llmp::scheduler::EvictionReceipt>();
+  llmp::scheduler::ProgramDone second_done;
+  llmp::scheduler::SwapReport second_report;
+  ASSERT_TRUE(scheduler_->Start(3, std::make_unique<llmp::scheduler::SwapProgram>(
+                                       second_done, std::vector<ExtentId>{}, Of({4}), true,
+                                       second_report, std::vector<ExtentId>{}, Closure{}, second)));
+  // Scheduler turns only: the old release commands cannot have executed.
+  for (int i = 0; i < 100 && !second_done.gone.load(); ++i) (void)scheduler_->Turn();
+  ASSERT_TRUE(second_done.gone.load());
+  EXPECT_EQ(second_done.outcome.load(), static_cast<int>(TaskOutcome::kSucceeded));
+  second->Seal(Occupied().Total().value());
+  const auto second_endpoint = second->Read();
+  EXPECT_TRUE(second_endpoint.complete);
+  EXPECT_EQ(second_endpoint.handed_off, 0U);
+  EXPECT_EQ(second_endpoint.released_unused, 0U);
+  EXPECT_FALSE(first->Read().complete);
+  EXPECT_EQ(first->Read().released_unused, 0U);
+  // This is the predicate used by production PollSwap (and hence idle
+  // Maintain). A cached activation succeeding cannot refresh the old owner.
+  EXPECT_EQ(first->Read().progressed, waiting.progressed);
+  EXPECT_TRUE(first->Read().Stalled(waiting.progressed + quiet, quiet));
+  EXPECT_FALSE(second_endpoint.Stalled(waiting.progressed + quiet, quiet));
+
+  Settle();
+  const auto first_endpoint = first->Read();
+  EXPECT_TRUE(first_endpoint.complete);
+  EXPECT_EQ(first_endpoint.pending, 0U);
+  EXPECT_EQ(first_endpoint.handed_off, 1U);
+  EXPECT_EQ(first_endpoint.released_unused, 2U);
+  EXPECT_EQ(first_endpoint.quarantined, 0U);
+  EXPECT_FALSE(first_endpoint.Stalled(first_endpoint.progressed + quiet, quiet));
+  EXPECT_GE(first_endpoint.finished, second_endpoint.finished);
+  EXPECT_EQ(second->Read().finished, second_endpoint.finished);
+  EXPECT_EQ(second->Read().occupancy, second_endpoint.occupancy);
+  EXPECT_EQ(second->Read().released_unused, 0U);
+}
+
+TEST_P(PageInTest, SealingAfterUnrelatedWorkPreservesTheActualReleaseEndpoint) {
+  Build();
+  LoadProgram::Report loaded;
+  ASSERT_TRUE(scheduler_->Start(1, Load(loaded, Of({0, 1}))));
+  Settle();
+  auto receipt = std::make_shared<llmp::scheduler::EvictionReceipt>();
+  llmp::scheduler::ProgramDone done;
+  llmp::scheduler::SwapReport report;
+  ASSERT_TRUE(
+      scheduler_->Start(2, std::make_unique<llmp::scheduler::SwapProgram>(
+                               done, std::vector<ExtentId>{extents_[0], extents_[1]}, Of({3}), true,
+                               report, std::vector<ExtentId>{}, Closure{}, receipt)));
+  Settle();
+  ASSERT_TRUE(done.gone.load());
+  ASSERT_EQ(done.outcome.load(), static_cast<int>(TaskOutcome::kSucceeded));
+  const auto endpoint = receipt->Read();
+  ASSERT_EQ(endpoint.pending, 0U);
+  EXPECT_FALSE(endpoint.complete);  // activation has not sealed its owner yet
+  ASSERT_NE(endpoint.finished, llmp::scheduler::EvictionReceipt::Clock::time_point{});
+  const auto ready = llmp::scheduler::EvictionReceipt::Clock::now();
+
+  // Unrelated work changes occupancy while the driver is still in setup.
+  LoadProgram::Report unrelated;
+  ASSERT_TRUE(scheduler_->Start(3, Load(unrelated, Of({4}))));
+  Settle();
+  ASSERT_EQ(unrelated.outcome, TaskOutcome::kSucceeded);
+  ASSERT_NE(Occupied().Total().value(), endpoint.occupancy);
+  receipt->Seal(Occupied().Total().value());
+  const auto sealed = receipt->Read();
+  EXPECT_TRUE(sealed.complete);
+  EXPECT_EQ(sealed.finished, endpoint.finished);
+  EXPECT_EQ(sealed.occupancy, endpoint.occupancy);
+  EXPECT_EQ(sealed.TailAfter(ready), llmp::scheduler::EvictionReceipt::Clock::duration::zero());
+  EXPECT_GT(sealed.TailAfter(endpoint.finished - std::chrono::milliseconds(1)),
+            llmp::scheduler::EvictionReceipt::Clock::duration::zero());
+
+  // With no owned work, the explicit endpoint is sealing; there is no tail.
+  llmp::scheduler::EvictionReceipt empty;
+  empty.Seal(Occupied().Total().value());
+  EXPECT_TRUE(empty.Read().complete);
+  EXPECT_GE(empty.Read().finished, ready);
+  EXPECT_EQ(empty.Read().occupancy, Occupied().Total().value());
+  EXPECT_EQ(empty.Read().TailAfter(ready),
+            llmp::scheduler::EvictionReceipt::Clock::duration::zero());
+}
+
+TEST_P(PageInTest, CancelledEvictionReceiptKeepsOwnershipUntilItsReleaseSettles) {
+  Build();
+  LoadProgram::Report loaded;
+  ASSERT_TRUE(scheduler_->Start(1, Load(loaded, Of({0, 1}))));
+  Settle();
+  auto receipt = std::make_shared<llmp::scheduler::EvictionReceipt>();
+  llmp::scheduler::ProgramDone done;
+  llmp::scheduler::SwapReport report;
+  ASSERT_TRUE(
+      scheduler_->Start(2, std::make_unique<llmp::scheduler::SwapProgram>(
+                               done, std::vector<ExtentId>{extents_[0], extents_[1]}, Of({3}), true,
+                               report, std::vector<ExtentId>{}, Closure{}, receipt)));
+  // The scheduler issued unmaps, but no backing lane has run them.
+  (void)scheduler_->Turn();
+  ASSERT_EQ(receipt->Read().pending, 2U);
+  ASSERT_TRUE(scheduler_->Cancel(2));
+  for (int i = 0; i < 100 && !done.gone.load(); ++i) (void)scheduler_->Turn();
+  ASSERT_TRUE(done.gone.load());
+  receipt->Seal(Occupied().Total().value());
+  EXPECT_FALSE(receipt->Read().complete);
+  EXPECT_EQ(done.outcome.load(), static_cast<int>(TaskOutcome::kCancelled));
+  std::weak_ptr<llmp::scheduler::EvictionReceipt> kept = receipt;
+  receipt.reset();  // only the actual in-flight evictions retain the owner
+  ASSERT_FALSE(kept.expired());
+  receipt = kept.lock();
+  Settle();
+  EXPECT_TRUE(receipt->Read().complete);
+  EXPECT_EQ(receipt->Read().handed_off, 0U);
+  EXPECT_EQ(receipt->Read().released_unused, 2U);
+  EXPECT_EQ(receipt->Read().quarantined, 0U);
+  receipt.reset();
+  EXPECT_TRUE(kept.expired());
+}
+
+TEST_P(PageInTest, FailedHandoffLoadKeepsItsReceiptThroughUnusedBackingRelease) {
+  Build();
+  LoadProgram::Report loaded;
+  ASSERT_TRUE(scheduler_->Start(1, Load(loaded, Of({0, 1}))));
+  Settle();
+  auto receipt = std::make_shared<llmp::scheduler::EvictionReceipt>();
+  llmp::scheduler::ProgramDone done;
+  llmp::scheduler::SwapReport report;
+  memory_.FailNext(llmp::providers::fake::Operation::kMap, ProviderError::kFailed);
+  ASSERT_TRUE(
+      scheduler_->Start(2, std::make_unique<llmp::scheduler::SwapProgram>(
+                               done, std::vector<ExtentId>{extents_[0], extents_[1]}, Of({3}), true,
+                               report, std::vector<ExtentId>{}, Closure{}, receipt)));
+  for (int i = 0; i < 1000 && !done.gone.load(); ++i) (void)Round();
+  ASSERT_TRUE(done.gone.load());
+  EXPECT_EQ(done.outcome.load(), static_cast<int>(TaskOutcome::kFailed));
+  receipt->Seal(Occupied().Total().value());
+  Settle();
+  EXPECT_TRUE(receipt->Read().complete);
+  EXPECT_EQ(receipt->Read().pending, 0U);
+  EXPECT_EQ(receipt->Read().handed_off, 1U);
+  EXPECT_EQ(receipt->Read().released_unused, 2U);
+  EXPECT_EQ(receipt->Read().refused, 1U);
+  EXPECT_EQ(receipt->Read().quarantined, 0U);
+}
+
+TEST_P(PageInTest, ReceiptDistinguishesAQuarantinedReleaseFromSuccessfulCompletion) {
+  Build();
+  LoadProgram::Report loaded;
+  ASSERT_TRUE(scheduler_->Start(1, Load(loaded, Of({0, 1}))));
+  Settle();
+  auto receipt = std::make_shared<llmp::scheduler::EvictionReceipt>();
+  llmp::scheduler::ProgramDone done;
+  llmp::scheduler::SwapReport report;
+  ASSERT_TRUE(
+      scheduler_->Start(2, std::make_unique<llmp::scheduler::SwapProgram>(
+                               done, std::vector<ExtentId>{extents_[0], extents_[1]}, Of({3}), true,
+                               report, std::vector<ExtentId>{}, Closure{}, receipt)));
+  for (int i = 0; i < 1000 && !done.gone.load(); ++i) (void)Round();
+  ASSERT_TRUE(done.gone.load());
+  receipt->Seal(Occupied().Total().value());
+  ASSERT_EQ(receipt->Read().pending, 1U);
+  memory_.FailNext(llmp::providers::fake::Operation::kRelease, ProviderError::kFailed);
+  Settle();
+  EXPECT_TRUE(receipt->Read().complete);
+  EXPECT_EQ(receipt->Read().handed_off, 1U);
+  EXPECT_EQ(receipt->Read().released_unused, 0U);
+  EXPECT_EQ(receipt->Read().quarantined, 1U);
+  EXPECT_TRUE(scheduler_->fault());
 }
 
 // A parked extent materialized again takes its own kept backing back.

@@ -799,6 +799,16 @@ class PagedNode {
   Status Load(std::vector<catalog::ExtentId> extents, std::string what,
               std::vector<LoadStats>& log);
   Status Evict(std::vector<catalog::ExtentId> extents, scheduler::EvictOptions options = {});
+  // Driver-scoped ownership of all evictions an operation issues, including
+  // reclaim and rollback programs. The caller restores the previous owner
+  // only once every issuing program retired, then seals on the scheduler.
+  std::shared_ptr<scheduler::EvictionReceipt> SetEvictionReceipt(
+      std::shared_ptr<scheduler::EvictionReceipt> receipt) {
+    return std::exchange(eviction_receipt_, std::move(receipt));
+  }
+  // Includes payment for the retained observer/list entry and its strings.
+  std::expected<std::shared_ptr<scheduler::EvictionReceipt>, std::string> NewEvictionReceipt(
+      std::uint64_t observer_bytes);
   // A full swap (SwapProgram): `out` evicted, with their backing handed
   // to `in`'s loads if `handoff`, then `in` materialized.
   Status Swap(std::vector<catalog::ExtentId> out, const catalog::Closure& in, bool handoff,
@@ -812,6 +822,10 @@ class PagedNode {
   scheduler::BackingCreateStats backing_create_stats() const {
     return backing_lane_ != nullptr ? backing_lane_->create_stats()
                                     : scheduler::BackingCreateStats{};
+  }
+  scheduler::BackingCreateCounts backing_create_counts() const {
+    return backing_lane_ != nullptr ? backing_lane_->create_counts()
+                                    : scheduler::BackingCreateCounts{};
   }
   MemoryMode memory_mode() const noexcept { return settings_.memory_mode; }
   std::size_t ReserveAvailable() const {
@@ -1124,6 +1138,7 @@ class PagedNode {
   std::unique_ptr<HostPayment::Releases, HostPayment::DropReleases> host_releases_;
   void CollectHostReleases();
   // Catalog/span vector capacity remains node-owned after geometry retirement.
+  std::shared_ptr<scheduler::EvictionReceipt> eviction_receipt_;  // driver only
   std::uint64_t region_metadata_bytes_ = 0;
   std::uint64_t host_charged_ = 0;  // the extent's size: whole extents past the floor
   std::uint64_t host_overcharges_ = 0;

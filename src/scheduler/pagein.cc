@@ -316,8 +316,12 @@ std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
           if (catalog_.OccupancyOf(found->descriptor.domain).Total() > budget()) {
             return std::unexpected(WorkError::kOverBudget);
           }
+          auto receipt = eviction->second.receipt;
+          if (receipt) receipt->Transfer();
           EndParked(extent);
-          if (auto begun = BeginPageIn(*record, extent, source->second, /*own=*/true); !begun) {
+          if (auto begun =
+                  BeginPageIn(*record, extent, source->second, /*own=*/true, std::move(receipt));
+              !begun) {
             return std::unexpected(begun.error());
           }
           waiting = true;
@@ -342,7 +346,8 @@ std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
 }
 
 std::expected<void, WorkError> Scheduler::BeginPageIn(TaskRecord& record, catalog::ExtentId extent,
-                                                      const PageSource& source, bool own) {
+                                                      const PageSource& source, bool own,
+                                                      std::shared_ptr<EvictionReceipt> receipt) {
   // Backing a parked eviction kept, if one keeps a compatible one: the
   // load is allowed that extent's bytes over B because the parked
   // eviction completes in the same step, moving the charge.
@@ -366,12 +371,15 @@ std::expected<void, WorkError> Scheduler::BeginPageIn(TaskRecord& record, catalo
     return std::unexpected(ErrorOf(ticket.error()));
   }
   if (donor) {
+    receipt = evictions_.at(*donor).receipt;
+    if (receipt) receipt->Transfer();
     EndParked(*donor);
   }
   // Recorded before any lane can see it: the extent is LOADING and charged
   // until the load's last stage settles it.
   Load& load = loads_[extent];
   load = Load{};
+  load.receipt = std::move(receipt);
   load.ticket = *ticket;
   load.source = source;
   load.reuse = own || donor.has_value();
@@ -664,6 +672,7 @@ void Scheduler::OnStage(catalog::ExtentId extent, Outcome outcome, std::uint64_t
       if (succeeded) {
         load.reuse = false;
         ++stats_.released_unused;
+        if (load.receipt) load.receipt->Released();
         EndLoad(extent, false);
         return;
       }
@@ -702,6 +711,10 @@ void Scheduler::EndLoad(catalog::ExtentId extent, bool loaded) {
   base::Check(loaded ? catalog_.CompleteLoad(load.ticket).has_value()
                      : catalog_.FailLoad(load.ticket, true).has_value(),
               "settling a page-in's load");
+  if (load.receipt)
+    load.receipt->End(
+        loaded, false,
+        catalog_.OccupancyOf(catalog_.Describe(extent)->descriptor.domain).Total().value());
   if (settings_.observer != nullptr) {
     settings_.observer->Staged(extent, loaded ? PageInEvent::kResident : PageInEvent::kFailed);
   }
@@ -746,6 +759,10 @@ void Scheduler::QuarantineLoad(catalog::ExtentId extent, Fault fault) {
     slots_.at(*load.slot) = SlotState::kQuarantined;
   }
   base::Check(catalog_.FailLoad(load.ticket, false).has_value(), "quarantining a page-in's load");
+  if (load.receipt)
+    load.receipt->End(
+        false, true,
+        catalog_.OccupancyOf(catalog_.Describe(extent)->descriptor.domain).Total().value());
   for (const TaskId waiter : load.waiters) {
     Wake(waiter, true);
   }
@@ -900,6 +917,7 @@ std::expected<Readiness, WorkError> Scheduler::Evict(TaskId task, catalog::Exten
   Eviction& eviction = evictions_[extent];
   eviction = Eviction{.ticket = *ticket,
                       .operation = {},
+                      .receipt = options.receipt,
                       .evictor = task,
                       .waiters = {},
                       .stage = EvictStage::kUnmapping,
@@ -907,6 +925,7 @@ std::expected<Readiness, WorkError> Scheduler::Evict(TaskId task, catalog::Exten
                       .write_back = write_back,
                       // Only managed backing is kept: unmanaged stays mapped anyway.
                       .handoff = options.handoff && place.backing.has_value()};
+  if (eviction.receipt) eviction.receipt->Begin();
   eviction.waiters.reserve(settings_.waiters);
   eviction.waiters.push_back(task);
   ++record->waiting;
@@ -1092,6 +1111,7 @@ void Scheduler::OnEvicted(catalog::ExtentId extent, Outcome outcome, std::uint64
       // Refused: it is still kept, and stays charged.
       if (succeeded) {
         ++stats_.released_unused;
+        if (eviction.receipt) eviction.receipt->Released();
         EndEviction(extent, true);
         return;
       }
@@ -1203,6 +1223,7 @@ void Scheduler::EndParked(catalog::ExtentId extent) {
   base::Check(eviction.stage == EvictStage::kParked && eviction.waiters.empty(),
               "handing off backing an eviction does not keep");
   --parked_count_;
+  if (eviction.receipt) eviction.receipt->Handoff();
   EndEviction(extent, true);  // its entry in parked_ goes stale
 }
 
@@ -1215,6 +1236,10 @@ void Scheduler::EndEviction(catalog::ExtentId extent, bool evicted) {
   base::Check(evicted ? catalog_.CompleteEvict(eviction.ticket).has_value()
                       : catalog_.CancelEvict(eviction.ticket).has_value(),
               "settling an eviction");
+  if (eviction.receipt)
+    eviction.receipt->End(
+        evicted, false,
+        catalog_.OccupancyOf(catalog_.Describe(extent)->descriptor.domain).Total().value());
   // Only the evictor is told of a refusal: a task materializing the extent
   // finds it resident again.
   for (const TaskId waiter : eviction.waiters) {
@@ -1242,6 +1267,10 @@ void Scheduler::QuarantineEvicting(catalog::ExtentId extent, Fault fault) {
     slots_.at(*eviction.slot) = SlotState::kQuarantined;
   }
   base::Check(catalog_.QuarantineEviction(eviction.ticket).has_value(), "quarantining an eviction");
+  if (eviction.receipt)
+    eviction.receipt->End(
+        false, true,
+        catalog_.OccupancyOf(catalog_.Describe(extent)->descriptor.domain).Total().value());
   for (const TaskId waiter : eviction.waiters) {
     Wake(waiter, true);
   }

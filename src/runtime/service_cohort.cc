@@ -336,7 +336,6 @@ std::expected<void, std::string> NodeBackend::Advance(
     if (!needed) {
       return {};
     }
-    swapped_ = server_.resident() != cohort_model_;
     if (auto refused = ActivateFor(*cohort_model_, "the cooperative chat model"); refused) {
       if (!server_.NodeHealthy()) {
         return std::unexpected(refused->message);  // the service stops (ActivateFor failed it)

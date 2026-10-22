@@ -8,9 +8,9 @@
 #include <expected>
 #include <format>
 #include <functional>
-#include <limits>
 #include <map>
 #include <memory>
+#include <new>
 #include <optional>
 #include <set>
 #include <span>
@@ -35,54 +35,68 @@ using serving_support::Error;
 using serving_support::kExtent;
 using serving_support::Seconds;
 }  // namespace
-Status Server::WaitReleased() {
-  // Progress-based (D-102): only evictions that stop finishing for the
-  // node's quiet time are given up on, however long the whole takes.
-  auto give_up = Clock::now() + node_.quiet();
-  std::size_t before = std::numeric_limits<std::size_t>::max();
-  for (;;) {
-    std::size_t left = 0;
-    if (auto r = node_.Call(
-            [&]() -> Status {
-              left = node_.scheduler().evictions();
-              return {};
-            },
-            "counting evictions");
-        !r) {
-      return r;
-    }
-    if (left == 0) {
-      return {};
-    }
-    if (left < before) {
-      before = left;
-      give_up = Clock::now() + node_.quiet();
-    } else if (Clock::now() > give_up) {
-      return Error(
-          "backing no load took was not released: no eviction finished for the node's "
-          "quiet time");
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+std::expected<SwapParts, std::string> SwapParts::Create(engine::PagedNode& node,
+                                                        std::string_view from,
+                                                        std::string_view to) {
+  std::size_t names_bytes = 0;
+  std::uint64_t observer_bytes = 0;
+  // One observer/list entry and one exact-size character allocation. Unlike
+  // growing strings, this payload cannot acquire an unpaid spare capacity.
+  constexpr std::uint64_t kMetadata = sizeof(SwapParts) + 2 * sizeof(void*) + 64;
+  if (__builtin_add_overflow(from.size(), to.size(), &names_bytes) ||
+      __builtin_add_overflow(static_cast<std::uint64_t>(names_bytes), kMetadata, &observer_bytes))
+    return Error("swap observer names overflow their host payment");
+  auto receipt = node.NewEvictionReceipt(observer_bytes);
+  if (!receipt) return std::unexpected(receipt.error());
+  SwapParts result;
+  result.receipt_ = std::move(*receipt);
+  if (names_bytes != 0) {
+    result.names_.reset(new (std::nothrow) char[names_bytes]);
+    if (!result.names_) return Error("allocating prepaid swap observer names failed");
+    if (!from.empty()) (void)from.copy(result.names_.get(), from.size());
+    if (!to.empty()) (void)to.copy(result.names_.get() + from.size(), to.size());
+    result.from = {result.names_.get(), from.size()};
+    result.to = {result.names_.get() + from.size(), to.size()};
   }
+  return result;
+}
+
+std::expected<bool, std::string> Server::PollSwap(SwapParts& parts) {
+  if (parts.capture_failed_)
+    return Error("the swap's release measurement could not be funded or sealed");
+  if (parts.finished_ || !parts.receipt_) return true;
+  scheduler::EvictionReceipt::Snapshot snapshot;
+  bool stalled = false;
+  if (auto read = node_.Call(
+          [&]() -> Status {
+            snapshot = parts.receipt_->Read();
+            // Judge this observation while owned progress is serialized with
+            // it. A delayed driver must not age an obsolete pending snapshot.
+            stalled = snapshot.Stalled(Clock::now(), node_.quiet());
+            return {};
+          },
+          "reading an activation's release receipt");
+      !read)
+    return std::unexpected(read.error());
+  if (stalled)
+    return Error("the swap's own backing releases made no progress for the node's quiet time");
+  if (!snapshot.complete) return false;
+  if (snapshot.quarantined != 0) return Error("the swap's backing release was quarantined");
+  parts.release = Seconds(snapshot.TailAfter(parts.ended_));
+  parts.handed_off = snapshot.handed_off;
+  parts.released_unused = snapshot.released_unused;
+  parts.occupancy_released = snapshot.occupancy;
+  parts.finished_ = true;
+  return true;
 }
 
 Status Server::FinishSwap(SwapParts& parts) {
-  if (auto r = WaitReleased(); !r) {
-    return r;
+  for (;;) {
+    const auto finished = PollSwap(parts);
+    if (!finished) return std::unexpected(finished.error());
+    if (*finished) return {};
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
-  parts.release = Seconds(Clock::now() - parts.ready);
-  auto after = node_.Stats();
-  if (!after) {
-    return std::unexpected(after.error());
-  }
-  parts.handed_off = after->handed_off - swap_before_.handed_off;
-  parts.released_unused = after->released_unused - swap_before_.released_unused;
-  parts.occupancy_released = after->catalog_occupancy_bytes;
-  if (parts.diagnostic.enabled) {
-    parts.diagnostic.finished = swap_host_phases_;
-    parts.diagnostic.creates_finished = node_.backing_create_stats();
-  }
-  return {};
 }
 
 std::uint64_t Server::ReleaseKept(std::uint64_t needed, const Served* last,
@@ -303,12 +317,42 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   // Quiet): their reads and the swap's share the drive.
   const StateKeeper::Quiet quiet(keeper_.get());
   parts = SwapParts{};
-  parts.to = m.name();
   last_activity_ = Clock::now();
   if (resident_ == &m) {
     return {};
   }
+  auto observer = SwapParts::Create(
+      node_, resident_ != nullptr ? std::string_view(resident_->name()) : std::string_view{},
+      m.name());
+  if (!observer) return std::unexpected(observer.error());
+  parts = std::move(*observer);
   parts.requested = Clock::now();
+  struct Measurement {
+    Server& server;
+    SwapParts& parts;
+    std::shared_ptr<scheduler::EvictionReceipt> previous;
+    ~Measurement() {
+      parts.ended_ = parts.ready == Clock::time_point{} ? Clock::now() : parts.ready;
+      if (parts.diagnostic.enabled) {
+        // Freeze driver phases and cumulative lane snapshots at activation
+        // end. Observing this receipt after another activation never extends
+        // these diagnostic intervals to include that activation.
+        parts.diagnostic.finished = server.swap_host_phases_;
+        parts.diagnostic.creates_finished = server.node_.backing_create_counts();
+      }
+      (void)server.node_.SetEvictionReceipt(std::move(previous));
+      // Every issuing program has retired; resource-service evictions may
+      // still be in flight. Seal without waiting for any of those events.
+      const auto sealed = server.node_.Call(
+          [&]() -> Status {
+            parts.receipt_->Seal(
+                server.node_.catalog().OccupancyOf(server.node_.domain()).Total().value());
+            return {};
+          },
+          "sealing an activation's release receipt");
+      parts.capture_failed_ = parts.capture_failed_ || !sealed;
+    }
+  } measurement{*this, parts, node_.SetEvictionReceipt(parts.receipt_)};
   // The activation is the incoming model's page-in need: its weight files
   // open now (inside the swap's timing), and whichever model is not
   // resident when this returns has its closed (the outgoing one's once its
@@ -323,7 +367,7 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   if (options_.diagnostic_budget_cap_bytes) {
     parts.diagnostic.enabled = true;
     parts.diagnostic.requested = swap_host_phases_;
-    parts.diagnostic.creates_requested = node_.backing_create_stats();
+    parts.diagnostic.creates_requested = node_.backing_create_counts();
     parts.diagnostic.requested_ns = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(parts.requested.time_since_epoch())
             .count());
@@ -332,7 +376,6 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   if (!before) {
     return std::unexpected(before.error());
   }
-  swap_before_ = *before;
   parts.occupancy_requested = before->catalog_occupancy_bytes;
   Served* const outgoing_model = resident_;
   const auto protected_before = activation_protect_.size();
@@ -647,7 +690,6 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     loaded = Clock::now();
   } else {
     Served& out = *resident_;
-    parts.from = out.name();
     // The caller yields only at a completed unit. Release its request even
     // when the incoming closure is cached and no weight victim is needed.
     if (node_.InRequest(out.paged().stream())) {
@@ -821,7 +863,7 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     parts.evicted = report.evictions;
     parts.loaded = report.loads;
   }
-  if (parts.diagnostic.enabled) parts.diagnostic.creates_loaded = node_.backing_create_stats();
+  if (parts.diagnostic.enabled) parts.diagnostic.creates_loaded = node_.backing_create_counts();
   parts.evict = Seconds(evicted - parts.requested);
   Clock::time_point restored = evicted;
   if (restoring) {
@@ -925,7 +967,7 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   parts.total = Seconds(parts.ready - parts.requested);
   if (parts.diagnostic.enabled) {
     parts.diagnostic.ready = swap_host_phases_;
-    parts.diagnostic.creates_ready = node_.backing_create_stats();
+    parts.diagnostic.creates_ready = node_.backing_create_counts();
   }
   return {};
 }

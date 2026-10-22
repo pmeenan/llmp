@@ -83,7 +83,7 @@ static_assert(sizeof(BackingTimingStats) <= 512);
 
 // Actual device-memory provider Create outcomes on the backing lane. These
 // diagnostics do not imply that an internally retried driver call was clean.
-struct BackingCreateStats {
+struct BackingCreateCounts {
   std::uint64_t startup_pool_creates = 0;
   std::uint64_t reserve_attempts = 0;
   std::uint64_t reserve_failures = 0;
@@ -92,10 +92,14 @@ struct BackingCreateStats {
   std::uint64_t last_failure_monotonic_ns = 0;
   bool last_failure_reserve = false;
   providers::ProviderError last_failure_error = providers::ProviderError::kFailed;
-  std::string last_failure_detail;
   BackingTimingStats timing;
 
   std::uint64_t post_init_creates() const noexcept { return ordinary_attempts + reserve_attempts; }
+};
+
+// Only consumers of the provider's failure text need an allocating snapshot.
+struct BackingCreateStats : BackingCreateCounts {
+  std::string last_failure_detail;
 };
 
 class BackingCreateCounters {
@@ -113,6 +117,7 @@ class BackingCreateCounters {
   void EndPark();
   void Failed(bool reserve, const providers::Failure& failure);
   BackingCreateStats Snapshot() const;
+  BackingCreateCounts Counts() const;
 
  private:
   std::atomic<std::uint64_t> startup_pool_creates_ = 0;
@@ -571,6 +576,7 @@ class BackingService {
   std::size_t DrainReserve(std::optional<std::size_t> down_to = std::nullopt);
   bool ReleaseReserve();
   BackingCreateStats create_stats() const { return creates_.Snapshot(); }
+  BackingCreateCounts create_counts() const { return creates_.Counts(); }
 
  private:
   void Handle(DeviceCommand& command);

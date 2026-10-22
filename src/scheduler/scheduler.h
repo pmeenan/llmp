@@ -212,6 +212,7 @@
 #include "providers/direct_reader.h"
 #include "scheduler/commands.h"
 #include "scheduler/completions.h"
+#include "scheduler/eviction_receipt.h"
 #include "scheduler/files.h"
 #include "scheduler/lane.h"
 #include "scheduler/services.h"
@@ -473,6 +474,7 @@ struct EvictOptions {
   // (ExtentView::saved_generation), the write-back writes nothing, and the
   // eviction completes preserved as if it had (incremental spill).
   bool unchanged = false;
+  std::shared_ptr<EvictionReceipt> receipt = {};
 };
 
 // Controls from other threads.
@@ -718,6 +720,7 @@ class Scheduler {
 
   // A page-in, the scheduler's: one per extent, with its waiters.
   struct Load {
+    std::shared_ptr<EvictionReceipt> receipt;
     catalog::Ticket ticket;
     PageSource source;
     Stage stage = Stage::kQueued;
@@ -747,6 +750,7 @@ class Scheduler {
   struct Eviction {
     catalog::Ticket ticket;
     OperationId operation;
+    std::shared_ptr<EvictionReceipt> receipt;
     TaskId evictor;               // the task that asked for it
     std::vector<TaskId> waiters;  // it, and tasks materializing the extent
     EvictStage stage = EvictStage::kUnmapping;
@@ -877,7 +881,8 @@ class Scheduler {
   // Page-ins (pagein.cc). With `own`, the extent's own parked eviction
   // has just ended and its kept backing is the load's.
   std::expected<void, WorkError> BeginPageIn(TaskRecord& record, catalog::ExtentId extent,
-                                             const PageSource& source, bool own = false);
+                                             const PageSource& source, bool own = false,
+                                             std::shared_ptr<EvictionReceipt> receipt = {});
   // A parked eviction in `domain` keeping backing for `place`: the budget
   // is each domain's, so a charge never moves between domains.
   std::optional<catalog::ExtentId> Donor(const BackingPlace& place, catalog::DomainId domain);

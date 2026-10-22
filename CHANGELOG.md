@@ -47,6 +47,8 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Swap reports follow each activation's asynchronous releases across
+  same-model requests, cancellation and overlapping model switches (M3.5 U10).
 - Kept-state and process-lock files pin existing regular objects before I/O
   opens, including replacement identity checks; exclusive lock creation keeps
   dangling-link behavior without opening a substituted device or FIFO (M3.5 U10).

@@ -197,17 +197,43 @@ struct SwapDiagnostic {
   SwapHostPhases requested;
   SwapHostPhases ready;
   SwapHostPhases finished;
-  scheduler::BackingCreateStats creates_requested;
-  scheduler::BackingCreateStats creates_loaded;
-  scheduler::BackingCreateStats creates_ready;
-  scheduler::BackingCreateStats creates_finished;
+  // Cumulative backing-lane snapshots at activation endpoints, including
+  // reserve activity; these are not per-receipt create counts.
+  scheduler::BackingCreateCounts creates_requested;
+  scheduler::BackingCreateCounts creates_loaded;
+  scheduler::BackingCreateCounts creates_ready;
+  scheduler::BackingCreateCounts creates_finished;
 };
 
 // One swap's parts, in seconds, each from the end of the one before.
 struct SwapParts {
+ private:
+  friend class Server;
+  // Declaration order keeps the payment alive until the owned storage is
+  // destroyed. Scheduler work may independently retain the same paid receipt.
+  std::shared_ptr<scheduler::EvictionReceipt> receipt_;
+  std::unique_ptr<char[]> names_;
+
+ public:
+  SwapParts() = default;
+  SwapParts(const SwapParts&) = delete;
+  SwapParts& operator=(const SwapParts&) = delete;
+  SwapParts(SwapParts&&) noexcept = default;
+  SwapParts& operator=(SwapParts&& other) noexcept {
+    if (this != &other) {
+      // Default member assignment would refund this observer before freeing
+      // its old payload. Retire the whole old owner first, in destructor order.
+      std::destroy_at(this);
+      std::construct_at(this, std::move(other));
+    }
+    return *this;
+  }
+  ~SwapParts() = default;
+  static std::expected<SwapParts, std::string> Create(engine::PagedNode& node,
+                                                      std::string_view from, std::string_view to);
   SwapDiagnostic diagnostic;
-  std::string from;
-  std::string to;
+  std::string_view from;
+  std::string_view to;
   bool with_state = false;  // the outgoing model's conversation spilled
   double evict = 0;         // the request to every outgoing extent evicted (or parked)
   double restore = 0;       // then the incoming model's state resident (0 if it had none spilled)
@@ -230,6 +256,11 @@ struct SwapParts {
   std::uint64_t dropped_graphs = 0;  // graphs the reclaim order took for the incoming model
   Clock::time_point requested;
   Clock::time_point ready;  // setup's end
+
+ private:
+  Clock::time_point ended_;  // activation success or failure, before sealing
+  bool capture_failed_ = false;
+  bool finished_ = false;
 };
 
 // A switch's selected future weight releases, distinct from actual reclaimed
@@ -1666,9 +1697,12 @@ class Server {
   // `spill_state` false keeps the outgoing LLM's state resident (0
   // context); by default it is spilled when the LLM holds a conversation.
   Status Activate(Served& m, SwapParts& parts, std::optional<bool> spill_state = {});
-  // After the incoming model's first output, off the swap's path: waits
-  // until the backing no load took is released, and records that time and
-  // the handoff's counts in `parts`.
+  // Nonblocking observation of this activation's owned evictions. Other
+  // activations can run meanwhile; counters and the terminal timestamp are
+  // captured at the owned events, not when a response reads them.
+  std::expected<bool, std::string> PollSwap(SwapParts& parts);
+  // Commands/benchmarks explicitly wait for this measurement alone. The
+  // service uses PollSwap between units and never waits for reporting.
   Status FinishSwap(SwapParts& parts);
   // `body` as one request of `m` (D-093): its closure leased once, every
   // job of `body` a step under it.
@@ -1688,9 +1722,6 @@ class Server {
   // error from another operation, or cohort health, does not. End the stream
   // request only for the last owner; peers keep their selected state leases.
   ReferenceRetirement RetireRequestBranches(Llm& model, bool last_owner);
-  // Every eviction's backing no load took released (after a swap).
-  Status WaitReleased();
-
   // The node's one reclaim order (memory/reclaim.h; D-055 as amended
   // 2026-10-02; docs/retention-policy.md#victims-spill-and-exhaustion):
   // everything that can give memory back, whoever holds it (every model's
@@ -1980,8 +2011,7 @@ class Server {
   StateSnapshot snapshot_;
   bool snapshot_enabled_ = false;
   Llm* snapshot_model_ = nullptr;
-  scheduler::SchedulerStats swap_before_;  // the counters at the last Activate
-  SwapHostPhases swap_host_phases_;        // cap-only cumulative attribution, driver owned
+  SwapHostPhases swap_host_phases_;  // cap-only cumulative attribution, driver owned
   // Models whose conversation state was spilled by a swap out (and is
   // restored when they come back).
   std::vector<const Served*> spilled_;

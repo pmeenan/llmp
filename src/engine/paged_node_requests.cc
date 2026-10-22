@@ -1252,8 +1252,8 @@ Status PagedNode::Acquire(const catalog::Closure& closure, AcquireReport& report
     }
   }
   Done done;
-  auto program = std::make_unique<AcquireProgram>(done, closure, domain_, report,
-                                                  std::move(workspace), !reclaimer_);
+  auto program = std::make_unique<AcquireProgram>(
+      done, closure, domain_, report, std::move(workspace), !reclaimer_, eviction_receipt_);
   auto acquired = Post(std::move(program), done, what);
   if (over_budget != nullptr) {
     // Read once the program is gone (Post returns only then).

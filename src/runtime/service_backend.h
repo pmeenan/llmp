@@ -5,6 +5,7 @@
 #ifndef LLMP_RUNTIME_SERVICE_BACKEND_H_
 #define LLMP_RUNTIME_SERVICE_BACKEND_H_
 #include <array>
+#include <list>
 #include <optional>
 #include <string_view>
 
@@ -261,6 +262,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
 
   void Fail(std::string what);
 
+  // Collects ready activation receipts without draining outstanding work.
+  void CollectSwaps();
+
   // Makes `m` resident for requests' work (Server::Activate; D-102,
   // recovery first): nothing, or the error those requests get. A swap whose
   // hung work was cancelled waits for the cancellation to drain (when it
@@ -293,8 +297,10 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   HangLadder* ladder_ = nullptr;
   // The model a cohort's hang left to reset once its members retire.
   Llm* hang_reset_ = nullptr;
-  SwapParts parts_;
-  bool swapped_ = false;
+  // Each list entry is prepaid with its receipt; a pending entry survives
+  // only while that activation owns unfinished work. Completed ones drain
+  // between units, responses and activations, without a fixed count cap.
+  std::list<SwapParts> pending_swaps_;
   std::string failure_;  // a node failure: the service stops
   std::array<ChatWork*, Llm::kMaxBranches> cohort_{};
   Llm* cohort_model_ = nullptr;

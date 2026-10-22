@@ -111,9 +111,7 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
     return so_far(0);
   }
 
-  swapped_ = server_.resident() != m;
-  if (swapped_ && !exchange.Next(Phase::kSwap, swap_bytes)) {
-    swapped_ = false;
+  if (server_.resident() != m && !exchange.Next(Phase::kSwap, swap_bytes)) {
     return so_far(0);
   }
   if (auto refused = ActivateFor(*m, m->name()); refused) {
@@ -296,9 +294,7 @@ std::expected<api::Completion, api::Error> NodeBackend::Complete(
                        .floors = floors})) {
     return api::Completion{};
   }
-  swapped_ = server_.resident() != model;
-  if (swapped_ && !exchange.Next(Phase::kSwap, swap_bytes)) {
-    swapped_ = false;
+  if (server_.resident() != model && !exchange.Next(Phase::kSwap, swap_bytes)) {
     return api::Completion{};
   }
   if (auto refused = ActivateFor(*model, "the literal completion model"); refused) {
@@ -447,25 +443,40 @@ std::expected<api::Completion, api::Error> NodeBackend::Complete(
   return result;
 }
 
-void NodeBackend::AfterResponse() {
-  if (!swapped_) {
-    return;
+void NodeBackend::CollectSwaps() {
+  for (auto it = pending_swaps_.begin(); it != pending_swaps_.end();) {
+    const auto finished = server_.PollSwap(*it);
+    if (finished && !*finished) {
+      ++it;
+      continue;
+    }
+    if (!finished) {
+      Fail("finishing the swap: " + finished.error());
+    } else {
+      const auto& parts = *it;
+      if (parts.ready == Clock::time_point{}) {
+        Say(log_, std::format("swap {} -> {} failed; its backing release settled {:.3f} s later "
+                              "({} handoffs, {} unused releases)",
+                              parts.from.empty() ? "(nothing)" : parts.from, parts.to,
+                              parts.release, parts.handed_off, parts.released_unused));
+      } else {
+        Say(log_, std::format("swap {} -> {}: ready in {:.3f} s (evict {:.3f}, restore {:.3f}, "
+                              "page-in {:.3f}, setup {:.3f}; {} graphs reclaimed for it); backing "
+                              "released {:.3f} s "
+                              "later",
+                              parts.from.empty() ? "(nothing)" : parts.from, parts.to, parts.total,
+                              parts.evict, parts.restore, parts.page_in, parts.setup,
+                              parts.dropped_graphs, parts.release));
+      }
+    }
+    it = pending_swaps_.erase(it);
   }
-  swapped_ = false;
-  if (auto r = server_.FinishSwap(parts_); !r) {
-    Fail("finishing the swap: " + r.error());
-    return;
-  }
-  Say(log_,
-      std::format(
-          "swap {} -> {}: ready in {:.3f} s (evict {:.3f}, restore {:.3f}, "
-          "page-in {:.3f}, setup {:.3f}; {} graphs reclaimed for it); backing released {:.3f} s "
-          "later",
-          parts_.from.empty() ? "(nothing)" : parts_.from, parts_.to, parts_.total, parts_.evict,
-          parts_.restore, parts_.page_in, parts_.setup, parts_.dropped_graphs, parts_.release));
 }
 
+void NodeBackend::AfterResponse() { CollectSwaps(); }
+
 void NodeBackend::Maintain() {
+  CollectSwaps();
   if (failure_.empty()) {
     // The request memory grown to what the I/O and parse threads wanted
     // (or a denial counted), or given back toward what is used.
@@ -511,12 +522,18 @@ void NodeBackend::Fail(std::string what) {
 }
 
 std::optional<api::Error> NodeBackend::ActivateFor(Served& m, std::string_view what) {
+  if (server_.resident() == &m) {
+    return std::nullopt;  // no swap: preserve the preceding activation's measurement
+  }
+  CollectSwaps();  // observation only: never wait for an earlier release tail
+  if (!healthy()) return Failure(500, "the runtime is stopping after a swap release failure");
   (void)server_.node().TakeHangCancelled();  // asked after the work (D-102)
-  auto activated = server_.Activate(m, parts_);
+  SwapParts parts;
+  auto activated = server_.Activate(m, parts);
+  if (parts.requested != Clock::time_point{}) pending_swaps_.push_back(std::move(parts));
   if (activated) {
     return std::nullopt;
   }
-  swapped_ = false;
   if (server_.node().TakeHangCancelled()) {
     Say(log_,
         "hang recovery: the swap's hung work was cancelled; the swap failed and only "

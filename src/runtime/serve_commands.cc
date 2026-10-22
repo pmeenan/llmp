@@ -160,7 +160,7 @@ std::string BackingTimingJson(const scheduler::BackingTimingStats& t) {
                      ParkStageJson(t.park_stash), ParkStageJson(t.park_publication));
 }
 
-std::string CreateCountsJson(const scheduler::BackingCreateStats& c) {
+std::string CreateCountsJson(const scheduler::BackingCreateCounts& c) {
   return std::format(R"({{"reserve_attempts":{},"reserve_failures":{},"ordinary_attempts":{},)"
                      R"("ordinary_failures":{},"timing":{}}})",
                      c.reserve_attempts, c.reserve_failures, c.ordinary_attempts,
@@ -613,7 +613,7 @@ Status Table::Finish(Row& row) {
                           p.page_in + p.restore > 0 ? gb / (p.page_in + p.restore) : 0.0, p.setup,
                           row.first, row.plan_seconds, row.demand_seconds, GiB(row.peak),
                           p.handed_off, verdict));
-  rows_.push_back(row);
+  rows_.push_back(std::move(row));
   return {};
 }
 
@@ -753,7 +753,7 @@ Status Table::Pair(Served& a, Served& b) {
     Row ba;
     ba.pair = pair;
     ba.name = std::format("B->A, {} ({})", use, held);
-    ba.context_ids_sha256 = ab.context_ids_sha256;
+    ba.context_ids_sha256 = rows_.back().context_ids_sha256;
     server_.memory().Reset();
     if (auto r = server_.Activate(a, ba.parts); !r) {
       return r;

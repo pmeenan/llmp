@@ -585,6 +585,16 @@ BackingCreateStats BackingCreateCounters::Snapshot() const {
   return result;
 }
 
+BackingCreateCounts BackingCreateCounters::Counts() const {
+  std::lock_guard lock(mutex_);
+  BackingCreateCounts result = failures_;
+  result.startup_pool_creates = startup_pool_creates_.load(std::memory_order_relaxed);
+  result.reserve_attempts = reserve_attempts_.load(std::memory_order_relaxed);
+  result.ordinary_attempts = ordinary_attempts_.load(std::memory_order_relaxed);
+  result.timing.enabled = timing_enabled_;
+  return result;
+}
+
 std::optional<providers::BackingId> HandleReserve::Take(std::size_t allocation_class, Bytes size) {
   std::lock_guard lock(mutex_);
   if (settings_.count == 0 || allocation_class != settings_.allocation_class ||
