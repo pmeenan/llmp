@@ -90,6 +90,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Refresh Gemma26 and Gemma31 target and paired spec metadata with their source
+  sampling defaults, preserving all encoded payloads and assistant artifacts.
+
 - Record the failed Gemma2 scalar numerical transfer screen and reopen its
   qualification, preserving the registered bounds and frozen expectations.
 

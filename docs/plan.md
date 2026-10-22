@@ -599,8 +599,10 @@ D-122).
       for all 323,607 named tensor parts, including every expert slice.
       The two EXL3 fixtures now retain their source sampling defaults with
       [unchanged source identities and all 798 encoded parts each](experiments/m35-generic-import/exl3-sampling-refresh.md).
-      The other four legacy target refreshes and drafter stored-spec migration
-      remain open.
+      Gemma26 and Gemma31 now retain their source sampling defaults with
+      [complete payload and paired canonical identity proofs](experiments/m35-generic-import/gemma-sampling-refresh.md).
+      The Qwen GGUF and DeepSeek target refreshes and drafter stored-spec
+      migration remain open.
       Drafter import, admission, construction and calibration use the resolved
       canonical target architecture rather than its retained source alias. Fresh
       drafter components publish their selected canonical execution architecture;
