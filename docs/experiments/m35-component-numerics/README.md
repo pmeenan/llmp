@@ -288,3 +288,121 @@ CUDA-only timing. Both arms receive the same fixture patch.
 Review/build that fixture change and this completed registration, then commit the
 registration separately before quality/speed comparisons. No result is implied
 by the metadata inventory or by the input-only run.
+
+## Prospective LLM operand capture amendment (2026-10-22)
+
+This amendment fixes the diagnostic arms and capture recipe **before** their
+first governed capture. It changes no input, numerical domain, quality bound or
+speed threshold above. The image arms remain frozen separately. No LLM capture
+or quality result is claimed by this amendment.
+
+Both instrumented LLM arms run on Spark A (`spark-c4e2`, GB10, driver
+580.178.04), from individual snapshots in
+`/home/pmeenan/src/llmp/build/spark-native/src/runtime/`:
+
+| Arm | Snapshot | SHA-256 |
+| --- | --- | --- |
+| A | `m35-u4-baseline-diagnostic-runtime` | `405c5930accdc009ad8e824d2fcdeff00f063877f0d936c2b1a5dda6b28e519e` |
+| B | `m35-u4-candidate-diagnostic-runtime` | `e47f5b30150e9e8a357fa204c423de10ab706c8c8a7f02f0bc48887b5b2a04af` |
+
+A is base `5ec811a4413982630c05e7b6c2448f51f1191883` plus the generic diagnostic
+patch SHA-256 `f7b9304a4ae0c29b6f7bab9490c7c2336103225a0b9392e13a3953c99e4e3230`.
+B is that same base plus the frozen U4 source patch
+`08c82f5832358a8c68489bfbb2b1a48757e71ec9ca5331293b459e8da3332a30` and the
+**identical** diagnostic patch. The seven diagnostic files match byte for byte;
+the complete source-manifest difference is exactly the U4 patch's 56 paths.
+Both native runtime/lowering/model-runner builds passed, and each arm passed
+five focused descriptor/completion regressions on A. The build used SDK
+`aarch64-2c4eb5b2f68f3fa5`, Clang 22.1.8, NVCC 13.4.92 and cuBLAS 13.8.0.4.
+The remote build receipt's retained Git checkout identity is not the source
+identity; the base and patch identities above define these arms.
+
+[llm-capture-pins.json](llm-capture-pins.json) freezes the actual generated
+`speed_gate.config_template` text for `qwen38`, `qwen38-gguf` and `deepseek`,
+the speed/quality helper hashes, runtime identities, target/drafter IDs, and observed
+manifest/index/spec hashes. The current helper ignores its old/new label when
+generating configurations: both labels select the same current target artifacts.
+The launcher checks that generated text equals the registration before starting.
+The DeepSeek target for this capture is `d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f`;
+`698b1cd8…` above identifies the historical encoding inventory, not this launch.
+Its index/spec hashes agree with that historical inventory. The accepted Qwen
+MTP and DSpark drafter artifacts have no optional `spec.json`; the pins record
+null for that observed absence. This is not a claim that all artifacts were
+re-imported or that the separate drafter-spec migration has completed.
+
+The source Qwen tokenizer and chat template are pinned by their actual hashes
+and checkpoint directory in the same JSON. The default corpus is
+`~/.local/share/llmp/corpus/m3-reference-corpus.txt`, verified on A as the symlink
+to `m36-baselines/inputs/corpus-1facc957.md`: 817275 bytes, SHA-256
+`55381941fdb19f99a88c5170f25d7cbc3e091d7d839a8776ac491a593c978ceb`.
+The two unchanged `QUALITY_PROMPTS` each retain `max_tokens=128`; scoring
+retains `passage(corpus,100003,4000)`. The launcher captures these already
+registered controls together with the plan inventory; native Qwen's ordinary
+A/B scores remain informational, with its independent Mia acceptance unchanged.
+
+[capture.py](capture.py) imports the pinned `tools/speed_gate.py` only after
+parsing arguments. `--repo` permits an externally staged repository; its default
+is derived from this checked-in script. Runtime hashes are fixed in code with
+no command-line override. Every attempt requires a new exact `--out` directory,
+including retries after failure. The service adds only `--debug-plans` to the
+ordinary quality launch; readiness is bounded at 420 seconds and retirement at
+20 seconds, inside a required exclusive `spark-job --gpu --timeout 600` job.
+One family/arm runs per supervised job, which is then waited on. For example,
+a job step after this amendment is reviewed and committed is:
+
+```sh
+/home/pmeenan/.local/bin/mise exec -- python3 /home/pmeenan/src/llmp/docs/experiments/m35-component-numerics/capture.py --family qwen38 --arm A --runtime /home/pmeenan/src/llmp/build/spark-native/src/runtime/m35-u4-baseline-diagnostic-runtime --out /home/pmeenan/.local/share/llmp/m35-u4-capture/qwen38-A-ATTEMPT
+```
+
+Use the matching B snapshot for B and distinct fresh directories for each
+family/arm. A nonzero supervisor exit, incomplete receipt, failed greedy reply,
+missing scored targets or unsuccessful runtime retirement does not qualify.
+The retained score prompt must equal the exact generated frozen passage in both
+bytes and recorded hash; the response hash and exact sibling filenames must
+match. The pinned `quality_pair.from_speed_gate` helper checks canonical actual
+target IDs, echo agreement and finite nonpositive log-probabilities. Capture
+additionally requires one choice, an unscored null first row followed by exactly
+996 nonnull target rows for native/GGUF Qwen or 966 for DeepSeek, and an equally
+long complete echoed-ID list. `usage.prompt_tokens` equals that full row count,
+`usage.completion_tokens` is zero, and the receipt's target count agrees.
+The ordered actual target-ID digest is retained for later A/B alignment; a
+single arm's digest is not a tokenizer-identity claim. These are the existing
+registered target counts; native Qwen's 996-target comparison remains
+informational. Six score-validation regressions cover complete responses and
+partial, null, invalid-probability, echo, usage, prompt and hash failures.
+The exact family/label determines the receipt and runtime-log paths; no glob
+chooses a prior result. Capture metadata retains helper, launcher, pin, input,
+config, runtime, parser, quality receipt and raw-log identities. Raw logs,
+requests, replies and score arrays remain outside Git.
+
+[plan_reports.py](plan_reports.py) produces **physical plan inventories backed
+by successful-use markers, not a kernel execution trace**. Installed inventory
+is associated with model plus installed serial; only completed uses count, so
+unused lookahead is excluded. Transient/private plans stream their paid
+inventory at successful completion and are scoped by model plus completion
+sequence. Each descriptor preserves concrete dtype, dimensions, byte strides,
+view offset/source, semantic encoding/layout where available, and ordered
+source/output identity including repeated and null source slots. Launch reads
+refer to backing storage; operated source slots retain actual view descriptors.
+
+The parser retains logical selections, product arithmetic and all logical
+provenance records, and validates the logical selection summary/count. It also
+validates exact descriptor, graph-step, root and routed-group counts,
+unique contiguous descriptor/step ordinals, every referenced descriptor, ordered
+recipe access multiplicity, and routed copy/selected-descriptor metadata. The
+routed arena's descriptor count covers the **whole physical inventory**, not
+just its selected-descriptor subset. Recipes describe installed launch structure;
+this report does not claim observed expert/routed IDs or dynamic launch counts.
+Eleven parser regressions cover missing complete recipes, unreferenced or
+duplicate descriptors, missing metadata, repeated/null slots, routed omissions,
+private completions, model scopes and unsuccessful/unknown completions.
+
+Count checks detect inconsistent omissions, not coordinated editing of both
+records and their declared counts or deletion of a whole completed workload.
+Successful quality receipts, exact request provenance and raw-log hashes remain
+necessary. Compare actual node operations, product arithmetic, operated
+source/output encodings and geometry/order, and implementation bindings.
+Retain identity provenance, but eligibility/evidence/schema-digest churn alone
+is not changed arithmetic; genuine implementation changes cannot be discarded
+as metadata. Ambiguous or incomplete capture fails closed. The original quality
+and matched-speed obligations above apply if arithmetic changes.

@@ -1,0 +1,92 @@
+{
+  "artifacts": {
+    "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9": {
+      "manifest.json": "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9",
+      "index.json": "2b29dc0f905bd670522abda9d8ef5e17f0db328c1d4fcd9f8dae63e9079dc5dd",
+      "spec.json": "c2e2822e48502a42783ab9f1c4d8ecf3649f02e6331ea2c0ea133e2542983a0f"
+    },
+    "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef": {
+      "manifest.json": "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef",
+      "index.json": "c20f71e3c79ad0505f24a5f822a8a644d53a3cdfc4e962e4e34533a508cee316",
+      "spec.json": null
+    },
+    "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027": {
+      "manifest.json": "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027",
+      "index.json": "40803567725558418f1993e1c50948870d92ea7022fea40151846334fbd03d70",
+      "spec.json": "dbbce592f38d0ec8c5fc96b1255e0821b3bf80600a6ad89e068cd39cd90fa72b"
+    },
+    "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f": {
+      "manifest.json": "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f",
+      "index.json": "4f84772b3cfa5912e6a5ece00f438b9b8ac330679dd848a1896810f7d48a8e80",
+      "spec.json": "ddaaa1d38bd6a501b9ef891bc0f639a70f41b19ff85a85674be5d77470e7a8e8"
+    },
+    "6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41": {
+      "manifest.json": "6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41",
+      "index.json": "272e5fcdac70d1f56cd6b4515819a7643dbdef5ce0038a6f7f228fbeb864a36d",
+      "spec.json": null
+    }
+  },
+  "source_files": {
+    "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json": {
+      "sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+      "bytes": 12809320,
+      "resolved_path": "/home/pmeenan/.local/share/llmp/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json"
+    },
+    "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/chat_template.jinja": {
+      "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+      "bytes": 8952,
+      "resolved_path": "/home/pmeenan/.local/share/llmp/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/chat_template.jinja"
+    },
+    "corpus/m3-reference-corpus.txt": {
+      "sha256": "55381941fdb19f99a88c5170f25d7cbc3e091d7d839a8776ac491a593c978ceb",
+      "bytes": 817275,
+      "resolved_path": "/home/pmeenan/.local/share/llmp/m36-baselines/inputs/corpus-1facc957.md"
+    }
+  },
+  "schema": 1,
+  "base_commit": "5ec811a4413982630c05e7b6c2448f51f1191883",
+  "u4_patch_sha256": "08c82f5832358a8c68489bfbb2b1a48757e71ec9ca5331293b459e8da3332a30",
+  "diagnostic_patch_sha256": "f7b9304a4ae0c29b6f7bab9490c7c2336103225a0b9392e13a3953c99e4e3230",
+  "speed_gate_sha256": "0f1135a2283fe63797e15c8dffe48c9df39b0baae91a57f925b5ba21c3e3252e",
+  "runtime_directory": "/home/pmeenan/src/llmp/build/spark-native/src/runtime",
+  "arms": {
+    "A": {
+      "file": "m35-u4-baseline-diagnostic-runtime",
+      "sha256": "405c5930accdc009ad8e824d2fcdeff00f063877f0d936c2b1a5dda6b28e519e"
+    },
+    "B": {
+      "file": "m35-u4-candidate-diagnostic-runtime",
+      "sha256": "e47f5b30150e9e8a357fa204c423de10ab706c8c8a7f02f0bc48887b5b2a04af"
+    }
+  },
+  "configs": {
+    "qwen38": "schema_version = 2\n[storage]\ndata_dir = \"{data}\"\ninstalled = \"{share}/u2-v1-artifacts\"\n[client]\nbind = [\"loopback\"]\nport = {port}\n[models.\"qwen3.8\"]\nartifact = \"02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9\"\ndrafter = \"2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef\"\nspeculation = true\ndraft_vocab = 65536\ndepth_cost_ratio = 1.16\ncontext = 33792\nprefill_chunk = 4096\nmax_slots = 4\ntokenizer = \"{share}/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json\"\nchat_template = \"{share}/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/chat_template.jinja\"\n",
+    "qwen38-gguf": "schema_version = 2\n[storage]\ndata_dir = \"{data}\"\ninstalled = \"{share}/u2-v1-artifacts\"\n[client]\nbind = [\"loopback\"]\nport = {port}\n[models.\"qwen3.8-gguf\"]\nartifact = \"f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027\"\ncontext = 33792\nprefill_chunk = 4096\nmax_slots = 4\ntokenizer = \"{share}/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json\"\nchat_template = \"{share}/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/chat_template.jinja\"\n",
+    "deepseek": "schema_version = 2\n[storage]\ndata_dir = \"{data}\"\ninstalled = \"{share}/u2-v1-artifacts\"\n[client]\nbind = [\"loopback\"]\nport = {port}\n[models.deepseek]\nartifact = \"d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f\"\ndrafter = \"6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41\"\nspeculation = true\nwave_form = \"plain\"\ncontext = 262144\nprefill_chunk = 4096\nmax_slots = 4\n"
+  },
+  "quality": {
+    "greedy_prompts": [
+      "Explain, step by step, how a hash table handles collisions.",
+      "Write a short story about a lighthouse keeper who finds a map."
+    ],
+    "max_tokens": 128,
+    "passage_index": 100003,
+    "passage_chars": 4000,
+    "expected_targets": {
+      "qwen38": 996,
+      "qwen38-gguf": 996,
+      "deepseek": 966
+    }
+  },
+  "qualification": {
+    "host": "spark-c4e2",
+    "focused_tests_per_arm": 5,
+    "result": "PASS",
+    "clang": "22.1.8",
+    "nvcc": "13.4.92",
+    "cublas": "13.8.0.4",
+    "driver": "580.178.04",
+    "device": "GB10"
+  },
+  "quality_pair_sha256": "9bf1d1597a8d6e97d65a648a9db68d8a51c694cc3772a6f01ba158fc420137bd"
+}
