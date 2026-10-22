@@ -81,7 +81,15 @@ JSON use checked expanded byte bounds shared with the prepayment calculation;
 escaping never grants more raw input bytes. The other JSON limits still apply
 to the internal documents, including normalization's added envelope values,
 keys and depth. JSON nesting uses the existing parser stack bound. The streaming scanner keeps its lexical position across fragments and
-withholds partial UTF-8 and marker prefixes before emitting text.
+withholds partial UTF-8 and marker prefixes before emitting text. Bare-envelope
+name/argument recognition also retains fixed, copyable metadata: probes of an
+unfinished call advance over appended bytes and any held delimiter suffix,
+without rescanning its accepted argument prefix. A separate whole-pending projection preserves callback-pause
+and ordinary-answer fallback semantics. Argument payloads remain borrowed by
+probes; bounded keys and names use the existing JSON checks. `ToolOutputBytes`
+funds both cursor snapshots through the actual interpreter size. This removes
+whole-prefix rescanning structurally; no measured parser or model speedup is
+claimed.
 
 Parallel result groups are reordered by IDs into their assistant's call order.
 Their text and error flag move together. Missing IDs preserve supplied order,

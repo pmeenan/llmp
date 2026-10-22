@@ -999,3 +999,270 @@ TEST(ToolCalls, BareJsonIncompleteAnswerIsRetainedButTruncatedCallIsDropped) {
   EXPECT_FALSE(malformed.Push(R"({"name":"lookup","parameters":nope})", output.Sink()));
 }
 }  // namespace
+
+namespace {
+// Frozen e0338017 envelope projection, independent of the incremental cursor.
+bool Space(char ch) { return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'; }
+bool PrefixOf(std::string_view prefix, std::string_view text) { return text.starts_with(prefix); }
+std::string_view Strip(std::string_view text) {
+  while (!text.empty() && Space(text.front())) text.remove_prefix(1);
+  while (!text.empty() && Space(text.back())) text.remove_suffix(1);
+  return text;
+}
+struct DelimiterScan {
+  std::size_t at = 0;
+  std::vector<char> nesting;
+  bool quoted = false, escaped = false;
+};
+std::optional<std::size_t> Outside(std::string_view text, std::string_view needle,
+                                   std::string_view quote, DelimiterScan& scan,
+                                   std::string_view second = {}, std::string_view third = {},
+                                   bool structured = true) {
+  while (scan.at < text.size()) {
+    const auto rest = text.substr(scan.at);
+    const auto boundary = [&](std::string_view token) {
+      if (token.empty() || !rest.starts_with(token)) return false;
+      // An XML-like boundary outside a quoted string closes a malformed JSON
+      // value too: unclosed braces must not turn a fully closed bad call into
+      // a length-truncated call that would silently disappear.
+      return scan.nesting.empty() ||
+             (token.front() != '}' && token.front() != ']' && token.front() != ',');
+    };
+    if (!scan.quoted && (boundary(needle) || boundary(second) || boundary(third))) return scan.at;
+    if (scan.quoted) {
+      if (quote == "\"" && !scan.escaped && rest.front() == '\\') {
+        scan.escaped = true;
+        ++scan.at;
+        continue;
+      }
+      if (!scan.escaped && rest.starts_with(quote)) {
+        scan.quoted = false;
+        scan.at += quote.size();
+        continue;
+      }
+      if (!scan.escaped && rest.size() < quote.size() && PrefixOf(rest, quote)) return {};
+      scan.escaped = false;
+    } else {
+      if (structured && rest.starts_with(quote)) {
+        scan.quoted = true;
+        scan.at += quote.size();
+        continue;
+      }
+      if ((structured && rest.size() < quote.size() && PrefixOf(rest, quote)) ||
+          (rest.size() < needle.size() && PrefixOf(rest, needle)) ||
+          (rest.size() < second.size() && PrefixOf(rest, second)) ||
+          (rest.size() < third.size() && PrefixOf(rest, third)))
+        return {};
+      const char c = rest.front();
+      if (structured && (c == '{' || c == '[')) scan.nesting.push_back(c);
+      if ((c == '}' || c == ']') && !scan.nesting.empty()) scan.nesting.pop_back();
+    }
+    ++scan.at;
+  }
+  return {};
+}
+
+struct EnvelopeInfo {
+  bool name = false, arguments = false, allowed = false;
+};
+// Scan top-level envelope keys without copying argument payloads. Both the
+// output interpreter and vocabulary probes use this same lexical projection;
+// full JSON validation occurs once when an accepted call closes.
+EnvelopeInfo OriginalEnvelope(std::string_view text, const c::ToolCallFormat& format,
+                              const c::ToolRequest& request) {
+  EnvelopeInfo info;
+  std::size_t at = 0;
+  while (at < text.size()) {
+    while (at < text.size() && (Space(text[at]) || text[at] == ',')) ++at;
+    if (at == text.size() || text[at] != '"') break;
+    const auto key_start = at++;
+    bool escaped = false;
+    while (at < text.size()) {
+      const char ch = text[at++];
+      if (!escaped && ch == '"') break;
+      if (!escaped && ch == '\\')
+        escaped = true;
+      else
+        escaped = false;
+    }
+    if (at > text.size() || text[at - 1] != '"') break;
+    std::string key;
+    if (at - key_start <= 6 * std::max(format.name_key.size(), format.arguments_key.size()) + 2) {
+      const auto bytes = static_cast<std::string>(text.substr(key_start, at - key_start));
+      auto parsed = j::Parse(bytes, {.max_bytes = bytes.size(),
+                                     .max_depth = bytes.size(),
+                                     .max_values = bytes.size(),
+                                     .max_string_bytes = bytes.size()});
+      if (parsed && parsed->root().is_string()) key = parsed->root().string();
+    }
+    while (at < text.size() && Space(text[at])) ++at;
+    if (at == text.size() || text[at++] != ':') break;
+    while (at < text.size() && Space(text[at])) ++at;
+    if (at == text.size()) break;
+    const auto value = at;
+    DelimiterScan scan;
+    const auto end = Outside(text.substr(value), ",", "\"", scan);
+    at = end ? value + *end : text.size();
+    if (key == format.arguments_key) info.arguments = true;
+    if (key == format.name_key) {
+      info.name = true;
+      // The entire name, including JSON escapes, is checked before any token
+      // containing its closing quote can be chosen/kept. Other fields may come
+      // first, and whitespace/key order are ordinary JSON semantics.
+      auto encoded = Strip(text.substr(value, at - value));
+      if (!encoded.empty() && encoded.front() == '"' && encoded.back() == '"' &&
+          encoded.size() <= 6 * request.NameBytes() + 2) {
+        const auto bytes = static_cast<std::string>(encoded);
+        auto parsed = j::Parse(bytes, {.max_bytes = bytes.size(),
+                                       .max_depth = bytes.size(),
+                                       .max_values = bytes.size(),
+                                       .max_string_bytes = bytes.size()});
+        if (parsed && parsed->root().is_string()) {
+          const auto name = parsed->root().string();
+          info.allowed = request.choice().kind == c::ToolChoiceKind::kNamed
+                             ? name == request.choice().name
+                             : request.Declared(name);
+        }
+      } else if (!end) {
+        // An unfinished name is still a viable prefix; final closure must
+        // authenticate a complete name. No minimum-completion grammar here.
+        info.name = false;
+      }
+    }
+    if (!end) break;
+    ++at;
+  }
+  return info;
+}
+
+TEST(ToolCalls, IncrementalEnvelopeMatchesOriginalAtEveryHostilePrefix) {
+  const std::vector<std::string> bodies{
+      R"("parameters":{"s":"a\\\"b","xs":[{},[],{"n":1}]},"na\u006de":"lookup"   )",
+      R"("name":"lookup","name":"unknown","parameters":{)",
+      R"("name":"lookup","name":nope,"parameters":{)",
+      R"("name":"unknown","name":"lookup","name":"unfinished)",
+      R"("name":"lookup","name":"bad\q","parameters":{)",
+      R"("parameters":,"name":null, "name":"lookup"x)",
+      R"("parameters":{},"name":"lookup",not_a_key,"name":"unknown")",
+      R"("na\u006de":"look\u0075p","parameters":{"s":"},\"name\":\"unknown\""})",
+      R"("name\"":"ignored","parameters":{},"name":"unknown")",
+      "\"" + std::string(1024, 'x') + "\":\"ignored\",\"name\":\"lookup\"",
+      "\"parameters\":{\"s\":\"" + std::string(4096, 'x')};
+  const auto auto_request = Request();
+  const auto named_request = Request({c::ToolChoiceKind::kNamed, "lookup"});
+  for (const auto& body : bodies) {
+    c::ToolInterpreter incremental(c::JsonToolCalls(), auto_request, Limits());
+    c::ToolInterpreter named(c::JsonToolCalls(), named_request, Limits());
+    incremental.SyntaxOnly();
+    named.SyntaxOnly();
+    const auto sink = [](c::ToolEvent) { return true; };
+    ASSERT_TRUE(incremental.Push("{", sink));
+    ASSERT_TRUE(named.Push("{", sink));
+    for (std::size_t size = 0; size <= body.size(); ++size) {
+      const auto prefix = std::string_view(body).substr(0, size);
+      const auto ordinary = OriginalEnvelope(prefix, c::JsonToolCalls(), auto_request);
+      const bool can_stop = !(ordinary.name && ordinary.arguments) && !ordinary.allowed;
+      EXPECT_EQ(incremental.CanStop(), can_stop) << prefix;
+      EXPECT_EQ(incremental.CanStop(), can_stop) << prefix;
+      const auto restricted = OriginalEnvelope(prefix, c::JsonToolCalls(), named_request);
+      EXPECT_EQ(named.Allows({}), !restricted.name || restricted.allowed) << prefix;
+      if (size == body.size()) break;
+      const auto next = std::string_view(body).substr(size, 1);
+      const auto future = OriginalEnvelope(std::string_view(body).substr(0, size + 1),
+                                           c::JsonToolCalls(), named_request);
+      EXPECT_EQ(named.Allows(next), !future.name || future.allowed) << prefix << next;
+      ASSERT_TRUE(incremental.Push(next, sink));
+      ASSERT_TRUE(named.Push(next, sink));
+    }
+  }
+}
+
+TEST(ToolCalls, IncrementalEnvelopeCopiesKeepIndependentProvisionalNamesAndRollback) {
+  const std::string prefix = R"({"parameters":{"s":"value"},"name":"look)";
+  c::ToolInterpreter original(c::JsonToolCalls(), Request(), Limits());
+  Output output;
+  ASSERT_TRUE(original.Push(prefix, output.Sink()));
+  EXPECT_TRUE(original.CanStop());
+  auto accepted = original;
+  auto rejected = original;
+  Output good, bad;
+  ASSERT_TRUE(accepted.Push("up\"", good.Sink()));
+  ASSERT_TRUE(rejected.Push("else\"", bad.Sink()));
+  EXPECT_FALSE(accepted.CanStop());
+  EXPECT_FALSE(rejected.CanStop());  // both fields authenticate a call, even an undeclared name
+  EXPECT_TRUE(original.CanStop());
+  EXPECT_TRUE(original.Allows("up\"}"));
+  ASSERT_TRUE(accepted.Push("}", good.Sink()));
+  ASSERT_TRUE(accepted.Finish(c::ToolFinish::kStop, good.Sink()));
+  ASSERT_EQ(good.calls.size(), 1U);
+  EXPECT_EQ(good.calls[0].name, "lookup");
+  ASSERT_TRUE(original.Finish(c::ToolFinish::kStop, output.Sink()));
+  EXPECT_EQ(output.text, prefix);
+}
+
+TEST(ToolCalls, PausedBareEnvelopeRetainsWholePendingAndFirstBodyProjections) {
+  for (const std::string close : {"}", "}\n", "</call>"}) {
+    for (const bool second : {false, true}) {
+      const std::string suffix =
+          second ? R"( {"name":"other","parameters":{})" + close : " trailing answer";
+      auto format = c::JsonToolCalls();
+      format.opener_ends_reasoning = true;
+      format.call_end = close;
+      const std::string input = R"({"name":"lookup","parameters":{})" + close + suffix;
+      c::ToolInterpreter parser(format, Request(), Limits());
+      Output output;
+      ASSERT_TRUE(parser.Push(input, [&](c::ToolEvent event) {
+        EXPECT_TRUE(std::holds_alternative<c::ToolReasoningEnd>(event));
+        return c::ToolInterpreter::Flow::kPause;
+      }));
+      ASSERT_TRUE(parser.paused());
+      const auto info = OriginalEnvelope(std::string_view(input).substr(1), format, Request());
+      EXPECT_EQ(parser.CanStop(), !(info.name && info.arguments) && !info.allowed);
+      EXPECT_TRUE(parser.Allows({}));
+      auto speculative = parser;
+      EXPECT_TRUE(speculative.Allows(" more"));
+      ASSERT_TRUE(speculative.Finish(c::ToolFinish::kStop, output.Sink()));
+      EXPECT_TRUE(speculative.paused());
+      ASSERT_TRUE(speculative.Resume(output.Sink()));
+      EXPECT_TRUE(speculative.ended());
+      ASSERT_EQ(output.calls.size(), second ? 2U : 1U);
+      EXPECT_EQ(output.calls.front().name, "lookup");
+      EXPECT_TRUE(parser.paused());
+      Output resumed;
+      ASSERT_TRUE(parser.Resume(resumed.Sink()));
+      EXPECT_TRUE(parser.CanStop());
+      EXPECT_TRUE(parser.Allows(" more"));
+      ASSERT_TRUE(parser.Finish(c::ToolFinish::kStop, resumed.Sink()));
+      EXPECT_EQ(resumed.calls.size(), output.calls.size());
+      EXPECT_EQ(resumed.text, output.text);
+    }
+  }
+}
+
+}  // namespace
+
+namespace {
+TEST(ToolCalls, IncrementalEnvelopeHoldsEverySplitOfDeclaredClosingDelimiter) {
+  for (const std::string close : {"}\n", "END", "</call>"}) {
+    auto format = c::JsonToolCalls();
+    format.call_end = close;
+    const std::string body = R"({"parameters":{"s":"value"},"name":"lookup")";
+    for (std::size_t split = 0; split < close.size(); ++split) {
+      c::ToolInterpreter parser(format, Request(), Limits());
+      c::ToolInterpreter named(format, Request({c::ToolChoiceKind::kNamed, "lookup"}), Limits());
+      Output output, named_output;
+      ASSERT_TRUE(parser.Push(body + close.substr(0, split), output.Sink()));
+      ASSERT_TRUE(named.Push(body + close.substr(0, split), named_output.Sink()));
+      const auto suffix = std::string_view(close).substr(split);
+      EXPECT_TRUE(parser.Allows(suffix)) << close << split;
+      EXPECT_TRUE(named.Allows(suffix)) << close << split;
+      ASSERT_TRUE(parser.Push(suffix, output.Sink()));
+      ASSERT_TRUE(named.Push(suffix, named_output.Sink()));
+      ASSERT_EQ(output.calls.size(), 1U) << close << split;
+      ASSERT_EQ(named_output.calls.size(), 1U) << close << split;
+      EXPECT_EQ(output.calls.front().name, "lookup");
+      ASSERT_TRUE(parser.Finish(c::ToolFinish::kStop, output.Sink()));
+    }
+  }
+}
+}  // namespace

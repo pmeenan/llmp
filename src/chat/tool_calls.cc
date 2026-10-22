@@ -243,54 +243,23 @@ std::optional<std::size_t> Outside(Text text, std::string_view needle, std::stri
   return {};
 }
 
-struct EnvelopeInfo {
-  bool name = false, arguments = false, allowed = false;
-};
-// Scan top-level envelope keys without copying argument payloads. Both the
-// output interpreter and vocabulary probes use this same lexical projection;
-// full JSON validation occurs once when an accepted call closes.
+using EnvelopeInfo = detail::ToolEnvelopeInfo;
+using EnvelopeCursor = detail::ToolEnvelopeCursor;
+
+// Advance only through newly appended bytes. Projections of the current field
+// remain provisional until a top-level comma; this preserves the old lexical
+// treatment of malformed values and duplicate names. Only bounded key/name
+// slices are materialized, never argument payloads.
 template <class Text>
-EnvelopeInfo Envelope(Text text, const ToolCallFormat& format, const ToolRequest& request) {
-  EnvelopeInfo info;
-  std::size_t at = 0;
-  while (at < text.size()) {
-    while (at < text.size() && (Space(text[at]) || text[at] == ',')) ++at;
-    if (at == text.size() || text[at] != '"') break;
-    const auto key_start = at++;
-    bool escaped = false;
-    while (at < text.size()) {
-      const char ch = text[at++];
-      if (!escaped && ch == '"') break;
-      if (!escaped && ch == '\\')
-        escaped = true;
-      else
-        escaped = false;
-    }
-    if (at > text.size() || text[at - 1] != '"') break;
-    std::string key;
-    if (at - key_start <= 6 * std::max(format.name_key.size(), format.arguments_key.size()) + 2) {
-      const auto bytes = static_cast<std::string>(text.substr(key_start, at - key_start));
-      auto parsed = j::Parse(bytes, {.max_bytes = bytes.size(),
-                                     .max_depth = bytes.size(),
-                                     .max_values = bytes.size(),
-                                     .max_string_bytes = bytes.size()});
-      if (parsed && parsed->root().is_string()) key = parsed->root().string();
-    }
-    while (at < text.size() && Space(text[at])) ++at;
-    if (at == text.size() || text[at++] != ':') break;
-    while (at < text.size() && Space(text[at])) ++at;
-    if (at == text.size()) break;
-    const auto value = at;
-    DelimiterScan scan;
-    const auto end = Outside(text.substr(value), ",", "\"", scan);
-    at = end ? value + *end : text.size();
-    if (key == format.arguments_key) info.arguments = true;
-    if (key == format.name_key) {
+EnvelopeInfo Envelope(Text text, const ToolCallFormat& format, const ToolRequest& request,
+                      EnvelopeCursor& scan) {
+  using Phase = EnvelopeCursor::Phase;
+  const auto project = [&](bool ended) {
+    auto info = scan.committed;
+    if (scan.arguments_key) info.arguments = true;
+    if (scan.name_key) {
       info.name = true;
-      // The entire name, including JSON escapes, is checked before any token
-      // containing its closing quote can be chosen/kept. Other fields may come
-      // first, and whitespace/key order are ordinary JSON semantics.
-      auto encoded = Strip(text.substr(value, at - value));
+      const auto encoded = text.substr(scan.value_start, scan.trim_end - scan.value_start);
       if (!encoded.empty() && encoded.front() == '"' && encoded.back() == '"' &&
           encoded.size() <= 6 * request.NameBytes() + 2) {
         const auto bytes = static_cast<std::string>(encoded);
@@ -304,16 +273,104 @@ EnvelopeInfo Envelope(Text text, const ToolCallFormat& format, const ToolRequest
                              ? name == request.choice().name
                              : request.Declared(name);
         }
-      } else if (!end) {
-        // An unfinished name is still a viable prefix; final closure must
-        // authenticate a complete name. No minimum-completion grammar here.
+      } else if (!ended) {
         info.name = false;
       }
     }
-    if (!end) break;
-    ++at;
+    return info;
+  };
+  const auto previous_trim = scan.trim_end;
+  const auto previous_phase = scan.phase;
+  while (scan.at < text.size() && scan.phase != Phase::kStopped) {
+    const char ch = text[scan.at];
+    switch (scan.phase) {
+      case Phase::kBetween:
+        if (Space(ch) || ch == ',') {
+          ++scan.at;
+        } else if (ch == '"') {
+          scan.key_start = scan.at++;
+          scan.escaped = false;
+          scan.phase = Phase::kKey;
+        } else {
+          scan.phase = Phase::kStopped;
+        }
+        break;
+      case Phase::kKey:
+        ++scan.at;
+        if (!scan.escaped && ch == '"') {
+          scan.name_key = scan.arguments_key = false;
+          if (scan.at - scan.key_start <=
+              6 * std::max(format.name_key.size(), format.arguments_key.size()) + 2) {
+            const auto bytes =
+                static_cast<std::string>(text.substr(scan.key_start, scan.at - scan.key_start));
+            auto parsed = j::Parse(bytes, {.max_bytes = bytes.size(),
+                                           .max_depth = bytes.size(),
+                                           .max_values = bytes.size(),
+                                           .max_string_bytes = bytes.size()});
+            if (parsed && parsed->root().is_string()) {
+              scan.name_key = parsed->root().string() == format.name_key;
+              scan.arguments_key = parsed->root().string() == format.arguments_key;
+            }
+          }
+          scan.phase = Phase::kColon;
+        } else {
+          scan.escaped = !scan.escaped && ch == '\\';
+        }
+        break;
+      case Phase::kColon:
+        if (Space(ch)) {
+          ++scan.at;
+        } else if (ch == ':') {
+          ++scan.at;
+          scan.phase = Phase::kValueStart;
+        } else {
+          scan.phase = Phase::kStopped;
+        }
+        break;
+      case Phase::kValueStart:
+        if (Space(ch)) {
+          ++scan.at;
+        } else {
+          scan.value_start = scan.trim_end = scan.at;
+          scan.depth = 0;
+          scan.quoted = scan.escaped = false;
+          scan.phase = Phase::kValue;
+        }
+        break;
+      case Phase::kValue:
+        if (!scan.quoted && scan.depth == 0 && ch == ',') {
+          scan.committed = scan.projected = project(true);
+          ++scan.at;
+          scan.phase = Phase::kBetween;
+          break;
+        }
+        if (scan.quoted) {
+          if (!scan.escaped && ch == '\\') {
+            scan.escaped = true;
+          } else {
+            if (!scan.escaped && ch == '"') scan.quoted = false;
+            scan.escaped = false;
+          }
+        } else if (ch == '"') {
+          scan.quoted = true;
+        } else if (ch == '{' || ch == '[') {
+          ++scan.depth;
+        } else if ((ch == '}' || ch == ']') && scan.depth != 0) {
+          --scan.depth;
+        }
+        ++scan.at;
+        if (!Space(ch)) scan.trim_end = scan.at;
+        break;
+      case Phase::kStopped:
+        break;
+    }
   }
-  return info;
+  if (scan.phase == Phase::kValue &&
+      (scan.trim_end != previous_trim || previous_phase != Phase::kValue))
+    scan.projected = project(false);
+  else if (scan.phase != Phase::kValue)
+    scan.projected = scan.committed;
+  return scan.projected;
 }
 
 // Implicit conversion only recognizes schema-admitted non-string values.
@@ -948,13 +1005,38 @@ ToolInterpreter::ToolInterpreter(ToolCallFormat format, ToolRequest request, j::
   for (const auto& marker : format_.continued_route_stops)
     if (marker.empty()) error_ = "empty continued route stop";
 }
+void ToolInterpreter::ResetEnvelope() {
+  envelope_ = {};
+  envelope_whole_ = {};
+  envelope_size_ = std::string::npos;
+}
+void ToolInterpreter::RefreshEnvelope() const {
+  if (!format_.bare_envelope || !in_call_ || envelope_size_ == pending_.size()) return;
+  const JoinedText pending(pending_);
+  auto stable = scan_at_;
+  if (stable < pending_.size()) {
+    DelimiterScan scan{scan_at_, scan_nesting_, scan_quoted_, scan_escaped_};
+    Outside(pending, format_.call_end, format_.quote, scan);
+    stable = scan.at;
+  }
+  // Outside holds a partial closing delimiter. Keep the resumable body cursor
+  // before those bytes: a later append can make its body end precede the old
+  // whole-pending projection. Probes revisit only the held delimiter suffix.
+  Envelope(pending.substr(0, stable), format_, request_, envelope_);
+  envelope_whole_ = envelope_;
+  // A paused callback can retain a closed call and later text. CanStop and the
+  // provisional required-name check historically examine that complete buffer.
+  Envelope(pending, format_, request_, envelope_whole_);
+  envelope_size_ = pending_.size();
+}
 bool ToolInterpreter::CanStop() const {
   if (error_ || ended_ || (in_block_ && block_calls_ == calls_)) return false;
   if (in_call_) {
     if (!format_.bare_envelope || request_.choice().kind != ToolChoiceKind::kAuto) return false;
     // The same ordinary-answer fallback as Finish: an unmatched JSON opener
     // without an authenticated call name/argument pair is still answer text.
-    const auto info = Envelope(JoinedText(pending_), format_, request_);
+    RefreshEnvelope();
+    const auto info = envelope_whole_.projected;
     if ((info.name && info.arguments) || info.allowed) return false;
   }
   return calls_ != 0 || (request_.choice().kind != ToolChoiceKind::kRequired &&
@@ -963,7 +1045,10 @@ bool ToolInterpreter::CanStop() const {
 bool ToolInterpreter::Allows(std::string_view candidate) const {
   if (error_ || ended_ || candidate.size() > limits_.max_bytes - received_) return false;
   if (request_.choice().kind == ToolChoiceKind::kNone) return true;
+  RefreshEnvelope();
   JoinedText pending(pending_, candidate);
+  auto envelope = envelope_;
+  auto whole_envelope = envelope_whole_;
   DelimiterScan scan{scan_at_, scan_nesting_, scan_quoted_, scan_escaped_};
   auto phase = tag_phase_;
   auto json = tag_json_;
@@ -975,7 +1060,8 @@ bool ToolInterpreter::Allows(std::string_view candidate) const {
       if (request_.choice().kind == ToolChoiceKind::kNamed ||
           request_.choice().kind == ToolChoiceKind::kRequired) {
         if (format_.bare_envelope) {
-          const auto info = Envelope(pending, format_, request_);
+          auto probe = whole_envelope;
+          const auto info = Envelope(pending, format_, request_, probe);
           if (info.name && !info.allowed) return false;
         } else {
           if (format_.arguments == ToolArguments::kJsonEnvelope) return false;
@@ -992,7 +1078,8 @@ bool ToolInterpreter::Allows(std::string_view candidate) const {
       if (!end) return true;
       bool is_call = true;
       if (format_.bare_envelope) {
-        const auto info = Envelope(pending.substr(0, end->at), format_, request_);
+        auto probe = envelope;
+        const auto info = Envelope(pending.substr(0, end->at), format_, request_, probe);
         is_call = info.name && info.arguments;
         const auto kind = request_.choice().kind;
         if ((kind == ToolChoiceKind::kRequired || kind == ToolChoiceKind::kNamed) &&
@@ -1006,6 +1093,8 @@ bool ToolInterpreter::Allows(std::string_view candidate) const {
         ++calls;
       }
       scan = {};
+      envelope = {};
+      whole_envelope = {};
       phase = 0;
       name_end = std::string::npos;
       search = 0;
@@ -1086,14 +1175,16 @@ ToolStatus ToolInterpreter::Drain(bool final, const Sink& sink) {
       scan_nesting_ = std::move(scan.nesting);
       scan_quoted_ = scan.quoted;
       scan_escaped_ = scan.escaped;
+      RefreshEnvelope();
       if (!end) return {};
       if (format_.bare_envelope && request_.choice().kind == ToolChoiceKind::kAuto) {
         const auto body = std::string_view(pending_).substr(0, end->at);
-        const auto info = Envelope(JoinedText(body), format_, request_);
+        const auto info = envelope_.projected;
         if (!info.name || !info.arguments) {
           auto text = format_.call_begin + std::string(body) + format_.call_end;
           pending_.erase(0, end->at + end->bytes);
           in_call_ = false;
+          ResetEnvelope();
           scan_at_ = 0;
           scan_nesting_.clear();
           scan_quoted_ = scan_escaped_ = false;
@@ -1115,6 +1206,7 @@ ToolStatus ToolInterpreter::Drain(bool final, const Sink& sink) {
       ++calls_;
       pending_.erase(0, end->at + end->bytes);
       in_call_ = false;
+      ResetEnvelope();
       scan_at_ = 0;
       scan_nesting_.clear();
       scan_quoted_ = scan_escaped_ = false;
@@ -1195,6 +1287,7 @@ ToolStatus ToolInterpreter::Drain(bool final, const Sink& sink) {
       if (!format_.bare_envelope && !request_.parallel() && calls_ != 0)
         return Fail("parallel tool calls are disabled");
       in_call_ = true;
+      ResetEnvelope();
     }
     if (format_.opener_ends_reasoning && !reasoning_ended_) {
       reasoning_ended_ = true;
@@ -1230,7 +1323,8 @@ ToolStatus ToolInterpreter::Finish(ToolFinish reason, const Sink& sink) {
   if (auto drained = Drain(true, sink); !drained) return drained;
   if (paused_) return {};
   if (in_call_ && format_.bare_envelope && request_.choice().kind == ToolChoiceKind::kAuto) {
-    const auto info = Envelope(JoinedText(pending_), format_, request_);
+    RefreshEnvelope();
+    const auto info = envelope_whole_.projected;
     if ((!info.name || !info.arguments) && !info.allowed) {
       auto text = format_.call_begin + std::exchange(pending_, {});
       in_call_ = false;

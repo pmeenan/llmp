@@ -144,6 +144,20 @@ struct ToolReasoningEnd {};
 using ToolEvent = std::variant<TextPart, ToolUsePart, ToolReasoningEnd>;
 enum class ToolFinish { kStop, kLength };
 
+namespace detail {
+// Copyable lexical metadata only; argument bytes remain in the interpreter.
+struct ToolEnvelopeInfo {
+  bool name = false, arguments = false, allowed = false;
+};
+struct ToolEnvelopeCursor {
+  enum class Phase { kBetween, kKey, kColon, kValueStart, kValue, kStopped };
+  Phase phase = Phase::kBetween;
+  std::size_t at = 0, key_start = 0, value_start = 0, trim_end = 0, depth = 0;
+  bool escaped = false, quoted = false, name_key = false, arguments_key = false;
+  ToolEnvelopeInfo committed, projected;
+};
+}  // namespace detail
+
 class ToolInterpreter {
  public:
   // Caller prepays ToolOutputBytes(format, limits.max_bytes) before construction.
@@ -177,12 +191,17 @@ class ToolInterpreter {
 
  private:
   ToolStatus Drain(bool final, const Sink& sink);
+  void RefreshEnvelope() const;
+  void ResetEnvelope();
   ToolStatus Emit(ToolEvent event, const Sink& sink);
   ToolStatus Fail(std::string error);
   ToolCallFormat format_;
   ToolRequest request_;
   base::json::Limits limits_;
   std::string pending_;
+  // Const probes may fill this derived cache; copies own all cursor state.
+  mutable detail::ToolEnvelopeCursor envelope_, envelope_whole_;
+  mutable std::size_t envelope_size_ = std::string::npos;
   std::size_t received_ = 0, calls_ = 0, block_calls_ = 0, scan_at_ = 0;
   std::vector<char> scan_nesting_;
   bool scan_quoted_ = false, scan_escaped_ = false;
