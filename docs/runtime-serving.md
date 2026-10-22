@@ -1273,15 +1273,23 @@ The service and serving commands accept `--debug-plans`, off by default:
 `llmp-runtime --debug-plans` enables it for the service; `chat` and
 `swap-table` also accept it among their command options. Each successful
 plan-cache installation emits a detailed report of selected implementations,
-applied fusions, primitive fallbacks and physical storage. A cache hit emits
-no new report; a plan rebuilt after eviction emits its new report. The
-registration log carries aggregate coverage, including primitive fallbacks
+applied fusions, primitive fallbacks and physical storage. A plan rebuilt after
+eviction emits its new report. LLM steps also emit a `completed_plan` marker
+after successful completion and state publication, including on cache hits.
+The marker links to the installed serial; private batch plans instead stream
+their paid inventory after the marker, identified by its per-model use sequence.
+An installed lookahead plan alone is not evidence of execution. Physical nodes
+include their actual descriptor dtype, shape, strides and view links, plus the
+planned semantic format where mapped (including packed weight parts). These
+are inventories of successfully used plans, not per-kernel execution traces.
+The registration log carries aggregate coverage, including primitive fallbacks
 and decode-shaped products requiring expansion. Reports contain no prompt,
 KV or tensor payloads. Each compiled program retains an owned, typed logical
 inventory paid before allocation; its physical report reuses the backend's
-existing inventory. JSON is serialized only for debug installation or an
-explicit query, as synchronous begin/fragment/end events with stack formatting.
-Debug-off compilation and cache hits do not serialize reports. No complete JSON
+existing inventory. JSON is serialized only for debug installation, completed
+LLM use or an explicit query, as synchronous begin/fragment/end events with
+stack formatting.
+Debug-off compilation and execution do not serialize reports. No complete JSON
 copy is retained. The report includes numerical qualification evidence and
 source/spec identities, and encountered opportunities lacking qualification.
 Retained metadata transfers once from construction payment to the plan cache's

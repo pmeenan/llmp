@@ -193,6 +193,9 @@ The entries below record each change; the record of the milestone is
   and on demand; `--debug-plans` logs detailed paid plans on cache installation
   for the service, `chat` and `swap-table` (unreleased 0.2.0; no separate
   public-surface version changes).
+- Debug plan reports include every physical operand view's dtype and geometry,
+  with semantic formats for mapped tensors. Successful LLM uses identify their
+  installed or private plan, distinguishing execution from unused lookahead.
 
 - Scratch planning and funding use the backend's actual lane configuration,
   so serial multiowner programs do not reserve four unused lane workspaces.

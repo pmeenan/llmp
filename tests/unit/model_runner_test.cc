@@ -1065,18 +1065,33 @@ TEST_F(InstalledPlanReportTest, EmitsOnlyPaidInstallsAndOffersCachedReportsOnDem
   for (std::uint32_t past = 0; past < 3; ++past) {
     const auto result = Run(Shape(pl::Phase::kDecode, {Seg(0, past, 1, 1)}), {{902341}});
     ASSERT_TRUE(result) << (result ? "" : result.error().what);
-    ASSERT_EQ(records_.size(), 1U);  // Capture/replay/cache hits add no records.
+    ASSERT_EQ(records_.size(), past + 2U);  // One install, then each successful use.
+    auto completed = llmp::base::json::Parse(records_.back());
+    ASSERT_TRUE(completed);
+    EXPECT_EQ(completed->root().find("kind")->string(), "completed_plan");
+    auto installed = llmp::base::json::Parse(records_.front());
+    ASSERT_TRUE(installed);
+    EXPECT_EQ(completed->root().find("id")->int64(), installed->root().find("id")->int64());
+    EXPECT_EQ(completed->root().find("rows")->int64(), 1);
+    EXPECT_EQ(records_.back().find("902341"), std::string::npos);
     EXPECT_EQ(runner_->plans().size(), 1U);
   }
   EXPECT_NE(records_[0].find("installed_plan"), std::string::npos);
   EXPECT_EQ(records_[0].find("902341"), std::string::npos);
   std::vector<std::string> requested;
   runner_->ReportPlans(ts::CollectPlanRecords(requested));
-  EXPECT_EQ(requested, records_);
+  ASSERT_EQ(requested.size(), 1U);
+  EXPECT_EQ(requested[0], records_[0]);  // A query is not another execution.
   runner_->DropPlans();
   ASSERT_TRUE(Run(Shape(pl::Phase::kDecode, {Seg(0, 3, 1, 1)}), {{902341}}));
-  ASSERT_EQ(records_.size(), 2U);  // A new paid entry for that key may report again.
-  EXPECT_NE(records_[0], records_[1]);
+  ASSERT_EQ(records_.size(), 6U);  // A new install and successful use.
+  EXPECT_NE(records_[0], records_[4]);
+}
+TEST_F(InstalledPlanReportTest, FailedUseDoesNotReportSuccessfulCompletion) {
+  source_->options().fail_run = kn::StepError::kRejected;
+  EXPECT_FALSE(Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{902341}}));
+  ASSERT_EQ(records_.size(), 1U);
+  EXPECT_NE(records_[0].find("installed_plan"), std::string::npos);
 }
 TEST_F(ModelRunnerTest, DisabledPlanDebugSinkStillAllowsOnDemandCachedDetails) {
   ASSERT_TRUE(Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{902341}}));
@@ -3728,6 +3743,11 @@ class PrivateResourceBackend final : public kn::BackendOwner {
 class PrivateBatchTest : public PrivateResourcesTest {
  protected:
   std::shared_ptr<PrivateResourceBackend> producer_;
+  std::vector<std::string> plan_records_;
+  void Configure(en::RunnerConfig& config) override {
+    PrivateResourcesTest::Configure(config);
+    config.plan_report_sink = ts::CollectPlanRecords(plan_records_);
+  }
   std::vector<pl::StepShape> SetupShapes() override {
     return {Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)})};
   }
@@ -3767,17 +3787,27 @@ TEST_F(PrivateBatchTest, WholeScoreBatchOutgrowsDecodeStagingAndRetainsAllRowsAf
   EXPECT_EQ(owned_->plans().size(), cached);
   const auto builds = source_->built().size();
   source_->options().refuse_build = [](const auto&) { return true; };
+  const auto before_records = plan_records_.size();
   auto report = en::RunWave(*owned_, *composer, pending, work, true, {}, {}, *batch);
   ASSERT_EQ(report.outcomes.size(), 1U);
   ASSERT_FALSE(report.outcomes[0].refusal)
       << report.outcomes[0].refusal.value_or(en::StepRefusal{}).what;
   EXPECT_EQ(source_->built().size(), builds);  // all plans existed before progress
+  ASSERT_EQ(plan_records_.size(), before_records + 1);
+  auto completed = llmp::base::json::Parse(plan_records_.back());
+  ASSERT_TRUE(completed);
+  EXPECT_EQ(completed->root().find("kind")->string(), "completed_plan");
+  EXPECT_EQ(completed->root().find("id")->int64(), 0);
+  EXPECT_TRUE(completed->root().find("transient")->boolean());
+  EXPECT_EQ(completed->root().find("sequence")->int64(), 2);
+  EXPECT_EQ(completed->root().find("rows")->int64(), 17);
   EXPECT_EQ(owned_->slots().positions(0), 18U);
   auto retained = report.outcomes[0].outputs;
   ASSERT_TRUE(batch->Close());
   EXPECT_FALSE(batch->ready());
   auto late = en::RunWave(*owned_, *composer, pending, work, true, {}, {}, *batch);
   ASSERT_TRUE(late.outcomes[0].refusal);
+  EXPECT_EQ(plan_records_.size(), before_records + 1);
   EXPECT_EQ(source_->queued(), 2U);
   const auto rows = Rows(retained);
   ASSERT_EQ(rows.size(), 17U);

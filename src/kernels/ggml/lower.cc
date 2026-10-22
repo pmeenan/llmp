@@ -5447,6 +5447,8 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   for (std::uint32_t i = 0; i < launched_.size(); ++i)
     for (const auto* t : launched_[i])
       if (auto* record = descriptor(t)) record->producer = NodeId{i};
+  for (auto& record : out_.physical_tensors)
+    if (record.tensor.valid()) record.ir_format = p_.tensor(record.tensor).format;
   // Every source/storage edge, including routed preparations outside the
   // fixed graph schedule, belongs to this owned, finalized arena.
   for (const auto& record : out_.physical_tensors) {
@@ -5793,6 +5795,12 @@ void StreamPhysicalPlanReport(const LoweredStep& lowered, const execution::Regis
     writer.Number(value);
   };
   writer.Raw(R"({"kind":"physical_plan")");
+  number("operand_schema", 1);
+  // Exact record counts, not execution counts or routed-subset bounds.
+  number("descriptor_count", lowered.physical_tensors.size());
+  number("graph_steps", lowered.plan.steps.size());
+  number("routed_groups", lowered.routing.size());
+  number("physical_roots", lowered.physical_roots.size());
   number("logical_activation_bytes", lowered.logical_extent);
   number("physical_activation_bytes", lowered.extent);
   number("omitted_logical_bytes", lowered.unmaterialized_logical_bytes);
@@ -5847,6 +5855,9 @@ void StreamPhysicalPlanReport(const LoweredStep& lowered, const execution::Regis
     number("host_bytes", r.host_bytes);
     number("activation_offset", route.activation_offset);
     number("activation_bytes", route.activation_bytes);
+    number("readback_copies", r.readback.size());
+    number("upload_copies", route.uploads.size());
+    number("selected_descriptor_count", route.descriptors.size());
     writer.Raw(R"(,"preparation":{"implementation":)");
     writer.Quoted(kMoeRouteName);
     writer.Raw(R"(,"identity":")");
@@ -5993,14 +6004,47 @@ void StreamPhysicalPlanReport(const LoweredStep& lowered, const execution::Regis
       writer.Raw("null");
     writer.Raw(R"(,"op":)");
     writer.Quoted(ggml_op_name(tensor->op));
+    // Describe the actual operated view, not just its backing activation
+    // root. Weight parts and backend-only intermediates have no such root.
+    writer.Raw(R"(,"dtype":)");
+    writer.Quoted(ggml_type_name(tensor->type));
+    writer.Raw(R"(,"shape":[)");
+    for (unsigned axis = 0; axis < 4; ++axis) {
+      if (axis) writer.Raw(",");
+      writer.Number(static_cast<std::uint64_t>(tensor->ne[axis]));
+    }
+    writer.Raw(R"(],"strides":[)");
+    for (unsigned axis = 0; axis < 4; ++axis) {
+      if (axis) writer.Raw(",");
+      writer.Number(tensor->nb[axis]);
+    }
+    writer.Raw(R"(],"ir_format":)");
+    if (record.ir_format) {
+      writer.Raw(R"({"encoding":)");
+      writer.Quoted(format::Info(record.ir_format->encoding).name);
+      writer.Raw(R"(,"layout":)");
+      writer.Quoted(format::Info(record.ir_format->layout).name);
+      writer.Raw(R"(,"shape":[)");
+      for (unsigned axis = 0; axis < 4; ++axis) {
+        if (axis) writer.Raw(",");
+        writer.Number(record.ir_format->shape.ne[axis]);
+      }
+      writer.Raw("]}");
+    } else {
+      writer.Raw("null");
+    }
+    writer.Raw(R"(,"part":)");
     if (record.part) {
-      writer.Raw(R"(,"part":)");
       writer.Quoted(format::PartRoleName(*record.part));
+    } else {
+      writer.Raw("null");
     }
     writer.Raw(R"(,"storage":)");
     const auto* storage = tensor;
     while (storage->view_src) storage = storage->view_src;
     id(storage);
+    writer.Raw(R"(,"view_source":)");
+    id(tensor->view_src);
     number("view_offset", tensor->view_offs);
     writer.Raw(R"(,"sources":[)");
     std::size_t sources = std::size(tensor->src);

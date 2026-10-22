@@ -138,6 +138,9 @@ struct PhysicalTensor {
   ir::TensorId tensor{}, root{};
   ir::NodeId producer{};
   std::optional<format::PartRole> part{};
+  // The planned value's semantic format, when this descriptor maps to one.
+  // Backend-only descriptors retain their actual GGML dtype/shape/strides.
+  std::optional<format::TensorFormat> ir_format{};
 };
 struct PhysicalRoot {
   ir::TensorId root;

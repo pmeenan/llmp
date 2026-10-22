@@ -474,7 +474,8 @@ TEST(GgmlLowerTest, PhysicalReportLinksRootsAndPreservesConcreteRepeatedSources)
   ir::Builder builder;
   builder.SetComponent(9);
   builder.SetOwner(0);
-  const auto x = builder.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({16})));
+  const auto storage = builder.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({32, 2})));
+  const auto x = builder.View(storage, ir::ShapeOf({16, 2}), {4, 128, 256, 256}, 4);
   builder.Output(builder.Add(x, x));
   auto graph = std::move(builder).Finish();
   ASSERT_TRUE(graph);
@@ -496,6 +497,10 @@ TEST(GgmlLowerTest, PhysicalReportLinksRootsAndPreservesConcreteRepeatedSources)
   ASSERT_NE(a, nullptr);
   ASSERT_NE(b, nullptr);
   EXPECT_EQ(a->id, b->id);
+  ASSERT_NE(concrete->src[0]->view_src, nullptr);
+  const auto* backing = kg::PhysicalTensorOf(*lowered, concrete->src[0]->view_src);
+  ASSERT_NE(backing, nullptr);
+  EXPECT_NE(backing->id, a->id);
   EXPECT_NE(add->id, a->id);
   const auto output = plan->graph.outputs()[0];
   EXPECT_EQ(add->tensor, output);
@@ -506,7 +511,7 @@ TEST(GgmlLowerTest, PhysicalReportLinksRootsAndPreservesConcreteRepeatedSources)
   EXPECT_EQ(root->producer, add->producer);
   EXPECT_EQ(root->operation, ir::Primitive(ir::Op::kAdd));
   EXPECT_EQ(root->component, 9);
-  EXPECT_EQ(root->bytes, 16 * sizeof(float));
+  EXPECT_EQ(root->bytes, 32 * sizeof(float));
   const auto count = lowered->physical_tensors.size();
   auto moved = std::move(*lowered);
   EXPECT_EQ(moved.physical_tensors.size(), count);
@@ -515,7 +520,7 @@ TEST(GgmlLowerTest, PhysicalReportLinksRootsAndPreservesConcreteRepeatedSources)
   std::string records;
   kg::StreamPhysicalPlanReport(moved, registry,
                                [&](std::string_view fragment) { records.append(fragment); });
-  bool recipe = false, root_link = false, source_link = false;
+  bool recipe = false, root_link = false, source_link = false, view_format = false;
   for (std::size_t begin = 0; begin < records.size();) {
     const auto end = records.find('\n', begin);
     ASSERT_NE(end, std::string::npos);
@@ -523,6 +528,34 @@ TEST(GgmlLowerTest, PhysicalReportLinksRootsAndPreservesConcreteRepeatedSources)
     ASSERT_TRUE(parsed);
     const auto record = parsed->root();
     const auto kind = record.find("kind")->string();
+    if (kind == "physical_plan") {
+      EXPECT_EQ(record.find("descriptor_count")->int64(), moved.physical_tensors.size());
+      EXPECT_EQ(record.find("graph_steps")->int64(), moved.plan.steps.size());
+      EXPECT_EQ(record.find("routed_groups")->int64(), moved.routing.size());
+      EXPECT_EQ(record.find("physical_roots")->int64(), moved.physical_roots.size());
+    }
+    if (kind == "physical_node") {
+      const auto dtype = record.find("dtype"), shape = record.find("shape"),
+                 strides = record.find("strides");
+      ASSERT_TRUE(dtype && shape && strides);
+      EXPECT_EQ(dtype->string(), "f32");
+      ASSERT_EQ(shape->size(), 4U);
+      ASSERT_EQ(strides->size(), 4U);
+      if (record.find("id")->int64() == a->id) {
+        // The input view is external to activation placement; its backing
+        // tensor's width/strides cannot substitute for the operated view.
+        EXPECT_EQ(shape->at(0).int64(), 16);
+        EXPECT_EQ(shape->at(1).int64(), 2);
+        EXPECT_EQ(strides->at(1).int64(), 128);
+        EXPECT_EQ(record.find("view_offset")->int64(), 4);
+        const auto semantic = record.find("ir_format");
+        ASSERT_TRUE(semantic);
+        EXPECT_EQ(semantic->find("encoding")->string(), "f32");
+        EXPECT_EQ(semantic->find("layout")->string(), "dense");
+        EXPECT_EQ(semantic->find("shape")->at(0).int64(), 16);
+        view_format = true;
+      }
+    }
     if (kind == "launch_recipe") {
       const auto nodes = record.find("nodes"), reads = record.find("reads"),
                  writes = record.find("writes");
@@ -530,8 +563,8 @@ TEST(GgmlLowerTest, PhysicalReportLinksRootsAndPreservesConcreteRepeatedSources)
       ASSERT_EQ(nodes->size(), 1U);
       EXPECT_EQ(nodes->at(0).int64(), add->id);
       ASSERT_EQ(reads->size(), 2U);
-      EXPECT_EQ(reads->at(0).int64(), a->id);
-      EXPECT_EQ(reads->at(1).int64(), a->id);
+      EXPECT_EQ(reads->at(0).int64(), backing->id);
+      EXPECT_EQ(reads->at(1).int64(), backing->id);
       ASSERT_EQ(writes->size(), 1U);
       EXPECT_EQ(writes->at(0).int64(), add->id);
       recipe = true;
@@ -555,6 +588,7 @@ TEST(GgmlLowerTest, PhysicalReportLinksRootsAndPreservesConcreteRepeatedSources)
   EXPECT_TRUE(recipe);
   EXPECT_TRUE(root_link);
   EXPECT_TRUE(source_link);
+  EXPECT_TRUE(view_format);
 }
 
 TEST(GgmlLowerTest, ProductArithmeticDescribesActualRoutingAndExplicitF32Requests) {

@@ -56,7 +56,7 @@ using llmp::base::Bytes;
 using llmp::test_support::Failed;
 constexpr std::uint64_t kMiB = 1ULL << 20U;
 constexpr std::uint64_t kDomain = 3ULL << 30U, kMetadata = 512 * kMiB;
-constexpr std::uint64_t kCompilerAndOwner = 128 * kMiB, kProgram = 8 * kMiB;
+constexpr std::uint64_t kProgram = 8 * kMiB;
 constexpr std::uint64_t kActivation = 64 * kMiB, kPool = 2 * kMiB;
 constexpr std::uint64_t kPinned = 8 * kMiB, kOutputOffset = kMiB;
 constexpr std::uint64_t kWeightOffset = 2 * kMiB;
@@ -71,11 +71,13 @@ constexpr std::uint64_t kReferenceWeightBytes = 2675456, kTotalWeightBytes = 101
 // it is no longer also held by the enclosing compiler payment.
 constexpr std::uint64_t kNativeConstruction =
     llmp::test_support::compiler_inventory::NativeBytes((1498 + 128 + 31 * 749ULL + 4), 1498);
-static_assert(
+constexpr std::uint64_t kCompilerInventory =
     llmp::test_support::compiler_inventory::GraphBytes(749, 1498) + 4096 * (749 + 1498ULL) +
-        llmp::test_support::compiler_inventory::NativeBytes((1498 + 128 + 31 * 749ULL + 4), 1498) +
-        2 * kProgram + 1056 * en::kGraphNodeHostBytes + 32 * kMiB <
-    kCompilerAndOwner);
+    kNativeConstruction + 2 * kProgram + 1056 * en::kGraphNodeHostBytes + 32 * kMiB;
+// Pay the fixed graph's actual descriptor inventory, rounded to the fixture's
+// MiB units; descriptor metadata growth must not outgrow a stale 128 MiB grant.
+constexpr std::uint64_t kCompilerAndOwner = ((kCompilerInventory + kMiB - 1) / kMiB) * kMiB;
+static_assert(kCompilerAndOwner + kProgram < kMetadata);
 
 en::Status Error(std::string what) { return std::unexpected(std::move(what)); }
 std::string Hash(std::span<const std::byte> bytes) {

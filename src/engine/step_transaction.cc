@@ -1657,6 +1657,27 @@ std::expected<StepReport, StepRefusal> StepTransaction::Publish(Frame& frame) {
         !published)
       return refuse_publication(published.error());
   }
+  if (const auto& sink = runner_.config_.plan_report_sink; sink) {
+    // A paid install (including lookahead) is not evidence of use. Emit
+    // only after positive completion and successful state publication.
+    std::array<char, 256> text{};
+    const auto written = std::format_to_n(
+        text.data(), text.size(),
+        R"({{"kind":"completed_plan","id":{},"sequence":{},"transient":{},"stage":{},"phase":{},"rows":{},"path":{}}})",
+        entry.serial,
+        runner_.graph_stats_.eager + runner_.graph_stats_.captured + runner_.graph_stats_.replayed,
+        entry.serial == 0, shape.stage, static_cast<unsigned>(shape.phase), shape.rows(),
+        static_cast<unsigned>(report.path));
+    base::Check(static_cast<std::size_t>(written.size) <= text.size(),
+                "bounded completed-plan report");
+    sink(kn::PlanReportEvent::kBegin, {});
+    sink(kn::PlanReportEvent::kFragment,
+         std::string_view(text.data(), static_cast<std::size_t>(written.size)));
+    sink(kn::PlanReportEvent::kEnd, {});
+    // Private batch plans have paid inventory but no cache-install serial.
+    // Stream that inventory after its unique successful-use marker instead.
+    if (entry.serial == 0) program.ReportPlanRecords(sink);
+  }
   return std::move(report);
 }
 
