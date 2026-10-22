@@ -735,8 +735,9 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
     return s;
   };
   const auto publish_v1 = [&](const std::filesystem::path& root, std::string arch,
-                              const llmp::spec::ModelSpec& spec) {
+                              const llmp::spec::ModelSpec& spec, std::string container = "gguf") {
     llmp::test::V1Plan plan;
+    plan.container = std::move(container);
     plan.architecture = std::move(arch);
     plan.spec = llmp::spec::ToJson(spec);
     plan.groups = {llmp::test::V1Group{
@@ -827,6 +828,67 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
   EXPECT_TRUE(opened.target_admission.has_value());
   ASSERT_TRUE(opened.drafter_admission.has_value());
   EXPECT_TRUE(opened.drafter_admission->model.has_value());
+
+  // Source architecture spellings survive publication, while both native and
+  // MLX MTP recipes name the canonical target. Stored drafter composition and
+  // calibration must use that resolved identity, with structural checks intact.
+  for (const std::string draft_container : {"safetensors", "mlx"}) {
+    const auto mtp_path = publish_v1(store_dir, "qwen4exp-mtp", drafter_spec, draft_container);
+    const auto mtp = llmp::artifact::Artifact::Open(mtp_path);
+    ASSERT_TRUE(mtp) << mtp.error().ToString();
+    for (const std::string target_container : {"safetensors", "mlx"}) {
+      for (const std::string architecture : {"qwen4exp", "qwen3_8_flash_next", "qwen4_exp"}) {
+        SCOPED_TRACE(draft_container + ":" + target_container + ":" + architecture);
+        ModelEntry entry = Model("mtp", true);
+        entry.overrides["draft_vocab"] = std::int64_t{64};
+        entry.artifact =
+            publish_v1(store_dir, architecture, ds_spec, target_container).filename().string();
+        entry.drafter = mtp_path.filename().string();
+        llmp::runtime::OpenedModelArtifacts retained;
+        const auto facts = llmp::runtime::ReadArtifactFacts(entry, store_dir, &retained);
+        ASSERT_TRUE(facts) << facts.error();
+        EXPECT_EQ(facts->architecture, architecture);
+        ASSERT_TRUE(facts->composed_spec) << facts->composed_spec_error;
+        EXPECT_TRUE(facts->composed_spec_error.empty());
+        ASSERT_TRUE(retained.drafter_admission);
+        ASSERT_TRUE(retained.drafter_admission->model);
+        Calibration calibration;
+        calibration.prefill_chunk = 64;
+        const auto settings = ResolveSettings(entry, *facts, &calibration, false);
+        ASSERT_TRUE(settings) << settings.error();
+        EXPECT_EQ(settings->bound_spec, facts->composed_spec);
+        EXPECT_TRUE(settings->speculation.value);
+      }
+    }
+    const auto wrong_family = llmp::runtime::ArtifactFactsOf(*ds_art, &*mtp);
+    ASSERT_TRUE(wrong_family) << wrong_family.error();
+    EXPECT_FALSE(wrong_family->composed_spec);
+    EXPECT_THAT(wrong_family->composed_spec_error, HasSubstr("does not target architecture"));
+    EXPECT_FALSE(ResolveSettings(Model("wrong-family", true), *wrong_family, nullptr, false));
+  }
+  const auto alias_target = llmp::artifact::Artifact::Open(
+      publish_v1(store_dir, "qwen3_8_flash_next", ds_spec, "safetensors"));
+  ASSERT_TRUE(alias_target) << alias_target.error().ToString();
+  for (const bool wrong_width : {false, true}) {
+    auto invalid = drafter_spec;
+    if (wrong_width)
+      invalid.stages.back().stream.width = 31;
+    else
+      invalid.stages.back().heads.output->params.front().value = std::int64_t{65};
+    llmp::spec::Canonicalize(invalid);
+    const auto drafter = llmp::artifact::Artifact::Open(
+        publish_v1(store_dir, "qwen4exp-mtp", invalid, "safetensors"));
+    ASSERT_TRUE(drafter) << drafter.error().ToString();
+    const auto facts = llmp::runtime::ArtifactFactsOf(*alias_target, &*drafter);
+    ASSERT_TRUE(facts) << facts.error();
+    EXPECT_FALSE(facts->composed_spec);
+    EXPECT_FALSE(facts->composed_spec_error.empty());
+    EXPECT_THAT(facts->composed_spec_error,
+                ::testing::Not(HasSubstr("does not target architecture")));
+    ModelEntry bad_shape = Model("bad-shape", true);
+    bad_shape.overrides["draft_vocab"] = std::int64_t{64};
+    EXPECT_FALSE(ResolveSettings(bad_shape, *facts, nullptr, false));
+  }
 
   // Multiple aliases retain independent parsed artifacts/specs while the
   // startup parser workspace is reused. Their loans must exist before

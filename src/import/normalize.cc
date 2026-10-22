@@ -1697,7 +1697,7 @@ std::expected<void, Error> ValidateTarget(const NormalizationTarget& target,
   if (!drafter.draft || target.mapping == nullptr ||
       target.mapping != spec::FindMapping(target.source.architecture, target.source.container) ||
       target.mapping->role != spec::StageRole::kTarget ||
-      drafter.draft->target_architecture != target.source.architecture ||
+      drafter.draft->target_architecture != target.mapping->architecture ||
       target.model.stages.size() != 1 ||
       target.model.stages.front().role != spec::StageRole::kTarget ||
       target.model.stages.front().artifact != 0)

@@ -120,10 +120,15 @@ Mia artifact (`7175c03c…`) produced this unambiguous alternate spelling in its
 first named-tool diagnostic. The original request failed with an incomplete
 call at natural completion; recovered persisted history identified the variant.
 The parser and terminal fixes pass deterministic controls and a fresh plain
-native named-tool/result transaction on the same weights. Sampled MTP
-qualification stopped at target/drafter architecture admission before inference;
-that separate finding remains open. The original failures remain recorded in
-[the diagnostic results](experiments/m35-tools/RESULTS.md).
+native named-tool/result transaction on the same weights. The original sampled
+MTP attempt stopped at target/drafter architecture admission before inference;
+its failed startup and **NOTRUN** inference controls remain recorded in
+[the diagnostic results](experiments/m35-tools/RESULTS.md). After the canonical
+mapping-identity repair, fresh separate sampled-MTP required-tool and named-tool
+transactions pass with actual drafting, marker reads and streamed follow-ups;
+see the [qualification evidence](experiments/m35-generic-import/original-parity.md#drafter-source-alias-admission-repair).
+These two representative cells do not establish broad speculative tool coverage
+or close qualification across the remaining aliases and template grammars.
 
 ## Route ownership and response contract
 

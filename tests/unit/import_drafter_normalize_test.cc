@@ -32,6 +32,7 @@
 #include "import/readers/gguf.h"
 #include "import/writer.h"
 #include "import_target_fixture.h"
+#include "qwen38_fixture.h"
 #include "runtime/component_admission.h"
 #include "runtime/model_settings.h"
 #include "spec/spec.h"
@@ -235,9 +236,12 @@ std::optional<Checkpoint> SyntheticAssistantCheckpoint(std::uint32_t size) {
 
 std::expected<artifact::Artifact, artifact::Error> MakeTargetV1(
     const std::filesystem::path& target_scratch, std::string arch, std::string source_name,
-    std::uint64_t bytes, std::string sha256) {
+    std::uint64_t bytes, std::string sha256, std::string container = "gguf",
+    std::string stored_spec = {}) {
   llmp::test::V1Plan p;
+  p.container = std::move(container);
   p.architecture = std::move(arch);
+  if (!stored_spec.empty()) p.spec = std::move(stored_spec);
   p.groups = {
       llmp::test::V1Group{.kind = llmp::artifact::GroupKind::kTable,
                           .resources = {{.name = "token_embd.weight",
@@ -256,10 +260,10 @@ std::expected<artifact::Artifact, artifact::Error> MakeTargetV1(
 std::expected<artifact::Artifact, artifact::Error> MakeDrafterV1(
     const std::filesystem::path& drafter_scratch, std::string arch,
     std::span<const spec::SourceTensor> tensors, std::string source_name, std::uint64_t bytes,
-    std::string sha256, std::string kept_gguf = {}) {
+    std::string sha256, std::string kept_gguf = {}, std::string container = "gguf") {
   llmp::test::V1Plan p;
   p.architecture = std::move(arch);
-  p.container = "gguf";
+  p.container = std::move(container);
   p.sources.clear();
   // Kept as the importer keeps a GGUF drafter's header: meta/<stem>.kv.gguf.
   if (!kept_gguf.empty())
@@ -355,6 +359,62 @@ TEST(ImportDrafterNormalizeTest,
     }
   }
 
+  std::filesystem::remove_all(scratch, ec);
+}
+
+TEST(ImportDrafterNormalizeTest, LegacyDrafterValuesMatchCanonicalTargetAcrossSourceAliases) {
+  const std::filesystem::path scratch =
+      std::filesystem::path(testing::TempDir()) / "import-drafter-source-alias";
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  // The legacy native MTP artifact has no spec.json: its recipe extracts
+  // architecture facts from the target spec and layer/head counts from its
+  // own tensors. Tiny placeholders suffice for this metadata-only check.
+  const std::array tensors{
+      spec::SourceTensor{.name = "blk.0.attn_q.weight",
+                         .format = {.encoding = fm::Encoding::kF32,
+                                    .layout = fm::Layout::kDense,
+                                    .shape = {.ne = {1, 1, 1, 1}, .rank = 2}}},
+      spec::SourceTensor{.name = "draft_output.weight",
+                         .format = {.encoding = fm::Encoding::kF32,
+                                    .layout = fm::Layout::kDense,
+                                    .shape = {.ne = {1, 64, 1, 1}, .rank = 2}}}};
+  const auto target_spec = spec::ToJson(test_support::qwen38::NativeModelOpt().model);
+  auto drafter = MakeDrafterV1(scratch / "drafter", "qwen4exp-mtp", tensors, "drafter.safetensors",
+                               1, std::string(64, '2'), {}, "safetensors");
+  ASSERT_TRUE(drafter) << drafter.error().ToString();
+  ASSERT_FALSE(drafter->spec_json());
+  for (const std::string container : {"safetensors", "mlx"}) {
+    for (const std::string architecture : {"qwen4exp", "qwen3_8_flash_next", "qwen4_exp"}) {
+      SCOPED_TRACE(container + ":" + architecture);
+      auto target = MakeTargetV1(scratch / (container + architecture), architecture, "target.bin",
+                                 1, std::string(64, '1'), container, target_spec);
+      ASSERT_TRUE(target) << target.error().ToString();
+      const auto values = rt::ComponentDrafterValues(*target, *drafter);
+      ASSERT_TRUE(values) << values.error();
+      for (const auto& [key, expected] :
+           {std::pair{"qwen4exp-mtp.block_count", std::int64_t{1}},
+            std::pair{"qwen4exp-mtp.draft_vocab", std::int64_t{64}},
+            std::pair{"qwen4exp-mtp.embedding_length", std::int64_t{2560}}}) {
+        const auto found = std::ranges::find(*values, key, &spec::SourceValue::key);
+        ASSERT_NE(found, values->end()) << key;
+        EXPECT_EQ(std::get<std::int64_t>(found->value), expected) << key;
+      }
+    }
+  }
+  // A source alias is accepted only through its registered target/container mapping.
+  for (const auto& [architecture, container, reason] :
+       {std::tuple{"gemma4", "gguf", "does not target architecture"},
+        std::tuple{"qwen3_8_flash_next", "gguf", "no target component mapping"},
+        std::tuple{"qwen4exp-mtp", "safetensors", "no target component mapping"}}) {
+    SCOPED_TRACE(architecture);
+    auto target = MakeTargetV1(scratch / architecture, architecture, "target.bin", 1,
+                               std::string(64, '1'), container);
+    ASSERT_TRUE(target) << target.error().ToString();
+    const auto refused = rt::ComponentDrafterValues(*target, *drafter);
+    ASSERT_FALSE(refused);
+    EXPECT_NE(refused.error().find(reason), std::string::npos) << refused.error();
+  }
   std::filesystem::remove_all(scratch, ec);
 }
 

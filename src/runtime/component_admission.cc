@@ -348,7 +348,8 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValue
       spec::FindMapping(target.model().architecture, target.model().container);
   if (!target_mapping || target_mapping->role != spec::StageRole::kTarget)
     return Refused("target architecture/container has no target component mapping");
-  if (mapping->draft->target_architecture != target.model().architecture)
+  // Recipes name canonical architectures; manifest names retain the source dialect.
+  if (mapping->draft->target_architecture != target_mapping->architecture)
     return Refused(std::format("drafter {} does not target architecture {}",
                                drafter.model().architecture, target.model().architecture));
   // A drafter without kept metadata values: its recipe's, from its source.

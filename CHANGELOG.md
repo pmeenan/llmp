@@ -72,6 +72,12 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Match drafter recipes against the resolved canonical target architecture, so
+  source aliases remain compatible during import, admission, construction and
+  calibration. Fresh drafter component artifacts record their canonical execution
+  architecture while retaining authenticated checkpoint provenance; re-import only
+  drafter artifacts previously published under their parent target architecture.
+
 - Scalar generation keeps its completed conversation prefix after a clean
   dispatch refusal, so a retry can resume without clearing proven state.
 

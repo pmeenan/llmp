@@ -1824,13 +1824,15 @@ class ImportDrafterWriterTest : public ImportWriterTest {
  protected:
   static constexpr std::string_view kOptions = R"({"draft_head":"ids.txt"})";
   std::vector<std::byte> weights_;
-  std::expected<NormalizedPlan, Error> Drafter() {
+  std::expected<NormalizedPlan, Error> Drafter(std::string architecture = "qwen4exp-mtp",
+                                               std::string container = "safetensors",
+                                               bool executable = false) {
     weights_.resize(256);
     for (std::size_t i = 0; i < weights_.size(); ++i)
       weights_[i] = static_cast<std::byte>((i * 37 + 11) & 0xFF);
     Write(dir_ / "drafter/weights.bin", weights_);
     Write(dir_ / "drafter/ids.txt", "1\n2\n5\n");
-    Checkpoint source{.container = "safetensors", .architecture = "qwen4exp-mtp"};
+    Checkpoint source{.container = container, .architecture = architecture};
     for (const auto name : {"weights.bin", "ids.txt"}) {
       auto opened = OpenCheckpointFile(dir_ / "drafter" / name, 0);
       if (!opened) return std::unexpected(opened.error());
@@ -1846,16 +1848,34 @@ class ImportDrafterWriterTest : public ImportWriterTest {
                       list ? base::Sha256().Update("1\n2\n5\n").Finish()
                            : base::Sha256().Update(std::span(weights_).first(16)).Finish()}});
     }
+    if (executable) {
+      const auto config = std::format(R"({{"model_type":"{}"}})", architecture);
+      Write(dir_ / "drafter/config.json", config);
+      auto opened = OpenCheckpointFile(dir_ / "drafter/config.json", 2);
+      if (!opened) return std::unexpected(opened.error());
+      source.files.push_back({.name = "config.json",
+                              .path = opened->path,
+                              .bytes = opened->bytes,
+                              .device = opened->device,
+                              .inode = opened->inode,
+                              .parsed = {opened->bytes, base::Sha256().Update(config).Finish()}});
+    }
     const auto bf16 = [](std::uint64_t rows) {
       return format::TensorFormat{.encoding = Encoding::kBF16,
                                   .shape = {.ne = {4, rows, 1, 1}, .rank = 2}};
     };
-    // A 10-row table of 4 BF16 values a row at 0, a 4x4 matrix at 128.
-    source.tensors.push_back({.name = "fc.weight",
-                              .format = bf16(4),
-                              .extent = {.file = 0, .offset = 128, .bytes = 32},
-                              .dtype = "BF16",
-                              .dims = {4, 4}});
+    const auto local_format = executable
+                                  ? format::TensorFormat{.encoding = Encoding::kBF16,
+                                                         .shape = {.ne = {4, 1, 1, 1}, .rank = 1}}
+                                  : bf16(4);
+    const auto local_bytes = executable ? 8U : 32U;
+    // A 10-row table of 4 BF16 values a row at 0, local matrix/norm at 128.
+    source.tensors.push_back(
+        {.name = "fc.weight",
+         .format = local_format,
+         .extent = {.file = 0, .offset = 128, .bytes = local_bytes},
+         .dtype = "BF16",
+         .dims = executable ? std::vector<std::uint64_t>{4} : std::vector<std::uint64_t>{4, 4}});
     source.tensors.push_back({.name = "table.rows.1",
                               .format = bf16(2),
                               .extent = {.file = 0, .offset = 8, .bytes = 16},
@@ -1868,7 +1888,7 @@ class ImportDrafterWriterTest : public ImportWriterTest {
                               .dims = {1, 4}});
     std::vector<TensorAssembly> outputs;
     outputs.push_back({.name = "fc.weight",
-                       .format = bf16(4),
+                       .format = local_format,
                        .parts = {{.part = format::PartRole::kData, .sources = {0}}}});
     outputs.push_back({.name = "draft_output.weight",
                        .format = bf16(3),
@@ -1880,9 +1900,9 @@ class ImportDrafterWriterTest : public ImportWriterTest {
     if (!cost) return std::unexpected(cost.error());
     auto parts = IndexedPartPlan::Make(std::move(source), outputs, dispositions, *cost);
     if (!parts) return std::unexpected(parts.error());
-    spec::Source canonical{.architecture = "qwen4exp-mtp", .container = "safetensors"};
+    spec::Source canonical{.architecture = "qwen4exp-mtp", .container = container};
     canonical.tensors = {
-        {.name = "fc.weight", .format = bf16(4)},
+        {.name = "fc.weight", .format = local_format},
         {.name = "draft_output.weight", .format = bf16(3)},
         {.name = "draft_output.ids",
          .format = {.encoding = Encoding::kI32, .shape = {.ne = {1, 3, 1, 1}, .rank = 2}}}};
@@ -1897,6 +1917,18 @@ class ImportDrafterWriterTest : public ImportWriterTest {
         spec::ComponentRef{.kind = "head.linear",
                            .weights = {{.role = "ids", .tensor = "draft_output.ids"},
                                        {.role = "weight", .tensor = "draft_output.weight"}}};
+    if (executable) {
+      for (auto& stage : model.stages) {
+        stage.stream.width = 4;
+        stage.context = 128;
+      }
+      model.stages[1].layers[0].components[0] = {
+          .kind = "norm.rms",
+          .params = {{"eps", 0.00001}},
+          .weights = {{.role = "weight", .tensor = "fc.weight"}}};
+      model.stages[1].heads.output->params = {{"selected", true}, {"rows", std::int64_t{3}}};
+      spec::Canonicalize(model);
+    }
     std::vector<GeneratedPart> generated{{.tensor = 2, .file = 1, .bytes = {}}};
     for (const int id : {1, 2, 5})
       for (int b = 0; b < 4; ++b)
@@ -1955,6 +1987,74 @@ TEST_F(ImportDrafterWriterTest, GathersRowsAndWritesItsAuthenticatedTokenMap) {
   // Without the plan's options the identity would differ: refused.
   EXPECT_FALSE(WriteArtifact(*plan, Options("no-options")));
   EXPECT_FALSE(std::filesystem::exists(dir_ / "no-options" / result->id));
+}
+
+TEST_F(ImportDrafterWriterTest, NativeComponentsPublishTheirCanonicalRoleAndKeepSourceIdentity) {
+  for (const std::string container : {"safetensors", "mlx"}) {
+    const std::string source_architecture =
+        container == "safetensors" ? "qwen3_8_flash_next" : "qwen4_exp";
+    SCOPED_TRACE(container);
+    auto plan = Drafter(source_architecture, container, true);
+    ASSERT_TRUE(plan) << plan.error().ToString();
+    EXPECT_EQ(plan->source().architecture, source_architecture);
+    auto options = Options(container);
+    options.options = std::string(kOptions);
+    // Publication and reuse both perform the writer's deep payload validation.
+    auto result = WriteArtifact(*plan, options);
+    ASSERT_TRUE(result) << result.error().ToString();
+    auto reused = WriteArtifact(*plan, options);
+    ASSERT_TRUE(reused) << reused.error().ToString();
+    EXPECT_TRUE(reused->reused);
+    auto opened = artifact::Artifact::Open(result->path, {.expected_id = result->id});
+    ASSERT_TRUE(opened) << opened.error().ToString();
+    EXPECT_EQ(opened->model().architecture, "qwen4exp-mtp");
+    EXPECT_EQ(opened->model().container, container);
+    const auto config = std::format(R"({{"model_type":"{}"}})", source_architecture);
+    EXPECT_EQ(opened->ReadMetadata("config.json"), config);
+    const auto receipt =
+        std::ranges::find(opened->sources(), "config.json", &artifact::Source::name);
+    ASSERT_NE(receipt, opened->sources().end());
+    EXPECT_EQ(receipt->sha256, base::Sha256().Update(config).Finish());
+    const auto stored = spec::StoredSpec(*opened);
+    ASSERT_TRUE(stored) << stored.error();
+    EXPECT_EQ(*stored, plan->spec());
+    ASSERT_TRUE(runtime::ReadComponentDrafterAdmission(*opened));
+
+    spec::ModelSpec target_spec;
+    spec::Stage target{.name = "target", .context = 128};
+    target.stream.width = 4;
+    target.embedding = spec::ComponentRef{
+        .kind = "embedding.token", .weights = {{.role = "table", .tensor = "token_embd.weight"}}};
+    target.heads.output = spec::ComponentRef{
+        .kind = "head.linear", .weights = {{.role = "weight", .tensor = "token_embd.weight"}}};
+    target_spec.stages.push_back(std::move(target));
+    spec::Canonicalize(target_spec);
+    for (const std::string& architecture :
+         {std::string("qwen4exp"), source_architecture, std::string("deepseek4")}) {
+      test::V1Plan target_plan;
+      target_plan.architecture = architecture;
+      target_plan.container = architecture == "deepseek4" ? "gguf" : container;
+      target_plan.spec = spec::ToJson(target_spec);
+      target_plan.groups = {
+          test::V1Group{.kind = artifact::GroupKind::kTable,
+                        .resources = {{.name = "token_embd.weight",
+                                       .format = {.encoding = Encoding::kBF16,
+                                                  .shape = {.ne = {4, 10, 1, 1}, .rank = 2}}}}}};
+      auto target_artifact = artifact::Artifact::Open(
+          test::Publish(dir_ / (container + architecture), test::Render(target_plan)));
+      ASSERT_TRUE(target_artifact) << target_artifact.error().ToString();
+      const auto facts = runtime::ArtifactFactsOf(*target_artifact, &*opened);
+      ASSERT_TRUE(facts) << facts.error();
+      if (architecture == "deepseek4") {
+        EXPECT_FALSE(facts->composed_spec);
+        EXPECT_NE(facts->composed_spec_error.find("does not target architecture"),
+                  std::string::npos);
+      } else {
+        EXPECT_TRUE(facts->composed_spec) << facts->composed_spec_error;
+        EXPECT_TRUE(facts->composed_spec_error.empty());
+      }
+    }
+  }
 }
 
 TEST_F(ImportDrafterWriterTest, AChangedListOrMisfitTokenMapCannotPublish) {

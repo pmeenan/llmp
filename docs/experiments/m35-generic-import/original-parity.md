@@ -45,6 +45,66 @@ Shared payload aggregate SHA-256: `9024ba08f6fb18899b384599e71fe40ad52b0da6307e6
 
 Shared semantic aggregate SHA-256: `ef91111624d6505a41305bb284947e7836bc114c78969026afc6e2d2b284c7b5`.
 
+## Drafter source-alias admission repair
+
+A subsequent MTP qualification attempt on 2026-10-22 paired the new ModelOpt
+target `7175c03c…` with existing drafter
+`2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef`.
+Startup refused before readiness: the drafter's recipe targets canonical
+`qwen4exp`, while the target manifest retains source name
+`qwen3_8_flash_next`. This is a failed startup; the intended inference/tool
+control is **NOTRUN**, not a quality or tool-generation result. Its original
+failure receipts remain in external scratch under
+`/tmp/llmp-m35-orchestration/native-tool-fix-r4/model-qualification/mtp-required/`.
+
+Import, admission, stored-drafter construction and calibration now compare the recipe
+against the resolved target mapping's canonical architecture. The existing
+container, role, source and structural compatibility checks still apply.
+Both retained-metadata and stored-spec drafter paths use that same identity.
+No re-import of this existing target/drafter pair is needed: the target mapping
+already resolves the source alias, and the existing and newly imported MTP
+recipes both name `qwen4exp`. Fresh drafter component publications now identify
+the selected canonical drafter architecture rather than the parent checkpoint
+architecture, retaining the raw identity in authenticated source/config receipts
+and existing mapping metadata. Only component artifacts previously published
+under the parent target architecture need re-import; target output and the
+artifact schema are unchanged.
+
+Fresh separate required-tool and named-tool cells on Spark B passed on
+2026-10-22 with the same `7175c03c…` target and `2cb4cdb8…` drafter. Each
+performed an actual `read_marker` call, read `LLMP_TOOL_NATIVE_RESULT_7319`
+from the tool result, and completed its streamed follow-up. Their runtime
+counters confirm speculative execution rather than just configuration:
+
+| Tool choice | Speculative units | Drafted | Accepted | Discarded | Coverage violations |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| required | 53 | 58 | 32 | 0 | 0 |
+| named | 51 | 64 | 33 | 0 | 0 |
+
+Both cells used temperature 1, top-k 20, top-p 0.95, min-p 0, seed 7319,
+three draft rows, requested draft vocabulary 65,536 and depth cost ratio 1.16.
+The effective draft vocabulary was 47,172, capped to the companion's selected
+head rows; shared wave depth and draft wave maximum were both 2, with 4 verify
+rows. Both used 16,384 context, 512 prefill chunk, one slot and F16 KV. The request output
+budget was 1,024 tokens each. Source, runtime, artifact and asset checks
+matched before and after both cells; process groups retired cleanly and
+the listener closed. These are bounded behavior controls, not speed,
+reference-quality or broad U3/tool qualification.
+
+The unchanged qualification helper has SHA-256
+`324d8441d60f7893c2817f00644a70fe828148c6a5234dbd6d09338dcb3312d9`.
+The 2,828-file combined source manifest has SHA-256
+`0783bdf0a3b1ab2931515bc25ad1b0e9abb129f81a1351788b9f70f961a94509`;
+Spark B's actual runtime has SHA-256
+`ea3276a767b59a0ecc7ef907aee52233d2dae157618062cc9599415331ebb74a`;
+the compiler/kernel identity is
+`8148b25f8c488058047940556525d80736d9d5a4fd4b4401c7bd0fa323146830`.
+Raw transaction, authentication, final-counter and retirement receipts are
+under external scratch
+`/tmp/llmp-m35-w6-checks/model-qualification/{required,named}/`.
+The earlier admission failure and its inference **NOTRUN** remain historical
+results; these fresh cells do not replace those receipts.
+
 ## Reproduction and provenance
 
 Compiled primary base e9de1e8316d68a764e6a718ce44ff4a3291051ff plus the reviewed staged union frozen outside Git in source.patch, SHA-256 a428dc12a5914ac626b803a42472783eb55065c344a4982e3cbf23a3faa2ff80. Importer executable SHA-256 c77b2e5c9f5aa742531d831f5b840374c0505a1901051e811ba8e9ba70343517. Only llmp target built on spark, 77 successful steps. Remote .git deliberately remained unsynchronized: the manifest's importer.build (61f8426f7e2f45931d91645b016069e13f6f2236.dirty) is not the compiled primary source identity; use base + frozen patch + executable hash.

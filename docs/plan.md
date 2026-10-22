@@ -597,6 +597,15 @@ D-122).
       are separate controls. Original Qwen ModelOpt and MLX re-imports have
       [identical payload digests](experiments/m35-generic-import/original-parity.md)
       for all 323,607 named tensor parts, including every expert slice.
+      Drafter import, admission, construction and calibration use the resolved
+      canonical target architecture rather than its retained source alias. Fresh
+      drafter components publish their selected canonical execution architecture;
+      target publication and authenticated checkpoint provenance are retained. The
+      alias-failed MTP startup remains a failed startup with inference **NOTRUN**.
+      Fresh separate required-tool and named-tool cells now pass against the
+      original target/drafter pair, including actual speculative drafting, tool
+      execution and streamed follow-ups (same parity report). Broader U3/tool
+      and reference-quality qualification remain open.
       The second-architecture MLX checkpoint passes its registered bounded
       [source-quality screen](experiments/m35-u3-quality/qwen27/RESULTS.md):
       both short/depth repeat pairs and all six completed raw-ID behavior
@@ -1069,17 +1078,21 @@ D-122).
       [results](experiments/m35-tools/RESULTS.md). This evidence does not close
       the item: qualification across remaining served aliases and template
       grammars remains open; final integrated source checks are separate. No
-      performance, maximum-context, sampled-quality, or speculative coverage
+      performance, maximum-context, sampled-quality, or broad speculative coverage
       follows from these diagnostics. See [tool-calls.md](tool-calls.md).
       The first native mixed-encoding Mia named-tool diagnostic failed with
       an incomplete call; persisted history showed an alternate tagged header
       and call close. Declared structural aliases, terminal eligibility and
       legacy grammar-marker route-stop controls address that failure in the
       shared engine. The same native weights now pass one named-tool/result
-      transaction, including the streamed result follow-up. Sampled MTP
-      qualification failed at architecture admission before inference; its
-      named cell has not run. The broader alias/grammar qualification remains
-      open, and the original failures are retained.
+      transaction, including the streamed result follow-up. The original sampled
+      MTP attempt failed at architecture admission before inference; its inference
+      controls remain **NOTRUN**. After canonical mapping-identity repair, fresh
+      separate sampled-MTP required-tool and named-tool cells pass with actual
+      drafting, marker reads and streamed follow-ups; see the
+      [qualification evidence](experiments/m35-generic-import/original-parity.md#drafter-source-alias-admission-repair).
+      These two representative cells leave broader alias/grammar and speculative
+      tool qualification open, and the original failures are retained.
       `tools`/`functions` and `tool_choice` (`auto`, `none`,
       `required`, a named function) accepted on Chat Completions, assistant
       `tool_calls` returned, with streamed argument fragments and tool-result

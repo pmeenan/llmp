@@ -418,7 +418,7 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
         std::expected<spec::ModelSpec, std::string> composed = std::unexpected(std::string());
         if (drafter_admitted->model) {
           if (draft_mapping->draft != nullptr &&
-              draft_mapping->draft->target_architecture != facts.architecture)
+              draft_mapping->draft->target_architecture != target_mapping->architecture)
             return Error(std::format("drafter {} does not target architecture {}",
                                      drafter->model().architecture, facts.architecture));
           composed = spec::ComposeStoredDrafter(model, *drafter_admitted->model);

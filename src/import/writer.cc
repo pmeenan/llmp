@@ -1032,6 +1032,11 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
                                {"shards", A(shards)}}) +
                             '\n';
   const bool is_drafter = IsDrafter(plan.spec());
+  // Component selection changes the artifact's execution role. Keep the raw
+  // checkpoint identity in its authenticated source/config receipts, while the
+  // drafter manifest names the selected mapping rather than its parent model.
+  const std::string_view architecture =
+      is_drafter ? plan.canonical().architecture : source.architecture;
   const auto spec = spec::ToJson(plan.spec());
   if (spec.size() > artifact::kMaxSpecBytes)
     return Bad("an artifact document exceeds its cap", Rule::kBounds);
@@ -1080,7 +1085,7 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
                                          {"member_alignment", N(artifact::kMemberAlignment)},
                                          {"profile", Q("spark")},
                                          {"profile_version", "1"}})},
-                           {"model", O({{"architecture", Q(source.architecture)},
+                           {"model", O({{"architecture", Q(architecture)},
                                         {"container", Q(source.container)},
                                         {"expert_count", N(layout->experts)}})},
                            {"source", A(source_list)},

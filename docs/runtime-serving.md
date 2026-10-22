@@ -791,6 +791,16 @@ engine's default where it chose none (an entry's `kNone`); admission runs
 once a registration's settings and once its build, each over its own open
 of the artifact. Source receipts are as the importer
 verified and declared them; admission compares them without re-hashing.
+Drafter recipes name the target mapping's canonical architecture. Admission,
+construction and calibration compare that identity after resolving the target's
+source architecture and container; a retained source alias is not a different
+model family. Source receipts, target/drafter roles, container support and the
+composed spec's tensor shapes are still validated. This identity comparison does
+not require re-import of targets or correctly identified drafters. Drafter component
+imports publish the selected canonical drafter architecture; an earlier component
+artifact published under its parent target architecture needs re-import. Its raw
+checkpoint identity remains in the authenticated source/config receipts.
+
 Serving is v1-only (D-118, slice 4b): a target or drafter of any other
 format version is refused at registration ("re-import its source checkpoint
 with `llmp import`"), and a configuration names the v1 import's ID; nothing

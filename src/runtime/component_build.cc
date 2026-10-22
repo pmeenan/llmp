@@ -687,7 +687,7 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
       spec::Source* dsource = &drafter_admitted->source;
       if (drafter_admitted->model) {
         if (drafter_mapping->draft != nullptr &&
-            drafter_mapping->draft->target_architecture != artifact->model().architecture)
+            drafter_mapping->draft->target_architecture != mapping->architecture)
           return Error(std::format("drafter {} does not target architecture {}",
                                    drafter->model().architecture, artifact->model().architecture));
         if (const spec::DraftRecipe* draft = drafter_mapping->draft;

@@ -591,6 +591,41 @@ TEST(ImportModelOptDrafterTest, TheApprovalNamesOneListAndItsInventory) {
   EXPECT_FALSE(runtime::CheckComponentDrafterAdmission(other, approved));
 }
 
+TEST(ImportModelOptDrafterTest, TargetSourceAliasesUseCanonicalMappingIdentity) {
+  const auto source = Source();
+  const auto limits = Paid(source, 0);
+  std::optional<base::Sha256Digest> canonical_digest;
+  for (const std::string architecture : {"qwen4exp", "qwen3_8_flash_next", "qwen4_exp"}) {
+    SCOPED_TRACE(architecture);
+    auto target = NativeTarget();
+    target.source.architecture = architecture;
+    ASSERT_TRUE(ValidateTarget(target, spec::mappings::Qwen38MtpNativeMapping()));
+    const auto plan = Normalize(source, limits, &target, {.component = "mtp"});
+    ASSERT_TRUE(plan) << plan.error().ToString();
+    EXPECT_EQ(plan->canonical().architecture, "qwen4exp-mtp");
+    EXPECT_EQ(plan->source().architecture, "qwen3_8_flash_next");
+    if (!canonical_digest) canonical_digest = plan->spec().Digest();
+    EXPECT_EQ(plan->spec().Digest(), *canonical_digest);
+  }
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
+    SCOPED_TRACE(mutation);
+    auto target = NativeTarget();
+    target.source.architecture = "qwen3_8_flash_next";
+    if (mutation == 0) {
+      target.source.architecture = "gemma4";
+      target.source.container = "gguf";
+      target.mapping = spec::FindMapping(target.source.architecture, target.source.container);
+      ASSERT_NE(target.mapping, nullptr);
+    }
+    if (mutation == 1) target.source.container = "gguf";
+    if (mutation == 2) target.mapping = &spec::mappings::Qwen38MtpNativeMapping();
+    if (mutation == 3) target.model.stages.front().role = spec::StageRole::kDrafter;
+    if (mutation == 4) target.model.stages.front().stream.width = 1;
+    EXPECT_FALSE(ValidateTarget(target, spec::mappings::Qwen38MtpNativeMapping()));
+    EXPECT_FALSE(Normalize(source, limits, &target, {.component = "mtp"}));
+  }
+}
+
 TEST(ImportModelOptDrafterTest, SelectedIdsMustFitBothActualTargetAndCheckpointHeadRows) {
   auto target = NativeTarget();
   for (auto& tensor : target.source.tensors)

@@ -129,22 +129,32 @@ identities match; the runtime exits zero and is reaped without kills or live
 descendants, and the port closes. Raw receipts are outside Git under
 `/tmp/llmp-m35-orchestration/native-tool-fix-r4/model-qualification/plain`.
 
-The next sampled-MTP `required` cell fails before readiness: legacy companion
+The original sampled-MTP `required` cell failed before readiness: legacy companion
 `2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef`
 is declared for `qwen4exp`, while the new target manifest names
-`qwen3_8_flash_next`. The process exits one, is reaped, and leaves no live group
-or open port. No request or speculative unit runs; the sampled-MTP named cell
-has not run. That admission failure remains **FAIL**, with separate canonical
-mapping-identity work required. It does not turn the plain native transaction
-into a sampled-MTP qualification. No performance, maximum-context or broad
-quality claim follows from either diagnostic.
+`qwen3_8_flash_next`. The process exited one, was reaped, and left no live group
+or open port. No request or speculative unit ran; the original required and
+named inference controls remain **NOTRUN**, and the admission result remains
+**FAIL**.
+
+After the canonical mapping-identity repair, fresh separate sampled-MTP
+`required` and `named` cells passed on the same target/companion pair. Each
+executed the actual marker read and completed its streamed result follow-up.
+Required recorded 53 speculative units and 58 drafted tokens; named recorded
+51 and 64, with zero coverage violations in both. The requested draft vocabulary
+was 65,536; the effective value was 47,172, capped to the selected companion
+head. Source/runtime/assets matched before and after, and both runtimes retired
+cleanly with closed ports. See the [expanded qualification evidence](../m35-generic-import/original-parity.md#drafter-source-alias-admission-repair)
+for frozen identities, settings and counters. These two sampled-MTP behavior
+controls do not establish performance, maximum-context or broad quality coverage.
 
 ## Qualification boundary
 
 This evidence establishes six representative GGUF Qwen API tool/result
-transactions, one native mixed-encoding Mia named-tool/result transaction, and
+transactions, one plain native mixed-encoding Mia named-tool/result transaction,
+two sampled native MTP tool/result transactions (`required` and `named`), and
 one actual OpenCode 1.19.3 task on their recorded frozen identities. It does not
 qualify every served model alias, each template grammar, all client variants,
-maximum context, performance, sampled quality, or speculation. In particular,
+maximum context, performance, sampled quality, or broad speculation coverage. In particular,
 it does not establish full served-model tool coverage or make the open plan
 item complete. Final integrated source checks remain separate from this diagnostic.
