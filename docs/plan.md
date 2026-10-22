@@ -1162,7 +1162,12 @@ D-122).
       continuation when the chat template renders an earlier reply
       differently from the open turn (Qwen3.5's drops the empty think block;
       check Qwen3.8's) and when the model's own reply is re-tokenized from
-      resent text. If either misses, the renderer reports a second
+      resent text. [First bounded Qwen3.8 checks](experiments/m35-prefix-reuse/README.md)
+      (2026-10-22) retain all processed reply tokens when reasoning is resent;
+      omitting reasoning changes the prompt and recovers the earlier turn
+      checkpoint. Actual OpenCode mock captures preserve reasoning in history.
+      Long prompts, native client qualification and broader reuse remain open;
+      these cells select no cache change. If either misses, the renderer reports a second
       boundary per turn, the position where the next request's rendering of
       this reply diverges, found by differential rendering (two renderings
       with different marker strings, first differing position; no
