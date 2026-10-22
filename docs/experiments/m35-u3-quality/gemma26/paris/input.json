@@ -1,0 +1,57 @@
+{
+  "add_special_tokens": false,
+  "messages": [
+    {
+      "content": "Answer only the requested capital city, without explanation.",
+      "role": "system"
+    },
+    {
+      "content": "What is the capital of France?",
+      "role": "user"
+    }
+  ],
+  "options": {
+    "add_generation_prompt": true,
+    "enable_thinking": false,
+    "tools": null
+  },
+  "prompt_token_ids": [
+    2,
+    105,
+    9731,
+    107,
+    7925,
+    1186,
+    506,
+    15633,
+    5279,
+    3207,
+    236764,
+    2180,
+    15569,
+    236761,
+    106,
+    107,
+    105,
+    2364,
+    107,
+    3689,
+    563,
+    506,
+    5279,
+    529,
+    7001,
+    236881,
+    106,
+    107,
+    105,
+    4368,
+    107,
+    100,
+    45518,
+    107,
+    101
+  ],
+  "rendered": "<bos><|turn>system\nAnswer only the requested capital city, without explanation.<turn|>\n<|turn>user\nWhat is the capital of France?<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+  "rendered_sha256": "d01c83b27d5600c694366037eeccd563440a46beac7555e70c186bbbc0b0651e"
+}

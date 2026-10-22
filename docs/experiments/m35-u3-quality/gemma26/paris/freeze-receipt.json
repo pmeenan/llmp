@@ -1,0 +1,37 @@
+{
+  "default_direct_type": "transformers.tokenization_utils_base.BatchEncoding",
+  "default_projection": "input_ids",
+  "explicit_direct_options": {
+    "add_generation_prompt": true,
+    "enable_thinking": false,
+    "return_dict": false,
+    "tokenize": true,
+    "tools": null
+  },
+  "helper_sha256": "f8c21049c1e783ba865ac7bcc9bb9764e134b6b7bbfeeda3de4504dc52f7d8f2",
+  "image": "sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8",
+  "input_sha256": "3d0e98600de96f8a96f7bab3655d85b9d2e974c6e39b768d092e6fa1961069ec",
+  "metadata": {
+    "chat_template.jinja": "94899c0f917d93f6fe81c95744d1e8ddab2d21d39228d2e4aec1fb2a25bff413",
+    "config.json": "4e379cc809c617a49179a49140f553a2d6a5ec538ed480832b0c54f6ace43d98",
+    "generation_config.json": "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de",
+    "llmp-archive.json": "4f36e82e02c29b3e99530efa38495459667a4c461a4d03bc9f610664db162ca1",
+    "tokenizer.json": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+    "tokenizer_config.json": "90c3a3ba5bf53818383a58e1a776cbcacd2a038d4812eaa373e1522f2d06f3df"
+  },
+  "method_signature": "(conversation: 'list[dict[str, str]] | list[list[dict[str, str]]]', tools: 'list[dict | Callable] | None' = None, documents: 'list[dict[str, str]] | None' = None, chat_template: 'str | None' = None, add_generation_prompt: 'bool' = False, continue_final_message: 'bool | str' = False, tokenize: 'bool' = True, padding: 'bool | str | PaddingStrategy' = False, truncation: 'bool' = False, max_length: 'int | None' = None, return_tensors: 'str | TensorType | None' = None, return_dict: 'bool' = True, return_assistant_tokens_mask: 'bool' = False, tokenizer_kwargs: 'dict[str, Any] | None' = None, **kwargs) -> 'str | list[int] | list[str] | list[list[int]] | BatchEncoding'",
+  "method_source_file_sha256": "520a914d0dcc873f8c8788e60ad3007f7db032c82c0b2b2c44ee7f44f2cdad8e",
+  "model_constructed": false,
+  "nvidia_device_nodes": [],
+  "nvidia_visible_devices": "void",
+  "prompt_tokens": 35,
+  "separate_encode_equals_default_projection_equals_explicit_flat": true,
+  "status": "frozen-inputs-only",
+  "tokenization_diagnostic_sha256": "e6e46e7bd2087470ff8acd985b57bc2022087a6676517f8b9749d38cc9b31b35",
+  "tokenizer_class": "GemmaTokenizer",
+  "tokenizer_module": "/usr/local/lib/python3.12/dist-packages/transformers/models/gemma/tokenization_gemma.py",
+  "tokenizer_module_sha256": "ff2481e06983015188575dc62bd2fa0e6f33ed2d01165d940efe77b80ee8d419",
+  "tokenizers_version": "0.22.2",
+  "transformers_version": "5.15.1",
+  "weights_mounted": false
+}
