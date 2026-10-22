@@ -265,7 +265,8 @@ struct FeatureFrom {
     // The slot's carry on the step's stage: the next features the last
     // drafter step with features of that slot on that stage returned (its
     // segment's rows, one a row; RunStep carries them after every such
-    // step and forgets them when the slot's state changes otherwise).
+    // step and forgets them when the slot's logical state is replaced;
+    // ordinary spill/restore preserves them).
     kCarry,
   };
   Kind kind = Kind::kNone;

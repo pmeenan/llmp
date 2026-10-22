@@ -494,8 +494,8 @@ then the launch, then the memory they name. A step (`RunStep`):
    and its ring still holds, or the slot's carry), and its next features
    (an output marked `features`) carried to its slots' carries after its
    run, both in its job outside any recording (their sources move with the
-   positions); a carry is forgotten when the slot's state changes outside
-   its steps;
+   positions); a carry survives ordinary spill/restore and is forgotten
+   when the slot's logical state is replaced or cleared;
 4. the futures (`StepAhead`): deduplicated against the shape and each
    other and protected by `Find` before any funding; a recording made
    ahead whose staging differs is dropped; the capture decision (second

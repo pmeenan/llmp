@@ -64,13 +64,10 @@ SlotLifecycleOptions ModelRunner::LifecycleOptions(ModelRunner* self,
     self->DropPlans();
     if (also) also();
   };
-  // A slot's state changed outside its steps: what a drafter step carried
-  // for it no longer follows.
-  options.invalidate = [self, also = std::move(options.invalidate)](std::uint32_t slot) {
-    self->ForgetCarry(slot);
-    if (also) also(slot);
-  };
+  // Logical replacement invalidates carried features; an ordinary spill
+  // preserves them in runtime memory for the drafter's next step.
   options.content_changed = [self, also = std::move(options.content_changed)](std::uint32_t slot) {
+    self->ForgetCarry(slot);
     for (std::size_t stage = 0; stage < self->slots_.stages(); ++stage) {
       const std::size_t at = (std::size_t{slot} * self->slots_.stages()) + stage;
       self->tap_rows_[at] = self->previous_tap_rows_[at] = {};

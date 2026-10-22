@@ -44,6 +44,8 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Drafter continuation features survive ordinary state spill and restore
+  while logical state replacement still clears them (M3.5 U10).
 - Source-only native drafters receive startup metadata funding while target
   bindings continue to require a stored spec (M3.5).
 - IR byte addressing uses the format layer's physical block geometry, with

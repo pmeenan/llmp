@@ -379,6 +379,7 @@ TEST_F(AnchoredDrafterTest, PassesSitAtTheAnchorReadingTheTapThenTheirCarry) {
 TEST_F(AnchoredDrafterTest, FeaturesNothingHoldsAreRefused) {
   const std::array<std::uint32_t, kSlots> prompts = {40, 41};
   Prefill(prompts);
+  std::vector<ts::FakeRow> drafted;
   const auto draft = [&](en::FeatureFrom from) -> std::string {
     auto borrow = runner_->slots().Borrow(0, 0);
     EXPECT_TRUE(borrow.has_value());
@@ -397,6 +398,10 @@ TEST_F(AnchoredDrafterTest, FeaturesNothingHoldsAreRefused) {
                               .read_align = 256};
     auto ran = runner_->RunStep(
         {.shape = shape, .work = work, .step_bytes = {}, .advance = false, .ahead = {}});
+    if (ran) {
+      const auto rows = Rows(std::span(ran->outputs.front()).first(sizeof(ts::FakeRow)));
+      drafted.insert(drafted.end(), rows.begin(), rows.end());
+    }
     return ran ? std::string() : ran.error().what;
   };
   EXPECT_NE(draft({}).find("does not name"), std::string::npos);
@@ -410,7 +415,14 @@ TEST_F(AnchoredDrafterTest, FeaturesNothingHoldsAreRefused) {
   // The tap of the last committed position, then the carry it leaves.
   EXPECT_EQ(draft({.kind = en::FeatureFrom::Kind::kTap, .position = 39}), "");
   EXPECT_EQ(draft({.kind = en::FeatureFrom::Kind::kCarry}), "");
-  // A slot whose state changed outside its steps carries nothing.
+  // Spilling preserves both the logical state and the drafter's runtime
+  // carry, so catch-up can continue from exactly its previous features.
+  ASSERT_TRUE(runner_->slots().Spill(0));
+  ASSERT_TRUE(runner_->slots().Restore(0));
+  EXPECT_EQ(draft({.kind = en::FeatureFrom::Kind::kCarry}), "");
+  ASSERT_GE(drafted.size(), 3U);
+  EXPECT_EQ(drafted.back().tap, drafted[drafted.size() - 2].token + ts::kFakeFeatureStep);
+  // A slot whose logical state was replaced carries nothing.
   ASSERT_TRUE(runner_->slots().Clear(0));
   EXPECT_NE(draft({.kind = en::FeatureFrom::Kind::kCarry}).find("carries no features"),
             std::string::npos);

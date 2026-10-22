@@ -771,7 +771,9 @@ D-122).
       **Regular-file reader subspike complete (2026-10-22):** checkpoint
       readers and ordinary artifact reads pin the selected regular object
       before opening it for I/O, preserving each caller's symlink policy.
-      Direct-I/O opening remains to audit. Remaining items: the
+      Direct-I/O opening remains to audit. **Drafter carry subspike complete
+      (2026-10-22):** ordinary spill/restore preserves continuation features;
+      logical state replacement still clears them. Remaining items: the
       runtime's single `swapped_`/`parts_` fields measured against the
       wrong swap; `ChargeRuntime`'s count and catalog falling out of step
       when `AddExtent` fails (done in U1); `CheckOwners` testing the `expected` rather
