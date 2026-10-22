@@ -999,7 +999,7 @@ representation (D-108):
      grouped, and rows templates) and/or specialized backend kernels in
      `src/kernels/ggml/` or `src/kernels/exl3/`.
    - Wire the format into the planner's format selection and rank tables
-     (`src/execution/registry.h`, `src/execution/measured_ranks.h`,
+     (`src/execution/registry.h`, `src/kernels/ggml/measured_ranks.h`,
      `src/planner/select.cc`) and test GPU decode/product parity against the
      CPU reference (`tests/unit/decode_gpu_test.cc`).
 

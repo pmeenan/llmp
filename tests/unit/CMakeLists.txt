@@ -483,6 +483,10 @@ add_executable(execution_test execution_test.cc)
 target_link_libraries(execution_test PRIVATE llmp_execution)
 llmp_gtest(execution_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+add_executable(ggml_measured_ranks_test ggml_measured_ranks_test.cc)
+target_link_libraries(ggml_measured_ranks_test PRIVATE llmp_execution)
+llmp_gtest(ggml_measured_ranks_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # Tensor formats (D-108): encodings, layouts and the size rule.
 add_executable(format_test format_test.cc)
 target_link_libraries(format_test PRIVATE llmp_format)

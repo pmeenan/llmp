@@ -172,7 +172,7 @@ if(LLMP_CUDA)
   # build's configure (CONFIGURE_DEPENDS), so none escapes the identity;
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
-  set(module_files ../decode/float_formats.cuh float_route.cc float_route.h CMakeLists.txt capabilities.cc capabilities.h recipe_entries.inc lower.cc lower.h step_program.cc
+  set(module_files measured_ranks.h ../decode/float_formats.cuh float_route.cc float_route.h CMakeLists.txt capabilities.cc capabilities.h recipe_entries.inc lower.cc lower.h step_program.cc
                    step_program.h selected_operation.h cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_sparse.cu
                    dsv4_weighted_reduce.h dsv4_weighted_reduce.cc dsv4_weighted_reduce.cu
                    gemma_moe.h gemma_moe.cc gemma_moe.cu

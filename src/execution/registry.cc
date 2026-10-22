@@ -19,7 +19,7 @@
 
 #include "base/check.h"
 #include "base/sha256.h"
-#include "execution/measured_ranks.h"
+#include "execution/rank_data.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "ir/op.h"
@@ -257,18 +257,22 @@ base::Sha256Digest IdentityOf(const Implementation& implementation) {
 }
 
 Registry::Registry(std::vector<Implementation> implementations,
-                   std::vector<base::Sha256Digest> identities, std::vector<std::size_t> by_name)
-    : implementations_(std::move(implementations)),
+                   std::vector<base::Sha256Digest> identities, std::vector<std::size_t> by_name,
+                   RankData ranks)
+    : rank_digest_(RankDataDigest(ranks)),
+      ranks_(std::move(ranks)),
+      implementations_(std::move(implementations)),
       identities_(std::move(identities)),
       by_name_(std::move(by_name)) {
   base::Sha256 hash;
-  hash.Update("llmp-registry-set-v1");
+  hash.Update("llmp-registry-set-v2");
+  hash.Update(std::as_bytes(std::span(rank_digest_)));
   for (const auto index : by_name_) hash.Update(std::as_bytes(std::span(identities_[index])));
   digest_ = hash.Finish();
 }
 
-std::expected<Registry, PlanRejection> Registry::Create(
-    std::vector<Implementation> implementations) {
+std::expected<Registry, PlanRejection> Registry::Create(std::vector<Implementation> implementations,
+                                                        RankData ranks) {
   if (implementations.size() > kMaxImplementations) {
     return Rejected(PlanError::kInvalid, 0,
                     std::format("{} implementations, more than {}", implementations.size(),
@@ -300,7 +304,31 @@ std::expected<Registry, PlanRejection> Registry::Create(
     return Rejected(PlanError::kInvalid, 0,
                     std::format("two implementations named {}", implementations[*duplicate].name));
   }
-  return Registry(std::move(implementations), std::move(identities), std::move(by_name));
+  for (const auto& rank : ranks.records) {
+    const auto implementation =
+        std::ranges::find(implementations, rank.implementation, &Implementation::name);
+    if (rank.device_class.empty() || rank.rows_min > rank.rows_max || rank.stacked == 0 ||
+        implementation == implementations.end() || implementation->operation != rank.op ||
+        static_cast<std::size_t>(rank.encoding) >= format::Encodings().size() ||
+        static_cast<std::size_t>(rank.layout) >= format::Layouts().size())
+      return Rejected(PlanError::kInvalid, 0, "malformed or unbound backend rank record");
+  }
+  for (std::size_t i = 0; i < ranks.records.size(); ++i) {
+    const auto& a = ranks.records[i];
+    for (std::size_t j = i + 1; j < ranks.records.size(); ++j) {
+      const auto& b = ranks.records[j];
+      if (a.implementation == b.implementation && a.op == b.op &&
+          a.device_class == b.device_class &&
+          (a.device_model.empty() || b.device_model.empty() || a.device_model == b.device_model) &&
+          a.arch == b.arch && a.multiprocessors == b.multiprocessors && a.encoding == b.encoding &&
+          a.layout == b.layout && a.params == b.params && a.stacked == b.stacked &&
+          a.rows_min <= b.rows_max && b.rows_min <= a.rows_max &&
+          (a.k == 0 || b.k == 0 || a.k == b.k) && (a.n == 0 || b.n == 0 || a.n == b.n))
+        return Rejected(PlanError::kInvalid, 0, "overlapping backend rank records");
+    }
+  }
+  return Registry(std::move(implementations), std::move(identities), std::move(by_name),
+                  std::move(ranks));
 }
 
 std::optional<std::size_t> Registry::Find(std::string_view name) const {
@@ -407,27 +435,30 @@ std::optional<std::uint32_t> DeviceRank(const CapabilityQuery& query,
   }
   return {};
 }
-const base::Sha256Digest& MeasuredRanksDigest() {
-  static const auto digest = [] {
+base::Sha256Digest RankDataDigest(const RankData& data) {
+  std::vector<base::Sha256Digest> records;
+  records.reserve(data.records.size());
+  for (const auto& r : data.records) {
     base::Sha256 hash;
-    Field(hash, "llmp-device-measured-ranks-v1");
-    for (const auto& r : kDeviceMeasuredRanks) {
-      Field(hash, r.device_class);
-      Field(hash, r.device_model);
-      Field(hash, r.implementation);
-      Field(hash, std::format("stacked:{}", r.stacked));
-      Field(hash, std::format("params:{}:{}:{}:{}:{}:{}:{}", r.params.k_bits,
-                              static_cast<unsigned>(r.params.codebook), r.params.tensor_scale,
-                              r.params.bits, r.params.group, static_cast<unsigned>(r.params.scale),
-                              r.params.zero_point));
-      Field(hash, std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", r.arch, r.multiprocessors,
-                              static_cast<unsigned>(r.op.op), static_cast<unsigned>(r.op.fused),
-                              static_cast<unsigned>(r.encoding), static_cast<unsigned>(r.layout),
-                              r.rows_min, r.rows_max, r.k, r.n, r.rank, 0));
-    }
-    return hash.Finish();
-  }();
-  return digest;
+    Field(hash, r.device_class);
+    Field(hash, r.device_model);
+    Field(hash, r.implementation);
+    Field(hash, std::format("stacked:{}", r.stacked));
+    Field(hash, std::format("params:{}:{}:{}:{}:{}:{}:{}", r.params.k_bits,
+                            static_cast<unsigned>(r.params.codebook), r.params.tensor_scale,
+                            r.params.bits, r.params.group, static_cast<unsigned>(r.params.scale),
+                            r.params.zero_point));
+    Field(hash, std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}", r.arch, r.multiprocessors,
+                            static_cast<unsigned>(r.op.op), static_cast<unsigned>(r.op.fused),
+                            static_cast<unsigned>(r.encoding), static_cast<unsigned>(r.layout),
+                            r.rows_min, r.rows_max, r.k, r.n, r.rank, 0));
+    records.push_back(hash.Finish());
+  }
+  std::ranges::sort(records);
+  base::Sha256 hash;
+  Field(hash, "llmp-device-measured-ranks-v2");
+  for (const auto& record : records) hash.Update(std::as_bytes(std::span(record)));
+  return hash.Finish();
 }
 std::vector<std::size_t> Candidates(const Registry& registry, const CapabilityQuery& query) {
   struct Ranked {
@@ -448,7 +479,7 @@ std::vector<std::size_t> Candidates(const Registry& registry, const CapabilityQu
     const auto rank = std::ranges::find_if(query.measured, [&](const MeasuredRank& m) {
       return m.implementation == implementation.name;
     });
-    const auto device_rank = DeviceRank(query, implementation.name);
+    const auto device_rank = DeviceRank(query, implementation.name, registry.ranks().records);
     if (query.automatic_fusion && implementation.capability->fusion_needs_measurement &&
         rank == query.measured.end() && !device_rank)
       continue;

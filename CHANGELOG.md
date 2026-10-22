@@ -42,6 +42,8 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Kernel selection scopes measured ranking data to its providing backend and
+  includes that data in plan-cache identity (M3.5 U6b).
 - The GGML backend validates original operands as well as fused plans, so a
   fusion cannot hide dimensions outside the backend's supported range; the
   shared IR now gets operation traits from one table (M3.5 U6a).

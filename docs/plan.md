@@ -674,8 +674,12 @@ D-122).
       layout, partition and decomposition traits share one checked table;
       source- and fused-graph GGML extent validation lives in the backend.
       Native focused tests: 270/270 on `spark-b`; the integrated shared check
-      is recorded with the commit. Device/shape rank data, remaining dispatch
-      consolidation and exhaustive planner-pattern coverage remain open.
+      is recorded with the commit. **U6b complete (2026-10-22):** backends
+      supply owned, validated measured-rank data whose digest participates in
+      registry and plan-cache identity; unrelated registries inherit none.
+      The two existing measured rows now belong to the GGML backend.
+      Complete shape-class fusion/decomposition measurements, remaining
+      dispatch consolidation and exhaustive planner-pattern coverage remain open.
       One op-trait table (arity, write
       set, layout class, splittability with no silent "unsplittable"
       default, decomposition, reference) replacing the dozen-odd per-op edit

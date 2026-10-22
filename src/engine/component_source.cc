@@ -11,7 +11,6 @@
 
 #include "base/check.h"
 #include "engine/graph_plan.h"
-#include "execution/measured_ranks.h"
 #include "format/tensor_format.h"
 #include "ir/graph.h"
 #include "planner/plan.h"
@@ -146,7 +145,6 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
   facts.Update("llmp-plan-backend-v2");
   facts.Update(std::format("lanes:{}:{};", source_backend.lanes.count,
                            source_backend.lanes.scratch_bytes_per_lane));
-  facts.Update(std::as_bytes(std::span(execution::MeasuredRanksDigest())));
   facts.Update(std::format("{}:", source_backend.device.device_class.size()));
   facts.Update(source_backend.device.device_class);
   facts.Update(std::format(":{}:{}:{}:{}:", source_backend.device.arch,

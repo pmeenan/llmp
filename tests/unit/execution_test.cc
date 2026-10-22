@@ -26,7 +26,7 @@
 #include <utility>
 #include <vector>
 
-#include "execution/measured_ranks.h"
+#include "execution/rank_data.h"
 #include "execution/registry.h"
 #include "expected_error.h"
 #include "format/encoding.h"
@@ -589,101 +589,69 @@ TEST(CapabilityTest, ExplicitSourcePreferencePreservesPinsAfterMeasuredRanks) {
   EXPECT_EQ(Names(registry, ex::Candidates(registry, query)).front(), "fake.new");
 }
 
-TEST(CapabilityTest, DeviceRanksRequireEveryMeasuredFactAndUnbatchedOperands) {
-  ASSERT_EQ(ex::kDeviceMeasuredRanks.size(), 2U);
-  for (const auto& record : ex::kDeviceMeasuredRanks) {
-    SCOPED_TRACE(record.implementation);
-    const bool product = record.op == ir::Primitive(ir::Op::kMatMul);
-    std::array operands{
-        ex::OperandFormat{.operand = 0,
-                          .stacked = record.stacked,
-                          .encoding = record.encoding,
-                          .layout = record.layout,
-                          .params = record.params,
-                          .ne = {record.k, record.n, 1, 1}},
-        ex::OperandFormat{
-            .operand = 1,
-            .encoding = product ? Encoding::kF32 : Encoding::kI32,
+ex::RankData SyntheticRanks() {
+  return {{{.device_class = "test.device",
+            .device_model = "test model",
+            .arch = 7,
+            .multiprocessors = 9,
+            .op = ir::Primitive(ir::Op::kMatMul),
+            .encoding = Encoding::kF32,
             .layout = Layout::kDense,
-            .ne = {product ? record.k : record.rows_min, product ? record.rows_min : 1, 1, 1}},
-        ex::OperandFormat{.operand = ex::kOutputOperand,
-                          .encoding = Encoding::kF32,
-                          .layout = Layout::kDense,
-                          .ne = {product ? record.n : record.k, record.rows_min, 1, 1}},
-    };
-    ex::CapabilityQuery query{.op = record.op,
-                              .operands = operands,
-                              .rows = record.rows_min,
-                              .k = record.k,
-                              .n = record.n,
-                              .arch = record.arch,
-                              .device_class = record.device_class,
-                              .device_model = record.device_model,
-                              .multiprocessors = record.multiprocessors};
-    ASSERT_EQ(ex::DeviceRank(query, record.implementation), 0U);
-    EXPECT_FALSE(ex::DeviceRank(query, "fake.unmeasured"));
-    auto registry =
-        Registry::Create({Capable(std::string(record.implementation), {.op = record.op}),
-                          Capable("fake.alternative", {.op = record.op, .priority = 100})})
-            .value();
-    EXPECT_EQ(Names(registry, ex::Candidates(registry, query)).front(), record.implementation);
-    const auto original = query;
-    const auto original_operands = operands;
-    const auto misses = [&] {
-      EXPECT_FALSE(ex::DeviceRank(query, record.implementation));
-      query = original;
-      operands = original_operands;
-    };
-    query.device_class = "sm_86";
-    misses();
-    query.device_model = "another device";
-    misses();
-    --query.arch;
-    misses();
-    --query.multiprocessors;
-    misses();
-    query.op = ir::Primitive(ir::Op::kAdd);
-    misses();
-    operands[0].encoding = Encoding::kBF16;
-    misses();
-    operands[0].layout = Layout::kDense;
-    misses();
-    operands[0].params.tensor_scale = !operands[0].params.tensor_scale;
-    misses();
-    ++operands[0].stacked;
-    misses();
-    --query.rows;
-    misses();
-    ++query.rows;
-    misses();
-    ++query.k;
-    misses();
-    ++query.n;
-    misses();
-    ++operands[0].ne[0];
-    misses();
-    ++operands[0].ne[1];
-    misses();
-    ++operands[1].ne[product ? 1 : 0];
-    misses();
-    for (auto& operand : operands) {
-      for (const std::size_t dimension : {2U, 3U}) {
-        operand.ne[dimension] = 2;
-        misses();
-      }
-    }
-    query.operands = {};
-    misses();
-    query.operands = std::span(operands).first(1);
-    misses();
-    const std::array override{ex::MeasuredRank{.implementation = "fake.alternative", .rank = 0}};
-    query.measured = override;
-    EXPECT_EQ(Names(registry, ex::Candidates(registry, query)).front(), "fake.alternative");
-  }
+            .rows_min = 1,
+            .rows_max = 4,
+            .k = 16,
+            .n = 32,
+            .implementation = "test.product",
+            .rank = 1}}};
+}
+
+TEST(PlanRegistryTest, BackendRanksAreOwnedExplicitAndPartOfTheRegistryIdentity) {
+  const auto declarations =
+      std::vector{Capable("test.product", {.op = ir::Primitive(ir::Op::kMatMul)})};
+  auto data = SyntheticRanks();
+  auto registry = Registry::Create(declarations, data).value();
+  const auto plain = Registry::Create(declarations).value();
+  EXPECT_TRUE(plain.ranks().records.empty());
+  EXPECT_NE(registry.Digest(), plain.Digest());
+  EXPECT_EQ(registry.identity(0), plain.identity(0));
+  EXPECT_EQ(registry.RankDigest(), ex::RankDataDigest(data));
+  const auto digest = registry.Digest();
+  data.records.front().device_model = "changed model";
+  EXPECT_EQ(registry.ranks().records.front().device_model, "test model");
+  EXPECT_EQ(registry.Digest(), digest);
+  EXPECT_NE(Registry::Create(declarations, data)->Digest(), digest);
+}
+
+TEST(PlanRegistryTest, BackendRanksRejectUnboundAndAmbiguousRecords) {
+  const auto declarations =
+      std::vector{Capable("test.product", {.op = ir::Primitive(ir::Op::kMatMul)})};
+  auto data = SyntheticRanks();
+  EXPECT_FALSE(Registry::Create({}, data));
+  data.records.front().op = ir::Primitive(ir::Op::kGetRows);
+  EXPECT_FALSE(Registry::Create(declarations, data));
+  data = SyntheticRanks();
+  data.records.front().rows_max = 0;
+  EXPECT_FALSE(Registry::Create(declarations, data));
+  data = SyntheticRanks();
+  data.records.push_back(data.records.front());
+  data.records.back().device_model.clear();
+  data.records.back().k = 0;
+  data.records.back().rank = 2;
+  EXPECT_FALSE(Registry::Create(declarations, data));
+  data.records.back().rows_min = 5;
+  data.records.back().rows_max = 8;
+  ASSERT_TRUE(Registry::Create(declarations, data));
+  const auto digest = ex::RankDataDigest(data);
+  std::swap(data.records.front(), data.records.back());
+  EXPECT_EQ(ex::RankDataDigest(data), digest);
+  EXPECT_EQ(
+      Registry::Create(declarations, data)->Digest(),
+      Registry::Create(declarations, ex::RankData{{data.records.back(), data.records.front()}})
+          ->Digest());
 }
 
 TEST(CapabilityTest, DeviceRanksSupportWildcardModelAndShape) {
-  const std::array custom_ranks{ex::DeviceMeasuredRank{.device_class = "sm_121",
+  const std::array custom_ranks{ex::DeviceMeasuredRank{.device_class = "test.device",
                                                        .device_model = "",  // wildcard
                                                        .arch = 121,
                                                        .multiprocessors = 48,
@@ -716,7 +684,7 @@ TEST(CapabilityTest, DeviceRanksSupportWildcardModelAndShape) {
                             .k = 1024,
                             .n = 4096,
                             .arch = 121,
-                            .device_class = "sm_121",
+                            .device_class = "test.device",
                             .device_model = "Any Device Model",
                             .multiprocessors = 48};
   EXPECT_EQ(ex::DeviceRank(query, "test.generic", custom_ranks), 0U);
@@ -729,7 +697,7 @@ TEST(CapabilityTest, DeviceRanksSupportWildcardModelAndShape) {
   query.k = 2048;
   query.n = 8192;
   EXPECT_EQ(ex::DeviceRank(query, "test.generic", custom_ranks), 0U);
-  query.device_class = "sm_86";
+  query.device_class = "other.device";
   EXPECT_FALSE(ex::DeviceRank(query, "test.generic", custom_ranks));
 }
 

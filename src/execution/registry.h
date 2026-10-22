@@ -43,6 +43,7 @@
 #include <vector>
 
 #include "base/sha256.h"
+#include "execution/rank_data.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "ir/op.h"
@@ -343,7 +344,8 @@ class Registry {
   static constexpr std::size_t kMaxImplementations = 512;
   static constexpr std::size_t kMaxName = 128;
 
-  static std::expected<Registry, PlanRejection> Create(std::vector<Implementation> implementations);
+  static std::expected<Registry, PlanRejection> Create(std::vector<Implementation> implementations,
+                                                       RankData ranks = {});
 
   // Moving keeps every declaration where it is, so a bound plan follows
   // the registry; nothing replaces a registry's declarations in place.
@@ -359,14 +361,18 @@ class Registry {
   const Implementation& at(std::size_t index) const;
   // IdentityOf(at(index)), computed once.
   const base::Sha256Digest& identity(std::size_t index) const;
-  // Canonical implementation set, independent of insertion order.
+  // Canonical implementation set and backend rank data, independent of declaration order.
   const base::Sha256Digest& Digest() const { return digest_; }
+  const RankData& ranks() const { return ranks_; }
+  const base::Sha256Digest& RankDigest() const { return rank_digest_; }
 
  private:
   Registry(std::vector<Implementation> implementations, std::vector<base::Sha256Digest> identities,
-           std::vector<std::size_t> by_name);
+           std::vector<std::size_t> by_name, RankData ranks);
 
   base::Sha256Digest digest_{};
+  base::Sha256Digest rank_digest_{};
+  RankData ranks_;
   std::vector<Implementation> implementations_;
   std::vector<base::Sha256Digest> identities_;  // parallel to implementations_
   std::vector<std::size_t> by_name_;            // indices, sorted by name

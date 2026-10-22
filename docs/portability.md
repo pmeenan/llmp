@@ -295,7 +295,10 @@ from the component catalog (`components::BuildStep`, `src/components/step.h`).
 (carrying `ir::OpKey` (`ir::Op` and `ir::FusedKind`, `src/ir/op.h`), operand
 and output `TensorFormat`s, logical shapes, `StepShape`, `DeviceFacts`, node
 parameters and `automatic_rewrite` intent) and `Registry::Candidates`
-(`src/execution/registry.h`, ranked via `src/execution/measured_ranks.h`). When
+(`src/execution/registry.h`). Backends supply owned `execution::RankData`;
+the GGML backend's checked-in measurements live in
+`src/kernels/ggml/measured_ranks.h`. The registry digest covers that data,
+so plan caches follow rank changes without importing backend tables. When
 a fused or composite node finds no eligible implementation, the planner
 decomposes it via `ir::Decompose` (`src/ir/decompose.h`) into primitive IR ops
 before re-selecting.

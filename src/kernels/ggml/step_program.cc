@@ -19,7 +19,6 @@
 #include "base/bytes.h"
 #include "base/check.h"
 #include "base/json_stream.h"
-#include "execution/measured_ranks.h"
 #include "execution/registry.h"
 #include "kernels/decode/selected_source.h"
 #include "kernels/exl3/selected_source.h"
@@ -30,6 +29,7 @@
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/llmp_ops.h"
+#include "kernels/ggml/measured_ranks.h"
 #include "kernels/ggml/plan_step.h"
 #include "providers/device_runtime.h"
 
@@ -707,7 +707,7 @@ std::expected<void, std::string> GgmlBackend::PrepareDeclaration() {
   selection.Update("llmp-ggml-declared-selection-v2");
   selection.Update(
       std::format("lanes:{}:{};", options_.lanes.count, options_.lanes.scratch_bytes_per_lane));
-  selection.Update(std::as_bytes(std::span(execution::MeasuredRanksDigest())));
+  selection.Update(std::as_bytes(std::span(registry_->RankDigest())));
   for (std::size_t i = 0; i < registry_->size(); ++i) {
     recipe.Update(std::as_bytes(std::span(registry_->identity(i))));
   }
@@ -805,7 +805,7 @@ std::expected<std::unique_ptr<GgmlBackend>, std::string> GgmlBackend::Create(
   } else if (options.lower.selected_source) {
     return std::unexpected("a backend must own its selected source");
   }
-  auto registry = execution::Registry::Create(std::move(implementations));
+  auto registry = execution::Registry::Create(std::move(implementations), MeasuredRanks());
   if (!registry) return std::unexpected(registry.error().detail);
   backend->registry_ = std::make_unique<execution::Registry>(std::move(*registry));
   auto measuring =
