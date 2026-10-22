@@ -3,6 +3,10 @@
 
 # Qwen verify alpha/beta fusion — 2026-10-04
 
+Historical result. The shared gate shape contract was subsequently generalized
+by the [U7a gate spike](../gdn-gates/RESULTS.md); the measurements and original
+eligibility below remain the 2026-10-04 record.
+
 Qwen's fast speculative verify now computes its two Gated DeltaNet gate
 planes in one pointwise kernel. Both preceding linear products, the
 recurrence and accepted-row commit remain unchanged. The representative

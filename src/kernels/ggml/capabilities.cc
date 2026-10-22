@@ -1544,9 +1544,23 @@ bool AcceptsGdnStep(const ex::CapabilityQuery& q) {
   return Built(q) && Ne(q, 0, 0) == 128 && Ne(q, 2, 0) == 128 && Ne(q, 2, 2) >= 1 &&
          Ne(q, 2, 2) <= static_cast<std::uint64_t>(kGatedDeltaNetLanesTokens) && Ne(q, 2, 3) == 1;
 }
-// llmp.gdn.gates: 48 value heads, 1 to 16 rows.
+// llmp.gdn.gates: independent pointwise rows, two F32 output views.
 bool AcceptsGdnGates(const ex::CapabilityQuery& q) {
-  return Built(q) && Ne(q, 0, 0) == 48 && Ne(q, 0, 1) >= 1 && Ne(q, 0, 1) <= 16;
+  const auto heads = Ne(q, 0, 0), rows = Ne(q, 0, 1);
+  if (!Built(q) || !GdnGatesShapeFits(heads, rows)) return false;
+  for (std::uint8_t i = 0; i < 4; ++i) {
+    const auto* operand = Operand(q, i);
+    if (!operand || operand->encoding != Encoding::kF32 || operand->layout != Layout::kDense ||
+        !ShapedOperand(q, i, {heads, i < 2 ? rows : 1, 1, 1}))
+      return false;
+  }
+  for (const auto i : {ex::kOutputOperand, static_cast<std::uint8_t>(ex::kOutputOperand + 1)}) {
+    const auto* operand = Operand(q, i);
+    if (!operand || operand->encoding != Encoding::kF32 || operand->layout != Layout::kDense ||
+        !ShapedOperand(q, i, {1, heads, rows, 1}))
+      return false;
+  }
+  return true;
 }
 bool AcceptsGdnNormGate(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::NormGateParams>(q);
@@ -2576,7 +2590,8 @@ const std::array kEntries = {
     Entry{kGdnStepName, Cap(F(FusedKind::kGdnStep), kGatedDeltaRules, &AcceptsGdnStep, false),
           "; selectable for the build's SASS architectures: heads of 128, up to 16 tokens"},
     Entry{kGdnGatesName, Cap(F(FusedKind::kGdnGates), kHcNormRules, &AcceptsGdnGates, true),
-          "; selectable for the build's SASS architectures: 48 heads, up to 16 rows"},
+          "; selectable for the build's SASS architectures: positive heads/rows, representable F32 "
+          "planes"},
     Entry{kGdnNormGateName, Cap(F(FusedKind::kNormGate), kNormGateRules, &AcceptsGdnNormGate, true),
           "; selectable for the build's SASS architectures: heads of 128"},
     Entry{kGatedDeltaNetName,

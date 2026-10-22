@@ -784,8 +784,10 @@ D-122).
 - [ ] **U7 Fast paths by capability** (after the memory-mode re-gate and
       U4/U6; five sub-slices, each moving its fusions' patterns to matching
       against their decompositions, which three of the sixty use today):
-      - **U7a:** parameterize the whitelisted kernels: GDN gates' heads (48
-        only, `h = i % 48` in the kernel), HC width and stream count, the
+      - **U7a:** the [first shared GDN gate spike](experiments/gdn-gates/RESULTS.md)
+        removes the 48-head and 16-row whitelist with checked storage bounds,
+        non-reference-shape correctness and a passing registered 48×1 speed
+        screen. Remaining kernels: HC width and stream count, the
         weighted reduce's width and slots, QSA's head and indexer sizes,
         DeepSeek's Q-head and output-A shapes and encodings (output-A is Q8_0
         only), owner attention's head counts, sizes and softcap, and the MXFP8

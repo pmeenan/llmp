@@ -1188,7 +1188,6 @@ TEST_F(Qwen38FastTest, GdnHistoryShiftsTheOldHistoryForShortChunks) {
 // than substituting CPU math. In particular fast-math's FTZ and the
 // softplus branch at 20 must agree at every F32 rounding boundary.
 TEST_F(Qwen38FastTest, GdnGatesAreTheOriginalPointwiseChainsAndSavedViews) {
-  constexpr std::int64_t heads = 48;
   const float tiny = std::numeric_limits<float>::denorm_min();
   const float inf = std::numeric_limits<float>::infinity();
   const std::array edges{0.0f,
@@ -1212,14 +1211,27 @@ TEST_F(Qwen38FastTest, GdnGatesAreTheOriginalPointwiseChainsAndSavedViews) {
                          -0.125f,
                          std::nextafter(1.0f, 0.0f),
                          std::nextafter(1.0f, inf)};
-  for (const std::int64_t rows : {1, 2, 3, 4, 8, 16}) {
-    SCOPED_TRACE(rows);
+  constexpr std::array<std::array<std::int64_t, 2>, 13> shapes = {{{48, 1},
+                                                                   {48, 2},
+                                                                   {48, 3},
+                                                                   {48, 4},
+                                                                   {48, 8},
+                                                                   {48, 16},
+                                                                   {1, 17},
+                                                                   {7, 33},
+                                                                   {31, 17},
+                                                                   {37, 19},
+                                                                   {65, 17},
+                                                                   {257, 17},
+                                                                   {513, 1}}};
+  for (const auto& [heads, rows] : shapes) {
+    SCOPED_TRACE(std::format("heads={} rows={}", heads, rows));
     auto alpha_h = Normal(100 + static_cast<std::uint64_t>(rows),
                           static_cast<std::size_t>(heads * rows), 5.0f);
     auto beta_h = Normal(200 + static_cast<std::uint64_t>(rows), alpha_h.size(), 5.0f);
     auto bias_h = Normal(300, static_cast<std::size_t>(heads));
     auto a_h = Normal(400, static_cast<std::size_t>(heads));
-    for (std::size_t i = 0; i < edges.size(); ++i) {
+    for (std::size_t i = 0; i < std::min(edges.size(), bias_h.size()); ++i) {
       bias_h[i] = 0.0f;
       a_h[i] = -0.5f;
       for (std::int64_t t = 0; t < rows; ++t) {
@@ -1230,19 +1242,21 @@ TEST_F(Qwen38FastTest, GdnGatesAreTheOriginalPointwiseChainsAndSavedViews) {
     }
     // Cancellation and a subnormal add/multiply are also original GPU
     // operations, so this exercises their actual FTZ rather than assuming it.
-    bias_h[30] = -16.0f;
-    alpha_h[30] = std::nextafter(16.0f, inf);
-    bias_h[31] = tiny;
-    alpha_h[31] = -tiny;
-    a_h[31] = -0.0f;
-    // Normal multiplier with a subnormal result, and subnormal input
-    // multiplier: both must flush exactly as the original MUL node does.
-    alpha_h[32] = 0.0f;
-    bias_h[32] = 0.0f;
-    a_h[32] = -std::numeric_limits<float>::min();
-    alpha_h[33] = 20.0f;
-    bias_h[33] = 0.0f;
-    a_h[33] = -tiny;
+    if (heads > 33) {
+      bias_h[30] = -16.0f;
+      alpha_h[30] = std::nextafter(16.0f, inf);
+      bias_h[31] = tiny;
+      alpha_h[31] = -tiny;
+      a_h[31] = -0.0f;
+      // Normal multiplier with a subnormal result, and subnormal input
+      // multiplier: both must flush exactly as the original MUL node does.
+      alpha_h[32] = 0.0f;
+      bias_h[32] = 0.0f;
+      a_h[32] = -std::numeric_limits<float>::min();
+      alpha_h[33] = 20.0f;
+      bias_h[33] = 0.0f;
+      a_h[33] = -tiny;
+    }
     ggml_tensor* alpha = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, heads, rows), alpha_h);
     ggml_tensor* beta = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, heads, rows), beta_h);
     ggml_tensor* bias = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, heads), bias_h);
@@ -1283,7 +1297,7 @@ TEST_F(Qwen38FastTest, GdnGatesAreTheOriginalPointwiseChainsAndSavedViews) {
   }
 }
 
-TEST_F(Qwen38FastTest, GdnGatesRefuseAliasedMisalignedStaleOrTooManyRows) {
+TEST_F(Qwen38FastTest, GdnGatesRefuseAliasedMisalignedStaleOrInvalidExtents) {
   constexpr std::int64_t heads = 48;
   constexpr std::int64_t rows = 2;
   const std::vector<float> values(static_cast<std::size_t>(heads * rows), 1.0f);
@@ -1313,15 +1327,43 @@ TEST_F(Qwen38FastTest, GdnGatesRefuseAliasedMisalignedStaleOrTooManyRows) {
   alpha->data = backing;
   gates->src[0] = alpha;
   ASSERT_TRUE(kg::CheckGdnGates(gates).has_value());
-  // The CUDA launcher flattens at most sixteen rows. A valid larger
-  // descriptor must refuse before launch rather than silently truncate.
-  const std::vector<float> wide(static_cast<std::size_t>(heads * 17), 1.0f);
-  ggml_tensor* alpha17 = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, heads, 17), wide);
-  ggml_tensor* beta17 = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, heads, 17), wide);
-  ggml_tensor* gates17 = kg::GdnGates(c(), alpha17, beta17, bias, a);
-  TensorArena::Bind(gates17, Allocate(ggml_nbytes(gates17)));
-  EXPECT_FALSE(kg::CheckGdnGates(gates17).has_value());
-  EXPECT_FALSE(kg::RunGdnGates(launch(), gates17).has_value());
+  // Mutate metadata only: no impossible allocation or ggml_nbytes call.
+  // Constructor and bound checker reject the same malformed operand shapes.
+  for (ggml_tensor* input : {alpha, beta, bias, a}) {
+    const ggml_tensor saved = *input;
+    for (int dim = 0; dim < 4; ++dim) {
+      for (const std::int64_t bad :
+           {std::int64_t{0}, std::int64_t{-1}, std::numeric_limits<std::int64_t>::max()}) {
+        input->ne[dim] = bad;
+        EXPECT_EQ(kg::GdnGates(c(), alpha, beta, bias, a), nullptr);
+        EXPECT_FALSE(kg::CheckGdnGates(gates).has_value());
+        *input = saved;
+      }
+    }
+    input->ne[0] += 1;
+    EXPECT_EQ(kg::GdnGates(c(), alpha, beta, bias, a), nullptr);
+    EXPECT_FALSE(kg::CheckGdnGates(gates).has_value());
+    *input = saved;
+    input->nb[1] = std::numeric_limits<std::size_t>::max();
+    EXPECT_FALSE(kg::CheckGdnGates(gates).has_value());
+    *input = saved;
+  }
+  const auto saved = *gates;
+  gates->ne[2] = 1;
+  EXPECT_FALSE(kg::CheckGdnGates(gates).has_value());
+  *gates = saved;
+  gates->nb[2] = std::numeric_limits<std::size_t>::max();
+  EXPECT_FALSE(kg::CheckGdnGates(gates).has_value());
+  *gates = saved;
+  EXPECT_EQ(kg::GdnGates(c(), nullptr, beta, bias, a), nullptr);
+  // Each input individually fits signed metadata, but two F32 planes do not.
+  const auto alpha_saved = *alpha, beta_saved = *beta;
+  alpha->ne[1] = beta->ne[1] = std::numeric_limits<std::int64_t>::max() / heads / 4;
+  EXPECT_EQ(kg::GdnGates(c(), alpha, beta, bias, a), nullptr);
+  EXPECT_FALSE(kg::CheckGdnGates(gates).has_value());
+  *alpha = alpha_saved;
+  *beta = beta_saved;
+  ASSERT_TRUE(kg::CheckGdnGates(gates).has_value());
 }
 
 TEST_F(Qwen38FastTest, GdnStepIsTheColumnsRecurrenceInPlace) {

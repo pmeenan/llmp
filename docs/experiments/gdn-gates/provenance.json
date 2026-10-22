@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "date": "2026-10-22",
+  "registration": "963997c3422d531e6728424ed06c02463ae8d3fa",
+  "host": "spark-b (spark-56f5)",
+  "device": "NVIDIA GB10",
+  "driver": "580.178.04",
+  "driver_api": 13000,
+  "cuda_runtime": 13040,
+  "sdk": "aarch64-2c4eb5b2f68f3fa5",
+  "build_profile": "spark-native RelWithDebInfo",
+  "source_lock_sha256": "4d9b56ed6f83d6029b37481287b3a9489f217ccbb1ce66e67e458ed57bf6f00f",
+  "collector_sha256": "7116ab84c7b572e4b8887e87741cb5a47522dca5660b1c64ac1f8a7e3c472bcc",
+  "execution_wrapper_sha256": "2b676d57c34a8cbf7685406bc2bc47d104bd5413f7729981bab589dcb8c405be",
+  "enrollment_sha256": "774ec1cfc634d38b9deeaeb3d8c8e62d24de2f0e0d05ca0f6f304bcbd0f39a85",
+  "output_sha256": "f1a16d8c9dbb842a88765c738401c90478a691ca3a6a9a4ef3d74ff5366fe95c",
+  "fixture_device_bytes": 1152,
+  "kernel_scratch_bytes": 0,
+  "arms": {
+    "baseline": {
+      "binary_sha256": "df4bfc2479399d4e6463e82f11693c978368c916fae897c5ce58867344c12f47",
+      "selection_digest": "1e51026b1dc7a4647c9fd34e37b6c307e74f8299e99469c722bf11b50d9ee060",
+      "compiler_identity": "e56dd641cd38334a1c77a7e685b7feeb2d84fc77bceb0154ddea3266288901e2",
+      "source_manifest_sha256": "558e07422573961ffd9f787740bb3acdc221d7db51a22444d7f2d0ec0cd9eeae",
+      "compiler_receipt_sha256": "9647d4d9fde6cb56e1b423cae784d944a72e6911e34576dbe0984daf18b9d949",
+      "build_receipt_sha256": "5390ed59a7019a6e3b14f355b60b6c2fe3bb884adf4153f6f0665f2ca7d89578"
+    },
+    "candidate": {
+      "binary_sha256": "3a67433526fcac4f4aa6f21b6bf525c1a95bdd9d9f6dcca5c35304c9dfc645b5",
+      "selection_digest": "f5f4b8c3b779898fccd7071e1ef5b6c7f7c53f442102f21424b650a7f73a72d2",
+      "compiler_identity": "374364310fbe78618b0f332a189bb8d9db18fde6eea5ea646892aa088429c50e",
+      "source_manifest_sha256": "d5e159ed667a6282bebf74e0f73cf743d3a5ac8ba83019267e99335b18dbb360",
+      "compiler_receipt_sha256": "eed7f031ab72be16517a892eb87d404483766a5e8ad4ebc87a9016e1613f4a8b",
+      "build_receipt_sha256": "5390ed59a7019a6e3b14f355b60b6c2fe3bb884adf4153f6f0665f2ca7d89578"
+    }
+  },
+  "candidate_files": {
+    "src/kernels/ggml/capabilities.cc": "9fa72feef28c2b7b650a0ec87dc80ea119c8cb6246b4297b6d7042090d8f99d4",
+    "src/kernels/ggml/llmp_fused.cu": "e30bb2b68097ead4c9b04713bd630146d9e86b2a79c0b3106b916ce7570ef326",
+    "src/kernels/ggml/llmp_ops.cc": "feda0074fd20148b0c82b575929f8cd7b6b54a543916093edd16b490a05bd6eb",
+    "src/kernels/ggml/llmp_ops.h": "661d33864b555d7308d58f82a31e8657a729090d09315eeb1cdffdac4d16ab69",
+    "tests/unit/ggml_lower_qwen38_test.cc": "1469f83db14e978e7f0187f9ebf7133841f56ceb89e70db034e785548bdbb37a",
+    "tests/unit/qwen38_fast_test.cc": "ea3f7e7f9694aeb398fd0691e1f3ccfc7f06f60fb0ada48b17b768a7f84c628a"
+  },
+  "validation": {
+    "focused": {
+      "ctest_entries": 50,
+      "failures": 0,
+      "skips": 0,
+      "xml_sha256": "f21241260b4bcd7bbda2b1927559ecde9a4afd93173c941e61cc1af00a416e21"
+    },
+    "shared": {
+      "ctest_entries": 3624,
+      "failures": 0,
+      "skips": 0,
+      "xml_sha256": "f5897cf92e0327d2cef624c9811c7b640eeff7d3e0131969cc5af89a8e25bf0a"
+    },
+    "models": {
+      "ctest_entries": 6,
+      "failures": 0,
+      "skips": 0,
+      "xml_sha256": "c857318828f60033b22da6282f19c7c7182af0d269fb9e97b236cd9e776fa0de"
+    },
+    "ctest_version": "4.4.3",
+    "model_formats": [
+      "ModelOpt",
+      "GGUF"
+    ],
+    "refreshed_consumer_targets": 181
+  }
+}

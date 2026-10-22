@@ -1411,16 +1411,17 @@ __global__ void __launch_bounds__(kRouterWarps * 32)
 // expressions, including their FTZ behavior. No recurrence or state write.
 __global__ void GdnGatesKernel(const float* __restrict__ alpha, const float* __restrict__ beta,
                                const float* __restrict__ dt_bias, const float* __restrict__ ssm_a,
-                               float* __restrict__ dst, int n) {
-  const int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-  if (i >= n) {
-    return;
+                               float* __restrict__ dst, std::uint64_t heads, std::uint64_t n) {
+  const auto step = static_cast<std::uint64_t>(gridDim.x) * blockDim.x;
+  for (std::uint64_t i = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < n;
+       i += step) {
+    // The first row needs no division, including every single-row invocation.
+    const auto h = i < heads ? i : i % heads;
+    const float x = __fadd_rn(alpha[i], dt_bias[h]);
+    const float sp = x > 20.0f ? x : logf(1.0f + expf(x));
+    dst[i] = __fmul_rn(sp, ssm_a[h]);
+    dst[n + i] = Sigmoid(beta[i]);
   }
-  const int h = i % 48;
-  const float x = __fadd_rn(alpha[i], dt_bias[h]);
-  const float sp = x > 20.0f ? x : logf(1.0f + expf(x));
-  dst[i] = __fmul_rn(sp, ssm_a[h]);
-  dst[n + i] = Sigmoid(beta[i]);
 }
 
 __global__ void Bf16Kernel(const float* __restrict__ x, nv_bfloat16* __restrict__ dst,
@@ -1563,12 +1564,17 @@ std::expected<void, KernelFailure> RunGdnGates(LaunchContext& launch, ggml_tenso
     return checked;
   }
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
-    const int n = 48 * static_cast<int>(node->ne[1]);
-    GdnGatesKernel<<<Blocks(n, kThreads), kThreads, 0, context.stream()>>>(
+    const auto heads = static_cast<std::uint64_t>(node->ne[0]);
+    const auto n = heads * static_cast<std::uint64_t>(node->ne[1]);
+    // CUDA compute capability >= 3.0 supports 2^31-1 blocks in grid.x.
+    // The grid-stride loop also covers shapes above that one-launch grid.
+    const auto blocks =
+        static_cast<unsigned>(std::min((n + kThreads - 1) / kThreads, std::uint64_t{2147483647}));
+    GdnGatesKernel<<<blocks, kThreads, 0, context.stream()>>>(
         static_cast<const float*>(node->src[0]->data),
         static_cast<const float*>(node->src[1]->data),
         static_cast<const float*>(node->src[2]->data),
-        static_cast<const float*>(node->src[3]->data), static_cast<float*>(node->data), n);
+        static_cast<const float*>(node->src[3]->data), static_cast<float*>(node->data), heads, n);
   });
 }
 

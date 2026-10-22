@@ -83,6 +83,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <span>
 
 #include "ggml.h"
@@ -434,11 +435,18 @@ ggml_tensor* GdnHistory(ggml_context* context, ggml_tensor* x, std::int64_t taps
 std::expected<void, KernelFailure> CheckGdnConv(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckGdnNormGate(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckGdnHistory(const ggml_tensor* node);
-//   llmp.gdn.gates     Qwen verify's two pointwise chains, with the
+//   llmp.gdn.gates     Two pointwise chains, with the
 //                        original F32 rounding: sigmoid(beta) and
 //                        softplus(alpha + dt_bias) * ssm_a.
-// `alpha`, `beta` F32 [48, t], `dt_bias`, `ssm_a` F32 [48], 1 <= t <= 16:
-// F32 [48, t, 2], gate in the first plane and beta in the second.
+// `alpha`, `beta` F32 [heads, rows], `dt_bias`, `ssm_a` F32 [heads]:
+// F32 [heads, rows, 2], gate in the first plane and beta in the second.
+// Both planes and their byte strides must fit GGML's signed offset range.
+inline constexpr bool GdnGatesShapeFits(std::uint64_t heads, std::uint64_t rows) {
+  constexpr auto max_values =
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) / (2 * sizeof(float));
+  return heads > 0 && heads <= max_values && rows > 0 && rows <= max_values / heads;
+}
+// Returns nullptr for invalid operand shapes, before GGML allocates metadata.
 ggml_tensor* GdnGates(ggml_context* context, ggml_tensor* alpha, ggml_tensor* beta,
                       ggml_tensor* dt_bias, ggml_tensor* ssm_a);
 std::expected<void, KernelFailure> CheckGdnGates(const ggml_tensor* node);

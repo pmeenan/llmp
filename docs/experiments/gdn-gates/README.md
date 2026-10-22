@@ -8,6 +8,9 @@ pointwise kernel at the existing 48-head, one-row decode workload. It is
 not a model throughput gate, a fusion-rank update, or evidence for the
 remaining U7 kernels. Synthetic non-reference shapes are correctness tests.
 
+Result: [the registered first screen](RESULTS.md) passed; the registration below
+retains its prospective wording and fixed criteria.
+
 ## Arms and execution
 
 A is the production implementation at `48bbb5ede4a3333c80c4dd37df877e358baaa997`.

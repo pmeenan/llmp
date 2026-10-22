@@ -23,6 +23,7 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -1417,3 +1418,64 @@ TEST(GgmlLowerQwen38Test, ReservedWeightFactsSelectTypedProductsAndRejectBrokenP
 }
 
 }  // namespace
+
+TEST(GgmlLowerQwen38Test, GdnGatesCapabilityUsesRepresentableShapes) {
+  using llmp::format::Encoding;
+  const ex::Capability* cap = kg::CapabilityOf(kg::kGdnGatesName);
+  ASSERT_NE(cap, nullptr);
+  ASSERT_NE(cap->accepts, nullptr);
+  constexpr std::array<std::array<std::uint64_t, 2>, 5> shapes = {
+      {{48, 1}, {1, 17}, {37, 19}, {257, 17}, {513, 1}}};
+  for (const auto& [heads, rows] : shapes) {
+    SCOPED_TRACE(std::format("heads={} rows={}", heads, rows));
+    std::array operands{ex::OperandFormat{.operand = 0,
+                                          .encoding = Encoding::kF32,
+                                          .layout = llmp::format::Layout::kDense,
+                                          .ne = {heads, rows, 1, 1}},
+                        ex::OperandFormat{.operand = 1,
+                                          .encoding = Encoding::kF32,
+                                          .layout = llmp::format::Layout::kDense,
+                                          .ne = {heads, rows, 1, 1}},
+                        ex::OperandFormat{.operand = 2,
+                                          .encoding = Encoding::kF32,
+                                          .layout = llmp::format::Layout::kDense,
+                                          .ne = {heads, 1, 1, 1}},
+                        ex::OperandFormat{.operand = 3,
+                                          .encoding = Encoding::kF32,
+                                          .layout = llmp::format::Layout::kDense,
+                                          .ne = {heads, 1, 1, 1}},
+                        ex::OperandFormat{.operand = ex::kOutputOperand,
+                                          .encoding = Encoding::kF32,
+                                          .layout = llmp::format::Layout::kDense,
+                                          .ne = {1, heads, rows, 1}},
+                        ex::OperandFormat{.operand = ex::kOutputOperand + 1,
+                                          .encoding = Encoding::kF32,
+                                          .layout = llmp::format::Layout::kDense,
+                                          .ne = {1, heads, rows, 1}}};
+    ex::CapabilityQuery q{.op = cap->op, .operands = operands, .arch = 121};
+    EXPECT_TRUE(cap->accepts(q));
+    for (auto& operand : operands) {
+      const auto saved = operand;
+      for (std::size_t dim = 0; dim < 4; ++dim) {
+        for (const auto bad : {std::uint64_t{0}, std::numeric_limits<std::uint64_t>::max()}) {
+          operand.ne[dim] = bad;
+          EXPECT_FALSE(cap->accepts(q));
+          operand = saved;
+        }
+      }
+      operand.encoding = Encoding::kBF16;
+      EXPECT_FALSE(cap->accepts(q));
+      operand = saved;
+      operand.ne[0] += 1;
+      EXPECT_FALSE(cap->accepts(q));
+      operand = saved;
+    }
+    q.operands = std::span(operands).first(5);
+    EXPECT_FALSE(cap->accepts(q));
+  }
+  constexpr auto max_values =
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) / (2 * sizeof(float));
+  EXPECT_TRUE(kg::GdnGatesShapeFits(1, max_values));
+  EXPECT_FALSE(kg::GdnGatesShapeFits(1, max_values + 1));
+  EXPECT_FALSE(kg::GdnGatesShapeFits(max_values, 2));
+}

@@ -535,8 +535,28 @@ ggml_tensor* GdnHistory(ggml_context* context, ggml_tensor* x, std::int64_t taps
       {taps});
 }
 
+namespace {
+
+bool GdnGatesOperands(const ggml_tensor* alpha, const ggml_tensor* beta, const ggml_tensor* dt_bias,
+                      const ggml_tensor* ssm_a) {
+  if (!IsF32(alpha) || !IsF32(beta) || !IsF32(dt_bias) || !IsF32(ssm_a) || alpha->ne[0] <= 0 ||
+      alpha->ne[1] <= 0 ||
+      !GdnGatesShapeFits(static_cast<std::uint64_t>(alpha->ne[0]),
+                         static_cast<std::uint64_t>(alpha->ne[1])))
+    return false;
+  const auto heads = alpha->ne[0], rows = alpha->ne[1];
+  const auto shaped = [](const ggml_tensor* t, std::int64_t h, std::int64_t r) {
+    return t->ne[0] == h && t->ne[1] == r && t->ne[2] == 1 && t->ne[3] == 1;
+  };
+  return shaped(alpha, heads, rows) && shaped(beta, heads, rows) && shaped(dt_bias, heads, 1) &&
+         shaped(ssm_a, heads, 1);
+}
+
+}  // namespace
+
 ggml_tensor* GdnGates(ggml_context* context, ggml_tensor* alpha, ggml_tensor* beta,
                       ggml_tensor* dt_bias, ggml_tensor* ssm_a) {
+  if (!GdnGatesOperands(alpha, beta, dt_bias, ssm_a)) return nullptr;
   return Custom(context, GGML_TYPE_F32, {alpha->ne[0], alpha->ne[1], 2, 1},
                 {alpha, beta, dt_bias, ssm_a}, kTagGdnGates.data());
 }
@@ -1649,11 +1669,15 @@ std::expected<void, KernelFailure> CheckGdnGates(const ggml_tensor* node) {
   const ggml_tensor* beta = node->src[1];
   const ggml_tensor* dt_bias = node->src[2];
   const ggml_tensor* ssm_a = node->src[3];
-  const std::int64_t rows = alpha->ne[1];
-  if (!IsF32(alpha) || !Shaped(alpha, 48, rows, 1) || !IsF32(beta) || !Shaped(beta, 48, rows, 1) ||
-      !Vector(dt_bias, 48) || !Vector(ssm_a, 48) || !IsF32(node) || !Shaped(node, 48, rows, 2) ||
-      rows < 1 || rows > 16) {
-    return Rejected("F32 alpha/beta [48, 1..16], dt_bias/ssm_a [48], output [48, rows, 2]");
+  if (!GdnGatesOperands(alpha, beta, dt_bias, ssm_a) || !IsF32(node) ||
+      !Shaped(node, alpha->ne[0], alpha->ne[1], 2)) {
+    return Rejected(
+        "representable F32 alpha/beta [heads, rows], dt_bias/ssm_a [heads], "
+        "output [heads, rows, 2]");
+  }
+  // Check arbitrary bound strides before Packed/ggml_is_contiguous multiplies them.
+  if (!AllSane({node, alpha, beta, dt_bias, ssm_a})) {
+    return Rejected("measurable operands and output");
   }
   for (const ggml_tensor* tensor : {node, alpha, beta, dt_bias, ssm_a}) {
     if (!Aligned(tensor, sizeof(float))) {

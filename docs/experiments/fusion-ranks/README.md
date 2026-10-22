@@ -12,7 +12,10 @@ The U8 spatial-definition hook build produces identity
 34 of the 195 compiler-owned object receipts change, including the component
 objects and their planner/backend dependents. The twelve W5 rows remain exact
 historical evidence and are stale on this build; selection retains the incumbent
-until newly source-matched comparisons are measured. Full U6 remains open.
+until newly source-matched comparisons are measured. The subsequent
+[U7a GDN gate spike](../gdn-gates/RESULTS.md) produces compiler identity
+`374364310fbe78618b0f332a189bb8d9db18fde6eea5ea646892aa088429c50e`;
+its narrow GDN screen does not refresh these RMSNormMul rows. Full U6 remains open.
 The [original results](RESULTS.md) and
 [historical data](historical-v11-v12.json) retain unchanged measurements and
 identities; they are stale for current source. The registrations below preserve

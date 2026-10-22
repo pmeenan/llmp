@@ -24,6 +24,9 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Shared GDN gate fusion accepts positive head and row counts within checked
+  storage bounds, preserving its original pointwise arithmetic (M3.5 U7a).
+
 - Image imports accept explicit `--reuse-component ROLE=ARTIFACT_ID` selections
   after matching their stored spec, tensor inventory and complete archive source
   receipts, avoiding another payload pass for unchanged prepared components.
