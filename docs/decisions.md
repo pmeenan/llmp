@@ -240,13 +240,19 @@ Image text encoder layers and denoiser blocks compose higher-level token
 components (`attention.dense` and `ffn.glu`) directly alongside row-wise 1D
 token components (`embedding.token`, `norm.rms`, `norm.channel`,
 `norm.adaptive`, `residual.gated`, `projection.spatial`, `residual.spatial`,
-`condition.rows`, `concat.spatial`, `slice.spatial`, `residual.scaled`), all
-using `Def::emit` and `Def::reference` (`Def::spatial == nullptr`); single-op
-surrogates `glu.spatial` and `norm.rope_axes` are removed. Only genuinely
-multi-dimensional spatial operations (`conv.spatial`, `upsample.nearest`,
-`residual.upsample`, `reshape.spatial`, `affine.channel`, `attention.spatial`)
-use `Def::spatial`. No component in the catalog carries both `Def::spatial` and
-`Def::emit`, or stub callbacks that refuse token execution.
+`condition.rows`, `concat.spatial`, `slice.spatial`, `residual.scaled`);
+single-op surrogates `glu.spatial` and `norm.rope_axes` are removed.
+
+**Amendment, 2026-10-22 (M3.5 U8, `180c2d2`).** Every component admitted to
+spatial compilation supplies complete `ComponentDef::spatial` shape, emission
+and reference hooks. Definitions also own their input encodings, carry shape,
+stateless eligibility and temporary-storage requirements. Components that
+support ordinary token streams retain paired `emit` and `reference` hooks;
+a definition may support both domains. The spatial compiler selects the
+spatial hooks uniformly and refuses missing or incomplete hooks. Shared
+adapters let a definition reuse its token implementation with its declared
+spatial layout; no kind-name fallback selects an implementation or layout.
+This supersedes the original mutually exclusive spatial/token hook rule.
 
 **Context.** M3.6 review follow-up R9.5: `SpatialComposition` held `links` and
 `exports` beside `ModelSpec`, and the image pipeline decomposed attention and
@@ -254,11 +260,11 @@ GLU FFN into 17 op-level components per block/layer instead of reusing the
 token catalog's `attention.dense` and `ffn.glu` components.
 
 **Consequences.** `spec::Validate`, `spec::ToJson`, and `spec::FromJson`
-validate and round-trip stage `links` and `exports`. `BuildSpatialStep` bridges
-token components (`Def::spatial == nullptr`) through `Def::emit` and
-`Def::reference` over the 2D row view of `[width, rows, 1, 1]` activations,
-collapsing each denoiser block from 17 to 6 components and each text encoder
-layer from 17 to 2 components (`attention.dense` + `ffn.glu`).
+validate and round-trip stage `links` and `exports`. `BuildSpatialStep` uses
+the definition-owned spatial contracts, including adapters to the shared token
+implementations. The higher-level components reduce each denoiser block from
+17 to 6 components and each text encoder layer from 17 to 2 components
+(`attention.dense` + `ffn.glu`).
 
 **Reopen if.** Multi-dimensional spatial shape propagation is unified directly
 into `Fragment` and `RefIO`.
