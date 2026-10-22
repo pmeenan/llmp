@@ -1,0 +1,76 @@
+{
+  "container": {
+    "cpu_limit": 2,
+    "memory_bytes": 3221225472,
+    "network": "none",
+    "runtime": "runc"
+  },
+  "corpus_sha256": "55381941fdb19f99a88c5170f25d7cbc3e091d7d839a8776ac491a593c978ceb",
+  "evidence_sha256": {
+    "container.json": "fd5b1e137b2a40303aa8c4aba6e7fd886b8b749ff6ff989f381c7a0e32cbe2af",
+    "container.log": "0ec0e9410284b095097c6c2d54b81c701178ff640797e5c52c62f1a405aad63e",
+    "ids.json": "389216b176c694cd5f43e3068b20d6fad97e09cbd956bcd6c2837d6b400858b2",
+    "launch.json": "28dfb8e3a5bca467aaf3a65a1faeddd9f36102285b2a29da56a7b1427dc6e2d9",
+    "result.json": "90a57e11d2df1212c962e5da83cbed5370b568100cbba6f77b11aff4601dd696",
+    "source-authentication.json": "794ea145af23c75e4e921f53c403839614dd8418dd6b29ad2ae545f238b346c8",
+    "source-evidence.json": "25bf003b6e2a388e1ad5f3c2dce94c2faa91e1e514b239e6772d6302d4a73896",
+    "tokenization-diagnostic.json": "d02ba90e345606f34eb5ce4862395c9b1b8a1ae4eb37fb8fcba2cf5b87e2927a",
+    "tokenizer-length-source.json": "d85ecb169b15e03fa0f460e7cad03d771937e3ffe61c0aaea5ba42f8d05f4bf2"
+  },
+  "first_scored_position": 1,
+  "helper_sha256": "5b4d56c0fad561123fdee6d5ead5f8beef786df1c9479a47d91199990be692a7",
+  "ids_sha256": "389216b176c694cd5f43e3068b20d6fad97e09cbd956bcd6c2837d6b400858b2",
+  "image": "sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8",
+  "input_ids": 1024,
+  "job": "m35-u3-gemma26-short-prep-r2",
+  "metadata": {
+    "chat_template.jinja": "94899c0f917d93f6fe81c95744d1e8ddab2d21d39228d2e4aec1fb2a25bff413",
+    "config.json": "4e379cc809c617a49179a49140f553a2d6a5ec538ed480832b0c54f6ace43d98",
+    "generation_config.json": "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de",
+    "llmp-archive.json": "4f36e82e02c29b3e99530efa38495459667a4c461a4d03bc9f610664db162ca1",
+    "tokenizer.json": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+    "tokenizer_config.json": "90c3a3ba5bf53818383a58e1a776cbcacd2a038d4812eaa373e1522f2d06f3df"
+  },
+  "model_constructed": false,
+  "nvidia_device_nodes": [],
+  "nvidia_visible_devices": "void",
+  "parents": {
+    "paris_freeze.py": "f8c21049c1e783ba865ac7bcc9bb9764e134b6b7bbfeeda3de4504dc52f7d8f2",
+    "raw_reference.py": "847191af80ee1cead7979e06d825fc6460e1e73a408e6a415c48c9bc2c28d7ef"
+  },
+  "previous_attempt": {
+    "cause": "container attach exceeded registered120s bound after both tokenizer calls; no final freeze receipt",
+    "correction": "cache len(tokenizer) once instead of213814 backend size queries; no claim about backend asymptotic complexity",
+    "ids_equal_to_successful_attempt": true,
+    "job": "m35-u3-gemma26-short-prep-r1",
+    "raw_directory": "/tmp/llmp-gemma26-short-prep-evidence-r1",
+    "status": "FAIL",
+    "supervisor_directory": "/tmp/llmp-gemma26-short-prep-supervisor-r1"
+  },
+  "raw_directory": "/tmp/llmp-gemma26-short-prep-evidence-r2",
+  "recipe": "[BOS 2] + encode(corpus, add_special_tokens=False)[:1023]",
+  "retirement": {
+    "check_returncode": 0,
+    "name": "llmp-gemma26-short-prep-d9279087dd344fd78969be05d0300457",
+    "remaining_ids": "",
+    "remove_returncode": 0,
+    "remove_stderr": "",
+    "retired": true
+  },
+  "source_evidence_sha256": "25bf003b6e2a388e1ad5f3c2dce94c2faa91e1e514b239e6772d6302d4a73896",
+  "source_hashes_sha256": "80ad88e3b7f01de67e86f72c2ec59e3fdac6ec108ee0961bf434b1b6efe5a9b4",
+  "status": "frozen-inputs-only-source-review-pending",
+  "supervision": {
+    "class": "shared",
+    "grace_seconds": 30,
+    "timeout_seconds": 180
+  },
+  "supervisor_directory": "/tmp/llmp-gemma26-short-prep-supervisor-r2",
+  "supervisor_final_sha256": "646fee7c49d5aa51c49bf271aaf7f5db523e2465495b7b1c5c9f9feb04bcece0",
+  "targets": 1023,
+  "tokenization_diagnostic_sha256": "d02ba90e345606f34eb5ce4862395c9b1b8a1ae4eb37fb8fcba2cf5b87e2927a",
+  "tokenizer_length_source_sha256": "d85ecb169b15e03fa0f460e7cad03d771937e3ffe61c0aaea5ba42f8d05f4bf2",
+  "tokenizers_version": "0.22.2",
+  "transformers_version": "5.15.1",
+  "weights_mounted": false
+}
