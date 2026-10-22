@@ -8,7 +8,9 @@
 // protection is in what the readers do with the bytes (bounds, caps,
 // strict parsers, no checkpoint code run). Only a regular file is opened:
 // a device or a FIFO is refused before it is opened, since opening one can
-// have effects of its own. A reader holds a file open while it reads it
+// have effects of its own. Opening pins the resolved object before checking
+// its type and reopens that reference, never the original pathname. A reader
+// holds a file open while it reads it
 // and then closes it; the checkpoint keeps each file's path and identity
 // (device and inode), and a later read opens the file again and refuses
 // one that is no longer the file the reader read (checkpoint.h).

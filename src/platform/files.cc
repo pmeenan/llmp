@@ -29,6 +29,34 @@ std::error_code LastError() { return {errno, std::generic_category()}; }
 
 }  // namespace
 
+std::expected<int, int> OpenPathReference(int parent, const char* name, bool follow_links) {
+  const int fd = ::openat(parent == -1 ? AT_FDCWD : parent, name,
+                          O_PATH | O_CLOEXEC | (follow_links ? 0 : O_NOFOLLOW));
+  if (fd < 0) return std::unexpected(errno);
+  return fd;
+}
+
+std::expected<int, int> ReopenRegularFileForRead(int reference) {
+  struct stat seen{};
+  if (::fstat(reference, &seen) != 0) return std::unexpected(errno);
+  if (!S_ISREG(seen.st_mode)) return std::unexpected(EPERM);
+  if (seen.st_size < 0) return std::unexpected(EIO);
+  // open(2)'s O_PATH reference holds the object even after rename/unlink.
+  // Following this procfs magic link opens that object, not its former name.
+  const std::string path = "/proc/self/fd/" + std::to_string(reference);
+  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK);
+  if (fd < 0) return std::unexpected(errno);
+  struct stat status{};
+  const bool stated = ::fstat(fd, &status) == 0;
+  const int error = stated ? EIO : errno;
+  if (!stated || !S_ISREG(status.st_mode) || status.st_size < 0 || status.st_dev != seen.st_dev ||
+      status.st_ino != seen.st_ino) {
+    (void)::close(fd);
+    return std::unexpected(error);
+  }
+  return fd;
+}
+
 std::expected<std::string, std::error_code> ReadSmallFile(const std::filesystem::path& path,
                                                           std::size_t limit) {
   const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK);

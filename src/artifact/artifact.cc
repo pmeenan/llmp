@@ -46,6 +46,7 @@
 #include "format/layout.h"
 #include "format/tensor_format.h"
 #include "platform/direct_io.h"
+#include "platform/files.h"
 
 namespace llmp::artifact {
 
@@ -99,16 +100,25 @@ std::unexpected<Error> Pass(const std::expected<T, Error>& failed) {
   return std::unexpected(failed.error());
 }
 
-// Opens `name` beneath dir without following a link, and without blocking
-// on a FIFO swapped in; kFileType if it is not a regular file. Hard links
+// Opens `name` beneath dir without following a link or opening a non-regular
+// object for I/O, even if the name changes; kFileType unless it is regular. Hard links
 // are the filesystem's business (a deduplicated store, D-056 as amended on
 // 2026-10-09).
 std::expected<FileDescriptor, Error> OpenRegular(int dir, const char* name, struct stat& status,
                                                  Item item) {
-  FileDescriptor fd(::openat(dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_NOCTTY));
-  if (!fd.valid()) {
+  auto pinned = platform::OpenPathReference(dir, name, false);
+  if (!pinned) {
     return Fail(Rule::kFileType, "cannot open a listed file as a regular file", item);
   }
+  const FileDescriptor reference(*pinned);
+  auto opened = platform::ReopenRegularFileForRead(reference.get());
+  if (!opened) {
+    if (opened.error() == EIO || opened.error() == EBADF) {
+      return Fail(Rule::kIo, "cannot examine a pinned listed file", item);
+    }
+    return Fail(Rule::kFileType, "cannot open a listed file as a regular file", item);
+  }
+  FileDescriptor fd(*opened);
   if (::fstat(fd.get(), &status) != 0) {
     return Fail(Rule::kIo, "fstat failed", item);
   }

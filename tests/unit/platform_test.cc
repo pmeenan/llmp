@@ -112,6 +112,100 @@ std::optional<std::string> Value(const llmp::base::Report& report, std::string_v
   return std::nullopt;
 }
 
+TEST(Files, ReopensPinnedRegularFileAfterReplacementOrUnlink) {
+  for (const auto* replacement : {"regular", "fifo", "device", "absent"}) {
+    SCOPED_TRACE(replacement);
+    const FakeRoot root;
+    root.Write("original", "original bytes");
+    const auto path = root.path() / "original";
+    auto pinned = llmp::platform::OpenPathReference(-1, path.c_str());
+    ASSERT_TRUE(pinned.has_value());
+    struct stat before{};
+    ASSERT_EQ(::fstat(*pinned, &before), 0);
+    EXPECT_NE(::fcntl(*pinned, F_GETFD) & FD_CLOEXEC, 0);
+    ASSERT_TRUE(fs::remove(path));
+    if (std::string_view(replacement) == "regular") root.Write("original", "replacement bytes");
+    if (std::string_view(replacement) == "fifo") ASSERT_EQ(::mkfifo(path.c_str(), 0600), 0);
+    if (std::string_view(replacement) == "device") fs::create_symlink("/dev/zero", path);
+    auto opened = llmp::platform::ReopenRegularFileForRead(*pinned);
+    EXPECT_TRUE(opened.has_value());
+    // The reference is borrowed, and the readable descriptor survives its close.
+    EXPECT_NE(::fcntl(*pinned, F_GETFD), -1);
+    EXPECT_EQ(::close(*pinned), 0);
+    ASSERT_TRUE(opened.has_value());
+    struct stat after{};
+    EXPECT_EQ(::fstat(*opened, &after), 0);
+    EXPECT_EQ(before.st_dev, after.st_dev);
+    EXPECT_EQ(before.st_ino, after.st_ino);
+    EXPECT_NE(::fcntl(*opened, F_GETFD) & FD_CLOEXEC, 0);
+    std::array<char, 32> bytes{};
+    const auto count = ::read(*opened, bytes.data(), bytes.size());
+    EXPECT_EQ(count, 14);
+    EXPECT_EQ(std::string_view(bytes.data(), 14), "original bytes");
+    EXPECT_EQ(::close(*opened), 0);
+  }
+}
+
+TEST(Files, PathReferencesFollowLinksOnlyWhenRequested) {
+  const FakeRoot root;
+  root.Write("blob", "hello");
+  fs::create_symlink("blob", root.path() / "snapshot");
+  const int directory = ::open(root.path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  ASSERT_GE(directory, 0);
+  for (bool follow : {true, false}) {
+    auto pinned = llmp::platform::OpenPathReference(directory, "snapshot", follow);
+    ASSERT_TRUE(pinned.has_value());
+    auto opened = llmp::platform::ReopenRegularFileForRead(*pinned);
+    if (follow) {
+      EXPECT_TRUE(opened.has_value());
+      if (opened) EXPECT_EQ(::close(*opened), 0);
+    } else {
+      ASSERT_FALSE(opened.has_value());
+      EXPECT_EQ(opened.error(), EPERM);
+    }
+    EXPECT_EQ(::close(*pinned), 0);
+  }
+  EXPECT_EQ(::close(directory), 0);
+  fs::remove(root.path() / "blob");
+  auto dangling = llmp::platform::OpenPathReference(-1, (root.path() / "snapshot").c_str());
+  ASSERT_FALSE(dangling.has_value());
+  EXPECT_EQ(dangling.error(), ENOENT);
+  auto missing = llmp::platform::OpenPathReference(-1, (root.path() / "blob").c_str());
+  ASSERT_FALSE(missing.has_value());
+  EXPECT_EQ(missing.error(), ENOENT);
+}
+
+TEST(Files, RefusesNonRegularReferencesWithoutOpeningThemForIo) {
+  const FakeRoot root;
+  const auto fifo = root.path() / "fifo";
+  ASSERT_EQ(::mkfifo(fifo.c_str(), 0600), 0);
+  for (const auto& path : {fifo, root.path(), fs::path("/dev/null")}) {
+    auto pinned = llmp::platform::OpenPathReference(-1, path.c_str());
+    ASSERT_TRUE(pinned.has_value());
+    // A FIFO opened for reading would let this writer connect. A reference
+    // must not do so, and refusing the subsequent reopen must leave it alone.
+    if (path == fifo) {
+      const int writer = ::open(fifo.c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+      EXPECT_EQ(writer, -1);
+      if (writer < 0)
+        EXPECT_EQ(errno, ENXIO);
+      else
+        (void)::close(writer);
+    }
+    auto opened = llmp::platform::ReopenRegularFileForRead(*pinned);
+    EXPECT_FALSE(opened.has_value());
+    if (!opened)
+      EXPECT_EQ(opened.error(), EPERM);
+    else
+      (void)::close(*opened);
+    EXPECT_NE(::fcntl(*pinned, F_GETFD), -1);
+    EXPECT_EQ(::close(*pinned), 0);
+  }
+  auto invalid = llmp::platform::ReopenRegularFileForRead(-1);
+  ASSERT_FALSE(invalid.has_value());
+  EXPECT_EQ(invalid.error(), EBADF);
+}
+
 TEST(Files, ReadSmallFile) {
   const FakeRoot root;
   ASSERT_FALSE(root.path().empty());

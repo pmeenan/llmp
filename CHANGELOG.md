@@ -44,6 +44,8 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Checkpoint and ordinary artifact readers pin regular files before opening
+  them for I/O, closing pathname replacement races (M3.5 U10).
 - Kernel selection scopes measured ranking data to its providing backend and
   includes that data in plan-cache identity (M3.5 U6b).
 - The GGML backend validates original operands as well as fused plans, so a

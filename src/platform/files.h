@@ -21,6 +21,22 @@ namespace llmp::platform {
 
 inline constexpr std::size_t kSmallFileLimit = std::size_t{64} * 1024;
 
+// Pins a pathname without opening the object for I/O (Linux O_PATH). `parent`
+// is an open directory, or -1 for the working directory; absolute names ignore
+// it. Links are followed unless follow_links is false, in which case a final
+// link itself is pinned. The returned close-on-exec descriptor is the caller's
+// to close; errno on failure. No ownership or permission policy is imposed.
+std::expected<int, int> OpenPathReference(int parent, const char* name, bool follow_links = true);
+
+// Opens the pinned object for reading only after checking that it is regular;
+// never resolves its original pathname again. The reference is borrowed and
+// must stay open throughout the call. EPERM for a non-regular object, EIO for
+// an inconsistent identity/size, otherwise errno. The returned close-on-exec
+// descriptor is independent of the reference and the caller's to close.
+// Linux uses /proc/self/fd; failure to reopen is an error, never a pathname
+// fallback. This pins identity, not file contents: writes can still change it.
+std::expected<int, int> ReopenRegularFileForRead(int reference);
+
 // Reads a whole file of at most limit bytes, reading to its end rather
 // than trusting its reported size, which /proc and /sys files misstate. A
 // longer file is an error (std::errc::file_too_large).

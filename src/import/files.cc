@@ -24,6 +24,7 @@
 #include "artifact/artifact.h"
 #include "artifact/schema.h"
 #include "import/error.h"
+#include "platform/files.h"
 
 namespace llmp::import {
 namespace {
@@ -104,45 +105,44 @@ std::expected<std::optional<OpenFile>, Error> OpenCheckpointFileIfPresent(const 
   if (error) {
     return Fail(Rule::kIo, "cannot make a checkpoint path absolute", file);
   }
-  // Only what is a regular file now is opened: opening a device or a FIFO
-  // can have effects of its own.
-  struct stat seen{};
-  if (::stat(absolute.c_str(), &seen) != 0) {
-    const int stat_error = errno;
-    if (stat_error == ENOENT) {
+  // Pin first: checking a pathname and then opening it could instead open a
+  // device or FIFO swapped into its place. O_PATH lives in the platform seam.
+  auto pinned = platform::OpenPathReference(-1, absolute.c_str());
+  if (!pinned) {
+    const int open_error = pinned.error();
+    if (open_error == ENOENT) {
       // A link to nothing (a cache's blob not downloaded) is a broken
-      // checkpoint, not a file it lacks: reading on would silently leave
-      // the file out.
+      // checkpoint, not a file it lacks: reading on would silently omit it.
       if (struct stat link{}; ::lstat(absolute.c_str(), &link) == 0 && S_ISLNK(link.st_mode)) {
         return Fail(Rule::kFileType, "a checkpoint file is a link to nothing", file);
       }
       return std::optional<OpenFile>();
     }
-    if (stat_error == EMFILE || stat_error == ENFILE || stat_error == ENOMEM) {
+    if (open_error == EMFILE || open_error == ENFILE || open_error == ENOMEM) {
       return Fail(Rule::kIo, "out of file descriptors opening a checkpoint file", file);
     }
     return Fail(Rule::kFileType, "a checkpoint path that cannot be examined", file);
   }
-  if (!S_ISREG(seen.st_mode)) {
-    return Fail(Rule::kFileType, "a checkpoint file is not a regular file", file);
-  }
-  OpenFile f;
-  f.path = absolute;
-  f.fd = artifact::FileDescriptor(
-      ::open(absolute.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY));
-  if (!f.fd.valid()) {
-    const int open_error = errno;
+  const artifact::FileDescriptor reference(*pinned);
+  auto opened = platform::ReopenRegularFileForRead(reference.get());
+  if (!opened) {
+    const int open_error = opened.error();
     if (open_error == EMFILE || open_error == ENFILE || open_error == ENOMEM) {
       return Fail(Rule::kIo, "out of file descriptors opening a checkpoint file", file);
     }
+    if (open_error == EIO || open_error == EBADF) {
+      return Fail(Rule::kIo, "cannot examine a pinned checkpoint file", file);
+    }
     return Fail(Rule::kFileType, "a checkpoint file cannot be opened as a regular file", file);
   }
+  OpenFile f;
+  f.path = absolute;
+  f.fd = artifact::FileDescriptor(*opened);
   struct stat status{};
   if (::fstat(f.fd.get(), &status) != 0) {
     return Fail(Rule::kIo, "fstat failed", file);
   }
-  if (!S_ISREG(status.st_mode) || status.st_dev != seen.st_dev || status.st_ino != seen.st_ino ||
-      status.st_size < 0) {
+  if (!S_ISREG(status.st_mode) || status.st_size < 0) {
     return Fail(Rule::kFileType, "a checkpoint file is not a regular file", file);
   }
   f.bytes = static_cast<std::uint64_t>(status.st_size);

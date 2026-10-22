@@ -860,6 +860,38 @@ TEST_F(ImportGgufFilesTest, OpensRegularFiles) {
   EXPECT_EQ(RuleOf(ReadCheckpoint(dir_ / "m.bin")), Rule::kFileType);
 }
 
+TEST_F(ImportGgufFilesTest, OptionalFileDistinguishesAbsenceFromBrokenCheckpoint) {
+  namespace fs = std::filesystem;
+  const auto path = dir_ / "optional.json";
+  auto absent = OpenCheckpointFileIfPresent(path, 7);
+  ASSERT_TRUE(absent.has_value());
+  EXPECT_FALSE(absent->has_value());
+  Write(path, "abc");
+  auto regular = OpenCheckpointFileIfPresent(path, 7);
+  ASSERT_TRUE(regular.has_value());
+  ASSERT_TRUE(regular->has_value());
+  EXPECT_EQ((**regular).bytes, 3U);
+  EXPECT_EQ(ReadDocument(**regular, 3, 7), "abc");
+  EXPECT_EQ(Failed(ReadDocument(**regular, 2, 7), &Error::rule), Rule::kBounds);
+  fs::remove(path);
+  // An already-open checkpoint keeps its pinned file; a later open sees absence.
+  EXPECT_EQ(ReadDocument(**regular, 3, 7), "abc");
+  absent = OpenCheckpointFileIfPresent(path, 7);
+  ASSERT_TRUE(absent.has_value());
+  EXPECT_FALSE(absent->has_value());
+  fs::create_symlink("missing-blob", path);
+  auto dangling = OpenCheckpointFileIfPresent(path, 7);
+  ASSERT_FALSE(dangling.has_value());
+  EXPECT_EQ(dangling.error().rule, Rule::kFileType);
+  EXPECT_EQ(dangling.error().file, 7U);
+  fs::remove(path);
+  ASSERT_EQ(::mkfifo(path.c_str(), 0600), 0);
+  auto fifo = OpenCheckpointFileIfPresent(path, 7);
+  ASSERT_FALSE(fifo.has_value());
+  EXPECT_EQ(fifo.error().rule, Rule::kFileType);
+  EXPECT_EQ(fifo.error().file, 7U);
+}
+
 // A tensor's bytes come from the file its reader read: one renamed over
 // it or shrunk under it fails the read.
 TEST_F(ImportGgufFilesTest, ReadsOnlyTheFilesItRead) {
