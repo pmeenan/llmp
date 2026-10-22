@@ -13,7 +13,6 @@
 namespace llmp::spec::mappings {
 
 const Mapping& Gemma2Mapping();
-const Mapping& Gemma2SafetensorsMapping();
 
 }  // namespace llmp::spec::mappings
 

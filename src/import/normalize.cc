@@ -602,6 +602,11 @@ static_assert(sizeof(void*) == 8);
 namespace normalization_detail {
 std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::Mapping& t,
                                               NormalizeBoundOptions options) {
+  if (!t.dialects.empty()) {
+    auto selected = spec::ResolveSourceMapping(t, s.architecture, s.container);
+    if (!selected) return Bad("missing, ambiguous or invalid source dialect", Rule::kUnsupported);
+    return Bound(s, selected->mapping, options);
+  }
   if ((!options.component.empty() || options.draft_head_rows) &&
       t.role != spec::StageRole::kDrafter)
     return Bad("draft options require a drafter mapping", Rule::kUnsupported);
@@ -1183,6 +1188,11 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapp
                                            NormalizationLimits limits,
                                            const NormalizationTarget* target,
                                            NormalizeOptions options) {
+  if (!table.dialects.empty()) {
+    auto selected = spec::ResolveSourceMapping(table, source.architecture, source.container);
+    if (!selected) return Bad("missing, ambiguous or invalid source dialect", Rule::kUnsupported);
+    return Build(std::move(source), selected->mapping, limits, target, std::move(options));
+  }
   if (table.role == spec::StageRole::kDrafter && !target)
     return Bad("drafter import requires --target TARGET_ID in the selected store",
                Rule::kUnsupported);

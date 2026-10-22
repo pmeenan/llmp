@@ -601,6 +601,7 @@ TEST(MappingTest, Gemma2SpecFromItsTensorsAndProfile) {
   Source other = test_support::Gemma2Source();
   other.container = "safetensors";
   Mapping synthetic = mappings::Gemma2Mapping();
+  synthetic.dialects = {};
   synthetic.containers = {};  // exercise fold semantics in an explicitly neutral test mapping
   const auto unfolded = Synthesize(synthetic, other, *values);
   ASSERT_TRUE(unfolded.has_value());
@@ -1147,9 +1148,9 @@ TEST(MappingTest, ContainerLookupIsExactAndUnknownVariantsRefuse) {
   for (const Mapping* mapping : Mappings())
     for (const auto container : mapping->containers)
       EXPECT_EQ(FindMapping(mapping->architecture, container, mapping->version), mapping);
-  EXPECT_EQ(FindMapping("gemma2", "safetensors"), &mappings::Gemma2SafetensorsMapping());
-  EXPECT_EQ(FindMapping("gemma3_text", "safetensors"), &mappings::Gemma3SafetensorsMapping());
-  EXPECT_EQ(FindMapping("gemma3", "safetensors"), &mappings::Gemma3ConditionalSafetensorsMapping());
+  EXPECT_EQ(FindMapping("gemma2", "safetensors"), &mappings::Gemma2Mapping());
+  EXPECT_EQ(FindMapping("gemma3_text", "safetensors"), &mappings::Gemma3Mapping());
+  EXPECT_EQ(FindMapping("gemma3", "safetensors"), &mappings::Gemma3Mapping());
   EXPECT_EQ(FindMapping("qwen4exp", "exl3"), nullptr);
   EXPECT_EQ(FindMapping("qwen4exp", ""), nullptr);
   EXPECT_EQ(FindMapping("qwen4exp-mtp", "gguf"), nullptr);
@@ -1159,6 +1160,57 @@ TEST(MappingTest, ContainerLookupIsExactAndUnknownVariantsRefuse) {
   auto source = test_support::Gemma2Source();
   source.container = "safetensors";
   EXPECT_FALSE(Synthesize(mappings::Gemma2Mapping(), source, *values));
+}
+
+TEST(MappingTest, GemmaRegistryHasOneArchitectureWithExplicitUnambiguousDialects) {
+  EXPECT_EQ(std::ranges::count_if(Mappings(),
+                                  [](const auto* m) {
+                                    return m->architecture == "gemma2" ||
+                                           m->architecture == "gemma3" ||
+                                           m->architecture == "gemma3_text";
+                                  }),
+            2);
+  EXPECT_EQ(FindMapping("gemma3_text", "gguf"), nullptr);
+  EXPECT_EQ(FindMapping("gemma2", "mlx"), nullptr);
+  EXPECT_EQ(FindMapping("gemma3", "safetensors", 2), nullptr);
+  auto canonical = mappings::Gemma3Mapping();
+  auto selected = ResolveSourceMapping(canonical, "gemma3_text", "safetensors");
+  ASSERT_TRUE(selected) << selected.error();
+  EXPECT_EQ(selected->mapping.slots.data(), canonical.slots.data());
+  EXPECT_EQ(selected->mapping.policies.data(), canonical.policies.data());
+  EXPECT_EQ(selected->mapping.serving, canonical.serving);
+  EXPECT_EQ(selected->mapping.architecture, "gemma3_text");
+  const auto& native = canonical.dialects[1];
+  std::array duplicate{native, native};
+  canonical.dialects = duplicate;
+  EXPECT_FALSE(ValidateMapping(canonical));
+  EXPECT_FALSE(SupportsSource(canonical, "gemma3_text", "safetensors"));
+  EXPECT_FALSE(ResolveSourceMapping(canonical, "gemma3_text", "safetensors"));
+  auto dialect = native;
+  canonical.dialects = std::span(&dialect, 1);
+  const auto override = native.overrides.front();
+  std::array overrides{override, override};
+  dialect.overrides = overrides;
+  EXPECT_FALSE(ValidateMapping(canonical));
+  overrides[1].param = "unknown";
+  EXPECT_FALSE(ValidateMapping(canonical));
+  dialect = native;
+  const std::array bad_key{SourceKey{"unknown", "hidden_size"}};
+  dialect.keys = bad_key;
+  EXPECT_FALSE(ValidateMapping(canonical));
+  dialect = native;
+  const std::array duplicate_key{SourceKey{"embedding_length", "hidden_size"},
+                                 SourceKey{"embedding_length", "width"}};
+  dialect.keys = duplicate_key;
+  EXPECT_FALSE(ValidateMapping(canonical));
+  dialect = native;
+  const std::array bad_part{TensorPartOverride{"attention", "missing"}};
+  dialect.parts = bad_part;
+  EXPECT_FALSE(ValidateMapping(canonical));
+  dialect = native;
+  const std::array bad_fold{FoldRule{.fold = "norm.times_two", .container = "safetensors"}};
+  dialect.folds = bad_fold;
+  EXPECT_FALSE(ValidateMapping(canonical));
 }
 
 TEST(MappingTest, SignedZeroCanonicalizesAndContainerFoldsSuppressRules) {

@@ -87,25 +87,16 @@ bool IsName(std::string_view s) {
 
 const spec::Mapping* FindImportMapping(std::string_view container, std::string_view architecture,
                                        std::string_view component) {
-  if (!component.empty()) {
-    for (const auto* mapping : spec::Mappings())
-      if (std::ranges::contains(mapping->containers, container) &&
-          mapping->role == spec::StageRole::kDrafter && mapping->stage == component &&
-          (architecture == mapping->architecture ||
-           std::ranges::contains(mapping->source_architectures, architecture)))
-        return mapping;
-    return nullptr;
+  if (component.empty()) return spec::FindMapping(architecture, container);
+  const spec::Mapping* found = nullptr;
+  for (const auto* mapping : spec::Mappings()) {
+    if (!spec::SupportsSource(*mapping, architecture, container) ||
+        mapping->role != spec::StageRole::kDrafter || mapping->stage != component)
+      continue;
+    if (found) return nullptr;
+    found = mapping;
   }
-  for (const auto* mapping : spec::Mappings())
-    if (std::ranges::contains(mapping->containers, container) &&
-        architecture == mapping->architecture)
-      return mapping;
-  for (const auto* mapping : spec::Mappings())
-    if (std::ranges::contains(mapping->containers, container) &&
-        mapping->role == spec::StageRole::kTarget &&
-        std::ranges::contains(mapping->source_architectures, architecture))
-      return mapping;
-  return nullptr;
+  return found;
 }
 
 namespace normalization_detail {
@@ -272,6 +263,18 @@ std::optional<NameMatch> Match(std::string_view pattern, std::string_view name,
 
 std::expected<void, Error> ValidateImportMapping(const spec::Mapping& table,
                                                  std::string_view container) {
+  if (!table.dialects.empty()) {
+    if (!spec::ValidateMapping(table)) return Invalid();
+    bool found = false;
+    for (const auto& dialect : table.dialects) {
+      if (dialect.container != container) continue;
+      auto selected = spec::ResolveSourceMapping(table, dialect.architecture, container);
+      if (!selected) return Invalid();
+      if (auto valid = ValidateImportMapping(selected->mapping, container); !valid) return valid;
+      found = true;
+    }
+    return found ? std::expected<void, Error>{} : Invalid();
+  }
   if ((container != "gguf" && container != "exl3" && container != "safetensors" &&
        container != "mlx") ||
       table.version == 0 || !std::ranges::contains(table.containers, container) ||

@@ -234,26 +234,27 @@ Checkpoint Tiny(bool gemma3 = false, bool untied = false, std::uint32_t layers =
 
 Checkpoint TinyGemmaHf(bool gemma3, bool conditional = false, std::uint32_t layers = 2) {
   auto input = Tiny(gemma3, false, layers);
-  const auto* gguf = FindImportMapping("gguf", input.architecture);
   const std::string architecture = gemma3 ? conditional ? "gemma3" : "gemma3_text" : "gemma2";
-  const auto* native = FindImportMapping("safetensors", architecture);
-  base::Check(native != nullptr, "native Gemma fixture table");
-  auto values = std::move(input.metadata);
   input.metadata.clear();
   input.container = "safetensors";
   input.architecture = architecture;
   Value(input, "model_type", architecture);
-  for (std::size_t i = 0; i < gguf->params.size(); ++i) {
-    const auto& before = gguf->params[i];
-    const auto& after = native->params[i];
-    const std::string before_key = spec::CanonicalKey(*gguf, before.key);
-    const std::string after_key = spec::CanonicalKey(*native, after.key);
-    if (before.key.empty() || after.key.empty() || after_key.ends_with("query_pre_attn_scalar"))
-      continue;
-    const auto found = std::ranges::find(values, before_key, &MetaEntry::key);
-    if (found != values.end()) Value(input, after_key, found->value);
-  }
   const std::string prefix = conditional ? "text_config." : "";
+  for (const auto& [key, value] :
+       std::array<std::pair<std::string_view, std::int64_t>, 8>{{{"max_position_embeddings", 128},
+                                                                 {"hidden_size", 8},
+                                                                 {"intermediate_size", 16},
+                                                                 {"num_attention_heads", 2},
+                                                                 {"num_key_value_heads", 1},
+                                                                 {"head_dim", 4},
+                                                                 {"sliding_window", 64},
+                                                                 {"num_hidden_layers", layers}}})
+    Value(input, prefix + std::string(key), value);
+  Value(input, prefix + "rms_norm_eps", 1e-6);
+  if (!gemma3) {
+    Value(input, prefix + "attn_logit_softcapping", 50.0);
+    Value(input, prefix + "final_logit_softcapping", 30.0);
+  }
   Value(input, prefix + "query_pre_attn_scalar", gemma3 ? 168.0 : 144.0);
   Value(input, prefix + "num_hidden_layers", std::int64_t{layers});
   Value(input, prefix + "hidden_activation", std::string("gelu_pytorch_tanh"));
@@ -264,15 +265,38 @@ Checkpoint TinyGemmaHf(bool gemma3, bool conditional = false, std::uint32_t laye
     Value(input, prefix + "attn_logit_softcapping", nullptr);
     Value(input, prefix + "final_logit_softcapping", nullptr);
   }
+  // Independent source spellings: do not manufacture inputs from the production dialect.
+  const std::map<std::string_view, std::string_view> names{
+      {"attn_norm", "input_layernorm"},
+      {"attn_q", "self_attn.q_proj"},
+      {"attn_k", "self_attn.k_proj"},
+      {"attn_v", "self_attn.v_proj"},
+      {"attn_output", "self_attn.o_proj"},
+      {"attn_q_norm", "self_attn.q_norm"},
+      {"attn_k_norm", "self_attn.k_norm"},
+      {"post_attention_norm", "post_attention_layernorm"},
+      {"ffn_norm", "pre_feedforward_layernorm"},
+      {"post_ffw_norm", "post_feedforward_layernorm"},
+      {"ffn_gate", "mlp.gate_proj"},
+      {"ffn_up", "mlp.up_proj"},
+      {"ffn_down", "mlp.down_proj"}};
   for (auto& tensor : input.tensors) {
-    const auto match = std::ranges::find_if(native->tensor_aliases, [&](const auto& rule) {
-      return nd::Match(rule.canonical, tensor.name, layers).has_value();
-    });
-    base::Check(match != native->tensor_aliases.end(), "Gemma fixture tensor alias");
-    const std::string digits(nd::Match(match->canonical, tensor.name, layers)->digits);
-    tensor.name = std::string(native->tensor_prefix) + std::string(match->source);
-    if (const auto at = tensor.name.find(spec::kLayerField); at != std::string::npos)
-      tensor.name.replace(at, spec::kLayerField.size(), digits);
+    if (tensor.name == "token_embd.weight")
+      tensor.name = "model.embed_tokens.weight";
+    else if (tensor.name == "output_norm.weight")
+      tensor.name = "model.norm.weight";
+    else if (tensor.name == "output.weight")
+      tensor.name = "lm_head.weight";
+    else {
+      const auto split = tensor.name.find('.', 4);
+      const auto key =
+          std::string_view(tensor.name).substr(split + 1, tensor.name.size() - split - 8);
+      const auto found = names.find(key);
+      base::Check(found != names.end(), "Gemma fixture source name");
+      tensor.name =
+          std::format("model.layers.{}.{}.weight", tensor.name.substr(4, split - 4), found->second);
+    }
+    if (conditional) tensor.name = "language_model." + tensor.name;
     std::ranges::reverse(tensor.dims);
     tensor.dtype = "F32";
   }
@@ -314,6 +338,135 @@ TEST(ImportNormalizeTest, GemmaNativeHfUsesExplicitQueryScalarAndFoldsNormsAtImp
       } else {
         EXPECT_EQ(output.format, original[member.source].format);
       }
+    }
+  }
+}
+
+TEST(ImportNormalizeTest, GemmaDialectsProduceEquivalentSpecsAndEveryPayloadPart) {
+  for (const auto [gemma3, conditional] :
+       {std::pair{false, false}, std::pair{true, false}, std::pair{true, true}}) {
+    SCOPED_TRACE(std::format("gemma3={} conditional={}", gemma3, conditional));
+    auto gguf = Tiny(gemma3, false, 6);
+    auto hf = TinyGemmaHf(gemma3, conditional, 6);
+    const auto architecture = hf.architecture;
+    const auto original_metadata = hf.metadata;
+    Value(gguf, gguf.architecture + ".attention.scale", 1.0 / std::sqrt(gemma3 ? 168.0 : 144.0));
+    if (gemma3) {
+      Value(gguf, "gemma3.rope.freq_base", 1000000.0);
+      Value(gguf, "gemma3.rope.freq_base_swa", 10000.0);
+    }
+    auto converted = Normalize(std::move(gguf), kFunded);
+    auto native = Normalize(std::move(hf), kFunded);
+    ASSERT_TRUE(converted) << test_support::Failed(converted, &Error::ToString).value_or("");
+    ASSERT_TRUE(native) << test_support::Failed(native, &Error::ToString).value_or("");
+    EXPECT_EQ(spec::ToJson(converted->spec()), spec::ToJson(native->spec()));
+    EXPECT_EQ(native->source().architecture, architecture);
+    EXPECT_EQ(native->canonical().architecture, architecture);
+    EXPECT_EQ(native->mapping_architecture(), architecture);
+    EXPECT_EQ(native->architecture_version(), 1);
+    ASSERT_EQ(native->source().metadata.size(), original_metadata.size());
+    for (std::size_t i = 0; i < original_metadata.size(); ++i) {
+      EXPECT_EQ(native->source().metadata[i].key, original_metadata[i].key);
+      EXPECT_EQ(native->source().metadata[i].value, original_metadata[i].value);
+    }
+    EXPECT_TRUE(converted->planned_folds().empty());
+    ASSERT_EQ(native->planned_folds().size(), 1);
+    EXPECT_EQ(native->planned_folds()[0].fold, "norm.plus_one");
+    EXPECT_EQ(native->planned_folds()[0].outputs.size(), gemma3 ? 37U : 25U);
+    ASSERT_EQ(native->canonical().tensors.size(), converted->canonical().tensors.size());
+    for (const auto& tensor : native->canonical().tensors) {
+      const auto other =
+          std::ranges::find(converted->canonical().tensors, tensor.name, &spec::SourceTensor::name);
+      ASSERT_NE(other, converted->canonical().tensors.end());
+      EXPECT_EQ(tensor.format, other->format);
+      EXPECT_EQ(tensor.part, other->part);
+    }
+    // Execute every native route with independent F32 input bytes. GGUF norm
+    // vectors already hold 1.25; native zero-centered vectors hold 0.25. All
+    // bulk parts retain 0.25 bit for bit. This also catches a missed or double fold.
+    std::size_t routed = 0;
+    for (const auto& member : native->parts().members()) {
+      ASSERT_LT(member.output, native->parts().outputs().size());
+      const auto& output = native->parts().outputs()[member.output];
+      const auto expected_word = output.name.contains("norm") ? 0x3fa00000U : 0x3e800000U;
+      std::vector<std::byte> input;
+      for (std::uint64_t i = 0; i < member.extent.bytes; i += 4)
+        fixtures::Append(input, 0x3e800000U, 4);
+      std::vector<std::byte> actual;
+      std::array<std::byte, 65536> workspace{};
+      auto run = member.route.Start(workspace);
+      ASSERT_TRUE(run);
+      const PartSink sink = [&](std::uint64_t offset,
+                                std::span<const std::byte> bytes) -> std::expected<void, Error> {
+        if (offset != actual.size())
+          return std::unexpected(Error{.reason = "noncontiguous fixture output"});
+        actual.insert(actual.end(), bytes.begin(), bytes.end());
+        return {};
+      };
+      ASSERT_TRUE(run->Consume(0, input, sink));
+      ASSERT_TRUE(run->Finish());
+      std::vector<std::byte> expected;
+      for (std::uint64_t i = 0; i < member.extent.bytes; i += 4)
+        fixtures::Append(expected, expected_word, 4);
+      EXPECT_EQ(actual, expected) << output.name;
+      ++routed;
+    }
+    EXPECT_EQ(routed, native->source().tensors.size());
+  }
+}
+
+TEST(ImportNormalizeTest, GemmaNativeDialectDefaultsAreSourceSpecific) {
+  for (const auto [gemma3, conditional] :
+       {std::pair{false, false}, std::pair{true, false}, std::pair{true, true}}) {
+    auto source = TinyGemmaHf(gemma3, conditional, 6);
+    std::erase_if(source.metadata, [](const auto& value) {
+      return value.key.ends_with("max_position_embeddings") || value.key.ends_with("rms_norm_eps");
+    });
+    auto plan = Normalize(source, kFunded);
+    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+    const auto& stage = plan->spec().stages.front();
+    EXPECT_EQ(stage.context, gemma3 ? 131072U : 8192U);
+    const auto& global = stage.layers.back().components.front();
+    EXPECT_EQ(std::get<double>(global.Find("rope_base")->value), gemma3 ? 1000000.0 : 10000.0);
+    EXPECT_EQ(std::get<double>(global.Find("eps")->value), 1e-6);
+    auto gguf = Tiny(gemma3, false, 6);
+    std::erase_if(gguf.metadata,
+                  [](const auto& value) { return value.key.ends_with("context_length"); });
+    EXPECT_FALSE(Normalize(gguf, kFunded));
+  }
+}
+
+TEST(ImportNormalizeTest, GemmaDialectsRefuseUnknownMathConflictingAliasesAndWrongNesting) {
+  for (const auto [gemma3, conditional] :
+       {std::pair{false, false}, std::pair{true, false}, std::pair{true, true}}) {
+    const std::string prefix = conditional ? "text_config." : "";
+    const auto valid = TinyGemmaHf(gemma3, conditional);
+    auto source = valid;
+    Value(source, prefix + "rope_parameters.unknown_scale", 2.0);
+    EXPECT_FALSE(Normalize(source, kFunded));
+    source = valid;
+    Value(source, prefix + "rope_theta", 10000.0);
+    Value(source, prefix + "rope_parameters.rope_theta", 10000.0);
+    EXPECT_TRUE(Normalize(source, kFunded));  // Equal aliases are unambiguous native metadata.
+    Value(source, prefix + "rope_parameters.rope_theta", 20000.0);
+    EXPECT_FALSE(Normalize(source, kFunded));
+    source = valid;
+    auto duplicate = source.tensors.front();
+    duplicate.name = "token_embd.weight";
+    source.tensors.push_back(duplicate);
+    EXPECT_FALSE(Normalize(source, kFunded));
+    if (conditional) {
+      source = valid;
+      std::erase_if(source.metadata,
+                    [](const auto& v) { return v.key == "text_config.model_type"; });
+      EXPECT_FALSE(Normalize(source, kFunded));
+      source = valid;
+      Value(source, "text_config.model_type", std::string("gemma2"));
+      EXPECT_FALSE(Normalize(source, kFunded));
+      source = valid;
+      source.architecture = "gemma3_text";
+      Value(source, "model_type", std::string("gemma3_text"));
+      EXPECT_FALSE(Normalize(source, kFunded));
     }
   }
 }
@@ -626,7 +779,10 @@ TEST(ImportNormalizeTest, AliasesHaveOneDestinationAndTableLifetimeIsNotBorrowed
   input.tensors[0].name = "words.weight";
   const std::array aliases{TensorAlias{"words.weight", "token_embd.weight"}};
   const std::array keys{KeyAlias{"config.width", "gemma2.embedding_length"}};
-  auto table = *FindImportMapping("gguf", "gemma2");
+  auto selected =
+      spec::ResolveSourceMapping(*FindImportMapping("gguf", "gemma2"), "gemma2", "gguf");
+  ASSERT_TRUE(selected);
+  auto table = selected->mapping;
   table.tensor_aliases = aliases;
   table.key_aliases = keys;
   auto width = std::ranges::find(input.metadata, "gemma2.embedding_length", &MetaEntry::key);
@@ -645,7 +801,10 @@ TEST(ImportNormalizeTest, AliasesHaveOneDestinationAndTableLifetimeIsNotBorrowed
     const std::string prefix = "custom.", reason = "local compiled annotation";
     const std::array local_alias{TensorAlias{original, canonical}};
     const std::array local_aux{AuxiliaryNamespace{prefix, reason}};
-    auto local_table = *FindImportMapping("gguf", "gemma2");
+    auto selected =
+        spec::ResolveSourceMapping(*FindImportMapping("gguf", "gemma2"), "gemma2", "gguf");
+    base::Check(selected.has_value(), "fixture source dialect");
+    auto local_table = selected->mapping;
     local_table.tensor_aliases = local_alias;
     local_table.auxiliary = local_aux;
     Value(source, "custom.origin", std::string("kept"));
@@ -691,7 +850,10 @@ TEST(ImportNormalizeTest, ImportSelectionBorrowsTheAuthoritativeRegistryForEachC
 }
 
 TEST(ImportNormalizeTest, ImportDeclarationsValidateTheirOwnReferencesAndBounds) {
-  const auto& registered = *FindImportMapping("gguf", "gemma2");
+  auto selected =
+      spec::ResolveSourceMapping(*FindImportMapping("gguf", "gemma2"), "gemma2", "gguf");
+  ASSERT_TRUE(selected);
+  const auto& registered = selected->mapping;
   auto mapping = registered;
   const std::array bad_encodings{static_cast<format::Encoding>(65535)};
   mapping.encodings = bad_encodings;
@@ -719,7 +881,10 @@ TEST(ImportNormalizeTest, ImportDeclarationsValidateTheirOwnReferencesAndBounds)
 }
 
 TEST(ImportNormalizeTest, MalformedDeclarationsAndSemanticAliasesAreRefused) {
-  auto table = *FindImportMapping("gguf", "gemma2");
+  auto selected =
+      spec::ResolveSourceMapping(*FindImportMapping("gguf", "gemma2"), "gemma2", "gguf");
+  ASSERT_TRUE(selected);
+  auto table = selected->mapping;
   const std::array malformed{TensorAlias{"blk.{layer}.{layer}", "token_embd.weight"}};
   table.tensor_aliases = malformed;
   EXPECT_FALSE(ValidateImportMapping(table, "gguf"));
@@ -730,10 +895,10 @@ TEST(ImportNormalizeTest, MalformedDeclarationsAndSemanticAliasesAreRefused) {
   const std::array aux{AuxiliaryNamespace{"gemma2.", "must not swallow model keys"}};
   table.auxiliary = aux;
   EXPECT_FALSE(ValidateImportMapping(table, "gguf"));
-  table = *FindImportMapping("gguf", "gemma2");
+  table = selected->mapping;
   table.pipeline = static_cast<spec::PipelineKind>(255);
   EXPECT_FALSE(ValidateImportMapping(table, "gguf"));
-  table = *FindImportMapping("gguf", "gemma2");
+  table = selected->mapping;
   const std::array bad_requirements{spec::ScalarRequirement{.key = "bad key", .positive = true}};
   table.requirements = bad_requirements;
   EXPECT_FALSE(ValidateImportMapping(table, "gguf"));

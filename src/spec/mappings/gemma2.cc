@@ -93,23 +93,6 @@ constexpr std::array kParams = {
     RequireInt("attention.sliding_window_pattern", 2, true),
 };
 
-constexpr std::array kFolds = {
-    FoldRule{.fold = "norm.plus_one", .container = "gguf"},
-    FoldRule{.fold = "norm.plus_one", .container = "safetensors", .imported = true},
-    FoldRule{.fold = "norm.plus_one", .container = "mlx", .imported = true},
-};
-
-constexpr auto kNativeTensors = [] {
-  auto out = kTensors;
-  for (auto& r : out) {
-    if (r.role != "norm" && r.role != "post_norm" &&
-        !(r.slot == "final_norm" && r.role == "weight")) {
-      r.any_part = true;
-    }
-  }
-  return out;
-}();
-
 // The serving recipe (runtime/serving.cc's Gemma2): the fused norm-mul,
 // norm-add and quantized GeGLU, shared Q8 preparation, owner attention
 // (owner decode with bounded roots, owner and flexible owner prefill); no
@@ -126,6 +109,41 @@ constexpr ServingRecipe kServing{
 constexpr std::array kGemma2Requirements{ScalarRequirement{
     .key = "block_count", .reject_equal = 46, .unless_present = "attention.scale"}};
 
+constexpr auto kHfKeys = [] {
+  std::array<SourceKey, kGemmaHfKeys.size() + 1> out{};
+  std::ranges::copy(kGemmaHfKeys, out.begin());
+  out[kGemmaHfKeys.size()] = {"rope.freq_base_swa", "rope_theta"};
+  return out;
+}();
+constexpr std::array kHfOverrides{kGemmaHfQueryScale};
+constexpr std::array kHfDefaults{Int(kStageSlot, "context", 8192), Real("attention", "eps", 1e-6),
+                                 Real("ffn", "eps", 1e-6), Real("final_norm", "eps", 1e-6)};
+constexpr std::array kDialects{
+    SourceDialect{.architecture = "gemma2",
+                  .container = "gguf",
+                  .folds = kGemmaGgufFolds,
+                  .auxiliary = kGgufAuxiliary,
+                  .requirements = kGemma2Requirements},
+    SourceDialect{.architecture = "gemma2",
+                  .container = "safetensors",
+                  .unprefixed_keys = true,
+                  .source_key_prefix = "text_config.",
+                  .keys = kHfKeys,
+                  .overrides = kHfOverrides,
+                  .params = kGemmaHfParams,
+                  .defaults = kHfDefaults,
+                  .parts = kGemmaHfParts,
+                  .folds = kGemmaHfFolds,
+                  .tensor_aliases = kGemmaHfTensors,
+                  .key_aliases = kGemmaSafetensorsKeys,
+                  .auxiliary = kGemmaHfAuxiliary,
+                  .requirements = kGemma2HfRequirements,
+                  .semantic = kHfSemantic,
+                  .ignored_tensors = kHfIgnored,
+                  .null_semantics = kGemmaHfNulls,
+                  .tensor_presence = kHfHeadPresence},
+};
+
 constexpr Mapping kMapping{
     .architecture = "gemma2",
     .version = 1,
@@ -135,39 +153,14 @@ constexpr Mapping kMapping{
     .slots = kSlots,
     .tensors = kTensors,
     .params = kParams,
-    .folds = kFolds,
     .policies = kPolicies,
     .serving = &kServing,
-    .containers = kGgufContainers,
-    .auxiliary = kGgufAuxiliary,
-    .requirements = kGemma2Requirements,
+    .containers = kGemmaContainers,
+    .dialects = kDialects,
 };
-
-// Native HF metadata is authoritative; unlike GGUF, its norm vectors are zero-centered.
-constexpr auto kNativeParams = GemmaHfParams(kParams, 8192, "rope_theta");
-constexpr Mapping kNativeMapping = [] {
-  auto mapping = kMapping;
-  mapping.architecture = "gemma2";
-  mapping.unprefixed_keys = true;
-  mapping.source_key_prefix = "text_config.";
-  mapping.layer_count_key = "num_hidden_layers";
-  mapping.tensors = kNativeTensors;
-  mapping.params = kNativeParams;
-  mapping.containers = kSafetensorsContainers;
-  mapping.tensor_aliases = kGemmaHfTensors;
-  mapping.key_aliases = kGemmaSafetensorsKeys;
-  mapping.auxiliary = kGemmaHfAuxiliary;
-  mapping.requirements = kGemma2HfRequirements;
-  mapping.semantic = kHfSemantic;
-  mapping.ignored_tensors = kHfIgnored;
-  mapping.null_semantics = kGemmaHfNulls;
-  mapping.tensor_presence = kHfHeadPresence;
-  return mapping;
-}();
 
 }  // namespace
 
 const Mapping& Gemma2Mapping() { return kMapping; }
-const Mapping& Gemma2SafetensorsMapping() { return kNativeMapping; }
 
 }  // namespace llmp::spec::mappings

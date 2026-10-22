@@ -426,15 +426,12 @@ std::expected<void, std::string> CheckRequirements(const Mapping& m, const Value
     if (!r.slot.empty()) {
       continue;
     }
-    if (r.key == "text_config.model_type" && m.key_prefix != "text_config") {
-      continue;
-    }
     auto v = Evaluate(m, r, values, std::format("requirement {}", r.key));
     if (!v) {
       return std::unexpected(v.error());
     }
     if (!*v) {
-      if (r.optional && !(r.key == "text_config.model_type" && m.key_prefix == "text_config")) {
+      if (r.optional) {
         continue;
       }
       return Refuse(r.key, "absent from the source");
@@ -1181,35 +1178,145 @@ std::expected<const PolicyRule*, std::string> DefaultRule(const Mapping& mapping
 }
 
 std::span<const Mapping* const> Mappings() {
-  static const std::array all = {&mappings::Gemma2Mapping(),
-                                 &mappings::Gemma3Mapping(),
-                                 &mappings::Gemma2SafetensorsMapping(),
-                                 &mappings::Gemma3SafetensorsMapping(),
-                                 &mappings::Gemma3ConditionalSafetensorsMapping(),
-                                 &mappings::Gemma4Mapping(),
-                                 &mappings::Gemma4SafetensorsMapping(),
-                                 &mappings::Gemma4AssistantMapping(),
-                                 &mappings::Qwen38Mapping(),
-                                 &mappings::Qwen38MtpMapping(),
-                                 &mappings::Dsv4Mapping(),
-                                 &mappings::DsparkMapping(),
-                                 &mappings::Qwen2Mapping(),
-                                 &mappings::Qwen35Mapping(),
-                                 &mappings::Qwen38GgufMapping(),
-                                 &mappings::Qwen38NativeMapping(),
-                                 &mappings::Qwen38MtpNativeMapping(),
-                                 &mappings::Qwen2GgufMapping(),
-                                 &mappings::Qwen2SafetensorsMapping(),
-                                 &mappings::Qwen2Exl3Mapping(),
-                                 &mappings::LlamaMapping(),
-                                 &mappings::LlamaGgufMapping(),
-                                 &mappings::LlamaSafetensorsMapping(),
-                                 &mappings::LlamaExl3Mapping(),
-                                 &mappings::MistralMapping(),
-                                 &mappings::MistralGgufMapping(),
-                                 &mappings::MistralSafetensorsMapping(),
-                                 &mappings::MistralExl3Mapping()};
+  static const std::array all = {
+      &mappings::Gemma2Mapping(),          &mappings::Gemma3Mapping(),
+      &mappings::Gemma4Mapping(),          &mappings::Gemma4SafetensorsMapping(),
+      &mappings::Gemma4AssistantMapping(), &mappings::Qwen38Mapping(),
+      &mappings::Qwen38MtpMapping(),       &mappings::Dsv4Mapping(),
+      &mappings::DsparkMapping(),          &mappings::Qwen2Mapping(),
+      &mappings::Qwen35Mapping(),          &mappings::Qwen38GgufMapping(),
+      &mappings::Qwen38NativeMapping(),    &mappings::Qwen38MtpNativeMapping(),
+      &mappings::Qwen2GgufMapping(),       &mappings::Qwen2SafetensorsMapping(),
+      &mappings::Qwen2Exl3Mapping(),       &mappings::LlamaMapping(),
+      &mappings::LlamaGgufMapping(),       &mappings::LlamaSafetensorsMapping(),
+      &mappings::LlamaExl3Mapping(),       &mappings::MistralMapping(),
+      &mappings::MistralGgufMapping(),     &mappings::MistralSafetensorsMapping(),
+      &mappings::MistralExl3Mapping()};
   return all;
+}
+
+const SourceDialect* FindSourceDialect(const Mapping& mapping, std::string_view architecture,
+                                       std::string_view container) {
+  const SourceDialect* found = nullptr;
+  for (const auto& dialect : mapping.dialects) {
+    if (dialect.architecture != architecture || dialect.container != container) continue;
+    if (found) return nullptr;
+    found = &dialect;
+  }
+  return found;
+}
+
+bool SupportsSource(const Mapping& mapping, std::string_view architecture,
+                    std::string_view container) {
+  if (!mapping.dialects.empty()) return FindSourceDialect(mapping, architecture, container);
+  return MatchesArchitecture(mapping, architecture) &&
+         std::ranges::contains(mapping.containers, container);
+}
+
+std::span<const FoldRule> SourceFolds(const Mapping& mapping, std::string_view architecture,
+                                      std::string_view container) {
+  if (mapping.dialects.empty()) return mapping.folds;
+  const auto* dialect = FindSourceDialect(mapping, architecture, container);
+  return dialect ? dialect->folds : std::span<const FoldRule>{};
+}
+
+std::expected<ResolvedMapping, std::string> ResolveSourceMapping(const Mapping& canonical,
+                                                                 std::string_view architecture,
+                                                                 std::string_view container) {
+  ResolvedMapping out(canonical);
+  if (canonical.dialects.empty()) return out;
+  const auto* d = FindSourceDialect(canonical, architecture, container);
+  if (!d) return Refuse(architecture, "missing or ambiguous source dialect");
+  if (d->keys.size() + d->overrides.size() + d->params.size() + d->defaults.size() +
+          d->parts.size() + canonical.params.size() + canonical.tensors.size() >
+      kMaxMappingRules)
+    return Refuse(architecture, "too many source dialect rules");
+  for (const auto& key : d->keys) {
+    if (!IsText(key.canonical) || !IsText(key.source) ||
+        std::ranges::count(d->keys, key.canonical, &SourceKey::canonical) != 1)
+      return Refuse(architecture, "invalid or duplicate source key spelling");
+    const bool scalar = key.canonical == canonical.layer_count_key ||
+                        key.canonical == canonical.context_key ||
+                        key.canonical == canonical.softcap_key;
+    const bool parameter = std::ranges::any_of(canonical.params, [&](const auto& p) {
+      return key.canonical == p.key || key.canonical == p.numerator_key ||
+             key.canonical == p.divisor_key;
+    });
+    if (!scalar && !parameter)
+      return Refuse(key.canonical, "source spelling has no supported canonical input");
+  }
+  const auto key = [&](std::string_view input) {
+    const auto at = std::ranges::find(d->keys, input, &SourceKey::canonical);
+    return at == d->keys.end() ? input : at->source;
+  };
+  auto& m = out.mapping;
+  // Preserve the emitted source identity, including a text subarchitecture.
+  m.architecture = d->architecture;
+  m.source_architectures = {};
+  m.containers = std::span(&d->container, 1);
+  m.dialects = {};
+  m.key_prefix = d->key_prefix;
+  m.unprefixed_keys = d->unprefixed_keys;
+  m.tensor_prefix = d->tensor_prefix;
+  m.source_key_prefix = d->source_key_prefix;
+  m.layer_count_key = key(m.layer_count_key);
+  m.context_key = key(m.context_key);
+  m.softcap_key = key(m.softcap_key);
+  m.folds = d->folds;
+  m.tensor_aliases = d->tensor_aliases;
+  m.key_aliases = d->key_aliases;
+  m.auxiliary = d->auxiliary;
+  m.requirements = d->requirements;
+  m.semantic = d->semantic;
+  m.ignored_tensors = d->ignored_tensors;
+  m.null_semantics = d->null_semantics;
+  m.ignored_tensor_prefixes = d->ignored_tensor_prefixes;
+  m.tensor_presence = d->tensor_presence;
+  std::vector<bool> used(d->overrides.size(), false);
+  for (auto p : canonical.params) {
+    std::optional<std::size_t> selected;
+    for (std::size_t i = 0; i < d->overrides.size(); ++i) {
+      const auto& r = d->overrides[i];
+      if (p.slot != r.slot || p.param != r.param ||
+          (r.layer_types && p.layer_types != *r.layer_types) || (r.key && p.key != *r.key))
+        continue;
+      if (selected) return Refuse(architecture, "overlapping source parameter overrides");
+      selected = i;
+    }
+    if (selected) {
+      const auto& r = d->overrides[*selected];
+      if (r.rule.slot != r.slot || r.rule.param != r.param)
+        return Refuse(architecture, "source override changes its parameter identity");
+      if (!used[*selected]) out.params.push_back(r.rule);
+      used[*selected] = true;
+    } else {
+      p.key = key(p.key);
+      p.numerator_key = key(p.numerator_key);
+      p.divisor_key = key(p.divisor_key);
+      out.params.push_back(p);
+    }
+  }
+  if (std::ranges::contains(used, false))
+    return Refuse(architecture, "source override has no canonical parameter");
+  out.params.insert(out.params.end(), d->params.begin(), d->params.end());
+  out.params.insert(out.params.end(), d->defaults.begin(), d->defaults.end());
+  m.params = out.params;
+  out.tensors.assign(canonical.tensors.begin(), canonical.tensors.end());
+  for (const auto& part : d->parts) {
+    if (std::ranges::count_if(d->parts, [&](const auto& other) {
+          return other.slot == part.slot && other.role == part.role;
+        }) != 1)
+      return Refuse(architecture, "duplicate source tensor part override");
+    bool found = false;
+    for (auto& tensor : out.tensors) {
+      if (tensor.slot != part.slot || tensor.role != part.role) continue;
+      tensor.any_part = part.any_part;
+      found = true;
+    }
+    if (!found) return Refuse(architecture, "source part override has no canonical tensor role");
+  }
+  m.tensors = out.tensors;
+  return out;
 }
 
 const Mapping* FindMapping(std::string_view architecture) {
@@ -1227,7 +1334,7 @@ const Mapping* FindMapping(std::string_view architecture, std::string_view conta
   const Mapping* result = nullptr;
   for (const Mapping* m : Mappings()) {
     if (m->architecture != architecture || m->version != version ||
-        !std::ranges::contains(m->containers, container))
+        !SupportsSource(*m, architecture, container))
       continue;
     if (result != nullptr) return nullptr;  // ambiguous registrations never pick by order
     result = m;
@@ -1235,7 +1342,7 @@ const Mapping* FindMapping(std::string_view architecture, std::string_view conta
   if (result != nullptr) return result;
   for (const Mapping* m : Mappings()) {
     if (m->role != StageRole::kTarget || !MatchesArchitecture(*m, architecture) ||
-        m->version != version || !std::ranges::contains(m->containers, container))
+        m->version != version || !SupportsSource(*m, architecture, container))
       continue;
     if (result != nullptr) return nullptr;
     result = m;
@@ -1428,6 +1535,15 @@ std::vector<std::string> SourceKeys(const Mapping& m) {
 
 Status ValidateMapping(const Mapping& m) {
   const std::string where = std::format("mapping {}", m.architecture);
+  if (m.dialects.size() > kMaxMappingRules) return Refuse(where, "too many source dialects");
+  for (const auto& d : m.dialects) {
+    if (!MatchesArchitecture(m, d.architecture) ||
+        !std::ranges::contains(m.containers, d.container))
+      return Refuse(where, "source dialect outside the mapping's architecture or containers");
+    auto selected = ResolveSourceMapping(m, d.architecture, d.container);
+    if (!selected) return std::unexpected(selected.error());
+    if (auto ok = ValidateMapping(selected->mapping); !ok) return ok;
+  }
   if (!IsArchitecture(m.architecture) || m.version == 0 ||
       static_cast<std::uint8_t>(m.pipeline) > static_cast<std::uint8_t>(PipelineKind::kDecision)) {
     return Refuse(where, "an invalid architecture, version or pipeline");
@@ -1746,6 +1862,11 @@ Status ValidateMapping(const Mapping& m) {
 
 std::expected<ModelSpec, std::string> Synthesize(const Mapping& mapping, const Source& source,
                                                  std::span<const SourceValue> values) {
+  if (!mapping.dialects.empty()) {
+    auto selected = ResolveSourceMapping(mapping, source.architecture, source.container);
+    if (!selected) return std::unexpected(selected.error());
+    return Synthesize(selected->mapping, source, values);
+  }
   if (mapping.role != StageRole::kTarget) {
     return Refuse(std::format("mapping {}", mapping.architecture),
                   "a drafter's mapping, which composes with its target");

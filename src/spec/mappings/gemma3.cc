@@ -100,23 +100,6 @@ constexpr std::array kParams = {
     RequireInt("attention.sliding_window_pattern", 6, true),
 };
 
-constexpr std::array kFolds = {
-    FoldRule{.fold = "norm.plus_one", .container = "gguf"},
-    FoldRule{.fold = "norm.plus_one", .container = "safetensors", .imported = true},
-    FoldRule{.fold = "norm.plus_one", .container = "mlx", .imported = true},
-};
-
-constexpr auto kNativeTensors = [] {
-  auto out = kTensors;
-  for (auto& r : out) {
-    if (r.role != "norm" && r.role != "post_norm" && r.role != "q_norm" && r.role != "k_norm" &&
-        !(r.slot == "final_norm" && r.role == "weight")) {
-      r.any_part = true;
-    }
-  }
-  return out;
-}();
-
 // The serving recipe (runtime/serving.cc's Gemma3): every pattern but the
 // RoPE store (the fused norm-mul, norm-rope and norm-add, the quantized
 // GeGLU, shared Q8 preparation, grouped KV stores, owner attention with
@@ -138,25 +121,21 @@ constexpr ServingRecipe kServing{.family = "Gemma",
 constexpr std::array kGemma3Requirements{ScalarRequirement{
     .key = "block_count", .reject_equal = 62, .unless_present = "attention.scale"}};
 
-constexpr Mapping kMapping{
-    .architecture = "gemma3",
-    .version = 1,
-    .pipeline = PipelineKind::kLlm,
-    .layer_count_key = "block_count",
-    .layer_types = "lllllg",
-    .slots = kSlots,
-    .tensors = kTensors,
-    .params = kParams,
-    .folds = kFolds,
-    .policies = kPolicies,
-    .serving = &kServing,
-    .containers = kGgufContainers,
-    .auxiliary = kGgufAuxiliary,
-    .requirements = kGemma3Requirements,
-};
-
-// Native HF metadata is authoritative; unlike GGUF, its norm vectors are zero-centered.
-constexpr auto kNativeParams = GemmaHfParams(kParams, 131072, "rope_local_base_freq", 1000000.0);
+constexpr auto kHfKeys = [] {
+  std::array<SourceKey, kGemmaHfKeys.size() + 2> out{};
+  std::ranges::copy(kGemmaHfKeys, out.begin());
+  out[kGemmaHfKeys.size()] = {"rope.freq_base_swa", "rope_local_base_freq"};
+  out[kGemmaHfKeys.size() + 1] = {"rope.scaling.factor", "rope_scaling.factor"};
+  return out;
+}();
+constexpr std::array kHfOverrides{
+    kGemmaHfQueryScale, ParamOverride{.slot = "attention",
+                                      .param = "rope_base",
+                                      .layer_types = "g",
+                                      .key = "",
+                                      .rule = Real("attention", "rope_base", 1000000.0, "g")}};
+constexpr std::array kHfDefaults{Int(kStageSlot, "context", 131072), Real("attention", "eps", 1e-6),
+                                 Real("ffn", "eps", 1e-6), Real("final_norm", "eps", 1e-6)};
 constexpr auto kGemma3ConditionalAuxiliary = [] {
   std::array<AuxiliaryNamespace, kGemmaHfAuxiliary.size() + 7> out{};
   std::ranges::copy(kGemmaHfAuxiliary, out.begin());
@@ -183,49 +162,76 @@ constexpr std::array kGemmaConditionalHeadPresence{
     TensorPresenceRequirement{.flag = "text_config.tie_word_embeddings", .tensor = "output.weight"},
     TensorPresenceRequirement{.flag = "tie_word_embeddings", .tensor = "output.weight"}};
 
-constexpr Mapping kNativeMapping = [] {
-  auto mapping = kMapping;
-  mapping.architecture = "gemma3_text";
-  mapping.unprefixed_keys = true;
-  mapping.source_key_prefix = "text_config.";
-  mapping.layer_count_key = "num_hidden_layers";
-  mapping.tensors = kNativeTensors;
-  mapping.params = kNativeParams;
-  mapping.containers = kSafetensorsContainers;
-  mapping.tensor_aliases = kGemma3HfTensors;
-  mapping.key_aliases = kGemmaSafetensorsKeys;
-  mapping.auxiliary = kGemmaHfAuxiliary;
-  mapping.requirements = kGemmaHfRequirements;
-  mapping.semantic = kHfSemantic;
-  mapping.ignored_tensors = kHfIgnored;
-  mapping.null_semantics = kGemmaHfNulls;
-  mapping.tensor_presence = kHfHeadPresence;
-  return mapping;
+constexpr auto kConditionalDefaults = [] {
+  std::array<ParamRule, kHfDefaults.size() + 1> out{};
+  std::ranges::copy(kHfDefaults, out.begin());
+  out.back() = Require("text_config.model_type", "gemma3_text", false);
+  return out;
 }();
+constexpr std::array<std::string_view, 1> kSourceArchitectures{"gemma3_text"};
+constexpr std::array kDialects{
+    SourceDialect{.architecture = "gemma3",
+                  .container = "gguf",
+                  .folds = kGemmaGgufFolds,
+                  .auxiliary = kGgufAuxiliary,
+                  .requirements = kGemma3Requirements},
+    SourceDialect{.architecture = "gemma3_text",
+                  .container = "safetensors",
+                  .unprefixed_keys = true,
+                  .source_key_prefix = "text_config.",
+                  .keys = kHfKeys,
+                  .overrides = kHfOverrides,
+                  .params = kGemmaHfParams,
+                  .defaults = kHfDefaults,
+                  .parts = kGemmaHfParts,
+                  .folds = kGemmaHfFolds,
+                  .tensor_aliases = kGemma3HfTensors,
+                  .key_aliases = kGemmaSafetensorsKeys,
+                  .auxiliary = kGemmaHfAuxiliary,
+                  .requirements = kGemmaHfRequirements,
+                  .semantic = kHfSemantic,
+                  .ignored_tensors = kHfIgnored,
+                  .null_semantics = kGemmaHfNulls,
+                  .tensor_presence = kHfHeadPresence},
+    SourceDialect{.architecture = "gemma3",
+                  .container = "safetensors",
+                  .key_prefix = "text_config",
+                  .tensor_prefix = "language_model.",
+                  .source_key_prefix = "text_config.",
+                  .keys = kHfKeys,
+                  .overrides = kHfOverrides,
+                  .params = kGemmaHfParams,
+                  .defaults = kConditionalDefaults,
+                  .parts = kGemmaHfParts,
+                  .folds = kGemmaHfFolds,
+                  .tensor_aliases = kGemma3HfTensors,
+                  .key_aliases = kGemmaSafetensorsKeys,
+                  .auxiliary = kGemma3ConditionalAuxiliary,
+                  .requirements = kGemmaHfRequirements,
+                  .semantic = kGemma3ConditionalSemantic,
+                  .null_semantics = kGemma3ConditionalNulls,
+                  .ignored_tensor_prefixes = kGemma3Excluded,
+                  .tensor_presence = kGemmaConditionalHeadPresence},
+};
 
-constexpr Mapping kConditionalMapping = [] {
-  auto mapping = kNativeMapping;
-  mapping.architecture = "gemma3";
-  mapping.key_prefix = "text_config";
-  mapping.unprefixed_keys = false;
-  mapping.tensor_prefix = "language_model.";
-  mapping.layer_count_key = "num_hidden_layers";
-  mapping.params = kNativeParams;
-  mapping.tensor_aliases = kGemma3HfTensors;
-  mapping.auxiliary = kGemma3ConditionalAuxiliary;
-  mapping.requirements = kGemmaHfRequirements;
-  mapping.semantic = kGemma3ConditionalSemantic;
-  mapping.ignored_tensors = {};
-  mapping.ignored_tensor_prefixes = kGemma3Excluded;
-  mapping.null_semantics = kGemma3ConditionalNulls;
-  mapping.tensor_presence = kGemmaConditionalHeadPresence;
-  return mapping;
-}();
+constexpr Mapping kMapping{
+    .architecture = "gemma3",
+    .source_architectures = kSourceArchitectures,
+    .version = 1,
+    .pipeline = PipelineKind::kLlm,
+    .layer_count_key = "block_count",
+    .layer_types = "lllllg",
+    .slots = kSlots,
+    .tensors = kTensors,
+    .params = kParams,
+    .policies = kPolicies,
+    .serving = &kServing,
+    .containers = kGemmaContainers,
+    .dialects = kDialects,
+};
 
 }  // namespace
 
 const Mapping& Gemma3Mapping() { return kMapping; }
-const Mapping& Gemma3SafetensorsMapping() { return kNativeMapping; }
-const Mapping& Gemma3ConditionalSafetensorsMapping() { return kConditionalMapping; }
 
 }  // namespace llmp::spec::mappings

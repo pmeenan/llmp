@@ -307,17 +307,18 @@ bool OriginsWellFormed(std::span<const artifact::Source> origins) {
   return true;
 }
 
-bool FoldDeclared(const spec::Mapping& mapping, std::string_view container, std::string_view fold) {
-  return std::ranges::any_of(mapping.folds, [&](const spec::FoldRule& rule) {
-    return rule.fold == fold && rule.container == container;
-  });
+bool FoldDeclared(const spec::Mapping& mapping, const spec::Source& source, std::string_view fold) {
+  return std::ranges::any_of(spec::SourceFolds(mapping, source.architecture, source.container),
+                             [&](const spec::FoldRule& rule) {
+                               return rule.fold == fold && rule.container == source.container;
+                             });
 }
 
 std::expected<void, std::string> CheckUnpinnedInventory(const spec::Source& source,
                                                         const spec::Mapping& mapping) {
   if (source.tensors.empty()) return Refused(kRefusedInventory);
   for (const std::string& fold : source.folds) {
-    if (!FoldDeclared(mapping, source.container, fold)) {
+    if (!FoldDeclared(mapping, source, fold)) {
       return Refused("source fold is not declared by the architecture's mapping");
     }
   }
@@ -466,7 +467,8 @@ std::expected<void, std::string> CheckComponentAdmission(
     return Refused("architecture has no target component mapping");
   if (auto inv = CheckUnpinnedInventory(source, *mapping); !inv) return inv;
   std::vector<std::string> expected_folds = source.folds;
-  for (const spec::FoldRule& f : mapping->folds) {
+  for (const spec::FoldRule& f :
+       spec::SourceFolds(*mapping, source.architecture, source.container)) {
     if (!f.imported && f.container == source.container &&
         !std::ranges::contains(expected_folds, f.fold)) {
       expected_folds.emplace_back(f.fold);

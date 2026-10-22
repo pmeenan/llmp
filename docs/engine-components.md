@@ -2721,7 +2721,14 @@ in a central recognition/dispatch registry; a mapping and its recipes ran no
 callbacks. M3.5 U3 removed the ModelOpt and MLX normalizers and their
 independent registry. Source normalization now lives in registered
 `spec::Mapping` data consumed directly by import, with the selected container
-as invocation context. No per-container mapping copies are retained.
+as invocation context. Gemma 2 and Gemma 3 each now register one canonical
+mapping: source-architecture/container dialects declare metadata spellings,
+parameter input/default overrides, tensor prefixes/aliases/parts and fold
+conventions. Normalization and source synthesis resolve those declarations
+locally; serving keeps the canonical mapping and its shared recipe. The emitted
+source architecture (including `gemma3_text`), mapping version, stored spec and
+payload semantics are retained. Other architectures still need the same registry
+consolidation; no independent per-container architecture definitions are added.
 Drafter target dimensions come from the target artifact's stored spec and its
 actual tensors (`llmp import ... --target ID`), not per-size synthetic profiles.
 

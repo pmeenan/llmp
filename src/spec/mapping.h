@@ -502,6 +502,41 @@ struct AuxiliaryNamespace {
   std::uint8_t equals_dim = 0;
 };
 
+// Source spellings and conventions overlay one architecture's component rules.
+// Keys rename canonical inputs; parameter overrides replace a selected source
+// resolution chain, never the slots or component kinds. Empty optional selectors
+// mean all rules for the parameter; an engaged empty key selects a constant.
+struct SourceKey {
+  std::string_view canonical{}, source{};
+};
+struct ParamOverride {
+  std::string_view slot{}, param{};
+  std::optional<std::string_view> layer_types{}, key{};
+  ParamRule rule{};
+};
+struct TensorPartOverride {
+  std::string_view slot{}, role{};
+  bool any_part = true;
+};
+struct SourceDialect {
+  std::string_view architecture{}, container{};
+  std::string_view key_prefix{};
+  bool unprefixed_keys = false;
+  std::string_view tensor_prefix{}, source_key_prefix{};
+  std::span<const SourceKey> keys{};
+  std::span<const ParamOverride> overrides{};
+  std::span<const ParamRule> params{}, defaults{};
+  std::span<const TensorPartOverride> parts{};
+  std::span<const FoldRule> folds{};
+  std::span<const TensorAlias> tensor_aliases{};
+  std::span<const KeyAlias> key_aliases{};
+  std::span<const AuxiliaryNamespace> auxiliary{};
+  std::span<const ScalarRequirement> requirements{};
+  std::span<const std::string_view> semantic{}, ignored_tensors{}, null_semantics{};
+  std::span<const std::string_view> ignored_tensor_prefixes{};
+  std::span<const TensorPresenceRequirement> tensor_presence{};
+};
+
 struct Mapping {
   std::string_view architecture{};  // the checkpoint's (GGUF general.architecture)
   std::span<const std::string_view> source_architectures{};
@@ -577,7 +612,31 @@ struct Mapping {
   std::span<const std::string_view> ignored_tensor_prefixes{};
   std::span<const TensorPresenceRequirement> tensor_presence{};
   std::span<const SemanticTensorRule> semantic_tensors{};
+  std::span<const SourceDialect> dialects{};
 };
+
+// Invocation-local interpretation. It owns only the resolved rule arrays;
+// registry entries and serving keep the canonical Mapping. Moving preserves
+// the arrays' addresses; copying could leave spans pointing into another owner.
+struct ResolvedMapping {
+  explicit ResolvedMapping(const Mapping& canonical) : mapping(canonical) {}
+  ResolvedMapping(ResolvedMapping&&) = default;
+  ResolvedMapping& operator=(ResolvedMapping&&) = default;
+  ResolvedMapping(const ResolvedMapping&) = delete;
+  ResolvedMapping& operator=(const ResolvedMapping&) = delete;
+  Mapping mapping;
+  std::vector<ParamRule> params;
+  std::vector<TensorRule> tensors;
+};
+const SourceDialect* FindSourceDialect(const Mapping& mapping, std::string_view architecture,
+                                       std::string_view container);
+bool SupportsSource(const Mapping& mapping, std::string_view architecture,
+                    std::string_view container);
+std::expected<ResolvedMapping, std::string> ResolveSourceMapping(const Mapping& mapping,
+                                                                 std::string_view architecture,
+                                                                 std::string_view container);
+std::span<const FoldRule> SourceFolds(const Mapping& mapping, std::string_view architecture,
+                                      std::string_view container);
 
 constexpr std::string_view KeyPrefix(const Mapping& mapping) {
   return mapping.unprefixed_keys

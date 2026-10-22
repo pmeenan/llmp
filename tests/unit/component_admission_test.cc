@@ -846,6 +846,20 @@ TEST_F(ComponentAdmissionTest, ApprovesCompleteNativeFormatsAndPreservesTheStore
             model.stages.front().heads.output->weights.front().tensor);
 }
 
+TEST_F(ComponentAdmissionTest, NativeDialectRequiresItsImporterFoldReceipt) {
+  source.container = "safetensors";
+  // Native source vectors have no converter-asserted fold. A folded stored
+  // stage needs the importer's receipt, independent of the canonical registry pointer.
+  EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
+  source.folds = {"norm.plus_one"};
+  EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
+  source.folds = {"norm.times_two"};
+  EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
+  source.folds = {"norm.plus_one"};
+  source.container = "mlx";
+  EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
+}
+
 TEST_F(ComponentAdmissionTest,
        UnpinnedOriginAdmitsValidSpecWhileMalformedOriginOrUnknownArchitectureFails) {
   origins[0].sha256[0] ^= 1;

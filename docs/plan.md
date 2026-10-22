@@ -646,14 +646,16 @@ D-122).
       - **U3a One mapping per architecture:** the importer now consumes
         `spec::Mapping` directly with selected-container context; the derived
         `import::SourceMapping` structure and per-container copies are removed.
-        The remaining dialect and artifact-migration obligations below stay open.
+        Gemma 2 and Gemma 3 now each have one canonical registry entry with
+        explicit source dialects for metadata, tensor names/parts, defaults and
+        folds; serving keeps the canonical pointer. Equivalent-source synthetic
+        controls check the complete spec, routed bytes and retained provenance.
+        Other architectures’ registry consolidation and artifact migration stay open.
         The semantic metadata namespace
         derived from the architecture, failing closed on any unconsumed
         `<arch>.*` key (the hand-kept `kGgufSemantic` fails open for a
-        family it omits); one HF↔GGUF key and tensor dialect table replacing
-        the `KeyAlias` tables, `gemma3.cc`'s rewriting lambdas and
-        `source_mapping.cc`'s `language_model.` loops, with a nesting-prefix
-        field; the family and kind names out of generic import code
+        family it omits); the shared HF↔GGUF dialect seam extended beyond
+        Gemma 2/3; the family and kind names out of generic import code
         (`normalize.cc`'s `qwen4exp.rope.dimension_count`, `dflash.` and
         `gemma4-assistant.`, `writer.cc`'s `side.ngram`/`side.hash`,
         `expert_relayout.cc`'s name fallbacks and `StackedNameOf`); mapping

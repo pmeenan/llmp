@@ -173,8 +173,11 @@ TEST(ImportGemmaMetadataTest, Official27BConfigsAndIndexNamesProduceTheDeclaredT
     auto metadata = FlattenMetadata(model_config_root);
     ASSERT_TRUE(metadata);
     source.metadata = std::move(*metadata);
-    const auto* table = FindImportMapping(source.container, source.architecture);
-    ASSERT_NE(table, nullptr);
+    const auto* mapping = FindImportMapping(source.container, source.architecture);
+    ASSERT_NE(mapping, nullptr);
+    auto selected = spec::ResolveSourceMapping(*mapping, source.architecture, source.container);
+    ASSERT_TRUE(selected) << selected.error();
+    const auto* table = &selected->mapping;
     const auto weights = index->root().find("weight_map");
     ASSERT_TRUE(weights && weights->is_object());
     for (std::size_t i = 0; i < weights->size(); ++i) {

@@ -410,72 +410,55 @@ constexpr ParamRule KeyEquals(std::string_view slot, std::string_view param, std
           .optional = true};
 }
 
-template <std::size_t N>
-constexpr auto GemmaHfParams(const std::array<ParamRule, N>& gguf_params,
-                             std::int64_t default_context, std::string_view swa_rope_key,
-                             double global_rope_base = 0.0) {
-  std::array<ParamRule, N + 12> params{};
-  std::ranges::copy(gguf_params, params.begin());
-  for (auto& p : params) {
-    if (global_rope_base != 0.0 && p.slot == "attention" && p.param == "rope_base" &&
-        p.key.empty() && p.layer_types == "g")
-      p.value.real = global_rope_base;
-    if (p.param == "scale" && p.slot == "attention") {
-      p.key = "query_pre_attn_scalar";
-      p.transform = Transform::kRsqrt;
-    } else if (p.key == "context_length")
-      p.key = "max_position_embeddings";
-    else if (p.key == "embedding_length")
-      p.key = "hidden_size";
-    else if (p.key == "attention.layer_norm_rms_epsilon")
-      p.key = "rms_norm_eps";
-    else if (p.key == "attention.head_count")
-      p.key = "num_attention_heads";
-    else if (p.key == "attention.head_count_kv")
-      p.key = "num_key_value_heads";
-    else if (p.key == "attention.key_length" || p.key == "attention.value_length" ||
-             p.key == "rope.dimension_count")
-      p.key = "head_dim";
-    else if (p.key == "attn_logit_softcapping")
-      p.key = "attn_logit_softcapping";
-    else if (p.key == "final_logit_softcapping")
-      p.key = "final_logit_softcapping";
-    else if (p.key == "attention.sliding_window")
-      p.key = "sliding_window";
-    else if (p.key == "feed_forward_length")
-      p.key = "intermediate_size";
-    else if (p.key == "rope.freq_base")
-      p.key = "rope_theta";
-    else if (p.key == "rope.freq_base_swa")
-      p.key = swa_rope_key;
-    else if (p.key == "rope.scaling.factor")
-      p.key = "rope_scaling.factor";
-    else if (p.key == "rope.scaling.type")
-      p.key = "rope_scaling.rope_type";
-    else if (p.key == "attention.sliding_window_pattern")
-      p.key = "sliding_window_pattern";
-  }
-  std::size_t i = N;
-  for (std::string_view slot : {"attention", "ffn", "final_norm"}) {
-    params[i++] = ZeroCenteredNorm(slot);
-  }
-  params[i++] = Require("hidden_activation", "gelu_pytorch_tanh", true);
-  params[i++] = ParamRule{.key = "attention_bias",
-                          .type = ValueType::kBool,
-                          .value = {.flag = false},
-                          .optional = true};
-  params[i++] = Require("hidden_act", "gelu_pytorch_tanh", true);
-  params[i++] = ParamRule{.key = "use_bidirectional_attention",
-                          .type = ValueType::kBool,
-                          .value = {.flag = false},
-                          .optional = true};
-  params[i++] = Int(kStageSlot, "context", default_context);
-  params[i++] = Real("attention", "eps", 1e-6);
-  params[i++] = Real("ffn", "eps", 1e-6);
-  params[i++] = Real("final_norm", "eps", 1e-6);
-  params[i] = Require("text_config.model_type", "gemma3_text", true);
-  return params;
-}
+// Shared native dialect data. Canonical architecture parameters occur once;
+// source keys and exporter defaults do not redefine the component structure.
+inline constexpr std::array kGemmaHfKeys{
+    SourceKey{"block_count", "num_hidden_layers"},
+    SourceKey{"context_length", "max_position_embeddings"},
+    SourceKey{"embedding_length", "hidden_size"},
+    SourceKey{"attention.layer_norm_rms_epsilon", "rms_norm_eps"},
+    SourceKey{"attention.head_count", "num_attention_heads"},
+    SourceKey{"attention.head_count_kv", "num_key_value_heads"},
+    SourceKey{"attention.key_length", "head_dim"},
+    SourceKey{"attention.value_length", "head_dim"},
+    SourceKey{"rope.dimension_count", "head_dim"},
+    SourceKey{"attention.sliding_window", "sliding_window"},
+    SourceKey{"feed_forward_length", "intermediate_size"},
+    SourceKey{"rope.freq_base", "rope_theta"},
+    SourceKey{"rope.scaling.type", "rope_scaling.rope_type"},
+    SourceKey{"attention.sliding_window_pattern", "sliding_window_pattern"},
+};
+inline constexpr ParamOverride kGemmaHfQueryScale{
+    .slot = "attention",
+    .param = "scale",
+    .rule = FromKey("attention", "scale", "query_pre_attn_scalar", ValueType::kReal,
+                    Transform::kRsqrt)};
+inline constexpr std::array kGemmaHfParams{
+    ZeroCenteredNorm("attention"),
+    ZeroCenteredNorm("ffn"),
+    ZeroCenteredNorm("final_norm"),
+    Require("hidden_activation", "gelu_pytorch_tanh", true),
+    ParamRule{.key = "attention_bias",
+              .type = ValueType::kBool,
+              .value = {.flag = false},
+              .optional = true},
+    Require("hidden_act", "gelu_pytorch_tanh", true),
+    ParamRule{.key = "use_bidirectional_attention",
+              .type = ValueType::kBool,
+              .value = {.flag = false},
+              .optional = true},
+};
+inline constexpr std::array kGemmaHfParts{
+    TensorPartOverride{"embedding", "table"},  TensorPartOverride{"attention", "q"},
+    TensorPartOverride{"attention", "k"},      TensorPartOverride{"attention", "v"},
+    TensorPartOverride{"attention", "output"}, TensorPartOverride{"ffn", "gate"},
+    TensorPartOverride{"ffn", "up"},           TensorPartOverride{"ffn", "down"},
+    TensorPartOverride{"output", "weight"},
+};
+inline constexpr std::array kGemmaGgufFolds{FoldRule{.fold = "norm.plus_one", .container = "gguf"}};
+inline constexpr std::array kGemmaHfFolds{
+    FoldRule{.fold = "norm.plus_one", .container = "safetensors", .imported = true}};
+inline constexpr std::array<std::string_view, 2> kGemmaContainers{"gguf", "safetensors"};
 
 // A profile's value under a source key: integers as integers, floats as the
 // reals they are.
