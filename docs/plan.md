@@ -630,8 +630,10 @@ D-122).
         scales, biases, zero points) from the `hf_quant` and `mlx` readers'
         descriptors; the normalized plan's folds, permutations, scale-atom
         relayouts and strided parts planned by tensor role and encoding on
-        every import (rule 11), so native Gemma HF imports store the 1 + w
-        fold (8% of decode when measured on Qwen); Qwen3.8 ModelOpt and MLX
+        every import (rule 11), so native Gemma 2/3 HF imports store their
+        zero-centered 1 + w fold, while Gemma 4 retains direct RMS gamma
+        ([source audit](experiments/m35-u3-quality/GEMMA26-NORM.md));
+        Qwen3.8 ModelOpt and MLX
         expressed as mappings and both normalizers deleted. **Exit:** Qwen3.8
         ModelOpt and MLX re-import with identical tensor content digests and
         no checkpoint-named import code; a plain-NVFP4 ModelOpt checkpoint

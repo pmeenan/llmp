@@ -267,10 +267,8 @@ constexpr std::array kGemma4LayerTypeCodes{
     LayerTypeCode{.value = 1, .type = 'l', .label = "sliding_attention"},
     LayerTypeCode{.value = 0, .type = 'g', .label = "full_attention"},
 };
-constexpr std::array kGemma4NativeFolds{
-    FoldRule{.fold = "norm.plus_one", .container = "safetensors", .imported = true},
-    FoldRule{.fold = "norm.plus_one", .container = "mlx", .imported = true},
-};
+// Gemma 4 stores direct RMS gamma in HF and MLX, as in GGUF. Unlike
+// Gemma 2/3, neither a zero-centered parameter nor a plus-one fold applies.
 constexpr auto kGemma4NativeTensors = [] {
   std::array<TensorRule, kTensors.size() + 5> out{};
   std::size_t n = 0;
@@ -322,7 +320,6 @@ constexpr std::array kGemma4NativeParams = {
     FromKey(kStreamSlot, "width", "embedding_length", kInt),
     FromKey("embedding", "scale", "embedding_length", kReal, Transform::kSqrt),
     Name("attention", "placement", "sandwich"),
-    ZeroCenteredNorm("attention"),
     FromKey("attention", "eps", kEps, kReal),
     PerLayer("attention", "heads", "attention.head_count", kInt),
     PerLayer("attention", "kv_heads", "attention.head_count_kv", kInt, "l"),
@@ -360,7 +357,6 @@ constexpr std::array kGemma4NativeParams = {
     FromTensor("attention", "rope_freqs", "rope_freqs.weight", "g"),
     Flag("attention", "rope_freqs", false, "g"),
     Name("moe", "placement", "parallel"),
-    ZeroCenteredNorm("moe"),
     FromKey("moe", "eps", kEps, kReal),
     Name("moe", "activation", "gelu_tanh"),
     PerLayer("moe", "hidden", kFfn, kInt),
@@ -381,11 +377,9 @@ constexpr std::array kGemma4NativeParams = {
     FromTensor("moe", "stacked", "blk.{layer}.ffn_gate_up_exps.weight"),
     Flag("moe", "stacked", false),
     Name("ffn", "placement", "sandwich"),
-    ZeroCenteredNorm("ffn"),
     FromKey("ffn", "eps", kEps, kReal),
     Name("ffn", "activation", "gelu_tanh"),
     PerLayer("ffn", "hidden", kFfn, kInt),
-    ZeroCenteredNorm("final_norm"),
     FromKey("final_norm", "eps", kEps, kReal),
     FromKey(kHeadsSlot, "softcap", "final_logit_softcapping", kReal, Transform::kNone, {}, true),
     RequireInt("attention.shared_kv_layers", 0, true),
@@ -743,7 +737,7 @@ constexpr Mapping kNativeMapping{
     .slots = kSlots,
     .tensors = kGemma4NativeTensors,
     .params = kGemma4NativeParams,
-    .folds = kGemma4NativeFolds,
+    .folds = {},
     .layer_flags_key = "attention.sliding_window_pattern",
     .layer_flag_type = 'l',
     .policies = kPolicies,

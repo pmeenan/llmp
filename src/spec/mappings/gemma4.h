@@ -21,7 +21,9 @@
 // renormalized weights and per-expert down scales; one without has
 // ffn.glu layers. The GGUF converter applies no norm fold to Gemma 4
 // (llama.cpp's Gemma4Model.norm_shift is 0): its norm weights are used as
-// they are, and the mapping asserts no fold.
+// they are, and the mapping asserts no fold. HF/ModelOpt and MLX likewise
+// store direct RMS gamma: all Gemma 4 source mappings retain those bytes
+// and their source dtype, without the Gemma 2/3 zero-centered convention.
 //
 // "gemma4-assistant": the drafter stage "assistant" composed with its
 // target (ComposeDrafter): it reads the target's K and V (each local

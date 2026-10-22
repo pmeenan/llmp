@@ -2047,6 +2047,104 @@ TEST(ImportNormalizeTest, LlamaMappingSynthesizesLlama3FrequencyScaledRope) {
   EXPECT_EQ(std::get<std::int64_t>(attn.Find("yarn_context")->value), 8192);
 }
 
+// Gemma 4 HF/MLX store direct gamma, unlike Gemma 2/3. The reader and
+// writer route must retain both the values and the small vectors' source dtype.
+TEST(ImportNormalizeSafetensorsTest, Gemma4NativeDirectGammaPreservesEveryNormRoleAndEncoding) {
+  constexpr std::array<std::uint32_t, 4> f32{0xBF000000, 0, 0x3D800000, 0x3FC00000};
+  constexpr std::array<std::uint32_t, 4> bf16{0xBF00, 0, 0x3D80, 0x3FC0};
+  constexpr std::array<std::uint32_t, 4> f16{0xB800, 0, 0x2C00, 0x3E00};
+  for (const bool moe : {false, true}) {
+    for (const bool mlx : {false, true}) {
+      for (const auto encoding : {Encoding::kF32, Encoding::kBF16, Encoding::kF16}) {
+        SCOPED_TRACE(
+            std::format("moe={} mlx={} encoding={}", moe, mlx, format::Info(encoding).name));
+        const auto fixture = TinyGemma4(moe);
+        std::vector<fixtures::Entry> entries;
+        for (const auto& tensor : fixture.tensors) {
+          auto shape = tensor.dims;
+          std::ranges::reverse(shape);
+          const bool norm = tensor.name.find("norm") != std::string::npos;
+          const std::string dtype = !norm || encoding == Encoding::kF32 ? "F32"
+                                    : encoding == Encoding::kBF16       ? "BF16"
+                                                                        : "F16";
+          entries.push_back(fixtures::E(tensor.name, dtype, std::move(shape)));
+        }
+        const auto config = std::string(R"({"model_type":"gemma4","text_config":{
+          "model_type":"gemma4_text","num_hidden_layers":6,"hidden_size":8,
+          "intermediate_size":16,"num_attention_heads":2,"num_key_value_heads":1,
+          "num_global_key_value_heads":1,"head_dim":4,"global_head_dim":4,
+          "max_position_embeddings":128,"rms_norm_eps":0.000001,"sliding_window":64,
+          "vocab_size":10,"layer_types":["sliding_attention","sliding_attention",
+          "sliding_attention","sliding_attention","sliding_attention","full_attention"],
+          "rope_parameters":{"full_attention":{"rope_type":"proportional",
+          "rope_theta":1000000,"partial_rotary_factor":1.0},
+          "sliding_attention":{"rope_type":"default","rope_theta":10000}})") +
+                            (moe ? R"(,"enable_moe_block":true,"num_experts":4,
+                              "top_k_experts":2,"moe_intermediate_size":8}})"
+                                 : R"(,"enable_moe_block":false}})");
+        auto bytes = fixtures::Shard(entries, mlx ? R"({"format":"mlx"})" : "");
+        std::size_t payload = 0;
+        for (const auto& e : entries) payload += e.bytes;
+        std::size_t at = bytes.size() - payload;
+        std::fill(bytes.begin() + static_cast<std::ptrdiff_t>(at), bytes.end(), std::byte{0});
+        const auto& values = encoding == Encoding::kF32    ? f32
+                             : encoding == Encoding::kBF16 ? bf16
+                                                           : f16;
+        const std::size_t width = encoding == Encoding::kF32 ? 4 : 2;
+        for (const auto& e : entries) {
+          if (e.name.find("norm") != std::string::npos) {
+            for (std::size_t j = 0; j < e.bytes / width; ++j)
+              for (std::size_t b = 0; b < width; ++b)
+                bytes[at + j * width + b] = static_cast<std::byte>(values[j % 4] >> (8U * b));
+          }
+          at += e.bytes;
+        }
+        auto source = mlx ? ParseMlx(bytes, config) : ParseSafetensors(bytes, config);
+        ASSERT_TRUE(source) << test_support::Failed(source, &Error::ToString).value_or("");
+        auto plan = Normalize(std::move(*source), kFunded);
+        ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+        ASSERT_TRUE(plan->is_indexed());
+        EXPECT_TRUE(plan->planned_folds().empty());
+        EXPECT_TRUE(plan->applied_folds().empty());
+        const auto& stage = plan->spec().stages.front();
+        EXPECT_TRUE(stage.folds.empty());
+        for (const auto& layer : stage.layers)
+          for (const auto& component : layer.components)
+            EXPECT_EQ(component.Find("norm_zero_centered"), nullptr);
+        ASSERT_TRUE(stage.heads.final_norm);
+        EXPECT_EQ(stage.heads.final_norm->Find("norm_zero_centered"), nullptr);
+        std::size_t norms = 0;
+        for (const auto& member : plan->parts().members()) {
+          const auto& output = plan->parts().outputs()[member.output];
+          if (output.name.find("norm") == std::string::npos) continue;
+          ++norms;
+          EXPECT_EQ(output.format.encoding, encoding);
+          EXPECT_EQ(output.format.layout, format::Layout::kDense);
+          ASSERT_LE(member.extent.offset + member.extent.bytes, bytes.size());
+          const auto input = std::span(bytes).subspan(member.extent.offset, member.extent.bytes);
+          std::vector<std::byte> actual(member.route.output_bytes());
+          std::array<std::byte, 65536> workspace{};
+          auto run = member.route.Start(workspace);
+          ASSERT_TRUE(run);
+          const PartSink sink =
+              [&](std::uint64_t offset,
+                  std::span<const std::byte> chunk) -> std::expected<void, Error> {
+            if (offset > actual.size() || chunk.size() > actual.size() - offset)
+              return std::unexpected(Error{.rule = Rule::kBounds, .reason = "test gamma sink"});
+            std::ranges::copy(chunk, actual.begin() + static_cast<std::ptrdiff_t>(offset));
+            return {};
+          };
+          ASSERT_TRUE(run->Consume(0, input, sink));
+          ASSERT_TRUE(run->Finish());
+          EXPECT_EQ(actual.size(), input.size());
+          EXPECT_TRUE(std::ranges::equal(actual, input)) << output.name;
+        }
+        EXPECT_EQ(norms, moe ? 55U : 37U);  // 9/6 norms per block plus final norm.
+      }
+    }
+  }
+}
+
 TEST(ImportNormalizeTest, Gemma4NestedNativeMathFlagsFailClosed) {
   auto native = TinyGemma4(true);
   native.container = "safetensors";

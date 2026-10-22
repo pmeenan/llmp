@@ -47,6 +47,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Preserve Gemma 4 native RMS weights as direct scales instead of applying
+  the Gemma 2/3 plus-one convention. Affected native artifacts need re-import.
+
 - Preserve Qwen3.5-family GDN SiLU output gates through shared component graphs
   and fused kernels; keep Qwen3.8's sigmoid contract and numerical grants distinct.
 
