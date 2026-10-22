@@ -8,7 +8,9 @@ The [registered protocol](PROTOCOL.md) passed both likelihood phases and
 five paired behavioral controls. Both Fibonacci replies truncated at the
 registered 256-token limit: each reply fails, and the comparative cell remains
 unresolved. The ordinary native chat smoke passed. This evidence does not close
-all of U3 or qualify speed, batching, full context or sustained serving.
+all of U3 or qualify speed, batching, full context or sustained serving. The
+separate [512-token completion supplement](FIBONACCI512-RESULTS.md) passes its
+new bound without changing the original failure.
 
 ## Provenance and executed configuration
 

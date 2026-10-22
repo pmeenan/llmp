@@ -3,7 +3,9 @@
 
 # Llama 3.3 Fibonacci completion supplement: 512 tokens
 
-**Prospective; no supplement results yet.** This asks whether the original
+The [separate results](FIBONACCI512-RESULTS.md) pass all four registered
+completion observations. The prospective registration below is preserved.
+This asks whether the original
 Fibonacci request finishes coherently with a larger output allowance. The
 512-token allowance was chosen **after observing** both engines' truncated
 256-token replies. It is a new completion question, not an independent

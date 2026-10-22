@@ -607,8 +607,9 @@ D-122).
       ends by length with no final content. Gemma's registered
       [exact-source diagnostic](experiments/m35-u3-quality/GEMMA26-NORM.md#exact-source-raw-id-diagnostic)
       reproduces the same raw-token repetition under the disclosed KV precision
-      difference; general Gemma source qualification and the earlier Llama
-      Fibonacci control remain open.
+      difference. The separate Llama [512-token completion supplement](experiments/m35-u3-quality/FIBONACCI512-RESULTS.md)
+      passes all four fresh observations; the original 256-token control remains
+      failed/unresolved. General Gemma source qualification remains open.
       - **U3a One mapping per architecture:** `import::SourceMapping`
         merged into `spec::Mapping`; the semantic metadata namespace
         derived from the architecture, failing closed on any unconsumed
