@@ -39,6 +39,51 @@ one Spark and on two.
 
 ---
 
+## D-125: Architecture-owned normalization and stored execution semantics (2026-10-21, status: accepted at the owner's direction; amends D-109, D-113 and D-120)
+
+**Decision.** An architecture mapping owns its source dialects as well as its
+component structure. Container readers describe tensor encodings and their
+parts; the normalization interpreter applies the selected mapping to metadata,
+logical roles, expert and shard indices. Checkpoint names, pinned dimensions
+and tensor counts do not select a separate normalization implementation.
+Source semantic keys must be consumed or explicitly classified by the mapping.
+
+Lossless permutations and relayouts, and small derived-parameter folds, are
+planned at import from component roles and encoding descriptors. Every source
+tensor is routed, read as an authenticated semantic input, or explicitly
+excluded by the mapping. Quantized bulk weights retain their encoding. The
+writer records the mapping architecture and version with its existing importer
+version and source receipts.
+
+Targets and drafters carry their execution structure in `spec.json`; a drafter's
+stored target interface composes with the actual target's stored spec. Serving
+validates stored structure and tensors without recreating model structure from
+kept checkpoint metadata. Context and available sampling defaults travel in
+the stored spec. Historical checkpoint approvals are optimization evidence and
+measured exceptions, not an alternate structural-admission authority. Changed
+semantics receive no stale numerical qualification; U4 supplies qualification
+as component data scoped by device.
+
+There is one artifact identity: the canonical manifest digest with only
+`importer.build` normalized to `"unknown"` (D-120). Readers no longer accept a
+raw-manifest digest as an alternate name. Experimental v1 artifacts may need
+re-importing when their stored spec or provenance changes; source and payload
+integrity checks remain mandatory (D-121).
+
+**Context.** Separate source and architecture tables, checkpoint-specific
+ModelOpt/MLX normalizers and pinned serving digests duplicated model knowledge
+and prevented importing another valid checkpoint of a supported architecture.
+Prepared artifacts already contain the structure serving needs.
+
+**Consequences.** New source dialects and model geometries use the same
+normalization, publication and stored-spec validation route. Re-import checks
+compare tensor content independently from changed spec/provenance identities.
+Import success alone is not a serving, quality or performance qualification.
+
+**Reopen if.** A supported source cannot express its tensor relationships or
+semantic metadata in these declarative mappings without checkpoint-specific
+execution code.
+
 ## D-124: Physical memory modes: dedicated node pool versus shared-machine mode (2026-10-21, status: proposed; implements memory pool preallocation and shared-workstation operational profiles; amends D-004, D-006, D-096, D-097)
 
 **Decision.** Physical memory management operates in two explicit operational modes configured via `[memory] mode = "dedicated" | "shared"` (with optional `[memory] budget_gib = <int>`, defaulting to 0 for full detected capacity):

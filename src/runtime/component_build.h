@@ -32,6 +32,7 @@
 #include "runtime/component_admission.h"
 #include "runtime/component_domain.h"
 #include "runtime/engine_llm.h"
+#include "runtime/model_settings.h"
 #include "spec/spec.h"
 
 namespace llmp::runtime {
@@ -80,6 +81,10 @@ struct ComponentBuildOptions {
   // Read-only diagnostic validation of the real source's lowering. Captures
   // are part of the harness's prepaid lifetime, never an alternate backend.
   kernels::ProgramValidator validate_program{};
+  // Already-opened artifacts and admissions from ReadArtifactFacts (Start),
+  // consumed on the first build call so startup does not open or admit them a
+  // second time.
+  std::shared_ptr<OpenedModelArtifacts> prepared{};
 };
 
 // The parts of `entry`'s model (its artifact and drafter in `store`), made

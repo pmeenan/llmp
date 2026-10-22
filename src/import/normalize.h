@@ -3,17 +3,26 @@
 #ifndef LLMP_IMPORT_NORMALIZE_H_
 #define LLMP_IMPORT_NORMALIZE_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "base/sha256.h"
 #include "import/checkpoint.h"
+#include "import/indexed_parts.h"
 #include "import/source_mapping.h"
 #include "spec/spec.h"
+
+namespace llmp::test_support {
+class PartPublicationFixture;
+}
 
 namespace llmp::import {
 // Caller-owned, validated artifact target. Normalization never manufactures a
@@ -37,7 +46,31 @@ struct NormalizationCost {
   std::uint64_t metadata_bytes = 0, work_units = 0, payload_bytes = 0;
   std::uint32_t layers = 0;
 };
-std::expected<NormalizationCost, Error> NormalizationBound(const Checkpoint& source);
+
+// A selected draft head's token list (`llmp import --draft-head`): one
+// decimal token ID a line, strictly ascending (the order keeps argmax's
+// tie-breaking), each below the vocabulary; at most `vocab` lines. Read
+// whole as untrusted input; the file becomes one of the drafter's sources,
+// its whole content its parsed receipt, so publication authenticates the
+// bytes these IDs were read from.
+struct DraftHeadList {
+  SourceFile file{};
+  std::vector<std::int32_t> ids{};
+};
+std::expected<DraftHeadList, Error> ReadDraftHeadList(const std::filesystem::path& path,
+                                                      std::uint32_t vocab);
+
+struct NormalizeBoundOptions {
+  std::string_view component{};
+  std::size_t draft_head_rows = 0;
+};
+struct NormalizeOptions {
+  std::string component{};
+  std::optional<DraftHeadList> draft_head{};
+};
+
+std::expected<NormalizationCost, Error> NormalizationBound(const Checkpoint& source,
+                                                           NormalizeBoundOptions options = {});
 
 enum class MetadataClass : std::uint8_t { kSelected, kStructural, kAuxiliary };
 struct MetadataUse {
@@ -73,13 +106,21 @@ struct AppliedSourceFold {
 struct OwnedAuxiliaryNamespace {
   std::string prefix{}, reason{};
 };
+
 class NormalizedPlan;
+
 namespace normalization_detail {
 // Internal construction seam for compiled-table tests. The public entry selects
 // only FindSourceMapping. The same validator and interpreter serve both.
-std::expected<NormalizationCost, Error> Bound(const Checkpoint&, const SourceMapping&);
-std::expected<NormalizedPlan, Error> Build(Checkpoint, const SourceMapping&, NormalizationLimits,
-                                           const NormalizationTarget* = nullptr);
+std::expected<NormalizationCost, Error> Bound(const Checkpoint&, const SourceMapping&,
+                                              NormalizeBoundOptions = {});
+std::expected<NormalizedPlan, Error> Build(Checkpoint&&, const SourceMapping&, NormalizationLimits,
+                                           const NormalizationTarget* = nullptr,
+                                           NormalizeOptions = {});
+std::expected<NormalizedPlan, Error> Build(const Checkpoint&, const SourceMapping&,
+                                           NormalizationLimits,
+                                           const NormalizationTarget* = nullptr,
+                                           NormalizeOptions = {});
 }  // namespace normalization_detail
 
 class NormalizedPlan {
@@ -88,7 +129,9 @@ class NormalizedPlan {
   NormalizedPlan& operator=(NormalizedPlan&&) noexcept = default;
   NormalizedPlan(const NormalizedPlan&) = delete;
   NormalizedPlan& operator=(const NormalizedPlan&) = delete;
-  const Checkpoint& source() const { return source_; }
+  const Checkpoint& source() const { return parts_ ? parts_->source() : source_; }
+  bool is_indexed() const { return parts_.has_value(); }
+  const IndexedPartPlan& parts() const { return *parts_; }
   const spec::Source& canonical() const { return canonical_; }
   const spec::ModelSpec& spec() const { return spec_; }
   std::span<const spec::SourceValue> values() const { return values_; }
@@ -98,16 +141,33 @@ class NormalizedPlan {
   std::span<const CopyRoute> routes() const { return routes_; }
   // Canonical output indices sorted by physical source file/offset.
   std::span<const std::uint32_t> source_order() const { return order_; }
+  std::span<const NormalizedPartBinding> bindings() const { return bindings_; }
+  std::span<const SemanticReceipt> semantic() const { return semantic_; }
+  std::span<const PlannedPartFold> planned_folds() const { return planned_folds_; }
+  std::span<const GeneratedPart> generated() const { return generated_; }
+  std::uint64_t selected_rows() const { return selected_rows_; }
+  const std::string& options() const { return options_; }
+  bool has_options() const { return has_options_; }
+  std::string_view mapping_architecture() const {
+    return mapping_architecture_.empty() ? std::string_view(canonical_.architecture)
+                                         : std::string_view(mapping_architecture_);
+  }
   std::uint16_t normalization_version() const { return version_; }
   std::uint16_t architecture_version() const { return architecture_version_; }
   const NormalizationCost& cost() const { return cost_; }
   std::expected<SourceCopyCursor, Error> CursorFor(std::size_t output) const;
 
  private:
+  friend class llmp::test_support::PartPublicationFixture;
   friend std::expected<NormalizedPlan, Error> normalization_detail::Build(
-      Checkpoint, const SourceMapping&, NormalizationLimits, const NormalizationTarget*);
+      Checkpoint&&, const SourceMapping&, NormalizationLimits, const NormalizationTarget*,
+      NormalizeOptions);
+  friend std::expected<NormalizedPlan, Error> normalization_detail::Build(
+      const Checkpoint&, const SourceMapping&, NormalizationLimits, const NormalizationTarget*,
+      NormalizeOptions);
   NormalizedPlan() = default;
   Checkpoint source_{};
+  std::optional<IndexedPartPlan> parts_{};
   spec::Source canonical_{};
   spec::ModelSpec spec_{};
   std::vector<spec::SourceValue> values_{};
@@ -116,12 +176,25 @@ class NormalizedPlan {
   std::vector<AppliedSourceFold> folds_{};
   std::vector<CopyRoute> routes_{};
   std::vector<std::uint32_t> order_{};
+  std::vector<NormalizedPartBinding> bindings_{};
+  std::vector<SemanticReceipt> semantic_{};
+  std::vector<PlannedPartFold> planned_folds_{};
+  std::vector<GeneratedPart> generated_{};
+  std::uint64_t selected_rows_ = 0;
+  std::string options_{};
+  bool has_options_ = false;
+  std::string mapping_architecture_{};
   std::uint16_t version_ = 0, architecture_version_ = 0;
   NormalizationCost cost_{};
 };
-// Consumes metadata only. No payload reads, writes, transformation, output
-// artifact, or successful-import receipt is implied by a returned plan.
-std::expected<NormalizedPlan, Error> Normalize(Checkpoint source, NormalizationLimits limits,
-                                               const NormalizationTarget* target = nullptr);
+
+// Consumes metadata and explicitly declared authenticated semantic inputs. No
+// payload writes or successful-import receipt is implied by a returned plan.
+std::expected<NormalizedPlan, Error> Normalize(Checkpoint&& source, NormalizationLimits limits,
+                                               const NormalizationTarget* target = nullptr,
+                                               NormalizeOptions options = {});
+std::expected<NormalizedPlan, Error> Normalize(const Checkpoint& source, NormalizationLimits limits,
+                                               const NormalizationTarget* target = nullptr,
+                                               NormalizeOptions options = {});
 }  // namespace llmp::import
 #endif  // LLMP_IMPORT_NORMALIZE_H_

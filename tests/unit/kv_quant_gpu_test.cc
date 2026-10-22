@@ -14,6 +14,9 @@
 //   often its blocks differ is printed, not judged; in blocks below F32's
 //   normal range the codes may differ, and only where both scales are F16
 //   zeros;
+//   Llama 3's primitive decomposition is compared with the independent
+//   reference at the quantizer's error plus the existing RoPE RMS allowance;
+//   its untouched rows remain byte-exact;
 // - the quantized vector attention at decode (1 and 2 query rows) and
 //   prefill shapes (odd rows, 1,024 and 1,025 rows with the mask pre-pass),
 //   D 64 and 256, Q8_0 and Q4_0, no GQA and GQA 2, 7 and 8, with and
@@ -62,6 +65,7 @@
 #include "kernels/ggml/kv_quant.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
+#include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/reference/decode.h"
 #include "kernels/reference/exec.h"
@@ -435,6 +439,107 @@ TEST_F(KvQuantTest, GroupedStoresWriteWhatEachStoreWrites) {
   EXPECT_EQ(FailedCode(kg::SetRowsQuantGroup(launch(), twice)), KernelError::kRejected);
 }
 
+TEST_F(KvQuantTest, ProportionalRotationMatchesReferenceAndPreservesInactivePairs) {
+  constexpr std::int64_t heads = 2, tokens = 3;
+  const std::vector<std::int32_t> positions{1, 31, 4096};
+  const std::vector<std::int64_t> wide_positions(positions.begin(), positions.end());
+  for (const std::uint32_t dims : {32U, 64U, 256U}) {
+    const auto values = Normal(753 + dims, static_cast<std::size_t>(dims * heads * tokens));
+    for (const double factor : {0.0, 0.3, 0.75, 1.0}) {
+      for (const bool neox : {false, true}) {
+        for (const bool inverse : {false, true}) {
+          SCOPED_TRACE(
+              std::format("dims {} factor {} neox {} inverse {}", dims, factor, neox, inverse));
+          const auto active = 2U * static_cast<std::uint32_t>(std::floor(factor * dims / 2));
+          const ir::RopeParams params{.mode = neox ? ir::RopeMode::kNeox : ir::RopeMode::kNormal,
+                                      .inverse = inverse,
+                                      .dims = dims,
+                                      .base = 10000.0F,
+                                      .rotated_dims = active};
+          ir::Builder b;
+          const auto x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({dims, heads, tokens})));
+          const auto pos = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({tokens})));
+          const auto out = b.Rope(x, pos, {}, params);
+          b.Output(out);
+          auto graph = std::move(b).Finish();
+          ASSERT_TRUE(graph);
+          auto reference = ref::Executor::Create(*graph);
+          ASSERT_TRUE(reference);
+          ASSERT_TRUE(reference->BindValues(x, values));
+          ASSERT_TRUE(reference->BindInts(pos, wide_positions));
+          ASSERT_TRUE(reference->Run());
+          const auto want = reference->Values(out);
+          ASSERT_TRUE(want);
+          auto* gx = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, dims, heads, tokens), values);
+          auto* gp = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, tokens), positions);
+          const auto rope = inverse ? ggml_rope_ext_back : ggml_rope_ext;
+          auto* rotated = Place(rope(c(), gx, gp, nullptr, static_cast<int>(dims),
+                                     neox ? GGML_ROPE_TYPE_NEOX : 0, 0, params.base, params.scale,
+                                     0.0F, 1.0F, 32.0F, 1.0F));
+          rotated->op_params[11] = static_cast<int>(active) + 1;
+          Launched(kg::RopeExt(launch(), rotated), "proportional RoPE");
+          const auto got = Download(rotated);
+          EXPECT_LT(Nmse(got, *want), 1e-7);
+          for (std::size_t i = 0; i < got.size(); ++i) {
+            const auto channel = i % dims;
+            const auto pair = neox ? channel % (dims / 2) : channel / 2;
+            if (pair >= active / 2) EXPECT_EQ(got[i], values[i]) << i;
+          }
+          if (neox && !inverse) {
+            const std::int64_t width = dims * heads;
+            auto* flat = ggml_view_2d(c(), rotated, width, tokens, rotated->nb[2], 0);
+            TensorArena::Bind(flat, reinterpret_cast<std::uintptr_t>(rotated->data));
+            auto* ids = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I64, tokens), wide_positions);
+            for (const auto type : {GGML_TYPE_F16, GGML_TYPE_Q8_0}) {
+              auto* cache = Place(ggml_new_tensor_2d(c(), type, width, 8192));
+              auto* store = ggml_set_rows(c(), cache, flat, ids);
+              TensorArena::Bind(store, reinterpret_cast<std::uintptr_t>(cache->data));
+              EXPECT_FALSE(type == GGML_TYPE_F16 ? kg::CheckRopeSetRows(rotated, store)
+                                                 : kg::CheckRopeSetRowsQuant(rotated, store));
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST_F(KvQuantTest, Llama3RotationMatchesTheIndependentReference) {
+  constexpr std::int64_t head = 64, heads = 2, tokens = 3;
+  const auto values = Normal(731, N(head * heads * tokens));
+  const std::vector<std::int32_t> positions{1, 31, 4096};
+  const ir::RopeParams params{.mode = ir::RopeMode::kNeox,
+                              .llama3 = true,
+                              .dims = head,
+                              .original_context = 8192,
+                              .base = 500000.0F,
+                              .scale = 0.125F,
+                              .beta_fast = 4.0F,
+                              .beta_slow = 1.0F};
+  ir::Builder b;
+  const auto x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({head, heads, tokens})));
+  const auto pos = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({tokens})));
+  const auto out = b.Rope(x, pos, {}, params);
+  b.Output(out);
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph);
+  auto reference = ref::Executor::Create(*graph);
+  ASSERT_TRUE(reference);
+  ASSERT_TRUE(reference->BindValues(x, values));
+  const std::vector<std::int64_t> wide_positions(positions.begin(), positions.end());
+  ASSERT_TRUE(reference->BindInts(pos, wide_positions));
+  ASSERT_TRUE(reference->Run());
+  const auto want = reference->Values(out);
+  ASSERT_TRUE(want);
+  auto* gx = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, head, heads, tokens), values);
+  auto* gp = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, tokens), positions);
+  auto* rotated = Place(ggml_rope_ext(c(), gx, gp, nullptr, head, GGML_ROPE_TYPE_NEOX,
+                                      params.original_context, params.base, params.scale, -1.0F,
+                                      1.0F, params.beta_fast, params.beta_slow));
+  Launched(kg::Rope(launch(), rotated), "Llama 3 RoPE");
+  EXPECT_LT(Nmse(Download(rotated), *want), 1e-7);
+}
+
 struct RopeCase {
   std::int64_t head = 0;
   std::int64_t heads = 0;
@@ -443,28 +548,78 @@ struct RopeCase {
   bool factors = false;
   float freq_scale = 1.0f;
   float ext_factor = 0.0f;
+  std::int32_t position = 100000;
 };
 
 TEST_F(KvQuantTest, RopeStoreWritesGgmlsRopeRowsAsTheStoreWould) {
-  const std::array<RopeCase, 4> cases = {{
+  const std::array<RopeCase, 11> cases = {{
       {.head = 256, .heads = 4, .tokens = 1, .n_dims = 256},
       {.head = 256, .heads = 4, .tokens = 37, .n_dims = 256, .factors = true},
       {.head = 64, .heads = 2, .tokens = 19, .n_dims = 64},
       // Partial rotation with YaRN: the rest of each head passes through.
       {.head = 64, .heads = 2, .tokens = 23, .n_dims = 32, .freq_scale = 0.25f, .ext_factor = 1.0f},
+      // Llama 3's scaled-frequency launch uses a separate quantized store.
+      {.head = 64,
+       .heads = 2,
+       .tokens = 7,
+       .n_dims = 64,
+       .freq_scale = 0.125f,
+       .ext_factor = -1.0f},
+      {.head = 128,
+       .heads = 8,
+       .tokens = 1,
+       .n_dims = 128,
+       .freq_scale = 0.125f,
+       .ext_factor = -1.0f,
+       .position = 131071},
+      {.head = 128,
+       .heads = 8,
+       .tokens = 37,
+       .n_dims = 128,
+       .freq_scale = 0.125f,
+       .ext_factor = -1.0f,
+       .position = 131071},
+      {.head = 128,
+       .heads = 8,
+       .tokens = 128,
+       .n_dims = 128,
+       .freq_scale = 0.125f,
+       .ext_factor = -1.0f,
+       .position = 131071},
+      {.head = 128,
+       .heads = 8,
+       .tokens = 1,
+       .n_dims = 128,
+       .freq_scale = 0.125f,
+       .ext_factor = -1.0f,
+       .position = 1000000},
+      {.head = 128,
+       .heads = 8,
+       .tokens = 37,
+       .n_dims = 128,
+       .freq_scale = 0.125f,
+       .ext_factor = -1.0f,
+       .position = 1000000},
+      {.head = 128,
+       .heads = 8,
+       .tokens = 128,
+       .n_dims = 128,
+       .freq_scale = 0.125f,
+       .ext_factor = -1.0f,
+       .position = 1000000},
   }};
   constexpr std::int64_t kCells = 1024;
   std::uint64_t seed = 700;
   for (const ggml_type type : {GGML_TYPE_Q8_0, GGML_TYPE_Q4_0}) {
     for (const RopeCase& rc : cases) {
-      SCOPED_TRACE(std::format("{} head {} tokens {} dims {}", ggml_type_name(type), rc.head,
-                               rc.tokens, rc.n_dims));
+      SCOPED_TRACE(std::format("{} head {} tokens {} dims {} position {}", ggml_type_name(type),
+                               rc.head, rc.tokens, rc.n_dims, rc.position));
       const std::int64_t width = rc.head * rc.heads;
-      auto* x = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, rc.head, rc.heads, rc.tokens),
-                      Normal(++seed, N(width * rc.tokens), 3.0f));
+      const auto values = Normal(++seed, N(width * rc.tokens), 3.0f);
+      auto* x = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, rc.head, rc.heads, rc.tokens), values);
       std::vector<std::int32_t> positions(N(rc.tokens));
       for (std::int64_t t = 0; t < rc.tokens; ++t) {
-        positions[N(t)] = static_cast<std::int32_t>(100000 + (t * 977) % 30000);
+        positions[N(t)] = static_cast<std::int32_t>(rc.position + (t * 977) % 30000);
       }
       auto* pos = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, rc.tokens), positions);
       ggml_tensor* factors = nullptr;
@@ -494,11 +649,86 @@ TEST_F(KvQuantTest, RopeStoreWritesGgmlsRopeRowsAsTheStoreWould) {
       TensorArena::Bind(flat, reinterpret_cast<std::uintptr_t>(rope->data));
       auto* store = ggml_set_rows(c(), cache, flat, index);
       TensorArena::Bind(store, reinterpret_cast<std::uintptr_t>(cache->data));
-      ASSERT_TRUE(kg::CheckRopeSetRowsQuant(rope, store));
-      Launched(kg::RopeSetRowsQuant(launch(), rope, store), "the RoPE quantizing store");
+      if (rc.ext_factor < 0.0f) {
+        // The accurate primitive plus quantized store wins over the accurate
+        // fused candidate on GB10. Both capability and launch validation
+        // leave this scaling mode on the primitive decomposition.
+        EXPECT_FALSE(kg::CheckRopeSetRowsQuant(rope, store));
+        EXPECT_FALSE(kg::RopeSetRowsQuant(launch(), rope, store));
+        Launched(kg::SetRowsQuant(launch(), store), "Llama 3's separate quantized store");
+      } else {
+        ASSERT_TRUE(kg::CheckRopeSetRowsQuant(rope, store));
+        Launched(kg::RopeSetRowsQuant(launch(), rope, store), "the RoPE quantizing store");
+      }
       const auto got = Download<std::byte>(cache);
-      EXPECT_EQ(DifferingBlocks(got, want, ggml_type_size(type)), 0U);
-      EXPECT_TRUE(got == want);
+      if (rc.ext_factor >= 0.0f) {
+        EXPECT_EQ(DifferingBlocks(got, want, ggml_type_size(type)), 0U);
+        EXPECT_TRUE(got == want);
+        continue;
+      }
+      // Judge Llama 3 against its independent IR formula and the encoding's
+      // own error, without requiring identical block codes.
+      ir::Builder b;
+      const auto input = b.Input(
+          ir::Dense(Encoding::kF32, ir::ShapeOf({std::uint64_t(rc.head), std::uint64_t(rc.heads),
+                                                 std::uint64_t(rc.tokens)})));
+      const auto position =
+          b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({std::uint64_t(rc.tokens)})));
+      const auto output = b.Rope(input, position, {},
+                                 {.mode = ir::RopeMode::kNeox,
+                                  .llama3 = true,
+                                  .dims = static_cast<std::uint32_t>(rc.n_dims),
+                                  .original_context = 4096,
+                                  .base = 1000000.0F,
+                                  .scale = rc.freq_scale,
+                                  .beta_fast = 32.0F,
+                                  .beta_slow = 1.0F});
+      b.Output(output);
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph);
+      auto reference = ref::Executor::Create(*graph);
+      ASSERT_TRUE(reference);
+      ASSERT_TRUE(reference->BindValues(input, values));
+      const std::vector<std::int64_t> wide_positions(positions.begin(), positions.end());
+      ASSERT_TRUE(reference->BindInts(position, wide_positions));
+      ASSERT_TRUE(reference->Run());
+      const auto oracle = reference->Values(output);
+      ASSERT_TRUE(oracle);
+      const llmp::format::TensorFormat format{
+          .encoding = EncodingOf(type),
+          .layout = Layout::kGgmlBlocks,
+          .shape = ir::ShapeOf({std::uint64_t(width), std::uint64_t(rc.tokens)})};
+      std::vector<std::byte> reference_bytes(row_bytes * N(rc.tokens)),
+          stored(reference_bytes.size());
+      ASSERT_TRUE(ref::EncodeRows(format, 0, 0, *oracle, reference_bytes));
+      for (std::int64_t cell = 0; cell < kCells; ++cell) {
+        const auto at = std::ranges::find(ids, cell);
+        const auto row = std::span(got).subspan(N(cell) * row_bytes, row_bytes);
+        if (at == ids.end()) {
+          EXPECT_TRUE(
+              std::ranges::equal(row, std::span(before).subspan(N(cell) * row_bytes, row_bytes)))
+              << "unwritten cell " << cell;
+        } else {
+          const auto offset = static_cast<std::size_t>(at - ids.begin()) * row_bytes;
+          std::ranges::copy(row, stored.begin() + static_cast<std::ptrdiff_t>(offset));
+        }
+      }
+      std::vector<float> decoded(stored.size() / row_bytes * N(width)), quantized(decoded.size());
+      const std::array reference_part{ref::PartView{.bytes = reference_bytes}};
+      const std::array stored_part{ref::PartView{.bytes = stored}};
+      ASSERT_TRUE(ref::DecodeRows(format, reference_part, 0, 0, N(rc.tokens), quantized));
+      ASSERT_TRUE(ref::DecodeRows(format, stored_part, 0, 0, N(rc.tokens), decoded));
+      const double quantization_error = Nmse(quantized, *oracle);
+      // Triangle inequality in RMS: the existing 1e-7 RoPE NMSE allowance
+      // is additional to the independently encoded reference's own error.
+      const double rms_bound = std::sqrt(quantization_error) + std::sqrt(1e-7);
+      const double stored_error = Nmse(decoded, *oracle);
+      std::cout << std::format(
+          "{} Llama3: primitive_nmse={} reference_quant_nmse={} "
+          "stored_nmse={} bound={} differing_blocks={}\n",
+          ggml_type_name(type), Nmse(rotated, *oracle), quantization_error, stored_error,
+          rms_bound * rms_bound, DifferingBlocks(got, want, ggml_type_size(type)));
+      EXPECT_LE(stored_error, rms_bound * rms_bound);
     }
   }
 }
@@ -930,12 +1160,30 @@ TEST_F(KvQuantTest, TheRegistryDeclaresEachWithItsCapability) {
   const std::array<ex::OperandFormat, 5> rope = {
       dense(0, Encoding::kF32), dense(1, Encoding::kI32), blocks(2, Encoding::kQ8_0),
       dense(3, Encoding::kI64), dense(4, Encoding::kF32)};
+  // Missing parameters cannot establish the fusion's rotation contract.
   EXPECT_EQ(names({.op = ir::Fused(ir::FusedKind::kRopeStore),
                    .operands = rope,
                    .rows = 1,
                    .k = 1024,
                    .arch = arch}),
+            Of{});
+  ir::RopeParams rope_params{.mode = ir::RopeMode::kNeox, .dims = 256};
+  EXPECT_EQ(names({.op = ir::Fused(ir::FusedKind::kRopeStore),
+                   .operands = rope,
+                   .rows = 1,
+                   .k = 1024,
+                   .arch = arch,
+                   .params = std::as_bytes(std::span(&rope_params, 1))}),
             Of{std::string(kg::kRopeSetRowsQuantName)});
+  rope_params.llama3 = true;
+  EXPECT_EQ(names({.op = ir::Fused(ir::FusedKind::kRopeStore),
+                   .operands = rope,
+                   .rows = 1,
+                   .k = 1024,
+                   .arch = arch,
+                   .params = std::as_bytes(std::span(&rope_params, 1))}),
+            Of{});
+  rope_params.llama3 = false;
   const std::array<ex::OperandFormat, 4> f16_rope = {
       dense(0, Encoding::kF32), dense(1, Encoding::kI32), dense(2, Encoding::kF16),
       dense(3, Encoding::kI64)};
@@ -943,8 +1191,9 @@ TEST_F(KvQuantTest, TheRegistryDeclaresEachWithItsCapability) {
                    .operands = f16_rope,
                    .rows = 1,
                    .k = 1024,
-                   .arch = arch}),
-            Of{});
+                   .arch = arch,
+                   .params = std::as_bytes(std::span(&rope_params, 1))}),
+            Of{"ggml.rope_set_rows.fused"});
 }
 
 }  // namespace

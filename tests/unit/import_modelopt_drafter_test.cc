@@ -23,7 +23,7 @@
 #include <vector>
 
 #include "base/sha256.h"
-#include "import/modelopt_qwen38.h"
+#include "import/normalize.h"
 #include "qwen38_fixture.h"
 #include "runtime/approvals.h"
 #include "runtime/component_admission.h"
@@ -40,11 +40,11 @@ NormalizationTarget NativeTarget() {
   return {&spec::mappings::Qwen38NativeMapping(), std::move(fixture.model),
           std::move(fixture.source)};
 }
-std::expected<ModelOptDrafterPlan, Error> NormalizeDrafterFixture(const Checkpoint& source,
-                                                                  std::optional<DraftHeadList> head,
-                                                                  NormalizationLimits limits) {
+std::expected<NormalizedPlan, Error> NormalizeDrafterFixture(const Checkpoint& source,
+                                                             std::optional<DraftHeadList> head,
+                                                             NormalizationLimits limits) {
   auto target = NativeTarget();
-  return NormalizeModelOptDrafter(source, std::move(head), limits, &target);
+  return Normalize(source, limits, &target, {.component = "mtp", .draft_head = std::move(head)});
 }
 
 enum class Kind : std::uint8_t { kDense, kCodes, kScales, kScale2 };
@@ -145,6 +145,7 @@ std::vector<MetaEntry> Metadata() {
     m.push_back({std::string(k), std::string(v)});
   };
   const auto b = [&](std::string_view k, bool v) { m.push_back({std::string(k), v}); };
+  t("model_type", "qwen3_8_flash_next");
   t("dtype", "bfloat16");
   b("is_encoder_decoder", false);
   b("tie_word_embeddings", false);
@@ -260,7 +261,7 @@ fs::path WriteList(std::string_view name, std::string_view text) {
 }
 
 NormalizationLimits Paid(const Checkpoint& c, std::size_t ids) {
-  auto bound = ModelOptDrafterBound(c, ids);
+  auto bound = NormalizationBound(c, {.component = "mtp", .draft_head_rows = ids});
   EXPECT_TRUE(bound) << (bound ? "" : bound.error().ToString());
   return bound ? NormalizationLimits{bound->metadata_bytes, bound->work_units}
                : NormalizationLimits{};
@@ -375,7 +376,7 @@ TEST(ImportModelOptDrafterTest, NormalizesTheDrafterInItsSourceEncodings) {
   EXPECT_EQ(files, (std::vector<std::string>{"config.json", "hf_quant_config.json",
                                              "model-00034-of-00034.safetensors",
                                              "model.safetensors.index.json"}));
-  EXPECT_EQ(plan->parts().source().architecture, "qwen4exp-mtp");
+  EXPECT_EQ(plan->parts().source().architecture, source.architecture);
   EXPECT_EQ(plan->parts().source().tensors.size(), 29U + 9U * 512U);
   EXPECT_TRUE(plan->generated().empty());
   EXPECT_EQ(plan->selected_rows(), 0U);
@@ -459,13 +460,20 @@ TEST(ImportModelOptDrafterTest, GathersASelectedHeadInItsListsOrder) {
   const auto lm = *source.FindTensor("lm_head.weight");
   std::vector<Extent> runs;
   for (const auto& t : sub.tensors)
-    if (t.name.starts_with("lm_head.weight.rows.")) runs.push_back(t.extent);
+    if (std::ranges::any_of(plan->parts().members(), [&](const auto& member) {
+          return member.source == static_cast<std::uint32_t>(&t - sub.tensors.data()) &&
+                 plan->parts().outputs()[member.output].name == "draft_output.weight";
+        }))
+      runs.push_back(t.extent);
   ASSERT_EQ(runs.size(), 3U);
   EXPECT_EQ(runs[0], (Extent{.file = 2, .offset = lm.extent.offset, .bytes = 3 * 5120}));
   EXPECT_EQ(runs[1], (Extent{.file = 2, .offset = lm.extent.offset + 10 * 5120, .bytes = 5120}));
   EXPECT_EQ(runs[2],
             (Extent{.file = 2, .offset = lm.extent.offset + 248319ULL * 5120, .bytes = 5120}));
-  const auto& head = plan->parts().outputs().back();
+  const auto head_at =
+      std::ranges::find(plan->parts().outputs(), "draft_output.weight", &IndexedOutput::name);
+  ASSERT_NE(head_at, plan->parts().outputs().end());
+  const auto& head = *head_at;
   EXPECT_EQ(head.name, "draft_output.weight");
   EXPECT_EQ(head.format.shape.ne[1], 5U);
   // The token map: the last canonical tensor, generated from the list.
@@ -542,19 +550,19 @@ TEST(ImportModelOptDrafterTest, RefusesWhatItCannotDescribeOrIsNotPaidFor) {
   }
   {  // another checkpoint kind
     auto c = source;
-    c.quantization = "modelopt NVFP4";
-    EXPECT_TRUE(refused(c));
+    c.quantization = "mlx affine";
+    auto normalized = NormalizeDrafterFixture(c, std::nullopt, Paid(c, 0));
+    EXPECT_TRUE(normalized);  // tensor descriptors, rather than provenance text, govern assembly
   }
   // Not paid for.
-  auto bound = ModelOptDrafterBound(source, 0);
+  auto bound = NormalizationBound(source, {.component = "mtp"});
   ASSERT_TRUE(bound);
   EXPECT_FALSE(NormalizeDrafterFixture(source, std::nullopt,
                                        {bound->metadata_bytes - 1, bound->work_units}));
 }
 
-// Only the approved list's drafter is approved: its sources name exactly
-// Mia's list, and another list's drafter (another head) has no approval;
-// with the approved sources, its inventory still pins the head.
+// Historical performance evidence identifies its list, while valid component
+// structure admits independently of that evidence.
 TEST(ImportModelOptDrafterTest, TheApprovalNamesOneListAndItsInventory) {
   const auto source = Source();
   auto list = ReadDraftHeadList(WriteList("ids.txt", "4\n5\n"), 248320);
@@ -577,9 +585,9 @@ TEST(ImportModelOptDrafterTest, TheApprovalNamesOneListAndItsInventory) {
   EXPECT_EQ(runtime::FindApproval("qwen4exp-mtp", approved), &a);
   EXPECT_EQ(runtime::FindApproval("qwen4exp", approved), nullptr);
   // Two rows, not Mia's 47,172: not the approved inventory.
-  EXPECT_FALSE(runtime::CheckComponentDrafterAdmission(plan->canonical(), approved));
+  EXPECT_TRUE(runtime::CheckComponentDrafterAdmission(plan->canonical(), approved));
   auto other = plan->canonical();
-  other.folds.push_back("ssm.a_neg_exp");
+  other.folds.push_back("unknown.fold");
   EXPECT_FALSE(runtime::CheckComponentDrafterAdmission(other, approved));
 }
 
@@ -592,15 +600,15 @@ TEST(ImportModelOptDrafterTest, SelectedIdsMustFitBothActualTargetAndCheckpointH
   auto head = ReadDraftHeadList(WriteList("outside-source-ids.txt", "248320\n"), 300000);
   ASSERT_TRUE(head);
   const auto source = Source();
-  const auto normalized =
-      NormalizeModelOptDrafter(source, std::move(*head), Paid(source, 1), &target);
+  const auto normalized = Normalize(source, Paid(source, 1), &target,
+                                    {.component = "mtp", .draft_head = std::move(*head)});
   ASSERT_FALSE(normalized);
-  EXPECT_NE(normalized.error().reason.find("checkpoint head"), std::string::npos);
+  EXPECT_NE(normalized.error().reason.find("head"), std::string::npos);
 }
 
 TEST(ImportModelOptDrafterTest, MissingTargetRefusesAndPublishedMetadataExtractionUsesActualFacts) {
   const auto source = Source();
-  const auto missing = NormalizeModelOptDrafter(source, std::nullopt, Paid(source, 0));
+  const auto missing = Normalize(source, Paid(source, 0), nullptr, {.component = "mtp"});
   ASSERT_FALSE(missing);
   EXPECT_NE(missing.error().reason.find("--target"), std::string::npos);
   auto target = NativeTarget();
@@ -621,6 +629,27 @@ TEST(ImportModelOptDrafterTest, MissingTargetRefusesAndPublishedMetadataExtracti
                                target.source, own);
   ASSERT_TRUE(values);
   EXPECT_EQ(std::get<std::int64_t>(Find(*values, "qwen4exp-mtp.draft_vocab")->value), 65536);
+}
+
+TEST(ImportModelOptDrafterTest, TargetExtractionPreservesDeclaredDrafterMath) {
+  auto source = Source();
+  for (auto& entry : source.metadata) {
+    if (entry.key == "text_config.rms_norm_eps") entry.value = 0.000003;
+    if (entry.key == "text_config.rope_parameters.rope_theta") entry.value = 900000.0;
+  }
+  const auto target = NativeTarget();
+  auto plan = Normalize(source, Paid(source, 0), &target, {.component = "mtp"});
+  ASSERT_TRUE(plan) << plan.error().ToString();
+  const auto* epsilon = Find(plan->values(), "qwen4exp-mtp.attention.layer_norm_rms_epsilon");
+  const auto* rope = Find(plan->values(), "qwen4exp-mtp.rope.freq_base");
+  ASSERT_NE(epsilon, nullptr);
+  ASSERT_NE(rope, nullptr);
+  EXPECT_DOUBLE_EQ(std::get<double>(epsilon->value), 0.000003);
+  EXPECT_DOUBLE_EQ(std::get<double>(rope->value), 900000.0);
+  auto composed_target = plan->spec().stages.front();
+  // Composition adds taps for its declared reads without changing target math.
+  composed_target.taps = target.model.stages.front().taps;
+  EXPECT_EQ(composed_target, target.model.stages.front());
 }
 
 // The drafter's expert layout comes from its own tensors, never its target's:

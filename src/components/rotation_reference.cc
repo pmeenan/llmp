@@ -57,36 +57,64 @@ std::size_t SectionForPair(const ir::RopeParams& p, std::uint64_t pair, double& 
 void RotateHeads(std::span<double> row, std::uint64_t heads, std::uint64_t head_dim,
                  const ir::RopeParams& params, std::array<std::int64_t, 4> positions,
                  std::span<const float> freqs) {
-  const std::uint64_t pairs =
-      params.mode == ir::RopeMode::kVision ? params.dims : (params.dims / 2);
+  const std::uint64_t pairs = params.rotated_dims != UINT32_MAX      ? params.rotated_dims / 2
+                              : params.mode == ir::RopeMode::kVision ? params.dims
+                                                                     : params.dims / 2;
   if (pairs == 0) return;
   const float theta_scale =
       static_cast<float>(std::pow(static_cast<double>(params.base),
                                   static_cast<double>(-2.0F / static_cast<float>(params.dims))));
-  const std::array<float, 2> corr =
-      params.ext_factor != 0.0F ? YarnCorrDims(params) : std::array<float, 2>{0.0F, 0.0F};
+  const bool llama3 = params.llama3;
+  const std::array<float, 2> corr = (!llama3 && params.ext_factor > 0.0F)
+                                        ? YarnCorrDims(params)
+                                        : std::array<float, 2>{0.0F, 0.0F};
   for (std::uint64_t h = 0; h < heads; ++h) {
     double* x = &row[h * head_dim];
     for (std::uint64_t i = 0; i < pairs; ++i) {
       double exponent = 0.0;
       const std::size_t section = SectionForPair(params, i, exponent);
       const auto pos = static_cast<float>(positions.at(section));
-      const float power = static_cast<float>(std::pow(static_cast<double>(theta_scale), exponent));
-      float extrap = pos * power;
-      if (!freqs.empty()) {
-        extrap /= freqs[static_cast<std::size_t>(i)];
-      }
-      const float interp = params.scale * extrap;
-      float theta = interp;
+      float theta = 0.0F;
       float mscale = params.attn_factor;
-      if (params.ext_factor != 0.0F) {
-        const float y = (static_cast<float>(i) - corr[0]) / std::max(0.001F, corr[1] - corr[0]);
-        const float ramp = (1.0F - std::min(1.0F, std::max(0.0F, y))) * params.ext_factor;
-        const float kept = interp * (1.0F - ramp);
-        const float mixed = extrap * ramp;
-        theta = kept + mixed;
-        const float magnitude = 0.1F * std::log(1.0F / params.scale);
-        mscale *= 1.0F + magnitude;
+      if (llama3) {
+        const float base_theta = static_cast<float>(std::pow(
+            static_cast<double>(params.base), (2.0 * exponent) / static_cast<double>(params.dims)));
+        const float freq = 1.0F / base_theta;
+        const float old_ctx = static_cast<float>(params.original_context);
+        const float low_freq_wavelen = old_ctx / params.beta_slow;
+        const float high_freq_wavelen = old_ctx / params.beta_fast;
+        const float wavelen = 6.28318530717958647692F / freq;
+        float scaled_freq = freq;
+        if (wavelen > low_freq_wavelen) {
+          scaled_freq = freq * params.scale;
+        } else if (wavelen > high_freq_wavelen && params.beta_fast > params.beta_slow) {
+          const float smooth =
+              (old_ctx / wavelen - params.beta_slow) / (params.beta_fast - params.beta_slow);
+          scaled_freq = ((1.0F - smooth) * freq * params.scale) + (smooth * freq);
+        }
+        theta = pos * scaled_freq;
+        if (!freqs.empty()) {
+          theta /= freqs[static_cast<std::size_t>(i)];
+        }
+        mscale = params.attn_factor != 0.0F ? params.attn_factor : 1.0F;
+      } else {
+        const float power =
+            static_cast<float>(std::pow(static_cast<double>(theta_scale), exponent));
+        float extrap = pos * power;
+        if (!freqs.empty()) {
+          extrap /= freqs[static_cast<std::size_t>(i)];
+        }
+        const float interp = params.scale * extrap;
+        theta = interp;
+        if (params.ext_factor > 0.0F) {
+          const float y = (static_cast<float>(i) - corr[0]) / std::max(0.001F, corr[1] - corr[0]);
+          const float ramp = (1.0F - std::min(1.0F, std::max(0.0F, y))) * params.ext_factor;
+          const float kept = interp * (1.0F - ramp);
+          const float mixed = extrap * ramp;
+          theta = kept + mixed;
+          const float magnitude = 0.1F * std::log(1.0F / params.scale);
+          mscale *= 1.0F + magnitude;
+        }
       }
       const double c = std::cos(static_cast<double>(theta)) * static_cast<double>(mscale);
       const double s = (params.inverse ? -std::sin(static_cast<double>(theta))

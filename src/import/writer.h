@@ -17,8 +17,6 @@
 #include "import/normalize.h"
 
 namespace llmp::import {
-class ModelOptTargetPlan;
-class ModelOptDrafterPlan;
 // Where a component's tensor is stored when its spec's bindings do not say
 // (an image component's spec binds every tensor in one spatial layer): its
 // row table, its global group, one of its layers' (a transformer block's,
@@ -71,14 +69,7 @@ struct WriteResult {
 // within one store; an existing ID is fully verified before reuse.
 std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
                                                 const WriteOptions& options);
-std::expected<WriteResult, Error> WriteArtifact(const ModelOptTargetPlan& plan,
-                                                const WriteOptions& options);
 std::expected<WriteResult, Error> WriteArtifact(const ComponentPlan& plan,
-                                                const WriteOptions& options);
-// A drafter carries no spec (D-113); its generated parts (a selected head's
-// token map) are written once every source stream, the whole file each
-// derives from included, has authenticated.
-std::expected<WriteResult, Error> WriteArtifact(const ModelOptDrafterPlan& plan,
                                                 const WriteOptions& options);
 std::expected<void, Error> ValidateCompositionFiles(std::span<const SourceFile> files);
 std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions& options);

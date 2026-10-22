@@ -42,16 +42,30 @@ const Checkpoint* FindComponent(const Checkpoint& source, std::string_view role)
 }
 
 // A kept pipeline file's members as source values (flattened as a
-// config.json's).
-std::expected<std::vector<spec::SourceValue>, Error> FileValues(const Checkpoint& source,
-                                                                std::string_view name) {
-  const auto found = std::ranges::find(source.files, name, &SourceFile::name);
-  if (found == source.files.end()) return Bad("the pipeline lacks a file its mapping reads");
-  const auto index = static_cast<std::uint64_t>(found - source.files.begin());
+// config.json's), re-checking its identity and recording its parsed receipt.
+std::expected<std::vector<spec::SourceValue>, Error> FileValues(
+    std::vector<SourceFile>& pipeline_files, std::string_view name) {
+  const auto found = std::ranges::find(pipeline_files, name, &SourceFile::name);
+  if (found == pipeline_files.end()) return Bad("the pipeline lacks a file its mapping reads");
+  const auto index = static_cast<std::uint64_t>(found - pipeline_files.begin());
   auto opened = OpenCheckpointFile(found->path, index);
   if (!opened) return std::unexpected(opened.error());
+  if (opened->bytes != found->bytes || opened->device != found->device ||
+      opened->inode != found->inode) {
+    return std::unexpected(Error{.rule = Rule::kIo,
+                                 .reason = "a pipeline file changed identity or size after listing",
+                                 .file = index});
+  }
   auto text = ReadDocument(*opened, kMaxPipelineFileBytes, index);
   if (!text) return std::unexpected(text.error());
+  const auto digest = base::Sha256().Update(*text).Finish();
+  if (found->parsed.bytes != 0 &&
+      (found->parsed.bytes != opened->bytes || digest != found->parsed.sha256)) {
+    return std::unexpected(Error{.rule = Rule::kIo,
+                                 .reason = "a pipeline file changed content after parsing",
+                                 .file = index});
+  }
+  found->parsed = {.bytes = opened->bytes, .sha256 = digest};
   auto doc = base::json::Parse(*text, {.max_bytes = text->size(),
                                        .max_depth = 8,
                                        .max_values = std::size_t{1} << 16U,
@@ -67,7 +81,8 @@ std::expected<std::vector<spec::SourceValue>, Error> FileValues(const Checkpoint
 // The family spec of the pipeline (the mapping's), from its components'
 // configs and the kept files the mapping reads.
 std::expected<spec::ModelSpec, Error> Family(const Checkpoint& source,
-                                             const spec::ImageMapping& mapping) {
+                                             const spec::ImageMapping& mapping,
+                                             std::vector<SourceFile>& pipeline_files) {
   std::vector<std::vector<spec::SourceValue>> values;
   std::vector<spec::ImageComponentSource> components;
   values.reserve(mapping.components.size());
@@ -90,7 +105,7 @@ std::expected<spec::ModelSpec, Error> Family(const Checkpoint& source,
   file_values.reserve(names.size());
   std::vector<spec::ImageSource> files;
   for (const auto name : names) {
-    auto read = FileValues(source, name);
+    auto read = FileValues(pipeline_files, name);
     if (!read) return std::unexpected(read.error());
     file_values.push_back(std::move(*read));
     files.push_back({.name = name, .values = file_values.back()});
@@ -204,7 +219,9 @@ std::expected<ComponentPlan, Error> PlanComponent(
         .extent = found->extent,
         .readable = 0,
     });
-    payload += found->extent.bytes;
+    if (__builtin_add_overflow(payload, found->extent.bytes, &payload)) {
+      return Bad("a component's payload exceeds 64-bit bounds", Rule::kBounds);
+    }
   }
   if (auto valid =
           components::ValidateSpec(spec, canonical.tensors, components::ValidationPurpose::kImport);
@@ -231,8 +248,10 @@ std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& sou
   std::uint64_t total_tensors = 0;
   for (const auto& comp : source.components) {
     for (const auto& t : comp.tensors) {
-      total_payload += t.extent.bytes;
-      ++total_tensors;
+      if (__builtin_add_overflow(total_payload, t.extent.bytes, &total_payload) ||
+          __builtin_add_overflow(total_tensors, std::uint64_t{1}, &total_tensors)) {
+        return Bad("image pipeline payload exceeds 64-bit bounds", Rule::kBounds);
+      }
     }
   }
   return NormalizationCost{
@@ -247,7 +266,8 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
     return Bad("not a diffusers pipeline with an image mapping", Rule::kContainer);
   }
   const auto& mapping = *spec::FindImageMapping(source.architecture);
-  auto family = Family(source, mapping);
+  std::vector<SourceFile> pipeline_files = source.files;
+  auto family = Family(source, mapping, pipeline_files);
   if (!family) return std::unexpected(family.error());
   auto profile = spec::ImageProfileOf(*family, mapping);
   if (!profile) return Bad("the family spec does not read back");
@@ -268,6 +288,7 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
   if (!vae_spec) return Bad("cannot build the VAE's spec");
 
   ImagePipelinePlan out;
+  out.files = std::move(pipeline_files);
   out.components.reserve(mapping.components.size());
   const std::array<std::pair<const std::vector<model::ImageTensor>*, const spec::ModelSpec*>, 3>
       by_kind{{{&text_tensors, &text_spec->spec},
@@ -281,7 +302,9 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
                                                      rule.ignored_tensors, *by_kind[at].second,
                                                      GroupsOf(kind, *by_kind[at].first, p, names));
     if (!plan) return std::unexpected(plan.error());
-    out.payload_bytes += plan->payload_bytes;
+    if (__builtin_add_overflow(out.payload_bytes, plan->payload_bytes, &out.payload_bytes)) {
+      return Bad("image pipeline payload exceeds 64-bit bounds", Rule::kBounds);
+    }
     out.components.push_back(std::move(*plan));
   }
   out.family = std::move(*family);

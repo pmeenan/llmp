@@ -44,7 +44,9 @@ std::expected<PartRoutePlan, Error> PartRoutePlan::Permute(const HeadPermutation
 }
 std::expected<PartRoutePlan, Error> PartRoutePlan::Fold(ScalarFold fold, std::uint64_t elements,
                                                         format::Encoding source_encoding) {
-  if ((fold != ScalarFold::kNormPlusOne && fold != ScalarFold::kANegExp) || elements == 0 ||
+  if ((fold != ScalarFold::kNormPlusOne && fold != ScalarFold::kANegExp &&
+       fold != ScalarFold::kIdentity) ||
+      elements == 0 ||
       (source_encoding != format::Encoding::kBF16 && source_encoding != format::Encoding::kF16 &&
        source_encoding != format::Encoding::kF32) ||
       elements > std::numeric_limits<std::uint64_t>::max() / 4)
@@ -63,7 +65,8 @@ std::expected<PartRoutePlan, Error> PartRoutePlan::PermuteFold(const HeadPermuta
   auto out = Permute(plan, part);
   if (!out) return out;
   const auto enc = plan.format().encoding;
-  if ((fold != ScalarFold::kNormPlusOne && fold != ScalarFold::kANegExp) ||
+  if ((fold != ScalarFold::kNormPlusOne && fold != ScalarFold::kANegExp &&
+       fold != ScalarFold::kIdentity) ||
       (enc != format::Encoding::kBF16 && enc != format::Encoding::kF16 &&
        enc != format::Encoding::kF32))
     return Bad("a permuted fold needs a small whole BF16/F16/F32 part");

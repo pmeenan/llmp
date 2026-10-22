@@ -833,6 +833,13 @@ std::expected<void, KernelFailure> CheckRopeExt(const ggml_tensor* node) {
   const std::int32_t mode = node->op_params[2];
   const std::int32_t offset = node->op_params[15];
   const bool multi = mode == GGML_ROPE_TYPE_MROPE || mode == GGML_ROPE_TYPE_IMROPE;
+  if (!multi && node->op_params[11] != 0) {
+    float extension = 0;
+    std::memcpy(&extension, node->op_params + 7, sizeof(extension));
+    const auto active = static_cast<std::int64_t>(node->op_params[11]) - 1;
+    if (active < 0 || active % 2 != 0 || active > n_dims || extension != 0.0F)
+      return Rejected("invalid proportional RoPE dimensions or frequency scaling");
+  }
   if (mode != 0 && mode != GGML_ROPE_TYPE_NEOX && !multi) {
     return Rejected("normal, NEOX, MROPE or IMROPE rotation (not vision)");
   }

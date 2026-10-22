@@ -93,10 +93,10 @@ __global__ void RopeQuantizedStore(const __grid_constant__ RopeStore s) {
     const int pair = channel < half_dims ? channel : channel - half_dims;
     // rope_neox's i0 (n_offs is 0): the pair's even index.
     const int iw = 2 * pair;
-    const float theta_base = s.pos[token] * powf(s.theta_scale, iw / 2.0f);
     const float freq_factor = kHasFf ? s.freq_factors[iw / 2] : 1.0f;
     float cos_theta;
     float sin_theta;
+    const float theta_base = s.pos[token] * powf(s.theta_scale, iw / 2.0f);
     RopeYarn(theta_base / freq_factor, s.freq_scale, s.corr_dims, iw, s.ext_factor, s.attn_factor,
              cos_theta, sin_theta);
     const float x0 = x[pair];
@@ -148,7 +148,9 @@ std::expected<void, KernelFailure> RopeSetRowsQuant(LaunchContext& launch, ggml_
   std::memcpy(&s.attn_factor, rope->op_params + 8, sizeof(float));
   std::memcpy(&beta_fast, rope->op_params + 9, sizeof(float));
   std::memcpy(&beta_slow, rope->op_params + 10, sizeof(float));
-  ggml_rope_yarn_corr_dims(s.n_dims, n_ctx_orig, freq_base, beta_fast, beta_slow, s.corr_dims.v);
+  if (s.ext_factor > 0.0f) {
+    ggml_rope_yarn_corr_dims(s.n_dims, n_ctx_orig, freq_base, beta_fast, beta_slow, s.corr_dims.v);
+  }
   s.theta_scale = powf(freq_base, -2.0f / static_cast<float>(s.n_dims));
   s.type = set_rows->type;
   const auto blocks = static_cast<unsigned>((std::uint64_t{s.total} + kThreads - 1) / kThreads);

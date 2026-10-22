@@ -1292,6 +1292,26 @@ TEST(ImportQuantizationTest, PairsModelOptNvfp4) {
   EXPECT_FALSE(Named(*w4a16, "m.weight").format.params.tensor_scale);
 }
 
+TEST(ImportQuantizationTest, NarrowTensorScalesRetainPhysicalSourceDescription) {
+  for (const auto dtype : {"BF16", "F16"}) {
+    auto entries = Nvfp4("m", 4, 64, false, false);
+    entries.push_back(E("m.weight_scale_2", dtype, {1}));
+    const auto checkpoint = ParseSafetensors(Shard(entries), kConfig, kNvfp4Hf);
+    ASSERT_TRUE(checkpoint) << checkpoint.error().ToString();
+    const auto& scale = Named(*checkpoint, "m.weight_scale_2");
+    EXPECT_EQ(scale.scalar_storage,
+              dtype == std::string_view("BF16") ? Encoding::kBF16 : Encoding::kF16);
+    EXPECT_EQ(scale.extent.bytes, 2U);
+    EXPECT_EQ(SourcePartBytes(scale), 2U);
+    const auto parts = format::PartsOf(scale.format);
+    ASSERT_TRUE(parts);
+    EXPECT_EQ(parts->Find(PartRole::kTensorScale)->bytes, 4U);
+    EXPECT_EQ(scale.format, Named(*checkpoint, "m.weight").format);
+    entries.back() = E("m.weight_scale_2", dtype, {2});
+    EXPECT_FALSE(ParseSafetensors(Shard(entries), kConfig, kNvfp4Hf));
+  }
+}
+
 TEST(ImportQuantizationTest, PairsMxfp8AndMixedPrecision) {
   const std::string config =
       R"({"model_type":"t","quantization_config":{"quant_method":"modelopt","quant_algo":"MXFP8","group_size":32}})";

@@ -220,4 +220,27 @@ TEST(Json, QuotesMinimally) {
   EXPECT_EQ(out, "\"a\\\"b\\\\c\\n\\u0001\x7F é\"");
 }
 
+TEST(Json, AccessorsCheckKindAndBounds) {
+  json::Document empty_doc;
+  EXPECT_TRUE(empty_doc.root().is_null());
+  EXPECT_EQ(empty_doc.root().size(), 0U);
+  EXPECT_TRUE(empty_doc.root().at(0).is_null());
+  EXPECT_EQ(empty_doc.root().key(0), "");
+  EXPECT_TRUE(empty_doc.root().member(0).is_null());
+
+  const auto doc = json::Parse(R"({"arr":[10,20],"obj":{"k":"v"},"num":42})");
+  ASSERT_TRUE(doc.has_value());
+  const auto root = doc->root();
+  EXPECT_TRUE(root.at(0).is_null());
+  EXPECT_EQ(root.key(3), "");
+  EXPECT_TRUE(root.member(3).is_null());
+
+  const auto arr = root.find("arr");
+  ASSERT_TRUE(arr.has_value());
+  EXPECT_EQ(arr->at(0).int64(), 10);
+  EXPECT_TRUE(arr->at(2).is_null());
+  EXPECT_EQ(arr->key(0), "");
+  EXPECT_TRUE(arr->member(0).is_null());
+}
+
 }  // namespace

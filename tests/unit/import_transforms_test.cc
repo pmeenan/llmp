@@ -428,6 +428,24 @@ TEST(ImportTransformsTest, AffineHeadsPreserveAllCodesScalesAndBiases) {
   }
 }
 
+TEST(ImportTransformsTest, AffineHeadPermutationCoversEveryReaderBitsGroupAndScale) {
+  for (const auto bits : {4U, 8U})
+    for (const auto group : {32U, 64U, 128U})
+      for (const auto scale :
+           {format::AffineScale::kBF16, format::AffineScale::kF16, format::AffineScale::kF32}) {
+        auto f = AffineMatrix(768, 17);
+        f.params.bits = static_cast<std::uint8_t>(bits);
+        f.params.group = group;
+        f.params.scale = scale;
+        auto rows = HeadPermutationPlan::Make(f, HeadAxis::kRows, 2, 6, 2, 3);
+        ASSERT_TRUE(rows);
+        CheckPermutation(*rows, HeadAxis::kRows, 2, 6, 2, 3);
+        auto columns = HeadPermutationPlan::Make(f, HeadAxis::kColumns, 2, 6, 128);
+        ASSERT_TRUE(columns);
+        CheckPermutation(*columns, HeadAxis::kColumns, 2, 6, 128, 0);
+      }
+}
+
 TEST(ImportTransformsTest, AffineHeadFactoryRefusesPartialGroupsAndUnsupportedFormats) {
   const auto good = AffineMatrix(192, 17);
   const auto refuse = [](format::TensorFormat candidate, HeadAxis axis = HeadAxis::kRows,
@@ -449,18 +467,17 @@ TEST(ImportTransformsTest, AffineHeadFactoryRefusesPartialGroupsAndUnsupportedFo
   refuse(good, HeadAxis::kRows, 2, 6, 2, 6);
   refuse(good, HeadAxis::kRows, 2, 6, std::numeric_limits<std::uint64_t>::max());
   refuse(good, static_cast<HeadAxis>(255));
-  for (const auto bits : {2U, 3U, 5U, 8U}) {
+  for (const auto bits : {2U, 3U, 5U}) {
     auto bad = good;
     bad.params.bits = static_cast<std::uint8_t>(bits);
     refuse(bad);
   }
-  for (const auto group : {0U, 16U, 64U}) {
+  for (const auto group : {0U, 16U, 48U}) {
     auto bad = good;
     bad.params.group = group;
     refuse(bad);
   }
-  for (const auto scale :
-       {format::AffineScale::kNone, format::AffineScale::kF16, format::AffineScale::kF32}) {
+  for (const auto scale : {format::AffineScale::kNone, static_cast<format::AffineScale>(255)}) {
     auto bad = good;
     bad.params.scale = scale;
     refuse(bad);

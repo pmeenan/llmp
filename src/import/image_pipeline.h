@@ -31,6 +31,7 @@ namespace llmp::import {
 struct ImagePipelinePlan {
   std::vector<ComponentPlan> components;  // in the mapping's (role) order
   spec::ModelSpec family{};               // the composition's spec
+  std::vector<SourceFile> files{};        // pipeline files with parsed receipts
   std::uint64_t payload_bytes = 0;
 };
 

@@ -15,9 +15,10 @@
 //
 //   - NVFP4: M.weight U8 [N, K / 2] (two E2M1 codes a byte, value 2i in the
 //     low nibble), M.weight_scale F8_E4M3 [N, K / 16], and when present
-//     M.weight_scale_2 F32 with one value: the format {nvfp4, kSplit,
+//     M.weight_scale_2 F32, BF16 or F16 with one value: the format {nvfp4, kSplit,
 //     [K, N]} with a tensor scale, its parts kCodes, kBlockScales and
-//     kTensorScale. Without M.weight_scale_2, the nearest ancestor module
+//     kTensorScale (a narrower source scalar is converted to F32 at import).
+//     Without M.weight_scale_2, the nearest ancestor module
 //     A with A.weight_scale_2 and no A.weight_scale gives the tensor scale
 //     (a table stored as row shards under one scale, as Qwen3.8's n-gram
 //     table): that tensor is the kTensorScale part of each such weight,

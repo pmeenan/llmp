@@ -7,12 +7,11 @@
 // relaid out losslessly into format::Layout::kScaleAtoms, the tile order
 // block-scaled tensor-core grouped products read, with a MoE's gate and up
 // stacked into one table, and its per-matrix tensor scales gathered into an
-// F32 [experts] vector per projection. Chosen by canonical name (the
-// converted naming's `blk.L.ffn_{gate,up,down}_exps.weight` tables, whose
-// name says the projection: ExpertTableOf) and encoding, never by
-// architecture; only
+// F32 [experts] vector per projection. Chosen by component weight role
+// and encoding, never by architecture; only
 // where the result is no larger than the source (whole 128-row atoms, whole
-// 4-scale atom columns), else the table stays split. Another block-scaled
+// 4-scale atom columns), else the table stays split with its per-expert
+// tensor scales in separate projection vectors. Another block-scaled
 // encoding of one-byte scales (MXFP8, MXFP4) joins by entering kEncodings
 // once its products read the atoms. Row tables of the same encodings take
 // the row-interleaved layout (RelayoutRowTable).
@@ -32,8 +31,9 @@
 #include "import/indexed_parts.h"
 
 namespace llmp::spec {
+struct Mapping;
 struct ModelSpec;
-}
+}  // namespace llmp::spec
 
 namespace llmp::import {
 
@@ -52,20 +52,13 @@ struct ExpertTable {
   std::string name{}, stacked{}, scales{};
 };
 
-// The routed-expert table a canonical name names,
-// `blk.<layer>.ffn_<gate|up|down>_exps.weight` (the canonical tensor names
-// normalizations publish, not an architecture's), with the names its
-// relayout gives it: its own, the gate-up table's for a gate, and
-// `<name>_scale_2` for its tensor scales. Nullopt for any other name, a
-// layer index that is not a canonical decimal below 2^16 among them.
-std::optional<ExpertTable> ExpertTableOf(std::string_view name, std::uint32_t output);
-
-// An expert table identified from a component's role in spec when available,
-// falling back to canonical name parsing.
+// An expert table identified from a component's role in spec.
 std::expected<std::optional<ExpertTable>, Error> ExpertTableOf(
-    const TensorAssembly& tensor, const spec::ModelSpec* spec = nullptr);
+    const TensorAssembly& tensor, const spec::ModelSpec* spec,
+    const spec::Mapping* mapping = nullptr);
 std::expected<std::optional<ExpertTable>, Error> ExpertTableOf(
-    const TensorAssembly& tensor, std::uint32_t output, const spec::ModelSpec* spec = nullptr);
+    const TensorAssembly& tensor, std::uint32_t output, const spec::ModelSpec* spec,
+    const spec::Mapping* mapping = nullptr);
 
 struct ExpertRelayoutSummary {
   std::uint32_t tables = 0;         // relaid out
@@ -81,15 +74,18 @@ bool RelaysOut(const format::TensorFormat& table);
 // Rewrites `outputs`: each listed table that RelaysOut becomes its
 // kScaleAtoms form (a gate with its MoE's up of the same format stacked,
 // the up's output removed), and its tensor scales an F32 [experts] kScalars
-// output appended; other tables stay as they are. Output indices after the
+// output appended. Split NVFP4 tables that cannot form whole scale atoms
+// retain their packed bytes and separate the same scalar vectors. Other
+// tables stay as they are. Output indices after the
 // first rewritten one change. Refuses a listed output that is not a whole
 // expert table or one listed twice.
 std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
     std::vector<TensorAssembly>& outputs, std::span<const ExpertTable> tables);
 
-// Overload identifying expert tables from spec or naming.
+// Overload identifying expert tables from spec.
 std::expected<ExpertRelayoutSummary, Error> RelayoutExpertTables(
-    std::vector<TensorAssembly>& outputs, const spec::ModelSpec* spec = nullptr);
+    std::vector<TensorAssembly>& outputs, const spec::ModelSpec* spec,
+    const spec::Mapping* mapping = nullptr);
 
 // A row-gathered table (an embedding or side table: the caller names it by
 // role) of a block-scaled encoding a device kernel reads row-interleaved

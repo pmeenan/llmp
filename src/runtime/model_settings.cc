@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
-#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -66,56 +65,12 @@ std::expected<ja::GgufMetadata, std::string> ReadKeptGguf(const ja::Artifact& a,
   return std::move(*read);
 }
 
-// GGUF's F32 value type.
-constexpr std::uint32_t kGgufF32 = 6;
-
-// A float as the decimal it was written as: its shortest round-trip text
-// read as a double (0.95f is 0.95, not 0.949999988...).
-double Decimal(float value) {
-  std::array<char, 32> text{};
-  const auto written = std::to_chars(text.data(), text.data() + text.size(), value);
-  double out = value;
-  (void)std::from_chars(text.data(), written.ptr, out);
-  return out;
-}
-
-std::optional<double> Real(const ja::GgufMetadata& m, std::string_view key) {
-  const auto it = m.find(key);
-  if (it == m.end()) {
-    return std::nullopt;
-  }
-  if (it->second.kind == ja::GgufValue::Kind::kFloat) {
-    return it->second.type == kGgufF32 ? Decimal(static_cast<float>(it->second.real))
-                                       : it->second.real;
-  }
-  if (it->second.kind == ja::GgufValue::Kind::kInteger) {
-    return static_cast<double>(it->second.integer);
-  }
-  return std::nullopt;
-}
-
 std::optional<std::int64_t> Integer(const ja::GgufMetadata& m, std::string_view key) {
   const auto it = m.find(key);
   if (it == m.end() || it->second.kind != ja::GgufValue::Kind::kInteger) {
     return std::nullopt;
   }
   return it->second.integer;
-}
-
-std::optional<double> JsonReal(const json::Value& object, std::string_view key) {
-  if (!object.is_object()) {
-    return std::nullopt;
-  }
-  const auto v = object.find(key);
-  return v && v->is_number() ? v->float64() : std::nullopt;
-}
-
-std::optional<std::int64_t> JsonInteger(const json::Value& object, std::string_view key) {
-  if (!object.is_object()) {
-    return std::nullopt;
-  }
-  const auto v = object.find(key);
-  return v && v->is_number() ? v->int64() : std::nullopt;
 }
 
 // The sampling defaults a checkpoint keeps, each within the range a request
@@ -144,24 +99,6 @@ void Sampling(ArtifactFacts& facts, std::optional<double> temperature, std::opti
   }
   if (any) {
     facts.sampling_from += (facts.sampling_from.empty() ? "" : ", ") + std::string(from);
-  }
-}
-
-// A rope-scaled checkpoint's trained context (YaRN and the like): its
-// original context times the scaling factor, where that is longer than the
-// context its metadata states (GGUFs state DeepSeek V4 Flash's scaled
-// 1,048,576 already; others state the original).
-void TrainedByScaling(ArtifactFacts& facts, std::optional<double> factor,
-                      std::optional<std::int64_t> original, const std::string& from) {
-  if (!factor || !original || !std::isfinite(*factor) || *factor <= 1 || *factor > 1024 ||
-      *original <= 0 || *original > (std::int64_t{1} << 32)) {
-    return;
-  }
-  const auto scaled =
-      static_cast<std::uint64_t>(std::floor(static_cast<double>(*original) * *factor));
-  if (!facts.trained_context || scaled > *facts.trained_context) {
-    facts.trained_context = scaled;
-    facts.trained_context_from = from;
   }
 }
 
@@ -405,79 +342,14 @@ std::expected<std::string, std::string> ReadRegularFile(const fs::path& path, st
   return bytes;
 }
 
-std::vector<std::string> GgufFactKeys(std::string_view architecture) {
-  return {std::format("{}.context_length", architecture),
-          std::format("{}.rope.scaling.factor", architecture),
-          std::format("{}.rope.scaling.original_context_length", architecture),
-          "general.sampling.temp",
-          "general.sampling.top_p",
-          "general.sampling.top_k",
-          "general.sampling.min_p"};
-}
-
-void FactsFromGguf(const ja::GgufMetadata& m, ArtifactFacts& facts) {
-  const std::vector<std::string> keys = GgufFactKeys(facts.architecture);
-  if (const auto context = Integer(m, keys[0]); context && *context > 0) {
-    facts.trained_context = static_cast<std::uint64_t>(*context);
-    facts.trained_context_from = keys[0];
-  }
-  TrainedByScaling(facts, Real(m, keys[1]), Integer(m, keys[2]),
-                   std::format("{} times {}", keys[2], keys[1]));
-  Sampling(facts, Real(m, keys[3]), Real(m, keys[4]), Integer(m, keys[5]), Real(m, keys[6]),
-           "general.sampling");
-}
-
-std::expected<void, std::string> FactsFromConfigJson(std::string_view text, ArtifactFacts& facts) {
-  auto doc = json::Parse(text);
-  if (!doc) {
-    return Error(std::format("config.json: {}", doc.error().ToString()));
-  }
-  // The language model's own keys: at the top, or in text_config.
-  json::Value config = doc->root();
-  std::string prefix = "config.json ";
-  if (!JsonInteger(config, "max_position_embeddings") && config.is_object()) {
-    if (const auto text_config = config.find("text_config")) {
-      config = *text_config;
-      prefix = "config.json text_config.";
-    }
-  }
-  if (const auto context = JsonInteger(config, "max_position_embeddings");
-      context && *context > 0) {
-    facts.trained_context = static_cast<std::uint64_t>(*context);
-    facts.trained_context_from = prefix + "max_position_embeddings";
-  }
-  if (const auto scaling = config.is_object() ? config.find("rope_scaling") : std::nullopt) {
-    TrainedByScaling(facts, JsonReal(*scaling, "factor"),
-                     JsonInteger(*scaling, "original_max_position_embeddings"),
-                     prefix + "rope_scaling");
-  }
-  return {};
-}
-
-std::expected<void, std::string> FactsFromGenerationConfig(std::string_view text,
-                                                           ArtifactFacts& facts) {
-  auto doc = json::Parse(text);
-  if (!doc) {
-    return Error(std::format("generation_config.json: {}", doc.error().ToString()));
-  }
-  const json::Value root = doc->root();
-  // do_sample false is greedy whatever the temperature says (as
-  // transformers reads it).
-  std::optional<double> temperature = JsonReal(root, "temperature");
-  std::string_view from = "generation_config.json";
-  if (const auto greedy = root.is_object() ? root.find("do_sample") : std::nullopt;
-      greedy && greedy->is_bool() && !greedy->boolean()) {
-    temperature = 0.0;
-    from = "generation_config.json (do_sample false)";
-  }
-  Sampling(facts, temperature, JsonReal(root, "top_p"), JsonInteger(root, "top_k"),
-           JsonReal(root, "min_p"), from);
-  return {};
-}
-
-std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
-    const ja::Artifact& target, const ja::Artifact* drafter, std::string_view kv_cache_encoding,
-    std::optional<std::uint32_t> draft_vocab) {
+std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& target,
+                                                          const ja::Artifact* drafter,
+                                                          std::string_view kv_cache_encoding,
+                                                          std::optional<std::uint32_t> draft_vocab,
+                                                          OpenedModelArtifacts* opened_out) {
+  if (opened_out != nullptr && (opened_out->target || opened_out->drafter ||
+                                opened_out->target_admission || opened_out->drafter_admission))
+    return Error("artifact facts require an empty retained owner");
   ArtifactFacts facts;
   if (kv_cache_encoding != "f16" && kv_cache_encoding != "q8_0")
     return Error("unknown KV cache encoding");
@@ -504,38 +376,36 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
   if (const spec::Mapping* mapping = spec::FindMapping(facts.architecture, facts.container);
       mapping != nullptr)
     facts.pipeline = mapping->pipeline;
-  std::optional<std::uint32_t> declared_context;
   // The target's stored spec (a v1 artifact's alone: D-118) and, with a
-  // drafter, its composition: their bound identities. No independent parser
-  // or cached execution model; every object below dies before
-  // tokenizer/generation metadata is read.
+  // drafter, its composition: their bound identities.
   if (auto served = RequireServedVersion(target); !served) return Error(served.error());
   if (drafter != nullptr)
     if (auto served = RequireServedVersion(*drafter); !served) return Error(served.error());
-  std::optional<spec::ModelSpec> model;
-  {
-    auto admitted = ReadComponentAdmission(target);
-    if (!admitted) return Error(admitted.error());
-    declared_context = admitted->model.stages.front().context;
-    facts.pipeline = admitted->model.pipeline;
-    auto vocabulary = spec::Vocabulary(admitted->model, admitted->source);
-    if (!vocabulary) return Error(vocabulary.error());
-    facts.vocabulary = *vocabulary;
-    if (const auto* mapping = spec::FindMapping(facts.architecture, facts.container))
-      facts.policy_gates = spec::PolicyGates(*mapping, admitted->model, facts.container);
-    model = std::move(admitted->model);
-  }
-  // The drafter's admission, once: its source as checked, for its
-  // composition below.
+  auto admitted = ReadComponentAdmission(target);
+  if (!admitted) return Error(admitted.error());
+  const spec::Stage& target_stage = admitted->model.stages.front();
+  facts.trained_context = target_stage.context;
+  facts.trained_context_from = "the admitted stored spec";
+  facts.pipeline = admitted->model.pipeline;
+  const spec::SamplingDefaults& smp = target_stage.sampling;
+  Sampling(facts, smp.temperature, smp.top_p, smp.top_k, smp.min_p, "the admitted stored spec");
+  auto vocabulary = spec::Vocabulary(admitted->model, admitted->source);
+  if (!vocabulary) return Error(vocabulary.error());
+  facts.vocabulary = *vocabulary;
+  if (const auto* mapping = spec::FindMapping(facts.architecture, facts.container))
+    facts.policy_gates = spec::PolicyGates(*mapping, admitted->model, facts.container);
+  // The drafter's admission, once: its source and optional stored spec as
+  // checked, for its composition below.
   std::optional<ComponentDrafterAdmission> drafter_admitted;
   if (drafter != nullptr) {
-    auto admitted = ReadComponentDrafterAdmission(*drafter);
-    if (!admitted) return Error(admitted.error());
-    drafter_admitted.emplace(std::move(*admitted));
+    auto d_admitted = ReadComponentDrafterAdmission(*drafter);
+    if (!d_admitted) return Error(d_admitted.error());
+    drafter_admitted.emplace(std::move(*d_admitted));
   }
-  if (model) {
-    facts.context_ceiling = model->stages.front().context;
-    facts.has_moe = std::ranges::any_of(model->stages.front().layers, [](const spec::Layer& layer) {
+  {
+    spec::ModelSpec model = admitted->model;
+    facts.context_ceiling = model.stages.front().context;
+    facts.has_moe = std::ranges::any_of(model.stages.front().layers, [](const spec::Layer& layer) {
       return std::ranges::any_of(layer.components,
                                  [](const spec::ComponentRef& c) { return c.kind == "ffn.moe"; });
     });
@@ -545,31 +415,65 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
         if (target_mapping == nullptr) return Error("component calibration has no target mapping");
         const auto* draft_mapping = ComposedDrafterMapping(*drafter);
         if (draft_mapping == nullptr) return Error("component calibration has no drafter mapping");
-        auto draft_values = ComponentDrafterValues(target, *drafter);
-        if (!draft_values) return Error(draft_values.error());
-        const spec::Source* draft_source = &drafter_admitted->source;
-        auto composed = spec::ComposeDrafter(*model, *target_mapping, *draft_mapping, *draft_source,
-                                             *draft_values);
-        if (!composed) return Error(composed.error());
-        if (auto approved = CheckComposedAdmission(*composed, target, *drafter); !approved)
-          return Error(approved.error());
-        if (draft_mapping->draft != nullptr && !draft_mapping->draft->vocab_key.empty()) {
-          const auto* serving_ptr = spec::ServingRecipeOf(*target_mapping);
-          if (serving_ptr == nullptr)
-            return Error("component calibration has no target serving recipe");
-          const auto& serving = *serving_ptr;
-          auto map = DraftHeadRows(*drafter, draft_mapping->draft->head_ids, facts.vocabulary);
-          if (!map) return Error(map.error());
-          const auto selected =
-              *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt;
-          auto width = ConfigureDraftVocabulary(*draft_values, *draft_mapping->draft,
-                                                draft_vocab.value_or(serving.default_draft_vocab),
-                                                facts.vocabulary, selected);
-          if (!width) return Error(width.error());
-          facts.composed_draft_vocab = *width;
-          composed = spec::ComposeDrafter(*model, *target_mapping, *draft_mapping, *draft_source,
+        std::expected<spec::ModelSpec, std::string> composed = std::unexpected(std::string());
+        if (drafter_admitted->model) {
+          if (draft_mapping->draft != nullptr &&
+              draft_mapping->draft->target_architecture != facts.architecture)
+            return Error(std::format("drafter {} does not target architecture {}",
+                                     drafter->model().architecture, facts.architecture));
+          composed = spec::ComposeStoredDrafter(model, *drafter_admitted->model);
+          if (!composed) return Error(composed.error());
+          if (auto approved =
+                  CheckComposedAdmission(*composed, admitted->source, drafter_admitted->source);
+              !approved)
+            return Error(approved.error());
+          if (draft_mapping->draft != nullptr && !draft_mapping->draft->vocab_key.empty()) {
+            const auto* serving_ptr = spec::ServingRecipeOf(*target_mapping);
+            if (serving_ptr == nullptr)
+              return Error("component calibration has no target serving recipe");
+            const auto& serving = *serving_ptr;
+            auto map = DraftHeadRows(*drafter, draft_mapping->draft->head_ids, facts.vocabulary);
+            if (!map) return Error(map.error());
+            const auto selected =
+                *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt;
+            const std::uint32_t available = selected.value_or(facts.vocabulary);
+            const std::uint32_t requested = draft_vocab.value_or(serving.default_draft_vocab);
+            const std::uint32_t width = requested == 0 ? available : std::min(requested, available);
+            if (width == 0 || available > facts.vocabulary)
+              return Error("a draft head needs a positive row count within the target vocabulary");
+            facts.composed_draft_vocab = width;
+            composed = spec::ComposeStoredDrafter(model, *drafter_admitted->model, width);
+            if (!composed) return Error(composed.error());
+          }
+        } else {
+          auto draft_values = ComponentDrafterValues(target, *drafter);
+          if (!draft_values) return Error(draft_values.error());
+          const spec::Source* draft_source = &drafter_admitted->source;
+          composed = spec::ComposeDrafter(model, *target_mapping, *draft_mapping, *draft_source,
                                           *draft_values);
           if (!composed) return Error(composed.error());
+          if (auto approved =
+                  CheckComposedAdmission(*composed, admitted->source, drafter_admitted->source);
+              !approved)
+            return Error(approved.error());
+          if (draft_mapping->draft != nullptr && !draft_mapping->draft->vocab_key.empty()) {
+            const auto* serving_ptr = spec::ServingRecipeOf(*target_mapping);
+            if (serving_ptr == nullptr)
+              return Error("component calibration has no target serving recipe");
+            const auto& serving = *serving_ptr;
+            auto map = DraftHeadRows(*drafter, draft_mapping->draft->head_ids, facts.vocabulary);
+            if (!map) return Error(map.error());
+            const auto selected =
+                *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt;
+            auto width = ConfigureDraftVocabulary(*draft_values, *draft_mapping->draft,
+                                                  draft_vocab.value_or(serving.default_draft_vocab),
+                                                  facts.vocabulary, selected);
+            if (!width) return Error(width.error());
+            facts.composed_draft_vocab = *width;
+            composed = spec::ComposeDrafter(model, *target_mapping, *draft_mapping, *draft_source,
+                                            *draft_values);
+            if (!composed) return Error(composed.error());
+          }
         }
         if (auto configured = configure(*composed); !configured) return Error(configured.error());
         const std::array<std::string_view, 2> both{target.id(), drafter->id()};
@@ -582,44 +486,10 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
         facts.composed_spec_error = composed.error();
     }
     const std::array<std::string_view, 1> ids{target.id()};
-    if (auto configured = configure(*model); !configured) return Error(configured.error());
-    auto digest = spec::BoundDigest(*model, ids);
+    if (auto configured = configure(model); !configured) return Error(configured.error());
+    auto digest = spec::BoundDigest(model, ids);
     if (!digest) return Error(digest.error());
     facts.target_spec = *digest;
-  }
-  // generation_config.json first: GGUF's general.sampling keys are copied
-  // from it where a converter kept them.
-  if (Keeps(target, "generation_config.json")) {
-    auto text = target.ReadMetadata("generation_config.json");
-    if (!text) {
-      return Error(std::format("generation_config.json: {}", text.error().ToString()));
-    }
-    if (auto read = FactsFromGenerationConfig(*text, facts); !read) {
-      return std::unexpected(read.error());
-    }
-  }
-  if (const std::string kv = KeptGguf(target); !kv.empty()) {
-    const std::vector<std::string> names = GgufFactKeys(facts.architecture);
-    const std::vector<std::string_view> keys(names.begin(), names.end());
-    auto m = ReadKeptGguf(target, kv, keys);
-    if (!m) {
-      return std::unexpected(m.error());
-    }
-    FactsFromGguf(*m, facts);
-  } else if (Keeps(target, "config.json")) {
-    auto text = target.ReadMetadata("config.json");
-    if (!text) {
-      return Error(std::format("config.json: {}", text.error().ToString()));
-    }
-    if (auto read = FactsFromConfigJson(*text, facts); !read) {
-      return std::unexpected(read.error());
-    }
-  }
-  if (declared_context) {
-    if (facts.trained_context && *facts.trained_context != *declared_context)
-      return Error("kept context metadata disagrees with the admitted stored spec");
-    facts.trained_context = *declared_context;
-    facts.trained_context_from = "the admitted stored spec";
   }
   if (drafter != nullptr) {
     facts.drafter_architecture = drafter->model().architecture;
@@ -647,11 +517,20 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
       }
     }
   }
+  if (opened_out != nullptr) {
+    opened_out->target_admission = std::move(*admitted);
+    opened_out->drafter_admission = std::move(drafter_admitted);
+  }
   return facts;
 }
 
 std::expected<ArtifactFacts, std::string> ReadArtifactFacts(const config::ModelEntry& entry,
-                                                            const fs::path& store) {
+                                                            const fs::path& store,
+                                                            OpenedModelArtifacts* opened_out,
+                                                            const StartupArtifactFunder& funder) {
+  if (opened_out != nullptr && (opened_out->payment || opened_out->target || opened_out->drafter ||
+                                opened_out->target_admission || opened_out->drafter_admission))
+    return Error("artifact facts require an empty retained owner");
   if (entry.composition) {
     ArtifactFacts pipeline;
     pipeline.composition = true;
@@ -669,9 +548,23 @@ std::expected<ArtifactFacts, std::string> ReadArtifactFacts(const config::ModelE
     }
     drafter.emplace(std::move(*opened));
   }
-  return ArtifactFactsOf(*target, drafter ? &*drafter : nullptr,
-                         entry.Text("kv_cache_encoding").value_or("f16"),
-                         U32(entry.Integer("draft_vocab")));
+  // Open's current pair is covered by the reusable parser loan. Before
+  // admitting/copying its spec and source, give this retained alias a separate
+  // payment, so the next alias can reuse that entire parser workspace.
+  if (funder) {
+    if (opened_out == nullptr) return Error("startup artifact funding needs a retained owner");
+    auto paid = funder(*target, drafter ? &*drafter : nullptr);
+    if (!paid) return Error(paid.error());
+    opened_out->payment = std::move(*paid);
+  }
+  auto facts = ArtifactFactsOf(*target, drafter ? &*drafter : nullptr,
+                               entry.Text("kv_cache_encoding").value_or("f16"),
+                               U32(entry.Integer("draft_vocab")), opened_out);
+  if (facts && opened_out != nullptr) {
+    opened_out->target = std::move(*target);
+    opened_out->drafter = std::move(drafter);
+  }
+  return facts;
 }
 
 std::expected<ChatAssets, std::string> ReadChatAssets(const ja::Artifact& target,
@@ -1271,7 +1164,8 @@ int PrintSettings(const config::NodeConfig& config, bool json_output, std::FILE*
   std::string text = json_output ? R"({"models":[)" : "";
   bool first = true;
   for (const config::ModelEntry& entry : config.models) {
-    auto facts = ReadArtifactFacts(entry, store);
+    OpenedModelArtifacts opened;
+    auto facts = ReadArtifactFacts(entry, store, &opened);
     if (!facts) {
       say(std::format("model {}: {}", entry.name, facts.error()));
       failed = true;
@@ -1293,10 +1187,9 @@ int PrintSettings(const config::NodeConfig& config, bool json_output, std::FILE*
       continue;
     }
     if (!entry.composition) {
-      auto target = OpenInstalled(store, entry.artifact.value_or(""));
-      auto assets = target
-                        ? ReadChatAssets(*target, entry)
-                        : std::expected<ChatAssets, std::string>(std::unexpected(target.error()));
+      auto assets = opened.target ? ReadChatAssets(*opened.target, entry)
+                                  : std::expected<ChatAssets, std::string>(
+                                        std::unexpected("opened target artifact is missing"));
       if (!assets) {
         say(std::format("model {}: {}", entry.name, assets.error()));
         failed = true;

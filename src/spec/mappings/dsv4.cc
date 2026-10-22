@@ -87,73 +87,73 @@ constexpr std::array kCodes = {
       Plain("blk.{layer}.ffn_up_shexp.weight", SLOT, "up"),              \
       Plain("blk.{layer}.ffn_down_shexp.weight", SLOT, "down")
 
-// The block parameters both mappings read, under a prefix's keys.
-#define LLMP_DSV4_BLOCK_PARAMS(P)                                                                  \
+// The block parameters both mappings read.
+#define LLMP_DSV4_BLOCK_PARAMS                                                                     \
   Name("streams", "mix", "sinkhorn"), Name("attn_mix", "mix", "sinkhorn"),                         \
-      FromKey("attn_mix", "eps", P "attention.layer_norm_rms_epsilon", kReal),                     \
-      FromKey("attn_mix", "hc_eps", P "hyper_connection.epsilon", kReal),                          \
-      FromKey("attn_mix", "iterations", P "hyper_connection.sinkhorn_iterations", kInt),           \
+      FromKey("attn_mix", "eps", "attention.layer_norm_rms_epsilon", kReal),                       \
+      FromKey("attn_mix", "hc_eps", "hyper_connection.epsilon", kReal),                            \
+      FromKey("attn_mix", "iterations", "hyper_connection.sinkhorn_iterations", kInt),             \
       Name("attn_combine", "mix", "sinkhorn"), Name("ffn_mix", "mix", "sinkhorn"),                 \
-      FromKey("ffn_mix", "eps", P "attention.layer_norm_rms_epsilon", kReal),                      \
-      FromKey("ffn_mix", "hc_eps", P "hyper_connection.epsilon", kReal),                           \
-      FromKey("ffn_mix", "iterations", P "hyper_connection.sinkhorn_iterations", kInt),            \
+      FromKey("ffn_mix", "eps", "attention.layer_norm_rms_epsilon", kReal),                        \
+      FromKey("ffn_mix", "hc_eps", "hyper_connection.epsilon", kReal),                             \
+      FromKey("ffn_mix", "iterations", "hyper_connection.sinkhorn_iterations", kInt),              \
       Name("ffn_combine", "mix", "sinkhorn"), Name("output_mix", "mix", "sinkhorn"),               \
-      FromKey("output_mix", "eps", P "attention.layer_norm_rms_epsilon", kReal),                   \
-      FromKey("output_mix", "hc_eps", P "hyper_connection.epsilon", kReal),                        \
+      FromKey("output_mix", "eps", "attention.layer_norm_rms_epsilon", kReal),                     \
+      FromKey("output_mix", "hc_eps", "hyper_connection.epsilon", kReal),                          \
       Flag("output_mix", "inject", false),                                                         \
-      FromKey("attention", "eps", P "attention.layer_norm_rms_epsilon", kReal),                    \
-      FromKey("attention", "heads", P "attention.head_count", kInt),                               \
-      FromKey("attention", "head_dim", P "attention.key_length", kInt),                            \
-      FromKey("attention", "rope_dims", P "rope.dimension_count", kInt),                           \
-      FromKey("attention", "q_rank", P "attention.q_lora_rank", kInt),                             \
-      FromKey("attention", "o_rank", P "attention.output_lora_rank", kInt),                        \
-      FromKey("attention", "o_groups", P "attention.output_group_count", kInt),                    \
-      FromKey("attention", "window", P "attention.sliding_window", kInt),                          \
-      FromKey("attention", "rope_base", P "rope.freq_base", kReal, Transform::kNone, "w"),         \
-      FromKey("attention", "rope_base", P "attention.compress_rope_freq_base", kReal,              \
+      FromKey("attention", "eps", "attention.layer_norm_rms_epsilon", kReal),                      \
+      FromKey("attention", "heads", "attention.head_count", kInt),                                 \
+      FromKey("attention", "head_dim", "attention.key_length", kInt),                              \
+      FromKey("attention", "rope_dims", "rope.dimension_count", kInt),                             \
+      FromKey("attention", "q_rank", "attention.q_lora_rank", kInt),                               \
+      FromKey("attention", "o_rank", "attention.output_lora_rank", kInt),                          \
+      FromKey("attention", "o_groups", "attention.output_group_count", kInt),                      \
+      FromKey("attention", "window", "attention.sliding_window", kInt),                            \
+      FromKey("attention", "rope_base", "rope.freq_base", kReal, Transform::kNone, "w"),           \
+      FromKey("attention", "rope_base", "attention.compress_rope_freq_base", kReal,                \
               Transform::kNone, "ch"),                                                             \
-      FromKey("attention", "rope_factor", P "rope.scaling.factor", kReal, Transform::kNone, "ch"), \
-      FromKey("attention", "yarn_context", P "rope.scaling.original_context_length", kInt,         \
+      FromKey("attention", "rope_factor", "rope.scaling.factor", kReal, Transform::kNone, "ch"),   \
+      FromKey("attention", "yarn_context", "rope.scaling.original_context_length", kInt,           \
               Transform::kNone, "ch"),                                                             \
-      FromKey("attention", "beta_fast", P "rope.scaling.yarn_beta_fast", kReal, Transform::kNone,  \
+      FromKey("attention", "beta_fast", "rope.scaling.yarn_beta_fast", kReal, Transform::kNone,    \
               "ch"),                                                                               \
-      FromKey("attention", "beta_slow", P "rope.scaling.yarn_beta_slow", kReal, Transform::kNone,  \
+      FromKey("attention", "beta_slow", "rope.scaling.yarn_beta_slow", kReal, Transform::kNone,    \
               "ch"),                                                                               \
       Int("attention", "ratio", kCsaRatio, "c"), Int("attention", "ratio", kHcaRatio, "h"),        \
       Flag("attention", "overlap", true, "c"), Flag("attention", "indexer", true, "c"),            \
-      FromKey("attention", "indexer_heads", P "attention.indexer.head_count", kInt,                \
+      FromKey("attention", "indexer_heads", "attention.indexer.head_count", kInt,                  \
               Transform::kNone, "c"),                                                              \
-      FromKey("attention", "index_dim", P "attention.indexer.key_length", kInt, Transform::kNone,  \
+      FromKey("attention", "index_dim", "attention.indexer.key_length", kInt, Transform::kNone,    \
               "c"),                                                                                \
-      FromKey("attention", "top_k", P "attention.indexer.top_k", kInt, Transform::kNone, "c"),     \
-      FromKey(kStageSlot, "context", P "context_length", kInt),                                    \
-      FromKey(kStreamSlot, "width", P "embedding_length", kInt),                                   \
-      FromKey(kStreamSlot, "streams", P "hyper_connection.count",                                  \
+      FromKey("attention", "top_k", "attention.indexer.top_k", kInt, Transform::kNone, "c"),       \
+      FromKey(kStageSlot, "context", "context_length", kInt),                                      \
+      FromKey(kStreamSlot, "width", "embedding_length", kInt),                                     \
+      FromKey(kStreamSlot, "streams", "hyper_connection.count",                                    \
               kInt), /* One KV head; the rotation's YaRN where it is scaled. */                    \
-      RequireInt(P "attention.head_count_kv", 1, false),                                           \
-      Require(P "rope.scaling.type", "yarn", true), RequireInt(P "expert_shared_count", 1, false)
+      RequireInt("attention.head_count_kv", 1, false), Require("rope.scaling.type", "yarn", true), \
+      RequireInt("expert_shared_count", 1, false)
 
 // An MoE slot's parameters (its router aside). A source listing no shared
 // expert clamps (antirez's GGUFs) clamps its shared expert as its routed
 // ones, as the M3 profile served it.
-#define LLMP_DSV4_MOE_PARAMS(P, SLOT)                                                       \
-  Name(SLOT, "placement", "none"),                                                          \
-      FromKey(SLOT, "eps", P "attention.layer_norm_rms_epsilon", kReal),                    \
-      Name(SLOT, "activation", "silu_clamp"),                                               \
-      FromKey(SLOT, "hidden", P "expert_feed_forward_length", kInt),                        \
-      FromKey(SLOT, "experts", P "expert_count", kInt),                                     \
-      FromKey(SLOT, "used", P "expert_used_count", kInt),                                   \
-      FromKey(SLOT, "expert_hidden", P "expert_feed_forward_length", kInt),                 \
-      Name(SLOT, "router_input", "stream"),                                                 \
-      FromKey(SLOT, "normalize", P "expert_weights_norm", kBool),                           \
-      FromKey(SLOT, "route_scale", P "expert_weights_scale", kReal),                        \
-      Flag(SLOT, "router_f32", true), PerLayer(SLOT, "limit", P "swiglu_clamp_exp", kReal), \
-      PerLayer(SLOT, "shared_limit", P "swiglu_clamp_shexp", kReal),                        \
-      PerLayer(SLOT, "shared_limit", P "swiglu_clamp_exp", kReal)
+#define LLMP_DSV4_MOE_PARAMS(SLOT)                                                                 \
+  Name(SLOT, "placement", "none"),                                                                 \
+      FromKey(SLOT, "eps", "attention.layer_norm_rms_epsilon", kReal),                             \
+      Name(SLOT, "activation", "silu_clamp"),                                                      \
+      FromKey(SLOT, "hidden", "expert_feed_forward_length", kInt),                                 \
+      FromKey(SLOT, "experts", "expert_count", kInt),                                              \
+      FromKey(SLOT, "used", "expert_used_count", kInt),                                            \
+      FromKey(SLOT, "expert_hidden", "expert_feed_forward_length", kInt),                          \
+      Name(SLOT, "router_input", "stream"),                                                        \
+      FromKey(SLOT, "normalize", "expert_weights_norm", kBool),                                    \
+      FromKey(SLOT, "route_scale", "expert_weights_scale", kReal), Flag(SLOT, "router_f32", true), \
+      PerLayer(SLOT, "limit", "swiglu_clamp_exp", kReal),                                          \
+      PerLayer(SLOT, "shared_limit", "swiglu_clamp_shexp", kReal),                                 \
+      PerLayer(SLOT, "shared_limit", "swiglu_clamp_exp", kReal)
 
 // ---------------------------------------------------------------- deepseek4
 
-constexpr std::string_view kHashLayers = "deepseek4.hash_layer_count";
+constexpr std::string_view kHashLayers = "hash_layer_count";
 
 constexpr std::array kSlots = {
     SlotRule{.slot = "embedding", .site = Site::kEmbedding, .kind = "embedding.token"},
@@ -197,18 +197,18 @@ constexpr std::array kTensors = {
 };
 
 constexpr std::array kParams = {
-    LLMP_DSV4_BLOCK_PARAMS("deepseek4."),
+    LLMP_DSV4_BLOCK_PARAMS,
     Real("embedding", "scale", 1.0),
-    FromKey("hash", "experts", "deepseek4.expert_count", kInt),
-    FromKey("hash", "used", "deepseek4.expert_used_count", kInt),
+    FromKey("hash", "experts", "expert_count", kInt),
+    FromKey("hash", "used", "expert_used_count", kInt),
     Name("attention", "cache", "ring"),
-    LLMP_DSV4_MOE_PARAMS("deepseek4.", "moe_hash"),
+    LLMP_DSV4_MOE_PARAMS("moe_hash"),
     Name("moe_hash", "router", "hash"),
     Name("moe_hash", "hash", "hash_{layer}"),
-    LLMP_DSV4_MOE_PARAMS("deepseek4.", "moe"),
+    LLMP_DSV4_MOE_PARAMS("moe"),
     Name("moe", "router", "sqrt_softplus"),
     // sqrt(softplus) gating (LLAMA_EXPERT_GATING_FUNC_TYPE_SQRT_SOFTPLUS).
-    RequireInt("deepseek4.expert_gating_func", 4, true),
+    RequireInt("expert_gating_func", 4, true),
 };
 
 // Its serving: the derived shared route, in its automatic shape only (no
@@ -259,14 +259,35 @@ constexpr ServingRecipe kServing{.family = "DeepSeek V4",
                                  .serving_rule = &kServingRule};
 
 constexpr std::array kGates = {GateRule{.key = "deepseek4.expert_count", .kind = "ffn.moe"}};
+constexpr std::array kDsv4Requirements{
+    ScalarRequirement{.key = "attention.value_length", .equals_key = "attention.key_length"}};
+constexpr std::array kDsv4Auxiliary{
+    kGgufAuxiliary[0], kGgufAuxiliary[1], kGgufAuxiliary[2],
+    AuxiliaryNamespace{"deepseek4.nextn_predict_layers", "MTP layers the import does not hold"},
+    AuxiliaryNamespace{"deepseek4.vocab_size", "the vocabulary the token table states",
+                       "token_embd.weight", 1}};
+constexpr std::array kDsv4Lists{
+    ListRequirement{.key = "attention.compress_ratios",
+                    .size = kLayerLimit,
+                    .min_size = 1,
+                    .per_layer = true,
+                    .extra_layers_key = "nextn_predict_layers",
+                    .allow_unstated_extra = true},
+    ListRequirement{
+        .key = "swiglu_clamp_exp", .size = kLayerLimit, .min_size = 1, .per_layer = true},
+    ListRequirement{.key = "swiglu_clamp_shexp",
+                    .size = kLayerLimit,
+                    .min_size = 1,
+                    .optional = true,
+                    .per_layer = true}};
 
 constexpr Mapping kMapping{
     .architecture = "deepseek4",
     .version = 1,
     .pipeline = PipelineKind::kLlm,
-    .layer_count_key = "deepseek4.block_count",
+    .layer_count_key = "block_count",
     .layer_types = "wch",
-    .layer_type_key = "deepseek4.attention.compress_ratios",
+    .layer_type_key = "attention.compress_ratios",
     .layer_type_codes = kCodes,
     .slots = kSlots,
     .tensors = kTensors,
@@ -274,6 +295,10 @@ constexpr Mapping kMapping{
     .serving = &kServing,
     .containers = kGgufContainers,
     .gates = kGates,
+    .auxiliary = kDsv4Auxiliary,
+    .requirements = kDsv4Requirements,
+    .lists = kDsv4Lists,
+    .extended_components = true,
 };
 
 // ---------------------------------------------------------------- dflash
@@ -307,21 +332,21 @@ constexpr std::array kDsparkTensors = {
 };
 
 constexpr std::array kDsparkParams = {
-    LLMP_DSV4_BLOCK_PARAMS("dflash."),
-    FromKey("embedding", "eps", "dflash.attention.layer_norm_rms_epsilon", kReal),
+    LLMP_DSV4_BLOCK_PARAMS,
+    FromKey("embedding", "eps", "attention.layer_norm_rms_epsilon", kReal),
     Name("embedding", "tap", "features"),
     Int("embedding", "taps", 3),
     Int("embedding", "cells", kDsparkRing),
     Name("attention", "cache", "injected"),
     Int("attention", "cells", kDsparkRing),
-    LLMP_DSV4_MOE_PARAMS("dflash.", "moe"),
+    LLMP_DSV4_MOE_PARAMS("moe"),
     Name("moe", "router", "sqrt_softplus"),
     Flag("output_mix", "gather", false),
     Flag("output", "gather", false),
     Flag("output", "markov", true),
     // Every block routed by its bias, sqrt(softplus).
-    RequireInt("dflash.hash_layer_count", 0, true),
-    RequireInt("dflash.expert_gating_func", 4, true),
+    RequireInt("hash_layer_count", 0, true),
+    RequireInt("expert_gating_func", 4, true),
 };
 
 // The streams' means entering the target layers it names.
@@ -329,19 +354,19 @@ constexpr std::array kDsparkReads = {
     ReadRule{.kind = ReadKind::kTap,
              .name = "features_0",
              .point = TapPoint::kStreamMean,
-             .layers_key = "dflash.target_layers",
+             .layers_key = "target_layers",
              .index = 0,
              .entering = true},
     ReadRule{.kind = ReadKind::kTap,
              .name = "features_1",
              .point = TapPoint::kStreamMean,
-             .layers_key = "dflash.target_layers",
+             .layers_key = "target_layers",
              .index = 1,
              .entering = true},
     ReadRule{.kind = ReadKind::kTap,
              .name = "features_2",
              .point = TapPoint::kStreamMean,
-             .layers_key = "dflash.target_layers",
+             .layers_key = "target_layers",
              .index = 2,
              .entering = true},
 };
@@ -354,14 +379,25 @@ constexpr DraftRecipe kDsparkDraft{.shape = DraftRecipe::Shape::kBlock,
                                    .target_architecture = "deepseek4"};
 
 constexpr std::array kDsparkPolicies = {PolicyRule{.text = kDsparkServingPolicy}};
+constexpr std::array kDsparkRequirements{
+    ScalarRequirement{.key = "attention.value_length", .equals_key = "attention.key_length"},
+    ScalarRequirement{.key = "block_size", .positive = true}};
+constexpr std::array kDsparkLists{
+    ListRequirement{
+        .key = "attention.compress_ratios", .size = kLayerLimit, .min_size = 1, .per_layer = true},
+    ListRequirement{
+        .key = "swiglu_clamp_exp", .size = kLayerLimit, .min_size = 1, .per_layer = true},
+    ListRequirement{
+        .key = "swiglu_clamp_shexp", .size = kLayerLimit, .min_size = 1, .per_layer = true},
+    ListRequirement{.key = "target_layers", .size = kLayerLimit, .min_size = 1}};
 
 constexpr Mapping kDsparkMapping{
     .architecture = "dflash",
     .version = 1,
     .pipeline = PipelineKind::kLlm,
-    .layer_count_key = "dflash.block_count",
+    .layer_count_key = "block_count",
     .layer_types = "wch",
-    .layer_type_key = "dflash.attention.compress_ratios",
+    .layer_type_key = "attention.compress_ratios",
     .layer_type_codes = std::span(kCodes).first(1),
     .slots = kDsparkSlots,
     .tensors = kDsparkTensors,
@@ -372,6 +408,10 @@ constexpr Mapping kDsparkMapping{
     .policies = kDsparkPolicies,
     .draft = &kDsparkDraft,
     .containers = kGgufContainers,
+    .auxiliary = kGgufAuxiliary,
+    .requirements = kDsparkRequirements,
+    .lists = kDsparkLists,
+    .extended_components = true,
 };
 
 #undef LLMP_DSV4_BLOCK_SLOTS

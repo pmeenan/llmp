@@ -1903,7 +1903,8 @@ class Server {
   bool AnyResidentState();
 
  private:
-  Status Make(const config::ModelEntry& entry, const ModelSettings& settings, int index);
+  Status Make(const config::ModelEntry& entry, const ModelSettings& settings, int index,
+              std::shared_ptr<OpenedModelArtifacts> opened = {});
   void Log(std::string_view text);
   // D-105 at Start: before the node's Register, the kept conversations'
   // records read and checked (their files hashed), everything else in the

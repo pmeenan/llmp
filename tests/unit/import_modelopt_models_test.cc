@@ -24,7 +24,7 @@
 #include "base/sha256.h"
 #include "cli/cli.h"
 #include "components/step.h"
-#include "import/modelopt_qwen38.h"
+#include "import/normalize.h"
 #include "import/reader.h"
 #include "import/transforms.h"
 #include "import/writer.h"
@@ -96,15 +96,14 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
   ASSERT_TRUE(source) << source.error().ToString();
   ASSERT_EQ(source->tensors.size(), 301730U);
   ASSERT_EQ(source->files.size(), 42U);
-  auto bound = ModelOptTargetBound(*source);
+  auto bound = NormalizationBound(*source);
   ASSERT_TRUE(bound) << bound.error().ToString();
   // The diagnostic's 8 GiB hard domain includes reader, retained Checkpoint,
   // planner and file cache. This assertion constrains the closed planner's
   // separately derived inventory; the domain cap is not measured occupancy.
   ASSERT_LT(bound->metadata_bytes, kGiB);
   const auto* retained = source->tensors.data();
-  ASSERT_FALSE(
-      NormalizeModelOptTarget(std::move(*source), {bound->metadata_bytes - 1, bound->work_units}));
+  ASSERT_FALSE(Normalize(std::move(*source), {bound->metadata_bytes - 1, bound->work_units}));
   ASSERT_EQ(source->tensors.data(), retained);
   // These fields determine the cache/operand/decoder contract, independently
   // of weight shapes. Every refusal precedes ownership transfer and semantics.
@@ -118,35 +117,34 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
     ASSERT_NE(entry, source->metadata.end());
     auto original = std::move(entry->value);
     entry->value = replacement;
-    ASSERT_FALSE(ModelOptTargetBound(*source));
-    ASSERT_FALSE(
-        NormalizeModelOptTarget(std::move(*source), {bound->metadata_bytes, bound->work_units}));
+    ASSERT_FALSE(NormalizationBound(*source));
+    ASSERT_FALSE(Normalize(std::move(*source), {bound->metadata_bytes, bound->work_units}));
     ASSERT_EQ(source->tensors.data(), retained);
     entry->value = std::move(original);
+  }
+  for (const std::string_view key : {"text_config.num_hidden_layers", "text_config.hidden_size"}) {
+    auto entry = std::ranges::find(source->metadata, key, &MetaEntry::key);
+    ASSERT_NE(entry, source->metadata.end());
     const auto index = static_cast<std::size_t>(entry - source->metadata.begin());
     auto required = std::move(*entry);
     source->metadata.erase(entry);
-    ASSERT_FALSE(ModelOptTargetBound(*source));
-    ASSERT_FALSE(
-        NormalizeModelOptTarget(std::move(*source), {bound->metadata_bytes, bound->work_units}));
+    ASSERT_FALSE(NormalizationBound(*source));
+    ASSERT_FALSE(Normalize(std::move(*source), {bound->metadata_bytes, bound->work_units}));
     ASSERT_EQ(source->tensors.data(), retained);
     source->metadata.insert(source->metadata.begin() + static_cast<std::ptrdiff_t>(index),
                             std::move(required));
   }
   source->metadata.push_back({"zz_unknown_semantic_setting", true});
-  ASSERT_FALSE(ModelOptTargetBound(*source));
-  ASSERT_FALSE(
-      NormalizeModelOptTarget(std::move(*source), {bound->metadata_bytes, bound->work_units}));
+  ASSERT_FALSE(NormalizationBound(*source));
+  ASSERT_FALSE(Normalize(std::move(*source), {bound->metadata_bytes, bound->work_units}));
   ASSERT_EQ(source->tensors.data(), retained);
   source->metadata.pop_back();
   const auto original_name = source->tensors.front().name;
   source->tensors.front().name = "unclassified.target.weight";
-  ASSERT_FALSE(
-      NormalizeModelOptTarget(std::move(*source), {bound->metadata_bytes, bound->work_units}));
+  ASSERT_FALSE(Normalize(std::move(*source), {bound->metadata_bytes, bound->work_units}));
   ASSERT_EQ(source->tensors.data(), retained);
   source->tensors.front().name = original_name;
-  auto plan =
-      NormalizeModelOptTarget(std::move(*source), {bound->metadata_bytes, bound->work_units});
+  auto plan = Normalize(std::move(*source), {bound->metadata_bytes, bound->work_units});
   ASSERT_TRUE(plan) << plan.error().ToString();
   ASSERT_EQ(plan->parts().source().tensors.size(), 301730U);
   ASSERT_EQ(plan->parts().members().size(), 222892U);
@@ -318,7 +316,7 @@ constexpr std::array<PublicationPin, 42> kPublicationPins{{
 // Independent destination-order oracle: no route/cursor/transform API is used.
 // The closed source has16 key heads and48 value heads; destination j*16+g
 // receives source g*3+j. Every byte of every recorded permuted part is read.
-void ComparePermutedPart(const ModelOptTargetPlan& plan, const IndexedMember& member,
+void ComparePermutedPart(const NormalizedPlan& plan, const IndexedMember& member,
                          const artifact::Artifact& stored, const std::filesystem::path& root,
                          std::string_view canonical_name, std::uint64_t& compared) {
   const auto& output = plan.parts().outputs()[member.output];
@@ -450,11 +448,10 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
     authenticated_source_bytes += file.bytes;
   }
   ASSERT_EQ(authenticated_source_bytes, 105885660088ULL);
-  auto bound = ModelOptTargetBound(*source);
+  auto bound = NormalizationBound(*source);
   ASSERT_TRUE(bound) << bound.error().ToString();
   ASSERT_LT(bound->metadata_bytes, kGiB);
-  auto plan =
-      NormalizeModelOptTarget(std::move(*source), {bound->metadata_bytes, bound->work_units});
+  auto plan = Normalize(std::move(*source), {bound->metadata_bytes, bound->work_units});
   ASSERT_TRUE(plan) << plan.error().ToString();
   ASSERT_EQ(plan->canonical().tensors.size(), 1789U);
   ASSERT_EQ(plan->parts().outputs().size(), 1308U);

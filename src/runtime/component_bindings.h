@@ -8,6 +8,7 @@
 #include <expected>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -65,6 +66,7 @@ struct StoredComponentBindings {
 };
 // Generic source validity only; does not approve any serving policy/envelope.
 std::expected<StoredComponentBindings, std::string> ReadStoredComponents(
-    const artifact::Artifact&, std::unique_ptr<StoredBindingPayment> payment);
+    const artifact::Artifact&, std::unique_ptr<StoredBindingPayment> payment,
+    std::optional<std::pair<spec::ModelSpec, spec::Source>> pre_read = std::nullopt);
 }  // namespace llmp::runtime
 #endif  // LLMP_RUNTIME_COMPONENT_BINDINGS_H_

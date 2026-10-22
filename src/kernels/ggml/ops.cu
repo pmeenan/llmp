@@ -14,6 +14,7 @@
 #include "cpy.cuh"
 #include "getrows.cuh"
 #include "kernels/ggml/ops.h"
+#include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate.h"
 #include "mmf.cuh"
 #include "mmvf.cuh"
@@ -149,6 +150,132 @@ __global__ void CopyI32ContKernel(const char* __restrict__ src, std::int32_t* __
   const auto offset = static_cast<std::size_t>(i0) * nb0 + static_cast<std::size_t>(i1) * nb1 +
                       static_cast<std::size_t>(i2) * nb2 + static_cast<std::size_t>(i3) * nb3;
   dst[index] = *reinterpret_cast<const std::int32_t*>(src + offset);
+}
+
+__device__ float ToF32(float v) { return v; }
+__device__ float ToF32(half v) { return __half2float(v); }
+template <typename T>
+__device__ T FromF32(float v);
+template <>
+__device__ float FromF32<float>(float v) {
+  return v;
+}
+template <>
+__device__ half FromF32<half>(float v) {
+  return __float2half(v);
+}
+
+template <typename SrcT, typename DstT, bool kSetRows>
+__global__ void Llama3RopeKernel(const char* x_bytes, const std::int32_t* pos_data,
+                                 const float* freq_factors, const std::int64_t* row_ids,
+                                 char* dst_bytes, std::int64_t ne0, std::int64_t ne1,
+                                 std::int64_t ne2, std::size_t x_nb1, std::size_t x_nb2,
+                                 std::size_t x_nb3, std::size_t dst_nb1, std::size_t dst_nb2,
+                                 std::size_t dst_nb3, int n_dims, int n_offs, int n_ctx_orig,
+                                 float freq_base, float freq_scale, float attn_factor,
+                                 float beta_fast, float beta_slow, bool neox, bool inverse) {
+  const std::int64_t flat = blockIdx.x;
+  const std::int64_t i1 = flat % ne1;
+  const std::int64_t rem = flat / ne1;
+  const std::int64_t i2 = rem % ne2;
+  const std::int64_t i3 = rem / ne2;
+  const auto* x_row = reinterpret_cast<const SrcT*>(x_bytes + static_cast<std::size_t>(i1) * x_nb1 +
+                                                    static_cast<std::size_t>(i2) * x_nb2 +
+                                                    static_cast<std::size_t>(i3) * x_nb3);
+  DstT* dst_row = nullptr;
+  if constexpr (kSetRows) {
+    dst_row = reinterpret_cast<DstT*>(dst_bytes + static_cast<std::size_t>(row_ids[i2]) * dst_nb1) +
+              i1 * ne0;
+  } else {
+    dst_row = reinterpret_cast<DstT*>(dst_bytes + static_cast<std::size_t>(i1) * dst_nb1 +
+                                      static_cast<std::size_t>(i2) * dst_nb2 +
+                                      static_cast<std::size_t>(i3) * dst_nb3);
+  }
+  for (int c = static_cast<int>(threadIdx.x); c < static_cast<int>(ne0);
+       c += static_cast<int>(blockDim.x)) {
+    if (c < n_offs || c >= n_offs + n_dims) {
+      dst_row[c] = FromF32<DstT>(ToF32(x_row[c]));
+    }
+  }
+  const int pairs = n_dims / 2;
+  const float pos = static_cast<float>(pos_data[i2]);
+  const float old_ctx = static_cast<float>(n_ctx_orig);
+  const float low_freq_wavelen = old_ctx / beta_slow;
+  const float high_freq_wavelen = old_ctx / beta_fast;
+  const float mscale = attn_factor != 0.0f ? attn_factor : 1.0f;
+  for (int pr = static_cast<int>(threadIdx.x); pr < pairs; pr += static_cast<int>(blockDim.x)) {
+    const int idx0 = neox ? (n_offs + pr) : (n_offs + 2 * pr);
+    const int idx1 = neox ? (idx0 + pairs) : (idx0 + 1);
+    const float base_theta =
+        powf(freq_base, (2.0f * static_cast<float>(pr)) / static_cast<float>(n_dims));
+    const float freq = 1.0f / base_theta;
+    const float wavelen = 6.28318530717958647692f / freq;
+    float scaled_freq = freq;
+    if (wavelen > low_freq_wavelen) {
+      scaled_freq = freq * freq_scale;
+    } else if (wavelen > high_freq_wavelen && beta_fast > beta_slow) {
+      const float smooth = (old_ctx / wavelen - beta_slow) / (beta_fast - beta_slow);
+      scaled_freq = (1.0f - smooth) * freq * freq_scale + smooth * freq;
+    }
+    const float ff = freq_factors != nullptr ? freq_factors[pr] : 1.0f;
+    const float theta = (pos * scaled_freq) / ff;
+    const float c_val = cosf(theta) * mscale;
+    const float s_val = (inverse ? -sinf(theta) : sinf(theta)) * mscale;
+    const float x0 = ToF32(x_row[idx0]);
+    const float x1 = ToF32(x_row[idx1]);
+    dst_row[idx0] = FromF32<DstT>(x0 * c_val - x1 * s_val);
+    dst_row[idx1] = FromF32<DstT>(x0 * s_val + x1 * c_val);
+  }
+}
+
+bool IsLlama3Rope(const ggml_tensor* rope) {
+  float ext_factor = 0.0f;
+  std::memcpy(&ext_factor, rope->op_params + 7, sizeof(float));
+  return ext_factor < 0.0f && rope->op_params[4] > 0;
+}
+
+void LaunchLlama3Rope(ggml_backend_cuda_context& context, const ggml_tensor* rope,
+                      ggml_tensor* set_rows) {
+  const ggml_tensor* x = rope->src[0];
+  const auto* pos = static_cast<const std::int32_t*>(rope->src[1]->data);
+  const auto* ff =
+      rope->src[2] != nullptr ? static_cast<const float*>(rope->src[2]->data) : nullptr;
+  const int n_dims = rope->op_params[1];
+  const int mode = rope->op_params[2];
+  const int n_offs = rope->op_params[15];
+  const int n_ctx_orig = rope->op_params[4];
+  float freq_base = 0.0f, freq_scale = 0.0f, attn_factor = 0.0f, beta_fast = 0.0f, beta_slow = 0.0f;
+  std::memcpy(&freq_base, rope->op_params + 5, sizeof(float));
+  std::memcpy(&freq_scale, rope->op_params + 6, sizeof(float));
+  std::memcpy(&attn_factor, rope->op_params + 8, sizeof(float));
+  std::memcpy(&beta_fast, rope->op_params + 9, sizeof(float));
+  std::memcpy(&beta_slow, rope->op_params + 10, sizeof(float));
+  const bool neox = (mode & GGML_ROPE_TYPE_NEOX) != 0;
+  const bool inverse = rope->op == GGML_OP_ROPE_BACK;
+  const auto blocks = static_cast<unsigned>(x->ne[1] * x->ne[2] * x->ne[3]);
+  if (blocks == 0) return;
+  cudaStream_t stream = context.stream();
+  if (set_rows != nullptr) {
+    const auto* ids = static_cast<const std::int64_t*>(set_rows->src[1]->data);
+    Llama3RopeKernel<float, half, true><<<blocks, 128, 0, stream>>>(
+        static_cast<const char*>(x->data), pos, ff, ids, static_cast<char*>(set_rows->data),
+        x->ne[0], x->ne[1], x->ne[2], x->nb[1], x->nb[2], x->nb[3], set_rows->nb[1], 0, 0, n_dims,
+        n_offs, n_ctx_orig, freq_base, freq_scale, attn_factor, beta_fast, beta_slow, neox,
+        inverse);
+  } else if (x->type == GGML_TYPE_F16) {
+    Llama3RopeKernel<half, half, false><<<blocks, 128, 0, stream>>>(
+        static_cast<const char*>(x->data), pos, ff, nullptr, static_cast<char*>(rope->data),
+        x->ne[0], x->ne[1], x->ne[2], x->nb[1], x->nb[2], x->nb[3], rope->nb[1], rope->nb[2],
+        rope->nb[3], n_dims, n_offs, n_ctx_orig, freq_base, freq_scale, attn_factor, beta_fast,
+        beta_slow, neox, inverse);
+  } else {
+    Llama3RopeKernel<float, float, false><<<blocks, 128, 0, stream>>>(
+        static_cast<const char*>(x->data), pos, ff, nullptr, static_cast<char*>(rope->data),
+        x->ne[0], x->ne[1], x->ne[2], x->nb[1], x->nb[2], x->nb[3], rope->nb[1], rope->nb[2],
+        rope->nb[3], n_dims, n_offs, n_ctx_orig, freq_base, freq_scale, attn_factor, beta_fast,
+        beta_slow, neox, inverse);
+  }
+  CUDA_CHECK(cudaGetLastError());
 }
 
 }  // namespace
@@ -324,7 +451,12 @@ std::expected<void, KernelFailure> Rope(LaunchContext& launch, ggml_tensor* rope
   if (auto checked = CheckRope(rope); !checked) {
     return checked;
   }
+  if (rope->op_params[11] != 0) return RopeExt(launch, rope);
   return launch.Run(base::Bytes(0), [rope](ggml_backend_cuda_context& context) {
+    if (IsLlama3Rope(rope)) {
+      LaunchLlama3Rope(context, rope, nullptr);
+      return;
+    }
     ggml_cuda_op_rope(context, rope);
   });
 }
@@ -335,6 +467,10 @@ std::expected<void, KernelFailure> RopeSetRows(LaunchContext& launch, ggml_tenso
     return checked;
   }
   return launch.Run(base::Bytes(0), [rope, set_rows](ggml_backend_cuda_context& context) {
+    if (IsLlama3Rope(rope)) {
+      LaunchLlama3Rope(context, rope, set_rows);
+      return;
+    }
     ggml_cuda_op_rope_fused(context, rope, set_rows);
   });
 }

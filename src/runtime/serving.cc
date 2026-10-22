@@ -228,7 +228,8 @@ void Server::Log(std::string_view text) {
   (void)std::fflush(log_);
 }
 
-Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settings, int index) {
+Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settings, int index,
+                    std::shared_ptr<OpenedModelArtifacts> opened) {
   // A model on the component engine: the adapter of its spec's pipeline
   // kind (its settings', from its stored spec). Every LLM uses one declared
   // backend route, with an execution envelope from its actual source/state
@@ -256,6 +257,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                                   .prefill_lookahead = options_.prefill_lookahead,
                                   .prepare_state = options_.prepare_state,
                                   .state_only_prefill = options_.state_only_prefill,
+                                  .prepared = std::move(opened),
                               }));
         if (options_.diagnostic_capture_first_verify)
           Log(std::format("model {}: experimental Verify capture beside first eager run",
@@ -463,13 +465,30 @@ Status Server::Start(bool snapshot) {
   // resources to be allocated either.
   std::vector<ModelSettings> settings;
   std::vector<Llm::CalibrationRecord> calibrations;
+  std::vector<std::shared_ptr<OpenedModelArtifacts>> opened_artifacts;
   settings.reserve(config_.models.size());
+  opened_artifacts.reserve(config_.models.size());
   if (const std::string note = CalibrationDirectoryNote(roles_.state); !note.empty()) {
     Log(std::format("warning: the calibration directory {}/{}: {}; used as found",
                     roles_.state.string(), config::kCalibrationDirectory, note));
   }
   for (const config::ModelEntry& entry : config_.models) {
-    auto facts = ReadArtifactFacts(entry, roles_.installed);
+    auto opened = std::make_shared<OpenedModelArtifacts>();
+    const StartupArtifactFunder funder = [this](const artifact::Artifact& target,
+                                                const artifact::Artifact* drafter)
+        -> std::expected<std::unique_ptr<StartupArtifactPayment>, std::string> {
+      auto bytes = StartupArtifactBytes(target);
+      if (!bytes) return Error(bytes.error());
+      if (drafter != nullptr) {
+        auto draft_bytes = StartupArtifactBytes(*drafter);
+        if (!draft_bytes) return Error(draft_bytes.error());
+        if (__builtin_add_overflow(*bytes, *draft_bytes, &*bytes))
+          return Error("retained startup artifact inventory overflows");
+      }
+      return StartupArtifactPayment::Admit(node_.catalog(), node_.domain(), *bytes, startup_cap_,
+                                           MemorySampler::Available());
+    };
+    auto facts = ReadArtifactFacts(entry, roles_.installed, opened.get(), funder);
     if (!facts) {
       return Error(std::format("model {}: {}", entry.name, facts.error()));
     }
@@ -504,6 +523,7 @@ Status Server::Start(bool snapshot) {
     }
     settings.push_back(std::move(*resolved));
     calibrations.push_back(std::move(record));
+    opened_artifacts.push_back(std::move(opened));
   }
   if (!prepaid) {
     if (auto r = node_.Open(); !r) return r;
@@ -511,13 +531,16 @@ Status Server::Start(bool snapshot) {
   // Each model's stream and owner: its place among the registered.
   for (std::size_t i = 0; i < config_.models.size(); ++i) {
     const std::size_t before = models_.size();
-    if (auto r = Make(config_.models[i], settings[i], static_cast<int>(models_.size())); !r) {
+    if (auto r = Make(config_.models[i], settings[i], static_cast<int>(models_.size()),
+                      std::move(opened_artifacts[i]));
+        !r) {
       return r;
     }
     if (models_.size() > before && models_.back()->llm()) {
       static_cast<Llm&>(*models_.back()).calibration_record() = std::move(calibrations[i]);
     }
   }
+  std::vector<std::shared_ptr<OpenedModelArtifacts>>().swap(opened_artifacts);
   if (models_.empty()) {
     return Error("no configured model could be registered");
   }

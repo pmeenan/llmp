@@ -124,6 +124,7 @@ struct EngineLlmParts {
     std::optional<bool> default_thinking;
   };
   ChatSlice chat;
+  std::optional<artifact::Artifact> target_artifact{};
   std::uint64_t startup_host_bytes = 0;
   std::uint64_t startup_cap = 0;
   // Remains live through source sealing; its counted high-water may grow

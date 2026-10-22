@@ -95,6 +95,9 @@ struct TensorAssembly {
   // tensor scales not this output's (kScalars outputs); or a row table's
   // kInterleavedRows assembly in format::Layout::kRowInterleaved.
   std::optional<format::Layout> relayout_from{};
+  // A routed expert table may keep its packed layout while moving each
+  // matrix's scalar into a separately bound F32 projection-scale vector.
+  bool separate_tensor_scale = false;
 };
 struct IndexedPartCost {
   std::uint64_t metadata_bytes = 0;
@@ -132,7 +135,7 @@ class IndexedPartPlan {
   // Allocation-free preflight. Bounds this planner's simultaneous allocations,
   // including sort metadata and string allocations. Caller separately funds
   // the already-built Checkpoint and borrowed declarations through Make; they
-  // are not hidden in this cost. Caps: kMaxTensors entries, 256 files.
+  // are not hidden in this cost. Caps: kMaxTensors entries, kMaxSourceFiles files.
   static std::expected<IndexedPartCost, Error> Bound(const Checkpoint& source,
                                                      std::span<const TensorAssembly> outputs);
   // Refusal before admission leaves the caller's source ownership intact.

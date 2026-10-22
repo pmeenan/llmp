@@ -116,16 +116,112 @@ std::expected<ModelSpec, std::string> StoredSpec(const artifact::Artifact& artif
   if (!spec) {
     return spec;
   }
-  for (const Stage& s : spec->stages) {
-    if (s.artifact != 0) {
-      return Refuse(
-          where, std::format("stage {} runs from artifact {}, not this one", s.name, s.artifact));
+  const bool is_drafter = spec->stages.size() == 2 && spec->stages[0].role == StageRole::kTarget &&
+                          spec->stages[0].artifact == 0 &&
+                          spec->stages[1].role == StageRole::kDrafter &&
+                          spec->stages[1].artifact == 1;
+  if (!is_drafter) {
+    for (const Stage& s : spec->stages) {
+      if (s.artifact != 0) {
+        return Refuse(
+            where, std::format("stage {} runs from artifact {}, not this one", s.name, s.artifact));
+      }
+    }
+    if (auto ok = CheckApplied(artifact, 0, *spec); !ok) {
+      return std::unexpected(ok.error());
+    }
+  } else {
+    if (auto ok = CheckApplied(artifact, 1, *spec); !ok) {
+      return std::unexpected(ok.error());
     }
   }
-  if (auto ok = CheckApplied(artifact, 0, *spec); !ok) {
+  return spec;
+}
+
+std::expected<ModelSpec, std::string> ComposeStoredDrafter(
+    const ModelSpec& target_spec, const ModelSpec& drafter_spec,
+    std::optional<std::uint32_t> draft_vocab) {
+  constexpr std::string_view kWhere = "drafter composition";
+  if (auto ok = Validate(target_spec); !ok) {
     return std::unexpected(ok.error());
   }
-  return spec;
+  if (auto ok = Validate(drafter_spec); !ok) {
+    return std::unexpected(ok.error());
+  }
+  if (target_spec.stages.size() != 1 || target_spec.stages[0].role != StageRole::kTarget ||
+      target_spec.stages[0].artifact != 0) {
+    return Refuse(kWhere, "target spec must have one target stage on artifact 0");
+  }
+  if (drafter_spec.stages.size() != 2 || drafter_spec.stages[0].role != StageRole::kTarget ||
+      drafter_spec.stages[0].artifact != 0 || drafter_spec.stages[1].role != StageRole::kDrafter ||
+      drafter_spec.stages[1].artifact != 1 || target_spec.pipeline != drafter_spec.pipeline) {
+    return Refuse(kWhere,
+                  "drafter spec must have a stub target on artifact 0 and a drafter stage on "
+                  "artifact 1 of the target's pipeline");
+  }
+  if (std::ranges::contains(target_spec.stages, drafter_spec.stages[1].name, &Stage::name)) {
+    return Refuse(kWhere,
+                  std::format("target spec already has a stage {}", drafter_spec.stages[1].name));
+  }
+  ModelSpec out = target_spec;
+  Stage& target_stage = out.stages[0];
+  for (const FeatureTap& tap : drafter_spec.stages[0].taps) {
+    if (tap.point == TapPoint::kPostFinalNorm
+            ? (tap.layer != 0 || !target_stage.heads.final_norm.has_value())
+            : tap.layer >= target_stage.layers.size()) {
+      return Refuse(kWhere, std::format("tap {} at layer {} exceeds target's {} layers", tap.name,
+                                        tap.layer, target_stage.layers.size()));
+    }
+    const auto existing = std::ranges::find(target_stage.taps, tap.name, &FeatureTap::name);
+    if (existing == target_stage.taps.end()) {
+      target_stage.taps.push_back(tap);
+    } else if (existing->layer != tap.layer || existing->point != tap.point) {
+      return Refuse(kWhere, std::format("target tap {} conflicts with the drafter's", tap.name));
+    }
+  }
+  Stage drafter = drafter_spec.stages[1];
+  const std::string_view stub_target_name = drafter_spec.stages[0].name;
+  for (Read& r : drafter.reads) {
+    if (r.stage == stub_target_name) {
+      r.stage = target_stage.name;
+    }
+  }
+  EachComponent(drafter, [&](ComponentRef& c, const std::string&) {
+    for (WeightBinding& w : c.weights) {
+      if (w.stage == stub_target_name) {
+        w.stage = target_stage.name;
+      }
+    }
+  });
+  if (draft_vocab.has_value()) {
+    const auto set_rows = [&](ComponentRef& c, bool add_if_missing) {
+      const auto it = std::ranges::find(c.params, "rows", &Param::name);
+      if (it != c.params.end()) {
+        it->value = static_cast<std::int64_t>(*draft_vocab);
+      } else if (add_if_missing) {
+        c.params.push_back(
+            {.name = "rows", .value = ParamValue(static_cast<std::int64_t>(*draft_vocab))});
+      }
+    };
+    if (drafter.heads.output.has_value()) {
+      set_rows(*drafter.heads.output, true);
+    }
+    for (Layer& layer : drafter.layers) {
+      for (ComponentRef& c : layer.components) {
+        const Param* sel = c.Find("selected");
+        const auto* is_sel = sel != nullptr ? std::get_if<bool>(&sel->value) : nullptr;
+        if (is_sel != nullptr && *is_sel) {
+          set_rows(c, false);
+        }
+      }
+    }
+  }
+  out.stages.push_back(std::move(drafter));
+  Canonicalize(out);
+  if (auto ok = Validate(out); !ok) {
+    return std::unexpected(ok.error());
+  }
+  return out;
 }
 
 std::expected<ModelSpec, std::string> StoredSpec(

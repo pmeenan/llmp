@@ -17,7 +17,9 @@
 #include <vector>
 
 #include "artifact/format_json.h"
+#include "artifact/json.h"
 #include "artifact/layout.h"
+#include "artifact/schema.h"
 #include "base/check.h"
 #include "base/sha256.h"
 #include "format/encoding.h"
@@ -40,6 +42,14 @@ std::uint64_t AlignUp(std::uint64_t n, std::uint64_t unit) { return (n + unit - 
 
 std::string Hex(std::string_view bytes) {
   return base::ToHex(base::Sha256().Update(bytes).Finish());
+}
+
+std::string ManifestId(std::string_view text) {
+  auto parsed = artifact::json::Parse(text, true);
+  if (parsed && parsed->root().is_object()) {
+    return base::ToHex(artifact::schema::ManifestIdentity(parsed->root()));
+  }
+  return Hex(text);
 }
 
 std::string_view KindName(artifact::GroupKind kind) {
@@ -496,7 +506,7 @@ fs::path Publish(const fs::path& store, const V1Files& files, const PublishHooks
   if (hooks.manifest) {
     hooks.manifest(text);
   }
-  const fs::path dir = store / Hex(text);
+  const fs::path dir = store / ManifestId(text);
   std::error_code error;
   fs::remove_all(dir, error);
   fs::create_directories(dir, error);
@@ -569,7 +579,7 @@ fs::path Publish(const fs::path& store, const CompositionFiles& files, const Pub
   if (hooks.manifest) {
     hooks.manifest(text);
   }
-  const fs::path dir = store / Hex(text);
+  const fs::path dir = store / ManifestId(text);
   std::error_code error;
   fs::remove_all(dir, error);
   fs::create_directories(dir, error);

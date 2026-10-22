@@ -23,11 +23,11 @@
 #include "image_family.h"
 #include "import/archive_input.h"
 #include "import/image_pipeline.h"
-#include "import/modelopt_qwen38.h"
 #include "import/normalize.h"
 #include "import/reader.h"
 #include "import/readers/gguf.h"
 #include "import/readers/safetensors.h"
+#include "import/sampling_defaults.h"
 #include "import/stream.h"
 #include "import/writer.h"
 #include "import_fixtures.h"
@@ -295,6 +295,115 @@ TEST_F(ImportWriterTest, ImportPreservesF16NormsAndDefersExecutionSupportToPlann
   ASSERT_TRUE(admitted) << test_support::Failed(admitted).value_or("");
 }
 
+TEST_F(ImportWriterTest, HfSamplingDefaultsRoundTripFromAuthenticatedGenerationConfig) {
+  for (const bool sample : {false, true}) {
+    const auto source = dir_ / (sample ? "sample-source" : "greedy-source");
+    auto config = fixtures::TinyQwen2HfConfig();
+    config.pop_back();
+    config += R"(,"temperature":0.4,"top_p":0.8,"top_k":12})";
+    Write(source / "config.json", config);
+    Write(source / "model.safetensors", fixtures::Shard(fixtures::TinyQwen2HfEntries()));
+    const std::string generation =
+        std::string(R"({"do_sample":)") + (sample ? "true" : "false") +
+        R"(,"temperature":1.25,"top_p":0.92,"top_k":2147483647,"min_p":0.07})";
+    Write(source / "generation_config.json", generation);
+    auto input = ReadCheckpoint(source);
+    ASSERT_TRUE(input) << test_support::Failed(input, &Error::ToString).value_or("");
+    EXPECT_FALSE(ReadSamplingDefaults(*input, {}));
+    auto bound = NormalizationBound(*input);
+    ASSERT_TRUE(bound);
+    auto plan = Normalize(std::move(*input), {bound->metadata_bytes, bound->work_units});
+    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+    const auto& defaults = plan->spec().stages.front().sampling;
+    EXPECT_EQ(defaults.temperature, sample ? 1.25 : 0.0);
+    EXPECT_EQ(defaults.top_p, 0.92);
+    EXPECT_EQ(defaults.top_k, 2147483647);
+    EXPECT_EQ(defaults.min_p, 0.07);
+    auto published = WriteArtifact(*plan, Options(sample ? "sample-store" : "greedy-store"));
+    ASSERT_TRUE(published) << test_support::Failed(published, &Error::ToString).value_or("");
+    const auto opened = artifact::Artifact::Open(published->path);
+    ASSERT_TRUE(opened);
+    const auto stored = spec::StoredSpec(*opened);
+    ASSERT_TRUE(stored);
+    EXPECT_EQ(stored->stages.front().sampling, defaults);
+    const auto facts = runtime::ArtifactFactsOf(*opened, nullptr);
+    ASSERT_TRUE(facts) << test_support::Failed(facts).value_or("");
+    EXPECT_EQ(facts->temperature, defaults.temperature);
+    EXPECT_EQ(facts->top_p, defaults.top_p);
+    EXPECT_EQ(facts->top_k, defaults.top_k);
+    EXPECT_EQ(facts->min_p, defaults.min_p);
+  }
+}
+
+TEST_F(ImportWriterTest, NestedSamplingDefaultsFillUnsetOuterValuesBeforeGenerationOverrides) {
+  for (const auto [sample, override] :
+       {std::pair{true, false}, std::pair{false, false}, std::pair{false, true}}) {
+    const auto source = dir_ / std::format("source-{}-{}", sample, override);
+    auto config = fixtures::TinyQwen2HfConfig();
+    config.pop_back();
+    config +=
+        std::string(
+            R"(,"temperature":1.2,"text_config":{"temperature":0.5,"top_p":0.81,"top_k":13,"min_p":0.12,"do_sample":)") +
+        (sample ? "true}}" : "false}}");
+    Write(source / "config.json", config);
+    Write(source / "model.safetensors", fixtures::Shard(fixtures::TinyQwen2HfEntries()));
+    if (override)
+      Write(source / "generation_config.json",
+            R"({"temperature":0.9,"top_p":0.72,"do_sample":true})");
+    auto input = ReadCheckpoint(source);
+    ASSERT_TRUE(input) << test_support::Failed(input, &Error::ToString).value_or("");
+    const auto cost = SamplingDefaultsBound(*input);
+    ASSERT_TRUE(cost);
+    const auto defaults = ReadSamplingDefaults(*input, *cost, "text_config.");
+    ASSERT_TRUE(defaults) << test_support::Failed(defaults, &Error::ToString).value_or("");
+    EXPECT_EQ(defaults->temperature, override ? 0.9 : sample ? 1.2 : 0.0);
+    EXPECT_EQ(defaults->top_p, override ? 0.72 : 0.81);
+    EXPECT_EQ(defaults->top_k, 13);
+    EXPECT_EQ(defaults->min_p, 0.12);
+  }
+}
+
+TEST_F(ImportWriterTest, GgufSamplingDefaultsRoundTripWithoutKeptMetadataReparsing) {
+  auto checkpoint = Tiny();
+  Value(checkpoint, "general.sampling.temp", 0.75);
+  Value(checkpoint, "general.sampling.top_p", 0.875);
+  Value(checkpoint, "general.sampling.top_k", std::int64_t{32});
+  Value(checkpoint, "general.sampling.min_p", 0.125);
+  Write(dir_ / "source/sampling.gguf", Gguf(checkpoint));
+  auto source = ReadGguf(dir_ / "source/sampling.gguf");
+  ASSERT_TRUE(source);
+  auto bound = NormalizationBound(*source);
+  ASSERT_TRUE(bound);
+  auto plan = Normalize(std::move(*source), {bound->metadata_bytes, bound->work_units});
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  const spec::SamplingDefaults expected{
+      .temperature = 0.75, .top_p = 0.875, .top_k = 32, .min_p = 0.125};
+  EXPECT_EQ(plan->spec().stages.front().sampling, expected);
+  auto published = WriteArtifact(*plan, Options());
+  ASSERT_TRUE(published) << test_support::Failed(published, &Error::ToString).value_or("");
+  const auto opened = artifact::Artifact::Open(published->path);
+  ASSERT_TRUE(opened);
+  const auto stored = spec::StoredSpec(*opened);
+  ASSERT_TRUE(stored);
+  EXPECT_EQ(stored->stages.front().sampling, expected);
+}
+
+TEST_F(ImportWriterTest, SamplingDefaultsRefuseChangedRetainedDocumentBeforeInterpretation) {
+  const auto source = dir_ / "source";
+  Write(source / "config.json", fixtures::TinyQwen2HfConfig());
+  Write(source / "model.safetensors", fixtures::Shard(fixtures::TinyQwen2HfEntries()));
+  Write(source / "generation_config.json", R"({"temperature":0.5})");
+  auto input = ReadCheckpoint(source);
+  ASSERT_TRUE(input);
+  const auto cost = SamplingDefaultsBound(*input);
+  ASSERT_TRUE(cost);
+  Write(source / "generation_config.json", R"({"temperature":1.5})");
+  const auto changed = ReadSamplingDefaults(*input, *cost);
+  ASSERT_FALSE(changed);
+  EXPECT_EQ(changed.error().rule, Rule::kIo);
+  EXPECT_FALSE(std::filesystem::exists(dir_ / "store"));
+}
+
 TEST_F(ImportWriterTest, HfPublicationKeepsTokenizerDocumentsAndUsesTheirChatTemplate) {
   const auto source = dir_ / "source";
   Write(source / "config.json", fixtures::TinyQwen2HfConfig());
@@ -356,15 +465,16 @@ TEST_F(ImportWriterTest, ReaderAcceptsLegacyNamedBuildManifestIdentity) {
   opts.build = "40bf23e3.dirty";
   auto published = WriteArtifact(*plan, opts);
   ASSERT_TRUE(published);
+  auto opened = artifact::Artifact::Open(published->path);
+  ASSERT_TRUE(opened) << test_support::Failed(opened, &artifact::Error::ToString).value_or("");
+  EXPECT_EQ(opened->converter().build, opts.build);
   std::ifstream in(published->path / "manifest.json", std::ios::binary);
   const std::string text((std::istreambuf_iterator<char>(in)), {});
   const auto raw = base::ToHex(base::Sha256().Update(text).Finish());
   ASSERT_NE(raw, published->id);
   const auto legacy = opts.store / raw;
   std::filesystem::rename(published->path, legacy);
-  auto opened = artifact::Artifact::Open(legacy);
-  ASSERT_TRUE(opened) << test_support::Failed(opened, &artifact::Error::ToString).value_or("");
-  EXPECT_EQ(opened->converter().build, opts.build);
+  EXPECT_FALSE(artifact::Artifact::Open(legacy));
 }
 
 TEST_F(ImportWriterTest, DeterministicPublicationAndEveryPayloadByte) {
@@ -845,9 +955,8 @@ TEST_F(ImportWriterTest, CliRefusesIncompleteModelOptWithoutPublishingOrFallingB
     std::rewind(error);
     std::array<char, 1024> text{};
     const auto count = std::fread(text.data(), 1, text.size(), error);
-    EXPECT_NE(
-        std::string_view(text.data(), count).find("outside closed ModelOpt target source domain"),
-        std::string_view::npos);
+    EXPECT_GT(count, 0U);
+    EXPECT_NE(std::string_view(text.data(), count).find("llmp import:"), std::string_view::npos);
     std::fclose(output);
     std::fclose(error);
     EXPECT_FALSE(std::filesystem::exists(store));
@@ -878,7 +987,7 @@ TEST_F(ImportWriterTest, SafetensorsAndConfigReceiptsDescribeExactlyParsedBytes)
 // The source adapter remains closed to full pinned ModelOpt geometry. These
 // private tiny products exercise only the shared publisher and component spec.
 struct PartCase {
-  ModelOptTargetPlan plan;
+  NormalizedPlan plan;
   std::map<std::string, std::vector<std::byte>> expected;
 };
 class ImportPartWriterTest : public ImportWriterTest {
@@ -1715,7 +1824,7 @@ class ImportDrafterWriterTest : public ImportWriterTest {
  protected:
   static constexpr std::string_view kOptions = R"({"draft_head":"ids.txt"})";
   std::vector<std::byte> weights_;
-  std::expected<ModelOptDrafterPlan, Error> Drafter() {
+  std::expected<NormalizedPlan, Error> Drafter() {
     weights_.resize(256);
     for (std::size_t i = 0; i < weights_.size(); ++i)
       weights_[i] = static_cast<std::byte>((i * 37 + 11) & 0xFF);
@@ -1783,7 +1892,7 @@ class ImportDrafterWriterTest : public ImportWriterTest {
     model.stages[1] = {.name = "mtp", .role = spec::StageRole::kDrafter, .artifact = 1};
     model.stages[1].layers.resize(1);
     model.stages[1].layers[0].components.push_back(
-        {.kind = "x", .weights = {{.role = "w", .tensor = "fc.weight"}}});
+        {.kind = "x.y", .weights = {{.role = "w", .tensor = "fc.weight"}}});
     model.stages[1].heads.output =
         spec::ComponentRef{.kind = "head.linear",
                            .weights = {{.role = "ids", .tensor = "draft_output.ids"},
@@ -1826,7 +1935,7 @@ TEST_F(ImportDrafterWriterTest, GathersRowsAndWritesItsAuthenticatedTokenMap) {
   ASSERT_TRUE(result) << test_support::Failed(result, &Error::ToString).value_or("");
   auto opened = artifact::Artifact::Open(result->path);
   ASSERT_TRUE(opened);
-  EXPECT_FALSE(opened->spec_json().has_value());
+  EXPECT_TRUE(opened->spec_json().has_value());
   EXPECT_EQ(opened->model().architecture, "qwen4exp-mtp");
   EXPECT_EQ(opened->converter().options_sha256, base::Sha256().Update(kOptions).Finish());
   const auto list = std::ranges::find(opened->sources(), "ids.txt", &artifact::Source::name);

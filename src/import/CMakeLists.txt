@@ -10,7 +10,7 @@
 # services layer (docs/architecture.md#layers-and-dependency-rules): format,
 # spec, components, artifact, platform and base; never the engine or a kernel module.
 add_library(llmp_import STATIC
-            checkpoint.cc error.cc files.cc reader.cc transforms.cc route.cc indexed_parts.cc expert_relayout.cc parameter_folds.cc modelopt_qwen38.cc mlx_qwen38.cc image_pipeline.cc stream.cc normalize.cc source_mapping.cc writer.cc archive_input.cc
+            checkpoint.cc error.cc files.cc reader.cc transforms.cc route.cc indexed_parts.cc expert_relayout.cc parameter_folds.cc image_pipeline.cc stream.cc normalize.cc source_mapping.cc sampling_defaults.cc writer.cc archive_input.cc
             readers/diffusers.cc readers/exl3.cc readers/gguf.cc readers/hf_quant.cc
             readers/mlx.cc readers/safetensors.cc)
 target_include_directories(llmp_import PUBLIC "${PROJECT_SOURCE_DIR}/src")

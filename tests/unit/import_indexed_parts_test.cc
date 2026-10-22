@@ -88,7 +88,8 @@ void Reconstruct(const IndexedPartPlan& plan, const Fixture& fixture, const Payl
       const Key key{member.output, member.part};
       auto& bytes = actual.at(key);
       auto& written = counts.at(key);
-      auto run = member.route.Start();
+      std::array<std::byte, 65536> workspace{};
+      auto run = member.route.Start(workspace);
       ASSERT_TRUE(run);
       EXPECT_FALSE(run->Finish());
       const PartSink sink = [&](std::uint64_t offset,
@@ -150,6 +151,95 @@ TEST(ImportIndexedPartsTest, AllExpertPartsGatherInNumericOrderFromPhysicalOrder
   EXPECT_EQ(plan->FindSource("expert1.part0"), ids[0][1]);
   EXPECT_FALSE(plan->FindSource("expert01.part0"));
   Reconstruct(*plan, f, expected);
+}
+
+TEST(ImportIndexedPartsTest, NarrowTensorScaleConversionPreservesPackedWeightParts) {
+  for (const auto storage : {Encoding::kBF16, Encoding::kF16}) {
+    Fixture fixture;
+    const auto format = Fmt(Encoding::kNvfp4, {32, 3});
+    TensorAssembly output{.name = "weight", .format = format};
+    Payloads expected;
+    for (const auto role : {PartRole::kCodes, PartRole::kBlockScales, PartRole::kTensorScale}) {
+      const auto source = fixture.Add(std::string(format::PartRoleName(role)), format, role, 9);
+      output.parts.push_back({.part = role, .sources = {source}});
+      if (role == PartRole::kTensorScale) {
+        auto& tensor = fixture.source.tensors[source];
+        tensor.scalar_storage = storage;
+        tensor.extent.bytes = 2;
+        fixture.payloads[source] = storage == Encoding::kBF16
+                                       ? std::vector{std::byte{0x80}, std::byte{0x3F}}
+                                       : std::vector{std::byte{0}, std::byte{0x3C}};
+        expected[{0, role}] = {std::byte{0}, std::byte{0}, std::byte{0x80}, std::byte{0x3F}};
+      } else {
+        expected[{0, role}] = fixture.payloads[source];
+      }
+    }
+    fixture.outputs.push_back(std::move(output));
+    const auto plan = fixture.Build();
+    ASSERT_TRUE(plan) << plan.error().ToString();
+    EXPECT_EQ(plan->outputs().front().format, format);
+    Reconstruct(*plan, fixture, expected);
+    auto& scale = fixture.source.tensors.back();
+    scale.scalar_storage = Encoding::kF32;
+    EXPECT_FALSE(SourcePartBytes(scale));
+    EXPECT_FALSE(fixture.Build());
+    scale.scalar_storage = storage;
+    scale.extent.bytes = 4;
+    EXPECT_FALSE(fixture.Build());
+    scale.extent.bytes = 2;
+    scale.part = PartRole::kCodes;
+    EXPECT_FALSE(SourcePartBytes(scale));
+    EXPECT_FALSE(fixture.Build());
+  }
+}
+
+TEST(ImportIndexedPartsTest, MixedScalarStorageGathersCanonicalF32InDeclaredOrder) {
+  Fixture fixture;
+  const auto format = Fmt(Encoding::kNvfp4, {32, 3});
+  std::vector<std::uint32_t> sources;
+  for (const auto storage : {Encoding::kBF16, Encoding::kF16, Encoding::kF32}) {
+    const auto source =
+        fixture.Add(std::to_string(sources.size()), format, PartRole::kTensorScale, 0);
+    sources.push_back(source);
+    if (storage != Encoding::kF32) {
+      fixture.source.tensors[source].scalar_storage = storage;
+      fixture.source.tensors[source].extent.bytes = 2;
+      fixture.payloads[source] = storage == Encoding::kBF16
+                                     ? std::vector{std::byte{0x80}, std::byte{0x3F}}
+                                     : std::vector{std::byte{0}, std::byte{0x3C}};
+    } else {
+      fixture.payloads[source] = {std::byte{0}, std::byte{0}, std::byte{0x80}, std::byte{0x3F}};
+    }
+  }
+  fixture.outputs.push_back(
+      {.name = "scales",
+       .format = Fmt(Encoding::kF32, {3}),
+       .parts = {
+           {.part = PartRole::kData, .kind = PartAssemblyKind::kScalars, .sources = sources}}});
+  Payloads expected;
+  for (std::size_t i = 0; i < sources.size(); ++i)
+    for (const auto byte : {std::byte{0}, std::byte{0}, std::byte{0x80}, std::byte{0x3F}})
+      expected[{0, PartRole::kData}].push_back(byte);
+  const auto plan = fixture.Build();
+  ASSERT_TRUE(plan) << plan.error().ToString();
+  Reconstruct(*plan, fixture, expected);
+}
+
+TEST(ImportIndexedPartsTest, SourceInventoryAcceptsReaderShardCountsAbove256) {
+  Fixture fixture;
+  const auto format = Fmt(Encoding::kF32, {4});
+  const auto source = fixture.Add("weight", format, PartRole::kData, 7);
+  fixture.outputs.push_back({.name = "weight",
+                             .format = format,
+                             .parts = {{.part = PartRole::kData, .sources = {source}}}});
+  for (std::size_t i = fixture.source.files.size(); i < 300; ++i)
+    fixture.source.files.push_back({.name = "shard-" + std::to_string(i)});
+  const auto plan = fixture.Build();
+  ASSERT_TRUE(plan) << plan.error().ToString();
+  EXPECT_EQ(plan->source().files.size(), 300U);
+  Reconstruct(*plan, fixture, {{{0, PartRole::kData}, fixture.payloads[source]}});
+  fixture.source.files.back().name = fixture.source.files.front().name;
+  EXPECT_FALSE(fixture.Build());
 }
 
 TEST(ImportIndexedPartsTest, RowShardsUseOneInheritedScaleWithoutReplication) {

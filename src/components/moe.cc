@@ -12,7 +12,7 @@
 // llama.cpp's qwen4exp.cpp, inside hyper-connections: no norm of its own):
 // the routed experts of the stream, routed from the stream itself
 // (router_input "stream"), each projection by its per-expert tensor scale
-// where `projection_scales` (down's in the reduce), and the shared expert's
+// where their individual scale flags are set (down's in the reduce), and the shared expert's
 // GLU of the stream behind its sigmoid gate (`shared_gate`: the stream's
 // product with the gate's row), added to them. The route and reduce shapes
 // are its parameters (experts, used, the expert width), not constants.
@@ -323,6 +323,10 @@ constexpr std::array kParams{
     // A scale per expert on each of its products (NVFP4's tensor scales
     // kept beside the experts): roles gate_scale, up_scale, down_scale.
     Flag("projection_scales"),
+    // Individual projections may have different source encodings and scales.
+    Flag("gate_scale"),
+    Flag("up_scale"),
+    Flag("down_scale"),
     // The dense GLU (the shared expert) times sigmoid(x · shared_gate).
     Flag("shared_gate"),
     // The selected weights' scale (DeepSeek V4's expert_weights_scale).
@@ -368,7 +372,7 @@ constexpr std::array kRoles{
                .encodings = defs::kNormEncodings,
                .derived = defs::kZeroCenteredNorm},
     WeightRole{.name = "router"},
-    WeightRole{.name = "router_scale", .encodings = kF32Only},
+    WeightRole{.name = "router_scale", .encodings = defs::kNormEncodings},
     WeightRole{.name = "routed_norm",
                .encodings = defs::kNormEncodings,
                .derived = defs::kZeroCenteredNorm},
@@ -376,7 +380,7 @@ constexpr std::array kRoles{
     WeightRole{.name = "gate_experts"},
     WeightRole{.name = "up_experts"},
     WeightRole{.name = "down_experts"},
-    WeightRole{.name = "expert_scale", .encodings = kF32Only},
+    WeightRole{.name = "expert_scale", .encodings = defs::kNormEncodings},
     WeightRole{.name = "routed_post_norm",
                .encodings = defs::kNormEncodings,
                .derived = defs::kZeroCenteredNorm},
@@ -386,12 +390,13 @@ constexpr std::array kRoles{
     WeightRole{.name = "up_scale", .encodings = kF32Only},
     WeightRole{.name = "down_scale", .encodings = kF32Only},
     WeightRole{.name = "shared_gate"},
-    WeightRole{.name = "router_bias", .encodings = kF32Only},
+    WeightRole{.name = "router_bias", .encodings = defs::kNormEncodings},
 };
 
 struct Dims {
   std::uint64_t width, hidden, experts, used, expert_hidden;
-  bool parallel, pre, rms_router, normalize, expert_scales, stacked, projection_scales, shared_gate;
+  bool parallel, pre, rms_router, normalize, expert_scales, stacked, gate_scale, up_scale,
+      down_scale, shared_gate;
   ir::GluKind kind;
   float eps;
   ir::RouteKind route;
@@ -423,7 +428,9 @@ Dims DimsOf(const Instance& in) {
           .normalize = p.Flag("normalize"),
           .expert_scales = p.Flag("expert_scales"),
           .stacked = p.Flag("stacked"),
-          .projection_scales = p.Flag("projection_scales"),
+          .gate_scale = p.Flag("projection_scales") || p.Flag("gate_scale"),
+          .up_scale = p.Flag("projection_scales") || p.Flag("up_scale"),
+          .down_scale = p.Flag("projection_scales") || p.Flag("down_scale"),
           .shared_gate = p.Flag("shared_gate"),
           .kind = GluKindOf(p.Name("activation")),
           .eps = F32(p.Real("eps")),
@@ -450,9 +457,6 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
     return std::unexpected("shared_gate and shared_limit require a shared expert (hidden > 0)");
   }
   if (d.used > d.experts) return std::unexpected("more experts used than there are");
-  if (d.expert_scales && d.projection_scales) {
-    return std::unexpected("a learned expert scale and the products' scales both");
-  }
   const bool valid_limits =
       d.hidden > 0 ? (d.limit > 0.0F && d.shared_limit > 0.0F) : (d.limit > 0.0F);
   if ((d.kind == ir::GluKind::kSwiGluClamp) != valid_limits ||
@@ -493,9 +497,9 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
     out.push_back(Role(kUpExperts, {w, f, e}));
   }
   if (d.expert_scales) out.push_back(Role(kExpertScale, {e}));
-  if (d.projection_scales) {
-    for (const std::uint16_t r : {kGateScale, kUpScale, kDownScale}) out.push_back(Role(r, {e}));
-  }
+  if (d.gate_scale) out.push_back(Role(kGateScale, {e}));
+  if (d.up_scale) out.push_back(Role(kUpScale, {e}));
+  if (d.down_scale) out.push_back(Role(kDownScale, {e}));
   if (d.shared_gate) out.push_back(Role(kSharedGate, {w}));
   if (d.route == ir::RouteKind::kSqrtSoftplusBias) out.push_back(Role(kRouterBias, {e}));
   return out;
@@ -507,8 +511,8 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
 constexpr std::array kExpertRoles{
     RoleSplit{.role = kGateUpExperts, .dim = 2}, RoleSplit{.role = kGateExperts, .dim = 2},
     RoleSplit{.role = kUpExperts, .dim = 2},     RoleSplit{.role = kDownExperts, .dim = 2},
-    RoleSplit{.role = kGateScale, .dim = 0},     RoleSplit{.role = kUpScale, .dim = 0},
-    RoleSplit{.role = kDownScale, .dim = 0}};
+    RoleSplit{.role = kExpertScale, .dim = 0},   RoleSplit{.role = kGateScale, .dim = 0},
+    RoleSplit{.role = kUpScale, .dim = 0},       RoleSplit{.role = kDownScale, .dim = 0}};
 constexpr std::array kSplits{SplitOption{
     .kind = SplitKind::kExperts,
     .collective = ir::Op::kAllReduce,
@@ -530,6 +534,9 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     if (role == kNorm || role == kDensePostNorm || role == kRoutedNorm || role == kRoutedPostNorm ||
         role == kPostNorm) {
       return parameters.Norm(role);
+    }
+    if (role == kRouterScale || role == kExpertScale || role == kRouterBias) {
+      return parameters.Get(role);
     }
     return f.Weight(role);
   };
@@ -556,20 +563,20 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
        .route_scale = d.route_scale,
        .f32 = d.router_f32},
       d.route == ir::RouteKind::kSqrtSoftplusBias ? w(kRouterBias) : ir::TensorId{}, hashed);
-  const ir::TensorId reduced =
-      moe::EmitExperts(b, d.parallel ? norm(x, kRoutedNorm) : in, routed,
-                       w(d.stacked ? kGateUpExperts : kGateExperts),
-                       d.stacked ? ir::TensorId{} : w(kUpExperts), w(kDownExperts),
-                       d.expert_scales       ? w(kExpertScale)
-                       : d.projection_scales ? w(kDownScale)
-                                             : ir::TensorId{},
-                       {.width = d.width,
-                        .hidden = d.expert_hidden,
-                        .stacked = d.stacked,
-                        .kind = d.kind,
-                        .limit = d.limit},
-                       d.projection_scales ? w(kGateScale) : ir::TensorId{},
-                       d.projection_scales ? w(kUpScale) : ir::TensorId{});
+  const ir::TensorId reduced = moe::EmitExperts(
+      b, d.parallel ? norm(x, kRoutedNorm) : in, routed,
+      w(d.stacked ? kGateUpExperts : kGateExperts), d.stacked ? ir::TensorId{} : w(kUpExperts),
+      w(kDownExperts),
+      d.expert_scales && d.down_scale ? b.Mul(w(kExpertScale), w(kDownScale))
+      : d.expert_scales               ? w(kExpertScale)
+      : d.down_scale                  ? w(kDownScale)
+                                      : ir::TensorId{},
+      {.width = d.width,
+       .hidden = d.expert_hidden,
+       .stacked = d.stacked,
+       .kind = d.kind,
+       .limit = d.limit},
+      d.gate_scale ? w(kGateScale) : ir::TensorId{}, d.up_scale ? w(kUpScale) : ir::TensorId{});
   if (!d.parallel) {
     // Inside hyper-connections (Qwen3.8's, DeepSeek V4's) or pre-norm:
     // the experts' sum and optional shared expert.
@@ -645,20 +652,28 @@ std::expected<void, std::string> Reference(RefIO& io) {
        .f32 = d.router_f32},
       d.route == ir::RouteKind::kSqrtSoftplusBias ? w(kRouterBias) : std::span<const float>{},
       io.side_ids);
+  std::vector<float> combined_scale;
+  if (d.expert_scales && d.down_scale) {
+    const auto es = w(kExpertScale);
+    const auto ds = w(kDownScale);
+    combined_scale.resize(std::min(es.size(), ds.size()));
+    for (std::size_t i = 0; i < combined_scale.size(); ++i) combined_scale[i] = es[i] * ds[i];
+  }
   std::vector<double> reduced =
       moe::ExpertsReference(d.parallel ? normed(io.stream, kRoutedNorm) : in_ref, routed,
                             w(d.stacked ? kGateUpExperts : kGateExperts),
                             d.stacked ? std::span<const float>{} : w(kUpExperts), w(kDownExperts),
-                            d.expert_scales       ? w(kExpertScale)
-                            : d.projection_scales ? w(kDownScale)
-                                                  : std::span<const float>{},
+                            d.expert_scales && d.down_scale ? std::span<const float>(combined_scale)
+                            : d.expert_scales               ? w(kExpertScale)
+                            : d.down_scale                  ? w(kDownScale)
+                                                            : std::span<const float>{},
                             {.width = d.width,
                              .hidden = d.expert_hidden,
                              .stacked = d.stacked,
                              .kind = d.kind,
                              .limit = d.limit},
-                            d.projection_scales ? w(kGateScale) : std::span<const float>{},
-                            d.projection_scales ? w(kUpScale) : std::span<const float>{});
+                            d.gate_scale ? w(kGateScale) : std::span<const float>{},
+                            d.up_scale ? w(kUpScale) : std::span<const float>{});
   std::vector<double> shared{};
   if (d.hidden > 0) {
     shared = moe::GluReference(d.parallel ? normed(io.stream, kNorm) : in_ref, w(kGate), w(kUp),

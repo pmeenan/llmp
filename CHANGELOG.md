@@ -24,6 +24,10 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Generic architecture-owned normalization for native quantized tensor parts,
+  expert gathers and shards (M3.5 U3, D-125), with import-time role-based
+  transforms, mapping provenance and stored drafter specs. Llama 3 frequency
+  scaling is represented through attention and rotation components.
 - Physical memory modes (D-124): `[memory] mode = "dedicated" | "shared"` and
   `budget_gib` configuration support. In dedicated mode, physical memory handles
   are pre-allocated synchronously up to the unmapped budget headroom into a

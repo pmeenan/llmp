@@ -2190,83 +2190,152 @@ TEST(GgmlLowerTest, Bf16NormOffsetHasTransientPlacementAndStrictLowering) {
   EXPECT_EQ(lowered->extent, plan->placement.extent);
 }
 
+// The production registry keeps Llama 3's quantized store on the faster,
+// accurate primitive decomposition, including a graph already fused by a caller.
+TEST(GgmlLowerTest, Llama3QuantizedRopeStoreUsesPrimitiveDecomposition) {
+  using llmp::format::Encoding;
+  const auto registry = PlanningRegistry();
+  for (const auto encoding : {Encoding::kQ8_0, Encoding::kQ4_0}) {
+    for (const bool llama3 : {false, true}) {
+      for (const bool fused : {false, true}) {
+        SCOPED_TRACE(std::format("encoding={} llama3={} fused={}", static_cast<unsigned>(encoding),
+                                 llama3, fused));
+        ir::Builder b;
+        const auto x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({128, 8, 3})));
+        const auto pos = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+        const auto idx = b.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({3})));
+        const auto cache = b.State({.encoding = encoding,
+                                    .layout = llmp::format::Layout::kGgmlBlocks,
+                                    .shape = ir::ShapeOf({1024, 32})},
+                                   {});
+        const ir::RopeParams params{.mode = ir::RopeMode::kNeox,
+                                    .llama3 = llama3,
+                                    .dims = 128,
+                                    .original_context = 8192,
+                                    .base = 1000000.0F,
+                                    .scale = llama3 ? 0.125F : 1.0F,
+                                    .beta_fast = 4.0F,
+                                    .beta_slow = 1.0F};
+        if (fused) {
+          b.Output(b.Fused(ir::FusedKind::kRopeStore,
+                           std::array{x, pos, cache, idx, ir::TensorId{}}, params)[0]);
+        } else {
+          const auto rope = b.Rope(x, pos, {}, params);
+          b.Output(b.CacheStore(cache, b.Reshape(rope, ir::ShapeOf({1024, 3})), idx));
+        }
+        auto graph = std::move(b).Finish();
+        ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+        auto plan = pl::Plan(std::move(*graph), registry, Gb10(), {}, {});
+        ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+        EXPECT_EQ(
+            std::ranges::count(plan->graph.nodes(), ir::Primitive(ir::Op::kRope), &ir::Node::key),
+            llama3 ? 1 : 0);
+        EXPECT_EQ(std::ranges::count(plan->graph.nodes(), ir::Primitive(ir::Op::kCacheStore),
+                                     &ir::Node::key),
+                  llama3 ? 1 : 0);
+        std::vector<std::string_view> selected;
+        for (const auto& step : plan->steps)
+          selected.push_back(registry.at(step.implementation).name);
+        EXPECT_EQ(std::ranges::count(selected, kg::kSetRowsQuantName), llama3 ? 1 : 0);
+        EXPECT_EQ(std::ranges::count(selected, kg::kRopeSetRowsQuantName), llama3 ? 0 : 1);
+      }
+    }
+  }
+}
+
 // RopeStore writes the cache, not its eliminated F32 rotation. Its descriptor
 // must borrow the read operand, while a retained rotation still owns storage.
 TEST(GgmlLowerTest, RopeStoreUsesReadOperandStandInWithoutAliasingRetainedRotation) {
   using llmp::format::Encoding;
   const auto registry = PlanningRegistry();
-  for (const bool retained : {false, true}) {
-    for (const bool measuring : {true, false}) {
-      SCOPED_TRACE(std::format("retained={} measuring={}", retained, measuring));
-      ir::Builder b;
-      const auto root = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({64, 1, 4})));
-      const auto x = b.View(root, ir::ShapeOf({64, 1, 3}), b.tensor(root).nb, 256);
-      const auto pos = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
-      const auto idx = b.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({3})));
-      const ir::StateRef ref{.stage = 0, .tensor = 0, .layer = 0, .segment = 0};
-      const auto cache = b.State(ir::Dense(Encoding::kF16, ir::ShapeOf({64, 32})), ref);
-      const auto target = b.View(cache, ir::ShapeOf({64, 16}), b.tensor(cache).nb, 128);
-      const auto rope =
-          b.Rope(x, pos, {}, {.mode = ir::RopeMode::kNeox, .dims = 64, .base = 10000.0F});
-      const auto flat = b.Reshape(rope, ir::ShapeOf({64, 3}));
-      const auto rows = b.View(flat, ir::ShapeOf({64, 3}), b.tensor(flat).nb, 0);
-      b.Output(b.CacheStore(target, rows, idx));
-      if (retained) b.Output(rope);
-      auto graph = std::move(b).Finish();
-      ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
-      co::StepGraph step{
-          .graph = std::move(*graph),
-          .inputs = {{.tensor = root, .kind = co::InputKind::kFeatures},
-                     {.tensor = pos, .kind = co::InputKind::kPositions},
-                     {.tensor = idx, .kind = co::InputKind::kStoreCells, .segment = 0}},
-          .weights = {},
-          .state = {{.tensor = cache, .ref = ref, .written = true}}};
-      const std::vector<ir::TensorId> staged{root, pos, idx};
-      auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), {},
-                           {.staged = staged, .written = &kg::WrittenBytes});
-      ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
-      EXPECT_EQ(std::ranges::count(plan->applied, "rope_store", &pl::Applied::pattern),
-                retained ? 0 : 1);
-      alignas(256) std::array<std::byte, 16384> activation{};
-      alignas(256) std::array<std::byte, 4096> state{};
-      ASSERT_LE(plan->placement.extent, activation.size());
-      const kn::Addresses addresses{
-          .weight = {},
-          .weight_rows = {},
-          .state =
-              [&](const ir::StateRef& actual) {
-                EXPECT_EQ(actual, ref);
-                return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(state.data()));
-              },
-          .save = {},
-          .activations = measuring ? 0 : reinterpret_cast<std::uintptr_t>(activation.data()),
-          .activation_bytes = activation.size()};
-      const pl::StepShape shape{};
-      const kn::LowerInput input{*plan, step, shape, addresses};
-      auto lowered = kg::LowerStep(input, registry, Device());
-      ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
-      const auto rotation = std::ranges::find_if(
-          lowered->nodes, [](const auto* node) { return node->op == GGML_OP_ROPE; });
-      const auto store = std::ranges::find_if(
-          lowered->nodes, [](const auto* node) { return node->op == GGML_OP_SET_ROWS; });
-      ASSERT_NE(rotation, lowered->nodes.end());
-      ASSERT_NE(store, lowered->nodes.end());
-      EXPECT_EQ((*store)->data, state.data() + 128);
-      EXPECT_EQ(reinterpret_cast<std::uintptr_t>((*rotation)->src[0]->data),
-                reinterpret_cast<std::uintptr_t>((*rotation)->src[0]->view_src->data) + 256);
-      EXPECT_NE((*rotation)->data, (*store)->data);
-      if (retained) {
-        EXPECT_NE((*rotation)->data, (*rotation)->src[0]->data);
-        EXPECT_EQ(lowered->plan.steps.size(), 2U);
-        EXPECT_TRUE(kg::CheckRope(*rotation));
-        EXPECT_TRUE(kg::CheckSetRows(*store));
-      } else {
-        EXPECT_EQ((*rotation)->data, (*rotation)->src[0]->data);
-        ASSERT_EQ(lowered->plan.steps.size(), 1U);
-        EXPECT_EQ(lowered->plan.steps[0].implementation, kg::kRopeSetRowsFused);
-        EXPECT_TRUE(kg::CheckRopeSetRows(*rotation, *store));
+  for (const unsigned rotation_kind : {0U, 1U, 2U}) {
+    const bool llama3 = rotation_kind == 1;
+    const bool proportional = rotation_kind == 2;
+    for (const bool retained : {false, true}) {
+      for (const bool measuring : {true, false}) {
+        SCOPED_TRACE(std::format("retained={} measuring={}", retained, measuring));
+        ir::Builder b;
+        const auto root = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({64, 1, 4})));
+        const auto x = b.View(root, ir::ShapeOf({64, 1, 3}), b.tensor(root).nb, 256);
+        const auto pos = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+        const auto idx = b.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({3})));
+        const ir::StateRef ref{.stage = 0, .tensor = 0, .layer = 0, .segment = 0};
+        const auto cache = b.State(ir::Dense(Encoding::kF16, ir::ShapeOf({64, 32})), ref);
+        const auto target = b.View(cache, ir::ShapeOf({64, 16}), b.tensor(cache).nb, 128);
+        const auto rope = b.Rope(x, pos, {},
+                                 {.mode = ir::RopeMode::kNeox,
+                                  .llama3 = llama3,
+                                  .dims = 64,
+                                  .original_context = llama3 ? 8192U : 0U,
+                                  .base = 10000.0F,
+                                  .scale = llama3 ? 0.125F : 1.0F,
+                                  .beta_fast = 4.0F,
+                                  .beta_slow = 1.0F,
+                                  .rotated_dims = proportional ? 32U : UINT32_MAX});
+        const auto flat = b.Reshape(rope, ir::ShapeOf({64, 3}));
+        const auto rows = b.View(flat, ir::ShapeOf({64, 3}), b.tensor(flat).nb, 0);
+        b.Output(b.CacheStore(target, rows, idx));
+        if (retained) b.Output(rope);
+        auto graph = std::move(b).Finish();
+        ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+        co::StepGraph step{
+            .graph = std::move(*graph),
+            .inputs = {{.tensor = root, .kind = co::InputKind::kFeatures},
+                       {.tensor = pos, .kind = co::InputKind::kPositions},
+                       {.tensor = idx, .kind = co::InputKind::kStoreCells, .segment = 0}},
+            .weights = {},
+            .state = {{.tensor = cache, .ref = ref, .written = true}}};
+        const std::vector<ir::TensorId> staged{root, pos, idx};
+        auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), {},
+                             {.staged = staged, .written = &kg::WrittenBytes});
+        ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+        EXPECT_EQ(std::ranges::count(plan->applied, "rope_store", &pl::Applied::pattern),
+                  retained || proportional ? 0 : 1);
+        alignas(256) std::array<std::byte, 16384> activation{};
+        alignas(256) std::array<std::byte, 4096> state{};
+        ASSERT_LE(plan->placement.extent, activation.size());
+        const kn::Addresses addresses{
+            .weight = {},
+            .weight_rows = {},
+            .state =
+                [&](const ir::StateRef& actual) {
+                  EXPECT_EQ(actual, ref);
+                  return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(state.data()));
+                },
+            .save = {},
+            .activations = measuring ? 0 : reinterpret_cast<std::uintptr_t>(activation.data()),
+            .activation_bytes = activation.size()};
+        const pl::StepShape shape{};
+        const kn::LowerInput input{*plan, step, shape, addresses};
+        auto lowered = kg::LowerStep(input, registry, Device());
+        ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+        const auto rotation = std::ranges::find_if(
+            lowered->nodes, [](const auto* node) { return node->op == GGML_OP_ROPE; });
+        const auto store = std::ranges::find_if(
+            lowered->nodes, [](const auto* node) { return node->op == GGML_OP_SET_ROWS; });
+        ASSERT_NE(rotation, lowered->nodes.end());
+        float extension = 0.0F;
+        std::memcpy(&extension, (*rotation)->op_params + 7, sizeof(extension));
+        EXPECT_FLOAT_EQ(extension, llama3 ? -1.0F : 0.0F);
+        EXPECT_EQ((*rotation)->op_params[11], proportional ? 33 : 0);
+        ASSERT_NE(store, lowered->nodes.end());
+        EXPECT_EQ((*store)->data, state.data() + 128);
+        EXPECT_EQ(reinterpret_cast<std::uintptr_t>((*rotation)->src[0]->data),
+                  reinterpret_cast<std::uintptr_t>((*rotation)->src[0]->view_src->data) + 256);
+        EXPECT_NE((*rotation)->data, (*store)->data);
+        if (retained || proportional) {
+          EXPECT_NE((*rotation)->data, (*rotation)->src[0]->data);
+          EXPECT_EQ(lowered->plan.steps.size(), 2U);
+          EXPECT_TRUE(kg::CheckRope(*rotation));
+          EXPECT_TRUE(kg::CheckSetRows(*store));
+        } else {
+          EXPECT_EQ((*rotation)->data, (*rotation)->src[0]->data);
+          ASSERT_EQ(lowered->plan.steps.size(), 1U);
+          EXPECT_EQ(lowered->plan.steps[0].implementation, kg::kRopeSetRowsFused);
+          EXPECT_TRUE(kg::CheckRopeSetRows(*rotation, *store));
+        }
+        EXPECT_EQ(lowered->extent, plan->placement.extent);
       }
-      EXPECT_EQ(lowered->extent, plan->placement.extent);
     }
   }
 }

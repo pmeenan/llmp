@@ -20,6 +20,20 @@
 
 namespace llmp::import {
 
+std::optional<std::uint64_t> SourcePartBytes(const Tensor& tensor) {
+  const auto parts = format::PartsOf(tensor.format);
+  const auto part = parts ? parts->Find(tensor.part) : std::nullopt;
+  if (!part) return std::nullopt;
+  if (!tensor.scalar_storage) return part->bytes;
+  if (tensor.part != format::PartRole::kTensorScale ||
+      tensor.format.encoding != format::Encoding::kNvfp4 || !tensor.format.params.tensor_scale ||
+      tensor.format.stacked != 1 || part->bytes != 4 ||
+      (*tensor.scalar_storage != format::Encoding::kBF16 &&
+       *tensor.scalar_storage != format::Encoding::kF16))
+    return std::nullopt;
+  return 2;
+}
+
 const Tensor* Checkpoint::FindTensor(std::string_view name) const {
   const auto found = std::ranges::find(tensors, name, &Tensor::name);
   return found == tensors.end() ? nullptr : &*found;

@@ -26,6 +26,7 @@ std::optional<std::uint64_t> SpatialElements(SpatialShape shape) {
 namespace {
 
 constexpr std::size_t kComponents = spec::kMaxComponents, kOwners = 16, kTensors = 1024;
+constexpr std::size_t kParameterChars = 64;
 static_assert(kComponents <= std::numeric_limits<std::uint16_t>::max());
 
 std::expected<std::uint64_t, std::string> Values(SpatialShape s) {
@@ -301,25 +302,52 @@ std::expected<std::uint64_t, std::string> MetadataBound(
       stage.context != 0)
     return std::unexpected("spatial compilation requires a bounded stateless component graph");
   std::size_t components = 0, source_count = 0, primitive_count = 0;
+  std::uint64_t parameter_bytes = 0;
   for (const auto& layer : stage.layers) {
     if (layer.components.empty() || layer.components.size() > kComponents - components)
       return std::unexpected("spatial component count is outside its bound");
     components += layer.components.size();
     for (const auto& ref : layer.components) {
-      if (ref.kind.size() > 64 || ref.params.size() > 32 || ref.weights.size() > 12)
+      if (ref.kind.size() > 64 || ref.params.size() > spec::kMaxParams || ref.weights.size() > 12)
         return std::unexpected("spatial component metadata exceeds its bound");
       const auto* def = Find(ref.kind, ref.version);
       const auto max_nodes = def != nullptr ? MaxSpatialNodes(*def) : 0U;
-      if (def == nullptr || !StatelessRef(*def, ref) || def->params.size() > 36 ||
-          def->roles.size() > 16 || max_nodes == 0 || max_nodes > 64)
+      if (def == nullptr || !StatelessRef(*def, ref) || def->roles.size() > 16 || max_nodes == 0 ||
+          max_nodes > 64)
         return std::unexpected("a component has no bounded stateless spatial fragment");
       primitive_count += max_nodes;
+      // Params owns every schema entry, including defaults, plus the names
+      // explicitly given. The main instance set coexists with validation or
+      // the weight visitor's set. For each set, three slots per entry cover
+      // old and grown vector storage during reallocation; charging their
+      // string payloads too covers the temporary typed/default value.
+      for (const auto& param : def->params) {
+        std::uint64_t name_bytes = 0, names = 0, value_bytes = kParameterChars + 1;
+        if (__builtin_add_overflow(std::uint64_t{param.name.size()}, std::uint64_t{1},
+                                   &name_bytes) ||
+            __builtin_mul_overflow(name_bytes, std::uint64_t{2}, &names))
+          return std::unexpected("spatial parameter metadata overflows");
+        if (param.type == ParamType::kName && !param.choices.empty()) {
+          std::uint64_t fallback_bytes = 0;
+          if (__builtin_add_overflow(std::uint64_t{param.choices.front().size()}, std::uint64_t{1},
+                                     &fallback_bytes))
+            return std::unexpected("spatial parameter metadata overflows");
+          value_bytes = std::max(value_bytes, fallback_bytes);
+        }
+        std::uint64_t entry = sizeof(spec::Param) + sizeof(std::string);
+        if (__builtin_add_overflow(entry, names, &entry) ||
+            __builtin_add_overflow(entry, value_bytes, &entry) ||
+            __builtin_mul_overflow(entry, std::uint64_t{2 * 3}, &entry) ||
+            __builtin_add_overflow(parameter_bytes, entry, &parameter_bytes))
+          return std::unexpected("spatial parameter metadata overflows");
+      }
       for (const auto& param : ref.params)
-        if (param.name.size() > 64 || (!std::holds_alternative<std::int64_t>(param.value) &&
-                                       !std::holds_alternative<double>(param.value) &&
-                                       !std::holds_alternative<bool>(param.value) &&
-                                       !(std::holds_alternative<std::string>(param.value) &&
-                                         std::get<std::string>(param.value).size() <= 64)))
+        if (param.name.size() > kParameterChars ||
+            (!std::holds_alternative<std::int64_t>(param.value) &&
+             !std::holds_alternative<double>(param.value) &&
+             !std::holds_alternative<bool>(param.value) &&
+             !(std::holds_alternative<std::string>(param.value) &&
+               std::get<std::string>(param.value).size() <= kParameterChars)))
           return std::unexpected("spatial parameters are bounded scalar numbers, flags or names");
       for (const auto& weight : ref.weights)
         if (weight.role.size() > 64 || weight.tensor.size() > 256 || !weight.stage.empty())
@@ -384,15 +412,19 @@ std::expected<std::uint64_t, std::string> MetadataBound(
   }
   // Bounded roles/component, one input/owner and the declared primitive limit/component/owner.
   // 4KiB per node/tensor covers graph+clone+rewrite/placement metadata, and
-  // 4KiB per source/component covers bounded names/Params/visitor copies.
+  // 4KiB per source/component covers bounded names and visitor copies;
+  // normalized parameter ownership is charged from the schema separately.
   static_assert(sizeof(ir::Node) <= 256 && sizeof(ir::TensorDesc) <= 256);
   const auto nodes = owners.size() * (primitive_count + 1) + options.inputs.size() + 2 * components;
   // Explicit outputs add owned port/shape lists and graph output retention.
-  // Legacy single-output metadata payment and identity remain unchanged.
   // Layout sinking makes the graph again: at most a node's own copy, a
   // view, a permute and a Cont at each of its places.
-  return 4096ULL * ((options.sink_layouts ? 6 : 2) * nodes + source_count + 4 * components + 16 +
-                    owners.size() * options.exports.size() + 2 * options.inputs.size());
+  std::uint64_t metadata =
+      4096ULL * ((options.sink_layouts ? 6 : 2) * nodes + source_count + 4 * components + 16 +
+                 owners.size() * options.exports.size() + 2 * options.inputs.size());
+  if (__builtin_add_overflow(metadata, parameter_bytes, &metadata))
+    return std::unexpected("spatial compiler metadata overflows");
+  return metadata;
 }
 struct PaymentOwner {
   SpatialPayment calls;

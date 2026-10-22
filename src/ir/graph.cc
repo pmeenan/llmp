@@ -244,7 +244,7 @@ Graph Graph::Clone() const {
 
 base::Sha256Digest Graph::Digest() const {
   Hasher h;
-  h.Bytes(std::as_bytes(std::span(std::string_view("llmp.ir.graph.v1"))));
+  h.Bytes(std::as_bytes(std::span(std::string_view("llmp.ir.graph.v2"))));
   h.U32(kOpSetVersion);
 
   // Inputs are named by their position among the inputs.

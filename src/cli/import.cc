@@ -16,7 +16,7 @@
 #include "cli/cli.h"
 #include "import/archive_input.h"
 #include "import/image_pipeline.h"
-#include "import/normalizers.h"
+#include "import/normalize.h"
 #include "import/reader.h"
 #include "import/writer.h"
 #include "spec/stored.h"
@@ -164,26 +164,22 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     }
     return kExitOk;
   };
-  const auto publish = [&](const auto& plan, const import::Checkpoint& checkpoint,
+  const auto publish = [&](const import::NormalizedPlan& plan, const import::Checkpoint& checkpoint,
                            std::uint64_t used) {
-    if constexpr (requires { plan.metadata(); }) {
-      for (const auto& use : plan.metadata()) {
-        if (use.classification == import::MetadataClass::kAuxiliary &&
-            plan.auxiliary_namespaces()[use.destination].prefix.empty())
-          warn(checkpoint.metadata[use.source].key,
-               "unread metadata retained as source provenance");
+    for (const auto& use : plan.metadata()) {
+      if (use.classification == import::MetadataClass::kAuxiliary &&
+          plan.auxiliary_namespaces()[use.destination].prefix.empty())
+        warn(checkpoint.metadata[use.source].key, "unread metadata retained as source provenance");
+    }
+    if (const auto* table =
+            import::FindSourceMapping(checkpoint.container, checkpoint.architecture))
+      for (const auto& rule : table->lists) {
+        const auto canonical = spec::CanonicalKey(*table->architecture, rule.key);
+        const auto* value = checkpoint.FindValue(canonical);
+        const auto* labels = value ? std::get_if<std::vector<std::int64_t>>(value) : nullptr;
+        if (rule.allow_unstated_extra && labels && labels->size() > plan.cost().layers)
+          warn(canonical, "trailing unimported layer labels retained as source provenance");
       }
-    }
-    if constexpr (requires { plan.metadata(); }) {
-      if (const auto* table =
-              import::FindSourceMapping(checkpoint.container, checkpoint.architecture))
-        for (const auto& rule : table->lists) {
-          const auto* value = checkpoint.FindValue(rule.key);
-          const auto* labels = value ? std::get_if<std::vector<std::int64_t>>(value) : nullptr;
-          if (rule.allow_unstated_extra && labels && labels->size() > plan.cost().layers)
-            warn(rule.key, "trailing unimported layer labels retained as source provenance");
-        }
-    }
     auto result = import::WriteArtifact(
         plan,
         {.store = store, .build = build, .expected = expected, .metadata_bytes = metadata - used});
@@ -194,10 +190,8 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     return bound.metadata_bytes <= metadata;
   };
   if (component == "mtp") {
-    const auto* normalizer = import::FindNormalizer(*input);
-    if (!normalizer || !normalizer->drafter || !normalizer->drafter_bound)
-      return Failure(err, {.rule = import::Rule::kUnsupported,
-                           .reason = "no registered normalizer recognizes this drafter component"});
+    if (auto prebound = import::NormalizationBound(*input, {.component = component}); !prebound)
+      return Failure(err, prebound.error());
     if (!target)
       return Failure(err, {.rule = import::Rule::kUnsupported,
                            .reason = "drafter import requires --target TARGET_ID in --store"});
@@ -213,13 +207,15 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
       list_name = list->file.name;
       head = std::move(*list);
     }
-    auto bound = normalizer->drafter_bound(*input, head ? head->ids.size() : 0);
+    auto bound = import::NormalizationBound(
+        *input, {.component = component, .draft_head_rows = head ? head->ids.size() : 0});
     if (!bound) return Failure(err, bound.error());
     if (!funded(*bound))
       return Failure(err, {.rule = import::Rule::kBounds,
                            .reason = "normalization exceeds the requested metadata budget"});
-    auto plan = normalizer->drafter(*input, std::move(head),
-                                    {bound->metadata_bytes, bound->work_units}, &*target);
+    auto plan =
+        import::Normalize(*input, {bound->metadata_bytes, bound->work_units}, &*target,
+                          {.component = std::string(component), .draft_head = std::move(head)});
     if (!plan) return Failure(err, plan.error());
     // The archive's identities of the files it reads (the head list is
     // the caller's, not the archive's).
@@ -241,18 +237,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     if (!result) return Failure(err, result.error());
     return finish(*result, *input, false, true, list_name);
   }
-  if (import::IsIndexedTarget(*input)) {
-    if (target) return usage();
-    auto bound = import::IndexedTargetBound(*input);
-    if (!bound) return Failure(err, bound.error());
-    if (!funded(*bound))
-      return Failure(err, {.rule = import::Rule::kBounds,
-                           .reason = "normalization exceeds the requested metadata budget"});
-    auto plan = import::NormalizeIndexedTarget(std::move(*input),
-                                               {bound->metadata_bytes, bound->work_units});
-    if (!plan) return Failure(err, plan.error());
-    return publish(*plan, plan->parts().source(), bound->metadata_bytes);
-  }
+  if (target && (input->container == "safetensors" || input->container == "mlx")) return usage();
   if (import::IsImagePipeline(*input)) {
     if (target) return usage();
     auto bound = import::ImagePipelineBound(*input);
@@ -263,7 +248,8 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     auto plan = import::PlanImagePipeline(*input);
     if (!plan) return Failure(err, plan.error());
 
-    if (auto valid = import::ValidateCompositionFiles(input->files); !valid)
+    const auto& comp_files = plan->files.empty() ? input->files : plan->files;
+    if (auto valid = import::ValidateCompositionFiles(comp_files); !valid)
       return Failure(err, valid.error());
     std::vector<artifact::CompositionComponent> published_components;
     published_components.reserve(plan->components.size());
@@ -296,7 +282,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
         .build = build,
         .architecture = input->architecture,
         .components = std::move(published_components),
-        .files = input->files,
+        .files = comp_files,
         .expected = expected,
         .spec = plan->family,
     });

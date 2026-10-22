@@ -3,8 +3,7 @@
 
 // Qwen3.8's architecture mappings (spec/mapping.h), as llama.cpp's qwen4exp
 // GGUF names its tensors and keys (b29c606e; conversion at b11254) and as
-// the ModelOpt and MLX imports (import/modelopt_qwen38.h, mlx_qwen38.h)
-// write the same names.
+// the ModelOpt and MLX imports (import/normalize.h) write the same names.
 //
 // "qwen4exp" (Qwen3.8 Flash Next, its ModelOpt NVFP4/MXFP8 import and its
 // GGUF quantizations, through one spec): hyper-connection streams
@@ -71,7 +70,7 @@ const Mapping& Qwen38NativeMapping();
 // Container-neutral canonical recipe for synthetic component/lowering tables.
 // Runtime resolves the native variants below from actual source provenance.
 const Mapping& Qwen38MtpMapping();
-// The native importer's MTP drafter (v1, import/modelopt_qwen38.h): source
+// The native importer's MTP drafter (v1, import/normalize.h): source
 // encodings but its norms (the importer's applied norm.plus_one, its
 // source's fold), the routed experts' NVFP4 parts by projection, the
 // converted drafter's parameters and policy.

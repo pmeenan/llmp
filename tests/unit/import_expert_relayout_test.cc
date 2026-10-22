@@ -259,6 +259,47 @@ TEST(ImportExpertRelayoutTest, RelaidTablesDecodeToTheSplitSourcesValues) {
 
 // A row table gathered from split row blocks, row-interleaved: each row's
 // codes then its scales, decoding to the blocks' values in order.
+TEST(ImportExpertRelayoutTest, NonAtomExpertRowsKeepPackedBytesAndSeparateTheirScalars) {
+  Source source;
+  TensorAssembly output{.name = "blk.0.ffn_down_exps.weight", .format = Split(64, 704, kExperts)};
+  for (const auto role : {PartRole::kCodes, PartRole::kBlockScales, PartRole::kTensorScale}) {
+    PartAssembly part{.part = role, .kind = PartAssemblyKind::kMatrices};
+    for (std::uint32_t expert = 0; expert < kExperts; ++expert) {
+      const auto name = std::format("{}.{}", expert, static_cast<int>(role));
+      source.Add(name, Split(64, 704), role, expert);
+      part.sources.push_back(source.index.at(name));
+    }
+    output.parts.push_back(std::move(part));
+  }
+  source.checkpoint.files.push_back({.name = "model.safetensors", .bytes = source.file.size()});
+  std::vector<TensorAssembly> outputs{output};
+  const ExpertTable table{.output = 0,
+                          .projection = ExpertProjection::kDown,
+                          .name = output.name,
+                          .scales = "projection_scales"};
+  auto changed = RelayoutExpertTables(outputs, std::span(&table, 1));
+  ASSERT_TRUE(changed);
+  EXPECT_EQ(changed->tables, 0U);
+  EXPECT_EQ(changed->scale_vectors, 1U);
+  auto cost = IndexedPartPlan::Bound(source.checkpoint, outputs);
+  ASSERT_TRUE(cost);
+  const std::vector<SourceDisposition> dispositions(source.checkpoint.tensors.size());
+  auto plan = IndexedPartPlan::Make(std::move(source.checkpoint), outputs, dispositions, *cost);
+  ASSERT_TRUE(plan) << plan.error().ToString();
+  const auto published = Publish(*plan, source.file);
+  for (const auto role : {PartRole::kCodes, PartRole::kBlockScales, PartRole::kTensorScale}) {
+    std::vector<std::byte> expected;
+    for (const auto& member : plan->source().tensors) {
+      if (member.part != role) continue;
+      const auto bytes = std::span(source.file).subspan(member.extent.offset, member.extent.bytes);
+      expected.insert(expected.end(), bytes.begin(), bytes.end());
+    }
+    EXPECT_EQ(published.at({role == PartRole::kTensorScale ? 1U : 0U,
+                            role == PartRole::kTensorScale ? PartRole::kData : role}),
+              expected);
+  }
+}
+
 TEST(ImportExpertRelayoutTest, RowTablesInterleaveToTheSplitBlocksValues) {
   constexpr std::uint64_t kK = 64;
   const std::array<std::uint64_t, 2> blocks{5, 3};
@@ -347,26 +388,47 @@ TEST(ImportExpertRelayoutTest, RowTablesRelayOutOnlyWhatAKernelReadsInterleaved)
 }
 
 TEST(ImportExpertRelayoutTest, NamesExpertTablesByCanonicalRole) {
-  const auto gate = ExpertTableOf("blk.12.ffn_gate_exps.weight", 3);
-  ASSERT_TRUE(gate);
-  EXPECT_EQ(gate->output, 3U);
-  EXPECT_EQ(gate->moe, 12U);
-  EXPECT_EQ(gate->projection, ExpertProjection::kGate);
-  EXPECT_EQ(gate->name, "blk.12.ffn_gate_exps.weight");
-  EXPECT_EQ(gate->stacked, "blk.12.ffn_gate_up_exps.weight");
-  EXPECT_EQ(gate->scales, "blk.12.ffn_gate_exps.weight_scale_2");
-  const auto down = ExpertTableOf("blk.0.ffn_down_exps.weight", 0);
-  ASSERT_TRUE(down);
-  EXPECT_EQ(down->projection, ExpertProjection::kDown);
-  EXPECT_TRUE(down->stacked.empty());
-  EXPECT_EQ(ExpertTableOf("blk.0.ffn_up_exps.weight", 0)->projection, ExpertProjection::kUp);
+  spec::ModelSpec spec;
+  spec.stages.resize(1);
+  spec.stages[0].layers.resize(13);
+  for (std::uint32_t l = 0; l < 13; ++l) {
+    spec::ComponentRef moe{.kind = "ffn.moe", .version = 1};
+    moe.weights.push_back({.role = "gate_experts",
+                           .tensor = std::format("blk.{}.ffn_gate_exps.weight", l),
+                           .part = PartRole::kCodes});
+    moe.weights.push_back({.role = "up_experts",
+                           .tensor = std::format("blk.{}.ffn_up_exps.weight", l),
+                           .part = PartRole::kCodes});
+    moe.weights.push_back({.role = "down_experts",
+                           .tensor = std::format("blk.{}.ffn_down_exps.weight", l),
+                           .part = PartRole::kCodes});
+    spec.stages[0].layers[l].components.push_back(std::move(moe));
+  }
+  const auto gate = ExpertTableOf(TensorAssembly{.name = "blk.12.ffn_gate_exps.weight"}, 3, &spec);
+  ASSERT_TRUE(gate && *gate);
+  EXPECT_EQ((*gate)->output, 3U);
+  EXPECT_EQ((*gate)->moe, 12U);
+  EXPECT_EQ((*gate)->projection, ExpertProjection::kGate);
+  EXPECT_EQ((*gate)->name, "blk.12.ffn_gate_exps.weight");
+  EXPECT_EQ((*gate)->stacked, "blk.12.ffn_gate_up_exps.weight");
+  EXPECT_EQ((*gate)->scales, "blk.12.ffn_gate_exps.weight_scale_2");
+  const auto down = ExpertTableOf(TensorAssembly{.name = "blk.0.ffn_down_exps.weight"}, 0, &spec);
+  ASSERT_TRUE(down && *down);
+  EXPECT_EQ((*down)->projection, ExpertProjection::kDown);
+  EXPECT_TRUE((*down)->stacked.empty());
+  const auto up = ExpertTableOf(TensorAssembly{.name = "blk.0.ffn_up_exps.weight"}, 0, &spec);
+  ASSERT_TRUE(up && *up);
+  EXPECT_EQ((*up)->projection, ExpertProjection::kUp);
   for (const std::string_view bad :
        {"blk..ffn_gate_exps.weight", "blk.01.ffn_gate_exps.weight", "blk.x.ffn_gate_exps.weight",
         "blk.-1.ffn_gate_exps.weight", "blk.65536.ffn_gate_exps.weight",
         "blk.123456.ffn_gate_exps.weight", "blk.1ffn_gate_exps.weight", "blk_exps.weight",
         "blk.1.ffn_gate_up_exps.weight", "blk.1.ffn_gate_exps.weight_scale",
-        "blk.1.ffn_gate_shexp.weight", "blk.1.2.ffn_gate_exps.weight", "token_embd.weight"})
-    EXPECT_FALSE(ExpertTableOf(bad, 0)) << bad;
+        "blk.1.ffn_gate_shexp.weight", "blk.1.2.ffn_gate_exps.weight", "token_embd.weight"}) {
+    const auto res = ExpertTableOf(TensorAssembly{.name = std::string(bad)}, 0, &spec);
+    ASSERT_TRUE(res);
+    EXPECT_FALSE(*res) << bad;
+  }
 }
 
 // A gate without its MoE's up is relaid out alone, under its own name; a
@@ -377,10 +439,17 @@ TEST(ImportExpertRelayoutTest, LoneGatesKeepTheirNameAndPartlessTablesAreRefused
   for (const auto role : {PartRole::kCodes, PartRole::kBlockScales, PartRole::kTensorScale})
     outputs[0].parts.push_back(
         {.part = role, .kind = PartAssemblyKind::kMatrices, .sources = {0, 1}});
-  const auto gate = ExpertTableOf(outputs[0].name, 0);
-  ASSERT_TRUE(gate);
+  spec::ModelSpec spec;
+  spec.stages.resize(1);
+  spec.stages[0].layers.resize(1);
+  spec::ComponentRef moe{.kind = "ffn.moe", .version = 1};
+  moe.weights.push_back(
+      {.role = "gate_experts", .tensor = "blk.0.ffn_gate_exps.weight", .part = PartRole::kCodes});
+  spec.stages[0].layers[0].components.push_back(std::move(moe));
+  const auto gate = ExpertTableOf(outputs[0], 0, &spec);
+  ASSERT_TRUE(gate && *gate);
   auto lone = outputs;
-  auto relaid = RelayoutExpertTables(lone, std::span(&*gate, 1));
+  auto relaid = RelayoutExpertTables(lone, std::span(&**gate, 1));
   ASSERT_TRUE(relaid);
   EXPECT_EQ(relaid->stacked, 0U);
   ASSERT_EQ(lone.size(), 2U);
@@ -389,7 +458,7 @@ TEST(ImportExpertRelayoutTest, LoneGatesKeepTheirNameAndPartlessTablesAreRefused
   EXPECT_EQ(lone[1].name, "blk.0.ffn_gate_exps.weight_scale_2");
   auto partless = outputs;
   partless[0].parts.erase(partless[0].parts.begin() + 1);  // its block scales
-  EXPECT_FALSE(RelayoutExpertTables(partless, std::span(&*gate, 1)));
+  EXPECT_FALSE(RelayoutExpertTables(partless, std::span(&**gate, 1)));
 }
 
 TEST(ImportExpertRelayoutTest, KeepsTablesItCannotRelayLosslesslyAndRefusesBadLists) {
@@ -405,8 +474,14 @@ TEST(ImportExpertRelayoutTest, KeepsTablesItCannotRelayLosslesslyAndRefusesBadLi
   auto kept = RelayoutExpertTables(outputs, down);
   ASSERT_TRUE(kept);
   EXPECT_EQ(kept->tables, 0U);
-  ASSERT_EQ(outputs.size(), 1U);
+  ASSERT_EQ(outputs.size(), 2U);
+  EXPECT_EQ(kept->scale_vectors, 1U);
   EXPECT_EQ(outputs[0].format.layout, Layout::kSplit);
+  EXPECT_FALSE(outputs[0].format.params.tensor_scale);
+  EXPECT_TRUE(outputs[0].separate_tensor_scale);
+  EXPECT_EQ(outputs[0].parts.size(), 2U);
+  EXPECT_EQ(outputs[1].name, "s");
+  EXPECT_EQ(outputs[1].parts.front().sources, (std::vector<std::uint32_t>{0, 1}));
   // A table that does not relay out need not be gathered expert by expert:
   // an MLX drafter's pre-stacked affine experts are one source per part.
   std::vector<TensorAssembly> stacked(1);
@@ -423,7 +498,8 @@ TEST(ImportExpertRelayoutTest, KeepsTablesItCannotRelayLosslesslyAndRefusesBadLi
   EXPECT_EQ(stacked[0].parts.size(), 2U);
   const std::array<ExpertTable, 2> twice{down[0], down[0]};
   EXPECT_FALSE(RelayoutExpertTables(outputs, twice));
-  const std::array<ExpertTable, 1> outside{{{.output = 1, .name = "x"}}};
+  const std::array<ExpertTable, 1> outside{
+      {{.output = static_cast<std::uint32_t>(outputs.size()), .name = "x"}}};
   EXPECT_FALSE(RelayoutExpertTables(outputs, outside));
 }
 

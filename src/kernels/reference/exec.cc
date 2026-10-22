@@ -1356,11 +1356,14 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
       // each later step rounded to F32 as rope.cu forms it.
       const float theta_scale = RoundF32(std::pow(
           static_cast<double>(p.base), static_cast<double>(-2.0f / static_cast<float>(p.dims))));
+      const bool llama3 = p.llama3;
       const std::array<float, 2> corr =
-          p.ext_factor != 0.0f
+          (!llama3 && p.ext_factor > 0.0f)
               ? CorrDims(p.dims, p.original_context, p.base, p.beta_fast, p.beta_slow)
               : std::array<float, 2>{0.0f, 0.0f};
-      const std::uint64_t pairs = p.mode == ir::RopeMode::kVision ? p.dims : p.dims / 2;
+      const std::uint64_t pairs = p.rotated_dims != UINT32_MAX      ? p.rotated_dims / 2
+                                  : p.mode == ir::RopeMode::kVision ? p.dims
+                                                                    : p.dims / 2;
       const auto& sec = p.sections;
       const std::uint64_t sect_dims = std::uint64_t{sec[0]} + sec[1] + sec[2] + sec[3];
       for (std::uint64_t i3 = 0; i3 < xn[3]; ++i3) {
@@ -1420,24 +1423,49 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
                 }
                 const auto position =
                     static_cast<float>(pos[static_cast<std::size_t>((section * t_count) + t)]);
-                const float power = RoundF32(std::pow(static_cast<double>(theta_scale), exponent));
-                float extrap = position * power;
-                if (!freq.empty()) {
-                  extrap /= static_cast<float>(freq[static_cast<std::size_t>(pr)]);
-                }
-                const float interp = p.scale * extrap;
-                float theta = interp;
+                float theta = 0.0f;
                 float mscale = p.attn_factor;
-                if (p.ext_factor != 0.0f) {
-                  const float y =
-                      (static_cast<float>(pr) - corr[0]) / std::max(0.001f, corr[1] - corr[0]);
-                  const float ramp = (1.0f - std::min(1.0f, std::max(0.0f, y))) * p.ext_factor;
-                  const float kept = interp * (1.0f - ramp);
-                  const float mixed = extrap * ramp;
-                  theta = kept + mixed;
-                  // Two statements: no contraction into a fused multiply-add.
-                  const float magnitude = 0.1f * std::log(1.0f / p.scale);
-                  mscale *= 1.0f + magnitude;
+                if (llama3) {
+                  const float base_theta = RoundF32(std::pow(
+                      static_cast<double>(p.base), (2.0 * exponent) / static_cast<double>(p.dims)));
+                  const float freq_val = 1.0f / base_theta;
+                  const float old_ctx = static_cast<float>(p.original_context);
+                  const float low_freq_wavelen = old_ctx / p.beta_slow;
+                  const float high_freq_wavelen = old_ctx / p.beta_fast;
+                  const float wavelen = 6.28318530717958647692f / freq_val;
+                  float scaled_freq = freq_val;
+                  if (wavelen > low_freq_wavelen) {
+                    scaled_freq = freq_val * p.scale;
+                  } else if (wavelen > high_freq_wavelen && p.beta_fast > p.beta_slow) {
+                    const float smooth =
+                        (old_ctx / wavelen - p.beta_slow) / (p.beta_fast - p.beta_slow);
+                    scaled_freq = ((1.0f - smooth) * freq_val * p.scale) + (smooth * freq_val);
+                  }
+                  theta = position * scaled_freq;
+                  if (!freq.empty()) {
+                    theta /= static_cast<float>(freq[static_cast<std::size_t>(pr)]);
+                  }
+                  mscale = p.attn_factor != 0.0f ? p.attn_factor : 1.0f;
+                } else {
+                  const float power =
+                      RoundF32(std::pow(static_cast<double>(theta_scale), exponent));
+                  float extrap = position * power;
+                  if (!freq.empty()) {
+                    extrap /= static_cast<float>(freq[static_cast<std::size_t>(pr)]);
+                  }
+                  const float interp = p.scale * extrap;
+                  theta = interp;
+                  if (p.ext_factor > 0.0f) {
+                    const float y =
+                        (static_cast<float>(pr) - corr[0]) / std::max(0.001f, corr[1] - corr[0]);
+                    const float ramp = (1.0f - std::min(1.0f, std::max(0.0f, y))) * p.ext_factor;
+                    const float kept = interp * (1.0f - ramp);
+                    const float mixed = extrap * ramp;
+                    theta = kept + mixed;
+                    // Two statements: no contraction into a fused multiply-add.
+                    const float magnitude = 0.1f * std::log(1.0f / p.scale);
+                    mscale *= 1.0f + magnitude;
+                  }
                 }
                 c = std::cos(static_cast<double>(theta)) * mscale;
                 s = std::sin(static_cast<double>(theta)) * mscale;

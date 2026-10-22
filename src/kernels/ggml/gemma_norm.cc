@@ -55,8 +55,8 @@ std::expected<void, KernelFailure> CheckGemmaNormRope(const ggml_tensor* norm,
   if (!OperandChains(rope)) return Rejected("invalid RoPE operand view chain");
   if (rope == nullptr || rope->op != GGML_OP_ROPE || !IsF32(rope) || rope->src[0] != mul ||
       (mul->ne[0] <= 0 || mul->ne[0] % 2 != 0 || mul->ne[0] > std::numeric_limits<int>::max()) ||
-      rope->op_params[1] != mul->ne[0] || rope->op_params[4] <= 0 || !Extent(rope) ||
-      !Packed(mul) || !Packed(rope))
+      rope->op_params[1] != mul->ne[0] || rope->op_params[4] <= 0 || rope->op_params[11] != 0 ||
+      !Extent(rope) || !Packed(mul) || !Packed(rope))
     return Rejected("norm/RoPE requires full even-width rotation and packed tensors");
   if (auto r = CheckRope(rope); !r) return r;
   if (Elided(rope->src[1], norm, mul) || Elided(rope->src[2], norm, mul))

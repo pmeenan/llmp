@@ -74,6 +74,11 @@ constexpr std::array kNgramParams{
     ParamSpec{.name = "heads_per_ngram", .type = ParamType::kInt, .least = 1, .most = 64},
     // Values a table row holds.
     ParamSpec{.name = "row", .type = ParamType::kInt, .least = 1, .most = 1 << 16},
+    ParamSpec{.name = "declared_width",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 1,
+              .most = kInt64},
     // The token that cuts the context (EOS).
     ParamSpec{.name = "eos", .type = ParamType::kInt, .least = 0, .most = kInt64},
     // The hash: a multiplier a context place, an offset and a vocabulary a head.
@@ -90,6 +95,10 @@ std::uint64_t NgramHeads(const Instance& in) {
 
 std::expected<std::vector<RoleShape>, std::string> NgramShapes(const Instance& in) {
   const std::uint64_t heads = NgramHeads(in);
+  if (in.params.Given("declared_width") &&
+      static_cast<std::uint64_t>(in.params.Int("declared_width")) !=
+          heads * static_cast<std::uint64_t>(in.params.Int("row")))
+    return std::unexpected("declared side width disagrees with its heads and table row width");
   if (in.params.Ints("multipliers").size() != static_cast<std::size_t>(in.params.Int("ngram")) ||
       in.params.Ints("offsets").size() != heads || in.params.Ints("vocab").size() != heads) {
     return std::unexpected("a multiplier a context place, an offset and a vocabulary a head");
@@ -183,6 +192,11 @@ constexpr std::array kPleParams{
     // The side input it reads (spec.h SideInput; its width is the key and
     // value products' input's).
     ParamSpec{.name = "input", .type = ParamType::kName},
+    ParamSpec{.name = "input_width",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 1,
+              .most = kInt64},
     // The convolution's kernel and its dilation (the n-gram size).
     ParamSpec{.name = "conv", .type = ParamType::kInt, .least = 2, .most = 64},
     ParamSpec{.name = "dilation", .type = ParamType::kInt, .least = 1, .most = 64},
@@ -218,9 +232,10 @@ std::expected<std::vector<RoleShape>, std::string> PleShapes(const Instance& in)
     return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
   const PleDims d = PleDimsOf(in);
   if (d.hc < 2) return std::unexpected("an n-gram block in a stage of one stream");
-  return std::vector<RoleShape>{Role(kKey, {0, d.hw()}),   Role(kValue, {0, d.width}),
-                                Role(kNormKey, {d.hw()}),  Role(kNormQuery, {d.hw()}),
-                                Role(kNormConv, {d.hw()}), Role(kConvW, {d.conv, d.hw()})};
+  const auto input = static_cast<std::uint64_t>(in.params.Int("input_width"));
+  return std::vector<RoleShape>{Role(kKey, {input, d.hw()}), Role(kValue, {input, d.width}),
+                                Role(kNormKey, {d.hw()}),    Role(kNormQuery, {d.hw()}),
+                                Role(kNormConv, {d.hw()}),   Role(kConvW, {d.conv, d.hw()})};
 }
 
 model::StateContract PleState(const Instance& in) {

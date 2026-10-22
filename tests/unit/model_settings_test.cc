@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -29,6 +30,7 @@
 #include "runtime/approvals.h"
 #include "runtime/component_admission.h"
 #include "spec/mapping.h"
+#include "spec/spec.h"
 
 namespace {
 
@@ -693,122 +695,200 @@ TEST(ModelSettings, ArtifactFactsRefuseV0Artifacts) {
   ASSERT_FALSE(alone.has_value());
 }
 
-// The facts kept metadata gives: DeepSeek V4 Flash's GGUF keys as its
-// artifact keeps them, a Qwen config.json's text_config, rope scaling,
-// generation_config.json's sampling defaults (ahead of a GGUF's), and
-// sampling defaults no request could ask for ignored.
+// The facts a stored v1 spec gives: stage.context, stage.sampling
+// (temperature, top_p, top_k, min_p, including greedy temperature 0.0),
+// and a standalone two-stage drafter spec.json composed with its target
+// without reading checkpoint metadata sidecars.
 TEST(ModelSettings, ReadsFactsFromMetadata) {
-  using llmp::artifact::GgufValue;
-  const auto integer = [](std::int64_t v) {
-    GgufValue g;
-    g.kind = GgufValue::Kind::kInteger;
-    g.integer = v;
-    return g;
+  const std::filesystem::path scratch =
+      std::filesystem::path(testing::TempDir()) / "model-settings-stored-spec";
+  std::error_code error;
+  std::filesystem::remove_all(scratch, error);
+  std::filesystem::create_directories(scratch, error);
+
+  const auto make_stage = [](std::string name, llmp::spec::StageRole role, std::uint32_t artifact,
+                             std::uint32_t context, llmp::spec::SamplingDefaults sampling) {
+    llmp::spec::Stage s{
+        .name = std::move(name),
+        .role = role,
+        .artifact = artifact,
+        .context = context,
+        .sampling = sampling,
+    };
+    s.embedding =
+        llmp::spec::ComponentRef{.kind = "embedding.token",
+                                 .version = 1,
+                                 .params = {{"scale", 1.0}},
+                                 .weights = {{.role = "table", .tensor = "token_embd.weight"}}};
+    s.stream.width = 32;
+    s.layers.push_back(llmp::spec::Layer{
+        .components = {llmp::spec::ComponentRef{
+            .kind = "norm.rms",
+            .version = 1,
+            .params = {{"eps", 0.00001}},
+            .weights = {{.role = "weight", .tensor = "blk.0.attn_norm.weight"}}}}});
+    s.heads.output =
+        llmp::spec::ComponentRef{.kind = "head.linear",
+                                 .version = 1,
+                                 .params = {{"rows", std::int64_t{64}}},
+                                 .weights = {{.role = "weight", .tensor = "output.weight"}}};
+    return s;
   };
-  const auto real = [](double v) {
-    GgufValue g;
-    g.kind = GgufValue::Kind::kFloat;
-    g.real = v;
-    return g;
+  const auto publish_v1 = [&](const std::filesystem::path& root, std::string arch,
+                              const llmp::spec::ModelSpec& spec) {
+    llmp::test::V1Plan plan;
+    plan.architecture = std::move(arch);
+    plan.spec = llmp::spec::ToJson(spec);
+    plan.groups = {llmp::test::V1Group{
+        .kind = llmp::artifact::GroupKind::kTable,
+        .resources = {{.name = "token_embd.weight",
+                       .aliases = {"output.weight"},
+                       .format = {.encoding = llmp::format::Encoding::kF32,
+                                  .layout = llmp::format::Layout::kDense,
+                                  .shape = {.ne = {32, 64, 1, 1}, .rank = 2}},
+                       .rows = true},
+                      {.name = "blk.0.attn_norm.weight",
+                       .format = {.encoding = llmp::format::Encoding::kF32,
+                                  .layout = llmp::format::Layout::kDense,
+                                  .shape = {.ne = {32, 1, 1, 1}, .rank = 1}}}}}};
+    return llmp::test::Publish(root, llmp::test::Render(plan));
   };
-  ArtifactFacts ds = Facts("deepseek4");
-  EXPECT_EQ(llmp::runtime::GgufFactKeys("deepseek4").front(), "deepseek4.context_length");
-  llmp::artifact::GgufMetadata gguf;
-  gguf["deepseek4.context_length"] = integer(1048576);
-  gguf["deepseek4.rope.scaling.factor"] = real(16.0);
-  gguf["deepseek4.rope.scaling.original_context_length"] = integer(65536);
-  gguf["general.sampling.temp"] = real(1.0);
-  gguf["general.sampling.top_p"] = real(1.0);
-  gguf["general.sampling.top_k"] = integer(-1);  // not a request's: ignored
-  llmp::runtime::FactsFromGguf(gguf, ds);
-  EXPECT_EQ(ds.trained_context, 1048576U);
-  EXPECT_EQ(ds.trained_context_from, "deepseek4.context_length");
-  EXPECT_EQ(ds.temperature, 1.0);
-  EXPECT_EQ(ds.top_p, 1.0);
-  EXPECT_FALSE(ds.top_k.has_value());
-  EXPECT_EQ(ds.sampling_from, "general.sampling");
 
-  // A GGUF that states the original context: scaled.
-  ArtifactFacts scaled = Facts("llama");
-  llmp::artifact::GgufMetadata original;
-  original["llama.context_length"] = integer(32768);
-  original["llama.rope.scaling.factor"] = real(4.0);
-  original["llama.rope.scaling.original_context_length"] = integer(32768);
-  llmp::runtime::FactsFromGguf(original, scaled);
-  EXPECT_EQ(scaled.trained_context, 131072U);
-  EXPECT_THAT(scaled.trained_context_from, HasSubstr("rope.scaling.factor"));
+  llmp::spec::ModelSpec ds_spec{
+      .pipeline = llmp::spec::PipelineKind::kLlm,
+      .stages = {make_stage("target", llmp::spec::StageRole::kTarget, 0, 1048576,
+                            {.temperature = 0.6, .top_p = 0.95, .top_k = 20, .min_p = 0.05})}};
+  llmp::spec::Canonicalize(ds_spec);
+  const auto ds_path = publish_v1(scratch / "ds", "deepseek4", ds_spec);
+  const auto ds_art = llmp::artifact::Artifact::Open(ds_path);
+  ASSERT_TRUE(ds_art.has_value()) << (ds_art ? "" : ds_art.error().ToString());
+  const auto ds = llmp::runtime::ArtifactFactsOf(*ds_art, nullptr);
+  ASSERT_TRUE(ds.has_value()) << (ds ? "" : ds.error());
+  EXPECT_EQ(ds->trained_context, 1048576U);
+  EXPECT_EQ(ds->trained_context_from, "the admitted stored spec");
+  EXPECT_EQ(ds->temperature, 0.6);
+  EXPECT_EQ(ds->top_p, 0.95);
+  EXPECT_EQ(ds->top_k, 20U);
+  EXPECT_EQ(ds->min_p, 0.05);
+  EXPECT_EQ(ds->sampling_from, "the admitted stored spec");
 
-  ArtifactFacts qwen = Facts("qwen4exp");
-  ASSERT_TRUE(
-      llmp::runtime::FactsFromGenerationConfig(
-          R"({"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":2.0,"do_sample":true})", qwen)
-          .has_value());
-  ASSERT_TRUE(llmp::runtime::FactsFromConfigJson(
-                  R"({"architectures":["X"],"text_config":{"max_position_embeddings":262144,)"
-                  R"("rope_scaling":{"factor":2.0,"original_max_position_embeddings":32768}}})",
-                  qwen)
-                  .has_value());
-  EXPECT_EQ(qwen.trained_context, 262144U);  // longer than 32,768 times 2
-  EXPECT_EQ(qwen.trained_context_from, "config.json text_config.max_position_embeddings");
-  EXPECT_EQ(qwen.temperature, 0.6);
-  EXPECT_EQ(qwen.top_k, 20);
-  EXPECT_FALSE(qwen.min_p.has_value());  // 2.0: not a request's
-  // A GGUF's sampling after it adds nothing it already has.
-  llmp::runtime::FactsFromGguf(gguf, qwen);
-  EXPECT_EQ(qwen.temperature, 0.6);
-  EXPECT_EQ(qwen.sampling_from, "generation_config.json");
-
-  ArtifactFacts top = Facts("qwen2");
-  ASSERT_TRUE(
-      llmp::runtime::FactsFromConfigJson(R"({"max_position_embeddings":32768})", top).has_value());
-  EXPECT_EQ(top.trained_context, 32768U);
-  EXPECT_EQ(top.trained_context_from, "config.json max_position_embeddings");
-  EXPECT_FALSE(llmp::runtime::FactsFromConfigJson("{", top).has_value());
-  EXPECT_FALSE(llmp::runtime::FactsFromGenerationConfig("[1,", top).has_value());
-
-  // A Qwen3.8 GGUF quantization keeps its checkpoint's sampling (the
-  // UD-IQ3_XXS: top_k 20, top_p 0.95 as F32): requests that send neither
-  // sample with them, and 0.95 stays 0.95, not the float's 0.949999988.
-  llmp::artifact::GgufMetadata qwen_gguf;
-  GgufValue top_p_f32 = real(static_cast<double>(0.95F));
-  top_p_f32.type = 6;  // F32
-  qwen_gguf["general.sampling.top_p"] = top_p_f32;
-  qwen_gguf["general.sampling.top_k"] = integer(20);
-  qwen_gguf["qwen4exp.context_length"] = integer(262144);
-  ArtifactFacts quant = Facts("qwen4exp");
-  llmp::runtime::FactsFromGguf(qwen_gguf, quant);
-  EXPECT_EQ(quant.top_p, 0.95);
-  EXPECT_EQ(quant.top_k, 20);
-  const ModelSettings sampled = Resolved(Model("q"), quant);
+  const ModelSettings sampled = Resolved(Model("ds"), *ds);
+  EXPECT_EQ(sampled.temperature.value, 0.6);
+  EXPECT_EQ(sampled.temperature.source, SettingSource::kDerived);
   EXPECT_EQ(sampled.top_p.value, 0.95);
   EXPECT_EQ(sampled.top_p.source, SettingSource::kDerived);
   EXPECT_EQ(sampled.top_k.value, 20U);
-  EXPECT_EQ(sampled.temperature.source, SettingSource::kFallback);
+  EXPECT_EQ(sampled.min_p.value, 0.05);
   EXPECT_THAT(sampled.Summary(), HasSubstr("top_p=0.95 (derived) top_k=20 (derived)"));
 
-  // generation_config.json's do_sample false: greedy, whatever its
-  // temperature.
-  ArtifactFacts greedy = Facts("qwen4exp");
-  ASSERT_TRUE(llmp::runtime::FactsFromGenerationConfig(
-                  R"({"temperature":0.6,"top_p":0.9,"do_sample":false})", greedy)
-                  .has_value());
-  EXPECT_EQ(greedy.temperature, 0.0);
-  EXPECT_EQ(greedy.top_p, 0.9);
-  EXPECT_THAT(greedy.sampling_from, HasSubstr("do_sample false"));
-  ArtifactFacts sampling = Facts("qwen4exp");
-  ASSERT_TRUE(
-      llmp::runtime::FactsFromGenerationConfig(R"({"temperature":0.6,"do_sample":true})", sampling)
-          .has_value());
-  EXPECT_EQ(sampling.temperature, 0.6);
+  // Greedy sampling (temperature 0.0) and a derived context below the
+  // architecture's default.
+  llmp::spec::ModelSpec greedy_spec{
+      .pipeline = llmp::spec::PipelineKind::kLlm,
+      .stages = {make_stage("target", llmp::spec::StageRole::kTarget, 0, 40960,
+                            {.temperature = 0.0, .top_p = 0.9})}};
+  llmp::spec::Canonicalize(greedy_spec);
+  const auto greedy_art =
+      llmp::artifact::Artifact::Open(publish_v1(scratch / "greedy", "deepseek4", greedy_spec));
+  ASSERT_TRUE(greedy_art.has_value()) << (greedy_art ? "" : greedy_art.error().ToString());
+  const auto greedy = llmp::runtime::ArtifactFactsOf(*greedy_art, nullptr);
+  ASSERT_TRUE(greedy.has_value()) << (greedy ? "" : greedy.error());
+  EXPECT_EQ(greedy->temperature, 0.0);
+  EXPECT_EQ(greedy->top_p, 0.9);
+  EXPECT_FALSE(greedy->top_k.has_value());
+  const ModelSettings small = Resolved(Model("ds"), *greedy);
+  EXPECT_EQ(small.context.value, 40960U);
+  EXPECT_EQ(small.context.source, SettingSource::kDerived);
+  EXPECT_EQ(small.temperature.value, 0.0);
+  EXPECT_EQ(small.temperature.source, SettingSource::kDerived);
 
-  // Through resolution: the derived context below the default.
-  ArtifactFacts small = Facts("qwen4exp");
-  ASSERT_TRUE(llmp::runtime::FactsFromConfigJson(
-                  R"({"text_config":{"max_position_embeddings":40960}})", small)
-                  .has_value());
-  const ModelSettings s = Resolved(Model("q"), small);
-  EXPECT_EQ(s.context.value, 40960U);
-  EXPECT_EQ(s.context.source, SettingSource::kDerived);
+  // A standalone two-stage drafter spec.json composed with the target via
+  // ReadArtifactFacts, returning the opened artifacts and admitted specs.
+  llmp::spec::Stage drafter_stage =
+      make_stage("drafter", llmp::spec::StageRole::kDrafter, 1, 1048576, {});
+  llmp::spec::ModelSpec drafter_spec{.pipeline = llmp::spec::PipelineKind::kLlm,
+                                     .stages = {ds_spec.stages.front(), std::move(drafter_stage)}};
+  llmp::spec::Canonicalize(drafter_spec);
+  const auto store_dir = scratch / "store";
+  const auto pub_target = publish_v1(store_dir, "deepseek4", ds_spec);
+  const auto pub_drafter = publish_v1(store_dir, "dflash", drafter_spec);
+
+  ModelEntry composed_entry;
+  composed_entry.name = "ds";
+  composed_entry.artifact = pub_target.filename().string();
+  composed_entry.drafter = pub_drafter.filename().string();
+  llmp::runtime::OpenedModelArtifacts opened;
+  const auto composed_facts = llmp::runtime::ReadArtifactFacts(composed_entry, store_dir, &opened);
+  ASSERT_TRUE(composed_facts.has_value()) << (composed_facts ? "" : composed_facts.error());
+  EXPECT_TRUE(composed_facts->target_spec.has_value());
+  EXPECT_TRUE(composed_facts->composed_spec.has_value());
+  EXPECT_TRUE(opened.target.has_value());
+  EXPECT_TRUE(opened.drafter.has_value());
+  EXPECT_TRUE(opened.target_admission.has_value());
+  ASSERT_TRUE(opened.drafter_admission.has_value());
+  EXPECT_TRUE(opened.drafter_admission->model.has_value());
+
+  // Multiple aliases retain independent parsed artifacts/specs while the
+  // startup parser workspace is reused. Their loans must exist before
+  // admission, survive factory handoff, and unwind on every failed alias.
+  namespace rt = llmp::runtime;
+  llmp::catalog::Catalog catalog;
+  const auto domain = catalog.AddDomain("pending aliases");
+  std::uint64_t cap = UINT64_MAX;
+  const auto occupancy = [&] { return catalog.OccupancyOf(domain).Total().value(); };
+  std::uint64_t funding_calls = 0;
+  const rt::StartupArtifactFunder funder = [&](const llmp::artifact::Artifact& target,
+                                               const llmp::artifact::Artifact* draft)
+      -> std::expected<std::unique_ptr<rt::StartupArtifactPayment>, std::string> {
+    ++funding_calls;
+    auto bytes = rt::StartupArtifactBytes(target);
+    if (!bytes) return std::unexpected(bytes.error());
+    if (draft != nullptr) {
+      auto draft_bytes = rt::StartupArtifactBytes(*draft);
+      if (!draft_bytes) return std::unexpected(draft_bytes.error());
+      *bytes += *draft_bytes;
+    }
+    return rt::StartupArtifactPayment::Admit(catalog, domain, *bytes, cap, 128ULL << 30U);
+  };
+  std::vector<std::shared_ptr<rt::OpenedModelArtifacts>> pending;
+  for (unsigned alias = 0; alias < 2; ++alias) {
+    auto owner = std::make_shared<rt::OpenedModelArtifacts>();
+    const auto facts = rt::ReadArtifactFacts(composed_entry, store_dir, owner.get(), funder);
+    ASSERT_TRUE(facts) << (facts ? "" : facts.error());
+    ASSERT_TRUE(owner->payment);
+    EXPECT_TRUE(owner->target_admission);
+    EXPECT_TRUE(owner->drafter_admission);
+    if (alias == 0) cap = 2 * owner->payment->bytes();
+    pending.push_back(std::move(owner));
+  }
+  EXPECT_EQ(occupancy(), cap);
+  rt::OpenedModelArtifacts blocked;
+  const auto refused = rt::ReadArtifactFacts(composed_entry, store_dir, &blocked, funder);
+  ASSERT_FALSE(refused);
+  EXPECT_THAT(refused.error(), HasSubstr("retained startup artifacts"));
+  EXPECT_FALSE(blocked.target_admission);  // funding refused before spec/source admission
+  EXPECT_FALSE(blocked.payment);
+  EXPECT_EQ(occupancy(), cap);
+
+  auto factory = std::move(pending.front());
+  pending.clear();
+  EXPECT_EQ(occupancy(), factory->payment->bytes());
+  auto malformed = ds_spec;
+  malformed.stages.front().context = 0;
+  auto bad_entry = composed_entry;
+  bad_entry.artifact = publish_v1(store_dir, "deepseek4", malformed).filename().string();
+  const auto before_failure = occupancy();
+  {
+    rt::OpenedModelArtifacts failed;
+    const auto bad = rt::ReadArtifactFacts(bad_entry, store_dir, &failed, funder);
+    ASSERT_FALSE(bad);
+    ASSERT_TRUE(failed.payment);  // failure happened after funding, during admission
+    EXPECT_GT(occupancy(), before_failure);
+  }
+  EXPECT_EQ(occupancy(), before_failure);
+  EXPECT_EQ(funding_calls, 4U);
+  factory.reset();
+  EXPECT_EQ(occupancy(), 0U);
 }
 
 // Later layers win: an override over a calibration over a derived default

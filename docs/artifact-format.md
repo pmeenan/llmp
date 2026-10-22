@@ -36,9 +36,10 @@ and v1 where it does not say otherwise.
 ## Native writer
 
 `llmp import SOURCE --store DIRECTORY [--metadata-mib N]` writes version 1
-from the native normalizer's closed source domains: Gemma 2, 3 and 4 target
-GGUFs, and the supported native ModelOpt target described below. It embeds
-`spec.json`, retains source metadata, preserves
+for source/container combinations described by registered `spec::Mapping`
+data. The importer derives its source-normalization view from that mapping;
+there is no independent `SourceMapping` registry or per-model normalizer.
+It embeds `spec.json`, retains source metadata, preserves
 weight encodings and derives layer, row-table, head, global and expert groups
 from the spec's bindings. Source-converter folds stay in the spec; copying
 such bytes does not claim an importer-applied fold.
@@ -53,12 +54,18 @@ After structural, embedded-spec and complete-file/chunk verification, the
 writer syncs the staged files and directories and publishes by one rename.
 New store ancestors and archive catalog/event directories are synced along
 with their containing directories before reporting durable publication.
-An existing artifact is verified before reuse. This first standalone writer
-serializes publication with `.staging/native-import.lock`; its incomplete
-private staging directories are never installed artifacts. It does not yet
-sweep directories left by a process killed without cleanup.
+An existing artifact is verified before reuse. The writer serializes
+publication with `.staging/native-import.lock`; incomplete private staging
+directories are never installed artifacts. Its orphan sweep removes abandoned
+job directories only after acquiring their locks.
 
-The writer API also consumes closed native ModelOpt target multipart plans.
+### Historical ModelOpt publication evidence (M3.6)
+
+The following checkpoint-specific implementation and publication evidence
+predates the generic route in D-125; current targets and drafters use the
+registered mapping and both carry stored specs.
+
+The former writer API also consumed closed native ModelOpt target multipart plans.
 It routes whole source members into canonical parts and contiguous expert
 slices, preserving the source encoding through numeric gathers and planned
 head permutations. Its metadata payment includes route cursors and all
@@ -123,7 +130,8 @@ changed.
 `llmp import SOURCE --store DIRECTORY --target TARGET_ID --component mtp [--draft-head IDS]`
 publishes the same checkpoint's MTP drafter instead of its target, validating
 the composition against the stored target artifact selected by `--target`
-(`import/modelopt_qwen38.h` `NormalizeModelOptDrafter`): architecture
+(`import/modelopt_qwen38.h` `NormalizeModelOptDrafter`; historical M3
+implementation, superseded by the generic mapping importer): architecture
 `qwen4exp-mtp`, container `safetensors`, no `spec.json` (a drafter that
 reads its target, D-113; serving composes it with the target's spec), one
 fold (`norm.plus_one` over its nine norms, by role as the target's) and
@@ -201,7 +209,7 @@ groups start at 4 KiB, so no file space pays for 2 MiB padding (D-056).
 ## Directory, identity and publication
 
 ```text
-<installed store>/<artifact-id>/        artifact-id = SHA-256 of manifest.json bytes
+<installed store>/<artifact-id>/        artifact-id = D-120 canonical manifest digest
   manifest.json                         root: versions, profile, sources, file list
   index.json                            resource index (groups, resources, chunk hashes)
   data/00000.safetensors ...            immutable payload shards
@@ -251,7 +259,9 @@ groups start at 4 KiB, so no file space pays for 2 MiB padding (D-056).
   store, then deletes that directory. A crash therefore leaves either the
   published artifact or a leftover that the startup sweep removes once its
   lock is free.
-- The artifact ID is the digest of the exact manifest bytes. Import is
+- The artifact ID is the digest of the canonical manifest with
+  `importer.build` set to `"unknown"` (D-120), not the exact stored manifest
+  bytes. Import is
   deterministic: canonical JSON (sorted keys, no insignificant whitespace,
   one trailing newline, lists in a defined order), no timestamps and no host
   paths. Every string is ASCII from a fixed pattern that excludes `"` and
@@ -260,7 +270,7 @@ groups start at 4 KiB, so no file space pays for 2 MiB padding (D-056).
   `resources` by (group, offset), `expert_arrays` by (first group, offset),
   and alias roles after the canonical name, sorted.
   Each shard header is fully determined by the index. The same sources,
-  converter and options give the same bytes and ID; readers reject anything
+  converter and options give the same artifact ID; readers reject anything
   else, so one content has one ID. A Qwen2.5 rebuild reproduced its ID. D-054's archive and
   peer replication key on this ID; the ID travels over the authenticated
   session and the bytes are verified against it.
@@ -896,8 +906,8 @@ chunk digests, kept metadata and its source coverage, and every cap.
 Native manifests additionally admit safe UTF-8 filenames with minimal JSON
 quoting (identifiers keep their narrower patterns). Identity follows D-120:
 hash the canonical manifest with only `importer.build` set to `"unknown"`;
-the stored manifest keeps the actual build. Legacy v1 raw-manifest IDs also
-remain readable. What changes:
+the stored manifest keeps the actual build. Legacy v1 raw-manifest IDs are not
+accepted; artifacts must use the canonical identity above. What changes:
 
 ```text
 <installed store>/<artifact-id>/        artifact-id = SHA-256 of the D-120 canonical manifest
@@ -972,11 +982,13 @@ as a manifest member:
   manifest, and so the artifact ID, covers it;
 - the manifest keeps its 1 MiB cap whatever the spec's size.
 
-An artifact carries the spec of the model it holds alone: every stage
-runs from it (artifact index 0). A model of several artifacts carries
-its spec in its composition (below). A component artifact may carry
-none, such as a drafter that reads its target, or a spec of its own,
-such as a text encoder usable alone.
+A standalone target carries its spec with artifact index 0. A drafter
+carries a two-stage stored interface: its target is artifact index 0 and
+the drafter is artifact index 1. Serving composes this interface with the
+actual target stored spec and validates the resulting bindings. A model of
+several artifacts carries its composed spec in its composition (below).
+Other component artifacts may carry their own spec, such as a text encoder
+usable alone.
 
 ### index.json (v1)
 

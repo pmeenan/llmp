@@ -356,7 +356,7 @@ std::expected<void, VerifyError> NormEps(const Ctx& c, float eps) {
 std::expected<void, VerifyError> CheckRope(const Ctx& c, const RopeParams& p, std::size_t at) {
   LLMP_TRY(Bool(c, at + 1));
   LLMP_TRY(Bool(c, at + 2));
-  LLMP_TRY(Zero(c, at + 3, 1));
+  LLMP_TRY(Bool(c, at + 3));
   if (static_cast<std::uint8_t>(p.mode) > static_cast<std::uint8_t>(RopeMode::kInterleavedMulti)) {
     return Fail(GraphError::kParams, c, "an unknown rotation mode");
   }
@@ -392,6 +392,21 @@ std::expected<void, VerifyError> CheckRope(const Ctx& c, const RopeParams& p, st
   }
   if (p.ext_factor != 0.0f && p.original_context == 0) {
     return Fail(GraphError::kParams, c, "YaRN needs the original context");
+  }
+  if (p.llama3 && (p.table || multi || p.original_context == 0 || p.scale >= 1.0F ||
+                   p.ext_factor > 0.0F || p.beta_slow <= 0.0F || p.beta_fast <= p.beta_slow)) {
+    return Fail(GraphError::kParams, c,
+                "Llama 3 RoPE needs one-dimensional positions, an original context, scale < 1, "
+                "and high frequency factor > low frequency factor > 0");
+  }
+  if (!p.llama3 && p.ext_factor < 0.0F) {
+    return Fail(GraphError::kParams, c, "a negative YaRN extension needs Llama 3 RoPE");
+  }
+  if (p.rotated_dims != UINT32_MAX && (p.rotated_dims > p.dims || p.rotated_dims % 2 != 0 ||
+                                       p.table || multi || p.llama3 || p.ext_factor != 0.0F)) {
+    return Fail(GraphError::kParams, c,
+                "proportional RoPE needs even active dimensions within its one-dimensional "
+                "pairing span and no table, Llama 3 scaling or YaRN");
   }
   return {};
 }

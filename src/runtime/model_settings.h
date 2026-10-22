@@ -34,6 +34,7 @@
 #include <expected>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -43,6 +44,8 @@
 #include "artifact/gguf_metadata.h"
 #include "base/sha256.h"
 #include "config/node_config.h"
+#include "runtime/component_admission.h"
+#include "runtime/memory_guard.h"
 #include "spec/mapping.h"
 #include "spec/spec.h"
 #include "tokenizer/tokenizer.h"
@@ -181,26 +184,38 @@ std::expected<artifact::Artifact, std::string> OpenInstalled(const std::filesyst
 std::expected<std::string, std::string> ReadRegularFile(const std::filesystem::path& path,
                                                         std::size_t limit);
 
+// The opened artifacts and their verified admissions from ReadArtifactFacts /
+// ArtifactFactsOf, retained by callers (Server::Start -> ComponentLlmBuild,
+// PrintSettings) that continue with the same artifacts rather than opening or
+// admitting them a second time.
+struct OpenedModelArtifacts {
+  OpenedModelArtifacts() = default;
+  OpenedModelArtifacts(OpenedModelArtifacts&&) noexcept = default;
+  OpenedModelArtifacts& operator=(OpenedModelArtifacts&&) = delete;
+  // First: release only after every retained artifact/admission field dies.
+  // The active factory may transfer payloads while its parser loan is held.
+  std::unique_ptr<StartupArtifactPayment> payment;
+  std::optional<artifact::Artifact> target;
+  std::optional<ComponentAdmission> target_admission;
+  std::optional<artifact::Artifact> drafter;
+  std::optional<ComponentDrafterAdmission> drafter_admission;
+};
+
+using StartupArtifactFunder =
+    std::function<std::expected<std::unique_ptr<StartupArtifactPayment>, std::string>(
+        const artifact::Artifact&, const artifact::Artifact*)>;
+
 // The facts of a configured model's artifact and drafter: both opened as
-// OpenInstalled does, their kept metadata read as untrusted input.
-std::expected<ArtifactFacts, std::string> ReadArtifactFacts(const config::ModelEntry& entry,
-                                                            const std::filesystem::path& store);
-// The same from what an opened artifact keeps (and its drafter's, if any).
+// OpenInstalled does, their stored specs and admissions read once.
+std::expected<ArtifactFacts, std::string> ReadArtifactFacts(
+    const config::ModelEntry& entry, const std::filesystem::path& store,
+    OpenedModelArtifacts* opened_out = nullptr, const StartupArtifactFunder& funder = {});
+// The same from an opened artifact (and its drafter's, if any).
 std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
     const artifact::Artifact& target, const artifact::Artifact* drafter,
     std::string_view kv_cache_encoding = "f16",
-    std::optional<std::uint32_t> draft_vocab = std::nullopt);
-// Its parts, each adding to `facts` (`facts.architecture` set): the kept
-// GGUF metadata's keys (GgufFactKeys: the context, its rope scaling, the
-// sampling defaults), config.json's (max_position_embeddings and
-// rope_scaling, at the top or in text_config) and generation_config.json's
-// sampling defaults. A sampling default outside a request's range is not
-// one (ignored); the first source of each wins.
-std::vector<std::string> GgufFactKeys(std::string_view architecture);
-void FactsFromGguf(const artifact::GgufMetadata& metadata, ArtifactFacts& facts);
-std::expected<void, std::string> FactsFromConfigJson(std::string_view text, ArtifactFacts& facts);
-std::expected<void, std::string> FactsFromGenerationConfig(std::string_view text,
-                                                           ArtifactFacts& facts);
+    std::optional<std::uint32_t> draft_vocab = std::nullopt,
+    OpenedModelArtifacts* opened_out = nullptr);
 
 // A model's tokenizer and chat template: kept in its artifact's metadata
 // (a GGUF's, the first shard's; or tokenizer.json and chat_template.jinja),

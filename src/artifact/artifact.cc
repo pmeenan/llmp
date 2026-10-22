@@ -367,8 +367,7 @@ class Opener {
     if (!manifest_.canonical()) {
       return Fail(Rule::kCanonical, "manifest.json is not in canonical form");
     }
-    if (artifact_.id_ != base::ToHex(schema::ManifestIdentity(m)) &&
-        artifact_.id_ != base::ToHex(Sha256Of(manifest_bytes_))) {
+    if (artifact_.id_ != base::ToHex(schema::ManifestIdentity(m))) {
       return Fail(Rule::kIdentity, "the artifact name is not the manifest digest");
     }
     return {};
@@ -425,8 +424,8 @@ class Opener {
   // v1's importer: what made the artifact, so that the same sources, the
   // same importer and the same options give the same bytes and ID.
   Step CheckImporter(json::Value importer) {
-    if (auto ok = schema::Object(importer, {"name", "version", "build", "options_sha256"}, {},
-                                 "importer keys");
+    if (auto ok = schema::Object(importer, {"name", "version", "build", "options_sha256"},
+                                 {"mapping_architecture", "mapping_version"}, "importer keys");
         !ok) {
       return ok;
     }
@@ -448,10 +447,31 @@ class Opener {
     if (!options) {
       return Pass(options);
     }
+    const auto map_arch = importer.find("mapping_architecture");
+    const auto map_ver = importer.find("mapping_version");
+    if (map_arch.has_value() != map_ver.has_value()) {
+      return Fail(Rule::kSchema, "importer keys");
+    }
+    std::string mapping_architecture;
+    std::uint32_t mapping_version = 0;
+    if (map_arch) {
+      auto arch = schema::Str(*map_arch, schema::IsName, "importer.mapping_architecture");
+      if (!arch) {
+        return Pass(arch);
+      }
+      auto ver = schema::Int(*map_ver, 1, 65535, "importer.mapping_version");
+      if (!ver) {
+        return Pass(ver);
+      }
+      mapping_architecture = std::string(*arch);
+      mapping_version = static_cast<std::uint32_t>(*ver);
+    }
     artifact_.converter_ = {.name = std::string(*name),
                             .version = std::string(*version),
                             .build = std::string(*build),
-                            .options_sha256 = schema::DigestFromHex(*options).value_or(Digest{})};
+                            .options_sha256 = schema::DigestFromHex(*options).value_or(Digest{}),
+                            .mapping_architecture = std::move(mapping_architecture),
+                            .mapping_version = mapping_version};
     return {};
   }
 

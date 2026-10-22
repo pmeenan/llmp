@@ -83,7 +83,7 @@ static_assert(kOutputOffset + kOutputTotal <= kSavedOffset &&
 // construction; actual measured programs must fit before node Start/admission.
 struct Limits {
   std::uint64_t domain, metadata, compiler, program, activation, pool;
-  std::uint64_t output_offset, nodes, tensors, graph_metadata, launches;
+  std::uint64_t output_offset, nodes, tensors, launches;
   std::size_t parts, selected_pages, reserved_pages;
   std::array<std::uint64_t, 2> outputs;
 };
@@ -96,15 +96,14 @@ constexpr Limits kConditioning{kDomain,
                                kOutputOffset,
                                37,
                                74,
-                               491520,
                                64,
                                4,
                                98,
                                130,
                                kOutputBytes};
-constexpr Limits kBlock{1024 * kMiB, 96 * kMiB, 64 * kMiB, 4 * kMiB, 8 * kMiB,
-                        8 * kMiB,    131072,    250,       500,      2912256,
-                        256,         13,        307,       339,      {98304, 32768}};
+constexpr Limits kBlock{1024 * kMiB, 96 * kMiB, 64 * kMiB, 4 * kMiB,      8 * kMiB,
+                        8 * kMiB,    131072,    250,       500,           256,
+                        13,          307,       339,       {98304, 32768}};
 constexpr std::array<std::string_view, 9> kBlockNames{
     "transformer_blocks.0.attn.to_q.weight",          "transformer_blocks.0.attn.to_k.weight",
     "transformer_blocks.0.attn.to_v.weight",          "transformer_blocks.0.attn.to_out.0.weight",
@@ -124,9 +123,9 @@ static_assert(645922816ULL + kBlock.metadata + kBlock.activation + kBlock.pool +
                   kPinned + en::kSlabSlotBytes <
               kBlock.domain);
 
-constexpr Limits kFlow{16ULL << 30U, 1024 * kMiB, 768 * kMiB, 16 * kMiB, 32 * kMiB,
-                       32 * kMiB,    65536,       5948,       11896,     66072576,
-                       5948,         297,         6818,       6818,      {1024, 1024}};
+constexpr Limits kFlow{16ULL << 30U, 1024 * kMiB, 768 * kMiB, 16 * kMiB,   32 * kMiB,
+                       32 * kMiB,    65536,       5948,       11896,       5948,
+                       297,          6818,        6818,       {1024, 1024}};
 constexpr std::uint64_t kFlowSourceBytes = 14230249472ULL;
 constexpr std::uint64_t kFlowMappingBytes = 1233920;
 static_assert(llmp::test_support::compiler_inventory::GraphBytes(5948, 11896) +
@@ -135,8 +134,9 @@ static_assert(llmp::test_support::compiler_inventory::GraphBytes(5948, 11896) +
                       (11896 + 297 + 31 * 5948ULL + 6), 11896) +
                   2 * kFlow.program + (5948 + 8) * en::kGraphNodeHostBytes + 16 * kMiB <
               kFlow.compiler);
-static_assert(kFlow.compiler + kFlow.graph_metadata + kFlowMappingBytes + kProgram <
-              kFlow.metadata);
+static_assert(kConditioning.compiler + kConditioning.program < kConditioning.metadata);
+static_assert(kBlock.compiler + kBlock.program < kBlock.metadata);
+static_assert(kFlow.compiler + kFlowMappingBytes + kFlow.program < kFlow.metadata);
 static_assert(14298382336ULL + kFlow.metadata + kFlow.activation + kFlow.pool + 32 * kMiB +
                   kPinned + en::kSlabSlotBytes <
               kFlow.domain);
@@ -377,6 +377,11 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
       co::SpatialInput{0, 0, {1, 4, 64, 1}}, co::SpatialInput{0, 1, {1, 2, 256, 1}},
       co::SpatialInput{0, 2, {6, 3, 1, 1}, fm::Encoding::kI32},
       co::SpatialInput{0, 3, {6, 6, 1, 1}}, co::SpatialInput{0, 4, {1, 1, 1, 1}}};
+  // Schema-owned defaults consume metadata too; the graph may use the
+  // admitted remainder after the compiler, mapping and retained program.
+  const auto graph_metadata_limit = life.limits.metadata - life.limits.compiler -
+                                    life.limits.program - (life.flow ? kFlowMappingBytes : 0);
+  const auto paid_before = life.paid->used();
   auto graph =
       co::BuildSpatialStep(mapping->spec, tables, owners,
                            {[paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
@@ -388,10 +393,13 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
                                       : life.block ? std::span<const co::SpatialInput>(ports)
                                                    : std::span<const co::SpatialInput>{}});
   if (!graph) return Error(graph.error());
+  if (graph->metadata_bytes() == 0 ||
+      life.paid->used() - paid_before != graph->metadata_bytes() + graph->reference_bytes())
+    return Error("complete spatial compiler metadata payment");
   if (graph->graph().nodes().size() > life.limits.nodes ||
       graph->graph().tensor_count() > life.limits.tensors ||
       graph->weights().size() != life.limits.parts ||
-      graph->metadata_bytes() > life.limits.graph_metadata || graph->reference_bytes() != 0 ||
+      graph->metadata_bytes() > graph_metadata_limit || graph->reference_bytes() != 0 ||
       graph->outputs().size() != 2)
     return Error(
         "fixed timestep graph inventory: nodes=" + std::to_string(graph->graph().nodes().size()) +
@@ -399,7 +407,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
         std::to_string(graph->graph().tensor_count()) + "/" + std::to_string(life.limits.tensors) +
         " parts=" + std::to_string(graph->weights().size()) + "/" +
         std::to_string(life.limits.parts) + " metadata=" + std::to_string(graph->metadata_bytes()) +
-        "/" + std::to_string(life.limits.graph_metadata) +
+        "/" + std::to_string(graph_metadata_limit) +
         " reference=" + std::to_string(graph->reference_bytes()) +
         "/0 outputs=" + std::to_string(graph->outputs().size()) + "/2");
   life.graph.emplace(std::move(*graph));

@@ -798,6 +798,8 @@ std::expected<void, KernelFailure> CheckRopeSetRows(const ggml_tensor* rope,
   if (auto checked = CheckRopeInput(rope); !checked) {
     return checked;
   }
+  if (rope->op_params[11] != 0)
+    return Rejected("proportional RoPE uses separate rotation and cache store");
   if (set_rows == nullptr || set_rows->op != GGML_OP_SET_ROWS || !Bound(set_rows) ||
       !Bound(set_rows->src[1])) {
     return Rejected("not a bound set_rows node");

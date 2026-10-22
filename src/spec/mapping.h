@@ -86,8 +86,10 @@ inline constexpr std::size_t kMaxSourceValues = std::size_t{1} << 16U;
 inline constexpr std::string_view kStageSlot = "stage";
 inline constexpr std::string_view kStreamSlot = "stream";
 inline constexpr std::string_view kHeadsSlot = "heads";
-// The layer number in a tensor pattern.
+// The layer, expert and shard numbers in a tensor pattern.
 inline constexpr std::string_view kLayerField = "{layer}";
+inline constexpr std::string_view kExpertField = "{expert}";
+inline constexpr std::string_view kShardField = "{shard}";
 
 // kSide: a side input's source (spec.h SideInput, named by its slot), at
 // the layers its layers_key names; kMixing: a stage of several streams'
@@ -119,6 +121,10 @@ struct SlotRule {
   // tensor rules' {layer} that layer's, read by that layer alone (a table
   // each layer has of its own: DeepSeek V4's token-hash routing).
   bool per_layer = false;
+  // An alternate source spelling for the selector, with its numeric index
+  // base (0 or 1). The primary selector always uses zero-based indices.
+  std::string_view layers_alias{};
+  std::uint8_t alias_index_base = 0;
 };
 
 struct TensorRule {
@@ -154,8 +160,8 @@ struct TensorRule {
 // kInts: a list of integers (from a key only: a GGUF array, the n-gram
 // hash's constants).
 enum class ValueType : std::uint8_t { kInt, kReal, kBool, kString, kInts };
-// Applied to a real value: 1 / x, sqrt(x), 1 / sqrt(x).
-enum class Transform : std::uint8_t { kNone, kReciprocal, kSqrt, kRsqrt, kFloat32 };
+// Applied to a real value: 1 / x, sqrt(x), 1 / sqrt(x), float32, or a product of two keys.
+enum class Transform : std::uint8_t { kNone, kReciprocal, kSqrt, kRsqrt, kFloat32, kProduct };
 
 // A rule's constant (when it has no key) or a requirement's value.
 struct Literal {
@@ -180,8 +186,10 @@ struct ParamRule {
   ValueType type = ValueType::kInt;
   Transform transform = Transform::kNone;
   Literal value{};
-  // When no rule for the parameter resolves, it is left out (a
-  // requirement: the key may be absent).
+  // A boolean requirement may accept this source string as its literal flag
+  // value as well (e.g. a text-only causal setting named "vision").
+  std::string_view flag_text{};
+  // When no rule resolves, leave the parameter out; a requirement may be absent.
   bool optional = false;
   // kLayer slots, kInt or kReal: the key's value is a list with an entry a
   // layer, the layer's being the value, or one value for every layer
@@ -418,19 +426,112 @@ struct DraftRecipe {
 struct LayerTypeCode {
   std::int64_t value = 0;
   char type = 0;
+  std::string_view label{};
+};
+
+struct SemanticTensorRule {
+  std::string_view tensor{};
+  std::string_view key{};
+  // Zero takes the bounded I64 vector length from its validated source shape.
+  std::size_t size = 0;
+};
+
+struct TensorAlias {
+  std::string_view source{};
+  std::string_view canonical{};  // an existing TensorRule pattern
+};
+struct KeyAlias {
+  std::string_view source{};
+  std::string_view canonical{};  // an existing selected source key
+  // This source dialect fallback applies only when the named primary source key is absent.
+  std::string_view unless_present{};
+};
+struct ScalarRequirement {
+  // Refuse this integer by default; require_equal instead admits only it.
+  std::string_view key{};
+  std::int64_t reject_equal = 0;
+  bool require_equal = false;
+  std::string_view equals_key{};  // require equality with another selected scalar
+  bool positive = false;
+  // A legacy ambiguity refusal is waived only by this explicit semantic key.
+  std::string_view unless_present{};
+  bool optional = false;
+  bool boolean = false;  // validate a flag whose two values are both supported
+  // A boolean must equal whether this integer source scalar is positive;
+  // an absent related scalar is zero (a disabled optional component).
+  std::string_view flag_of_positive{};
+};
+struct TensorPresenceRequirement {
+  std::string_view flag{}, tensor{};
+  bool when = false;
+};
+struct ListRequirement {
+  std::string_view key{};
+  std::size_t size = 0;
+  std::span<const std::int64_t> exact{};  // absent: retain the source values
+  // Nonzero: the list may hold from `min_size` to `size` entries (trailing
+  // entries describe layers the source does not hold), equal to `exact`'s
+  // first entries where it is given.
+  std::size_t min_size = 0;
+  // The key may be absent (the mapping resolves its parameter otherwise).
+  bool optional = false;
+  bool per_layer = false;
+  std::string_view extra_layers_key{};
+  // Some converters append type labels for unimported layers without a depth key.
+  bool allow_unstated_extra = false;
+  // Nonempty: the entries are widths in pairs (rotary sections) of this
+  // selected integer key's value, which twice their sum must equal.
+  std::string_view sections_of{};
+  std::string_view sections_multiplier_key{};
+};
+struct TensorShapeRequirement {
+  std::string_view name{};
+  std::span<const std::uint64_t> shape{};
+};
+struct RowIndexRequirement {
+  std::string_view offsets{}, counts{}, tensor{};
+  bool operator==(const RowIndexRequirement&) const = default;
+};
+struct AuxiliaryNamespace {
+  std::string_view prefix{};  // literal: dot-terminated, or one whole key; metadata only
+  std::string_view reason{};
+  // A whole key's integer that must equal a source tensor's extent along
+  // `equals_dim` (a vocabulary size its token table states): an inconsistent
+  // source is refused. Empty: unchecked.
+  std::string_view equals_tensor{};
+  std::uint8_t equals_dim = 0;
 };
 
 struct Mapping {
   std::string_view architecture{};  // the checkpoint's (GGUF general.architecture)
-  std::uint16_t version = 1;        // the mapping's own, for provenance
+  std::span<const std::string_view> source_architectures{};
+  std::uint16_t version = 1;  // the mapping's own, for provenance
   PipelineKind pipeline = PipelineKind::kLlm;
+  // Prefix prepended to unprefixed source keys in layer_count_key,
+  // context_key, softcap_key, layer_type_key, layer_flags_key,
+  // SlotRule::{gate,layers_key,count_key},
+  // ParamRule::{key,numerator_key,divisor_key}, ReadRule::layers_key, and
+  // PolicyRule::gate; when empty and !unprefixed_keys, `architecture` is
+  // used ("gemma2.block_count" from "block_count").
+  std::string_view key_prefix{};
+  bool unprefixed_keys = false;
+  // Optional prefix stripped from source tensor names before matching
+  // TensorRule patterns or TensorAlias source patterns ("language_model.").
+  std::string_view tensor_prefix{};
+  // Container metadata may nest the same semantic dialect (HF text_config).
+  std::string_view source_key_prefix{};
   std::string_view layer_count_key{};
+  std::string_view context_key{};
+  std::string_view softcap_key{};
   std::string_view layer_types{};  // one letter a layer, repeating
   // Or each layer's type by a source key listing an integer a layer (its
   // first `layers` entries; entries past them unread: a GGUF's MTP heads'),
   // each value's letter in `layer_type_codes` (DeepSeek V4's compression
   // ratios); `layer_types` then lists the letters. Required when set.
   std::string_view layer_type_key{};
+  // Optional positive interval: the first layer_types letter between every
+  // Nth layer, its last letter on every Nth. Explicit layer types must agree.
+  std::string_view layer_type_interval_key{};
   std::span<const LayerTypeCode> layer_type_codes{};
   std::span<const SlotRule> slots{};
   std::span<const TensorRule> tensors{};
@@ -460,7 +561,74 @@ struct Mapping {
   // selects an explicit architecture/container/version entry.
   std::span<const std::string_view> containers{};
   std::span<const GateRule> gates{};
+  // Source normalization rules for checkpoints of `containers`.
+  std::span<const TensorAlias> tensor_aliases{};
+  std::span<const KeyAlias> key_aliases{};
+  std::span<const AuxiliaryNamespace> auxiliary{};
+  std::span<const ScalarRequirement> requirements{};
+  std::span<const ListRequirement> lists{};
+  std::span<const format::Encoding> encodings{};
+  bool extended_components = false;
+  std::span<const TensorShapeRequirement> shapes{};
+  std::span<const RowIndexRequirement> row_indices{};
+  std::span<const std::string_view> semantic{};
+  std::span<const std::string_view> ignored_tensors{};
+  std::span<const std::string_view> null_semantics{};
+  std::span<const std::string_view> ignored_tensor_prefixes{};
+  std::span<const TensorPresenceRequirement> tensor_presence{};
+  std::span<const SemanticTensorRule> semantic_tensors{};
 };
+
+constexpr std::string_view KeyPrefix(const Mapping& mapping) {
+  return mapping.unprefixed_keys
+             ? std::string_view{}
+             : (mapping.key_prefix.empty() ? mapping.architecture : mapping.key_prefix);
+}
+
+constexpr std::string_view UnprefixedKey(const Mapping& mapping, std::string_view key) {
+  const std::string_view prefix = KeyPrefix(mapping);
+  if (!prefix.empty() && key.size() > prefix.size() && key.starts_with(prefix) &&
+      key[prefix.size()] == '.') {
+    return key.substr(prefix.size() + 1);
+  }
+  return key;
+}
+
+inline std::string CanonicalKey(const Mapping& mapping, std::string_view key) {
+  const std::string_view prefix = KeyPrefix(mapping);
+  if (key.empty() || prefix.empty() || key.starts_with("llmp.") || key.starts_with("tokenizer.") ||
+      key.starts_with("general.") || key.starts_with("split.") ||
+      (key.size() > prefix.size() && key.starts_with(prefix) && key[prefix.size()] == '.')) {
+    return std::string(key);
+  }
+  std::string out;
+  out.reserve(prefix.size() + 1 + key.size());
+  out.append(prefix);
+  out.push_back('.');
+  out.append(key);
+  return out;
+}
+
+constexpr bool IsCanonicalKey(const Mapping& mapping, std::string_view rule_key,
+                              std::string_view candidate_key) {
+  if (rule_key.empty() || candidate_key.empty()) return false;
+  const std::string_view prefix = KeyPrefix(mapping);
+  if (prefix.empty() || rule_key.starts_with("llmp.") || rule_key.starts_with("tokenizer.") ||
+      rule_key.starts_with("general.") || rule_key.starts_with("split.") ||
+      (rule_key.size() > prefix.size() && rule_key.starts_with(prefix) &&
+       rule_key[prefix.size()] == '.')) {
+    return candidate_key == rule_key;
+  }
+  return candidate_key.size() == prefix.size() + 1 + rule_key.size() &&
+         candidate_key.starts_with(prefix) && candidate_key[prefix.size()] == '.' &&
+         candidate_key.substr(prefix.size() + 1) == rule_key;
+}
+
+constexpr bool MatchesCanonicalKey(const Mapping& mapping, std::string_view rule_key,
+                                   std::string_view candidate_key) {
+  if (rule_key.empty() || candidate_key.empty()) return false;
+  return UnprefixedKey(mapping, rule_key) == UnprefixedKey(mapping, candidate_key);
+}
 
 // The effective serving recipe for `mapping`: its explicit `serving` recipe
 // when set, or `kDefaultServingRecipe` for any target LLM mapping.
@@ -489,7 +657,7 @@ std::expected<void, std::string> ValidateMapping(const Mapping& mapping);
 // Every source key the mapping reads (its layer, slot, parameter, read and
 // policy keys), each once: what a stored drafter's kept metadata is read
 // for (its values are the source's, as the importer read them).
-std::vector<std::string_view> SourceKeys(const Mapping& mapping);
+std::vector<std::string> SourceKeys(const Mapping& mapping);
 
 // A source's metadata value: an integer, a real, a flag or a string.
 struct SourceValue {

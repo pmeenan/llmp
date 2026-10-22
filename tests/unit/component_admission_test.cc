@@ -321,18 +321,28 @@ TEST_F(ComponentAdmissionTest, NumericalFactsAuthenticateBeforePaymentAndRetainE
   };
   auto wrong = semantic;
   wrong[0] ^= 1;
-  EXPECT_FALSE(rt::AdmittedNumerics(model, source, origins, &approval, wrong, envelope, 0, funder));
+  const auto stale =
+      rt::AdmittedNumerics(model, source, origins, &approval, wrong, envelope, 0, funder);
+  ASSERT_TRUE(stale);
+  EXPECT_FALSE(*stale);
   EXPECT_EQ(owner->charges, 0U);
   const auto receipt = origins[0].sha256;
   origins[0].sha256[0] ^= 1;
   EXPECT_FALSE(bind());
   origins[0].sha256 = receipt;
   EXPECT_EQ(owner->charges, 0U);
-  const auto encoding = source.tensors[0].format.encoding;
-  source.tensors[0].format.encoding =
-      encoding == fm::Encoding::kBF16 ? fm::Encoding::kF32 : fm::Encoding::kBF16;
+  const auto original_tensor = source.tensors.front();
+  source.tensors.front().format.encoding = static_cast<fm::Encoding>(UINT16_MAX);
   EXPECT_FALSE(bind());
-  source.tensors[0].format.encoding = encoding;
+  source.tensors.front().format = {.encoding = fm::Encoding::kBF16,
+                                   .layout = fm::Layout::kDense,
+                                   .shape = original_tensor.format.shape};
+  source.tensors.front().part = fm::PartRole::kData;
+  ASSERT_TRUE(fm::Validate(source.tensors.front().format));
+  const auto changed_format = bind();
+  ASSERT_TRUE(changed_format);
+  EXPECT_FALSE(*changed_format);
+  source.tensors.front() = original_tensor;
   EXPECT_EQ(owner->charges, 0U);
   auto outside = rt::AdmittedNumerics(model, source, origins, &approval, semantic,
                                       {.context = 8193, .slots = 4}, 0, funder);
@@ -444,12 +454,17 @@ TEST_F(ComponentAdmissionTest, Iq2IncumbentDomainProjectsOnlyOneActualRowAndExac
     EXPECT_EQ(grant.semantic, semantic);
   }
   const auto charges = owner->charges;
-  source.tensors.front().format.encoding =
-      source.tensors.front().format.encoding == fm::Encoding::kF32 ? fm::Encoding::kF16
-                                                                   : fm::Encoding::kF32;
-  EXPECT_FALSE(rt::AdmittedNumerics(model, source, origins, &approval, semantic,
-                                    {.context = 8192, .slots = 4}, 0, funder));
-  EXPECT_EQ(owner->charges, charges);  // altered format refuses before payment
+  const auto original_tensor = source.tensors.front();
+  source.tensors.front().format = {.encoding = fm::Encoding::kF16,
+                                   .layout = fm::Layout::kDense,
+                                   .shape = original_tensor.format.shape};
+  source.tensors.front().part = fm::PartRole::kData;
+  ASSERT_TRUE(fm::Validate(source.tensors.front().format));
+  const auto changed_format = rt::AdmittedNumerics(model, source, origins, &approval, semantic,
+                                                   {.context = 8192, .slots = 4}, 0, funder);
+  ASSERT_TRUE(changed_format);
+  EXPECT_FALSE(*changed_format);
+  EXPECT_EQ(owner->charges, charges);  // changed format gets no stale evidence or payment
 }
 
 TEST_F(ComponentAdmissionTest, UnpinnedModelsDeriveCapabilityBasedNumerics) {
@@ -615,7 +630,7 @@ TEST_F(ComponentAdmissionTest, ApprovesCompleteNativeFormatsAndPreservesTheStore
 }
 
 TEST_F(ComponentAdmissionTest,
-       UnpinnedOriginAdmitsValidSpecWhileMalformedOriginOrWrongFamilyFails) {
+       UnpinnedOriginAdmitsValidSpecWhileMalformedOriginOrUnknownArchitectureFails) {
   origins[0].sha256[0] ^= 1;
   EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
   origins = Origins();
@@ -624,17 +639,19 @@ TEST_F(ComponentAdmissionTest,
   origins[0].bytes = llmp::base::Bytes(0);
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
   origins = Origins();
-  source.architecture = "gemma3";
+  source.architecture = "unknown_architecture";
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
 }
 
-TEST_F(ComponentAdmissionTest, RejectsContextArithmeticFoldsAndUntiedHeadChanges) {
+TEST_F(ComponentAdmissionTest, StoredContextAndArithmeticDoNotRequireHistoricalApproval) {
   const auto original = model;
   ++model.stages.front().context;
-  EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
+  EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
   model = original;
   model.stages.front().heads.softcap = 29.0;
-  EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
+  EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
+  model.stages.front().sampling.temperature = 0.75;
+  EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
   model = original;
   model.stages.front().folds.clear();
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
@@ -643,13 +660,13 @@ TEST_F(ComponentAdmissionTest, RejectsContextArithmeticFoldsAndUntiedHeadChanges
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
   model = original;
   source.folds = {"norm.plus_one"};
-  EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
+  EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
 }
 
 TEST_F(ComponentAdmissionTest, RejectsNativeFormatGeometryAndRoleChanges) {
   const auto original = source;
   auto& format = source.tensors.front().format;
-  format.encoding = fm::Encoding::kQ4_0;
+  format.encoding = static_cast<fm::Encoding>(UINT16_MAX);
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
   source = original;
   source.tensors.front().format.shape.ne[0] += 32;
@@ -672,7 +689,7 @@ TEST_F(ComponentAdmissionTest, PolicyRechecksTheApprovedSpecBeforeSelectingItsRe
   EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8193, .slots = 2}));
   EXPECT_TRUE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 3}));
   model.stages.front().context = 8193;
-  EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 2}));
+  EXPECT_TRUE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 2}));
 }
 
 // An approved row's envelope is its settings' default, not a refusal: an
@@ -730,17 +747,16 @@ TEST(ComponentAdmissionQwenTest, FullNormalizedTargetKeepsItsUntiedHeadAndSource
         changed_origins[2] = changed_origins[1];
         break;
       case 2:
-        ++changed_model.stages[0].context;
+        changed_model.stages[0].context = 0;
         break;
       case 3:
         changed_model.stages[0].folds.clear();
         break;
       case 4:
-        changed_model.stages[0].heads.output->weights[0].tensor =
-            changed_model.stages[0].embedding->weights[0].tensor;
+        changed_model.stages[0].heads.output->weights[0].tensor = "missing.output.weight";
         break;
       case 5:
-        changed_source.tensors[0].format.encoding = fm::Encoding::kF16;
+        changed_source.tensors[0].format.encoding = static_cast<fm::Encoding>(UINT16_MAX);
         break;
       case 6:
         ASSERT_FALSE(changed_model.stages[0].side.empty());
@@ -748,8 +764,15 @@ TEST(ComponentAdmissionQwenTest, FullNormalizedTargetKeepsItsUntiedHeadAndSource
           if (param.name == "multipliers") std::get<std::vector<std::int64_t>>(param.value)[0] += 2;
         break;
     }
-    EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
-        << mutation;
+    const auto changed =
+        rt::CheckComponentAdmission(changed_model, changed_source, changed_origins);
+    if (mutation == 6) {
+      // A valid stored arithmetic change is not rejected by a historical
+      // checkpoint digest; numerical qualification remains a separate step.
+      EXPECT_TRUE(changed);
+    } else {
+      EXPECT_FALSE(changed) << mutation;
+    }
   }
 }
 
@@ -800,8 +823,7 @@ TEST_P(NativeGemmaAdmissionTest, RefusesChangedFormatPlacementExpertIdentityAndA
   auto matrix =
       std::ranges::find_if(source.tensors, [](const auto& t) { return t.format.shape.rank == 2; });
   ASSERT_NE(matrix, source.tensors.end());
-  matrix->format.encoding =
-      matrix->format.encoding == fm::Encoding::kQ8_0 ? fm::Encoding::kQ4_0 : fm::Encoding::kQ8_0;
+  matrix->format.encoding = static_cast<fm::Encoding>(UINT16_MAX);
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
   source = saved_source;
   source.tensors.front().format.params.tensor_scale = true;
@@ -814,7 +836,7 @@ TEST_P(NativeGemmaAdmissionTest, RefusesChangedFormatPlacementExpertIdentityAndA
   model.stages.front().heads.output->weights.front().tensor = "output.weight";
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
   model = saved_model;
-  ++model.stages.front().context;
+  model.stages.front().context = 0;
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
   model = saved_model;
   model.stages.front().role = sp::StageRole::kDrafter;
@@ -879,7 +901,14 @@ TEST_P(NativeGemmaAdmissionTest, ChoosesExactProfileAndEnvelopeRecipeWithoutChec
   }
   EXPECT_FALSE(
       rt::ComponentAdmissionPolicy(model, source, origins, {.context = 0, .slots = slots}));
+  // A shorter, component-valid stage is a new valid geometry. Refusal is
+  // structural, rather than a comparison with a historical layer count.
   model.stages.front().layers.pop_back();
+  EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
+  EXPECT_TRUE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 4096, .slots = 2}));
+  ASSERT_FALSE(model.stages.front().layers.front().components.front().weights.empty());
+  model.stages.front().layers.front().components.front().weights.front().tensor = "missing";
+  EXPECT_FALSE(llmp::components::ValidateSpec(model, source.tensors));
   EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 4096, .slots = 2}));
 }
 INSTANTIATE_TEST_SUITE_P(ApprovedTargets, NativeGemmaAdmissionTest, testing::Values(3U, 26U, 31U));
@@ -916,11 +945,11 @@ TEST(ComponentAdmissionDsv4Test, FullStoredTargetPreservesProfilePolicyAndClosed
     auto changed_origins = origins;
     if (mutation == 0) changed_origins[2].bytes = llmp::base::Bytes(0);
     if (mutation == 1) changed_origins[2] = changed_origins[1];
-    if (mutation == 2) changed_source.tensors[0].format.encoding = fm::Encoding::kF16;
+    if (mutation == 2)
+      changed_source.tensors[0].format.encoding = static_cast<fm::Encoding>(UINT16_MAX);
     if (mutation == 3) changed_model.stages[0].side.pop_back();
     if (mutation == 4)
-      changed_model.stages[0].heads.output->weights[0].tensor =
-          changed_model.stages[0].embedding->weights[0].tensor;
+      changed_model.stages[0].heads.output->weights[0].tensor = "missing.output.weight";
     if (mutation == 5) changed_model.stages[0].folds.push_back("norm.plus_one");
     EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
         << mutation;
@@ -956,10 +985,10 @@ TEST(ComponentAdmissionQwen2Test, FullStoredTargetPreservesProfilePolicyAndClose
     auto changed_origins = origins;
     if (mutation == 0) changed_origins[0].name.clear();
     if (mutation == 1) changed_origins[0].bytes = llmp::base::Bytes(0);
-    if (mutation == 2) changed_source.tensors[0].format.encoding = fm::Encoding::kBF16;
+    if (mutation == 2)
+      changed_source.tensors[0].format.encoding = static_cast<fm::Encoding>(UINT16_MAX);
     if (mutation == 3)
-      changed_model.stages[0].heads.output->weights[0].tensor =
-          changed_model.stages[0].embedding->weights[0].tensor;
+      changed_model.stages[0].heads.output->weights[0].tensor = "missing.output.weight";
     if (mutation == 4) changed_model.stages[0].folds.push_back("norm.plus_one");
     EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
         << mutation;
@@ -1002,7 +1031,7 @@ TEST(ComponentAdmissionQwen2Exl3Test,
       auto changed_origins = origins;
       if (mutation == 0) changed_origins[0].bytes = llmp::base::Bytes(0);
       if (mutation == 1) changed_origins[1] = changed_origins[0];
-      if (mutation == 2) changed_source.container = "gguf";
+      if (mutation == 2) changed_source.container = "unknown";
       if (mutation == 3) changed_source.tensors[2].format.params.k_bits = 6;
       if (mutation == 4) changed_source.tensors[2].part = fm::PartRole::kData;
       if (mutation == 5) changed_model.stages[0].folds.push_back("norm.plus_one");
@@ -1206,9 +1235,9 @@ TEST(ComponentAdmissionDrafterTest, ComponentDrafterValuesApprovesV1DraftersAndR
   composed.stages.back().role = sp::StageRole::kDrafter;
   const auto pinned = rt::CheckComposedAdmission(composed, *g26_target, *g26_asst);
   ASSERT_FALSE(pinned.has_value());
-  EXPECT_NE(pinned.error().find("is not the one approved"), std::string::npos) << pinned.error();
+  // Malformed stored structure refuses identically for qualified and unpinned sources.
   const auto paired = rt::CheckComposedAdmission(composed, *requant, *g26_asst);
-  EXPECT_TRUE(paired.has_value()) << (paired ? "" : paired.error());
+  EXPECT_FALSE(paired.has_value());
   sp::ModelSpec alone = composed;
   alone.stages.pop_back();
   EXPECT_FALSE(rt::CheckComposedAdmission(alone, *requant, *g26_asst));
@@ -1217,12 +1246,35 @@ TEST(ComponentAdmissionDrafterTest, ComponentDrafterValuesApprovesV1DraftersAndR
 TEST(ComponentAdmissionModelOptTest,
      IncumbentHcProjectionUsesActualNormWidthStreamsAndLongContext) {
   auto fixture = llmp::test_support::qwen38::NativeModelOpt();
+  // This test exercises the recorded incumbent recipe, whose stored spec
+  // predates independent projection scales. Reconstruct that exact shorthand;
+  // the new native spec has a different semantic identity and gets no stale grant.
+  const auto current_model = fixture.model;
+  for (auto& layer : fixture.model.stages.front().layers)
+    for (auto& component : layer.components)
+      if (component.kind == "ffn.moe") {
+        std::erase_if(component.params, [](const auto& param) {
+          return param.name == "gate_scale" || param.name == "up_scale" ||
+                 param.name == "down_scale";
+        });
+        const auto scales =
+            std::ranges::find(component.params, "projection_scales", &sp::Param::name);
+        ASSERT_NE(scales, component.params.end());
+        scales->value = true;
+      }
+  ASSERT_NE(current_model.Digest(), fixture.model.Digest());
   auto origins = llmp::test_support::qwen38::ModelOptOrigins();
   const auto* approval = rt::FindApproval(fixture.source.architecture, origins);
   ASSERT_NE(approval, nullptr);
   auto owner = std::make_shared<NumericalOwner>();
   auto funder = NumericalFunder(owner);
   const auto semantic = fixture.model.Digest();
+  const auto stale =
+      rt::AdmittedNumerics(current_model, fixture.source, origins, approval, current_model.Digest(),
+                           {.context = 262144, .slots = 1}, 0, funder);
+  ASSERT_TRUE(stale) << (stale ? "" : stale.error());
+  EXPECT_FALSE(*stale);
+  EXPECT_EQ(owner->charges, 0U);
   for (const auto slots : {1U, 4U}) {
     auto facts = rt::AdmittedNumerics(fixture.model, fixture.source, origins, approval, semantic,
                                       {.context = 262144, .slots = slots}, 0, funder);
@@ -1278,10 +1330,11 @@ TEST(ComponentAdmissionModelOptTest,
     auto changed_origins = origins;
     if (mutation == 0) changed_origins[0].name.clear();
     if (mutation == 1) changed_origins[0].bytes = llmp::base::Bytes(0);
-    if (mutation == 2) changed_source.container = "gguf";
+    if (mutation == 2) changed_source.container = "unknown";
     if (mutation == 3) changed_source.folds.clear();
     if (mutation == 4) changed_model.stages[0].folds.clear();
-    if (mutation == 5) changed_source.tensors[0].format.encoding = fm::Encoding::kF16;
+    if (mutation == 5)
+      changed_source.tensors[0].format.encoding = static_cast<fm::Encoding>(UINT16_MAX);
     if (mutation == 6) {
       auto it = std::ranges::find_if(changed_source.tensors, [](const auto& t) {
         return t.format.encoding == fm::Encoding::kNvfp4 && t.format.params.tensor_scale;
@@ -1290,8 +1343,7 @@ TEST(ComponentAdmissionModelOptTest,
       it->format.params.tensor_scale = false;
     }
     if (mutation == 7) {
-      changed_model.stages[0].heads.output->weights[0].tensor =
-          changed_model.stages[0].embedding->weights[0].tensor;
+      changed_model.stages[0].heads.output->weights[0].tensor = "missing.output.weight";
     }
     if (mutation == 8) {
       for (auto& t : changed_source.tensors)
@@ -1355,20 +1407,20 @@ TEST(ComponentAdmissionMlxTest,
     auto changed_origins = origins;
     if (mutation == 0) changed_origins[0].name.clear();
     if (mutation == 1) changed_origins[0].bytes = llmp::base::Bytes(0);
-    if (mutation == 2) changed_source.container = "safetensors";
+    if (mutation == 2) changed_source.container = "unknown";
     if (mutation == 3) changed_source.folds.clear();
     if (mutation == 4) changed_model.stages[0].folds.clear();
-    if (mutation == 5) changed_source.tensors[0].format.encoding = fm::Encoding::kF16;
+    if (mutation == 5)
+      changed_source.tensors[0].format.encoding = static_cast<fm::Encoding>(UINT16_MAX);
     if (mutation == 6) {
       auto it = std::ranges::find_if(changed_source.tensors, [](const auto& t) {
         return t.format.encoding == fm::Encoding::kAffine;
       });
       ASSERT_NE(it, changed_source.tensors.end());
-      it->format.params.bits = 8;
+      it->format.params.bits = 0;
     }
     if (mutation == 7) {
-      changed_model.stages[0].heads.output->weights[0].tensor =
-          changed_model.stages[0].embedding->weights[0].tensor;
+      changed_model.stages[0].heads.output->weights[0].tensor = "missing.output.weight";
     }
     if (mutation == 8) {
       auto it = std::ranges::find_if(changed_source.tensors, [](const auto& t) {
@@ -1384,8 +1436,8 @@ TEST(ComponentAdmissionMlxTest,
     if (mutation == 10 || mutation == 11) {
       for (auto& t : changed_source.tensors) {
         if (t.format.encoding != fm::Encoding::kAffine) continue;
-        if (mutation == 10) t.format.params.group = 64;
-        if (mutation == 11) t.format.params.scale = fm::AffineScale::kF16;
+        if (mutation == 10) t.format.params.group = 0;
+        if (mutation == 11) t.format.params.scale = static_cast<fm::AffineScale>(UINT8_MAX);
       }
     }
     EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))

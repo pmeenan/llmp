@@ -30,6 +30,7 @@
 #include "spec/mappings/gemma4.h"
 #include "spec/mappings/qwen2.h"
 #include "spec/mappings/qwen38.h"
+#include "spec/mappings/rules.h"
 #include "spec/names.h"
 #include "spec/spec.h"
 
@@ -149,6 +150,14 @@ std::optional<ValueType> PseudoParam(std::string_view slot, std::string_view par
 
 using Values = std::map<std::string_view, const ParamValue*>;
 
+const ParamValue* FindValue(const Mapping& m, const Values& values, std::string_view key) {
+  if (key.empty()) return nullptr;
+  if (const auto found = values.find(key); found != values.end()) return found->second;
+  const std::string canonical = CanonicalKey(m, key);
+  if (const auto found = values.find(canonical); found != values.end()) return found->second;
+  return nullptr;
+}
+
 std::expected<double, std::string> Transformed(double x, Transform t, std::string_view where) {
   double y = x;
   switch (t) {
@@ -166,6 +175,8 @@ std::expected<double, std::string> Transformed(double x, Transform t, std::strin
     case Transform::kFloat32:
       y = static_cast<double>(static_cast<float>(x));
       break;
+    case Transform::kProduct:
+      break;
   }
   if (!std::isfinite(y)) {
     return Refuse(where, "a value outside its transform's domain");
@@ -182,25 +193,35 @@ struct LayerAt {
 // The rule's value: its constant, or its key's converted (a per-layer
 // key's entry for the layer); nothing when the key is absent.
 std::expected<std::optional<ParamValue>, std::string> Evaluate(
-    const ParamRule& r, const Values& values, std::string_view where, LayerAt layer = {},
-    const std::map<std::string_view, const SourceTensor*>* tensors = nullptr) {
+    const Mapping& m, const ParamRule& r, const Values& values, std::string_view where,
+    LayerAt layer = {}, const std::map<std::string_view, const SourceTensor*>* tensors = nullptr) {
   if (!r.tensor.empty()) {
-    if (tensors != nullptr && tensors->contains(r.tensor)) {
-      return ParamValue(true);
+    if (tensors != nullptr) {
+      if (const auto it = tensors->find(Expand(r.tensor, layer.layer)); it != tensors->end()) {
+        if (r.type == ValueType::kInt) {
+          if (it->second->format.shape.rank == 0) {
+            return Refuse(where, std::format("tensor '{}' has rank 0", r.tensor));
+          }
+          return ParamValue(static_cast<std::int64_t>(it->second->format.shape.ne[0]));
+        }
+        return ParamValue(true);
+      }
     }
     return std::optional<ParamValue>();
   }
   const auto eval_ratio = [&]() -> std::expected<std::optional<ParamValue>, std::string> {
-    const auto num_found = values.find(r.numerator_key);
-    const auto den_found = values.find(r.divisor_key);
-    if (num_found == values.end() || den_found == values.end()) {
+    const ParamValue* num_found = FindValue(m, values, r.numerator_key);
+    const ParamValue* den_found = FindValue(m, values, r.divisor_key);
+    if (num_found == nullptr || den_found == nullptr) {
       return std::optional<ParamValue>();
     }
-    const std::string at = std::format("{} (from {} / {})", where, r.numerator_key, r.divisor_key);
-    const auto* num_i = std::get_if<std::int64_t>(num_found->second);
-    const auto* den_i = std::get_if<std::int64_t>(den_found->second);
-    const auto* num_d = std::get_if<double>(num_found->second);
-    const auto* den_d = std::get_if<double>(den_found->second);
+    const bool is_product = r.transform == Transform::kProduct;
+    const std::string at = std::format("{} (from {} {} {})", where, r.numerator_key,
+                                       is_product ? "*" : "/", r.divisor_key);
+    const auto* num_i = std::get_if<std::int64_t>(num_found);
+    const auto* den_i = std::get_if<std::int64_t>(den_found);
+    const auto* num_d = std::get_if<double>(num_found);
+    const auto* den_d = std::get_if<double>(den_found);
     if (num_i == nullptr && num_d == nullptr) {
       return Refuse(at, "numerator is not a number");
     }
@@ -209,6 +230,13 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(
     }
     if (r.type == ValueType::kInt) {
       if (num_i != nullptr && den_i != nullptr) {
+        if (is_product) {
+          std::int64_t prod = 0;
+          if (__builtin_mul_overflow(*num_i, *den_i, &prod)) {
+            return Refuse(at, "product overflows");
+          }
+          return ParamValue(prod);
+        }
         if (*den_i == 0) return Refuse(at, "division by zero");
         if (*num_i == std::numeric_limits<std::int64_t>::min() && *den_i == -1) {
           return Refuse(at, "ratio overflows");
@@ -218,20 +246,21 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(
       }
       const double num_val = num_i != nullptr ? static_cast<double>(*num_i) : *num_d;
       const double den_val = den_i != nullptr ? static_cast<double>(*den_i) : *den_d;
-      if (den_val == 0.0) return Refuse(at, "division by zero");
-      const double q = num_val / den_val;
+      if (!is_product && den_val == 0.0) return Refuse(at, "division by zero");
+      const double q = is_product ? (num_val * den_val) : (num_val / den_val);
       if (!std::isfinite(q) || std::floor(q) != q ||
           q < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
           q >= 9223372036854775808.0) {
-        return Refuse(at, "ratio is not an integer");
+        return Refuse(at, is_product ? "product is not an integer" : "ratio is not an integer");
       }
       return ParamValue(static_cast<std::int64_t>(q));
     }
     if (r.type == ValueType::kReal) {
       const double num_val = num_i != nullptr ? static_cast<double>(*num_i) : *num_d;
       const double den_val = den_i != nullptr ? static_cast<double>(*den_i) : *den_d;
-      if (den_val == 0.0) return Refuse(at, "division by zero");
-      auto y = Transformed(num_val / den_val, r.transform, at);
+      if (!is_product && den_val == 0.0) return Refuse(at, "division by zero");
+      const double raw = is_product ? (num_val * den_val) : (num_val / den_val);
+      auto y = Transformed(raw, is_product ? Transform::kNone : r.transform, at);
       if (!y) return std::unexpected(y.error());
       return ParamValue(*y);
     }
@@ -261,8 +290,8 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(
         return Refuse(where, "a list without its key");
     }
   }
-  const auto found = values.find(r.key);
-  if (found == values.end()) {
+  const ParamValue* found = FindValue(m, values, r.key);
+  if (found == nullptr) {
     if (!r.numerator_key.empty() && !r.divisor_key.empty()) {
       return eval_ratio();
     }
@@ -271,7 +300,7 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(
   const std::string at = std::format("{} (from {})", where, r.key);
   // A per-layer key's entry for the layer (a list of one value a layer),
   // or its one value for every layer.
-  ParamValue entry = *found->second;
+  ParamValue entry = *found;
   if (r.per_layer) {
     const auto pick = [&](const auto& list) -> std::expected<void, std::string> {
       if (list.size() != layer.layers || layer.layer >= list.size()) {
@@ -281,11 +310,11 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(
       entry = list[layer.layer];
       return {};
     };
-    if (const auto* is = std::get_if<std::vector<std::int64_t>>(&*found->second)) {
+    if (const auto* is = std::get_if<std::vector<std::int64_t>>(found)) {
       if (auto ok = pick(*is); !ok) {
         return std::unexpected(ok.error());
       }
-    } else if (const auto* ds = std::get_if<std::vector<double>>(&*found->second)) {
+    } else if (const auto* ds = std::get_if<std::vector<double>>(found)) {
       if (auto ok = pick(*ds); !ok) {
         return std::unexpected(ok.error());
       }
@@ -314,6 +343,12 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(
       return ParamValue(*y);
     }
     case ValueType::kBool:
+      if (!r.flag_text.empty()) {
+        if (const auto* text = std::get_if<std::string>(&v)) {
+          if (*text == r.flag_text) return ParamValue(r.value.flag);
+          return Refuse(at, "not the value the mapping's components implement");
+        }
+      }
       if (!r.value.text.empty()) {
         const auto* s = std::get_if<std::string>(&v);
         if (s == nullptr) {
@@ -322,7 +357,11 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(
         if (*s == r.value.text) {
           return ParamValue(r.value.flag);
         }
-        if (*s == "none" || *s == "default") {
+        if (*s == "none" || *s == "default" ||
+            std::ranges::any_of(m.params, [&](const ParamRule& other) {
+              return other.type == ValueType::kBool && !other.value.text.empty() &&
+                     MatchesCanonicalKey(m, other.key, r.key) && *s == other.value.text;
+            })) {
           return std::optional<ParamValue>();
         }
         return Refuse(at, "not the value the mapping's components implement");
@@ -338,6 +377,11 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(
       return Refuse(at, "not a name");
     case ValueType::kInts:
       if (const auto* is = std::get_if<std::vector<std::int64_t>>(&v)) {
+        if (r.param == "rope_sections" && is->size() == 3) {
+          std::vector<std::int64_t> padded = *is;
+          padded.push_back(0);
+          return ParamValue(std::move(padded));
+        }
         return ParamValue(*is);
       }
       return Refuse(at, "not a list of integers");
@@ -362,7 +406,7 @@ std::expected<std::optional<ParamValue>, std::string> Resolve(
     }
     applied = true;
     optional = optional || r.optional;
-    auto v = Evaluate(r, values, where, layer, tensors);
+    auto v = Evaluate(m, r, values, where, layer, tensors);
     if (!v) {
       return std::unexpected(v.error());
     }
@@ -382,22 +426,25 @@ std::expected<void, std::string> CheckRequirements(const Mapping& m, const Value
     if (!r.slot.empty()) {
       continue;
     }
-    auto v = Evaluate(r, values, std::format("requirement {}", r.key));
+    if (r.key == "text_config.model_type" && m.key_prefix != "text_config") {
+      continue;
+    }
+    auto v = Evaluate(m, r, values, std::format("requirement {}", r.key));
     if (!v) {
       return std::unexpected(v.error());
     }
     if (!*v) {
-      if (!r.optional) {
-        return Refuse(r.key, "absent from the source");
+      if (r.optional && !(r.key == "text_config.model_type" && m.key_prefix == "text_config")) {
+        continue;
       }
-      continue;
+      return Refuse(r.key, "absent from the source");
     }
     ParamRule constant = r;
     constant.key = {};
     constant.numerator_key = {};
     constant.divisor_key = {};
     constant.transform = Transform::kNone;
-    auto want = Evaluate(constant, values, r.key);
+    auto want = Evaluate(m, constant, values, r.key);
     if (!want || **v != **want) {
       return Refuse(r.key, "not the value the mapping's components implement");
     }
@@ -413,19 +460,41 @@ constexpr std::uint32_t kShared = ~std::uint32_t{0};
 
 bool Layered(std::string_view pattern) { return pattern.contains(kLayerField); }
 
+bool MatchesArchitecture(const Mapping& m, std::string_view arch) {
+  return m.architecture == arch || std::ranges::contains(m.source_architectures, arch);
+}
+
+std::optional<std::string> CompanionStem(std::string_view name, format::PartRole part) {
+  if (part != format::PartRole::kBlockScales && part != format::PartRole::kTensorScale &&
+      part != format::PartRole::kBiases && part != format::PartRole::kZeros) {
+    return std::nullopt;
+  }
+  for (std::string_view suffix : {".weight_scale_2", ".weight_scale", ".weight_bias",
+                                  ".weight_zero", ".scales", ".biases", ".zeros"}) {
+    if (name.size() > suffix.size() && name.ends_with(suffix)) {
+      return std::format("{}.weight", name.substr(0, name.size() - suffix.size()));
+    }
+  }
+  if (name.ends_with(".weight")) {
+    return std::string(name);
+  }
+  return std::nullopt;
+}
+
 // Whether a gate holds for the values: the key an integer above zero, or
 // (absent) the key absent or zero; an empty gate always holds.
-std::expected<bool, std::string> Holds(std::string_view gate, bool absent, const Values& values) {
+std::expected<bool, std::string> Holds(const Mapping& m, std::string_view gate, bool absent,
+                                       const Values& values) {
   if (gate.empty()) {
     return true;
   }
   std::int64_t n = 0;
-  if (const auto found = values.find(gate); found != values.end()) {
+  if (const ParamValue* found = FindValue(m, values, gate); found != nullptr) {
     // A flag (an approval's gate) holds when set.
-    if (const auto* flag = std::get_if<bool>(found->second); flag != nullptr) {
+    if (const auto* flag = std::get_if<bool>(found); flag != nullptr) {
       n = *flag ? 1 : 0;
     } else {
-      const auto* i = std::get_if<std::int64_t>(found->second);
+      const auto* i = std::get_if<std::int64_t>(found);
       if (i == nullptr || *i < 0) {
         return Refuse(gate, "a gate that is not a flag or an integer of at least zero");
       }
@@ -450,21 +519,48 @@ bool Exclusive(const SlotRule& a, const SlotRule& b) {
 
 // The layers a source key names: an integer or a list of integers, each
 // below `layers`.
-std::expected<std::set<std::uint32_t>, std::string> LayersOf(std::string_view key,
+std::expected<std::set<std::uint32_t>, std::string> LayersOf(const Mapping& m, std::string_view key,
                                                              const Values& values,
-                                                             std::uint32_t layers) {
+                                                             std::uint32_t layers,
+                                                             std::string_view alias = {},
+                                                             std::uint8_t alias_base = 0) {
   std::set<std::uint32_t> out;
-  const auto found = values.find(key);
-  if (found == values.end()) return out;
+  bool one_based = false;
+  const ParamValue* found = FindValue(m, values, key);
+  if (found == nullptr && !alias.empty()) {
+    found = FindValue(m, values, alias);
+    one_based = alias_base == 1;
+  }
+  if (found == nullptr) return out;
   std::vector<std::int64_t> list;
-  if (const auto* i = std::get_if<std::int64_t>(found->second)) {
+  if (const auto* i = std::get_if<std::int64_t>(found)) {
     list.push_back(*i);
-  } else if (const auto* is = std::get_if<std::vector<std::int64_t>>(found->second)) {
+  } else if (const auto* is = std::get_if<std::vector<std::int64_t>>(found)) {
     list = *is;
   } else {
     return Refuse(key, "not a layer or a list of layers");
   }
-  for (const std::int64_t l : list) {
+  if (!one_based && !alias.empty()) {
+    if (const auto* other = FindValue(m, values, alias)) {
+      std::vector<std::int64_t> alternate;
+      if (const auto* i = std::get_if<std::int64_t>(other))
+        alternate.push_back(*i);
+      else if (const auto* alternate_values = std::get_if<std::vector<std::int64_t>>(other))
+        alternate = *alternate_values;
+      else
+        return Refuse(alias, "not a layer selector");
+      if (alternate.size() != list.size())
+        return Refuse(alias, "alternate layer selector disagrees");
+      for (std::size_t i = 0; i < list.size(); ++i)
+        if (alternate[i] < alias_base || alternate[i] - alias_base != list[i])
+          return Refuse(alias, "alternate layer selector disagrees");
+    }
+  }
+  for (std::int64_t l : list) {
+    if (one_based) {
+      if (l < 1) return Refuse(key, "layer index is below its declared origin");
+      --l;
+    }
     if (l < 0 || l >= static_cast<std::int64_t>(layers)) {
       return Refuse(key, std::format("a layer {} past the {} layers", l, layers));
     }
@@ -492,7 +588,7 @@ class Synthesis {
   // layers or count key is at.
   std::expected<void, std::string> Gate() {
     for (const SlotRule& slot : m_.slots) {
-      auto present = Holds(slot.gate, slot.gate_absent, values_);
+      auto present = Holds(m_, slot.gate, slot.gate_absent, values_);
       if (!present) {
         return std::unexpected(present.error());
       }
@@ -500,7 +596,8 @@ class Synthesis {
         present_.insert(slot.slot);
       }
       if (!slot.layers_key.empty()) {
-        auto at = LayersOf(slot.layers_key, values_, layers_);
+        auto at = LayersOf(m_, slot.layers_key, values_, layers_, slot.layers_alias,
+                           slot.alias_index_base);
         if (!at) {
           return std::unexpected(at.error());
         }
@@ -508,8 +605,8 @@ class Synthesis {
       }
       if (!slot.count_key.empty()) {
         std::uint64_t n = 0;
-        if (const auto found = values_.find(slot.count_key); found != values_.end()) {
-          auto count = Count(found->second, slot.count_key, 0, layers_);
+        if (const ParamValue* found = FindValue(m_, values_, slot.count_key); found != nullptr) {
+          auto count = Count(found, slot.count_key, 0, layers_);
           if (!count) return std::unexpected(count.error());
           n = *count;
         }
@@ -542,6 +639,30 @@ class Synthesis {
     for (const SourceTensor& t : source_.tensors) {
       names_.emplace(t.name, &t);
     }
+    const auto match_rule =
+        [&](std::string_view tensor_name) -> std::optional<std::pair<std::size_t, std::uint32_t>> {
+      std::optional<std::pair<std::size_t, std::uint32_t>> match;
+      for (std::size_t i = 0; i < m_.tensors.size(); ++i) {
+        const TensorRule& rule = m_.tensors[i];
+        if (rule.target || !Present(rule.slot)) {
+          continue;  // the target's tensor, or a slot the source has not
+        }
+        const auto layer = Match(rule.pattern, tensor_name, layers_);
+        if (!layer) {
+          continue;
+        }
+        const SlotRule& at = *FindSlot(m_, rule.slot);
+        if (at.site == Site::kLayer && Layered(rule.pattern) &&
+            (!At(at, *layer) || !Applies(rule.layer_types, Type(*layer)))) {
+          continue;
+        }
+        if (match) {
+          return std::nullopt;
+        }
+        match = std::pair(i, Layered(rule.pattern) ? *layer : kShared);
+      }
+      return match;
+    };
     for (const SourceTensor& t : source_.tensors) {
       std::optional<std::pair<std::size_t, std::uint32_t>> match;
       for (std::size_t i = 0; i < m_.tensors.size(); ++i) {
@@ -563,8 +684,28 @@ class Synthesis {
         }
         match = std::pair(i, Layered(rule.pattern) ? *layer : kShared);
       }
-      if (!match) {
-        return Refuse(t.name, "matches none of the mapping's tensor rules of the slots it has");
+      const bool mismatched_rule =
+          match &&
+          ((!m_.tensors[match->first].any_part && m_.tensors[match->first].part != t.part) ||
+           m_.tensors[match->first].experts != t.experts);
+      if (!match || bound_.contains(*match) || mismatched_rule) {
+        if (const auto stem = CompanionStem(t.name, t.part); stem && names_.contains(*stem)) {
+          if (const auto stem_match = match_rule(*stem)) {
+            const TensorRule& stem_rule = m_.tensors[stem_match->first];
+            if (stem_rule.any_part && stem_rule.experts == t.experts) {
+              auto& list = companions_[*stem];
+              if (std::ranges::any_of(list,
+                                      [&](const SourceTensor* c) { return c->part == t.part; })) {
+                return Refuse(t.name, "binds a companion part another tensor binds");
+              }
+              list.push_back(&t);
+              continue;
+            }
+          }
+        }
+        if (!match) {
+          return Refuse(t.name, "matches none of the mapping's tensor rules of the slots it has");
+        }
       }
       const TensorRule& rule = m_.tensors[match->first];
       const SlotRule& slot = *FindSlot(m_, rule.slot);
@@ -658,6 +799,18 @@ class Synthesis {
           rule.any_part && held != names_.end() ? held->second->part : rule.part;
       c.weights.push_back(WeightBinding{
           .role = std::string(rule.role), .tensor = tensor, .part = part, .experts = rule.experts});
+      if (const auto comp_it = companions_.find(tensor); comp_it != companions_.end()) {
+        for (const SourceTensor* comp : comp_it->second) {
+          if (std::ranges::none_of(c.weights, [&](const WeightBinding& w) {
+                return w.role == rule.role && w.part == comp->part && w.stage.empty();
+              })) {
+            c.weights.push_back(WeightBinding{.role = std::string(rule.role),
+                                              .tensor = comp->name,
+                                              .part = comp->part,
+                                              .experts = comp->experts});
+          }
+        }
+      }
     }
     return c;
   }
@@ -685,6 +838,7 @@ class Synthesis {
   std::set<std::string_view> present_;
   std::map<std::string_view, std::set<std::uint32_t>> at_;
   std::map<std::pair<std::size_t, std::uint32_t>, std::string> bound_;  // (rule, layer)
+  std::map<std::string, std::vector<const SourceTensor*>, std::less<>> companions_;
   std::span<const std::string> folds_;
   std::string types_;  // a letter a layer, or the mapping's repeating pattern
 };
@@ -703,10 +857,48 @@ std::expected<std::uint64_t, std::string> Count(const ParamValue* v, std::string
 // the mapping's repeating pattern.
 std::expected<std::string, std::string> LayerTypes(const Mapping& m, const Values& values,
                                                    std::uint64_t layers) {
-  if (m.layer_type_key.empty()) return std::string(m.layer_types);
-  const auto found = values.find(m.layer_type_key);
-  if (found != values.end() && found->second != nullptr) {
-    if (const auto* str = std::get_if<std::string>(found->second)) {
+  std::optional<std::uint64_t> interval;
+  if (const auto* value = FindValue(m, values, m.layer_type_interval_key)) {
+    const auto* integer = std::get_if<std::int64_t>(value);
+    if (!integer || *integer <= 0)
+      return Refuse(m.layer_type_interval_key, "not a positive interval");
+    interval = static_cast<std::uint64_t>(*integer);
+  }
+  const auto finish = [&](std::string types,
+                          bool explicit_types) -> std::expected<std::string, std::string> {
+    if (!interval) return types;
+    if (!explicit_types) types.resize(static_cast<std::size_t>(layers));
+    for (std::uint64_t layer = 0; layer < layers; ++layer) {
+      const char type = (layer + 1) % *interval == 0 ? m.layer_types.back() : m.layer_types.front();
+      if (explicit_types && types[layer] != type)
+        return Refuse(m.layer_type_interval_key, "disagrees with the explicit layer schedule");
+      types[layer] = type;
+    }
+    return types;
+  };
+  const ParamValue* found = FindValue(m, values, m.layer_type_key);
+  if (found == nullptr && !m.layer_flags_key.empty()) {
+    if (const auto* value = FindValue(m, values, m.layer_flags_key)) {
+      const auto* flags = std::get_if<std::vector<std::int64_t>>(value);
+      if (flags == nullptr || flags->size() != layers)
+        return Refuse(m.layer_flags_key, "not a flag for each layer");
+      char other = 0;
+      for (const char type : m.layer_types) {
+        if (type == m.layer_flag_type) continue;
+        if (other != 0 && other != type)
+          return Refuse(m.layer_flags_key, "flags do not describe a two-type schedule");
+        other = type;
+      }
+      if (other == 0) return Refuse(m.layer_flags_key, "flags do not describe a two-type schedule");
+      std::string types;
+      types.reserve(static_cast<std::size_t>(layers));
+      for (const auto flag : *flags) types.push_back(flag != 0 ? m.layer_flag_type : other);
+      return finish(std::move(types), true);
+    }
+  }
+  if (m.layer_type_key.empty()) return finish(std::string(m.layer_types), false);
+  if (found != nullptr) {
+    if (const auto* str = std::get_if<std::string>(found)) {
       if (str->size() < layers) {
         return Refuse(m.layer_type_key, std::format("not a value for each of {} layers", layers));
       }
@@ -717,12 +909,13 @@ std::expected<std::string, std::string> LayerTypes(const Mapping& m, const Value
               std::format("layer {}'s '{}' is none of the mapping's layer types", il, (*str)[il]));
         }
       }
-      return str->substr(0, layers);
+      return finish(str->substr(0, layers), true);
     }
   }
-  const auto* list = (found == values.end() || found->second == nullptr)
-                         ? nullptr
-                         : std::get_if<std::vector<std::int64_t>>(found->second);
+  if (found == nullptr && (interval || (!m.layer_type_codes.empty() && m.layer_types.size() > 1))) {
+    return finish(std::string(m.layer_types), false);
+  }
+  const auto* list = found == nullptr ? nullptr : std::get_if<std::vector<std::int64_t>>(found);
   if (list == nullptr || list->size() < layers) {
     return Refuse(m.layer_type_key, std::format("not a value for each of {} layers", layers));
   }
@@ -736,7 +929,7 @@ std::expected<std::string, std::string> LayerTypes(const Mapping& m, const Value
     }
     types.push_back(code->type);
   }
-  return types;
+  return finish(std::move(types), true);
 }
 
 // A layer-flag list (layer_flags_key): one flag a layer, set exactly at
@@ -746,11 +939,11 @@ std::expected<void, std::string> CheckLayerFlags(const Mapping& m, const Values&
   if (m.layer_flags_key.empty()) {
     return {};
   }
-  const auto found = values.find(m.layer_flags_key);
-  if (found == values.end()) {
+  const ParamValue* found = FindValue(m, values, m.layer_flags_key);
+  if (found == nullptr) {
     return {};
   }
-  const auto* flags = std::get_if<std::vector<std::int64_t>>(found->second);
+  const auto* flags = std::get_if<std::vector<std::int64_t>>(found);
   if (flags == nullptr || flags->size() != layers) {
     return Refuse(m.layer_flags_key, std::format("not a flag for each of {} layers", layers));
   }
@@ -780,7 +973,7 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
   }
   if (!mapping.containers.empty() && !std::ranges::contains(mapping.containers, source.container))
     return Refuse("source", "container has no variant of this mapping");
-  if (source.architecture != mapping.architecture) {
+  if (!MatchesArchitecture(mapping, source.architecture)) {
     return Refuse("source", std::format("architecture {}, not the mapping's {}",
                                         source.architecture, mapping.architecture));
   }
@@ -796,9 +989,8 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
       }
     }
   }
-  const auto found = by_key.find(mapping.layer_count_key);
-  const auto layers = Count(found == by_key.end() ? nullptr : found->second,
-                            mapping.layer_count_key, 1, kMaxLayers);
+  const ParamValue* found = FindValue(mapping, by_key, mapping.layer_count_key);
+  const auto layers = Count(found, mapping.layer_count_key, 1, kMaxLayers);
   if (!layers) {
     return std::unexpected(layers.error());
   }
@@ -844,6 +1036,11 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
     return Count(&**v, std::format("{}.{}", slot, param), least, most);
   };
   auto context = count(kStageSlot, "context", 1, kMaxContext, 0);
+  if (context && *context == 0 && !mapping.context_key.empty()) {
+    if (const ParamValue* cv = FindValue(mapping, by_key, mapping.context_key); cv != nullptr) {
+      context = Count(cv, mapping.context_key, 1, kMaxContext);
+    }
+  }
   auto width = count(kStreamSlot, "width", 1, kMaxWidth, 0);
   auto streams = count(kStreamSlot, "streams", 1, kMaxStreams, 1);
   if (!context || !width || !streams) {
@@ -858,6 +1055,16 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
   }
   if (*softcap) {
     stage.heads.softcap = std::get<double>(**softcap);
+  } else if (!mapping.softcap_key.empty()) {
+    if (const ParamValue* sv = FindValue(mapping, by_key, mapping.softcap_key); sv != nullptr) {
+      if (const auto* d = std::get_if<double>(sv)) {
+        stage.heads.softcap = *d;
+      } else if (const auto* i = std::get_if<std::int64_t>(sv)) {
+        stage.heads.softcap = static_cast<double>(*i);
+      } else {
+        return Refuse(mapping.softcap_key, "not a number");
+      }
+    }
   }
 
   auto embedding = syn.Only(Site::kEmbedding);
@@ -959,7 +1166,7 @@ std::expected<const PolicyRule*, std::string> DefaultRule(const Mapping& mapping
     }
   }
   for (const PolicyRule& p : mapping.policies) {
-    auto holds = Holds(p.gate, p.gate_absent, by_key);
+    auto holds = Holds(mapping, p.gate, p.gate_absent, by_key);
     if (!holds) {
       return std::unexpected(holds.error());
     }
@@ -980,12 +1187,14 @@ std::span<const Mapping* const> Mappings() {
                                  &mappings::Gemma3SafetensorsMapping(),
                                  &mappings::Gemma3ConditionalSafetensorsMapping(),
                                  &mappings::Gemma4Mapping(),
+                                 &mappings::Gemma4SafetensorsMapping(),
                                  &mappings::Gemma4AssistantMapping(),
                                  &mappings::Qwen38Mapping(),
                                  &mappings::Qwen38MtpMapping(),
                                  &mappings::Dsv4Mapping(),
                                  &mappings::DsparkMapping(),
                                  &mappings::Qwen2Mapping(),
+                                 &mappings::Qwen35Mapping(),
                                  &mappings::Qwen38GgufMapping(),
                                  &mappings::Qwen38NativeMapping(),
                                  &mappings::Qwen38MtpNativeMapping(),
@@ -1006,6 +1215,9 @@ std::span<const Mapping* const> Mappings() {
 const Mapping* FindMapping(std::string_view architecture) {
   for (const Mapping* m : Mappings())
     if (m->architecture == architecture && m->version == 1) return m;
+  for (const Mapping* m : Mappings())
+    if (m->role == StageRole::kTarget && MatchesArchitecture(*m, architecture) && m->version == 1)
+      return m;
   return nullptr;
 }
 
@@ -1018,6 +1230,14 @@ const Mapping* FindMapping(std::string_view architecture, std::string_view conta
         !std::ranges::contains(m->containers, container))
       continue;
     if (result != nullptr) return nullptr;  // ambiguous registrations never pick by order
+    result = m;
+  }
+  if (result != nullptr) return result;
+  for (const Mapping* m : Mappings()) {
+    if (m->role != StageRole::kTarget || !MatchesArchitecture(*m, architecture) ||
+        m->version != version || !std::ranges::contains(m->containers, container))
+      continue;
+    if (result != nullptr) return nullptr;
     result = m;
   }
   return result;
@@ -1081,7 +1301,8 @@ std::expected<std::vector<SourceValue>, std::string> ExtractValues(const Mapping
   const Stage& stage = target.stages.front();
   std::vector<SourceValue> out;
   for (const ValueRule& rule : mapping.draft->values) {
-    if (std::ranges::contains(out, rule.key, &SourceValue::key)) continue;
+    const std::string canonical_key = CanonicalKey(mapping, rule.key);
+    if (std::ranges::contains(out, canonical_key, &SourceValue::key)) continue;
     std::optional<ParamValue> value;
     switch (rule.origin) {
       case ValueOrigin::kLiteral:
@@ -1160,22 +1381,28 @@ std::expected<std::vector<SourceValue>, std::string> ExtractValues(const Mapping
       if (!i) return Refuse(rule.key, "a noninteger list extraction");
       value = std::vector<std::int64_t>{*i};
     }
-    out.push_back({.key = std::string(rule.key), .value = std::move(*value)});
+    out.push_back({.key = canonical_key, .value = std::move(*value)});
   }
   return out;
 }
 
-std::vector<std::string_view> SourceKeys(const Mapping& m) {
-  std::vector<std::string_view> keys;
+std::vector<std::string> SourceKeys(const Mapping& m) {
+  std::vector<std::string> keys;
   const auto add = [&](std::string_view key) {
-    if (!key.empty() && std::ranges::find(keys, key) == keys.end()) keys.push_back(key);
+    if (key.empty()) return;
+    const std::string canonical = CanonicalKey(m, key);
+    if (std::ranges::find(keys, canonical) == keys.end()) keys.push_back(canonical);
   };
   add(m.layer_count_key);
+  add(m.context_key);
+  add(m.softcap_key);
   add(m.layer_type_key);
+  add(m.layer_type_interval_key);
   add(m.layer_flags_key);
   for (const SlotRule& s : m.slots) {
     add(s.gate);
     add(s.layers_key);
+    add(s.layers_alias);
     add(s.count_key);
   }
   for (const ParamRule& p : m.params) {
@@ -1183,12 +1410,17 @@ std::vector<std::string_view> SourceKeys(const Mapping& m) {
     add(p.numerator_key);
     add(p.divisor_key);
   }
+  for (const auto& list : m.lists) {
+    add(list.key);
+    add(list.sections_of);
+    add(list.sections_multiplier_key);
+  }
   for (const ReadRule& r : m.reads) add(r.layers_key);
   for (const PolicyRule& p : m.policies) add(p.gate);
   if (m.role == StageRole::kTarget && m.companion != nullptr &&
       m.companion->role == StageRole::kDrafter) {
-    for (std::string_view k : SourceKeys(*m.companion)) {
-      add(k);
+    for (const std::string& k : SourceKeys(*m.companion)) {
+      if (std::ranges::find(keys, k) == keys.end()) keys.push_back(k);
     }
   }
   return keys;
@@ -1200,9 +1432,24 @@ Status ValidateMapping(const Mapping& m) {
       static_cast<std::uint8_t>(m.pipeline) > static_cast<std::uint8_t>(PipelineKind::kDecision)) {
     return Refuse(where, "an invalid architecture, version or pipeline");
   }
+  for (std::size_t i = 0; i < m.source_architectures.size(); ++i)
+    if (!IsArchitecture(m.source_architectures[i]) || m.source_architectures[i] == m.architecture ||
+        std::ranges::count(m.source_architectures, m.source_architectures[i]) != 1)
+      return Refuse(where, "invalid or duplicate source architecture");
   for (std::size_t i = 0; i < m.containers.size(); ++i)
     if (!IsName(m.containers[i]) || std::ranges::count(m.containers, m.containers[i]) != 1)
       return Refuse(where, "invalid or duplicate mapping container");
+  if ((!m.context_key.empty() && !IsText(m.context_key)) ||
+      (!m.softcap_key.empty() && !IsText(m.softcap_key))) {
+    return Refuse(where, "an invalid context or softcap key");
+  }
+  if (!m.source_key_prefix.empty() &&
+      (!m.source_key_prefix.ends_with('.') ||
+       !IsText(m.source_key_prefix.substr(0, m.source_key_prefix.size() - 1))))
+    return Refuse(where, "invalid source metadata nesting prefix");
+  for (const SemanticTensorRule& s : m.semantic_tensors)
+    if (!IsPattern(s.tensor, true) || !IsText(s.key) || s.size > kMaxList)
+      return Refuse(where, "an invalid semantic tensor rule");
   for (const GateRule& rule : m.gates)
     if (!IsText(rule.key) || !IsKind(rule.kind) || (!rule.param.empty() && !IsName(rule.param)) ||
         (!rule.container.empty() && !IsName(rule.container)))
@@ -1225,11 +1472,17 @@ Status ValidateMapping(const Mapping& m) {
       m.layer_types.size() > kMaxLayerTypes || !std::ranges::all_of(m.layer_types, Lower)) {
     return Refuse(where, "an invalid layer count key or layer types");
   }
+  if (!m.layer_type_interval_key.empty() &&
+      (!IsText(m.layer_type_interval_key) || m.layer_types.size() < 2 ||
+       m.layer_types.front() == m.layer_types.back() ||
+       !std::ranges::all_of(m.layer_types.substr(0, m.layer_types.size() - 1),
+                            [&](char type) { return type == m.layer_types.front(); })))
+    return Refuse(where, "an invalid interval key or repeating layer schedule");
   if ((m.layer_type_key.empty() && !m.layer_type_codes.empty()) ||
       (!m.layer_type_key.empty() &&
-       (!IsText(m.layer_type_key) || !m.layer_flags_key.empty() ||
+       (!IsText(m.layer_type_key) ||
         !std::ranges::all_of(m.layer_type_codes, [&](const LayerTypeCode& c) {
-          return m.layer_types.contains(c.type) &&
+          return m.layer_types.contains(c.type) && (c.label.empty() || IsName(c.label)) &&
                  std::ranges::count(m.layer_type_codes, c.value, &LayerTypeCode::value) == 1;
         })))) {
     return Refuse(where, "a layer type key without codes of the mapping's types (each value once)");
@@ -1294,6 +1547,10 @@ Status ValidateMapping(const Mapping& m) {
         static_cast<std::uint8_t>(s.site) > static_cast<std::uint8_t>(Site::kMixing)) {
       return Refuse(at, "an invalid kind, version or site");
     }
+    if (s.alias_index_base > 1 ||
+        (!s.layers_alias.empty() && (s.layers_key.empty() || !IsText(s.layers_alias))) ||
+        (s.layers_alias.empty() && s.alias_index_base != 0))
+      return Refuse(at, "invalid alternate layer selector or index base");
     if ((s.site == Site::kSide && s.layers_key.empty() && s.count_key.empty()) ||
         (!s.layers_key.empty() && !s.count_key.empty()) ||
         (!s.layers_key.empty() &&
@@ -1394,18 +1651,27 @@ Status ValidateMapping(const Mapping& m) {
     const std::string at = std::format("{} parameter {}.{}", where, r.slot, r.param);
     if (static_cast<std::uint8_t>(r.type) > static_cast<std::uint8_t>(ValueType::kInts) ||
         (r.type == ValueType::kInts && (r.key.empty() || r.per_layer)) ||
-        static_cast<std::uint8_t>(r.transform) > static_cast<std::uint8_t>(Transform::kFloat32) ||
-        (r.transform != Transform::kNone && r.type != ValueType::kReal)) {
+        static_cast<std::uint8_t>(r.transform) > static_cast<std::uint8_t>(Transform::kProduct) ||
+        (r.transform != Transform::kNone && r.transform != Transform::kProduct &&
+         r.type != ValueType::kReal) ||
+        (r.transform == Transform::kProduct &&
+         (r.numerator_key.empty() || (r.type != ValueType::kInt && r.type != ValueType::kReal)))) {
       return Refuse(at, "an unknown type or transform, or a transform of a non-real");
     }
     if (!r.key.empty() && !IsText(r.key)) {
       return Refuse(at, "an invalid key");
     }
     if (!r.tensor.empty() &&
-        (!IsText(r.tensor) || r.slot.empty() || IsPseudo(r.slot) || !r.key.empty() ||
-         !r.numerator_key.empty() || !r.divisor_key.empty() || r.type != ValueType::kBool ||
-         r.transform != Transform::kNone || !r.optional || r.per_layer || !r.unless_fold.empty())) {
+        (!IsPattern(r.tensor, r.tensor.contains(kLayerField)) || r.slot.empty() ||
+         IsPseudo(r.slot) || !r.key.empty() || !r.numerator_key.empty() || !r.divisor_key.empty() ||
+         (r.type != ValueType::kBool && r.type != ValueType::kInt) ||
+         r.transform != Transform::kNone || (r.type == ValueType::kBool && !r.optional) ||
+         r.per_layer || !r.unless_fold.empty())) {
       return Refuse(at, "an invalid tensor presence parameter rule");
+    }
+    if (!r.flag_text.empty() && (r.type != ValueType::kBool || !r.slot.empty() || r.key.empty() ||
+                                 !r.value.text.empty() || !IsName(r.flag_text))) {
+      return Refuse(at, "an invalid boolean requirement string alias");
     }
     if (!r.value.text.empty() && r.type == ValueType::kBool &&
         (r.slot.empty() || r.key.empty() || !IsName(r.value.text) || !r.optional || r.per_layer)) {
@@ -1485,27 +1751,49 @@ std::expected<ModelSpec, std::string> Synthesize(const Mapping& mapping, const S
                   "a drafter's mapping, which composes with its target");
   }
   if (mapping.companion != nullptr) {
-    const auto matches_companion = [&](const SourceTensor& t) {
-      for (const TensorRule& rule : mapping.companion->tensors) {
+    const std::string stage_prefix = std::format("{}.", mapping.companion->stage);
+    const auto matches_rules = [](std::span<const TensorRule> rules, std::string_view name) {
+      for (const TensorRule& rule : rules) {
         if (rule.target) continue;
-        if (Match(rule.pattern, t.name, kMaxLayers).has_value() ||
-            (!rule.fallback.empty() && Match(rule.fallback, t.name, kMaxLayers).has_value())) {
+        if (Match(rule.pattern, name, kMaxLayers).has_value() ||
+            (!rule.fallback.empty() && Match(rule.fallback, name, kMaxLayers).has_value())) {
           return true;
         }
       }
       return false;
     };
-    if (std::ranges::any_of(source.tensors, matches_companion)) {
+    const bool has_prefixed_companion =
+        std::ranges::any_of(source.tensors, [&](const SourceTensor& t) {
+          return t.name.starts_with(stage_prefix) &&
+                 matches_rules(mapping.companion->tensors, t.name.substr(stage_prefix.size()));
+        });
+    const bool has_unprefixed_companion =
+        !has_prefixed_companion && std::ranges::any_of(source.tensors, [&](const SourceTensor& t) {
+          return matches_rules(mapping.companion->tensors, t.name) &&
+                 !matches_rules(mapping.tensors, t.name);
+        });
+    if (has_prefixed_companion || has_unprefixed_companion) {
       Source target_source = source;
       Source companion_source = source;
       companion_source.architecture = mapping.companion->architecture;
       target_source.tensors.clear();
       companion_source.tensors.clear();
       for (const SourceTensor& t : source.tensors) {
-        if (matches_companion(t)) {
-          companion_source.tensors.push_back(t);
+        if (has_prefixed_companion) {
+          if (t.name.starts_with(stage_prefix) &&
+              matches_rules(mapping.companion->tensors, t.name.substr(stage_prefix.size()))) {
+            SourceTensor stripped = t;
+            stripped.name = t.name.substr(stage_prefix.size());
+            companion_source.tensors.push_back(std::move(stripped));
+          } else {
+            target_source.tensors.push_back(t);
+          }
         } else {
-          target_source.tensors.push_back(t);
+          if (matches_rules(mapping.companion->tensors, t.name)) {
+            companion_source.tensors.push_back(t);
+          } else {
+            target_source.tensors.push_back(t);
+          }
         }
       }
       auto made = MakeStage(mapping, target_source, values, {}, {});
@@ -1523,6 +1811,15 @@ std::expected<ModelSpec, std::string> Synthesize(const Mapping& mapping, const S
       auto composed = ComposeDrafter(target, mapping, *mapping.companion, companion_source, values);
       if (!composed) {
         return composed;
+      }
+      if (has_prefixed_companion) {
+        EachComponent(composed->stages.back(), [&](ComponentRef& component, const std::string&) {
+          for (WeightBinding& w : component.weights) {
+            if (w.stage.empty()) {
+              w.tensor = stage_prefix + w.tensor;
+            }
+          }
+        });
       }
       composed->stages.back().artifact = 0;
       std::vector<std::string> shared_folds;
@@ -1674,7 +1971,9 @@ std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
                                   ? 0
                                   : static_cast<std::uint32_t>(target_stage.layers.size() - 1);
     if (!r.layers_key.empty()) {
-      const auto found = std::ranges::find(values, r.layers_key, &SourceValue::key);
+      const auto found = std::ranges::find_if(values, [&](const SourceValue& v) {
+        return MatchesCanonicalKey(drafter, r.layers_key, v.key);
+      });
       const auto* list =
           found == values.end() ? nullptr : std::get_if<std::vector<std::int64_t>>(&found->value);
       const auto count = static_cast<std::int64_t>(target_stage.layers.size());

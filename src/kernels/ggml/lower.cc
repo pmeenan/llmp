@@ -1760,11 +1760,18 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
         return Refused("a rotation other than NORMAL or NEOX over positions");
       }
       const auto rope = p.inverse ? ggml_rope_ext_back : ggml_rope_ext;
-      return ggml_rope_set_offset(rope(c_, s[0], s[1], s[2], static_cast<int>(p.dims),
-                                       p.mode == ir::RopeMode::kNeox ? GGML_ROPE_TYPE_NEOX : 0,
-                                       static_cast<int>(p.original_context), p.base, p.scale,
-                                       p.ext_factor, p.attn_factor, p.beta_fast, p.beta_slow),
-                                  static_cast<int>(p.offset));
+      auto* result = ggml_rope_set_offset(
+          rope(c_, s[0], s[1], s[2], static_cast<int>(p.dims),
+               p.mode == ir::RopeMode::kNeox ? GGML_ROPE_TYPE_NEOX : 0,
+               static_cast<int>(p.original_context), p.base, p.scale,
+               p.llama3 ? -1.0F : p.ext_factor, p.attn_factor, p.beta_fast, p.beta_slow),
+          static_cast<int>(p.offset));
+      // Words 11..14 are sections only for multi-axis modes. In the owned
+      // one-dimensional launcher, word 11 holds active dimensions + 1;
+      // zero keeps upstream's full rotation and one represents identity.
+      if (p.rotated_dims != UINT32_MAX)
+        result->op_params[11] = static_cast<int>(p.rotated_dims) + 1;
+      return result;
     }
     case Op::kCacheStore:
       // GGML lists the rows, the indices, then the cache.

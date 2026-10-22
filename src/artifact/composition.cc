@@ -289,9 +289,7 @@ class CompositionOpener {
     if (!doc_->canonical()) {
       return Fail(Rule::kCanonical, "manifest.json is not in canonical form");
     }
-    if (out_.id_ != base::ToHex(schema::ManifestIdentity(m)) &&
-        (out_.format_version_ >= 2 ||
-         out_.id_ != base::ToHex(base::Sha256().Update(bytes_).Finish()))) {
+    if (out_.id_ != base::ToHex(schema::ManifestIdentity(m))) {
       return Fail(Rule::kIdentity, "the composition name is not the manifest digest");
     }
     return {};

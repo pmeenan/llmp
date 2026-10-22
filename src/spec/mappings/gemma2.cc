@@ -51,49 +51,64 @@ constexpr std::array kTensors = {
                .fallback = "token_embd.weight"},
 };
 
-constexpr std::string_view kEps = "gemma2.attention.layer_norm_rms_epsilon";
-constexpr std::string_view kKeyLength = "gemma2.attention.key_length";
+constexpr std::string_view kEps = "attention.layer_norm_rms_epsilon";
+constexpr std::string_view kKeyLength = "attention.key_length";
 
 constexpr std::array kParams = {
-    FromKey(kStageSlot, "context", "gemma2.context_length", kInt),
-    FromKey(kStreamSlot, "width", "gemma2.embedding_length", kInt),
-    FromKey("embedding", "scale", "gemma2.embedding_length", kReal, Transform::kSqrt),
+    FromKey(kStageSlot, "context", "context_length", kInt),
+    FromKey(kStreamSlot, "width", "embedding_length", kInt),
+    FromKey("embedding", "scale", "embedding_length", kReal, Transform::kSqrt),
     Name("attention", "placement", "sandwich"),
     FromKey("attention", "eps", kEps, kReal),
-    FromKey("attention", "heads", "gemma2.attention.head_count", kInt),
-    FromKey("attention", "kv_heads", "gemma2.attention.head_count_kv", kInt),
+    FromKey("attention", "heads", "attention.head_count", kInt),
+    FromKey("attention", "kv_heads", "attention.head_count_kv", kInt),
     FromKey("attention", "key_dim", kKeyLength, kInt),
-    FromKey("attention", "value_dim", "gemma2.attention.value_length", kInt),
+    FromKey("attention", "value_dim", "attention.value_length", kInt),
     // Explicit exporter semantics override the legacy key-length default.
-    FromKey("attention", "scale", "gemma2.attention.scale", kReal),
+    FromKey("attention", "scale", "attention.scale", kReal),
     FromKey("attention", "scale", kKeyLength, kReal, Transform::kRsqrt),
-    FromKey("attention", "softcap", "gemma2.attn_logit_softcapping", kReal),
-    FromKey("attention", "window", "gemma2.attention.sliding_window", kInt, Transform::kNone, "l"),
+    FromKey("attention", "softcap", "attn_logit_softcapping", kReal),
+    FromKey("attention", "window", "attention.sliding_window", kInt, Transform::kNone, "l"),
     Int("attention", "window", 0, "g"),
     Name("attention", "rotation", "neox"),
-    FromKey("attention", "rope_dims", "gemma2.rope.dimension_count", kInt),
+    FromKey("attention", "rope_dims", "rope.dimension_count", kInt),
     FromKey("attention", "rope_dims", kKeyLength, kInt),
     // Local layers rotate at the checkpoint's sliding-window base when it
     // has one (llama.cpp reads it), else at the global base.
-    FromKey("attention", "rope_base", "gemma2.rope.freq_base_swa", kReal, Transform::kNone, "l"),
-    FromKey("attention", "rope_base", "gemma2.rope.freq_base", kReal),
+    FromKey("attention", "rope_base", "rope.freq_base_swa", kReal, Transform::kNone, "l"),
+    FromKey("attention", "rope_base", "rope.freq_base", kReal),
     Real("attention", "rope_base", 10000.0),
     Real("attention", "rope_scale", 1.0),
     Flag("attention", "qk_norm", false),
     Name("ffn", "placement", "sandwich"),
     FromKey("ffn", "eps", kEps, kReal),
     Name("ffn", "activation", "gelu_tanh"),
-    FromKey("ffn", "hidden", "gemma2.feed_forward_length", kInt),
+    FromKey("ffn", "hidden", "feed_forward_length", kInt),
     FromKey("final_norm", "eps", kEps, kReal),
-    FromKey(kHeadsSlot, "softcap", "gemma2.final_logit_softcapping", kReal),
+    FromKey(kHeadsSlot, "softcap", "final_logit_softcapping", kReal),
     // The components rotate without scaling.
-    Require("gemma2.rope.scaling.type", "none", true),
+    Require("rope.scaling.type", "none", true),
     // The layer types are "lg": a checkpoint's own pattern may only agree
     // (llama.cpp's load_swa_pattern reads it; an array form is refused).
-    RequireInt("gemma2.attention.sliding_window_pattern", 2, true),
+    RequireInt("attention.sliding_window_pattern", 2, true),
 };
 
-constexpr std::array kFolds = {FoldRule{.fold = "norm.plus_one", .container = "gguf"}};
+constexpr std::array kFolds = {
+    FoldRule{.fold = "norm.plus_one", .container = "gguf"},
+    FoldRule{.fold = "norm.plus_one", .container = "safetensors", .imported = true},
+    FoldRule{.fold = "norm.plus_one", .container = "mlx", .imported = true},
+};
+
+constexpr auto kNativeTensors = [] {
+  auto out = kTensors;
+  for (auto& r : out) {
+    if (r.role != "norm" && r.role != "post_norm" &&
+        !(r.slot == "final_norm" && r.role == "weight")) {
+      r.any_part = true;
+    }
+  }
+  return out;
+}();
 
 // The serving recipe (runtime/serving.cc's Gemma2): the fused norm-mul,
 // norm-add and quantized GeGLU, shared Q8 preparation, owner attention
@@ -108,11 +123,14 @@ constexpr std::array kPolicies = {
 constexpr ServingRecipe kServing{
     .family = "Gemma", .name = "Gemma2", .bounded = true, .prefill_rows = 128, .drafters = false};
 
+constexpr std::array kGemma2Requirements{ScalarRequirement{
+    .key = "block_count", .reject_equal = 46, .unless_present = "attention.scale"}};
+
 constexpr Mapping kMapping{
     .architecture = "gemma2",
     .version = 1,
     .pipeline = PipelineKind::kLlm,
-    .layer_count_key = "gemma2.block_count",
+    .layer_count_key = "block_count",
     .layer_types = "lg",
     .slots = kSlots,
     .tensors = kTensors,
@@ -121,74 +139,29 @@ constexpr Mapping kMapping{
     .policies = kPolicies,
     .serving = &kServing,
     .containers = kGgufContainers,
+    .auxiliary = kGgufAuxiliary,
+    .requirements = kGemma2Requirements,
 };
 
 // Native HF metadata is authoritative; unlike GGUF, its norm vectors are zero-centered.
-constexpr auto kNativeParams = [] {
-  std::array<ParamRule, kParams.size() + 11> params{};
-  std::ranges::copy(kParams, params.begin());
-  for (auto& p : params) {
-    if (p.param == "scale" && p.slot == "attention") {
-      p.key = "query_pre_attn_scalar";
-      p.transform = Transform::kRsqrt;
-    } else if (p.key == "gemma2.context_length")
-      p.key = "max_position_embeddings";
-    else if (p.key == "gemma2.embedding_length")
-      p.key = "hidden_size";
-    else if (p.key == "gemma2.attention.layer_norm_rms_epsilon")
-      p.key = "rms_norm_eps";
-    else if (p.key == "gemma2.attention.head_count")
-      p.key = "num_attention_heads";
-    else if (p.key == "gemma2.attention.head_count_kv")
-      p.key = "num_key_value_heads";
-    else if (p.key == "gemma2.attention.key_length" || p.key == "gemma2.attention.value_length" ||
-             p.key == "gemma2.rope.dimension_count")
-      p.key = "head_dim";
-    else if (p.key == "gemma2.attn_logit_softcapping")
-      p.key = "attn_logit_softcapping";
-    else if (p.key == "gemma2.final_logit_softcapping")
-      p.key = "final_logit_softcapping";
-    else if (p.key == "gemma2.attention.sliding_window")
-      p.key = "sliding_window";
-    else if (p.key == "gemma2.feed_forward_length")
-      p.key = "intermediate_size";
-    else if (p.key == "gemma2.rope.freq_base")
-      p.key = "rope_theta";
-    else if (p.key == "gemma2.rope.freq_base_swa")
-      p.key = "rope_theta";
-    else if (p.key == "gemma2.rope.scaling.factor")
-      p.key = "rope_scaling.factor";
-    else if (p.key == "gemma2.rope.scaling.type")
-      p.key = "rope_scaling.rope_type";
-    else if (p.key == "gemma2.attention.sliding_window_pattern")
-      p.key = "sliding_window_pattern";
-  }
-  std::size_t i = kParams.size();
-  for (std::string_view slot : {"attention", "ffn", "final_norm"}) {
-    params[i] = Flag(slot, "norm_zero_centered", true);
-    params[i++].unless_fold = "norm.plus_one";
-  }
-  params[i++] = Require("hidden_activation", "gelu_pytorch_tanh", true);
-  params[i++] =
-      ParamRule{.key = "attention_bias", .type = kBool, .value = {.flag = false}, .optional = true};
-  params[i++] = Require("hidden_act", "gelu_pytorch_tanh", true);
-  params[i++] = ParamRule{.key = "use_bidirectional_attention",
-                          .type = kBool,
-                          .value = {.flag = false},
-                          .optional = true};
-  // Defaults of the native HF config schema, not checkpoint-size inference.
-  params[i++] = Int(kStageSlot, "context", 8192);
-  params[i++] = Real("attention", "eps", 1e-6);
-  params[i++] = Real("ffn", "eps", 1e-6);
-  params[i] = Real("final_norm", "eps", 1e-6);
-  return params;
-}();
+constexpr auto kNativeParams = GemmaHfParams(kParams, 8192, "rope_theta");
 constexpr Mapping kNativeMapping = [] {
   auto mapping = kMapping;
   mapping.architecture = "gemma2";
+  mapping.unprefixed_keys = true;
+  mapping.source_key_prefix = "text_config.";
   mapping.layer_count_key = "num_hidden_layers";
+  mapping.tensors = kNativeTensors;
   mapping.params = kNativeParams;
   mapping.containers = kSafetensorsContainers;
+  mapping.tensor_aliases = kGemmaHfTensors;
+  mapping.key_aliases = kGemmaSafetensorsKeys;
+  mapping.auxiliary = kGemmaHfAuxiliary;
+  mapping.requirements = kGemma2HfRequirements;
+  mapping.semantic = kHfSemantic;
+  mapping.ignored_tensors = kHfIgnored;
+  mapping.null_semantics = kGemmaHfNulls;
+  mapping.tensor_presence = kHfHeadPresence;
   return mapping;
 }();
 

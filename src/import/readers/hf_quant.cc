@@ -363,8 +363,9 @@ std::expected<format::TensorFormat, Error> Describe(QuantScheme scheme, const Pa
     f.shape = {.ne = {w.dims[1] * 2, n, 1, 1}, .rank = 2};
     if (p.tensor_scale) {
       const Tensor& s2 = tensors[*p.tensor_scale];
-      if (s2.dtype != "F32" || Elements(s2) != 1 || s2.dims.size() > 1) {
-        return refuse("an NVFP4 tensor scale that is not one F32 value");
+      if ((s2.dtype != "F32" && s2.dtype != "BF16" && s2.dtype != "F16") || Elements(s2) != 1 ||
+          s2.dims.size() > 1) {
+        return refuse("an NVFP4 tensor scale that is not one F32, BF16 or F16 value");
       }
       f.params.tensor_scale = true;
     }
@@ -385,7 +386,8 @@ std::expected<format::TensorFormat, Error> Describe(QuantScheme scheme, const Pa
   const auto bytes = [&](PartRole role) { return parts->Find(role)->bytes; };
   if (bytes(PartRole::kCodes) != w.extent.bytes ||
       bytes(PartRole::kBlockScales) != s.extent.bytes || s.dims[0] != n ||
-      (p.tensor_scale && bytes(PartRole::kTensorScale) != tensors[*p.tensor_scale].extent.bytes)) {
+      (p.tensor_scale && (tensors[*p.tensor_scale].dtype == "F32" ? 4U : 2U) !=
+                             tensors[*p.tensor_scale].extent.bytes)) {
     return refuse("a scaled weight's parts are not the sizes its format gives them");
   }
   return f;
@@ -512,6 +514,8 @@ std::expected<void, Error> ApplyQuantization(const std::optional<Quantization>& 
                             "a shared tensor scale whose weights' formats differ", tensors[s2], s2);
       }
       set(s2, PartRole::kTensorScale);
+      if (tensors[s2].dtype == "BF16") tensors[s2].scalar_storage = Encoding::kBF16;
+      if (tensors[s2].dtype == "F16") tensors[s2].scalar_storage = Encoding::kF16;
     }
   }
   return {};

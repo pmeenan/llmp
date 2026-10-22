@@ -25,7 +25,9 @@
 #ifndef LLMP_SPEC_STORED_H_
 #define LLMP_SPEC_STORED_H_
 
+#include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -41,10 +43,20 @@ namespace llmp::spec {
 
 // The spec a v1 artifact carries: FromJson's, its bytes exactly ToJson's
 // (so the digest the manifest lists is the spec's Digest()), every stage
-// of artifact 0, every applied fold the catalog's, every stage's and
-// naming a tensor the stages bind. Refused for a v0 artifact (which
-// stores none: re-import it, D-118) and for an artifact that carries none.
+// of artifact 0 (or, for a standalone drafter artifact, a stub target on
+// artifact 0 and the drafter stage on artifact 1), every applied fold the
+// catalog's, every stage's and naming a tensor the stages bind. Refused for
+// a v0 artifact (which stores none: re-import it, D-118) and for an artifact
+// that carries none.
 std::expected<ModelSpec, std::string> StoredSpec(const artifact::Artifact& artifact);
+
+// Compose a target artifact's stored spec with a standalone drafter
+// artifact's stored spec (`stages[0]` stub target on artifact 0 +
+// `stages[1]` drafter on artifact 1), optionally setting the drafter's
+// output-head / selected-vocabulary rows to `draft_vocab`.
+std::expected<ModelSpec, std::string> ComposeStoredDrafter(
+    const ModelSpec& target_spec, const ModelSpec& drafter_spec,
+    std::optional<std::uint32_t> draft_vocab = std::nullopt);
 
 // The spec a v1 composition carries, with its components opened in the
 // composition's order (components[i] the artifact components()[i] names,

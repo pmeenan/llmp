@@ -316,7 +316,7 @@ std::string OpKeyName(OpKey key);
 
 // ---------------------------------------------------------------- parameters
 
-inline constexpr std::size_t kMaxParamBytes = 64;
+inline constexpr std::size_t kMaxParamBytes = 68;
 
 enum class QueryRounding : std::uint8_t { kF16 };
 struct RoundedIndexScoreParams {
@@ -344,9 +344,9 @@ enum class RopeMode : std::uint8_t {
 // inverse (ggml_rope_ext_back).
 struct RopeParams {
   RopeMode mode = RopeMode::kNormal;
-  bool inverse = false;  // rotate by -theta
-  bool table = false;    // pos is an F32 cos/sin table, not positions
-  std::uint8_t reserved = 0;
+  bool inverse = false;      // rotate by -theta
+  bool table = false;        // pos is an F32 cos/sin table, not positions
+  bool llama3 = false;       // Llama 3 smooth frequency scaling
   std::uint32_t dims = 0;    // rotated values a head
   std::uint32_t offset = 0;  // the first rotated value (GGML's n_offs)
   std::uint32_t original_context = 0;
@@ -357,6 +357,10 @@ struct RopeParams {
   float beta_fast = 32.0f;
   float beta_slow = 1.0f;
   std::array<std::uint32_t, 4> sections{};  // the multi-section modes'
+  // UINT32_MAX: rotate every pair. Otherwise rotate the first rotated_dims/2
+  // pairs with the full dims denominator and pairing span; other values pass
+  // through unchanged (proportional RoPE, including zero active pairs).
+  std::uint32_t rotated_dims = UINT32_MAX;
 };
 
 enum class MaskKind : std::uint8_t { kCausal, kWindow, kBlock, kAhead };
@@ -733,7 +737,7 @@ static_assert(sizeof(SinkhornPreParams) == 16 && sizeof(SpatialNormParams) == 12
               sizeof(QkAttentionParams) == 8 && sizeof(SplitModulateParams) == 8);
 
 // No implicit padding: each struct's size is the sum of its fields'.
-static_assert(sizeof(RopeParams) == 4 + (3 * 4) + (6 * 4) + 16);
+static_assert(sizeof(RopeParams) == 4 + (4 * 4) + (6 * 4) + 16);
 static_assert(sizeof(MaskParams) == 4 + 4 + 4);
 static_assert(sizeof(ProductParams) == 8);
 static_assert(sizeof(AttnParams) == (4 * 4) + 4 + 4);

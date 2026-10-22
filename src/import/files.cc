@@ -108,7 +108,8 @@ std::expected<std::optional<OpenFile>, Error> OpenCheckpointFileIfPresent(const 
   // can have effects of its own.
   struct stat seen{};
   if (::stat(absolute.c_str(), &seen) != 0) {
-    if (errno == ENOENT) {
+    const int stat_error = errno;
+    if (stat_error == ENOENT) {
       // A link to nothing (a cache's blob not downloaded) is a broken
       // checkpoint, not a file it lacks: reading on would silently leave
       // the file out.
@@ -116,6 +117,9 @@ std::expected<std::optional<OpenFile>, Error> OpenCheckpointFileIfPresent(const 
         return Fail(Rule::kFileType, "a checkpoint file is a link to nothing", file);
       }
       return std::optional<OpenFile>();
+    }
+    if (stat_error == EMFILE || stat_error == ENFILE || stat_error == ENOMEM) {
+      return Fail(Rule::kIo, "out of file descriptors opening a checkpoint file", file);
     }
     return Fail(Rule::kFileType, "a checkpoint path that cannot be examined", file);
   }
@@ -137,7 +141,8 @@ std::expected<std::optional<OpenFile>, Error> OpenCheckpointFileIfPresent(const 
   if (::fstat(f.fd.get(), &status) != 0) {
     return Fail(Rule::kIo, "fstat failed", file);
   }
-  if (!S_ISREG(status.st_mode)) {
+  if (!S_ISREG(status.st_mode) || status.st_dev != seen.st_dev || status.st_ino != seen.st_ino ||
+      status.st_size < 0) {
     return Fail(Rule::kFileType, "a checkpoint file is not a regular file", file);
   }
   f.bytes = static_cast<std::uint64_t>(status.st_size);

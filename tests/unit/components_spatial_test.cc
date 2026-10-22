@@ -1215,6 +1215,35 @@ TEST(SpatialComponentsTest, SourceAxesUseNormalOffsetsAndIndependentNegativePosi
                                         {.role = "q", .tensor = "q"},
                                         {.role = "q_norm", .tensor = "q_norm"},
                                         {.role = "v", .tensor = "v"}}};
+  // Explicit defaults must fit the same schema-funded storage as omitted
+  // defaults, even when there are more than the former 32 supplied parameters.
+  const std::array<spec::Param, 21> defaults{{
+      {"norm_zero_centered", false},
+      {"softcap", 0.0},
+      {"rope_partial_factor", 1.0},
+      {"rope_offset", std::int64_t{0}},
+      {"yarn", false},
+      {"rope_factor", 1.0},
+      {"yarn_context", std::int64_t{0}},
+      {"beta_fast", 32.0},
+      {"beta_slow", 1.0},
+      {"llama3_rope", false},
+      {"low_freq_factor", 1.0},
+      {"high_freq_factor", 4.0},
+      {"rope_freqs", false},
+      {"qkv_bias", false},
+      {"explicit_scores", false},
+      {"sinks", false},
+      {"output_gate", false},
+      {"kv_encoding", std::string("f16")},
+      {"kv_tie", false},
+      {"v_norm", false},
+      {"target_layer", std::int64_t{-1}},
+  }};
+  rotate.params.insert(rotate.params.end(), defaults.begin(), defaults.end());
+  const auto* definition = Find(rotate.kind, rotate.version);
+  ASSERT_NE(definition, nullptr);
+  ASSERT_EQ(rotate.params.size(), definition->params.size());
   spec::Layer layer;
   layer.components.push_back(std::move(rotate));
   stage.layers.push_back(std::move(layer));
@@ -1233,6 +1262,22 @@ TEST(SpatialComponentsTest, SourceAxesUseNormalOffsetsAndIndependentNegativePosi
   auto graph =
       BuildSpatialStep(model, tables, owners, budget.Payment(), {.links = links, .inputs = ports});
   ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  Budget denied;
+  denied.limit = graph->metadata_bytes() - 1;
+  auto refused =
+      BuildSpatialStep(model, tables, owners, denied.Payment(), {.links = links, .inputs = ports});
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(Failed(refused).value_or(""), "spatial compiler metadata was not funded");
+  EXPECT_EQ(denied.calls, 1U);
+  EXPECT_EQ(denied.used, 0U);
+  Budget no_reference;
+  no_reference.limit = graph->metadata_bytes();
+  auto unfunded = BuildSpatialStep(model, tables, owners, no_reference.Payment(),
+                                   {.links = links, .inputs = ports});
+  ASSERT_FALSE(unfunded);
+  EXPECT_EQ(Failed(unfunded).value_or(""), "spatial graph/reference buffers were not funded");
+  EXPECT_EQ(no_reference.calls, 2U);
+  EXPECT_EQ(no_reference.used, 0U);
   auto exec = ref::Executor::Create(graph->graph());
   ASSERT_TRUE(exec);
   const std::vector<float> gamma(128, 1.0F);
@@ -1618,11 +1663,11 @@ TEST(SpatialComponentsTest, FullFlowPays563ComponentsAndRefusesDecodedReferenceB
       4096ULL * (2 * metadata_nodes + source.size() + 4 * mapping->links.size() + 16 +
                  owners.size() * mapping->exports.size() + 2 * ports.size());
   EXPECT_EQ(metadata_bytes, 41398272U);
-  EXPECT_EQ(graph->metadata_bytes(), metadata_bytes);
+  EXPECT_GT(graph->metadata_bytes(), metadata_bytes);  // normalized schema parameters are extra
   RecordProperty("full_flow_primitive_ceiling", std::to_string(primitive_count));
   RecordProperty("full_flow_metadata_bytes", std::to_string(graph->metadata_bytes()));
   const auto paid = budget.used;
-  EXPECT_EQ(paid, metadata_bytes);
+  EXPECT_EQ(paid, graph->metadata_bytes());
   EXPECT_LT(paid, budget.limit);
   Budget denied;
   denied.limit = paid - 1;
@@ -1824,7 +1869,7 @@ TEST(SpatialComponentsTest, RealTextAnd1024FlowMetadataArePaidWithoutReferencePa
   ASSERT_TRUE(flow_graph) << Failed(flow_graph).value_or("");
   EXPECT_EQ(flow_graph->weights().size(), 297U);
   EXPECT_EQ(flow_graph->outputs()[1].shape, (SpatialShape{1, 4096, 64, 1}));
-  EXPECT_EQ(flow_graph->metadata_bytes(), 41398272U);
+  EXPECT_GT(flow_graph->metadata_bytes(), 41398272U);  // includes normalized schema parameters
   EXPECT_EQ(flow_graph->reference_bytes(), 0U);
   RecordProperty("text_metadata_bytes", std::to_string(text_graph->metadata_bytes()));
   RecordProperty("real_flow_metadata_bytes", std::to_string(flow_graph->metadata_bytes()));

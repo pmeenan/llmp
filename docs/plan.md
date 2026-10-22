@@ -587,6 +587,14 @@ D-122).
       string `"modelopt MIXED_PRECISION"`), and every HF quantization in the
       formats item below (MXFP4, NVFP4, MXFP8, FP8, AWQ, GPTQ, MLX affine)
       and every HF MoE, Nemotron's included, arrives through it.
+      **Importer-core spike (2026-10-22):** the generic mapping route replaces
+      both checkpoint normalizers, publishes stored target/drafter semantics
+      and sampling defaults, and carries Llama 3 and proportional RoPE through
+      CPU/GPU execution. The three owner-approved proof checkpoints publish
+      through deep artifact and stored-spec validation; see the
+      [import proof](experiments/m35-generic-import/README.md). The full U3
+      exit remains open: original Qwen payload parity, new-checkpoint serving
+      and reference-quality qualification are separate controls.
       - **U3a One mapping per architecture:** `import::SourceMapping`
         merged into `spec::Mapping`; the semantic metadata namespace
         derived from the architecture, failing closed on any unconsumed

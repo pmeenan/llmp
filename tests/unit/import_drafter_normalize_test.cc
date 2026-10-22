@@ -458,7 +458,8 @@ TEST(ImportDrafterNormalizeTest, AssistantParentDimensionsMustMatchTheSuppliedTa
     if (refused) {
       ASSERT_FALSE(plan);
       if (parent == 0)
-        EXPECT_EQ(plan.error().reason, "drafter composition does not satisfy its components");
+        EXPECT_TRUE(
+            plan.error().reason.starts_with("normalized tensors do not satisfy their components"));
       continue;
     }
     // The 26B assistant's tensors against the 31B target: selected, then
@@ -546,8 +547,9 @@ TEST(ImportDrafterNormalizeModelsTest,
     ASSERT_TRUE(drafter_art) << drafter_art.error().ToString();
     EXPECT_EQ(drafter_art->model().architecture, "gemma4-assistant");
 
-    // Drafter artifact omits standalone spec.json
-    EXPECT_FALSE(std::filesystem::exists(written->path / "spec.json"));
+    // Drafter artifact carries its composed spec.json
+    EXPECT_TRUE(std::filesystem::exists(written->path / "spec.json"));
+    EXPECT_TRUE(drafter_art->spec_json().has_value());
 
     // Verify drafter admission
     auto drafter_source = spec::SourceOf(*drafter_art);
@@ -639,8 +641,9 @@ TEST(ImportDrafterNormalizeModelsTest,
   ASSERT_TRUE(drafter_art) << drafter_art.error().ToString();
   EXPECT_EQ(drafter_art->model().architecture, "dflash");
 
-  // Drafter artifact omits standalone spec.json
-  EXPECT_FALSE(std::filesystem::exists(written->path / "spec.json"));
+  // Drafter artifact carries its composed spec.json
+  EXPECT_TRUE(std::filesystem::exists(written->path / "spec.json"));
+  EXPECT_TRUE(drafter_art->spec_json().has_value());
 
   // Verify drafter admission
   auto drafter_source = spec::SourceOf(*drafter_art);

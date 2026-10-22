@@ -370,6 +370,23 @@ TEST(ArtifactV1Test, AcceptsWhatIsDescribedCorrectly) {
   ASSERT_TRUE(opened.has_value()) << Describe(opened);
   EXPECT_FALSE(opened->spec_json().has_value());
   EXPECT_TRUE(opened->folds().empty());
+
+  V1Files with_mapping = Render(p);
+  with_mapping.manifest["importer"]["mapping_architecture"] = "qwen2";
+  with_mapping.manifest["importer"]["mapping_version"] = 1;
+  const fs::path mapped_root = Publish(store, with_mapping);
+  const auto mapped = Artifact::Open(mapped_root);
+  ASSERT_TRUE(mapped.has_value()) << Describe(mapped);
+  EXPECT_EQ(mapped->converter().mapping_architecture, "qwen2");
+  EXPECT_EQ(mapped->converter().mapping_version, 1U);
+
+  // Raw manifest SHA-256 (when importer.build != "unknown") is not accepted as the artifact ID.
+  std::ifstream in(mapped_root / "manifest.json", std::ios::binary);
+  const std::string raw_manifest((std::istreambuf_iterator<char>(in)),
+                                 std::istreambuf_iterator<char>());
+  const auto raw_sha_open = Artifact::Open(mapped_root, {.expected_id = Hex(raw_manifest)});
+  ASSERT_FALSE(raw_sha_open.has_value());
+  EXPECT_EQ(raw_sha_open.error().rule, Rule::kIdentity);
 }
 
 TEST(ArtifactV1Test, FormatsRoundTripThroughTheirJson) {
@@ -483,6 +500,21 @@ std::vector<Case> Cases() {
        "importer.options_sha256"},
       {"importer-build-missing", [](V1Files& f, H&) { f.manifest["importer"].Erase("build"); },
        Rule::kSchema, "importer keys"},
+      {"importer-mapping-half-present",
+       [](V1Files& f, H&) { f.manifest["importer"]["mapping_architecture"] = "qwen2"; },
+       Rule::kSchema, "importer keys"},
+      {"importer-mapping-version-zero",
+       [](V1Files& f, H&) {
+         f.manifest["importer"]["mapping_architecture"] = "qwen2";
+         f.manifest["importer"]["mapping_version"] = 0;
+       },
+       Rule::kSchema, "importer.mapping_version"},
+      {"importer-mapping-arch-invalid",
+       [](V1Files& f, H&) {
+         f.manifest["importer"]["mapping_architecture"] = "-bad";
+         f.manifest["importer"]["mapping_version"] = 1;
+       },
+       Rule::kSchema, "importer.mapping_architecture"},
       // Folds and relayouts.
       {"fold-name-pattern",
        [](V1Files& f, H&) { Transformation(f, "fold")["fold"] = "Norm.plus_one"; }, Rule::kSchema,

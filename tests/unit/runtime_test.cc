@@ -1079,6 +1079,39 @@ TEST(StartupHostAllowanceTest, RefusesBeforeNodeOrMetadataEffects) {
   EXPECT_FALSE(CheckStartupHostAllowance(2 * gib, ~std::uint64_t{0}, ~std::uint64_t{0}));
 }
 
+TEST(StartupHostAllowanceTest, PendingArtifactPaymentsRespectLiveBudgetAndReleaseOnFailure) {
+  namespace cat = llmp::catalog;
+  using llmp::runtime::StartupArtifactPayment;
+  constexpr std::uint64_t extent = 2ULL << 20U;
+  constexpr std::uint64_t available = 128ULL << 30U;
+  cat::Catalog catalog;
+  const auto domain = catalog.AddDomain("startup");
+  const auto occupancy = [&] { return catalog.OccupancyOf(domain).Total().value(); };
+  EXPECT_FALSE(StartupArtifactPayment::Admit(catalog, domain, 0, extent, available));
+  EXPECT_FALSE(StartupArtifactPayment::Admit(catalog, domain, UINT64_MAX, extent, available));
+  EXPECT_FALSE(StartupArtifactPayment::Admit(catalog, domain, 1, extent - 1, available));
+  EXPECT_FALSE(StartupArtifactPayment::Admit(catalog, domain, 1, extent, 0));
+  EXPECT_EQ(occupancy(), 0U);
+  {
+    auto first = StartupArtifactPayment::Admit(catalog, domain, 1, 2 * extent, available);
+    ASSERT_TRUE(first);
+    EXPECT_EQ((*first)->bytes(), extent);
+    EXPECT_EQ(occupancy(), extent);
+    {
+      auto second = StartupArtifactPayment::Admit(catalog, domain, 1, 2 * extent, available);
+      ASSERT_TRUE(second);
+      EXPECT_EQ(occupancy(), 2 * extent);
+      EXPECT_FALSE(StartupArtifactPayment::Admit(catalog, domain, 1, 2 * extent, available));
+      EXPECT_EQ(occupancy(), 2 * extent);  // failed admission changed no held payment
+    }
+    EXPECT_EQ(occupancy(), extent);
+    auto transferred = std::move(*first);
+    first->reset();
+    EXPECT_EQ(occupancy(), extent);  // transfer does not repay a still-live owner
+  }
+  EXPECT_EQ(occupancy(), 0U);
+}
+
 TEST(StartupHostAllowanceTest, OrdinaryBudgetComesFromMeasuredMemory) {
   using llmp::runtime::OrdinaryStartupBudget;
   constexpr std::uint64_t gib = std::uint64_t{1} << 30U;

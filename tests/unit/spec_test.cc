@@ -382,6 +382,59 @@ TEST(MappingTest, CompiledMappingsAreValid) {
   EXPECT_EQ(FindFold("norm.times_two"), nullptr);
 }
 
+TEST(MappingTest, SourceIntervalsDeriveAndValidateExplicitLayerSchedules) {
+  auto mapping = mappings::Gemma2Mapping();
+  mapping.layer_type_interval_key = "full_attention_interval";
+  mapping.layer_type_key = "explicit_types";
+  const std::array codes{LayerTypeCode{.value = 0, .type = 'l'},
+                         LayerTypeCode{.value = 1, .type = 'g'}};
+  mapping.layer_type_codes = codes;
+  ASSERT_TRUE(ValidateMapping(mapping));
+  auto values = *fam::Gemma2Values(fam::Gemma2_2B());
+  values.push_back({"gemma2.full_attention_interval", std::int64_t{3}});
+  auto model = Synthesize(mapping, test_support::Gemma2Source(), values);
+  ASSERT_TRUE(model) << model.error();
+  std::vector<std::int64_t> types;
+  for (std::size_t layer = 0; layer < model->stages.front().layers.size(); ++layer) {
+    const bool full = (layer + 1) % 3 == 0;
+    types.push_back(full ? 1 : 0);
+    const auto& attention = model->stages.front().layers[layer].components.front();
+    EXPECT_EQ(std::get<std::int64_t>(attention.Find("window")->value) == 0, full);
+  }
+  values.push_back({"gemma2.explicit_types", types});
+  EXPECT_TRUE(Synthesize(mapping, test_support::Gemma2Source(), values));
+  types.front() = 1;
+  values.back().value = types;
+  EXPECT_FALSE(Synthesize(mapping, test_support::Gemma2Source(), values));
+  values.pop_back();
+  values.back().value = std::int64_t{0};
+  EXPECT_FALSE(Synthesize(mapping, test_support::Gemma2Source(), values));
+}
+
+TEST(MappingTest, ExplicitFlagsSupplyTheScheduleWhenIntervalIsAbsent) {
+  auto mapping = mappings::Gemma2Mapping();
+  mapping.layer_type_interval_key = "full_attention_interval";
+  mapping.layer_flags_key = "full_attention_flags";
+  mapping.layer_flag_type = 'g';
+  auto values = *fam::Gemma2Values(fam::Gemma2_2B());
+  const auto source = test_support::Gemma2Source();
+  auto original = Synthesize(mapping, source, values);
+  ASSERT_TRUE(original) << original.error();
+  std::vector<std::int64_t> flags(original->stages.front().layers.size());
+  for (std::size_t layer = 0; layer < flags.size(); ++layer) flags[layer] = (layer + 1) % 3 == 0;
+  values.push_back({"gemma2.full_attention_flags", flags});
+  auto model = Synthesize(mapping, source, values);
+  ASSERT_TRUE(model) << model.error();
+  for (std::size_t layer = 0; layer < flags.size(); ++layer) {
+    const auto& attention = model->stages.front().layers[layer].components.front();
+    EXPECT_EQ(std::get<std::int64_t>(attention.Find("window")->value) == 0, flags[layer] != 0);
+  }
+  values.push_back({"gemma2.full_attention_interval", std::int64_t{3}});
+  EXPECT_TRUE(Synthesize(mapping, source, values));
+  values.back().value = std::int64_t{4};
+  EXPECT_FALSE(Synthesize(mapping, source, values));
+}
+
 TEST(MappingTest, InvalidMappingsAreRefused) {
   const Mapping& good = mappings::Gemma2Mapping();
   // Each policy rule's text: printable lines (the planner's own rules are
@@ -1075,8 +1128,16 @@ TEST(MappingTest, GenericDenseDecoderSynthesizesLlamaAndMistralWithRopeFreqsAndY
 TEST(MappingTest, CheckLayerFlagsRefusesFlagWhenScheduleResolvesToAllA) {
   Mapping m = mappings::Gemma4Mapping();
   m.layer_flag_type = 'g';
+  m.layer_type_key = "explicit_types";
   auto source = test_support::Gemma4Source(26);
   auto values = *fam::Gemma4Values(fam::Gemma4_26BA4B());
+  const auto count = std::ranges::find(values, "gemma4.block_count", &SourceValue::key);
+  ASSERT_NE(count, values.end());
+  const auto layers = std::get<std::int64_t>(count->value);
+  std::string types;
+  for (std::int64_t layer = 0; layer < layers; ++layer)
+    types.push_back(m.layer_types[static_cast<std::size_t>(layer) % m.layer_types.size()]);
+  values.push_back({"gemma4.explicit_types", std::move(types)});
   const auto s = Synthesize(m, source, values);
   ASSERT_FALSE(s.has_value());
   EXPECT_NE(s.error().find("not of the mapping's layer types"), std::string::npos) << s.error();

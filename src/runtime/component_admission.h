@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Admission of stored component specs before settings or execution allocation.
-// Approval is data (runtime/approvals.h): an approved source identity, its
-// native tensor inventory and the digest of the spec it executes. Admission
-// neither fabricates legacy representations nor changes the stored spec.
+// Stored specs and native tensor formats determine execution eligibility.
+// Reference approvals provide performance defaults and numerical evidence;
+// changing a valid stored spec does not require a new checkpoint allowlist.
 #ifndef LLMP_RUNTIME_COMPONENT_ADMISSION_H_
 #define LLMP_RUNTIME_COMPONENT_ADMISSION_H_
 
@@ -88,12 +88,14 @@ std::expected<void, std::string> ReadPlaced(const artifact::Artifact& artifact,
 std::expected<std::int64_t, std::string> KeptInteger(const artifact::Artifact& artifact,
                                                      std::string_view key);
 // A drafter's composition (before any per-alias KV encoding) with `target`:
-// one with a drafter stage, and beside its approved target the one its
-// approval pins. A pinned drafter beside another target is pinned by its
-// own inventory and checked structurally (the composition's validation).
+// one with a drafter stage whose component bindings validate against the
+// two artifacts' native tensor descriptions.
 std::expected<void, std::string> CheckComposedAdmission(const spec::ModelSpec& composed,
                                                         const artifact::Artifact& target,
                                                         const artifact::Artifact& drafter);
+std::expected<void, std::string> CheckComposedAdmission(const spec::ModelSpec& composed,
+                                                        const spec::Source& target,
+                                                        const spec::Source& drafter);
 
 // `count` integers of a resource, read directly (a draft head's token map).
 template <class T>
@@ -110,13 +112,14 @@ struct ComponentAdmission {
   const Approval* approval = nullptr;
 };
 struct ComponentDrafterAdmission {
+  std::optional<spec::ModelSpec> model{};
   spec::Source source;
   const Approval* approval = nullptr;
 };
 
-// The same closed check used by artifact admission, exposed over values for
-// descriptor controls. Source identity, complete spec, tensor roles/formats
-// and source/importer folds must all agree with an approved declaration.
+// The same structural check used by artifact admission, exposed over values
+// for descriptor controls: valid provenance, complete stored spec, native
+// tensor roles/formats and consistent source/importer folds.
 std::expected<void, std::string> CheckComponentAdmission(const spec::ModelSpec& model,
                                                          const spec::Source& source,
                                                          std::span<const artifact::Source> origins);
@@ -124,9 +127,8 @@ std::expected<void, std::string> CheckComponentDrafterAdmission(
     const spec::Source& source, std::span<const artifact::Source> origins);
 
 // The artifact-level prerequisites, before its spec or source is read: a v1
-// artifact with well-formed source receipts, an approved one's transforms
-// and inventory counts (an unpinned one's architecture with a mapping), and
-// its scale-atom expert slots.
+// artifact with well-formed source receipts, an architecture with a mapping,
+// and valid scale-atom expert slots.
 std::expected<void, std::string> CheckArtifactPrerequisites(const artifact::Artifact& artifact);
 // The whole admission of a target or drafter artifact, by its mapping's
 // role (ReadComponentAdmission or ReadComponentDrafterAdmission, results

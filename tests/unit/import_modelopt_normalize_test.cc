@@ -11,8 +11,8 @@
 #include <vector>
 
 #include "components/step.h"
-#include "import/modelopt_qwen38.h"
-#include "import/normalizers.h"
+#include "import/normalize.h"
+#include "qwen38_fixture.h"
 #include "spec/mappings/qwen38.h"
 
 namespace llmp::import {
@@ -23,11 +23,10 @@ struct NativeFixture {
   spec::Source source{};
   std::vector<spec::SourceValue> values{};
 };
-// The native target as NormalizeModelOptTarget publishes it.
+// The native target as Normalize publishes it.
 NativeFixture Native() {
-  auto form = ModelOptNativeTargetForm();
-  EXPECT_TRUE(form) << (form ? "" : form.error().ToString());
-  return {std::move(form->source), std::move(form->values)};
+  auto form = test_support::qwen38::NativeModelOpt();
+  return {std::move(form.source), std::move(form.values)};
 }
 const spec::Param* ParamOf(const spec::ComponentRef& c, std::string_view name) {
   return c.Find(name);
@@ -91,7 +90,9 @@ TEST(ImportModelOptNormalizeTest, NativeRelaidTargetValidatesAcrossCompleteTarge
       if (c.kind == "attention.qsa") ++attention;
       if (c.kind == "ffn.moe") {
         ++moes;
-        EXPECT_EQ(std::get<bool>(ParamOf(c, "projection_scales")->value), true);
+        EXPECT_EQ(std::get<bool>(ParamOf(c, "projection_scales")->value), false);
+        for (const auto scale : {"gate_scale", "up_scale", "down_scale"})
+          EXPECT_EQ(std::get<bool>(ParamOf(c, scale)->value), true);
         EXPECT_EQ(std::get<bool>(ParamOf(c, "stacked")->value), true);
         for (const auto& [role, count] :
              std::array<std::pair<std::string_view, int>, 5>{{{"gate_up_experts", 2},
@@ -127,7 +128,7 @@ TEST(ImportModelOptNormalizeTest, NativeMappingRejectsMissingPartAndReadsItsFold
   auto f = Native();
   auto before = f.source.tensors;
   std::erase_if(f.source.tensors,
-                [](const auto& t) { return t.name == "blk.0.ffn_gate_exps.weight_scale_2"; });
+                [](const auto& t) { return t.name == "blk.0.ffn_down_exps.weight_scale"; });
   auto missing = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);
   if (missing) EXPECT_FALSE(components::ValidateSpec(*missing, f.source.tensors));
   f.source.tensors = std::move(before);
@@ -165,25 +166,24 @@ TEST(ImportModelOptNormalizeTest, ExistingConvertedMappingKeepsItsFoldAndPolicyC
   }));
 }
 TEST(ImportModelOptNormalizeTest, RegistryRecognitionIsUniqueAndRequiresAllSourceFields) {
-  ASSERT_FALSE(Normalizers().empty());
-  for (const auto& normalizer : Normalizers()) {
+  constexpr std::array<std::pair<std::string_view, std::string_view>, 2> kIndexed = {{
+      {"safetensors", "modelopt nvfp4+mxfp8"},
+      {"mlx", "mlx affine"},
+  }};
+  for (const auto& [container, quantization] : kIndexed) {
     Checkpoint source;
-    source.container = normalizer.container;
-    source.architecture = normalizer.architecture;
-    source.quantization = normalizer.quantization;
-    EXPECT_EQ(FindNormalizer(source), &normalizer);
-    EXPECT_TRUE(IsIndexedTarget(source));
-    ASSERT_NE(normalizer.target, nullptr);
-    ASSERT_NE(normalizer.target_bound, nullptr);
-    EXPECT_EQ(normalizer.drafter != nullptr, normalizer.drafter_bound != nullptr);
+    source.container = std::string(container);
+    source.architecture = "qwen4_exp";
+    source.quantization = std::string(quantization);
+    EXPECT_NE(FindSourceMapping(source.container, source.architecture), nullptr);
     source.quantization += "-unknown";
-    EXPECT_EQ(FindNormalizer(source), nullptr);
-    source.quantization = normalizer.quantization;
+    EXPECT_FALSE(NormalizationBound(source));
+    source.quantization = std::string(quantization);
     source.container += "-unknown";
-    EXPECT_EQ(FindNormalizer(source), nullptr);
-    source.container = normalizer.container;
+    EXPECT_EQ(FindSourceMapping(source.container, source.architecture), nullptr);
+    source.container = std::string(container);
     source.architecture += "-unknown";
-    EXPECT_EQ(FindNormalizer(source), nullptr);
+    EXPECT_EQ(FindSourceMapping(source.container, source.architecture), nullptr);
   }
 }
 
@@ -193,8 +193,8 @@ TEST(ImportModelOptNormalizeTest, UnknownSourceRefusalKeepsSourceOwnership) {
   source.architecture = "qwen3_8_flash_next";
   source.tensors.push_back({.name = "owned source"});
   const auto* owned = source.tensors.data();
-  EXPECT_FALSE(ModelOptTargetBound(source));
-  EXPECT_FALSE(NormalizeModelOptTarget(std::move(source), {}));
+  EXPECT_FALSE(NormalizationBound(source));
+  EXPECT_FALSE(Normalize(std::move(source), {}));
   EXPECT_EQ(source.tensors.data(), owned);
   ASSERT_EQ(source.tensors.size(), 1U);
   EXPECT_EQ(source.tensors[0].name, "owned source");

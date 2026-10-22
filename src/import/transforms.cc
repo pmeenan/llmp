@@ -149,7 +149,8 @@ double F16Double(std::uint16_t bits) noexcept {
 std::expected<void, Error> FoldScalar(ScalarFold fold, format::Encoding source_encoding,
                                       std::span<const std::byte> input,
                                       std::span<std::byte> output) {
-  if (fold != ScalarFold::kNormPlusOne && fold != ScalarFold::kANegExp) {
+  if (fold != ScalarFold::kNormPlusOne && fold != ScalarFold::kANegExp &&
+      fold != ScalarFold::kIdentity) {
     return Refuse("unknown scalar fold");
   }
   const std::size_t elem_size =
@@ -165,7 +166,7 @@ std::expected<void, Error> FoldScalar(ScalarFold fold, format::Encoding source_e
       output.size() != (input.size() / elem_size) * 4) {
     return Refuse("scalar fold spans do not hold whole elements and F32 output");
   }
-  if (std::fegetround() != FE_TONEAREST)
+  if (fold != ScalarFold::kIdentity && std::fegetround() != FE_TONEAREST)
     return Refuse("scalar folds require nearest-even rounding");
   if (input.empty()) return {};
   const std::less<const std::byte*> less;
@@ -192,6 +193,20 @@ std::expected<void, Error> FoldScalar(ScalarFold fold, format::Encoding source_e
   };
 
   const auto fold_element = [&](std::size_t offset) -> std::uint32_t {
+    if (fold == ScalarFold::kIdentity) {
+      if (source_encoding == format::Encoding::kBF16) return InputBits(input, offset);
+      if (source_encoding == format::Encoding::kF32) {
+        return std::to_integer<std::uint32_t>(input[offset]) |
+               (std::to_integer<std::uint32_t>(input[offset + 1]) << 8U) |
+               (std::to_integer<std::uint32_t>(input[offset + 2]) << 16U) |
+               (std::to_integer<std::uint32_t>(input[offset + 3]) << 24U);
+      }
+      const auto bits = std::to_integer<std::uint32_t>(input[offset]) |
+                        (std::to_integer<std::uint32_t>(input[offset + 1]) << 8U);
+      if ((bits & 0x7C00U) == 0x7C00U)
+        return ((bits & 0x8000U) << 16U) | 0x7F800000U | ((bits & 0x03FFU) << 13U);
+      return F32Bits(read_double(offset));
+    }
     if (source_encoding == format::Encoding::kBF16) {
       const auto bits = InputBits(input, offset);
       if ((bits & 0x7F800000U) == 0x7F800000U && (bits & 0x007FFFFFU) != 0) {
@@ -261,11 +276,14 @@ std::expected<HeadPermutationPlan, Error> HeadPermutationPlan::Make(
                      format.encoding == Encoding::kF16;
   // This finite affine domain preserves the source code packing and both
   // BF16 parameter planes; no value decoding or implicit zero-point conversion.
-  const bool affine = format.encoding == Encoding::kAffine && format.layout == Layout::kSplit &&
-                      format.shape.rank == 2 && format.params.bits == 4 &&
-                      format.params.group == 32 &&
-                      format.params.scale == format::AffineScale::kBF16 &&
-                      !format.params.zero_point && !format.params.tensor_scale;
+  const bool affine =
+      format.encoding == Encoding::kAffine && format.layout == Layout::kSplit &&
+      format.shape.rank == 2 && (format.params.bits == 4 || format.params.bits == 8) &&
+      (format.params.group == 32 || format.params.group == 64 || format.params.group == 128) &&
+      (format.params.scale == format::AffineScale::kBF16 ||
+       format.params.scale == format::AffineScale::kF16 ||
+       format.params.scale == format::AffineScale::kF32) &&
+      !format.params.zero_point && !format.params.tensor_scale;
   if (!parts || format.stacked != 1 || format.shape.rank < 1 || format.shape.rank > 2 ||
       !((dense && format.layout == Layout::kDense) ||
         (format.encoding == Encoding::kMxfp8 && format.layout == Layout::kSplit &&

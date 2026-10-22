@@ -286,15 +286,19 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
     }
     item.shape = {2, 2, 64, 1};
     const std::array owners{co::SpatialOwner{0, item.shape}};
+    const auto paid_before = life.paid->used();
     auto graph =
         co::BuildSpatialStep(item.spec, tables, owners,
                              {[paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
                               [paid = life.paid](std::uint64_t n) { paid->Release(n); }},
                              {.links = links, .reference_buffers = i == 0});
     if (!graph) return Error(graph.error());
+    if (graph->metadata_bytes() == 0 ||
+        life.paid->used() - paid_before != graph->metadata_bytes() + graph->reference_bytes())
+      return Error("complete spatial compiler metadata payment");
     if (graph->graph().nodes().size() > 749 || graph->graph().tensor_count() > 1498 ||
         graph->weights().size() != (i == 0 ? 4U : 128U) ||
-        (i == 1 && (graph->reference_bytes() != 0 || graph->metadata_bytes() != 12263424)))
+        (i == 1 && graph->reference_bytes() != 0))
       return Error("fixed spatial compiler inventory");
     item.graph.emplace(std::move(*graph));
     for (const auto& weight : item.graph->weights()) {

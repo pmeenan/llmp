@@ -9,11 +9,14 @@
 #include <format>
 #include <limits>
 #include <string>
+#include <utility>
 
 #include "artifact/artifact.h"
 #include "artifact/json.h"
+#include "base/check.h"
 #include "base/json.h"
 #include "runtime/calibration.h"
+#include "runtime/component_bindings.h"
 #include "runtime/model_settings.h"
 
 namespace llmp::runtime {
@@ -79,14 +82,18 @@ std::expected<std::uint64_t, std::string> StartupBootstrapBytes(std::uint64_t al
   // scratch (16/value), copied text, input and bounded metadata source views.
   constexpr std::uint64_t metadata =
       36 * json.max_values + 4 * a::kMaxMetadataTotal + json.max_string_bytes;
-  // One fact pass may have both opened artifacts. Settings retained for all
+  // One fact pass may have both opened artifacts. Retained artifact/spec/source
+  // owners transfer to their own StartupArtifactPayment before the next pass.
+  // Settings retained for all
   // aliases are paid independently of transient parser reuse (including names,
   // calibration fields and their canonical/digest scratch).
   constexpr std::uint64_t fixed = 2 * artifact_open + 2 * metadata;
-  // Retained settings/calibration, their copies and formatting. Parser scratch
-  // is already in metadata; variable configured strings are paid separately.
+  // Retained settings/calibration, their copies and formatting, and the pending
+  // alias/shared-owner vector allocated before each artifact-specific payment.
+  // Parser scratch is in metadata; configured strings are paid separately.
   constexpr std::uint64_t per_alias =
-      16 * (kMaxCalibrationBytes + sizeof(ModelSettings) + sizeof(Calibration));
+      16 * (kMaxCalibrationBytes + sizeof(ModelSettings) + sizeof(Calibration)) +
+      4 * (sizeof(OpenedModelArtifacts) + sizeof(std::shared_ptr<OpenedModelArtifacts>) + 64);
   constexpr std::uint64_t alignment = a::kChunkBytes;
   std::uint64_t bytes = 0, configured = 0;
   if (aliases == 0 || __builtin_mul_overflow(configuration_bytes, std::uint64_t{16}, &configured) ||
@@ -96,6 +103,63 @@ std::expected<std::uint64_t, std::string> StartupBootstrapBytes(std::uint64_t al
       __builtin_add_overflow(bytes, alignment - 1, &bytes))
     return std::unexpected("startup parser loan overflows");
   return bytes / alignment * alignment;
+}
+
+std::expected<std::uint64_t, std::string> StartupArtifactBytes(const artifact::Artifact& artifact) {
+  auto bound = StoredBindingBytes(artifact);
+  if (!bound) return std::unexpected(bound.error());
+  std::uint64_t bytes = *bound;
+  const auto add = [&](std::uint64_t count, std::uint64_t unit) {
+    std::uint64_t term = 0;
+    return !__builtin_mul_overflow(count, unit, &term) &&
+           !__builtin_add_overflow(bytes, term, &bytes);
+  };
+  // Retained manifest strings and doubled vector/string capacities. Index and
+  // spec document sizes bound names and roles; records, chunk digests, source
+  // placements and shared alias/control owners have separate inventory terms.
+  if (!add(artifact::kMaxManifestBytes, 8) || !add(1, 4096))
+    return std::unexpected("startup artifact metadata bound overflows");
+  for (const auto& file : artifact.files())
+    if ((file.role == artifact::FileRole::kIndex || file.role == artifact::FileRole::kSpec) &&
+        !add(file.bytes.value(), 8))
+      return std::unexpected("startup artifact document inventory overflows");
+  for (const auto& [count, unit] :
+       {std::pair{artifact.resources().size(), 4096ULL},
+        std::pair{artifact.expert_arrays().size(), 4096ULL},
+        std::pair{artifact.chunk_sha256().size(), 1024ULL},
+        std::pair{artifact.groups().size(), 4096ULL}, std::pair{artifact.shards().size(), 1024ULL}})
+    if (!add(count, unit)) return std::unexpected("startup artifact descriptor bound overflows");
+  return bytes;
+}
+
+std::expected<std::unique_ptr<StartupArtifactPayment>, std::string> StartupArtifactPayment::Admit(
+    catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes, std::uint64_t cap,
+    std::uint64_t available) {
+  constexpr std::uint64_t extent = artifact::kChunkBytes;
+  std::uint64_t total = 0;
+  if (bytes == 0 || __builtin_add_overflow(bytes, std::uint64_t{4096}, &total) ||
+      __builtin_add_overflow(total, extent - 1, &total))
+    return std::unexpected("startup artifact payment overflows");
+  total = total / extent * extent;
+  const auto occupied = catalog.OccupancyOf(domain).Total().value();
+  if (occupied > cap || total > cap - occupied || total > available ||
+      kUncountedMargin > available - total)
+    return std::unexpected("retained startup artifacts exceed the node execution budget");
+  auto payment = catalog.AddExtent({.domain = domain,
+                                    .memory_class = catalog::MemoryClass::kRuntime,
+                                    .recovery = catalog::Recovery::kPinned,
+                                    .size = base::Bytes(total),
+                                    .content = {}},
+                                   true);
+  if (!payment) return std::unexpected("startup artifact payment could not be cataloged");
+  return std::unique_ptr<StartupArtifactPayment>(
+      new StartupArtifactPayment(catalog, *payment, total));
+}
+
+StartupArtifactPayment::~StartupArtifactPayment() {
+  base::Check(
+      catalog_->ReleasePinned(extent_).has_value() && catalog_->RemoveExtent(extent_).has_value(),
+      "startup artifact payment lost its held catalog extent");
 }
 
 std::uint64_t MeasuredStartupCeiling(std::uint64_t available) {

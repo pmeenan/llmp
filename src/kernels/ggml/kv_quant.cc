@@ -236,6 +236,10 @@ std::expected<void, KernelFailure> CheckRopeSetRowsQuant(const ggml_tensor* rope
   if (auto checked = CheckRopeOperands(rope); !checked) {
     return checked;
   }
+  if (ParamF32(rope, 7) < 0.0F)
+    return Rejected("Llama 3 uses separate rotation and quantized cache store");
+  if (rope->op_params[11] != 0)
+    return Rejected("proportional RoPE uses separate rotation and quantized cache store");
   if (set_rows == nullptr || set_rows->op != GGML_OP_SET_ROWS || !Bound(set_rows) ||
       !Bound(set_rows->src[1])) {
     return Rejected("not a bound set_rows node");

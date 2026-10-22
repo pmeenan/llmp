@@ -546,9 +546,17 @@ std::expected<Document, Error> Parse(std::string_view text, const Limits& limits
   return doc;
 }
 
-Kind Value::kind() const { return document_->nodes_[node_].kind; }
+Kind Value::kind() const {
+  if (document_ == nullptr || node_ >= document_->nodes_.size()) {
+    return Kind::kNull;
+  }
+  return document_->nodes_[node_].kind;
+}
 
 std::string_view Value::string() const {
+  if (document_ == nullptr || node_ >= document_->nodes_.size()) {
+    return {};
+  }
   const auto& n = document_->nodes_[node_];
   if (n.kind != Kind::kString) {
     return {};
@@ -557,6 +565,9 @@ std::string_view Value::string() const {
 }
 
 std::string_view Value::number() const {
+  if (document_ == nullptr || node_ >= document_->nodes_.size()) {
+    return {};
+  }
   const auto& n = document_->nodes_[node_];
   if (n.kind != Kind::kNumber) {
     return {};
@@ -565,6 +576,9 @@ std::string_view Value::number() const {
 }
 
 bool Value::is_integer() const {
+  if (document_ == nullptr || node_ >= document_->nodes_.size()) {
+    return false;
+  }
   const auto& n = document_->nodes_[node_];
   return n.kind == Kind::kNumber && n.integer;
 }
@@ -634,22 +648,43 @@ std::optional<double> Value::float64() const {
 }
 
 std::size_t Value::size() const {
+  if (document_ == nullptr || node_ >= document_->nodes_.size()) {
+    return 0;
+  }
   const auto& n = document_->nodes_[node_];
   return n.kind == Kind::kArray || n.kind == Kind::kObject ? n.size : 0;
 }
 
 Value Value::at(std::size_t i) const {
+  if (document_ == nullptr || node_ >= document_->nodes_.size()) {
+    return {nullptr, 0};
+  }
   const auto& n = document_->nodes_[node_];
+  if (n.kind != Kind::kArray || i >= n.size) {
+    return {nullptr, 0};
+  }
   return {document_, document_->kids_[n.first + i]};
 }
 
 std::string_view Value::key(std::size_t i) const {
+  if (document_ == nullptr || node_ >= document_->nodes_.size()) {
+    return {};
+  }
   const auto& n = document_->nodes_[node_];
+  if (n.kind != Kind::kObject || i >= n.size) {
+    return {};
+  }
   return Value(document_, document_->kids_[n.first + (2 * i)]).string();
 }
 
 Value Value::member(std::size_t i) const {
+  if (document_ == nullptr || node_ >= document_->nodes_.size()) {
+    return {nullptr, 0};
+  }
   const auto& n = document_->nodes_[node_];
+  if (n.kind != Kind::kObject || i >= n.size) {
+    return {nullptr, 0};
+  }
   return {document_, document_->kids_[n.first + (2 * i) + 1]};
 }
 

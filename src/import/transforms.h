@@ -18,7 +18,7 @@
 
 namespace llmp::import {
 
-enum class ScalarFold : std::uint8_t { kNormPlusOne, kANegExp };
+enum class ScalarFold : std::uint8_t { kNormPlusOne, kANegExp, kIdentity };
 
 // Little-endian BF16/F16/F32 -> F32. Uses binary64 arithmetic then integer
 // nearest-even F32 encoding, without hardware F32 flush-to-zero on conversion.
@@ -69,10 +69,11 @@ class HeadPermutationCursor {
 
 // Grouped-to-tiled heads: destination j*K+g receives source g*(V/K)+j.
 // Dense F32/BF16, split MXFP8 (codes AND block scales), or split affine
-// 4-bit/group32/BF16 (codes AND block scales AND biases), all unstacked.
+// 4/8-bit, groups 32/64/128, BF16/F16/F32 scales (codes AND block scales
+// AND biases), all unstacked.
 // Affine is rank 2 only; dense/MXFP8 remain rank 1 or 2. Rows are rank 2,
 // with unchanged prefix/suffix; columns cover a whole row. Quantized column
-// heads are whole 32-value groups and packed code bytes. No decoding,
+// heads are whole encoding groups and packed code bytes. No decoding,
 // allocation, format/shape change or source head-order authority is implied.
 class HeadPermutationPlan {
  public:

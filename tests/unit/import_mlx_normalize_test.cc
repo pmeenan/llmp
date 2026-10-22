@@ -10,13 +10,14 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "artifact/artifact.h"
 #include "base/sha256.h"
 #include "components/step.h"
-#include "import/mlx_qwen38.h"
+#include "import/normalize.h"
 #include "import/reader.h"
 #include "import/writer.h"
 #if defined(LLMP_HAS_CUDA)
@@ -129,6 +130,144 @@ TEST(ImportMlxNormalizeTest, NativeSplitPartsValidateAcrossCompleteTarget) {
   EXPECT_EQ(stage.side[0].source.weights.size(), 3U);
 }
 
+TEST(ImportMlxNormalizeTest, EachLayerDerivesItsOwnExpertLayoutFromItsTensors) {
+  auto fixture = fx::NativeModelOpt();
+  auto affine = fx::NativeMlx();
+  const auto selected = [](const spec::SourceTensor& tensor) {
+    return tensor.name.starts_with("blk.1.") && tensor.experts;
+  };
+  std::erase_if(fixture.source.tensors, [&](const auto& tensor) {
+    return selected(tensor) ||
+           (tensor.name.starts_with("blk.1.") && tensor.name.ends_with("_exps.weight_scale_2"));
+  });
+  for (const auto& tensor : affine.source.tensors)
+    if (selected(tensor)) fixture.source.tensors.push_back(tensor);
+  auto model =
+      spec::Synthesize(spec::mappings::Qwen38NativeMapping(), fixture.source, fixture.values);
+  ASSERT_TRUE(model) << model.error();
+  auto valid = components::ValidateSpec(*model, fixture.source.tensors);
+  ASSERT_TRUE(valid) << valid.error();
+  for (std::size_t layer = 0; layer < 2; ++layer) {
+    const auto& components = model->stages.front().layers[layer].components;
+    const auto moe =
+        std::ranges::find(components, std::string("ffn.moe"), &spec::ComponentRef::kind);
+    ASSERT_NE(moe, components.end());
+    EXPECT_EQ(std::get<bool>(moe->Find("stacked")->value), layer == 0);
+    EXPECT_EQ(std::get<bool>(moe->Find("projection_scales")->value), false);
+    for (const auto scale : {"gate_scale", "up_scale", "down_scale"})
+      EXPECT_EQ(std::get<bool>(moe->Find(scale)->value), layer == 0);
+  }
+}
+
+TEST(ImportMlxNormalizeTest, ProjectionsWithinOneLayerKeepIndependentScalarBindings) {
+  for (const bool dense_down : {false, true}) {
+    SCOPED_TRACE(dense_down);
+    auto fixture = fx::NativeModelOpt();
+    std::erase_if(fixture.source.tensors, [&](const auto& tensor) {
+      if (!tensor.name.starts_with("blk.0.ffn_")) return false;
+      return dense_down ? tensor.name.contains("down_exps")
+                        : tensor.name.contains("gate_up_exps") ||
+                              tensor.name.contains("gate_exps") || tensor.name.contains("up_exps");
+    });
+    for (const auto projection : {"gate", "up", "down"}) {
+      const bool down = std::string_view(projection) == "down";
+      if (down != dense_down) continue;
+      fixture.source.tensors.push_back(
+          {.name = std::string("blk.0.ffn_") + projection + "_exps.weight",
+           .format = {.encoding = Encoding::kBF16,
+                      .layout = format::Layout::kDense,
+                      .shape = {.ne = {down ? 640U : 2560U, down ? 2560U : 640U, 512, 1},
+                                .rank = 3}},
+           .experts = true});
+    }
+    auto model =
+        spec::Synthesize(spec::mappings::Qwen38NativeMapping(), fixture.source, fixture.values);
+    ASSERT_TRUE(model) << model.error();
+    auto valid = components::ValidateSpec(*model, fixture.source.tensors);
+    ASSERT_TRUE(valid) << valid.error();
+    const auto& block = model->stages.front().layers.front().components;
+    const auto moe = std::ranges::find(block, std::string("ffn.moe"), &spec::ComponentRef::kind);
+    ASSERT_NE(moe, block.end());
+    for (const auto role : {"gate_scale", "up_scale", "down_scale"}) {
+      const bool down = std::string_view(role) == "down_scale";
+      EXPECT_EQ(std::ranges::count(moe->weights, std::string(role), &spec::WeightBinding::role),
+                down == dense_down ? 0 : 1);
+    }
+  }
+}
+
+TEST(ImportMlxNormalizeTest, DeclaredPleWidthMatchesItsTableAndBothProjectionInputs) {
+  auto fixture = fx::NativeMlx();
+  const auto table =
+      std::ranges::find(fixture.source.tensors, std::string("per_layer_token_embd.weight"),
+                        &spec::SourceTensor::name);
+  ASSERT_NE(table, fixture.source.tensors.end());
+  const auto rows = table->format.shape.ne[1];
+  std::erase_if(fixture.source.tensors, [](const auto& tensor) {
+    return tensor.name.starts_with("per_layer_token_embd.") ||
+           tensor.name.starts_with("blk.1.ple_key.") || tensor.name.starts_with("blk.1.ple_value.");
+  });
+  for (const auto& [name, width, height] :
+       std::array<std::tuple<std::string, std::uint64_t, std::uint64_t>, 3>{
+           {{"per_layer_token_embd.weight", 4, rows},
+            {"blk.1.ple_key.weight", 64, 10240},
+            {"blk.1.ple_value.weight", 64, 2560}}})
+    fixture.source.tensors.push_back(
+        {.name = name,
+         .format = {.encoding = Encoding::kBF16,
+                    .layout = format::Layout::kDense,
+                    .shape = {.ne = {width, height, 1, 1}, .rank = 2}}});
+  for (auto& value : fixture.values)
+    if (value.key == "qwen4exp.embedding_length_per_layer_input") value.value = std::int64_t{4};
+  fixture.values.push_back({"qwen4exp.ple.embed_dim", std::int64_t{64}});
+  const auto validate = [&]() {
+    auto model =
+        spec::Synthesize(spec::mappings::Qwen38NativeMapping(), fixture.source, fixture.values);
+    EXPECT_TRUE(model) << (model ? "" : model.error());
+    return model && components::ValidateSpec(*model, fixture.source.tensors).has_value();
+  };
+  EXPECT_TRUE(validate());
+  fixture.values.back().value = std::int64_t{2560};
+  EXPECT_FALSE(validate());
+  fixture.values.back().value = std::int64_t{64};
+  auto key = std::ranges::find(fixture.source.tensors, std::string("blk.1.ple_key.weight"),
+                               &spec::SourceTensor::name);
+  key->format.shape.ne[0] = 32;
+  EXPECT_FALSE(validate());
+}
+
+TEST(ImportMlxNormalizeTest, PleLayerAndHashGeometryComeFromTheirDeclaredSourceValues) {
+  auto fixture = fx::NativeMlx();
+  for (auto& tensor : fixture.source.tensors)
+    if (tensor.name.starts_with("blk.1.ple")) tensor.name.replace(0, 6, "blk.2.");
+  for (auto& value : fixture.values) {
+    if (value.key == "qwen4exp.ple.layers") {
+      value.key = "qwen4exp.ple.layer_ids";
+      value.value = std::vector<std::int64_t>{3};
+    }
+    if (value.key == "qwen4exp.ple.ngram_size") value.value = std::int64_t{5};
+    if (value.key == "qwen4exp.ple.heads_per_ngram") value.value = std::int64_t{4};
+    if (value.key == "qwen4exp.ple.layer_multipliers")
+      value.value = std::vector<std::int64_t>{3, 5, 7, 11, 13};
+  }
+  const auto& mapping = spec::mappings::Qwen38NativeMapping();
+  auto model = spec::Synthesize(mapping, fixture.source, fixture.values);
+  ASSERT_TRUE(model) << model.error();
+  auto valid = components::ValidateSpec(*model, fixture.source.tensors);
+  ASSERT_TRUE(valid) << valid.error();
+  const auto& side = model->stages.front().side.front().source;
+  EXPECT_EQ(std::get<std::int64_t>(side.Find("ngram")->value), 5);
+  EXPECT_EQ(std::get<std::vector<std::int64_t>>(side.Find("multipliers")->value).size(), 5U);
+  for (std::size_t layer = 1; layer <= 2; ++layer) {
+    const auto& components = model->stages.front().layers[layer].components;
+    EXPECT_EQ(
+        std::ranges::count(components, std::string("residual.ple"), &spec::ComponentRef::kind),
+        layer == 2 ? 1 : 0);
+  }
+  fixture.values.push_back({"qwen4exp.ple.layers", std::vector<std::int64_t>{1}});
+  EXPECT_FALSE(spec::Synthesize(mapping, fixture.source, fixture.values));
+}
+
 TEST(ImportMlxNormalizeTest, NativeMappingRejectsMissingPartAndReadsRecordedFolds) {
   auto f = fx::NativeMlx();
   auto before = f.source.tensors;
@@ -162,8 +301,8 @@ TEST(ImportMlxNormalizeTest, UnknownSourceRefusalKeepsSourceOwnership) {
   source.quantization = "mlx affine";
   source.tensors.push_back({.name = "owned source"});
   const auto* owned = source.tensors.data();
-  EXPECT_FALSE(MlxTargetBound(source));
-  EXPECT_FALSE(NormalizeMlxTarget(std::move(source), {}));
+  EXPECT_FALSE(NormalizationBound(source));
+  EXPECT_FALSE(Normalize(std::move(source), {}));
   EXPECT_EQ(source.tensors.data(), owned);
   ASSERT_EQ(source.tensors.size(), 1U);
   EXPECT_EQ(source.tensors[0].name, "owned source");
@@ -174,8 +313,8 @@ TEST(ImportMlxNormalizeTest, DrafterBoundRefusesInvalidCheckpoint) {
   source.container = "safetensors";
   source.architecture = "qwen4_exp";
   source.quantization = "mlx affine";
-  EXPECT_FALSE(MlxDrafterBound(source, 0));
-  EXPECT_FALSE(NormalizeMlxDrafter(source, std::nullopt, {}, nullptr));
+  EXPECT_FALSE(NormalizationBound(source, {.component = "mtp"}));
+  EXPECT_FALSE(Normalize(source, {}, nullptr, {.component = "mtp"}));
 }
 
 TEST(ImportMlxNormalizeModelsTest,
@@ -196,11 +335,11 @@ TEST(ImportMlxNormalizeModelsTest,
   EXPECT_EQ(checkpoint->quantization, "mlx affine");
   EXPECT_EQ(checkpoint->files.size(), 28U);  // 22 shards, config/index and four tokenizer documents
 
-  auto bound = MlxTargetBound(*checkpoint);
+  auto bound = NormalizationBound(*checkpoint);
   ASSERT_TRUE(bound) << bound.error().ToString();
 
   NormalizationLimits limits{bound->metadata_bytes, bound->work_units};
-  auto plan = NormalizeMlxTarget(std::move(*checkpoint), limits);
+  auto plan = Normalize(std::move(*checkpoint), limits);
   ASSERT_TRUE(plan) << plan.error().ToString();
   EXPECT_EQ(plan->canonical().tensors.size(), 2954U);
   // The head reorder, then the parameter folds by role (as ModelOpt's): the
@@ -314,11 +453,11 @@ TEST(ImportMlxNormalizeModelsTest, RealStagedCheckpointNormalizesMlxDrafter) {
                              .model = std::move(f.model),
                              .source = std::move(f.source)};
 
-  auto bound = MlxDrafterBound(*checkpoint, 0);
+  auto bound = NormalizationBound(*checkpoint, {.component = "mtp"});
   ASSERT_TRUE(bound) << bound.error().ToString();
 
   NormalizationLimits limits{bound->metadata_bytes, bound->work_units};
-  auto plan = NormalizeMlxDrafter(*checkpoint, std::nullopt, limits, &target);
+  auto plan = Normalize(*checkpoint, limits, &target, {.component = "mtp"});
   ASSERT_TRUE(plan) << plan.error().ToString();
   EXPECT_EQ(plan->canonical().architecture, "qwen4exp-mtp");
   EXPECT_EQ(plan->canonical().container, "mlx");

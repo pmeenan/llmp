@@ -60,8 +60,8 @@ bool GatherEncoding(const format::TensorFormat& f) {
 std::expected<IndexedPartCost, Error> IndexedPartPlan::Bound(
     const Checkpoint& source, std::span<const TensorAssembly> outputs) {
   if (source.tensors.empty() || source.tensors.size() > kMaxTensors || outputs.empty() ||
-      outputs.size() > kMaxTensors || source.files.empty() || source.files.size() > 256 ||
-      !source.components.empty())
+      outputs.size() > kMaxTensors || source.files.empty() ||
+      source.files.size() > kMaxSourceFiles || !source.components.empty())
     return std::unexpected(Bad("indexed assembly count outside bound", Rule::kBounds));
   for (const auto& f : source.files)
     if (f.name.size() > kMaxNameBytes || f.path.native().size() > 4096)
@@ -95,7 +95,7 @@ std::expected<IndexedPartCost, Error> IndexedPartPlan::Bound(
   // sort are comparison-bounded by a conservative64*n*bit_width(n) allowance;
   // includes all format/member checks and the <=256-file identity checks.
   const auto n = static_cast<std::uint64_t>(source.tensors.size() + outputs.size());
-  cost.work_units = 256ULL * 256 * 4096 +
+  cost.work_units = source.files.size() * source.files.size() * 4096ULL +
                     64 * n * static_cast<std::uint64_t>(std::bit_width(n)) * (kMaxNameBytes + 1);
   return cost;
 }
@@ -135,9 +135,8 @@ std::expected<IndexedPartPlan, Error> IndexedPartPlan::Make(
         t.extent.offset > plan.source_.files[t.extent.file].bytes ||
         t.extent.bytes > plan.source_.files[t.extent.file].bytes - t.extent.offset)
       return std::unexpected(Bad("indexed source extent outside file"));
-    auto parts = format::PartsOf(t.format);
-    auto part = parts ? parts->Find(t.part) : std::nullopt;
-    if (!part || part->bytes != t.extent.bytes)
+    const auto bytes = SourcePartBytes(t);
+    if (!bytes || *bytes != t.extent.bytes)
       return std::unexpected(Bad("indexed source part does not match format"));
   }
   std::ranges::sort(extents, [&](auto a, auto b) {
@@ -166,6 +165,13 @@ std::expected<IndexedPartPlan, Error> IndexedPartPlan::Make(
     auto out_parts = format::PartsOf(out.format);
     if (!out_parts || out_parts->size() != out.parts.size())
       return std::unexpected(Bad("indexed output part coverage is incomplete"));
+    if (out.separate_tensor_scale &&
+        (out.relayout_from || out.fold || out.permutation || out.format.params.tensor_scale ||
+         out.format.encoding != format::Encoding::kNvfp4 ||
+         out.format.layout != format::Layout::kSplit || out.format.shape.rank != 3 ||
+         std::ranges::any_of(out.parts,
+                             [](const auto& p) { return p.kind != PartAssemblyKind::kMatrices; })))
+      return std::unexpected(Bad("invalid separate tensor-scale assembly"));
     const auto basis = std::ranges::find_if(
         out.parts, [](const auto& p) { return p.part != format::PartRole::kTensorScale; });
     if (basis == out.parts.end())
@@ -257,6 +263,11 @@ std::expected<IndexedPartPlan, Error> IndexedPartPlan::Make(
         auto as_output = t.format;
         if (out.fold && IsFoldSourceEncoding(t.format.encoding))
           as_output.encoding = format::Encoding::kF32;
+        if (out.separate_tensor_scale) {
+          if (!t.format.params.tensor_scale)
+            return std::unexpected(Bad("source lacks separated tensor scale"));
+          as_output.params.tensor_scale = false;
+        }
         if (atom_table) {
           as_output.layout = out.format.layout;
           as_output.stacked = out.format.stacked;
@@ -267,8 +278,9 @@ std::expected<IndexedPartPlan, Error> IndexedPartPlan::Make(
         const auto lane_part =
             ordinal % 2 == 0 ? format::PartRole::kCodes : format::PartRole::kBlockScales;
         if (row_table) as_output.layout = out.format.layout;
-        if (scalar ? (t.part != format::PartRole::kTensorScale || t.extent.bytes != 4 ||
-                      !t.format.params.tensor_scale || t.format.stacked != 1)
+        if (scalar ? (t.part != format::PartRole::kTensorScale || !SourcePartBytes(t) ||
+                      t.extent.bytes != *SourcePartBytes(t) || !t.format.params.tensor_scale ||
+                      t.format.stacked != 1)
                    : ((interleaved ? t.part != lane_part : t.part != assembly.part) ||
                       !SameEncoding(as_output, out.format) ||
                       (relaid && (t.format.layout != *out.relayout_from || t.format.stacked != 1))))
@@ -317,7 +329,8 @@ std::expected<IndexedPartPlan, Error> IndexedPartPlan::Make(
             valid = out.format.encoding == format::Encoding::kNvfp4 && out.format.shape.rank == 2 &&
                     t.format.shape.rank == 2 && out.format.stacked == 1 &&
                     t.format.shape.ne[0] == out.format.shape.ne[0] &&
-                    assembly.part == format::PartRole::kTensorScale && t.extent.bytes == 4;
+                    assembly.part == format::PartRole::kTensorScale && SourcePartBytes(t) &&
+                    t.extent.bytes == *SourcePartBytes(t);
             break;
         }
         if (!valid) return std::unexpected(Bad("indexed assembly geometry mismatch"));
@@ -330,8 +343,9 @@ std::expected<IndexedPartPlan, Error> IndexedPartPlan::Make(
           return std::unexpected(Bad("invalid indexed row interleave"));
         const std::uint64_t elem_size = (t.format.encoding == format::Encoding::kF32) ? 4U : 2U;
         auto route =
-            interleaved ? PartRoutePlan::Strided(t.format.shape.ne[1], *row_bytes, *stride,
-                                                 ordinal % 2 == 0 ? 0 : *stride - *row_bytes)
+            t.scalar_storage ? PartRoutePlan::Fold(ScalarFold::kIdentity, 1, *t.scalar_storage)
+            : interleaved    ? PartRoutePlan::Strided(t.format.shape.ne[1], *row_bytes, *stride,
+                                                      ordinal % 2 == 0 ? 0 : *stride - *row_bytes)
             : out.permutation && out.fold
                 ? PartRoutePlan::PermuteFold(*out.permutation, assembly.part, *out.fold)
             : out.permutation ? PartRoutePlan::Permute(*out.permutation, assembly.part)
@@ -340,8 +354,9 @@ std::expected<IndexedPartPlan, Error> IndexedPartPlan::Make(
             : atoms ? PartRoutePlan::ScaleAtoms(t.format.shape.ne[1],
                                                 block == 0 ? 0 : t.format.shape.ne[0] / block)
                     : PartRoutePlan::Copy(t.extent.bytes);
-        const std::uint64_t produced =
-            out.fold ? (t.extent.bytes / elem_size) * 4U : t.extent.bytes;
+        const std::uint64_t produced = t.scalar_storage ? 4U
+                                       : out.fold       ? (t.extent.bytes / elem_size) * 4U
+                                                        : t.extent.bytes;
         // The output range it writes in (an interleaved lane's rows' span).
         const std::uint64_t span = route ? route->span() : 0;
         if (!route || route->input_bytes() != t.extent.bytes || route->output_bytes() != produced ||

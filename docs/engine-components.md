@@ -1927,7 +1927,8 @@ declared extraction data; prompt bounds come from actual component masks/state
 contracts, and drafter imports validate against the stored target selected by
 `--target ID`. Existing native MTP artifacts derive missing metadata from that
 same target and their own tensors. The closed Qwen3.8 ModelOpt and MLX
-normalizers remain per family, M3.5 debt:
+normalizers described here were the M3.5 implementation and debt; M3.5 U3
+replaced them with the generic mapping importer:
 [M3.6 record](m36-record.md#deferred-items-from-the-reviews). The tests
 that synthesize a real family's spec from a fixture's tensor table take
 the profile values from `tests/support/families/`, and the frozen v1
@@ -2692,15 +2693,18 @@ pass with a full native build, 103 affected host controls and one real-header
 normalization case. Actual full publication, admission and model qualification
 are separate.
 
-**Mapping and admission after review R4 (2026-10-17).** Import, stored
+**Historical R4 mapping and admission state (2026-10-17; superseded by M3.5 U3).** Import, stored
 admission, draft composition and policy selection resolve one mapping by
 `(architecture, container, version)` from retained source provenance; an
 unknown or ambiguous variant refuses instead of selecting an architecture-only
 fallback. Native and GGUF fold declarations distinguish a converter's asserted
 fold from an allowed importer fold. Policy gate keys and their component facts
 are mapping data, including the architecture's declared expert-count key.
-The retained family normalizers are trusted native implementations in a central
-recognition/dispatch registry; a mapping and its recipes run no callbacks.
+At that point, retained family normalizers were trusted native implementations
+in a central recognition/dispatch registry; a mapping and its recipes ran no
+callbacks. M3.5 U3 removed the ModelOpt and MLX normalizers and their
+independent registry. Source normalization now lives in registered
+`spec::Mapping` data, with `import::SourceMapping` derived from those mappings.
 Drafter target dimensions come from the target artifact's stored spec and its
 actual tensors (`llmp import ... --target ID`), not per-size synthetic profiles.
 
@@ -2843,7 +2847,8 @@ selection and stored-drafter admission remain unchanged. ModelOpt/MLX serving,
 family migration and N5's all-artifact gates remain open. See the
 [publication and execution evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md#native-gguf-publication-and-target-serving--2026-10-13).
 
-The ModelOpt checkpoint's MTP drafter has a native v1 publication
+Historical M3.6 implementation (superseded by M3.5 U3): the ModelOpt
+checkpoint's MTP drafter had a native v1 publication
 (`llmp import SOURCE --store DIRECTORY --target TARGET_ID --component mtp [--draft-head IDS]`,
 `import/modelopt_qwen38.h` `NormalizeModelOptDrafter`). Its 38 `mtp.*` roles
 keep their pinned descriptors and source encodings (BF16 linears), but its
@@ -3003,7 +3008,8 @@ failures or skips. Source, recipe and model-binary guards and quality gates
 passed (2026-10-12). Geometry validation does not authorize a source mapping,
 authenticate checkpoint bytes, publish an artifact or admit a model.
 
-A separate closed ModelOpt target normalizer (`import/modelopt_qwen38.h`)
+Historical M3.6 implementation (superseded by M3.5 U3): a separate closed
+ModelOpt target normalizer (`import/modelopt_qwen38.h`)
 uses an owned indexed part plan. It validates the complete source set with
 finite role/index grammars, including explicitly classified MTP, vision and
 activation-scale entries, and reads exactly 280 bytes of pinned PLE semantic
@@ -3053,13 +3059,14 @@ The 8 GiB, zero-swap run completed in 31 minutes, reached its memory cap
 and incurred no OOM kills. This API extension
 does not admit a runtime model or import MTP/vision components.
 
-The `llmp import` CLI uses registered source mappings for ordinary containers
-and one central normalizer registry for the retained ModelOpt/MLX normalizers.
-Container, architecture and quantization recognition are data in that registry;
-the CLI has no family dispatch or vocabulary constant. Recognition is not
-admission authority: the normalizer still validates the
-complete source contract and refuses unsupported inputs without falling back
-to another mapping. Existing flags, ordinary/archive source verification,
+The `llmp import` CLI uses registered `spec::Mapping` data for container,
+architecture and quantization recognition and source normalization. Its
+`import::SourceMapping` view is derived from those mappings; there is no
+independent normalizer registry or per-model normalizer. The CLI has no family
+dispatch or vocabulary constant. Recognition is not admission authority: the
+generic normalizer validates the complete source contract and refuses
+unsupported inputs without falling back to another mapping. Existing flags,
+ordinary/archive source verification,
 parsed-prefix receipts, publication/reuse results and post-publication archive
 events use the same writer flow. The requested metadata ceiling covers both
 the owned plan and the writer, with reader storage bounded separately.

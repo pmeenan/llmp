@@ -18,6 +18,7 @@ const Mapping& Qwen2GgufMapping();
 const Mapping& Qwen2Exl3Mapping();
 // Closed, multipart-copy safetensors target normalization.
 const Mapping& Qwen2SafetensorsMapping();
+const Mapping& Qwen35Mapping();
 
 const Mapping& LlamaMapping();
 const Mapping& LlamaGgufMapping();

@@ -21,6 +21,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -531,6 +532,46 @@ std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path) {
   auto c = Assemble(std::move(files));
   if (!c) {
     return std::unexpected(c.error());
+  }
+  if (sources.size() > 1) {
+    struct PhysicalSpan {
+      std::size_t physical = 0;
+      std::uint64_t begin = 0;
+      std::uint64_t end = 0;
+      std::uint32_t file = 0;
+      std::size_t tensor = 0;
+    };
+    std::vector<std::size_t> physical(sources.size());
+    for (std::size_t i = 0; i < sources.size(); ++i) {
+      physical[i] = i;
+      for (std::size_t j = 0; j < i; ++j) {
+        if ((!sources[i].path.empty() && sources[i].path == sources[j].path) ||
+            (sources[i].inode != 0 && sources[i].device == sources[j].device &&
+             sources[i].inode == sources[j].inode)) {
+          physical[i] = physical[j];
+          break;
+        }
+      }
+    }
+    std::vector<PhysicalSpan> spans;
+    spans.reserve(c->tensors.size());
+    for (std::size_t t = 0; t < c->tensors.size(); ++t) {
+      const Extent& e = c->tensors[t].extent;
+      spans.push_back({.physical = physical[e.file],
+                       .begin = e.offset,
+                       .end = e.offset + e.bytes,
+                       .file = e.file,
+                       .tensor = t});
+    }
+    std::ranges::stable_sort(spans, [](const PhysicalSpan& a, const PhysicalSpan& b) {
+      return std::tie(a.physical, a.begin) < std::tie(b.physical, b.begin);
+    });
+    for (std::size_t i = 1; i < spans.size(); ++i) {
+      if (spans[i].physical == spans[i - 1].physical && spans[i].begin < spans[i - 1].end) {
+        return Fail(Rule::kContainer, "two tensors' data overlap", spans[i].file, ItemKind::kTensor,
+                    spans[i].tensor);
+      }
+    }
   }
   c->files = std::move(sources);
   return c;

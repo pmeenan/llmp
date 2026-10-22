@@ -544,8 +544,9 @@ bool AcceptsNormRope(const ex::CapabilityQuery& q) {
   const ir::RopeParams& r = p->rope;
   const std::array values = {r.base,        r.scale,     r.ext_factor,
                              r.attn_factor, r.beta_fast, r.beta_slow};
-  return r.mode == ir::RopeMode::kNeox && !r.inverse && !r.table && r.offset == 0 &&
-         r.dims == q.k && r.original_context > 0 &&
+  return r.mode == ir::RopeMode::kNeox && !r.inverse && !r.table && !r.llama3 &&
+         r.rotated_dims == UINT32_MAX && r.ext_factor >= 0.0F && r.offset == 0 && r.dims == q.k &&
+         r.original_context > 0 &&
          std::ranges::all_of(values, [](float v) { return std::isfinite(v); }) && r.base > 1.0F &&
          r.scale > 0.0F && r.beta_fast > 0.0F && r.beta_slow > 0.0F && r.attn_factor > 0.0F &&
          std::isfinite(p->eps) && p->eps >= 0.0F;
@@ -1191,8 +1192,8 @@ bool AcceptsDsv4QHead(const ex::CapabilityQuery& q) {
   const auto& r = p->rope;
   const std::array values{p->eps,        r.base,      r.scale,    r.ext_factor,
                           r.attn_factor, r.beta_fast, r.beta_slow};
-  return r.mode == ir::RopeMode::kNormal && !r.inverse && !r.table && r.dims == 64 &&
-         r.offset == 448 &&
+  return r.mode == ir::RopeMode::kNormal && !r.inverse && !r.table && !r.llama3 &&
+         r.rotated_dims == UINT32_MAX && r.dims == 64 && r.offset == 448 &&
          r.original_context <=
              static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) &&
          std::ranges::all_of(values, [](float v) { return std::isfinite(v); }) && p->eps >= 0 &&
@@ -1212,8 +1213,8 @@ bool AcceptsDsv4OutA(const ex::CapabilityQuery& q) {
     return false;
   const auto& r = *p;
   const std::array values{r.base, r.scale, r.ext_factor, r.attn_factor, r.beta_fast, r.beta_slow};
-  return r.mode == ir::RopeMode::kNormal && r.inverse && !r.table && r.dims == 64 &&
-         r.offset == 448 &&
+  return r.mode == ir::RopeMode::kNormal && r.inverse && !r.table && !r.llama3 &&
+         r.rotated_dims == UINT32_MAX && r.dims == 64 && r.offset == 448 &&
          r.original_context <=
              static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) &&
          std::ranges::all_of(values, [](float v) { return std::isfinite(v); }) && r.base > 0 &&
@@ -1559,7 +1560,8 @@ bool QsaRope(const ir::RopeParams& r) {
   // These kernels rotate at pos * base^(-2 / dims), without inverse,
   // frequency scaling, a table, an offset or YaRN amplitude correction.
   return r.mode == ir::RopeMode::kInterleavedMulti && r.dims == 64 && !r.inverse && !r.table &&
-         r.offset == 0 && r.scale == 1.0F && r.ext_factor == 0.0F && r.attn_factor == 1.0F;
+         r.rotated_dims == UINT32_MAX && r.offset == 0 && r.scale == 1.0F && r.ext_factor == 0.0F &&
+         r.attn_factor == 1.0F;
 }
 
 bool AcceptsQsaPrep(const ex::CapabilityQuery& q) {
@@ -2022,15 +2024,17 @@ bool AcceptsQuantAttention(const ex::CapabilityQuery& q) { return QuantAttention
 bool AcceptsQ4Attention(const ex::CapabilityQuery& q) { return QuantAttention(q, false); }
 bool AcceptsQuantStore(const ex::CapabilityQuery& q) { return Built(q) && q.k >= 32; }
 bool AcceptsQuantRopeStore(const ex::CapabilityQuery& q) {
+  const auto r = ParamsOf<ir::RopeParams>(q);
   const ex::OperandFormat* freq = Operand(q, 4);
-  return AcceptsQuantStore(q) &&
+  return r && !r->llama3 && r->ext_factor >= 0.0F && r->rotated_dims == UINT32_MAX &&
+         AcceptsQuantStore(q) &&
          (freq == nullptr || (freq->encoding == Encoding::kF32 && freq->layout == Layout::kDense));
 }
 // ggml.rope_set_rows.fused (RopeSetRowsFusionAt): NEOX into F16 rows.
 bool AcceptsRopeStore(const ex::CapabilityQuery& q) {
   const auto r = ParamsOf<ir::RopeParams>(q);
   return Built(q) && r && PlainRope(*r) && r->mode == ir::RopeMode::kNeox && !r->inverse &&
-         r->offset == 0 && !Has(q, 4);
+         r->rotated_dims == UINT32_MAX && r->offset == 0 && !Has(q, 4);
 }
 
 // ------------------------------------------------------------- the table
@@ -2335,9 +2339,11 @@ const std::array kEntries = {
     // Rotations and stores.
     Entry{"ggml.rope.neox", Cap(P(Op::kRope), kRope, &AcceptsRopeNeox, true, {}, 1),
           "; selectable for the build's SASS architectures: NEOX over positions without "
-          "frequency factors or an offset"},
+          "frequency factors or an offset; proportional pairs use the owned primitive "
+          "and a separate cache store"},
     Entry{"ggml.rope.ext", Cap(P(Op::kRope), kRope, &AcceptsRopeExt, true),
-          "; selectable for the build's SASS architectures over positions"},
+          "; selectable for the build's SASS architectures over positions; proportional pairs "
+          "use the owned primitive and a separate cache store"},
     Entry{"ggml.set_rows", Cap(P(Op::kCacheStore), kF16Store, &AcceptsAny, true, {}, 1), kBuilt},
     Entry{"ggml.set_rows.ext", Cap(P(Op::kCacheStore), kFloatStore, &AcceptsAny, true), kBuilt},
     Entry{kSetRowsGroupedName,

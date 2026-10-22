@@ -327,6 +327,28 @@ void WriteStage(std::string& out, const Stage& s) {
   out += ']';
   Key(out, "role", first);
   Quoted(out, StageRoleName(s.role));
+  if (!s.sampling.empty()) {
+    Key(out, "sampling", first);
+    out += '{';
+    bool smp_first = true;
+    if (s.sampling.min_p) {
+      Key(out, "min_p", smp_first);
+      Quoted(out, RealText(*s.sampling.min_p));
+    }
+    if (s.sampling.temperature) {
+      Key(out, "temperature", smp_first);
+      Quoted(out, RealText(*s.sampling.temperature));
+    }
+    if (s.sampling.top_k) {
+      Key(out, "top_k", smp_first);
+      out += std::to_string(*s.sampling.top_k);
+    }
+    if (s.sampling.top_p) {
+      Key(out, "top_p", smp_first);
+      Quoted(out, RealText(*s.sampling.top_p));
+    }
+    out += '}';
+  }
   Key(out, "side", first);
   out += '[';
   for (std::size_t i = 0; i < s.side.size(); ++i) {
@@ -560,7 +582,7 @@ std::expected<Stage, std::string> ReadStage(json::Value v, const std::string& wh
   if (auto k = Keys(v, where,
                     {"artifact", "context", "folds", "heads", "layers", "name", "reads", "role",
                      "side", "stream", "taps"},
-                    {"embedding", "exports", "links"});
+                    {"embedding", "exports", "links", "sampling"});
       !k) {
     return std::unexpected(k.error());
   }
@@ -578,6 +600,36 @@ std::expected<Stage, std::string> ReadStage(json::Value v, const std::string& wh
   s.artifact = static_cast<std::uint32_t>(*artifact);
   LLMP_SPEC_TRY(context, Unsigned(Member(v, "context"), where + ".context", kMaxContext));
   s.context = static_cast<std::uint32_t>(*context);
+  if (const auto smp = v.find("sampling"); smp) {
+    const std::string sm = where + ".sampling";
+    if (auto k = Keys(*smp, sm, {}, {"min_p", "temperature", "top_k", "top_p"}); !k) {
+      return std::unexpected(k.error());
+    }
+    if (smp->size() == 0) {
+      return Refuse(sm, "present only when non-empty");
+    }
+    const auto read_real =
+        [&](std::string_view key) -> std::expected<std::optional<double>, std::string> {
+      const auto f = smp->find(key);
+      if (!f) return std::nullopt;
+      const std::optional<double> r = f->is_string() ? ParseReal(f->string()) : std::nullopt;
+      if (!r) {
+        return Refuse(std::format("{}.{}", sm, key),
+                      "not a finite real in its shortest round-trip form");
+      }
+      return *r;
+    };
+    LLMP_SPEC_TRY(min_p, read_real("min_p"));
+    s.sampling.min_p = *min_p;
+    LLMP_SPEC_TRY(temperature, read_real("temperature"));
+    s.sampling.temperature = *temperature;
+    if (const auto tk = smp->find("top_k"); tk) {
+      LLMP_SPEC_TRY(top_k, Unsigned(*tk, sm + ".top_k", 2147483647));
+      s.sampling.top_k = static_cast<std::int64_t>(*top_k);
+    }
+    LLMP_SPEC_TRY(top_p, read_real("top_p"));
+    s.sampling.top_p = *top_p;
+  }
   LLMP_SPEC_TRY(embedding, MaybeComponent(v, "embedding", where));
   s.embedding = std::move(*embedding);
 
@@ -838,6 +890,22 @@ Status CheckStage(const ModelSpec& spec, const Stage& s, const std::string& wher
   if (s.artifact >= kMaxArtifacts || s.context > kMaxContext) {
     return Refuse(where, "an artifact index or context out of range");
   }
+  if (s.sampling.temperature &&
+      (!IsReal(*s.sampling.temperature) || *s.sampling.temperature < 0.0 ||
+       *s.sampling.temperature > 100.0)) {
+    return Refuse(where + ".sampling.temperature", "not a finite real in [0, 100]");
+  }
+  if (s.sampling.top_p &&
+      (!IsReal(*s.sampling.top_p) || *s.sampling.top_p <= 0.0 || *s.sampling.top_p > 1.0)) {
+    return Refuse(where + ".sampling.top_p", "not a finite real in (0, 1]");
+  }
+  if (s.sampling.top_k && (*s.sampling.top_k < 0 || *s.sampling.top_k > 2147483647)) {
+    return Refuse(where + ".sampling.top_k", "not an integer in [0, INT32_MAX]");
+  }
+  if (s.sampling.min_p &&
+      (!IsReal(*s.sampling.min_p) || *s.sampling.min_p < 0.0 || *s.sampling.min_p > 1.0)) {
+    return Refuse(where + ".sampling.min_p", "not a finite real in [0, 1]");
+  }
   if (s.layers.size() > kMaxLayers) {
     return Refuse(where, std::format("more than {} layers", kMaxLayers));
   }
@@ -1029,6 +1097,9 @@ void Canonicalize(ModelSpec& spec) {
     });
   };
   for (Stage& s : spec.stages) {
+    if (s.sampling.temperature && *s.sampling.temperature == 0.0) *s.sampling.temperature = 0.0;
+    if (s.sampling.top_p && *s.sampling.top_p == 0.0) *s.sampling.top_p = 0.0;
+    if (s.sampling.min_p && *s.sampling.min_p == 0.0) *s.sampling.min_p = 0.0;
     EachComponent(s, [&](ComponentRef& c, const std::string&) { component(c); });
     for (SideInput& in : s.side) std::ranges::sort(in.layers);
     std::ranges::sort(s.side, {}, &SideInput::name);

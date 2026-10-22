@@ -888,23 +888,21 @@ When a new model architecture uses existing components in `src/components/`
      (only DeepSeek's mapping enables the schedule products today), and
      evidence-backed numerical changes are admitted by
      `runtime/component_admission.cc` for GB10 (`arch = 121`) only.
-2. **Register container normalization tables (`src/import/source_mapping.cc`):**
-   - Add `SourceMapping` entries in `FindSourceMapping` for each supported
-     source container (`gguf`, `safetensors`, `exl3`; `mlx` and HF-quantized
-     safetensors are served only by the pinned Qwen3.8 normalizers,
-     `ValidateSourceMapping` admits no other), wiring Hugging Face
-     `config.json` key aliases (`KeyAlias`), tensor name aliases
-     (`TensorAlias`), auxiliary metadata prefixes (`AuxiliaryNamespace`),
-     tied-head presence rules (`TensorPresenceRequirement`), and the GGUF
-     `<arch>.` prefix in the hand-kept `kGgufSemantic` list
-     (`source_mapping.cc`). **Omitting that prefix fails open:** unconsumed
-     `<arch>.*` keys become auxiliary metadata with only a warning
-     (`normalize.cc`), so a key the math needs is ignored instead of refused.
-     A family with bounded side or numeric-list components also sets
+2. **Declare source normalization in the architecture mapping
+   (`src/spec/mappings/`):**
+   - Put each supported container's source rules in its registered
+     `spec::Mapping`: container names, Hugging Face `config.json` key aliases
+     (`KeyAlias`), tensor name aliases (`TensorAlias`), auxiliary metadata
+     prefixes (`AuxiliaryNamespace`), tied-head presence rules
+     (`TensorPresenceRequirement`), and additional semantic keys or patterns. The GGUF semantic prefix comes
+     from the mapping architecture (or its explicit `key_prefix`); unconsumed
+     keys in that namespace refuse. `import::SourceMapping` is derived from
+     these mappings; do not maintain a separate source-mapping registry. A
+     family with bounded side or numeric-list components also sets
      `extended_components`.
-   - If `config.json` uses a new `model_type` string, map it to the canonical
-     architecture name in the container readers (`src/import/readers/safetensors.cc`,
-     `src/import/readers/exl3.cc`, `src/import/readers/mlx.cc`).
+   - If `config.json` uses another `model_type` string for the architecture,
+     declare it in the mapping's `source_architectures`. Container readers
+     preserve the source architecture; mapping selection resolves the alias.
 3. **Tokenizer and chat template (only if new):**
    - If the checkpoint introduces a new pre-tokenizer regex or normalizer, add
      it in `src/tokenizer/` ([tokenizer.md](tokenizer.md)).
@@ -1023,9 +1021,10 @@ checkpoint container or quantization family:
      deterministic import-time transform (transpose, bit-unpacking, scale row/col
      folding, or routed-expert stacking), wire it through
      `src/import/transforms.{h,cc}`, `src/import/expert_relayout.{h,cc}`, or
-     `src/import/parameter_folds.{h,cc}` and declare the container's
-     `SourceMapping` rules in `src/import/source_mapping.cc` and
-     `src/import/normalize.cc`.
+     `src/import/parameter_folds.{h,cc}` and declare
+     the container's source rules in its registered `spec::Mapping` under
+     `src/spec/mappings/`; the importer derives its `SourceMapping` view from
+     that mapping.
 3. **Tests:**
    - Add positive normalization and v1 writer tests in
      `tests/unit/import_normalize_test.cc`, `tests/unit/import_writer_test.cc`,

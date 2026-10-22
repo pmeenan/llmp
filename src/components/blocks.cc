@@ -102,7 +102,7 @@ std::expected<void, std::string> NormReference(RefIO& io) {
 
 // ------------------------------------------------------------- scale.learned
 
-constexpr std::array kScaleRoles{WeightRole{.name = "weight", .encodings = kF32Only}};
+constexpr std::array kScaleRoles{WeightRole{.name = "weight", .encodings = kNormEncodings}};
 
 std::expected<std::vector<RoleShape>, std::string> ScaleShapes(const Instance&) {
   return std::vector<RoleShape>{Role(0, {1})};
@@ -110,7 +110,7 @@ std::expected<std::vector<RoleShape>, std::string> ScaleShapes(const Instance&) 
 
 std::expected<FragmentOut, std::string> ScaleEmit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
-  return FragmentOut{.stream = f.b.Mul(f.stream, f.Weight(0))};
+  return FragmentOut{.stream = f.b.Mul(f.stream, NormScale(f.b, f.Weight(0)))};
 }
 
 std::expected<void, std::string> ScaleReference(RefIO& io) {

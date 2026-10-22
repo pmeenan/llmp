@@ -37,7 +37,14 @@
 
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <string>
+
+#include "catalog/catalog.h"
+
+namespace llmp::artifact {
+class Artifact;
+}
 
 namespace llmp::runtime {
 
@@ -77,9 +84,38 @@ std::expected<void, std::string> CheckMemoryGuard(const MemoryGuard& guard);
 // Initial metadata loan, independent of a file's observed size: the existing
 // readers enforce their caps on opened descriptors even if files grow. At most
 // target+drafter parse simultaneously; aliases resolve and set up sequentially.
-// The server replaces this loan only after all parser owners have died.
+// Each retained alias has a separate StartupArtifactPayment before another
+// alias can reuse this workspace. The server replaces this loan only after
+// all parser owners have died.
 std::expected<std::uint64_t, std::string> StartupBootstrapBytes(
     std::uint64_t aliases, std::uint64_t configuration_bytes = 0);
+
+// Retained opened-artifact descriptors plus the spec/source admission bound,
+// from immutable opened metadata, without parsing the spec or copying owners.
+std::expected<std::uint64_t, std::string> StartupArtifactBytes(const artifact::Artifact& artifact);
+
+// A pending alias's metadata loan, distinct from the reusable parser workspace.
+// Admit and destruction run only on the stopped startup catalog owner. Declare
+// this payment before the payload it funds so that failure destroys that
+// payload first. The active setup may release it only while its parser loan
+// remains held; persistent source payments precede repayment of that loan.
+class StartupArtifactPayment {
+ public:
+  static std::expected<std::unique_ptr<StartupArtifactPayment>, std::string> Admit(
+      catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes, std::uint64_t cap,
+      std::uint64_t available);
+  ~StartupArtifactPayment();
+  StartupArtifactPayment(const StartupArtifactPayment&) = delete;
+  StartupArtifactPayment& operator=(const StartupArtifactPayment&) = delete;
+  std::uint64_t bytes() const { return bytes_; }
+
+ private:
+  StartupArtifactPayment(catalog::Catalog& catalog, catalog::ExtentId extent, std::uint64_t bytes)
+      : catalog_(&catalog), extent_(extent), bytes_(bytes) {}
+  catalog::Catalog* catalog_;
+  catalog::ExtentId extent_;
+  std::uint64_t bytes_;
+};
 
 // An ordinary startup's budget (no LLMP_DIAGNOSTIC_* ceiling), from the
 // node's real resources only (D-102): the parser loan the configured

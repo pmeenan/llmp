@@ -131,7 +131,8 @@ def configure_args(sdk: sdklib.Sdk, preset: str, fresh: bool, locked: bool) -> l
     return args + (["--fresh"] if fresh else [])
 
 
-def build(sdk: sdklib.Sdk, preset: str, fresh: bool, locked: bool = False) -> None:
+def build(sdk: sdklib.Sdk, preset: str, fresh: bool, locked: bool = False,
+          targets: list[str] | None = None) -> None:
     cmake = sdk.root / "bin" / "cmake"
     previous = configured_sdk(preset)
     if previous and os.path.normpath(previous) != os.path.normpath(sdk.root):
@@ -139,7 +140,10 @@ def build(sdk: sdklib.Sdk, preset: str, fresh: bool, locked: bool = False) -> No
         log(f"build/{preset} was configured with {previous}; configuring it afresh")
         fresh = True
     run([cmake, *configure_args(sdk, preset, fresh, locked)], sdk_env(sdk))
-    run([cmake, "--build", "--preset", preset], sdk_env(sdk))
+    build_cmd = [cmake, "--build", "--preset", preset]
+    if targets:
+        build_cmd += ["--target", *targets]
+    run(build_cmd, sdk_env(sdk))
 
 
 def ssh_control_path() -> str | None:
@@ -211,6 +215,8 @@ def main() -> int:
         sub.add_argument("presets", nargs="*", metavar="PRESET")
         sub.add_argument("--fresh", action="store_true", help="configure from an empty cache")
         sub.add_argument("--locked", action="store_true", help="the core profile from locked sources only")
+        sub.add_argument("--target", nargs="+", action="extend", metavar="TARGET",
+                         help="build only these targets instead of the full preset")
         if name == "test":
             where = sub.add_mutually_exclusive_group()
             where.add_argument("--host", help="run the cross build's tests on this host over SSH")
@@ -254,8 +260,9 @@ def main() -> int:
                 parser.error(f"{preset}'s tests run only on a Spark: add --host HOST")
 
     control = ssh_control_path() if remote else None
+    targets = getattr(args, "target", None)
     for preset in presets:
-        build(sdk, preset, args.fresh, args.locked)
+        build(sdk, preset, args.fresh, args.locked, targets)
         if args.command == "deploy":
             deploy(sdk, preset, args.host, control)
         elif args.command == "test":

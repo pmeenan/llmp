@@ -33,6 +33,7 @@
 #include "components/component.h"
 #include "components/defs.h"
 #include "components/moe.h"
+#include "components/rotation_reference.h"
 #include "components/state_encoding.h"
 #include "components/step.h"
 #include "families/gemma.h"
@@ -679,6 +680,151 @@ TEST(ComponentsTest, AttentionFragmentsMatchTheirReference) {
     Compare(*in, AttentionFormats(v.weights), both, AttentionSteps(32), kOutputTolerance,
             kF16StateTolerance);
   }
+}
+
+TEST(ComponentsTest, ProportionalRopeUsesFullHeadPairsAndFloorsTheActiveFraction) {
+  // Independent analytic checks: HF's proportional definition uses the full
+  // head denominator and halves, including when the active fraction is odd.
+  for (const std::uint32_t dims : {16U, 32U, 64U, 256U}) {
+    for (const double factor : {0.0, 0.3, 0.5, 0.75, 1.0}) {
+      SCOPED_TRACE(std::format("dims {} factor {}", dims, factor));
+      const auto active_pairs = static_cast<std::uint32_t>(std::floor(factor * dims / 2.0));
+      const ir::RopeParams params{.mode = ir::RopeMode::kNeox,
+                                  .dims = dims,
+                                  .base = 10000.0F,
+                                  .rotated_dims = 2 * active_pairs};
+      std::vector<float> input(2 * dims);
+      for (std::size_t i = 0; i < input.size(); ++i)
+        input[i] = static_cast<float>(static_cast<int>(i % 19) - 9) / 10.0F;
+      std::vector<double> want(input.begin(), input.end());
+      for (std::uint32_t h = 0; h < 2; ++h) {
+        for (std::uint32_t pair = 0; pair < active_pairs; ++pair) {
+          const std::size_t first = h * dims + pair;
+          const std::size_t second = first + dims / 2;
+          const double angle = 7.0 / std::pow(10000.0, 2.0 * pair / dims);
+          want[first] = input[first] * std::cos(angle) - input[second] * std::sin(angle);
+          want[second] = input[first] * std::sin(angle) + input[second] * std::cos(angle);
+        }
+      }
+      std::vector<double> rotated(input.begin(), input.end());
+      defs::RotateHeads(rotated, 2, dims, params, {7, 0, 0, 0});
+      ir::Builder builder;
+      const auto x = builder.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({dims, 2, 1})));
+      const auto positions = builder.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({1})));
+      const auto output = builder.Rope(x, positions, {}, params);
+      builder.Output(output);
+      auto graph = std::move(builder).Finish();
+      ASSERT_TRUE(graph);
+      auto exec = ref::Executor::Create(*graph);
+      ASSERT_TRUE(exec);
+      ASSERT_TRUE(exec->BindValues(x, input));
+      const std::array<std::int64_t, 1> pos{7};
+      ASSERT_TRUE(exec->BindInts(positions, pos));
+      ASSERT_TRUE(exec->Run());
+      const auto result = exec->Values(output);
+      ASSERT_TRUE(result);
+      for (std::size_t i = 0; i < want.size(); ++i) {
+        EXPECT_NEAR(rotated[i], want[i], 3e-6) << i;
+        EXPECT_NEAR((*result)[i], want[i], 3e-6) << i;
+      }
+    }
+  }
+  for (const double factor : {0.0, 0.3, 0.75, 1.0}) {
+    auto attention = Attention(0, 0.0, true, "neox", "pre");
+    attention.params.push_back(P("rope_partial_factor", R(factor)));
+    std::ranges::sort(attention.params, {}, &Param::name);
+    const auto instance = MakeInstance(attention, kFacts, Site::kLayer, 0, 1);
+    ASSERT_TRUE(instance);
+    const std::array<std::uint64_t, 2> cells{32, 32};
+    const auto built = BuildComponent(*instance, AttentionSteps(32)[0].shape,
+                                      AttentionFormats(Encoding::kF32), cells);
+    ASSERT_TRUE(built);
+    bool found = false;
+    for (const auto& node : built->step.graph.nodes()) {
+      if (node.key.op != ir::Op::kRope) continue;
+      const auto params = node.Params<ir::RopeParams>();
+      EXPECT_EQ(params.rotated_dims,
+                factor == 1.0
+                    ? UINT32_MAX
+                    : 2U * static_cast<std::uint32_t>(std::floor(factor * params.dims / 2)));
+      found = true;
+    }
+    EXPECT_TRUE(found);
+  }
+}
+
+TEST(ComponentsTest, Llama3SmoothFrequencyScaledRopeMatchesReferenceAndRegimes) {
+  auto r = Attention(0, 0.0, true, "neox", "pre");
+  for (Param& p : r.params) {
+    if (p.name == "rope_base") p.value = R(500000.0);
+    if (p.name == "rope_scale") p.value = R(1.0);
+  }
+  r.params.push_back(P("llama3_rope", ParamValue(true)));
+  r.params.push_back(P("rope_factor", R(8.0)));
+  r.params.push_back(P("yarn_context", I(8192)));
+  r.params.push_back(P("low_freq_factor", R(1.0)));
+  r.params.push_back(P("high_freq_factor", R(4.0)));
+  std::ranges::sort(r.params, {}, &Param::name);
+
+  auto in = MakeInstance(r, kFacts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in.has_value()) << in.error();
+  const std::array<std::uint64_t, 2> cells{32, 32};
+  Compare(*in, AttentionFormats(Encoding::kF32), cells, AttentionSteps(32), kOutputTolerance,
+          kF16StateTolerance);
+
+  auto built =
+      BuildComponent(*in, AttentionSteps(32)[0].shape, AttentionFormats(Encoding::kF32), cells);
+  ASSERT_TRUE(built.has_value()) << built.error();
+  bool found_rope = false;
+  ir::RopeParams rp{};
+  for (const ir::Node& n : built->step.graph.nodes()) {
+    if (n.key.op == ir::Op::kRope) {
+      rp = n.Params<ir::RopeParams>();
+      found_rope = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found_rope);
+  EXPECT_TRUE(rp.llama3);
+  EXPECT_FLOAT_EQ(rp.ext_factor, 0.0F);
+  EXPECT_FLOAT_EQ(rp.scale, 0.125F);
+  EXPECT_EQ(rp.original_context, 8192U);
+  EXPECT_FLOAT_EQ(rp.beta_fast, 4.0F);
+  EXPECT_FLOAT_EQ(rp.beta_slow, 1.0F);
+  EXPECT_FLOAT_EQ(rp.attn_factor, 1.0F);
+
+  // Verify the three wavelength regimes directly via RotateHeads at position 1:
+  // dims = 32, base = 500000, old_ctx = 8192, high_freq_wavelen = 2048, low_freq_wavelen = 8192.
+  // - Pair 0: base_theta = 1, wavelen = 2*pi < 2048 -> high-freq regime (unscaled, freq = 1).
+  // - Pair 8: base_theta = 500000^(16/32) = sqrt(500000) ~ 707.10678, wavelen ~ 4442.88 in
+  //   (2048, 8192) -> mid-freq smooth interpolation regime.
+  // - Pair 15: base_theta = 500000^(30/32) ~ 219527.2, wavelen > 8192 -> low-freq regime
+  //   (scaled by 1/8).
+  std::vector<double> head(32, 0.0);
+  head[0] = 1.0;
+  head[8] = 1.0;
+  head[15] = 1.0;
+  defs::RotateHeads(head, 1, 32, rp, {1, 0, 0, 0});
+  // Pair 0: angle = 1.0
+  EXPECT_NEAR(head[0], std::cos(1.0), 1e-6);
+  EXPECT_NEAR(head[16], std::sin(1.0), 1e-6);
+  // Pair 8: smoothly interpolated between freq * 0.125 and freq
+  const double freq8 = 1.0 / std::sqrt(500000.0);
+  const double wavelen8 = (2.0 * std::numbers::pi) / freq8;
+  const double smooth8 = ((8192.0 / wavelen8) - 1.0) / (4.0 - 1.0);
+  const double scaled8 = ((1.0 - smooth8) * freq8 * 0.125) + (smooth8 * freq8);
+  EXPECT_NEAR(head[8], std::cos(scaled8), 1e-6);
+  EXPECT_NEAR(head[24], std::sin(scaled8), 1e-6);
+  // Pair 15: scaled by 0.125
+  const double freq15 = 1.0 / std::pow(500000.0, 30.0 / 32.0);
+  EXPECT_NEAR(head[15], std::cos(freq15 * 0.125), 1e-6);
+  EXPECT_NEAR(head[31], std::sin(freq15 * 0.125), 1e-6);
+
+  // Rejects simultaneous llama3_rope and yarn.
+  auto both_flags = r;
+  both_flags.params.push_back(P("yarn", ParamValue(true)));
+  std::ranges::sort(both_flags.params, {}, &Param::name);
+  EXPECT_FALSE(MakeInstance(both_flags, kFacts, Site::kLayer, 0, 1).has_value());
 }
 
 TEST(ComponentsTest, ZeroCenteredDenseNormsMatchTheirReferencesWithoutChangingSourceWeights) {

@@ -49,6 +49,7 @@
 #include "artifact/layout.h"
 #include "base/json.h"
 #include "base/sha256.h"
+#include "components/step.h"
 #include "expected_error.h"
 #include "format/encoding.h"
 #include "format/layout.h"
@@ -93,7 +94,9 @@ void ExpectWellFormed(const Checkpoint& c) {
     ASSERT_TRUE(parts.has_value()) << t.name;
     const auto part = parts->Find(t.part);
     ASSERT_TRUE(part.has_value()) << t.name;
-    EXPECT_EQ(part.value_or(format::PartExtent{}).bytes, t.extent.bytes) << t.name;
+    const auto source_bytes = SourcePartBytes(t);
+    ASSERT_TRUE(source_bytes) << t.name;
+    EXPECT_EQ(*source_bytes, t.extent.bytes) << t.name;
   }
 }
 
@@ -176,10 +179,14 @@ TEST(ImportGemmaMetadataTest, Official27BConfigsAndIndexNamesProduceTheDeclaredT
     ASSERT_TRUE(weights && weights->is_object());
     for (std::size_t i = 0; i < weights->size(); ++i) {
       const auto name = weights->key(i);
+      const std::string_view pfx = table->architecture->tensor_prefix;
+      const std::string_view unprefixed =
+          !pfx.empty() && name.starts_with(pfx) ? name.substr(pfx.size()) : std::string_view{};
       const auto alias = std::ranges::find_if(table->tensors, [&](const auto& candidate) {
-        return normalization_detail::Match(candidate.source, name,
-                                           static_cast<std::uint32_t>(layers))
-            .has_value();
+        const std::string_view target = pfx.empty() ? name : unprefixed;
+        return !target.empty() && normalization_detail::Match(candidate.source, target,
+                                                              static_cast<std::uint32_t>(layers))
+                                      .has_value();
       });
       std::vector<std::uint64_t> shape{1};
       if (alias == table->tensors.end()) {
@@ -1163,6 +1170,59 @@ TEST(ImportGgufModelsTest, NormalizesClosedQwen38TargetHeadersWithoutPayloadRead
   RecordProperty("normalization_metadata_bound", std::to_string(cost->metadata_bytes));
   RecordProperty("source_payload_bytes", std::to_string(cost->payload_bytes));
   RecordProperty("scope", "actual headers only; no payload hash, publication or execution");
+}
+
+// These cases exercise the one generic planner on the owner-approved proof
+// checkpoints. Payload publication is covered by the supervised CLI proofs.
+class ImportGenericModelsTest : public testing::TestWithParam<const char*> {};
+TEST_P(ImportGenericModelsTest, NativeHeadersProduceAValidStoredSpec) {
+  const auto directory = std::filesystem::path("/mnt/llm/checkpoints/hf") / GetParam();
+  if (!Exists(directory / "config.json")) GTEST_SKIP() << directory;
+  auto source = ReadCheckpoint(directory);
+  ASSERT_TRUE(source) << source.error().ToString();
+  auto plan = Normalize(std::move(*source), {4ULL << 30U, 1ULL << 48U});
+  ASSERT_TRUE(plan) << plan.error().ToString();
+  auto valid = components::ValidateSpec(plan->spec(), plan->canonical().tensors);
+  ASSERT_TRUE(valid) << valid.error();
+  const auto stored = spec::ToJson(plan->spec());
+  auto recovered = spec::FromJson(stored);
+  ASSERT_TRUE(recovered) << recovered.error();
+  EXPECT_EQ(*recovered, plan->spec());
+  ReportNormalized(GetParam(), *plan);
+}
+INSTANTIATE_TEST_SUITE_P(
+    ProofCheckpoints, ImportGenericModelsTest,
+    testing::Values(
+        "nvidia/Llama-3.3-70B-Instruct-NVFP4@f792b707002f2c613e0729c6b37bbcedc4efa94e",
+        "nvidia/Gemma-4-26B-A4B-NVFP4@a19cfe00be84568a6867111c9a68c9c44fdcffe6",
+        "TensorFold/Qwen3.8-27B-MLX-4bit@70ae7fac63274ff2eac54152031433374cb80f2f",
+        "Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6c14c6c9442ef83e8f05b5a3c39304f69",
+        "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa8066e3be900a0d148d0f5a2f4eb1cf6534"));
+
+TEST(ImportGenericModelsTest, NativeMathMetadataCannotDisappearIntoAuxiliaryNamespaces) {
+  const auto directory = std::filesystem::path("/mnt/llm/checkpoints/hf/TensorFold/") /
+                         "Qwen3.8-27B-MLX-4bit@70ae7fac63274ff2eac54152031433374cb80f2f";
+  if (!Exists(directory / "config.json")) GTEST_SKIP() << directory;
+  auto source = ReadCheckpoint(directory);
+  ASSERT_TRUE(source) << source.error().ToString();
+  auto ordinary_axes = *source;
+  for (auto& entry : ordinary_axes.metadata)
+    if (entry.key == "text_config.rope_parameters.mrope_interleaved") entry.value = false;
+  auto equivalent_text = Normalize(std::move(ordinary_axes), {4ULL << 30U, 1ULL << 48U});
+  ASSERT_TRUE(equivalent_text) << equivalent_text.error().ToString();
+  for (const auto& [key, value] : std::vector<MetaEntry>{
+           {"text_config.use_bidirectional_attention", true},
+           {"text_config.rope_parameters.rope_type", std::string("dynamic")},
+           {"text_config.rope_parameters.unrecognized_frequency_scale", 2.0},
+           {"text_config.indexer_kv_heads", std::int64_t{2}},
+           {"text_config.rope_parameters.mrope_interleaved", std::string("unknown")}}) {
+    auto changed = *source;
+    std::erase_if(changed.metadata, [&](const auto& entry) { return entry.key == key; });
+    changed.metadata.push_back({key, value});
+    std::ranges::sort(changed.metadata, {}, &MetaEntry::key);
+    auto plan = Normalize(std::move(changed), {4ULL << 30U, 1ULL << 48U});
+    EXPECT_FALSE(plan) << key;
+  }
 }
 
 }  // namespace

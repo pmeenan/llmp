@@ -33,8 +33,6 @@
 #include "families/qwen.h"
 #include "fixture_source.h"
 #include "format/tensor_format.h"
-#include "import/mlx_qwen38.h"
-#include "import/modelopt_qwen38.h"
 #include "spec/mapping.h"
 #include "spec/mappings/qwen38.h"
 
@@ -295,15 +293,156 @@ struct NativeModelOptFixture {
   std::vector<spec::SourceValue> values{};
 };
 
-// The native ModelOpt target as its importer publishes it
-// (import::ModelOptNativeTargetForm): relaid-out experts, folded norms and A.
+// The native ModelOpt target as its importer publishes it: relaid-out
+// experts, folded norms and A.
 inline NativeModelOptFixture NativeModelOpt() {
+  using format::Encoding;
+  using format::Layout;
+  using format::PartRole;
   NativeModelOptFixture result;
-  auto form = import::ModelOptNativeTargetForm();
-  EXPECT_TRUE(form.has_value());
-  if (!form) return result;
-  result.source = std::move(form->source);
-  result.values = std::move(form->values);
+  result.source.architecture = "qwen4exp";
+  result.source.container = "safetensors";
+  result.source.folds = ModelOptFolds();
+  auto& t = result.source.tensors;
+  const auto dense = [&](std::string name, Encoding enc, std::vector<std::uint64_t> ne) {
+    format::TensorFormat f{
+        .encoding = enc,
+        .layout = Layout::kDense,
+        .shape = {.ne = {1, 1, 1, 1}, .rank = static_cast<std::uint8_t>(ne.size())}};
+    for (std::size_t i = 0; i < ne.size(); ++i) f.shape.ne[i] = ne[i];
+    t.push_back({.name = std::move(name), .format = f, .part = PartRole::kData, .experts = false});
+  };
+  const auto mxfp8 = [&](const std::string& base, std::uint64_t k, std::uint64_t n) {
+    const format::TensorFormat f{.encoding = Encoding::kMxfp8,
+                                 .layout = Layout::kSplit,
+                                 .shape = {.ne = {k, n, 1, 1}, .rank = 2}};
+    t.push_back(
+        {.name = base + ".weight", .format = f, .part = PartRole::kCodes, .experts = false});
+    t.push_back({.name = base + ".weight_scale",
+                 .format = f,
+                 .part = PartRole::kBlockScales,
+                 .experts = false});
+  };
+  const auto nvfp4_exp = [&](const std::string& base, std::uint64_t k, std::uint64_t n,
+                             std::uint8_t stacked) {
+    const format::TensorFormat f{.encoding = Encoding::kNvfp4,
+                                 .layout = Layout::kScaleAtoms,
+                                 .shape = {.ne = {k, n, 512, 1}, .rank = 3},
+                                 .stacked = stacked};
+    t.push_back({.name = base + ".weight", .format = f, .part = PartRole::kCodes, .experts = true});
+    t.push_back({.name = base + ".weight_scale",
+                 .format = f,
+                 .part = PartRole::kBlockScales,
+                 .experts = true});
+  };
+  dense("output.weight", Encoding::kBF16, {2560, 248320});
+  dense("token_embd.weight", Encoding::kBF16, {2560, 248320});
+  dense("output_hc_norm.weight", Encoding::kF32, {10240});
+  dense("output_hc_down.weight", Encoding::kBF16, {10240, 320});
+  dense("output_hc_up.weight", Encoding::kBF16, {320, 10240});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    dense(std::format("blk.{}.hc_attn_inject.weight", l), Encoding::kBF16, {10240, 4});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    dense(std::format("blk.{}.hc_attn_norm.weight", l), Encoding::kF32, {10240});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    dense(std::format("blk.{}.hc_attn_down.weight", l), Encoding::kBF16, {10240, 320});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    dense(std::format("blk.{}.hc_attn_up.weight", l), Encoding::kBF16, {320, 10240});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 != 3) dense(std::format("blk.{}.ssm_a", l), Encoding::kF32, {48});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 != 3) dense(std::format("blk.{}.ssm_conv1d.weight", l), Encoding::kBF16, {4, 10240});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 != 3) dense(std::format("blk.{}.ssm_dt.bias", l), Encoding::kBF16, {48});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 != 3) mxfp8(std::format("blk.{}.ssm_alpha", l), 2560, 48);
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 != 3) mxfp8(std::format("blk.{}.ssm_beta", l), 2560, 48);
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 != 3) mxfp8(std::format("blk.{}.attn_qkv", l), 2560, 10240);
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 != 3) mxfp8(std::format("blk.{}.attn_gate", l), 2560, 6144);
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 != 3) dense(std::format("blk.{}.ssm_norm.weight", l), Encoding::kBF16, {128});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 != 3) mxfp8(std::format("blk.{}.ssm_out", l), 6144, 2560);
+  for (std::uint32_t l = 0; l < 48; ++l)
+    nvfp4_exp(std::format("blk.{}.ffn_down_exps", l), 640, 2560, 1);
+  for (std::uint32_t l = 0; l < 48; ++l)
+    nvfp4_exp(std::format("blk.{}.ffn_gate_up_exps", l), 2560, 1280, 2);
+  for (std::uint32_t l = 0; l < 48; ++l)
+    dense(std::format("blk.{}.ffn_gate_inp.weight", l), Encoding::kBF16, {2560, 512});
+  for (std::uint32_t l = 0; l < 48; ++l) mxfp8(std::format("blk.{}.ffn_down_shexp", l), 640, 2560);
+  for (std::uint32_t l = 0; l < 48; ++l) mxfp8(std::format("blk.{}.ffn_gate_shexp", l), 2560, 640);
+  for (std::uint32_t l = 0; l < 48; ++l) mxfp8(std::format("blk.{}.ffn_up_shexp", l), 2560, 640);
+  for (std::uint32_t l = 0; l < 48; ++l)
+    dense(std::format("blk.{}.ffn_gate_inp_shexp.weight", l), Encoding::kBF16, {2560});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    dense(std::format("blk.{}.hc_ffn_inject.weight", l), Encoding::kBF16, {10240, 4});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    dense(std::format("blk.{}.hc_ffn_norm.weight", l), Encoding::kF32, {10240});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    dense(std::format("blk.{}.hc_ffn_down.weight", l), Encoding::kBF16, {10240, 320});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    dense(std::format("blk.{}.hc_ffn_up.weight", l), Encoding::kBF16, {320, 10240});
+  dense("blk.1.ple_conv1d.weight", Encoding::kBF16, {4, 10240});
+  dense("blk.1.ple_key.weight", Encoding::kBF16, {2560, 10240});
+  dense("blk.1.ple_norm_conv.weight", Encoding::kF32, {10240});
+  dense("blk.1.ple_norm_key.weight", Encoding::kF32, {10240});
+  dense("blk.1.ple_norm_query.weight", Encoding::kF32, {10240});
+  {
+    const format::TensorFormat ple_table{.encoding = Encoding::kNvfp4,
+                                         .params = {.tensor_scale = true},
+                                         .layout = Layout::kRowInterleaved,
+                                         .shape = {.ne = {160, kTableRows, 1, 1}, .rank = 2}};
+    t.push_back({.name = "per_layer_token_embd.weight",
+                 .format = ple_table,
+                 .part = PartRole::kData,
+                 .experts = false});
+    t.push_back({.name = "per_layer_token_embd.weight_scale_2",
+                 .format = ple_table,
+                 .part = PartRole::kTensorScale,
+                 .experts = false});
+  }
+  dense("blk.1.ple_value.weight", Encoding::kBF16, {2560, 2560});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 == 3) mxfp8(std::format("blk.{}.indexer.qk_proj", l), 2560, 640);
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 == 3) dense(std::format("blk.{}.indexer.k_norm.weight", l), Encoding::kF32, {128});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 == 3) dense(std::format("blk.{}.indexer.q_norm.weight", l), Encoding::kF32, {128});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 == 3) dense(std::format("blk.{}.attn_k_norm.weight", l), Encoding::kF32, {256});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 == 3) mxfp8(std::format("blk.{}.attn_k", l), 2560, 512);
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 == 3) mxfp8(std::format("blk.{}.attn_output", l), 6144, 2560);
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 == 3) dense(std::format("blk.{}.attn_q_norm.weight", l), Encoding::kF32, {256});
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 == 3) mxfp8(std::format("blk.{}.attn_q", l), 2560, 12288);
+  for (std::uint32_t l = 0; l < 48; ++l)
+    if (l % 4 == 3) mxfp8(std::format("blk.{}.attn_v", l), 2560, 512);
+  for (std::uint32_t l = 0; l < 48; ++l)
+    dense(std::format("blk.{}.ffn_down_exps.weight_scale_2", l), Encoding::kF32, {512});
+  for (std::uint32_t l = 0; l < 48; ++l) {
+    dense(std::format("blk.{}.ffn_gate_exps.weight_scale_2", l), Encoding::kF32, {512});
+    dense(std::format("blk.{}.ffn_up_exps.weight_scale_2", l), Encoding::kF32, {512});
+  }
+  const families::Qwen38PleHash hash{
+      .multipliers = {23703573157769, 20109073645365, 8052911324071},
+      .offsets = {0, 20000003, 40000026, 60000059, 80000106, 100000165, 120000228, 140000297,
+                  160000374, 180000455, 200000548, 220000655, 240000802, 260000955, 280001114,
+                  300001275},
+      .vocab = {20000003, 20000023, 20000033, 20000047, 20000059, 20000063, 20000069, 20000077,
+                20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161, 20000171}};
+  auto values = families::Qwen38ModelOptValues(families::Qwen38Flash(), hash,
+                                               families::Qwen38Experts::kCutlass);
+  EXPECT_TRUE(values.has_value());
+  if (values) {
+    result.values = std::move(*values);
+    result.values.push_back({"llmp.qwen4exp.expert_activation_scales", true});
+  }
   auto made = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), result.source, result.values);
   EXPECT_TRUE(made.has_value());
   if (made) result.model = std::move(*made);
@@ -409,8 +548,94 @@ struct NativeMlxFixture {
 };
 
 inline NativeMlxFixture NativeMlx() {
+  using format::AffineScale;
+  using format::Encoding;
+  using format::Layout;
+  using format::PartRole;
   NativeMlxFixture result;
-  result.source = import::ApprovedMlxTargetSource();
+  result.source.architecture = "qwen4exp";
+  result.source.container = "mlx";
+  result.source.folds = ModelOptFolds();
+  auto& t = result.source.tensors;
+  const auto dense = [&](std::string name, Encoding enc, std::vector<std::uint64_t> ne) {
+    format::TensorFormat f{
+        .encoding = enc,
+        .layout = Layout::kDense,
+        .shape = {.ne = {1, 1, 1, 1}, .rank = static_cast<std::uint8_t>(ne.size())}};
+    for (std::size_t i = 0; i < ne.size(); ++i) f.shape.ne[i] = ne[i];
+    t.push_back({.name = std::move(name), .format = f, .part = PartRole::kData, .experts = false});
+  };
+  const auto affine = [&](const std::string& base, std::uint8_t bits, std::uint32_t group,
+                          std::vector<std::uint64_t> ne) {
+    format::TensorFormat f{
+        .encoding = Encoding::kAffine,
+        .params = {.bits = bits, .group = group, .scale = AffineScale::kBF16},
+        .layout = Layout::kSplit,
+        .shape = {.ne = {1, 1, 1, 1}, .rank = static_cast<std::uint8_t>(ne.size())}};
+    for (std::size_t i = 0; i < ne.size(); ++i) f.shape.ne[i] = ne[i];
+    const bool experts = f.shape.rank == 3;
+    t.push_back(
+        {.name = base + ".weight", .format = f, .part = PartRole::kCodes, .experts = experts});
+    t.push_back({.name = base + ".weight_scale",
+                 .format = f,
+                 .part = PartRole::kBlockScales,
+                 .experts = experts});
+    t.push_back({.name = base + ".weight_bias",
+                 .format = f,
+                 .part = PartRole::kBiases,
+                 .experts = experts});
+  };
+  affine("token_embd", 4, 32, {2560, 248320});
+  dense("output_hc_norm.weight", Encoding::kF32, {10240});
+  affine("output_hc_down", 8, 64, {10240, 320});
+  affine("output_hc_up", 8, 64, {320, 10240});
+  affine("output", 6, 64, {2560, 248320});
+  affine("per_layer_token_embd", 4, 32, {160, kTableRows});
+  affine("blk.1.ple_key", 8, 64, {2560, 10240});
+  affine("blk.1.ple_value", 8, 64, {2560, 2560});
+  dense("blk.1.ple_norm_key.weight", Encoding::kF32, {10240});
+  dense("blk.1.ple_norm_query.weight", Encoding::kF32, {10240});
+  dense("blk.1.ple_norm_conv.weight", Encoding::kF32, {10240});
+  dense("blk.1.ple_conv1d.weight", Encoding::kBF16, {4, 10240});
+  for (std::uint32_t l = 0; l < 48; ++l) {
+    dense(std::format("blk.{}.hc_attn_norm.weight", l), Encoding::kF32, {10240});
+    affine(std::format("blk.{}.hc_attn_down", l), 8, 64, {10240, 320});
+    affine(std::format("blk.{}.hc_attn_up", l), 8, 64, {320, 10240});
+    affine(std::format("blk.{}.hc_attn_inject", l), 8, 64, {10240, 4});
+    dense(std::format("blk.{}.hc_ffn_norm.weight", l), Encoding::kF32, {10240});
+    affine(std::format("blk.{}.hc_ffn_down", l), 8, 64, {10240, 320});
+    affine(std::format("blk.{}.hc_ffn_up", l), 8, 64, {320, 10240});
+    affine(std::format("blk.{}.hc_ffn_inject", l), 8, 64, {10240, 4});
+    dense(std::format("blk.{}.ffn_gate_inp.weight", l), Encoding::kBF16, {2560, 512});
+    affine(std::format("blk.{}.ffn_gate_inp_shexp", l), 4, 32, {2560});
+    affine(std::format("blk.{}.ffn_gate_shexp", l), 4, 32, {2560, 640});
+    affine(std::format("blk.{}.ffn_up_shexp", l), 4, 32, {2560, 640});
+    affine(std::format("blk.{}.ffn_down_shexp", l), 4, 32, {640, 2560});
+    affine(std::format("blk.{}.ffn_gate_exps", l), 4, 32, {2560, 640, 512});
+    affine(std::format("blk.{}.ffn_up_exps", l), 4, 32, {2560, 640, 512});
+    affine(std::format("blk.{}.ffn_down_exps", l), 4, 32, {640, 2560, 512});
+    if (l % 4 != 3) {
+      affine(std::format("blk.{}.attn_qkv", l), 4, 32, {2560, 10240});
+      affine(std::format("blk.{}.attn_gate", l), 4, 32, {2560, 6144});
+      affine(std::format("blk.{}.ssm_beta", l), 4, 32, {2560, 48});
+      affine(std::format("blk.{}.ssm_alpha", l), 4, 32, {2560, 48});
+      dense(std::format("blk.{}.ssm_dt.bias", l), Encoding::kBF16, {48});
+      dense(std::format("blk.{}.ssm_a", l), Encoding::kF32, {48});
+      dense(std::format("blk.{}.ssm_conv1d.weight", l), Encoding::kBF16, {4, 10240});
+      dense(std::format("blk.{}.ssm_norm.weight", l), Encoding::kBF16, {128});
+      affine(std::format("blk.{}.ssm_out", l), 4, 32, {6144, 2560});
+    } else {
+      affine(std::format("blk.{}.attn_q", l), 4, 32, {2560, 12288});
+      affine(std::format("blk.{}.attn_k", l), 4, 32, {2560, 512});
+      affine(std::format("blk.{}.attn_v", l), 4, 32, {2560, 512});
+      affine(std::format("blk.{}.attn_output", l), 4, 32, {6144, 2560});
+      dense(std::format("blk.{}.attn_q_norm.weight", l), Encoding::kF32, {256});
+      dense(std::format("blk.{}.attn_k_norm.weight", l), Encoding::kF32, {256});
+      affine(std::format("blk.{}.indexer.qk_proj", l), 8, 64, {2560, 640});
+      dense(std::format("blk.{}.indexer.q_norm.weight", l), Encoding::kF32, {128});
+      dense(std::format("blk.{}.indexer.k_norm.weight", l), Encoding::kF32, {128});
+    }
+  }
   const families::Qwen38PleHash hash{
       .multipliers = {23703573157769, 20109073645365, 8052911324071},
       .offsets = {0, 20000003, 40000026, 60000059, 80000106, 100000165, 120000228, 140000297,

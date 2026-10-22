@@ -87,7 +87,7 @@ constexpr ParamSpec OptionalInt(std::string_view name, double most) {
 
 // The parameters both kinds take, in order; the dense kind adds its V's
 // form, the borrowed one the target layer it reads.
-constexpr std::size_t kCommon = 27;
+constexpr std::size_t kCommon = 31;
 constexpr std::array<ParamSpec, kCommon> kCommonParams{
     kNormZeroCentered,
     ParamSpec{.name = "placement", .type = ParamType::kName, .choices = kPlacements},
@@ -109,6 +109,12 @@ constexpr std::array<ParamSpec, kCommon> kCommonParams{
     ParamSpec{.name = "window", .type = ParamType::kInt, .least = 0, .most = 1 << 30},
     ParamSpec{.name = "rotation", .type = ParamType::kName, .choices = kRotations},
     ParamSpec{.name = "rope_dims", .type = ParamType::kInt, .least = 2, .most = 1024},
+    ParamSpec{.name = "rope_partial_factor",
+              .type = ParamType::kReal,
+              .required = false,
+              .least = 0.0,
+              .most = 1.0,
+              .fallback = 1.0},
     ParamSpec{.name = "rope_offset",
               .type = ParamType::kInt,
               .required = false,
@@ -143,6 +149,19 @@ constexpr std::array<ParamSpec, kCommon> kCommonParams{
               .least = 0.0,
               .most = 1e6,
               .fallback = 1.0},
+    Flag("llama3_rope"),
+    ParamSpec{.name = "low_freq_factor",
+              .type = ParamType::kReal,
+              .required = false,
+              .least = 0.0001,
+              .most = 1000.0,
+              .fallback = 1.0},
+    ParamSpec{.name = "high_freq_factor",
+              .type = ParamType::kReal,
+              .required = false,
+              .least = 0.0001,
+              .most = 1000.0,
+              .fallback = 4.0},
     Flag("qk_norm"),
     // Per-pair frequency factors divide the angles (role rope_freqs).
     Flag("rope_freqs"),
@@ -232,12 +251,12 @@ constexpr std::array kRoles{
 struct Dims {
   Encoding kv_encoding;
   std::uint64_t width, heads, kv_heads, kd, vd, rope_dims, rope_offset;
-  std::uint32_t window;
+  std::uint32_t window, rotated_dims;
   bool sandwich, bare, qk_norm, neox, freqs, kv_tie, v_norm, borrowed, stateless;
-  bool qkv_bias, scale_scores, explicit_scores, sinks, output_gate, yarn_enabled;
+  bool qkv_bias, scale_scores, explicit_scores, sinks, output_gate, yarn_enabled, llama3_rope;
   std::array<std::uint64_t, 3> rope_axes{};
   std::uint32_t target_layer;
-  float eps, scale, softcap, base, freq_scale;
+  float eps, scale, softcap, base, freq_scale, low_freq_factor, high_freq_factor;
   YarnParams yarn;
 };
 Dims DimsOf(const Instance& in) {
@@ -251,7 +270,8 @@ Dims DimsOf(const Instance& in) {
   const std::array<std::uint64_t, 3> rope_axes = (a0 == 0 && a1 == 0 && a2 == 0)
                                                      ? std::array<std::uint64_t, 3>{rope_dims, 0, 0}
                                                      : std::array<std::uint64_t, 3>{a0, a1, a2};
-  const bool yarn_enabled = p.Flag("yarn") || p.Real("rope_factor") > 1.0;
+  const bool llama3_rope = p.Flag("llama3_rope");
+  const bool yarn_enabled = !llama3_rope && (p.Flag("yarn") || p.Real("rope_factor") > 1.0);
   const float yarn_factor = p.Given("rope_factor") ? F32(p.Real("rope_factor"))
                                                    : (p.Flag("yarn") && p.Real("rope_scale") < 1.0
                                                           ? F32(1.0 / p.Real("rope_scale"))
@@ -272,6 +292,11 @@ Dims DimsOf(const Instance& in) {
           .rope_dims = rope_dims,
           .rope_offset = static_cast<std::uint64_t>(p.Int("rope_offset")),
           .window = static_cast<std::uint32_t>(p.Int("window")),
+          .rotated_dims = p.Real("rope_partial_factor") == 1.0
+                              ? UINT32_MAX
+                              : static_cast<std::uint32_t>(
+                                    2.0 * std::floor(p.Real("rope_partial_factor") *
+                                                     static_cast<double>(rope_dims) / 2.0)),
           .sandwich = p.Name("placement") == "sandwich",
           .bare = p.Name("placement") == "bare",
           .qk_norm = p.Flag("qk_norm"),
@@ -287,6 +312,7 @@ Dims DimsOf(const Instance& in) {
           .sinks = p.Flag("sinks"),
           .output_gate = p.Flag("output_gate"),
           .yarn_enabled = yarn_enabled,
+          .llama3_rope = llama3_rope,
           .rope_axes = rope_axes,
           .target_layer = borrowed ? static_cast<std::uint32_t>(p.Int("target_layer")) : 0U,
           .eps = F32(p.Real("eps")),
@@ -294,7 +320,9 @@ Dims DimsOf(const Instance& in) {
           .softcap = F32(p.Real("softcap")),
           .base = F32(p.Real("rope_base")),
           .freq_scale = F32(p.Real("rope_scale")),
-          .yarn = {.factor = yarn_enabled ? yarn_factor : 1.0F,
+          .low_freq_factor = F32(p.Real("low_freq_factor")),
+          .high_freq_factor = F32(p.Real("high_freq_factor")),
+          .yarn = {.factor = (yarn_enabled || llama3_rope) ? yarn_factor : 1.0F,
                    .context = yarn_ctx,
                    .beta_fast = F32(p.Real("beta_fast")),
                    .beta_slow = F32(p.Real("beta_slow")),
@@ -331,6 +359,20 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   if (d.heads % d.kv_heads != 0) return std::unexpected("heads are not a multiple of kv_heads");
   if (d.rope_dims % 2 != 0 || d.rope_offset + d.rope_dims > d.kd) {
     return std::unexpected("rope_dims is odd or past key_dim");
+  }
+  if (d.rotated_dims != UINT32_MAX &&
+      (d.yarn_enabled || d.llama3_rope || d.rope_axes[1] != 0 || d.rope_axes[2] != 0)) {
+    return std::unexpected("proportional RoPE requires one-dimensional unscaled frequency pairs");
+  }
+  if (d.llama3_rope && in.params.Flag("yarn")) {
+    return std::unexpected("Llama 3 RoPE and YaRN cannot both be enabled");
+  }
+  if (d.llama3_rope && (d.rope_axes[1] != 0 || d.rope_axes[2] != 0 || !(d.yarn.factor > 1.0F) ||
+                        d.yarn.context == 0 || !(d.low_freq_factor > 0.0F) ||
+                        !(d.high_freq_factor > d.low_freq_factor))) {
+    return std::unexpected(
+        "Llama 3 RoPE requires 1D rotation, rope_factor > 1, a positive original context, and "
+        "0 < low_freq_factor < high_freq_factor");
   }
   if (d.yarn_enabled && (!(d.yarn.factor > 1.0F) || d.yarn.context == 0)) {
     return std::unexpected("YaRN requires rope_factor > 1 and a positive original context");
@@ -432,9 +474,24 @@ constexpr std::array kSplits{SplitOption{.kind = SplitKind::kHeads,
                                          .state = kHeadState}};
 
 ir::RopeParams Rotation(const Instance& in, const Dims& d) {
-  return MakeRopeParams(
+  if (d.llama3_rope) {
+    return {.mode = d.neox ? ir::RopeMode::kNeox : ir::RopeMode::kNormal,
+            .llama3 = true,
+            .dims = static_cast<std::uint32_t>(d.rope_dims),
+            .offset = static_cast<std::uint32_t>(d.rope_offset),
+            .original_context = d.yarn.context,
+            .base = d.base,
+            .scale = 1.0F / d.yarn.factor,
+            .ext_factor = 0.0F,
+            .attn_factor = 1.0F,
+            .beta_fast = d.high_freq_factor,
+            .beta_slow = d.low_freq_factor};
+  }
+  auto rotation = MakeRopeParams(
       d.neox ? ir::RopeMode::kNeox : ir::RopeMode::kNormal, static_cast<std::uint32_t>(d.rope_dims),
       static_cast<std::uint32_t>(d.rope_offset), in.stage.context, d.base, d.freq_scale, d.yarn);
+  rotation.rotated_dims = d.rotated_dims;
+  return rotation;
 }
 
 // The cell rule of a state tensor of this instance.

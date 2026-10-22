@@ -151,6 +151,8 @@ struct Converter {
   std::string version;
   std::string build{};
   Digest options_sha256{};
+  std::string mapping_architecture{};
+  std::uint32_t mapping_version = 0;
 };
 
 struct Resource {

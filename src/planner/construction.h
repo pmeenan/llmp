@@ -18,7 +18,10 @@ namespace llmp::planner {
 inline constexpr std::uint64_t kConstructionAppliedGrowth = sizeof(Applied) > 64
                                                                 ? sizeof(Applied) - 64
                                                                 : 0;
-inline constexpr std::uint64_t kConstructionGraphNodeBytes = 480 + kConstructionAppliedGrowth;
+// Three node-capacity copies plus the reviewed 72-byte name/selection slot.
+// Parameter growth follows Node's actual layout, rather than its former size.
+inline constexpr std::uint64_t kConstructionGraphNodeBytes =
+    3 * sizeof(ir::Node) + 72 + kConstructionAppliedGrowth;
 // Recipient nodes are disjoint within each round. A compound GLU node has
 // two independently authenticated weight operands. Two rewrite rounds, with
 // at most three-capacity old/current growth overlap each, bound all retained

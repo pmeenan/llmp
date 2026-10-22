@@ -23,16 +23,17 @@
 #include "artifact/schema.h"
 #include "base/gguf.h"
 #include "base/json.h"
+#include "components/component.h"
 #include "components/step.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
 #include "import/indexed_parts.h"
 #include "import/route.h"
-#include "import/source_mapping.h"
 #include "import/stream.h"
 #include "platform/files.h"
 #include "platform/lock_file.h"
 #include "platform/sockets.h"
+#include "spec/mapping.h"
 #include "spec/stored.h"
 
 namespace llmp::import {
@@ -96,6 +97,7 @@ void SweepOrphanedStagingJobs(const fs::path& staging) {
 std::expected<FD, Error> Create(const fs::path& path) {
   FD file(::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0644));
   if (!file.valid()) return Bad("cannot create an artifact staging file");
+  if (::fchmod(file.get(), 0644) != 0) return Bad("cannot set artifact file permissions");
   return file;
 }
 std::expected<void, Error> Save(const fs::path& path, std::string_view text) {
@@ -153,6 +155,8 @@ struct PublicationView {
   // Each canonical tensor's group where the spec's bindings do not say
   // (ComponentPlan::groups); empty: by the spec.
   std::span<const ComponentGroup> groups{};
+  std::string_view mapping_architecture{};
+  std::uint16_t mapping_version = 0;
   const Checkpoint& source() const { return checkpoint; }
   const spec::Source& canonical() const { return canonical_source; }
   const spec::ModelSpec& spec() const { return model_spec; }
@@ -466,7 +470,9 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
       const auto& side = stage.side[i];
       // On-demand side rows must not share an unbacked group with the ordinary
       // token embedding (or another table). Keep each side's ownership intact.
-      const bool rows = side.source.kind == "side.ngram" || side.source.kind == "side.hash";
+      const auto* def = components::Find(side.source.kind, side.source.version);
+      const bool rows =
+          def && std::ranges::any_of(def->roles, &components::WeightRole::rows_on_demand);
       bind(side.source, {rows ? 0U : 1U, rows ? static_cast<std::uint32_t>(i + 1) : 0U});
     }
     for (std::size_t i = 0; i < stage.layers.size(); ++i)
@@ -475,10 +481,18 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
     if (stage.heads.output) bind(*stage.heads.output, {3, 0});
     for (const auto& c : stage.heads.mtp) bind(c, {3, 0});
   }
-  if (const auto* source_mapping =
-          FindSourceMapping(plan.source().container, plan.source().architecture);
-      source_mapping && source_mapping->architecture) {
-    const auto& mapping = *source_mapping->architecture;
+  const spec::Mapping* mapping_ptr =
+      !plan.mapping_architecture.empty()
+          ? spec::FindMapping(plan.mapping_architecture, plan.source().container,
+                              plan.mapping_version ? plan.mapping_version : 1)
+          : nullptr;
+  if (!mapping_ptr && !plan.mapping_architecture.empty())
+    mapping_ptr = spec::FindMapping(plan.mapping_architecture);
+  if (!mapping_ptr)
+    mapping_ptr = spec::FindMapping(plan.source().architecture, plan.source().container);
+  if (!mapping_ptr) mapping_ptr = spec::FindMapping(plan.source().architecture);
+  if (mapping_ptr) {
+    const auto& mapping = *mapping_ptr;
     for (const auto& r : mapping.tensors) {
       if (!r.unbound) continue;
       GroupKey key{3, 0};
@@ -735,6 +749,7 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   if (fs::is_symlink(status)) return Bad("artifact staging must not be a symlink");
   error.clear();
   if (auto ok = CreateImportDirectory(staging, false); !ok) return std::unexpected(ok.error());
+  if (::chmod(staging.c_str(), 0700) != 0) return Bad("cannot protect staging directory");
   auto lock = platform::LockFile::Acquire(staging / "native-import.lock");
   if (!lock) return Bad("another import owns this store or its lock cannot be opened");
   SweepOrphanedStagingJobs(staging);
@@ -1017,13 +1032,11 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
                                {"shards", A(shards)}}) +
                             '\n';
   const bool is_drafter = IsDrafter(plan.spec());
-  if (!is_drafter) {
-    const auto spec = spec::ToJson(plan.spec());
-    if (spec.size() > artifact::kMaxSpecBytes)
-      return Bad("an artifact document exceeds its cap", Rule::kBounds);
-    if (auto ok = Save(job / "spec.json", spec); !ok) return std::unexpected(ok.error());
-    files.emplace("spec.json", FileJson("spec.json", "spec", spec.size(), Hex(spec)));
-  }
+  const auto spec = spec::ToJson(plan.spec());
+  if (spec.size() > artifact::kMaxSpecBytes)
+    return Bad("an artifact document exceeds its cap", Rule::kBounds);
+  if (auto ok = Save(job / "spec.json", spec); !ok) return std::unexpected(ok.error());
+  files.emplace("spec.json", FileJson("spec.json", "spec", spec.size(), Hex(spec)));
   if (index.size() > artifact::kMaxIndexBytes)
     return Bad("an artifact document exceeds its cap", Rule::kBounds);
   if (auto ok = Save(job / "index.json", index); !ok) return std::unexpected(ok.error());
@@ -1047,14 +1060,19 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
                                  {"tensors", A(names)}}));
   }
   std::ranges::sort(transformations);
+  std::map<std::string, std::string> importer{{"build", Q(options.build)},
+                                              {"name", Q("llmp-import")},
+                                              {"options_sha256", Q(Hex(options.options))},
+                                              {"version", Q("1")}};
+  if (!plan.mapping_architecture.empty() && plan.mapping_version != 0) {
+    importer.emplace("mapping_architecture", Q(plan.mapping_architecture));
+    importer.emplace("mapping_version", N(plan.mapping_version));
+  }
   const auto manifest = O({{"experimental", "true"},
                            {"files", A(file_list)},
                            {"format", Q("llmp-artifact")},
                            {"format_version", "1"},
-                           {"importer", O({{"build", Q(options.build)},
-                                           {"name", Q("llmp-import")},
-                                           {"options_sha256", Q(Hex(options.options))},
-                                           {"version", Q("1")}})},
+                           {"importer", O(std::move(importer))},
                            {"layout", O({{"byte_order", Q("little")},
                                          {"chunk_bytes", N(artifact::kChunkBytes)},
                                          {"container", Q("safetensors")},
@@ -1076,18 +1094,14 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   const std::string id = base::ToHex(artifact::schema::ManifestIdentity(identity->root()));
   auto opened = artifact::Artifact::Open(job, {.expected_id = id});
   if (!opened) return Bad("the produced artifact failed structural verification", Rule::kConfig);
-  if (!is_drafter) {
-    auto stored = spec::StoredSpec(*opened);
-    if (!stored || *stored != plan.spec())
-      return Bad("the produced artifact has an invalid embedded spec", Rule::kConfig);
-    auto stored_source = spec::SourceOf(*opened);
-    if (!stored_source || !components::ValidateSpec(*stored, stored_source->tensors,
-                                                    components::ValidationPurpose::kImport))
-      return Bad("the produced artifact does not bind its embedded spec", Rule::kConfig);
-  } else {
-    auto stored_source = spec::SourceOf(*opened);
-    if (!stored_source) return Bad("the produced artifact does not bind its source", Rule::kConfig);
-  }
+  auto stored = spec::StoredSpec(*opened);
+  if (!stored || *stored != plan.spec())
+    return Bad("the produced artifact has an invalid embedded spec", Rule::kConfig);
+  auto stored_source = spec::SourceOf(*opened);
+  if (!stored_source ||
+      (!is_drafter && !components::ValidateSpec(*stored, stored_source->tensors,
+                                                components::ValidationPurpose::kImport)))
+    return Bad("the produced artifact does not bind its embedded spec", Rule::kConfig);
   if (auto ok = Deep(job, *opened); !ok) return std::unexpected(ok.error());
   for (const auto& directory : {job / "data", job / "meta", job}) {
     if (::chmod(directory.c_str(), 0755) != 0)
@@ -1099,18 +1113,13 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
     auto previous = artifact::Artifact::Open(destination, {.expected_id = id});
     if (!previous) return Bad("the existing artifact is damaged");
     if (auto ok = Deep(destination, *previous); !ok) return Bad("the existing artifact is damaged");
-    if (!is_drafter) {
-      auto prev_stored = spec::StoredSpec(*previous);
-      if (!prev_stored || *prev_stored != plan.spec())
-        return Bad("the existing artifact is damaged");
-      auto prev_source = spec::SourceOf(*previous);
-      if (!prev_source || !components::ValidateSpec(*prev_stored, prev_source->tensors,
-                                                    components::ValidationPurpose::kImport))
-        return Bad("the existing artifact is damaged");
-    } else {
-      auto prev_source = spec::SourceOf(*previous);
-      if (!prev_source) return Bad("the existing artifact is damaged");
-    }
+    auto prev_stored = spec::StoredSpec(*previous);
+    if (!prev_stored || *prev_stored != plan.spec()) return Bad("the existing artifact is damaged");
+    auto prev_source = spec::SourceOf(*previous);
+    if (!prev_source ||
+        (!is_drafter && !components::ValidateSpec(*prev_stored, prev_source->tensors,
+                                                  components::ValidationPurpose::kImport)))
+      return Bad("the existing artifact is damaged");
     return WriteResult{id, destination, true};
   };
   const bool exists = fs::exists(destination, error);
@@ -1142,7 +1151,14 @@ std::expected<publication_detail::PlacementSummary, Error> publication_detail::I
                        .canonical_source = plan.canonical(),
                        .model_spec = plan.spec(),
                        .payload = plan.cost().payload_bytes,
-                       .copy = &plan},
+                       .copy = plan.is_indexed() ? nullptr : &plan,
+                       .parts = plan.is_indexed() ? &plan.parts() : nullptr,
+                       .bindings = plan.bindings(),
+                       .semantic = plan.semantic(),
+                       .planned_folds = plan.planned_folds(),
+                       .generated = plan.generated(),
+                       .mapping_architecture = plan.mapping_architecture(),
+                       .mapping_version = plan.architecture_version()},
                       metadata_bytes);
   if (!layout) return std::unexpected(layout.error());
   PlacementSummary out{.metadata_bytes = layout->metadata_bytes,
@@ -1165,11 +1181,20 @@ std::expected<publication_detail::PlacementSummary, Error> publication_detail::I
 
 std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
                                                 const WriteOptions& options) {
+  if (plan.has_options() && options.options != plan.options())
+    return Bad("drafter publication options differ from its plan's", Rule::kConfig);
   return Publish({.checkpoint = plan.source(),
                   .canonical_source = plan.canonical(),
                   .model_spec = plan.spec(),
                   .payload = plan.cost().payload_bytes,
-                  .copy = &plan},
+                  .copy = plan.is_indexed() ? nullptr : &plan,
+                  .parts = plan.is_indexed() ? &plan.parts() : nullptr,
+                  .bindings = plan.bindings(),
+                  .semantic = plan.semantic(),
+                  .planned_folds = plan.planned_folds(),
+                  .generated = plan.generated(),
+                  .mapping_architecture = plan.mapping_architecture(),
+                  .mapping_version = plan.architecture_version()},
                  options);
 }
 std::expected<WriteResult, Error> WriteArtifact(const ComponentPlan& plan,
@@ -1246,6 +1271,7 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
   if (fs::is_symlink(status)) return Bad("composition staging must not be a symlink");
   error.clear();
   if (auto ok = CreateImportDirectory(staging, false); !ok) return std::unexpected(ok.error());
+  if (::chmod(staging.c_str(), 0700) != 0) return Bad("cannot protect staging directory");
   auto lock = platform::LockFile::Acquire(staging / "native-import.lock");
   if (!lock) return Bad("another import owns this store or its lock cannot be opened");
   SweepOrphanedStagingJobs(staging);

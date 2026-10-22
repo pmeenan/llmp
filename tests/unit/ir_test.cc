@@ -36,9 +36,9 @@ namespace {
 using format::Encoding;
 using format::Layout;
 
-// The digest of DigestIsStableAcrossBuilds' graph.
+// The v2 digest of DigestIsStableAcrossBuilds' graph (68-byte node parameters).
 constexpr std::string_view kGoldenDigest =
-    "750dfb38849e3a682066a492272fd35ecbaef503f212a3d575e27a34b46d4ca7";
+    "815b7fc68dbd63410f7a84cdc032c56d8514838023983359d4794b3b02fa72e8";
 
 format::TensorFormat F32(std::initializer_list<std::uint64_t> ne) {
   return Dense(Encoding::kF32, ShapeOf(ne));
@@ -255,6 +255,51 @@ TEST(IrTest, ViewsOfBlockLayoutsAreRowsOfWholeBlocks) {
   // Past the root.
   b.View(w, ShapeOf({64, 6}), {nb[0], nb[1], nb[2], nb[2]}, 4 * nb[2]);
   EXPECT_EQ(ErrorOf(b), GraphError::kBounds);
+}
+
+TEST(IrTest, ProportionalRopeValidatesActiveDimensionsAndScalingModes) {
+  for (const std::uint32_t active : {0U, 2U, 8U, 3U, 10U}) {
+    Builder b;
+    const auto x = b.Input(F32({8, 2, 1}));
+    b.Rope(x, b.Input(I32({1})), {}, {.mode = RopeMode::kNeox, .dims = 8, .rotated_dims = active});
+    EXPECT_EQ(b.ok(), active <= 8 && active % 2 == 0) << active;
+  }
+  Builder b;
+  const auto x = b.Input(F32({8, 2, 1}));
+  b.Rope(x, b.Input(I32({1})), {},
+         {.mode = RopeMode::kNeox,
+          .dims = 8,
+          .original_context = 8192,
+          .ext_factor = 1.0F,
+          .rotated_dims = 4});
+  EXPECT_FALSE(b.ok());
+}
+
+TEST(IrTest, Llama3RopeRejectsAmbiguousScalingAndNonPositionModes) {
+  const RopeParams valid{.mode = RopeMode::kNeox,
+                         .llama3 = true,
+                         .dims = 8,
+                         .original_context = 8192,
+                         .scale = 0.125F,
+                         .beta_fast = 4.0F,
+                         .beta_slow = 1.0F};
+  for (unsigned mutation = 0; mutation < 7; ++mutation) {
+    Builder b;
+    auto p = valid;
+    if (mutation == 1) p.original_context = 0;
+    if (mutation == 2) p.scale = 1.0F;
+    if (mutation == 3) p.beta_slow = 0.0F;
+    if (mutation == 4) p.beta_fast = p.beta_slow;
+    if (mutation == 5) p.ext_factor = 1.0F;
+    if (mutation == 6) {
+      p.llama3 = false;
+      p.ext_factor = -1.0F;
+    }
+    const auto x = b.Input(F32({8, 2, 3}));
+    b.Rope(x, b.Input(I32({3})), {}, p);
+    EXPECT_EQ(b.ok(), mutation == 0) << mutation;
+    if (mutation != 0) EXPECT_EQ(ErrorOf(b), GraphError::kParams);
+  }
 }
 
 TEST(IrTest, RefusesWhatOpSetV1DoesNotDefine) {

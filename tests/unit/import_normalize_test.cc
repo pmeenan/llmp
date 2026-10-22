@@ -245,10 +245,12 @@ Checkpoint TinyGemmaHf(bool gemma3, bool conditional = false, std::uint32_t laye
   for (std::size_t i = 0; i < gguf->architecture->params.size(); ++i) {
     const auto& before = gguf->architecture->params[i];
     const auto& after = native->architecture->params[i];
-    if (before.key.empty() || after.key.empty() || after.key.ends_with("query_pre_attn_scalar"))
+    const std::string before_key = spec::CanonicalKey(*gguf->architecture, before.key);
+    const std::string after_key = spec::CanonicalKey(*native->architecture, after.key);
+    if (before.key.empty() || after.key.empty() || after_key.ends_with("query_pre_attn_scalar"))
       continue;
-    const auto found = std::ranges::find(values, before.key, &MetaEntry::key);
-    if (found != values.end()) Value(input, std::string(after.key), found->value);
+    const auto found = std::ranges::find(values, before_key, &MetaEntry::key);
+    if (found != values.end()) Value(input, after_key, found->value);
   }
   const std::string prefix = conditional ? "text_config." : "";
   Value(input, prefix + "query_pre_attn_scalar", gemma3 ? 168.0 : 144.0);
@@ -267,15 +269,16 @@ Checkpoint TinyGemmaHf(bool gemma3, bool conditional = false, std::uint32_t laye
     });
     base::Check(match != native->tensors.end(), "Gemma fixture tensor alias");
     const std::string digits(nd::Match(match->canonical, tensor.name, layers)->digits);
-    tensor.name = std::string(match->source);
+    tensor.name = std::string(native->architecture->tensor_prefix) + std::string(match->source);
     if (const auto at = tensor.name.find(spec::kLayerField); at != std::string::npos)
       tensor.name.replace(at, spec::kLayerField.size(), digits);
     std::ranges::reverse(tensor.dims);
+    tensor.dtype = "F32";
   }
   return input;
 }
 
-TEST(ImportNormalizeTest, GemmaNativeHfUsesExplicitQueryScalarAndUnfoldedNorms) {
+TEST(ImportNormalizeTest, GemmaNativeHfUsesExplicitQueryScalarAndFoldsNormsAtImport) {
   for (const auto [gemma3, conditional, layers] :
        {std::tuple{false, false, 46U}, std::tuple{true, false, 62U}, std::tuple{true, true, 62U}}) {
     SCOPED_TRACE(std::format("gemma3={} conditional={} layers={}", gemma3, conditional, layers));
@@ -284,24 +287,39 @@ TEST(ImportNormalizeTest, GemmaNativeHfUsesExplicitQueryScalarAndUnfoldedNorms) 
     auto normalized = Normalize(std::move(input), kFunded);
     ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
     const auto& stage = normalized->spec().stages.front();
-    EXPECT_TRUE(stage.folds.empty());
+    EXPECT_EQ(stage.folds, std::vector<std::string>{"norm.plus_one"});
     EXPECT_EQ(stage.layers.size(), layers);
     EXPECT_DOUBLE_EQ(std::get<double>(stage.layers.front().components.front().Find("scale")->value),
                      1.0 / std::sqrt(gemma3 ? 168.0 : 144.0));
     for (const auto& layer : stage.layers)
       for (const auto& component : layer.components)
-        EXPECT_EQ(component.Find("norm_zero_centered")->value, spec::ParamValue(true));
-    EXPECT_EQ(stage.heads.final_norm->Find("norm_zero_centered")->value, spec::ParamValue(true));
-    ASSERT_EQ(normalized->routes().size(), original.size());
-    for (std::size_t i = 0; i < original.size(); ++i) {
-      EXPECT_EQ(normalized->routes()[i].extent, original[i].extent);
-      EXPECT_EQ(normalized->canonical().tensors[i].format, original[i].format);
+        EXPECT_EQ(component.Find("norm_zero_centered"), nullptr);
+    EXPECT_EQ(stage.heads.final_norm->Find("norm_zero_centered"), nullptr);
+    ASSERT_TRUE(normalized->is_indexed());
+    ASSERT_EQ(normalized->parts().members().size(), original.size());
+    std::vector<bool> seen(original.size(), false);
+    for (const auto& member : normalized->parts().members()) {
+      ASSERT_LT(member.source, original.size());
+      EXPECT_FALSE(seen[member.source]);
+      seen[member.source] = true;
+      EXPECT_EQ(member.extent, original[member.source].extent);
+      ASSERT_LT(member.output, normalized->parts().outputs().size());
+      const auto& output = normalized->parts().outputs()[member.output];
+      if (output.name.contains("norm")) {
+        EXPECT_EQ(output.format.encoding, Encoding::kF32);
+        EXPECT_TRUE(std::ranges::any_of(normalized->planned_folds(), [&](const auto& fold) {
+          return fold.fold == "norm.plus_one" && std::ranges::contains(fold.outputs, member.output);
+        }));
+      } else {
+        EXPECT_EQ(output.format, original[member.source].format);
+      }
     }
   }
 }
 
 TEST(ImportNormalizeTest, GemmaNativeHfReadsNestedConfigAndBf16Safetensors) {
   for (const bool gemma3 : {false, true}) {
+    SCOPED_TRACE(gemma3);
     auto source = TinyGemmaHf(gemma3, gemma3);
     std::vector<fixtures::Entry> tensors;
     for (const auto& tensor : source.tensors)
@@ -331,8 +349,10 @@ TEST(ImportNormalizeTest, GemmaNativeHfReadsNestedConfigAndBf16Safetensors) {
     ASSERT_TRUE(checkpoint) << test_support::Failed(checkpoint, &Error::ToString).value_or("");
     auto normalized = Normalize(std::move(*checkpoint), kFunded);
     ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
-    for (const auto& tensor : normalized->canonical().tensors)
-      EXPECT_EQ(tensor.format.encoding, Encoding::kBF16);
+    for (const auto& tensor : normalized->canonical().tensors) {
+      EXPECT_EQ(tensor.format.encoding,
+                tensor.name.contains("norm") ? Encoding::kF32 : Encoding::kBF16);
+    }
     EXPECT_EQ(normalized->spec().stages.front().layers.size(), 2);
   }
 }
@@ -398,6 +418,7 @@ TEST(ImportNormalizeTest, GemmaNativeTyingFlagCannotInventAnUntiedHead) {
     }
     Value(input, key, false);
     AddTensor(input, gemma3 ? "language_model.lm_head.weight" : "lm_head.weight", {8, 10});
+    input.tensors.back().dtype = "F32";
     std::ranges::reverse(input.tensors.back().dims);
     auto untied = Normalize(std::move(input), kFunded);
     ASSERT_TRUE(untied) << test_support::Failed(untied, &Error::ToString).value_or("");
@@ -414,7 +435,13 @@ TEST(ImportNormalizeTest, GemmaConditionalTextImportExplicitlyExcludesVisionComp
   Value(input, "vision_config.hidden_size", std::int64_t{2});
   auto normalized = Normalize(input, kFunded);
   ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
-  EXPECT_EQ(normalized->routes().size(), count);
+  ASSERT_TRUE(normalized->is_indexed());
+  EXPECT_EQ(normalized->parts().members().size(), count);
+  ASSERT_EQ(normalized->parts().dispositions().size(), count + 2);
+  for (std::size_t i = count; i < count + 2; ++i) {
+    EXPECT_EQ(normalized->parts().dispositions()[i].kind, SourceDispositionKind::kAuxiliary);
+    EXPECT_FALSE(std::ranges::contains(normalized->parts().members(), i, &IndexedMember::source));
+  }
   Value(input, "text_config.model_type", std::string("wrong"));
   EXPECT_FALSE(Normalize(std::move(input), kFunded));
 }
@@ -749,8 +776,9 @@ TEST(ImportNormalizeTest, FormatAndComponentChecksGoBeyondNameCoverage) {
   s.files[0].bytes = last.extent.offset + last.extent.bytes;
   ASSERT_TRUE(NormalizationBound(s));  // geometry/name coverage alone is insufficient
   const auto malformed = test_support::NormalizeWithFixtureTarget(std::move(s), kFunded);
-  EXPECT_EQ(test_support::Failed(malformed, &Error::reason),
-            "normalized tensors do not satisfy their components");
+  ASSERT_FALSE(malformed);
+  EXPECT_TRUE(
+      malformed.error().reason.starts_with("normalized tensors do not satisfy their components"));
   s = Tiny();
   Value(s, "gemma2.attention.head_count", std::int64_t{3});
   EXPECT_FALSE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
@@ -1170,6 +1198,20 @@ TEST(ImportNormalizeQwenTest, ProfilePreflightHonorsExistingSourceAliases) {
   EXPECT_EQ(plan->routes().size(), 1224U);
   EXPECT_EQ(plan->spec().stages[0].stream.width, 2560U);
   EXPECT_TRUE(components::ValidateSpec(plan->spec(), plan->canonical().tensors));
+}
+
+TEST(ImportNormalizeQwenTest, GgufLayerIntervalAgreesWithItsExplicitFlags) {
+  auto source = test_support::Qwen38GgufCheckpoint();
+  Value(source, "qwen4exp.full_attention_interval", std::int64_t{3});
+  std::vector<std::int64_t> flags(48);
+  for (std::size_t layer = 0; layer < flags.size(); ++layer)
+    flags[layer] = (layer + 1) % 3 == 0 ? 4 : 0;
+  Value(source, "qwen4exp.attention.compress_ratios", flags);
+  auto cost = NormalizationBound(source);
+  ASSERT_TRUE(cost) << cost.error().ToString();
+  flags.front() = 4;
+  Value(source, "qwen4exp.attention.compress_ratios", flags);
+  EXPECT_FALSE(NormalizationBound(source));
 }
 
 TEST(ImportNormalizeQwenTest, RejectsUnfundedConstructionAndInvalidStructure) {
@@ -1689,6 +1731,89 @@ TEST(ImportNormalizeSafetensorsTest, Qwen2SafetensorsMappingValidatesAndGgufSynt
   EXPECT_EQ(spec->stages[0].layers.size(), 1U);
 }
 
+TEST(ImportNormalizeSafetensorsTest, ConditionalMetadataAliasesUseTheDeclaredPrimary) {
+  auto source = ParseSafetensors(fixtures::Shard(fixtures::TinyQwen2HfEntries()),
+                                 fixtures::TinyQwen2HfConfig());
+  ASSERT_TRUE(source);
+  auto table = *FindSourceMapping("safetensors", "qwen2");
+  std::vector<spec::KeyAlias> aliases(table.keys.begin(), table.keys.end());
+  aliases.push_back({"legacy_rms_eps", "attention.layer_norm_rms_epsilon", "rms_norm_eps"});
+  table.keys = aliases;
+  std::vector<spec::AuxiliaryNamespace> auxiliary(table.auxiliary.begin(), table.auxiliary.end());
+  auxiliary.push_back({"legacy_rms_eps", "provenance when the primary mathematical scalar exists"});
+  table.auxiliary = auxiliary;
+  ASSERT_TRUE(ValidateSourceMapping(table));
+  Value(*source, "legacy_rms_eps", std::vector<std::int64_t>{7, 8});
+  auto preferred = nd::Build(*source, table, kFunded);
+  ASSERT_TRUE(preferred) << preferred.error().ToString();
+  EXPECT_DOUBLE_EQ(
+      std::get<double>(
+          preferred->spec().stages.front().layers.front().components.front().Find("eps")->value),
+      1e-6);
+  std::erase_if(source->metadata, [](const auto& entry) { return entry.key == "rms_norm_eps"; });
+  EXPECT_FALSE(nd::Build(*source, table, kFunded));
+  Value(*source, "legacy_rms_eps", 0.000002);
+  auto fallback = nd::Build(*source, table, kFunded);
+  ASSERT_TRUE(fallback) << fallback.error().ToString();
+  EXPECT_DOUBLE_EQ(
+      std::get<double>(
+          fallback->spec().stages.front().layers.front().components.front().Find("eps")->value),
+      2e-6);
+  aliases.back().unless_present = "legacy_rms_eps";
+  EXPECT_FALSE(ValidateSourceMapping(table));
+}
+
+TEST(ImportNormalizeSafetensorsTest, SharedScalarMayPrecedeItsIndexedRowShards) {
+  auto entries = fixtures::TinyQwen2HfEntries();
+  std::erase_if(entries,
+                [](const auto& entry) { return entry.name == "model.embed_tokens.weight"; });
+  for (auto& entry : entries) {
+    for (auto& dim : entry.shape)
+      if (dim == 4 || dim == 8 || dim == 16) dim *= 2;
+    if (entry.bytes) entry.bytes = *format::BlockBytes(Encoding::kF16);
+    for (auto dim : entry.shape) entry.bytes *= dim;
+  }
+  entries.insert(entries.begin(), fixtures::E("model.embed_tokens.weight_scale_2", "F32", {}));
+  for (const auto shard : {0, 1}) {
+    const auto prefix = std::format("model.embed_tokens.shard_{}.", shard);
+    entries.push_back(fixtures::E(prefix + "weight", "U8", {5, 8}));
+    entries.push_back(fixtures::E(prefix + "weight_scale", "F8_E4M3", {5, 1}));
+  }
+  auto config = fixtures::TinyQwen2HfConfig();
+  for (const auto& [from, to] : std::array<std::pair<std::string_view, std::string_view>, 3>{
+           {{"\"hidden_size\":8", "\"hidden_size\":16"},
+            {"\"intermediate_size\":16", "\"intermediate_size\":32"},
+            {"\"head_dim\":4", "\"head_dim\":8"}}})
+    config.replace(config.find(from), from.size(), to);
+  auto source = ParseSafetensors(fixtures::Shard(entries), config);
+  ASSERT_TRUE(source) << source.error().ToString();
+  std::erase_if(source->metadata, [](const auto& entry) { return entry.key == "vocab_size"; });
+  // ParseSafetensors is the raw in-memory parser; describe the reader's
+  // paired NVFP4 parts explicitly before exercising generic normalization.
+  for (auto& tensor : source->tensors) {
+    if (!tensor.name.starts_with("model.embed_tokens.")) continue;
+    tensor.format = {.encoding = Encoding::kNvfp4,
+                     .params = {.tensor_scale = true},
+                     .layout = format::Layout::kSplit,
+                     .shape = {.ne = {16, 5, 1, 1}, .rank = 2}};
+    tensor.part = tensor.name.ends_with(".weight_scale_2") ? format::PartRole::kTensorScale
+                  : tensor.name.ends_with(".weight_scale") ? format::PartRole::kBlockScales
+                                                           : format::PartRole::kCodes;
+  }
+  auto table = *FindSourceMapping("safetensors", "qwen2");
+  std::vector<spec::TensorAlias> aliases(table.tensors.begin(), table.tensors.end());
+  aliases.push_back({"model.embed_tokens.shard_{shard}.weight", "token_embd.weight"});
+  table.tensors = aliases;
+  auto plan = nd::Build(std::move(*source), table, kFunded);
+  ASSERT_TRUE(plan) << plan.error().ToString();
+  auto valid = components::ValidateSpec(plan->spec(), plan->canonical().tensors);
+  EXPECT_TRUE(valid) << valid.error();
+  const auto embedding = std::ranges::find(
+      plan->canonical().tensors, std::string("token_embd.weight"), &spec::SourceTensor::name);
+  ASSERT_NE(embedding, plan->canonical().tensors.end());
+  EXPECT_EQ(embedding->format.shape.ne[1], 10U);
+}
+
 TEST(ImportNormalizeSafetensorsTest, RealisticTransformersConfigNormalizesWithEitherDtypeSpelling) {
   const auto entries = fixtures::TinyQwen2HfEntries();
   for (const auto dtype : {"dtype", "torch_dtype"}) {
@@ -1703,7 +1828,14 @@ TEST(ImportNormalizeSafetensorsTest, RealisticTransformersConfigNormalizesWithEi
     ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
     EXPECT_EQ(plan->spec().stages[0].stream.width, 8U);
     EXPECT_EQ(plan->canonical().tensors.size(), 15U);
-    EXPECT_EQ(plan->routes().size(), 15U);
+    ASSERT_TRUE(plan->is_indexed());
+    EXPECT_EQ(plan->parts().members().size(), 15U);
+    std::set<std::uint32_t> sources;
+    for (const auto& member : plan->parts().members()) {
+      ASSERT_LT(member.source, plan->source().tensors.size());
+      EXPECT_TRUE(sources.insert(member.source).second);
+      EXPECT_EQ(member.extent, plan->source().tensors[member.source].extent);
+    }
     auto malformed = config;
     const auto null_at = malformed.find("\"rope_scaling\":null");
     ASSERT_NE(null_at, std::string::npos);
@@ -1872,6 +2004,102 @@ TEST(ImportNormalizeTest, OversizedMetadataListsAreRetainedForExplicitValidation
   const auto values = ValuesOf(source);
   ASSERT_EQ(values.size(), 1U);
   EXPECT_EQ(std::get<std::vector<std::int64_t>>(values.front().value).size(), spec::kMaxList + 1);
+}
+
+TEST(ImportNormalizeTest, LlamaMappingSynthesizesLlama3FrequencyScaledRope) {
+  auto source = SourceOf(test_support::Qwen2GgufCheckpoint());
+  source.architecture = "llama";
+  std::erase_if(source.tensors, [](const spec::SourceTensor& t) {
+    return t.name.ends_with(".attn_q.bias") || t.name.ends_with(".attn_k.bias") ||
+           t.name.ends_with(".attn_v.bias");
+  });
+  const std::vector<spec::SourceValue> values = {
+      {"llama.block_count", std::int64_t{24}},
+      {"llama.context_length", std::int64_t{131072}},
+      {"llama.embedding_length", std::int64_t{896}},
+      {"llama.attention.layer_norm_rms_epsilon", 1e-6},
+      {"llama.attention.head_count", std::int64_t{14}},
+      {"llama.attention.head_count_kv", std::int64_t{2}},
+      {"llama.attention.key_length", std::int64_t{64}},
+      {"llama.attention.value_length", std::int64_t{64}},
+      {"llama.rope.dimension_count", std::int64_t{64}},
+      {"llama.rope.freq_base", 500000.0},
+      {"llama.rope.scaling.type", std::string("llama3")},
+      {"llama.rope.scaling.factor", 32.0},
+      {"llama.rope.scaling.low_freq_factor", 1.0},
+      {"llama.rope.scaling.high_freq_factor", 4.0},
+      {"llama.rope.scaling.original_context_length", std::int64_t{8192}},
+      {"llama.feed_forward_length", std::int64_t{4864}},
+  };
+  auto spec = spec::Synthesize(spec::mappings::LlamaGgufMapping(), source, values);
+  ASSERT_TRUE(spec) << spec.error();
+  const auto& attn = spec->stages.front().layers.front().components.front();
+  ASSERT_NE(attn.Find("llama3_rope"), nullptr);
+  EXPECT_TRUE(std::get<bool>(attn.Find("llama3_rope")->value));
+  ASSERT_NE(attn.Find("rope_factor"), nullptr);
+  EXPECT_DOUBLE_EQ(std::get<double>(attn.Find("rope_factor")->value), 32.0);
+  ASSERT_NE(attn.Find("low_freq_factor"), nullptr);
+  EXPECT_DOUBLE_EQ(std::get<double>(attn.Find("low_freq_factor")->value), 1.0);
+  ASSERT_NE(attn.Find("high_freq_factor"), nullptr);
+  EXPECT_DOUBLE_EQ(std::get<double>(attn.Find("high_freq_factor")->value), 4.0);
+  ASSERT_NE(attn.Find("yarn_context"), nullptr);
+  EXPECT_EQ(std::get<std::int64_t>(attn.Find("yarn_context")->value), 8192);
+}
+
+TEST(ImportNormalizeTest, Gemma4NestedNativeMathFlagsFailClosed) {
+  auto native = TinyGemma4(true);
+  native.container = "safetensors";
+  for (auto& tensor : native.tensors) {
+    tensor.dtype = "F32";
+    std::ranges::reverse(tensor.dims);
+  }
+  std::erase_if(native.metadata,
+                [](const auto& entry) { return entry.key == "general.architecture"; });
+  Value(native, "model_type", std::string("gemma4"));
+  Value(native, "gemma4.layer_types",
+        std::vector<std::string>{"sliding_attention", "sliding_attention", "sliding_attention",
+                                 "sliding_attention", "sliding_attention", "full_attention"});
+  Value(native, "text_config.use_bidirectional_attention", std::string("vision"));
+  Value(native, "text_config.enable_moe_block", true);
+  Value(native, "text_config.rope_parameters.full_attention.rope_type",
+        std::string("proportional"));
+  Value(native, "text_config.rope_parameters.sliding_attention.rope_type", std::string("default"));
+  const auto valid = NormalizationBound(native);
+  ASSERT_TRUE(valid) << test_support::Failed(valid, &Error::ToString).value_or("");
+  for (const auto& [key, value] : std::array<std::pair<std::string_view, MetaValue>, 9>{
+           {{"text_config.use_bidirectional_attention", true},
+            {"text_config.use_bidirectional_attention", std::string("all")},
+            {"text_config.rope_parameters.full_attention.rope_type", std::string("linear")},
+            {"text_config.rope_parameters.full_attention.unknown_math", 1.0},
+            {"text_config.attention_bias", true},
+            {"text_config.hidden_activation", std::string("relu")},
+            {"text_config.use_double_wide_mlp", true},
+            {"text_config.enable_moe_block", false},
+            {"text_config.attention_k_eq_v", false}}}) {
+    SCOPED_TRACE(key);
+    auto changed = native;
+    Value(changed, std::string(key), value);
+    EXPECT_FALSE(NormalizationBound(changed));
+  }
+  Value(native, "text_config.use_bidirectional_attention", false);
+  EXPECT_TRUE(NormalizationBound(native));
+  auto dense = TinyGemma4(false);
+  dense.container = "safetensors";
+  for (auto& tensor : dense.tensors) {
+    tensor.dtype = "F32";
+    std::ranges::reverse(tensor.dims);
+  }
+  std::erase_if(dense.metadata,
+                [](const auto& entry) { return entry.key == "general.architecture"; });
+  Value(dense, "model_type", std::string("gemma4"));
+  Value(dense, "gemma4.layer_types",
+        std::vector<std::string>{"sliding_attention", "sliding_attention", "sliding_attention",
+                                 "sliding_attention", "sliding_attention", "full_attention"});
+  Value(dense, "text_config.enable_moe_block", false);
+  const auto dense_valid = NormalizationBound(dense);
+  ASSERT_TRUE(dense_valid) << test_support::Failed(dense_valid, &Error::ToString).value_or("");
+  Value(dense, "text_config.enable_moe_block", true);
+  EXPECT_FALSE(NormalizationBound(dense));
 }
 
 }  // namespace

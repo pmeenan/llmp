@@ -6,13 +6,13 @@
 //
 // Each entry is one qualified reference checkpoint: its identity (the source
 // files' receipts and the native tensor inventory's digest), the stored
-// spec it must carry (for a drafter, the spec it composes with its approved
+// spec the evidence covers (for a drafter, the spec it composes with its qualified
 // target), the execution envelope it was qualified for and how its
 // mapping's planning policy is selected there. When an artifact's source
-// receipts match an entry, admission verifies its inventory, transforms and
-// stored spec digest against the entry; unpinned artifacts of supported
-// architectures are admitted directly by stored spec and mapping validation
-// (D-119, runtime/component_admission.h).
+// receipts match an entry, the envelope and policy provide measured defaults.
+// LLM admission validates stored specs and formats independently; numerical
+// evidence is applied only to the native inventory and semantics it covers.
+// Image component admission retains its separate qualified pipeline contract.
 #ifndef LLMP_RUNTIME_APPROVALS_H_
 #define LLMP_RUNTIME_APPROVALS_H_
 

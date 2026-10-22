@@ -824,6 +824,80 @@ bool Aligned16(std::initializer_list<const void*> pointers) {
       pointers, [](const void* p) { return reinterpret_cast<std::uintptr_t>(p) % 16 == 0; });
 }
 
+__device__ float ExtToF32(float v) { return v; }
+__device__ float ExtToF32(half v) { return __half2float(v); }
+template <typename T>
+__device__ T ExtFromF32(float v);
+template <>
+__device__ float ExtFromF32<float>(float v) {
+  return v;
+}
+template <>
+__device__ half ExtFromF32<half>(float v) {
+  return __float2half(v);
+}
+
+template <typename T>
+__global__ void ScaledRopeExtKernel(const char* x_bytes, const std::int32_t* pos_data,
+                                    const float* freq_factors, char* dst_bytes, std::int64_t ne0,
+                                    std::int64_t ne1, std::int64_t ne2, std::size_t x_nb1,
+                                    std::size_t x_nb2, std::size_t x_nb3, std::size_t dst_nb1,
+                                    std::size_t dst_nb2, std::size_t dst_nb3, int n_dims,
+                                    int n_offs, int n_ctx_orig, float freq_base, float freq_scale,
+                                    float attn_factor, float beta_fast, float beta_slow, bool neox,
+                                    bool inverse, bool llama3, int rotated_dims) {
+  const std::int64_t flat = blockIdx.x;
+  const std::int64_t i1 = flat % ne1;
+  const std::int64_t rem = flat / ne1;
+  const std::int64_t i2 = rem % ne2;
+  const std::int64_t i3 = rem / ne2;
+  const auto* x_row = reinterpret_cast<const T*>(x_bytes + static_cast<std::size_t>(i1) * x_nb1 +
+                                                 static_cast<std::size_t>(i2) * x_nb2 +
+                                                 static_cast<std::size_t>(i3) * x_nb3);
+  auto* dst_row = reinterpret_cast<T*>(dst_bytes + static_cast<std::size_t>(i1) * dst_nb1 +
+                                       static_cast<std::size_t>(i2) * dst_nb2 +
+                                       static_cast<std::size_t>(i3) * dst_nb3);
+  const int pairs = n_dims / 2;
+  const int active_pairs = rotated_dims >= 0 ? rotated_dims / 2 : pairs;
+  for (int c = static_cast<int>(threadIdx.x); c < static_cast<int>(ne0);
+       c += static_cast<int>(blockDim.x)) {
+    const int relative = c - n_offs;
+    if (relative < 0 || relative >= n_dims ||
+        (neox ? relative % pairs : relative / 2) >= active_pairs) {
+      dst_row[c] = x_row[c];
+    }
+  }
+  const float pos = static_cast<float>(pos_data[i2]);
+  const float old_ctx = static_cast<float>(n_ctx_orig);
+  const float low_freq_wavelen = old_ctx / beta_slow;
+  const float high_freq_wavelen = old_ctx / beta_fast;
+  const float mscale = llama3 && attn_factor == 0.0f ? 1.0f : attn_factor;
+  for (int pr = static_cast<int>(threadIdx.x); pr < active_pairs;
+       pr += static_cast<int>(blockDim.x)) {
+    const int idx0 = neox ? (n_offs + pr) : (n_offs + 2 * pr);
+    const int idx1 = neox ? (idx0 + pairs) : (idx0 + 1);
+    const float base_theta =
+        powf(freq_base, (2.0f * static_cast<float>(pr)) / static_cast<float>(n_dims));
+    const float freq = 1.0f / base_theta;
+    const float wavelen = 6.28318530717958647692f / freq;
+    float scaled_freq = llama3 ? freq : freq * freq_scale;
+    if (llama3 && wavelen > low_freq_wavelen) {
+      scaled_freq = freq * freq_scale;
+    } else if (llama3 && wavelen > high_freq_wavelen && beta_fast > beta_slow) {
+      const float smooth = (old_ctx / wavelen - beta_slow) / (beta_fast - beta_slow);
+      scaled_freq = (1.0f - smooth) * freq * freq_scale + smooth * freq;
+    }
+    const float ff = freq_factors != nullptr ? freq_factors[pr] : 1.0f;
+    const float theta = (pos * scaled_freq) / ff;
+    const float c_val = cosf(theta) * mscale;
+    const float s_val = (inverse ? -sinf(theta) : sinf(theta)) * mscale;
+    const float x0 = ExtToF32(x_row[idx0]);
+    const float x1 = ExtToF32(x_row[idx1]);
+    dst_row[idx0] = ExtFromF32<T>(x0 * c_val - x1 * s_val);
+    dst_row[idx1] = ExtFromF32<T>(x0 * s_val + x1 * c_val);
+  }
+}
+
 }  // namespace
 
 std::expected<void, KernelFailure> MulMatHadamard(LaunchContext& launch, ggml_tensor* node) {
@@ -952,6 +1026,49 @@ std::expected<void, KernelFailure> SwiGluClamp(LaunchContext& launch, ggml_tenso
 
 std::expected<void, KernelFailure> RopeExt(LaunchContext& launch, ggml_tensor* node) {
   auto checked = CheckRopeExt(node);
+  if (!checked) return checked;
+  float ext_factor = 0.0f;
+  std::memcpy(&ext_factor, node->op_params + 7, sizeof(float));
+  const bool llama3 = ext_factor < 0.0f && node->op_params[4] > 0;
+  const bool single = node->op_params[2] == 0 || node->op_params[2] == GGML_ROPE_TYPE_NEOX;
+  if (llama3 || (single && node->op_params[11] != 0)) {
+    return launch.Run(base::Bytes(0), [node, llama3](ggml_backend_cuda_context& context) {
+      const ggml_tensor* x = node->src[0];
+      const auto* pos = static_cast<const std::int32_t*>(node->src[1]->data);
+      const auto* ff =
+          node->src[2] != nullptr ? static_cast<const float*>(node->src[2]->data) : nullptr;
+      const int n_dims = node->op_params[1];
+      const int mode = node->op_params[2];
+      const int n_offs = node->op_params[15];
+      const int n_ctx_orig = node->op_params[4];
+      const int rotated_dims = node->op_params[11] != 0 ? node->op_params[11] - 1 : -1;
+      float freq_base = 0.0f, freq_scale = 0.0f, attn_factor = 0.0f, beta_fast = 0.0f,
+            beta_slow = 0.0f;
+      std::memcpy(&freq_base, node->op_params + 5, sizeof(float));
+      std::memcpy(&freq_scale, node->op_params + 6, sizeof(float));
+      std::memcpy(&attn_factor, node->op_params + 8, sizeof(float));
+      std::memcpy(&beta_fast, node->op_params + 9, sizeof(float));
+      std::memcpy(&beta_slow, node->op_params + 10, sizeof(float));
+      const bool neox = (mode & GGML_ROPE_TYPE_NEOX) != 0;
+      const bool inverse = node->op == GGML_OP_ROPE_BACK;
+      const auto blocks = static_cast<unsigned>(x->ne[1] * x->ne[2] * x->ne[3]);
+      if (blocks == 0) return;
+      if (x->type == GGML_TYPE_F16) {
+        ScaledRopeExtKernel<half><<<blocks, 128, 0, context.stream()>>>(
+            static_cast<const char*>(x->data), pos, ff, static_cast<char*>(node->data), x->ne[0],
+            x->ne[1], x->ne[2], x->nb[1], x->nb[2], x->nb[3], node->nb[1], node->nb[2], node->nb[3],
+            n_dims, n_offs, n_ctx_orig, freq_base, freq_scale, attn_factor, beta_fast, beta_slow,
+            neox, inverse, llama3, rotated_dims);
+      } else {
+        ScaledRopeExtKernel<float><<<blocks, 128, 0, context.stream()>>>(
+            static_cast<const char*>(x->data), pos, ff, static_cast<char*>(node->data), x->ne[0],
+            x->ne[1], x->ne[2], x->nb[1], x->nb[2], x->nb[3], node->nb[1], node->nb[2], node->nb[3],
+            n_dims, n_offs, n_ctx_orig, freq_base, freq_scale, attn_factor, beta_fast, beta_slow,
+            neox, inverse, llama3, rotated_dims);
+      }
+      CUDA_CHECK(cudaGetLastError());
+    });
+  }
   return RunChecked(
       launch, node, checked,
       checked && node->op == GGML_OP_ROPE_BACK ? &ggml_cuda_op_rope_back : &ggml_cuda_op_rope);

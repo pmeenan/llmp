@@ -136,6 +136,34 @@ TEST(ImportRouteTest, PermutationsCoverEveryByteInEitherPartOrder) {
   }
 }
 
+TEST(ImportRouteTest, ScalarIdentityWidensExactBitsAcrossFragmentBoundaries) {
+  constexpr std::array<std::uint16_t, 8> bf16{0x0000, 0x8000, 0x0001, 0x3F80,
+                                              0xBF80, 0x7F80, 0x7F81, 0xFFFF};
+  constexpr std::array<std::uint16_t, 8> f16{0x0000, 0x8000, 0x0001, 0x3C00,
+                                             0xBC00, 0x7C00, 0x7C01, 0xFFFF};
+  constexpr std::array<std::uint32_t, 8> f16_f32{0x00000000, 0x80000000, 0x33800000, 0x3F800000,
+                                                 0xBF800000, 0x7F800000, 0x7F802000, 0xFFFFE000};
+  for (const auto encoding : {Encoding::kBF16, Encoding::kF16, Encoding::kF32}) {
+    std::vector<std::byte> source, expected;
+    for (std::size_t i = 0; i < bf16.size(); ++i) {
+      const auto bits = encoding == Encoding::kBF16 ? std::uint32_t{bf16[i]} << 16U : f16_f32[i];
+      for (unsigned byte = 0; byte < 4; ++byte)
+        expected.push_back(static_cast<std::byte>((bits >> (8U * byte)) & 0xFFU));
+      const auto input = encoding == Encoding::kBF16  ? bf16[i]
+                         : encoding == Encoding::kF16 ? f16[i]
+                                                      : bits;
+      for (unsigned byte = 0; byte < (encoding == Encoding::kF32 ? 4U : 2U); ++byte)
+        source.push_back(static_cast<std::byte>((input >> (8U * byte)) & 0xFFU));
+    }
+    auto plan = PartRoutePlan::Fold(ScalarFold::kIdentity, bf16.size(), encoding);
+    ASSERT_TRUE(plan);
+    EXPECT_FALSE(plan->Start());
+    std::array<std::byte, 64> workspace{};
+    for (const std::size_t chunk : {1U, 3U, 5U, 64U})
+      Check(*plan, source, expected, chunk, workspace);
+  }
+}
+
 TEST(ImportRouteTest, ScalarCarryMatchesHistoricalBytesWithPaidWorkspace) {
   constexpr std::array<std::uint16_t, 4> words{0x0000, 0x8000, 0x3F00, 0xBF80};
   constexpr std::array<std::uint32_t, 4> norm{0x3F800000, 0x3F800000, 0x3FC00000, 0x00000000};

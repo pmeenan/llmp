@@ -9,7 +9,8 @@
 // typed key/values. Where a quantization pairs several container tensors
 // into one logical tensor (a ModelOpt NVFP4 weight's codes, block scales
 // and tensor scale), each keeps its own extent and carries the pair's
-// format with its own part, as spec::SourceTensor does. Nothing is
+// format with its own part, as spec::SourceTensor does. `scalar_storage`
+// records a narrower physical scalar when canonical F32 is needed. Nothing is
 // relayed out or converted here: the bytes are the checkpoint's.
 //
 // SourceOf and ValuesOf give exactly what spec::Synthesize reads, so an
@@ -27,6 +28,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -109,7 +111,14 @@ struct Tensor {
   // innermost first, safetensors' outermost first).
   std::string_view dtype{};
   std::vector<std::uint64_t> dims{};
+  // A small scalar part may have a narrower physical source encoding than
+  // its canonical logical format. Only F16/BF16 tensor scales are accepted;
+  // import emits an authenticated, lossless conversion to canonical F32.
+  std::optional<format::Encoding> scalar_storage{};
 };
+// Physical source bytes, validating any scalar-storage override separately
+// from the canonical logical format. A missing result denotes invalid metadata.
+std::optional<std::uint64_t> SourcePartBytes(const Tensor& tensor);
 
 // A diffusers pipeline (container "diffusers"; readers/diffusers.h) is a
 // checkpoint of components, each a checkpoint of its own with its role

@@ -172,11 +172,25 @@ struct Read {
   bool operator==(const Read&) const = default;
 };
 
+struct SamplingDefaults {
+  std::optional<double> temperature{};
+  std::optional<double> top_p{};
+  std::optional<std::int64_t> top_k{};
+  std::optional<double> min_p{};
+
+  [[nodiscard]] bool empty() const noexcept {
+    return !temperature.has_value() && !top_p.has_value() && !top_k.has_value() &&
+           !min_p.has_value();
+  }
+  bool operator==(const SamplingDefaults&) const = default;
+};
+
 struct Stage {
   std::string name{};
   StageRole role = StageRole::kTarget;
   std::uint32_t artifact = 0;  // its artifact: an index into the bound artifacts (a composition's)
   std::uint32_t context = 0;   // the trained context, 0 where none applies
+  SamplingDefaults sampling{};
   std::optional<ComponentRef> embedding{};
   ResidualStream stream{};
   std::vector<SideInput> side{};  // sorted by name

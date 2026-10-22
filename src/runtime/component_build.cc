@@ -387,6 +387,7 @@ struct PreparedServing {
   LlmServingPolicy policy;
   base::Sha256Digest bound;
   std::uint32_t logit_width = 0, verify_rows = 0, branch_depth = 0;
+  std::optional<ja::Artifact> target_artifact{};
 };
 
 std::expected<EngineLlmParts, std::string> AssembleComponentParts(
@@ -499,6 +500,7 @@ std::expected<EngineLlmParts, std::string> AssembleComponentParts(
       .tools = recipe.chat_tools,
       .stops = std::vector<std::string>(recipe.chat_stops.begin(), recipe.chat_stops.end()),
       .default_thinking = recipe.default_thinking};
+  parts.target_artifact = std::move(built.target_artifact);
   parts.keep = std::move(built.hold);
   return parts;
 }
@@ -566,8 +568,17 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error("component serving needs positive context/chunk and a bounded owner count");
     if (settings.speculation.value && drafter_id.empty())
       return Error("component speculation needs an owned drafter artifact");
-    auto artifact = OpenInstalled(store, id);
-    if (!artifact) return Error(artifact.error());
+    auto prepared = std::exchange(options.prepared, nullptr);
+    std::optional<ja::Artifact> artifact;
+    std::optional<ComponentAdmission> pre_admitted;
+    if (prepared && prepared->target && prepared->target->id() == id) {
+      artifact = std::move(prepared->target);
+      pre_admitted = std::move(prepared->target_admission);
+    } else {
+      auto opened = OpenInstalled(store, id);
+      if (!opened) return Error(opened.error());
+      artifact.emplace(std::move(*opened));
+    }
 
     const spec::Mapping* mapping =
         spec::FindMapping(artifact->model().architecture, artifact->model().container);
@@ -581,8 +592,10 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // payment on retries.
     std::unique_ptr<StoredBindingPayment> stored_payment;
     {
-      if (auto admitted = CheckArtifactPrerequisites(*artifact); !admitted)
-        return Error(admitted.error());
+      if (!pre_admitted) {
+        if (auto admitted = CheckArtifactPrerequisites(*artifact); !admitted)
+          return Error(admitted.error());
+      }
       auto bytes = StoredBindingBytes(*artifact);
       if (!bytes) return Error(bytes.error());
       if (!stored_metadata) {
@@ -606,22 +619,30 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     std::optional<spec::PolicyRule> stored_policy;
     std::expected<spec::ModelSpec, std::string> synthesized;
     {
-      auto bindings = ReadStoredComponents(*artifact, std::move(hold->stored_payment));
+      std::optional<std::pair<spec::ModelSpec, spec::Source>> pre_read;
+      if (pre_admitted) {
+        pre_read.emplace(std::move(pre_admitted->model), std::move(pre_admitted->source));
+      }
+      auto bindings =
+          ReadStoredComponents(*artifact, std::move(hold->stored_payment), std::move(pre_read));
       if (!bindings) return Error(bindings.error());
       stored_bindings.emplace(std::move(*bindings));
       if (settings.context.value == 0 ||
           settings.context.value > stored_bindings->model.stages.front().context)
         return Error("resolved context exceeds the admitted stored spec");
       // Admitted once, as read; its policy from that admission.
-      if (auto admitted = CheckComponentAdmission(stored_bindings->model, stored_bindings->source,
-                                                  artifact->sources());
-          !admitted)
-        return Error(admitted.error());
+      if (!pre_admitted) {
+        if (auto admitted = CheckComponentAdmission(stored_bindings->model, stored_bindings->source,
+                                                    artifact->sources());
+            !admitted)
+          return Error(admitted.error());
+      }
       hold->numerical_semantics[0] = stored_bindings->model.Digest();
-      auto policy =
-          AdmittedPolicy(stored_bindings->model, stored_bindings->source,
-                         FindApproval(artifact->model().architecture, artifact->sources()),
-                         {.context = settings.context.value, .slots = settings.max_slots.value});
+      auto policy = AdmittedPolicy(
+          stored_bindings->model, stored_bindings->source,
+          pre_admitted ? pre_admitted->approval
+                       : FindApproval(artifact->model().architecture, artifact->sources()),
+          {.context = settings.context.value, .slots = settings.max_slots.value});
       if (!policy) return Error(policy.error());
       stored_policy = *policy;
       if (auto checked = CheckStoredHashTables(*artifact, stored_bindings->model); !checked)
@@ -638,13 +659,20 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     std::optional<ja::Artifact> drafter;
     const spec::Mapping* drafter_mapping = nullptr;
     if (speculate) {
-      auto opened = OpenInstalled(store, drafter_id);
-      if (!opened) return Error(opened.error());
-      drafter.emplace(std::move(*opened));
-      // Admitted once: its source as checked (its complete tensor
-      // inventory its approval's, where it has one).
-      auto drafter_admitted = ReadComponentDrafterAdmission(*drafter);
-      if (!drafter_admitted) return Error(drafter_admitted.error());
+      std::optional<ComponentDrafterAdmission> drafter_admitted;
+      if (prepared && prepared->drafter && prepared->drafter->id() == drafter_id) {
+        drafter = std::move(prepared->drafter);
+        drafter_admitted = std::move(prepared->drafter_admission);
+      } else {
+        auto opened = OpenInstalled(store, drafter_id);
+        if (!opened) return Error(opened.error());
+        drafter.emplace(std::move(*opened));
+      }
+      if (!drafter_admitted) {
+        auto admitted = ReadComponentDrafterAdmission(*drafter);
+        if (!admitted) return Error(admitted.error());
+        drafter_admitted.emplace(std::move(*admitted));
+      }
       // The drafter's mapping as composed (its drafting recipe's replay
       // form; a stored one's by its approval).
       drafter_mapping = ComposedDrafterMapping(*drafter);
@@ -652,62 +680,111 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         return Error(std::format("the drafter's architecture {} has no drafter mapping",
                                  drafter->model().architecture));
       }
-      auto dvalues = ComponentDrafterValues(*artifact, *drafter);
-      if (!dvalues) return Error(dvalues.error());
-      // The values its approval's composition was pinned with, before a
-      // setting narrows the draft vocabulary.
-      const std::vector<spec::SourceValue> approved_values = *dvalues;
-      // The draft vocabulary (the recipe's vocab_key value): the configured
-      // draft_vocab, bounded by the selected head's rows (its token map, the
-      // recipe's head_ids) or, without a selected head, by the target's
-      // vocabulary; the head's token IDs are read and checked.
-      if (const spec::DraftRecipe* draft = drafter_mapping->draft;
-          draft != nullptr && !draft->vocab_key.empty()) {
-        auto map = DraftHeadRows(*drafter, draft->head_ids, target_vocabulary);
-        if (!map) return Error(map.error());
-        auto width = ConfigureDraftVocabulary(
-            *dvalues, *draft, settings.draft_vocab.value, target_vocabulary,
-            *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt);
-        if (!width) return Error(width.error());
-        hold->draft_head_rows = *width;
-        if (*map) {
-          auto ids = ReadRecipeIntegers<std::int32_t>(*drafter, (*map)->resource, (*map)->rows);
-          if (!ids) return Error(ids.error());
-          // Strictly ascending target token IDs.
-          for (std::size_t i = 0; i < ids->size(); ++i)
-            if ((*ids)[i] < 0 || std::cmp_greater_equal((*ids)[i], target_vocabulary) ||
-                (i != 0 && (*ids)[i] <= (*ids)[i - 1]))
-              return Error("a selected draft head's token IDs are not strictly ascending");
-          ids->resize(*width);
-          hold->draft_head_ids = std::make_shared<const std::vector<std::int32_t>>(std::move(*ids));
-        }
-      }
-      hold->drafter_values = std::move(*dvalues);
-      spec::Source* dsource = &drafter_admitted->source;
       if (auto envelope = ComponentDrafterEnvelope(
               {.context = settings.context.value, .slots = settings.max_slots.value});
           !envelope)
         return Error(envelope.error());
-      auto composed = spec::ComposeDrafter(*synthesized, *mapping, *drafter_mapping, *dsource,
-                                           hold->drafter_values);
-      if (!composed) return Error(composed.error());
-      if (approved_values == hold->drafter_values) {
-        if (auto approved = CheckComposedAdmission(*composed, *artifact, *drafter); !approved)
-          return Error(approved.error());
-        hold->numerical_semantics[1] = composed->Digest();
-      } else {
-        auto pinned = spec::ComposeDrafter(*synthesized, *mapping, *drafter_mapping, *dsource,
-                                           approved_values);
+      spec::Source* dsource = &drafter_admitted->source;
+      if (drafter_admitted->model) {
+        if (drafter_mapping->draft != nullptr &&
+            drafter_mapping->draft->target_architecture != artifact->model().architecture)
+          return Error(std::format("drafter {} does not target architecture {}",
+                                   drafter->model().architecture, artifact->model().architecture));
+        if (const spec::DraftRecipe* draft = drafter_mapping->draft;
+            draft != nullptr && !draft->vocab_key.empty()) {
+          auto map = DraftHeadRows(*drafter, draft->head_ids, target_vocabulary);
+          if (!map) return Error(map.error());
+          const auto selected =
+              *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt;
+          const std::uint32_t available = selected.value_or(target_vocabulary);
+          const std::uint32_t requested = settings.draft_vocab.value;
+          const std::uint32_t width = requested == 0 ? available : std::min(requested, available);
+          if (width == 0 || available > target_vocabulary)
+            return Error("a draft head needs a positive row count within the target vocabulary");
+          hold->draft_head_rows = width;
+          if (*map) {
+            auto ids = ReadRecipeIntegers<std::int32_t>(*drafter, (*map)->resource, (*map)->rows);
+            if (!ids) return Error(ids.error());
+            for (std::size_t i = 0; i < ids->size(); ++i)
+              if ((*ids)[i] < 0 || std::cmp_greater_equal((*ids)[i], target_vocabulary) ||
+                  (i != 0 && (*ids)[i] <= (*ids)[i - 1]))
+                return Error("a selected draft head's token IDs are not strictly ascending");
+            ids->resize(width);
+            hold->draft_head_ids =
+                std::make_shared<const std::vector<std::int32_t>>(std::move(*ids));
+          }
+        }
+        auto pinned = spec::ComposeStoredDrafter(*synthesized, *drafter_admitted->model);
         if (!pinned) return Error(pinned.error());
-        if (auto approved = CheckComposedAdmission(*pinned, *artifact, *drafter); !approved)
+        if (auto approved = CheckComposedAdmission(*pinned, hold->sources.front(), *dsource);
+            !approved)
           return Error(approved.error());
         hold->numerical_semantics[1] = pinned->Digest();
+        if (hold->draft_head_rows != 0) {
+          auto composed = spec::ComposeStoredDrafter(*synthesized, *drafter_admitted->model,
+                                                     hold->draft_head_rows);
+          if (!composed) return Error(composed.error());
+          hold->spec = std::move(*composed);
+        } else {
+          hold->spec = std::move(*pinned);
+        }
+      } else {
+        auto dvalues = ComponentDrafterValues(*artifact, *drafter);
+        if (!dvalues) return Error(dvalues.error());
+        // The values its approval's composition was pinned with, before a
+        // setting narrows the draft vocabulary.
+        const std::vector<spec::SourceValue> approved_values = *dvalues;
+        // The draft vocabulary (the recipe's vocab_key value): the configured
+        // draft_vocab, bounded by the selected head's rows (its token map, the
+        // recipe's head_ids) or, without a selected head, by the target's
+        // vocabulary; the head's token IDs are read and checked.
+        if (const spec::DraftRecipe* draft = drafter_mapping->draft;
+            draft != nullptr && !draft->vocab_key.empty()) {
+          auto map = DraftHeadRows(*drafter, draft->head_ids, target_vocabulary);
+          if (!map) return Error(map.error());
+          auto width = ConfigureDraftVocabulary(
+              *dvalues, *draft, settings.draft_vocab.value, target_vocabulary,
+              *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt);
+          if (!width) return Error(width.error());
+          hold->draft_head_rows = *width;
+          if (*map) {
+            auto ids = ReadRecipeIntegers<std::int32_t>(*drafter, (*map)->resource, (*map)->rows);
+            if (!ids) return Error(ids.error());
+            // Strictly ascending target token IDs.
+            for (std::size_t i = 0; i < ids->size(); ++i)
+              if ((*ids)[i] < 0 || std::cmp_greater_equal((*ids)[i], target_vocabulary) ||
+                  (i != 0 && (*ids)[i] <= (*ids)[i - 1]))
+                return Error("a selected draft head's token IDs are not strictly ascending");
+            ids->resize(*width);
+            hold->draft_head_ids =
+                std::make_shared<const std::vector<std::int32_t>>(std::move(*ids));
+          }
+        }
+        hold->drafter_values = std::move(*dvalues);
+        auto composed = spec::ComposeDrafter(*synthesized, *mapping, *drafter_mapping, *dsource,
+                                             hold->drafter_values);
+        if (!composed) return Error(composed.error());
+        if (approved_values == hold->drafter_values) {
+          if (auto approved = CheckComposedAdmission(*composed, hold->sources.front(), *dsource);
+              !approved)
+            return Error(approved.error());
+          hold->numerical_semantics[1] = composed->Digest();
+        } else {
+          auto pinned = spec::ComposeDrafter(*synthesized, *mapping, *drafter_mapping, *dsource,
+                                             approved_values);
+          if (!pinned) return Error(pinned.error());
+          if (auto approved = CheckComposedAdmission(*pinned, hold->sources.front(), *dsource);
+              !approved)
+            return Error(approved.error());
+          hold->numerical_semantics[1] = pinned->Digest();
+        }
+        hold->spec = std::move(*composed);
       }
-      hold->spec = std::move(*composed);
       hold->sources.push_back(std::move(*dsource));
     } else {
       hold->spec = std::move(*synthesized);
     }
+    prepared.reset();
     if (settings.kv_cache_encoding.value != "f16") {
       if (settings.kv_cache_encoding.value != "q8_0") return Error("unsupported KV encoding");
       auto bytes = components::KvCacheEncodingBytes(hold->spec, format::Encoding::kQ8_0);
@@ -1004,7 +1081,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                    .bound = *bound,
                                    .logit_width = logit_width,
                                    .verify_rows = verify_rows,
-                                   .branch_depth = mtp ? depth : 0});
+                                   .branch_depth = mtp ? depth : 0,
+                                   .target_artifact = std::move(artifact)});
   };
 }
 

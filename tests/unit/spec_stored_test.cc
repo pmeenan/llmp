@@ -385,4 +385,64 @@ TEST(SpecStoredTest, ACompositionsSpecBindsItsComponents) {
   EXPECT_NE(nothing.error().find("names no tensor"), std::string::npos) << nothing.error();
 }
 
+TEST(SpecStoredTest, StandaloneDrafterStoredSpecAndComposeStoredDrafter) {
+  spec::ModelSpec target_spec = Target(0);
+  target_spec.stages[0].taps.clear();
+  target_spec.stages[0].sampling = {.temperature = 0.7, .top_p = 0.95, .top_k = 40, .min_p = 0.05};
+  spec::Canonicalize(target_spec);
+  ASSERT_TRUE(spec::Validate(target_spec).has_value()) << spec::Validate(target_spec).error();
+  const auto round_trip = spec::FromJson(spec::ToJson(target_spec));
+  ASSERT_TRUE(round_trip.has_value()) << round_trip.error();
+  EXPECT_EQ(*round_trip, target_spec);
+
+  spec::Stage stub_target{.name = "target", .role = spec::StageRole::kTarget, .artifact = 0};
+  stub_target.stream = {.streams = 1, .width = 64, .mixing = std::nullopt};
+  stub_target.layers.push_back(spec::Layer{.components = {}});
+  stub_target.taps = {
+      spec::FeatureTap{.name = "features", .layer = 0, .point = spec::TapPoint::kLayerOut}};
+
+  spec::Stage d{.name = "assistant", .role = spec::StageRole::kDrafter, .artifact = 1};
+  d.stream = {.streams = 1, .width = 32, .mixing = std::nullopt};
+  spec::ComponentRef vocab_map = C("linear", {W("weight", "blk.0.attn_norm.weight")});
+  vocab_map.params = {{.name = "rows", .value = std::int64_t{100}},
+                      {.name = "selected", .value = true}};
+  d.layers.push_back(spec::Layer{.components = {vocab_map}});
+  d.heads.output = C("head.linear", {W("weight", "output.weight")});
+  d.heads.output->params = {{.name = "rows", .value = std::int64_t{100}}};
+  d.reads = {spec::Read{.stage = "target", .kind = spec::ReadKind::kTap, .name = "features"}};
+  d.folds = {"norm.plus_one"};
+
+  spec::ModelSpec drafter_spec{.pipeline = spec::PipelineKind::kLlm, .stages = {stub_target, d}};
+  spec::Canonicalize(drafter_spec);
+  ASSERT_TRUE(spec::Validate(drafter_spec).has_value()) << spec::Validate(drafter_spec).error();
+
+  V1Plan dp = Plan(spec::ToJson(drafter_spec));
+  dp.architecture = "toy-assistant";
+  const artifact::Artifact drafter_artifact = Open(Publish(Scratch("drafter-stored"), Render(dp)));
+  const auto got_drafter = spec::StoredSpec(drafter_artifact);
+  ASSERT_TRUE(got_drafter.has_value()) << got_drafter.error();
+  EXPECT_EQ(*got_drafter, drafter_spec);
+
+  const auto composed = spec::ComposeStoredDrafter(target_spec, *got_drafter, 32U);
+  ASSERT_TRUE(composed.has_value()) << composed.error();
+  ASSERT_EQ(composed->stages.size(), 2U);
+  ASSERT_EQ(composed->stages[0].taps.size(), 1U);
+  EXPECT_EQ(composed->stages[0].taps[0].name, "features");
+  ASSERT_TRUE(composed->stages[1].heads.output.has_value());
+  const spec::Param* out_rows = composed->stages[1].heads.output->Find("rows");
+  ASSERT_NE(out_rows, nullptr);
+  EXPECT_EQ(std::get<std::int64_t>(out_rows->value), 32);
+  const spec::Param* layer_rows = composed->stages[1].layers[0].components[0].Find("rows");
+  ASSERT_NE(layer_rows, nullptr);
+  EXPECT_EQ(std::get<std::int64_t>(layer_rows->value), 32);
+
+  spec::ModelSpec bad_tap = *got_drafter;
+  bad_tap.stages[0].layers.resize(3);
+  bad_tap.stages[0].taps[0].layer = 2;
+  spec::Canonicalize(bad_tap);
+  const auto refused = spec::ComposeStoredDrafter(target_spec, bad_tap);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_NE(refused.error().find("exceeds target's"), std::string::npos) << refused.error();
+}
+
 }  // namespace
