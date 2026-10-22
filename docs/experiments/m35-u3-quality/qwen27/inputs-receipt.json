@@ -1,0 +1,22 @@
+{
+  "add_special_tokens": false,
+  "behavior_sha256": "2333d7d57a73e9d12b45c809083ec22367ffe84ed63b57df0f1400ab614341f6",
+  "corpus_sha256": "55381941fdb19f99a88c5170f25d7cbc3e091d7d839a8776ac491a593c978ceb",
+  "count": 9216,
+  "first_id": 6164,
+  "ids_sha256": "477546a2035ee466e127f307305d9158ee848650952d8cd8f8aaa7e7086ab2ef",
+  "metadata": {
+    "chat_template.jinja": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+    "config.json": "14b65a0ee06517060a6bbd979bb1a8ff54e7b304b1a1f01d54344b88b8285e85",
+    "generation_config.json": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+    "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+    "tokenizer_config.json": "792fa3f0cb88b111e54ef3134c873531008c4df471d108da17903426e308aa7b"
+  },
+  "source": {
+    "commit": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "files": 449,
+    "inventory_sha256": "8605fa47ae126abb91a79688ab72cb440032679b741ce3bcd7aeb75ae65a7cd3"
+  },
+  "vocab_size": 248320,
+  "weight_loads": 0
+}

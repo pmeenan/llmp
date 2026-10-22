@@ -1,0 +1,48 @@
+{
+  "format": "llmp-u3-qwen27-prereg/1",
+  "status": "frozen",
+  "source": "cb2ebf0540f42604e2759b2ddef497861e928248",
+  "image": "sha256:1010df9519efb5fb2ca8a09c1504e95829206e4fff8c8e8f3b671b4d71a6737a",
+  "checkpoint": "TensorFold/Qwen3.8-27B-MLX-4bit",
+  "revision": "70ae7fac63274ff2eac54152031433374cb80f2f",
+  "archive_manifest_sha256": "e64f621c146c3b14ad7023eab05a476acaa663f1d9ba97a57a7768986d4d6a66",
+  "ids_sha256": "477546a2035ee466e127f307305d9158ee848650952d8cd8f8aaa7e7086ab2ef",
+  "behavior_sha256": "2333d7d57a73e9d12b45c809083ec22367ffe84ed63b57df0f1400ab614341f6",
+  "vocab_size": 248320,
+  "native_artifact": "bbf67ee688746792a1fbb06552b59bc0132e74bc79ced2333302b431549d0fa5",
+  "native_runtime_sha256": "078a8da5a78242477891757b88675ed685b4ebe6d687db634c8c116cef1f3181",
+  "recipe": {
+    "context": 12288,
+    "prefill_rows": 512,
+    "head_rows": 16,
+    "source_prefill_fp8": false,
+    "source_kv": "bfloat16",
+    "native_kv": "float16",
+    "streams": 1,
+    "tp": 1,
+    "draft": false,
+    "behavior_max_tokens": 512,
+    "enable_thinking": false,
+    "max_rows": 16
+  },
+  "bounds": {
+    "cross_ppl_increase_pct": 1.0,
+    "own_abs_ppl_delta_pct": 0.1
+  },
+  "phases": {
+    "short": {
+      "input_ids": 1024,
+      "first_scored_position": 1,
+      "targets": 1023,
+      "document": 0
+    },
+    "depth": {
+      "input_ids": 9216,
+      "first_scored_position": 8192,
+      "targets": 1024,
+      "document": 1
+    }
+  },
+  "native_manifest_sha256": "0e0e325360f02b4a678eab55c4cb9847538a849695f5c1c92c9902369f56b1bd",
+  "native_spec_sha256": "3930c5bc8c74c5ddb2a3b043e1011c6dc15d82bb04e87e3e359d235dc8a3ec2a"
+}

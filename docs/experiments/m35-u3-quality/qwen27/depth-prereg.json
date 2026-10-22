@@ -1,0 +1,8 @@
+{
+  "format": "llmp-quality-prereg/1",
+  "name": "u3-qwen27-mlx-depth-cross-v1",
+  "bounds": {
+    "expected_targets": 1024,
+    "max_ppl_increase_pct": 1.0
+  }
+}
