@@ -1145,6 +1145,17 @@ source was copied, and package dependencies were identified but not license
 audited. See the [TileKernels source audit](tilekernels-audit.md) for the
 revision-pinned links, fetched-file hashes and upstream gate-semantics caveat.
 
+## XGrammar source-only audit
+
+The M3.5 audit pinned `mlc-ai/xgrammar` at
+`614ab01d2af3fdfdde73ae3e4171a7f36db45c23`, recorded the Apache-2.0 root
+license, the BSD-2-Clause terms in the vendored PicoJSON header and the
+Apache-2.0 DLPack submodule. The selected C++ core did not compile with
+`-fno-exceptions` because it contains `throw` and `try`/`catch` syntax. No
+code was adopted; optional Python, test and cpptrace dependency closures were
+not audited. See the [XGrammar source audit](xgrammar-audit.md) for the
+bounded Spark compile evidence and scope.
+
 ## Adoption gate and verification handoff
 
 Before selecting any of these units, record its exact upstream path/revision,

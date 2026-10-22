@@ -1222,13 +1222,15 @@ D-122).
       consuming layer. Host keys keep cross-chunk read-ahead in prefill.
       A row cache only if the measurement shows reuse, as a reclaimable
       catalog entry priced at its re-read cost.
-- [ ] **Dependency audits for adopted DeepInfer items** (owner,
+- [x] **Dependency audits for adopted DeepInfer items** (owner,
       2026-10-20), source and license only, no integration:
-      - **xgrammar** (structured output for M7's constrained output and
-        the tool-call trigger shape): pin a revision, confirm its license
-        and its dependencies' (D-017), and whether its C++ core builds with
-        `-fno-exceptions` (D-066) or needs an isolated unit; record the
-        result in the source lock's notes or licensing.md;
+      - [x] **xgrammar** (structured output for M7's constrained output and
+        the tool-call trigger shape): pinned its revision, audited the
+        selected C++ core license/dependency closure, and recorded that the
+        core fails to compile with `-fno-exceptions` in
+        [the source audit](xgrammar-audit.md); no code was integrated. Any
+        future use needs a reviewed D-066-compatible error boundary or
+        source adaptation;
       - [x] **TileKernels** (`deepseek-ai/TileKernels`, the Engram hash and
         gate kernels V4.1 needs): pinned its revision and license and recorded
         the sourced formulas in [the source audit](tilekernels-audit.md); no
