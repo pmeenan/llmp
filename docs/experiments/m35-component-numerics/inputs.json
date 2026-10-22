@@ -1,0 +1,93 @@
+{
+  "report": {
+    "spec": {
+      "prompt": "A blue glass vase beside a yellow book, viewed from above.",
+      "width": 512,
+      "height": 512,
+      "steps": 2,
+      "seed": 43,
+      "true_cfg_scale": 1.0,
+      "prefix_kv_cache": true
+    },
+    "torch": "2.14.0+cu130",
+    "cuda": "13.0",
+    "device": "NVIDIA GB10",
+    "drop_tokens": 14,
+    "input_ids": [
+      151644,
+      8948,
+      198,
+      1092,
+      30782,
+      408,
+      323,
+      23643,
+      279,
+      3897,
+      9934,
+      13,
+      151645,
+      198,
+      151644,
+      872,
+      198,
+      32,
+      6303,
+      8991,
+      92384,
+      29388,
+      264,
+      13753,
+      2311,
+      11,
+      19334,
+      504,
+      3403,
+      13,
+      151645,
+      198,
+      151644,
+      77091,
+      198
+    ],
+    "kept_rows": 21,
+    "mu": 0.5387096774193548,
+    "inputs_only": true,
+    "generator_sha256": "4703ce969c93d62a12f1cf8eb23a8be21be98413e83bc4c7b1398db5a0534d85"
+  },
+  "files": {
+    "input_ids": {
+      "file": "input_ids.i64",
+      "dtype": "i64",
+      "shape": [
+        35
+      ],
+      "sha256": "9fae64491633bc8e2b0faea2fb8bd4b21c9e3a43c65ab9c75027e94433b37601"
+    },
+    "latents_init": {
+      "file": "latents_init.bf16",
+      "dtype": "bf16",
+      "shape": [
+        1024,
+        64
+      ],
+      "sha256": "50e4e792cedad68a2286554af921cdf77ee8f1dcc0b90d95dc3343823e435cf0"
+    },
+    "timesteps": {
+      "file": "timesteps.f32",
+      "dtype": "f32",
+      "shape": [
+        2
+      ],
+      "sha256": "996016cf8c65bb8922153fd24474774e8b9d673ca2321c060ec7a047f1d448c8"
+    },
+    "sigmas": {
+      "file": "sigmas.f32",
+      "dtype": "f32",
+      "shape": [
+        3
+      ],
+      "sha256": "307ce7b347ebc60e192865768675902e75a5433119fe086124efc9097ecf2054"
+    }
+  }
+}

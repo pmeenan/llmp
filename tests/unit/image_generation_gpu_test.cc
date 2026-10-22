@@ -120,6 +120,87 @@ struct Lifetime {
   std::uint64_t tuning_credit = 0, attention_source_nodes = 0;
   std::array<en::StepTimes, 2> decoder_job_times{};
   fs::path output;
+  fs::path numerical_fixture;
+  std::string fixture_prompt, fixture_receipt;
+  std::uint32_t fixture_width = 0, fixture_height = 0, fixture_steps = 0, fixture_drop = 0;
+  std::vector<std::int64_t> fixture_ids;
+  std::vector<float> fixture_sigmas, fixture_timesteps;
+  std::array<std::array<double, 3>, 2> stage_seconds{};
+  std::size_t measured_run = 0;
+  std::uint32_t observed_stage = 0, observed_iteration = 0;
+  bool observing_stage = false;
+  std::chrono::steady_clock::time_point stage_started;
+  void EndStage() {
+    if (observing_stage)
+      stage_seconds[measured_run][observed_stage] +=
+          Seconds(std::chrono::steady_clock::now() - stage_started);
+    observing_stage = false;
+  }
+  Status ReadNumericalFixture() {
+    std::error_code ec;
+    const auto bytes = fs::file_size(numerical_fixture / "reference.json", ec);
+    if (ec || bytes > kMiB) return Error("numerical fixture receipt extent differs");
+    auto raw = ReadExact(numerical_fixture / "reference.json", bytes);
+    if (!raw) return Error(raw.error());
+    fixture_receipt = llmp::base::ToHex(llmp::base::Sha256{}.Update(*raw).Finish());
+    auto doc = llmp::base::json::Parse(*raw);
+    if (!doc) return Error(doc.error().ToString());
+    const auto report = doc->root().find("report"), files = doc->root().find("files");
+    if (!report || !files) return Error("numerical fixture receipt fields absent");
+    const auto spec = report->find("spec"), drop = report->find("drop_tokens");
+    if (!spec || !drop || !drop->int64() || *drop->int64() < 0 || *drop->int64() > 4096)
+      return Error("numerical fixture prompt drop absent");
+    fixture_drop = static_cast<std::uint32_t>(*drop->int64());
+    const auto prompt = spec->find("prompt"), width = spec->find("width"),
+               height = spec->find("height"), steps = spec->find("steps"),
+               guidance = spec->find("true_cfg_scale"), cache = spec->find("prefix_kv_cache");
+    if (!prompt || !prompt->is_string() || !width || !height || !steps || !width->int64() ||
+        !height->int64() || !steps->int64() || !guidance || guidance->float64() != 1.0 || !cache ||
+        cache->boolean() != true)
+      return Error("numerical fixture request fields differ");
+    // Bounds belong to this paid diagnostic, not production eligibility.
+    if (*width->int64() <= 0 || *width->int64() > 2048 || *height->int64() <= 0 ||
+        *height->int64() > 2048 || *width->int64() % 32 || *height->int64() % 32 ||
+        *steps->int64() <= 0 || *steps->int64() > 40 || prompt->string().size() > 4096)
+      return Error("numerical fixture exceeds its diagnostic envelope");
+    fixture_prompt = prompt->string();
+    fixture_width = static_cast<std::uint32_t>(*width->int64());
+    fixture_height = static_cast<std::uint32_t>(*height->int64());
+    fixture_steps = static_cast<std::uint32_t>(*steps->int64());
+    const auto read = [&](std::string_view name, std::string_view suffix,
+                          std::uint64_t count) -> std::expected<std::string, std::string> {
+      const auto entry = files->find(name);
+      if (!entry) return std::unexpected("numerical fixture input absent");
+      const auto hash = entry->find("sha256"), file = entry->find("file"),
+                 dtype = entry->find("dtype");
+      const std::string filename = std::format("{}.{}", name, suffix);
+      if (!hash || !file || !dtype || file->string() != filename || dtype->string() != suffix)
+        return std::unexpected("numerical fixture input identity absent");
+      auto data = ReadExact(numerical_fixture / filename, count);
+      if (!data || llmp::base::ToHex(llmp::base::Sha256{}.Update(*data).Finish()) != hash->string())
+        return std::unexpected("numerical fixture input hash differs");
+      return data;
+    };
+    const auto ids = files->find("input_ids");
+    const auto shape = ids ? ids->find("shape") : std::nullopt;
+    if (!shape || !shape->is_array() || shape->size() != 1 || !shape->at(0).int64() ||
+        *shape->at(0).int64() <= fixture_drop || *shape->at(0).int64() > 4096)
+      return Error("numerical fixture token shape differs");
+    auto tokens = read("input_ids", "i64", static_cast<std::uint64_t>(*shape->at(0).int64()) * 8);
+    auto sigmas = read("sigmas", "f32", (std::uint64_t{fixture_steps} + 1) * 4);
+    auto timesteps = read("timesteps", "f32", std::uint64_t{fixture_steps} * 4);
+    auto noise = read("latents_init", "bf16",
+                      std::uint64_t{fixture_width / 16} * (fixture_height / 16) * 64 * 2);
+    if (!tokens || !sigmas || !timesteps || !noise)
+      return Error("numerical fixture input verification failed");
+    fixture_ids.resize(tokens->size() / 8);
+    fixture_sigmas.resize(sigmas->size() / 4);
+    fixture_timesteps.resize(timesteps->size() / 4);
+    std::memcpy(fixture_ids.data(), tokens->data(), tokens->size());
+    std::memcpy(fixture_sigmas.data(), sigmas->data(), sigmas->size());
+    std::memcpy(fixture_timesteps.data(), timesteps->data(), timesteps->size());
+    return {};
+  }
   std::vector<std::byte> exported;
   double setup_seconds = 0;
   std::array<double, 2> first_seconds{}, finish_seconds{}, generation_seconds{};
@@ -135,6 +216,9 @@ struct Lifetime {
   std::array<std::string, 2> first{}, final{};
   Status Load(const fs::path& store, const fs::path& noise) {
     if (!allowance->Charge(kStartup)) return Error("image startup owner is unpaid");
+    if (!numerical_fixture.empty()) {
+      if (auto read = ReadNumericalFixture(); !read) return read;
+    }
     source = std::make_shared<rt::ImageGenerationSource>();
     // Retain the source-construction payment with the source owner. The whole
     // enclosing node/provider lifetime is retained separately on failed drain.
@@ -169,8 +253,9 @@ struct Lifetime {
     if (!spec) return Error(spec.error().ToString());
     auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(*spec));
     if (!tokenizer) return Error(tokenizer.error().ToString());
-    auto prompt =
-        llmp::chat::RenderQwenImagePrompt(rectangular_request ? kRectangularPrompt : kPrompt);
+    auto prompt = llmp::chat::RenderQwenImagePrompt(
+        !numerical_fixture.empty() ? std::string_view(fixture_prompt)
+                                   : (rectangular_request ? kRectangularPrompt : kPrompt));
     if (!prompt) return Error(prompt.error().ToString());
     std::vector<std::size_t> prompt_positions;
     if (auto encoded =
@@ -180,11 +265,32 @@ struct Lifetime {
       return Error(encoded.error().ToString());
     if (prompt->drop_span >= prompt_positions.size()) return Error("image prefix span is absent");
     const auto drop = prompt_positions[prompt->drop_span];
-    if (!rectangular_request && (source->prompt.size() != 39 || drop != 14))
+    if (numerical_fixture.empty() && !rectangular_request &&
+        (source->prompt.size() != 39 || drop != 14))
       return Error("native source prompt geometry differs");
     source->drop = static_cast<std::uint32_t>(drop);
     prompt_rows = static_cast<std::uint32_t>(source->prompt.size());
     dropped_rows = source->drop;
+    if (!numerical_fixture.empty()) {
+      if (source->prompt.size() != fixture_ids.size() || drop != fixture_drop ||
+          !std::ranges::equal(source->prompt, fixture_ids))
+        return Error("native numerical fixture token IDs differ from diffusers");
+      source->width = fixture_width;
+      source->height = fixture_height;
+      auto schedule =
+          llmp::model::ImageSchedulerSigmas(FrozenFamily()->profile.scheduler, fixture_steps,
+                                            (fixture_width / 16) * (fixture_height / 16));
+      if (!schedule) return Error(schedule.error());
+      const auto same = [](const auto& native, const auto& reference) {
+        return native.size() == reference.size() &&
+               std::ranges::equal(native, reference, [](float a, float b) {
+                 return std::isfinite(a) && std::isfinite(b) &&
+                        std::abs(a - b) <= 1.e-6F * std::max(1.F, std::abs(b));
+               });
+      };
+      if (!same(schedule->sigmas, fixture_sigmas) || !same(schedule->timesteps, fixture_timesteps))
+        return Error("native numerical fixture schedule differs from diffusers");
+    }
     if (rectangular_request) {
       if (prompt_rows == 39 || prompt_rows <= dropped_rows)
         return Error("rectangular request must exercise a different native prompt length");
@@ -211,7 +317,10 @@ struct Lifetime {
           other_positions[other->drop_span] != source->drop || alternate_prompt == source->prompt)
         return Error("native replacement prompt must change content within the retained layout");
     }
-    auto initial = ReadExact(noise, 524288);
+    const auto noise_bytes = numerical_fixture.empty() ? 524288ULL
+                                                       : std::uint64_t{fixture_width / 16} *
+                                                             (fixture_height / 16) * 64 * 2;
+    auto initial = ReadExact(noise, noise_bytes);
     if (!initial) return Error(initial.error());
     source->noise.resize(initial->size() / sizeof(std::uint16_t));
     std::memcpy(source->noise.data(), initial->data(), initial->size());
@@ -225,7 +334,8 @@ struct Lifetime {
   }
   Status Export(std::string_view expected) {
     if (output.empty()) return {};
-    constexpr std::size_t pixels = 1024 * 1024;
+    const std::size_t pixels =
+        numerical_fixture.empty() ? 1024 * 1024 : std::size_t{fixture_width} * fixture_height;
     if (exported.size() != pixels * 16) return Error("completed export extent differs");
     std::vector<std::byte> rgba(pixels * 4);
     for (std::size_t c = 0; c < 4; ++c)
@@ -266,8 +376,10 @@ struct Lifetime {
     entry.name = "shared-image-generation";
     entry.artifact = std::string(kComposition);
     rt::ModelSettings settings;
-    settings.image_size.value = 1024;
-    settings.image_steps.value = rectangular_request || replace_requests ? 1 : 2;
+    settings.image_size.value = numerical_fixture.empty() ? 1024 : fixture_width;
+    settings.image_steps.value = !numerical_fixture.empty()
+                                     ? fixture_steps
+                                     : (rectangular_request || replace_requests ? 1 : 2);
     settings.name = entry.name;
     settings.architecture = "qwen_image_pipeline";
     if (tiled || masked_attention) {
@@ -398,9 +510,11 @@ struct Lifetime {
       };
     }
     if (!output.empty()) {
-      export_credit = 20 * kMiB;
+      const auto pixels = numerical_fixture.empty() ? 1024 * 1024ULL
+                                                    : std::uint64_t{fixture_width} * fixture_height;
+      export_credit = 20 * pixels;
       if (!allowance->Charge(export_credit)) return Error("quality export credit is unavailable");
-      exported.resize(16 * kMiB);
+      exported.resize(16 * pixels);
       build = [this, original = std::move(build)](const rt::ModelSettings& current)
           -> std::expected<rt::EngineImageParts, std::string> {
         auto parts = original(current);
@@ -433,6 +547,37 @@ struct Lifetime {
         // FirstOutput now completes both flow iterations; Finish is decoder
         // only.
         parts->request.first_output = 2;
+        return parts;
+      };
+    }
+    if (!numerical_fixture.empty()) {
+      build = [this, original = std::move(build)](const rt::ModelSettings& current)
+          -> std::expected<rt::EngineImageParts, std::string> {
+        auto parts = original(current);
+        if (!parts) return std::unexpected(parts.error());
+        // Move only the observation boundary: every stage already copies its
+        // output. FirstOutput completes all denoising; Finish is VAE only.
+        if (parts->request.sequence.size() != std::size_t{fixture_steps} + 2)
+          return std::unexpected(std::string("numerical fixture sequence differs"));
+        parts->request.first_output = fixture_steps;
+        auto fill = std::move(parts->request.fill);
+        parts->request.fill = [this, fill = std::move(fill)](const rt::ImageInvocation& invocation,
+                                                             std::size_t input,
+                                                             std::span<std::byte> bytes) -> Status {
+          if (invocation.stage >= 3) return Error("numerical fixture stage outside source");
+          // The VAE may read only device ports and never invoke fill. Its time
+          // is the completed Finish interval, not inferred from a callback.
+          if (invocation.stage == 2) return fill(invocation, input, bytes);
+          if (!observing_stage || observed_stage != invocation.stage ||
+              observed_iteration != invocation.iteration) {
+            EndStage();
+            stage_started = std::chrono::steady_clock::now();
+            observed_stage = invocation.stage;
+            observed_iteration = invocation.iteration;
+            observing_stage = true;
+          }
+          return fill(invocation, input, bytes);
+        };
         return parts;
       };
     }
@@ -489,6 +634,7 @@ struct Lifetime {
     // Repeated generation uses the same retained typed plans/captures and
     // restores the original latent port only after a completed prior Finish.
     for (std::size_t run = 0; run < first.size(); ++run) {
+      measured_run = run;
       const auto started = std::chrono::steady_clock::now();
       auto first_done = started;
       auto complete =
@@ -496,6 +642,7 @@ struct Lifetime {
             if (decoder_times) (void)node.TakeTimes(0);
             auto step = image->FirstOutput(first[run]);
             first_done = std::chrono::steady_clock::now();
+            if (!numerical_fixture.empty()) EndStage();
             if (!step) return step;
             if (decoder_times) (void)node.TakeTimes(0);
             auto output_done = image->Finish(final[run]);
@@ -503,9 +650,11 @@ struct Lifetime {
             return output_done;
           });
       const auto finished = std::chrono::steady_clock::now();
+      EndStage();
       if (!complete) return complete;
       first_seconds[run] = Seconds(first_done - started);
       finish_seconds[run] = Seconds(finished - first_done);
+      if (!numerical_fixture.empty()) stage_seconds[run][2] = finish_seconds[run];
       generation_seconds[run] = Seconds(finished - started);
       if (auto saved = Export(final[run]); !saved) return saved;
       if (first[run].size() != 64 || final[run].size() != 64)
@@ -814,6 +963,14 @@ TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
   ASSERT_NE(store, nullptr);
   ASSERT_NE(noise, nullptr);
   auto life = std::make_unique<Lifetime>();
+  if (const char* fixture = std::getenv("LLMP_IMAGE_NUMERICAL_FIXTURE")) {
+    life->numerical_fixture = fixture;
+    ASSERT_EQ(fs::path(noise).lexically_normal(),
+              (life->numerical_fixture / "latents_init.bf16").lexically_normal());
+    ASSERT_EQ(std::getenv("LLMP_IMAGE_SCREEN_TILED_CONV"), nullptr);
+    ASSERT_EQ(std::getenv("LLMP_IMAGE_SCREEN_MASKED_ATTENTION"), nullptr);
+    ASSERT_EQ(std::getenv("LLMP_IMAGE_SCREEN_DECODER_TIMES"), nullptr);
+  }
   if (const char* output = std::getenv("LLMP_IMAGE_SCREEN_OUTPUT")) {
     std::error_code error;
     ASSERT_TRUE(fs::is_directory(output, error));
@@ -839,7 +996,9 @@ TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
   RecordProperty("arm", arm);
   RecordProperty("mode", life->decoder_times ? "decoder_diagnostic"
                                              : (life->output.empty() ? "timing" : "quality"));
-  RecordProperty("first_output_invocation", life->decoder_times ? 2 : 1);
+  RecordProperty("first_output_invocation", !life->numerical_fixture.empty()
+                                                ? life->fixture_steps
+                                                : (life->decoder_times ? 2 : 1));
   if (life->decoder_times) {
     // Run checks both own-arm pins repeat; the invocation seals the current
     // candidate pin. A historical implementation's pixels are not a requirement.
@@ -864,6 +1023,18 @@ TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
                    std::to_string(life->tuning_facts->facts().tuned.size()));
     RecordProperty("attention_tuning_credit_bytes", std::to_string(life->tuning_credit));
     RecordProperty("attention_source_nodes", std::to_string(life->attention_source_nodes));
+  }
+  if (!life->numerical_fixture.empty()) {
+    RecordProperty("fixture_receipt_sha256", life->fixture_receipt);
+    RecordProperty("fixture_width", life->fixture_width);
+    RecordProperty("fixture_height", life->fixture_height);
+    RecordProperty("fixture_steps", life->fixture_steps);
+    RecordProperty("fixture_prompt_rows", life->prompt_rows);
+    RecordProperty("fixture_dropped_rows", life->dropped_rows);
+    for (std::size_t run = 0; run < 2; ++run)
+      for (std::size_t stage = 0; stage < 3; ++stage)
+        RecordProperty(std::format("stage_wall_{}_{}", run, stage),
+                       std::format("{:.9f}", life->stage_seconds[run][stage]));
   }
   RecordProperty("completed_generations", 2);
   RecordProperty("setup_seconds", std::format("{:.9f}", life->setup_seconds));
