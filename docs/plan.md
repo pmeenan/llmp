@@ -604,8 +604,11 @@ D-122).
       open. The [norm diagnosis](experiments/m35-u3-quality/QWEN27-NORM.md)
       and [GDN gate repair](experiments/m35-u3-quality/QWEN27-GATE.md) correct
       independent defects; the earlier unchanged 64-token chat screen still
-      ends by length with no final content. Gemma source qualification and
-      the earlier Llama Fibonacci control remain open.
+      ends by length with no final content. Gemma's registered
+      [exact-source diagnostic](experiments/m35-u3-quality/GEMMA26-NORM.md#exact-source-raw-id-diagnostic)
+      reproduces the same raw-token repetition under the disclosed KV precision
+      difference; general Gemma source qualification and the earlier Llama
+      Fibonacci control remain open.
       - **U3a One mapping per architecture:** `import::SourceMapping`
         merged into `spec::Mapping`; the semantic metadata namespace
         derived from the architecture, failing closed on any unconsumed

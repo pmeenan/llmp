@@ -158,8 +158,8 @@ retirement returned zero, and the runtime's before/after hashes matched.
 The process succeeded, but the raw-prompt behavior remains a negative cell.
 The norm defect and its byte-level repair are established independently;
 this small screen does not establish general quality, context coverage,
-batching or speed. The cause of raw-token repetition remains open pending
-an exact-source reference diagnostic. Adding BOS or replacing the prompt
+batching or speed. The exact-source diagnostic below subsequently reproduced
+the same repetition. Adding BOS or replacing the prompt
 would constitute a separate prospective control, not repair this cell.
 
 
@@ -185,4 +185,53 @@ quality conclusion follows. The [prospective transport amendment](gemma26/PROTOC
 adds the supported container-local callback serialization setting and a real
 CPU codec round-trip check. The first failure remains preserved, and review
 and an amendment commit precede a fresh launch. Native F16 KV still differs
-from source BF16 KV; no source raw behavior has been collected.
+from source BF16 KV. The completed second launch is recorded below.
+
+
+## Exact-source raw-ID diagnostic
+
+After independent review and transport registration `b970961d`, exclusive
+Spark A job `m35-u3-gemma26-source-raw-r2` completed the unchanged diagnostic.
+The official archive staging job had already verified all 12 files,
+18,825,679,760 bytes; its successful log SHA-256 is
+`9fb846ebf68691cd63465c999d0a2e4ca9dd64037b09c2998bae230370a52593`.
+The immutable image, source revision, original checkpoint, five literal IDs,
+no-BOS processing, stops and 64-token bound remained as registered.
+The authenticated reference helper SHA-256 was
+`847191af80ee1cead7979e06d825fc6460e1e73a408e6a415c48c9bc2c28d7ef`.
+
+The live worker inspection confirmed the built-in Gemma causal model,
+`ModelOptNvFp4Config` with NVFP4, all 30 expert blocks using
+`FLASHINFER_CUTLASS` with `use_a16=false`, and all 30 attention layers using
+Triton attention with BF16 KV. Unquantized dense projections are declared by
+this checkpoint. No W4A16 fallback was selected. The source's W1/W3 global
+scale warning remains in the log; this run changed neither scales nor kernels.
+
+| Arm | Exact input IDs | Output | Finish |
+| --- | --- | --- | --- |
+| Corrected native, F16 KV | `[818,5279,529,7001,563]` | ` is` repeated 64 times | Length |
+| Source reference, BF16 KV | `[818,5279,529,7001,563]` | 64 copies of `563` (` is`) | Length |
+
+All 64 reference selected-token log probabilities are finite; their cumulative
+value is -3.9212753417668864. No stop token was produced. The reference text
+matches the native observation; the native API receipt does not record output
+IDs. This is not a bitwise logit/log-probability
+comparison and the disclosed KV precisions differ. The result reproduces the
+symptom in the source engine, so this cell alone does not demonstrate a
+native-only defect. It does not explain why the source repeats, prove general
+native arithmetic or qualify source quality. The original negative native
+cell and first failed source launch remain recorded. Likelihood, completed
+behavior, batching, context and speed controls remain separate U3 work.
+
+The helper recorded collection complete, identical helper hashes before/after,
+container removal and a successful exact-name absence check. The supervisor
+returned zero; a separate post-job busy receipt showed no running/waiting jobs
+or GPU compute processes. Result SHA-256:
+`5069213d9e53c3fc0cd0429a17f29fb76b847121f9a12c7a12ec1ca160b1046f`;
+launch receipt SHA-256:
+`d75744966442bc84265891bafa8e511a3011f6aef930f5f798a5e3650bca4ea4`;
+container log SHA-256:
+`02e68503ae67c28a1df43965143d4a9f04d3e0b00eb3ea416e5f3fb8395573ef`.
+Raw evidence remains outside Git on Spark A under
+`~/.local/share/llmp/m35-u3-quality/gemma26-source-raw-r2` and on the
+workstation at `/tmp/llmp-m35-orchestration/gemma26-source-raw-r2`.

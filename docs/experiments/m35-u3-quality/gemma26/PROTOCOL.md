@@ -3,10 +3,12 @@
 
 # Gemma 4 26B NVFP4 exact raw-ID source diagnostic
 
-**No reference request has run.** The original registration `c696e743` was
-followed by successful model startup and a failed inspection RPC, before
-`generate`. The callback-transport amendment below requires independent review
-and its pre-registration commit before the second, separately recorded launch.
+**Diagnostic collected; no general quality qualification.** The original
+registration `c696e743` reached startup but failed inspection before `generate`.
+After reviewed transport amendment `b970961d`, the separately recorded second
+launch returned the same 64-token repetition as native on the unchanged raw IDs.
+See the [collected result](../GEMMA26-NORM.md#exact-source-raw-id-diagnostic).
+The registrations below retain their prospective execution requirements.
 This diagnostic asks whether the native five-token repetition also occurs in
 the source engine. It is not a likelihood, speed or general quality gate and
 cannot close U3. The [native norm report](../GEMMA26-NORM.md) preserves both
