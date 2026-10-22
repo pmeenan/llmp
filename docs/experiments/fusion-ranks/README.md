@@ -180,6 +180,65 @@ that the completed job leaves no GPU process. Review the first result before
 expanding the already listed matrix or installing any measured rank. No model
 speed, arithmetic qualification or full-U6 completion follows from this screen.
 
+## Prospective v12 capacity amendment for the last matrix case
+
+The reviewed v11 first screen and ten additional matrix cases produced eleven
+valid measurements. The twelfth case, width 4096 and 256 rows, refused its
+argument guard before backend setup and produced no timing. Preserve that
+refusal and every earlier attempt. No measured rank has been installed yet;
+the first eleven results are being audited separately.
+
+The v12 harness replaces its blanket factor-16 input estimate with overflow-safe
+per-input F32 bounds. Before lowering, each arm checks its actual production
+placement extent against the unchanged 32 MiB activation arena. Before binding
+or launching, it also checks the lowered activation and kernel-pool requirements
+against that arena and the unchanged 16 MiB pool. No kernel, implementation
+identity, input, arithmetic, sampling order, drift bound or decision band changes.
+The other 2,776 source-manifest entries are byte-identical to v11.
+
+Before timing, supervised shared jobs `u6-fusion-v12-build`,
+`u6-fusion-v12-validate` and `u6-fusion-v12-negative-controls` on spark-b passed.
+Full `--validate-only 4096 256` reported logical placement 8,404,992 bytes for
+both arms, actual lowered activation 8,404,992 bytes fused and 12,599,296 bytes
+primitive, and zero kernel-pool bytes. Output differences were zero, captured
+nodes 128/256 and replay equality true; completion followed teardown. No timing
+event or sample was created. Two oversized individual inputs refused before
+backend setup; a third case whose inputs fit separately refused its 67,125,248
+byte production placement before lowering. These retained controls validate
+resource refusal, not performance.
+
+| Frozen v12 execution identity | Value |
+| --- | --- |
+| Source base | `dfba7a78cd6f6a821148d3cc434ab182153ece7c` |
+| Explicit wave-J dependency patch SHA-256 | `2cfe12da558abb5c84fe2b3b4d1a0641c5edcebe739e3bd847545c093054e775` |
+| Full U6 v12 patch SHA-256 | `43373c288f15490f21e32325212f9a593775e2c09d1531324a718d3dbd94db8a` |
+| Narrow v11-to-v12 repair SHA-256 | `c67f5451dfbf786b2bda35f6379aa1f3db1cdcf80dca206c248ee751b99e5856` |
+| Complete 2,778-file source manifest SHA-256 | `acfb562360004d70ba11d80e09a0cde9dc594aee6925520587c7d89276456b98` |
+| Native benchmark SHA-256 | `ecb80b29f4df1271feaeba9ba0f950b61c5e6c6837207385370cabcca74b610b` |
+| Last-case launch helper SHA-256 | `38a2b379c9d9f99428f4c3b5b3e720120cb480b41e598699e38d9f98b54e570a` |
+| Host / GPU / SDK | `spark-b` / NVIDIA GB10 / `aarch64-2c4eb5b2f68f3fa5` |
+
+Run only after independent review and this amendment's commit. Stage the
+manifest at `/tmp/u6-v12-last-screen-source-manifest.json` and the helper at
+`/tmp/u6-last-screen-v12.py`. The helper differs from the reviewed v11 helper
+only in frozen identities, output directory and the exact last-case arguments.
+It authenticates every manifest entry before execution and the binary before
+and after retirement. The inherited remote dirty Git label is not build identity.
+
+```sh
+~/.local/bin/spark-job start --gpu --name m35-u6-matrix-4096x256-v12-r1 \
+  --timeout 600 --grace 30 -C /home/pmeenan/src/llmp -- \
+  /home/pmeenan/.local/bin/mise exec -- python3 -B /tmp/u6-last-screen-v12.py \
+  --prereg-commit COMMITTED_V12_REGISTRATION
+```
+
+The fresh output is
+`~/.local/share/llmp/m35-u6-fusion-ranks/matrix-4096x256-v12-r1`. Preserve its
+launch, flushed samples and diagnostics, including refusal or cleanup failure;
+check post-job absence of GPU processes. Existing v11 measurements are retained
+and are not rerun. This amendment authorizes only the remaining prospective
+matrix tuple; it establishes no model-speed or full-U6 conclusion.
+
 ## Data and source identity
 
 `execution/fusion_ranks.h` distinguishes unmeasured, stale, neutral, fused-win
