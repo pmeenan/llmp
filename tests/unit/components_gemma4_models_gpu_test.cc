@@ -7,7 +7,7 @@
 // (components/step.h BuildStep) and run by the reference executor (double
 // arithmetic over the decoded weights, F16 KV state), against the served
 // model on the GPU (the runtime's server over the shared engine,
-// runtime/engine_llm.h) for the same prompt and the tokens it picks:
+// runtime/serving.h) for the same prompt and the tokens it picks:
 //
 //   - 26B-A4B: a two-token prompt and one decode;
 //   - 31B: the two-token prompt.

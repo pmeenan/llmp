@@ -3,7 +3,7 @@
 
 // Dense decoder models (Llama 3.2 1B Instruct Q8_0 and Q4_K_M, Qwen2.5 0.5B
 // Instruct FP16 GGUF and EXL3 4.0 bpw) served through the runtime's server
-// over the shared component engine (runtime/engine_llm.h) under the default
+// over the shared component engine (runtime/serving.h) under the default
 // serving recipe (spec/mapping.h kDefaultServingRecipe):
 // - admission and default settings (prefill_chunk = 4,096);
 // - multi-row prompt scoring through BeginScoringPrompt and RunPromptWave,
@@ -38,7 +38,6 @@
 #include "base/sha256.h"
 #include "engine/live_state.h"
 #include "engine/paged_node.h"
-#include "runtime/engine_llm.h"
 #include "runtime/serving.h"
 #include "v1_frozen.h"
 
@@ -118,7 +117,7 @@ class DenseDecoderServingGpu : public ::testing::TestWithParam<std::size_t> {
   bool uncertain = false;
   const Profile& profile() const { return kProfiles.at(GetParam()); }
   rt::Llm::Branch& Branch(std::uint32_t id) { return **model->branch(id); }
-  rt::EngineLlm& Engine() { return dynamic_cast<rt::EngineLlm&>(*model); }
+  rt::Llm& Engine() { return dynamic_cast<rt::Llm&>(*model); }
 
   void SetUp() override {
     const auto id = llmp::test_support::V1IdNamed(profile().v1_name);
@@ -217,8 +216,8 @@ class DenseDecoderServingGpu : public ::testing::TestWithParam<std::size_t> {
         std::make_unique<rt::Server>(life->config, life->roles, life->options, life->log.get());
     if (auto started = life->server->Start(true); !started) return started;
     model = dynamic_cast<rt::Llm*>(life->server->Find("dense"));
-    if (model == nullptr || dynamic_cast<rt::EngineLlm*>(model) == nullptr)
-      return std::unexpected("published artifact did not use the common EngineLlm");
+    if (model == nullptr || dynamic_cast<rt::Llm*>(model) == nullptr)
+      return std::unexpected("published artifact did not use the common Llm");
     if (model->logit_width() != profile().vocab || model->settings().prefill_chunk.value != 4096U ||
         model->settings().context.value != 4096U ||
         model->settings().max_slots.value != profile().slots)

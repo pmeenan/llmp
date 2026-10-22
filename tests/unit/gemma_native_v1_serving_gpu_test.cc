@@ -32,7 +32,6 @@
 #include "base/sha256.h"
 #include "engine/live_state.h"
 #include "engine/paged_node.h"
-#include "runtime/engine_llm.h"
 #include "runtime/serving.h"
 #include "v1_frozen.h"
 
@@ -113,7 +112,7 @@ class GemmaNativeV1ServingGpu : public ::testing::TestWithParam<std::size_t> {
   bool uncertain = false;
   const Profile& profile() const { return kProfiles.at(GetParam()); }
   rt::Llm::Branch& Branch(std::uint32_t id) { return **model->branch(id); }
-  rt::EngineLlm& Engine() { return dynamic_cast<rt::EngineLlm&>(*model); }
+  rt::Llm& Engine() { return dynamic_cast<rt::Llm&>(*model); }
 
   void SetUp() override {
     // The store's v1-ids.json names the published v1 artifact.
@@ -221,8 +220,8 @@ class GemmaNativeV1ServingGpu : public ::testing::TestWithParam<std::size_t> {
         std::make_unique<rt::Server>(life->config, life->roles, life->options, life->log.get());
     if (auto started = life->server->Start(true); !started) return started;
     model = dynamic_cast<rt::Llm*>(life->server->Find("gemma"));
-    if (model == nullptr || dynamic_cast<rt::EngineLlm*>(model) == nullptr)
-      return std::unexpected("published artifact did not use the common EngineLlm");
+    if (model == nullptr || dynamic_cast<rt::Llm*>(model) == nullptr)
+      return std::unexpected("published artifact did not use the common Llm");
     if (model->logit_width() != profile().vocab ||
         model->settings().prefill_chunk.value != profile().prefill ||
         model->settings().context.value != 4096 || model->settings().max_slots.value != 2)

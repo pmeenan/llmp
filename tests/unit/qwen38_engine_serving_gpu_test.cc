@@ -60,7 +60,6 @@
 #include "runtime/approvals.h"
 #include "runtime/component_admission.h"
 #include "runtime/component_build.h"
-#include "runtime/engine_llm.h"
 #include "runtime/memory_guard.h"
 #include "runtime/serving.h"
 #include "runtime/snapshot_store.h"
@@ -306,8 +305,7 @@ struct Lifetime {
     if (log != nullptr) std::fclose(log);
   }
 };
-static_assert(sizeof(Lifetime) <= 16384 && sizeof(rt::Server) <= 65536 &&
-              sizeof(rt::EngineLlm) <= 65536);
+static_assert(sizeof(Lifetime) <= 16384 && sizeof(rt::Server) <= 65536 && sizeof(rt::Llm) <= 65536);
 
 std::vector<std::int32_t> Prompt() {
   std::vector<std::int32_t> out;
@@ -319,7 +317,7 @@ std::vector<std::int32_t> Prompt() {
 
 // Same completed-state reader used by the native Gemma publication proof:
 // bounded pinned staging, complete initialized coordinates and streamed bytes.
-std::expected<StateImage, std::string> ReadState(Lifetime& life, rt::EngineLlm& model) {
+std::expected<StateImage, std::string> ReadState(Lifetime& life, rt::Llm& model) {
   StateImage state;
   auto& slots = model.runner().slots();
   auto& node = life.server->node();
@@ -433,7 +431,7 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
     // remaining model metadata, before activating any new model work.
     if (previous != nullptr) previous->server.reset();
     model = dynamic_cast<rt::Llm*>(life->server->Find("qwen"));
-    if (!model || (dynamic_cast<rt::EngineLlm*>(model) != nullptr) != component)
+    if (!model || (dynamic_cast<rt::Llm*>(model) != nullptr) != component)
       return std::unexpected("wrong serving pipeline selected");
     if (model->generation_wave_capacity() != 1 || model->logit_width() != kVocab)
       return std::unexpected("wrong serving envelope");
@@ -456,7 +454,7 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
       if (mtp && result.drafted == 0) return std::unexpected("the serving unit did not speculate");
       life->result.history[turn] = (*b)->history();
       if (publication) {
-        auto state = ReadState(*life, *static_cast<rt::EngineLlm*>(model));
+        auto state = ReadState(*life, *static_cast<rt::Llm*>(model));
         if (!state) return std::unexpected(state.error());
         life->result.states[turn == 0 ? 0 : 2] = std::move(*state);
       }
@@ -482,7 +480,7 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
           if (before.eager != after.eager || before.captured != after.captured ||
               before.replayed != after.replayed || (*b)->spilled())
             return std::unexpected("native publication restoration executed model work");
-          auto state = ReadState(*life, *static_cast<rt::EngineLlm*>(model));
+          auto state = ReadState(*life, *static_cast<rt::Llm*>(model));
           if (!state) return std::unexpected(state.error());
           life->result.states[1] = std::move(*state);
           if (life->result.states[0] != life->result.states[1])
@@ -496,7 +494,7 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
       }
     }
     if (component) {
-      const auto& engine = *static_cast<rt::EngineLlm*>(model);
+      const auto& engine = *static_cast<rt::Llm*>(model);
       if (engine.runner().coverage().violations != 0)
         return std::unexpected("shared program bound uncovered storage");
     }
@@ -814,7 +812,7 @@ TEST(Qwen38EngineServingGpu, NativeMtpLadderDrafterKeepsTokens) {
   }
 }
 
-// A manually enabled durable C2 control in the existing real EngineLlm fixture.
+// A manually enabled durable C2 control in the existing real Llm fixture.
 // It uses the same selected implementation in two sequential whole owners.
 namespace c2 {
 namespace pl = llmp::planner;
@@ -864,7 +862,7 @@ struct Owner {
   cfg::RuntimeRoles roles;
   cfg::ModelEntry entry;
   std::unique_ptr<rt::StateKeeper> keeper;
-  std::unique_ptr<rt::EngineLlm> llm;
+  std::unique_ptr<rt::Llm> llm;
   en::StepSource* source = nullptr;
   std::vector<Plan> measured;
   std::vector<pl::StepShape> classes, runnable;
@@ -952,7 +950,7 @@ rt::Status Observe(Owner& owner, const kn::LowerInput& in, const kn::StepProgram
   return {};
 }
 
-rt::Status AddClasses(rt::EngineLlmParts& parts, Owner& owner) {
+rt::Status AddClasses(rt::LlmBuildParts& parts, Owner& owner) {
   auto composer = en::WaveComposer::Make(
       parts.caps, {{.context = 512, .read_align = 256}, {.context = 512, .read_align = 256}});
   if (!composer) return std::unexpected(composer.error());
@@ -1092,7 +1090,7 @@ rt::Status Setup(Owner& owner, const fs::path& directory, Evidence& evidence, bo
   auto build =
       rt::ComponentLlmBuild(owner.node, owner.roles.installed, owner.entry, 0, std::move(*options));
   auto inspect = [&owner, build = std::move(build)](const rt::ModelSettings& actual) mutable
-      -> std::expected<rt::EngineLlmParts, std::string> {
+      -> std::expected<rt::LlmBuildParts, std::string> {
     auto parts = build(actual);
     if (!parts) return std::unexpected(parts.error());
     if (parts->config.slots.stages.size() != 2 || parts->mode.drafters.size() != 1 ||
@@ -1105,8 +1103,8 @@ rt::Status Setup(Owner& owner, const fs::path& directory, Evidence& evidence, bo
     if (auto s = AddClasses(*parts, owner); !s) return std::unexpected(s.error());
     return std::move(*parts);
   };
-  owner.llm = std::make_unique<rt::EngineLlm>(owner.node, owner.entry, settings, owner.roles, 0,
-                                              std::move(inspect));
+  owner.llm = std::make_unique<rt::Llm>(owner.node, owner.entry, settings, owner.roles, 0,
+                                        std::move(inspect));
   owner.llm->SetTokenMemory(owner.tokens);
   owner.llm->set_turn_checkpoints(false);
   if (auto s = owner.llm->Setup(); !s) {
@@ -1136,7 +1134,7 @@ rt::Status Setup(Owner& owner, const fs::path& directory, Evidence& evidence, bo
   if (!paid_plans) return std::unexpected(paid_plans.error());
   owner.plans = std::move(*paid_plans);
   if (!owner.plans->Charge(owner.plan_bytes)) return std::unexpected("C2 measured payment refused");
-  // EngineLlm::UsedStateRangesFor forwards LiveState::used_ranges: at
+  // Llm::UsedStateRangesFor forwards LiveState::used_ranges: at
   // most one descriptor per actual 2 MiB extent, including each final partial
   // extent. SnapshotStore::Prepare adds its nine-u64 header, cursor, optional
   // execution digest, adaptive words, ranges, history and actual layout text.
@@ -1579,7 +1577,7 @@ rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previou
   if (auto s = life.server->Start(false); !s) return s;
   if (previous != nullptr) previous->reset();
   owner.llm = dynamic_cast<rt::Llm*>(life.server->Find("qwen-server-c2"));
-  auto* shared = dynamic_cast<rt::EngineLlm*>(owner.llm);
+  auto* shared = dynamic_cast<rt::Llm*>(owner.llm);
   if (!owner.llm || owner.llm->generation_wave_capacity() != 2 ||
       (shared != nullptr) != component || (shared && shared->runner().slots().stages() != 2))
     return std::unexpected("Server did not build the declared C2 implementation");
@@ -1600,7 +1598,7 @@ rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previou
 
 rt::Status Run(Owner& owner, bool reopen) {
   auto& server = *owner.life.server;
-  auto& llm = *dynamic_cast<rt::EngineLlm*>(owner.llm);
+  auto& llm = *dynamic_cast<rt::Llm*>(owner.llm);
   auto& evidence = *owner.evidence;
   const std::array<rt::Llm::Branch*, 2> branches{&owner.Branch(0), &owner.Branch(1)};
   if (reopen) {
@@ -1807,7 +1805,7 @@ rt::Status SpeedPass(Owner& owner, const SpeedIds& ids, bool measured) {
   const auto graphs = llm.graphs();
   property("graphs_captured", graphs.captured);
   property("graphs_replayed", graphs.replayed);
-  if (auto* shared = dynamic_cast<rt::EngineLlm*>(&llm)) {
+  if (auto* shared = dynamic_cast<rt::Llm*>(&llm)) {
     const auto ahead = shared->runner().lookahead_stats();
     property("future_built", ahead.built);
     property("future_captured", ahead.captured_ahead + ahead.captured_first);
@@ -1938,7 +1936,7 @@ class Qwen38GgufKeptGpu : public testing::Test {
     if (auto r = life->server->Start(true); !r) return r;
     model = dynamic_cast<rt::Llm*>(life->server->Find("qwen"));
     if (model == nullptr) return std::unexpected("configured Qwen3.8 model missing");
-    if (dynamic_cast<rt::EngineLlm*>(model) == nullptr)
+    if (dynamic_cast<rt::Llm*>(model) == nullptr)
       return std::unexpected("Qwen3.8 is not on the component engine");
     if (model->logit_width() != kVocab || model->generation_wave_capacity() != 2)
       return std::unexpected("wrong serving envelope");
@@ -1985,7 +1983,7 @@ class Qwen38GgufKeptGpu : public testing::Test {
     if (!scratch.empty()) fs::remove_all(scratch);
   }
   rt::Llm::Branch& Branch(std::uint32_t id) { return **model->branch(id); }
-  rt::EngineLlm& Engine() { return dynamic_cast<rt::EngineLlm&>(*model); }
+  rt::Llm& Engine() { return dynamic_cast<rt::Llm&>(*model); }
   std::string Log() const {
     std::string text;
     (void)std::fflush(log);

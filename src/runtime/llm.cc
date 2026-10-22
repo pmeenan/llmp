@@ -1,12 +1,10 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// An LLM's conversations on the node (serving.h's Llm): its branches,
-// prompt and generation sessions, turn checkpoints, spills and kept
-// conversations (D-105), over the virtual calls each model implements.
-// Vendor-free: it reaches the engine through the core (the paged node,
-// live state, checkpoint files), so it builds in every profile, with the
-// engine-backed adapter (engine_llm.h) and its tests on the fake backend.
+// The concrete LLM's host conversation ownership: branches, prompt and
+// generation sessions, turn checkpoints, spills and kept conversations.
+// Native work and state are implemented by the same Llm in llm_execution.cc,
+// through the shared runner and slot lifecycle, in every build profile.
 
 #include <unistd.h>
 
@@ -94,8 +92,6 @@ std::int32_t HostArgmax(std::span<const float> row) {
 
 // ---------------------------------------------------------------- an LLM
 
-Llm::Llm() : default_branch_(*this) {}
-
 void Llm::SetTokenMemory(RequestMemory& memory) {
   base::Check(token_history_bytes() == 0, "changing a model's token pool with live history");
   for (std::size_t slot = 0; slot < branches(); ++slot) {
@@ -111,15 +107,14 @@ std::uint64_t Llm::token_history_bytes() const {
   std::uint64_t bytes = 0;
   for (std::uint32_t slot = 0; slot < branch_count_; ++slot) {
     const Branch& b = slot == 0 ? default_branch_ : *extra_branches_[slot - 1];
-    bytes += b.history_charge_.bytes() + b.saved_history_charge_.bytes() +
-             b.verify_tokens_charge_.bytes();
+    bytes += b.history_charge_.bytes() + b.saved_history_charge_.bytes();
   }
   return bytes;
 }
 
 std::uint64_t Llm::IdleHistoryBytes(const Branch& branch) const {
   CheckBranch(branch);
-  return branch.history_charge_.bytes() + branch.verify_tokens_charge_.bytes();
+  return branch.history_charge_.bytes();
 }
 
 bool Llm::HistoryReclaimable(const Branch& branch) const {
@@ -141,11 +136,6 @@ bool Llm::ReserveTokens(Branch& branch, std::vector<std::int32_t>& tokens, Memor
   token_memory_->Settle(0, std::chrono::milliseconds{0});
   branch.funding_history_ = was_funding;
   return funded;
-}
-
-bool Llm::ReserveTokenScratch(Branch& branch, std::size_t tokens, std::uint32_t left) {
-  return ReserveTokens(branch, branch.verify_tokens_, branch.verify_tokens_charge_,
-                       TokenScratchCapacityFor(branch, tokens, left));
 }
 
 void Llm::ReleaseTokens(std::vector<std::int32_t>& tokens, MemoryCharge& charge) {
@@ -442,11 +432,6 @@ void Llm::DropBranchSamplingScratch(Branch& branch) {
   std::vector<execution::SamplingCandidate>().swap(branch.scratch_);
 }
 
-std::expected<std::int32_t, std::string> Llm::Choose(std::span<const float> row,
-                                                     std::uint64_t position) {
-  return Choose(default_branch_, row, position);
-}
-
 std::expected<std::int32_t, std::string> Llm::Choose(Branch& branch, std::span<const float> row,
                                                      std::uint64_t position) {
   CheckBranch(branch);
@@ -462,11 +447,6 @@ std::expected<std::int32_t, std::string> Llm::Choose(Branch& branch, std::span<c
     return Error(std::format("sampling: {}", execution::SamplingErrorName(token.error())));
   }
   return *token;
-}
-
-std::expected<bool, std::string> Llm::Keep(std::span<const float> row, std::int32_t draft,
-                                           std::uint64_t position, std::int32_t& next) {
-  return Keep(default_branch_, row, draft, position, next);
 }
 
 std::expected<bool, std::string> Llm::Keep(Branch& branch, std::span<const float> row,
@@ -598,13 +578,6 @@ std::expected<Llm::Branch*, std::string> Llm::branch(std::size_t index) & {
     return Error("the model has no native conversation slot at this index");
   }
   return index == 0 ? &default_branch_ : extra_branches_[index - 1].get();
-}
-
-Status Llm::SelectBranches(std::span<Branch* const> active) {
-  if (active.size() != 1 || active.front() != &default_branch_) {
-    return Error("this model supports only its default native conversation");
-  }
-  return {};
 }
 
 void Llm::CheckBranch(const Branch& branch) const {
@@ -932,7 +905,6 @@ Status Llm::Adopt(Branch& branch, kept::Record& record, MemoryCharge& token_char
   branch.history_charge_ = std::move(token_charge);
   branch.needs_clear_ = false;
   branch.history_used_ = SteadyAt(record.used_unix_ms);
-  SetCursorFor(branch, record.cursor);
   RestoreTurnDecodingStateFor(branch, decoding);
   branch.turn_checkpoints_ = std::move(checkpoints);
   remove_unused_checkpoints();
@@ -1085,12 +1057,6 @@ void Llm::RestoreBranchDecoding(Branch& branch) {
   branch.decoding_ = branch.saved_decoding_;
 }
 
-Status Llm::RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,
-                               std::uint32_t n_past, bool inject, bool /*want_head*/,
-                               std::vector<float>& logits, PrefillHint /*next*/) {
-  return RunChunkFor(branch, all, n_past, inject, logits);
-}
-
 void Llm::CheckIdleGeneration(const Branch& branch, const PromptSession* prompt) const {
   CheckBranch(branch);
   base::Check(!branch.generation_active_, "mutating a conversation with an active generation");
@@ -1104,7 +1070,6 @@ void Llm::Forget(Branch& branch, const PromptSession* prompt) {
   branch.turn_checkpoints_.clear();
   branch.score_rows_ = {};
   ReleaseTokens(branch.history_, branch.history_charge_);
-  ReleaseTokens(branch.verify_tokens_, branch.verify_tokens_charge_);
   branch.needs_clear_ = true;
 }
 
@@ -1117,7 +1082,6 @@ Status Llm::Clear(Branch& branch, const PromptSession* prompt) {
   }
   branch.score_rows_ = {};
   ReleaseTokens(branch.history_, branch.history_charge_);
-  ReleaseTokens(branch.verify_tokens_, branch.verify_tokens_charge_);
   branch.needs_clear_ = false;
   branch.history_used_ = Clock::now();
   return {};
@@ -1132,7 +1096,6 @@ Status Llm::ReleaseIdleState(Branch& branch) {
   branch.turn_checkpoints_.clear();
   branch.score_rows_ = {};
   ReleaseTokens(branch.history_, branch.history_charge_);
-  ReleaseTokens(branch.verify_tokens_, branch.verify_tokens_charge_);
   if (auto released = ReleaseIdleStateFor(branch); !released) {
     branch.needs_clear_ = true;  // its next use clears whatever is left
     return released;
@@ -1387,7 +1350,6 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
     return completed;
   }
   branch.history_.resize(position);
-  SetCursorFor(branch, restored_cursor);
   RestoreTurnDecodingStateFor(branch, restored_decoding);
   std::erase_if(branch.turn_checkpoints_,
                 [&](const TurnCheckpoint& c) { return c.boundary.position > position; });
@@ -1461,7 +1423,6 @@ Status Llm::RestoreState(Branch& branch, void* host) {
   branch.score_rows_ = branch.saved_score_rows_;
   branch.turn_checkpoints_.clear();  // a full diagnostic restore may replace the branch
   branch.history_used_ = Clock::now();
-  SetCursorFor(branch, branch.saved_cursor_);
   RestoreDecodingStateFor(branch);
   branch.needs_clear_ = false;
   return {};
@@ -1545,7 +1506,6 @@ Status Llm::RestoreState(Branch& branch, SnapshotStore& store, const StateSnapsh
   branch.score_rows_ = snapshot.score_rows_;
   branch.turn_checkpoints_.clear();
   branch.history_used_ = Clock::now();
-  SetCursorFor(branch, captured->cursor);
   RestoreTurnDecodingStateFor(branch, captured->decoding);
   branch.needs_clear_ = false;
   return {};

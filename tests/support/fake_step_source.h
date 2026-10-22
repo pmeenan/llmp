@@ -30,7 +30,7 @@
 //   rows when the state persisted), `hash` is the fixed state's after the
 //   row, `tap` the tapped token (-1: none valid) and `borrowed` the count;
 // - for a greedy segment, returns just one I32: its last token + 1000.
-// With `logits` (a serving adapter's head, runtime/engine_llm.h), each
+// With `logits` (a serving adapter's head, runtime/serving.h), each
 // output row is instead that many F32 logits, every one 0 but a 1 at
 // FakeLogit(token, position): on the target only while its tensor 0 holds a
 // valid cell for every position through the row's (else at logits - 1, the
@@ -159,6 +159,10 @@ struct FakeSourceOptions {
   // publication. Ordinary logits and all other phases remain unchanged.
   std::optional<std::int32_t> native_token{};
   std::optional<planner::Phase> native_token_phase{};
+  // Transform a completed numeric row before its device output is copied.
+  // Tests use this to exercise per-owner judgement failures after real work.
+  std::function<void(planner::Phase, std::int32_t, std::int32_t, std::span<float>)>
+      transform_logits;
   // A drafter's features as a kFeatures input and a features output.
   bool features = false;
   // Verify saves each row's fixed-state hash; a generated commit restores its kept last row.

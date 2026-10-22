@@ -344,8 +344,8 @@ int main(int argc, char** argv) {
   std::vector<en::PagedModel*> entered;
   const auto execute = [&]() -> en::Status {
     if (auto r = node.Open(); !r) return r;
-    const rt::EngineBuild build = rt::ComponentLlmBuild(
-        node, target.parent_path(), entry, 0, {.target_policy = std::string(kScreenPolicy)});
+    const rt::LlmBuild build = rt::ComponentLlmBuild(node, target.parent_path(), entry, 0,
+                                                     {.target_policy = std::string(kScreenPolicy)});
     auto parts = build(settings);
     if (!parts) return Error(parts.error());
     keep = std::move(parts->keep);

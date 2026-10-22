@@ -313,6 +313,8 @@ class FakeProgram final : public kn::StepProgram {
         if (s.logits != 0) {
           std::vector<float> row(s.logits, 0.0F);
           row[static_cast<std::size_t>(choice(r))] = 1.0F;
+          if (options.transform_logits)
+            options.transform_logits(phase, s.slot, position_of(r), row);
           std::memcpy(At<void>(s.out + (std::uint64_t{o} * s.logits * sizeof(float))), row.data(),
                       row.size() * sizeof(float));
           continue;

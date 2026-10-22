@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // What serving's translation units share (serving.cc, llm.cc,
-// engine_llm.cc): error values, seconds, and the conversions a kept
+// llm_execution.cc): error values, seconds, and the conversions a kept
 // record's fields (D-105) take between the engine's types and the record's
 // and between steady and wall-clock times. Private to src/runtime.
 

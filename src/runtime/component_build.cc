@@ -41,6 +41,7 @@
 #include "runtime/memory_guard.h"
 #include "runtime/model_settings.h"
 #include "runtime/prefill.h"
+#include "runtime/serving.h"
 #include "runtime/serving_support.h"
 #include "spec/mapping.h"
 #include "spec/spec.h"
@@ -390,7 +391,7 @@ struct PreparedServing {
   std::optional<ja::Artifact> target_artifact{};
 };
 
-std::expected<EngineLlmParts, std::string> AssembleComponentParts(
+std::expected<LlmBuildParts, std::string> AssembleComponentParts(
     engine::PagedNode& node, const fs::path& store, std::string_view id,
     std::string_view drafter_id, [[maybe_unused]] int index, const ModelSettings& settings,
     const spec::ServingRecipe& recipe, const spec::Mapping* drafter_mapping,
@@ -406,7 +407,7 @@ std::expected<EngineLlmParts, std::string> AssembleComponentParts(
   if (auto opened = weights->Open(store / id); !opened) return Error(opened.error());
   engine::PagedWeights* paged = weights.get();
   engine::PagedWeights* drafter_paged = nullptr;
-  EngineLlmParts parts;
+  LlmBuildParts parts;
   parts.execution_metadata = metadata;
   if (built.hold->automatic_construction) {
     parts.startup_host_bytes = built.hold->automatic_construction->capacity() +
@@ -507,14 +508,13 @@ std::expected<EngineLlmParts, std::string> AssembleComponentParts(
 
 }  // namespace
 
-EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
-                              const config::ModelEntry& entry, int index,
-                              ComponentBuildOptions options) {
+LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config::ModelEntry& entry,
+                           int index, ComponentBuildOptions options) {
   return [&node, store = std::move(store), id = entry.artifact.value_or(""),
           drafter_id = entry.drafter.value_or(""), index, options = std::move(options),
           metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{},
           stored_metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{}](
-             const ModelSettings& settings) mutable -> std::expected<EngineLlmParts, std::string> {
+             const ModelSettings& settings) mutable -> std::expected<LlmBuildParts, std::string> {
     // The architecture's serving recipe (its mapping's data or the default
     // target LLM recipe, spec/mapping.h).
     const spec::Mapping* recipe_mapping =

@@ -3,7 +3,7 @@
 
 // The production adapter and driver over the approved native artifacts:
 // since M3.6 (slice G2c) Gemma 4 serves on the shared engine
-// (runtime/engine_llm.h), so these controls, taken on the M3 class, now hold
+// (runtime/serving.h), so these controls, taken on the M3 class, now hold
 // for it (the M3 class's own internals, its preparation diagnostic and its
 // kept tags' profile prefix, are gone from them).
 #include <gtest/gtest.h>
@@ -30,7 +30,6 @@
 
 #include "base/sha256.h"
 #include "engine/paged_node.h"
-#include "runtime/engine_llm.h"
 #include "runtime/serving.h"
 #include "tokenizer_fixtures.h"
 #include "v1_frozen.h"
@@ -347,7 +346,7 @@ class Gemma4EnvelopeServingGpu : public Gemma4ServingGpu {
     // Unequal cache widths must retain the admitted four-owner decode.
     // Passing continuation by silently recomposing four singleton plans is
     // insufficient: exact selected-shape workspace admission pays its padding.
-    auto* engine = dynamic_cast<rt::EngineLlm*>(model);
+    auto* engine = dynamic_cast<rt::Llm*>(model);
     ASSERT_NE(engine, nullptr);
     bool joined_decode = false;
     engine->runner().plans().ForEach([&](const auto& plan) {
@@ -453,7 +452,7 @@ TEST_P(Gemma4AssistantServingGpu, DraftsFromTheTargetsStateAreVerifiedAndKept) {
   EXPECT_GT(speculative.accepted, 0U);
   EXPECT_LE(speculative.accepted, speculative.drafted);
   EXPECT_LT(speculative.steps, 48U);  // verifies of several rows each
-  const auto& engine = dynamic_cast<const rt::EngineLlm&>(*model);
+  const auto& engine = dynamic_cast<const rt::Llm&>(*model);
   EXPECT_GT(engine.counts().speculative_units, 0U);
   EXPECT_EQ(engine.counts().discarded, 0U);
   EXPECT_TRUE(model->violations().empty());
@@ -580,7 +579,7 @@ TEST_P(Gemma4ServingGpu, OwnedSnapshotTurnRollbackSpillAndRestartContinueExactly
     EXPECT_EQ(expected.tokens[i], std::max_element(row.begin(), row.end()) - row.begin());
   }
   ASSERT_TRUE(server->RestoreSnapshot(*model));
-  const auto& engine = dynamic_cast<const rt::EngineLlm&>(*model);
+  const auto& engine = dynamic_cast<const rt::Llm&>(*model);
   const std::uint64_t greedy_before = engine.counts().greedy_tokens;
   ASSERT_TRUE(Branch(0).Generate(first, gen, restored));
   EXPECT_EQ(expected.tokens, restored.tokens);

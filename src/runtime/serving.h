@@ -4,8 +4,8 @@
 // Serving on the node (D-096; docs/runtime-serving.md): the configured
 // models registered on one paged node (engine/paged_node.h), the full swap
 // between them, and each model's turns. The server (serving.cc) is CUDA
-// builds only; an LLM's conversation code (Llm, llm.cc) and the serving
-// adapters over the shared runner (engine_llm.h, engine_image.h) build in
+// builds only; the concrete Llm and the image adapter (engine_image.h)
+// over the shared runner build in
 // every profile. The commands
 // (commands.h) drive it from the runtime's main thread, the node's one
 // driver.
@@ -29,7 +29,7 @@
 //   state restored if it was spilled); then its checks of what its kernels
 //   index unchecked, and its places checked still pinned (D-090). Each part
 //   is timed (SwapParts).
-// - An LLM holds one conversation: `history` is every token its state has
+// - Each LLM branch holds one conversation: `history` is every token its state has
 //   seen. A turn's tokens extend it when they start with it; otherwise a
 //   matching retained turn checkpoint restores its prefix, or the state
 //   clears before fresh prefill. Generation is greedy, speculative by default
@@ -71,11 +71,16 @@
 #include "config/storage_roles.h"
 #include "engine/checkpoint_file.h"
 #include "engine/component_source.h"
+#include "engine/decoding.h"
 #include "engine/execution_contract.h"
 #include "engine/host_buffer.h"
 #include "engine/live_state.h"
+#include "engine/model_runner.h"
 #include "engine/paged_node.h"
+#include "engine/runner_owner.h"
+#include "engine/wave_composer.h"
 #include "execution/adaptive_depth.h"
+#include "execution/adaptive_wave_mode.h"
 #include "execution/sampling.h"
 #include "kernels/common/step_program.h"
 #include "memory/reclaim.h"
@@ -84,6 +89,7 @@
 #include "runtime/commands.h"
 #include "runtime/intake_limits.h"
 #include "runtime/kept_record.h"
+#include "runtime/llm_build.h"
 #include "runtime/model_settings.h"
 #include "runtime/prefill.h"
 #include "runtime/pressure_trim.h"
@@ -455,8 +461,11 @@ struct RenderCharge {
   std::uint64_t bytes = 0;   // what its request is charged while it renders
 };
 
-// A model with a conversation: DeepSeek V4 Flash, Qwen3.8 Flash Next.
-class Llm : public Served {
+// The concrete LLM pipeline: conversation sessions and their shared runner.
+// Served is the LLM/image boundary; branch work and state use direct calls.
+class Llm final : public Served {
+  friend struct LlmTestAccess;
+
  private:
   struct TurnCheckpoint {
     TurnBoundary boundary;
@@ -494,8 +503,7 @@ class Llm : public Served {
     bool HeldByContinuation() const { return continuations_.load(std::memory_order_relaxed) != 0; }
     Status Clear();
     // Clears an idle branch's retained state (its finished conversation's
-    // reuse cache) while it is outside the selected cohort. Families
-    // without separate native slots refuse.
+    // reuse cache) while it is outside the selected cohort.
     Status ReleaseIdleState();
     // Whether its state is spilled (Llm::SpillIdle): resident again only
     // once its next prompt's first unit restores it.
@@ -580,8 +588,6 @@ class Llm : public Served {
     ScoreRows saved_score_rows_;
     MemoryCharge saved_history_charge_;
     std::vector<std::int32_t> saved_history_;
-    MemoryCharge verify_tokens_charge_;
-    std::vector<std::int32_t> verify_tokens_;
     std::uint32_t saved_cursor_ = 0;
     std::vector<engine::LiveState::Range> saved_ranges_;
     bool saved_valid_ = false;
@@ -613,7 +619,58 @@ class Llm : public Served {
     execution::AdaptiveDepth saved_decoding_{1};
   };
 
-  Llm();
+  engine::PagedModel& paged() override;
+  bool has_paged() const override { return static_cast<bool>(runner_); }
+  Status Setup() override;
+  Status Register() override;
+  Status Bind() override;
+  std::uint64_t activations_needed() const override;
+  std::uint64_t pool_needed() const override;
+  std::uint64_t host_input_bytes() const override;
+  std::uint64_t plan_floor_bytes() const override;
+  std::string plan_report() const override;
+  void set_plan_report_sink(kernels::PlanRecordSink sink) override;
+  void ReportPlans(const kernels::PlanRecordSink& sink) const override;
+  std::uint64_t startup_host_bytes() const override {
+    return startup_host_bytes_ +
+           (execution_metadata_ ? execution_metadata_->capacity() +
+                                      engine::ExecutionMetadataAllowance::OverheadBytes()
+                                : 0) +
+           (chat_startup_
+                ? chat_startup_->capacity() + engine::ExecutionMetadataAllowance::OverheadBytes()
+                : 0);
+  }
+  std::string slots_report() const override;
+  void ReclaimCandidates(std::uint32_t owner, bool running,
+                         std::vector<memory::ReclaimCandidate>& out) override;
+  std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id) override;
+  std::vector<catalog::ExtentId> weights() const override;
+  std::vector<catalog::ExtentId> kept_state() const override;
+  std::vector<catalog::ExtentId> unchanged_state() const override;
+  void StateWrittenBack(bool whole) override;
+  bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
+  const catalog::Closure& everything() const override;
+  const catalog::Closure& request_closure() const override;
+  Status PrepareDefaultRequest() override;
+  std::uint64_t weight_read_bytes() const override;
+  Status CheckPlaces() override;
+  void DropPlans() override;
+  // D-102's rung 2: the lifecycle's recovery (its untouched spilled slots
+  // kept, the rest discarded, their records removed first), the discarded
+  // conversations forgotten, every plan dropped.
+  Status RecoverInPlace() override;
+  GraphCounts graphs() const override;
+  std::string violations() const override;
+  std::string extra() const override;
+
+  Llm(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
+      const config::RuntimeRoles& roles, int index, LlmBuild build);
+  Llm(const Llm&) = delete;
+  Llm& operator=(const Llm&) = delete;
+  Llm(Llm&&) = delete;
+  Llm& operator=(Llm&&) = delete;
+  ~Llm() override;
+
   // Attach before any history allocation; the pool outlives this model.
   void SetTokenMemory(RequestMemory& memory);
   std::uint64_t token_history_bytes() const;
@@ -621,14 +678,14 @@ class Llm : public Served {
   bool HistoryReclaimable(const Branch& branch) const;
   Branch& default_branch() & { return default_branch_; }
   const Branch& default_branch() const& { return default_branch_; }
-  // A branch a native request slot (engine/request_cohort.h kMaxRequestSlots).
+  // Each branch names a native request slot (engine/request_cohort.h kMaxRequestSlots).
   static constexpr std::size_t kMaxBranches = 16;
   std::size_t branches() const { return branch_count_; }
   // A stable model-owned wrapper. Looking it up performs no native work.
   std::expected<Branch*, std::string> branch(std::size_t index) &;
-  // Between completed native units. The Qwen implementation protects the
+  // Between completed native units. The slot lifecycle protects the
   // complete selected set; selecting performs no model registration.
-  virtual Status SelectBranches(std::span<Branch* const> active);
+  Status SelectBranches(std::span<Branch* const> active);
   // Serial state capacity (docs/runtime-serving.md#state-capacity-in-a-
   // cohort). A serial Prefill, ScorePrompt, PreparePrompt or Generate of a
   // branch whose prefill chunk or decode step only the state's capacity
@@ -670,10 +727,7 @@ class Llm : public Served {
   // (docs/runtime-serving.md#request-slots). 0 when the model keeps no
   // such state; an error when its layout could not be measured (never an
   // estimate of nothing, which would admit a request the budget lacks).
-  virtual std::expected<std::uint64_t, std::string> StateBytesThrough(
-      std::uint32_t /*positions*/) const {
-    return 0;
-  }
+  std::expected<std::uint64_t, std::string> StateBytesThrough(std::uint32_t positions) const;
   // When a branch was last used (its history extended or reused): its
   // retention's clock and the reclaim order's recency.
   Clock::time_point LastUsed(const Branch& branch) const;
@@ -734,13 +788,10 @@ class Llm : public Served {
   bool keeps() const { return kept_.keeper != nullptr; }
   // The identity a kept record of this model must match: its runner's
   // state layout (after Setup). Empty: this model keeps none.
-  virtual std::string KeptLayout() const { return {}; }
-  // Snapshot compatibility seam. Legacy adapters return no execution seal.
-  // No production adapter declares a required identity yet; a future adapter
-  // must qualify its real backend and operation admission before doing so.
-  virtual std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const {
-    return std::optional<base::Sha256Digest>{};
-  }
+  std::string KeptLayout() const;
+  // The runner's execution seal, when its source supplies one. Snapshot
+  // capture and restore compare it before any native effects.
+  std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const;
   // The record's format version this model writes and reads (kept_record.h
   // kVersion: one spill file a stage). A record of another version is
   // refused and discarded.
@@ -748,8 +799,8 @@ class Llm : public Served {
   // What the runner keeps of a slot, for its record's checks at adoption:
   // its regions' bytes in their files and their layouts' bytes (a region a
   // stage).
-  virtual std::vector<std::uint64_t> KeptRegions() const { return {}; }
-  virtual std::vector<std::uint64_t> KeptLayouts() const { return {}; }
+  std::vector<std::uint64_t> KeptRegions() const;
+  std::vector<std::uint64_t> KeptLayouts() const;
   // A slot's record written in the background (StateKeeper::Keep) once its
   // spill file holds its whole, settled state: after a spill or a swap's
   // write-back. Nothing otherwise.
@@ -812,7 +863,7 @@ class Llm : public Served {
   std::uint32_t context() const { return context_; }
   // What a conversation may use of the context: its speculative steps may
   // need rows past the last token (Qwen3.8's MTP drafts).
-  virtual std::uint32_t usable_context() const { return context_; }
+  std::uint32_t usable_context() const { return context_ - std::min(context_, context_margin_); }
   bool speculative() const { return speculate_; }
   // The throughput floors the chat route figures this model's work at
   // (watchdog.h), resolved once at registration (D-103).
@@ -846,8 +897,8 @@ class Llm : public Served {
   // A logit row's width: the model's output vocabulary, which may be wider
   // than its tokenizer (Qwen3.8's 248,320 rows over tokenizer.json's 248,077
   // tokens).
-  virtual std::uint32_t logit_width() const = 0;
-  virtual std::span<const std::int32_t> ChatStops() const { return {}; }
+  std::uint32_t logit_width() const { return logit_width_; }
+  std::span<const std::int32_t> ChatStops() const { return chat_stops_; }
 
   // Tokens of plain text (no template; BOS first where the vocabulary has
   // one, as the reference runs fed it). With `memory`, temporary work is
@@ -885,11 +936,10 @@ class Llm : public Served {
   // Text of generated tokens (control tokens left out).
   std::string Detokenize(std::span<const std::int32_t> tokens) const;
   // Template options this model's reference runs rendered with.
-  virtual void Defaults(chat::Conversation& conversation) const = 0;
+  void Defaults(chat::Conversation& conversation) const;
 
   // The conversation: every token the state has seen.
   const std::vector<std::int32_t>& history() const { return default_branch_.history(); }
-  bool HasRetainedState() const override { return default_branch_.HasRetainedState(); }
   // The state zeroed and the conversation empty.
   Status Clear();
   // The conversation dropped without a job: the state's contents are no
@@ -985,6 +1035,7 @@ class Llm : public Served {
 
    private:
     friend class Llm;
+    friend struct LlmTestAccess;
     PromptSession(Llm& model, Branch& branch, std::uint32_t stable_boundary, bool fresh,
                   bool resume, bool scoring,
                   std::function<bool(std::int32_t, std::span<const float>)> on_row);
@@ -1029,16 +1080,16 @@ class Llm : public Served {
                        bool defer_capacity = false);
   // Measured-policy candidate; every participant still completes through its
   // ordinary session Apply/CompleteChunk contract after the common native unit.
-  virtual bool supports_causal_waves() const { return false; }
+  bool supports_causal_waves() const {
+    return !speculate_ && caps_.mixed_causal && caps_.join_prefill && caps_.max_segments > 1;
+  }
   Status RunCausalWave(std::span<PromptSession* const> prompts, std::span<const PrefillGoOn> go_on,
                        std::span<GenerationSession* const> generations,
                        bool defer_capacity = false);
-  virtual std::size_t prefill_wave_capacity() const { return 1; }
-  virtual bool CompatiblePrefill(std::uint32_t, std::uint32_t rows, std::uint32_t,
-                                 std::uint32_t peer_rows, bool want_head = true,
-                                 bool peer_want_head = true) const {
-    return rows >= 2 && rows == peer_rows && want_head == peer_want_head;
-  }
+  std::size_t prefill_wave_capacity() const;
+  bool CompatiblePrefill(std::uint32_t past, std::uint32_t rows, std::uint32_t peer_past,
+                         std::uint32_t peer_rows, bool want_head = true,
+                         bool peer_want_head = true) const;
   std::size_t turn_checkpoints() const { return default_branch_.turn_checkpoints(); }
   std::uint64_t turn_checkpoint_bytes() const;
   // One resumable generation on the default conversation. The model,
@@ -1139,10 +1190,10 @@ class Llm : public Served {
   // still run), for the caller to retry or end (GenerationSession::PrepareStep).
   Status RunGenerationWave(std::span<GenerationSession* const> sessions,
                            bool defer_capacity = false);
-  virtual bool supports_generation_waves() const { return false; }
+  bool supports_generation_waves() const { return true; }
   // Immutable live-owner bound after runner setup. Native branch identifiers
   // may be sparse; capacity limits simultaneous owners, not their slot IDs.
-  virtual std::size_t generation_wave_capacity() const { return 1; }
+  std::size_t generation_wave_capacity() const;
   // A dispatch/fence admission guard only; a healthy cohort is not proof
   // that native references have retired. The Server fences explicitly.
   bool generation_cohort_usable() const { return GenerationCohortUsable(); }
@@ -1157,9 +1208,24 @@ class Llm : public Served {
   Status RestoreState(void* host);
   void InvalidateStateSnapshot() { default_branch_.InvalidateStateSnapshot(); }
 
-  std::vector<catalog::ExtentId> state() const override = 0;
+  std::vector<catalog::ExtentId> state() const override;
 
- protected:
+  // The runner, after Setup (the tests' and the report's view).
+  const engine::ModelRunner& runner() const { return *runner_; }
+  engine::ModelRunner& runner() { return *runner_; }
+  // Units run so far: joined prefill steps and their rows, generation
+  // waves of more than one owner, speculative units and what they drafted
+  // and kept.
+  struct Counts {
+    std::uint64_t joined_prefill_steps = 0, joined_prefill_rows = 0;
+    std::uint64_t joined_causal_steps = 0, joined_causal_rows = 0;
+    std::uint64_t joined_waves = 0, joined_units = 0;
+    std::uint64_t speculative_units = 0, drafted = 0, accepted = 0, discarded = 0;
+    std::uint64_t greedy_tokens = 0;
+  };
+  const Counts& counts() const { return counts_; }
+
+ private:
   struct PreparedGeneration {
     GenerationSession* session = nullptr;
     Branch* branch = nullptr;
@@ -1176,38 +1242,24 @@ class Llm : public Served {
     // keeps it (GenerationSession::FailAfterAnchor).
     bool anchor_processed = false;
     // A greedy plain step whose token the model chose on the device: no row
-    // was published (DeviceGreedy).
+    // was published.
     std::optional<std::int32_t> chosen;
   };
-  // Greedy output with no caller of its rows. An adapter may use this for
-  // an injected plain wave whose session still applies speculative results.
+  // Greedy output with no caller of its rows, including a policy-selected
+  // plain wave whose sessions still apply speculative results.
   static bool GreedyWithoutRows(const PreparedGeneration& unit);
-  // Ordinary plain dispatch additionally refuses speculative steps.
-  static bool DeviceGreedy(const PreparedGeneration& unit);
   // Success means the native unit completed. Each independent judgement
   // supplies its own result. A shared error supplies no result to apply.
-  virtual Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared);
-  // One plain unit, selecting the device token when eligible and supported.
-  // Nullopt from the model retains its ordinary full-row path. Chosen is
-  // published only after successful native completion.
-  Status RunPlainGenerationUnit(PreparedGeneration& unit);
-  // Independent scalar native units, with per-unit completion publication.
-  Status RunScalarGenerationUnits(std::span<PreparedGeneration> prepared);
+  Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared);
   // Execution health only: false prevents dispatch after a shared failure.
   // This is deliberately separate from native-reference retirement proof.
-  virtual bool GenerationCohortUsable() const { return true; }
-  // Model-specific workspace funded by the startup guard. Defaults preserve
-  // the existing families' sampling storage policy.
-  virtual Status PrepareSamplingScratchFor(Branch& branch, std::size_t rows) {
-    (void)branch;
-    (void)rows;
-    return {};
-  }
-  virtual void RetireSamplingScratchFor(Branch& branch) { (void)branch; }
+  bool GenerationCohortUsable() const;
+  // Sampling workspace lives with the active session and is retired by it.
+  Status PrepareSamplingScratchFor(Branch& branch, std::size_t rows);
+  void RetireSamplingScratchFor(Branch& branch);
   void ReserveBranchSamplingScratch(Branch& branch, std::size_t capacity);
   void DropBranchSamplingScratch(Branch& branch);
-  // Called once, after the native slots exist. Other model families retain
-  // one default branch and their existing scalar overrides.
+  // Called once, after the native slots exist.
   Status PrepareBranches(std::uint32_t count, std::uint32_t draft_depth);
   std::uint32_t BranchIndex(const Branch& branch) const;
   bool AnyBranchHasRetainedState() const;
@@ -1220,23 +1272,18 @@ class Llm : public Served {
   // model with one conversation has its default branch alone).
   //
   // One chunk: all[n_past, end) after n_past (all holds every token from
-  // position 0), `inject` with the drafter's pass; the last row's logits.
-  virtual Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all,
-                             std::uint32_t n_past, bool inject, std::vector<float>& logits) = 0;
+  // position 0); the shared pipeline updates its companion state and
+  // returns the last row's logits.
+  Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
+                     std::vector<float>& logits);
   // RunChunkFor for a plain greedy step with no caller of its row
-  // (DeviceGreedy): its token chosen on the device, the row not published.
-  // Nullopt for a family without that path (the row is then published).
-  virtual std::optional<Status> RunGreedyChunkFor(Branch& /*branch*/,
-                                                  std::span<const std::int32_t> /*all*/,
-                                                  std::uint32_t /*n_past*/,
-                                                  std::int32_t& /*token*/) {
-    return std::nullopt;
-  }
-  // Non-final, non-scoring prompt chunks may omit their unused head. Families
-  // without an explicit state-only graph retain their complete chunk path.
-  virtual Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,
-                                    std::uint32_t n_past, bool inject, bool want_head,
-                                    std::vector<float>& logits, PrefillHint next = {});
+  // with its token chosen on the device and no row published. Nullopt
+  // when the built pipeline has no device-token capability.
+
+  // Non-final, non-scoring prompt chunks may omit their unused head when
+  // the built pipeline supports a state-only graph.
+  Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
+                            bool want_head, std::vector<float>& logits, PrefillHint next);
   struct PreparedPrefill {
     PromptSession* session = nullptr;
     Branch* branch = nullptr;
@@ -1252,165 +1299,110 @@ class Llm : public Served {
     std::optional<std::int32_t>* chosen = nullptr;
     bool retired = false;
   };
-  virtual Status RunPreparedCausalWave(std::span<PreparedPrefill>, std::span<PreparedGeneration>) {
-    return std::unexpected("the model does not support mixed causal dispatch");
-  }
-  struct PrefillHeadModes {
-    std::optional<bool> next, after;
-  };
-  // Independent future cohorts: mixed head modes suppress that stage only.
-  static PrefillHeadModes FuturePrefillHeads(std::span<const PreparedPrefill> prepared);
+  Status RunPreparedCausalWave(std::span<PreparedPrefill> prompts,
+                               std::span<PreparedGeneration> generations);
   // Fund state before shared dispatch; a clean refusal leaves its completed
   // prefix usable and does not publish another owner's prepared history.
-  virtual Status PreparePrefillStateFor(Branch&, std::uint32_t, std::uint32_t) { return {}; }
+  Status PreparePrefillStateFor(Branch& branch, std::uint32_t past, std::uint32_t rows);
   // Legal scoring geometry, independently of currently paid output staging.
-  // Scalar-only adapters retain their actual one-row implementation.
-  virtual std::uint32_t ScoreChunkRowsFor(const Branch&) const { return 1; }
-  virtual Status RunPreparedPrefillWave(std::span<PreparedPrefill> prepared);
+  std::uint32_t ScoreChunkRowsFor(const Branch& branch) const;
+  Status RunPreparedPrefillWave(std::span<PreparedPrefill> prepared);
   // One speculative step from `pos`, the anchor `all.back()` (at pos, not
   // in the state yet): the verify's kept tokens (the anchor's accepted
   // drafts then the next token) and, with `logits`, each kept row's logits.
   // `prefix_kept`, when given, is set on a failure whose verify was undone
   // (a host judgement failing after the native verify completed): the
   // step's starting prefix still holds, as a wave's failed_prefix_valid.
-  virtual Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
-                             std::uint32_t left, std::vector<std::int32_t>& kept,
-                             std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
-                             bool* prefix_kept = nullptr) = 0;
+  Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
+                     std::uint32_t left, std::vector<std::int32_t>& kept,
+                     std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
+                     bool* prefix_kept);
   // Runs any pending restore or commit (the last verify's).
-  virtual Status SettleFor(Branch& branch) = 0;
-  virtual Status ClearStateFor(Branch& branch) = 0;
-  virtual bool StateUsableFor(const Branch& branch) const = 0;
+  Status SettleFor(Branch& branch);
+  Status ClearStateFor(Branch& branch);
+  bool StateUsableFor(const Branch& branch) const;
   // After a failed RunChunkFor or PrepareDecodeStateFor of this branch: true
   // when only the state's capacity refused it, before any dispatch, leaving
   // the state usable as it was. Waiting for peers' state to be freed may
-  // then let it succeed. Families without this distinction never claim it.
-  virtual bool StateRefusedFor(const Branch& /*branch*/) const { return false; }
-  // Completed-boundary adapter diagnostic, never an authority to submit.
+  // then let it succeed.
+  bool StateRefusedFor(const Branch& branch) const;
+  // Completed-boundary diagnostic, never an authority to submit.
   static void MarkCapacityRefused(Branch& branch, bool refused) {
     branch.capacity_refused_ = refused;
   }
   // Discards an unselected branch's native state (Branch::ReleaseIdleState).
-  virtual Status ReleaseIdleStateFor(Branch& /*branch*/) {
-    return std::unexpected("this model keeps no idle conversation state apart");
-  }
+  Status ReleaseIdleStateFor(Branch& branch);
   // A branch's native state spilled to its slot's spill file, and restored
   // (a clean capacity refusal: StateRefusedFor true, still spilled);
   // whether it is spilled, and what its spill holds; whether a request
   // open on the model's stream leases its state now.
-  virtual Status SpillFor(Branch& /*branch*/) {
-    return std::unexpected("this model keeps no idle conversation state apart");
-  }
-  // D-105's hooks over a branch's native slot: its live state, whether its
+  Status SpillFor(Branch& branch);
+  // D-105's operations on a branch's native slot: its live state, whether its
   // spill file holds its whole settled state, whether its last verify
   // still owes a restore, its adoption of a kept conversation, and where
   // its slots' spill files live.
   // Every live state whose spill file a record names, in file order: one
   // a stage (none: the model keeps nothing across a restart).
-  virtual std::vector<const engine::LiveState*> KeptLivesFor(const Branch& /*branch*/) const {
-    return {};
-  }
-  virtual bool KeptWholeFor(const Branch& /*branch*/) const { return false; }
-  virtual bool OwedFor(const Branch& /*branch*/) const { return false; }
-  virtual Status AdoptFor(Branch& /*branch*/, std::span<const engine::LiveState::Range> /*used*/) {
-    return std::unexpected("this model keeps no conversation across a restart");
-  }
+  std::vector<const engine::LiveState*> KeptLivesFor(const Branch& branch) const;
+  bool KeptWholeFor(const Branch& branch) const;
+  bool OwedFor(const Branch& branch) const;
+
   // Where each slot's stage spills (a file a stage). Empty: unnamed files.
-  // By default nowhere (a model that spills nothing).
   using StageSpillPlace =
       std::function<engine::LiveState::SpillPlace(std::uint32_t slot, std::uint32_t stage)>;
-  virtual void SetStageSpillPlaces(const StageSpillPlace& /*place*/) {}
-  virtual Status RestoreFor(Branch& /*branch*/) { return {}; }
-  virtual bool SpilledFor(const Branch& /*branch*/) const { return false; }
-  virtual std::uint64_t SpilledBytesFor(const Branch& /*branch*/) const { return 0; }
-  virtual std::uint64_t RetainedSpillBytesFor(const Branch& /*branch*/) const { return 0; }
-  virtual Status ReleaseRetainedSpillFor(Branch& /*branch*/) { return {}; }
-  virtual bool LeasedFor(const Branch& /*branch*/) const { return true; }
-  virtual std::uint64_t RefusedBytesFor(const Branch& /*branch*/) const { return 0; }
-  // What a spill of its resident state would write (SpillWriteBytes); by
-  // default all of it.
-  virtual std::uint64_t SpillWriteBytesFor(const Branch& branch) const {
-    return UsedStateBytesFor(branch);
-  }
-  virtual Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) = 0;
-  virtual std::uint64_t TargetStateBaseFor(const Branch& branch) const = 0;
-  virtual std::uint64_t TargetStateBytesFor(const Branch& branch) const = 0;
-  virtual std::uint64_t DrafterStateBaseFor(const Branch& branch) const = 0;
-  virtual std::uint64_t DrafterStateBytesFor(const Branch& branch) const = 0;
-  virtual std::uint64_t UsedStateBytesFor(const Branch& branch) const = 0;
-  virtual std::vector<engine::LiveState::Range> UsedStateRangesFor(const Branch& branch) const = 0;
-  virtual Status SaveUsedStateFor(Branch& branch, void* host,
-                                  std::span<const engine::LiveState::Range> ranges) = 0;
-  virtual Status RestoreUsedStateFor(Branch& branch, void* host,
-                                     std::span<const engine::LiveState::Range> ranges) = 0;
-  virtual std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRangesFor(
-      const Branch& branch, std::uint32_t positions) const = 0;
-  virtual Status PrepareRestoreStateFor(Branch& branch,
-                                        std::span<const engine::LiveState::Range> footprint) = 0;
-  virtual Status CopyCheckpointStateFor(Branch& branch, void* host,
-                                        std::span<const engine::LiveState::Range> ranges,
-                                        bool to_host) = 0;
-  // Position-aware restoration. By default unchecked bytes and a cursor (the
-  // tests' fakes); the shared runner's lifecycle authenticates its
-  // completed positions.
+  void SetStageSpillPlaces(const StageSpillPlace& place);
+  Status RestoreFor(Branch& branch);
+  bool SpilledFor(const Branch& branch) const;
+  std::uint64_t SpilledBytesFor(const Branch& branch) const;
+  std::uint64_t RetainedSpillBytesFor(const Branch& branch) const;
+  Status ReleaseRetainedSpillFor(Branch& branch);
+  bool LeasedFor(const Branch& branch) const;
+  std::uint64_t RefusedBytesFor(const Branch& branch) const;
+  // What a spill would write, excluding unchanged retained extents.
+  std::uint64_t SpillWriteBytesFor(const Branch& branch) const;
+  Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left);
+
+  std::uint64_t UsedStateBytesFor(const Branch& branch) const;
+  std::vector<engine::LiveState::Range> UsedStateRangesFor(const Branch& branch) const;
+  Status SaveUsedStateFor(Branch& branch, void* host,
+                          std::span<const engine::LiveState::Range> ranges);
+
+  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRangesFor(
+      const Branch& branch, std::uint32_t positions) const;
+
+  Status CopyCheckpointStateFor(Branch& branch, void* host,
+                                std::span<const engine::LiveState::Range> ranges, bool to_host);
+  // Position-aware restoration: the slot lifecycle authenticates completed
+  // positions before the host history can be restored.
   // `layout` is the kept layout ID (D-105) of the state being restored or
   // adopted: this process's own for its turn checkpoints, a kept record's
   // for what it names; the shared runner's lifecycle refuses another than
   // its own.
-  virtual Status PreparePositionRestoreFor(Branch& branch, std::uint32_t position,
-                                           std::uint32_t cursor,
-                                           std::span<const engine::LiveState::Range> footprint,
-                                           std::string_view layout) {
-    (void)position;
-    (void)cursor;
-    (void)layout;
-    return PrepareRestoreStateFor(branch, footprint);
+  Status PreparePositionRestoreFor(Branch& branch, std::uint32_t position, std::uint32_t cursor,
+                                   std::span<const engine::LiveState::Range> footprint,
+                                   std::string_view layout);
+  Status CheckCheckpointMetadataFor(const Branch& branch, std::uint32_t position,
+                                    std::uint32_t cursor,
+                                    std::span<const engine::LiveState::Range> footprint) const;
+  Status CompletePositionRestoreFor(Branch& branch, std::uint32_t position);
+  Status RestoreSnapshotFor(Branch& branch, void* host,
+                            std::span<const engine::LiveState::Range> ranges, std::uint32_t cursor,
+                            std::string_view layout);
+  Status AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens,
+                          std::uint32_t cursor, std::span<const engine::LiveState::Range> ranges,
+                          std::string_view layout);
+  Status CheckConversation(const chat::Conversation& conversation) const;
+  // A branch's completed cursor and persisted decoding policy.
+  std::uint32_t CursorFor(const Branch& branch) const;
+
+  void SaveDecodingStateFor(Branch& branch) { SaveBranchDecoding(branch); }
+  void RestoreDecodingStateFor(Branch& branch) { RestoreBranchDecoding(branch); }
+  execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const {
+    return BranchDecoding(branch);
   }
-  virtual Status CheckCheckpointMetadataFor(
-      const Branch& branch, std::uint32_t position, std::uint32_t cursor,
-      std::span<const engine::LiveState::Range> footprint) const {
-    (void)branch;
-    (void)position;
-    (void)cursor;
-    (void)footprint;
-    return {};
+  void RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveDepth& state) {
+    BranchDecoding(branch) = state;
   }
-  virtual Status CompletePositionRestoreFor(Branch& branch, std::uint32_t position) {
-    (void)branch;
-    (void)position;
-    return {};
-  }
-  virtual Status RestoreSnapshotFor(Branch& branch, void* host,
-                                    std::span<const engine::LiveState::Range> ranges,
-                                    std::uint32_t cursor, std::string_view layout) {
-    (void)cursor;
-    (void)layout;
-    return RestoreUsedStateFor(branch, host, ranges);
-  }
-  virtual Status AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens,
-                                  std::uint32_t cursor,
-                                  std::span<const engine::LiveState::Range> ranges,
-                                  std::string_view layout) {
-    (void)tokens;
-    (void)cursor;
-    (void)layout;
-    return AdoptFor(branch, ranges);
-  }
-  virtual Status CheckConversation(const chat::Conversation& conversation) const {
-    (void)conversation;
-    return {};
-  }
-  // A branch's cursor and decoding state; by default none (a model whose
-  // state has no cursor, and decodes at a fixed depth).
-  virtual std::uint32_t CursorFor(const Branch& /*branch*/) const { return 0; }
-  virtual void SetCursorFor(Branch& /*branch*/, std::uint32_t /*value*/) {}
-  virtual void SaveDecodingStateFor(Branch& /*branch*/) {}
-  virtual void RestoreDecodingStateFor(Branch& /*branch*/) {}
-  virtual execution::AdaptiveDepth TurnDecodingStateFor(const Branch& /*branch*/) const {
-    return execution::AdaptiveDepth(1);
-  }
-  virtual void RestoreTurnDecodingStateFor(Branch& /*branch*/,
-                                           const execution::AdaptiveDepth& /*state*/) {}
 
   // Live cooperative session facts, queried only at completed driver
   // boundaries. The session owns options/output; no duplicated remaining
@@ -1422,12 +1414,8 @@ class Llm : public Served {
   // a position in the conversation (greedy: the argmax), and whether the
   // target keeps a draft there (greedy: the argmax equals it); if not,
   // `next` is the token in its place.
-  bool sampling() const { return default_branch_.sampling_.has_value(); }
   bool sampling(const Branch& branch) const;
-  std::expected<std::int32_t, std::string> Choose(std::span<const float> row,
-                                                  std::uint64_t position);
-  std::expected<bool, std::string> Keep(std::span<const float> row, std::int32_t draft,
-                                        std::uint64_t position, std::int32_t& next);
+
   std::expected<std::int32_t, std::string> Choose(Branch& branch, std::span<const float> row,
                                                   std::uint64_t position);
   std::expected<bool, std::string> Keep(Branch& branch, std::span<const float> row,
@@ -1507,15 +1495,9 @@ class Llm : public Served {
   bool CapacityRefused(const Branch& branch) const;
   bool ReclaimFor(const Branch& branch);
 
- protected:
-  virtual std::uint32_t StepTokenBoundFor(const Branch& branch, std::uint32_t left) const {
-    return std::min(left, BranchDecoding(branch).maximum() + 1);
-  }
-  virtual std::size_t TokenScratchCapacityFor(const Branch&, std::size_t, std::uint32_t) const {
-    return 0;
-  }
-  bool ReserveTokenScratch(Branch& branch, std::size_t tokens, std::uint32_t left);
-  std::vector<std::int32_t>& VerifyTokens(Branch& branch) { return branch.verify_tokens_; }
+ private:
+  std::uint32_t StepTokenBoundFor(const Branch& branch, std::uint32_t left) const;
+
   bool ReserveTokens(Branch& branch, std::vector<std::int32_t>& tokens, MemoryCharge& charge,
                      std::size_t capacity);
   void ReleaseTokens(std::vector<std::int32_t>& tokens, MemoryCharge& charge);
@@ -1536,7 +1518,7 @@ class Llm : public Served {
   Status RestoreSpilled(Branch& branch, bool& refused);
   Status Spill(Branch& branch, bool set_aside);
 
- protected:
+ private:
   std::filesystem::path checkpoint_directory_;
   Kept kept_;
   std::uint64_t checkpoint_serial_ = 0;  // the next kept checkpoint file's
@@ -1549,6 +1531,69 @@ class Llm : public Served {
       log_(text);
     }
   }
+
+ private:
+  // One prompt chunk a unit, run as one wave (RunWave): each unit's result
+  // its own.
+  Status RunPrefill(std::span<PreparedPrefill> prepared);
+  // One plain decode row a unit (greedy on the device where `greedy` and
+  // the parts allow).
+  void RunPlain(std::span<PreparedGeneration> units);
+  // One speculative unit each.
+  void RunSpeculative(std::span<PreparedGeneration> units);
+  // A head row's logits from a step's outputs (`row` of them).
+  std::expected<std::vector<float>, std::string> LogitsRow(std::span<const std::byte> outputs,
+                                                           std::size_t row) const;
+  std::expected<std::size_t, std::string> HeadRows(std::span<const std::byte> outputs) const;
+  // The decoding orchestrators' drafter cursors follow a slot's positions
+  // after anything that changes its state from outside a unit.
+  void ResetDrafters(std::uint32_t slot);
+  void SyncDrafters(std::span<const engine::DecodeWork> work);
+  std::uint32_t Slot(const Branch& branch) const { return BranchIndex(branch); }
+  Status Built() const;
+  engine::DecodingPolicy Policy();
+
+  engine::PagedNode& node_ref_;
+  config::ModelEntry entry_;
+  std::filesystem::path store_;
+  std::filesystem::path spill_;
+  int index_;
+  LlmBuild build_;
+  StageSpillPlace stage_place_;
+  std::string architecture_;
+
+  // Declared before the runner, so it outlives it (LlmBuildParts::keep).
+  std::shared_ptr<void> keep_;
+  std::uint64_t startup_host_bytes_ = 0;
+  std::shared_ptr<engine::ExecutionMetadataAllowance> execution_metadata_{};
+  engine::RunnerOwner runner_;
+  std::optional<base::Sha256Digest> execution_identity_{};
+  std::optional<engine::WaveComposer> composer_;
+  std::optional<engine::DecodingOrchestrator> plain_;
+  std::optional<engine::DecodingOrchestrator> speculative_;
+  std::optional<execution::AdaptiveWaveMode> wave_mode_;
+  model::Batching caps_;
+  engine::PrefillOptions prefill_;
+  std::uint32_t logit_width_ = 0;
+  bool device_greedy_ = false;
+  bool device_verify_ = false;
+  std::uint32_t branch_depth_ = 0;
+  std::uint32_t context_margin_ = 0;
+  std::vector<engine::DrafterSpec> drafter_specs_;
+  LlmBuildParts::ChatSlice chat_;
+  std::vector<std::int32_t> chat_stops_;
+  std::uint32_t slots_ = 1;
+  std::vector<Branch*> active_branches_;
+  std::uint32_t verify_rows_ = 1;
+  // Per slot: its drafters' cursors to reset before its next speculative
+  // unit; and the judge's record of a verify's kept rows' logits, when the
+  // unit asked for them.
+  std::array<bool, kMaxBranches> reset_{};
+  std::array<bool, kMaxBranches> want_rows_{};
+  std::array<bool, kMaxBranches> verify_tokens_{};
+  std::array<std::vector<std::vector<float>>, kMaxBranches> verified_rows_{};
+  Counts counts_;
+  kernels::PlanRecordSink plan_report_sink_{};
 };
 
 // Buffer input owns its payment and exact encoded bytes, independently of the

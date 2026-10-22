@@ -17,7 +17,7 @@ places) and D-094 (the runtime wake).
 | Resource core | `scheduler/programs.h` | The task programs a driver posts: run, call, evict, a full swap (`SwapProgram`), a request's lease (`RequestProgram`), BP-S3's acquisition. Vendor-free; the fake backend's tests check them |
 | Engine (new, above the kernels) | `engine/` | The paged node (`paged_node.h`: device 0's providers, streams, io_uring, one catalog domain, the landing zone, the scheduler and its lanes on their threads, the shared workspace, requests), weights as extents (`paged_weights.h`), Qwen3.8's n-gram rows (`ple_rows.h`), the model runner over step programs (`model_runner.h`). CUDA builds only (it links the kernels); it reaches the device through the providers and the device runtime (`providers/device_runtime.h`), never the CUDA runtime itself ([portability.md](portability.md)) |
 | Services | `config` | The models a node serves: `[models.<name>]` (below) |
-| Programs | `runtime` | `commands.h` (the serving commands' arguments, vendor-free) and `serving.h` (the configured models on one node, the full swap, each model's turns, the commands; CUDA builds, but an LLM's conversation code, `llm.cc`, and the serving adapters over the shared runner, `engine_llm.h` and `engine_image.h`, build in every profile: [engine-backed models](#engine-backed-models)) |
+| Programs | `runtime` | `commands.h` (the serving commands' arguments, vendor-free) and `serving.h` (the configured models on one node, the full swap, each model's turns, the commands; CUDA builds, but an LLM's conversation code, `llm.cc`, and the serving adapters over the shared runner, `serving.h` and `engine_image.h`, build in every profile: [engine-backed models](#engine-backed-models)) |
 
 The harnesses (`benchmarks/`) drive the same engine, and `tests/support`'s
 `paged_node.h` and `paged_programs.h` name the node and the
@@ -762,7 +762,7 @@ open-file limit (D-102) stays as it is, for the chat route's connections.
 
 M3.6 replaces each family's serving class with one adapter per pipeline
 kind over the shared runner (D-107; [engine.md](engine.md#the-serving-adapter)):
-`EngineLlm` (`runtime/engine_llm.h`) for LLMs and `EngineImage`
+`Llm` (`runtime/serving.h`) for LLMs and `EngineImage`
 (`runtime/engine_image.h`) for image pipelines. `Server::Make` picks one by
 the pipeline kind of the model's spec (its settings', from the stored
 spec; a composition's, the image pipeline) for an architecture whose
@@ -797,11 +797,11 @@ is synthesized from a compiled profile or bound by a per-family binder.
 The v0 IDs in older reports are history. All LLM models (Gemma 2, Gemma 3,
 Gemma 4 26B-A4B and 31B, Qwen3.8 native ModelOpt with MTP and GGUF, DeepSeek V4
 with DSpark) and their drafters, as well as image compositions (Qwen-Image-2.1),
-are served on the shared engine through `EngineLlm` (`runtime/engine_llm.h`) and
+are served on the shared engine through `Llm` (`runtime/serving.h`) and
 `EngineImage` (`runtime/engine_image.h`). All legacy per-family serving classes,
 runners, plans and graph builders have been deleted.
 `src/runtime/serving.cc` (`Server::Make`) builds all LLM and drafter sessions
-through `ComponentLlmBuild` (`src/runtime/component_build.h`) onto `EngineLlm`
+through `ComponentLlmBuild` (`src/runtime/component_build.h`) onto `Llm`
 and image compositions onto `EngineImage`, gated by `src/runtime/component_admission.h`
 (validating the stored v1 `spec.json`, tensor formats, component catalog, and
 mapping recipes directly under D-119, and enforcing pinned source receipts and
@@ -840,21 +840,24 @@ references' prompts); the others serve their whole template. A conversation an M
 (record version 1, no longer read) is refused at start and its files
 discarded, once ([below](#conversations-kept-across-a-restart)).
 
-`EngineLlm` is an `Llm` like the M3 classes: the conversation code
-(branches, prompt and generation sessions, turn checkpoints, spills, kept
-conversations; `runtime/llm.cc`, which builds in every profile) is
-shared, and only the units of work differ. A branch is the request slot of
-its index; prompt chunks and joined prompt waves run as prefill steps (a
-state-only cut unless the chunk is the prompt's last), with the session's
-next two chunks as the step's futures; plain decode rows run in the plain
-decoding mode (a greedy row's token chosen on the device when its caller
-takes no logits), speculative steps in the speculative mode with every
-drafter the model has (D-068: a cascade or alternatives, one verify, the
-verdict the model's greedy agreement or seeded speculative sampling); every
-state verb is the slot lifecycle's, checked there, so the M3 defaults a
-legacy class could leave in place (a checkpoint's metadata unchecked, a
-restore's completion doing nothing, recovery by dropping plans) do not
-apply. Its settings are the model's (D-103: context, prefill chunk,
+`Llm final : Served` owns its branches, prompt and generation sessions,
+turn checkpoints, spills and kept conversations together with its shared
+`ModelRunner`. There is no family subclass or branch-operation vtable.
+The public session API uses direct calls into `runtime/llm_execution.cc`;
+`LlmBuild` and `LlmBuildParts` (`runtime/llm_build.h`) supply the component
+source, layout and capabilities. The source and node-owned runner lifetime
+remain separate from the wrapper's host conversation lifetime.
+
+A branch is the request slot of its index. Prompt chunks and joined prompt
+waves run as prefill steps, omitting unused heads, with upcoming chunks as
+futures. Plain decode runs in the plain decoding mode; speculative steps
+use the declared drafters and the shared decoding orchestrator. Every state
+operation goes through the slot lifecycle's position and completion checks.
+The fake-backend controls use this same concrete Llm and runner, injecting
+numeric failures at the step source and completion/copy failures at the
+provider or lifecycle boundaries.
+
+Its settings are the model's (D-103: context, prefill chunk,
 request slots, speculation), given to the build of its parts and capped by
 what they hold. The image adapter registers, pages and plans its runner
 like any model and runs its stages (encoder, denoiser steps, decoder) as

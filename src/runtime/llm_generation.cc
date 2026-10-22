@@ -191,8 +191,7 @@ std::expected<Llm::GenerationSession::Step, std::string> Llm::GenerationSession:
   }
   left_ = static_cast<std::uint32_t>(options_.max_tokens - out_.tokens.size());
   const auto step_tokens = model_.speculate_ ? model_.StepTokenBoundFor(branch_, left_) : 1U;
-  if (!model_.ReserveTokens(branch_, all_, all_charge_, all_.size() + step_tokens) ||
-      !model_.ReserveTokenScratch(branch_, all_.size(), left_)) {
+  if (!model_.ReserveTokens(branch_, all_, all_charge_, all_.size() + step_tokens)) {
     refusal_ = "native generation history exceeds the execution budget";
     if (defer_capacity) {
       return std::unexpected(refusal_);
@@ -240,10 +239,6 @@ Status Llm::GenerationSession::FailAfterAnchor(std::string error) {
 bool Llm::GreedyWithoutRows(const PreparedGeneration& unit) {
   return unit.branch != nullptr && unit.session != nullptr && !unit.step.need_logits &&
          !unit.branch->sampling_.has_value();
-}
-
-bool Llm::DeviceGreedy(const PreparedGeneration& unit) {
-  return !unit.step.speculative && GreedyWithoutRows(unit);
 }
 
 Status Llm::GenerationSession::ApplyChosen(std::int32_t token) {
@@ -370,60 +365,24 @@ Status Llm::GenerationSession::RunScalarStep(bool defer_capacity) {
     // SpecStep already updated the legacy counter, including partial failures.
     return ApplySpeculative(std::move(kept), std::move(logits), 0);
   }
-  if (!step->need_logits && !branch_.sampling_) {
-    std::int32_t token = 0;
-    if (auto ran = model_.RunGreedyChunkFor(branch_, step->all, step->position, token)) {
-      if (!*ran) {
-        return FailStep(ran->error());
-      }
-      model_.calibration_samples_.DecodeStep(step->position, 1.0, Seconds(Clock::now() - started));
-      return ApplyChosen(token);
-    }
-  }
-  std::vector<float> row;
-  if (auto ran = model_.RunChunkFor(branch_, step->all, step->position, false, row); !ran) {
-    return FailStep(ran.error());
+  PreparedGeneration unit{.session = this,
+                          .branch = &branch_,
+                          .step = *step,
+                          .row = {},
+                          .kept = {},
+                          .logits = {},
+                          .drafted = 0,
+                          .result = {},
+                          .failed_prefix_valid = false,
+                          .anchor_processed = false,
+                          .chosen = std::nullopt};
+  model_.RunPlain(std::span(&unit, 1));
+  if (!unit.result) {
+    return unit.anchor_processed ? FailAfterAnchor(unit.result.error())
+                                 : FailStep(unit.result.error(), unit.failed_prefix_valid);
   }
   model_.calibration_samples_.DecodeStep(step->position, 1.0, Seconds(Clock::now() - started));
-  return ApplyPlain(std::move(row));
-}
-
-Status Llm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) {
-  // Families without a shared implementation retain the ordinary one-slot
-  // unit. This fallback never advertises multi-request shared dispatch.
-  if (prepared.size() != 1) {
-    return Error("this model has no shared generation implementation");
-  }
-  PreparedGeneration& unit = prepared.front();
-  if (unit.step.speculative) {
-    return SpecStepFor(*unit.branch, unit.step.all, unit.step.position, unit.step.left, unit.kept,
-                       unit.step.need_logits ? &unit.logits : nullptr, unit.drafted,
-                       &unit.failed_prefix_valid);
-  }
-  return RunPlainGenerationUnit(unit);
-}
-
-Status Llm::RunPlainGenerationUnit(PreparedGeneration& unit) {
-  if (unit.step.speculative) return Error("a plain generation unit cannot be speculative");
-  unit.chosen.reset();
-  if (DeviceGreedy(unit)) {
-    std::int32_t token = 0;
-    if (auto ran = RunGreedyChunkFor(*unit.branch, unit.step.all, unit.step.position, token)) {
-      if (*ran) unit.chosen = token;
-      return *ran;
-    }
-  }
-  return RunChunkFor(*unit.branch, unit.step.all, unit.step.position, false, unit.row);
-}
-
-Status Llm::RunScalarGenerationUnits(std::span<PreparedGeneration> prepared) {
-  for (auto& unit : prepared) {
-    if (unit.step.speculative) return Error("independent scalar units require plain generation");
-    unit.result = RunPlainGenerationUnit(unit);
-    if (!unit.result && !GenerationCohortUsable()) return unit.result;
-    if (!unit.result) unit.failed_prefix_valid = StateUsableFor(*unit.branch);
-  }
-  return {};
+  return unit.chosen ? ApplyChosen(*unit.chosen) : ApplyPlain(std::move(unit.row));
 }
 
 Status Llm::RunGenerationWave(std::span<GenerationSession* const> sessions, bool defer_capacity) {
@@ -544,7 +503,6 @@ void Llm::GenerationSession::Close() {
   branch_.sampling_.reset();
   model_.RetireSamplingScratchFor(branch_);
   model_.ReleaseTokens(all_, all_charge_);
-  model_.ReleaseTokens(branch_.verify_tokens_, branch_.verify_tokens_charge_);
   branch_.generation_active_ = false;
   finished_ = true;
 }

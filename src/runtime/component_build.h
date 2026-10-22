@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The component engine's parts of an LLM served by EngineLlm (D-107;
-// docs/runtime-serving.md, "Engine-backed models"; runtime/engine_llm.h):
+// The component engine's parts of an LLM served by Llm (D-107;
+// docs/runtime-serving.md, "Engine-backed models"; runtime/serving.h):
 // from a v1 artifact (and its drafter's) to the spec, the stages' state
 // layouts, the batching and composition, the component step sources over
 // GGML's registry and lowering, the weights' places and the runner's own
@@ -31,7 +31,7 @@
 #include "kernels/common/lower.h"
 #include "runtime/component_admission.h"
 #include "runtime/component_domain.h"
-#include "runtime/engine_llm.h"
+#include "runtime/llm_build.h"
 #include "runtime/model_settings.h"
 #include "spec/spec.h"
 
@@ -105,9 +105,9 @@ struct ComponentBuildOptions {
 // device. An architecture whose mapping has no serving recipe is refused
 // at Setup, naming why.
 
-EngineBuild ComponentLlmBuild(engine::PagedNode& node, std::filesystem::path store,
-                              const config::ModelEntry& entry, int index,
-                              ComponentBuildOptions options = {});
+LlmBuild ComponentLlmBuild(engine::PagedNode& node, std::filesystem::path store,
+                           const config::ModelEntry& entry, int index,
+                           ComponentBuildOptions options = {});
 
 }  // namespace llmp::runtime
 

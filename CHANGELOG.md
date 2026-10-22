@@ -47,6 +47,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Scalar generation keeps its completed conversation prefix after a clean
+  dispatch refusal, so a retry can resume without clearing proven state.
+
 - Substitute model cohorts time-slice and preserve request continuations,
   allowing the original and other waiting models to progress (M3.5 U5c).
 

@@ -30,10 +30,10 @@ target_link_libraries(llmp_runtime PUBLIC llmp_artifact llmp_chat llmp_config ll
 
 # An LLM's conversations over the engine core (serving.h's Llm, llm.cc) and
 # the one serving adapter per pipeline kind over the shared runner
-# (engine_llm.h, engine_image.h; D-107), in every build profile: they name
+# (serving.h, engine_image.h; D-107), in every build profile: they name
 # no kernel library and link no device backend, so the tests run them on
 # the fake one.
-add_library(llmp_runtime_llm STATIC llm.cc llm_prompt.cc llm_generation.cc llm_mixed.cc llm_policy.cc component_domain.cc engine_llm.cc engine_image.cc snapshot_store.cc component_bindings.cc)
+add_library(llmp_runtime_llm STATIC llm.cc llm_prompt.cc llm_generation.cc llm_mixed.cc llm_policy.cc command_support.cc component_domain.cc llm_execution.cc reclaim_policy.cc engine_image.cc snapshot_store.cc component_bindings.cc)
 target_include_directories(llmp_runtime_llm PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_runtime_llm PUBLIC llmp_runtime llmp_engine_core llmp_sampling
                                                 llmp_chat llmp_tokenizer llmp_spec

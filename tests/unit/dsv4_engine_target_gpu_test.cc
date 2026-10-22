@@ -35,7 +35,6 @@
 #include "model/state_contract.h"
 #include "platform/host_probe.h"
 #include "runtime/component_build.h"
-#include "runtime/engine_llm.h"
 #include "runtime/memory_guard.h"
 #include "runtime/serving.h"
 #include "v1_frozen.h"
@@ -226,7 +225,7 @@ struct Owner {
     if (log) std::fclose(log);
   }
 };
-std::expected<StateImage, std::string> ReadState(Owner& life, rt::EngineLlm& model) {
+std::expected<StateImage, std::string> ReadState(Owner& life, rt::Llm& model) {
   StateImage state;
   auto& slots = model.runner().slots();
   auto& node = life.server->node();
@@ -323,7 +322,7 @@ std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, st
       return paid;
     // Only the new paid owner may take over both arms' retained host results.
     if (previous) previous->server.reset();
-    auto* model = dynamic_cast<rt::EngineLlm*>(life->server->Find("deepseek"));
+    auto* model = dynamic_cast<rt::Llm*>(life->server->Find("deepseek"));
     if (!model || model->logit_width() != kVocab || model->generation_wave_capacity() != 1)
       return std::unexpected("native target selected the wrong source or serving envelope");
     rt::SwapParts parts;

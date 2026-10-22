@@ -277,7 +277,7 @@ selected closure. A separately held destination refuses discard. A proven local
 failure while discarding the destination invalidates that slot; clean validation
 refusals preserve the existing state. An unproven device or shared-execution failure
 stops the cohort and preserves borrowed owners until retirement is established.
-`EngineLlm` forwards each host branch to its corresponding slot in `ModelRunner`
+`Llm` forwards each host branch to its corresponding slot in `ModelRunner`
 and proves retirement through a native fence before any borrowed owner is released.
 
 ## The shared slot lifecycle
@@ -705,9 +705,9 @@ How each family's speculation maps onto the shared engine (all migrations comple
 
 | Family | Maps onto | Migration milestone |
 | --- | --- | --- |
-| Qwen3.8 MTP | An autoregressive drafter with `catch_up` over its own stage (K, V and indexer cells truncating; the streams a per-row tap the target writes, snapshot); the target's K, V, indexer and completed block keys snapshot by row, its linear layers' state `kCommit` with generated component commits; bounded on-demand n-gram rows and chunk-feature inputs | Completed in M3.6 (slice G3b/G3c); served via `EngineLlm` |
-| DeepSeek V4 + DSpark | A block drafter (its fill the mask token) over its ring (a position ring the target's injection writes); the target's window cells, compressor rings and compressed rows snapshot by row, no commit; the exact mode a row-invariant verify | Completed in M3.6 (slice G4b); served via `EngineLlm` |
-| Gemma4 assistant | An anchored autoregressive drafter with `borrows_target` and `features`, its contract viewing the target's KV (`borrowed_from_target`) and its tap of the target's final-norm rows; the target's KV truncates (a ring holds a chunk's rows beside its window, so a rejected row is never read) | Completed in M3.6 (slice G2c); served via `EngineLlm` |
+| Qwen3.8 MTP | An autoregressive drafter with `catch_up` over its own stage (K, V and indexer cells truncating; the streams a per-row tap the target writes, snapshot); the target's K, V, indexer and completed block keys snapshot by row, its linear layers' state `kCommit` with generated component commits; bounded on-demand n-gram rows and chunk-feature inputs | Completed in M3.6 (slice G3b/G3c); served via `Llm` |
+| DeepSeek V4 + DSpark | A block drafter (its fill the mask token) over its ring (a position ring the target's injection writes); the target's window cells, compressor rings and compressed rows snapshot by row, no commit; the exact mode a row-invariant verify | Completed in M3.6 (slice G4b); served via `Llm` |
+| Gemma4 assistant | An anchored autoregressive drafter with `borrows_target` and `features`, its contract viewing the target's KV (`borrowed_from_target`) and its tap of the target's final-norm rows; the target's KV truncates (a ring holds a chunk's rows beside its window, so a rejected row is never read) | Completed in M3.6 (slice G2c); served via `Llm` |
 
 What the shared pieces reproduce of each family (completed in M3.6):
 
@@ -721,12 +721,12 @@ What the shared pieces reproduce of each family (completed in M3.6):
 
 ## The serving adapter
 
-One adapter per pipeline kind (D-107; [runtime-serving.md](runtime-serving.md#engine-backed-models))
-replaces the M3 serving classes: `runtime/engine_llm.h` (`EngineLlm final :
-Llm`) and `runtime/engine_image.h` (`EngineImage final : Image`). Both
-are in the runtime's `llmp_runtime_llm` library with `Llm`'s conversation
-code (`runtime/llm.cc`, `runtime/llm_prompt.cc`, `runtime/llm_generation.cc`,
-`runtime/llm_mixed.cc`), every build profile: they reach the engine through
+The concrete `Llm final : Served` (`runtime/serving.h`) owns both its
+conversation sessions and the single shared runner. Its execution lives in
+`runtime/llm_execution.cc`; host conversation operations remain in `llm.cc`,
+`llm_prompt.cc`, `llm_generation.cc` and `llm_mixed.cc`. `Served` retains the
+LLM/image boundary, with `EngineImage final : Image` in `runtime/engine_image.h`.
+Both pipelines build in every profile in `llmp_runtime_llm`: they reach the engine through
 the core and name no kernel library, so `engine_llm_test` drives a whole `Llm`
 session over the fake backend.
 
@@ -740,8 +740,8 @@ owns typed-stage invocation, per-stage closures, geometry replacement,
 node-owned root retains plans and backing after frontend destruction until
 authenticated fences and physical retirement.
 
-An LLM adapter is made with its model's settings (D-103) and an `EngineBuild`
-that turns them into its parts (`EngineLlmParts`): the `RunnerConfig`
+A concrete LLM is made with its model's settings (D-103) and an `LlmBuild`
+that turns them into its parts (`LlmBuildParts`): the `RunnerConfig`
 (every stage's layout, from the settings' context and chunk; the bound
 spec's digest; the stages' weights, setup shapes, launch, verify rows and
 commits), the step source, the components' `model::Batching`, the
@@ -779,8 +779,8 @@ context reading all of it, and with a drafter a verify of its rows and a draft
 pass, joined and alone. All supported LLM architectures (Gemma 2, Gemma 3,
 Gemma 4 26B-A4B and 31B, Qwen2, Llama, Mistral, Qwen3.8, and DeepSeek V4 Flash)
 and drafters (`gemma4_assistant`, `dspark`) are built by `ComponentLlmBuild`
-(`src/runtime/component_build.h`) and served by `EngineLlm`
-(`src/runtime/engine_llm.h`); reference-fleet aliases are pinned to their frozen
+(`src/runtime/component_build.h`) and served by `Llm`
+(`src/runtime/serving.h`); reference-fleet aliases are pinned to their frozen
 digests in `src/runtime/approvals.cc`, while arbitrary v1 artifacts of mapped
 architectures are admitted directly by `src/runtime/component_admission.cc`
 (D-119) using `ServingRecipeOf(mapping)` (`kDefaultServingRecipe` when the
@@ -919,7 +919,7 @@ When a new model architecture uses existing components in `src/components/`
    - Add synthesis and mapping validation cases in `tests/unit/spec_test.cc`,
      container normalization tests in `tests/unit/import_normalize_test.cc`,
      admission checks in `tests/unit/component_admission_test.cc`, and a GPU
-     import + `EngineLlm` serving smoke test (such as
+     import + `Llm` serving smoke test (such as
      `tests/unit/dense_decoder_serving_gpu_test.cc`).
 
 ### How to add a component
@@ -1075,7 +1075,7 @@ checkpoint container or quantization family:
 - **Resumable prompt preparation**: a runtime branch's `PromptSession` owns
   the bounded prompt and advances reuse/restore, one ordinary prefill chunk,
   or checkpoint capture as separate completed units (`runtime/llm_prompt.cc`,
-  `engine/prefill.h`). This seam applies to all LLMs on `EngineLlm` and
+  `engine/prefill.h`). This seam applies to all LLMs on `Llm` and
   interleaves prompt units and peer decode without moving a borrowed request
   frame.
 - **Deterministic top-k and sparse prefill attention**: planner patterns and

@@ -679,7 +679,7 @@ D-122).
       and an unpinned artifact of one architecture and encoding set receive
       identical qualifications (tested); an `sm_86` plan report names what
       it lacks.
-- [ ] **U5 Front-door and scheduling seams** — **U5a complete (2026-10-22):**
+- [x] **U5 Front-door and scheduling seams** — **U5a complete (2026-10-22):**
       Channel, Stream and I/O use route-owned start, delta,
       finish, error and keepalive events; the Messages encoder has indexed
       text/tool blocks and incremental JSON inputs. The Messages route is
@@ -698,20 +698,21 @@ D-122).
       per-attempt phases owning snapshots, protection, rollback and accounting.
       Native builds, all 3,483 shared checks and 13 actual-model swap, recovery
       and observer cases pass on spark-b without skips; whole and adversarial
-      reviews are clean. The concrete LLM interface remains open.
-      Native focused, shared and affected tokenizer/template checks
-      pass. The remaining serving-loop changes also take the
-      heavy review path: a per-route stream encoder (`Channel` stops hard-coding
-      OpenAI SSE; Messages owns `message_start`, indexed blocks,
-      `input_json_delta` and `ping`); structured message parts (text,
-      `tool_use`, `tool_result`, image) replacing the text-only
-      `chat::Message`; the scheduler-side cohort policy is reusable by M4's
-      conductor and the throughput-first scheduling item below; `Llm` (70 virtuals, one
-      implementation) collapsed to the concrete engine type or the narrow
-      interface its callers use; `Server::Activate` and `Server::Reclaim`
-      split into named phases. **Exit:** the tool-call and Messages items
-      build on these seams with no OpenAI-specific code in shared paths, and
-      the cohort policy has unit tests without a socket.
+      reviews are clean. **U5e complete (2026-10-22):** one concrete `Llm`
+      replaces the 70-hook adapter; tests use the real engine with fake providers.
+      Scalar clean refusal now preserves its proven prefix, matching wave
+      recovery. Whole and adversarial reviews are clean. The combined wave
+      passed 3,525 shared checks, 461 AArch64 no-CUDA checks and 31 actual-model
+      state, speculation, swap and image cases across both Sparks, with no
+      required skips. The final isolated native build also passes. Tool calls
+      and Messages remain separate open plan items below.
+      Each serving-loop change took the heavy review path. Route encoders own
+      protocol events, structured message parts retain text and tool boundaries,
+      and shared paths have no OpenAI-specific encoding. The scheduler cohort
+      policy has socket-free tests and is reusable by M4's conductor and the
+      throughput-first scheduling item below. Activation and reclamation use
+      named phases, and the LLM has one concrete implementation. These seams
+      are ready for the separate tool-call and Messages work.
 - [ ] **U6 IR and planner structure:** **U6a complete (2026-10-21):**
       primitive/fused operation identity, parameter size, arity, write set,
       layout, partition and decomposition traits share one checked table;

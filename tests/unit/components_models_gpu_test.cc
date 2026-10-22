@@ -7,7 +7,7 @@
 // built into a prefill step and three decode steps (components/step.h BuildStep) and
 // run by the reference executor (double arithmetic over the decoded
 // weights, F16 KV state), against the served model on the GPU (the
-// runtime's server over the shared engine, runtime/engine_llm.h) for the
+// runtime's server over the shared engine, runtime/serving.h) for the
 // same prompt and the tokens it picks. The served path quantizes
 // activations for its quantized products (Q8_1), rounds attention's
 // operands to F16 and fuses norms, so the logits agree to a tolerance, not

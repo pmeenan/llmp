@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// DeepSeek V4 Flash served by the shared engine (D-107; runtime/engine_llm.h
+// DeepSeek V4 Flash served by the shared engine (D-107; runtime/serving.h
 // over the component step source) on the published v1 artifacts (label
 // `models`; tests/support/v1_frozen.h V1Store: the target d2046349 and the
 // DSpark drafter 6b1b9dca), through the runtime's server as the service drives it: the
@@ -79,7 +79,6 @@
 #include "plain_token_serving_checks.h"
 #include "runtime/commands.h"
 #include "runtime/component_build.h"
-#include "runtime/engine_llm.h"
 #include "runtime/model_settings.h"
 #include "runtime/serving.h"
 #include "v1_frozen.h"
@@ -235,7 +234,7 @@ class Dsv4EngineBase : public testing::Test {
     if (auto r = life->server->Start(true); !r) return r;
     model = dynamic_cast<rt::Llm*>(life->server->Find("deepseek"));
     if (model == nullptr) return std::unexpected("configured DeepSeek model missing");
-    if (dynamic_cast<rt::EngineLlm*>(model) == nullptr)
+    if (dynamic_cast<rt::Llm*>(model) == nullptr)
       return std::unexpected("DeepSeek is not on the component engine");
     rt::SwapParts parts;
     if (auto r = life->server->Activate(*model, parts); !r) return r;
@@ -283,7 +282,7 @@ class Dsv4EngineBase : public testing::Test {
     if (!scratch.empty()) fs::remove_all(scratch);
   }
   rt::Llm::Branch& Branch(std::uint32_t id) { return **model->branch(id); }
-  rt::EngineLlm& Engine() { return dynamic_cast<rt::EngineLlm&>(*model); }
+  rt::Llm& Engine() { return dynamic_cast<rt::Llm&>(*model); }
   std::string Log() const {
     std::string text;
     (void)std::fflush(log);
@@ -440,7 +439,7 @@ TEST_F(Dsv4EngineTarget, PlainTokensAndRowsAgreeOnTheEngine) {
 
 // The same with DSpark configured and its joined waves forced plain (the
 // token-only C2 waves): a lone owner speculates, so only the joined waves
-// and a speculative step with one row left (plain, EngineLlm::
+// and a speculative step with one row left (plain, Llm::
 // RunPreparedGenerationWave) choose on the device. The lone owner's
 // first step keeps two of its three rows on this prompt (greedy decoding is
 // deterministic, so is the count): one device token; the joined pair's two
@@ -520,7 +519,7 @@ TEST_F(Dsv4EngineTarget, LogitRowsAreTheModelsWidthAndContinuationRowsComplete) 
 
 // One owner's generation after `first` tokens, run alone to its end: the
 // ordinary scalar path (a lone request speculates).
-rt::Status RunToEnd(rt::EngineLlm& llm, rt::Llm::GenerationSession& session) {
+rt::Status RunToEnd(rt::Llm& llm, rt::Llm::GenerationSession& session) {
   for (unsigned guard = 0; !session.done(); ++guard) {
     if (guard > 64) return std::unexpected("a lone generation made no progress");
     std::array<rt::Llm::GenerationSession*, 1> one{&session};
@@ -1120,7 +1119,7 @@ TEST(Dsv4EngineLowering, EveryServingProgramBindsTheCompleteExpertDomain) {
     if (!checked && seen.failure.empty()) seen.failure = checked.error();
     return checked;
   };
-  auto model = std::make_unique<rt::EngineLlm>(
+  auto model = std::make_unique<rt::Llm>(
       node, entry, *settings, roles, 0,
       rt::ComponentLlmBuild(node, installed, entry, 0, std::move(options)));
   rt::RequestMemory tokens{1ULL << 20U};

@@ -75,6 +75,7 @@ class SnapshotStore {
 
  private:
   friend class Llm;
+  friend struct SnapshotStoreTestAccess;
   struct CaptureView {
     void* payload = nullptr;
     std::span<const engine::LiveState::Range> ranges;

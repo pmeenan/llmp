@@ -40,7 +40,6 @@
 #include "base/sha256.h"
 #include "engine/live_state.h"
 #include "engine/paged_node.h"
-#include "runtime/engine_llm.h"
 #include "runtime/serving.h"
 #include "v1_frozen.h"
 
@@ -90,7 +89,7 @@ struct Owner {
 
 // The complete used state of slot 0, every stage, hashed through pinned host
 // memory the test funds beside the node's catalog.
-std::expected<std::string, std::string> StateImage(Owner& own, rt::EngineLlm& model) {
+std::expected<std::string, std::string> StateImage(Owner& own, rt::Llm& model) {
   auto& slots = model.runner().slots();
   auto& node = own.server->node();
   constexpr std::uint64_t kPart = 1ULL << 20U;
@@ -172,14 +171,14 @@ std::expected<Observations, std::string> RunArm(const Profile& profile, const Ar
   const auto completed = [&]() -> rt::Status {
     if (auto started = own->server->Start(true); !started) return started;
     auto* model = dynamic_cast<rt::Llm*>(own->server->Find("gemma"));
-    if (model == nullptr || dynamic_cast<rt::EngineLlm*>(model) == nullptr)
+    if (model == nullptr || dynamic_cast<rt::Llm*>(model) == nullptr)
       return std::unexpected("the pair is not on the component engine");
     if (!model->speculative()) return std::unexpected("the assistant is not the model's drafter");
     if (model->logit_width() != kVocab || model->settings().context.value != kContext ||
         model->settings().prefill_chunk.value != profile.prefill_chunk ||
         model->settings().max_slots.value != kSlots)
       return std::unexpected("the pair changed the approved execution recipe");
-    auto& engine = dynamic_cast<rt::EngineLlm&>(*model);
+    auto& engine = dynamic_cast<rt::Llm&>(*model);
     rt::SwapParts parts;
     if (auto activated = own->server->Activate(*model, parts); !activated) return activated;
     auto branch = model->branch(0);

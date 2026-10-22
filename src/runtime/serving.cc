@@ -53,7 +53,6 @@
 #include "runtime/component_build.h"
 #include "runtime/component_image_build.h"
 #include "runtime/engine_image.h"
-#include "runtime/engine_llm.h"
 #include "runtime/intake_limits.h"
 #include "runtime/memory_guard.h"
 #include "runtime/prefill.h"
@@ -243,7 +242,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
       case spec::PipelineKind::kLlm: {
         if (AutomaticStartup() && !compiler_)
           compiler_ = std::make_shared<engine::SharedCompilerAllowance>();
-        auto llm = std::make_unique<EngineLlm>(
+        auto llm = std::make_unique<Llm>(
             node_, entry, settings, roles_, index,
             ComponentLlmBuild(node_, roles_.installed, entry, index,
                               {

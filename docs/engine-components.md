@@ -1653,7 +1653,7 @@ parallelism with as many experts as devices (`partition.cc`) is not
 reachable for DeepSeek on two Sparks (256 experts) and is left as it is.
 
 G4c1 now executes the complete fixed prepared DeepSeek target through the
-shared component factory, EngineLlm and ModelRunner, including checked token-hash
+shared component factory, Llm and ModelRunner, including checked token-hash
 rows and the actual compressor inputs. Construction is prepaid before parsing;
 the reader uses unused space in the existing compiler allowance rather than
 adding another charge. State-only prefill retains all persistent state writes
@@ -3161,7 +3161,7 @@ dispatch instrumentation. The cleaned correction also passed a model-free
 of the same recorded program. This component-only test is separate from the
 full-vocabulary diagnostic and does not cover target/drafter state. The bounded owned-domain
 [joined state/replay screen](experiments/m36-numerical-audit/qwen-joined-mtp.md)
-passes. The actual EngineLlm/StateKeeper C2 control additionally preserves both
+passes. The actual Llm/StateKeeper C2 control additionally preserves both
 stages of two conversations across sequential owners: cold hydration executes
 no prefix, and eight fresh continuation heads plus complete initialized-state
 coordinates and payloads match the same selected implementation. It uses the
@@ -3182,7 +3182,7 @@ as `gemma3-4b-f16-kv-device-v1`. Those IDs are bumped and old kept state
 discarded rather than migrated; per-model settings and calibration
 (D-103) are re-keyed from family to spec.
 
-**As built: the serving adapters** (2026-10-09). `runtime/engine_llm.h`
+**As built: the serving adapters** (2026-10-09). `runtime/serving.h`
 and `runtime/engine_image.h` are the one adapter of the LLM and image
 pipeline kinds over the shared runner ([engine.md](engine.md#the-serving-adapter),
 [runtime-serving.md](runtime-serving.md#engine-backed-models)), every

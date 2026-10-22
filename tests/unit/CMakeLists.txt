@@ -127,15 +127,13 @@ add_executable(api_test api_test.cc stream_encoder_test.cc)
 target_link_libraries(api_test PRIVATE llmp_runtime llmp_json)
 llmp_gtest(api_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-# The actual Llm loops with fake completed chunks; no GPU work. Serving's
-# Llm implementation is currently linked only in CUDA profiles.
-if(LLMP_CUDA)
-  add_executable(llm_scores_test llm_scores_test.cc)
-  target_link_libraries(llm_scores_test PRIVATE llmp_runtime_serving)
-  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
-  target_link_options(llm_scores_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
-  llmp_gtest(llm_scores_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-endif()
+# The concrete Llm loops and lifecycle use the real runner on the fake device.
+add_executable(llm_scores_test llm_scores_test.cc)
+target_link_libraries(llm_scores_test PRIVATE llmp_runtime_llm llmp_engine_core
+                                              llmp_fake_step_source llmp_fake_device_backend
+                                              llmp_platform)
+llmp_gtest(llm_scores_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 # The resource core: the catalog and the memory manager's policy, on no
 # vendor SDK (D-026).
@@ -643,7 +641,7 @@ target_link_libraries(anchored_drafter_test PRIVATE llmp_engine_core llmp_fake_s
 llmp_gtest(anchored_drafter_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-# The LLM serving adapter over the shared runner (runtime/engine_llm.h):
+# The LLM serving adapter over the shared runner (runtime/serving.h):
 # Llm's conversations, waves, speculation with two drafters, spills, turn
 # checkpoints, recovery and kept conversations in a file a stage (D-105's
 # record version 2), over the same fake step source.
@@ -651,10 +649,19 @@ add_executable(execution_contract_test execution_contract_test.cc)
 target_link_libraries(execution_contract_test PRIVATE llmp_engine_core llmp_warnings)
 llmp_gtest(execution_contract_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+add_executable(llm_prompt_sessions_test llm_prompt_sessions_test.cc)
+target_link_libraries(llm_prompt_sessions_test PRIVATE llmp_runtime_llm llmp_engine_core
+                                                       llmp_fake_step_source llmp_fake_device_backend
+                                                       llmp_platform)
+llmp_gtest(llm_prompt_sessions_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
 add_executable(snapshot_store_test snapshot_store_test.cc)
-target_link_libraries(snapshot_store_test PRIVATE llmp_runtime_llm llmp_fake_device_backend
-                                                    llmp_warnings)
-llmp_gtest(snapshot_store_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit)
+target_link_libraries(snapshot_store_test PRIVATE llmp_runtime_llm llmp_engine_core
+                                                    llmp_fake_step_source llmp_fake_device_backend
+                                                    llmp_platform llmp_warnings)
+llmp_gtest(snapshot_store_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 add_executable(engine_image_test engine_image_test.cc)
 target_link_libraries(engine_image_test PRIVATE llmp_runtime_llm llmp_fake_device_backend

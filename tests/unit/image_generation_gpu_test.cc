@@ -40,8 +40,8 @@
 #include "platform/kept_files.h"
 #include "providers/device_runtime.h"
 #include "runtime/component_image_build.h"
-#include "runtime/engine_llm.h"
 #include "runtime/memory_guard.h"
+#include "runtime/serving.h"
 #include "tokenizer/hf.h"
 #include "v1_frozen.h"
 
@@ -1278,7 +1278,7 @@ struct ServerGrowthLifetime {
     // Server owns its snapshot; clearing the caller's handoff cannot release it.
     options.diagnostic_prepared_images.clear();
     image = dynamic_cast<rt::EngineImage*>(server->Find("image"));
-    llm = dynamic_cast<rt::EngineLlm*>(server->Find("gemma"));
+    llm = dynamic_cast<rt::Llm*>(server->Find("gemma"));
     if (!image || (!quality && !llm))
       return Error("Server did not construct the shared image/LLM adapters");
     if (ordinary) {

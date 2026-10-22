@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "runtime/engine_llm.h"
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -14,6 +12,7 @@
 #include "engine/draft_companions.h"
 #include "model/state_contract.h"
 #include "runtime/model_settings.h"
+#include "runtime/serving.h"
 #include "runtime/serving_support.h"
 
 namespace llmp::runtime {
@@ -29,10 +28,10 @@ std::int32_t Argmax(std::span<const float> row) {
 
 }  // namespace
 
-EngineLlm::EngineLlm(en::PagedNode& node, const config::ModelEntry& entry,
-                     const ModelSettings& settings, const config::RuntimeRoles& roles, int index,
-                     EngineBuild build)
-    : node_ref_(node),
+Llm::Llm(en::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
+         const config::RuntimeRoles& roles, int index, LlmBuild build)
+    : default_branch_(*this),
+      node_ref_(node),
       entry_(entry),
       store_(roles.installed),
       spill_(roles.spill),
@@ -49,9 +48,9 @@ EngineLlm::EngineLlm(en::PagedNode& node, const config::ModelEntry& entry,
                                      static_cast<std::uint32_t>(kMaxBranches));
 }
 
-EngineLlm::~EngineLlm() = default;
+Llm::~Llm() = default;
 
-Status EngineLlm::Built() const {
+Status Llm::Built() const {
   if (!runner_ || !composer_ || !plain_) return Error(name_ + " is not set up");
   if (auto identity = ExecutionIdentity(); !identity) return Error(identity.error());
   return {};
@@ -59,12 +58,12 @@ Status EngineLlm::Built() const {
 
 // ------------------------------------------------------------------ its life
 
-en::PagedModel& EngineLlm::paged() {
+en::PagedModel& Llm::paged() {
   base::Check(static_cast<bool>(runner_), "an engine-backed model's runner before its Setup");
   return *runner_;
 }
 
-Status EngineLlm::Setup() {
+Status Llm::Setup() {
   if (static_cast<bool>(runner_)) return Error(std::format("model {}: set up already", name_));
   if (!build_) return Error(std::format("model {}: no component pipeline builds it", name_));
   auto parts = build_(settings_);
@@ -180,90 +179,86 @@ Status EngineLlm::Setup() {
       slots_, branch_depth_ ? branch_depth_ : std::clamp<std::uint32_t>(verify_rows_ - 1, 1, 7));
 }
 
-Status EngineLlm::Register() {
+Status Llm::Register() {
   if (auto built = Built(); !built) return built;
   return runner_->Register();
 }
 
-Status EngineLlm::Bind() {
+Status Llm::Bind() {
   if (auto built = Built(); !built) return built;
   return runner_->Bind();
 }
 
-std::uint64_t EngineLlm::activations_needed() const {
+std::uint64_t Llm::activations_needed() const {
   return runner_ ? runner_->activations_needed() : 0;
 }
-std::uint64_t EngineLlm::pool_needed() const { return runner_ ? runner_->pool_needed() : 0; }
-std::uint64_t EngineLlm::host_input_bytes() const {
+std::uint64_t Llm::pool_needed() const { return runner_ ? runner_->pool_needed() : 0; }
+std::uint64_t Llm::host_input_bytes() const {
   // Beside the runner's staging: per slot a retained frontier and a
   // prepared row, and the sampling candidates' bound (2 × vocabulary).
   const std::uint64_t heap = std::uint64_t{slots_} * logit_width_ *
                              (2 * sizeof(float) + 2 * sizeof(execution::SamplingCandidate));
   return (runner_ ? runner_->host_input_bytes() : 0) + heap;
 }
-std::uint64_t EngineLlm::plan_floor_bytes() const {
-  return runner_ ? runner_->plan_floor_bytes() : 0;
-}
+std::uint64_t Llm::plan_floor_bytes() const { return runner_ ? runner_->plan_floor_bytes() : 0; }
 
-std::string EngineLlm::plan_report() const { return runner_ ? runner_->plan_report() : ""; }
-void EngineLlm::set_plan_report_sink(kernels::PlanRecordSink sink) {
+std::string Llm::plan_report() const { return runner_ ? runner_->plan_report() : ""; }
+void Llm::set_plan_report_sink(kernels::PlanRecordSink sink) {
   plan_report_sink_ = std::move(sink);
 }
-void EngineLlm::ReportPlans(const kernels::PlanRecordSink& sink) const {
+void Llm::ReportPlans(const kernels::PlanRecordSink& sink) const {
   if (runner_) runner_->ReportPlans(sink);
 }
 
-std::string EngineLlm::slots_report() const {
+std::string Llm::slots_report() const {
   return std::format("{} request slot{} ({}: {})", slots_, slots_ == 1 ? "" : "s",
                      SourceName(settings_.max_slots.source), settings_.max_slots.basis);
 }
 
-void EngineLlm::ReclaimCandidates(std::uint32_t owner, bool running,
-                                  std::vector<memory::ReclaimCandidate>& out) {
+void Llm::ReclaimCandidates(std::uint32_t owner, bool running,
+                            std::vector<memory::ReclaimCandidate>& out) {
   if (runner_) runner_->ReclaimCandidates(owner, running, out);
 }
-std::uint64_t EngineLlm::Reclaim(memory::ReclaimKind kind, std::uint64_t id) {
+std::uint64_t Llm::Reclaim(memory::ReclaimKind kind, std::uint64_t id) {
   return runner_ ? runner_->Reclaim(kind, id) : 0;
 }
-std::vector<catalog::ExtentId> EngineLlm::weights() const {
+std::vector<catalog::ExtentId> Llm::weights() const {
   return runner_ ? runner_->weights() : std::vector<catalog::ExtentId>{};
 }
-std::vector<catalog::ExtentId> EngineLlm::state() const {
+std::vector<catalog::ExtentId> Llm::state() const {
   return runner_ ? runner_->slots().state() : std::vector<catalog::ExtentId>{};
 }
-std::vector<catalog::ExtentId> EngineLlm::kept_state() const {
+std::vector<catalog::ExtentId> Llm::kept_state() const {
   return runner_ ? runner_->slots().kept_state() : std::vector<catalog::ExtentId>{};
 }
-std::vector<catalog::ExtentId> EngineLlm::unchanged_state() const {
+std::vector<catalog::ExtentId> Llm::unchanged_state() const {
   return runner_ ? runner_->slots().unchanged_state() : std::vector<catalog::ExtentId>{};
 }
-void EngineLlm::StateWrittenBack(bool whole) {
+void Llm::StateWrittenBack(bool whole) {
   if (runner_) runner_->slots().StateWrittenBack(whole);
 }
-const catalog::Closure& EngineLlm::everything() const {
+const catalog::Closure& Llm::everything() const {
   base::Check(static_cast<bool>(runner_), "an engine-backed model's closure before its Setup");
   return runner_->slots().everything();
 }
-const catalog::Closure& EngineLlm::request_closure() const {
+const catalog::Closure& Llm::request_closure() const {
   base::Check(static_cast<bool>(runner_), "an engine-backed model's closure before its Setup");
   return runner_->slots().execution();
 }
-Status EngineLlm::PrepareDefaultRequest() {
+Status Llm::PrepareDefaultRequest() {
   std::array<Branch*, 1> selected{&default_branch()};
   return SelectBranches(selected);
 }
-std::uint64_t EngineLlm::weight_read_bytes() const {
-  return runner_ ? runner_->weight_read_bytes() : 0;
-}
-Status EngineLlm::CheckPlaces() {
+std::uint64_t Llm::weight_read_bytes() const { return runner_ ? runner_->weight_read_bytes() : 0; }
+Status Llm::CheckPlaces() {
   if (auto built = Built(); !built) return built;
   return runner_->slots().CheckPlaces();
 }
-void EngineLlm::DropPlans() {
+void Llm::DropPlans() {
   if (runner_) runner_->DropPlans();
 }
 
-Status EngineLlm::RecoverInPlace() {
+Status Llm::RecoverInPlace() {
   if (auto built = Built(); !built) return built;
   auto discarded =
       runner_->slots().RecoverInPlace([this](std::uint32_t slot) { UnkeepSlot(slot); });
@@ -276,7 +271,7 @@ Status EngineLlm::RecoverInPlace() {
   return {};
 }
 
-GraphCounts EngineLlm::graphs() const {
+GraphCounts Llm::graphs() const {
   if (!runner_) return {};
   const en::GraphStats& g = runner_->graph_stats();
   return {.eager = g.eager,
@@ -286,11 +281,11 @@ GraphCounts EngineLlm::graphs() const {
           .kept = runner_->plans().graphs()};
 }
 
-std::string EngineLlm::violations() const {
+std::string Llm::violations() const {
   return runner_ ? runner_->coverage().first_violation : std::string();
 }
 
-std::string EngineLlm::extra() const {
+std::string Llm::extra() const {
   return std::format(
       R"({{"engine":"component","architecture":"{}","slots":{},"speculative":{},"verify_rows":{},"joined_prefill_steps":{},"joined_prefill_rows":{},"joined_causal_steps":{},"joined_causal_rows":{},"joined_waves":{},"joined_units":{},"speculative_units":{},"drafted":{},"accepted":{},"discarded":{},"greedy_tokens":{},"runner":{}}})",
       architecture_, slots_, speculate_, verify_rows_, counts_.joined_prefill_steps,
@@ -302,7 +297,7 @@ std::string EngineLlm::extra() const {
 
 // ------------------------------------------------------------------ the LLM
 
-void EngineLlm::Defaults(chat::Conversation& conversation) const {
+void Llm::Defaults(chat::Conversation& conversation) const {
   if (conversation.enable_thinking) return;
   if (!chat_.thinking) {
     conversation.enable_thinking = false;
@@ -311,7 +306,7 @@ void EngineLlm::Defaults(chat::Conversation& conversation) const {
   }
 }
 
-Status EngineLlm::CheckConversation(const chat::Conversation& conversation) const {
+Status Llm::CheckConversation(const chat::Conversation& conversation) const {
   if (!chat_.thinking && conversation.enable_thinking.value_or(false)) {
     return Error(std::format("{}'s thought-channel output is not served yet", name_));
   }
@@ -321,7 +316,7 @@ Status EngineLlm::CheckConversation(const chat::Conversation& conversation) cons
   return {};
 }
 
-Status EngineLlm::SelectBranches(std::span<Branch* const> active) {
+Status Llm::SelectBranches(std::span<Branch* const> active) {
   if (auto built = Built(); !built) return built;
   if (active.size() > slots_) return Error(std::format("too many {} conversation owners", name_));
   std::array<std::uint32_t, en::kMaxRequestSlots> ids{};
@@ -335,8 +330,7 @@ Status EngineLlm::SelectBranches(std::span<Branch* const> active) {
   return runner_->slots().SelectSlots(std::span(ids).first(active.size()));
 }
 
-std::expected<std::uint64_t, std::string> EngineLlm::StateBytesThrough(
-    std::uint32_t positions) const {
+std::expected<std::uint64_t, std::string> Llm::StateBytesThrough(std::uint32_t positions) const {
   if (!runner_) return std::unexpected(std::format("{} is not built", name_));
   const en::SlotLifecycle& slots = runner_->slots();
   std::uint64_t total = 0;
@@ -362,26 +356,25 @@ std::expected<std::uint64_t, std::string> EngineLlm::StateBytesThrough(
   return total;
 }
 
-std::size_t EngineLlm::generation_wave_capacity() const { return slots_; }
+std::size_t Llm::generation_wave_capacity() const { return slots_; }
 
-std::size_t EngineLlm::prefill_wave_capacity() const {
+std::size_t Llm::prefill_wave_capacity() const {
   return caps_.join_prefill ? std::min<std::size_t>(slots_, std::max(caps_.max_segments, 1U)) : 1;
 }
 
-bool EngineLlm::CompatiblePrefill(std::uint32_t past, std::uint32_t rows, std::uint32_t peer_past,
-                                  std::uint32_t peer_rows, bool want_head,
-                                  bool peer_want_head) const {
+bool Llm::CompatiblePrefill(std::uint32_t past, std::uint32_t rows, std::uint32_t peer_past,
+                            std::uint32_t peer_rows, bool want_head, bool peer_want_head) const {
   return composer_ &&
          composer_->CanJoinPrefill(past, rows, want_head, peer_past, peer_rows, peer_want_head);
 }
 
-std::uint32_t EngineLlm::StepTokenBoundFor(const Branch& /*branch*/, std::uint32_t left) const {
+std::uint32_t Llm::StepTokenBoundFor(const Branch& /*branch*/, std::uint32_t left) const {
   return std::min(left, speculate_ ? verify_rows_ : 1U);
 }
 
 // ------------------------------------------------------------- D-105
 
-std::expected<std::optional<base::Sha256Digest>, std::string> EngineLlm::ExecutionIdentity() const {
+std::expected<std::optional<base::Sha256Digest>, std::string> Llm::ExecutionIdentity() const {
   if (!runner_) return std::unexpected("the execution source is not set up");
   auto actual = runner_->ExecutionIdentity();
   if (!actual) return std::unexpected(actual.error());
@@ -390,11 +383,11 @@ std::expected<std::optional<base::Sha256Digest>, std::string> EngineLlm::Executi
   return execution_identity_;
 }
 
-std::string EngineLlm::KeptLayout() const {
+std::string Llm::KeptLayout() const {
   return runner_ ? runner_->slots().kept_layout_id() : std::string();
 }
 
-std::vector<std::uint64_t> EngineLlm::KeptRegions() const {
+std::vector<std::uint64_t> Llm::KeptRegions() const {
   std::vector<std::uint64_t> out;
   if (!runner_) return out;
   for (std::size_t s = 0; s < runner_->slots().stages(); ++s) {
@@ -403,7 +396,7 @@ std::vector<std::uint64_t> EngineLlm::KeptRegions() const {
   return out;
 }
 
-std::vector<std::uint64_t> EngineLlm::KeptLayouts() const {
+std::vector<std::uint64_t> Llm::KeptLayouts() const {
   std::vector<std::uint64_t> out;
   if (!runner_) return out;
   for (std::size_t s = 0; s < runner_->slots().stages(); ++s) {
@@ -412,7 +405,7 @@ std::vector<std::uint64_t> EngineLlm::KeptLayouts() const {
   return out;
 }
 
-std::vector<const en::LiveState*> EngineLlm::KeptLivesFor(const Branch& branch) const {
+std::vector<const en::LiveState*> Llm::KeptLivesFor(const Branch& branch) const {
   std::vector<const en::LiveState*> out;
   if (!runner_) return out;
   for (std::size_t s = 0; s < runner_->slots().stages(); ++s) {
@@ -421,20 +414,19 @@ std::vector<const en::LiveState*> EngineLlm::KeptLivesFor(const Branch& branch) 
   return out;
 }
 
-bool EngineLlm::KeptWholeFor(const Branch& branch) const {
+bool Llm::KeptWholeFor(const Branch& branch) const {
   return runner_ && runner_->slots().kept_whole(Slot(branch));
 }
 
-bool EngineLlm::OwedFor(const Branch& branch) const {
+bool Llm::OwedFor(const Branch& branch) const {
   return runner_ && runner_->slots().owed(Slot(branch));
 }
 
-void EngineLlm::SetStageSpillPlaces(const StageSpillPlace& place) { stage_place_ = place; }
+void Llm::SetStageSpillPlaces(const StageSpillPlace& place) { stage_place_ = place; }
 
 // ------------------------------------------------------------- outputs
 
-std::expected<std::size_t, std::string> EngineLlm::HeadRows(
-    std::span<const std::byte> outputs) const {
+std::expected<std::size_t, std::string> Llm::HeadRows(std::span<const std::byte> outputs) const {
   const std::size_t row = std::size_t{logit_width_} * sizeof(float);
   if (row == 0 || outputs.empty() || outputs.size() % row != 0) {
     return Error(std::format("{}'s step returned {} output bytes, not rows of {} logits", name_,
@@ -443,8 +435,8 @@ std::expected<std::size_t, std::string> EngineLlm::HeadRows(
   return outputs.size() / row;
 }
 
-std::expected<std::vector<float>, std::string> EngineLlm::LogitsRow(
-    std::span<const std::byte> outputs, std::size_t row) const {
+std::expected<std::vector<float>, std::string> Llm::LogitsRow(std::span<const std::byte> outputs,
+                                                              std::size_t row) const {
   auto rows = HeadRows(outputs);
   if (!rows) return std::unexpected(rows.error());
   if (row >= *rows) return Error(std::format("{}'s step returned no row {}", name_, row));
@@ -456,7 +448,7 @@ std::expected<std::vector<float>, std::string> EngineLlm::LogitsRow(
 
 // ------------------------------------------------------------- decoding
 
-en::DecodingPolicy EngineLlm::Policy() {
+en::DecodingPolicy Llm::Policy() {
   en::DecodingPolicy policy;
   // A drafter's proposal a row: its head's most likely token.
   // (A drafter that returns its next features has them after its logits.)
@@ -573,11 +565,11 @@ en::DecodingPolicy EngineLlm::Policy() {
   return policy;
 }
 
-void EngineLlm::ResetDrafters(std::uint32_t slot) {
+void Llm::ResetDrafters(std::uint32_t slot) {
   if (slot < reset_.size()) reset_[slot] = true;
 }
 
-void EngineLlm::SyncDrafters(std::span<const en::DecodeWork> work) {
+void Llm::SyncDrafters(std::span<const en::DecodeWork> work) {
   if (!speculative_) return;
   for (const en::DecodeWork& w : work) {
     if (w.slot < reset_.size() && reset_[w.slot]) {
@@ -587,7 +579,7 @@ void EngineLlm::SyncDrafters(std::span<const en::DecodeWork> work) {
   }
 }
 
-void EngineLlm::RunPlain(std::span<PreparedGeneration> units) {
+void Llm::RunPlain(std::span<PreparedGeneration> units) {
   std::vector<en::DecodeWork> work;
   std::vector<bool> greedy;
   work.reserve(units.size());
@@ -649,7 +641,7 @@ void EngineLlm::RunPlain(std::span<PreparedGeneration> units) {
   }
 }
 
-void EngineLlm::RunSpeculative(std::span<PreparedGeneration> units) {
+void Llm::RunSpeculative(std::span<PreparedGeneration> units) {
   std::vector<en::DecodeWork> work;
   work.reserve(units.size());
   // The scalar SpecStepFor bridge has no session pointer. Its owned branch
@@ -716,7 +708,7 @@ void EngineLlm::RunSpeculative(std::span<PreparedGeneration> units) {
   }
 }
 
-Status EngineLlm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) {
+Status Llm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) {
   if (auto built = Built(); !built) return built;
   if (prepared.empty() || prepared.size() > slots_) {
     return Error(std::format("{}'s generation wave exceeds its request slots", name_));
@@ -768,10 +760,10 @@ Status EngineLlm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepar
                                   : Error(std::format("{}'s request cohort faulted", name_));
 }
 
-Status EngineLlm::SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
-                              std::uint32_t left, std::vector<std::int32_t>& kept,
-                              std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
-                              bool* prefix_kept) {
+Status Llm::SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
+                        std::uint32_t left, std::vector<std::int32_t>& kept,
+                        std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
+                        bool* prefix_kept) {
   if (auto built = Built(); !built) return built;
   if (!speculative_) return Error(std::format("{} has no drafter to speculate with", name_));
   PreparedGeneration unit{.session = nullptr,
@@ -800,11 +792,11 @@ Status EngineLlm::SpecStepFor(Branch& branch, std::span<const std::int32_t> all,
   return {};
 }
 
-bool EngineLlm::GenerationCohortUsable() const {
+bool Llm::GenerationCohortUsable() const {
   return static_cast<bool>(runner_) && !runner_->slots().faulted();
 }
 
-Status EngineLlm::PrepareSamplingScratchFor(Branch& branch, std::size_t rows) {
+Status Llm::PrepareSamplingScratchFor(Branch& branch, std::size_t rows) {
   if (rows != logit_width_) {
     return Error(std::format("{}'s sampling needs its whole head row", name_));
   }
@@ -813,11 +805,11 @@ Status EngineLlm::PrepareSamplingScratchFor(Branch& branch, std::size_t rows) {
   return {};
 }
 
-void EngineLlm::RetireSamplingScratchFor(Branch& branch) { DropBranchSamplingScratch(branch); }
+void Llm::RetireSamplingScratchFor(Branch& branch) { DropBranchSamplingScratch(branch); }
 
 // ------------------------------------------------------------- prompts
 
-Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
+Status Llm::RunPrefill(std::span<PreparedPrefill> prepared) {
   if (prepared.empty()) return {};
   if (auto built = Built(); !built) return built;
   constexpr std::uint64_t kAllocatorMetadata = 64;
@@ -1006,8 +998,8 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
                                   : Error(std::format("{}'s request cohort faulted", name_));
 }
 
-Status EngineLlm::RunPreparedCausalWave(std::span<PreparedPrefill> prompts,
-                                        std::span<PreparedGeneration> generations) {
+Status Llm::RunPreparedCausalWave(std::span<PreparedPrefill> prompts,
+                                  std::span<PreparedGeneration> generations) {
   if (!supports_causal_waves() || prompts.size() + generations.size() > caps_.max_segments)
     return Error("mixed causal dispatch exceeds its actual mechanical policy");
   std::array<PreparedPrefill, kMaxBranches> storage{};
@@ -1057,12 +1049,12 @@ Status EngineLlm::RunPreparedCausalWave(std::span<PreparedPrefill> prompts,
   return result;
 }
 
-std::uint32_t EngineLlm::ScoreChunkRowsFor(const Branch& /*branch*/) const {
+std::uint32_t Llm::ScoreChunkRowsFor(const Branch& /*branch*/) const {
   if (!runner_) return 0;
   return std::min(max_rows_, runner_->slots().layout(0).max_rows);
 }
 
-Status EngineLlm::RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) {
+Status Llm::RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) {
   if (prepared.empty() || prepared.size() > prefill_wave_capacity()) {
     return Error(std::format("{}'s prompt wave exceeds its capability", name_));
   }
@@ -1100,9 +1092,9 @@ Status EngineLlm::RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) {
   }
 }
 
-Status EngineLlm::RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,
-                                     std::uint32_t past, bool /*inject*/, bool want_head,
-                                     std::vector<float>& logits, PrefillHint next) {
+Status Llm::RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,
+                               std::uint32_t past, bool want_head, std::vector<float>& logits,
+                               PrefillHint next) {
   if (past >= all.size()) return Error(std::format("{} needs a nonempty prompt chunk", name_));
   PreparedPrefill unit{.session = nullptr,
                        .branch = &branch,
@@ -1117,7 +1109,7 @@ Status EngineLlm::RunPrefillChunkFor(Branch& branch, std::span<const std::int32_
   return unit.result;
 }
 
-Status EngineLlm::PreparePrefillStateFor(Branch& branch, std::uint32_t past, std::uint32_t rows) {
+Status Llm::PreparePrefillStateFor(Branch& branch, std::uint32_t past, std::uint32_t rows) {
   if (auto built = Built(); !built) return built;
   const std::uint32_t slot = Slot(branch);
   if (past != runner_->slots().positions(slot) || rows == 0 || past > context_ ||
@@ -1127,8 +1119,8 @@ Status EngineLlm::PreparePrefillStateFor(Branch& branch, std::uint32_t past, std
   return runner_->slots().ReserveStateThrough(slot, past + rows);
 }
 
-Status EngineLlm::RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
-                              bool /*inject*/, std::vector<float>& logits) {
+Status Llm::RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
+                        std::vector<float>& logits) {
   if (auto built = Built(); !built) return built;
   if (past >= all.size()) return Error(std::format("{} needs a nonempty chunk", name_));
   // One row after the state: a decode row (a generation's, a scorer's).
@@ -1173,36 +1165,9 @@ Status EngineLlm::RunChunkFor(Branch& branch, std::span<const std::int32_t> all,
   return {};
 }
 
-std::optional<Status> EngineLlm::RunGreedyChunkFor(Branch& branch,
-                                                   std::span<const std::int32_t> all,
-                                                   std::uint32_t past, std::int32_t& token) {
-  if (!device_greedy_) return std::nullopt;
-  if (auto built = Built(); !built) return built;
-  if (all.size() != std::size_t{past} + 1) {
-    return Error(std::format("{}'s greedy step needs one anchor row", name_));
-  }
-  // A greedy device choice regardless of the branch's sampling: the caller
-  // asks only for greedy rows without a caller of their logits.
-  const std::uint32_t slot = Slot(branch);
-  std::array<en::DecodeWork, 1> work{
-      en::DecodeWork{.slot = slot, .history = all, .left = 1, .greedy = true, .score = {}}};
-  const en::DecodeReport report = plain_->Step(work);
-  const en::DecodeOutcome& out = report.outcomes.front();
-  if (out.refusal) return Error(out.refusal->what);
-  if (out.outputs.size() != sizeof(token)) {
-    return Error(std::format("{}'s greedy step returned no token", name_));
-  }
-  std::memcpy(&token, out.outputs.data(), sizeof(token));
-  if (token < 0 || std::cmp_greater_equal(token, logit_width_)) {
-    return Error(std::format("{}'s greedy step chose token {}", name_, token));
-  }
-  ++counts_.greedy_tokens;
-  return Status{};
-}
-
 // ------------------------------------------------------------- the state
 
-Status EngineLlm::SettleFor(Branch& branch) {
+Status Llm::SettleFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
   const std::uint32_t slot = Slot(branch);
   en::SlotLifecycle& slots = runner_->slots();
@@ -1213,63 +1178,63 @@ Status EngineLlm::SettleFor(Branch& branch) {
                             : Error(std::format("{}'s conversation state is unusable", name_));
 }
 
-Status EngineLlm::ClearStateFor(Branch& branch) {
+Status Llm::ClearStateFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
   if (branch_depth_)
     BranchDecoding(branch) = execution::AdaptiveDepth(branch_depth_, depth_cost_ratio_);
   return runner_->slots().Clear(Slot(branch));
 }
 
-bool EngineLlm::StateUsableFor(const Branch& branch) const {
+bool Llm::StateUsableFor(const Branch& branch) const {
   // Prefix reuse includes healthy kept state that still needs hydration.
   // Execution guards continue to reject its pending progress replacement.
   return runner_ &&
          (runner_->slots().usable(Slot(branch)) || runner_->slots().restorable(Slot(branch)));
 }
 
-bool EngineLlm::StateRefusedFor(const Branch& branch) const {
+bool Llm::StateRefusedFor(const Branch& branch) const {
   return branch.capacity_refused() || (runner_ && runner_->slots().state_refused(Slot(branch)));
 }
 
-Status EngineLlm::ReleaseIdleStateFor(Branch& branch) {
+Status Llm::ReleaseIdleStateFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
   if (branch_depth_)
     BranchDecoding(branch) = execution::AdaptiveDepth(branch_depth_, depth_cost_ratio_);
   return runner_->slots().ClearIdle(Slot(branch));
 }
 
-Status EngineLlm::SpillFor(Branch& branch) {
+Status Llm::SpillFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
   return runner_->slots().Spill(Slot(branch));
 }
 
-Status EngineLlm::RestoreFor(Branch& branch) {
+Status Llm::RestoreFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
   return runner_->slots().Restore(Slot(branch));
 }
 
-bool EngineLlm::SpilledFor(const Branch& branch) const {
+bool Llm::SpilledFor(const Branch& branch) const {
   return runner_ && runner_->slots().spilled(Slot(branch));
 }
 
-std::uint64_t EngineLlm::SpilledBytesFor(const Branch& branch) const {
+std::uint64_t Llm::SpilledBytesFor(const Branch& branch) const {
   return runner_ ? runner_->slots().spilled_bytes(Slot(branch)) : 0;
 }
 
-std::uint64_t EngineLlm::RetainedSpillBytesFor(const Branch& branch) const {
+std::uint64_t Llm::RetainedSpillBytesFor(const Branch& branch) const {
   return runner_ ? runner_->slots().retained_spill_bytes(Slot(branch)) : 0;
 }
 
-Status EngineLlm::ReleaseRetainedSpillFor(Branch& branch) {
+Status Llm::ReleaseRetainedSpillFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
   return runner_->slots().ReleaseSpillFiles(Slot(branch));
 }
 
-bool EngineLlm::LeasedFor(const Branch& branch) const {
+bool Llm::LeasedFor(const Branch& branch) const {
   return runner_ && runner_->slots().held(Slot(branch));
 }
 
-std::uint64_t EngineLlm::RefusedBytesFor(const Branch& branch) const {
+std::uint64_t Llm::RefusedBytesFor(const Branch& branch) const {
   if (!runner_) return 0;
   const en::SlotLifecycle& slots = runner_->slots();
   const std::uint32_t slot = Slot(branch);
@@ -1277,11 +1242,11 @@ std::uint64_t EngineLlm::RefusedBytesFor(const Branch& branch) const {
   return slots.spilled(slot) ? slots.spilled_bytes(slot) : slots.refused_bytes(slot);
 }
 
-std::uint64_t EngineLlm::SpillWriteBytesFor(const Branch& branch) const {
+std::uint64_t Llm::SpillWriteBytesFor(const Branch& branch) const {
   return runner_ ? runner_->slots().spill_write_bytes(Slot(branch)) : 0;
 }
 
-Status EngineLlm::PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) {
+Status Llm::PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) {
   if (auto built = Built(); !built) return built;
   const std::uint32_t slot = Slot(branch);
   if (pos != runner_->slots().positions(slot) || pos >= context_) {
@@ -1294,25 +1259,11 @@ Status EngineLlm::PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::
   return runner_->slots().ReserveStateThrough(slot, pos + rows);
 }
 
-std::uint64_t EngineLlm::TargetStateBaseFor(const Branch& branch) const {
-  return runner_ ? runner_->slots().live(Slot(branch), 0).base(0) : 0;
-}
-std::uint64_t EngineLlm::TargetStateBytesFor(const Branch& branch) const {
-  return runner_ ? runner_->slots().live(Slot(branch), 0).bytes(0) : 0;
-}
-std::uint64_t EngineLlm::DrafterStateBaseFor(const Branch& branch) const {
-  return runner_ && runner_->slots().stages() > 1 ? runner_->slots().live(Slot(branch), 1).base(0)
-                                                  : 0;
-}
-std::uint64_t EngineLlm::DrafterStateBytesFor(const Branch& branch) const {
-  return runner_ && runner_->slots().stages() > 1 ? runner_->slots().live(Slot(branch), 1).bytes(0)
-                                                  : 0;
-}
-std::uint64_t EngineLlm::UsedStateBytesFor(const Branch& branch) const {
+std::uint64_t Llm::UsedStateBytesFor(const Branch& branch) const {
   return runner_ ? runner_->slots().used_bytes(Slot(branch)) : 0;
 }
 
-std::vector<en::LiveState::Range> EngineLlm::UsedStateRangesFor(const Branch& branch) const {
+std::vector<en::LiveState::Range> Llm::UsedStateRangesFor(const Branch& branch) const {
   std::vector<en::LiveState::Range> out;
   if (!runner_) return out;
   const en::SlotLifecycle& slots = runner_->slots();
@@ -1324,18 +1275,13 @@ std::vector<en::LiveState::Range> EngineLlm::UsedStateRangesFor(const Branch& br
   return out;
 }
 
-Status EngineLlm::SaveUsedStateFor(Branch& branch, void* host,
-                                   std::span<const en::LiveState::Range> ranges) {
+Status Llm::SaveUsedStateFor(Branch& branch, void* host,
+                             std::span<const en::LiveState::Range> ranges) {
   if (auto built = Built(); !built) return built;
   return runner_->slots().CopyState(Slot(branch), host, ranges, /*to_host=*/true);
 }
 
-Status EngineLlm::RestoreUsedStateFor(Branch& /*branch*/, void* /*host*/,
-                                      std::span<const en::LiveState::Range> /*ranges*/) {
-  return Error(std::format("{} restores its state only with its positions", name_));
-}
-
-std::expected<std::vector<en::LiveState::Range>, std::string> EngineLlm::CheckpointRangesFor(
+std::expected<std::vector<en::LiveState::Range>, std::string> Llm::CheckpointRangesFor(
     const Branch& branch, std::uint32_t positions) const {
   if (auto built = Built(); !built) return std::unexpected(built.error());
   const std::uint32_t slot = Slot(branch);
@@ -1345,21 +1291,15 @@ std::expected<std::vector<en::LiveState::Range>, std::string> EngineLlm::Checkpo
   return runner_->slots().CheckpointRanges(slot, positions);
 }
 
-Status EngineLlm::PrepareRestoreStateFor(Branch& /*branch*/,
-                                         std::span<const en::LiveState::Range> /*footprint*/) {
-  return Error(std::format("{} restores its state only with its positions", name_));
-}
-
-Status EngineLlm::CopyCheckpointStateFor(Branch& branch, void* host,
-                                         std::span<const en::LiveState::Range> ranges,
-                                         bool to_host) {
+Status Llm::CopyCheckpointStateFor(Branch& branch, void* host,
+                                   std::span<const en::LiveState::Range> ranges, bool to_host) {
   if (auto built = Built(); !built) return built;
   return runner_->slots().CopyState(Slot(branch), host, ranges, to_host);
 }
 
-Status EngineLlm::CheckCheckpointMetadataFor(
-    const Branch& /*branch*/, std::uint32_t position, std::uint32_t cursor,
-    std::span<const en::LiveState::Range> footprint) const {
+Status Llm::CheckCheckpointMetadataFor(const Branch& /*branch*/, std::uint32_t position,
+                                       std::uint32_t cursor,
+                                       std::span<const en::LiveState::Range> footprint) const {
   if (auto built = Built(); !built) return built;
   if (position != cursor) {
     return Error(std::format("{}'s checkpoint cursor differs from its positions", name_));
@@ -1367,17 +1307,16 @@ Status EngineLlm::CheckCheckpointMetadataFor(
   return runner_->slots().ValidateFootprint(position, footprint);
 }
 
-Status EngineLlm::PreparePositionRestoreFor(Branch& branch, std::uint32_t position,
-                                            std::uint32_t cursor,
-                                            std::span<const en::LiveState::Range> footprint,
-                                            std::string_view layout) {
+Status Llm::PreparePositionRestoreFor(Branch& branch, std::uint32_t position, std::uint32_t cursor,
+                                      std::span<const en::LiveState::Range> footprint,
+                                      std::string_view layout) {
   if (auto checked = CheckCheckpointMetadataFor(branch, position, cursor, footprint); !checked) {
     return checked;
   }
   return runner_->slots().PrepareRestore(Slot(branch), position, footprint, layout);
 }
 
-Status EngineLlm::CompletePositionRestoreFor(Branch& branch, std::uint32_t position) {
+Status Llm::CompletePositionRestoreFor(Branch& branch, std::uint32_t position) {
   if (auto built = Built(); !built) return built;
   if (auto completed = runner_->slots().CompleteRestore(Slot(branch), position); !completed) {
     return completed;
@@ -1386,9 +1325,9 @@ Status EngineLlm::CompletePositionRestoreFor(Branch& branch, std::uint32_t posit
   return {};
 }
 
-Status EngineLlm::RestoreSnapshotFor(Branch& branch, void* host,
-                                     std::span<const en::LiveState::Range> ranges,
-                                     std::uint32_t cursor, std::string_view layout) {
+Status Llm::RestoreSnapshotFor(Branch& branch, void* host,
+                               std::span<const en::LiveState::Range> ranges, std::uint32_t cursor,
+                               std::string_view layout) {
   // The authenticated capture names its original layout.
   if (auto prepared = PreparePositionRestoreFor(branch, cursor, cursor, ranges, layout);
       !prepared) {
@@ -1400,10 +1339,9 @@ Status EngineLlm::RestoreSnapshotFor(Branch& branch, void* host,
   return CompletePositionRestoreFor(branch, cursor);
 }
 
-Status EngineLlm::AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens,
-                                   std::uint32_t cursor,
-                                   std::span<const en::LiveState::Range> ranges,
-                                   std::string_view layout) {
+Status Llm::AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens,
+                             std::uint32_t cursor, std::span<const en::LiveState::Range> ranges,
+                             std::string_view layout) {
   if (auto built = Built(); !built) return built;
   if (cursor == 0 || cursor != tokens.size()) {
     return Error(std::format("{}'s kept positions differ from its token history", name_));
@@ -1415,7 +1353,7 @@ Status EngineLlm::AdoptPositionFor(Branch& branch, std::span<const std::int32_t>
   return {};
 }
 
-std::uint32_t EngineLlm::CursorFor(const Branch& branch) const {
+std::uint32_t Llm::CursorFor(const Branch& branch) const {
   return runner_ ? runner_->slots().positions(Slot(branch)) : 0;
 }
 

@@ -325,37 +325,6 @@ Status Llm::PromptSession::PublishScores() {
   return {};
 }
 
-Llm::PrefillHeadModes Llm::FuturePrefillHeads(std::span<const PreparedPrefill> prepared) {
-  PrefillHeadModes heads;
-  bool mixed_next = false, mixed_after = false;
-  for (const auto& unit : prepared) {
-    if (unit.next.rows != 0) {
-      if (heads.next.has_value() && *heads.next != unit.next.want_head)
-        mixed_next = true;
-      else if (!heads.next.has_value())
-        heads.next = unit.next.want_head;
-    }
-    if (unit.next.after_rows != 0) {
-      if (heads.after.has_value() && *heads.after != unit.next.after_want_head)
-        mixed_after = true;
-      else if (!heads.after.has_value())
-        heads.after = unit.next.after_want_head;
-    }
-  }
-  if (mixed_next) heads.next.reset();
-  if (mixed_after) heads.after.reset();
-  return heads;
-}
-
-Status Llm::RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) {
-  for (auto& unit : prepared) {
-    unit.result = RunPrefillChunkFor(*unit.branch, unit.all, unit.past, speculate_, unit.want_head,
-                                     *unit.logits, unit.next);
-    if (!unit.result && !GenerationCohortUsable()) return unit.result;
-  }
-  return {};
-}
-
 Status Llm::RunPromptWave(std::span<PromptSession* const> sessions,
                           std::span<const PrefillGoOn> go_on, bool defer_capacity) {
   if (sessions.empty() || sessions.size() > kMaxBranches ||
@@ -643,15 +612,15 @@ Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::v
         const PrefillHint hint{next_rows, next_rows == remaining, after_rows,
                                after_rows == remaining - next_rows};
         auto started = Clock::now();
-        auto chunk = RunPrefillChunkFor(branch, std::span(all).first(at + n), at, speculate_,
+        auto chunk = RunPrefillChunkFor(branch, std::span(all).first(at + n), at,
                                         at + n == all.size(), last, hint);
         // A capacity refusal ran nothing: the same chunk again once freed.
         for (std::size_t reclaimed = 0;
              !chunk && CapacityRefused(branch) && reclaimed < kMaxBranches && ReclaimFor(branch);
              ++reclaimed) {
           started = Clock::now();
-          chunk = RunPrefillChunkFor(branch, std::span(all).first(at + n), at, speculate_,
-                                     at + n == all.size(), last, hint);
+          chunk = RunPrefillChunkFor(branch, std::span(all).first(at + n), at, at + n == all.size(),
+                                     last, hint);
         }
         if (chunk) {
           completed = at + n;
@@ -672,7 +641,6 @@ Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::v
     branch.needs_clear_ = !StateUsableFor(branch);
     if (branch.needs_clear_) {
       ReleaseTokens(branch.history_, branch.history_charge_);
-      ReleaseTokens(branch.verify_tokens_, branch.verify_tokens_charge_);
     } else {
       PublishTokens(branch, all, all_charge, completed);
     }

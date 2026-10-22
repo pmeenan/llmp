@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Gemma 2 and Gemma 3 served by the shared engine (D-107; runtime/
-// engine_llm.h over the component step source) on the approved artifacts
+// serving.h over the component step source) on the approved artifacts
 // (label `models`), through the runtime's server as the service drives it:
 //
 // - plain generation's device tokens and logit rows agree, alone and
@@ -68,7 +68,6 @@
 #include "execution/sampling.h"
 #include "plain_token_serving_checks.h"
 #include "platform/crash_policy.h"
-#include "runtime/engine_llm.h"
 #include "runtime/memory_guard.h"
 #include "runtime/runtime.h"
 #include "runtime/serving.h"
@@ -173,7 +172,7 @@ class GemmaEngineServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     if (auto r = life->server->Start(true); !r) return r;
     model = dynamic_cast<rt::Llm*>(life->server->Find("gemma"));
     if (model == nullptr) return std::unexpected("configured Gemma model missing");
-    if (dynamic_cast<rt::EngineLlm*>(model) == nullptr) {
+    if (dynamic_cast<rt::Llm*>(model) == nullptr) {
       return std::unexpected("the family is not on the component engine");
     }
     first_activation = {};
@@ -229,7 +228,7 @@ class GemmaEngineServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     return text;
   }
   rt::Llm::Branch& Branch(std::uint32_t id) { return **model->branch(id); }
-  rt::EngineLlm& Engine() { return dynamic_cast<rt::EngineLlm&>(*model); }
+  rt::Llm& Engine() { return dynamic_cast<rt::Llm&>(*model); }
 
   // Every stage's used state of `slot`, hashed (the engine's slots).
   std::expected<llmp::base::Sha256Digest, std::string> StateHash(std::uint32_t slot) {
