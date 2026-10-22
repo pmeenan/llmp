@@ -363,8 +363,10 @@ TEST(ImportMlxNormalizeModelsTest,
     folded_members += folded ? 1 : 0;
   }
   EXPECT_EQ(folded_members, 148U + 36U);
-  // The manifest names the mapping's architecture, not config.json's.
-  EXPECT_EQ(plan->parts().source().architecture, "qwen4exp");
+  // Source provenance retains config.json's dialect; the artifact uses the
+  // mapping's canonical architecture.
+  EXPECT_EQ(plan->parts().source().architecture, "qwen4_exp");
+  EXPECT_EQ(plan->canonical().architecture, "qwen4exp");
 
 #if defined(LLMP_HAS_CUDA)
   // Verify DecodeSelectedSource supports all Affine split decoders
