@@ -275,7 +275,10 @@ GB10 reads through the cache would spend the one memory budget.
 `OpenForDirectRead`'s `buffered_fallback` exists for a platform where
 direct I/O is only a preference (as TensorFold's reader falls back to
 buffered reads when `O_DIRECT` is refused); llmpalooza never asks for it on
-Linux, and a port that does decides what the role check accepts.
+Linux, and a port that does decides what the role check accepts. Direct
+reads pin the selected regular object before opening it for I/O; any
+buffered retry reopens that same object, even if its pathname changed.
+Final symlinks are refused, and no ownership or permission policy is added.
 
 ### What a new OS still needs
 

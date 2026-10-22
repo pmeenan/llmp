@@ -69,13 +69,19 @@ struct DirectFile {
   bool direct = false;
 };
 
-// Opens `name` beneath the directory `dir` for direct reads: read-only,
-// never following a final link, close-on-exec, not a controlling terminal,
-// and non-blocking (so a FIFO put in its place cannot hang the open; the
-// caller clears it once it knows the file). Without `buffered_fallback`,
-// a filesystem that refuses direct I/O fails the open (errno EINVAL); with
-// it, the file is opened through the cache instead (`direct` false). As
-// openat's errno on failure.
+// Reopens a borrowed path reference for direct reads, checking regular-file
+// type before any I/O open. Both the direct attempt and optional buffered
+// fallback use that same pinned object, even after its pathname is replaced.
+// EPERM for non-regular objects, otherwise errno on failure. The returned
+// descriptor is independent of the reference and the caller's to close.
+std::expected<DirectFile, int> ReopenForDirectRead(int reference, bool buffered_fallback = false);
+
+// Pins `name` beneath `dir` without following a final link, then reopens
+// that regular object for direct reads: read-only, close-on-exec, not a
+// controlling terminal and non-blocking. Without `buffered_fallback`, a
+// filesystem that refuses direct I/O fails with EINVAL; with it, the same
+// object is opened through the cache instead (`direct` false). Non-regular
+// objects (including final symlinks) fail with EPERM before any I/O open.
 std::expected<DirectFile, int> OpenForDirectRead(int dir, const char* name,
                                                  bool buffered_fallback = false);
 

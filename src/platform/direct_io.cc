@@ -24,6 +24,8 @@
 #include <string>
 #include <utility>
 
+#include "platform/files.h"
+
 namespace llmp::platform {
 namespace {
 
@@ -121,21 +123,22 @@ std::expected<FilesystemFacts, std::string> DescribeFilesystem(const std::filesy
   return facts;
 }
 
+std::expected<DirectFile, int> ReopenForDirectRead(int reference, bool buffered_fallback) {
+  auto direct = ReopenRegularFileForRead(reference, true);
+  if (direct) return DirectFile{.fd = *direct, .direct = true};
+  if (direct.error() != EINVAL || !buffered_fallback) return std::unexpected(direct.error());
+  auto buffered = ReopenRegularFileForRead(reference);
+  if (!buffered) return std::unexpected(buffered.error());
+  return DirectFile{.fd = *buffered, .direct = false};
+}
+
 std::expected<DirectFile, int> OpenForDirectRead(int dir, const char* name,
                                                  bool buffered_fallback) {
-  constexpr int kFlags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_NOCTTY;
-  const int fd = ::openat(dir, name, kFlags | O_DIRECT);
-  if (fd >= 0) {
-    return DirectFile{.fd = fd, .direct = true};
-  }
-  if (errno != EINVAL || !buffered_fallback) {
-    return std::unexpected(errno);
-  }
-  const int buffered = ::openat(dir, name, kFlags);
-  if (buffered < 0) {
-    return std::unexpected(errno);
-  }
-  return DirectFile{.fd = buffered, .direct = false};
+  auto reference = OpenPathReference(dir, name, false);
+  if (!reference) return std::unexpected(reference.error());
+  auto opened = ReopenForDirectRead(*reference, buffered_fallback);
+  (void)::close(*reference);
+  return opened;
 }
 
 std::expected<int, int> OpenUnnamedDirectFile(const std::filesystem::path& directory) {

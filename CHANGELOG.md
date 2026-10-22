@@ -44,10 +44,12 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
-- Drafter continuation features survive ordinary state spill and restore
-  while logical state replacement still clears them (M3.5 U10).
 - Source-only native drafters receive startup metadata funding while target
   bindings continue to require a stored spec (M3.5).
+- Direct artifact reads and buffered retries open the same pinned regular
+  file, preventing pathname replacement during selection (M3.5 U10).
+- Drafter continuation features survive ordinary state spill and restore
+  while logical state replacement still clears them (M3.5 U10).
 - IR byte addressing uses the format layer's physical block geometry, with
   vendor and device facts checked at neutral module boundaries (M3.5 U6c).
 - Checkpoint and ordinary artifact readers pin regular files before opening

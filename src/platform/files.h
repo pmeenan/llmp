@@ -35,7 +35,8 @@ std::expected<int, int> OpenPathReference(int parent, const char* name, bool fol
 // descriptor is independent of the reference and the caller's to close.
 // Linux uses /proc/self/fd; failure to reopen is an error, never a pathname
 // fallback. This pins identity, not file contents: writes can still change it.
-std::expected<int, int> ReopenRegularFileForRead(int reference);
+// With direct true, request direct I/O; unsupported files return EINVAL.
+std::expected<int, int> ReopenRegularFileForRead(int reference, bool direct = false);
 
 // Reads a whole file of at most limit bytes, reading to its end rather
 // than trusting its reported size, which /proc and /sys files misstate. A

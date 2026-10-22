@@ -648,6 +648,84 @@ TEST(Files, AvailableMemoryAndAnonymousFiles) {
   EXPECT_GT(stamp.value_or(llmp::platform::ExecutableStamp{}).modified_ns, 0);
 }
 
+TEST(DirectIo, PinnedReadsSurvivePathReplacementInDirectAndBufferedModes) {
+  for (bool proc : {false, true}) {
+    for (const auto* replacement : {"regular", "fifo", "device", "absent"}) {
+      SCOPED_TRACE(proc ? "buffered procfs" : "direct regular");
+      SCOPED_TRACE(replacement);
+      const FakeRoot root;
+      const auto path = root.path() / "selected";
+      if (proc) {
+        fs::create_symlink("/proc/meminfo", path);
+      } else {
+        root.Write("selected", std::string(4096, 'x'));
+        ASSERT_EQ(::chmod(path.c_str(), 0666), 0);
+      }
+      auto pinned = llmp::platform::OpenPathReference(-1, path.c_str());
+      ASSERT_TRUE(pinned.has_value());
+      const llmp::platform::OwnedDescriptor reference(*pinned);
+      struct stat before{};
+      ASSERT_EQ(::fstat(reference.get(), &before), 0);
+      ASSERT_TRUE(fs::remove(path));
+      if (std::string_view(replacement) == "regular") root.Write("selected", "replacement");
+      if (std::string_view(replacement) == "fifo") ASSERT_EQ(::mkfifo(path.c_str(), 0600), 0);
+      if (std::string_view(replacement) == "device") fs::create_symlink("/dev/zero", path);
+      auto opened = llmp::platform::ReopenForDirectRead(reference.get(), true);
+      ASSERT_TRUE(opened.has_value()) << opened.error();
+      const llmp::platform::OwnedDescriptor readable(opened->fd);
+      struct stat after{};
+      ASSERT_EQ(::fstat(readable.get(), &after), 0);
+      EXPECT_EQ(after.st_dev, before.st_dev);
+      EXPECT_EQ(after.st_ino, before.st_ino);
+      EXPECT_EQ(after.st_uid, before.st_uid);
+      EXPECT_EQ(after.st_mode, before.st_mode);
+      EXPECT_NE(::fcntl(readable.get(), F_GETFD) & FD_CLOEXEC, 0);
+      alignas(4096) std::array<char, 4096> bytes{};
+      const auto count = ::read(readable.get(), bytes.data(), bytes.size());
+      ASSERT_GT(count, 0);
+      if (proc) {
+        EXPECT_FALSE(opened->direct);
+        EXPECT_TRUE(std::string_view(bytes.data(), static_cast<std::size_t>(count))
+                        .starts_with("MemTotal:"));
+        EXPECT_EQ(llmp::platform::ReopenForDirectRead(reference.get()).error_or(0), EINVAL);
+      } else {
+        auto filesystem = llmp::platform::DescribeFilesystem(root.path());
+        ASSERT_TRUE(filesystem.has_value());
+        if (filesystem->accepted) EXPECT_TRUE(opened->direct);
+        EXPECT_EQ(count, 4096);
+        EXPECT_EQ(std::string_view(bytes.data(), bytes.size()), std::string(4096, 'x'));
+      }
+    }
+  }
+}
+
+TEST(DirectIo, RejectsNonRegularObjectsAndFinalSymlinksBeforeIo) {
+  const FakeRoot root;
+  root.Write("regular", "hello");
+  fs::create_symlink("regular", root.path() / "link");
+  fs::create_symlink("missing", root.path() / "dangling");
+  ASSERT_EQ(::mkfifo((root.path() / "fifo").c_str(), 0600), 0);
+  for (const auto& path : {root.path() / "link", root.path() / "dangling", root.path() / "fifo",
+                           root.path(), fs::path("/dev/null")}) {
+    for (bool fallback : {false, true}) {
+      auto opened = llmp::platform::OpenForDirectRead(-1, path.c_str(), fallback);
+      EXPECT_FALSE(opened.has_value()) << path;
+      if (opened) {
+        (void)::close(opened->fd);
+      } else {
+        EXPECT_EQ(opened.error(), EPERM) << path;
+      }
+    }
+  }
+  const int writer = ::open((root.path() / "fifo").c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+  EXPECT_EQ(writer, -1);
+  if (writer < 0)
+    EXPECT_EQ(errno, ENXIO);
+  else
+    (void)::close(writer);
+  EXPECT_EQ(llmp::platform::ReopenForDirectRead(-1).error_or(0), EBADF);
+}
+
 // The direct-I/O opens: a shard opened for direct reads (and, on a
 // filesystem that refuses direct I/O, refused or, when asked, opened
 // through the cache), and an unnamed spill file that leaves nothing behind.

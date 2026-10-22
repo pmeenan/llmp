@@ -770,25 +770,21 @@ D-122).
       C++ change.
 - [ ] **U9 Partitioning and per-model residency** (M4 entry; amends M4's
       "Concurrent models and the shared workspace" item).
-- [ ] **U10 Review leftovers** (small; re-verify each at HEAD first).
-      **Regular-file reader subspike complete (2026-10-22):** checkpoint
-      readers and ordinary artifact reads pin the selected regular object
-      before opening it for I/O, preserving each caller's symlink policy.
-      Direct-I/O opening remains to audit. **Drafter carry subspike complete
-      (2026-10-22):** ordinary spill/restore preserves continuation features;
-      logical state replacement still clears them. Remaining items: the
-      runtime's single `swapped_`/`parts_` fields measured against the
-      wrong swap; `ChargeRuntime`'s count and catalog falling out of step
-      when `AddExtent` fails (done in U1); `CheckOwners` testing the `expected` rather
-      than its `optional`; a spill discarding the drafter's catch-up
-      (`invalidate` where `content_changed` is meant);
-      `StepTransaction::Begin` counting `pending` before a return that can
-      fail (done in U1); HTTP's 503 for a render-time deadline (504), `102 Processing`
-      ahead of a stream's 200 after a half-close, and `malloc_trim` on the
-      I/O thread; and the readers' remaining hardening (direct-I/O pin/reopen,
-      overlap checks by physical file, bounds
-      on `base::json`'s accessors, checked image payload sums, kept pipeline
-      JSON re-checked by identity, writer `chmod` results checked).
+- [ ] **U10 Review leftovers** (re-verified 2026-10-22).
+      **Reader subspikes complete:** checkpoint, ordinary artifact and
+      direct-I/O readers pin the selected regular object before opening it
+      for I/O; a buffered retry uses the same object. Each caller's symlink
+      policy remains in force. **Drafter carry subspike complete:** ordinary
+      spill/restore preserves continuation features; logical state
+      replacement still clears them.
+      **Remaining:** the runtime's single `swapped_`/`parts_` fields measured
+      against the wrong swap; and pin/reopen for the existing-file branches
+      of kept-file and lock-file write/create operations.
+      The prior count/catalog and pending-counter failures, `CheckOwners`,
+      HTTP deadline/half-close ordering and I/O-thread heap trim findings
+      are fixed or retired. Physical-file overlap checks, JSON accessor
+      bounds, checked image payload sums, kept-pipeline JSON identity and
+      writer permission-error handling are present at HEAD.
 
 - [x] **Family selection** (approved by the owner 2026-09-29: all 13
       checkpoints of [m35-families.md](m35-families.md), with the answers
