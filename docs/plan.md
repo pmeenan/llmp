@@ -661,7 +661,14 @@ D-122).
       split into named phases. **Exit:** the tool-call and Messages items
       build on these seams with no OpenAI-specific code in shared paths, and
       the cohort policy has unit tests without a socket.
-- [ ] **U6 IR and planner structure:** one op-trait table (arity, write
+- [ ] **U6 IR and planner structure:** **U6a complete (2026-10-21):**
+      primitive/fused operation identity, parameter size, arity, write set,
+      layout, partition and decomposition traits share one checked table;
+      source- and fused-graph GGML extent validation lives in the backend.
+      Native focused tests: 270/270 on `spark-b`; the integrated shared check
+      is recorded with the commit. Device/shape rank data, remaining dispatch
+      consolidation and exhaustive planner-pattern coverage remain open.
+      One op-trait table (arity, write
       set, layout class, splittability with no silent "unsplittable"
       default, decomposition, reference) replacing the dozen-odd per-op edit
       points and the separate write-set definitions; vendor facts out of the

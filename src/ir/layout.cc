@@ -22,6 +22,7 @@
 #include "ir/builder.h"
 #include "ir/decompose.h"
 #include "ir/op.h"
+#include "ir/op_traits.h"
 
 namespace llmp::ir {
 namespace {
@@ -225,6 +226,17 @@ void Sinker::Prefer() {
     const TensorId out = n.out[0];
     const auto wanted = Wanted(out);
     const Ne one = NeOf(g_.tensor(out));
+    const auto layout = ir::Traits(n.key)->layout;
+    if (layout == ir::LayoutClass::kElementwise || layout == ir::LayoutClass::kConcat) {
+      if (wanted && through_) {
+        for (const TensorId src : n.sources()) {
+          if (!src.valid()) continue;
+          const Ne ne = NeOf(g_.tensor(src));
+          if (ne == one || n.key.op == Op::kConcat || n.key.op == Op::kRepeat) Want(src, *wanted);
+        }
+      }
+      continue;
+    }
     switch (n.key.op) {
       case Op::kPermute: {
         if (!wanted) break;
@@ -263,27 +275,6 @@ void Sinker::Prefer() {
         break;
       }
       case Op::kView:
-        break;
-      // An elementwise node, a concatenation or a repeat chooses its own
-      // order (Elementwise: the fewest copies): its operands' readers'
-      // wants are not its result's.
-      case Op::kAdd:
-      case Op::kSub:
-      case Op::kMul:
-      case Op::kDiv:
-      case Op::kScale:
-      case Op::kUnary:
-      case Op::kClamp:
-      case Op::kConvert:
-      case Op::kGlu:
-      case Op::kConcat:
-      case Op::kRepeat:
-        if (!wanted || !through_) break;
-        for (const TensorId s : n.sources()) {
-          if (!s.valid()) continue;
-          const Ne ne = NeOf(g_.tensor(s));
-          if (ne == one || n.key.op == Op::kConcat || n.key.op == Op::kRepeat) Want(s, *wanted);
-        }
         break;
       default:
         natural();
@@ -1010,140 +1001,133 @@ std::expected<Sunk, ir::VerifyError> Sinker::Run() {
     if (!kept && n.nout == 1) {
       const TensorId out = n.out[0];
       const ir::TensorDesc& od = g_.tensor(out);
-      switch (n.key.fused == ir::FusedKind::kNone ? n.key.op : Op::kFused) {
-        case Op::kPermute: {
-          if (const auto c = CheapOf(n)) {
-            vals_.at(out.v).cheap = c;
-            done = true;
-          } else if (const auto& j = vals_.at(n.src[0].v).joined) {
-            const auto axes = n.Params<ir::PermuteParams>().axes;
-            Joined p{.ne = {}, .axis = axes[j->axis], .pieces = {}};
-            for (std::size_t d = 0; d < 4; ++d) p.ne[axes[d]] = j->ne[d];
-            for (const auto& [start, piece] : j->pieces) {
-              Strided q = piece;
-              for (std::size_t d = 0; d < 4; ++d) {
-                q.ne[axes[d]] = piece.ne[d];
-                q.st[axes[d]] = piece.st[d];
-              }
-              p.pieces.emplace_back(start, q);
-            }
-            vals_.at(out.v).joined = std::move(p);
-            done = true;
-          } else if (const auto l = Lift(n.src[0])) {
-            const auto axes = n.Params<ir::PermuteParams>().axes;
-            Strided p = *l;
-            for (std::size_t d = 0; d < 4; ++d) {
-              p.ne[axes[d]] = l->ne[d];
-              p.st[axes[d]] = l->st[d];
-            }
-            vals_.at(out.v).lazy = p;
-            done = true;
-          }
-          break;
+      if (ir::Traits(n.key)->layout == ir::LayoutClass::kElementwise) {
+        if (n.key.op == Op::kGlu) {
+          done = n.nsrc == 2 && n.src[1].valid() && Dense(od) && Elementwise(n);
+        } else if (const auto cheap = Dense(od) ? CheapOf(n) : std::nullopt) {
+          vals_.at(out.v).cheap = cheap;
+          done = true;
+        } else {
+          done = Dense(od) && Elementwise(n);
         }
-        case Op::kReshape:
-        case Op::kCont: {
-          if (const auto c = CheapOf(n)) {
-            vals_.at(out.v).cheap = c;
-            done = true;
-            break;
-          }
-          if (const auto& j = vals_.at(n.src[0].v).joined) {
-            // Extents of one added or dropped only: the pieces each so.
-            const Ne to = NeOf(od);
-            std::vector<std::uint8_t> wide_from, wide_to;
-            for (std::uint8_t d = 0; d < 4; ++d) {
-              if (j->ne[d] != 1) wide_from.push_back(d);
-              if (to[d] != 1) wide_to.push_back(d);
-            }
-            bool same = wide_from.size() == wide_to.size();
-            for (std::size_t k = 0; same && k < wide_from.size(); ++k)
-              same = j->ne[wide_from[k]] == to[wide_to[k]];
-            const auto at = std::ranges::find(wide_from, j->axis) - wide_from.begin();
-            if (same && static_cast<std::size_t>(at) < wide_from.size()) {
-              const std::uint8_t axis = wide_to[static_cast<std::size_t>(at)];
-              Joined r{.ne = to, .axis = axis, .pieces = {}};
+      } else {
+        switch (n.key.fused == ir::FusedKind::kNone ? n.key.op : Op::kFused) {
+          case Op::kPermute: {
+            if (const auto c = CheapOf(n)) {
+              vals_.at(out.v).cheap = c;
+              done = true;
+            } else if (const auto& j = vals_.at(n.src[0].v).joined) {
+              const auto axes = n.Params<ir::PermuteParams>().axes;
+              Joined p{.ne = {}, .axis = axes[j->axis], .pieces = {}};
+              for (std::size_t d = 0; d < 4; ++d) p.ne[axes[d]] = j->ne[d];
               for (const auto& [start, piece] : j->pieces) {
-                Ne shape = to;
-                shape[axis] = piece.ne[j->axis];
-                const auto q = Reshaped(piece, shape);
-                if (!q) {
-                  same = false;
-                  break;
+                Strided q = piece;
+                for (std::size_t d = 0; d < 4; ++d) {
+                  q.ne[axes[d]] = piece.ne[d];
+                  q.st[axes[d]] = piece.st[d];
                 }
-                r.pieces.emplace_back(start, *q);
+                p.pieces.emplace_back(start, q);
               }
-              if (same) {
-                vals_.at(out.v).joined = std::move(r);
-                done = true;
-                break;
+              vals_.at(out.v).joined = std::move(p);
+              done = true;
+            } else if (const auto l = Lift(n.src[0])) {
+              const auto axes = n.Params<ir::PermuteParams>().axes;
+              Strided p = *l;
+              for (std::size_t d = 0; d < 4; ++d) {
+                p.ne[axes[d]] = l->ne[d];
+                p.st[axes[d]] = l->st[d];
               }
-            }
-          }
-          if (const auto l = Lift(n.src[0])) {
-            if (const auto r = Reshaped(*l, NeOf(od))) {
-              vals_.at(out.v).lazy = *r;
+              vals_.at(out.v).lazy = p;
               done = true;
             }
+            break;
           }
-          break;
-        }
-        case Op::kView: {
-          const ir::TensorDesc& src = g_.tensor(n.src[0]);
-          if (ir::IsContiguous(src) && Dense(src) && vals_.at(n.src[0].v).joined) {
-            // A view within one piece is a view of it.
-            const Joined& j = *vals_.at(n.src[0].v).joined;
-            if (const auto m = MapView(j.ne, src, od)) {
-              for (const auto& [start, piece] : j.pieces) {
-                if (m->at[j.axis] < start || m->used[j.axis] >= start + piece.ne[j.axis]) continue;
-                Ne at = m->at;
-                at[j.axis] -= start;
-                vals_.at(out.v).lazy = Apply(piece, *m, at, od);
-                done = true;
-                break;
+          case Op::kReshape:
+          case Op::kCont: {
+            if (const auto c = CheapOf(n)) {
+              vals_.at(out.v).cheap = c;
+              done = true;
+              break;
+            }
+            if (const auto& j = vals_.at(n.src[0].v).joined) {
+              // Extents of one added or dropped only: the pieces each so.
+              const Ne to = NeOf(od);
+              std::vector<std::uint8_t> wide_from, wide_to;
+              for (std::uint8_t d = 0; d < 4; ++d) {
+                if (j->ne[d] != 1) wide_from.push_back(d);
+                if (to[d] != 1) wide_to.push_back(d);
+              }
+              bool same = wide_from.size() == wide_to.size();
+              for (std::size_t k = 0; same && k < wide_from.size(); ++k)
+                same = j->ne[wide_from[k]] == to[wide_to[k]];
+              const auto at = std::ranges::find(wide_from, j->axis) - wide_from.begin();
+              if (same && static_cast<std::size_t>(at) < wide_from.size()) {
+                const std::uint8_t axis = wide_to[static_cast<std::size_t>(at)];
+                Joined r{.ne = to, .axis = axis, .pieces = {}};
+                for (const auto& [start, piece] : j->pieces) {
+                  Ne shape = to;
+                  shape[axis] = piece.ne[j->axis];
+                  const auto q = Reshaped(piece, shape);
+                  if (!q) {
+                    same = false;
+                    break;
+                  }
+                  r.pieces.emplace_back(start, *q);
+                }
+                if (same) {
+                  vals_.at(out.v).joined = std::move(r);
+                  done = true;
+                  break;
+                }
               }
             }
-            if (done) break;
-          }
-          if (ir::IsContiguous(src) && Dense(src)) {
             if (const auto l = Lift(n.src[0])) {
-              if (const auto r = Viewed(*l, src, od)) {
+              if (const auto r = Reshaped(*l, NeOf(od))) {
                 vals_.at(out.v).lazy = *r;
                 done = true;
               }
             }
+            break;
           }
-          break;
+          case Op::kView: {
+            const ir::TensorDesc& src = g_.tensor(n.src[0]);
+            if (ir::IsContiguous(src) && Dense(src) && vals_.at(n.src[0].v).joined) {
+              // A view within one piece is a view of it.
+              const Joined& j = *vals_.at(n.src[0].v).joined;
+              if (const auto m = MapView(j.ne, src, od)) {
+                for (const auto& [start, piece] : j.pieces) {
+                  if (m->at[j.axis] < start || m->used[j.axis] >= start + piece.ne[j.axis])
+                    continue;
+                  Ne at = m->at;
+                  at[j.axis] -= start;
+                  vals_.at(out.v).lazy = Apply(piece, *m, at, od);
+                  done = true;
+                  break;
+                }
+              }
+              if (done) break;
+            }
+            if (ir::IsContiguous(src) && Dense(src)) {
+              if (const auto l = Lift(n.src[0])) {
+                if (const auto r = Viewed(*l, src, od)) {
+                  vals_.at(out.v).lazy = *r;
+                  done = true;
+                }
+              }
+            }
+            break;
+          }
+          case Op::kConcat:
+            if (const auto c = Dense(od) ? CheapOf(n) : std::nullopt) {
+              vals_.at(out.v).cheap = c;
+              done = true;
+            } else {
+              done = Dense(od) && Join(n);
+            }
+            break;
+          default:
+            break;
         }
-        case Op::kAdd:
-        case Op::kSub:
-        case Op::kMul:
-        case Op::kDiv:
-        case Op::kScale:
-        case Op::kUnary:
-        case Op::kClamp:
-        case Op::kConvert:
-        case Op::kRepeat:
-          if (const auto c = Dense(od) ? CheapOf(n) : std::nullopt) {
-            vals_.at(out.v).cheap = c;
-            done = true;
-          } else {
-            done = Dense(od) && Elementwise(n);
-          }
-          break;
-        case Op::kGlu:
-          done = n.nsrc == 2 && n.src[1].valid() && Dense(od) && Elementwise(n);
-          break;
-        case Op::kConcat:
-          if (const auto c = Dense(od) ? CheapOf(n) : std::nullopt) {
-            vals_.at(out.v).cheap = c;
-            done = true;
-          } else {
-            done = Dense(od) && Join(n);
-          }
-          break;
-        default:
-          break;
       }
       if (failed_ || !b_.ok()) {
         why_ = std::format(

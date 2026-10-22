@@ -23,6 +23,7 @@
 #include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "ir/op_traits.h"
 #include "ir/verify.h"
 
 namespace llmp::ir {
@@ -323,160 +324,6 @@ std::expected<void, VerifyError> Writable(const Ctx& c, std::size_t i) {
 
 // ---------------------------------------------------------------- per op
 
-std::size_t ParamSize(OpKey key) {
-  if (key.op == Op::kFused) {
-    switch (key.fused) {
-      case FusedKind::kRmsNormMul:
-      case FusedKind::kRmsNormMulAdd:
-      case FusedKind::kHcNorm:
-      case FusedKind::kNormGate:
-        return sizeof(NormParams);
-      case FusedKind::kRmsNormMulRope:
-      case FusedKind::kQkPrep:
-        return sizeof(NormRopeParams);
-      case FusedKind::kSoftmaxPoolCompress:
-        return sizeof(CompressorParams);
-      case FusedKind::kRoundedIndexMask:
-        return sizeof(RoundedIndexMaskParams);
-      case FusedKind::kGroupedMatMul:
-        return sizeof(ProductParams);
-      case FusedKind::kStateBankAttention:
-        return sizeof(AttnParams);
-      case FusedKind::kSinkhornHcPre:
-        return sizeof(SinkhornPreParams);
-      case FusedKind::kRopeStore:
-      case FusedKind::kInverseRopeGroupedMatMul:
-        return sizeof(RopeParams);
-      case FusedKind::kMatMulGlu:
-      case FusedKind::kMoeGlu:
-        return sizeof(GluParams);
-      case FusedKind::kOwnerAttention:
-        return sizeof(OwnerAttnParams);
-      case FusedKind::kHcNormPost:
-        return sizeof(HcNormPostParams);
-      case FusedKind::kDupUpAdd:
-        return sizeof(DupUpParams);
-      case FusedKind::kSpatialChannelNorm:
-        return sizeof(SpatialNormParams);
-      case FusedKind::kRmsNormMulRopeSections:
-      case FusedKind::kRopeTable:
-        return sizeof(RopeSectionsParams);
-      case FusedKind::kAttentionMaskPack:
-        return sizeof(MaskPackParams);
-      case FusedKind::kQkAttention:
-        return sizeof(QkAttentionParams);
-      case FusedKind::kLayerNormModulateSplit:
-      case FusedKind::kGatedResidualSplit:
-      case FusedKind::kGatedResidualModulateSplit:
-        return sizeof(SplitModulateParams);
-      case FusedKind::kHcPrep:
-        return sizeof(HcNormPostParams);
-      case FusedKind::kScaledUnary:
-        return sizeof(ScaledUnaryParams);
-      case FusedKind::kHcFold:
-        return sizeof(HcFoldParams);
-      case FusedKind::kHcCombine:
-        return sizeof(HcParams);
-      case FusedKind::kGdnConv:
-        return sizeof(GdnConvParams);
-      case FusedKind::kGdnHistory:
-        return sizeof(GdnHistoryParams);
-      case FusedKind::kGdnStep:
-        return sizeof(GdnStepParams);
-      case FusedKind::kHeadGate:
-        return sizeof(HeadGateParams);
-      case FusedKind::kMeanPoolNormRopeStore:
-        return sizeof(BlockPoolParams);
-      case FusedKind::kBlockSparseAttention:
-        return sizeof(BlockSparseAttnParams);
-      case FusedKind::kMoeRouter:
-        return sizeof(RouteParams);
-      case FusedKind::kMoeExperts:
-      case FusedKind::kMatMulIdGlu:
-        return sizeof(MoeExpertsParams);
-      case FusedKind::kNone:
-      case FusedKind::kMatMulAdd:
-      case FusedKind::kGroupedStores:
-      case FusedKind::kMoeCombine:
-      case FusedKind::kPreparedProducts:
-      case FusedKind::kEulerStep:
-      case FusedKind::kGdnGates:
-        return 0;
-    }
-  }
-  switch (key.op) {
-    case Op::kMatMul:
-    case Op::kMatMulId:
-      return sizeof(ProductParams);
-    case Op::kPermute:
-      return sizeof(PermuteParams);
-    case Op::kConcat:
-      return sizeof(ConcatParams);
-    case Op::kExpertSort:
-      return sizeof(ExpertSortParams);
-    case Op::kAttention:
-      return sizeof(AttnParams);
-    case Op::kMaskBuild:
-      return sizeof(MaskParams);
-    case Op::kPool:
-      return sizeof(PoolParams);
-    case Op::kRmsNorm:
-    case Op::kL2Norm:
-    case Op::kLayerNorm:
-    case Op::kChannelNorm:
-      return sizeof(NormParams);
-    case Op::kRope:
-      return sizeof(RopeParams);
-    case Op::kScale:
-      return sizeof(ScaleParams);
-    case Op::kUnary:
-      return sizeof(UnaryParams);
-    case Op::kClamp:
-      return sizeof(ClampParams);
-    case Op::kFill:
-      return sizeof(FillParams);
-    case Op::kGlu:
-      return sizeof(GluParams);
-    case Op::kSoftcap:
-      return sizeof(SoftcapParams);
-    case Op::kSoftMax:
-      return sizeof(SoftMaxParams);
-    case Op::kArgmax:
-      return sizeof(ArgmaxParams);
-    case Op::kArgsort:
-      return sizeof(ArgsortParams);
-    case Op::kTopK:
-    case Op::kVisibleTopK:
-      return sizeof(TopKParams);
-    case Op::kSelectedMask:
-      return sizeof(SelectedMaskParams);
-    case Op::kRoundedIndexScore:
-      return sizeof(RoundedIndexScoreParams);
-    case Op::kPrefixOverwrite:
-      return sizeof(PrefixOverwriteParams);
-    case Op::kRoute:
-      return sizeof(RouteParams);
-    case Op::kHcPre:
-    case Op::kHcPost:
-    case Op::kHcMix:
-      return sizeof(HcParams);
-    case Op::kConv2d:
-      return sizeof(Conv2dParams);
-    case Op::kUpsample:
-      return sizeof(UpsampleParams);
-    case Op::kSample:
-      return sizeof(SampleParams);
-    case Op::kAllReduce:
-    case Op::kAllGather:
-    case Op::kAllToAll:
-    case Op::kSend:
-    case Op::kRecv:
-      return sizeof(CollectiveParams);
-    default:
-      return 0;
-  }
-}
-
 bool Finite(float v) { return std::isfinite(v); }
 
 // A product's accumulation and hint (op.h): known values, reserved bytes
@@ -486,7 +333,7 @@ std::expected<void, VerifyError> CheckProduct(const Ctx& c, const TensorDesc& a)
   LLMP_TRY(Zero(c, 2, 2));
   LLMP_TRY(Zero(c, 5, 3));
   if (static_cast<std::uint8_t>(p.arithmetic) >
-      static_cast<std::uint8_t>(ProductArithmetic::kGgmlQ8_1F32))
+      static_cast<std::uint8_t>(ProductArithmetic::kBlock32Q8SumF32))
     return Fail(GraphError::kParams, c, "an unknown product arithmetic recipe");
   if (static_cast<std::uint8_t>(p.accumulate) > static_cast<std::uint8_t>(Accumulate::kF32) ||
       static_cast<std::uint8_t>(p.hint) > static_cast<std::uint8_t>(ProductHint::kHadamard)) {
@@ -583,7 +430,6 @@ Out RopeOf(const Ctx& c, const RopeParams& p, std::size_t x_at, std::size_t pos_
 }
 
 Out Leaf(const Ctx& c) {
-  LLMP_TRY(Arity(c, 0, 0));
   const TensorDesc* r = c.req(0);
   if (r == nullptr) {
     return Fail(GraphError::kArity, c, "a leaf needs its description");
@@ -617,7 +463,6 @@ Out InferStructure(const Ctx& c) {
     case Op::kState:
       return Leaf(c);
     case Op::kView: {
-      LLMP_TRY(Arity(c, 1, 1));
       const TensorDesc* r = c.req(0);
       if (r == nullptr) {
         return Fail(GraphError::kArity, c, "a view needs its description");
@@ -633,7 +478,6 @@ Out InferStructure(const Ctx& c) {
       return One(t, false);
     }
     case Op::kReshape: {
-      LLMP_TRY(Arity(c, 1, 1));
       const TensorDesc& a = *c.src(0);
       const TensorDesc* r = c.req(0);
       if (r == nullptr) {
@@ -652,7 +496,6 @@ Out InferStructure(const Ctx& c) {
       return One(ViewOf(c, 0, f, NaturalStrides(f), a.view_offset), false);
     }
     case Op::kPermute: {
-      LLMP_TRY(Arity(c, 1, 1));
       const auto p = c.params<PermuteParams>();
       std::array<bool, 4> seen{};
       for (const std::uint8_t ax : p.axes) {
@@ -680,7 +523,6 @@ Out InferStructure(const Ctx& c) {
       return One(ViewOf(c, 0, f, nb, a.view_offset), false);
     }
     case Op::kCont: {
-      LLMP_TRY(Arity(c, 1, 1));
       const TensorDesc& a = *c.src(0);
       LLMP_TRY(Want(a.format.layout == format::Layout::kDense, c, "copies dense tensors"));
       Shape shape = a.shape();
@@ -692,7 +534,6 @@ Out InferStructure(const Ctx& c) {
       return One(Fresh(shape, a.format.encoding), false);
     }
     case Op::kConcat: {
-      LLMP_TRY(Arity(c, 2, 2));
       const auto p = c.params<ConcatParams>();
       const TensorDesc& a = *c.src(0);
       const TensorDesc& b = *c.src(1);
@@ -734,7 +575,6 @@ Out InferStructure(const Ctx& c) {
       return One(r, false);
     }
     case Op::kRepeat: {
-      LLMP_TRY(Arity(c, 1, 1));
       const TensorDesc& a = *c.src(0);
       const TensorDesc* r = c.req(0);
       if (r == nullptr) {
@@ -747,7 +587,6 @@ Out InferStructure(const Ctx& c) {
                  false);
     }
     case Op::kConvert: {
-      LLMP_TRY(Arity(c, 1, 1));
       const TensorDesc& a = *c.src(0);
       const TensorDesc* r = c.req(0);
       if (r == nullptr) {
@@ -760,7 +599,6 @@ Out InferStructure(const Ctx& c) {
       return One(Fresh(a.shape(), r->format.encoding), false);
     }
     case Op::kGetRows: {
-      LLMP_TRY(Arity(c, 2, 2));
       LLMP_TRY(Readable(c, 0));
       LLMP_TRY(IndexSrc(c, 1));
       const TensorDesc& a = *c.src(0);
@@ -781,7 +619,6 @@ Out InferStructure(const Ctx& c) {
 Out InferProducts(const Ctx& c) {
   switch (c.key().op) {
     case Op::kMatMul: {
-      LLMP_TRY(Arity(c, 2, 2));
       LLMP_TRY(FloatSrc(c, 0));
       LLMP_TRY(FloatSrc(c, 1));
       const TensorDesc& a = *c.src(0);
@@ -792,7 +629,6 @@ Out InferProducts(const Ctx& c) {
       return FloatResult(S(a.ne(1), b.ne(1), b.ne(2), b.ne(3)), Encoding::kF32);
     }
     case Op::kMatMulId: {
-      LLMP_TRY(Arity(c, 3, 3));
       LLMP_TRY(FloatSrc(c, 0));
       LLMP_TRY(FloatSrc(c, 1));
       LLMP_TRY(IndexSrc(c, 2));
@@ -808,7 +644,6 @@ Out InferProducts(const Ctx& c) {
       return FloatResult(S(as.ne(1), ids.ne(0), b.ne(2)), Encoding::kF32);
     }
     case Op::kPrepare: {
-      LLMP_TRY(Arity(c, 1, 1));
       LLMP_TRY(FloatSrc(c, 0));
       const TensorDesc* r = c.req(0);
       if (r == nullptr) {
@@ -831,7 +666,6 @@ Out InferProducts(const Ctx& c) {
       return One(t, false);
     }
     case Op::kExpertSort: {
-      LLMP_TRY(Arity(c, 1, 1));
       LLMP_TRY(IndexSrc(c, 0));
       const auto p = c.params<ExpertSortParams>();
       const TensorDesc& ids = *c.src(0);
@@ -853,7 +687,6 @@ Out InferProducts(const Ctx& c) {
 Out InferAttentionAndMasks(const Ctx& c) {
   switch (c.key().op) {
     case Op::kAttention: {
-      LLMP_TRY(Arity(c, 3, 5));
       const auto p = c.params<AttnParams>();
       LLMP_TRY(Bool(c, 16));
       LLMP_TRY(Bool(c, 18));
@@ -900,7 +733,6 @@ Out InferAttentionAndMasks(const Ctx& c) {
       return FloatResult(S(v.ne(0), q.ne(2), q.ne(1), q.ne(3)), Encoding::kF32);
     }
     case Op::kMaskBuild: {
-      LLMP_TRY(Arity(c, 2, 2));
       LLMP_TRY(IndexSrc(c, 0));
       LLMP_TRY(IndexSrc(c, 1));
       const auto p = c.params<MaskParams>();
@@ -931,7 +763,6 @@ Out InferAttentionAndMasks(const Ctx& c) {
       return One(Fresh(S(cp.ne(0), r->ne(1)), e), false);
     }
     case Op::kCacheStore: {
-      LLMP_TRY(Arity(c, 3, 3));
       LLMP_TRY(Readable(c, 0));
       LLMP_TRY(FloatSrc(c, 1));
       LLMP_TRY(IndexSrc(c, 2, true));
@@ -951,7 +782,6 @@ Out InferAttentionAndMasks(const Ctx& c) {
       return One(ViewOf(c, 0, cache.format, cache.nb, cache.view_offset), false);
     }
     case Op::kRoundedIndexScore: {
-      LLMP_TRY(Arity(c, 4, 4));
       const auto p = c.params<RoundedIndexScoreParams>();
       LLMP_TRY(Zero(c, 1, 3));
       if (p.query != QueryRounding::kF16) return Fail(GraphError::kParams, c, "F16 query rounding");
@@ -969,7 +799,6 @@ Out InferAttentionAndMasks(const Ctx& c) {
       return One(Fresh(S(k.ne(2), q.ne(2)), Encoding::kF32), false);
     }
     case Op::kPrefixOverwrite: {
-      LLMP_TRY(Arity(c, 2, 2));
       const TensorDesc& x = *c.src(0);
       const TensorDesc& counts = *c.src(1);
       LLMP_TRY(Want(x.format.encoding == Encoding::kF32 && x.ne(0) <= INT32_MAX && x.ne(2) == 1 &&
@@ -979,7 +808,6 @@ Out InferAttentionAndMasks(const Ctx& c) {
       return One(Fresh(x.shape(), Encoding::kF32), false);
     }
     case Op::kIndexScore: {
-      LLMP_TRY(Arity(c, 3, 4));
       for (std::size_t i = 0; i < 4; ++i) {
         LLMP_TRY(FloatSrc(c, i));
       }
@@ -999,7 +827,6 @@ Out InferAttentionAndMasks(const Ctx& c) {
       return FloatResult(S(k.ne(2), q.ne(2), 1, q.ne(3)), Encoding::kF32);
     }
     case Op::kPool: {
-      LLMP_TRY(Arity(c, 1, 2));
       LLMP_TRY(FloatSrc(c, 0));
       LLMP_TRY(FloatSrc(c, 1));
       const auto p = c.params<PoolParams>();
@@ -1029,13 +856,11 @@ Out InferNormsAndRotations(const Ctx& c) {
     case Op::kL2Norm:
     case Op::kLayerNorm:
     case Op::kChannelNorm: {
-      LLMP_TRY(Arity(c, 1, 1));
       LLMP_TRY(FloatSrc(c, 0));
       LLMP_TRY(NormEps(c, c.params<NormParams>().eps));
       return FloatResult(c.src(0)->shape(), FloatOf(*c.src(0)));
     }
     case Op::kRope: {
-      LLMP_TRY(Arity(c, 2, 3));
       const auto p = c.params<RopeParams>();
       LLMP_TRY(CheckRope(c, p, 0));
       return RopeOf(c, p, 0, 1, 2);
@@ -1049,7 +874,6 @@ Out InferElementwise(const Ctx& c) {
   const Op op = c.key().op;
   switch (op) {
     case Op::kSelect: {
-      LLMP_TRY(Arity(c, 3, 3));
       LLMP_TRY(IndexSrc(c, 0));
       LLMP_TRY(Readable(c, 1));
       LLMP_TRY(Readable(c, 2));
@@ -1071,7 +895,6 @@ Out InferElementwise(const Ctx& c) {
     case Op::kSub:
     case Op::kMul:
     case Op::kDiv: {
-      LLMP_TRY(Arity(c, 2, 2));
       LLMP_TRY(FloatSrc(c, 0));
       LLMP_TRY(FloatSrc(c, 1));
       const TensorDesc& a = *c.src(0);
@@ -1085,7 +908,6 @@ Out InferElementwise(const Ctx& c) {
     case Op::kUnary:
     case Op::kClamp:
     case Op::kSoftcap: {
-      LLMP_TRY(Arity(c, 1, 1));
       LLMP_TRY(FloatSrc(c, 0));
       if (op == Op::kUnary && static_cast<std::uint8_t>(c.params<UnaryParams>().fn) >
                                   static_cast<std::uint8_t>(UnaryFn::kSgn)) {
@@ -1106,7 +928,6 @@ Out InferElementwise(const Ctx& c) {
       return FloatResult(c.src(0)->shape(), FloatOf(*c.src(0)));
     }
     case Op::kFill: {
-      LLMP_TRY(Arity(c, 0, 0));
       const TensorDesc* r = c.req(0);
       if (r == nullptr) {
         return Fail(GraphError::kArity, c, "a fill needs its shape");
@@ -1116,7 +937,6 @@ Out InferElementwise(const Ctx& c) {
                  false);
     }
     case Op::kGlu: {
-      LLMP_TRY(Arity(c, 1, 2));
       LLMP_TRY(FloatSrc(c, 0));
       LLMP_TRY(FloatSrc(c, 1));
       const auto p = c.params<GluParams>();
@@ -1143,13 +963,11 @@ Out InferElementwise(const Ctx& c) {
 Out InferReductionsAndSelection(const Ctx& c) {
   switch (c.key().op) {
     case Op::kSumRows: {
-      LLMP_TRY(Arity(c, 1, 1));
       LLMP_TRY(FloatSrc(c, 0));
       const TensorDesc& x = *c.src(0);
       return FloatResult(S(1, x.ne(1), x.ne(2), x.ne(3)), FloatOf(x));
     }
     case Op::kSoftMax: {
-      LLMP_TRY(Arity(c, 1, 3));
       for (std::size_t i = 0; i < 3; ++i) {
         LLMP_TRY(FloatSrc(c, i));
       }
@@ -1173,7 +991,6 @@ Out InferReductionsAndSelection(const Ctx& c) {
       return FloatResult(x.shape(), FloatOf(x));
     }
     case Op::kArgmax: {
-      LLMP_TRY(Arity(c, 1, 1));
       LLMP_TRY(FloatSrc(c, 0));
       if (c.byte(0) > static_cast<std::uint8_t>(ArgmaxNan::kFirstColumn)) {
         return Fail(GraphError::kParams, c, "an unknown NaN rule");
@@ -1183,13 +1000,11 @@ Out InferReductionsAndSelection(const Ctx& c) {
       return One(Fresh(S(x.ne(1)), Encoding::kI32), false);
     }
     case Op::kArgsort: {
-      LLMP_TRY(Arity(c, 1, 1));
       LLMP_TRY(FloatSrc(c, 0));
       LLMP_TRY(Bool(c, 0));
       return One(Fresh(c.src(0)->shape(), Encoding::kI32), false);
     }
     case Op::kTopK: {
-      LLMP_TRY(Arity(c, 1, 1));
       LLMP_TRY(FloatSrc(c, 0));
       const auto p = c.params<TopKParams>();
       const TensorDesc& x = *c.src(0);
@@ -1199,7 +1014,6 @@ Out InferReductionsAndSelection(const Ctx& c) {
       return One(Fresh(S(p.k, x.ne(1), x.ne(2), x.ne(3)), Encoding::kI32), false);
     }
     case Op::kVisibleTopK: {
-      LLMP_TRY(Arity(c, 2, 2));
       const auto p = c.params<TopKParams>();
       const TensorDesc& x = *c.src(0);
       const TensorDesc& counts = *c.src(1);
@@ -1213,7 +1027,6 @@ Out InferReductionsAndSelection(const Ctx& c) {
       return One(Fresh(S(p.k, x.ne(1)), Encoding::kI32), false);
     }
     case Op::kSelectedMask: {
-      LLMP_TRY(Arity(c, 2, 2));
       const auto p = c.params<SelectedMaskParams>();
       const TensorDesc& raw = *c.src(0);
       const TensorDesc& ids = *c.src(1);
@@ -1235,7 +1048,6 @@ Out InferReductionsAndSelection(const Ctx& c) {
 Out InferRouting(const Ctx& c) {
   switch (c.key().op) {
     case Op::kRoute: {
-      LLMP_TRY(Arity(c, 1, 4));
       LLMP_TRY(FloatSrc(c, 0));
       LLMP_TRY(FloatSrc(c, 1));
       LLMP_TRY(IndexSrc(c, 2));
@@ -1283,7 +1095,6 @@ Out InferRouting(const Ctx& c) {
       return r;
     }
     case Op::kExpertReduce: {
-      LLMP_TRY(Arity(c, 2, 4));
       LLMP_TRY(FloatSrc(c, 0));
       LLMP_TRY(FloatSrc(c, 1));
       LLMP_TRY(IndexSrc(c, 2));
@@ -1316,7 +1127,6 @@ Out InferRouting(const Ctx& c) {
 Out InferRecurrencesAndConvolutions(const Ctx& c) {
   switch (c.key().op) {
     case Op::kSsmConv: {
-      LLMP_TRY(Arity(c, 2, 2));
       LLMP_TRY(FloatSrc(c, 0));
       LLMP_TRY(FloatSrc(c, 1));
       const TensorDesc& sx = *c.src(0);
@@ -1327,7 +1137,6 @@ Out InferRecurrencesAndConvolutions(const Ctx& c) {
       return FloatResult(S(w.ne(1), sx.ne(0) - w.ne(0) + 1, sx.ne(2)), Encoding::kF32);
     }
     case Op::kGatedDeltaNet: {
-      LLMP_TRY(Arity(c, 6, 6));
       for (std::size_t i = 0; i < 6; ++i) {
         LLMP_TRY(FloatSrc(c, i));
       }
@@ -1357,7 +1166,6 @@ Out InferRecurrencesAndConvolutions(const Ctx& c) {
       return r;
     }
     case Op::kConv2d: {
-      LLMP_TRY(Arity(c, 2, 3));
       for (std::size_t i = 0; i < 3; ++i) {
         LLMP_TRY(FloatSrc(c, i));
       }
@@ -1383,7 +1191,6 @@ Out InferRecurrencesAndConvolutions(const Ctx& c) {
       return FloatResult(S(ow, oh, w.ne(3), x.ne(3)), Encoding::kF32);
     }
     case Op::kUpsample: {
-      LLMP_TRY(Arity(c, 1, 1));
       LLMP_TRY(FloatSrc(c, 0));
       const auto f = c.params<UpsampleParams>().factor;
       if (f == 0) {
@@ -1410,7 +1217,6 @@ Out InferHyperConnections(const Ctx& c) {
   }
   const std::uint64_t hc = p.streams;
   if (op == Op::kHcPre) {
-    LLMP_TRY(Arity(c, 2, 2));
     LLMP_TRY(FloatSrc(c, 0));
     LLMP_TRY(FloatSrc(c, 1));
     const TensorDesc& x = *c.src(0);
@@ -1425,7 +1231,6 @@ Out InferHyperConnections(const Ctx& c) {
     return FloatResult(S(x.ne(0), t), Encoding::kF32);
   }
   if (op == Op::kHcPost) {
-    LLMP_TRY(Arity(c, 3, 4));
     for (std::size_t i = 0; i < 4; ++i) {
       LLMP_TRY(FloatSrc(c, i));
     }
@@ -1444,7 +1249,6 @@ Out InferHyperConnections(const Ctx& c) {
     }
     return FloatResult(S(w, hc, t), Encoding::kF32);
   }
-  LLMP_TRY(Arity(c, 3, 3));
   for (std::size_t i = 0; i < 3; ++i) {
     LLMP_TRY(FloatSrc(c, i));
   }
@@ -1480,7 +1284,6 @@ Out InferHyperConnections(const Ctx& c) {
 Out InferSamplingAndCollectives(const Ctx& c) {
   const Op op = c.key().op;
   if (op == Op::kSample) {
-    LLMP_TRY(Arity(c, 1, 2));
     LLMP_TRY(FloatSrc(c, 0));
     const auto p = c.params<SampleParams>();
     LLMP_TRY(Zero(c, 1, 3));
@@ -1509,7 +1312,6 @@ Out InferSamplingAndCollectives(const Ctx& c) {
     return Fail(GraphError::kParams, c, "dim past 3");
   }
   if (op == Op::kRecv) {
-    LLMP_TRY(Arity(c, 0, 0));
     const TensorDesc* r = c.req(0);
     if (r == nullptr || r->format.layout != format::Layout::kDense ||
         !format::Validate(r->format)) {
@@ -1517,7 +1319,6 @@ Out InferSamplingAndCollectives(const Ctx& c) {
     }
     return One(Fresh(r->shape(), r->format.encoding), false);
   }
-  LLMP_TRY(Arity(c, 1, 1));
   LLMP_TRY(Readable(c, 0));
   const TensorDesc& x = *c.src(0);
   LLMP_TRY(Want(x.format.layout == format::Layout::kDense, c, "moves dense tensors"));
@@ -1542,80 +1343,30 @@ Out InferSamplingAndCollectives(const Ctx& c) {
 Out InferPrimitive(const Ctx& c) {
   const Op op = c.key().op;
   if (op != Op::kInput && op != Op::kWeight && op != Op::kState) {
-    LLMP_TRY(Tail(c, ParamSize(c.key())));  // a leaf's: Leaf
+    LLMP_TRY(Tail(c, Traits(c.key())->param_bytes));  // a leaf's: Leaf
   }
-  switch (op) {
-    case Op::kInput:
-    case Op::kWeight:
-    case Op::kState:
-    case Op::kView:
-    case Op::kReshape:
-    case Op::kPermute:
-    case Op::kCont:
-    case Op::kConcat:
-    case Op::kRepeat:
-    case Op::kConvert:
-    case Op::kGetRows:
+  switch (Traits(c.key())->inference) {
+    case InferenceClass::kStructure:
       return InferStructure(c);
-    case Op::kMatMul:
-    case Op::kMatMulId:
-    case Op::kPrepare:
-    case Op::kExpertSort:
+    case InferenceClass::kProducts:
       return InferProducts(c);
-    case Op::kAttention:
-    case Op::kMaskBuild:
-    case Op::kCacheStore:
-    case Op::kRoundedIndexScore:
-    case Op::kPrefixOverwrite:
-    case Op::kIndexScore:
-    case Op::kPool:
+    case InferenceClass::kAttentionAndMasks:
       return InferAttentionAndMasks(c);
-    case Op::kRmsNorm:
-    case Op::kL2Norm:
-    case Op::kLayerNorm:
-    case Op::kChannelNorm:
-    case Op::kRope:
+    case InferenceClass::kNormsAndRotations:
       return InferNormsAndRotations(c);
-    case Op::kSelect:
-    case Op::kAdd:
-    case Op::kSub:
-    case Op::kMul:
-    case Op::kDiv:
-    case Op::kScale:
-    case Op::kUnary:
-    case Op::kClamp:
-    case Op::kSoftcap:
-    case Op::kFill:
-    case Op::kGlu:
+    case InferenceClass::kElementwise:
       return InferElementwise(c);
-    case Op::kSumRows:
-    case Op::kSoftMax:
-    case Op::kArgmax:
-    case Op::kArgsort:
-    case Op::kTopK:
-    case Op::kVisibleTopK:
-    case Op::kSelectedMask:
+    case InferenceClass::kReductionsAndSelection:
       return InferReductionsAndSelection(c);
-    case Op::kRoute:
-    case Op::kExpertReduce:
+    case InferenceClass::kRouting:
       return InferRouting(c);
-    case Op::kSsmConv:
-    case Op::kGatedDeltaNet:
-    case Op::kConv2d:
-    case Op::kUpsample:
+    case InferenceClass::kRecurrencesAndConvolutions:
       return InferRecurrencesAndConvolutions(c);
-    case Op::kHcPre:
-    case Op::kHcPost:
-    case Op::kHcMix:
+    case InferenceClass::kHyperConnections:
       return InferHyperConnections(c);
-    case Op::kSample:
-    case Op::kAllReduce:
-    case Op::kAllGather:
-    case Op::kAllToAll:
-    case Op::kSend:
-    case Op::kRecv:
+    case InferenceClass::kSamplingAndCollectives:
       return InferSamplingAndCollectives(c);
-    case Op::kFused:
+    case InferenceClass::kFused:
       break;
   }
   return Fail(GraphError::kParams, c, "an op outside op set v1");
@@ -1634,7 +1385,7 @@ static_assert(offsetof(RopeSectionsParams, sections) == 9 &&
               offsetof(RopeSectionsParams, reserved) == 10);
 
 Out InferFused(const Ctx& c) {
-  LLMP_TRY(Tail(c, ParamSize(c.key())));
+  LLMP_TRY(Tail(c, Traits(c.key())->param_bytes));
   if (c.key().fused == FusedKind::kNone ||
       static_cast<std::uint16_t>(c.key().fused) > static_cast<std::uint16_t>(kLastFusedKind)) {
     return Fail(GraphError::kParams, c, "an unknown fused kind");
@@ -1678,9 +1429,6 @@ Out InferFused(const Ctx& c) {
   // before its decomposition reads a flag as a bool.
   switch (c.key().fused) {
     case FusedKind::kGroupedMatMul:  // ProductParams
-      LLMP_TRY(Arity(c, 2, 2));
-      if (!c.src(0) || !c.src(1))
-        return Fail(GraphError::kArity, c, "grouped products need both operands");
       LLMP_TRY(CheckProduct(c, *c.src(0)));
       break;
     case FusedKind::kHcCombine:  // HcParams
@@ -1763,6 +1511,13 @@ std::expected<Inferred, VerifyError> Infer(OpKey key,
   }
   if (key.op != Op::kFused && key.fused != FusedKind::kNone) {
     return Err(GraphError::kParams, "a fused kind on a primitive op");
+  }
+  const OpTraits* traits = Traits(key);
+  if (!traits) return Fail(GraphError::kParams, c, "an op outside op set v1");
+  // Invalid-as-node fused keys keep their parameter error below. Valid keys
+  // share static bounds; decompositions refine parameter-dependent arities.
+  if (traits->reference != ReferencePath::kNone) {
+    LLMP_TRY(Arity(c, traits->required_sources, traits->max_sources));
   }
   Out r = key.op == Op::kFused ? InferFused(c) : InferPrimitive(c);
   if (!r || key.op == Op::kInput || key.op == Op::kWeight || key.op == Op::kState) {

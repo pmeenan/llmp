@@ -267,294 +267,38 @@ namespace llmp::ir {
 inline constexpr std::uint32_t kOpSetVersion = 1;
 
 enum class Op : std::uint16_t {
-  // Structure.
-  kInput,
-  kWeight,
-  kState,
-  kView,
-  kReshape,
-  kPermute,
-  kCont,
-  kConcat,
-  kRepeat,
-  kConvert,  // a dense tensor into another encoding (a cast)
-  kGetRows,  // rows gathered by index
-  // Products.
-  kMatMul,
-  kMatMulId,    // grouped: each row times its selected matrices
-  kPrepare,     // activations into a product's input form (a quantization)
-  kExpertSort,  // routed rows sorted by matrix: a grouped product's worklist
-  // Attention and masks.
-  kAttention,   // AttnParams
-  kMaskBuild,   // MaskParams
-  kCacheStore,  // rows stored at indices (set_rows)
-  kIndexScore,  // sparse attention's cell scores
-  kPool,        // compressed KV pooling
-  // Norms and rotations.
-  kRmsNorm,
-  kL2Norm,
-  kLayerNorm,
-  kChannelNorm,
-  kRope,  // RopeParams
-  // Elementwise.
-  kAdd,
-  kSub,
-  kMul,
-  kDiv,
-  kScale,  // x · scale + bias
-  kUnary,  // UnaryParams
-  kClamp,
-  kFill,
-  kGlu,  // GluParams
-  kSoftcap,
-  // Reductions and selection.
-  kSumRows,
-  kSoftMax,
-  kArgmax,
-  kArgsort,
-  kTopK,
-  // Routing.
-  kRoute,         // RouteParams: scores into selected experts and weights
-  kExpertReduce,  // the selected experts' outputs, weighted and summed
-  // Recurrences and convolutions.
-  kSsmConv,
-  kGatedDeltaNet,
-  kConv2d,
-  kUpsample,
-  // Hyper-connections: composite ops with a mandatory primitive
-  // decomposition.
-  kHcPre,   // streams folded into one
-  kHcPost,  // one output spread back over the streams
-  kHcMix,   // HcParams: the mixing weights
-  // Sampling and collectives.
-  kSample,
-  kAllReduce,
-  kAllGather,
-  kAllToAll,
-  kSend,
-  kRecv,
-  // A pattern's result; FusedKind names it.
-  kFused,
-  // Exact visibility-bounded selection and its bit-preserving mask.
-  kVisibleTopK,
-  kSelectedMask,
-  kRoundedIndexScore,
-  kPrefixOverwrite,
-  kSelect,
+#define LLMP_PRIMITIVE(op, ...) op,
+#define LLMP_FUSED(kind, ...)
+#include "ir/op_traits.inc"
+#undef LLMP_PRIMITIVE
+#undef LLMP_FUSED
 };
 
 // Each fused kind's sources (in order), outputs and parameters; its
 // decomposition (ir/decompose.h) is its meaning.
 enum class FusedKind : std::uint16_t {
-  kNone,
-  kRmsNormMul,  // (x, w): NormParams: rms_norm(x) · w
-  // (x [D, H, T], pos [T]) or (x [D, H, T], w [D], pos [T], freq?):
-  // NormRopeParams: rope(rms_norm(x, eps) [· w]).
-  kRmsNormMulRope,
-  kRmsNormMulAdd,  // (x, w, r): NormParams: rms_norm(x) · w + r
-  // (x [D, H, T], pos, cache [D · H, C], idx [T], freq?): RopeParams: the
-  // rotated rows stored; the output is a view of cache.
-  kRopeStore,
-  // (w_gate, w_up, x): GluParams: glu(w_gate · x, w_up · x), the gate's
-  // product the GLU's gate (GGML's ggml_glu_split(gate, up) over its
-  // mul_mat(w_gate, x) and mul_mat(w_up, x); the weights first, as
-  // kMatMulAdd's).
-  kMatMulGlu,
-  kMatMulAdd,  // (w, x, b): w · x + b
-  // (q [D, R, H, owners], mask [C, >= R, 1, owners], k0, ..., v0, ...):
-  // OwnerAttnParams: joined requests' rows, each owner's R rows attending to
-  // its own cache [D, C_o, Hk, 1] (C_o <= C): owner o's queries q[:, :, :,
-  // o] and its mask mask[:C_o, :R, 0, o] (the first C_o cells and R rows
-  // of its own matrix, so each owner keeps its mask's row padding);
-  // [Dv, H, R, owners], owner o's attention at o. One to four owners.
-  // Its cohort and offset (amended 2026-10-09) place the node among a
-  // step's joined owners when they run as several nodes of up to four
-  // (GGML's four-root carriers): the cohort is every joined owner, the
-  // offset the node's first one there. Like a product's accumulation, they
-  // are hashed choices that do not change the definition (an
-  // implementation partitions its grid by them); 0 and 0 is a lone node.
-  kOwnerAttention,
-  // A batch key, never a node (the builder and verifier refuse one, and it
-  // has no decomposition): consecutive independent kCacheStore nodes that
-  // one implementation runs as one launch (planner/pattern.h
-  // grouped_stores). A capability of it describes one member store
-  // (cache, src, idx) and declares its batch bound (execution/registry.h
-  // Capability::batch). Its first form, a node of two or three stores,
-  // held none of GGML's groups (two to sixteen) and was dropped
-  // (2026-10-09).
-  kGroupedStores,
-  // (gate [n, U, T], up [n, U, T], ids [U, T], s_gate [E], s_up [E]):
-  // GluParams: glu(gate · s_gate[ids], up · s_up[ids]).
-  kMoeGlu,
-  // (down [n, U, T], ids, weights [U, T], shared [n, T], shared_gate? [1, T],
-  // s_down? [E]): expert_reduce(down, weights, ids, s_down) + shared ·
-  // sigmoid(shared_gate), or + shared where the shared expert has no gate
-  // (DeepSeek V4's).
-  kMoeCombine,
-  // (x [W, hc, T], w [W · hc]): NormParams: each stream's rms_norm (over W,
-  // Qwen3.8's llmp.hc.norm), then as [W · hc, T], · w. DeepSeek V4's flat
-  // norm over all W · hc is kHcNormPost's second output, or rms_norm of the
-  // reshape.
-  kHcNorm,
-  // (y, x, post, comb?): HcNormPostParams: two outputs, hc_post's p and
-  // rms_norm(p as [W · hc, T]).
-  kHcNormPost,
-  // (q, wq, k, wk, pos, freq?): NormRopeParams: two outputs, each
-  // rope(rms_norm(·) · w).
-  kQkPrep,
-  // (w0, w1, ..., x): an output per product wi · x, up to four; the
-  // weights first, as kMatMulGlu's and kMatMulAdd's.
-  kPreparedProducts,
-  kNormGate,   // (x, w, z): NormParams: rms_norm(x) · w · sigmoid(z)
-  kEulerStep,  // (sample, noise, dt [1]): sample + dt · noise
-  // (x [2W, 2H, Co], shortcut [W, H, Ci]): DupUpParams: x plus Qwen-Image's
-  // DupUp3D of the shortcut at its last kept frame (kernels/ggml/ops_ext.h
-  // DupUpAddF32): output channel o's sub-pixel (b, d) reads input channel
-  // (((o · ft + ft - 1) · 2 + b) · 2 + d) / (Co · ft · 4 / Ci).
-  kDupUpAdd,
-  // (x [W, hc, T], norm [W · hc], inject? [W · hc, hc], out? [W, T],
-  // logits? [hc, T]): HcNormPostParams: the streams s = x, or with out and
-  // logits x combined with the last block's output first (kHcCombine); the
-  // normed streams xn = kHcNorm(s, norm), and with inject the next combine's
-  // logits inject · xn (from xn in F32). Outputs: xn, then the logits (with
-  // inject), then s (with out).
-  kHcPrep,
-  // (x): ScaledUnaryParams: fn(x · scale).
-  kScaledUnary,
-  // (xn [W · hc, T], gate [W · hc, T]) or (x [W, hc, T], norm [W · hc],
-  // gate [W · hc, T]): HcFoldParams: (1 / hc) Σ_k xn_k · sigmoid(gate_k)
-  // over the streams in order (kHcPre's gated fold of xn as [W, hc, T], or
-  // of kHcNorm(x, norm, eps)), [W, T]; with `prepared` also the result
-  // prepared into MXFP8 rows (kPrepare's), with `rounded` also rounded to
-  // BF16, in that order after it.
-  kHcFold,
-  // (x [W, hc, T], out [W, T], logits [hc, T]): HcParams: x + out ·
-  // 2 · sigmoid(logits / hc) on each stream (hc.combine's).
-  kHcCombine,
-  // (rows [C, T], history [(K - 1) · C], w [K, C]): GdnConvParams: the
-  // causal depthwise convolution of the rows after the history (tap j of
-  // channel c at c · (K - 1) + j) and SiLU, [C, T]; its first qk_channels
-  // channels, heads of `head`, L2-normed as rms_norm(x, eps) · scale.
-  kGdnConv,
-  // (rows [C, T], history? [(K - 1) · C]): GdnHistoryParams: the
-  // convolution's next history, [taps · C, 1]: the last `taps` of the
-  // history (when given) followed by the rows, each channel's taps
-  // together.
-  kGdnHistory,
-  // (q, k, v, g, beta, state [S], idx? [1]): GdnStepParams: kGatedDeltaNet
-  // over state viewed as [Sk, Sv, H, 1]: its attention, and with `write`
-  // the new state stored over state at idx (an output that is a view of
-  // state).
-  kGdnStep,
-  // (alpha [H, T], beta [H, T], dt_bias [H], a [H]): two outputs, the
-  // decay's log softplus(alpha + dt_bias) · a and sigmoid(beta), each [1,
-  // H, T, 1].
-  kGdnGates,
-  // (attn [d · H, T], q [2 · d · H, T]): HeadGateParams: attn times
-  // sigmoid of each head's gate (q's second d of each head's 2 · d).
-  kHeadGate,
-  // (raw [D, C], blocks [D, N], w [D], block_pos [4 · B], cells [B],
-  // positions? [4 · T]): BlockPoolParams: the block keys of the first B
-  // blocks of `ratio` raw rows, each their mean, rms_norm · w, rotated at
-  // its block's position and rounded to BF16, stored in blocks at cells:
-  // a view of blocks. An implementation may write only the blocks the
-  // step's positions complete (the others hold what earlier steps stored):
-  // a block's key never changes once its rows are written.
-  kMeanPoolNormRopeStore,
-  // (q [d, H, T], k [d, C, Hk], v [d, C, Hk], qi [Di, Hi, T], blocks [Di,
-  // B], causal [C, T] F32, seen [B, T] F32, mask [C, >= T], positions? [4 ·
-  // T]): BlockSparseAttnParams: block-sparse selection and attention:
-  // each block's score Σ_h relu(bf16(qi_h) · block), plus 1e9 where `seen`
-  // hides the block's last position, spread over its `ratio` cells, plus
-  // `causal`; the `width` best cells kept; attention of q over k and v
-  // under `mask` and -inf but at the kept cells. [d · H, T].
-  kBlockSparseAttention,
-  // (logits [E, T], x [W, T], gate [W]): RouteParams: kRoute's ids and
-  // weights, and the shared expert's gate logit Σ x · gate [1, T].
-  kMoeRouter,
-  // (gate_up [W, 2F, E], down [F, W, E], x [W, T], ids [U, T], weights [U,
-  // T], shared [W, T], gate [1, T], s_gate [E], s_up [E], s_down [E]):
-  // MoeExpertsParams: the routed experts (gate_up's halves, each by its
-  // expert's scale, the GLU, down) reduced with s_down and the weights,
-  // plus shared · sigmoid(gate): kMoeCombine over them.
-  kMoeExperts,
-  // (gate [W, F, E], up [W, F, E], x [W, T], ids [U, T]): MoeExpertsParams:
-  // glu(gate[ids] · x, up[ids] · x), [F, U, T].
-  kMatMulIdGlu,
-  // (state_kv [C, S], state_score [C, S], kv [C, T], score [C, T],
-  // read_idxs [ratio * B * (overlap ? 2 : 1)] I32): CompressorParams:
-  // each block's rows from [state | current] softmax pooled per channel.
-  // Without overlap C = D; with overlap C = 2D, each block takes its
-  // previous rows' first D channels, then its current rows' second D.
-  // Overlap's source also has a final zero row with score -inf. The
-  // indices address this source; [D, 1, B] F32 before norm or rotation.
-  kSoftmaxPoolCompress,
-  // (x [W, hc, T], fn [W * hc, (2 + hc) * hc], scale [3],
-  // base [(2 + hc) * hc], norm [W]): SinkhornPreParams: the full-carry
-  // Sinkhorn block mix. Outputs are the folded stream's weighted RMSNorm
-  // [W, T], post [hc, T], and combination [hc, hc, T], all packed F32.
-  kSinkhornHcPre,
-  // (q [D, T, H], raw [D, 1, A], compressed [D, 1, B], mask?, sinks?):
-  // AttnParams, unchanged: Attention(q, permute(concat(raw, compressed, 2)),
-  // the same K as V, mask, sinks). The formula needs no layout fact;
-  // only zero-copy implementations require a proven contiguous state span.
-  kStateBankAttention,
-  // (q [D,H,T], k [D,1,C], weights [H,T], visible I32 [T], raw F16 [W,T]):
-  // RoundedIndexMaskParams. RoundedIndexScore -> VisibleTopK -> SelectedMask,
-  // with the same visible operand throughout. Neither score nor selected IDs
-  // escape this formula. It does not fuse generic IndexScore/TopK semantics.
-  kRoundedIndexMask,
-  // (w [K,N,G], x [K,G,T]): ProductParams. Each group uses its own
-  // matrix on its input rows; packed F32 [N,G,T]. The decomposition
-  // permutes x to [K,T,G], multiplies, permutes back and makes contiguous.
-  kGroupedMatMul,
-  // (out_a, heads, positions): RopeParams: inverse tail RoPE and staged
-  // grouped output-A matrix product.
-  kInverseRopeGroupedMatMul,
-  // (x [W, H, C, N], gamma [C]): SpatialNormParams: each pixel's channels
-  // L2-normed (over C, eps the norm's floor), times scale and gamma, and
-  // with silu SiLU: the decomposition takes x to channel rows ([C, W, H,
-  // N]), normalizes and returns to [W, H, C, N].
-  kSpatialChannelNorm,
-  // (x [D, heads, rows], w [D], pos0 [rows], pos1, pos2): RopeSectionsParams:
-  // the RMS norm of each head times w (any float encoding, read as F32),
-  // then `sections` plain rotations, each of its own I32 positions over
-  // the next dims[i] values of the head (offsets 0, dims[0], dims[0] +
-  // dims[1]), together the whole head: a multi-axis rotation.
-  kRmsNormMulRopeSections,
-  // (mask F32 [C, R]): MaskPackParams: the mask in F16, padded with -inf to
-  // [cells, rows] (cells >= C, rows >= R): an attention's mask prepared
-  // once for every attention of a step that reads it. (An implementation
-  // may mark a square mask's whole rows, -0 at their first column, for an
-  // attention whose keys are exactly its columns: kQkAttention's.)
-  kAttentionMaskPack,
-  // (pos0 [R], pos1, pos2): RopeSectionsParams (normal pairs; eps unused):
-  // F32 [2, D / 2, R], each pair's cos and sin of the sections' angles
-  // (kRmsNormMulRopeSections' rotation of (1, 0)): a rotation table.
-  kRopeTable,
-  // (q [D · H, R], wq [D], k [D · Hk, R], v [D · Hk, R], mask [cells, >= R],
-  // table F32 [2, D / 2, R]): QkAttentionParams: attention of q's heads,
-  // each RMS-normed (eps), times wq and rotated by the table (normal
-  // pairs), over k's and v's heads (head h reads h / (H / Hk)) and the
-  // mask's first R rows and columns, scaled: [D · H, R], each row's heads
-  // in order (the channel rows a projection reads).
-  kQkAttention,
-  // (x [C, R], s [C]) or (x [C, R], a [C], b [C]): SplitModulateParams:
-  // LayerNorm(x) · (1 + s), where s is unsplit (2 sources) or row r is a
-  // where r < split, else b (3 sources).
-  kLayerNormModulateSplit,
-  // (carry [C, R], branch [C, R], g [C]) or (carry [C, R], branch [C, R],
-  // a [C], b [C]): SplitModulateParams (eps unused): carry + branch · tanh(g),
-  // where g is unsplit (3 sources) or row r is a where r < split, else b.
-  kGatedResidualSplit,
-  // (carry [C, R], branch [C, R], g [C], m [C]) or (carry [C, R], branch
-  // [C, R], ga [C], gb [C], ma [C], mb [C]): SplitModulateParams:
-  // x = kGatedResidualSplit, then kLayerNormModulateSplit(x) (eps):
-  // [x, modulated].
-  kGatedResidualModulateSplit,
+#define LLMP_PRIMITIVE(op, ...)
+#define LLMP_FUSED(kind, ...) kind,
+#include "ir/op_traits.inc"
+#undef LLMP_PRIMITIVE
+#undef LLMP_FUSED
 };
-// The op set's last fused kind (the kinds are 1 to it).
-inline constexpr FusedKind kLastFusedKind = FusedKind::kGatedResidualModulateSplit;
+// Counts are generated too: no separate enum or last-kind edit for a new op.
+inline constexpr std::size_t kOpCount = 0
+#define LLMP_PRIMITIVE(...) +1
+#define LLMP_FUSED(...)
+#include "ir/op_traits.inc"
+#undef LLMP_PRIMITIVE
+#undef LLMP_FUSED
+    ;
+inline constexpr std::size_t kFusedKindCount = 0
+#define LLMP_PRIMITIVE(...)
+#define LLMP_FUSED(...) +1
+#include "ir/op_traits.inc"
+#undef LLMP_PRIMITIVE
+#undef LLMP_FUSED
+    ;
+inline constexpr FusedKind kLastFusedKind = static_cast<FusedKind>(kFusedKindCount - 1);
 
 struct OpKey {
   Op op = Op::kInput;
@@ -640,9 +384,9 @@ enum class ProductHint : std::uint8_t {
 // Convert/Prepare still explicitly describes the operand's representation.
 enum class ProductArithmetic : std::uint8_t {
   kImplementation,
-  kBf16F32,      // BF16 RNE input, F32 accumulation, declared output storage
-  kGgmlQ8_1F32,  // Ordinary MMVQ: block32 max-abs, FP16 scale/sum, roundf int8,
-                 // pad512 zero tail and original vector reduction into F32
+  kBf16F32,          // BF16 RNE input, F32 accumulation, declared output storage
+  kBlock32Q8SumF32,  // Block32 max-abs, FP16 scale/sum, roundf int8,
+                     // pad512 zero tail and original vector reduction into F32
 };
 std::string_view ProductArithmeticName(ProductArithmetic arithmetic);
 struct ProductParams {

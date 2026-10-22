@@ -203,6 +203,10 @@ std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root);
 // llmp.moe.router, llmp.gdn.gates), or none.
 ir::TensorId WithinRoot(const ir::Graph& graph, ir::TensorId root);
 
+// Backend indexing limits (RE-037), checked before creating any GGML tensor.
+// A wide graph remains valid IR and may be accepted by another backend.
+std::expected<void, KernelFailure> CheckIrIndexBounds(const ir::Graph& graph);
+
 // Steps 1 to 6 above, with `device` the device's own choices (executor.h
 // DeviceChoicesOf on CUDA builds; a model of it in tests) and `registry` the
 // one the plan selected from.

@@ -2122,12 +2122,12 @@ ir::ProductArithmetic Q8ProductArithmetic(const ex::CapabilityQuery& q) {
   if (!packed(*weight, info.ggml->block_bytes, q.k / info.ggml->block_elements)) return unknown;
   if (input->encoding == Encoding::kF32 && input->layout == Layout::kDense &&
       packed(*input, sizeof(float), q.k))
-    return ir::ProductArithmetic::kGgmlQ8_1F32;
+    return ir::ProductArithmetic::kBlock32Q8SumF32;
   // Logical Q8_1 row strides describe unpadded blocks; the owned Prepare
   // lowering authenticates and funds the complete physical padded rows.
   if (input->encoding == Encoding::kQ8_1 && input->layout == Layout::kGgmlBlocks &&
       packed(*input, 36, q.k / 32))
-    return ir::ProductArithmetic::kGgmlQ8_1F32;
+    return ir::ProductArithmetic::kBlock32Q8SumF32;
   return unknown;
 }
 

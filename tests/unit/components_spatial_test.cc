@@ -1957,19 +1957,27 @@ TEST(SpatialComponentsTest, DecoderBoundsFollowTheNumberOfLevels) {
                                    .reference_buffers = false,
                                    .exports = mapping->exports,
                                    .inputs = ports});
+    ASSERT_TRUE(graph) << Failed(graph).value_or("");
+    EXPECT_EQ(graph->weights().size(), source.size());
+    EXPECT_EQ(
+        graph->outputs()[0].shape,
+        (SpatialShape{profile.spatial_factor, profile.spatial_factor, profile.out_channels, 1}));
+    EXPECT_EQ(graph->reference_bytes(), 0U);
+    EXPECT_EQ(budget.used, graph->metadata_bytes());
     if (levels == 16) {
-      // The bounded source spec is valid, but even a 1x1 latent expands
-      // to 32768x32768 pixels. Its F32 graph exceeds the existing GGML
-      // stride representation, which remains a separate admission bound.
-      ASSERT_FALSE(graph);
-      EXPECT_NE(Failed(graph).value_or("").find("past INT32_MAX"), std::string::npos);
-      EXPECT_EQ(budget.used, 0U);
-    } else {
-      ASSERT_TRUE(graph) << Failed(graph).value_or("");
-      EXPECT_EQ(graph->weights().size(), source.size());
-      EXPECT_EQ(
-          graph->outputs()[0].shape,
-          (SpatialShape{profile.spatial_factor, profile.spatial_factor, profile.out_channels, 1}));
+      // A 1x1 latent expands to 32768x32768 pixels. The neutral graph's
+      // metadata fits, but its reference buffers exceed this budget.
+      // GGML's narrower stride limits are checked separately at lowering.
+      Budget reference_budget;
+      auto reference = BuildSpatialStep(mapping->spec, tables, owners, reference_budget.Payment(),
+                                        {.links = mapping->links,
+                                         .reference_buffers = true,
+                                         .exports = mapping->exports,
+                                         .inputs = ports});
+      ASSERT_FALSE(reference);
+      EXPECT_EQ(Failed(reference).value_or(""), "spatial graph/reference buffers were not funded");
+      EXPECT_EQ(reference_budget.calls, 2U);
+      EXPECT_EQ(reference_budget.used, 0U);
     }
     EXPECT_FALSE(spec::ImageDecodeSpec(profile, 1, std::span(source).first(source.size() - 1)));
     auto invalid = profile;

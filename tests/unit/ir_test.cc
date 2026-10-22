@@ -27,6 +27,7 @@
 #include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "ir/op_traits.h"
 #include "ir/verify.h"
 
 namespace llmp::ir {
@@ -512,7 +513,103 @@ TEST(IrTest, PrefixOverwriteLiteralBitsArePartOfItsDigest) {
   EXPECT_NE(nan1->Digest(), nan2->Digest());
 }
 
-TEST(IrTest, VerifyHoldsGgmlsInt32Limits) {
+TEST(IrTest, TraitTableCoversEveryKeyAndPreservesNames) {
+  EXPECT_EQ(PrimitiveTraits().size(), kOpCount);
+  EXPECT_EQ(FusedTraits().size(), kFusedKindCount);
+  for (const auto& traits : PrimitiveTraits()) {
+    SCOPED_TRACE(traits.name);
+    EXPECT_EQ(OpName(traits.key.op), traits.name);
+    EXPECT_LE(traits.required_sources, traits.max_sources);
+    EXPECT_LE(traits.max_sources, kMaxSources);
+    EXPECT_LE(traits.param_bytes, kMaxParamBytes);
+    EXPECT_EQ(HasDecomposition(traits.key), traits.decomposition);
+    if (traits.key.op != Op::kFused) EXPECT_EQ(Traits(traits.key), &traits);
+  }
+  for (const auto& traits : FusedTraits()) {
+    SCOPED_TRACE(traits.name);
+    EXPECT_EQ(FusedKindName(traits.key.fused), traits.name);
+    EXPECT_EQ(Traits(traits.key), &traits);
+    EXPECT_LE(traits.required_sources, traits.max_sources);
+    EXPECT_LE(traits.max_sources, kMaxSources);
+    EXPECT_LE(traits.param_bytes, kMaxParamBytes);
+    EXPECT_EQ(HasDecomposition(traits.key), traits.decomposition);
+  }
+  EXPECT_EQ(Traits(Primitive(static_cast<Op>(kOpCount))), nullptr);
+  EXPECT_EQ(Traits(Fused(static_cast<FusedKind>(kFusedKindCount))), nullptr);
+  EXPECT_EQ(Traits({.op = Op::kAdd, .fused = FusedKind::kRmsNormMul}), nullptr);
+  EXPECT_EQ(OpName(Op::kFused), "fused");
+  EXPECT_EQ(FusedKindName(FusedKind::kNone), "none");
+}
+
+TEST(IrTest, FusedArityKeepsOptionalHolesAndConditionalStores) {
+  for (const bool missing_norm : {false, true}) {
+    Builder b;
+    const auto x = b.Input(F32({4, 2, 3}));
+    const auto norm = missing_norm ? TensorId{} : b.Input(F32({8}));
+    const auto out = b.Input(F32({4, 3}));
+    const auto logits = b.Input(F32({2, 3}));
+    const auto made = b.Fused(FusedKind::kHcPrep, std::array{x, norm, TensorId{}, out, logits},
+                              HcNormPostParams{.eps = 1e-6F, .streams = 2});
+    if (missing_norm) {
+      EXPECT_EQ(ErrorOf(b), GraphError::kArity);
+    } else {
+      ASSERT_TRUE(b.ok()) << b.error()->detail;
+      EXPECT_EQ(made.n, 2);
+      EXPECT_TRUE(std::move(b).Finish());
+    }
+  }
+  for (const bool write : {false, true}) {
+    for (const bool missing_slot : {false, true}) {
+      Builder b;
+      const auto q = b.Input(F32({4, 1, 1}));
+      const auto k = b.Input(F32({4, 1, 1}));
+      const auto v = b.Input(F32({4, 2, 1}));
+      const auto g = b.Input(F32({1, 2, 1}));
+      const auto beta = b.Input(F32({1, 2, 1}));
+      const auto state = b.State(F32({32, 1}), StateRef{.tensor = 0});
+      const auto slot = missing_slot ? TensorId{} : b.Input(I32({1}));
+      const std::array sources{q, k, v, g, beta, state, slot};
+      const auto made = b.Fused(FusedKind::kGdnStep, std::span(sources).first(write ? 7U : 6U),
+                                GdnStepParams{.write = write});
+      if (write && missing_slot) {
+        EXPECT_EQ(ErrorOf(b), GraphError::kArity);
+      } else {
+        ASSERT_TRUE(b.ok()) << b.error()->detail;
+        EXPECT_EQ(made.n, write ? 2 : 1);
+        EXPECT_TRUE(std::move(b).Finish());
+      }
+    }
+  }
+}
+
+TEST(IrTest, TraitWritesFollowPresentOutputsAndIgnoreStructuralViews) {
+  Node node{.key = Fused(FusedKind::kGdnStep), .nsrc = 7, .nout = 1};
+  for (std::size_t i = 0; i < node.nsrc; ++i) node.src[i] = TensorId{static_cast<std::uint32_t>(i)};
+  std::vector<std::size_t> writes;
+  const auto collect = [&](std::size_t source) { writes.push_back(source); };
+  ForEachWrittenSource(node, collect);
+  EXPECT_TRUE(writes.empty());
+  node.nout = 2;
+  ForEachWrittenSource(node, collect);
+  EXPECT_EQ(writes, (std::vector<std::size_t>{5}));
+  writes.clear();
+  node.key = Primitive(Op::kCacheStore);
+  ForEachWrittenSource(node, collect);
+  EXPECT_EQ(writes, (std::vector<std::size_t>{0}));
+  writes.clear();
+  node.key = Primitive(Op::kView);
+  ForEachWrittenSource(node, collect);
+  EXPECT_TRUE(writes.empty());
+  node.key = Fused(FusedKind::kRopeStore);
+  ForEachWrittenSource(node, collect);
+  EXPECT_EQ(writes, (std::vector<std::size_t>{2}));
+  writes.clear();
+  node.key = Fused(FusedKind::kMeanPoolNormRopeStore);
+  ForEachWrittenSource(node, collect);
+  EXPECT_EQ(writes, (std::vector<std::size_t>{1}));
+}
+
+TEST(IrTest, VerifyAcceptsBackendIndependentExtents) {
   // RE-037: [n_kv, rows] F32 permuted puts its plane stride (2^31 bytes
   // here) in a dimension GGML takes as int.
   Builder b;
@@ -520,9 +617,7 @@ TEST(IrTest, VerifyHoldsGgmlsInt32Limits) {
   const TensorId p = b.Permute(scores, {0, 2, 1, 3});
   EXPECT_EQ(b.tensor(p).nb[1], 65536ULL * 8192 * 4);
   auto g = std::move(b).Finish();
-  ASSERT_FALSE(g.has_value());
-  EXPECT_EQ(g.error().error, GraphError::kLimit);
-  EXPECT_EQ(g.error().node, 1U);
+  ASSERT_TRUE(g.has_value());
 
   // The same past the rank: a transpose's source's plane stride (GGML's
   // permute holds all four), and flash attention's mask plane at 262,144
@@ -531,8 +626,7 @@ TEST(IrTest, VerifyHoldsGgmlsInt32Limits) {
     Builder t;
     t.Transpose(t.Input(F32({65536, 8192})));
     auto r = std::move(t).Finish();
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().error, GraphError::kLimit);
+    ASSERT_TRUE(r.has_value());
   }
   {
     Builder a;
@@ -541,19 +635,15 @@ TEST(IrTest, VerifyHoldsGgmlsInt32Limits) {
     const TensorId mask = a.Input(Dense(Encoding::kF16, ShapeOf({262144, 4096})));
     a.Attention(q, k, k, mask, {}, AttnParams{});
     auto r = std::move(a).Finish();
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().error, GraphError::kLimit);
-    EXPECT_EQ(r.error().node, 3U);
+    ASSERT_TRUE(r.has_value());
   }
 
   Builder wide;
   wide.Input(F32({std::uint64_t{1} << 31}));
   auto w = std::move(wide).Finish();
-  ASSERT_FALSE(w.has_value());
-  EXPECT_EQ(w.error().error, GraphError::kLimit);
+  ASSERT_TRUE(w.has_value());
 
-  // Within the limits a large weight's last stride may exceed it: it is past
-  // the rank.
+  // A large weight's stride past its rank is also valid.
   Builder ok;
   ok.Weight(Dense(Encoding::kBF16, ShapeOf({4096, 262144})), WeightRef{.role = 1});
   EXPECT_TRUE(std::move(ok).Finish().has_value());
@@ -869,7 +959,8 @@ TEST(IrTest, FusedFlagsAndReservedBytesAreChecked) {
     Builder b;
     ParamBytes p = ToBytes(RouteParams{.normalize = true, .experts = 4, .used = 2});
     p.at(2) = std::byte{1};
-    b.FusedBytes(FusedKind::kMoeRouter, std::array{b.Input(F32({4, 2}))}, p, {});
+    b.FusedBytes(FusedKind::kMoeRouter,
+                 std::array{b.Input(F32({4, 2})), b.Input(F32({8, 2})), b.Input(F32({8}))}, p, {});
     EXPECT_EQ(ErrorOf(b), GraphError::kParams);
   }
 }

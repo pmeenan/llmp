@@ -3146,7 +3146,7 @@ std::optional<Match> VecQInputsMatch(const MatchContext& c, NodeId anchor) {
   const ir::TensorDesc prepared = Q8Rows(xd);
   if (auto equivalent =
           PreparedInputs(c, anchor, x, prepared, takes, Encoding::kQ8_1,
-                         format::Layout::kGgmlBlocks, ir::ProductArithmetic::kGgmlQ8_1F32))
+                         format::Layout::kGgmlBlocks, ir::ProductArithmetic::kBlock32Q8SumF32))
     return equivalent;
   auto changed =
       PreparedInputs(c, anchor, x, prepared, takes, Encoding::kQ8_1, format::Layout::kGgmlBlocks);

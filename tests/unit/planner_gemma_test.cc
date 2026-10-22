@@ -139,7 +139,7 @@ ex::Registry GemmaRegistry() {
                .shape = {.max_rows = 8},
                .group = "fake.mul_mat",
                .product_arithmetic =
-                   [](const ex::CapabilityQuery&) { return ir::ProductArithmetic::kGgmlQ8_1F32; }}),
+                   [](const ex::CapabilityQuery&) { return ir::ProductArithmetic::kBlock32Q8SumF32; }}),
       Fake("fake.mul_mat.mmq", llmp::ir::Primitive(llmp::ir::Op::kMatMul),
            ex::Capability{.op = ir::Primitive(Op::kMatMul),
                           .operands = kProductRules,
@@ -151,7 +151,7 @@ ex::Registry GemmaRegistry() {
                .operands = kPreparedRules,
                .shape = {.max_rows = 8},
                .product_arithmetic =
-                   [](const ex::CapabilityQuery&) { return ir::ProductArithmetic::kGgmlQ8_1F32; }}),
+                   [](const ex::CapabilityQuery&) { return ir::ProductArithmetic::kBlock32Q8SumF32; }}),
       Fake("fake.rms_norm_mul.fused", llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMul),
            Any(ir::Fused(FusedKind::kRmsNormMul))),
       Fake("fake.rms_norm_mul_rope.fused", llmp::ir::Fused(llmp::ir::FusedKind::kRmsNormMulRope),

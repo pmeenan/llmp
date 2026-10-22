@@ -6112,10 +6112,46 @@ std::expected<LowerConstructionInventory, KernelFailure> LowerConstructionOf(
                                     .bytes = bytes};
 }
 
+std::expected<void, KernelFailure> CheckIrIndexBounds(const ir::Graph& graph) {
+  constexpr std::uint64_t limit = std::numeric_limits<std::int32_t>::max();
+  for (const ir::Node& node : graph.nodes()) {
+    const auto op = ir::OpKeyName(node.key);
+    for (const ir::TensorId output : node.outputs()) {
+      const auto& tensor = graph.tensor(output);
+      for (std::size_t dim = 0; dim < tensor.shape().rank; ++dim) {
+        if (tensor.ne(dim) > limit || tensor.nb.at(dim) > limit)
+          return Refused(
+              std::format("{}: output {} dimension {} exceeds int32 indexing", op, output.v, dim));
+      }
+    }
+    // Permute's locals use every stride, including those past rank;
+    // attention's launch takes operands' row and plane strides as int32.
+    if (node.key.op == ir::Op::kPermute || node.key.op == ir::Op::kAttention) {
+      const bool permute = node.key.op == ir::Op::kPermute;
+      for (const ir::TensorId source : node.sources()) {
+        if (!source.valid()) continue;
+        const auto& tensor = graph.tensor(source);
+        for (std::size_t dim = permute ? 0 : 1; dim < (permute ? 4U : 3U); ++dim) {
+          if (tensor.nb.at(dim) > limit)
+            return Refused(
+                std::format("{}: source {} stride {} exceeds int32 indexing", op, source.v, dim));
+        }
+      }
+    }
+  }
+  return {};
+}
+
 std::expected<LoweredStep, KernelFailure> LowerStep(const LowerInput& input,
                                                     const execution::Registry& registry,
                                                     const DeviceChoices& device,
                                                     const LowerOptions& options) {
+  // The original graph preserves primitive stride requirements that a fusion
+  // hides; the planned graph also authenticates any generated descriptors.
+  if (auto bounds = CheckIrIndexBounds(input.io.graph); !bounds)
+    return std::unexpected(bounds.error());
+  if (auto bounds = CheckIrIndexBounds(input.plan.graph); !bounds)
+    return std::unexpected(bounds.error());
   Lowering lowering(input, registry, device, options);
   return lowering.Run();
 }

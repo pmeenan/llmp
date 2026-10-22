@@ -38,6 +38,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- The GGML backend validates original operands as well as fused plans, so a
+  fusion cannot hide dimensions outside the backend's supported range; the
+  shared IR now gets operation traits from one table (M3.5 U6a).
 - Test-only paths and v0 artifact reader retired (M3.5 U2): `PlanGraph`
   (`kernels/ggml/graph_plan.{h,cc}`) and `Qwen38Commit` removed with their
   tests and `benchmarks/decode_templates.cc` moved onto the production IR

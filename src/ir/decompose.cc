@@ -25,6 +25,7 @@
 #include "ir/graph.h"
 #include "ir/infer.h"
 #include "ir/op.h"
+#include "ir/op_traits.h"
 #include "ir/verify.h"
 
 namespace llmp::ir {
@@ -1623,26 +1624,7 @@ Outputs Attention(D& d, const AttnParams& p) {
   return One(b.Cont(b.Permute(product, {0, 2, 1, 3})));
 }
 
-bool Composite(Op op) {
-  switch (op) {
-    case Op::kAttention:
-    case Op::kHcPre:
-    case Op::kHcPost:
-    case Op::kHcMix:
-    case Op::kIndexScore:
-    case Op::kRoundedIndexScore:
-    case Op::kVisibleTopK:
-    case Op::kSelectedMask:
-    case Op::kPool:
-    case Op::kRoute:
-    case Op::kExpertReduce:
-    case Op::kSsmConv:
-    case Op::kGatedDeltaNet:
-      return true;
-    default:
-      return false;
-  }
-}
+bool Composite(Op op) { return HasDecomposition(Primitive(op)); }
 
 std::expected<Graph, VerifyError> ExpandOnce(const Graph& graph, bool composites,
                                              std::vector<TensorId>& map, bool& more) {
@@ -1714,27 +1696,15 @@ std::expected<Graph, VerifyError> ExpandOnce(const Graph& graph, bool composites
 }  // namespace
 
 bool HasDecomposition(OpKey key) {
-  if (key.op == Op::kFused) {
-    return key.fused != FusedKind::kNone && key.fused != FusedKind::kGroupedStores &&
-           static_cast<std::uint16_t>(key.fused) <= static_cast<std::uint16_t>(kLastFusedKind);
-  }
-  return key.fused == FusedKind::kNone && Composite(key.op);
+  const OpTraits* traits = Traits(key);
+  return traits && traits->decomposition;
 }
 
 std::optional<std::size_t> AliasedSource(OpKey key, std::size_t output) {
-  if (key.op != Op::kFused) {
+  const OpTraits* traits = Traits(key);
+  if (!traits || output >= traits->aliased_outputs.size() || traits->aliased_outputs[output] < 0)
     return std::nullopt;
-  }
-  if (key.fused == FusedKind::kRopeStore && output == 0) {
-    return 2;
-  }
-  if (key.fused == FusedKind::kGdnStep && output == 1) {
-    return 5;  // its state, written in place (`write`)
-  }
-  if (key.fused == FusedKind::kMeanPoolNormRopeStore && output == 0) {
-    return 1;  // the block keys
-  }
-  return std::nullopt;
+  return static_cast<std::size_t>(traits->aliased_outputs[output]);
 }
 
 Outputs Decompose(Builder& b, OpKey key, const ParamBytes& params,

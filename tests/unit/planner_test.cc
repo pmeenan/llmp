@@ -75,7 +75,7 @@ constexpr std::array kPreparedRules = {ex::OperandRule{.operand = 0, .encodings 
 
 bool Width64(const ex::CapabilityQuery& q) { return q.k == 64; }
 ir::ProductArithmetic FixtureVectorArithmetic(const ex::CapabilityQuery& q) {
-  return q.rows <= 8 ? ir::ProductArithmetic::kGgmlQ8_1F32 : ir::ProductArithmetic::kImplementation;
+  return q.rows <= 8 ? ir::ProductArithmetic::kBlock32Q8SumF32 : ir::ProductArithmetic::kImplementation;
 }
 
 ex::Implementation Fake(std::string name, ex::Capability capability,
@@ -2541,7 +2541,7 @@ TEST(PlannerPatternTest, QualifiedVectorRecipientsReachTheirOwnArithmeticSelecti
       if (control == 4 && role == 0) ref.stage = 1;
       const auto w = builder.Weight(Q8(128, 8 + 8ULL * role), ref);
       ir::ProductParams params;
-      if (control == 7 && role == 0) params.arithmetic = ir::ProductArithmetic::kGgmlQ8_1F32;
+      if (control == 7 && role == 0) params.arithmetic = ir::ProductArithmetic::kBlock32Q8SumF32;
       builder.Output(builder.Scale(builder.MatMul(w, x, params), 2));
     }
     const auto graph = Finish(builder);
@@ -2584,7 +2584,7 @@ TEST(PlannerPatternTest, QualifiedVectorRecipientsReachTheirOwnArithmeticSelecti
         EXPECT_EQ(node.Params<ir::ProductParams>().arithmetic,
                   changed || (control == 8 && ref.role == 0)
                       ? ir::ProductArithmetic::kImplementation
-                      : ir::ProductArithmetic::kGgmlQ8_1F32);
+                      : ir::ProductArithmetic::kBlock32Q8SumF32);
         EXPECT_EQ(plan.graph.tensor(node.src[1]).format.encoding,
                   explicit_raw ? Encoding::kF32 : Encoding::kQ8_1);
       }
@@ -3397,7 +3397,7 @@ TEST(PlannerPatternTest, Round1Bf16BranchPreservesOnlyItsMatchingPreparedArithme
     const auto x = builder.Input(input);
     const auto w = builder.Weight(
         ir::Dense(control == 6 ? Encoding::kF32 : Encoding::kBF16, ir::ShapeOf({64, 64})), W(0));
-    ir::ProductParams params{.arithmetic = control == 2 ? ir::ProductArithmetic::kGgmlQ8_1F32
+    ir::ProductParams params{.arithmetic = control == 2 ? ir::ProductArithmetic::kBlock32Q8SumF32
                                                         : ir::ProductArithmetic::kBf16F32};
     if (control == 3) params.accumulate = ir::Accumulate::kF32;
     if (control == 4) params.hint = ir::ProductHint::kHadamard;

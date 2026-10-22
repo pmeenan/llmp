@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The graph IR's verifier (D-107): whether a graph is one op set v1 gives
-// a meaning to, and one the lowerings can take. It checks, node by node in
-// order:
+// a meaning to. Backend-specific indexing limits are checked by each lowering. It checks, node by
+// node in order:
 //   - structure: every source made by an earlier node (so the graph is
 //     acyclic and in a runnable order), every tensor made by exactly one
 //     node, the outputs and kept tensors existing, the bounds on nodes and
@@ -18,11 +18,7 @@
 //   - bindings: a weight leaf bound to a WeightRef, a state leaf to a
 //     StateRef (its segment the tensor's), no weight or state bound twice;
 //     a per-owner node's outputs its owner's segment, and its sources of
-//     that segment or joined;
-//   - the GGML lowering's limits: rank at most four (format::kMaxDims) and
-//     every extent and byte stride of a dimension within the rank at most
-//     INT32_MAX (GGML takes some of them as int: RE-037), so a graph that
-//     verifies is one the lowering can express.
+//     that segment or joined.
 
 #ifndef LLMP_IR_VERIFY_H_
 #define LLMP_IR_VERIFY_H_

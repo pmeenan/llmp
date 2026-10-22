@@ -27,6 +27,7 @@
 #include "ir/builder.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "ir/op_traits.h"
 #include "ir/verify.h"
 
 namespace llmp::ir {
@@ -52,16 +53,15 @@ std::optional<std::size_t> AliasedSource(OpKey key, std::size_t output);
 // that orders reads against writes reads it here.
 template <typename F>
 void ForEachWrittenSource(const Node& node, F&& f) {
-  if (node.key == Primitive(Op::kCacheStore)) {
-    if (node.nsrc > 0 && node.src[0].valid()) f(std::size_t{0});
-    return;
+  const OpTraits* traits = Traits(node.key);
+  if (!traits) return;
+  for (std::size_t i = 0; i < node.nsrc; ++i) {
+    if ((traits->written_sources & (std::uint16_t{1} << i)) != 0 && node.src.at(i).valid()) f(i);
   }
-  if (node.key.op != Op::kFused) return;
   for (std::size_t i = 0; i < node.nout; ++i) {
     if (const auto alias = AliasedSource(node.key, i);
-        alias && *alias < node.nsrc && node.src.at(*alias).valid()) {
+        alias && *alias < node.nsrc && node.src.at(*alias).valid())
       f(*alias);
-    }
   }
 }
 

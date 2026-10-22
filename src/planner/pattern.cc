@@ -1538,13 +1538,13 @@ std::optional<Match> PreparedInputsMatch(const MatchContext& c, NodeId anchor) {
         std::ranges::contains(products, r)) {
       continue;
     }
-    if (c.view().IncumbentArithmetic(c.graph(), q) != ir::ProductArithmetic::kGgmlQ8_1F32 ||
+    if (c.view().IncumbentArithmetic(c.graph(), q) != ir::ProductArithmetic::kBlock32Q8SumF32 ||
         c.view().Qualification(NumericalChange::kQ8VectorReduction, c.graph(), q) ||
         std::ranges::contains(c.view().policy().numerical_candidates,
                               NumericalChange::kQ8VectorReduction))
       continue;
     auto params = q.Params<ir::ProductParams>();
-    params.arithmetic = ir::ProductArithmetic::kGgmlQ8_1F32;
+    params.arithmetic = ir::ProductArithmetic::kBlock32Q8SumF32;
     const std::array<const ir::TensorDesc*, 2> s = {&c.tensor(q.src[0]), &pd};
     const std::array<const ir::TensorDesc*, 1> o = {&c.tensor(q.out[0])};
     if (!c.view().Candidates(Prim(Op::kMatMul), s, o, ir::ToBytes(params)).empty()) {
@@ -2113,7 +2113,7 @@ void PreparedRewrite(RewriteContext& c, const Match& m, std::size_t index) {
         b.Prepare(c.Map(m.sources.front()), format::Encoding::kQ8_1, format::Layout::kGgmlBlocks);
   }
   auto params = product.Params<ir::ProductParams>();
-  params.arithmetic = ir::ProductArithmetic::kGgmlQ8_1F32;
+  params.arithmetic = ir::ProductArithmetic::kBlock32Q8SumF32;
   c.Set(product.out[0], b.MatMul(c.Map(product.src[0]), c.local()[0], params));
 }
 

@@ -48,8 +48,6 @@ std::string_view GraphErrorName(GraphError error) {
 
 namespace {
 
-constexpr std::uint64_t kInt32Max = std::numeric_limits<std::int32_t>::max();
-
 std::unexpected<VerifyError> Err(GraphError e, std::size_t node, std::string detail) {
   return std::unexpected(VerifyError{
       .error = e, .node = static_cast<std::uint32_t>(node), .detail = std::move(detail)});
@@ -218,34 +216,6 @@ std::expected<void, VerifyError> Verify(const Graph& graph) {
           return Err(GraphError::kBinding, n, which + ": a per-owner node is one owner's");
         }
         owner = rec.segment;
-      }
-      // The GGML lowering's int32 extents and strides (RE-037).
-      for (std::size_t d = 0; d < rec.format.shape.rank; ++d) {
-        if (rec.ne(d) > kInt32Max || rec.nb.at(d) > kInt32Max) {
-          return Err(GraphError::kLimit, n,
-                     std::format("{}: dim {} has {} values {} bytes apart, past INT32_MAX", which,
-                                 d, rec.ne(d), rec.nb.at(d)));
-        }
-      }
-    }
-    // GGML truncates some sources' strides to int, past their rank too
-    // (RE-037): ggml_permute's locals hold all four of its source's, and
-    // flash attention's launch takes nb[1] and nb[2] of each operand (the
-    // mask's plane included) as int32.
-    if (node.key.op == Op::kPermute || node.key.op == Op::kAttention) {
-      const bool permute = node.key.op == Op::kPermute;
-      for (const TensorId s : node.sources()) {
-        if (!s.valid()) {
-          continue;
-        }
-        const TensorDesc& src = descs.at(s.v);
-        for (std::size_t d = permute ? 0 : 1; d < (permute ? 4U : 3U); ++d) {
-          if (src.nb.at(d) > kInt32Max) {
-            return Err(GraphError::kLimit, n,
-                       std::format("{}: source {}'s stride {} is {} bytes, past INT32_MAX", op, s.v,
-                                   d, src.nb.at(d)));
-          }
-        }
       }
     }
     if (node.batch == Batch::kPerOwner) {

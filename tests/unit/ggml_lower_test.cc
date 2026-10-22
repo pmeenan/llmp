@@ -667,15 +667,15 @@ TEST(GgmlLowerTest, MmvqSharingRequiresCanonicalQuantizerAndOriginalReduction) {
       auto graph = std::move(builder).Finish();
       ASSERT_TRUE(graph);
       const auto& node = graph->node(graph->producer(output));
-      EXPECT_EQ(
-          view.IncumbentArithmetic(*graph, node),
-          rows <= 8 ? ir::ProductArithmetic::kGgmlQ8_1F32 : ir::ProductArithmetic::kImplementation);
+      EXPECT_EQ(view.IncumbentArithmetic(*graph, node),
+                rows <= 8 ? ir::ProductArithmetic::kBlock32Q8SumF32
+                          : ir::ProductArithmetic::kImplementation);
       auto prepared = graph->tensor(x);
       prepared.format.encoding = llmp::format::Encoding::kQ8_1;
       prepared.format.layout = llmp::format::Layout::kGgmlBlocks;
       prepared.nb = ir::NaturalStrides(prepared.format);
       auto params = node.Params<ir::ProductParams>();
-      params.arithmetic = ir::ProductArithmetic::kGgmlQ8_1F32;
+      params.arithmetic = ir::ProductArithmetic::kBlock32Q8SumF32;
       const std::array<const ir::TensorDesc*, 2> src{&graph->tensor(w), &prepared};
       const std::array<const ir::TensorDesc*, 1> out{&graph->tensor(output)};
       const auto candidates = view.Candidates(node.key, src, out, ir::ToBytes(params));
@@ -2829,6 +2829,103 @@ TEST(GgmlLowerConstruction, ActualReplacedOutputsAndCommitSavesAreCounted) {
   EXPECT_FALSE(kg::LowerConstructionOf(input));
   plan.applied.back().replaced.front() = ir::NodeId{};
   EXPECT_FALSE(kg::LowerConstructionOf(input));
+}
+
+TEST(GgmlLowerTest, BackendOwnsInt32IndexBounds) {
+  // RE-037: [n_kv, rows] F32 permuted puts its plane stride (2^31 bytes
+  // here) in a dimension GGML takes as int.
+  ir::Builder b;
+  const ir::TensorId scores =
+      b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({65536, 8192})));
+  const ir::TensorId p = b.Permute(scores, {0, 2, 1, 3});
+  EXPECT_EQ(b.tensor(p).nb[1], 65536ULL * 8192 * 4);
+  auto g = std::move(b).Finish();
+  ASSERT_TRUE(g.has_value());
+  EXPECT_FALSE(kg::CheckIrIndexBounds(*g).has_value());
+
+  // The same past the rank: a transpose's source's plane stride (GGML's
+  // permute holds all four), and flash attention's mask plane at 262,144
+  // cells and 4,096 rows (nb32 is int32).
+  {
+    ir::Builder t;
+    t.Transpose(t.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({65536, 8192}))));
+    auto r = std::move(t).Finish();
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FALSE(kg::CheckIrIndexBounds(*r).has_value());
+  }
+  {
+    ir::Builder a;
+    const ir::TensorId q = a.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({8, 4096})));
+    const ir::TensorId k =
+        a.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({8, 262144})));
+    const ir::TensorId mask =
+        a.Input(ir::Dense(llmp::format::Encoding::kF16, ir::ShapeOf({262144, 4096})));
+    a.Attention(q, k, k, mask, {}, ir::AttnParams{});
+    auto r = std::move(a).Finish();
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FALSE(kg::CheckIrIndexBounds(*r).has_value());
+  }
+
+  ir::Builder wide;
+  wide.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({std::uint64_t{1} << 31})));
+  auto w = std::move(wide).Finish();
+  ASSERT_TRUE(w.has_value());
+  EXPECT_FALSE(kg::CheckIrIndexBounds(*w).has_value());
+
+  // Within the limits a large weight's last stride may exceed it: it is past
+  // the rank.
+  ir::Builder ok;
+  ok.Weight(ir::Dense(llmp::format::Encoding::kBF16, ir::ShapeOf({4096, 262144})),
+            ir::WeightRef{.role = 1});
+  auto accepted = std::move(ok).Finish();
+  ASSERT_TRUE(accepted.has_value());
+  EXPECT_TRUE(kg::CheckIrIndexBounds(*accepted).has_value());
+}
+
+TEST(GgmlLowerTest, FusedAttentionCannotHideOriginalInt32StrideRequirements) {
+  const auto make = [](bool fused) {
+    ir::Builder builder;
+    const auto q = builder.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({8, 4096})));
+    const auto raw =
+        builder.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({8, 1, 131072})));
+    const auto compressed =
+        builder.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({8, 1, 131072})));
+    const auto mask =
+        builder.Input(ir::Dense(llmp::format::Encoding::kF16, ir::ShapeOf({262144, 4096})));
+    ir::TensorId out;
+    if (fused) {
+      out = builder.Fused(ir::FusedKind::kStateBankAttention, std::array{q, raw, compressed, mask},
+                          ir::AttnParams{})[0];
+    } else {
+      const auto joined = builder.Concat(raw, compressed, 2);
+      const auto keys = builder.Permute(joined, {0, 2, 1, 3});
+      out = builder.Attention(q, keys, keys, mask, {}, ir::AttnParams{});
+    }
+    builder.Output(out);
+    return std::move(builder).Finish();
+  };
+  auto primitive = make(false);
+  auto fused = make(true);
+  ASSERT_TRUE(primitive);
+  ASSERT_TRUE(fused);
+  EXPECT_FALSE(kg::CheckIrIndexBounds(*primitive));
+  // The primitive attention is now hidden inside a fusion, whose leaf mask's
+  // plane stride lies past its rank. It must not erase the original bound.
+  EXPECT_TRUE(kg::CheckIrIndexBounds(*fused));
+  pl::StepPlan plan{.graph = std::move(*fused),
+                    .steps = {},
+                    .regions = {},
+                    .placement = {},
+                    .applied = {},
+                    .from = {},
+                    .tensors = {},
+                    .decomposed = {}};
+  const co::GraphBuildIO io{*primitive, primitive->inputs(), primitive->outputs(), {}};
+  const kn::Addresses addresses{};
+  auto lowered = kg::LowerStep({plan, io, addresses}, PlanningRegistry(), Device());
+  ASSERT_FALSE(lowered);
+  EXPECT_EQ(lowered.error().error, kg::KernelError::kRejected);
+  EXPECT_NE(lowered.error().detail.find("stride 2 exceeds int32 indexing"), std::string::npos);
 }
 
 }  // namespace

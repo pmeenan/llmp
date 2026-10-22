@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "components/component.h"
 #include "components/step.h"
 #include "format/encoding.h"
@@ -29,6 +30,7 @@
 #include "ir/builder.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "ir/op_traits.h"
 #include "model/state_contract.h"
 #include "spec/spec.h"
 
@@ -1767,6 +1769,8 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
                                         const std::array<Lay, ir::kMaxSources>& cur,
                                         const Place& place) const {
   const auto g = static_cast<std::uint32_t>(place.slots.size());
+  const auto* traits = ir::Traits(node.key);
+  if (!traits || traits->partition == ir::PartitionClass::kWhole) return std::nullopt;
   const Op op = node.key.op;
   const auto shape = [&](std::size_t i) -> const format::Shape& {
     return g_.tensor(node.src.at(i)).shape();
@@ -2071,6 +2075,7 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
       }
       return std::nullopt;
     default:
+      base::Fatal("every partition-supported op has a rule");
       return std::nullopt;
   }
 }
