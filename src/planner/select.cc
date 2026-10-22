@@ -17,8 +17,11 @@
 #include <variant>
 #include <vector>
 
+#include "execution/fusion_ranks.h"
 #include "execution/registry.h"
 #include "format/tensor_format.h"
+#include "ir/builder.h"
+#include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "planner/fusions.h"
@@ -479,11 +482,91 @@ std::vector<std::size_t> SelectionView::Candidates(ir::OpKey key,
   return ForOperands(key, sources, outputs, params, state_span, {}, automatic_fusion);
 }
 
+std::vector<std::size_t> SelectionView::TerminalDecomposition(
+    ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
+    std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
+    std::span<const std::uint64_t> alignments) const {
+  if (params.size() != ir::kMaxParamBytes || !ir::HasDecomposition(key) ||
+      alignments.size() != sources.size() + outputs.size())
+    return {};
+  // Exact natural roots can be represented as independent symbolic inputs.
+  // Strided/view/state/alias cases need a richer ordered-plan proof and remain
+  // unmeasured. This is a structural contract, never an operation whitelist.
+  const auto natural = [](const ir::TensorDesc* t) {
+    return t && !t->is_view() && t->view_offset == 0 && t->role != ir::Role::kState &&
+           t->nb == ir::NaturalStrides(t->format);
+  };
+  if (!std::ranges::all_of(sources, natural) || !std::ranges::all_of(outputs, natural)) return {};
+  // Original descriptors are graph-owned roots here. Cloning a repeated root
+  // as separate symbolic inputs would erase its alias partition, which the
+  // exact format query does not encode. Such queries remain unmeasured.
+  if (std::ranges::any_of(
+          sources, [&](const auto* source) { return std::ranges::count(sources, source) != 1; }))
+    return {};
+  ir::Builder builder;
+  std::vector<ir::TensorId> inputs;
+  for (const auto* source : sources) inputs.push_back(builder.Input(source->format));
+  std::vector<format::Encoding> encodings;
+  for (const auto* output : outputs) encodings.push_back(output->format.encoding);
+  ir::ParamBytes bytes{};
+  std::ranges::copy(params, bytes.begin());
+  const auto results = ir::Decompose(builder, key, bytes, inputs, encodings);
+  if (results.n != outputs.size()) return {};
+  for (const auto result : results.span()) builder.Output(result);
+  auto made = std::move(builder).Finish();
+  if (!made) return {};
+  const auto& graph = *made;
+  const auto alignment = [&](ir::TensorId id) {
+    const auto found = std::ranges::find(inputs, id);
+    return found != inputs.end() ? alignments[static_cast<std::size_t>(found - inputs.begin())]
+                                 : Alignment(graph, id);
+  };
+  for (std::size_t i = 0; i < outputs.size(); ++i) {
+    const auto& actual = graph.tensor(results[i]);
+    if (actual.format != outputs[i]->format || actual.nb != outputs[i]->nb || actual.is_view() ||
+        alignment(results[i]) != alignments[sources.size() + i])
+      return {};
+  }
+  std::vector<std::size_t> selected;
+  for (const auto& node : graph.nodes()) {
+    if (node.key == ir::Primitive(ir::Op::kInput)) continue;
+    if (LaunchesNothing(node.key) || ir::HasDecomposition(node.key) || ir::WritesInPlace(node) ||
+        node.nout != 1 || graph.tensor(node.out[0]).is_view())
+      return {};
+    // No later batch matcher can consume this node or a neighboring chain.
+    if (std::ranges::any_of(Patterns(), [&](const auto& pattern) {
+          return pattern.kind == PatternKind::kBatch && !Disabled(policy_, pattern.name) &&
+                 std::ranges::contains(pattern.anchors, node.key.op);
+        }))
+      return {};
+    std::vector<const ir::TensorDesc*> src, out;
+    std::vector<std::uint64_t> aligned;
+    for (const auto source : node.sources()) {
+      if (!source.valid()) return {};
+      src.push_back(&graph.tensor(source));
+      aligned.push_back(alignment(source));
+    }
+    for (const auto output : node.outputs()) {
+      out.push_back(&graph.tensor(output));
+      aligned.push_back(alignment(output));
+    }
+    const auto candidates = ForOperands(node.key, src, out, node.params, false, aligned);
+    if (candidates.empty()) return {};
+    const auto& capability = *registry_.at(candidates.front()).capability;
+    if (!capability.standalone_comparator || !capability.group.empty() || capability.batch != 0 ||
+        capability.pitched_output || capability.needs_state_span ||
+        capability.fusion_needs_measurement || capability.expansion != execution::Expansion::kNone)
+      return {};
+    selected.push_back(candidates.front());
+  }
+  return selected;
+}
+
 std::vector<std::size_t> SelectionView::ForOperands(
     ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
     std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
     bool state_span, std::span<const std::uint64_t> alignments, bool automatic_fusion,
-    const QueryInspector& inspect) const {
+    const QueryInspector& inspect, bool final_selection) const {
   // A composite op whose own implementations the policy leaves off
   // (pattern.h route_reduce) has none: it decomposes.
   if (!CompositeImplemented(policy_, key)) {
@@ -509,7 +592,8 @@ std::vector<std::size_t> SelectionView::ForOperands(
              execution::OperandMemory{.nb = sources[i]->nb,
                                       .view_offset = sources[i]->view_offset,
                                       .root_alignment = i < alignments.size() ? alignments[i] : 0,
-                                      .is_view = sources[i]->is_view()}});
+                                      .is_view = sources[i]->is_view()},
+         .rank = f.shape.rank});
   }
   // The outputs' formats, for rules and predicates on the result.
   for (std::size_t i = 0; i < outputs.size(); ++i) {
@@ -529,10 +613,11 @@ std::vector<std::size_t> SelectionView::ForOperands(
                                             .root_alignment = sources.size() + i < alignments.size()
                                                                   ? alignments[sources.size() + i]
                                                                   : 0,
-                                            .is_view = outputs[i]->is_view()}});
+                                            .is_view = outputs[i]->is_view()},
+         .rank = f.shape.rank});
   }
   const QueryShape shape = ShapeOfNode(key, sources, outputs);
-  const execution::CapabilityQuery query{
+  execution::CapabilityQuery query{
       .op = key,
       .operands = operands,
       .rows = shape.rows,
@@ -555,6 +640,16 @@ std::vector<std::size_t> SelectionView::ForOperands(
       .multiprocessors = device_.multiprocessors,
       .automatic_fusion = automatic_fusion,
       .preferred = device_.preferred};
+  std::vector<std::size_t> terminal;
+  bool has_comparison = false;
+  if (final_selection && registry_.HasFusionComparisons(key)) {
+    const auto key_digest = execution::FusionQueryKey(query);
+    has_comparison = key_digest && !registry_.FusionComparisons(key, *key_digest).empty();
+  }
+  if (key.op == ir::Op::kFused && (inspect || has_comparison)) {
+    terminal = TerminalDecomposition(key, sources, outputs, params, alignments);
+    query.terminal_decomposition = terminal;
+  }
   if (inspect) {
     inspect(query);
     return {};
@@ -571,6 +666,12 @@ std::vector<std::size_t> SelectionView::Candidates(const ir::Graph& graph, const
                                                    ir::OpKey key, bool automatic_fusion) const {
   return CandidatesForNode(graph, node, key, automatic_fusion);
 }
+std::vector<std::size_t> SelectionView::FinalCandidates(const ir::Graph& graph,
+                                                        const ir::Node& node, ir::OpKey key,
+                                                        bool automatic_fusion) const {
+  return CandidatesForNode(graph, node, key, automatic_fusion, {}, true);
+}
+
 void SelectionView::Inspect(const ir::Graph& graph, const ir::Node& node,
                             const QueryInspector& inspect) const {
   if (inspect) (void)CandidatesForNode(graph, node, node.key, false, inspect);
@@ -670,7 +771,8 @@ std::optional<NumericalQualification> SelectionView::Qualification(
 std::vector<std::size_t> SelectionView::CandidatesForNode(const ir::Graph& graph,
                                                           const ir::Node& node, ir::OpKey key,
                                                           bool automatic_fusion,
-                                                          const QueryInspector& inspect) const {
+                                                          const QueryInspector& inspect,
+                                                          bool final_selection) const {
   // Direct composites need the same immutable source authority as the
   // primitive matcher. Refuse native selection early so ordinary expansion
   // remains available for otherwise valid grouped products.
@@ -721,7 +823,7 @@ std::vector<std::size_t> SelectionView::CandidatesForNode(const ir::Graph& graph
   for (const auto tensor : node.sources()) alignments.push_back(alignment(tensor));
   for (const auto tensor : node.outputs()) alignments.push_back(alignment(tensor));
   auto candidates = ForOperands(key, sources, outputs, node.params, state_span, alignments,
-                                automatic_fusion, inspect);
+                                automatic_fusion, inspect, final_selection);
   if (grouped) {
     std::erase_if(candidates, [&](std::size_t index) {
       const auto& capability = registry_.at(index).capability;

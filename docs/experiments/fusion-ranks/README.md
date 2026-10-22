@@ -3,10 +3,17 @@
 
 # Fusion versus its own decomposition: first U6 measurement slice
 
-Status: **source implementation, no measurements yet**. `data.json` is empty.
-No fusion/device/shape is performance-qualified by this slice yet. Existing
-selection remains the fallback. Full U6 coverage of selected fusions and their
-meaningful supported shapes remains open.
+Status: [measured results](RESULTS.md) record all twelve registered F32
+RMSNormMul cells: eleven fusion wins and one neutral cell, with the original
+capacity refusal preserved. The data are an independently audited proposal,
+pending final integration/freshness checks; production data have not been
+installed. Full U6 fusion coverage remains open. The registrations below
+preserve the protocol and pre-execution status.
+
+The following trait-dispatch/source-closure checkpoint makes these original
+measurements historical and source-stale. [Source identity](SOURCE-IDENTITY.md)
+documents the corrected dependency boundary; a new reviewed freeze and
+registration are required before remeasurement. Recorded IDs remain unchanged.
 
 ## Prospective protocol (2026-10-22, before measurement)
 

@@ -26,6 +26,7 @@
 #include "ir/builder.h"
 #include "ir/decompose.h"
 #include "ir/graph.h"
+#include "ir/infer.h"
 #include "ir/op.h"
 #include "ir/op_traits.h"
 #include "ir/verify.h"
@@ -609,6 +610,99 @@ TEST(IrTest, TraitTableCoversEveryKeyAndPreservesNames) {
   EXPECT_EQ(Traits({.op = Op::kAdd, .fused = FusedKind::kRmsNormMul}), nullptr);
   EXPECT_EQ(OpName(Op::kFused), "fused");
   EXPECT_EQ(FusedKindName(FusedKind::kNone), "none");
+}
+
+TEST(IrTest, DeclaredNonDecompositionsRefuseRatherThanDispatchingAnotherHandler) {
+  const auto check = [](OpKey key) {
+    EXPECT_FALSE(HasDecomposition(key));
+    Builder b;
+    EXPECT_EQ(Decompose(b, key, {}, {}, {}).n, 0);
+    ASSERT_FALSE(b.ok());
+    EXPECT_EQ(ErrorOf(b), GraphError::kParams);
+    EXPECT_NE(b.error()->detail.find("has no decomposition"), std::string::npos);
+  };
+  for (const auto& traits : PrimitiveTraits())
+    if (!traits.decomposition) check(traits.key);
+  for (const auto& traits : FusedTraits())
+    if (!traits.decomposition) check(traits.key);
+  check(Primitive(static_cast<Op>(kOpCount)));
+  check(Fused(static_cast<FusedKind>(kFusedKindCount)));
+  check({.op = Op::kAdd, .fused = FusedKind::kRmsNormMul});
+}
+
+TEST(IrTest, EveryDescriptorChecksParameterTailBeforeItsHandler) {
+  TensorDesc source;
+  source.format = F32({4, 2});
+  source.nb = NaturalStrides(source.format);
+  const std::array tensors{source};
+  const auto check = [&](const OpTraits& traits) {
+    if (traits.key.op == Op::kInput || traits.key.op == Op::kWeight ||
+        traits.key.op == Op::kState || traits.param_bytes == kMaxParamBytes)
+      return;  // Leaves use their separate input/constant metadata contract.
+    SCOPED_TRACE(traits.name);
+    std::vector<TensorId> sources(traits.required_sources, TensorId{0});
+    ParamBytes params{};
+    params[traits.param_bytes] = std::byte{1};
+    auto result = Infer(traits.key, params, sources, tensors, {});
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error().error, GraphError::kParams);
+    EXPECT_NE(result.error().detail.find("set past"), std::string::npos);
+  };
+  for (const auto& traits : PrimitiveTraits()) check(traits);
+  for (const auto& traits : FusedTraits()) check(traits);
+}
+
+TEST(IrTest, FusedDescriptorValidatorsRunBeforeDecompositionReadsParameters) {
+  // Independent expectations from the parameter layouts, including every kind
+  // whose fused descriptor performs a flag/reserved-byte check. The sources are
+  // deliberately not valid for the decompositions: the named byte check must
+  // win before an unrelated shape error or a read of a noncanonical bool.
+  struct Probe {
+    FusedKind kind;
+    std::size_t offset;
+    bool flag;
+  };
+  constexpr Probe probes[] = {
+      {FusedKind::kRopeStore, 1, true},
+      {FusedKind::kInverseRopeGroupedMatMul, 1, true},
+      {FusedKind::kRmsNormMulRope, 5, true},
+      {FusedKind::kQkPrep, 5, true},
+      {FusedKind::kMeanPoolNormRopeStore, 9, true},
+      {FusedKind::kStateBankAttention, 16, true},
+      {FusedKind::kSoftmaxPoolCompress, 4, true},
+      {FusedKind::kHcFold, 4, true},
+      {FusedKind::kGdnStep, 0, true},
+      {FusedKind::kScaledUnary, 5, false},
+      {FusedKind::kGroupedMatMul, 2, false},
+      {FusedKind::kHcCombine, 2, false},
+      {FusedKind::kMatMulGlu, 1, true},
+      {FusedKind::kMoeGlu, 1, true},
+      {FusedKind::kMoeExperts, 1, true},
+      {FusedKind::kMatMulIdGlu, 1, true},
+      {FusedKind::kMoeRouter, 1, true},
+      {FusedKind::kOwnerAttention, 18, true},
+      {FusedKind::kBlockSparseAttention, 19, false},
+      {FusedKind::kSpatialChannelNorm, 8, true},
+      {FusedKind::kRmsNormMulRopeSections, 10, false},
+      {FusedKind::kRopeTable, 10, false},
+  };
+  TensorDesc source;
+  source.format = F32({4, 2});
+  source.nb = NaturalStrides(source.format);
+  const std::array tensors{source};
+  for (const auto& probe : probes) {
+    SCOPED_TRACE(FusedKindName(probe.kind));
+    const auto key = Fused(probe.kind);
+    std::vector<TensorId> sources(Traits(key)->required_sources, TensorId{0});
+    ParamBytes params{};
+    params[probe.offset] = probe.flag ? std::byte{2} : std::byte{1};
+    auto result = Infer(key, params, sources, tensors, {});
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error().error, GraphError::kParams);
+    EXPECT_NE(result.error().detail.find(probe.flag ? "flag at byte" : "reserved parameter byte"),
+              std::string::npos)
+        << result.error().detail;
+  }
 }
 
 TEST(IrTest, FusedArityKeepsOptionalHolesAndConditionalStores) {

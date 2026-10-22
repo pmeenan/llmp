@@ -25,3 +25,8 @@ add_subdirectory(config)
 add_subdirectory(import)
 add_subdirectory(cli)
 add_subdirectory(runtime)
+
+# All implementation dependencies now exist; tests consume this identity next.
+if(LLMP_CUDA)
+  llmp_ggml_source_identity()
+endif()

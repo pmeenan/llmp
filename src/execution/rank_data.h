@@ -33,8 +33,27 @@ struct DeviceMeasuredRank {
   format::EncodingParams params{};
   std::uint8_t stacked = 1;
 };
+// Paired timings of a fused implementation and its own IR decomposition.
+// The query key is an exact operand/parameter/device identity, not a width
+// whitelist or an extrapolated interval. Implementation identities make stale
+// measurements explicitly unmeasured after code/toolchain changes.
+struct MeasuredImplementation {
+  std::string name;
+  base::Sha256Digest identity{};
+};
+struct FusionComparison {
+  std::string shape_class;  // descriptive, never a selection predicate
+  base::Sha256Digest query{};
+  base::Sha256Digest selection_environment{};
+  MeasuredImplementation fusion;
+  std::vector<MeasuredImplementation> decomposition;
+  std::uint64_t fused_ns = 0, decomposition_ns = 0;
+  std::uint32_t samples = 0;
+  std::string provenance;  // checked-in aggregate report and source receipt
+};
 struct RankData {
-  std::vector<DeviceMeasuredRank> records;
+  std::vector<DeviceMeasuredRank> records{};
+  std::vector<FusionComparison> fusions{};
 };
 std::optional<std::uint32_t> DeviceRank(const CapabilityQuery& query,
                                         std::string_view implementation,

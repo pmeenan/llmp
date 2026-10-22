@@ -2201,6 +2201,13 @@ constexpr ex::Capability Cap(ir::OpKey op, std::span<const Rule> rules,
   return result;
 }
 
+// Lowering::Build binds these individual scalar recipes without upstream
+// refusion or preparation folding. The source identity covers that contract.
+constexpr ex::Capability StandaloneComparator(ex::Capability cap) {
+  cap.standalone_comparator = true;
+  return cap;
+}
+
 // Its output 0 at source 0's row pitch (ex::Capability::pitched_output).
 constexpr ex::Capability Pitched(ex::Capability cap) {
   cap.pitched_output = true;
@@ -2288,7 +2295,8 @@ const std::array kEntries = {
           kBuilt},
     Entry{"ggml.scale", Cap(P(Op::kScale), kF32In, &AcceptsAny, true), kBuilt},
     Entry{"ggml.add", Cap(P(Op::kAdd), kAddRules, &AcceptsAdd, true), kBuilt},
-    Entry{"ggml.mul", Cap(P(Op::kMul), kF32Binary, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.mul", StandaloneComparator(Cap(P(Op::kMul), kF32Binary, &AcceptsAny, true)),
+          kBuilt},
     Entry{"ggml.sub", Cap(P(Op::kSub), kF32Binary, &AcceptsAny, true), kBuilt},
     Entry{"ggml.div", Cap(P(Op::kDiv), kF32Binary, &AcceptsAny, true), kBuilt},
     Entry{"ggml.unary", Cap(P(Op::kUnary), kF32In, &AcceptsAny, true), kBuilt},
@@ -2330,7 +2338,8 @@ const std::array kEntries = {
               &AcceptsNormRopeSections, true),
           "; selectable for the build's SASS architectures: packed F32 or BF16 heads of D at most "
           "512, an F32 or BF16 [D] weight, one to three plain sections covering D"},
-    Entry{"ggml.rms_norm", Cap(P(Op::kRmsNorm), kF32In, &AcceptsAny, true), kBuilt},
+    Entry{"ggml.rms_norm", StandaloneComparator(Cap(P(Op::kRmsNorm), kF32In, &AcceptsAny, true)),
+          kBuilt},
     Entry{"ggml.rms_norm_mul.fused", Cap(F(FusedKind::kRmsNormMul), kNormMul, &AcceptsAny, true),
           kBuilt},
     Entry{kGemmaNormRopeName,

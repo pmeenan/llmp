@@ -19,6 +19,9 @@ endif()
 string(REPLACE ":" ";" names "${NAMES}")
 list(SORT names)
 set(lines "")
+if(CONFIGURATION)
+  string(APPEND lines "configuration ${CONFIGURATION}\n")
+endif()
 foreach(name IN LISTS names)
   if(NOT EXISTS "${BASE}/${name}" OR IS_DIRECTORY "${BASE}/${name}")
     message(FATAL_ERROR "module_digest.cmake: ${BASE}/${name} is not a file")
@@ -41,7 +44,7 @@ file(WRITE "${OUTPUT}.tmp"
   "\n"
   "namespace llmp::kernels::ggml {\n"
   "\n"
-  "std::string_view ModuleSourcesDigest() { return \"${digest}\"; }\n"
+  "const char* ModuleSourcesDigest() { return \"${digest}\"; }\n"
   "\n"
   "}  // namespace llmp::kernels::ggml\n")
 file(RENAME "${OUTPUT}.tmp" "${OUTPUT}")

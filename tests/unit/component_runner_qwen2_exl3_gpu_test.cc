@@ -219,8 +219,10 @@ static_assert(sizeof(kg::PlanStep) <= 64 && sizeof(kn::TensorUse) <= 64);
 static_assert(llmp::execution::Registry::kMaxImplementations == 512);
 static_assert(sizeof(llmp::execution::TunedShape) <= 48);
 static_assert(llmp::ir::kMaxSources == 10 && llmp::ir::kMaxOutputs == 4);
+// Exact logical rank adds eight ABI bytes per transient operand descriptor.
+// These bounded selection vectors remain within the metadata allowance below.
 static_assert(sizeof(llmp::execution::OperandMemory) <= 48 &&
-              sizeof(llmp::execution::OperandFormat) <= 112 &&
+              sizeof(llmp::execution::OperandFormat) <= 120 &&
               sizeof(llmp::execution::CapabilityQuery) <= 256);
 // The inherited inventory's largest overlapping phase (seven graphs;
 // this target uses fewer) and the fixed screen's additional live owners.

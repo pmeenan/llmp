@@ -1,4 +1,281 @@
 {
   "version": 1,
-  "comparisons": []
+  "comparisons": [
+    {
+      "shape_class": "rms_norm_mul.f32.width1024.rows1",
+      "query": "9ea6890e72ec288341f90c94a6ef9549cb951a406c93d86f8b8d9e160a41aeb2",
+      "selection_environment": "9441b5493c88e6b931ef626d4a1c837110bbf3b397bb9a08827cbe94c3ce4cac",
+      "fusion": {
+        "name": "ggml.rms_norm_mul.fused",
+        "identity": "579261470f978640ca8aceb5d5f9ada1c0413a76c06026ab117853c56038d293"
+      },
+      "decomposition": [
+        {
+          "name": "ggml.rms_norm",
+          "identity": "040869e79c3bfec00f78acd195ea57379d801bf08464bbcdba1b803fa8656929"
+        },
+        {
+          "name": "ggml.mul",
+          "identity": "27267dea97f92ac56524daa25eb82aeb798bf5f92ffcc3caa52cbb99bff31871"
+        }
+      ],
+      "fused_ns": 1372,
+      "decomposition_ns": 1807,
+      "samples": 9,
+      "provenance": "docs/experiments/fusion-ranks/RESULTS.md#measured-cells; samples-sha256:86986af6409b80a3cdc77a2c28d47679d2a6d50e023d6f3aba369c64446a3368"
+    },
+    {
+      "shape_class": "rms_norm_mul.f32.width1024.rows256",
+      "query": "b07e579f10335f0f997cb79ac409361c2a7ad22b941cbebbcdb89ca03dca46d5",
+      "selection_environment": "9441b5493c88e6b931ef626d4a1c837110bbf3b397bb9a08827cbe94c3ce4cac",
+      "fusion": {
+        "name": "ggml.rms_norm_mul.fused",
+        "identity": "579261470f978640ca8aceb5d5f9ada1c0413a76c06026ab117853c56038d293"
+      },
+      "decomposition": [
+        {
+          "name": "ggml.rms_norm",
+          "identity": "040869e79c3bfec00f78acd195ea57379d801bf08464bbcdba1b803fa8656929"
+        },
+        {
+          "name": "ggml.mul",
+          "identity": "27267dea97f92ac56524daa25eb82aeb798bf5f92ffcc3caa52cbb99bff31871"
+        }
+      ],
+      "fused_ns": 7420,
+      "decomposition_ns": 8603,
+      "samples": 9,
+      "provenance": "docs/experiments/fusion-ranks/RESULTS.md#measured-cells; samples-sha256:17c64aa046c3a618c793d3aab91dff4483d4e6d7cf14d03f1b60185e7fd5ca5a"
+    },
+    {
+      "shape_class": "rms_norm_mul.f32.width1024.rows32",
+      "query": "e10b9296f6bea68156f7220ea257098652bdd56482363a7b3b377ea1d31be2af",
+      "selection_environment": "9441b5493c88e6b931ef626d4a1c837110bbf3b397bb9a08827cbe94c3ce4cac",
+      "fusion": {
+        "name": "ggml.rms_norm_mul.fused",
+        "identity": "579261470f978640ca8aceb5d5f9ada1c0413a76c06026ab117853c56038d293"
+      },
+      "decomposition": [
+        {
+          "name": "ggml.rms_norm",
+          "identity": "040869e79c3bfec00f78acd195ea57379d801bf08464bbcdba1b803fa8656929"
+        },
+        {
+          "name": "ggml.mul",
+          "identity": "27267dea97f92ac56524daa25eb82aeb798bf5f92ffcc3caa52cbb99bff31871"
+        }
+      ],
+      "fused_ns": 1769,
+      "decomposition_ns": 2330,
+      "samples": 9,
+      "provenance": "docs/experiments/fusion-ranks/RESULTS.md#measured-cells; samples-sha256:93422a5ce2d9e021046ad29897505285b356353f95e18be83f67a63c240b9d05"
+    },
+    {
+      "shape_class": "rms_norm_mul.f32.width1024.rows4",
+      "query": "5a86f330cd9a0ca1e814313ffecbe27c2f7893862c973b8d41084dafb535949f",
+      "selection_environment": "9441b5493c88e6b931ef626d4a1c837110bbf3b397bb9a08827cbe94c3ce4cac",
+      "fusion": {
+        "name": "ggml.rms_norm_mul.fused",
+        "identity": "579261470f978640ca8aceb5d5f9ada1c0413a76c06026ab117853c56038d293"
+      },
+      "decomposition": [
+        {
+          "name": "ggml.rms_norm",
+          "identity": "040869e79c3bfec00f78acd195ea57379d801bf08464bbcdba1b803fa8656929"
+        },
+        {
+          "name": "ggml.mul",
+          "identity": "27267dea97f92ac56524daa25eb82aeb798bf5f92ffcc3caa52cbb99bff31871"
+        }
+      ],
+      "fused_ns": 1374,
+      "decomposition_ns": 1815,
+      "samples": 9,
+      "provenance": "docs/experiments/fusion-ranks/RESULTS.md#measured-cells; samples-sha256:18f8d1814e0db132ea175c480b2d801ba383b834dde930c442644dbc48d87f85"
+    },
+    {
+      "shape_class": "rms_norm_mul.f32.width256.rows1",
+      "query": "e0671957b1a9c28109d835c1f40fdcc9f00f6f69619fe7bc7251d0755195a8a2",
+      "selection_environment": "9441b5493c88e6b931ef626d4a1c837110bbf3b397bb9a08827cbe94c3ce4cac",
+      "fusion": {
+        "name": "ggml.rms_norm_mul.fused",
+        "identity": "579261470f978640ca8aceb5d5f9ada1c0413a76c06026ab117853c56038d293"
+      },
+      "decomposition": [
+        {
+          "name": "ggml.rms_norm",
+          "identity": "040869e79c3bfec00f78acd195ea57379d801bf08464bbcdba1b803fa8656929"
+        },
+        {
+          "name": "ggml.mul",
+          "identity": "27267dea97f92ac56524daa25eb82aeb798bf5f92ffcc3caa52cbb99bff31871"
+        }
+      ],
+      "fused_ns": 973,
+      "decomposition_ns": 1449,
+      "samples": 9,
+      "provenance": "docs/experiments/fusion-ranks/RESULTS.md#measured-cells; samples-sha256:9a7b3d698363c09b079d3b856cf8e491b16630c7d74007c69d9bf55f9d5539b7"
+    },
+    {
+      "shape_class": "rms_norm_mul.f32.width256.rows256",
+      "query": "977c46773fbfd913db4667936cd93a517c20e4b06832a401fa8d9375f36b18cf",
+      "selection_environment": "9441b5493c88e6b931ef626d4a1c837110bbf3b397bb9a08827cbe94c3ce4cac",
+      "fusion": {
+        "name": "ggml.rms_norm_mul.fused",
+        "identity": "579261470f978640ca8aceb5d5f9ada1c0413a76c06026ab117853c56038d293"
+      },
+      "decomposition": [
+        {
+          "name": "ggml.rms_norm",
+          "identity": "040869e79c3bfec00f78acd195ea57379d801bf08464bbcdba1b803fa8656929"
+        },
+        {
+          "name": "ggml.mul",
+          "identity": "27267dea97f92ac56524daa25eb82aeb798bf5f92ffcc3caa52cbb99bff31871"
+        }
+      ],
+      "fused_ns": 1465,
+      "decomposition_ns": 2478,
+      "samples": 9,
+      "provenance": "docs/experiments/fusion-ranks/RESULTS.md#measured-cells; samples-sha256:436b2e966351ce5edad2cb7bc0267e97810ecd0ec4f8261dc9a0ecd34791c6c8"
+    },
+    {
+      "shape_class": "rms_norm_mul.f32.width256.rows32",
+      "query": "bbb29032fa26c7e8fb0a9f8fd055ca0b3f76c5b10f489b82ca1149eec7a60e87",
+      "selection_environment": "9441b5493c88e6b931ef626d4a1c837110bbf3b397bb9a08827cbe94c3ce4cac",
+      "fusion": {
+        "name": "ggml.rms_norm_mul.fused",
+        "identity": "579261470f978640ca8aceb5d5f9ada1c0413a76c06026ab117853c56038d293"
+      },
+      "decomposition": [
+        {
+          "name": "ggml.rms_norm",
+          "identity": "040869e79c3bfec00f78acd195ea57379d801bf08464bbcdba1b803fa8656929"
+        },
+        {
+          "name": "ggml.mul",
+          "identity": "27267dea97f92ac56524daa25eb82aeb798bf5f92ffcc3caa52cbb99bff31871"
+        }
+      ],
+      "fused_ns": 1032,
+      "decomposition_ns": 1460,
+      "samples": 9,
+      "provenance": "docs/experiments/fusion-ranks/RESULTS.md#measured-cells; samples-sha256:43fa1e1d7fde98a919dec36ccd4888347aaf85eae58731a8d79d33f1b990c532"
+    },
+    {
+      "shape_class": "rms_norm_mul.f32.width256.rows4",
+      "query": "08710e659855f53aeb2a4520959dc00ed0dbee6f897778eb1af370d2dba15b77",
+      "selection_environment": "9441b5493c88e6b931ef626d4a1c837110bbf3b397bb9a08827cbe94c3ce4cac",
+      "fusion": {
+        "name": "ggml.rms_norm_mul.fused",
+        "identity": "579261470f978640ca8aceb5d5f9ada1c0413a76c06026ab117853c56038d293"
+      },
+      "decomposition": [
+        {
+          "name": "ggml.rms_norm",
+          "identity": "040869e79c3bfec00f78acd195ea57379d801bf08464bbcdba1b803fa8656929"
+        },
+        {
+          "name": "ggml.mul",
+          "identity": "27267dea97f92ac56524daa25eb82aeb798bf5f92ffcc3caa52cbb99bff31871"
+        }
+      ],
+      "fused_ns": 992,
+      "decomposition_ns": 1520,
+      "samples": 9,
+      "provenance": "docs/experiments/fusion-ranks/RESULTS.md#measured-cells; samples-sha256:e6e5db22d85faaf13c1678b2efb7880940a58c93abf4d0c96113c3229b8566c0"
+    },
+    {
+      "shape_class": "rms_norm_mul.f32.width4096.rows1",
+      "query": "3c86de987aa60a1f4304149180bf3852c80c6cbeebe098a2a8591b6543003d96",
+      "selection_environment": "9441b5493c88e6b931ef626d4a1c837110bbf3b397bb9a08827cbe94c3ce4cac",
+      "fusion": {
+        "name": "ggml.rms_norm_mul.fused",
+        "identity": "579261470f978640ca8aceb5d5f9ada1c0413a76c06026ab117853c56038d293"
+      },
+      "decomposition": [
+        {
+          "name": "ggml.rms_norm",
+          "identity": "040869e79c3bfec00f78acd195ea57379d801bf08464bbcdba1b803fa8656929"
+        },
+        {
+          "name": "ggml.mul",
+          "identity": "27267dea97f92ac56524daa25eb82aeb798bf5f92ffcc3caa52cbb99bff31871"
+        }
+      ],
+      "fused_ns": 1928,
+      "decomposition_ns": 2123,
+      "samples": 9,
+      "provenance": "docs/experiments/fusion-ranks/RESULTS.md#measured-cells; samples-sha256:e8c27ba89d3df625b4f8fe11bd3f77c0a0976d65fd71b2cc585b11e706e13861"
+    },
+    {
+      "shape_class": "rms_norm_mul.f32.width4096.rows256",
+      "query": "ec16ed7b0d37df0b3bec44c0db0d808bdf879175ae3286856dc62f2088881eb8",
+      "selection_environment": "9441b5493c88e6b931ef626d4a1c837110bbf3b397bb9a08827cbe94c3ce4cac",
+      "fusion": {
+        "name": "ggml.rms_norm_mul.fused",
+        "identity": "579261470f978640ca8aceb5d5f9ada1c0413a76c06026ab117853c56038d293"
+      },
+      "decomposition": [
+        {
+          "name": "ggml.rms_norm",
+          "identity": "040869e79c3bfec00f78acd195ea57379d801bf08464bbcdba1b803fa8656929"
+        },
+        {
+          "name": "ggml.mul",
+          "identity": "27267dea97f92ac56524daa25eb82aeb798bf5f92ffcc3caa52cbb99bff31871"
+        }
+      ],
+      "fused_ns": 10778,
+      "decomposition_ns": 22565,
+      "samples": 9,
+      "provenance": "docs/experiments/fusion-ranks/RESULTS.md#measured-cells; samples-sha256:395b9e62663ab27dbb5cb0fa8560daa457b6d9839dab199fc0c307992f9069bf"
+    },
+    {
+      "shape_class": "rms_norm_mul.f32.width4096.rows32",
+      "query": "b06172e7355bdd3c61535c3ace5c25a58109c3af4c1d03a475e89a69fd365ba0",
+      "selection_environment": "9441b5493c88e6b931ef626d4a1c837110bbf3b397bb9a08827cbe94c3ce4cac",
+      "fusion": {
+        "name": "ggml.rms_norm_mul.fused",
+        "identity": "579261470f978640ca8aceb5d5f9ada1c0413a76c06026ab117853c56038d293"
+      },
+      "decomposition": [
+        {
+          "name": "ggml.rms_norm",
+          "identity": "040869e79c3bfec00f78acd195ea57379d801bf08464bbcdba1b803fa8656929"
+        },
+        {
+          "name": "ggml.mul",
+          "identity": "27267dea97f92ac56524daa25eb82aeb798bf5f92ffcc3caa52cbb99bff31871"
+        }
+      ],
+      "fused_ns": 2657,
+      "decomposition_ns": 3406,
+      "samples": 9,
+      "provenance": "docs/experiments/fusion-ranks/RESULTS.md#measured-cells; samples-sha256:7df3f5b86874aea3ab2b01c988891e49f546985e0ae3c194f220aa24b093c1f6"
+    },
+    {
+      "shape_class": "rms_norm_mul.f32.width4096.rows4",
+      "query": "6a9e3796c7898e1f68f4914337180614f2564d565b292d341771548a1d358c12",
+      "selection_environment": "9441b5493c88e6b931ef626d4a1c837110bbf3b397bb9a08827cbe94c3ce4cac",
+      "fusion": {
+        "name": "ggml.rms_norm_mul.fused",
+        "identity": "579261470f978640ca8aceb5d5f9ada1c0413a76c06026ab117853c56038d293"
+      },
+      "decomposition": [
+        {
+          "name": "ggml.rms_norm",
+          "identity": "040869e79c3bfec00f78acd195ea57379d801bf08464bbcdba1b803fa8656929"
+        },
+        {
+          "name": "ggml.mul",
+          "identity": "27267dea97f92ac56524daa25eb82aeb798bf5f92ffcc3caa52cbb99bff31871"
+        }
+      ],
+      "fused_ns": 1981,
+      "decomposition_ns": 2321,
+      "samples": 9,
+      "provenance": "docs/experiments/fusion-ranks/RESULTS.md#measured-cells; samples-sha256:bc400b96bfc1454b15422e3fb2016084e74ae1ee182caa7cd78dd66283134f81"
+    }
+  ]
 }

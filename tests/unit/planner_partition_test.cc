@@ -1607,6 +1607,90 @@ TEST(PartitionTest, StreamBytesScalesWithStreamsCount) {
   EXPECT_EQ(traffic2.bytes, 2 * traffic1.bytes);
 }
 
+TEST(PartitionTest, DeclaredAlgebraReducesPartialSumsAtTheCorrectBoundary) {
+  const Tiny t = TinyGemma(false);
+  const Assignment a = TinyAssignment(t, 2, {.stages = {{0, 1}}, .first_layer = {0}});
+  const std::uint16_t component = a.per_layer[0][1].component;
+  struct Case {
+    ir::Op op;
+    bool whole_left;
+    float bias;
+    bool reduce_before;
+  };
+  const Case cases[] = {
+      {ir::Op::kScale, false, 0, false},
+      {ir::Op::kScale, false, 1, true},
+      {ir::Op::kUnary, false, 0, true},
+      {ir::Op::kAdd, false, 0, false},
+      {ir::Op::kSub, false, 0, false},
+      {ir::Op::kMul, false, 0, true},   // two partial factors must be reduced
+      {ir::Op::kDiv, false, 0, false},  // partial / whole stays partial
+      {ir::Op::kDiv, true, 0, true},    // whole / partial cannot
+  };
+  for (const auto& test : cases) {
+    SCOPED_TRACE(
+        std::format("{} whole_left={} bias={}", ir::OpName(test.op), test.whole_left, test.bias));
+    ir::Builder b;
+    b.SetComponent(component);
+    const auto f32 = [](std::initializer_list<std::uint64_t> ne) {
+      return ir::Dense(Encoding::kF32, ir::ShapeOf(ne));
+    };
+    const auto weight = [&](std::uint16_t role, std::initializer_list<std::uint64_t> ne) {
+      return b.Weight(f32(ne), {.stage = 0, .component = component, .role = role, .layer = 0});
+    };
+    const auto x = b.Input(f32({kWidth, 2}));
+    const auto gate = weight(1, {kWidth, kHidden});
+    const auto down = weight(3, {kHidden, kWidth});
+    const auto partial = b.MatMul(down, b.MatMul(gate, x));
+    ir::TensorId out;
+    switch (test.op) {
+      case ir::Op::kScale:
+        out = b.Scale(partial, 2, test.bias);
+        break;
+      case ir::Op::kUnary:
+        out = b.Unary(partial, ir::UnaryFn::kSilu);
+        break;
+      case ir::Op::kAdd:
+        out = b.Add(partial, partial);
+        break;
+      case ir::Op::kSub:
+        out = b.Sub(partial, partial);
+        break;
+      case ir::Op::kMul:
+        out = b.Mul(partial, partial);
+        break;
+      case ir::Op::kDiv:
+        out = test.whole_left ? b.Div(x, partial) : b.Div(partial, x);
+        break;
+      default:
+        FAIL() << "unexpected test operation";
+    }
+    b.Output(out);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << graph.error().detail;
+    auto parts = Partition(*graph, a);
+    ASSERT_TRUE(parts) << parts.error();
+    for (const auto& device : parts->devices) {
+      std::size_t reduction = 0, operation = 0, reductions = 0;
+      for (std::size_t i = 0; i < device.graph.nodes().size(); ++i) {
+        const auto op = device.graph.nodes()[i].key.op;
+        if (op == ir::Op::kAllReduce) {
+          reduction = i;
+          ++reductions;
+        }
+        if (op == test.op) operation = i;
+      }
+      ASSERT_EQ(reductions, 1U);
+      EXPECT_EQ(reduction < operation, test.reduce_before);
+    }
+    Leaves leaves;
+    leaves.floats[x.v] = std::vector<float>(kWidth * 2, 0.5F);
+    leaves.floats[gate.v] = std::vector<float>(kWidth * kHidden, 0.125F);
+    leaves.floats[down.v] = std::vector<float>(kHidden * kWidth, 0.0625F);
+    Equivalent(*graph, leaves, a, {}, {.results = {out}, .tolerance = 1e-5, .traffic = false});
+  }
+}
+
 TEST(PartitionTest, MakeFullDoesNotEmitDuplicateAllGather) {
   const Tiny t = TinyGemma(false);
   const Assignment a = TinyAssignment(t, 2, {.stages = {{0, 1}}, .first_layer = {0}});

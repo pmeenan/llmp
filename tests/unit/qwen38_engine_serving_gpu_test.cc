@@ -95,8 +95,10 @@ static_assert(sizeof(llmp::planner::Match) + sizeof(void*) <= 256);
 static_assert(sizeof(llmp::planner::RootAlignmentFact) <= 16);
 static_assert(sizeof(llmp::kernels::InputSlot) <= 512 && sizeof(llmp::kernels::TensorUse) <= 64);
 static_assert(sizeof(llmp::kernels::ggml::PlanStep) <= 64);
+// Exact logical rank adds eight ABI bytes per transient operand descriptor.
+// These bounded selection vectors remain within the serving metadata allowance.
 static_assert(sizeof(llmp::execution::OperandMemory) <= 48 &&
-              sizeof(llmp::execution::OperandFormat) <= 112 &&
+              sizeof(llmp::execution::OperandFormat) <= 120 &&
               sizeof(llmp::execution::CapabilityQuery) <= 256);
 static_assert(sizeof(llmp::ir::WeightRef) <= 16 && sizeof(llmp::ir::StateRef) <= 16);
 static_assert(llmp::execution::Registry::kMaxImplementations == 512);

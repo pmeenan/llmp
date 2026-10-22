@@ -24,6 +24,14 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Fusion/decomposition comparisons now bind exact queries, numerical contracts
+  and compiler-owned implementation provenance; stale or absent evidence retains
+  incumbent selection (M3.5 U6, coverage still in progress). The first twelve
+  RMSNormMul observations remain historical pending current-source remeasurement.
+- IR operation traits select typed parameter, inference, decomposition and
+  partition handlers, with exhaustive dispatch controls and indexed fusion-rank
+  lookup (M3.5 U6).
+
 - Chat Completions tool intake, generated calls and result continuation through
   the shared format-driven parser and renderer, with canonical stable-span
   forcing in the common engine (M3.5; real-model/client qualification pending).
@@ -33,7 +41,7 @@ The entries below record each change; the record of the milestone is
   round-trip through the selected template fail before generation.
 
 - Owned structured conversation parts with bounded text/template projection
-  (M3.5 U5b); HTTP tools, images and the Messages route remain disabled.
+  (M3.5 U5b); images and the Messages route remain disabled.
 
 - Route-owned streaming encoders for OpenAI-compatible and Messages events
   (M3.5 U5a); the Messages request route remains disabled.

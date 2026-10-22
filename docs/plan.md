@@ -730,8 +730,20 @@ D-122).
       patterns have named synthetic match and refusal controls; the test
       inventory rejects unaccounted registrations and checks successful
       rewriting as well as matching.
-      Complete shape-class fusion/decomposition measurements, remaining
-      dispatch consolidation and exhaustive planner-pattern coverage remain open.
+      Complete shape-class fusion/decomposition measurements remain open.
+      **Dispatch and identity follow-up reviewed; integrated qualification pending:**
+      the trait rows select typed inference, parameter-validation and decomposition
+      handlers, plus explicit semantic partition rules. Typed-dispatch focused checks
+      pass on `spark-b`; the final compiler-owned
+      identity mechanism passes native Clang/NVCC, source-integrity and actual
+      rank-data-only mutation/restoration controls on `spark`. Whole and
+      adversarial reviews are clean; main integration checks remain pending.
+      Compiler dependency receipts replace the incomplete comparison source list,
+      and rank lookup is indexed by operation and exact query. The original twelve
+      RMSNormMul measurements remain historical with unchanged IDs; current-source
+      requalification is pending. The 49-pattern synthetic
+      match/refusal inventory already satisfies U6d; real-backend measured-veto
+      integration coverage expands with the remaining fusion comparisons.
       One op-trait table (arity, write
       set, layout class, splittability with no silent "unsplittable"
       default, decomposition, reference) replacing the dozen-odd per-op edit
@@ -743,8 +755,10 @@ D-122).
       data per device class comparing each fusion with its own
       decomposition per shape class (owner, 2026-10-20), so a fusion that
       loses on a shape class is not selected there; a synthetic match and refusal control for every registered rewrite/batch
-      pattern, enforced by the test inventory. **Exit:** adding an IR op edits the trait table, its kernels
-      and its tests only, and the boundary check finds no vendor or kernel
+      pattern, enforced by the test inventory. **Exit:** adding an IR op declares its dispatch once in the trait table;
+      new semantic algorithms live in their owning modules and need no duplicate
+      per-op classification lists. Its kernels and tests complete the addition,
+      and the boundary check finds no vendor or kernel
       names under `ir/` or `execution/`.
 - [ ] **U7 Fast paths by capability** (after the memory-mode re-gate and
       U4/U6; five sub-slices, each moving its fusions' patterns to matching

@@ -14,25 +14,36 @@
 
 namespace llmp::ir {
 
-// Shape rules share an inference implementation by semantic family.
-enum class InferenceClass : std::uint8_t {
-  kStructure,
-  kProducts,
-  kAttentionAndMasks,
-  kNormsAndRotations,
-  kElementwise,
-  kReductionsAndSelection,
-  kRouting,
-  kRecurrencesAndConvolutions,
-  kHyperConnections,
-  kSamplingAndCollectives,
-  kFused,
-};
-
 enum class LayoutClass : std::uint8_t { kStructural, kElementwise, kConcat, kFixed };
-// kWhole is an explicit decision. A missing entry is an invalid op, never an
-// implicit refusal to split; kSupported uses the partitioner's shape rules.
-enum class PartitionClass : std::uint8_t { kWhole, kSupported };
+// Explicit semantic propagation rules. kWhole is a decision, never a missing
+// handler fallback. Several operations share a rule when their algebra agrees.
+enum class PartitionRule : std::uint8_t {
+  kAdditive,
+  kArgmax,
+  kAttention,
+  kCacheStore,
+  kChannelNorm,
+  kConcat,
+  kCont,
+  kDivide,
+  kExpertReduce,
+  kGetRows,
+  kGlu,
+  kMatMul,
+  kMatMulId,
+  kMultiply,
+  kPermute,
+  kPrepare,
+  kReshape,
+  kRope,
+  kRowReduce,
+  kRows,
+  kScale,
+  kSoftMax,
+  kUnary,
+  kView,
+  kWhole
+};
 enum class ReferencePath : std::uint8_t { kNone, kDirect, kDecomposition, kCollective };
 
 struct OpTraits {
@@ -40,9 +51,8 @@ struct OpTraits {
   std::string_view name;
   std::size_t param_bytes;
   std::uint8_t required_sources, max_sources;
-  InferenceClass inference;
   LayoutClass layout;
-  PartitionClass partition;
+  PartitionRule partition;
   bool decomposition;
   ReferencePath reference;
   // Sources written regardless of the output count (cache_store's cache).

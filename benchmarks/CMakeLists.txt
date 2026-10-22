@@ -62,6 +62,14 @@ target_link_libraries(llmp_gemma_tokenize PRIVATE llmp_tokenizer llmp_chat
 # Storage queue depth and request size, direct into host VMM through the
 # providers (docs/experiments/storage-queue/). Needs a CUDA device.
 if(LLMP_CUDA)
+  add_executable(llmp_fusion_ranks fusion_ranks.cc)
+  target_include_directories(llmp_fusion_ranks SYSTEM PRIVATE
+    "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
+  target_link_libraries(llmp_fusion_ranks PRIVATE llmp_engine llmp_ggml_kernels
+    llmp_cuda_device_memory llmp_json llmp_warnings)
+  target_link_options(llmp_fusion_ranks PRIVATE
+    "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   add_executable(llmp_turn_reuse turn_reuse.cc)
   target_link_libraries(llmp_turn_reuse PRIVATE llmp_runtime_serving llmp_base llmp_warnings)
   target_link_options(llmp_turn_reuse PRIVATE

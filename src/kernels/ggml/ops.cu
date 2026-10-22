@@ -320,7 +320,11 @@ std::expected<void, KernelFailure> RmsNormThenMul(LaunchContext& launch, ggml_te
   }
   return launch.Run(base::Bytes(0), [norm, mul](ggml_backend_cuda_context& context) {
     ggml_cuda_op_rms_norm(context, norm);
-    ggml_cuda_op_mul(context, mul);
+    // The wrapper pays exactly the standalone Mul descriptor normalization,
+    // including width-one shapes; wrapping never changes its launch recipe.
+    ggml_tensor dst = *mul, s0 = *mul->src[0], s1 = *mul->src[1];
+    ShiftBinaryLeft(dst, s0, s1);
+    ggml_cuda_op_mul(context, &dst);
   });
 }
 

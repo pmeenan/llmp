@@ -44,6 +44,7 @@ if(LLMP_CUDA)
     endif()
   endforeach()
   string(JOIN ":" module_names ${module_files})
+  set_property(GLOBAL PROPERTY LLMP_DECODE_MODULE_NAMES "${module_names}")
   list(TRANSFORM module_files PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/" OUTPUT_VARIABLE module_paths)
   set(module_digest "${CMAKE_CURRENT_BINARY_DIR}/module_digest.cc")
   add_custom_command(
@@ -56,6 +57,6 @@ if(LLMP_CUDA)
   target_sources(llmp_decode_kernels PRIVATE "${module_digest}")
   # One optional operation source for the ordinary shared ordered program.
   add_library(llmp_decode_selected STATIC selected_rows.cc selected_grouped.cc selected_products.cc selected_source.cc)
-  target_link_libraries(llmp_decode_selected PUBLIC llmp_decode_kernels llmp_ggml_kernels
+  target_link_libraries(llmp_decode_selected PUBLIC llmp_decode_kernels llmp_ggml_tensors
                                                PRIVATE llmp_device_runtime llmp_warnings)
 endif()

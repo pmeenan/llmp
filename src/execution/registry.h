@@ -185,6 +185,12 @@ struct Capability {
   // (views, reshapes, permutes) and values the step returns or keeps then
   // read a compact copy, which the planner makes.
   bool pitched_output = false;
+  // A terminal node lowers to its own stable standalone launch recipe:
+  // no preparation, neighbor-dependent launch folding, or substitution.
+  // Wrapping unchanged consecutive launches in one host recipe is allowed.
+  // A backend certifies this property in source; it is not speed evidence.
+  // Own-decomposition comparisons require this contract for every child.
+  bool standalone_comparator = false;
 };
 
 // An output's format in a capability query: the operand at this index
@@ -219,6 +225,7 @@ struct OperandFormat {
   format::EncodingParams params{};
   std::array<std::uint64_t, 4> ne{};
   std::optional<OperandMemory> memory{};
+  std::optional<std::uint8_t> rank{};  // exact logical rank when a graph supplies it
 };
 
 struct SelectionPolicy {
@@ -295,6 +302,10 @@ struct CapabilityQuery {
   std::uint32_t multiprocessors = 0;
   bool automatic_fusion = false;
   std::span<const std::string> preferred{};
+  // Planner proof of this exact node's immediate, terminal, stateless own
+  // decomposition: ordered single-node registry indices. Empty: unproved.
+  // It contains neither nested fusion choices nor rewrite/batch/group routing.
+  std::span<const std::size_t> terminal_decomposition{};
 };
 
 // One compiled implementation of an operation, as its module declares it.
@@ -366,7 +377,19 @@ class Registry {
   const base::Sha256Digest& identity(std::size_t index) const;
   // Canonical implementation set and backend rank data, independent of declaration order.
   const base::Sha256Digest& Digest() const { return digest_; }
+  // Every implementation alternative/capability and ordinary device rank;
+  // excludes fusion comparison data to avoid a circular measurement identity.
+  const base::Sha256Digest& SelectionDigest() const { return selection_digest_; }
   const RankData& ranks() const { return ranks_; }
+  // Indexed once at construction. An unrelated operation never needs an exact
+  // query hash; matching queries expose only their own measured alternatives.
+  struct IndexedFusionComparison {
+    ir::OpKey operation;
+    const FusionComparison* comparison;
+  };
+  bool HasFusionComparisons(ir::OpKey operation) const;
+  std::span<const IndexedFusionComparison> FusionComparisons(ir::OpKey operation,
+                                                             const base::Sha256Digest& query) const;
   const base::Sha256Digest& RankDigest() const { return rank_digest_; }
 
  private:
@@ -375,7 +398,9 @@ class Registry {
 
   base::Sha256Digest digest_{};
   base::Sha256Digest rank_digest_{};
+  base::Sha256Digest selection_digest_{};
   RankData ranks_;
+  std::vector<IndexedFusionComparison> fusion_index_;
   std::vector<Implementation> implementations_;
   std::vector<base::Sha256Digest> identities_;  // parallel to implementations_
   std::vector<std::size_t> by_name_;            // indices, sorted by name

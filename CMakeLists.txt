@@ -23,6 +23,8 @@ endif()
 # A change to the SDK's inputs reruns configure, which then checks the SDK again.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${LLMP_SDK_INPUT_FILES})
 message(STATUS "llmpalooza profile ${LLMP_PROFILE}, SDK ${LLMP_SDK_IDENTITY}, CUDA ${LLMP_CUDA}")
+include(cmake/LlmpSourceClosure.cmake)
+llmp_identity_freeze_sources()
 include(cmake/LlmpVersion.cmake)
 
 set(CMAKE_CXX_STANDARD 23)

@@ -1770,8 +1770,9 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
                                         const Place& place) const {
   const auto g = static_cast<std::uint32_t>(place.slots.size());
   const auto* traits = ir::Traits(node.key);
-  if (!traits || traits->partition == ir::PartitionClass::kWhole) return std::nullopt;
-  const Op op = node.key.op;
+  if (!traits || traits->partition == ir::PartitionRule::kWhole) return std::nullopt;
+  const auto rule = traits->partition;
+  using ir::PartitionRule;
   const auto shape = [&](std::size_t i) -> const format::Shape& {
     return g_.tensor(node.src.at(i)).shape();
   };
@@ -1805,17 +1806,18 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
     }
     // Partial sums stay partial through a sum of two, or a product with a
     // whole factor; anything else reads them reduced.
-    const bool sum = op == Op::kAdd || op == Op::kSub;
+    const bool sum = rule == PartitionRule::kAdditive;
     if (a.kind == LayKind::kPartial && b.kind == LayKind::kPartial && sum) {
       r.out = kPartial;
       return r;
     }
     if (a.kind == LayKind::kPartial && b.kind == LayKind::kFull &&
-        (op == Op::kMul || op == Op::kDiv)) {
+        (rule == PartitionRule::kMultiply || rule == PartitionRule::kDivide)) {
       r.out = kPartial;
       return r;
     }
-    if (b.kind == LayKind::kPartial && a.kind == LayKind::kFull && op == Op::kMul) {
+    if (b.kind == LayKind::kPartial && a.kind == LayKind::kFull &&
+        rule == PartitionRule::kMultiply) {
       r.out = kPartial;
       return r;
     }
@@ -1845,28 +1847,24 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
     r.out = SplitAt(b.dim);
     return r;
   };
-  switch (op) {
-    case Op::kGlu:
+  switch (rule) {
+    case PartitionRule::kGlu:
       if (present(1)) return binary();
       [[fallthrough]];
-    case Op::kScale:
-    case Op::kUnary:
-    case Op::kClamp:
-    case Op::kSoftcap:
-    case Op::kConvert:
-    case Op::kRmsNorm:
-    case Op::kL2Norm:
-    case Op::kLayerNorm:
-    case Op::kChannelNorm:
-    case Op::kPrepare:
-    case Op::kCont: {
+    case PartitionRule::kScale:
+    case PartitionRule::kUnary:
+    case PartitionRule::kRows:
+    case PartitionRule::kChannelNorm:
+    case PartitionRule::kPrepare:
+    case PartitionRule::kCont: {
       // Over each row: a split of the rows' values cannot pass.
-      const bool rows = op == Op::kRmsNorm || op == Op::kL2Norm || op == Op::kLayerNorm ||
-                        op == Op::kPrepare || op == Op::kGlu;
+      const bool rows = rule == PartitionRule::kRows || rule == PartitionRule::kPrepare ||
+                        rule == PartitionRule::kGlu;
       const format::Shape& to = g_.tensor(node.out[0]).shape();
       if (x.kind == LayKind::kSplit) {
-        if ((rows && x.dim == 0) || (op == Op::kChannelNorm && x.dim == 1)) return std::nullopt;
-        if (op == Op::kCont && to.ne != shape(0).ne) {
+        if ((rows && x.dim == 0) || (rule == PartitionRule::kChannelNorm && x.dim == 1))
+          return std::nullopt;
+        if (rule == PartitionRule::kCont && to.ne != shape(0).ne) {
           const auto e = ReshapedDim(shape(0), x.dim, to, g);
           if (!e) return std::nullopt;
           r.out = SplitAt(*e);
@@ -1876,7 +1874,7 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
         return r;
       }
       if (x.kind == LayKind::kPartial) {
-        if (op == Op::kScale && node.Params<ir::ScaleParams>().bias == 0.0F) {
+        if (rule == PartitionRule::kScale && node.Params<ir::ScaleParams>().bias == 0.0F) {
           r.out = kPartial;
           return r;
         }
@@ -1884,19 +1882,18 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
         r.out = kFull;
         return r;
       }
-      if (x.kind == LayKind::kExperts && op != Op::kPrepare && op != Op::kCont &&
-          op != Op::kChannelNorm) {
+      if (x.kind == LayKind::kExperts && rule != PartitionRule::kPrepare &&
+          rule != PartitionRule::kCont && rule != PartitionRule::kChannelNorm) {
         r.out = x;
         return r;
       }
       return std::nullopt;
     }
-    case Op::kAdd:
-    case Op::kSub:
-    case Op::kMul:
-    case Op::kDiv:
+    case PartitionRule::kAdditive:
+    case PartitionRule::kMultiply:
+    case PartitionRule::kDivide:
       return binary();
-    case Op::kView: {
+    case PartitionRule::kView: {
       if (x.kind == LayKind::kFull || x.kind == LayKind::kPartial) {
         r.out = x;
         return r;
@@ -1911,7 +1908,7 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
       r.desc = local->first;
       return r;
     }
-    case Op::kReshape: {
+    case PartitionRule::kReshape: {
       if (x.kind == LayKind::kFull || x.kind == LayKind::kPartial) {
         r.out = x;
         return r;
@@ -1922,14 +1919,14 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
       r.out = SplitAt(*e);
       return r;
     }
-    case Op::kPermute:
+    case PartitionRule::kPermute:
       if (x.kind == LayKind::kExperts) return std::nullopt;
       r.out = x;
       if (x.kind == LayKind::kSplit) {
         r.out = SplitAt(node.Params<ir::PermuteParams>().axes.at(x.dim));
       }
       return r;
-    case Op::kConcat: {
+    case PartitionRule::kConcat: {
       const std::uint8_t c = node.Params<ir::ConcatParams>().dim;
       const Lay& s = cur[0].kind == LayKind::kSplit ? cur[0] : cur[1];
       if (s.kind != LayKind::kSplit || s.dim == c) return std::nullopt;
@@ -1940,7 +1937,7 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
       r.out = s;
       return r;
     }
-    case Op::kMatMul: {
+    case PartitionRule::kMatMul: {
       // out[n, m] = Σ_k a[k, n] b[k, m].
       const Lay& a = cur[0];
       const Lay& b = cur[1];
@@ -1965,7 +1962,7 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
       }
       return r;
     }
-    case Op::kMatMulId: {
+    case PartitionRule::kMatMulId: {
       const Lay& as = cur[0];
       const Lay& b = cur[1];
       if (cur[2].kind != LayKind::kFull) return std::nullopt;
@@ -1989,7 +1986,7 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
       }
       return r;
     }
-    case Op::kExpertReduce:
+    case PartitionRule::kExpertReduce:
       for (std::size_t i = 1; i < 4; ++i) {
         if (present(i) && cur.at(i).kind != LayKind::kFull) return std::nullopt;
       }
@@ -2002,13 +1999,13 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
         return std::nullopt;
       }
       return r;
-    case Op::kGetRows:
+    case PartitionRule::kGetRows:
       if (split(x, 0) && cur[1].kind == LayKind::kFull) {
         r.out = x;
         return r;
       }
       return std::nullopt;
-    case Op::kCacheStore:
+    case PartitionRule::kCacheStore:
       if (x.kind != LayKind::kSplit || x.dim == 1 || cur[2].kind != LayKind::kFull) {
         return std::nullopt;
       }
@@ -2016,7 +2013,7 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
       r.want[1] = x;
       r.out = x;
       return r;
-    case Op::kAttention: {
+    case PartitionRule::kAttention: {
       // By heads: a query head's KV head is on its device (whole KV heads).
       // ALiBi's slopes follow the global head index: not split.
       if (node.Params<ir::AttnParams>().max_bias > 0.0F) return std::nullopt;
@@ -2036,7 +2033,7 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
       r.out = SplitAt(1);
       return r;
     }
-    case Op::kSoftMax:
+    case PartitionRule::kSoftMax:
       if (x.kind != LayKind::kSplit || x.dim < 2) return std::nullopt;
       if (x.dim == 2 && node.Params<ir::SoftMaxParams>().max_bias > 0.0F) return std::nullopt;
       if (present(1)) {
@@ -2051,21 +2048,19 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
       }
       r.out = x;
       return r;
-    case Op::kArgmax:
+    case PartitionRule::kArgmax:
       if (split(x, 1)) {
         r.out = SplitAt(0);
         return r;
       }
       return std::nullopt;
-    case Op::kSumRows:
-    case Op::kArgsort:
-    case Op::kTopK:
+    case PartitionRule::kRowReduce:
       if (x.kind == LayKind::kSplit && x.dim != 0) {
         r.out = x;
         return r;
       }
       return std::nullopt;
-    case Op::kRope:
+    case PartitionRule::kRope:
       if (split(x, 1) || split(x, 3)) {
         for (std::size_t i = 1; i < 3; ++i) {
           if (present(i) && cur.at(i).kind != LayKind::kFull) return std::nullopt;
@@ -2074,10 +2069,10 @@ std::optional<Rule> Partitioner::RuleOf(const ir::Node& node,
         return r;
       }
       return std::nullopt;
-    default:
-      base::Fatal("every partition-supported op has a rule");
+    case PartitionRule::kWhole:
       return std::nullopt;
   }
+  base::Fatal("invalid declared partition rule");
 }
 
 std::expected<TensorId, std::string> Partitioner::Leaf(TensorId src, std::size_t slot,

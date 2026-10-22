@@ -6,10 +6,12 @@
 #include "execution/rank_data.h"
 
 namespace llmp::kernels::ggml {
+std::vector<execution::FusionComparison> MeasuredFusionComparisons();
+
 // The backend owns these measurements; unrelated registries do not inherit them.
 inline execution::RankData MeasuredRanks() {
   // Filled only from the frozen protocol in docs/experiments/decode-ladder-r6.md.
-  return execution::RankData{{
+  auto data = execution::RankData{{
       {.device_class = "sm_121",
        .device_model = "NVIDIA GB10",
        .arch = 121,
@@ -39,6 +41,8 @@ inline execution::RankData MeasuredRanks() {
        .rank = 0,
        .params = {.tensor_scale = true}},
   }};
+  data.fusions = MeasuredFusionComparisons();
+  return data;
 }
 }  // namespace llmp::kernels::ggml
 #endif  // LLMP_KERNELS_GGML_MEASURED_RANKS_H_

@@ -99,7 +99,7 @@ if(LLMP_CUDA)
 
   # Per-operation adapters to the shared component step engine; no model graph.
   add_library(llmp_exl3_selected STATIC selected_source.cc)
-  target_link_libraries(llmp_exl3_selected PUBLIC llmp_exl3_kernels llmp_ggml_kernels
-                                                 PRIVATE llmp_warnings)
+  target_link_libraries(llmp_exl3_selected PUBLIC llmp_exl3_kernels llmp_ggml_tensors
+                                                 PRIVATE llmp_decode_selected llmp_warnings)
 
 endif()

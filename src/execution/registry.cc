@@ -19,9 +19,11 @@
 
 #include "base/check.h"
 #include "base/sha256.h"
+#include "execution/fusion_ranks.h"
 #include "execution/rank_data.h"
 #include "format/encoding.h"
 #include "format/layout.h"
+#include "ir/decompose.h"
 #include "ir/op.h"
 
 namespace llmp::execution {
@@ -102,6 +104,7 @@ std::string CapabilityText(const Capability& c) {
   if (c.rung_for) text += "; concrete operand rung";
   if (c.product_arithmetic) text += "; authenticated product arithmetic recipe";
   if (c.pitched_output) text += "; output 0 at source 0's row pitch";
+  if (c.standalone_comparator) text += "; stable standalone comparator recipe";
   if (c.needs_tuning) {
     text += "; needs tuning";
   }
@@ -265,11 +268,41 @@ Registry::Registry(std::vector<Implementation> implementations,
       implementations_(std::move(implementations)),
       identities_(std::move(identities)),
       by_name_(std::move(by_name)) {
+  for (const auto& comparison : ranks_.fusions)
+    fusion_index_.push_back({at(*Find(comparison.fusion.name)).operation, &comparison});
+  std::ranges::sort(fusion_index_, [](const auto& a, const auto& b) {
+    if (a.operation.fused != b.operation.fused) return a.operation.fused < b.operation.fused;
+    if (a.comparison->query != b.comparison->query)
+      return a.comparison->query < b.comparison->query;
+    return a.comparison->fusion.name < b.comparison->fusion.name;
+  });
+  base::Sha256 selection;
+  selection.Update("llmp-terminal-selection-environment-v1");
+  const auto primitive_ranks = RankDataDigest({.records = ranks_.records});
+  selection.Update(std::as_bytes(std::span(primitive_ranks)));
+  for (const auto index : by_name_) selection.Update(std::as_bytes(std::span(identities_[index])));
+  selection_digest_ = selection.Finish();
   base::Sha256 hash;
   hash.Update("llmp-registry-set-v2");
   hash.Update(std::as_bytes(std::span(rank_digest_)));
   for (const auto index : by_name_) hash.Update(std::as_bytes(std::span(identities_[index])));
   digest_ = hash.Finish();
+}
+
+bool Registry::HasFusionComparisons(ir::OpKey operation) const {
+  if (operation.op != ir::Op::kFused) return false;
+  const auto found = std::ranges::lower_bound(
+      fusion_index_, operation.fused, {}, [](const auto& entry) { return entry.operation.fused; });
+  return found != fusion_index_.end() && found->operation == operation;
+}
+std::span<const Registry::IndexedFusionComparison> Registry::FusionComparisons(
+    ir::OpKey operation, const base::Sha256Digest& query) const {
+  if (operation.op != ir::Op::kFused) return {};
+  const auto key = std::pair{operation.fused, query};
+  const auto range = std::ranges::equal_range(fusion_index_, key, {}, [](const auto& entry) {
+    return std::pair{entry.operation.fused, entry.comparison->query};
+  });
+  return {range.begin(), range.end()};
 }
 
 std::expected<Registry, PlanRejection> Registry::Create(std::vector<Implementation> implementations,
@@ -327,6 +360,31 @@ std::expected<Registry, PlanRejection> Registry::Create(std::vector<Implementati
           (a.k == 0 || b.k == 0 || a.k == b.k) && (a.n == 0 || b.n == 0 || a.n == b.n))
         return Rejected(PlanError::kInvalid, 0, "overlapping backend rank records");
     }
+  }
+  for (std::size_t i = 0; i < ranks.fusions.size(); ++i) {
+    const auto& r = ranks.fusions[i];
+    const auto fusion = std::ranges::find(implementations, r.fusion.name, &Implementation::name);
+    const auto empty_digest = [](const auto& digest) {
+      return std::ranges::all_of(digest, [](auto v) { return v == 0; });
+    };
+    if (r.shape_class.empty() || r.provenance.empty() || r.fused_ns == 0 ||
+        r.decomposition_ns == 0 || r.samples == 0 || r.decomposition.empty() ||
+        empty_digest(r.query) || empty_digest(r.selection_environment) ||
+        empty_digest(r.fusion.identity) || fusion == implementations.end() ||
+        fusion->operation.op != ir::Op::kFused || !ir::HasDecomposition(fusion->operation))
+      return Rejected(PlanError::kInvalid, 0, "malformed or unbound fusion comparison");
+    for (const auto& part : r.decomposition) {
+      const auto implementation =
+          std::ranges::find(implementations, part.name, &Implementation::name);
+      if (part.name == r.fusion.name || empty_digest(part.identity) ||
+          implementation == implementations.end() ||
+          ir::HasDecomposition(implementation->operation) ||
+          implementation->operation.op == ir::Op::kFused)
+        return Rejected(PlanError::kInvalid, 0, "unbound fusion decomposition implementation");
+    }
+    for (std::size_t j = 0; j < i; ++j)
+      if (r.fusion.name == ranks.fusions[j].fusion.name && r.query == ranks.fusions[j].query)
+        return Rejected(PlanError::kInvalid, 0, "duplicate fusion comparison");
   }
   return Registry(std::move(implementations), std::move(identities), std::move(by_name),
                   std::move(ranks));
@@ -457,7 +515,9 @@ base::Sha256Digest RankDataDigest(const RankData& data) {
   }
   std::ranges::sort(records);
   base::Sha256 hash;
-  Field(hash, "llmp-device-measured-ranks-v2");
+  Field(hash, "llmp-device-measured-ranks-v3");
+  const auto fusions = FusionComparisonsDigest(data.fusions);
+  hash.Update(std::as_bytes(std::span(fusions)));
   for (const auto& record : records) hash.Update(std::as_bytes(std::span(record)));
   return hash.Finish();
 }
@@ -470,6 +530,7 @@ std::vector<std::size_t> Candidates(const Registry& registry, const CapabilityQu
     bool preferred = false;
     std::string_view name;
   };
+  const auto fusion_preferences = FusionPreferences(registry, query);
   std::vector<Ranked> ranked;
   for (std::size_t i = 0; i < registry.size(); ++i) {
     const Implementation& implementation = registry.at(i);
@@ -477,12 +538,17 @@ std::vector<std::size_t> Candidates(const Registry& registry, const CapabilityQu
         !Tuned(implementation, query)) {
       continue;
     }
+    const auto preference = std::ranges::find(fusion_preferences, implementation.name,
+                                              &NamedFusionPreference::implementation);
+    const auto fusion = preference == fusion_preferences.end() ? FusionPreference::kUnmeasured
+                                                               : preference->preference;
+    if (fusion == FusionPreference::kDecomposition) continue;
     const auto rank = std::ranges::find_if(query.measured, [&](const MeasuredRank& m) {
       return m.implementation == implementation.name;
     });
     const auto device_rank = DeviceRank(query, implementation.name, registry.ranks().records);
     if (query.automatic_fusion && implementation.capability->fusion_needs_measurement &&
-        rank == query.measured.end() && !device_rank)
+        rank == query.measured.end() && !device_rank && fusion != FusionPreference::kFusion)
       continue;
     ranked.push_back(
         {.index = i,

@@ -148,7 +148,7 @@ namespace llmp::kernels::ggml {
 std::vector<execution::Implementation> Implementations();
 
 // The digest of the module's own files, generated at build time.
-std::string_view ModuleSourcesDigest();
+const char* ModuleSourcesDigest();
 
 // One GGML implementation of RMSNorm-mul, over a ggml_rms_norm node and
 // the ggml_mul that scales it (ops.h).

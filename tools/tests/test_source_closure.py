@@ -6,6 +6,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -207,6 +208,20 @@ class Inventory(unittest.TestCase):
                                   str(self.build / self.component_output / "configured.h")]
         self.check()
 
+    def test_current_configured_generated_input_accepted(self):
+        header = str(self.build / "configured.h")
+        self.deps["object.o"].append(header)
+        with mock.patch.object(closure, "configured_generated_inputs",
+                               return_value={header: [str(self.source / "CMakeLists.txt")]}):
+            self.check()
+
+    def test_configured_declaration_outside_selected_source_rejected(self):
+        header = str(self.build / "configured.h")
+        self.deps["object.o"].append(header)
+        with mock.patch.object(closure, "configured_generated_inputs",
+                               return_value={header: [str(self.root / "unselected/CMakeLists.txt")]}):
+            self.check(1, "generated-input declaration")
+
     ELF_OBJECT = b"\x7fELF\x02\x01\x01" + bytes(9) + (1).to_bytes(2, "little")
 
     def test_linked_object_without_compile_record_is_audited_for_exceptions(self):
@@ -362,6 +377,71 @@ class Inventory(unittest.TestCase):
         del self.deps["app"]
         self.link_inputs = str(self.root / "external.o")
         self.check(1, "outside the source tree")
+
+
+class ConfiguredGeneratedInputs(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.source = pathlib.Path(self.tmp.name) / "source"
+        self.build = self.source / "build/cpu"
+        self.reply = self.build / ".cmake/api/v1/reply"
+        self.reply.mkdir(parents=True)
+        (self.build / "build.ninja").write_text("# current graph\n")
+        self.index = {"cmake": {"generator": {"name": "Ninja"}}, "objects": [
+            {"kind": "codemodel", "version": {"major": 2}, "jsonFile": "model.json"}]}
+        self.model = {"paths": {"source": str(self.source), "build": str(self.build)},
+                      "configurations": [{"targets": [{"id": "owner-id", "jsonFile": "target.json"}]}]}
+        self.header = str(self.build / "configured.h")
+        self.target = {"name": "owner", "id": "owner-id", "sources": [
+            {"path": self.header, "isGenerated": True, "backtrace": 0}],
+            "backtraceGraph": {"files": ["CMakeLists.txt"], "nodes": [
+                {"command": 0, "line": 4, "file": 0}]}}
+        self.rules = {"owner": "phony"}
+
+    def read(self, stale=False):
+        for name, value in (("model.json", self.model), ("target.json", self.target),
+                            ("index-2026-10-22.json", self.index)):
+            (self.reply / name).write_text(json.dumps(value))
+        if stale:
+            os.utime(self.reply / "index-2026-10-22.json", ns=(1, 1))
+        problems = []
+        result = closure.configured_generated_inputs(self.build, self.source, self.rules, problems)
+        return result, problems
+
+    def test_explicit_current_target_generated_source(self):
+        result, problems = self.read()
+        self.assertEqual(problems, [])
+        self.assertEqual(result, {self.header: [str(self.source / "CMakeLists.txt")]})
+
+    def test_ordinary_source_does_not_grant_generated_ownership(self):
+        del self.target["sources"][0]["isGenerated"]
+        self.assertEqual(self.read(), ({}, []))
+
+    def test_implicit_source_does_not_grant_generated_ownership(self):
+        del self.target["sources"][0]["backtrace"]
+        self.assertEqual(self.read(), ({}, []))
+
+    def test_removed_target_does_not_grant_ownership(self):
+        self.rules = {}
+        self.assertEqual(self.read(), ({}, []))
+
+    def test_stale_reply_fails_closed(self):
+        result, problems = self.read(stale=True)
+        self.assertEqual(result, {})
+        self.assertIn("predates", problems[0])
+
+    def test_foreign_build_reply_fails_closed(self):
+        self.model["paths"]["build"] = str(self.source / "other-build")
+        result, problems = self.read()
+        self.assertEqual(result, {})
+        self.assertIn("does not match", problems[0])
+
+    def test_mismatched_target_fails_closed(self):
+        self.target["id"] = "other-id"
+        result, problems = self.read()
+        self.assertEqual(result, {})
+        self.assertIn("identity mismatch", problems[0])
 
 
 if __name__ == "__main__":

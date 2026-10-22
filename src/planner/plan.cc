@@ -389,7 +389,8 @@ Selection Select(const ir::Graph& graph, const SelectionView& view,
       bool singles = true;
       for (const NodeId member : m->nodes) {
         const auto& own_node = graph.node(member);
-        const auto own = view.Candidates(graph, own_node, own_node.key, automatic.at(member.v));
+        const auto own =
+            view.FinalCandidates(graph, own_node, own_node.key, automatic.at(member.v));
         if (own.empty()) {
           singles = false;
           break;
@@ -408,7 +409,7 @@ Selection Select(const ir::Graph& graph, const SelectionView& view,
     if (batched) {
       continue;
     }
-    const auto candidates = view.Candidates(graph, node, node.key, automatic.at(i));
+    const auto candidates = view.FinalCandidates(graph, node, node.key, automatic.at(i));
     if (candidates.empty()) {
       out.missing[i] = true;
       out.complete = false;

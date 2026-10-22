@@ -10,19 +10,18 @@
 namespace llmp::ir {
 namespace {
 
-#define LLMP_TRAITS(key, name, params, required, max, inference, layout, partition, decompose, \
-                    ref, writes, a0, a1)                                                       \
-  OpTraits{key,                                                                                \
-           name,                                                                               \
-           params,                                                                             \
-           required,                                                                           \
-           max,                                                                                \
-           InferenceClass::inference,                                                          \
-           LayoutClass::layout,                                                                \
-           PartitionClass::partition,                                                          \
-           decompose,                                                                          \
-           ReferencePath::ref,                                                                 \
-           writes,                                                                             \
+#define LLMP_TRAITS(key, name, params, required, max, inference, validate, layout, partition, \
+                    decompose, handler, ref, writes, a0, a1)                                  \
+  OpTraits{key,                                                                               \
+           name,                                                                              \
+           params,                                                                            \
+           required,                                                                          \
+           max,                                                                               \
+           LayoutClass::layout,                                                               \
+           PartitionRule::partition,                                                          \
+           decompose,                                                                         \
+           ReferencePath::ref,                                                                \
+           writes,                                                                            \
            {a0, a1}},
 #define LLMP_PRIMITIVE(op, ...) LLMP_TRAITS(Primitive(Op::op), __VA_ARGS__)
 #define LLMP_FUSED(...)

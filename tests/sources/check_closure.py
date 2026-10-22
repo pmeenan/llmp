@@ -19,9 +19,10 @@ and checks:
   another build directory; a native build may also use the host's glibc and
   kernel headers (the declared platform packages), a cross build nothing
   from the host at all;
-- a build-tree file is an output of a current build rule or lies in a
-  selected component's build directory, so no leftover of another profile
-  and no file a script wrote at configure is used;
+- a build-tree file is an output of a current build rule, an explicitly
+  generated source declared by a current target in CMake's File API, or lies in a
+  selected component's build directory; undeclared configure output and stale
+  profile leftovers remain refused;
 - libraries named with -l are the declared platform's: glibc and the
   static CUDA runtime (D-017, D-060);
 - every C++ and CUDA compile, third-party code included, ends its exception
@@ -322,6 +323,62 @@ def expand_linker_options(arguments: list[str]) -> list[str]:
     return expanded
 
 
+def configured_generated_inputs(build_dir: pathlib.Path, source_dir: pathlib.Path,
+                                rules: dict[str, str], problems: list[str]) -> dict[str, list[str]]:
+    """Explicit generated sources of current targets, with their declaration origins.
+
+    Configure/generate-time products have no Ninja producer edge. CMake's current
+    codemodel publishes the GENERATED source property and the declaring command's
+    backtrace. This is ownership evidence, not a fabricated build rule. Ordinary
+    files and stale/unselected target declarations grant no build-tree admission.
+    """
+    reply = build_dir / ".cmake/api/v1/reply"
+    indexes = sorted(reply.glob("index-*.json"))
+    if not indexes:
+        return {}  # Builds that request no File API get no additional allowance.
+    result: dict[str, list[str]] = {}
+    try:
+        index_path = indexes[-1]
+        if index_path.stat().st_mtime_ns < (build_dir / "build.ninja").stat().st_mtime_ns:
+            raise ValueError("File API reply predates the current Ninja graph; reconfigure")
+        index = json.loads(index_path.read_text())
+        def read(name):
+            if pathlib.Path(name).name != name:
+                raise ValueError("File API reference is not a reply filename")
+            return json.loads((reply / name).read_text())
+        models = [item for item in index["objects"]
+                  if item["kind"] == "codemodel" and item["version"]["major"] == 2]
+        if not models:
+            return {}
+        if len(models) != 1 or index["cmake"]["generator"]["name"] != "Ninja":
+            raise ValueError("ambiguous or unsupported File API codemodel")
+        model = read(models[0]["jsonFile"])
+        if (os.path.realpath(model["paths"]["build"]) != os.path.realpath(build_dir) or
+                os.path.realpath(model["paths"]["source"]) != os.path.realpath(source_dir) or
+                len(model["configurations"]) != 1):
+            raise ValueError("File API source/build/configuration does not match this inventory")
+        for item in model["configurations"][0]["targets"]:
+            target = read(item["jsonFile"])
+            if target["id"] != item["id"]:
+                raise ValueError("File API target identity mismatch")
+            if target["name"] not in rules:
+                continue  # No current Ninja target selects this declaration.
+            for entry in target.get("sources", []):
+                if entry.get("isGenerated") is not True or "backtrace" not in entry:
+                    continue
+                graph = target["backtraceGraph"]
+                node = graph["nodes"][entry["backtrace"]]
+                if "command" not in node or "line" not in node:
+                    continue  # An implicit CMake source is not an authored declaration.
+                origin = os.path.normpath(source_dir / graph["files"][node["file"]])
+                path = os.path.normpath(source_dir / entry["path"])
+                result.setdefault(path, []).append(origin)
+    except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
+        problems.append(f"cannot authenticate configured generated-input ownership: {error}")
+        return {}
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--build-dir", type=pathlib.Path, required=True)
@@ -350,6 +407,8 @@ def main() -> int:
     problems, used = [], set()
     component_outputs = [os.path.join(build, top) for top in outputs]
     rules: dict[str, str] = {}  # every current Ninja output, filled in below
+    configured: dict[str, list[str]] = {}
+    classifying: set[str] = set()
 
     def classify(path: str, what: str, *, count_used: bool = True) -> None:
         if not os.path.isabs(path):
@@ -373,13 +432,19 @@ def main() -> int:
             problems.append(f"{what} uses {path}, a prepared tree the receipt does not select")
         elif within(real, build):
             # A build-tree file is a selected component's output or a current
-            # build rule's; anything else (a module's leftover, a file a
-            # script wrote at configure) has no audited origin.
+            # build rule's, or explicitly declared generated by a current
+            # CMake target; undeclared configure output has no audited origin.
             if (os.path.isdir(real) or any(within(real, d) for d in component_outputs)
                     or os.path.relpath(real, build) in rules or os.path.relpath(path, build) in rules):
                 return
+            if path in configured and real == path and path not in classifying:
+                classifying.add(path)
+                for origin in configured[path]:
+                    classify(origin, f"{what}'s generated-input declaration", count_used=count_used)
+                classifying.remove(path)
+                return
             problems.append(f"{what} uses {path}, a file in the build tree that no build rule or selected "
-                            "component produced")
+                            "component produced and no current target declares generated")
         elif within(real, sdk):
             return
         elif within(real, builds_root):
@@ -395,6 +460,7 @@ def main() -> int:
     scope = focused_outputs(args.ninja, args.build_dir, args.target, problems) if args.target else None
     inputs, found_rules = recorded_inputs(args.ninja, args.build_dir, problems, scope)
     rules.update({os.path.normpath(o): r for o, r in found_rules.items()})
+    configured.update(configured_generated_inputs(args.build_dir, args.source_dir, rules, problems))
     if not inputs:
         problems.append("Ninja recorded no dependencies; build before running this check")
     for output, paths in inputs.items():

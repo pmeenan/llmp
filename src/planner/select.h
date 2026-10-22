@@ -160,6 +160,11 @@ class SelectionView {
   std::vector<std::size_t> Candidates(const ir::Graph& graph, const ir::Node& node, ir::OpKey key,
                                       bool automatic_fusion = false) const;
 
+  // Final selection runs after all rewrites; only here can performance evidence
+  // replace a fusion by its proven terminal chain without cross-boundary refusion.
+  std::vector<std::size_t> FinalCandidates(const ir::Graph& graph, const ir::Node& node,
+                                           ir::OpKey key, bool automatic_fusion = false) const;
+
   // Borrow the same immutable typed query used for this node's selection.
   // The callback is synchronous and does not retain descriptors or reselect.
   using QueryInspector = std::function<void(const execution::CapabilityQuery&)>;
@@ -195,16 +200,22 @@ class SelectionView {
   }
 
  private:
+  // Empty unless the immediate own decomposition is terminal, stateless and
+  // selects only ordinary single-node implementations. No whole-model copy.
+  std::vector<std::size_t> TerminalDecomposition(ir::OpKey key,
+                                                 std::span<const ir::TensorDesc* const> sources,
+                                                 std::span<const ir::TensorDesc* const> outputs,
+                                                 std::span<const std::byte> params,
+                                                 std::span<const std::uint64_t> alignments) const;
   std::vector<std::size_t> CandidatesForNode(const ir::Graph& graph, const ir::Node& node,
                                              ir::OpKey key, bool automatic_fusion,
-                                             const QueryInspector& inspect = {}) const;
-  std::vector<std::size_t> ForOperands(ir::OpKey key,
-                                       std::span<const ir::TensorDesc* const> sources,
-                                       std::span<const ir::TensorDesc* const> outputs,
-                                       std::span<const std::byte> params, bool state_span,
-                                       std::span<const std::uint64_t> alignments,
-                                       bool automatic_fusion = false,
-                                       const QueryInspector& inspect = {}) const;
+                                             const QueryInspector& inspect = {},
+                                             bool final_selection = false) const;
+  std::vector<std::size_t> ForOperands(
+      ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
+      std::span<const ir::TensorDesc* const> outputs, std::span<const std::byte> params,
+      bool state_span, std::span<const std::uint64_t> alignments, bool automatic_fusion = false,
+      const QueryInspector& inspect = {}, bool final_selection = false) const;
   const execution::Registry& registry_;
   const DeviceFacts& device_;
   const Policy& policy_;

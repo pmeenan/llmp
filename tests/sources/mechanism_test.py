@@ -214,10 +214,21 @@ PROJECT = {
     "CMakeLists.txt": """
         cmake_minimum_required(VERSION 4.4.3)
         project(fixture LANGUAGES CXX)
+        cmake_file_api(QUERY API_VERSION 1 CODEMODEL 2)
         add_compile_options(-fno-exceptions)  # as llmpalooza's root CMakeLists.txt (D-066)
         include("${LLMP_ROOT}/cmake/LlmpSources.cmake")
         llmp_sources_add(LOCK "${FIXTURE_LOCK}")
         add_executable(fixture_app app.cc)
+        if(FIXTURE_CONFIGURED_INPUT)
+          set(configured "${CMAKE_CURRENT_BINARY_DIR}/configured-input.h")
+          file(GENERATE OUTPUT "${configured}" CONTENT "#define FIXTURE_CONFIGURED_VALUE 17\\n")
+          target_compile_definitions(fixture_app PRIVATE FIXTURE_CONFIGURED_INPUT)
+          if(FIXTURE_DECLARE_CONFIGURED_INPUT)
+            set_source_files_properties("${configured}" TARGET_DIRECTORY fixture_app
+              PROPERTIES GENERATED TRUE HEADER_FILE_ONLY TRUE)
+            target_sources(fixture_app PRIVATE "${configured}")
+          endif()
+        endif()
         # Like a generated config header's directory: whatever the build tree
         # holds is visible to the app.
         target_include_directories(fixture_app PRIVATE "${CMAKE_BINARY_DIR}")
@@ -248,6 +259,10 @@ PROJECT = {
     "app.cc": """
         #include <cstdio>
         #include "core.h"
+        #ifdef FIXTURE_CONFIGURED_INPUT
+        #include "configured-input.h"
+        static_assert(FIXTURE_CONFIGURED_VALUE == 17);
+        #endif
         #if defined(FIXTURE_WITH_CUDA) || defined(FIXTURE_IMPORT_CUDA_HEADER)
         #include "cuda.h"
         static_assert(FIXTURE_CUDA_VALUE == 7);
@@ -602,6 +617,17 @@ def main() -> int:
         check("opt-lib" not in text and "fixture_opt" not in text, f"{name} mentions the optional module")
     check_receipt(fx, b)
     check_closure(fx, b)
+    step("declared configure/generate products have current producers; undeclared build files do not")
+    configured = work / "build-configured-input"
+    configure(fx, configured, sources, extra=["-DFIXTURE_CONFIGURED_INPUT=ON",
+                                            "-DFIXTURE_DECLARE_CONFIGURED_INPUT=ON"])
+    build(configured)
+    check_closure(fx, configured)
+    configure(fx, configured, sources, extra=["-DFIXTURE_CONFIGURED_INPUT=ON",
+                                            "-DFIXTURE_DECLARE_CONFIGURED_INPUT=OFF"])
+    build(configured)
+    check_closure(fx, configured, ok=False,
+                  expect="a file in the build tree that no build rule or selected component produced")
     step("CUDA-only source selection, receipt authentication and strict inventory")
     check_cuda_selection(work / "cuda-selection")
     # This build defines _GLIBCXX_ASSERTIONS nowhere, so one that must define

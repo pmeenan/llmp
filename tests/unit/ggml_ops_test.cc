@@ -401,6 +401,44 @@ constexpr std::array<std::int32_t, kRows> kPicks = {7, 0, 3, 3, 6};
 constexpr std::array<std::int64_t, kRows> kSlots = {9, 2, 15, 0, 4};
 constexpr std::uint16_t kPoisonHalf = 0x7e00;  // an F16 NaN no kernel writes
 
+TEST_F(GgmlOpsTest, NormMulWrapperPreservesStandaloneLaunchesAndOutputs) {
+  auto launch = Launcher();
+  ASSERT_TRUE(launch);
+  for (const std::int64_t width : {1, 1024}) {
+    SCOPED_TRACE(width);
+    auto arena = TensorArena::Create(16).value();
+    auto* c = arena.context();
+    constexpr std::int64_t rows = 3;
+    const auto values = Values(41, static_cast<std::size_t>(width * rows));
+    const auto weights = Values(53, static_cast<std::size_t>(width));
+    auto* x = Place(Memory::kCudaMalloc, ggml_new_tensor_2d(c, GGML_TYPE_F32, width, rows), values);
+    auto* w = Place(Memory::kCudaMalloc, ggml_new_tensor_1d(c, GGML_TYPE_F32, width), weights);
+    auto* norm = Place(Memory::kCudaMalloc, ggml_rms_norm(c, x, 1e-6F));
+    auto* output = Place(Memory::kCudaMalloc, ggml_mul(c, norm, w));
+    Finish();
+    const auto separate = Record([&] {
+      EXPECT_TRUE(llmp::kernels::ggml::RmsNorm(*launch, norm));
+      EXPECT_TRUE(llmp::kernels::ggml::Mul(*launch, output));
+    });
+    const auto reference = Download(output);
+    const auto wrapped =
+        Record([&] { EXPECT_TRUE(llmp::kernels::ggml::RmsNormThenMul(*launch, norm, output)); });
+    EXPECT_EQ(Download(output), reference);
+    EXPECT_EQ(Download(x), values);
+    EXPECT_EQ(Download(w), weights);
+    ASSERT_EQ(separate.size(), 2U);
+    ASSERT_EQ(wrapped.size(), separate.size());
+    for (std::size_t i = 0; i < separate.size(); ++i) {
+      EXPECT_EQ(wrapped[i].kind, separate[i].kind);
+      EXPECT_EQ(wrapped[i].name, separate[i].name);
+      EXPECT_EQ(wrapped[i].grid, separate[i].grid);
+      EXPECT_EQ(wrapped[i].block, separate[i].block);
+      EXPECT_EQ(wrapped[i].shared, separate[i].shared);
+      EXPECT_EQ(wrapped[i].stream, separate[i].stream);
+    }
+  }
+}
+
 TEST_F(GgmlOpsTest, F16ApeRowsWidenExactlyAcrossMemoryDomains) {
   const auto source = Halves(29, kWidth * 8, 4.0f);
   const std::vector<std::int32_t> picks(kPicks.begin(), kPicks.end());
