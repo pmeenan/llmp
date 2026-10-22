@@ -22,7 +22,7 @@ args.out.mkdir(parents=True, exist_ok=True)
 argv = server_args()[2:]
 parsed = vars(cli_args.make_arg_parser(FlexibleArgumentParser()).parse_args(argv))
 for key, expected in {"model": "/model", "served_model_name": ["llama33"],
-                      "dtype": "bfloat16", "kv_cache_dtype": "float16",
+                      "dtype": "float16", "kv_cache_dtype": "float16",
                       "enable_prefix_caching": False, "max_model_len": 12288,
                       "max_num_seqs": 1, "max_num_batched_tokens": 512,
                       "max_logprobs": 1, "logprobs_mode": "raw_logprobs",

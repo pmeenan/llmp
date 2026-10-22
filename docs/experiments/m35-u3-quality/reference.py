@@ -24,7 +24,7 @@ def server_args(port=18973):
         "-m", "vllm.entrypoints.openai.api_server", "--model", "/model",
         "--served-model-name", "llama33", "--host", "127.0.0.1",
         "--port", str(port), "--load-format", "instanttensor",
-        "--dtype", "bfloat16", "--kv-cache-dtype", "float16",
+        "--dtype", "float16", "--kv-cache-dtype", "float16",
         "--gpu-memory-utilization", "0.65", "--max-model-len", "12288",
         "--max-num-seqs", "1", "--max-num-batched-tokens", "512",
         "--max-logprobs", "1", "--logprobs-mode", "raw_logprobs",
