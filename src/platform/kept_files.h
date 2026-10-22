@@ -59,14 +59,15 @@ struct PrivateOpen {
 };
 // Opens `name` beneath `dir`: an existing file as it is (any owner, mode
 // or number of links; a link followed), a new one made 0600 (O_EXCL,
-// never through a link). EPERM unless it is a regular file (looked at
-// before it is opened: a FIFO or device is not opened unless put there
-// meanwhile, and then not used); ENOLINK for a link to nothing, which is
+// never through a link). An existing object is pinned and checked before
+// opening it for I/O, so a substituted FIFO or device is never opened.
+// EPERM unless it is regular; ENOLINK for a link to nothing, which is
 // never created through. `truncate` gives the name a new empty file (made
 // as above): what was there is unlinked, never emptied, so a link's target
 // or a file's other names keep their bytes (its identity is therefore a
-// new one). A name that changes between the look and the open is looked
-// at again; EAGAIN if it keeps changing.
+// new one). Existing opens keep the pinned object across pathname changes;
+// exclusive creation retries a name that appears meanwhile, with EAGAIN
+// if it keeps changing.
 std::expected<PrivateFile, int> OpenPrivateFile(int dir, const char* name, PrivateOpen how);
 
 // Replaces `name` beneath `dir` with `bytes`, atomically: a temporary file

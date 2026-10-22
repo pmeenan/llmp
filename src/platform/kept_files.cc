@@ -60,14 +60,16 @@ FileIdentity IdentityOf(const struct stat& st, int fd) {
           .generation = FileGeneration(fd)};
 }
 
-// The file `name` beneath `dir` now (never through a link, never waiting
-// on a FIFO), with its status in `st`; errno if it cannot be opened.
+// Pin the file without following a final link, then check its type before
+// opening it to query the inode generation. No special object is opened for
+// I/O, including one substituted during a replacement's identity check.
 std::expected<FileIdentity, int> IdentityAt(int dir, const std::string& name, struct stat& st) {
-  const Owned fd(
-      ::openat(dir, name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_NOCTTY));
-  if (fd.get() < 0) {
-    return std::unexpected(errno);
-  }
+  auto pinned = OpenPathReference(dir, name.c_str(), false);
+  if (!pinned) return std::unexpected(pinned.error());
+  const Owned reference(*pinned);
+  auto opened = ReopenRegularFileForRead(reference.get());
+  if (!opened) return std::unexpected(opened.error());
+  const Owned fd(*opened);
   if (::fstat(fd.get(), &st) != 0) {
     return std::unexpected(errno);
   }
@@ -99,33 +101,28 @@ std::expected<int, int> OpenPrivateDirectory(int parent, const char* name) {
 }
 
 std::expected<PrivateFile, int> OpenPrivateFile(int dir, const char* name, PrivateOpen how) {
-  // The name is looked at before anything is opened, and may change before
-  // the open (another writer, in a directory its owner opened up): an open
-  // that finds it changed tries again, a few times.
+  // Pin first: neither inspection nor the later I/O open can select a
+  // substituted FIFO/device. Only exclusive creation retries a changed name.
   constexpr int kAttempts = 8;
   int error = EAGAIN;
   for (int attempt = 0; attempt < kAttempts; ++attempt) {
-    // What the name is now: a device or a FIFO is not opened (even
-    // non-blocking, opening can have effects), and a link to nothing is not
-    // created through.
+    auto pinned = OpenPathReference(dir, name);
+    if (!pinned && pinned.error() != ENOENT) return std::unexpected(pinned.error());
+    const Owned reference(pinned.value_or(-1));
+    const bool present = pinned.has_value();
     struct stat seen{};
-    bool present = true;
-    if (::fstatat(dir, name, &seen, AT_SYMLINK_NOFOLLOW) != 0) {
-      if (errno != ENOENT) {
-        return std::unexpected(errno);
+    if (present) {
+      if (::fstat(reference.get(), &seen) != 0) return std::unexpected(errno);
+      if (!S_ISREG(seen.st_mode)) return std::unexpected(EPERM);
+    } else {
+      // Preserve the kept-file policy: never create through a dangling link.
+      // O_EXCL below also enforces this if a link arrives after this check.
+      if (::fstatat(dir, name, &seen, AT_SYMLINK_NOFOLLOW) == 0) {
+        if (S_ISLNK(seen.st_mode)) return std::unexpected(ENOLINK);
+        continue;  // a name appeared since the pin attempt
       }
-      present = false;
-    }
-    if (present && S_ISLNK(seen.st_mode)) {
-      if (::fstatat(dir, name, &seen, 0) != 0) {
-        return std::unexpected(errno == ENOENT ? ENOLINK : errno);
-      }
-    }
-    if (present && !S_ISREG(seen.st_mode)) {
-      return std::unexpected(EPERM);
-    }
-    if (!present && !how.create) {
-      return std::unexpected(ENOENT);
+      if (errno != ENOENT) return std::unexpected(errno);
+      if (!how.create) return std::unexpected(ENOENT);
     }
     // Emptying gives the name a new file: what was there (a link, a file
     // with other names, or one only this name leads to) is unlinked, never
@@ -147,27 +144,29 @@ std::expected<PrivateFile, int> OpenPrivateFile(int dir, const char* name, Priva
     if (make) {
       flags |= O_CREAT | O_EXCL;
     }
-    Owned fd(::openat(dir, name, flags, 0600));
-    if (fd.get() < 0) {
-      if ((make && errno == EEXIST) || (!make && errno == ENOENT)) {
-        error = errno;  // changed since it was looked at
+    auto opened = make ? std::expected<int, int>(::openat(dir, name, flags, 0600))
+                       : ReopenRegularFile(reference.get(), how.write, how.direct);
+    if (make && *opened < 0) opened = std::unexpected(errno);
+    if (!opened) {
+      if (make && opened.error() == EEXIST) {
+        error = EAGAIN;
         continue;
       }
-      return std::unexpected(errno);
+      return std::unexpected(opened.error());
     }
+    Owned fd(*opened);
     struct stat st{};
     if (::fstat(fd.get(), &st) != 0) {
       return std::unexpected(errno);
     }
-    if (!S_ISREG(st.st_mode)) {
-      return std::unexpected(EPERM);
+    if (!S_ISREG(st.st_mode) || st.st_size < 0) {
+      return std::unexpected(EIO);
     }
     // Not through the umask, which could leave it unreadable to its owner.
     if (make && ::fchmod(fd.get(), 0600) != 0) {
       return std::unexpected(errno);
     }
-    // Regular files do not block; the flag only kept a FIFO put there since
-    // from hanging the open.
+    // Return a blocking descriptor, as callers of this interface expect.
     if (::fcntl(fd.get(), F_SETFL, ::fcntl(fd.get(), F_GETFL) & ~O_NONBLOCK) != 0) {
       return std::unexpected(errno);
     }

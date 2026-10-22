@@ -782,9 +782,10 @@ D-122).
       policy remains in force. **Drafter carry subspike complete:** ordinary
       spill/restore preserves continuation features; logical state
       replacement still clears them.
-      **Remaining:** the runtime's single `swapped_`/`parts_` fields measured
-      against the wrong swap; and pin/reopen for the existing-file branches
-      of kept-file and lock-file write/create operations.
+      **Kept-file and lock-file subspike complete:** existing regular files
+      are pinned before write/create I/O; deterministic race controls and
+      integrated shared checks pass.
+      **Remaining:** activation-owned asynchronous swap measurement.
       The prior count/catalog and pending-counter failures, `CheckOwners`,
       HTTP deadline/half-close ordering and I/O-thread heap trim findings
       are fixed or retired. Physical-file overlap checks, JSON accessor

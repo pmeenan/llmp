@@ -47,6 +47,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Kept-state and process-lock files pin existing regular objects before I/O
+  opens, including replacement identity checks; exclusive lock creation keeps
+  dangling-link behavior without opening a substituted device or FIFO (M3.5 U10).
 - Idle conversation and turn-checkpoint retention defaults to seven days,
   preserving state across an idle weekend within the configured spill budget
   (M3.5, D-055).

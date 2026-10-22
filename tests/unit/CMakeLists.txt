@@ -28,6 +28,12 @@ target_link_libraries(platform_test PRIVATE llmp_platform)
 llmp_gtest(platform_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+# Deterministic replacement races around the production filesystem opens.
+add_executable(private_files_test private_files_test.cc)
+target_link_libraries(private_files_test PRIVATE llmp_platform)
+target_link_options(private_files_test PRIVATE "LINKER:--wrap=openat,--wrap=open")
+llmp_gtest(private_files_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The CUDA provider, apart from its device queries, which need a GPU
 # (smoke.doctor in tests/smoke).
 if(LLMP_CUDA)

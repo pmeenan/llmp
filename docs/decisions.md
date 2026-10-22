@@ -1338,11 +1338,12 @@ name's link count cannot be read together with the name, so emptying in
 place could empty a file linked there meanwhile), while a file it holds
 open (one it made, or one adopted) is written and cleared in place, as
 any other name for it shows; a file is
-made with `O_EXCL`, so a link to nothing is never created through. A kept file is looked at
-before it is opened (a FIFO or device is refused unopened; one swapped in
-meanwhile is opened `O_NONBLOCK|O_NOCTTY` and refused), a name that
-changes between the look and the open is looked at again, and a link to
-nothing is refused by name (`ENOLINK`), as the configuration refuses one.
+made with `O_EXCL`, so a link to nothing is never created through. A kept file is pinned
+before it is opened for I/O (a FIFO or device is refused unopened, including
+one substituted during selection); the later open uses that same object,
+even if its name changes. Exclusive creation retries a name that appears
+meanwhile. A link to nothing is refused by name (`ENOLINK`), as the
+configuration refuses one.
 An adopted spill file is written in place, through a link if its name is
 one: adoption first checks that the file reached is the one the record
 names (device, inode, generation, size), so a link leads only to the

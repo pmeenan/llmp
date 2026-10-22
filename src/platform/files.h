@@ -38,6 +38,10 @@ std::expected<int, int> OpenPathReference(int parent, const char* name, bool fol
 // With direct true, request direct I/O; unsupported files return EINVAL.
 std::expected<int, int> ReopenRegularFileForRead(int reference, bool direct = false);
 
+// The same identity-preserving reopen, optionally for reads and writes. Never
+// creates or truncates an object, and checks its type before opening for I/O.
+std::expected<int, int> ReopenRegularFile(int reference, bool write, bool direct = false);
+
 // Reads a whole file of at most limit bytes, reading to its end rather
 // than trusting its reported size, which /proc and /sys files misstate. A
 // longer file is an error (std::errc::file_too_large).

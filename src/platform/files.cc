@@ -37,6 +37,10 @@ std::expected<int, int> OpenPathReference(int parent, const char* name, bool fol
 }
 
 std::expected<int, int> ReopenRegularFileForRead(int reference, bool direct) {
+  return ReopenRegularFile(reference, false, direct);
+}
+
+std::expected<int, int> ReopenRegularFile(int reference, bool write, bool direct) {
   struct stat seen{};
   if (::fstat(reference, &seen) != 0) return std::unexpected(errno);
   if (!S_ISREG(seen.st_mode)) return std::unexpected(EPERM);
@@ -44,8 +48,8 @@ std::expected<int, int> ReopenRegularFileForRead(int reference, bool direct) {
   // open(2)'s O_PATH reference holds the object even after rename/unlink.
   // Following this procfs magic link opens that object, not its former name.
   const std::string path = "/proc/self/fd/" + std::to_string(reference);
-  const int fd =
-      ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK | (direct ? O_DIRECT : 0));
+  const int fd = ::open(path.c_str(), (write ? O_RDWR : O_RDONLY) | O_CLOEXEC | O_NOCTTY |
+                                          O_NONBLOCK | (direct ? O_DIRECT : 0));
   if (fd < 0) return std::unexpected(errno);
   struct stat status{};
   const bool stated = ::fstat(fd, &status) == 0;
