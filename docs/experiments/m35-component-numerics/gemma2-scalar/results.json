@@ -1,0 +1,425 @@
+{
+  "registration": "78747648169b2643cdc031680b304ce5a43ab09a",
+  "status": "FAIL",
+  "scope": "Registered first Gemma2 scalar Q8 quality screen, no wider-family/oracle/speed qualification",
+  "pair": {
+    "format": "llmp-quality-pair/1",
+    "name": "gemma2: v1 on the candidate against v0 on the fixed baseline, the quality control's passage",
+    "prereg": {
+      "file": "/tmp/llmp-u3-gemma2-quality-78747648/reg/docs/experiments/m36-final/prereg/pair-gemma2.json",
+      "sha256": "77f657291cdceb45ff24b004d8556a122d309909f441e1979e7aec808bfa245d"
+    },
+    "candidate": {
+      "file": "/tmp/llmp-u3-gemma2-quality-78747648/arm-d/quality/gemma2-quality-new.json",
+      "kind": "speed_gate",
+      "sha256": "87f1a2328d7644ed0ec38b917312d9ee27678378ba930b51b81dd9675e719a62"
+    },
+    "reference": {
+      "file": "/tmp/llmp-u3-gemma2-quality-78747648/arm-a/quality/gemma2-quality-old.json",
+      "kind": "speed_gate",
+      "sha256": "6cdc73fee7eb210bfcac6666d7552833aab208de4f70b5b950ec21b09a69294c"
+    },
+    "result": {
+      "targets": 1070,
+      "candidate": {
+        "mean_nll": 3.5655671149652917,
+        "perplexity": 35.35950062117154
+      },
+      "reference": {
+        "mean_nll": 3.5635004927423646,
+        "perplexity": 35.28650134833719
+      },
+      "nll_delta": 0.0020666222229270836,
+      "nll_delta_se": 0.00149228429727646,
+      "ppl_delta_pct": 0.20687591584591658,
+      "mean_abs_diff": 0.03060143695677268,
+      "max_abs_diff": 0.23948357221575733,
+      "max_abs_diff_at": {
+        "document": 0,
+        "position": 884,
+        "target": 6659
+      },
+      "candidate_lower": 533,
+      "candidate_higher": 532,
+      "identical": 5,
+      "documents": {
+        "0": {
+          "targets": 1070,
+          "candidate_nll": 3.5655671149652917,
+          "reference_nll": 3.5635004927423646,
+          "ppl_delta_pct": 0.20687591584591658
+        }
+      },
+      "agreement": {
+        "tolerance": 0.1,
+        "fraction": 0.9401869158878504
+      }
+    },
+    "bounds": [
+      {
+        "bound": "expected_targets",
+        "limit": 1070,
+        "observed": 1070,
+        "ok": true
+      },
+      {
+        "bound": "max_abs_ppl_delta_pct",
+        "limit": 0.5,
+        "observed": 0.20687591584591658,
+        "ok": true
+      },
+      {
+        "bound": "max_mean_abs_diff",
+        "limit": 0.05,
+        "observed": 0.03060143695677268,
+        "ok": true
+      },
+      {
+        "bound": "max_abs_diff",
+        "limit": 1.0,
+        "observed": 0.23948357221575733,
+        "ok": true
+      },
+      {
+        "bound": "min_agreement",
+        "limit": 0.95,
+        "observed": 0.9401869158878504,
+        "ok": false
+      }
+    ],
+    "pass": false
+  },
+  "pair_sha256": "1b0f3c4958df0352a1fdde29ce343d734722819af02fb0bda06337cdfd566c82",
+  "identical_full_input_ids": true,
+  "input_tokens": 1071,
+  "teachers": 1070,
+  "arms": {
+    "a": {
+      "score": {
+        "tokens": 1070,
+        "nll": 3.5635004927423646,
+        "scores_sha256": "cf15e993400a928f0833c1b6411970b61a5cd1d12962288f9c6538367d0ee07d"
+      },
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "input_ids_sha256": "ee85f4ffc9be5825936ff379d873322a78c048018375805ffbb4a5cb5b1946c4",
+      "timing_observations": [
+        {
+          "prompt": 0,
+          "completion_tokens": 128,
+          "finish": "length",
+          "first_token_s": 0.7304123588837683,
+          "end_to_end_s": 2.4013907499611378,
+          "decode_tokens_s": 76.06713640510011,
+          "reply_sha256": "6ab43072f4e0cabec2755af8449e200296f472bd43506e4804d16d53234287e4",
+          "raw_sse_sha256": "ac6773c06efc99c711644fb6550667ab00ff46ed7441635717ded314c5fe3d30"
+        },
+        {
+          "prompt": 1,
+          "completion_tokens": 128,
+          "finish": "length",
+          "first_token_s": 0.5101577648892999,
+          "end_to_end_s": 2.1564972191117704,
+          "decode_tokens_s": 77.20799691453396,
+          "reply_sha256": "8705e323ce1d71c66b656f6fb7a66d98dc9e591f98a3b7587d040818deddcc2d",
+          "raw_sse_sha256": "da7228af4049bc93c14da67cd9ddafdc21e8a7e41ffaff3d9d6f9d6f3a22156e"
+        }
+      ],
+      "raw_sha256": {
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-a/launch.json": "3409ef99a8a4bf800d94ef71f4b6e49a2a850d899333fab7d159c857f25c9c1b",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-a/preflight.json": "cd1482c5dc8cce9af02b35a8471f243ad233fbf7d5d46485048315c50ebf911b",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-a/postflight.json": "99164ac218fbe8cc3c1c433c4eaa72ed98bca131602d63911e6e319a84ff11b0",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-a/audit.json": "8dbef444453621eaf032aece9f7860e3f42c13018ed7399e8f090ddc55d3168f",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-a/quality/gemma2-quality-old.json": "6cdc73fee7eb210bfcac6666d7552833aab208de4f70b5b950ec21b09a69294c",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-a/quality/gemma2-quality-old-score.json": "3ee8bd41accf6394c5dc46e1b9722893e26719dcc79daf20cb080aacc40a9599",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-a/quality/gemma2-quality-old-score.txt": "d94ee6ec0c784a57a6f363883b91d089525b1bffa8e141a8968035734986d03b",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-a/work/gemma2-quality-old/runtime.log": "07f66344a11efb701b81a47ab043cb9131bc03f866317ed433ad61893061c834",
+        "/tmp/llmp-u3-gemma2-quality-78747648/supervisor-a/final.json": "89e7cb205b70dfde94e31717eab0f4b88580a8541289bf9a6766549b9630f69b",
+        "/tmp/llmp-u3-gemma2-quality-78747648/supervisor-a/log": "ff6cd9b4b680c07824f0116e701833ea7bdc4eea4a42926b2ac6a1586149fb7e"
+      },
+      "score_plan_headers": [
+        {
+          "kind": "installed_plan",
+          "id": 613,
+          "stage": 0,
+          "phase": 4,
+          "rows": 1,
+          "segments": 1,
+          "host_bytes": 3201713
+        },
+        {
+          "kind": "installed_plan",
+          "id": 1126,
+          "stage": 0,
+          "phase": 4,
+          "rows": 1,
+          "segments": 1,
+          "host_bytes": 3201713
+        },
+        {
+          "kind": "installed_plan",
+          "id": 1639,
+          "stage": 0,
+          "phase": 4,
+          "rows": 1,
+          "segments": 1,
+          "host_bytes": 3201713
+        },
+        {
+          "kind": "installed_plan",
+          "id": 2152,
+          "stage": 0,
+          "phase": 4,
+          "rows": 1,
+          "segments": 1,
+          "host_bytes": 3201713
+        },
+        {
+          "kind": "installed_plan",
+          "id": 2665,
+          "stage": 0,
+          "phase": 4,
+          "rows": 1,
+          "segments": 1,
+          "host_bytes": 3201713
+        }
+      ],
+      "score_plan_completed_uses": [
+        256,
+        256,
+        256,
+        256,
+        47
+      ],
+      "selected_per_score_plan": {
+        "llmp.mmvq.prepared": 105,
+        "ggml.mul_mat.mmvq": 26,
+        "ggml.mul_mat_geglu.mmvq_fused": 26
+      },
+      "launch": {
+        "registration": "78747648169b2643cdc031680b304ce5a43ab09a",
+        "arm": "a",
+        "argv": [
+          "/usr/bin/python3",
+          "-B",
+          "-c",
+          "import capture,pathlib,sys; repo=pathlib.Path(sys.argv.pop(1)); raise SystemExit(capture.load_speed_gate(repo).main())",
+          "/tmp/llmp-u3-gemma2-quality-78747648/reg",
+          "quality",
+          "--family",
+          "gemma2",
+          "--label",
+          "old",
+          "--runtime",
+          "/home/pmeenan/.local/share/llmp/baselines/m35-u4-gemma-screen/src/runtime/m35-u4-baseline-diagnostic-runtime",
+          "--config-template",
+          "/tmp/llmp-u3-gemma2-quality-78747648/reg/docs/experiments/m35-component-numerics/gemma2-scalar/node.toml",
+          "--corpus",
+          "/home/pmeenan/.local/share/llmp/m36-baselines/inputs/corpus-1facc957.md",
+          "--retain-streams",
+          "--port",
+          "18114",
+          "--out",
+          "/tmp/llmp-u3-gemma2-quality-78747648/arm-a"
+        ],
+        "PYTHONPATH": "/tmp/llmp-u3-gemma2-quality-78747648/reg/docs/experiments/m35-component-numerics",
+        "wrapper_sha256": "dcbf0def97a51c5eab0eb06da1a83dc9ad7e4a7c016d9bc6838b47022447d0bf",
+        "start_unix": 1792707655.7907321,
+        "returncode": 0,
+        "end_unix": 1792707678.2846014
+      },
+      "supervisor": {
+        "job": "m35-u3-gemma2-scalar-a-r1",
+        "mode": "exclusive",
+        "timeout_seconds": 600,
+        "grace_seconds": 30,
+        "result": "FAIL"
+      }
+    },
+    "d": {
+      "score": {
+        "tokens": 1070,
+        "nll": 3.5655671149652917,
+        "scores_sha256": "388ac85d796d8a6365be1cd7feaa74a87af051c87d216ca061c2078882615cd8"
+      },
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "input_ids_sha256": "ee85f4ffc9be5825936ff379d873322a78c048018375805ffbb4a5cb5b1946c4",
+      "timing_observations": [
+        {
+          "prompt": 0,
+          "completion_tokens": 128,
+          "finish": "length",
+          "first_token_s": 0.8124773977324367,
+          "end_to_end_s": 2.462399335578084,
+          "decode_tokens_s": 77.0500626033824,
+          "reply_sha256": "f9277dd179d31be30eaa72ac78edf20e57904d65329eb0802e9382b0c23bb44a",
+          "raw_sse_sha256": "49af1a2df48090676f0f55f055c036a58c858b77fea13a9c1145fda55848aeda"
+        },
+        {
+          "prompt": 1,
+          "completion_tokens": 128,
+          "finish": "length",
+          "first_token_s": 0.551337949000299,
+          "end_to_end_s": 2.177845171187073,
+          "decode_tokens_s": 78.21409570868555,
+          "reply_sha256": "3ef4f0c02f2a673cc8d07c5216622444e3e50b09dd4d4f2d8a33d26e14544b2c",
+          "raw_sse_sha256": "22683871b6eb4a0be3334ae75fcd57a26c3ae4c5a4a8eb4fcfe76dbc3d9bb681"
+        }
+      ],
+      "raw_sha256": {
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-d/launch.json": "186283ffde803da6cc88af2dab216df1a885a9ff0157bd948293c373b87553ca",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-d/preflight.json": "75be2f79d0ea76f44738c6cbc84dd875ce9d7de00e6d8205afaee850813531d5",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-d/postflight.json": "9caf815e87f99d592cd2a74a3c3c59196e15e68b11565e01eb03905fe99d8395",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-d/audit.json": "ae79184c7264c2f3eba85a572d0e662ce50d80f31393f2aab6e0276266434474",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-d/quality/gemma2-quality-new.json": "87f1a2328d7644ed0ec38b917312d9ee27678378ba930b51b81dd9675e719a62",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-d/quality/gemma2-quality-new-score.json": "6ea2a9ddca335305437ad02a53cd2fcf340c9acfed689c79d2508edb790fbb32",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-d/quality/gemma2-quality-new-score.txt": "d94ee6ec0c784a57a6f363883b91d089525b1bffa8e141a8968035734986d03b",
+        "/tmp/llmp-u3-gemma2-quality-78747648/arm-d/work/gemma2-quality-new/runtime.log": "9401b19070e1be27103903d8d07f544310ac2942ff0ec8dda4cf9a72011c8e71",
+        "/tmp/llmp-u3-gemma2-quality-78747648/supervisor-d/final.json": "8a55c0688117165cb071b6fb6a83276970ac9bf1b2a658ae3e1637a3ed7b80c1",
+        "/tmp/llmp-u3-gemma2-quality-78747648/supervisor-d/log": "57d1eb728ee02b7ef37cd5799fb449830b0fae6f2e5d413a2f31c88c4a0e3980"
+      },
+      "score_plan_headers": [
+        {
+          "kind": "installed_plan",
+          "id": 613,
+          "stage": 0,
+          "phase": 4,
+          "rows": 1,
+          "segments": 1,
+          "host_bytes": 3402433
+        },
+        {
+          "kind": "installed_plan",
+          "id": 1126,
+          "stage": 0,
+          "phase": 4,
+          "rows": 1,
+          "segments": 1,
+          "host_bytes": 3402433
+        },
+        {
+          "kind": "installed_plan",
+          "id": 1639,
+          "stage": 0,
+          "phase": 4,
+          "rows": 1,
+          "segments": 1,
+          "host_bytes": 3402433
+        },
+        {
+          "kind": "installed_plan",
+          "id": 2152,
+          "stage": 0,
+          "phase": 4,
+          "rows": 1,
+          "segments": 1,
+          "host_bytes": 3402433
+        },
+        {
+          "kind": "installed_plan",
+          "id": 2665,
+          "stage": 0,
+          "phase": 4,
+          "rows": 1,
+          "segments": 1,
+          "host_bytes": 3402433
+        }
+      ],
+      "score_plan_completed_uses": [
+        256,
+        256,
+        256,
+        256,
+        47
+      ],
+      "selected_per_score_plan": {
+        "llmp.vecq.dense": 130,
+        "llmp.vecq.glu": 26,
+        "llmp.mmvq.prepared": 1
+      },
+      "launch": {
+        "registration": "78747648169b2643cdc031680b304ce5a43ab09a",
+        "arm": "d",
+        "argv": [
+          "/usr/bin/python3",
+          "-B",
+          "-c",
+          "import capture,pathlib,sys; repo=pathlib.Path(sys.argv.pop(1)); raise SystemExit(capture.load_speed_gate(repo).main())",
+          "/tmp/llmp-u3-gemma2-quality-78747648/reg",
+          "quality",
+          "--family",
+          "gemma2",
+          "--label",
+          "new",
+          "--runtime",
+          "/home/pmeenan/.local/share/llmp/baselines/m35-u4-gemma-screen/src/runtime/m35-u4-candidate-d-diagnostic-runtime",
+          "--config-template",
+          "/tmp/llmp-u3-gemma2-quality-78747648/reg/docs/experiments/m35-component-numerics/gemma2-scalar/node.toml",
+          "--corpus",
+          "/home/pmeenan/.local/share/llmp/m36-baselines/inputs/corpus-1facc957.md",
+          "--retain-streams",
+          "--port",
+          "18114",
+          "--out",
+          "/tmp/llmp-u3-gemma2-quality-78747648/arm-d"
+        ],
+        "PYTHONPATH": "/tmp/llmp-u3-gemma2-quality-78747648/reg/docs/experiments/m35-component-numerics",
+        "wrapper_sha256": "ac5fdc7dc1c66a8ea7b8b9efcc7fe5d273b4966aa1f091eabebbf3c9f5ca1482",
+        "start_unix": 1792707756.4929955,
+        "returncode": 0,
+        "end_unix": 1792707779.032282
+      },
+      "supervisor": {
+        "job": "m35-u3-gemma2-scalar-d-r1",
+        "mode": "exclusive",
+        "timeout_seconds": 600,
+        "grace_seconds": 30,
+        "result": "PASS"
+      }
+    }
+  },
+  "a_outer_failure": {
+    "original_supervisor_result": "FAIL rc1, retained unchanged",
+    "collector_returncode": 0,
+    "cause": "Outer harness compared ASLR load addresses in raw ldd text",
+    "different_prepost_fields": [
+      "ldd"
+    ],
+    "ldd_after_address_normalization_equal": true,
+    "all_other_identity_fields_exact": true,
+    "raw_audit_valid": true,
+    "teachers": 1070,
+    "score_rows": 1071,
+    "audit_sha256": "8dbef444453621eaf032aece9f7860e3f42c13018ed7399e8f090ddc55d3168f",
+    "repeat_inference": false
+  },
+  "timing_scope": "Two sequential fixed 128-token greedy controls, single samples with debug-plan logging. Observational only; no 10% speed gate.",
+  "semantic_observation": "Both arms have coherent relevant openings, differ and finish by length at 128 tokens. Both hash-table explanations misleadingly call the index unique; A implies similar keys cause collisions. No completed task or behavior-pack PASS.",
+  "no_retries": true,
+  "no_threshold_changes": true,
+  "host_free_receipt": "/tmp/llmp-u3-gemma2-quality-78747648/post-pair-host-free.txt",
+  "format": "llmp-gemma2-scalar-transfer-result/1",
+  "protocol_sha256": "6abcb080dd1d44477e4bb2b4ddf37c2c3f1df5c39d8885944259fc6684bd9414",
+  "pins_sha256": "298fdceb1b7a1759df2dd3860b2bccc2388bca06394a64573df7ad44c28cf5db",
+  "raw_root": "/tmp/llmp-u3-gemma2-quality-78747648",
+  "registration_snapshot_sha256": "0c3153fb19fd4ead3ef0a8c834c7a2abae82041fb2baa518bb03e0f7b392038a",
+  "pair_name_note": "The reused bound file has a historical v0/v1 display name. Actual arms are registered U4 A/D with the same canonical artifact, not v0 versus v1.",
+  "id_hash_encoding": "UTF-8 json.dumps(full_integer_id_list) with Python default separators",
+  "observational_timing_ratios": [
+    {
+      "prompt": 0,
+      "a_over_d_decode_rate": 0.9872430188234638,
+      "a_over_d_end_to_end_time": 0.9752239270310623
+    },
+    {
+      "prompt": 1,
+      "a_over_d_decode_rate": 0.9871366051728211,
+      "a_over_d_end_to_end_time": 0.9901976722873892
+    }
+  ]
+}
