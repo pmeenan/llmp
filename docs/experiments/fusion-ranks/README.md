@@ -62,9 +62,12 @@ backend capability restrictions. Expand to other selected fusions only after
 reviewing this first class and its paid decomposition. No whole-model speed
 claim follows from isolated operation timings.
 
-## Frozen first-screen execution
+## Original v8 registration (closed without timing)
 
-The reviewed v8 source checkpoint and its native binary are frozen before this
+The original v8 registration below is historical. Its launch attempts produced
+no timing; the v11 registration in the next section governs execution.
+
+The reviewed v8 source checkpoint and its native binary were frozen before this
 registration. This registration adds their execution identities; the frozen
 source snapshot retains its original protocol text. No measurement has run.
 
@@ -109,6 +112,73 @@ sets `completed=true`. The supervisor's post-job GPU-process check remains
 required. Failed or refused evidence is retained. Review
 this first result before expanding the prospectively listed matrix or installing
 rank data. This operator screen makes no model-speed or whole-U6 coverage claim.
+
+## Repaired v11 first-screen registration
+
+**Prospective:** run only after this registration is committed and reviewed.
+No performance samples exist. The first A supervisor job failed before the
+helper because its invocation used a relative mise path and omitted the
+registered working directory. The corrected invocation authenticated all 2,778
+source files and the v8 binary, then the harness refused a zero-byte backend
+workspace during setup. No warmup, timing or correctness result was collected.
+Both failures remain in the external first-screen receipt directories.
+
+The repair uses the production `DeviceBackend` factory's full declaration,
+workspace binding and launch sequence. It obtains the actual library and selected
+persistent backing requirements. The fixture has one owner and both planner
+arms start from its own expanded IR: normal rewriting reconstructs the fused
+arm with production provenance; disabling only `rms_norm_mul` leaves its
+primitive arm. The actual final fused query must equal the reported typed
+fixture query. These are harness corrections, with the registered arithmetic,
+shape, inputs, epsilon, correctness, sampling, drift and decision bands unchanged.
+
+Before this registration, native job `u6-fusion-v11-validate` on spark-b passed
+`--validate-only 1024 1` through complete setup, eager output, capture, replay,
+comparison and teardown. Both output differences were zero; captured graphs
+contained 128 fused and 256 primitive nodes. The mode creates no timing events,
+collects no samples and emits no measurement row. Its final completion receipt
+followed teardown. Earlier v9/v10 validation refusals for missing rewrite
+provenance and joined input ports remain preserved.
+
+| Frozen execution identity | Value |
+| --- | --- |
+| Source base | `dfba7a78cd6f6a821148d3cc434ab182153ece7c` |
+| Explicit wave-J dependency patch SHA-256 | `2cfe12da558abb5c84fe2b3b4d1a0641c5edcebe739e3bd847545c093054e775` |
+| Reviewed U6 v11 patch SHA-256 | `ed7439d4e71f83698e3723a1508a5ec4f09186336c36f713b258348dc19e1756` |
+| Complete 2,778-file source manifest SHA-256 | `b01ba89bdd4689caccca6c5aa5d20e12efbc375bd9bbd567f537082148b0c978` |
+| Native benchmark SHA-256 | `6e9bcdebd527fdf2ea4dd63fe685d2254a064725704a6b2a58430e33bc4c3b46` |
+| Launch helper SHA-256 | `667bdf81939430fe247bb8f04a79775339b67b4846ab1eefd7e911573d952cda` |
+| Host / GPU | `spark-b` (`spark-56f5`), NVIDIA GB10 |
+| SDK / driver API / runtime API | `aarch64-2c4eb5b2f68f3fa5` / `13000` / `13040` |
+| Library / selected persistent backing | 33,554,432 / 21,015,040 bytes |
+
+This source snapshot retains its pre-registration protocol text. Its exact
+source chain and manifest identify the compiled source; the inherited remote
+`61f8426f.dirty` stamp does not identify this build. The production rank code
+remains the whole/adversarial-reviewed v8 implementation. All six v8 native
+targets and focused checks passed; v11 rebuilt the changed harness and passed
+its complete functional validation.
+
+Stage only the authenticated helper and manifest at
+`/tmp/u6-first-screen-v11.py` and
+`/tmp/u6-v11-first-screen-source-manifest.json`. Preserve the frozen source and
+binary. Run exactly one exclusive 600-second job with 30-second termination
+grace, using absolute installed tool paths and the registered working directory:
+
+```sh
+~/.local/bin/spark-job start --gpu --name m35-u6-first-1024x1-v11-r1 \
+  --timeout 600 --grace 30 -C /home/pmeenan/src/llmp -- \
+  /home/pmeenan/.local/bin/mise exec -- python3 -B /tmp/u6-first-screen-v11.py \
+  --prereg-commit COMMITTED_V11_REGISTRATION
+```
+
+The helper retains the reviewed v8 bounded lifecycle and source/binary
+validation, substituting only the v11 identities and fresh output path
+`~/.local/share/llmp/m35-u6-fusion-ranks/first-1024x1-v11-r1`. Keep `launch.json`,
+all `samples.jsonl` events and `stderr.txt`, including any refusal, and check
+that the completed job leaves no GPU process. Review the first result before
+expanding the already listed matrix or installing any measured rank. No model
+speed, arithmetic qualification or full-U6 completion follows from this screen.
 
 ## Data and source identity
 
