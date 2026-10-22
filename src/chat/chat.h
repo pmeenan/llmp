@@ -200,6 +200,8 @@ struct StopRules {
   std::vector<std::string_view> tokens;
 };
 
+struct ToolCallFormat;
+
 // A native renderer and the template hash its fixtures pin.
 struct Template {
   std::string_view sha256;  // of the template's UTF-8 bytes, lower-case hex
@@ -215,6 +217,7 @@ struct Template {
   bool probe_variants = false;
   // Whether structured tool parts can be projected without losing their work.
   bool supports_tools = true;
+  const ToolCallFormat* tool_calls = nullptr;
 };
 
 // The native renderer for a template hash, or nullptr.
@@ -289,6 +292,9 @@ class ChatTemplate {
   // template, the control token it places after an assistant message (the
   // tokenizer's EOS is added where the model registers).
   const std::vector<std::string>& stop() const { return stop_; }
+  // Generated-output grammar only when verified with this native template.
+  // An interpreted template can render tools without having a known grammar.
+  const ToolCallFormat* tool_calls() const { return native_ ? native_->tool_calls : nullptr; }
 
  private:
   ChatTemplate() = default;

@@ -10,7 +10,7 @@
 # The model layer (docs/architecture.md#layers-and-dependency-rules), after
 # the tokenizer.
 add_library(llmp_chat STATIC chat.cc deepseek_v4.cc gemma.cc jinja_eval.cc jinja_parse.cc
-                               jinja_value.cc pycase.cc pyjson.cc qwen.cc template.cc)
+                               jinja_value.cc pycase.cc pyjson.cc qwen.cc template.cc tool_calls.cc)
 target_include_directories(llmp_chat PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_chat PUBLIC llmp_json llmp_tokenizer PRIVATE llmp_base
                       llmp_warnings)

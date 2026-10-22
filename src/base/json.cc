@@ -528,6 +528,15 @@ std::size_t ParseWorkingBytes(std::string_view text) {
   return (MaxValues(text) * (kNodeBytes + (2 * sizeof(std::uint32_t)))) + text.size();
 }
 
+std::optional<std::size_t> ParseWorkingBytesBound(std::size_t input_bytes) {
+  std::size_t nodes = 0, tables = 0, total = 0;
+  if (__builtin_add_overflow(input_bytes, std::size_t{1}, &nodes) ||
+      __builtin_mul_overflow(nodes, kNodeBytes + (2 * sizeof(std::uint32_t)), &tables) ||
+      __builtin_add_overflow(tables, input_bytes, &total))
+    return std::nullopt;
+  return total;
+}
+
 std::expected<Document, Error> Parse(std::string_view text, const Limits& limits) {
   if (text.size() > limits.max_bytes) {
     return std::unexpected(Error{"document too large", 0});

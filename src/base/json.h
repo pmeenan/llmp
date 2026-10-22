@@ -126,6 +126,9 @@ std::size_t MaxValues(std::string_view text);
 // its value, child and pending tables for MaxValues and its strings'
 // bytes. A caller charges this before parsing untrusted input.
 std::size_t ParseWorkingBytes(std::string_view text);
+// Before text exists (generated output): the same bound at the worst possible
+// structural density for this input size. Empty on size arithmetic overflow.
+std::optional<std::size_t> ParseWorkingBytesBound(std::size_t input_bytes);
 
 // Whether bytes are well-formed UTF-8 (Unicode 15.1, table 3-7); on failure
 // the offset of the first byte of the first ill-formed sequence.

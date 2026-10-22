@@ -524,6 +524,11 @@ DSML parameters; chat-v2 parses string arguments with `from_json`, which
 equals rendering the client's string parsed (fixtures `string-arguments`,
 and `string-arguments-not-object`, which both refuse).
 
+**Generated tool output.** The protocol-neutral [tool-call foundation](tool-calls.md)
+attaches a declarative output grammar to verified native templates and consumes
+only generated text. This is not yet wired into the public chat route; required
+trigger forcing and route qualification remain outstanding.
+
 **Structured content.** `chat::Content` owns either nullable scalar text or
 ordered text, tool-use, tool-result and image parts. Intake keeps text-part
 boundaries; one shared checked projection joins text at the template boundary

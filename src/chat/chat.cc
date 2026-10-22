@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "base/sha256.h"
+#include "chat/tool_calls.h"
 #include "tokenizer/tokenizer.h"
 
 namespace llmp::chat {
@@ -241,26 +242,30 @@ constexpr auto kGemmaEfforts = std::to_array<std::string_view>({"high"});
 // selects them.
 const std::array<Template, 10> kTemplates = {{
     {"e643c31fcec17f342f72296e02c46d35846bf4c70f6a0271f23bad73fd4eb645", "deepseek-v4-flash-0731",
-     &RenderDeepSeekV4, StopRules{{"<｜end▁of▁sentence｜>"}}, kDeepSeekEfforts},
+     &RenderDeepSeekV4, StopRules{{"<｜end▁of▁sentence｜>"}}, kDeepSeekEfforts, false, true,
+     &DsmlToolCalls()},
     {"872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27",
      "deepseek-v4-flash-chat-v2", &RenderDeepSeekV4ChatV2, StopRules{{"<｜end▁of▁sentence｜>"}},
-     kChatV2Efforts},
+     kChatV2Efforts, false, true, &DsmlToolCalls()},
     {"c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041", "qwen3.8-flash-next",
-     &RenderQwen38, StopRules{{"<|im_end|>", "<|endoftext|>"}}, kQwenEfforts},
+     &RenderQwen38, StopRules{{"<|im_end|>", "<|endoftext|>"}}, kQwenEfforts, false, true,
+     &QwenToolCalls()},
     {"", "qwen3.8-flash-next-unsloth", &RenderQwen38Unsloth,
-     StopRules{{"<|im_end|>", "<|endoftext|>"}}, kQwenUnslothEfforts},
+     StopRules{{"<|im_end|>", "<|endoftext|>"}}, kQwenUnslothEfforts, false, true,
+     &QwenToolCalls()},
     {"7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4", "gemma-3", &RenderGemma3,
      StopRules{{"<end_of_turn>"}}, kGemmaEfforts, false, false},
     {"ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4", "gemma-4", &RenderGemma4,
-     StopRules{{"<turn|>", "<|tool_response>"}}, kGemmaEfforts, true},
+     StopRules{{"<turn|>", "<|tool_response>"}}, kGemmaEfforts, true, true, &GemmaToolCalls()},
     {"0a2c8073c878ab1da004bee933a998606537bbb62016310352c7285c3f01c5b5", "gemma-4-e",
-     &RenderGemma4E, StopRules{{"<turn|>", "<|tool_response>"}}, kGemmaEfforts, true},
+     &RenderGemma4E, StopRules{{"<turn|>", "<|tool_response>"}}, kGemmaEfforts, true, true,
+     &GemmaToolCalls()},
     {"", "gemma-4-unsloth", &RenderGemma4Unsloth, StopRules{{"<turn|>", "<|tool_response>"}},
-     kGemmaEfforts, true},
+     kGemmaEfforts, true, true, &GemmaToolCalls()},
     {"", "gemma-4-e-unsloth", &RenderGemma4EUnsloth, StopRules{{"<turn|>", "<|tool_response>"}},
-     kGemmaEfforts, true},
+     kGemmaEfforts, true, true, &GemmaToolCalls()},
     {"", "gemma-4-2604", &RenderGemma4April, StopRules{{"<turn|>", "<|tool_response>"}},
-     kGemmaEfforts, true},
+     kGemmaEfforts, true, true, &GemmaToolCalls()},
 }};
 
 }  // namespace

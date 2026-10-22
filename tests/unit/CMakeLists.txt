@@ -426,6 +426,10 @@ llmp_gtest(tokenizer_assets_test TEST_PREFIX unit. PROPERTIES LABELS unit
 
 # The chat renderers against their references' text (D-067), and JSON as
 # Python prints it.
+add_executable(tool_calls_test tool_calls_test.cc)
+target_link_libraries(tool_calls_test PRIVATE llmp_chat llmp_json)
+llmp_gtest(tool_calls_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(chat_test chat_test.cc)
 add_executable(turn_reuse_test turn_reuse_test.cc)
 target_link_libraries(turn_reuse_test PRIVATE llmp_runtime llmp_chat)

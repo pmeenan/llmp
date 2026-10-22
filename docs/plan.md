@@ -1020,7 +1020,15 @@ D-122).
       other contexts. A fixed-clock checkpoint regression retains a
       boundary after a 72-hour idle weekend and expires it at 168 hours.
 - [ ] **Tool calls on the chat route** (moved from M5 by the owner,
-      2026-10-20): `tools`/`functions` and `tool_choice` (`auto`, `none`,
+      2026-10-20): **Interpreter foundation complete (2026-10-22):** one
+      generated-output interpreter uses verified template syntax data for
+      Qwen, DSML and Gemma, with owned definitions, resource accounting bounds,
+      complete-call events and Flare's malformed-call controls. Whole and
+      adversarial reviews are clean; native focused and integrated shared and
+      no-CUDA checks pass. This does not enable the public route. Intake,
+      canonical forced spans, sampling/verification, route adaptation and
+      OpenCode qualification remain open. See [tool-calls.md](tool-calls.md).
+      `tools`/`functions` and `tool_choice` (`auto`, `none`,
       `required`, a named function) accepted on Chat Completions, assistant
       `tool_calls` returned, with streamed argument fragments and tool-result
       messages rendered back by D-067's renderers. The parser is one engine
