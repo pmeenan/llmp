@@ -34,6 +34,7 @@
 #include "components/defs.h"
 #include "components/moe.h"
 #include "components/rotation_reference.h"
+#include "components/spatial.h"
 #include "components/state_encoding.h"
 #include "components/step.h"
 #include "families/gemma.h"
@@ -165,8 +166,9 @@ TEST(ComponentsTest, CatalogIsSortedUniqueAndHasReferences) {
   for (const ComponentDef* def : Catalog()) {
     kinds.emplace_back(def->kind, def->version);
     if (def->spatial != nullptr) {
-      EXPECT_EQ(def->emit, nullptr) << def->kind;
-      EXPECT_EQ(def->reference, nullptr) << def->kind;
+      EXPECT_GT(MaxSpatialNodes(*def), 0) << def->kind;
+      // A definition may expose both domains while sharing its arithmetic.
+      EXPECT_EQ(def->emit != nullptr, def->reference != nullptr) << def->kind;
     } else {
       EXPECT_NE(def->emit, nullptr) << def->kind;
       EXPECT_NE(def->reference, nullptr) << def->kind;

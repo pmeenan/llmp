@@ -14,6 +14,7 @@
 
 #include "components/component.h"
 #include "components/defs.h"
+#include "components/spatial_stream.h"
 #include "components/step.h"
 #include "ir/op.h"
 
@@ -216,6 +217,53 @@ std::expected<void, std::string> GatedReference(RefIO& io) {
   return {};
 }
 
+std::expected<SpatialShape, std::string> ChannelSpatialShape(
+    const Instance& instance, SpatialShape shape, std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  const auto explicit_width = instance.params.Int("channels");
+  const auto width =
+      explicit_width == 0 ? instance.stage.width : static_cast<std::uint64_t>(explicit_width);
+  if (auxiliary || shape.channels != width || !instance.def->shapes(instance))
+    return std::unexpected("spatial norm input or auxiliary differs");
+  return shape;
+}
+
+std::expected<SpatialShape, std::string> AdaptiveSpatialShape(
+    const Instance& instance, SpatialShape shape, std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  if (shape.channels != instance.stage.width || !auxiliary || *auxiliary != shape)
+    return std::unexpected("adaptive spatial operands must have identical owner geometry");
+  return shape;
+}
+
+std::expected<SpatialShape, std::string> GatedSpatialShape(const Instance& instance,
+                                                           SpatialShape shape,
+                                                           std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  if (shape.channels != instance.stage.width || !auxiliary || *auxiliary != shape)
+    return std::unexpected("adaptive spatial operands must have identical owner geometry");
+  return shape;
+}
+
+const SpatialOps kNormChannelSpatial{.infer_shape = ChannelSpatialShape,
+                                     .emit = EmitSpatialStream<SpatialStreamLayout::kChannelFirst>,
+                                     .reference = RunSpatialStreamReference<>,
+                                     .max_nodes = 12};
+const SpatialOps kNormAdaptiveSpatial{
+    .infer_shape = AdaptiveSpatialShape,
+    .emit = EmitSpatialStream<SpatialStreamLayout::kChannelRows, SpatialStreamLayout::kChannelRows,
+                              true>,
+    .reference = RunSpatialStreamReference<true, true>,
+    .max_nodes = 16};
+const SpatialOps kResidualGatedSpatial{.infer_shape = GatedSpatialShape,
+                                       .emit = EmitSpatialStream<>,
+                                       .reference = RunSpatialStreamReference<false>,
+                                       .max_nodes = 3,
+                                       .needs_carry = true};
+
 }  // namespace
 
 const ComponentDef& NormChannel() {
@@ -226,6 +274,7 @@ const ComponentDef& NormChannel() {
       .params = kParams,
       .roles = kRoles,
       .shapes = Shapes,
+      .spatial = &kNormChannelSpatial,
       .emit = Emit,
       .reference = Reference,
   };
@@ -249,6 +298,7 @@ const ComponentDef& NormAdaptive() {
       .params = kAdaptiveParams,
       .numerical = kNumericalSites,
       .shapes = AdaptiveShapes,
+      .spatial = &kNormAdaptiveSpatial,
       .emit = AdaptiveEmit,
       .reference = AdaptiveReference,
   };
@@ -263,6 +313,7 @@ const ComponentDef& ResidualGated() {
       .side_input = Conditioning,
       .params = kGatedParams,
       .shapes = AdaptiveShapes,
+      .spatial = &kResidualGatedSpatial,
       .emit = GatedEmit,
       .reference = GatedReference,
   };

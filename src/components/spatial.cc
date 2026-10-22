@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "components/defs.h"
+#include "components/spatial_stream.h"
 #include "ir/layout.h"
 
 namespace llmp::components {
@@ -183,34 +184,22 @@ const SpatialOps kConv{ConvShape, ConvEmit, ConvReference, 9};
 const SpatialOps kUp{UpShape, UpEmit, UpReference};
 
 bool StatelessRef(const ComponentDef& def, const spec::ComponentRef& ref) {
-  if (def.state == nullptr) return true;
-  return def.kind == "attention.dense" && std::ranges::any_of(ref.params, [](const spec::Param& p) {
-           return p.name == "stateless" && std::holds_alternative<bool>(p.value) &&
-                  std::get<bool>(p.value);
-         });
+  return def.state == nullptr ||
+         (def.spatial && def.spatial->stateless_ref && def.spatial->stateless_ref(ref));
 }
 format::Encoding InputSpatialEncoding(const ComponentDef& def) {
-  if (def.spatial != nullptr) return def.spatial->input_encoding;
-  return def.kind == "embedding.token" ? format::Encoding::kI32 : format::Encoding::kF32;
+  return def.spatial->input_encoding;
 }
 format::Encoding AuxiliarySpatialEncoding(const ComponentDef& def) {
-  if (def.spatial != nullptr) return def.spatial->auxiliary_encoding;
-  return def.kind == "attention.dense" ? format::Encoding::kI32 : format::Encoding::kF32;
+  return def.spatial->auxiliary_encoding;
 }
-bool NeedsSpatialCarry(const ComponentDef& def) {
-  if (def.spatial != nullptr) return def.spatial->needs_carry;
-  return def.kind == "residual.gated" || def.kind == "residual.scaled" ||
-         def.kind == "attention.dense";
-}
+bool NeedsSpatialCarry(const ComponentDef& def) { return def.spatial->needs_carry; }
+}  // namespace
+
 SpatialShape CarrySpatialShape(const ComponentDef& def, SpatialShape source_shape) {
-  if (def.kind == "attention.dense")
-    return SpatialShape{source_shape.height, source_shape.height, 1, 1};
-  return source_shape;
+  return def.spatial->carry_shape ? def.spatial->carry_shape(source_shape) : source_shape;
 }
-bool ChannelRowsToken(std::string_view kind) {
-  return kind == "norm.rms" || kind == "norm.adaptive" || kind == "projection.spatial" ||
-         kind == "ffn.glu" || kind == "attention.dense";
-}
+namespace {
 ir::TensorId ChannelRows(ir::Builder& b, ir::TensorId x, SpatialShape shape) {
   return b.Reshape(b.Cont(b.Permute(x, {1, 2, 0, 3})),
                    ir::ShapeOf({shape.channels, shape.width * shape.height * shape.images}));
@@ -220,6 +209,8 @@ ir::TensorId FromChannelRows(ir::Builder& b, ir::TensorId x, SpatialShape shape)
       b.Reshape(x, ir::ShapeOf({shape.channels, shape.width, shape.height, shape.images})),
       {2, 0, 1, 3}));
 }
+}  // namespace
+
 std::vector<double> ToChannelRows(std::span<const double> whcn, SpatialShape s) {
   std::vector<double> out(whcn.size());
   const auto pixels = s.width * s.height;
@@ -239,8 +230,10 @@ std::vector<double> FromChannelRows(std::span<const double> rows, SpatialShape s
   return out;
 }
 
-std::expected<SpatialValue, std::string> EmitSpatialFragment(SpatialFragment& f) {
-  if (f.instance.def->spatial != nullptr) return f.instance.def->spatial->emit(f);
+std::expected<SpatialValue, std::string> EmitSpatialStream(SpatialFragment& f,
+                                                           SpatialStreamLayout input_layout,
+                                                           SpatialStreamLayout output_layout,
+                                                           bool auxiliary_channel_rows) {
   auto out = InferSpatialShape(f.instance, f.shape,
                                f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
   if (!out || f.weights.size() != f.instance.def->roles.size() ||
@@ -249,17 +242,16 @@ std::expected<SpatialValue, std::string> EmitSpatialFragment(SpatialFragment& f)
     return std::unexpected("spatial fragment operands do not match component contract");
   const auto rows = static_cast<std::uint32_t>(f.shape.width * f.shape.height * f.shape.images);
   StepContext ctx(f.builder, {SegmentRows{.rows = rows, .outputs = rows}}, false);
-  const auto kind = f.instance.def->kind;
   ir::TensorId stream = f.input;
-  if (ChannelRowsToken(kind)) {
+  if (input_layout == SpatialStreamLayout::kChannelRows) {
     stream = ChannelRows(f.builder, f.input, f.shape);
-  } else if (kind == "norm.channel") {
+  } else if (input_layout == SpatialStreamLayout::kChannelFirst) {
     stream = f.builder.Cont(f.builder.Permute(f.input, {1, 2, 0, 3}));
   }
   ir::TensorId side{};
   if (f.auxiliary) {
-    side = kind == "norm.adaptive" ? ChannelRows(f.builder, f.auxiliary->tensor, f.auxiliary->shape)
-                                   : f.auxiliary->tensor;
+    side = auxiliary_channel_rows ? ChannelRows(f.builder, f.auxiliary->tensor, f.auxiliary->shape)
+                                  : f.auxiliary->tensor;
   }
   const ir::TensorId mask_carry = f.carry ? f.carry->tensor : ir::TensorId{};
   const ir::TensorId carry =
@@ -275,17 +267,19 @@ std::expected<SpatialValue, std::string> EmitSpatialFragment(SpatialFragment& f)
                             std::string_view name) { return name == "mask" ? mask_carry : side; }};
   auto emitted = f.instance.def->emit(frag);
   if (!emitted) return std::unexpected(emitted.error());
-  if (kind == "embedding.token" || ChannelRowsToken(kind)) {
+  if (output_layout == SpatialStreamLayout::kChannelRows) {
     return SpatialValue{FromChannelRows(f.builder, emitted->stream, *out), *out};
   }
-  if (kind == "norm.channel") {
+  if (output_layout == SpatialStreamLayout::kChannelFirst) {
     return SpatialValue{f.builder.Cont(f.builder.Permute(emitted->stream, {2, 0, 1, 3})), *out};
   }
   return SpatialValue{emitted->stream, *out};
 }
 
+namespace {
+
 // Count and bound borrowed metadata before any copy, validation allocation or
-// visitor. This first spatial domain has no side/state/embedding/temporal path.
+// visitor. State is refused through definition-owned preflight and instance contracts.
 std::expected<std::uint64_t, std::string> MetadataBound(
     const spec::ModelSpec& spec, std::span<const std::span<const BoundTensor>> tensors,
     std::span<const SpatialOwner> owners, SpatialBuildOptions options) {
@@ -467,127 +461,32 @@ const ComponentDef& UpsampleNearest() {
 }  // namespace defs
 
 std::uint16_t MaxSpatialNodes(const ComponentDef& def) {
-  if (def.spatial != nullptr) return def.spatial->max_nodes;
-  if (def.kind == "embedding.token") return 6;
-  if (def.kind == "norm.rms") return 10;
-  if (def.kind == "norm.channel") return 12;
-  if (def.kind == "norm.adaptive") return 16;
-  if (def.kind == "residual.gated") return 3;
-  if (def.kind == "projection.spatial") return 8;
-  if (def.kind == "residual.spatial") return 1;
-  if (def.kind == "condition.rows") return 8;
-  if (def.kind == "concat.spatial") return 1;
-  if (def.kind == "slice.spatial") return 2;
-  if (def.kind == "residual.scaled") return 2;
-  if (def.kind == "ffn.glu") return 20;
-  if (def.kind == "attention.dense") return 64;
-  return 0;
+  return def.spatial && def.spatial->infer_shape && def.spatial->emit && def.spatial->reference
+             ? def.spatial->max_nodes
+             : 0;
 }
 
 std::expected<SpatialShape, std::string> InferSpatialShape(const Instance& instance,
                                                            SpatialShape shape,
                                                            std::optional<SpatialShape> auxiliary) {
-  if (instance.def->spatial != nullptr)
-    return instance.def->spatial->infer(instance, shape, auxiliary);
-  if (!Values(shape)) return std::unexpected("spatial dimensions exceed representable storage");
-  const auto kind = instance.def->kind;
-  if (kind == "embedding.token") {
-    if (instance.site != Site::kLayer || instance.params.Real("scale") != 1.0 || auxiliary ||
-        shape != SpatialShape{1, shape.height, 1, 1} ||
-        !Values({1, shape.height, instance.stage.width, 1}))
-      return std::unexpected("spatial token embedding requires unit-scale row IDs");
-    return SpatialShape{1, shape.height, instance.stage.width, 1};
-  }
-  if (kind == "norm.rms" || kind == "norm.channel") {
-    const auto explicit_width = instance.params.Int("channels");
-    const auto width =
-        explicit_width == 0 ? instance.stage.width : static_cast<std::uint64_t>(explicit_width);
-    if (auxiliary || shape.channels != width || !instance.def->shapes(instance))
-      return std::unexpected("spatial norm input or auxiliary differs");
-    return shape;
-  }
-  if (kind == "norm.adaptive" || kind == "residual.gated") {
-    if (shape.channels != instance.stage.width || !auxiliary || *auxiliary != shape)
-      return std::unexpected("adaptive spatial operands must have identical owner geometry");
-    return shape;
-  }
-  if (kind == "projection.spatial") {
-    if (auxiliary || (instance.params.Flag("silu") && instance.params.Flag("gelu")) ||
-        shape.channels != static_cast<std::uint64_t>(instance.params.Int("in_channels")))
-      return std::unexpected("spatial projection input channels or auxiliary differ");
-    shape.channels = static_cast<std::uint64_t>(instance.params.Int("out_channels"));
-    if (!Values(shape)) return std::unexpected("spatial projection output exceeds value bound");
-    return shape;
-  }
-  if (kind == "residual.spatial") {
-    if (!auxiliary || *auxiliary != shape)
-      return std::unexpected("spatial binary operands must have equal geometry");
-    return shape;
-  }
-  if (kind == "condition.rows") {
-    if (shape.width != 1 || shape.images != 1 || !auxiliary || auxiliary->width != 1 ||
-        auxiliary->height != 2 ||
-        auxiliary->channels !=
-            static_cast<std::uint64_t>(instance.params.Int("quarters")) * shape.channels ||
-        auxiliary->images != 1 ||
-        static_cast<std::uint64_t>(instance.params.Int("prefix_rows")) > shape.height ||
-        instance.params.Int("quarter") >= instance.params.Int("quarters"))
-      return std::unexpected("conditioning row selection geometry differs");
-    return shape;
-  }
-  if (kind == "concat.spatial") {
-    if (!auxiliary || !Values(*auxiliary) || shape.width != auxiliary->width ||
-        shape.images != auxiliary->images)
-      return std::unexpected("spatial concatenation geometry differs");
-    if (instance.params.Int("axis") == 1) {
-      if (shape.channels != auxiliary->channels ||
-          __builtin_add_overflow(shape.height, auxiliary->height, &shape.height))
-        return std::unexpected("row concatenation geometry differs");
-    } else if (shape.height != auxiliary->height ||
-               __builtin_add_overflow(shape.channels, auxiliary->channels, &shape.channels)) {
-      return std::unexpected("channel concatenation geometry differs");
-    }
-    if (!Values(shape)) return std::unexpected("concatenation output exceeds the value bound");
-    return shape;
-  }
-  if (kind == "ffn.glu") {
-    if (auxiliary || shape.width != 1 || shape.images != 1 ||
-        shape.channels != instance.stage.width || !instance.def->shapes(instance))
-      return std::unexpected("spatial FFN GLU input or parameters differ");
-    return shape;
-  }
-  if (kind == "attention.dense") {
-    const auto axes =
-        (instance.params.Int("rope_axis1") != 0 || instance.params.Int("rope_axis2") != 0) ? 3U
-                                                                                           : 1U;
-    if (!instance.params.Flag("stateless") || !instance.def->shapes(instance) || shape.width != 1 ||
-        shape.images != 1 || shape.channels != instance.stage.width || !auxiliary ||
-        *auxiliary != SpatialShape{shape.height, axes, 1, 1} ||
-        !Values({shape.height, shape.height,
-                 static_cast<std::uint64_t>(instance.params.Int("heads")), 1}))
-      return std::unexpected("spatial attention input or position geometry differs");
-    return shape;
-  }
-  if (kind == "slice.spatial") {
-    const auto start = static_cast<std::uint64_t>(instance.params.Int("start"));
-    const auto rows = static_cast<std::uint64_t>(instance.params.Int("rows"));
-    if (auxiliary || start >= shape.height || rows > shape.height - start ||
-        (instance.params.Int("input_rows") != 0 &&
-         static_cast<std::uint64_t>(instance.params.Int("input_rows")) != shape.height))
-      return std::unexpected("spatial row slice lies outside its input");
-    shape.height = rows;
-    return shape;
-  }
-  if (kind == "residual.scaled") {
-    if (!auxiliary || *auxiliary != SpatialShape{1, 1, 1, 1})
-      return std::unexpected("scaled residual requires an explicit scalar");
-    return shape;
-  }
-  return std::unexpected("component has no spatial shape rule");
+  if (!instance.def || MaxSpatialNodes(*instance.def) == 0)
+    return std::unexpected("component has no spatial shape rule");
+  return instance.def->spatial->infer(instance, shape, auxiliary);
+}
+
+std::expected<SpatialValue, std::string> EmitSpatialFragment(SpatialFragment& fragment) {
+  if (!fragment.instance.def || MaxSpatialNodes(*fragment.instance.def) == 0)
+    return std::unexpected("component has no spatial fragment");
+  return fragment.instance.def->spatial->emit(fragment);
 }
 
 std::expected<void, std::string> RunSpatialReference(SpatialRefIO& io) {
-  if (io.instance.def->spatial != nullptr) return io.instance.def->spatial->reference(io);
+  if (!io.instance.def || MaxSpatialNodes(*io.instance.def) == 0)
+    return std::unexpected("component has no spatial reference");
+  return io.instance.def->spatial->reference(io);
+}
+
+std::expected<SpatialShape, std::string> ValidateSpatialReference(SpatialRefIO& io) {
   auto out = InferSpatialShape(io.instance, io.shape, io.auxiliary_shape);
   if (!out || io.input.size() != *Values(io.shape) || !io.bias.empty() ||
       (!io.weights.empty() && !io.kernel.empty()) ||
@@ -597,51 +496,13 @@ std::expected<void, std::string> RunSpatialReference(SpatialRefIO& io) {
                           io.carry.size() != *Values(*io.carry_shape))) ||
       (!io.carry_shape && !io.carry.empty()))
     return std::unexpected("spatial reference extents differ");
-  const auto kind = io.instance.def->kind;
+  return out;
+}
+
+std::expected<RefIO, std::string> PrepareSpatialReference(SpatialRefIO& io) {
+  auto validated = ValidateSpatialReference(io);
+  if (!validated) return std::unexpected(validated.error());
   RefIO ref{.instance = &io.instance};
-  if (kind == "embedding.token") {
-    const auto table = !io.kernel.empty()
-                           ? io.kernel
-                           : (io.weights.size() == 1 ? io.weights[0] : std::span<const float>{});
-    if (table.size() < out->channels || table.size() % out->channels != 0)
-      return std::unexpected("spatial embedding reference table differs");
-    const auto vocab = table.size() / out->channels;
-    ref.segments = {{.rows = static_cast<std::uint32_t>(io.shape.height)}};
-    ref.tokens.reserve(io.input.size());
-    for (double v : io.input) {
-      if (!std::isfinite(v) || v < 0 || v != std::trunc(v) ||
-          static_cast<std::uint64_t>(v) >= vocab)
-        return std::unexpected("spatial embedding token ID lies outside vocabulary");
-      ref.tokens.push_back(static_cast<std::int32_t>(v));
-    }
-    ref.weights = {{table.begin(), table.end()}};
-    if (auto r = io.instance.def->reference(ref); !r) return r;
-    io.output = FromChannelRows(ref.stream, *out);
-    return {};
-  }
-  if (kind == "slice.spatial") {
-    const SpatialShape in_planes{1, io.shape.height,
-                                 io.shape.width * io.shape.channels * io.shape.images, 1};
-    const SpatialShape out_planes{1, out->height, out->width * out->channels * out->images, 1};
-    ref.segments = {{.rows = static_cast<std::uint32_t>(io.shape.height)}};
-    ref.stream = ToChannelRows(io.input, in_planes);
-    if (auto r = io.instance.def->reference(ref); !r) return r;
-    io.output = FromChannelRows(ref.stream, out_planes);
-    return {};
-  }
-  if (kind == "concat.spatial" && io.instance.params.Int("axis") == 1) {
-    const SpatialShape in_planes{io.shape.width, io.shape.height,
-                                 io.shape.channels * io.shape.images, 1};
-    const SpatialShape aux_planes{io.auxiliary_shape->width, io.auxiliary_shape->height,
-                                  io.auxiliary_shape->channels * io.auxiliary_shape->images, 1};
-    const SpatialShape out_planes{out->width, out->height, out->channels * out->images, 1};
-    ref.segments = {{.rows = static_cast<std::uint32_t>(io.shape.width * io.shape.height)}};
-    ref.stream = ToChannelRows(io.input, in_planes);
-    ref.side = ToChannelRows(io.auxiliary, aux_planes);
-    if (auto r = io.instance.def->reference(ref); !r) return r;
-    io.output = FromChannelRows(ref.stream, out_planes);
-    return {};
-  }
   const auto rows = io.shape.width * io.shape.height * io.shape.images;
   ref.segments = {{.rows = static_cast<std::uint32_t>(rows)}};
   if (!io.weights.empty()) {
@@ -666,23 +527,24 @@ std::expected<void, std::string> RunSpatialReference(SpatialRefIO& io) {
   } else if (!io.instance.def->roles.empty()) {
     ref.weights = {{io.kernel.begin(), io.kernel.end()}};
   }
-  if (kind == "residual.gated" || kind == "residual.spatial" || kind == "residual.scaled") {
-    ref.stream.assign(io.input.begin(), io.input.end());
-    ref.side.assign(io.auxiliary.begin(), io.auxiliary.end());
-    ref.carry.assign(io.carry.begin(), io.carry.end());
-    if (auto r = io.instance.def->reference(ref); !r) return r;
-    io.output = std::move(ref.stream);
-    return {};
-  }
-  ref.stream = ToChannelRows(io.input, io.shape);
+  return ref;
+}
+
+std::expected<void, std::string> RunSpatialStreamReference(SpatialRefIO& io, bool channel_rows,
+                                                           bool auxiliary_channel_rows) {
+  auto prepared = PrepareSpatialReference(io);
+  if (!prepared) return std::unexpected(prepared.error());
+  auto& ref = *prepared;
+  const auto out = InferSpatialShape(io.instance, io.shape, io.auxiliary_shape);
+  ref.stream = channel_rows ? ToChannelRows(io.input, io.shape)
+                            : std::vector<double>(io.input.begin(), io.input.end());
   ref.carry.assign(io.carry.begin(), io.carry.end());
-  if (io.auxiliary_shape) {
-    ref.side = (kind == "norm.adaptive" || kind == "concat.spatial")
+  if (io.auxiliary_shape)
+    ref.side = auxiliary_channel_rows
                    ? ToChannelRows(io.auxiliary, *io.auxiliary_shape)
                    : std::vector<double>(io.auxiliary.begin(), io.auxiliary.end());
-  }
-  if (auto r = io.instance.def->reference(ref); !r) return r;
-  io.output = FromChannelRows(ref.stream, *out);
+  if (auto result = io.instance.def->reference(ref); !result) return result;
+  io.output = channel_rows ? FromChannelRows(ref.stream, *out) : std::move(ref.stream);
   return {};
 }
 
@@ -759,16 +621,9 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
       inferred.push_back(shape);
       if (__builtin_add_overflow(values, *Values(shape), &values))
         return std::unexpected("spatial reference inventory overflows");
-      const std::uint64_t temp =
-          def.spatial && def.spatial->temporary_values
-              ? def.spatial->temporary_values(*instance, source_shape)
-          : def.kind == "attention.dense"
-              ? source_shape.height * source_shape.height *
-                        static_cast<std::uint64_t>(instance->params.Int("heads")) +
-                    6ULL * *Values(source_shape)
-          : def.kind == "ffn.glu" ? 3ULL * source_shape.height *
-                                        static_cast<std::uint64_t>(instance->params.Int("hidden"))
-                                  : 0ULL;
+      const std::uint64_t temp = def.spatial->temporary_values
+                                     ? def.spatial->temporary_values(*instance, source_shape)
+                                     : 0ULL;
       if (__builtin_add_overflow(values, temp, &values))
         return std::unexpected("spatial reference temporary inventory overflows");
     }

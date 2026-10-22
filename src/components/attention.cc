@@ -53,6 +53,7 @@
 #include "components/component.h"
 #include "components/defs.h"
 #include "components/rotation_reference.h"
+#include "components/spatial_stream.h"
 #include "components/step.h"
 #include "format/encoding.h"
 #include "ir/graph.h"
@@ -953,6 +954,44 @@ std::expected<void, std::string> Reference(RefIO& io) {
   return {};
 }
 
+std::expected<SpatialShape, std::string> DenseSpatialShape(const Instance& instance,
+                                                           SpatialShape shape,
+                                                           std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  const auto axes =
+      (instance.params.Int("rope_axis1") != 0 || instance.params.Int("rope_axis2") != 0) ? 3U : 1U;
+  if (!instance.params.Flag("stateless") || !instance.def->shapes(instance) || shape.width != 1 ||
+      shape.images != 1 || shape.channels != instance.stage.width || !auxiliary ||
+      *auxiliary != SpatialShape{shape.height, axes, 1, 1} ||
+      !SpatialElements({shape.height, shape.height,
+                        static_cast<std::uint64_t>(instance.params.Int("heads")), 1}))
+    return std::unexpected("spatial attention input or position geometry differs");
+  return shape;
+}
+
+std::uint64_t DenseSpatialTemporaries(const Instance& instance, SpatialShape shape) {
+  return shape.height * shape.height * static_cast<std::uint64_t>(instance.params.Int("heads")) +
+         6ULL * *SpatialElements(shape);
+}
+SpatialShape DenseSpatialCarry(SpatialShape shape) { return {shape.height, shape.height, 1, 1}; }
+bool DenseSpatialStateless(const spec::ComponentRef& ref) {
+  return std::ranges::any_of(ref.params, [](const spec::Param& p) {
+    return p.name == "stateless" && std::holds_alternative<bool>(p.value) &&
+           std::get<bool>(p.value);
+  });
+}
+const SpatialOps kAttentionDenseSpatial{
+    .infer_shape = DenseSpatialShape,
+    .emit = EmitSpatialStream<SpatialStreamLayout::kChannelRows>,
+    .reference = RunSpatialStreamReference<>,
+    .max_nodes = 64,
+    .temporary_values = DenseSpatialTemporaries,
+    .auxiliary_encoding = format::Encoding::kI32,
+    .needs_carry = true,
+    .carry_shape = DenseSpatialCarry,
+    .stateless_ref = DenseSpatialStateless};
+
 }  // namespace
 
 const ComponentDef& AttentionDense() {
@@ -999,6 +1038,7 @@ const ComponentDef& AttentionDense() {
       .splits = kSplits,
 
       .masks = Masks,
+      .spatial = &kAttentionDenseSpatial,
       .emit = Emit,
       .reference = Reference,
   };

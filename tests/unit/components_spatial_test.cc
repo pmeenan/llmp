@@ -74,6 +74,81 @@ struct Budget {
 };
 constexpr std::array kOwners{SpatialOwner{1, {3, 2, 2, 1}}, SpatialOwner{4, {2, 3, 2, 1}}};
 
+TEST(SpatialComponentsTest, RenamedDefinitionExecutesSpatialHooksAndMissingHooksRefuse) {
+  // An unseen kind uses the registered definition's real RMS arithmetic and
+  // layout adapter. Removing its spatial contract must refuse even if the name
+  // is changed back to a previously recognized builtin.
+  const auto* registered = Find("norm.rms", 1);
+  ASSERT_NE(registered, nullptr);
+  ComponentDef definition = *registered;
+  definition.kind = "synthetic.channel_normalizer";
+  const spec::ComponentRef params{.params = {{"eps", 0.125}}};
+  auto parsed = Params::Of(definition.params, params);
+  ASSERT_TRUE(parsed) << Failed(parsed).value_or("");
+  Instance instance{.def = &definition, .params = std::move(*parsed), .stage = {.width = 3}};
+  const SpatialShape shape{2, 2, 3, 2};
+  auto inferred = InferSpatialShape(instance, shape);
+  ASSERT_TRUE(inferred) << Failed(inferred).value_or("");
+  EXPECT_EQ(*inferred, shape);
+  ir::Builder builder(MaxSpatialNodes(definition) + 2);
+  const auto input = builder.Input(ir::Dense(format::Encoding::kF32, ir::ShapeOf({2, 2, 3, 2})));
+  const auto weight = builder.Weight(ir::Dense(format::Encoding::kF32, ir::ShapeOf({3})), {});
+  const std::array weights{weight};
+  SpatialFragment fragment{builder, instance, input, shape, weights};
+  auto emitted = EmitSpatialFragment(fragment);
+  ASSERT_TRUE(emitted) << Failed(emitted).value_or("");
+  builder.Output(emitted->tensor);
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph);
+  auto exec = ref::Executor::Create(*graph);
+  ASSERT_TRUE(exec) << Failed(exec, &ref::ExecFailure::detail).value_or("");
+  const std::array<float, 3> gamma{0.5F, 1.5F, -2.0F};
+  std::array<float, 24> values{};
+  for (std::size_t i = 0; i < values.size(); ++i)
+    values[i] = static_cast<float>(static_cast<int>(i) - 11) / 4.0F;
+  ASSERT_TRUE(exec->BindValues(input, values));
+  ASSERT_TRUE(exec->BindValues(weight, gamma));
+  ASSERT_TRUE(exec->Run());
+  auto actual = exec->Values(graph->outputs()[0]);
+  ASSERT_TRUE(actual);
+  const std::vector<double> original(values.begin(), values.end());
+  SpatialRefIO oracle{instance, shape, original, gamma};
+  ASSERT_TRUE(RunSpatialReference(oracle));
+  ASSERT_EQ(actual->size(), original.size());
+  ASSERT_EQ(oracle.output.size(), original.size());
+  for (std::size_t image = 0; image < 2; ++image)
+    for (std::size_t pixel = 0; pixel < 4; ++pixel) {
+      double squares = 0.0;
+      for (std::size_t channel = 0; channel < 3; ++channel) {
+        const auto value = original[image * 12 + channel * 4 + pixel];
+        squares += value * value;
+      }
+      for (std::size_t channel = 0; channel < 3; ++channel) {
+        const auto i = image * 12 + channel * 4 + pixel;
+        const auto expected = original[i] * gamma[channel] / std::sqrt(squares / 3.0 + 0.125);
+        EXPECT_NEAR((*actual)[i], expected, 1e-6);
+        EXPECT_NEAR(oracle.output[i], expected, 1e-12);
+      }
+    }
+
+  // Refusal happens before a builder or output is modified, not through a
+  // hidden builtin-name dispatch. Partial hook tables are equally unsupported.
+  definition.kind = "norm.rms";
+  SpatialOps incomplete = *definition.spatial;
+  incomplete.emit = nullptr;
+  for (const auto* hooks : std::array<const SpatialOps*, 2>{nullptr, &incomplete}) {
+    definition.spatial = hooks;
+    EXPECT_EQ(MaxSpatialNodes(definition), 0);
+    EXPECT_FALSE(InferSpatialShape(instance, shape));
+    ir::Builder refused_builder(1);
+    SpatialFragment refused{refused_builder, instance, {}, shape, weights};
+    EXPECT_FALSE(EmitSpatialFragment(refused));
+    oracle.output.clear();
+    EXPECT_FALSE(RunSpatialReference(oracle));
+    EXPECT_TRUE(oracle.output.empty());
+  }
+}
+
 TEST(SpatialComponentsTest, WeightReferencesRetainExplicitPipelineStage) {
   const auto spec = SpatialSpec();
   const auto tensors = Tensors(3, format::Encoding::kF32);

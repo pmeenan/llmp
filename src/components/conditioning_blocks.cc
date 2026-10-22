@@ -11,6 +11,7 @@
 
 #include "components/defs.h"
 #include "components/spatial.h"
+#include "components/spatial_stream.h"
 
 namespace llmp::components::defs {
 namespace {
@@ -266,12 +267,123 @@ std::expected<void, std::string> AffineReference(SpatialRefIO& io) {
 const SpatialOps kReshape{ReshapeShape, ReshapeEmit, ReshapeReference, 1};
 const SpatialOps kAffine{AffineShape, AffineEmit, AffineReference, 4};
 
+std::expected<SpatialShape, std::string> ConditionSpatialShape(
+    const Instance& instance, SpatialShape shape, std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  if (shape.width != 1 || shape.images != 1 || !auxiliary || auxiliary->width != 1 ||
+      auxiliary->height != 2 ||
+      auxiliary->channels !=
+          static_cast<std::uint64_t>(instance.params.Int("quarters")) * shape.channels ||
+      auxiliary->images != 1 ||
+      static_cast<std::uint64_t>(instance.params.Int("prefix_rows")) > shape.height ||
+      instance.params.Int("quarter") >= instance.params.Int("quarters"))
+    return std::unexpected("conditioning row selection geometry differs");
+  return shape;
+}
+
+std::expected<SpatialShape, std::string> ConcatSpatialShape(const Instance& instance,
+                                                            SpatialShape shape,
+                                                            std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  if (!auxiliary || !SpatialElements(*auxiliary) || shape.width != auxiliary->width ||
+      shape.images != auxiliary->images)
+    return std::unexpected("spatial concatenation geometry differs");
+  if (instance.params.Int("axis") == 1) {
+    if (shape.channels != auxiliary->channels ||
+        __builtin_add_overflow(shape.height, auxiliary->height, &shape.height))
+      return std::unexpected("row concatenation geometry differs");
+  } else if (shape.height != auxiliary->height ||
+             __builtin_add_overflow(shape.channels, auxiliary->channels, &shape.channels)) {
+    return std::unexpected("channel concatenation geometry differs");
+  }
+  if (!SpatialElements(shape))
+    return std::unexpected("concatenation output exceeds the value bound");
+  return shape;
+}
+
+std::expected<SpatialShape, std::string> SliceSpatialShape(const Instance& instance,
+                                                           SpatialShape shape,
+                                                           std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  const auto start = static_cast<std::uint64_t>(instance.params.Int("start"));
+  const auto rows = static_cast<std::uint64_t>(instance.params.Int("rows"));
+  if (auxiliary || start >= shape.height || rows > shape.height - start ||
+      (instance.params.Int("input_rows") != 0 &&
+       static_cast<std::uint64_t>(instance.params.Int("input_rows")) != shape.height))
+    return std::unexpected("spatial row slice lies outside its input");
+  shape.height = rows;
+  return shape;
+}
+
+std::expected<SpatialShape, std::string> ScaledSpatialShape(const Instance&, SpatialShape shape,
+                                                            std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  if (!auxiliary || *auxiliary != SpatialShape{1, 1, 1, 1})
+    return std::unexpected("scaled residual requires an explicit scalar");
+  return shape;
+}
+
+std::expected<void, std::string> SliceSpatialReference(SpatialRefIO& io) {
+  auto out = ValidateSpatialReference(io);
+  if (!out) return std::unexpected(out.error());
+  RefIO ref{.instance = &io.instance};
+
+  const SpatialShape in_planes{1, io.shape.height,
+                               io.shape.width * io.shape.channels * io.shape.images, 1};
+  const SpatialShape out_planes{1, out->height, out->width * out->channels * out->images, 1};
+  ref.segments = {{.rows = static_cast<std::uint32_t>(io.shape.height)}};
+  ref.stream = ToChannelRows(io.input, in_planes);
+  if (auto r = io.instance.def->reference(ref); !r) return r;
+  io.output = FromChannelRows(ref.stream, out_planes);
+  return {};
+}
+std::expected<void, std::string> ConcatSpatialReference(SpatialRefIO& io) {
+  if (io.instance.params.Int("axis") != 1) return RunSpatialStreamReference<true, true>(io);
+  auto out = ValidateSpatialReference(io);
+  if (!out) return std::unexpected(out.error());
+  RefIO ref{.instance = &io.instance};
+
+  const SpatialShape in_planes{io.shape.width, io.shape.height, io.shape.channels * io.shape.images,
+                               1};
+  const SpatialShape aux_planes{io.auxiliary_shape->width, io.auxiliary_shape->height,
+                                io.auxiliary_shape->channels * io.auxiliary_shape->images, 1};
+  const SpatialShape out_planes{out->width, out->height, out->channels * out->images, 1};
+  ref.segments = {{.rows = static_cast<std::uint32_t>(io.shape.width * io.shape.height)}};
+  ref.stream = ToChannelRows(io.input, in_planes);
+  ref.side = ToChannelRows(io.auxiliary, aux_planes);
+  if (auto r = io.instance.def->reference(ref); !r) return r;
+  io.output = FromChannelRows(ref.stream, out_planes);
+  return {};
+}
+const SpatialOps kConditionRowsSpatial{.infer_shape = ConditionSpatialShape,
+                                       .emit = EmitSpatialStream<>,
+                                       .reference = RunSpatialStreamReference<>,
+                                       .max_nodes = 8};
+const SpatialOps kConcatSpatial{.infer_shape = ConcatSpatialShape,
+                                .emit = EmitSpatialStream<>,
+                                .reference = ConcatSpatialReference,
+                                .max_nodes = 1};
+const SpatialOps kSliceSpatial{.infer_shape = SliceSpatialShape,
+                               .emit = EmitSpatialStream<>,
+                               .reference = SliceSpatialReference,
+                               .max_nodes = 2};
+const SpatialOps kResidualScaledSpatial{.infer_shape = ScaledSpatialShape,
+                                        .emit = EmitSpatialStream<>,
+                                        .reference = RunSpatialStreamReference<false>,
+                                        .max_nodes = 2,
+                                        .needs_carry = true};
+
 }  // namespace
 const ComponentDef& ConditionRows() {
   static const ComponentDef d{.kind = "condition.rows",
                               .row_local = true,
                               .params = kSelectParams,
                               .shapes = NoRoles,
+                              .spatial = &kConditionRowsSpatial,
                               .emit = SelectTokenEmit,
                               .reference = SelectTokenReference};
   return d;
@@ -280,6 +392,7 @@ const ComponentDef& ConcatSpatial() {
   static const ComponentDef d{.kind = "concat.spatial",
                               .params = kConcatParams,
                               .shapes = NoRoles,
+                              .spatial = &kConcatSpatial,
                               .emit = ConcatTokenEmit,
                               .reference = ConcatTokenReference};
   return d;
@@ -288,6 +401,7 @@ const ComponentDef& SliceSpatial() {
   static const ComponentDef d{.kind = "slice.spatial",
                               .params = kSliceParams,
                               .shapes = NoRoles,
+                              .spatial = &kSliceSpatial,
                               .emit = SliceTokenEmit,
                               .reference = SliceTokenReference};
   return d;
@@ -296,6 +410,7 @@ const ComponentDef& ResidualScaled() {
   static const ComponentDef d{.kind = "residual.scaled",
                               .row_local = true,
                               .shapes = NoRoles,
+                              .spatial = &kResidualScaledSpatial,
                               .emit = ScaledTokenEmit,
                               .reference = ScaledTokenReference};
   return d;

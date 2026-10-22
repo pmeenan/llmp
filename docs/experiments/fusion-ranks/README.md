@@ -5,8 +5,14 @@
 
 Status: [fresh W5 results](FRESH-W5-RESULTS.md) independently qualify all twelve
 registered exact F32 RMSNormMul tuples: eleven fusion wins and one neutral cell.
-Native live-registry/planner verification recognizes all twelve current rows and
-preserves unmeasured fallback. Full U6 remains open.
+The W5 native live-registry/planner verification recognized all twelve rows on
+compiler identity `4c2b14cf0a66eebb8f433daefff9b58b4cfc0afdc082d6ba0e5a1ec3ac200cee`.
+The U8 spatial-definition hook build produces identity
+`8148b25f8c488058047940556525d80736d9d5a4fd4b4401c7bd0fa323146830`:
+34 of the 195 compiler-owned object receipts change, including the component
+objects and their planner/backend dependents. The twelve W5 rows remain exact
+historical evidence and are stale on this build; selection retains the incumbent
+until newly source-matched comparisons are measured. Full U6 remains open.
 The [original results](RESULTS.md) and
 [historical data](historical-v11-v12.json) retain unchanged measurements and
 identities; they are stale for current source. The registrations below preserve

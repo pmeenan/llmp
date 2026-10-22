@@ -14,6 +14,7 @@
 
 #include "components/defs.h"
 #include "components/spatial.h"
+#include "components/spatial_stream.h"
 
 namespace llmp::components::defs {
 namespace {
@@ -245,6 +246,37 @@ std::uint64_t AttentionTemporaries(const Instance& in, SpatialShape shape) {
 }
 const SpatialOps kAttention{AttentionShape, AttentionEmit, AttentionReference, 24,
                             AttentionTemporaries};
+std::expected<SpatialShape, std::string> ProjectionSpatialShape(
+    const Instance& instance, SpatialShape shape, std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  if (auxiliary || (instance.params.Flag("silu") && instance.params.Flag("gelu")) ||
+      shape.channels != static_cast<std::uint64_t>(instance.params.Int("in_channels")))
+    return std::unexpected("spatial projection input channels or auxiliary differ");
+  shape.channels = static_cast<std::uint64_t>(instance.params.Int("out_channels"));
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial projection output exceeds value bound");
+  return shape;
+}
+
+std::expected<SpatialShape, std::string> ResidualSpatialShape(
+    const Instance&, SpatialShape shape, std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  if (!auxiliary || *auxiliary != shape)
+    return std::unexpected("spatial binary operands must have equal geometry");
+  return shape;
+}
+
+const SpatialOps kProjectionSpatial{.infer_shape = ProjectionSpatialShape,
+                                    .emit = EmitSpatialStream<SpatialStreamLayout::kChannelRows>,
+                                    .reference = RunSpatialStreamReference<>,
+                                    .max_nodes = 8};
+const SpatialOps kResidualSpatial{.infer_shape = ResidualSpatialShape,
+                                  .emit = EmitSpatialStream<>,
+                                  .reference = RunSpatialStreamReference<false>,
+                                  .max_nodes = 1};
+
 }  // namespace
 
 const ComponentDef& ProjectionSpatial() {
@@ -262,6 +294,7 @@ const ComponentDef& ProjectionSpatial() {
                                 .roles = kProjectionRoles,
                                 .numerical = kNumericalSites,
                                 .shapes = ProjectionRoles,
+                                .spatial = &kProjectionSpatial,
                                 .emit = ProjectionTokenEmit,
                                 .reference = ProjectionTokenReference};
   return def;
@@ -270,6 +303,7 @@ const ComponentDef& ResidualSpatial() {
   static const ComponentDef def{.kind = "residual.spatial",
                                 .row_local = true,
                                 .shapes = NoRoles,
+                                .spatial = &kResidualSpatial,
                                 .emit = AddTokenEmit,
                                 .reference = AddTokenReference};
   return def;

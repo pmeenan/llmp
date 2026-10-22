@@ -1062,7 +1062,12 @@ explicit zero padding and bias), including different input/output channel
 counts and ragged owner geometry. F32/BF16 weights retain their source formats;
 activations are F32 without a forced intermediate-rounding policy. Its
 synchronous, paid graph owner retains complete input/output dimensions and
-uses the common native binding visitor for role ownership.
+uses the common native binding visitor for role ownership. Every supported
+spatial component declares its shape, emission, reference, operand encodings,
+carry geometry and temporary-storage bound through `ComponentDef::spatial`.
+Stream-backed definitions choose shared layout adapters beside their arithmetic;
+the spatial compiler does not recognize kind names or infer missing hooks.
+The image stage wiring and quantized image formats remain M3.5 U8 work.
 
 `PlanComponentGraph` is the same graph/fact-to-plan helper now used by the
 existing `ComponentStepSource`; it retains actual physical alignment facts,

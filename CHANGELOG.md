@@ -24,6 +24,10 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Image components own their spatial construction and operand contracts, so
+  adding a spatial definition no longer requires compiler kind-name branches
+  (M3.5 U8; stage wiring and quantized image support remain in progress).
+
 - Fusion/decomposition comparisons now bind exact queries, numerical contracts
   and compiler-owned implementation provenance; stale or absent evidence retains
   incumbent selection (M3.5 U6, coverage still in progress). The first twelve

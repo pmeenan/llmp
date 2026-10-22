@@ -102,6 +102,11 @@ struct SpatialOps {
   format::Encoding input_encoding = format::Encoding::kF32;
   format::Encoding auxiliary_encoding = format::Encoding::kF32;
   bool needs_carry = false;
+  // Null means the carry has the input geometry. Attention supplies a mask shape.
+  SpatialShape (*carry_shape)(SpatialShape) = nullptr;
+  // Allocation-free metadata preflight for a definition with optional state.
+  // The instantiated state contract is checked again before graph construction.
+  bool (*stateless_ref)(const spec::ComponentRef&) = nullptr;
 };
 
 // Paid before copies/graph construction. The callbacks retain their actual
@@ -152,6 +157,7 @@ class SpatialGraph {
 };
 
 std::uint16_t MaxSpatialNodes(const ComponentDef& def);
+std::expected<SpatialValue, std::string> EmitSpatialFragment(SpatialFragment& fragment);
 std::expected<SpatialShape, std::string> InferSpatialShape(
     const Instance& instance, SpatialShape shape, std::optional<SpatialShape> auxiliary = {});
 std::expected<void, std::string> RunSpatialReference(SpatialRefIO& io);

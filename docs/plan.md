@@ -825,7 +825,13 @@ D-122).
       routes item (owner, 2026-10-20), and the stored per-geometry image spec
       carried in from M3.6 lands here. **Exit:** Qwen-Image produces identical
       images from data, and a second VAE/DiT configuration imports with no
-      C++ change.
+      C++ change. **First hook spike:** every spatial component now owns its
+      shape, emission, reference, encoding, carry and temporary-storage contract
+      through `ComponentDef::spatial`; the compiler has no kind-name fallback.
+      Stage-graph wiring, quantized image import/execution and structural source
+      accounting remain open. This build changes the compiler identity; the
+      twelve W5 fusion comparisons are retained as historical evidence and use
+      the conservative stale-row fallback ([status](experiments/fusion-ranks/README.md)).
 - [ ] **U9 Partitioning and per-model residency** (M4 entry; amends M4's
       "Concurrent models and the shared workspace" item).
 - [x] **U10 Review leftovers** (re-verified 2026-10-22).

@@ -17,6 +17,7 @@
 #include "components/component.h"
 #include "components/defs.h"
 #include "components/moe.h"
+#include "components/spatial_stream.h"
 #include "components/step.h"
 #include "ir/graph.h"
 #include "ir/op.h"
@@ -130,6 +131,26 @@ std::expected<void, std::string> Reference(RefIO& io) {
   return {};
 }
 
+std::expected<SpatialShape, std::string> GluSpatialShape(const Instance& instance,
+                                                         SpatialShape shape,
+                                                         std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  if (auxiliary || shape.width != 1 || shape.images != 1 ||
+      shape.channels != instance.stage.width || !instance.def->shapes(instance))
+    return std::unexpected("spatial FFN GLU input or parameters differ");
+  return shape;
+}
+
+std::uint64_t GluSpatialTemporaries(const Instance& instance, SpatialShape shape) {
+  return 3ULL * shape.height * static_cast<std::uint64_t>(instance.params.Int("hidden"));
+}
+const SpatialOps kFfnGluSpatial{.infer_shape = GluSpatialShape,
+                                .emit = EmitSpatialStream<SpatialStreamLayout::kChannelRows>,
+                                .reference = RunSpatialStreamReference<>,
+                                .max_nodes = 20,
+                                .temporary_values = GluSpatialTemporaries};
+
 }  // namespace
 
 const ComponentDef& FfnGlu() {
@@ -172,6 +193,7 @@ const ComponentDef& FfnGlu() {
       .splits = kSplits,
 
       .masks = nullptr,
+      .spatial = &kFfnGluSpatial,
       .emit = Emit,
       .reference = Reference,
   };

@@ -38,6 +38,7 @@
 
 #include "components/component.h"
 #include "components/defs.h"
+#include "components/spatial_stream.h"
 #include "components/step.h"
 #include "format/encoding.h"
 #include "ir/graph.h"
@@ -524,6 +525,64 @@ std::expected<void, std::string> HeadReference(RefIO& io) {
   return {};
 }
 
+std::expected<SpatialShape, std::string> RmsSpatialShape(const Instance& instance,
+                                                         SpatialShape shape,
+                                                         std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  const auto explicit_width = instance.params.Int("channels");
+  const auto width =
+      explicit_width == 0 ? instance.stage.width : static_cast<std::uint64_t>(explicit_width);
+  if (auxiliary || shape.channels != width || !instance.def->shapes(instance))
+    return std::unexpected("spatial norm input or auxiliary differs");
+  return shape;
+}
+
+std::expected<SpatialShape, std::string> EmbeddingSpatialShape(
+    const Instance& instance, SpatialShape shape, std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  if (instance.site != Site::kLayer || instance.params.Real("scale") != 1.0 || auxiliary ||
+      shape != SpatialShape{1, shape.height, 1, 1} ||
+      !SpatialElements({1, shape.height, instance.stage.width, 1}))
+    return std::unexpected("spatial token embedding requires unit-scale row IDs");
+  return SpatialShape{1, shape.height, instance.stage.width, 1};
+}
+
+std::expected<void, std::string> EmbeddingSpatialReference(SpatialRefIO& io) {
+  auto out = ValidateSpatialReference(io);
+  if (!out) return std::unexpected(out.error());
+  RefIO ref{.instance = &io.instance};
+
+  const auto table = !io.kernel.empty()
+                         ? io.kernel
+                         : (io.weights.size() == 1 ? io.weights[0] : std::span<const float>{});
+  if (table.size() < out->channels || table.size() % out->channels != 0)
+    return std::unexpected("spatial embedding reference table differs");
+  const auto vocab = table.size() / out->channels;
+  ref.segments = {{.rows = static_cast<std::uint32_t>(io.shape.height)}};
+  ref.tokens.reserve(io.input.size());
+  for (double v : io.input) {
+    if (!std::isfinite(v) || v < 0 || v != std::trunc(v) || static_cast<std::uint64_t>(v) >= vocab)
+      return std::unexpected("spatial embedding token ID lies outside vocabulary");
+    ref.tokens.push_back(static_cast<std::int32_t>(v));
+  }
+  ref.weights = {{table.begin(), table.end()}};
+  if (auto r = io.instance.def->reference(ref); !r) return r;
+  io.output = FromChannelRows(ref.stream, *out);
+  return {};
+}
+const SpatialOps kNormRmsSpatial{.infer_shape = RmsSpatialShape,
+                                 .emit = EmitSpatialStream<SpatialStreamLayout::kChannelRows>,
+                                 .reference = RunSpatialStreamReference<>,
+                                 .max_nodes = 10};
+const SpatialOps kEmbeddingTokenSpatial{
+    .infer_shape = EmbeddingSpatialShape,
+    .emit = EmitSpatialStream<SpatialStreamLayout::kWhcn, SpatialStreamLayout::kChannelRows>,
+    .reference = EmbeddingSpatialReference,
+    .max_nodes = 6,
+    .input_encoding = format::Encoding::kI32};
+
 }  // namespace
 
 const ComponentDef& NormRms() {
@@ -535,6 +594,7 @@ const ComponentDef& NormRms() {
       .roles = kNormRoles,
       .shapes = NormShapes,
 
+      .spatial = &kNormRmsSpatial,
       .emit = NormEmit,
       .reference = NormReference,
   };
@@ -564,6 +624,7 @@ const ComponentDef& EmbeddingToken() {
       .roles = kEmbeddingRoles,
       .shapes = EmbeddingShapes,
 
+      .spatial = &kEmbeddingTokenSpatial,
       .emit = EmbeddingEmit,
       .reference = EmbeddingReference,
   };
