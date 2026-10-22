@@ -80,18 +80,24 @@ class Ignored {
   std::vector<std::string>& names_;
 };
 
-// A message's content: a string, or text parts joined.
-std::expected<std::string, Error> Content(const json::Value& content, const std::string& at,
-                                          Ignored& ignored) {
+// A message's content: a string, or owned ordered text parts.
+std::expected<chat::Content, Error> Content(const json::Value& content, const std::string& at,
+                                            Ignored& ignored, RequestMemory* memory,
+                                            MemoryCharge& charge) {
   if (content.is_string()) {
-    return std::string(content.string());
+    return chat::Content(std::string(content.string()));
   }
   if (!content.is_array()) {
     return Bad(std::format("{}.content must be a string or an array of text parts", at),
                at + ".content");
   }
   // Any number of parts: their bytes are the body's (D-102).
-  std::string text;
+  const std::uint64_t parts_bytes = content.size() * sizeof(chat::MessagePart);
+  if (memory != nullptr && !charge.Add(*memory, parts_bytes)) {
+    return std::unexpected(MemoryRefusal(*memory, parts_bytes, "message parts"));
+  }
+  std::vector<chat::MessagePart> text;
+  text.reserve(content.size());
   for (std::size_t j = 0; j < content.size(); ++j) {
     const json::Value part = content.at(j);
     const std::string where = std::format("{}.content[{}]", at, j);
@@ -118,13 +124,14 @@ std::expected<std::string, Error> Content(const json::Value& content, const std:
     if (!piece || !piece->is_string()) {
       return Bad(where + ".text must be a string", where + ".text");
     }
-    text += piece->string();
+    text.emplace_back(chat::TextPart{std::string(piece->string())});
   }
-  return text;
+  return chat::Content(std::move(text));
 }
 
 std::expected<Message, Error> ParseMessage(const json::Value& m, std::size_t index,
-                                           Ignored& ignored) {
+                                           Ignored& ignored, RequestMemory* memory,
+                                           MemoryCharge& charge) {
   const std::string at = std::format("messages[{}]", index);
   if (!m.is_object()) {
     return Bad(at + " must be an object", at);
@@ -164,7 +171,7 @@ std::expected<Message, Error> ParseMessage(const json::Value& m, std::size_t ind
         has_content = true;
         continue;
       }
-      auto text = Content(v, at, ignored);
+      auto text = Content(v, at, ignored, memory, charge);
       if (!text) {
         return std::unexpected(text.error());
       }
@@ -438,9 +445,13 @@ std::expected<ChatRequest, Error> ParseRequest(std::string_view body, Completion
         return Bad("messages must be a non-empty array", "messages");
       }
       // Any number: their bytes are the body's, their tokens the context's.
+      const std::uint64_t message_bytes = v.size() * sizeof(Message);
+      if (memory != nullptr && !charge.Add(*memory, message_bytes)) {
+        return std::unexpected(MemoryRefusal(*memory, message_bytes, "messages"));
+      }
       request.messages.reserve(v.size());
       for (std::size_t i = 0; i < v.size(); ++i) {
-        auto m = ParseMessage(v.at(i), i, ignored);
+        auto m = ParseMessage(v.at(i), i, ignored, memory, charge);
         if (!m) {
           return std::unexpected(m.error());
         }
@@ -642,7 +653,7 @@ std::uint64_t RequestBytes(const ChatRequest& request) {
   std::uint64_t bytes = sizeof(ChatRequest) + request.model.capacity();
   bytes += request.messages.capacity() * sizeof(Message);
   for (const Message& m : request.messages) {
-    bytes += m.content.capacity() + (m.reasoning ? m.reasoning->capacity() : 0);
+    bytes += m.content.StorageBytes() + (m.reasoning ? m.reasoning->capacity() : 0);
   }
   bytes += request.ignored.capacity() * sizeof(std::string);
   for (const std::string& name : request.ignored) {

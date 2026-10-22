@@ -522,6 +522,18 @@ DSML parameters; chat-v2 parses string arguments with `from_json`, which
 equals rendering the client's string parsed (fixtures `string-arguments`,
 and `string-arguments-not-object`, which both refuse).
 
+**Structured content.** `chat::Content` owns either nullable scalar text or
+ordered text, tool-use, tool-result and image parts. Intake keeps text-part
+boundaries; one shared checked projection joins text at the template boundary
+without changing control-token marking or turn boundaries. Tool input JSON is
+owned and parsed into stable documents whose lifetime follows projected calls;
+interpreted templates receive call IDs and result IDs as well as the existing
+function fields. Text after tool use, mixed/multiple or out-of-order results, error results and
+images are refused until a faithful rendering path exists. Gemma 3 refuses
+structured tools instead of silently ignoring them. The OpenAI route still
+accepts text only, and `/v1/messages` is disabled. Reuse remains keyed by rendered
+tokens and model/template state, so text partitioning alone changes no KV identity.
+
 **Gemma.** `chat/gemma.cc` holds both generations, written from the formats
 and linear in the
 conversation (the templates rescan it for every message: Gemma 4's,

@@ -1400,8 +1400,14 @@ The current routes retain their OpenAI event bytes. The Messages encoder
 provides indexed text/tool blocks and incremental JSON-input deltas, with
 at most three carried UTF-8 bytes and no retained argument document; it
 sends pings before prompt usage is available and `message_start` on
-admission. Messages request handling, structured message parts, tool
-extraction and signed reasoning remain future work; `/v1/messages` is
+admission. Intake retains ordered owned text parts; the shared chat content
+representation also describes tool use, tool results and images. A checked
+projection feeds existing native or interpreted templates, preserving text
+concatenation and tool IDs/JSON ownership, and refuses parts it cannot express
+(including images, error results and mixed or out-of-order result messages). Projection and
+part storage are charged before rendering. HTTP tools and images are still
+refused. Messages request handling, tool extraction and signed reasoning remain
+future work; `/v1/messages` is
 not enabled by this seam.
 
 **Fields.** Honored: `model` (a configured name; unknown is a 404, the

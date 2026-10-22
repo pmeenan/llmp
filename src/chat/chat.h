@@ -67,6 +67,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "base/json.h"
@@ -100,19 +101,65 @@ struct Error {
 
 enum class Role : std::uint8_t { kSystem, kUser, kAssistant, kTool };
 
+// Ordered content is owned by the conversation, including tool JSON and image
+// sources. Image payloads are descriptions only: text rendering never fetches them.
+struct TextPart {
+  std::string text;
+};
+struct ToolUsePart {
+  std::string id;
+  std::string name;
+  std::string input_json;
+};
+struct ToolResultPart {
+  std::string tool_use_id;
+  std::string text;
+  bool is_error = false;
+};
+struct ImagePart {
+  std::string media_type;
+  std::string source;
+};
+using MessagePart = std::variant<TextPart, ToolUsePart, ToolResultPart, ImagePart>;
+
+class Content {
+ public:
+  Content() = default;
+  Content(std::nullopt_t) {}
+  Content(std::string text) : value_(std::optional<std::string>(std::move(text))) {}
+  Content(const char* text) : Content(std::string(text)) {}
+  Content(std::optional<std::string> text) : value_(std::move(text)) {}
+  Content(std::vector<MessagePart> parts) : value_(std::move(parts)) {}
+
+  // Scalar text is a template projection, not a flattening accessor. Callers
+  // must project structured content before using it.
+  const std::optional<std::string>& text() const { return std::get<0>(value_); }
+  const std::vector<MessagePart>* parts() const { return std::get_if<1>(&value_); }
+  std::uint64_t PayloadBytes() const;
+  std::uint64_t StorageBytes() const;
+  // Extra owned storage and JSON parser working memory during projection.
+  std::uint64_t ProjectionBytes() const;
+
+ private:
+  std::variant<std::optional<std::string>, std::vector<MessagePart>> value_;
+};
+
 struct ToolCall {
   std::string name;
   // The arguments as a JSON object, parsed from the client's string: what
   // vLLM and llama.cpp hand the template.
   base::json::Value arguments;
+  std::string id = {};
+  std::shared_ptr<const base::json::Document> owner = {};
 };
 
 // JSON values point into documents the caller keeps alive while rendering.
 struct Message {
   Role role = Role::kUser;
-  std::optional<std::string> content;  // text; text blocks already joined
-  std::optional<std::string> reasoning_content;
-  std::vector<ToolCall> tool_calls;
+  Content content;
+  std::optional<std::string> reasoning_content = {};
+  std::vector<ToolCall> tool_calls = {};
+  std::string tool_call_id = {};
 };
 
 struct Conversation {
@@ -130,6 +177,13 @@ struct Conversation {
   std::size_t max_render_bytes = jinja::Limits{}.max_output_bytes;
   std::size_t max_live_bytes = 0;
 };
+
+// The shared template boundary. Text parts concatenate exactly; tools project
+// to template fields with IDs preserved. Unrepresentable ordering, error results
+// and images are rejected before any native or interpreted template runs.
+bool HasStructuredContent(const Conversation& conversation);
+std::expected<Conversation, Error> ProjectContent(const Conversation& conversation,
+                                                  bool supports_tools = true);
 
 using jinja::Boundary;
 using jinja::BoundaryKind;
@@ -159,6 +213,8 @@ struct Template {
   // content, properties named like schema keys, blank content beside tool
   // results (template.cc's VariantConversations).
   bool probe_variants = false;
+  // Whether structured tool parts can be projected without losing their work.
+  bool supports_tools = true;
 };
 
 // The native renderer for a template hash, or nullptr.

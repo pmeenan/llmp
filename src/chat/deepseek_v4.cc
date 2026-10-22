@@ -104,7 +104,7 @@ bool SystemPrompt(const Conversation& c, std::string& system) {
     if (any) {
       system += "\n\n";
     }
-    system += m.content.value_or("");
+    system += m.content.text().value_or("");
     any = true;
   }
   return any;
@@ -186,6 +186,13 @@ std::expected<void, Error> ToolCalls(Writer& w, const Message& m, std::size_t it
 }  // namespace
 
 std::expected<Rendered, Error> RenderDeepSeekV4(const Conversation& c) {
+  if (HasStructuredContent(c)) {
+    auto projected = ProjectContent(c);
+    if (!projected) {
+      return std::unexpected(projected.error());
+    }
+    return RenderDeepSeekV4(*projected);
+  }
   if (c.preserve_thinking) {
     return Fail(Rule::kUnsupported, "preserve_thinking is a Qwen3.8 option");
   }
@@ -251,10 +258,10 @@ std::expected<Rendered, Error> RenderDeepSeekV4(const Conversation& c) {
           in_user = true;
         }
         if (m.role == Role::kUser) {
-          w.Text(m.content.value_or(""));
+          w.Text(m.content.text().value_or(""));
         } else {
           w.Text("<tool_result>");
-          w.Text(m.content.value_or(""));
+          w.Text(m.content.text().value_or(""));
           w.Text("</tool_result>");
         }
         break;
@@ -276,7 +283,7 @@ std::expected<Rendered, Error> RenderDeepSeekV4(const Conversation& c) {
           w.Text(m.reasoning_content.value_or(""));
           w.Special(kThinkEnd);
         }
-        w.Text(TextOf(m.content));
+        w.Text(TextOf(m.content.text()));
         if (auto r = ToolCalls(w, m, i); !r) {
           return std::unexpected(r.error());
         }
@@ -295,6 +302,13 @@ std::expected<Rendered, Error> RenderDeepSeekV4(const Conversation& c) {
 }
 
 std::expected<Rendered, Error> RenderDeepSeekV4ChatV2(const Conversation& c) {
+  if (HasStructuredContent(c)) {
+    auto projected = ProjectContent(c);
+    if (!projected) {
+      return std::unexpected(projected.error());
+    }
+    return RenderDeepSeekV4ChatV2(*projected);
+  }
   if (c.preserve_thinking) {
     return Fail(Rule::kUnsupported, "preserve_thinking is a Qwen3.8 option");
   }
@@ -342,14 +356,14 @@ std::expected<Rendered, Error> RenderDeepSeekV4ChatV2(const Conversation& c) {
         }
         if (m.role == Role::kUser) {
           w.Special(kUser);
-          w.Text(m.content.value_or(""));
+          w.Text(m.content.text().value_or(""));
           pending_tool_result = false;
         } else {
           if (!pending_tool_result) {
             w.Special(kUser);
           }
           w.Text("<tool_result>");
-          w.Text(m.content.value_or(""));
+          w.Text(m.content.text().value_or(""));
           w.Text("</tool_result>");
           pending_tool_result = true;
         }
@@ -366,7 +380,7 @@ std::expected<Rendered, Error> RenderDeepSeekV4ChatV2(const Conversation& c) {
           }
           w.Special(kThinkEnd);
         }
-        w.Text(TextOf(m.content));
+        w.Text(TextOf(m.content.text()));
         if (auto r = ToolCalls(w, m, i); !r) {
           return std::unexpected(r.error());
         }

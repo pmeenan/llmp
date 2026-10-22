@@ -41,6 +41,7 @@
 #include <utility>
 #include <vector>
 
+#include "chat/chat.h"
 #include "config/node_config.h"
 #include "runtime/intake_limits.h"
 
@@ -85,9 +86,9 @@ struct Error {
 enum class Role : std::uint8_t { kSystem, kUser, kAssistant };
 
 struct Message {
-  Role role = Role::kUser;               // "developer" is read as system
-  std::string content;                   // text parts joined
-  std::optional<std::string> reasoning;  // an assistant's reasoning, sent back
+  Role role = Role::kUser;                // "developer" is read as system
+  chat::Content content = std::string();  // ordered parts survive intake
+  std::optional<std::string> reasoning;   // an assistant's reasoning, sent back
 };
 
 // A request's stop strings, matched together (Aho-Corasick): a trie of

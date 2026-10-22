@@ -115,7 +115,7 @@ TEST(ChatRequest, ReadsTheHonoredFields) {
   ASSERT_TRUE(minimal.has_value());
   EXPECT_EQ(minimal->model, "m");
   ASSERT_EQ(minimal->messages.size(), 1U);
-  EXPECT_EQ(minimal->messages[0].content, "hi");
+  EXPECT_EQ(minimal->messages[0].content.text().value(), "hi");
   EXPECT_FALSE(minimal->max_tokens.has_value());
   EXPECT_EQ(minimal->temperature, 1.0);
   EXPECT_EQ(minimal->top_p, 1.0);
@@ -133,7 +133,11 @@ TEST(ChatRequest, ReadsTheHonoredFields) {
     "prompt_cache_key":"p","frequency_penalty":null})");
   ASSERT_TRUE(full.has_value()) << full.error().message;
   EXPECT_EQ(full->messages[0].role, api::Role::kSystem);
-  EXPECT_EQ(full->messages[1].content, "ab");
+  const auto* parts = full->messages[1].content.parts();
+  ASSERT_NE(parts, nullptr);
+  ASSERT_EQ(parts->size(), 2U);
+  EXPECT_EQ(std::get<llmp::chat::TextPart>((*parts)[0]).text, "a");
+  EXPECT_EQ(std::get<llmp::chat::TextPart>((*parts)[1]).text, "b");
   EXPECT_EQ(full->messages[2].role, api::Role::kAssistant);
   EXPECT_EQ(full->messages[2].reasoning, std::optional<std::string>("r"));
   EXPECT_EQ(full->max_tokens, std::optional<std::uint32_t>(32));
@@ -296,7 +300,7 @@ TEST(ChatRequest, EnforcesItsBounds) {
   EXPECT_EQ(many->messages.size(), 5000U);
   const auto large = Parse(messages(1, (std::size_t{8} << 20U) + 1));  // was at most 8 MiB
   ASSERT_TRUE(large.has_value());
-  EXPECT_EQ(large->messages[0].content.size(), (std::size_t{8} << 20U) + 1);
+  EXPECT_EQ(large->messages[0].content.PayloadBytes(), (std::size_t{8} << 20U) + 1);
   EXPECT_THAT(ErrorOf(R"({"model":"m","messages":[]})"), HasSubstr("[messages]"));
   // Parts: any number, joined.
   const auto parts = [](std::size_t n, std::size_t bytes) {
@@ -309,10 +313,10 @@ TEST(ChatRequest, EnforcesItsBounds) {
   };
   const auto joined = Parse(parts(1000, 3));  // was at most 64
   ASSERT_TRUE(joined.has_value());
-  EXPECT_EQ(joined->messages[0].content.size(), 3000U);
+  EXPECT_EQ(joined->messages[0].content.PayloadBytes(), 3000U);
   const auto halves = Parse(parts(2, (std::size_t{4} << 20U) + 1));
   ASSERT_TRUE(halves.has_value());
-  EXPECT_EQ(halves->messages[0].content.size(), (std::size_t{8} << 20U) + 2);
+  EXPECT_EQ(halves->messages[0].content.PayloadBytes(), (std::size_t{8} << 20U) + 2);
   // The model's name.
   EXPECT_TRUE(Parse(std::format(R"({{"model":"{}","messages":[{{"role":"user","content":"x"}}]}})",
                                 std::string(api::kMaxModelBytes, 'm')))
@@ -433,7 +437,7 @@ TEST(ChatRequest, AcceptsLargeCodingTextWithinBoundedIntake) {
                         std::string(std::size_t{24} << 20U, '\\')));
   ASSERT_TRUE(request.has_value()) << request.error().message;
   ASSERT_EQ(request->messages.size(), 1U);
-  EXPECT_EQ(request->messages.front().content, content);
+  EXPECT_EQ(request->messages.front().content.text().value(), content);
   // Only what the body itself holds bounds its values: a token-ID prompt is
   // one value a token, and a 1,048,576-token one parses (was 262,144
   // values at most).
@@ -658,13 +662,30 @@ TEST(ChatRequest, ChargesItsParseToTheRequestMemory) {
   EXPECT_EQ(busy.used(), 0U);
 }
 
+TEST(ChatRequest, StructuredPartsAreOwnedAndCharged) {
+  std::string body = R"({"model":"m","messages":[{"role":"assistant","content":null},
+      {"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}]})";
+  auto parsed = Parse(body);
+  ASSERT_TRUE(parsed);
+  body.clear();
+  EXPECT_EQ(parsed->messages[0].content.text(), std::optional<std::string>(""));
+  const auto* parts = parsed->messages[1].content.parts();
+  ASSERT_NE(parts, nullptr);
+  ASSERT_EQ(parts->size(), 2U);
+  EXPECT_EQ(std::get<llmp::chat::TextPart>((*parts)[1]).text, "b");
+  EXPECT_GE(parsed->messages[1].content.StorageBytes(), 2 * sizeof(llmp::chat::MessagePart));
+  const auto retained = api::RequestBytes(*parsed);
+  parsed->messages[1].content = std::string("ab");
+  EXPECT_GT(retained, api::RequestBytes(*parsed));
+}
+
 // Untrusted text: NUL and escapes pass through as text; ill-formed UTF-8
 // is refused.
 TEST(ChatRequest, TakesTextAsText) {
   auto nul = Parse(R"({"model":"m","messages":[{"role":"user","content":"a\u0000b"}]})");
   ASSERT_TRUE(nul.has_value());
   using namespace std::string_view_literals;
-  EXPECT_EQ(nul->messages[0].content, "a\0b"sv);
+  EXPECT_EQ(nul->messages[0].content.text().value(), "a\0b"sv);
   EXPECT_THAT(ErrorOf("{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"\xC3\"}]}"),
               HasSubstr("not valid JSON"));
   EXPECT_THAT(ErrorOf(R"({"model":"m","model":"n","messages":[{"role":"user","content":"x"}]})"),
@@ -1399,7 +1420,7 @@ class FakeBackend final : public api::Backend {
   std::expected<api::Completion, api::Error> Complete(const api::ChatRequest& request,
                                                       api::Exchange& exchange) override {
     ++chat_calls;
-    const std::string& text = request.messages.back().content;
+    const std::string& text = request.messages.back().content.text().value();
     if (text == "fail") {
       return std::unexpected(api::Error{.status = 400,
                                         .type = "invalid_request_error",
@@ -1712,7 +1733,8 @@ class FakeCooperative final : public api::CooperativeBackend {
     return (request.options.model == "alpha" ||
             (second_model.load() && request.options.model == "tiny")) &&
            (request.literal == nullptr || literal_enabled.load()) &&
-           (request.literal != nullptr || request.options.messages.back().content != "serial");
+           (request.literal != nullptr ||
+            request.options.messages.back().content.text().value() != "serial");
   }
   std::expected<std::unique_ptr<Work>, api::Error> Start(const Request& request,
                                                          api::Exchange& exchange) override {
@@ -1720,7 +1742,8 @@ class FakeCooperative final : public api::CooperativeBackend {
       ++capacity_deferrals;
       return std::unique_ptr<Work>{};  // No owner, Admit, output or borrowed descriptor.
     }
-    if (request.literal == nullptr && request.options.messages.back().content == "bad") {
+    if (request.literal == nullptr &&
+        request.options.messages.back().content.text().value() == "bad") {
       ++rejections;
       return std::unexpected(api::Error{.status = 400,
                                         .type = "invalid_request_error",
@@ -1728,11 +1751,13 @@ class FakeCooperative final : public api::CooperativeBackend {
                                         .param = "messages",
                                         .code = {}});
     }
-    if (request.literal == nullptr && request.options.messages.back().content == "defer") {
+    if (request.literal == nullptr &&
+        request.options.messages.back().content.text().value() == "defer") {
       ++deferrals;
       return std::unique_ptr<Work>{};
     }
-    if (request.literal == nullptr && request.options.messages.back().content == "later") {
+    if (request.literal == nullptr &&
+        request.options.messages.back().content.text().value() == "later") {
       later_after_serial.store(serial_calls != nullptr && serial_calls->load() != 0);
     }
     auto work = std::make_unique<Job>(*this, request, exchange);
@@ -1813,8 +1838,8 @@ class FakeCooperative final : public api::CooperativeBackend {
         ++paused_skips;  // left out of this unit, as the node's backend leaves it
         continue;
       }
-      const bool pour =
-          job.request.literal == nullptr && job.request.options.messages.back().content == "pour";
+      const bool pour = job.request.literal == nullptr &&
+                        job.request.options.messages.back().content.text().value() == "pour";
       if (!job.exchange.Content(pour ? std::string(8192, 'x') : std::string("x"))) {
         job.Cancel();
       }

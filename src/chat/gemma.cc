@@ -681,6 +681,13 @@ struct Gemma4Variant {
 
 std::expected<Rendered, Error> RenderGemma4Variant(const Conversation& c,
                                                    const Gemma4Variant& variant) {
+  if (HasStructuredContent(c)) {
+    auto projected = ProjectContent(c);
+    if (!projected) {
+      return std::unexpected(projected.error());
+    }
+    return RenderGemma4Variant(*projected, variant);
+  }
   const std::vector<Message>& messages = c.messages;
   if (!variant.july && messages.empty()) {
     return Fail(Rule::kInvalid, "no messages");  // the 2026-04 template reads messages[0]
@@ -704,8 +711,8 @@ std::expected<Rendered, Error> RenderGemma4Variant(const Conversation& c,
       prev = Prev::kThink;
     }
     if (system_first) {
-      if (messages[0].content) {
-        w.Text(PythonStrip(*messages[0].content));
+      if (messages[0].content.text()) {
+        w.Text(PythonStrip(*messages[0].content.text()));
       }
       start = 1;
     }
@@ -802,19 +809,28 @@ std::expected<Rendered, Error> RenderGemma4Variant(const Conversation& c,
       w.Special(kToolCallEnd);
       prev = Prev::kToolCall;
     }
-    // The tool results after a message with tool calls, each answering
-    // (the templates match call IDs, which llmpalooza's messages lack, so every
-    // call matches) the last call.
+    // The template associates each result with the matching call ID. Legacy
+    // fixture calls omit IDs: their absent values compare equal, selecting
+    // the last call as before.
     bool responded = false;
     if (calls) {
-      const std::string_view name = m.tool_calls.back().name;
       for (std::size_t k = i + 1; k < n && messages[k].role == Role::kTool; ++k) {
+        const ToolCall* matching = nullptr;
+        for (const ToolCall& call : m.tool_calls) {
+          if (call.id == messages[k].tool_call_id) {
+            matching = &call;
+          }
+        }
+        if (matching == nullptr) {
+          return Fail(Rule::kInvalid, "tool result ID does not match a preceding call", k);
+        }
+        const std::string_view name = matching->name;
         w.Special(kToolResponse);
         w.Text("response:");
         w.Text(name);
         w.Text("{value:");
-        if (messages[k].content) {
-          g.Quoted(*messages[k].content);
+        if (messages[k].content.text()) {
+          g.Quoted(*messages[k].content.text());
         } else {
           w.Text(variant.july ? "null" : "None");
         }
@@ -825,8 +841,9 @@ std::expected<Rendered, Error> RenderGemma4Variant(const Conversation& c,
       }
     }
     std::string content;
-    if (m.content) {
-      content = model ? StripThinking(*m.content) : std::string(PythonStrip(*m.content));
+    if (m.content.text()) {
+      content =
+          model ? StripThinking(*m.content.text()) : std::string(PythonStrip(*m.content.text()));
     }
     w.Text(content);
     const bool has_content = !content.empty();
@@ -870,6 +887,13 @@ std::expected<Rendered, Error> RenderGemma4Variant(const Conversation& c,
 }  // namespace
 
 std::expected<Rendered, Error> RenderGemma3(const Conversation& c) {
+  if (HasStructuredContent(c)) {
+    auto projected = ProjectContent(c, false);
+    if (!projected) {
+      return std::unexpected(projected.error());
+    }
+    return RenderGemma3(*projected);
+  }
   const std::vector<Message>& messages = c.messages;
   if (messages.empty()) {
     return Fail(Rule::kInvalid, "no messages");  // the template reads messages[0]
@@ -879,7 +903,7 @@ std::expected<Rendered, Error> RenderGemma3(const Conversation& c) {
   std::string prefix;
   std::size_t start = 0;
   if (messages[0].role == Role::kSystem) {
-    const std::optional<std::string>& system = messages[0].content;
+    const std::optional<std::string>& system = messages[0].content.text();
     if (!system) {
       return Fail(Rule::kInvalid, "a system message without content", 0);
     }
@@ -901,10 +925,10 @@ std::expected<Rendered, Error> RenderGemma3(const Conversation& c) {
       w.Text(prefix);
       w.Mark(BoundaryKind::kPrefixEnd);
     }
-    if (!m.content) {
+    if (!m.content.text()) {
       return Fail(Rule::kInvalid, "a message without content", i);
     }
-    w.Text(PythonStrip(*m.content));
+    w.Text(PythonStrip(*m.content.text()));
     w.Special(kEndOfTurn);
     w.Text("\n");
     w.Mark(BoundaryKind::kMessageEnd);

@@ -59,7 +59,11 @@ std::vector<std::pair<std::string, jinja::Input>> Variables(const Conversation& 
   for (const Message& m : c.messages) {
     std::vector<std::pair<std::string, Input>> fields;
     fields.emplace_back("role", Input::String(RoleName(m.role)));
-    fields.emplace_back("content", m.content ? Input::String(*m.content) : Input::None());
+    fields.emplace_back("content",
+                        m.content.text() ? Input::String(*m.content.text()) : Input::None());
+    if (!m.tool_call_id.empty()) {
+      fields.emplace_back("tool_call_id", Input::String(m.tool_call_id));
+    }
     if (m.reasoning_content) {
       fields.emplace_back("reasoning_content", Input::String(*m.reasoning_content));
     }
@@ -67,10 +71,15 @@ std::vector<std::pair<std::string, jinja::Input>> Variables(const Conversation& 
       std::vector<Input> calls;
       calls.reserve(m.tool_calls.size());
       for (const ToolCall& call : m.tool_calls) {
-        calls.push_back(
-            Input::Map({{"type", Input::String("function")},
-                        {"function", Input::Map({{"name", Input::String(call.name)},
-                                                 {"arguments", Input::Json(call.arguments)}})}}));
+        std::vector<std::pair<std::string, Input>> call_fields;
+        if (!call.id.empty()) {
+          call_fields.emplace_back("id", Input::String(call.id));
+        }
+        call_fields.emplace_back("type", Input::String("function"));
+        call_fields.emplace_back("function",
+                                 Input::Map({{"name", Input::String(call.name)},
+                                             {"arguments", Input::Json(call.arguments)}}));
+        calls.push_back(Input::Map(std::move(call_fields)));
       }
       fields.emplace_back("tool_calls", Input::List(std::move(calls)));
     }
@@ -311,7 +320,7 @@ std::vector<Conversation> ProbeConversations(const ProbeDocs& d) {
   add({M(R::kUser, "Hi"), M(R::kAssistant, "Hello!", "Greeting.")}, false, false);
   add({M(R::kSystem, "You can call tools."), M(R::kUser, "Weather in Paris and Tokyo for 3 days?"),
        M(R::kAssistant, "", "I need two weather calls.",
-         {{"get_weather", d.paris.root()}, {"get_weather", d.tokyo.root()}}),
+         {{"get_weather", d.paris.root(), {}, {}}, {"get_weather", d.tokyo.root(), {}, {}}}),
        M(R::kTool, R"({"temp": 21, "sky": "sunny"})"), M(R::kTool, R"({"temp": 18.5})"),
        M(R::kAssistant, "Paris: 21°C. Tokyo: 18.5°C.", "Summarize both."),
        M(R::kUser, "Thanks! Any news on umbrellas?")},
@@ -319,7 +328,7 @@ std::vector<Conversation> ProbeConversations(const ProbeDocs& d) {
   add({M(R::kUser, "Find news about tokenizers.")}, true);
   add({M(R::kSystem, ""), M(R::kUser, "Find news.")}, true);
   add({M(R::kSystem, "Tools allowed."), M(R::kUser, "Weather?"),
-       M(R::kAssistant, "Let me check.", std::nullopt, {{"get_weather", d.oslo.root()}}),
+       M(R::kAssistant, "Let me check.", std::nullopt, {{"get_weather", d.oslo.root(), {}, {}}}),
        M(R::kTool, "cold")},
       true);
   add({M(R::kSystem, "Réponds en français. 用中文也可以。"),
@@ -358,7 +367,7 @@ std::vector<Conversation> VariantConversations(const ProbeDocs& d) {
   for (const base::json::Document* args : {&d.string, &d.plain, &d.list}) {
     Conversation c;
     c.messages = {M(R::kUser, "Weather in Oslo?"),
-                  M(R::kAssistant, "", std::nullopt, {{"get_weather", args->root()}}),
+                  M(R::kAssistant, "", std::nullopt, {{"get_weather", args->root(), {}, {}}}),
                   M(R::kTool, "cold"), M(R::kUser, "Thanks.")};
     c.tools = {d.weather.root()};
     out.push_back(std::move(c));
@@ -372,7 +381,7 @@ std::vector<Conversation> VariantConversations(const ProbeDocs& d) {
   out.push_back(std::move(keys));
   Conversation blank;
   blank.messages = {M(R::kUser, "Weather in Oslo?"),
-                    M(R::kAssistant, "  ", std::nullopt, {{"get_weather", d.oslo.root()}}),
+                    M(R::kAssistant, "  ", std::nullopt, {{"get_weather", d.oslo.root(), {}, {}}}),
                     M(R::kTool, "cold"), M(R::kUser, "Thanks.")};
   blank.tools = {d.weather.root()};
   out.push_back(std::move(blank));
@@ -470,6 +479,14 @@ std::expected<Rendered, Error> RenderInterpreted(const jinja::Template& program,
                                                  const TokenFacts& tokens,
                                                  const std::optional<jinja::CivilTime>& now,
                                                  jinja::Budget budget) {
+  if (HasStructuredContent(conversation)) {
+    auto projected = ProjectContent(conversation);
+    if (!projected) {
+      return std::unexpected(projected.error());
+    }
+    return RenderInterpreted(program, *projected, tokens, now, budget);
+  }
+
   // The scan for control tokens is charged to the rendering's work: to a
   // probe's budget, when it has one (an ordinary rendering's work is not
   // capped, D-102; the scan is linear in its output).
@@ -634,6 +651,13 @@ std::string_view ChatTemplate::name() const {
 std::expected<Rendered, Error> ChatTemplate::Render(const Conversation& conversation,
                                                     const std::optional<jinja::CivilTime>& now,
                                                     const std::function<bool()>* cancelled) const {
+  if (HasStructuredContent(conversation)) {
+    auto projected = ProjectContent(conversation, native_ == nullptr || native_->supports_tools);
+    if (!projected) {
+      return std::unexpected(projected.error());
+    }
+    return Render(*projected, now, cancelled);
+  }
   if (native_ != nullptr) {
     auto rendered = native_->render(conversation);
     // A case the native renderer does not implement is the template's to

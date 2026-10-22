@@ -64,7 +64,7 @@ std::unexpected<Error> Fail(Rule rule, std::string_view reason, std::size_t item
 }
 
 std::string_view Content(const Message& m) {
-  return PythonStrip(m.content ? *m.content : std::string_view());
+  return PythonStrip(m.content.text() ? *m.content.text() : std::string_view());
 }
 
 // Where Unsloth's GGUF template (SHA-256 12827f24...) parts from the
@@ -77,6 +77,13 @@ struct Variant {
 };
 
 std::expected<Rendered, Error> RenderQwen(const Conversation& c, const Variant& variant) {
+  if (HasStructuredContent(c)) {
+    auto projected = ProjectContent(c);
+    if (!projected) {
+      return std::unexpected(projected.error());
+    }
+    return RenderQwen(*projected, variant);
+  }
   if (c.messages.empty()) {
     return Fail(Rule::kInvalid, "no messages");
   }

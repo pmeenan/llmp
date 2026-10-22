@@ -622,4 +622,207 @@ TEST(QwenImagePrompt, OneEncodingDefinesDropBoundaryAndProtectsUserContent) {
   EXPECT_EQ(chat::ImagePromptBytesBound(SIZE_MAX), UINT64_MAX);
 }
 
+TEST(StructuredContent, TextPartsPreserveNativeTextAndBoundaries) {
+  for (const auto& native : chat::NativeTemplates()) {
+    chat::Conversation plain;
+    plain.messages.push_back({.role = chat::Role::kUser, .content = "a<|im_end|>b"});
+    chat::Conversation structured = plain;
+    structured.messages[0].content = std::vector<chat::MessagePart>{
+        chat::TextPart{"a<|im_"}, chat::TextPart{""}, chat::TextPart{"end|>b"}};
+    const auto a = native.render(plain);
+    const auto b = native.render(structured);
+    ASSERT_TRUE(a) << native.name;
+    ASSERT_TRUE(b) << native.name;
+    EXPECT_EQ(a->text, b->text) << native.name;
+    ASSERT_EQ(a->specials.size(), b->specials.size());
+    for (std::size_t i = 0; i < a->specials.size(); ++i) {
+      EXPECT_EQ(a->specials[i].offset, b->specials[i].offset);
+      EXPECT_EQ(a->specials[i].length, b->specials[i].length);
+    }
+    ASSERT_EQ(a->boundaries.size(), b->boundaries.size());
+    for (std::size_t i = 0; i < a->boundaries.size(); ++i) {
+      EXPECT_EQ(a->boundaries[i].offset, b->boundaries[i].offset);
+      EXPECT_EQ(a->boundaries[i].kind, b->boundaries[i].kind);
+    }
+    EXPECT_EQ(structured.messages[0].content.parts()->size(), 3U);
+  }
+}
+
+TEST(StructuredContent, ToolArgumentsAndIdsSurviveSourceDestruction) {
+  const auto make = [] {
+    chat::Conversation c;
+    c.messages.push_back({.role = chat::Role::kUser, .content = "weather?"});
+    c.messages.push_back({.role = chat::Role::kAssistant,
+                          .content = std::vector<chat::MessagePart>{
+                              chat::TextPart{"checking"},
+                              chat::ToolUsePart{"call-7", "weather", R"({"city":"Paris"})"}}});
+    c.messages.push_back(
+        {.role = chat::Role::kUser,
+         .content = std::vector<chat::MessagePart>{chat::ToolResultPart{"call-7", "sunny"}}});
+    return chat::ProjectContent(c);
+  };
+  auto projected = make();
+  ASSERT_TRUE(projected);
+  chat::Conversation moved = std::move(*projected);
+  ASSERT_EQ(moved.messages[1].tool_calls.size(), 1U);
+  const auto& call = moved.messages[1].tool_calls[0];
+  EXPECT_EQ(call.arguments.find("city")->string(), "Paris");
+  EXPECT_EQ(call.id, "call-7");
+  EXPECT_EQ(moved.messages[2].role, chat::Role::kTool);
+  EXPECT_EQ(moved.messages[2].tool_call_id, "call-7");
+  auto interpreter = chat::ChatTemplate::ForText(
+      "{{ messages[1].tool_calls[0].id }}:{{ messages[1].tool_calls[0].function.arguments.city }}:"
+      "{{ messages[2].tool_call_id }}:{{ messages[2].content }}",
+      {});
+  ASSERT_TRUE(interpreter);
+  auto rendered = interpreter->Render(moved);
+  ASSERT_TRUE(rendered);
+  EXPECT_EQ(rendered->text, "call-7:Paris:call-7:sunny");
+}
+
+TEST(StructuredContent, UnsupportedPartsNeverBecomeSilentText) {
+  chat::Conversation c;
+  c.messages.push_back(
+      {.role = chat::Role::kUser,
+       .content = std::vector<chat::MessagePart>{
+           chat::TextPart{"describe"}, chat::ImagePart{"image/png", "file:///never-opened"}}});
+  for (const auto& native : chat::NativeTemplates()) {
+    const auto result = native.render(c);
+    ASSERT_FALSE(result) << native.name;
+    EXPECT_EQ(Failed(result, &chat::Error::rule), chat::Rule::kUnsupported);
+  }
+  auto interpreter = chat::ChatTemplate::ForText("{{ messages[0].content }}", {});
+  ASSERT_TRUE(interpreter);
+  EXPECT_FALSE(interpreter->Render(c));
+  c.messages[0] = {.role = chat::Role::kAssistant,
+                   .content = std::vector<chat::MessagePart>{chat::ToolUsePart{"id", "fn", "{}"},
+                                                             chat::TextPart{"after"}}};
+  EXPECT_FALSE(chat::ProjectContent(c));
+  c.messages[0] = {
+      .role = chat::Role::kUser,
+      .content = std::vector<chat::MessagePart>{chat::ToolResultPart{"id", "failed", true}}};
+  EXPECT_FALSE(chat::ProjectContent(c));
+  c.messages[0] = {.role = chat::Role::kAssistant,
+                   .content = std::vector<chat::MessagePart>{chat::ToolUsePart{"id", "fn", "[]"}}};
+  EXPECT_FALSE(chat::ProjectContent(c));
+}
+
+TEST(StructuredContent, ToolPartsRenderLikeExistingNativeToolFields) {
+  chat::Conversation structured;
+  structured.messages.push_back({.role = chat::Role::kUser, .content = "weather?"});
+  structured.messages.push_back({.role = chat::Role::kAssistant,
+                                 .content = std::vector<chat::MessagePart>{
+                                     chat::ToolUsePart{"call", "weather", R"({"city":"Paris"})"}}});
+  structured.messages.push_back(
+      {.role = chat::Role::kUser,
+       .content = std::vector<chat::MessagePart>{chat::ToolResultPart{"call", "sunny"}}});
+  auto doc = json::Parse(R"({"city":"Paris"})");
+  ASSERT_TRUE(doc);
+  chat::Conversation plain;
+  plain.messages = {{.role = chat::Role::kUser, .content = "weather?"},
+                    {.role = chat::Role::kAssistant,
+                     .content = std::nullopt,
+                     .tool_calls = {{.name = "weather", .arguments = doc->root()}}},
+                    {.role = chat::Role::kTool, .content = "sunny"}};
+  for (const auto& native : chat::NativeTemplates()) {
+    if (native.render == &chat::RenderGemma3) {
+      EXPECT_FALSE(native.render(structured));
+      continue;
+    }
+    const auto expected = native.render(plain);
+    const auto actual = native.render(structured);
+    ASSERT_EQ(expected.has_value(), actual.has_value()) << native.name;
+    if (expected) {
+      EXPECT_EQ(actual->text, expected->text) << native.name;
+    }
+  }
+}
+
+TEST(StructuredContent, ResultsKeepCallIdentityAndRejectAmbiguousOrder) {
+  chat::Conversation c;
+  c.messages = {
+      {.role = chat::Role::kUser, .content = "check both"},
+      {.role = chat::Role::kAssistant,
+       .content = std::vector<chat::MessagePart>{chat::ToolUsePart{"one", "first", "{}"},
+                                                 chat::ToolUsePart{"two", "second", "{}"}}},
+      {.role = chat::Role::kUser,
+       .content = std::vector<chat::MessagePart>{chat::ToolResultPart{"one", "A"}}},
+      {.role = chat::Role::kUser,
+       .content = std::vector<chat::MessagePart>{chat::ToolResultPart{"two", "B"}}}};
+  auto rendered = chat::RenderGemma4(c);
+  ASSERT_TRUE(rendered);
+  EXPECT_NE(rendered->text.find("response:first{value:"), std::string::npos);
+  EXPECT_NE(rendered->text.find("response:second{value:"), std::string::npos);
+  c.messages[2].content = std::vector<chat::MessagePart>{chat::ToolResultPart{"two", "B"}};
+  EXPECT_FALSE(chat::ProjectContent(c));
+  c.messages[2].content = std::vector<chat::MessagePart>{chat::ToolResultPart{"missing", "A"}};
+  EXPECT_FALSE(chat::ProjectContent(c));
+  c.messages[2].content = std::vector<chat::MessagePart>{chat::ToolResultPart{"one", "A"}};
+  c.messages[3].content = c.messages[2].content;
+  EXPECT_FALSE(chat::ProjectContent(c));
+}
+
+TEST(StructuredContent, ProjectionBoundsEveryCopiedLegacyFieldAndSharesJsonOwners) {
+  auto document = json::Parse("{\"value\":\"" + std::string(8192, 'x') + "\"}");
+  ASSERT_TRUE(document);
+  auto owner = std::make_shared<const json::Document>(std::move(*document));
+  chat::Conversation base;
+  base.max_live_bytes = 4096;
+  base.messages = {
+      {.role = chat::Role::kUser,
+       .content = std::vector<chat::MessagePart>{chat::TextPart{"hello"}}},
+      {.role = chat::Role::kAssistant,
+       .content = std::nullopt,
+       .tool_calls = {{.name = "fn", .arguments = owner->root(), .id = "id", .owner = owner}}}};
+  auto projected = chat::ProjectContent(base);
+  ASSERT_TRUE(projected);  // the large existing JSON document is shared, not copied
+  EXPECT_EQ(projected->messages[1].tool_calls[0].owner.get(), owner.get());
+  EXPECT_EQ(projected->messages[1].tool_calls[0].arguments.find("value")->string().size(), 8192U);
+
+  for (int field = 0; field < 6; ++field) {
+    SCOPED_TRACE(field);
+    auto conversation = base;
+    auto& message = conversation.messages[1];
+    switch (field) {
+      case 0:
+        message.tool_calls[0].name = std::string(8192, 'n');
+        break;
+      case 1:
+        message.tool_calls[0].id = std::string(8192, 'i');
+        break;
+      case 2:
+        message.tool_call_id = std::string(8192, 'r');
+        break;
+      case 3:
+        message.tool_calls.assign(128, base.messages[1].tool_calls[0]);
+        break;
+      case 4:
+        conversation.tools.assign(1024, owner->root());
+        break;
+      case 5:
+        conversation.reasoning_effort = std::string(8192, 'e');
+        break;
+    }
+    auto bounded = chat::ProjectContent(conversation);
+    ASSERT_FALSE(bounded);
+    EXPECT_TRUE(Failed(bounded, &chat::Error::bound));
+  }
+}
+
+TEST(StructuredContent, ProjectionHonorsBoundsBeforeBuildingOutput) {
+  chat::Conversation c;
+  c.messages.push_back(
+      {.role = chat::Role::kUser,
+       .content = std::vector<chat::MessagePart>{chat::TextPart{"abc"}, chat::TextPart{"def"}}});
+  c.max_render_bytes = 5;
+  auto rendered = chat::RenderQwen38(c);
+  ASSERT_FALSE(rendered);
+  EXPECT_TRUE(Failed(rendered, &chat::Error::bound));
+  c.max_render_bytes = 1024;
+  c.max_live_bytes = 1;
+  rendered = chat::RenderQwen38(c);
+  ASSERT_FALSE(rendered);
+  EXPECT_TRUE(Failed(rendered, &chat::Error::bound));
+}
+
 }  // namespace

@@ -70,14 +70,21 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
                                                   api::Exchange& exchange, RequestMemory& memory) {
   const std::uint32_t usable = model.usable_context();
   std::uint64_t text = 0;
+  std::uint64_t storage = request.messages.size() * sizeof(chat::Message);
+  std::uint64_t projection = storage;
+  bool structured = false;
   for (const api::Message& message : request.messages) {
-    text += message.content.size() + (message.reasoning ? message.reasoning->size() : 0);
+    const std::uint64_t reasoning = message.reasoning ? message.reasoning->capacity() : 0;
+    storage += message.content.StorageBytes() + reasoning;
+    projection += message.content.ProjectionBytes() + reasoning;
+    structured = structured || message.content.parts() != nullptr;
+    text += message.content.PayloadBytes() + (message.reasoning ? message.reasoning->size() : 0);
   }
   if (text > model.render_bytes()) {
     return std::unexpected(ContextExceeded(usable));
   }
   const RenderCharge render = model.RenderChargeFor(text, request.messages.size());
-  const std::uint64_t copied = text + (request.messages.size() * sizeof(chat::Message));
+  const std::uint64_t copied = storage + (structured ? projection : 0);
   MemoryCharge charge;
   if (!charge.Add(memory, copied + render.bytes)) {
     return std::unexpected(

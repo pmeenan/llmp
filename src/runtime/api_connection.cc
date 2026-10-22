@@ -834,7 +834,7 @@ void Server::OnParsed(Connection& c, Parse& parse) {
   // waits, only to be refused.
   std::uint64_t text = 0;
   for (const Message& m : parsed->messages) {
-    text += m.content.size() + (m.reasoning ? m.reasoning->size() : 0);
+    text += m.content.PayloadBytes() + (m.reasoning ? m.reasoning->size() : 0);
   }
   if (literal && literal->prompt) {
     text += literal->prompt->size();

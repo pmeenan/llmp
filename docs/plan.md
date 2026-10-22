@@ -658,9 +658,12 @@ D-122).
       Channel, Stream and I/O use route-owned start, delta,
       finish, error and keepalive events; the Messages encoder has indexed
       text/tool blocks and incremental JSON inputs. The Messages route is
-      not enabled. Structured message parts and the scheduling/engine seams
-      below remain open. This is the first sub-slice of the tool-call and
-      Messages items; the remaining serving-loop changes also take the
+      not enabled. **U5b complete (2026-10-22):** owned structured message parts
+      and checked native/interpreted projection retain text boundaries, tool IDs and
+      owned JSON; unsupported rendering combinations are refused. Public tool
+      intake/extraction, Messages handling and the scheduling/engine seams below
+      remain open. Native focused, shared and affected tokenizer/template checks
+      pass. The remaining serving-loop changes also take the
       heavy review path: a per-route stream encoder (`Channel` stops hard-coding
       OpenAI SSE; Messages owns `message_start`, indexed blocks,
       `input_json_delta` and `ping`); structured message parts (text,

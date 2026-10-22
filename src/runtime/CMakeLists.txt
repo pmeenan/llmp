@@ -23,7 +23,7 @@ add_library(llmp_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server
                                   prefill.cc pressure_trim.cc state_keeper.cc swap_room.cc
                                   watchdog.cc)
 target_include_directories(llmp_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(llmp_runtime PUBLIC llmp_artifact llmp_config llmp_platform
+target_link_libraries(llmp_runtime PUBLIC llmp_artifact llmp_chat llmp_config llmp_platform
                                             llmp_tokenizer
                       PRIVATE llmp_base llmp_build_info llmp_report llmp_device_probe llmp_model
                               llmp_json llmp_sampling llmp_spec llmp_components llmp_planner llmp_warnings)

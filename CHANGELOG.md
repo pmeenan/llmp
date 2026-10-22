@@ -24,6 +24,9 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Owned structured conversation parts with bounded text/template projection
+  (M3.5 U5b); HTTP tools, images and the Messages route remain disabled.
+
 - Route-owned streaming encoders for OpenAI-compatible and Messages events
   (M3.5 U5a); the Messages request route remains disabled.
 - Generic architecture-owned normalization for native quantized tensor parts,
