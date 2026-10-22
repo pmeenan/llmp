@@ -1067,7 +1067,8 @@ spatial component declares its shape, emission, reference, operand encodings,
 carry geometry and temporary-storage bound through `ComponentDef::spatial`.
 Stream-backed definitions choose shared layout adapters beside their arithmetic;
 the spatial compiler does not recognize kind names or infer missing hooks.
-The image stage wiring and quantized image formats remain M3.5 U8 work.
+The flow/VAE runtime uses stored stage wiring with explicit geometry bindings.
+Import-time topology synthesis and quantized image formats remain M3.5 U8 work.
 
 `PlanComponentGraph` is the same graph/fact-to-plan helper now used by the
 existing `ComponentStepSource`; it retains actual physical alignment facts,
@@ -3288,10 +3289,14 @@ LLM families; decision models, embeddings and speech arrive as specs.
 
 ### Image pipelines
 
-An image pipeline's graphs depend on each request's geometry, so they are
-built per request from its family's hyperparameters
-(`spec/image_spatial.h`); a stored spec per geometry waits for M3.5. The
-hyperparameters are data, and no family's numbers are compiled in
+An image pipeline's graphs depend on each request's geometry. Flow and VAE
+component artifacts store their complete topology and `Stage::scalar_bindings`
+for integer geometry parameters (D-122). Serving copies and binds those specs
+using checked request dimensions and the stored family profile, then verifies
+actual inferred stage outputs against that geometry. It preserves stored
+components, weight bindings, links and exports. The text encoder still builds
+its request graph through `spec/image_spatial.h`; image topology synthesis at
+import remains a later U8 task. Family hyperparameters are data
 (`spec/image_family.h`). An image mapping (`spec/mappings/qwen_image.cc`
 for `QwenImage21Pipeline`) names the pipeline's components (each a
 composition role, a stored stage, its accepted architectures and the
@@ -3327,9 +3332,13 @@ family digest and each component's sources, dense inventory and spec digest;
 pins when the source receipts match, or admits an unpinned v1 composition of a
 registered `ImageMapping` directly by validating its stored family spec and
 each component's stored spec and tensor inventory, then reads the family back
-through the schema as the profile every request's graphs are built from (with
-each stage's DAG wiring carried in `spec::Stage::links` and `exports`, D-122,
-and executed through `engine::StagedExecution` in `engine/staged_execution.h`).
+through the schema as the profile for request geometry. Flow/VAE templates
+retain their stored topology and bind only declared scalar inputs; their
+retained metadata and request copies are prepaid from the actual stored spec
+inventory. Each stage's DAG wiring is carried in `spec::Stage::links` and
+`exports` (D-122) and executed through `engine::StagedExecution` in
+`engine/staged_execution.h`. The current mapping requires patch size one;
+other patch layouts need their own stored profile and typed boundary contract.
 Serving finds the mapping by the composition's architecture and takes the
 components' roles, the tokenizer, the prompt renderer, the policy and the
 default tuned attention rows from it.

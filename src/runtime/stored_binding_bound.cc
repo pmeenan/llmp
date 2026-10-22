@@ -45,9 +45,9 @@ std::expected<std::uint64_t, std::string> ComponentAdmissionBytes(
   }
   // All possible spec record types fit Stage, ComponentRef, or SideInput;
   // retain the explicit maximum so additions cannot silently exceed payment.
-  const auto record =
-      std::max({sizeof(spec::Stage), sizeof(spec::ComponentRef), sizeof(spec::SideInput),
-                sizeof(spec::WeightBinding), sizeof(components::Instance)});
+  const auto record = std::max({sizeof(spec::Stage), sizeof(spec::ComponentRef),
+                                sizeof(spec::SideInput), sizeof(spec::WeightBinding),
+                                sizeof(spec::StageScalarBinding), sizeof(components::Instance)});
   std::uint64_t bytes = sizeof(StoredComponentBindings) + sizeof(StoredBindingPayment) + 4096;
   const auto add = [&](std::uint64_t count, std::uint64_t unit) {
     std::uint64_t size = 0;

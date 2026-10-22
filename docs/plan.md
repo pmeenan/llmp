@@ -840,8 +840,13 @@ D-122).
       C++ change. **First hook spike:** every spatial component now owns its
       shape, emission, reference, encoding, carry and temporary-storage contract
       through `ComponentDef::spatial`; the compiler has no kind-name fallback.
-      Stage-graph wiring, quantized image import/execution and structural source
-      accounting remain open. This build changes the compiler identity; the
+      **Stored-topology spike:** flow/VAE artifacts carry integer geometry
+      bindings; request construction instantiates their stored components,
+      links and exports and checks actual endpoint shapes. Import-time topology synthesis, quantized image import/execution and
+      structural source accounting remain open. Verified on Spark B: 3,623
+      ordinary tests and nine affected image/import model controls passed,
+      including the registered rectangular two-prompt request. This build changes
+      the compiler identity; the
       twelve W5 fusion comparisons are retained as historical evidence and use
       the conservative stale-row fallback ([status](experiments/fusion-ranks/README.md)).
 - [ ] **U9 Partitioning and per-model residency** (M4 entry; amends M4's

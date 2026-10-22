@@ -239,7 +239,7 @@ inline constexpr std::string_view kDeepSeekV4Target =
 inline constexpr std::string_view kDeepSeekV4Drafter =
     "6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41";
 inline constexpr std::string_view kQwenImageComposition =
-    "95314e538fbe1251c23b46e1bb52f86dd34cfbf7f7509e80849472c2e2faa53a";
+    "62497918eae947b8d4327bf8e0771318118d581c59c2c0574208345ed7cc6518";
 
 }  // namespace v1_store
 

@@ -1179,6 +1179,11 @@ target_link_libraries(components_spatial_test PRIVATE llmp_engine_core llmp_comp
                      llmp_reference_kernels llmp_fake_device_backend llmp_test_expected)
 llmp_gtest(components_spatial_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+add_executable(image_stage_test image_stage_test.cc)
+target_link_libraries(image_stage_test PRIVATE llmp_runtime llmp_components
+                     llmp_reference_kernels llmp_test_expected)
+llmp_gtest(image_stage_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The Qwen3.8 components (hyper-connections, Gated DeltaNet, QSA, the n-gram
 # embedding, the MoE's hyper-connection form, the MTP drafter's input)
 # against their references, verify saves and commits, the qwen4exp and

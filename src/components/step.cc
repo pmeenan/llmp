@@ -1761,6 +1761,8 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
                                                 const planner::StepShape& shape,
                                                 const Bindings& bindings,
                                                 const StepOptions& options) {
+  if (stage < spec.stages.size() && !spec.stages[stage].scalar_bindings.empty())
+    return Refused("step compilation requires resolved stage scalar bindings");
   if (shape.stage != stage) return Refused("a shape of another stage");
   if (auto checked = CheckShape(shape); !checked) return std::unexpected(checked.error());
   auto instances = InstancesOf(spec, stage);

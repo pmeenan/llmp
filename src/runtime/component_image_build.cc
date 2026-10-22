@@ -23,10 +23,13 @@
 #include "platform/kept_files.h"
 #include "providers/device_runtime.h"
 #include "runtime/component_admission.h"
+#include "runtime/component_bindings.h"
+#include "runtime/image_stage.h"
 #include "runtime/memory_guard.h"
 #include "runtime/numerical_evidence.h"
 #include "runtime/serving_support.h"
 #include "spec/image_spatial.h"
+#include "spec/stored.h"
 #include "tokenizer/hf.h"
 
 namespace llmp::runtime {
@@ -67,20 +70,17 @@ std::expected<RequestGeometry, std::string> RequestOf(const ImageGenerationReque
   r.width = source.width ? source.width : settings.image_size.value;
   r.height = source.height ? source.height : settings.image_size.value;
   r.steps = settings.image_steps.value;
-  const auto factor = profile.vae.spatial_factor;
-  if (!r.width || !r.height || !r.steps || !factor || r.width % factor || r.height % factor ||
-      source.prompt.empty() || source.prompt.size() > INT32_MAX ||
-      source.drop >= source.prompt.size())
+  if (!r.steps || source.prompt.size() > INT32_MAX)
     return Error("image request dimensions, scheduler count or prompt/drop are invalid");
-  r.grid_width = r.width / factor;
-  r.grid_height = r.height / factor;
-  const auto rows = std::uint64_t{r.grid_width} * r.grid_height;
   r.prompt_rows = static_cast<std::uint32_t>(source.prompt.size());
-  r.text_rows = r.prompt_rows - source.drop;
-  if (rows > UINT32_MAX - r.text_rows || r.grid_width > INT32_MAX || r.grid_height > INT32_MAX)
-    return Error("image request exceeds row/position representation");
-  r.rows = static_cast<std::uint32_t>(rows);
-  r.latent_elements = rows * profile.vae.z_dim;
+  auto stage_geometry =
+      ImageStageDimensionsOf(profile, {r.width, r.height, r.prompt_rows, source.drop});
+  if (!stage_geometry) return Error(stage_geometry.error());
+  r.grid_width = stage_geometry->width;
+  r.grid_height = stage_geometry->height;
+  r.text_rows = stage_geometry->text_rows;
+  r.rows = stage_geometry->rows;
+  r.latent_elements = std::uint64_t{r.rows} * profile.vae.z_dim;
   r.pixels = std::uint64_t{r.width} * r.height;
   if (profile.denoiser.in_channels != profile.vae.z_dim ||
       source.noise.size() != r.latent_elements ||
@@ -129,6 +129,8 @@ struct ImageGenerationModel {
   std::shared_ptr<const ImageFamily> family;
   planner::Policy policy;
   std::array<std::vector<md::ImageTensor>, 3> source_tensors;
+  std::array<spec::ModelSpec, 3> stored_specs;
+  std::uint64_t stored_spec_bytes = 0;
   std::array<std::vector<co::BoundTensor>, 3> tables;
   std::array<std::vector<std::uint32_t>, 3> resource_ids;
   std::array<en::PagedWeights*, 3> weights{};
@@ -160,7 +162,7 @@ std::uint64_t SourceOwnerBytes(const md::ImageProfile& p) {
 // each actual LowerInput by the backend funder, including replacement geometry.
 // Reports stream lazily from the retained typed inventory; no serialized report
 // copy is constructed. Captures retain EngineImage's separate PlanAccount.
-std::expected<std::uint64_t, std::string> CompilerBound(const spec::SpatialComposition& mapping,
+std::expected<std::uint64_t, std::string> CompilerBound(const spec::ModelSpec& mapping,
                                                         std::size_t roles, std::size_t ports) {
   std::uint64_t primitives = 0, components = 0;
   const auto add = [](std::uint64_t a, std::uint64_t b, std::uint64_t& out) {
@@ -169,8 +171,8 @@ std::expected<std::uint64_t, std::string> CompilerBound(const spec::SpatialCompo
   const auto mul = [](std::uint64_t a, std::uint64_t b, std::uint64_t& out) {
     return !__builtin_mul_overflow(a, b, &out);
   };
-  if (mapping.spec.stages.empty()) return Error("image compiler inventory has no stage");
-  for (const auto& layer : mapping.spec.stages[0].layers)
+  if (mapping.stages.empty()) return Error("image compiler inventory has no stage");
+  for (const auto& layer : mapping.stages[0].layers)
     for (const auto& component : layer.components) {
       const auto* def = co::Find(component.kind, component.version);
       const auto max_nodes = def ? co::MaxSpatialNodes(*def) : 0U;
@@ -454,8 +456,10 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
   const auto drop = request_source.drop;
   const auto image_rows = geometry.rows, prompt_rows = geometry.prompt_rows;
   const auto channels = p.vae.z_dim;
-  const auto geometry_bytes = SourceMappingBytes(p) + 2 * sizeof(ImageGeometryOwner) +
-                              2 * sizeof(ImageGeometry) + 6 * sizeof(ImageStage) + 4096;
+  auto geometry_bytes = SourceMappingBytes(p) + 2 * sizeof(ImageGeometryOwner) +
+                        2 * sizeof(ImageGeometry) + 6 * sizeof(ImageStage) + 4096;
+  if (__builtin_add_overflow(geometry_bytes, model->stored_spec_bytes, &geometry_bytes))
+    return Error("stored image geometry copy allowance overflows");
   if (!ChargeExecutionMetadata(construction, geometry_bytes, source->construction_node,
                                source->construction_cap))
     return Error("image geometry mapping is not prepaid");
@@ -471,10 +475,12 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
   if (!prepared_request) return Error(prepared_request.error());
   const auto& source_tensors = model->source_tensors;
   const auto text_rows = geometry.text_rows;
-  std::array mappings{
-      spec::ImageTextSpec(p.text, prompt_rows, drop, source_tensors[0]),
-      spec::ImageFlowSpec(p.denoiser, text_rows, image_rows, source_tensors[1]),
-      spec::ImageDecodeSpec(p.vae, geometry.grid_height, geometry.grid_width, source_tensors[2])};
+  auto text_mapping = spec::ImageTextSpec(p.text, prompt_rows, drop, source_tensors[0]);
+  if (!text_mapping) return Error(text_mapping.error());
+  const ImageStageGeometry stage_geometry{geometry.width, geometry.height, prompt_rows, drop};
+  std::array<std::expected<spec::ModelSpec, std::string>, 3> mappings{
+      std::move(text_mapping->spec), BindImageStage(model->stored_specs[1], p, stage_geometry),
+      BindImageStage(model->stored_specs[2], p, stage_geometry)};
   const std::array<co::SpatialShape, 3> primary{co::SpatialShape{1, prompt_rows, 1, 1},
                                                 {1, text_rows, p.text.width, 1},
                                                 {1, image_rows, channels, 1}};
@@ -506,20 +512,25 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
     const std::array<std::span<const co::BoundTensor>, 1> tables{model->tables[i]};
     const std::array owners{co::SpatialOwner{0, primary[i]}};
     auto graph = co::BuildSpatialStep(
-        mappings[i]->spec, tables, owners,
+        *mappings[i], tables, owners,
         {[construction, source](std::uint64_t bytes) {
            return ChargeExecutionMetadata(construction, bytes, source->construction_node,
                                           source->construction_cap);
          },
          [construction](std::uint64_t bytes) { construction->Release(bytes); }},
-        {.links = mappings[i]->links,
+        {.links = mappings[i]->stages[0].links,
          .reference_buffers = false,
          .input_encoding = i == 0 ? format::Encoding::kI32 : format::Encoding::kF32,
-         .exports = mappings[i]->exports,
+         .exports = mappings[i]->stages[0].exports,
          .inputs = inputs[i],
          .sink_layouts = SinksLayouts(model->policy),
          .stage = static_cast<std::uint16_t>(i)});
     if (!graph) return Error(std::format("image stage {}: {}", i, graph.error()));
+    if (i != 0) {
+      auto valid = ValidateImageStageOutputs(mappings[i]->stages[0].role, graph->outputs(), p,
+                                             stage_geometry);
+      if (!valid) return Error(valid.error());
+    }
     for (const auto& weight : graph->weights()) {
       if (weight.parts.size() != 1 || weight.parts[0].second != format::PartRole::kData)
         return Error("image source part contract changed");
@@ -541,10 +552,10 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
   for (std::size_t i = 0; i < 3; ++i) {
     ImageStage stage;
     stage.graph = held->graphs[i];
-    auto numerical = AdmittedImageNumerics(
-        model->family->spec, model->family->approval, *source->composition, stage.graph->graph(),
-        mappings[i]->spec, static_cast<std::uint16_t>(i), model->backend->device(),
-        model->backend->Backend().ConstructionFunding());
+    auto numerical = AdmittedImageNumerics(model->family->spec, model->family->approval,
+                                           *source->composition, stage.graph->graph(), *mappings[i],
+                                           static_cast<std::uint16_t>(i), model->backend->device(),
+                                           model->backend->Backend().ConstructionFunding());
     if (!numerical) return Error(numerical.error());
     stage.numerical = std::move(*numerical);
     stage.weights = static_cast<std::uint16_t>(i);
@@ -642,6 +653,23 @@ EngineImageBuild ComponentImageGenerationBuild(
       if (!component || component->artifact != artifact.id() ||
           !std::ranges::contains(rule.architectures, component->architecture))
         return Error("image composition/source artifact identity differs");
+      if (i != 0) {
+        // The artifact's actual JSON/object inventory pays parsing, retained
+        // topology and separately each request copy, including scalar binding
+        // strings. Profile block counts cannot bound an arbitrary stored DAG.
+        auto bytes = StoredBindingBytes(artifact);
+        if (!bytes) return Error(bytes.error());
+        if (!held->paid.Add(*bytes)) return Error("stored image topology is not prepaid");
+        if (__builtin_add_overflow(held->stored_spec_bytes, *bytes, &held->stored_spec_bytes))
+          return Error("stored image topology allowance overflows");
+        auto stored = spec::StoredSpec(artifact);
+        if (!stored) return Error(stored.error());
+        const auto role = i == 1 ? spec::StageRole::kDenoiser : spec::StageRole::kVae;
+        if (stored->pipeline != spec::PipelineKind::kImage || stored->stages.size() != 1 ||
+            stored->stages[0].role != role)
+          return Error("stored image topology differs from its composition role");
+        held->stored_specs[i] = std::move(*stored);
+      }
       auto bindings = md::BindImageComponent(source_tensors[i], component->architecture, artifact);
       if (!bindings) return Error(bindings.error());
       held->resource_ids[i] = std::move(*bindings);

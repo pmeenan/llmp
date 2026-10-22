@@ -257,7 +257,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
   if (!life.paid->Charge(kCompilerAndOwner - kNativeConstruction))
     return Error("preconstruction payment");
   std::error_code ec;
-  if (std::filesystem::file_size(path / "manifest.json", ec) != 1309 || ec ||
+  if (std::filesystem::file_size(path / "manifest.json", ec) != 1348 || ec ||
       std::filesystem::file_size(path / "index.json", ec) != 68162 || ec)
     return Error("fixed metadata extent");
   if (auto r = life.weights.Open(path, {.expected_id = std::string(kArtifact)}); !r) return r;

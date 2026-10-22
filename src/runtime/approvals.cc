@@ -824,7 +824,7 @@ constexpr std::array kQwenImageComponents{
              .sources = kQwenImageTransformerSources,
              .tensors = 297,
              .inventory = "984e1dd57dbe7ad5011c4bdbcee19bea18529ee1d4086e9428fd278f225849e9",
-             .spec = "c43b66a636b5d4a099032d200c287757ad0ddb5cb33a400f61bea74bfa64e675",
+             .spec = "3adbff4e47d168ceafceb41e3da1961b1be3692be4a3af40e28329b356f07a43",
              .policy = ApprovedPolicy::kNone},
     Approval{.name = "qwen-image-2.1-vae",
              .label = "QwenImage21",
@@ -833,7 +833,7 @@ constexpr std::array kQwenImageComponents{
              .sources = kQwenImageVaeSources,
              .tensors = 128,
              .inventory = "dc21b79eddff66b8cc71a7297ab47cebb7875ee18509cde02312c30e934a485b",
-             .spec = "fe40715ad7d84131f6561a024740a592cdd0ed2c35889ac4d264bdf9334c6a68",
+             .spec = "acadec6d800a6971f6e8a28e6cc91090077c081b2631bddd7c232847f2d2de72",
              .policy = ApprovedPolicy::kNone},
 };
 

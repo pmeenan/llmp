@@ -781,8 +781,9 @@ scheduler's config and the processor's nine files. The importer's grouping
 policy per component (the prototype's layer pattern and row tables) is
 `import_m3.py`'s, and the layout rules above are otherwise unchanged.
 Its native v1 import (`llmp import`, 2026-10-16; re-stamped for `"profile":
-"spark"` in M3.5 U2) is composition
-`95314e53…`: each component keeps the tensors text to image runs (the
+"spark"` in M3.5 U2; flow/VAE geometry templates re-imported in U8 on
+2026-10-22) is composition
+`62497918…`: each component keeps the tensors text to image runs (the
 text encoder's token table and 36 layers, 15.14 GB in 37 groups; the
 denoiser's globals and 32 blocks, 14.23 GB in 33; the VAE decoder's up
 blocks and the rest of its decoder, 1.01 GB in 6), and the composition

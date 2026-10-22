@@ -256,8 +256,8 @@ TEST(InstalledComposition, QwenImage) {
   const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
   const fs::path base = fs::path(home != nullptr ? home : "/") / ".local/share/llmp";
   fs::path store = base / "m36-v1-artifacts";
-  fs::path found = store / "95314e538fbe1251c23b46e1bb52f86dd34cfbf7f7509e80849472c2e2faa53a";
-  for (const char* id : {"95314e538fbe1251c23b46e1bb52f86dd34cfbf7f7509e80849472c2e2faa53a",
+  fs::path found = store / "62497918eae947b8d4327bf8e0771318118d581c59c2c0574208345ed7cc6518";
+  for (const char* id : {"62497918eae947b8d4327bf8e0771318118d581c59c2c0574208345ed7cc6518",
                          "2170db12b295d308b4ec071765a8c1b9fb6651b45b210aeaa3976603de82e3ac"}) {
     for (const char* sub : {"u2-v1-artifacts", "artifacts", "m36-v1-artifacts"}) {
       std::error_code ec;

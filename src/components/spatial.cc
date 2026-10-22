@@ -287,6 +287,8 @@ std::expected<std::uint64_t, std::string> MetadataBound(
       tensors.size() > 16 || owners.empty() || owners.size() > kOwners)
     return std::unexpected("spatial compilation needs one image stage and 1..16 owners");
   const auto& stage = spec.stages.front();
+  if (!stage.scalar_bindings.empty())
+    return std::unexpected("spatial compilation requires resolved stage scalar bindings");
   if (options.links.empty()) options.links = stage.links;
   if (options.exports.empty()) options.exports = stage.exports;
   if (stage.name.size() > 256 || stage.layers.empty() || stage.layers.size() > kComponents ||

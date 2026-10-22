@@ -349,6 +349,23 @@ void WriteStage(std::string& out, const Stage& s) {
     }
     out += '}';
   }
+  if (!s.scalar_bindings.empty()) {
+    Key(out, "scalar_bindings", first);
+    out += '[';
+    for (std::size_t i = 0; i < s.scalar_bindings.size(); ++i) {
+      const auto& binding = s.scalar_bindings[i];
+      out += i > 0 ? ",{" : "{";
+      bool b_first = true;
+      Key(out, "component", b_first);
+      out += std::to_string(binding.component);
+      Key(out, "parameter", b_first);
+      Quoted(out, binding.parameter);
+      Key(out, "source", b_first);
+      Quoted(out, binding.source);
+      out += '}';
+    }
+    out += ']';
+  }
   Key(out, "side", first);
   out += '[';
   for (std::size_t i = 0; i < s.side.size(); ++i) {
@@ -582,11 +599,27 @@ std::expected<Stage, std::string> ReadStage(json::Value v, const std::string& wh
   if (auto k = Keys(v, where,
                     {"artifact", "context", "folds", "heads", "layers", "name", "reads", "role",
                      "side", "stream", "taps"},
-                    {"embedding", "exports", "links", "sampling"});
+                    {"embedding", "exports", "links", "sampling", "scalar_bindings"});
       !k) {
     return std::unexpected(k.error());
   }
   Stage s;
+  if (const auto bindings = v.find("scalar_bindings")) {
+    LLMP_SPEC_TRY(list, Array(*bindings, where + ".scalar_bindings", kMaxComponents * kMaxParams));
+    if (list->size() == 0) return Refuse(where + ".scalar_bindings", "present only when non-empty");
+    for (std::size_t i = 0; i < list->size(); ++i) {
+      const auto entry = list->at(i);
+      const auto at = std::format("{}.scalar_bindings[{}]", where, i);
+      if (auto keys = Keys(entry, at, {"component", "parameter", "source"}); !keys)
+        return std::unexpected(keys.error());
+      LLMP_SPEC_TRY(component,
+                    Unsigned(Member(entry, "component"), at + ".component", kMaxComponents));
+      LLMP_SPEC_TRY(parameter, Text(Member(entry, "parameter"), at + ".parameter", &IsName));
+      LLMP_SPEC_TRY(source, Text(Member(entry, "source"), at + ".source", &IsName));
+      s.scalar_bindings.push_back(
+          {static_cast<std::uint16_t>(*component), std::move(*parameter), std::move(*source)});
+    }
+  }
   LLMP_SPEC_TRY(name, Text(Member(v, "name"), where + ".name", &IsName));
   s.name = std::move(*name);
   const json::Value role = Member(v, "role");
@@ -962,9 +995,28 @@ Status CheckStage(const ModelSpec& spec, const Stage& s, const std::string& wher
     return Refuse(where, std::format("more than {} components", kMaxComponents));
   }
   std::size_t layer_components = 0;
+  if (!StrictlySorted(s.scalar_bindings, [](const StageScalarBinding& b) {
+        return std::pair{b.component, std::string_view(b.parameter)};
+      }))
+    return Refuse(where + ".scalar_bindings", "targets not sorted or a target bound twice");
+  std::size_t binding_at = 0;
   for (const Layer& l : s.layers) {
-    layer_components += l.components.size();
+    for (const auto& component : l.components) {
+      ++layer_components;
+      while (binding_at < s.scalar_bindings.size() &&
+             s.scalar_bindings[binding_at].component <= layer_components) {
+        const auto& binding = s.scalar_bindings[binding_at++];
+        const auto* parameter = component.Find(binding.parameter);
+        if (binding.component != layer_components || !IsName(binding.parameter) ||
+            !IsName(binding.source) || !parameter ||
+            !std::holds_alternative<std::int64_t>(parameter->value))
+          return Refuse(where + ".scalar_bindings",
+                        "target must be an existing integer parameter with a named source");
+      }
+    }
   }
+  if (binding_at != s.scalar_bindings.size())
+    return Refuse(where + ".scalar_bindings", "target component out of range");
   if (!s.links.empty()) {
     if (s.links.size() != layer_components) {
       return Refuse(where + ".links", "must match the stage's layer components");
@@ -1108,7 +1160,44 @@ void Canonicalize(ModelSpec& spec) {
       return std::tuple<std::string_view, ReadKind, std::string_view>(r.stage, r.kind, r.name);
     });
     std::ranges::sort(s.folds);
+    std::ranges::sort(s.scalar_bindings, {}, [](const StageScalarBinding& b) {
+      return std::pair{b.component, std::string_view(b.parameter)};
+    });
   }
+}
+
+std::expected<ModelSpec, std::string> BindStageScalars(const ModelSpec& spec,
+                                                       std::span<const StageScalar> scalars) {
+  if (auto valid = Validate(spec); !valid) return std::unexpected(valid.error());
+  for (std::size_t i = 0; i < scalars.size(); ++i) {
+    if (!IsName(scalars[i].name)) return Refuse("scalars", "invalid source name");
+    if (i && scalars[i - 1].name >= scalars[i].name)
+      return Refuse("scalars", "names not sorted or a name supplied twice");
+  }
+  for (const auto& stage : spec.stages)
+    for (const auto& binding : stage.scalar_bindings) {
+      const auto value = std::ranges::lower_bound(scalars, binding.source, {}, &StageScalar::name);
+      if (value == scalars.end() || value->name != binding.source)
+        return Refuse(binding.source, "required stage scalar is absent");
+    }
+  auto bound = spec;
+  for (auto& stage : bound.stages) {
+    std::size_t id = 0, binding_at = 0;
+    for (auto& layer : stage.layers)
+      for (auto& component : layer.components) {
+        ++id;
+        while (binding_at < stage.scalar_bindings.size() &&
+               stage.scalar_bindings[binding_at].component == id) {
+          const auto& binding = stage.scalar_bindings[binding_at++];
+          const auto value =
+              std::ranges::lower_bound(scalars, binding.source, {}, &StageScalar::name);
+          auto parameter = std::ranges::find(component.params, binding.parameter, &Param::name);
+          parameter->value = value->value;
+        }
+      }
+    stage.scalar_bindings.clear();
+  }
+  return bound;
 }
 
 Status Validate(const ModelSpec& spec) {

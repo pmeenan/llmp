@@ -251,9 +251,10 @@ std::expected<SpatialComposition, std::string> VaeDecoderSpec(
   return SpatialComposition{std::move(spec), std::move(links), {}};
 }
 
-std::expected<SpatialComposition, std::string> ImageDecodeSpec(
+namespace {
+std::expected<SpatialComposition, std::string> ImageDecodeSpecImpl(
     const model::ImageVaeProfile& profile, std::uint32_t height, std::uint32_t width,
-    std::span<const model::ImageTensor> tensors) {
+    std::span<const model::ImageTensor> tensors, bool geometry_template) {
   if (!width || !height || width > UINT32_MAX / height || !profile.z_dim || profile.z_dim > 65536 ||
       !profile.spatial_factor || width > UINT32_MAX / profile.spatial_factor ||
       height > UINT32_MAX / profile.spatial_factor)
@@ -300,9 +301,26 @@ std::expected<SpatialComposition, std::string> ImageDecodeSpec(
   out->links.insert(out->links.begin() + 1, GraphLink{.input = 1, .auxiliary_port = 0});
   out->spec.stages[0].links = out->links;
   out->spec.stages[0].exports = out->exports;
+  if (geometry_template)
+    out->spec.stages[0].scalar_bindings = {{1, "height", "latent_height"},
+                                           {1, "width", "latent_width"}};
   Canonicalize(out->spec);
   if (auto valid = Validate(out->spec); !valid) return std::unexpected(valid.error());
   return out;
+}
+
+}  // namespace
+
+std::expected<SpatialComposition, std::string> ImageDecodeSpec(
+    const model::ImageVaeProfile& profile, std::uint32_t height, std::uint32_t width,
+    std::span<const model::ImageTensor> tensors) {
+  return ImageDecodeSpecImpl(profile, height, width, tensors, false);
+}
+std::expected<ModelSpec, std::string> ImageDecodeTemplate(
+    const model::ImageVaeProfile& profile, std::span<const model::ImageTensor> tensors) {
+  auto built = ImageDecodeSpecImpl(profile, 1, 1, tensors, true);
+  if (!built) return std::unexpected(built.error());
+  return std::move(built->spec);
 }
 
 std::expected<SpatialComposition, std::string> ImageTimestepSpec(
@@ -602,9 +620,10 @@ std::expected<std::uint64_t, std::string> ImageFlowSpecBound(
   // inventory coexist; source payloads are borrowed, never copied here.
   return 4096 * components + 1024 * tensors.size() + 65536;
 }
-std::expected<SpatialComposition, std::string> ImageFlowSpec(
+namespace {
+std::expected<SpatialComposition, std::string> ImageFlowSpecImpl(
     const model::ImageDenoiserProfile& p, std::uint32_t text_rows, std::uint32_t image_rows,
-    std::span<const model::ImageTensor> tensors) {
+    std::span<const model::ImageTensor> tensors, bool geometry_template) {
   auto bound = ImageFlowSpecBound(p, tensors);
   if (!bound) return std::unexpected(bound.error());
   // The whole denoiser's list, by role (DenoiserTensors' order).
@@ -668,16 +687,23 @@ std::expected<SpatialComposition, std::string> ImageFlowSpec(
                                       {"rows", std::int64_t{image_rows}},
                                       {"input_rows", std::int64_t{image_rows}}}},
                           {.input_port = 0});
+  if (geometry_template) {
+    stage.scalar_bindings.push_back({latent, "input_rows", "latent_rows"});
+    stage.scalar_bindings.push_back({latent, "rows", "latent_rows"});
+  }
   const auto image = projection(kImgIn, latent);
   auto stream = add({.kind = "concat.spatial", .version = 1, .params = {{"axis", std::int64_t{1}}}},
                     {text, image});
   std::array<std::uint16_t, 4> condition{};
-  for (std::size_t i = 0; i < condition.size(); ++i)
+  for (std::size_t i = 0; i < condition.size(); ++i) {
     condition[i] = add({.kind = "condition.rows",
                         .version = 1,
                         .params = {{"quarter", static_cast<std::int64_t>(i)},
                                    {"prefix_rows", std::int64_t{text_rows}}}},
                        {stream, 3});
+    if (geometry_template)
+      stage.scalar_bindings.push_back({condition[i], "prefix_rows", "text_rows"});
+  }
   for (std::uint32_t block = 0; block < p.blocks; ++block) {
     auto result = AppendImageBlock(*out, p, block, tensors, stream, condition, 2, 3);
     if (!result) return std::unexpected(result.error());
@@ -689,6 +715,11 @@ std::expected<SpatialComposition, std::string> ImageFlowSpec(
                                          {"rows", std::int64_t{image_rows}},
                                          {"input_rows", std::int64_t{text_rows + image_rows}}}},
                              {stream, {}});
+  if (geometry_template) {
+    stage.scalar_bindings.push_back({image_out, "input_rows", "joint_rows"});
+    stage.scalar_bindings.push_back({image_out, "rows", "latent_rows"});
+    stage.scalar_bindings.push_back({image_out, "start", "text_rows"});
+  }
   const auto scale = add({.kind = "condition.rows",
                           .version = 1,
                           .params = {{"quarter", std::int64_t{0}},
@@ -708,6 +739,20 @@ std::expected<SpatialComposition, std::string> ImageFlowSpec(
   Canonicalize(out->spec);
   if (auto valid = Validate(out->spec); !valid) return std::unexpected(valid.error());
   return out;
+}
+
+}  // namespace
+
+std::expected<SpatialComposition, std::string> ImageFlowSpec(
+    const model::ImageDenoiserProfile& profile, std::uint32_t text_rows, std::uint32_t image_rows,
+    std::span<const model::ImageTensor> tensors) {
+  return ImageFlowSpecImpl(profile, text_rows, image_rows, tensors, false);
+}
+std::expected<ModelSpec, std::string> ImageFlowTemplate(
+    const model::ImageDenoiserProfile& profile, std::span<const model::ImageTensor> tensors) {
+  auto built = ImageFlowSpecImpl(profile, 1, 1, tensors, true);
+  if (!built) return std::unexpected(built.error());
+  return std::move(built->spec);
 }
 
 }  // namespace llmp::spec

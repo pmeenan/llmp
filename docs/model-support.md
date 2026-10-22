@@ -30,7 +30,7 @@ and A folded as ModelOpt's) has a pinned approval row and is admitted, but
 is not qualified for serving yet: no serving comparison or speed gate has
 run on it, a separate later task. Qwen3.8's v0 GGML-experts form has no v1
 import and is no longer served. Qwen-Image-2.1 is served from its v1
-composition (`95314e53…`) with its stored family spec (`ef266ac1…`) and
+composition (`62497918…`) with its stored family spec (`ef266ac1…`) and
 component `spec.json` files.
 
 Plain target-only greedy decode now publishes a device I32 token by default
@@ -953,11 +953,14 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   stores ([engine-components](engine-components.md#image-pipelines)).
 - **Checkpoint:** `Qwen/Qwen-Image-2.1@790c9263`, BF16
   ([pins.json](experiments/fast-swap/pins.json)).
-- **Artifacts:** v1 composition `95314e53…` (D-089, D-113, `llmp import`
+- **Artifacts:** v1 composition `62497918…` (D-089, D-113, `llmp import`
   of the pipeline) naming text encoder `32fa6658…` (spec `b815577c…`),
-  denoiser `eb8cea71…` (spec `c43b66a6…`) and VAE `3785dfca…` (spec
-  `fe40715a…`), each the tensors text to image runs; its approval
-  pins the family spec `ef266ac1…`. The v0 composition `eca21baa…`
+  denoiser `1bf5d143…` (spec `3adbff4e…`) and VAE `c0447188…` (spec
+  `acadec6d…`), each the tensors text to image runs; its approval
+  pins the family spec `ef266ac1…`. The 2026-10-22 U8 re-import adds stored
+  geometry bindings while retaining the original source, index and payload
+  receipts; the text component remains unchanged.
+  The v0 composition `eca21baa…`
   ([qwen-image-native](experiments/qwen-image-native/README.md#what-runs))
   is no longer served.
 - **Template:** none; the fixed prompt string (above).
@@ -967,7 +970,12 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   The initial latents come from a file (diffusers' for its seed); there is
   no native seeded generator yet. The runtime serves one prompt a
   process, fixed at setup.
-- **Verified:** one prompt, 1024², 40 steps, seed 42, against diffusers
+- **U8 checks (2026-10-22, Spark B):** all 3,623 ordinary checks and nine
+  affected model controls passed: the component import, seven source image
+  controls, and the registered 2048×512, one-step request with two prompts.
+  These bounded controls do not repeat the full-generation quality or speed
+  measurements below.
+- **Historical verification:** one prompt, 1024², 40 steps, seed 42, against diffusers
   `8b3c707e` BF16: tokens exact, every component and the image within its
   pre-registered bounds; the paged node's and the runtime's pixels equal
   the harness's, before and after swaps

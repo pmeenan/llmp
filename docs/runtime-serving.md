@@ -186,7 +186,7 @@ tokenizer = "/path/to/tokenizer.json"          # when the artifact keeps none
 chat_template = "/path/to/chat_template.jinja"  # likewise
 
 [models.image]
-composition = "95314e53…"  # a pipeline (D-089)
+composition = "62497918…"  # a pipeline (D-089)
 
 [memory]                     # D-055 as amended 2026-10-02, D-124 (below)
 # mode = "dedicated"         # "dedicated" (default on DGX Spark) preallocates physical backing pool;

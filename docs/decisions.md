@@ -254,6 +254,31 @@ adapters let a definition reuse its token implementation with its declared
 spatial layout; no kind-name fallback selects an implementation or layout.
 This supersedes the original mutually exclusive spatial/token hook rule.
 
+**Amendment, 2026-10-22 (M3.5 U8 stored image topology).** A stage may
+carry `scalar_bindings`: sorted, unique `(component, parameter)` targets naming
+checked external integer scalars. Component IDs are the same 1-based layer
+component IDs as `links`; the target must already be an integer parameter.
+Binding copies the immutable template, substitutes required values and removes
+the bindings. Missing scalars refuse; compilers refuse unresolved bindings.
+The optional key participates in the spec digest and is omitted when empty,
+so existing specs without bindings keep their canonical bytes.
+
+Image import writes flow and VAE topology with explicit geometry bindings.
+Serving instantiates those stored graphs, preserving their components, weights,
+links and exports; it never regenerates them from a family-specific builder.
+Geometry scalars derive from the request and stored family profile, including
+its VAE spatial factor. Inferred output shapes must match the request's stage
+contract, even for equal-area rectangles. Static graphs need no bindings when
+their actual geometry fits. Template parsing, retention and request copies are
+paid from their stored inventory before allocation. Affected image artifacts
+must be re-imported; source provenance and numerical admission remain in force.
+
+This first slice makes stored runtime topology authoritative. The import-time
+VAE/DiT topology generators and text-encoder request construction remain C++;
+replacing the source mappings with configurable topology, quantized image
+execution and structural source accounting remain U8 work. No expression
+language or additional image patch layout is introduced.
+
 **Context.** M3.6 review follow-up R9.5: `SpatialComposition` held `links` and
 `exports` beside `ModelSpec`, and the image pipeline decomposed attention and
 GLU FFN into 17 op-level components per block/layer instead of reusing the

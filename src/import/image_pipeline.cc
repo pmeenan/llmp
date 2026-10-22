@@ -281,10 +281,10 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
   auto text_spec = spec::ImageTextSpec(p.text, 1, 0, text_tensors);
   if (!text_spec) return Bad("cannot build the text encoder's spec");
   const auto denoiser_tensors = model::DenoiserTensors(p.denoiser, names.denoiser);
-  auto denoiser_spec = spec::ImageFlowSpec(p.denoiser, 1, 1, denoiser_tensors);
+  auto denoiser_spec = spec::ImageFlowTemplate(p.denoiser, denoiser_tensors);
   if (!denoiser_spec) return Bad("cannot build the denoiser's spec");
   const auto vae_tensors = model::VaeDecoderTensors(p.vae, names.vae);
-  auto vae_spec = spec::ImageDecodeSpec(p.vae, 64, 64, vae_tensors);
+  auto vae_spec = spec::ImageDecodeTemplate(p.vae, vae_tensors);
   if (!vae_spec) return Bad("cannot build the VAE's spec");
 
   ImagePipelinePlan out;
@@ -292,8 +292,8 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
   out.components.reserve(mapping.components.size());
   const std::array<std::pair<const std::vector<model::ImageTensor>*, const spec::ModelSpec*>, 3>
       by_kind{{{&text_tensors, &text_spec->spec},
-               {&denoiser_tensors, &denoiser_spec->spec},
-               {&vae_tensors, &vae_spec->spec}}};
+               {&denoiser_tensors, &*denoiser_spec},
+               {&vae_tensors, &*vae_spec}}};
   for (const auto& rule : mapping.components) {
     const auto* comp = FindComponent(source, rule.role);
     const auto kind = rule.kinds.front();

@@ -185,6 +185,21 @@ struct SamplingDefaults {
   bool operator==(const SamplingDefaults&) const = default;
 };
 
+// A request-dependent integer parameter of a stored stage graph. Component
+// IDs use the layer-component numbering of GraphLink (1-based). The source
+// names a checked external scalar; it is not an expression or a default.
+struct StageScalarBinding {
+  std::uint16_t component = 0;
+  std::string parameter{};
+  std::string source{};
+  bool operator==(const StageScalarBinding&) const = default;
+};
+
+struct StageScalar {
+  std::string_view name{};
+  std::int64_t value = 0;
+};
+
 struct Stage {
   std::string name{};
   StageRole role = StageRole::kTarget;
@@ -211,6 +226,9 @@ struct Stage {
   // non-empty (D-122).
   std::vector<GraphLink> links{};
   std::vector<std::uint16_t> exports{};
+  // Sorted by (component, parameter), each target exactly once. Binding a
+  // template preserves its topology and removes these unresolved bindings.
+  std::vector<StageScalarBinding> scalar_bindings{};
   bool operator==(const Stage&) const = default;
 };
 
@@ -269,6 +287,13 @@ void Canonicalize(ModelSpec& spec);
 // The spec's own rules (see the header comment); the first violation, with
 // where it is.
 std::expected<void, std::string> Validate(const ModelSpec& spec);
+
+// Copy a validated template and resolve its integer scalar bindings. Scalars
+// are sorted by name and unique; missing names refuse rather than using the
+// template's literals. The caller pays for the copied spec before this call.
+// Component schema and shape validation still apply to the resulting values.
+std::expected<ModelSpec, std::string> BindStageScalars(const ModelSpec& spec,
+                                                       std::span<const StageScalar> scalars);
 
 // Canonical JSON with one trailing newline. A spec that Validate refuses
 // may write JSON that FromJson refuses.

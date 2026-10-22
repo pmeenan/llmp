@@ -24,6 +24,10 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Image flow and VAE requests execute stored stage topology with checked
+  geometry bindings, preserving alternate graph wiring from the artifact
+  (M3.5 U8, D-122; affected image artifacts require re-import).
+
 - Image components own their spatial construction and operand contracts, so
   adding a spatial definition no longer requires compiler kind-name branches
   (M3.5 U8; stage wiring and quantized image support remain in progress).

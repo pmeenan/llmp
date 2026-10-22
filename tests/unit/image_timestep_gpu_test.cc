@@ -298,7 +298,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
       !life.paid->Charge(life.limits.compiler - native_category))
     return Error("preconstruction owner payment");
   std::error_code ec;
-  if (std::filesystem::file_size(path / "manifest.json", ec) != 2243 || ec ||
+  if (std::filesystem::file_size(path / "manifest.json", ec) != 2282 || ec ||
       std::filesystem::file_size(path / "index.json", ec) != 543282 || ec)
     return Error("fixed source metadata extents");
   if (auto r = life.weights.Open(path, {.expected_id = std::string(kArtifact)}); !r) return r;
