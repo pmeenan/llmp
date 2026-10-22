@@ -73,6 +73,46 @@ on one day in two private projects. No native rendering/token count, cache hit,
 latency saving, date-instability measurement or native model/tool qualification
 is claimed by this mock capture. Volatile-block reordering remains off.
 
+## Actual native OpenCode continuation
+
+A seeded coding task adds one actual native OpenCode observation to the earlier
+CLI, stateless HTTP and mock-client checks. The run used context 16,384,
+prefill chunks of 512, one F16 KV slot and speculation off. Its weights were the
+`unsloth/Qwen3.8-Flash-Next-GGUF@38bb39ee` UD-IQ3_XXS artifact
+`f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027`.
+`Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` supplied tokenizer and
+chat-template assets only; no NVFP4 weight qualification follows. OpenCode
+v1.19.3, the runtime, source manifest and asset pins are recorded in the
+[native tool-task report](../m35-tools/RESULTS.md#actual-opencode-task).
+
+The runtime also logged a separate request with 652 prompt, 155 generated and
+0 cached tokens. No HTTP request bodies were captured, so its purpose is
+unknown and it is not classified as part of the task flow. The following four
+request records accompany the retained client event stream, which shows four
+actual tool calls: two reads, an edit and a bash test. Across those task turns,
+the next prompt's reported cached count equals the previous prompt plus
+completion count minus one:
+
+| Previous prompt p | Generated g | Processed prefix p+g−1 | Next prompt | Cached | New prompt tokens |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 4,755 | 99 | 4,853 | 5,180 | 4,853 | 327 |
+| 5,180 | 120 | 5,299 | 5,319 | 5,299 | 20 |
+| 5,319 | 78 | 5,396 | 5,429 | 5,396 | 33 |
+
+The count relationship matches the source contract: `prompt_tokens` is the
+whole rendered prompt, `completion_tokens` counts generated tokens including a
+stop token, and `cached_tokens` counts prompt tokens already held; a live-state
+continuation reuses the exact common token prefix ([API completion counts](../../../src/runtime/api_server.h),
+[ReusePrompt](../../../src/runtime/llm.cc)). Generation keeps its final selected
+token as the next anchor, not yet processed into state
+([generation boundary](../../../src/runtime/llm_generation.cc)); therefore
+`p + g − 1` is the processed prefix at these completed turn boundaries. The
+three observed cached counts match it exactly. This is evidence of live
+within-conversation reuse in one OpenCode task. It does not measure prefill
+launches or speed, qualify long prompts or other models and clients, or
+establish a global prompt cache. No cache or recurrent-state change is selected
+from this observation.
+
 ## Provenance and limits
 
 The frozen native executable remained in its original build directory:

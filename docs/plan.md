@@ -1198,8 +1198,14 @@ D-122).
       (2026-10-22) retain all processed reply tokens when reasoning is resent;
       omitting reasoning changes the prompt and recovers the earlier turn
       checkpoint. Actual OpenCode mock captures preserve reasoning in history.
-      Long prompts, native client qualification and broader reuse remain open;
-      these cells select no cache change. If either misses, the renderer reports a second
+      A seeded native OpenCode v1.19.3 task adds three bounded continuation
+      observations: cached tokens equal each prior prompt plus generated count
+      minus the final unprocessed anchor (4,853, 5,299, 5,396); its next
+      prompts add 327, 20 and 33 tokens. See the
+      [native continuation results](experiments/m35-prefix-reuse/README.md#actual-native-opencode-continuation).
+      This is one task, not general native-client, long-prompt or cross-model
+      qualification; broader reuse remains open and these cells select no cache
+      change. If either misses, the renderer reports a second
       boundary per turn, the position where the next request's rendering of
       this reply diverges, found by differential rendering (two renderings
       with different marker strings, first differing position; no
