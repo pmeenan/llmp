@@ -209,7 +209,7 @@ schema_version = 2
 # on disk (spilled, written back by a swap, or spilled when the service
 # stops) survives a restart: owner-only files and a checked record in the
 # spill directory's conversations/ (D-105), within the same retention.
-# retention_hours = 24
+# retention_hours = 168
 # The most spilled conversation state the spill directory keeps (0 to
 # 1048576 GiB), a swapped-out model's conversations included: past it the
 # least recently used is deleted first. Turn checkpoints count too, after

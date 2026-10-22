@@ -193,7 +193,7 @@ composition = "95314e53…"  # a pipeline (D-089)
 # budget_gib = 0             # whole-node memory budget in GiB (0 = detected hardware capacity)
 # idle_release_seconds = 300 # in shared mode: seconds of inactivity before dropping resident models,
                              #   freeing unused backings, and trimming heap
-# retention_hours = 24       # idle conversations, resident or spilled, and their
+# retention_hours = 168      # idle conversations, resident or spilled, and their
                              #   turn checkpoints stay reusable this long: 1 to 8,760
                              #   (across a restart too, D-105)
 # spill_budget_gib = 128     # spilled conversation state kept on disk at most,
@@ -954,7 +954,7 @@ between each page. A cancelled capture drops its unpublished file and
 keeps the completed prefix; a cancelled partial restore clears before
 reuse. The page currently in flight completes first.
 
-Checkpoints expire for reuse `[memory] retention_hours` (24 by default)
+Checkpoints expire for reuse `[memory] retention_hours` (168 hours by default)
 after capture; looking one up does not renew it. Idle live history, and
 an idle conversation's spilled state, expire after as long unused: the
 driver deletes them between units and while idle, and a lookup treats

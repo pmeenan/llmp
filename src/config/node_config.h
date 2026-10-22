@@ -331,7 +331,7 @@ struct Setting {
 // 2026-10-02): how long an idle conversation's state, resident or spilled,
 // and its turn checkpoints stay reusable, and how much spilled state the
 // spill directory may hold before the least recently used is deleted.
-inline constexpr std::uint32_t kDefaultRetentionHours = 24;
+inline constexpr std::uint32_t kDefaultRetentionHours = 168;
 inline constexpr std::uint32_t kMaxRetentionHours = 8760;
 inline constexpr std::uint32_t kDefaultSpillBudgetGib = 128;
 inline constexpr std::uint32_t kMaxSpillBudgetGib = 1048576;

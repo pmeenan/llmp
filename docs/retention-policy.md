@@ -368,13 +368,30 @@ their provenance.
 
 | Parameter | Meaning | Rule | Pinned |
 | --- | --- | --- | --- |
-| `T_cont`, `T_prefix` | Maximum idle age per class | 7 days each (owner decision, 2026-10-20; 24 hours before); configurable: M3's runtime has `[memory] retention_hours`, 1 to 8,760, for its conversations and their turn checkpoints, whose default is still 24 until M3.5's retention item moves it to 168 | Now |
+| `T_cont`, `T_prefix` | Maximum idle age per class | 7 days each (owner decision, 2026-10-20; 24 hours before); configurable: M3's runtime has `[memory] retention_hours`, 1 to 8,760, for its conversations and their turn checkpoints, default 168 | Now |
 | `M_state` | Resident retained-state cap | At most `B − F − J − max_m(R_m + E_m)`, so idle state never stops the node from holding its largest supported request | M5 exit |
-| `S_spill` | Spill capacity | Within the spill filesystem's free space less a fixed reserve; held back from installs (D-054). M3's runtime: `[memory] spill_budget_gib`, default 128 GiB, the least recently used deleted past it | M5 exit |
+| `S_spill` | Spill capacity | Within the spill filesystem's free space less a fixed reserve; held back from installs (D-054). M3's runtime: `[memory] spill_budget_gib`, default 128 GiB, the least recently used deleted past it; the seven-day capacity calculation below retains this binding cap. | M5 exit |
 | Spill write budget | Bytes spilled per rolling 24 hours | From the drive's rated endurance, with its source recorded, and the measured M6 workload; past it, entries are dropped instead of spilled and the event is reported | M6 entry |
 | `N_prefix`, `N_cont` | Entry-count caps per class, with a per-scope share of each | Worst-case index metadata (token IDs, block digests and maps at maximum context) fits inside `F` | M5 exit |
 | `L_prefix` | Minimum shared-prefix length | Below it, recomputation costs less than an entry's metadata and lookup | M5 exit |
 | Maintenance interval | Maximum delay before expiry and release are processed | Bounded maintenance work, independent of inference queues | M5 exit |
+
+**Seven-day capacity calculation (M3.5).** Keep the 128 GiB default.
+[The pressure run](experiments/memory-pressure/README.md#idle-conversations-under-pressure-http-one-model)
+spilled 451 MiB for a 20,014-token DeepSeek conversation;
+[the capacity check](experiments/memory-pressure/README.md#review-round-2026-10-03)
+wrote 710 of 712 MiB for a slot reserved through 63,488 positions. Using
+451 and 712 MiB as representative retained footprints, 128 GiB holds about
+290 or 184 states. Dividing across seven days gives about 41 or 26 new
+idle states per day, assuming every state stays for the whole week, no
+growth, and no other spill usage. These are calculated capacity scenarios,
+not measured weekly arrivals or new count limits. Turn checkpoints share
+the budget: one additional checkpoint of the same size per conversation
+reduces those scenarios to about 20 or 13 conversations per day. Larger
+contexts, different models and more checkpoints reduce capacity further.
+No measured weekly demand establishes a need to increase the default;
+capacity still expires the least recently used state before seven days
+when necessary, so the idle cap does not guarantee a week of retention.
 
 `B`, `F`, `J`, `R_m` and `E_m` follow D-050: the execution budget, fixed
 overhead, non-revocable maintenance work such as spill writes and expiry,

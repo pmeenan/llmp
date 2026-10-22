@@ -19,8 +19,8 @@ namespace llmp::runtime {
 // `[memory] spill_budget_gib` (shared with spilled conversations, which
 // come first: Server::TrimTurnCheckpoints) and a conversation's kept
 // record's format bound (kept::kMostCheckpoints).
-// The default of `[memory] retention_hours` (D-055's idle cap, 24 hours).
-inline constexpr auto kTurnCheckpointRetention = std::chrono::hours(24);
+// The default of `[memory] retention_hours` (D-055's idle cap, 7 days).
+inline constexpr auto kTurnCheckpointRetention = std::chrono::hours(168);
 
 // A checkpoint is optional: admit its complete padded file before writing
 // it, beside every retained checkpoint (including active/held branches)

@@ -1068,8 +1068,9 @@ checkpoint container or quantization family:
   two retained boundaries within their common prefix, and prefills the
   suffix. Boundaries precede the renderer's unstable assistant opening.
   Entries carry history position, cursor and adaptive decoding state,
-  expire for reuse after 24 hours and disappear at clear or restart;
-  cleanup during idle time is lazy. See
+  expire for reuse after the configured retention (168 hours by default)
+  and disappear at clear. Service checkpoints can survive restart with
+  persisted conversation state; cleanup during idle time is lazy. See
   [the native control](experiments/turn-reuse/README.md).
 - **Resumable prompt preparation**: a runtime branch's `PromptSession` owns
   the bounded prompt and advances reuse/restore, one ordinary prefill chunk,

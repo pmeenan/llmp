@@ -78,6 +78,18 @@ TEST(TurnReuseTest, SelectsTheNearestCheckpointInsideTheExactCommonPrefix) {
   EXPECT_FALSE(rt::MatchingTurnBoundary(boundaries, 1, changed.size(), now));
 }
 
+TEST(TurnReuseTest, DefaultRetentionKeepsAnIdleWeekendButExpiresAtSevenDays) {
+  const auto created = Clock::time_point{} + std::chrono::hours(1);
+  const std::array boundaries = {rt::TurnBoundary{.position = 2, .created = created}};
+  EXPECT_EQ(rt::MatchingTurnBoundary(boundaries, 3, 4, created + std::chrono::hours(72)), 0);
+  EXPECT_EQ(rt::MatchingTurnBoundary(
+                boundaries, 3, 4, created + std::chrono::hours(168) - std::chrono::nanoseconds(1)),
+            0);
+  // Looking up a checkpoint does not renew its lifetime.
+  EXPECT_FALSE(rt::MatchingTurnBoundary(boundaries, 3, 4, created + std::chrono::hours(168)));
+  EXPECT_FALSE(rt::MatchingTurnBoundary(boundaries, 3, 4, created + std::chrono::hours(169)));
+}
+
 TEST(TurnReuseTest, ExpiredBoundariesAndPromptEndsCannotSupplyMissingLogits) {
   const auto now = Clock::now();
   const std::array<rt::TurnBoundary, 2> boundaries = {

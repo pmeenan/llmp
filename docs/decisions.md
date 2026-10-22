@@ -6791,7 +6791,7 @@ entries yet); M6's entry classes keep the rules above.
   of 0.
 - **Retention and the spill budget are configuration** (`[memory]`, a
   public surface; schema version 2, compatible keys): `retention_hours`
-  (1 to 8,760, default 24 as built, the cap above; 168 once M3.5's retention item lands) bounds idle conversations,
+  (1 to 8,760, default 168) bounds idle conversations,
   resident or spilled, and their turn checkpoints, enforced between units
   and while idle; `spill_budget_gib` (0 to 1,048,576, default 128) bounds
   the spilled state on disk, a swap's write-back included (past it, the
@@ -6839,7 +6839,13 @@ weekend (DeepSeek's deployment keeps 3 to 7 days; see the
 [DeepInfer assessment](deepinfer-assessment.md#owner-decisions-and-open-questions)).
 The range, the spill budget and its least-recently-used deletion are
 unchanged; the spill budget, not the age cap, stays the binding limit. The
-runtime's default moves with M3.5's retention item; until then it is 24.
+runtime's seven-day default lands with M3.5's retention item. The
+[seven-day capacity calculation](retention-policy.md#bounds-and-defaults)
+retains the 128 GiB default: representative measured footprints of 451
+and 712 MiB correspond to about 41 or 26 new idle states per day for
+seven days without other spill usage. Checkpoints share that capacity.
+This is a calculated scenario, not measured weekly demand or a retention
+guarantee across models and contexts; capacity-driven deletion still applies.
 
 
 ## D-054: Installed artifacts stay node-local; optional long-term store; one import per cluster with peer replication  (2026-09-22, status: accepted; specializes D-009, D-018, D-034 and D-041; role paths and keys in D-063; its identity rule, staging default and artifact archive amended by D-114's model archive, 2026-10-10)

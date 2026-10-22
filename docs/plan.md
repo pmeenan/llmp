@@ -957,7 +957,7 @@ D-122).
         SHA-256 under D-054), amending D-105's record format when it lands;
       - registered io_uring buffers on the host-VMM landing zone, and
         bounded batched copies on a low-priority stream for spills.
-- [ ] **Seven-day retention default** (owner, 2026-10-20; D-055 as
+- [x] **Seven-day retention default** (owner, 2026-10-20; D-055 as
       amended): idle conversations and turn checkpoints survive an idle
       weekend. Move `[memory] retention_hours`' default from 24 to 168
       (`kDefaultRetentionHours` in `src/config/node_config.h`, the
@@ -968,8 +968,13 @@ D-122).
       runtime docs that state 24 (runtime-serving.md, engine.md, D-055's
       configuration bullet). The
       spill budget (`spill_budget_gib`, least recently used first) stays
-      the binding limit; check its default against a week of idle
-      conversations' spills and say whether it changes.
+      the binding limit. The [seven-day capacity calculation](retention-policy.md#bounds-and-defaults)
+      retains its 128 GiB default: measured 451/712 MiB state footprints
+      give scenarios of about 41/26 new idle states per day over seven
+      days, or 20/13 with one equal-sized checkpoint each. These are
+      capacity calculations, not measured weekly demand or guarantees for
+      other contexts. A fixed-clock checkpoint regression retains a
+      boundary after a 72-hour idle weekend and expires it at 168 hours.
 - [ ] **Tool calls on the chat route** (moved from M5 by the owner,
       2026-10-20): `tools`/`functions` and `tool_choice` (`auto`, `none`,
       `required`, a named function) accepted on Chat Completions, assistant

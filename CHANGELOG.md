@@ -44,6 +44,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Idle conversation and turn-checkpoint retention defaults to seven days,
+  preserving state across an idle weekend within the configured spill budget
+  (M3.5, D-055).
 - Source-only native drafters receive startup metadata funding while target
   bindings continue to require a stored spec (M3.5).
 - Direct artifact reads and buffered retries open the same pinned regular

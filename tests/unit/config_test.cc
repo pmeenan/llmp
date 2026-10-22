@@ -237,7 +237,7 @@ TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
 // its retention and the spill budget, with their defaults and ranges.
 TEST(NodeConfigTest, MemoryKeepsConversationsAsConfigured) {
   const NodeConfig defaults = Parsed("schema_version = 2\n");
-  EXPECT_EQ(defaults.memory.retention_hours, 24U);
+  EXPECT_EQ(defaults.memory.retention_hours, 168U);
   EXPECT_EQ(defaults.memory.spill_budget_gib, 128U);
   EXPECT_TRUE(defaults.memory.keep_across_restart);
   const NodeConfig set = Parsed(
