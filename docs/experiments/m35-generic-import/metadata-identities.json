@@ -1,0 +1,226 @@
+{
+  "mlx": {
+    "new": {
+      "files": [
+        {
+          "bytes": 8612448,
+          "path": "index.json",
+          "role": "index",
+          "sha256": "59716f53eeb0a782f26ac4e0037a8376935dfc53cb7dba0d8365116b97f8c925"
+        },
+        {
+          "bytes": 8952,
+          "path": "meta/chat_template.jinja",
+          "role": "source-metadata",
+          "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+        },
+        {
+          "bytes": 5361,
+          "path": "meta/config.json",
+          "role": "source-metadata",
+          "sha256": "4efd5f41c47e8de9f55c678df4a237cbbc78e4d517dad42a906889f7d94f79a2"
+        },
+        {
+          "bytes": 202,
+          "path": "meta/generation_config.json",
+          "role": "source-metadata",
+          "sha256": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e"
+        },
+        {
+          "bytes": 420813,
+          "path": "meta/model.safetensors.index.json",
+          "role": "source-metadata",
+          "sha256": "8848503860c7da8619fdc8d5e65201868f8f1d21d69d2e21166c95522379ff77"
+        },
+        {
+          "bytes": 12809320,
+          "path": "meta/tokenizer.json",
+          "role": "source-metadata",
+          "sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
+        },
+        {
+          "bytes": 17928,
+          "path": "meta/tokenizer_config.json",
+          "role": "source-metadata",
+          "sha256": "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27"
+        },
+        {
+          "bytes": 270780,
+          "path": "spec.json",
+          "role": "spec",
+          "sha256": "f184c790c9dd92cdee3b849805a5221b53e00ac12c746444768c34a3950ced87"
+        }
+      ],
+      "importer": {
+        "build": "61f8426f7e2f45931d91645b016069e13f6f2236.dirty",
+        "mapping_architecture": "qwen4exp",
+        "mapping_version": 1,
+        "name": "llmp-import",
+        "options_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "version": "1"
+      },
+      "model": {
+        "architecture": "qwen4_exp",
+        "container": "mlx",
+        "expert_count": 512
+      }
+    },
+    "old": {
+      "files": [
+        {
+          "bytes": 8612448,
+          "path": "index.json",
+          "role": "index",
+          "sha256": "59716f53eeb0a782f26ac4e0037a8376935dfc53cb7dba0d8365116b97f8c925"
+        },
+        {
+          "bytes": 5361,
+          "path": "meta/config.json",
+          "role": "source-metadata",
+          "sha256": "4efd5f41c47e8de9f55c678df4a237cbbc78e4d517dad42a906889f7d94f79a2"
+        },
+        {
+          "bytes": 420813,
+          "path": "meta/model.safetensors.index.json",
+          "role": "source-metadata",
+          "sha256": "8848503860c7da8619fdc8d5e65201868f8f1d21d69d2e21166c95522379ff77"
+        },
+        {
+          "bytes": 268042,
+          "path": "spec.json",
+          "role": "spec",
+          "sha256": "90e6fbbbbcad4297fc6d56e900674c2ec865aa29e96b9d3c5098a07c557eff0a"
+        }
+      ],
+      "importer": {
+        "build": "unknown",
+        "name": "llmp-import",
+        "options_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "version": "1"
+      },
+      "model": {
+        "architecture": "qwen4exp",
+        "container": "mlx",
+        "expert_count": 512
+      }
+    }
+  },
+  "modelopt": {
+    "new": {
+      "files": [
+        {
+          "bytes": 8236769,
+          "path": "index.json",
+          "role": "index",
+          "sha256": "2b29dc0f905bd670522abda9d8ef5e17f0db328c1d4fcd9f8dae63e9079dc5dd"
+        },
+        {
+          "bytes": 8952,
+          "path": "meta/chat_template.jinja",
+          "role": "source-metadata",
+          "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+        },
+        {
+          "bytes": 109897,
+          "path": "meta/config.json",
+          "role": "source-metadata",
+          "sha256": "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e"
+        },
+        {
+          "bytes": 2097,
+          "path": "meta/generation_config.json",
+          "role": "source-metadata",
+          "sha256": "735ec63e625c2086fbec18327233a03a7b060fddabfd7915af4e6fdcec3187a2"
+        },
+        {
+          "bytes": 99088,
+          "path": "meta/hf_quant_config.json",
+          "role": "source-metadata",
+          "sha256": "d60c54caa65317fd8f1338bdeb81b9014512ac8f21ec18da22541cb88c6784b7"
+        },
+        {
+          "bytes": 33074286,
+          "path": "meta/model.safetensors.index.json",
+          "role": "source-metadata",
+          "sha256": "435eef76fc10fc6e932a208a1f85a86bc9c7ffc389b27b34ba83bb6a5d0371e9"
+        },
+        {
+          "bytes": 12809320,
+          "path": "meta/tokenizer.json",
+          "role": "source-metadata",
+          "sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
+        },
+        {
+          "bytes": 17928,
+          "path": "meta/tokenizer_config.json",
+          "role": "source-metadata",
+          "sha256": "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27"
+        },
+        {
+          "bytes": 176866,
+          "path": "spec.json",
+          "role": "spec",
+          "sha256": "02d130bce7462794251cc29e5554565a0ad83a398ce2776fd8078ef4b683618a"
+        }
+      ],
+      "importer": {
+        "build": "61f8426f7e2f45931d91645b016069e13f6f2236.dirty",
+        "mapping_architecture": "qwen4exp",
+        "mapping_version": 1,
+        "name": "llmp-import",
+        "options_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "version": "1"
+      },
+      "model": {
+        "architecture": "qwen3_8_flash_next",
+        "container": "safetensors",
+        "expert_count": 512
+      }
+    },
+    "old": {
+      "files": [
+        {
+          "bytes": 8236769,
+          "path": "index.json",
+          "role": "index",
+          "sha256": "2b29dc0f905bd670522abda9d8ef5e17f0db328c1d4fcd9f8dae63e9079dc5dd"
+        },
+        {
+          "bytes": 109897,
+          "path": "meta/config.json",
+          "role": "source-metadata",
+          "sha256": "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e"
+        },
+        {
+          "bytes": 99088,
+          "path": "meta/hf_quant_config.json",
+          "role": "source-metadata",
+          "sha256": "d60c54caa65317fd8f1338bdeb81b9014512ac8f21ec18da22541cb88c6784b7"
+        },
+        {
+          "bytes": 33074286,
+          "path": "meta/model.safetensors.index.json",
+          "role": "source-metadata",
+          "sha256": "435eef76fc10fc6e932a208a1f85a86bc9c7ffc389b27b34ba83bb6a5d0371e9"
+        },
+        {
+          "bytes": 174224,
+          "path": "spec.json",
+          "role": "spec",
+          "sha256": "c2e2822e48502a42783ab9f1c4d8ecf3649f02e6331ea2c0ea133e2542983a0f"
+        }
+      ],
+      "importer": {
+        "build": "unknown",
+        "name": "llmp-import",
+        "options_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "version": "1"
+      },
+      "model": {
+        "architecture": "qwen4exp",
+        "container": "safetensors",
+        "expert_count": 512
+      }
+    }
+  }
+}

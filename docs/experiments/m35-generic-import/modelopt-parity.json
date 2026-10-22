@@ -1,0 +1,22 @@
+{
+  "added": [],
+  "changed": {},
+  "changed_fields": {},
+  "missing": [],
+  "new": {
+    "artifact": "/home/pmeenan/.local/share/llmp/models/m35-u3-proof/7175c03c1748aa96af84667f2e51e53d56e954d7fb3b6ccc1083f882b41501a2",
+    "elapsed_s": 168.56543037109077,
+    "payload_bytes": 103799140484,
+    "payload_digest": "5d365648ea2ab7824bba41269ec91ed3ad47c3cc5c7d034d246f10fb1bc1e1d8",
+    "semantic_digest": "024d9180a752e85322bd84bc54d2837adc10214c830d6d045bfcb5af82b74892",
+    "tensor_parts": 99901
+  },
+  "old": {
+    "artifact": "/home/pmeenan/.local/share/llmp/u2-v1-artifacts/02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9",
+    "elapsed_s": 147.2961372951977,
+    "payload_bytes": 103799140484,
+    "payload_digest": "5d365648ea2ab7824bba41269ec91ed3ad47c3cc5c7d034d246f10fb1bc1e1d8",
+    "semantic_digest": "024d9180a752e85322bd84bc54d2837adc10214c830d6d045bfcb5af82b74892",
+    "tensor_parts": 99901
+  }
+}

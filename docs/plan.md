@@ -593,8 +593,10 @@ D-122).
       CPU/GPU execution. The three owner-approved proof checkpoints publish
       through deep artifact and stored-spec validation; see the
       [import proof](experiments/m35-generic-import/README.md). The full U3
-      exit remains open: original Qwen payload parity, new-checkpoint serving
-      and reference-quality qualification are separate controls.
+      exit remains open: new-checkpoint serving and reference-quality qualification
+      are separate controls. Original Qwen ModelOpt and MLX re-imports have
+      [identical payload digests](experiments/m35-generic-import/original-parity.md)
+      for all 323,607 named tensor parts, including every expert slice.
       - **U3a One mapping per architecture:** `import::SourceMapping`
         merged into `spec::Mapping`; the semantic metadata namespace
         derived from the architecture, failing closed on any unconsumed

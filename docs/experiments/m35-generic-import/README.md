@@ -53,8 +53,10 @@ published payload and stored spec do not depend on those deltas.
 
 ## Controls still owed by the full U3 exit
 
-- Re-import the original Qwen3.8 ModelOpt and MLX checkpoints and compare
-  tensor content digests independently of changed spec/provenance identities.
+The [original ModelOpt and MLX parity controls](original-parity.md) passed on
+2026-10-22: all 323,607 named tensor parts match, including every expert slice,
+independently of changed spec/provenance identities. Remaining controls:
+
 - Serve the new plain-NVFP4 and second-architecture MLX artifacts and compare
   the Llama 3.1+ frequency-scaling path with its reference under D-085.
 - Preserve supported-family speed and quality qualifications; import success
