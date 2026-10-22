@@ -1,0 +1,111 @@
+{
+  "arms": {
+    "native": {
+      "evidence_sha256": {
+        "launch.json": "78c15301af27fd3a391eae08056bb4bd289f7bee7758e68133cf1239e0f68570",
+        "post-busy.txt": "1a99134725b313827519f639888a2d9ace4f1146b439e31725a8ec34bbfdbb30",
+        "request.json": "56fcb75c8cb487c45830743a1b599a2277a832e6dd0bb80a3a81dda3d2dd1ac1",
+        "response.json": "3ebc4a41cd6f100e0b8a32c586d394bffa43e345024bbcb4d211b189d1973300",
+        "result.json": "36927991d56ab4e10ed0fca59a54ca6fdc95a20f0b84f925d4466c1f9688c172",
+        "runtime.log": "e6bb79365dc93df759029fac627c8dadf413c4e40a670a44dd9258e4ce96d7b7"
+      },
+      "finish_reason": "stop",
+      "generated_tokens": 2,
+      "job": "m35-u3-gemma26-paris-native-r1",
+      "kv_dtype": "float16",
+      "output_ids": [
+        50429,
+        106
+      ],
+      "raw_directory": "/tmp/llmp-gemma26-paris-native-r1",
+      "retirement": {
+        "returncode": 0,
+        "signal": "TERM"
+      },
+      "runtime_sha256": "d18c7b7a9c8c6cf383a6f607a8606d2ce2026c4b2a8cb47632ec424601704dff",
+      "selected_token_logprobs": [
+        -6.114664809613695e-08,
+        -6.925708366781607e-08
+      ],
+      "source_manifest_sha256": "d0c8f0023776b0994de9e97beff04cb7bcd3e77ddad78bf87390bb312794cff4",
+      "spark_raw_directory": "~/.local/share/llmp/m35-u3-quality/gemma26-paris-native-r1",
+      "supervisor_final_sha256": "062f751b26c0d3e12423be9b29e1e54bf95bfc4ebbfe944a0c5e787847650323",
+      "supervisor_rc": 0,
+      "text": "Paris"
+    },
+    "source": {
+      "dispatch": {
+        "attention_backends": [
+          "vllm.v1.attention.backends.triton_attn.TritonAttentionBackend"
+        ],
+        "attention_layers": 30,
+        "expert_backends": [
+          "NvFp4MoeBackend.FLASHINFER_CUTLASS"
+        ],
+        "expert_blocks": 30,
+        "expert_use_a16": false,
+        "linear_method": "ModelOptNvFp4LinearMethod",
+        "model": "vllm.model_executor.models.gemma4.Gemma4ForCausalLM",
+        "quant_config": "vllm.model_executor.layers.quantization.modelopt.ModelOptNvFp4Config",
+        "quant_method": "NVFP4"
+      },
+      "dtype": "bfloat16",
+      "evidence_sha256": {
+        "container.log": "db169fd5cf44ce37505e244fb30325814a5c1a0a74ce793935e6b6749c8d10df",
+        "launch.json": "617e39b6d95f08470b3cbf130ce21efd2d3f554e51cbb177a68521a7543cc53e",
+        "post-busy.txt": "1a99134725b313827519f639888a2d9ace4f1146b439e31725a8ec34bbfdbb30",
+        "request.json": "76a0b74bab98c5bb49c5c397a8fb368b035901032782c5ed3669a3175fea0949",
+        "result.json": "b3788d30a128465b985817b946a4897e7f3ab9de23c9fe134aba4265c90e80db",
+        "returned.txt": "89afa253460ce6d28b498a6e57fbcb02f422e9f207a3a2280516346cc29d378d"
+      },
+      "finish_reason": "stop",
+      "generated_tokens": 2,
+      "image": "sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8",
+      "job": "m35-u3-gemma26-paris-source-r1",
+      "kv_dtype": "bfloat16",
+      "output_ids": [
+        50429,
+        106
+      ],
+      "raw_directory": "/tmp/llmp-gemma26-paris-source-r1",
+      "retained_warning": "w1_weight_scale_2 must match w3_weight_scale_2. Accuracy may be affected.",
+      "retirement": {
+        "check_returncode": 0,
+        "name": "llmp-gemma26-paris-34f18b97e2944e659acc9aa17d9cd692",
+        "remaining_ids": "",
+        "remove_returncode": 0,
+        "remove_stderr": "",
+        "retired": true
+      },
+      "selected_token_logprobs": [
+        0.0,
+        0.0
+      ],
+      "spark_raw_directory": "~/.local/share/llmp/m35-u3-quality/gemma26-paris-source-r1",
+      "stop_reason": 106,
+      "supervisor_final_sha256": "18cf909859795af6cd1aa84628014fe8ecf5f5d0c439e265be0a52ed43175cfe",
+      "supervisor_rc": 0,
+      "text": "Paris"
+    }
+  },
+  "artifact_locality": {
+    "copy_receipt_sha256": "a507ddc09cb2cebbe7e67822f7286650efba6ffe725dffc95608afd0855d5ebe",
+    "preflight_missing_artifact_preserved": "/tmp/llmp-gemma26-paris-registered-3202f46f/preflight-r1-failure.json",
+    "preflight_missing_artifact_sha256": "4a9e538f42b8639cd51f1be2a89b223e36625567bbf447af55bc2fb7eb0430bd",
+    "reimported": false,
+    "successful_preflight_sha256": "5201f905e204373cc130ee036380fe6cba511f1edb9c8fac816cdc0a3d18db2e",
+    "verified_manifest_files": 14
+  },
+  "host": "spark-c4e2",
+  "input_sha256": "3d0e98600de96f8a96f7bab3655d85b9d2e974c6e39b768d092e6fa1961069ec",
+  "max_tokens": 64,
+  "order": [
+    "native",
+    "reference"
+  ],
+  "prompt_tokens": 35,
+  "registered_protocol_sha256": "9cdd6a2cac1dc68abed9ecae9c1ebcd12d9926491fd15310f06d2eba46dc56a0",
+  "registration_commit": "3202f46fb1f9343d528b88afb66ba6819940da04",
+  "scope": "One paired source-template Paris64 completion control; no general U3 quality qualification",
+  "verdict": "pass"
+}

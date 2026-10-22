@@ -235,3 +235,9 @@ container log SHA-256:
 Raw evidence remains outside Git on Spark A under
 `~/.local/share/llmp/m35-u3-quality/gemma26-source-raw-r2` and on the
 workstation at `/tmp/llmp-m35-orchestration/gemma26-source-raw-r2`.
+
+The subsequently registered [source-template Paris pair](gemma26/paris/RESULTS.md)
+passed on both engines with the same frozen 35 input IDs: both returned `Paris`,
+output IDs `[50429,106]`, and stopped normally. This establishes a usable source
+reference for that single control. It preserves the raw-ID negatives above;
+representative Gemma likelihood and behavior qualification remain open.
