@@ -118,6 +118,6 @@ Receipts, responses and logs remain outside Git under
 with supervised jobs `u3-qwen27-gdn-reimport-r1` and
 `u3-qwen27-gdn-smoke-r2`.
 
-No new Qwen reference-quality comparison has been collected. A separately
-reviewed prospective protocol must freeze its source reference, inputs,
-precision, actual-target likelihood contract and acceptance bounds first.
+The subsequent [preregistered Qwen quality screen](qwen27/RESULTS.md) records
+bounded likelihood and completed raw-ID behavior results. The original smoke
+and its incomplete ordinary chat answer remain preserved above.

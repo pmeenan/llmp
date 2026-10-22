@@ -3,8 +3,10 @@
 
 # Prospective Qwen27 MLX source-quality screen
 
-**Inputs are frozen. Run only after this protocol has received independent
-review and been committed. No Qwen source-quality results exist yet.**
+**Results recorded:** the preregistered bounded likelihood and behavior screens
+passed; see [RESULTS.md](RESULTS.md). The prospective body below is preserved,
+including its pre-execution status statements. Inputs and acceptance bounds are
+unchanged.
 `prereg.json`'s `frozen` status means its input identities are complete, not that
 a preregistration commit or model validation has happened. The actual reviewed
 commit must be recorded in each later receipt. The source adapter validation

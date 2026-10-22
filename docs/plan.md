@@ -597,11 +597,15 @@ D-122).
       are separate controls. Original Qwen ModelOpt and MLX re-imports have
       [identical payload digests](experiments/m35-generic-import/original-parity.md)
       for all 323,607 named tensor parts, including every expert slice.
-      Second-architecture MLX source qualification remains open. The
-      [norm diagnosis](experiments/m35-u3-quality/QWEN27-NORM.md) and
-      [GDN gate repair](experiments/m35-u3-quality/QWEN27-GATE.md) correct
-      independent defects; the unchanged 64-token screen now produces coherent
-      text, while chat still ends by length with no final content.
+      The second-architecture MLX checkpoint passes its registered bounded
+      [source-quality screen](experiments/m35-u3-quality/qwen27/RESULTS.md):
+      both short/depth repeat pairs and all six completed raw-ID behavior
+      controls pass. Speed, batching and maximum-context qualification remain
+      open. The [norm diagnosis](experiments/m35-u3-quality/QWEN27-NORM.md)
+      and [GDN gate repair](experiments/m35-u3-quality/QWEN27-GATE.md) correct
+      independent defects; the earlier unchanged 64-token chat screen still
+      ends by length with no final content. Gemma source qualification and
+      the earlier Llama Fibonacci control remain open.
       - **U3a One mapping per architecture:** `import::SourceMapping`
         merged into `spec::Mapping`; the semantic metadata namespace
         derived from the architecture, failing closed on any unconsumed

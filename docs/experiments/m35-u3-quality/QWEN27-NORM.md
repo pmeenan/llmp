@@ -6,8 +6,9 @@
 The first bounded Qwen27 native serving smoke produced garbled text. A subsequent
 small-tensor audit proved that the importer added one to RMS scales that the MLX
 checkpoint already stores with that addition. This establishes an import defect;
-it does not establish that this is the only cause of the failed smoke. No Qwen
-reference quality comparison has been collected or preregistered.
+it does not establish that this is the only cause of the failed smoke. The subsequent
+[preregistered Qwen quality screen](qwen27/RESULTS.md) records its bounded results;
+this diagnosis and its original negative smoke remain preserved.
 
 ## Original smoke and source identity
 
