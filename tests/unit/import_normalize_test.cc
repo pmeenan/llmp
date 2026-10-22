@@ -1516,8 +1516,8 @@ TEST(ImportNormalizeQwen2Exl3Test, CompleteCaptured40And45TargetsMatchV0SpecAndP
     ASSERT_EQ(plan->routes().size(), 798U);
     ASSERT_EQ(plan->spec().stages.size(), 1U);
     EXPECT_EQ(plan->spec().stages[0].layers.size(), 24U);
-    // The spec both approved EXL3 artifacts store (runtime/approvals.cc),
-    // identical to the tied GGUF spec above.
+    // This captured fixture omits source sampling defaults; its historical
+    // spec remains identical to the tied GGUF fixture above.
     EXPECT_EQ(base::ToHex(plan->spec().Digest()),
               "b2cf6f15206be2712e20fe080df11f7edcbf8aaeda23f830755f767f11433d6a");
     EXPECT_TRUE(plan->applied_folds().empty());

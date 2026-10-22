@@ -87,6 +87,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Refresh the two EXL3 fixture artifacts with source sampling defaults while
+  preserving all encoded tensor parts and source identities (M3.5 U3).
+
 - Align the Qwen ModelOpt MTP approval record with its equivalent individual
   expert-scale declarations, preserving the selected head and source receipts.
 
