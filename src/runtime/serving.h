@@ -1937,6 +1937,9 @@ class Server {
   bool AnyResidentState();
 
  private:
+  struct Activation;
+  struct Reclamation;
+
   Status Make(const config::ModelEntry& entry, const ModelSettings& settings, int index,
               std::shared_ptr<OpenedModelArtifacts> opened = {});
   void Log(std::string_view text);

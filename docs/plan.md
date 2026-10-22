@@ -690,7 +690,12 @@ D-122).
       starvation remains the separate throughput-first item below. The native
       build, all 3,483 shared checks (including 175 focused cases), and four
       affected model state/cohort cases pass on spark-b without skips.
-      The engine seams below remain open. Native focused, shared and affected tokenizer/template checks
+      **U5d complete (2026-10-22):** activation and reclamation have named
+      per-attempt phases owning snapshots, protection, rollback and accounting.
+      Native builds, all 3,483 shared checks and 13 actual-model swap, recovery
+      and observer cases pass on spark-b without skips; whole and adversarial
+      reviews are clean. The concrete LLM interface remains open.
+      Native focused, shared and affected tokenizer/template checks
       pass. The remaining serving-loop changes also take the
       heavy review path: a per-route stream encoder (`Channel` stops hard-coding
       OpenAI SSE; Messages owns `message_start`, indexed blocks,

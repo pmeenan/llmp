@@ -362,54 +362,28 @@ bool Server::RoomFor(std::uint64_t needed, std::string_view why, const Llm::Bran
       });
 }
 
-std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_view why,
-                              const Served* running, std::optional<memory::ReclaimKind> below_kind,
-                              bool partial, const Llm::Branch* spare, std::uint64_t token_incoming,
-                              std::span<const catalog::ExtentId> protect,
-                              PendingWeightEvictions* pending, bool allow_weights) {
-  if (reclaiming_ || !started_ || torn_down_ || needed == 0) {
-    return 0;
-  }
-  reclaiming_ = true;
-  const bool diagnostic = options_.diagnostic_budget_cap_bytes.has_value();
-  if (diagnostic) ++swap_host_phases_.reclaim_calls;
-  if (running == nullptr) {
-    running = resident_;
-  }
-  // Kept zeroed state backing holds nothing: it goes first, before the
-  // order prices anything (other models' before the running one's).
-  std::set<catalog::ExtentId> protected_ids(activation_protect_.begin(), activation_protect_.end());
-  protected_ids.insert(protect.begin(), protect.end());
-  const std::vector<catalog::ExtentId> protected_extents(protected_ids.begin(),
-                                                         protected_ids.end());
-  const std::uint64_t kept = ReleaseKept(needed, running, protected_extents);
-  if (kept >= needed) {
-    reclaiming_ = false;
-    return kept;
-  }
-  // Idle state's cost at the rates measured so far (once a GiB has moved).
+// One driver-owned reclaim attempt. Gather refreshes eligibility on each round;
+// taking a candidate waits outside node.Call and credits actual retirement.
+// Measured transfer rates stay fixed while per-kind accounting accumulates
+// across rounds. A pending weight selection is credited only by its swap.
+struct Server::Reclamation {
+  Server& server;
+  std::uint64_t needed;
+  bool states;
+  std::string_view why;
+  const Served* running;
+  std::optional<memory::ReclaimKind> below_kind;
+  bool partial;
+  const Llm::Branch* spare;
+  std::uint64_t token_incoming;
+  PendingWeightEvictions* pending;
+  bool allow_weights;
+  bool diagnostic;
+  std::set<catalog::ExtentId> protected_ids;
+  std::uint64_t kept = 0;
   double spill_rate = kSpillBytesPerSecond;
   double restore_rate = kRestoreBytesPerSecond;
-  {
-    Llm::SpillStats all;
-    for (const auto& m : models_) {
-      if (m->llm()) {
-        const Llm::SpillStats& s = static_cast<Llm&>(*m).spill_stats();
-        all.spilled_bytes += s.spilled_bytes;
-        all.spill_seconds += s.spill_seconds;
-        all.restored_bytes += s.restored_bytes;
-        all.restore_seconds += s.restore_seconds;
-      }
-    }
-    constexpr std::uint64_t kEnough = std::uint64_t{1} << 30U;
-    if (all.spilled_bytes >= kEnough && all.spill_seconds > 0) {
-      spill_rate = static_cast<double>(all.spilled_bytes) / all.spill_seconds;
-    }
-    if (all.restored_bytes >= kEnough && all.restore_seconds > 0) {
-      restore_rate = static_cast<double>(all.restored_bytes) / all.restore_seconds;
-    }
-  }
-  const auto k = [](memory::ReclaimKind kind) { return static_cast<std::size_t>(kind); };
+  double weight_rate = kWeightReadBytesPerSecond;
   std::array<std::uint64_t, memory::kReclaimKinds> count{};
   std::array<std::uint64_t, memory::kReclaimKinds> freed_by{};
   std::array<double, memory::kReclaimKinds> cost{};
@@ -422,30 +396,64 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
     std::uint32_t owner;
     std::uint64_t slot;
   };
-  std::vector<HistoryVictim> histories;
-  std::vector<TokenReclaimGroup> history_groups;
+  std::vector<HistoryVictim> histories{};
+  std::vector<TokenReclaimGroup> history_groups{};
   struct WeightView {
     std::uint32_t owner = 0;
     std::uint64_t generation = 0;
     std::uint64_t bytes = 0;
   };
-  std::map<catalog::ExtentId, WeightView> weight_views;
-  const double weight_rate = page_read_bytes_ >= (std::uint64_t{1} << 30U) && page_read_seconds_ > 0
-                                 ? static_cast<double>(page_read_bytes_) / page_read_seconds_
-                                 : kWeightReadBytesPerSecond;
-  // The candidates afresh each round (memory::RunReclaim): every model's
-  // plans and graphs, and with `states` the resident model's idle state.
-  const auto gather = [&](std::vector<memory::ReclaimCandidate>& candidates, double& below) {
-    const SwapPhaseTimer timer(diagnostic ? &swap_host_phases_.gather_seconds : nullptr);
+  std::map<catalog::ExtentId, WeightView> weight_views{};
+
+  static std::size_t KindIndex(memory::ReclaimKind kind) { return static_cast<std::size_t>(kind); }
+
+  void ReleaseEmptyBacking(std::span<const catalog::ExtentId> protect) {
+    // Empty kept state goes before restore-cost selection, with the same
+    // activation protection as all later candidates.
+    protected_ids.insert(server.activation_protect_.begin(), server.activation_protect_.end());
+    protected_ids.insert(protect.begin(), protect.end());
+    const std::vector<catalog::ExtentId> extents(protected_ids.begin(), protected_ids.end());
+    kept = server.ReleaseKept(needed, running, extents);
+  }
+
+  void MeasureRates() {
+    // Idle state's cost at the rates measured so far (once a GiB has moved).
+    {
+      Llm::SpillStats all;
+      for (const auto& m : server.models_) {
+        if (m->llm()) {
+          const Llm::SpillStats& s = static_cast<Llm&>(*m).spill_stats();
+          all.spilled_bytes += s.spilled_bytes;
+          all.spill_seconds += s.spill_seconds;
+          all.restored_bytes += s.restored_bytes;
+          all.restore_seconds += s.restore_seconds;
+        }
+      }
+      constexpr std::uint64_t kEnough = std::uint64_t{1} << 30U;
+      if (all.spilled_bytes >= kEnough && all.spill_seconds > 0) {
+        spill_rate = static_cast<double>(all.spilled_bytes) / all.spill_seconds;
+      }
+      if (all.restored_bytes >= kEnough && all.restore_seconds > 0) {
+        restore_rate = static_cast<double>(all.restored_bytes) / all.restore_seconds;
+      }
+    }
+    weight_rate =
+        server.page_read_bytes_ >= (std::uint64_t{1} << 30U) && server.page_read_seconds_ > 0
+            ? static_cast<double>(server.page_read_bytes_) / server.page_read_seconds_
+            : kWeightReadBytesPerSecond;
+  }
+
+  void Gather(std::vector<memory::ReclaimCandidate>& candidates, double& below) {
+    const SwapPhaseTimer timer(diagnostic ? &server.swap_host_phases_.gather_seconds : nullptr);
     idle_owner = nullptr;
     histories.clear();
     history_groups.clear();
     weight_views.clear();
     std::uint32_t resident_index = 0;
-    for (std::uint32_t i = 0; i < models_.size(); ++i) {
-      models_[i]->ReclaimCandidates(i, models_[i].get() == running, candidates);
-      if (states && models_[i]->llm()) {
-        auto& model = static_cast<Llm&>(*models_[i]);
+    for (std::uint32_t i = 0; i < server.models_.size(); ++i) {
+      server.models_[i]->ReclaimCandidates(i, server.models_[i].get() == running, candidates);
+      if (states && server.models_[i]->llm()) {
+        auto& model = static_cast<Llm&>(*server.models_[i]);
         for (std::size_t slot = 0; slot < model.branches(); ++slot) {
           auto branch = model.branch(slot);
           if (!branch || *branch == spare || !model.HistoryReclaimable(**branch)) {
@@ -458,29 +466,29 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
           histories.push_back({.model = &model, .branch = *branch, .owner = i, .slot = slot});
         }
       }
-      if (models_[i].get() == resident_) {
+      if (server.models_[i].get() == server.resident_) {
         resident_index = i;
       }
     }
-    if (options_.partial_weight_eviction && allow_weights) {
+    if (server.options_.partial_weight_eviction && allow_weights) {
       std::set<catalog::ExtentId> pending_ids;
       if (pending != nullptr) {
         pending_ids = pending->rejected;
         for (const auto& selected : pending->selected) pending_ids.insert(selected.extent);
       }
       std::vector<std::vector<catalog::ExtentId>> weights;
-      weights.reserve(models_.size());
-      for (const auto& model : models_) {
+      weights.reserve(server.models_.size());
+      for (const auto& model : server.models_) {
         weights.push_back(model.get() == running ? std::vector<catalog::ExtentId>{}
                                                  : model->weights());
       }
-      const auto listed = node_.Call(
+      const auto listed = server.node_.Call(
           [&]() -> Status {
             for (std::uint32_t i = 0; i < weights.size(); ++i) {
               for (const auto extent : weights[i]) {
                 if (protected_ids.contains(extent) || pending_ids.contains(extent)) continue;
-                const auto view = node_.catalog().Describe(extent);
-                const auto* source = node_.scheduler().SourceOf(extent);
+                const auto view = server.node_.catalog().Describe(extent);
+                const auto* source = server.node_.scheduler().SourceOf(extent);
                 if (!view || !catalog::Catalog::Evictable(*view) || source == nullptr ||
                     view->descriptor.memory_class != catalog::MemoryClass::kWeights ||
                     view->descriptor.recovery != catalog::Recovery::kFromArtifact)
@@ -499,14 +507,14 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
                      .bytes = view->descriptor.size.value(),
                      .last_use = view->last_use,
                      .restore_seconds = static_cast<double>(source->read.length) / weight_rate});
-                memory::SetUse(candidates.back(), models_[i]->weight_use());
+                memory::SetUse(candidates.back(), server.models_[i]->weight_use());
               }
             }
             return {};
           },
           "gathering inactive weight reclaim candidates");
       if (!listed) {
-        Log(std::format("listing inactive weights: {}", listed.error()));
+        server.Log(std::format("listing inactive weights: {}", listed.error()));
         std::erase_if(candidates,
                       [](const auto& c) { return c.kind == memory::ReclaimKind::kIdleWeights; });
         weight_views.clear();
@@ -520,8 +528,8 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
     for (const auto& history : histories) {
       capacities.push_back(history.model->IdleHistoryBytes(*history.branch));
     }
-    history_groups =
-        GroupTokenReclaim(capacities, token_memory_.used() + token_incoming, kExtent, needed);
+    history_groups = GroupTokenReclaim(capacities, server.token_memory_.used() + token_incoming,
+                                       kExtent, needed);
     std::size_t first = 0;
     for (const auto& group : history_groups) {
       const auto& oldest = histories[first];
@@ -546,15 +554,15 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
     }
     // The running model's next step finds what its last ones used.
     memory::ProtectFloor(candidates, running != nullptr ? running->plan_floor_bytes() : 0);
-    if (states && resident_ != nullptr && resident_->llm()) {
-      idle_owner = static_cast<Llm*>(resident_);
-      AddIdleStateCandidates(*idle_owner, resident_index, resident_ == running, spare,
+    if (states && server.resident_ != nullptr && server.resident_->llm()) {
+      idle_owner = static_cast<Llm*>(server.resident_);
+      AddIdleStateCandidates(*idle_owner, resident_index, server.resident_ == running, spare,
                              {.spill_rate = spill_rate,
                               .restore_rate = restore_rate,
-                              .spill_budget = spill_budget_,
+                              .spill_budget = server.spill_budget_,
                               .spill_room =
                                   [this](const Llm::Branch& branch, std::uint64_t bytes) {
-                                    return SpillRoomSeconds(bytes, {.spilling = &branch});
+                                    return server.SpillRoomSeconds(bytes, {.spilling = &branch});
                                   }},
                              candidates);
     }
@@ -562,39 +570,39 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
     if (below_kind) {
       // What the charge would cost to restore a GiB: its kind's measured
       // cost, or the GB10's when none is held.
-      double charged = cost[k(*below_kind)];
+      double charged = cost[KindIndex(*below_kind)];
       if (charged == 0) {
         charged = *below_kind == memory::ReclaimKind::kGraph ? kGraphSecondsPerGiB : 0;
       }
       below = memory::ReclaimInflation() + charged;
     }
-  };
-  // What the catalog charges in the node's domain now (none when it cannot
-  // be read): a take's gain, measured rather than assumed.
-  const auto occupancy = [&]() -> std::optional<std::uint64_t> {
+  }
+
+  std::optional<std::uint64_t> Occupancy() {
     std::optional<std::uint64_t> total;
-    if (!node_.Call(
+    if (!server.node_.Call(
             [&]() -> Status {
-              total = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+              total = server.node_.catalog().OccupancyOf(server.node_.domain()).Total().value();
               return {};
             },
             "sizing a reclaim's catalog charge")) {
       return std::nullopt;
     }
     return total;
-  };
-  const auto take = [&](const memory::ReclaimCandidate& c) -> std::uint64_t {
-    const SwapPhaseTimer timer(diagnostic ? &swap_host_phases_.take_seconds : nullptr);
+  }
+
+  std::uint64_t Take(const memory::ReclaimCandidate& c) {
+    const SwapPhaseTimer timer(diagnostic ? &server.swap_host_phases_.take_seconds : nullptr);
     std::uint64_t got = 0;
     if (c.kind == memory::ReclaimKind::kTokenHistory) {
       std::size_t first = 0;
       const auto prospective = [&]() {
-        const auto target = token_memory_.used() + token_incoming;
+        const auto target = server.token_memory_.used() + token_incoming;
         return (target / kExtent + (target % kExtent != 0 ? 1U : 0U)) * kExtent;
       };
       const auto before = prospective();
-      const auto charged_before = node_.token_charged();
-      const auto free_before = node_.FreeBytes();
+      const auto charged_before = server.node_.token_charged();
+      const auto free_before = server.node_.FreeBytes();
       for (const auto& group : history_groups) {
         const auto& oldest = histories[first];
         if (oldest.owner == c.owner && oldest.slot == c.id) {
@@ -609,8 +617,9 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
         first = group.end;
       }
       const auto after = prospective();
-      const auto free_after = node_.FreeBytes();
-      const auto actual_tokens = charged_before - std::min(charged_before, node_.token_charged());
+      const auto free_after = server.node_.FreeBytes();
+      const auto actual_tokens =
+          charged_before - std::min(charged_before, server.node_.token_charged());
       // Dropping a history can also release its resident native state. Count
       // the measured catalog gain once, including overlapping idle victims.
       got = free_before && free_after && *free_after >= *free_before ? *free_after - *free_before
@@ -637,17 +646,17 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
       if (held == 0) {
         return 0;  // gone meanwhile: nothing to give back
       }
-      if (held <= spill_budget_ && KeepWithinSpillBudget(held, {.spilling = *b})) {
-        const auto before = occupancy();
+      if (held <= server.spill_budget_ && server.KeepWithinSpillBudget(held, {.spilling = *b})) {
+        const auto before = Occupancy();
         if (auto spilled = idle_owner->SpillIdle(**b); spilled) {
           got = c.bytes;
         } else {
-          Log(std::format("{}'s idle conversation in slot {}: {}", idle_owner->name(), c.id,
-                          spilled.error()));
+          server.Log(std::format("{}'s idle conversation in slot {}: {}", idle_owner->name(), c.id,
+                                 spilled.error()));
           // A spill that failed part way counts as spilled (its slot is out
           // of every closure) though some of it stays resident: what it
           // actually freed, never its whole state.
-          const auto after = occupancy();
+          const auto after = Occupancy();
           got = before && after ? *before - std::min(*before, *after) : 0;
         }
       } else if (auto released = (*b)->ReleaseIdleState(); released) {
@@ -656,32 +665,33 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
       }
     } else {
       std::optional<std::uint64_t> before_charge;
-      if (options_.partial_weight_eviction) {
-        before_charge = occupancy();
+      if (server.options_.partial_weight_eviction) {
+        before_charge = Occupancy();
       }
-      got = models_[c.owner]->Reclaim(c.kind, c.id);
+      got = server.models_[c.owner]->Reclaim(c.kind, c.id);
       if (before_charge) {
-        const auto after = occupancy();
+        const auto after = Occupancy();
         got = after ? *before_charge - std::min(*before_charge, *after) : 0;
       }
     }
     if (got != 0) {
       took = true;
-      ++count[k(c.kind)];
-      freed_by[k(c.kind)] += got;
+      ++count[KindIndex(c.kind)];
+      freed_by[KindIndex(c.kind)] += got;
     }
     return got;
-  };
-  const auto take_weights = [&](std::span<const memory::ReclaimCandidate> victims,
-                                std::span<std::uint64_t> freed) {
-    const SwapPhaseTimer timer(diagnostic ? &swap_host_phases_.take_seconds : nullptr);
+  }
+
+  void TakeWeights(std::span<const memory::ReclaimCandidate> victims,
+                   std::span<std::uint64_t> freed) {
+    const SwapPhaseTimer timer(diagnostic ? &server.swap_host_phases_.take_seconds : nullptr);
     std::vector<catalog::ExtentId> eligible;
-    const auto listed = node_.Call(
+    const auto listed = server.node_.Call(
         [&]() -> Status {
           for (const auto& c : victims) {
             const auto extent = WeightExtent(c.id);
             const auto known = weight_views.find(extent);
-            const auto view = node_.catalog().Describe(extent);
+            const auto view = server.node_.catalog().Describe(extent);
             if (known != weight_views.end() && known->second.owner == c.owner && view &&
                 view->content_generation == known->second.generation &&
                 view->descriptor.size.value() == c.bytes && catalog::Catalog::Evictable(*view) &&
@@ -692,14 +702,14 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
         },
         "rechecking selected idle weights");
     if (!listed || eligible.empty()) return;
-    const auto evicted = node_.Evict(eligible);
-    if (!evicted) Log(std::format("reclaiming idle weights: {}", evicted.error()));
+    const auto evicted = server.node_.Evict(eligible);
+    if (!evicted) server.Log(std::format("reclaiming idle weights: {}", evicted.error()));
     const std::set<catalog::ExtentId> attempted(eligible.begin(), eligible.end());
-    const auto reconciled = node_.Call(
+    const auto reconciled = server.node_.Call(
         [&]() -> Status {
           for (std::size_t i = 0; i < victims.size(); ++i) {
             const auto extent = WeightExtent(victims[i].id);
-            const auto view = node_.catalog().Describe(extent);
+            const auto view = server.node_.catalog().Describe(extent);
             if (attempted.contains(extent) && view &&
                 view->state == catalog::ExtentState::kNonresident)
               freed[i] = victims[i].bytes;
@@ -711,93 +721,141 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
     for (const auto bytes : freed) {
       if (bytes != 0) {
         took = true;
-        ++count[k(memory::ReclaimKind::kIdleWeights)];
-        freed_by[k(memory::ReclaimKind::kIdleWeights)] += bytes;
+        ++count[KindIndex(memory::ReclaimKind::kIdleWeights)];
+        freed_by[KindIndex(memory::ReclaimKind::kIdleWeights)] += bytes;
       }
     }
-  };
-  // All of it or nothing (memory::RunReclaim): a selection that cannot
-  // cover what is needed reclaims nothing (the caller waits or refuses);
-  // another round, without it, only when a victim gave back less than its
-  // count (held, or gone meanwhile), and what the rounds before took then
-  // stays taken even when the rest cannot be covered.
-  memory::ReclaimRun run;
-  if (pending == nullptr) {
-    const auto begin = diagnostic ? Clock::now() : Clock::time_point{};
-    const auto gather_before = swap_host_phases_.gather_seconds;
-    const auto take_before = swap_host_phases_.take_seconds;
-    run = memory::RunReclaim(needed - kept, partial, gather, take, take_weights);
-    if (diagnostic) {
-      swap_host_phases_.selection_bookkeeping_seconds += std::max(
-          0.0, Seconds(Clock::now() - begin) - (swap_host_phases_.gather_seconds - gather_before) -
-                   (swap_host_phases_.take_seconds - take_before));
-    }
-  } else {
-    std::vector<memory::ReclaimCandidate> candidates;
-    double below = std::numeric_limits<double>::infinity();
-    gather(candidates, below);
-    memory::ReclaimPlan plan;
-    {
-      const SwapPhaseTimer timer(diagnostic ? &swap_host_phases_.selection_bookkeeping_seconds
-                                            : nullptr);
-      plan = memory::SelectReclaim(candidates, needed - kept, below);
-    }
-    if (!plan.sufficient) {
-      run.short_of_need = true;
+  }
+
+  memory::ReclaimRun SelectAndTake() {
+    memory::ReclaimRun run;
+    // All of it or nothing (memory::RunReclaim): a selection that cannot
+    // cover what is needed reclaims nothing (the caller waits or refuses);
+    // another round, without it, only when a victim gave back less than its
+    // count (held, or gone meanwhile), and what the rounds before took then
+    // stays taken even when the rest cannot be covered.
+    if (pending == nullptr) {
+      const auto begin = diagnostic ? Clock::now() : Clock::time_point{};
+      const auto gather_before = server.swap_host_phases_.gather_seconds;
+      const auto take_before = server.swap_host_phases_.take_seconds;
+      run = memory::RunReclaim(
+          needed - kept, partial,
+          [this](auto& candidates, double& below) { Gather(candidates, below); },
+          [this](const auto& candidate) { return Take(candidate); },
+          [this](auto victims, auto freed) { TakeWeights(victims, freed); });
+      if (diagnostic) {
+        server.swap_host_phases_.selection_bookkeeping_seconds +=
+            std::max(0.0, Seconds(Clock::now() - begin) -
+                              (server.swap_host_phases_.gather_seconds - gather_before) -
+                              (server.swap_host_phases_.take_seconds - take_before));
+      }
     } else {
-      std::uint64_t pending_credit = 0;
-      for (std::size_t i = 0; i < plan.victims.size() && run.freed + pending_credit < needed - kept;
-           ++i) {
-        const auto& c = candidates[plan.victims[i]];
-        if (c.kind == memory::ReclaimKind::kIdleWeights) {
-          const auto extent = WeightExtent(c.id);
-          const auto known = weight_views.find(extent);
-          if (known != weight_views.end()) {
-            pending->selected.push_back({.extent = extent,
-                                         .generation = known->second.generation,
-                                         .candidate = c,
-                                         .priority = plan.priorities[i]});
-            pending_credit += c.bytes;
-          }
-        } else {
-          const auto got = take(c);
-          if (got != 0) {
-            memory::RaiseReclaimInflation(plan.priorities[i]);
-            run.freed += got;
+      std::vector<memory::ReclaimCandidate> candidates;
+      double below = std::numeric_limits<double>::infinity();
+      Gather(candidates, below);
+      memory::ReclaimPlan plan;
+      {
+        const SwapPhaseTimer timer(
+            diagnostic ? &server.swap_host_phases_.selection_bookkeeping_seconds : nullptr);
+        plan = memory::SelectReclaim(candidates, needed - kept, below);
+      }
+      if (!plan.sufficient) {
+        run.short_of_need = true;
+      } else {
+        std::uint64_t pending_credit = 0;
+        for (std::size_t i = 0;
+             i < plan.victims.size() && run.freed + pending_credit < needed - kept; ++i) {
+          const auto& c = candidates[plan.victims[i]];
+          if (c.kind == memory::ReclaimKind::kIdleWeights) {
+            const auto extent = WeightExtent(c.id);
+            const auto known = weight_views.find(extent);
+            if (known != weight_views.end()) {
+              pending->selected.push_back({.extent = extent,
+                                           .generation = known->second.generation,
+                                           .candidate = c,
+                                           .priority = plan.priorities[i]});
+              pending_credit += c.bytes;
+            }
+          } else {
+            const auto got = Take(c);
+            if (got != 0) {
+              memory::RaiseReclaimInflation(plan.priorities[i]);
+              run.freed += got;
+            }
           }
         }
       }
     }
+    return run;
   }
-  const std::uint64_t freed = run.freed + kept;
-  if (freed == 0 && run.short_of_need) {
-    ++reclaims_short_;
-  } else if (pending == nullptr && !partial && freed != 0 && freed < needed) {
-    ++reclaims_cut_short_;
+
+  std::uint64_t Finish(const memory::ReclaimRun& run) {
+    const std::uint64_t freed = run.freed + kept;
+    if (freed == 0 && run.short_of_need) {
+      ++server.reclaims_short_;
+    } else if (pending == nullptr && !partial && freed != 0 && freed < needed) {
+      ++server.reclaims_cut_short_;
+    }
+    if (freed != 0) {
+      const SwapPhaseTimer timer(diagnostic ? &server.swap_host_phases_.heap_release_seconds
+                                            : nullptr);
+      if (diagnostic) ++server.swap_host_phases_.heap_release_calls;
+      platform::ReleaseFreeHeap();
+    }
+    if (took) {
+      const auto mib = [](std::uint64_t b) { return static_cast<double>(b) / (1U << 20U); };
+      using K = memory::ReclaimKind;
+      // Counts, bytes and measured costs only (D-014).
+      server.Log(std::format(
+          "reclaimed {:.1f} MiB of {:.1f} MiB needed for {}: {} graphs ({:.1f} MiB), {} plans "
+          "({:.1f} MiB), {} idle weights ({:.1f} MiB), {} idle conversations {} ({:.1f} MiB); "
+          "measured s a GiB: graphs {:.2f}, "
+          "plans {:.2f}, idle state {:.2f}; {} history groups discarded ({:.1f} MiB capacity)",
+          mib(freed), mib(needed), why, count[KindIndex(K::kGraph)],
+          mib(freed_by[KindIndex(K::kGraph)]), count[KindIndex(K::kPlan)],
+          mib(freed_by[KindIndex(K::kPlan)]), count[KindIndex(K::kIdleWeights)],
+          mib(freed_by[KindIndex(K::kIdleWeights)]), count[KindIndex(K::kIdleState)],
+          dropped != 0 ? "dropped" : "spilled", mib(freed_by[KindIndex(K::kIdleState)]),
+          cost[KindIndex(K::kGraph)], cost[KindIndex(K::kPlan)], cost[KindIndex(K::kIdleState)],
+          count[KindIndex(K::kTokenHistory)], mib(freed_by[KindIndex(K::kTokenHistory)])));
+    }
+    return freed;
   }
-  if (freed != 0) {
-    const SwapPhaseTimer timer(diagnostic ? &swap_host_phases_.heap_release_seconds : nullptr);
-    if (diagnostic) ++swap_host_phases_.heap_release_calls;
-    platform::ReleaseFreeHeap();
+};
+
+std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_view why,
+                              const Served* running, std::optional<memory::ReclaimKind> below_kind,
+                              bool partial, const Llm::Branch* spare, std::uint64_t token_incoming,
+                              std::span<const catalog::ExtentId> protect,
+                              PendingWeightEvictions* pending, bool allow_weights) {
+  if (reclaiming_ || !started_ || torn_down_ || needed == 0) {
+    return 0;
   }
-  if (took) {
-    const auto mib = [](std::uint64_t b) { return static_cast<double>(b) / (1U << 20U); };
-    using K = memory::ReclaimKind;
-    // Counts, bytes and measured costs only (D-014).
-    Log(std::format(
-        "reclaimed {:.1f} MiB of {:.1f} MiB needed for {}: {} graphs ({:.1f} MiB), {} plans "
-        "({:.1f} MiB), {} idle weights ({:.1f} MiB), {} idle conversations {} ({:.1f} MiB); "
-        "measured s a GiB: graphs {:.2f}, "
-        "plans {:.2f}, idle state {:.2f}; {} history groups discarded ({:.1f} MiB capacity)",
-        mib(freed), mib(needed), why, count[k(K::kGraph)], mib(freed_by[k(K::kGraph)]),
-        count[k(K::kPlan)], mib(freed_by[k(K::kPlan)]), count[k(K::kIdleWeights)],
-        mib(freed_by[k(K::kIdleWeights)]), count[k(K::kIdleState)],
-        dropped != 0 ? "dropped" : "spilled", mib(freed_by[k(K::kIdleState)]), cost[k(K::kGraph)],
-        cost[k(K::kPlan)], cost[k(K::kIdleState)], count[k(K::kTokenHistory)],
-        mib(freed_by[k(K::kTokenHistory)])));
-  }
-  reclaiming_ = false;
-  return freed;
+  reclaiming_ = true;
+  struct ReclaimGuard {
+    bool& active;
+    ~ReclaimGuard() { active = false; }
+  } guard{reclaiming_};
+  const bool diagnostic = options_.diagnostic_budget_cap_bytes.has_value();
+  if (diagnostic) ++swap_host_phases_.reclaim_calls;
+  Reclamation reclaim{.server = *this,
+                      .needed = needed,
+                      .states = states,
+                      .why = why,
+                      .running = running != nullptr ? running : resident_,
+                      .below_kind = below_kind,
+                      .partial = partial,
+                      .spare = spare,
+                      .token_incoming = token_incoming,
+                      .pending = pending,
+                      .allow_weights = allow_weights,
+                      .diagnostic = diagnostic,
+                      .protected_ids = {}};
+  reclaim.ReleaseEmptyBacking(protect);
+  if (reclaim.kept >= needed) return reclaim.kept;
+  reclaim.MeasureRates();
+  const auto run = reclaim.SelectAndTake();
+  return reclaim.Finish(run);
 }
 
 Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out,

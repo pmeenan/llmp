@@ -1291,6 +1291,9 @@ The entries below record each change; the record of the milestone is
 
 ### Changed
 
+- Model activation and memory reclamation use named phases with per-attempt
+  ownership of snapshots, rollback and accounting (M3.5 U5d).
+
 - Numerical optimizations join component semantics and stored encodings to
   explicit device evidence (M3.5 U4, D-126), consistently for pinned and new
   checkpoints. Missing evidence preserves exact arithmetic and is reported;

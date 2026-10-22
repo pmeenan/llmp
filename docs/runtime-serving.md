@@ -330,7 +330,14 @@ the paid pending rows and publishes them before another native submission.
 
 The runtime separates startup and kept-model bookkeeping (`serving.cc`), reclaim
 and spill budgets (`serving_memory.cc`), and physical swaps and recovery
-(`serving_swap.cc`). Service lifetime stays in `serve_api.cc`; serial and
+(`serving_swap.cc`). Each activation owns its incoming snapshot and rollback
+state across preparation, transfer, accounting, validation and publication;
+receipt sealing and idle-file closure surround every exit. Reclaim owns one
+attempt's measured rates, protected extents and candidate snapshots across
+empty-backing release, gathering, selection, retirement and accounting. Each
+retry gathers eligibility again, and pending swap victims are accounted only
+after transfer. Catalog calls snapshot or recheck metadata; GPU and disk waits
+remain outside them. Service lifetime stays in `serve_api.cc`; serial and
 cooperative requests run in `service_backend.cc` and `service_cohort.cc`, sharing
 paid request ownership from `service_request`. Connection I/O, response streaming
 and the cooperative HTTP driver live in `api_connection.cc`, `api_stream.cc` and
