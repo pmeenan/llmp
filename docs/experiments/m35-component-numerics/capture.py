@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -20,11 +21,12 @@ import time
 EXPECTED = {
     "A": "405c5930accdc009ad8e824d2fcdeff00f063877f0d936c2b1a5dda6b28e519e",
     "B": "e47f5b30150e9e8a357fa204c423de10ab706c8c8a7f02f0bc48887b5b2a04af",
+    "C": "6e7bc211551d17b7ba752d319b91d0937c29ab471853b7382da1fbb22093d68f",
 }
 HERE = pathlib.Path(__file__).resolve().parent
 
 
-def load_speed_gate(repo):
+def load_speed_gate(repo, *, debug_plans=True):
     spec = importlib.util.spec_from_file_location("llmp_speed_gate", repo / "tools/speed_gate.py")
     assert spec and spec.loader
     sg = importlib.util.module_from_spec(spec)
@@ -40,8 +42,9 @@ def load_speed_gate(repo):
             self.log = open(run_dir / "runtime.log", "wb")
             self.started = time.monotonic()
             self.proc = subprocess.Popen(
-                [str(runtime), "--config", str(config), "--anchor", str(run_dir / "enrollment"),
-                 "--debug-plans"], stdout=self.log, stderr=subprocess.STDOUT,
+                [str(runtime), "--config", str(config), "--anchor", str(run_dir / "enrollment")]
+                + (["--debug-plans"] if debug_plans else []),
+                stdout=self.log, stderr=subprocess.STDOUT,
                 env=sg.arm_env(runtime_env))
 
         def wait_ready(self, timeout=420):
@@ -151,7 +154,7 @@ def main() -> int:
     p.add_argument("--repo", type=pathlib.Path, default=HERE.parents[2],
                    help="repository containing the pinned tools/speed_gate.py")
     p.add_argument("--family", required=True, choices=("qwen38", "qwen38-gguf", "deepseek"))
-    p.add_argument("--arm", required=True, choices=("A", "B"))
+    p.add_argument("--arm", required=True, choices=("A", "B", "C"))
     p.add_argument("--runtime", required=True, type=pathlib.Path)
     p.add_argument("--out", required=True, type=pathlib.Path,
                    help="private per-arm directory; use same parent for A and B")
@@ -159,6 +162,7 @@ def main() -> int:
     p.add_argument("--corpus", type=pathlib.Path,
                    default=pathlib.Path("~/.local/share/llmp/corpus/m3-reference-corpus.txt").expanduser())
     a = p.parse_args()
+    os.umask(0o077)
     out = a.out.expanduser().absolute()
     # Reserve the exact namespace once, including failed attempts. Never erase a prior run.
     out.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -195,10 +199,15 @@ def main() -> int:
     # runtime hash, prompt/score hashes and target logprobs. Same host/port/config
     # semantics are held fixed across arms; only fresh data/anchor paths vary.
     args = argparse.Namespace(
-        family=a.family, runtime=str(runtime), label=("old" if a.arm == "A" else "new"),
+        family=a.family, runtime=str(runtime), label={"A": "old", "B": "new", "C": "candidate-c"}[a.arm],
         out=str(out), share=str(a.share.expanduser().resolve()), corpus=str(a.corpus.expanduser().resolve()), port=18114,
         config_template=str(config_template), runtime_env=None)
     rc = sg.cmd_quality(args)
+    after = sha256_file(runtime)
+    capture_metadata["runtime_sha256_after"] = after
+    (out / "capture-metadata.json").write_text(json.dumps(capture_metadata, indent=2) + "\n")
+    if after != actual:
+        raise SystemExit("runtime changed during the capture")
     quality_dir = out / "quality"
     name = f"{family.name}-quality-{args.label}"
     log = out / "work" / name / "runtime.log"

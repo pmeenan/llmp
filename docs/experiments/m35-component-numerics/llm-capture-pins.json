@@ -57,6 +57,20 @@
     "B": {
       "file": "m35-u4-candidate-diagnostic-runtime",
       "sha256": "e47f5b30150e9e8a357fa204c423de10ab706c8c8a7f02f0bc48887b5b2a04af"
+    },
+    "C": {
+      "file": "m35-u4-candidate-c-diagnostic-runtime",
+      "sha256": "6e7bc211551d17b7ba752d319b91d0937c29ab471853b7382da1fbb22093d68f",
+      "base_commit": "5ec811a4413982630c05e7b6c2448f51f1191883",
+      "u4_source_patch_sha256": "08c82f5832358a8c68489bfbb2b1a48757e71ec9ca5331293b459e8da3332a30",
+      "diagnostic_patch_sha256": "f7b9304a4ae0c29b6f7bab9490c7c2336103225a0b9392e13a3953c99e4e3230",
+      "repair_patch_sha256": "b4e31fa6be6308bbf29499b1c2182fa4c283c8c4330c270321a0452adcbc93d1",
+      "complete_patch_sha256": "1e992eddb8b38eee1141e857675caf4595131fb39aa8a0ab156e90b61a0a3480",
+      "source_manifest_sha256": "4a97757784de64faa857480a559bb924a2309324facbd34decfe42dcdbd28e9f",
+      "build_host": "spark-b / spark-56f5",
+      "capture_host": "spark-c4e2",
+      "focused_tests": 6,
+      "tests_result": "PASS; no skips"
     }
   },
   "configs": {
@@ -88,5 +102,16 @@
     "driver": "580.178.04",
     "device": "GB10"
   },
-  "quality_pair_sha256": "9bf1d1597a8d6e97d65a648a9db68d8a51c694cc3772a6f01ba158fc420137bd"
+  "quality_pair_sha256": "9bf1d1597a8d6e97d65a648a9db68d8a51c694cc3772a6f01ba158fc420137bd",
+  "prior_ab_registration": {
+    "commit": "a9b0d7ec1ba81b1b1000432e6a91db5e8779d3f1",
+    "capture_sha256": "6db6600f2a54a17385c37e21b0e9c77ccd7428efcfb1a6e35d79807c94133ce0",
+    "pins_sha256": "e4388cef7195d23a6c37c2e955954bf173e1e488dcc2dd17afafa7c7bdfe1e2d",
+    "scope": "Original A/B registration and captures remain preserved; B is negative evidence for the device-facts plumbing defect."
+  },
+  "greedy_baseline_receipts": {
+    "qwen38-gguf": "28c49af3b2966b3cab4c2b855ee56a55786c5e77d28f790de0ea5d3bb9839f10",
+    "qwen38": "2ccaad7feb3abde7edc953330364c40ebada4e2d727c43ffbfac34c14ba7ef52",
+    "deepseek": "2efb65a22c09baedb50177c9b0d6b39eeb66817354c663eb2b1bcfdd8d1ee79e"
+  }
 }

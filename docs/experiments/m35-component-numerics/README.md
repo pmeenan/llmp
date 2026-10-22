@@ -408,3 +408,112 @@ Retain identity provenance, but eligibility/evidence/schema-digest churn alone
 is not changed arithmetic; genuine implementation changes cannot be discarded
 as metadata. Ambiguous or incomplete capture fails closed. The original quality
 and matched-speed obligations above apply if arithmetic changes.
+
+## Prospective C repair and greedy-text amendment (2026-10-22)
+
+This amendment is registered before C inference. The original A/B registration
+at `a9b0d7ec1ba81b1b1000432e6a91db5e8779d3f1`, its helper/pin hashes and all
+completed A/B captures remain retained. B is negative evidence: native serving
+passed the empty wrapper's device facts after backend declaration, although the
+owner held the actual GB10 facts. Numerical evidence consequently failed to bind,
+changing selected arithmetic rather than only receipt identities. B's successful
+jobs and score controls do not qualify that defect or establish U4 acceptance.
+
+**C** is the same base `5ec811a4413982630c05e7b6c2448f51f1191883`, U4 patch
+`08c82f5832358a8c68489bfbb2b1a48757e71ec9ca5331293b459e8da3332a30` and diagnostic
+patch `f7b9304a4ae0c29b6f7bab9490c7c2336103225a0b9392e13a3953c99e4e3230`, plus
+the reviewed device-facts repair
+`b4e31fa6be6308bbf29499b1c2182fa4c283c8c4330c270321a0452adcbc93d1`.
+The serving admission boundary now resolves device facts by const reference
+from the backend owner and uses its existing construction payer. It adds no
+default architecture, numerical grant, encoding, row domain or approval override.
+Mutable wrapper facts and payers cannot replace the owner's authority.
+
+The complete C source patch is
+`1e992eddb8b38eee1141e857675caf4595131fb39aa8a0ab156e90b61a0a3480`; its source
+manifest is `4a97757784de64faa857480a559bb924a2309324facbd34decfe42dcdbd28e9f`.
+The frozen runtime is
+`/home/pmeenan/src/llmp/build/spark-native/src/runtime/m35-u4-candidate-c-diagnostic-runtime`,
+SHA-256 `6e7bc211551d17b7ba752d319b91d0937c29ab471853b7382da1fbb22093d68f`.
+The native runtime/admission build and six focused admission tests passed on
+Spark B with no skips; independent whole-change and adversarial review was
+clean. The executable alone was copied to the same path on Spark A; its hash
+and all ten resolved dependency hashes match the build host. C captures run on
+Spark A (`spark-c4e2`), the original A capture host. The image registration and
+its separately frozen executable remain unchanged.
+
+[llm-capture-pins.json](llm-capture-pins.json) appends C without replacing the A/B
+arm identities. [capture.py](capture.py) accepts explicit `--arm C`, hardcodes
+its executable hash without an override, and uses receipt label `candidate-c`.
+All current artifact/config/source metadata, corpus bytes, the two greedy
+prompts, their `max_tokens=128`, score passage, 996/966 target counts, parser and
+quality bounds remain identical to the original capture registration. Runtime
+hashes are checked before and after capture. New files use private 0700
+directories and 0600 files. Every attempt uses a fresh output directory.
+
+Run one C capture per family in its own exclusive 600-second supervised job,
+with the same 420-second readiness and 20-second retirement bounds. For example,
+the job step is:
+
+```sh
+/home/pmeenan/.local/bin/mise exec -- python3 /home/pmeenan/src/llmp/docs/experiments/m35-component-numerics/capture.py --family qwen38 --arm C --runtime /home/pmeenan/src/llmp/build/spark-native/src/runtime/m35-u4-candidate-c-diagnostic-runtime --out /home/pmeenan/.local/share/llmp/m35-u4-capture/qwen38-C-ATTEMPT
+```
+
+Reuse each retained A capture for the A/C comparison. Reparse successful-use
+inventories and compare selected operations, product arithmetic, concrete
+operand encodings/layouts/dimensions/strides/views, routes and matched shapes;
+do not infer restored arithmetic from scores or receipt hashes. Pair all actual
+target losses by position and token ID. Unchanged arithmetic can reuse its
+existing source-quality evidence only with the required controls. If arithmetic
+still changes, all original obligations remain: the registered GGUF/DeepSeek
+quality bounds, native Qwen's independent four-document 1016-target Mia check,
+and the affected workload's matched 10% speed screen. Native Qwen's ordinary
+996-target A/C pairing remains informational. No C result is claimed here.
+
+### Supplementary greedy text, fixed before execution
+
+The original pinned speed helper retained reply hashes but deliberately omitted
+reply text. Therefore the completed A/B captures cannot support semantic review
+of those replies. [greedy_capture.py](greedy_capture.py) supplies the missing
+text in separate prospective jobs for A and C, one family/arm per job after the
+three C plan captures. It uses the same frozen runtime for that arm and the
+same current configuration, artifacts, source inputs, fresh service data and
+the two prompts in their original order. The request bodies exactly retain
+`temperature=0`, `stream=true`, `stream_options.include_usage=true`,
+`max_tokens=128`, and the original single user message. It adds no score or
+timing workload. Debug-plan output is disabled for these text-only captures;
+none of their counters qualifies as a timing sample.
+
+The collector uses the pinned speed helper's service launch with readiness
+420 seconds and retirement 20 seconds, inside an exclusive
+`spark-job --gpu --timeout 600` job. Its immutable runtime pin is checked before
+and after the requests. Output must be a new directory: 0700 directories and
+0600 files retain exact request JSON, raw SSE through `[DONE]`, ordered decoded
+events, reasoning and content text, the original event-order concatenation,
+and provenance. No reply text or raw stream is committed to Git. Parser checks
+reject malformed events, invalid choice/delta schemas, missing completion or
+usage, duplicate completion/usage, and text following completion; split UTF-8
+and CRLF boundaries are covered by regressions.
+
+For each streamed delta, the digest appends `reasoning` and then `content`,
+exactly as the pinned `speed_gate.stream_chat` did. It does not concatenate all
+reasoning before all content. A supplementary reply qualifies only if its
+digest, finish reason and entire usage object match the corresponding prior
+quality receipt. The retained A receipt hashes are frozen in the pins; C receipt
+metadata must bind the current C runtime/helper/pins and source inputs. All
+score prompt/response hashes and complete target validation are checked before
+starting the supplementary service. A mismatch retains the new raw evidence
+and fails qualification; it cannot substitute a different reply for the
+registered capture or silently erase an earlier attempt. Matching text permits
+semantic inspection of that exact captured reply, not a new numerical bound.
+
+For example, after a successful C capture, the supplementary job step is:
+
+```sh
+/home/pmeenan/.local/bin/mise exec -- python3 /home/pmeenan/src/llmp/docs/experiments/m35-component-numerics/greedy_capture.py --family qwen38 --arm C --runtime /home/pmeenan/src/llmp/build/spark-native/src/runtime/m35-u4-candidate-c-diagnostic-runtime --quality-receipt /home/pmeenan/.local/share/llmp/m35-u4-capture/qwen38-C-ATTEMPT/quality/qwen38-quality-candidate-c.json --out /home/pmeenan/.local/share/llmp/m35-u4-greedy/qwen38-C-ATTEMPT
+```
+
+For A, select its original frozen diagnostic executable and retained
+`qwen38-quality-old.json` (or the corresponding GGUF/DeepSeek receipt), with a
+distinct fresh output directory. These semantic checks neither overwrite the
+earlier captures nor change any independent-reference or speed obligation.
