@@ -580,7 +580,12 @@ std::expected<bool, Error> Regex::TestClass(std::uint32_t index, char32_t cp, Re
 }
 
 std::expected<std::size_t, Error> Regex::Match(std::span<const char32_t> text, std::size_t start,
-                                               RegexBudget& budget) const {
+                                               RegexBudget& budget, bool* consulted_end,
+                                               bool* append_may_shrink) const {
+  const auto end_read = [&](bool may_shrink = false) {
+    if (consulted_end != nullptr) *consulted_end = true;
+    if (may_shrink && append_may_shrink != nullptr) *append_may_shrink = true;
+  };
   struct Counter {
     std::uint32_t count = 0, previous = 0, mark = 0, stalled = 0;
   };
@@ -642,11 +647,13 @@ std::expected<std::size_t, Error> Regex::Match(std::span<const char32_t> text, s
           if (!matched) break;
           ++pos;
         }
+        if (matched && part < ins.b && pos == text.size()) end_read();
         matched = matched && part == ins.b;
         if (matched) ++pc;
         break;
       }
       case Op::kAheadClass: {
+        if (pos == text.size()) end_read();
         matched = false;
         if (pos < text.size()) {
           auto hit = TestClass(ins.a, text[pos], budget, class_stack);
@@ -657,6 +664,7 @@ std::expected<std::size_t, Error> Regex::Match(std::span<const char32_t> text, s
         break;
       }
       case Op::kClass: {
+        if (pos == text.size()) end_read();
         matched = false;
         if (pos < text.size()) {
           auto hit = TestClass(ins.a, text[pos], budget, class_stack);
@@ -678,6 +686,7 @@ std::expected<std::size_t, Error> Regex::Match(std::span<const char32_t> text, s
           if (!*hit) break;
           ++pos;
         }
+        if (pos == text.size() && pos - begin < ins.c) end_read();
         matched = pos - begin >= ins.b;
         if (!matched) break;
         const auto minimum = begin + ins.b;
@@ -745,15 +754,18 @@ std::expected<std::size_t, Error> Regex::Match(std::span<const char32_t> text, s
         ++pc;
         break;
       case Op::kBegin:
+        if (pos == text.size() && pos > 0 && ins.a != 0) end_read();
         matched =
             pos == 0 || (ins.a != 0 && pos > 0 && pos < text.size() && text[pos - 1] == U'\n');
         if (matched) ++pc;
         break;
       case Op::kEnd:
+        if (pos == text.size()) end_read(true);
         matched = pos == text.size() || (ins.a != 0 && pos < text.size() && text[pos] == U'\n');
         if (matched) ++pc;
         break;
       case Op::kNotNonSpace:
+        if (pos == text.size()) end_read(true);
         matched = pos == text.size() || unicode::IsWhiteSpace(text[pos]);
         if (matched) ++pc;
         break;
@@ -782,14 +794,20 @@ std::expected<std::size_t, Error> Regex::Match(std::span<const char32_t> text, s
 }
 
 std::expected<void, Error> Regex::Split(std::span<const char32_t> text,
-                                        std::vector<std::uint32_t>& lengths,
-                                        RegexBudget& budget) const {
+                                        std::vector<std::uint32_t>& lengths, RegexBudget& budget,
+                                        std::size_t* stable_prefix, bool* append_may_shrink) const {
+  if (stable_prefix != nullptr) *stable_prefix = 0;
+  if (append_may_shrink != nullptr) *append_may_shrink = false;
+  bool unstable = false;
   if (!base::Pulse()) return Fail(Rule::kCancelled, "regex was asked to stop");
   if (text.size() >= kUnlimited) return Fail(Rule::kBounds, "regex input code point limit");
   std::size_t gap = 0, pos = 0;
   while (pos <= text.size()) {
     if (auto paid = budget.Pay(); !paid) return paid;
-    auto end = Match(text, pos, budget);
+    bool consulted_end = false;
+    auto end = Match(text, pos, budget, stable_prefix != nullptr ? &consulted_end : nullptr,
+                     append_may_shrink);
+    unstable = unstable || consulted_end;
     if (!end) return std::unexpected(end.error());
     if (*end == kNoMatch) {
       ++pos;
@@ -798,12 +816,14 @@ std::expected<void, Error> Regex::Split(std::span<const char32_t> text,
     if (*end == pos) {
       if (pos > gap) lengths.push_back(static_cast<std::uint32_t>(pos - gap));
       gap = pos;
+      if (!unstable && stable_prefix != nullptr) *stable_prefix = gap;
       ++pos;
       continue;
     }
     if (pos > gap) lengths.push_back(static_cast<std::uint32_t>(pos - gap));
     lengths.push_back(static_cast<std::uint32_t>(*end - pos));
     gap = pos = *end;
+    if (!unstable && stable_prefix != nullptr) *stable_prefix = gap;
   }
   if (gap < text.size()) lengths.push_back(static_cast<std::uint32_t>(text.size() - gap));
   return {};

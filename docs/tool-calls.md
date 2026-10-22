@@ -7,7 +7,9 @@ The M3.5 foundation in `chat/tool_calls.h` is protocol-neutral. It does not
 turn on tools in the chat route. Public request decoding, admitted-memory
 payments, tokenizer-bound forcing in sampling/verification, route event
 adaptation and client qualification remain the next slice. Strict tool
-arguments remain M7's constrained-output work.
+arguments remain M7's constrained-output work. The tokenizer now supplies the
+[canonical span planner](tokenizer.md), including held unstable tails; its
+runtime sampling/verification and causal-unit wiring are still separate work.
 
 `ToolRequest` owns normalized definitions and their JSON documents. Its neutral
 choice is auto, none, required or named, with a parallel-call flag. Named

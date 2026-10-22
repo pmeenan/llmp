@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -190,6 +191,202 @@ struct Tokenizer::Impl {
       }
     }
     return best;
+  }
+
+  // True only for a trie prefix that reaches the available end and may
+  // continue. Unlike a matched atom, such a prefix is not a cut vertex yet.
+  bool OpenSpecial(std::string_view text, std::size_t at, unsigned phase) const {
+    std::uint32_t node = phase;
+    for (std::size_t p = at; p < text.size(); ++p) {
+      if (p - at >= kMaxSpecialBytes) return false;
+      const auto found = edges.find((static_cast<std::uint64_t>(node) << 8U) |
+                                    static_cast<unsigned char>(text[p]));
+      if (found == edges.end()) return false;
+      node = found->second;
+    }
+    if (text.size() - at >= kMaxSpecialBytes) return false;
+    // Disallowed descendants may make this conservative, never optimistic.
+    for (unsigned byte = 0; byte < 256; ++byte)
+      if (edges.contains((static_cast<std::uint64_t>(node) << 8U) | byte)) return true;
+    return false;
+  }
+
+  struct Blocks {
+    std::vector<std::size_t> ends;
+    std::size_t stable = 0;
+    bool append_may_shrink = false;
+  };
+
+  // Uses the encoder's matchers, compiled SplitPlan, and raw newline rule.
+  // Offsets are in the ORIGINAL bytes, only after exact reproduction has been
+  // established by the caller. A normalized nonidentity fragment is refused.
+  std::expected<Blocks, Error> TraceBlocks(std::string_view text, SpecialTokens special,
+                                           bool final_boundary) const {
+    Blocks out;
+    out.ends.reserve(text.size());
+    std::size_t uncertain = text.size();
+    std::size_t work = 0;
+    const auto pulse = [&] { return (++work & 0xffffU) != 0 || base::Pulse(); };
+    auto budget = split_plan.Budget(Times(text.size() + 1, 4));
+    const auto piece = [&](std::size_t end, bool stable) {
+      if (out.ends.empty() || out.ends.back() != end) out.ends.push_back(end);
+      if (stable) out.stable = end;
+    };
+    const auto fragment = [&](std::size_t begin, std::size_t end,
+                              bool closed) -> std::expected<void, Error> {
+      if (begin == end) return {};
+      const auto input = text.substr(begin, end - begin);
+      std::vector<char32_t> cps;
+      if (auto decoded_text = unicode::DecodeUtf8(input, cps); !decoded_text) return decoded_text;
+      if (normalization == Normalization::kNfc) {
+        auto normalized = cps;
+        unicode::ToNfc(normalized);
+        if (normalized != cps)
+          return std::unexpected(Error{Rule::kUnsupported, "forced bytes are changed by NFC"});
+      }
+      std::vector<std::size_t> offsets;
+      offsets.reserve(cps.size() + 1);
+      std::size_t at = begin;
+      for (const auto cp : cps) {
+        if (!pulse())
+          return std::unexpected(Error{Rule::kCancelled, "forced span planning was asked to stop"});
+        offsets.push_back(at);
+        at += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+      }
+      offsets.push_back(end);
+      std::vector<std::uint32_t> lengths;
+      lengths.reserve(cps.size());
+      std::size_t stable = 0;
+      if (pre_tokenizer == PreTokenizer::kByteBpe) {
+        bool shrink = false;
+        if (auto split = split_plan.Split(cps, lengths, budget, &stable, &shrink); !split)
+          return split;
+        if (!closed) out.append_may_shrink = out.append_may_shrink || shrink;
+      } else if (pre_tokenizer == PreTokenizer::kRawBpe && raw_bpe_split_newlines) {
+        for (std::size_t p = 0; p < cps.size();) {
+          std::size_t next = p + 1;
+          while (next < cps.size() && (cps[next] == U'\n') == (cps[p] == U'\n')) {
+            if (!pulse())
+              return std::unexpected(
+                  Error{Rule::kCancelled, "forced span planning was asked to stop"});
+            ++next;
+          }
+          lengths.push_back(static_cast<std::uint32_t>(next - p));
+          if (next < cps.size()) stable = next;
+          p = next;
+        }
+      } else {
+        lengths.push_back(static_cast<std::uint32_t>(cps.size()));
+      }
+      if (closed) stable = cps.size();
+      std::size_t normalization_cut = end;
+      if (!closed && normalization == Normalization::kNfc) {
+        // A future combining mark or Hangul jamo may change the final starter
+        // and its marks. Earlier starters are independent. An ASCII lookahead
+        // supplied by the caller is itself the held final starter.
+        std::size_t starter = cps.size();
+        while (starter > 0) {
+          if (!pulse())
+            return std::unexpected(
+                Error{Rule::kCancelled, "forced span planning was asked to stop"});
+          --starter;
+          if (unicode::CombiningClass(cps[starter]) == 0) break;
+        }
+        stable = std::min(stable, starter);
+        normalization_cut = offsets[starter];
+      }
+      std::size_t first = 0;
+      for (const auto length : lengths) {
+        const auto last = first + length;
+        if (pre_tokenizer == PreTokenizer::kByteBpe) {
+          piece(offsets[last], last <= stable);
+          first = last;
+          continue;
+        }
+        // Raw modes freeze normalized added/model symbols inside the merge
+        // region. Map their actual normalized spellings back to source bytes.
+        std::string mapped;
+        std::vector<std::size_t> source;
+        mapped.reserve(3 * (offsets[last] - offsets[first]));
+        source.reserve(3 * (offsets[last] - offsets[first]) + 1);
+        for (std::size_t c = first; c < last; ++c) {
+          if (!pulse())
+            return std::unexpected(
+                Error{Rule::kCancelled, "forced span planning was asked to stop"});
+          const auto start = mapped.size();
+          unicode::AppendUtf8(cps[c] == U' ' ? U'▁' : cps[c], mapped);
+          source.insert(source.end(), mapped.size() - start, offsets[c]);
+        }
+        source.push_back(offsets[last]);
+        // Match EncodeWindow's newline whole-token shortcut before looking
+        // for normalized atoms: that shortcut bypasses the symbol matcher.
+        const auto whole = by_text.find(mapped);
+        if (pre_tokenizer == PreTokenizer::kRawBpe && raw_bpe_split_newlines &&
+            cps[first] == U'\n' && whole != by_text.end() &&
+            kinds[static_cast<std::size_t>(whole->second)] == TokenKind::kNormal) {
+          piece(offsets[last], last <= stable);
+          first = last;
+          continue;
+        }
+
+        const unsigned phase =
+            pre_tokenizer == PreTokenizer::kSentencePiece && model_symbols.empty() ? 0U : 1U;
+        const auto policy = pre_tokenizer == PreTokenizer::kSentencePiece && model_symbols.empty()
+                                ? SpecialTokens::kUserDefinedOnly
+                                : special;
+        std::size_t normal = 0;
+        for (std::size_t p = 0; p < mapped.size();) {
+          if (!pulse())
+            return std::unexpected(
+                Error{Rule::kCancelled, "forced span planning was asked to stop"});
+          if (!closed && last == cps.size() && OpenSpecial(mapped, p, phase))
+            uncertain = std::min(uncertain, source[p]);
+          std::size_t size = 0;
+          const auto id = MatchSpecial(mapped, p, policy, &size, phase);
+          if (id >= 0) {
+            if (p > normal) piece(source[p], true);
+            p += size;
+            piece(source[p], true);
+            normal = p;
+          } else {
+            const auto byte = static_cast<unsigned char>(mapped[p]);
+            p += byte < 0x80 ? 1 : byte < 0xe0 ? 2 : byte < 0xf0 ? 3 : 4;
+          }
+        }
+        if (normal < mapped.size()) piece(offsets[last], last <= stable);
+        first = last;
+      }
+      out.stable = std::min(out.stable, normalization_cut);
+      return {};
+    };
+    std::size_t start = 0;
+    for (std::size_t p = 0; p < text.size();) {
+      if ((p & 0xffffU) == 0 && !base::Pulse())
+        return std::unexpected(Error{Rule::kCancelled, "forced span planning was asked to stop"});
+      if (!final_boundary && OpenSpecial(text, p, 0)) uncertain = std::min(uncertain, p);
+      std::size_t length = 0;
+      const auto id = MatchSpecial(text, p, special, &length);
+      if (id < 0) {
+        ++p;
+        continue;
+      }
+      if (auto traced = fragment(start, p, true); !traced) return std::unexpected(traced.error());
+      p += length;
+      piece(p, true);
+      if (!rstrip.empty() && rstrip[static_cast<std::size_t>(id)]) {
+        // Any stripped bytes would violate the exact reproduction check.
+        while (p < text.size() && AsciiSpace(text[p])) ++p;
+      }
+      start = p;
+    }
+    if (auto traced = fragment(start, text.size(), final_boundary); !traced)
+      return std::unexpected(traced.error());
+    out.stable = std::min(out.stable, uncertain);
+    // A possible longer atom may begin within an earlier pretoken block.
+    // Commit only whole blocks ending before that earliest uncertain byte.
+    auto cut = std::upper_bound(out.ends.begin(), out.ends.end(), out.stable);
+    out.stable = cut == out.ends.begin() ? 0 : *std::prev(cut);
+    return out;
   }
 
   static std::expected<void, Error> Emit(TokenId id, const EncodeOptions& options,
@@ -1243,6 +1440,220 @@ std::expected<void, Error> Tokenizer::EncodeMarked(std::string_view text,
     return e;
   }
   return impl_->End(options, out, base);
+}
+
+std::uint64_t Tokenizer::ForcedSpanBytes(std::size_t input_bytes) const {
+  const auto most = std::numeric_limits<std::uint64_t>::max();
+  if (input_bytes > most - 4) return most;
+  const auto n = static_cast<std::uint64_t>(input_bytes) + 4;
+  // Original/decoded/extended strings, canonical and committed IDs, two trace
+  // vectors and raw source-offset maps coexist with one encoding/regex pass.
+  const auto working = Times(WorkingBytes(static_cast<std::size_t>(n)), 4);
+  const auto owned = Times(n, 96);
+  return working > most - owned ? most : working + owned;
+}
+
+bool Tokenizer::CoversForced(TokenId candidate, std::size_t cover,
+                             const DecodeOptions& options) const {
+  if (candidate < 0 || static_cast<std::size_t>(candidate) >= size()) return false;
+  const auto id = static_cast<std::size_t>(candidate);
+  const auto kind = impl_->kinds[id];
+  std::string_view bytes;
+  if (kind == TokenKind::kControl && !options.control_tokens) return false;
+  if (kind == TokenKind::kUnused && !impl_->ModelToken(candidate)) return false;
+  if (kind == TokenKind::kControl || kind == TokenKind::kUserDefined)
+    bytes = impl_->decode_added_whitespace ? impl_->decoded[id] : impl_->tokens[id];
+  else {
+    bytes = impl_->decoded[id];
+    if (impl_->add_space_prefix && options.remove_space_prefix && bytes.starts_with(' '))
+      bytes.remove_prefix(1);
+  }
+  return !bytes.empty() && bytes.size() >= cover;
+}
+
+std::expected<std::size_t, Error> Tokenizer::ForcedCoverBytes(
+    std::string_view forced, const ForcedSpanOptions& options) const {
+  if (options.encode.add_bos_eos)
+    return std::unexpected(
+        Error{Rule::kUnsupported, "forced spans cannot insert postprocessor tokens"});
+  if (forced.size() > options.encode.max_bytes)
+    return std::unexpected(Error{Rule::kInputTooLarge, "forced span exceeds max_bytes"});
+  const auto complete = unicode::CompleteUtf8Prefix(forced);
+  if (auto valid = unicode::ValidateUtf8(forced.substr(0, complete)); !valid)
+    return std::unexpected(valid.error());
+  if (forced.empty() || complete != forced.size()) return 0;
+  auto encode = options.encode;
+  encode.max_tokens = static_cast<std::size_t>(OutputTokensBound(forced.size()));
+  if (auto valid = impl_->Preflight(forced, encode); !valid) return std::unexpected(valid.error());
+  std::vector<char32_t> cps;
+  if (auto valid = unicode::DecodeUtf8(forced, cps); !valid) return std::unexpected(valid.error());
+  // Whitespace lookahead can split a formerly single block into a shorter
+  // prefix plus a space attached to the next word. Do not impose that cover.
+  if (unicode::IsWhiteSpace(cps.back())) return 0;
+  auto blocks = impl_->TraceBlocks(forced, options.encode.special, options.terminal);
+  if (!blocks) return std::unexpected(blocks.error());
+  // A token for an open block alone is not a cover proof: a higher-priority
+  // crossing merge can turn ab + c into a / bc. Failed earlier regex branches
+  // can likewise introduce a shorter boundary after more input arrives.
+  if (blocks->ends.size() != 1 || blocks->stable != forced.size()) return 0;
+  std::vector<TokenId> ids;
+  if (auto encoded = Encode(forced, encode, ids); !encoded) return std::unexpected(encoded.error());
+  std::string reproduced;
+  if (auto decoded = Decode(ids, options.decode, reproduced); !decoded)
+    return std::unexpected(decoded.error());
+  if (reproduced != forced)
+    return std::unexpected(
+        Error{Rule::kUnsupported, "canonical forced token does not reproduce its bytes"});
+  return ids.size() == 1 ? forced.size() : 0;
+}
+
+std::expected<ForcedSpanPlan, Error> Tokenizer::PlanForcedSpan(
+    std::optional<TokenId> selected, std::string_view forced,
+    const ForcedSpanOptions& options) const {
+  if (options.encode.add_bos_eos)
+    return std::unexpected(
+        Error{Rule::kUnsupported, "forced spans cannot insert postprocessor tokens"});
+  ForcedSpanPlan out;
+  std::string text;
+  if (selected) {
+    if (auto decoded = Decode(std::span(&*selected, 1), options.decode, text); !decoded)
+      return std::unexpected(decoded.error());
+    if (text.empty())
+      return std::unexpected(Error{Rule::kUnsupported, "selected token has no decoded bytes"});
+  }
+  const auto selected_bytes = text.size();
+  if (text.size() > options.encode.max_bytes ||
+      forced.size() > options.encode.max_bytes - text.size())
+    return std::unexpected(Error{Rule::kInputTooLarge, "forced span exceeds max_bytes"});
+  text += forced;
+  const auto complete = unicode::CompleteUtf8Prefix(text);
+  if (options.terminal && complete != text.size())
+    return std::unexpected(
+        Error{Rule::kInvalidUtf8, "terminal forced span ends inside UTF-8", complete});
+  const auto available = std::string_view(text).substr(0, complete);
+  if (auto valid = unicode::ValidateUtf8(available); !valid) return std::unexpected(valid.error());
+  auto encode = options.encode;
+  // Canonicalization is funded by input bytes. Publication is independently
+  // clipped to the actual token/context allowance, never inside a token.
+  encode.max_tokens = static_cast<std::size_t>(OutputTokensBound(available.size()));
+  std::vector<TokenId> canonical;
+  if (auto encoded = Encode(available, encode, canonical); !encoded)
+    return std::unexpected(encoded.error());
+  std::string reproduced;
+  if (auto decoded = Decode(canonical, options.decode, reproduced); !decoded)
+    return std::unexpected(decoded.error());
+  if (reproduced != available)
+    return std::unexpected(
+        Error{Rule::kUnsupported, "canonical forced span does not reproduce its bytes"});
+  auto blocks =
+      impl_->TraceBlocks(available, encode.special, options.terminal && complete == text.size());
+  if (!blocks) return std::unexpected(blocks.error());
+  std::size_t cut = blocks->stable;
+  if (complete == text.size() && !options.terminal && options.following_known &&
+      !options.following_bytes.empty() &&
+      std::ranges::all_of(options.following_bytes, [](std::uint8_t byte) { return byte < 0x80; })) {
+    // Every allowed ASCII byte is a complete code point. For non-ASCII next
+    // bytes, retain the conservative open prefix, never representative chars.
+    std::size_t proven = available.size();
+    for (const auto byte : options.following_bytes) {
+      std::string extended(available);
+      extended.push_back(static_cast<char>(byte));
+      auto future = impl_->TraceBlocks(extended, encode.special, false);
+      if (!future) return std::unexpected(future.error());
+      proven = std::min(proven, future->stable);
+      while (proven != 0) {
+        const auto current = std::upper_bound(blocks->ends.begin(), blocks->ends.end(), proven);
+        if (current == blocks->ends.begin()) {
+          proven = 0;
+          break;
+        }
+        proven = *std::prev(current);
+        if (std::ranges::binary_search(future->ends, proven)) break;
+        --proven;
+      }
+      // A common endpoint is insufficient: lookahead may repartition the
+      // prefix (ab(?=c)|a), enabling a merge absent from the original text.
+      const auto before_end = std::upper_bound(blocks->ends.begin(), blocks->ends.end(), proven);
+      const auto after_end = std::upper_bound(future->ends.begin(), future->ends.end(), proven);
+      if (!std::equal(blocks->ends.begin(), before_end, future->ends.begin(), after_end)) {
+        proven = 0;
+        continue;
+      }
+      auto future_encode = encode;
+      future_encode.max_bytes = extended.size();
+      future_encode.max_tokens = static_cast<std::size_t>(OutputTokensBound(extended.size()));
+      std::vector<TokenId> future_ids;
+      if (auto encoded = Encode(extended, future_encode, future_ids); !encoded)
+        return std::unexpected(encoded.error());
+      std::string future_text;
+      if (auto decoded = Decode(future_ids, options.decode, future_text); !decoded)
+        return std::unexpected(decoded.error());
+      if (future_text != extended) {
+        proven = 0;
+        continue;
+      }
+      std::size_t prefix_bytes = 0;
+      std::string piece;
+      for (std::size_t i = 0; i < canonical.size() && prefix_bytes < proven; ++i) {
+        piece.clear();
+        auto decode = options.decode;
+        decode.remove_space_prefix = decode.remove_space_prefix && i == 0;
+        if (auto decoded = Decode(std::span(&canonical[i], 1), decode, piece); !decoded)
+          return std::unexpected(decoded.error());
+        if (i >= future_ids.size() || canonical[i] != future_ids[i] ||
+            piece.size() > proven - prefix_bytes) {
+          proven = 0;
+          break;
+        }
+        prefix_bytes += piece.size();
+      }
+      if (prefix_bytes != proven) proven = 0;
+    }
+    cut = std::max(cut, proven);
+  }
+  // Check canonical IDs for the complete known span, not an independently
+  // encoded short prefix. This includes healing an unpublished sampled ID.
+  const auto allowance =
+      std::min({options.remaining_tokens, options.remaining_context, options.encode.max_tokens});
+  out.tokens.reserve(std::min(canonical.size(), allowance));
+  std::size_t bytes = 0;
+  std::string token_bytes;
+  for (std::size_t i = 0; i < canonical.size(); ++i) {
+    token_bytes.clear();
+    auto decode = options.decode;
+    decode.remove_space_prefix = decode.remove_space_prefix && i == 0;
+    if (auto decoded = Decode(std::span(&canonical[i], 1), decode, token_bytes); !decoded)
+      return std::unexpected(decoded.error());
+    if (bytes + token_bytes.size() > cut) break;
+    if (out.tokens.size() == allowance) {
+      out.limited = true;
+      break;
+    }
+    out.tokens.push_back(canonical[i]);
+    bytes += token_bytes.size();
+  }
+  if (selected && bytes < selected_bytes) {
+    // The selected token has not been published. Retain all of it until one
+    // canonical candidate covers it; never publish a partial replacement.
+    out.tokens.clear();
+    bytes = 0;
+  }
+  out.committed_bytes = bytes;
+  out.consumed_forced_bytes = bytes > selected_bytes ? bytes - selected_bytes : 0;
+  out.selected_covered = !selected || bytes >= selected_bytes;
+  out.replaces_selected = selected && !out.tokens.empty() && out.tokens.front() != *selected;
+  out.selected_matches_canonical_prefix =
+      selected && !canonical.empty() && canonical.front() == *selected;
+  out.held = text.substr(bytes);
+  if (!out.held.empty()) {
+    auto cover_options = options;
+    // A held tail begins after the original first token's dummy-space policy.
+    if (bytes != 0) cover_options.decode.remove_space_prefix = false;
+    auto cover = ForcedCoverBytes(out.held, cover_options);
+    if (!cover) return std::unexpected(cover.error());
+    out.cover_bytes = *cover;
+  }
+  return out;
 }
 
 std::expected<void, Error> Tokenizer::Decode(std::span<const TokenId> tokens,

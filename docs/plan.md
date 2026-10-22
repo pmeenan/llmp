@@ -1025,9 +1025,15 @@ D-122).
       Qwen, DSML and Gemma, with owned definitions, resource accounting bounds,
       complete-call events and Flare's malformed-call controls. Whole and
       adversarial reviews are clean; native focused and integrated shared and
-      no-CUDA checks pass. This does not enable the public route. Intake,
-      canonical forced spans, sampling/verification, route adaptation and
-      OpenCode qualification remain open. See [tool-calls.md](tool-calls.md).
+      no-CUDA checks pass. **Canonical tokenizer foundation complete
+      (2026-10-22):** exact canonical span planning uses actual EOF-sensitive
+      tokenizer blocks, holds unstable tails and funds owned results. Whole
+      and adversarial reviews are clean. Spark B passes 179 unique targeted
+      shared checks across the initial and fixture-repair runs, including all
+      17 span controls, and 24 model-tokenizer checks without skips. This
+      does not enable the public route. Intake, causal-unit span feeding,
+      sampling/verification, route adaptation and OpenCode qualification remain
+      open. See [tool-calls.md](tool-calls.md).
       `tools`/`functions` and `tool_choice` (`auto`, `none`,
       `required`, a named function) accepted on Chat Completions, assistant
       `tool_calls` returned, with streamed argument fragments and tool-result

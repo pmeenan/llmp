@@ -151,6 +151,36 @@ struct DecodeOptions {
   bool remove_space_prefix = false;  // remove SentencePiece dummy space at stream start
 };
 
+// Planning never accepts published IDs: selected is still a local sampling
+// candidate. All returned tokens replace that candidate and include its bytes.
+struct ForcedSpanOptions {
+  EncodeOptions encode{.special = SpecialTokens::kParse};
+  DecodeOptions decode{.control_tokens = true};
+  // Complete allowed NEXT-BYTE set, not Unicode representatives. High-byte
+  // possibilities conservatively retain an open tail; byte-cover accepts them.
+  std::span<const std::uint8_t> following_bytes;
+  bool following_known = false;
+  bool terminal = false;  // actual hard grammar boundary, never max_tokens
+  std::size_t remaining_tokens = 0;
+  std::size_t remaining_context = 0;
+};
+struct ForcedSpanPlan {
+  std::vector<TokenId> tokens;
+  std::size_t committed_bytes = 0;        // decoded selected + forced prefix
+  std::size_t consumed_forced_bytes = 0;  // excludes the selected token's bytes
+  std::string held;                       // exact uncommitted suffix of both inputs
+  std::size_t cover_bytes = 0;
+  bool replaces_selected = false;
+  // False: this plan supplies no stable replacement or certain suffix. An
+  // unchanged ordinary sampler choice is a separate caller disposition.
+  bool selected_covered = false;
+  // Local consistency with the finite known suffix only, NOT a proof against
+  // unknown future merges. Permits an unchanged genuine sampler choice while
+  // an open block remains held; never authorizes inserting unstable IDs.
+  bool selected_matches_canonical_prefix = false;
+  bool limited = false;  // real token/context allowance cut the plan
+};
+
 class Tokenizer {
  public:
   // Allocation-free bound for Create's peak and retained storage, including
@@ -205,6 +235,21 @@ class Tokenizer {
   std::expected<void, Error> EncodeMarked(std::string_view text, std::span<const SpecialSpan> spans,
                                           const EncodeOptions& options, std::vector<TokenId>& out,
                                           std::vector<std::size_t>* span_tokens = nullptr) const;
+
+  // Peak working + result ownership, before either planner/cover operation.
+  // input_bytes includes the selected token's decoded bytes and forced bytes.
+  std::uint64_t ForcedSpanBytes(std::size_t input_bytes) const;
+  std::expected<ForcedSpanPlan, Error> PlanForcedSpan(std::optional<TokenId> selected,
+                                                      std::string_view forced,
+                                                      const ForcedSpanOptions& options) const;
+  // Boundary cover applies only when the forced prefix is one proven closed
+  // actual block represented by one exact canonical token. Open blocks return
+  // zero: a later crossing merge can split a token encoded in isolation. Lexical permission for any
+  // extra candidate bytes is checked separately by the caller's constraint cursor.
+  std::expected<std::size_t, Error> ForcedCoverBytes(std::string_view forced,
+                                                     const ForcedSpanOptions& options) const;
+  bool CoversForced(TokenId candidate, std::size_t cover_bytes,
+                    const DecodeOptions& options = {.control_tokens = true}) const;
 
   // Appends the tokens' bytes to out. Byte-level tokens can end inside a
   // UTF-8 sequence, so a partial sequence may end the output; StreamDecoder

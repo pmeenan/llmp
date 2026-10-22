@@ -222,6 +222,26 @@ charge after temporary work is released. Swap-table context caches keep that
 owner after shrinking the visible token count and borrow its immutable tokens
 for pair operations; destruction releases token storage before its payment.
 
+**Canonical forced spans.** `PlanForcedSpan` plans an owned canonical prefix
+from a still-unpublished selected token and known bytes. It uses the encoder's
+actual special-token matching, raw newline cuts and EOF-sensitive pre-token
+blocks, checks exact decode reproduction, and holds the unstable final block.
+Normalization or decoder transformations that change the requested bytes are
+explicit capability refusals. The plan never rewrites published history.
+`ForcedSpanBytes` bounds peak work and owned results before allocation; token
+and context allowances cut only at canonical token boundaries. A terminal
+boundary is an actual grammar boundary, not an output-token allowance.
+
+Boundary cover is proved only for a closed real block represented by one
+canonical token. An open block has zero cover: a future higher-priority merge
+can split a token encoded in isolation. Following-byte promotion requires
+EOF-independent stability, identical prefix partitions and canonical IDs for
+every allowed continuation. A finite known-suffix first-ID match is only a
+consistency check; it never permits injecting an unstable token. The caller
+may keep an unchanged ordinary sampled token through a held tail as a distinct
+choice. Feeding proven spans in one causal unit, sampling constraints,
+speculative acceptance and public tool calls are separate runtime work.
+
 Parser storage derives from the source and paid construction memory. There
 are no separate small expression, group, stage or wrapper-count policy limits.
 Compilation uses explicit source-sized frames, resolves deep group chains once,

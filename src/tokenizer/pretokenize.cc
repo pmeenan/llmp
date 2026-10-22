@@ -74,7 +74,10 @@ std::uint64_t SplitPlan::WorkingBytes(std::size_t n) const {
 
 std::expected<void, Error> SplitPlan::Split(std::span<const char32_t> text,
                                             std::vector<std::uint32_t>& lengths,
-                                            RegexBudget& budget) const {
+                                            RegexBudget& budget, std::size_t* stable_prefix,
+                                            bool* append_may_shrink) const {
+  if (stable_prefix != nullptr) *stable_prefix = 0;
+  if (append_may_shrink != nullptr) *append_may_shrink = false;
   if (text.empty()) return {};
   if (text.size() >= std::numeric_limits<std::uint32_t>::max())
     return std::unexpected(Error{Rule::kBounds, "split input code point limit"});
@@ -82,16 +85,28 @@ std::expected<void, Error> SplitPlan::Split(std::span<const char32_t> text,
   current.reserve(text.size());
   next.reserve(text.size());
   current.push_back(static_cast<std::uint32_t>(text.size()));
+  bool first = true;
   for (const auto& stage : stages_) {
     next.clear();
     std::size_t offset = 0;
     for (const auto length : current) {
       if (auto paid = budget.Pay(); !paid) return paid;
-      if (auto split = stage.Split(text.subspan(offset, length), next, budget); !split)
+      std::size_t stable = 0;
+      bool shrink = false;
+      if (auto split = stage.Split(
+              text.subspan(offset, length), next, budget,
+              stable_prefix != nullptr && first ? &stable : nullptr,
+              append_may_shrink != nullptr && offset + length == text.size() ? &shrink : nullptr);
+          !split)
         return split;
+      if (stable_prefix != nullptr && first) *stable_prefix = stable;
+      if (append_may_shrink != nullptr) *append_may_shrink = *append_may_shrink || shrink;
       offset += length;
     }
     current.swap(next);
+    // Later stages cannot undo earlier boundaries. They run on complete
+    // earlier pieces; conservatively retain the first stage's proven prefix.
+    first = false;
   }
   if (auto paid = budget.Pay(current.size()); !paid) return paid;
   lengths.insert(lengths.end(), current.begin(), current.end());
