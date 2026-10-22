@@ -687,6 +687,10 @@ D-122).
       format layer, preparation names its target layout explicitly, and
       boundary checks reject backend/device facts in IR and selection code.
       Native focused checks and CPU portability controls pass.
+      **U6d complete (2026-10-22):** all 49 registered rewrite/batch
+      patterns have named synthetic match and refusal controls; the test
+      inventory rejects unaccounted registrations and checks successful
+      rewriting as well as matching.
       Complete shape-class fusion/decomposition measurements, remaining
       dispatch consolidation and exhaustive planner-pattern coverage remain open.
       One op-trait table (arity, write
@@ -699,9 +703,8 @@ D-122).
       names turned into rank data keyed by device facts); checked-in rank
       data per device class comparing each fusion with its own
       decomposition per shape class (owner, 2026-10-20), so a fusion that
-      loses on a shape class is not selected there; a match and a no-match
-      synthetic test for each planner pattern (twelve are named in no test
-      today). **Exit:** adding an IR op edits the trait table, its kernels
+      loses on a shape class is not selected there; a synthetic match and refusal control for every registered rewrite/batch
+      pattern, enforced by the test inventory. **Exit:** adding an IR op edits the trait table, its kernels
       and its tests only, and the boundary check finds no vendor or kernel
       names under `ir/` or `execution/`.
 - [ ] **U7 Fast paths by capability** (after the memory-mode re-gate and

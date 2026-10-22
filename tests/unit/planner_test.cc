@@ -75,7 +75,8 @@ constexpr std::array kPreparedRules = {ex::OperandRule{.operand = 0, .encodings 
 
 bool Width64(const ex::CapabilityQuery& q) { return q.k == 64; }
 ir::ProductArithmetic FixtureVectorArithmetic(const ex::CapabilityQuery& q) {
-  return q.rows <= 8 ? ir::ProductArithmetic::kBlock32Q8SumF32 : ir::ProductArithmetic::kImplementation;
+  return q.rows <= 8 ? ir::ProductArithmetic::kBlock32Q8SumF32
+                     : ir::ProductArithmetic::kImplementation;
 }
 
 ex::Implementation Fake(std::string name, ex::Capability capability,
@@ -243,6 +244,35 @@ Policy Disabling(std::initializer_list<std::string> names) {
   Policy p{.disabled = names};
   Canonicalize(p);
   return p;
+}
+
+// Exercise registered entries, including round-one rewrites, in isolation so
+// another fusion cannot satisfy a positive assertion or hide a refusal.
+void CheckRegisteredRewrite(std::string_view name, const ir::Graph& graph,
+                            const ex::Registry& registry, bool matches,
+                            const StepShape* shape = nullptr) {
+  SCOPED_TRACE(name);
+  const Pattern* pattern = FindPattern(name);
+  ASSERT_NE(pattern, nullptr);
+  std::vector<NumericalChange> changes;
+  if (pattern->numerical_change) changes.push_back(*pattern->numerical_change);
+  Policy policy = FixtureNumericalPolicy(graph, {}, changes);
+  policy.enabled.push_back(std::string(name));
+  const SelectionView view(registry, kDevice, policy, false, false);
+  const MatchContext context(graph, view, shape);
+  bool matched = false;
+  for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
+    const auto& node = graph.node({i});
+    if (std::ranges::contains(pattern->anchors, node.key.op) && pattern->match(context, {i}))
+      matched = true;
+  }
+  EXPECT_EQ(matched, matches);
+  auto result = ApplyPatternTable(std::span(pattern, 1), graph, view, shape);
+  ASSERT_TRUE(result) << (result ? "" : result.error().detail);
+  EXPECT_TRUE(result->dropped.empty())
+      << (result->dropped.empty() ? "" : result->dropped.front().detail);
+  EXPECT_EQ(result->applied.empty(), !matches);
+  for (const auto& applied : result->applied) EXPECT_EQ(applied.pattern, name);
 }
 
 // x [64, rows] normed, times w.
@@ -1253,6 +1283,7 @@ TEST(PlannerPatternTest, HyperConnectionMixChecksItsStreamViewsAndFinalScale) {
     const auto g = Finish(b);
     const MatchContext c(g, selection, nullptr);
     EXPECT_EQ(fusions::HcMixMatch(c, g.producer(rms)).has_value(), mutation == 0);
+    CheckRegisteredRewrite("hc_mix", g, registry, mutation == 0);
   }
 }
 
@@ -1280,6 +1311,7 @@ TEST(PlannerPatternTest, HyperConnectionCombineRejectsUnrepresentedScaleParamete
     const auto g = Finish(b);
     const MatchContext c(g, selection, nullptr);
     EXPECT_EQ(fusions::HcCombineMatch(c, g.producer(mixed)).has_value(), mutation == 0);
+    CheckRegisteredRewrite("hc_combine", g, registry, mutation == 0);
   }
 }
 
@@ -1296,22 +1328,27 @@ TEST(PlannerPatternTest, HyperConnectionPrepRejectsLowRankScaleBias) {
   for (bool bias : {false, true}) {
     SCOPED_TRACE(bias);
     ir::Builder b;
-    const TensorId x = b.Input(F32({4, 2, 3}));
-    const TensorId norm = b.Weight(F32({8}), W(0));
-    const TensorId down = b.Weight(F32({8, 2}), W(1));
-    const TensorId up = b.Weight(F32({2, 8}), W(2));
+    // The prepared fold emits MXFP8 rows, so use a whole encoding block.
+    constexpr std::uint64_t width = 256;
+    const TensorId x = b.Input(F32({width, 2, 3}));
+    const TensorId norm = b.Weight(F32({2 * width}), W(0));
+    const TensorId down = b.Weight(F32({2 * width, 2}), W(1));
+    const TensorId up = b.Weight(F32({2, 2 * width}), W(2));
     const TensorId rms = b.RmsNorm(x, 1e-6F);
-    const TensorId xn = b.Mul(b.Reshape(rms, ir::ShapeOf({8, 3})), norm);
+    const TensorId xn = b.Mul(b.Reshape(rms, ir::ShapeOf({2 * width, 3})), norm);
     const TensorId low =
         b.Unary(b.Scale(b.MatMul(down, xn), 0.5F, bias ? 1.0F : 0.0F), ir::UnaryFn::kSilu);
     const TensorId gated = b.Reshape(b.Mul(xn, b.Unary(b.MatMul(up, low), ir::UnaryFn::kSigmoid)),
-                                     ir::ShapeOf({4, 2, 3}));
-    const TensorId first = b.Cont(b.View(gated, ir::ShapeOf({4, 3}), {4, 32, 96, 96}, 0));
-    const TensorId second = b.View(gated, ir::ShapeOf({4, 3}), {4, 32, 96, 96}, 16);
+                                     ir::ShapeOf({width, 2, 3}));
+    const TensorId first =
+        b.Cont(b.View(gated, ir::ShapeOf({width, 3}), {4, 8 * width, 24 * width, 24 * width}, 0));
+    const TensorId second =
+        b.View(gated, ir::ShapeOf({width, 3}), {4, 8 * width, 24 * width, 24 * width}, 4 * width);
     b.Output(b.Scale(b.Add(first, second), 0.5F));
     const auto g = Finish(b);
     const MatchContext c(g, selection, nullptr);
     EXPECT_EQ(fusions::HcPrepMatch(c, g.producer(rms)).has_value(), !bias);
+    CheckRegisteredRewrite("hc_prep", g, registry, !bias);
   }
 }
 
@@ -1361,6 +1398,7 @@ TEST(PlannerPatternTest, GdnConvolutionChecksBothNormalizedSlicesAndHistoryTail)
     const MatchContext c(g, selection, nullptr);
     EXPECT_EQ(fusions::GdnConvMatch(c, g.producer(convolution)).has_value(),
               mutation == 0 || mutation == 6);
+    if (mutation == 0 || mutation == 6) CheckRegisteredRewrite("gdn_conv", g, registry, true);
   }
 }
 
@@ -1407,6 +1445,7 @@ TEST(PlannerPatternTest, GdnHistoryChecksStandaloneCommitTail) {
     const bool valid = (mutation == 0);
     EXPECT_EQ(fusions::GdnHistoryMatch(c, g.producer(store)).has_value(), valid);
     EXPECT_EQ(fusions::GdnConvMatch(c, g.producer(store)).has_value(), valid);
+    CheckRegisteredRewrite("gdn_conv", g, registry, valid);
     if (!valid) continue;
 
     Policy on;
@@ -1473,6 +1512,7 @@ TEST(PlannerPatternTest, QsaSelectionChecksItsFixedWeightsMasksAndBias) {
     const auto g = Finish(b);
     const MatchContext c(g, selection, nullptr);
     EXPECT_EQ(fusions::BlockSparseAttentionMatch(c, g.producer(attn)).has_value(), mutation == 0);
+    CheckRegisteredRewrite("block_sparse_attention", g, registry, mutation == 0);
   }
 }
 
@@ -1490,19 +1530,22 @@ TEST(PlannerPatternTest, QsaPoolingDoesNotDropRotationFrequencyFactors) {
     const TensorId blocks =
         b.State(ir::Dense(Encoding::kBF16, ir::ShapeOf({2, 2})), ir::StateRef{});
     const TensorId norm = b.Weight(F32({2}), W(0));
-    const TensorId positions = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2})));
+    // Two pooled blocks, each with the four QSA rotation-position sections.
+    const TensorId positions = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({8})));
     const TensorId cells = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2})));
     const TensorId freq = frequencies ? b.Input(F32({1})) : TensorId{};
     const TensorId pooled = b.Pool(raw, {}, {.ratio = 2, .kind = ir::PoolKind::kMean});
     const TensorId weighted = b.Mul(b.RmsNorm(pooled, 1e-6F), norm);
     const TensorId rotated =
-        b.Rope(b.Reshape(weighted, ir::ShapeOf({2, 1, 2})), positions, freq, {.dims = 2});
+        b.Rope(b.Reshape(weighted, ir::ShapeOf({2, 1, 2})), positions, freq,
+               {.mode = ir::RopeMode::kInterleavedMulti, .dims = 2, .sections = {1, 0, 0, 0}});
     const TensorId rounded = b.Convert(rotated, Encoding::kBF16);
     const TensorId stored = b.CacheStore(blocks, b.Reshape(rounded, ir::ShapeOf({2, 2})), cells);
     b.Keep(stored);
     const auto g = Finish(b);
     const MatchContext c(g, selection, nullptr);
     EXPECT_EQ(fusions::MeanPoolNormRopeStoreMatch(c, g.producer(stored)).has_value(), !frequencies);
+    CheckRegisteredRewrite("mean_pool_norm_rope_store", g, registry, !frequencies);
   }
 }
 
@@ -4644,6 +4687,576 @@ TEST(PlannerPlacementTest, PhysicalContractOmitsProofStorageAndRejectsUnfundedRe
   auto invalid = PlaceActivations(graph, steps, {}, staged, 256, {}, {}, {}, &physical);
   ASSERT_FALSE(invalid);
   EXPECT_EQ(invalid.error(), "a physical read names an absent materialization");
+}
+
+TEST(PlannerPatternCoverageTest, SplitGatedResidualRequiresTanhAndPrivateIntermediates) {
+  const auto registry =
+      Registry({Fake("test.split", Any(ir::Fused(FusedKind::kGatedResidualSplit)))});
+  for (unsigned mutation = 0; mutation != 4; ++mutation) {
+    SCOPED_TRACE(mutation);
+    ir::Builder b;
+    const auto carry = b.Input(F32({8, 3}));
+    const auto branch = b.Input(F32({8, 3}));
+    const auto side = b.Repeat(b.Input(F32({8})), ir::ShapeOf({8, 3}));
+    const auto gate = b.Unary(side, mutation == 1 ? ir::UnaryFn::kSigmoid : ir::UnaryFn::kTanh);
+    const auto gated = b.Mul(branch, gate);
+    b.Output(b.Add(carry, gated));
+    if (mutation == 2) b.Output(gate);
+    if (mutation == 3) b.Output(gated);
+    const auto graph = Finish(b);
+    CheckRegisteredRewrite("split_gated_residual", graph, registry, mutation == 0);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, FoldReadersReuseOnlyTheMatchingEncoding) {
+  for (const bool prepared : {false, true}) {
+    for (const bool available : {false, true}) {
+      ir::Builder b;
+      const auto x = b.Input(F32({512, 2}));
+      const auto gate = b.Input(F32({512, 2}));
+      const auto fold = b.Fused(
+          FusedKind::kHcFold, std::array{x, gate},
+          ir::HcFoldParams{
+              .streams = 2, .prepared = prepared && available, .rounded = !prepared && available});
+      const auto read = prepared ? b.Prepare(fold[0], Encoding::kMxfp8, Layout::kScaleAtoms)
+                                 : b.Convert(fold[0], Encoding::kBF16);
+      b.Output(read);
+      auto graph = Finish(b);
+      CheckRegisteredRewrite("hc_fold_inputs", graph, Registry(), available);
+    }
+  }
+}
+
+TEST(PlannerPatternCoverageTest, Bf16RowsRequireOnlyPermittedConsumers) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("test.product", Any(ir::Primitive(Op::kMatMul))));
+  const auto registry = Registry(std::move(implementations));
+  for (unsigned mutation = 0; mutation != 3; ++mutation) {
+    ir::Builder b;
+    b.SetComponent(1);
+    const auto x = b.Input(F32({256, 2}));
+    const auto input = b.Prepare(x, Encoding::kMxfp8, Layout::kScaleAtoms);
+    const auto w = b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({256, 8})), W(0));
+    const auto product = b.MatMul(w, input);
+    const auto shaped = b.Reshape(product, ir::ShapeOf({4, 2, 2}));
+    const auto rows = b.Input(F32({4, 2, 2}));
+    const auto norm = b.Weight(F32({4}), W(1));
+    const auto result = b.Fused(FusedKind::kNormGate, std::array{rows, norm, shaped},
+                                ir::NormParams{.eps = 1e-6F})[0];
+    b.Output(result);
+    if (mutation == 1) b.Output(product);  // returning F32 is an observable rounding contract
+    if (mutation == 2) b.Output(b.Add(product, b.Input(F32({8, 2}))));
+    auto graph = Finish(b);
+    CheckRegisteredRewrite("bf16_rows", graph, registry, mutation == 0);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, Exl3ProductsRequireContiguousInputAndAvailableConversion) {
+  for (unsigned mutation = 0; mutation != 3; ++mutation) {
+    auto implementations = Everything();
+    implementations.push_back(Fake("test.product", Any(ir::Primitive(Op::kMatMul))));
+    if (mutation != 2)
+      implementations.push_back(Fake("test.convert", Any(ir::Primitive(Op::kConvert))));
+    const auto registry = Registry(std::move(implementations));
+    ir::Builder b;
+    auto x = mutation == 1 ? b.Transpose(b.Input(F32({2, 256}))) : b.Input(F32({256, 2}));
+    format::TensorFormat encoded{.encoding = Encoding::kExl3Trellis,
+                                 .layout = Layout::kExl3Tiles,
+                                 .shape = ir::ShapeOf({256, 32})};
+    encoded.params.k_bits = 4;
+    encoded.params.codebook = format::Exl3Codebook::kMcg;
+    const auto w = b.Weight(encoded, W(0));
+    b.Output(b.MatMul(w, x));
+    auto graph = Finish(b);
+    CheckRegisteredRewrite("exl3_products", graph, registry, mutation == 0);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, FloatProductAddPreservesExplicitArithmeticAndShape) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("test.fused_add", Any(ir::Fused(FusedKind::kMatMulAdd))));
+  const auto registry = Registry(std::move(implementations));
+  for (unsigned mutation = 0; mutation != 4; ++mutation) {
+    ir::Builder b;
+    const auto x = b.Input(F32({8, 2}));
+    const auto w = b.Weight(ir::Dense(Encoding::kF16, ir::ShapeOf({8, 4})), W(0));
+    ir::ProductParams params;
+    if (mutation == 1) params.accumulate = ir::Accumulate::kF32;
+    const auto product = b.MatMul(w, x, params);
+    const auto residual = b.Input(F32({4, mutation == 2 ? 1U : 2U}));
+    b.Output(b.Add(product, residual));
+    if (mutation == 3) b.Output(product);
+    auto graph = Finish(b);
+    CheckRegisteredRewrite("float_mul_mat_add", graph, registry, mutation == 0);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, GdnNormGatePreservesGateFunctionAndNormReaders) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("test.norm_gate", Any(ir::Fused(FusedKind::kNormGate))));
+  const auto registry = Registry(std::move(implementations));
+  for (unsigned mutation = 0; mutation != 3; ++mutation) {
+    ir::Builder b;
+    const auto x = b.Input(F32({4, 2}));
+    const auto z = b.Input(F32({4, 2}));
+    const auto w = b.Weight(F32({4}), W(0));
+    const auto norm = b.RmsNorm(x, 1e-6F);
+    const auto scaled = b.Mul(norm, w);
+    const auto gate = b.Unary(z, mutation == 1 ? ir::UnaryFn::kSilu : ir::UnaryFn::kSigmoid);
+    b.Output(b.Mul(scaled, gate));
+    if (mutation == 2) b.Output(norm);
+    auto graph = Finish(b);
+    CheckRegisteredRewrite("gdn_norm_gate", graph, registry, mutation == 0);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, GdnStepCannotDiscardAnObservedNextState) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("test.gdn_step", Any(ir::Fused(FusedKind::kGdnStep))));
+  const auto registry = Registry(std::move(implementations));
+  for (const bool observed_state : {false, true}) {
+    ir::Builder b;
+    const auto q = b.Input(F32({4, 2, 3, 1}));
+    const auto k = b.Input(F32({4, 2, 3, 1}));
+    const auto v = b.Input(F32({4, 4, 3, 1}));
+    const auto g = b.Input(F32({1, 4, 3, 1}));
+    const auto beta = b.Input(F32({1, 4, 3, 1}));
+    const auto state = b.State(F32({64, 1}), ir::StateRef{.tensor = 1});
+    const auto shaped = b.Reshape(state, ir::ShapeOf({4, 4, 4, 1}));
+    const auto step = b.GatedDeltaNet(q, k, v, g, beta, shaped);
+    b.Output(step[0]);
+    if (observed_state) b.Output(step[1]);
+    auto graph = Finish(b);
+    CheckRegisteredRewrite("gdn_step", graph, registry, !observed_state);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, GdnGatesRequireVerifyAndSoftplus) {
+  const auto registry = Registry({Fake("test.gates", Any(ir::Fused(FusedKind::kGdnGates)))});
+  for (unsigned mutation = 0; mutation != 3; ++mutation) {
+    ir::Builder b;
+    const auto x = b.Input(F32({8, 3}));
+    const auto wa = b.Weight(F32({8, 4}), W(0));
+    const auto wb = b.Weight(F32({8, 4}), W(1));
+    const auto dt = b.Weight(F32({4}), W(2));
+    const auto a = b.Weight(F32({4}), W(3));
+    auto alpha = b.Reshape(b.MatMul(wa, x), ir::ShapeOf({4, 3, 1}));
+    alpha = b.Add(alpha, dt);
+    alpha = b.Unary(alpha, mutation == 2 ? ir::UnaryFn::kSilu : ir::UnaryFn::kSoftplus);
+    alpha = b.Reshape(b.Mul(alpha, a), ir::ShapeOf({1, 4, 3, 1}));
+    const auto beta =
+        b.Unary(b.Reshape(b.MatMul(wb, x), ir::ShapeOf({1, 4, 3, 1})), ir::UnaryFn::kSigmoid);
+    b.Output(alpha);
+    b.Output(beta);
+    auto graph = Finish(b);
+    StepShape shape;
+    shape.phase = mutation == 1 ? Phase::kDecode : Phase::kVerify;
+    CheckRegisteredRewrite("gdn_gates", graph, registry, mutation == 0, &shape);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, RoundedMaskRequiresTheScoresVisibilityDomain) {
+  const auto registry = Registry({Fake("test.mask", Any(ir::Fused(FusedKind::kRoundedIndexMask)))});
+  for (unsigned mutation = 0; mutation != 3; ++mutation) {
+    ir::Builder b;
+    const auto q = b.Input(F32({128, 64, 3}));
+    const auto k = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({128, 1, 5})));
+    const auto w = b.Input(F32({64, 3}));
+    const auto counts = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+    const auto other_counts = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+    const auto raw = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({4, 3})));
+    const auto score = b.RoundedIndexScore(q, k, w, counts);
+    const auto top = b.VisibleTopK(score, mutation == 1 ? other_counts : counts, 2);
+    b.Output(b.SelectedMask(raw, top, {.raw_cells = 4, .cells = 5}));
+    if (mutation == 2) b.Output(score);
+    auto graph = Finish(b);
+    CheckRegisteredRewrite("rounded_index_mask", graph, registry, mutation == 0);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, Mxfp8InputsRequireEncodedWeightsAndPreparation) {
+  for (unsigned mutation = 0; mutation != 3; ++mutation) {
+    std::vector<ex::Implementation> implementations = {
+        Fake("test.product", Any(ir::Primitive(Op::kMatMul)))};
+    if (mutation != 2)
+      implementations.push_back(Fake("test.prepare", Any(ir::Primitive(Op::kPrepare))));
+    const auto registry = Registry(std::move(implementations));
+    ir::Builder b;
+    b.SetComponent(1);
+    const auto x = b.Input(F32({256, 2}));
+    const format::TensorFormat encoded{.encoding = Encoding::kMxfp8,
+                                       .layout = Layout::kScaleAtoms,
+                                       .shape = ir::ShapeOf({256, 32})};
+    const auto w = b.Weight(mutation == 1 ? F32({256, 32}) : encoded, W(0));
+    b.Output(b.MatMul(w, x));
+    auto graph = Finish(b);
+    CheckRegisteredRewrite("mxfp8_inputs", graph, registry, mutation == 0);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, MoeRouterPreservesGateComponentAndReaders) {
+  const auto registry = Registry({Fake("test.router", Any(ir::Fused(FusedKind::kMoeRouter)))});
+  for (unsigned mutation = 0; mutation != 3; ++mutation) {
+    ir::Builder b;
+    const auto x = b.Input(F32({8, 2}));
+    const auto w = b.Weight(F32({8, 4}), W(0));
+    const auto gate = b.Weight(F32({8}), W(1));
+    const auto logits = b.MatMul(w, x);
+    const auto route =
+        b.Route(logits, {}, {}, {}, {.kind = ir::RouteKind::kSoftmaxTopK, .experts = 4, .used = 2});
+    if (mutation == 1) b.SetComponent(2);
+    const auto multiplied = b.Mul(x, gate);
+    b.Output(b.SumRows(multiplied));
+    if (mutation == 2) b.Output(multiplied);
+    b.Output(route[0]);
+    b.Output(route[1]);
+    auto graph = Finish(b);
+    CheckRegisteredRewrite("moe_router", graph, registry, mutation == 0);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, MoeCombinePreservesReductionReadersAndAddOrder) {
+  const auto registry = Registry({Fake("test.combine", Any(ir::Fused(FusedKind::kMoeCombine)))});
+  for (unsigned mutation = 0; mutation != 3; ++mutation) {
+    ir::Builder b;
+    const auto expert = b.Input(F32({8, 2, 3}));
+    const auto weights = b.Input(F32({2, 3}));
+    const auto ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2, 3})));
+    const auto shared = b.Input(F32({8, 3}));
+    const auto reduce = b.ExpertReduce(expert, weights, ids, {});
+    b.Output(mutation == 1 ? b.Add(shared, reduce) : b.Add(reduce, shared));
+    if (mutation == 2) b.Output(reduce);
+    auto graph = Finish(b);
+    CheckRegisteredRewrite("moe_combine", graph, registry, mutation == 0);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, MoeGluAndExpertsRequireTheirOwnRoutingScales) {
+  for (const bool stacked : {false, true}) {
+    const auto name = stacked ? "moe_experts" : "moe_glu";
+    const auto kind = stacked ? FusedKind::kMoeExperts : FusedKind::kMoeGlu;
+    const auto registry = Registry({Fake("test.moe", Any(ir::Fused(kind)))});
+    for (unsigned mutation = 0; mutation != 3; ++mutation) {
+      ir::Builder b;
+      b.SetComponent(1);
+      const auto x = b.Input(F32({8, 3}));
+      const auto ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2, 3})));
+      const auto other_ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2, 3})));
+      const auto sg = b.Weight(F32({4}), W(0));
+      const auto su = b.Weight(F32({4}), W(1));
+      const auto sd = b.Weight(F32({4}), W(2));
+      const auto gathered = [&](TensorId scales, TensorId selected) {
+        return b.GetRows(
+            b.Repeat(b.Reshape(scales, ir::ShapeOf({1, 4, 1})), ir::ShapeOf({1, 4, 3})), selected);
+      };
+      const auto input = b.Reshape(x, ir::ShapeOf({8, 1, 3}));
+      TensorId gate, up;
+      if (stacked) {
+        const auto pair = b.MatMulId(b.Weight(F32({8, 10, 4}), W(3)), input, ids);
+        const auto strides = b.tensor(pair).nb;
+        gate = b.View(pair, ir::ShapeOf({5, 2, 3}), strides, 0);
+        up = b.View(pair, ir::ShapeOf({5, 2, 3}), strides, 20);
+      } else {
+        gate = b.MatMulId(b.Weight(F32({8, 5, 4}), W(3)), input, ids);
+        up = b.MatMulId(b.Weight(F32({8, 5, 4}), W(4)), input, ids);
+      }
+      gate = b.Mul(gate, gathered(sg, ids));
+      up = b.Mul(up, gathered(su, mutation == 1 ? other_ids : ids));
+      const auto activated = b.Glu(gate, up, {});
+      if (mutation == 2) b.Output(gate);
+      if (stacked) {
+        const auto down = b.MatMulId(b.Weight(F32({5, 8, 4}), W(5)), activated, ids);
+        const auto reduce = b.ExpertReduce(down, b.Input(F32({2, 3})), ids, gathered(sd, ids));
+        const auto shared = b.Input(F32({8, 3}));
+        const auto logit = b.Input(F32({1, 3}));
+        b.Output(b.Add(reduce, b.Mul(shared, b.Unary(logit, ir::UnaryFn::kSigmoid))));
+      } else {
+        b.Output(activated);
+      }
+      auto graph = Finish(b);
+      CheckRegisteredRewrite(name, graph, registry, mutation == 0);
+    }
+  }
+}
+
+TEST(PlannerPatternCoverageTest, QkAttentionKeepsMaskSemanticsAndProductReaders) {
+  std::vector<ex::Implementation> implementations;
+  for (const auto op : {Op::kMatMul, Op::kConvert})
+    implementations.push_back(Fake(std::string(ir::OpName(op)), Any(ir::Primitive(op))));
+  for (const auto kind : {FusedKind::kRmsNormMulRopeSections, FusedKind::kAttentionMaskPack,
+                          FusedKind::kRopeTable, FusedKind::kQkAttention})
+    implementations.push_back(Fake(std::string(ir::FusedKindName(kind)), Any(ir::Fused(kind))));
+  const auto registry = Registry(std::move(implementations));
+  for (unsigned mutation = 0; mutation != 3; ++mutation) {
+    ir::Builder b;
+    b.SetComponent(1);
+    const auto x = b.Input(F32({8, 17}));
+    const auto positions = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({17})));
+    const auto norm = b.Weight(F32({4}), W(0));
+    const auto mask = b.Input(F32({17, 17}));
+    std::array<TensorId, 3> heads;
+    for (std::uint16_t i = 0; i < heads.size(); ++i) {
+      const auto weight = b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({8, 8})), W(i + 1));
+      const auto product = b.MatMul(weight, x);
+      if (mutation == 2 && i == 0) b.Output(product);
+      auto h = b.Reshape(product, ir::ShapeOf({4, 2, 17}));
+      if (i != 2) {
+        h = b.Fused(FusedKind::kRmsNormMulRopeSections, std::array{h, norm, positions},
+                    ir::RopeSectionsParams{.eps = 1e-6F, .sections = 1, .dims = {4, 0, 0}})[0];
+      }
+      h = b.Permute(h, {0, 2, 1, 3});
+      heads[i] = i != 2 ? b.Cont(h) : h;
+    }
+    b.Output(b.Attention(heads[0], heads[1], heads[2], mask, {},
+                         {.scale = 0.5F, .softcap = mutation == 1 ? 2.0F : 0.0F}));
+    auto graph = Finish(b);
+    CheckRegisteredRewrite("qk_attention", graph, registry, mutation == 0);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, PairedAndFloatingGluPreserveSharedInputAndVisibleProducts) {
+  for (const std::string_view name : {"paired_glu_products", "float_mul_mat_glu"}) {
+    const auto kind =
+        name == "paired_glu_products" ? FusedKind::kPreparedProducts : FusedKind::kMatMulGlu;
+    const auto registry = Registry({Fake("test.pair", Any(ir::Fused(kind)))});
+    for (unsigned mutation = 0; mutation != 3; ++mutation) {
+      ir::Builder b;
+      const auto x = b.Input(F32({8, 2}));
+      const auto other = b.Input(F32({8, 2}));
+      const auto wg = b.Weight(ir::Dense(Encoding::kF16, ir::ShapeOf({8, 4})), W(0));
+      const auto wu = b.Weight(ir::Dense(Encoding::kF16, ir::ShapeOf({8, 4})), W(1));
+      const auto gate = b.MatMul(wg, x);
+      const auto up = b.MatMul(wu, mutation == 1 ? other : x);
+      b.Output(b.Glu(gate, up, {}));
+      if (mutation == 2) b.Output(gate);
+      auto graph = Finish(b);
+      CheckRegisteredRewrite(name, graph, registry, mutation == 0);
+    }
+  }
+}
+
+TEST(PlannerPatternCoverageTest, OwnerAttentionRequiresCompatibleOwnersAndPrivateQueries) {
+  const auto registry = Registry({Fake("test.owners", Any(ir::Fused(FusedKind::kOwnerAttention)))});
+  for (unsigned mutation = 0; mutation != 3; ++mutation) {
+    ir::Builder b;
+    b.SetJoined();
+    const auto joined = b.Input(F32({4, 2, 4}));
+    std::array<TensorId, 2> outputs, masks;
+    // Masks precede all query views: the rewrite joins them once before
+    // the layer's owner group begins.
+    for (std::uint8_t owner = 0; owner != 2; ++owner) {
+      b.SetOwner(owner);
+      const auto qpos = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2})));
+      const auto cells = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({4})));
+      masks[owner] = b.MaskBuild(qpos, cells, 2, {.exact_rows = true});
+    }
+    for (std::uint8_t owner = 0; owner != 2; ++owner) {
+      b.SetOwner(owner);
+      const auto cache_format = ir::Dense(Encoding::kF16, ir::ShapeOf({4, 2, 4}));
+      const auto k = b.State(cache_format, {.tensor = 0, .segment = owner});
+      const auto v = b.State(cache_format, {.tensor = 1, .segment = owner});
+      const auto qview = b.View(joined, ir::ShapeOf({4, 2, 2}), b.tensor(joined).nb, owner * 64);
+      const auto key = b.View(k, ir::ShapeOf({4, 2, 4}), b.tensor(k).nb, 0);
+      const auto value = b.View(v, ir::ShapeOf({4, 2, 4}), b.tensor(v).nb, 0);
+      const auto q = b.Permute(qview, {0, 2, 1, 3});
+      if (mutation == 2 && owner == 0) b.Output(q);
+      const auto attention =
+          b.Attention(q, b.Permute(key, {0, 2, 1, 3}), b.Permute(value, {0, 2, 1, 3}), masks[owner],
+                      {}, {.scale = mutation == 1 && owner == 1 ? 0.25F : 0.5F});
+      outputs[owner] = b.Reshape(attention, ir::ShapeOf({8, 2}));
+    }
+    b.SetJoined();
+    b.Output(b.Concat(outputs[0], outputs[1], 1));
+    auto graph = Finish(b);
+    CheckRegisteredRewrite("owner_attention", graph, registry, mutation == 0);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, InterleavedNormRopeCannotElideAnObservedNorm) {
+  const auto registry = Registry();
+  for (const bool observed : {false, true}) {
+    ir::Builder b;
+    const auto x = b.Input(F32({64, 2, 3}));
+    const auto w = b.Weight(F32({64}), W(0));
+    const auto pos = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+    const auto norm = b.RmsNorm(x, 1e-6F);
+    b.Output(b.Rope(b.Mul(norm, w), pos, {}, {.mode = ir::RopeMode::kNeox, .dims = 64}));
+    if (observed) b.Output(norm);
+    auto graph = Finish(b);
+    CheckRegisteredRewrite("interleaved_norm_rope", graph, registry, !observed);
+  }
+}
+
+TEST(PlannerPatternCoverageTest, InverseGroupedProductCannotEraseObservableRotation) {
+  const auto registry =
+      Registry({Fake("test.inverse", Any(ir::Fused(FusedKind::kInverseRopeGroupedMatMul)))});
+  for (const bool observed : {false, true}) {
+    ir::Builder b;
+    const auto weight = b.Input(F32({128, 384, 2}));
+    const auto heads = b.Input(F32({64, 4, 5}));
+    const auto pos = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({5})));
+    const auto rotated = b.Rope(
+        heads, pos, {}, {.mode = ir::RopeMode::kNormal, .inverse = true, .dims = 32, .offset = 32});
+    const auto reshaped = b.Reshape(rotated, ir::ShapeOf({128, 2, 5}));
+    const auto low = b.MatMul(weight, b.Permute(reshaped, {0, 2, 1, 3}));
+    b.Output(b.Cont(b.Permute(low, {0, 2, 1, 3}), ir::ShapeOf({768, 5})));
+    if (observed) b.Output(rotated);
+    auto graph = Finish(b);
+    CheckRegisteredRewrite("inverse_rope_grouped_mul_mat", graph, registry, !observed);
+  }
+}
+
+// Explicit audit inventory: each rewrite/batch registration must name the
+// synthetic positive and refusal controls that own its contract. Policy options
+// and composites have no matcher and are tested by the policy/selection suites.
+// Test names are checked against GTest registration even under a filtered run;
+// the normal planner_test run executes every listed control.
+TEST(PlannerPatternCoverageTest, EveryRegisteredMatcherHasPositiveAndRefusalControls) {
+  struct Coverage {
+    std::string_view pattern;
+    std::string_view positive;
+    std::string_view refusal;
+  };
+  constexpr Coverage coverage[] = {
+      {"rounded_index_mask",
+       "PlannerPatternCoverageTest.RoundedMaskRequiresTheScoresVisibilityDomain",
+       "PlannerPatternCoverageTest.RoundedMaskRequiresTheScoresVisibilityDomain"},
+      {"state_bank_attention",
+       "PlannerPatternTest.StateBanksKeepAttentionParametersAndRefuseObservableCopies",
+       "PlannerPatternTest.StateBanksKeepAttentionParametersAndRefuseObservableCopies"},
+      {"rms_norm_rope_tail",
+       "PlannerPatternTest.Dsv4QHeadChecksTailOwnershipSideReadersAndInterveningWrites",
+       "PlannerPatternTest.Dsv4QHeadChecksTailOwnershipSideReadersAndInterveningWrites"},
+      {"inverse_rope_grouped_mul_mat",
+       "PlannerPatternCoverageTest.InverseGroupedProductCannotEraseObservableRotation",
+       "PlannerPatternCoverageTest.InverseGroupedProductCannotEraseObservableRotation"},
+      {"softmax_pool_compress",
+       "PlannerPatternTest.Dsv4CompressorChecksTheEntireCanonicalAssemblyAndReadOrder",
+       "PlannerPatternTest.Dsv4CompressorChecksTheEntireCanonicalAssemblyAndReadOrder"},
+      {"sinkhorn_hc_pre", "PlannerPatternTest.Dsv4HcPreChecksTheFullCarryAndPrimitiveArithmetic",
+       "PlannerPatternTest.Dsv4HcPreChecksTheFullCarryAndPrimitiveArithmetic"},
+      {"hc_post_flat_norm",
+       "PlannerPatternTest.Dsv4HcPostPreservesBothOutputsAcrossComponentBoundaries",
+       "PlannerPatternTest.Dsv4HcPostPreservesBothOutputsAcrossComponentBoundaries"},
+      {"hc_prep", "PlannerPatternTest.HyperConnectionPrepRejectsLowRankScaleBias",
+       "PlannerPatternTest.HyperConnectionPrepRejectsLowRankScaleBias"},
+      {"hc_mix", "PlannerPatternTest.HyperConnectionMixChecksItsStreamViewsAndFinalScale",
+       "PlannerPatternTest.HyperConnectionMixChecksItsStreamViewsAndFinalScale"},
+      {"hc_combine", "PlannerPatternTest.HyperConnectionCombineRejectsUnrepresentedScaleParameters",
+       "PlannerPatternTest.HyperConnectionCombineRejectsUnrepresentedScaleParameters"},
+      {"gdn_conv", "PlannerPatternTest.GdnHistoryChecksStandaloneCommitTail",
+       "PlannerPatternTest.GdnHistoryChecksStandaloneCommitTail"},
+      {"gdn_gates", "PlannerPatternCoverageTest.GdnGatesRequireVerifyAndSoftplus",
+       "PlannerPatternCoverageTest.GdnGatesRequireVerifyAndSoftplus"},
+      {"gdn_step", "PlannerPatternCoverageTest.GdnStepCannotDiscardAnObservedNextState",
+       "PlannerPatternCoverageTest.GdnStepCannotDiscardAnObservedNextState"},
+      {"gdn_norm_gate", "PlannerPatternCoverageTest.GdnNormGatePreservesGateFunctionAndNormReaders",
+       "PlannerPatternCoverageTest.GdnNormGatePreservesGateFunctionAndNormReaders"},
+      {"interleaved_norm_rope",
+       "PlannerPatternCoverageTest.InterleavedNormRopeCannotElideAnObservedNorm",
+       "PlannerPatternCoverageTest.InterleavedNormRopeCannotElideAnObservedNorm"},
+      {"mean_pool_norm_rope_store",
+       "PlannerPatternTest.QsaPoolingDoesNotDropRotationFrequencyFactors",
+       "PlannerPatternTest.QsaPoolingDoesNotDropRotationFrequencyFactors"},
+      {"block_sparse_attention", "PlannerPatternTest.QsaSelectionChecksItsFixedWeightsMasksAndBias",
+       "PlannerPatternTest.QsaSelectionChecksItsFixedWeightsMasksAndBias"},
+      {"prepared_head_gate",
+       "PlannerPatternTest.QsaGateQualifiesItsDownstreamProductRatherThanItsMulAnchor",
+       "PlannerPatternTest.QsaGateQualifiesItsDownstreamProductRatherThanItsMulAnchor"},
+      {"moe_router", "PlannerPatternCoverageTest.MoeRouterPreservesGateComponentAndReaders",
+       "PlannerPatternCoverageTest.MoeRouterPreservesGateComponentAndReaders"},
+      {"moe_experts", "PlannerPatternCoverageTest.MoeGluAndExpertsRequireTheirOwnRoutingScales",
+       "PlannerPatternCoverageTest.MoeGluAndExpertsRequireTheirOwnRoutingScales"},
+      {"moe_glu", "PlannerPatternCoverageTest.MoeGluAndExpertsRequireTheirOwnRoutingScales",
+       "PlannerPatternCoverageTest.MoeGluAndExpertsRequireTheirOwnRoutingScales"},
+      {"moe_combine", "PlannerPatternCoverageTest.MoeCombinePreservesReductionReadersAndAddOrder",
+       "PlannerPatternCoverageTest.MoeCombinePreservesReductionReadersAndAddOrder"},
+      {"vecq_glu",
+       "PlannerPatternTest.QuantizedGluAuthenticatesBothProductsAndPreparedCompoundOperands",
+       "PlannerPatternTest.QuantizedGluAuthenticatesBothProductsAndPreparedCompoundOperands"},
+      {"mxfp8_inputs", "PlannerPatternCoverageTest.Mxfp8InputsRequireEncodedWeightsAndPreparation",
+       "PlannerPatternCoverageTest.Mxfp8InputsRequireEncodedWeightsAndPreparation"},
+      {"hc_fold_inputs", "PlannerPatternCoverageTest.FoldReadersReuseOnlyTheMatchingEncoding",
+       "PlannerPatternCoverageTest.FoldReadersReuseOnlyTheMatchingEncoding"},
+      {"qk_attention", "PlannerPatternCoverageTest.QkAttentionKeepsMaskSemanticsAndProductReaders",
+       "PlannerPatternCoverageTest.QkAttentionKeepsMaskSemanticsAndProductReaders"},
+      {"split_gated_residual_modulate",
+       "PlannerPatternTest.SplitResidualJoinsTheModulationOfItsSum",
+       "PlannerPatternTest.SplitResidualJoinsTheModulationOfItsSum"},
+      {"bf16_branch", "PlannerPatternTest.Bf16BranchRecordsTheResidualsBranchInBf16",
+       "PlannerPatternTest.Bf16BranchRecordsTheResidualsBranchInBf16"},
+      {"bf16_inputs",
+       "PlannerPatternTest.DefaultPreparationRequiresIncumbentFactsAndConstrainsFinalCompetitors",
+       "PlannerPatternTest.DefaultPreparationRequiresIncumbentFactsAndConstrainsFinalCompetitors"},
+      {"bf16_rows", "PlannerPatternCoverageTest.Bf16RowsRequireOnlyPermittedConsumers",
+       "PlannerPatternCoverageTest.Bf16RowsRequireOnlyPermittedConsumers"},
+      {"grouped_vecq", "PlannerPatternTest.GroupedVecQRequiresTheActualProductQualification",
+       "PlannerPatternTest.GroupedVecQRequiresTheActualProductQualification"},
+      {"vecq_inputs",
+       "PlannerPatternTest.MqaOutAGroupedAndDenseVecQQualifyAtOneRowAndRefuseMultiRow",
+       "PlannerPatternTest.MqaOutAGroupedAndDenseVecQQualifyAtOneRowAndRefuseMultiRow"},
+      {"spatial_channel_norm", "PlannerPatternTest.SpatialChannelNormTakesTheWholeLayoutRoundTrip",
+       "PlannerPatternTest.SpatialChannelNormTakesTheWholeLayoutRoundTrip"},
+      {"rms_norm_mul_rope", "PlannerPatternTest.TheLongerChainComesFirst",
+       "PlannerPatternTest.TheLongerChainComesFirst"},
+      {"rms_norm_mul_rope_sections",
+       "PlannerPatternTest.RotatedSectionsTakeTheWeightWideningAndPositionCopies",
+       "PlannerPatternTest.RotatedSectionsTakeTheWeightWideningAndPositionCopies"},
+      {"rms_norm_mul_add", "PlannerPatternTest.NormThenResidualAdd",
+       "PlannerPatternTest.NormThenResidualAdd"},
+      {"split_modulate", "PlannerPatternTest.SplitModulationAndGatedResidualFuseTheirConditioning",
+       "PlannerPatternTest.SplitModulationAndGatedResidualFuseTheirConditioning"},
+      {"split_gated_residual",
+       "PlannerPatternCoverageTest.SplitGatedResidualRequiresTanhAndPrivateIntermediates",
+       "PlannerPatternCoverageTest.SplitGatedResidualRequiresTanhAndPrivateIntermediates"},
+      {"bf16_glu", "PlannerPatternTest.Bf16GluRecordsTheMlpInBf16",
+       "PlannerPatternTest.Bf16GluRecordsTheMlpInBf16"},
+      {"float_mul_mat_glu",
+       "PlannerPatternCoverageTest.PairedAndFloatingGluPreserveSharedInputAndVisibleProducts",
+       "PlannerPatternCoverageTest.PairedAndFloatingGluPreserveSharedInputAndVisibleProducts"},
+      {"float_mul_mat_add",
+       "PlannerPatternCoverageTest.FloatProductAddPreservesExplicitArithmeticAndShape",
+       "PlannerPatternCoverageTest.FloatProductAddPreservesExplicitArithmeticAndShape"},
+      {"mul_mat_glu", "PlannerPatternTest.GateAndUpProductsJoinTheirGlu",
+       "PlannerPatternTest.GateAndUpProductsJoinTheirGlu"},
+      {"rope_store", "PlannerPatternTest.ARotationStoredWhole",
+       "PlannerPatternTest.ARotationStoredWhole"},
+      {"rms_norm_mul", "PlannerPatternTest.NormAndItsWeightFuse",
+       "PlannerPatternTest.NothingFusesAnIntermediateReadElsewhere"},
+      {"owner_attention",
+       "PlannerPatternCoverageTest.OwnerAttentionRequiresCompatibleOwnersAndPrivateQueries",
+       "PlannerPatternCoverageTest.OwnerAttentionRequiresCompatibleOwnersAndPrivateQueries"},
+      {"exl3_products",
+       "PlannerPatternCoverageTest.Exl3ProductsRequireContiguousInputAndAvailableConversion",
+       "PlannerPatternCoverageTest.Exl3ProductsRequireContiguousInputAndAvailableConversion"},
+      {"paired_glu_products",
+       "PlannerPatternCoverageTest.PairedAndFloatingGluPreserveSharedInputAndVisibleProducts",
+       "PlannerPatternCoverageTest.PairedAndFloatingGluPreserveSharedInputAndVisibleProducts"},
+      {"prepared_inputs", "PlannerPatternTest.ProductsOfOneInputShareItsPreparation",
+       "PlannerPatternTest.ProductsOfOneInputShareItsPreparation"},
+      {"grouped_stores", "PlannerBatchTest.ConsecutiveStoresRunAsOne",
+       "PlannerBatchTest.ConsecutiveStoresRunAsOne"},
+  };
+  std::vector<std::string> tests;
+  const auto* unit = ::testing::UnitTest::GetInstance();
+  for (int s = 0; s != unit->total_test_suite_count(); ++s) {
+    const auto* suite = unit->GetTestSuite(s);
+    for (int t = 0; t != suite->total_test_count(); ++t)
+      tests.push_back(std::string(suite->name()) + "." + suite->GetTestInfo(t)->name());
+  }
+  std::vector<std::string_view> covered, registered;
+  for (const auto& item : coverage) {
+    SCOPED_TRACE(item.pattern);
+    EXPECT_TRUE(std::ranges::contains(tests, item.positive));
+    EXPECT_TRUE(std::ranges::contains(tests, item.refusal));
+    covered.push_back(item.pattern);
+  }
+  for (const auto& pattern : llmp::planner::Patterns())
+    if (pattern.kind == PatternKind::kRewrite || pattern.kind == PatternKind::kBatch)
+      registered.push_back(pattern.name);
+  std::ranges::sort(covered);
+  std::ranges::sort(registered);
+  EXPECT_EQ(covered, registered);
 }
 
 }  // namespace
