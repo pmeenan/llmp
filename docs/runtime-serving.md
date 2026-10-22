@@ -47,7 +47,8 @@ this same driver. Complete trusted-artifact binding selects the existing
 immutable engine profile before adapter construction and is rechecked at setup.
 It accepts chat and literal completions with target likelihoods. Context is capped
 at 262,144 and settings fallbacks are uncalibrated. Plain chat disables thinking;
-generated tools are refused; a `drafter` (the profile's assistant) speculates
+the original controls refused generated tools (the M3.5 tool route now awaits
+separate model qualification); a `drafter` (the profile's assistant) speculates
 on the shared engine ([engine-backed models](#engine-backed-models)), where
 both profiles serve since M3.6's migration, their recipes below now the
 `gemma4` mapping's rules (the evidence recorded here is the M3 class's).
@@ -1437,17 +1438,20 @@ admission. Intake retains ordered owned text parts; the shared chat content
 representation also describes tool use, tool results and images. A checked
 projection feeds existing native or interpreted templates, preserving text
 concatenation and tool IDs/JSON ownership, and refuses parts it cannot express
-(including images, error results and mixed or out-of-order result messages). Projection and
-part storage are charged before rendering. HTTP tools and images are still
-refused. Messages request handling, tool extraction and signed reasoning remain
-future work; `/v1/messages` is
-not enabled by this seam.
+(including images and ambiguous result associations). Projection and part
+storage are charged before rendering. Chat Completions accepts tools/functions,
+required/named/auto/none choices, generated calls and tool results through the
+shared format-driven implementation; real-model and client qualification remains
+pending. See [tool calls](tool-calls.md) for constraints, canonical span feeding,
+continuation ownership and the explicit Gemma history correction. Images,
+Messages request handling and signed reasoning remain future work;
+`/v1/messages` is not enabled by this seam.
 
 **Fields.** Honored: `model` (a configured name; unknown is a 404, the
 image pipeline a 400 `model_not_supported`), `messages` (system;
 developer, read as system; user; assistant, whose `reasoning` or
 `reasoning_content` goes back to the template; content as a string or text
-parts; the last message the user's), `max_tokens` or
+parts; assistant calls and tool/function results), `max_tokens` or
 `max_completion_tokens` (default: the rest of the context), `temperature`
 (default 1, OpenAI's; 0 is greedy), `top_p`, `top_k` (0 or −1: off),
 `min_p`, `seed` (default: random), `stop` (matched in the answer, not in
@@ -1455,15 +1459,13 @@ the reasoning), `stream`, `stream_options.include_usage`. Known fields
 that would change the answer are accepted only at their "off" value, and
 otherwise refused with a 400 naming them: `n` 1, `presence_penalty` and
 `frequency_penalty` 0, `repetition_penalty` 1, `logprobs` false,
-`top_logprobs` 0, `tools` and `functions` empty, `tool_choice` and
-`function_call` "none" or "auto", `response_format` text, `logit_bias`
+`top_logprobs` 0, strict tool schemas false, `response_format` text, `logit_bias`
 empty, `modalities` ["text"], `audio` null, `store` false; OpenRouter's
 `transforms` and `plugins` are refused whatever their value (D-046).
 Known metadata is ignored: `user`, `safety_identifier`,
-`prompt_cache_key`, `metadata`, `service_tier`, `parallel_tool_calls`, a
-message's `name`, a text part's `cache_control`, and an assistant's null
-`refusal`, `audio` and `function_call`, empty `tool_calls` and
-`annotations` (echoes of a response). **Any other field is ignored with a
+`prompt_cache_key`, `metadata`, `service_tier`, a
+non-tool message's `name`, a text part's `cache_control`, and an assistant's null
+`refusal` and `audio`, and empty `annotations` (echoes of a response). **Any other field is ignored with a
 200**, at the top, in a message, a text part or `stream_options`; its
 name, never its value, is counted (`x`, `messages[].x`,
 `messages[].content[].x`, `stream_options.x`; at most 64 names a request,
@@ -2406,7 +2408,7 @@ short DeepSeek and Qwen prompts, with speculation on and off.
 
 - One process, one model resident at a time: M3's full swap. Partial
   eviction, admission and the switching policy come with M5 and M6.
-- The chat route is M3's minimal one: no tools, no reasoning controls,
+- The chat route adds M3.5 tool calls (qualification pending), but no reasoning controls,
   no credentials (the optional API key is M5's), no CORS, no Responses or
   Messages routes. Qwen and DeepSeek chat and literal completions share up to their request slots
   (four by default; [request slots](#request-slots)); other

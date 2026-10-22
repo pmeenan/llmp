@@ -809,22 +809,32 @@ std::expected<Rendered, Error> RenderGemma4Variant(const Conversation& c,
       w.Special(kToolCallEnd);
       prev = Prev::kToolCall;
     }
-    // The template associates each result with the matching call ID. Legacy
-    // fixture calls omit IDs: their absent values compare equal, selecting
-    // the last call as before.
+    // Shared projection resolves known IDs before missing-ID/name evidence.
+    // No empty-ID comparison and no invented persistent IDs reach the renderer.
     bool responded = false;
     if (calls) {
       for (std::size_t k = i + 1; k < n && messages[k].role == Role::kTool; ++k) {
-        const ToolCall* matching = nullptr;
-        for (const ToolCall& call : m.tool_calls) {
-          if (call.id == messages[k].tool_call_id) {
-            matching = &call;
+        const auto association = messages[k].resolved_tool_call;
+        std::string_view name;
+        if (association && *association < m.tool_calls.size()) {
+          name = m.tool_calls[*association].name;
+        } else if (!messages[k].tool_result_name.empty()) {
+          // Shared validation proved this name has enough unmatched calls.
+          name = messages[k].tool_result_name;
+        } else {
+          // A missing occurrence is harmless when every eligible call has the
+          // same name: that is the only association detail this template uses.
+          for (std::size_t ci = 0; ci < m.tool_calls.size(); ++ci) {
+            bool claimed = false;
+            for (std::size_t r = i + 1; r < n && messages[r].role == Role::kTool; ++r)
+              claimed = claimed || messages[r].resolved_tool_call == ci;
+            if (claimed) continue;
+            if (!name.empty() && name != m.tool_calls[ci].name)
+              return Fail(Rule::kInvalid, "tool result association is ambiguous", k);
+            name = m.tool_calls[ci].name;
           }
+          if (name.empty()) return Fail(Rule::kInvalid, "tool result association is ambiguous", k);
         }
-        if (matching == nullptr) {
-          return Fail(Rule::kInvalid, "tool result ID does not match a preceding call", k);
-        }
-        const std::string_view name = matching->name;
         w.Special(kToolResponse);
         w.Text("response:");
         w.Text(name);

@@ -23,6 +23,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -31,11 +32,13 @@
 #include "llm_fixture.h"
 #include "memory/reclaim.h"
 #include "providers/fake/fake_device_runtime.h"
+#include "runtime/service_request.h"
 #include "runtime/serving.h"
 #include "scheduler/cohort_policy.h"
 #include "scheduler/cohort_schedule.h"
 #include "tokenizer/tokenizer.h"
 #include "tokenizer/unicode.h"
+#include "tokenizer_fixtures.h"
 
 namespace {
 using namespace llmp::test_support::llm_fixture;
@@ -1733,3 +1736,579 @@ TEST_F(LlmScores, ResumableVerifySettlesTheFullAcceptedPrefixAfterVisibleStop) {
 }
 
 }  // namespace
+
+class LlmTools : public LlmScores {
+ protected:
+  void QwenChat() {
+    score_width_ = 265;
+    StartScores(false, 1, 4096, 32);
+    const auto text = ts::ReadFile(ts::DataDir() + "/chat/templates/qwen3.8.jinja");
+    ASSERT_TRUE(text);
+    auto spec = ByteTokenizerSpec();
+    for (const auto* marker : {"<think>", "</think>", "<tool_call>", "</tool_call>",
+                               "<tool_response>", "</tool_response>"}) {
+      spec.tokens.emplace_back(marker);
+      spec.kinds.push_back(llmp::tokenizer::TokenKind::kUserDefined);
+    }
+    auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(spec));
+    ASSERT_TRUE(tokenizer);
+    ASSERT_TRUE(rt::LlmTestAccess::UseChat(*llm_, std::move(*tokenizer), *text));
+  }
+  std::shared_ptr<llmp::chat::ToolSampling> Constraint(bool speculative = false) {
+    score_width_ = 259;
+    StartScores(speculative, 1, 128, 32);
+    EXPECT_TRUE(rt::LlmTestAccess::UseChat(*llm_, ByteTokenizer(), "{{ messages[0].content }}"));
+    const std::array<llmp::chat::ToolDefinition, 1> definitions{
+        {{.name = "lookup", .description = {}}}};
+    auto request = llmp::chat::ToolRequest::Create(
+        definitions, {llmp::chat::ToolChoiceKind::kNamed, "lookup"}, true, {});
+    EXPECT_TRUE(request);
+    return std::make_shared<llmp::chat::ToolSampling>(
+        llm_->tokenizer(), llmp::chat::QwenToolCalls(), std::move(*request),
+        llmp::base::json::Limits{}, false, std::span<const std::int32_t>{});
+  }
+};
+
+TEST_F(LlmTools, PlainKnownOpeningRunsWithItsSelectingAnchorInOneCausalUnit) {
+  auto constraint = Constraint();
+  auto& branch = BranchAt(0);
+  const std::array<std::int32_t, 1> prompt{'x'};
+  std::vector<float> last;
+  ASSERT_TRUE(branch.Prefill(prompt, last));
+  const auto before = source_->built().size();
+  rt::GenerateOptions options;
+  options.max_tokens = 8;
+  options.stop = false;
+  options.tool_sampling = constraint;
+  std::vector<std::int32_t> reported;
+  options.on_tokens = [&](auto fresh) {
+    reported.insert(reported.end(), fresh.begin(), fresh.end());
+    return true;
+  };
+  rt::Generation output;
+  ASSERT_TRUE(branch.Generate(last, options, output));
+  EXPECT_EQ(output.steps, 1U);
+  EXPECT_EQ(output.tokens.size(), 8U);
+  EXPECT_EQ(reported, output.tokens);
+  std::string text;
+  ASSERT_TRUE(llm_->tokenizer().Decode(output.tokens, {}, text));
+  EXPECT_EQ(text, "<tool_ca");
+  auto expected = std::vector<std::int32_t>(prompt.begin(), prompt.end());
+  expected.insert(expected.end(), output.tokens.begin(), output.tokens.end() - 1);
+  EXPECT_EQ(State(0), expected);
+  bool multirow = false;
+  for (std::size_t i = before; i < source_->built().size(); ++i) {
+    const auto& shape = source_->built()[i].shape;
+    multirow = multirow || (shape.phase == pl::Phase::kPrefill && shape.segments.size() == 1 &&
+                            shape.segments[0].rows == 7);
+  }
+  EXPECT_TRUE(multirow);
+}
+
+TEST_F(LlmTools, CertainSpanScoresEveryPublishedTokenFromItsActualCausalRow) {
+  auto constraint = Constraint();
+  std::vector<float> last;
+  ASSERT_TRUE(BranchAt(0).Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 8;
+  options.stop = false;
+  options.tool_sampling = constraint;
+  options.keep_logits = true;
+  std::vector<std::int32_t> scored;
+  options.on_logits = [&](std::int32_t token, std::span<const float> row) {
+    const auto previous = scored.empty() ? 'x' : scored.back();
+    EXPECT_EQ(ArgmaxOf(row),
+              ts::FakeLogit(previous, static_cast<std::int32_t>(scored.size()), 259));
+    scored.push_back(token);
+    return true;
+  };
+  rt::Generation output;
+  ASSERT_TRUE(BranchAt(0).Generate(last, options, output));
+  EXPECT_EQ(output.steps, 1U);
+  EXPECT_EQ(scored, output.tokens);
+  EXPECT_EQ(output.logits.size(), output.tokens.size());
+  EXPECT_EQ(output.tokens.size(), 8U);
+}
+
+TEST_F(LlmTools, EmptyConstraintCandidatesRetireOnlyTheirRequestAndKeepNativeFailuresDistinct) {
+  auto constraint = Constraint();
+  auto native_failure = std::make_shared<llmp::chat::ToolSampling>(*constraint);
+  std::vector<float> last;
+  ASSERT_TRUE(BranchAt(0).Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 8;
+  options.stop = false;
+  options.tool_sampling = constraint;
+  const auto queued = source_->queued();
+  std::ranges::fill(last, -std::numeric_limits<float>::infinity());
+  last['z'] = 1;  // finite native output, excluded by the required opener
+  rt::Generation refused;
+  EXPECT_FALSE(BranchAt(0).Generate(last, options, refused));
+  EXPECT_TRUE(constraint->refused_candidates());
+  EXPECT_TRUE(llm_->generation_cohort_usable());
+  EXPECT_TRUE(refused.tokens.empty());
+  EXPECT_EQ(source_->queued(), queued);
+  EXPECT_EQ(State(0), (std::vector<std::int32_t>{'x'}));
+  options.tool_sampling = native_failure;
+  last['z'] = -std::numeric_limits<float>::infinity();
+  rt::Generation invalid;
+  EXPECT_FALSE(BranchAt(0).Generate(last, options, invalid));
+  EXPECT_FALSE(native_failure->refused_candidates());
+  EXPECT_EQ(source_->queued(), queued);
+  options.tool_sampling.reset();
+  last['a'] = 1;
+  options.max_tokens = 1;
+  rt::Generation next;
+  ASSERT_TRUE(BranchAt(0).Generate(last, options, next));
+  EXPECT_EQ(next.tokens, (std::vector<std::int32_t>{'a'}));
+}
+
+TEST_F(LlmTools, ChooseValidatesExcludedNativeLogitsBeforeMaskingOrRefusal) {
+  auto initial = Constraint();
+  std::vector<float> last;
+  ASSERT_TRUE(BranchAt(0).Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  const auto queued = source_->queued();
+  for (const bool sampled : {false, true}) {
+    for (const bool allowed : {false, true}) {
+      for (const float invalid :
+           {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+        auto constraint = std::make_shared<llmp::chat::ToolSampling>(*initial);
+        std::ranges::fill(last, -std::numeric_limits<float>::infinity());
+        last[allowed ? '<' : 'z'] = 1;
+        last[258] = invalid;  // excluded by the named opener
+        rt::GenerateOptions options;
+        options.max_tokens = 1;
+        options.stop = false;
+        options.tool_sampling = constraint;
+        if (sampled) options.sampling = llmp::execution::SamplingParams{};
+        rt::Generation output;
+        auto generated = BranchAt(0).Generate(last, options, output);
+        ASSERT_FALSE(generated);
+        EXPECT_THAT(generated.error(), HasSubstr("invalid-logits"));
+        EXPECT_FALSE(constraint->refused_candidates());
+        EXPECT_TRUE(output.tokens.empty());
+        EXPECT_EQ(source_->queued(), queued);
+        EXPECT_EQ(State(0), (std::vector<std::int32_t>{'x'}));
+      }
+    }
+  }
+  // Negative infinity is legal padding, including at excluded IDs.
+  std::ranges::fill(last, -std::numeric_limits<float>::infinity());
+  last['<'] = 1;
+  rt::GenerateOptions options;
+  options.max_tokens = 1;
+  options.stop = false;
+  options.tool_sampling = initial;
+  rt::Generation output;
+  ASSERT_TRUE(BranchAt(0).Generate(last, options, output));
+  EXPECT_EQ(output.tokens, (std::vector<std::int32_t>{'<'}));
+}
+
+TEST_F(LlmTools, CertainSpanCannotBypassDecodeExecutionQualification) {
+  auto constraint = Constraint();
+  std::vector<float> last;
+  ASSERT_TRUE(BranchAt(0).Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 8;
+  options.stop = false;
+  options.tool_sampling = constraint;
+  rt::Generation output;
+  auto session = BranchAt(0).BeginGeneration(last, options, output);
+  ASSERT_TRUE(session);
+  ASSERT_EQ(output.tokens.size(), 1U);
+  const auto queued = source_->queued();
+  source_->options().check_execution_use = [](en::NumericalUse use) -> en::Status {
+    if (use == en::NumericalUse::kDecode) return std::unexpected("decode qualification withdrawn");
+    return {};
+  };
+  EXPECT_FALSE((*session)->RunScalarStep());
+  EXPECT_EQ(source_->queued(), queued);
+  EXPECT_EQ(output.tokens.size(), 1U);
+  EXPECT_EQ(State(0), (std::vector<std::int32_t>{'x'}));
+  EXPECT_FALSE((*session)->Finish());
+}
+
+TEST_F(LlmTools, CertainSpanSkipsModelDrafterAndPreservesRealTargetWrittenTap) {
+  auto constraint = Constraint(true);
+  auto& branch = BranchAt(0);
+  std::vector<float> last;
+  ASSERT_TRUE(branch.Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  const auto before = source_->built().size();
+  rt::GenerateOptions options;
+  options.max_tokens = 8;
+  options.stop = false;
+  options.tool_sampling = constraint;
+  rt::Generation output;
+  ASSERT_TRUE(branch.Generate(last, options, output));
+  EXPECT_EQ(output.steps, 1U);
+  EXPECT_EQ(output.drafted, 0U);
+  for (std::size_t i = before; i < source_->built().size(); ++i)
+    EXPECT_NE(source_->built()[i].shape.phase, pl::Phase::kDraft);
+  EXPECT_EQ(State(0), State(0, kMtp));
+}
+
+TEST_F(LlmTools, CancelledPublicAnchorResumesItsPendingSpanWithoutReplay) {
+  auto constraint = Constraint();
+  auto& branch = BranchAt(0);
+  std::vector<float> last;
+  ASSERT_TRUE(branch.Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 8;
+  options.stop = false;
+  options.tool_sampling = constraint;
+  std::vector<std::int32_t> reported;
+  bool pause = true;
+  options.on_tokens = [&](auto fresh) {
+    reported.insert(reported.end(), fresh.begin(), fresh.end());
+    return !pause;
+  };
+  rt::Generation output;
+  ASSERT_TRUE(branch.Generate(last, options, output));
+  ASSERT_EQ(output.tokens.size(), 1U);
+  ASSERT_FALSE(constraint->certain().empty());
+  EXPECT_EQ(reported, output.tokens);
+  pause = false;
+  auto resumed = branch.ResumeGeneration({}, options, output);
+  ASSERT_TRUE(resumed);
+  while (!(*resumed)->done()) ASSERT_TRUE((*resumed)->RunScalarStep());
+  ASSERT_TRUE((*resumed)->Finish());
+  EXPECT_EQ(output.tokens.size(), 8U);
+  EXPECT_EQ(reported, output.tokens);
+  EXPECT_EQ(output.steps, 1U);
+}
+
+namespace {
+class ToolExchange : public rt::api::Exchange {
+ public:
+  bool Admit(const Admission&) override { return true; }
+  bool Next(rt::Phase, std::uint64_t) override { return true; }
+  bool Reasoning(std::string_view value) override {
+    reasoning += value;
+    return !paused;
+  }
+  bool Content(std::string_view value) override {
+    text += value;
+    if (pause_text) paused = true;
+    return !paused;
+  }
+  bool ToolCall(const llmp::chat::ToolUsePart& call) override {
+    calls.push_back(call);
+    paused = true;
+    return !serial;
+  }
+  bool Continue() override { return !paused; }
+  bool Paused() const override { return paused && !serial; }
+  bool Yielding() const override { return paused && serial; }
+  bool paused = false, serial = false, pause_text = false;
+  std::string text, reasoning;
+  std::vector<llmp::chat::ToolUsePart> calls;
+};
+}  // namespace
+
+TEST_F(LlmTools, PrepareRejectsUnrepresentableActiveNamesBeforeNativeWork) {
+  QwenChat();
+  rt::RequestMemory memory(64 * 1024 * 1024);
+  ToolExchange exchange;
+  const auto queued = source_->queued();
+  for (const auto name : {"a>b", " padded", "padded\t", "lookup"}) {
+    for (const auto choice : {"auto", "required", "named", "none"}) {
+      std::string quoted;
+      llmp::base::json::AppendQuoted(name, quoted);
+      std::string body =
+          R"({"model":"m","max_tokens":8,"messages":[{"role":"user","content":"read"}],"functions":[{"name":)" +
+          quoted + "}],\"function_call\":";
+      if (std::string_view(choice) == "named")
+        body += "{\"name\":" + quoted + "}";
+      else
+        llmp::base::json::AppendQuoted(choice, body);
+      body += '}';
+      {
+        auto request = rt::api::ParseChatRequest(body, &memory);
+        ASSERT_TRUE(request);
+        auto prepared = rt::service_detail::PrepareChat(*llm_, *request, exchange, memory);
+        if (std::string_view(choice) == "none" || std::string_view(name) == "lookup") {
+          ASSERT_TRUE(prepared) << prepared.error().message;
+        } else {
+          ASSERT_FALSE(prepared) << body;
+          EXPECT_EQ(prepared.error().status, 400);
+          EXPECT_EQ(prepared.error().code, "invalid_tool_name");
+        }
+      }
+      EXPECT_EQ(source_->queued(), queued);
+      EXPECT_EQ(memory.used(), 0U);
+    }
+  }
+}
+
+TEST_F(LlmTools, PreparedOutputPaymentFollowsPausedStateAfterRequestRetires) {
+  QwenChat();
+  rt::RequestMemory memory(64 * 1024 * 1024);
+  ToolExchange exchange;
+  exchange.serial = true;
+  std::shared_ptr<rt::service_detail::ChatOutput::State> saved;
+  std::uint64_t held = 0;
+  {
+    auto request = rt::api::ParseChatRequest(R"({"model":"m","max_tokens":128,
+      "messages":[{"role":"user","content":"read"}],
+      "tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]})",
+                                             &memory);
+    ASSERT_TRUE(request);
+    auto prepared = rt::service_detail::PrepareChat(*llm_, *request, exchange, memory);
+    ASSERT_TRUE(prepared) << prepared.error().message;
+    ASSERT_TRUE(prepared->tools);
+    held = prepared->tools->charge.bytes() + prepared->tools->options->charge.bytes() +
+           prepared->output_charge->bytes();
+    rt::service_detail::ChatOutput output(*llm_, exchange, false, prepared->tools,
+                                          prepared->output_charge);
+    const std::string generated = "<function=lookup><parameter=s>x</parameter></function>tail";
+    const std::vector<std::int32_t> ids(generated.begin(), generated.end());
+    ASSERT_FALSE(output.Push(ids));
+    ASSERT_TRUE(output.pending());
+    saved = output.Save();
+  }
+  EXPECT_EQ(memory.used(), held);
+  EXPECT_GT(held, 0U);
+  {
+    rt::service_detail::ChatOutput resumed(*llm_, exchange, false);
+    resumed.Restore(std::move(saved));
+    exchange.paused = false;
+    ASSERT_TRUE(resumed.Drain());
+    ASSERT_TRUE(resumed.Finish());
+    EXPECT_EQ(exchange.calls.size(), 1U);
+    EXPECT_EQ(exchange.text, "tail");
+    EXPECT_EQ(memory.used(), held);
+  }
+  EXPECT_EQ(memory.used(), 0U);
+}
+
+TEST_F(LlmTools, AcceptedCallPauseOwnsUnreadTokenBatchAcrossBothContinuationAdapters) {
+  auto sampling = Constraint();
+  const std::array<llmp::chat::ToolDefinition, 1> definitions{
+      {{.name = "lookup", .description = {}}}};
+  auto request = llmp::chat::ToolRequest::Create(definitions, {}, true, {});
+  ASSERT_TRUE(request);
+  auto options = std::make_shared<rt::api::ToolOptions>();
+  options->request = std::move(*request);
+  auto tools = std::make_shared<rt::service_detail::ChatTools>();
+  tools->options = options;
+  tools->format = llmp::chat::QwenToolCalls();
+  tools->sampling = sampling;
+  const std::string generated =
+      "before<function=lookup><parameter=s>value</parameter></function>after";
+  const std::vector<std::int32_t> ids(generated.begin(), generated.end());
+  for (const bool serial : {false, true}) {
+    ToolExchange exchange;
+    exchange.serial = serial;
+    rt::service_detail::ChatOutput first(*llm_, exchange, false, tools);
+    EXPECT_EQ(first.Push(ids), !serial);
+    ASSERT_TRUE(first.pending());
+    ASSERT_EQ(exchange.calls.size(), 1U);
+    EXPECT_EQ(exchange.text, "before");
+    auto saved = first.Save();
+    rt::service_detail::ChatOutput resumed(*llm_, exchange, false, tools);
+    resumed.Restore(std::move(saved));
+    exchange.paused = false;
+    ASSERT_TRUE(resumed.Drain());
+    ASSERT_TRUE(resumed.Finish());
+    EXPECT_TRUE(resumed.done());
+    EXPECT_FALSE(resumed.error());
+    EXPECT_EQ(exchange.calls.size(), 1U);
+    EXPECT_EQ(exchange.calls[0].input_json, R"({"s":"value"})");
+    EXPECT_EQ(exchange.text, "beforeafter");
+  }
+}
+
+TEST_F(LlmTools, FinalBareJsonTextPauseResumesWithoutReplayingOrFinishingTwice) {
+  auto sampling = Constraint();
+  const std::array<llmp::chat::ToolDefinition, 1> definitions{
+      {{.name = "lookup", .description = {}}}};
+  auto request = llmp::chat::ToolRequest::Create(definitions, {}, true, {});
+  ASSERT_TRUE(request);
+  auto options = std::make_shared<rt::api::ToolOptions>();
+  options->request = std::move(*request);
+  auto tools = std::make_shared<rt::service_detail::ChatTools>();
+  tools->options = options;
+  tools->format = llmp::chat::JsonToolCalls();
+  tools->sampling = sampling;
+  ToolExchange exchange;
+  exchange.serial = true;
+  exchange.pause_text = true;
+  rt::service_detail::ChatOutput output(*llm_, exchange, false, tools);
+  const std::string generated = R"({"answer":"unfinished)";
+  const std::vector<std::int32_t> ids(generated.begin(), generated.end());
+  ASSERT_TRUE(output.Push(ids));
+  EXPECT_FALSE(output.Finish(false));
+  EXPECT_TRUE(output.pending());
+  exchange.paused = false;
+  exchange.pause_text = false;
+  ASSERT_TRUE(output.Drain());
+  EXPECT_TRUE(output.done());
+  EXPECT_FALSE(output.error());
+  EXPECT_EQ(exchange.text, generated);
+}
+
+TEST_F(LlmTools, MidCertainBatchYieldPreservesUnreportedKnownSuffixForRestoredPublicPrefix) {
+  auto constraint = Constraint();
+  auto& branch = BranchAt(0);
+  std::vector<float> last;
+  ASSERT_TRUE(branch.Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 8;
+  options.stop = false;
+  options.tool_sampling = constraint;
+  std::vector<std::int32_t> reported;
+  options.on_tokens = [&](auto fresh) {
+    reported.insert(reported.end(), fresh.begin(), fresh.end());
+    return reported.size() < 3;
+  };
+  rt::Generation output;
+  ASSERT_TRUE(branch.Generate(last, options, output));
+  ASSERT_EQ(output.tokens.size(), 3U);
+  ASSERT_FALSE(constraint->certain().empty());
+  std::vector<std::int32_t> public_prefix{'x'};
+  public_prefix.insert(public_prefix.end(), output.tokens.begin(), output.tokens.end() - 1);
+  std::uint32_t reused = 0;
+  ASSERT_TRUE(branch.PreparePrompt(public_prefix, 0, last, reused, {}, nullptr, false, true));
+  options.on_tokens = [&](auto fresh) {
+    reported.insert(reported.end(), fresh.begin(), fresh.end());
+    return true;
+  };
+  auto resumed = branch.ResumeGeneration(last, options, output);
+  ASSERT_TRUE(resumed);
+  while (!(*resumed)->done()) ASSERT_TRUE((*resumed)->RunScalarStep());
+  ASSERT_TRUE((*resumed)->Finish());
+  EXPECT_EQ(output.tokens.size(), 8U);
+  EXPECT_EQ(reported, output.tokens);
+  EXPECT_EQ(llm_->Detokenize(output.tokens), "<tool_ca");
+}
+
+class LlmToolInvalidVerify : public LlmTools,
+                             public ::testing::WithParamInterface<std::tuple<bool, bool, bool>> {};
+TEST_P(LlmToolInvalidVerify, ExcludedNativeInvalidityCannotDisappearInKeep) {
+  const auto [sampled, allowed, nan] = GetParam();
+  (void)Constraint(true);
+  bool verified = false;
+  source_->options().transform_logits = [&](pl::Phase phase, std::int32_t, std::int32_t,
+                                            std::span<float> row) {
+    std::ranges::fill(row, -std::numeric_limits<float>::infinity());
+    row[phase == pl::Phase::kVerify ? (allowed ? 'a' : 257) : 'r'] = 1;
+    if (phase == pl::Phase::kVerify) {
+      verified = true;
+      row[258] =
+          nan ? std::numeric_limits<float>::quiet_NaN() : std::numeric_limits<float>::infinity();
+    }
+  };
+  source_->options().transform_native_token = [](pl::Phase phase, std::int32_t, std::int32_t,
+                                                 std::int32_t token) -> std::int32_t {
+    return phase == pl::Phase::kDraft ? 'a' : token;
+  };
+  const std::array<llmp::chat::ToolDefinition, 1> definitions{
+      {{.name = "lookup", .description = {}}}};
+  auto request = llmp::chat::ToolRequest::Create(
+      definitions, {llmp::chat::ToolChoiceKind::kNamed, "lookup"}, true, {});
+  ASSERT_TRUE(request);
+  const std::array<std::int32_t, 2> stops{257, 258};
+  auto constraint = std::make_shared<llmp::chat::ToolSampling>(
+      llm_->tokenizer(), llmp::chat::QwenToolCalls(), std::move(*request),
+      llmp::base::json::Limits{}, true, stops);
+  std::vector<float> last;
+  ASSERT_TRUE(BranchAt(0).Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  const auto target = State(0), tap = State(0, kMtp);
+  rt::GenerateOptions options;
+  options.max_tokens = 8;
+  options.tool_sampling = constraint;
+  if (sampled) options.sampling = llmp::execution::SamplingParams{};
+  std::vector<std::int32_t> reported;
+  options.on_tokens = [&](auto tokens) {
+    reported.insert(reported.end(), tokens.begin(), tokens.end());
+    return true;
+  };
+  rt::Generation output;
+  auto generated = BranchAt(0).Generate(last, options, output);
+  ASSERT_FALSE(generated);
+  EXPECT_THAT(generated.error(), HasSubstr("invalid-logits"));
+  EXPECT_TRUE(verified);
+  EXPECT_FALSE(constraint->refused_candidates());
+  EXPECT_EQ(reported, (std::vector<std::int32_t>{'r'}));
+  EXPECT_EQ(output.tokens, reported);
+  EXPECT_EQ(output.accepted, 0U);
+  EXPECT_EQ(State(0), target);
+  EXPECT_EQ(State(0, kMtp), tap);
+  EXPECT_EQ(BranchAt(0).history(), target);
+  EXPECT_FALSE(llm_->runner().slots().owed(0));
+}
+INSTANTIATE_TEST_SUITE_P(GreedyAndSampled, LlmToolInvalidVerify,
+                         ::testing::Combine(::testing::Bool(), ::testing::Bool(),
+                                            ::testing::Bool()));
+
+class LlmToolVerify : public LlmTools {
+ protected:
+  void Boundary(std::uint32_t preceding, bool sampled) {
+    (void)Constraint(true);
+    source_->options().transform_logits = [preceding](pl::Phase phase, std::int32_t,
+                                                      std::int32_t position, std::span<float> row) {
+      // Negative-infinity padding remains legal through both Choose and Keep.
+      std::ranges::fill(row, -std::numeric_limits<float>::infinity());
+      const auto selected = position == 0                                      ? 'r'
+                            : position <= static_cast<std::int32_t>(preceding) ? 'a'
+                                                                               : '~';
+      row[static_cast<std::size_t>(selected)] = 90;
+      // The target would prefer EOS. Both Choose and Keep must remove it
+      // during reasoning before applying the identical greedy/sampled filter.
+      if (phase != pl::Phase::kDraft) row[258] = 100;
+    };
+    source_->options().transform_native_token = [preceding](pl::Phase phase, std::int32_t,
+                                                            std::int32_t position,
+                                                            std::int32_t token) -> std::int32_t {
+      if (phase != pl::Phase::kDraft) return token;
+      return position <= static_cast<std::int32_t>(preceding) ? 'a' : '~';
+    };
+    const std::array<llmp::chat::ToolDefinition, 1> definitions{
+        {{.name = "lookup", .description = {}}}};
+    auto request = llmp::chat::ToolRequest::Create(
+        definitions, {llmp::chat::ToolChoiceKind::kNamed, "lookup"}, true, {});
+    ASSERT_TRUE(request);
+    auto format = llmp::chat::QwenToolCalls();
+    format.reasoning_end = "~";
+    const std::array<std::int32_t, 2> stops{'~', 258};
+    auto constraint = std::make_shared<llmp::chat::ToolSampling>(
+        llm_->tokenizer(), format, std::move(*request), llmp::base::json::Limits{}, true, stops);
+    rt::LlmTestAccess::Stops(*llm_, {stops.begin(), stops.end()});
+    auto& branch = BranchAt(0);
+    std::vector<float> last;
+    ASSERT_TRUE(branch.Prefill(std::array<std::int32_t, 1>{'x'}, last));
+    rt::GenerateOptions options;
+    options.max_tokens = 24;
+    options.tool_sampling = constraint;
+    if (sampled)
+      options.sampling =
+          llmp::execution::SamplingParams{.temperature = 1, .top_k = 1, .top_p = 1, .min_p = 0};
+    std::vector<std::int32_t> reported;
+    options.on_tokens = [&](auto fresh) {
+      reported.insert(reported.end(), fresh.begin(), fresh.end());
+      return reported.empty() || reported.back() != '~';
+    };
+    rt::Generation output;
+    ASSERT_TRUE(branch.Generate(last, options, output));
+    std::vector<std::int32_t> expected{'r'};
+    expected.insert(expected.end(), preceding, 'a');
+    expected.push_back('~');
+    EXPECT_EQ(output.tokens, expected);
+    EXPECT_EQ(reported, expected);
+    EXPECT_FALSE(output.stopped);  // reasoning-end/terminal overlap is resolved
+    EXPECT_TRUE(output.cancelled);
+    EXPECT_EQ(output.accepted, preceding);
+    EXPECT_GT(output.drafted, 0U);
+    EXPECT_FALSE(constraint->certain().empty());
+    std::vector<std::int32_t> state{'x'};
+    state.insert(state.end(), expected.begin(), expected.end() - 1);
+    EXPECT_EQ(State(0), state);
+    EXPECT_FALSE(llm_->runner().slots().owed(0));
+  }
+};
+TEST_F(LlmToolVerify, RowZeroBoundaryStopsAcceptanceBeforePublishingTheCertainSpan) {
+  Boundary(0, false);
+}
+TEST_F(LlmToolVerify, LaterSampledBoundaryRetainsOnlyTheAuthenticatedEarlierPrefix) {
+  Boundary(1, true);
+}

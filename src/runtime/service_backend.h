@@ -18,7 +18,7 @@ namespace llmp::runtime::service_detail {
 class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   class ChatWork final : public api::CooperativeBackend::Work {
    public:
-    enum class Stage { kPrompt, kGeneration, kDone };
+    enum class Stage { kPrompt, kGeneration, kOutput, kDone };
     ChatWork(NodeBackend& owner, Llm& model, Llm::Branch& branch, std::size_t slot,
              const api::ChatRequest& request, api::Exchange& exchange, ChatPrompt rendered,
              Floors floors, std::uint64_t swap_bytes,
@@ -32,10 +32,12 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
           rendered(std::move(rendered)),
           floors(floors),
           swap_bytes(swap_bytes),
-          output(model, exchange, this->rendered.reasoning),
+          output(model, exchange, this->rendered.reasoning, this->rendered.tools,
+                 this->rendered.output_charge),
           literal(std::move(literal)) {
       options.max_tokens = this->rendered.max_tokens;
       options.stop = true;
+      if (this->rendered.tools) options.tool_sampling = this->rendered.tools->sampling;
       if (this->literal == nullptr) options.extra_stops = model.ChatStops();
       options.sampling = SamplingOf(request, model);
       if (options.sampling) {
@@ -70,7 +72,8 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     ChatWork& operator=(ChatWork&&) = delete;
     bool terminal() const override {
       return cancelled || yielding || error.has_value() || stage == Stage::kDone ||
-             (generation_session != nullptr && generation_session->done());
+             (generation_session != nullptr && generation_session->done() &&
+              (literal != nullptr || output.done()));
     }
     void Cancel() override {
       cancelled = true;
@@ -79,7 +82,8 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     // Yields only a generation under way that is not set aside or waiting
     // for capacity (its continuation is its generation so far).
     bool Yield() override {
-      if (generation_session == nullptr || generation_session->done() ||
+      if ((generation_session == nullptr && stage != Stage::kOutput) ||
+          (generation_session && generation_session->done() && !output.pending()) ||
           generation.tokens.empty() || wait != CapacityWait::kNone || resume || error ||
           cancelled) {
         return false;
@@ -308,6 +312,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   std::array<ChatWork*, Llm::kMaxBranches> selected_prefill_{};
   std::size_t selected_prefill_count_ = 0;
   std::vector<ChatWork*> selected_decode_;
+  std::vector<ChatWork*> selected_output_;
   std::uint64_t admissions_ = 0;
   bool selected_swap_ = false;
   bool cohort_native_touched_ = false;

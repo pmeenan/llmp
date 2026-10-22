@@ -310,7 +310,7 @@ Status Llm::CheckConversation(const chat::Conversation& conversation) const {
   if (!chat_.thinking && conversation.enable_thinking.value_or(false)) {
     return Error(std::format("{}'s thought-channel output is not served yet", name_));
   }
-  if (!chat_.tools && !conversation.tools.empty()) {
+  if (!tool_format() && !conversation.tools.empty()) {
     return Error(std::format("{}'s generated tool calls are not served yet", name_));
   }
   return {};
@@ -522,6 +522,8 @@ en::DecodingPolicy Llm::Policy() {
     const std::uint32_t pos = runner_->slots().positions(slot);
     std::vector<std::vector<float>>& kept_rows = verified_rows_.at(slot);
     kept_rows.clear();
+    std::optional<chat::ToolSampling> tentative;
+    if ((*branch)->tool_sampling_) tentative = *(*branch)->tool_sampling_;
     std::uint32_t m = 0;
     std::int32_t next = -1;
     for (;; ++m) {
@@ -530,11 +532,26 @@ en::DecodingPolicy Llm::Policy() {
       const std::uint64_t position = std::uint64_t{pos} + m + 1;
       std::int32_t token = -1;
       if (m + 1 < verified.size()) {
-        auto keep = Keep(**branch, *row, verified[m + 1], position, token);
+        auto keep = Keep(**branch, *row, verified[m + 1], position, token,
+                         tentative ? &*tentative : nullptr);
         if (!keep) return std::unexpected(keep.error());
-        if (*keep) token = -1;
+        if (*keep) {
+          if (tentative) {
+            auto plan = tentative->Plan(verified[m + 1]);
+            if (!plan) return Error(plan.error());
+            if (plan->tokens.size() != 1 || plan->tokens.front() != verified[m + 1]) {
+              token = verified[m + 1];
+              if (want_rows_.at(slot)) kept_rows.push_back(std::move(*row));
+              next = token;
+              break;
+            }
+            if (auto accepted = tentative->Accept(verified[m + 1]); !accepted)
+              return Error(accepted.error());
+          }
+          token = -1;
+        }
       } else {
-        auto chosen = Choose(**branch, *row, position);
+        auto chosen = Choose(**branch, *row, position, tentative ? &*tentative : nullptr);
         if (!chosen) return std::unexpected(chosen.error());
         token = *chosen;
       }
@@ -598,7 +615,9 @@ void Llm::RunPlain(std::span<PreparedGeneration> units) {
                     .history = unit.step.all,
                     .left = std::max<std::uint32_t>(unit.step.left, 1),
                     .greedy = owner_device,
-                    .score = {}});
+                    .score = {},
+                    .certain = unit.step.certain,
+                    .certain_scores = unit.step.need_logits});
   }
   const en::DecodeReport report = plain_->Step(work);
   for (std::size_t i = 0; i < units.size(); ++i) {
@@ -625,7 +644,20 @@ void Llm::RunPlain(std::span<PreparedGeneration> units) {
       unit.chosen = token;
       ++counts_.greedy_tokens;
     } else {
-      auto row = LogitsRow(out.outputs, 0);
+      if (unit.step.forced && unit.step.need_logits) {
+        for (std::size_t r = 0; r < unit.step.certain.size() + 1; ++r) {
+          auto scored = LogitsRow(out.outputs, r);
+          if (!scored) {
+            unit.result = Error(scored.error());
+            unit.anchor_processed = true;
+            break;
+          }
+          unit.logits.push_back(std::move(*scored));
+        }
+        if (!unit.result) continue;
+      }
+      auto row = LogitsRow(
+          out.outputs, unit.step.forced && unit.step.need_logits ? unit.step.certain.size() : 0);
       if (!row) {
         unit.result = Error(row.error());
         unit.anchor_processed = true;
@@ -648,7 +680,8 @@ void Llm::RunSpeculative(std::span<PreparedGeneration> units) {
   // still supplies sampling state, and need_logits supplies output intent.
   const auto device_for = [this](const PreparedGeneration& unit) {
     return device_verify_ && unit.branch != nullptr && &unit.branch->model() == this &&
-           !unit.step.need_logits && !sampling(*unit.branch);
+           !unit.step.need_logits && !sampling(*unit.branch) &&
+           unit.branch->tool_sampling_ == nullptr;
   };
   const bool device = std::ranges::all_of(units, device_for);
   for (PreparedGeneration& unit : units) {
@@ -710,7 +743,7 @@ void Llm::RunSpeculative(std::span<PreparedGeneration> units) {
 
 Status Llm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) {
   if (auto built = Built(); !built) return built;
-  if (prepared.empty() || prepared.size() > slots_) {
+  if (prepared.empty() || prepared.size() > slots_ || prepared.size() > kMaxBranches) {
     return Error(std::format("{}'s generation wave exceeds its request slots", name_));
   }
   const bool speculative = prepared.front().step.speculative;
@@ -721,6 +754,26 @@ Status Llm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) {
       return Error(
           std::format("{}'s generation wave needs its own one-anchor units of one kind", name_));
     }
+  }
+  if (std::ranges::any_of(prepared, [](const auto& unit) { return unit.step.forced; })) {
+    std::array<PreparedGeneration, kMaxBranches> known{}, ordinary{};
+    std::array<std::size_t, kMaxBranches> ki{}, oi{};
+    std::size_t nk = 0, no = 0;
+    for (std::size_t i = 0; i < prepared.size(); ++i) {
+      if (!prepared[i].step.forced) {
+        oi[no] = i;
+        ordinary[no++] = std::move(prepared[i]);
+      } else {
+        ki[nk] = i;
+        known[nk++] = std::move(prepared[i]);
+      }
+    }
+    RunPlain(std::span(known).first(nk));
+    Status rest;
+    if (no != 0) rest = RunPreparedGenerationWave(std::span(ordinary).first(no));
+    for (std::size_t i = 0; i < nk; ++i) prepared[ki[i]] = std::move(known[i]);
+    for (std::size_t i = 0; i < no; ++i) prepared[oi[i]] = std::move(ordinary[i]);
+    return rest;
   }
   if (speculative) {
     if (!speculative_) return Error(std::format("{} has no drafter to speculate with", name_));
@@ -884,9 +937,11 @@ Status Llm::RunPrefill(std::span<PreparedPrefill> prepared) {
          .prompt_end = unit.session ? std::optional(unit.session->prompt_rows()) : std::nullopt,
          .remaining = unit.session ? unit.session->continuation_rows() : std::nullopt,
          .decode_greedy = device_greedy_ && unit.session &&
-                          !unit.session->continuation_sampling().value_or(true),
+                          !unit.session->continuation_sampling().value_or(true) &&
+                          unit.branch->tool_sampling_ == nullptr,
          .verify_greedy = device_verify_ && unit.session &&
-                          !unit.session->continuation_sampling().value_or(true),
+                          !unit.session->continuation_sampling().value_or(true) &&
+                          unit.branch->tool_sampling_ == nullptr,
          .all_outputs = scoring,
          .generation_expected = unit.session && unit.session->has_continuation(),
          .sampling = unit.session && unit.session->continuation_sampling().value_or(false)});
@@ -900,20 +955,22 @@ Status Llm::RunPrefill(std::span<PreparedPrefill> prepared) {
       continue;
     const auto past = CursorFor(*branch);
     if (past == 0 || past >= context_) continue;
-    peers.push_back({.next = {.slot = Slot(*branch),
-                              .stage = 0,
-                              .phase = pl::Phase::kDecode,
-                              .past = past,
-                              .rows = 1,
-                              .outputs = 1,
-                              .want_head = true,
-                              .greedy = device_greedy_ && !sampling(*branch),
-                              .row_invariant = speculative_ && speculative_->mode().row_invariant,
-                              .alone = false},
-                     .ready = true,
-                     .verify_greedy = device_verify_ && !sampling(*branch),
-                     .sampling = sampling(*branch),
-                     .remaining = RemainingGenerationRowsFor(*branch)});
+    peers.push_back(
+        {.next = {.slot = Slot(*branch),
+                  .stage = 0,
+                  .phase = pl::Phase::kDecode,
+                  .past = past,
+                  .rows = 1,
+                  .outputs = 1,
+                  .want_head = true,
+                  .greedy =
+                      device_greedy_ && !sampling(*branch) && branch->tool_sampling_ == nullptr,
+                  .row_invariant = speculative_ && speculative_->mode().row_invariant,
+                  .alone = false},
+         .ready = true,
+         .verify_greedy = device_verify_ && !sampling(*branch) && branch->tool_sampling_ == nullptr,
+         .sampling = sampling(*branch),
+         .remaining = RemainingGenerationRowsFor(*branch)});
   }
   const en::PrefillContinuation continuation{
       .speculate = speculate_ && verify_rows_ > 1,
@@ -1000,8 +1057,32 @@ Status Llm::RunPrefill(std::span<PreparedPrefill> prepared) {
 
 Status Llm::RunPreparedCausalWave(std::span<PreparedPrefill> prompts,
                                   std::span<PreparedGeneration> generations) {
-  if (!supports_causal_waves() || prompts.size() + generations.size() > caps_.max_segments)
+  if (!supports_causal_waves() || prompts.size() + generations.size() > caps_.max_segments ||
+      prompts.size() + generations.size() > kMaxBranches)
     return Error("mixed causal dispatch exceeds its actual mechanical policy");
+  if (std::ranges::any_of(generations, [](const auto& unit) { return unit.step.forced; })) {
+    // Certain causal spans have their own semantic rows (and possibly genuine
+    // all-row scores). Keep those owners together in the common decoder;
+    // ordinary mixed prompt/decode owners retain their existing joined wave.
+    std::array<PreparedGeneration, kMaxBranches> certain{}, ordinary{};
+    std::array<std::size_t, kMaxBranches> ci{}, oi{};
+    std::size_t nc = 0, no = 0;
+    for (std::size_t i = 0; i < generations.size(); ++i) {
+      if (generations[i].step.forced) {
+        ci[nc] = i;
+        certain[nc++] = std::move(generations[i]);
+      } else {
+        oi[no] = i;
+        ordinary[no++] = std::move(generations[i]);
+      }
+    }
+    auto result = RunPreparedGenerationWave(std::span(certain).first(nc));
+    if (result && (!prompts.empty() || no != 0))
+      result = RunPreparedCausalWave(prompts, std::span(ordinary).first(no));
+    for (std::size_t i = 0; i < nc; ++i) generations[ci[i]] = std::move(certain[i]);
+    for (std::size_t i = 0; i < no; ++i) generations[oi[i]] = std::move(ordinary[i]);
+    return result;
+  }
   std::array<PreparedPrefill, kMaxBranches> storage{};
   std::array<std::size_t, kMaxBranches> source{};
   std::size_t count = 0;
@@ -1246,7 +1327,8 @@ std::uint64_t Llm::SpillWriteBytesFor(const Branch& branch) const {
   return runner_ ? runner_->slots().spill_write_bytes(Slot(branch)) : 0;
 }
 
-Status Llm::PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) {
+Status Llm::PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left,
+                                  std::uint32_t certain_rows) {
   if (auto built = Built(); !built) return built;
   const std::uint32_t slot = Slot(branch);
   if (pos != runner_->slots().positions(slot) || pos >= context_) {
@@ -1255,7 +1337,9 @@ Status Llm::PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32
   // A verify's rows (the anchor and every proposal) at most, within the
   // context: the decoding orchestrator never takes more.
   const std::uint32_t rows =
-      speculate_ ? std::max<std::uint32_t>(std::min({left, verify_rows_, context_ - pos}), 1) : 1;
+      certain_rows != 0 ? certain_rows + 1
+      : speculate_      ? std::max<std::uint32_t>(std::min({left, verify_rows_, context_ - pos}), 1)
+                        : 1;
   return runner_->slots().ReserveStateThrough(slot, pos + rows);
 }
 

@@ -302,11 +302,13 @@ class FakeProgram final : public kn::StepProgram {
       for (std::uint32_t o = 0; o < s.outputs; ++o) {
         const std::uint32_t r = s.rows - s.outputs + o;
         if (s.greedy) {
-          const std::int32_t chosen = options.native_token && (!options.native_token_phase ||
-                                                               *options.native_token_phase == phase)
-                                          ? *options.native_token
-                                      : s.logits != 0 ? choice(r)
-                                                      : tokens[r] + 1000;
+          std::int32_t chosen = options.native_token && (!options.native_token_phase ||
+                                                         *options.native_token_phase == phase)
+                                    ? *options.native_token
+                                : s.logits != 0 ? choice(r)
+                                                : tokens[r] + 1000;
+          if (options.transform_native_token)
+            chosen = options.transform_native_token(phase, s.slot, position_of(r), chosen);
           std::memcpy(At<void>(s.out + std::uint64_t{o} * sizeof(chosen)), &chosen, sizeof(chosen));
           continue;
         }

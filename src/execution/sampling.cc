@@ -95,6 +95,12 @@ std::expected<Scan, SamplingError> ScanLogits(std::span<const float> logits) {
 
 }  // namespace
 
+std::expected<void, SamplingError> ValidateLogits(std::span<const float> logits) {
+  const auto scan = ScanLogits(logits);
+  if (!scan) return std::unexpected(scan.error());
+  return {};
+}
+
 std::expected<std::int32_t, SamplingError> Greedy(std::span<const float> logits) {
   const auto scan = ScanLogits(logits);
   if (!scan) {

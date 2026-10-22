@@ -24,6 +24,14 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Chat Completions tool intake, generated calls and result continuation through
+  the shared format-driven parser and renderer, with canonical stable-span
+  forcing in the common engine (M3.5; real-model/client qualification pending).
+  Gemma missing-ID histories now resolve unambiguous call names instead of
+  matching every result to the final empty-ID call; ambiguous histories fail.
+  Call-only assistant history accepts omitted content. Tool names that cannot
+  round-trip through the selected template fail before generation.
+
 - Owned structured conversation parts with bounded text/template projection
   (M3.5 U5b); HTTP tools, images and the Messages route remain disabled.
 

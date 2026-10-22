@@ -1034,10 +1034,18 @@ D-122).
       tokenizer blocks, holds unstable tails and funds owned results. Whole
       and adversarial reviews are clean. Spark B passes 179 unique targeted
       shared checks across the initial and fixture-repair runs, including all
-      17 span controls, and 24 model-tokenizer checks without skips. This
-      does not enable the public route. Intake, causal-unit span feeding,
-      sampling/verification, route adaptation and OpenCode qualification remain
-      open. See [tool-calls.md](tool-calls.md).
+      17 span controls, and 24 model-tokenizer checks without skips. The native
+      route enablement spike and representative proof are complete
+      (2026-10-22): six frozen-identity Qwen API tool/result transactions pass
+      across auto, required and named choice, each in JSON and SSE, and pinned
+      OpenCode 1.19.3 completes one seeded edit-and-test task with four actual
+      tools; the initial seeded tests fail and the independent post-edit run
+      passes all five without changing the tests. See the
+      [results](experiments/m35-tools/RESULTS.md). This evidence does not close
+      the item: qualification across remaining served aliases and template
+      grammars remains open; final integrated source checks are separate. No
+      performance, maximum-context, sampled-quality, or speculative coverage
+      follows from these diagnostics. See [tool-calls.md](tool-calls.md).
       `tools`/`functions` and `tool_choice` (`auto`, `none`,
       `required`, a named function) accepted on Chat Completions, assistant
       `tool_calls` returned, with streamed argument fragments and tool-result

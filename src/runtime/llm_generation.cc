@@ -110,7 +110,8 @@ std::optional<std::uint32_t> Llm::RemainingGenerationRowsFor(const Branch& branc
 }
 
 bool Llm::GenerationSession::IsStop(std::int32_t token) const {
-  return options_.stop &&
+  return !(options_.tool_sampling && options_.tool_sampling->ReasoningBoundary(token)) &&
+         options_.stop &&
          (std::ranges::find(model_.stops_, token) != model_.stops_.end() ||
           std::ranges::find(options_.extra_stops, token) != options_.extra_stops.end());
 }
@@ -122,7 +123,8 @@ bool Llm::GenerationSession::Report() {
     return true;
   }
   std::size_t visible = std::min<std::size_t>(out_.tokens.size(), options_.max_tokens);
-  if (out_.stopped && visible == out_.tokens.size() && visible > 0) {
+  if (out_.stopped && visible == out_.tokens.size() && visible > 0 &&
+      !(options_.tool_sampling && options_.tool_sampling->Preserves(out_.tokens.back()))) {
     --visible;  // the stop token
   }
   const std::span<const std::int32_t> fresh =
@@ -136,6 +138,7 @@ Status Llm::GenerationSession::Begin(const std::vector<float>& last, bool resume
     return Error("native generation history exceeds the execution budget");
   }
   branch_.sampling_.reset();
+  branch_.tool_sampling_ = options_.tool_sampling.get();
   if (options_.sampling && options_.sampling->temperature > 0) {
     branch_.sampling_ = options_.sampling;
     branch_.seed_ = options_.seed;
@@ -153,9 +156,19 @@ Status Llm::GenerationSession::Begin(const std::vector<float>& last, bool resume
     initialized_ = true;
     return {};
   }
+  if (options_.tool_sampling)
+    options_.tool_sampling->Budget(options_.max_tokens, model_.context_ - branch_.history_.size());
   auto first = model_.Choose(branch_, last, branch_.history_.size());
   if (!first) {
     return std::unexpected(first.error());
+  }
+  if (options_.tool_sampling) {
+    auto plan = options_.tool_sampling->Plan(*first);
+    if (!plan) return std::unexpected(plan.error());
+    *first = plan->tokens.front();
+    options_.tool_sampling->Certain({plan->tokens.begin() + 1, plan->tokens.end()});
+    if (auto accepted = options_.tool_sampling->Accept(*first); !accepted)
+      return std::unexpected(accepted.error());
   }
   out_.tokens = {*first};
   if (options_.keep_logits) {
@@ -190,7 +203,16 @@ std::expected<Llm::GenerationSession::Step, std::string> Llm::GenerationSession:
     return std::unexpected(ran_.error());
   }
   left_ = static_cast<std::uint32_t>(options_.max_tokens - out_.tokens.size());
-  const auto step_tokens = model_.speculate_ ? model_.StepTokenBoundFor(branch_, left_) : 1U;
+  certain_rows_ = 0;
+  if (options_.tool_sampling) {
+    options_.tool_sampling->Budget(left_, model_.context_ - position_ - 1);
+    const auto cap = model_.caps_.max_segment_rows != 0 ? model_.caps_.max_segment_rows : left_;
+    certain_rows_ = std::min({options_.tool_sampling->certain().size(), std::size_t{left_ - 1},
+                              std::size_t{cap - 1}, std::size_t{model_.context_ - position_ - 2}});
+  }
+  const auto step_tokens = certain_rows_ != 0  ? static_cast<std::uint32_t>(certain_rows_ + 1)
+                           : model_.speculate_ ? model_.StepTokenBoundFor(branch_, left_)
+                                               : 1U;
   if (!model_.ReserveTokens(branch_, all_, all_charge_, all_.size() + step_tokens)) {
     refusal_ = "native generation history exceeds the execution budget";
     if (defer_capacity) {
@@ -200,7 +222,9 @@ std::expected<Llm::GenerationSession::Step, std::string> Llm::GenerationSession:
     failed_prefix_valid_ = true;
     return std::unexpected(ran_.error());
   }
-  if (auto prepared = model_.PrepareDecodeStateFor(branch_, position_, left_); !prepared) {
+  if (auto prepared = model_.PrepareDecodeStateFor(branch_, position_, left_,
+                                                   static_cast<std::uint32_t>(certain_rows_));
+      !prepared) {
     if (defer_capacity && model_.StateRefusedFor(branch_) && model_.StateUsableFor(branch_)) {
       // Refused before dispatch: the session stays active and unprepared,
       // its state and history as the last completed step left them.
@@ -216,7 +240,10 @@ std::expected<Llm::GenerationSession::Step, std::string> Llm::GenerationSession:
               .position = position_,
               .left = left_,
               .speculative = model_.speculate_,
-              .need_logits = options_.keep_logits || static_cast<bool>(options_.on_logits)};
+              .need_logits = options_.keep_logits || static_cast<bool>(options_.on_logits),
+              .certain = certain_rows_ != 0 ? options_.tool_sampling->certain().first(certain_rows_)
+                                            : std::span<const std::int32_t>{},
+              .forced = options_.tool_sampling && !options_.tool_sampling->certain().empty()};
 }
 
 Status Llm::GenerationSession::FailStep(std::string error, bool prefix_valid) {
@@ -231,14 +258,18 @@ Status Llm::GenerationSession::FailAfterAnchor(std::string error) {
   base::Check(prepared_, "failing a generation without a prepared step");
   prepared_ = false;
   ran_ = Error(std::move(error));
-  ++position_;  // the anchor was processed before the choice failed
+  if (certain_rows_ != 0 && options_.tool_sampling) {
+    const auto known = options_.tool_sampling->certain().first(certain_rows_);
+    all_.insert(all_.end(), known.begin(), known.end());
+  }
+  position_ += static_cast<std::uint32_t>(certain_rows_ + 1);
   failed_prefix_valid_ = model_.StateUsableFor(branch_);
   return ran_;
 }
 
 bool Llm::GreedyWithoutRows(const PreparedGeneration& unit) {
   return unit.branch != nullptr && unit.session != nullptr && !unit.step.need_logits &&
-         !unit.branch->sampling_.has_value();
+         !unit.branch->sampling_.has_value() && unit.branch->tool_sampling_ == nullptr;
 }
 
 Status Llm::GenerationSession::ApplyChosen(std::int32_t token) {
@@ -262,6 +293,31 @@ Status Llm::GenerationSession::ApplyPlain(std::vector<float> row) {
     logits.push_back(std::move(row));
   }
   return ApplyTokens({*next}, std::move(logits));
+}
+
+Status Llm::GenerationSession::ApplyCertain(std::vector<float> row,
+                                            std::vector<std::vector<float>> logits) {
+  base::Check(prepared_ && options_.tool_sampling,
+              "applying a certain span without prepared canonical tokens");
+  auto& constraint = *options_.tool_sampling;
+  auto tentative = constraint;
+  const auto known = constraint.certain().first(certain_rows_);
+  for (const auto token : known) {
+    if (auto accepted = tentative.Accept(token); !accepted)
+      return FailAfterAnchor(accepted.error());
+  }
+  tentative.Budget(left_ - certain_rows_, model_.context_ - position_ - certain_rows_ - 1);
+  const bool more = constraint.certain().size() > certain_rows_;
+  auto next = more ? std::expected<std::int32_t, std::string>(constraint.certain()[certain_rows_])
+                   : model_.Choose(branch_, row, position_ + certain_rows_ + 1, &tentative);
+  if (!next) return FailAfterAnchor(next.error());
+  std::vector<std::int32_t> kept(known.begin(), known.end());
+  kept.push_back(*next);
+  // Their IDs remain in this completed unit until publication; consuming the
+  // queue cannot change any borrowed engine span because all work has retired.
+  constraint.ConsumeCertain(certain_rows_ + (more ? 1 : 0));
+  prepared_ = false;
+  return ApplyTokens(std::move(kept), std::move(logits), certain_rows_ + (more ? 1 : 0));
 }
 
 Status Llm::GenerationSession::ApplySpeculative(std::vector<std::int32_t> kept,
@@ -288,7 +344,8 @@ Status Llm::GenerationSession::ApplySpeculative(std::vector<std::int32_t> kept,
 }
 
 Status Llm::GenerationSession::ApplyTokens(std::vector<std::int32_t> kept,
-                                           std::vector<std::vector<float>> logits) {
+                                           std::vector<std::vector<float>> logits,
+                                           std::size_t known) {
   // User callbacks may reenter the model. Its partially published token
   // batch is not an independently completed peer until this method returns.
   struct Publishing {
@@ -307,7 +364,28 @@ Status Llm::GenerationSession::ApplyTokens(std::vector<std::int32_t> kept,
   position_ += static_cast<std::uint32_t>(kept.size());
   all_.insert(all_.end(), kept.begin(), kept.end());
   for (std::size_t i = 0; i < kept.size() && out_.tokens.size() < options_.max_tokens; ++i) {
-    const std::int32_t token = kept[i];
+    std::int32_t token = kept[i];
+    if (options_.tool_sampling && i + 1 == kept.size() &&
+        options_.tool_sampling->certain().empty()) {
+      options_.tool_sampling->Budget(options_.max_tokens - out_.tokens.size(),
+                                     model_.context_ - position_);
+      auto planned = options_.tool_sampling->Plan(token);
+      if (!planned) {
+        ran_ = std::unexpected(planned.error());
+        out_.cancelled = true;
+        break;
+      }
+      token = planned->tokens.front();
+      all_.back() = token;  // the local, not-yet-processed anchor only
+      options_.tool_sampling->Certain({planned->tokens.begin() + 1, planned->tokens.end()});
+    }
+    if (options_.tool_sampling) {
+      if (auto accepted = options_.tool_sampling->Accept(token); !accepted) {
+        ran_ = std::unexpected(accepted.error());
+        out_.cancelled = true;
+        break;
+      }
+    }
     out_.tokens.push_back(token);
     if (options_.keep_logits) {
       out_.logits.push_back(logits[i]);
@@ -321,14 +399,24 @@ Status Llm::GenerationSession::ApplyTokens(std::vector<std::int32_t> kept,
     // A scoring response associates each visible token with its row.
     // Deliver it now, so a stop string cannot collect later verify rows.
     // The entire accepted verify is already complete and is still settled.
-    if (options_.on_logits) {
+    if (options_.on_logits || options_.tool_sampling) {
       out_.cancelled = !Report() || out_.cancelled;
     }
     if (out_.stopped || out_.cancelled) {
+      if (out_.cancelled && !out_.stopped && options_.tool_sampling && i + 1 < known) {
+        // A callback can yield within this completed unit. Only delivered IDs
+        // advanced the lexical cursor; preserve its still-known suffix for the
+        // restored public prefix, rather than resampling or losing the grammar.
+        std::vector<std::int32_t> pending(kept.begin() + static_cast<std::ptrdiff_t>(i + 1),
+                                          kept.begin() + static_cast<std::ptrdiff_t>(known));
+        const auto tail = options_.tool_sampling->certain();
+        pending.insert(pending.end(), tail.begin(), tail.end());
+        options_.tool_sampling->Certain(std::move(pending));
+      }
       break;
     }
   }
-  if (!options_.on_logits) {
+  if (!options_.on_logits && !options_.tool_sampling) {
     out_.cancelled = !Report() || out_.cancelled;
   }
   return {};
@@ -349,7 +437,7 @@ Status Llm::GenerationSession::RunScalarStep(bool defer_capacity) {
     return std::unexpected(step.error());
   }
   const auto started = Clock::now();
-  if (step->speculative) {
+  if (step->speculative && !step->forced) {
     std::vector<std::int32_t> kept;
     std::vector<std::vector<float>> logits;
     bool prefix_kept = false;
@@ -381,7 +469,10 @@ Status Llm::GenerationSession::RunScalarStep(bool defer_capacity) {
     return unit.anchor_processed ? FailAfterAnchor(unit.result.error())
                                  : FailStep(unit.result.error(), unit.failed_prefix_valid);
   }
-  model_.calibration_samples_.DecodeStep(step->position, 1.0, Seconds(Clock::now() - started));
+  model_.calibration_samples_.DecodeStep(
+      step->position, static_cast<double>(step->forced ? step->certain.size() + 1 : 1),
+      Seconds(Clock::now() - started));
+  if (unit.step.forced) return ApplyCertain(std::move(unit.row), std::move(unit.logits));
   return unit.chosen ? ApplyChosen(*unit.chosen) : ApplyPlain(std::move(unit.row));
 }
 
@@ -461,7 +552,9 @@ Status Llm::RunGenerationWave(std::span<GenerationSession* const> sessions, bool
     std::uint32_t at = std::numeric_limits<std::uint32_t>::max();
     for (const PreparedGeneration& unit : prepared) {
       if (unit.result) {
-        tokens += unit.step.speculative ? unit.kept.size() : 1;
+        tokens += unit.step.forced        ? unit.step.certain.size() + 1
+                  : unit.step.speculative ? unit.kept.size()
+                                          : 1;
       }
       at = std::min(at, unit.step.position);
     }
@@ -478,10 +571,13 @@ Status Llm::RunGenerationWave(std::span<GenerationSession* const> sessions, bool
     } else {
       // Apply owns any ordinary sampling/callback error on this session.
       // Completed peers still receive their results in branch order.
-      (void)(unit.step.speculative ? unit.session->ApplySpeculative(
-                                         std::move(unit.kept), std::move(unit.logits), unit.drafted)
-             : unit.chosen         ? unit.session->ApplyChosen(*unit.chosen)
-                                   : unit.session->ApplyPlain(std::move(unit.row)));
+      (void)(unit.step.forced
+                 ? unit.session->ApplyCertain(std::move(unit.row), std::move(unit.logits))
+             : unit.step.speculative
+                 ? unit.session->ApplySpeculative(std::move(unit.kept), std::move(unit.logits),
+                                                  unit.drafted)
+             : unit.chosen ? unit.session->ApplyChosen(*unit.chosen)
+                           : unit.session->ApplyPlain(std::move(unit.row)));
     }
     if (!GenerationCohortUsable()) {
       const std::string error = "the native generation cohort became unusable";
@@ -501,6 +597,8 @@ void Llm::GenerationSession::Close() {
   base::Check(branch_.generation_session_ == this, "a generation lost its branch ownership");
   branch_.generation_session_ = nullptr;
   branch_.sampling_.reset();
+  branch_.tool_sampling_ = nullptr;
+  std::vector<float>().swap(branch_.constrained_logits_);
   model_.RetireSamplingScratchFor(branch_);
   model_.ReleaseTokens(all_, all_charge_);
   branch_.generation_active_ = false;
@@ -549,10 +647,10 @@ Status Llm::GenerationSession::Finish() {
 }
 
 Status Llm::Generate(Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
-                     Generation& out) {
+                     Generation& out, bool resume) {
   CheckBranch(branch);
   branch.capacity_refused_ = false;
-  auto began = BeginGeneration(branch, last, options, out);
+  auto began = BeginGeneration(branch, last, options, out, resume);
   if (!began) {
     return std::unexpected(began.error());
   }

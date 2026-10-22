@@ -3,19 +3,20 @@
 
 # Tool-call interpretation
 
-The M3.5 foundation in `chat/tool_calls.h` is protocol-neutral. It does not
-turn on tools in the chat route. Public request decoding, admitted-memory
-payments, tokenizer-bound forcing in sampling/verification, route event
-adaptation and client qualification remain the next slice. Strict tool
-arguments remain M7's constrained-output work. The tokenizer now supplies the
-[canonical span planner](tokenizer.md), including held unstable tails; its
-runtime sampling/verification and causal-unit wiring are still separate work.
+The M3.5 implementation connects the protocol-neutral interpreter to Chat
+Completions intake, shared rendering, common generation and route events.
+Real-model and OpenCode qualification remain pending; this implementation
+checkpoint does not qualify every served model. Strict tool arguments remain
+M7's constrained-output work.
 
 `ToolRequest` owns normalized definitions and their JSON documents. Its neutral
 choice is auto, none, required or named, with a parallel-call flag. Named
 selection supplies only that definition to the template; the complete request
 still knows its declarations. Strict definitions, duplicate names and missing
-required/named declarations fail before generation. Non-strict schemas guide
+required/named declarations fail before generation. Active names must round-trip
+exactly through the selected format: delimiter collisions and stripped names
+fail before rendering or native work. JSON envelopes retain escaped names;
+`none` bypasses this check. Non-strict schemas guide
 conversion, not argument validation: an unconvertible scalar stays a string.
 Implicit tagged values use structured scanning only for a leading container
 kind admitted by their property schema. Missing or non-container schemas keep
@@ -36,14 +37,32 @@ and the reasoning boundary. The interpreter has no family dispatch. JSON
 objects, tagged parameters and object notation are generic syntax encodings.
 Qwen, DSML and Gemma declarations come from their checked-in renderers and
 pinned templates; all native variants are covered by renderer-call round trips.
-An interpreted template with unknown output syntax exposes no grammar. A
+The source-verified Llama 3.3 template hash
+`e10ca381b1ccc5cf9db52e371f3b6651576caee0a630b452e2816b2d404d4b65`
+(`nvidia/Llama-3.3-70B-Instruct-NVFP4@f792b707`) independently binds a bare
+JSON object envelope with `name` and `parameters`, even when rendering is
+interpreted. Ordinary non-call JSON remains answer text. An interpreted
+template with unknown output syntax exposes no grammar. A
 synthetic key/value-tag grammar tests extensibility without claiming support
 for an unverified GLM template.
 
-The trigger descriptor names the opening text, optional reasoning boundary,
-and required/named intent. It **does not enforce generation constraints** yet.
-The follow-on sampler and speculative verification path must bind those texts
-to tokenizer IDs and enforce them before the public route can claim support.
+Required/named choices mask terminal tokens during reasoning and force the
+opening after the declared reasoning end, or immediately outside reasoning.
+Every candidate's complete decoded bytes pass the same lexical/name rules
+before both sampling and speculative acceptance. Original native rows are
+validated first, so masks cannot hide NaN or positive infinity; negative
+infinity remains legal padding. Names are constrained on
+subsequent calls too; no argument payload is copied per vocabulary candidate.
+
+The [canonical span planner](tokenizer.md) finds an exact cover before the selecting token is
+published. Proven stable IDs run with that selecting anchor in one common
+causal unit, including ordinary models and target-written drafter state. An
+unstable final block remains ordinary target sampling: unchanged selected IDs
+advance the held grammar, with no injected unstable IDs or claim of canonical
+segmentation under unknown future raw-BPE merges. Verification stops before
+accepting a proposal whose cover changes its ID or introduces a certain span;
+already public anchors are never replaced. Usage and optional scoring follow
+actual published IDs and their real causal rows.
 
 The caller derives `json::Limits` from its admitted request/output resource
 budget and prepays `ToolRequestBytes` and `ToolOutputBytes`. These overflow-
@@ -60,8 +79,13 @@ withholds partial UTF-8 and marker prefixes before emitting text.
 Parallel result groups are reordered by IDs into their assistant's call order.
 Their text and error flag move together. Missing IDs preserve supplied order,
 without inventing a stable association; duplicate or unknown supplied IDs are
-an explicit ambiguity/error. The shared conversation adapter must call this
-normalizer before rendering; it is not wired into the current text-only route.
+an explicit ambiguity/error. The shared conversation adapter resolves supplied IDs first. A complete
+missing-ID group can use ordinal order only consistently with those IDs; partial
+same-name results resolve the name alone and preserve supplied order. Different
+possible names are ambiguous. Gemma renders the resolved name instead of the
+source template's empty-ID last match. Verified name-only templates receive
+transient, collision-free association keys in both native/probed and interpreted
+rendering; original IDs and pinned raw reference fixtures remain unchanged.
 
 Qwen's user-defined markers still tokenize in message content for reference
 parity (D-067). No blanket renderer-side marker refusal is introduced: it would
@@ -78,3 +102,26 @@ trimmed at each side where declared. Unknown names survive auto mode. See
 and [the project assessment](flare-assessment.md#5-tool-calls-and-the-messages-profile).
 No upstream parser implementation is copied; the shared interpreter implements
 the format descriptions above.
+
+## Route ownership and response contract
+
+Modern `tools`/`tool_choice` and legacy `functions`/`function_call` normalize to
+one owned request. Assistant history with a valid nonempty modern or legacy
+call may omit content, with the same absence of text as explicit null. Ordinary
+messages still require content. Contradictory forms fail; `none` remains harmless on templates
+without a verified output grammar. Generated calls emit modern `tool_calls` in
+both response modes, with stable request-owned IDs and one validated argument
+fragment per call. Clients execute tools. Result messages return through the
+same shared conversation adapter used by native and interpreted rendering.
+
+An accepted-and-paused output callback retains the parser's unread input tail
+and token batch. Serial yield and cooperative pause transfer the same paid
+output state; neither replays an accepted call nor prematurely finishes a
+partial call. Payments follow request definitions, parser/cursor snapshots,
+canonical planning, unread output and serialized escaping through retirement.
+Explicit stop strings match contiguous answer segments, excluding reasoning and
+arguments, and cannot join a partial match across a call. Natural completion
+with calls uses `tool_calls`; token exhaustion retains `length` and drops a
+truncated final call. Required/named mode still refuses if no call completed.
+An empty constrained candidate set is a request failure after native retirement,
+not evidence that the model's execution failed.

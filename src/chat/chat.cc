@@ -44,7 +44,7 @@ std::uint64_t PartBytes(const MessagePart& part, bool storage) {
         } else if constexpr (std::is_same_v<T, ToolUsePart>) {
           return AddBytes(AddBytes(bytes(p.id), bytes(p.name)), bytes(p.input_json));
         } else if constexpr (std::is_same_v<T, ToolResultPart>) {
-          return AddBytes(bytes(p.tool_use_id), bytes(p.text));
+          return AddBytes(AddBytes(bytes(p.tool_use_id), bytes(p.text)), bytes(p.name));
         } else {
           return AddBytes(bytes(p.media_type), bytes(p.source));
         }
@@ -63,10 +63,18 @@ std::uint64_t ProjectionStorageBytes(const Conversation& conversation) {
     if (message.reasoning_content) {
       bytes = AddBytes(bytes, message.reasoning_content->capacity());
     }
-    bytes = AddBytes(bytes, message.tool_call_id.capacity());
-    bytes = AddBytes(bytes, MultiplyBytes(message.tool_calls.capacity(), sizeof(ToolCall)));
+    bytes = AddBytes(
+        bytes, AddBytes(message.tool_call_id.capacity(), message.tool_result_name.capacity()));
+    // Group normalization's index tables and result copies; a resolved name is
+    // borrowed by index, not copied once per result.
+    bytes = AddBytes(bytes, sizeof(ToolResultPart) * 3 + sizeof(std::size_t) * 4);
+    if (message.role == Role::kTool)
+      bytes = AddBytes(bytes, MultiplyBytes(3, message.content.PayloadBytes()));
+    bytes = AddBytes(bytes,
+                     MultiplyBytes(message.tool_calls.capacity(),
+                                   sizeof(ToolCall) + sizeof(ToolUsePart) + sizeof(std::size_t)));
     for (const ToolCall& call : message.tool_calls) {
-      bytes = AddBytes(bytes, AddBytes(call.name.capacity(), call.id.capacity()));
+      bytes = AddBytes(bytes, AddBytes(call.name.capacity(), MultiplyBytes(3, call.id.capacity())));
       // Legacy JSON values remain views and their owners remain shared. Only
       // structured tool parts parse new documents, in ProjectionBytes above.
     }
@@ -102,8 +110,10 @@ std::uint64_t Content::ProjectionBytes() const {
   if (p == nullptr) {
     return StorageBytes();
   }
-  auto bytes = AddBytes(AddBytes(StorageBytes(), MultiplyBytes(2, PayloadBytes())),
-                        MultiplyBytes(p->size(), sizeof(ToolCall)));
+  auto bytes =
+      AddBytes(AddBytes(MultiplyBytes(3, StorageBytes()), MultiplyBytes(4, PayloadBytes())),
+               MultiplyBytes(p->size(), sizeof(ToolCall) + sizeof(ToolResultPart) * 3 +
+                                            sizeof(std::size_t) * 4 + 32));
   for (const auto& part : *p) {
     if (const auto* use = std::get_if<ToolUsePart>(&part)) {
       bytes = AddBytes(bytes, AddBytes(base::json::ParseWorkingBytes(use->input_json),
@@ -114,8 +124,9 @@ std::uint64_t Content::ProjectionBytes() const {
 }
 
 bool HasStructuredContent(const Conversation& conversation) {
-  return std::ranges::any_of(conversation.messages,
-                             [](const Message& m) { return m.content.parts() != nullptr; });
+  return std::ranges::any_of(conversation.messages, [](const Message& m) {
+    return m.content.parts() != nullptr || (m.role == Role::kTool && !m.tool_result_normalized);
+  });
 }
 
 std::expected<Conversation, Error> ProjectContent(const Conversation& conversation,
@@ -168,11 +179,12 @@ std::expected<Conversation, Error> ProjectContent(const Conversation& conversati
         if (!supports_tools) {
           return fail("this template does not render tool use");
         }
-        if (m.role != Role::kAssistant || use->id.empty() || use->name.empty()) {
-          return fail("tool use requires an assistant, an ID and a name");
+        if (m.role != Role::kAssistant || use->name.empty()) {
+          return fail("tool use requires an assistant and a name");
         }
-        if (std::ranges::any_of(m.tool_calls,
-                                [&](const ToolCall& call) { return call.id == use->id; })) {
+        if (std::ranges::any_of(m.tool_calls, [&](const ToolCall& call) {
+              return !use->id.empty() && call.id == use->id;
+            })) {
           return fail("tool use IDs must be distinct within a message");
         }
         auto document = base::json::Parse(use->input_json);
@@ -189,37 +201,151 @@ std::expected<Conversation, Error> ProjectContent(const Conversation& conversati
         if (!supports_tools) {
           return fail("this template does not render tool results");
         }
-        if (parts->size() != 1 || (m.role != Role::kUser && m.role != Role::kTool) ||
-            result->tool_use_id.empty() || result->is_error) {
-          return fail("tool results require a single successful result in a user or tool message");
-        }
-        std::size_t previous = i;
-        while (previous > 0 && out.messages[previous - 1].role == Role::kTool) {
-          --previous;
-          if (out.messages[previous].tool_call_id == result->tool_use_id) {
-            return fail("a tool use cannot receive duplicate results");
-          }
-        }
-        if (previous == 0 ||
-            !std::ranges::any_of(out.messages[previous - 1].tool_calls, [&](const ToolCall& call) {
-              return call.id == result->tool_use_id;
-            })) {
-          return fail("a tool result must reference the preceding assistant's tool use");
-        }
-        const auto& preceding_calls = out.messages[previous - 1].tool_calls;
-        const std::size_t result_index = i - previous;
-        if (result_index >= preceding_calls.size() ||
-            preceding_calls[result_index].id != result->tool_use_id) {
-          return fail("tool results must follow their call order for text templates");
+        if (parts->size() != 1 || (m.role != Role::kUser && m.role != Role::kTool)) {
+          return fail("tool results require one result in a user or tool message");
         }
         m.role = Role::kTool;
         m.tool_call_id = result->tool_use_id;
+        m.tool_result_name = result->name;
+        m.tool_result_is_error = result->is_error;
+        m.tool_result_normalized = false;
         text = result->text;
       } else {
         return fail("image content requires a multimodal renderer");
       }
     }
     m.content = calls && !has_text ? Content(std::nullopt) : Content(std::move(text));
+  }
+  // Resolve one contiguous group at a time. Known IDs constrain association
+  // first; remaining missing-ID results retain their supplied relative order.
+  for (std::size_t first = 0; first < out.messages.size();) {
+    if (out.messages[first].role != Role::kTool) {
+      ++first;
+      continue;
+    }
+    std::size_t end = first + 1;
+    while (end < out.messages.size() && out.messages[end].role == Role::kTool) ++end;
+    const auto fail = [first](std::string_view reason) {
+      return std::unexpected(Error{.rule = Rule::kUnsupported, .reason = reason, .item = first});
+    };
+    if (!supports_tools) return fail("this template does not render tool results");
+    if (first == 0 || out.messages[first - 1].role != Role::kAssistant ||
+        out.messages[first - 1].tool_calls.empty())
+      return fail("a tool result requires preceding assistant tool calls");
+    const auto& calls = out.messages[first - 1].tool_calls;
+    if (end - first > calls.size()) return fail("more tool results than preceding calls");
+    std::vector<ToolUsePart> identities;
+    identities.reserve(calls.size());
+    for (const auto& call : calls) identities.push_back({call.id, {}, {}});
+    std::vector<ToolResultPart> results;
+    results.reserve(end - first);
+    for (std::size_t i = first; i < end; ++i) {
+      const auto& m = out.messages[i];
+      results.push_back({m.tool_call_id, {}, m.tool_result_is_error, {}});
+    }
+    // The shared order helper owns duplicate/unknown-ID validation. Empty text
+    // avoids copying payload merely to discover the order of existing messages.
+    auto ordered = OrderToolResults(identities, results);
+    if (!ordered) return fail("tool results contain duplicate or unknown IDs");
+    const bool all_ids =
+        std::ranges::all_of(identities, [](const auto& c) { return !c.id.empty(); }) &&
+        std::ranges::all_of(results, [](const auto& r) { return !r.tool_use_id.empty(); });
+    if (all_ids) {
+      for (std::size_t offset = 0; offset < ordered->size(); ++offset) {
+        const auto found =
+            std::ranges::find(out.messages.begin() + static_cast<std::ptrdiff_t>(first + offset),
+                              out.messages.begin() + static_cast<std::ptrdiff_t>(end),
+                              (*ordered)[offset].tool_use_id, &Message::tool_call_id);
+        std::iter_swap(out.messages.begin() + static_cast<std::ptrdiff_t>(first + offset), found);
+      }
+    }
+    std::vector<bool> used(calls.size(), false);
+    for (std::size_t i = first; i < end; ++i) {
+      auto& m = out.messages[i];
+      m.resolved_tool_call.reset();
+      if (!m.tool_call_id.empty()) {
+        const auto match = std::ranges::find(calls, m.tool_call_id, &ToolCall::id);
+        const auto index = static_cast<std::size_t>(match - calls.begin());
+        if (!m.tool_result_name.empty() && m.tool_result_name != match->name)
+          return fail("tool result name contradicts its call ID");
+        m.resolved_tool_call = index;
+        used[index] = true;
+      }
+    }
+    // Names are evidence even when no IDs were supplied (legacy function
+    // messages). Resolve singleton candidates, including those made unique by
+    // an earlier known-ID match; never silently replace contradictory evidence.
+    bool progress = true;
+    while (progress) {
+      progress = false;
+      for (std::size_t i = first; i < end; ++i) {
+        auto& m = out.messages[i];
+        if (m.resolved_tool_call || m.tool_result_name.empty()) continue;
+        std::optional<std::size_t> match;
+        std::size_t count = 0;
+        for (std::size_t c = 0; c < calls.size(); ++c) {
+          if (!used[c] && calls[c].name == m.tool_result_name) {
+            match = c;
+            ++count;
+          }
+        }
+        if (count == 0) return fail("tool result name has no unmatched preceding call");
+        if (count == 1) {
+          m.resolved_tool_call = *match;
+          used[*match] = true;
+          progress = true;
+        }
+      }
+    }
+    // Repeated function names may identify the required rendering name without
+    // identifying a call occurrence, but cannot claim more calls than exist.
+    for (std::size_t i = first; i < end; ++i) {
+      const auto& m = out.messages[i];
+      if (m.resolved_tool_call || m.tool_result_name.empty()) continue;
+      std::size_t available = 0, supplied = 0;
+      for (std::size_t c = 0; c < calls.size(); ++c)
+        if (!used[c] && calls[c].name == m.tool_result_name) ++available;
+      for (std::size_t r = first; r < end; ++r)
+        if (!out.messages[r].resolved_tool_call &&
+            out.messages[r].tool_result_name == m.tool_result_name)
+          ++supplied;
+      if (supplied > available) return fail("too many results for the named tool calls");
+    }
+    const auto remaining = static_cast<std::size_t>(std::ranges::count(used, false));
+    const auto unresolved = static_cast<std::size_t>(
+        std::ranges::count_if(out.messages.begin() + static_cast<std::ptrdiff_t>(first),
+                              out.messages.begin() + static_cast<std::ptrdiff_t>(end),
+                              [](const Message& m) { return !m.resolved_tool_call; }));
+    // In a complete group, reserve every name-constrained result first, then
+    // associate unnamed results with the remaining calls in call order. This
+    // fallback never overrides known IDs or name evidence, and moves no result.
+    if (remaining == unresolved) {
+      for (std::size_t i = first; i < end; ++i) {
+        auto& m = out.messages[i];
+        if (m.resolved_tool_call || m.tool_result_name.empty()) continue;
+        for (std::size_t c = 0; c < calls.size(); ++c) {
+          if (!used[c] && calls[c].name == m.tool_result_name) {
+            m.resolved_tool_call = c;
+            used[c] = true;
+            break;
+          }
+        }
+      }
+      std::size_t next = 0;
+      for (std::size_t i = first; i < end; ++i) {
+        auto& m = out.messages[i];
+        if (m.resolved_tool_call) continue;
+        while (used[next]) ++next;
+        m.resolved_tool_call = next++;
+      }
+    }
+    for (std::size_t i = first; i < end; ++i) {
+      auto& m = out.messages[i];
+      if (m.tool_result_is_error && !m.tool_result_normalized)
+        m.content = Content("[tool error] " + m.content.text().value_or(""));
+      m.tool_result_normalized = true;
+    }
+    first = end;
   }
   return out;
 }
@@ -256,16 +382,17 @@ const std::array<Template, 10> kTemplates = {{
     {"7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4", "gemma-3", &RenderGemma3,
      StopRules{{"<end_of_turn>"}}, kGemmaEfforts, false, false},
     {"ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4", "gemma-4", &RenderGemma4,
-     StopRules{{"<turn|>", "<|tool_response>"}}, kGemmaEfforts, true, true, &GemmaToolCalls()},
+     StopRules{{"<turn|>", "<|tool_response>"}}, kGemmaEfforts, true, true, &GemmaToolCalls(),
+     true},
     {"0a2c8073c878ab1da004bee933a998606537bbb62016310352c7285c3f01c5b5", "gemma-4-e",
      &RenderGemma4E, StopRules{{"<turn|>", "<|tool_response>"}}, kGemmaEfforts, true, true,
-     &GemmaToolCalls()},
+     &GemmaToolCalls(), true},
     {"", "gemma-4-unsloth", &RenderGemma4Unsloth, StopRules{{"<turn|>", "<|tool_response>"}},
-     kGemmaEfforts, true, true, &GemmaToolCalls()},
+     kGemmaEfforts, true, true, &GemmaToolCalls(), true},
     {"", "gemma-4-e-unsloth", &RenderGemma4EUnsloth, StopRules{{"<turn|>", "<|tool_response>"}},
-     kGemmaEfforts, true, true, &GemmaToolCalls()},
+     kGemmaEfforts, true, true, &GemmaToolCalls(), true},
     {"", "gemma-4-2604", &RenderGemma4April, StopRules{{"<turn|>", "<|tool_response>"}},
-     kGemmaEfforts, true, true, &GemmaToolCalls()},
+     kGemmaEfforts, true, true, &GemmaToolCalls(), true},
 }};
 
 }  // namespace

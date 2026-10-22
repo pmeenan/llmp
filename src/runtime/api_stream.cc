@@ -7,6 +7,7 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -34,6 +35,9 @@ Server::Stream::Stream(Server& server, Pending& pending, int wake_fd,
       usage_(pending.usage),
       reasoning_(std::move(pending.reasoning)),
       content_(std::move(pending.content)),
+      tool_calls_(std::move(pending.tool_calls)),
+      tool_count_(pending.tool_count),
+      tool_charge_(std::move(pending.tool_charge)),
       text_charge_(std::move(pending.text_charge)),
       pauses_(pending.pauses),
       cooperative_(cooperative) {
@@ -84,6 +88,86 @@ bool Server::Stream::Content(std::string_view text) {
   return Backpressure() && Check(std::nullopt, 0);
 }
 
+bool Server::Stream::ToolCall(const chat::ToolUsePart& call) {
+  if (text_.stopped()) return false;
+  Emit(text_.Boundary());
+  // One whole call is accepted before applying backpressure. All serialization
+  // copies and the growing channel/vector are funded before allocating them.
+  const std::uint64_t payload = call.name.size() + call.input_json.size();
+  const std::uint64_t identity = channel_.id.size() + channel_.model.size() + 32;
+  constexpr std::uint64_t framing = 2048;  // three SSE/HTTP envelopes and JSON fields
+  const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+  if (payload > (maximum - framing) / 24 || identity > (maximum - framing - payload * 24) / 48)
+    return false;
+  const std::uint64_t wire = framing + payload * 24 + identity * 48;
+  MemoryCharge scratch;
+  const auto refuse = [&]() {
+    const auto error = MemoryRefusal(*server_.memory_, wire, "the tool-call response");
+    const std::scoped_lock lock(server_.mutex_);
+    channel_.encoding_error = error;
+    channel_.PutError(error);
+    Dirty();
+    server_.WakeIo();
+    return false;
+  };
+  if (!scratch.Add(*server_.memory_, wire, true)) return refuse();
+  const std::string id = std::format("call_{}_{}", channel_.id, tool_count_);
+  if (!pending_.request.stream) {
+    const auto capacity = tool_calls_.size() == tool_calls_.capacity()
+                              ? std::max<std::size_t>(1, tool_calls_.capacity() * 2)
+                              : tool_calls_.capacity();
+    const auto growth = (capacity - tool_calls_.capacity()) * sizeof(chat::ToolUsePart);
+    const auto retained = tool_charge_.bytes() + growth + 2 * (id.size() + payload + 3);
+    MemoryCharge replacement;
+    if (!replacement.Add(*server_.memory_, retained, true)) return refuse();
+    tool_calls_.reserve(capacity);
+    tool_calls_.push_back({.id = id, .name = call.name, .input_json = call.input_json});
+    tool_charge_ = std::move(replacement);
+    ++tool_count_;
+  } else {
+    const std::scoped_lock lock(server_.mutex_);
+    if (channel_.gone || channel_.stalled || channel_.ended) return false;
+    // Kept until the I/O thread consumes the channel. The extra capacity covers
+    // simultaneous old/new string allocations; no allocation is justified by
+    // an uncharged post-hoc size observation.
+    if (channel_.out.size() > maximum - wire) {
+      channel_.encoding_error = MemoryRefusal(*server_.memory_, wire, "the tool-call stream");
+      channel_.PutError(*channel_.encoding_error);
+      Dirty();
+      return false;
+    }
+    const auto needed = channel_.out.size() + wire;
+    if (needed > channel_.out.capacity()) {
+      const auto capacity = std::max(
+          needed, channel_.out.capacity() > maximum / 2 ? maximum : channel_.out.capacity() * 2);
+      MemoryCharge replacement;
+      if (!replacement.Add(*server_.memory_, capacity, true)) {
+        channel_.encoding_error = MemoryRefusal(*server_.memory_, capacity, "the tool-call stream");
+        channel_.PutError(*channel_.encoding_error);
+        Dirty();
+        return false;
+      }
+      channel_.out.reserve(capacity);
+      channel_.unread = std::move(replacement);
+    }
+    channel_.PutStart();
+    channel_.Encoded(
+        channel_.encoder.ToolStart(channel_.identity(), id, call.name, channel_.sink()));
+    channel_.Encoded(
+        channel_.encoder.ToolInput(channel_.identity(), call.input_json, channel_.sink()));
+    channel_.Encoded(channel_.encoder.ToolEnd(channel_.sink()));
+    ++tool_count_;
+    if (channel_.out.size() > server_.options_.intake.stream_buffer && !channel_.paused) {
+      channel_.paused = true;
+      channel_.paused_at = Clock::now();
+      ++pauses_;
+    }
+    Dirty();
+  }
+  server_.WakeIo();
+  return Backpressure() && Check(std::nullopt, 0);
+}
+
 bool Server::Stream::Continue() { return Backpressure() && Check(std::nullopt, 0); }
 
 bool Server::Stream::Paused() const {
@@ -100,6 +184,9 @@ void Server::Stream::Carry(Pending& pending, bool taken_up) {
   pending.usage = usage_;
   pending.reasoning = std::move(reasoning_);
   pending.content = std::move(content_);
+  pending.tool_calls = std::move(tool_calls_);
+  pending.tool_count = tool_count_;
+  pending.tool_charge = std::move(tool_charge_);
   pending.text_charge = std::move(text_charge_);
   pending.pauses = pauses_;
   if (taken_up) {
@@ -127,17 +214,35 @@ int Server::Stream::End(const std::expected<Completion, Error>& result) {
     EmitLocked(text_.Finish());  // non-streaming: only local strings
     usage_.completion_tokens = result->completion_tokens;
     usage_.cached_tokens = result->cached_tokens;
-    const Finish finish = result->stopped || text_.stopped() ? Finish::kStop : Finish::kLength;
+    const Finish finish = text_.stopped()    ? Finish::kStop
+                          : !result->stopped ? Finish::kLength
+                          : tool_count_ != 0 ? Finish::kToolCalls
+                                             : Finish::kStop;
     // The body's most: what the request memory could hold besides it.
     const std::uint64_t most = server_.memory_->capacity();
-    body =
-        pending_.literal
-            ? LiteralCompletionJson(channel_.id, channel_.created, *pending_.literal, content_,
-                                    result->literal, finish, usage_, static_cast<std::size_t>(most))
-            : std::expected<std::string, Error>(CompletionJson(
-                  channel_.id, channel_.created, pending_.request.model, content_,
-                  reasoning_.empty() ? std::nullopt : std::optional<std::string>(reasoning_),
-                  finish, usage_));
+    bool funded = true;
+    if (!pending_.literal) {
+      const auto bound = CompletionJsonBytes(
+          channel_.id, pending_.request.model, content_,
+          reasoning_.empty() ? std::nullopt : std::optional<std::string_view>(reasoning_),
+          tool_calls_);
+      std::uint64_t peak = 0;
+      funded = bound && !__builtin_add_overflow(std::uint64_t{*bound}, std::uint64_t{512}, &peak) &&
+               body_charge.Add(*server_.memory_, peak);
+      if (!funded)
+        body = std::unexpected(
+            MemoryRefusal(*server_.memory_, peak, "serializing the completed response"));
+    }
+    if (funded)
+      body =
+          pending_.literal
+              ? LiteralCompletionJson(channel_.id, channel_.created, *pending_.literal, content_,
+                                      result->literal, finish, usage_,
+                                      static_cast<std::size_t>(most))
+              : std::expected<std::string, Error>(CompletionJson(
+                    channel_.id, channel_.created, pending_.request.model, content_,
+                    reasoning_.empty() ? std::nullopt : std::optional<std::string_view>(reasoning_),
+                    finish, usage_, tool_calls_));
     std::string().swap(content_);
     std::string().swap(reasoning_);
     text_charge_.Reset();
@@ -145,7 +250,8 @@ int Server::Stream::End(const std::expected<Completion, Error>& result) {
     // grows for it); one that cannot be held beside what slow readers
     // keep is refused (503), so they cannot retain responses without
     // bound.
-    if (*body && !body_charge.Add(*server_.memory_, (*body)->capacity())) {
+    if (*body && (*body)->capacity() > body_charge.bytes() &&
+        !body_charge.Add(*server_.memory_, (*body)->capacity() - body_charge.bytes())) {
       body = std::unexpected(
           MemoryRefusal(*server_.memory_, (*body)->capacity(), "the completed response"));
     }
@@ -181,7 +287,10 @@ int Server::Stream::End(const std::expected<Completion, Error>& result) {
         channel_.PutError(error);
         status = error.status;
       } else {
-        const Finish finish = result->stopped || text_.stopped() ? Finish::kStop : Finish::kLength;
+        const Finish finish = text_.stopped()    ? Finish::kStop
+                              : !result->stopped ? Finish::kLength
+                              : tool_count_ != 0 ? Finish::kToolCalls
+                                                 : Finish::kStop;
         if (pending_.request.stream) {
           if (!channel_.head_sent) {
             channel_.PutStart();

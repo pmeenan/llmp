@@ -123,7 +123,7 @@ llmp_gtest(swap_room_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The chat route (D-097): requests and their bounds, the bind resolution and
 # Host guard, and the server over real loopback sockets with a fake backend.
-add_executable(api_test api_test.cc stream_encoder_test.cc)
+add_executable(api_test api_test.cc api_tools_test.cc stream_encoder_test.cc)
 target_link_libraries(api_test PRIVATE llmp_runtime llmp_json)
 llmp_gtest(api_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
@@ -133,7 +133,8 @@ target_link_libraries(llm_scores_test PRIVATE llmp_runtime_llm llmp_engine_core
                                               llmp_fake_step_source llmp_fake_device_backend
                                               llmp_platform)
 llmp_gtest(llm_scores_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
-             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
+             ENVIRONMENT_MODIFICATION "LLMP_TEST_DATA=set:${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 # The resource core: the catalog and the memory manager's policy, on no
 # vendor SDK (D-026).

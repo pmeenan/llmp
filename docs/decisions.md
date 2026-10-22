@@ -2114,7 +2114,8 @@ amended it to what follows.
   reverse names (at most 16 lookups, within 5 s together at startup).
   Anything else is a 403, as is a cross-site `Sec-Fetch-Site`. No CORS
   headers are sent.
-- **Surface.** `POST /v1/chat/completions` (non-streaming and SSE),
+- **Surface (original M3 text-only scope; tool calling amended below).**
+  `POST /v1/chat/completions` (non-streaming and SSE),
   `GET /v1/models`, `GET /v1/models/{id}`, in OpenAI's shapes, and for
   loopback peers only `GET /llmp/v1/ignored-fields` (below). Honored:
   `model`, text `messages` (system, developer as system, user, assistant
@@ -2270,6 +2271,48 @@ counts, queue and connection limits do not widen. The byte caps remain
 independent of token counts; they do not guarantee every possible 1M-token
 input fits. Existing request shapes remain valid; API version stays 1
 (D-062), and no physical model-fit claim follows from intake acceptance.
+
+**Amended 2026-10-22 — M3.5 tool calling.** The owner's M3.5 scope extends
+this route beyond the original text-only surface above. The current contract
+is [tool-calls.md](tool-calls.md): modern `tools`/`tool_choice` and legacy
+`functions`/`function_call` normalize to one owned, protocol-neutral request;
+assistant call history and tool results use the shared rendering boundary.
+Valid call-only assistant history may omit content. Responses emit modern
+`tool_calls`, in non-streaming and SSE modes; clients execute the tools and
+return results. Contradictory representations fail explicitly.
+
+Active tools require a verified generated-output format for the selected
+template, with exactly representable active names. Unknown formats are refused;
+`none` remains harmless on templates without tool support. Auto, required and
+named choice, parallel calls and result association follow the shared contract,
+with syntax declared as data rather than per-model parsers. Only newly generated
+output enters the interpreter. Strict argument-schema enforcement remains M7.
+
+Required/named forcing uses the shared engine's sampling and speculative
+verification paths. Before publishing a selecting token, canonical tokenization
+and exact reproduction establish any stable forced span; its selecting anchor
+and known stable tokens run together in one causal unit. An unstable final block
+remains held and advances through unchanged ordinary target selections, with no
+injected unstable IDs or claim of canonicality under unknown future bytes.
+
+These are additive standard fields on `POST /v1/chat/completions`; the `/v1`
+endpoint prefix and public-surface version remain unchanged. No configuration
+schema or artifact-format change is introduced. D-062 does not require another
+product-version increment for each additive feature within the already
+unreleased 0.2 version; the route change has its `Unreleased` changelog entry.
+**Bounded M3.5 qualification (2026-10-22).** Six native Qwen API
+transactions pass for auto, required and named tool choice in JSON and SSE,
+and the pinned OpenCode 1.19.3 client passes one seeded edit-and-test task;
+the initial seeded test run fails against the intended bug, then the
+independent post-edit run passes all five tests without changing the test file.
+The frozen runtime, source, helper, model, template, artifact and client
+identities and clean retirements are recorded in the
+[native tool-call results](experiments/m35-tools/RESULTS.md). This confirms
+representative real-model and actual-client operation for that run identity.
+It does not establish support for every served alias or grammar, maximum
+context, performance, sampled quality or speculative decoding. Full M3.5
+served-model/client qualification remains **open**; final integrated source
+checks remain separate from this diagnostic.
 
 ## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057; its engine's CUDA use moved behind the device runtime on 2026-09-29, noted below; engine structure amended by D-107 (one runner of shared components, one serving adapter per pipeline kind); its engine core builds in every profile since 2026-10-08, amended below)
 

@@ -71,9 +71,6 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
   std::vector<std::int32_t> continued;
   if (resume != nullptr) {
     continued = resume->history;
-    if (!resume->generation.tokens.empty()) {
-      continued.push_back(resume->generation.tokens.back());
-    }
   }
   MemoryCharge token_charge;
   if (auto refused =
@@ -111,21 +108,7 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
     return so_far(0);
   }
 
-  if (server_.resident() != m && !exchange.Next(Phase::kSwap, swap_bytes)) {
-    return so_far(0);
-  }
-  if (auto refused = ActivateFor(*m, m->name()); refused) {
-    return std::unexpected(std::move(*refused));
-  }
-  // A swap is one program (about 10 s on a Spark), watched as one unit
-  // at its bytes; whatever ended the request meanwhile (the client gone,
-  // the backend stalled, the deadline, the runtime stopping) ends it
-  // here, before any of its model work. The exchange answers for it.
-  if (!exchange.Continue()) {
-    return so_far(0);
-  }
-
-  GenerateOptions options{.max_tokens = max_tokens,
+  GenerateOptions options{.max_tokens = rendered.max_tokens,
                           .extra_stops = l.ChatStops(),
                           .stop = true,
                           .keep_logits = false,
@@ -139,12 +122,28 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
     options.sampling = sampling;
     options.seed = request.seed.value_or(RandomSeed());
   }
-  ChatOutput output(l, exchange, rendered.reasoning);
+  ChatOutput output(l, exchange, rendered.reasoning, rendered.tools, rendered.output_charge);
+  if (rendered.tools) options.tool_sampling = rendered.tools->sampling;
   if (resume != nullptr) {
     output.Restore(resume->output);
   }
-  Generation generation;
+  Generation generation = resume != nullptr ? resume->generation : Generation{};
+  if (resume != nullptr && !output.Drain()) {
+    if (output.error()) return std::unexpected(*output.error());
+    if (exchange.Yielding()) {
+      auto kept =
+          KeepContinuation(rendered, generation, options, output.Save(), resume->reused, *memory_);
+      if (!kept) return std::unexpected(kept.error());
+      return api::Completion{.completion_tokens = done,
+                             .cached_tokens = resume->reused,
+                             .stopped = generation.stopped,
+                             .literal = {},
+                             .yielded = std::move(*kept)};
+    }
+    return so_far(resume->reused);
+  }
   std::optional<api::Error> token_problem;
+  std::optional<api::Error> constraint_problem;
   options.on_tokens = [&](std::span<const std::int32_t> fresh) {
     server_.TouchActivity();
     const std::uint64_t held =
@@ -158,25 +157,52 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
   const PrefillGoOn go_on = [&exchange](std::uint32_t rows) {
     return exchange.Next(Phase::kPrefill, rows);
   };
+  const bool needs_model = max_tokens != 0 && !generation.stopped;
+  if (needs_model) {
+    if (server_.resident() != m && !exchange.Next(Phase::kSwap, swap_bytes)) {
+      return so_far(0);
+    }
+    if (auto refused = ActivateFor(*m, m->name()); refused) {
+      return std::unexpected(std::move(*refused));
+    }
+    // A swap is one program (about 10 s on a Spark), watched as one unit
+    // at its bytes; whatever ended the request meanwhile (the client gone,
+    // the backend stalled, the deadline, the runtime stopping) ends it
+    // here, before any of its model work. The exchange answers for it.
+    if (!exchange.Continue()) {
+      return so_far(0);
+    }
+  }
   // Idle branches' retained state gives way to this request, the largest
   // first; a refusal it still meets fails the request alone.
   const ScopedReclaim reclaim(l, SerialReclaim(l));
   SerialCapacity capacity(l);
-  auto ran = server_.InRequest(*m, [&]() -> Status {
+  const auto run = [&]() -> Status {
     // Between chunks, whatever ends the request (the client gone, the
     // backend stalled, the deadline, the runtime stopping) stops the
     // prefill: an ordinary end, the state holding the chunks that ran
     // (serving.h Llm::Prefill).
+    if (max_tokens == 0 || generation.stopped) return {};
     std::vector<float> last;
-    if (auto r = l.PreparePrompt(tokens, rendered.stable_boundary, last, reused, go_on, &prefill);
+    if (auto r = l.PreparePrompt(tokens, rendered.stable_boundary, last, reused, go_on, &prefill,
+                                 false, resume != nullptr);
         !r) {
       return capacity(r, "the prompt could not be processed: ");
     }
-    if (prefill.stopped || !exchange.Next(Phase::kDecode, 0)) {
+    if (prefill.stopped || max_tokens == 0 || generation.stopped ||
+        !exchange.Next(Phase::kDecode, 0)) {
       return {};  // the state holds what ran; the exchange answers for why
     }
-    return capacity(l.Generate(last, options, generation), "the generation failed: ");
-  });
+    auto generated = l.Generate(last, options, generation, resume != nullptr);
+    if (!generated && options.tool_sampling && options.tool_sampling->refused_candidates() &&
+        l.generation_cohort_usable()) {
+      constraint_problem =
+          Failure(500, "no generated token satisfies the tool constraint", "tool_output_invalid");
+      return {};  // EndRequest still authenticates retirement before this is returned.
+    }
+    return capacity(std::move(generated), "the generation failed: ");
+  };
+  auto ran = needs_model ? server_.InRequest(*m, run) : Status{};
   if (!ran) {
     if (server_.node().TakeHangCancelled()) {
       return std::unexpected(RecoverFromHang(*m, std::format("{}'s request", m->name())));
@@ -196,6 +222,7 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
   if (token_problem) {
     return std::unexpected(*token_problem);
   }
+  if (constraint_problem) return std::unexpected(*constraint_problem);
   if (prefill.stopped) {
     // Token counts and times only (D-014); the exchange answers for why.
     Say(log_, std::format("{}'s prefill stopped after {} chunks: the state holds {} of the "
@@ -203,40 +230,32 @@ std::expected<api::Completion, api::Error> NodeBackend::SerialChat(Llm& l,
                           m->name(), prefill.chunks, l.history().size(), tokens.size()));
     return so_far(reused);
   }
-  // Yielding its place (D-102): ended at this completed step, unless the
-  // generation is whole anyway; it continues from here when taken up.
-  if (exchange.Yielding() && !generation.stopped && !generation.tokens.empty() &&
-      generation.tokens.size() < max_tokens) {
-    MemoryCharge combined;
-    const std::uint64_t bytes = (done + generation.tokens.size()) * sizeof(std::int32_t);
-    if (!combined.Add(*memory_, 2 * bytes)) {
-      return std::unexpected(api::MemoryRefusal(*memory_, 2 * bytes, "the continued generation"));
-    }
-    Generation all = resume != nullptr ? resume->generation : Generation{};
-    all.tokens.insert(all.tokens.end(), generation.tokens.begin(), generation.tokens.end());
-    const auto total = static_cast<std::uint32_t>(all.tokens.size());
-    auto yielded = KeepContinuation(rendered, all, options, output.Save(),
+  if (!exchange.Yielding()) (void)output.Finish(generation.stopped);
+  if (output.error()) return std::unexpected(*output.error());
+  // Final-drain pauses also continue: there may be no further GPU work, but
+  // already accepted bytes must still reach the client exactly once.
+  if (exchange.Yielding() &&
+      ((!generation.stopped && generation.tokens.size() < rendered.max_tokens) ||
+       output.pending())) {
+    auto yielded = KeepContinuation(rendered, generation, options, output.Save(),
                                     resume != nullptr ? resume->reused : reused, *memory_);
-    if (!yielded) {
-      return std::unexpected(yielded.error());
-    }
-    return api::Completion{.completion_tokens = total,
-                           .cached_tokens = (*yielded)->reused,
-                           .stopped = false,
-                           .literal = {},
-                           .yielded = std::move(*yielded)};
+    if (!yielded) return std::unexpected(yielded.error());
+    return api::Completion{
+        .completion_tokens = static_cast<std::uint32_t>(generation.tokens.size()),
+        .cached_tokens = (*yielded)->reused,
+        .stopped = generation.stopped,
+        .literal = {},
+        .yielded = std::move(*yielded)};
   }
-  output.Finish();
   if (ladder_ != nullptr) {
     ladder_->Served(m->name());  // a later hang may reset it again
   }
   server_.TouchActivity();
-  return api::Completion{
-      .completion_tokens = done + static_cast<std::uint32_t>(generation.tokens.size()),
-      .cached_tokens = resume != nullptr ? resume->reused : reused,
-      .stopped = generation.stopped,
-      .literal = {},
-      .yielded = nullptr};
+  return api::Completion{.completion_tokens = static_cast<std::uint32_t>(generation.tokens.size()),
+                         .cached_tokens = resume != nullptr ? resume->reused : reused,
+                         .stopped = generation.stopped,
+                         .literal = {},
+                         .yielded = nullptr};
 }
 
 std::expected<api::Completion, api::Error> NodeBackend::Complete(

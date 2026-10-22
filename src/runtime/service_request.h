@@ -40,12 +40,24 @@ std::uint64_t RandomSeed();
 std::optional<execution::SamplingParams> SamplingOf(const api::ChatRequest& request,
                                                     const Llm& model);
 
+// This owner pays the parser, speculative cursor snapshots, tokenizer planning
+// storage and output copies from the request's actual prepared token allowance.
+struct ChatTools {
+  MemoryCharge charge;
+  std::shared_ptr<const api::ToolOptions> options;
+  chat::ToolCallFormat format;
+  base::json::Limits limits;
+  std::shared_ptr<chat::ToolSampling> sampling;
+};
+
 struct ChatPrompt {
   std::shared_ptr<const api::PromptTokens> token_storage;
   const std::vector<std::int32_t>& tokens() const { return token_storage->values(); }
   std::uint32_t stable_boundary = 0;
   std::uint32_t max_tokens = 0;
   bool reasoning = false;
+  std::shared_ptr<ChatTools> tools;
+  std::shared_ptr<MemoryCharge> output_charge;
 };
 
 // The context's refusal, for a conversation that cannot fit before it is
@@ -70,70 +82,53 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
 // ownership so an options callback can borrow it across completed units.
 class ChatOutput final {
  public:
-  ChatOutput(Llm& model, api::Exchange& exchange, bool reasoning)
-      : model_(model), exchange_(exchange), decoder_(model.tokenizer(), {}), thinking_(reasoning) {}
-  bool Push(std::span<const std::int32_t> fresh) {
-    std::string piece;
-    bool go = true;
-    bool said = false;
-    const auto send = [&]() {
-      if (!piece.empty()) {
-        go = (thinking_ ? exchange_.Reasoning(piece) : exchange_.Content(piece)) && go;
-        any_content_ = any_content_ || !thinking_;
-        said = true;
-        piece.clear();
-      }
-    };
-    for (const std::int32_t token : fresh) {
-      if (thinking_ && model_.think_end() && token == *model_.think_end()) {
-        decoder_.Finish(piece);
-        if (piece.empty()) {
-          go = exchange_.Reasoning({}) && go;
-        }
-        send();
-        thinking_ = false;
-        continue;
-      }
-      if (!thinking_ && !any_content_ && piece.empty() && model_.think_start() &&
-          token == *model_.think_start()) {
-        thinking_ = true;
-        continue;
-      }
-      std::ignore = decoder_.Push(token, piece);
-    }
-    send();
-    return said ? go : exchange_.Continue();
-  }
-  void Finish() {
-    std::string rest;
-    decoder_.Finish(rest);
-    if (!rest.empty()) {
-      (void)(thinking_ ? exchange_.Reasoning(rest) : exchange_.Content(rest));
-    }
-  }
-
-  // Where the output stands (a partial character held back, inside the
-  // reasoning or not): a request that yields its place continues from it.
+  ChatOutput(Llm& model, api::Exchange& exchange, bool reasoning,
+             std::shared_ptr<ChatTools> tools = nullptr,
+             std::shared_ptr<MemoryCharge> charge = nullptr)
+      : model_(model),
+        exchange_(exchange),
+        state_(std::make_shared<State>(model.tokenizer(), reasoning, std::move(tools),
+                                       std::move(charge))) {}
+  bool Push(std::span<const std::int32_t> fresh);
+  bool Drain();
+  bool Finish(bool stopped = true);
+  bool pending() const;
+  bool done() const { return state_->finished; }
+  const std::optional<api::Error>& error() const { return state_->error; }
   struct State {
+    State(const tokenizer::Tokenizer& tokenizer, bool reasoning, std::shared_ptr<ChatTools> owner,
+          std::shared_ptr<MemoryCharge> charge)
+        : decoder(tokenizer, {.control_tokens = owner != nullptr}),
+          thinking(reasoning),
+          tools(std::move(owner)),
+          output_charge(std::move(charge)) {
+      if (tools) {
+        parser.emplace(tools->format, tools->options->request, tools->limits);
+        parser->Reasoning(reasoning);
+      }
+    }
     tokenizer::StreamDecoder decoder;
-    bool thinking = false;
-    bool any_content = false;
+    bool thinking = false, any_content = false, finished = false;
+    bool decoder_finished = false;
+    std::shared_ptr<ChatTools> tools;
+    std::shared_ptr<MemoryCharge> output_charge;
+    std::optional<chat::ToolInterpreter> parser;
+    std::vector<std::int32_t> unread;
+    std::size_t consumed = 0;
+    std::optional<bool> finishing;
+    std::optional<api::Error> error;
   };
-  State Save() const {
-    return {.decoder = decoder_, .thinking = thinking_, .any_content = any_content_};
-  }
-  void Restore(const State& state) {
-    decoder_ = state.decoder;
-    thinking_ = state.thinking;
-    any_content_ = state.any_content;
-  }
+  // Shared ownership moves a paused parser and its unread accepted batch across
+  // continuation frames without cloning argument payloads or replaying events.
+  std::shared_ptr<State> Save() const { return state_; }
+  void Restore(std::shared_ptr<State> state) { state_ = std::move(state); }
 
  private:
+  chat::ToolInterpreter::Flow Send(chat::ToolEvent event);
+  bool Text(std::string_view text);
   Llm& model_;
   api::Exchange& exchange_;
-  tokenizer::StreamDecoder decoder_;
-  bool thinking_ = false;
-  bool any_content_ = false;
+  std::shared_ptr<State> state_;
 };
 
 // A chat request that yielded its place (api::Exchange::Yielding): what it
@@ -146,7 +141,7 @@ struct ChatResume final : api::Yielded {
   ChatResume(ChatResume&&) = delete;
   ChatResume& operator=(ChatResume&&) = delete;
   ChatResume(ChatPrompt prompt, Generation so_far, const GenerateOptions& options,
-             ChatOutput::State out, std::uint32_t cached, MemoryCharge charge,
+             std::shared_ptr<ChatOutput::State> out, std::uint32_t cached, MemoryCharge charge,
              Llm::Branch* held = nullptr, std::shared_ptr<api::LiteralOutput> literal = nullptr)
       : rendered(std::move(prompt)),
         generation(std::move(so_far)),
@@ -180,7 +175,7 @@ struct ChatResume final : api::Yielded {
   std::vector<std::int32_t> history;
   std::optional<execution::SamplingParams> sampling;
   std::uint64_t seed = 0;
-  ChatOutput::State output;
+  std::shared_ptr<ChatOutput::State> output;
   std::uint32_t reused = 0;  // the first turn's cached tokens, for its usage
   MemoryCharge token_charge;
   Llm::Branch* held_branch = nullptr;
@@ -189,7 +184,7 @@ struct ChatResume final : api::Yielded {
 
 std::expected<std::shared_ptr<ChatResume>, api::Error> KeepContinuation(
     const ChatPrompt& prompt, const Generation& generation, const GenerateOptions& options,
-    ChatOutput::State output, std::uint32_t reused, RequestMemory& memory,
+    std::shared_ptr<ChatOutput::State> output, std::uint32_t reused, RequestMemory& memory,
     Llm::Branch* branch = nullptr, std::shared_ptr<api::LiteralOutput> literal = nullptr);
 
 // A serial request's state-capacity policy on its model for the request's

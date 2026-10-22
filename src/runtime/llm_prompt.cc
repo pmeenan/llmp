@@ -52,10 +52,10 @@ using serving_support::Seconds;
 Status Llm::PreparePrompt(Branch& branch, std::span<const std::int32_t> tokens,
                           std::uint32_t stable_boundary, std::vector<float>& last,
                           std::uint32_t& reused, const PrefillGoOn& go_on, PrefillRun* run,
-                          bool fresh) {
+                          bool fresh, bool resume) {
   CheckIdleGeneration(branch);
   branch.capacity_refused_ = false;
-  auto opened = BeginPrompt(branch, tokens, stable_boundary, fresh);
+  auto opened = BeginPrompt(branch, tokens, stable_boundary, fresh, resume);
   if (!opened) {
     return std::unexpected(opened.error());
   }

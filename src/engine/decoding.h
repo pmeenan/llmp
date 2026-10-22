@@ -168,6 +168,12 @@ struct DecodeWork {
   // Scored: the tokens whose every row's outputs return, from the slot's
   // positions.
   std::span<const std::int32_t> score{};
+  // Canonically tokenized, certain continuations after the unpublished-in-KV
+  // anchor. They are target inputs, not model drafter proposals. One causal
+  // unit processes anchor + these rows and returns only the last free head.
+  // The caller bounds rows by the real scheduler/context capacity.
+  std::span<const std::int32_t> certain{};
+  bool certain_scores = false;  // genuine scores for every known row when requested
 };
 
 // A verify's verdict: its first `keep` rows stay (the anchor and the
@@ -295,6 +301,7 @@ class DecodingOrchestrator {
   // One plain (or sampled, or scored: `scored`) step a slot.
   DecodeReport Single(std::span<const DecodeWork> work, bool scored, bool greedy);
   DecodeReport Speculate(std::span<const DecodeWork> work);
+  DecodeReport Certain(std::span<const DecodeWork> work);
   std::size_t At(std::uint32_t slot, std::size_t drafter) const {
     return (std::size_t{slot} * mode_.drafters.size()) + drafter;
   }

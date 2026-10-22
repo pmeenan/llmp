@@ -138,12 +138,33 @@ void CheckFixture(std::string_view name, std::string_view sha256,
     std::deque<json::Document> arguments;
     const chat::Conversation conv = ConversationFrom(c, &arguments);
     const auto rendered = t->render(conv);
+    // Frozen upstream fixtures include permissive orphan results and Gemma's
+    // empty-ID last-match bug. The shared history contract deliberately fixes
+    // those cases; retain their source bytes and assert the exact divergence.
+    const bool orphan = case_name == "orphan-tool" || case_name == "tool-first" ||
+                        case_name == "tool-after-user" || case_name == "tool-runs-interleaved" ||
+                        case_name == "tool-in-assistant-slot" || case_name == "g3-system-ws";
+    if (orphan || (name.starts_with("gemma-") && case_name == "bools-nulls") ||
+        (name == "gemma-3" && std::ranges::any_of(conv.messages, [](const auto& message) {
+           return message.role == chat::Role::kTool;
+         }))) {
+      ASSERT_FALSE(rendered) << case_name;
+      EXPECT_EQ(rendered.error().rule, chat::Rule::kUnsupported) << case_name;
+      EXPECT_NE(rendered.error().reason.find("tool"), std::string_view::npos) << case_name;
+      continue;
+    }
     if (c.find("error")) {
       EXPECT_EQ(Failed(rendered, &chat::Error::rule), chat::Rule::kInvalid) << case_name;
       continue;
     }
     ASSERT_TRUE(rendered.has_value()) << case_name << ": " << rendered.error().ToString();
-    EXPECT_EQ(rendered->text, Get(c, "text").string()) << case_name;
+    std::string expected(Get(c, "text").string());
+    if (name.starts_with("gemma-") && case_name == "chain-tools") {
+      const auto first_result = expected.find("response:g{value:");
+      ASSERT_NE(first_result, std::string::npos);
+      expected.replace(first_result, std::string_view("response:g").size(), "response:f");
+    }
+    EXPECT_EQ(rendered->text, expected) << case_name;
     // Marked spans hold what they claim, in order.
     std::size_t at = 0;
     for (const auto& s : rendered->specials) {
@@ -391,6 +412,13 @@ TEST(Gemma, VariantsDifferWhereTheirTemplatesDo) {
     std::deque<json::Document> arguments;
     const chat::Conversation conv = ConversationFrom(c, &arguments);
     const auto unsloth = chat::RenderGemma4Unsloth(conv);
+    if (name == "orphan-tool" || name == "tool-first" || name == "tool-after-user" ||
+        name == "tool-runs-interleaved" || name == "tool-in-assistant-slot" ||
+        name == "g3-system-ws" || name == "bools-nulls") {
+      ASSERT_FALSE(unsloth) << name;
+      EXPECT_EQ(unsloth.error().rule, chat::Rule::kUnsupported);
+      continue;
+    }
     if (name == "string-arguments") {
       ASSERT_TRUE(unsloth.has_value());
       EXPECT_NE(unsloth->text.find(R"(call:get_weather{"city": 1}<tool_call|>)"), std::string::npos)
@@ -400,7 +428,13 @@ TEST(Gemma, VariantsDifferWhereTheirTemplatesDo) {
       EXPECT_NE(unsloth->text.find("call:get_weather{}<tool_call|>"), std::string::npos);
     } else if (c.find("text")) {
       ASSERT_TRUE(unsloth.has_value()) << name;
-      EXPECT_EQ(unsloth->text, Get(c, "text").string()) << name;
+      std::string expected(Get(c, "text").string());
+      if (name == "chain-tools") {
+        const auto first = expected.find("response:g{value:");
+        ASSERT_NE(first, std::string::npos);
+        expected.replace(first, std::string_view("response:g").size(), "response:f");
+      }
+      EXPECT_EQ(unsloth->text, expected) << name;
     }
     if (const auto text = c.find("text")) {
       const auto e = chat::RenderGemma4E(conv);
@@ -518,20 +552,17 @@ TEST(Gemma, LongConversationsRenderInLinearTime) {
             kGenerous);
 }
 
-// A native rendering is bounded as the interpreter's output is: a long tool
-// name, which Gemma 4 repeats for every tool result, is refused at the bound
-// (32 MiB) rather than built a thousand times over; so is any renderer's
-// text past it.
+// A native rendering is bounded as the interpreter is. The same tool name
+// appears in both its call and result, so even valid history can exceed output.
 TEST(Renderers, OutputIsBounded) {
   const auto args = json::Parse("{}");
   ASSERT_TRUE(args.has_value());
   chat::Conversation c;
-  const std::string name(std::size_t{1} << 20U, 'n');
+  c.max_render_bytes = std::size_t{1} << 20U;
+  const std::string name(std::size_t{600} << 10U, 'n');
   c.messages.push_back({chat::Role::kUser, "go", std::nullopt, {}});
   c.messages.push_back({chat::Role::kAssistant, "", std::nullopt, {{name, args->root()}}});
-  for (int i = 0; i < 1000; ++i) {
-    c.messages.push_back({chat::Role::kTool, "r", std::nullopt, {}});
-  }
+  c.messages.push_back({chat::Role::kTool, "r", std::nullopt, {}});
   for (const auto render : {chat::RenderGemma4, chat::RenderGemma4E, chat::RenderGemma4Unsloth,
                             chat::RenderGemma4April}) {
     const auto r = render(c);
@@ -823,6 +854,165 @@ TEST(StructuredContent, ProjectionHonorsBoundsBeforeBuildingOutput) {
   rendered = chat::RenderQwen38(c);
   ASSERT_FALSE(rendered);
   EXPECT_TRUE(Failed(rendered, &chat::Error::bound));
+}
+
+chat::Conversation ToolHistory(std::vector<chat::ToolUsePart> calls,
+                               std::vector<chat::ToolResultPart> results) {
+  chat::Conversation out;
+  out.messages.push_back({.role = chat::Role::kUser, .content = "use tools"});
+  std::vector<chat::MessagePart> parts;
+  for (auto& call : calls) parts.emplace_back(std::move(call));
+  out.messages.push_back({.role = chat::Role::kAssistant, .content = std::move(parts)});
+  for (auto& result : results)
+    out.messages.push_back(
+        {.role = chat::Role::kTool, .content = std::vector<chat::MessagePart>{std::move(result)}});
+  return out;
+}
+
+TEST(ToolHistory, KnownIdsReorderWholeMessagesAndPreserveErrorStatus) {
+  const auto c =
+      ToolHistory({{"a", "first", "{}"}, {"b", "second", "{}"}}, {{"b", "B", true}, {"a", "A"}});
+  auto projected = chat::ProjectContent(c);
+  ASSERT_TRUE(projected);
+  EXPECT_EQ(projected->messages[2].tool_call_id, "a");
+  EXPECT_EQ(projected->messages[2].resolved_tool_call, 0U);
+  EXPECT_EQ(projected->messages[3].tool_call_id, "b");
+  EXPECT_EQ(projected->messages[3].resolved_tool_call, 1U);
+  EXPECT_TRUE(projected->messages[3].tool_result_is_error);
+  EXPECT_EQ(projected->messages[3].content.text(), "[tool error] B");
+  auto again = chat::ProjectContent(*projected);
+  ASSERT_TRUE(again);
+  EXPECT_EQ(again->messages[3].content.text(), "[tool error] B");
+  for (const auto render : {chat::RenderQwen38, chat::RenderDeepSeekV4, chat::RenderGemma4}) {
+    auto text = render(c);
+    ASSERT_TRUE(text) << Failed(text, &chat::Error::ToString).value_or("");
+    EXPECT_NE(text->text.find("[tool error] B"), std::string::npos);
+  }
+}
+
+TEST(ToolHistory, MixedKnownAndMissingIdsKeepSuppliedOrderAndKnownAssociation) {
+  const auto c =
+      ToolHistory({{"a", "first", "{}"}, {"b", "second", "{}"}}, {{"b", "B"}, {"", "A"}});
+  auto projected = chat::ProjectContent(c);
+  ASSERT_TRUE(projected);
+  EXPECT_EQ(projected->messages[2].tool_call_id, "b");
+  EXPECT_EQ(projected->messages[2].resolved_tool_call, 1U);
+  EXPECT_TRUE(projected->messages[3].tool_call_id.empty());
+  EXPECT_EQ(projected->messages[3].resolved_tool_call, 0U);
+  auto text = chat::RenderGemma4(c);
+  ASSERT_TRUE(text);
+  const auto second = text->text.find("response:second{value:");
+  const auto first = text->text.find("response:first{value:");
+  ASSERT_NE(second, std::string::npos);
+  ASSERT_NE(first, std::string::npos);
+  EXPECT_LT(second, first);
+}
+
+TEST(ToolHistory, PartialKnownGroupAndUniqueLegacyNameNeedNoOrdinalGuess) {
+  auto c = ToolHistory({{"a", "first", "{}"}, {"b", "second", "{}"}, {"c", "third", "{}"}},
+                       {{"b", "B"}});
+  auto partial = chat::RenderGemma4(c);
+  ASSERT_TRUE(partial);
+  EXPECT_NE(partial->text.find("response:second{value:"), std::string::npos);
+  c.messages.back().content =
+      std::vector<chat::MessagePart>{chat::ToolResultPart{"", "C", false, "third"}};
+  auto named = chat::ProjectContent(c);
+  ASSERT_TRUE(named);
+  EXPECT_EQ(named->messages.back().resolved_tool_call, 2U);
+  EXPECT_TRUE(named->messages.back().tool_call_id.empty());
+  auto text = chat::RenderGemma4(c);
+  ASSERT_TRUE(text);
+  EXPECT_NE(text->text.find("response:third{value:"), std::string::npos);
+}
+
+TEST(ToolHistory, MissingAmbiguousNameFailsOnlyWhereTheRendererNeedsIt) {
+  const auto c = ToolHistory({{"a", "first", "{}"}, {"b", "second", "{}"}}, {{"", "result"}});
+  auto projected = chat::ProjectContent(c);
+  ASSERT_TRUE(projected);
+  EXPECT_FALSE(projected->messages.back().resolved_tool_call);
+  EXPECT_TRUE(chat::RenderQwen38(c));
+  EXPECT_TRUE(chat::RenderDeepSeekV4(c));
+  auto gemma = chat::RenderGemma4(c);
+  ASSERT_FALSE(gemma);
+  EXPECT_NE(gemma.error().reason.find("ambiguous"), std::string_view::npos);
+}
+
+TEST(ToolHistory, RepeatedNameEvidenceCanBeSufficientWithoutInventingAnOccurrence) {
+  const auto c = ToolHistory({{"a", "f", "{}"}, {"b", "f", "{}"}, {"c", "g", "{}"}},
+                             {{"", "result", false, "f"}});
+  auto projected = chat::ProjectContent(c);
+  ASSERT_TRUE(projected);
+  EXPECT_FALSE(projected->messages.back().resolved_tool_call);
+  EXPECT_TRUE(projected->messages.back().tool_call_id.empty());
+  auto text = chat::RenderGemma4(c);
+  ASSERT_TRUE(text);
+  EXPECT_NE(text->text.find("response:f{value:"), std::string::npos);
+  auto same = ToolHistory({{"", "f", "{}"}, {"", "f", "{}"}}, {{"", "result"}});
+  EXPECT_TRUE(chat::RenderGemma4(same));
+}
+
+TEST(ToolHistory, FullGroupReservesNameEvidenceBeforeUnnamedOrdinalFallback) {
+  const auto c = ToolHistory({{"a", "f", "{}"}, {"b", "f", "{}"}, {"c", "g", "{}"}},
+                             {{"", "G"}, {"", "F1", false, "f"}, {"", "F2", false, "f"}});
+  auto projected = chat::ProjectContent(c);
+  ASSERT_TRUE(projected);
+  EXPECT_EQ(projected->messages[2].resolved_tool_call, 2U);
+  EXPECT_EQ(projected->messages[3].resolved_tool_call, 0U);
+  EXPECT_EQ(projected->messages[4].resolved_tool_call, 1U);
+  auto text = chat::RenderGemma4(c);
+  ASSERT_TRUE(text);
+  EXPECT_LT(text->text.find("response:g{value:"), text->text.find("response:f{value:"));
+}
+
+TEST(ToolHistory, ContradictoryNamesUnknownIdsAndExcessResultsFail) {
+  for (const auto& results :
+       std::vector<std::vector<chat::ToolResultPart>>{{{"b", "B", false, "first"}},
+                                                      {{"unknown", "?"}},
+                                                      {{"a", "A"}, {"a", "again"}},
+                                                      {{"", "?", false, "unknown"}},
+                                                      {{"", "A"}, {"", "B"}, {"", "extra"}}}) {
+    EXPECT_FALSE(
+        chat::ProjectContent(ToolHistory({{"a", "first", "{}"}, {"b", "second", "{}"}}, results)));
+  }
+  EXPECT_FALSE(chat::ProjectContent(
+      ToolHistory({{"a", "f", "{}"}, {"b", "f", "{}"}, {"c", "g", "{}"}},
+                  {{"", "1", false, "f"}, {"", "2", false, "f"}, {"", "3", false, "f"}})));
+}
+
+TEST(ToolHistory, DirectLegacyRendererUsesLocalAssociationRatherThanLastEmptyId) {
+  const auto args = json::Parse("{}");
+  ASSERT_TRUE(args);
+  chat::Conversation c;
+  c.messages = {{.role = chat::Role::kUser, .content = "go"},
+                {.role = chat::Role::kAssistant,
+                 .content = "",
+                 .tool_calls = {{"f", args->root()}, {"g", args->root()}}},
+                {.role = chat::Role::kTool, .content = "first"},
+                {.role = chat::Role::kTool, .content = "second"}};
+  auto text = chat::RenderGemma4(c);
+  ASSERT_TRUE(text);
+  EXPECT_NE(text->text.find("response:f{value:<|\"|>first"), std::string::npos);
+  EXPECT_NE(text->text.find("response:g{value:<|\"|>second"), std::string::npos);
+  auto projected = chat::ProjectContent(c);
+  ASSERT_TRUE(projected);
+  EXPECT_TRUE(projected->messages[1].tool_calls[0].id.empty());
+  EXPECT_TRUE(projected->messages[2].tool_call_id.empty());
+}
+
+TEST(ToolHistory, LegacyNameStorageIsCountedBeforeProjection) {
+  chat::Content content(
+      std::vector<chat::MessagePart>{chat::ToolResultPart{"", "x", false, std::string(8192, 'n')}});
+  EXPECT_GE(content.PayloadBytes(), 8193U);
+  EXPECT_GE(content.StorageBytes(), 8193U);
+  EXPECT_GT(content.ProjectionBytes(), content.StorageBytes());
+  auto c = ToolHistory({{"a", "first", "{}"}}, {{"a", "x"}});
+  auto projected = chat::ProjectContent(c);
+  ASSERT_TRUE(projected);
+  projected->messages.back().tool_result_name.assign(8192, 'n');
+  projected->max_live_bytes = 4096;
+  auto refused = chat::ProjectContent(*projected);
+  ASSERT_FALSE(refused);
+  EXPECT_TRUE(refused.error().bound);
 }
 
 }  // namespace

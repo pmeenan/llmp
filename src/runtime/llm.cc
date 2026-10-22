@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -82,11 +83,6 @@ std::optional<chat::jinja::CivilTime> LocalTime() {
 }
 
 using llm_detail::HistoryFundingGuard;
-
-// The highest value's index, the first of equals (greedy choice).
-std::int32_t HostArgmax(std::span<const float> row) {
-  return static_cast<std::int32_t>(std::ranges::max_element(row) - row.begin());
-}
 
 }  // namespace
 
@@ -194,8 +190,9 @@ Status Llm::Branch::ScorePrompt(
 Status Llm::Branch::PreparePrompt(std::span<const std::int32_t> tokens,
                                   std::uint32_t stable_boundary, std::vector<float>& last,
                                   std::uint32_t& reused, const PrefillGoOn& go_on, PrefillRun* run,
-                                  bool fresh) {
-  return model_.PreparePrompt(*this, tokens, stable_boundary, last, reused, go_on, run, fresh);
+                                  bool fresh, bool resume) {
+  return model_.PreparePrompt(*this, tokens, stable_boundary, last, reused, go_on, run, fresh,
+                              resume);
 }
 
 std::expected<std::unique_ptr<Llm::PromptSession>, std::string> Llm::Branch::BeginPrompt(
@@ -251,8 +248,9 @@ Status Llm::ScorePrompt(std::span<const std::int32_t> tokens, std::vector<float>
 
 Status Llm::PreparePrompt(std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
                           std::vector<float>& last, std::uint32_t& reused, const PrefillGoOn& go_on,
-                          PrefillRun* run, bool fresh) {
-  return default_branch_.PreparePrompt(tokens, stable_boundary, last, reused, go_on, run, fresh);
+                          PrefillRun* run, bool fresh, bool resume) {
+  return default_branch_.PreparePrompt(tokens, stable_boundary, last, reused, go_on, run, fresh,
+                                       resume);
 }
 
 std::uint64_t Llm::turn_checkpoint_bytes() const { return default_branch_.turn_checkpoint_bytes(); }
@@ -263,8 +261,8 @@ std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::BeginGe
 }
 
 Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& options,
-                     Generation& out) {
-  return default_branch_.Generate(last, options, out);
+                     Generation& out, bool resume) {
+  return Generate(default_branch_, last, options, out, resume);
 }
 
 std::uint64_t Llm::state_snapshot_bytes() const { return default_branch_.state_snapshot_bytes(); }
@@ -356,6 +354,20 @@ std::expected<std::vector<std::int32_t>, std::string> Llm::RenderChat(
     }
     return Error(rendered.error().ToString());
   }
+  if (options.reasoning != nullptr) {
+    *options.reasoning = false;
+    const auto* format = template_->tool_calls();
+    if (format != nullptr && !format->reasoning_begin.empty()) {
+      for (const auto& boundary : rendered->boundaries) {
+        if (boundary.kind != chat::BoundaryKind::kGenerationPrompt) continue;
+        const auto suffix = std::string_view(rendered->text).substr(boundary.offset);
+        const auto begin = suffix.rfind(format->reasoning_begin);
+        const auto end = suffix.rfind(format->reasoning_end);
+        *options.reasoning =
+            begin != std::string_view::npos && (end == std::string_view::npos || begin > end);
+      }
+    }
+  }
   // The whole-fragment working set and bounded output are charged together.
   MemoryCharge charge;
   if (options.memory != nullptr) {
@@ -432,11 +444,35 @@ void Llm::DropBranchSamplingScratch(Branch& branch) {
   std::vector<execution::SamplingCandidate>().swap(branch.scratch_);
 }
 
+std::expected<std::span<const float>, std::string> Llm::ConstrainedRow(
+    Branch& branch, std::span<const float> row, chat::ToolSampling* constraint) {
+  auto* mask = constraint ? constraint : branch.tool_sampling_;
+  if (!mask) return row;
+  // A mask must not erase invalid native output or reclassify it as a
+  // request-local candidate refusal. Choose and Keep share this boundary.
+  if (auto valid = execution::ValidateLogits(row); !valid)
+    return Error(std::string(execution::SamplingErrorName(valid.error())));
+  const auto filtered = mask->Mask(row, branch.constrained_logits_);
+  const auto finite = [](float value) { return std::isfinite(value); };
+  if (branch.tool_sampling_ && std::ranges::none_of(filtered, finite)) {
+    // Verification uses a tentative lexical cursor; the request itself owns
+    // this refusal. Invalid native rows never acquire this classification.
+    branch.tool_sampling_->RefuseCandidates();
+  }
+  return filtered;
+}
+
 std::expected<std::int32_t, std::string> Llm::Choose(Branch& branch, std::span<const float> row,
-                                                     std::uint64_t position) {
+                                                     std::uint64_t position,
+                                                     chat::ToolSampling* constraint) {
   CheckBranch(branch);
+  auto constrained = ConstrainedRow(branch, row, constraint);
+  if (!constrained) return std::unexpected(constrained.error());
+  row = *constrained;
   if (!branch.sampling_) {
-    return HostArgmax(row);
+    auto chosen = execution::Greedy(row);
+    if (!chosen) return Error(std::string(execution::SamplingErrorName(chosen.error())));
+    return *chosen;
   }
   if (auto prepared = PrepareSamplingScratchFor(branch, row.size()); !prepared)
     return std::unexpected(prepared.error());
@@ -451,10 +487,15 @@ std::expected<std::int32_t, std::string> Llm::Choose(Branch& branch, std::span<c
 
 std::expected<bool, std::string> Llm::Keep(Branch& branch, std::span<const float> row,
                                            std::int32_t draft, std::uint64_t position,
-                                           std::int32_t& next) {
+                                           std::int32_t& next, chat::ToolSampling* constraint) {
   CheckBranch(branch);
+  auto constrained = ConstrainedRow(branch, row, constraint);
+  if (!constrained) return std::unexpected(constrained.error());
+  row = *constrained;
   if (!branch.sampling_) {
-    next = HostArgmax(row);
+    auto chosen = execution::Greedy(row);
+    if (!chosen) return Error(std::string(execution::SamplingErrorName(chosen.error())));
+    next = *chosen;
     return next == draft;
   }
   auto verdict = execution::VerifyDraft(row, draft, *branch.sampling_,

@@ -176,6 +176,8 @@ class Exchange {
   // block ended having said nothing.
   virtual bool Reasoning(std::string_view text) = 0;
   virtual bool Content(std::string_view text) = 0;
+  virtual bool ToolCall(const chat::ToolUsePart&) { return false; }
+  virtual bool Stopped() const { return false; }
   // Between steps that produced no text.
   virtual bool Continue() = 0;
   // Whether the client has more of a stream's output unread than the
@@ -490,6 +492,9 @@ class Server {
     Usage usage{};
     std::string reasoning;  // a non-streaming response's text so far
     std::string content;
+    std::vector<chat::ToolUsePart> tool_calls;
+    std::uint64_t tool_count = 0;
+    MemoryCharge tool_charge;
     MemoryCharge text_charge;
     std::uint64_t pauses = 0;
     std::optional<Clock::time_point> started;

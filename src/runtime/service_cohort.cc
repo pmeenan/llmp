@@ -58,7 +58,9 @@ std::expected<std::unique_ptr<api::CooperativeBackend::Work>, api::Error> NodeBa
       return std::unexpected(held.error());
     }
     rendered = ChatPrompt{.token_storage = std::move(*held),
-                          .max_tokens = request.options.max_tokens.value_or(16)};
+                          .max_tokens = request.options.max_tokens.value_or(16),
+                          .tools = nullptr,
+                          .output_charge = nullptr};
   } else {
     rendered = PrepareChat(model, request.options, exchange, *memory_);
   }
@@ -169,12 +171,20 @@ std::expected<std::unique_ptr<api::CooperativeBackend::Work>, api::Error> NodeBa
       return std::unexpected(*frame->error);
     }
   }
-  auto prompt = WorkPrompt(*frame);
-  if (!prompt) {
-    frame->retired = true;  // no session or native work retained a reference
-    return std::unexpected(Failure(500, "the prompt could not be admitted: " + prompt.error()));
+  const bool output_only =
+      frame->literal == nullptr &&
+      (frame->generation.stopped || frame->generation.tokens.size() >= frame->options.max_tokens);
+  if (output_only) {
+    frame->stage = ChatWork::Stage::kOutput;
+    frame->resume = false;
+  } else {
+    auto prompt = WorkPrompt(*frame);
+    if (!prompt) {
+      frame->retired = true;  // no session or native work retained a reference
+      return std::unexpected(Failure(500, "the prompt could not be admitted: " + prompt.error()));
+    }
+    frame->prompt_session = std::move(*prompt);
   }
-  frame->prompt_session = std::move(*prompt);
   if (!exchange.Admit({.prompt_tokens = static_cast<std::uint32_t>(frame->rendered.tokens().size()),
                        .max_tokens = frame->rendered.max_tokens,
                        .swap_bytes = swap_bytes,
@@ -195,13 +205,29 @@ std::expected<api::CooperativeBackend::Unit, std::string> NodeBackend::NextUnit(
   selected_prompt_ = nullptr;
   selected_prefill_count_ = 0;
   selected_decode_.clear();
+  selected_output_.clear();
   selected_swap_ = server_.resident() != cohort_model_;
+  // Draining accepted output is its own host-only completed unit. Selection
+  // performs no callbacks; Advance owns emission and any resulting pause/error.
+  for (auto* base : work) {
+    auto& frame = static_cast<ChatWork&>(*base);
+    if (frame.literal == nullptr && !frame.exchange.Paused() &&
+        (frame.stage == ChatWork::Stage::kOutput || frame.output.pending() ||
+         (frame.generation_session && frame.generation_session->done())))
+      selected_output_.push_back(&frame);
+  }
+  if (!selected_output_.empty()) {
+    selected_swap_ = false;  // draining bytes needs no activation or device unit
+    return api::CooperativeBackend::Unit{
+        .phase = Phase::kDecode, .expected_seconds = 0, .advances_request = false};
+  }
   if (selected_swap_) {
     return api::CooperativeBackend::Unit{
         .phase = Phase::kSwap,
         .expected_seconds =
             static_cast<double>(SwapBytes(*cohort_model_)) / kSwapFloorBytesPerSecond};
   }
+
   // The schedule (cohort_schedule.h): the prompt with the fewest tokens
   // left goes next, a long one passed over for a bounded number of units,
   // and a generating member waits for at most one prompt unit.
@@ -217,6 +243,10 @@ std::expected<api::CooperativeBackend::Unit, std::string> NodeBackend::NextUnit(
     auto& frame = static_cast<ChatWork&>(*base);
     if (frame.wait != CapacityWait::kNone) {
       continue;  // waits for state capacity (cohort_capacity.h)
+    }
+    if (frame.stage == ChatWork::Stage::kOutput) {
+      paused = paused || frame.exchange.Paused();
+      continue;
     }
     if (frame.stage == ChatWork::Stage::kGeneration) {
       if (restoring_generations) {
@@ -357,6 +387,24 @@ std::expected<void, std::string> NodeBackend::Advance(
     for (auto* base : work) {
       static_cast<ChatWork&>(*base).native_touched = true;
     }
+    return {};
+  }
+  if (!selected_output_.empty()) {
+    for (auto* frame : selected_output_) {
+      bool go = frame->output.Drain();
+      if (go && (frame->stage == ChatWork::Stage::kOutput ||
+                 (frame->generation_session && frame->generation_session->done())))
+        go = frame->output.Finish(frame->generation.stopped);
+      if (frame->stage == ChatWork::Stage::kOutput && frame->output.done())
+        frame->stage = ChatWork::Stage::kDone;
+      if (frame->output.error())
+        frame->error = *frame->output.error();
+      else if (frame->exchange.Yielding())
+        frame->yielding = true;
+      else if (!go && !frame->exchange.Paused())
+        frame->cancelled = true;
+    }
+    selected_output_.clear();
     return {};
   }
   if (selected_prompt_ == nullptr && selected_decode_.empty()) {
@@ -535,10 +583,12 @@ api::CooperativeBackend::Retirement NodeBackend::Retire(api::CooperativeBackend:
   // Yielding its place (D-102): its state stays as a finished turn's, and
   // it continues from its generation so far when taken up again, unless
   // the generation ended whole anyway.
-  const bool yields = frame.yielding && !frame.error && !frame.generation.stopped &&
-                      ((frame.model_paused && frame.generation.tokens.empty()) ||
-                       (!frame.generation.tokens.empty() &&
-                        frame.generation.tokens.size() < frame.options.max_tokens));
+  const bool yields =
+      frame.yielding && !frame.error &&
+      (frame.output.pending() || (!frame.generation.stopped &&
+                                  ((frame.model_paused && frame.generation.tokens.empty()) ||
+                                   (!frame.generation.tokens.empty() &&
+                                    frame.generation.tokens.size() < frame.options.max_tokens))));
   std::shared_ptr<api::Yielded> yielded;
   if (yields) {
     if (frame.model_paused) {
@@ -558,7 +608,8 @@ api::CooperativeBackend::Retirement NodeBackend::Retire(api::CooperativeBackend:
     }
   } else if (!frame.error && !frame.generation.tokens.empty()) {
     if (frame.literal == nullptr) {
-      frame.output.Finish();  // including a generation preempted and not yet resumed
+      (void)frame.output.Finish(frame.generation.stopped);
+      if (frame.output.error()) frame.error = *frame.output.error();
     }
   }
   api::LiteralResult literal_result;
@@ -771,7 +822,8 @@ std::expected<std::unique_ptr<Llm::PromptSession>, std::string> NodeBackend::Wor
       // generation already owns its anchor and samples nothing here.
       (*begun)->SetContinuationRows(
           PromptTargetRows(frame.options.max_tokens, frame.generation.tokens.size(), frame.resume),
-          frame.options.sampling && frame.options.sampling->temperature > 0);
+          (frame.options.sampling && frame.options.sampling->temperature > 0) ||
+              frame.options.tool_sampling != nullptr);
     }
     return begun;
   };

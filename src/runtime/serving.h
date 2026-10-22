@@ -67,6 +67,7 @@
 
 #include "catalog/catalog.h"
 #include "chat/chat.h"
+#include "chat/tool_sampling.h"
 #include "config/node_config.h"
 #include "config/storage_roles.h"
 #include "engine/checkpoint_file.h"
@@ -432,6 +433,7 @@ struct GenerateOptions {
   // (VerifyDraft), so the tokens are distributed as plain sampling's.
   std::optional<execution::SamplingParams> sampling;
   std::uint64_t seed = 0;
+  std::shared_ptr<chat::ToolSampling> tool_sampling = nullptr;
   // Called with each step's new tokens (the first call with the token from
   // the prefill's logits), a stop token left out; returning false ends
   // the generation after that step, the state holding what it accepted.
@@ -451,6 +453,7 @@ struct ChatRenderOptions {
   // kMemory, with the actual bytes it needed in *memory_needed.
   RequestMemory* memory = nullptr;
   std::uint64_t* memory_needed = nullptr;
+  bool* reasoning = nullptr;  // only the renderer-owned generation suffix
 };
 enum class ChatRenderFailure : std::uint8_t { kOther, kTooLong, kCancelled, kMemory };
 
@@ -517,7 +520,7 @@ class Llm final : public Served {
     Status PreparePrompt(std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
                          std::vector<float>& last, std::uint32_t& reused,
                          const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr,
-                         bool fresh = false);
+                         bool fresh = false, bool resume = false);
     // Host-only admission. The session owns the supplied prompt and performs
     // reuse, chunks and checkpointing only through declared completed units.
     // With `resume`, `tokens` may equal the history exactly (a generation
@@ -592,6 +595,8 @@ class Llm final : public Served {
     std::vector<engine::LiveState::Range> saved_ranges_;
     bool saved_valid_ = false;
     std::optional<execution::SamplingParams> sampling_;
+    chat::ToolSampling* tool_sampling_ = nullptr;  // active session's paid request owner
+    std::vector<float> constrained_logits_;
     std::uint64_t seed_ = 0;
     std::vector<execution::SamplingCandidate> scratch_;
     std::vector<TurnCheckpoint> turn_checkpoints_;
@@ -899,6 +904,10 @@ class Llm final : public Served {
   // tokens).
   std::uint32_t logit_width() const { return logit_width_; }
   std::span<const std::int32_t> ChatStops() const { return chat_stops_; }
+  std::span<const std::int32_t> StopTokens() const { return stops_; }
+  const chat::ToolCallFormat* tool_format() const {
+    return template_ ? template_->tool_calls() : nullptr;
+  }
 
   // Tokens of plain text (no template; BOS first where the vocabulary has
   // one, as the reference runs fed it). With `memory`, temporary work is
@@ -968,8 +977,8 @@ class Llm final : public Served {
   // opening, at stable_boundary; zero means no renderer boundary supplied.
   Status PreparePrompt(std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
                        std::vector<float>& last, std::uint32_t& reused,
-                       const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr,
-                       bool fresh = false);
+                       const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr, bool fresh = false,
+                       bool resume = false);
   // A prompt on one branch, advanced separately from peer decode steps.
   // NextUnit is host-only; Advance owns native work through its completed
   // boundary. Finish releases host ownership, not proof of GPU retirement.
@@ -1104,6 +1113,8 @@ class Llm final : public Served {
       std::uint32_t left = 0;
       bool speculative = false;
       bool need_logits = false;
+      std::span<const std::int32_t> certain{};
+      bool forced = false;
     };
     GenerationSession(const GenerationSession&) = delete;
     GenerationSession& operator=(const GenerationSession&) = delete;
@@ -1130,6 +1141,7 @@ class Llm final : public Served {
     Status ApplyPlain(std::vector<float> row);
     // A plain step's token chosen by the model on the device (greedy).
     Status ApplyChosen(std::int32_t token);
+    Status ApplyCertain(std::vector<float> row, std::vector<std::vector<float>> logits);
     Status ApplySpeculative(std::vector<std::int32_t> kept, std::vector<std::vector<float>> logits,
                             std::uint64_t drafted);
     // A failed submitted step: prefix_valid requires an independently proven
@@ -1153,7 +1165,8 @@ class Llm final : public Served {
     bool Report();
     // Ends a deferred capacity refusal as an undeferred one would have.
     void EndRefused();
-    Status ApplyTokens(std::vector<std::int32_t> kept, std::vector<std::vector<float>> logits);
+    Status ApplyTokens(std::vector<std::int32_t> kept, std::vector<std::vector<float>> logits,
+                       std::size_t known = 0);
     void Close();
 
     Llm& model_;
@@ -1164,6 +1177,7 @@ class Llm final : public Served {
     std::vector<std::int32_t> all_;
     std::uint32_t position_ = 0;
     std::uint32_t left_ = 0;
+    std::size_t certain_rows_ = 0;
     std::size_t reported_ = 0;
     Clock::time_point start_;
     Status ran_;
@@ -1198,7 +1212,8 @@ class Llm final : public Served {
   // that native references have retired. The Server fences explicitly.
   bool generation_cohort_usable() const { return GenerationCohortUsable(); }
   // Drives the same resumable core to completion using ordinary native steps.
-  Status Generate(const std::vector<float>& last, const GenerateOptions& options, Generation& out);
+  Status Generate(const std::vector<float>& last, const GenerateOptions& options, Generation& out,
+                  bool resume = false);
   // The whole conversation state (the target's and the drafter's, and the
   // host's speculation cursor) saved to or put back from pinned host
   // memory the caller keeps (state_snapshot_bytes() long), by one job; and
@@ -1360,7 +1375,8 @@ class Llm final : public Served {
   std::uint64_t RefusedBytesFor(const Branch& branch) const;
   // What a spill would write, excluding unchanged retained extents.
   std::uint64_t SpillWriteBytesFor(const Branch& branch) const;
-  Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left);
+  Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left,
+                               std::uint32_t certain_rows = 0);
 
   std::uint64_t UsedStateBytesFor(const Branch& branch) const;
   std::vector<engine::LiveState::Range> UsedStateRangesFor(const Branch& branch) const;
@@ -1416,11 +1432,16 @@ class Llm final : public Served {
   // `next` is the token in its place.
   bool sampling(const Branch& branch) const;
 
+  std::expected<std::span<const float>, std::string> ConstrainedRow(Branch& branch,
+                                                                    std::span<const float> row,
+                                                                    chat::ToolSampling* constraint);
   std::expected<std::int32_t, std::string> Choose(Branch& branch, std::span<const float> row,
-                                                  std::uint64_t position);
+                                                  std::uint64_t position,
+                                                  chat::ToolSampling* constraint = nullptr);
   std::expected<bool, std::string> Keep(Branch& branch, std::span<const float> row,
                                         std::int32_t draft, std::uint64_t position,
-                                        std::int32_t& next);
+                                        std::int32_t& next,
+                                        chat::ToolSampling* constraint = nullptr);
   // The model's tokenizer, reasoning markers (its settings') and chat
   // template, from its artifact or the files `entry` names
   // (model_settings.h ReadChatAssets); then UseTemplate.
@@ -1461,8 +1482,8 @@ class Llm final : public Served {
                      const PrefillGoOn& go_on, PrefillRun* run);
   Status PreparePrompt(Branch& branch, std::span<const std::int32_t> tokens,
                        std::uint32_t stable_boundary, std::vector<float>& last,
-                       std::uint32_t& reused, const PrefillGoOn& go_on, PrefillRun* run,
-                       bool fresh);
+                       std::uint32_t& reused, const PrefillGoOn& go_on, PrefillRun* run, bool fresh,
+                       bool resume);
   Status CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool& stopped,
                                const PromptSession* prompt = nullptr);
   Status ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t& reused,
@@ -1482,7 +1503,7 @@ class Llm final : public Served {
       Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
       Generation& out, bool resume = false);
   Status Generate(Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
-                  Generation& out);
+                  Generation& out, bool resume = false);
   Status SaveState(Branch& branch, void* host);
   Status RestoreState(Branch& branch, void* host);
   std::expected<StateSnapshot, std::string> CaptureState(Branch& branch, SnapshotStore& store);

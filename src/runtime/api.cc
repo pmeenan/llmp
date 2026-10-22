@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/json.h"
 
 namespace llmp::runtime::api {
@@ -129,93 +130,377 @@ std::expected<chat::Content, Error> Content(const json::Value& content, const st
   return chat::Content(std::move(text));
 }
 
+// Preserve JSON number spellings, including values outside machine floating point.
+void AppendJson(json::Value v, std::string& out) {
+  if (v.is_string())
+    json::AppendQuoted(v.string(), out);
+  else if (v.is_number())
+    out += v.number();
+  else if (v.is_bool())
+    out += v.boolean() ? "true" : "false";
+  else if (v.is_null())
+    out += "null";
+  else {
+    out += v.is_object() ? '{' : '[';
+    for (std::size_t i = 0; i < v.size(); ++i) {
+      if (i) out += ',';
+      if (v.is_object()) {
+        json::AppendQuoted(v.key(i), out);
+        out += ':';
+      }
+      AppendJson(v.is_object() ? v.member(i) : v.at(i), out);
+    }
+    out += v.is_object() ? '}' : ']';
+  }
+}
+
+bool SameJson(json::Value a, json::Value b) {
+  if (a.kind() != b.kind()) return false;
+  if (a.is_string()) return a.string() == b.string();
+  if (a.is_number()) return a.number() == b.number();
+  if (!a.is_array() && !a.is_object()) return true;
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (a.is_array()) {
+      if (!SameJson(a.at(i), b.at(i))) return false;
+    } else {
+      const auto member = b.find(a.key(i));
+      if (!member || !SameJson(a.member(i), *member)) return false;
+    }
+  }
+  return true;
+}
+
+std::expected<chat::ToolUsePart, Error> ParseCall(json::Value value, bool legacy,
+                                                  const std::string& where, Ignored& ignored,
+                                                  RequestMemory* memory) {
+  if (!value.is_object()) return Bad(where + " must be an object", where);
+  chat::ToolUsePart out;
+  if (!legacy) {
+    auto type = value.find("type");
+    if (!type || !type->is_string() || type->string() != "function")
+      return Bad(where + ".type must be function", where);
+    if (auto id = value.find("id")) {
+      if (!id->is_string()) return Bad(where + ".id must be a string", where + ".id");
+      out.id = std::string(id->string());
+    }
+    for (std::size_t i = 0; i < value.size(); ++i)
+      if (value.key(i) != "id" && value.key(i) != "type" && value.key(i) != "function")
+        ignored.Add("messages[].tool_calls[].", value.key(i));
+    const auto function = value.find("function");
+    if (!function || !function->is_object())
+      return Bad(where + ".function must be an object", where);
+    value = *function;
+  }
+  auto name = value.find("name");
+  auto args = value.find("arguments");
+  if (!name || !name->is_string() || name->string().empty() || !args || !args->is_string())
+    return Bad(where + " requires a nonempty name and JSON string arguments", where);
+  MemoryCharge working;
+  const auto bytes = json::ParseWorkingBytes(args->string());
+  if (memory != nullptr && !working.Add(*memory, bytes))
+    return std::unexpected(MemoryRefusal(*memory, bytes, "tool call arguments"));
+  const auto size = args->string().size();
+  auto document = json::Parse(args->string(), {.max_bytes = size,
+                                               .max_depth = kMaxJsonDepth,
+                                               .max_values = size + 1,
+                                               .max_string_bytes = size + 1});
+  if (!document || !document->root().is_object())
+    return Bad(where + ".arguments must encode a JSON object", where);
+  out.name = std::string(name->string());
+  out.input_json = std::string(args->string());
+  for (std::size_t i = 0; i < value.size(); ++i)
+    if (value.key(i) != "name" && value.key(i) != "arguments")
+      ignored.Add(legacy ? "messages[].function_call." : "messages[].tool_calls[].function.",
+                  value.key(i));
+  return out;
+}
+
 std::expected<Message, Error> ParseMessage(const json::Value& m, std::size_t index,
                                            Ignored& ignored, RequestMemory* memory,
                                            MemoryCharge& charge) {
   const std::string at = std::format("messages[{}]", index);
-  if (!m.is_object()) {
-    return Bad(at + " must be an object", at);
-  }
+  if (!m.is_object()) return Bad(at + " must be an object", at);
   Message out;
   auto role = m.find("role");
-  if (!role || !role->is_string()) {
-    return Bad(at + ".role must be a string", at + ".role");
-  }
+  if (!role || !role->is_string()) return Bad(at + ".role must be a string", at + ".role");
   const std::string_view r = role->string();
-  if (r == "system" || r == "developer") {
+  if (r == "system" || r == "developer")
     out.role = Role::kSystem;
-  } else if (r == "user") {
+  else if (r == "user")
     out.role = Role::kUser;
-  } else if (r == "assistant") {
+  else if (r == "assistant")
     out.role = Role::kAssistant;
-  } else if (r == "tool" || r == "function") {
-    return Bad(
-        std::format("{}.role is {}: tools are not supported by this route yet", at, Quoted(r)),
-        at + ".role");
-  } else {
-    return Bad(std::format("{}.role is {}; it must be system, developer, user or assistant", at,
-                           Quoted(r)),
+  else if (r == "tool" || r == "function")
+    out.role = Role::kTool;
+  else
+    return Bad(at + ".role must be system, developer, user, assistant, tool or function",
                at + ".role");
-  }
   const bool assistant = out.role == Role::kAssistant;
   bool has_content = false;
+  bool null_content = false;
+  chat::ToolResultPart result;
   for (std::size_t k = 0; k < m.size(); ++k) {
     const std::string_view key = m.key(k);
     const json::Value v = m.member(k);
     const std::string where = std::format("{}.{}", at, key);
-    if (key == "role") {
-      continue;
-    }
+    if (key == "role") continue;
     if (key == "content") {
       if (v.is_null() && assistant) {
+        null_content = true;
         has_content = true;
         continue;
       }
       auto text = Content(v, at, ignored, memory, charge);
-      if (!text) {
-        return std::unexpected(text.error());
-      }
+      if (!text) return std::unexpected(text.error());
       out.content = std::move(*text);
       has_content = true;
     } else if (key == "name") {
-      if (!v.is_string()) {
-        return Bad(where + " must be a string", where);
-      }
-      // Ignored: neither served template renders a speaker's name.
+      if (!v.is_string()) return Bad(where + " must be a string", where);
+      if (out.role == Role::kTool) result.name = std::string(v.string());
+    } else if (out.role == Role::kTool && key == "tool_call_id") {
+      if (!v.is_string()) return Bad(where + " must be a string", where);
+      result.tool_use_id = std::string(v.string());
+    } else if (out.role == Role::kTool && key == "is_error") {
+      if (!v.is_bool()) return Bad(where + " must be a boolean", where);
+      result.is_error = v.boolean();
     } else if (assistant && (key == "reasoning" || key == "reasoning_content")) {
-      if (v.is_null()) {
-        continue;
-      }
-      if (!v.is_string()) {
-        return Bad(where + " must be a string", where);
-      }
-      if (out.reasoning) {
-        return Bad(at + " has both reasoning and reasoning_content", where);
-      }
+      if (v.is_null()) continue;
+      if (!v.is_string()) return Bad(where + " must be a string", where);
+      if (out.reasoning) return Bad(at + " has both reasoning and reasoning_content", where);
       out.reasoning = std::string(v.string());
-    } else if (assistant && ((key == "annotations" && v.is_array()) ||
-                             ((key == "refusal" || key == "audio" || key == "tool_calls" ||
-                               key == "function_call") &&
-                              v.is_null()) ||
-                             (key == "tool_calls" && v.is_array() && v.size() == 0))) {
-      // Response metadata, a response's null fields or an empty tool_calls,
-      // which a client echoes back.
-      continue;
-    } else if (assistant && key == "refusal") {
-      return Bad(where + ": a refusal cannot be sent back to this route; send it as content",
-                 where);
-    } else if (assistant && key == "audio") {
-      return Bad(where + ": audio is not supported by this route", where);
     } else if (assistant && (key == "tool_calls" || key == "function_call")) {
-      return Bad(where + ": tool calls are not supported by this route yet", where);
-    } else {
+      // Decode together below, independent of object-member order.
+      continue;
+    } else if (assistant && ((key == "annotations" && v.is_array()) ||
+                             ((key == "refusal" || key == "audio") && v.is_null())))
+      continue;
+    else if (assistant && key == "refusal")
+      return Bad(where + ": send a refusal as content", where);
+    else if (assistant && key == "audio")
+      return Bad(where + ": audio is not supported by this route", where);
+    else
       ignored.Add("messages[].", key);
-    }
   }
-  if (!has_content) {
-    return Bad(at + ".content is required", at + ".content");
+  if (!assistant && !has_content) return Bad(at + ".content is required", at + ".content");
+  if (out.role == Role::kTool) {
+    if (const auto* parts = out.content.parts()) {
+      for (const auto& part : *parts) result.text += std::get<chat::TextPart>(part).text;
+    } else if (out.content.text())
+      result.text = *out.content.text();
+    if (memory != nullptr && !charge.Add(*memory, sizeof(chat::MessagePart)))
+      return std::unexpected(MemoryRefusal(*memory, sizeof(chat::MessagePart), "tool result"));
+    std::vector<chat::MessagePart> parts;
+    parts.emplace_back(std::move(result));
+    out.content = chat::Content(std::move(parts));
+  }
+  if (assistant) {
+    auto modern = m.find("tool_calls");
+    auto legacy = m.find("function_call");
+    const bool has_modern = modern && !modern->is_null();
+    const bool has_legacy = legacy && !legacy->is_null();
+    if (has_modern && !modern->is_array())
+      return Bad(at + ".tool_calls must be an array", at + ".tool_calls");
+    const std::size_t count = has_modern ? modern->size() : (has_legacy ? 1 : 0);
+    if (has_legacy && has_modern && count != 1)
+      return Bad(at + " has conflicting tool_calls and function_call", at + ".function_call");
+    if (!has_content && count == 0) return Bad(at + ".content is required", at + ".content");
+    // Call-only assistant history may omit content. Preserve its absence,
+    // exactly as explicit null, while validating every call below.
+    null_content = null_content || !has_content;
+    const auto* old = out.content.parts();
+    const std::size_t text_count =
+        old ? old->size() : (!null_content && out.content.text() ? 1 : 0);
+    const std::uint64_t bytes = (count + text_count) * sizeof(chat::MessagePart);
+    if (count && memory != nullptr && !charge.Add(*memory, bytes))
+      return std::unexpected(MemoryRefusal(*memory, bytes, "assistant tool calls"));
+    std::vector<chat::MessagePart> parts;
+    if (count) {
+      parts.reserve(count + text_count);
+      if (old)
+        parts = *old;
+      else if (!null_content && out.content.text())
+        parts.emplace_back(chat::TextPart{*out.content.text()});
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+      const auto where =
+          has_modern ? std::format("{}.tool_calls[{}]", at, i) : at + ".function_call";
+      auto call =
+          ParseCall(has_modern ? modern->at(i) : *legacy, !has_modern, where, ignored, memory);
+      if (!call) return std::unexpected(call.error());
+      if (has_legacy && has_modern) {
+        auto old_call = ParseCall(*legacy, true, at + ".function_call", ignored, memory);
+        if (!old_call) return std::unexpected(old_call.error());
+        // Parsed JSON equality below admits irrelevant whitespace/key ordering.
+        MemoryCharge comparison;
+        const auto compare_bytes = json::ParseWorkingBytes(call->input_json) +
+                                   json::ParseWorkingBytes(old_call->input_json);
+        if (memory != nullptr && !comparison.Add(*memory, compare_bytes))
+          return std::unexpected(MemoryRefusal(*memory, compare_bytes, "tool call comparison"));
+        auto a = json::Parse(call->input_json), b = json::Parse(old_call->input_json);
+        if (call->name != old_call->name || !a || !b || !SameJson(a->root(), b->root()))
+          return Bad(at + " has conflicting tool_calls and function_call", at + ".function_call");
+      }
+      parts.emplace_back(std::move(*call));
+    }
+    if (count) out.content = chat::Content(std::move(parts));
   }
   return out;
+}
+
+std::expected<chat::ToolChoice, Error> ParseToolChoice(json::Value v, bool legacy,
+                                                       Ignored& ignored) {
+  const std::string field = legacy ? "function_call" : "tool_choice";
+  if (v.is_string()) {
+    if (v.string() == "auto") return chat::ToolChoice{chat::ToolChoiceKind::kAuto, {}};
+    if (v.string() == "none") return chat::ToolChoice{chat::ToolChoiceKind::kNone, {}};
+    if (v.string() == "required") return chat::ToolChoice{chat::ToolChoiceKind::kRequired, {}};
+  } else if (v.is_object()) {
+    if (!legacy) {
+      auto type = v.find("type"), function = v.find("function");
+      if (!type || !type->is_string() || type->string() != "function" || !function ||
+          !function->is_object())
+        return Bad("tool_choice must select a function", field);
+      for (std::size_t i = 0; i < v.size(); ++i)
+        if (v.key(i) != "type" && v.key(i) != "function") ignored.Add("tool_choice.", v.key(i));
+      v = *function;
+    }
+    auto name = v.find("name");
+    if (name && name->is_string() && !name->string().empty()) {
+      for (std::size_t i = 0; i < v.size(); ++i)
+        if (v.key(i) != "name")
+          ignored.Add(legacy ? "function_call." : "tool_choice.function.", v.key(i));
+      return chat::ToolChoice{chat::ToolChoiceKind::kNamed, std::string(name->string())};
+    }
+  }
+  return Bad(field + " must be auto, none, required or a named function", field);
+}
+
+std::expected<std::vector<chat::ToolDefinition>, Error> ParseDefinitions(json::Value v, bool legacy,
+                                                                         Ignored& ignored,
+                                                                         RequestMemory* memory,
+                                                                         MemoryCharge& charge) {
+  const std::string field = legacy ? "functions" : "tools";
+  if (!v.is_array()) return Bad(field + " must be an array", field);
+  const std::uint64_t bytes = v.size() * sizeof(chat::ToolDefinition);
+  if (memory != nullptr && !charge.Add(*memory, bytes))
+    return std::unexpected(MemoryRefusal(*memory, bytes, "tool definitions"));
+  std::vector<chat::ToolDefinition> out;
+  out.reserve(v.size());
+  for (std::size_t i = 0; i < v.size(); ++i) {
+    auto definition = v.at(i);
+    const auto where = std::format("{}[{}]", field, i);
+    if (!definition.is_object()) return Bad(where + " must be an object", field);
+    if (!legacy) {
+      auto type = definition.find("type"), function = definition.find("function");
+      if (!type || !type->is_string() || type->string() != "function" || !function ||
+          !function->is_object())
+        return Bad(where + " must contain a function definition", field);
+      for (std::size_t k = 0; k < definition.size(); ++k)
+        if (definition.key(k) != "type" && definition.key(k) != "function")
+          ignored.Add("tools[].", definition.key(k));
+      definition = *function;
+    }
+    auto name = definition.find("name");
+    if (!name || !name->is_string() || name->string().empty())
+      return Bad(where + ".name must be nonempty", field);
+    chat::ToolDefinition parsed;
+    parsed.name = std::string(name->string());
+    for (std::size_t k = 0; k < definition.size(); ++k) {
+      auto key = definition.key(k);
+      auto value = definition.member(k);
+      if (key == "name") continue;
+      if (key == "description") {
+        if (!value.is_string()) return Bad(where + ".description must be a string", field);
+        parsed.description = std::string(value.string());
+      } else if (key == "parameters") {
+        if (!value.is_object()) return Bad(where + ".parameters must be an object", field);
+        parsed.parameters_json.clear();
+        AppendJson(value, parsed.parameters_json);
+      } else if (key == "strict") {
+        if (!value.is_bool()) return Bad(where + ".strict must be a boolean", field);
+        parsed.strict = value.boolean();
+      } else
+        ignored.Add(legacy ? "functions[]." : "tools[].function.", key);
+    }
+    out.push_back(std::move(parsed));
+  }
+  return out;
+}
+
+std::expected<std::shared_ptr<const ToolOptions>, Error> ParseTools(json::Value root,
+                                                                    Ignored& ignored,
+                                                                    RequestMemory* memory,
+                                                                    MemoryCharge& charge) {
+  auto tools = root.find("tools"), functions = root.find("functions");
+  auto modern_choice = root.find("tool_choice"), legacy_choice = root.find("function_call");
+  auto parallel = root.find("parallel_tool_calls");
+  const auto present = [](const std::optional<json::Value>& v) { return v && !v->is_null(); };
+  if (!present(tools) && !present(functions) && !present(modern_choice) &&
+      !present(legacy_choice) && !present(parallel))
+    return std::shared_ptr<const ToolOptions>();
+  std::vector<chat::ToolDefinition> definitions;
+  if (present(tools) || present(functions)) {
+    auto parsed = ParseDefinitions(present(tools) ? *tools : *functions, !present(tools), ignored,
+                                   memory, charge);
+    if (!parsed) return std::unexpected(parsed.error());
+    definitions = std::move(*parsed);
+  }
+  if (present(tools) && present(functions)) {
+    auto legacy = ParseDefinitions(*functions, true, ignored, memory, charge);
+    if (!legacy) return std::unexpected(legacy.error());
+    if (definitions.size() != legacy->size())
+      return Bad("tools and functions conflict", "functions");
+    for (const auto& definition : definitions) {
+      const auto other = std::ranges::find(*legacy, definition.name, &chat::ToolDefinition::name);
+      if (other == legacy->end() || definition.description != other->description ||
+          definition.strict != other->strict)
+        return Bad("tools and functions conflict", "functions");
+      MemoryCharge comparison;
+      const auto bytes = json::ParseWorkingBytes(definition.parameters_json) +
+                         json::ParseWorkingBytes(other->parameters_json);
+      if (memory != nullptr && !comparison.Add(*memory, bytes))
+        return std::unexpected(MemoryRefusal(*memory, bytes, "tool definition comparison"));
+      auto a = json::Parse(definition.parameters_json), b = json::Parse(other->parameters_json);
+      if (!a || !b || !SameJson(a->root(), b->root()))
+        return Bad("tools and functions conflict", "functions");
+    }
+  }
+  chat::ToolChoice choice{
+      definitions.empty() ? chat::ToolChoiceKind::kNone : chat::ToolChoiceKind::kAuto, {}};
+  if (present(modern_choice) || present(legacy_choice)) {
+    auto parsed = ParseToolChoice(present(modern_choice) ? *modern_choice : *legacy_choice,
+                                  !present(modern_choice), ignored);
+    if (!parsed) return std::unexpected(parsed.error());
+    choice = std::move(*parsed);
+  }
+  if (present(modern_choice) && present(legacy_choice)) {
+    auto parsed = ParseToolChoice(*legacy_choice, true, ignored);
+    if (!parsed) return std::unexpected(parsed.error());
+    if (choice.kind != parsed->kind || choice.name != parsed->name)
+      return Bad("tool_choice and function_call conflict", "function_call");
+  }
+  if (present(parallel) && !parallel->is_bool())
+    return Bad("parallel_tool_calls must be a boolean", "parallel_tool_calls");
+  const auto bound = chat::ToolRequestBytes(definitions);
+  if (!bound || *bound > std::numeric_limits<std::uint64_t>::max() - sizeof(ToolOptions) -
+                             choice.name.capacity())
+    return Bad("tool definitions exceed addressable memory", "tools");
+  const std::uint64_t bytes = *bound + sizeof(ToolOptions) + choice.name.capacity();
+  MemoryCharge owned;
+  if (memory != nullptr && !owned.Add(*memory, bytes))
+    return std::unexpected(MemoryRefusal(*memory, bytes, "normalized tool definitions"));
+  // The paid bound covers canonical envelope expansion as well as the source fields.
+  const json::Limits limits{.max_bytes = *bound,
+                            .max_depth = kMaxJsonDepth,
+                            .max_values = *bound,
+                            .max_string_bytes = *bound};
+  auto request = chat::ToolRequest::Create(definitions, std::move(choice),
+                                           !present(parallel) || parallel->boolean(), limits);
+  if (!request)
+    return Bad(request.error(),
+               present(tools) ? "tools" : (present(functions) ? "functions" : "tool_choice"));
+  return std::make_shared<const ToolOptions>(ToolOptions{std::move(*request), std::move(owned)});
 }
 
 // The stop strings, as one shared matcher. Any number and length: their
@@ -562,14 +847,9 @@ std::expected<ChatRequest, Error> ParseRequest(std::string_view body, Completion
       if (!NumberIs(v, 0)) {
         return Bad("logprobs are not supported by this route yet", name);
       }
-    } else if (key == "tools" || key == "functions") {
-      if (!v.is_array() || v.size() != 0) {
-        return Bad("tools are not supported by this route yet", name);
-      }
-    } else if (key == "tool_choice" || key == "function_call") {
-      if (!v.is_string() || (v.string() != "none" && v.string() != "auto")) {
-        return Bad("tools are not supported by this route yet", name);
-      }
+    } else if (key == "tools" || key == "functions" || key == "tool_choice" ||
+               key == "function_call") {
+      // Normalize the related modern and legacy fields together after parsing.
     } else if (key == "response_format") {
       auto type = v.is_object() && v.size() == 1 ? v.find("type") : std::nullopt;
       if (!type || !type->is_string() || type->string() != "text") {
@@ -620,9 +900,16 @@ std::expected<ChatRequest, Error> ParseRequest(std::string_view body, Completion
     return Bad("max_tokens and max_completion_tokens differ; give one", "max_completion_tokens");
   }
   request.max_tokens = max_completion_tokens ? max_completion_tokens : max_tokens;
-  if (literal == nullptr && request.messages.back().role != Role::kUser) {
-    return Bad("the last message must be the user's", "messages");
+  if (literal == nullptr && request.messages.back().role != Role::kUser &&
+      request.messages.back().role != Role::kTool) {
+    return Bad("the last message must be the user's or a tool result", "messages");
   }
+  auto tools = ParseTools(root, ignored, memory, charge);
+  if (!tools) return std::unexpected(tools.error());
+  request.tools = std::move(*tools);
+  if (literal != nullptr && request.tools &&
+      request.tools->request.choice().kind != chat::ToolChoiceKind::kNone)
+    return Bad("tools are not supported by the literal completions route", "tools");
   return request;
 }
 
@@ -650,6 +937,7 @@ Error MemoryRefusal(const RequestMemory& memory, std::uint64_t bytes, std::strin
 }
 
 std::uint64_t RequestBytes(const ChatRequest& request) {
+  // ToolOptions owns its separate prepaid charge across all request copies.
   std::uint64_t bytes = sizeof(ChatRequest) + request.model.capacity();
   bytes += request.messages.capacity() * sizeof(Message);
   for (const Message& m : request.messages) {
@@ -747,7 +1035,9 @@ std::string ErrorJson(const Error& error) {
 
 namespace {
 
-std::string_view FinishName(Finish finish) { return finish == Finish::kStop ? "stop" : "length"; }
+std::string_view FinishName(Finish finish) {
+  return finish == Finish::kStop ? "stop" : finish == Finish::kToolCalls ? "tool_calls" : "length";
+}
 
 std::string UsageJson(const Usage& u) {
   return std::format(R"({{"prompt_tokens":{},"completion_tokens":{},"total_tokens":{},)"
@@ -759,16 +1049,74 @@ std::string UsageJson(const Usage& u) {
 
 }  // namespace
 
+std::optional<std::size_t> CompletionJsonBytes(std::string_view id, std::string_view model,
+                                               std::string_view content,
+                                               std::optional<std::string_view> reasoning,
+                                               std::span<const chat::ToolUsePart> calls) {
+  // Fixed keys, punctuation, bounded-width integer formatting and its temporary
+  // usage string. The variable payload is counted with its actual escaping.
+  std::size_t bytes = 1024;
+  const auto quoted = [&](std::string_view value) {
+    if (__builtin_add_overflow(bytes, std::size_t{2}, &bytes)) return false;
+    for (const char ch : value) {
+      const auto c = static_cast<unsigned char>(ch);
+      const std::size_t width =
+          c == '"' || c == '\\' || c == '\n' || c == '\r' || c == '\t' || c == '\b' || c == '\f' ? 2
+          : c < 0x20                                                                             ? 6
+                     : 1;
+      if (__builtin_add_overflow(bytes, width, &bytes)) return false;
+    }
+    return true;
+  };
+  if (!quoted(id) || !quoted(model) || !quoted(content) || (reasoning && !quoted(*reasoning)))
+    return std::nullopt;
+  for (const auto& call : calls) {
+    if (__builtin_add_overflow(bytes, std::size_t{128}, &bytes) || !quoted(call.id) ||
+        !quoted(call.name) || !quoted(call.input_json))
+      return std::nullopt;
+  }
+  return bytes;
+}
+
 std::string CompletionJson(std::string_view id, std::int64_t created, std::string_view model,
-                           std::string_view content, const std::optional<std::string>& reasoning,
-                           Finish finish, const Usage& usage) {
-  return std::format(
-      R"({{"id":{},"object":"chat.completion","created":{},"model":{},"choices":[{{"index":0,)"
-      R"("message":{{"role":"assistant","content":{}{}}},"logprobs":null,"finish_reason":"{}"}}],)"
-      R"("usage":{}}})",
-      Quoted(id), created, Quoted(model), Quoted(content),
-      reasoning ? ",\"reasoning\":" + Quoted(*reasoning) : std::string(), FinishName(finish),
-      UsageJson(usage));
+                           std::string_view content, std::optional<std::string_view> reasoning,
+                           Finish finish, const Usage& usage,
+                           std::span<const chat::ToolUsePart> calls) {
+  const auto bound = CompletionJsonBytes(id, model, content, reasoning, calls);
+  base::Check(bound.has_value(), "completion serialization exceeds addressable storage");
+  std::string out;
+  out.reserve(*bound);
+  out = "{\"id\":";
+  json::AppendQuoted(id, out);
+  out += std::format(",\"object\":\"chat.completion\",\"created\":{},\"model\":", created);
+  json::AppendQuoted(model, out);
+  out += ",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":";
+  json::AppendQuoted(content, out);
+  if (reasoning) {
+    out += ",\"reasoning\":";
+    json::AppendQuoted(*reasoning, out);
+  }
+  if (!calls.empty()) {
+    out += ",\"tool_calls\":[";
+    for (std::size_t i = 0; i < calls.size(); ++i) {
+      if (i != 0) out += ',';
+      out += "{\"id\":";
+      json::AppendQuoted(calls[i].id, out);
+      out += ",\"type\":\"function\",\"function\":{\"name\":";
+      json::AppendQuoted(calls[i].name, out);
+      out += ",\"arguments\":";
+      json::AppendQuoted(calls[i].input_json, out);
+      out += "}}";
+    }
+    out += ']';
+  }
+  out += "},\"logprobs\":null,\"finish_reason\":\"";
+  out += FinishName(finish);
+  out += "\"}],\"usage\":";
+  out += UsageJson(usage);
+  out += '}';
+  base::Check(out.size() <= *bound, "completion serialization exceeded its paid bound");
+  return out;
 }
 
 std::expected<std::string, Error> LiteralCompletionJson(std::string_view id, std::int64_t created,
@@ -1162,6 +1510,11 @@ OutputText::Out OutputText::Content(std::string_view text) {
     held_start_ = 0;
   }
   return out;
+}
+
+OutputText::Out OutputText::Boundary() {
+  state_ = 0;
+  return Finish();
 }
 
 OutputText::Out OutputText::Finish() {

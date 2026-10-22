@@ -147,8 +147,10 @@ struct Server::Channel {
   void PutFinish(Finish finish, const Usage& usage, bool include_usage) {
     if (!ended) {
       Encoded(encoder.End(identity(),
-                          finish == Finish::kStop ? StreamStop::kStop : StreamStop::kLength, usage,
-                          include_usage, sink()));
+                          finish == Finish::kStop        ? StreamStop::kStop
+                          : finish == Finish::kToolCalls ? StreamStop::kToolUse
+                                                         : StreamStop::kLength,
+                          usage, include_usage, sink()));
     }
     if (!ended) {
       PutEnd();
@@ -298,6 +300,8 @@ class Server::Stream final : public Exchange {
   bool Next(Phase phase, std::uint64_t size) override;
   bool Reasoning(std::string_view text) override;
   bool Content(std::string_view text) override;
+  bool ToolCall(const chat::ToolUsePart& call) override;
+  bool Stopped() const override { return text_.stopped(); }
   bool Continue() override;
   bool Paused() const override;
   bool timed_out() const override { return timed_out_; }
@@ -355,6 +359,9 @@ class Server::Stream final : public Exchange {
   Usage usage_;
   std::string reasoning_;  // a non-streaming response's text so far
   std::string content_;
+  std::vector<chat::ToolUsePart> tool_calls_;
+  std::uint64_t tool_count_ = 0;
+  MemoryCharge tool_charge_;
   MemoryCharge text_charge_;  // theirs, in the request memory
   bool timed_out_ = false;
   bool stopping_ = false;

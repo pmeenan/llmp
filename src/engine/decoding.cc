@@ -217,6 +217,42 @@ DecodeReport DecodingOrchestrator::Step(std::span<const DecodeWork> work) {
     for (auto& out : report.outcomes) out.refusal = Refusal(qualified.error());
     return report;
   }
+  if (std::ranges::any_of(work, [](const auto& unit) { return !unit.certain.empty(); })) {
+    auto partition = runner_->PayHostMetadata(
+        work.size() * (2 * sizeof(DecodeWork) + 2 * sizeof(std::size_t) + sizeof(DecodeOutcome)));
+    if (!partition) {
+      DecodeReport report;
+      report.outcomes.resize(work.size());
+      for (auto& out : report.outcomes) out.refusal = Refusal(partition.error());
+      return report;
+    }
+    std::vector<DecodeWork> known, ordinary;
+    known.reserve(work.size());
+    ordinary.reserve(work.size());
+    std::vector<std::size_t> ki, oi;
+    ki.reserve(work.size());
+    oi.reserve(work.size());
+    for (std::size_t i = 0; i < work.size(); ++i) {
+      if (work[i].certain.empty()) {
+        ordinary.push_back(work[i]);
+        oi.push_back(i);
+      } else {
+        known.push_back(work[i]);
+        ki.push_back(i);
+      }
+    }
+    DecodeReport result;
+    result.outcomes.resize(work.size());
+    const auto merge = [&](DecodeReport report, const auto& indexes) {
+      result.steps += report.steps;
+      result.speculated = result.speculated || report.speculated;
+      for (std::size_t i = 0; i < indexes.size(); ++i)
+        result.outcomes[indexes[i]] = std::move(report.outcomes[i]);
+    };
+    merge(Certain(known), ki);
+    if (!ordinary.empty()) merge(Step(ordinary), oi);
+    return result;
+  }
   if (mode_.kind != Kind::kSpeculative) {
     return Single(work, mode_.kind == Kind::kScored, mode_.kind == Kind::kPlain);
   }
@@ -311,6 +347,75 @@ DecodeReport DecodingOrchestrator::Single(std::span<const DecodeWork> work, bool
   for (std::size_t j = 0; j < pending.size(); ++j) {
     DecodeOutcome& out = report.outcomes[of[j]];
     WaveOutcome& ran = wave.outcomes[j];
+    if (ran.refusal) {
+      out.refusal = std::move(ran.refusal);
+      continue;
+    }
+    out.kept = pending[j].rows;
+    Place(out, ran);
+  }
+  return report;
+}
+
+DecodeReport DecodingOrchestrator::Certain(std::span<const DecodeWork> work) {
+  DecodeReport report;
+  report.outcomes.resize(work.size());
+  std::uint64_t bytes = 0;
+  for (const auto& unit : work)
+    bytes += (unit.history.size() + unit.certain.size()) * sizeof(std::int32_t) +
+             sizeof(PendingWork) + sizeof(SegmentWork) + 256;
+  auto payment = runner_->PayHostMetadata(bytes);
+  if (!payment) {
+    for (auto& out : report.outcomes) out.refusal = Refusal(payment.error());
+    return report;
+  }
+  std::vector<std::vector<std::int32_t>> histories(work.size());
+  std::vector<std::span<const std::int32_t>> views;
+  std::vector<PendingWork> pending;
+  std::vector<SegmentWork> segments;
+  std::vector<std::size_t> indexes;
+  const auto& slots = runner_->slots();
+  views.reserve(work.size());
+  pending.reserve(work.size());
+  segments.reserve(work.size());
+  indexes.reserve(work.size());
+  for (std::size_t i = 0; i < work.size(); ++i) {
+    const auto& unit = work[i];
+    if (unit.slot >= slots.slots() || unit.certain.empty() ||
+        unit.history.size() != std::size_t{slots.positions(unit.slot)} + 1 ||
+        unit.certain.size() >= unit.left || !unit.score.empty()) {
+      report.outcomes[i].refusal =
+          Refusal("certain inputs do not continue one anchor within the reply budget");
+      continue;
+    }
+    const auto past = slots.positions(unit.slot);
+    histories[i].reserve(unit.history.size() + unit.certain.size());
+    histories[i].assign(unit.history.begin(), unit.history.end());
+    histories[i].insert(histories[i].end(), unit.certain.begin(), unit.certain.end());
+    const auto rows = static_cast<std::uint32_t>(1 + unit.certain.size());
+    pending.push_back({.slot = unit.slot,
+                       .stage = 0,
+                       .phase = unit.certain_scores ? pl::Phase::kScore : pl::Phase::kPrefill,
+                       .past = past,
+                       .rows = rows,
+                       .outputs = unit.certain_scores ? rows : 1U,
+                       .want_head = true,
+                       .greedy = unit.greedy,
+                       .row_invariant = false,
+                       .alone = false});
+    segments.push_back(
+        {.tokens = std::span<const std::int32_t>(histories[i]).subspan(past), .bytes = {}});
+    views.push_back(histories[i]);
+    indexes.push_back(i);
+  }
+  // The ordinary target/companion lifecycle consumes every known row, including
+  // target-written drafter features. No model-drafter dispatch or acceptance
+  // random draws occur; prompt numerical permission covers the causal rows.
+  auto wave = RunPromptWave(*runner_, *composer_, pending, segments, views);
+  report.steps = wave.steps;
+  for (std::size_t j = 0; j < indexes.size(); ++j) {
+    auto& out = report.outcomes[indexes[j]];
+    auto& ran = wave.outcomes[j];
     if (ran.refusal) {
       out.refusal = std::move(ran.refusal);
       continue;

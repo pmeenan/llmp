@@ -159,6 +159,10 @@ struct FakeSourceOptions {
   // publication. Ordinary logits and all other phases remain unchanged.
   std::optional<std::int32_t> native_token{};
   std::optional<planner::Phase> native_token_phase{};
+  // Transform the actual completed greedy device result by phase/slot/row,
+  // preserving native-output execution in acceptance and rollback controls.
+  std::function<std::int32_t(planner::Phase, std::int32_t, std::int32_t, std::int32_t)>
+      transform_native_token;
   // Transform a completed numeric row before its device output is copied.
   // Tests use this to exercise per-owner judgement failures after real work.
   std::function<void(planner::Phase, std::int32_t, std::int32_t, std::span<float>)>

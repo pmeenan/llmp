@@ -180,6 +180,8 @@ Status Llm::RunCausalWave(std::span<PromptSession* const> prompts,
       (void)(unit.anchor_processed
                  ? unit.session->FailAfterAnchor(unit.result.error())
                  : unit.session->FailStep(unit.result.error(), unit.failed_prefix_valid));
+    else if (unit.step.forced)
+      (void)unit.session->ApplyCertain(std::move(unit.row), std::move(unit.logits));
     else if (unit.chosen)
       (void)unit.session->ApplyChosen(*unit.chosen);
     else

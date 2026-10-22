@@ -115,6 +115,7 @@ struct ToolResultPart {
   std::string tool_use_id;
   std::string text;
   bool is_error = false;
+  std::string name = {};  // legacy function-result evidence, not a synthetic ID
 };
 struct ImagePart {
   std::string media_type;
@@ -160,6 +161,12 @@ struct Message {
   std::optional<std::string> reasoning_content = {};
   std::vector<ToolCall> tool_calls = {};
   std::string tool_call_id = {};
+  // Local association into the immediately preceding assistant's calls. Never
+  // serialized as an invented persistent ID. Missing associations remain explicit.
+  std::optional<std::size_t> resolved_tool_call = {};
+  std::string tool_result_name = {};
+  bool tool_result_is_error = false;
+  bool tool_result_normalized = false;
 };
 
 struct Conversation {
@@ -179,8 +186,10 @@ struct Conversation {
 };
 
 // The shared template boundary. Text parts concatenate exactly; tools project
-// to template fields with IDs preserved. Unrepresentable ordering, error results
-// and images are rejected before any native or interpreted template runs.
+// to template fields with IDs preserved. Results with complete IDs are reordered;
+// missing IDs retain supplied order and resolve only from unambiguous evidence.
+// Error results retain status and render with an explicit "[tool error] " prefix.
+// Images and unrepresentable content ordering fail before template rendering.
 bool HasStructuredContent(const Conversation& conversation);
 std::expected<Conversation, Error> ProjectContent(const Conversation& conversation,
                                                   bool supports_tools = true);
@@ -218,6 +227,10 @@ struct Template {
   // Whether structured tool parts can be projected without losing their work.
   bool supports_tools = true;
   const ToolCallFormat* tool_calls = nullptr;
+  // Verified template consumes association IDs solely to recover a tool name
+  // and never emits them. Render-local keys may therefore project name-only
+  // evidence without asserting a stable occurrence or changing caller IDs.
+  bool tool_association_name_only = false;
 };
 
 // The native renderer for a template hash, or nullptr.
@@ -294,13 +307,14 @@ class ChatTemplate {
   const std::vector<std::string>& stop() const { return stop_; }
   // Generated-output grammar only when verified with this native template.
   // An interpreted template can render tools without having a known grammar.
-  const ToolCallFormat* tool_calls() const { return native_ ? native_->tool_calls : nullptr; }
+  const ToolCallFormat* tool_calls() const { return tool_calls_; }
 
  private:
   ChatTemplate() = default;
   How how_ = How::kInterpreted;
   std::string sha256_;
   const Template* native_ = nullptr;
+  const ToolCallFormat* tool_calls_ = nullptr;
   std::unique_ptr<jinja::Template> program_;
   TokenFacts tokens_;
   std::vector<std::string> stop_;
@@ -316,7 +330,8 @@ std::expected<Rendered, Error> RenderInterpreted(const jinja::Template& program,
                                                  const Conversation& conversation,
                                                  const TokenFacts& tokens,
                                                  const std::optional<jinja::CivilTime>& now,
-                                                 jinja::Budget budget = {});
+                                                 jinja::Budget budget = {},
+                                                 bool tool_association_name_only = false);
 
 // All of one registration's probes: a heuristic with its own fixed basis
 // (what one rendering's former bounds were, about 6 s of a GB10 core),

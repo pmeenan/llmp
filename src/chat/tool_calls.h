@@ -55,22 +55,35 @@ class ToolRequest {
   static std::expected<ToolRequest, std::string> Create(std::span<const ToolDefinition> definitions,
                                                         ToolChoice choice, bool parallel,
                                                         const base::json::Limits& limits);
-  const ToolChoice& choice() const { return choice_; }
-  bool parallel() const { return parallel_; }
+  const ToolChoice& choice() const { return data_->choice; }
+  bool parallel() const { return data_->parallel; }
   bool Declared(std::string_view name) const;
+  // Checks a partial name plus its declarative terminator without allocating.
+  std::size_t NameBytes() const;
+  // Exact name identity in the selected grammar. Named choice checks only
+  // its exposed definition; none is harmless. Caller prepays NameBytes()
+  // scratch (the object scanner); JSON envelopes escape arbitrary names.
+  ToolStatus ValidateNames(const ToolCallFormat& format) const;
+  std::size_t TemplateBytes() const;
+  bool NamePrefix(std::string_view prefix, std::string_view terminator) const;
   std::optional<base::json::Value> Parameter(std::string_view name, std::string_view key) const;
   // OpenAI-shaped definitions are the template contract, owned by this request.
   // Named choice presents only its selected definition. None presents no tools.
   std::vector<base::json::Value> TemplateTools() const;
 
  private:
+  friend std::optional<std::size_t> ToolRequestBytes(std::span<const ToolDefinition> definitions);
   struct Definition {
     std::string name;
     std::shared_ptr<const base::json::Document> owner;
+    std::size_t bytes = 0;
   };
-  ToolChoice choice_;
-  bool parallel_ = true;
-  std::vector<Definition> definitions_;
+  struct Data {
+    ToolChoice choice;
+    bool parallel = true;
+    std::vector<Definition> definitions;
+  };
+  std::shared_ptr<const Data> data_;
 };
 
 enum class ToolArguments { kJsonEnvelope, kTaggedParameters, kObjectNotation };
@@ -82,12 +95,16 @@ struct ToolCallFormat {
   std::string name_end = {};
   std::string name_key = "name", arguments_key = "arguments";
   ToolArguments arguments = ToolArguments::kJsonEnvelope;
+  // Bare JSON object: call_begin/end delimit the envelope itself. Auto mode
+  // preserves objects without both call fields as ordinary answer text.
+  bool bare_envelope = false;
   std::string parameter_begin = {}, parameter_name_end = {}, parameter_end = {};
   // An optional parameter-header suffix says string or JSON explicitly.
   std::string string_suffix = {}, json_suffix = {};
   bool trim_wrapping_newline = false;
   bool opener_ends_reasoning = false;
   std::string reasoning_end = {};
+  std::string reasoning_begin = {};  // actual rendered generation-prefix bytes
   // Object notation: strings use this delimiter; keys may be bare. null_word
   // accepts a template's spelling in addition to JSON null.
   std::string quote = "\"", null_word = "null";
@@ -98,6 +115,8 @@ struct ToolCallFormat {
 const ToolCallFormat& QwenToolCalls();
 const ToolCallFormat& DsmlToolCalls();
 const ToolCallFormat& GemmaToolCalls();
+const ToolCallFormat& JsonToolCalls();
+const ToolCallFormat* ToolCallsForTemplate(std::string_view sha256);
 
 // The later sampler/verify integration binds these texts to tokenizer IDs.
 // This is a constraint intent, not evidence that required/named decoding is
@@ -122,7 +141,25 @@ class ToolInterpreter {
   // expansion already included in ToolOutputBytes; the other JSON limits
   // still bound depth, values and decoded strings. No call-count or time limit.
   ToolInterpreter(ToolCallFormat format, ToolRequest request, base::json::Limits limits);
-  using Sink = std::function<bool(ToolEvent)>;  // consumes owned events; false cancels
+  struct Flow {
+    enum Action { kContinue, kPause, kCancel } action;
+    Flow(bool go) : action(go ? kContinue : kCancel) {}
+    Flow(Action value) : action(value) {}
+  };
+  using Sink = std::function<Flow(ToolEvent)>;  // every event is accepted exactly once
+  // A pause retains the unconsumed input suffix; Resume drains it before new input.
+  ToolStatus Resume(const Sink& sink);
+  bool paused() const { return paused_; }
+  bool ended() const { return ended_; }
+  // Sampling probes borrow pending argument bytes; only lexical cursor state is
+  // cloned per candidate. Syntax-only cursors do not build argument documents.
+  bool Allows(std::string_view candidate) const;
+  void SyntaxOnly() { syntax_only_ = true; }
+  void Reasoning(bool active) { reasoning_active_ = active; }
+  bool reasoning() const { return reasoning_active_; }
+  std::optional<std::string_view> error() const {
+    return error_ ? std::optional<std::string_view>(*error_) : std::nullopt;
+  }
   ToolStatus Push(std::string_view generated, const Sink& sink);
   ToolStatus Finish(ToolFinish reason, const Sink& sink);
   std::size_t calls() const { return calls_; }
@@ -142,6 +179,8 @@ class ToolInterpreter {
   unsigned tag_phase_ = 0;
   int tag_json_ = -1;
   bool in_call_ = false, in_block_ = false, ended_ = false, reasoning_ended_ = false, busy_ = false;
+  bool paused_ = false, syntax_only_ = false, reasoning_active_ = false;
+  std::optional<ToolFinish> finishing_;
   std::optional<std::string> error_;
 };
 

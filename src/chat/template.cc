@@ -26,6 +26,7 @@
 #include "base/sha256.h"
 #include "chat/chat.h"
 #include "chat/jinja.h"
+#include "chat/tool_calls.h"
 #include "tokenizer/tokenizer.h"
 
 namespace llmp::chat {
@@ -52,16 +53,52 @@ std::string_view RoleName(Role role) {
 // (enable_thinking also as `thinking`, which DeepSeek's templates read).
 std::vector<std::pair<std::string, jinja::Input>> Variables(const Conversation& c,
                                                             const TokenFacts& tokens,
-                                                            bool add_generation_prompt) {
+                                                            bool add_generation_prompt,
+                                                            bool name_only = false) {
   using jinja::Input;
   std::vector<Input> messages;
   messages.reserve(c.messages.size());
-  for (const Message& m : c.messages) {
+  std::size_t group = 0;
+  const Message* calls_owner = nullptr;
+  for (std::size_t mi = 0; mi < c.messages.size(); ++mi) {
+    const Message& m = c.messages[mi];
+    if (!m.tool_calls.empty()) {
+      group = mi;
+      calls_owner = &m;
+    } else if (m.role != Role::kTool)
+      calls_owner = nullptr;
+    // Every key in a qualified renderer's local view is rewritten together,
+    // so client-supplied IDs cannot collide with these transient name keys.
+    const auto key = [&](std::string_view name) {
+      return std::to_string(group) + ":" + std::string(name);
+    };
     std::vector<std::pair<std::string, Input>> fields;
     fields.emplace_back("role", Input::String(RoleName(m.role)));
     fields.emplace_back("content",
                         m.content.text() ? Input::String(*m.content.text()) : Input::None());
-    if (!m.tool_call_id.empty()) {
+    if (name_only && m.role == Role::kTool && calls_owner != nullptr) {
+      std::string_view name = m.tool_result_name;
+      if (m.resolved_tool_call && *m.resolved_tool_call < calls_owner->tool_calls.size())
+        name = calls_owner->tool_calls[*m.resolved_tool_call].name;
+      if (name.empty()) {
+        // Only a unique remaining NAME is inferred. Repeated same-name calls
+        // share a key; no arbitrary occurrence is recorded in the conversation.
+        for (std::size_t ci = 0; ci < calls_owner->tool_calls.size(); ++ci) {
+          bool claimed = false;
+          for (std::size_t ri = group + 1;
+               ri < c.messages.size() && c.messages[ri].role == Role::kTool; ++ri)
+            claimed = claimed || c.messages[ri].resolved_tool_call == ci;
+          if (claimed) continue;
+          const auto candidate = calls_owner->tool_calls[ci].name;
+          if (!name.empty() && name != candidate) {
+            name = {};
+            break;
+          }
+          name = candidate;
+        }
+      }
+      if (!name.empty()) fields.emplace_back("tool_call_id", Input::String(key(name)));
+    } else if (!m.tool_call_id.empty()) {
       fields.emplace_back("tool_call_id", Input::String(m.tool_call_id));
     }
     if (m.reasoning_content) {
@@ -72,9 +109,10 @@ std::vector<std::pair<std::string, jinja::Input>> Variables(const Conversation& 
       calls.reserve(m.tool_calls.size());
       for (const ToolCall& call : m.tool_calls) {
         std::vector<std::pair<std::string, Input>> call_fields;
-        if (!call.id.empty()) {
+        if (name_only)
+          call_fields.emplace_back("id", Input::String(key(call.name)));
+        else if (!call.id.empty())
           call_fields.emplace_back("id", Input::String(call.id));
-        }
         call_fields.emplace_back("type", Input::String("function"));
         call_fields.emplace_back("function",
                                  Input::Map({{"name", Input::String(call.name)},
@@ -394,7 +432,10 @@ enum class Verdict : std::uint8_t { kSame, kBothRefuse, kSkip, kDiffer };
 
 Verdict Probe(const Template& native, const jinja::Template& program, const TokenFacts& tokens,
               const Conversation& c, jinja::Usage& spent) {
-  const auto mine = native.render(c);
+  auto projected = ProjectContent(c, native.supports_tools);
+  if (!projected) return Verdict::kBothRefuse;
+  const auto& resolved = *projected;
+  const auto mine = native.render(resolved);
   if (!mine && mine.error().rule == Rule::kUnsupported) {
     return Verdict::kSkip;
   }
@@ -402,7 +443,9 @@ Verdict Probe(const Template& native, const jinja::Template& program, const Toke
   if (!budget) {
     return Verdict::kDiffer;  // the pool is spent: no family's template costs that much
   }
-  auto theirs = program.Render(Variables(c, tokens, c.add_generation_prompt), kProbeTime, *budget);
+  auto theirs = program.Render(
+      Variables(resolved, tokens, c.add_generation_prompt, native.tool_association_name_only),
+      kProbeTime, *budget);
   if (mine && theirs) {
     return mine->text == theirs->text ? Verdict::kSame : Verdict::kDiffer;
   }
@@ -478,13 +521,18 @@ std::expected<Rendered, Error> RenderInterpreted(const jinja::Template& program,
                                                  const Conversation& conversation,
                                                  const TokenFacts& tokens,
                                                  const std::optional<jinja::CivilTime>& now,
-                                                 jinja::Budget budget) {
-  if (HasStructuredContent(conversation)) {
+                                                 jinja::Budget budget,
+                                                 bool tool_association_name_only) {
+  // Direct interpretation preserves the pinned source template semantics.
+  // Serving resolves legacy associations before reaching this boundary; only
+  // structured parts need projection here.
+  if (std::ranges::any_of(conversation.messages,
+                          [](const auto& message) { return message.content.parts() != nullptr; })) {
     auto projected = ProjectContent(conversation);
     if (!projected) {
       return std::unexpected(projected.error());
     }
-    return RenderInterpreted(program, *projected, tokens, now, budget);
+    return RenderInterpreted(program, *projected, tokens, now, budget, tool_association_name_only);
   }
 
   // The scan for control tokens is charged to the rendering's work: to a
@@ -497,8 +545,9 @@ std::expected<Rendered, Error> RenderInterpreted(const jinja::Template& program,
   jinja::Usage& used = budget.usage != nullptr ? *budget.usage : own;
   const jinja::Usage before = used;
   budget.usage = &used;
-  auto rendered = program.Render(
-      Variables(conversation, tokens, conversation.add_generation_prompt), now, budget);
+  auto rendered = program.Render(Variables(conversation, tokens, conversation.add_generation_prompt,
+                                           tool_association_name_only),
+                                 now, budget);
   if (!rendered) {
     return std::unexpected(FromJinja(rendered.error()));
   }
@@ -600,6 +649,7 @@ std::expected<ChatTemplate, std::string> ChatTemplate::ForText(std::string_view 
                                                                const jinja::Limits& limits) {
   ChatTemplate t;
   t.sha256_ = base::ToHex(base::Sha256().Update(template_text).Finish());
+  t.tool_calls_ = ToolCallsForTemplate(t.sha256_);
   t.tokens_ = std::move(tokens);
   t.max_bytes_ = limits.max_output_bytes;
   t.max_live_bytes_ = limits.max_live_bytes;
@@ -628,6 +678,7 @@ std::expected<ChatTemplate, std::string> ChatTemplate::ForText(std::string_view 
     }
   }
   if (t.native_ != nullptr) {
+    t.tool_calls_ = t.native_->tool_calls;
     for (const std::string_view s : t.native_->stop.tokens) {
       t.stop_.emplace_back(s);
     }
@@ -674,7 +725,8 @@ std::expected<Rendered, Error> ChatTemplate::Render(const Conversation& conversa
                                          .usage = nullptr,
                                          .cancelled = cancelled,
                                          .max_live_bytes = conversation.max_live_bytes,
-                                         .max_output_bytes = conversation.max_render_bytes});
+                                         .max_output_bytes = conversation.max_render_bytes},
+                           native_ != nullptr && native_->tool_association_name_only);
 }
 
 }  // namespace llmp::chat

@@ -195,8 +195,8 @@ TEST(ChatRequest, RefusesWhatItDoesNotHonor) {
   EXPECT_THAT(ErrorOf(WithField(R"("min_p":-0.1)")), HasSubstr("[min_p]"));
   // Messages.
   EXPECT_THAT(ErrorOf(R"({"model":"m","messages":[]})"), HasSubstr("[messages]"));
-  EXPECT_THAT(ErrorOf(R"({"model":"m","messages":[{"role":"tool","content":"x"}]})"),
-              HasSubstr("tools are not supported"));
+  EXPECT_TRUE(Parse(R"({"model":"m","messages":[{"role":"tool","content":"x"}]})"));
+  // Shared conversation preparation validates result association.
   EXPECT_THAT(ErrorOf(R"({"model":"m","messages":[{"role":"robot","content":"x"}]})"),
               HasSubstr("[messages[0].role]"));
   EXPECT_THAT(
@@ -206,7 +206,7 @@ TEST(ChatRequest, RefusesWhatItDoesNotHonor) {
               HasSubstr("[messages[0].content]"));
   EXPECT_THAT(
       ErrorOf(R"({"model":"m","messages":[{"role":"assistant","content":"x","tool_calls":[{}]}]})"),
-      HasSubstr("tool calls are not supported"));
+      HasSubstr("[messages[0].tool_calls[0]]"));
   EXPECT_THAT(ErrorOf(R"({"model":"m","messages":[
                  {"role":"assistant","content":"x","function_call":{"name":"f"}},
                  {"role":"user","content":"y"}]})"),
@@ -1488,6 +1488,16 @@ class FakeBackend final : public api::Backend {
       }
       std::this_thread::sleep_for(std::chrono::seconds(1));
     }
+    if (text == "tool-answer" || text == "tool-stop" || text == "tool-length") {
+      (void)exchange.Reasoning("read first");
+      (void)exchange.Content(text == "tool-stop" ? "xabc" : "ab");
+      // Even an already accepted batch cannot emit a later call after a stop.
+      (void)exchange.ToolCall(
+          {.id = {}, .name = "read", .input_json = R"({"filePath":"marker.txt","text":"abc"})"});
+      (void)exchange.Content("c");
+      return api::Completion{
+          .completion_tokens = 12, .cached_tokens = 2, .stopped = text != "tool-length"};
+    }
     if (text == "big") {
       (void)exchange.Content(std::string(std::size_t{16} << 20U, 'y'));
       return api::Completion{.completion_tokens = 1, .cached_tokens = 0, .stopped = true};
@@ -2312,6 +2322,43 @@ TEST_F(ServerTest, StopStringsEndTheAnswer) {
   const json::Value choice = In(doc->root(), {"choices"}).at(0);
   EXPECT_EQ(In(choice, {"message", "content"}).string(), "Hel");
   EXPECT_EQ(In(choice, {"finish_reason"}).string(), "stop");
+}
+
+TEST_F(ServerTest, ToolCallsUseTheSameNormalizedWholeCallInJsonAndStreaming) {
+  const auto response = Exchange(Post(Chat("tool-answer", R"(,"stop":"abc")")));
+  auto doc = json::Parse(BodyOf(response));
+  ASSERT_TRUE(doc) << response;
+  const auto choice = In(doc->root(), {"choices"}).at(0);
+  const auto message = In(choice, {"message"});
+  EXPECT_EQ(In(message, {"content"}).string(), "abc");
+  EXPECT_EQ(In(message, {"reasoning"}).string(), "read first");
+  EXPECT_EQ(In(choice, {"finish_reason"}).string(), "tool_calls");
+  const auto call = In(message, {"tool_calls"}).at(0);
+  EXPECT_THAT(std::string(In(call, {"id"}).string()), StartsWith("call_"));
+  EXPECT_EQ(In(call, {"function", "name"}).string(), "read");
+  EXPECT_EQ(In(call, {"function", "arguments"}).string(),
+            R"({"filePath":"marker.txt","text":"abc"})");
+  EXPECT_EQ(In(doc->root(), {"usage", "completion_tokens"}).int64(), 12);
+  const auto stream = BodyOf(Exchange(Post(Chat(
+      "tool-answer", R"(,"stop":"abc","stream":true,"stream_options":{"include_usage":true})"))));
+  EXPECT_THAT(stream, HasSubstr(R"("name":"read")"));
+  EXPECT_THAT(stream, HasSubstr(R"("finish_reason":"tool_calls")"));
+  EXPECT_THAT(stream, HasSubstr(R"("completion_tokens":12)"));
+  EXPECT_TRUE(stream.ends_with("data: [DONE]\n\n"));
+}
+TEST_F(ServerTest, ExplicitTextStopAndLengthOverrideToolFinishReason) {
+  for (const auto name : {"tool-stop", "tool-length"}) {
+    auto response = Exchange(Post(Chat(name, R"(,"stop":"abc")")));
+    auto doc = json::Parse(BodyOf(response));
+    ASSERT_TRUE(doc) << response;
+    const auto choice = In(doc->root(), {"choices"}).at(0);
+    EXPECT_EQ(In(choice, {"finish_reason"}).string(),
+              std::string_view(name) == "tool-stop" ? "stop" : "length");
+    if (std::string_view(name) == "tool-stop") {
+      EXPECT_EQ(In(choice, {"message", "content"}).string(), "x");
+      EXPECT_FALSE(In(choice, {"message"}).find("tool_calls"));
+    }
+  }
 }
 
 TEST_F(ServerTest, ListsModels) {

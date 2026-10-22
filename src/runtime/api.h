@@ -42,6 +42,7 @@
 #include <vector>
 
 #include "chat/chat.h"
+#include "chat/tool_calls.h"
 #include "config/node_config.h"
 #include "runtime/intake_limits.h"
 
@@ -83,7 +84,7 @@ struct Error {
   std::string code;   // empty: null
 };
 
-enum class Role : std::uint8_t { kSystem, kUser, kAssistant };
+enum class Role : std::uint8_t { kSystem, kUser, kAssistant, kTool };
 
 struct Message {
   Role role = Role::kUser;                // "developer" is read as system
@@ -148,10 +149,18 @@ struct SamplingDefaults {
   double min_p = 0.0;
 };
 
+// Shared neutral tool definitions and the payment made before normalization.
+// Copies of ChatRequest share both; RequestBytes excludes this separately paid owner.
+struct ToolOptions {
+  chat::ToolRequest request;
+  MemoryCharge charge;
+};
+
 struct ChatRequest {
   std::string model;
   std::vector<Message> messages;  // at least one, the last the user's
   std::optional<std::uint32_t> max_tokens;
+  std::shared_ptr<const ToolOptions> tools = nullptr;
   // Each as sent; one not sent takes the model's default (Sampling).
   double temperature = 1.0;  // [0, 2]; 0 is greedy (OpenAI's default is 1)
   double top_p = 1.0;        // (0, 1]
@@ -266,7 +275,7 @@ class IgnoredFields {
 
 // ---------------------------------------------------------------- output
 
-enum class Finish : std::uint8_t { kStop, kLength };
+enum class Finish : std::uint8_t { kStop, kLength, kToolCalls };
 
 struct Usage {
   std::uint32_t prompt_tokens = 0;
@@ -295,10 +304,17 @@ struct LiteralResult {
 
 // {"error":{...}}
 std::string ErrorJson(const Error& error);
+// A single reserved serialization buffer, including JSON escaping and fixed
+// numeric/envelope fields. No quoted payload or tool-list copies are built.
+std::optional<std::size_t> CompletionJsonBytes(std::string_view id, std::string_view model,
+                                               std::string_view content,
+                                               std::optional<std::string_view> reasoning,
+                                               std::span<const chat::ToolUsePart> calls = {});
 // A non-streaming response (object "chat.completion").
 std::string CompletionJson(std::string_view id, std::int64_t created, std::string_view model,
-                           std::string_view content, const std::optional<std::string>& reasoning,
-                           Finish finish, const Usage& usage);
+                           std::string_view content, std::optional<std::string_view> reasoning,
+                           Finish finish, const Usage& usage,
+                           std::span<const chat::ToolUsePart> calls = {});
 // Legacy OpenAI arrays and the vLLM prompt_logprobs extension. The result's
 // scores come from the natural target distribution, before sampling filters.
 // The body is at most `max_bytes` (the request memory's capacity).
@@ -357,6 +373,8 @@ class OutputText {
   Out Content(std::string_view text);
   // At the end: whatever was held back.
   Out Finish();
+  // A tool event separates contiguous answer segments; stop strings never span it.
+  Out Boundary();
   bool stopped() const { return stopped_; }
 
  private:

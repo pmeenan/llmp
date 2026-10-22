@@ -62,6 +62,10 @@ enum class SamplingError : std::uint8_t {
 
 std::string_view SamplingErrorName(SamplingError e);
 
+// Validate the original native row before a caller transforms it. Negative
+// infinity is legal padding; empty/all-padding rows, NaN and +infinity fail.
+std::expected<void, SamplingError> ValidateLogits(std::span<const float> logits);
+
 // The greedy choice.
 std::expected<std::int32_t, SamplingError> Greedy(std::span<const float> logits);
 
