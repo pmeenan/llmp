@@ -997,9 +997,9 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   return s;
 }
 
-std::expected<void, std::string> ResolveReasoning(ModelSettings& settings,
-                                                  const config::ModelEntry& entry,
-                                                  const FindToken& find) {
+std::expected<ReasoningSettings, std::string> ResolveReasoning(const config::ModelEntry& entry,
+                                                               const FindToken& find) {
+  ReasoningSettings settings;
   const auto one = [&](std::string_view key, std::string_view marker,
                        Setting<std::string>& into) -> std::expected<void, std::string> {
     if (const auto text = entry.Text(key)) {
@@ -1017,10 +1017,20 @@ std::expected<void, std::string> ResolveReasoning(ModelSettings& settings,
     }
     return {};
   };
-  if (auto r = one("reasoning_start", kThinkStart, settings.reasoning_start); !r) {
-    return r;
-  }
-  return one("reasoning_end", kThinkEnd, settings.reasoning_end);
+  if (auto r = one("reasoning_start", kThinkStart, settings.start); !r)
+    return std::unexpected(r.error());
+  if (auto r = one("reasoning_end", kThinkEnd, settings.end); !r) return std::unexpected(r.error());
+  return settings;
+}
+
+std::expected<void, std::string> ResolveReasoning(ModelSettings& settings,
+                                                  const config::ModelEntry& entry,
+                                                  const FindToken& find) {
+  auto resolved = ResolveReasoning(entry, find);
+  if (!resolved) return std::unexpected(resolved.error());
+  settings.reasoning_start = std::move(resolved->start);
+  settings.reasoning_end = std::move(resolved->end);
+  return {};
 }
 
 std::vector<ModelSettings::Line> ModelSettings::Lines() const {

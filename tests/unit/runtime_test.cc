@@ -1067,6 +1067,44 @@ TEST(StartupHostAllowanceTest, ParserLoanIsIndependentOfMutableFileSizes) {
   EXPECT_GT(*configured, *one);
 }
 
+TEST(StartupHostAllowanceTest, ChatReaderInventoryAndWeakProofCoverRealReaderStorage) {
+  namespace rt = llmp::runtime;
+  namespace cat = llmp::catalog;
+  auto reader = rt::ChatReaderBytes();
+  auto bootstrap = rt::StartupBootstrapBytes(1);
+  ASSERT_TRUE(reader);
+  ASSERT_TRUE(bootstrap);
+  EXPECT_GT(*bootstrap, *reader);
+  EXPECT_EQ(*reader % (2ULL << 20U), 0U);
+  // Sparse HF config IDs and GGUF string arrays allocate output tables even
+  // when source text is small. This is separate from serialized JSON storage.
+  EXPECT_GT(*reader, (1ULL << 24U) * 64);
+  cat::Catalog catalog;
+  const auto domain = catalog.AddDomain("chat");
+  const auto other = catalog.AddDomain("other");
+  constexpr auto available = 128ULL << 30U;
+  constexpr auto cap = 32ULL << 30U;
+  EXPECT_FALSE(rt::StartupArtifactPayment::Admit(catalog, domain, *reader, *reader - 1, available));
+  auto retained = rt::StartupArtifactPayment::Admit(catalog, domain, *reader, cap, available);
+  ASSERT_TRUE(retained);
+  EXPECT_FALSE((*retained)->reader_loan().Covers(catalog, domain, *reader));
+  retained->reset();
+  rt::StartupReaderLoan stale;
+  {
+    auto owner = rt::StartupArtifactPayment::AdmitReader(catalog, domain, *reader, cap, available);
+    ASSERT_TRUE(owner);
+    stale = (*owner)->reader_loan();
+    EXPECT_TRUE(stale.Covers(catalog, domain, *reader));
+    EXPECT_FALSE(stale.Covers(catalog, other, *reader));
+    EXPECT_FALSE(stale.Covers(catalog, domain, (*owner)->bytes() + 1));
+    cat::Catalog foreign;
+    const auto foreign_domain = foreign.AddDomain("chat");
+    EXPECT_FALSE(stale.Covers(foreign, foreign_domain, *reader));
+  }
+  EXPECT_FALSE(stale.Covers(catalog, domain, *reader));
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), 0U);
+}
+
 TEST(StartupHostAllowanceTest, RefusesBeforeNodeOrMetadataEffects) {
   using llmp::runtime::CheckStartupHostAllowance;
   constexpr std::uint64_t gib = std::uint64_t{1} << 30U;

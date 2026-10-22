@@ -636,9 +636,11 @@ D-122).
       reuse authenticated metadata and recheck execution capabilities. This
       startup slice changes no artifact bytes; mapping consolidation/provenance,
       the four published legacy drafter specs, GGUF semantic metadata handling
-      and quantization ingress remain open U3 obligations. Repeated chat-asset
-      startup payment and tokenizer/template replacement ownership also remain
-      a separate bounded startup follow-up.
+      and quantization ingress remain open U3 obligations. Chat startup now
+      prepays verified reader workspace and reuses one construction pool across
+      retries, admitting old and new live assets together and publishing only
+      after tokenizer, reasoning, template and stop validation all succeed.
+      Later Setup failures after runner adoption remain outside this slice.
       - **U3a One mapping per architecture:** the importer now consumes
         `spec::Mapping` directly with selected-container context; the derived
         `import::SourceMapping` structure and per-container copies are removed.

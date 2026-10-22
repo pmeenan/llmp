@@ -573,9 +573,18 @@ and chat metadata; payload shards reopen through the retained directory handle
 when activated, with their existing size checks. Diagnostic path labels never
 redirect those reads. Shared owners release their payment after their payloads;
 the node's catalog outlives its last retained shard-opener callback.
-This factory reuse does not yet cover repeated chat-asset construction payments
-in `Llm::UseChatAssets`; tokenizer/template replacement peak ownership and that
-retry accounting remain a separate U3 startup follow-up.
+Chat startup independently reuses one node-lifetime construction pool. Each
+attempt pays its complete candidate beside the old live assets before creating
+a tokenizer or template. Failed attempts leave tokenizer, template, stops,
+render bounds and both reasoning settings intact, release their live charge,
+and reuse the same high-water reservation on retry. The reported chat footprint
+is the successful asset owner's charge, not unused pool capacity. Reader
+workspace is paid before any chat metadata read: Server lends its live verified
+parser loan; direct paid callers and retries after loan expiry take a temporary
+loan. The bound includes HF/GGUF/SentencePiece output vectors and config maps,
+not only serialized JSON. Explicit diagnostic `startup_cap == 0` keeps its
+caller-funded mode. This transaction covers chat startup and retries before
+runner adoption; later `Setup` failure ownership remains a separate contract.
 
 **Startup's construction payment** (`Server::Start`, `ComponentLlmBuild`,
 `ComponentImageServingBuild`; the default for every model, with no setting

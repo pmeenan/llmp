@@ -61,6 +61,14 @@ struct LlmTestAccess {
     model.tokenizer_ = std::make_unique<tokenizer::Tokenizer>(std::move(tokenizer));
     return model.UseTemplate(text);
   }
+  static Status UseChatAssets(Llm& model, const artifact::Artifact& artifact,
+                              const config::ModelEntry& entry, std::uint64_t cap) {
+    return model.UseChatAssets(artifact, entry, cap);
+  }
+  static bool HasChat(const Llm& model) { return model.tokenizer_ && model.template_; }
+  static auto ChatPool(const Llm& model) { return model.chat_startup_; }
+  static const chat::ChatTemplate& ChatTemplate(const Llm& model) { return *model.template_; }
+  static std::size_t LongestToken(const Llm& model) { return model.longest_token_; }
   static PrefillHint Hint(const Llm::PromptSession& session, std::uint32_t current_end) {
     return session.NextPrefillHint(current_end);
   }

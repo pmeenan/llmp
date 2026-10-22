@@ -257,7 +257,8 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                                   .prepare_state = options_.prepare_state,
                                   .state_only_prefill = options_.state_only_prefill,
                                   .prepared = std::move(opened),
-                              }));
+                              }),
+            startup_reader_);
         if (options_.diagnostic_capture_first_verify)
           Log(std::format("model {}: experimental Verify capture beside first eager run",
                           entry.name));
@@ -451,6 +452,9 @@ Status Server::Start(bool snapshot) {
     const auto after = node_.catalog().OccupancyOf(node_.domain()).Total().value();
     if (after < before || after - before != bytes)
       return Error("startup host allowance has no physical occupancy");
+    startup_reader_lifetime_ = std::make_shared<const std::byte>();
+    startup_reader_ = StartupReaderLoan(node_.catalog(), node_.domain(), *extent, bytes,
+                                        startup_reader_lifetime_);
     if (AutomaticStartup()) bootstrap = *extent;
     prepaid = true;
   }
@@ -650,6 +654,7 @@ Status Server::Start(bool snapshot) {
     // before repaying the parser loan, while the scheduler is still stopped.
     std::vector<ModelSettings>().swap(settings);
     std::vector<Llm::CalibrationRecord>().swap(calibrations);
+    startup_reader_lifetime_.reset();
     if (!node_.catalog().ReleasePinned(*bootstrap) || !node_.catalog().RemoveExtent(*bootstrap))
       return Error("could not retire the startup parser loan");
     startup_allowance = retained;

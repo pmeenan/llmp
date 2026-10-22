@@ -26,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -508,53 +509,94 @@ std::expected<bool, std::string> Llm::Keep(Branch& branch, std::span<const float
   return verdict->accepted;
 }
 
-Status Llm::UseTemplate(std::string_view text) {
-  // A rendering's bounds follow the model (D-102): what a prompt that fits
-  // its context could occupy; a value and the values held at once scale
-  // with it, never below the library's own. The longest token's bytes: a
-  // normal token's decoded, a special token's text.
-  const std::size_t longest = tokenizer_->longest_token_bytes();
-  longest_token_ = longest;
-  render_bytes_ = static_cast<std::size_t>(RenderBytes(
-      context_, longest, tokenizer_->normalization() == tokenizer::Normalization::kNfc));
+namespace {
+struct ChatTemplateCandidate {
+  std::optional<chat::ChatTemplate> chosen;
+  std::vector<std::int32_t> stops;
+  std::size_t longest = 1, render_bytes = 0;
+};
+
+std::expected<ChatTemplateCandidate, std::string> MakeChatTemplate(
+    const tokenizer::Tokenizer& tokenizer, std::uint32_t context, std::string_view text) {
+  ChatTemplateCandidate out;
+  out.longest = tokenizer.longest_token_bytes();
+  out.render_bytes = static_cast<std::size_t>(RenderBytes(
+      context, out.longest, tokenizer.normalization() == tokenizer::Normalization::kNfc));
   chat::jinja::Limits limits;
-  limits.max_output_bytes = render_bytes_;
-  limits.max_string_bytes = std::max(limits.max_string_bytes, render_bytes_);
-  limits.max_live_bytes = std::max(limits.max_live_bytes, 2 * render_bytes_);
-  auto chosen = chat::ChatTemplate::ForText(text, chat::TokenFacts::From(*tokenizer_), limits);
-  if (!chosen) {
-    return Error(chosen.error());
-  }
-  template_ = std::move(*chosen);
-  auto stops = chat::StopTokens(template_->stop(), *tokenizer_);
-  if (!stops) {
-    return Error(stops.error().ToString());
-  }
-  stops_.assign(stops->begin(), stops->end());
-  if (tokenizer_->eos() && std::ranges::find(stops_, *tokenizer_->eos()) == stops_.end()) {
-    stops_.push_back(*tokenizer_->eos());
-  }
-  if (template_->how() != chat::ChatTemplate::How::kNativeByHash) {
-    std::println(stderr, "{}: chat template {} rendered {} (D-067)", name_,
-                 template_->sha256().substr(0, 12),
-                 template_->how() == chat::ChatTemplate::How::kNativeByProbe
-                     ? std::format("natively by {}, equal on its probe corpus", template_->name())
+  limits.max_output_bytes = out.render_bytes;
+  limits.max_string_bytes = std::max(limits.max_string_bytes, out.render_bytes);
+  limits.max_live_bytes = std::max(limits.max_live_bytes, 2 * out.render_bytes);
+  auto chosen = chat::ChatTemplate::ForText(text, chat::TokenFacts::From(tokenizer), limits);
+  if (!chosen) return Error(chosen.error());
+  out.chosen = std::move(*chosen);
+  auto stops = chat::StopTokens(out.chosen->stop(), tokenizer);
+  if (!stops) return Error(stops.error().ToString());
+  out.stops.assign(stops->begin(), stops->end());
+  if (tokenizer.eos() && std::ranges::find(out.stops, *tokenizer.eos()) == out.stops.end())
+    out.stops.push_back(*tokenizer.eos());
+  return out;
+}
+
+void ReportChatTemplate(std::string_view name, const chat::ChatTemplate& chosen) {
+  if (chosen.how() != chat::ChatTemplate::How::kNativeByHash)
+    std::println(stderr, "{}: chat template {} rendered {} (D-067)", name,
+                 chosen.sha256().substr(0, 12),
+                 chosen.how() == chat::ChatTemplate::How::kNativeByProbe
+                     ? std::format("natively by {}, equal on its probe corpus", chosen.name())
                      : std::string("by the sandboxed template interpreter"));
-  }
+}
+}  // namespace
+
+Status Llm::UseTemplate(std::string_view text) {
+  auto candidate = MakeChatTemplate(*tokenizer_, context_, text);
+  if (!candidate) return Error(candidate.error());
+  template_.swap(candidate->chosen);
+  stops_.swap(candidate->stops);
+  longest_token_ = candidate->longest;
+  render_bytes_ = candidate->render_bytes;
+  ReportChatTemplate(name_, *template_);
   return {};
+}
+
+std::uint64_t Llm::startup_host_bytes() const {
+  return startup_host_bytes_ +
+         (execution_metadata_ ? execution_metadata_->capacity() +
+                                    engine::ExecutionMetadataAllowance::OverheadBytes()
+                              : 0) +
+         (chat_charge_ ? chat_charge_->bytes + engine::ExecutionMetadataAllowance::OverheadBytes()
+                       : 0);
 }
 
 Status Llm::UseChatAssets(const ja::Artifact& artifact, const config::ModelEntry& entry,
                           std::uint64_t startup_cap) {
-  auto assets = ReadChatAssets(artifact, entry);
-  if (!assets) {
-    return std::unexpected(assets.error());
+  // Reader funding precedes every payload read. Server lends its existing live
+  // serialized parser payment; a direct caller or expired view pays locally.
+  // Diagnostic cap==0 retains the explicit caller-funded construction mode.
+  std::unique_ptr<StartupArtifactPayment> reader;
+  if (startup_cap != 0) {
+    auto bytes = ChatReaderBytes();
+    if (!bytes) return Error(bytes.error());
+    if (!chat_reader_.Covers(node_->catalog(), node_->domain(), *bytes)) {
+      auto paid = StartupArtifactPayment::AdmitReader(node_->catalog(), node_->domain(), *bytes,
+                                                      startup_cap,
+                                                      platform::AvailableMemoryBytes().value_or(0));
+      if (!paid) return Error(paid.error());
+      reader = std::move(*paid);
+    }
   }
+  auto assets = ReadChatAssets(artifact, entry);
+  if (!assets) return Error(assets.error());
+  struct ChatCandidate {
+    // Declared first: every candidate/old payload dies before its live charge.
+    std::unique_ptr<serving_support::Paid> charge;
+    std::unique_ptr<tokenizer::Tokenizer> tokenizer;
+    ReasoningSettings reasoning;
+    std::optional<std::int32_t> think_start, think_end;
+    ChatTemplateCandidate chat;
+  } candidate;
   if (startup_cap != 0) {
     auto bytes = tokenizer::Tokenizer::ConstructionBytes(assets->spec);
     if (!bytes) return Error(bytes.error().ToString());
-    // Template AST nodes, strings/edges and old+new parse scratch from the
-    // actual template text, plus the bounded startup probe renderer's work.
     constexpr chat::jinja::Limits limits;
     const std::uint64_t template_size =
         assets->chat_template
@@ -562,38 +604,77 @@ Status Llm::UseChatAssets(const ja::Artifact& artifact, const config::ModelEntry
             : 0;
     const std::uint64_t nodes = std::min<std::uint64_t>(template_size + 1, limits.max_nodes);
     constexpr std::uint64_t kProbeScratchBytes = std::uint64_t{32} << 20U;
-    const std::uint64_t template_bytes = 2048 * nodes + 4 * template_size + kProbeScratchBytes;
+    // AST/source/probe plus candidate ownership and stop-token vector growth.
+    const std::uint64_t template_bytes = 2048 * nodes + 4 * template_size + kProbeScratchBytes +
+                                         sizeof(ChatCandidate) + sizeof(serving_support::Paid) +
+                                         4096;
     if (__builtin_add_overflow(*bytes, template_bytes, &*bytes))
       return Error("chat asset construction payment overflows");
-    auto paid = serving_support::AdmitStartup(*node_, *bytes, startup_cap);
-    if (!paid) return Error(paid.error());
-    chat_startup_ = std::move(*paid);
+    // The two resolved settings own their text and override provenance. Include
+    // formatting/copy growth before either setting is constructed.
+    std::uint64_t reasoning = 1024;
+    if (__builtin_add_overflow(reasoning, entry.name.size(), &reasoning))
+      return Error("chat reasoning payment overflows");
+    for (const auto key : {"reasoning_start", "reasoning_end"}) {
+      const auto setting = entry.overrides.find(key);
+      if (setting == entry.overrides.end()) continue;
+      const auto* text = std::get_if<std::string>(&setting->second);
+      if (text && __builtin_add_overflow(reasoning, text->size(), &reasoning))
+        return Error("chat reasoning payment overflows");
+    }
+    if (__builtin_mul_overflow(reasoning, std::uint64_t{8}, &reasoning) ||
+        __builtin_add_overflow(*bytes, reasoning, &*bytes))
+      return Error("chat reasoning payment overflows");
+    if (!chat_startup_) {
+      std::uint64_t total = 0;
+      if (__builtin_add_overflow(*bytes, engine::ExecutionMetadataAllowance::OverheadBytes(),
+                                 &total))
+        return Error("chat asset payment overhead overflows");
+      auto pool = serving_support::AdmitExecutionMetadata(*node_, total, startup_cap);
+      if (!pool) return Error(pool.error());
+      chat_startup_ = std::move(*pool);
+    }
+    if (!serving_support::ChargeExecutionMetadata(chat_startup_, *bytes, node_, startup_cap))
+      return Error("chat asset construction exceeds the node execution cap or available memory");
+    candidate.charge = std::make_unique<serving_support::Paid>(chat_startup_, *bytes);
   }
   auto created = tokenizer::Tokenizer::Create(std::move(assets->spec));
-  if (!created) {
-    return Error(std::format("{}: {}", assets->from, created.error().ToString()));
-  }
-  tokenizer_ = std::make_unique<tokenizer::Tokenizer>(std::move(*created));
-  // The reasoning markers (D-103): an override, else the vocabulary's
-  // "<think>" pair, else none.
-  if (auto r = ResolveReasoning(settings_, entry,
-                                [this](std::string_view text) { return tokenizer_->Find(text); });
-      !r) {
-    return r;
-  }
-  const auto find = [this](const std::string& text) -> std::optional<std::int32_t> {
-    return text.empty() ? std::nullopt : tokenizer_->Find(text);
+  if (!created) return Error(std::format("{}: {}", assets->from, created.error().ToString()));
+  candidate.tokenizer = std::make_unique<tokenizer::Tokenizer>(std::move(*created));
+  auto reasoning = ResolveReasoning(
+      entry, [&](std::string_view text) { return candidate.tokenizer->Find(text); });
+  if (!reasoning) return Error(reasoning.error());
+  candidate.reasoning = std::move(*reasoning);
+  const auto find = [&](const std::string& text) -> std::optional<std::int32_t> {
+    return text.empty() ? std::nullopt : candidate.tokenizer->Find(text);
   };
-  think_start_ = find(settings_.reasoning_start.value);
-  think_end_ = find(settings_.reasoning_end.value);
-  // A model is refused when it could serve no turn.
-  if (!assets->chat_template) {
+  candidate.think_start = find(candidate.reasoning.start.value);
+  candidate.think_end = find(candidate.reasoning.end.value);
+  if (!assets->chat_template)
     return Error(
         std::format("{} keeps no chat template and models.{}.chat_template is not set, "
                     "so it has no chat turns",
                     assets->from, entry.name));
-  }
-  return UseTemplate(*assets->chat_template);
+  auto chosen = MakeChatTemplate(*candidate.tokenizer, context_, *assets->chat_template);
+  if (!chosen) return Error(chosen.error());
+  candidate.chat = std::move(*chosen);
+  // Publication cannot fail or allocate. The candidate takes every old payload
+  // and its independent charge, keeping old+new funded through the last swap.
+  static_assert(std::is_nothrow_swappable_v<decltype(template_)>);
+  static_assert(std::is_nothrow_swappable_v<Setting<std::string>>);
+  using std::swap;
+  chat_charge_.swap(candidate.charge);
+  tokenizer_.swap(candidate.tokenizer);
+  template_.swap(candidate.chat.chosen);
+  stops_.swap(candidate.chat.stops);
+  swap(longest_token_, candidate.chat.longest);
+  swap(render_bytes_, candidate.chat.render_bytes);
+  swap(think_start_, candidate.think_start);
+  swap(think_end_, candidate.think_end);
+  swap(settings_.reasoning_start, candidate.reasoning.start);
+  swap(settings_.reasoning_end, candidate.reasoning.end);
+  ReportChatTemplate(name_, *template_);
+  return {};
 }
 
 Status Llm::PrepareBranches(std::uint32_t count, std::uint32_t draft_depth) {

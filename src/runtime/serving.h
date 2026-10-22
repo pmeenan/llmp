@@ -91,6 +91,7 @@
 #include "runtime/intake_limits.h"
 #include "runtime/kept_record.h"
 #include "runtime/llm_build.h"
+#include "runtime/memory_guard.h"
 #include "runtime/model_settings.h"
 #include "runtime/prefill.h"
 #include "runtime/pressure_trim.h"
@@ -102,6 +103,9 @@
 #include "tokenizer/tokenizer.h"
 
 namespace llmp::runtime {
+namespace serving_support {
+struct Paid;
+}
 
 using Status = std::expected<void, std::string>;
 using Clock = std::chrono::steady_clock;
@@ -636,15 +640,7 @@ class Llm final : public Served {
   std::string plan_report() const override;
   void set_plan_report_sink(kernels::PlanRecordSink sink) override;
   void ReportPlans(const kernels::PlanRecordSink& sink) const override;
-  std::uint64_t startup_host_bytes() const override {
-    return startup_host_bytes_ +
-           (execution_metadata_ ? execution_metadata_->capacity() +
-                                      engine::ExecutionMetadataAllowance::OverheadBytes()
-                                : 0) +
-           (chat_startup_
-                ? chat_startup_->capacity() + engine::ExecutionMetadataAllowance::OverheadBytes()
-                : 0);
-  }
+  std::uint64_t startup_host_bytes() const override;
   std::string slots_report() const override;
   void ReclaimCandidates(std::uint32_t owner, bool running,
                          std::vector<memory::ReclaimCandidate>& out) override;
@@ -669,7 +665,7 @@ class Llm final : public Served {
   std::string extra() const override;
 
   Llm(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-      const config::RuntimeRoles& roles, int index, LlmBuild build);
+      const config::RuntimeRoles& roles, int index, LlmBuild build, StartupReaderLoan reader = {});
   Llm(const Llm&) = delete;
   Llm& operator=(const Llm&) = delete;
   Llm(Llm&&) = delete;
@@ -1457,7 +1453,11 @@ class Llm final : public Served {
   std::uint32_t context_ = config::kDefaultContext;
   bool speculate_ = false;
   bool bos_ = false;  // EncodeText puts BOS first
+  StartupReaderLoan chat_reader_;
+  // One reusable node-lifetime high-water pool, with a separate live asset
+  // charge. Payload members below die before their charge returns to the pool.
   std::shared_ptr<engine::ExecutionMetadataAllowance> chat_startup_{};
+  std::unique_ptr<serving_support::Paid> chat_charge_;
   std::unique_ptr<tokenizer::Tokenizer> tokenizer_;
   std::optional<chat::ChatTemplate> template_;
   std::size_t render_bytes_ = chat::jinja::Limits{}.max_output_bytes;  // set by UseTemplate
@@ -2024,6 +2024,9 @@ class Server {
   // Start's prepaid parser loan and the execution ceiling it was admitted
   // under (a diagnostic cap, else the node's measured memory): what an image
   // source's readers and construction are bounded by before the node runs.
+  // Weak views expire when the actual parser extent is retired.
+  std::shared_ptr<const std::byte> startup_reader_lifetime_;
+  StartupReaderLoan startup_reader_;
   std::uint64_t startup_parser_loan_ = 0;
   std::uint64_t startup_cap_ = 0;
   std::FILE* log_;

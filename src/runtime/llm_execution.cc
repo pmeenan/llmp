@@ -29,8 +29,9 @@ std::int32_t Argmax(std::span<const float> row) {
 }  // namespace
 
 Llm::Llm(en::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-         const config::RuntimeRoles& roles, int index, LlmBuild build)
-    : default_branch_(*this),
+         const config::RuntimeRoles& roles, int index, LlmBuild build, StartupReaderLoan reader)
+    : chat_reader_(std::move(reader)),
+      default_branch_(*this),
       node_ref_(node),
       entry_(entry),
       store_(roles.installed),
@@ -48,7 +49,16 @@ Llm::Llm(en::PagedNode& node, const config::ModelEntry& entry, const ModelSettin
                                      static_cast<std::uint32_t>(kMaxBranches));
 }
 
-Llm::~Llm() = default;
+Llm::~Llm() {
+  // These chat-owned payloads live in the base settings. Retire them before
+  // member destruction returns the chat charge (the base dies last).
+  // Empty assignment may retain string capacity; swaps transfer the buffers
+  // into locals whose destruction precedes every member's destruction.
+  ReasoningSettings retired;
+  static_assert(noexcept(std::swap(settings_.reasoning_start, retired.start)));
+  std::swap(settings_.reasoning_start, retired.start);
+  std::swap(settings_.reasoning_end, retired.end);
+}
 
 Status Llm::Built() const {
   if (!runner_ || !composer_ || !plain_) return Error(name_ + " is not set up");

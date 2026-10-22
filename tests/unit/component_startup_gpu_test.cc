@@ -6,10 +6,12 @@
 #include <unistd.h>
 
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 
 #include "artifact_writer.h"
+#include "chat_tokenizer.h"
 #include "expected_error.h"
 #include "runtime/component_build.h"
 #include "runtime/memory_guard.h"
@@ -292,4 +294,69 @@ TEST_F(ComponentStartupGpu, LastShardCallbackRefundsBeforeTheNodeCatalogDies) {
   node.reset();                  // actual StartupArtifactPayment refund checks its catalog extent
   EXPECT_TRUE(last.expired());
 }
+TEST_F(ComponentStartupGpu, ChatRetryBeforeRunnerAdoptionPreservesTheLastSuccessfulAssets) {
+  ASSERT_TRUE(plan.spec);
+  auto spec = sp::FromJson(*plan.spec);
+  ASSERT_TRUE(spec);
+  spec->stages[0].heads.output->params = {{"rows", std::int64_t{261}}};
+  spec->stages[0].embedding->weights[0].tensor = "head";
+  sp::Canonicalize(*spec);
+  plan.spec = sp::ToJson(*spec);
+  plan.groups[0].resources[0].aliases.clear();
+  plan.groups[0].resources.push_back({.name = "head",
+                                      .format = {.encoding = llmp::format::Encoding::kF32,
+                                                 .layout = llmp::format::Layout::kDense,
+                                                 .shape = {.ne = {32, 261, 1, 1}, .rank = 2}}});
+  plan.meta = {{"tokenizer.model", llmp::test_support::chat_tokenizer::Model()},
+               {"tokenizer_config.json", R"({"bos_token":"<bos>","eos_token":"<eos>"})"}};
+  const auto path = llmp::test::Publish(store, llmp::test::Render(plan));
+  entry.artifact = path.filename().string();
+  entry.chat_template = store / "repairable-template.jinja";
+  const auto write = [&](std::string_view text) { std::ofstream(*entry.chat_template) << text; };
+  write("{{ messages[0].content }}");
+  en::PagedNode node({.compute_streams = 1, .slots = 1, .slot_bytes = en::kPagedExtent});
+  ASSERT_TRUE(node.Open());
+  rt::ComponentBuildOptions options;
+  options.automatic_startup_cap = std::uint64_t{32} << 30U;
+  options.shared_compiler = std::make_shared<en::SharedCompilerAllowance>();
+  auto factory = rt::ComponentLlmBuild(node, store, entry, 0, std::move(options));
+  bool first = true;
+  auto build =
+      [&](const rt::ModelSettings& resolved) -> std::expected<rt::LlmBuildParts, std::string> {
+    auto parts = factory(resolved);
+    if (!parts) return std::unexpected(parts.error());
+    if (first) {
+      parts->branch_depth = 8;  // actual post-chat, pre-runner-adoption refusal
+      first = false;
+    }
+    return parts;
+  };
+  llmp::config::RuntimeRoles roles;
+  roles.installed = store;
+  rt::Llm model(node, entry, settings, roles, 0, build);
+  auto refused = model.Setup();
+  ASSERT_FALSE(refused);
+  ASSERT_NE(refused.error().find("conversation-owned depth"), std::string::npos) << refused.error();
+  EXPECT_FALSE(model.has_paged());
+  std::vector<std::int32_t> original;
+  ASSERT_TRUE(model.tokenizer().Encode("a", {}, original));
+  EXPECT_EQ(original, (std::vector<std::int32_t>{260}));
+  const auto live_chat = model.startup_host_bytes();
+  EXPECT_GT(live_chat, 0U);
+  write("{% if");
+  auto bad_template = model.Setup();
+  ASSERT_FALSE(bad_template);
+  EXPECT_NE(bad_template.error().find("interpreter does not accept"), std::string::npos);
+  EXPECT_FALSE(model.has_paged());
+  EXPECT_EQ(model.startup_host_bytes(), live_chat);
+  std::vector<std::int32_t> still_old;
+  ASSERT_TRUE(model.tokenizer().Encode("a", {}, still_old));
+  EXPECT_EQ(still_old, original);
+  write("{{ messages[0].content }}");
+  auto retried = model.Setup();
+  EXPECT_TRUE(retried) << Failed(retried).value_or("");
+  EXPECT_TRUE(model.has_paged());
+  ASSERT_TRUE(node.TearDown({}));
+}
+
 }  // namespace

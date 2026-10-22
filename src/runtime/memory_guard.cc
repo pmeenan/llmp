@@ -14,10 +14,13 @@
 #include "artifact/artifact.h"
 #include "artifact/json.h"
 #include "base/check.h"
+#include "base/gguf.h"
 #include "base/json.h"
 #include "runtime/calibration.h"
 #include "runtime/component_bindings.h"
 #include "runtime/model_settings.h"
+#include "tokenizer/gguf.h"
+#include "tokenizer/tokenizer.h"
 
 namespace llmp::runtime {
 
@@ -95,14 +98,63 @@ std::expected<std::uint64_t, std::string> StartupBootstrapBytes(std::uint64_t al
       16 * (kMaxCalibrationBytes + sizeof(ModelSettings) + sizeof(Calibration)) +
       4 * (sizeof(OpenedModelArtifacts) + sizeof(std::shared_ptr<OpenedModelArtifacts>) + 64);
   constexpr std::uint64_t alignment = a::kChunkBytes;
+  auto chat = ChatReaderBytes();
+  if (!chat) return std::unexpected(chat.error());
   std::uint64_t bytes = 0, configured = 0;
   if (aliases == 0 || __builtin_mul_overflow(configuration_bytes, std::uint64_t{16}, &configured) ||
       __builtin_mul_overflow(aliases, per_alias, &bytes) ||
       __builtin_add_overflow(bytes, configured, &bytes) ||
       __builtin_add_overflow(bytes, fixed, &bytes) ||
+      __builtin_add_overflow(bytes, *chat, &bytes) ||
       __builtin_add_overflow(bytes, alignment - 1, &bytes))
     return std::unexpected("startup parser loan overflows");
   return bytes / alignment * alignment;
+}
+
+std::expected<std::uint64_t, std::string> ChatReaderBytes() {
+  constexpr base::json::Limits json;
+  constexpr auto input = artifact::kMaxMetadataBytes;  // named readers have the same 64 MiB cap
+  static_assert(kMaxTokenizerBytes == input);
+  // JSON parser node/kid/pending + duplicate-key scratch (36/value).
+  // HF postprocessor pending stacks, ordered definition map nodes and compact
+  // ids/slices coexist: 3x growth for each, covered by 256 bytes/value.
+  // Input, parsed text and copied token/merge/regex/template strings coexist;
+  // config can be parsed while the tokenizer source and spec remain live.
+  constexpr std::uint64_t json_work = (36 + 256) * json.max_values;
+  constexpr std::uint64_t text = 16 * input + 4 * json.max_string_bytes;
+  // HF config may resize a sparse ID up to kMaxVocabulary before rejecting it.
+  // SentencePiece vector growth and HF config's sorted text->ID index coexist
+  // with strings, kinds, scores and five bit vectors: 3x old/new capacities.
+  constexpr std::uint64_t vocabulary =
+      3 * tokenizer::kMaxVocabulary *
+      (sizeof(std::string) + sizeof(tokenizer::TokenKind) + sizeof(float) + 5 +
+       sizeof(std::pair<std::string_view, tokenizer::TokenId>));
+  // GGUF conversion can construct a spec before Create's vocabulary cap. The
+  // combined string-array count is bounded by their 8-byte wire lengths;
+  // converted views and token/merge owners coexist, including rejected inputs.
+  constexpr std::uint64_t arrays =
+      3 * std::min<std::uint64_t>(tokenizer::kMaxGgufArray, input / 8) *
+      (sizeof(std::string_view) + 2 * sizeof(std::string) + sizeof(float) + 2);
+  constexpr std::uint64_t keys = 3 * tokenizer::kMaxGgufKeys * (sizeof(base::gguf::KeyValue) + 128);
+  std::uint64_t bytes = 4096;
+  for (const auto term : {json_work, text, vocabulary, arrays, keys})
+    if (__builtin_add_overflow(bytes, term, &bytes))
+      return std::unexpected("chat reader inventory overflows");
+  if (__builtin_add_overflow(bytes, artifact::kChunkBytes - 1, &bytes))
+    return std::unexpected("chat reader inventory alignment overflows");
+  return bytes / artifact::kChunkBytes * artifact::kChunkBytes;
+}
+
+bool StartupReaderLoan::Covers(const catalog::Catalog& catalog, catalog::DomainId domain,
+                               std::uint64_t bytes) const {
+  if (lifetime_.expired() || catalog_ != &catalog || domain_ != domain || bytes > bytes_)
+    return false;
+  const auto extent = catalog.Describe(extent_);
+  return extent && extent->state == catalog::ExtentState::kResident &&
+         extent->descriptor.domain == domain &&
+         extent->descriptor.recovery == catalog::Recovery::kPinned &&
+         extent->descriptor.memory_class == catalog::MemoryClass::kRuntime &&
+         extent->descriptor.size.value() >= bytes_;
 }
 
 std::expected<std::uint64_t, std::string> StartupArtifactBytes(const artifact::Artifact& artifact) {
@@ -200,10 +252,20 @@ std::expected<std::unique_ptr<StartupArtifactPayment>, std::string> StartupArtif
                                    true);
   if (!payment) return std::unexpected("startup artifact payment could not be cataloged");
   return std::unique_ptr<StartupArtifactPayment>(
-      new StartupArtifactPayment(catalog, *payment, total));
+      new StartupArtifactPayment(catalog, domain, *payment, total));
+}
+
+std::expected<std::unique_ptr<StartupArtifactPayment>, std::string>
+StartupArtifactPayment::AdmitReader(catalog::Catalog& catalog, catalog::DomainId domain,
+                                    std::uint64_t bytes, std::uint64_t cap,
+                                    std::uint64_t available) {
+  auto owner = Admit(catalog, domain, bytes, cap, available);
+  if (owner) (*owner)->reader_ = true;
+  return owner;
 }
 
 StartupArtifactPayment::~StartupArtifactPayment() {
+  lifetime_.reset();
   base::Check(
       catalog_->ReleasePinned(extent_).has_value() && catalog_->RemoveExtent(extent_).has_value(),
       "startup artifact payment lost its held catalog extent");

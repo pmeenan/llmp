@@ -93,6 +93,10 @@ The entries below record each change; the record of the milestone is
 - Record the failed Gemma2 scalar numerical transfer screen and reopen its
   qualification, preserving the registered bounds and frozen expectations.
 
+- Chat startup retries reuse paid construction capacity, preserve previous assets
+  and reasoning settings on failure, and fund reader workspace before loading
+  tokenizer or template data. Replacement admits both old and new live assets.
+
 - Refresh the two EXL3 fixture artifacts with source sampling defaults while
   preserving all encoded tensor parts and source identities (M3.5 U3).
 

@@ -1180,10 +1180,19 @@ TEST(ModelSettings, ResolvesTheReasoningMarkers) {
   EXPECT_EQ(s.reasoning_start.value, "");
   EXPECT_EQ(s.reasoning_start.source, SettingSource::kOverride);
 
+  const auto original_start = s.reasoning_start;
+  const auto original_end = s.reasoning_end;
+  entry.overrides["reasoning_start"] = std::string("<think>");
   entry.overrides["reasoning_end"] = std::string("<nope>");
   auto refused = ResolveReasoning(s, entry, find);
   ASSERT_FALSE(refused.has_value());
   EXPECT_THAT(refused.error(), HasSubstr("not a token"));
+  EXPECT_EQ(s.reasoning_start.value, original_start.value);
+  EXPECT_EQ(s.reasoning_start.source, original_start.source);
+  EXPECT_EQ(s.reasoning_start.basis, original_start.basis);
+  EXPECT_EQ(s.reasoning_end.value, original_end.value);
+  EXPECT_EQ(s.reasoning_end.source, original_end.source);
+  EXPECT_EQ(s.reasoning_end.basis, original_end.basis);
 }
 
 // The listing is the schema's: every setting a model uses, once, in

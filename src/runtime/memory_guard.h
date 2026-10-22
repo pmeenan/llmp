@@ -35,6 +35,7 @@
 #ifndef LLMP_RUNTIME_MEMORY_GUARD_H_
 #define LLMP_RUNTIME_MEMORY_GUARD_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -90,6 +91,31 @@ std::expected<void, std::string> CheckMemoryGuard(const MemoryGuard& guard);
 std::expected<std::uint64_t, std::string> StartupBootstrapBytes(
     std::uint64_t aliases, std::uint64_t configuration_bytes = 0);
 
+// Complete reader workspace before tokenizer construction: bounded input/JSON,
+// GGUF conversion, SentencePiece vectors and HF config/postprocessor owners.
+std::expected<std::uint64_t, std::string> ChatReaderBytes();
+
+// A weak proof of a live serialized startup reader payment. It never keeps the
+// payment alive. Only its owner can issue it; validate again before each read.
+class StartupReaderLoan {
+ public:
+  StartupReaderLoan() = default;
+  bool Covers(const catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes) const;
+
+ private:
+  friend class StartupArtifactPayment;
+  friend class Server;
+  StartupReaderLoan(const catalog::Catalog& catalog, catalog::DomainId domain,
+                    catalog::ExtentId extent, std::uint64_t bytes,
+                    const std::shared_ptr<const std::byte>& lifetime)
+      : catalog_(&catalog), domain_(domain), extent_(extent), bytes_(bytes), lifetime_(lifetime) {}
+  const catalog::Catalog* catalog_ = nullptr;
+  catalog::DomainId domain_{};
+  catalog::ExtentId extent_{};
+  std::uint64_t bytes_ = 0;
+  std::weak_ptr<const std::byte> lifetime_;
+};
+
 // Retained opened-artifact descriptors plus the spec/source admission bound,
 // from immutable opened metadata, without parsing the spec or copying owners.
 std::expected<std::uint64_t, std::string> StartupArtifactBytes(const artifact::Artifact& artifact);
@@ -113,17 +139,30 @@ class StartupArtifactPayment {
   static std::expected<std::unique_ptr<StartupArtifactPayment>, std::string> Admit(
       catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes, std::uint64_t cap,
       std::uint64_t available);
+  // Only an explicitly temporary reader payment can lend free parser space;
+  // a retained artifact/spec payment cannot authorize another payload read.
+  static std::expected<std::unique_ptr<StartupArtifactPayment>, std::string> AdmitReader(
+      catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes, std::uint64_t cap,
+      std::uint64_t available);
   ~StartupArtifactPayment();
   StartupArtifactPayment(const StartupArtifactPayment&) = delete;
   StartupArtifactPayment& operator=(const StartupArtifactPayment&) = delete;
   std::uint64_t bytes() const { return bytes_; }
+  StartupReaderLoan reader_loan() const {
+    return reader_ ? StartupReaderLoan(*catalog_, domain_, extent_, bytes_, lifetime_)
+                   : StartupReaderLoan();
+  }
 
  private:
-  StartupArtifactPayment(catalog::Catalog& catalog, catalog::ExtentId extent, std::uint64_t bytes)
-      : catalog_(&catalog), extent_(extent), bytes_(bytes) {}
+  StartupArtifactPayment(catalog::Catalog& catalog, catalog::DomainId domain,
+                         catalog::ExtentId extent, std::uint64_t bytes)
+      : catalog_(&catalog), domain_(domain), extent_(extent), bytes_(bytes) {}
   catalog::Catalog* catalog_;
+  catalog::DomainId domain_;
+  std::shared_ptr<const std::byte> lifetime_ = std::make_shared<const std::byte>();
   catalog::ExtentId extent_;
   std::uint64_t bytes_;
+  bool reader_ = false;
 };
 
 // An ordinary startup's budget (no LLMP_DIAGNOSTIC_* ceiling), from the

@@ -348,6 +348,11 @@ const spec::ServingRecipe* RecipeOf(std::string_view architecture, std::string_v
 // none); else derived, "<think>" and "</think>" where the vocabulary has
 // both; else none.
 using FindToken = std::function<std::optional<std::int32_t>(std::string_view)>;
+struct ReasoningSettings {
+  Setting<std::string> start, end;
+};
+std::expected<ReasoningSettings, std::string> ResolveReasoning(const config::ModelEntry& entry,
+                                                               const FindToken& find);
 std::expected<void, std::string> ResolveReasoning(ModelSettings& settings,
                                                   const config::ModelEntry& entry,
                                                   const FindToken& find);

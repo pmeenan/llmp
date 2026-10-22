@@ -70,6 +70,15 @@ add_executable(llm_policy_test llm_policy_test.cc)
 target_link_libraries(llm_policy_test PRIVATE llmp_runtime_llm llmp_fake_device_backend)
 llmp_gtest(llm_policy_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# Chat startup transactions use real tokenizer/template readers on a fake node.
+add_executable(chat_startup_test chat_startup_test.cc)
+target_link_libraries(chat_startup_test PRIVATE llmp_runtime_llm llmp_engine_core
+                                                llmp_fake_step_source llmp_fake_device_backend
+                                                llmp_test_artifact_writer llmp_platform)
+llmp_gtest(chat_startup_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
+             ENVIRONMENT_MODIFICATION "LLMP_TEST_DATA=set:${CMAKE_CURRENT_SOURCE_DIR}/data")
+
 # The calibration record (D-103): its format, key, atomic write and trusted
 # read, and what a model's first uses measure.
 add_executable(calibration_test calibration_test.cc)
