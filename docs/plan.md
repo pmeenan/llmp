@@ -1029,6 +1029,12 @@ D-122).
       and a bound token that forces it for `tool_choice: required` or a
       named function; no per-model parser code
       ([assessment](deepinfer-assessment.md#8-tool-calls-and-structured-output)).
+      The forced begin sequence is fed in the same step as the token
+      that selects it, as the tokenizer's canonical encoding of the forced
+      bytes (checked to reproduce them, with an unstable last block held
+      back), so it costs about one weight read and never feeds a token
+      sequence the tokenizer would not produce
+      ([Locals](locals-assessment.md#2-canonical-forced-spans-jump-forward)).
       Each format's data also declares, after
       [Flare](flare-assessment.md#5-tool-calls-and-the-messages-profile)
       (owner, 2026-10-20), the per-call begin and end, where the name sits,
@@ -1140,6 +1146,24 @@ D-122).
       rules (cross-conversation byte stability is still measured as above). A hit
       check predicts how many prefill launches the hit leaves and compares
       the runtime's counters.
+      Two more measurements first, from
+      [Locals](locals-assessment.md#3-reply-boundary-checkpoints-for-recurrent-state)
+      (owner, 2026-10-22), for stateless clients on recurrent models
+      (Qwen3.8): whether a client's next request hits the retained
+      continuation when the chat template renders an earlier reply
+      differently from the open turn (Qwen3.5's drops the empty think block;
+      check Qwen3.8's) and when the model's own reply is re-tokenized from
+      resent text. If either misses, the renderer reports a second
+      boundary per turn, the position where the next request's rendering of
+      this reply diverges, found by differential rendering (two renderings
+      with different marker strings, first differing position; no
+      per-template rule), the state there is checkpointed (recurrent and
+      window state only, with views of the KV), and the tokens of the
+      model's own reply are retained with the continuation. Moving volatile
+      per-session blocks (date, folder) to the end of a system prompt is
+      considered only if the byte-stability measurement above shows they
+      cause the misses; it changes what the model reads, so an opt-in
+      client-profile mode, off by default (rule 11).
 - [ ] **Checkpoints off the turn path, measure first** (owner,
       2026-10-20, from [Flare](flare-assessment.md#9-checkpoints-off-the-turn-path)):
       turn checkpoints are captured and restored synchronously on the turn
@@ -3031,6 +3055,23 @@ sustained-use schedule and duration.
       sequence so reasoning stays free; the mask filled while the step
       runs; and one mask per draft step with rollback, in the shared
       sampler and verify path.
+      From [Locals](locals-assessment.md) (owner, 2026-10-22), generic
+      over the grammar engine: budget-aware masking, a per-grammar-state
+      minimum-completion table built when the grammar compiles (forced
+      spans and the pushdown stack included) that masks any token after
+      which no valid completion fits in the remaining `max_tokens`, so a
+      length finish always leaves valid JSON or a closed call (check
+      whether xgrammar exposes the table, else build it above it); and
+      canonical forced spans (jump-forward) as certain-acceptance
+      proposals in the speculation scheduler's verify rows, tokenized
+      canonically with the boundary rule and healing, generalizing M3.5's
+      forced begin sequence. Leads, measured after the above exist and
+      only if they pay: tree decoding of a small candidate set with its
+      forced spans in one pass (needs tree-masked attention rows; Locals
+      has no measurement), computing the output head only for the allowed
+      rows when few are allowed, and prompt-lookup drafts walked through
+      the automaton and cut at the first disallowed token (beside the
+      history-copy drafts above).
 - [ ] **Sustained use:** a bounded multi-hour agent/subagent session on the
       pair with repeated switches, branches, cancellations (during I/O and
       while paused included), expiry by capacity and by test-shortened idle
@@ -3388,6 +3429,7 @@ dependency-group scoring, optimistic MoE) live in features.md.
 | Automatic membership changes | After M6a, when configured enrollment and explicit restart cannot reasonably serve membership churn | Candidate mechanism under D-023/D-038; bootstrap discovery and path refresh for enrolled nodes are already M6a scope |
 | Conductor election | After M6a, when conductor failover becomes an explicit requirement; first define fencing and in-flight request handling | Candidate mechanism under D-023; one configured conductor initially |
 | Automatic replica placement and balancing | After M6a, when measured overlapping demand on a small model causes waiting while another node has sufficient headroom | Confirmed D-023 scope with deferred delivery; preserve affinity and include duplicated weights/state in budgets |
+| Apple-silicon port design notes | When the Apple port is scheduled (AGENTS.md: Apple first among later ports) | Compute dtype as a device-capability plan input (M1/M2 emulate bfloat16), row-count classes in rank data, measuring against current MLX on the target chip, per-platform relayouts for formats Metal reads natively ([Locals assessment](locals-assessment.md#apple-silicon-notes-for-the-later-port)) |
 | Discrete-GPU fast swap of large models | After the two-Spark swap (D-087); small models only fit a 12 GB card | M6 validates the A→B→A fast swap on the workstation's RTX 3080 Ti (D-082); a later slice or milestone takes the swap path further there |
 
 Review untriggered items during M9 and M10 planning; they do not
