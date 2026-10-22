@@ -47,6 +47,8 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Qwen3.5-family MLX imports preserve converter-folded RMS scales instead of
+  adding one twice; Hugging Face zero-centered norms retain their import fold.
 - Swap reports follow each activation's asynchronous releases across
   same-model requests, cancellation and overlapping model switches (M3.5 U10).
 - Kept-state and process-lock files pin existing regular objects before I/O

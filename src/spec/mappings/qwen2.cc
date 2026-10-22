@@ -522,7 +522,8 @@ constexpr std::array kQwen35Folds = {
     FoldRule{.fold = "norm.plus_one", .container = "safetensors", .imported = true},
     FoldRule{.fold = "ssm.a_neg_exp", .container = "safetensors", .imported = true},
     FoldRule{.fold = "gdn.value_heads_tiled", .container = "safetensors", .imported = true},
-    FoldRule{.fold = "norm.plus_one", .container = "mlx", .imported = true},
+    // MLX conversion stores the RMS scale itself; HF stores gamma - 1.
+    FoldRule{.fold = "norm.plus_one", .container = "mlx"},
     FoldRule{.fold = "ssm.a_neg_exp", .container = "mlx", .imported = true},
     FoldRule{.fold = "gdn.value_heads_tiled", .container = "mlx", .imported = true},
 };

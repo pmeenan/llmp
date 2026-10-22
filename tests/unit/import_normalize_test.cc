@@ -30,6 +30,7 @@
 #include "gemma4_fixture.h"
 #include "import/normalize.h"
 #include "import/readers/gguf.h"
+#include "import/readers/mlx.h"
 #include "import/readers/safetensors.h"
 #include "import_fixtures.h"
 #include "import_target_fixture.h"
@@ -2100,6 +2101,136 @@ TEST(ImportNormalizeTest, Gemma4NestedNativeMathFlagsFailClosed) {
   ASSERT_TRUE(dense_valid) << test_support::Failed(dense_valid, &Error::ToString).value_or("");
   Value(dense, "text_config.enable_moe_block", true);
   EXPECT_FALSE(NormalizationBound(dense));
+}
+
+// MLX qwen3_5 conversion has already added one to RMS scales, while HF
+// stores zero-centered scales. GDN's gated norm is ordinary in both formats.
+// Exercise the actual reader, mapping, transform routes and runtime payloads.
+TEST(ImportNormalizeSafetensorsTest, Qwen35MlxNormsAreConverterFoldedAndHfNormsAreNot) {
+  using fixtures::E;
+  std::vector<fixtures::Entry> entries{
+      E("model.embed_tokens.weight", "F32", {16, 64}),
+      E("model.norm.weight", "BF16", {64}),
+      E("lm_head.weight", "F32", {16, 64}),
+  };
+  for (unsigned layer = 0; layer < 2; ++layer) {
+    const auto p = std::format("model.layers.{}.", layer);
+    for (const auto norm : {"input_layernorm.weight", "post_attention_layernorm.weight"})
+      entries.push_back(E(p + norm, "BF16", {64}));
+    for (const auto proj : {"gate_proj", "up_proj"})
+      entries.push_back(E(p + "mlp." + proj + ".weight", "F32", {128, 64}));
+    entries.push_back(E(p + "mlp.down_proj.weight", "F32", {64, 128}));
+    if (layer == 0) {
+      const auto q = p + "linear_attn.";
+      entries.push_back(E(q + "in_proj_qkv.weight", "F32", {128, 64}));
+      entries.push_back(E(q + "in_proj_z.weight", "F32", {64, 64}));
+      for (const auto proj : {"in_proj_a", "in_proj_b"})
+        entries.push_back(E(q + proj + ".weight", "F32", {2, 64}));
+      entries.push_back(E(q + "out_proj.weight", "F32", {64, 64}));
+      entries.push_back(E(q + "conv1d.weight", "F32", {128, 1, 4}));
+      entries.push_back(E(q + "A_log", "BF16", {2}));
+      entries.push_back(E(q + "dt_bias", "F32", {2}));
+      entries.push_back(E(q + "norm.weight", "BF16", {32}));
+    } else {
+      const auto q = p + "self_attn.";
+      entries.push_back(E(q + "q_proj.weight", "F32", {128, 64}));
+      for (const auto proj : {"k_proj", "v_proj"})
+        entries.push_back(E(q + proj + ".weight", "F32", {32, 64}));
+      entries.push_back(E(q + "o_proj.weight", "F32", {64, 64}));
+      for (const auto norm : {"q_norm", "k_norm"})
+        entries.push_back(E(q + norm + ".weight", "BF16", {32}));
+    }
+  }
+  constexpr std::string_view config = R"({"model_type":"qwen3_5","text_config":{
+    "num_hidden_layers":2,"hidden_size":64,"intermediate_size":128,
+    "num_attention_heads":2,"num_key_value_heads":1,"head_dim":32,
+    "max_position_embeddings":128,"rms_norm_eps":0.000001,
+    "linear_conv_kernel_dim":4,"linear_num_key_heads":1,"linear_num_value_heads":2,
+    "linear_key_head_dim":32,"linear_value_head_dim":32,
+    "layer_types":["linear_attention","full_attention"],
+    "rope_parameters":{"rope_type":"default","rope_theta":10000,
+      "partial_rotary_factor":0.25}}})";
+  constexpr std::array<std::uint16_t, 4> folded{0x3F00, 0x3FC0, 0x3F80, 0x3F40};
+  constexpr std::array<std::uint16_t, 4> centered{0xBF00, 0x3F00, 0x0000, 0xBE80};
+  constexpr std::array<float, 4> expected{0.5F, 1.5F, 1.0F, 0.75F};
+  for (const bool mlx : {false, true}) {
+    SCOPED_TRACE(mlx ? "MLX converter-folded" : "HF zero-centered");
+    auto own_entries = entries;
+    for (auto& e : own_entries)
+      if (mlx && e.name.ends_with("conv1d.weight")) e.shape = {128, 4, 1};
+    auto bytes = fixtures::Shard(own_entries, mlx ? R"({"format":"mlx"})" : "");
+    std::size_t payload_bytes = 0;
+    for (const auto& e : own_entries) payload_bytes += e.bytes;
+    auto offset = bytes.size() - payload_bytes;
+    std::fill(bytes.begin() + static_cast<std::ptrdiff_t>(offset), bytes.end(), std::byte{0});
+    for (const auto& e : own_entries) {
+      if (e.dtype == "BF16" && e.name.ends_with("norm.weight")) {
+        const auto& values = mlx || e.name.ends_with("linear_attn.norm.weight") ? folded : centered;
+        for (std::size_t j = 0; j < e.bytes / 2; ++j) {
+          bytes[offset + j * 2] = static_cast<std::byte>(values[j % 4] & 0xFFU);
+          bytes[offset + j * 2 + 1] = static_cast<std::byte>(values[j % 4] >> 8U);
+        }
+      }
+      offset += e.bytes;
+    }
+    auto source = mlx ? ParseMlx(bytes, config) : ParseSafetensors(bytes, config);
+    ASSERT_TRUE(source) << test_support::Failed(source, &Error::ToString).value_or("");
+    EXPECT_EQ(source->container, mlx ? "mlx" : "safetensors");
+    auto plan = Normalize(std::move(*source), kFunded);
+    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+    ASSERT_TRUE(plan->is_indexed());
+    const auto& stage = plan->spec().stages.front();
+    EXPECT_TRUE(std::ranges::contains(stage.folds, "norm.plus_one"));
+    EXPECT_EQ(std::ranges::count(plan->planned_folds(), std::string("norm.plus_one"),
+                                 &PlannedPartFold::fold),
+              mlx ? 0 : 1);
+    EXPECT_EQ(std::ranges::count(plan->applied_folds(), std::string("norm.plus_one"),
+                                 &AppliedSourceFold::fold),
+              mlx ? 1 : 0);
+    for (const auto fold : {"ssm.a_neg_exp", "gdn.value_heads_tiled"})
+      EXPECT_EQ(
+          std::ranges::count(plan->planned_folds(), std::string(fold), &PlannedPartFold::fold), 1);
+    for (const auto& layer : stage.layers)
+      for (const auto& component : layer.components)
+        EXPECT_EQ(component.Find("norm_zero_centered"), nullptr);
+    ASSERT_TRUE(stage.heads.final_norm);
+    EXPECT_EQ(stage.heads.final_norm->Find("norm_zero_centered"), nullptr);
+    std::size_t norms = 0;
+    for (const auto& member : plan->parts().members()) {
+      const auto& output = plan->parts().outputs()[member.output];
+      if (!output.name.ends_with("norm.weight")) continue;
+      ++norms;
+      const bool gated = output.name == "blk.0.ssm_norm.weight";
+      EXPECT_EQ(output.format.encoding, mlx || gated ? Encoding::kBF16 : Encoding::kF32);
+      std::vector<std::byte> input(member.extent.bytes), actual(member.route.output_bytes());
+      // In-memory reader fixtures have no backing pathname; feed their exact
+      // recorded source extent into the same output route the writer uses.
+      ASSERT_LE(member.extent.offset + member.extent.bytes, bytes.size());
+      std::ranges::copy(std::span(bytes).subspan(member.extent.offset, member.extent.bytes),
+                        input.begin());
+      std::array<std::byte, 65536> workspace{};
+      auto run = member.route.Start(workspace);
+      ASSERT_TRUE(run);
+      const PartSink sink = [&](std::uint64_t at,
+                                std::span<const std::byte> chunk) -> std::expected<void, Error> {
+        if (at > actual.size() || chunk.size() > actual.size() - at)
+          return std::unexpected(Error{.rule = Rule::kBounds, .reason = "test norm sink"});
+        std::ranges::copy(chunk, actual.begin() + static_cast<std::ptrdiff_t>(at));
+        return {};
+      };
+      ASSERT_TRUE(run->Consume(0, input, sink));
+      ASSERT_TRUE(run->Finish());
+      const std::size_t width = mlx || gated ? 2 : 4;
+      for (std::size_t j = 0; j < actual.size() / width; ++j) {
+        std::uint32_t bits = 0;
+        for (std::size_t b = 0; b < width; ++b)
+          bits |= std::to_integer<std::uint32_t>(actual[j * width + b]) << (8U * b);
+        if (width == 2) bits <<= 16U;
+        EXPECT_EQ(std::bit_cast<float>(bits), expected[j % 4]) << output.name << " " << j;
+      }
+    }
+    EXPECT_EQ(norms, 8U);  // four block norms, q/k, final, and the ordinary GDN norm
+  }
 }
 
 }  // namespace
