@@ -18,7 +18,10 @@ check fails when:
   a CUDA, cuBLAS, cuFile, NVML, NCCL, CUB, Thrust or CUTLASS header, a CUDA
   runtime or driver API name or type (cuda..., cu...(, CU..., CU_..., CUDA_...,
   cublas...), a kernel qualifier or launch, a .cu or .cuh file, or an include
-  of providers/cuda/.
+  of providers/cuda/;
+- kernel library names appear outside KERNEL_HOMES. In the neutral ir/ and
+  execution/ layers this includes embedded identifiers, device names and
+  diagnostic strings, with no vendor or kernel exceptions.
 
 POSIX calls (open, poll, sockets, mmap) are not Linux-specific and are not
 checked: macOS has them, and a Windows port gives the platform module its
@@ -35,7 +38,7 @@ from __future__ import annotations
 import pathlib
 import re
 
-SOURCE_SUFFIXES = (".cc", ".cpp", ".cxx", ".c", ".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp", ".cu", ".cuh")
+SOURCE_SUFFIXES = (".cc", ".cpp", ".cxx", ".c", ".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp", ".inc", ".cu", ".cuh")
 SCOPE = "src/"
 
 LINUX = "linux"
@@ -50,8 +53,6 @@ KERNEL_HOMES = (
     "src/import/",
     "src/spec/",
     "src/tokenizer/",
-    "src/ir/",
-    "src/execution/",
     "src/components/",
     "src/model/",
     "src/planner/",
@@ -88,6 +89,12 @@ CUDA_INCLUDES = ("providers/cuda/",)
 CUDA_SUFFIXES = (".cu", ".cuh")
 
 KERNEL_HEADERS = re.compile(r"^(ggml|kernels/(ggml|exl3|cutlass)/|llmp_exl3)")
+# Neutral graph and selection code cannot choose vendors by enum, embedded
+# identifier, device spelling or diagnostic either. Provenance comments remain
+# outside the check; format names are interpreted by the format layer.
+NEUTRAL_HOMES = ("src/ir/", "src/execution/")
+NEUTRAL_KERNEL_WORDS = re.compile(r"\b\w*(ggml|exl3|cublas|cutlass)\w*\b", re.IGNORECASE)
+NEUTRAL_VENDOR_WORDS = re.compile(r"\b\w*(cuda|nvidia|gb10(?!\d)|sm_?\d+[a-z]?)\w*\b", re.IGNORECASE)
 KERNEL_WORDS = re.compile(r"\b(ggml\w*|exl3\w*|cublas\w*|cutlass\w*)\b", re.IGNORECASE)
 
 INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*([<"])([^>"]+)[>"]', re.MULTILINE)
@@ -212,8 +219,16 @@ def findings(name: str, text: str) -> list[tuple[str, str]]:
         add(LINUX, m.start(), f"names /{m.group(2)}/, which is Linux's")
     for m in CUDA_WORDS.finditer(code):
         add(CUDA, m.start(), f"uses {m.group(0).rstrip('( ')}, which is CUDA's")
-    for m in KERNEL_WORDS.finditer(code):
+    neutral = name.startswith(NEUTRAL_HOMES)
+    kernel_words = NEUTRAL_KERNEL_WORDS if neutral else KERNEL_WORDS
+    for m in kernel_words.finditer(code):
         add(KERNEL, m.start(), f"uses {m.group(0)}, which names a kernel library")
+    if neutral:
+        for m in NEUTRAL_KERNEL_WORDS.finditer(strings):
+            add(KERNEL, m.start(), f"names {m.group(0)}, which names a kernel library")
+        for view in (code, strings):
+            for m in NEUTRAL_VENDOR_WORDS.finditer(view):
+                add(CUDA, m.start(), f"names {m.group(0)}, which is vendor-specific")
     if name.endswith(CUDA_SUFFIXES):
         found.append((CUDA, f"{name}: a CUDA source file"))
     return found

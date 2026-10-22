@@ -54,6 +54,76 @@ FormatError Refusal(const TensorFormat& f) {
   return parts ? FormatError::kUnknown : parts.error();
 }
 
+TEST(FormatTest, AddressUnitsDescribePhysicalBlocksRatherThanScaleGroups) {
+  struct Case {
+    Encoding encoding;
+    Layout layout;
+    format::AddressUnit unit;
+  };
+  for (const auto& c : {
+           Case{Encoding::kF32, Layout::kDense, {1, 4}},
+           Case{Encoding::kBF16, Layout::kDense, {1, 2}},
+           Case{Encoding::kQ8_0, Layout::kGgmlBlocks, {32, 34}},
+           Case{Encoding::kQ4_K, Layout::kGgmlBlocks, {256, 144}},
+           Case{Encoding::kNvfp4, Layout::kGgmlNvfp4Blocks, {64, 36}},
+       }) {
+    const auto f = Matrix(c.encoding, c.layout, 512, 3, 2);
+    EXPECT_EQ(format::AddressUnitOf(f), c.unit);
+    const auto row = 512 / c.unit.elements * c.unit.bytes;
+    EXPECT_EQ(format::RowBytes(f, PartRole::kData), row);
+    EXPECT_EQ(Parts(f)[0].bytes, row * 3 * 2);
+  }
+  EXPECT_EQ(format::Info(Encoding::kNvfp4).block_elements, 16U);
+}
+
+TEST(FormatTest, AddressUnitsAgreeWithEveryStridedFormatsSizeRule) {
+  for (const auto& encoding : format::Encodings()) {
+    for (const auto layout : {Layout::kDense, Layout::kGgmlBlocks, Layout::kGgmlNvfp4Blocks}) {
+      const auto f = Matrix(encoding.id, layout, 512, 3, 2);
+      const auto unit = format::AddressUnitOf(f);
+      const auto parts = format::PartsOf(f);
+      ASSERT_EQ(unit.has_value(), parts.has_value()) << encoding.name;
+      if (!unit) continue;
+      ASSERT_GT(unit->elements, 0U);
+      ASSERT_GT(unit->bytes, 0U);
+      EXPECT_EQ(parts->size(), 1U);
+      const auto row = f.shape.ne[0] / unit->elements * unit->bytes;
+      EXPECT_EQ((*parts)[0].bytes, row * 3 * 2);
+      EXPECT_EQ(format::RowBytes(f, PartRole::kData), row);
+    }
+  }
+}
+
+TEST(FormatTest, AddressUnitsRefuseMultipartTiledAndInvalidMetadata) {
+  auto f = Matrix(Encoding::kNvfp4, Layout::kGgmlNvfp4Blocks, 128, 3);
+  f.params.tensor_scale = true;
+  EXPECT_TRUE(format::Validate(f));
+  EXPECT_FALSE(format::AddressUnitOf(f));
+  for (const auto layout : {Layout::kSplit, Layout::kRowInterleaved, Layout::kScaleAtoms}) {
+    f = Matrix(Encoding::kNvfp4, layout, 128, 3);
+    EXPECT_TRUE(format::Validate(f));
+    EXPECT_FALSE(format::AddressUnitOf(f));
+  }
+  f = Matrix(Encoding::kExl3Trellis, Layout::kExl3Tiles, 16, 16);
+  f.params.k_bits = 4;
+  f.params.codebook = format::Exl3Codebook::kMcg;
+  EXPECT_TRUE(format::Validate(f));
+  EXPECT_FALSE(format::AddressUnitOf(f));
+  f = Matrix(Encoding::kF32, Layout::kDense, 4, 2);
+  f.params.bits = 4;
+  EXPECT_FALSE(format::AddressUnitOf(f));
+  f.params = {};
+  f.encoding = static_cast<Encoding>(65535);
+  EXPECT_FALSE(format::AddressUnitOf(f));
+  f.encoding = Encoding::kF32;
+  f.layout = static_cast<Layout>(65535);
+  EXPECT_FALSE(format::AddressUnitOf(f));
+  // Geometry is metadata, not validation of a whole tensor's shape/extent.
+  f = Matrix(Encoding::kNvfp4, Layout::kGgmlNvfp4Blocks, 16, 3);
+  EXPECT_TRUE(format::AddressUnitOf(f));
+  EXPECT_EQ(Refusal(f), FormatError::kBlock);
+}
+
 TEST(FormatTest, TablesAreCompleteAndNamed) {
   std::set<std::string_view> names;
   for (std::size_t i = 0; i < format::Encodings().size(); ++i) {

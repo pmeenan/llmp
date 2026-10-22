@@ -138,8 +138,8 @@ class Builder {
   // ---- products
   TensorId MatMul(TensorId a, TensorId b, const ProductParams& params = {});
   TensorId MatMulId(TensorId as, TensorId b, TensorId ids, const ProductParams& params = {});
-  TensorId Prepare(TensorId a, format::Encoding encoding,
-                   format::Layout layout = format::Layout::kGgmlBlocks);
+  // The caller chooses the target layout from its implementation's capability.
+  TensorId Prepare(TensorId a, format::Encoding encoding, format::Layout layout);
   Outputs ExpertSort(TensorId ids, std::uint32_t experts);  // order, offsets
 
   // ---- attention and masks

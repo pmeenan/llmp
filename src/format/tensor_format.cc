@@ -132,6 +132,20 @@ bool Holds(Layout layout, const EncodingInfo& info) {
   return false;
 }
 
+// For a layout known to hold the encoding. This is also the geometry used
+// by the size rule, so neutral consumers cannot drift from stored bytes.
+std::optional<AddressUnit> UnitOf(Layout layout, const EncodingInfo& info) {
+  switch (layout) {
+    case Layout::kDense:
+      return AddressUnit{.elements = 1, .bytes = info.element_bits / 8};
+    case Layout::kGgmlBlocks:
+    case Layout::kGgmlNvfp4Blocks:
+      return AddressUnit{.elements = info.ggml->block_elements, .bytes = info.ggml->block_bytes};
+    default:
+      return std::nullopt;
+  }
+}
+
 // Bytes a row's codes take (K a multiple of the block, so of 2 for 4-bit
 // codes).
 std::uint64_t CodeRowBytes(std::uint64_t k, const EncodingInfo& info) {
@@ -153,18 +167,14 @@ std::expected<PartList, FormatError> MatrixParts(const TensorFormat& f, const En
   };
   std::expected<void, FormatError> ok;
   switch (f.layout) {
-    case Layout::kDense: {
-      const Size elements = Mul(k, n);
-      ok = add(PartRole::kData, elements ? Mul(*elements, info.element_bits / 8) : elements);
-      break;
-    }
+    case Layout::kDense:
     case Layout::kGgmlBlocks:
     case Layout::kGgmlNvfp4Blocks: {
-      const GgmlBlock& block = *info.ggml;
-      if (k % block.block_elements != 0) {
+      const AddressUnit unit = *UnitOf(f.layout, info);
+      if (k % unit.elements != 0) {
         return std::unexpected(FormatError::kBlock);
       }
-      const Size row = Mul(k / block.block_elements, block.block_bytes);
+      const Size row = Mul(k / unit.elements, unit.bytes);
       ok = add(PartRole::kData, row ? Mul(*row, n) : row);
       break;
     }
@@ -343,6 +353,18 @@ std::expected<PartList, FormatError> PartsOf(const TensorFormat& format) {
   return parts;
 }
 
+std::optional<AddressUnit> AddressUnitOf(const TensorFormat& format) {
+  if (!KnownEncoding(format.encoding) || !KnownLayout(format.layout) ||
+      format.params.tensor_scale) {
+    return std::nullopt;
+  }
+  const EncodingInfo& info = Info(format.encoding);
+  if (!Holds(format.layout, info) || !CheckParams(format, info)) {
+    return std::nullopt;
+  }
+  return UnitOf(format.layout, info);
+}
+
 std::expected<std::uint64_t, FormatError> RowBytes(const TensorFormat& format, PartRole role) {
   const auto parts = PartsOf(format);
   if (!parts) {
@@ -358,10 +380,11 @@ std::expected<std::uint64_t, FormatError> RowBytes(const TensorFormat& format, P
   }
   switch (format.layout) {
     case Layout::kDense:
-      return k * (info.element_bits / 8);
     case Layout::kGgmlBlocks:
-    case Layout::kGgmlNvfp4Blocks:
-      return k / info.ggml->block_elements * info.ggml->block_bytes;
+    case Layout::kGgmlNvfp4Blocks: {
+      const AddressUnit unit = *UnitOf(format.layout, info);
+      return k / unit.elements * unit.bytes;
+    }
     case Layout::kSplit:
       if (format.encoding == Encoding::kAffine) {
         const AffineRow row = AffineRowOf(format);

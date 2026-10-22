@@ -370,7 +370,7 @@ std::expected<void, VerifyError> CheckRope(const Ctx& c, const RopeParams& p, st
     return Fail(GraphError::kParams, c, "the vision rotation has no offset");
   }
   if (p.offset % 2 != 0) {
-    return Fail(GraphError::kParams, c, "the first rotated value is even (GGML's n_offs)");
+    return Fail(GraphError::kParams, c, "the first rotated value is even");
   }
   if (p.mode == RopeMode::kVision && std::uint64_t{p.sections[0]} + p.sections[1] == 0) {
     return Fail(GraphError::kParams, c, "the vision rotation's two sections are its first two");
@@ -561,12 +561,12 @@ Out InferStructure(const Ctx& c) {
       }
       if (a.format.layout == format::Layout::kDense) {
         // Any dimension is valid for dense tensors.
-      } else if (a.format.layout == format::Layout::kGgmlBlocks) {
+      } else if (format::IsSinglePartBlockOrDense(a.format.layout)) {
         if (p.dim == 0) {
           return Fail(GraphError::kFormat, c, "quantized concat requires a higher dimension");
         }
       } else {
-        return Fail(GraphError::kFormat, c, "concat requires dense or ggml block layout");
+        return Fail(GraphError::kFormat, c, "concat requires a dense or uniform block layout");
       }
       std::array<std::uint64_t, 4> ne = a.shape().ne;
       for (std::size_t d = 0; d < 4; ++d) {

@@ -152,6 +152,38 @@ class Check(unittest.TestCase):
             "src/runtime/a.cc:9: uses cutlass_gemm, which names a kernel library",
         ])
 
+    def test_ir_and_execution_reject_vendor_code_and_diagnostics(self):
+        for directory in ("ir", "execution"):
+            for suffix in (".cc", ".h", ".inc"):
+                for snippet in (
+                    '#include "kernels/ggml/launch.h"',
+                    'auto bytes = info.ggml->block_bytes;',
+                    'auto layout = format::Layout::kGgmlBlocks;',
+                    'auto encoding = format::Encoding::kExl3Trellis;',
+                    'int my_cutlass_choice = 0;',
+                    'Fail("GGML requires whole blocks");',
+                    'auto implementation = "ggml.mul_mat";',
+                    'auto model = "NVIDIA GB10";',
+                    'auto model = "GB10";',
+                    'constexpr int kGb10Rank = 1;',
+                    'auto architecture = "sm_121";',
+                    'auto architecture = "sm_121a";',
+                    'constexpr int kSm121Rank = 1;',
+                    'constexpr int kSm_121aRank = 1;',
+                    'auto provider = providers::cuda::Open();',
+                ):
+                    with self.subTest(directory=directory, suffix=suffix, snippet=snippet):
+                        name = f"src/{directory}/vendor{suffix}"
+                        self.assertTrue(self.check({name: snippet + "\n"}))
+
+    def test_ir_and_execution_keep_neutral_facts_and_provenance(self):
+        sample = ('// SPDX-FileCopyrightText: 2023-2026 The ggml authors\n'
+                  '// Original CUDA behavior on GB10 (sm_121a) is provenance.\n'
+                  'auto unit = format::AddressUnitOf(tensor.format);\n'
+                  'auto encoding = format::Encoding::kNvfp4;\n'
+                  'auto rank = DeviceRank(query, implementation, table);\n')
+        self.assertEqual(self.check({"src/ir/a.inc": sample, "src/execution/a.h": sample}), [])
+
     def test_only_sources_under_src_are_checked(self):
         checked, problems = boundaries.check(self.root, [])
         self.assertEqual((checked, problems), (0, []))

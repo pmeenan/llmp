@@ -683,6 +683,10 @@ D-122).
       supply owned, validated measured-rank data whose digest participates in
       registry and plan-cache identity; unrelated registries inherit none.
       The two existing measured rows now belong to the GGML backend.
+      **U6c complete (2026-10-22):** IR address geometry comes from the
+      format layer, preparation names its target layout explicitly, and
+      boundary checks reject backend/device facts in IR and selection code.
+      Native focused checks and CPU portability controls pass.
       Complete shape-class fusion/decomposition measurements, remaining
       dispatch consolidation and exhaustive planner-pattern coverage remain open.
       One op-trait table (arity, write

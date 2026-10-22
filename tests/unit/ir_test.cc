@@ -257,6 +257,31 @@ TEST(IrTest, ViewsOfBlockLayoutsAreRowsOfWholeBlocks) {
   EXPECT_EQ(ErrorOf(b), GraphError::kBounds);
 }
 
+TEST(IrTest, BlockViewsUsePhysicalAddressUnitsAndRespectRootBounds) {
+  const format::TensorFormat f{
+      .encoding = Encoding::kNvfp4, .layout = Layout::kGgmlNvfp4Blocks, .shape = ShapeOf({128, 3})};
+  EXPECT_EQ(UnitBytes(f), 36U);
+  EXPECT_EQ(UnitElements(f), 64U);
+  EXPECT_EQ(NaturalStrides(f), (std::array<std::uint64_t, 4>{36, 72, 216, 216}));
+  Builder b;
+  const auto root = b.Weight(f, WeightRef{.role = 1});
+  ASSERT_TRUE(b.ok());
+  EXPECT_TRUE(IsContiguous(b.tensor(root)));
+  const auto nb = b.tensor(root).nb;
+  const auto column = b.View(root, ShapeOf({64, 3}), nb, 36);
+  ASSERT_TRUE(b.ok()) << b.error()->detail;
+  EXPECT_EQ(b.tensor(column).view_offset, 36U);
+  EXPECT_FALSE(IsContiguous(b.tensor(column)));
+  // The next block would reach into allocation padding, past logical data.
+  b.View(root, ShapeOf({64, 3}), nb, 72);
+  EXPECT_EQ(ErrorOf(b), GraphError::kBounds);
+  auto scaled = f;
+  scaled.params.tensor_scale = true;
+  EXPECT_EQ(UnitBytes(scaled), 0U);
+  EXPECT_EQ(UnitElements(scaled), 0U);
+  EXPECT_EQ(NaturalStrides(scaled), (std::array<std::uint64_t, 4>{}));
+}
+
 TEST(IrTest, ProportionalRopeValidatesActiveDimensionsAndScalingModes) {
   for (const std::uint32_t active : {0U, 2U, 8U, 3U, 10U}) {
     Builder b;
@@ -1109,6 +1134,20 @@ TEST(IrTest, ConcatSupportsDenseAndGgmlBlocks) {
     const TensorId x = b.Input(f);
     const TensorId y = b.Input(f);
     b.Concat(x, y, 0);
+    EXPECT_EQ(ErrorOf(b), GraphError::kFormat);
+  }
+}
+
+TEST(IrTest, ConcatKeepsItsExistingLayoutDomain) {
+  for (const auto layout :
+       {Layout::kGgmlNvfp4Blocks, Layout::kSplit, Layout::kRowInterleaved, Layout::kScaleAtoms}) {
+    Builder b;
+    const format::TensorFormat f{
+        .encoding = Encoding::kNvfp4, .layout = layout, .shape = ShapeOf({128, 3})};
+    const auto x = b.Input(f);
+    const auto y = b.Input(f);
+    ASSERT_TRUE(b.ok()) << b.error()->detail;
+    b.Concat(x, y, 1);
     EXPECT_EQ(ErrorOf(b), GraphError::kFormat);
   }
 }

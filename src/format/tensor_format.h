@@ -100,6 +100,21 @@ std::expected<void, FormatError> Validate(const TensorFormat& format);
 // The size rule: each part's bytes and readable range.
 std::expected<PartList, FormatError> PartsOf(const TensorFormat& format);
 
+// The independently addressed element/block of a single-part strided tensor.
+// `elements` is physical layout geometry, not an encoding's scale group:
+// NVFP4's block layout addresses 64 values in 36 bytes, although its scales
+// cover 16 values each. Padding past the tensor is not an address unit.
+struct AddressUnit {
+  std::uint32_t elements = 0;
+  std::uint32_t bytes = 0;
+  bool operator==(const AddressUnit&) const = default;
+};
+
+// Metadata-only query: no unit for invalid encoding/layout/parameters, a
+// multipart tensor, or rows not made of uniform interleaved units. Shape,
+// whole-row divisibility and size overflow still require Validate/PartsOf.
+std::optional<AddressUnit> AddressUnitOf(const TensorFormat& format);
+
 // The bytes of one row of a part, for a layout whose rows are addressable
 // (kLayout otherwise; kParts for a part the format does not have).
 std::expected<std::uint64_t, FormatError> RowBytes(const TensorFormat& format, PartRole role);

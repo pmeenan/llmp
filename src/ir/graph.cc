@@ -42,19 +42,8 @@ std::string_view RoleName(Role role) {
 }
 
 std::uint64_t UnitBytes(const format::TensorFormat& format) {
-  const format::EncodingInfo& info = format::Info(format.encoding);
-  if (format.params.tensor_scale) {
-    return 0;  // a second part: the scale per matrix
-  }
-  switch (format.layout) {
-    case format::Layout::kDense:
-      return info.element_bits / 8;
-    case format::Layout::kGgmlBlocks:
-    case format::Layout::kGgmlNvfp4Blocks:
-      return info.ggml ? info.ggml->block_bytes : 0;
-    default:
-      return 0;
-  }
+  const auto unit = format::AddressUnitOf(format);
+  return unit ? unit->bytes : 0;
 }
 
 bool PreparedRows(const format::TensorFormat& format) {
@@ -63,19 +52,8 @@ bool PreparedRows(const format::TensorFormat& format) {
 }
 
 std::uint64_t UnitElements(const format::TensorFormat& format) {
-  const format::EncodingInfo& info = format::Info(format.encoding);
-  if (format.params.tensor_scale) {
-    return 0;
-  }
-  switch (format.layout) {
-    case format::Layout::kDense:
-      return 1;
-    case format::Layout::kGgmlBlocks:
-    case format::Layout::kGgmlNvfp4Blocks:
-      return info.ggml ? info.ggml->block_elements : 0;
-    default:
-      return 0;
-  }
+  const auto unit = format::AddressUnitOf(format);
+  return unit ? unit->elements : 0;
 }
 
 std::array<std::uint64_t, format::kMaxDims> NaturalStrides(const format::TensorFormat& format) {

@@ -100,7 +100,7 @@ differ. See the
 | Code | Only in | Everything else |
 | --- | --- | --- |
 | CUDA: headers, runtime and driver API names and types, kernels and launches, `.cu` files | `src/providers/cuda/` and `src/kernels/` | reaches the device through the provider interfaces, the device runtime and the kernels' own vendor-free headers |
-| Kernel libraries: `ggml`, `exl3`, `cublas` and `cutlass` headers, namespaces, types and words | `src/kernels/` (for `engine/` and `runtime/`, which sit above the kernels) | reaches the backend through `kernels/common/` (`DeviceBackend`, `StreamLibrary`, `SelectedSource`, `StepProgram`, `LowerOptions`) and `engine/runner_resources.h` |
+| Kernel libraries: `ggml`, `exl3`, `cublas` and `cutlass` headers, namespaces, types and words | `src/kernels/` (for `engine/`, `runtime/`, `ir/` and `execution/`) | reaches the backend through `kernels/common/` (`DeviceBackend`, `StreamLibrary`, `SelectedSource`, `StepProgram`, `LowerOptions`) and `engine/runner_resources.h` |
 | Linux-specific headers and calls: `<linux/...>`, epoll, eventfd, signalfd, io_uring, memfd, `O_DIRECT`, `O_TMPFILE`, `getrandom`, `accept4`, `SOCK_CLOEXEC`, `MSG_NOSIGNAL`, prctl, raw system calls, `/proc` and `/sys` paths | `src/platform/` and the Linux providers (`src/providers/uring_storage.*`) | calls the platform module |
 | POSIX (open, poll, sockets, mmap, pthreads) | anywhere | macOS has it; a Windows port gives the platform module its own implementations (below) |
 
@@ -110,10 +110,20 @@ tests (`tools/tests/test_boundaries.py` checks this tree). It reads code
 with comments removed, matches names outside string literals and paths
 inside them, and fails on an include of `providers/cuda/`,
 `platform/io_uring.h` or `providers/uring_storage.h` elsewhere, or any
-kernel-library header or identifier under `src/engine/` or `src/runtime/`. An
+kernel-library header or identifier under `src/engine/`, `src/runtime/`,
+`src/ir/` or `src/execution/`. The latter two also reject embedded vendor
+identifiers, device names and diagnostic strings; provenance comments remain
+allowed. Included `.inc` source tables are checked too. An
 exception needs an entry in its `EXCEPTIONS` table with the reason, and a
 stale exception is itself a failure. **There are no exceptions today.**
 Tests and benchmarks drive the CUDA build directly and are not checked.
+
+IR byte strides come from `format::AddressUnitOf`, which shares the size rule's
+physical element/block geometry. NVFP4's packed block is 64 values in 36 bytes,
+not its 16-value scale group. Multipart and tiled formats have no such unit;
+shape validity, whole rows, overflow and readable padding remain the format
+layer's `Validate`/`PartsOf` contract. Preparation requires an explicit target
+layout chosen by its caller's implementation capability.
 
 ## The GPU seam
 

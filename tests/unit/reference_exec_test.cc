@@ -673,7 +673,7 @@ TEST_F(ExecTest, ProductsBroadcastByDivisionAndReadEachSlotsColumn) {
 
 TEST_F(ExecTest, PreparationQuantizesAsTheEncoderDoes) {
   const TensorId x = F({64, 2});
-  const TensorId q = b.Prepare(x, Encoding::kQ8_0);
+  const TensorId q = b.Prepare(x, Encoding::kQ8_0, Layout::kGgmlBlocks);
   b.Output(q);
   ASSERT_TRUE(Finish());
   const std::vector<float> xv = Normal(6, 128);
