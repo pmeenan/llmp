@@ -71,6 +71,28 @@
       "capture_host": "spark-c4e2",
       "focused_tests": 6,
       "tests_result": "PASS; no skips"
+    },
+    "D": {
+      "base_commit": "5ec811a4413982630c05e7b6c2448f51f1191883",
+      "u4_source_patch_sha256": "08c82f5832358a8c68489bfbb2b1a48757e71ec9ca5331293b459e8da3332a30",
+      "diagnostic_patch_sha256": "f7b9304a4ae0c29b6f7bab9490c7c2336103225a0b9392e13a3953c99e4e3230",
+      "c_device_repair_patch_sha256": "b4e31fa6be6308bbf29499b1c2182fa4c283c8c4330c270321a0452adcbc93d1",
+      "d_domain_repair_patch_sha256": "7490aca5b9041359f30489054ceea6fdbdc13c650b99360859d323dcc108c123",
+      "complete_patch_sha256": "70e48c0741992069ffa4a36792f034e78d24f4ab12c1c9ee077cf19a7cc04bac",
+      "source_manifest_sha256": "8e4ba26098e2e5dd399c3ce9a9663cc84efd0279e8c47d4749c36779b39b36d1",
+      "build_host": "spark-b / spark-56f5",
+      "test_count": 269,
+      "dependencies_match_frozen_c": true,
+      "gate_spike_included": false,
+      "deliberately_transferred_domains": [
+        "GGUF actual five-row Q6_K/Q8_0 vecq/GLU products under unchanged DS evidence; Qwen evidence remains rows1-4",
+        "Native MTP HC/expert fusions remain new relative to A; affected controls owed"
+      ],
+      "file": "m35-u4-candidate-d-diagnostic-runtime",
+      "sha256": "16a8da3639e3a26e4fdd2dec6927510688ee769fe4fbe10acae17bfc21078338",
+      "capture_host": "spark-c4e2",
+      "tests_result": "269 PASS; no skips",
+      "independent_review": "Whole-change and adversarial CLEAN"
     }
   },
   "configs": {

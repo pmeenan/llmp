@@ -125,7 +125,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=pathlib.Path, default=HERE.parents[2])
     parser.add_argument("--family", required=True, choices=("qwen38", "qwen38-gguf", "deepseek"))
-    parser.add_argument("--arm", required=True, choices=("A", "C"))
+    parser.add_argument("--arm", required=True, choices=("A", "C", "D"))
     parser.add_argument("--runtime", required=True, type=pathlib.Path)
     parser.add_argument("--quality-receipt", required=True, type=pathlib.Path,
                         help="exact completed quality receipt whose replies must reproduce")
@@ -152,15 +152,15 @@ def main():
         raise SystemExit("greedy requests differ from registration")
     template, inputs = verify_inputs(sg, args, pins)
     prior_path = args.quality_receipt.expanduser().resolve(strict=True)
-    label = "old" if args.arm == "A" else "candidate-c"
+    label = {"A": "old", "C": "candidate-c", "D": "candidate-d"}[args.arm]
     if prior_path.name != f"{args.family}-quality-{label}.json":
         raise SystemExit("wrong family/arm receipt filename")
     prior_sha = sha256_file(prior_path)
     if args.arm == "A" and prior_sha != pins["greedy_baseline_receipts"][args.family]:
         raise SystemExit("baseline receipt differs from the retained governed A capture")
-    if args.arm == "C":
+    if args.arm in ("C", "D"):
         metadata = json.loads((prior_path.parent.parent / "capture-metadata.json").read_text())
-        expected_metadata = {"family": args.family, "arm": "C", "runtime_sha256": before,
+        expected_metadata = {"family": args.family, "arm": args.arm, "runtime_sha256": before,
                              "runtime_sha256_after": before, "inputs": inputs,
                              "capture_sha256": sha256_file(HERE / "capture.py"),
                              "parser_sha256": sha256_file(HERE / "plan_reports.py"),
@@ -168,7 +168,7 @@ def main():
                              "speed_gate_sha256": pins["speed_gate_sha256"],
                              "quality_pair_sha256": pins["quality_pair_sha256"]}
         if any(metadata.get(k) != value for k, value in expected_metadata.items()):
-            raise SystemExit("C capture metadata differs from the registered source/inputs")
+            raise SystemExit(f"{args.arm} capture metadata differs from the registered source/inputs")
     prior = json.loads(prior_path.read_text())
     if (prior.get("error") or prior.get("family") != args.family or prior.get("label") != label or
             prior.get("runtime_sha256") != before or prior.get("config_template") != template or

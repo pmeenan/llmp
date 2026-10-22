@@ -22,6 +22,7 @@ EXPECTED = {
     "A": "405c5930accdc009ad8e824d2fcdeff00f063877f0d936c2b1a5dda6b28e519e",
     "B": "e47f5b30150e9e8a357fa204c423de10ab706c8c8a7f02f0bc48887b5b2a04af",
     "C": "6e7bc211551d17b7ba752d319b91d0937c29ab471853b7382da1fbb22093d68f",
+    "D": "16a8da3639e3a26e4fdd2dec6927510688ee769fe4fbe10acae17bfc21078338",
 }
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -154,7 +155,7 @@ def main() -> int:
     p.add_argument("--repo", type=pathlib.Path, default=HERE.parents[2],
                    help="repository containing the pinned tools/speed_gate.py")
     p.add_argument("--family", required=True, choices=("qwen38", "qwen38-gguf", "deepseek"))
-    p.add_argument("--arm", required=True, choices=("A", "B", "C"))
+    p.add_argument("--arm", required=True, choices=("A", "B", "C", "D"))
     p.add_argument("--runtime", required=True, type=pathlib.Path)
     p.add_argument("--out", required=True, type=pathlib.Path,
                    help="private per-arm directory; use same parent for A and B")
@@ -199,7 +200,7 @@ def main() -> int:
     # runtime hash, prompt/score hashes and target logprobs. Same host/port/config
     # semantics are held fixed across arms; only fresh data/anchor paths vary.
     args = argparse.Namespace(
-        family=a.family, runtime=str(runtime), label={"A": "old", "B": "new", "C": "candidate-c"}[a.arm],
+        family=a.family, runtime=str(runtime), label={"A": "old", "B": "new", "C": "candidate-c", "D": "candidate-d"}[a.arm],
         out=str(out), share=str(a.share.expanduser().resolve()), corpus=str(a.corpus.expanduser().resolve()), port=18114,
         config_template=str(config_template), runtime_env=None)
     rc = sg.cmd_quality(args)

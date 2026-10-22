@@ -518,6 +518,63 @@ For A, select its original frozen diagnostic executable and retained
 distinct fresh output directory. These semantic checks neither overwrite the
 earlier captures nor change any independent-reference or speed obligation.
 
+### Prospective D evidence-domain repair (2026-10-22)
+
+This amendment freezes D before its first inference. A, B and C captures and
+their registrations remain preserved. C restored authoritative device facts,
+but its completed plans exposed three incomplete evidence matches:
+
+- The GDN BF16-result qualification described BF16 stored weights. The native
+  artifact instead stores all 36 GDN qkv/gate matrices as MXFP8; BF16 describes
+  the rounded intermediate results. D binds this evidence only to those two
+  roles and that stored encoding, retaining the existing device and row bounds.
+- Residual PLE key/value Q8_0 products had no component sites. D declares those
+  sites under the existing Q8 product evidence and its unchanged conditions.
+- The accepted GGUF artifact contains one IQ3_S gate/up expert layer alongside
+  47 IQ2_S layers. D includes IQ3_S only in selected-expert evidence; it adds
+  no dense IQ3_S qualification and keeps Qwen evidence at rows 1 through 4.
+
+Artifact metadata and the accepted source-shard pins establish these stored
+roles and encodings. They do not by themselves qualify transferred arithmetic.
+In particular, the GGUF five-row products can use existing DeepSeek Q6_K/Q8_0
+evidence through the shared product sites; their actual operated rows are five,
+not the sliced head's one row. This is a genuine component transfer requiring
+the registered correctness, quality and matched-speed checks. Native MTP HC and
+expert fusions also remain new relative to A. No result is claimed for D here.
+
+D is frozen from the same base and C prerequisites above, plus repair patch
+`7490aca5b9041359f30489054ceea6fdbdc13c650b99360859d323dcc108c123`.
+Its complete source patch is
+`70e48c0741992069ffa4a36792f034e78d24f4ab12c1c9ee077cf19a7cc04bac`,
+source manifest
+`8e4ba26098e2e5dd399c3ce9a9663cc84efd0279e8c47d4749c36779b39b36d1`.
+The frozen executable is
+`/home/pmeenan/src/llmp/build/spark-native/src/runtime/m35-u4-candidate-d-diagnostic-runtime`,
+SHA-256 `16a8da3639e3a26e4fdd2dec6927510688ee769fe4fbe10acae17bfc21078338`.
+Spark B built it and passed 269 focused tests without skips; independent whole
+and adversarial review was clean. Its ten resolved dependencies match C and A.
+This executable excludes the separate Qwen27 output-gate repair. Copy only this
+executable to the identical Spark A build path and authenticate its bytes and
+dependencies before capture.
+
+The collectors accept explicit `--arm D`, with immutable executable checks and
+receipt label `candidate-d`. Run one capture per family on the original Spark A
+capture host, each in a fresh directory under an exclusive 600-second job.
+Use the same commands above with D and its executable substituted. Reuse the
+retained A captures; compare completed physical plans and actual target losses
+before expanding qualification. Run supplementary D text captures against each
+new D quality receipt using the same requests and 128-token limit. Historical
+registrations retain the earlier helper versions for their original receipts.
+
+Artifact/configuration/source pins, inputs, target counts, prompts, readiness,
+retirement and quality bounds are unchanged. Native Qwen's 996-target comparison
+remains informational. Changed native arithmetic still requires the independent
+1016-target Mia comparison under the original registered bounds; historical
+exceptions are not silently inherited. Every changed arithmetic domain requires
+the affected matched 10% speed screen. Unchanged arithmetic may reuse existing
+source-quality evidence with its required controls. Failed B/C results remain
+negative evidence, and passing helper or model jobs alone does not close U4.
+
 ### Supplementary launcher correction before retry (2026-10-22)
 
 The first supplementary job, `m35-u4-greedy-qwen38-gguf-A-r1`, failed before
