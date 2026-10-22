@@ -3343,6 +3343,13 @@ Serving finds the mapping by the composition's architecture and takes the
 components' roles, the tokenizer, the prompt renderer, the policy and the
 default tuned attention rows from it.
 
+For an affected-stage re-import, `llmp import --reuse-component ROLE=ARTIFACT_ID`
+can explicitly retain an unchanged prepared component. Before any publication,
+its complete archive source receipts, canonical spec and tensor inventory must
+match the current plan. This authenticates existing metadata and retains prior
+prepared weights without another payload pass; it does not newly deep-verify
+payload bytes (D-109).
+
 ## Partitioning
 
 Tensor, pipeline and expert parallelism with any number of splits, mixed

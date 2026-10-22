@@ -959,7 +959,7 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   `acadec6d…`), each the tensors text to image runs; its approval
   pins the family spec `ef266ac1…`. The 2026-10-22 U8 re-import adds stored
   geometry bindings while retaining the original source, index and payload
-  receipts; the text component remains unchanged.
+  receipts; explicit validated reuse keeps the text component unchanged.
   The v0 composition `eca21baa…`
   ([qwen-image-native](experiments/qwen-image-native/README.md#what-runs))
   is no longer served.

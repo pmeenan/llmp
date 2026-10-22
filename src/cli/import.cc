@@ -6,6 +6,7 @@
 #include <charconv>
 #include <filesystem>
 #include <format>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -16,9 +17,11 @@
 #include "cli/cli.h"
 #include "import/archive_input.h"
 #include "import/image_pipeline.h"
+#include "import/image_reuse.h"
 #include "import/normalize.h"
 #include "import/reader.h"
 #include "import/writer.h"
+#include "spec/names.h"
 #include "spec/stored.h"
 
 namespace llmp::cli {
@@ -37,6 +40,10 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     Print(err,
           "Usage: llmp import SOURCE --store DIRECTORY [--metadata-mib N]\n"
           "                   [--target TARGET_ID] [--component mtp [--draft-head IDS]]\n"
+          "                   [--reuse-component ROLE=ARTIFACT_ID]...\n"
+          "  --reuse-component explicitly reuse prepared image weights with matching\n"
+          "                    spec, inventory and complete archive source identities;\n"
+          "                    authenticates metadata, without rehashing payloads\n"
           "  --target ID       validate a drafter against this artifact in --store\n"
           "  --component mtp   import the checkpoint's MTP drafter (Qwen3.8 Flash Next's\n"
           "                    ModelOpt checkpoint) instead of its target\n"
@@ -48,6 +55,12 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
   if (args.empty() || args[0].empty() || args[0].starts_with('-')) return usage();
   std::filesystem::path source(args[0]), store, draft_head;
   std::string_view component, target_id;
+  std::map<std::string_view, std::string_view, std::less<>> reuse;
+  const auto artifact_id = [](std::string_view id) {
+    return id.size() == 64 && std::ranges::all_of(id, [](char c) {
+             return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+           });
+  };
   // Caller-owned checkpoint storage is bounded by the container readers.
   // This separate budget covers normalization and publication metadata.
   std::uint64_t metadata = std::uint64_t{4} << 30U;
@@ -69,16 +82,22 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
       component = args[i + 1];
     else if (args[i] == "--target" && target_id.empty())
       target_id = args[i + 1];
-    else if (args[i] == "--draft-head" && draft_head.empty())
+    else if (args[i] == "--reuse-component") {
+      const auto split = args[i + 1].find('=');
+      if (split == std::string_view::npos) return usage();
+      const auto role = args[i + 1].substr(0, split);
+      const auto id = args[i + 1].substr(split + 1);
+      if (!spec::names::IsName(role) || !artifact_id(id) || !reuse.emplace(role, id).second)
+        return usage();
+    } else if (args[i] == "--draft-head" && draft_head.empty())
       draft_head = args[i + 1];
     else
       return usage();
   }
-  if (store.empty() || (!draft_head.empty() && component != "mtp")) return usage();
-  if (!target_id.empty() && (target_id.size() != 64 || !std::ranges::all_of(target_id, [](char c) {
-                               return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-                             })))
+  if (store.empty() || (!draft_head.empty() && component != "mtp") ||
+      (!reuse.empty() && (!component.empty() || !target_id.empty() || !draft_head.empty())))
     return usage();
+  if (!target_id.empty() && !artifact_id(target_id)) return usage();
   std::optional<import::NormalizationTarget> target;
   if (!target_id.empty()) {
     auto opened = artifact::Artifact::Open(store / target_id);
@@ -240,6 +259,13 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
   if (target && (input->container == "safetensors" || input->container == "mlx")) return usage();
   if (import::IsImagePipeline(*input)) {
     if (target) return usage();
+    for (const auto& [role, id] : reuse) {
+      (void)id;
+      if (std::ranges::none_of(input->components,
+                               [&](const auto& child) { return child.role == role; }))
+        return Failure(err, {.rule = import::Rule::kConfig,
+                             .reason = "--reuse-component names an unknown image component role"});
+    }
     auto bound = import::ImagePipelineBound(*input);
     if (!bound) return Failure(err, bound.error());
     if (!funded(*bound))
@@ -251,21 +277,49 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     const auto& comp_files = plan->files.empty() ? input->files : plan->files;
     if (auto valid = import::ValidateCompositionFiles(comp_files); !valid)
       return Failure(err, valid.error());
+    // Validate every explicitly selected artifact before publishing any component.
+    // Archive receipts identify the source; this path deliberately does not
+    // re-read unchanged source or prepared payload bytes.
+    std::vector<std::vector<std::optional<base::Sha256Digest>>> component_expected(
+        plan->components.size());
+    for (std::size_t i = 0; i < plan->components.size(); ++i) {
+      if (*archive) {
+        auto identities =
+            import::ArchiveFileIdentities(**archive, plan->components[i].checkpoint.files);
+        if (!identities) return Failure(err, identities.error());
+        component_expected[i] = std::move(*identities);
+      }
+    }
+    for (const auto& [role, id] : reuse) {
+      const auto at = std::ranges::find_if(
+          plan->components, [&](const auto& planned) { return planned.checkpoint.role == role; });
+      if (at == plan->components.end())
+        return Failure(err, {.rule = import::Rule::kConfig,
+                             .reason = "--reuse-component names an unknown image component role"});
+      auto opened = artifact::Artifact::Open(store / id);
+      if (!opened || opened->id() != id)
+        return Failure(
+            err, {.rule = import::Rule::kConfig,
+                  .reason = "--reuse-component does not name a readable artifact in --store"});
+      const auto i = static_cast<std::size_t>(at - plan->components.begin());
+      auto valid = import::ValidateImageComponentReuse(*at, *opened, component_expected[i],
+                                                       metadata - bound->metadata_bytes);
+      if (!valid) return Failure(err, valid.error());
+    }
     std::vector<artifact::CompositionComponent> published_components;
     published_components.reserve(plan->components.size());
-
     for (std::size_t i = 0; i < plan->components.size(); ++i) {
       const auto& comp_plan = plan->components[i];
-      std::vector<std::optional<base::Sha256Digest>> comp_expected;
-      if (*archive) {
-        auto comp_identities = import::ArchiveFileIdentities(**archive, comp_plan.checkpoint.files);
-        if (!comp_identities) return Failure(err, comp_identities.error());
-        comp_expected = std::move(*comp_identities);
+      if (const auto selected = reuse.find(comp_plan.checkpoint.role); selected != reuse.end()) {
+        published_components.push_back({.role = comp_plan.checkpoint.role,
+                                        .artifact = std::string(selected->second),
+                                        .architecture = comp_plan.checkpoint.architecture});
+        continue;
       }
       auto result =
           import::WriteArtifact(comp_plan, {.store = store,
                                             .build = build,
-                                            .expected = comp_expected,
+                                            .expected = component_expected[i],
                                             .metadata_bytes = metadata - bound->metadata_bytes});
       if (!result) return Failure(err, result.error());
       published_components.push_back({
@@ -290,6 +344,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
 
     return finish(*comp_result, *input, true, false);
   }
+  if (!reuse.empty()) return usage();
   auto bound = import::NormalizationBound(*input);
   if (!bound) {
     if (bound.error().kind == import::ItemKind::kTensor &&

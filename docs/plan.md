@@ -842,7 +842,9 @@ D-122).
       through `ComponentDef::spatial`; the compiler has no kind-name fallback.
       **Stored-topology spike:** flow/VAE artifacts carry integer geometry
       bindings; request construction instantiates their stored components,
-      links and exports and checks actual endpoint shapes. Import-time topology synthesis, quantized image import/execution and
+      links and exports and checks actual endpoint shapes. Explicit validated
+      component reuse publishes only the changed image stages and composition;
+      import-time topology synthesis, quantized image import/execution and
       structural source accounting remain open. Verified on Spark B: 3,623
       ordinary tests and nine affected image/import model controls passed,
       including the registered rectangular two-prompt request. This build changes

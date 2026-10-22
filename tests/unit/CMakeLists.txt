@@ -1568,6 +1568,10 @@ target_link_libraries(import_models_test PRIVATE llmp_import llmp_spec llmp_mode
                                                  llmp_reference_kernels llmp_test_v1_frozen)
 llmp_gtest(import_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")
 
+add_executable(image_reuse_test image_reuse_test.cc)
+target_link_libraries(image_reuse_test PRIVATE llmp_cli llmp_import llmp_components llmp_spec llmp_artifact llmp_base)
+llmp_gtest(image_reuse_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(import_writer_test import_writer_test.cc)
 target_link_libraries(import_writer_test PRIVATE llmp_cli llmp_runtime llmp_import llmp_components llmp_spec llmp_artifact llmp_base
                                           llmp_test_artifact_writer)

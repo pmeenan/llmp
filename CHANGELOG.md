@@ -24,6 +24,10 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Image imports accept explicit `--reuse-component ROLE=ARTIFACT_ID` selections
+  after matching their stored spec, tensor inventory and complete archive source
+  receipts, avoiding another payload pass for unchanged prepared components.
+
 - Image flow and VAE requests execute stored stage topology with checked
   geometry bindings, preserving alternate graph wiring from the artifact
   (M3.5 U8, D-122; affected image artifacts require re-import).

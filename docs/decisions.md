@@ -987,6 +987,24 @@ something D-107's backend seam cannot express.
 
 ## D-109: A native importer reads containers and formats by capability and architectures through declarative mappings; the model spec lives in the artifact  (2026-10-08, status: accepted by the owner, 2026-10-08; implements D-009's owned import pipeline in the distribution; amends D-056's manifest with the model spec, encodings, layouts and applied folds (a new artifact format version, re-import, no migration; version 1 in D-113, whose manifest lists and hashes the spec as a document of its own, spec.json); replaces the per-checkpoint Python importers; changes how checkpoints are approved, not who approves them)
 
+**Amendment, 2026-10-22 (explicit image component reuse).** Image pipeline
+import accepts repeatable `--reuse-component ROLE=ARTIFACT_ID`. Before any
+component publication, each selected role must exist in the planned pipeline;
+its artifact must pass ordinary header/spec/index authentication and exactly
+match the planned stored spec, tensor inventory (including encodings and folds),
+architecture, container and complete declared archive source identities.
+Source receipts compare by name, independent of ordering, with duplicates
+refused. Unknown/duplicate roles, malformed IDs, absent receipts and mismatches
+refuse; there is no fallback to repacking a selected component.
+
+This explicitly selects previously published prepared weights. It relies on
+their content-addressed publication and authenticated metadata, and does not
+claim newly hashed source or prepared payloads. Nonselected components use the
+ordinary source import, and the composition keeps normal publication and archive
+provenance checks. Without this option, ordinary import is unchanged. D-122's
+stored-topology re-import can therefore replace only changed stages and their
+composition while retaining an unchanged text component.
+
 **Decision.**
 
 - **Native, distributed, no Python.** The importer is C++ in the
