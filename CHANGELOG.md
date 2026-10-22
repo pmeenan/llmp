@@ -47,6 +47,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Accept both lists and named maps of Hugging Face extra special tokens, with
+  the same vocabulary lookup and matching validation.
+
 - Qwen3.5-family MLX imports preserve converter-folded RMS scales instead of
   adding one twice; Hugging Face zero-centered norms retain their import fold.
 - Swap reports follow each activation's asynchronous releases across

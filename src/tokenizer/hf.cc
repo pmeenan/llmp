@@ -715,9 +715,10 @@ std::expected<void, Error> ApplyHfTokenizerConfig(std::string_view text, Tokeniz
     }
   }
   if (const auto extra = root.find("extra_special_tokens"); extra && !extra->is_null()) {
-    if (!extra->is_object()) return Fail(Rule::kFormat, "extra_special_tokens is not an object");
+    if (!extra->is_object() && !extra->is_array())
+      return Fail(Rule::kFormat, "extra_special_tokens is not an object or array");
     for (std::size_t i = 0; i < extra->size(); ++i) {
-      auto id = find_special(extra->member(i));
+      auto id = find_special(extra->is_array() ? extra->at(i) : extra->member(i));
       if (!id) return std::unexpected(id.error());
     }
   }

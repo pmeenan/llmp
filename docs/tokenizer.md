@@ -342,8 +342,10 @@ models without them retain the 96-byte bound. Construction accounting covers
 model-membership/symbol flags and each raw or normalized trie spelling.
 
 For HF and ModelProto assets, `ApplyHfTokenizerConfig` reads the kept
-`tokenizer_config.json` special-token identities, added-token metadata and
-BOS/EOS insertion flags. ID/text changes, gaps, stripping/single-word options
+`tokenizer_config.json` special-token identities (including lists and named maps
+of `extra_special_tokens`, resolved to existing vocabulary IDs), added-token
+metadata and BOS/EOS insertion flags. ID/text changes, gaps, unsupported
+stripping/single-word options
 and enabled SentencePiece sampling are refused. The runtime ordinarily loads
 kept `tokenizer.json`, or `tokenizer.model` when JSON is absent, followed by
 that configuration and the kept chat template. A malformed present JSON

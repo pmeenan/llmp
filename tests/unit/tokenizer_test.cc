@@ -1623,6 +1623,21 @@ TEST(SentencePieceModel, HfConfigAddsSpecialMetadataAndControlsInsertion) {
             (std::vector<TokenId>{264, 256, 267, 266}));
 }
 
+TEST(SentencePieceModel, ExtraSpecialListsAndMapsPreserveRstripMatching) {
+  for (const std::string_view extras : {R"([{"content":"<bos>","rstrip":true}])",
+                                        R"({"named":{"content":"<bos>","rstrip":true}})"}) {
+    auto spec = tok::ReadSentencePieceTokenizer(SentencePieceModel());
+    ASSERT_TRUE(spec);
+    ASSERT_TRUE(tok::ApplyHfTokenizerConfig(
+        R"({"extra_special_tokens":)" + std::string(extras) + "}", *spec));
+    ASSERT_TRUE(spec->rstrip[264]);
+    auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+    ASSERT_TRUE(tokenizer);
+    EXPECT_EQ(Encode(*tokenizer, "<bos>  a", {.special = tok::SpecialTokens::kParse}),
+              (std::vector<TokenId>{264, 256}));
+  }
+}
+
 TEST(SentencePieceModel, HfConfigRefusesUnrepresentableOrInconsistentSpecialMetadata) {
   for (const std::string_view json :
        {R"({"bos_token":"missing"})", R"({"add_bos_token":"true"})",
@@ -2329,6 +2344,86 @@ std::string HfJson(
   return json;
 }
 
+TEST(HfTokenizer, ExtraSpecialTokenListsAndNamedMapsShareControlSemantics) {
+  for (
+      const std::string_view extras :
+      {R"(["<|end|>",{"content":"<think>","rstrip":false,"lstrip":false,"single_word":false}])",
+       R"({"plain":"<|end|>","structured":{"content":"<think>","rstrip":false,"lstrip":false,"single_word":false}})"}) {
+    SCOPED_TRACE(extras);
+    auto spec = tok::ReadHfTokenizer(HfJson());
+    ASSERT_TRUE(spec);
+    const auto count = spec->tokens.size();
+    ASSERT_TRUE(tok::ApplyHfTokenizerConfig(
+        R"({"extra_special_tokens":)" + std::string(extras) + "}", *spec));
+    EXPECT_EQ(spec->tokens.size(), count);  // Existing IDs are resolved, never allocated.
+    EXPECT_EQ(spec->tokens[257], "<|end|>");
+    EXPECT_EQ(spec->tokens[258], "<think>");
+    for (const auto id : {257U, 258U}) {
+      EXPECT_EQ(spec->kinds[id], TokenKind::kControl);
+    }
+    EXPECT_TRUE(spec->added_tokens.empty());
+    EXPECT_TRUE(spec->model_tokens.empty());
+    EXPECT_TRUE(spec->rstrip.empty());
+    EXPECT_EQ(spec->kinds[97], TokenKind::kNormal);
+    auto tokenizer = tok::Tokenizer::Create(std::move(*spec));
+    ASSERT_TRUE(tokenizer) << Failed(tokenizer, &tok::Error::ToString).value_or("");
+    EXPECT_EQ(Encode(*tokenizer, "ab"), (std::vector<TokenId>{256}));
+    EXPECT_EQ(Encode(*tokenizer, "<|end|>", {.special = tok::SpecialTokens::kParse}),
+              (std::vector<TokenId>{257}));
+    EXPECT_EQ(Encode(*tokenizer, "<think>a", {.special = tok::SpecialTokens::kParse}),
+              (std::vector<TokenId>{258, 97}));
+    EXPECT_NE(Encode(*tokenizer, "<think>"), (std::vector<TokenId>{258}));
+  }
+}
+
+TEST(HfTokenizer, ExtraSpecialTokenEmptyFormsLeaveVocabularyUnchanged) {
+  for (const std::string_view config :
+       {R"({})", R"({"extra_special_tokens":null})", R"({"extra_special_tokens":[]})",
+        R"({"extra_special_tokens":{}})"}) {
+    auto spec = tok::ReadHfTokenizer(HfJson());
+    ASSERT_TRUE(spec);
+    const auto before = *spec;
+    ASSERT_TRUE(tok::ApplyHfTokenizerConfig(config, *spec));
+    EXPECT_EQ(spec->tokens, before.tokens);
+    EXPECT_EQ(spec->kinds, before.kinds);
+    EXPECT_EQ(spec->added_tokens, before.added_tokens);
+    EXPECT_EQ(spec->model_tokens, before.model_tokens);
+  }
+}
+
+TEST(HfTokenizer, ExtraSpecialTokenFormsPreserveValidationAndRefusals) {
+  for (const auto& [value, rule] :
+       {std::pair{R"(42)", Rule::kFormat}, std::pair{R"("ab")", Rule::kFormat},
+        std::pair{R"(true)", Rule::kFormat}, std::pair{R"([null])", Rule::kFormat},
+        std::pair{R"([{"content":42}])", Rule::kFormat},
+        std::pair{R"({"named":{}})", Rule::kFormat}, std::pair{R"(["absent"])", Rule::kVocabulary},
+        std::pair{R"({"named":"absent"})", Rule::kVocabulary},
+        std::pair{R"([{"content":"ab","lstrip":true}])", Rule::kUnsupported},
+        std::pair{R"({"named":{"content":"ab","single_word":true}})", Rule::kUnsupported},
+        std::pair{R"([{"content":"ab","rstrip":"true"}])", Rule::kUnsupported},
+        std::pair{R"([{"content":"ab","single_word":1}])", Rule::kUnsupported}}) {
+    SCOPED_TRACE(value);
+    auto spec = tok::ReadHfTokenizer(HfJson());
+    ASSERT_TRUE(spec);
+    EXPECT_EQ(Failed(tok::ApplyHfTokenizerConfig(
+                         R"({"extra_special_tokens":)" + std::string(value) + "}", *spec),
+                     &tok::Error::rule),
+              rule);
+  }
+  // The list does not bypass ID/content checks in added_tokens_decoder.
+  for (const std::string_view added : {R"({"260":{"content":"<new>","special":true}})",
+                                       R"({"256":{"content":"<new>","special":true}})"}) {
+    auto spec = tok::ReadHfTokenizer(HfJson());
+    ASSERT_TRUE(spec);
+    EXPECT_EQ(Failed(tok::ApplyHfTokenizerConfig(
+                         R"({"extra_special_tokens":["<new>"],"added_tokens_decoder":)" +
+                             std::string(added) + "}",
+                         *spec),
+                     &tok::Error::rule),
+              Rule::kVocabulary);
+  }
+}
+
 std::string HfWithPost(std::string_view post) {
   auto text = HfJson();
   const auto begin = text.find("\"post_processor\":");
@@ -2721,6 +2816,23 @@ std::string RawHfJson(bool literal_tab = false) {
     json += '[' + quoted(spec.merges[i].first) + ',' + quoted(spec.merges[i].second) + ']';
   }
   return json + "]}}";
+}
+
+TEST(HfTokenizer, ExtraSpecialTokensUpdateMaterializedMembershipFlags) {
+  for (const std::string_view extras : {R"(["▁▁"])", R"({"named":"▁▁"})"}) {
+    auto spec = tok::ReadHfTokenizer(RawHfJson());
+    ASSERT_TRUE(spec);
+    ASSERT_TRUE(spec->model_tokens[265]);
+    // The config reader also accepts specs whose container materializes added membership.
+    spec->added_tokens.assign(spec->tokens.size(), false);
+    ASSERT_TRUE(tok::ApplyHfTokenizerConfig(
+        R"({"extra_special_tokens":)" + std::string(extras) + "}", *spec));
+    EXPECT_EQ(spec->kinds[265], TokenKind::kControl);
+    EXPECT_FALSE(spec->model_tokens[265]);
+    EXPECT_TRUE(spec->added_tokens[265]);
+    EXPECT_TRUE(spec->model_tokens[256]);
+    EXPECT_FALSE(spec->added_tokens[256]);
+  }
 }
 
 TEST(HfTokenizer, RawPipelinePreservesWhitespaceModelMembershipAndCrossNewlineMerges) {
