@@ -173,9 +173,11 @@ source. The inspected Gemma implementation SHA-256 is
 `6074e4a2f0c40a5bb28d101060fb4fe64f11ac6ee0cb6f524a9bb3deaceab797`;
 ModelOpt source SHA-256 is
 `3f3ca743fd3c66d72be92b7544591a8632f1aa422b73bb50c83e8a3281196e7d`.
-No model was loaded and no reference request ran. Actual kernel selection,
-launch compatibility and exact raw-ID handling still require validation.
-The next diagnostic must preserve the original five IDs and 64-token bound,
-authenticate the checkpoint and engine, and report source BF16 versus native
-F16 KV explicitly if that prospective recipe is selected. No reference
-behavior or source-quality conclusion is inferred from code registration.
+No model was loaded and no reference request ran. The
+[prospective exact-ID protocol and helpers](gemma26/PROTOCOL.md) now pass the
+pinned image's real CPU-only `TokensPrompt`, parser/renderer, `EngineArgs`
+and sampling API checks: the five IDs survive without tokenizer access or
+added BOS. Actual device configuration, loader startup and kernel selection
+remain unvalidated. The proposed source BF16/BF16-KV recipe explicitly differs
+from native F16 KV; independent review and pre-registration precede inference.
+No reference behavior or source-quality conclusion follows from preparation.
