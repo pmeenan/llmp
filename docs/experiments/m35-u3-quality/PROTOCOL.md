@@ -13,6 +13,10 @@ retains the startup findings and prospective rationale as recorded before
 those requests. Speed, batching, full-context and sustained serving
 qualification remain separate; these results do not close all of U3.
 
+A separate [prospective 512-token Fibonacci supplement](FIBONACCI512-PROTOCOL.md)
+asks about completion with a larger allowance chosen after those truncations.
+It leaves the original 256-token failures and unresolved comparative cell intact.
+
 ## Immutable inputs and reference
 
 - Checkpoint: `nvidia/Llama-3.3-70B-Instruct-NVFP4` revision
