@@ -27,7 +27,9 @@ The entries below record each change; the record of the milestone is
 - Fusion/decomposition comparisons now bind exact queries, numerical contracts
   and compiler-owned implementation provenance; stale or absent evidence retains
   incumbent selection (M3.5 U6, coverage still in progress). The first twelve
-  RMSNormMul observations remain historical pending current-source remeasurement.
+  RMSNormMul observations remain in an unchanged historical archive; twelve fresh
+  GB10 exact-query comparisons are independently audited (eleven fusion wins, one
+  neutral), with native live-registry/planner consumption verified.
 - IR operation traits select typed parameter, inference, decomposition and
   partition handlers, with exhaustive dispatch controls and indexed fusion-rank
   lookup (M3.5 U6).

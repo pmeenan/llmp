@@ -3,17 +3,16 @@
 
 # Fusion versus its own decomposition: first U6 measurement slice
 
-Status: [measured results](RESULTS.md) record all twelve registered F32
-RMSNormMul cells: eleven fusion wins and one neutral cell, with the original
-capacity refusal preserved. The data are an independently audited proposal,
-pending final integration/freshness checks; production data have not been
-installed. Full U6 fusion coverage remains open. The registrations below
-preserve the protocol and pre-execution status.
-
-The following trait-dispatch/source-closure checkpoint makes these original
-measurements historical and source-stale. [Source identity](SOURCE-IDENTITY.md)
-documents the corrected dependency boundary; a new reviewed freeze and
-registration are required before remeasurement. Recorded IDs remain unchanged.
+Status: [fresh W5 results](FRESH-W5-RESULTS.md) independently qualify all twelve
+registered exact F32 RMSNormMul tuples: eleven fusion wins and one neutral cell.
+Native live-registry/planner verification recognizes all twelve current rows and
+preserves unmeasured fallback. Full U6 remains open.
+The [original results](RESULTS.md) and
+[historical data](historical-v11-v12.json) retain unchanged measurements and
+identities; they are stale for current source. The registrations below preserve
+the original protocol and pre-execution status. The current-source rerun followed
+[FRESH-W5-REGISTRATION.md](FRESH-W5-REGISTRATION.md), using the corrected
+[compiler-owned source identity](SOURCE-IDENTITY.md).
 
 ## Prospective protocol (2026-10-22, before measurement)
 

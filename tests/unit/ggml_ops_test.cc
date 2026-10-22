@@ -31,12 +31,14 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -50,9 +52,12 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "execution/fusion_ranks.h"
 #include "execution/registry.h"
 #include "expected_error.h"
 #include "ggml.h"
+#include "ir/builder.h"
+#include "kernels/common/device_backend.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
@@ -62,6 +67,7 @@
 #include "kernels/ggml/validate.h"
 #include "launch_recorder.h"
 #include "plan_record.h"
+#include "planner/select.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/cuda/cuda_device_memory.h"
 #include "providers/device_execution.h"
@@ -400,6 +406,143 @@ constexpr std::array<std::int32_t, kRows> kPositions = {0, 1, 5, 76, 576};
 constexpr std::array<std::int32_t, kRows> kPicks = {7, 0, 3, 3, 6};
 constexpr std::array<std::int64_t, kRows> kSlots = {9, 2, 15, 0, 4};
 constexpr std::uint16_t kPoisonHalf = 0x7e00;  // an F16 NaN no kernel writes
+
+// This live table check normally permits source-stale measurements. The adoption
+// invocation can require the exact compiled digest and number of current rows
+// without forcing every future source change to remeasure this operator.
+TEST_F(GgmlOpsTest, LiveFusionMeasurementsMatchCurrentQueriesOrRemainSafelyStale) {
+  namespace ex = llmp::execution;
+  namespace ir = llmp::ir;
+  namespace pl = llmp::planner;
+  namespace kg = llmp::kernels::ggml;
+  const char* module = kg::ModuleSourcesDigest();
+  if (const char* expected = std::getenv("LLMP_TEST_EXPECT_MODULE_DIGEST")) {
+    EXPECT_STREQ(module, expected);
+  }
+  std::uint64_t charged = 0;
+  constexpr std::uint64_t budget = 64ULL << 20U;
+  auto created = llmp::kernels::DeviceBackend::Create(0, *execution_, stream_);
+  ASSERT_TRUE(created.has_value());
+  struct BackendLifetime {
+    std::unique_ptr<llmp::kernels::DeviceBackend> backend;
+    ~BackendLifetime() { backend->ReleaseWorkspaces(); }
+  } life{std::move(*created)};
+  const auto charge = [&](std::uint64_t bytes) {
+    if (bytes > budget - charged) return false;
+    charged += bytes;
+    return true;
+  };
+  const auto refund = [&](std::uint64_t bytes) {
+    EXPECT_LE(bytes, charged);
+    charged -= bytes;
+  };
+  ASSERT_TRUE(life.backend->FundConstruction(charge, refund).has_value());
+  ASSERT_TRUE(life.backend->Declare({}, charge, refund).has_value());
+  std::vector<std::uint64_t> workspaces{
+      Allocate(Memory::kCudaMalloc, life.backend->library_workspace_bytes())};
+  if (life.backend->persistent_bytes() != 0) {
+    workspaces.push_back(Allocate(Memory::kCudaMalloc, life.backend->persistent_bytes()));
+  }
+  ASSERT_TRUE(life.backend->BindWorkspaces(workspaces).has_value());
+  const auto owned = life.backend->Backend();
+  ASSERT_TRUE(owned.owner && owned.owner->Ready());
+  const auto& table = owned.owner->backend();
+  const auto& registry = *table.registry;
+  const auto fused = registry.Find("ggml.rms_norm_mul.fused");
+  ASSERT_TRUE(fused.has_value());
+  EXPECT_NE(registry.at(*fused).revision.find(module), std::string::npos);
+  const pl::Policy policy;
+  pl::SelectionView selection(registry, table.device, policy, false, true, {}, {},
+                              {.base = 256, .offset = 256, .within = table.within});
+  std::size_t current_rows = 0;
+  const auto inspect = [&](std::uint64_t width, std::uint64_t rows, bool outside) {
+    SCOPED_TRACE(std::format("{}x{}", width, rows));
+    ir::Builder builder;
+    builder.SetOwner(0);
+    const auto x =
+        builder.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({width, rows})));
+    const auto weight =
+        builder.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({width})));
+    const std::array operands{x, weight};
+    builder.Output(
+        builder.Fused(ir::FusedKind::kRmsNormMul, operands, ir::NormParams{.eps = 1e-6F})[0]);
+    auto graph = std::move(builder).Finish();
+    ASSERT_TRUE(graph.has_value());
+    const auto& node = graph->nodes().back();
+    ex::FusionPreference preference = ex::FusionPreference::kUnmeasured;
+    bool inspected = false;
+    selection.Inspect(*graph, node, [&](const ex::CapabilityQuery& query) {
+      inspected = true;
+      const auto key = ex::FusionQueryKey(query);
+      ASSERT_TRUE(key.has_value());
+      const ex::FusionComparison* record = nullptr;
+      for (const auto& entry : registry.FusionComparisons(query.op, *key)) {
+        if (entry.comparison->fusion.name == "ggml.rms_norm_mul.fused") {
+          ASSERT_EQ(record, nullptr);
+          record = entry.comparison;
+        }
+      }
+      preference = ex::FusionPreferenceFor(registry, query, "ggml.rms_norm_mul.fused");
+      if (outside) {
+        EXPECT_EQ(record, nullptr);
+        EXPECT_EQ(preference, ex::FusionPreference::kUnmeasured);
+        return;
+      }
+      if (record == nullptr) {
+        EXPECT_EQ(preference, ex::FusionPreference::kUnmeasured);
+        return;  // Future query-contract changes leave the old data unmeasured.
+      }
+      ASSERT_EQ(record->query, *key);
+      if (query.terminal_decomposition.size() != 2U) {
+        EXPECT_TRUE(preference == ex::FusionPreference::kStale ||
+                    preference == ex::FusionPreference::kUnmeasured);
+        return;
+      }
+      ASSERT_EQ(record->decomposition.size(), 2U);
+      EXPECT_EQ(registry.at(query.terminal_decomposition[0]).name, "ggml.rms_norm");
+      EXPECT_EQ(registry.at(query.terminal_decomposition[1]).name, "ggml.mul");
+      bool current = record->selection_environment == registry.SelectionDigest() &&
+                     record->fusion.identity == registry.identity(*fused);
+      for (std::size_t i = 0; i < record->decomposition.size(); ++i) {
+        const auto child = query.terminal_decomposition[i];
+        current = current && record->decomposition[i].name == registry.at(child).name &&
+                  record->decomposition[i].identity == registry.identity(child);
+      }
+      if (current) {
+        ++current_rows;
+        EXPECT_EQ(preference,
+                  ex::ClassifyFusionLatency(record->fused_ns, record->decomposition_ns));
+      } else {
+        EXPECT_EQ(preference, ex::FusionPreference::kStale);
+      }
+      std::cout << "fusion data query " << width << 'x' << rows << ' ' << llmp::base::ToHex(*key)
+                << " current=" << current << "\n";
+    });
+    ASSERT_TRUE(inspected);
+    const auto candidates = selection.FinalCandidates(*graph, node, node.key);
+    ASSERT_FALSE(candidates.empty());
+    if (preference == ex::FusionPreference::kDecomposition) {
+      EXPECT_EQ(std::ranges::find(candidates, *fused), candidates.end());
+    } else {
+      EXPECT_EQ(candidates.front(), *fused);  // Stale/missing/neutral retain the incumbent.
+    }
+  };
+  for (std::uint64_t width : {256U, 1024U, 4096U}) {
+    for (std::uint64_t rows : {1U, 4U, 32U, 256U}) inspect(width, rows, false);
+  }
+  inspect(512, 1, true);
+  if (const char* expected = std::getenv("LLMP_TEST_EXPECT_CURRENT_FUSION_ROWS")) {
+    std::size_t count = 0;
+    const std::string_view text(expected);
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), count);
+    ASSERT_EQ(parsed.ec, std::errc{});
+    ASSERT_EQ(parsed.ptr, text.data() + text.size());
+    EXPECT_EQ(current_rows, count);
+  }
+  std::cout << "fusion data module " << module << " selection "
+            << llmp::base::ToHex(registry.SelectionDigest()) << " current_rows=" << current_rows
+            << " unmeasured512=incumbent\n";
+}
 
 TEST_F(GgmlOpsTest, NormMulWrapperPreservesStandaloneLaunchesAndOutputs) {
   auto launch = Launcher();

@@ -731,17 +731,22 @@ D-122).
       inventory rejects unaccounted registrations and checks successful
       rewriting as well as matching.
       Complete shape-class fusion/decomposition measurements remain open.
-      **Dispatch and identity follow-up reviewed; integrated qualification pending:**
+      **Dispatch, identity and first fresh data adoption integrated:**
       the trait rows select typed inference, parameter-validation and decomposition
       handlers, plus explicit semantic partition rules. Typed-dispatch focused checks
       pass on `spark-b`; the final compiler-owned
       identity mechanism passes native Clang/NVCC, source-integrity and actual
       rank-data-only mutation/restoration controls on `spark`. Whole and
-      adversarial reviews are clean; main integration checks remain pending.
+      adversarial reviews are clean; integrated source checks passed.
       Compiler dependency receipts replace the incomplete comparison source list,
       and rank lookup is indexed by operation and exact query. The original twelve
-      RMSNormMul measurements remain historical with unchanged IDs; current-source
-      requalification is pending. The 49-pattern synthetic
+      RMSNormMul measurements remain historical with unchanged IDs. The independently
+      audited [fresh W5 matrix](experiments/fusion-ranks/FRESH-W5-RESULTS.md) has
+      eleven fusion wins and one neutral exact tuple. Native live-registry/planner
+      checks recognize all twelve current rows with unchanged compiler identity;
+      an unmeasured width retains the incumbent. Other fusion families/format
+      domains remain open.
+      The 49-pattern synthetic
       match/refusal inventory already satisfies U6d; real-backend measured-veto
       integration coverage expands with the remaining fusion comparisons.
       One op-trait table (arity, write
