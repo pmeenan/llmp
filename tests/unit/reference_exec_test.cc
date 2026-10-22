@@ -172,6 +172,44 @@ class ExecTest : public testing::Test {
   }
 };
 
+TEST_F(ExecTest, NormOutputGatesHaveIndependentSignedFormula) {
+  const auto x = F({5});
+  const auto w = F({5});
+  const auto z = F({5});
+  std::array<TensorId, 2> outputs;
+  for (const auto gate : {ir::NormGateFn::kSigmoid, ir::NormGateFn::kSilu}) {
+    const auto index = static_cast<std::size_t>(gate);
+    outputs[index] = b.Fused(ir::FusedKind::kNormGate, std::array{x, w, z},
+                             ir::NormGateParams{.eps = 0, .gate = gate})[0];
+    b.Output(outputs[index]);
+  }
+  ASSERT_TRUE(Finish());
+  Set(x, {1, 1, 1, 1, 1});
+  Set(w, {1, 1, 1, 1, 1});
+  const std::vector<float> gates{-30, -1, 0, 1, 30};
+  Set(z, gates);
+  ASSERT_TRUE(Run());
+  for (std::size_t mode = 0; mode < outputs.size(); ++mode) {
+    const auto actual = Get(outputs[mode]);
+    for (std::size_t i = 0; i < gates.size(); ++i) {
+      const double sigmoid = 1.0 / (1.0 + std::exp(-static_cast<double>(gates[i])));
+      const double expected = mode == 0 ? sigmoid : gates[i] * sigmoid;
+      EXPECT_NEAR(actual[i], expected, 1e-6 * (1 + std::abs(expected)));
+    }
+  }
+  EXPECT_LT(Get(outputs[1])[1], 0);
+  EXPECT_EQ(Get(outputs[1])[2], 0);
+  EXPECT_FLOAT_EQ(Get(outputs[0])[2], 0.5F);
+}
+
+TEST(ReferenceExecValidationTest, NormOutputGateRejectsUnknownSelection) {
+  ir::Builder b;
+  const auto x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({4})));
+  b.Output(b.Fused(ir::FusedKind::kNormGate, std::array{x, x, x},
+                   ir::NormGateParams{.gate = static_cast<ir::NormGateFn>(2)})[0]);
+  EXPECT_FALSE(std::move(b).Finish());
+}
+
 TEST_F(ExecTest, GroupedMatMulHasIndependentCompleteGroupAndTokenFormula) {
   constexpr std::size_t k = 4, n = 3, groups = 2, tokens = 5;
   const auto w = F({k, n, groups});
@@ -2424,8 +2462,11 @@ TEST(ReferenceDecompositionTest, FusedKindsRunAsThePrimitivesTheyName) {
   pair(prods[0], b.MatMul(wg, x));
   pair(prods[1], b.MatMul(wu, x));
   const TensorId z = in({8, 3});
-  pair(b.Fused(ir::FusedKind::kNormGate, std::array{x, w, z}, ir::NormParams{1e-5f})[0],
+  pair(b.Fused(ir::FusedKind::kNormGate, std::array{x, w, z}, ir::NormGateParams{1e-5f})[0],
        b.Mul(b.Mul(b.RmsNorm(x, 1e-5f), w), b.Unary(z, ir::UnaryFn::kSigmoid)));
+  pair(b.Fused(ir::FusedKind::kNormGate, std::array{x, w, z},
+               ir::NormGateParams{.eps = 1e-5f, .gate = ir::NormGateFn::kSilu})[0],
+       b.Mul(b.Mul(b.RmsNorm(x, 1e-5f), w), b.Unary(z, ir::UnaryFn::kSilu)));
   const TensorId dt = in({1});
   pair(b.Fused(ir::FusedKind::kEulerStep, std::array{x, r, dt})[0], b.Add(x, b.Mul(r, dt)));
   // Full Sinkhorn pre carries and the following post's two outputs.

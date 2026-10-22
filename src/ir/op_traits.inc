@@ -215,8 +215,8 @@ LLMP_FUSED(kQkPrep, "qk_prep", sizeof(NormRopeParams), 5, 6, kFused, kFixed, kWh
   // weights first, as kMatMulGlu's and kMatMulAdd's.
 LLMP_FUSED(kPreparedProducts, "prepared_products", 0, 2, 5, kFused, kFixed, kWhole, true, kDecomposition, 0, -1, -1)
 
-  // (x, w, z): NormParams: rms_norm(x) · w · sigmoid(z)
-LLMP_FUSED(kNormGate, "norm_gate", sizeof(NormParams), 3, 3, kFused, kFixed, kWhole, true, kDecomposition, 0, -1, -1)
+  // (x, w, z): NormGateParams: rms_norm(x) · w · sigmoid(z) or SiLU(z)
+LLMP_FUSED(kNormGate, "norm_gate", sizeof(NormGateParams), 3, 3, kFused, kFixed, kWhole, true, kDecomposition, 0, -1, -1)
 
   // (sample, noise, dt [1]): sample + dt · noise
 LLMP_FUSED(kEulerStep, "euler_step", 0, 3, 3, kFused, kFixed, kWhole, true, kDecomposition, 0, -1, -1)

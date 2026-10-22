@@ -404,7 +404,7 @@ std::expected<void, KernelFailure> CheckGatedDeltaNetLanes(const ggml_tensor* no
 //                         straight from the rows (no transposed copy or
 //                         concatenation);
 //   llmp.gdn.norm_gate  each head's rms_norm times the norm weight times
-//                         sigmoid(z), in F32 or rounded to BF16 (the output
+//                         sigmoid(z) or SiLU(z), in F32 or rounded to BF16 (the output
 //                         projection's input), or (the fast graph's)
 //                         quantized to MXFP8 for the tensor-core product
 //                         (mxfp8_cutlass.h RowsLayout, as
@@ -422,9 +422,9 @@ ggml_tensor* GdnConv(ggml_context* context, ggml_tensor* x, ggml_tensor* history
                      float scale);
 // `o` F32 [d, heads, t] (packed), `weight` F32 [d], `z` F32 or BF16 [d ·
 // heads, t]: [d · heads, t] of `type` (F32 or BF16), or with I8 the MXFP8
-// rows' bytes.
+// rows' bytes. Gate selector: 0 sigmoid, 1 SiLU; other values are refused.
 ggml_tensor* GdnNormGate(ggml_context* context, ggml_tensor* o, ggml_tensor* weight, ggml_tensor* z,
-                         float eps, ggml_type type);
+                         float eps, ggml_type type, std::int32_t gate = 0);
 // `x` F32 or BF16 [channels, t], t at least k - 1: F32 [(k - 1) · channels,
 // 1]; or, given the old `history` (the conv state, F32 [(k - 1) ·
 // channels]), any t: the last k - 1 of its taps followed by the rows (the

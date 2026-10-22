@@ -47,6 +47,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Preserve Qwen3.5-family GDN SiLU output gates through shared component graphs
+  and fused kernels; keep Qwen3.8's sigmoid contract and numerical grants distinct.
+
 - Accept both lists and named maps of Hugging Face extra special tokens, with
   the same vocabulary lookup and matching validation.
 

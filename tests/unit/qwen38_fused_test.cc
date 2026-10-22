@@ -410,7 +410,11 @@ class Qwen38FusedTest : public ::testing::Test {
                                            static_cast<std::uint64_t>(node->src[0]->ne[2])})));
           staged.push_back(z);
           const std::array src{o, w, z};
-          b.Output(b.Fused(ir::FusedKind::kNormGate, src, ir::NormParams{.eps = kEps}, out_enc)[0]);
+          b.Output(
+              b.Fused(ir::FusedKind::kNormGate, src,
+                      ir::NormGateParams{
+                          .eps = kEps, .gate = static_cast<ir::NormGateFn>(kg::LlmpOpInt(node, 1))},
+                      out_enc)[0]);
           break;
         }
         default:
@@ -1014,44 +1018,69 @@ TEST_F(Qwen38FusedTest, GdnConvIsTheUnfusedNodes) {
 TEST_F(Qwen38FusedTest, GdnNormGateIsTheUnfusedNodes) {
   constexpr std::int64_t kD = 128;
   constexpr std::int64_t kH = 48;
-  for (const std::int64_t t : {1, 7, 33}) {
-    const auto o_h =
-        Normal(41 + static_cast<std::uint64_t>(t), static_cast<std::size_t>(kD * kH * t));
-    const auto z_h = Normal(42, static_cast<std::size_t>(kD * kH * t), 2.0f);
-    const auto w_h = Normal(43, kD, 0.3f, 1.0f);
-    ggml_tensor* o = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kD, kH, t), o_h);
-    ggml_tensor* z = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kD * kH, t), z_h);
-    ggml_tensor* w = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, kD), w_h);
-    ggml_tensor* unfused = ggml_mul(c(), ggml_mul(c(), ggml_rms_norm(c(), o, kEps), w),
-                                    ggml_sigmoid(c(), ggml_reshape_3d(c(), z, kD, kH, t)));
-    ggml_tensor* f32 = kg::GdnNormGate(c(), o, w, z, kEps, GGML_TYPE_F32);
-    ggml_tensor* bf16 = kg::GdnNormGate(c(), o, w, z, kEps, GGML_TYPE_BF16);
-    Run({unfused, f32, bf16});
-    EXPECT_EQ(PlannedFor(f32), kg::kGdnNormGateName);
-    const auto want = Download(unfused);
-    const std::string what = "gdn norm gate t " + std::to_string(t);
-    ExpectSame(Download(f32), want, what);
-    const auto rounded = Download<std::uint16_t>(bf16);
-    std::size_t differing = 0;
-    for (std::size_t i = 0; i < rounded.size(); ++i) {
-      differing += rounded[i] != Bf16Bits(want[i]);
-    }
-    EXPECT_EQ(differing, 0U) << what;
-    std::vector<double> ref(want.size());
-    for (std::int64_t row = 0; row < kH * t; ++row) {
-      double ss = 0.0;
-      for (std::int64_t i = 0; i < kD; ++i) {
-        const double v = o_h[static_cast<std::size_t>((row * kD) + i)];
-        ss += v * v;
+  for (const std::int32_t gate : {0, 1}) {
+    SCOPED_TRACE(gate);
+    for (const std::int64_t t : {1, 7, 33}) {
+      const auto o_h =
+          Normal(41 + static_cast<std::uint64_t>(t), static_cast<std::size_t>(kD * kH * t));
+      auto z_h = Normal(42, static_cast<std::size_t>(kD * kH * t), 2.0f);
+      constexpr std::array signed_gates{-30.0F, -1.0F, 0.0F, 1.0F, 30.0F};
+      std::copy(signed_gates.begin(), signed_gates.end(), z_h.begin());
+      const auto w_h = Normal(43, kD, 0.3f, 1.0f);
+      ggml_tensor* o = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kD, kH, t), o_h);
+      ggml_tensor* z = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kD * kH, t), z_h);
+      ggml_tensor* w = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, kD), w_h);
+      ggml_tensor* shaped = ggml_reshape_3d(c(), z, kD, kH, t);
+      ggml_tensor* activated = gate == 1 ? ggml_silu(c(), shaped) : ggml_sigmoid(c(), shaped);
+      ggml_tensor* unfused =
+          ggml_mul(c(), ggml_mul(c(), ggml_rms_norm(c(), o, kEps), w), activated);
+      ggml_tensor* f32 = kg::GdnNormGate(c(), o, w, z, kEps, GGML_TYPE_F32, gate);
+      ggml_tensor* bf16 = kg::GdnNormGate(c(), o, w, z, kEps, GGML_TYPE_BF16, gate);
+      Run({unfused, f32, bf16});
+      EXPECT_EQ(PlannedFor(f32), kg::kGdnNormGateName);
+      const auto want = Download(unfused);
+      const std::string what = "gdn norm gate t " + std::to_string(t);
+      if (gate == 0)
+        ExpectSame(Download(f32), want, what);
+      else
+        ExpectNear(Download(f32), std::vector<double>(want.begin(), want.end()), what);
+      const auto rounded = Download<std::uint16_t>(bf16);
+      std::size_t differing = 0;
+      for (std::size_t i = 0; i < rounded.size(); ++i) {
+        differing += rounded[i] != Bf16Bits(want[i]);
       }
-      const double s = 1.0 / std::sqrt((ss / kD) + kEps);
-      for (std::int64_t i = 0; i < kD; ++i) {
-        const auto at = static_cast<std::size_t>((row * kD) + i);
-        ref[at] = o_h[at] * s * w_h[static_cast<std::size_t>(i)] * Sigmoid(z_h[at]);
+      if (gate == 0)
+        EXPECT_EQ(differing, 0U) << what;
+      else {
+        const auto full = Download(f32);
+        for (std::size_t i = 0; i < rounded.size(); ++i)
+          EXPECT_EQ(rounded[i], Bf16Bits(full[i])) << i;
       }
+      std::vector<double> ref(want.size());
+      for (std::int64_t row = 0; row < kH * t; ++row) {
+        double ss = 0.0;
+        for (std::int64_t i = 0; i < kD; ++i) {
+          const double v = o_h[static_cast<std::size_t>((row * kD) + i)];
+          ss += v * v;
+        }
+        const double s = 1.0 / std::sqrt((ss / kD) + kEps);
+        for (std::int64_t i = 0; i < kD; ++i) {
+          const auto at = static_cast<std::size_t>((row * kD) + i);
+          ref[at] = o_h[at] * s * w_h[static_cast<std::size_t>(i)] * Sigmoid(z_h[at]) *
+                    (gate == 1 ? z_h[at] : 1.0F);
+        }
+      }
+      ExpectNear(Download(f32), ref, what);
     }
-    ExpectNear(Download(f32), ref, what);
   }
+}
+
+TEST_F(Qwen38FusedTest, NormGateRejectsUnknownSelector) {
+  auto* o = ggml_new_tensor_3d(c(), GGML_TYPE_F32, 128, 1, 1);
+  auto* w = ggml_new_tensor_1d(c(), GGML_TYPE_F32, 128);
+  auto* z = ggml_new_tensor_2d(c(), GGML_TYPE_F32, 128, 1);
+  for (const std::int32_t invalid : {-1, 2})
+    EXPECT_FALSE(kg::CheckGdnNormGate(kg::GdnNormGate(c(), o, w, z, kEps, GGML_TYPE_F32, invalid)));
 }
 
 TEST_F(Qwen38FusedTest, AnExpertIdOutsideTheScalesGivesNan) {

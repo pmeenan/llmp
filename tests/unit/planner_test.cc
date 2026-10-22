@@ -4762,7 +4762,7 @@ TEST(PlannerPatternCoverageTest, Bf16RowsRequireOnlyPermittedConsumers) {
     const auto rows = b.Input(F32({4, 2, 2}));
     const auto norm = b.Weight(F32({4}), W(1));
     const auto result = b.Fused(FusedKind::kNormGate, std::array{rows, norm, shaped},
-                                ir::NormParams{.eps = 1e-6F})[0];
+                                ir::NormGateParams{.eps = 1e-6F})[0];
     b.Output(result);
     if (mutation == 1) b.Output(product);  // returning F32 is an observable rounding contract
     if (mutation == 2) b.Output(b.Add(product, b.Input(F32({8, 2}))));
@@ -4815,18 +4815,20 @@ TEST(PlannerPatternCoverageTest, GdnNormGatePreservesGateFunctionAndNormReaders)
   auto implementations = Everything();
   implementations.push_back(Fake("test.norm_gate", Any(ir::Fused(FusedKind::kNormGate))));
   const auto registry = Registry(std::move(implementations));
-  for (unsigned mutation = 0; mutation != 3; ++mutation) {
+  for (unsigned mutation = 0; mutation != 4; ++mutation) {
     ir::Builder b;
     const auto x = b.Input(F32({4, 2}));
     const auto z = b.Input(F32({4, 2}));
     const auto w = b.Weight(F32({4}), W(0));
     const auto norm = b.RmsNorm(x, 1e-6F);
     const auto scaled = b.Mul(norm, w);
-    const auto gate = b.Unary(z, mutation == 1 ? ir::UnaryFn::kSilu : ir::UnaryFn::kSigmoid);
+    const auto gate = b.Unary(z, mutation == 1   ? ir::UnaryFn::kSilu
+                                 : mutation == 3 ? ir::UnaryFn::kRelu
+                                                 : ir::UnaryFn::kSigmoid);
     b.Output(b.Mul(scaled, gate));
     if (mutation == 2) b.Output(norm);
     auto graph = Finish(b);
-    CheckRegisteredRewrite("gdn_norm_gate", graph, registry, mutation == 0);
+    CheckRegisteredRewrite("gdn_norm_gate", graph, registry, mutation <= 1);
   }
 }
 

@@ -1549,7 +1549,10 @@ bool AcceptsGdnGates(const ex::CapabilityQuery& q) {
   return Built(q) && Ne(q, 0, 0) == 48 && Ne(q, 0, 1) >= 1 && Ne(q, 0, 1) <= 16;
 }
 bool AcceptsGdnNormGate(const ex::CapabilityQuery& q) {
-  return Built(q) && Ne(q, 0, 0) == 128 && Ne(q, 0, 3) <= 1;
+  const auto p = ParamsOf<ir::NormGateParams>(q);
+  return Built(q) && p &&
+         (p->gate == ir::NormGateFn::kSigmoid || p->gate == ir::NormGateFn::kSilu) &&
+         Ne(q, 0, 0) == 128 && Ne(q, 0, 3) <= 1;
 }
 // GGML's gated delta rule (upstream's or llmpalooza's column-blocked
 // kernels, which PlanGraph picks by shape): one sequence.

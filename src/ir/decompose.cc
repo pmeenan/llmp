@@ -750,9 +750,14 @@ Outputs DecomposeNormRopeFused(D& d, FusedKind kind, const ParamBytes& params) {
       if (!d.need(3, 3)) {
         return {};
       }
-      const auto p = Get<NormParams>(params);
+      const auto p = Get<NormGateParams>(params);
+      if (p.gate != NormGateFn::kSigmoid && p.gate != NormGateFn::kSilu) {
+        b.Refuse(GraphError::kParams, "unknown norm output gate");
+        return {};
+      }
       const TensorId n = b.Mul(b.RmsNorm(d.s(0), p.eps), d.s(1));
-      return One(b.Mul(n, b.Unary(d.s(2), UnaryFn::kSigmoid)));
+      return One(b.Mul(
+          n, b.Unary(d.s(2), p.gate == NormGateFn::kSilu ? UnaryFn::kSilu : UnaryFn::kSigmoid)));
     }
     default:
       b.Refuse(GraphError::kParams, "an unknown fused kind");

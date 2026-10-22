@@ -4503,7 +4503,7 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       return {};
     }
     case FusedKind::kNormGate: {
-      const auto p = n.Params<ir::NormParams>();
+      const auto p = n.Params<ir::NormGateParams>();
       const ir::TensorDesc& o = desc(0);
       const auto d = static_cast<std::int64_t>(o.ne(0));
       const auto heads = static_cast<std::int64_t>(o.ne(1));
@@ -4516,7 +4516,8 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
         if (producer == id) into = NodeId{prepare};
       }
       const ggml_type type = into.valid() ? GGML_TYPE_I8 : GGML_TYPE_F32;
-      ggml_tensor* t = GdnNormGate(c_, src(0), src(1), z, p.eps, type);
+      ggml_tensor* t =
+          GdnNormGate(c_, src(0), src(1), z, p.eps, type, static_cast<std::int32_t>(p.gate));
       Node(t, id);
       set(0, t);
       if (into.valid()) made_.at(p_.node(into).out[0].v) = t;

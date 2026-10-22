@@ -1366,7 +1366,7 @@ std::optional<Match> GdnStepMatch(const MatchContext& c, NodeId anchor) {
 }
 
 // gdn_norm_gate: the gated output norm (each head's RMS norm times the
-// weight and sigmoid(z)) as llmp.gdn.norm_gate.
+// weight and sigmoid(z) or SiLU(z)) as llmp.gdn.norm_gate.
 std::optional<Match> GdnNormGateMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, anchor, Op::kRmsNorm) || c.taken(anchor)) {
     return std::nullopt;
@@ -1381,7 +1381,9 @@ std::optional<Match> GdnNormGateMatch(const MatchContext& c, NodeId anchor) {
     return std::nullopt;
   }
   const NodeId sz = Made(c, c.node(*gm).src[1]);
-  if (!IsUnary(c, sz, ir::UnaryFn::kSigmoid) || Only(c, c.node(*gm).src[1]) != *gm || c.taken(sz)) {
+  const bool silu = IsUnary(c, sz, ir::UnaryFn::kSilu);
+  if ((!silu && !IsUnary(c, sz, ir::UnaryFn::kSigmoid)) || Only(c, c.node(*gm).src[1]) != *gm ||
+      c.taken(sz)) {
     return std::nullopt;
   }
   const TensorId z = c.node(sz).src[0];
@@ -1396,7 +1398,8 @@ std::optional<Match> GdnNormGateMatch(const MatchContext& c, NodeId anchor) {
   if (!b.Closed(outs)) {
     return std::nullopt;
   }
-  const ir::NormParams params{.eps = nr.Params<ir::NormParams>().eps};
+  const ir::NormGateParams params{.eps = nr.Params<ir::NormParams>().eps,
+                                  .gate = silu ? ir::NormGateFn::kSilu : ir::NormGateFn::kSigmoid};
   const std::array<TensorId, 3> s = {nr.src[0], c.node(*nm).src[1], z};
   const std::array<const ir::TensorDesc*, 1> o = {&c.tensor(outs[0])};
   if (!Has(c, ir::Fused(FusedKind::kNormGate), Descs(c, s), o, ir::ToBytes(params))) {

@@ -580,11 +580,12 @@ __global__ void __launch_bounds__(128)
 
 // One 128-value head a warp: rms_norm_f32<256>'s scale (each warp-sized
 // quarter summed as one of its warps would, then the eight warps' sums),
-// times the weight, times sigmoid(z).
+// times the weight, times the selected sigmoid(z) or SiLU(z).
 template <typename T, typename Z>
 __global__ void __launch_bounds__(256)
     GdnNormGateKernel(const float* __restrict__ o, const float* __restrict__ weight,
-                      const Z* __restrict__ z, T* __restrict__ out, int rows, float eps) {
+                      const Z* __restrict__ z, T* __restrict__ out, int rows, float eps,
+                      bool silu) {
   ggml_cuda_pdl_lc();  // the output product after it fetches its weights meanwhile
   const int lane = static_cast<int>(threadIdx.x) % 32;
   const int row = (static_cast<int>(blockIdx.x) * 8) + (static_cast<int>(threadIdx.x) / 32);
@@ -611,7 +612,8 @@ __global__ void __launch_bounds__(256)
 #pragma unroll
   for (int k = 0; k < 4; ++k) {
     const int d = (32 * k) + lane;
-    dst[d] = Store<T>(s * v[k] * weight[d] * Sigmoid(Load(g + d)));
+    dst[d] = Store<T>(s * v[k] * weight[d] *
+                      (silu ? Load(g + d) * Sigmoid(Load(g + d)) : Sigmoid(Load(g + d))));
   }
 }
 
@@ -623,7 +625,8 @@ template <typename Z>
 __global__ void __launch_bounds__(256)
     GdnNormGateMxfp8Kernel(const float* __restrict__ o, const float* __restrict__ weight,
                            const Z* __restrict__ z, std::uint8_t* __restrict__ codes,
-                           std::uint8_t* __restrict__ scales, int rows, int heads, float eps) {
+                           std::uint8_t* __restrict__ scales, int rows, int heads, float eps,
+                           bool silu) {
   ggml_cuda_pdl_lc();
   const int lane = static_cast<int>(threadIdx.x) % 32;
   const int row = (static_cast<int>(blockIdx.x) * 8) + (static_cast<int>(threadIdx.x) / 32);
@@ -646,7 +649,8 @@ __global__ void __launch_bounds__(256)
 #pragma unroll
   for (int k = 0; k < 4; ++k) {
     const int d = (32 * k) + lane;
-    const float y = s * v[k] * weight[d] * Sigmoid(Load(g + d));
+    const float y =
+        s * v[k] * weight[d] * (silu ? Load(g + d) * Sigmoid(Load(g + d)) : Sigmoid(Load(g + d)));
     float amax = fabsf(y);
 #pragma unroll
     for (int offset = 16; offset > 0; offset >>= 1) {
@@ -1713,6 +1717,7 @@ std::expected<void, KernelFailure> RunGdnNormGate(LaunchContext& launch, ggml_te
     const auto* x = static_cast<const float*>(o->data);
     const auto* w = static_cast<const float*>(node->src[1]->data);
     const float eps = LlmpOpEps(node);
+    const bool silu = LlmpOpInt(node, 1) == 1;
     const unsigned blocks = static_cast<unsigned>((rows + 7) / 8);
     cudaStream_t stream = context.stream();
     const auto launch_with = [&](const auto* z) {
@@ -1724,13 +1729,13 @@ std::expected<void, KernelFailure> RunGdnNormGate(LaunchContext& launch, ggml_te
         (void)cudaMemsetAsync(base + layout.scales(), 0, layout.bytes() - layout.scales(), stream);
         GdnNormGateMxfp8Kernel<<<blocks, 256, 0, stream>>>(x, w, z, base + layout.codes(),
                                                            base + layout.scales(), rows,
-                                                           static_cast<int>(o->ne[1]), eps);
+                                                           static_cast<int>(o->ne[1]), eps, silu);
       } else if (node->type == GGML_TYPE_BF16) {
         GdnNormGateKernel<<<blocks, 256, 0, stream>>>(
-            x, w, z, static_cast<nv_bfloat16*>(node->data), rows, eps);
+            x, w, z, static_cast<nv_bfloat16*>(node->data), rows, eps, silu);
       } else {
         GdnNormGateKernel<<<blocks, 256, 0, stream>>>(x, w, z, static_cast<float*>(node->data),
-                                                      rows, eps);
+                                                      rows, eps, silu);
       }
     };
     if (node->src[2]->type == GGML_TYPE_BF16) {

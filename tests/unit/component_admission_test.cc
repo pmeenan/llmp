@@ -581,7 +581,7 @@ TEST(ComponentAdmissionModelOptTest, GdnMxfp8ResultRoundingReachesTheRegisteredR
               b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({128, n / 128, count})));
           const auto norm = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({128})));
           b.Output(b.Fused(ir::FusedKind::kNormGate, std::array{values, norm, heads},
-                           ir::NormParams{.eps = 1e-6F})[0]);
+                           ir::NormGateParams{.eps = 1e-6F, .gate = ir::NormGateFn::kSigmoid})[0]);
         } else {
           // Even the denied output role has a structurally eligible consumer:
           // graph matching alone must not substitute for the component's role.

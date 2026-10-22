@@ -1050,47 +1050,53 @@ TEST(GgmlLowerQwen38Test, DefaultPoliciesFollowTheImportsForm) {
 }
 
 TEST(GgmlLowerQwen38Test, KeptNormResultsAreNotReplacedByPreparedRows) {
-  for (const std::uint32_t retained : {0U, 1U, 2U}) {
-    SCOPED_TRACE(retained);
-    ir::Builder b;
-    const ir::TensorId x =
-        b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({128, 1, 17, 1})));
-    const ir::TensorId norm = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({128})));
-    const ir::TensorId gate =
-        b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({128, 1, 17, 1})));
-    const std::array sources{x, norm, gate};
-    const ir::TensorId value = b.Fused(ir::FusedKind::kNormGate, sources, ir::NormParams{})[0];
-    const ir::TensorId flat = b.Reshape(value, ir::ShapeOf({128, 17}));
-    const ir::TensorId prepared =
-        b.Prepare(flat, llmp::format::Encoding::kMxfp8, llmp::format::Layout::kScaleAtoms);
-    b.Output(prepared);
-    if (retained == 1) b.Keep(value);
-    if (retained == 2) b.Keep(flat);
-    auto graph = std::move(b).Finish();
-    ASSERT_TRUE(graph.has_value()) << graph.error().detail;
-    EXPECT_EQ(kg::WithinRoot(*graph, prepared).valid(), retained == 0);
-    co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
-    for (const ir::TensorId input : sources) {
-      step.inputs.push_back({.tensor = input, .kind = co::InputKind::kFeatures});
-    }
-    const ex::Registry registry = PlanningRegistry();
-    auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), {},
-                         {.staged = std::vector<ir::TensorId>(sources.begin(), sources.end()),
-                          .written = &kg::WrittenBytes,
-                          .within = &kg::WithinRoot});
-    ASSERT_TRUE(plan.has_value()) << plan.error().detail;
-    const pl::StepShape shape{};
-    const kn::Addresses addresses{};
-    const kn::LowerInput input{*plan, step, shape, addresses};
-    auto lowered = kg::LowerStep(input, registry, Device());
-    ASSERT_TRUE(lowered.has_value()) << lowered.error().detail;
-    std::size_t separate = 0;
-    for (const ggml_tensor* node : lowered->nodes) {
-      if (node->op == GGML_OP_CUSTOM && kg::LlmpOpOf(node) == kg::LlmpOp::kMxfp8Quantize) {
-        ++separate;
+  for (const auto fn : {ir::NormGateFn::kSigmoid, ir::NormGateFn::kSilu}) {
+    for (const std::uint32_t retained : {0U, 1U, 2U}) {
+      SCOPED_TRACE(retained);
+      ir::Builder b;
+      const ir::TensorId x =
+          b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({128, 1, 17, 1})));
+      const ir::TensorId norm =
+          b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({128})));
+      const ir::TensorId gate =
+          b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({128, 1, 17, 1})));
+      const std::array sources{x, norm, gate};
+      const ir::TensorId value =
+          b.Fused(ir::FusedKind::kNormGate, sources, ir::NormGateParams{.gate = fn})[0];
+      const ir::TensorId flat = b.Reshape(value, ir::ShapeOf({128, 17}));
+      const ir::TensorId prepared =
+          b.Prepare(flat, llmp::format::Encoding::kMxfp8, llmp::format::Layout::kScaleAtoms);
+      b.Output(prepared);
+      if (retained == 1) b.Keep(value);
+      if (retained == 2) b.Keep(flat);
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph.has_value()) << graph.error().detail;
+      EXPECT_EQ(kg::WithinRoot(*graph, prepared).valid(), retained == 0);
+      co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+      for (const ir::TensorId input : sources) {
+        step.inputs.push_back({.tensor = input, .kind = co::InputKind::kFeatures});
       }
+      const ex::Registry registry = PlanningRegistry();
+      auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), {},
+                           {.staged = std::vector<ir::TensorId>(sources.begin(), sources.end()),
+                            .written = &kg::WrittenBytes,
+                            .within = &kg::WithinRoot});
+      ASSERT_TRUE(plan.has_value()) << plan.error().detail;
+      const pl::StepShape shape{};
+      const kn::Addresses addresses{};
+      const kn::LowerInput input{*plan, step, shape, addresses};
+      auto lowered = kg::LowerStep(input, registry, Device());
+      ASSERT_TRUE(lowered.has_value()) << lowered.error().detail;
+      std::size_t separate = 0;
+      for (const ggml_tensor* node : lowered->nodes) {
+        if (node->op == GGML_OP_CUSTOM && kg::LlmpOpOf(node) == kg::LlmpOp::kGdnNormGate)
+          EXPECT_EQ(kg::LlmpOpInt(node, 1), static_cast<std::int32_t>(fn));
+        if (node->op == GGML_OP_CUSTOM && kg::LlmpOpOf(node) == kg::LlmpOp::kMxfp8Quantize) {
+          ++separate;
+        }
+      }
+      EXPECT_EQ(separate, retained == 0 ? 0U : 1U);
     }
-    EXPECT_EQ(separate, retained == 0 ? 0U : 1U);
   }
 }
 

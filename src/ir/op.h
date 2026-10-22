@@ -333,6 +333,14 @@ struct NormParams {
   float eps = 0.0f;
 };
 
+// Semantic output activation, preserved by fusion and primitive decomposition.
+enum class NormGateFn : std::uint32_t { kSigmoid, kSilu };
+struct NormGateParams {
+  float eps = 0.0f;
+  NormGateFn gate = NormGateFn::kSigmoid;
+};
+static_assert(sizeof(NormGateParams) == 8);
+
 enum class RopeMode : std::uint8_t {
   kNormal,            // pairs (2i, 2i + 1)
   kNeox,              // pairs (i, i + dims / 2)

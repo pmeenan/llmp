@@ -506,7 +506,7 @@ ggml_tensor* GdnConv(ggml_context* context, ggml_tensor* x, ggml_tensor* history
 }
 
 ggml_tensor* GdnNormGate(ggml_context* context, ggml_tensor* o, ggml_tensor* weight, ggml_tensor* z,
-                         float eps, ggml_type type) {
+                         float eps, ggml_type type, std::int32_t gate) {
   const std::int64_t k = o->ne[0] * o->ne[1];
   const std::int64_t t = o->ne[2];
   const std::array<std::int64_t, 4> ne =
@@ -517,7 +517,10 @@ ggml_tensor* GdnNormGate(ggml_context* context, ggml_tensor* o, ggml_tensor* wei
                                                 .bytes()),
                                         1, 1, 1}
           : std::array<std::int64_t, 4>{k, t, 1, 1};
-  return WithEps(Custom(context, type, ne, {o, weight, z}, kTagGdnNormGate.data()), eps);
+  auto* node = WithEps(Custom(context, type, ne, {o, weight, z}, kTagGdnNormGate.data()), eps);
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + sizeof(float), &gate,
+              sizeof(gate));
+  return node;
 }
 
 ggml_tensor* GdnHistory(ggml_context* context, ggml_tensor* x, std::int64_t taps,
@@ -1617,7 +1620,8 @@ std::expected<void, KernelFailure> CheckGdnNormGate(const ggml_tensor* node) {
   const bool quantized = node->type == GGML_TYPE_I8;
   const mxfp8::RowsLayout rows{.k = static_cast<std::uint64_t>(d * heads),
                                .rows = static_cast<std::uint64_t>(t)};
-  if (!IsF32(o) || d != 128 || o->ne[3] != 1 || !Vector(weight, d) ||
+  const auto gate = LlmpOpInt(node, 1);
+  if ((gate != 0 && gate != 1) || !IsF32(o) || d != 128 || o->ne[3] != 1 || !Vector(weight, d) ||
       (!IsF32(z) && z->type != GGML_TYPE_BF16) || !Shaped(z, d * heads, t, 1) ||
       (node->type != GGML_TYPE_F32 && node->type != GGML_TYPE_BF16 && !quantized) ||
       (quantized ? !Shaped(node, static_cast<std::int64_t>(rows.bytes()), 1, 1)

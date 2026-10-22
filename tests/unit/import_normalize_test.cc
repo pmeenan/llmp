@@ -2180,6 +2180,11 @@ TEST(ImportNormalizeSafetensorsTest, Qwen35MlxNormsAreConverterFoldedAndHfNormsA
     ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
     ASSERT_TRUE(plan->is_indexed());
     const auto& stage = plan->spec().stages.front();
+    const auto linear = std::ranges::find(stage.layers.front().components, "attention.gdn",
+                                          &spec::ComponentRef::kind);
+    ASSERT_NE(linear, stage.layers.front().components.end());
+    ASSERT_NE(linear->Find("output_gate"), nullptr);
+    EXPECT_EQ(std::get<std::string>(linear->Find("output_gate")->value), "silu");
     EXPECT_TRUE(std::ranges::contains(stage.folds, "norm.plus_one"));
     EXPECT_EQ(std::ranges::count(plan->planned_folds(), std::string("norm.plus_one"),
                                  &PlannedPartFold::fold),

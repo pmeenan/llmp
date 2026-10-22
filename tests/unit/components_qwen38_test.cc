@@ -423,6 +423,34 @@ std::vector<format::TensorFormat> GdnFormats(Encoding e) {
 const std::map<std::uint16_t, std::pair<float, float>> kGdnRanges{
     {5, {-1.2F, 0.5F}}, {4, {-0.5F, 0.5F}}, {6, {-0.6F, 0.6F}}};
 
+TEST(ComponentsQwen38Test, GdnOutputGateIsExplicitAndDoesNotInheritSigmoidEvidence) {
+  const std::array<std::uint64_t, 2> cells{1, 1};
+  const std::vector<Step> steps{{.shape = {.segments = {Seg(0, 3, 0, 256, 3)}}},
+                                {.shape = {.segments = {Seg(0, 1, 3, 256, 1)}}}};
+  for (const auto gate : {"sigmoid", "silu"}) {
+    auto ref = Gdn();
+    ref.params.push_back(P("output_gate", N(gate)));
+    std::ranges::sort(ref.params, {}, &Param::name);
+    auto in = MakeInstance(ref, kFacts, Site::kLayer, 0, 1);
+    ASSERT_TRUE(in) << (in ? "" : in.error());
+    EXPECT_EQ(in->params.Name("output_gate"), gate);
+    Compare(*in, GdnFormats(Encoding::kF32), cells, steps, kTolerance, kTolerance, {}, kGdnRanges);
+    for (const auto& site : in->def->numerical) {
+      ASSERT_FALSE(site.roles.empty());
+      EXPECT_EQ(NumericalSiteApplies(site, *in, ir::Primitive(ir::Op::kMatMul), site.roles.front(),
+                                     site.encodings.front()),
+                std::string_view(gate) == "sigmoid");
+    }
+  }
+  auto legacy = MakeInstance(Gdn(), kFacts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(legacy);
+  EXPECT_EQ(legacy->params.Name("output_gate"), "sigmoid");
+  auto invalid = Gdn();
+  invalid.params.push_back(P("output_gate", N("relu")));
+  std::ranges::sort(invalid.params, {}, &Param::name);
+  EXPECT_FALSE(MakeInstance(invalid, kFacts, Site::kLayer, 0, 1));
+}
+
 TEST(ComponentsQwen38Test, GatedDeltaNetMatchesItsReference) {
   auto in = MakeInstance(Gdn(), kFacts, Site::kLayer, 0, 1);
   ASSERT_TRUE(in.has_value()) << in.error();

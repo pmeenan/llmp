@@ -1105,35 +1105,39 @@ TEST_F(Qwen38FastTest, GatedDeltaNetTakesBf16RowsAndQuantizesItsGate) {
   ggml_tensor* o = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, d, heads, t), o_h);
   ggml_tensor* norm = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, d), norm_h);
   ggml_tensor* z = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, d * heads, t), z_b);
-  ggml_tensor* gated = kg::GdnNormGate(c(), o, norm, z, kEps, GGML_TYPE_F32);
-  ggml_tensor* gated8 = kg::GdnNormGate(c(), o, norm, z, kEps, GGML_TYPE_I8);
-  Run({conv32, conv16, kept, gated, gated8});
-  EXPECT_EQ(PlannedFor(kept), kg::kGdnHistoryName);
-  EXPECT_EQ(Download(conv16), Download(conv32));
-  const auto kept_h = Download(kept);
-  std::size_t wrong = 0;
-  for (std::int64_t ch = 0; ch < channels; ++ch) {
-    for (std::int64_t j = 0; j < 3; ++j) {
-      wrong += kept_h[static_cast<std::size_t>((ch * 3) + j)] !=
-               rows_f[static_cast<std::size_t>(((t - 3 + j) * channels) + ch)];
+  for (const std::int32_t gate : {0, 1}) {
+    SCOPED_TRACE(gate);
+    ggml_tensor* gated = kg::GdnNormGate(c(), o, norm, z, kEps, GGML_TYPE_F32, gate);
+    ggml_tensor* gated8 = kg::GdnNormGate(c(), o, norm, z, kEps, GGML_TYPE_I8, gate);
+    Run({conv32, conv16, kept, gated, gated8});
+    EXPECT_EQ(PlannedFor(kept), kg::kGdnHistoryName);
+    EXPECT_EQ(Download(conv16), Download(conv32));
+    const auto kept_h = Download(kept);
+    std::size_t wrong = 0;
+    for (std::int64_t ch = 0; ch < channels; ++ch) {
+      for (std::int64_t j = 0; j < 3; ++j) {
+        wrong += kept_h[static_cast<std::size_t>((ch * 3) + j)] !=
+                 rows_f[static_cast<std::size_t>(((t - 3 + j) * channels) + ch)];
+      }
     }
+    EXPECT_EQ(wrong, 0U);
+    std::vector<double> want(o_h.size());
+    for (std::int64_t row = 0; row < heads * t; ++row) {
+      double sum = 0.0;
+      for (std::int64_t i = 0; i < d; ++i) {
+        sum += static_cast<double>(o_h[static_cast<std::size_t>((row * d) + i)]) *
+               o_h[static_cast<std::size_t>((row * d) + i)];
+      }
+      const double s = 1.0 / std::sqrt((sum / d) + kEps);
+      for (std::int64_t i = 0; i < d; ++i) {
+        const auto at = static_cast<std::size_t>((row * d) + i);
+        want[at] = o_h[at] * s * norm_h[static_cast<std::size_t>(i)] * Sigmoid(FromBf16(z_b[at])) *
+                   (gate == 1 ? FromBf16(z_b[at]) : 1.0F);
+      }
+    }
+    ExpectNear(Download(gated), want, 1e-11, "gated norm, BF16 gate");
+    ExpectQuantized(Download<std::uint8_t>(gated8), want, d * heads, t, "gated norm into MXFP8");
   }
-  EXPECT_EQ(wrong, 0U);
-  std::vector<double> want(o_h.size());
-  for (std::int64_t row = 0; row < heads * t; ++row) {
-    double sum = 0.0;
-    for (std::int64_t i = 0; i < d; ++i) {
-      sum += static_cast<double>(o_h[static_cast<std::size_t>((row * d) + i)]) *
-             o_h[static_cast<std::size_t>((row * d) + i)];
-    }
-    const double s = 1.0 / std::sqrt((sum / d) + kEps);
-    for (std::int64_t i = 0; i < d; ++i) {
-      const auto at = static_cast<std::size_t>((row * d) + i);
-      want[at] = o_h[at] * s * norm_h[static_cast<std::size_t>(i)] * Sigmoid(FromBf16(z_b[at]));
-    }
-  }
-  ExpectNear(Download(gated), want, 1e-11, "gated norm, BF16 gate");
-  ExpectQuantized(Download<std::uint8_t>(gated8), want, d * heads, t, "gated norm into MXFP8");
 }
 
 // Decode's history (fewer rows than taps): the old history's last taps then

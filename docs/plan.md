@@ -597,9 +597,11 @@ D-122).
       are separate controls. Original Qwen ModelOpt and MLX re-imports have
       [identical payload digests](experiments/m35-generic-import/original-parity.md)
       for all 323,607 named tensor parts, including every expert slice.
-      The second-architecture MLX smoke remains unqualified: the
-      [Qwen27 diagnosis](experiments/m35-u3-quality/QWEN27-NORM.md) records
-      a corrected duplicate norm fold and a still-failing serving smoke.
+      Second-architecture MLX source qualification remains open. The
+      [norm diagnosis](experiments/m35-u3-quality/QWEN27-NORM.md) and
+      [GDN gate repair](experiments/m35-u3-quality/QWEN27-GATE.md) correct
+      independent defects; the unchanged 64-token screen now produces coherent
+      text, while chat still ends by length with no final content.
       - **U3a One mapping per architecture:** `import::SourceMapping`
         merged into `spec::Mapping`; the semantic metadata namespace
         derived from the architecture, failing closed on any unconsumed

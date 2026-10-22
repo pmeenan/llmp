@@ -684,6 +684,7 @@ constexpr std::array kQwen35Params = {
     Int(kStageSlot, "context", 262144),
     FromKey(kStreamSlot, "width", "embedding_length", kInt),
     Name("linear", "placement", "pre"),
+    Name("linear", "output_gate", "silu"),
     ZeroCenteredNorm("linear"),
     FromKey("linear", "eps", "attention.layer_norm_rms_epsilon", kReal),
     FromKey("linear", "k_heads", "ssm.group_count", kInt),

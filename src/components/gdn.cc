@@ -21,7 +21,8 @@
 //     the gdn.value_heads_tiled fold) and A is stored as -exp(A_log) (the
 //     ssm.a_neg_exp fold). Explicit a_log instead computes -exp(A_log) in
 //     transient F32 storage; the value-head fold remains mandatory;
-//   - each head's output RMS-normed, times the norm weight and sigmoid(z),
+//   - each head's output RMS-normed, times the norm weight and the declared
+//     sigmoid(z) or SiLU(z),
 //     and the output product.
 //
 // Its state is fixed: the convolution's history F32 [(conv - 1) ·
@@ -64,7 +65,13 @@ namespace {
 
 constexpr std::array<std::string_view, 3> kPlacements{"none", "pre", "sandwich"};
 
+constexpr std::array<std::string_view, 2> kOutputGates{"sigmoid", "silu"};
+
 constexpr std::array kParams{
+    ParamSpec{.name = "output_gate",
+              .type = ParamType::kName,
+              .required = false,
+              .choices = kOutputGates},
     kNormZeroCentered,
     ParamSpec{
         .name = "placement", .type = ParamType::kName, .required = false, .choices = kPlacements},
@@ -321,10 +328,12 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = x};
   ir::TensorId out = outputs.front();
   for (std::size_t s = 1; s < outputs.size(); ++s) out = b.Concat(out, outputs[s], 2);
-  // The gated norm: each head's RMS norm times the weight and sigmoid(z).
+  // The gated norm: each head's RMS norm times the weight and its declared gate.
   const ir::TensorId normed = b.Mul(b.RmsNorm(out, d.eps), w(kNorm));
   const ir::TensorId z = b.Reshape(b.MatMul(w(kGate), in_stream), Shape({d.d, d.hv, rows, 1}));
-  const ir::TensorId gated = b.Mul(normed, b.Unary(z, ir::UnaryFn::kSigmoid));
+  const ir::TensorId gated =
+      b.Mul(normed, b.Unary(z, in.params.Name("output_gate") == "silu" ? ir::UnaryFn::kSilu
+                                                                       : ir::UnaryFn::kSigmoid));
   ir::TensorId projected = b.MatMul(w(kOutput), b.Reshape(gated, Shape({d.d * d.hv, rows})));
   if (d.placement == "sandwich") {
     projected = b.Mul(b.RmsNorm(projected, d.eps), parameters.Norm(kPostNorm));
@@ -483,7 +492,8 @@ std::expected<void, std::string> Reference(RefIO& io) {
     first += seg.rows;
   }
   RmsRows(out, d.d, d.eps, weight(kNorm));
-  for (std::size_t i = 0; i < out.size(); ++i) out[i] *= Sigmoid(z[i]);
+  for (std::size_t i = 0; i < out.size(); ++i)
+    out[i] *= in.params.Name("output_gate") == "silu" ? Silu(z[i]) : Sigmoid(z[i]);
   std::vector<double> projected = Product(weight(kOutput), d.hv * d.d, w, out);
   if (d.placement == "sandwich") {
     RmsRows(projected, w, d.eps, weight(kPostNorm));
@@ -500,6 +510,10 @@ std::expected<void, std::string> Reference(RefIO& io) {
 }  // namespace
 
 const ComponentDef& AttentionGdn() {
+  // Existing numerical evidence covers the sigmoid contract. A SiLU component
+  // needs separately applicable evidence before those arithmetic rewrites.
+  static constexpr std::array kSigmoidGate{
+      NumericalCondition{.parameter = "output_gate", .choice = "sigmoid"}};
   static constexpr std::array kNumericalProductRoles{
       std::string_view{"qkv"}, std::string_view{"gate"}, std::string_view{"beta"},
       std::string_view{"alpha"}, std::string_view{"output"}};
@@ -512,17 +526,20 @@ const ComponentDef& AttentionGdn() {
                     .change = ir::NumericalChange::kQ8VectorReduction,
                     .anchors = numerics::kProductAnchors,
                     .roles = kNumericalProductRoles,
-                    .encodings = numerics::kBlockWeightEncodings},
+                    .encodings = numerics::kBlockWeightEncodings,
+                    .when = kSigmoidGate},
       NumericalSite{.semantic = "product.mxfp8_input",
                     .change = ir::NumericalChange::kMxfp8ProductInput,
                     .anchors = numerics::kProductAnchors,
                     .roles = kNumericalProductRoles,
-                    .encodings = numerics::kPreparedWeightEncodings},
+                    .encodings = numerics::kPreparedWeightEncodings,
+                    .when = kSigmoidGate},
       NumericalSite{.semantic = "gdn.product_bf16_intermediates",
                     .change = ir::NumericalChange::kBf16ProductInputAndResult,
                     .anchors = numerics::kProductAnchors,
                     .roles = kBf16ResultRoles,
-                    .encodings = kBf16ResultWeights},
+                    .encodings = kBf16ResultWeights,
+                    .when = kSigmoidGate},
   };
   static const ComponentDef def{
       .kind = "attention.gdn",
