@@ -111,13 +111,13 @@ class NormalizedPlan;
 
 namespace normalization_detail {
 // Internal construction seam for compiled-table tests. The public entry selects
-// only FindSourceMapping. The same validator and interpreter serve both.
-std::expected<NormalizationCost, Error> Bound(const Checkpoint&, const SourceMapping&,
+// only FindImportMapping. The same validator and interpreter serve both.
+std::expected<NormalizationCost, Error> Bound(const Checkpoint&, const spec::Mapping&,
                                               NormalizeBoundOptions = {});
-std::expected<NormalizedPlan, Error> Build(Checkpoint&&, const SourceMapping&, NormalizationLimits,
+std::expected<NormalizedPlan, Error> Build(Checkpoint&&, const spec::Mapping&, NormalizationLimits,
                                            const NormalizationTarget* = nullptr,
                                            NormalizeOptions = {});
-std::expected<NormalizedPlan, Error> Build(const Checkpoint&, const SourceMapping&,
+std::expected<NormalizedPlan, Error> Build(const Checkpoint&, const spec::Mapping&,
                                            NormalizationLimits,
                                            const NormalizationTarget* = nullptr,
                                            NormalizeOptions = {});
@@ -152,7 +152,7 @@ class NormalizedPlan {
     return mapping_architecture_.empty() ? std::string_view(canonical_.architecture)
                                          : std::string_view(mapping_architecture_);
   }
-  std::uint16_t normalization_version() const { return version_; }
+  std::uint16_t normalization_version() const { return architecture_version_; }
   std::uint16_t architecture_version() const { return architecture_version_; }
   const NormalizationCost& cost() const { return cost_; }
   std::expected<SourceCopyCursor, Error> CursorFor(std::size_t output) const;
@@ -160,10 +160,10 @@ class NormalizedPlan {
  private:
   friend class llmp::test_support::PartPublicationFixture;
   friend std::expected<NormalizedPlan, Error> normalization_detail::Build(
-      Checkpoint&&, const SourceMapping&, NormalizationLimits, const NormalizationTarget*,
+      Checkpoint&&, const spec::Mapping&, NormalizationLimits, const NormalizationTarget*,
       NormalizeOptions);
   friend std::expected<NormalizedPlan, Error> normalization_detail::Build(
-      const Checkpoint&, const SourceMapping&, NormalizationLimits, const NormalizationTarget*,
+      const Checkpoint&, const spec::Mapping&, NormalizationLimits, const NormalizationTarget*,
       NormalizeOptions);
   NormalizedPlan() = default;
   Checkpoint source_{};
@@ -184,7 +184,7 @@ class NormalizedPlan {
   std::string options_{};
   bool has_options_ = false;
   std::string mapping_architecture_{};
-  std::uint16_t version_ = 0, architecture_version_ = 0;
+  std::uint16_t architecture_version_ = 0;
   NormalizationCost cost_{};
 };
 

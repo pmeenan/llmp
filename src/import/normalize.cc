@@ -60,13 +60,14 @@ struct Key {
   std::uint8_t types = 0;
   std::uint32_t auxiliary = 0;
 };
-std::optional<Key> Classify(const SourceMapping& t, std::string_view key, bool is_null = false,
+std::optional<Key> Classify(const spec::Mapping& t, std::string_view container,
+                            std::string_view key, bool is_null = false,
                             const Checkpoint* source = nullptr) {
-  const auto& m = *t.architecture;
-  if ((t.container == "gguf" &&
+  const auto& m = t;
+  if ((container == "gguf" &&
        (key == "general.architecture" || key == "general.alignment" || key == "split.no" ||
         key == "split.count" || key == "split.tensors.count")) ||
-      ((t.container == "exl3" || t.container == "safetensors" || t.container == "mlx") &&
+      ((container == "exl3" || container == "safetensors" || container == "mlx") &&
        key == "model_type"))
     return Key{.kind = MetadataClass::kStructural, .canonical = key};
   std::string_view stripped = key;
@@ -78,7 +79,7 @@ std::optional<Key> Classify(const SourceMapping& t, std::string_view key, bool i
     return Key{.auxiliary = static_cast<std::uint32_t>(t.auxiliary.size())};
   auto canonical = key;
   bool aliased = false;
-  for (const auto& alias : t.keys) {
+  for (const auto& alias : t.key_aliases) {
     if ((m.key_prefix.empty() && key == alias.source) ||
         (has_key_prefix && stripped == alias.source)) {
       if (!alias.unless_present.empty() && source && source->FindValue(alias.unless_present))
@@ -214,11 +215,12 @@ struct ResolvedName {
   std::optional<std::uint32_t> index{};
   bool is_expert = false, is_shard = false;
 };
-std::optional<ResolvedName> TensorName(const SourceMapping& t, std::string_view name,
-                                       std::uint32_t layers,
-                                       format::PartRole source_part = format::PartRole::kData) {
-  const auto& m = *t.architecture;
-  if (!m.tensor_prefix.empty()) {
+std::optional<ResolvedName> TensorName(const spec::Mapping& t, std::string_view container,
+                                       std::string_view name, std::uint32_t layers,
+                                       format::PartRole source_part = format::PartRole::kData,
+                                       bool prefixed = true) {
+  const auto& m = t;
+  if (prefixed && !m.tensor_prefix.empty()) {
     if (!name.starts_with(m.tensor_prefix)) return std::nullopt;
     name.remove_prefix(m.tensor_prefix.size());
   }
@@ -229,7 +231,7 @@ std::optional<ResolvedName> TensorName(const SourceMapping& t, std::string_view 
       if (found && found->pattern != rule.pattern) return std::nullopt;
       found = ResolvedName{rule.pattern,
                            match->digits,
-                           (rule.any_part || t.container == "safetensors" || t.container == "mlx")
+                           (rule.any_part || container == "safetensors" || container == "mlx")
                                ? source_part
                                : rule.part,
                            rule.experts,
@@ -238,31 +240,27 @@ std::optional<ResolvedName> TensorName(const SourceMapping& t, std::string_view 
                            match->is_shard};
     }
   }
-  for (const auto& alias : t.tensors)
+  for (const auto& alias : t.tensor_aliases)
     if (const auto match = nd::Match(alias.source, name, layers)) {
       if (found) return std::nullopt;
       for (const auto& rule : m.tensors)
         if (!rule.target && rule.pattern == alias.canonical)
-          found = ResolvedName{
-              alias.canonical,
-              match->digits,
-              (rule.any_part || t.container == "safetensors" || t.container == "mlx") ? source_part
-                                                                                      : rule.part,
-              rule.experts,
-              match->index,
-              match->is_expert,
-              match->is_shard};
+          found = ResolvedName{alias.canonical,
+                               match->digits,
+                               (rule.any_part || container == "safetensors" || container == "mlx")
+                                   ? source_part
+                                   : rule.part,
+                               rule.experts,
+                               match->index,
+                               match->is_expert,
+                               match->is_shard};
     }
   if (!found && source_part != format::PartRole::kData && source_part != format::PartRole::kCodes) {
     for (std::string_view suffix : {".weight_scale_2", ".weight_scale", ".weight_bias",
                                     ".weight_zero", ".scales", ".biases", ".zeros"}) {
       if (!name.ends_with(suffix)) continue;
       const std::string base = std::string(name.substr(0, name.size() - suffix.size())) + ".weight";
-      auto unprefixed = t;
-      auto mapping = m;
-      mapping.tensor_prefix = {};
-      unprefixed.architecture = &mapping;
-      if (auto weight = TensorName(unprefixed, base, layers, format::PartRole::kCodes)) {
+      if (auto weight = TensorName(t, container, base, layers, format::PartRole::kCodes, false)) {
         if (!weight->digits.empty())
           weight->digits = name.substr(
               static_cast<std::size_t>(weight->digits.data() - base.data()), weight->digits.size());
@@ -273,7 +271,7 @@ std::optional<ResolvedName> TensorName(const SourceMapping& t, std::string_view 
   }
   return found;
 }
-bool IgnoredTensor(const SourceMapping& table, std::string_view name, std::uint32_t layers) {
+bool IgnoredTensor(const spec::Mapping& table, std::string_view name, std::uint32_t layers) {
   if (std::ranges::any_of(table.ignored_tensor_prefixes,
                           [&](auto prefix) { return name.starts_with(prefix); }))
     return true;
@@ -388,7 +386,7 @@ struct AssemblyInventory {
   std::vector<SourceDisposition> dispositions{};
 };
 std::expected<AssemblyInventory, Error> Assemble(const Checkpoint& source,
-                                                 const SourceMapping& table, std::uint32_t layers,
+                                                 const spec::Mapping& table, std::uint32_t layers,
                                                  const TensorAssembly* selection = nullptr) {
   struct Group {
     TensorAssembly output{};
@@ -404,11 +402,11 @@ std::expected<AssemblyInventory, Error> Assemble(const Checkpoint& source,
           return std::ranges::contains(part.sources, ti);
         }))
       continue;
-    if (SemanticTensor(*table.architecture, tensor.name)) {
+    if (SemanticTensor(table, tensor.name)) {
       inventory.dispositions[ti] = {SourceDispositionKind::kSemantic, 1};
       continue;
     }
-    auto name = TensorName(table, tensor.name, layers, tensor.part);
+    auto name = TensorName(table, source.container, tensor.name, layers, tensor.part);
     if (!name && IgnoredTensor(table, tensor.name, layers)) {
       inventory.dispositions[ti] = {SourceDispositionKind::kAuxiliary, 1};
       continue;
@@ -487,7 +485,7 @@ std::expected<AssemblyInventory, Error> Assemble(const Checkpoint& source,
     }
     if (group.members.size() != source_parts->size()) return Bad("unexpected logical tensor part");
     const spec::TensorRule* role = nullptr;
-    for (const auto& r : table.architecture->tensors)
+    for (const auto& r : table.tensors)
       if (nd::Match(r.pattern, out.name, layers)) {
         role = &r;
         break;
@@ -602,21 +600,21 @@ static_assert(sizeof(void*) == 8);
 }  // namespace
 
 namespace normalization_detail {
-std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceMapping& t,
+std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::Mapping& t,
                                               NormalizeBoundOptions options) {
   if ((!options.component.empty() || options.draft_head_rows) &&
-      t.architecture->role != spec::StageRole::kDrafter)
+      t.role != spec::StageRole::kDrafter)
     return Bad("draft options require a drafter mapping", Rule::kUnsupported);
   if (options.draft_head_rows > kMaxTensors)
     return Bad("draft head row count exceeds tensor bounds", Rule::kBounds);
-  if (auto table = ValidateSourceMapping(t); !table) return std::unexpected(table.error());
-  const auto& m = *t.architecture;
-  if (s.container != t.container ||
-      (s.architecture != m.architecture &&
+  if (auto table = ValidateImportMapping(t, s.container); !table)
+    return std::unexpected(table.error());
+  const auto& m = t;
+  if ((s.architecture != m.architecture &&
        !std::ranges::contains(m.source_architectures, s.architecture)) ||
       !s.role.empty() ||
       (!IndexedSource(s) &&
-       s.quantization != (t.container == "exl3" ? std::string_view("exl3") : std::string_view{})) ||
+       s.quantization != (s.container == "exl3" ? std::string_view("exl3") : std::string_view{})) ||
       !s.components.empty())
     return Bad("source is outside the normalization domain", ItemKind::kNone, kNoItem,
                Rule::kUnsupported);
@@ -665,7 +663,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
         (metadata_bytes = a.Add(metadata_bytes, a.Add(e.key.size() + 64, *bytes))) >
             kMaxGgufMetadataBytes)
       return Bad("metadata exceeds the reader accounting bound", ItemKind::kKey, i, Rule::kBounds);
-    const auto key = Classify(t, e.key, std::holds_alternative<std::nullptr_t>(e.value), &s);
+    const auto key =
+        Classify(t, s.container, e.key, std::holds_alternative<std::nullptr_t>(e.value), &s);
     if (!key)
       return Bad("unconsumed semantic metadata changes unsupported mapping semantics",
                  ItemKind::kKey, i);
@@ -773,7 +772,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
       return nullptr;
     };
     if (const auto* found = find_with_prefix(canonical)) return found;
-    for (const auto& alias : t.tensors)
+    for (const auto& alias : t.tensor_aliases)
       if (alias.canonical == canonical)
         if (const auto* found = find_with_prefix(alias.source)) return found;
     return nullptr;
@@ -946,7 +945,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
     return Bad("source layer count or width is outside component bounds", ItemKind::kNone, kNoItem,
                Rule::kBounds);
   for (std::size_t i = 0; i < s.metadata.size(); ++i) {
-    const auto key = Classify(t, s.metadata[i].key,
+    const auto key = Classify(t, s.container, s.metadata[i].key,
                               std::holds_alternative<std::nullptr_t>(s.metadata[i].value), &s);
     if (key->kind != MetadataClass::kSelected) continue;
     const auto* list = std::get_if<std::vector<std::int64_t>>(&s.metadata[i].value);
@@ -975,7 +974,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
           return Bad("layer selector is not ordered unique in-range layers", ItemKind::kKey, i);
     }
   }
-  if (t.container == "gguf" &&
+  if (s.container == "gguf" &&
       ((split_no && *split_no != 0) ||
        (split_count &&
         (*split_count <= 0 || static_cast<std::uint64_t>(*split_count) != s.files.size())) ||
@@ -1013,7 +1012,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
     if (tensor.name.empty() || tensor.name.size() > kMaxNameBytes ||
         !NoControlCharacters(tensor.name) || json::FirstInvalidUtf8(tensor.name))
       return Bad("invalid source tensor name", ItemKind::kTensor, i);
-    const auto name = TensorName(t, tensor.name, static_cast<std::uint32_t>(layers), tensor.part);
+    const auto name =
+        TensorName(t, s.container, tensor.name, static_cast<std::uint32_t>(layers), tensor.part);
     if ((!name && IgnoredTensor(t, tensor.name, static_cast<std::uint32_t>(layers))) ||
         SemanticTensor(m, tensor.name)) {
       const auto& extent = tensor.extent;
@@ -1038,7 +1038,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
       if (!SourceDescriptor(tensor))
         return Bad("source physical descriptor disagrees with logical format", ItemKind::kTensor,
                    i);
-    } else if (t.container == "exl3") {
+    } else if (s.container == "exl3") {
       if (tensor.part == format::PartRole::kData) {
         if (parts->size() != 1 || tensor.format.layout != format::Layout::kDense ||
             tensor.format.params != format::EncodingParams{} ||
@@ -1179,11 +1179,11 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   return NormalizationCost{bytes, work, payload, static_cast<std::uint32_t>(layers)};
 }
 
-std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapping& table,
+std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapping& table,
                                            NormalizationLimits limits,
                                            const NormalizationTarget* target,
                                            NormalizeOptions options) {
-  if (table.architecture->role == spec::StageRole::kDrafter && !target)
+  if (table.role == spec::StageRole::kDrafter && !target)
     return Bad("drafter import requires --target TARGET_ID in the selected store",
                Rule::kUnsupported);
   const auto cost = Bound(
@@ -1192,27 +1192,23 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
   if (cost->metadata_bytes > limits.metadata_bytes || cost->work_units > limits.work_units)
     return Bad("normalization reservation is insufficient", ItemKind::kNone, kNoItem,
                Rule::kBounds);
-  if (target != nullptr && table.architecture->role != spec::StageRole::kDrafter)
+  if (target != nullptr && table.role != spec::StageRole::kDrafter)
     return Bad("--target applies only to a drafter import", ItemKind::kNone, kNoItem,
                Rule::kUnsupported);
-  if (auto mapping = spec::ValidateMapping(*table.architecture); !mapping)
-    return Bad("invalid architecture mapping", ItemKind::kNone, kNoItem, Rule::kUnsupported);
   NormalizedPlan plan;
   plan.cost_ = *cost;
-  plan.version_ = table.version;
-  plan.architecture_version_ = table.architecture->version;
+  plan.architecture_version_ = table.version;
   plan.source_ = std::move(source);
   spec::SamplingDefaults sampling;
-  if (table.architecture->role == spec::StageRole::kTarget) {
+  if (table.role == spec::StageRole::kTarget) {
     auto budget = SamplingDefaultsBound(plan.source_);
     if (!budget) return std::unexpected(budget.error());
-    auto defaults =
-        ReadSamplingDefaults(plan.source_, *budget, table.architecture->source_key_prefix);
+    auto defaults = ReadSamplingDefaults(plan.source_, *budget, table.source_key_prefix);
     if (!defaults) return std::unexpected(defaults.error());
     sampling = std::move(*defaults);
   }
   const auto& input = plan.source_;
-  plan.canonical_.architecture = std::string(table.architecture->architecture);
+  plan.canonical_.architecture = std::string(table.architecture);
   plan.mapping_architecture_ = plan.canonical_.architecture;
   plan.canonical_.container = input.container;
   plan.canonical_.tensors.reserve(input.tensors.size());
@@ -1221,7 +1217,7 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
   std::optional<TensorAssembly> selected_output;
   std::vector<Tensor> head_parts;
   if (options.draft_head) {
-    if (!target || !table.architecture->draft || !IndexedSource(plan.source_))
+    if (!target || !table.draft || !IndexedSource(plan.source_))
       return Bad("selected head requires a native drafter and actual target", Rule::kUnsupported);
     const auto& head = *options.draft_head;
     auto vocab = spec::Vocabulary(target->model, target->source);
@@ -1235,19 +1231,19 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
         return Bad("selected head IDs must be ascending in the actual target vocabulary");
       previous = id;
     }
-    const auto* dialect = FindSourceMapping(input.container, target->source.architecture);
+    const auto* dialect = FindImportMapping(input.container, target->source.architecture);
     if (!dialect) return Bad("selected head has no source dialect for the target architecture");
     std::set<std::uint32_t> head_indices;
     for (std::uint32_t ti = 0; ti < input.tensors.size(); ++ti) {
       const auto& tensor = input.tensors[ti];
-      const auto name = TensorName(*dialect, tensor.name, nd::kLayerLimit, tensor.part);
+      const auto name =
+          TensorName(*dialect, input.container, tensor.name, nd::kLayerLimit, tensor.part);
       if (!name) continue;
-      const auto rule = std::ranges::find(dialect->architecture->tensors, name->pattern,
-                                          &spec::TensorRule::pattern);
-      if (rule == dialect->architecture->tensors.end()) continue;
-      const auto slot =
-          std::ranges::find(dialect->architecture->slots, rule->slot, &spec::SlotRule::slot);
-      if (slot != dialect->architecture->slots.end() && slot->site == spec::Site::kOutput &&
+      const auto rule =
+          std::ranges::find(dialect->tensors, name->pattern, &spec::TensorRule::pattern);
+      if (rule == dialect->tensors.end()) continue;
+      const auto slot = std::ranges::find(dialect->slots, rule->slot, &spec::SlotRule::slot);
+      if (slot != dialect->slots.end() && slot->site == spec::Site::kOutput &&
           rule->role == "weight") {
         head_parts.push_back(tensor);
         head_indices.insert(ti);
@@ -1261,11 +1257,10 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
         data->format.shape.ne[1] != *vocab)
       return Bad("selected head output geometry differs from target vocabulary");
     std::string output_name;
-    for (const auto& rule : table.architecture->tensors) {
+    for (const auto& rule : table.tensors) {
       if (rule.target || rule.role != "weight") continue;
-      const auto slot =
-          std::ranges::find(table.architecture->slots, rule.slot, &spec::SlotRule::slot);
-      if (slot != table.architecture->slots.end() && slot->site == spec::Site::kOutput) {
+      const auto slot = std::ranges::find(table.slots, rule.slot, &spec::SlotRule::slot);
+      if (slot != table.slots.end() && slot->site == spec::Site::kOutput) {
         output_name = rule.pattern;
         break;
       }
@@ -1315,7 +1310,7 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
     const auto file = static_cast<std::uint32_t>(plan.source_.files.size());
     plan.source_.files.push_back(head.file);
     selected_ids =
-        spec::SourceTensor{.name = std::string(table.architecture->draft->head_ids),
+        spec::SourceTensor{.name = std::string(table.draft->head_ids),
                            .format = {.encoding = format::Encoding::kI32,
                                       .shape = {.ne = {1, head.ids.size(), 1, 1}, .rank = 2}},
                            .part = format::PartRole::kData};
@@ -1328,7 +1323,7 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
     plan.selected_rows_ = head.ids.size();
     plan.has_options_ = true;
     plan.options_ = "{\"component\":";
-    json::AppendQuoted(table.architecture->stage, plan.options_);
+    json::AppendQuoted(table.stage, plan.options_);
     plan.options_ += ",\"draft_head\":";
     json::AppendQuoted(head.file.name, plan.options_);
     plan.options_ += '}';
@@ -1340,21 +1335,20 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
     if (!inventory) return std::unexpected(inventory.error());
     assembled = std::move(*inventory);
     if (selected_output) assembled->outputs.push_back(std::move(*selected_output));
-    auto relaid = RelayoutExpertTables(assembled->outputs, nullptr, table.architecture);
+    auto relaid = RelayoutExpertTables(assembled->outputs, nullptr, &table);
     if (!relaid) return std::unexpected(relaid.error());
     for (auto& out : assembled->outputs) {
-      const auto role = std::ranges::find_if(table.architecture->tensors, [&](const auto& r) {
+      const auto role = std::ranges::find_if(table.tensors, [&](const auto& r) {
         return r.role == "table" && nd::Match(r.pattern, out.name, cost->layers).has_value();
       });
-      if (role == table.architecture->tensors.end()) continue;
-      const auto slot =
-          std::ranges::find(table.architecture->slots, role->slot, &spec::SlotRule::slot);
-      if (slot != table.architecture->slots.end() &&
+      if (role == table.tensors.end()) continue;
+      const auto slot = std::ranges::find(table.slots, role->slot, &spec::SlotRule::slot);
+      if (slot != table.slots.end() &&
           (slot->site == spec::Site::kSide || slot->site == spec::Site::kEmbedding)) {
         if (auto row = RelayoutRowTable(out); !row) return std::unexpected(row.error());
       }
     }
-    if (table.architecture->role == spec::StageRole::kDrafter) {
+    if (table.role == spec::StageRole::kDrafter) {
       // A component publication authenticates only its contributing shards and
       // kept documents. The disposition table, not a family/name test, selects
       // tensors; all source and output indices are remapped together.
@@ -1398,7 +1392,7 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
   for (std::size_t i = 0; !assembled && i < input.tensors.size(); ++i) {
     auto& tensor = plan.source_.tensors[i];
     tensor.dtype = format::Info(tensor.format.encoding).name;
-    const auto name = TensorName(table, tensor.name, cost->layers);
+    const auto name = TensorName(table, input.container, tensor.name, cost->layers);
     if (!name && IgnoredTensor(table, tensor.name, cost->layers)) continue;
     if (!name) return Bad("tensor mapping changed after preflight", ItemKind::kTensor, i);
     plan.canonical_.tensors.push_back({.name = Expand(*name),
@@ -1467,8 +1461,8 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
   plan.auxiliary_.push_back({"", "unread metadata retained as source provenance"});
   for (std::size_t i = 0; i < input.metadata.size(); ++i) {
     const auto& e = input.metadata[i];
-    const auto key =
-        *Classify(table, e.key, std::holds_alternative<std::nullptr_t>(e.value), &input);
+    const auto key = *Classify(table, input.container, e.key,
+                               std::holds_alternative<std::nullptr_t>(e.value), &input);
     auto destination = key.auxiliary;
     if (key.kind == MetadataClass::kAuxiliary && key.auxiliary < table.auxiliary.size()) {
       // An auxiliary key a tensor's extent states must agree with it.
@@ -1497,17 +1491,16 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
       if (const auto* labels = std::get_if<std::vector<std::string>>(&e.value)) {
         std::vector<std::int64_t> codes;
         for (const auto& label : *labels) {
-          const auto found = std::ranges::find(table.architecture->layer_type_codes, label,
-                                               &spec::LayerTypeCode::label);
-          if (found == table.architecture->layer_type_codes.end())
-            return Bad("unknown layer type label");
+          const auto found =
+              std::ranges::find(table.layer_type_codes, label, &spec::LayerTypeCode::label);
+          if (found == table.layer_type_codes.end()) return Bad("unknown layer type label");
           codes.push_back(found->value);
         }
         value = std::move(codes);
       }
-      const bool mapped_key = nd::KeyTypes(*table.architecture, key.canonical, true) != 0;
-      const auto canonical_key = mapped_key ? spec::CanonicalKey(*table.architecture, key.canonical)
-                                            : std::string(key.canonical);
+      const bool mapped_key = nd::KeyTypes(table, key.canonical, true) != 0;
+      const auto canonical_key =
+          mapped_key ? spec::CanonicalKey(table, key.canonical) : std::string(key.canonical);
       const auto previous = std::ranges::find(plan.values_, canonical_key, &spec::SourceValue::key);
       if (previous != plan.values_.end()) {
         if (previous->value != value) return Bad("inconsistent metadata aliases");
@@ -1520,14 +1513,14 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
   }
   for (std::uint32_t ti = 0; ti < input.tensors.size(); ++ti) {
     const auto& tensor = input.tensors[ti];
-    const auto* rule = SemanticTensor(*table.architecture, tensor.name);
+    const auto* rule = SemanticTensor(table, tensor.name);
     if (!rule) continue;
     const auto count = tensor.format.shape.rank == 1 ? tensor.format.shape.ne[0] : 0;
     if (count == 0 || count > spec::kMaxList || (rule->size && rule->size != count) ||
         tensor.format.encoding != format::Encoding::kI64 ||
         tensor.part != format::PartRole::kData || tensor.extent.bytes != count * 8)
       return Bad("semantic tensor is not its declared I64 list", ItemKind::kTensor, ti);
-    const auto key = spec::CanonicalKey(*table.architecture, rule->key);
+    const auto key = spec::CanonicalKey(table, rule->key);
     std::vector<std::byte> bytes(count * 8);
     if (auto read = input.Read(tensor.extent, 0, bytes); !read)
       return std::unexpected(read.error());
@@ -1548,27 +1541,25 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
       plan.values_.push_back({key, std::move(values)});
     plan.semantic_.push_back({ti, tensor.extent, base::Sha256{}.Update(bytes).Finish()});
   }
-  const bool drafter = table.architecture->role == spec::StageRole::kDrafter;
+  const bool drafter = table.role == spec::StageRole::kDrafter;
   if (drafter) {
     if (target == nullptr)
       return Bad("drafter import requires --target TARGET_ID in the selected store",
                  Rule::kUnsupported);
-    if (auto valid = ValidateTarget(*target, *table.architecture); !valid)
-      return std::unexpected(valid.error());
+    if (auto valid = ValidateTarget(*target, table); !valid) return std::unexpected(valid.error());
   }
   const auto synthesize = [&]() -> std::expected<spec::ModelSpec, Error> {
-    if (drafter && table.architecture->draft) {
-      auto values =
-          spec::ExtractValues(*table.architecture, target->model, target->source, plan.canonical_);
+    if (drafter && table.draft) {
+      auto values = spec::ExtractValues(table, target->model, target->source, plan.canonical_);
       if (!values) return Bad("drafter target extraction failed");
       for (auto& value : *values) {
         auto at = std::ranges::find(plan.values_, value.key, &spec::SourceValue::key);
         if (at == plan.values_.end()) plan.values_.push_back(std::move(value));
       }
     }
-    auto model = drafter ? spec::ComposeDrafter(target->model, *target->mapping,
-                                                *table.architecture, plan.canonical_, plan.values_)
-                         : spec::Synthesize(*table.architecture, plan.canonical_, plan.values_);
+    auto model = drafter ? spec::ComposeDrafter(target->model, *target->mapping, table,
+                                                plan.canonical_, plan.values_)
+                         : spec::Synthesize(table, plan.canonical_, plan.values_);
     if (!model) {
       return Bad("source does not satisfy the architecture mapping");
     }
@@ -1594,12 +1585,11 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
     if (auto valid = validate(*model); !valid) return std::unexpected(valid.error());
   plan.spec_ = std::move(*model);
   const auto own_stage = [&]() -> const spec::Stage& {
-    return *std::ranges::find(plan.spec_.stages, table.architecture->role, &spec::Stage::role);
+    return *std::ranges::find(plan.spec_.stages, table.role, &spec::Stage::role);
   };
-  const bool has_imported_folds =
-      std::ranges::any_of(table.architecture->folds, [&](const spec::FoldRule& f) {
-        return f.imported && f.container == plan.canonical_.container;
-      });
+  const bool has_imported_folds = std::ranges::any_of(table.folds, [&](const spec::FoldRule& f) {
+    return f.imported && f.container == plan.canonical_.container;
+  });
   if (has_imported_folds || assembled) {
     std::vector<TensorAssembly> outputs;
     if (assembled) outputs = std::move(assembled->outputs);
@@ -1611,7 +1601,7 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
                                     .kind = PartAssemblyKind::kCopy,
                                     .sources = {plan.routes_[ci].source_tensor}}}});
     }
-    if (assembled && std::ranges::any_of(table.architecture->folds, [&](const auto& f) {
+    if (assembled && std::ranges::any_of(table.folds, [&](const auto& f) {
           return f.imported && f.container == input.container && f.fold == "gdn.value_heads_tiled";
         })) {
       auto tiled = TileGdnHeads(own_stage(), outputs);
@@ -1659,22 +1649,22 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const SourceMapp
         plan.bindings_.push_back({oi, plan.canonical_.tensors[oi].part});
     }
   }
-  for (auto& g : spec::PolicyGates(*table.architecture, plan.spec_, plan.canonical_.container)) {
+  for (auto& g : spec::PolicyGates(table, plan.spec_, plan.canonical_.container)) {
     if (std::ranges::none_of(plan.values_, [&](const auto& v) { return v.key == g.key; }))
       plan.values_.push_back(std::move(g));
   }
-  plan.folds_.reserve(table.architecture->folds.size());
-  for (const auto& fold : table.architecture->folds)
+  plan.folds_.reserve(table.folds.size());
+  for (const auto& fold : table.folds)
     if (!fold.imported && fold.container == plan.canonical_.container)
       plan.folds_.push_back({std::string(fold.fold), std::string(fold.container)});
   return plan;
 }
 
-std::expected<NormalizedPlan, Error> Build(const Checkpoint& source, const SourceMapping& table,
+std::expected<NormalizedPlan, Error> Build(const Checkpoint& source, const spec::Mapping& table,
                                            NormalizationLimits limits,
                                            const NormalizationTarget* target,
                                            NormalizeOptions options) {
-  if (table.architecture->role == spec::StageRole::kDrafter && !target)
+  if (table.role == spec::StageRole::kDrafter && !target)
     return Bad("drafter import requires --target TARGET_ID in the selected store",
                Rule::kUnsupported);
   const auto cost = Bound(
@@ -1683,7 +1673,7 @@ std::expected<NormalizedPlan, Error> Build(const Checkpoint& source, const Sourc
   if (cost->metadata_bytes > limits.metadata_bytes || cost->work_units > limits.work_units)
     return Bad("normalization reservation is insufficient", ItemKind::kNone, kNoItem,
                Rule::kBounds);
-  if (target != nullptr && table.architecture->role != spec::StageRole::kDrafter)
+  if (target != nullptr && table.role != spec::StageRole::kDrafter)
     return Bad("--target applies only to a drafter import", ItemKind::kNone, kNoItem,
                Rule::kUnsupported);
   Checkpoint copy = source;
@@ -1759,7 +1749,7 @@ std::expected<DraftHeadList, Error> ReadDraftHeadList(const std::filesystem::pat
 
 std::expected<NormalizationCost, Error> NormalizationBound(const Checkpoint& source,
                                                            NormalizeBoundOptions options) {
-  const auto* mapping = FindSourceMapping(source.container, source.architecture, options.component);
+  const auto* mapping = FindImportMapping(source.container, source.architecture, options.component);
   if (!mapping) return Bad("no complete normalization table for this source", Rule::kUnsupported);
   return nd::Bound(source, *mapping, options);
 }
@@ -1767,7 +1757,7 @@ std::expected<NormalizationCost, Error> NormalizationBound(const Checkpoint& sou
 std::expected<NormalizedPlan, Error> Normalize(Checkpoint&& source, NormalizationLimits limits,
                                                const NormalizationTarget* target,
                                                NormalizeOptions options) {
-  const auto* mapping = FindSourceMapping(source.container, source.architecture, options.component);
+  const auto* mapping = FindImportMapping(source.container, source.architecture, options.component);
   if (!mapping) return Bad("no complete normalization table for this source", Rule::kUnsupported);
   return nd::Build(std::move(source), *mapping, limits, target, std::move(options));
 }
@@ -1775,7 +1765,7 @@ std::expected<NormalizedPlan, Error> Normalize(Checkpoint&& source, Normalizatio
 std::expected<NormalizedPlan, Error> Normalize(const Checkpoint& source, NormalizationLimits limits,
                                                const NormalizationTarget* target,
                                                NormalizeOptions options) {
-  const auto* mapping = FindSourceMapping(source.container, source.architecture, options.component);
+  const auto* mapping = FindImportMapping(source.container, source.architecture, options.component);
   if (!mapping) return Bad("no complete normalization table for this source", Rule::kUnsupported);
   return nd::Build(source, *mapping, limits, target, std::move(options));
 }

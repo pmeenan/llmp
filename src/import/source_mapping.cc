@@ -7,7 +7,6 @@
 #include <charconv>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "spec/mapping.h"
 
@@ -84,56 +83,28 @@ bool IsName(std::string_view s) {
          });
 }
 
-SourceMapping MakeSourceMapping(std::string_view container, const spec::Mapping& m) {
-  return SourceMapping{
-      .container = container,
-      .version = m.version,
-      .architecture = &m,
-      .tensors = m.tensor_aliases,
-      .keys = m.key_aliases,
-      .auxiliary = m.auxiliary,
-      .requirements = m.requirements,
-      .lists = m.lists,
-      .encodings = m.encodings,
-      .extended_components = m.extended_components,
-      .shapes = m.shapes,
-      .row_indices = m.row_indices,
-      .semantic = m.semantic,
-      .ignored_tensors = m.ignored_tensors,
-      .null_semantics = m.null_semantics,
-      .ignored_tensor_prefixes = m.ignored_tensor_prefixes,
-      .tensor_presence = m.tensor_presence,
-  };
-}
 }  // namespace
 
-const SourceMapping* FindSourceMapping(std::string_view container, std::string_view architecture,
+const spec::Mapping* FindImportMapping(std::string_view container, std::string_view architecture,
                                        std::string_view component) {
-  static const auto tables = [] {
-    std::vector<SourceMapping> out;
-    for (const spec::Mapping* m : spec::Mappings()) {
-      for (const std::string_view c : m->containers) {
-        out.push_back(MakeSourceMapping(c, *m));
-      }
-    }
-    return out;
-  }();
   if (!component.empty()) {
-    for (const auto& table : tables)
-      if (container == table.container && table.architecture->role == spec::StageRole::kDrafter &&
-          table.architecture->stage == component &&
-          (architecture == table.architecture->architecture ||
-           std::ranges::contains(table.architecture->source_architectures, architecture)))
-        return &table;
+    for (const auto* mapping : spec::Mappings())
+      if (std::ranges::contains(mapping->containers, container) &&
+          mapping->role == spec::StageRole::kDrafter && mapping->stage == component &&
+          (architecture == mapping->architecture ||
+           std::ranges::contains(mapping->source_architectures, architecture)))
+        return mapping;
     return nullptr;
   }
-  for (const auto& table : tables)
-    if (container == table.container && architecture == table.architecture->architecture)
-      return &table;
-  for (const auto& table : tables)
-    if (container == table.container && table.architecture->role == spec::StageRole::kTarget &&
-        std::ranges::contains(table.architecture->source_architectures, architecture))
-      return &table;
+  for (const auto* mapping : spec::Mappings())
+    if (std::ranges::contains(mapping->containers, container) &&
+        architecture == mapping->architecture)
+      return mapping;
+  for (const auto* mapping : spec::Mappings())
+    if (std::ranges::contains(mapping->containers, container) &&
+        mapping->role == spec::StageRole::kTarget &&
+        std::ranges::contains(mapping->source_architectures, architecture))
+      return mapping;
   return nullptr;
 }
 
@@ -299,87 +270,60 @@ std::optional<NameMatch> Match(std::string_view pattern, std::string_view name,
 }
 }  // namespace normalization_detail
 
-std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
-  if ((table.container != "gguf" && table.container != "exl3" && table.container != "safetensors" &&
-       table.container != "mlx") ||
-      table.version == 0 || !table.architecture || table.route != RouteOperation::kCopyPart ||
-      table.tensors.size() > nd::kRuleLimit || table.keys.size() > nd::kRuleLimit ||
+std::expected<void, Error> ValidateImportMapping(const spec::Mapping& table,
+                                                 std::string_view container) {
+  if ((container != "gguf" && container != "exl3" && container != "safetensors" &&
+       container != "mlx") ||
+      table.version == 0 || !std::ranges::contains(table.containers, container) ||
+      table.tensor_aliases.size() > nd::kRuleLimit || table.key_aliases.size() > nd::kRuleLimit ||
       table.auxiliary.size() > nd::kRuleLimit || table.requirements.size() > 16 ||
       table.ignored_tensor_prefixes.size() > 8 || table.tensor_presence.size() > 8 ||
-      ((table.container == "exl3" || table.container == "safetensors" ||
-        table.container == "mlx") &&
+      ((container == "exl3" || container == "safetensors" || container == "mlx") &&
        table.auxiliary.empty()))
     return Invalid();
-  const auto& m = *table.architecture;
-  const auto* registered =
-      FindSourceMapping(table.container, m.architecture,
-                        m.role == spec::StageRole::kDrafter ? m.stage : std::string_view{});
-  const auto row_eq = [&](const RowIndexRequirement& a, const RowIndexRequirement& b) {
-    return spec::MatchesCanonicalKey(m, a.offsets, b.offsets) &&
-           spec::MatchesCanonicalKey(m, a.counts, b.counts) && a.tensor == b.tensor;
+  const auto& m = table;
+  if (!spec::ValidateMapping(m)) return Invalid();
+  const auto tensor = [&](std::string_view name) {
+    return nd::Pattern(name) && std::ranges::any_of(m.tensors, [&](const auto& rule) {
+             return !rule.target && rule.pattern == name;
+           });
   };
-  if (!registered || registered->architecture != &m ||
-      table.extended_components != registered->extended_components ||
-      table.lists.size() != registered->lists.size() ||
-      table.shapes.size() != registered->shapes.size() ||
-      !std::ranges::equal(table.row_indices, registered->row_indices, row_eq) ||
-      !std::ranges::equal(table.encodings, registered->encodings) ||
-      !std::ranges::equal(table.semantic, registered->semantic) ||
-      !std::ranges::equal(table.ignored_tensors, registered->ignored_tensors) ||
-      !std::ranges::equal(table.null_semantics, registered->null_semantics) ||
-      !std::ranges::equal(table.ignored_tensor_prefixes, registered->ignored_tensor_prefixes) ||
-      table.tensor_presence.size() != registered->tensor_presence.size())
-    return Invalid();
-  for (std::size_t i = 0; i < table.tensor_presence.size(); ++i) {
-    const auto& rule = table.tensor_presence[i];
-    const auto& expected = registered->tensor_presence[i];
-    if (rule.flag != expected.flag || rule.tensor != expected.tensor || rule.when != expected.when)
+  // This retained declaration is not an ingress whitelist; readers and the
+  // format/part validators determine encoding support. Registered lists are empty.
+  for (const auto encoding : m.encodings)
+    if (!std::ranges::contains(format::Encodings(), encoding, &format::EncodingInfo::id))
       return Invalid();
-  }
-  for (std::size_t i = 0; i < table.shapes.size(); ++i) {
-    const auto& a = table.shapes[i];
-    const auto& b = registered->shapes[i];
-    if (a.name != b.name || !std::ranges::equal(a.shape, b.shape)) return Invalid();
-  }
-  for (std::size_t i = 0; i < table.lists.size(); ++i) {
-    const auto& a = table.lists[i];
-    const auto& b = registered->lists[i];
-    const bool same_extra = (a.extra_layers_key.empty() && b.extra_layers_key.empty()) ||
-                            spec::MatchesCanonicalKey(m, a.extra_layers_key, b.extra_layers_key);
-    const bool same_sections = (a.sections_of.empty() && b.sections_of.empty()) ||
-                               spec::MatchesCanonicalKey(m, a.sections_of, b.sections_of);
-    const bool same_multiplier =
-        a.sections_multiplier_key == b.sections_multiplier_key ||
-        spec::MatchesCanonicalKey(m, a.sections_multiplier_key, b.sections_multiplier_key);
-    if (!spec::MatchesCanonicalKey(m, a.key, b.key) || a.size != b.size ||
-        a.size > nd::kLayerLimit || a.min_size != b.min_size || a.min_size > a.size ||
-        a.optional != b.optional || a.per_layer != b.per_layer || !same_extra ||
-        a.allow_unstated_extra != b.allow_unstated_extra || !same_sections || !same_multiplier ||
+  for (const auto& rule : m.tensor_presence)
+    if (!spec::IsSourceKey(rule.flag) || !tensor(rule.tensor)) return Invalid();
+  for (const auto& rule : m.shapes)
+    if (!tensor(rule.name) || rule.shape.empty() || rule.shape.size() > format::kMaxDims ||
+        std::ranges::contains(rule.shape, std::uint64_t{0}))
+      return Invalid();
+  for (const auto& rule : m.row_indices)
+    if (!tensor(rule.tensor) || (nd::KeyTypes(m, rule.offsets, true) & nd::kIntegers) == 0 ||
+        (nd::KeyTypes(m, rule.counts, true) & nd::kIntegers) == 0)
+      return Invalid();
+  for (const auto& a : m.lists) {
+    if (a.size > nd::kLayerLimit || a.min_size > a.size ||
+        (!a.extra_layers_key.empty() && !spec::IsSourceKey(a.extra_layers_key)) ||
         (!a.sections_multiplier_key.empty() &&
          (a.sections_of.empty() ||
           (nd::KeyTypes(m, a.sections_multiplier_key, true) & (nd::kInteger | nd::kReal)) == 0)) ||
         (!a.sections_of.empty() && (nd::KeyTypes(m, a.sections_of, true) & nd::kInteger) == 0) ||
-        (!a.exact.empty() && a.exact.size() != a.size) || !std::ranges::equal(a.exact, b.exact) ||
+        (!a.exact.empty() && a.exact.size() != a.size) ||
         (nd::KeyTypes(m, a.key, true) & (nd::kIntegers | nd::kReals)) == 0)
       return Invalid();
   }
-  for (const auto& required : registered->requirements) {
-    bool found = false;
-    for (const auto& rule : table.requirements) {
-      const bool same_eq = (rule.equals_key.empty() && required.equals_key.empty()) ||
-                           spec::MatchesCanonicalKey(m, rule.equals_key, required.equals_key);
-      const bool same_unless =
-          (rule.unless_present.empty() && required.unless_present.empty()) ||
-          spec::MatchesCanonicalKey(m, rule.unless_present, required.unless_present);
-      found |= spec::MatchesCanonicalKey(m, rule.key, required.key) &&
-               rule.reject_equal == required.reject_equal &&
-               rule.require_equal == required.require_equal && same_eq &&
-               rule.positive == required.positive && same_unless &&
-               rule.optional == required.optional && rule.boolean == required.boolean &&
-               rule.flag_of_positive == required.flag_of_positive;
-    }
-    if (!found) return Invalid();
+  for (auto key : m.semantic) {
+    if (key.ends_with('*')) key.remove_suffix(1);
+    if (!spec::IsSourceKey(key)) return Invalid();
   }
+  for (const auto key : m.null_semantics)
+    if (!spec::IsSourceKey(key)) return Invalid();
+  for (const auto pattern : m.ignored_tensors)
+    if (!nd::Pattern(pattern)) return Invalid();
+  for (const auto prefix : m.ignored_tensor_prefixes)
+    if (!spec::IsSourceKey(prefix)) return Invalid();
   const bool drafter = m.role == spec::StageRole::kDrafter;
   if ((m.role != spec::StageRole::kTarget && !drafter) ||
       (drafter ? m.stage.empty() || !IsName(m.stage) || m.stage == "target" || m.reads.size() > 8
@@ -402,23 +346,22 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
         (!table.extended_components && p.type == spec::ValueType::kInts))
       return Invalid();
   for (const auto& r : m.tensors)
-    if (!nd::Pattern(r.pattern) || (!drafter && r.target) ||
-        (table.container == "exl3" && r.any_part) ||
+    if (!nd::Pattern(r.pattern) || (!drafter && r.target) || (container == "exl3" && r.any_part) ||
         (!drafter && !table.extended_components && r.unbound) || (r.target && r.unbound) ||
-        (table.container == "gguf" && r.part != format::PartRole::kData) ||
-        ((table.container == "safetensors" || table.container == "mlx") &&
-         r.part != format::PartRole::kData && r.part != format::PartRole::kCodes &&
-         r.part != format::PartRole::kBlockScales && r.part != format::PartRole::kTensorScale &&
-         r.part != format::PartRole::kBiases && r.part != format::PartRole::kZeros) ||
-        (table.container == "exl3" && r.part != format::PartRole::kData &&
+        (container == "gguf" && r.part != format::PartRole::kData) ||
+        ((container == "safetensors" || container == "mlx") && r.part != format::PartRole::kData &&
+         r.part != format::PartRole::kCodes && r.part != format::PartRole::kBlockScales &&
+         r.part != format::PartRole::kTensorScale && r.part != format::PartRole::kBiases &&
+         r.part != format::PartRole::kZeros) ||
+        (container == "exl3" && r.part != format::PartRole::kData &&
          r.part != format::PartRole::kCodes && r.part != format::PartRole::kInputSigns &&
          r.part != format::PartRole::kOutputSigns && r.part != format::PartRole::kCodebookMarker))
       return Invalid();
-  const auto count = m.tensors.size() + table.tensors.size();
+  const auto count = m.tensors.size() + table.tensor_aliases.size();
   const auto spelling = [&](std::size_t i,
                             std::array<char, spec::kMaxText>& buf) -> std::string_view {
     if (i < m.tensors.size()) return m.tensors[i].pattern;
-    const std::string_view s = table.tensors[i - m.tensors.size()].source;
+    const std::string_view s = table.tensor_aliases[i - m.tensors.size()].source;
     if (!m.tensor_prefix.empty() && !s.starts_with(m.tensor_prefix) &&
         m.tensor_prefix.size() + s.size() <= buf.size()) {
       auto* out = std::ranges::copy(m.tensor_prefix, buf.begin()).out;
@@ -427,7 +370,7 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
     }
     return s;
   };
-  for (const auto& a : table.tensors) {
+  for (const auto& a : table.tensor_aliases) {
     if (!nd::Pattern(a.source) || !SameShape(a.source, a.canonical)) return Invalid();
     std::size_t matches = 0;
     for (const auto& r : m.tensors) matches += (!r.target && r.pattern == a.canonical);
@@ -459,21 +402,21 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
       if (is_target(i) == is_target(j) && Overlap(spelling(i, buf_i), spelling(j, buf_j)) &&
           !(i < m.tensors.size() && exclusive(m.tensors[i], m.tensors[j])))
         return Invalid();
-  for (std::size_t i = 0; i < table.keys.size(); ++i) {
-    const auto& a = table.keys[i];
+  for (std::size_t i = 0; i < table.key_aliases.size(); ++i) {
+    const auto& a = table.key_aliases[i];
     if (!spec::IsSourceKey(a.source) || !nd::KeyTypes(m, a.canonical, true) ||
         (m.key_prefix.empty() && a.source != a.canonical && nd::KeyTypes(m, a.source)) ||
         Structural(a.source))
       return Invalid();
     if (!a.unless_present.empty() &&
         (!spec::IsSourceKey(a.unless_present) || a.unless_present == a.source ||
-         std::ranges::none_of(table.keys, [&](const auto& primary) {
+         std::ranges::none_of(table.key_aliases, [&](const auto& primary) {
            return primary.source == a.unless_present && primary.unless_present.empty() &&
                   spec::MatchesCanonicalKey(m, primary.canonical, a.canonical);
          })))
       return Invalid();
     for (std::size_t j = 0; j < i; ++j)
-      if (a.source == table.keys[j].source) return Invalid();
+      if (a.source == table.key_aliases[j].source) return Invalid();
   }
   for (std::size_t i = 0; i < table.auxiliary.size(); ++i) {
     const auto& a = table.auxiliary[i];
@@ -514,7 +457,7 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
           (!p.numerator_key.empty() && matches_aux(p.numerator_key)) ||
           (!p.divisor_key.empty() && matches_aux(p.divisor_key)))
         return Invalid();
-    for (const auto& k : table.keys)
+    for (const auto& k : table.key_aliases)
       if (matches_aux_raw(k.source) && k.unless_present.empty()) return Invalid();
     for (std::size_t j = 0; j < i; ++j)
       if (a.prefix.starts_with(table.auxiliary[j].prefix) ||
@@ -522,6 +465,7 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
         return Invalid();
   }
   for (const auto& r : table.requirements) {
+    if (!spec::IsSourceKey(r.key)) return Invalid();
     if (!r.unless_present.empty() && (!nd::KeyTypes(m, r.unless_present, true) || r.require_equal ||
                                       r.positive || !r.equals_key.empty()))
       return Invalid();
@@ -533,20 +477,11 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
     if (!r.require_equal && r.equals_key.empty() && !r.positive && !r.boolean &&
         nd::KeyTypes(m, r.key, true) != nd::kInteger)
       return Invalid();
-    if ((!r.equals_key.empty() || r.positive) &&
-        std::ranges::none_of(registered->requirements, [&](const auto& known) {
-          const bool same_eq = (r.equals_key.empty() && known.equals_key.empty()) ||
-                               spec::MatchesCanonicalKey(m, r.equals_key, known.equals_key);
-          return spec::MatchesCanonicalKey(m, r.key, known.key) && same_eq &&
-                 r.positive == known.positive;
-        }))
-      return Invalid();
-    if (r.require_equal && (!spec::IsSourceKey(r.key) || Structural(r.key) ||
-                            std::ranges::none_of(registered->requirements, [&](const auto& known) {
-                              return known.require_equal &&
-                                     spec::MatchesCanonicalKey(m, r.key, known.key) &&
-                                     r.reject_equal == known.reject_equal;
-                            })))
+    if ((!r.equals_key.empty() &&
+         ((nd::KeyTypes(m, r.key, true) & (nd::kInteger | nd::kReal)) == 0 ||
+          (nd::KeyTypes(m, r.equals_key, true) & (nd::kInteger | nd::kReal)) == 0)) ||
+        (r.positive && (nd::KeyTypes(m, r.key, true) & (nd::kInteger | nd::kReal)) == 0) ||
+        (r.require_equal && (!spec::IsSourceKey(r.key) || Structural(r.key))))
       return Invalid();
   }
   return {};

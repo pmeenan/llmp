@@ -639,8 +639,11 @@ D-122).
       and quantization ingress remain open U3 obligations. Repeated chat-asset
       startup payment and tokenizer/template replacement ownership also remain
       a separate bounded startup follow-up.
-      - **U3a One mapping per architecture:** `import::SourceMapping`
-        merged into `spec::Mapping`; the semantic metadata namespace
+      - **U3a One mapping per architecture:** the importer now consumes
+        `spec::Mapping` directly with selected-container context; the derived
+        `import::SourceMapping` structure and per-container copies are removed.
+        The remaining dialect and artifact-migration obligations below stay open.
+        The semantic metadata namespace
         derived from the architecture, failing closed on any unconsumed
         `<arch>.*` key (the hand-kept `kGgufSemantic` fails open for a
         family it omits); one HF↔GGUF key and tensor dialect table replacing

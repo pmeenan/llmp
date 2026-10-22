@@ -234,20 +234,20 @@ Checkpoint Tiny(bool gemma3 = false, bool untied = false, std::uint32_t layers =
 
 Checkpoint TinyGemmaHf(bool gemma3, bool conditional = false, std::uint32_t layers = 2) {
   auto input = Tiny(gemma3, false, layers);
-  const auto* gguf = FindSourceMapping("gguf", input.architecture);
+  const auto* gguf = FindImportMapping("gguf", input.architecture);
   const std::string architecture = gemma3 ? conditional ? "gemma3" : "gemma3_text" : "gemma2";
-  const auto* native = FindSourceMapping("safetensors", architecture);
+  const auto* native = FindImportMapping("safetensors", architecture);
   base::Check(native != nullptr, "native Gemma fixture table");
   auto values = std::move(input.metadata);
   input.metadata.clear();
   input.container = "safetensors";
   input.architecture = architecture;
   Value(input, "model_type", architecture);
-  for (std::size_t i = 0; i < gguf->architecture->params.size(); ++i) {
-    const auto& before = gguf->architecture->params[i];
-    const auto& after = native->architecture->params[i];
-    const std::string before_key = spec::CanonicalKey(*gguf->architecture, before.key);
-    const std::string after_key = spec::CanonicalKey(*native->architecture, after.key);
+  for (std::size_t i = 0; i < gguf->params.size(); ++i) {
+    const auto& before = gguf->params[i];
+    const auto& after = native->params[i];
+    const std::string before_key = spec::CanonicalKey(*gguf, before.key);
+    const std::string after_key = spec::CanonicalKey(*native, after.key);
     if (before.key.empty() || after.key.empty() || after_key.ends_with("query_pre_attn_scalar"))
       continue;
     const auto found = std::ranges::find(values, before_key, &MetaEntry::key);
@@ -265,12 +265,12 @@ Checkpoint TinyGemmaHf(bool gemma3, bool conditional = false, std::uint32_t laye
     Value(input, prefix + "final_logit_softcapping", nullptr);
   }
   for (auto& tensor : input.tensors) {
-    const auto match = std::ranges::find_if(native->tensors, [&](const auto& rule) {
+    const auto match = std::ranges::find_if(native->tensor_aliases, [&](const auto& rule) {
       return nd::Match(rule.canonical, tensor.name, layers).has_value();
     });
-    base::Check(match != native->tensors.end(), "Gemma fixture tensor alias");
+    base::Check(match != native->tensor_aliases.end(), "Gemma fixture tensor alias");
     const std::string digits(nd::Match(match->canonical, tensor.name, layers)->digits);
-    tensor.name = std::string(native->architecture->tensor_prefix) + std::string(match->source);
+    tensor.name = std::string(native->tensor_prefix) + std::string(match->source);
     if (const auto at = tensor.name.find(spec::kLayerField); at != std::string::npos)
       tensor.name.replace(at, spec::kLayerField.size(), digits);
     std::ranges::reverse(tensor.dims);
@@ -561,8 +561,8 @@ TEST(ImportNormalizeTest, CompleteOwnedPlansAndTiedHeadDoNotInventPayloads) {
       auto input = Tiny(gemma3, untied);
       Value(input, "tokenizer.ggml.tokens", std::vector<std::string>{"a", "b"});
       const auto expected =
-          spec::Synthesize(*FindSourceMapping(input.container, input.architecture)->architecture,
-                           SourceOf(input), ValuesOf(input));
+          spec::Synthesize(*FindImportMapping(input.container, input.architecture), SourceOf(input),
+                           ValuesOf(input));
       ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
       const auto count = input.tensors.size();
       auto plan = test_support::NormalizeWithFixtureTarget(std::move(input), kFunded);
@@ -626,14 +626,14 @@ TEST(ImportNormalizeTest, AliasesHaveOneDestinationAndTableLifetimeIsNotBorrowed
   input.tensors[0].name = "words.weight";
   const std::array aliases{TensorAlias{"words.weight", "token_embd.weight"}};
   const std::array keys{KeyAlias{"config.width", "gemma2.embedding_length"}};
-  auto table = *FindSourceMapping("gguf", "gemma2");
-  table.tensors = aliases;
-  table.keys = keys;
+  auto table = *FindImportMapping("gguf", "gemma2");
+  table.tensor_aliases = aliases;
+  table.key_aliases = keys;
   auto width = std::ranges::find(input.metadata, "gemma2.embedding_length", &MetaEntry::key);
   ASSERT_NE(width, input.metadata.end());
   width->key = "config.width";
   Ordered(input);
-  ASSERT_TRUE(ValidateSourceMapping(table));
+  ASSERT_TRUE(ValidateImportMapping(table, "gguf"));
   auto plan = nd::Build(std::move(input), table, kFunded);
   ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
   EXPECT_EQ(plan->canonical().tensors[0].name, "token_embd.weight");
@@ -645,8 +645,8 @@ TEST(ImportNormalizeTest, AliasesHaveOneDestinationAndTableLifetimeIsNotBorrowed
     const std::string prefix = "custom.", reason = "local compiled annotation";
     const std::array local_alias{TensorAlias{original, canonical}};
     const std::array local_aux{AuxiliaryNamespace{prefix, reason}};
-    auto local_table = *FindSourceMapping("gguf", "gemma2");
-    local_table.tensors = local_alias;
+    auto local_table = *FindImportMapping("gguf", "gemma2");
+    local_table.tensor_aliases = local_alias;
     local_table.auxiliary = local_aux;
     Value(source, "custom.origin", std::string("kept"));
     return nd::Build(std::move(source), local_table, kFunded);
@@ -663,24 +663,80 @@ TEST(ImportNormalizeTest, AliasesHaveOneDestinationAndTableLifetimeIsNotBorrowed
   EXPECT_FALSE(nd::Build(std::move(key_duplicate), table, kFunded));
 }
 
-TEST(ImportNormalizeTest, InvalidTablesCannotBroadenInputAuthority) {
-  auto table = *FindSourceMapping("gguf", "gemma2");
+TEST(ImportNormalizeTest, ImportSelectionBorrowsTheAuthoritativeRegistryForEachContainer) {
+  for (const auto* mapping : spec::Mappings()) {
+    for (const auto container : mapping->containers) {
+      const auto component =
+          mapping->role == spec::StageRole::kDrafter ? mapping->stage : std::string_view{};
+      EXPECT_EQ(FindImportMapping(container, mapping->architecture, component), mapping)
+          << mapping->architecture << " " << container << " " << component;
+      EXPECT_TRUE(ValidateImportMapping(*mapping, container))
+          << mapping->architecture << " " << container;
+      EXPECT_FALSE(ValidateImportMapping(*mapping, "unknown-container"));
+    }
+  }
+  const auto* target = FindImportMapping("safetensors", "qwen4exp");
+  const auto* drafter = FindImportMapping("safetensors", "qwen4_exp", "mtp");
+  ASSERT_NE(target, nullptr);
+  ASSERT_NE(drafter, nullptr);
+  EXPECT_NE(target, drafter);
+  EXPECT_EQ(target->role, spec::StageRole::kTarget);
+  EXPECT_EQ(drafter->role, spec::StageRole::kDrafter);
+  EXPECT_EQ(FindImportMapping("safetensors", "qwen4_exp"), target);
+  EXPECT_EQ(FindImportMapping("safetensors", "qwen4_exp", "mtp"), drafter);
+  EXPECT_EQ(FindImportMapping("safetensors", drafter->architecture), drafter);
+  EXPECT_EQ(FindImportMapping("safetensors", "qwen4exp", "mtp"), nullptr);
+  EXPECT_EQ(FindImportMapping("safetensors", "qwen4_exp", "unknown"), nullptr);
+  EXPECT_FALSE(ValidateImportMapping(*FindImportMapping("gguf", "gemma2"), "mlx"));
+}
+
+TEST(ImportNormalizeTest, ImportDeclarationsValidateTheirOwnReferencesAndBounds) {
+  const auto& registered = *FindImportMapping("gguf", "gemma2");
+  auto mapping = registered;
+  const std::array bad_encodings{static_cast<format::Encoding>(65535)};
+  mapping.encodings = bad_encodings;
+  EXPECT_FALSE(ValidateImportMapping(mapping, "gguf"));
+  mapping = registered;
+  const std::array bad_shapes{spec::TensorShapeRequirement{"missing.weight", {}}};
+  mapping.shapes = bad_shapes;
+  EXPECT_FALSE(ValidateImportMapping(mapping, "gguf"));
+  mapping = registered;
+  const std::array bad_rows{spec::RowIndexRequirement{"missing", "missing", "token_embd.weight"}};
+  mapping.row_indices = bad_rows;
+  EXPECT_FALSE(ValidateImportMapping(mapping, "gguf"));
+  mapping = registered;
+  const std::array bad_presence{spec::TensorPresenceRequirement{"flag", "missing.weight"}};
+  mapping.tensor_presence = bad_presence;
+  EXPECT_FALSE(ValidateImportMapping(mapping, "gguf"));
+  mapping = registered;
+  const std::array<std::string_view, 1> empty_semantic{"*"};
+  mapping.semantic = empty_semantic;
+  EXPECT_FALSE(ValidateImportMapping(mapping, "gguf"));
+  mapping = registered;
+  const std::array<std::string_view, 1> bad_prefix{""};
+  mapping.ignored_tensor_prefixes = bad_prefix;
+  EXPECT_FALSE(ValidateImportMapping(mapping, "gguf"));
+}
+
+TEST(ImportNormalizeTest, MalformedDeclarationsAndSemanticAliasesAreRefused) {
+  auto table = *FindImportMapping("gguf", "gemma2");
   const std::array malformed{TensorAlias{"blk.{layer}.{layer}", "token_embd.weight"}};
-  table.tensors = malformed;
-  EXPECT_FALSE(ValidateSourceMapping(table));
+  table.tensor_aliases = malformed;
+  EXPECT_FALSE(ValidateImportMapping(table, "gguf"));
   const std::array overlap{TensorAlias{"blk.{layer}.attn_q.weight", "blk.{layer}.attn_k.weight"}};
-  table.tensors = overlap;
-  EXPECT_FALSE(ValidateSourceMapping(table));
-  table.tensors = {};
+  table.tensor_aliases = overlap;
+  EXPECT_FALSE(ValidateImportMapping(table, "gguf"));
+  table.tensor_aliases = {};
   const std::array aux{AuxiliaryNamespace{"gemma2.", "must not swallow model keys"}};
   table.auxiliary = aux;
-  EXPECT_FALSE(ValidateSourceMapping(table));
-  table = *FindSourceMapping("gguf", "gemma2");
-  table.route = static_cast<RouteOperation>(255);
-  EXPECT_FALSE(ValidateSourceMapping(table));
-  table = *FindSourceMapping("gguf", "gemma2");
-  table.requirements = {};
-  EXPECT_FALSE(ValidateSourceMapping(table));
+  EXPECT_FALSE(ValidateImportMapping(table, "gguf"));
+  table = *FindImportMapping("gguf", "gemma2");
+  table.pipeline = static_cast<spec::PipelineKind>(255);
+  EXPECT_FALSE(ValidateImportMapping(table, "gguf"));
+  table = *FindImportMapping("gguf", "gemma2");
+  const std::array bad_requirements{spec::ScalarRequirement{.key = "bad key", .positive = true}};
+  table.requirements = bad_requirements;
+  EXPECT_FALSE(ValidateImportMapping(table, "gguf"));
 }
 
 TEST(ImportNormalizeTest, PresentBadOptionalKeysNeverBecomeDefaults) {
@@ -860,8 +916,8 @@ TEST(ImportNormalizeTest, QuantizationProvenanceIsExplicitAuxiliaryMetadata) {
 TEST(ImportNormalizeTest, Gemma4DenseAndExpertPlansPreserveEverySourcePart) {
   for (const bool moe : {false, true}) {
     auto s = TinyGemma4(moe);
-    auto expected = spec::Synthesize(*FindSourceMapping("gguf", "gemma4")->architecture,
-                                     SourceOf(s), ValuesOf(s));
+    auto expected =
+        spec::Synthesize(*FindImportMapping("gguf", "gemma4"), SourceOf(s), ValuesOf(s));
     ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
     const auto bytes = Gguf(s);
     auto input = ParseGguf(bytes);
@@ -948,11 +1004,11 @@ TEST(ImportNormalizeTest, Gemma4LayerListsGatesAndExpertGeometryRefuseAmbiguity)
   s = TinyGemma4(false);
   Value(s, "gemma4.feed_forward_length", std::vector<std::int64_t>(6, 16));
   EXPECT_TRUE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
-  const auto table = *FindSourceMapping("gguf", "gemma4");
+  const auto table = *FindImportMapping("gguf", "gemma4");
   const std::array aliases{TensorAlias{"dense.{layer}.weight", "blk.{layer}.ffn_gate.weight"}};
   auto aliased = table;
-  aliased.tensors = aliases;
-  ASSERT_TRUE(ValidateSourceMapping(aliased));
+  aliased.tensor_aliases = aliases;
+  ASSERT_TRUE(ValidateImportMapping(aliased, "gguf"));
   s = TinyGemma4(false);
   auto gate = std::ranges::find(s.tensors, "blk.0.ffn_gate.weight", &Tensor::name);
   ASSERT_NE(gate, s.tensors.end());
@@ -1015,8 +1071,8 @@ TEST(ImportNormalizeTest, Gemma4CompleteDescriptorInventoriesUseTheSameMapping) 
                            .dims = std::move(dims)});
       s.files[0].bytes = offset + (*parts)[0].bytes;
     }
-    const auto expected = spec::Synthesize(*FindSourceMapping("gguf", "gemma4")->architecture,
-                                           SourceOf(s), ValuesOf(s));
+    const auto expected =
+        spec::Synthesize(*FindImportMapping("gguf", "gemma4"), SourceOf(s), ValuesOf(s));
     ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
     auto p = test_support::NormalizeWithFixtureTarget(std::move(s), kFunded);
     ASSERT_TRUE(p) << test_support::Failed(p, &Error::ToString).value_or("");
@@ -1072,8 +1128,8 @@ TEST(ImportNormalizeTest, ApprovedCompleteDescriptorInventoriesMatchExistingSpec
            .dims = std::move(dims)});
     }
     const auto old_source = SourceOf(s);
-    const auto* table = FindSourceMapping(s.container, s.architecture);
-    const auto expected = spec::Synthesize(*table->architecture, old_source, ValuesOf(s));
+    const auto* table = FindImportMapping(s.container, s.architecture);
+    const auto expected = spec::Synthesize(*table, old_source, ValuesOf(s));
     ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
     auto p = test_support::NormalizeWithFixtureTarget(std::move(s), kFunded);
     ASSERT_TRUE(p) << test_support::Failed(p, &Error::ToString).value_or("");
@@ -1190,10 +1246,10 @@ TEST(ImportNormalizeQwenTest, ProfilePreflightHonorsExistingSourceAliases) {
     ASSERT_NE(found, input.tensors.end());
     found->name = alias.source;
   }
-  auto table = *FindSourceMapping("gguf", "qwen4exp");
-  table.keys = keys;
-  table.tensors = tensors;
-  ASSERT_TRUE(ValidateSourceMapping(table));
+  auto table = *FindImportMapping("gguf", "qwen4exp");
+  table.key_aliases = keys;
+  table.tensor_aliases = tensors;
+  ASSERT_TRUE(ValidateImportMapping(table, "gguf"));
   auto plan = nd::Build(std::move(input), table, kFunded);
   ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
   EXPECT_EQ(plan->routes().size(), 1224U);
@@ -1602,36 +1658,30 @@ TEST(ImportNormalizeQwen2Exl3Test, ReaderCodebooksAndRatesPreserveFormatsAndRequ
 }
 
 TEST(ImportNormalizeDrafterTest, ApprovedGgufDrafterMappingsValidateAndRejectMalformedRoles) {
-  const auto* gemma_asst = FindSourceMapping("gguf", "gemma4-assistant");
+  const auto* gemma_asst = FindImportMapping("gguf", "gemma4-assistant");
   ASSERT_NE(gemma_asst, nullptr);
-  EXPECT_TRUE(ValidateSourceMapping(*gemma_asst));
-  EXPECT_EQ(gemma_asst->architecture->role, spec::StageRole::kDrafter);
-  EXPECT_EQ(gemma_asst->architecture->stage, "assistant");
-  EXPECT_FALSE(gemma_asst->architecture->reads.empty());
+  EXPECT_TRUE(ValidateImportMapping(*gemma_asst, "gguf"));
+  EXPECT_EQ(gemma_asst->role, spec::StageRole::kDrafter);
+  EXPECT_EQ(gemma_asst->stage, "assistant");
+  EXPECT_FALSE(gemma_asst->reads.empty());
 
-  const auto* dspark = FindSourceMapping("gguf", "dflash");
+  const auto* dspark = FindImportMapping("gguf", "dflash");
   ASSERT_NE(dspark, nullptr);
-  EXPECT_TRUE(ValidateSourceMapping(*dspark));
-  EXPECT_EQ(dspark->architecture->role, spec::StageRole::kDrafter);
-  EXPECT_EQ(dspark->architecture->stage, "dspark");
-  EXPECT_FALSE(dspark->architecture->reads.empty());
+  EXPECT_TRUE(ValidateImportMapping(*dspark, "gguf"));
+  EXPECT_EQ(dspark->role, spec::StageRole::kDrafter);
+  EXPECT_EQ(dspark->stage, "dspark");
+  EXPECT_FALSE(dspark->reads.empty());
   EXPECT_TRUE(dspark->extended_components);
 
   auto bad_gemma = *gemma_asst;
-  auto bad_m = *gemma_asst->architecture;
-  bad_m.stage = "target";
-  bad_gemma.architecture = &bad_m;
-  EXPECT_FALSE(ValidateSourceMapping(bad_gemma));
-
-  bad_m = *gemma_asst->architecture;
-  bad_m.role = spec::StageRole::kTarget;
-  bad_gemma.architecture = &bad_m;
-  EXPECT_FALSE(ValidateSourceMapping(bad_gemma));
-
-  bad_m = *gemma_asst->architecture;
-  bad_m.stage = "";
-  bad_gemma.architecture = &bad_m;
-  EXPECT_FALSE(ValidateSourceMapping(bad_gemma));
+  bad_gemma.stage = "target";
+  EXPECT_FALSE(ValidateImportMapping(bad_gemma, "gguf"));
+  bad_gemma = *gemma_asst;
+  bad_gemma.role = spec::StageRole::kTarget;
+  EXPECT_FALSE(ValidateImportMapping(bad_gemma, "gguf"));
+  bad_gemma = *gemma_asst;
+  bad_gemma.stage = "";
+  EXPECT_FALSE(ValidateImportMapping(bad_gemma, "gguf"));
 }
 
 TEST(ImportNormalizeDrafterTest, NormalizesGemma4AssistantCheckpointsIntoComposedSpecs) {
@@ -1686,14 +1736,14 @@ TEST(ImportNormalizeDrafterTest, RejectsMissingDrafterKeysAndMismatchedParentWid
 }
 
 TEST(ImportNormalizeSafetensorsTest, Qwen2SafetensorsMappingValidatesAndGgufSynthesizesNon05B) {
-  const auto* qwen2_sf = FindSourceMapping("safetensors", "qwen2");
+  const auto* qwen2_sf = FindImportMapping("safetensors", "qwen2");
   ASSERT_NE(qwen2_sf, nullptr);
-  EXPECT_TRUE(ValidateSourceMapping(*qwen2_sf));
+  EXPECT_TRUE(ValidateImportMapping(*qwen2_sf, "safetensors"));
   for (const auto arch : {"llama", "mistral"}) {
     for (const auto container : {"gguf", "safetensors", "exl3"}) {
-      const auto* table = FindSourceMapping(container, arch);
+      const auto* table = FindImportMapping(container, arch);
       ASSERT_NE(table, nullptr) << container << " " << arch;
-      EXPECT_TRUE(ValidateSourceMapping(*table)) << container << " " << arch;
+      EXPECT_TRUE(ValidateImportMapping(*table, container)) << container << " " << arch;
     }
   }
 
@@ -1736,14 +1786,14 @@ TEST(ImportNormalizeSafetensorsTest, ConditionalMetadataAliasesUseTheDeclaredPri
   auto source = ParseSafetensors(fixtures::Shard(fixtures::TinyQwen2HfEntries()),
                                  fixtures::TinyQwen2HfConfig());
   ASSERT_TRUE(source);
-  auto table = *FindSourceMapping("safetensors", "qwen2");
-  std::vector<spec::KeyAlias> aliases(table.keys.begin(), table.keys.end());
+  auto table = *FindImportMapping("safetensors", "qwen2");
+  std::vector<spec::KeyAlias> aliases(table.key_aliases.begin(), table.key_aliases.end());
   aliases.push_back({"legacy_rms_eps", "attention.layer_norm_rms_epsilon", "rms_norm_eps"});
-  table.keys = aliases;
+  table.key_aliases = aliases;
   std::vector<spec::AuxiliaryNamespace> auxiliary(table.auxiliary.begin(), table.auxiliary.end());
   auxiliary.push_back({"legacy_rms_eps", "provenance when the primary mathematical scalar exists"});
   table.auxiliary = auxiliary;
-  ASSERT_TRUE(ValidateSourceMapping(table));
+  ASSERT_TRUE(ValidateImportMapping(table, "safetensors"));
   Value(*source, "legacy_rms_eps", std::vector<std::int64_t>{7, 8});
   auto preferred = nd::Build(*source, table, kFunded);
   ASSERT_TRUE(preferred) << preferred.error().ToString();
@@ -1761,58 +1811,66 @@ TEST(ImportNormalizeSafetensorsTest, ConditionalMetadataAliasesUseTheDeclaredPri
           fallback->spec().stages.front().layers.front().components.front().Find("eps")->value),
       2e-6);
   aliases.back().unless_present = "legacy_rms_eps";
-  EXPECT_FALSE(ValidateSourceMapping(table));
+  EXPECT_FALSE(ValidateImportMapping(table, "safetensors"));
 }
 
-TEST(ImportNormalizeSafetensorsTest, SharedScalarMayPrecedeItsIndexedRowShards) {
-  auto entries = fixtures::TinyQwen2HfEntries();
-  std::erase_if(entries,
-                [](const auto& entry) { return entry.name == "model.embed_tokens.weight"; });
-  for (auto& entry : entries) {
-    for (auto& dim : entry.shape)
-      if (dim == 4 || dim == 8 || dim == 16) dim *= 2;
-    if (entry.bytes) entry.bytes = *format::BlockBytes(Encoding::kF16);
-    for (auto dim : entry.shape) entry.bytes *= dim;
+TEST(ImportNormalizeSafetensorsTest, SharedScalarMayPrecedeItsIndexedRowShardsWithOrWithoutPrefix) {
+  for (const bool prefixed : {false, true}) {
+    auto entries = fixtures::TinyQwen2HfEntries();
+    std::erase_if(entries,
+                  [](const auto& entry) { return entry.name == "model.embed_tokens.weight"; });
+    for (auto& entry : entries) {
+      for (auto& dim : entry.shape)
+        if (dim == 4 || dim == 8 || dim == 16) dim *= 2;
+      if (entry.bytes) entry.bytes = *format::BlockBytes(Encoding::kF16);
+      for (auto dim : entry.shape) entry.bytes *= dim;
+    }
+    entries.insert(entries.begin(), fixtures::E("model.embed_tokens.weight_scale_2", "F32", {}));
+    for (const auto shard : {0, 1}) {
+      const auto prefix = std::format("model.embed_tokens.shard_{}.", shard);
+      entries.push_back(fixtures::E(prefix + "weight", "U8", {5, 8}));
+      entries.push_back(fixtures::E(prefix + "weight_scale", "F8_E4M3", {5, 1}));
+    }
+    auto config = fixtures::TinyQwen2HfConfig();
+    for (const auto& [from, to] : std::array<std::pair<std::string_view, std::string_view>, 3>{
+             {{"\"hidden_size\":8", "\"hidden_size\":16"},
+              {"\"intermediate_size\":16", "\"intermediate_size\":32"},
+              {"\"head_dim\":4", "\"head_dim\":8"}}})
+      config.replace(config.find(from), from.size(), to);
+    auto source = ParseSafetensors(fixtures::Shard(entries), config);
+    ASSERT_TRUE(source) << source.error().ToString();
+    std::erase_if(source->metadata, [](const auto& entry) { return entry.key == "vocab_size"; });
+    // ParseSafetensors is the raw in-memory parser; describe the reader's
+    // paired NVFP4 parts explicitly before exercising generic normalization.
+    for (auto& tensor : source->tensors) {
+      if (!tensor.name.starts_with("model.embed_tokens.")) continue;
+      tensor.format = {.encoding = Encoding::kNvfp4,
+                       .params = {.tensor_scale = true},
+                       .layout = format::Layout::kSplit,
+                       .shape = {.ne = {16, 5, 1, 1}, .rank = 2}};
+      tensor.part = tensor.name.ends_with(".weight_scale_2") ? format::PartRole::kTensorScale
+                    : tensor.name.ends_with(".weight_scale") ? format::PartRole::kBlockScales
+                                                             : format::PartRole::kCodes;
+    }
+    auto table = *FindImportMapping("safetensors", "qwen2");
+    std::vector<spec::TensorAlias> aliases(table.tensor_aliases.begin(),
+                                           table.tensor_aliases.end());
+    aliases.push_back({"model.embed_tokens.shard_{shard}.weight", "token_embd.weight"});
+    table.tensor_aliases = aliases;
+    if (prefixed) {
+      table.tensor_prefix = "language_model.";
+      for (auto& tensor : source->tensors)
+        tensor.name = std::string(table.tensor_prefix) + tensor.name;
+    }
+    auto plan = nd::Build(std::move(*source), table, kFunded);
+    ASSERT_TRUE(plan) << plan.error().ToString();
+    auto valid = components::ValidateSpec(plan->spec(), plan->canonical().tensors);
+    EXPECT_TRUE(valid) << valid.error();
+    const auto embedding = std::ranges::find(
+        plan->canonical().tensors, std::string("token_embd.weight"), &spec::SourceTensor::name);
+    ASSERT_NE(embedding, plan->canonical().tensors.end());
+    EXPECT_EQ(embedding->format.shape.ne[1], 10U);
   }
-  entries.insert(entries.begin(), fixtures::E("model.embed_tokens.weight_scale_2", "F32", {}));
-  for (const auto shard : {0, 1}) {
-    const auto prefix = std::format("model.embed_tokens.shard_{}.", shard);
-    entries.push_back(fixtures::E(prefix + "weight", "U8", {5, 8}));
-    entries.push_back(fixtures::E(prefix + "weight_scale", "F8_E4M3", {5, 1}));
-  }
-  auto config = fixtures::TinyQwen2HfConfig();
-  for (const auto& [from, to] : std::array<std::pair<std::string_view, std::string_view>, 3>{
-           {{"\"hidden_size\":8", "\"hidden_size\":16"},
-            {"\"intermediate_size\":16", "\"intermediate_size\":32"},
-            {"\"head_dim\":4", "\"head_dim\":8"}}})
-    config.replace(config.find(from), from.size(), to);
-  auto source = ParseSafetensors(fixtures::Shard(entries), config);
-  ASSERT_TRUE(source) << source.error().ToString();
-  std::erase_if(source->metadata, [](const auto& entry) { return entry.key == "vocab_size"; });
-  // ParseSafetensors is the raw in-memory parser; describe the reader's
-  // paired NVFP4 parts explicitly before exercising generic normalization.
-  for (auto& tensor : source->tensors) {
-    if (!tensor.name.starts_with("model.embed_tokens.")) continue;
-    tensor.format = {.encoding = Encoding::kNvfp4,
-                     .params = {.tensor_scale = true},
-                     .layout = format::Layout::kSplit,
-                     .shape = {.ne = {16, 5, 1, 1}, .rank = 2}};
-    tensor.part = tensor.name.ends_with(".weight_scale_2") ? format::PartRole::kTensorScale
-                  : tensor.name.ends_with(".weight_scale") ? format::PartRole::kBlockScales
-                                                           : format::PartRole::kCodes;
-  }
-  auto table = *FindSourceMapping("safetensors", "qwen2");
-  std::vector<spec::TensorAlias> aliases(table.tensors.begin(), table.tensors.end());
-  aliases.push_back({"model.embed_tokens.shard_{shard}.weight", "token_embd.weight"});
-  table.tensors = aliases;
-  auto plan = nd::Build(std::move(*source), table, kFunded);
-  ASSERT_TRUE(plan) << plan.error().ToString();
-  auto valid = components::ValidateSpec(plan->spec(), plan->canonical().tensors);
-  EXPECT_TRUE(valid) << valid.error();
-  const auto embedding = std::ranges::find(
-      plan->canonical().tensors, std::string("token_embd.weight"), &spec::SourceTensor::name);
-  ASSERT_NE(embedding, plan->canonical().tensors.end());
-  EXPECT_EQ(embedding->format.shape.ne[1], 10U);
 }
 
 TEST(ImportNormalizeSafetensorsTest, RealisticTransformersConfigNormalizesWithEitherDtypeSpelling) {
@@ -1917,7 +1975,7 @@ TEST(ImportNormalizeTest, SemanticNamespaceIsTheArchitecturesOwn) {
   }
   // Its own unconsumed keys refuse, for every registered GGUF table.
   for (const std::string_view arch : {"gemma4-assistant", "dflash", "qwen4exp", "deepseek4"}) {
-    const auto* table = FindSourceMapping("gguf", arch);
+    const auto* table = FindImportMapping("gguf", arch);
     ASSERT_NE(table, nullptr) << arch;
     auto other = Tiny();
     other.architecture = std::string(arch);

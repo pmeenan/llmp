@@ -2720,7 +2720,8 @@ At that point, retained family normalizers were trusted native implementations
 in a central recognition/dispatch registry; a mapping and its recipes ran no
 callbacks. M3.5 U3 removed the ModelOpt and MLX normalizers and their
 independent registry. Source normalization now lives in registered
-`spec::Mapping` data, with `import::SourceMapping` derived from those mappings.
+`spec::Mapping` data consumed directly by import, with the selected container
+as invocation context. No per-container mapping copies are retained.
 Drafter target dimensions come from the target artifact's stored spec and its
 actual tensors (`llmp import ... --target ID`), not per-size synthetic profiles.
 
@@ -3076,9 +3077,10 @@ and incurred no OOM kills. This API extension
 does not admit a runtime model or import MTP/vision components.
 
 The `llmp import` CLI uses registered `spec::Mapping` data for container,
-architecture and quantization recognition and source normalization. Its
-`import::SourceMapping` view is derived from those mappings; there is no
-independent normalizer registry or per-model normalizer. The CLI has no family
+architecture and quantization recognition and source normalization. It consumes
+the authoritative mappings directly, with the selected container passed to
+normalization and declaration validation; there is no independent normalizer
+registry, copied projection table or per-model normalizer. The CLI has no family
 dispatch or vocabulary constant. Recognition is not admission authority: the
 generic normalizer validates the complete source contract and refuses
 unsupported inputs without falling back to another mapping. Existing flags,

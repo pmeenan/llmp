@@ -140,7 +140,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     for (const auto& skipped : checkpoint.skipped) warn(skipped.name, skipped.reason);
     for (const auto& skipped : checkpoint.skipped_tensors) warn(skipped.name, skipped.reason);
     if (const auto* mapping =
-            import::FindSourceMapping(checkpoint.container, checkpoint.architecture))
+            import::FindImportMapping(checkpoint.container, checkpoint.architecture))
       for (const auto prefix : mapping->ignored_tensor_prefixes)
         if (std::ranges::any_of(checkpoint.tensors, [&](const auto& tensor) {
               return tensor.name.starts_with(prefix);
@@ -191,9 +191,9 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
         warn(checkpoint.metadata[use.source].key, "unread metadata retained as source provenance");
     }
     if (const auto* table =
-            import::FindSourceMapping(checkpoint.container, checkpoint.architecture))
+            import::FindImportMapping(checkpoint.container, checkpoint.architecture))
       for (const auto& rule : table->lists) {
-        const auto canonical = spec::CanonicalKey(*table->architecture, rule.key);
+        const auto canonical = spec::CanonicalKey(*table, rule.key);
         const auto* value = checkpoint.FindValue(canonical);
         const auto* labels = value ? std::get_if<std::vector<std::int64_t>>(value) : nullptr;
         if (rule.allow_unstated_extra && labels && labels->size() > plan.cost().layers)

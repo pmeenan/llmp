@@ -896,8 +896,9 @@ When a new model architecture uses existing components in `src/components/`
      prefixes (`AuxiliaryNamespace`), tied-head presence rules
      (`TensorPresenceRequirement`), and additional semantic keys or patterns. The GGUF semantic prefix comes
      from the mapping architecture (or its explicit `key_prefix`); unconsumed
-     keys in that namespace refuse. `import::SourceMapping` is derived from
-     these mappings; do not maintain a separate source-mapping registry. A
+     keys in that namespace refuse. The importer consumes the registered mapping
+     directly, with the selected container as invocation context; there is no
+     copied source-mapping projection or separate registry. A
      family with bounded side or numeric-list components also sets
      `extended_components`.
    - If `config.json` uses another `model_type` string for the architecture,
@@ -1023,8 +1024,7 @@ checkpoint container or quantization family:
      `src/import/transforms.{h,cc}`, `src/import/expert_relayout.{h,cc}`, or
      `src/import/parameter_folds.{h,cc}` and declare
      the container's source rules in its registered `spec::Mapping` under
-     `src/spec/mappings/`; the importer derives its `SourceMapping` view from
-     that mapping.
+     `src/spec/mappings/`; the importer consumes that mapping directly.
 3. **Tests:**
    - Add positive normalization and v1 writer tests in
      `tests/unit/import_normalize_test.cc`, `tests/unit/import_writer_test.cc`,

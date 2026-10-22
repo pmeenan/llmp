@@ -1352,6 +1352,9 @@ The entries below record each change; the record of the milestone is
 - Bare JSON tool-call terminal and candidate checks retain incremental envelope
   metadata instead of rescanning accepted argument prefixes.
 
+- Import normalization consumes the authoritative architecture mapping directly,
+  with selected-container validation and unchanged mapping provenance.
+
 - Model activation and memory reclamation use named phases with per-attempt
   ownership of snapshots, rollback and accounting (M3.5 U5d).
 

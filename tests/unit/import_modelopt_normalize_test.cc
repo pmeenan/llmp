@@ -175,15 +175,15 @@ TEST(ImportModelOptNormalizeTest, RegistryRecognitionIsUniqueAndRequiresAllSourc
     source.container = std::string(container);
     source.architecture = "qwen4_exp";
     source.quantization = std::string(quantization);
-    EXPECT_NE(FindSourceMapping(source.container, source.architecture), nullptr);
+    EXPECT_NE(FindImportMapping(source.container, source.architecture), nullptr);
     source.quantization += "-unknown";
     EXPECT_FALSE(NormalizationBound(source));
     source.quantization = std::string(quantization);
     source.container += "-unknown";
-    EXPECT_EQ(FindSourceMapping(source.container, source.architecture), nullptr);
+    EXPECT_EQ(FindImportMapping(source.container, source.architecture), nullptr);
     source.container = std::string(container);
     source.architecture += "-unknown";
-    EXPECT_EQ(FindSourceMapping(source.container, source.architecture), nullptr);
+    EXPECT_EQ(FindImportMapping(source.container, source.architecture), nullptr);
   }
 }
 

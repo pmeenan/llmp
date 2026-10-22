@@ -173,30 +173,30 @@ TEST(ImportGemmaMetadataTest, Official27BConfigsAndIndexNamesProduceTheDeclaredT
     auto metadata = FlattenMetadata(model_config_root);
     ASSERT_TRUE(metadata);
     source.metadata = std::move(*metadata);
-    const auto* table = FindSourceMapping(source.container, source.architecture);
+    const auto* table = FindImportMapping(source.container, source.architecture);
     ASSERT_NE(table, nullptr);
     const auto weights = index->root().find("weight_map");
     ASSERT_TRUE(weights && weights->is_object());
     for (std::size_t i = 0; i < weights->size(); ++i) {
       const auto name = weights->key(i);
-      const std::string_view pfx = table->architecture->tensor_prefix;
+      const std::string_view pfx = table->tensor_prefix;
       const std::string_view unprefixed =
           !pfx.empty() && name.starts_with(pfx) ? name.substr(pfx.size()) : std::string_view{};
-      const auto alias = std::ranges::find_if(table->tensors, [&](const auto& candidate) {
+      const auto alias = std::ranges::find_if(table->tensor_aliases, [&](const auto& candidate) {
         const std::string_view target = pfx.empty() ? name : unprefixed;
         return !target.empty() && normalization_detail::Match(candidate.source, target,
                                                               static_cast<std::uint32_t>(layers))
                                       .has_value();
       });
       std::vector<std::uint64_t> shape{1};
-      if (alias == table->tensors.end()) {
+      if (alias == table->tensor_aliases.end()) {
         ASSERT_TRUE(std::ranges::any_of(table->ignored_tensor_prefixes, [&](auto prefix) {
           return name.starts_with(prefix);
         })) << name;
       } else {
-        const auto role = std::ranges::find(table->architecture->tensors, alias->canonical,
-                                            &spec::TensorRule::pattern);
-        ASSERT_NE(role, table->architecture->tensors.end());
+        const auto role =
+            std::ranges::find(table->tensors, alias->canonical, &spec::TensorRule::pattern);
+        ASSERT_NE(role, table->tensors.end());
         if (role->slot == "embedding" || role->slot == "output")
           shape = {width, vocabulary};
         else if (role->slot == "final_norm")
@@ -494,11 +494,11 @@ TEST_P(ImportV1FormatsTest, SourceFormatsAreTheArtifacts) {
     EXPECT_EQ(found->second->format, t.format) << t.name;
     ++compared;
   }
-  if (const auto* table = FindSourceMapping(checkpoint->container, checkpoint->architecture)) {
+  if (const auto* table = FindImportMapping(checkpoint->container, checkpoint->architecture)) {
     const auto bound = NormalizationBound(*checkpoint);
     ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
     std::optional<NormalizationTarget> target;
-    if (table->architecture->role == spec::StageRole::kDrafter) {
+    if (table->role == spec::StageRole::kDrafter) {
       const std::string_view target_name = c.artifact == "gemma26-assistant"   ? "gemma26"
                                            : c.artifact == "gemma31-assistant" ? "gemma31"
                                                                                : "deepseek";
@@ -519,7 +519,7 @@ TEST_P(ImportV1FormatsTest, SourceFormatsAreTheArtifacts) {
     auto normalized = Normalize(*checkpoint, {bound->metadata_bytes, bound->work_units},
                                 target ? &*target : nullptr);
     ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
-    if (table->architecture->role == spec::StageRole::kTarget) {
+    if (table->role == spec::StageRole::kTarget) {
       const auto expected = spec::StoredSpec(*artifact);
       ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
       EXPECT_EQ(normalized->spec(), *expected);
