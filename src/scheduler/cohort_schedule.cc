@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "runtime/cohort_schedule.h"
+#include "scheduler/cohort_schedule.h"
 
 #include <cstddef>
 #include <optional>
 #include <span>
 
-namespace llmp::runtime {
+namespace llmp::scheduler {
 
 ScheduleChoice NextCohortUnit(std::span<const ScheduledMember> members) {
   using Stage = ScheduledMember::Stage;
@@ -42,4 +42,4 @@ ScheduleChoice NextCohortUnit(std::span<const ScheduledMember> members) {
   return {.decode = false, .prompt = aged && !finishing ? aged : shortest};
 }
 
-}  // namespace llmp::runtime
+}  // namespace llmp::scheduler

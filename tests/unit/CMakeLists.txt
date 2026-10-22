@@ -82,8 +82,12 @@ add_executable(cohort_capacity_test cohort_capacity_test.cc)
 target_link_libraries(cohort_capacity_test PRIVATE llmp_runtime)
 llmp_gtest(cohort_capacity_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+add_executable(cohort_policy_test cohort_policy_test.cc)
+target_link_libraries(cohort_policy_test PRIVATE llmp_scheduler)
+llmp_gtest(cohort_policy_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(cohort_schedule_test cohort_schedule_test.cc)
-target_link_libraries(cohort_schedule_test PRIVATE llmp_runtime)
+target_link_libraries(cohort_schedule_test PRIVATE llmp_scheduler)
 llmp_gtest(cohort_schedule_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # When pressure on memory from outside has the runtime trim: its target,

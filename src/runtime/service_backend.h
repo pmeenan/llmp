@@ -11,9 +11,9 @@
 
 #include "base/check.h"
 #include "runtime/cohort_capacity.h"
-#include "runtime/cohort_schedule.h"
 #include "runtime/prefill.h"
 #include "runtime/service_request.h"
+#include "scheduler/cohort_schedule.h"
 namespace llmp::runtime::service_detail {
 class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   class ChatWork final : public api::CooperativeBackend::Work {

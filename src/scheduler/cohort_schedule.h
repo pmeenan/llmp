@@ -4,14 +4,14 @@
 // Which unit a cooperative chat cohort runs next (docs/runtime-serving.md,
 // "The chat route"): a prompt unit of one member, or a decode wave of every
 // generating member. Vendor-free and host-only, so the CPU tests drive it;
-// serve_api.cc keeps the counters and applies the choice.
+// service_cohort.cc keeps the counters and applies the choice.
 //
 // - Prompts: the one with the fewest prompt tokens left to prefill (after
 //   what its conversation can reuse) goes next, the oldest of equals, so a
 //   short prompt is not held behind a long one that arrived first, and
 //   prompts of equal length finish one after another instead of all at the
 //   end. A prompt passed over for kPromptAgeUnits other prompt units that
-//   prefilled rows (a reuse or checkpoint unit prefills none: serve_api.cc)
+//   prefilled rows (a reuse or checkpoint unit prefills none: service_cohort.cc)
 //   goes next (the one passed over most, then the oldest), so a long prompt
 //   is not starved while other members cycle short ones, unless the
 //   shortest is a started prompt about to finish (kPromptFinishRows).
@@ -21,15 +21,15 @@
 //   by a unit, not a clock: a DeepSeek chunk of 4,096 rows takes about 4.4
 //   s, a Qwen3.8 one under 2 s.
 
-#ifndef LLMP_RUNTIME_COHORT_SCHEDULE_H_
-#define LLMP_RUNTIME_COHORT_SCHEDULE_H_
+#ifndef LLMP_SCHEDULER_COHORT_SCHEDULE_H_
+#define LLMP_SCHEDULER_COHORT_SCHEDULE_H_
 
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
 
-namespace llmp::runtime {
+namespace llmp::scheduler {
 
 // A prompt waits for at most this many other prompt units.
 inline constexpr std::uint32_t kPromptAgeUnits = 12;
@@ -59,6 +59,6 @@ struct ScheduleChoice {
 // prompt when there is none.
 ScheduleChoice NextCohortUnit(std::span<const ScheduledMember> members);
 
-}  // namespace llmp::runtime
+}  // namespace llmp::scheduler
 
-#endif  // LLMP_RUNTIME_COHORT_SCHEDULE_H_
+#endif  // LLMP_SCHEDULER_COHORT_SCHEDULE_H_

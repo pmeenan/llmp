@@ -252,6 +252,9 @@ class CooperativeBackend {
   struct Unit {
     Phase phase = Phase::kStarting;
     double expected_seconds = 0;
+    // False for restore/reuse/checkpoint-only readiness: a resumed cohort must
+    // perform useful work before another model turn. Swap is always excluded.
+    bool advances_request = true;
   };
   struct Retirement {
     std::expected<Completion, Error> result;
@@ -405,8 +408,9 @@ struct ServerOptions {
   // its place (Exchange::Yielding).
   std::chrono::milliseconds yield_after{std::chrono::seconds(10)};
   // A pending other model may pause a cohort after this much resident
-  // work. One substitute cohort runs to completion, then this cohort resumes
-  // ahead of later arrivals. This is a scheduling quantum, not a request
+  // work. A substitute gets the same finite turn, then this cohort resumes;
+  // yielded substitute continuations rotate behind other waiting models.
+  // This is a scheduling quantum, not a request
   // deadline; no request is truncated when its turn ends.
   std::chrono::milliseconds model_turn{std::chrono::seconds(30)};
   // Hang recovery (D-102; hang_ladder.h). The I/O thread feeds `ladder` the

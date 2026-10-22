@@ -47,6 +47,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Substitute model cohorts time-slice and preserve request continuations,
+  allowing the original and other waiting models to progress (M3.5 U5c).
+
 - Preserve Gemma 4 native RMS weights as direct scales instead of applying
   the Gemma 2/3 plus-one convention. Affected native artifacts need re-import.
 

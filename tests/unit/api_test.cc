@@ -1711,6 +1711,7 @@ class FakeCooperative final : public api::CooperativeBackend {
     bool YieldForSwitch() override {
       if (request.options.model == "tiny") {
         ++owner.tiny_switch_attempts;
+        if (!owner.tiny_switchable.load()) return false;
       }
       return Yield();
     }
@@ -1768,6 +1769,7 @@ class FakeCooperative final : public api::CooperativeBackend {
         first_resume_serial_calls.store(serial_calls->load());
         started_at_first_resume.store(started.load());
         tiny_started_at_first_resume.store(tiny_started.load());
+        tiny_ticks_at_first_resume.store(tiny_retired_ticks.load());
       }
     }
     if (!exchange.Admit({.prompt_tokens = request.literal != nullptr ? 4U : 10U,
@@ -1868,6 +1870,7 @@ class FakeCooperative final : public api::CooperativeBackend {
         result.literal.prompt_text.assign(std::size_t{4} << 20U, 'x');
       }
     }
+    if (job.request.options.model == "tiny") tiny_retired_ticks.store(job.ticks);
     job.retired = true;
     ++retired;
     return {.result = std::move(result), .references_retired = true};
@@ -1879,6 +1882,8 @@ class FakeCooperative final : public api::CooperativeBackend {
   std::atomic<unsigned> started_at_first_resume{0};
   std::atomic<unsigned> tiny_peak{0}, tiny_switch_attempts{0}, tiny_started{0};
   std::atomic<unsigned> tiny_started_at_first_resume{0};
+  std::atomic<unsigned> tiny_retired_ticks{0}, tiny_ticks_at_first_resume{0};
+  std::atomic<bool> tiny_switchable{true};
   std::atomic<bool> second_model{false}, pause_substitute{false};
   std::atomic<bool> literal_enabled{true}, disable_literal_after_yield{false};
   std::atomic<bool> substitute_entered{false}, release_substitute{false};
@@ -4166,7 +4171,7 @@ TEST_F(ServerTest, AClientLeavingDuringASubstituteDropsItsContinuation) {
   EXPECT_FALSE(cooperative_->early_destruction.load());
 }
 
-TEST_F(ServerTest, ASubstituteCohortBatchesReadyPeersWithoutNestedPauseOrLaterRefill) {
+TEST_F(ServerTest, ASubstituteCohortBatchesReadyPeersAndYieldsBeforeCompletion) {
   api::ServerOptions options;
   options.model_turn = std::chrono::milliseconds(50);
   options.keepalive = std::chrono::milliseconds(20);
@@ -4204,24 +4209,29 @@ TEST_F(ServerTest, ASubstituteCohortBatchesReadyPeersWithoutNestedPauseOrLaterRe
   ASSERT_TRUE(WaitFor([&] { return cooperative_->resumed.load() != 0; }));
   // Original resumes before the later tiny request can form another turn.
   EXPECT_EQ(cooperative_->tiny_started_at_first_resume.load(), 2U);
-  EXPECT_EQ(cooperative_->tiny_switch_attempts.load(), 0U);
+  EXPECT_GT(cooperative_->tiny_ticks_at_first_resume.load(), 0U);
+  EXPECT_LT(cooperative_->tiny_ticks_at_first_resume.load(), 20U);
+  EXPECT_GT(cooperative_->tiny_switch_attempts.load(), 0U);
   std::string pending;
   EXPECT_THAT(ReadResponse(original, pending), HasSubstr(R"("completion_tokens":80)"));
   ReadUntil(later, later_received, "data: [DONE]\n\n");
   EXPECT_EQ(ContentBytes(later_received), 20U);
   (void)::close(original);
   (void)::close(later);
-  EXPECT_EQ(cooperative_->tiny_switch_attempts.load(), 0U);
+  EXPECT_GT(cooperative_->tiny_switch_attempts.load(), 0U);
   EXPECT_FALSE(cooperative_->early_destruction.load());
 }
 
-TEST_F(ServerTest, ASubstituteReaderYieldsToSuspendedMembersWhenThePublicQueueIsEmpty) {
+TEST_F(ServerTest, ASubstituteWithoutModelYieldStillYieldsItsReaderToSuspendedMembers) {
   api::ServerOptions options;
   options.model_turn = std::chrono::milliseconds(50);
   options.yield_after = std::chrono::milliseconds(50);
   options.intake.stream_buffer = std::size_t{64} << 10U;
   StartCooperative(options);
   cooperative_->second_model.store(true);
+  // Some work cannot yet pause for a model switch; reader backpressure
+  // must still park it while the public queue is empty.
+  cooperative_->tiny_switchable.store(false);
   const int original = Open();
   ASSERT_TRUE(llmp::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));

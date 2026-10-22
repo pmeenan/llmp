@@ -682,19 +682,22 @@ D-122).
       not enabled. **U5b complete (2026-10-22):** owned structured message parts
       and checked native/interpreted projection retain text boundaries, tool IDs and
       owned JSON; unsupported rendering combinations are refused. Public tool
-      intake/extraction, Messages handling and the scheduling/engine seams below
-      remain open. Native focused, shared and affected tokenizer/template checks
+      intake/extraction and Messages handling remain open.
+      **U5c complete (2026-10-22):** scheduler-owned cohort, turn, drain and
+      substitute policy has socket-free tests; substitutes time-slice, then
+      rotate behind other models with continuations before fresh peers.
+      The unchanged unit chooser also lives in the scheduler; calibrated
+      starvation remains the separate throughput-first item below. The native
+      build, all 3,483 shared checks (including 175 focused cases), and four
+      affected model state/cohort cases pass on spark-b without skips.
+      The engine seams below remain open. Native focused, shared and affected tokenizer/template checks
       pass. The remaining serving-loop changes also take the
       heavy review path: a per-route stream encoder (`Channel` stops hard-coding
       OpenAI SSE; Messages owns `message_start`, indexed blocks,
       `input_json_delta` and `ping`); structured message parts (text,
       `tool_use`, `tool_result`, image) replacing the text-only
-      `chat::Message`; cohort, turn, drain and substitute policy lifted out
-      of `Server::ServeCooperative` into a scheduler-side policy object the
-      HTTP server only frames requests for, which the throughput-first
-      scheduling item below builds on and M4's conductor reuses, and which
-      time-slices a substitute cohort too (today it runs to completion while
-      the paused model waits unbounded); `Llm` (70 virtuals, one
+      `chat::Message`; the scheduler-side cohort policy is reusable by M4's
+      conductor and the throughput-first scheduling item below; `Llm` (70 virtuals, one
       implementation) collapsed to the concrete engine type or the narrow
       interface its callers use; `Server::Activate` and `Server::Reclaim`
       split into named phases. **Exit:** the tool-call and Messages items

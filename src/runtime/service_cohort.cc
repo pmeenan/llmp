@@ -205,7 +205,7 @@ std::expected<api::CooperativeBackend::Unit, std::string> NodeBackend::NextUnit(
   // The schedule (cohort_schedule.h): the prompt with the fewest tokens
   // left goes next, a long one passed over for a bounded number of units,
   // and a generating member waits for at most one prompt unit.
-  std::vector<ScheduledMember> members;
+  std::vector<scheduler::ScheduledMember> members;
   std::vector<ChatWork*> frames;
   bool paused = false;
   const bool restoring_generations = std::ranges::any_of(work, [](const auto* base) {
@@ -229,7 +229,7 @@ std::expected<api::CooperativeBackend::Unit, std::string> NodeBackend::NextUnit(
         continue;
       }
       selected_decode_.push_back(&frame);
-      members.push_back({.stage = ScheduledMember::Stage::kGeneration,
+      members.push_back({.stage = scheduler::ScheduledMember::Stage::kGeneration,
                          .admitted = frame.admitted,
                          .remaining = 0,
                          .passed = 0,
@@ -241,17 +241,17 @@ std::expected<api::CooperativeBackend::Unit, std::string> NodeBackend::NextUnit(
         continue;
       }
       const std::uint32_t remaining = frame.prompt_session->remaining_rows();
-      members.push_back(
-          {.stage = ScheduledMember::Stage::kPrompt,
-           .admitted = frame.admitted,
-           .remaining = remaining,
-           .passed = frame.passed,
-           .waited = 0,
-           .finishing = frame.prompt_session->started() && remaining <= kPromptFinishRows});
+      members.push_back({.stage = scheduler::ScheduledMember::Stage::kPrompt,
+                         .admitted = frame.admitted,
+                         .remaining = remaining,
+                         .passed = frame.passed,
+                         .waited = 0,
+                         .finishing = frame.prompt_session->started() &&
+                                      remaining <= scheduler::kPromptFinishRows});
       frames.push_back(&frame);
     }
   }
-  const ScheduleChoice choice = NextCohortUnit(members);
+  const scheduler::ScheduleChoice choice = scheduler::NextCohortUnit(members);
   ChatWork* prompt = choice.prompt ? frames[*choice.prompt] : nullptr;
   if (choice.decode) {
     double expected = 0;
@@ -310,7 +310,9 @@ std::expected<api::CooperativeBackend::Unit, std::string> NodeBackend::NextUnit(
   if (selected_decode_.size() > room) selected_decode_.resize(room);
   for (const auto* frame : selected_decode_)
     expected += ExpectedSeconds(Phase::kDecode, 1, frame->floors);
-  return api::CooperativeBackend::Unit{.phase = Phase::kPrefill, .expected_seconds = expected};
+  return api::CooperativeBackend::Unit{.phase = Phase::kPrefill,
+                                       .expected_seconds = expected,
+                                       .advances_request = unit->advances_request()};
 }
 
 std::expected<void, std::string> NodeBackend::Advance(

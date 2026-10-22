@@ -40,7 +40,6 @@
 #include "runtime/api_server.h"
 #include "runtime/binding.h"
 #include "runtime/cohort_capacity.h"
-#include "runtime/cohort_schedule.h"
 #include "runtime/commands.h"
 #include "runtime/completion_tokens.h"
 #include "runtime/hang_ladder.h"
@@ -50,6 +49,7 @@
 #include "runtime/service_backend.h"
 #include "runtime/serving.h"
 #include "runtime/watchdog.h"
+#include "scheduler/cohort_schedule.h"
 #include "tokenizer/tokenizer.h"
 
 namespace llmp::runtime {

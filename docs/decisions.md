@@ -1750,7 +1750,7 @@ cancels or shortens a request, and keepalives continue while a request
 waits. Request classes (D-042's priority, M6) may order work only within
 the bound, never past it. Waits between models stay D-050's and D-019's
 (run to completion, then a swap). The bound replaces the unit-count bounds
-of `src/runtime/cohort_schedule.h` (a generation waits at most one prompt
+of `src/scheduler/cohort_schedule.h` (a generation waits at most one prompt
 unit; a prompt ages in after 12), which stretch with chunk length.
 
 ## D-101: Decision models through the Jev/SystemOne API, multimodal file inputs with each family's bring-up, and OpenAI-shaped media generation routes  (2026-10-02, status: accepted at the owner's request of 2026-10-02, with the owner's answers that day on DeepSeek V4 Flash Vision-Exp, the audio carrier, confidence and the TTS testbeds; scope and plan only, nothing built; moves D-042's file inputs from M10 to M3.5 and M4; makes decision heads an exception to D-044's classification deferral; schedules the image-output API features.md left unscheduled; adds public routes, D-016)
@@ -5194,6 +5194,16 @@ per-token alternation. D-102 governs genuine hangs and optional deadlines;
 returning an admitted continuation to the queue cannot apply an initial
 queue-wait refusal again. Configuration schema 2 remains compatible; this
 is a minor change in the 0.x product line (D-062).
+
+**M3.5 U5 amendment (owner direction, 2026-10-20).** A substitute cohort
+also time-slices: the model-turn quantum applies while the original cohort
+waits, including with an empty public queue. It never opens a nested substitute;
+the originals resume first, and yielded substitute continuations rotate behind
+other waiting models, ahead of that model's fresh arrivals. Initial batching
+and no later substitute refill remain. A resumed cohort must advance useful
+work before yielding again; swaps and restore-only readiness do not qualify.
+This supersedes the M3 prohibition on pausing a substitute, without changing
+admission, native retirement or protected continuation state.
 
 **Reopen if.** M4's measurements show the default mis-serves the primary
 workload, or pausing causes reload traffic that cancels its latency benefit.

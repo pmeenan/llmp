@@ -7,7 +7,7 @@
 # a template); the storage, device and CPU lanes over the provider
 # interfaces (services.h); and the scheduler thread's turn loop
 # (scheduler.h). Resource core: no vendor types.
-add_library(llmp_scheduler STATIC admission.cc completions.cc files.cc pagein.cc scheduler.cc
+add_library(llmp_scheduler STATIC admission.cc cohort_policy.cc cohort_schedule.cc completions.cc files.cc pagein.cc scheduler.cc
                                     services.cc tasks.cc)
 target_include_directories(llmp_scheduler PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_scheduler PUBLIC llmp_base llmp_catalog llmp_memory llmp_storage

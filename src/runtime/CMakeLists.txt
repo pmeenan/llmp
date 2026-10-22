@@ -17,7 +17,7 @@
 # state_keeper.h, D-105), all vendor-free.
 add_library(llmp_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc
                 api_connection.cc api_stream.cc api_dispatch.cc stream_encoder.cc approvals.cc binding.cc
-                                  calibration.cc cohort_capacity.cc cohort_schedule.cc
+                                  calibration.cc cohort_capacity.cc
                                   completion_tokens.cc component_admission.cc numerical_evidence.cc hang_ladder.cc intake_limits.cc
                                   kept_record.cc memory_guard.cc model_settings.cc stored_binding_bound.cc
                                   prefill.cc pressure_trim.cc state_keeper.cc swap_room.cc
@@ -26,7 +26,7 @@ target_include_directories(llmp_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_runtime PUBLIC llmp_artifact llmp_chat llmp_config llmp_platform
                                             llmp_tokenizer
                       PRIVATE llmp_base llmp_build_info llmp_report llmp_device_probe llmp_model
-                              llmp_json llmp_sampling llmp_spec llmp_components llmp_planner llmp_warnings)
+                              llmp_json llmp_sampling llmp_spec llmp_components llmp_planner llmp_scheduler llmp_warnings)
 
 # An LLM's conversations over the engine core (serving.h's Llm, llm.cc) and
 # the one serving adapter per pipeline kind over the shared runner

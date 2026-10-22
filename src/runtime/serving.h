@@ -931,6 +931,9 @@ class Llm : public Served {
       Phase phase = Phase::kReuse;
       std::uint32_t rows = 0;
       bool want_head = false;
+      // Reuse and checkpoint capture can repeat at a resumed stable boundary;
+      // neither alone earns another model switch without request progress.
+      bool advances_request() const { return phase == Phase::kChunk || phase == Phase::kScores; }
     };
     PromptSession(const PromptSession&) = delete;
     PromptSession& operator=(const PromptSession&) = delete;
@@ -954,7 +957,7 @@ class Llm : public Served {
     Status Finish();
     std::uint32_t reused() const { return reused_; }
     // The prompt tokens left to prefill, a scheduling hint
-    // (runtime/cohort_schedule.h): before its reuse, past what the reuse
+    // (scheduler/cohort_schedule.h): before its reuse, past what the reuse
     // would keep (Llm::ReusableFor; none of a stale history).
     std::uint32_t remaining_rows() const;
     // Its reuse settled: its first unit ran.

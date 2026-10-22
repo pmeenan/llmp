@@ -1746,7 +1746,7 @@ none) goes next, so a long prompt is not starved, unless the shortest is
 a started prompt with at most 256 tokens left, which finishes first. A
 generating request waits
 for at most one prompt unit between its waves
-(`runtime/cohort_schedule.h`;
+(`scheduler/cohort_schedule.h`;
 [prompt order](experiments/deepseek-batching/README.md#prompt-order-adopted)).
 Compatible small-row target/draft products of consecutive requests share
 weights while their rows fit sixteen (four requests of a depth-2 verify's
@@ -1917,16 +1917,29 @@ already reported anchor without choosing or sending it again. A final
 prefill checkpoint chooses that anchor before pausing; runnable generating
 peers restore before their resumed decode wave begins.
 
+Model-turn, cohort refill/drain and continuation ordering live in the
+socket-free `scheduler::CohortPolicy`; the transport owns request frames and
+performs the chosen actions after native retirement. Unit selection within a
+model lives in `scheduler/cohort_schedule.h`. Its existing unit-count aging
+is unchanged; the throughput-first calibrated starvation bound remains planned.
+
 One substitute cohort runs: compatible requests ready at its first
-admission pass may join, then it accepts no later refill and cannot itself
-be paused for another model. The original cohort resumes ahead of later
-arrivals after that turn ends. Disconnects, individual substitute errors
-and shutdown retain the ordinary completion/retirement rules. A failed
-swap that cannot fit its protected state within the spill budget refuses
-the substitute and leaves the original continuations intact. Returning
-an admitted continuation to the queue cannot impose the initial
-`queue_wait_seconds` refusal again. D-069's M3 amendment records this policy;
-no response is truncated by its turn interval.
+admission pass may join, then it accepts no later refill. It yields after the
+same resident-work quantum even when the public queue is empty and only the
+original cohort waits. A resumed turn must complete useful work before another
+switch; swap, restore-only and checkpoint-only units cannot cause repeated
+switching without request progress. The original cohort resumes first. Yielded substitute
+continuations rotate behind other waiting models, with fresh requests for
+that substitute model following its continuations so they cannot take held
+slots. Thus a third model can run without waiting for an A/B pair to finish.
+A substitute never opens another substitute turn; the driver unwinds before
+starting another original turn. No response is truncated by its turn interval.
+
+Disconnects, individual substitute errors and shutdown retain the ordinary
+completion/retirement rules. A failed swap that cannot fit its protected state
+within the spill budget refuses the substitute and leaves the original
+continuations intact. Returning an admitted continuation to the queue cannot
+impose the initial `queue_wait_seconds` refusal again. D-069 records this policy.
 
 ### State capacity in a cohort
 

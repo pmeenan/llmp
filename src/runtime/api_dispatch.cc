@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "runtime/api_server_internal.h"
+#include "scheduler/cohort_policy.h"
 
 namespace llmp::runtime::api {
 using server_detail::kListenerTag;
@@ -231,8 +232,9 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
   std::vector<std::unique_ptr<Active>> active;
   active.reserve(kMaxActiveRequests);
   std::deque<Pending> suspended;
-  auto turn_since = Clock::now();
-  bool substitute_formed = false;
+  using Policy = scheduler::CohortPolicy;
+  Policy policy(options_.model_turn, Clock::now(),
+                substitute ? Policy::Role::kSubstitute : Policy::Role::kPrimary);
   std::string fatal;
   // False means deferred with no effects. The caller still owns the frame
   // and either restores it to the FIFO or uses the serial path alone.
@@ -309,6 +311,7 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
             ++suspended_requests_;
           }
           suspended.push_back(std::move(frame->pending));
+          policy.ContinuationRetired();
           return true;
         }
         Requeue(frame->pending, frame->exchange, std::move(retired.result->yielded));
@@ -352,38 +355,31 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     // Failed or departed starters do not grow active.size(). Bound attempts
     // as well as live works so an endless invalid FIFO cannot starve decode.
     std::size_t attempts = 0;
-    bool deferred = false;  // the backend could not take the head now
-    bool other_model = false;
+    std::uint64_t seen = 0;
     {
       const std::scoped_lock lock(mutex_);
-      other_model =
-          !queue_.empty() && queue_.front().request.model != active.front()->pending.request.model;
+      // Capture arrivals with the head observation. Taking this later could
+      // hide a competing arrival during refill from an all-reader-paused wait.
+      seen = enqueued_;
+      policy.BeginPass(queue_.empty() ? Policy::Head::kEmpty
+                       : queue_.front().request.model != active.front()->pending.request.model
+                           ? Policy::Head::kOtherModel
+                           : Policy::Head::kCompatible);
     }
-    // Look even when every slot is occupied: an incompatible head must
-    // neither refill the old cohort nor wait for every response to end.
-    // Both follow the queue's current head, pass by pass: a different
-    // model's request that left again neither keeps the cohort from
-    // refilling nor pauses its members. Members already set aside for a
-    // switch keep it draining, so they resume before later arrivals.
-    bool drain = other_model || (substitute && substitute_formed) || !suspended.empty();
-    // Once members paused for a switch, the rest follow (they resume
-    // together), even if the request that asked for it has left since.
-    const bool switching =
-        (!substitute && other_model && Clock::now() - turn_since >= options_.model_turn) ||
-        !suspended.empty();
-    if (switching) {
+    if (policy.YieldForSwitch(Clock::now())) {
       for (const auto& frame : active) {
         if (!frame->exchange.Yielding() && frame->work->YieldForSwitch()) {
           frame->model_paused = true;
           frame->exchange.SetYielding();
         }
       }
+      policy.SwitchAttempted();
       retire(false);
       if (active.empty()) {
         break;
       }
     }
-    while (!drain && active.size() < kMaxActiveRequests && attempts < kMaxActiveRequests) {
+    while (policy.CanRefill(active.size(), kMaxActiveRequests, attempts)) {
       std::optional<Pending> pending;
       {
         const std::scoped_lock lock(mutex_);
@@ -391,11 +387,14 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
           break;
         }
         Pending& head = queue_.front();
-        if (head.request.model != active.front()->pending.request.model ||
-            !cooperative.Supports({.options = head.request,
-                                   .literal = head.literal ? &*head.literal : nullptr,
-                                   .resume = head.resume.get()})) {
-          drain = true;  // never refill past an incompatible FIFO head
+        const auto kind =
+            head.request.model != active.front()->pending.request.model ? Policy::Head::kOtherModel
+            : cooperative.Supports({.options = head.request,
+                                    .literal = head.literal ? &*head.literal : nullptr,
+                                    .resume = head.resume.get()})
+                ? Policy::Head::kCompatible
+                : Policy::Head::kIncompatible;
+        if (!policy.AdmitHead(kind)) {
           break;
         }
         pending.emplace(std::move(head));
@@ -411,14 +410,11 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
         const std::scoped_lock lock(mutex_);
         frame->pending.channel->queued = true;
         queue_.push_front(std::move(frame->pending));
-        deferred = true;
+        policy.Deferred();
         break;
       }
     }
-    // The substitute may batch the compatible requests already ready at
-    // its first admission pass. Later arrivals wait until the suspended
-    // cohort has resumed, so continuous refill cannot starve it.
-    substitute_formed = true;
+    policy.AdmissionFinished();
     // Backpressure that blocks others (D-102): the queue waits on this
     // cohort (it must drain for another model, or is full) while a member
     // waits for its client. Such a member yields its place once paused for
@@ -427,7 +423,7 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     {
       const std::scoped_lock lock(mutex_);
       blocked_ =
-          drain || deferred || active.size() >= kMaxActiveRequests || suspended_requests_ != 0;
+          policy.BlocksWaiters(active.size() >= kMaxActiveRequests, suspended_requests_ != 0);
       const auto now = Clock::now();
       for (const auto& frame : active) {
         if (!frame->exchange.Yielding() && YieldDueLocked(*frame->pending.channel, now)) {
@@ -467,13 +463,8 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
       work[i] = active[i]->work.get();
     }
     const std::span<CooperativeBackend::Work* const> wave(work.data(), active.size());
-    // The queue as the unit is chosen: a request that arrives after it ends
-    // a pause's wait (below), even one that arrives while it is chosen.
-    std::uint64_t seen = 0;
-    {
-      const std::scoped_lock lock(mutex_);
-      seen = enqueued_;
-    }
+    // Any arrival since this pass observed the head ends a pause's wait,
+    // including arrivals during admission, housekeeping or unit selection.
     auto next = cooperative.NextUnit(wave);
     if (!next) {
       fatal = next.error().empty() ? "no cooperative backend unit" : next.error();
@@ -485,8 +476,7 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
       // (it may join), one is due to yield its place, or the runtime stops;
       // the next pass then retires, admits, yields or advances.
       std::vector<const Channel*> waiting;
-      Clock::time_point yield_due =
-          !substitute && other_model ? turn_since + options_.model_turn : Clock::time_point::max();
+      Clock::time_point yield_due = policy.SwitchDeadline();
       {
         const std::scoped_lock lock(mutex_);
         for (const auto& frame : active) {
@@ -533,8 +523,10 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     if (!advanced) {
       fatal = advanced.error().empty() ? "the cooperative backend unit failed" : advanced.error();
     }
-    if (next->phase == Phase::kSwap) {
-      turn_since = Clock::now();  // residency cost is not useful work in the turn
+    if (advanced) {
+      policy.UnitCompleted(Clock::now(), next->phase == Phase::kSwap ? Policy::Unit::kSwap
+                                         : next->advances_request    ? Policy::Unit::kProgress
+                                                                     : Policy::Unit::kReadiness);
     }
   }
   if (!suspended.empty()) {
@@ -544,8 +536,11 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
       // The different-model head may have left while native retirement
       // waited. A fresh same-model request must wait for the originals'
       // held slots, rather than falling back to a serial clear of one.
-      if (!stopping_ && fatal.empty() && !queue_.empty() &&
-          queue_.front().request.model != suspended.front().request.model) {
+      const auto head = queue_.empty() ? Policy::Head::kEmpty
+                        : queue_.front().request.model != suspended.front().request.model
+                            ? Policy::Head::kOtherModel
+                            : Policy::Head::kCompatible;
+      if (policy.RunSubstitute(head, stopping_ || !fatal.empty())) {
         replacement.emplace(std::move(queue_.front()));
         replacement->channel->queued = false;
         queue_.pop_front();
@@ -563,18 +558,16 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
         Serve(*replacement, wake_fd, on_wake);
       }
     }
-    // Restore the whole cohort ahead of every later arrival, including
-    // when the substitute failed or shutdown arrived. Run's stop path
-    // then ends queued continuations normally. Reverse insertion retains
-    // admission order and carried output/usage for each member.
+    // Ownership moves only after every native reference retired. The policy
+    // chooses ordering, including continuations' precedence over fresh peers.
     {
       const std::scoped_lock lock(mutex_);
-      while (!suspended.empty()) {
-        queue_.push_front(std::move(suspended.back()));
-        suspended.pop_back();
-        --suspended_requests_;
-        ++enqueued_;
-      }
+      const auto count = suspended.size();
+      policy.Restore(queue_, suspended, [](const Pending& pending) -> std::string_view {
+        return pending.request.model;
+      });
+      suspended_requests_ -= count;
+      enqueued_ += count;
       ready_.Signal();
     }
   }

@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The cooperative chat cohort's schedule (runtime/cohort_schedule.h): the
+// The cooperative chat cohort's schedule (scheduler/cohort_schedule.h): the
 // shortest remaining prompt first, the oldest of equals; a long prompt
 // passed over for at most kPromptAgeUnits prompt units; a generating
 // member waiting for at most one prompt unit.
 
-#include "runtime/cohort_schedule.h"
+#include "scheduler/cohort_schedule.h"
 
 #include <gtest/gtest.h>
 
@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-namespace llmp::runtime {
+namespace llmp::scheduler {
 namespace {
 
 using Stage = ScheduledMember::Stage;
@@ -177,4 +177,4 @@ TEST(CohortSchedule, AStartedPromptAboutToFinishGoesBeforeAnAgedOne) {
 }
 
 }  // namespace
-}  // namespace llmp::runtime
+}  // namespace llmp::scheduler

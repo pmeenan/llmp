@@ -32,8 +32,9 @@
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "memory/reclaim.h"
-#include "runtime/cohort_schedule.h"
 #include "runtime/serving.h"
+#include "scheduler/cohort_policy.h"
+#include "scheduler/cohort_schedule.h"
 #include "tokenizer/tokenizer.h"
 #include "tokenizer/unicode.h"
 
@@ -2206,13 +2207,15 @@ TEST(LlmScores, PromptWaveReadinessSettlesColdPeerWithoutReplacingDueDecode) {
   auto x = (*first)->BeginPrompt(a), y = (*second)->BeginPrompt(b);
   ASSERT_TRUE(x && y);
   std::array<rt::Llm::PromptSession*, 3> sessions{x->get(), y->get(), nullptr};
-  std::array<rt::ScheduledMember, 3> members{
-      rt::ScheduledMember{.admitted = 1, .remaining = 19},
-      rt::ScheduledMember{.admitted = 2, .remaining = 27},
-      rt::ScheduledMember{
-          .stage = rt::ScheduledMember::Stage::kGeneration, .admitted = 3, .waited = 1}};
+  std::array<llmp::scheduler::ScheduledMember, 3> members{
+      llmp::scheduler::ScheduledMember{.admitted = 1, .remaining = 19},
+      llmp::scheduler::ScheduledMember{.admitted = 2, .remaining = 27},
+      llmp::scheduler::ScheduledMember{
+          .stage = llmp::scheduler::ScheduledMember::Stage::kGeneration,
+          .admitted = 3,
+          .waited = 1}};
   const auto choose = [&] {
-    const auto choice = rt::NextCohortUnit(members);
+    const auto choice = llmp::scheduler::NextCohortUnit(members);
     return rt::Llm::PromptSession::SelectForWave(choice.decode, choice.prompt, sessions);
   };
   EXPECT_FALSE(choose());  // a due decoder keeps its original priority
@@ -2525,6 +2528,44 @@ TEST(LlmScores, ResumablePromptKeepsTheTiledTailAndTurnBoundarySeparate) {
   EXPECT_EQ(boundary_model.history(), std::vector<std::int32_t>(9, 2));
   EXPECT_EQ(boundary_model.history(), boundary_model.target);
   EXPECT_EQ(boundary_model.turn_checkpoints(), 0U);
+}
+
+TEST(LlmScores, ResumingAtATurnCheckpointMustPrefillBeforeAnotherModelSwitch) {
+  using Policy = llmp::scheduler::CohortPolicy;
+  using PromptPhase = rt::Llm::PromptSession::Phase;
+  const Policy::Clock::time_point start{};
+  FakeLlm model;
+  const std::vector<std::int32_t> prompt(17, 2);
+  auto first = model.default_branch().BeginPrompt(prompt, 8);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE((*first)->Advance());  // reuse
+  ASSERT_TRUE((*first)->Advance());  // reaches the stable boundary
+  ASSERT_EQ((*first)->NextUnit()->phase, PromptPhase::kCheckpoint);
+  (*first)->Cancel();
+  ASSERT_TRUE((*first)->Finish());
+  first->reset();
+  ASSERT_EQ(model.history().size(), 8U);
+
+  auto resumed = model.default_branch().BeginPrompt(prompt, 8);
+  ASSERT_TRUE(resumed);
+  Policy policy(std::chrono::seconds(30), start);
+  policy.BeginPass(Policy::Head::kOtherModel);
+  // Restoring and recapturing that boundary may exceed the whole quantum.
+  // They must not trigger another pause at the same eight-token prefix.
+  for (const auto phase : {PromptPhase::kReuse, PromptPhase::kCheckpoint, PromptPhase::kChunk}) {
+    const auto unit = (*resumed)->NextUnit();
+    ASSERT_TRUE(unit);
+    ASSERT_EQ(unit->phase, phase);
+    ASSERT_TRUE((*resumed)->Advance());
+    policy.UnitCompleted(start + std::chrono::seconds(60), unit->advances_request()
+                                                               ? Policy::Unit::kProgress
+                                                               : Policy::Unit::kReadiness);
+    EXPECT_EQ(policy.YieldForSwitch(start + std::chrono::seconds(60)),
+              phase == PromptPhase::kChunk);
+    EXPECT_EQ(model.history().size(), phase == PromptPhase::kChunk ? 16U : 8U);
+  }
+  (*resumed)->Cancel();
+  ASSERT_TRUE((*resumed)->Finish());
 }
 
 TEST(LlmScores, ResumablePromptFailuresDoNotPublishAnUnprovenChunk) {
