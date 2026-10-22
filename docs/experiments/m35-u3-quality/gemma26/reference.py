@@ -18,7 +18,12 @@ IDS = [818, 5279, 529, 7001, 563]
 STOP_IDS = [1, 106, 50]
 SOURCE = 'nvidia/Gemma-4-26B-A4B-NVFP4'
 REVISION = 'a19cfe00be84568a6867111c9a68c9c44fdcffe6'
+SERIALIZATION_ENV = 'VLLM_ALLOW_INSECURE_SERIALIZATION'
 SOURCE_HASHES = {
+    'envs.py': 'fb701e932ff263612d520c1447dfdbd882da3286c889c4e01735c8456c3db508',
+    'v1/serial_utils.py': 'd75c17a098231b2398cbdb7da6f9983e5b9229c0ba138b2874934d45fafd1f28',
+    'v1/engine/llm_engine.py': '415b7d02460984e8678f78420be22dbc336d8bb73734d7a753b2badb62232744',
+    'v1/worker/worker_base.py': 'b0684c84f2f2c4bff2d7f0574e13f48c01b4d76dbf555e7c52b32e9a702a9061',
     'model_executor/models/gemma4.py': '6074e4a2f0c40a5bb28d101060fb4fe64f11ac6ee0cb6f524a9bb3deaceab797',
     'model_executor/layers/quantization/modelopt.py': '3f3ca743fd3c66d72be92b7544591a8632f1aa422b73bb50c83e8a3281196e7d',
     'inputs/llm.py': 'd7bf21f71d089709b5566c9232ce20bf3da7029228ca6256b5e1e61057fba5d2',
@@ -89,6 +94,58 @@ def source_check():
     return actual
 
 
+def validate_callback_transport(*, enabled=True):
+    """Round-trip only our own callback through the pinned official RPC codec."""
+    from types import SimpleNamespace
+    from vllm.v1.serial_utils import MsgpackEncoder, MsgpackDecoder, UtilityResult
+    from vllm.v1.worker.worker_base import WorkerBase
+
+    require(os.environ.get(SERIALIZATION_ENV, '0') == ('1' if enabled else '0'),
+            'callback serialization environment differs from the selected validation')
+    # These are the collective_rpc arguments produced by LLMEngine.apply_model.
+    request = ('apply_model', None, (inspect_model,), None)
+    if not enabled:
+        try:
+            MsgpackEncoder().encode(request)
+        except TypeError as error:
+            require('function' in str(error) and SERIALIZATION_ENV in str(error),
+                    'unexpected default-off codec failure')
+            return dict(enabled=False, callback_rejected=True, failure=str(error))
+        raise ValueError('default-off codec unexpectedly accepted the callback')
+
+    buffers = MsgpackEncoder().encode(request)
+    decoded = MsgpackDecoder().decode(buffers)
+    require(len(decoded) == 4 and decoded[0] == 'apply_model' and
+            decoded[1] is None and decoded[3] is None and len(decoded[2]) == 1,
+            'callback RPC envelope changed')
+    restored = decoded[2][0]
+    require(callable(restored) and restored.__name__ == inspect_model.__name__ and
+            restored.__code__ == inspect_model.__code__, 'callback code changed in transport')
+
+    class FixtureModel:
+        quant_config = SimpleNamespace(quant_method='NVFP4',
+                                       LinearMethodCls=type('ModelOptNvFp4LinearMethod', (), {}))
+
+        def named_modules(self):
+            # No tensors, weights, model constructor or device calls. These objects
+            # exercise both quantized-kernel and attention provenance branches.
+            yield 'expert', SimpleNamespace(quant_method=SimpleNamespace(
+                use_a16=False, nvfp4_backend='FLASHINFER_CUTLASS', moe_kernel=object()))
+            yield 'attention', SimpleNamespace(kv_cache_dtype='bfloat16',
+                get_attn_backend=lambda: type('TritonAttentionBackend', (), {}))
+
+    fixture = FixtureModel()
+    expected = inspect_model(fixture)
+    actual = WorkerBase.apply_model(SimpleNamespace(get_model=lambda: fixture), restored)
+    require(actual == expected, 'transported callback changed inspected metadata')
+    result_buffers = MsgpackEncoder().encode(UtilityResult([actual]))
+    result = MsgpackDecoder(UtilityResult).decode(result_buffers).result
+    require(result == [expected], 'callback utility result changed in transport')
+    return dict(enabled=True, callback='inspect_model', callback_code_equal=True,
+                official_worker_apply_passed=True, utility_result_equal=True,
+                encoded_bytes=sum(len(buf) for buf in buffers), model_constructed=False)
+
+
 def validate():
     """Exercise the real official parser and renderer with a tokenizer tripwire."""
     sources = source_check()
@@ -128,7 +185,9 @@ def validate():
     sampling = SamplingParams(**sampling_kwargs())
     require(sampling.temperature == 0 and sampling.max_tokens == 64,
             'sampling contract changed')
+    transport = validate_callback_transport()
     return dict(format='llmp-gemma26-reference-api/1', image=IMAGE,
+                callback_transport=transport,
                 vllm_version=vllm.__version__, sources=sources,
                 engine_kwargs=kwargs, sampling_kwargs=sampling_kwargs(),
                 prompt_token_ids=rendered['prompt_token_ids'], bos_added=False,
@@ -288,10 +347,13 @@ def run(out):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['validate', 'run'])
+    parser.add_argument('mode', choices=['validate', 'validate-rpc-disabled', 'run'])
     parser.add_argument('--out', type=Path)
     args = parser.parse_args()
-    if args.mode == 'validate':
+    if args.mode == 'validate-rpc-disabled':
+        print(encoded(dict(sources=source_check(),
+                           callback_transport=validate_callback_transport(enabled=False))).decode(), end='')
+    elif args.mode == 'validate':
         print(encoded(validate()).decode(), end='')
     else:
         require(args.out is not None and args.out.is_dir(), 'private mounted output required')

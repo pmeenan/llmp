@@ -14,7 +14,7 @@ import signal
 import subprocess
 import uuid
 
-from reference import IMAGE, checkpoint_check, encoded, require, sha
+from reference import IMAGE, SERIALIZATION_ENV, checkpoint_check, encoded, require, sha
 
 DOCKER = ['sudo', '-n', 'docker']
 
@@ -137,6 +137,7 @@ def main():
         '-v', f'{loader}:/opt/instanttensor:ro', '-v', f'{cache}:/triton',
         '-v', f'{out}:/output', '-e', 'PYTHONPATH=/opt/instanttensor',
         '-e', 'TRITON_CACHE_DIR=/triton', '-e', 'VLLM_USE_V2_MODEL_RUNNER=1',
+        '-e', f'{SERIALIZATION_ENV}=1',
         '-e', 'HF_HUB_OFFLINE=1', '-e', 'TRANSFORMERS_OFFLINE=1',
         IMAGE, '/helpers/reference.py', 'run', '--out', '/output',
     ]

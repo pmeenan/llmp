@@ -173,11 +173,16 @@ source. The inspected Gemma implementation SHA-256 is
 `6074e4a2f0c40a5bb28d101060fb4fe64f11ac6ee0cb6f524a9bb3deaceab797`;
 ModelOpt source SHA-256 is
 `3f3ca743fd3c66d72be92b7544591a8632f1aa422b73bb50c83e8a3281196e7d`.
-No model was loaded and no reference request ran. The
+That inspection loaded no model and ran no reference request. The
 [prospective exact-ID protocol and helpers](gemma26/PROTOCOL.md) now pass the
 pinned image's real CPU-only `TokensPrompt`, parser/renderer, `EngineArgs`
 and sampling API checks: the five IDs survive without tokenizer access or
-added BOS. Actual device configuration, loader startup and kernel selection
-remain unvalidated. The proposed source BF16/BF16-KV recipe explicitly differs
-from native F16 KV; independent review and pre-registration precede inference.
-No reference behavior or source-quality conclusion follows from preparation.
+added BOS. The first registered source launch subsequently completed BF16/BF16-KV
+startup, then failed while serializing the owned inspection callback, before
+any `generate` request. Its logs selected FlashInfer CUTLASS MoE and Triton
+attention and warned about differing W1/W3 global scales; no scale repair or
+quality conclusion follows. The [prospective transport amendment](gemma26/PROTOCOL.md#prospective-callback-transport-amendment-2026-10-22)
+adds the supported container-local callback serialization setting and a real
+CPU codec round-trip check. The first failure remains preserved, and review
+and an amendment commit precede a fresh launch. Native F16 KV still differs
+from source BF16 KV; no source raw behavior has been collected.

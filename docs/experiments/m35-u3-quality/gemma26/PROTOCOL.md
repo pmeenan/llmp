@@ -3,8 +3,10 @@
 
 # Gemma 4 26B NVFP4 exact raw-ID source diagnostic
 
-**Prospective; no model startup or reference request has run.** Independent
-review and the pre-registration commit must precede the one model launch below.
+**No reference request has run.** The original registration `c696e743` was
+followed by successful model startup and a failed inspection RPC, before
+`generate`. The callback-transport amendment below requires independent review
+and its pre-registration commit before the second, separately recorded launch.
 This diagnostic asks whether the native five-token repetition also occurs in
 the source engine. It is not a likelihood, speed or general quality gate and
 cannot close U3. The [native norm report](../GEMMA26-NORM.md) preserves both
@@ -46,8 +48,10 @@ recipe. Source and metadata SHA-256 pins are executable constants in
 checkpoint `quant_algo=NVFP4` selects its W4A4 path. The
 [Llama precision amendment](../PROTOCOL.md#prospective-reference-precision-amendment-2026-10-22)
 addressed BF16 queries paired with F16 keys in FlashAttention 2, not a general
-NVFP4 BF16 restriction. This recipe pairs BF16 queries with BF16 keys. It has
-passed API construction only; actual Gemma device support is unvalidated.
+NVFP4 BF16 restriction. This recipe pairs BF16 queries with BF16 keys. The first registered launch
+completed initialization with those dtypes; its inspection RPC then failed
+before generation. Per-layer dispatch validation and the raw request remain
+uncollected.
 Any unsupported startup is a retained failure and requires a reviewed,
 prospective amendment before another attempt. Never silently choose FP16,
 FP8 KV, W4A16, a new engine image or another attention/MoE backend.
@@ -84,8 +88,9 @@ A tokenizer tripwire raises on any encode/decode or tokenizer-attribute access;
 none occurred. `TokenizeParams` disables special-token insertion and imposes
 only the declared context/output lengths. This validates the raw-token branch,
 not an invented mock implementation. Actual `EngineArgs` construction accepts
-all frozen options, and actual `SamplingParams` accepts the request. Device
-configuration resolution, loader startup and weights remain untested.
+all frozen options, and actual `SamplingParams` accepts the request. That initial CPU validation did not test callback transport. The first
+registered model launch subsequently passed device configuration and loading;
+the amendment below records the additional CPU transport controls.
 
 Review-only CPU source extractions, supervised shared jobs
 `m35-u3-gemma26-review-inspect` and `m35-u3-gemma26-review-inspect-r2`,
@@ -123,6 +128,90 @@ probabilities, text, finish/stop reason and counts. Missing actual-token scores,
 nonfinite/positive scores, incomplete requests, changed prompt IDs or invalid
 length/finish/stop-token combinations fail the diagnostic contract. Repeated nonsense is
 valid captured evidence, never a passing quality verdict.
+
+## Prospective callback-transport amendment (2026-10-22)
+
+The registered `m35-u3-gemma26-source-raw-r1` launch on `spark` completed
+BF16/BF16-KV initialization from the exact staged source. Startup logs report
+17.07 GiB for model loading and select `FLASHINFER_CUTLASS` for NVFP4 MoE and
+`TRITON_ATTN` for Gemma's heterogeneous attention head dimensions. These are
+startup observations, not a speed result or completed per-layer dispatch audit.
+The source also warned that `w1_weight_scale_2` and `w3_weight_scale_2` differ
+and accuracy may be affected. Preserve that observation; this amendment does
+not modify scale handling, weights, kernels or arithmetic.
+
+The next operation, `LLM.apply_model(inspect_model)`, failed in the pinned
+`v1/serial_utils.py` encoder with `TypeError: Object of type <class 'function'>
+is not serializable`, identifying `VLLM_ALLOW_INSECURE_SERIALIZATION=1` as the
+supported callable transport. The exception occurred before `LLM.generate`.
+The result is `failed`, collection is false, and successful exact-name listing
+confirmed container retirement. It supplies no reference raw output, likelihood
+or quality evidence. Retain the entire first directory unchanged:
+`spark:~/.local/share/llmp/m35-u3-quality/gemma26-source-raw-r1` (workstation
+copy `/tmp/llmp-m35-orchestration/gemma26-source-raw-r1`).
+
+Source inspection confirms `LLMEngine.apply_model` passes our callable as the
+argument to `collective_rpc("apply_model", ...)`. The encoder's supported
+function path uses cloudpickle only when the named environment flag is enabled;
+the decoder's corresponding extension handler has the same gate. The
+amendment sets `VLLM_ALLOW_INSECURE_SERIALIZATION=1` **only in this owned
+reference container**, whose network remains disabled and whose helper is an
+authenticated read-only snapshot. It serializes llmpalooza's own registered
+inspection function; `trust_remote_code=false` remains in force and no
+checkpoint code is executed. No host-wide environment setting or source patch
+is made. Prompt IDs, stops, sampling, 64-token limit, BF16/BF16 precision,
+image, loader, kernel selection and the actual W4A4 dispatch gates are unchanged.
+
+The helper now tests this callback route before constructing `LLM`. Its CPU
+validation uses the actual `MsgpackEncoder` and `MsgpackDecoder` to transport
+the registered `inspect_model` callable and RPC arguments, compares the restored
+code object, invokes it through the official `WorkerBase.apply_model` method
+on a tensor-free metadata fixture, and round-trips the returned inspection via
+the official `UtilityResult` codec. The fixture exercises expert/kernel and
+attention provenance fields. A separate process with serialization disabled
+must reproduce the original function refusal. These checks validate the owned
+codec and callback contract without constructing a model or making a device
+call; they do not claim a live model-worker RPC pass.
+
+CPU transport validation passed on `spark` in shared supervised job
+`m35-u3-gemma26-rpc-api-r1`: the flag-off process reproduced the function
+refusal; the flag-on process transported 2,385 bytes, preserved the callback
+code, passed official worker invocation and returned equal utility metadata.
+The existing actual token/parser/renderer and argument checks passed again.
+Both immutable-image containers used `runc`, GPU visibility `void`, no network,
+no mounts and no model construction; both returned zero and were confirmed
+absent. Tested helper SHA-256:
+`847191af80ee1cead7979e06d825fc6460e1e73a408e6a415c48c9bc2c28d7ef`.
+Raw receipts are outside Git at `spark:/tmp/llmp-u3-gemma26-rpc-api-r1` and
+`/tmp/llmp-gemma-rpc-evidence/api-r1` on the workstation. Source inspection
+job `m35-u3-gemma26-rpc-source-r1` likewise passed and retired. All eight
+result/dispatch/retirement fixtures also pass under the workstation's shared
+host lock. No second model launch or reference request ran during this repair.
+
+Additional executable source pins are:
+
+| Source | SHA-256 |
+| --- | --- |
+| `v1/serial_utils.py` | `d75c17a098231b2398cbdb7da6f9983e5b9229c0ba138b2874934d45fafd1f28` |
+| `envs.py` | `fb701e932ff263612d520c1447dfdbd882da3286c889c4e01735c8456c3db508` |
+| `v1/engine/llm_engine.py` | `415b7d02460984e8678f78420be22dbc336d8bb73734d7a753b2badb62232744` |
+| `v1/worker/worker_base.py` | `b0684c84f2f2c4bff2d7f0574e13f48c01b4d76dbf555e7c52b32e9a702a9061` |
+
+The official stage is already complete: job `m35-u3-gemma26-stage-r1` verified
+12 files / 18,825,679,760 bytes, with log SHA-256
+`9fb846ebf68691cd63465c999d0a2e4ca9dd64037b09c2998bae230370a52593`.
+Reuse the existing source at
+`spark:~/.local/share/llmp/models/nvidia/Gemma-4-26B-A4B-NVFP4@a19cfe00`;
+its manifest retains the identity above. No second stage or peer transfer is
+needed for the next launch on `spark`.
+
+After review and the amendment commit, coordinate the host and run the same
+bounded launcher with a **new** job `m35-u3-gemma26-source-raw-r2` and a fresh
+`~/.local/share/llmp/m35-u3-quality/gemma26-source-raw-r2` output directory.
+Supply the verified stage job log and its SHA-256 above. Use the same 600-second
+exclusive supervisor and 510-second inner execution deadline shown below.
+Do not delete or overwrite the first failure. If the live callback or dispatch
+gate still fails, preserve that failure and stop before collecting requests.
 
 ## Bounded execution after review and pre-registration
 
@@ -164,12 +253,12 @@ job. Substitute actual absolute paths and the SHA-256 of reviewed successful
 staging evidence below; these are arguments, not new model or input choices.
 
 ```sh
-~/.local/bin/spark-job start --gpu --name u3-gemma26-source-raw-r1 --timeout 600 -- \
+~/.local/bin/spark-job start --gpu --name m35-u3-gemma26-source-raw-r2 --timeout 600 -- \
   python3 -B /ABS/REPO/docs/experiments/m35-u3-quality/gemma26/launch.py \
   --repo /ABS/REPO --checkpoint /ABS/VERIFIED_LOCAL_STAGE \
-  --out /ABS/PRIVATE_RESULTS/gemma26-source-raw-r1 \
+  --out /ABS/PRIVATE_RESULTS/gemma26-source-raw-r2 \
   --staging-evidence /ABS/STAGE_JOB_EVIDENCE --staging-sha256 ACTUAL_SHA256
-~/.local/bin/spark-job wait u3-gemma26-source-raw-r1
+~/.local/bin/spark-job wait m35-u3-gemma26-source-raw-r2
 ~/.local/bin/spark-job busy
 ```
 
