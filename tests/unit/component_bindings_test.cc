@@ -22,6 +22,7 @@
 #include "expected_error.h"
 #include "ir/graph.h"
 #include "runtime/component_admission.h"
+#include "runtime/memory_guard.h"
 #include "spec/stored.h"
 
 #if defined(LLMP_BINDING_CUDA)
@@ -129,6 +130,48 @@ TEST_F(ComponentBindingsTest, PaymentPrecedesParseAndMovesWithAllOwnedBindingDat
   EXPECT_EQ(allowance->used(), 0U);
   EXPECT_GT(catalog.OccupancyOf(domain).Total().value(), charged);      // node-lifetime prepayment
   EXPECT_TRUE(rt::StoredBindingPayment::Create(*artifact, allowance));  // same allowance, retry
+}
+
+TEST_F(ComponentBindingsTest, StartupPaysSourceOnlyDraftersWithoutAdmittingSpecLessTargets) {
+  auto plan = Plan();
+  auto with_spec = Open(plan);
+  ASSERT_TRUE(with_spec);
+  const auto with_spec_bound = rt::StartupArtifactBytes(*with_spec);
+  ASSERT_TRUE(with_spec_bound);
+  plan.spec.reset();
+  auto source_only = Open(plan);
+  ASSERT_TRUE(source_only);
+  EXPECT_FALSE(source_only->spec_json());
+  ASSERT_TRUE(sp::SourceOf(*source_only));
+  const auto source_bound = rt::StartupArtifactBytes(*source_only);
+  ASSERT_TRUE(source_bound) << Failed(source_bound).value_or("");
+  EXPECT_LT(*source_bound, *with_spec_bound);
+  // Funding source metadata cannot turn a source-only artifact into a target.
+  EXPECT_FALSE(rt::StoredBindingBytes(*source_only));
+  EXPECT_FALSE(Pay(*source_only));
+  EXPECT_FALSE(rt::ReadComponentAdmission(*source_only));
+  // Alias records and copied names remain paid even without a spec document.
+  plan.groups.front().resources.front().aliases.push_back(std::string(64, 'x'));
+  auto larger = Open(plan);
+  ASSERT_TRUE(larger) << Failed(larger, &llmp::artifact::Error::ToString).value_or("");
+  const auto larger_bound = rt::StartupArtifactBytes(*larger);
+  ASSERT_TRUE(larger_bound);
+  EXPECT_GT(*larger_bound, *source_bound);
+  constexpr std::uint64_t extent = llmp::artifact::kChunkBytes;
+  const auto paid_bytes = (*source_bound + 4096 + extent - 1) / extent * extent;
+  constexpr std::uint64_t available = 128ULL << 30U;
+  EXPECT_FALSE(
+      rt::StartupArtifactPayment::Admit(catalog, domain, *source_bound, paid_bytes - 1, available));
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), 0U);
+  {
+    auto payment =
+        rt::StartupArtifactPayment::Admit(catalog, domain, *source_bound, paid_bytes, available);
+    ASSERT_TRUE(payment) << Failed(payment).value_or("");
+    EXPECT_EQ((*payment)->bytes(), paid_bytes);
+    auto moved = std::move(*payment);
+    EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), paid_bytes);
+  }
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), 0U);
 }
 
 TEST_F(ComponentBindingsTest, NativeFormatsAliasesAndHeadRowsSurviveWithoutServingAdmission) {

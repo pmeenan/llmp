@@ -44,6 +44,8 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Source-only native drafters receive startup metadata funding while target
+  bindings continue to require a stored spec (M3.5).
 - IR byte addressing uses the format layer's physical block geometry, with
   vendor and device facts checked at neutral module boundaries (M3.5 U6c).
 - Checkpoint and ordinary artifact readers pin regular files before opening

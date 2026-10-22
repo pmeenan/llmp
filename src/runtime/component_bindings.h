@@ -31,6 +31,11 @@ using ComponentWeightPlaces =
 
 // Bound from already-opened header bytes/counts, without parsing the spec or
 // constructing a compiler. Payment must precede the first StoredSpec/SourceOf.
+// Retained admission metadata: a native source plus its optional stored spec.
+// Source-only drafters are valid here; this bound does not authorize serving.
+std::expected<std::uint64_t, std::string> ComponentAdmissionBytes(
+    const artifact::Artifact& artifact);
+// A target's binding owner additionally requires the stored spec to exist.
 std::expected<std::uint64_t, std::string> StoredBindingBytes(const artifact::Artifact& artifact);
 class StoredBindingPayment {
  public:

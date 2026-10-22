@@ -106,7 +106,10 @@ std::expected<std::uint64_t, std::string> StartupBootstrapBytes(std::uint64_t al
 }
 
 std::expected<std::uint64_t, std::string> StartupArtifactBytes(const artifact::Artifact& artifact) {
-  auto bound = StoredBindingBytes(artifact);
+  // Drafters may contribute a source without a stored spec; target admission
+  // still requires one. Pay the retained source and any spec before either
+  // admission is read, independently of that semantic requirement.
+  auto bound = ComponentAdmissionBytes(artifact);
   if (!bound) return std::unexpected(bound.error());
   std::uint64_t bytes = *bound;
   const auto add = [&](std::uint64_t count, std::uint64_t unit) {

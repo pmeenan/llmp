@@ -17,17 +17,18 @@ std::unexpected<std::string> Refuse(std::string_view what) {
 }
 }  // namespace
 
-std::expected<std::uint64_t, std::string> StoredBindingBytes(const artifact::Artifact& artifact) {
+std::expected<std::uint64_t, std::string> ComponentAdmissionBytes(
+    const artifact::Artifact& artifact) {
   const auto text = artifact.spec_json();
-  if (artifact.format_version() != 1 || !text || text->size() > spec::kMaxSpecBytes)
-    return Refuse("stored binding requires bounded native spec bytes");
+  if (artifact.format_version() != 1 || (text && text->size() > spec::kMaxSpecBytes))
+    return Refuse("component admission requires native headers and bounded spec bytes");
   // The strict JSON parser has 24-byte nodes + four-byte child indices.
   // At most one of each per source byte, three overlapping vector capacities.
   // Strings, numeric lists, canonicalization and owned spec growth share the
   // byte term; object records and catalog defaults use the separate term.
   std::uint64_t objects = 0;
   bool quoted = false;
-  for (const char c : *text) {
+  for (const char c : text.value_or(std::string_view{})) {
     if (c == '\"')
       quoted = !quoted;  // canonical subset has no escapes
     else if (!quoted && c == '{')
@@ -53,7 +54,7 @@ std::expected<std::uint64_t, std::string> StoredBindingBytes(const artifact::Art
     return !__builtin_mul_overflow(count, unit, &size) &&
            !__builtin_add_overflow(bytes, size, &bytes) && bytes <= SIZE_MAX;
   };
-  if (!add(text->size(), 3 * (32 + sizeof(std::int64_t)) + 16) ||
+  if (!add(text ? text->size() : 0, 3 * (32 + sizeof(std::int64_t)) + 16) ||
       !add(objects, 8 * record + 4 * defaults))
     return Refuse("stored binding spec inventory overflows");
   std::uint64_t tensors = 0;
@@ -77,6 +78,11 @@ std::expected<std::uint64_t, std::string> StoredBindingBytes(const artifact::Art
   if (!add(artifact.groups().size(), 64) || !add(artifact.expert_arrays().size(), 256))
     return Refuse("stored binding placement inventory overflows");
   return bytes;
+}
+
+std::expected<std::uint64_t, std::string> StoredBindingBytes(const artifact::Artifact& artifact) {
+  if (!artifact.spec_json()) return Refuse("stored binding requires native spec bytes");
+  return ComponentAdmissionBytes(artifact);
 }
 
 }  // namespace llmp::runtime
