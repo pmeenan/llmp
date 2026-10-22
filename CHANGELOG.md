@@ -24,6 +24,9 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Opt-in quality runs retain raw streamed replies and timing records, and
+  stop collection after an incomplete or failed stream.
+
 - LLM startup shares admitted artifact metadata and composed structure across
   settings and runner construction; retries retain successful preparation while
   each build keeps its own funded state and execution checks (M3.5 U3a).

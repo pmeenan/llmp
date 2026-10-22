@@ -1,0 +1,168 @@
+{
+  "schema": 1,
+  "scope": "Prospective first Gemma2 scalar-score transfer screen; no collection yet",
+  "arms": {
+    "a": {
+      "runtime": "/home/pmeenan/.local/share/llmp/baselines/m35-u4-gemma-screen/src/runtime/m35-u4-baseline-diagnostic-runtime",
+      "runtime_sha256": "405c5930accdc009ad8e824d2fcdeff00f063877f0d936c2b1a5dda6b28e519e",
+      "dependencies": {
+        "/home/pmeenan/.local/share/llmp/baselines/m35-u4-gemma-screen/lib/llmp/libcublas.so.13": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b",
+        "/home/pmeenan/.local/share/llmp/baselines/m35-u4-gemma-screen/lib/llmp/libcublasLt.so.13": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30",
+        "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": "390027e5f45f236bd1838bc54bf464c5ff01d260ab9f8b415ea8276641bce505",
+        "/usr/lib/aarch64-linux-gnu/libc.so.6": "0f1905dc27dbc6715875c70527bc8da846a10084c9c483e9d8ff76dce8d69d0e",
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.580.178.04": "b11359b073ae9e49df81dc4f5c156378bd97fb9f6197ef64edc46e22c670bed4",
+        "/usr/lib/aarch64-linux-gnu/libdl.so.2": "1c16b2692a155191c97d7fdc5ce937d37c242435f05745046a794a9832b16af4",
+        "/usr/lib/aarch64-linux-gnu/libgcc_s.so.1": "f2d3ad2bf0b61f6bc944cc37d7b6ab7f88d2582b41ff989ca164803f56cc5f20",
+        "/usr/lib/aarch64-linux-gnu/libm.so.6": "5e0391562de36de323fb9cb0f2c1b6bd6d034c840b1dac018499f5fe4ded1b4a",
+        "/usr/lib/aarch64-linux-gnu/libpthread.so.0": "6f1ab9e7d7de142dc5e2feaf6d19faceff0a0f40d5e225c922899f5362b8c353",
+        "/usr/lib/aarch64-linux-gnu/librt.so.1": "93d0d5ab643b50ac1a61c2c7baf670e8aa94973fa5a2584d13db05295d5b5a0e"
+      },
+      "ldd": "\tlinux-vdso.so.1 (0x0000e98ddaaac000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000e98dcfec0000)\n\tlibcublas.so.13 => /home/pmeenan/.local/share/llmp/baselines/m35-u4-gemma-screen/src/runtime/../../lib/llmp/libcublas.so.13 (0x0000e98dcba00000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000e98dcb950000)\n\tlibcublasLt.so.13 => /home/pmeenan/.local/share/llmp/baselines/m35-u4-gemma-screen/src/runtime/../../lib/llmp/libcublasLt.so.13 (0x0000e98d9e600000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e98d9e440000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000e98ddaa60000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000e98dcb920000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000e98dcb8f0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000e98dcb8c0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000e98dcb880000)\n"
+    },
+    "d": {
+      "runtime": "/home/pmeenan/.local/share/llmp/baselines/m35-u4-gemma-screen/src/runtime/m35-u4-candidate-d-diagnostic-runtime",
+      "runtime_sha256": "16a8da3639e3a26e4fdd2dec6927510688ee769fe4fbe10acae17bfc21078338",
+      "dependencies": {
+        "/home/pmeenan/.local/share/llmp/baselines/m35-u4-gemma-screen/lib/llmp/libcublas.so.13": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b",
+        "/home/pmeenan/.local/share/llmp/baselines/m35-u4-gemma-screen/lib/llmp/libcublasLt.so.13": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30",
+        "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": "390027e5f45f236bd1838bc54bf464c5ff01d260ab9f8b415ea8276641bce505",
+        "/usr/lib/aarch64-linux-gnu/libc.so.6": "0f1905dc27dbc6715875c70527bc8da846a10084c9c483e9d8ff76dce8d69d0e",
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.580.178.04": "b11359b073ae9e49df81dc4f5c156378bd97fb9f6197ef64edc46e22c670bed4",
+        "/usr/lib/aarch64-linux-gnu/libdl.so.2": "1c16b2692a155191c97d7fdc5ce937d37c242435f05745046a794a9832b16af4",
+        "/usr/lib/aarch64-linux-gnu/libgcc_s.so.1": "f2d3ad2bf0b61f6bc944cc37d7b6ab7f88d2582b41ff989ca164803f56cc5f20",
+        "/usr/lib/aarch64-linux-gnu/libm.so.6": "5e0391562de36de323fb9cb0f2c1b6bd6d034c840b1dac018499f5fe4ded1b4a",
+        "/usr/lib/aarch64-linux-gnu/libpthread.so.0": "6f1ab9e7d7de142dc5e2feaf6d19faceff0a0f40d5e225c922899f5362b8c353",
+        "/usr/lib/aarch64-linux-gnu/librt.so.1": "93d0d5ab643b50ac1a61c2c7baf670e8aa94973fa5a2584d13db05295d5b5a0e"
+      },
+      "ldd": "\tlinux-vdso.so.1 (0x0000f668ca5ec000)\n\tlibcuda.so.1 => /lib/aarch64-linux-gnu/libcuda.so.1 (0x0000f668bfa00000)\n\tlibcublas.so.13 => /home/pmeenan/.local/share/llmp/baselines/m35-u4-gemma-screen/src/runtime/../../lib/llmp/libcublas.so.13 (0x0000f668bb400000)\n\tlibm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000f668bf950000)\n\tlibcublasLt.so.13 => /home/pmeenan/.local/share/llmp/baselines/m35-u4-gemma-screen/src/runtime/../../lib/llmp/libcublasLt.so.13 (0x0000f6688e000000)\n\tlibc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000f668bb240000)\n\t/lib/ld-linux-aarch64.so.1 (0x0000f668ca5b0000)\n\tlibdl.so.2 => /lib/aarch64-linux-gnu/libdl.so.2 (0x0000f668bf920000)\n\tlibrt.so.1 => /lib/aarch64-linux-gnu/librt.so.1 (0x0000f668bf8f0000)\n\tlibpthread.so.0 => /lib/aarch64-linux-gnu/libpthread.so.0 (0x0000f668bf8c0000)\n\tlibgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000f6688dfc0000)\n"
+    }
+  },
+  "sources": {
+    "base": "5ec811a4413982630c05e7b6c2448f51f1191883",
+    "A": {
+      "diagnostic_patch_sha256": "f7b9304a4ae0c29b6f7bab9490c7c2336103225a0b9392e13a3953c99e4e3230",
+      "source_manifest_sha256": "e6f29c44953a67feba58198af5eb0cf1cea12f6ec3b6368f6b04d2296cf1306d",
+      "files": 2688
+    },
+    "D": {
+      "complete_patch_sha256": "70e48c0741992069ffa4a36792f034e78d24f4ab12c1c9ee077cf19a7cc04bac",
+      "source_manifest_sha256": "8e4ba26098e2e5dd399c3ce9a9663cc84efd0279e8c47d4749c36779b39b36d1",
+      "files": 2694
+    }
+  },
+  "artifact": {
+    "files": {
+      "data/00000.safetensors": {
+        "bytes": 2778603520,
+        "device": 66306,
+        "inode": 27263119,
+        "listed_sha256": "eb12a9077d5ca20006502dd3787d834758853e65c645a3f3fb372769dd50189a",
+        "mtime_ns": 1792102877509076261
+      },
+      "index.json": {
+        "actual_sha256": "5d71f838f8b09cba4dc0c0dc8e14ae5b3849900c0e2a23b2becc8d9af9c60829",
+        "bytes": 163060,
+        "device": 66306,
+        "inode": 27263116,
+        "listed_sha256": "5d71f838f8b09cba4dc0c0dc8e14ae5b3849900c0e2a23b2becc8d9af9c60829",
+        "mtime_ns": 1792102871754087533
+      },
+      "meta/gemma-2-2b-it-Q8_0.kv.gguf": {
+        "actual_sha256": "03bfd1bac861b68641f726cfb6adde758bffe830d434b8d772f2756d813a50af",
+        "bytes": 6029343,
+        "device": 66306,
+        "inode": 27263120,
+        "listed_sha256": "03bfd1bac861b68641f726cfb6adde758bffe830d434b8d772f2756d813a50af",
+        "mtime_ns": 1792102877525076229
+      },
+      "spec.json": {
+        "actual_sha256": "5d9a04370e581d5bddc1eeda9b1c4eb6222372ec5bd0d3db723bafacc999c28f",
+        "bytes": 30845,
+        "device": 66306,
+        "inode": 27263118,
+        "listed_sha256": "5d9a04370e581d5bddc1eeda9b1c4eb6222372ec5bd0d3db723bafacc999c28f",
+        "mtime_ns": 1792102871755752058
+      }
+    },
+    "manifest": {
+      "experimental": true,
+      "files": [
+        {
+          "bytes": 2778603520,
+          "path": "data/00000.safetensors",
+          "role": "shard",
+          "sha256": "eb12a9077d5ca20006502dd3787d834758853e65c645a3f3fb372769dd50189a"
+        },
+        {
+          "bytes": 163060,
+          "path": "index.json",
+          "role": "index",
+          "sha256": "5d71f838f8b09cba4dc0c0dc8e14ae5b3849900c0e2a23b2becc8d9af9c60829"
+        },
+        {
+          "bytes": 6029343,
+          "path": "meta/gemma-2-2b-it-Q8_0.kv.gguf",
+          "role": "source-metadata",
+          "sha256": "03bfd1bac861b68641f726cfb6adde758bffe830d434b8d772f2756d813a50af"
+        },
+        {
+          "bytes": 30845,
+          "path": "spec.json",
+          "role": "spec",
+          "sha256": "5d9a04370e581d5bddc1eeda9b1c4eb6222372ec5bd0d3db723bafacc999c28f"
+        }
+      ],
+      "format": "llmp-artifact",
+      "format_version": 1,
+      "importer": {
+        "build": "unknown",
+        "name": "llmp-import",
+        "options_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "version": "1"
+      },
+      "layout": {
+        "byte_order": "little",
+        "chunk_bytes": 2097152,
+        "container": "safetensors",
+        "file_alignment": 4096,
+        "member_alignment": 256,
+        "profile": "spark",
+        "profile_version": 1
+      },
+      "model": {
+        "architecture": "gemma2",
+        "container": "gguf",
+        "expert_count": 0
+      },
+      "source": [
+        {
+          "bytes": 2784495456,
+          "name": "gemma-2-2b-it-Q8_0.gguf",
+          "sha256": "2d448a9aab894b8e8e18168cf3f490cb9f65632222f29f93514ac9ecc754debe"
+        }
+      ],
+      "transformations": []
+    },
+    "manifest_sha256": "92bbb574ec219595d5942f05d1cce9480229b4bac5b7e22205af74499133ab4e",
+    "root": "/home/pmeenan/.local/share/llmp/u2-v1-artifacts/92bbb574ec219595d5942f05d1cce9480229b4bac5b7e22205af74499133ab4e"
+  },
+  "input": {
+    "corpus_sha256": "55381941fdb19f99a88c5170f25d7cbc3e091d7d839a8776ac491a593c978ceb",
+    "corpus_bytes": 817275,
+    "passage_index": 100003,
+    "passage_chars": 4000,
+    "passage_sha256": "d94ee6ec0c784a57a6f363883b91d089525b1bffa8e141a8968035734986d03b",
+    "passage_bytes": 4000,
+    "prompt_tokens": 1071,
+    "teacher_targets": 1070,
+    "ids_policy": "Audit all actual echoed IDs after collection; require exact complete A/D equality, one leading BOS2, leading null score and every subsequent teacher key. No pre-run ID list is asserted."
+  },
+  "helpers": {
+    "tools/speed_gate.py": "e65de36ad6ae8c12d0ce72b39c1e6f098a929068bbf0a99e5556e2656e6a7823",
+    "tools/quality_pair.py": "9bf1d1597a8d6e97d65a648a9db68d8a51c694cc3772a6f01ba158fc420137bd",
+    "docs/experiments/m35-component-numerics/capture.py": "c5ef533210b650b2a82db1f736d43cc69ddba5db2dfe44d8fe671a6899b12a8f",
+    "docs/experiments/m35-component-numerics/greedy_capture.py": "0869f7e857e539afce72199d15ded286ab14c816ea8ceb32456b1672f2317d9d",
+    "docs/experiments/m35-component-numerics/plan_reports.py": "4b20e901e5fccfd77d68177d6ea7b43b6b0654b781747091dd71838614061ac3"
+  },
+  "config_sha256": "a1ab4a936fc85a461c2a3608be26961a41b8c7a0809447714860461453c4d0e6"
+}

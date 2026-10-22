@@ -107,13 +107,15 @@ primed session (the records min_blocks come from predate priming) and
 counts those without one.
 
 `quality` runs one process: two fixed greedy C1 replies (their digests;
-the reply text is never kept) and the mean negative log-likelihood of a
+`--retain-streams` additionally keeps raw SSE and client timings) and the mean negative log-likelihood of a
 fixed corpus passage through the literal completions route's prompt
 scores. It is a quick runtime-level control beside each family's own
 oracle controls, not a replacement for them.
 
-Prompts and replies are never written: records keep token counts, timings
-and SHA-256 digests only. Run it under the Spark's GPU supervisor
+Ordinary speed records keep token counts, timings and SHA-256 digests only.
+Quality records retain the scored passage and response; `--retain-streams`
+also retains greedy replies for explicitly enrolled quality comparisons.
+Run it under the Spark's GPU supervisor
 (docs/workflow.md); a run that fails records its error and exits nonzero,
 so a steps queue moves on.
 """
@@ -522,12 +524,16 @@ def port_open(port: int) -> bool:
         return False
 
 
-def stream_chat(port: int, body: dict, barrier: threading.Barrier | None) -> dict:
+def stream_chat(port: int, body: dict, barrier: threading.Barrier | None,
+                raw_stream: pathlib.Path | None = None) -> dict:
     """One streamed chat request: client-clock timings, usage and the reply's digest."""
     record: dict = {"error": None}
     payload = json.dumps(body).encode()
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
+    raw_output = None
     try:
+        if raw_stream is not None:
+            raw_output = raw_stream.open("xb")
         conn.connect()
         if barrier is not None:
             barrier.wait(timeout=600)
@@ -536,11 +542,16 @@ def stream_chat(port: int, body: dict, barrier: threading.Barrier | None) -> dic
                      {"Content-Type": "application/json"})
         response = conn.getresponse()
         if response.status != 200:
-            record["error"] = f"HTTP {response.status}: {response.read()[:400]!r}"
+            failed_body = response.read()
+            if raw_output is not None:
+                raw_output.write(failed_body)
+            record["error"] = f"HTTP {response.status}: {failed_body[:400]!r}"
             return record
         digest = hashlib.sha256()
         times: list[float] = []
         for raw in response:
+            if raw_output is not None:
+                raw_output.write(raw)
             line = raw.strip()
             if not line.startswith(b"data: "):
                 continue
@@ -577,6 +588,10 @@ def stream_chat(port: int, body: dict, barrier: threading.Barrier | None) -> dic
             barrier.abort()  # the cell's other requests stop waiting for this one
     finally:
         conn.close()
+        if raw_output is not None:
+            raw_output.close()
+            record["raw_stream"] = {"file": raw_stream.name,
+                                    "sha256": sha256_file(raw_stream)}
     return record
 
 
@@ -839,6 +854,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def cmd_quality(args: argparse.Namespace) -> int:
     family = FAMILIES[args.family]
+    retain_streams = getattr(args, "retain_streams", False)
     if family.kind != "llm":
         raise SystemExit(f"{family.name}: quality covers LLM families")
     out = pathlib.Path(args.out).resolve()
@@ -866,13 +882,18 @@ def cmd_quality(args: argparse.Namespace) -> int:
     try:
         service = Service(runtime, config, run_dir, args.port, runtime_env)
         service.wait_ready()
-        for text in QUALITY_PROMPTS:
+        for index, text in enumerate(QUALITY_PROMPTS):
             body = {"model": family.model, "stream": True, "temperature": 0,
                     "stream_options": {"include_usage": True}, "max_tokens": family.max_tokens,
                     "messages": [{"role": "user", "content": text}]}
-            r = stream_chat(args.port, body, None)
-            record["replies"].append({k: r.get(k) for k in ("error", "finish", "reply_sha256",
-                                                             "usage")})
+            raw_stream = (out / "quality" / f"{name}-reply-{index}.sse"
+                          if retain_streams else None)
+            r = stream_chat(args.port, body, None, raw_stream)
+            record["replies"].append(r if retain_streams else
+                                     {k: r.get(k) for k in ("error", "finish", "reply_sha256",
+                                                           "usage")})
+            if retain_streams and r.get("error"):
+                raise RuntimeError(f"greedy request {index}: {r['error']}")
         text = passage(corpus, 100003, family.score_chars)
         conn = http.client.HTTPConnection("127.0.0.1", args.port, timeout=3600)
         conn.request("POST", "/v1/completions", json.dumps(
@@ -905,7 +926,7 @@ def cmd_quality(args: argparse.Namespace) -> int:
     (out / "quality" / f"{name}.json").write_text(json.dumps(record, indent=1) + "\n")
     shutil.rmtree(run_dir / "data", ignore_errors=True)
     print(json.dumps({"quality": name, "error": record["error"], "score": record.get("score"),
-                      "replies": [r["reply_sha256"] for r in record["replies"]]}), flush=True)
+                      "replies": [r.get("reply_sha256") for r in record["replies"]]}), flush=True)
     return 1 if record["error"] else 0
 
 
@@ -1408,6 +1429,9 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--runtime-env", action="append", metavar="NAME=VALUE",
                        help="a diagnostic switch (LLMP_DIAGNOSTIC_*) for this arm's runtime")
         p.set_defaults(func=func)
+        if command == "quality":
+            p.add_argument("--retain-streams", action="store_true",
+                           help="retain raw greedy SSE and full client timing records")
         if command == "run":
             p.add_argument("--image-pixels-sha256",
                            help="this image arm's output pin, frozen before timing; quality is separate")

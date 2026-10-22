@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 2
+[storage]
+data_dir = "{data}"
+installed = "{share}/u2-v1-artifacts"
+[client]
+bind = ["loopback"]
+port = {port}
+[models.gemma2]
+artifact = "92bbb574ec219595d5942f05d1cce9480229b4bac5b7e22205af74499133ab4e"
+context = 8192
+prefill_chunk = 1
+max_slots = 2

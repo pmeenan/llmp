@@ -753,13 +753,13 @@ class StreamErrors(unittest.TestCase):
     def event(value):
         return b"data: " + json.dumps(value).encode() + b"\n"
 
-    def request(self, lines):
+    def request(self, lines, raw_stream=None):
         connection = unittest.mock.MagicMock()
         response = connection.getresponse.return_value
         response.status = 200
         response.__iter__.return_value = iter(lines)
         with unittest.mock.patch.object(gate.http.client, "HTTPConnection", return_value=connection):
-            result = gate.stream_chat(1, {}, None)
+            result = gate.stream_chat(1, {}, None, raw_stream)
         connection.close.assert_called_once()
         return result
 
@@ -791,6 +791,64 @@ class StreamErrors(unittest.TestCase):
 
     def test_malformed_event_still_fails_and_closes(self):
         self.assertTrue(self.request([b"data: malformed\n"])["error"].startswith("JSONDecodeError:"))
+
+    def test_opt_in_stream_retains_exact_bytes_and_existing_times(self):
+        lines = [b": keepalive\r\n", self.event({"choices": [
+            {"delta": {"content": "hello"}, "finish_reason": "length"}]}),
+            self.event({"usage": {"completion_tokens": 1}}), b"data: [DONE]\n"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "reply.sse"
+            result = self.request(lines, path)
+            self.assertIsNone(result["error"])
+            self.assertEqual(path.read_bytes(), b"".join(lines))
+            self.assertEqual(result["raw_stream"], {
+                "file": path.name, "sha256": gate.sha256_file(path)})
+            self.assertEqual(len(result["times"]), 1)
+            self.assertIn("t_end", result)
+        self.assertNotIn("raw_stream", self.request(lines))
+
+    def test_opt_in_stream_preserves_invalid_event_before_refusal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "reply.sse"
+            result = self.request([b"data: malformed\n"], path)
+            self.assertTrue(result["error"].startswith("JSONDecodeError:"))
+            self.assertEqual(path.read_bytes(), b"data: malformed\n")
+            self.assertEqual(result["raw_stream"]["sha256"], gate.sha256_file(path))
+            prior = path.read_bytes()
+            result = self.request([b"replacement"], path)
+            self.assertTrue(result["error"].startswith("FileExistsError:"))
+            self.assertEqual(path.read_bytes(), prior)
+
+
+class RetainedQualityFailure(unittest.TestCase):
+    def test_failed_stream_is_preserved_and_stops_before_more_requests(self):
+        for failed in ({"error": "HTTP 503: unavailable"},
+                       {"error": "stream ended without usage", "reply_sha256": "partial"}):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                runtime = root / "runtime"
+                runtime.write_bytes(b"mock runtime")
+                args = gate.argparse.Namespace(
+                    family="gemma2", label="old", runtime=str(runtime), out=str(root / "out"),
+                    share=str(root), corpus=str(root / "corpus"), port=18114,
+                    config_template=None, runtime_env=None, retain_streams=True)
+                with (unittest.mock.patch.object(gate, "load_corpus", return_value="corpus"),
+                      unittest.mock.patch.object(gate, "check_runtime_env"),
+                      unittest.mock.patch.object(gate, "host_facts", return_value={}),
+                      unittest.mock.patch.object(gate, "Service") as service,
+                      unittest.mock.patch.object(gate, "stream_chat", return_value=failed) as stream,
+                      unittest.mock.patch.object(gate.http.client, "HTTPConnection") as score,
+                      contextlib.redirect_stdout(io.StringIO())):
+                    service.return_value.stop.return_value = {"signal": "TERM", "returncode": 0}
+                    self.assertEqual(gate.cmd_quality(args), 1)
+                    stream.assert_called_once()
+                    score.assert_not_called()
+                    service.return_value.stop.assert_called_once()
+                record = json.loads((root / "out/quality/gemma2-quality-old.json").read_text())
+                self.assertEqual(record["replies"], [failed])
+                self.assertIn(failed["error"], record["error"])
+                self.assertNotIn("score", record)
+                self.assertEqual(record["stop"]["returncode"], 0)
 
 
 class Service(unittest.TestCase):
