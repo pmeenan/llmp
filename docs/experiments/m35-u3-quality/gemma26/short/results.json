@@ -1,0 +1,227 @@
+{
+  "actual_runtime_sha256": "d18c7b7a9c8c6cf383a6f607a8606d2ce2026c4b2a8cb47632ec424601704dff",
+  "actual_runtime_source_sha256": "d0c8f0023776b0994de9e97beff04cb7bcd3e77ddad78bf87390bb312794cff4",
+  "additional_GPU_jobs": 0,
+  "arms": {
+    "native": {
+      "input_ids": 1024,
+      "job": "m35-u3-gemma26-short-native-r1",
+      "raw_directory": "/tmp/llmp-gemma26-short-native-r1",
+      "raw_sha256": {
+        "launch.json": "c7c101ad7777f6ab8c378483337129e108f49a2cbeb06d809fec391ee23f4d85",
+        "losses.jsonl": "f54dda6ecb6068e15e4dffafb691c7cf273173cee3fae49e5a13f8d0545ad61e",
+        "request.json": "7647e732b26c338d5bf859131e813ba67f4dd591e4a960e718b28a8e931405bd",
+        "response.json": "5d36f4876296a3305e3c4d39f27cd3f7d8feaee46799fbf994947031a26577f8",
+        "result.json": "ff60bd95350db3195e319e7c9a6e1d36ff0ee2711fc0a4df7a86b89f6e59d447",
+        "runtime.log": "157352f4c430ba8e3523e5b5fedf32a8d4246fe8e74cb2f407d1a7964b1fe7e2"
+      },
+      "remote_directory": "spark:/home/pmeenan/.local/share/llmp/m35-u3-quality/gemma26-short-native-r1",
+      "retirement": {
+        "returncode": 0,
+        "signal": "TERM"
+      },
+      "supervisor_directory": "/tmp/llmp-gemma26-short-native-r1-supervisor",
+      "supervisor_exit_code": 0,
+      "supervisor_final_sha256": "06a81b231e69e5e38c5ded8e1bb7c003e2a4cde400a49870b412c3e8572c2b3d",
+      "supervisor_job_sha256": "24af8d720c2503a7fe662ea05566024fa1c58d5e1f383ef59a339f002e80d548",
+      "supervisor_log_sha256": "20573b73fc62d66ecf823a468c98241bb06dd634406c0a391250640e901e717f",
+      "teacher_targets": 1023
+    },
+    "source": {
+      "input_ids": 1024,
+      "job": "m35-u3-gemma26-short-source-r1",
+      "raw_directory": "/tmp/llmp-gemma26-short-source-r1",
+      "raw_sha256": {
+        "container.json": "62c73152bfa564af61e04cc77d5b390ad66e7ca84e1278f530d1820ad09d29ff",
+        "container.log": "abd8c4ca8a0042b23eb5f9462e8dfe40662d2acda25a7c5c036e6e273c7d8e89",
+        "launch.json": "7fda19ef2f10ccb57b49330b2b668faead3a4cd7d1ccaf003ca9d52cc32aaa87",
+        "losses.jsonl": "d41c5811f26bc0e5d51a799d98752b3fac5be42627c8f2ca5b82ce093a5716a6",
+        "request.json": "2828e284eae618bf49e226e093218dd840ef326fcc6301dcc7ea4286b1c145d1",
+        "result.json": "119e9deb9bb9c82227f7187b90f7201bee0ea906e9581dcbedb89a92208e8024",
+        "returned.txt": "588e4f5284f63223588ed460dd9b6862cfb00b22efaca65698eeb6cc589753c0"
+      },
+      "remote_directory": "spark:/home/pmeenan/.local/share/llmp/m35-u3-quality/gemma26-short-source-r1",
+      "retirement": {
+        "check_returncode": 0,
+        "name": "llmp-gemma26-short-01da88e36d6b419c846b008cc2f7d6dd",
+        "remaining_ids": "",
+        "remove_returncode": 0,
+        "remove_stderr": "",
+        "retired": true
+      },
+      "supervisor_directory": "/tmp/llmp-gemma26-short-source-r1-supervisor",
+      "supervisor_exit_code": 0,
+      "supervisor_final_sha256": "13e2d263b14769c87b30885c0a538660073e949d250296874d19ec2bb00d77fd",
+      "supervisor_job_sha256": "4be26d9dae6346fe35a6d175a1fabcbfc649507f9b0e541c9f81943816446b9d",
+      "supervisor_log_sha256": "015f3720a0c2a275f3517599a850c7cc5b7a93e9e97263e09b8ce09ba05ce75b",
+      "teacher_targets": 1023
+    }
+  },
+  "artifact": "1d20ce879b2fe72c947699357da5e20d3f6388e9cc7858b9eb6fcc2516cd3875",
+  "corpus": {
+    "bytes": 817275,
+    "recipe": "BOS 2 once, then first 1023 body IDs; see PREPARATION.md and PROPOSAL.md",
+    "sha256": "55381941fdb19f99a88c5170f25d7cbc3e091d7d839a8776ac491a593c978ceb"
+  },
+  "criterion_origin": "Prospectively borrowed U3 Llama/Qwen +1.0% PPL allowance; not a measured Gemma tolerance. No per-target bound enrolled.",
+  "dependency_validation_scope": "Runtime and Service payload hashes, registered helper/source/metadata pins, installed reference loader pins and normalized native library resolution checked. No claim of fresh full native library payload hashing or model-weight rehashing; prior authenticated staging/artifact transfer receipts retained.",
+  "enrollment_sha256": "26a60c0053c87a4ce003fd9fc034670345c65646b0b1a69a5cb729cf8f44afc3",
+  "evidence_directory": "/tmp/llmp-gemma26-short-registered-eadf8da8",
+  "format": "llmp-m35-gemma26-short-result/1",
+  "historical_service_sha256": "0f1135a2283fe63797e15c8dffe48c9df39b0baae91a57f925b5ba21c3e3252e",
+  "identity_and_score_validation": {
+    "all_teacher_logprobs_finite_nonpositive": true,
+    "first_prompt_score_row": null,
+    "losses_reconciled_with_raw_returns": true,
+    "native_complete_echoed_token_id_labels_exact": true,
+    "source_actual_prompt_ids_exact": true,
+    "source_generated_token_excluded": true,
+    "teacher_positions": [
+      1,
+      1023
+    ]
+  },
+  "independent_raw_review": {
+    "files": {
+      "/tmp/llmp-gemma26-short-results-review-r1.json": "014d0bf8a58eac083f4c00c9eb24f489f519c4ee06880536391a76042ff89335",
+      "/tmp/llmp-gemma26-short-results-review-r1.md": "87767af1fc378da2195ac2a844d7e89a91410bf1f4e61d0cc057742de9b3f66f"
+    },
+    "scope": "Registered single-short result, raw numerical alignment, provenance and retirement; final documentation review separate",
+    "status": "CLEAN"
+  },
+  "input_sha256": "389216b176c694cd5f43e3068b20d6fad97e09cbd956bcd6c2837d6b400858b2",
+  "job_conditions": {
+    "admission": "installed exclusive",
+    "context": 4096,
+    "host": "spark (A)",
+    "native_max_tokens": 0,
+    "prefill": 512,
+    "prefix_caching": false,
+    "slots": 1,
+    "source_max_tokens": 1,
+    "temperature": 0,
+    "termination_grace_seconds": 30,
+    "timeout_seconds": 600
+  },
+  "limits": [
+    "One 1024-input/1023-teacher pair only; no repeat stability, depth, behavior, batching, speed or general U3 closure.",
+    "Mean absolute per-target NLL difference 1.3656772891013642; maximum 19.33066256754946 at position 884, target 232021. No per-target acceptance bound registered.",
+    "Opposing per-target differences offset in the aggregate; lower aggregate native PPL does not establish superiority or tokenwise/logit parity.",
+    "Native F16 versus source BF16 KV retained; source W1/W3 scale warning retained.",
+    "Earlier raw-ID negatives, failed source launch, missing-artifact preflight and first CPU preparation timeout remain unchanged."
+  ],
+  "metrics": {
+    "candidate": {
+      "mean_nll": 5.9302727887238005,
+      "perplexity": 376.25713853131225
+    },
+    "candidate_higher": 515,
+    "candidate_lower": 508,
+    "documents": {
+      "0": {
+        "candidate_nll": 5.9302727887238005,
+        "ppl_delta_pct": -0.959790604251709,
+        "reference_nll": 5.9399170515235165,
+        "targets": 1023
+      }
+    },
+    "identical": 0,
+    "max_abs_diff": 19.33066256754946,
+    "max_abs_diff_at": {
+      "document": 0,
+      "position": 884,
+      "target": 232021
+    },
+    "mean_abs_diff": 1.3656772891013642,
+    "nll_delta": -0.009644262799715975,
+    "nll_delta_se": 0.07698422891917328,
+    "ppl_delta_pct": -0.959790604251709,
+    "reference": {
+      "mean_nll": 5.9399170515235165,
+      "perplexity": 379.90341582159925
+    },
+    "targets": 1023
+  },
+  "native_kv": "float16",
+  "order": [
+    "native",
+    "source"
+  ],
+  "pair_receipt_sha256": "c581b585a41156ff8904ffbc588656fbf62899de2de386215523c8c73cb7aef3",
+  "pair_report_sha256": "0727024b196e64e43dcddc648238b9d5bb40c61b966267c6c78a374629f45db7",
+  "pair_tool_sha256": "9bf1d1597a8d6e97d65a648a9db68d8a51c694cc3772a6f01ba158fc420137bd",
+  "post_job_host": "A free: no running/waiting jobs or GPU compute processes; all 2828 source files, runtime, Service and snapshot guards unchanged.",
+  "postflight_sha256": "52611e018e5a47183fe765c935f4f0592af0fcd251285f22c0ff3bffb46d70d9",
+  "preflight_sha256": "9667a6bc53507ccaf0e0debfe8608e7ca4cfac15c5be0abe375261db6e20862a",
+  "protocol_sha256": "bd294f02be8b52a72a27046d82d247f11e8644a5c68e212594f13e6b7b3644e4",
+  "registered_bounds": [
+    {
+      "bound": "expected_targets",
+      "limit": 1023,
+      "observed": 1023,
+      "ok": true
+    },
+    {
+      "bound": "min_targets",
+      "limit": 1023,
+      "observed": 1023,
+      "ok": true
+    },
+    {
+      "bound": "max_ppl_increase_pct",
+      "limit": 1.0,
+      "observed": -0.959790604251709,
+      "ok": true
+    }
+  ],
+  "registered_file_sha256": {
+    "docs/experiments/fast-swap/mia-launch.json": "61732d66793a85ca140cb090a2c8aecad23da141eb4980f3cb8767953f3127a1",
+    "docs/experiments/m35-u3-quality/gemma26/launch.py": "1b30eec5096cf3383bf3f3b410b1ea75a6279594c7abcfb83760975803a66325",
+    "docs/experiments/m35-u3-quality/gemma26/paris/control.py": "e01815d98d1395d631847211275e771ac208be7593689edba790564f00294ce9",
+    "docs/experiments/m35-u3-quality/gemma26/reference.py": "847191af80ee1cead7979e06d825fc6460e1e73a408e6a415c48c9bc2c28d7ef",
+    "docs/experiments/m35-u3-quality/gemma26/short/PROTOCOL.md": "bd294f02be8b52a72a27046d82d247f11e8644a5c68e212594f13e6b7b3644e4",
+    "docs/experiments/m35-u3-quality/gemma26/short/control.py": "5602d2aceb7c90413cbdcda13fbdb98c8fa023fe3d65d508618c6822d7b8a50c",
+    "docs/experiments/m35-u3-quality/gemma26/short/ids.json": "389216b176c694cd5f43e3068b20d6fad97e09cbd956bcd6c2837d6b400858b2",
+    "docs/experiments/m35-u3-quality/gemma26/short/native.py": "c6626620507236a58cff110f87f5c58a25fa68300367e17927d6c5db287ac078",
+    "docs/experiments/m35-u3-quality/gemma26/short/pair-prereg.json": "f9a06071f0c7f75cf4472f6ad80a0125db4fae418cc460c9a1f9d42f4b27dbd9",
+    "docs/experiments/m35-u3-quality/gemma26/short/source-hashes.json": "80ad88e3b7f01de67e86f72c2ec59e3fdac6ec108ee0961bf434b1b6efe5a9b4",
+    "docs/experiments/m35-u3-quality/gemma26/short/source.py": "da2cf933bcfb7c15947ac6592038a7fbde4c4a65099ea98b31b461c4eab7d102",
+    "docs/experiments/m35-u3-quality/gemma26/short/source_launch.py": "9960056e1aef81625733600d6a0b9b0fd980c2b0ffa15f6a37e7b9bc09c8b670",
+    "docs/experiments/m35-u3-quality/gemma26/short/test_control.py": "b1209929899cd0bc9b07569b14138fcd4c776eb99089e4255f9593191e6b23d0",
+    "docs/experiments/m35-u3-quality/qwen27/contract.py": "697485e5f71da2d2bafd77f564d799cba410a10252f53bdf6de6cc13bf121e17",
+    "tools/quality_pair.py": "9bf1d1597a8d6e97d65a648a9db68d8a51c694cc3772a6f01ba158fc420137bd"
+  },
+  "registration_commit": "eadf8da897a6968ddeed4696408d7759d56a5ab1",
+  "source_checkpoint": {
+    "repository": "nvidia/Gemma-4-26B-A4B-NVFP4",
+    "revision": "a19cfe00be84568a6867111c9a68c9c44fdcffe6"
+  },
+  "source_dispatch": {
+    "attention": "Triton",
+    "backend": "FLASHINFER_CUTLASS",
+    "expert_blocks": 30,
+    "final_logit_softcap": 30,
+    "model": "Gemma4ForCausalLM",
+    "quantization": "ModelOptNvFp4Config",
+    "runner_environment": "VLLM_USE_V2_MODEL_RUNNER=1",
+    "score_vocabulary": 262144,
+    "use_a16": false
+  },
+  "source_files_authenticated_before_after": 37,
+  "source_image": "sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8",
+  "source_kv": "bfloat16",
+  "source_model_arithmetic": "bfloat16",
+  "source_unused_generated_output": {
+    "finish_reason": "length",
+    "stop_reason": null,
+    "text": "-",
+    "token_ids": [
+      236772
+    ],
+    "used_as_teacher": false
+  },
+  "source_warning_lines": [
+    "w1_weight_scale_2 must match w3_weight_scale_2. Accuracy may be affected."
+  ],
+  "status": "PASS_PRELIMINARY_SINGLE_SHORT_PPL_PAIR"
+}

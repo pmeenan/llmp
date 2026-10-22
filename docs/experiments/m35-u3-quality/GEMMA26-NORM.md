@@ -241,3 +241,11 @@ passed on both engines with the same frozen 35 input IDs: both returned `Paris`,
 output IDs `[50429,106]`, and stopped normally. This establishes a usable source
 reference for that single control. It preserves the raw-ID negatives above;
 representative Gemma likelihood and behavior qualification remain open.
+
+The registered [first short likelihood pair](gemma26/short/RESULTS.md) passes
+its preliminary aggregate +1% PPL bound: native PPL is 0.9598% lower across
+1,023 teachers. Mean/max absolute per-target NLL differences remain substantial
+at 1.3657/19.3307 nats (maximum at position 884, target 232021); no per-target
+bound was enrolled. This does not establish tokenwise parity, repeat stability,
+depth or broader behavior quality. The source W1/W3 scale warning and all older
+negative evidence remain unchanged; general Gemma qualification is still open.

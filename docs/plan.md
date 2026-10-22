@@ -619,6 +619,10 @@ D-122).
       difference. The subsequent registered [source-template Paris pair](experiments/m35-u3-quality/gemma26/paris/RESULTS.md)
       passes on both engines with identical output IDs `[50429,106]`; this single
       completion control leaves general Gemma quality qualification open.
+      Its registered [short likelihood pair](experiments/m35-u3-quality/gemma26/short/RESULTS.md)
+      passes the preliminary aggregate +1% PPL bound (-0.9598%), while mean/max
+      absolute per-target NLL differences are 1.3657/19.3307 nats. No per-target
+      bound, repeat, depth or broader behavior qualification is claimed.
       The separate Llama [512-token completion supplement](experiments/m35-u3-quality/FIBONACCI512-RESULTS.md)
       passes all four fresh observations; the original 256-token control remains
       failed/unresolved. General Gemma source qualification remains open.
