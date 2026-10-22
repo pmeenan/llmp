@@ -575,6 +575,9 @@ the affected matched 10% speed screen. Unchanged arithmetic may reuse existing
 source-quality evidence with its required controls. Failed B/C results remain
 negative evidence, and passing helper or model jobs alone does not close U4.
 
+The separately registered [LLM speed recipe](LLM-SPEED-PROTOCOL.md) fixes the
+affected A/D concurrency workloads, pairing and 10% aggregation before timing.
+
 ### Supplementary launcher correction before retry (2026-10-22)
 
 The first supplementary job, `m35-u4-greedy-qwen38-gguf-A-r1`, failed before
