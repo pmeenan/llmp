@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "artifact/artifact.h"
+#include "base/json.h"
 #include "base/sha256.h"
 #include "cli/cli.h"
 #include "components/step.h"
@@ -35,6 +37,47 @@ namespace llmp::import {
 namespace {
 constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
 constexpr std::uint64_t kCombined = 8 * kGiB, kMargin = 6 * kGiB;
+constexpr std::uint64_t kNormalizationBudget = 3 * kGiB, kDefaultMetadataBudget = 4 * kGiB;
+bool KnownCliWarning(std::string_view line) {
+  constexpr std::string_view prefix = "llmp import: warning: ";
+  if (!line.starts_with(prefix)) return false;
+  line.remove_prefix(prefix.size());
+  for (const std::string_view reason :
+       {": component excluded by this text-only architecture mapping",
+        ": unread metadata retained as source provenance",
+        ": trailing unimported layer labels retained as source provenance"}) {
+    if (!line.ends_with(reason)) continue;
+    const auto key = base::json::Parse(
+        line.substr(0, line.size() - reason.size()),
+        {.max_bytes = 8192, .max_depth = 1, .max_values = 1, .max_string_bytes = 8192});
+    return key && key->root().is_string() && !key->root().string().empty();
+  }
+  return false;
+}
+struct CliDiagnostics {
+  bool complete = false;
+  std::size_t warnings = 0;
+  std::string terminal;
+};
+CliDiagnostics ReadCliDiagnostics(std::FILE* file) {
+  CliDiagnostics result;
+  if (std::fseek(file, 0, SEEK_SET) != 0) return result;
+  // Stream all records in fixed storage; never mistake a truncated prefix of
+  // provenance warnings for the final refusal. Reject oversized/partial lines.
+  std::array<char, 8192> buffer{};
+  while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), file)) {
+    std::string_view line(buffer.data());
+    if (!line.ends_with('\n') || !result.terminal.empty()) return result;
+    line.remove_suffix(1);
+    if (line.empty()) return result;
+    if (KnownCliWarning(line))
+      ++result.warnings;
+    else
+      result.terminal = line;
+  }
+  result.complete = std::feof(file) != 0 && std::ferror(file) == 0;
+  return result;
+}
 std::string SmallFile(const std::filesystem::path& path) {
   std::ifstream file(path);
   std::array<char, 8192> text{};
@@ -73,7 +116,7 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
   ASSERT_FALSE(std::filesystem::exists(cli_store));
   for (const auto& [mib, message] : std::array<std::pair<std::string_view, std::string_view>, 2>{
            {{"1", "normalization exceeds the requested metadata budget"},
-            {"512", "artifact metadata has not been funded"}}}) {
+            {"3072", "artifact metadata has not been funded"}}}) {
     const std::array<std::string_view, 6> args{"import",  configured,       "--store",
                                                cli_store, "--metadata-mib", mib};
     std::FILE* output = std::tmpfile();
@@ -82,14 +125,18 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
     ASSERT_NE(error, nullptr);
     EXPECT_EQ(cli::Run(args, output, error), cli::kExitFailure);
     EXPECT_EQ(std::ftell(output), 0);
-    std::rewind(error);
-    std::array<char, 1024> text{};
-    const auto count = std::fread(text.data(), 1, text.size(), error);
-    EXPECT_NE(std::string_view(text.data(), count).find(message), std::string_view::npos);
+    const auto diagnostics = ReadCliDiagnostics(error);
+    EXPECT_TRUE(diagnostics.complete) << "metadata MiB=" << mib;
+    EXPECT_GT(diagnostics.warnings, 0U);
+    EXPECT_EQ(diagnostics.terminal, "llmp import: bounds: " + std::string(message))
+        << "metadata MiB=" << mib;
+    if (mib == "3072" && diagnostics.complete)
+      RecordProperty("cli_writer_warning_records", std::to_string(diagnostics.warnings));
     std::fclose(output);
     std::fclose(error);
     EXPECT_FALSE(std::filesystem::exists(cli_store));
   }
+  ASSERT_FALSE(HasFailure());
   RecordProperty("cli_normalization_unfunded_refused", true);
   RecordProperty("cli_writer_unfunded_refused", true);
   auto source = ReadCheckpoint(configured);
@@ -99,9 +146,12 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
   auto bound = NormalizationBound(*source);
   ASSERT_TRUE(bound) << bound.error().ToString();
   // The diagnostic's 8 GiB hard domain includes reader, retained Checkpoint,
-  // planner and file cache. This assertion constrains the closed planner's
-  // separately derived inventory; the domain cap is not measured occupancy.
-  ASSERT_LT(bound->metadata_bytes, kGiB);
+  // planner and file cache. Generic normalization's owned canonical/synthesis
+  // ledger replaces the old indexed-plan sub-GiB inventory. The 3 GiB CLI
+  // refusal budget must fund normalization; the default 4 GiB must also fund
+  // the independent writer, checked through its actual planner below.
+  // Neither admission bound is measured occupancy.
+  ASSERT_LT(bound->metadata_bytes, kNormalizationBudget);
   const auto* retained = source->tensors.data();
   ASSERT_FALSE(Normalize(std::move(*source), {bound->metadata_bytes - 1, bound->work_units}));
   ASSERT_EQ(source->tensors.data(), retained);
@@ -146,6 +196,13 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
   source->tensors.front().name = original_name;
   auto plan = Normalize(std::move(*source), {bound->metadata_bytes, bound->work_units});
   ASSERT_TRUE(plan) << plan.error().ToString();
+  const auto placement =
+      publication_detail::InspectPlacement(*plan, kDefaultMetadataBudget - bound->metadata_bytes);
+  ASSERT_TRUE(placement) << placement.error().ToString();
+  ASSERT_GT(placement->metadata_bytes, kNormalizationBudget - bound->metadata_bytes);
+  ASSERT_LE(bound->metadata_bytes + placement->metadata_bytes, kDefaultMetadataBudget);
+  const spec::SamplingDefaults expected_sampling{1.0, 0.95, 20, std::nullopt};
+  EXPECT_EQ(plan->spec().stages.front().sampling, expected_sampling);
   ASSERT_EQ(plan->parts().source().tensors.size(), 301730U);
   ASSERT_EQ(plan->parts().members().size(), 222892U);
   std::array<std::uint64_t, 3> classified{};
@@ -190,12 +247,15 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
   const auto& fold = plan->planned_folds().front();
   EXPECT_EQ(fold.fold, "gdn.value_heads_tiled");
   ASSERT_EQ(fold.outputs.size(), 288U);
-  EXPECT_TRUE(std::ranges::is_sorted(fold.outputs));
-  EXPECT_EQ(std::ranges::adjacent_find(fold.outputs), fold.outputs.end());
+  // Generic planning preserves component traversal order. Membership and
+  // uniqueness are the contract; do not impose numeric ordering on the plan.
+  auto fold_outputs = fold.outputs;
+  std::ranges::sort(fold_outputs);
+  EXPECT_EQ(std::ranges::adjacent_find(fold_outputs), fold_outputs.end());
   for (const auto output : fold.outputs) ASSERT_LT(output, plan->parts().outputs().size());
   EXPECT_EQ(std::ranges::count_if(plan->bindings(),
                                   [&](const auto& binding) {
-                                    return std::ranges::binary_search(fold.outputs, binding.output);
+                                    return std::ranges::binary_search(fold_outputs, binding.output);
                                   }),
             468);
   ASSERT_EQ(plan->semantic().size(), 3U);
@@ -215,6 +275,8 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
   auto valid = components::ValidateSpec(plan->spec(), plan->canonical().tensors);
   ASSERT_TRUE(valid) << valid.error();
   RecordProperty("normalization_metadata_bound", std::to_string(bound->metadata_bytes));
+  RecordProperty("writer_metadata_bound", std::to_string(placement->metadata_bytes));
+  RecordProperty("default_metadata_budget", std::to_string(kDefaultMetadataBudget));
   RecordProperty("combined_memory_max", std::to_string(kCombined));
   RecordProperty("mem_available_before", std::to_string(*memory.available));
   RecordProperty("canonical_parts", std::to_string(plan->canonical().tensors.size()));
@@ -450,9 +512,11 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
   ASSERT_EQ(authenticated_source_bytes, 105885660088ULL);
   auto bound = NormalizationBound(*source);
   ASSERT_TRUE(bound) << bound.error().ToString();
-  ASSERT_LT(bound->metadata_bytes, kGiB);
+  ASSERT_LT(bound->metadata_bytes, kNormalizationBudget);
   auto plan = Normalize(std::move(*source), {bound->metadata_bytes, bound->work_units});
   ASSERT_TRUE(plan) << plan.error().ToString();
+  const spec::SamplingDefaults expected_sampling{1.0, 0.95, 20, std::nullopt};
+  EXPECT_EQ(plan->spec().stages.front().sampling, expected_sampling);
   ASSERT_EQ(plan->canonical().tensors.size(), 1789U);
   ASSERT_EQ(plan->parts().outputs().size(), 1308U);
   ASSERT_EQ(plan->parts().members().size(), 222892U);
@@ -495,14 +559,15 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
   ASSERT_NE(error, nullptr);
   const auto code = cli::Run(args, output, error);
   std::rewind(output);
-  std::rewind(error);
-  std::array<char, 512> text{}, diagnostic{};
+  std::array<char, 512> text{};
   const auto count = std::fread(text.data(), 1, text.size(), output);
-  const auto errors = std::fread(diagnostic.data(), 1, diagnostic.size(), error);
+  const auto diagnostics = ReadCliDiagnostics(error);
   std::fclose(output);
   std::fclose(error);
-  ASSERT_EQ(code, cli::kExitOk) << std::string_view(diagnostic.data(), errors);
-  ASSERT_EQ(errors, 0U);
+  ASSERT_EQ(code, cli::kExitOk) << diagnostics.terminal;
+  ASSERT_TRUE(diagnostics.complete);
+  ASSERT_GT(diagnostics.warnings, 0U);
+  ASSERT_TRUE(diagnostics.terminal.empty()) << diagnostics.terminal;
   const std::string_view cli_receipt(text.data(), count);
   ASSERT_EQ(cli_receipt.size(), 75U);
   ASSERT_TRUE(cli_receipt.starts_with("published "));
@@ -529,7 +594,8 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
   ASSERT_TRUE(spec) << spec.error();
   EXPECT_EQ(spec->Digest(), plan->spec().Digest());
   EXPECT_EQ(base::ToHex(spec->Digest()),
-            "c2e2822e48502a42783ab9f1c4d8ecf3649f02e6331ea2c0ea133e2542983a0f");
+            "02d130bce7462794251cc29e5554565a0ad83a398ce2776fd8078ef4b683618a");
+  EXPECT_EQ(spec->stages.front().sampling, expected_sampling);
   ASSERT_EQ(stored->sources().size(), kPublicationPins.size());
   for (const auto& receipt : stored->sources()) {
     const auto pin = std::ranges::find(kPublicationPins, receipt.name, &PublicationPin::name);
@@ -573,7 +639,7 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
       EXPECT_EQ(resource.part, tensor.part);
       EXPECT_EQ(resource.bytes.value(), part->bytes);
     }
-    if (!std::ranges::binary_search(plan->planned_folds()[0].outputs, binding.output)) continue;
+    if (!std::ranges::contains(plan->planned_folds()[0].outputs, binding.output)) continue;
     ASSERT_FALSE(tensor.experts);
     const auto member = std::ranges::find_if(plan->parts().members(), [&](const auto& m) {
       return m.output == binding.output && m.part == binding.part;
