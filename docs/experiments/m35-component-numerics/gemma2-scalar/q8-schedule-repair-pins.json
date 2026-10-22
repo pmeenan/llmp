@@ -12,7 +12,7 @@
       "/usr/lib/aarch64-linux-gnu/libpthread.so.0": "6f1ab9e7d7de142dc5e2feaf6d19faceff0a0f40d5e225c922899f5362b8c353",
       "/usr/lib/aarch64-linux-gnu/librt.so.1": "93d0d5ab643b50ac1a61c2c7baf670e8aa94973fa5a2584d13db05295d5b5a0e"
     },
-    "label": "q8-repair",
+    "label": "new",
     "module_identity": "e777b69317ac8e6f49ded8217d703d73ccc195e881e4b8a8482f6e30d52d309b",
     "repair_files": {
       "src/kernels/ggml/dsv4_fast.cu": "170744c0125a901c44213554459578dfa8e329021afb193d8de71ade664f03b7",

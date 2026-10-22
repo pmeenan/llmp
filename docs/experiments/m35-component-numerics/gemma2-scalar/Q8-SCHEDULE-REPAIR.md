@@ -59,22 +59,29 @@ and artifact pins plus R's source/runtime/dependencies before enrollment and
 after retirement. Preserve both raw `ldd` transcripts; dependency equality uses
 resolved paths/hashes, ignoring only hexadecimal load addresses. Retain exact
 argv, environment, full raw score response/SSE and successful-use plans before
-validation. No retries, fallback, additional prompts or changed bounds.
+validation. No inference retries, fallback, additional prompts or changed bounds.
 
-### Pre-launch metadata locality correction (2026-10-22)
+### Pre-launch administrative corrections (2026-10-22)
 
-The first enrollment, `m35-u3-q8-scalar-repair-r1`, stopped in preflight before
-service launch because the registered A `audit.json` and `plans.json` existed
-only on the orchestrator. Preserve that failed job. Copy those exact already
-pinned files to their registered Spark B paths and authenticate their hashes.
-One fresh enrollment may then collect the first R sample. All original pins,
-inputs, bounds and retirement requirements remain; any service launch consumes
-that collection attempt, and no subsequent inference retry is authorized.
+The first enrollment, `m35-u3-q8-scalar-repair-r1`, stopped in preflight because
+the registered A `audit.json` and `plans.json` existed only on the orchestrator.
+Their exact pinned bytes were copied and authenticated. The second enrollment,
+`m35-u3-q8-scalar-repair-r2`, rejected `--label q8-repair` during CLI parsing.
+Neither launched the runtime service or collected a sample. Preserve both jobs.
+
+Before the first runtime service launch, validation-only failures may be fixed
+and enrollment repeated after authenticating every unchanged pin. Validate the
+complete collector argv with its quality handler replaced by a no-service
+capture. Use the existing supported `--label new`; the explicit pinned config
+remains authoritative, and R remains this arm's identity. This label changes
+only output names and report labels. Any runtime service launch consumes the
+one collection attempt; no subsequent inference retry is authorized. Inputs,
+bounds, executable, dependencies and retirement requirements remain unchanged.
 
 Run once on Spark B in a fresh private output/data directory under installed
 exclusive `spark-job --gpu --timeout 600 --grace 30`. Use the parent's exact
 `capture.load_speed_gate` command with its committed private `REG` snapshot,
-`--label q8-repair`, and runtime:
+`--label new`, and runtime:
 
 ```text
 /home/pmeenan/.local/share/llmp/baselines/m35-q8-schedule-r5/src/runtime/llmp-runtime
@@ -95,7 +102,7 @@ and retain attention/Rope and operand-domain comparisons; count alone is not
 proof of the executed recipe. A wide score plan invalidates this scalar screen.
 
 After valid collection, run the unchanged `quality_pair.py pair` once with
-R's `quality/gemma2-quality-q8-repair.json`, retained
+R's `quality/gemma2-quality-new.json`, retained
 `/tmp/llmp-u3-gemma2-quality-78747648/arm-a/quality/gemma2-quality-old.json`, and
 `docs/experiments/m36-final/prereg/pair-gemma2.json`. The unchanged bounds are
 absolute PPL delta≤0.5%, mean absolute NLL difference≤0.05 nats, maximum≤1.0,
