@@ -734,6 +734,89 @@ TEST(ComponentsQwen38Test, TheMoeInsideHyperConnectionsMatchesItsReference) {
   }
 }
 
+TEST(ComponentsQwen38Test, SharedAndIndividualExpertScalesHaveIdenticalGraphsAndArithmetic) {
+  for (const bool stacked : {false, true}) {
+    SCOPED_TRACE(stacked);
+    const auto legacy_ref = QwenMoe(stacked, true);
+    auto individual_ref = QwenMoe(stacked, false);
+    for (const auto name : {"gate_scale", "up_scale", "down_scale"})
+      individual_ref.params.push_back(P(name, B(true)));
+    std::ranges::sort(individual_ref.params, {}, &Param::name);
+    auto partial_ref = individual_ref;
+    const auto down = std::ranges::find(partial_ref.params, "down_scale", &Param::name);
+    ASSERT_NE(down, partial_ref.params.end());
+    down->value = false;
+    const auto legacy = MakeInstance(legacy_ref, kFacts, Site::kLayer, 0, 1);
+    const auto individual = MakeInstance(individual_ref, kFacts, Site::kLayer, 0, 1);
+    const auto partial = MakeInstance(partial_ref, kFacts, Site::kLayer, 0, 1);
+    ASSERT_TRUE(legacy && individual && partial);
+    const auto old_roles = legacy->def->shapes(*legacy);
+    const auto new_roles = individual->def->shapes(*individual);
+    const auto partial_roles = partial->def->shapes(*partial);
+    ASSERT_TRUE(old_roles && new_roles && partial_roles);
+    ASSERT_EQ(old_roles->size(), new_roles->size());
+    for (std::size_t i = 0; i < old_roles->size(); ++i) {
+      EXPECT_EQ((*old_roles)[i].role, (*new_roles)[i].role);
+      EXPECT_EQ((*old_roles)[i].ne, (*new_roles)[i].ne);
+      EXPECT_EQ((*old_roles)[i].rank, (*new_roles)[i].rank);
+    }
+    const auto down_role = RoleIndex(*legacy->def, "down_scale");
+    ASSERT_TRUE(down_role);
+    EXPECT_TRUE(std::ranges::contains(*old_roles, *down_role, &RoleShape::role));
+    EXPECT_FALSE(std::ranges::contains(*partial_roles, *down_role, &RoleShape::role));
+
+    std::vector<format::TensorFormat> formats(legacy->def->roles.size());
+    RefIO inputs{.instance = &*legacy};
+    inputs.weights.resize(formats.size());
+    inputs.weight_shapes.resize(formats.size());
+    std::mt19937 rng(7319);
+    std::uniform_real_distribution<float> random(-0.2F, 0.2F);
+    for (const auto& role : *old_roles) {
+      const format::Shape shape{.ne = role.ne, .rank = role.rank};
+      formats[role.role] = ir::Dense(Encoding::kF32, shape);
+      inputs.weight_shapes[role.role] = shape;
+      inputs.weights[role.role].resize(ir::Elements(shape));
+      for (auto& value : inputs.weights[role.role]) value = random(rng);
+    }
+    // Distinct, non-unit values make every scale role observable.
+    float base = 0.4F;
+    for (const auto name : {"gate_scale", "up_scale", "down_scale"}) {
+      const auto role = RoleIndex(*legacy->def, name);
+      ASSERT_TRUE(role);
+      auto& values = inputs.weights[*role];
+      for (std::size_t i = 0; i < values.size(); ++i)
+        values[i] = base + 0.03F * static_cast<float>(i);
+      base += 0.7F;
+    }
+    for (const auto& step : RowSteps()) {
+      const auto old_graph = BuildComponent(*legacy, step.shape, formats, {});
+      const auto new_graph = BuildComponent(*individual, step.shape, formats, {});
+      const auto partial_graph = BuildComponent(*partial, step.shape, formats, {});
+      ASSERT_TRUE(old_graph && new_graph && partial_graph);
+      EXPECT_EQ(old_graph->step.graph.Digest(), new_graph->step.graph.Digest());
+      EXPECT_NE(old_graph->step.graph.Digest(), partial_graph->step.graph.Digest());
+      inputs.segments.clear();
+      std::uint64_t rows = 0;
+      for (const auto& segment : step.shape.segments) {
+        inputs.segments.push_back({.rows = segment.rows});
+        rows += segment.rows;
+      }
+      inputs.stream.resize(kWidth * rows);
+      for (auto& value : inputs.stream) value = random(rng);
+      auto old_result = inputs;
+      auto new_result = inputs;
+      auto partial_result = inputs;
+      new_result.instance = &*individual;
+      partial_result.instance = &*partial;
+      ASSERT_TRUE(legacy->def->reference(old_result));
+      ASSERT_TRUE(individual->def->reference(new_result));
+      ASSERT_TRUE(partial->def->reference(partial_result));
+      EXPECT_EQ(old_result.stream, new_result.stream);
+      EXPECT_NE(old_result.stream, partial_result.stream);
+    }
+  }
+}
+
 // ---------------------------------------------------------------- the n-gram embedding
 
 TEST(ComponentsQwen38Test, TheNgramRowsAreLlamaCppsHash) {

@@ -87,6 +87,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Align the Qwen ModelOpt MTP approval record with its equivalent individual
+  expert-scale declarations, preserving the selected head and source receipts.
+
 - Match drafter recipes against the resolved canonical target architecture, so
   source aliases remain compatible during import, admission, construction and
   calibration. Fresh drafter component artifacts record their canonical execution
