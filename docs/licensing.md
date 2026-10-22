@@ -1136,6 +1136,15 @@ weights remain user-supplied and outside project licensing scope per D-002;
 since 2026-09-28 (D-087) a weight license gates nothing in llmpalooza and is
 recorded for information only.
 
+## TileKernels Engram source-only audit
+
+The M3.5 audit pinned `deepseek-ai/TileKernels` at
+`c1cf914a82e6901c679445f872051ce44ac2cc63`, recorded its MIT source license
+and notice requirement, and documented sourced hash and gate formulas. No
+source was copied, and package dependencies were identified but not license
+audited. See the [TileKernels source audit](tilekernels-audit.md) for the
+revision-pinned links, fetched-file hashes and upstream gate-semantics caveat.
+
 ## Adoption gate and verification handoff
 
 Before selecting any of these units, record its exact upstream path/revision,

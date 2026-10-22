@@ -1229,10 +1229,10 @@ D-122).
         and its dependencies' (D-017), and whether its C++ core builds with
         `-fno-exceptions` (D-066) or needs an isolated unit; record the
         result in the source lock's notes or licensing.md;
-      - **TileKernels** (`deepseek-ai/TileKernels`, the Engram hash and
-        gate kernels V4.1 needs): pin a revision, record its license, and
-        write down the hash and gate formulas with their sources, so M4's
-        Engram component is not blocked on them.
+      - [x] **TileKernels** (`deepseek-ai/TileKernels`, the Engram hash and
+        gate kernels V4.1 needs): pinned its revision and license and recorded
+        the sourced formulas in [the source audit](tilekernels-audit.md); no
+        integration was done.
 - [ ] **NVFP4 scale compression (CSF) in the importer** (owner,
       2026-10-20), for [Qwen3.8 FP4-Local](m35-families.md#owner-requested-addition-qwen38-flash-next-fp4-local):
       Flare describes a lossless NVFP4 scale compression, CSF
