@@ -73,9 +73,18 @@ std::expected<void, Error> CreateImportDirectory(const fs::path& path, bool pare
   // entry may now exist but its parent still needs to be persisted.
   if (auto ok = sync(at.parent_path()); !ok) return ok;
   for (auto next = missing.rbegin(); next != missing.rend(); ++next) {
-    error.clear();
-    fs::create_directory(*next, error);
-    if (error) return Fail(Rule::kIo, "cannot create publication directory", kNoItem);
+    // The environment's umask may remove owner access, but must never expose
+    // a newly created directory. Do not change a path another creator supplied.
+    if (::mkdir(next->c_str(), 0700) == 0) {
+      if (::chmod(next->c_str(), 0700) != 0) {
+        (void)::rmdir(next->c_str());
+        return Fail(Rule::kIo, "cannot protect publication directory", kNoItem);
+      }
+    } else {
+      error.clear();
+      if (errno != EEXIST || !fs::is_directory(*next, error) || error)
+        return Fail(Rule::kIo, "cannot create publication directory", kNoItem);
+    }
     if (auto ok = sync(*next); !ok) return ok;
     if (auto ok = sync(next->parent_path()); !ok) return ok;
   }

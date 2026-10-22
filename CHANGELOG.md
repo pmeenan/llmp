@@ -90,6 +90,9 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Native artifact and composition publication creates private files (0600) and
+  directories (0700), preserving existing store and input permissions.
+
 - Adding or removing unrelated reports no longer rebuilds unchanged compiler
   inputs; current source ownership and generated-input checks remain enforced.
 

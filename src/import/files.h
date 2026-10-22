@@ -50,8 +50,9 @@ struct ParsedPrefix {
 };
 static_assert(sizeof(ParsedPrefix) == 40);
 
-// Publication directories: persist each new directory and its entry in its
-// parent before proceeding. With parents=false, never create a missing parent
+// Publication directories: create new directories with mode 0700, leaving
+// existing permissions unchanged. Persist each new directory and its entry in
+// its parent before proceeding. With parents=false, never create a missing parent
 // (in particular an archive root that disappeared after an unmount).
 std::expected<void, Error> CreateImportDirectory(const std::filesystem::path& path, bool parents);
 

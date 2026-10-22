@@ -95,9 +95,9 @@ void SweepOrphanedStagingJobs(const fs::path& staging) {
   }
 }
 std::expected<FD, Error> Create(const fs::path& path) {
-  FD file(::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0644));
+  FD file(::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600));
   if (!file.valid()) return Bad("cannot create an artifact staging file");
-  if (::fchmod(file.get(), 0644) != 0) return Bad("cannot set artifact file permissions");
+  if (::fchmod(file.get(), 0600) != 0) return Bad("cannot set artifact file permissions");
   return file;
 }
 std::expected<void, Error> Save(const fs::path& path, std::string_view text) {
@@ -749,21 +749,17 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   if (fs::is_symlink(status)) return Bad("artifact staging must not be a symlink");
   error.clear();
   if (auto ok = CreateImportDirectory(staging, false); !ok) return std::unexpected(ok.error());
-  if (::chmod(staging.c_str(), 0700) != 0) return Bad("cannot protect staging directory");
   auto lock = platform::LockFile::Acquire(staging / "native-import.lock");
   if (!lock) return Bad("another import owns this store or its lock cannot be opened");
   SweepOrphanedStagingJobs(staging);
   std::array<std::byte, 32> random{};
   if (!platform::FillRandom(random)) return Bad("cannot generate a private staging name");
   const fs::path job = staging / ("job-" + base::ToHex(base::Sha256().Update(random).Finish()));
-  if (!fs::create_directory(job, error) || error)
-    return Bad("cannot create private staging directory");
+  if (::mkdir(job.c_str(), 0700) != 0) return Bad("cannot create private staging directory");
   Cleanup cleanup{job};
   if (::chmod(job.c_str(), 0700) != 0) return Bad("cannot protect staging directory");
-  fs::create_directory(job / "data", error);
-  if (error) return Bad("cannot create shard directory");
-  fs::create_directory(job / "meta", error);
-  if (error) return Bad("cannot create metadata directory");
+  for (const auto& directory : {job / "data", job / "meta"})
+    if (auto ok = CreateImportDirectory(directory, false); !ok) return std::unexpected(ok.error());
   for (const auto& shard : layout->shards) {
     auto file = Create(job / shard.path);
     if (!file) return std::unexpected(file.error());
@@ -1109,8 +1105,6 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
     return Bad("the produced artifact does not bind its embedded spec", Rule::kConfig);
   if (auto ok = Deep(job, *opened); !ok) return std::unexpected(ok.error());
   for (const auto& directory : {job / "data", job / "meta", job}) {
-    if (::chmod(directory.c_str(), 0755) != 0)
-      return Bad("cannot set artifact directory permissions");
     if (auto ok = Sync(directory); !ok) return std::unexpected(ok.error());
   }
   const auto destination = options.store / id;
@@ -1276,20 +1270,18 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
   if (fs::is_symlink(status)) return Bad("composition staging must not be a symlink");
   error.clear();
   if (auto ok = CreateImportDirectory(staging, false); !ok) return std::unexpected(ok.error());
-  if (::chmod(staging.c_str(), 0700) != 0) return Bad("cannot protect staging directory");
   auto lock = platform::LockFile::Acquire(staging / "native-import.lock");
   if (!lock) return Bad("another import owns this store or its lock cannot be opened");
   SweepOrphanedStagingJobs(staging);
   std::array<std::byte, 32> random{};
   if (!platform::FillRandom(random)) return Bad("cannot generate a private staging name");
   const fs::path job = staging / ("job-" + base::ToHex(base::Sha256().Update(random).Finish()));
-  if (!fs::create_directory(job, error) || error)
-    return Bad("cannot create private staging directory");
+  if (::mkdir(job.c_str(), 0700) != 0) return Bad("cannot create private staging directory");
   Cleanup cleanup{job};
   if (::chmod(job.c_str(), 0700) != 0) return Bad("cannot protect staging directory");
   if (!options.files.empty()) {
-    fs::create_directory(job / "meta", error);
-    if (error) return Bad("cannot create metadata directory");
+    if (auto ok = CreateImportDirectory(job / "meta", false); !ok)
+      return std::unexpected(ok.error());
   }
 
   struct KeptFileEntry {
@@ -1319,8 +1311,6 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
     kept_entries.push_back({.name = name, .bytes = file.bytes, .sha256 = base::ToHex(*digest)});
   }
   for (const auto& directory : metadata_dirs) {
-    if (::chmod(directory.c_str(), 0755) != 0)
-      return Bad("cannot set metadata directory permissions");
     if (auto ok = Sync(directory); !ok) return std::unexpected(ok.error());
   }
   std::ranges::sort(kept_entries, {}, &KeptFileEntry::name);
@@ -1387,11 +1377,8 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
   }
 
   if (!options.files.empty()) {
-    if (::chmod((job / "meta").c_str(), 0755) != 0)
-      return Bad("cannot set metadata directory permissions");
     if (auto ok = Sync(job / "meta"); !ok) return std::unexpected(ok.error());
   }
-  if (::chmod(job.c_str(), 0755) != 0) return Bad("cannot set composition directory permissions");
   if (auto ok = Sync(job); !ok) return std::unexpected(ok.error());
 
   const auto destination = options.store / id;

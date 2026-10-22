@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include <gtest/gtest.h>
+#include <sys/stat.h>
 
 #include <algorithm>
 #include <array>
@@ -2085,41 +2086,136 @@ TEST_F(ImportDrafterWriterTest, AChangedListOrMisfitTokenMapCannotPublish) {
   }
 }
 
-TEST_F(ImportWriterTest, StorePermissionsAndOrphanedStagingJobsCleanup) {
-  auto plan = Plan(false);
+void ExpectMode(const std::filesystem::path& path, unsigned mode) {
+  std::error_code error;
+  const auto status = std::filesystem::status(path, error);
+  ASSERT_FALSE(error) << path << ": " << error.message();
+  EXPECT_EQ(static_cast<unsigned>(status.permissions() & std::filesystem::perms::mask), mode)
+      << path;
+}
+void ExpectPrivateTree(const std::filesystem::path& path) {
+  ExpectMode(path, 0700);
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(path))
+    ExpectMode(entry.path(), entry.is_directory() ? 0700 : 0600);
+}
+std::map<std::filesystem::path, unsigned> MakeExistingTreePublic(
+    const std::filesystem::path& path) {
+  std::map<std::filesystem::path, unsigned> modes{{path, 0755}};
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(path))
+    modes.emplace(entry.path(), entry.is_directory() ? 0755 : 0644);
+  for (const auto& [name, mode] : modes) EXPECT_EQ(::chmod(name.c_str(), mode), 0);
+  return modes;
+}
+
+TEST_F(ImportWriterTest, PublicationIsPrivateAndPreservesExistingModes) {
+  auto plan = Plan();
   ASSERT_TRUE(plan);
-  auto result = WriteArtifact(*plan, Options());
-  ASSERT_TRUE(result);
+  std::string identity;
+  // Both extremes: never expose files under a permissive umask, and restore
+  // owner access only on our newly created paths under a restrictive one.
+  for (const mode_t mask : {mode_t{0000}, mode_t{0777}}) {
+    const auto options =
+        Options(mask == 0 ? "permissive/nested/store" : "restrictive/nested/store");
+    const auto previous = ::umask(mask);
+    auto written = WriteArtifact(*plan, options);
+    (void)::umask(previous);
+    ASSERT_TRUE(written) << test_support::Failed(written, &Error::ToString).value_or("");
+    EXPECT_FALSE(written->reused);
+    if (identity.empty()) identity = written->id;
+    EXPECT_EQ(written->id, identity);
+    ExpectPrivateTree(options.store.parent_path().parent_path());
+    auto opened = artifact::Artifact::Open(written->path, {.expected_id = identity});
+    ASSERT_TRUE(opened);
+    auto stored = spec::StoredSpec(*opened);
+    ASSERT_TRUE(stored);
+    EXPECT_EQ(*stored, plan->spec());
+  }
+  ExpectMode(dir_, 0750);
+  ExpectMode(dir_ / "source/model.gguf", 0644);
 
-  std::error_code ec;
-  auto dest_status = std::filesystem::status(result->path, ec);
-  ASSERT_FALSE(ec);
-  EXPECT_EQ(static_cast<unsigned>(dest_status.permissions() & std::filesystem::perms::mask), 0755U);
+  const auto options = Options("permissive/nested/store");
+  const auto modes = MakeExistingTreePublic(options.store);
+  const auto previous = ::umask(0000);
+  auto reused = WriteArtifact(*plan, options);  // includes full existing-payload verification
+  (void)::umask(previous);
+  ASSERT_TRUE(reused);
+  EXPECT_TRUE(reused->reused);
+  EXPECT_EQ(reused->id, identity);
+  for (const auto& [path, mode] : modes) ExpectMode(path, mode);
 
-  auto data_status = std::filesystem::status(result->path / "data", ec);
-  ASSERT_FALSE(ec);
-  EXPECT_EQ(static_cast<unsigned>(data_status.permissions() & std::filesystem::perms::mask), 0755U);
-
-  auto meta_status = std::filesystem::status(result->path / "meta", ec);
-  ASSERT_FALSE(ec);
-  EXPECT_EQ(static_cast<unsigned>(meta_status.permissions() & std::filesystem::perms::mask), 0755U);
-
-  auto manifest_status = std::filesystem::status(result->path / "manifest.json", ec);
-  ASSERT_FALSE(ec);
-  EXPECT_EQ(static_cast<unsigned>(manifest_status.permissions() & std::filesystem::perms::mask),
-            0644U);
-
-  const auto staging = dir_ / "store" / ".staging";
+  const auto staging = options.store / ".staging";
   const auto orphan = staging / "job-orphan123";
-  std::filesystem::create_directory(orphan, ec);
-  ASSERT_FALSE(ec);
-  EXPECT_TRUE(std::filesystem::exists(orphan));
-
-  auto plan2 = Plan(true);
-  ASSERT_TRUE(plan2);
-  auto result2 = WriteArtifact(*plan2, Options());
-  ASSERT_TRUE(result2);
+  ASSERT_TRUE(std::filesystem::create_directory(orphan));
+  auto other_plan = Plan(true);
+  ASSERT_TRUE(other_plan);
+  auto other = WriteArtifact(*other_plan, options);
+  ASSERT_TRUE(other);
   EXPECT_FALSE(std::filesystem::exists(orphan));
+  ExpectPrivateTree(other->path);
+  for (const auto& [path, mode] : modes) ExpectMode(path, mode);
+
+  auto invalid = options;
+  const std::array<std::optional<base::Sha256Digest>, 1> wrong{base::Sha256Digest{}};
+  invalid.expected = wrong;
+  EXPECT_FALSE(WriteArtifact(*other_plan, invalid));
+  for (const auto& entry : std::filesystem::directory_iterator(staging))
+    EXPECT_EQ(entry.path().filename(), "native-import.lock");
+}
+
+TEST_F(ImportWriterTest, CompositionIsPrivateAndPreservesExistingModes) {
+  auto plan = Plan();
+  ASSERT_TRUE(plan);
+  auto component = WriteArtifact(*plan, Options("components"));
+  ASSERT_TRUE(component);
+  const auto metadata = dir_ / "source/config.json";
+  Write(metadata, "{\"fixture\":true}");
+  auto source = OpenCheckpointFile(metadata, 0);
+  ASSERT_TRUE(source);
+  CompositionWriteOptions options{
+      .store = {},
+      .build = "test",
+      .architecture = "fixture",
+      .components = {{.role = "target", .artifact = component->id, .architecture = "Gemma2"}},
+      .files = {{.name = "tokenizer/config.json",
+                 .path = metadata,
+                 .bytes = source->bytes,
+                 .device = source->device,
+                 .inode = source->inode}},
+      .spec = plan->spec()};
+  std::string identity;
+  for (const mode_t mask : {mode_t{0000}, mode_t{0777}}) {
+    options.store = dir_ / (mask == 0 ? "permissive/nested/store" : "restrictive/nested/store");
+    const auto previous = ::umask(mask);
+    auto written = WriteComposition(options);
+    (void)::umask(previous);
+    ASSERT_TRUE(written) << test_support::Failed(written, &Error::ToString).value_or("");
+    EXPECT_FALSE(written->reused);
+    if (identity.empty()) identity = written->id;
+    EXPECT_EQ(written->id, identity);
+    ExpectPrivateTree(options.store.parent_path().parent_path());
+    auto opened = artifact::OpenComposition(written->path, identity);
+    ASSERT_TRUE(opened);
+    EXPECT_EQ(opened->Metadata("tokenizer/config.json"), "{\"fixture\":true}");
+    ASSERT_TRUE(opened->spec_json());
+    EXPECT_EQ(*opened->spec_json(), spec::ToJson(plan->spec()));
+  }
+  ExpectMode(dir_, 0750);
+  ExpectMode(metadata, 0644);
+  options.store = dir_ / "permissive/nested/store";
+  const auto modes = MakeExistingTreePublic(options.store);
+  const auto previous = ::umask(0000);
+  auto reused = WriteComposition(options);
+  (void)::umask(previous);
+  ASSERT_TRUE(reused);
+  EXPECT_TRUE(reused->reused);
+  EXPECT_EQ(reused->id, identity);
+  for (const auto& [path, mode] : modes) ExpectMode(path, mode);
+
+  const std::array<std::optional<base::Sha256Digest>, 1> wrong{base::Sha256Digest{}};
+  options.expected = wrong;
+  EXPECT_FALSE(WriteComposition(options));
+  for (const auto& entry : std::filesystem::directory_iterator(options.store / ".staging"))
+    EXPECT_EQ(entry.path().filename(), "native-import.lock");
 }
 
 }  // namespace
