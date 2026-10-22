@@ -53,6 +53,13 @@ before both sampling and speculative acceptance. Original native rows are
 validated first, so masks cannot hide NaN or positive infinity; negative
 infinity remains legal padding. Names are constrained on
 subsequent calls too; no argument payload is copied per vocabulary candidate.
+Actual stop IDs are also masked while a call is open or a required call has
+not completed, with the same check in selection and speculative acceptance.
+An ordinary auto-mode answer can still end normally. Exact grammar markers
+declared as continued route stops bypass legacy route-only stopping; model/EOS
+stops and client stop strings retain their own meaning.
+Speculative judging ends at the first accepted natural terminator, before
+later verified rows could reopen or reject the already completed tool stream.
 
 The [canonical span planner](tokenizer.md) finds an exact cover before the selecting token is
 published. Proven stable IDs run with that selecting anchor in one common
@@ -102,6 +109,21 @@ trimmed at each side where declared. Unknown names survive auto mode. See
 and [the project assessment](flare-assessment.md#5-tool-calls-and-the-messages-profile).
 No upstream parser implementation is copied; the shared interpreter implements
 the format descriptions above.
+
+Qwen's declaration also accepts `<parameter name="…">` headers and an
+`</invoke>` call close at structural boundaries, alongside the canonical
+rendered `<parameter=…>` and `</function>` spellings. These aliases are read
+only before a parameter or after an explicit `</parameter>`; their text inside
+an open raw value remains literal, and quoted JSON stays opaque. Undeclared
+boundaries and malformed closed arguments still fail. A native mixed-encoding
+Mia artifact (`7175c03c…`) produced this unambiguous alternate spelling in its
+first named-tool diagnostic. The original request failed with an incomplete
+call at natural completion; recovered persisted history identified the variant.
+The parser and terminal fixes pass deterministic controls and a fresh plain
+native named-tool/result transaction on the same weights. Sampled MTP
+qualification stopped at target/drafter architecture admission before inference;
+that separate finding remains open. The original failures remain recorded in
+[the diagnostic results](experiments/m35-tools/RESULTS.md).
 
 ## Route ownership and response contract
 

@@ -341,11 +341,55 @@ bool StructuredValue(Text body, int syntax) {
          (((syntax & 2) != 0 && body.front() == '{') || ((syntax & 4) != 0 && body.front() == '['));
 }
 
+struct TaggedBoundary {
+  std::size_t at, bytes;
+};
+struct ParameterHeader {
+  std::string_view begin, name_end;
+};
 template <class Text>
-std::optional<std::size_t> TaggedEnd(Text body, const ToolCallFormat& format,
-                                     const ToolRequest& request, DelimiterScan& scan,
-                                     unsigned& phase, int& json, std::size_t& call_name_end,
-                                     std::size_t& header_search) {
+std::string_view CallEnd(Text rest, const ToolCallFormat& format) {
+  if (rest.starts_with(format.call_end)) return format.call_end;
+  for (const auto& alias : format.call_end_aliases)
+    if (rest.starts_with(alias)) return alias;
+  return {};
+}
+template <class Text>
+std::optional<TaggedBoundary> FindCallEnd(Text body, std::size_t from,
+                                          const ToolCallFormat& format) {
+  const auto canonical = body.find(format.call_end, from);
+  std::optional<TaggedBoundary> found;
+  if (canonical != std::string_view::npos)
+    found = TaggedBoundary{canonical, format.call_end.size()};
+  for (const auto& alias : format.call_end_aliases) {
+    const auto at = body.find(alias, from);
+    if (at != std::string_view::npos && (!found || at < found->at))
+      found = TaggedBoundary{at, alias.size()};
+  }
+  return found;
+}
+template <class Text>
+ParameterHeader Header(Text rest, const ToolCallFormat& format) {
+  if (rest.starts_with(format.parameter_begin))
+    return {format.parameter_begin, format.parameter_name_end};
+  for (const auto& alias : format.parameter_aliases)
+    if (rest.starts_with(alias.begin)) return {alias.begin, alias.name_end};
+  return {};
+}
+template <class Text>
+bool PartialTaggedBoundary(Text rest, const ToolCallFormat& format) {
+  if (PrefixOf(rest, format.call_end) || PrefixOf(rest, format.parameter_begin)) return true;
+  for (const auto& alias : format.call_end_aliases)
+    if (PrefixOf(rest, alias)) return true;
+  for (const auto& alias : format.parameter_aliases)
+    if (PrefixOf(rest, alias.begin)) return true;
+  return false;
+}
+template <class Text>
+std::optional<TaggedBoundary> TaggedEnd(Text body, const ToolCallFormat& format,
+                                        const ToolRequest& request, DelimiterScan& scan,
+                                        unsigned& phase, int& json, std::size_t& call_name_end,
+                                        std::size_t& header_search) {
   if (phase == 0) {
     call_name_end = body.find(format.name_end, scan.at);
     if (call_name_end == std::string_view::npos) {
@@ -361,23 +405,22 @@ std::optional<std::size_t> TaggedEnd(Text body, const ToolCallFormat& format,
     if (phase == 1) {
       while (scan.at < body.size() && Space(body[scan.at])) ++scan.at;
       const auto rest = body.substr(scan.at);
-      if (rest.starts_with(format.call_end)) return scan.at;
-      if (PrefixOf(rest, format.call_end) || PrefixOf(rest, format.parameter_begin)) return {};
-      if (!rest.starts_with(format.parameter_begin)) {
-        const auto end = body.find(format.call_end, scan.at);
-        return end == std::string_view::npos ? std::nullopt : std::optional(end);
-      }
-      const auto name_at = scan.at + format.parameter_begin.size();
-      const auto end = body.find(format.parameter_name_end, std::max(name_at, header_search));
+      if (const auto end = CallEnd(rest, format); !end.empty())
+        return TaggedBoundary{scan.at, end.size()};
+      if (PartialTaggedBoundary(rest, format)) return {};
+      const auto header = Header(rest, format);
+      if (header.begin.empty()) return FindCallEnd(body, scan.at, format);
+      const auto name_at = scan.at + header.begin.size();
+      const auto end = body.find(header.name_end, std::max(name_at, header_search));
       if (end == std::string_view::npos) {
-        header_search = body.size() >= format.parameter_name_end.size()
-                            ? body.size() - format.parameter_name_end.size() + 1
+        header_search = body.size() >= header.name_end.size()
+                            ? body.size() - header.name_end.size() + 1
                             : name_at;
         return {};
       }
       header_search = end;
       const auto name = body.substr(name_at, end - name_at);
-      auto value_at = end + format.parameter_name_end.size();
+      auto value_at = end + header.name_end.size();
       std::optional<bool> string;
       if (!format.string_suffix.empty()) {
         const auto suffix = body.substr(value_at);
@@ -389,10 +432,8 @@ std::optional<std::size_t> TaggedEnd(Text body, const ToolCallFormat& format,
           value_at += format.json_suffix.size();
         } else if (PrefixOf(suffix, format.string_suffix) || PrefixOf(suffix, format.json_suffix))
           return {};
-        else {
-          const auto closing = body.find(format.call_end, value_at);
-          return closing == std::string_view::npos ? std::nullopt : std::optional(closing);
-        }
+        else
+          return FindCallEnd(body, value_at, format);
       }
       json = ParameterSyntax(
           request.Parameter(static_cast<std::string>(call_name), static_cast<std::string>(name)),
@@ -410,7 +451,8 @@ std::optional<std::size_t> TaggedEnd(Text body, const ToolCallFormat& format,
     const auto end = Outside(body, format.call_end, "\"", scan, format.parameter_begin,
                              format.parameter_end, json == 1);
     if (!end) return {};
-    if (body.substr(*end).starts_with(format.call_end)) return end;
+    if (body.substr(*end).starts_with(format.call_end))
+      return TaggedBoundary{*end, format.call_end.size()};
     if (body.substr(*end).starts_with(format.parameter_end)) scan.at += format.parameter_end.size();
     phase = 1;
   }
@@ -548,14 +590,14 @@ std::expected<ParsedCall, std::string> ParseCall(std::string_view body,
       call.arguments = "{";
       bool first = true;
       while (!(body = Strip(body)).empty()) {
-        if (!body.starts_with(format.parameter_begin))
-          return Bad("invalid tool parameter boundary");
-        body.remove_prefix(format.parameter_begin.size());
-        const auto name_end = body.find(format.parameter_name_end);
+        const auto header = Header(body, format);
+        if (header.begin.empty()) return Bad("invalid tool parameter boundary");
+        body.remove_prefix(header.begin.size());
+        const auto name_end = body.find(header.name_end);
         if (name_end == std::string_view::npos) return Bad("tool parameter has no name boundary");
         const auto name = body.substr(0, name_end);
         if (name.empty()) return Bad("tool parameter name is empty");
-        body.remove_prefix(name_end + format.parameter_name_end.size());
+        body.remove_prefix(name_end + header.name_end.size());
         std::optional<bool> string;
         if (!format.string_suffix.empty()) {
           if (body.starts_with(format.string_suffix)) {
@@ -628,6 +670,26 @@ std::optional<std::size_t> ToolOutputBytes(const ToolCallFormat& format,
         __builtin_add_overflow(total, owned, &total))
       return {};
   }
+  const auto add_string = [&](const std::string& field) {
+    std::size_t owned = 0;
+    return !__builtin_mul_overflow(field.size(), std::size_t{2}, &owned) &&
+           !__builtin_add_overflow(total, owned, &total);
+  };
+  std::size_t entries = 0;
+  if (__builtin_add_overflow(format.call_end_aliases.size(), format.continued_route_stops.size(),
+                             &entries) ||
+      __builtin_mul_overflow(entries, 2 * sizeof(std::string), &entries) ||
+      __builtin_add_overflow(total, entries, &total) ||
+      __builtin_mul_overflow(format.parameter_aliases.size(), 2 * sizeof(ToolParameterHeader),
+                             &entries) ||
+      __builtin_add_overflow(total, entries, &total))
+    return {};
+  for (const auto& alias : format.call_end_aliases)
+    if (!add_string(alias)) return {};
+  for (const auto& alias : format.parameter_aliases)
+    if (!add_string(alias.begin) || !add_string(alias.name_end)) return {};
+  for (const auto& marker : format.continued_route_stops)
+    if (!add_string(marker)) return {};
   return total;
 }
 std::optional<std::size_t> ToolRequestBytes(std::span<const ToolDefinition> definitions) {
@@ -785,7 +847,9 @@ const ToolCallFormat& QwenToolCalls() {
                                      .trim_wrapping_newline = true,
                                      .opener_ends_reasoning = true,
                                      .reasoning_end = "</think>",
-                                     .reasoning_begin = "<think>"};
+                                     .reasoning_begin = "<think>",
+                                     .call_end_aliases = {"</invoke>"},
+                                     .parameter_aliases = {{"<parameter name=\"", "\">"}}};
   return format;
 }
 const ToolCallFormat& DsmlToolCalls() {
@@ -812,7 +876,8 @@ const ToolCallFormat& GemmaToolCalls() {
                                      .reasoning_end = "<channel|>",
                                      .reasoning_begin = "<|channel>thought\n",
                                      .quote = "<|\"|>",
-                                     .null_word = "None"};
+                                     .null_word = "None",
+                                     .continued_route_stops = {"<|tool_call>"}};
   return format;
 }
 const ToolCallFormat& JsonToolCalls() {
@@ -854,6 +919,46 @@ ToolInterpreter::ToolInterpreter(ToolCallFormat format, ToolRequest request, j::
        (format_.parameter_begin.empty() || format_.parameter_name_end.empty() ||
         format_.parameter_end.empty())))
     error_ = "incomplete tool format declaration";
+  const auto overlaps = [](std::string_view a, std::string_view b) {
+    return a.starts_with(b) || b.starts_with(a);
+  };
+  if ((!format_.call_end_aliases.empty() || !format_.parameter_aliases.empty()) &&
+      format_.arguments != ToolArguments::kTaggedParameters)
+    error_ = "tagged aliases require tagged parameters";
+  for (std::size_t i = 0; i < format_.call_end_aliases.size(); ++i) {
+    const auto& alias = format_.call_end_aliases[i];
+    if (alias.empty() || overlaps(alias, format_.call_end) ||
+        overlaps(alias, format_.parameter_begin))
+      error_ = "ambiguous tagged boundary alias";
+    for (std::size_t previous = 0; previous < i; ++previous)
+      if (overlaps(alias, format_.call_end_aliases[previous]))
+        error_ = "ambiguous tagged boundary alias";
+    for (const auto& header : format_.parameter_aliases)
+      if (overlaps(alias, header.begin)) error_ = "ambiguous tagged boundary alias";
+  }
+  for (std::size_t i = 0; i < format_.parameter_aliases.size(); ++i) {
+    const auto& alias = format_.parameter_aliases[i];
+    if (alias.begin.empty() || alias.name_end.empty() ||
+        overlaps(alias.begin, format_.parameter_begin) || overlaps(alias.begin, format_.call_end))
+      error_ = "ambiguous tagged boundary alias";
+    for (std::size_t previous = 0; previous < i; ++previous)
+      if (overlaps(alias.begin, format_.parameter_aliases[previous].begin))
+        error_ = "ambiguous tagged boundary alias";
+  }
+  for (const auto& marker : format_.continued_route_stops)
+    if (marker.empty()) error_ = "empty continued route stop";
+}
+bool ToolInterpreter::CanStop() const {
+  if (error_ || ended_ || (in_block_ && block_calls_ == calls_)) return false;
+  if (in_call_) {
+    if (!format_.bare_envelope || request_.choice().kind != ToolChoiceKind::kAuto) return false;
+    // The same ordinary-answer fallback as Finish: an unmatched JSON opener
+    // without an authenticated call name/argument pair is still answer text.
+    const auto info = Envelope(JoinedText(pending_), format_, request_);
+    if ((info.name && info.arguments) || info.allowed) return false;
+  }
+  return calls_ != 0 || (request_.choice().kind != ToolChoiceKind::kRequired &&
+                         request_.choice().kind != ToolChoiceKind::kNamed);
 }
 bool ToolInterpreter::Allows(std::string_view candidate) const {
   if (error_ || ended_ || candidate.size() > limits_.max_bytes - received_) return false;
@@ -879,21 +984,22 @@ bool ToolInterpreter::Allows(std::string_view candidate) const {
           if (!request_.NamePrefix(header, format_.name_end)) return false;
         }
       }
-      const auto end =
-          format_.arguments == ToolArguments::kTaggedParameters
-              ? TaggedEnd(pending, format_, request_, scan, phase, json, name_end, search)
-              : Outside(pending, format_.call_end, format_.quote, scan);
+      std::optional<TaggedBoundary> end;
+      if (format_.arguments == ToolArguments::kTaggedParameters)
+        end = TaggedEnd(pending, format_, request_, scan, phase, json, name_end, search);
+      else if (const auto at = Outside(pending, format_.call_end, format_.quote, scan))
+        end = TaggedBoundary{*at, format_.call_end.size()};
       if (!end) return true;
       bool is_call = true;
       if (format_.bare_envelope) {
-        const auto info = Envelope(pending.substr(0, *end), format_, request_);
+        const auto info = Envelope(pending.substr(0, end->at), format_, request_);
         is_call = info.name && info.arguments;
         const auto kind = request_.choice().kind;
         if ((kind == ToolChoiceKind::kRequired || kind == ToolChoiceKind::kNamed) &&
             (!info.name || !info.arguments || !info.allowed))
           return false;
       }
-      pending.remove_prefix(*end + format_.call_end.size());
+      pending.remove_prefix(end->at + end->bytes);
       in_call = false;
       if (is_call) {
         if (!request_.parallel() && calls != 0) return false;
@@ -969,21 +1075,24 @@ ToolStatus ToolInterpreter::Drain(bool final, const Sink& sink) {
     if (in_call_) {
       // State retained across Push calls; only the final candidate is parsed.
       DelimiterScan scan{scan_at_, std::move(scan_nesting_), scan_quoted_, scan_escaped_};
-      auto end = format_.arguments == ToolArguments::kTaggedParameters
-                     ? TaggedEnd(std::string_view(pending_), format_, request_, scan, tag_phase_,
-                                 tag_json_, tag_name_end_, tag_header_search_)
-                     : Outside(std::string_view(pending_), format_.call_end, format_.quote, scan);
+      std::optional<TaggedBoundary> end;
+      if (format_.arguments == ToolArguments::kTaggedParameters)
+        end = TaggedEnd(std::string_view(pending_), format_, request_, scan, tag_phase_, tag_json_,
+                        tag_name_end_, tag_header_search_);
+      else if (const auto at =
+                   Outside(std::string_view(pending_), format_.call_end, format_.quote, scan))
+        end = TaggedBoundary{*at, format_.call_end.size()};
       scan_at_ = scan.at;
       scan_nesting_ = std::move(scan.nesting);
       scan_quoted_ = scan.quoted;
       scan_escaped_ = scan.escaped;
       if (!end) return {};
       if (format_.bare_envelope && request_.choice().kind == ToolChoiceKind::kAuto) {
-        const auto body = std::string_view(pending_).substr(0, *end);
+        const auto body = std::string_view(pending_).substr(0, end->at);
         const auto info = Envelope(JoinedText(body), format_, request_);
         if (!info.name || !info.arguments) {
           auto text = format_.call_begin + std::string(body) + format_.call_end;
-          pending_.erase(0, *end + format_.call_end.size());
+          pending_.erase(0, end->at + end->bytes);
           in_call_ = false;
           scan_at_ = 0;
           scan_nesting_.clear();
@@ -994,7 +1103,7 @@ ToolStatus ToolInterpreter::Drain(bool final, const Sink& sink) {
         }
       }
       auto call = syntax_only_ ? std::expected<ParsedCall, std::string>(ParsedCall{})
-                               : ParseCall(std::string_view(pending_).substr(0, *end), format_,
+                               : ParseCall(std::string_view(pending_).substr(0, end->at), format_,
                                            request_, limits_);
       if (!call) return Fail(call.error());
       const auto kind = request_.choice().kind;
@@ -1004,7 +1113,7 @@ ToolStatus ToolInterpreter::Drain(bool final, const Sink& sink) {
         return Fail("generated tool name violates tool choice");
       if (!request_.parallel() && calls_ != 0) return Fail("parallel tool calls are disabled");
       ++calls_;
-      pending_.erase(0, *end + format_.call_end.size());
+      pending_.erase(0, end->at + end->bytes);
       in_call_ = false;
       scan_at_ = 0;
       scan_nesting_.clear();

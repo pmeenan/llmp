@@ -548,7 +548,13 @@ en::DecodingPolicy Llm::Policy() {
             if (auto accepted = tentative->Accept(verified[m + 1]); !accepted)
               return Error(accepted.error());
           }
-          token = -1;
+          // Stop at the first accepted natural terminator. Later verified rows
+          // are paid native work, but do not extend this generation's lexical
+          // cursor or get sampled after its already accepted end.
+          const auto* session = (*branch)->generation_session_;
+          token = session && session->IsStop(verified[m + 1], tentative ? &*tentative : nullptr)
+                      ? verified[m + 1]
+                      : -1;
         }
       } else {
         auto chosen = Choose(**branch, *row, position, tentative ? &*tentative : nullptr);

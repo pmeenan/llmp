@@ -87,6 +87,9 @@ class ToolRequest {
 };
 
 enum class ToolArguments { kJsonEnvelope, kTaggedParameters, kObjectNotation };
+struct ToolParameterHeader {
+  std::string begin, name_end;
+};
 struct ToolCallFormat {
   std::string block_begin = {}, block_end = {};  // optional wrappers; inner calls stand alone
   std::string call_begin = {}, call_end = {};
@@ -108,6 +111,13 @@ struct ToolCallFormat {
   // Object notation: strings use this delimiter; keys may be bare. null_word
   // accepts a template's spelling in addition to JSON null.
   std::string quote = "\"", null_word = "null";
+  // Alternate tagged spellings are recognized only between parameters. They
+  // never add delimiters inside an open raw value or change the rendered form.
+  std::vector<std::string> call_end_aliases = {};
+  std::vector<ToolParameterHeader> parameter_aliases = {};
+  // Exact route-only stop spellings consumed by this tool protocol. Actual
+  // model/EOS stops still end generation; arbitrary substrings do not qualify.
+  std::vector<std::string> continued_route_stops = {};
 };
 
 // Declarations from the checked-in renderers and pinned templates, shared by
@@ -157,6 +167,7 @@ class ToolInterpreter {
   void SyntaxOnly() { syntax_only_ = true; }
   void Reasoning(bool active) { reasoning_active_ = active; }
   bool reasoning() const { return reasoning_active_; }
+  bool CanStop() const;
   std::optional<std::string_view> error() const {
     return error_ ? std::optional<std::string_view>(*error_) : std::nullopt;
   }

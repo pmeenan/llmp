@@ -1805,6 +1805,158 @@ TEST_F(LlmTools, PlainKnownOpeningRunsWithItsSelectingAnchorInOneCausalUnit) {
   EXPECT_TRUE(multirow);
 }
 
+class LlmToolRouteStops : public LlmScores,
+                          public testing::WithParamInterface<std::tuple<bool, bool>> {};
+TEST_P(LlmToolRouteStops, ExactGrammarRouteStopContinuesThroughCommonGeneration) {
+  const auto [speculative, reasoning] = GetParam();
+  score_width_ = 262;
+  StartScores(speculative, 1, 256, 32);
+  auto spec = ByteTokenizerSpec();
+  spec.tokens.emplace_back("<|tool_call>");
+  spec.kinds.push_back(llmp::tokenizer::TokenKind::kControl);
+  spec.tokens.emplace_back("<tool_call|>");
+  spec.kinds.push_back(llmp::tokenizer::TokenKind::kControl);
+  spec.tokens.emplace_back("<channel|>");
+  spec.kinds.push_back(llmp::tokenizer::TokenKind::kControl);
+  auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(tokenizer);
+  ASSERT_TRUE(
+      rt::LlmTestAccess::UseChat(*llm_, std::move(*tokenizer), "{{ messages[0].content }}"));
+  rt::LlmTestAccess::Stops(*llm_, {258});
+  std::vector<std::int32_t> script;
+  if (reasoning) script = {'r', 261};
+  script.push_back(259);
+  for (const char ch : std::string("call:lookup{}")) script.push_back(ch);
+  script.push_back(260);
+  script.push_back(258);
+  source_->options().transform_logits = [script](pl::Phase, std::int32_t, std::int32_t position,
+                                                 std::span<float> row) {
+    std::ranges::fill(row, -std::numeric_limits<float>::infinity());
+    const auto at = std::min(static_cast<std::size_t>(position), script.size() - 1);
+    row[static_cast<std::size_t>(script[at])] = 10;
+    // A genuine EOS is always preferred, but cannot end an open required call.
+    row[258] = 20;
+  };
+  source_->options().transform_native_token = [script](pl::Phase phase, std::int32_t,
+                                                       std::int32_t position,
+                                                       std::int32_t selected) -> std::int32_t {
+    if (phase != pl::Phase::kDraft) return selected;
+    return script[std::min(static_cast<std::size_t>(position), script.size() - 1)];
+  };
+  const std::array<llmp::chat::ToolDefinition, 1> definitions{
+      {{.name = "lookup", .description = {}}}};
+  auto request = llmp::chat::ToolRequest::Create(
+      definitions, {llmp::chat::ToolChoiceKind::kNamed, "lookup"}, true, {});
+  ASSERT_TRUE(request);
+  const std::array<std::int32_t, 1> stops{258}, route{259};
+  auto constraint = std::make_shared<llmp::chat::ToolSampling>(
+      llm_->tokenizer(), llmp::chat::GemmaToolCalls(), std::move(*request),
+      llmp::base::json::Limits{}, reasoning, stops, route);
+  std::vector<float> last;
+  ASSERT_TRUE(BranchAt(0).Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 128;
+  options.tool_sampling = constraint;
+  options.extra_stops = route;
+  if (speculative)
+    options.sampling =
+        llmp::execution::SamplingParams{.temperature = 1, .top_k = 1, .top_p = 1, .min_p = 0};
+  std::vector<std::int32_t> visible;
+  options.on_tokens = [&](auto fresh) {
+    visible.insert(visible.end(), fresh.begin(), fresh.end());
+    return true;
+  };
+  rt::Generation generated;
+  ASSERT_TRUE(BranchAt(0).Generate(last, options, generated));
+  EXPECT_TRUE(generated.stopped);
+  EXPECT_EQ(generated.tokens, script);
+  script.pop_back();
+  EXPECT_EQ(visible, script);
+  std::vector<std::int32_t> state{'x'};
+  state.insert(state.end(), script.begin(), script.end());
+  EXPECT_EQ(BranchAt(0).history(), state);
+  EXPECT_EQ(State(0), state);
+  EXPECT_FALSE(llm_->runner().slots().owed(0));
+  if (speculative) EXPECT_GT(llm_->counts().speculative_units, 0U);
+}
+INSTANTIATE_TEST_SUITE_P(PlainAndSampledSpeculative, LlmToolRouteStops,
+                         testing::Combine(testing::Bool(), testing::Bool()));
+
+TEST_F(LlmTools, AcceptedSpeculativeEosEndsJudgingBeforeAnUnpublishedToolOpener) {
+  (void)Constraint(true);
+  // A one-byte declared opener makes the post-stop lexical transition
+  // unambiguous without adding another canonical segmentation of the prefix.
+  auto format = llmp::chat::GemmaToolCalls();
+  format.call_begin = "[";
+  format.call_end = "]";
+  format.continued_route_stops.clear();
+  const std::array<llmp::chat::ToolDefinition, 1> definitions{
+      {{.name = "lookup", .description = {}}}};
+  auto request = llmp::chat::ToolRequest::Create(
+      definitions, {llmp::chat::ToolChoiceKind::kNamed, "lookup"}, true, {});
+  ASSERT_TRUE(request);
+  const std::array<std::int32_t, 1> stops{258};
+  auto constraint = std::make_shared<llmp::chat::ToolSampling>(
+      llm_->tokenizer(), format, std::move(*request), llmp::base::json::Limits{}, false, stops);
+  rt::LlmTestAccess::Stops(*llm_, {258});
+  std::vector<std::int32_t> script;
+  // Four padding bytes align ']' as the next verify anchor at depth two;
+  // its draft proposals are then EOS and the next '[' in the same unit.
+  for (const char ch : std::string("[lookup{}    ]")) script.push_back(ch);
+  script.push_back(258);
+  const auto expected = script;
+  script.push_back('[');  // accepted draft after EOS would reopen the parser
+  script.push_back(258);  // only finite candidate while that call is incomplete
+  source_->options().transform_logits = [script](pl::Phase, std::int32_t, std::int32_t position,
+                                                 std::span<float> row) {
+    std::ranges::fill(row, -std::numeric_limits<float>::infinity());
+    const auto at = std::min(static_cast<std::size_t>(position), script.size() - 1);
+    row[static_cast<std::size_t>(script[at])] = 10;
+  };
+  source_->options().transform_native_token = [script](pl::Phase phase, std::int32_t,
+                                                       std::int32_t position,
+                                                       std::int32_t selected) -> std::int32_t {
+    if (phase != pl::Phase::kDraft) return selected;
+    return script[std::min(static_cast<std::size_t>(position), script.size() - 1)];
+  };
+  std::vector<float> last;
+  ASSERT_TRUE(BranchAt(0).Prefill(std::array<std::int32_t, 1>{'x'}, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 64;
+  options.tool_sampling = constraint;
+  options.keep_logits = true;
+  options.sampling =
+      llmp::execution::SamplingParams{.temperature = 1, .top_k = 1, .top_p = 1, .min_p = 0};
+  std::vector<std::int32_t> visible;
+  options.on_tokens = [&](auto fresh) {
+    visible.insert(visible.end(), fresh.begin(), fresh.end());
+    return true;
+  };
+  std::vector<std::int32_t> scored;
+  options.on_logits = [&](std::int32_t token, std::span<const float> row) {
+    scored.push_back(token);
+    EXPECT_EQ(row.size(), 259U);
+    return true;
+  };
+  rt::Generation output;
+  const auto generated = BranchAt(0).Generate(last, options, output);
+  ASSERT_TRUE(generated) << (generated ? std::string{} : generated.error());
+  EXPECT_TRUE(output.stopped);
+  EXPECT_EQ(output.tokens, expected);
+  EXPECT_EQ(scored, expected);
+  EXPECT_EQ(output.logits.size(), expected.size());
+  std::vector<std::int32_t> state{'x'};
+  state.insert(state.end(), expected.begin(), expected.end() - 1);
+  EXPECT_EQ(visible, (std::vector<std::int32_t>{expected.begin(), expected.end() - 1}));
+  EXPECT_EQ(BranchAt(0).history(), state);
+  EXPECT_EQ(State(0), state);
+  EXPECT_FALSE(llm_->runner().slots().owed(0));
+  EXPECT_GT(llm_->counts().speculative_units, 0U);
+  EXPECT_GT(output.accepted, 0U);
+  EXPECT_GT(output.drafted, output.accepted);
+  EXPECT_FALSE(constraint->refused_candidates());
+}
+
 TEST_F(LlmTools, CertainSpanScoresEveryPublishedTokenFromItsActualCausalRow) {
   auto constraint = Constraint();
   std::vector<float> last;

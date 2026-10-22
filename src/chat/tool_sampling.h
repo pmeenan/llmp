@@ -17,13 +17,15 @@ namespace llmp::chat {
 class ToolSampling {
  public:
   ToolSampling(const tokenizer::Tokenizer& tokenizer, ToolCallFormat format, ToolRequest request,
-               base::json::Limits limits, bool reasoning, std::span<const std::int32_t> terminals);
+               base::json::Limits limits, bool reasoning, std::span<const std::int32_t> terminals,
+               std::span<const std::int32_t> route_stops = {});
   bool constrained() const;
   // A request-local sampling refusal, distinct from invalid native logits.
   void RefuseCandidates() { refused_candidates_ = true; }
   bool refused_candidates() const { return refused_candidates_; }
   bool Preserves(std::int32_t token) const;
   bool ReasoningBoundary(std::int32_t token) const;
+  bool ContinuesRouteStop(std::int32_t token) const;
   // Masks before temperature/top-k/min-p/top-p; returned storage is caller paid.
   std::span<const float> Mask(std::span<const float> row, std::vector<float>& scratch) const;
   ToolStatus Accept(std::int32_t token);
@@ -62,6 +64,7 @@ class ToolSampling {
   };
   bool Transition(std::string_view bytes, Trigger& next) const;
   bool Decode(std::int32_t token, std::string& out) const;
+  bool TerminalAllowed(std::int32_t token, bool can_stop) const;
   std::shared_ptr<const Context> context_;
   ToolInterpreter lexical_;
   Trigger trigger_;

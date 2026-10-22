@@ -195,6 +195,113 @@ TEST(ToolCalls, FunctionClosureCompletesCallEvenWithoutOptionalOuterClosure) {
   ASSERT_TRUE(parser.Finish(c::ToolFinish::kStop, out.Sink()));
   ASSERT_EQ(out.calls.size(), 1U);
 }
+TEST(ToolCalls, QwenObservedAttributeHeaderAndInvokeCloseAreDeclaredAlternatives) {
+  // Text recovered from the failed native 7175 tool qualification's persisted
+  // token history. Token IDs and the complete request remain external evidence.
+  const std::string text =
+      "The user wants me to read the marker.txt file using the read_marker tool. I should call "
+      "the tool with the path \"marker.txt\".\n</think><tool_call><function=read_marker>\n"
+      "<parameter name=\"path\">marker.txt</parameter>\n</invoke>";
+  const std::array<c::ToolDefinition, 1> definitions{
+      {{.name = "read_marker",
+        .description = {},
+        .parameters_json = R"({"type":"object","properties":{"path":{"type":"string"}}})"}}};
+  auto request = c::ToolRequest::Create(definitions, {c::ToolChoiceKind::kNamed, "read_marker"},
+                                        true, Limits());
+  ASSERT_TRUE(request);
+  for (std::size_t split = 0; split <= text.size(); ++split) {
+    SCOPED_TRACE(split);
+    c::ToolInterpreter parser(c::QwenToolCalls(), *request, Limits());
+    parser.Reasoning(true);
+    Output out;
+    ASSERT_TRUE(parser.Push(std::string_view(text).substr(0, split), out.Sink()));
+    ASSERT_TRUE(parser.Push(std::string_view(text).substr(split), out.Sink()));
+    EXPECT_TRUE(parser.CanStop());
+    ASSERT_TRUE(parser.Finish(c::ToolFinish::kStop, out.Sink()));
+    ASSERT_EQ(out.calls.size(), 1U);
+    EXPECT_EQ(out.calls[0].name, "read_marker");
+    EXPECT_EQ(out.calls[0].input_json, R"({"path":"marker.txt"})");
+    EXPECT_EQ(out.reasoning_ends, 1U);
+    EXPECT_FALSE(out.text.ends_with('>'));  // the shorter alias is erased exactly
+  }
+}
+TEST(ToolCalls, TaggedAlternativesMixOnlyAtStructuralBoundariesAndKeepValuesOpaque) {
+  const std::string text =
+      R"(<tool_call><function=lookup><parameter=s>literal </invoke> and <parameter name="n"> text</parameter><parameter name="n">12</parameter><parameter=obj>{"x":"</invoke><parameter name=\"s\">"}</parameter></invoke></tool_call>after)";
+  for (std::size_t split = 0; split <= text.size(); ++split) {
+    c::ToolInterpreter parser(c::QwenToolCalls(), Request(), Limits());
+    Output out;
+    ASSERT_TRUE(parser.Push(std::string_view(text).substr(0, split), out.Sink()));
+    ASSERT_TRUE(parser.Push(std::string_view(text).substr(split), out.Sink()));
+    ASSERT_TRUE(parser.Finish(c::ToolFinish::kStop, out.Sink()));
+    ASSERT_EQ(out.calls.size(), 1U);
+    auto parsed = j::Parse(out.calls[0].input_json);
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed->root().find("s")->string(),
+              R"(literal </invoke> and <parameter name="n"> text)");
+    EXPECT_EQ(parsed->root().find("n")->number(), "12");
+    EXPECT_EQ(parsed->root().find("obj")->find("x")->string(), R"(</invoke><parameter name="s">)");
+    EXPECT_EQ(out.text, "after");
+  }
+  c::ToolInterpreter bytes(c::QwenToolCalls(), Request(), Limits());
+  Output out;
+  for (const char ch : text) ASSERT_TRUE(bytes.Push(std::string_view(&ch, 1), out.Sink()));
+  ASSERT_TRUE(bytes.Finish(c::ToolFinish::kStop, out.Sink()));
+  ASSERT_EQ(out.calls.size(), 1U);
+  for (const std::string malformed : {"<function=lookup><parameter name=\"s\">unclosed</invoke>",
+                                      "<function=lookup><unsupported=s>x</unsupported></function>",
+                                      "<function=lookup><parameter name=\"s\">x</parameter>"
+                                      "<parameter=s>y</parameter></invoke>"}) {
+    c::ToolInterpreter parser(c::QwenToolCalls(), Request(), Limits());
+    Output bad;
+    const auto pushed = parser.Push(malformed, bad.Sink());
+    EXPECT_TRUE(!pushed || !parser.Finish(c::ToolFinish::kStop, bad.Sink()));
+    EXPECT_TRUE(bad.calls.empty());
+  }
+}
+TEST(ToolCalls, TaggedAlternativesRejectAmbiguousDeclarationsAndArePaidFor) {
+  const auto base = *c::ToolOutputBytes(c::QwenToolCalls(), Limits().max_bytes);
+  auto format = c::QwenToolCalls();
+  format.call_end_aliases.push_back("</much_longer_call_end>");
+  format.parameter_aliases.push_back({"<arg name=\"", "\">"});
+  format.continued_route_stops.push_back("<route_marker>");
+  EXPECT_GT(*c::ToolOutputBytes(format, Limits().max_bytes), base);
+  for (const auto alias : {"", "</function>", "</function>suffix", "<parameter="}) {
+    auto invalid = format;
+    invalid.call_end_aliases.emplace_back(alias);
+    c::ToolInterpreter parser(invalid, Request(), Limits());
+    EXPECT_TRUE(parser.error());
+    EXPECT_FALSE(parser.CanStop());
+  }
+}
+TEST(ToolCalls, MalformedBodiesClosedByAliasesRemainErrorsAtEverySplit) {
+  for (const std::string text : {"<function=lookup>junk</invoke>",
+                                 "<function=lookup><unsupported=s>x</unsupported></invoke>"}) {
+    for (std::size_t split = 0; split <= text.size(); ++split) {
+      c::ToolInterpreter parser(c::QwenToolCalls(), Request(), Limits());
+      Output out;
+      const auto first = parser.Push(std::string_view(text).substr(0, split), out.Sink());
+      const auto last = parser.Push(std::string_view(text).substr(split), out.Sink());
+      EXPECT_FALSE(first && last);
+      EXPECT_FALSE(parser.Finish(c::ToolFinish::kLength, out.Sink()));
+      EXPECT_TRUE(out.calls.empty());
+    }
+  }
+  auto suffix = c::DsmlToolCalls();
+  suffix.call_end_aliases = {"</invoke>"};
+  const std::string invalid =
+      "<｜DSML｜invoke name=\"lookup\"><｜DSML｜parameter name=\"s\" "
+      "invalid=\"true\">x</invoke>";
+  for (std::size_t split = 0; split <= invalid.size(); ++split) {
+    c::ToolInterpreter parser(suffix, Request(), Limits());
+    Output out;
+    const auto first = parser.Push(std::string_view(invalid).substr(0, split), out.Sink());
+    const auto last = parser.Push(std::string_view(invalid).substr(split), out.Sink());
+    EXPECT_FALSE(first && last);
+    EXPECT_FALSE(parser.Finish(c::ToolFinish::kLength, out.Sink()));
+    EXPECT_TRUE(out.calls.empty());
+  }
+}
 TEST(ToolCalls, NonstrictSchemaConversionDoesNotRejectUnconvertibleScalars) {
   c::ToolInterpreter parser(c::QwenToolCalls(), Request(), Limits());
   Output out;
@@ -714,6 +821,131 @@ TEST(ToolSampling, FutureCrossingMergeDoesNotTurnOrdinaryRawTailIntoCertainIds) 
   EXPECT_EQ(selected->kind, c::ToolSampling::Selection::Kind::kOrdinarySelected);
   EXPECT_EQ(selected->tokens, (std::vector<std::int32_t>{ab}));
   EXPECT_TRUE(sampling.certain().empty());
+}
+TEST(ToolSampling, OnlyActualTerminalsAreBlockedUntilAnOpenCallCompletes) {
+  for (const auto& choice : {c::ToolChoice{c::ToolChoiceKind::kAuto, {}},
+                             c::ToolChoice{c::ToolChoiceKind::kRequired, {}},
+                             c::ToolChoice{c::ToolChoiceKind::kNamed, "lookup"}}) {
+    RawTools raw;
+    const auto eos = raw.Add("<eos>", tok::TokenKind::kControl);
+    const auto other = raw.Add("<hidden>", tok::TokenKind::kControl);
+    auto tokenizer = tok::Tokenizer::Create(std::move(raw.spec));
+    ASSERT_TRUE(tokenizer);
+    const std::array terminals{eos};
+    c::ToolSampling sampling(*tokenizer, c::QwenToolCalls(), Request(choice), Limits(), false,
+                             terminals);
+    sampling.Budget(256, 256);
+    std::vector<float> row(tokenizer->size(), 0), scratch;
+    EXPECT_EQ(std::isfinite(sampling.Mask(row, scratch)[static_cast<std::size_t>(eos)]),
+              choice.kind == c::ToolChoiceKind::kAuto);
+    for (const unsigned char ch : std::string("<tool_call><function=lookup><parameter=s>cut"))
+      ASSERT_TRUE(sampling.Accept(ch));
+    const auto masked = sampling.Mask(row, scratch);
+    EXPECT_FALSE(std::isfinite(masked[static_cast<std::size_t>(eos)]));
+    EXPECT_TRUE(std::isfinite(masked[static_cast<std::size_t>(other)]));
+    EXPECT_FALSE(sampling.Plan(eos));
+    auto rejected = sampling;
+    EXPECT_FALSE(rejected.Accept(eos));
+    for (const unsigned char ch : std::string("</parameter></invoke>"))
+      ASSERT_TRUE(sampling.Accept(ch));
+    EXPECT_TRUE(std::isfinite(sampling.Mask(row, scratch)[static_cast<std::size_t>(eos)]));
+    EXPECT_TRUE(sampling.Plan(eos));
+    EXPECT_TRUE(sampling.Accept(eos));
+  }
+}
+TEST(ToolSampling, ReasoningBoundaryAndExactRouteMarkerContinueButRealEosWins) {
+  RawTools raw;
+  const auto eos = raw.Add("<eos>", tok::TokenKind::kControl);
+  const auto reasoning = raw.Add("</think>", tok::TokenKind::kControl);
+  const auto opener = raw.Add("<|tool_call>", tok::TokenKind::kControl);
+  auto tokenizer = tok::Tokenizer::Create(std::move(raw.spec));
+  ASSERT_TRUE(tokenizer);
+  const std::array terminals{eos, reasoning};
+  c::ToolSampling thinking(*tokenizer, c::QwenToolCalls(),
+                           Request({c::ToolChoiceKind::kRequired, {}}), Limits(), true, terminals);
+  thinking.Budget(256, 256);
+  std::vector<float> row(tokenizer->size(), 0), scratch;
+  const auto masked = thinking.Mask(row, scratch);
+  EXPECT_FALSE(std::isfinite(masked[static_cast<std::size_t>(eos)]));
+  EXPECT_TRUE(std::isfinite(masked[static_cast<std::size_t>(reasoning)]));
+  EXPECT_TRUE(thinking.Plan(reasoning));
+  EXPECT_TRUE(thinking.Accept(reasoning));
+  const std::array route{opener};
+  c::ToolSampling gemma(*tokenizer, c::GemmaToolCalls(),
+                        Request({c::ToolChoiceKind::kRequired, {}}), Limits(), false,
+                        std::span<const std::int32_t>{}, route);
+  gemma.Budget(256, 256);
+  EXPECT_TRUE(gemma.ContinuesRouteStop(opener));
+  EXPECT_FALSE(gemma.ContinuesRouteStop(eos));
+  EXPECT_TRUE(std::isfinite(gemma.Mask(row, scratch)[static_cast<std::size_t>(opener)]));
+  c::ToolSampling real_eos(*tokenizer, c::GemmaToolCalls(),
+                           Request({c::ToolChoiceKind::kRequired, {}}), Limits(), false, route,
+                           route);
+  real_eos.Budget(256, 256);
+  EXPECT_FALSE(std::isfinite(real_eos.Mask(row, scratch)[static_cast<std::size_t>(opener)]));
+  EXPECT_FALSE(real_eos.Plan(opener));
+  EXPECT_FALSE(real_eos.Accept(opener));
+}
+TEST(ToolSampling, DeclaredAliasControlTokensReachBothSamplingAndOutputParsers) {
+  RawTools raw;
+  const auto header = raw.Add("<parameter name=\"", tok::TokenKind::kControl);
+  const auto name_end = raw.Add("\">", tok::TokenKind::kControl);
+  const auto parameter_end = raw.Add("</parameter>", tok::TokenKind::kControl);
+  const auto call_end = raw.Add("</invoke>", tok::TokenKind::kControl);
+  const auto eos = raw.Add("<eos>", tok::TokenKind::kControl);
+  auto tokenizer = tok::Tokenizer::Create(std::move(raw.spec));
+  ASSERT_TRUE(tokenizer);
+  const auto request = Request({c::ToolChoiceKind::kNamed, "lookup"});
+  const std::array terminals{eos};
+  c::ToolSampling sampling(*tokenizer, c::QwenToolCalls(), request, Limits(), false, terminals);
+  c::ToolInterpreter parser(c::QwenToolCalls(), request, Limits());
+  sampling.Budget(256, 256);
+  Output output;
+  for (const unsigned char ch : std::string("<tool_call><function=lookup>")) {
+    ASSERT_TRUE(sampling.Accept(ch));
+    const char byte = static_cast<char>(ch);
+    ASSERT_TRUE(parser.Push(std::string_view(&byte, 1), output.Sink()));
+  }
+  const std::array<std::int32_t, 6> suffix{header, 's', name_end, 'x', parameter_end, call_end};
+  std::vector<float> row(tokenizer->size(), 0), scratch;
+  for (const auto token : suffix) {
+    if (token >= 256) EXPECT_TRUE(sampling.Preserves(token));
+    EXPECT_TRUE(std::isfinite(sampling.Mask(row, scratch)[static_cast<std::size_t>(token)]));
+    ASSERT_TRUE(sampling.Plan(token));
+    ASSERT_TRUE(sampling.Accept(token));
+    std::string piece;
+    ASSERT_TRUE(tokenizer->Decode(std::span(&token, 1), {.control_tokens = true}, piece));
+    ASSERT_TRUE(parser.Push(piece, output.Sink()));
+  }
+  ASSERT_TRUE(parser.Finish(c::ToolFinish::kStop, output.Sink()));
+  ASSERT_EQ(output.calls.size(), 1U);
+  EXPECT_EQ(output.calls[0].input_json, R"({"s":"x"})");
+  EXPECT_TRUE(sampling.Plan(eos));
+  EXPECT_TRUE(sampling.Accept(eos));
+}
+TEST(ToolSampling, BareJsonAutoOrdinaryOpenBraceCanEndButRecognizedPartialCallCannot) {
+  RawTools raw;
+  const auto eos = raw.Add("<eos>", tok::TokenKind::kControl);
+  auto tokenizer = tok::Tokenizer::Create(std::move(raw.spec));
+  ASSERT_TRUE(tokenizer);
+  for (const auto text : {"Use { to open a block", "{\"name\":\"ordinary\",\"x\":",
+                          "{\"name\":\"lookup\",\"parameters\":{"}) {
+    const bool ordinary = std::string_view(text).find("lookup") == std::string_view::npos;
+    const std::array terminals{eos};
+    c::ToolSampling sampling(*tokenizer, c::JsonToolCalls(), Request(), Limits(), false, terminals);
+    sampling.Budget(256, 256);
+    c::ToolInterpreter parser(c::JsonToolCalls(), Request(), Limits());
+    Output output;
+    for (const unsigned char ch : std::string(text)) ASSERT_TRUE(sampling.Accept(ch));
+    ASSERT_TRUE(parser.Push(text, output.Sink()));
+    EXPECT_EQ(parser.CanStop(), ordinary);
+    std::vector<float> row(tokenizer->size(), 0), scratch;
+    EXPECT_EQ(std::isfinite(sampling.Mask(row, scratch)[static_cast<std::size_t>(eos)]), ordinary);
+    EXPECT_EQ(sampling.Plan(eos).has_value(), ordinary);
+    EXPECT_EQ(sampling.Accept(eos).has_value(), ordinary);
+    EXPECT_EQ(parser.Finish(c::ToolFinish::kStop, output.Sink()).has_value(), ordinary);
+    if (ordinary) EXPECT_EQ(output.text, text);
+  }
 }
 }  // namespace
 

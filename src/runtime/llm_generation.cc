@@ -109,11 +109,13 @@ std::optional<std::uint32_t> Llm::RemainingGenerationRowsFor(const Branch& branc
   return static_cast<std::uint32_t>(rows);
 }
 
-bool Llm::GenerationSession::IsStop(std::int32_t token) const {
-  return !(options_.tool_sampling && options_.tool_sampling->ReasoningBoundary(token)) &&
-         options_.stop &&
+bool Llm::GenerationSession::IsStop(std::int32_t token,
+                                    const chat::ToolSampling* constraint) const {
+  if (constraint == nullptr) constraint = options_.tool_sampling.get();
+  return !(constraint && constraint->ReasoningBoundary(token)) && options_.stop &&
          (std::ranges::find(model_.stops_, token) != model_.stops_.end() ||
-          std::ranges::find(options_.extra_stops, token) != options_.extra_stops.end());
+          (std::ranges::find(options_.extra_stops, token) != options_.extra_stops.end() &&
+           !(constraint && constraint->ContinuesRouteStop(token))));
 }
 
 bool Llm::GenerationSession::Report() {

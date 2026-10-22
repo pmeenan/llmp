@@ -45,6 +45,9 @@ The entries below record each change; the record of the milestone is
   matching every result to the final empty-ID call; ambiguous histories fail.
   Call-only assistant history accepts omitted content. Tool names that cannot
   round-trip through the selected template fail before generation.
+  Tagged tool formats can declare structural aliases without changing raw
+  argument values. Open calls exclude premature stop IDs, and exact tool
+  markers continue past legacy route-only stops.
 
 - Owned structured conversation parts with bounded text/template projection
   (M3.5 U5b); images and the Messages route remain disabled.

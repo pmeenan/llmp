@@ -3,8 +3,8 @@
 
 # M3.5 native tool-call diagnostics
 
-These are bounded behavior diagnostics for native Qwen tool calls and one
-actual OpenCode client task. They are representative evidence for the native
+These are bounded behavior diagnostics for Qwen GGUF tool calls, one native
+mixed-encoding Mia named-tool transaction, and one actual OpenCode client task. They are representative evidence for the native
 route enablement spike, not the full M3.5 tool-call exit qualification. The
 complete item remains open for the rest of the served aliases and grammars
 and client coverage. Final integrated source checks are tracked separately.
@@ -30,7 +30,7 @@ Tokenizer and chat-template assets came from
 `0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3` and
 `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041`,
 respectively. The NVFP4 checkpoint supplies tokenizer/template assets only;
-these diagnostics do not qualify NVFP4 weights. OpenCode was pinned at version
+those W3 diagnostics do not qualify NVFP4 weights. OpenCode was pinned at version
 1.19.3, client SHA-256
 `e5309bc8df8deac0e4050fb4a65989839522703cf86f8a4561c2694f5157b8ca`.
 Pre/post source, model metadata, runtime, helper, and client identities were
@@ -74,10 +74,76 @@ matched before and after. Runtime, client, setup, and test children were reaped;
 there were no kills, retirement errors, or unexpected descendants, and the
 port closed.
 
+## Native mixed-encoding Mia qualification
+
+The native artifact is
+`7175c03c1748aa96af84667f2e51e53d56e954d7fb3b6ccc1083f882b41501a2`,
+from `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6c14c6c9442ef83e8f05b5a3c39304f69`.
+Its manifest-file SHA-256 is
+`6c79f701b97f087171f8765f001bd2f0ebd20782eff53275726d062b6b678c56`
+and StoredSpec SHA-256 is
+`02d130bce7462794251cc29e5554565a0ad83a398ce2776fd8078ef4b683618a`.
+This is one native ModelOpt checkpoint with mixed NVFP4/MXFP8 encodings,
+not independent qualification of every checkpoint in either format. Tokenizer
+and template hashes are the Mia assets recorded above.
+
+The first named-tool request failed on the frozen W5 source/runtime with
+`tool_output_invalid: incomplete tool call at natural completion`. Its
+persisted history retained 52 processed generated IDs after the 347-token
+prompt; the unprocessed final anchor is absent. Reversible byte-alphabet
+inspection of those IDs recovered an unambiguous call using
+`<parameter name="path">marker.txt</parameter>` and `</invoke>` instead of
+the declaration's canonical Qwen spellings. This was generated output, not an
+input-parser finding. The original HTTP 500 and its retirement records remain
+**FAIL**. An error-path usage count of zero did not mean the model generated no
+tokens.
+
+The shared interpreter now declares these alternatives only at structural
+boundaries, preserves their control-token encodings, and retains literal alias
+text inside open raw values and quoted JSON. Actual stop IDs cannot end an open
+or unfulfilled required call. Exact declared tool markers continue through
+legacy route-only stops, and speculative judging ends at its first accepted
+natural terminator. A scripted common-engine control reproduces the old
+post-EOS `sampling: no-logits` failure and passes with the fix, checking public
+tokens, score rows, retained history and retirement. Native focused checks pass
+344 unique CTest entries without skips, including both review regression
+controls and plain/sampled-speculative route-marker transitions.
+The final source also passes the complete shared set: 3,611 unique cases,
+combining those 344 focused checks with 3,267 other non-model/non-timing cases.
+Source closure and the actual compiled implementation-identity check pass.
+
+The fresh native plain named-tool transaction passes on `spark-b`, source
+manifest SHA-256
+`26e2a203348eb45a60e0c1584fcec285f9e6f96bc9890d2ff44927f1147ac911`
+(2,817 files), runtime SHA-256
+`107fc9cc22cb9f6d9e7980fe0587e48a9ce117ff5568d00753a20d01822c5843`,
+and unchanged qualification-helper SHA-256
+`324d8441d60f7893c2817f00644a70fe828148c6a5234dbd6d09338dcb3312d9`.
+The initial JSON response issues exactly one `read_marker({"path":"marker.txt"})`
+call with 347 prompt and 53 completion tokens. The actual file read supplies
+`LLMP_TOOL_NATIVE_RESULT_7319`; the streamed follow-up reports that value with
+474 prompt and 35 completion tokens. Both requests retain the 1,024-token budget,
+context 16,384, one slot, prefill 512, F16 KV, no speculation, and explicit
+T0/top-k0/top-p1/min-p0/seed7319. Pre/post source, runtime and model-asset
+identities match; the runtime exits zero and is reaped without kills or live
+descendants, and the port closes. Raw receipts are outside Git under
+`/tmp/llmp-m35-orchestration/native-tool-fix-r4/model-qualification/plain`.
+
+The next sampled-MTP `required` cell fails before readiness: legacy companion
+`2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef`
+is declared for `qwen4exp`, while the new target manifest names
+`qwen3_8_flash_next`. The process exits one, is reaped, and leaves no live group
+or open port. No request or speculative unit runs; the sampled-MTP named cell
+has not run. That admission failure remains **FAIL**, with separate canonical
+mapping-identity work required. It does not turn the plain native transaction
+into a sampled-MTP qualification. No performance, maximum-context or broad
+quality claim follows from either diagnostic.
+
 ## Qualification boundary
 
-This evidence establishes six representative Qwen API tool/result transactions
-and one actual OpenCode 1.19.3 task on the frozen run identity. It does not
+This evidence establishes six representative GGUF Qwen API tool/result
+transactions, one native mixed-encoding Mia named-tool/result transaction, and
+one actual OpenCode 1.19.3 task on their recorded frozen identities. It does not
 qualify every served model alias, each template grammar, all client variants,
 maximum context, performance, sampled quality, or speculation. In particular,
 it does not establish full served-model tool coverage or make the open plan

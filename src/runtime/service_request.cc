@@ -256,10 +256,9 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
     const auto stops = model.StopTokens();
     std::vector<std::int32_t> terminals(stops.begin(), stops.end());
     const auto extra = model.ChatStops();
-    terminals.insert(terminals.end(), extra.begin(), extra.end());
     owner->sampling =
         std::make_shared<chat::ToolSampling>(model.tokenizer(), format, request.tools->request,
-                                             owner->limits, result.reasoning, terminals);
+                                             owner->limits, result.reasoning, terminals, extra);
     owner->sampling->Budget(result.max_tokens, usable - prompt);
     result.tools = std::move(owner);
   }

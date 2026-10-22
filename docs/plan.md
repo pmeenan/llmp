@@ -1071,6 +1071,15 @@ D-122).
       grammars remains open; final integrated source checks are separate. No
       performance, maximum-context, sampled-quality, or speculative coverage
       follows from these diagnostics. See [tool-calls.md](tool-calls.md).
+      The first native mixed-encoding Mia named-tool diagnostic failed with
+      an incomplete call; persisted history showed an alternate tagged header
+      and call close. Declared structural aliases, terminal eligibility and
+      legacy grammar-marker route-stop controls address that failure in the
+      shared engine. The same native weights now pass one named-tool/result
+      transaction, including the streamed result follow-up. Sampled MTP
+      qualification failed at architecture admission before inference; its
+      named cell has not run. The broader alias/grammar qualification remains
+      open, and the original failures are retained.
       `tools`/`functions` and `tool_choice` (`auto`, `none`,
       `required`, a named function) accepted on Chat Completions, assistant
       `tool_calls` returned, with streamed argument fragments and tool-result

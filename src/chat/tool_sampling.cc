@@ -8,7 +8,8 @@
 namespace llmp::chat {
 ToolSampling::ToolSampling(const tokenizer::Tokenizer& tokenizer, ToolCallFormat format,
                            ToolRequest request, base::json::Limits limits, bool reasoning,
-                           std::span<const std::int32_t> terminals)
+                           std::span<const std::int32_t> terminals,
+                           std::span<const std::int32_t> route_stops)
     : lexical_(format, request, limits) {
   auto context =
       std::make_shared<Context>(Context{.tokenizer = &tokenizer,
@@ -16,6 +17,13 @@ ToolSampling::ToolSampling(const tokenizer::Tokenizer& tokenizer, ToolCallFormat
                                         .request = std::move(request),
                                         .prefix = {},
                                         .terminals = {terminals.begin(), terminals.end()}});
+  for (const auto token : route_stops) {
+    const bool continued =
+        token >= 0 && std::cmp_less(token, tokenizer.size()) &&
+        std::ranges::find(context->format.continued_route_stops, tokenizer.Text(token)) !=
+            context->format.continued_route_stops.end();
+    if (!continued) context->terminals.push_back(token);
+  }
   const auto trigger = ToolTriggerFor(context->format, context->request);
   if (trigger.required) {
     context->prefix = trigger.begin;
@@ -47,12 +55,28 @@ bool ToolSampling::Preserves(std::int32_t token) const {
   for (const auto* marker : {&f.call_begin, &f.call_end, &f.block_begin, &f.block_end,
                              &f.reasoning_end, &f.quote, &f.parameter_begin, &f.parameter_end})
     if (!text.empty() && marker->find(text) != std::string::npos) return true;
+  for (const auto& marker : f.call_end_aliases)
+    if (!text.empty() && marker.find(text) != std::string::npos) return true;
+  for (const auto& header : f.parameter_aliases)
+    if (!text.empty() && (header.begin.find(text) != std::string::npos ||
+                          header.name_end.find(text) != std::string::npos))
+      return true;
   return false;
 }
 bool ToolSampling::ReasoningBoundary(std::int32_t token) const {
   return (lexical_.reasoning() || last_reasoning_boundary_) && token >= 0 &&
          std::cmp_less(token, context_->tokenizer->size()) &&
          context_->tokenizer->Text(token) == context_->format.reasoning_end;
+}
+bool ToolSampling::ContinuesRouteStop(std::int32_t token) const {
+  return token >= 0 && std::cmp_less(token, context_->tokenizer->size()) &&
+         std::ranges::find(context_->format.continued_route_stops,
+                           context_->tokenizer->Text(token)) !=
+             context_->format.continued_route_stops.end();
+}
+bool ToolSampling::TerminalAllowed(std::int32_t token, bool can_stop) const {
+  if ((!trigger_.waiting && can_stop) || ReasoningBoundary(token)) return true;
+  return std::ranges::find(context_->terminals, token) == context_->terminals.end();
 }
 bool ToolSampling::Decode(std::int32_t token, std::string& out) const {
   if (token < 0 || std::cmp_greater_equal(token, context_->tokenizer->size())) return false;
@@ -90,6 +114,8 @@ bool ToolSampling::Transition(std::string_view bytes, Trigger& next) const {
 }
 std::expected<ToolSampling::Selection, std::string> ToolSampling::Plan(
     std::int32_t selected) const {
+  if (!TerminalAllowed(selected, lexical_.CanStop()))
+    return std::unexpected("selected terminal would leave an incomplete tool call");
   std::string piece;
   auto next = trigger_;
   if (!Decode(selected, piece) || !Transition(piece, next) || !lexical_.Allows(piece))
@@ -115,7 +141,9 @@ std::expected<ToolSampling::Selection, std::string> ToolSampling::Plan(
 }
 std::span<const float> ToolSampling::Mask(std::span<const float> row,
                                           std::vector<float>& scratch) const {
-  if (!constrained()) return row;
+  const bool constrained = this->constrained();
+  const bool can_stop = lexical_.CanStop();
+  if (!constrained && can_stop && !trigger_.waiting) return row;
   scratch.assign(row.begin(), row.end());
   std::expected<std::size_t, tokenizer::Error> cover = std::size_t{0};
   if (!trigger_.waiting && trigger_.forced < context_->prefix.size()) {
@@ -126,10 +154,11 @@ std::span<const float> ToolSampling::Mask(std::span<const float> row,
   }
   for (std::size_t i = 0; i < row.size(); ++i) {
     const auto token = static_cast<std::int32_t>(i);
-    bool allowed = true;
-    if (trigger_.waiting && !ReasoningBoundary(token) &&
-        std::ranges::find(context_->terminals, token) != context_->terminals.end())
-      allowed = false;
+    bool allowed = TerminalAllowed(token, can_stop);
+    if (!constrained) {
+      if (!allowed) scratch[i] = -std::numeric_limits<float>::infinity();
+      continue;
+    }
     std::string piece;
     auto next = trigger_;
     if (allowed)
@@ -148,6 +177,8 @@ std::span<const float> ToolSampling::Mask(std::span<const float> row,
   return scratch;
 }
 ToolStatus ToolSampling::Accept(std::int32_t token) {
+  if (!TerminalAllowed(token, lexical_.CanStop()))
+    return std::unexpected("accepted terminal would leave an incomplete tool call");
   std::string piece;
   if (!Decode(token, piece) || !Transition(piece, trigger_) || !lexical_.Allows(piece))
     return std::unexpected("accepted token violates the tool constraint");

@@ -1161,7 +1161,7 @@ class Llm final : public Served {
     friend class Llm;
     GenerationSession(Llm& model, Branch& branch, const GenerateOptions& options, Generation& out);
     Status Begin(const std::vector<float>& last, bool resume);
-    bool IsStop(std::int32_t token) const;
+    bool IsStop(std::int32_t token, const chat::ToolSampling* constraint = nullptr) const;
     bool Report();
     // Ends a deferred capacity refusal as an undeferred one would have.
     void EndRefused();
