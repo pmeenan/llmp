@@ -22,6 +22,15 @@ Old artifact: `02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9`
 
 New artifact: `7175c03c1748aa96af84667f2e51e53d56e954d7fb3b6ccc1083f882b41501a2`.
 
+The new target spec stores temperature 1, top-k 20 and top-p 0.95, with no
+min-p, from the retained `generation_config.json` (2,097 bytes, SHA-256
+`735ec63e625c2086fbec18327233a03a7b060fddabfd7915af4e6fdcec3187a2`).
+The old artifact has neither this retained file nor stored sampling defaults.
+These small manifest/spec fields were checked again on `spark` on 2026-10-22;
+no additional payload import or inference was needed. This supplies the pinned
+checkpoint's structured defaults; model-card fallback for other sources remains
+open.
+
 Shared payload aggregate SHA-256: `5d365648ea2ab7824bba41269ec91ed3ad47c3cc5c7d034d246f10fb1bc1e1d8`.
 
 Shared semantic aggregate SHA-256: `024d9180a752e85322bd84bc54d2837adc10214c830d6d045bfcb5af82b74892`.

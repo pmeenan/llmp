@@ -992,7 +992,11 @@ D-122).
 - [ ] **Small serving items from Flare** (owner, 2026-10-20,
       [assessment](flare-assessment.md#11-smaller-items)):
       - sampling defaults recorded at import from the model card for
-        artifacts whose checkpoint carries none (Qwen3.8 NVFP4 today),
+        artifacts whose checkpoint carries none. The original Qwen3.8 NVFP4
+        example artifact omitted its pinned `generation_config.json`; the
+        [U3 re-import](experiments/m35-generic-import/original-parity.md)
+        already retains temperature 1, top-k 20 and top-p 0.95 from that file.
+        The card fallback remains open for sources without structured defaults,
         since agent clients omit them; temperature 0 stays greedy and
         requests are never clamped;
       - XXH3 (BSD-2, source-locked) instead of SHA-256 for spill and
