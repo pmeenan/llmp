@@ -671,90 +671,59 @@ std::expected<ImageAdmission, std::string> ReadImageAdmission(
     return Refused("the composition's source receipts are empty or duplicate");
   const spec::ImageMapping* mapping = spec::FindImageMapping(composition.architecture());
   if (mapping == nullptr) return Refused("the composition's architecture has no image mapping");
-  const ImageApproval* approval =
-      FindImageApproval(composition.architecture(), composition.sources());
   const auto& named = composition.components();
-  if (named.size() != mapping->components.size() || components.size() != named.size() ||
-      (approval != nullptr && approval->components.size() != named.size()))
+  if (named.size() != mapping->components.size() || components.size() != named.size())
     return Refused("the composition's components are not its image mapping's");
+  const ImageApproval* candidate =
+      FindImageApproval(composition.architecture(), composition.sources(), components, named);
+  bool reference_match = candidate != nullptr;
   for (std::size_t i = 0; i < named.size(); ++i) {
     const auto& rule = mapping->components[i];
     const artifact::Artifact* a = components[i];
     if (a == nullptr || named[i].role != rule.role || a->id() != named[i].artifact ||
-        a->format_version() != 1 ||
+        a->model().architecture != named[i].architecture || a->format_version() != 1 ||
         !std::ranges::contains(rule.architectures, a->model().architecture) ||
         !a->expert_arrays().empty() || !OriginsWellFormed(a->sources()))
       return Refused(
           std::format("image component {} is not a valid v1 component artifact", rule.role));
     auto source = spec::SourceOf(*a);
     if (!source) return Refused(source.error());
+    if (!std::ranges::contains(rule.containers, source->container))
+      return Refused(
+          std::format("image component {} uses an unsupported source container", rule.role));
     auto stored = spec::StoredSpec(*a);
     if (!stored) return Refused(stored.error());
-    if (approval != nullptr) {
-      const Approval& want = approval->components[i];
-      if (a->model().architecture != want.architecture)
-        return Refused(std::format("image component {} is not its approved artifact", rule.role));
-      if (!SourcesMatch(want.sources, a->sources()) || !Transforms(*a, want) ||
-          a->resources().size() != want.tensors)
-        return Refused(std::format("image component {}'s source identity or inventory is not {}'s",
-                                   rule.role, want.name));
-      if (!SourceMatches(*source, want))
-        return Refused("source container, transforms or tensor inventory differs from its profile");
-      if (auto inventory = internal::CheckInventory(*source, want); !inventory)
-        return std::unexpected(inventory.error());
-      if (auto pinned = Pinned(want, *stored); !pinned) return std::unexpected(pinned.error());
-    } else {
-      for (const auto& t : source->tensors) {
-        if (!Admissible(t)) return Refused(kRefusedInventory);
-      }
+    if (stored->stages.size() != 1 || stored->stages.front().artifact != 0 ||
+        stored->stages.front().role != rule.stage_role)
+      return Refused(
+          std::format("image component {} does not own its required local stage", rule.role));
+    if (auto folds = components::ValidateFoldReceipts(*stored, 0, *source); !folds)
+      return std::unexpected(folds.error());
+    for (const auto& tensor : source->tensors)
+      if (!Admissible(tensor)) return Refused(kRefusedInventory);
+    if (candidate != nullptr) {
+      const Approval& want = candidate->components[i];
+      if (a->model().architecture != want.architecture ||
+          !SourcesMatch(want.sources, a->sources()) || !Transforms(*a, want) ||
+          a->resources().size() != want.tensors || !SourceMatches(*source, want) ||
+          !internal::CheckInventory(*source, want) || !Pinned(want, *stored))
+        reference_match = false;
     }
     if (const auto valid = components::ValidateSpec(*stored, source->tensors); !valid)
       return Refused(valid.error());
   }
   auto family = spec::StoredSpec(composition, components);
   if (!family) return Refused(family.error());
-  if (approval != nullptr) {
-    if (const auto actual = base::ToHex(family->Digest()); actual != approval->spec)
-      return Refused(std::format("the family spec ({}) is not the one approved for {} ({})", actual,
-                                 approval->name, approval->spec));
-  }
+  if (candidate != nullptr && base::ToHex(family->Digest()) != candidate->spec)
+    reference_match = false;
   auto profile = spec::ImageProfileOf(*family, *mapping);
   if (!profile) return Refused(profile.error());
-  // Import preserves source encodings; the current image kernels have a
-  // narrower execution contract. Report that boundary before building graphs.
-  for (std::size_t i = 0; i < named.size(); ++i) {
-    const auto kind = mapping->components[i].kinds.front();
-    const auto expected = kind == spec::kImageTextKind
-                              ? model::TextEncoderTensors(profile->text, mapping->names.text)
-                          : kind == spec::kImageFlowKind
-                              ? model::DenoiserTensors(profile->denoiser, mapping->names.denoiser)
-                              : model::VaeDecoderTensors(profile->vae, mapping->names.vae);
-    const auto source = spec::SourceOf(*components[i]);
-    if (!source) return Refused(source.error());
-    for (const auto& need : expected) {
-      const auto tensor = std::ranges::find(source->tensors, need.name, &spec::SourceTensor::name);
-      if (tensor == source->tensors.end())
-        return Refused(
-            std::format("image component {} tensor {}: current image runtime requires {}; source "
-                        "encoding is preserved by import",
-                        named[i].role, need.name, need.dtype));
-      if (need.dtype == "F32") {
-        if (tensor->format.encoding != format::Encoding::kF32)
-          return Refused(
-              std::format("image component {} tensor {}: current image runtime requires {}; source "
-                          "encoding is preserved by import",
-                          named[i].role, need.name, need.dtype));
-      } else {
-        if (tensor->format.encoding != format::Encoding::kBF16 || !Admissible(*tensor))
-          return Refused(
-              std::format("image component {} tensor {}: current image runtime requires {}; source "
-                          "encoding is preserved by import",
-                          named[i].role, need.name, need.dtype));
-      }
-    }
-  }
+  // Each component's stored spec and native source inventory are the
+  // authoritative tensor contract. ValidateSpec above checks that every
+  // declared role has a supported format, part and shape; execution planning
+  // later qualifies the actual operation/backend combination.
   return ImageAdmission{.mapping = mapping,
-                        .approval = approval,
+                        .approval = reference_match ? candidate : nullptr,
                         .family = std::move(*family),
                         .profile = std::move(*profile)};
 }
@@ -787,6 +756,11 @@ base::Sha256Digest ActualSourceIdentity(std::span<const artifact::Source> actual
     out.Number(source->bytes.value());
     hash.Update(std::as_bytes(std::span(source->sha256)));
   }
+  return hash.Finish();
+}
+base::Sha256Digest ImageCompositionIdentity(const artifact::Composition& composition) {
+  base::Sha256 hash;
+  hash.Update("llmp.numerical.image-composition.v1\n").Update(composition.id());
   return hash.Finish();
 }
 
@@ -1015,7 +989,7 @@ AdmittedImageNumerics(const spec::ModelSpec& family, const ImageApproval*,
     for (const auto& instance : layer) retain(instance);
   if (instances->final_norm) retain(*instances->final_norm);
   if (instances->output) retain(*instances->output);
-  const auto identity = ActualSourceIdentity(composition.sources());
+  const auto identity = ImageCompositionIdentity(composition);
   const auto semantic = family.Digest();
   return ProjectNumerics(
       identity, semantic, funder, [&](const auto& record) -> std::expected<void, std::string> {

@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "spec/mapping.h"
+#include "spec/stage_recipe.h"
 
 namespace llmp::import {
 namespace nd = normalization_detail;
@@ -90,8 +91,10 @@ const spec::Mapping* FindImportMapping(std::string_view container, std::string_v
   if (component.empty()) return spec::FindMapping(architecture, container);
   const spec::Mapping* found = nullptr;
   for (const auto* mapping : spec::Mappings()) {
-    if (!spec::SupportsSource(*mapping, architecture, container) ||
-        mapping->role != spec::StageRole::kDrafter || mapping->stage != component)
+    const bool drafter = mapping->stage_recipe == nullptr &&
+                         mapping->role == spec::StageRole::kDrafter && mapping->stage == component;
+    const bool spatial = mapping->stage_recipe != nullptr && mapping->stage == component;
+    if (!spec::SupportsSource(*mapping, architecture, container) || (!drafter && !spatial))
       continue;
     if (found) return nullptr;
     found = mapping;
@@ -275,6 +278,22 @@ std::expected<void, Error> ValidateImportMapping(const spec::Mapping& table,
       found = true;
     }
     return found ? std::expected<void, Error>{} : Invalid();
+  }
+  if (table.stage_recipe != nullptr) {
+    if ((container != "gguf" && container != "safetensors" && container != "mlx") ||
+        !std::ranges::contains(table.containers, container) || !spec::ValidateMapping(table) ||
+        !table.slots.empty() || !table.tensors.empty() || !table.params.empty() ||
+        !table.tensor_aliases.empty() || !table.key_aliases.empty() ||
+        !table.requirements.empty() || !table.lists.empty() || !table.semantic_tensors.empty() ||
+        !table.shapes.empty() || !table.row_indices.empty() || !table.tensor_presence.empty() ||
+        !table.folds.empty() || !table.policies.empty() || !table.reads.empty() ||
+        table.draft != nullptr || table.companion != nullptr ||
+        table.pipeline != spec::PipelineKind::kImage || table.role != table.stage_recipe->role ||
+        table.stage != table.stage_recipe->name || table.ignored_tensor_prefixes.size() > 8)
+      return Invalid();
+    for (const auto pattern : table.ignored_tensors)
+      if (!nd::Pattern(pattern)) return Invalid();
+    return {};
   }
   if ((container != "gguf" && container != "exl3" && container != "safetensors" &&
        container != "mlx") ||

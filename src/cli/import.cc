@@ -21,6 +21,7 @@
 #include "import/normalize.h"
 #include "import/reader.h"
 #include "import/writer.h"
+#include "spec/mapping.h"
 #include "spec/names.h"
 #include "spec/stored.h"
 
@@ -39,15 +40,15 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
   const auto usage = [&]() {
     Print(err,
           "Usage: llmp import SOURCE --store DIRECTORY [--metadata-mib N]\n"
-          "                   [--target TARGET_ID] [--component mtp [--draft-head IDS]]\n"
+          "                   [--target TARGET_ID] [--component NAME [--draft-head IDS]]\n"
           "                   [--reuse-component ROLE=ARTIFACT_ID]...\n"
           "  --reuse-component explicitly reuse prepared image weights with matching\n"
           "                    spec, inventory and complete archive source identities;\n"
           "                    authenticates metadata, without rehashing payloads\n"
           "  --target ID       validate a drafter against this artifact in --store\n"
-          "  --component mtp   import the checkpoint's MTP drafter (Qwen3.8 Flash Next's\n"
-          "                    ModelOpt checkpoint) instead of its target\n"
-          "  --draft-head IDS  give the drafter a selected draft head: IDS lists one\n"
+          "  --component NAME select a registered component mapping (mtp for a drafter,\n"
+          "                    transformer or vae for a configured spatial component)\n"
+          "  --draft-head IDS  give the MTP drafter a selected draft head: IDS lists one\n"
           "                    decimal token ID a line, strictly ascending; their rows\n"
           "                    of the checkpoint's lm_head.weight become its head\n");
     return kExitUsage;
@@ -78,7 +79,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
         return usage();
       metadata = mib << 20U;
       limit_seen = true;
-    } else if (args[i] == "--component" && component.empty() && args[i + 1] == "mtp")
+    } else if (args[i] == "--component" && component.empty() && spec::names::IsName(args[i + 1]))
       component = args[i + 1];
     else if (args[i] == "--target" && target_id.empty())
       target_id = args[i + 1];
@@ -96,6 +97,11 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
   }
   if (store.empty() || (!draft_head.empty() && component != "mtp") ||
       (!reuse.empty() && (!component.empty() || !target_id.empty() || !draft_head.empty())))
+    return usage();
+  if (!component.empty() && component != "mtp" &&
+      std::ranges::none_of(spec::Mappings(), [&](const auto* mapping) {
+        return mapping->stage_recipe != nullptr && mapping->stage == component;
+      }))
     return usage();
   if (!target_id.empty() && !artifact_id(target_id)) return usage();
   std::optional<import::NormalizationTarget> target;
@@ -275,6 +281,44 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     if (!result) return Failure(err, result.error());
     return finish(*result, *input, false, true, list_name);
   }
+  if (!component.empty()) {
+    const import::Checkpoint* spatial_source = &*input;
+    if (input->container == "diffusers") {
+      const auto child = std::ranges::find(input->components, component, &import::Checkpoint::role);
+      if (child == input->components.end())
+        return Failure(err, {.rule = import::Rule::kConfig,
+                             .reason = "--component names no source component role"});
+      spatial_source = &*child;
+    }
+    const auto* mapping = import::FindImportMapping(spatial_source->container,
+                                                    spatial_source->architecture, component);
+    if (!mapping || mapping->stage_recipe == nullptr)
+      return Failure(err,
+                     {.rule = import::Rule::kUnsupported,
+                      .reason = "no configured spatial component mapping matches --component"});
+    if (target || !reuse.empty()) return usage();
+    auto bound = import::NormalizationBound(*spatial_source, {.component = component});
+    if (!bound) return Failure(err, bound.error());
+    if (!funded(*bound))
+      return Failure(err, {.rule = import::Rule::kBounds,
+                           .reason = "normalization exceeds the requested metadata budget"});
+    auto plan = import::Normalize(*spatial_source, {bound->metadata_bytes, bound->work_units},
+                                  nullptr, {.component = std::string(component)});
+    if (!plan) return Failure(err, plan.error());
+    std::vector<std::optional<base::Sha256Digest>> component_expected;
+    if (*archive) {
+      auto identities = import::ArchiveFileIdentities(**archive, plan->source().files);
+      if (!identities) return Failure(err, identities.error());
+      component_expected = std::move(*identities);
+    }
+    auto result =
+        import::WriteArtifact(*plan, {.store = store,
+                                      .build = build,
+                                      .expected = component_expected,
+                                      .metadata_bytes = metadata - bound->metadata_bytes});
+    if (!result) return Failure(err, result.error());
+    return finish(*result, *spatial_source, false, true);
+  }
   if (target && (input->container == "safetensors" || input->container == "mlx")) return usage();
   if (import::IsImagePipeline(*input)) {
     if (target) return usage();
@@ -364,6 +408,30 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     return finish(*comp_result, *input, true, false);
   }
   if (!reuse.empty()) return usage();
+  if (const auto* mapping = import::FindImportMapping(input->container, input->architecture);
+      mapping && mapping->stage_recipe != nullptr) {
+    if (target) return usage();
+    auto bound = import::NormalizationBound(*input);
+    if (!bound) return Failure(err, bound.error());
+    if (!funded(*bound))
+      return Failure(err, {.rule = import::Rule::kBounds,
+                           .reason = "normalization exceeds the requested metadata budget"});
+    auto plan = import::Normalize(*input, {bound->metadata_bytes, bound->work_units});
+    if (!plan) return Failure(err, plan.error());
+    std::vector<std::optional<base::Sha256Digest>> component_expected;
+    if (*archive) {
+      auto identities = import::ArchiveFileIdentities(**archive, plan->source().files);
+      if (!identities) return Failure(err, identities.error());
+      component_expected = std::move(*identities);
+    }
+    auto result =
+        import::WriteArtifact(*plan, {.store = store,
+                                      .build = build,
+                                      .expected = component_expected,
+                                      .metadata_bytes = metadata - bound->metadata_bytes});
+    if (!result) return Failure(err, result.error());
+    return finish(*result, *input, false, true);
+  }
   auto bound = import::NormalizationBound(*input);
   if (!bound) {
     if (bound.error().kind == import::ItemKind::kTensor &&

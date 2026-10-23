@@ -69,6 +69,14 @@ struct NormalizeOptions {
   std::optional<DraftHeadList> draft_head{};
 };
 
+// Where a component's tensors are stored when the graph's bindings do not
+// state their group (spatial component recipes derive this from their nodes).
+struct ComponentGroup {
+  enum class Kind : std::uint8_t { kTable, kGlobal, kLayer, kHead };
+  Kind kind = Kind::kGlobal;
+  std::uint32_t layer = 0;
+};
+
 std::expected<NormalizationCost, Error> NormalizationBound(const Checkpoint& source,
                                                            NormalizeBoundOptions options = {});
 
@@ -139,6 +147,7 @@ class NormalizedPlan {
   std::span<const OwnedAuxiliaryNamespace> auxiliary_namespaces() const { return auxiliary_; }
   std::span<const AppliedSourceFold> applied_folds() const { return folds_; }
   std::span<const CopyRoute> routes() const { return routes_; }
+  std::span<const ComponentGroup> groups() const { return groups_; }
   // Canonical output indices sorted by physical source file/offset.
   std::span<const std::uint32_t> source_order() const { return order_; }
   std::span<const NormalizedPartBinding> bindings() const { return bindings_; }
@@ -175,6 +184,7 @@ class NormalizedPlan {
   std::vector<OwnedAuxiliaryNamespace> auxiliary_{};
   std::vector<AppliedSourceFold> folds_{};
   std::vector<CopyRoute> routes_{};
+  std::vector<ComponentGroup> groups_{};
   std::vector<std::uint32_t> order_{};
   std::vector<NormalizedPartBinding> bindings_{};
   std::vector<SemanticReceipt> semantic_{};

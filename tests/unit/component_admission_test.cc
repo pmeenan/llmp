@@ -728,6 +728,20 @@ TEST(ComponentAdmissionImageTest, NumericalContractsRequireDeclaredSiteStageDevi
   auto opened = llmp::artifact::OpenComposition(
       llmp::test::Publish(temp_dir, llmp::test::Render(publication)));
   ASSERT_TRUE(opened) << (opened ? "" : opened.error().ToString());
+  auto other_publication = publication;
+  other_publication.components[0] = {"transformer", std::string(64, 'd'),
+                                     "QwenImage21Transformer2DModel"};
+  const auto other_temp_dir = temp_dir.string() + "-other";
+  auto other_opened = llmp::artifact::OpenComposition(
+      llmp::test::Publish(other_temp_dir, llmp::test::Render(other_publication)));
+  ASSERT_TRUE(other_opened) << (other_opened ? "" : other_opened.error().ToString());
+  ASSERT_EQ(opened->sources().size(), other_opened->sources().size());
+  for (std::size_t i = 0; i < opened->sources().size(); ++i) {
+    EXPECT_EQ(opened->sources()[i].name, other_opened->sources()[i].name);
+    EXPECT_EQ(opened->sources()[i].bytes, other_opened->sources()[i].bytes);
+    EXPECT_EQ(opened->sources()[i].sha256, other_opened->sources()[i].sha256);
+  }
+  EXPECT_NE(opened->id(), other_opened->id());
   sp::Stage stage{.name = "projection", .role = sp::StageRole::kDenoiser, .artifact = 0};
   stage.stream.width = 4096;
   stage.layers.push_back({.components = {{.kind = "projection.spatial",
@@ -742,8 +756,9 @@ TEST(ComponentAdmissionImageTest, NumericalContractsRequireDeclaredSiteStageDevi
     llmp::ir::Builder b;
     b.SetComponent(1);
     const auto x = b.Input(llmp::ir::Dense(fm::Encoding::kF32, llmp::ir::ShapeOf({width, rows})));
-    const auto w = b.Weight(llmp::ir::Dense(encoding, llmp::ir::ShapeOf({width, width})),
-                            {.stage = weight_stage, .component = 1, .role = 0});
+    auto format = llmp::ir::Dense(encoding, llmp::ir::ShapeOf({width, width}));
+    if (fm::Info(encoding).quantized) format.layout = fm::Layout::kGgmlBlocks;
+    const auto w = b.Weight(format, {.stage = weight_stage, .component = 1, .role = 0});
     b.Output(b.MatMul(w, x));
     return std::move(b).Finish();
   };
@@ -763,6 +778,10 @@ TEST(ComponentAdmissionImageTest, NumericalContractsRequireDeclaredSiteStageDevi
   ASSERT_TRUE(unpinned && *unpinned);
   EXPECT_EQ((*pinned)->digest(), (*unpinned)->digest());
   EXPECT_EQ((*no_overlay)->digest(), (*unpinned)->digest());
+  auto other_identity = rt::AdmittedImageNumerics(family.spec, nullptr, *other_opened, *graph,
+                                                  generated, 1, NumericalDevice(), funder);
+  ASSERT_TRUE(other_identity && *other_identity);
+  EXPECT_NE((*other_identity)->digest(), (*unpinned)->digest());
   for (const auto& entry : (*unpinned)->entries()) {
     EXPECT_EQ(entry.stage, 1U);
     EXPECT_EQ(entry.component, 1U);
@@ -798,6 +817,13 @@ TEST(ComponentAdmissionImageTest, NumericalContractsRequireDeclaredSiteStageDevi
   auto wrong_encoding = bind(nullptr, NumericalDevice());
   ASSERT_TRUE(wrong_encoding);
   EXPECT_FALSE(*wrong_encoding);
+  for (const auto encoding : {fm::Encoding::kQ4_K, fm::Encoding::kQ6_K}) {
+    graph = make_graph(1, 25, 4096, encoding);
+    ASSERT_TRUE(graph);
+    auto unqualified_quant = bind(nullptr, NumericalDevice());
+    ASSERT_TRUE(unqualified_quant);
+    EXPECT_FALSE(*unqualified_quant);
+  }
   graph = make_graph(0);
   ASSERT_TRUE(graph);
   auto wrong_stage = bind(nullptr, NumericalDevice());
@@ -815,6 +841,27 @@ TEST(ComponentAdmissionImageTest, NumericalContractsRequireDeclaredSiteStageDevi
   EXPECT_EQ(owner->charges, covered_charges);
   std::error_code ec;
   std::filesystem::remove_all(temp_dir, ec);
+  std::filesystem::remove_all(other_temp_dir, ec);
+}
+
+TEST(ComponentAdmissionImageTest, SpatialProjectionAcceptsValidBlockLinearSource) {
+  sp::Stage stage{.name = "flow", .role = sp::StageRole::kDenoiser, .artifact = 0};
+  stage.stream.width = 256;
+  stage.layers.push_back(
+      {.components = {
+           {.kind = "projection.spatial",
+            .version = 1,
+            .params = {{"in_channels", std::int64_t{256}}, {"out_channels", std::int64_t{256}}},
+            .weights = {{.role = "weight", .tensor = "flow.weight"}}}}});
+  sp::ModelSpec model{.pipeline = sp::PipelineKind::kImage, .stages = {std::move(stage)}};
+  fm::TensorFormat q4;
+  q4.encoding = fm::Encoding::kQ4_K;
+  q4.layout = fm::Layout::kGgmlBlocks;
+  q4.shape = *fm::ShapeOf(std::array<std::uint64_t, 2>{256, 256});
+  const std::array<sp::SourceTensor, 1> source{
+      sp::SourceTensor{.name = "flow.weight", .format = q4, .part = fm::PartRole::kData}};
+  const auto checked = llmp::components::ValidateSpec(model, source);
+  EXPECT_TRUE(checked.has_value()) << (checked ? "" : checked.error());
 }
 
 TEST(ComponentAdmissionImageTest, AttentionTuningNeedsDeviceEvidenceAndActualAlgorithmHeadWidth) {

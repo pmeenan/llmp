@@ -84,13 +84,20 @@ The entries below record each change; the record of the milestone is
   after matching their stored spec, tensor inventory and complete archive source
   receipts, avoiding another payload pass for unchanged prepared components.
 
+- Image mappings expand finite, typed recipes into stored component graphs.
+  Configured GGUF image weights use the same importer and execution format layer;
+  Qwen-Image BF16 retains its frozen pixels, and a Q4_K/Q6_K variant completes
+  repeated generations. Ming transformer and first-frame RGBA VAE recipes
+  provide a second component configuration; complete Ming serving remains open
+  ([U8 evidence](docs/experiments/m35-image-pipeline-data/RESULTS.md)).
+
 - Image flow and VAE requests execute stored stage topology with checked
   geometry bindings, preserving alternate graph wiring from the artifact
   (M3.5 U8, D-122; affected image artifacts require re-import).
 
 - Image components own their spatial construction and operand contracts, so
   adding a spatial definition no longer requires compiler kind-name branches
-  (M3.5 U8; stage wiring and quantized image support remain in progress).
+  (M3.5 U8).
 
 - Fusion/decomposition comparisons now bind exact queries, numerical contracts
   and compiler-owned implementation provenance; stale or absent evidence retains

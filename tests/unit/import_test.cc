@@ -860,6 +860,100 @@ TEST_F(ImportGgufFilesTest, OpensRegularFiles) {
   EXPECT_EQ(RuleOf(ReadCheckpoint(dir_ / "m.bin")), Rule::kFileType);
 }
 
+TEST_F(ImportGgufFilesTest, ReadsConfiguredGgufComponentAndRetainsConfigReceipt) {
+  Write(dir_ / "config.json", R"({"_class_name":"QwenImage21Transformer2DModel","num_layers":1})");
+  Write(dir_ / "weights.gguf", Gguf()
+                                   .Str("qwen_image.general.architecture", "qwen_image")
+                                   .U32("qwen_image.block_count", 1)
+                                   .Tensor("weight", kBF16, {4, 4})
+                                   .Build());
+  auto checkpoint = ReadCheckpoint(dir_);
+  ASSERT_TRUE(checkpoint) << checkpoint.error().ToString();
+  EXPECT_EQ(checkpoint->container, "gguf");
+  EXPECT_EQ(checkpoint->architecture, "QwenImage21Transformer2DModel");
+  EXPECT_EQ(*Get<std::int64_t>(*checkpoint, "num_layers"), 1);
+  EXPECT_EQ(*Get<std::int64_t>(*checkpoint, "qwen_image.block_count"), 1);
+  ASSERT_EQ(checkpoint->files.size(), 2U);
+  EXPECT_EQ(checkpoint->files.back().name, "config.json");
+  EXPECT_EQ(checkpoint->files.back().parsed.bytes, checkpoint->files.back().bytes);
+  EXPECT_EQ(checkpoint->tensors.size(), 1U);
+  EXPECT_EQ(checkpoint->tensors.front().extent.file, 0U);
+
+  Write(dir_ / "model.safetensors", "competing");
+  EXPECT_EQ(RuleOf(ReadCheckpoint(dir_)), Rule::kShards);
+}
+
+TEST_F(ImportGgufFilesTest, ConfiguredComponentUsesConfigArchitectureWithoutInventingGgufMetadata) {
+  Write(dir_ / "config.json", R"({"_class_name":"QwenImage21Transformer2DModel","num_layers":1})");
+  Write(dir_ / "weights.gguf", Gguf()
+                                   .Remove("general.architecture")
+                                   .U32("qwen_image.block_count", 1)
+                                   .Tensor("weight", kBF16, {4, 4})
+                                   .Build());
+
+  const auto configured = ReadCheckpoint(dir_);
+  ASSERT_TRUE(configured) << configured.error().ToString();
+  EXPECT_EQ(configured->architecture, "QwenImage21Transformer2DModel");
+  EXPECT_EQ(configured->FindValue("general.architecture"), nullptr);
+  EXPECT_EQ(*Get<std::int64_t>(*configured, "qwen_image.block_count"), 1);
+  EXPECT_EQ(RuleOf(ReadGguf(dir_ / "weights.gguf")), Rule::kContainer);
+}
+
+TEST_F(ImportGgufFilesTest, ConfiguredDirectoryConsumesItsCompleteTwoFileSplitSet) {
+  Write(dir_ / "config.json", R"({"_class_name":"QwenImage21Transformer2DModel"})");
+  const auto split = Splits(2);
+  for (std::size_t i = 0; i < split.size(); ++i)
+    Write(dir_ / SplitFile(static_cast<int>(i) + 1, 2), split[i]);
+
+  const auto checkpoint = ReadCheckpoint(dir_);
+  ASSERT_TRUE(checkpoint) << checkpoint.error().ToString();
+  ASSERT_EQ(checkpoint->files.size(), 3U);
+  EXPECT_EQ(checkpoint->files[0].name, SplitFile(1, 2));
+  EXPECT_EQ(checkpoint->files[1].name, SplitFile(2, 2));
+  EXPECT_EQ(checkpoint->files[2].name, "config.json");
+  EXPECT_EQ(checkpoint->tensors.size(), 4U);
+}
+
+TEST_F(ImportGgufFilesTest, ConfiguredDirectoryRejectsHeadersThatDropOrDisagreeWithSelectedFiles) {
+  Write(dir_ / "config.json", R"({"_class_name":"QwenImage21Transformer2DModel"})");
+  const auto first = dir_ / SplitFile(1, 2);
+  const auto second = dir_ / SplitFile(2, 2);
+
+  // Split-looking filenames cannot turn two independent single files into
+  // one valid set; the second file must not be silently ignored.
+  Write(first, Gguf().Tensor("one", kF32, {4}).Build());
+  Write(second, Gguf().Tensor("two", kF32, {4}).Build());
+  EXPECT_EQ(RuleOf(ReadCheckpoint(dir_)), Rule::kShards);
+
+  std::filesystem::remove(first);
+  std::filesystem::remove(second);
+  // The first header describes one file while the directory selection names
+  // two; the selected filename inventory is still authoritative.
+  Write(first, Gguf()
+                   .U16("split.no", 0)
+                   .U16("split.count", 1)
+                   .I32("split.tensors.count", 1)
+                   .Tensor("one", kF32, {4})
+                   .Build());
+  Write(second, Gguf().Tensor("two", kF32, {4}).Build());
+  EXPECT_EQ(RuleOf(ReadCheckpoint(dir_)), Rule::kShards);
+}
+
+TEST_F(ImportGgufFilesTest, ConfiguredDirectoryRejectsCompetingSetsAndBoundsCandidateCount) {
+  Write(dir_ / "config.json", R"({"_class_name":"QwenImage21Transformer2DModel"})");
+  for (const std::string_view name : {"one-00001-of-00002.gguf", "one-00002-of-00002.gguf",
+                                      "two-00001-of-00002.gguf", "two-00002-of-00002.gguf"})
+    Write(dir_ / name, "");
+  EXPECT_EQ(RuleOf(ReadCheckpoint(dir_)), Rule::kShards);
+
+  std::filesystem::remove_all(dir_);
+  std::filesystem::create_directories(dir_);
+  Write(dir_ / "config.json", R"({"_class_name":"QwenImage21Transformer2DModel"})");
+  for (std::uint32_t i = 0; i <= kMaxGgufSplits; ++i)
+    Write(dir_ / std::format("candidate-{:04}.gguf", i), "");
+  EXPECT_EQ(RuleOf(ReadCheckpoint(dir_)), Rule::kBounds);
+}
+
 TEST_F(ImportGgufFilesTest, OptionalFileDistinguishesAbsenceFromBrokenCheckpoint) {
   namespace fs = std::filesystem;
   const auto path = dir_ / "optional.json";

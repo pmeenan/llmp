@@ -17,15 +17,6 @@
 #include "import/normalize.h"
 
 namespace llmp::import {
-// Where a component's tensor is stored when its spec's bindings do not say
-// (an image component's spec binds every tensor in one spatial layer): its
-// row table, its global group, one of its layers' (a transformer block's,
-// a decoder up block's) or its head group.
-struct ComponentGroup {
-  enum class Kind : std::uint8_t { kTable, kGlobal, kLayer, kHead };
-  Kind kind = Kind::kGlobal;
-  std::uint32_t layer = 0;
-};
 struct ComponentPlan {
   const Checkpoint& checkpoint;
   spec::Source canonical{};

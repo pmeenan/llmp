@@ -2767,6 +2767,159 @@ TEST(GgmlLowerTest, PrepareCapabilityDistinguishesItsOutputEncoding) {
   }
 }
 
+TEST(GgmlLowerTest, StatelessSharedQ8PreparationLowersUnderDefaultPolicy) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  constexpr std::uint64_t k = 2304;
+  const auto registry = PlanningRegistry();
+  for (const std::uint32_t rows : {1U, 2U, 8U}) {
+    SCOPED_TRACE(rows);
+    ir::Builder b;
+    b.SetComponent(1);
+    b.SetOwner(0);
+    const auto x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({k, rows})), "packed_f32");
+    const auto q4 = b.Weight(
+        {.encoding = Encoding::kQ4_K, .layout = Layout::kGgmlBlocks, .shape = ir::ShapeOf({k, 64})},
+        {.component = 1, .role = 0}, "q4_weight");
+    const auto q6 = b.Weight(
+        {.encoding = Encoding::kQ6_K, .layout = Layout::kGgmlBlocks, .shape = ir::ShapeOf({k, 64})},
+        {.component = 1, .role = 1}, "q6_weight");
+    b.Output(b.MatMul(q4, x));
+    b.Output(b.MatMul(q6, x));
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+    auto plan = pl::Plan(graph->Clone(), registry, Gb10(), pl::Policy{});
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+
+    std::size_t quantizers = 0, prepared_products = 0;
+    for (const auto& selected : plan->steps) {
+      const auto& name = registry.at(selected.implementation).name;
+      quantizers += name == "llmp.q8_1";
+      prepared_products += name == "llmp.mmvq.prepared";
+    }
+    ASSERT_EQ(quantizers, 1U);
+    ASSERT_EQ(prepared_products, 2U);
+
+    const std::array weights{
+        co::StepWeight{.tensor = q4,
+                       .ref = {.component = 1, .role = 0},
+                       .parts = {{"q4_weight", llmp::format::PartRole::kData}}},
+        co::StepWeight{.tensor = q6,
+                       .ref = {.component = 1, .role = 1},
+                       .parts = {{"q6_weight", llmp::format::PartRole::kData}}}};
+    const co::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), weights};
+    auto lowered = kg::LowerStep(kn::LowerInput(*plan, io, {}), registry, Device());
+    ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+    EXPECT_TRUE(lowered->measuring);
+    EXPECT_LE(lowered->physical_tensors.size(), lowered->descriptor_bound);
+    std::size_t lowered_quantizers = 0, lowered_prepared_products = 0;
+    for (const auto& step : lowered->plan.steps) {
+      lowered_quantizers += step.implementation == "llmp.q8_1";
+      lowered_prepared_products += step.implementation == "llmp.mmvq.prepared";
+    }
+    EXPECT_EQ(lowered_quantizers, 1U);
+    EXPECT_EQ(lowered_prepared_products, 2U);
+
+    const auto prep = std::ranges::find_if(plan->graph.nodes(), [](const ir::Node& node) {
+      return node.key == ir::Primitive(ir::Op::kPrepare);
+    });
+    ASSERT_NE(prep, plan->graph.nodes().end());
+    ASSERT_EQ(prep->nsrc, 1U);
+    ASSERT_EQ(prep->nout, 1U);
+    const auto input_id = prep->src[0];
+    const auto prepared_id = prep->out[0];
+    EXPECT_EQ(plan->graph.tensor(input_id).format.encoding, Encoding::kF32);
+    EXPECT_EQ(plan->graph.tensor(input_id).format.layout, Layout::kDense);
+    EXPECT_EQ(plan->graph.tensor(prepared_id).format.encoding, Encoding::kQ8_1);
+    EXPECT_EQ(plan->graph.tensor(prepared_id).format.layout, Layout::kGgmlBlocks);
+    const auto input =
+        std::ranges::find(lowered->physical_tensors, input_id, &kg::PhysicalTensor::tensor);
+    const auto prepared =
+        std::ranges::find(lowered->physical_tensors, prepared_id, &kg::PhysicalTensor::tensor);
+    ASSERT_NE(input, lowered->physical_tensors.end());
+    ASSERT_NE(prepared, lowered->physical_tensors.end());
+    ASSERT_NE(input->descriptor, nullptr);
+    ASSERT_NE(prepared->descriptor, nullptr);
+    EXPECT_EQ(input->root, plan->graph.root(input_id));
+    EXPECT_EQ(prepared->root, plan->graph.root(prepared_id));
+    const std::uint64_t padded_row_bytes = ((k + 511) / 512) * 512 / 32 * 36;
+    EXPECT_EQ(kg::WrittenBytes(plan->graph, plan->graph.root(prepared_id)),
+              padded_row_bytes * rows);
+
+    std::size_t actual_prepared_products = 0;
+    for (const ggml_tensor* node : lowered->nodes) {
+      if (kg::LlmpOpOf(node) != kg::LlmpOp::kMmvqPrepared) continue;
+      ++actual_prepared_products;
+      ASSERT_NE(node->src[1], nullptr);
+      ASSERT_NE(node->src[2], nullptr);
+      EXPECT_EQ(node->src[1], prepared->descriptor);
+      EXPECT_EQ(node->src[2], input->descriptor);
+    }
+    EXPECT_EQ(actual_prepared_products, 2U);
+
+    const auto q8_root = std::ranges::find(lowered->physical_roots, plan->graph.root(prepared_id),
+                                           &kg::PhysicalRoot::root);
+    ASSERT_NE(q8_root, lowered->physical_roots.end());
+    EXPECT_GE(q8_root->bytes, kg::WrittenBytes(plan->graph, q8_root->root));
+
+    const auto disjoint = [](const kg::PhysicalRoot& a, const kg::PhysicalRoot& c) {
+      return a.offset + a.bytes <= c.offset || c.offset + c.bytes <= a.offset;
+    };
+    for (const auto output : plan->graph.outputs()) {
+      const auto output_root = std::ranges::find(lowered->physical_roots, plan->graph.root(output),
+                                                 &kg::PhysicalRoot::root);
+      ASSERT_NE(output_root, lowered->physical_roots.end());
+      EXPECT_TRUE(disjoint(*q8_root, *output_root));
+    }
+
+    kn::Addresses bound_addresses{};
+    bound_addresses.weight = [](const ir::WeightRef& ref,
+                                llmp::format::PartRole part) -> std::uint64_t {
+      if (part != llmp::format::PartRole::kData || ref.component != 1) return 0;
+      return ref.role == 0 ? 0x10000000U : ref.role == 1 ? 0x20000000U : 0;
+    };
+    bound_addresses.activations = 0x80000000U;
+    bound_addresses.activation_bytes = plan->placement.extent + 4096;
+    bound_addresses.activation_alignment = 4096;
+    auto bound = kg::LowerStep(kn::LowerInput(*plan, io, bound_addresses), registry, Device());
+    ASSERT_TRUE(bound) << (bound ? "" : bound.error().detail);
+    EXPECT_FALSE(bound->measuring);
+    EXPECT_LE(bound->physical_tensors.size(), bound->descriptor_bound);
+    const auto bound_prep = std::ranges::find_if(bound->plan.steps, [](const kg::PlanStep& step) {
+      return step.implementation == "llmp.q8_1";
+    });
+    ASSERT_NE(bound_prep, bound->plan.steps.end());
+    ASSERT_EQ(bound_prep->nodes.size(), 1U);
+    const auto* bound_q8 = kg::PhysicalTensorOf(*bound, bound_prep->nodes[0]);
+    ASSERT_NE(bound_q8, nullptr);
+    ASSERT_EQ(bound_q8->root, plan->graph.root(prepared_id));
+    EXPECT_GE(bound->extent, kg::WrittenBytes(plan->graph, bound_q8->root));
+  }
+}
+
+TEST(GgmlLowerTest, StatelessPrepareRefusesUnsupportedTargetAndSourceForms) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  const auto registry = PlanningRegistry();
+  const auto rejected = [&](Encoding source_encoding, Encoding target_encoding,
+                            Layout target_layout) {
+    ir::Builder b;
+    const auto x = b.Input(ir::Dense(source_encoding, ir::ShapeOf({2304, 2})));
+    const auto weight = b.Weight({.encoding = Encoding::kQ4_K,
+                                  .layout = Layout::kGgmlBlocks,
+                                  .shape = ir::ShapeOf({2304, 64})},
+                                 {.component = 1, .role = 0});
+    const auto prepared = b.Prepare(x, target_encoding, target_layout);
+    b.Output(b.MatMul(weight, prepared));
+    auto graph = std::move(b).Finish();
+    EXPECT_TRUE(graph) << (graph ? "" : graph.error().detail);
+    if (!graph) return;
+    EXPECT_FALSE(pl::Plan(graph->Clone(), registry, Gb10(), pl::Policy{}));
+  };
+  rejected(Encoding::kF32, Encoding::kQ8_0, Layout::kGgmlBlocks);
+  rejected(Encoding::kF16, Encoding::kQ8_1, Layout::kGgmlBlocks);
+}
+
 TEST(GgmlLowerTest, CapabilitiesRouteAsUpstream) {
   using llmp::format::Encoding;
   EXPECT_TRUE(kg::MmvqRouted(Encoding::kQ4_0, 121, 8));

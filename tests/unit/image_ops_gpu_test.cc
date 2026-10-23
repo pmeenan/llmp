@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <initializer_list>
 #include <limits>
@@ -37,6 +38,7 @@
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
+#include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/plan_step.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/reference/exec.h"
@@ -849,6 +851,178 @@ TEST_F(ImageOpsGpu, DupUpAddAndConv1x1MatchTheirDecompositions) {
   // The lent handle's TF32 tensor-op math (cublas.cc, as upstream's and the
   // F32 products'): operands rounded to 10-bit mantissas.
   EXPECT_LE(WorstRelative(Read(node), *want, 1.0), 1e-2);
+}
+
+TEST_F(ImageOpsGpu, StridedConv2dReadsBfloatKernelAndBiasWithoutPacking) {
+  constexpr std::int64_t kw = 2, kh = 3, kt = 3, ci = 2, co = 3;
+  constexpr std::int64_t width = 5, height = 4, images = 2, stride = 2, padding = 1;
+  const auto out_w = (width + 2 * padding - kw) / stride + 1;
+  const auto out_h = (height + 2 * padding - kh) / stride + 1;
+  std::vector<float> input(static_cast<std::size_t>(width * height * ci * images));
+  for (std::size_t i = 0; i < input.size(); ++i)
+    input[i] = static_cast<float>(i % 11) * 0.125F - 0.5F;
+  std::vector<std::uint16_t> source(static_cast<std::size_t>(kw * kh * kt * ci * co));
+  std::vector<float> decoded(source.size());
+  for (std::int64_t oc = 0; oc < co; ++oc)
+    for (std::int64_t ic = 0; ic < ci; ++ic)
+      for (std::int64_t t = 0; t < kt; ++t)
+        for (std::int64_t y = 0; y < kh; ++y)
+          for (std::int64_t x = 0; x < kw; ++x) {
+            const auto i = static_cast<std::size_t>(x + kw * (y + kh * (t + kt * (ic + ci * oc))));
+            const float value =
+                static_cast<float>(1 + x + 2 * y + 3 * t + 5 * ic - 2 * oc) * 0.03125F;
+            source[i] = Bf16(value);
+            decoded[i] = std::bit_cast<float>(std::uint32_t{source[i]} << 16U);
+          }
+  std::vector<float> bias(static_cast<std::size_t>(co));
+  for (std::int64_t c = 0; c < co; ++c)
+    bias[static_cast<std::size_t>(c)] = 0.125F * static_cast<float>(c - 1);
+  std::vector<float> expected(static_cast<std::size_t>(out_w * out_h * co * images));
+  for (std::int64_t n = 0; n < images; ++n)
+    for (std::int64_t oc = 0; oc < co; ++oc)
+      for (std::int64_t oy = 0; oy < out_h; ++oy)
+        for (std::int64_t ox = 0; ox < out_w; ++ox) {
+          float sum = 0.0F;
+          for (std::int64_t ic = 0; ic < ci; ++ic)
+            for (std::int64_t ky = 0; ky < kh; ++ky)
+              for (std::int64_t kx = 0; kx < kw; ++kx) {
+                const auto ix = ox * stride + kx - padding;
+                const auto iy = oy * stride + ky - padding;
+                if (ix < 0 || iy < 0 || ix >= width || iy >= height) continue;
+                const auto xi =
+                    static_cast<std::size_t>(ix + width * (iy + height * (ic + ci * n)));
+                // The view selects the final temporal plane from the root.
+                const auto wi =
+                    static_cast<std::size_t>(kx + kw * (ky + kh * (kt - 1 + kt * (ic + ci * oc))));
+                sum = std::fma(input[xi], decoded[wi], sum);
+              }
+          sum += bias[static_cast<std::size_t>(oc)];
+          const auto oi = static_cast<std::size_t>(ox + out_w * (oy + out_h * (oc + co * n)));
+          expected[oi] = sum;
+        }
+  ggml_context* c = arena_->context();
+  ggml_tensor* gx = Place(ggml_new_tensor_4d(c, GGML_TYPE_F32, width, height, ci, images), input);
+  ggml_tensor* root = Place(ggml_new_tensor_4d(c, GGML_TYPE_BF16, kw, kh, kt, ci * co), source);
+  const auto elem = static_cast<std::uint64_t>(sizeof(std::uint16_t));
+  ggml_tensor* view =
+      ggml_view_4d(c, root, kw, kh, ci, co, elem * kw, elem * kw * kh * kt,
+                   elem * kw * kh * kt * ci, static_cast<std::size_t>(elem * kw * kh * (kt - 1)));
+  ggml_tensor* gb = Place(ggml_new_tensor_1d(c, GGML_TYPE_F32, co), bias);
+  ggml_tensor* node =
+      Place(kg::Conv2dStrided(c, view, gx, gb, stride, padding, 1), std::vector<float>{});
+  ASSERT_TRUE(kg::CheckConv2dStrided(node));
+  const auto ran = kg::Conv2dStrided(*launch_, node);
+  ASSERT_TRUE(ran) << ran.error().detail;
+  Finish();
+  const auto got = Read(node);
+  ASSERT_EQ(got.size(), expected.size());
+  for (std::size_t i = 0; i < got.size(); ++i) EXPECT_NEAR(got[i], expected[i], 1.0e-6F);
+  std::vector<std::uint16_t> source_after(source.size());
+  EXPECT_EQ(cudaMemcpy(source_after.data(), root->data, source.size() * sizeof(source[0]),
+                       cudaMemcpyDeviceToHost),
+            cudaSuccess);
+  EXPECT_EQ(source_after, source);
+  void* output_data = node->data;
+  node->data = gx->data;
+  EXPECT_FALSE(kg::CheckConv2dStrided(node));
+  node->data = gb->data;
+  EXPECT_FALSE(kg::CheckConv2dStrided(node));
+  node->data = view->data;
+  EXPECT_FALSE(kg::CheckConv2dStrided(node));
+  node->data = output_data;
+  const auto output_channels = node->ne[2];
+  node->ne[2] = output_channels - 1;
+  EXPECT_FALSE(kg::CheckConv2dStrided(node));
+  node->ne[2] = output_channels;
+  const auto bias_channels = gb->ne[0];
+  gb->ne[0] = bias_channels - 1;
+  EXPECT_FALSE(kg::CheckConv2dStrided(node));
+  gb->ne[0] = bias_channels;
+  std::array<std::int64_t, GGML_MAX_DIMS> bias_shape{};
+  std::copy(std::begin(gb->ne), std::end(gb->ne), bias_shape.begin());
+  gb->ne[0] = std::numeric_limits<std::int64_t>::max();
+  gb->ne[1] = 2;
+  EXPECT_FALSE(kg::CheckConv2dStrided(node));
+  std::copy(bias_shape.begin(), bias_shape.end(), std::begin(gb->ne));
+  const auto kernel_type = view->type;
+  view->type = GGML_TYPE_F16;
+  EXPECT_FALSE(kg::CheckConv2dStrided(node));
+  view->type = kernel_type;
+  const auto kernel_stride = view->nb[0];
+  view->nb[0] = 1;
+  EXPECT_FALSE(kg::CheckConv2dStrided(node));
+  view->nb[0] = kernel_stride;
+  const auto old_data = view->data;
+  const auto old_offset = view->view_offs;
+  view->view_offs = static_cast<std::size_t>(ggml_nbytes(root) - 1);
+  view->data = static_cast<char*>(root->data) + view->view_offs;
+  EXPECT_FALSE(kg::CheckConv2dStrided(node));
+  view->data = old_data;
+  view->view_offs = old_offset;
+}
+
+TEST_F(ImageOpsGpu, StridedConv2dOutputCannotAliasExcludedSourceRootRegions) {
+  ggml_context* c = arena_->context();
+  const std::vector<float> temporal_weights{1.0F, 2.0F, 3.0F};
+  const std::vector<float> input{0.5F};
+  const std::vector<float> bias{0.25F};
+  ggml_tensor* kernel_root =
+      Place(ggml_new_tensor_4d(c, GGML_TYPE_F32, 1, 1, 3, 1), temporal_weights);
+  ggml_tensor* kernel_view = ggml_view_4d(c, kernel_root, 1, 1, 1, 1, sizeof(float),
+                                          3 * sizeof(float), 3 * sizeof(float), 2 * sizeof(float));
+  ggml_tensor* gx = Place(ggml_new_tensor_4d(c, GGML_TYPE_F32, 1, 1, 1, 1), input);
+  ggml_tensor* gb = Place(ggml_new_tensor_1d(c, GGML_TYPE_F32, 1), bias);
+  ggml_tensor* node =
+      Place(kg::Conv2dStrided(c, kernel_view, gx, gb, 1, 0, 1), std::vector<float>{});
+  ASSERT_TRUE(kg::CheckConv2dStrided(node));
+  void* output_data = node->data;
+  node->data = kernel_root->data;
+  EXPECT_FALSE(kg::CheckConv2dStrided(node))
+      << "an output in an unused temporal prefix still aliases immutable kernel storage";
+  node->data = output_data;
+
+  const std::vector<float> bias_root_values{0.0F, 0.0F, 0.25F};
+  ggml_tensor* bias_root = Place(ggml_new_tensor_1d(c, GGML_TYPE_F32, 3), bias_root_values);
+  ggml_tensor* bias_view = ggml_view_1d(c, bias_root, 1, 2 * sizeof(float));
+  ggml_tensor* bias_node =
+      Place(kg::Conv2dStrided(c, kernel_view, gx, bias_view, 1, 0, 1), std::vector<float>{});
+  ASSERT_TRUE(kg::CheckConv2dStrided(bias_node));
+  output_data = bias_node->data;
+  bias_node->data = bias_root->data;
+  EXPECT_FALSE(kg::CheckConv2dStrided(bias_node))
+      << "an output in an unused bias-root prefix still aliases immutable bias storage";
+  bias_node->data = output_data;
+}
+
+TEST_F(ImageOpsGpu, StridedConv2dAcceptsF32KernelAndBfloatBiasForSingleTap) {
+  ggml_context* c = arena_->context();
+  const std::vector<float> input{1.0F, -2.0F, 3.0F, 4.0F, 0.5F, -1.0F};
+  const std::vector<float> weight{0.5F};
+  const std::vector<std::uint16_t> bias{Bf16(0.25F)};
+  ggml_tensor* gx = Place(ggml_new_tensor_3d(c, GGML_TYPE_F32, 3, 2, 1), input);
+  ggml_tensor* gw = Place(ggml_new_tensor_4d(c, GGML_TYPE_F32, 1, 1, 1, 1), weight);
+  ggml_tensor* gb = Place(ggml_new_tensor_1d(c, GGML_TYPE_BF16, 1), bias);
+  ggml_tensor* node = Place(kg::Conv2dStrided(c, gw, gx, gb, 1, 0, 1), std::vector<float>{});
+  ASSERT_TRUE(kg::CheckConv2dStrided(node));
+  const auto ran = kg::Conv2dStrided(*launch_, node);
+  ASSERT_TRUE(ran) << ran.error().detail;
+  Finish();
+  const auto got = Read(node);
+  ASSERT_EQ(got.size(), input.size());
+  for (std::size_t i = 0; i < got.size(); ++i) EXPECT_FLOAT_EQ(got[i], input[i] * 0.5F + 0.25F);
+}
+
+TEST_F(ImageOpsGpu, ClampLaunchesHardtanhBoundaryValues) {
+  ggml_context* c = arena_->context();
+  const std::vector<float> input{-2.0F, -1.0F, -0.25F, 0.0F, 0.75F, 1.0F, 3.0F};
+  ggml_tensor* x =
+      Place(ggml_new_tensor_1d(c, GGML_TYPE_F32, static_cast<std::int64_t>(input.size())), input);
+  ggml_tensor* node = Place(ggml_clamp(c, x, -1.0F, 1.0F), std::vector<float>{});
+  ASSERT_TRUE(kg::CheckClamp(node));
+  const auto ran = kg::Clamp(*launch_, node);
+  ASSERT_TRUE(ran) << ran.error().detail;
+  Finish();
+  EXPECT_EQ(Read(node), (std::vector<float>{-1.0F, -1.0F, -0.25F, 0.0F, 0.75F, 1.0F, 1.0F}));
 }
 
 }  // namespace

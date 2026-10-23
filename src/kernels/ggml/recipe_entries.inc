@@ -394,6 +394,12 @@ LLMP_GGML_RECIPE("ggml.conv2d.f32", llmp::ir::Primitive(llmp::ir::Op::kConv2d),
                  ([](ConstNodes n) { return CheckConv2dF32(n[0]); }),
                  ([](LaunchContext& launch, Nodes n) { return Conv2dF32(launch, n[0]); }))
 
+LLMP_GGML_RECIPE(
+    kConv2dStridedName, llmp::ir::Primitive(llmp::ir::Op::kConv2d),
+    "F32 output, F32 accumulation, stride-aware on-chip F32/BF16 kernel and bias reads", 1,
+    ([](ConstNodes n) { return CheckConv2dStrided(n[0]); }),
+    ([](LaunchContext& launch, Nodes n) { return Conv2dStrided(launch, n[0]); }))
+
 LLMP_GGML_RECIPE("ggml.upsample.nearest", llmp::ir::Primitive(llmp::ir::Op::kUpsample),
                  "ggml_cuda_op_upscale nearest2 WHCN; unchanged pinned launch configuration", 1,
                  ([](ConstNodes n) { return CheckUpsampleNearest(n[0]); }),

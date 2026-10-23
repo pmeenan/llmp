@@ -3316,8 +3316,11 @@ for integer geometry parameters (D-122). Serving copies and binds those specs
 using checked request dimensions and the stored family profile, then verifies
 actual inferred stage outputs against that geometry. It preserves stored
 components, weight bindings, links and exports. The text encoder still builds
-its request graph through `spec/image_spatial.h`; image topology synthesis at
-import remains a later U8 task. Family hyperparameters are data
+its request graph through `spec/image_spatial.h`. Mapping-owned `StageRecipe`
+data expands flow and VAE topology at import, using typed configuration values,
+checked arithmetic, finite repeats and branches. Preflight bounds the expansion
+and pays retained metadata and comparison work; only the expanded ordinary spec
+is serialized. Family hyperparameters are data
 (`spec/image_family.h`). An image mapping (`spec/mappings/qwen_image.cc`
 for `QwenImage21Pipeline`) names the pipeline's components (each a
 composition role, a stored stage, its accepted architectures and the
@@ -3348,12 +3351,15 @@ importer groups the tensors as the component's structure divides them
 group a layer, the denoiser's globals and one a block, the VAE decoder's
 up blocks one each and the rest of it one). The reference pipeline's entry in
 `runtime/approvals.cc` (`ImageApprovals`) pins the composition's kept files and
-family digest and each component's sources, dense inventory and spec digest;
-`ReadImageAdmission` (`runtime/component_admission.h`, D-119) verifies those
-pins when the source receipts match, or admits an unpinned v1 composition of a
-registered `ImageMapping` directly by validating its stored family spec and
-each component's stored spec and tensor inventory, then reads the family back
-through the schema as the profile for request geometry. Flow/VAE templates
+family digest and each component's sources, encoded inventory and spec digest;
+`ReadImageAdmission` (`runtime/component_admission.h`, D-119) always validates
+the composition roles, stored family, each component's spec, source receipts,
+folds and encoded tensor inventory. Historical recognition is an optional
+performance-policy overlay when the complete composition and component source
+closure matches. Numerical evidence is independently bound to the authenticated
+composition identity and each operation's encoding, site, device and shape;
+a changed valid encoding does not inherit the historical checkpoint's grants. Admission reads the family through the schema as
+the profile for request geometry. Flow/VAE templates
 retain their stored topology and bind only declared scalar inputs; their
 retained metadata and request copies are prepaid from the actual stored spec
 inventory. Each stage's DAG wiring is carried in `spec::Stage::links` and
@@ -3363,6 +3369,15 @@ other patch layouts need their own stored profile and typed boundary contract.
 Serving finds the mapping by the composition's architecture and takes the
 components' roles, the tokenizer, the prompt renderer, the policy and the
 default tuned attention rows from it.
+
+A configured standalone spatial component resolves its mapping from the actual
+container and source class, then expands the same recipe through `NormalizedPlan`
+and the shared artifact writer. Derived tensor roles determine its inventory and
+storage groups. Optional raw source-axis constraints compare every declared
+container axis before publication, including the original channel factorization
+of folded causal kernels. Quantized GGUF formats retain their encoded extents;
+source tensors outside the derived inventory require explicit mapping omissions.
+This import capability does not qualify a new full generation pipeline.
 
 For an affected-stage re-import, `llmp import --reuse-component ROLE=ARTIFACT_ID`
 can explicitly retain an unchanged prepared component. Before any publication,

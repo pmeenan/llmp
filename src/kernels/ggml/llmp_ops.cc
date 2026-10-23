@@ -109,6 +109,7 @@ constinit std::array kTagLayerNormModulateSplit =
 constinit std::array kTagGatedResidualSplit = std::to_array("llmp.image.gated_residual_split");
 constinit std::array kTagDupUpAdd = std::to_array("llmp.image.dup_up_add");
 constinit std::array kTagConv1x1 = std::to_array("llmp.image.conv1x1");
+constinit std::array kTagConv2dStrided = std::to_array("llmp.image.conv2d.strided");
 constinit std::array kTagDsv4Route = std::to_array("llmp.dsv4.route");
 constinit std::array kTagDsv4Combine = std::to_array("llmp.dsv4.combine");
 constinit std::array kTagDsv4WeightedReduce = std::to_array("llmp.dsv4.weighted_reduce");
@@ -218,6 +219,7 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
   const auto fused = std::to_array<std::pair<const char*, LlmpOp>>({
       {kTagDupUpAdd.data(), LlmpOp::kDupUpAdd},
       {kTagConv1x1.data(), LlmpOp::kConv1x1},
+      {kTagConv2dStrided.data(), LlmpOp::kConv2dStrided},
       {kTagLayerNormModulateSplit.data(), LlmpOp::kLayerNormModulateSplit},
       {kTagGatedResidualSplit.data(), LlmpOp::kGatedResidualSplit},
       {kTagAttentionMaskPack.data(), LlmpOp::kAttentionMaskPack},
@@ -1217,6 +1219,136 @@ ggml_tensor* Conv1x1(ggml_context* context, ggml_tensor* kernel, ggml_tensor* x,
                      ggml_tensor* bias) {
   return Custom(context, GGML_TYPE_F32, {x->ne[0], x->ne[1], kernel->ne[3], x->ne[3]},
                 {kernel, x, bias}, kTagConv1x1.data());
+}
+
+ggml_tensor* Conv2dStrided(ggml_context* context, ggml_tensor* kernel, ggml_tensor* x,
+                           ggml_tensor* bias, std::int64_t stride, std::int64_t padding,
+                           std::int64_t dilation) {
+  if (kernel == nullptr || x == nullptr || stride <= 0 || padding < 0 || dilation <= 0 ||
+      kernel->ne[0] <= 0 || kernel->ne[1] <= 0 || x->ne[0] <= 0 || x->ne[1] <= 0)
+    return nullptr;
+  const auto output_extent = [stride, padding, dilation](std::int64_t input,
+                                                         std::int64_t kernel_size) {
+    std::int64_t padded = 0, effective = 0;
+    if (__builtin_mul_overflow(padding, std::int64_t{2}, &padded) ||
+        __builtin_add_overflow(input, padded, &padded) ||
+        __builtin_mul_overflow(kernel_size - 1, dilation, &effective) ||
+        __builtin_add_overflow(effective, std::int64_t{1}, &effective) || padded < effective)
+      return std::int64_t{0};
+    return (padded - effective) / stride + 1;
+  };
+  const auto ow = output_extent(x->ne[0], kernel->ne[0]);
+  const auto oh = output_extent(x->ne[1], kernel->ne[1]);
+  if (ow <= 0 || oh <= 0) return nullptr;
+  return WithInts(Custom(context, GGML_TYPE_F32, {ow, oh, kernel->ne[3], x->ne[3]},
+                         {kernel, x, bias}, kTagConv2dStrided.data()),
+                  {stride, padding, dilation});
+}
+
+namespace {
+bool PackedConv(const ggml_tensor* tensor) {
+  if (tensor == nullptr || (tensor->type != GGML_TYPE_F32 && tensor->type != GGML_TYPE_BF16))
+    return false;
+  std::uint64_t stride = ggml_type_size(tensor->type);
+  for (int axis = 0; axis < GGML_MAX_DIMS; ++axis) {
+    if (tensor->ne[axis] <= 0 || tensor->nb[axis] != stride ||
+        __builtin_mul_overflow(stride, static_cast<std::uint64_t>(tensor->ne[axis]), &stride))
+      return false;
+  }
+  return true;
+}
+
+bool WithinRoot(const ggml_tensor* tensor) {
+  if (tensor == nullptr || !Bound(tensor) || !AllSane({tensor})) return false;
+  const ggml_tensor* slow = tensor;
+  const ggml_tensor* fast = tensor;
+  do {
+    slow = slow->view_src;
+    fast = fast != nullptr && fast->view_src != nullptr ? fast->view_src->view_src : nullptr;
+    if (slow != nullptr && slow == fast) return false;
+  } while (slow != nullptr && fast != nullptr);
+  const ggml_tensor* root = tensor;
+  for (const ggml_tensor* view = tensor; view->view_src != nullptr; view = view->view_src) {
+    const auto parent_begin = reinterpret_cast<std::uintptr_t>(view->view_src->data);
+    std::uintptr_t expected = 0;
+    if (view->view_src->data == nullptr ||
+        __builtin_add_overflow(parent_begin, static_cast<std::uintptr_t>(view->view_offs),
+                               &expected) ||
+        expected != reinterpret_cast<std::uintptr_t>(view->data))
+      return false;
+    root = view->view_src;
+  }
+  const auto tensor_size = detail::Extent(tensor);
+  const auto root_size = detail::Extent(root);
+  if (!tensor_size || !root_size) return false;
+  const auto begin = reinterpret_cast<std::uintptr_t>(tensor->data);
+  const auto root_begin = reinterpret_cast<std::uintptr_t>(root->data);
+  std::uintptr_t end = 0, root_end = 0;
+  return !__builtin_add_overflow(begin, static_cast<std::uintptr_t>(*tensor_size), &end) &&
+         !__builtin_add_overflow(root_begin, static_cast<std::uintptr_t>(*root_size), &root_end) &&
+         begin >= root_begin && end <= root_end;
+}
+
+const ggml_tensor* RootOf(const ggml_tensor* tensor) {
+  while (tensor->view_src != nullptr) tensor = tensor->view_src;
+  return tensor;
+}
+}  // namespace
+
+std::expected<void, KernelFailure> CheckConv2dStrided(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, LlmpOp::kConv2dStrided, 3); !checked) return checked;
+  const ggml_tensor* w = node->src[0];
+  const ggml_tensor* x = node->src[1];
+  const ggml_tensor* bias = node->src[2];
+  const auto stride = LlmpOpInt(node, 0);
+  const auto padding = LlmpOpInt(node, 1);
+  const auto dilation = LlmpOpInt(node, 2);
+  const bool w_f32 = w->type == GGML_TYPE_F32;
+  const bool w_bf16 = w->type == GGML_TYPE_BF16;
+  const bool b_f32 = bias->type == GGML_TYPE_F32;
+  const bool b_bf16 = bias->type == GGML_TYPE_BF16;
+  if ((!w_f32 && !w_bf16) || (!b_f32 && !b_bf16) || !IsF32(x) || !IsF32(node) || stride <= 0 ||
+      padding < 0 || dilation <= 0 ||
+      !std::ranges::all_of(
+          w->ne, [](auto v) { return v > 0; }) ||
+      !std::ranges::all_of(
+          x->ne, [](auto v) { return v > 0; }) ||
+      x->ne[2] != w->ne[2] || bias->ne[0] != w->ne[3] || bias->ne[1] != 1 || bias->ne[2] != 1 ||
+      bias->ne[3] != 1 || node->ne[2] != w->ne[3] || node->ne[3] != x->ne[3])
+    return Rejected("spatial fallback needs F32 activations and F32/BF16 strided weights and bias");
+  const auto output_extent = [stride, padding, dilation](std::int64_t input,
+                                                         std::int64_t kernel_size) {
+    std::int64_t padded = 0, effective = 0;
+    if (__builtin_mul_overflow(static_cast<std::int64_t>(padding), std::int64_t{2}, &padded) ||
+        __builtin_add_overflow(input, padded, &padded) ||
+        __builtin_mul_overflow(kernel_size - 1, static_cast<std::int64_t>(dilation), &effective) ||
+        __builtin_add_overflow(effective, std::int64_t{1}, &effective) || padded < effective)
+      return std::int64_t{0};
+    return (padded - effective) / stride + 1;
+  };
+  const auto ow = output_extent(x->ne[0], w->ne[0]);
+  const auto oh = output_extent(x->ne[1], w->ne[1]);
+  const auto output_count = detail::Product({node->ne[0], node->ne[1], node->ne[2], node->ne[3]});
+  std::int64_t max_x = 0, max_y = 0, kernel_x = 0, kernel_y = 0;
+  if (ow == 0 || oh == 0 || node->ne[0] != ow || node->ne[1] != oh || !output_count ||
+      *output_count > static_cast<std::uint64_t>(kInt32Max) ||
+      __builtin_mul_overflow(ow - 1, static_cast<std::int64_t>(stride), &max_x) ||
+      __builtin_mul_overflow(oh - 1, static_cast<std::int64_t>(stride), &max_y) ||
+      __builtin_mul_overflow(w->ne[0] - 1, static_cast<std::int64_t>(dilation), &kernel_x) ||
+      __builtin_mul_overflow(w->ne[1] - 1, static_cast<std::int64_t>(dilation), &kernel_y) ||
+      __builtin_add_overflow(max_x, kernel_x, &max_x) ||
+      __builtin_add_overflow(max_y, kernel_y, &max_y) ||
+      std::ranges::any_of(w->ne, [](auto v) { return std::cmp_greater(v, kInt32Max); }) ||
+      std::ranges::any_of(x->ne, [](auto v) { return std::cmp_greater(v, kInt32Max); }) ||
+      !WithinRoot(w) || !WithinRoot(x) || !WithinRoot(bias) || !WithinRoot(node) ||
+      !PackedConv(x) || !PackedConv(bias) || !PackedConv(node) || !detail::ElementStrides(w) ||
+      w->nb[0] != ggml_type_size(w->type) || !Aligned(w, ggml_type_size(w->type)) ||
+      !Aligned(x, 4) || !Aligned(bias, ggml_type_size(bias->type)) || !Aligned(node, 4) ||
+      !Disjoint(node, RootOf(w), false) || !Disjoint(node, x, false) ||
+      !Disjoint(node, RootOf(bias), false) || std::cmp_greater(ggml_nelements(node), kInt32Max) ||
+      ggml_nbytes(node) > kInt32Max - 256)
+    return Rejected("spatial fallback geometry, source view, alignment or output bounds differ");
+  return {};
 }
 
 std::expected<void, KernelFailure> CheckConv1x1(const ggml_tensor* node) {

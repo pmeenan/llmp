@@ -381,10 +381,8 @@ std::expected<std::uint64_t, std::string> MetadataBound(
     if (!Values(owners[i].shape) ||
         (options.input_encoding != format::Encoding::kF32 &&
          options.input_encoding != format::Encoding::kI32) ||
-        (options.input_encoding == format::Encoding::kF32 &&
-         owners[i].shape.channels != stage.stream.width) ||
         owners[i].owner >= ir::kJoinedSegment || (i && owners[i - 1].owner >= owners[i].owner))
-      return std::unexpected("spatial owner order or initial channels/dimensions differ");
+      return std::unexpected("spatial owner order or initial dimensions differ");
   }
   if (options.inputs.size() > kTensors)
     return std::unexpected("spatial additional root inventory exceeds its bound");
@@ -474,6 +472,27 @@ std::expected<SpatialShape, std::string> InferSpatialShape(const Instance& insta
   if (!instance.def || MaxSpatialNodes(*instance.def) == 0)
     return std::unexpected("component has no spatial shape rule");
   return instance.def->spatial->infer(instance, shape, auxiliary);
+}
+
+std::expected<SpatialOperand, std::string> InferSpatialOutput(
+    const Instance& instance, SpatialOperand input, std::optional<SpatialOperand> auxiliary,
+    std::optional<SpatialOperand> carry) {
+  if (!instance.def || MaxSpatialNodes(*instance.def) == 0)
+    return std::unexpected("component has no spatial shape rule");
+  if (!Values(input.shape) || input.encoding != InputSpatialEncoding(*instance.def))
+    return std::unexpected("spatial input shape or encoding differs from component contract");
+  if (auxiliary &&
+      (!Values(auxiliary->shape) || auxiliary->encoding != AuxiliarySpatialEncoding(*instance.def)))
+    return std::unexpected("spatial auxiliary shape or encoding differs from component contract");
+  if (carry.has_value() != NeedsSpatialCarry(*instance.def) ||
+      (carry && (!Values(carry->shape) || carry->encoding != format::Encoding::kF32 ||
+                 carry->shape != CarrySpatialShape(*instance.def, input.shape))))
+    return std::unexpected("spatial carry shape or encoding differs from component contract");
+  auto output = InferSpatialShape(instance, input.shape,
+                                  auxiliary ? std::optional(auxiliary->shape) : std::nullopt);
+  if (!output) return std::unexpected(output.error());
+  if (!Values(*output)) return std::unexpected("spatial output exceeds representable storage");
+  return SpatialOperand{.shape = *output, .encoding = format::Encoding::kF32};
 }
 
 std::expected<SpatialValue, std::string> EmitSpatialFragment(SpatialFragment& fragment) {
@@ -610,16 +629,15 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
           link.carry_port
               ? ports[*link.carry_port]->encoding
               : (link.carry && *link.carry == 0 ? options.input_encoding : format::Encoding::kF32);
-      if (source_encoding != InputSpatialEncoding(def) ||
-          (auxiliary && auxiliary_encoding != AuxiliarySpatialEncoding(def)) ||
-          carry.has_value() != NeedsSpatialCarry(def) ||
-          (carry && (carry_encoding != format::Encoding::kF32 ||
-                     *carry != CarrySpatialShape(def, source_shape))))
-        return std::unexpected(
-            "spatial typed operands or original carry do not match component contract");
-      auto next = InferSpatialShape(*instance, source_shape, auxiliary);
-      if (!next) return std::unexpected(next.error());
-      shape = *next;
+      auto typed = InferSpatialOutput(
+          *instance, {.shape = source_shape, .encoding = source_encoding},
+          auxiliary
+              ? std::optional(SpatialOperand{.shape = *auxiliary, .encoding = auxiliary_encoding})
+              : std::nullopt,
+          carry ? std::optional(SpatialOperand{.shape = *carry, .encoding = carry_encoding})
+                : std::nullopt);
+      if (!typed) return std::unexpected(typed.error());
+      shape = typed->shape;
       inferred.push_back(shape);
       if (__builtin_add_overflow(values, *Values(shape), &values))
         return std::unexpected("spatial reference inventory overflows");
@@ -640,10 +658,9 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
         const auto parts = format::PartsOf(role.format);
         if (role.use_stage != 0 || role.rows_per_token || role.head_rows || !parts ||
             parts->size() != 1 || role.parts.size() != 1 ||
-            role.format.layout != format::Layout::kDense ||
-            (role.format.encoding != format::Encoding::kF32 &&
-             role.format.encoding != format::Encoding::kBF16))
-          return std::unexpected("spatial roles need complete dense F32/BF16 source parts");
+            (*parts)[0].role != format::PartRole::kData ||
+            role.parts[0].second != format::PartRole::kData)
+          return std::unexpected("spatial roles need one complete encoded source data part");
         std::uint64_t count = 1;
         for (auto n : role.format.shape.ne)
           if (__builtin_mul_overflow(count, n, &count))

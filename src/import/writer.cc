@@ -816,7 +816,7 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   std::optional<std::uint32_t> output_shard;
   for (std::size_t f = 0; f < source.files.size(); ++f) {
     const auto& input = source.files[f];
-    const bool gguf = source.container == "gguf";
+    const bool gguf = source.container == "gguf" && input.name.ends_with(".gguf");
     const bool keep = gguf || ((input.name.ends_with(".json") || input.name.ends_with(".jinja") ||
                                 input.name == "tokenizer.model") &&
                                ResolvesInside(input.path.parent_path(), input.path));
@@ -1202,6 +1202,7 @@ std::expected<publication_detail::PlacementSummary, Error> publication_detail::I
                        .planned_folds = plan.planned_folds(),
                        .source_folds = plan.applied_folds(),
                        .generated = plan.generated(),
+                       .groups = plan.groups(),
                        .mapping_architecture = plan.mapping_architecture(),
                        .mapping_version = plan.architecture_version()},
                       metadata_bytes);
@@ -1239,6 +1240,7 @@ std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
                   .planned_folds = plan.planned_folds(),
                   .source_folds = plan.applied_folds(),
                   .generated = plan.generated(),
+                  .groups = plan.groups(),
                   .mapping_architecture = plan.mapping_architecture(),
                   .mapping_version = plan.architecture_version()},
                  options);

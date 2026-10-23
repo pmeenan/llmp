@@ -40,6 +40,7 @@
 #include "model/image_pipeline.h"
 #include "spec/mapping.h"
 #include "spec/spec.h"
+#include "spec/stage_recipe.h"
 
 namespace llmp::spec {
 
@@ -58,6 +59,13 @@ struct ImageComponentRule {
   StageRole stage_role = StageRole::kTextEncoder;
   std::span<const std::string_view> kinds{};  // the family components its stage holds
   std::span<const std::string_view> architectures{};
+  // Containers this role's mapping accepts; source config architecture and
+  // each tensor's actual format are still validated independently.
+  std::span<const std::string_view> containers{};
+  // The stage's import-time topology, expanded into the ordinary stored
+  // stage graph. A null recipe is reserved for text mapping until its
+  // separate encoder recipe is migrated.
+  const StageRecipe* recipe = nullptr;
   // The checkpoint's tensors the stage does not run (a text encoder's vision
   // tower and output head, a VAE's encoder), left out of the import: a name
   // ending in '.' covers every tensor under it, another one whole name; a

@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
@@ -73,6 +74,63 @@ struct Budget {
   }
 };
 constexpr std::array kOwners{SpatialOwner{1, {3, 2, 2, 1}}, SpatialOwner{4, {2, 3, 2, 1}}};
+
+TEST(SpatialComponentsTest, BuilderAcceptsProjectedPrimaryChannelsThatDifferFromStreamWidth) {
+  spec::Stage stage{.name = "flow", .role = spec::StageRole::kDenoiser};
+  stage.stream.width = 64;
+  spec::ComponentRef projection{.kind = "projection.spatial",
+                                .params = {{"in_channels", std::int64_t{32}},
+                                           {"out_channels", std::int64_t{64}},
+                                           {"gelu", false}},
+                                .weights = {{.role = "weight", .tensor = "projection.weight"}}};
+  spec::Layer layer;
+  layer.components.push_back(std::move(projection));
+  stage.layers.push_back(std::move(layer));
+  spec::ModelSpec model{.pipeline = spec::PipelineKind::kImage, .stages = {stage}};
+  spec::Canonicalize(model);
+  const std::vector<BoundTensor> tensors{
+      {"projection.weight", ir::Dense(format::Encoding::kF32, ir::ShapeOf({32, 64}))}};
+  const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+  const std::array owners{SpatialOwner{0, {1, 1, 32, 1}}};
+  Budget budget;
+  auto graph =
+      BuildSpatialStep(model, tables, owners, budget.Payment(), {.reference_buffers = false});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  ASSERT_EQ(graph->outputs().size(), 1U);
+  EXPECT_EQ(graph->inputs()[0].shape, (SpatialShape{1, 1, 32, 1}));
+  EXPECT_EQ(graph->outputs()[0].shape, (SpatialShape{1, 1, 64, 1}));
+}
+
+TEST(SpatialComponentsTest, ProjectionRoleRetainsSinglePartGgmlQuantFormats) {
+  spec::Stage stage{.name = "flow", .role = spec::StageRole::kDenoiser};
+  stage.stream.width = 256;
+  spec::ComponentRef projection{.kind = "projection.spatial",
+                                .params = {{"in_channels", std::int64_t{256}},
+                                           {"out_channels", std::int64_t{256}},
+                                           {"gelu", false}},
+                                .weights = {{.role = "weight", .tensor = "projection.weight"}}};
+  spec::Layer layer;
+  layer.components.push_back(std::move(projection));
+  stage.layers.push_back(std::move(layer));
+  spec::ModelSpec model{.pipeline = spec::PipelineKind::kImage, .stages = {stage}};
+  spec::Canonicalize(model);
+  const std::array owners{SpatialOwner{0, {1, 1, 256, 1}}};
+  const auto quant_shape = *format::ShapeOf(std::array<std::uint64_t, 2>{256, 256});
+  for (const auto encoding : {format::Encoding::kQ4_K, format::Encoding::kQ6_K}) {
+    const std::vector<BoundTensor> tensors{
+        {"projection.weight",
+         {.encoding = encoding, .layout = format::Layout::kGgmlBlocks, .shape = quant_shape}}};
+    const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+    Budget budget;
+    auto graph =
+        BuildSpatialStep(model, tables, owners, budget.Payment(), {.reference_buffers = false});
+    ASSERT_TRUE(graph) << Failed(graph).value_or("");
+    ASSERT_EQ(graph->weights().size(), 1U);
+    EXPECT_EQ(graph->graph().tensor(graph->weights()[0].tensor).format.encoding, encoding);
+    EXPECT_EQ(graph->graph().tensor(graph->weights()[0].tensor).format.layout,
+              format::Layout::kGgmlBlocks);
+  }
+}
 
 TEST(SpatialComponentsTest, RenamedDefinitionExecutesSpatialHooksAndMissingHooksRefuse) {
   // An unseen kind uses the registered definition's real RMS arithmetic and
@@ -164,6 +222,356 @@ TEST(SpatialComponentsTest, WeightReferencesRetainExplicitPipelineStage) {
     ASSERT_NE(binding, nullptr);
     EXPECT_EQ(binding->stage, 2U);
   }
+}
+
+TEST(SpatialComponentsTest, BiasedProjectionAddsBeforeActivation) {
+  spec::ComponentRef ref{
+      .kind = "projection.spatial",
+      .params = {{"bias", true},
+                 {"gelu", true},
+                 {"in_channels", std::int64_t{2}},
+                 {"out_channels", std::int64_t{2}}},
+      .weights = {{.role = "bias", .tensor = "b"}, {.role = "weight", .tensor = "w"}}};
+  const auto* def = Find(ref.kind, ref.version);
+  ASSERT_NE(def, nullptr);
+  auto params = Params::Of(def->params, ref);
+  ASSERT_TRUE(params);
+  Instance instance{.def = def, .ref = &ref, .params = std::move(*params), .stage = {.width = 2}};
+  RefIO io{.instance = &instance,
+           .segments = {{.rows = 1}},
+           .stream = {1.0, -2.0},
+           .weights = {{2.0, 0.5, -1.0, 3.0}, {0.75, -0.25}}};
+  ASSERT_TRUE(def->reference(io));
+  const auto activate = [](double x) {
+    return x * 0.5 * (1.0 + std::tanh(0.7978845608028654 * (x + 0.044715 * x * x * x)));
+  };
+  EXPECT_NEAR(io.stream[0], activate(1.0 * 2.0 + -2.0 * 0.5 + 0.75), 1e-14);
+  EXPECT_NEAR(io.stream[1], activate(1.0 * -1.0 + -2.0 * 3.0 - 0.25), 1e-14);
+}
+
+TEST(SpatialComponentsTest, ConditionRowsBroadcastsSingleRowAndKeepsTwoRowSelection) {
+  spec::ComponentRef ref{.kind = "condition.rows",
+                         .params = {{"prefix_rows", std::int64_t{1}},
+                                    {"quarter", std::int64_t{1}},
+                                    {"quarters", std::int64_t{2}}}};
+  const auto* def = Find(ref.kind, ref.version);
+  ASSERT_NE(def, nullptr);
+  auto params = Params::Of(def->params, ref);
+  ASSERT_TRUE(params);
+  Instance instance{.def = def, .ref = &ref, .params = std::move(*params), .stage = {.width = 2}};
+  const SpatialShape shape{1, 3, 2, 1};
+  auto one = InferSpatialShape(instance, shape, SpatialShape{1, 1, 4, 1});
+  ASSERT_TRUE(one);
+  const std::array<double, 6> zero_input{};
+  const std::array<double, 4> broadcast_values{10, 11, 20, 21};
+  SpatialRefIO broadcast{.instance = instance,
+                         .shape = shape,
+                         .input = zero_input,
+                         .auxiliary = broadcast_values,
+                         .auxiliary_shape = SpatialShape{1, 1, 4, 1}};
+  ASSERT_TRUE(RunSpatialReference(broadcast));
+  EXPECT_EQ(broadcast.output, (std::vector<double>{20, 20, 20, 21, 21, 21}));
+  auto two = InferSpatialShape(instance, shape, SpatialShape{1, 2, 4, 1});
+  ASSERT_TRUE(two);
+  const std::array<double, 8> selected_values{1, 2, 3, 4, 10, 11, 20, 21};
+  SpatialRefIO selected{.instance = instance,
+                        .shape = shape,
+                        .input = zero_input,
+                        .auxiliary = selected_values,
+                        .auxiliary_shape = SpatialShape{1, 2, 4, 1}};
+  ASSERT_TRUE(RunSpatialReference(selected));
+  EXPECT_EQ(selected.output, (std::vector<double>{11, 10, 10, 21, 20, 20}));
+  EXPECT_FALSE(InferSpatialShape(instance, shape, SpatialShape{1, 3, 4, 1}));
+}
+
+TEST(SpatialComponentsTest, ConditionRowsSingleAndPairedViewsExecuteWithinTheirSourceExtent) {
+  for (const std::uint64_t aux_rows : {1U, 2U}) {
+    spec::Stage stage{.name = "vae", .role = spec::StageRole::kVae, .artifact = 0};
+    stage.stream.width = 2;
+    spec::Layer layer;
+    layer.components.push_back({.kind = "condition.rows",
+                                .version = 1,
+                                .params = {{"prefix_rows", std::int64_t{1}},
+                                           {"quarter", std::int64_t{1}},
+                                           {"quarters", std::int64_t{2}}}});
+    stage.layers.push_back(std::move(layer));
+    spec::ModelSpec model{.pipeline = spec::PipelineKind::kImage, .stages = {std::move(stage)}};
+    spec::Canonicalize(model);
+    const std::array<std::span<const BoundTensor>, 1> tables{std::span<const BoundTensor>{}};
+    const std::array owners{SpatialOwner{0, {1, 3, 2, 1}}};
+    const std::array ports{SpatialInput{0, 0, {1, aux_rows, 4, 1}}};
+    const std::array links{SpatialLink{.input = 0, .auxiliary_port = 0}};
+    Budget budget;
+    auto graph = BuildSpatialStep(model, tables, owners, budget.Payment(),
+                                  {.links = links, .inputs = ports});
+    ASSERT_TRUE(graph) << Failed(graph).value_or("");
+    auto executor = ref::Executor::Create(graph->graph());
+    ASSERT_TRUE(executor) << Failed(executor, &ref::ExecFailure::detail).value_or("");
+    const std::array<float, 6> input{};
+    const std::vector<float> auxiliary = aux_rows == 1
+                                             ? std::vector<float>{10, 11, 20, 21}
+                                             : std::vector<float>{1, 2, 3, 4, 10, 11, 20, 21};
+    ASSERT_TRUE(executor->BindValues(graph->graph().inputs()[0], input));
+    ASSERT_TRUE(executor->BindValues(graph->graph().inputs()[1], auxiliary));
+    ASSERT_TRUE(executor->Run());
+    auto output = executor->Values(graph->graph().outputs()[0]);
+    ASSERT_TRUE(output);
+    if (aux_rows == 1)
+      EXPECT_EQ(*output, (std::vector<float>{20, 20, 20, 21, 21, 21}));
+    else
+      EXPECT_EQ(*output, (std::vector<float>{11, 10, 10, 21, 20, 20}));
+  }
+}
+
+TEST(SpatialComponentsTest, CausalFirstFrameConvolutionUsesStridedLastTemporalPlane) {
+  for (const auto encoding : {format::Encoding::kF32, format::Encoding::kBF16})
+    for (const std::int64_t depth : {1, 3}) {
+      spec::Stage stage{.name = "vae", .role = spec::StageRole::kVae, .artifact = 0};
+      stage.stream.width = 2;
+      spec::Layer layer;
+      layer.components.push_back({.kind = "conv.causal_first_frame",
+                                  .version = 1,
+                                  .params = {{"in_channels", std::int64_t{2}},
+                                             {"out_channels", std::int64_t{3}},
+                                             {"kernel_width", std::int64_t{2}},
+                                             {"kernel_height", std::int64_t{3}},
+                                             {"kernel_depth", depth},
+                                             {"padding", std::int64_t{1}}},
+                                  .weights = {{.role = "kernel", .tensor = "kernel"},
+                                              {.role = "bias", .tensor = "bias"}}});
+      stage.layers.push_back(std::move(layer));
+      spec::ModelSpec model{.pipeline = spec::PipelineKind::kImage, .stages = {std::move(stage)}};
+      spec::Canonicalize(model);
+      const std::vector<BoundTensor> tensors{
+          {"kernel",
+           ir::Dense(encoding, ir::ShapeOf({2, 3, static_cast<std::uint64_t>(depth), 6}))},
+          {"bias", ir::Dense(encoding, ir::ShapeOf({3}))}};
+      const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+      const std::array owners{SpatialOwner{0, {3, 2, 2, 1}}};
+      Budget budget;
+      auto graph = BuildSpatialStep(model, tables, owners, budget.Payment());
+      ASSERT_TRUE(graph) << Failed(graph).value_or("");
+      const auto& nodes = graph->graph().nodes();
+      ASSERT_EQ(
+          std::ranges::count_if(
+              nodes, [](const auto& node) { return node.key == ir::Primitive(ir::Op::kView); }),
+          1);
+      ASSERT_EQ(
+          std::ranges::count_if(
+              nodes, [](const auto& node) { return node.key == ir::Primitive(ir::Op::kConv2d); }),
+          1);
+      const auto view = std::ranges::find_if(
+          nodes, [](const auto& node) { return node.key == ir::Primitive(ir::Op::kView); });
+      ASSERT_NE(view, nodes.end());
+      const auto elem = encoding == format::Encoding::kBF16 ? 2U : 4U;
+      ASSERT_EQ(view->nout, 1);
+      const auto& descriptor = graph->graph().tensor(view->out[0]);
+      EXPECT_EQ(view->src[0], graph->weights()[0].tensor);
+      EXPECT_EQ(graph->weights().size(), 2U);
+      EXPECT_EQ(descriptor.shape(), ir::ShapeOf({2, 3, 2, 3}));
+      EXPECT_EQ(
+          std::ranges::count_if(
+              nodes, [](const auto& node) { return node.key == ir::Primitive(ir::Op::kCont); }),
+          0);
+      EXPECT_EQ(descriptor.view_offset, 6U * static_cast<std::uint64_t>(depth - 1) * elem);
+      EXPECT_EQ(descriptor.nb[0], elem);
+      EXPECT_EQ(descriptor.nb[1], 2U * elem);
+      EXPECT_EQ(descriptor.nb[2], 6U * static_cast<std::uint64_t>(depth) * elem);
+      EXPECT_EQ(descriptor.nb[3], 12U * static_cast<std::uint64_t>(depth) * elem);
+      auto executor = ref::Executor::Create(graph->graph());
+      ASSERT_TRUE(executor) << Failed(executor, &ref::ExecFailure::detail).value_or("");
+      std::vector<float> kernel(36U * static_cast<std::uint64_t>(depth)), bias{0.25F, -0.5F, 1.0F};
+      for (std::size_t i = 0; i < kernel.size(); ++i)
+        kernel[i] = static_cast<float>(static_cast<int>(i) - 25) / 16.0F;
+      std::vector<float> input{1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5, -6};
+      for (const auto& weight : graph->weights())
+        ASSERT_TRUE(
+            executor->BindValues(weight.tensor, weight.parts[0].first == "kernel" ? kernel : bias));
+      ASSERT_TRUE(executor->BindValues(graph->graph().inputs()[0], input));
+      ASSERT_TRUE(executor->Run());
+      auto actual = executor->Values(graph->graph().outputs()[0]);
+      ASSERT_TRUE(actual);
+      auto instances = InstancesOf(model, 0);
+      ASSERT_TRUE(instances) << Failed(instances).value_or("");
+      const std::vector<double> input_d(input.begin(), input.end());
+      SpatialRefIO reference{.instance = instances->layers[0][0],
+                             .shape = owners[0].shape,
+                             .input = input_d,
+                             .kernel = kernel,
+                             .bias = bias};
+      ASSERT_TRUE(RunSpatialReference(reference));
+      ASSERT_EQ(actual->size(), reference.output.size());
+      for (std::size_t i = 0; i < actual->size(); ++i)
+        EXPECT_NEAR((*actual)[i], reference.output[i], 1e-4);
+    }
+  const auto* def = Find("conv.causal_first_frame", 1);
+  ASSERT_NE(def, nullptr);
+  EXPECT_EQ(MaxSpatialNodes(*def), 2);
+  auto bad = spec::ComponentRef{
+      .kind = "conv.causal_first_frame",
+      .version = 1,
+      .params = {{"in_channels", std::int64_t{2}},
+                 {"out_channels", std::int64_t{3}},
+                 {"kernel_width", std::int64_t{2}},
+                 {"kernel_height", std::int64_t{2}},
+                 {"kernel_depth", std::int64_t{3}}},
+      .weights = {{.role = "kernel", .tensor = "kernel"}, {.role = "bias", .tensor = "bias"}}};
+  auto params = Params::Of(def->params, bad);
+  ASSERT_TRUE(params);
+  Instance instance{.def = def,
+                    .ref = &bad,
+                    .params = std::move(*params),
+                    .stage = {.width = 2},
+                    .site = Site::kLayer};
+  EXPECT_FALSE(def->spatial->infer(instance, {2, 2, 1, 1}));
+
+  spec::Stage bad_stage{.name = "vae", .role = spec::StageRole::kVae, .artifact = 0};
+  bad_stage.stream.width = 2;
+  spec::Layer bad_layer;
+  bad_layer.components.push_back(bad);
+  bad_stage.layers.push_back(std::move(bad_layer));
+  spec::ModelSpec bad_model{.pipeline = spec::PipelineKind::kImage,
+                            .stages = {std::move(bad_stage)}};
+  spec::Canonicalize(bad_model);
+  const std::array bad_owner{SpatialOwner{0, {3, 2, 2, 1}}};
+  const std::vector<BoundTensor> valid_tensors{
+      {"kernel", ir::Dense(format::Encoding::kF32, ir::ShapeOf({2, 2, 3, 6}))},
+      {"bias", ir::Dense(format::Encoding::kF32, ir::ShapeOf({3}))}};
+  const std::array<std::span<const BoundTensor>, 1> valid_tables{valid_tensors};
+  Budget valid_budget;
+  auto valid = BuildSpatialStep(bad_model, valid_tables, bad_owner, valid_budget.Payment());
+  ASSERT_TRUE(valid) << Failed(valid).value_or("");
+  const std::vector<BoundTensor> wrong_shape{
+      {"kernel", ir::Dense(format::Encoding::kF32, ir::ShapeOf({2, 2, 3, 5}))},
+      {"bias", ir::Dense(format::Encoding::kF32, ir::ShapeOf({3}))}};
+  const std::array<std::span<const BoundTensor>, 1> wrong_shape_tables{wrong_shape};
+  Budget bad_budget;
+  auto bad_shape = BuildSpatialStep(bad_model, wrong_shape_tables, bad_owner, bad_budget.Payment());
+  ASSERT_FALSE(bad_shape);
+  EXPECT_NE(Failed(bad_shape).value_or("").find("not the shape its parameters imply"),
+            std::string::npos);
+  const std::vector<BoundTensor> wrong_encoding{
+      {"kernel", ir::Dense(format::Encoding::kF16, ir::ShapeOf({2, 2, 3, 6}))},
+      {"bias", ir::Dense(format::Encoding::kF16, ir::ShapeOf({3}))}};
+  const std::array<std::span<const BoundTensor>, 1> wrong_encoding_tables{wrong_encoding};
+  Budget encoding_budget;
+  auto bad_encoding =
+      BuildSpatialStep(bad_model, wrong_encoding_tables, bad_owner, encoding_budget.Payment());
+  ASSERT_FALSE(bad_encoding);
+  EXPECT_NE(
+      Failed(bad_encoding).value_or("").find("first-frame convolution kernel encoding differs"),
+      std::string::npos)
+      << Failed(bad_encoding).value_or("");
+}
+
+TEST(SpatialComponentsTest, ExpandedSpatialFragmentsFitTheirBuildSpatialStepNodeBounds) {
+  const auto build = [](spec::ComponentRef component, std::vector<BoundTensor> tensors,
+                        Budget& budget, std::vector<SpatialInput> inputs = {},
+                        std::vector<SpatialLink> links = {}) {
+    spec::Stage stage{.name = "vae", .role = spec::StageRole::kVae, .artifact = 0};
+    stage.stream.width = 2;
+    spec::Layer layer;
+    layer.components.push_back(std::move(component));
+    stage.layers.push_back(std::move(layer));
+    spec::ModelSpec model{.pipeline = spec::PipelineKind::kImage, .stages = {std::move(stage)}};
+    spec::Canonicalize(model);
+    const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+    const std::array owners{SpatialOwner{0, {2, 2, 2, 1}}};
+    return BuildSpatialStep(model, tables, owners, budget.Payment(),
+                            {.links = links, .inputs = inputs});
+  };
+
+  Budget projection_budget, norm_budget, modulation_budget;
+  auto projection = build(
+      {.kind = "projection.spatial",
+       .version = 1,
+       .params = {{"bias", true},
+                  {"gelu", true},
+                  {"in_channels", std::int64_t{2}},
+                  {"out_channels", std::int64_t{3}}},
+       .weights = {{.role = "weight", .tensor = "weight"}, {.role = "bias", .tensor = "bias"}}},
+      {{"weight", ir::Dense(format::Encoding::kBF16, ir::ShapeOf({2, 3}))},
+       {"bias", ir::Dense(format::Encoding::kBF16, ir::ShapeOf({3}))}},
+      projection_budget);
+  ASSERT_TRUE(projection) << Failed(projection).value_or("");
+  auto norm = build({.kind = "norm.channel",
+                     .version = 1,
+                     .params = {{"channels", std::int64_t{2}}, {"round_bf16", true}},
+                     .weights = {{.role = "weight", .tensor = "gamma"}}},
+                    {{"gamma", ir::Dense(format::Encoding::kBF16, ir::ShapeOf({2}))}}, norm_budget);
+  ASSERT_TRUE(norm) << Failed(norm).value_or("");
+  auto modulation =
+      build({.kind = "modulate.scale", .version = 1, .params = {{"side", std::string{"scale"}}}},
+            {}, modulation_budget, {SpatialInput{0, 0, {2, 2, 2, 1}}},
+            {SpatialLink{.input = 0, .auxiliary_port = 0}});
+  ASSERT_TRUE(modulation) << Failed(modulation).value_or("");
+  const auto projection_nodes = MaxSpatialNodes(*Find("projection.spatial", 1));
+  EXPECT_EQ(projection_nodes, 10);
+  ASSERT_EQ(projection->graph().nodes().size(), 13U);
+  EXPECT_EQ(projection->graph().nodes().size(),
+            projection_nodes + projection->graph().inputs().size() + projection->weights().size());
+  EXPECT_EQ(MaxSpatialNodes(*Find("norm.channel", 1)), 18);
+  EXPECT_EQ(MaxSpatialNodes(*Find("modulate.scale", 1)), 11);
+}
+
+TEST(SpatialComponentsTest, ScaleModulationAndChannelNormExposeExplicitBf16RoundPoints) {
+  spec::ComponentRef mod_ref{.kind = "modulate.scale", .params = {{"side", std::string{"scale"}}}};
+  const auto* mod_def = Find(mod_ref.kind, mod_ref.version);
+  ASSERT_NE(mod_def, nullptr);
+  auto mod_params = Params::Of(mod_def->params, mod_ref);
+  ASSERT_TRUE(mod_params);
+  Instance mod{
+      .def = mod_def, .ref = &mod_ref, .params = std::move(*mod_params), .stage = {.width = 2}};
+  RefIO mod_io{.instance = &mod,
+               .segments = {{.rows = 2}},
+               .stream = {2.0, -1.0, 3.0, 4.0},
+               .side = {0.5, 1.0, -1.0, 0.25}};
+  ASSERT_TRUE(mod_def->reference(mod_io));
+  EXPECT_EQ(mod_io.stream, (std::vector<double>{3.0, -2.0, 0.0, 5.0}));
+
+  spec::ComponentRef norm_ref{.kind = "norm.channel",
+                              .params = {{"channels", std::int64_t{2}}, {"round_bf16", true}}};
+  auto norm_instance = MakeInstance(norm_ref, {.width = 2}, Site::kLayer, 0, 1);
+  ASSERT_TRUE(norm_instance) << Failed(norm_instance).value_or("");
+  const Instance& norm = *norm_instance;
+  const std::array gamma{0.123456789F, 0.7654321F};
+  constexpr float input0 = 0.00212345F;
+  constexpr float input1 = 0.0035096857F;
+  RefIO norm_io{.instance = &norm,
+                .segments = {{.rows = 1}},
+                .stream = {static_cast<double>(input0), static_cast<double>(input1)},
+                .weights = {{gamma[0], gamma[1]}}};
+  ASSERT_TRUE(norm.def->reference(norm_io));
+  const auto round = [](double x) {
+    float f = static_cast<float>(x);
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &f, sizeof(bits));
+    bits += 0x7FFFU + ((bits >> 16U) & 1U);
+    bits &= 0xFFFF0000U;
+    std::memcpy(&f, &bits, sizeof(f));
+    return static_cast<double>(f);
+  };
+  const double denominator = std::sqrt(input0 * input0 + input1 * input1);
+  const double expected = round(round(round(input0 / denominator) * std::sqrt(2.0)) * gamma[0]);
+  EXPECT_DOUBLE_EQ(norm_io.stream[0], expected);
+
+  const planner::StepShape shape{
+      .segments = {
+          planner::Segment{.slot = 0, .rows = 1, .past = 0, .read_cells = 256, .outputs = 1}}};
+  const std::array formats{ir::Dense(format::Encoding::kF32, ir::ShapeOf({2}))};
+  auto built = BuildComponent(norm, shape, formats, {});
+  ASSERT_TRUE(built) << Failed(built).value_or("");
+  auto exec = ref::Executor::Create(built->step.graph);
+  ASSERT_TRUE(exec) << Failed(exec, &ref::ExecFailure::detail).value_or("");
+  const std::array input{input0, input1};
+  ASSERT_TRUE(exec->BindValues(built->stream_in, input));
+  ASSERT_TRUE(exec->BindValues(built->weights[0], gamma));
+  ASSERT_TRUE(exec->Run());
+  auto actual = exec->Values(built->stream_out);
+  ASSERT_TRUE(actual);
+  ASSERT_EQ(actual->size(), norm_io.stream.size());
+  for (std::size_t i = 0; i < actual->size(); ++i)
+    EXPECT_NEAR((*actual)[i], norm_io.stream[i], 1e-7);
 }
 
 class ReportProbeProgram final : public kernels::StepProgram {
@@ -1749,13 +2157,15 @@ TEST(SpatialComponentsTest, FullFlowPays563ComponentsAndRefusesDecodedReferenceB
       primitive_count += MaxSpatialNodes(*def);
     }
   }
-  EXPECT_EQ(primitive_count, 32U * 122U + 137U);
+  // Eight shared projections each budget one bias-add node and one possible
+  // low-precision bias-conversion node.
+  EXPECT_EQ(primitive_count, 32U * 122U + 137U + 16U);
   const auto metadata_nodes =
       owners.size() * (primitive_count + 1) + ports.size() + 2 * mapping->links.size();
   const auto metadata_bytes =
       4096ULL * (2 * metadata_nodes + source.size() + 4 * mapping->links.size() + 16 +
                  owners.size() * mapping->exports.size() + 2 * ports.size());
-  EXPECT_EQ(metadata_bytes, 41398272U);
+  EXPECT_EQ(metadata_bytes, 41529344U);
   EXPECT_GT(graph->metadata_bytes(), metadata_bytes);  // normalized schema parameters are extra
   RecordProperty("full_flow_primitive_ceiling", std::to_string(primitive_count));
   RecordProperty("full_flow_metadata_bytes", std::to_string(graph->metadata_bytes()));

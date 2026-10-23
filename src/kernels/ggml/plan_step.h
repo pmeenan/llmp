@@ -281,6 +281,7 @@ inline constexpr std::string_view kGatedResidualModulateSplitName =
     "llmp.image.gated_residual_modulate_split";
 inline constexpr std::string_view kDupUpAddName = "llmp.image.dup_up_add";
 inline constexpr std::string_view kConv1x1Name = "llmp.image.conv1x1";
+inline constexpr std::string_view kConv2dStridedName = "llmp.image.conv2d.strided";
 inline constexpr std::string_view kHcMixBf16Name = "llmp.hc.mix_bf16";
 inline constexpr std::string_view kMoeRouterName = "llmp.moe.router";
 inline constexpr std::string_view kGdnHistoryName = "llmp.gdn.history";

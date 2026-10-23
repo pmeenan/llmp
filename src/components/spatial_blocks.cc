@@ -185,6 +185,12 @@ std::expected<void, std::string> AttentionReference(SpatialRefIO& io) {
 constexpr std::array kProjectionParams{
     ParamSpec{.name = "in_channels", .type = ParamType::kInt, .least = 1, .most = 65536},
     ParamSpec{.name = "out_channels", .type = ParamType::kInt, .least = 1, .most = 65536},
+    ParamSpec{.name = "bias",
+              .type = ParamType::kBool,
+              .required = false,
+              .least = 0,
+              .most = 1,
+              .fallback = 0},
     ParamSpec{.name = "silu",
               .type = ParamType::kBool,
               .required = false,
@@ -198,12 +204,30 @@ constexpr std::array kProjectionParams{
               .most = 1,
               .fallback = 0},
 };
-constexpr std::array kProjectionRoles{WeightRole{.name = "weight", .encodings = kSpatialEncodings}};
+// MatMul's execution registry owns the format/backend capability boundary.
+// Empty encodings here means this linear role accepts any valid shared format;
+// spatial convolution roles retain their narrower source-encoding list.
+constexpr std::array kProjectionRoles{WeightRole{.name = "weight"},
+                                      WeightRole{.name = "bias", .encodings = kNormEncodings}};
+bool ProjectionHasBias(const Instance& in) {
+  const bool bound = in.ref && std::ranges::any_of(in.ref->weights, [](const auto& binding) {
+                       return binding.role == "bias";
+                     });
+  return in.params.Flag("bias") && bound;
+}
 std::expected<std::vector<RoleShape>, std::string> ProjectionRoles(const Instance& in) {
-  if (in.site != Site::kLayer || (in.params.Flag("silu") && in.params.Flag("gelu")))
+  const bool bias_bound = in.ref && std::ranges::any_of(in.ref->weights, [](const auto& binding) {
+                            return binding.role == "bias";
+                          });
+  if (in.site != Site::kLayer || (in.params.Flag("silu") && in.params.Flag("gelu")) ||
+      in.params.Flag("bias") != bias_bound)
     return std::unexpected("spatial projection requires a layer and at most one activation");
-  return std::vector{Role(0, {static_cast<std::uint64_t>(in.params.Int("in_channels")),
-                              static_cast<std::uint64_t>(in.params.Int("out_channels"))})};
+  std::vector<RoleShape> roles{
+      Role(0, {static_cast<std::uint64_t>(in.params.Int("in_channels")),
+               static_cast<std::uint64_t>(in.params.Int("out_channels"))})};
+  if (ProjectionHasBias(in))
+    roles.push_back(Role(1, {static_cast<std::uint64_t>(in.params.Int("out_channels"))}));
+  return roles;
 }
 std::expected<FragmentOut, std::string> ProjectionTokenEmit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
@@ -212,6 +236,12 @@ std::expected<FragmentOut, std::string> ProjectionTokenEmit(Fragment& f) {
       f.b.tensor(f.stream).ne(0) != in_channels)
     return std::unexpected("spatial projection input channels or activation flags differ");
   auto output = f.b.MatMul(f.Weight(0), f.stream);
+  if (ProjectionHasBias(f.instance)) {
+    auto bias = f.Weight(1);
+    if (f.b.tensor(bias).format.encoding != format::Encoding::kF32)
+      bias = f.b.Convert(bias, format::Encoding::kF32);
+    output = f.b.Add(output, bias);
+  }
   if (f.instance.params.Flag("silu")) output = f.b.Unary(output, ir::UnaryFn::kSilu);
   if (f.instance.params.Flag("gelu")) output = f.b.Unary(output, ir::UnaryFn::kGeluTanh);
   return FragmentOut{.stream = output};
@@ -221,15 +251,20 @@ std::expected<void, std::string> ProjectionTokenReference(RefIO& io) {
   const auto in_c = static_cast<std::uint64_t>(in.params.Int("in_channels"));
   const auto out_c = static_cast<std::uint64_t>(in.params.Int("out_channels"));
   if ((in.params.Flag("silu") && in.params.Flag("gelu")) || io.rows() == 0 ||
-      io.stream.size() != in_c * io.rows() || io.weights.size() != 1 ||
+      io.stream.size() != in_c * io.rows() || io.weights.size() < 1 || io.weights.size() > 2 ||
       io.weights[0].size() != in_c * out_c)
     return std::unexpected("spatial projection reference source extents differ");
+  if (ProjectionHasBias(in) && (io.weights.size() != 2 || io.weights[1].size() != out_c))
+    return std::unexpected("spatial projection reference bias extent differs");
+  if (!ProjectionHasBias(in) && io.weights.size() > 1 && !io.weights[1].empty())
+    return std::unexpected("spatial projection reference has an unbound bias value");
   std::vector<double> output(static_cast<std::size_t>(out_c * io.rows()));
   for (std::uint64_t r = 0; r < io.rows(); ++r)
     for (std::uint64_t c = 0; c < out_c; ++c) {
       double value = 0;
       for (std::uint64_t k = 0; k < in_c; ++k)
         value += io.stream[r * in_c + k] * io.weights[0][k + in_c * c];
+      if (ProjectionHasBias(in)) value += io.weights[1][c];
       if (in.params.Flag("silu")) value /= 1 + std::exp(-value);
       if (in.params.Flag("gelu"))
         value *=
@@ -271,7 +306,7 @@ std::expected<SpatialShape, std::string> ResidualSpatialShape(
 const SpatialOps kProjectionSpatial{.infer_shape = ProjectionSpatialShape,
                                     .emit = EmitSpatialStream<SpatialStreamLayout::kChannelRows>,
                                     .reference = RunSpatialStreamReference<>,
-                                    .max_nodes = 8};
+                                    .max_nodes = 10};
 const SpatialOps kResidualSpatial{.infer_shape = ResidualSpatialShape,
                                   .emit = EmitSpatialStream<>,
                                   .reference = RunSpatialStreamReference<false>,

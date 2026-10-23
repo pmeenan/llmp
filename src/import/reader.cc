@@ -58,8 +58,11 @@ bool ClaimsMlx(const std::filesystem::path& path) {
 // Any other directory: a Hugging Face checkpoint (config.json, safetensors).
 bool ClaimsSafetensors(const std::filesystem::path& path) { return IsDirectory(path); }
 
-constexpr std::array<ContainerReader, 5> kReaders = {{
+constexpr std::array<ContainerReader, 6> kReaders = {{
     {.container = "gguf", .claims = ClaimsGguf, .read = ReadGguf},
+    {.container = "gguf",
+     .claims = ClaimsConfiguredGgufDirectory,
+     .read = ReadConfiguredGgufDirectory},
     {.container = "diffusers", .claims = ClaimsDiffusers, .read = ReadDiffusers},
     {.container = "exl3", .claims = ClaimsExl3, .read = ReadExl3},
     {.container = "mlx", .claims = ClaimsMlx, .read = ReadMlx},

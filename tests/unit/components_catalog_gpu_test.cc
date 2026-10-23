@@ -547,6 +547,26 @@ void RunCatalogSpatialGpuCase(const CatalogSpatialCase& sc) {
                                 {.links = sc.links, .inputs = sc.inputs});
   ASSERT_TRUE(graph.has_value()) << sc.ref.kind << " (" << sc.label << "): " << graph.error();
 
+  if (sc.ref.kind == "projection.spatial" && sc.ref.weights.size() == 2) {
+    const auto bias = std::ranges::find(graph->weights(), std::uint16_t{1},
+                                        [](const StepWeight& weight) { return weight.ref.role; });
+    ASSERT_NE(bias, graph->weights().end());
+    const auto weight = std::ranges::find(graph->weights(), std::uint16_t{0},
+                                          [](const StepWeight& item) { return item.ref.role; });
+    ASSERT_NE(weight, graph->weights().end());
+    std::size_t bias_converts = 0;
+    std::size_t weight_converts = 0;
+    for (const ir::Node& node : graph->graph().nodes()) {
+      if (node.key.op != ir::Op::kConvert || node.nsrc != 1) continue;
+      if (node.src[0] == bias->tensor) ++bias_converts;
+      if (node.src[0] == weight->tensor) ++weight_converts;
+    }
+    const bool needs_bias_convert =
+        graph->graph().tensor(bias->tensor).format.encoding != Encoding::kF32;
+    EXPECT_EQ(bias_converts, needs_bias_convert ? 1U : 0U) << sc.label;
+    EXPECT_EQ(weight_converts, 0U) << sc.label;
+  }
+
   auto exec = ref::Executor::Create(graph->graph());
   ASSERT_TRUE(exec.has_value()) << sc.ref.kind << " (" << sc.label << "): " << exec.error().detail;
 
@@ -554,6 +574,7 @@ void RunCatalogSpatialGpuCase(const CatalogSpatialCase& sc) {
   std::uniform_real_distribution<float> u(-0.6F, 0.6F);
 
   std::map<ir::WeightRef, std::uint64_t> weight_addrs;
+  std::map<ir::WeightRef, std::vector<std::byte>> original_weight_bytes;
   std::vector<std::vector<float>> weights(graph->weights().size());
   std::array<std::span<const float>, 2> roles{};
   for (std::size_t i = 0; i < weights.size(); ++i) {
@@ -562,12 +583,16 @@ void RunCatalogSpatialGpuCase(const CatalogSpatialCase& sc) {
     weights[i].resize(static_cast<std::size_t>(count));
     for (float& x : weights[i]) x = u(rng);
     ASSERT_TRUE(exec->BindValues(w.tensor, weights[i]));
+    auto decoded_weights = exec->Values(w.tensor);
+    ASSERT_TRUE(decoded_weights.has_value());
+    weights[i].assign(decoded_weights->begin(), decoded_weights->end());
     roles.at(w.ref.role) = weights[i];
     const auto wbytes = exec->Bytes(w.tensor);
     ASSERT_FALSE(wbytes.empty());
     const std::uint64_t addr = mem.Allocate(wbytes.size());
     mem.Upload(addr, wbytes);
     weight_addrs[w.ref] = addr;
+    original_weight_bytes[w.ref] = std::vector<std::byte>(wbytes.begin(), wbytes.end());
   }
 
   const auto in_count = ir::Elements(graph->graph().tensor(graph->graph().inputs()[0]).shape());
@@ -615,8 +640,24 @@ void RunCatalogSpatialGpuCase(const CatalogSpatialCase& sc) {
       .auxiliary = aux_d,
       .auxiliary_shape = aux_shape,
   };
-  auto ref_st = RunSpatialReference(oracle);
-  ASSERT_TRUE(ref_st.has_value()) << sc.ref.kind << " (" << sc.label << "): " << ref_st.error();
+  if (sc.ref.kind == "projection.spatial") {
+    std::vector<std::span<const float>> bound_weights;
+    bound_weights.reserve(instance.ref->weights.size());
+    for (const spec::WeightBinding& binding : instance.ref->weights) {
+      const auto role = std::ranges::find(instance.def->roles, binding.role, &WeightRole::name);
+      ASSERT_NE(role, instance.def->roles.end());
+      const auto role_index = static_cast<std::uint16_t>(role - instance.def->roles.begin());
+      bound_weights.emplace_back(roles.at(role_index));
+    }
+    oracle.kernel = {};
+    oracle.bias = {};
+    oracle.weights = bound_weights;
+    auto ref_st = RunSpatialReference(oracle);
+    ASSERT_TRUE(ref_st.has_value()) << sc.ref.kind << " (" << sc.label << "): " << ref_st.error();
+  } else {
+    auto ref_st = RunSpatialReference(oracle);
+    ASSERT_TRUE(ref_st.has_value()) << sc.ref.kind << " (" << sc.label << "): " << ref_st.error();
+  }
 
   const std::vector<ir::TensorId> staged(graph->graph().inputs().begin(),
                                          graph->graph().inputs().end());
@@ -661,6 +702,22 @@ void RunCatalogSpatialGpuCase(const CatalogSpatialCase& sc) {
   ASSERT_TRUE(lowered.has_value())
       << sc.ref.kind << " (" << sc.label << "): " << lowered.error().detail;
 
+  if (sc.ref.kind == "conv.causal_first_frame") {
+    ASSERT_EQ(lowered->plan.steps.size(), 1U);
+    EXPECT_EQ(lowered->plan.steps.front().implementation, kg::kConv2dStridedName);
+    ASSERT_EQ(lowered->plan.steps.front().nodes.size(), 1U);
+    const ggml_tensor* custom = lowered->plan.steps.front().nodes.front();
+    EXPECT_EQ(custom->op, GGML_OP_CUSTOM);
+    ASSERT_NE(custom->src[0], nullptr);
+    ASSERT_NE(custom->src[0]->view_src, nullptr);
+    EXPECT_GT(custom->src[0]->nb[2],
+              custom->src[0]->nb[1] * static_cast<std::uint64_t>(custom->src[0]->ne[1]));
+  }
+  if (sc.ref.kind == "conv.spatial") {
+    ASSERT_FALSE(lowered->plan.steps.empty());
+    EXPECT_EQ(lowered->plan.steps.front().implementation, "ggml.conv2d.f32");
+  }
+
   for (const kn::InputSlot& slot : lowered->inputs) {
     const auto it = input_bytes.find(slot.tensor.v);
     ASSERT_NE(it, input_bytes.end());
@@ -668,6 +725,7 @@ void RunCatalogSpatialGpuCase(const CatalogSpatialCase& sc) {
     mem.Upload(slot.device_address, it->second);
   }
 
+  std::vector<float> initial_gpu_output;
   if (!lowered->plan.steps.empty()) {
     auto bound = kg::BoundGraph::Bind(env.registry(), lowered->plan);
     ASSERT_TRUE(bound.has_value())
@@ -676,11 +734,55 @@ void RunCatalogSpatialGpuCase(const CatalogSpatialCase& sc) {
     ASSERT_TRUE(gpu_ran.has_value())
         << sc.ref.kind << " (" << sc.label << "): " << gpu_ran.error().detail;
     env.Finish();
+    ASSERT_FALSE(lowered->keep.empty());
+    initial_gpu_output = mem.ReadTensorValues(lowered->keep[0]);
+
+    if (sc.ref.kind == "conv.causal_first_frame") {
+      std::vector<float> changed = input_f;
+      for (float& value : changed) value += 0.125F;
+      ASSERT_TRUE(exec->BindValues(graph->graph().inputs()[0], changed));
+      const auto replay_input_span = exec->Bytes(graph->graph().inputs()[0]);
+      const std::vector<std::byte> replay_input(replay_input_span.begin(), replay_input_span.end());
+      bool uploaded = false;
+      for (const kn::InputSlot& slot : lowered->inputs) {
+        if (slot.tensor != graph->graph().inputs()[0]) continue;
+        ASSERT_EQ(slot.bytes, replay_input.size());
+        mem.Upload(slot.device_address, replay_input);
+        uploaded = true;
+      }
+      ASSERT_TRUE(uploaded);
+      auto replay = bound->Run(env.launch());
+      ASSERT_TRUE(replay.has_value()) << sc.ref.kind << " replay: " << replay.error().detail;
+      env.Finish();
+
+      std::vector<double> changed_double(changed.begin(), changed.end());
+      SpatialRefIO replay_oracle{
+          .instance = instance,
+          .shape = sc.owner.shape,
+          .input = changed_double,
+          .kernel = roles[0],
+          .bias = roles[1],
+          .output = {},
+          .auxiliary = aux_d,
+          .auxiliary_shape = aux_shape,
+      };
+      auto replay_reference = RunSpatialReference(replay_oracle);
+      ASSERT_TRUE(replay_reference.has_value()) << replay_reference.error();
+      const auto replay_output = mem.ReadTensorValues(lowered->keep[0]);
+      EXPECT_LE(Gap(replay_output, replay_oracle.output), sc.tolerance) << sc.ref.kind << " replay";
+      for (const auto& [ref, address] : weight_addrs)
+        EXPECT_EQ(mem.DownloadBytes(address, original_weight_bytes.at(ref).size()),
+                  original_weight_bytes.at(ref))
+            << "source weight changed during replay";
+    }
   }
 
   ASSERT_FALSE(lowered->keep.empty());
-  const std::vector<float> got = mem.ReadTensorValues(lowered->keep[0]);
-  EXPECT_LE(Gap(got, oracle.output), sc.tolerance) << sc.ref.kind << " (" << sc.label << ")";
+  const std::vector<float> got =
+      initial_gpu_output.empty() ? mem.ReadTensorValues(lowered->keep[0]) : initial_gpu_output;
+  EXPECT_LE(Gap(got, oracle.output), sc.tolerance)
+      << sc.ref.kind << " (" << sc.label << ") actual[0]=" << (got.empty() ? 0.0F : got[0])
+      << " expected[0]=" << (oracle.output.empty() ? 0.0 : oracle.output[0]);
 }
 
 TEST(ComponentsCatalogGpuTest, EveryCatalogComponentAndFormatMatchesCpuReferenceOnGpu) {

@@ -169,6 +169,7 @@ std::expected<void, KernelFailure> MulMatHadamard(LaunchContext& launch, ggml_te
 std::expected<void, KernelFailure> Unary(LaunchContext& launch, ggml_tensor* node);
 // Unchanged pinned direct F32 convolution and nearest spatial upsampling.
 std::expected<void, KernelFailure> Conv2dF32(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> Conv2dStrided(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> UpsampleNearest(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> Scale(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> Clamp(LaunchContext& launch, ggml_tensor* node);

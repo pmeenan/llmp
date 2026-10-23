@@ -32,12 +32,15 @@
 namespace llmp::components::defs {
 
 const ComponentDef& SliceSpatial();
+const ComponentDef& ActivationElementwise();
 const ComponentDef& ReshapeSpatial();
 const ComponentDef& AffineChannel();
+const ComponentDef& AffineScalar();
 const ComponentDef& ResidualScaled();
 const ComponentDef& ConditionRows();
 const ComponentDef& ConcatSpatial();
 const ComponentDef& Conv2d();
+const ComponentDef& ConvCausalFirstFrame();
 const ComponentDef& ProjectionSpatial();
 const ComponentDef& UpsampleNearest();
 const ComponentDef& ResidualSpatial();
@@ -47,6 +50,7 @@ const ComponentDef& EmbeddingToken();
 const ComponentDef& EmbeddingProjected();
 const ComponentDef& NormAdaptive();
 const ComponentDef& NormChannel();
+const ComponentDef& ModulateScale();
 const ComponentDef& NormRms();
 const ComponentDef& ScaleLearned();
 const ComponentDef& AttentionDense();

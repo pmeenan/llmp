@@ -38,6 +38,7 @@
 namespace {
 
 namespace md = llmp::model;
+namespace fm = llmp::format;
 
 TEST(QwenImage, TheScheduleIsDiffusers) {
   // FlowMatchEulerDiscreteScheduler.sigmas for 40 steps over 4,096 image
@@ -151,6 +152,29 @@ TEST(QwenImage, BindingRefusesWhatTheProfileDoesNotRead) {
   resources[1].shape = {4, 2};
   resources[1].family = "ggml";
   EXPECT_FALSE(md::BindImageComponent(tensors, "Arch", "Arch", resources).has_value());
+  auto q4 = fm::TensorFormat{};
+  q4.encoding = fm::Encoding::kQ4_K;
+  q4.layout = fm::Layout::kGgmlBlocks;
+  q4.shape.rank = 2;
+  q4.shape.ne[0] = 256;
+  q4.shape.ne[1] = 2;
+  resources[1].family = "other";
+  resources[1].shape = {2, 256};
+  resources[1].actual_format = q4;
+  const std::vector<md::ImageTensor> quantized = {{"a.weight", "BF16", {2, 256}}};
+  const auto encoded = md::BindImageComponent(quantized, "Arch", "Arch", resources);
+  ASSERT_TRUE(encoded.has_value()) << encoded.error();
+  EXPECT_EQ(*encoded, (std::vector<std::uint32_t>{1}));
+  resources[1].actual_format->shape.rank = 5;
+  EXPECT_FALSE(md::BindImageComponent(quantized, "Arch", "Arch", resources).has_value());
+  resources[1].actual_format = q4;
+  resources[1].actual_format->layout = fm::Layout::kScaleAtoms;
+  EXPECT_FALSE(md::BindImageComponent(quantized, "Arch", "Arch", resources).has_value());
+  resources[1].actual_format = q4;
+  const std::vector<md::ImageTensor> wrong_actual_shape = {{"a.weight", "BF16", {2, 128}}};
+  EXPECT_FALSE(md::BindImageComponent(wrong_actual_shape, "Arch", "Arch", resources).has_value());
+  resources[1].part = fm::PartRole::kCodes;
+  EXPECT_FALSE(md::BindImageComponent(quantized, "Arch", "Arch", resources).has_value());
   resources.pop_back();
   EXPECT_FALSE(md::BindImageComponent(tensors, "Arch", "Arch", resources).has_value());
 }
@@ -328,7 +352,27 @@ TEST(QwenImage, BindsV1Artifact) {
   const std::vector<md::ImageTensor> bad_dtype = {
       {.name = "weight_a", .dtype = "F32", .shape = {64, 128}},
   };
-  EXPECT_FALSE(md::BindImageComponent(bad_dtype, "toy_arch", *artifact).has_value());
+  // The artifact's stored format is authoritative; the legacy dtype hint is
+  // not allowed to disguise or reject the actual source encoding.
+  EXPECT_TRUE(md::BindImageComponent(bad_dtype, "toy_arch", *artifact).has_value());
+
+  // An actual v1 artifact's encoded matrix is bound from its stored format,
+  // with no BF16/F32 reconstruction in the image adapter.
+  ts::V1Plan q4_plan = plan;
+  auto& encoded_resource = q4_plan.groups.front().resources.front();
+  encoded_resource.format.encoding = llmp::format::Encoding::kQ4_K;
+  encoded_resource.format.layout = llmp::format::Layout::kGgmlBlocks;
+  encoded_resource.format.shape.rank = 2;
+  encoded_resource.format.shape.ne[0] = 256;
+  encoded_resource.format.shape.ne[1] = 2;
+  const auto q4_root = ts::Publish(store, ts::Render(q4_plan));
+  auto q4_artifact = llmp::artifact::Artifact::Open(q4_root);
+  ASSERT_TRUE(q4_artifact.has_value()) << q4_artifact.error().ToString();
+  const std::vector<md::ImageTensor> encoded_weight = {
+      {.name = "weight_a", .dtype = "F32", .shape = {2, 256}}};
+  const auto encoded_binding = md::BindImageComponent(encoded_weight, "toy_arch", *q4_artifact);
+  ASSERT_TRUE(encoded_binding.has_value()) << encoded_binding.error();
+  EXPECT_EQ(*encoded_binding, (std::vector<std::uint32_t>{0}));
 
   // Refusal: artifact with folds
   ts::V1Plan plan_with_folds = plan;

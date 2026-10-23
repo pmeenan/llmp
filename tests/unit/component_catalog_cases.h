@@ -344,6 +344,10 @@ inline std::vector<CatalogTokenRecipe> CatalogTokenRecipes() {
   add("head.linear", 1, Site::kOutput, {.width = 64, .context = 4096}, {}, {}, {},
       Seg(0, 3, 0, 256, 1));
 
+  // 17a. modulate.scale v1
+  add("modulate.scale", 1, Site::kLayer, {.width = 64, .context = 256}, {P("side", N("scale"))},
+      {.side = 64}, {}, Seg(0, 3, 0, 256, 3));
+
   // 18. norm.adaptive v1
   add("norm.adaptive", 1, Site::kLayer, {.width = 64, .context = 256},
       {P("eps", R(1e-6)), P("side", N("scale"))}, {.side = 64}, {}, Seg(0, 3, 0, 256, 3));
@@ -441,6 +445,24 @@ inline std::vector<CatalogSpatialRecipe> CatalogSpatialRecipes() {
 
   // 33. conv.spatial v1
   recipes.push_back({
+      .kind = "conv.causal_first_frame",
+      .version = 1,
+      .cases = {CatalogSpatialCase{
+          .label = "bf16-folded-view-preserves-source-bytes",
+          .ref =
+              MakeRef("conv.causal_first_frame", 1,
+                      {P("in_channels", I(2)), P("kernel_depth", I(3)), P("kernel_height", I(3)),
+                       P("kernel_width", I(2)), P("out_channels", I(3)), P("padding", I(1))},
+                      {{.role = "kernel", .tensor = "kernel"}, {.role = "bias", .tensor = "bias"}}),
+          .owner = SpatialOwner{0, {3, 2, 2, 1}},
+          .inputs = {},
+          .links = {},
+          .tensors = {BoundTensor{"kernel", ir::Dense(Encoding::kBF16, ir::ShapeOf({2, 3, 3, 6}))},
+                      BoundTensor{"bias", ir::Dense(Encoding::kBF16, ir::ShapeOf({3}))}},
+      }},
+  });
+
+  recipes.push_back({
       .kind = "conv.spatial",
       .version = 1,
       .cases = {CatalogSpatialCase{
@@ -456,6 +478,46 @@ inline std::vector<CatalogSpatialRecipe> CatalogSpatialRecipes() {
           .tensors = {BoundTensor{"kernel", ir::Dense(Encoding::kF32, ir::ShapeOf({3, 3, 2, 3}))},
                       BoundTensor{"bias", ir::Dense(Encoding::kF32, ir::ShapeOf({3}))}},
       }},
+  });
+
+  // projection.spatial keeps the matrix in its source encoding and widens
+  // only the small per-channel bias for the F32 add.
+  recipes.push_back({
+      .kind = "projection.spatial",
+      .version = 1,
+      .cases =
+          {CatalogSpatialCase{
+               .label = "f32-weight-f32-bias-plain",
+               .ref = MakeRef(
+                   "projection.spatial", 1,
+                   {P("bias", B(true)), P("in_channels", I(3)), P("out_channels", I(5))},
+                   {{.role = "weight", .tensor = "weight"}, {.role = "bias", .tensor = "bias"}}),
+               .owner = SpatialOwner{0, {1, 2, 3, 1}},
+               .tensors = {BoundTensor{"weight", ir::Dense(Encoding::kF32, ir::ShapeOf({3, 5}))},
+                           BoundTensor{"bias", ir::Dense(Encoding::kF32, ir::ShapeOf({5}))}},
+           },
+           CatalogSpatialCase{
+               .label = "bf16-weight-bf16-bias-silu",
+               .ref = MakeRef(
+                   "projection.spatial", 1,
+                   {P("bias", B(true)), P("in_channels", I(3)), P("out_channels", I(5)),
+                    P("silu", B(true))},
+                   {{.role = "weight", .tensor = "weight"}, {.role = "bias", .tensor = "bias"}}),
+               .owner = SpatialOwner{0, {1, 2, 3, 1}},
+               .tensors = {BoundTensor{"weight", ir::Dense(Encoding::kBF16, ir::ShapeOf({3, 5}))},
+                           BoundTensor{"bias", ir::Dense(Encoding::kBF16, ir::ShapeOf({5}))}},
+           },
+           CatalogSpatialCase{
+               .label = "f32-weight-f16-bias-gelu",
+               .ref = MakeRef(
+                   "projection.spatial", 1,
+                   {P("bias", B(true)), P("gelu", B(true)), P("in_channels", I(3)),
+                    P("out_channels", I(5))},
+                   {{.role = "weight", .tensor = "weight"}, {.role = "bias", .tensor = "bias"}}),
+               .owner = SpatialOwner{0, {1, 2, 3, 1}},
+               .tensors = {BoundTensor{"weight", ir::Dense(Encoding::kF32, ir::ShapeOf({3, 5}))},
+                           BoundTensor{"bias", ir::Dense(Encoding::kF16, ir::ShapeOf({5}))}},
+           }},
   });
 
   // 34. reshape.spatial v1
@@ -498,6 +560,43 @@ inline std::vector<CatalogSpatialRecipe> CatalogSpatialRecipes() {
           .links = {},
           .tensors = {},
       }},
+  });
+
+  recipes.push_back({
+      .kind = "affine.scalar",
+      .version = 1,
+      .cases = {CatalogSpatialCase{
+          .label = "f32",
+          .ref = MakeRef("affine.scalar", 1, {P("bias", R(0.25)), P("scale", R(1.5))}),
+          .owner = SpatialOwner{0, {2, 1, 2, 1}},
+          .inputs = {},
+          .links = {},
+          .tensors = {},
+      }},
+  });
+
+  recipes.push_back({
+      .kind = "activation.elementwise",
+      .version = 1,
+      .cases =
+          {
+              CatalogSpatialCase{
+                  .label = "silu",
+                  .ref = MakeRef("activation.elementwise", 1, {P("activation", N("silu"))}),
+                  .owner = SpatialOwner{0, {2, 1, 2, 1}},
+                  .inputs = {},
+                  .links = {},
+                  .tensors = {},
+              },
+              CatalogSpatialCase{
+                  .label = "hardtanh",
+                  .ref = MakeRef("activation.elementwise", 1, {P("activation", N("hardtanh"))}),
+                  .owner = SpatialOwner{0, {1, 2, 2, 1}},
+                  .inputs = {},
+                  .links = {},
+                  .tensors = {},
+              },
+          },
   });
 
   return recipes;
@@ -706,6 +805,9 @@ inline void RunCatalogSpatialCpuCase(const CatalogSpatialCase& sc) {
     weights[i].resize(static_cast<std::size_t>(count));
     for (float& x : weights[i]) x = u(rng);
     ASSERT_TRUE(exec->BindValues(w.tensor, weights[i]));
+    auto decoded_weights = exec->Values(w.tensor);
+    ASSERT_TRUE(decoded_weights.has_value());
+    weights[i].assign(decoded_weights->begin(), decoded_weights->end());
     roles.at(w.ref.role) = weights[i];
   }
 
@@ -749,8 +851,24 @@ inline void RunCatalogSpatialCpuCase(const CatalogSpatialCase& sc) {
       .auxiliary = aux_d,
       .auxiliary_shape = aux_shape,
   };
-  auto ref_st = RunSpatialReference(oracle);
-  ASSERT_TRUE(ref_st.has_value()) << sc.ref.kind << " (" << sc.label << "): " << ref_st.error();
+  if (sc.ref.kind == "projection.spatial") {
+    std::vector<std::span<const float>> bound_weights;
+    bound_weights.reserve(instance.ref->weights.size());
+    for (const spec::WeightBinding& binding : instance.ref->weights) {
+      const auto role = std::ranges::find(instance.def->roles, binding.role, &WeightRole::name);
+      ASSERT_NE(role, instance.def->roles.end());
+      const auto role_index = static_cast<std::uint16_t>(role - instance.def->roles.begin());
+      bound_weights.emplace_back(roles.at(role_index));
+    }
+    oracle.kernel = {};
+    oracle.bias = {};
+    oracle.weights = bound_weights;
+    auto ref_st = RunSpatialReference(oracle);
+    ASSERT_TRUE(ref_st.has_value()) << sc.ref.kind << " (" << sc.label << "): " << ref_st.error();
+  } else {
+    auto ref_st = RunSpatialReference(oracle);
+    ASSERT_TRUE(ref_st.has_value()) << sc.ref.kind << " (" << sc.label << "): " << ref_st.error();
+  }
 
   auto actual = exec->Values(graph->graph().outputs()[0]);
   ASSERT_TRUE(actual.has_value());

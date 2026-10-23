@@ -898,6 +898,52 @@ __global__ void ScaledRopeExtKernel(const char* x_bytes, const std::int32_t* pos
   }
 }
 
+__device__ float ConvWeight(const void* data, bool bf16, std::uint64_t index) {
+  return bf16 ? __bfloat162float(static_cast<const nv_bfloat16*>(data)[index])
+              : static_cast<const float*>(data)[index];
+}
+
+__global__ void Conv2dStridedKernel(
+    const void* weight, bool weight_bf16, std::uint64_t w0, std::uint64_t w1, std::uint64_t w2,
+    std::uint64_t w3, const float* input, std::uint64_t x1, std::uint64_t x2, std::uint64_t x3,
+    const void* bias, bool bias_bf16, std::uint64_t b0, float* output, std::int64_t width,
+    std::int64_t height, std::int64_t input_width, std::int64_t input_height,
+    std::int64_t out_channels, std::int64_t images, std::int64_t kw, std::int64_t kh,
+    std::int64_t in_channels, std::int64_t stride, std::int64_t padding, std::int64_t dilation,
+    std::uint64_t total) {
+  for (std::uint64_t index = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < total; index += static_cast<std::uint64_t>(gridDim.x) * blockDim.x) {
+    std::uint64_t remaining = index;
+    const auto ox = static_cast<std::int64_t>(remaining % static_cast<std::uint64_t>(width));
+    remaining /= static_cast<std::uint64_t>(width);
+    const auto oy = static_cast<std::int64_t>(remaining % static_cast<std::uint64_t>(height));
+    remaining /= static_cast<std::uint64_t>(height);
+    const auto oc = static_cast<std::int64_t>(remaining % static_cast<std::uint64_t>(out_channels));
+    const auto batch =
+        static_cast<std::int64_t>(remaining / static_cast<std::uint64_t>(out_channels));
+    if (batch >= images) return;
+    float sum = 0.0F;
+    for (std::int64_t ic = 0; ic < in_channels; ++ic) {
+      for (std::int64_t ky = 0; ky < kh; ++ky) {
+        const std::int64_t iy = oy * stride + ky * dilation - padding;
+        if (iy < 0 || iy >= input_height) continue;
+        for (std::int64_t kx = 0; kx < kw; ++kx) {
+          const std::int64_t ix = ox * stride + kx * dilation - padding;
+          if (ix < 0 || ix >= input_width) continue;
+          const auto wi = static_cast<std::uint64_t>(kx) * w0 +
+                          static_cast<std::uint64_t>(ky) * w1 +
+                          static_cast<std::uint64_t>(ic) * w2 + static_cast<std::uint64_t>(oc) * w3;
+          const auto xi = static_cast<std::uint64_t>(ix) + static_cast<std::uint64_t>(iy) * x1 +
+                          static_cast<std::uint64_t>(ic) * x2 +
+                          static_cast<std::uint64_t>(batch) * x3;
+          sum = fmaf(ConvWeight(weight, weight_bf16, wi), input[xi], sum);
+        }
+      }
+    }
+    output[index] = sum + ConvWeight(bias, bias_bf16, static_cast<std::uint64_t>(oc) * b0);
+  }
+}
+
 }  // namespace
 
 std::expected<void, KernelFailure> MulMatHadamard(LaunchContext& launch, ggml_tensor* node) {
@@ -922,6 +968,28 @@ std::expected<void, KernelFailure> Unary(LaunchContext& launch, ggml_tensor* nod
 
 std::expected<void, KernelFailure> Conv2dF32(LaunchContext& launch, ggml_tensor* node) {
   return RunChecked(launch, node, CheckConv2dF32(node), &ggml_cuda_op_conv2d);
+}
+std::expected<void, KernelFailure> Conv2dStrided(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckConv2dStrided(node); !checked) return checked;
+  const ggml_tensor* w = node->src[0];
+  const ggml_tensor* x = node->src[1];
+  const ggml_tensor* b = node->src[2];
+  return launch.Run(base::Bytes(0), [node, w, x, b](ggml_backend_cuda_context& context) {
+    const std::uint64_t total =
+        static_cast<std::uint64_t>(node->ne[0]) * static_cast<std::uint64_t>(node->ne[1]) *
+        static_cast<std::uint64_t>(node->ne[2]) * static_cast<std::uint64_t>(node->ne[3]);
+    const unsigned blocks = static_cast<unsigned>((total + 255) / 256);
+    Conv2dStridedKernel<<<blocks, 256, 0, context.stream()>>>(
+        w->data, w->type == GGML_TYPE_BF16, w->nb[0] / ggml_type_size(w->type),
+        w->nb[1] / ggml_type_size(w->type), w->nb[2] / ggml_type_size(w->type),
+        w->nb[3] / ggml_type_size(w->type), static_cast<const float*>(x->data),
+        x->nb[1] / sizeof(float), x->nb[2] / sizeof(float), x->nb[3] / sizeof(float), b->data,
+        b->type == GGML_TYPE_BF16, b->nb[0] / ggml_type_size(b->type),
+        static_cast<float*>(node->data), node->ne[0], node->ne[1], x->ne[0], x->ne[1], node->ne[2],
+        node->ne[3], w->ne[0], w->ne[1], w->ne[2], LlmpOpInt(node, 0), LlmpOpInt(node, 1),
+        LlmpOpInt(node, 2), total);
+    CUDA_CHECK(cudaGetLastError());
+  });
 }
 std::expected<void, KernelFailure> UpsampleNearest(LaunchContext& launch, ggml_tensor* node) {
   return RunChecked(launch, node, CheckUpsampleNearest(node), &ggml_cuda_op_upscale);

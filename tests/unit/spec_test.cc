@@ -31,8 +31,11 @@
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
+#include "spec/mappings/ming_transformer.h"
+#include "spec/mappings/ming_vae.h"
 #include "spec/mappings/qwen2.h"
 #include "spec/mappings/qwen38.h"
+#include "spec/stage_recipe.h"
 #include "spec_fixtures.h"
 
 namespace llmp::spec {
@@ -1325,6 +1328,57 @@ TEST(MappingTest, ContainerLookupIsExactAndUnknownVariantsRefuse) {
   auto source = test_support::Gemma2Source();
   source.container = "safetensors";
   EXPECT_FALSE(Synthesize(mappings::Gemma2Mapping(), source, *values));
+}
+
+TEST(MappingTest, ContainerLookupSelectsRegisteredSpatialRecipeAliasesAndRefusesAmbiguity) {
+  static constexpr StageRecipe recipe{.name = "transformer", .role = StageRole::kDenoiser};
+  static constexpr std::array<std::string_view, 1> aliases{"DiffusionTransformer"};
+  static constexpr std::array<std::string_view, 1> containers{"safetensors"};
+  static constexpr Mapping denoiser{.architecture = "fixture_denoiser",
+                                    .source_architectures = aliases,
+                                    .pipeline = PipelineKind::kImage,
+                                    .role = StageRole::kDenoiser,
+                                    .stage = "transformer",
+                                    .stage_recipe = &recipe,
+                                    .containers = containers};
+  static constexpr std::array<const Mapping*, 1> registry{&denoiser};
+  ASSERT_TRUE(ValidateMapping(denoiser));
+  EXPECT_EQ(FindMapping(registry, "DiffusionTransformer", "safetensors"), &denoiser);
+  EXPECT_EQ(FindMapping(registry, "diffusiontransformer", "safetensors"), nullptr);
+  EXPECT_EQ(FindMapping(registry, "fixture_denoiser", "safetensors"), &denoiser);
+
+  static constexpr StageRecipe vae_recipe{.name = "vae", .role = StageRole::kVae};
+  static constexpr Mapping vae{.architecture = "fixture_vae",
+                               .source_architectures = aliases,
+                               .pipeline = PipelineKind::kImage,
+                               .role = StageRole::kVae,
+                               .stage = "vae",
+                               .stage_recipe = &vae_recipe,
+                               .containers = containers};
+  static constexpr std::array<const Mapping*, 2> ambiguous{&denoiser, &vae};
+  EXPECT_EQ(FindMapping(ambiguous, "DiffusionTransformer", "safetensors"), nullptr);
+  static constexpr std::array<std::string_view, 1> malformed_aliases{"Diffusion Transformer"};
+  auto malformed = denoiser;
+  malformed.source_architectures = malformed_aliases;
+  EXPECT_FALSE(ValidateMapping(malformed));
+  static constexpr std::array<std::string_view, 2> duplicate_aliases{"DiffusionTransformer",
+                                                                     "DiffusionTransformer"};
+  malformed.source_architectures = duplicate_aliases;
+  EXPECT_FALSE(ValidateMapping(malformed));
+}
+
+TEST(MappingTest, MingSpatialRecipesUseExactSourceClassesAndRoles) {
+  const auto& transformer = mappings::MingTransformerMapping();
+  const auto& vae = mappings::MingVaeMapping();
+  ASSERT_TRUE(ValidateMapping(transformer));
+  ASSERT_TRUE(ValidateMapping(vae));
+  EXPECT_EQ(FindMapping("DiffusionTransformer", "safetensors"), &transformer);
+  EXPECT_EQ(FindMapping("diffusiontransformer", "safetensors"), nullptr);
+  EXPECT_EQ(transformer.architecture, "diffusion_transformer");
+  EXPECT_EQ(transformer.stage_recipe->role, StageRole::kDenoiser);
+  EXPECT_EQ(FindMapping("AutoencoderKLQwenImage", "safetensors"), &vae);
+  EXPECT_EQ(vae.architecture, "qwen_image_vae");
+  EXPECT_EQ(vae.stage_recipe->role, StageRole::kVae);
 }
 
 TEST(MappingTest, GemmaRegistryHasOneArchitectureWithExplicitUnambiguousDialects) {

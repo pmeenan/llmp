@@ -298,11 +298,23 @@ their actual geometry fits. Template parsing, retention and request copies are
 paid from their stored inventory before allocation. Affected image artifacts
 must be re-imported; source provenance and numerical admission remain in force.
 
-This first slice makes stored runtime topology authoritative. The import-time
-VAE/DiT topology generators and text-encoder request construction remain C++;
-replacing the source mappings with configurable topology, quantized image
-execution and structural source accounting remain U8 work. No expression
-language or additional image patch layout is introduced.
+**Amendment, 2026-10-23 (M3.5 U8 import-time recipes).** Mapping-owned,
+finite `StageRecipe` data expands flow and VAE wiring into the ordinary stored
+stage before publication. Typed configuration values, checked scalar arithmetic,
+bounded repeats and branches describe topology and expected tensor roles;
+preflight pays expansion metadata and comparison work before allocation. These
+instructions belong to the importer: artifacts and serving retain only the
+expanded components, links, exports and scalar bindings. There is no runtime
+recipe interpreter or additional serialized expression schema. The text encoder
+retains its existing request construction.
+
+Every source tensor must either match the derived role inventory or an explicit
+mapping omission. Formats and their physical extents determine retained encoded
+payloads; topology does not imply BF16 weights. An optional exact raw source-axis
+contract preserves container semantics when a component folds dimensions into a
+physical role shape. It is checked before publication, without discarding or
+rewriting unused taps of a causal convolution. A standalone configured spatial
+component uses the same normalization and writer route as other model imports.
 
 **Context.** M3.6 review follow-up R9.5: `SpatialComposition` held `links` and
 `exports` beside `ModelSpec`, and the image pipeline decomposed attention and

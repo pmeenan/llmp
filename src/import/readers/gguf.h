@@ -74,6 +74,13 @@ inline constexpr std::int64_t kMaxGgufAlignment = std::int64_t{1} << 31U;
 // The GGUF at `path`, and its other splits beside it.
 std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path);
 
+// A configured component directory containing exactly one GGUF weight set
+// plus config.json. The config supplies the component's model architecture
+// and source metadata; GGUF metadata and tensor formats remain authoritative.
+bool ClaimsConfiguredGgufDirectory(const std::filesystem::path& path);
+std::expected<Checkpoint, Error> ReadConfiguredGgufDirectory(
+    const std::filesystem::path& directory);
+
 // One whole GGUF file's bytes (no split of several files), as ReadGguf
 // reads a file: for tests and fuzzing. The checkpoint has one file, named
 // "memory", and no path (its reads fail).

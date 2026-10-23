@@ -256,14 +256,41 @@ TEST(GgmlSpatialTest, RaggedTypedPortsLowerWithoutTokenMetadataInBothBindingMode
     bad.outputs = bad.outputs.first(1);
     EXPECT_FALSE(kg::LowerStep(kn::LowerInput{*plan, bad, addresses}, *registry, {}));
   }
-  auto unsupported = tensors;
-  unsupported[0].format = ir::Dense(fm::Encoding::kBF16, ir::ShapeOf({3, 3, 2, 3}));
-  const std::array<std::span<const co::BoundTensor>, 1> unsupported_tables{unsupported};
-  auto bf16 = co::BuildSpatialStep(spec, unsupported_tables, owners, budget.Payment());
+  auto bf16_tensors = tensors;
+  bf16_tensors[0].format = ir::Dense(fm::Encoding::kBF16, ir::ShapeOf({3, 3, 2, 3}));
+  const std::array<std::span<const co::BoundTensor>, 1> bf16_tables{bf16_tensors};
+  auto bf16 = co::BuildSpatialStep(spec, bf16_tables, owners, budget.Payment());
   ASSERT_TRUE(bf16) << Failed(bf16).value_or("");
   en::GraphBuildIO bf16_io{bf16->graph(), bf16->graph().inputs(), bf16->graph().outputs(),
                            bf16->weights()};
-  EXPECT_FALSE(en::PlanComponentGraph(bf16_io, backend, {}, kn::Addresses{}));
+  for (const bool measuring : {true, false}) {
+    kn::Addresses addresses;
+    addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
+      return 0x20000000ULL + (std::uint64_t{ref.role} << 16U);
+    };
+    addresses.activations = measuring ? 0ULL : 0x10000000ULL;
+    addresses.activation_bytes = 1U << 20U;
+    addresses.activation_alignment = 256;
+    addresses.weight_alignment = [](const ir::WeightRef&, fm::PartRole) { return 256; };
+    auto bf16_plan = en::PlanComponentGraph(
+        bf16_io, backend, ImagePolicy(), addresses,
+        {.staged = std::vector(bf16_io.inputs.begin(), bf16_io.inputs.end()),
+         .written = kg::WrittenBytes,
+         .within = kg::WithinRoot,
+         .alignment_staged = std::vector(bf16_io.inputs.begin(), bf16_io.inputs.end())});
+    ASSERT_TRUE(bf16_plan) << Failed(bf16_plan).value_or("");
+    auto lowered = kg::LowerStep(kn::LowerInput{*bf16_plan, bf16_io, addresses}, *registry, {});
+    ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+    std::size_t strided_convolutions = 0;
+    for (const auto& step : lowered->plan.steps) {
+      if (step.implementation != kg::kConv2dStridedName) continue;
+      ++strided_convolutions;
+      ASSERT_EQ(step.nodes.size(), 1U);
+      EXPECT_TRUE(kg::CheckConv2dStrided(step.nodes[0]));
+      EXPECT_EQ(step.nodes[0]->src[0]->type, GGML_TYPE_BF16);
+    }
+    EXPECT_EQ(strided_convolutions, 2U);
+  }
 }
 
 TEST(GgmlSpatialTest, ActualVaeSourceSpansPreserveWeightsAndRefuseBranches) {

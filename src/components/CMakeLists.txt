@@ -8,7 +8,7 @@
 # graph (step.h). Model layer, after spec: no planner library, kernel,
 # engine or vendor type (the planner's step shape is a header-only type).
 add_library(llmp_components STATIC numerics.cc params.cc catalog.cc step.cc state_encoding.cc attention_core.cc rotation_reference.cc attention.cc ffn.cc moe.cc
-                                   blocks.cc image_blocks.cc conditioning_blocks.cc spatial.cc spatial_blocks.cc hc.cc gdn.cc qsa.cc ple.cc mqa.cc inject.cc)
+                                   blocks.cc image_blocks.cc conditioning_blocks.cc spatial.cc spatial_blocks.cc causal_first_frame.cc hc.cc gdn.cc qsa.cc ple.cc mqa.cc inject.cc)
 target_include_directories(llmp_components PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_components PUBLIC llmp_spec llmp_ir llmp_model llmp_format llmp_base
                                       PRIVATE llmp_warnings)

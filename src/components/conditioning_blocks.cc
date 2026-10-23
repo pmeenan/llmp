@@ -15,6 +15,43 @@
 
 namespace llmp::components::defs {
 namespace {
+constexpr std::array<std::string_view, 2> kElementwiseActivations{"hardtanh", "silu"};
+constexpr std::array kElementwiseActivationParams{
+    ParamSpec{.name = "activation", .type = ParamType::kName, .choices = kElementwiseActivations}};
+std::expected<SpatialShape, std::string> ActivationElementwiseShape(
+    const Instance& in, SpatialShape shape, std::optional<SpatialShape> auxiliary) {
+  if (auxiliary || !SpatialElements(shape) ||
+      (in.params.Name("activation") != "silu" && in.params.Name("activation") != "hardtanh"))
+    return std::unexpected("elementwise activation parameters or geometry are invalid");
+  return shape;
+}
+std::expected<SpatialValue, std::string> ActivationElementwiseEmit(SpatialFragment& f) {
+  auto out = ActivationElementwiseShape(
+      f.instance, f.shape, f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
+  if (!out || !f.weights.empty() || f.carry)
+    return std::unexpected("elementwise activation operands differ");
+  const auto activation = f.instance.params.Name("activation");
+  const auto value = activation == "hardtanh" ? f.builder.Clamp(f.input, -1.0F, 1.0F)
+                                              : f.builder.Unary(f.input, ir::UnaryFn::kSilu);
+  return SpatialValue{value, *out};
+}
+std::expected<void, std::string> ActivationElementwiseReference(SpatialRefIO& io) {
+  auto out = ActivationElementwiseShape(io.instance, io.shape, io.auxiliary_shape);
+  if (!out || io.input.size() != *SpatialElements(*out) || !io.auxiliary.empty() ||
+      !io.kernel.empty() || !io.bias.empty() || !io.carry.empty())
+    return std::unexpected("elementwise activation reference operands differ");
+  io.output.resize(io.input.size());
+  for (std::size_t i = 0; i < io.input.size(); ++i) {
+    const auto x = static_cast<float>(io.input[i]);
+    io.output[i] = io.instance.params.Name("activation") == "hardtanh"
+                       ? std::clamp(x, -1.0F, 1.0F)
+                       : static_cast<float>(x / (1.0F + std::exp(-x)));
+  }
+  return {};
+}
+const SpatialOps kActivationElementwise{ActivationElementwiseShape, ActivationElementwiseEmit,
+                                        ActivationElementwiseReference, 1};
+
 std::optional<std::uint64_t> Count(SpatialShape s) { return SpatialElements(s); }
 std::expected<std::vector<RoleShape>, std::string> NoRoles(const Instance& in) {
   if (in.site != Site::kLayer) return std::unexpected("conditioning fragments require a layer");
@@ -45,17 +82,23 @@ std::expected<FragmentOut, std::string> SelectTokenEmit(Fragment& f) {
   const auto quarters = static_cast<std::uint64_t>(f.instance.params.Int("quarters"));
   const auto prefix = static_cast<std::uint64_t>(f.instance.params.Int("prefix_rows"));
   const auto quarter = static_cast<std::uint64_t>(f.instance.params.Int("quarter"));
-  if ((spatial && (x.ne(0) != 1 || x.ne(3) != 1 || a.ne(0) != 1 || a.ne(1) != 2 ||
+  const auto auxiliary_elements = a.ne(0) * a.ne(1);
+  const auto selected_rows = spatial ? a.ne(1) : (auxiliary_elements == quarters * c ? 1U : 2U);
+  if ((spatial && (x.ne(0) != 1 || x.ne(3) != 1 || a.ne(0) != 1 || (a.ne(1) != 1 && a.ne(1) != 2) ||
                    a.ne(2) != quarters * c || a.ne(3) != 1)) ||
-      (!spatial && (x.shape().rank > 2 || a.ne(0) * a.ne(1) < 2 * quarters * c)) || prefix > rows ||
-      quarter >= quarters)
+      (!spatial && (x.shape().rank > 2 || (auxiliary_elements != quarters * c &&
+                                           auxiliary_elements < 2 * quarters * c))) ||
+      prefix > rows || quarter >= quarters)
     return std::unexpected("conditioning row selection geometry differs");
-  const std::array<std::uint64_t, 4> stride{4, 8, 8 * c, 8 * c};
+  const auto channel_stride = 4 * selected_rows;
+  const std::array<std::uint64_t, 4> stride{4, channel_stride, channel_stride * c,
+                                            channel_stride * c};
   const auto select = [&](std::uint64_t row, std::uint64_t count) {
-    auto v = f.b.View(aux, ir::ShapeOf({1, c}), stride, (2 * quarter * c + row) * 4);
+    auto v = f.b.View(aux, ir::ShapeOf({1, c}), stride, (selected_rows * quarter * c + row) * 4);
     return f.b.Repeat(f.b.Cont(v), ir::ShapeOf({count, c}));
   };
-  const auto values = prefix == 0      ? select(0, rows)
+  const auto values = selected_rows == 1 ? select(0, rows)
+                      : prefix == 0      ? select(0, rows)
                       : prefix == rows ? select(1, rows)
                                        : f.b.Concat(select(1, prefix), select(0, rows - prefix), 0);
   return FragmentOut{.stream = spatial ? f.b.Reshape(values, ir::ShapeOf({1, rows, c, 1}))
@@ -72,10 +115,14 @@ std::expected<void, std::string> SelectTokenReference(RefIO& io) {
       prefix > rows || quarter >= quarters)
     return std::unexpected("conditioning row reference extents");
   const auto c = io.stream.size() / rows;
-  if (aux.size() != 2 * quarters * c) return std::unexpected("conditioning row reference extents");
+  const auto selected_rows = aux.size() == quarters * c ? 1U : 2U;
+  if (aux.size() != selected_rows * quarters * c)
+    return std::unexpected("conditioning row reference extents");
   for (std::uint64_t row = 0; row < rows; ++row)
     for (std::uint64_t channel = 0; channel < c; ++channel)
-      io.stream[row * c + channel] = aux[2 * (quarter * c + channel) + (row < prefix ? 1U : 0U)];
+      io.stream[row * c + channel] =
+          selected_rows == 1 ? aux[quarter * c + channel]
+                             : aux[2 * (quarter * c + channel) + (row < prefix ? 1U : 0U)];
   return {};
 }
 constexpr std::array kConcatParams{ParamSpec{.name = "axis",
@@ -264,15 +311,55 @@ std::expected<void, std::string> AffineReference(SpatialRefIO& io) {
   }
   return {};
 }
+constexpr std::array kAffineScalarParams{ParamSpec{.name = "scale",
+                                                   .type = ParamType::kReal,
+                                                   .least = -std::numeric_limits<float>::max(),
+                                                   .most = std::numeric_limits<float>::max()},
+                                         ParamSpec{.name = "bias",
+                                                   .type = ParamType::kReal,
+                                                   .least = -std::numeric_limits<float>::max(),
+                                                   .most = std::numeric_limits<float>::max()}};
+std::expected<SpatialShape, std::string> AffineScalarShape(const Instance& instance,
+                                                           SpatialShape shape,
+                                                           std::optional<SpatialShape> auxiliary) {
+  const auto scale = instance.params.Real("scale");
+  const auto bias = instance.params.Real("bias");
+  if (auxiliary || !SpatialElements(shape) || !std::isfinite(scale) || !std::isfinite(bias) ||
+      !std::isfinite(static_cast<float>(scale)) || !std::isfinite(static_cast<float>(bias)))
+    return std::unexpected("scalar affine parameters or geometry are invalid");
+  return shape;
+}
+std::expected<SpatialValue, std::string> AffineScalarEmit(SpatialFragment& f) {
+  auto out = AffineScalarShape(f.instance, f.shape,
+                               f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
+  if (!out || !f.weights.empty() || f.carry)
+    return std::unexpected("scalar affine operands differ");
+  const auto scale = static_cast<float>(f.instance.params.Real("scale"));
+  const auto bias = static_cast<float>(f.instance.params.Real("bias"));
+  return SpatialValue{f.builder.Scale(f.input, scale, bias), *out};
+}
+std::expected<void, std::string> AffineScalarReference(SpatialRefIO& io) {
+  auto out = AffineScalarShape(io.instance, io.shape, io.auxiliary_shape);
+  if (!out || io.input.size() != *Count(*out) || !io.auxiliary.empty() || !io.kernel.empty() ||
+      !io.bias.empty() || !io.carry.empty())
+    return std::unexpected("scalar affine reference operands differ");
+  const auto scale = static_cast<float>(io.instance.params.Real("scale"));
+  const auto bias = static_cast<float>(io.instance.params.Real("bias"));
+  io.output.resize(io.input.size());
+  for (std::size_t i = 0; i < io.input.size(); ++i)
+    io.output[i] = static_cast<float>(static_cast<float>(io.input[i]) * scale + bias);
+  return {};
+}
 const SpatialOps kReshape{ReshapeShape, ReshapeEmit, ReshapeReference, 1};
 const SpatialOps kAffine{AffineShape, AffineEmit, AffineReference, 4};
+const SpatialOps kAffineScalar{AffineScalarShape, AffineScalarEmit, AffineScalarReference, 1};
 
 std::expected<SpatialShape, std::string> ConditionSpatialShape(
     const Instance& instance, SpatialShape shape, std::optional<SpatialShape> auxiliary) {
   if (!SpatialElements(shape))
     return std::unexpected("spatial dimensions exceed representable storage");
   if (shape.width != 1 || shape.images != 1 || !auxiliary || auxiliary->width != 1 ||
-      auxiliary->height != 2 ||
+      (auxiliary->height != 1 && auxiliary->height != 2) ||
       auxiliary->channels !=
           static_cast<std::uint64_t>(instance.params.Int("quarters")) * shape.channels ||
       auxiliary->images != 1 ||
@@ -422,6 +509,20 @@ const ComponentDef& ReshapeSpatial() {
 }
 const ComponentDef& AffineChannel() {
   static const ComponentDef d{.kind = "affine.channel", .shapes = NoRoles, .spatial = &kAffine};
+  return d;
+}
+const ComponentDef& ActivationElementwise() {
+  static const ComponentDef d{.kind = "activation.elementwise",
+                              .params = kElementwiseActivationParams,
+                              .shapes = NoRoles,
+                              .spatial = &kActivationElementwise};
+  return d;
+}
+const ComponentDef& AffineScalar() {
+  static const ComponentDef d{.kind = "affine.scalar",
+                              .params = kAffineScalarParams,
+                              .shapes = NoRoles,
+                              .spatial = &kAffineScalar};
   return d;
 }
 

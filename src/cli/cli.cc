@@ -42,7 +42,7 @@ constexpr std::string_view kHelp =
     "    --store DIRECTORY  destination artifact store (required)\n"
     "    --metadata-mib N   normalization and writer metadata budget (4096)\n"
     "    --target ID        stored target artifact for a drafter import\n"
-    "    --component mtp    select a registered normalizer's MTP component\n"
+    "    --component NAME  select a registered component mapping (mtp, transformer, vae)\n"
     "    --draft-head IDS   selected draft head token IDs (requires mtp)\n"
     "  --version  print the version, commit, license profile, SDK and target\n"
     "  --help     print this help\n";

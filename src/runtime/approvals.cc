@@ -29,6 +29,7 @@
 
 #include "base/sha256.h"
 #include "spec/mappings/qwen38.h"
+#include "spec/stored.h"
 
 namespace llmp::runtime {
 namespace {
@@ -909,9 +910,36 @@ const Approval* FindApprovalNamed(std::string_view name) {
 }
 
 const ImageApproval* FindImageApproval(std::string_view architecture,
-                                       std::span<const artifact::Source> sources) {
-  for (const ImageApproval& a : kImageApprovals)
-    if (a.architecture == architecture && SourcesMatch(a.sources, sources)) return &a;
+                                       std::span<const artifact::Source> sources,
+                                       std::span<const artifact::Artifact* const> components,
+                                       std::span<const artifact::CompositionComponent> named) {
+  for (const ImageApproval& a : kImageApprovals) {
+    if (a.architecture != architecture || !SourcesMatch(a.sources, sources) ||
+        a.components.size() != components.size() || named.size() != components.size())
+      continue;
+    bool matches = true;
+    for (std::size_t i = 0; i < components.size(); ++i) {
+      const artifact::Artifact* component = components[i];
+      const Approval& want = a.components[i];
+      if (component == nullptr || component->format_version() != 1 ||
+          component->id() != named[i].artifact ||
+          component->model().architecture != named[i].architecture ||
+          named[i].architecture != want.architecture ||
+          component->resources().size() != want.tensors ||
+          !SourcesMatch(want.sources, component->sources())) {
+        matches = false;
+        break;
+      }
+      auto source = spec::SourceOf(*component);
+      if (!source || source->container != want.container ||
+          !std::ranges::equal(source->folds, want.folds) ||
+          source->tensors.size() != want.tensors) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return &a;
+  }
   return nullptr;
 }
 

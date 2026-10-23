@@ -28,11 +28,14 @@
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
+#include "spec/mappings/ming_transformer.h"
+#include "spec/mappings/ming_vae.h"
 #include "spec/mappings/qwen2.h"
 #include "spec/mappings/qwen38.h"
 #include "spec/mappings/rules.h"
 #include "spec/names.h"
 #include "spec/spec.h"
+#include "spec/stage_recipe.h"
 
 namespace llmp::spec {
 namespace {
@@ -54,6 +57,13 @@ bool IsArchitecture(std::string_view s) {
   return !s.empty() && s.size() <= kMaxText && Lower(s.front()) &&
          std::ranges::all_of(s,
                              [](char c) { return Lower(c) || Digit(c) || c == '_' || c == '-'; });
+}
+
+bool IsSourceArchitecture(std::string_view s) {
+  const auto letter = [](char c) { return Lower(c) || (c >= 'A' && c <= 'Z'); };
+  return !s.empty() && s.size() <= kMaxText && letter(s.front()) &&
+         std::ranges::all_of(s,
+                             [&](char c) { return letter(c) || Digit(c) || c == '_' || c == '-'; });
 }
 
 // A tensor name or source key: printable ASCII without space, quotes,
@@ -1251,12 +1261,13 @@ std::expected<const PolicyRule*, std::string> DefaultRule(const Mapping& mapping
 }
 
 std::span<const Mapping* const> Mappings() {
-  static const std::array all = {&mappings::Gemma2Mapping(), &mappings::Gemma3Mapping(),
-                                 &mappings::Gemma4Mapping(), &mappings::Gemma4AssistantMapping(),
-                                 &mappings::Qwen38Mapping(), &mappings::Qwen38MtpMapping(),
-                                 &mappings::Dsv4Mapping(),   &mappings::DsparkMapping(),
-                                 &mappings::Qwen2Mapping(),  &mappings::Qwen35Mapping(),
-                                 &mappings::LlamaMapping(),  &mappings::MistralMapping()};
+  static const std::array all = {&mappings::Gemma2Mapping(),  &mappings::Gemma3Mapping(),
+                                 &mappings::Gemma4Mapping(),  &mappings::Gemma4AssistantMapping(),
+                                 &mappings::Qwen38Mapping(),  &mappings::Qwen38MtpMapping(),
+                                 &mappings::Dsv4Mapping(),    &mappings::DsparkMapping(),
+                                 &mappings::Qwen2Mapping(),   &mappings::Qwen35Mapping(),
+                                 &mappings::LlamaMapping(),   &mappings::MistralMapping(),
+                                 &mappings::MingVaeMapping(), &mappings::MingTransformerMapping()};
   return all;
 }
 
@@ -1504,17 +1515,28 @@ std::expected<ResolvedMapping, std::string> ResolveSourceMapping(const Mapping& 
 const Mapping* FindMapping(std::string_view architecture) {
   for (const Mapping* m : Mappings())
     if (m->architecture == architecture && m->version == 1) return m;
-  for (const Mapping* m : Mappings())
-    if (m->role == StageRole::kTarget && MatchesArchitecture(*m, architecture) && m->version == 1)
-      return m;
-  return nullptr;
+  const Mapping* result = nullptr;
+  for (const Mapping* m : Mappings()) {
+    const bool alias_eligible = m->role == StageRole::kTarget ||
+                                (m->stage_recipe != nullptr &&
+                                 (m->role == StageRole::kDenoiser || m->role == StageRole::kVae));
+    if (!alias_eligible || !MatchesArchitecture(*m, architecture) || m->version != 1) continue;
+    if (result) return nullptr;
+    result = m;
+  }
+  return result;
 }
 
 const Mapping* FindMapping(std::string_view architecture, std::string_view container,
                            std::uint16_t version) {
+  return FindMapping(Mappings(), architecture, container, version);
+}
+
+const Mapping* FindMapping(std::span<const Mapping* const> mappings, std::string_view architecture,
+                           std::string_view container, std::uint16_t version) {
   if (container.empty()) return nullptr;
   const Mapping* result = nullptr;
-  for (const Mapping* m : Mappings()) {
+  for (const Mapping* m : mappings) {
     if (m->architecture != architecture || m->version != version ||
         !SupportsSource(*m, architecture, container))
       continue;
@@ -1522,9 +1544,12 @@ const Mapping* FindMapping(std::string_view architecture, std::string_view conta
     result = m;
   }
   if (result != nullptr) return result;
-  for (const Mapping* m : Mappings()) {
-    if (m->role != StageRole::kTarget || !MatchesArchitecture(*m, architecture) ||
-        m->version != version || !SupportsSource(*m, architecture, container))
+  for (const Mapping* m : mappings) {
+    const bool alias_eligible = m->role == StageRole::kTarget ||
+                                (m->stage_recipe != nullptr &&
+                                 (m->role == StageRole::kDenoiser || m->role == StageRole::kVae));
+    if (!alias_eligible || !MatchesArchitecture(*m, architecture) || m->version != version ||
+        !SupportsSource(*m, architecture, container))
       continue;
     if (result != nullptr) return nullptr;
     result = m;
@@ -1748,12 +1773,39 @@ Status ValidateMapping(const Mapping& m) {
     return Refuse(where, "an invalid architecture, version or pipeline");
   }
   for (std::size_t i = 0; i < m.source_architectures.size(); ++i)
-    if (!IsArchitecture(m.source_architectures[i]) || m.source_architectures[i] == m.architecture ||
+    if (!IsSourceArchitecture(m.source_architectures[i]) ||
+        m.source_architectures[i] == m.architecture ||
         std::ranges::count(m.source_architectures, m.source_architectures[i]) != 1)
       return Refuse(where, "invalid or duplicate source architecture");
   for (std::size_t i = 0; i < m.containers.size(); ++i)
     if (!IsName(m.containers[i]) || std::ranges::count(m.containers, m.containers[i]) != 1)
       return Refuse(where, "invalid or duplicate mapping container");
+  if (m.stage_recipe != nullptr) {
+    if (m.pipeline != PipelineKind::kImage || m.containers.empty() || !IsName(m.stage) ||
+        (m.role != StageRole::kDenoiser && m.role != StageRole::kVae) ||
+        m.stage_recipe->name != m.stage || m.stage_recipe->role != m.role ||
+        !m.context_key.empty() || !m.softcap_key.empty() || !m.layer_types.empty() ||
+        !m.layer_type_key.empty() || !m.layer_type_interval_key.empty() ||
+        !m.layer_type_codes.empty() || !m.layer_flags_key.empty() || !m.slots.empty() ||
+        !m.tensors.empty() || !m.params.empty() || !m.folds.empty() || !m.reads.empty() ||
+        !m.policies.empty() || m.serving != nullptr || m.draft != nullptr ||
+        m.companion != nullptr || !m.key_prefix.empty() || m.unprefixed_keys ||
+        !m.tensor_prefix.empty() || !m.source_key_prefix.empty() || !m.layer_count_key.empty() ||
+        !m.gates.empty() || !m.tensor_aliases.empty() || !m.key_aliases.empty() ||
+        !m.auxiliary.empty() || !m.requirements.empty() || !m.lists.empty() ||
+        !m.encodings.empty() || m.extended_components || !m.shapes.empty() ||
+        !m.row_indices.empty() || !m.semantic.empty() || !m.null_semantics.empty() ||
+        !m.tensor_presence.empty() || !m.semantic_tensors.empty() || !m.dialects.empty() ||
+        m.ignored_tensors.size() > kMaxMappingRules || m.ignored_tensor_prefixes.size() > 8)
+      return Refuse(where,
+                    "a configured spatial mapping needs one matching denoiser or VAE recipe");
+    for (const auto pattern : m.ignored_tensors)
+      if (!IsPattern(pattern, pattern.find(kLayerField) != std::string_view::npos))
+        return Refuse(where, "invalid ignored tensor pattern in spatial mapping");
+    for (const auto prefix : m.ignored_tensor_prefixes)
+      if (!IsText(prefix)) return Refuse(where, "invalid ignored tensor prefix in spatial mapping");
+    return {};
+  }
   if ((!m.context_key.empty() && !IsText(m.context_key)) ||
       (!m.softcap_key.empty() && !IsText(m.softcap_key))) {
     return Refuse(where, "an invalid context or softcap key");

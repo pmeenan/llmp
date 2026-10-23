@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -34,6 +35,7 @@
 #include "import/checkpoint.h"
 #include "import/error.h"
 #include "import/files.h"
+#include "import/readers/safetensors.h"
 
 namespace llmp::import {
 namespace {
@@ -405,14 +407,17 @@ std::expected<File, Error> ReadFile(OpenFile& f, std::uint32_t file, Budget& bud
 
 // The checkpoint of interpreted files: their tensors in order, every name
 // once, and their metadata merged into the first's.
-std::expected<Checkpoint, Error> Assemble(std::vector<File> files) {
+std::expected<Checkpoint, Error> Assemble(
+    std::vector<File> files,
+    std::optional<std::string_view> configured_architecture = std::nullopt) {
   Checkpoint c{.container = "gguf"};
   auto& meta = files.front().metadata;
   const auto arch = meta.find(kArchitectureKey);
-  if (arch == meta.end()) {
+  if (arch == meta.end() && !configured_architecture) {
     return Fail(Rule::kContainer, "no general.architecture", 0);
   }
-  c.architecture = std::get<std::string>(arch->second);
+  c.architecture = arch == meta.end() ? std::string(*configured_architecture)
+                                      : std::get<std::string>(arch->second);
   std::size_t total = 0;
   for (const File& f : files) {
     total += f.tensors.size() + f.skipped.size();
@@ -463,9 +468,101 @@ std::string SplitName(std::string_view prefix, std::uint64_t no, std::uint64_t c
   return std::format("{}-{:05}-of-{:05}.gguf", prefix, no, count);
 }
 
+struct SplitFilename {
+  std::string_view prefix{};
+  std::uint32_t no = 0;
+  std::uint32_t count = 0;
+};
+
+std::optional<SplitFilename> ParseSplitFilename(std::string_view name) {
+  if (!name.ends_with(".gguf")) return std::nullopt;
+  name.remove_suffix(5);
+  const auto of = name.rfind("-of-");
+  if (of == std::string_view::npos || of < 6 || name.size() - of != 9) return std::nullopt;
+  const auto dash = of - 6;
+  if (name[dash] != '-') return std::nullopt;
+  const auto no_text = name.substr(dash + 1, 5);
+  const auto count_text = name.substr(of + 4, 5);
+  if (!std::ranges::all_of(no_text, [](char c) { return c >= '0' && c <= '9'; }) ||
+      !std::ranges::all_of(count_text, [](char c) { return c >= '0' && c <= '9'; }))
+    return std::nullopt;
+  std::uint32_t no = 0, count = 0;
+  const auto [no_end, no_error] =
+      std::from_chars(no_text.data(), no_text.data() + no_text.size(), no);
+  const auto [count_end, count_error] =
+      std::from_chars(count_text.data(), count_text.data() + count_text.size(), count);
+  if (no_error != std::errc{} || count_error != std::errc{} ||
+      no_end != no_text.data() + no_text.size() ||
+      count_end != count_text.data() + count_text.size() || no == 0 || count == 0 || no > count)
+    return std::nullopt;
+  return SplitFilename{.prefix = name.substr(0, dash), .no = no, .count = count};
+}
+
+struct ConfiguredGgufSelection {
+  std::filesystem::path first;
+  std::vector<std::string> files;
+};
+
+std::expected<ConfiguredGgufSelection, Error> SelectConfiguredGguf(
+    const std::filesystem::path& directory) {
+  std::error_code error;
+  std::vector<std::string> gguf_names;
+  bool competing_safetensors = false;
+  for (std::filesystem::directory_iterator it(directory, error), end; it != end;
+       it.increment(error)) {
+    if (error) return Fail(Rule::kIo, "cannot list a configured GGUF component directory", 0);
+    const auto name = it->path().filename().string();
+    if (!name.ends_with(".gguf") && !name.ends_with(".safetensors") &&
+        !name.ends_with(".safetensors.index.json"))
+      continue;
+    std::error_code type_error;
+    if (!it->is_regular_file(type_error) || type_error)
+      return Fail(Rule::kFileType, "a configured component weight candidate is not a regular file",
+                  0);
+    if (name.ends_with(".gguf")) {
+      if (gguf_names.size() == kMaxGgufSplits)
+        return Fail(Rule::kBounds, "more configured GGUF files than the reader's split bound", 0);
+      gguf_names.push_back(name);
+    } else {
+      competing_safetensors = true;
+    }
+  }
+  if (error) return Fail(Rule::kIo, "cannot list a configured GGUF component directory", 0);
+  if (competing_safetensors)
+    return Fail(Rule::kShards, "a configured component has competing GGUF and safetensors weights",
+                0);
+  if (gguf_names.empty())
+    return Fail(Rule::kFileType, "a configured component has no GGUF weight file", 0);
+  std::ranges::sort(gguf_names);
+  if (gguf_names.size() == 1) {
+    const auto split = ParseSplitFilename(gguf_names.front());
+    if (split && (split->no != 1 || split->count != 1))
+      return Fail(Rule::kShards, "a split GGUF component is missing one or more files", 0);
+    return ConfiguredGgufSelection{.first = directory / gguf_names.front(),
+                                   .files = std::move(gguf_names)};
+  }
+  const auto first = ParseSplitFilename(gguf_names.front());
+  if (!first || first->no != 1 || first->count != gguf_names.size())
+    return Fail(Rule::kShards, "a configured component has ambiguous GGUF weight candidates", 0);
+  for (std::uint32_t no = 1; no <= first->count; ++no) {
+    const auto expected = SplitName(first->prefix, no, first->count);
+    if (gguf_names[no - 1] != expected)
+      return Fail(Rule::kShards, "a configured component has competing GGUF split sets", 0);
+  }
+  return ConfiguredGgufSelection{.first = directory / gguf_names.front(),
+                                 .files = std::move(gguf_names)};
+}
+
+bool ValidArchitecture(std::string_view name) {
+  return !name.empty() && name.size() <= kMaxArchitecture &&
+         std::ranges::none_of(name, [](unsigned char c) { return c < 0x20U || c == 0x7fU; });
+}
+
 }  // namespace
 
-std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path) {
+static std::expected<Checkpoint, Error> ReadGgufImpl(
+    const std::filesystem::path& path,
+    std::optional<std::string_view> configured_architecture = std::nullopt) {
   std::vector<SourceFile> sources;
   Budget budget;
   // One file's header, its file open only while it is read.
@@ -529,7 +626,7 @@ std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path) {
   if (split.tensors && *split.tensors != total) {
     return Fail(Rule::kShards, "split.tensors.count is not the split files' tensors", 0);
   }
-  auto c = Assemble(std::move(files));
+  auto c = Assemble(std::move(files), configured_architecture);
   if (!c) {
     return std::unexpected(c.error());
   }
@@ -575,6 +672,79 @@ std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path) {
   }
   c->files = std::move(sources);
   return c;
+}
+
+std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path) {
+  return ReadGgufImpl(path);
+}
+
+bool ClaimsConfiguredGgufDirectory(const std::filesystem::path& path) {
+  std::error_code error;
+  if (!std::filesystem::is_directory(path, error) || error ||
+      !std::filesystem::exists(path / "config.json", error) || error)
+    return false;
+  for (std::filesystem::directory_iterator it(path, error), end; !error && it != end;
+       it.increment(error))
+    if (it->path().extension() == ".gguf") return true;
+  return false;
+}
+
+std::expected<Checkpoint, Error> ReadConfiguredGgufDirectory(
+    const std::filesystem::path& directory) {
+  auto root = CheckpointDirectory(directory);
+  if (!root) return std::unexpected(root.error());
+  auto selected = SelectConfiguredGguf(*root);
+  if (!selected) return std::unexpected(selected.error());
+
+  auto config_file = OpenCheckpointFile(*root / "config.json", 0);
+  if (!config_file) return std::unexpected(config_file.error());
+  auto config_text = ReadDocument(*config_file, kMaxConfigBytes, 0);
+  if (!config_text) return std::unexpected(config_text.error());
+  auto config =
+      json::Parse(*config_text, {.max_bytes = static_cast<std::size_t>(kMaxConfigBytes),
+                                 .max_depth = kMaxConfigDepth,
+                                 .max_values = std::size_t{1} << 20U,
+                                 .max_string_bytes = static_cast<std::size_t>(kMaxConfigBytes)});
+  if (!config || !config->root().is_object())
+    return Fail(Rule::kConfig, "component config.json is not a bounded JSON object", 0);
+  const auto root_value = config->root();
+  const auto model_type = root_value.find("model_type");
+  const auto class_name = root_value.find("_class_name");
+  const auto architecture = model_type ? model_type : class_name;
+  if (!architecture || !architecture->is_string() || !ValidArchitecture(architecture->string()))
+    return Fail(Rule::kConfig, "component config.json has no valid model_type or _class_name", 0);
+  auto config_metadata = FlattenMetadata(root_value);
+  if (!config_metadata) return std::unexpected(config_metadata.error());
+
+  auto checkpoint = ReadGgufImpl(selected->first, architecture->string());
+  if (!checkpoint) return std::unexpected(checkpoint.error());
+  if (checkpoint->files.size() != selected->files.size())
+    return Fail(Rule::kShards,
+                "configured GGUF filename inventory differs from its declared split set", 0);
+  for (std::size_t i = 0; i < selected->files.size(); ++i)
+    if (checkpoint->files[i].name != selected->files[i])
+      return Fail(Rule::kShards,
+                  "configured GGUF filename inventory differs from its declared split set", i);
+  std::map<std::string, MetaValue, std::less<>> merged;
+  for (const auto& item : checkpoint->metadata) merged.emplace(item.key, item.value);
+  for (const auto& item : *config_metadata) {
+    const auto [found, inserted] = merged.emplace(item.key, item.value);
+    if (!inserted && found->second != item.value)
+      return Fail(Rule::kConfig, "component config and GGUF metadata disagree", 0);
+  }
+  checkpoint->metadata.clear();
+  checkpoint->metadata.reserve(merged.size());
+  for (auto& [key, value] : merged)
+    checkpoint->metadata.push_back({.key = std::move(key), .value = std::move(value)});
+  checkpoint->architecture = architecture->string();
+  checkpoint->files.push_back({.name = "config.json",
+                               .path = config_file->path,
+                               .bytes = config_file->bytes,
+                               .device = config_file->device,
+                               .inode = config_file->inode,
+                               .parsed = {.bytes = config_text->size(),
+                                          .sha256 = base::Sha256().Update(*config_text).Finish()}});
+  return checkpoint;
 }
 
 std::expected<Checkpoint, Error> ParseGguf(std::span<const std::byte> file) {

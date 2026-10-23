@@ -12,7 +12,9 @@
 // receipts match an entry, the envelope and policy provide measured defaults.
 // LLM admission validates stored specs and formats independently; numerical
 // evidence is applied only to the native inventory and semantics it covers.
-// Image component admission retains its separate qualified pipeline contract.
+// Image pipeline rows are optional historical overlays recognized only by
+// their complete composition/component source closure; structural image
+// admission does not depend on a row, and arithmetic evidence is independent.
 #ifndef LLMP_RUNTIME_APPROVALS_H_
 #define LLMP_RUNTIME_APPROVALS_H_
 
@@ -22,6 +24,7 @@
 #include <string_view>
 
 #include "artifact/artifact.h"
+#include "artifact/composition.h"
 #include "planner/policy.h"
 
 namespace llmp::spec {
@@ -162,10 +165,15 @@ const Approval* FindApproval(std::string_view architecture,
                              std::span<const artifact::Source> sources);
 // By name; null when none.
 const Approval* FindApprovalNamed(std::string_view name);
-// The image pipeline entry of a composition's architecture and kept files;
-// null when none is.
-const ImageApproval* FindImageApproval(std::string_view architecture,
-                                       std::span<const artifact::Source> sources);
+// The image pipeline entry whose full opened source closure matches the
+// composition: architecture and kept files, then ordered component IDs,
+// architectures, containers, receipts and resource counts. Historical
+// transforms, inventories and stored specs are checked by image admission;
+// mismatch there removes the optional overlay without refusing a valid model.
+const ImageApproval* FindImageApproval(
+    std::string_view architecture, std::span<const artifact::Source> sources,
+    std::span<const artifact::Artifact* const> components,
+    std::span<const artifact::CompositionComponent> named_components);
 
 }  // namespace llmp::runtime
 #endif  // LLMP_RUNTIME_APPROVALS_H_

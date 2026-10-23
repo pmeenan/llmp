@@ -16,6 +16,7 @@
 #include "artifact_writer.h"
 #include "base/check.h"
 #include "base/json.h"
+#include "base/sha256.h"
 #include "cli/cli.h"
 #include "components/step.h"
 #include "dsv4_gguf_normalization_fixture.h"
@@ -39,6 +40,7 @@
 #include "runtime/component_admission.h"
 #include "runtime/model_settings.h"
 #include "spec/image_spatial.h"
+#include "spec/stage_recipe.h"
 #include "spec/stored.h"
 
 namespace llmp::import {
@@ -1791,18 +1793,20 @@ TEST_F(ImportWriterTest, ImageComponentMetadataPreservesF16AndBf16VaeWeights) {
   for (const auto encoding : {Encoding::kF16, Encoding::kBF16}) {
     Checkpoint component{
         .role = "vae", .container = "safetensors", .architecture = "AutoencoderKLQwenImage21"};
+    component.files.push_back({.name = "vae.safetensors", .path = "/tmp/vae.safetensors"});
     for (const auto& tensor : tensors) {
       format::Shape shape;
       shape.rank = static_cast<std::uint8_t>(tensor.shape.size());
       for (std::size_t d = 0; d < tensor.shape.size(); ++d)
         shape.ne[d] = tensor.shape[tensor.shape.size() - d - 1];
       const auto format = ir::Dense(encoding, shape);
-      component.tensors.push_back(
-          {.name = tensor.name,
-           .format = format,
-           .extent = {.bytes = format::PartsOf(format)->Find(format::PartRole::kData)->bytes},
-           .dtype = encoding == Encoding::kF16 ? "F16" : "BF16",
-           .dims = tensor.shape});
+      const auto bytes = format::PartsOf(format)->Find(format::PartRole::kData)->bytes;
+      component.tensors.push_back({.name = tensor.name,
+                                   .format = format,
+                                   .extent = {.offset = component.files[0].bytes, .bytes = bytes},
+                                   .dtype = encoding == Encoding::kF16 ? "F16" : "BF16",
+                                   .dims = tensor.shape});
+      component.files[0].bytes += bytes;
     }
     auto planned = image_pipeline_detail::PlanComponent(component, tensors, {}, built->spec, {});
     ASSERT_TRUE(planned) << test_support::Failed(planned, &Error::ToString).value_or("");
@@ -1813,6 +1817,44 @@ TEST_F(ImportWriterTest, ImageComponentMetadataPreservesF16AndBf16VaeWeights) {
   }
 }
 
+TEST_F(ImportWriterTest, ImageComponentPreservesGgmlQ4KFormatAndLogicalShape) {
+  const std::array<std::uint64_t, 2> dimensions{256, 256};
+  const auto shape = *format::ShapeOf(dimensions);
+  const format::TensorFormat encoded{
+      .encoding = Encoding::kQ4_K, .layout = format::Layout::kGgmlBlocks, .shape = shape};
+  const auto part = format::PartsOf(encoded)->Find(format::PartRole::kData);
+  ASSERT_TRUE(part);
+  Checkpoint component{
+      .role = "transformer", .container = "gguf", .architecture = "QwenImage21Transformer2DModel"};
+  component.files.push_back({.name = "model.gguf", .path = "/tmp/model.gguf"});
+  component.tensors.push_back({.name = "projection.weight",
+                               .format = encoded,
+                               .extent = {.bytes = part->bytes},
+                               .dtype = "q4_k",
+                               .dims = {256, 256}});
+  component.files[0].bytes = part->bytes;
+  spec::Stage stage{.name = "denoiser", .role = spec::StageRole::kDenoiser};
+  stage.stream.width = 256;
+  spec::ComponentRef projection{.kind = "projection.spatial",
+                                .params = {{"in_channels", std::int64_t{256}},
+                                           {"out_channels", std::int64_t{256}},
+                                           {"gelu", false}},
+                                .weights = {{.role = "weight", .tensor = "projection.weight"}}};
+  spec::Layer layer;
+  layer.components.push_back(std::move(projection));
+  stage.layers.push_back(std::move(layer));
+  spec::ModelSpec component_spec{.pipeline = spec::PipelineKind::kImage,
+                                 .stages = {std::move(stage)}};
+  spec::Canonicalize(component_spec);
+  const std::array expected{
+      model::ImageTensor{.name = "projection.weight", .dtype = {}, .shape = {256, 256}}};
+
+  auto planned = image_pipeline_detail::PlanComponent(component, expected, {}, component_spec, {});
+  ASSERT_TRUE(planned) << test_support::Failed(planned, &Error::ToString).value_or("");
+  ASSERT_EQ(planned->canonical.tensors.size(), 1U);
+  EXPECT_EQ(planned->canonical.tensors[0].format, encoded);
+}
+
 TEST_F(ImportWriterTest, ImageComponentRefusesTensorsItsMappingNeitherReadsNorLeavesOut) {
   const auto& family = test_support::QwenImage();
   const auto tensors = model::VaeDecoderTensors(family.profile.vae, family.mapping->names.vae);
@@ -1820,17 +1862,19 @@ TEST_F(ImportWriterTest, ImageComponentRefusesTensorsItsMappingNeitherReadsNorLe
   ASSERT_TRUE(built) << test_support::Failed(built).value_or("");
   Checkpoint component{
       .role = "vae", .container = "safetensors", .architecture = "AutoencoderKLQwenImage21"};
+  component.files.push_back({.name = "vae.safetensors", .path = "/tmp/vae.safetensors"});
   const auto add = [&](std::string name, const std::vector<std::uint64_t>& dims) {
     format::Shape shape;
     shape.rank = static_cast<std::uint8_t>(dims.size());
     for (std::size_t d = 0; d < dims.size(); ++d) shape.ne[d] = dims[dims.size() - d - 1];
     const auto format = ir::Dense(Encoding::kBF16, shape);
-    component.tensors.push_back(
-        {.name = std::move(name),
-         .format = format,
-         .extent = {.bytes = format::PartsOf(format)->Find(format::PartRole::kData)->bytes},
-         .dtype = "BF16",
-         .dims = dims});
+    const auto bytes = format::PartsOf(format)->Find(format::PartRole::kData)->bytes;
+    component.tensors.push_back({.name = std::move(name),
+                                 .format = format,
+                                 .extent = {.offset = component.files[0].bytes, .bytes = bytes},
+                                 .dtype = "BF16",
+                                 .dims = dims});
+    component.files[0].bytes += bytes;
   };
   for (const auto& tensor : tensors) add(tensor.name, tensor.shape);
   const auto rule = std::ranges::find(family.mapping->components, std::string_view("vae"),
@@ -1863,6 +1907,131 @@ TEST_F(ImportWriterTest, ImageComponentRefusesTensorsItsMappingNeitherReadsNorLe
   EXPECT_FALSE(spec::IgnoredImageTensor("a.{layer}.b", "a..b"));
   EXPECT_FALSE(spec::IgnoredImageTensor("a.{layer}.b", "a.17.bc"));
   EXPECT_TRUE(spec::IgnoredImageTensor("a.{layer}.", "a.3.c.d"));
+}
+
+TEST_F(ImportWriterTest, StandaloneSpatialRecipePublishesOrderedRoutesAndExplicitOmission) {
+  constexpr spec::RecipeValue two{.kind = spec::RecipeValueKind::kLiteral,
+                                  .literal = std::int64_t{2}};
+  constexpr spec::RecipeSpatialShape shape{
+      .width = two,
+      .height = two,
+      .channels = two,
+      .images = {.kind = spec::RecipeValueKind::kLiteral, .literal = std::int64_t{1}}};
+  static constexpr std::array params{spec::RecipeParam{.name = "in_channels", .value = two},
+                                     spec::RecipeParam{.name = "out_channels", .value = two}};
+  static constexpr std::array first_weights{
+      spec::RecipeWeight{.role = "weight", .tensor = "z.weight"}};
+  static constexpr std::array second_weights{
+      spec::RecipeWeight{.role = "weight", .tensor = "a.weight"}};
+  static constexpr spec::RecipeNode first{.name = "first",
+                                          .component_kind = "projection.spatial",
+                                          .params = params,
+                                          .weights = first_weights,
+                                          .input = {.kind = spec::RecipeRefKind::kStageInput}};
+  static constexpr spec::RecipeNode second{
+      .name = "second",
+      .component_kind = "projection.spatial",
+      .params = params,
+      .weights = second_weights,
+      .input = {.kind = spec::RecipeRefKind::kNamedValue, .name = "first"}};
+  static constexpr std::array steps{
+      spec::RecipeStep{.kind = spec::RecipeStep::Kind::kNode, .node = &first},
+      spec::RecipeStep{.kind = spec::RecipeStep::Kind::kNode, .node = &second}};
+  static constexpr std::array expected{shape};
+  static constexpr spec::StageRecipe recipe{.name = "transformer",
+                                            .role = spec::StageRole::kDenoiser,
+                                            .stream_width = two,
+                                            .primary_input = {.shape = shape},
+                                            .steps = steps,
+                                            .expected_outputs = expected};
+  static constexpr std::array containers{std::string_view("safetensors")};
+  static constexpr std::array ignored_prefixes{std::string_view("unused.")};
+  static constexpr std::array source_architectures{std::string_view("tiny_spatial_alias")};
+  static constexpr spec::Mapping mapping{.architecture = "tiny_spatial",
+                                         .source_architectures = source_architectures,
+                                         .pipeline = spec::PipelineKind::kImage,
+                                         .role = spec::StageRole::kDenoiser,
+                                         .stage = "transformer",
+                                         .stage_recipe = &recipe,
+                                         .containers = containers,
+                                         .ignored_tensor_prefixes = ignored_prefixes};
+
+  const auto source_path = dir_ / "spatial/source.safetensors";
+  std::array<std::byte, 36> payload{};
+  for (std::size_t i = 0; i < payload.size(); ++i) payload[i] = static_cast<std::byte>(i + 1);
+  Write(source_path, payload);
+  const auto source_digest = base::Sha256().Update(payload).Finish();
+  struct stat status{};
+  ASSERT_EQ(::stat(source_path.c_str(), &status), 0);
+  constexpr std::array<std::uint64_t, 2> matrix_dims{2, 2};
+  constexpr std::array<std::uint64_t, 1> ignored_dims{1};
+  const auto matrix_shape = format::ShapeOf(matrix_dims);
+  const auto ignored_shape = format::ShapeOf(ignored_dims);
+  ASSERT_TRUE(matrix_shape);
+  ASSERT_TRUE(ignored_shape);
+  const format::TensorFormat matrix_format{
+      .encoding = Encoding::kF32, .layout = format::Layout::kDense, .shape = *matrix_shape};
+  const format::TensorFormat ignored_format{
+      .encoding = Encoding::kF32, .layout = format::Layout::kDense, .shape = *ignored_shape};
+  Checkpoint source{.container = "safetensors",
+                    .architecture = "tiny_spatial_alias",
+                    .files = {{.name = "source.safetensors",
+                               .path = source_path,
+                               .bytes = payload.size(),
+                               .device = static_cast<std::uint64_t>(status.st_dev),
+                               .inode = static_cast<std::uint64_t>(status.st_ino),
+                               .parsed = {.bytes = payload.size(), .sha256 = source_digest}}},
+                    .tensors = {{.name = "z.weight",
+                                 .format = matrix_format,
+                                 .extent = {.file = 0, .offset = 16, .bytes = 16},
+                                 .dtype = "F32",
+                                 .dims = {2, 2}},
+                                {.name = "a.weight",
+                                 .format = matrix_format,
+                                 .extent = {.file = 0, .offset = 0, .bytes = 16},
+                                 .dtype = "F32",
+                                 .dims = {2, 2}},
+                                {.name = "unused.encoder.extra",
+                                 .format = ignored_format,
+                                 .extent = {.file = 0, .offset = 32, .bytes = 4},
+                                 .dtype = "F32",
+                                 .dims = {1}}}};
+  auto cost = normalization_detail::Bound(source, mapping, {.component = "transformer"});
+  ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
+  const auto rejects_bad_omitted_extent = [&](auto mutate) {
+    Checkpoint invalid = source;
+    mutate(invalid);
+    EXPECT_FALSE(normalization_detail::Build(std::move(invalid), mapping,
+                                             {cost->metadata_bytes, cost->work_units}, nullptr,
+                                             {.component = "transformer"}));
+  };
+  rejects_bad_omitted_extent([](Checkpoint& bad) { bad.tensors[2].extent.file = 1; });
+  rejects_bad_omitted_extent([](Checkpoint& bad) { bad.tensors[2].extent.offset = 33; });
+  rejects_bad_omitted_extent(
+      [](Checkpoint& bad) { bad.tensors[2].extent.offset = UINT64_MAX - 1; });
+  auto plan = normalization_detail::Build(std::move(source), mapping,
+                                          {cost->metadata_bytes, cost->work_units}, nullptr,
+                                          {.component = "transformer"});
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  EXPECT_EQ(plan->source().architecture, "tiny_spatial_alias");
+  EXPECT_EQ(plan->canonical().architecture, "tiny_spatial");
+  ASSERT_EQ(plan->source_order().size(), 2U);
+  EXPECT_EQ(plan->routes()[plan->source_order()[0]].extent.offset, 0U);
+  EXPECT_EQ(plan->routes()[plan->source_order()[1]].extent.offset, 16U);
+  EXPECT_EQ(plan->cost().payload_bytes, 32U);
+  ASSERT_EQ(plan->groups().size(), 2U);
+
+  auto options = Options("spatial-store");
+  auto written = WriteArtifact(*plan, options);
+  ASSERT_TRUE(written) << test_support::Failed(written, &Error::ToString).value_or("");
+  auto opened = artifact::Artifact::Open(written->path, {.expected_id = written->id});
+  ASSERT_TRUE(opened) << test_support::Failed(opened, &artifact::Error::ToString).value_or("");
+  auto stored = spec::StoredSpec(*opened);
+  ASSERT_TRUE(stored);
+  EXPECT_EQ(stored->stages[0].layers[0].components.size(), 2U);
+  auto inventory = spec::SourceOf(*opened);
+  ASSERT_TRUE(inventory);
+  EXPECT_EQ(inventory->tensors.size(), 2U);
 }
 
 TEST_F(ImportWriterTest, ImagePipelineValidationAndBound) {

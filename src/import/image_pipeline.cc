@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <numeric>
 #include <set>
 #include <span>
 #include <string>
@@ -22,6 +23,8 @@
 #include "import/files.h"
 #include "import/readers/diffusers.h"
 #include "import/readers/safetensors.h"
+#include "import/source_mapping.h"
+#include "import/stage_recipe.h"
 #include "ir/graph.h"
 #include "model/image_pipeline.h"
 #include "spec/image_family.h"
@@ -164,21 +167,93 @@ namespace image_pipeline_detail {
 std::expected<ComponentPlan, Error> PlanComponent(
     const Checkpoint& comp, std::span<const model::ImageTensor> expected_tensors,
     std::span<const std::string_view> ignored, const spec::ModelSpec& spec,
-    std::vector<ComponentGroup> groups) {
-  if (comp.container != "safetensors") {
-    return Bad("component container must be safetensors", Rule::kContainer);
+    std::vector<ComponentGroup> groups, std::span<const std::string_view> ignored_prefixes,
+    std::span<const spec::RecipeExpansion::Tensor> recipe_inventory) {
+  if (comp.container != "safetensors" && comp.container != "gguf")
+    return Bad("image component uses an unsupported source container", Rule::kContainer);
+  struct PhysicalExtent {
+    std::uint32_t file = 0;
+    std::uint64_t begin = 0;
+    std::uint64_t end = 0;
+  };
+  std::vector<std::uint32_t> physical_files(comp.files.size());
+  std::iota(physical_files.begin(), physical_files.end(), 0U);
+  for (std::size_t i = 0; i < comp.files.size(); ++i) {
+    for (std::size_t j = 0; j < i; ++j) {
+      const auto& a = comp.files[i];
+      const auto& b = comp.files[j];
+      const bool aliases = (!a.path.empty() && a.path == b.path) ||
+                           (a.inode != 0 && a.device == b.device && a.inode == b.inode);
+      if (!aliases) continue;
+      if (a.bytes != b.bytes || a.device != b.device || a.inode != b.inode)
+        return Bad("aliased image source files disagree", Rule::kConfig);
+      physical_files[i] = physical_files[j];
+      break;
+    }
   }
+  std::vector<PhysicalExtent> source_extents;
+  source_extents.reserve(comp.tensors.size());
+  std::set<std::string_view> source_names;
+  for (std::size_t i = 0; i < comp.tensors.size(); ++i) {
+    const auto& tensor = comp.tensors[i];
+    if (tensor.name.empty() || !NoControlCharacters(tensor.name) ||
+        !source_names.insert(tensor.name).second || tensor.extent.file >= comp.files.size())
+      return std::unexpected(
+          Error{.rule = Rule::kBounds,
+                .reason = "an image source tensor has an invalid or duplicate name/file",
+                .file = tensor.extent.file,
+                .kind = ItemKind::kTensor,
+                .item = i});
+    if (tensor.extent.offset > UINT64_MAX - tensor.extent.bytes ||
+        tensor.extent.offset + tensor.extent.bytes > comp.files[tensor.extent.file].bytes)
+      return std::unexpected(Error{.rule = Rule::kBounds,
+                                   .reason = "an image source tensor extent exceeds its file",
+                                   .file = tensor.extent.file,
+                                   .kind = ItemKind::kTensor,
+                                   .item = i});
+    const auto source_bytes = SourcePartBytes(tensor);
+    if (!source_bytes || *source_bytes != tensor.extent.bytes)
+      return std::unexpected(
+          Error{.rule = Rule::kContainer,
+                .reason = "an image source tensor format disagrees with its extent",
+                .file = tensor.extent.file,
+                .kind = ItemKind::kTensor,
+                .item = i});
+    source_extents.push_back({.file = physical_files[tensor.extent.file],
+                              .begin = tensor.extent.offset,
+                              .end = tensor.extent.offset + tensor.extent.bytes});
+  }
+  std::ranges::sort(source_extents, [](const PhysicalExtent& a, const PhysicalExtent& b) {
+    return a.file != b.file ? a.file < b.file : a.begin < b.begin;
+  });
+  for (std::size_t i = 1; i < source_extents.size(); ++i)
+    if (source_extents[i].file == source_extents[i - 1].file &&
+        source_extents[i].begin < source_extents[i - 1].end)
+      return Bad("image source tensor extents overlap", Rule::kContainer);
+
   // Every tensor is one the stage reads or one its mapping leaves out by
   // name: another (an extra norm or bias of a variant) would run with
   // different math than the checkpoint's, as the LLM route refuses.
   std::set<std::string_view> read;
-  for (const auto& need : expected_tensors) read.insert(need.name);
+  for (const auto& need : expected_tensors)
+    if (!read.insert(need.name).second)
+      return Bad("an image stage binds one physical source tensor more than once");
   for (std::size_t i = 0; i < comp.tensors.size(); ++i) {
     const std::string_view name = comp.tensors[i].name;
-    if (read.contains(name) || std::ranges::any_of(ignored, [&](std::string_view rule) {
-          return spec::IgnoredImageTensor(rule, name);
-        }))
-      continue;
+    const bool consumed = read.contains(name);
+    const bool omitted =
+        std::ranges::any_of(
+            ignored, [&](std::string_view rule) { return spec::IgnoredImageTensor(rule, name); }) ||
+        std::ranges::any_of(ignored_prefixes,
+                            [&](std::string_view prefix) { return name.starts_with(prefix); });
+    if (consumed && omitted)
+      return std::unexpected(
+          Error{.rule = Rule::kContainer,
+                .reason = "an image mapping both reads and omits a source tensor",
+                .file = comp.tensors[i].extent.file,
+                .kind = ItemKind::kTensor,
+                .item = i});
+    if (consumed || omitted) continue;
     return std::unexpected(Error{.rule = Rule::kContainer,
                                  .reason = "a component tensor its image mapping neither reads "
                                            "nor leaves out",
@@ -195,19 +270,16 @@ std::expected<ComponentPlan, Error> PlanComponent(
   for (const auto& need : expected_tensors) {
     const Tensor* found = comp.FindTensor(need.name);
     if (!found) return Bad("a component lacks a tensor its mapping names");
-    if (found->dims != need.shape) {
-      return Bad("a component tensor's format or shape is not its family's");
-    }
-    format::Shape shape;
-    shape.rank = static_cast<std::uint8_t>(need.shape.size());
-    for (std::size_t d = 0; d < need.shape.size(); ++d) {
-      shape.ne[d] = need.shape[need.shape.size() - 1 - d];
-    }
+    const auto shape = found->format.shape;
+    if (shape.rank != need.shape.size())
+      return Bad("a component tensor's rank is not its family's");
+    for (std::size_t d = 0; d < need.shape.size(); ++d)
+      if (shape.ne[d] != need.shape[need.shape.size() - 1 - d])
+        return Bad("a component tensor's shape is not its family's");
     const auto parts = format::PartsOf(found->format);
     if (!parts || parts->size() != 1 || found->part != format::PartRole::kData ||
-        found->format.layout != format::Layout::kDense ||
         found->format.params != format::EncodingParams{} || found->format.stacked != 1 ||
-        found->extent.bytes != (*parts)[0].bytes || found->format.shape != shape)
+        found->extent.bytes != (*parts)[0].bytes)
       return Bad("a component tensor has an inconsistent source format");
     canonical.tensors.push_back({.name = need.name,
                                  .format = found->format,
@@ -222,6 +294,30 @@ std::expected<ComponentPlan, Error> PlanComponent(
     if (__builtin_add_overflow(payload, found->extent.bytes, &payload)) {
       return Bad("a component's payload exceeds 64-bit bounds", Rule::kBounds);
     }
+  }
+  std::set<std::pair<std::string_view, format::PartRole>> checked_source_shapes;
+  for (const auto& contract : recipe_inventory) {
+    if (contract.source_dims.empty()) continue;
+    if (!checked_source_shapes.emplace(contract.name, contract.part).second)
+      return Bad("a recipe repeats an exact raw source-dimension contract");
+    const auto expected_count =
+        std::ranges::count_if(expected_tensors, [&](const model::ImageTensor& tensor) {
+          return tensor.name == contract.name && tensor.part == contract.part;
+        });
+    if (expected_count != 1)
+      return Bad("a raw source-dimension contract has no unique physical tensor binding");
+    const auto found = std::ranges::find_if(comp.tensors, [&](const Tensor& tensor) {
+      return tensor.name == contract.name && tensor.part == contract.part;
+    });
+    if (found == comp.tensors.end())
+      return Bad("a raw source-dimension contract has no source tensor");
+    if (std::ranges::count_if(std::ranges::subrange(found, comp.tensors.end()),
+                              [&](const Tensor& tensor) {
+                                return tensor.name == contract.name && tensor.part == contract.part;
+                              }) != 1)
+      return Bad("a raw source-dimension contract has ambiguous source tensors");
+    if (found->dims != contract.source_dims)
+      return Bad("a source tensor's raw header dimensions differ from its recipe contract");
   }
   if (auto valid =
           components::ValidateSpec(spec, canonical.tensors, components::ValidationPurpose::kImport);
@@ -239,6 +335,46 @@ std::expected<ComponentPlan, Error> PlanComponent(
 }
 
 }  // namespace image_pipeline_detail
+
+std::expected<ComponentPlan, Error> PlanSpatialComponent(const Checkpoint& component,
+                                                         const spec::Mapping& mapping,
+                                                         std::uint64_t metadata_bytes) {
+  if (mapping.stage_recipe == nullptr || mapping.stage.empty() ||
+      mapping.role != mapping.stage_recipe->role || mapping.stage != mapping.stage_recipe->name)
+    return Bad("configured spatial component mapping has no matching stage recipe",
+               Rule::kUnsupported);
+  if (auto valid = spec::ValidateMapping(mapping); !valid)
+    return Bad("configured spatial component mapping is invalid", Rule::kConfig);
+  if (!spec::SupportsSource(mapping, component.architecture, component.container))
+    return Bad("configured spatial component mapping does not accept this source",
+               Rule::kContainer);
+  if (metadata_bytes == 0)
+    return Bad("configured spatial component has no metadata budget", Rule::kBounds);
+
+  const spec::ModelSpec family{};
+  auto expanded =
+      ExpandStageRecipe(*mapping.stage_recipe, family, metadata_bytes, component.metadata);
+  if (!expanded) return Bad("cannot expand configured spatial component recipe");
+  std::vector<model::ImageTensor> tensors;
+  std::vector<ComponentGroup> groups;
+  tensors.reserve(expanded->tensors.size());
+  groups.reserve(expanded->tensors.size());
+  for (const auto& tensor : expanded->tensors) {
+    tensors.push_back(
+        {.name = tensor.name, .dtype = {}, .shape = tensor.shape, .part = tensor.part});
+    const auto group_kind =
+        tensor.group == spec::RecipeGroupKind::kTable   ? ComponentGroup::Kind::kTable
+        : tensor.group == spec::RecipeGroupKind::kLayer ? ComponentGroup::Kind::kLayer
+                                                        : ComponentGroup::Kind::kGlobal;
+    groups.push_back({.kind = group_kind, .layer = tensor.layer});
+  }
+  spec::ModelSpec component_spec{.pipeline = spec::PipelineKind::kImage,
+                                 .stages = {std::move(expanded->stage)}};
+  spec::Canonicalize(component_spec);
+  return image_pipeline_detail::PlanComponent(component, tensors, mapping.ignored_tensors,
+                                              component_spec, std::move(groups),
+                                              mapping.ignored_tensor_prefixes, expanded->tensors);
+}
 
 std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& source) {
   if (!IsImagePipeline(source)) {
@@ -266,6 +402,13 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
     return Bad("not a diffusers pipeline with an image mapping", Rule::kContainer);
   }
   const auto& mapping = *spec::FindImageMapping(source.architecture);
+  std::set<std::string_view> mapped_roles;
+  for (const auto& component : source.components) {
+    if (!mapped_roles.insert(component.role).second)
+      return Bad("an image source repeats a physical component role");
+    if (!std::ranges::contains(mapping.components, component.role, &spec::ImageComponentRule::role))
+      return Bad("the image source contains a component role its mapping does not account for");
+  }
   std::vector<SourceFile> pipeline_files = source.files;
   auto family = Family(source, mapping, pipeline_files);
   if (!family) return std::unexpected(family.error());
@@ -280,9 +423,6 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
   const auto text_tensors = model::TextEncoderTensors(p.text, names.text);
   auto text_spec = spec::ImageTextSpec(p.text, 1, 0, text_tensors);
   if (!text_spec) return Bad("cannot build the text encoder's spec");
-  const auto denoiser_tensors = model::DenoiserTensors(p.denoiser, names.denoiser);
-  auto denoiser_spec = spec::ImageFlowTemplate(p.denoiser, denoiser_tensors);
-  if (!denoiser_spec) return Bad("cannot build the denoiser's spec");
   const auto vae_tensors = model::VaeDecoderTensors(p.vae, names.vae);
   auto vae_spec = spec::ImageDecodeTemplate(p.vae, vae_tensors);
   if (!vae_spec) return Bad("cannot build the VAE's spec");
@@ -290,17 +430,49 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
   ImagePipelinePlan out;
   out.files = std::move(pipeline_files);
   out.components.reserve(mapping.components.size());
-  const std::array<std::pair<const std::vector<model::ImageTensor>*, const spec::ModelSpec*>, 3>
-      by_kind{{{&text_tensors, &text_spec->spec},
-               {&denoiser_tensors, &*denoiser_spec},
-               {&vae_tensors, &*vae_spec}}};
   for (const auto& rule : mapping.components) {
     const auto* comp = FindComponent(source, rule.role);
+    if (comp == nullptr) return Bad("the pipeline lacks a component its mapping names");
+    if (!std::ranges::contains(rule.containers, comp->container))
+      return Bad("an image component uses a container its mapping does not allow",
+                 Rule::kContainer);
+    std::vector<model::ImageTensor> expected_tensors;
+    std::vector<ComponentGroup> groups;
+    std::vector<spec::RecipeExpansion::Tensor> recipe_inventory;
+    spec::ModelSpec component_spec;
     const auto kind = rule.kinds.front();
-    const std::size_t at = kind == spec::kImageTextKind ? 0 : kind == spec::kImageFlowKind ? 1 : 2;
-    auto plan = image_pipeline_detail::PlanComponent(*comp, *by_kind[at].first,
-                                                     rule.ignored_tensors, *by_kind[at].second,
-                                                     GroupsOf(kind, *by_kind[at].first, p, names));
+    if (rule.recipe != nullptr) {
+      auto expanded = ExpandStageRecipe(*rule.recipe, *family, std::uint64_t{512} << 20U);
+      if (!expanded) return Bad("cannot expand the mapping's component stage recipe");
+      expected_tensors.reserve(expanded->tensors.size());
+      groups.reserve(expanded->tensors.size());
+      for (auto& tensor : expanded->tensors) {
+        expected_tensors.push_back(
+            {.name = tensor.name, .dtype = {}, .shape = tensor.shape, .part = tensor.part});
+        const auto group_kind =
+            tensor.group == spec::RecipeGroupKind::kTable   ? ComponentGroup::Kind::kTable
+            : tensor.group == spec::RecipeGroupKind::kLayer ? ComponentGroup::Kind::kLayer
+                                                            : ComponentGroup::Kind::kGlobal;
+        groups.push_back({.kind = group_kind, .layer = tensor.layer});
+      }
+      recipe_inventory = std::move(expanded->tensors);
+      component_spec = {.pipeline = spec::PipelineKind::kImage,
+                        .stages = {std::move(expanded->stage)}};
+      spec::Canonicalize(component_spec);
+    } else if (kind == spec::kImageTextKind) {
+      expected_tensors = text_tensors;
+      component_spec = text_spec->spec;
+      groups = GroupsOf(kind, expected_tensors, p, names);
+    } else if (kind == spec::kImageVaeKind) {
+      expected_tensors = vae_tensors;
+      component_spec = *vae_spec;
+      groups = GroupsOf(kind, expected_tensors, p, names);
+    } else {
+      return Bad("an image component has no mapping-owned stage recipe");
+    }
+    auto plan = image_pipeline_detail::PlanComponent(*comp, expected_tensors, rule.ignored_tensors,
+                                                     component_spec, std::move(groups), {},
+                                                     recipe_inventory);
     if (!plan) return std::unexpected(plan.error());
     if (__builtin_add_overflow(out.payload_bytes, plan->payload_bytes, &out.payload_bytes)) {
       return Bad("image pipeline payload exceeds 64-bit bounds", Rule::kBounds);

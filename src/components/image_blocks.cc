@@ -52,6 +52,12 @@ constexpr std::array kParams{
               .least = 0,
               .most = 1,
               .fallback = 0},
+    ParamSpec{.name = "round_bf16",
+              .type = ParamType::kBool,
+              .required = false,
+              .least = 0,
+              .most = 1,
+              .fallback = 0},
 };
 constexpr std::array kRoles{WeightRole{.name = "weight", .encodings = kNormEncodings}};
 
@@ -72,12 +78,30 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
 ir::TensorId Normalized(ir::Builder& builder, const Instance& in, ir::TensorId input,
                         ir::TensorId weight) {
   auto out = builder.L2Norm(input, F32(in.params.Real("eps")));
+  if (in.params.Flag("round_bf16")) {
+    out = builder.Convert(out, format::Encoding::kBF16);
+    out = builder.Convert(out, format::Encoding::kF32);
+  }
   out = builder.Scale(out, F32(std::sqrt(static_cast<double>(Channels(in)))));
+  if (in.params.Flag("round_bf16")) {
+    out = builder.Convert(out, format::Encoding::kBF16);
+    out = builder.Convert(out, format::Encoding::kF32);
+  }
   auto scale = NormScale(builder, weight);
   if (builder.tensor(scale).shape().rank != 1)
     scale = builder.Reshape(scale, ir::ShapeOf({Channels(in)}));
   out = builder.Mul(out, scale);
-  if (in.params.Flag("silu")) out = builder.Unary(out, ir::UnaryFn::kSilu);
+  if (in.params.Flag("round_bf16")) {
+    out = builder.Convert(out, format::Encoding::kBF16);
+    out = builder.Convert(out, format::Encoding::kF32);
+  }
+  if (in.params.Flag("silu")) {
+    out = builder.Unary(out, ir::UnaryFn::kSilu);
+    if (in.params.Flag("round_bf16")) {
+      out = builder.Convert(out, format::Encoding::kBF16);
+      out = builder.Convert(out, format::Encoding::kF32);
+    }
+  }
   return out;
 }
 std::expected<FragmentOut, std::string> Emit(Fragment& f) {
@@ -100,12 +124,65 @@ std::expected<void, std::string> Reference(RefIO& io) {
     for (std::size_t c = 0; c < width; ++c) squares += io.stream[row + c] * io.stream[row + c];
     const double denominator = std::max(std::sqrt(squares), eps);
     for (std::size_t c = 0; c < width; ++c) {
-      double value = (io.stream[row + c] / denominator) * scale * io.weights[0][c];
-      if (io.instance->params.Flag("silu")) value /= 1.0 + std::exp(-value);
+      const bool round_bf16 = io.instance->params.Flag("round_bf16");
+      const auto round = [](double x) {
+        float f = static_cast<float>(x);
+        std::uint32_t bits = 0;
+        std::memcpy(&bits, &f, sizeof(bits));
+        bits += 0x7FFFU + ((bits >> 16U) & 1U);
+        bits &= 0xFFFF0000U;
+        std::memcpy(&f, &bits, sizeof(f));
+        return static_cast<double>(f);
+      };
+      double value = io.stream[row + c] / denominator;
+      if (round_bf16) value = round(value);
+      value *= scale;
+      if (round_bf16) value = round(value);
+      value *= io.weights[0][c];
+      if (round_bf16) value = round(value);
+      if (io.instance->params.Flag("silu")) {
+        value /= 1.0 + std::exp(-value);
+        if (round_bf16) value = round(value);
+      }
       io.stream[row + c] = value;
     }
   }
   return {};
+}
+
+// Generic scale-only modulation, x * (1 + scale). The scale is an explicit
+// dynamic side input so it can be produced per request or per owner.
+constexpr std::array kModulateParams{ParamSpec{.name = "side", .type = ParamType::kName}};
+std::string_view Conditioning(const Instance& in);
+bool JoinedRows(const Fragment& f, ir::TensorId id);
+bool RefRows(const RefIO& io);
+std::expected<std::vector<RoleShape>, std::string> ModulateShapes(const Instance& in) {
+  if (in.site != Site::kLayer || in.stage.width == 0 || in.stage.width > kMaxStreamWidth ||
+      in.stage.streams != 1 || in.params.Name("side").empty())
+    return std::unexpected(
+        "scale modulation requires one bounded layer stream and named side input");
+  return std::vector<RoleShape>{};
+}
+std::expected<FragmentOut, std::string> ModulateEmit(Fragment& f) {
+  if (!f.stream_needed) return FragmentOut{.stream = f.stream};
+  const auto side = f.Side(Conditioning(f.instance));
+  if (!JoinedRows(f, f.stream) || !JoinedRows(f, side))
+    return std::unexpected("scale modulation requires matching F32 stream and conditioning rows");
+  return FragmentOut{.stream = f.b.Mul(f.stream, f.b.Scale(side, 1.0F, 1.0F))};
+}
+std::expected<void, std::string> ModulateReference(RefIO& io) {
+  if (!RefRows(io))
+    return std::unexpected("scale modulation reference: stream or conditioning shape");
+  for (std::size_t i = 0; i < io.stream.size(); ++i) io.stream[i] *= 1.0 + io.side[i];
+  return {};
+}
+std::expected<SpatialShape, std::string> ModulateSpatialShape(
+    const Instance& in, SpatialShape shape, std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial dimensions exceed representable storage");
+  if (shape.channels != in.stage.width || !auxiliary || *auxiliary != shape)
+    return std::unexpected("scale modulation requires identical stream and condition geometry");
+  return shape;
 }
 
 // Qwen-Image's DiT uses scale-only adaptive LayerNorm (no shift) and a
@@ -251,7 +328,13 @@ std::expected<SpatialShape, std::string> GatedSpatialShape(const Instance& insta
 const SpatialOps kNormChannelSpatial{.infer_shape = ChannelSpatialShape,
                                      .emit = EmitSpatialStream<SpatialStreamLayout::kChannelFirst>,
                                      .reference = RunSpatialStreamReference<>,
-                                     .max_nodes = 12};
+                                     .max_nodes = 18};
+const SpatialOps kModulateSpatial{
+    .infer_shape = ModulateSpatialShape,
+    .emit = EmitSpatialStream<SpatialStreamLayout::kChannelRows, SpatialStreamLayout::kChannelRows,
+                              true>,
+    .reference = RunSpatialStreamReference<true, true>,
+    .max_nodes = 11};
 const SpatialOps kNormAdaptiveSpatial{
     .infer_shape = AdaptiveSpatialShape,
     .emit = EmitSpatialStream<SpatialStreamLayout::kChannelRows, SpatialStreamLayout::kChannelRows,
@@ -302,6 +385,19 @@ const ComponentDef& NormAdaptive() {
       .emit = AdaptiveEmit,
       .reference = AdaptiveReference,
   };
+  return def;
+}
+
+const ComponentDef& ModulateScale() {
+  static const ComponentDef def{.kind = "modulate.scale",
+                                .version = 1,
+                                .row_local = true,
+                                .side_input = Conditioning,
+                                .params = kModulateParams,
+                                .shapes = ModulateShapes,
+                                .spatial = &kModulateSpatial,
+                                .emit = ModulateEmit,
+                                .reference = ModulateReference};
   return def;
 }
 

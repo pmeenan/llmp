@@ -1,0 +1,324 @@
+{
+  "$schema": "llmp-m35-u8-proof-aggregate.v3",
+  "status": "complete",
+  "complete": true,
+  "intended_tracked_destination": "docs/experiments/m35-image-pipeline-data/RESULTS.md and results.json (+ SPDX sidecar)",
+  "plan": {
+    "item": "U8 Image pipeline as data",
+    "status": "done",
+    "exit_criteria": [
+      {
+        "criterion": "Qwen-Image produces identical images from data",
+        "result": "passed",
+        "evidence": "Pinned BF16 imported composition matches the published 1024x1024, 40-step frozen pixels."
+      },
+      {
+        "criterion": "Second VAE/DiT configuration imports without family-specific C++ wiring",
+        "result": "passed_bounded_component_import",
+        "evidence": "Actual pinned Ming transformer and first-frame RGBA VAE mappings import native components and validate stored topology using shared primitives; no composed pipeline or serving claim."
+      }
+    ],
+    "qualification_limit": "Q4 repeat proves completion and repeatability only; Ming evidence is component import/topology only."
+  },
+  "provenance": {
+    "qwen_q4_import": {
+      "path": "/tmp/llmp-m35-orchestration/u8-resume/q4-native-import-proof.json",
+      "sha256": "4d5763f36837e3ec233afabe695f3d96134de1ce3ffb7d42a5cda97c171470c4"
+    },
+    "qwen_q4_screen": {
+      "path": "/tmp/llmp-m35-orchestration/u8-resume/admission/q4-after-q8-receipt.json",
+      "sha256": "d2f8de4e3aadd1e4b1f766bf08d689709f716da73875999cac09e2fe819834ff"
+    },
+    "qwen_bf16": {
+      "path": "/tmp/llmp-m35-orchestration/u8-resume/bf16-proof/bf16-proof-complete.json",
+      "sha256": "02e707053cb2b099015d2c01dd99923bc4193a29c5af8b914f0fa150c6f5ebba"
+    },
+    "ming_transformer_import": {
+      "path": "/tmp/llmp-m35-orchestration/u8-resume/ming-native/transformer-postfix-import-proof.json",
+      "sha256": "d5ee8c1cfbd12c4fcb4f1b444d2ecc62b52eeda6e5d5aff4d970a5c0141ec07a"
+    },
+    "ming_transformer_input_inventory": {
+      "path": "/tmp/llmp-m35-orchestration/u8-resume/ming-native/transformer-inputs.json",
+      "sha256": "578d45664ff0c8de957d574de70c8f68e87ed9cf4fcefb6e2de1d8fa0b4ea0e8"
+    },
+    "ming_vae_import": {
+      "path": "/tmp/llmp-m35-orchestration/u8-resume/ming-vae-proof-floor/import-proof.json",
+      "sha256": "d1952ab9ddc1798b6853fb5d88be9dacdafaba5075a4fe7b9e2ade4d170ce3f2",
+      "audit_path": "/tmp/llmp-m35-orchestration/u8-resume/ming-vae-proof-floor/artifact-audit.json",
+      "audit_sha256": "5b946231ca7df2d22f7b2e6d3e6f585c76f0326ef200b50d849f14de29880be3",
+      "supervisor_log_sha256": "bed82d04692fdfa0bc016e26639811032499720f5c250ed5e0ca33c4cb10f0ad"
+    }
+  },
+  "completed_evidence": {
+    "qwen_q4_repeat_completion": {
+      "status": "passed",
+      "host": "spark-b",
+      "class": "exclusive",
+      "test": "ImageGenerationGpu.ImportedQ4CompletesAndRepeatsWithoutInheritedNumerics",
+      "test_counts": {
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "no_skips": true,
+        "duration_s": 19.568
+      },
+      "shape": [
+        512,
+        512
+      ],
+      "steps": 2,
+      "generations": 2,
+      "repeat_digests_equal": true,
+      "composition_id": "7959b4cd5c3999fb0e46d168b9fa7e7a80fbea73d27dc42cc0dad4848e3afcea",
+      "transformer_component_id": "a4d7ce4e43aa35b85386286b0b867ed888bee2b65e5e1c48f6b2caf42b35bdfb",
+      "source": {
+        "base_checkpoint": "Qwen/Qwen-Image-2.1@790c92633540aa0cb11d9abf19eb46d861714758",
+        "quantized_transformer": "abenzerps/Qwen-Image-2.1-GGUF@c4de66efa2183fb25ecbc185bac509ee37952b41",
+        "config_sha256": "56ae3281c4e6c2d1aa3658252d187488071815fd79bef15808bb0205fc1a2241",
+        "source_spec_sha256": "3adbff4e47d168ceafceb41e3da1961b1be3692be4a3af40e28329b356f07a43",
+        "weights_sha256": "833439e91bc1152d28f37aa198c7f6f4218b7de95754c2f7a318a2422ab4b2f8",
+        "custody_caveat": "The original GGUF revision fetch returned HTTP 404 on 2026-10-23; this proof used retained historical bytes authenticated by pre-M3.5 pins/receipts. No new successful Hub fetch or combined upstream revision is claimed."
+      },
+      "verified_role_counts": {
+        "Q4_K_resources": 165,
+        "Q6_K_resources": 64,
+        "compiled_Q4_K_role_refs": 165,
+        "compiled_Q6_K_role_refs": 64
+      },
+      "actual_resource_bytes": 20753619536,
+      "actual_weight_reads": 20851982336,
+      "paid_retained_artifact_bytes": 335898484,
+      "flow_sha256": "211f5ae38cc41144ef3955d3e9c7850135287d66d233cd11968012f72e9fa5ed",
+      "pixels_sha256": "e3fe5d5da5dba3b470f515fd3ff953ade776dd9c66b2b011bcd8dd45445965b3",
+      "scope_limit": "512x512, 2-step repeat completion and staged-read closure only; no parity, quality, or performance claim."
+    },
+    "qwen_bf16_full_image_comparison": {
+      "status": "passed",
+      "host": "spark-c4e2",
+      "class": "exclusive",
+      "test_job": "u8-bf16-numerical-proof",
+      "checkpoint": "Qwen/Qwen-Image-2.1@790c92633540aa0cb11d9abf19eb46d861714758",
+      "composition_id": "62497918eae947b8d4327bf8e0771318118d581c59c2c0574208345ed7cc6518",
+      "composition_manifest_sha256": "16f52d244d866460d6f54b1134db156e724b28688c7f6766ac01c0c342d94682",
+      "fixture_tree_sha256": "a3ee3cb65b5609d92e40a4585d272890fbbace087284b067c6cd13f24343ffb7",
+      "fixture_file_count": 104,
+      "fixture_bytes": 213253825,
+      "pixel_pin_sha256": "46c04b83b94b18f1c549f5e1088a4a30f7e3111d785c98f50be5b26d7fcb89e0",
+      "numerical_proof": "1024x1024, 40-step published and imported generations completed; fixture/prompt IDs, family spec, component specs/inventories/source receipts/resource bytes, full pixel output equality and frozen pixels.1024x1024.40 digest assertions passed.",
+      "result": "rc 0; 1 test passed, 0 skipped, 92.456 seconds",
+      "scope_limit": "No speed claim; historical 52.6 s baseline was used only to bound the two-generation proof."
+    },
+    "ming_transformer_component_import": {
+      "status": "passed",
+      "host": "spark-b (spark-56f5)",
+      "class": "exclusive_gpu",
+      "job": "m35-u8-ming-transformer-import-postfix",
+      "rc": 0,
+      "checkpoint": "208087ada1486931692c1896f38d4cd16ff3df82",
+      "companion_revision": "3515cd7b1e3049fc517eed7d35020251cd06519a",
+      "component_id": "1d3baa7912d5ea24ae759742738286deddd4c53ba84b970589a07ef5ecf07f9e",
+      "mapping_architecture": "diffusion_transformer",
+      "mapping_version": 1,
+      "stored_stream_width": 3840,
+      "native_resources": 519,
+      "groups": 35,
+      "source_tensor_count": 519,
+      "config_sha256": "9a64223dd9858f5a1120f4593534173b57741bb8ec4bac53f1636058c820abcd",
+      "index_sha256": "21f362456d5f8394b516215521d7de8d44f8353e170043f82d902913eef5a2cc",
+      "source_shards": [
+        {
+          "name": "diffusion_pytorch_model-00001-of-00005.safetensors",
+          "bytes": 2990953408,
+          "sha256": "1488ae867d45a4c184fa0df9fde68d8f7bd9c2dea52b611b77fc6bbd685d9d70"
+        },
+        {
+          "name": "diffusion_pytorch_model-00002-of-00005.safetensors",
+          "bytes": 2924069536,
+          "sha256": "6f9441923d41408c74bd3761a34eb4db2c583fc08d5785a2c7f2260c8e17089e"
+        },
+        {
+          "name": "diffusion_pytorch_model-00003-of-00005.safetensors",
+          "bytes": 2973221624,
+          "sha256": "45cbd9a557c20c7ae5d676049b301f4856046be2f802f3e9e7de477c77a35b8c"
+        },
+        {
+          "name": "diffusion_pytorch_model-00004-of-00005.safetensors",
+          "bytes": 2973221616,
+          "sha256": "73c70763356a57d5d3cd04e91e714cb0b86081a3e922b594659b58f2ab49bc90"
+        },
+        {
+          "name": "diffusion_pytorch_model-00005-of-00005.safetensors",
+          "bytes": 448391960,
+          "sha256": "0c178789512c7f5d45a7b0c1c561f868704cd0fa77d4cb32f8d7ea06b2707781"
+        }
+      ],
+      "scope_limit": "bounded native transformer component import and stored-artifact topology publication; no serving/model-execution/quality/performance claim",
+      "companion_sources": {
+        "revision": "3515cd7b1e3049fc517eed7d35020251cd06519a",
+        "transformer_py_sha256": "aefd220223ba80a59ecd9251a1bd512c4633cb68f76b1ce14de83a388c97eec4",
+        "vae_py_sha256": "4013c3e09e3684d2ca8bbf1f98144a8ebab2a9408641831b1661d89b4a0aa106",
+        "pipeline_py_sha256": "ab42fc223ddff73f854d8b6595e1207ab184248d32151adbd847c0e9974f2343"
+      },
+      "input_boundary_contract": {
+        "caller_supplies_patch2_features_already_packed": true,
+        "timestep_features": "sinusoidal features computed from u=t*1000; scale precedes cos/sin",
+        "positions": "original three-axis positions",
+        "masks": "additive masks",
+        "tested_geometry": "aligned all-valid 32 image rows and 32 caption rows",
+        "executed_by_importer": false,
+        "qualification": "input contract only; no full Ming serving qualification"
+      }
+    },
+    "ming_vae_decoder_import": {
+      "status": "passed",
+      "host": "spark-c4e2",
+      "class": "exclusive GPU",
+      "job": "m35-u8-ming-vae-import-floor",
+      "rc": 0,
+      "artifact_id": "6c5b1603016eaa572d0a1acffd60825a49560bccfdf844900ef675ad2b93a458",
+      "store": "/home/pmeenan/.local/share/llmp/m35-u8-ming-vae-artifacts",
+      "checkpoint": "inclusionAI/Ming-Image-0.1-Design@208087ada1486931692c1896f38d4cd16ff3df82",
+      "companion_revision": "3515cd7b1e3049fc517eed7d35020251cd06519a",
+      "config_sha256": "8db67ee46bb5810ed819d698a8acfc95936d157fe68b66c9ed16b2d5ea04413e",
+      "source_weights_sha256": "06520463778e64dca1039c7447890065ee220bc408d15412182e5c3e06f304f1",
+      "source_tensor_count": 194,
+      "source_dtype_counts": {
+        "BF16": 194
+      },
+      "bound_tensors": 104,
+      "ignored_tensors": 90,
+      "ignored_counts": {
+        "encoder": 84,
+        "quant_conv": 2,
+        "inactive_time_conv": 4
+      },
+      "causal_source_rank5_kernel_count": 32,
+      "causal_kernel_contract": "Original 5-D kernel bytes retained in folded rank-four storage with exact raw-axis validation; raw source dimensions are import-only; artifact/runtime maximum rank is four.",
+      "spatial_upsamplers": 3,
+      "resource_count": 104,
+      "encoding_counts": {
+        "bf16": 104
+      },
+      "groups": 5,
+      "shards": 1,
+      "shard_bytes": [
+        143081472
+      ],
+      "writer_validation": "expected-ID Artifact::Open, StoredSpec equality, SourceOf, ValidateSpec(import), Deep before publication; source writer.cc lines1141-1151",
+      "audit_scope_limit": "Read-only metadata audit; no C++ deep inspector claim.",
+      "scope": "native first-frame VAE component import, no Ming serving/numerical/performance qualification",
+      "guards": "hostname, absent destination, record mode unset, source config/weight SHA256 before/after, CLI binary SHA256 before/after; no code-file hash guard inside this job",
+      "build_source_binding": "frozen Floor repair checkpoint verified under m35-u8-ming-floor-verified; no edits during import",
+      "binary_sha256": "a7ee40b6b222a0d4736cea10c7d919d77d97c8a31bf324216852851272888107",
+      "source_config_sha256": "8db67ee46bb5810ed819d698a8acfc95936d157fe68b66c9ed16b2d5ea04413e",
+      "source_weight_sha256": "06520463778e64dca1039c7447890065ee220bc408d15412182e5c3e06f304f1",
+      "artifact_metadata_sha256": {
+        "manifest": "e8afd71979966bb91ba59335bfbd305e6728db804001386768bdbdae580c26ff",
+        "spec": "d84ecde429023e956ca9a37db037cccbdeec31d5fb2f573b8cb927c0ac0c6652",
+        "index": "a3b5b3ca7a0f4ba7c8099327694ce5a6efcc8b36f3efb652ee0174347585f884"
+      }
+    },
+    "gpu_backend_repair_review": {
+      "status": "passed_clean_review",
+      "host": "spark-b (spark-56f5)",
+      "job": "m35-u8-gpu-review-r2-controls",
+      "supervision": "shared; 5/5 steps passed; rc 0",
+      "checks": {
+        "build_targets": [
+          "components_catalog_gpu_test",
+          "image_ops_gpu_test",
+          "ggml_ext_validate_test"
+        ],
+        "strided_conv_tests": {
+          "tests": 3,
+          "passed": 3,
+          "skipped": 0
+        },
+        "catalog_gpu_case": {
+          "tests": 1,
+          "passed": 1,
+          "skipped": 0
+        },
+        "ggml_ext_validate": {
+          "tests": 26,
+          "passed": 26,
+          "skipped": 0
+        }
+      },
+      "independent_review": "CLEAN; 16 reviewed path hashes matched; no findings",
+      "review_receipt": "/tmp/llmp-m35-orchestration/u8-resume/gpu-fix/review-r2.json",
+      "scope_limit": "Focused GPU correctness repair checks, not the final integrated U8 source/test sweep."
+    }
+  },
+  "evidence_policy": {
+    "aggregate": "Receipt-backed summary; raw logs remain external. Superseded attempts are omitted.",
+    "no_speed_claim": true,
+    "runtime_model_execution_for_ming": false,
+    "architecture_specific_runtime_or_math_added": false,
+    "decision_note": "D-122 already covers this work; no new decision requested."
+  },
+  "final_integrated_validation": {
+    "receipt": "/tmp/llmp-m35-orchestration/u8-resume/final2/final-checks.json",
+    "status": "passed",
+    "source_manifest": "/tmp/llmp-m35-orchestration/u8-resume/final2/source-postfix.json",
+    "source_sha256": "0eca59143b04650cd4d7a1dcc9268f83a9fc160def03d274e8bdd2c68308d9c7",
+    "changed_source_paths": 72,
+    "native_builds": {
+      "spark": "m35-u8-final2-build-A PASS117s",
+      "spark-b": "m35-u8-final2-build-B PASS51s; postfix-B PASS37s; postfix-gpu-B PASS8s"
+    },
+    "shared_coverage": {
+      "unique_tests": 3754,
+      "full_split": {
+        "spark": 1876,
+        "spark-b": 1878
+      },
+      "unchanged_passed": 3751,
+      "test_fixture_failures_repaired": [
+        "unit.ComponentsTest.EveryCatalogComponentHasAReferenceAndIsTested",
+        "unit.GgmlSpatialTest.RaggedTypedPortsLowerWithoutTokenMetadataInBothBindingModes",
+        "unit.SpatialComponentsTest.ExpandedSpatialFragmentsFitTheirBuildSpatialStepNodeBounds"
+      ],
+      "focused_final_tests": 111,
+      "focused_failed": 0,
+      "focused_skipped": 0,
+      "coverage_passed": 3754,
+      "single_final_source_full_rerun": false,
+      "reuse_reason": "Three test-only repairs and five formatting-only changes; strong reviewer confirmed focused checks sufficient. Production semantics, source formats, artifact bytes and model goldens unchanged."
+    },
+    "affected_model_checks": {
+      "tests": 26,
+      "passed": 26,
+      "failed": 0,
+      "skipped": 0,
+      "distribution": {
+        "spark-A": 7,
+        "spark-B": 19
+      },
+      "includes": [
+        "Qwen BF16 full image comparison",
+        "rectangular two-prompt request",
+        "Q4 repeat completion"
+      ]
+    },
+    "statics": {
+      "host": "workstation under hostlock shared, pinned misePython/x86SDK required by x86-only REUSE provisioning",
+      "reuse": "passed",
+      "headers": {
+        "files": 2629,
+        "problems": 0
+      },
+      "boundaries": {
+        "files": 720,
+        "problems": 0
+      },
+      "format": {
+        "files": 68,
+        "problems": 0
+      }
+    },
+    "coverage_note": "3,751 unchanged passing tests from the prior complete two-Spark split plus three repaired fixture tests and 111 focused final tests. No skips or focused failures. This is not one full-suite rerun on a single final source snapshot.",
+    "reuse_note": "REUSE ran on the workstation with the pinned x86 SDK because the Spark SDK does not provision the Python REUSE package; no repository tooling changes were required."
+  }
+}

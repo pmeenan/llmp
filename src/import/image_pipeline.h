@@ -24,7 +24,9 @@
 #include "import/normalize.h"
 #include "import/writer.h"
 #include "model/image_pipeline.h"
+#include "spec/mapping.h"
 #include "spec/spec.h"
+#include "spec/stage_recipe.h"
 
 namespace llmp::import {
 
@@ -42,15 +44,23 @@ std::expected<NormalizationCost, Error> ImagePipelineBound(const Checkpoint& sou
 
 std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& source);
 
+// A configured spatial checkpoint (no pipeline model_index.json): its
+// mapping-owned import recipe expands into one ordinary image component
+// artifact. Source metadata is the recipe environment; no family adapter is
+// synthesized for this path.
+std::expected<ComponentPlan, Error> PlanSpatialComponent(
+    const Checkpoint& component, const spec::Mapping& mapping,
+    std::uint64_t metadata_bytes = std::uint64_t{512} << 20U);
+
 namespace image_pipeline_detail {
 // Shared component metadata validation, also used by descriptor-only tests:
 // every tensor of the component is one of `tensors` or one `ignored` names
 // (spec::ImageComponentRule's ignored_tensors), or the plan is refused.
-std::expected<ComponentPlan, Error> PlanComponent(const Checkpoint& component,
-                                                  std::span<const model::ImageTensor> tensors,
-                                                  std::span<const std::string_view> ignored,
-                                                  const spec::ModelSpec& spec,
-                                                  std::vector<ComponentGroup> groups);
+std::expected<ComponentPlan, Error> PlanComponent(
+    const Checkpoint& component, std::span<const model::ImageTensor> tensors,
+    std::span<const std::string_view> ignored, const spec::ModelSpec& spec,
+    std::vector<ComponentGroup> groups, std::span<const std::string_view> ignored_prefixes = {},
+    std::span<const spec::RecipeExpansion::Tensor> recipe_inventory = {});
 }  // namespace image_pipeline_detail
 }  // namespace llmp::import
 

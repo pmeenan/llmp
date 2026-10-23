@@ -199,12 +199,11 @@ std::expected<std::uint32_t, std::string> MappingDefaultContext(
 // one), else its envelope's.
 std::expected<std::uint32_t, std::string> ApprovedDefaultContext(const Approval& approval);
 
-// An image pipeline's admission (spec/image_family.h): a v1 composition
-// whose architecture has an image mapping and whose kept files are an
-// approved pipeline's (ImageApproval), its components (opened in the
-// composition's order) each its approved source, dense inventory and
-// pinned component spec, and the family spec it stores the pinned one,
-// read back as the model's profile.
+// An image pipeline's admission (spec/image_family.h): structurally validates
+// a v1 composition and its ordered component artifacts, source receipts,
+// local stages, folds, native formats and stored family profile. A matching
+// ImageApproval is retained only as a historical overlay when its complete
+// source closure, transforms, inventories and stored specs match.
 struct ImageAdmission {
   const spec::ImageMapping* mapping = nullptr;
   const ImageApproval* approval = nullptr;

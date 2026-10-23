@@ -159,6 +159,7 @@ enum class LlmpOp : std::uint8_t {
   kGatedResidualSplit,
   kDupUpAdd,
   kConv1x1,
+  kConv2dStrided,
 };
 
 class LaunchContext;
@@ -819,6 +820,13 @@ std::expected<void, KernelFailure> RunDupUpAdd(LaunchContext& launch, ggml_tenso
 ggml_tensor* Conv1x1(ggml_context* context, ggml_tensor* kernel, ggml_tensor* x, ggml_tensor* bias);
 std::expected<void, KernelFailure> CheckConv1x1(const ggml_tensor* node);
 std::expected<void, KernelFailure> RunConv1x1(LaunchContext& launch, ggml_tensor* node);
+// Generic no-workspace spatial convolution fallback. Reads supported F32/BF16
+// kernel and bias storage through their original strides, writes packed F32.
+ggml_tensor* Conv2dStrided(ggml_context* context, ggml_tensor* kernel, ggml_tensor* x,
+                           ggml_tensor* bias, std::int64_t stride, std::int64_t padding,
+                           std::int64_t dilation);
+std::expected<void, KernelFailure> CheckConv2dStrided(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunConv2dStrided(LaunchContext& launch, ggml_tensor* node);
 
 // GemmBf16 with the GB10's pinned cuBLASLt algorithms where its shape has
 // one (llmp.gemm.bf16_lt; mul_mat_cublas.cu kGb10LtPins), else GemmBf16's

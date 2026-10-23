@@ -2257,7 +2257,7 @@ std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
     case Op::kConv2d: {
       if (n.nsrc != 3 || n.nout != 1 ||
           (Selected(id) != "ggml.conv2d.f32" && Selected(id) != kConv2dTiledF32 &&
-           Selected(id) != kConv1x1Name))
+           Selected(id) != kConv1x1Name && Selected(id) != kConv2dStridedName))
         return Refused("spatial convolution needs its selected F32 implementation");
       auto* kernel = made_.at(n.src[0].v);
       auto* input = made_.at(n.src[1].v);
@@ -2265,6 +2265,15 @@ std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
       if (kernel == nullptr || input == nullptr || bias == nullptr)
         return Refused("spatial convolution operands were not made");
       const auto params = n.Params<ir::Conv2dParams>();
+      if (Selected(id) == kConv2dStridedName) {
+        ggml_tensor* t =
+            Conv2dStrided(c_, kernel, input, bias, params.stride, params.padding, params.dilation);
+        if (auto valid = Matches(p_.tensor(n.out[0]), t, "strided spatial convolution"); !valid)
+          return valid;
+        Node(t, id);
+        made_.at(n.out[0].v) = t;
+        return {};
+      }
       if (kernel->type != GGML_TYPE_F32 || input->type != GGML_TYPE_F32 ||
           bias->type != GGML_TYPE_F32 || !ggml_is_contiguous(kernel) ||
           !ggml_is_contiguous(input) || !ggml_is_contiguous(bias) ||
@@ -5242,7 +5251,7 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   if (!in_.token) {
     // First stateless physical domain. No token/state operation can enter a
     // branch that interprets a StepShape, synthesized inputs or state spans.
-    const auto supported = [](const ir::Node& n) {
+    const auto supported = [](const ir::Graph& graph, const ir::Node& n) {
       // Closed explicit-operand forms only: the existing VAE shortcut,
       // learned RMS scaling, the spatial channel norm, the sectioned head
       // norm and rotation, and the image's attention with its packed mask
@@ -5259,6 +5268,15 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
           n.key == ir::Fused(FusedKind::kGatedResidualModulateSplit))
         return true;
       if (n.key != ir::Primitive(n.key.op)) return false;
+      if (n.key.op == Op::kPrepare) {
+        if (n.nsrc != 1 || n.nout != 1 || !n.src[0].valid() || !n.out[0].valid()) return false;
+        const auto& source = graph.tensor(n.src[0]).format;
+        const auto& output = graph.tensor(n.out[0]).format;
+        return source.encoding == format::Encoding::kF32 &&
+               source.layout == format::Layout::kDense &&
+               output.encoding == format::Encoding::kQ8_1 &&
+               output.layout == format::Layout::kGgmlBlocks;
+      }
       switch (n.key.op) {
         case Op::kInput:
         case Op::kWeight:
@@ -5273,6 +5291,7 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
         case Op::kAdd:
         case Op::kMul:
         case Op::kScale:
+        case Op::kClamp:
         case Op::kUnary:
         case Op::kLayerNorm:
         case Op::kRmsNorm:
@@ -5290,7 +5309,8 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
       }
     };
     for (const ir::Graph* graph : {&g_, &p_}) {
-      const auto bad = std::ranges::find_if_not(graph->nodes(), supported);
+      const auto bad = std::ranges::find_if_not(
+          graph->nodes(), [&](const ir::Node& n) { return supported(*graph, n); });
       if (bad != graph->nodes().end())
         return Refused(std::format("stateless GGML refuses {} in the {} graph",
                                    ir::OpKeyName(bad->key), graph == &g_ ? "source" : "planned"));

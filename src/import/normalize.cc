@@ -24,9 +24,11 @@
 #include "components/step.h"
 #include "import/expert_relayout.h"
 #include "import/files.h"
+#include "import/image_pipeline.h"
 #include "import/parameter_folds.h"
 #include "import/readers/gguf.h"
 #include "import/sampling_defaults.h"
+#include "import/stage_recipe.h"
 #include "import/transforms.h"
 #include "spec/stored.h"
 
@@ -599,6 +601,170 @@ void Sort(std::vector<std::uint32_t>& order, std::vector<std::uint32_t>& scratch
   }
 }
 
+std::expected<NormalizationCost, Error> SpatialRecipeBound(const Checkpoint& source,
+                                                           const spec::Mapping& mapping) {
+  if (!mapping.stage_recipe || mapping.stage.empty() ||
+      mapping.stage != mapping.stage_recipe->name || mapping.role != mapping.stage_recipe->role ||
+      (mapping.role != spec::StageRole::kDenoiser && mapping.role != spec::StageRole::kVae))
+    return Bad("configured spatial mapping has no matching stage recipe", Rule::kUnsupported);
+  if (!spec::SupportsSource(mapping, source.architecture, source.container))
+    return Bad("configured spatial mapping does not accept this source", Rule::kUnsupported);
+  if (!source.role.empty() && source.role != mapping.stage)
+    return Bad("configured spatial source role differs from its mapping", Rule::kUnsupported);
+  if (!source.components.empty() || source.files.empty() || source.files.size() > kMaxSourceFiles ||
+      source.metadata.size() > kMaxMetadata || source.tensors.empty() ||
+      source.tensors.size() > kMaxTensors || source.skipped_tensors.size() > kMaxTensors)
+    return Bad("configured spatial source exceeds importer bounds", Rule::kBounds);
+  if (auto valid = ValidateImportMapping(mapping, source.container); !valid)
+    return std::unexpected(valid.error());
+
+  const auto recipe = PreflightStageRecipe(*mapping.stage_recipe, {}, UINT64_MAX, source.metadata);
+  if (!recipe) return Bad("configured spatial recipe preflight failed", Rule::kConfig);
+  Arithmetic arithmetic;
+  std::uint64_t metadata = recipe->metadata_bytes;
+  std::uint64_t payload = 0;
+  std::uint64_t source_name_bytes = 0, max_source_name_bytes = 0;
+  std::uint64_t source_metadata_key_bytes = 0;
+  std::uint64_t source_path_bytes = 0;
+  std::uint64_t max_source_rank = 0;
+  for (const auto& tensor : source.tensors) {
+    if (__builtin_add_overflow(payload, tensor.extent.bytes, &payload))
+      return Bad("configured spatial payload exceeds 64-bit bounds", Rule::kBounds);
+    const auto tensor_name_bytes = static_cast<std::uint64_t>(tensor.name.size());
+    source_name_bytes = arithmetic.Add(source_name_bytes, tensor_name_bytes);
+    max_source_name_bytes = std::max(max_source_name_bytes, tensor_name_bytes);
+    max_source_rank = std::max(max_source_rank, static_cast<std::uint64_t>(tensor.dims.size()));
+    const auto source_copy =
+        arithmetic.Add(sizeof(Tensor), arithmetic.Mul(tensor.dims.size(), sizeof(std::uint64_t)));
+    const auto descriptor = arithmetic.Add(
+        sizeof(spec::SourceTensor) + sizeof(CopyRoute) + sizeof(ComponentGroup) + 128 + source_copy,
+        arithmetic.Mul(tensor.name.size(), 4));
+    metadata = arithmetic.Add(metadata, descriptor);
+  }
+  for (const auto& entry : source.metadata) {
+    const auto bytes = MetaBytes(entry.value);
+    if (!bytes) return Bad("configured spatial metadata has an invalid value", Rule::kConfig);
+    metadata = arithmetic.Add(
+        metadata, arithmetic.Add(sizeof(MetaEntry) + 64, arithmetic.Add(entry.key.size(), *bytes)));
+    const auto key_bytes = static_cast<std::uint64_t>(entry.key.size());
+    source_metadata_key_bytes = arithmetic.Add(source_metadata_key_bytes, key_bytes);
+  }
+  for (const auto& file : source.files) {
+    source_path_bytes =
+        arithmetic.Add(source_path_bytes, static_cast<std::uint64_t>(file.path.native().size()));
+    metadata = arithmetic.Add(
+        metadata, arithmetic.Add(sizeof(SourceFile) + 64,
+                                 arithmetic.Add(file.name.size(), file.path.native().size())));
+  }
+  std::uint64_t ignored_pattern_bytes = 0;
+  for (const auto pattern : mapping.ignored_tensors)
+    ignored_pattern_bytes = arithmetic.Add(ignored_pattern_bytes, pattern.size());
+  for (const auto prefix : mapping.ignored_tensor_prefixes)
+    ignored_pattern_bytes = arithmetic.Add(ignored_pattern_bytes, prefix.size());
+  metadata = arithmetic.Add(
+      metadata,
+      arithmetic.Add(
+          arithmetic.Mul(recipe->tensor_bindings, sizeof(spec::SourceTensor) + sizeof(CopyRoute) +
+                                                      sizeof(ComponentGroup) + 128),
+          arithmetic.Add(
+              arithmetic.Mul(recipe->tensor_bindings, 2 * sizeof(std::uint32_t)),
+              arithmetic.Add(arithmetic.Mul(source.files.size(), sizeof(std::uint32_t)),
+                             arithmetic.Mul(source.tensors.size(),
+                                            2 * sizeof(std::uint64_t) + sizeof(std::uint32_t))))));
+  for (const auto& skipped : source.skipped_tensors)
+    metadata =
+        arithmetic.Add(metadata, arithmetic.Add(sizeof(SkippedTensor) + 64, skipped.name.size()));
+  metadata = arithmetic.Add(metadata, sizeof(Checkpoint) + sizeof(NormalizedPlan) +
+                                          sizeof(spec::Source) + sizeof(spec::ModelSpec) +
+                                          source.role.size() + source.container.size() +
+                                          source.architecture.size() + source.quantization.size());
+  if (!arithmetic.ok || metadata == 0 || payload == 0)
+    return Bad("configured spatial plan bounds overflow", Rule::kBounds);
+  const auto metadata_lookup_bytes =
+      arithmetic.Add(source_metadata_key_bytes,
+                     arithmetic.Mul(source.metadata.size(), recipe->max_source_key_bytes));
+  const auto source_searches = arithmetic.Mul(metadata_lookup_bytes, recipe->source_value_lookups);
+  const auto tensor_searches = arithmetic.Mul(source_name_bytes, recipe->tensor_bindings);
+  const auto omission_rules = static_cast<std::uint64_t>(mapping.ignored_tensors.size() +
+                                                         mapping.ignored_tensor_prefixes.size());
+  const auto omission_searches =
+      arithmetic.Add(arithmetic.Mul(source_name_bytes, omission_rules),
+                     arithmetic.Mul(ignored_pattern_bytes, source.tensors.size()));
+  const auto binding_identity_searches =
+      arithmetic.Mul(arithmetic.Mul(recipe->tensor_bindings, recipe->tensor_bindings),
+                     recipe->max_tensor_name_bytes);
+  const auto shared_raw_dimension_checks =
+      arithmetic.Mul(arithmetic.Mul(recipe->raw_dimension_axes, recipe->raw_dimension_axes),
+                     sizeof(std::uint64_t));
+  const auto raw_contract_expected_scan =
+      arithmetic.Mul(arithmetic.Mul(recipe->raw_dimension_contracts, recipe->tensor_bindings),
+                     recipe->max_tensor_name_bytes);
+  const auto raw_contract_source_scan = arithmetic.Mul(
+      arithmetic.Mul(arithmetic.Mul(recipe->raw_dimension_contracts, source.tensors.size()), 2),
+      std::max(recipe->max_tensor_name_bytes, max_source_name_bytes));
+  const auto raw_contract_name_comparisons = arithmetic.Mul(
+      arithmetic.Mul(std::uint64_t{4}, arithmetic.Add(static_cast<std::uint64_t>(std::bit_width(
+                                                          recipe->raw_dimension_contracts)),
+                                                      std::uint64_t{1})),
+      recipe->raw_dimension_contracts);
+  const auto raw_contract_name_set_work =
+      arithmetic.Mul(raw_contract_name_comparisons, recipe->max_tensor_name_bytes);
+  const auto evaluated_weight_name_bytes =
+      arithmetic.Add(recipe->max_weight_role_bytes, recipe->max_tensor_name_bytes);
+  const auto evaluated_weight_lookup_work =
+      arithmetic.Mul(arithmetic.Mul(recipe->tensor_bindings, recipe->tensor_bindings),
+                     evaluated_weight_name_bytes);
+  const auto file_alias_checks = arithmetic.Mul(source.files.size(), source.files.size());
+  const auto file_alias_bytes =
+      arithmetic.Add(arithmetic.Mul(source_path_bytes, source.files.size()),
+                     arithmetic.Mul(file_alias_checks, 2 * sizeof(std::uint64_t)));
+  const auto source_name_comparisons = arithmetic.Mul(
+      std::uint64_t{4} * (static_cast<std::uint64_t>(
+                              std::bit_width(static_cast<std::uint64_t>(source.tensors.size()))) +
+                          1),
+      source.tensors.size());
+  const auto source_name_set_work = arithmetic.Mul(source_name_comparisons, max_source_name_bytes);
+  std::uint64_t sort_work = 0;
+  for (std::uint64_t remaining = recipe->tensor_bindings; remaining > 1; remaining >>= 1)
+    sort_work = arithmetic.Add(sort_work, recipe->tensor_bindings);
+  std::uint64_t source_sort_work = 0;
+  for (std::uint64_t remaining = source.tensors.size(); remaining > 1; remaining >>= 1)
+    source_sort_work = arithmetic.Add(source_sort_work, source.tensors.size());
+  const auto numeric_sort_work = arithmetic.Add(
+      arithmetic.Mul(sort_work, 2 * sizeof(std::uint64_t) + sizeof(std::uint32_t)),
+      arithmetic.Mul(source_sort_work, 2 * sizeof(std::uint64_t) + sizeof(std::uint32_t)));
+  const auto validation_name_work = arithmetic.Add(source_name_bytes, source_name_set_work);
+  // Each contracted binding can scan the matching header axes, while the
+  // recipe evaluates and retains each declared raw axis once. Charge both
+  // sides of those exact rank/axis comparisons in byte-comparison units.
+  const auto raw_dimension_work =
+      arithmetic.Mul(sizeof(std::uint64_t),
+                     arithmetic.Add(recipe->raw_dimension_axes,
+                                    arithmetic.Mul(recipe->raw_dimension_axes, max_source_rank)));
+  // Each raw-axis contract also walks the declared tensor inventory, scans
+  // source names for its exact/suffix match, and inserts its name into the
+  // contract set. Expansion then linearly searches the evaluated weights for
+  // every component role, even when no raw-axis contract is present. These
+  // are separate byte-comparison bounds from the earlier tensor/dedup scans.
+  const auto work = arithmetic.Add(
+      arithmetic.Add(arithmetic.Add(source_searches, tensor_searches),
+                     arithmetic.Add(omission_searches, binding_identity_searches)),
+      arithmetic.Add(
+          arithmetic.Add(file_alias_bytes, validation_name_work),
+          arithmetic.Add(
+              arithmetic.Add(raw_dimension_work, shared_raw_dimension_checks),
+              arithmetic.Add(
+                  arithmetic.Add(raw_contract_expected_scan, raw_contract_source_scan),
+                  arithmetic.Add(
+                      arithmetic.Add(raw_contract_name_set_work, evaluated_weight_lookup_work),
+                      arithmetic.Add(
+                          numeric_sort_work,
+                          arithmetic.Add(recipe->visited_steps, recipe->tensor_bindings)))))));
+  if (!arithmetic.ok) return Bad("configured spatial work bound overflows", Rule::kBounds);
+  return NormalizationCost{
+      .metadata_bytes = metadata, .work_units = work, .payload_bytes = payload, .layers = 0};
+}
+
 // Every listed object is charged separately by the source-derived ledger.
 static_assert(sizeof(spec::SourceTensor) <= 256 && sizeof(spec::SourceValue) <= 256);
 static_assert(sizeof(spec::ParamRule) <= 256 && sizeof(spec::TensorRule) <= 256);
@@ -620,13 +786,15 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::M
     return Bound(s, selected->mapping, options);
   }
   if ((!options.component.empty() || options.draft_head_rows) &&
-      t.role != spec::StageRole::kDrafter)
+      t.role != spec::StageRole::kDrafter &&
+      !(t.stage_recipe != nullptr && options.draft_head_rows == 0 && options.component == t.stage))
     return Bad("draft options require a drafter mapping", Rule::kUnsupported);
   if (options.draft_head_rows > kMaxTensors)
     return Bad("draft head row count exceeds tensor bounds", Rule::kBounds);
   if (auto table = ValidateImportMapping(t, s.container); !table)
     return std::unexpected(table.error());
   const auto& m = t;
+  if (m.stage_recipe != nullptr) return SpatialRecipeBound(s, m);
   if ((s.architecture != m.architecture &&
        !std::ranges::contains(m.source_architectures, s.architecture)) ||
       !s.role.empty() ||
@@ -1216,6 +1384,66 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapp
     built->mapping_architecture_ = table.architecture;
     built->architecture_version_ = table.version;
     return built;
+  }
+  if (table.stage_recipe != nullptr) {
+    if (target != nullptr || options.draft_head ||
+        (!options.component.empty() && options.component != table.stage))
+      return Bad("configured spatial imports do not accept drafter or target options",
+                 Rule::kUnsupported);
+    const auto cost = Bound(source, table, {std::string_view(table.stage), 0});
+    if (!cost) return std::unexpected(cost.error());
+    if (cost->metadata_bytes > limits.metadata_bytes || cost->work_units > limits.work_units)
+      return Bad("normalization reservation is insufficient", Rule::kBounds);
+    auto component = PlanSpatialComponent(source, table, limits.metadata_bytes);
+    if (!component) return std::unexpected(component.error());
+    NormalizedPlan plan;
+    plan.cost_ = *cost;
+    plan.mapping_architecture_ = std::string(table.architecture);
+    plan.architecture_version_ = table.version;
+    plan.cost_.payload_bytes = component->payload_bytes;
+    plan.canonical_ = std::move(component->canonical);
+    plan.canonical_.architecture = std::string(table.architecture);
+    plan.spec_ = std::move(component->spec);
+    plan.routes_ = std::move(component->routes);
+    plan.groups_ = std::move(component->groups);
+    plan.source_ = std::move(source);
+    std::vector<std::uint32_t> physical(plan.source_.files.size());
+    std::iota(physical.begin(), physical.end(), 0U);
+    for (std::size_t i = 0; i < plan.source_.files.size(); ++i) {
+      for (std::size_t j = 0; j < i; ++j) {
+        const auto& a = plan.source_.files[i];
+        const auto& b = plan.source_.files[j];
+        if ((!a.path.empty() && a.path == b.path) ||
+            (a.inode != 0 && a.device == b.device && a.inode == b.inode)) {
+          if (a.bytes != b.bytes || a.device != b.device || a.inode != b.inode)
+            return Bad("source file aliases disagree", Rule::kConfig);
+          physical[i] = physical[j];
+          break;
+        }
+      }
+    }
+    plan.order_.resize(plan.routes_.size());
+    std::vector<std::uint32_t> scratch(plan.routes_.size());
+    std::iota(plan.order_.begin(), plan.order_.end(), 0U);
+    for (const auto& route : plan.routes_)
+      if (route.extent.file >= physical.size() ||
+          route.source_tensor >= plan.source_.tensors.size() ||
+          route.extent.offset > UINT64_MAX - route.extent.bytes ||
+          route.extent.offset + route.extent.bytes > plan.source_.files[route.extent.file].bytes)
+        return Bad("spatial source route lies outside its authenticated file", Rule::kBounds);
+    Sort(plan.order_, scratch, [&](auto x, auto y) {
+      const auto& a = plan.routes_[x].extent;
+      const auto& b = plan.routes_[y].extent;
+      return physical[a.file] != physical[b.file] ? physical[a.file] < physical[b.file]
+                                                  : a.offset < b.offset;
+    });
+    for (std::size_t i = 1; i < plan.order_.size(); ++i) {
+      const auto& a = plan.routes_[plan.order_[i - 1]].extent;
+      const auto& b = plan.routes_[plan.order_[i]].extent;
+      if (physical[a.file] == physical[b.file] && b.offset < a.offset + a.bytes)
+        return Bad("spatial source payloads overlap", Rule::kBounds);
+    }
+    return plan;
   }
   if (table.role == spec::StageRole::kDrafter && !target)
     return Bad("drafter import requires --target TARGET_ID in the selected store",

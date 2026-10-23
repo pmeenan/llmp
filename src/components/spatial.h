@@ -24,6 +24,11 @@ struct SpatialShape {
   std::uint64_t width = 0, height = 0, channels = 0, images = 1;
   bool operator==(const SpatialShape&) const = default;
 };
+struct SpatialOperand {
+  SpatialShape shape;
+  format::Encoding encoding = format::Encoding::kF32;
+  bool operator==(const SpatialOperand&) const = default;
+};
 // Representable dense/reference storage only, not an execution admission cap.
 // Actual graph/reference construction and device liveness are paid separately.
 std::optional<std::uint64_t> SpatialElements(SpatialShape shape);
@@ -160,6 +165,11 @@ std::uint16_t MaxSpatialNodes(const ComponentDef& def);
 std::expected<SpatialValue, std::string> EmitSpatialFragment(SpatialFragment& fragment);
 std::expected<SpatialShape, std::string> InferSpatialShape(
     const Instance& instance, SpatialShape shape, std::optional<SpatialShape> auxiliary = {});
+// Shared shape-only typed edge contract for import preflight and spatial graph
+// construction. Carry must be F32 and have the component's declared geometry.
+std::expected<SpatialOperand, std::string> InferSpatialOutput(
+    const Instance& instance, SpatialOperand input, std::optional<SpatialOperand> auxiliary = {},
+    std::optional<SpatialOperand> carry = {});
 std::expected<void, std::string> RunSpatialReference(SpatialRefIO& io);
 
 // One stateless image stage, up to the spec/value-ID component limit and 16 distinct owners.

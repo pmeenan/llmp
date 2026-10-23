@@ -263,6 +263,7 @@ struct ReadRule {
 struct Mapping;
 struct Source;
 struct SourceValue;
+struct StageRecipe;
 
 // How serving runs a target architecture's models where the engine's
 // defaults differ: the architecture's serving recipe as data (D-109: "the
@@ -611,10 +612,13 @@ struct Mapping {
   // layer_types layer for layer.
   std::string_view layer_flags_key{};
   char layer_flag_type = 0;
-  // A drafter's architecture (role kDrafter): its stage's name and what it
-  // reads of its target; see ComposeDrafter.
+  // A drafter's stage name (role kDrafter, see ComposeDrafter), or the
+  // explicit CLI selector for a configured spatial component mapping.
   StageRole role = StageRole::kTarget;
   std::string_view stage{};
+  // An import-only configured spatial-component topology. Its ordinary
+  // Stage is expanded before publication; serving reads only the stored graph.
+  const StageRecipe* stage_recipe = nullptr;
   std::span<const ReadRule> reads{};
   // The default planning policy: the first rule whose gate holds (each
   // text at most kMaxPolicyText bytes of printable lines, each ending in
@@ -744,6 +748,8 @@ inline constexpr std::string_view kTargetLastLayer = "llmp.target.last_layer.";
 
 // The compiled mappings, and the one for an architecture.
 std::span<const Mapping* const> Mappings();
+const Mapping* FindMapping(std::span<const Mapping* const> mappings, std::string_view architecture,
+                           std::string_view container, std::uint16_t version = 1);
 const Mapping* FindMapping(std::string_view architecture);
 const Mapping* FindMapping(std::string_view architecture, std::string_view container,
                            std::uint16_t version = 1);

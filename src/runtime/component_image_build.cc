@@ -9,6 +9,7 @@
 #include <format>
 #include <limits>
 #include <map>
+#include <set>
 #include <utility>
 
 #include "base/bytes.h"
@@ -38,20 +39,14 @@ namespace en = engine;
 namespace co = components;
 namespace md = model;
 using en::support::Error;
-// Source descriptor/spec/input owner inventory, before any source-profile
-// vectors or copied names exist: the family's tensors (roles) at 4 KiB, its
-// components (17 a text layer and a flow block, the text encoder's 2 and
-// the flow's 19 besides, the decoder's at most 258) at 8 KiB.
-// Request-sized port, pixel and schedule vectors are separately paid below;
-// incoming prompt/noise allocations retain their caller-owned payment.
-std::uint64_t SourceMappingBytes(const md::ImageProfile& p) {
+// The text graph remains profile-backed in this slice. Flow and VAE topology
+// comes from stored artifacts and is prepaid separately with StoredBindingBytes
+// before parsing or copying any of their bindings. Request-sized ports, pixels
+// and schedules are separately paid below.
+std::uint64_t SourceTextMappingBytes(const md::ImageProfile& p) {
   const std::uint64_t roles =
-      1 + std::uint64_t{p.text.layers} * static_cast<std::uint64_t>(md::TextTensor::kCount) +
-      static_cast<std::uint64_t>(md::DenoiserGlobal::kCount) +
-      std::uint64_t{p.denoiser.blocks} * static_cast<std::uint64_t>(md::BlockTensor::kCount) +
-      md::VaeDecoderTensors(p.vae, {}).size();
-  const std::uint64_t components =
-      std::uint64_t{p.text.layers} * 17 + 2 + std::uint64_t{p.denoiser.blocks} * 17 + 19 + 258;
+      1 + std::uint64_t{p.text.layers} * static_cast<std::uint64_t>(md::TextTensor::kCount);
+  const std::uint64_t components = std::uint64_t{p.text.layers} * 17 + 2;
   return roles * 4096 + components * 8192;
 }
 using serving_support::ChargeExecutionMetadata;
@@ -152,8 +147,9 @@ struct ImageGeometryOwner {
 // coverage counters and report callback. The bounded registration summary has
 // its own temporary category; detailed reports charge their exact counted size.
 std::uint64_t SourceOwnerBytes(const md::ImageProfile& p) {
-  return SourceMappingBytes(p) + 2 * sizeof(ImageGenerationModel) + 2 * sizeof(EngineImageParts) +
-         6 * sizeof(ImageStage) + 22 * sizeof(std::optional<std::uint32_t>) + 4096 +
+  return SourceTextMappingBytes(p) + 2 * sizeof(ImageGenerationModel) +
+         2 * sizeof(EngineImageParts) + 6 * sizeof(ImageStage) +
+         22 * sizeof(std::optional<std::uint32_t>) + 4096 +
          2 * EngineImage::ControlMetadataBytes() + kernels::kRegistrationPlanReportMetadataBytes;
 }
 
@@ -195,20 +191,29 @@ std::expected<std::uint64_t, std::string> CompilerBound(const spec::ModelSpec& m
   return result;
 }
 std::expected<std::vector<co::BoundTensor>, std::string> Table(
-    std::span<const md::ImageTensor> tensors) {
+    std::span<const md::ImageTensor> tensors, const artifact::Artifact& artifact) {
   std::vector<co::BoundTensor> out;
   for (const auto& tensor : tensors) {
-    if (tensor.shape.empty() || tensor.shape.size() > 4) return Error("image source rank differs");
-    format::Shape shape;
-    shape.rank = static_cast<std::uint8_t>(tensor.shape.size());
-    for (std::size_t d = 0; d < tensor.shape.size(); ++d)
-      shape.ne[d] = tensor.shape[tensor.shape.size() - 1 - d];
-    const auto encoding = tensor.dtype == "BF16" ? format::Encoding::kBF16 : format::Encoding::kF32;
-    if (tensor.dtype != "BF16" && tensor.dtype != "F32")
-      return Error("image source encoding differs");
-    auto format = ir::Dense(encoding, shape);
-    if (!format::PartsOf(format)) return Error("image source geometry overflows");
-    out.push_back({tensor.name, std::move(format)});
+    const auto resource = std::ranges::find_if(artifact.resources(), [&](const auto& candidate) {
+      return candidate.format && candidate.part == format::PartRole::kData &&
+             std::ranges::find(candidate.roles, tensor.name) != candidate.roles.end();
+    });
+    if (resource == artifact.resources().end() || tensor.shape.empty() || tensor.shape.size() > 4 ||
+        !resource->format || resource->format->shape.rank == 0 ||
+        resource->format->shape.rank > resource->format->shape.ne.size() ||
+        !format::Validate(*resource->format))
+      return Error(std::format("image source tensor {} is missing", tensor.name));
+    std::vector<std::uint64_t> shape;
+    shape.reserve(resource->format->shape.rank);
+    for (std::size_t d = 0; d < resource->format->shape.rank; ++d)
+      shape.push_back(resource->format->shape.ne[resource->format->shape.rank - 1 - d]);
+    if (shape != tensor.shape ||
+        (resource->format->layout != format::Layout::kDense &&
+         resource->format->layout != format::Layout::kGgmlBlocks) ||
+        resource->format->stacked != 1 || !format::PartsOf(*resource->format))
+      return Error(std::format("image source tensor {} format differs from its stored binding",
+                               tensor.name));
+    out.push_back({tensor.name, *resource->format, resource->part});
   }
   return out;
 }
@@ -421,12 +426,34 @@ namespace {
 bool SinksLayouts(const planner::Policy& policy) {
   return !planner::Disabled(policy, "layout_sinking");
 }
-// The family's tensors, its mapping's names, in each stage's order.
-std::array<std::vector<md::ImageTensor>, 3> SourceTensors(const ImageFamily& family) {
-  const auto& p = family.profile;
-  const auto& n = family.mapping->names;
-  return {md::TextEncoderTensors(p.text, n.text), md::DenoiserTensors(p.denoiser, n.denoiser),
-          md::VaeDecoderTensors(p.vae, n.vae)};
+std::expected<std::vector<md::ImageTensor>, std::string> StoredImageTensors(
+    const spec::ModelSpec& model, const spec::Source& source) {
+  if (model.pipeline != spec::PipelineKind::kImage || model.stages.size() != 1 ||
+      model.stages[0].artifact != 0)
+    return Error("stored image component must have one image stage on its own artifact");
+  std::set<std::string> names;
+  spec::EachComponent(model.stages[0], [&](const spec::ComponentRef& component, std::string_view) {
+    for (const auto& binding : component.weights) names.insert(binding.tensor);
+  });
+  std::vector<md::ImageTensor> tensors;
+  tensors.reserve(names.size());
+  for (const auto& name : names) {
+    const auto found = std::ranges::find_if(source.tensors, [&](const spec::SourceTensor& tensor) {
+      return tensor.name == name && tensor.part == format::PartRole::kData;
+    });
+    if (found == source.tensors.end() || found->experts || found->format.shape.rank == 0 ||
+        found->format.shape.rank > 4)
+      return Error(std::format("stored image role {} has no supported source tensor", name));
+    std::vector<std::uint64_t> shape;
+    shape.reserve(found->format.shape.rank);
+    for (std::size_t d = 0; d < found->format.shape.rank; ++d)
+      shape.push_back(found->format.shape.ne[found->format.shape.rank - 1 - d]);
+    tensors.push_back({.name = name,
+                       .dtype = format::Info(found->format.encoding).name,
+                       .shape = std::move(shape),
+                       .part = found->part});
+  }
+  return tensors;
 }
 }  // namespace
 
@@ -456,7 +483,7 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
   const auto drop = request_source.drop;
   const auto image_rows = geometry.rows, prompt_rows = geometry.prompt_rows;
   const auto channels = p.vae.z_dim;
-  auto geometry_bytes = SourceMappingBytes(p) + 2 * sizeof(ImageGeometryOwner) +
+  auto geometry_bytes = SourceTextMappingBytes(p) + 2 * sizeof(ImageGeometryOwner) +
                         2 * sizeof(ImageGeometry) + 6 * sizeof(ImageStage) + 4096;
   if (__builtin_add_overflow(geometry_bytes, model->stored_spec_bytes, &geometry_bytes))
     return Error("stored image geometry copy allowance overflows");
@@ -643,7 +670,7 @@ EngineImageBuild ComponentImageGenerationBuild(
     auto policy = planner::ParsePolicy(family.mapping->serving->serving_rule->text);
     if (!policy) return Error(std::format("the image planning policy: {}", policy.error()));
     held->policy = std::move(*policy);
-    held->source_tensors = SourceTensors(family);
+    held->source_tensors[0] = TextEncoderTensors(p.text, family.mapping->names.text);
     const auto& source_tensors = held->source_tensors;
 
     for (std::size_t i = 0; i < 3; ++i) {
@@ -664,16 +691,23 @@ EngineImageBuild ComponentImageGenerationBuild(
           return Error("stored image topology allowance overflows");
         auto stored = spec::StoredSpec(artifact);
         if (!stored) return Error(stored.error());
+        auto source_inventory = spec::SourceOf(artifact);
+        if (!source_inventory) return Error(source_inventory.error());
+        if (auto checked = co::ValidateSpec(*stored, source_inventory->tensors); !checked)
+          return Error(checked.error());
         const auto role = i == 1 ? spec::StageRole::kDenoiser : spec::StageRole::kVae;
         if (stored->pipeline != spec::PipelineKind::kImage || stored->stages.size() != 1 ||
             stored->stages[0].role != role)
           return Error("stored image topology differs from its composition role");
         held->stored_specs[i] = std::move(*stored);
+        auto tensors = StoredImageTensors(held->stored_specs[i], *source_inventory);
+        if (!tensors) return Error(tensors.error());
+        held->source_tensors[i] = std::move(*tensors);
       }
       auto bindings = md::BindImageComponent(source_tensors[i], component->architecture, artifact);
       if (!bindings) return Error(bindings.error());
       held->resource_ids[i] = std::move(*bindings);
-      auto tensors = Table(source_tensors[i]);
+      auto tensors = Table(source_tensors[i], artifact);
       if (!tensors) return Error(tensors.error());
       held->tables[i] = std::move(*tensors);
       held->weights[i] = source->weights[i].get();

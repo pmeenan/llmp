@@ -837,34 +837,43 @@ D-122).
       rows hold; the format coverage report lists a device path for every
       encoding the importer accepts; Qwen2's C1/C2/C4 is measured against
       its comparator.
-- [ ] **U8 Image pipeline as data** (before a second image model; two
-      sub-slices): the VAE decoder's and DiT block's wiring
-      (`model/image_pipeline.cc`'s `VaeDecoderTensors`/`VaeDecoderPlan`,
-      `spec/image_spatial.cc`'s `AppendImageBlock`) as stage-graph data in
-      the spec, extending D-122's links, and every spatial kind through the
-      `ComponentDef::spatial` hook instead of `components/spatial.cc`'s
-      kind-string switches; then the format layer in place of the BF16-only
-      checks, so a quantized Qwen-Image imports and runs, and the image
-      importer accounting for every source tensor through its mapping, as
-      the LLM route does (`a2aa3b87` refuses an unmapped one; this makes it
-      structural). The second model is chosen with the media generation
-      routes item (owner, 2026-10-20), and the stored per-geometry image spec
-      carried in from M3.6 lands here. **Exit:** Qwen-Image produces identical
-      images from data, and a second VAE/DiT configuration imports with no
-      C++ change. **First hook spike:** every spatial component now owns its
-      shape, emission, reference, encoding, carry and temporary-storage contract
-      through `ComponentDef::spatial`; the compiler has no kind-name fallback.
-      **Stored-topology spike:** flow/VAE artifacts carry integer geometry
-      bindings; request construction instantiates their stored components,
-      links and exports and checks actual endpoint shapes. Explicit validated
-      component reuse publishes only the changed image stages and composition;
-      import-time topology synthesis, quantized image import/execution and
-      structural source accounting remain open. Verified on Spark B: 3,623
-      ordinary tests and nine affected image/import model controls passed,
-      including the registered rectangular two-prompt request. This build changes
-      the compiler identity; the
-      twelve W5 fusion comparisons are retained as historical evidence and use
-      the conservative stale-row fallback ([status](experiments/fusion-ranks/README.md)).
+- [x] **U8 Image pipeline as data** (completed 2026-10-23): Qwen-Image's
+      VAE decoder and DiT block wiring are mapping-owned stage-graph recipes;
+      spatial behavior is supplied by shared component hooks, and request
+      construction validates stored geometry bindings and endpoint shapes.
+      Import-time recipes account for each source tensor as consumed or
+      explicitly omitted. The approved Q4 image import completes the registered
+      512×512, two-step request twice with matching digests; the pinned BF16
+      import matches the published frozen pixels for the 1024×1024, 40-step
+      fixture. The second configuration imports the pinned Ming transformer
+      and first-frame RGBA VAE into native components using declarative mapping
+      tables and shared importer/compiler/runtime primitives; no
+      Ming-specific importer, compiler, or runtime wiring was added.
+
+      **Exit evaluation:** (1) Qwen-Image produces identical images from the
+      data-driven import: **passed** for the pinned BF16 full image comparison
+      and frozen pixel digest. The Q4 repeat screen establishes completion and
+      determinism only, not Q4 parity or quality. (2) A second VAE/DiT
+      configuration imports without family-specific C++ wiring: **passed** as a
+      bounded native component-import and stored-topology proof for the actual
+      pinned Ming transformer and first-frame RGBA VAE. It does not claim a
+      composed Ming pipeline, serving, or image quality.
+
+      Final integrated validation used the 72-path source manifest
+      (`0eca59143b04650cd4d7a1dcc9268f83a9fc160def03d274e8bdd2c68308d9c7`).
+      Both Spark native builds passed. Shared coverage comprises 3,751
+      unchanged passing tests from the two complete Spark splits plus three
+      repaired test fixtures, and 111 focused final tests; all passed with no
+      skips. This is not a single full-suite rerun on one final source snapshot.
+      The 26 affected model checks passed across Spark A and B, including the
+      BF16 image comparison, rectangular request, and Q4 repeat screen. Local
+      REUSE, header, boundary, and formatter checks passed with the pinned
+      workstation SDK. See the
+      [U8 evidence report](experiments/m35-image-pipeline-data/RESULTS.md) for
+      source pins, component IDs, jobs, and scope limits. This compiler change
+      leaves the historical W5 fusion rows stale; current dispatch retains the
+      incumbent until fresh matching data exists, with no re-pinning
+      ([status](experiments/fusion-ranks/README.md)).
 - [ ] **U9 Partitioning and per-model residency** (M4 entry; amends M4's
       "Concurrent models and the shared workspace" item).
 - [x] **U10 Review leftovers** (re-verified 2026-10-22).

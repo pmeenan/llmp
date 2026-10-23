@@ -985,11 +985,18 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   The initial latents come from a file (diffusers' for its seed); there is
   no native seeded generator yet. The runtime serves one prompt a
   process, fixed at setup.
-- **U8 checks (2026-10-22, Spark B):** all 3,623 ordinary checks and nine
-  affected model controls passed: the component import, seven source image
-  controls, and the registered 2048×512, one-step request with two prompts.
-  These bounded controls do not repeat the full-generation quality or speed
-  measurements below.
+- **U8 evidence (2026-10-23):** the pinned BF16 composition completed the
+  full 1024×1024, 40-step frozen-pixel comparison on Spark A; an imported
+  Q4_K_M composition completed the registered 512×512, two-step request twice
+  on Spark B with matching repeat digests. A focused shared-GPU repair review
+  also passed its catalog, strided-convolution and validator controls. Final
+  integrated U8 validation passed: 3,751 unchanged shared tests plus three
+  repaired fixtures across the two complete Spark splits, 111 focused tests,
+  and 26 affected model checks, all without skips. The complete suite was not
+  rerun once against a single final snapshot. These results do not establish
+  Q4 reference parity, quality or speed. Receipt-backed scope and source
+  provenance are in the
+  [M3.5 image pipeline data report](experiments/m35-image-pipeline-data/RESULTS.md).
 - **Historical verification:** one prompt, 1024², 40 steps, seed 42, against diffusers
   `8b3c707e` BF16: tokens exact, every component and the image within its
   pre-registered bounds; the paged node's and the runtime's pixels equal
@@ -1009,6 +1016,27 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   BF16 (bounded, above). The operations run through step plans bound against
   the implementation registry (D-053, D-107, `engine/staged_execution.h` and
   `runtime/engine_image.h`).
+
+## Ming-Image-0.1-Design — import evidence only
+
+This pinned checkpoint has bounded native component-import evidence, not a
+served image pipeline. The transformer mapping published 519 BF16 source
+weights in 35 groups (component `1d3baa79…`); the first-frame RGBA VAE mapping
+published 104 of 194 BF16 tensors in five groups (component `6c5b1603…`). The
+remaining VAE tensors are explicitly classified as encoder, quant-convolution
+or inactive time-convolution omissions. The VAE retains the original causal
+3-D kernel bytes and validates their raw axes while storing rank-four physical
+weights. Both imports use checkpoint
+`inclusionAI/Ming-Image-0.1-Design@208087ada1486931692c1896f38d4cd16ff3df82`;
+the companion implementation is separately pinned at
+`3515cd7b1e3049fc517eed7d35020251cd06519a`. There is no combined pipeline
+artifact or model-execution, numerical-quality, padding, or performance claim.
+The declarative Ming mappings use shared importer, graph compiler, and
+runtime primitives; this is bounded native component import and stored-topology
+evidence only, not a composed pipeline or serving qualification. See the
+[U8 evidence report](experiments/m35-image-pipeline-data/RESULTS.md) for
+configuration, artifact, source and validation details. Final integrated U8
+checks passed, with the coverage accounting described there.
 
 ## Gemma 2 2B
 

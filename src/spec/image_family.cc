@@ -219,11 +219,16 @@ std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
   for (std::size_t i = 0; i < m.components.size(); ++i) {
     const auto& c = m.components[i];
     if (c.role.empty() || !IsSourceKey(c.role) || c.stage.empty() || c.kinds.empty() ||
-        c.architectures.empty() || (i > 0 && !(m.components[i - 1].role < c.role)))
+        c.architectures.empty() || c.containers.empty() ||
+        (i > 0 && !(m.components[i - 1].role < c.role)))
       return Refused(
-          std::format("component {}: a role, a stage, kinds and architectures, "
+          std::format("component {}: a role, a stage, kinds, architectures and containers, "
                       "sorted by role",
                       i));
+    for (std::size_t j = 0; j < c.containers.size(); ++j)
+      if (c.containers[j].empty() || std::ranges::find(c.containers, c.containers[j]) !=
+                                         c.containers.begin() + static_cast<std::ptrdiff_t>(j))
+        return Refused(std::format("{}: nonempty unique component containers", c.role));
     for (const auto kind : c.kinds)
       if (!KnownKind(kind)) return Refused(std::format("{}: an unknown kind {}", c.role, kind));
     for (const auto ignored : c.ignored_tensors) {

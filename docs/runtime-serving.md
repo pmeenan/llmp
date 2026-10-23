@@ -847,9 +847,16 @@ runners, plans and graph builders have been deleted.
 `src/runtime/serving.cc` (`Server::Make`) builds all LLM and drafter sessions
 through `ComponentLlmBuild` (`src/runtime/component_build.h`) onto `Llm`
 and image compositions onto `EngineImage`, gated by `src/runtime/component_admission.h`
-(validating the stored v1 `spec.json`, tensor formats, component catalog, and
-mapping recipes directly under D-119, and enforcing pinned source receipts and
-digests when a checkpoint matches the reference fleet in `src/runtime/approvals.h`).
+(validating every stored v1 `spec.json`, tensor formats, component catalog,
+fold receipts and mapping recipes directly under D-119). Historical LLM
+approvals are retained only when their complete source and execution contracts
+match; image admission likewise validates the ordered component closure and
+stored family unconditionally, retaining an `ImageApproval` only when the
+composition receipts, ordered component identities, sources and transforms,
+inventories, and stored specs all match. These historical overlays do not gate
+structural admission. Numerical image evidence is projected from the
+authenticated composition identity and actual graph roles, independently of
+that historical overlay.
 A Gemma 4 model with a `drafter` (its assistant) speculates on the engine: three
 drafts a unit, each pass at the committed positions reading the target's cache
 frozen and its final-norm features, then one verify, greedy agreement or seeded

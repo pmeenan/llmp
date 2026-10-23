@@ -983,8 +983,21 @@ llmp_gtest(qwen_image_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 # mapping's own rules, synthesis from source values, the profile a stored
 # spec reads back as, and the frozen family's agreement with its approval.
 add_executable(image_family_test image_family_test.cc)
-target_link_libraries(image_family_test PRIVATE llmp_runtime llmp_spec llmp_model llmp_test_v1_frozen)
+target_link_libraries(image_family_test PRIVATE llmp_import llmp_runtime llmp_spec llmp_model
+                                                llmp_test_artifact_writer llmp_test_v1_frozen)
 llmp_gtest(image_family_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# Mapping-owned finite image stage recipes expand into the ordinary stored
+# graph, including request-local host ports through loop-carried aliases.
+add_executable(stage_recipe_test stage_recipe_test.cc)
+target_link_libraries(stage_recipe_test PRIVATE llmp_import)
+llmp_gtest(stage_recipe_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+add_executable(ming_transformer_test ming_transformer_test.cc)
+target_link_libraries(ming_transformer_test PRIVATE llmp_import)
+llmp_gtest(ming_transformer_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+add_executable(ming_vae_test ming_vae_test.cc)
+target_link_libraries(ming_vae_test PRIVATE llmp_import)
+llmp_gtest(ming_vae_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The locked ExLlamaV3 subset: the device context's sizes and the
 # launchers' host checks in every profile; the kernels' tables and lookups
@@ -1190,6 +1203,11 @@ add_executable(components_spatial_test components_spatial_test.cc)
 target_link_libraries(components_spatial_test PRIVATE llmp_engine_core llmp_components
                      llmp_reference_kernels llmp_fake_device_backend llmp_test_expected)
 llmp_gtest(components_spatial_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(affine_scalar_test affine_scalar_test.cc)
+target_link_libraries(affine_scalar_test PRIVATE llmp_engine_core llmp_components
+                     llmp_reference_kernels llmp_fake_device_backend llmp_test_expected)
+llmp_gtest(affine_scalar_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 add_executable(image_stage_test image_stage_test.cc)
 target_link_libraries(image_stage_test PRIVATE llmp_runtime llmp_components

@@ -26,6 +26,7 @@
 #include "base/sha256.h"
 #include "catalog/catalog.h"
 #include "chat/chat.h"
+#include "components/step.h"
 #include "engine/expert_slab.h"
 #include "engine/paged_node.h"
 #include "execution/registry.h"
@@ -39,9 +40,11 @@
 #include "platform/host_probe.h"
 #include "platform/kept_files.h"
 #include "providers/device_runtime.h"
+#include "runtime/component_bindings.h"
 #include "runtime/component_image_build.h"
 #include "runtime/memory_guard.h"
 #include "runtime/serving.h"
+#include "spec/stored.h"
 #include "tokenizer/hf.h"
 #include "v1_frozen.h"
 
@@ -49,6 +52,7 @@ namespace {
 namespace en = llmp::engine;
 namespace rt = llmp::runtime;
 namespace fs = std::filesystem;
+namespace format = llmp::format;
 using en::Status;
 using llmp::test_support::Failed;
 constexpr std::uint64_t kMiB = 1ULL << 20U, kGiB = 1ULL << 30U;
@@ -76,6 +80,299 @@ constexpr std::string_view kPrompt =
 constexpr std::string_view kRectangularPrompt =
     "A blue glass vase beside a yellow book, viewed from above.";
 Status Error(std::string message) { return std::unexpected(std::move(message)); }
+Status RefuseQuantizedRoleNumerics(const llmp::runtime::EngineImageParts& parts,
+                                   const llmp::artifact::Artifact& denoiser) {
+  if (parts.stages.size() != 3) return Error("imported image has no three-stage graph");
+  auto model = llmp::spec::StoredSpec(denoiser);
+  auto source = llmp::spec::SourceOf(denoiser);
+  if (!model || !source) return Error("imported denoiser stored inventory is unavailable");
+  auto instances = llmp::components::InstancesOf(*model, 0);
+  if (!instances) return Error(instances.error());
+  std::vector<const llmp::components::Instance*> by_index;
+  const auto retain = [&](const auto& instance) {
+    if (by_index.size() <= instance.index) by_index.resize(instance.index + 1);
+    by_index[instance.index] = &instance;
+  };
+  if (instances->embedding) retain(*instances->embedding);
+  for (const auto& instance : instances->side) retain(instance);
+  if (instances->mixing) retain(*instances->mixing);
+  for (const auto& layer : instances->layers)
+    for (const auto& instance : layer) retain(instance);
+  if (instances->final_norm) retain(*instances->final_norm);
+  if (instances->output) retain(*instances->output);
+  const auto qualifications = parts.stages[1].numerical;
+  if (!qualifications) return {};
+  for (const auto& qualification : qualifications->entries()) {
+    if (qualification.weight_role == UINT16_MAX) continue;
+    if (qualification.component >= by_index.size() || !by_index[qualification.component])
+      return Error("imported image numerical qualification has no stored component");
+    const auto& instance = *by_index[qualification.component];
+    if (qualification.weight_role >= instance.def->roles.size())
+      return Error("imported image numerical role index exceeds the actual component");
+    const auto role = instance.def->roles[qualification.weight_role].name;
+    const auto binding =
+        std::ranges::find(instance.ref->weights, role, &llmp::spec::WeightBinding::role);
+    if (binding == instance.ref->weights.end())
+      return Error("imported image numerical qualification has no stored role binding");
+    const auto tensor = std::ranges::find_if(source->tensors, [&](const auto& candidate) {
+      return candidate.name == binding->tensor && candidate.part == binding->part;
+    });
+    if (tensor == source->tensors.end())
+      return Error("imported image numerical role is absent from SourceOf");
+    if (tensor->format.encoding == llmp::format::Encoding::kQ4_K ||
+        tensor->format.encoding == llmp::format::Encoding::kQ6_K)
+      return Error("Q4_K/Q6_K image weight inherited a numerical qualification");
+  }
+  return {};
+}
+struct ImportedArtifactFacts {
+  llmp::base::Sha256Digest spec{}, inventory{}, receipts{};
+  std::uint64_t resource_bytes = 0;
+  std::uint64_t q4_k_resources = 0, q6_k_resources = 0;
+};
+std::expected<ImportedArtifactFacts, std::string> FactsOf(
+    const llmp::artifact::Artifact& artifact) {
+  auto model = llmp::spec::StoredSpec(artifact);
+  if (!model) return std::unexpected(model.error());
+  auto source = llmp::spec::SourceOf(artifact);
+  if (!source) return std::unexpected(source.error());
+  if (auto valid = llmp::components::ValidateSpec(*model, source->tensors); !valid)
+    return std::unexpected(valid.error());
+
+  llmp::base::Sha256 inventory, receipts;
+  const auto field = [](llmp::base::Sha256& hash, std::string_view value) {
+    hash.Update(value).Update("\n");
+  };
+  for (const auto& tensor : source->tensors) {
+    field(inventory, tensor.name);
+    field(inventory, std::to_string(std::to_underlying(tensor.part)));
+    field(inventory, format::Info(tensor.format.encoding).name);
+    field(inventory, std::to_string(std::to_underlying(tensor.format.layout)));
+    field(inventory, std::to_string(tensor.format.stacked));
+    field(inventory, std::to_string(tensor.experts));
+    for (std::uint8_t d = 0; d < tensor.format.shape.rank; ++d)
+      field(inventory, std::to_string(tensor.format.shape.ne[d]));
+    field(inventory, tensor.storage);
+  }
+  ImportedArtifactFacts facts{.spec = model->Digest()};
+  for (const auto& receipt : artifact.sources()) {
+    field(receipts, receipt.name);
+    field(receipts, std::to_string(receipt.bytes.value()));
+    field(receipts, llmp::base::ToHex(receipt.sha256));
+  }
+  for (const auto& resource : artifact.resources()) {
+    if (!resource.format || !format::Validate(*resource.format))
+      return std::unexpected("imported image resource has no valid native format");
+    const auto parts = format::PartsOf(*resource.format);
+    const auto extent = parts ? parts->Find(resource.part) : std::nullopt;
+    if (!extent || extent->bytes != resource.bytes.value())
+      return std::unexpected("imported image resource bytes differ from its native format");
+    if (__builtin_add_overflow(facts.resource_bytes, resource.bytes.value(), &facts.resource_bytes))
+      return std::unexpected("imported image resource byte sum overflows");
+    facts.q4_k_resources += resource.format->encoding == format::Encoding::kQ4_K;
+    facts.q6_k_resources += resource.format->encoding == format::Encoding::kQ6_K;
+    field(inventory, resource.name);
+    field(inventory, std::to_string(std::to_underlying(resource.part)));
+    field(inventory, std::to_string(resource.bytes.value()));
+    field(inventory, format::Info(resource.format->encoding).name);
+    field(inventory, std::to_string(std::to_underlying(resource.format->layout)));
+    field(inventory, std::to_string(resource.format->stacked));
+    for (std::uint8_t d = 0; d < resource.format->shape.rank; ++d)
+      field(inventory, std::to_string(resource.format->shape.ne[d]));
+    for (const auto& role : resource.roles) field(inventory, role);
+  }
+  facts.inventory = inventory.Finish();
+  facts.receipts = receipts.Finish();
+  return facts;
+}
+struct QuantizedReferenceCounts {
+  std::uint64_t q4_k = 0, q6_k = 0;
+  std::vector<std::uint32_t> q4_resources, q6_resources;
+};
+struct OwnedRoleBinding {
+  llmp::ir::WeightRef ref;
+  format::TensorFormat format;
+  std::vector<std::pair<std::string, format::PartRole>> parts;
+};
+std::expected<std::vector<OwnedRoleBinding>, std::string> OwnedRoleBindings(
+    const llmp::spec::ModelSpec& model,
+    std::span<const std::span<const llmp::components::BoundTensor>> tensors) {
+  std::vector<OwnedRoleBinding> bindings;
+  auto visited = llmp::components::VisitWeightBindings(
+      model, tensors,
+      [&](const llmp::components::WeightBindingView& binding) -> std::expected<void, std::string> {
+        bindings.push_back({.ref = binding.ref,
+                            .format = binding.format,
+                            .parts = std::vector<std::pair<std::string, format::PartRole>>(
+                                binding.parts.begin(), binding.parts.end())});
+        return {};
+      });
+  if (!visited) return std::unexpected(visited.error());
+  return bindings;
+}
+std::expected<const OwnedRoleBinding*, std::string> MatchCompiledRole(
+    std::span<const OwnedRoleBinding> bindings, llmp::ir::WeightRef compiled_ref,
+    const format::TensorFormat& compiled_format,
+    std::span<const std::pair<std::string, format::PartRole>> compiled_parts,
+    std::uint16_t compiled_stage) {
+  if (compiled_ref.stage != compiled_stage)
+    return std::unexpected("compiled weight has an unexpected graph stage");
+  compiled_ref.stage = 0;  // stored single-artifact specs use their local stage zero
+  const auto binding = std::ranges::find(bindings, compiled_ref, &OwnedRoleBinding::ref);
+  if (binding == bindings.end())
+    return std::unexpected("compiled weight has no validated stored binding");
+  if (binding->format != compiled_format || binding->parts.size() != compiled_parts.size())
+    return std::unexpected("compiled weight format or parts differ from its stored binding");
+  for (const auto& [name, part] : compiled_parts) {
+    if (std::ranges::find(binding->parts, std::pair<std::string, format::PartRole>{name, part}) ==
+        binding->parts.end())
+      return std::unexpected("compiled weight part differs from its stored binding");
+  }
+  return &*binding;
+}
+format::TensorFormat Blocks(format::Encoding encoding, std::uint64_t rows) {
+  format::TensorFormat tensor;
+  tensor.encoding = encoding;
+  tensor.layout = format::Layout::kGgmlBlocks;
+  tensor.shape = *format::ShapeOf(std::array<std::uint64_t, 2>{256, rows});
+  return tensor;
+}
+std::expected<const en::PagedWeights*, std::string> OwnedDenoiserWeights(
+    const rt::EngineImageParts& parts) {
+  if (parts.weights.size() != 3 || !parts.weights[1].weights)
+    return std::unexpected("image parts have no owned denoiser weights");
+  return parts.weights[1].weights.get();
+}
+std::expected<QuantizedReferenceCounts, std::string> QuantizedBoundRoles(
+    const llmp::runtime::EngineImageParts& parts, const llmp::artifact::Artifact& denoiser) {
+  if (parts.stages.size() != 3 || !parts.stages[1].graph)
+    return std::unexpected("imported image has no compiled denoiser graph");
+  auto model = llmp::spec::StoredSpec(denoiser);
+  auto source = llmp::spec::SourceOf(denoiser);
+  if (!model || !source) return std::unexpected("imported denoiser inventory is unavailable");
+  const std::array<std::span<const llmp::components::BoundTensor>, 1> tensors{source->tensors};
+  auto bindings = OwnedRoleBindings(*model, tensors);
+  if (!bindings) return std::unexpected(bindings.error());
+
+  QuantizedReferenceCounts counts;
+  const auto& graph = *parts.stages[1].graph;
+  const auto resources = denoiser.resources();
+  for (const auto& weight : graph.weights()) {
+    const auto& graph_format = graph.graph().tensor(weight.tensor).format;
+    auto binding = MatchCompiledRole(*bindings, weight.ref, graph_format, weight.parts, 1);
+    if (!binding) return std::unexpected(binding.error());
+    for (const auto& [name, part] : weight.parts) {
+      const auto resource_id = denoiser.FindResource(name);
+      if (!resource_id || *resource_id >= resources.size())
+        return std::unexpected("compiled denoiser role names no opened resource");
+      const auto& resource = resources[*resource_id];
+      if (!resource.format || resource.part != part || *resource.format != graph_format)
+        return std::unexpected("compiled denoiser role resource format differs from its graph");
+      if (graph_format.encoding == format::Encoding::kQ4_K) {
+        ++counts.q4_k;
+        counts.q4_resources.push_back(*resource_id);
+      }
+      if (graph_format.encoding == format::Encoding::kQ6_K) {
+        ++counts.q6_k;
+        counts.q6_resources.push_back(*resource_id);
+      }
+    }
+  }
+  std::ranges::sort(counts.q4_resources);
+  counts.q4_resources.erase(std::unique(counts.q4_resources.begin(), counts.q4_resources.end()),
+                            counts.q4_resources.end());
+  std::ranges::sort(counts.q6_resources);
+  counts.q6_resources.erase(std::unique(counts.q6_resources.begin(), counts.q6_resources.end()),
+                            counts.q6_resources.end());
+  return counts;
+}
+
+TEST(ImportedImageHarness, DenoiserWeightObserverFollowsTransferredOwner) {
+  auto owner = std::make_unique<en::PagedWeights>();
+  const auto* expected = owner.get();
+  std::vector<en::StageWeights> construction_weights(3);
+  construction_weights[1].weights = std::move(owner);
+  rt::EngineImageParts parts;
+  parts.weights = std::move(construction_weights);
+
+  const auto observer = OwnedDenoiserWeights(parts);
+  ASSERT_TRUE(observer) << observer.error();
+  EXPECT_EQ(*observer, expected);
+  EXPECT_EQ(parts.weights[1].weights.get(), expected);
+}
+
+TEST(ImportedImageHarness, OwnedRoleInventoryMatchesCompiledStageAndRejectsMutations) {
+  namespace spec = llmp::spec;
+  namespace co = llmp::components;
+  spec::Stage stage{
+      .name = "target", .role = spec::StageRole::kTarget, .artifact = 0, .context = 256};
+  stage.stream.width = 256;
+  stage.embedding = {.kind = "embedding.token",
+                     .version = 1,
+                     .params = {{"scale", 1.0}},
+                     .weights = {{.role = "table", .tensor = "table"}}};
+  stage.layers.push_back(llmp::spec::Layer{
+      .components = {llmp::spec::ComponentRef{.kind = "norm.rms",
+                                              .version = 1,
+                                              .params = {{"eps", 0.00001}},
+                                              .weights = {{.role = "weight", .tensor = "norm"}}}}});
+  stage.heads.output = {.kind = "head.linear",
+                        .version = 1,
+                        .params = {{"rows", std::int64_t{17}}},
+                        .weights = {{.role = "weight", .tensor = "head"}}};
+  spec::ModelSpec model{.pipeline = spec::PipelineKind::kLlm, .stages = {std::move(stage)}};
+  spec::Canonicalize(model);
+  const std::array<co::BoundTensor, 3> tensors{
+      spec::SourceTensor{.name = "table", .format = Blocks(format::Encoding::kQ4_K, 256)},
+      spec::SourceTensor{
+          .name = "norm",
+          .format = llmp::ir::Dense(format::Encoding::kF32,
+                                    *format::ShapeOf(std::array<std::uint64_t, 1>{256}))},
+      spec::SourceTensor{.name = "head", .format = Blocks(format::Encoding::kQ6_K, 17)}};
+  const std::array<std::span<const co::BoundTensor>, 1> artifacts{tensors};
+  auto owned = OwnedRoleBindings(model, artifacts);
+  ASSERT_TRUE(owned) << owned.error();
+  const auto q4 = std::ranges::find_if(*owned, [](const auto& binding) {
+    return binding.format.encoding == format::Encoding::kQ4_K;
+  });
+  const auto q6 = std::ranges::find_if(*owned, [](const auto& binding) {
+    return binding.format.encoding == format::Encoding::kQ6_K;
+  });
+  ASSERT_NE(q4, owned->end());
+  ASSERT_NE(q6, owned->end());
+  ASSERT_FALSE(q4->parts.empty());
+  ASSERT_FALSE(q6->parts.empty());
+  auto q4_ref = q4->ref;
+  q4_ref.stage = 1;
+  auto q6_ref = q6->ref;
+  q6_ref.stage = 1;
+  EXPECT_TRUE(MatchCompiledRole(*owned, q4_ref, q4->format, q4->parts, 1));
+  EXPECT_TRUE(MatchCompiledRole(*owned, q6_ref, q6->format, q6->parts, 1));
+  EXPECT_FALSE(MatchCompiledRole(*owned, q4_ref, q4->format, q4->parts, 0));
+  auto wrong_parts = q6->parts;
+  wrong_parts.front().first += ".wrong";
+  EXPECT_FALSE(MatchCompiledRole(*owned, q6_ref, q6->format, wrong_parts, 1));
+}
+
+TEST(ImportedImageHarness, TemporaryReaderPaymentCoversAndRefundsCatalogOccupancy) {
+  llmp::catalog::Catalog catalog;
+  const auto domain = catalog.AddDomain("imported-image-bootstrap");
+  const auto before = catalog.OccupancyOf(domain).Total().value();
+  const auto bound = rt::StartupBootstrapBytes(3);
+  ASSERT_TRUE(bound) << bound.error();
+  auto reader =
+      rt::StartupArtifactPayment::AdmitReader(catalog, domain, *bound, 32 * kGiB, 128 * kGiB);
+  ASSERT_TRUE(reader) << reader.error();
+  const auto loan = (*reader)->reader_loan();
+  EXPECT_TRUE(loan.Covers(catalog, domain, *bound));
+  EXPECT_FALSE(loan.Covers(catalog, domain, (*reader)->bytes() + 1));
+  const auto other_domain = catalog.AddDomain("other-image-bootstrap");
+  EXPECT_FALSE(loan.Covers(catalog, other_domain, *bound));
+  EXPECT_GT(catalog.OccupancyOf(domain).Total().value(), before);
+  reader->reset();
+  EXPECT_FALSE(loan.Covers(catalog, domain, *bound));
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), before);
+}
 // The published composition's family, as its admission reads it.
 std::shared_ptr<const rt::ImageFamily> FrozenFamily() {
   const auto& frozen = llmp::test_support::QwenImage();
@@ -112,6 +409,18 @@ struct Lifetime {
   std::string changed_pixels;
   std::uint64_t replacement_credit = 0, construction_peak = 0;
   std::uint64_t eager_occupancy = 0, warmed_occupancy = 0;
+  bool imported_source = false, single_generation = false, require_q4 = false;
+  bool image_setup_succeeded = false;
+  std::string requested_composition;
+  std::array<ImportedArtifactFacts, 3> imported_facts{};
+  std::uint64_t imported_resource_bytes = 0;
+  std::uint64_t imported_weight_reads = 0;
+  std::uint64_t imported_retained_bytes = 0;
+  QuantizedReferenceCounts quantized_refs{};
+  // Non-owning observer into the returned EngineImageParts owner. It is set
+  // by the Q4 build hook and read only after successful EngineImage::Setup.
+  const en::PagedWeights* quantized_weights = nullptr;
+  llmp::base::Sha256Digest imported_family_spec{};
   std::uint32_t completed_requests = 0, completed_request_stages = 0, released_requests = 0;
   std::uint32_t prompt_rows = 0, dropped_rows = 0;
   std::uint64_t request_sequence = 0, request_pixel_values = 0;
@@ -214,7 +523,13 @@ struct Lifetime {
   std::uint64_t footprint = 0, fixed = 0, activation = 0, pool = 0, staging = 0, plans = 0;
   std::uint64_t startup_parser = 0, selected_weight_bytes = 0;
   std::array<std::string, 2> first{}, final{};
-  Status Load(const fs::path& store, const fs::path& noise) {
+  Status Load(const fs::path& store, const fs::path& noise,
+              llmp::runtime::StartupReaderLoan bootstrap = {}) {
+    if (imported_source) {
+      auto bound = rt::StartupBootstrapBytes(3);
+      if (!bound || !bootstrap.Covers(node.catalog(), node.domain(), bound.value_or(0)))
+        return Error("imported artifact loading has no paid parser bootstrap");
+    }
     if (!allowance->Charge(kStartup)) return Error("image startup owner is unpaid");
     if (!numerical_fixture.empty()) {
       if (auto read = ReadNumericalFixture(); !read) return read;
@@ -223,26 +538,77 @@ struct Lifetime {
     // Retain the source-construction payment with the source owner. The whole
     // enclosing node/provider lifetime is retained separately on failed drain.
     source->keep = allowance;
-    auto composition = llmp::artifact::OpenComposition(store / kComposition);
+    const auto composition_id = imported_source ? requested_composition : kComposition;
+    if (imported_source && composition_id.empty())
+      return Error("imported image mode requires an explicit composition ID");
+    auto composition = llmp::artifact::OpenComposition(store / composition_id,
+                                                       std::optional<std::string>(composition_id));
     if (!composition) return Error(composition.error().ToString());
     source->composition =
         std::make_shared<const llmp::artifact::Composition>(std::move(*composition));
-    for (std::size_t i = 0; i < kIds.size(); ++i) {
-      auto index = ReadExact(store / kIds[i] / "index.json", kIndexBytes[i]);
-      if (!index ||
-          llmp::base::ToHex(llmp::base::Sha256{}.Update(*index).Finish()) != kIndexHashes[i])
-        return Error(
-            std::format("image source index identity differs: {} {}", index ? index->size() : 0,
-                        index ? llmp::base::ToHex(llmp::base::Sha256{}.Update(*index).Finish())
-                              : std::string()));
+    if (imported_source && source->composition->components().size() != source->weights.size())
+      return Error("imported image composition must name exactly three components");
+    for (std::size_t i = 0; i < source->weights.size(); ++i) {
+      const auto& id = imported_source ? source->composition->components()[i].artifact : kIds[i];
+      if (!imported_source) {
+        auto index = ReadExact(store / id / "index.json", kIndexBytes[i]);
+        if (!index ||
+            llmp::base::ToHex(llmp::base::Sha256{}.Update(*index).Finish()) != kIndexHashes[i])
+          return Error(
+              std::format("image source index identity differs: {} {}", index ? index->size() : 0,
+                          index ? llmp::base::ToHex(llmp::base::Sha256{}.Update(*index).Finish())
+                                : std::string()));
+      }
       source->weights[i] = std::make_unique<en::PagedWeights>();
       llmp::artifact::OpenOptions options;
-      options.expected_id = std::string(kIds[i]);
-      if (auto opened = source->weights[i]->Open(store / kIds[i], options); !opened) return opened;
+      options.expected_id = id;
+      if (auto opened = source->weights[i]->Open(store / id, options); !opened) {
+        source->weights[i].reset();
+        return opened;
+      }
+      if (imported_source) {
+        const auto& artifact = source->weights[i]->artifact();
+        auto artifact_bytes = rt::StartupArtifactBytes(artifact);
+        auto binding_bytes = rt::StoredBindingBytes(artifact);
+        if (!artifact_bytes || !binding_bytes) {
+          source->weights[i].reset();
+          return Error(!artifact_bytes ? artifact_bytes.error() : binding_bytes.error());
+        }
+        std::uint64_t retained = 0;
+        if (__builtin_add_overflow(*artifact_bytes, *binding_bytes, &retained)) {
+          source->weights[i].reset();
+          return Error("imported artifact retention allowance overflows");
+        }
+        auto charged = allowance->ChargeOrGrow(node.catalog(), node.domain(), retained, kCap,
+                                               llmp::platform::AvailableMemoryBytes().value_or(0),
+                                               rt::kUncountedMargin);
+        if (!charged) {
+          source->weights[i].reset();
+          return Error("imported artifact retention is unpaid: " + charged.error());
+        }
+        if (__builtin_add_overflow(imported_retained_bytes, retained, &imported_retained_bytes))
+          return Error("imported retained artifact total overflows");
+        auto facts = FactsOf(source->weights[i]->artifact());
+        if (!facts) return Error(facts.error());
+        imported_resource_bytes += facts->resource_bytes;
+        imported_facts[i] = *facts;
+      }
+    }
+    if (imported_source) {
+      std::array<const llmp::artifact::Artifact*, 3> artifacts{};
+      for (std::size_t i = 0; i < artifacts.size(); ++i)
+        artifacts[i] = &source->weights[i]->artifact();
+      auto family = rt::ReadImageFamily(*source->composition, artifacts);
+      if (!family) return Error(family.error());
+      source->family = std::move(*family);
+      imported_family_spec = source->family->spec.Digest();
+      if (source->family->mapping->components.size() != artifacts.size())
+        return Error("imported image family component mapping differs from the opened artifacts");
     }
     const auto json = source->composition->Metadata(
         source->composition->format_version() >= 2 ? "processor/tokenizer.json" : "tokenizer.json");
-    if (!json || json->size() != 11422654) return Error("image tokenizer source extent differs");
+    if (!json || json->size() > 12 * kMiB || (!imported_source && json->size() != 11422654))
+      return Error("image tokenizer source extent differs");
     startup_parser = llmp::base::json::ParseWorkingBytes(*json);
     // The exact authenticated source parser plus its simultaneously retained
     // vocabulary/merge/trie copies must fit the prepaid startup phase.
@@ -277,9 +643,9 @@ struct Lifetime {
         return Error("native numerical fixture token IDs differ from diffusers");
       source->width = fixture_width;
       source->height = fixture_height;
-      auto schedule =
-          llmp::model::ImageSchedulerSigmas(FrozenFamily()->profile.scheduler, fixture_steps,
-                                            (fixture_width / 16) * (fixture_height / 16));
+      auto schedule = llmp::model::ImageSchedulerSigmas(
+          (source->family ? source->family : FrozenFamily())->profile.scheduler, fixture_steps,
+          (fixture_width / 16) * (fixture_height / 16));
       if (!schedule) return Error(schedule.error());
       const auto same = [](const auto& native, const auto& reference) {
         return native.size() == reference.size() &&
@@ -360,21 +726,73 @@ struct Lifetime {
         std::string_view(reinterpret_cast<const char*>(rgba.data()), rgba.size()));
     return written ? Status{} : Error("writing completed shared image failed");
   }
+  Status CheckQuantizedReadClosure() const {
+    if (!require_q4) return {};
+    if (!image_setup_succeeded || !image || quantized_weights == nullptr ||
+        imported_weight_reads == 0 || quantized_refs.q4_resources.empty() ||
+        quantized_refs.q6_resources.empty())
+      return Error("compiled quantized roles are absent from the image weight closure");
+    const auto closure = image->weights();
+    if (closure.empty()) return Error("compiled image has no selected weight read closure");
+    const auto& weights = *quantized_weights;
+    const auto& artifact = weights.artifact();
+    std::vector<llmp::catalog::ExtentId> touched(weights.extents().size());
+    const auto included = [&](std::uint32_t resource_id) -> Status {
+      if (resource_id >= artifact.resources().size())
+        return Error("compiled quantized role resource id exceeds the opened artifact");
+      const auto& resource = artifact.resources()[resource_id];
+      const auto count = weights.ExtentsTouching(weights.resource_address(resource_id),
+                                                 resource.readable.value(), touched);
+      if (!count || *count > touched.size())
+        return Error("compiled quantized role extent is absent from its read closure");
+      for (std::size_t i = 0; i < *count; ++i)
+        if (std::ranges::find(closure, touched[i]) == closure.end())
+          return Error("compiled quantized role extent is absent from the staged read closure");
+      return {};
+    };
+    for (const auto id : quantized_refs.q4_resources)
+      if (auto valid = included(id); !valid) return valid;
+    for (const auto id : quantized_refs.q6_resources)
+      if (auto valid = included(id); !valid) return valid;
+    return {};
+  }
   Status Run(const fs::path& store, const fs::path& noise) {
     const auto setup_started = std::chrono::steady_clock::now();
     const auto before = llmp::platform::AvailableMemoryBytes().value_or(0);
-    if (auto paid = rt::CheckStartupHostAllowance(kConstruction, kCap, before); !paid) return paid;
+    std::uint64_t bootstrap_bytes = 0;
+    std::uint64_t initial_bytes = kConstruction;
+    if (imported_source) {
+      auto bound = rt::StartupBootstrapBytes(3);
+      if (!bound) return Error(bound.error());
+      bootstrap_bytes = *bound;
+      if (__builtin_add_overflow(initial_bytes, bootstrap_bytes, &initial_bytes))
+        return Error("imported startup allowance overflows");
+    }
+    if (auto paid = rt::CheckStartupHostAllowance(initial_bytes, kCap, before); !paid) return paid;
     if (auto opened = node.Open(); !opened) return opened;
     auto paid = en::ExecutionMetadataAllowance::Admit(
         node.catalog(), node.domain(), kConstruction,
         llmp::platform::AvailableMemoryBytes().value_or(0), rt::kUncountedMargin);
     if (!paid) return Error(paid.error());
     allowance = std::move(*paid);
-    if (auto loaded = Load(store, noise); !loaded) return loaded;
+    std::unique_ptr<rt::StartupArtifactPayment> startup_reader;
+    if (imported_source) {
+      auto loan = rt::StartupArtifactPayment::AdmitReader(
+          node.catalog(), node.domain(), bootstrap_bytes, kCap,
+          llmp::platform::AvailableMemoryBytes().value_or(0));
+      if (!loan) return Error("imported startup bootstrap is unpaid: " + loan.error());
+      startup_reader = std::move(*loan);
+    }
+    auto loaded = Load(store, noise,
+                       startup_reader ? startup_reader->reader_loan() : rt::StartupReaderLoan{});
+    // Load's parser and temporary source/spec copies have gone out of scope;
+    // retained artifacts/spec topology remain paid by `allowance`.
+    startup_reader.reset();
+    if (!loaded) return loaded;
     std::uint64_t weights = 0;
     llmp::config::ModelEntry entry;
     entry.name = "shared-image-generation";
-    entry.artifact = std::string(kComposition);
+    entry.artifact = source->composition->id();
     rt::ModelSettings settings;
     settings.image_size.value = numerical_fixture.empty() ? 1024 : fixture_width;
     settings.image_steps.value = !numerical_fixture.empty()
@@ -432,6 +850,29 @@ struct Lifetime {
       tuning_facts = std::make_shared<llmp::planner::OwnedDeviceFacts>(std::move(*owned));
     }
     auto build = rt::ComponentImageGenerationBuild(node, 0, source, allowance, tuning_facts);
+    if (require_q4) {
+      build = [this, original = std::move(build)](const rt::ModelSettings& current)
+          -> std::expected<rt::EngineImageParts, std::string> {
+        auto parts = original(current);
+        if (!parts) return std::unexpected(parts.error());
+        const auto observed = OwnedDenoiserWeights(*parts);
+        if (!observed || !source || !source->composition ||
+            source->composition->components().size() != 3)
+          return std::unexpected(std::string("Q4 build returned an incomplete weight closure"));
+        const auto& artifact = (*observed)->artifact();
+        if (artifact.id() != source->composition->components()[1].artifact)
+          return std::unexpected(std::string("Q4 build returned a different transformer artifact"));
+        auto bound = QuantizedBoundRoles(*parts, artifact);
+        if (!bound) return std::unexpected(bound.error());
+        quantized_refs = *bound;
+        if (quantized_refs.q4_k == 0 || quantized_refs.q6_k == 0)
+          return std::unexpected("compiled denoiser graph does not bind both Q4_K and Q6_K roles");
+        if (auto valid = RefuseQuantizedRoleNumerics(*parts, artifact); !valid)
+          return std::unexpected(valid.error());
+        quantized_weights = *observed;
+        return parts;
+      };
+    }
     if (tiled || masked_attention) {
       build = [this, original = std::move(build),
                facts = tuning_facts](const rt::ModelSettings& current)
@@ -582,12 +1023,19 @@ struct Lifetime {
       };
     }
     image = std::make_unique<rt::EngineImage>(node, entry, settings, 0, std::move(build));
+    image_setup_succeeded = false;
     const auto setup = image->Setup();
     if (image->has_paged()) entered.push_back(&image->paged());
-    if (!setup) return setup;
+    if (!setup) {
+      quantized_weights = nullptr;
+      return setup;
+    }
+    image_setup_succeeded = true;
     weights = image->weight_read_bytes();
     selected_weight_bytes = weights;
-    if (weights != kSelectedWeights)
+    imported_weight_reads = weights;
+    if (auto closed = CheckQuantizedReadClosure(); !closed) return closed;
+    if (!imported_source && weights != kSelectedWeights)
       return Error(std::format("complete source closure page union differs: {}", weights));
     activation = image->activations_needed();
     pool = std::max<std::uint64_t>(image->pool_needed(), en::kPagedExtent);
@@ -633,7 +1081,7 @@ struct Lifetime {
     if (replace_requests) return RunRequests();
     // Repeated generation uses the same retained typed plans/captures and
     // restores the original latent port only after a completed prior Finish.
-    for (std::size_t run = 0; run < first.size(); ++run) {
+    for (std::size_t run = 0; run < (single_generation ? 1 : first.size()); ++run) {
       measured_run = run;
       const auto started = std::chrono::steady_clock::now();
       auto first_done = started;
@@ -663,7 +1111,7 @@ struct Lifetime {
             "output boundaries");
     }
     native_report = image->extra();
-    if (first[0] != first[1] || final[0] != final[1])
+    if (!single_generation && (first[0] != first[1] || final[0] != final[1]))
       return Error("same selected complete generation differs on retained replay");
     return {};
   }
@@ -742,6 +1190,8 @@ struct Lifetime {
   Status Retire() {
     if (teardown_attempted) return Error("whole generation retirement was already attempted");
     teardown_attempted = true;
+    image_setup_succeeded = false;
+    quantized_weights = nullptr;
     return node.TearDown(entered);
   }
 };
@@ -1054,6 +1504,135 @@ TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
   RecordProperty("first_flow_sha256", life->first[0]);
   RecordProperty("pixels_sha256", life->final[0]);
   RecordProperty("native_report", life->native_report);
+}
+
+TEST(ImageGenerationGpu, ImportedBf16RecipeMatchesPublishedPixelsAndSource) {
+  if (!std::getenv("LLMP_RUN_IMPORTED_IMAGE_BF16_PROOF"))
+    GTEST_SKIP() << "explicit published-versus-imported BF16 proof required";
+  const char* store = std::getenv("LLMP_IMAGE_IMPORT_STORE");
+  const char* recipe = std::getenv("LLMP_IMAGE_IMPORT_BF16_COMPOSITION");
+  const char* fixture = std::getenv("LLMP_IMAGE_NUMERICAL_FIXTURE");
+  ASSERT_NE(store, nullptr);
+  ASSERT_NE(recipe, nullptr);
+  ASSERT_NE(fixture, nullptr);
+
+  const auto execute = [&](std::string composition) {
+    auto life = std::make_unique<Lifetime>();
+    life->imported_source = true;
+    life->single_generation = true;
+    life->requested_composition = std::move(composition);
+    life->numerical_fixture = fixture;
+    const fs::path noise = life->numerical_fixture / "latents_init.bf16";
+    auto result = life->Run(store, noise);
+    auto retired = life->Retire();
+    if (!retired) {
+      std::ignore = life.release();
+      ADD_FAILURE() << Failed(retired).value_or("");
+      return std::unique_ptr<Lifetime>{};
+    }
+    if (!result) {
+      ADD_FAILURE() << Failed(result).value_or("");
+      return std::unique_ptr<Lifetime>{};
+    }
+    return life;
+  };
+
+  auto published = execute(kComposition);
+  ASSERT_NE(published, nullptr);
+  ASSERT_EQ(published->final[0].size(), 64U);
+  ASSERT_FALSE(published->numerical_fixture.empty());
+  ASSERT_EQ(published->fixture_width, 1024U);
+  ASSERT_EQ(published->fixture_height, 1024U);
+  ASSERT_EQ(published->fixture_steps, 40U);
+  auto imported = execute(recipe);
+  ASSERT_NE(imported, nullptr);
+  ASSERT_EQ(imported->final[0].size(), 64U);
+  ASSERT_EQ(imported->fixture_receipt, published->fixture_receipt);
+  ASSERT_EQ(imported->fixture_prompt, published->fixture_prompt);
+  ASSERT_EQ(imported->fixture_ids, published->fixture_ids);
+  ASSERT_EQ(imported->imported_family_spec, published->imported_family_spec);
+  ASSERT_EQ(imported->imported_resource_bytes, published->imported_resource_bytes);
+  for (std::size_t i = 0; i < imported->imported_facts.size(); ++i) {
+    EXPECT_EQ(imported->imported_facts[i].spec, published->imported_facts[i].spec)
+        << "component " << i;
+    EXPECT_EQ(imported->imported_facts[i].inventory, published->imported_facts[i].inventory)
+        << "component " << i;
+    EXPECT_EQ(imported->imported_facts[i].receipts, published->imported_facts[i].receipts)
+        << "component " << i;
+    EXPECT_EQ(imported->imported_facts[i].resource_bytes,
+              published->imported_facts[i].resource_bytes)
+        << "component " << i;
+  }
+  ASSERT_EQ(imported->final[0], published->final[0]);
+  ASSERT_EQ(std::getenv("LLMP_TEST_V1_RECORD"), nullptr)
+      << "the imported source proof must never write a new frozen record";
+  llmp::test_support::FrozenDigests frozen("qwen_image");
+  ASSERT_TRUE(frozen.loaded()) << "the published v1 pixel pin must be available";
+  frozen.Expect("pixels.1024x1024.40", imported->final[0]);
+  RecordProperty("published_composition", kComposition);
+  RecordProperty("imported_composition", recipe);
+  RecordProperty("actual_resource_bytes", std::to_string(imported->imported_resource_bytes));
+  RecordProperty("published_pixel_sha256", published->final[0]);
+  RecordProperty("imported_pixel_sha256", imported->final[0]);
+  for (std::size_t i = 0; i < imported->imported_facts.size(); ++i) {
+    RecordProperty(std::format("component_{}_spec_sha256", i),
+                   llmp::base::ToHex(imported->imported_facts[i].spec));
+    RecordProperty(std::format("component_{}_inventory_sha256", i),
+                   llmp::base::ToHex(imported->imported_facts[i].inventory));
+    RecordProperty(std::format("component_{}_source_receipts_sha256", i),
+                   llmp::base::ToHex(imported->imported_facts[i].receipts));
+  }
+}
+
+TEST(ImageGenerationGpu, ImportedQ4CompletesAndRepeatsWithoutInheritedNumerics) {
+  if (!std::getenv("LLMP_RUN_IMPORTED_IMAGE_Q4_SMOKE"))
+    GTEST_SKIP() << "explicit imported Q4 native completion proof required";
+  const char* store = std::getenv("LLMP_IMAGE_IMPORT_STORE");
+  const char* composition = std::getenv("LLMP_IMAGE_IMPORT_Q4_COMPOSITION");
+  const char* fixture = std::getenv("LLMP_IMAGE_NUMERICAL_FIXTURE");
+  ASSERT_NE(store, nullptr);
+  ASSERT_NE(composition, nullptr);
+  ASSERT_NE(fixture, nullptr);
+
+  auto life = std::make_unique<Lifetime>();
+  life->imported_source = true;
+  life->require_q4 = true;
+  life->requested_composition = composition;
+  life->numerical_fixture = fixture;
+  const fs::path noise = life->numerical_fixture / "latents_init.bf16";
+  const auto result = life->Run(store, noise);
+  const auto retired = life->Retire();
+  if (!retired) {
+    std::ignore = life.release();
+    FAIL() << Failed(retired).value_or("");
+  }
+  ASSERT_TRUE(result) << Failed(result).value_or("");
+  ASSERT_EQ(life->fixture_width, 512U);
+  ASSERT_EQ(life->fixture_height, 512U);
+  ASSERT_EQ(life->fixture_steps, 2U);
+  ASSERT_GT(life->imported_facts[1].q4_k_resources, 0U);
+  ASSERT_GT(life->imported_facts[1].q6_k_resources, 0U);
+  ASSERT_GT(life->quantized_refs.q4_k, 0U);
+  ASSERT_GT(life->quantized_refs.q6_k, 0U);
+  ASSERT_EQ(life->first[0], life->first[1]);
+  ASSERT_EQ(life->final[0], life->final[1]);
+  RecordProperty("composition", composition);
+  RecordProperty("actual_resource_bytes", std::to_string(life->imported_resource_bytes));
+  RecordProperty("actual_weight_reads", std::to_string(life->imported_weight_reads));
+  RecordProperty("paid_retained_artifact_bytes", std::to_string(life->imported_retained_bytes));
+  RecordProperty("denoiser_q4_k_resources", std::to_string(life->imported_facts[1].q4_k_resources));
+  RecordProperty("denoiser_q6_k_resources", std::to_string(life->imported_facts[1].q6_k_resources));
+  RecordProperty("compiled_q4_k_role_refs", std::to_string(life->quantized_refs.q4_k));
+  RecordProperty("compiled_q6_k_role_refs", std::to_string(life->quantized_refs.q6_k));
+  RecordProperty("first_flow_sha256", life->first[0]);
+  RecordProperty("pixels_sha256", life->final[0]);
+  RecordProperty("fixture_receipt_sha256", life->fixture_receipt);
+  for (std::size_t i = 0; i < life->imported_facts.size(); ++i) {
+    RecordProperty(std::format("component_{}_format_inventory_sha256", i),
+                   llmp::base::ToHex(life->imported_facts[i].inventory));
+    RecordProperty(std::format("component_{}_source_receipts_sha256", i),
+                   llmp::base::ToHex(life->imported_facts[i].receipts));
+  }
 }
 // The production Server adapter consumes the same prepared source owner as the
 // direct fixture. Four serial images cover initial geometry, larger geometry,

@@ -12,11 +12,15 @@
 #include "spec/image_family.h"
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <format>
+#include <fstream>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -27,13 +31,18 @@
 
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
+#include "artifact_writer.h"
 #include "base/sha256.h"
 #include "image_family.h"
 #include "image_published.h"
+#include "import/stage_recipe.h"
+#include "ir/graph.h"
 #include "runtime/approvals.h"
 #include "runtime/component_admission.h"
+#include "spec/image_spatial.h"
 #include "spec/mappings/qwen_image.h"
 #include "spec/spec.h"
+#include "spec/stored.h"
 
 namespace {
 namespace sp = llmp::spec;
@@ -100,6 +109,84 @@ struct Toy {
   }
 };
 
+sp::ModelSpec TinyImageComponent(sp::StageRole role) {
+  sp::Stage stage{.name = "component", .role = role};
+  stage.stream.width = 64;
+  stage.layers.push_back({.components = {{.kind = "projection.spatial",
+                                          .params = {{"in_channels", std::int64_t{64}},
+                                                     {"out_channels", std::int64_t{64}},
+                                                     {"silu", true}},
+                                          .weights = {{.role = "weight", .tensor = "weight"}}}}});
+  sp::ModelSpec model{.pipeline = sp::PipelineKind::kImage, .stages = {std::move(stage)}};
+  sp::Canonicalize(model);
+  return model;
+}
+
+struct SyntheticImage {
+  std::filesystem::path root;
+  std::vector<llmp::artifact::Artifact> opened;
+  std::unique_ptr<llmp::artifact::Composition> composition;
+  std::vector<const llmp::artifact::Artifact*> components;
+
+  static std::expected<SyntheticImage, std::string> Make(
+      const std::filesystem::path& root, Toy toy = {},
+      std::string_view transformer_container = "gguf",
+      std::optional<sp::StageRole> transformer_role = std::nullopt,
+      std::vector<std::pair<std::string, std::vector<std::string>>> transformer_folds = {},
+      std::string_view transformer_source_bytes = "source bytes", bool transformer_q4 = false,
+      bool bad_transformer_fold = false) {
+    auto family = toy.Synthesize();
+    if (!family) return std::unexpected(family.error());
+    SyntheticImage result{.root = root, .opened = {}, .composition = nullptr, .components = {}};
+    const auto& mapping = sp::mappings::QwenImage21Mapping();
+    std::array<std::string, 3> ids;
+    for (std::size_t i = 0; i < mapping.components.size(); ++i) {
+      const auto& rule = mapping.components[i];
+      const std::string container = i == 1 ? std::string(transformer_container) : "safetensors";
+      auto component =
+          TinyImageComponent(i == 1 && transformer_role ? *transformer_role : rule.stage_role);
+      if (i == 1 && transformer_q4) {
+        component.stages.front().layers.clear();
+        sp::Canonicalize(component);
+      }
+      if (i == 1 && bad_transformer_fold) component.stages.front().folds = {"unapplied-fold"};
+      llmp::test::V1Plan plan;
+      plan.architecture = std::string(rule.architectures.front());
+      plan.container = container;
+      plan.sources = {{std::format("synthetic-{}.{}", rule.role, container),
+                       i == 1 ? std::string(transformer_source_bytes) : "source bytes"}};
+      plan.spec = sp::ToJson(component);
+      auto format = llmp::ir::Dense(llmp::format::Encoding::kF32, llmp::ir::ShapeOf({64, 64}));
+      if (i == 1 && transformer_q4) {
+        format = llmp::ir::Dense(llmp::format::Encoding::kQ4_K, llmp::ir::ShapeOf({256, 64}));
+        format.layout = llmp::format::Layout::kGgmlBlocks;
+      }
+      plan.groups = {{.kind = llmp::artifact::GroupKind::kGlobal,
+                      .resources = {{.name = "weight", .format = format}}}};
+      if (i == 1) plan.folds = std::move(transformer_folds);
+      const auto artifact_path = llmp::test::Publish(root, llmp::test::Render(plan));
+      auto artifact = llmp::artifact::Artifact::Open(artifact_path);
+      if (!artifact) return std::unexpected(artifact.error().ToString());
+      ids[i] = artifact->id();
+      result.opened.push_back(std::move(*artifact));
+    }
+    llmp::test::CompositionPlan composition;
+    composition.architecture = "QwenImage21Pipeline";
+    composition.meta = {{"model_index.json", R"({"_class_name":"QwenImage21Pipeline"})"}};
+    composition.spec = sp::ToJson(*family);
+    for (std::size_t i = 0; i < mapping.components.size(); ++i)
+      composition.components.emplace_back(mapping.components[i].role, ids[i],
+                                          mapping.components[i].architectures.front());
+    const auto composition_path = llmp::test::Publish(root, llmp::test::Render(composition));
+    auto opened_composition = llmp::artifact::OpenComposition(composition_path);
+    if (!opened_composition) return std::unexpected(opened_composition.error().ToString());
+    result.composition =
+        std::make_unique<llmp::artifact::Composition>(std::move(*opened_composition));
+    for (const auto& artifact : result.opened) result.components.push_back(&artifact);
+    return result;
+  }
+};
+
 void Set(Values& values, std::string_view key, sp::ParamValue value) {
   for (auto& v : values)
     if (v.key == key) {
@@ -121,6 +208,153 @@ TEST(ImageFamily, EveryMappingIsValidAndFoundByItsArchitecture) {
     EXPECT_EQ(sp::FindImageMapping(m->architecture), m);
   }
   EXPECT_EQ(sp::FindImageMapping("FluxPipeline"), nullptr);
+}
+
+TEST(ImageFamily, QwenFlowRecipeMatchesTheFrozenSpatialEmitter) {
+  Toy toy;
+  auto family = toy.Synthesize();
+  ASSERT_TRUE(family) << family.error();
+  const auto& mapping = sp::mappings::QwenImage21Mapping();
+  const auto flow =
+      std::ranges::find(mapping.components, "transformer", &sp::ImageComponentRule::role);
+  ASSERT_NE(flow, mapping.components.end());
+  ASSERT_NE(flow->recipe, nullptr);
+  EXPECT_TRUE(std::ranges::contains(flow->containers, "gguf"));
+  const auto text =
+      std::ranges::find(mapping.components, "text_encoder", &sp::ImageComponentRule::role);
+  ASSERT_NE(text, mapping.components.end());
+  EXPECT_FALSE(std::ranges::contains(text->containers, "gguf"));
+  auto profile = sp::ImageProfileOf(*family, mapping);
+  ASSERT_TRUE(profile) << profile.error();
+  auto tensors = md::DenoiserTensors(profile->denoiser, mapping.names.denoiser);
+  auto oracle = sp::ImageFlowTemplate(profile->denoiser, tensors);
+  ASSERT_TRUE(oracle) << oracle.error();
+  auto expanded =
+      llmp::import::ExpandStageRecipe(*flow->recipe, *family, std::uint64_t{512} << 20U);
+  ASSERT_TRUE(expanded) << expanded.error();
+  sp::ModelSpec actual{.pipeline = sp::PipelineKind::kImage,
+                       .stages = {std::move(expanded->stage)}};
+  sp::Canonicalize(actual);
+  ASSERT_EQ(actual.stages[0].layers[0].components.size(),
+            oracle->stages[0].layers[0].components.size());
+  const auto describe = [](const sp::ComponentRef& c) {
+    std::string out = c.kind;
+    for (const auto& p : c.params)
+      out += std::format(" {}={}", p.name,
+                         std::visit(
+                             [](const auto& v) -> std::string {
+                               using T = std::decay_t<decltype(v)>;
+                               if constexpr (std::is_same_v<T, std::string>)
+                                 return v;
+                               else if constexpr (std::is_same_v<T, bool>)
+                                 return v ? "true" : "false";
+                               else if constexpr (std::is_arithmetic_v<T>)
+                                 return std::format("{}", v);
+                               else
+                                 return "list";
+                             },
+                             p.value));
+    return out;
+  };
+  for (std::size_t i = 0; i < actual.stages[0].layers[0].components.size(); ++i) {
+    SCOPED_TRACE(i);
+    EXPECT_EQ(actual.stages[0].layers[0].components[i], oracle->stages[0].layers[0].components[i])
+        << "actual " << describe(actual.stages[0].layers[0].components[i]) << "; expected "
+        << describe(oracle->stages[0].layers[0].components[i]);
+  }
+  ASSERT_EQ(actual.stages[0].links.size(), oracle->stages[0].links.size());
+  for (std::size_t i = 0; i < actual.stages[0].links.size(); ++i) {
+    SCOPED_TRACE(i);
+    const auto& a = actual.stages[0].links[i];
+    const auto& e = oracle->stages[0].links[i];
+    EXPECT_EQ(a.input, e.input);
+    EXPECT_EQ(a.auxiliary, e.auxiliary);
+    EXPECT_EQ(a.input_port, e.input_port);
+    EXPECT_EQ(a.auxiliary_port, e.auxiliary_port);
+    EXPECT_EQ(a.carry, e.carry);
+    EXPECT_EQ(a.carry_port, e.carry_port);
+  }
+  EXPECT_EQ(actual.stages[0].exports, oracle->stages[0].exports);
+  EXPECT_EQ(actual.stages[0].scalar_bindings, oracle->stages[0].scalar_bindings);
+  ASSERT_EQ(expanded->tensors.size(), tensors.size());
+  auto actual_tensors = expanded->tensors;
+  auto expected_tensors = tensors;
+  std::ranges::sort(actual_tensors, {}, &sp::RecipeExpansion::Tensor::name);
+  std::ranges::sort(expected_tensors, {}, &md::ImageTensor::name);
+  for (std::size_t i = 0; i < expected_tensors.size(); ++i) {
+    EXPECT_EQ(actual_tensors[i].name, expected_tensors[i].name);
+    EXPECT_EQ(actual_tensors[i].shape, expected_tensors[i].shape);
+  }
+}
+
+TEST(ImageFamily, QwenVaeRecipeMatchesTheFrozenSpatialEmitter) {
+  Toy toy;
+  auto family = toy.Synthesize();
+  ASSERT_TRUE(family) << family.error();
+  const auto& mapping = sp::mappings::QwenImage21Mapping();
+  const auto vae = std::ranges::find(mapping.components, "vae", &sp::ImageComponentRule::role);
+  ASSERT_NE(vae, mapping.components.end());
+  ASSERT_NE(vae->recipe, nullptr);
+  auto profile = sp::ImageProfileOf(*family, mapping);
+  ASSERT_TRUE(profile) << profile.error();
+  const auto tensors = md::VaeDecoderTensors(profile->vae, mapping.names.vae);
+  auto oracle = sp::ImageDecodeTemplate(profile->vae, tensors);
+  ASSERT_TRUE(oracle) << oracle.error();
+  auto expanded = llmp::import::ExpandStageRecipe(*vae->recipe, *family, std::uint64_t{512} << 20U);
+  ASSERT_TRUE(expanded) << expanded.error();
+  sp::ModelSpec actual{.pipeline = sp::PipelineKind::kImage,
+                       .stages = {std::move(expanded->stage)}};
+  sp::Canonicalize(actual);
+  ASSERT_EQ(actual.stages[0].layers[0].components.size(),
+            oracle->stages[0].layers[0].components.size());
+  const auto describe = [](const sp::ComponentRef& c) {
+    std::string out = c.kind;
+    for (const auto& p : c.params)
+      out += std::format(" {}={}", p.name,
+                         std::visit(
+                             [](const auto& v) -> std::string {
+                               using T = std::decay_t<decltype(v)>;
+                               if constexpr (std::is_same_v<T, std::string>)
+                                 return v;
+                               else if constexpr (std::is_same_v<T, bool>)
+                                 return v ? "true" : "false";
+                               else if constexpr (std::is_arithmetic_v<T>)
+                                 return std::format("{}", v);
+                               else
+                                 return "list";
+                             },
+                             p.value));
+    return out;
+  };
+  for (std::size_t i = 0; i < actual.stages[0].layers[0].components.size(); ++i) {
+    SCOPED_TRACE(i);
+    EXPECT_EQ(actual.stages[0].layers[0].components[i], oracle->stages[0].layers[0].components[i])
+        << "actual " << describe(actual.stages[0].layers[0].components[i]) << "; expected "
+        << describe(oracle->stages[0].layers[0].components[i]);
+  }
+  ASSERT_EQ(actual.stages[0].links.size(), oracle->stages[0].links.size());
+  for (std::size_t i = 0; i < actual.stages[0].links.size(); ++i) {
+    SCOPED_TRACE(i);
+    const auto& a = actual.stages[0].links[i];
+    const auto& e = oracle->stages[0].links[i];
+    EXPECT_EQ(a.input, e.input);
+    EXPECT_EQ(a.auxiliary, e.auxiliary);
+    EXPECT_EQ(a.input_port, e.input_port);
+    EXPECT_EQ(a.auxiliary_port, e.auxiliary_port);
+    EXPECT_EQ(a.carry, e.carry);
+    EXPECT_EQ(a.carry_port, e.carry_port);
+  }
+  EXPECT_EQ(actual.stages[0].exports, oracle->stages[0].exports);
+  EXPECT_EQ(actual.stages[0].scalar_bindings, oracle->stages[0].scalar_bindings);
+  ASSERT_EQ(expanded->tensors.size(), tensors.size());
+  auto actual_tensors = expanded->tensors;
+  auto expected_tensors = tensors;
+  std::ranges::sort(actual_tensors, {}, &sp::RecipeExpansion::Tensor::name);
+  std::ranges::sort(expected_tensors, {}, &md::ImageTensor::name);
+  for (std::size_t i = 0; i < expected_tensors.size(); ++i) {
+    EXPECT_EQ(actual_tensors[i].name, expected_tensors[i].name);
+    EXPECT_EQ(actual_tensors[i].shape, expected_tensors[i].shape);
+  }
 }
 
 TEST(ImageFamily, AMappingRefusesWhatItCannotSay) {
@@ -357,6 +591,93 @@ TEST(ImageFamily, TheFrozenFamilyIsTheApprovedOne) {
   EXPECT_FALSE(approvals[0].sources.empty());
 }
 
+TEST(ImageFamily, RuntimeAdmissionValidatesSyntheticClosureBeforeHistoryLookup) {
+  const auto temp =
+      std::filesystem::temp_directory_path() / std::format("llmp-image-admission-{}", ::getpid());
+  std::error_code ignored;
+  std::filesystem::remove_all(temp, ignored);
+  auto valid = SyntheticImage::Make(temp / "valid");
+  ASSERT_TRUE(valid) << (valid ? "" : valid.error());
+  const auto admitted = llmp::runtime::ReadImageAdmission(*valid->composition, valid->components);
+  ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
+  EXPECT_EQ(admitted->approval, nullptr);
+
+  // The source receipts at the outer boundary are unchanged while the
+  // transformer's authentic GGUF child and ID change. Complete closure
+  // admission still succeeds and does not borrow the historical BF16 row.
+  auto q4 = SyntheticImage::Make(temp / "q4", {}, "gguf", std::nullopt, {},
+                                 "different authentic transformer bytes", true);
+  ASSERT_TRUE(q4) << (q4 ? "" : q4.error());
+  auto q4_source = sp::SourceOf(*q4->components[1]);
+  ASSERT_TRUE(q4_source) << (q4_source ? "" : q4_source.error());
+  ASSERT_EQ(q4_source->container, "gguf");
+  ASSERT_EQ(q4_source->tensors.size(), 1U);
+  EXPECT_EQ(q4_source->tensors[0].format.encoding, llmp::format::Encoding::kQ4_K);
+  ASSERT_EQ(valid->composition->sources().size(), q4->composition->sources().size());
+  for (std::size_t i = 0; i < valid->composition->sources().size(); ++i) {
+    EXPECT_EQ(valid->composition->sources()[i].name, q4->composition->sources()[i].name);
+    EXPECT_EQ(valid->composition->sources()[i].bytes, q4->composition->sources()[i].bytes);
+    EXPECT_EQ(valid->composition->sources()[i].sha256, q4->composition->sources()[i].sha256);
+  }
+  EXPECT_NE(valid->components[1]->id(), q4->components[1]->id());
+  auto q4_admitted = llmp::runtime::ReadImageAdmission(*q4->composition, q4->components);
+  ASSERT_TRUE(q4_admitted) << (q4_admitted ? "" : q4_admitted.error());
+  EXPECT_EQ(q4_admitted->approval, nullptr);
+
+  const auto publish_variant = [&](llmp::test::CompositionPlan plan) {
+    const auto path = llmp::test::Publish(temp / "valid", llmp::test::Render(plan));
+    return llmp::artifact::OpenComposition(path);
+  };
+  llmp::test::CompositionPlan plan;
+  plan.architecture = valid->composition->architecture();
+  plan.meta = {
+      {"model_index.json", std::string(*valid->composition->Metadata("model_index.json"))}};
+  plan.spec = std::string(*valid->composition->spec_json());
+  for (const auto& component : valid->composition->components())
+    plan.components.emplace_back(component.role, component.artifact, component.architecture);
+
+  auto wrong_role_plan = plan;
+  std::get<0>(wrong_role_plan.components[0]) = "transf0rmer";
+  auto wrong_role = publish_variant(std::move(wrong_role_plan));
+  ASSERT_TRUE(wrong_role) << wrong_role.error().ToString();
+  EXPECT_FALSE(llmp::runtime::ReadImageAdmission(*wrong_role, valid->components));
+
+  auto wrong_order_plan = plan;
+  std::swap(std::get<1>(wrong_order_plan.components[0]),
+            std::get<1>(wrong_order_plan.components[1]));
+  std::swap(std::get<2>(wrong_order_plan.components[0]),
+            std::get<2>(wrong_order_plan.components[1]));
+  auto wrong_order = publish_variant(std::move(wrong_order_plan));
+  ASSERT_TRUE(wrong_order) << wrong_order.error().ToString();
+  auto reversed = valid->components;
+  std::swap(reversed[0], reversed[1]);
+  EXPECT_FALSE(llmp::runtime::ReadImageAdmission(*wrong_order, reversed));
+
+  auto wrong_id_plan = plan;
+  std::get<1>(wrong_id_plan.components[1]) = std::string(64, '0');
+  auto wrong_id = publish_variant(std::move(wrong_id_plan));
+  ASSERT_TRUE(wrong_id) << wrong_id.error().ToString();
+  EXPECT_FALSE(llmp::runtime::ReadImageAdmission(*wrong_id, valid->components));
+
+  auto null_child = valid->components;
+  null_child[1] = nullptr;
+  EXPECT_FALSE(llmp::runtime::ReadImageAdmission(*valid->composition, null_child));
+
+  auto unsupported = SyntheticImage::Make(temp / "unsupported", {}, "mlx");
+  ASSERT_TRUE(unsupported) << (unsupported ? "" : unsupported.error());
+  EXPECT_FALSE(
+      llmp::runtime::ReadImageAdmission(*unsupported->composition, unsupported->components));
+
+  auto bad_role = SyntheticImage::Make(temp / "bad-role", {}, "gguf", sp::StageRole::kVae);
+  ASSERT_TRUE(bad_role) << (bad_role ? "" : bad_role.error());
+  EXPECT_FALSE(llmp::runtime::ReadImageAdmission(*bad_role->composition, bad_role->components));
+
+  auto bad_fold = SyntheticImage::Make(temp / "bad-fold", {}, "gguf", std::nullopt, {},
+                                       "source bytes", false, true);
+  ASSERT_TRUE(bad_fold) << (bad_fold ? "" : bad_fold.error());
+  EXPECT_FALSE(llmp::runtime::ReadImageAdmission(*bad_fold->composition, bad_fold->components));
+}
+
 // The published v1 composition and its components (a Spark's v1 store;
 // skipped where the store does not hold them) are admitted, and the
 // family they make is the frozen one.
@@ -383,8 +704,69 @@ TEST(ImageFamily, ThePublishedPipelineIsAdmitted) {
   for (std::size_t i = 0; i < ids.size(); ++i) EXPECT_EQ(components[i]->id(), ids[i]);
   auto admitted = llmp::runtime::ReadImageAdmission(*composition, components);
   ASSERT_TRUE(admitted.has_value()) << admitted.error();
+  ASSERT_NE(admitted->approval, nullptr);
   EXPECT_EQ(admitted->family, ts::QwenImage().spec);
   EXPECT_EQ(admitted->mapping, ts::QwenImage().mapping);
+
+  // The historical source closure still matches, but a different valid
+  // stored family is authoritative and therefore loses the old overlay.
+  auto changed_family = admitted->family;
+  auto& text_params = changed_family.stages[0].layers[0].components[0].params;
+  const auto layers = std::ranges::find(text_params, std::string_view("layers"), &sp::Param::name);
+  ASSERT_NE(layers, text_params.end());
+  const auto old_layers = std::get<std::int64_t>(layers->value);
+  layers->value = std::int64_t{old_layers > 1 ? old_layers - 1 : old_layers + 1};
+  sp::Canonicalize(changed_family);
+  ASSERT_NE(changed_family.Digest(), admitted->family.Digest());
+
+  llmp::test::CompositionPlan altered;
+  altered.architecture = composition->architecture();
+  for (const auto& source : composition->sources()) {
+    const auto bytes = composition->Metadata(source.name);
+    ASSERT_TRUE(bytes.has_value()) << source.name;
+    altered.meta.emplace_back(source.name, std::string(*bytes));
+  }
+  altered.spec = sp::ToJson(changed_family);
+  for (const auto& component : composition->components())
+    altered.components.emplace_back(component.role, component.artifact, component.architecture);
+  const auto altered_root = std::filesystem::temp_directory_path() /
+                            std::format("llmp-image-family-overlay-{}", ::getpid());
+  auto altered_files = llmp::test::Render(altered);
+  llmp::test::PublishHooks version_two;
+  version_two.manifest = [](std::string& manifest) {
+    constexpr std::string_view v1 = "\"format_version\":1";
+    const auto position = manifest.find(v1);
+    if (position != std::string::npos)
+      manifest.replace(position, v1.size(), "\"format_version\":2");
+  };
+  const auto altered_path = llmp::test::Publish(altered_root, altered_files, version_two);
+  for (const auto& [name, bytes] : altered.meta) {
+    const auto path = altered_path / "meta" / name;
+    std::error_code metadata_error;
+    std::filesystem::create_directories(path.parent_path(), metadata_error);
+    ASSERT_FALSE(metadata_error) << metadata_error.message();
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(file) << path;
+    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    ASSERT_TRUE(file) << path;
+  }
+  auto altered_composition = llmp::artifact::OpenComposition(altered_path);
+  ASSERT_TRUE(altered_composition) << altered_composition.error().ToString();
+  ASSERT_EQ(altered_composition->format_version(), 2U);
+  ASSERT_EQ(altered_composition->sources().size(), composition->sources().size());
+  for (std::size_t i = 0; i < composition->sources().size(); ++i) {
+    EXPECT_EQ(altered_composition->sources()[i].name, composition->sources()[i].name);
+    EXPECT_EQ(altered_composition->sources()[i].bytes, composition->sources()[i].bytes);
+    EXPECT_EQ(altered_composition->sources()[i].sha256, composition->sources()[i].sha256);
+  }
+  const auto* historical = llmp::runtime::FindImageApproval(
+      altered_composition->architecture(), altered_composition->sources(), components,
+      altered_composition->components());
+  ASSERT_NE(historical, nullptr);
+  auto altered_admission = llmp::runtime::ReadImageAdmission(*altered_composition, components);
+  ASSERT_TRUE(altered_admission) << altered_admission.error();
+  EXPECT_EQ(altered_admission->family, changed_family);
+  EXPECT_EQ(altered_admission->approval, nullptr);
 }
 
 }  // namespace

@@ -286,7 +286,24 @@ std::expected<std::vector<std::uint32_t>, std::string> BindImageComponent(
       return Refused(std::format("{}: no resource of that role", t.name));
     }
     const ImageResource& r = resources[*found];
-    if (r.family != "plain" || r.dtype != t.dtype || r.shape != t.shape) {
+    const bool actual_supported =
+        r.actual_format && r.part == t.part && r.part == format::PartRole::kData &&
+        (r.actual_format->layout == format::Layout::kDense ||
+         r.actual_format->layout == format::Layout::kGgmlBlocks) &&
+        r.actual_format->stacked == 1 && format::Validate(*r.actual_format).has_value();
+    if (r.actual_format) {
+      if (!actual_supported) {
+        return Refused(std::format("{}: source format or shape is not admitted", t.name));
+      }
+      std::vector<std::uint64_t> shape;
+      shape.reserve(r.actual_format->shape.rank);
+      for (std::size_t d = 0; d < r.actual_format->shape.rank; ++d)
+        shape.push_back(r.actual_format->shape.ne[r.actual_format->shape.rank - 1 - d]);
+      if (shape != t.shape) {
+        return Refused(std::format("{}: source format or shape is not admitted", t.name));
+      }
+    } else if (r.family != "plain" || r.dtype != t.dtype || r.shape != t.shape ||
+               r.part != t.part) {
       return Refused(
           std::format("{}: not a plain {} tensor of the profile's shape", t.name, t.dtype));
     }
@@ -325,7 +342,8 @@ std::expected<std::vector<std::uint32_t>, std::string> BindImageComponent(
       }
     }
     std::vector<std::uint64_t> shape;
-    if (r.format) {
+    if (r.format && r.format->shape.rank > 0 && r.format->shape.rank <= r.format->shape.ne.size() &&
+        format::Validate(*r.format)) {
       shape.reserve(r.format->shape.rank);
       for (std::size_t d = 0; d < r.format->shape.rank; ++d) {
         shape.push_back(r.format->shape.ne[r.format->shape.rank - 1 - d]);
@@ -334,7 +352,9 @@ std::expected<std::vector<std::uint32_t>, std::string> BindImageComponent(
     resources.push_back({.roles = r.roles,
                          .family = is_plain ? "plain" : "other",
                          .dtype = dtype,
-                         .shape = std::move(shape)});
+                         .shape = std::move(shape),
+                         .actual_format = r.format,
+                         .part = r.part});
   }
   return BindImageComponent(tensors, want, artifact.model().architecture, resources);
 }

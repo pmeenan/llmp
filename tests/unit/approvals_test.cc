@@ -104,6 +104,14 @@ TEST(Approvals, LookupNeedsTheWholeSourceIdentity) {
 TEST(Approvals, EveryServedArchitectureHasARecipeAndEveryDrafterADraftingOne) {
   for (const llmp::spec::Mapping* m : llmp::spec::Mappings()) {
     SCOPED_TRACE(m->architecture);
+    if (m->pipeline == llmp::spec::PipelineKind::kImage) {
+      EXPECT_NE(m->stage_recipe, nullptr);
+      EXPECT_EQ(m->serving, nullptr);
+      EXPECT_EQ(llmp::spec::ServingRecipeOf(*m), nullptr);
+      EXPECT_EQ(m->draft, nullptr);
+      EXPECT_FALSE(rt::OnComponentEngine(m->architecture));
+      continue;
+    }
     if (m->role == llmp::spec::StageRole::kDrafter) {
       EXPECT_EQ(m->serving, nullptr);
       EXPECT_EQ(llmp::spec::ServingRecipeOf(*m), nullptr);

@@ -16,7 +16,9 @@ namespace llmp::components {
 std::span<const ComponentDef* const> Catalog() {
   // Sorted by (kind, version).
   static const std::array catalog{
+      &defs::ActivationElementwise(),
       &defs::AffineChannel(),
+      &defs::AffineScalar(),
       &defs::AttentionBorrowed(),
       &defs::AttentionDense(),
       &defs::AttentionGdn(),
@@ -25,6 +27,7 @@ std::span<const ComponentDef* const> Catalog() {
       &defs::AttentionSpatial(),
       &defs::ConcatSpatial(),
       &defs::ConditionRows(),
+      &defs::ConvCausalFirstFrame(),
       &defs::Conv2d(),
       &defs::EmbeddingInject(),
       &defs::EmbeddingMtp(),
@@ -35,6 +38,7 @@ std::span<const ComponentDef* const> Catalog() {
       &defs::HcCombine(),
       &defs::HcMix(),
       &defs::HeadLinear(),
+      &defs::ModulateScale(),
       &defs::NormAdaptive(),
       &defs::NormChannel(),
       &defs::NormRms(),

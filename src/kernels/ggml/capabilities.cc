@@ -103,6 +103,11 @@ constexpr std::array<Rule, 4> kSpatialConvRules = {
      {.operand = 1, .encodings = kF32, .layouts = kDense},
      {.operand = 2, .encodings = kF32, .layouts = kDense},
      {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 4> kSpatialConvFallbackRules = {
+    {{.operand = 0, .encodings = kF32Bf16, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kF32Bf16, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
 // fused.rms_norm_mul_rope_sections' (x, w, pos0[, pos1, pos2]): the
 // later sections' positions are checked by its predicate.
 constexpr std::array<Rule, 3> kNormRopeSectionsRules = {
@@ -1836,6 +1841,19 @@ bool SpatialPackedF32(const ex::OperandFormat* operand) {
   }
   return true;
 }
+bool SpatialPackedFloat(const ex::OperandFormat* operand) {
+  if (operand == nullptr || operand->layout != Layout::kDense || !operand->memory ||
+      (operand->encoding != Encoding::kF32 && operand->encoding != Encoding::kBF16))
+    return false;
+  const std::uint64_t size = operand->encoding == Encoding::kF32 ? 4 : 2;
+  std::uint64_t bytes = size;
+  for (std::size_t d = 0; d < 4; ++d) {
+    if (operand->ne[d] == 0 || operand->memory->nb[d] != bytes ||
+        __builtin_mul_overflow(bytes, operand->ne[d], &bytes))
+      return false;
+  }
+  return bytes <= static_cast<std::uint64_t>(INT32_MAX) - 256;
+}
 bool AcceptsSpatialConv(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::Conv2dParams>(q);
   const auto* w = Operand(q, 0);
@@ -1851,6 +1869,53 @@ bool AcceptsSpatialConv(const ex::CapabilityQuery& q) {
          o->ne == ir::ShapeOf({x->ne[0] + 2 * p->padding - w->ne[0] + 1,
                                x->ne[1] + 2 * p->padding - w->ne[1] + 1, w->ne[3], x->ne[3]})
                       .ne;
+}
+bool AcceptsSpatialConvStrided(const ex::CapabilityQuery& q) {
+  // Preserve every source-format/geometry case already owned by the direct,
+  // tiled and pointwise F32 implementations. This entry is a genuine fallback.
+  if (AcceptsSpatialConv(q)) return false;
+  const auto p = ParamsOf<ir::Conv2dParams>(q);
+  const auto* w = Operand(q, 0);
+  const auto* x = Operand(q, 1);
+  const auto* b = Operand(q, 2);
+  const auto* o = Operand(q, ex::kOutputOperand);
+  if (!Built(q) || !p || p->stride == 0 || p->dilation == 0 ||
+      p->stride > static_cast<std::uint64_t>(INT32_MAX) ||
+      p->padding > static_cast<std::uint64_t>(INT32_MAX) ||
+      p->dilation > static_cast<std::uint64_t>(INT32_MAX) || w == nullptr ||
+      w->layout != Layout::kDense || !w->memory ||
+      (w->encoding != Encoding::kF32 && w->encoding != Encoding::kBF16) || !SpatialPackedF32(x) ||
+      !SpatialPackedFloat(b) || !SpatialPackedF32(o) || w->ne[0] == 0 || w->ne[1] == 0 ||
+      w->ne[2] != x->ne[2] || w->ne[3] == 0 || b->ne != ir::ShapeOf({w->ne[3]}).ne)
+    return false;
+  const std::uint64_t elem = w->encoding == Encoding::kBF16 ? 2 : 4;
+  if (w->memory->nb[0] != elem ||
+      std::ranges::any_of(w->memory->nb, [elem](auto n) { return n % elem != 0; }))
+    return false;
+  std::uint64_t pw = 0, ph = 0, kw = 0, kh = 0;
+  if (__builtin_mul_overflow(p->padding, std::uint64_t{2}, &pw) ||
+      __builtin_mul_overflow(p->padding, std::uint64_t{2}, &ph) ||
+      __builtin_add_overflow(x->ne[0], pw, &pw) || __builtin_add_overflow(x->ne[1], ph, &ph) ||
+      __builtin_mul_overflow(w->ne[0] - 1, p->dilation, &kw) ||
+      __builtin_add_overflow(kw, std::uint64_t{1}, &kw) ||
+      __builtin_mul_overflow(w->ne[1] - 1, p->dilation, &kh) ||
+      __builtin_add_overflow(kh, std::uint64_t{1}, &kh) || pw < kw || ph < kh)
+    return false;
+  const std::array<std::uint64_t, 4> expected{(pw - kw) / p->stride + 1, (ph - kh) / p->stride + 1,
+                                              w->ne[3], x->ne[3]};
+  std::uint64_t elements = 1;
+  for (const std::uint64_t extent : expected) {
+    if (__builtin_mul_overflow(elements, extent, &elements) ||
+        elements > static_cast<std::uint64_t>(INT32_MAX) / sizeof(float))
+      return false;
+  }
+  std::uint64_t max_x = 0, max_y = 0;
+  if (__builtin_mul_overflow(expected[0] - 1, p->stride, &max_x) ||
+      __builtin_mul_overflow(expected[1] - 1, p->stride, &max_y) ||
+      __builtin_add_overflow(max_x, kw - 1, &max_x) ||
+      __builtin_add_overflow(max_y, kh - 1, &max_y))
+    return false;
+  return o->ne == expected;
 }
 bool AcceptsSpatialTiled(const ex::CapabilityQuery& q) {
   if (!AcceptsSpatialConv(q)) return false;
@@ -2340,6 +2405,9 @@ const std::array kEntries = {
     Entry{"ggml.conv2d.f32",
           Cap(P(Op::kConv2d), kSpatialConvRules, &AcceptsSpatialConv, false, {}, 0, {}, 0,
               kSpatialConvSteps),
+          kBuilt},
+    Entry{kConv2dStridedName,
+          Cap(P(Op::kConv2d), kSpatialConvFallbackRules, &AcceptsSpatialConvStrided, false, {}, 0),
           kBuilt},
     Entry{"ggml.upsample.nearest", Cap(P(Op::kUpsample), kSpatialUpRules, &AcceptsSpatialUp, false),
           kBuilt},

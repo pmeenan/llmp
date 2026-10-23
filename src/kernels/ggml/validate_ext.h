@@ -157,6 +157,7 @@ std::expected<void, KernelFailure> CheckUnary(const ggml_tensor* node);
 
 // ggml_scale and ggml_scale_bias over packed F32 (scale.cu): x * s + b.
 std::expected<void, KernelFailure> CheckConv2dF32(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckConv2dStrided(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckUpsampleNearest(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckScale(const ggml_tensor* node);
 // ggml_clamp over packed F32 (clamp.cu), in int elements.

@@ -78,6 +78,8 @@ TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
       for (const auto& a : opened) components.push_back(&a);
       auto admitted = rt::ReadImageAdmission(*composition, components);
       ASSERT_TRUE(admitted) << admitted.error();
+      ASSERT_NE(admitted->approval, nullptr);
+      EXPECT_EQ(admitted->approval, &rt::ImageApprovals().front());
       EXPECT_EQ(llmp::base::ToHex(admitted->family.Digest()), admitted->approval->spec);
       ++pipelines;
       continue;

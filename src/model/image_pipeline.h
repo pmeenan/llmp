@@ -22,10 +22,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "format/tensor_format.h"
 
 namespace llmp::artifact {
 class Artifact;
@@ -156,8 +159,9 @@ struct ImageNames {
 // dtype and shape.
 struct ImageTensor {
   std::string name;
-  std::string_view dtype;  // "BF16" or "F32"
+  std::string_view dtype;  // Legacy request-side hint; artifact binding uses its stored format.
   std::vector<std::uint64_t> shape;
+  format::PartRole part = format::PartRole::kData;
 };
 
 // The components that compose an image pipeline.
@@ -235,14 +239,16 @@ std::vector<ImageTensor> VaeDecoderTensors(const ImageVaeProfile& p, const Image
 // A resource as the binder sees it.
 struct ImageResource {
   std::vector<std::string> roles;
-  std::string_view family;  // "plain", "ggml" or "exl3"
+  std::string_view family;  // Legacy caller-side hint when actual_format is absent.
   std::string_view dtype;
   std::vector<std::uint64_t> shape;
+  std::optional<format::TensorFormat> actual_format{};  // Artifact's source encoding and layout.
+  format::PartRole part = format::PartRole::kData;
 };
 
 // The resource index for each tensor, in the list's order; refused, naming
-// the tensor, if one is missing or not plain of its dtype and shape, or if
-// `architecture` is not `want`.
+// the tensor, if one is missing or its stored format, part or shape differs,
+// or if `architecture` is not `want`.
 std::expected<std::vector<std::uint32_t>, std::string> BindImageComponent(
     std::span<const ImageTensor> tensors, std::string_view want, std::string_view architecture,
     std::span<const ImageResource> resources);
