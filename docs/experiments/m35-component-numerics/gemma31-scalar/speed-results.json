@@ -1,0 +1,659 @@
+{
+  "schema": 1,
+  "scope": "Registered Gemma31 C1 incumbent versus normal repaired VecQ adoption speed only",
+  "registration_commit": "ee88938d83c74b75f6463efa17b4bcc2ccc8e7df",
+  "pass": true,
+  "runtime_sha256": "5965e83cf2217ffcfe79fff98e7850699a0afd74b37776f853b6d6aa074d0767",
+  "source_manifest_sha256": "d3b328506b77b6f00ada0f7c8557b78a577e4cb732672eae077650422fc1ba3e",
+  "artifact": "/home/pmeenan/.local/share/llmp/u2-v1-artifacts/090809981d2909085798273e665a0db58351a8e6029b13bc04ced857c9130943",
+  "host": "spark-c4e2",
+  "driver": "580.178.04",
+  "registration_receipt": {
+    "path": "/tmp/llmp-u4-gemma31-speed/registration.json",
+    "sha256": "fbe2450fb70905880c28be402f8441c216cc2cb8d91c00e88e517bcc767e2120"
+  },
+  "protocol": {
+    "path": "/tmp/llmp-u4-gemma31-speed/reg/docs/experiments/m35-component-numerics/gemma31-scalar/SPEED.md",
+    "sha256": "ca74132ca73d5ac1edfb213f7afc7f7ea661b223a21ccbc16d0be3832e7b291e"
+  },
+  "pins": {
+    "path": "/tmp/llmp-u4-gemma31-speed/reg/docs/experiments/m35-component-numerics/gemma31-scalar/speed-pins.json",
+    "sha256": "9d422ec6f5ce0dc3ff6d80df0b847d7a3f2075089bb585f11d1d71040e180a35"
+  },
+  "config": {
+    "path": "/tmp/llmp-u4-gemma31-speed/reg/docs/experiments/m35-component-numerics/gemma31-scalar/speed-node.toml",
+    "sha256": "f43895787b8b0587da5a4f93399f45f3dd38b6b11184c443f2fbf3e55f6b72d7"
+  },
+  "executor": {
+    "path": "/tmp/llmp-u4-gemma31-speed/run.py",
+    "sha256": "63878860de21b374b4883f7db1b6507adb64d7a0493c2c96a92253dd47f0bc79"
+  },
+  "quality_pair": {
+    "path": "/tmp/llmp-u4-gemma31-quality/pair.json",
+    "sha256": "5f4ce6b3a5f579a7dee3d29b25f18f52aea76a2e657cc375c97077a203150645"
+  },
+  "helper": {
+    "path": "/tmp/llmp-u4-gemma31-quality/reg/tools/speed_gate.py",
+    "sha256": "e65de36ad6ae8c12d0ce72b39c1e6f098a929068bbf0a99e5556e2656e6a7823"
+  },
+  "workload": {
+    "family": "gemma31",
+    "cells": [
+      1
+    ],
+    "prompt_chars": 26000,
+    "max_tokens": 128,
+    "temperature": 0,
+    "warmup_passes": 1,
+    "measured_passes": 1,
+    "prompts": [
+      0,
+      1
+    ],
+    "fresh_service_per_arm": true,
+    "no_debug": true
+  },
+  "bounds": {
+    "slower_candidate_ratio": 1.1,
+    "first_pair_stop": true,
+    "aggregate": "median of three paired ratios, each metric",
+    "metrics": [
+      "C1.prefill_s",
+      "C1.decode_tok_s",
+      "C1.wall_tok_s"
+    ],
+    "memory": "informational actual occupancy; workload must fit"
+  },
+  "arms": [
+    {
+      "pair": 1,
+      "arm": "a",
+      "record": {
+        "path": "/tmp/llmp-u4-gemma31-speed/p1-a/runs/gemma31-b01-p0-old.json",
+        "sha256": "7cdbbb18a7b3ea752f838818c80ede53554bff7c8220cff4de10d94add9302a3"
+      },
+      "metrics": {
+        "C1.prefill_s": 20.375078999903053,
+        "C1.decode_tok_s": 9.887124845805822,
+        "C1.wall_tok_s": 3.852903721340826,
+        "peak_gib": 23.105506896972656
+      },
+      "request_identity": [
+        {
+          "pass": 0,
+          "warmup": true,
+          "width": 1,
+          "prompts": [
+            0
+          ],
+          "usage": {
+            "prompt_tokens": 6966,
+            "completion_tokens": 128,
+            "total_tokens": 7094,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          }
+        },
+        {
+          "pass": 1,
+          "warmup": false,
+          "width": 1,
+          "prompts": [
+            1
+          ],
+          "usage": {
+            "prompt_tokens": 7402,
+            "completion_tokens": 128,
+            "total_tokens": 7530,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          }
+        }
+      ],
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "elapsed_s": 73.94637097697705,
+      "ready_s": 4.610944652929902,
+      "files": {
+        "audit.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-a/audit.json",
+          "sha256": "12909fa658c98cc3949339f63c4f0a1450be4c33e3bea7d13a0762d33ea78386"
+        },
+        "launch.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-a/launch.json",
+          "sha256": "b8ad2c7e19730a638dbab399f5e3ff57aed288e1784ec72e7248733580a20cb2"
+        },
+        "pre.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-a/pre.json",
+          "sha256": "2babacb5e501430cc9ad2839ca2fa331a37268eecc4bde49f90b5a1bc37eea4e"
+        },
+        "post.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-a/post.json",
+          "sha256": "52160adfadec4ecda88a173272fb8e86711031da939bcca832f10170dee963f5"
+        },
+        "collector-returncode.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-a/collector-returncode.json",
+          "sha256": "1e3f6691f455051e8adb15d961e4bf3c7a17e83dd88b2afdd13315cc288250bb"
+        },
+        "supervisor/final.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-a/supervisor/final.json",
+          "sha256": "6756894c096d680ea5d51b207ec4321167d0d9aa13477eb9f875bfd2ad43acfb"
+        },
+        "supervisor/log": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-a/supervisor/log",
+          "sha256": "2474fbba187215b5468826831b68c2d2a7370f7b0b9295bd1eaaee9209e71a41"
+        }
+      },
+      "raw_log_sha256": "89581e0e746a40d1ef4b1208c463565c698d902448b4da9cb2583af85828374e",
+      "rendered_config_sha256": "1de6a9ec0a65469a357b9fddfbc723bf0e65ba49be40419e1b4c6f42c327d3bc"
+    },
+    {
+      "pair": 1,
+      "arm": "d",
+      "record": {
+        "path": "/tmp/llmp-u4-gemma31-speed/p1-d/runs/gemma31-b01-p1-new.json",
+        "sha256": "42d963928933a76cca4fd78ac42e98cbdfcd432329849b9162c412b4f0bc1ed2"
+      },
+      "metrics": {
+        "C1.prefill_s": 20.75560999987647,
+        "C1.decode_tok_s": 10.09236821445302,
+        "C1.wall_tok_s": 3.8391196514643613,
+        "peak_gib": 22.78765106201172
+      },
+      "request_identity": [
+        {
+          "pass": 0,
+          "warmup": true,
+          "width": 1,
+          "prompts": [
+            0
+          ],
+          "usage": {
+            "prompt_tokens": 6966,
+            "completion_tokens": 128,
+            "total_tokens": 7094,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          }
+        },
+        {
+          "pass": 1,
+          "warmup": false,
+          "width": 1,
+          "prompts": [
+            1
+          ],
+          "usage": {
+            "prompt_tokens": 7402,
+            "completion_tokens": 128,
+            "total_tokens": 7530,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          }
+        }
+      ],
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "elapsed_s": 74.13760419096798,
+      "ready_s": 4.409335514996201,
+      "files": {
+        "audit.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-d/audit.json",
+          "sha256": "e5f8b4fdc48db006b48cec6016aeb3264437ffb3a97b6904fc35f8f231f1ef62"
+        },
+        "launch.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-d/launch.json",
+          "sha256": "a8e1ad963bc35b81fa3609a26afe0713cdb1f3ce94f3acfde8bb4b1fc48d0a85"
+        },
+        "pre.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-d/pre.json",
+          "sha256": "c186bc9d7972cb7545f36070ee77ec00c28ee1440be56e9d1dda39794b3fdf37"
+        },
+        "post.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-d/post.json",
+          "sha256": "4590874212e63fda517b4cb5b43beb65a06abcc7dac3194af5a1c247ce39b09b"
+        },
+        "collector-returncode.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-d/collector-returncode.json",
+          "sha256": "1e3f6691f455051e8adb15d961e4bf3c7a17e83dd88b2afdd13315cc288250bb"
+        },
+        "supervisor/final.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-d/supervisor/final.json",
+          "sha256": "2be4d273db12cfb0e2ee123ed43ea806055b9d70a04b2efddfc927390a8496eb"
+        },
+        "supervisor/log": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p1-d/supervisor/log",
+          "sha256": "969e889e5689407bd2e7fac73d26c0d56a6d4bb2eb66a3152d804b4a774892a0"
+        }
+      },
+      "raw_log_sha256": "033a9d80189c32bf7118cf3ecc3d94c39ca8dca38bfba4b78deb9bc0f2d2ec9b",
+      "rendered_config_sha256": "ee8d85e6fe8f1cedabf427b2ec247d935ccc4e304b8b96011e37dab3fb4e8088"
+    },
+    {
+      "pair": 2,
+      "arm": "d",
+      "record": {
+        "path": "/tmp/llmp-u4-gemma31-speed/p2-d/runs/gemma31-b02-p0-new.json",
+        "sha256": "42fc1a7929f745bc24fba4f4ac270293c258d4fdb1b507e3d6c0ae5bc30dbd3a"
+      },
+      "metrics": {
+        "C1.prefill_s": 20.742279999889433,
+        "C1.decode_tok_s": 10.084995868477616,
+        "C1.wall_tok_s": 3.8395926191963783,
+        "peak_gib": 22.389312744140625
+      },
+      "request_identity": [
+        {
+          "pass": 0,
+          "warmup": true,
+          "width": 1,
+          "prompts": [
+            0
+          ],
+          "usage": {
+            "prompt_tokens": 6966,
+            "completion_tokens": 128,
+            "total_tokens": 7094,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          }
+        },
+        {
+          "pass": 1,
+          "warmup": false,
+          "width": 1,
+          "prompts": [
+            1
+          ],
+          "usage": {
+            "prompt_tokens": 7402,
+            "completion_tokens": 128,
+            "total_tokens": 7530,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          }
+        }
+      ],
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "elapsed_s": 73.99578247824684,
+      "ready_s": 4.409681236837059,
+      "files": {
+        "audit.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-d/audit.json",
+          "sha256": "1a5bab2e5506a9485b4847826831631021d1596737f70b3966139f037e6de657"
+        },
+        "launch.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-d/launch.json",
+          "sha256": "cc944b8af13df8813f885621f5c92b1ea61f4b878f85802e24efc256991691c1"
+        },
+        "pre.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-d/pre.json",
+          "sha256": "cbc2f4263e48552555d61d9610389c51d237d73194a4b9e473243038c6639f3a"
+        },
+        "post.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-d/post.json",
+          "sha256": "f76e4c0b62a54b686dfc284f1b871fa36c83f5c2099f6aef5942b67968f12313"
+        },
+        "collector-returncode.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-d/collector-returncode.json",
+          "sha256": "1e3f6691f455051e8adb15d961e4bf3c7a17e83dd88b2afdd13315cc288250bb"
+        },
+        "supervisor/final.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-d/supervisor/final.json",
+          "sha256": "ce3d2f0aa5a5227593bc68e1ebfc3f5efbd6342330ec1a2e99a08cb931742cda"
+        },
+        "supervisor/log": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-d/supervisor/log",
+          "sha256": "2ef33693873175b7ff891140e212ec8d862c814df7e4cd24f7e77b404870d6d9"
+        }
+      },
+      "raw_log_sha256": "516f0e1f31998861fba198cc486cd635bb11845fe896c4d7b3efc0d6475b52e9",
+      "rendered_config_sha256": "a66107cce0e4ce7ce0488bbfecd567fbe6c2f684cd2827ce82e012bff9f93bfd"
+    },
+    {
+      "pair": 2,
+      "arm": "a",
+      "record": {
+        "path": "/tmp/llmp-u4-gemma31-speed/p2-a/runs/gemma31-b02-p1-old.json",
+        "sha256": "77c4f7cdae7b3920831b171047c9f827478246d843d9d6685f4f22d3dc0d0042"
+      },
+      "metrics": {
+        "C1.prefill_s": 20.378475999925286,
+        "C1.decode_tok_s": 9.918208362354102,
+        "C1.wall_tok_s": 3.85719867030206,
+        "peak_gib": 22.485347747802734
+      },
+      "request_identity": [
+        {
+          "pass": 0,
+          "warmup": true,
+          "width": 1,
+          "prompts": [
+            0
+          ],
+          "usage": {
+            "prompt_tokens": 6966,
+            "completion_tokens": 128,
+            "total_tokens": 7094,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          }
+        },
+        {
+          "pass": 1,
+          "warmup": false,
+          "width": 1,
+          "prompts": [
+            1
+          ],
+          "usage": {
+            "prompt_tokens": 7402,
+            "completion_tokens": 128,
+            "total_tokens": 7530,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          }
+        }
+      ],
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "elapsed_s": 73.64491508901119,
+      "ready_s": 4.415522167924792,
+      "files": {
+        "audit.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-a/audit.json",
+          "sha256": "28f77f974043a07a339acb56cc69a87559fecdb82b35928805574cfff7766260"
+        },
+        "launch.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-a/launch.json",
+          "sha256": "924c5fec32701de46a04010d2ba9847f2870e90073589f59782c370d175d600f"
+        },
+        "pre.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-a/pre.json",
+          "sha256": "f9da05306984a51aefa8ffb3efddeab483aa151bcfb87e3ad00b352b1488d938"
+        },
+        "post.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-a/post.json",
+          "sha256": "ea2502fb2cbeddf19fb5638fbcbc1d9b5be4aeac95b5ab86f11edc9dfce80dd4"
+        },
+        "collector-returncode.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-a/collector-returncode.json",
+          "sha256": "1e3f6691f455051e8adb15d961e4bf3c7a17e83dd88b2afdd13315cc288250bb"
+        },
+        "supervisor/final.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-a/supervisor/final.json",
+          "sha256": "94ee443f370cae4f2933464610ae249b240237798f61488b962f5ea3d75a30de"
+        },
+        "supervisor/log": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p2-a/supervisor/log",
+          "sha256": "0513b907b4f35c4e50006afb97266610553f10003f2c973dd6c3282ec8d3e93d"
+        }
+      },
+      "raw_log_sha256": "f5937c3e899a5fb45873c8ea07030d551b1db5920489da2d15a97d4c0175cab6",
+      "rendered_config_sha256": "6325d71ecb9ef28d2215fcf1cd3ac03aa74fa4fac38f77c62030f6af60b4a214"
+    },
+    {
+      "pair": 3,
+      "arm": "a",
+      "record": {
+        "path": "/tmp/llmp-u4-gemma31-speed/p3-a/runs/gemma31-b03-p0-old.json",
+        "sha256": "83c3c51d91235f0fdd624645d0ac348d3a798bb9937215edc67a7954cdcddb44"
+      },
+      "metrics": {
+        "C1.prefill_s": 20.564191000070423,
+        "C1.decode_tok_s": 9.939415739328908,
+        "C1.wall_tok_s": 3.8388730220371663,
+        "peak_gib": 22.598342895507812
+      },
+      "request_identity": [
+        {
+          "pass": 0,
+          "warmup": true,
+          "width": 1,
+          "prompts": [
+            0
+          ],
+          "usage": {
+            "prompt_tokens": 6966,
+            "completion_tokens": 128,
+            "total_tokens": 7094,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          }
+        },
+        {
+          "pass": 1,
+          "warmup": false,
+          "width": 1,
+          "prompts": [
+            1
+          ],
+          "usage": {
+            "prompt_tokens": 7402,
+            "completion_tokens": 128,
+            "total_tokens": 7530,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          }
+        }
+      ],
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "elapsed_s": 73.7655830970034,
+      "ready_s": 4.214854225981981,
+      "files": {
+        "audit.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-a/audit.json",
+          "sha256": "fb6a7a6994f0962eada6fd00a7268582670b63711c37519c0b995767d9b6cf80"
+        },
+        "launch.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-a/launch.json",
+          "sha256": "72815563fefe626780b8b13dfa64f9dc41f59f1c88871f3f3f539884b5550cbb"
+        },
+        "pre.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-a/pre.json",
+          "sha256": "021b3d2fb37c0fe8ac7f86c16b397c1daa89eaa450746a8f1f68a9bf14b2b631"
+        },
+        "post.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-a/post.json",
+          "sha256": "8f8d8783aad2b58c56be6449b021fe3cd501d75d9533d7a58aa237cb75ab35db"
+        },
+        "collector-returncode.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-a/collector-returncode.json",
+          "sha256": "1e3f6691f455051e8adb15d961e4bf3c7a17e83dd88b2afdd13315cc288250bb"
+        },
+        "supervisor/final.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-a/supervisor/final.json",
+          "sha256": "d98928cb08e31843633463f701bba4c53a6e33ce196d9d020154b4ac7be11260"
+        },
+        "supervisor/log": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-a/supervisor/log",
+          "sha256": "d04763d80d0be72cd31b4429c07d7896936a60139d76258a6cdc78ae5426e19c"
+        }
+      },
+      "raw_log_sha256": "fef7ff9a1201bc3bae7a3c61ceea4df02c770094c01c60e83c311359fe3342c7",
+      "rendered_config_sha256": "03144d4c8041a7796dbbea9bc65f0bc9b590f1176fbb87965740d66ffa0255bc"
+    },
+    {
+      "pair": 3,
+      "arm": "d",
+      "record": {
+        "path": "/tmp/llmp-u4-gemma31-speed/p3-d/runs/gemma31-b03-p1-new.json",
+        "sha256": "034239ab8545ab9bc89be6c0fb6cb98e6e578d0a13bd477809c5d2929e7f9dec"
+      },
+      "metrics": {
+        "C1.prefill_s": 20.74784199986607,
+        "C1.decode_tok_s": 10.090904749693927,
+        "C1.wall_tok_s": 3.839711253732189,
+        "peak_gib": 22.686294555664062
+      },
+      "request_identity": [
+        {
+          "pass": 0,
+          "warmup": true,
+          "width": 1,
+          "prompts": [
+            0
+          ],
+          "usage": {
+            "prompt_tokens": 6966,
+            "completion_tokens": 128,
+            "total_tokens": 7094,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          }
+        },
+        {
+          "pass": 1,
+          "warmup": false,
+          "width": 1,
+          "prompts": [
+            1
+          ],
+          "usage": {
+            "prompt_tokens": 7402,
+            "completion_tokens": 128,
+            "total_tokens": 7530,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          }
+        }
+      ],
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "elapsed_s": 73.99242026312277,
+      "ready_s": 4.416658027097583,
+      "files": {
+        "audit.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-d/audit.json",
+          "sha256": "4639c804f7290168546dd23c904bcc12ff79dc25ff59cd491937fd2e993a0bc7"
+        },
+        "launch.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-d/launch.json",
+          "sha256": "dc160630de1d50448cda71ccddb6698129f23dca8b26273786674101f9c1b3a0"
+        },
+        "pre.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-d/pre.json",
+          "sha256": "b429a1d0aeb6568ed540fe2b99ace8c478da1c24b98f1f6ec3aa15caf8b57562"
+        },
+        "post.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-d/post.json",
+          "sha256": "18a0aa734cff248628d1266759dd38ceb5240e2391c52b8c571c6414176f9c93"
+        },
+        "collector-returncode.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-d/collector-returncode.json",
+          "sha256": "1e3f6691f455051e8adb15d961e4bf3c7a17e83dd88b2afdd13315cc288250bb"
+        },
+        "supervisor/final.json": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-d/supervisor/final.json",
+          "sha256": "968b04bc13cb825beeb8a707b1a8e2f1be81f47f5b57378432225a8750949ab5"
+        },
+        "supervisor/log": {
+          "path": "/tmp/llmp-u4-gemma31-speed/p3-d/supervisor/log",
+          "sha256": "d94739c85b3ee2497ec06ef488f9920eb3c0e71de04d291164642cbfd94a6d95"
+        }
+      },
+      "raw_log_sha256": "a63a31031af59bb41ecc3d841489c8324bafa0eabb3dbf8e59d7637a27683d7c",
+      "rendered_config_sha256": "180c7bd92b8c7727a3d7b90c85efd515bf865b772609c4319ca5914ac743ead5"
+    }
+  ],
+  "pairs": [
+    {
+      "pair": 1,
+      "valid": true,
+      "slower_candidate_ratios": {
+        "C1.prefill_s": 1.0186762956833308,
+        "C1.decode_tok_s": 0.9796635076836303,
+        "C1.wall_tok_s": 1.003590424661864
+      },
+      "within_1_10": true,
+      "arm_audit_sha256": {
+        "a": "12909fa658c98cc3949339f63c4f0a1450be4c33e3bea7d13a0762d33ea78386",
+        "d": "e5f8b4fdc48db006b48cec6016aeb3264437ffb3a97b6904fc35f8f231f1ef62"
+      }
+    },
+    {
+      "pair": 2,
+      "valid": true,
+      "slower_candidate_ratios": {
+        "C1.prefill_s": 1.0178523654058076,
+        "C1.decode_tok_s": 0.9834618171094311,
+        "C1.wall_tok_s": 1.0045853956009965
+      },
+      "within_1_10": true,
+      "arm_audit_sha256": {
+        "a": "28f77f974043a07a339acb56cc69a87559fecdb82b35928805574cfff7766260",
+        "d": "1a5bab2e5506a9485b4847826831631021d1596737f70b3966139f037e6de657"
+      }
+    },
+    {
+      "pair": 3,
+      "valid": true,
+      "slower_candidate_ratios": {
+        "C1.prefill_s": 1.0089306211849043,
+        "C1.decode_tok_s": 0.984987569090907,
+        "C1.wall_tok_s": 0.9997816940807183
+      },
+      "within_1_10": true,
+      "arm_audit_sha256": {
+        "a": "fb6a7a6994f0962eada6fd00a7268582670b63711c37519c0b995767d9b6cf80",
+        "d": "4639c804f7290168546dd23c904bcc12ff79dc25ff59cd491937fd2e993a0bc7"
+      }
+    }
+  ],
+  "median_slower_candidate_ratios": {
+    "C1.prefill_s": 1.0178523654058076,
+    "C1.decode_tok_s": 0.9834618171094311,
+    "C1.wall_tok_s": 1.003590424661864
+  },
+  "aggregate_receipt": {
+    "path": "/tmp/llmp-u4-gemma31-speed/result.json",
+    "sha256": "e69fadb5be4912603b29a157d990c75c9bb77e54976491ebb0073df96e9b79c2"
+  },
+  "counts": {
+    "arms": 6,
+    "warmup_requests": 6,
+    "measured_requests": 6,
+    "total_completed_requests": 12,
+    "tokens_per_request": 128,
+    "total_generated_tokens": 1536,
+    "skipped_requests": 0
+  },
+  "metric_interpretation": {
+    "C1.prefill_s": "Client cohort-release to first-token interval (TTFT), not isolated prefill.",
+    "C1.decode_tok_s": "Existing helper rate over decode window.",
+    "C1.wall_tok_s": "Existing helper whole-request throughput.",
+    "slower_candidate_ratios": "D/A for TTFT, A/D for rates; median independently per metric."
+  },
+  "limits": [
+    "Same runtime with policy A versus D: competitiveness against quality-matched incumbent, not an isolated old/new schedule comparison.",
+    "No Gemma31 assistant, ordinary C4, frozen-state parity, general quality or milestone-closeout claim.",
+    "Memory occupancy is informational; all complete workloads fit.",
+    "No sample retries, extra priming, debug plans or new source/build changes."
+  ]
+}

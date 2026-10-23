@@ -1,0 +1,480 @@
+{
+  "schema": 1,
+  "status": "PASS: registered single scalar numerical transfer only",
+  "registration_commit": "a777309880253b7bc4997956b461276d6e0b1658",
+  "protocol": {
+    "path": "/tmp/llmp-u4-gemma31-quality/reg/docs/experiments/m35-component-numerics/gemma31-scalar/PROTOCOL.md",
+    "sha256": "59266842c694da606e006c2fbcccffd7e7e677bbbd50e5f3451389835cfdf325"
+  },
+  "pins": {
+    "path": "/tmp/llmp-u4-gemma31-quality/reg/docs/experiments/m35-component-numerics/gemma31-scalar/pins.json",
+    "sha256": "f2bfe57dfd0cad3ffb59408c5da70b80f0f9afca7787418b22e09ba160a0e61c"
+  },
+  "pair": {
+    "receipt": {
+      "path": "/tmp/llmp-u4-gemma31-quality/pair.json",
+      "sha256": "5f4ce6b3a5f579a7dee3d29b25f18f52aea76a2e657cc375c97077a203150645"
+    },
+    "result": {
+      "targets": 1070,
+      "candidate": {
+        "mean_nll": 9.574996392807655,
+        "perplexity": 14400.185865506815
+      },
+      "reference": {
+        "mean_nll": 9.574996392807655,
+        "perplexity": 14400.185865506815
+      },
+      "nll_delta": 0.0,
+      "nll_delta_se": 0.0,
+      "ppl_delta_pct": 0.0,
+      "mean_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "max_abs_diff_at": {
+        "document": 0,
+        "position": 1,
+        "target": 138
+      },
+      "candidate_lower": 0,
+      "candidate_higher": 0,
+      "identical": 1070,
+      "documents": {
+        "0": {
+          "targets": 1070,
+          "candidate_nll": 9.574996392807655,
+          "reference_nll": 9.574996392807655,
+          "ppl_delta_pct": 0.0
+        }
+      },
+      "agreement": {
+        "tolerance": 0.1,
+        "fraction": 1.0
+      }
+    },
+    "bounds": [
+      {
+        "bound": "expected_targets",
+        "limit": 1070,
+        "observed": 1070,
+        "ok": true
+      },
+      {
+        "bound": "max_abs_ppl_delta_pct",
+        "limit": 0.5,
+        "observed": 0.0,
+        "ok": true
+      },
+      {
+        "bound": "max_mean_abs_diff",
+        "limit": 0.05,
+        "observed": 0.0,
+        "ok": true
+      },
+      {
+        "bound": "max_abs_diff",
+        "limit": 1.0,
+        "observed": 0.0,
+        "ok": true
+      },
+      {
+        "bound": "min_agreement",
+        "limit": 0.95,
+        "observed": 1.0,
+        "ok": true
+      }
+    ],
+    "pass": true
+  },
+  "host": {
+    "ssh": "spark",
+    "hostname": "spark-c4e2",
+    "driver": "580.178.04"
+  },
+  "runtime": {
+    "compiled": {
+      "llmp-receipt.json": {
+        "bytes": 7398,
+        "sha256": "5390ed59a7019a6e3b14f355b60b6c2fe3bb884adf4153f6f0665f2ca7d89578"
+      },
+      "src/kernels/ggml/CMakeFiles/llmp_ggml_kernels.dir/module_digest.cc.o": {
+        "bytes": 3720,
+        "sha256": "8a77a812183ef7d7e83c447378fd6f4304330b25813a50cdddb7c5afc7a97892"
+      },
+      "src/kernels/ggml/compiler_identity_receipt.json": {
+        "bytes": 103763,
+        "sha256": "d1e7eb4b5942aa64625ae58fd1fdd2daf2930d8500534727e412e7606cfaa1c6"
+      },
+      "src/kernels/ggml/module_digest.cc": {
+        "bytes": 238,
+        "sha256": "c3f0512665d0d3f88412142c03d68d365c138ded6d5ab3fc65110d836fe6a57d"
+      },
+      "src/runtime/llmp-runtime": {
+        "bytes": 311784312,
+        "sha256": "5965e83cf2217ffcfe79fff98e7850699a0afd74b37776f853b6d6aa074d0767"
+      }
+    },
+    "dependencies": {
+      "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/lib/llmp/libcublas.so.13": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b",
+      "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/lib/llmp/libcublasLt.so.13": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30",
+      "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": "390027e5f45f236bd1838bc54bf464c5ff01d260ab9f8b415ea8276641bce505",
+      "/usr/lib/aarch64-linux-gnu/libc.so.6": "0f1905dc27dbc6715875c70527bc8da846a10084c9c483e9d8ff76dce8d69d0e",
+      "/usr/lib/aarch64-linux-gnu/libcuda.so.580.178.04": "b11359b073ae9e49df81dc4f5c156378bd97fb9f6197ef64edc46e22c670bed4",
+      "/usr/lib/aarch64-linux-gnu/libdl.so.2": "1c16b2692a155191c97d7fdc5ce937d37c242435f05745046a794a9832b16af4",
+      "/usr/lib/aarch64-linux-gnu/libgcc_s.so.1": "f2d3ad2bf0b61f6bc944cc37d7b6ab7f88d2582b41ff989ca164803f56cc5f20",
+      "/usr/lib/aarch64-linux-gnu/libm.so.6": "5e0391562de36de323fb9cb0f2c1b6bd6d034c840b1dac018499f5fe4ded1b4a",
+      "/usr/lib/aarch64-linux-gnu/libpthread.so.0": "6f1ab9e7d7de142dc5e2feaf6d19faceff0a0f40d5e225c922899f5362b8c353",
+      "/usr/lib/aarch64-linux-gnu/librt.so.1": "93d0d5ab643b50ac1a61c2c7baf670e8aa94973fa5a2584d13db05295d5b5a0e"
+    },
+    "path": "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/src/runtime/llmp-runtime",
+    "retained_dependency_bytes": {
+      "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/dependencies/system/ld-linux-aarch64.so.1": "390027e5f45f236bd1838bc54bf464c5ff01d260ab9f8b415ea8276641bce505",
+      "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/dependencies/system/libc.so.6": "0f1905dc27dbc6715875c70527bc8da846a10084c9c483e9d8ff76dce8d69d0e",
+      "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/dependencies/system/libcuda.so.580.178.04": "b11359b073ae9e49df81dc4f5c156378bd97fb9f6197ef64edc46e22c670bed4",
+      "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/dependencies/system/libdl.so.2": "1c16b2692a155191c97d7fdc5ce937d37c242435f05745046a794a9832b16af4",
+      "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/dependencies/system/libgcc_s.so.1": "f2d3ad2bf0b61f6bc944cc37d7b6ab7f88d2582b41ff989ca164803f56cc5f20",
+      "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/dependencies/system/libm.so.6": "5e0391562de36de323fb9cb0f2c1b6bd6d034c840b1dac018499f5fe4ded1b4a",
+      "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/dependencies/system/libpthread.so.0": "6f1ab9e7d7de142dc5e2feaf6d19faceff0a0f40d5e225c922899f5362b8c353",
+      "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/dependencies/system/librt.so.1": "93d0d5ab643b50ac1a61c2c7baf670e8aa94973fa5a2584d13db05295d5b5a0e",
+      "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/lib/llmp/libcublas.so.13": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b",
+      "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/lib/llmp/libcublasLt.so.13": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+    },
+    "retention_receipt": "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/receipt.json",
+    "retention_receipt_sha256": "6763d16cb8ee0349bc73d983a09d049bfe8454d8a0b75d329264fb6f14d7fece",
+    "sha256": "5965e83cf2217ffcfe79fff98e7850699a0afd74b37776f853b6d6aa074d0767",
+    "source_files": 2903,
+    "source_manifest": "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/source.json",
+    "source_manifest_sha256": "d3b328506b77b6f00ada0f7c8557b78a577e4cb732672eae077650422fc1ba3e",
+    "source_root": "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-scalar-r1/source"
+  },
+  "source": {
+    "fixture_sha256": "137fffd3d843e452ea47c41823dd8ff54dbd73af312fbecf2344e0c0d75933cb",
+    "production_sha256": "646370fb3a04a35623be208ecf468c3b02d598ba3f3a703b4765a6ac687dfc0a",
+    "root_head": "84ab300c6aabddb780460c7dd3e020c6d9c00be4",
+    "two_file_patch_sha256": "dd7bd9b26ae1205e2959488d475472496c43356b8d268f430cccc0d6506035b2"
+  },
+  "input": {
+    "corpus_bytes": 817275,
+    "corpus_path": "/home/pmeenan/.local/share/llmp/m36-baselines/inputs/corpus-1facc957.md",
+    "corpus_sha256": "55381941fdb19f99a88c5170f25d7cbc3e091d7d839a8776ac491a593c978ceb",
+    "ids_i32le_sha256": "e3c3bcd233290b3ec0219b64ada504eb90363d995af9a59b5acd89541cce40af",
+    "passage_chars": 4000,
+    "passage_index": 100003,
+    "passage_sha256": "d94ee6ec0c784a57a6f363883b91d089525b1bffa8e141a8968035734986d03b",
+    "prompt_tokens": 1071,
+    "teacher_targets": 1070
+  },
+  "artifact": {
+    "root": "/home/pmeenan/.local/share/llmp/u2-v1-artifacts/090809981d2909085798273e665a0db58351a8e6029b13bc04ced857c9130943",
+    "manifest_sha256": "b29cf16db21ff94b72340d77347c531c1b7a4e5a26a3e4938aebf7439fc96cdd"
+  },
+  "config": {
+    "path": "docs/experiments/m35-component-numerics/gemma31-scalar/node.toml",
+    "sha256": "a057445d67cda152e417c9b8f582a1dc28d43d846244065157868a7410f0ca65"
+  },
+  "arms": {
+    "a": {
+      "policy": {
+        "label": "old",
+        "output": "/tmp/llmp-u4-gemma31-quality/arm-a",
+        "quality_file": "quality/gemma31-quality-old.json",
+        "runtime_env": {
+          "LLMP_DIAGNOSTIC_NODE_CAP_BYTES": "120259084288",
+          "LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES": "auto",
+          "LLMP_DIAGNOSTIC_TARGET_POLICY": "max_decode_rows 16\ndisable grouped_vecq\ndisable owner_padded_reads\ndisable vecq_glu\ndisable vecq_inputs\n"
+        }
+      },
+      "collector_returncode": 0,
+      "collector_duration_s": 145.22984218597412,
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "score_completed_uses": 1071,
+      "teacher_targets": 1070,
+      "original_job": {
+        "name": "m35-u4-gemma31-quality-a-r1",
+        "class": "exclusive",
+        "timeout_s": 600,
+        "grace_s": 30,
+        "final": {
+          "state": "failed",
+          "reason": "--stop-on-fail after step 1; steps not done: 1",
+          "rc": 1,
+          "end": 1792720928.936,
+          "supervisor_pid": 1483774
+        },
+        "final_receipt": {
+          "path": "/tmp/llmp-u4-gemma31-quality/supervisor-a/final.json",
+          "sha256": "6de31e27bfc41688e6cb26e49c1a0a05aadeecc7b6dae6ec0ac2510263e5d64f"
+        },
+        "log": {
+          "path": "/tmp/llmp-u4-gemma31-quality/supervisor-a/log",
+          "sha256": "c7ff9ea0b5736fdfc9187d4f0c39e13b8ed62ab82085fb33a39354724743ef3b"
+        }
+      },
+      "files": {
+        "launch": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-a/launch.json",
+          "sha256": "8d09cb791d6beba9324407569996b9d0276390c5307961f1b585fd1b9d1e35de"
+        },
+        "preflight": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-a/preflight.json",
+          "sha256": "687a897e8c0f78dbf224947a3a07e2f2028f3aa137cfd16100fccafd6123ea08"
+        },
+        "postflight": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-a/postflight.json",
+          "sha256": "522df61cc87b1c8c0cc2fabb0052b9459f0a616e8ebf5d5f30a283f0f88b1df9"
+        },
+        "quality": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-a/quality/gemma31-quality-old.json",
+          "sha256": "3c9216ae083860b7d5ed5fe73f6acb6d322cf51aa987bea125a5e25ecff35b60"
+        },
+        "score": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-a/quality/gemma31-quality-old-score.json",
+          "sha256": "1579cb9a693e96f3720194fccf0454465539afdfe1f544548a85444173acfd8a"
+        },
+        "plans": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-a/plans.json",
+          "sha256": "cff48657064373b8a5f7de50c48e8f2e454dea05fc5b9d0b00cf7a1b2cc130df"
+        },
+        "log": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-a/work/gemma31-quality-old/runtime.log",
+          "sha256": "5853373a156b9e1a136952d93068590bca42c5a0875cb73c9eeb59efadc9285d"
+        },
+        "recovered_audit": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-a/audit.json",
+          "sha256": "e0cc1504c5cf061d2d31b7848f6a8bc846f61957eacc68abe2550d36beefc18c"
+        },
+        "manual_gate": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-a/manual-plan-review.json",
+          "sha256": "7ac0167a0df1e4a95e21bd59e930247a21d3a434828b5830c711d7d2ca019613"
+        }
+      },
+      "replies": [
+        {
+          "reply_sha256": "5318071dc3e76684c535cebabadfe431c70373aff025cb416cca17748a58b252",
+          "finish": "length",
+          "usage": {
+            "prompt_tokens": 26,
+            "completion_tokens": 128,
+            "total_tokens": 154,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          },
+          "content": "A **collision** occurs in a hash table when two different keys produce the same index (hash value) after being processed by the hash function. Since a single slot in the underlying array cannot hold two distinct pieces of data simultaneously, the hash table must have a strategy to handle this.\n\nThere are two primary categories of collision resolution: **Open Addressing** and **Separate Chaining**.\n\n---\n\n### Method 1: Separate Chaining (The \"Bucket\" Approach)\nIn separate chaining, each slot in the hash table array does not hold a single item, but rather a pointer to a **linked list** (or another data",
+          "ttft_s": 5.749752583913505,
+          "end_to_end_s": 17.343153771944344,
+          "decode_tok_s": 10.956425499015234,
+          "raw_stream": {
+            "file": "gemma31-quality-old-reply-0.sse",
+            "sha256": "eee4e7650f150b84cc0e9407df74ae5d316fad70c54edbae4a3ebd2f05221c58"
+          }
+        },
+        {
+          "reply_sha256": "fd56b9a14e2e890f4d313102419f96afd1f16b381a39fe58687e00e45e47b357",
+          "finish": "length",
+          "usage": {
+            "prompt_tokens": 26,
+            "completion_tokens": 128,
+            "total_tokens": 154,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          },
+          "content": "Elias had lived on the Needle for twenty years, a jagged spire of rock jutting out of the grey Atlantic. His life was measured in the rhythmic rotation of the Fresnel lens and the endless, salt-crusted silence of the coast. He liked the silence; it didn't ask for things he couldn't give.\n\nThe map arrived not by mail or by hand, but by the tide.\n\nAfter a particularly violent autumn gale that had shaken the lighthouse to its foundations, Elias went down to the tide pools to scavenge for driftwood. There, wedged inside a barnacle-encrusted copper tube, was a",
+          "ttft_s": 4.360390827059746,
+          "end_to_end_s": 15.918385073076934,
+          "decode_tok_s": 10.989723159459563,
+          "raw_stream": {
+            "file": "gemma31-quality-old-reply-1.sse",
+            "sha256": "792d6df591ddfa3a73d74e5d53176a0b849ebc4804b1a0f90a7893b1ab5ef9ac"
+          }
+        }
+      ]
+    },
+    "d": {
+      "policy": {
+        "label": "new",
+        "output": "/tmp/llmp-u4-gemma31-quality/arm-d",
+        "quality_file": "quality/gemma31-quality-new.json",
+        "runtime_env": {
+          "LLMP_DIAGNOSTIC_NODE_CAP_BYTES": "120259084288",
+          "LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES": "auto",
+          "LLMP_DIAGNOSTIC_TARGET_POLICY": "max_decode_rows 16\ndisable owner_padded_reads\n"
+        }
+      },
+      "collector_returncode": 0,
+      "collector_duration_s": 141.54446125030518,
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "score_completed_uses": 1071,
+      "teacher_targets": 1070,
+      "original_job": {
+        "name": "m35-u4-gemma31-quality-d-r1",
+        "class": "exclusive",
+        "timeout_s": 600,
+        "grace_s": 30,
+        "final": {
+          "state": "failed",
+          "reason": "--stop-on-fail after step 1; steps not done: 1",
+          "rc": 1,
+          "end": 1792721564.905,
+          "supervisor_pid": 1492304
+        },
+        "final_receipt": {
+          "path": "/tmp/llmp-u4-gemma31-quality/supervisor-d/final.json",
+          "sha256": "242607fd6cb27b1afcf9eb624ec7f00a0dc672121021af3fda72f1edd28ad320"
+        },
+        "log": {
+          "path": "/tmp/llmp-u4-gemma31-quality/supervisor-d/log",
+          "sha256": "4b7937f82df9b196ee6b10458cb30773d7f2c384f3ad3df38a50b02192a7cf62"
+        }
+      },
+      "files": {
+        "launch": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-d/launch.json",
+          "sha256": "9edb9f6e948bd10ffb2fd3f5c0ee1a2624834c2e798b2637d79d7c0e1695784e"
+        },
+        "preflight": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-d/preflight.json",
+          "sha256": "f72d471cfe3190cb7a08202d07e59cc67a552234c98b066bb350eb20db2ab8f6"
+        },
+        "postflight": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-d/postflight.json",
+          "sha256": "5589911e4c8c64a87fcf9c24c0730ff7efb99d6142ab7ef5e75ee3b2cd00450a"
+        },
+        "quality": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-d/quality/gemma31-quality-new.json",
+          "sha256": "7dd43287b514e4d53b5fa989d6856d05996f08c4c88b25129e664f7f30fcc789"
+        },
+        "score": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-d/quality/gemma31-quality-new-score.json",
+          "sha256": "5247591b28f23bcabc85c5b8d2863321f3b48d20f704301805d04992cb44c605"
+        },
+        "plans": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-d/plans.json",
+          "sha256": "4e0ffd071d00e8776883998fd85f6272c36f10f15a5cad3fe6d519ca4d87ce43"
+        },
+        "log": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-d/work/gemma31-quality-new/runtime.log",
+          "sha256": "c6c14b16569237df9dc1caa9c8e42ef8e732c7bbc1691e72650a8ac096964666"
+        },
+        "recovered_audit": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-d/audit.json",
+          "sha256": "74bd2605052b9df8a154fa93493847ee96a3daa5970023ec24fa750b3958a6eb"
+        },
+        "manual_gate": {
+          "path": "/tmp/llmp-u4-gemma31-quality/arm-d/manual-plan-review.json",
+          "sha256": "ca025c4e43e6ca7c5d3ca7304aeea67a09eefb1e0fa23920fd3bde9d8af5e740"
+        }
+      },
+      "replies": [
+        {
+          "reply_sha256": "5318071dc3e76684c535cebabadfe431c70373aff025cb416cca17748a58b252",
+          "finish": "length",
+          "usage": {
+            "prompt_tokens": 26,
+            "completion_tokens": 128,
+            "total_tokens": 154,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          },
+          "content": "A **collision** occurs in a hash table when two different keys produce the same index (hash value) after being processed by the hash function. Since a single slot in the underlying array cannot hold two distinct pieces of data simultaneously, the hash table must have a strategy to handle this.\n\nThere are two primary categories of collision resolution: **Open Addressing** and **Separate Chaining**.\n\n---\n\n### Method 1: Separate Chaining (The \"Bucket\" Approach)\nIn separate chaining, each slot in the hash table array does not hold a single item, but rather a pointer to a **linked list** (or another data",
+          "ttft_s": 5.810569802764803,
+          "end_to_end_s": 17.10091963969171,
+          "decode_tok_s": 11.250307718662658,
+          "raw_stream": {
+            "file": "gemma31-quality-new-reply-0.sse",
+            "sha256": "5260ed48f16744d1aaf87c1d1073bed2612f8cdae42dc4a5bc82b3bd57780107"
+          }
+        },
+        {
+          "reply_sha256": "fd56b9a14e2e890f4d313102419f96afd1f16b381a39fe58687e00e45e47b357",
+          "finish": "length",
+          "usage": {
+            "prompt_tokens": 26,
+            "completion_tokens": 128,
+            "total_tokens": 154,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          },
+          "content": "Elias had lived on the Needle for twenty years, a jagged spire of rock jutting out of the grey Atlantic. His life was measured in the rhythmic rotation of the Fresnel lens and the endless, salt-crusted silence of the coast. He liked the silence; it didn't ask for things he couldn't give.\n\nThe map arrived not by mail or by hand, but by the tide.\n\nAfter a particularly violent autumn gale that had shaken the lighthouse to its foundations, Elias went down to the tide pools to scavenge for driftwood. There, wedged inside a barnacle-encrusted copper tube, was a",
+          "ttft_s": 4.362308498006314,
+          "end_to_end_s": 15.62849592603743,
+          "decode_tok_s": 11.274868480288529,
+          "raw_stream": {
+            "file": "gemma31-quality-new-reply-1.sse",
+            "sha256": "c731fa52f10d9149270f1c8a7d478e59d242561d55190d9d06c1f9ce67c457d4"
+          }
+        }
+      ]
+    }
+  },
+  "pair_job": {
+    "name": "m35-u4-gemma31-pair-a-r1",
+    "class": "shared",
+    "timeout_s": 180,
+    "grace_s": 30,
+    "duration_s": 1,
+    "final": {
+      "state": "done",
+      "rc": 0,
+      "end": 1792721961.933,
+      "supervisor_pid": 1499689
+    },
+    "receipt": {
+      "path": "/tmp/llmp-u4-gemma31-quality/supervisor-pair/final.json",
+      "sha256": "ed9c7d0bd1fefe78c80328cfeb5fdc54f68d6b29b5c46d43a2fbcd29cc923115"
+    }
+  },
+  "limitations": [
+    "One passage and two bounded greedy replies; no raw-source checkpoint qualification or general quality conclusion.",
+    "No Gemma26 joined-row, Gemma31 assistant or frozen-state parity claim; frozen expectations unchanged.",
+    "No D-085 speed claim: debug logging, one quality sample per prompt, scalar chunk1.",
+    "Original A/D supervised jobs remain failed; independent read-only recovery and manual gates establish validity of the existing collections."
+  ],
+  "negative_preparation": "m35-u4-gemma31-tokens-a-r1: wrapper passed Path to existing passage API; failed before tokenizer invocation. Retained /tmp/llmp-u4-gemma31-prep-r1/token-supervisor. Corrected corpus.read_text(), no model/inference.",
+  "audit_recovery": {
+    "cause": "ggml_type_name physical q4_K/q5_K/q6_K differed in capitalization from format::Info.name semantic q4_k/q5_k/q6_k. Registered audit asserted the wrong physical spelling at line23.",
+    "adapter": {
+      "path": "/tmp/llmp-u4-gemma31-audit-adapter-r1/audit_physical_names.py",
+      "sha256": "2a83140d39968a70a7d97db9f71a1fd2194801b8e46b22f3caeaa4035cc42afd"
+    },
+    "diff": {
+      "path": "/tmp/llmp-u4-gemma31-audit-adapter-r1/adapter.diff",
+      "sha256": "fe7cf37c55f5b6b7278f1f55f581985db2353c74a679001b695d2f4f717efd1c"
+    },
+    "original_auditor_sha256": "a2294387f6414d95ca643193bfb2b7034af3968e5c29bbb698988fbdf33d8337",
+    "scope": "Only physical-name lowercasing with physical/semantic equality; exact existing plans/logs verified. No inference, numerical bounds or registered executor changes.",
+    "a_execution": {
+      "path": "/tmp/llmp-u4-gemma31-audit-adapter-r1/execution.json",
+      "sha256": "27da1e22d5e24e94a3e935539acaab1ad4db778127bb2e16ae3f8d065a6b5f20"
+    },
+    "d_execution": {
+      "path": "/tmp/llmp-u4-gemma31-audit-adapter-r1/execution-d.json",
+      "sha256": "48f3596c937f41d0e1c4977709ecda9709db9b9e1a3c3b2aa67dd5e0a984dee9"
+    },
+    "jobs": [
+      "m35-u4-gemma31-audit-a-r1",
+      "m35-u4-gemma31-audit-d-r1"
+    ],
+    "jobs_status": "PASS, 1s each, shared metadata-only; original supervised jobs remain FAILED rc1 at their auditor; collectors completed rc0"
+  },
+  "observational_a_over_d_ratios": [
+    {
+      "ttft_s": 0.9895333468290218,
+      "end_to_end_s": 1.0141649769343632,
+      "decode_tok_s": 0.9738778505444864
+    },
+    {
+      "ttft_s": 0.9995603999700057,
+      "end_to_end_s": 1.0185487553256192,
+      "decode_tok_s": 0.974709654367368
+    }
+  ]
+}

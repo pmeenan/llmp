@@ -719,10 +719,22 @@ D-122).
       exactly under the unchanged bounds. The report preserves the hash-table
       reply's semantic defects and both pre-launch failures. The registered
       [three-pair Gemma2 speed screen](experiments/m35-component-numerics/gemma2-scalar/Q8-ADOPTION-SPEED-RESULTS.md)
-      passes all six metrics. The Gemma26 assistant control passes and exercises
-      three changed scalar products; its target retains ten frozen-result failures.
-      Broader qualification, including Gemma31, remains open; frozen expectations
-      are unchanged.
+      passes all six metrics. The earlier Q8-only Gemma26 assistant control passed
+      and exercised three changed scalar products; its target retained ten
+      frozen-result failures.
+      The generic scalar schedule now follows incumbent reduction geometry across
+      all 18 VecQ encodings, with 182 positive operand controls. The registered
+      [Gemma31 scalar transfer](experiments/m35-component-numerics/gemma31-scalar/RESULTS.md)
+      matches all 1,070 teacher scores and both bounded 128-token replies exactly.
+      Its [C1 adoption speed check](experiments/m35-component-numerics/gemma31-scalar/SPEED-RESULTS.md)
+      passes: median slower-candidate ratios are 1.017852 for TTFT, 0.983462 for
+      decode and 1.003590 for wall throughput, each within the fixed 1.10 bound.
+      Current Gemma26/Gemma31 assistant and DSpark controls retain 15/6/3 frozen
+      differences, reproduced exactly with the legacy drafter path
+      ([attribution](experiments/m35-stored-drafter/RESULTS.md)).
+      Assistant, ordinary joined-multirow and frozen-state qualification,
+      broader checkpoint quality and other affected-domain obligations remain
+      open. Frozen expectations are unchanged; neither U3 nor U4 is closed.
       Component sites join explicit device/encoding evidence identically for
       pinned and unpinned artifacts; missing device evidence keeps exact
       arithmetic and reports the requirement. Native focused/shared checks,

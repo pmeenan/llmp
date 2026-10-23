@@ -24,6 +24,12 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- GB10 scalar quantized products use incumbent reduction schedules across all
+  18 VecQ encodings. Operand controls and the bounded Gemma31 scalar quality
+  transfer pass, with a matched C1 speed check within the 10% adoption bound;
+  broader assistant, joined-row and frozen-state qualification remains open
+  ([results](docs/experiments/m35-component-numerics/gemma31-scalar/RESULTS.md)).
+
 - Stored drafter execution contracts describe anchored, block and MTP protocols;
   serving derives structure and selected-head ownership from the stored graph,
   with optional performance defaults and actual row/state bounds. Four native

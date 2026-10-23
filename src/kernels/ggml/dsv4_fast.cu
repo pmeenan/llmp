@@ -798,6 +798,39 @@ int LanesPerRowOf(ggml_type type, int k) {
   }
 }
 
+// Incumbent GB10 scalar MMVQ schedule (pinned mmvq.cu d812350):
+// calc_nwarps, should_use_small_k and should_halve_iters. LanesPerRowOf
+// uses that source's qk/qi/VDR traits; these are encoding rules, not model
+// or measured-shape eligibility. The caller restricts this to GB10/no IDs.
+int ScalarMmvqVariant(ggml_type type, const VecQDesc& d) {
+  const int lanes = LanesPerRowOf(type, d.ncols_x);
+  // Upstream excludes these two IQ types from small-K on Turing and newer.
+  if (lanes < 128 && type != GGML_TYPE_IQ3_XXS && type != GGML_TYPE_IQ3_S) {
+    // R batches independent rows, without changing a row's partial sums.
+    // For an output tail use R=1, avoiding upstream's padded weight reads.
+    return d.nrows % 4 == 0 ? 10 : 0;
+  }
+  // The GB10 table only doubles these encodings' baseline four warps.
+  switch (type) {
+    case GGML_TYPE_Q4_0:
+    case GGML_TYPE_Q4_1:
+    case GGML_TYPE_Q5_0:
+    case GGML_TYPE_Q5_1:
+    case GGML_TYPE_Q8_0:
+    case GGML_TYPE_Q4_K:
+    case GGML_TYPE_Q5_K:
+    case GGML_TYPE_Q6_K:
+    case GGML_TYPE_IQ4_NL: {
+      const int trips = (lanes + 127) / 128;
+      const int wide_trips = (trips + 1) / 2;
+      const int idle = 2 * wide_trips - trips;
+      return idle * 8 <= 2 * wide_trips ? 1 : 0;
+    }
+    default:
+      return 0;
+  }
+}
+
 // The default for a shape, from benchmarks/vecq_bench.cc on the GB10
 // (docs/experiments/dsv4-decode/). Routed products (short rows of many
 // small matrices): one token, two rows a block striding with four warps;
@@ -805,26 +838,11 @@ int LanesPerRowOf(ggml_type type, int k) {
 // Dense products: see below.
 int DefaultVariant(ggml_type type, const VecQDesc& d) {
   const bool even = d.nrows % 2 == 0;
-  if (type == GGML_TYPE_Q8_0 && d.ids == nullptr && d.tokens == 1) {
+  if (d.ids == nullptr && d.tokens == 1) {
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
     if (GGML_CUDA_CC_IS_NVIDIA(cc) &&
         ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_DGX_SPARK) {
-      // Preserve the incumbent GB10 scalar Q8_0 MMVQ's lane partition:
-      // mmvq.cu (pinned d812350), should_use_small_k / should_halve_iters.
-      // A four-warp block covers 128 lanes. For longer rows, promote to
-      // eight warps when the extra idle half-iteration is at most 1/8 of
-      // their work. This is the original arithmetic schedule, not a
-      // measured-shape gate. SetVecQOneToken applies it to each joined row.
-      const int lanes = LanesPerRowOf(type, d.ncols_x);
-      if (lanes < 128) {
-        // R only batches independent output rows. A nonmultiple tail uses
-        // one row per block with the same four-warp partial sums.
-        return d.nrows % 4 == 0 ? 10 : 0;
-      }
-      const int trips = (lanes + 127) / 128;
-      const int wide_trips = (trips + 1) / 2;
-      const int idle = 2 * wide_trips - trips;
-      return idle * 8 <= 2 * wide_trips ? 1 : 0;
+      return ScalarMmvqVariant(type, d);
     }
   }
   // Qwen3.8's GGUF shapes at decode (vecq_bench's "qwen" cases on the GB10,
