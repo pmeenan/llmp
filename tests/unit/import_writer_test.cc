@@ -478,6 +478,37 @@ TEST_F(ImportWriterTest, ReaderAcceptsLegacyNamedBuildManifestIdentity) {
   EXPECT_FALSE(artifact::Artifact::Open(legacy));
 }
 
+TEST_F(ImportWriterTest, ConvertedNormReceiptsPreserveSourceBytesAndStoredSpec) {
+  auto plan = Plan();
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  ASSERT_EQ(plan->applied_folds().size(), 1U);
+  EXPECT_EQ(plan->applied_folds()[0].fold, "norm.plus_one");
+  auto published = WriteArtifact(*plan, Options());
+  ASSERT_TRUE(published) << test_support::Failed(published, &Error::ToString).value_or("");
+  auto artifact = artifact::Artifact::Open(published->path);
+  ASSERT_TRUE(artifact) << test_support::Failed(artifact, &artifact::Error::ToString).value_or("");
+  EXPECT_TRUE(artifact->folds().empty());
+  ASSERT_EQ(artifact->source_folds().size(), 1U);
+  EXPECT_EQ(artifact->source_folds()[0].name, "norm.plus_one");
+  EXPECT_EQ(
+      artifact->source_folds()[0].tensors,
+      (std::vector<std::string>{
+          "blk.0.attn_norm.weight", "blk.0.ffn_norm.weight", "blk.0.post_attention_norm.weight",
+          "blk.0.post_ffw_norm.weight", "blk.1.attn_norm.weight", "blk.1.ffn_norm.weight",
+          "blk.1.post_attention_norm.weight", "blk.1.post_ffw_norm.weight", "output_norm.weight"}));
+  const auto stored = spec::StoredSpec(*artifact);
+  ASSERT_TRUE(stored);
+  EXPECT_EQ(*stored, plan->spec());
+  const auto source = spec::SourceOf(*artifact);
+  ASSERT_TRUE(source);
+  EXPECT_TRUE(source->folds.empty());
+  EXPECT_TRUE(components::ValidateFoldReceipts(*stored, 0, *source));
+  EXPECT_TRUE(runtime::ReadComponentAdmission(*artifact));
+  ASSERT_EQ(artifact->sources().size(), plan->source().files.size());
+  EXPECT_EQ(artifact->sources()[0].name, plan->source().files[0].name);
+  EXPECT_EQ(artifact->sources()[0].bytes.value(), plan->source().files[0].bytes);
+}
+
 TEST_F(ImportWriterTest, DeterministicPublicationAndEveryPayloadByte) {
   for (const bool moe : {false, true}) {
     auto plan = Plan(moe);
@@ -1086,16 +1117,49 @@ class ImportPartWriterTest : public ImportWriterTest {
     // Put the permuted BF16 weight first physically so the 1 MiB source stream
     // splits it after exactly 3 bytes, independently of numeric output order.
     auto logical = normalized->canonical().tensors;
-    const auto query = std::ranges::find(logical, "blk.0.attn_q.weight", &spec::SourceTensor::name);
+    // A genuine GDN fragment governs the permutation receipt. The surrounding
+    // Gemma-style expert fixture still exercises stacking/gather/scatter paths.
+    spec::ComponentRef gdn{.kind = "attention.gdn",
+                           .version = 1,
+                           .params = {{"a_log", true},
+                                      {"conv", std::int64_t{2}},
+                                      {"eps", 1e-6},
+                                      {"head_dim", std::int64_t{8}},
+                                      {"k_heads", std::int64_t{2}},
+                                      {"v_heads", std::int64_t{4}}}};
+    const auto add_gdn = [&](std::string role, std::initializer_list<std::uint64_t> shape) {
+      const auto name = "gdn." + role;
+      logical.push_back(
+          {.name = name,
+           .format = {.encoding = Encoding::kF32,
+                      .shape = *format::ShapeOf(std::span(shape.begin(), shape.size()))}});
+      gdn.weights.push_back({.role = std::move(role), .tensor = name});
+    };
+    add_gdn("qkv", {32, 64});
+    add_gdn("gate", {32, 32});
+    add_gdn("alpha", {32, 4});
+    add_gdn("beta", {32, 4});
+    add_gdn("a", {4});
+    add_gdn("dt_bias", {4});
+    add_gdn("conv", {2, 64});
+    add_gdn("norm", {8});
+    add_gdn("output", {32, 32});
+    spec.stages[0].layers[0].components.push_back(std::move(gdn));
+    const auto query = std::ranges::find(logical, "gdn.gate", &spec::SourceTensor::name);
     if (query == logical.end()) return std::unexpected(Error{.reason = "missing fixture query"});
     std::rotate(logical.begin(), query, query + 1);
     for (const auto& old : logical) {
       auto format = old.format;
-      const bool permute = old.name == "blk.0.attn_q.weight";
+      const bool permute = old.name.starts_with("gdn.") && old.name != "gdn.norm";
+      const bool columns =
+          old.name == "gdn.a" || old.name == "gdn.dt_bias" || old.name == "gdn.output";
+      const bool scalar = old.name == "gdn.a" || old.name == "gdn.dt_bias" ||
+                          old.name == "gdn.alpha" || old.name == "gdn.beta";
+      const bool qk_prefix = old.name == "gdn.qkv" || old.name == "gdn.conv";
       const bool quant_experts = old.name == "blk.0.ffn_gate_up_exps.weight";
       const bool quant_dense = old.name == "blk.0.ffn_gate.weight";
-      const bool quant_mx = old.name == "blk.0.ffn_up.weight";
-      if (permute) format.encoding = Encoding::kBF16;
+      const bool quant_mx = old.name == "blk.0.ffn_up.weight" || old.name == "gdn.qkv";
+      if (old.name == "gdn.gate") format.encoding = Encoding::kBF16;
       if (quant_experts || quant_dense) {
         format.encoding = Encoding::kNvfp4;
         format.layout = format::Layout::kSplit;
@@ -1107,9 +1171,10 @@ class ImportPartWriterTest : public ImportWriterTest {
         format.params = {};
       }
       TensorAssembly assembly{.name = old.name, .format = format};
-      if (permute || quant_mx) {
+      if (permute) {
         auto permutation =
-            HeadPermutationPlan::Make(format, HeadAxis::kRows, 2, 4, format.shape.ne[1] / 4);
+            HeadPermutationPlan::Make(format, columns ? HeadAxis::kColumns : HeadAxis::kRows, 2, 4,
+                                      scalar ? 1 : 8, qk_prefix ? 32 : 0);
         if (!permutation) return std::unexpected(permutation.error());
         assembly.permutation = *permutation;
         folds[0].outputs.push_back(static_cast<std::uint32_t>(outputs.size()));
@@ -1165,15 +1230,24 @@ class ImportPartWriterTest : public ImportWriterTest {
           auto [index, payload] = input(name, format, part.role, {});
           member.sources.push_back(index);
           wanted = std::move(payload);
-          if (permute || quant_mx) {
+          if (permute) {
             const auto original = wanted;
-            const auto head_bytes = wanted.size() / 4;
-            for (std::size_t destination = 0; destination < 4; ++destination) {
-              const auto source_head = (destination % 2) * 2 + destination / 2;
-              std::copy_n(original.begin() + static_cast<std::ptrdiff_t>(source_head * head_bytes),
-                          head_bytes,
-                          wanted.begin() + static_cast<std::ptrdiff_t>(destination * head_bytes));
-            }
+            // Independent oracle: groups [0,1] [2,3] become [0,2,1,3].
+            // Preserve Q/K prefix rows; column permutations repeat per row.
+            const auto rows = columns ? (format.shape.rank == 1 ? 1U : format.shape.ne[1]) : 1U;
+            const auto row_bytes = wanted.size() / rows;
+            const auto prefix_bytes = qk_prefix ? wanted.size() / 2 : 0;
+            const auto head_bytes = (row_bytes - prefix_bytes) / 4;
+            for (std::size_t row = 0; row < rows; ++row)
+              for (std::size_t destination = 0; destination < 4; ++destination) {
+                constexpr std::array<std::size_t, 4> order{0, 2, 1, 3};
+                const auto begin = row * row_bytes + prefix_bytes;
+                std::copy_n(
+                    original.begin() +
+                        static_cast<std::ptrdiff_t>(begin + order[destination] * head_bytes),
+                    head_bytes,
+                    wanted.begin() + static_cast<std::ptrdiff_t>(begin + destination * head_bytes));
+              }
           }
         }
         assembly.parts.push_back(std::move(member));
@@ -1246,8 +1320,9 @@ TEST_F(ImportPartWriterTest, PermutationMultipartAndWholeExpertScatterAreExact) 
   ASSERT_EQ(opened->folds().size(), 1U);
   EXPECT_EQ(opened->folds()[0].name, "gdn.value_heads_tiled");
   EXPECT_EQ(opened->folds()[0].tensors,
-            (std::vector<std::string>{"blk.0.attn_q.weight", "blk.0.ffn_up.weight.block_scales",
-                                      "blk.0.ffn_up.weight.codes"}));
+            (std::vector<std::string>{"gdn.a", "gdn.alpha", "gdn.beta", "gdn.conv", "gdn.dt_bias",
+                                      "gdn.gate", "gdn.output", "gdn.qkv.block_scales",
+                                      "gdn.qkv.codes"}));
   std::size_t total = 0;
   const auto compare = [&](std::string_view name, std::uint64_t offset,
                            const artifact::Placement& place) {

@@ -248,6 +248,8 @@ class Artifact {
   }
   // What the importer applied.
   std::span<const AppliedFold> folds() const { return folds_; }
+  // Folds already present in the source, asserted by the selected import dialect.
+  std::span<const AppliedFold> source_folds() const { return source_folds_; }
   std::span<const Relayout> relayouts() const { return relayouts_; }
 
   // The resource bound to `role` (its name or a tied alias).
@@ -306,6 +308,7 @@ class Artifact {
   std::vector<Digest> chunk_sha256_;
   std::optional<std::string> spec_json_;
   std::vector<AppliedFold> folds_;
+  std::vector<AppliedFold> source_folds_;
   std::vector<Relayout> relayouts_;
   // (role, resource) and (name, array), sorted by name.
   std::vector<std::pair<std::string, std::uint32_t>> roles_;

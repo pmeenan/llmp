@@ -927,7 +927,7 @@ accepted; artifacts must use the canonical identity above. What changes:
 | `experimental`, `layout` | `true`, and `{profile: "spark", profile_version: 1, file_alignment: 4096, chunk_bytes: 2097152, member_alignment: 256, container: "safetensors", byte_order: "little"}` (renamed from v0's `spark-v0` profile in M3.5 U2, D-121) |
 | `model` | `{architecture, container, expert_count}`: the architecture and expert count as v0's; `container` the reader the importer read the checkpoint with, one of `exl3`, `gguf`, `mlx` and `safetensors` (a table, not a pattern: a mapping's folds depend on the container, so one this build does not know is `schema`, never read as another). No representation families |
 | `source` | As v0, with safe UTF-8 plain filenames (no separators, dot entries or control characters), JSON-quoted |
-| `transformations` | v0's `dedupe-identical` (ties) and `expert-slice`, which must describe the index exactly; and `fold` `{kind, fold, tensors}` and `relayout` `{kind, from, tensors}` (below). In canonical order by each record's canonical JSON |
+| `transformations` | v0's `dedupe-identical` (ties) and `expert-slice`, which must describe the index exactly; and `fold` / `source-fold` `{kind, fold, tensors}` and `relayout` `{kind, from, tensors}` (below). In canonical order by each record's canonical JSON |
 | `importer` | `{name, version, build, options_sha256}`: what made the artifact (text fields as v0's converter's; the SHA-256 of the options it ran with), so content and semantics determine the ID while the actual build remains provenance (D-120) |
 | `files` | As v0, plus at most one `spec.json` with role `spec` |
 
@@ -935,7 +935,10 @@ accepted; artifacts must use the canonical identity above. What changes:
 (spec.h's `Folds()`: `norm.plus_one`, `ssm.a_neg_exp`,
 `gdn.value_heads_tiled`, and N3's additions; dot-separated
 `[a-z][a-z0-9_]*` words, at most 64 characters) and the tensors the
-importer applied it to; each fold is recorded once. A `relayout` record
+importer applied it to. A `source-fold` has the same keys and records a fold
+already present in the source, established by the selected import dialect. Each
+fold appears at most once per origin; their tensor sets must be disjoint for the
+same fold. Neither record performs work at load time. A `relayout` record
 names the layout the tensors were losslessly relaid out from (a layout
 name, each once) into the one their format records. Tensors are named
 by resource name (never a tied alias, so one content has one manifest)
@@ -952,7 +955,14 @@ different containers (a GGUF target and a safetensors drafter), so a
 stage lists its own source's folds only, the same as every other stage
 of its artifact. A fold the source's own
 converter applied (GGUF's `(1 + w)` norms) is not the importer's: it
-appears only in the stage's folds. Ties and
+requires its own `source-fold` receipt. The union of both origins must exactly
+equal each stage's folds. Component admission checks complete governed
+tensor-role and encoded-part coverage, resolving tied aliases and borrowed
+stage bindings. It does not infer conversion from source-container names or
+import mappings. An older artifact missing a source-fold receipt needs
+republication; an older reader rejects the new transformation kind under
+D-113. Source identities, importer provenance and spec bytes retain their
+existing meaning. Ties and
 expert slicing keep v0's records; of the transforms N3's fold catalog
 plans, those that only change the tensor's layout between two
 `format::Layout`s of one format (NVFP4 scale atoms) are `relayout`

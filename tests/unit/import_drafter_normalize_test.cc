@@ -379,7 +379,11 @@ TEST(ImportDrafterNormalizeTest, LegacyDrafterValuesMatchCanonicalTargetAcrossSo
                          .format = {.encoding = fm::Encoding::kF32,
                                     .layout = fm::Layout::kDense,
                                     .shape = {.ne = {1, 64, 1, 1}, .rank = 2}}}};
-  const auto target_spec = spec::ToJson(test_support::qwen38::NativeModelOpt().model);
+  auto target_model = test_support::qwen38::NativeModelOpt().model;
+  // These metadata-only placeholders represent unprocessed weights and carry no
+  // preprocessing receipts; only their structural facts are used by this test.
+  for (auto& stage : target_model.stages) stage.folds.clear();
+  const auto target_spec = spec::ToJson(target_model);
   auto drafter = MakeDrafterV1(scratch / "drafter", "qwen4exp-mtp", tensors, "drafter.safetensors",
                                1, std::string(64, '2'), {}, "safetensors");
   ASSERT_TRUE(drafter) << drafter.error().ToString();

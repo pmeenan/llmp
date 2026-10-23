@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "artifact/gguf_metadata.h"
+#include "artifact/schema.h"
 #include "base/json_stream.h"
 #include "base/sha256.h"
 #include "components/step.h"
@@ -439,6 +440,12 @@ std::expected<void, std::string> CheckComposedAdmission(const spec::ModelSpec& c
                                                         const spec::Source& drafter) {
   if (composed.stages.size() < 2 || composed.stages.back().role != spec::StageRole::kDrafter)
     return Refused("composed spec has no drafter stage");
+  // The final graph includes borrowed roles. Each receipt belongs to the
+  // artifact holding those tensors, regardless of which stage uses them.
+  if (auto folds = components::ValidateFoldReceipts(composed, 0, target); !folds)
+    return Refused(folds.error());
+  if (auto folds = components::ValidateFoldReceipts(composed, 1, drafter); !folds)
+    return Refused(folds.error());
   const std::array<std::span<const spec::SourceTensor>, 2> tables{target.tensors, drafter.tensors};
   if (const auto valid = components::ValidateSpec(composed, tables); !valid)
     return Refused(valid.error());
@@ -457,26 +464,20 @@ std::expected<void, std::string> CheckComponentDrafterAdmission(
 std::expected<void, std::string> CheckComponentAdmission(
     const spec::ModelSpec& model, const spec::Source& source,
     std::span<const artifact::Source> origins) {
+  if (!artifact::schema::IsName(source.architecture))
+    return Refused("source architecture is not a valid provenance name");
+  if (!artifact::schema::IsContainerName(source.container))
+    return Refused("source container is not in the artifact schema");
   if (!OriginsWellFormed(origins)) return Refused("source origins are empty or duplicate");
   if (model.pipeline != spec::PipelineKind::kLlm || model.stages.size() != 1 ||
       model.stages[0].role != spec::StageRole::kTarget || model.stages[0].artifact != 0 ||
       model.stages[0].context == 0)
     return Refused("the stored pipeline is not a standalone target");
-  const spec::Mapping* mapping = spec::FindMapping(source.architecture, source.container);
-  if (mapping == nullptr || mapping->role != spec::StageRole::kTarget)
-    return Refused("architecture has no target component mapping");
-  if (auto inv = CheckUnpinnedInventory(source, *mapping); !inv) return inv;
-  std::vector<std::string> expected_folds = source.folds;
-  for (const spec::FoldRule& f :
-       spec::SourceFolds(*mapping, source.architecture, source.container)) {
-    if (!f.imported && f.container == source.container &&
-        !std::ranges::contains(expected_folds, f.fold)) {
-      expected_folds.emplace_back(f.fold);
-    }
-  }
-  std::ranges::sort(expected_folds);
-  if (model.stages.front().folds != expected_folds)
-    return Refused("stored stage folds disagree with source folds");
+  if (source.tensors.empty() ||
+      std::ranges::any_of(source.tensors, [](const auto& t) { return !Admissible(t); }))
+    return Refused(kRefusedInventory);
+  if (auto folds = components::ValidateFoldReceipts(model, 0, source); !folds)
+    return Refused(folds.error());
   const std::array<std::span<const spec::SourceTensor>, 1> tables{source.tensors};
   if (const auto valid = components::ValidateSpec(model, tables); !valid)
     return Refused(valid.error());
@@ -487,8 +488,6 @@ std::expected<void, std::string> CheckArtifactPrerequisites(const artifact::Arti
   if (auto served = RequireServedVersion(artifact); !served) return Refused(served.error());
   if (!OriginsWellFormed(artifact.sources()))
     return Refused("artifact source receipts are empty or duplicate");
-  if (spec::FindMapping(artifact.model().architecture, artifact.model().container) == nullptr)
-    return Refused("architecture has no component mapping");
   return CheckScaleAtomSlots(artifact);
 }
 
@@ -520,6 +519,10 @@ std::expected<ComponentDrafterAdmission, std::string> ReadComponentDrafterAdmiss
   if (!source) return Refused(source.error());
   if (auto checked = CheckComponentDrafterAdmission(*source, drafter.sources()); !checked)
     return std::unexpected(checked.error());
+  if (model) {
+    if (auto folds = components::ValidateFoldReceipts(*model, 1, *source); !folds)
+      return Refused(folds.error());
+  }
   return ComponentDrafterAdmission{
       .model = std::move(model),
       .source = std::move(*source),

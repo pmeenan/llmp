@@ -26,6 +26,8 @@ class PartPublicationFixture {
     plan.bindings_ = std::move(bindings);
     plan.semantic_.assign(semantic.begin(), semantic.end());
     plan.planned_folds_ = std::move(folds);
+    for (const auto& fold : plan.planned_folds_) plan.canonical_.folds.push_back(fold.fold);
+    std::ranges::sort(plan.canonical_.folds);
     for (const auto& tensor : plan.canonical_.tensors)
       plan.cost_.payload_bytes += format::PartsOf(tensor.format)->Find(tensor.part)->bytes;
     return plan;

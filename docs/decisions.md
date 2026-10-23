@@ -840,6 +840,19 @@ the decode implementations' names and so their identities: v0 Qwen
 calibration records and kept conversations recorded before it are not
 reused (acceptable while serving moves to v1 artifacts only).
 
+*Clarified 2026-10-22 (U3 stored preprocessing).* The new transformation
+vocabulary item `source-fold` has the same `{kind, fold, tensors}` shape as
+`fold`, and records converter work already present in the source rather than
+work done by this importer. The selected import dialect establishes it;
+publication authenticates it with the original source receipts. The origins
+stay distinct, including approval checks. Their exact union supplies a stage's
+folds; the component catalog checks complete bound role/part coverage.
+Serving no longer infers source folds from import mappings. Older readers
+reject the unknown kind under the vocabulary rule above; affected artifacts
+need new authenticated manifests/IDs, with source and payload parity retained.
+Empty-fold artifacts require no refresh. No numeric semantics or format-version
+fallback is introduced.
+
 **Reopen if** a tool must read a spec without the spec module, a cap must
 rise, or a reader needs a tensor's parts grouped without a spec (then an
 explicit tensor key in the index).

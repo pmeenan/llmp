@@ -174,14 +174,14 @@ TEST_F(ComponentBindingsTest, StartupPaysSourceOnlyDraftersWithoutAdmittingSpecL
   EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), 0U);
 }
 
-TEST_F(ComponentBindingsTest, NativeFormatsAliasesAndHeadRowsSurviveWithoutServingAdmission) {
+TEST_F(ComponentBindingsTest, NativeFormatsAliasesAndHeadRowsAdmitWithoutAnImportMapping) {
   auto artifact = Open(Plan(Tiny(), fm::Encoding::kBF16));
   ASSERT_TRUE(artifact) << Failed(artifact, &llmp::artifact::Error::ToString).value_or("");
   auto payment = Pay(*artifact);
   ASSERT_TRUE(payment);
   auto bound = rt::ReadStoredComponents(*artifact, std::move(*payment));
   ASSERT_TRUE(bound) << Failed(bound).value_or("");
-  EXPECT_FALSE(rt::CheckComponentArtifactAdmission(*artifact));  // toy is not an approved model
+  EXPECT_TRUE(rt::CheckComponentArtifactAdmission(*artifact));  // the stored spec is executable
   ASSERT_EQ(bound->places.size(), 3U);  // two role references share one physical resource
   std::size_t table_roles = 0;
   for (const auto& [key, place] : bound->places) {
@@ -200,12 +200,93 @@ TEST_F(ComponentBindingsTest, NativeFormatsAliasesAndHeadRowsSurviveWithoutServi
   malformed.stages[0].heads.output->params[0].value = std::int64_t{33};
   auto bad_artifact = Open(Plan(std::move(malformed)));
   ASSERT_TRUE(bad_artifact);
+  EXPECT_FALSE(rt::CheckComponentArtifactAdmission(*bad_artifact));
   auto bad_payment = Pay(*bad_artifact);
   ASSERT_TRUE(bad_payment);
   auto bad = rt::ReadStoredComponents(*bad_artifact, std::move(*bad_payment));
   ASSERT_FALSE(bad);
   EXPECT_NE(bad.error().find("vocabulary"), std::string::npos);
   EXPECT_EQ(allowance->used(), 0U);
+}
+
+TEST_F(ComponentBindingsTest, StoredDrafterFoldCoverageIncludesOwnRolesAndRespectsBorrowedHolder) {
+  auto target = Tiny();
+  target.stages[0].folds = {"norm.plus_one"};
+  auto target_plan = Plan(target);
+  target_plan.source_folds = {{"norm.plus_one", {"norm"}}};
+  auto target_artifact = llmp::artifact::Artifact::Open(
+      llmp::test::Publish(scratch / "target", llmp::test::Render(target_plan)));
+  ASSERT_TRUE(target_artifact);
+  auto target_source = sp::SourceOf(*target_artifact);
+  ASSERT_TRUE(target_source);
+
+  auto composed = target;
+  auto draft = target.stages[0];
+  draft.name = "assistant";
+  draft.role = sp::StageRole::kDrafter;
+  draft.artifact = 1;
+  draft.embedding->weights[0].stage = "target";
+  draft.heads.output->weights[0].stage = "target";
+  draft.layers[0].components[0].weights[0].tensor = "draft.first";
+  draft.layers[0].components.push_back(
+      C("norm.rms", {W("weight", "draft.second")}, {{"eps", 0.00001}}));
+  auto borrowed = C("norm.rms", {W("weight", "norm")}, {{"eps", 0.00001}});
+  borrowed.weights[0].stage = "target";
+  draft.layers[0].components.push_back(std::move(borrowed));
+  composed.stages.push_back(std::move(draft));
+  sp::Canonicalize(composed);
+  ASSERT_TRUE(sp::Validate(composed));
+  auto draft_plan = Plan(composed);
+  draft_plan.architecture = "gemma4-assistant";
+  draft_plan.groups = {{.kind = llmp::artifact::GroupKind::kGlobal,
+                        .resources = {{.name = "draft.first", .format = F({32})},
+                                      {.name = "draft.second", .format = F({32})}}}};
+  draft_plan.source_folds = {{"norm.plus_one", {"draft.first", "draft.second"}}};
+  const auto publish = [&](const V1Plan& plan, std::string_view name) {
+    return llmp::artifact::Artifact::Open(
+        llmp::test::Publish(scratch / name, llmp::test::Render(plan)));
+  };
+  auto complete = publish(draft_plan, "complete");
+  ASSERT_TRUE(complete);
+  auto admitted = rt::ReadComponentDrafterAdmission(*complete);
+  ASSERT_TRUE(admitted) << Failed(admitted).value_or("");
+  ASSERT_TRUE(admitted->model);
+  EXPECT_TRUE(rt::CheckComposedAdmission(composed, *target_source, admitted->source));
+  EXPECT_TRUE(rt::CheckComposedAdmission(composed, *target_artifact, *complete));
+
+  // Both roles remain bound and stored; only the authenticated receipt omits
+  // one. Catalog membership and listed-tensor membership alone cannot detect it.
+  draft_plan.source_folds[0].second.pop_back();
+  auto partial = publish(draft_plan, "partial");
+  ASSERT_TRUE(partial);
+  ASSERT_TRUE(sp::StoredSpec(*partial));
+  const auto refused = rt::ReadComponentDrafterAdmission(*partial);
+  ASSERT_FALSE(refused);
+  EXPECT_TRUE(refused.error().contains("complete component tensor roles"));
+  auto partial_source = sp::SourceOf(*partial);
+  ASSERT_TRUE(partial_source);
+  EXPECT_FALSE(rt::CheckComposedAdmission(composed, *target_source, *partial_source));
+  EXPECT_FALSE(rt::CheckComposedAdmission(composed, *target_artifact, *partial));
+
+  // The borrowed norm stays in the target's closure, not the drafter's.
+  auto wrong_holder = admitted->source;
+  wrong_holder.tensors.push_back({.name = "norm", .format = F({32})});
+  wrong_holder.preprocessing[0].tensors.push_back("norm");
+  EXPECT_FALSE(rt::CheckComposedAdmission(composed, *target_source, wrong_holder));
+  auto absent_target_receipt = *target_source;
+  absent_target_receipt.preprocessing.clear();
+  EXPECT_FALSE(rt::CheckComposedAdmission(composed, absent_target_receipt, admitted->source));
+
+  // Source-only legacy drafters retain their distinct preliminary path until
+  // their publication migration; final composition still checks both closures.
+  draft_plan.spec.reset();
+  draft_plan.source_folds.clear();
+  auto legacy = publish(draft_plan, "legacy");
+  ASSERT_TRUE(legacy);
+  auto legacy_admitted = rt::ReadComponentDrafterAdmission(*legacy);
+  ASSERT_TRUE(legacy_admitted) << Failed(legacy_admitted).value_or("");
+  EXPECT_FALSE(legacy_admitted->model);
+  EXPECT_FALSE(rt::CheckComposedAdmission(composed, *target_source, legacy_admitted->source));
 }
 
 TEST_F(ComponentBindingsTest, VisitorUsesHoldingStageArtifactAndTheEmitOwners) {

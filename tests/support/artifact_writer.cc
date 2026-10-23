@@ -434,6 +434,12 @@ V1Files Render(const V1Plan& plan) {
     transformations.emplace_back(
         Json::Object{{"fold", fold}, {"kind", "fold"}, {"tensors", Json(std::move(list))}});
   }
+  for (const auto& [fold, tensors] : plan.source_folds) {
+    Json::Array list;
+    for (const auto& t : tensors) list.emplace_back(t);
+    transformations.emplace_back(
+        Json::Object{{"fold", fold}, {"kind", "source-fold"}, {"tensors", Json(std::move(list))}});
+  }
   for (const auto& [from, tensors] : plan.relayouts) {
     Json::Array list(tensors.begin(), tensors.end());
     transformations.emplace_back(Json::Object{{"from", format::Info(from).name},

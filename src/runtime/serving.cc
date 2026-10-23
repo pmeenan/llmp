@@ -234,10 +234,6 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
   // backend route, with an execution envelope from its actual source/state
   // and automatic startup payment by default (Start).
   if (!entry.composition) {
-    const spec::ServingRecipe* recipe = RecipeOf(settings.architecture, settings.container);
-    if (recipe == nullptr)
-      return Error(std::format("model {}: no runner for architecture {}", entry.name,
-                               settings.architecture));
     switch (settings.pipeline) {
       case spec::PipelineKind::kLlm: {
         if (AutomaticStartup() && !compiler_)

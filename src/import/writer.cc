@@ -149,6 +149,7 @@ struct PublicationView {
   std::span<const NormalizedPartBinding> bindings{};
   std::span<const SemanticReceipt> semantic{};
   std::span<const PlannedPartFold> planned_folds{};
+  std::span<const AppliedSourceFold> source_folds{};
   // The trailing canonical tensors, each one whole part the importer derived
   // from one source file whose whole content is its parsed receipt.
   std::span<const GeneratedPart> generated{};
@@ -202,6 +203,7 @@ struct Layout {
   std::vector<std::size_t> first_destination{};
   std::vector<SemanticCheck> semantic{};
   std::vector<artifact::AppliedFold> folds{};
+  std::vector<artifact::AppliedFold> source_folds{};
   std::vector<artifact::Relayout> relayouts{};
   std::uint32_t experts = 0;
 };
@@ -387,6 +389,25 @@ std::expected<void, Error> Transfers(const PublicationView& plan, Layout& layout
   }
   if (next != order.size()) return Bad("part publication extra output", Rule::kConfig);
   std::ranges::sort(layout.copies, {}, [](const Copy& c) { return std::tie(c.file, c.source); });
+  const auto artifact_index = IsDrafter(plan.spec()) ? 1U : 0U;
+  std::set<std::string_view> source_names;
+  for (const auto& receipt : plan.source_folds) {
+    if (receipt.container != plan.source().container || !source_names.insert(receipt.fold).second)
+      return Bad("source fold declaration is not the selected dialect", Rule::kConfig);
+    auto names = components::FoldTensors(plan.spec(), artifact_index, receipt.fold);
+    if (!names || names->empty())
+      return Bad("source fold has no component tensor closure", Rule::kConfig);
+    layout.source_folds.push_back({.name = receipt.fold, .tensors = std::move(*names)});
+  }
+  spec::Source checked{.tensors = plan.canonical().tensors, .folds = plan.canonical().folds};
+  for (const auto& receipt : layout.folds)
+    checked.preprocessing.push_back({.name = receipt.name, .tensors = receipt.tensors});
+  for (const auto& receipt : layout.source_folds)
+    checked.preprocessing.push_back(
+        {.name = receipt.name, .tensors = receipt.tensors, .source = true});
+  if (auto valid = components::ValidateFoldReceipts(plan.spec(), artifact_index, checked); !valid)
+    return Bad("publication preprocessing does not cover its component tensor roles",
+               Rule::kConfig);
   std::ranges::sort(layout.semantic, {}, [](const SemanticCheck& c) {
     return std::tie(c.receipt->extent.file, c.receipt->extent.offset);
   });
@@ -398,16 +419,23 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
       plan.source().tensors.size() > kMaxTensors || plan.source().files.empty() ||
       plan.source().files.size() > kMaxSourceFiles || plan.members() > kMaxTensors ||
       plan.semantic.size() > plan.source().tensors.size() ||
-      plan.planned_folds.size() > spec::Folds().size())
+      plan.planned_folds.size() > spec::Folds().size() ||
+      plan.source_folds.size() > spec::Folds().size() ||
+      plan.canonical().folds.size() > spec::Folds().size())
     return Bad("invalid normalized output count", Rule::kBounds);
+  for (const auto& fold : plan.canonical().folds)
+    if (!spec::FindFold(fold)) return Bad("unknown canonical fold", Rule::kConfig);
   std::uint64_t fold_outputs = 0;
   for (const auto& fold : plan.planned_folds) {
     if (fold.outputs.size() > artifact::kMaxEntries - fold_outputs)
       return Bad("publication fold metadata exceeds cap", Rule::kBounds);
     fold_outputs += fold.outputs.size();
   }
-  std::uint64_t expanded = 0, output_bytes = 0;
+  std::uint64_t expanded = 0, output_bytes = 0, tensor_name_bytes = 0;
   for (const auto& t : tensors) {
+    if (t.name.size() > spec::kMaxText)
+      return Bad("tensor name exceeds spec text cap", Rule::kBounds);
+    tensor_name_bytes += t.name.size() + 1;
     const auto count = t.experts ? t.format.shape.ne[2] : 1;
     if (count > artifact::kMaxEntries - expanded)
       return Bad("expert expansion exceeds the artifact entry cap", Rule::kBounds);
@@ -425,10 +453,14 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
   const std::uint64_t chunk_bound = payload / artifact::kChunkBytes + expanded * 2;
   if (chunk_bound > artifact::kMaxIndexBytes / 128)
     return Bad("output chunk metadata exceeds index cap", Rule::kBounds);
-  const std::uint64_t bound = (std::uint64_t{256} << 20U) + expanded * 8192 + chunk_bound * 512 +
-                              plan.source().files.size() * 1024 + plan.members() * 512 +
-                              plan.source().tensors.size() * 32 + plan.semantic.size() * 256 +
-                              fold_outputs * 8192 + 65536;
+  const std::uint64_t bound =
+      (std::uint64_t{256} << 20U) + expanded * 8192 + chunk_bound * 512 +
+      plan.source().files.size() * 1024 + plan.members() * 512 + plan.source().tensors.size() * 32 +
+      plan.semantic.size() * 256 + fold_outputs * 8192 + 65536 +
+      (plan.source_folds.size() + plan.planned_folds.size()) *
+          (tensors.size() * (4 * sizeof(spec::FoldReceipt) + 8 * sizeof(std::string) + 256) +
+           tensor_name_bytes * 8) +
+      tensors.size() * sizeof(spec::SourceTensor) + tensor_name_bytes;
   if (funding < bound) return Bad("artifact metadata has not been funded", Rule::kBounds);
   const bool is_drafter = IsDrafter(plan.spec());
   if (!is_drafter) {
@@ -1046,12 +1078,18 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   for (const auto& [path, json] : files) file_list.push_back(json);
   for (const auto& [path, json] : sources) source_list.push_back(json);
   // Only reached after all source streams, semantic receipts and whole route
-  // cursors completed. Historical source-converter folds emit no new record.
+  // cursors completed. Source folds attest prior conversion, never new native work.
   for (const auto& fold : layout->folds) {
     std::vector<std::string> names;
     for (const auto& name : fold.tensors) names.push_back(Q(name));
     transformations.push_back(
         O({{"kind", Q("fold")}, {"fold", Q(fold.name)}, {"tensors", A(names)}}));
+  }
+  for (const auto& fold : layout->source_folds) {
+    std::vector<std::string> names;
+    for (const auto& name : fold.tensors) names.push_back(Q(name));
+    transformations.push_back(
+        O({{"kind", Q("source-fold")}, {"fold", Q(fold.name)}, {"tensors", A(names)}}));
   }
   for (const auto& relayout : layout->relayouts) {
     std::vector<std::string> names;
@@ -1155,6 +1193,7 @@ std::expected<publication_detail::PlacementSummary, Error> publication_detail::I
                        .bindings = plan.bindings(),
                        .semantic = plan.semantic(),
                        .planned_folds = plan.planned_folds(),
+                       .source_folds = plan.applied_folds(),
                        .generated = plan.generated(),
                        .mapping_architecture = plan.mapping_architecture(),
                        .mapping_version = plan.architecture_version()},
@@ -1191,6 +1230,7 @@ std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
                   .bindings = plan.bindings(),
                   .semantic = plan.semantic(),
                   .planned_folds = plan.planned_folds(),
+                  .source_folds = plan.applied_folds(),
                   .generated = plan.generated(),
                   .mapping_architecture = plan.mapping_architecture(),
                   .mapping_version = plan.architecture_version()},

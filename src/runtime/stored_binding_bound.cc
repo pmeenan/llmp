@@ -67,11 +67,20 @@ std::expected<std::uint64_t, std::string> ComponentAdmissionBytes(
   };
   for (const auto& r : artifact.resources())
     for (const auto& role : r.roles)
-      if (!tensor(role)) return Refuse("stored binding source inventory overflows");
+      if (!tensor(role) || (role != r.name && !add(r.name.size() + 1, 4)))
+        return Refuse("stored binding source inventory overflows");
   for (const auto& a : artifact.expert_arrays())
     if (!tensor(a.name)) return Refuse("stored binding source inventory overflows");
-  for (const auto& fold : artifact.folds())
-    if (!add(fold.name.size() + 1, 8)) return Refuse("stored binding fold inventory overflows");
+  // SourceOf owns both provenance categories. Closure validation keeps bounded
+  // name sets/maps alongside that projection, and tied aliases retain storage names.
+  for (auto receipts : {artifact.folds(), artifact.source_folds()})
+    for (const auto& fold : receipts) {
+      if (!add(1, 4 * sizeof(spec::FoldReceipt) + 128) || !add(fold.name.size() + 1, 8))
+        return Refuse("stored binding fold inventory overflows");
+      for (const auto& name : fold.tensors)
+        if (!add(1, 8 * sizeof(std::string) + 256) || !add(name.size() + 1, 8))
+          return Refuse("stored binding fold tensor inventory overflows");
+    }
   if (!add(artifact.model().architecture.size() + artifact.model().container.size() + 2, 8) ||
       !add(artifact.id().size() + 1, 2))
     return Refuse("stored binding source identity inventory overflows");

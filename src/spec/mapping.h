@@ -731,11 +731,18 @@ struct SourceValue {
 bool IsSourceKey(std::string_view key);
 
 // A source's tensors as the mapping sees them.
+struct FoldReceipt {
+  std::string name{};
+  std::vector<std::string> tensors{};
+  bool source = false;  // Already present in the checkpoint, not applied by this importer.
+};
 struct SourceTensor {
   std::string name{};
   format::TensorFormat format{};
   format::PartRole part = format::PartRole::kData;
   bool experts = false;
+  // Artifact resource identity for tied aliases; empty means name itself.
+  std::string storage{};
 };
 struct Source {
   std::string architecture{};
@@ -746,6 +753,8 @@ struct Source {
   // stage made of the source lists them, so that no component applies one
   // again.
   std::vector<std::string> folds{};
+  // Complete authenticated artifact preprocessing; absent for a raw checkpoint.
+  std::vector<FoldReceipt> preprocessing{};
 };
 
 // The actual target head's rows (its stored tensor geometry).

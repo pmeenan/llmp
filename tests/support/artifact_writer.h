@@ -120,6 +120,7 @@ struct V1Plan {
   std::optional<std::string> spec{};  // spec.json's bytes
   std::vector<V1Group> groups{};
   std::vector<std::pair<std::string, std::vector<std::string>>> folds{};  // (fold, tensors)
+  std::vector<std::pair<std::string, std::vector<std::string>>> source_folds{};
   std::vector<std::pair<format::Layout, std::vector<std::string>>> relayouts{};
 };
 

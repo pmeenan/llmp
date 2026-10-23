@@ -31,19 +31,20 @@ std::unexpected<std::string> Refuse(std::string_view where, std::string_view wha
   return std::unexpected(std::format("{}: {}", where, what));
 }
 
-// The importer's folds are catalog names.
+// Both preprocessing origins use catalog fold names.
 std::expected<void, std::string> CheckCatalog(const artifact::Artifact& a) {
-  for (const artifact::AppliedFold& f : a.folds()) {
-    if (FindFold(f.name) == nullptr) {
-      return Refuse(std::format("artifact {} fold {}", a.id(), f.name),
-                    "not in the fold catalog, so what its tensors mean is unknown");
+  for (auto records : {a.folds(), a.source_folds()})
+    for (const artifact::AppliedFold& f : records) {
+      if (FindFold(f.name) == nullptr) {
+        return Refuse(std::format("artifact {} fold {}", a.id(), f.name),
+                      "not in the fold catalog, so what its tensors mean is unknown");
+      }
     }
-  }
   return {};
 }
 
-// The importer's folds of artifact `index` (`a`) against the spec: catalog
-// names, each among the folds of every stage that runs from the artifact
+// Both origins' folds of artifact `index` (`a`) against the spec: catalog
+// names, together exactly the folds of every stage that runs from the artifact
 // (a stage's folds are its own artifact's, D-113), and each naming a
 // tensor (by resource or expert array name) that some binding of the spec
 // reads from the artifact, so that a fold record describes tensors the
@@ -53,9 +54,12 @@ std::expected<void, std::string> CheckApplied(const artifact::Artifact& a, std::
   if (auto ok = CheckCatalog(a); !ok) {
     return ok;
   }
-  if (a.folds().empty()) {
-    return {};
-  }
+  std::set<std::string_view> recorded;
+  for (auto records : {a.folds(), a.source_folds()})
+    for (const auto& fold : records) recorded.insert(fold.name);
+  for (const auto& stage : spec.stages)
+    if (stage.artifact == index && !std::ranges::equal(stage.folds, recorded))
+      return Refuse(a.id(), "stored stage folds disagree with preprocessing receipts");
   std::set<std::string_view> bound;
   for (const Stage& s : spec.stages) {
     EachComponent(s, [&](const ComponentRef& c, const std::string&) {
@@ -73,18 +77,20 @@ std::expected<void, std::string> CheckApplied(const artifact::Artifact& a, std::
       }
     });
   }
-  for (const artifact::AppliedFold& f : a.folds()) {
-    const std::string where = std::format("artifact {} fold {}", a.id(), f.name);
-    for (const Stage& s : spec.stages) {
-      if (s.artifact == index && !std::ranges::contains(s.folds, f.name)) {
-        return Refuse(
-            where, std::format("applied by the importer but not among stage {}'s folds", s.name));
+  for (auto records : {a.folds(), a.source_folds()})
+    for (const artifact::AppliedFold& f : records) {
+      const std::string where = std::format("artifact {} fold {}", a.id(), f.name);
+      for (const Stage& s : spec.stages) {
+        if (s.artifact == index && !std::ranges::contains(s.folds, f.name)) {
+          return Refuse(
+              where, std::format("applied by the importer but not among stage {}'s folds", s.name));
+        }
+      }
+      if (std::ranges::any_of(f.tensors,
+                              [&](const std::string& t) { return !bound.contains(t); })) {
+        return Refuse(where, "names no tensor a stage of the spec binds from the artifact");
       }
     }
-    if (std::ranges::any_of(f.tensors, [&](const std::string& t) { return !bound.contains(t); })) {
-      return Refuse(where, "names no tensor a stage of the spec binds from the artifact");
-    }
-  }
   return {};
 }
 
@@ -292,13 +298,20 @@ std::expected<Source, std::string> SourceOf(const artifact::Artifact& artifact) 
            .folds = {}};
   for (const artifact::AppliedFold& f : artifact.folds()) {
     s.folds.push_back(f.name);
+    s.preprocessing.push_back({.name = f.name, .tensors = f.tensors});
   }
+  for (const artifact::AppliedFold& f : artifact.source_folds())
+    s.preprocessing.push_back({.name = f.name, .tensors = f.tensors, .source = true});
   for (const artifact::Resource& r : artifact.resources()) {
     if (!r.format) {
       return Refuse(r.name, "no tensor format");  // every v1 resource has one
     }
     for (const std::string& role : r.roles) {
-      s.tensors.push_back({.name = role, .format = *r.format, .part = r.part, .experts = false});
+      s.tensors.push_back({.name = role,
+                           .format = *r.format,
+                           .part = r.part,
+                           .experts = false,
+                           .storage = role == r.name ? std::string{} : r.name});
     }
   }
   for (const artifact::ExpertArray& a : artifact.expert_arrays()) {

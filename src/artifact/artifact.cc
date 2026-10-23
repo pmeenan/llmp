@@ -589,8 +589,8 @@ class Opener {
           return Pass(count);
         }
         slices_.emplace_back(*tensor, *count);
-      } else if (k == "fold" || k == "relayout") {
-        if (auto ok = CheckApplied(t, k == "fold", i); !ok) {
+      } else if (k == "fold" || k == "source-fold" || k == "relayout") {
+        if (auto ok = CheckApplied(t, k != "relayout", i, k == "source-fold"); !ok) {
           return ok;
         }
       } else {
@@ -611,12 +611,14 @@ class Opener {
     return {};
   }
 
-  // v1's `fold` {kind, fold, tensors} and `relayout` {kind, from, tensors}:
+  // v1's `fold` / `source-fold` {kind, fold, tensors} and
+  // `relayout` {kind, from, tensors}:
   // a fold catalog name, or the layout the tensors were relaid out from,
   // and the tensors (resource and expert array names, sorted, at least
   // one). Each fold and each `from` once. The tensors are resolved against
   // the index once it is read (CheckTransformationsMatch).
-  Step CheckApplied(json::Value t, bool fold, Item i) {
+  Step CheckApplied(json::Value t, bool fold, Item i, bool source_fold = false) {
+    auto& folds = source_fold ? applied_source_folds_ : applied_folds_;
     if (auto ok =
             fold ? schema::Object(t, {"kind", "fold", "tensors"}, {}, "transformation keys", i)
                  : schema::Object(t, {"kind", "from", "tensors"}, {}, "transformation keys", i);
@@ -631,7 +633,7 @@ class Opener {
         return Pass(n);
       }
       name = *n;
-      if (std::ranges::contains(applied_folds_, name, &Applied::name)) {
+      if (std::ranges::contains(folds, name, &Applied::name)) {
         return Fail(Rule::kSchema, "a fold recorded twice", i);
       }
     } else {
@@ -664,7 +666,7 @@ class Opener {
       }
       out.tensors.push_back(*tensor);
     }
-    (fold ? applied_folds_ : applied_relayouts_).push_back(std::move(out));
+    (fold ? folds : applied_relayouts_).push_back(std::move(out));
     return {};
   }
 
@@ -1491,7 +1493,7 @@ class Opener {
   // it has and which holds its format (a relayout is lossless only between
   // layouts of one format).
   Step CheckApplications() {
-    if (applied_folds_.empty() && applied_relayouts_.empty()) {
+    if (applied_folds_.empty() && applied_source_folds_.empty() && applied_relayouts_.empty()) {
       return {};
     }
     // Every v1 entry has a format (CheckResourceV1, CheckExpertArrays).
@@ -1507,15 +1509,21 @@ class Opener {
       return found == formats.end() ? nullptr : found->second;
     };
     std::set<std::string_view> relaid;
-    for (std::size_t k = 0; k < applied_folds_.size() + applied_relayouts_.size(); ++k) {
-      const bool fold = k < applied_folds_.size();
-      const Applied& a = fold ? applied_folds_[k] : applied_relayouts_[k - applied_folds_.size()];
+    std::set<std::pair<std::string_view, std::string_view>> folded;
+    const auto fold_count = applied_folds_.size() + applied_source_folds_.size();
+    for (std::size_t k = 0; k < fold_count + applied_relayouts_.size(); ++k) {
+      const bool fold = k < fold_count;
+      const Applied& a = k < applied_folds_.size() ? applied_folds_[k]
+                         : fold ? applied_source_folds_[k - applied_folds_.size()]
+                                : applied_relayouts_[k - fold_count];
       for (const std::string_view t : a.tensors) {
         const format::TensorFormat* f = named(t);
         if (f == nullptr) {
           return Fail(Rule::kSchema, "a fold or relayout names no resource or expert array", k);
         }
         if (fold) {
+          if (!folded.emplace(a.name, t).second)
+            return Fail(Rule::kSchema, "source and importer folds overlap", k);
           continue;
         }
         if (!relaid.insert(t).second) {
@@ -1530,6 +1538,10 @@ class Opener {
     }
     for (const Applied& a : applied_folds_) {
       artifact_.folds_.push_back(
+          {.name = std::string(a.name), .tensors = {a.tensors.begin(), a.tensors.end()}});
+    }
+    for (const Applied& a : applied_source_folds_) {
+      artifact_.source_folds_.push_back(
           {.name = std::string(a.name), .tensors = {a.tensors.begin(), a.tensors.end()}});
     }
     for (const Applied& a : applied_relayouts_) {
@@ -1707,6 +1719,7 @@ class Opener {
   std::vector<std::pair<std::string_view, std::string_view>> dedupes_;
   std::vector<std::pair<std::string_view, std::uint64_t>> slices_;
   std::vector<Applied> applied_folds_;
+  std::vector<Applied> applied_source_folds_;
   std::vector<Applied> applied_relayouts_;
   std::uint64_t applied_tensors_ = 0;
   std::uint64_t total_chunks_ = 0;

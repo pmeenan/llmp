@@ -15,9 +15,9 @@
 // carry a spec of its own (a text encoder usable alone) or none (a drafter
 // that reads its target).
 //
-// The folds the importer applied, which the artifact reader checks only by
-// pattern and against its tensors, must be fold catalog names and must be
-// among the folds of every stage that runs from that artifact (a stage's
+// Source-converter and importer folds, kept as distinct manifest records,
+// must be fold catalog names; their union must equal the folds of every
+// stage that runs from that artifact (a stage's
 // folds are its own artifact's: a composition's stages may come from
 // different containers), so that no component applies one again; and each
 // must name a tensor some binding of the spec reads from that artifact.

@@ -66,6 +66,19 @@ std::array<llmp::artifact::Source, 1> Origins(
   return {{{std::string(name), llmp::base::Bytes(bytes), digest}}};
 }
 
+// Descriptor fixtures explicitly enroll their captured converted/native conventions.
+// The production path obtains these records from the authenticated manifest.
+void FixturePreprocessing(const sp::ModelSpec& model, sp::Source& source) {
+  source.preprocessing.clear();
+  for (const auto& fold : model.stages.front().folds) {
+    auto names = llmp::components::FoldTensors(model, 0, fold);
+    ASSERT_TRUE(names) << names.error();
+    source.preprocessing.push_back({.name = fold,
+                                    .tensors = std::move(*names),
+                                    .source = !std::ranges::contains(source.folds, fold)});
+  }
+}
+
 class ComponentAdmissionTest : public testing::Test {
  protected:
   sp::Source source = llmp::test_support::Gemma2Source();
@@ -77,6 +90,7 @@ class ComponentAdmissionTest : public testing::Test {
     auto made = sp::Synthesize(sp::mappings::Gemma2Mapping(), source, *values);
     ASSERT_TRUE(made) << (made ? "" : made.error());
     model = std::move(*made);
+    FixturePreprocessing(model, source);
   }
 };
 
@@ -476,6 +490,7 @@ TEST(ComponentAdmissionModelOptTest, ServingNumericsUseOwnedFactsAndPayerInstead
 
 TEST_F(ComponentAdmissionTest, NativeNumericalContractsUseActualEncodingAcrossContainers) {
   auto fixture = llmp::test_support::qwen38::NativeModelOpt();
+  FixturePreprocessing(fixture.model, fixture.source);
   auto opt_origins = llmp::test_support::qwen38::ModelOptOrigins();
   auto owner = std::make_shared<NumericalOwner>();
   const auto funder = NumericalFunder(owner);
@@ -846,22 +861,46 @@ TEST_F(ComponentAdmissionTest, ApprovesCompleteNativeFormatsAndPreservesTheStore
             model.stages.front().heads.output->weights.front().tensor);
 }
 
+TEST_F(ComponentAdmissionTest, FoldReceiptsCoverEveryBoundRoleAndKeepTheirOrigin) {
+  ASSERT_EQ(source.preprocessing.size(), 1U);
+  ASSERT_GT(source.preprocessing[0].tensors.size(), 1U);
+  const auto original = source;
+  source.preprocessing[0].tensors.pop_back();
+  EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
+  source = original;
+  source.preprocessing[0].tensors.push_back("token_embd.weight");
+  std::ranges::sort(source.preprocessing[0].tensors);
+  EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
+  source = original;
+  source.preprocessing[0].source = false;
+  // A converter claim cannot stand in for the importer's separate fold inventory.
+  EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
+  source.folds = {"norm.plus_one"};
+  EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
+  source.preprocessing.push_back(original.preprocessing[0]);
+  EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
+}
+
 TEST_F(ComponentAdmissionTest, NativeDialectRequiresItsImporterFoldReceipt) {
   source.container = "safetensors";
+  source.preprocessing.clear();
   // Native source vectors have no converter-asserted fold. A folded stored
   // stage needs the importer's receipt, independent of the canonical registry pointer.
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
   source.folds = {"norm.plus_one"};
+  FixturePreprocessing(model, source);
   EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
   source.folds = {"norm.times_two"};
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
   source.folds = {"norm.plus_one"};
   source.container = "mlx";
+  EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
+  source.preprocessing.clear();
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
 }
 
 TEST_F(ComponentAdmissionTest,
-       UnpinnedOriginAdmitsValidSpecWhileMalformedOriginOrUnknownArchitectureFails) {
+       StoredSpecAdmitsUnregisteredArchitectureWhileMalformedOriginsStillFail) {
   origins[0].sha256[0] ^= 1;
   EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
   origins = Origins();
@@ -871,7 +910,11 @@ TEST_F(ComponentAdmissionTest,
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
   origins = Origins();
   source.architecture = "unknown_architecture";
-  EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
+  EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
+  EXPECT_EQ(rt::FindApproval(source.architecture, origins), nullptr);
+  auto policy = rt::ComponentAdmissionPolicy(model, source, origins, {.context = 128, .slots = 2});
+  ASSERT_TRUE(policy) << policy.error();
+  EXPECT_TRUE(policy->text.empty());
 }
 
 TEST_F(ComponentAdmissionTest, StoredContextAndArithmeticDoNotRequireHistoricalApproval) {
@@ -891,6 +934,7 @@ TEST_F(ComponentAdmissionTest, StoredContextAndArithmeticDoNotRequireHistoricalA
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
   model = original;
   source.folds = {"norm.plus_one"};
+  FixturePreprocessing(model, source);
   EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
 }
 
@@ -955,6 +999,7 @@ TEST(ComponentAdmissionQwenTest, FullNormalizedTargetKeepsItsUntiedHeadAndSource
               "f1912ba34c79427d2295a58dcb2b732b5931af5bef7a373c60557a57d9ee7250")[0]};
   auto model = normalized->spec();
   auto source = normalized->canonical();
+  FixturePreprocessing(model, source);
   const auto admitted = rt::CheckComponentAdmission(model, source, origins);
   ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
   EXPECT_TRUE(rt::OnComponentEngine("qwen4exp"));
@@ -1038,6 +1083,7 @@ class NativeGemmaAdmissionTest : public testing::TestWithParam<std::uint32_t> {
     auto made = sp::Synthesize(*sp::FindMapping(source.architecture), source, values);
     ASSERT_TRUE(made) << (made ? "" : made.error());
     model = std::move(*made);
+    FixturePreprocessing(model, source);
   }
 };
 TEST_P(NativeGemmaAdmissionTest, CapturedDirectoryAndSpecAreAcceptedWithoutMutation) {
@@ -1135,6 +1181,9 @@ TEST_P(NativeGemmaAdmissionTest, ChoosesExactProfileAndEnvelopeRecipeWithoutChec
   // A shorter, component-valid stage is a new valid geometry. Refusal is
   // structural, rather than a comparison with a historical layer count.
   model.stages.front().layers.pop_back();
+  if (!source.preprocessing.empty())
+    EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
+  FixturePreprocessing(model, source);
   EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
   EXPECT_TRUE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 4096, .slots = 2}));
   ASSERT_FALSE(model.stages.front().layers.front().components.front().weights.empty());
@@ -1476,6 +1525,7 @@ TEST(ComponentAdmissionDrafterTest, ComponentDrafterValuesApprovesV1DraftersAndR
 
 TEST(ComponentAdmissionModelOptTest, EquivalentScaleDeclarationsHaveTheSameStructuralEligibility) {
   auto fixture = llmp::test_support::qwen38::NativeModelOpt();
+  FixturePreprocessing(fixture.model, fixture.source);
   auto legacy = fixture.model;
   auto independent = fixture.model;
   for (auto& layer : legacy.stages[0].layers)
@@ -1571,9 +1621,38 @@ TEST(ComponentAdmissionModelOptTest, EquivalentScaleDeclarationsHaveTheSameStruc
       EXPECT_NE(grant.change, llmp::planner::NumericalChange::kNvfp4ExpertIntermediates);
 }
 
+TEST(ComponentAdmissionModelOptTest, GdnFoldClosureIncludesEveryPartButNotItsIndependentNorm) {
+  auto fixture = llmp::test_support::qwen38::NativeModelOpt();
+  FixturePreprocessing(fixture.model, fixture.source);
+  const auto origin = llmp::test_support::qwen38::ModelOptOrigins();
+  const auto receipt = std::ranges::find(fixture.source.preprocessing, "gdn.value_heads_tiled",
+                                         &sp::FoldReceipt::name);
+  ASSERT_NE(receipt, fixture.source.preprocessing.end());
+  ASSERT_TRUE(rt::CheckComponentAdmission(fixture.model, fixture.source, origin));
+  const auto original = receipt->tensors;
+  const auto scale = std::ranges::find_if(receipt->tensors, [&](const auto& name) {
+    const auto tensor = std::ranges::find(fixture.source.tensors, name, &sp::SourceTensor::name);
+    return tensor != fixture.source.tensors.end() && tensor->part == fm::PartRole::kBlockScales;
+  });
+  ASSERT_NE(scale, receipt->tensors.end());
+  receipt->tensors.erase(scale);
+  EXPECT_FALSE(rt::CheckComponentAdmission(fixture.model, fixture.source, origin));
+  receipt->tensors = original;
+  const auto& components = fixture.model.stages.front().layers.front().components;
+  const auto gdn = std::ranges::find(components, "attention.gdn", &sp::ComponentRef::kind);
+  ASSERT_NE(gdn, components.end());
+  const auto norm = std::ranges::find(gdn->weights, "norm", &sp::WeightBinding::role);
+  ASSERT_NE(norm, gdn->weights.end());
+  EXPECT_FALSE(std::ranges::contains(receipt->tensors, norm->tensor));
+  receipt->tensors.push_back(norm->tensor);
+  std::ranges::sort(receipt->tensors);
+  EXPECT_FALSE(rt::CheckComponentAdmission(fixture.model, fixture.source, origin));
+}
+
 TEST(ComponentAdmissionModelOptTest,
      FullNormalizedTargetPreservesNativeProfilePolicyAndClosedSourceAuthority) {
   auto fixture = llmp::test_support::qwen38::NativeModelOpt();
+  FixturePreprocessing(fixture.model, fixture.source);
   auto origins = llmp::test_support::qwen38::ModelOptOrigins();
   const auto& model = fixture.model;
   const auto& source = fixture.source;
@@ -1652,6 +1731,7 @@ TEST(ComponentAdmissionModelOptTest,
 TEST(ComponentAdmissionMlxTest,
      FullNormalizedTargetPreservesNativeProfilePolicyAndClosedSourceAuthority) {
   auto fixture = llmp::test_support::qwen38::NativeMlx();
+  FixturePreprocessing(fixture.model, fixture.source);
   auto origins = llmp::test_support::qwen38::MlxOrigins();
   const auto& model = fixture.model;
   const auto& source = fixture.source;

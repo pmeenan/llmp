@@ -773,6 +773,18 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
   EXPECT_EQ(ds->min_p, 0.05);
   EXPECT_EQ(ds->sampling_from, "the admitted stored spec");
 
+  // The same executable stored components do not need an import registry entry.
+  const auto generic_path = publish_v1(scratch / "generic", "unregistered_decoder", ds_spec);
+  const auto generic_art = llmp::artifact::Artifact::Open(generic_path);
+  ASSERT_TRUE(generic_art);
+  const auto generic = llmp::runtime::ArtifactFactsOf(*generic_art, nullptr);
+  ASSERT_TRUE(generic) << generic.error();
+  EXPECT_EQ(generic->approval, nullptr);
+  EXPECT_EQ(generic->trained_context, ds->trained_context);
+  EXPECT_EQ(generic->temperature, ds->temperature);
+  const auto generic_settings = Resolved(Model("generic"), *generic);
+  EXPECT_EQ(generic_settings.prefill_chunk.value, llmp::spec::kDefaultServingRecipe.prefill_rows);
+
   const ModelSettings sampled = Resolved(Model("ds"), *ds);
   EXPECT_EQ(sampled.temperature.value, 0.6);
   EXPECT_EQ(sampled.temperature.source, SettingSource::kDerived);

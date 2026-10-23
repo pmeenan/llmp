@@ -664,13 +664,18 @@ D-122).
         version no longer selecting a serving form (MTP replay is version 2
         today); one artifact identity rule (the raw-manifest SHA form
         dropped, D-121); serving reading the stored spec without
-        `FindMapping` for structure; startup composing and admitting once,
+        `FindMapping` for structure (the standalone target path now checks explicit
+        source/importer fold receipts and complete component role coverage;
+        Gemma2/Gemma3/Qwen GGUF [native publications](experiments/m35-source-fold/RESULTS.md)
+        retain complete index and tensor bytes, with only Qwen’s independently
+        documented sampling metadata added to its spec; four legacy drafter
+        StoredSpec/provenance migrations remain open); startup composing and admitting once,
         opening each artifact once and taking context and sampling from the
         spec rather than re-parsing kept `config.json` and GGUF metadata.
         A shared [ARM SHA2 hash path](experiments/m35-sha256-arm/README.md)
         preserves every verification pass and digest, with a portable fallback.
-        Its bounded synthetic screen passes; actual refreshed publications and
-        complete payload/spec proofs remain required for these migrations.
+        Its bounded synthetic screen and the three actual refreshed target
+        publication/index/payload/spec proofs pass; broader U3 work remains open.
         **Exit:** a dense family of a known shape is one mapping file and one
         registry line, and every published v1 artifact re-imports
         content-identical apart from the new provenance fields.

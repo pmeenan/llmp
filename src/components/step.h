@@ -176,6 +176,16 @@ std::expected<void, std::string> ValidateSpec(
     const spec::ModelSpec& spec, std::span<const BoundTensor> tensors,
     ValidationPurpose purpose = ValidationPurpose::kExecution);
 
+// Complete bound tensor names whose component roles carry a catalog fold.
+// The caller resolves tied aliases to storage identities before receipt comparison.
+std::expected<std::vector<std::string>, std::string> FoldTensors(const spec::ModelSpec& model,
+                                                                 std::uint32_t artifact,
+                                                                 std::string_view fold);
+// Authenticated source/importer records exactly cover each declared fold's roles.
+std::expected<void, std::string> ValidateFoldReceipts(const spec::ModelSpec& model,
+                                                      std::uint32_t artifact,
+                                                      const spec::Source& source);
+
 // A stage's per-layer contracts (each layer's components' concatenated,
 // layer 0's after the embedding's), for model::Layout; layers without
 // state are left out.

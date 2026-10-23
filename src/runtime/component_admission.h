@@ -37,8 +37,8 @@ struct StepBackend;
 
 namespace llmp::runtime {
 
-// One authority for current production component serving: an architecture
-// whose mapping carries a serving or drafting recipe (spec/mapping.h).
+// Discovery of an existing serving/drafting overlay. Target admission instead
+// validates its stored spec and preprocessing, independent of this registry query.
 bool OnComponentEngine(std::string_view architecture);
 // The mapping a composition uses for a drafter architecture (its drafting
 // recipe's replay form, or its own); null when it has none.
@@ -162,8 +162,7 @@ std::expected<void, std::string> CheckComponentDrafterAdmission(
     const spec::Source& source, std::span<const artifact::Source> origins);
 
 // The artifact-level prerequisites, before its spec or source is read: a v1
-// artifact with well-formed source receipts, an architecture with a mapping,
-// and valid scale-atom expert slots.
+// artifact with well-formed source receipts and valid scale-atom expert slots.
 std::expected<void, std::string> CheckArtifactPrerequisites(const artifact::Artifact& artifact);
 // The whole admission of a target or drafter artifact, by its mapping's
 // role (ReadComponentAdmission or ReadComponentDrafterAdmission, results

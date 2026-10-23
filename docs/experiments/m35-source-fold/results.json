@@ -1,0 +1,428 @@
+{
+  "schema": "llmp.source-fold-publication.v1",
+  "date": "2026-10-22",
+  "status": "All three native publication/parity/readback proofs independently reviewed; canonical promotion and peer full-file verification PASS on both Sparks; three current ID mappings and Qwen sampling spec pin adopted",
+  "source_manifest_sha256": "33c45f942ca0067b27b4853b7062ad1c8a15eeea28b12c58dd96835950da2ba7",
+  "native_receipt": {
+    "source_sha256": "33c45f942ca0067b27b4853b7062ad1c8a15eeea28b12c58dd96835950da2ba7",
+    "compiler_sha256": "a71e8163bfd8166f0b79e4fb6c345b821ae1c41a68410b058dc6439154ffb721",
+    "compiler_version": "Ubuntu clang version 22.1.8 (++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80)\nTarget: aarch64-unknown-linux-gnu\nThread model: posix\nInstalledDir: /home/pmeenan/.local/share/llmp/sdk/aarch64-2c4eb5b2f68f3fa5/pkgs/llvm/usr/lib/llvm-22/bin\n",
+    "ctest_sha256": "35a0f6e7d60b5af14b566cb01850ffba91c16c04e619bf926985801648a46ee3",
+    "receipt_sha256": "5390ed59a7019a6e3b14f355b60b6c2fe3bb884adf4153f6f0665f2ca7d89578",
+    "binaries": {
+      "src/cli/llmp": "0092ab6bd491734cc2a2586b525080b7ce8802ad653963268000120545ff68f5",
+      "tests/unit/import_models_test": "be6a79238f2d6d8893a90856af2c8b1323d302ab4c694de00b35aa4b80a2b317"
+    }
+  },
+  "recipe_sha256": "8d6c2d40452738e68628b94b5d1f350d12dfd52acf0ba609c04b1ab6935c15b6",
+  "cases": [
+    {
+      "name": "gemma2",
+      "source": [
+        {
+          "bytes": 2784495456,
+          "name": "gemma-2-2b-it-Q8_0.gguf",
+          "sha256": "2d448a9aab894b8e8e18168cf3f490cb9f65632222f29f93514ac9ecc754debe"
+        }
+      ],
+      "archive_revision": "855f67caed130e1befc571b52bd181be2e858883",
+      "archive_manifest_sha256": "53bcc37c7122c1c7b4990fd8315652697a9707500c0134931d8a5d52f7c580fa",
+      "publication": {
+        "capacity_preflight_bytes": 10621152896,
+        "elapsed_s": 12.464502138085663,
+        "free_bytes_before": 744440594432,
+        "log_sha256": "b467dcae04ae33c1aa3f4a5b66cb423a86808694bf08db232b47ac2d77e18ab3",
+        "name": "gemma2",
+        "native_receipt_sha256": "7daa1c91205d130c2e8d0d0da6d24ee10a1c40d23327d14925206bcfd7b39cc0",
+        "new_id": "151bedf7db2629c33283bfc66fd4c567a1f45492d8bf661758745a4f9928e1de",
+        "old_id": "92bbb574ec219595d5942f05d1cce9480229b4bac5b7e22205af74499133ab4e",
+        "raw_manifest_sha256": "0728a6166bd9ca6c3b52024fe1166915f4de5d95d9524706efc413c60f246395",
+        "source_sha256": "33c45f942ca0067b27b4853b7062ad1c8a15eeea28b12c58dd96835950da2ba7"
+      },
+      "old_spec_sha256": "5d9a04370e581d5bddc1eeda9b1c4eb6222372ec5bd0d3db723bafacc999c28f",
+      "new_spec_sha256": "5d9a04370e581d5bddc1eeda9b1c4eb6222372ec5bd0d3db723bafacc999c28f",
+      "spec_delta": [],
+      "full_index": {
+        "full_index_byte_equal": true,
+        "old_sha256": "5d71f838f8b09cba4dc0c0dc8e14ae5b3849900c0e2a23b2becc8d9af9c60829",
+        "new_sha256": "5d71f838f8b09cba4dc0c0dc8e14ae5b3849900c0e2a23b2becc8d9af9c60829",
+        "coverage": "Complete groups/shards/resources/expert arrays, roles, access, readable_bytes, formats, part kinds, layout geometry and physical offsets; no descriptor exclusion"
+      },
+      "payload": {
+        "old": {
+          "artifact": "/home/pmeenan/.local/share/llmp/u2-v1-artifacts/92bbb574ec219595d5942f05d1cce9480229b4bac5b7e22205af74499133ab4e",
+          "elapsed_s": 3.351022084709257,
+          "payload_bytes": 2778448896,
+          "payload_digest": "b2b8d3fb66f00a20b4130152ba19d11475409ff8d58135ba3be4c8910ab8640e",
+          "semantic_digest": "c859be8b68c24096480f3b0487886a06e52ef02b096db554e432989014564a12",
+          "tensor_parts": 288
+        },
+        "new": {
+          "artifact": "/home/pmeenan/.local/share/llmp/u3-source-fold-proof-r1/151bedf7db2629c33283bfc66fd4c567a1f45492d8bf661758745a4f9928e1de",
+          "elapsed_s": 1.3133475291542709,
+          "payload_bytes": 2778448896,
+          "payload_digest": "b2b8d3fb66f00a20b4130152ba19d11475409ff8d58135ba3be4c8910ab8640e",
+          "semantic_digest": "c859be8b68c24096480f3b0487886a06e52ef02b096db554e432989014564a12",
+          "tensor_parts": 288
+        }
+      },
+      "all_payload_equal": true,
+      "all_listed_files_identical": true,
+      "only_manifest_changed_fields": [
+        "importer",
+        "transformations"
+      ],
+      "fold_receipts": [
+        {
+          "kind": "source-fold",
+          "fold": "norm.plus_one",
+          "tensors": 105
+        }
+      ],
+      "new_modes": {
+        "directories": "0700",
+        "files": "0600"
+      },
+      "native_readback": {
+        "cases": 1,
+        "complete": true,
+        "ctest_returncode": 0,
+        "failures": [],
+        "full_log_sha256": "d9e1f6b757d9ce4e21dd60ed20cafa5314398cb24af97df53e76b1b927ff2f29",
+        "inner": {
+          "properties": {
+            "metadata_keys": "39"
+          },
+          "result": "completed",
+          "status": "run",
+          "xml_sha256": "5cf4e42344f5f93083ee82cebd8589513af8033b465423cc4ed8d7f52e406777"
+        },
+        "lasttest_sha256": "9607dcc3652eef0514a97b2803d932ede85f896dba4763a8bf0d9ae43112b2b5",
+        "normalized_inventory_digest": "9226a9c0dd44c89a93b79e4a1df270c41206f338661e4184f12aae95ff5acccf",
+        "normalized_spec_digest": "5d9a04370e581d5bddc1eeda9b1c4eb6222372ec5bd0d3db723bafacc999c28f",
+        "skips": [],
+        "xml_sha256": "bb808480f71373eb81b917d6e1e893b9957060a31be4ac2783ec9fe1a4e02f6d"
+      }
+    },
+    {
+      "name": "gemma3",
+      "source": [
+        {
+          "bytes": 2526080992,
+          "name": "gemma-3-4b-it-qat-Q4_0.gguf",
+          "sha256": "ee91c3e7a4ab95d8c95672f9fcb58bf236b257e9f217966bcf53a5a6df4ab49a"
+        }
+      ],
+      "archive_revision": "bbcac0d065076c47042838c0675c602411b0dd4c",
+      "archive_manifest_sha256": "d19957e1857927370ec67667418ba2479d57a6118d5ef5144abba38218579e7b",
+      "publication": {
+        "capacity_preflight_bytes": 10621152896,
+        "elapsed_s": 11.318196008913219,
+        "free_bytes_before": 741651902464,
+        "log_sha256": "6bcb7219e53c9001dc1cb88282e7dc7c99ae134f7b9a83505221879c404a9795",
+        "name": "gemma3",
+        "native_receipt_sha256": "7daa1c91205d130c2e8d0d0da6d24ee10a1c40d23327d14925206bcfd7b39cc0",
+        "new_id": "e6174d3acddbc922af86df7be0b3171b98dbf4d65cd317caf721c75f857ff70b",
+        "old_id": "5d4674ce19e5783cea12775502f7ca23cbb2e6f2111efa2346c58bcd53482ece",
+        "raw_manifest_sha256": "3d7939db3ff6c59a99420fb40f450b757964c84ab91629a4409026c1f0a64858",
+        "source_sha256": "33c45f942ca0067b27b4853b7062ad1c8a15eeea28b12c58dd96835950da2ba7"
+      },
+      "old_spec_sha256": "0f0346b9626697e65fb5ec0ba2506b34af86eb8e0e52000a53ff1b03722741fb",
+      "new_spec_sha256": "0f0346b9626697e65fb5ec0ba2506b34af86eb8e0e52000a53ff1b03722741fb",
+      "spec_delta": [],
+      "full_index": {
+        "full_index_byte_equal": true,
+        "old_sha256": "be24b2030a35d1c4e6b7a8eb62be6e0d6614f334f2d2d42b0b1cb19b4ca96107",
+        "new_sha256": "be24b2030a35d1c4e6b7a8eb62be6e0d6614f334f2d2d42b0b1cb19b4ca96107",
+        "coverage": "Complete groups/shards/resources/expert arrays, roles, access, readable_bytes, formats, part kinds, layout geometry and physical offsets; no descriptor exclusion"
+      },
+      "payload": {
+        "old": {
+          "artifact": "/home/pmeenan/.local/share/llmp/u2-v1-artifacts/5d4674ce19e5783cea12775502f7ca23cbb2e6f2111efa2346c58bcd53482ece",
+          "elapsed_s": 3.0552814067341387,
+          "payload_bytes": 2519539712,
+          "payload_digest": "a84fec831e289d7da020f5e88a0d7499d10112280fd71cf6de34ff825d9fd8fc",
+          "semantic_digest": "57346d88a416a42b081159033d0f4b1935d40e6efe8e4a037eb487c106be6e44",
+          "tensor_parts": 444
+        },
+        "new": {
+          "artifact": "/home/pmeenan/.local/share/llmp/u3-source-fold-proof-r1/e6174d3acddbc922af86df7be0b3171b98dbf4d65cd317caf721c75f857ff70b",
+          "elapsed_s": 1.2653500540181994,
+          "payload_bytes": 2519539712,
+          "payload_digest": "a84fec831e289d7da020f5e88a0d7499d10112280fd71cf6de34ff825d9fd8fc",
+          "semantic_digest": "57346d88a416a42b081159033d0f4b1935d40e6efe8e4a037eb487c106be6e44",
+          "tensor_parts": 444
+        }
+      },
+      "all_payload_equal": true,
+      "all_listed_files_identical": true,
+      "only_manifest_changed_fields": [
+        "importer",
+        "transformations"
+      ],
+      "fold_receipts": [
+        {
+          "kind": "source-fold",
+          "fold": "norm.plus_one",
+          "tensors": 205
+        }
+      ],
+      "new_modes": {
+        "directories": "0700",
+        "files": "0600"
+      },
+      "native_readback": {
+        "cases": 1,
+        "complete": true,
+        "ctest_returncode": 0,
+        "failures": [],
+        "full_log_sha256": "db5a5e066fc1046a01ae0b5e63d661c33d6faedee90027502ea5a26c5efe4aa0",
+        "inner": {
+          "properties": {
+            "metadata_keys": "41"
+          },
+          "result": "completed",
+          "status": "run",
+          "xml_sha256": "7888435849c76a9c3f132f822feed4b29d1e42683c20a9c9bdced6dea4708de2"
+        },
+        "lasttest_sha256": "edb232a40b7ecd7f45785db440ffa5717f62ab49819b177a9b7190db05df8877",
+        "normalized_inventory_digest": "d501778ae71d4f06eb5def6f8c510ff3f46fc393df1c611e8b9f3962a504c086",
+        "normalized_spec_digest": "0f0346b9626697e65fb5ec0ba2506b34af86eb8e0e52000a53ff1b03722741fb",
+        "skips": [],
+        "xml_sha256": "5be0ae6b00e42d1a7ac0f25832647d7ea5862454bbecc3ac258e21cdabf7091e"
+      }
+    },
+    {
+      "name": "qwen38-gguf",
+      "recipe_sha256": "19f5ef2e977f050c8e5e4c80ae8ddaf7475c40a6f506739b92df3da8c4328d95",
+      "source": [
+        {
+          "bytes": 10946624,
+          "name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
+          "sha256": "268f81fdedf3149a538f252308927a4d5d1f6e062c178568a51e3b519744f8a8"
+        },
+        {
+          "bytes": 49567921344,
+          "name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf",
+          "sha256": "cfe600b236b88c7fad1613a5ca5e83b9f2beb63cbd44c32b2be50a44747c695f"
+        },
+        {
+          "bytes": 32382955968,
+          "name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf",
+          "sha256": "f1912ba34c79427d2295a58dcb2b732b5931af5bef7a373c60557a57d9ee7250"
+        }
+      ],
+      "archive_revision": "38bb39ee97821de2c9009abb7e93950eec396e66",
+      "archive_manifest_sha256": "506dfcaff491132eadb74e9c5f13f42dbe5f9668289aa130e0790c7fc4a549dc",
+      "publication": {
+        "capacity_preflight_bytes": 163923647872,
+        "elapsed_s": 436.7498809588142,
+        "free_bytes_before": 739114500096,
+        "log_sha256": "e38f4ca92fa90e68048d2e6346b93afdd9237dddbdc9713d1bd912c0de30e7c1",
+        "name": "qwen38-gguf",
+        "native_receipt_sha256": "7daa1c91205d130c2e8d0d0da6d24ee10a1c40d23327d14925206bcfd7b39cc0",
+        "new_id": "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8",
+        "old_id": "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027",
+        "raw_manifest_sha256": "61827c2fdd87aabd0ee6371054358b6f90433d9452ceef1910edcbe130268be1",
+        "source_sha256": "33c45f942ca0067b27b4853b7062ad1c8a15eeea28b12c58dd96835950da2ba7"
+      },
+      "old_spec_sha256": "dbbce592f38d0ec8c5fc96b1255e0821b3bf80600a6ad89e068cd39cd90fa72b",
+      "new_spec_sha256": "74116647d445819311c58dc16336099c95d675d827a5cd4125cfd88fadbd47cb",
+      "spec_delta": [
+        {
+          "new": {
+            "temperature": "1",
+            "top_k": 20,
+            "top_p": "0.949999988079071"
+          },
+          "old": null,
+          "path": "/stages/0/sampling"
+        }
+      ],
+      "historical_spec_reconstruction": "Remove exactly stage0 sampling; complete JSON equals old stored spec, with expected new full digest independently recorded by W7",
+      "full_index": {
+        "coverage": "Complete index JSON including roles/access/readable_bytes and every group/expert semantic; no descriptor exclusion",
+        "full_index_byte_equal": true,
+        "new_sha256": "40803567725558418f1993e1c50948870d92ea7022fea40151846334fbd03d70",
+        "old_sha256": "40803567725558418f1993e1c50948870d92ea7022fea40151846334fbd03d70"
+      },
+      "payload": {
+        "old": {
+          "artifact": "/home/pmeenan/.local/share/llmp/u2-v1-artifacts/f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027",
+          "elapsed_s": 104.88098165718839,
+          "payload_bytes": 81950799360,
+          "payload_digest": "44f61abb8bc69563a8ce691ad0eae4b7e1cdb156144dbddad40c4f0a8a6d8a73",
+          "semantic_digest": "7e725b53f4a6ac03c63c36aa53ed46c10ab1f31b6ecf36bee3f87807b8e7e6dd",
+          "tensor_parts": 74808
+        },
+        "new": {
+          "artifact": "/home/pmeenan/.local/share/llmp/u3-source-fold-qwen-proof-r1/b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8",
+          "elapsed_s": 68.92030905000865,
+          "payload_bytes": 81950799360,
+          "payload_digest": "44f61abb8bc69563a8ce691ad0eae4b7e1cdb156144dbddad40c4f0a8a6d8a73",
+          "semantic_digest": "7e725b53f4a6ac03c63c36aa53ed46c10ab1f31b6ecf36bee3f87807b8e7e6dd",
+          "tensor_parts": 74808
+        }
+      },
+      "all_payload_equal": true,
+      "only_listed_file_changed": "spec.json",
+      "only_manifest_changed_fields": [
+        "files",
+        "importer",
+        "transformations"
+      ],
+      "fold_receipts": [
+        {
+          "kind": "source-fold",
+          "fold": "gdn.value_heads_tiled",
+          "tensors": 288
+        },
+        {
+          "kind": "source-fold",
+          "fold": "norm.plus_one",
+          "tensors": 148
+        },
+        {
+          "kind": "source-fold",
+          "fold": "ssm.a_neg_exp",
+          "tensors": 36
+        }
+      ],
+      "existing_expert_slice_records": 144,
+      "new_modes": {
+        "directories": "0700",
+        "files": "0600"
+      },
+      "native_readback": {
+        "cases": 1,
+        "complete": true,
+        "ctest_returncode": 0,
+        "failures": [],
+        "full_log_sha256": "2a724f0b3de686e3355a46d40827cdf4646f3b48f635e9efeca70bfd0f30a0a7",
+        "inner": {
+          "properties": {
+            "normalized_inventory_digest": "aadc75f3c68af677f52c9680de79b8f8c818c4f4ffd7744f77ae8c6ac8069585",
+            "normalized_spec_digest": "74116647d445819311c58dc16336099c95d675d827a5cd4125cfd88fadbd47cb",
+            "source_tensors": "1224",
+            "v1_tensors": "1224",
+            "v1_tensors_compared": "1224"
+          },
+          "result": "completed",
+          "status": "run",
+          "xml_sha256": "f08c38853824a939760fd60f488138ae18d776df28df7b1d5197eed765c886f9"
+        },
+        "lasttest_sha256": "89f961d9c27f010fb8d85d40068dff4438d1b542323c84b79fa5ab9b7b196afc",
+        "skips": [],
+        "xml_sha256": "db4aa03bc05da7d673379f25efcf98bf5be1ddadd77b827a4f631c480b9f0554"
+      }
+    }
+  ],
+  "canonical_promotion": {
+    "host": "spark",
+    "complete": true,
+    "elapsed_s": 139.3005821639672,
+    "receipt_sha256": "0deafb1d9c34fb1f974157755f2310f98c8ef4a189fefbb55d246245bb30713e",
+    "job": "m35-source-fold-promote-a-r1",
+    "artifacts": [
+      {
+        "name": "gemma2",
+        "id": "151bedf7db2629c33283bfc66fd4c567a1f45492d8bf661758745a4f9928e1de",
+        "linked_files": 4,
+        "linked_bytes": 2784826768,
+        "link_source": "private proof publication",
+        "full_files_sha256_verified": true,
+        "directories": "0700",
+        "files": "0600"
+      },
+      {
+        "name": "gemma3",
+        "id": "e6174d3acddbc922af86df7be0b3171b98dbf4d65cd317caf721c75f857ff70b",
+        "linked_files": 4,
+        "linked_bytes": 2526416112,
+        "link_source": "private proof publication",
+        "full_files_sha256_verified": true,
+        "directories": "0700",
+        "files": "0600"
+      },
+      {
+        "name": "qwen38-gguf",
+        "id": "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8",
+        "linked_files": 20,
+        "linked_bytes": 82054585147,
+        "link_source": "private proof publication",
+        "full_files_sha256_verified": true,
+        "directories": "0700",
+        "files": "0600"
+      }
+    ]
+  },
+  "independent_review": {
+    "source-fold-migration-review-r1.json": {
+      "sha256": "7cbcc491bae451882650dc3346b6ac6af7026332d677ef99b3e250edc00a7251",
+      "verdict": "CLEAN actual Gemma2 and Gemma3 publication/parity/import controls; Qwen not yet reviewed"
+    },
+    "source-fold-qwen-review-r1.json": {
+      "sha256": "91ebdbe35f6b9ce5fa2d6759eec7b44ee969f6dc4ab0996ea971e0ff0458ab76",
+      "verdict": "CLEAN completed Qwen publication, full payload/index parity, source-fold closure and native import control; combined Gemma2/Gemma3/Qwen migration evidence CLEAN"
+    },
+    "source-fold-adoption-review-r1.json": {
+      "sha256": "aac73c0ae916d55664af7fa8a6b23885ce5c2c453de5faf5487630c40231aa0a",
+      "verdict": "CLEAN with low status-wording clarification for final landing"
+    }
+  },
+  "peer_copy": {
+    "host": "spark-b",
+    "complete": true,
+    "elapsed_s": 153.0213705189526,
+    "receipt_sha256": "3528b3b971ffc36d2da0d6c5330e8f24f7d9f1168194c933d99ad9dba9c58dfe",
+    "job": "m35-source-fold-peer-b-r1",
+    "paired_sender_job": "m35-source-fold-send-a-r1",
+    "transfer_bytes": {
+      "Total transferred file size": 163675,
+      "Literal data": 25383,
+      "Matched data": 138292
+    },
+    "artifacts": [
+      {
+        "name": "gemma2",
+        "id": "151bedf7db2629c33283bfc66fd4c567a1f45492d8bf661758745a4f9928e1de",
+        "linked_files": 4,
+        "linked_bytes": 2784826768,
+        "link_source": "unchanged prior canonical artifact files",
+        "full_files_sha256_verified": true,
+        "directories": "0700",
+        "files": "0600"
+      },
+      {
+        "name": "gemma3",
+        "id": "e6174d3acddbc922af86df7be0b3171b98dbf4d65cd317caf721c75f857ff70b",
+        "linked_files": 4,
+        "linked_bytes": 2526416112,
+        "link_source": "unchanged prior canonical artifact files",
+        "full_files_sha256_verified": true,
+        "directories": "0700",
+        "files": "0600"
+      },
+      {
+        "name": "qwen38-gguf",
+        "id": "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8",
+        "linked_files": 19,
+        "linked_bytes": 82054459385,
+        "link_source": "unchanged prior canonical artifact files",
+        "full_files_sha256_verified": true,
+        "directories": "0700",
+        "files": "0600"
+      }
+    ],
+    "original_artifacts": "Original bytes and modes retained; hard-link reuse increases inode link counts"
+  },
+  "adoption_scope": {
+    "active_artifact_ids_changed": 3,
+    "approval_spec_pins_changed": 1,
+    "composition_bindings_changed": 0,
+    "numerical_oracles_changed": 0,
+    "performance_exceptions_changed": 0,
+    "four_legacy_drafter_migrations": "OPEN",
+    "broader_U3": "OPEN"
+  }
+}

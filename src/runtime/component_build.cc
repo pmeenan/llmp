@@ -301,7 +301,7 @@ std::expected<PreparedPlacement, std::string> PrepareComponentPlacement(
 
 std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSources(
     ComponentHold& hold, const ComponentBuildOptions& options, const spec::PolicyRule& composition,
-    bool forced, bool speculate, const spec::Mapping* mapping, const spec::Mapping* drafter_mapping,
+    bool forced, bool speculate, const spec::Mapping* drafter_mapping,
     const base::Sha256Digest& bound, std::uint32_t slots, std::uint32_t context,
     const std::shared_ptr<const engine::NumericalDomain>& execution_domain,
     const ja::Artifact& artifact, const ja::Artifact* drafter) {
@@ -366,7 +366,7 @@ std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSou
                       .stages = hold.stages,
                       .artifacts = hold.tables},
          .bound_digest = bound,
-         .mapping = stage == 0 ? mapping : drafter_mapping,
+         .mapping = stage == 0 ? nullptr : drafter_mapping,
          .values = stage == 0 ? std::span<const spec::SourceValue>{}
                               : std::span<const spec::SourceValue>(hold.drafter_values),
          .slots = slots,
@@ -543,14 +543,8 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
     auto& stored_metadata = preparation->stored_metadata;
     // The architecture's serving recipe (its mapping's data or the default
     // target LLM recipe, spec/mapping.h).
-    const spec::Mapping* recipe_mapping =
-        spec::FindMapping(settings.architecture, settings.container);
-    const spec::ServingRecipe* recipe_ptr =
-        recipe_mapping != nullptr ? spec::ServingRecipeOf(*recipe_mapping) : nullptr;
-    if (recipe_ptr == nullptr)
-      return Error(
-          std::format("the component engine serves no architecture {}", settings.architecture));
-    const spec::ServingRecipe& recipe = *recipe_ptr;
+    const auto* recipe_ptr = RecipeOf(settings.architecture, settings.container);
+    const auto& recipe = recipe_ptr ? *recipe_ptr : spec::kDefaultServingRecipe;
     const auto metadata_cap =
         [&node, startup_cap =
                     options.automatic_startup_cap]() -> std::expected<std::uint64_t, std::string> {
@@ -653,9 +647,6 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
                                       *structure_cap, platform::AvailableMemoryBytes().value_or(0));
     if (!structure_payment) return Error(structure_payment.error());
 
-    const spec::Mapping* mapping =
-        spec::FindMapping(artifact->model().architecture, artifact->model().container);
-    if (mapping == nullptr) return Error("the artifact's architecture has no mapping");
     if (settings.architecture != artifact->model().architecture ||
         settings.container != artifact->model().container)
       return Error("resolved architecture/container differs from the opened artifact");
@@ -1037,7 +1028,7 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
         return Error(declared.error());
     }
 
-    auto sealed = SealComponentSources(*hold, options, composition, forced, speculate, mapping,
+    auto sealed = SealComponentSources(*hold, options, composition, forced, speculate,
                                        drafter_mapping, *bound, slots, context, execution_domain,
                                        *artifact, drafter ? &*drafter : nullptr);
     if (!sealed) return Error(sealed.error());

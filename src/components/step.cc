@@ -2575,4 +2575,99 @@ std::expected<void, std::string> VisitWeightBindings(
   return {};
 }
 
+std::expected<std::vector<std::string>, std::string> FoldTensors(const spec::ModelSpec& model,
+                                                                 std::uint32_t artifact,
+                                                                 std::string_view fold) {
+  if (!spec::FindFold(fold)) return Refused("preprocessing fold is absent from the catalog");
+  std::set<std::string_view> names;
+  std::string error;
+  for (const auto& stage : model.stages)
+    spec::EachComponent(stage, [&](const spec::ComponentRef& component, const std::string&) {
+      const auto* def = Find(component.kind, component.version);
+      if (!def) {
+        error = "preprocessing component is absent from the catalog";
+        return;
+      }
+      for (const auto& binding : component.weights) {
+        const auto* holder = spec::HoldingStage(model, stage, binding);
+        const auto role = RoleIndex(*def, binding.role);
+        if (!holder || !role) {
+          error = "preprocessing binding is invalid";
+          continue;
+        }
+        if (holder->artifact != artifact) continue;
+        const auto& declaration = def->roles[*role];
+        if (declaration.derived.fold == fold || declaration.ordering_fold == fold)
+          names.insert(binding.tensor);
+      }
+    });
+  if (!error.empty()) return Refused(std::move(error));
+  std::vector<std::string> out;
+  for (auto name : names) out.emplace_back(name);
+  return out;
+}
+
+std::expected<void, std::string> ValidateFoldReceipts(const spec::ModelSpec& model,
+                                                      std::uint32_t artifact,
+                                                      const spec::Source& source) {
+  std::map<std::string_view, const spec::SourceTensor*> tensors;
+  for (const auto& tensor : source.tensors)
+    if (!tensors.emplace(tensor.name, &tensor).second)
+      return Refused("preprocessing tensor names are duplicated");
+  for (const auto& tensor : source.tensors) {
+    if (tensor.storage.empty()) continue;
+    const auto storage = tensors.find(tensor.storage);
+    if (storage == tensors.end() || !storage->second->storage.empty() ||
+        storage->second->format != tensor.format || storage->second->part != tensor.part ||
+        storage->second->experts != tensor.experts)
+      return Refused("preprocessing tied alias disagrees with canonical tensor storage");
+  }
+  std::map<std::string_view, std::set<std::string_view>> recorded;
+  std::set<std::pair<std::string_view, bool>> categories;
+  std::set<std::string_view> imported;
+  for (const auto& receipt : source.preprocessing) {
+    if (!spec::FindFold(receipt.name) || receipt.tensors.empty() ||
+        !categories.emplace(receipt.name, receipt.source).second)
+      return Refused("preprocessing receipt name, coverage or origin is invalid");
+    if (!receipt.source) imported.insert(receipt.name);
+    auto& names = recorded[receipt.name];
+    std::string_view previous;
+    for (const auto& name : receipt.tensors) {
+      if ((!previous.empty() && previous >= name) || !names.insert(name).second)
+        return Refused("preprocessing receipt tensors overlap or are not canonical");
+      previous = name;
+      const auto at = tensors.find(name);
+      if (at == tensors.end() || (!at->second->storage.empty() && at->second->storage != name))
+        return Refused("preprocessing receipt does not name canonical tensor storage");
+      if (!receipt.source && (receipt.name == "norm.plus_one" || receipt.name == "ssm.a_neg_exp") &&
+          (at->second->format.encoding != format::Encoding::kF32 ||
+           at->second->part != format::PartRole::kData))
+        return Refused("native scalar fold does not carry its F32 data part");
+    }
+  }
+  if (!std::ranges::equal(source.folds, imported))
+    return Refused("native folds disagree with preprocessing receipts");
+  for (const auto& stage : model.stages) {
+    if (stage.artifact != artifact) continue;
+    if (stage.folds.size() != recorded.size() ||
+        !std::ranges::all_of(stage.folds,
+                             [&](const auto& name) { return recorded.contains(name); }))
+      return Refused("stored stage folds disagree with preprocessing receipts");
+  }
+  for (const auto& [fold, actual] : recorded) {
+    auto bound = FoldTensors(model, artifact, fold);
+    if (!bound) return std::unexpected(bound.error());
+    std::set<std::string_view> expected;
+    for (const auto& name : *bound) {
+      const auto at = tensors.find(name);
+      if (at == tensors.end()) return Refused("preprocessing role names an absent tensor");
+      expected.insert(at->second->storage.empty() ? std::string_view(at->second->name)
+                                                  : std::string_view(at->second->storage));
+    }
+    if (expected.empty() || expected != actual)
+      return Refused("preprocessing receipt does not cover the complete component tensor roles");
+  }
+  return {};
+}
+
 }  // namespace llmp::components

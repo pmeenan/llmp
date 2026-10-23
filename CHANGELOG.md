@@ -24,6 +24,11 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Gemma 2, Gemma 3 and Qwen3.8 GGUF publications carry explicit source-fold
+  provenance for spec-based serving admission. Complete index and tensor bytes
+  are unchanged; Qwen also stores its existing source sampling defaults
+  ([proof](docs/experiments/m35-source-fold/RESULTS.md)).
+
 - SHA-256 uses runtime-selected ARM SHA2 instructions where available, with a
   portable scalar fallback and unchanged digests, artifact IDs and verification
   passes ([bounded hash screen](docs/experiments/m35-sha256-arm/README.md)).
@@ -1373,6 +1378,11 @@ The entries below record each change; the record of the milestone is
   evidence and known divergences.
 
 ### Changed
+
+- Standalone component targets validate stored preprocessing receipts and tensor roles
+  without requiring an import mapping. Converter folds have explicit `source-fold`
+  provenance; affected older artifacts require republication. Known performance
+  policies and importer-specific approval evidence retain their existing scope.
 
 - Bare JSON tool-call terminal and candidate checks retain incremental envelope
   metadata instead of rescanning accepted argument prefixes.

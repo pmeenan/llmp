@@ -4,7 +4,7 @@
 // Single-slot screens through the real Server and Llm on the published v1
 // Qwen3.8 artifacts (tests/support/v1_frozen.h V1Store: the native ModelOpt
 // target 02354af1 with its MTP drafter 2cb4cdb8, and the GGUF import
-// f60d801a). Two arms of one binary draft and judge their own outputs and
+// b31c469e). Two arms of one binary draft and judge their own outputs and
 // must agree bit for bit; the GGUF publication arm is asserted against its
 // frozen digests (tests/unit/data/v1_frozen/qwen38_gguf.json). No
 // graph/source wrapper or teacher-forced proposals. This small screen is
@@ -152,7 +152,9 @@ static_assert(sizeof(llmp::artifact::Resource) <= 512 &&
               sizeof(llmp::artifact::ExpertArray) <= 512 && sizeof(llmp::artifact::Group) <= 64);
 static_assert(sizeof(llmp::engine::SlabPage) <= 128 && sizeof(llmp::scheduler::PageSource) <= 256 &&
               sizeof(llmp::catalog::ExtentView) <= 144);
-static_assert(sizeof(llmp::spec::SourceTensor) <= 128);
+// Alias storage and fold provenance stay within the existing 2 KiB per-record
+// serving allowance; this assertion anchors the source record itself.
+static_assert(sizeof(llmp::spec::SourceTensor) <= 256);
 // Exact private-field mirrors used by the inherited and new inventories.
 struct JsonNodeAbi {
   llmp::artifact::json::Kind kind{};
@@ -214,21 +216,21 @@ constexpr std::array kFixtureFiles{
                 "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9/meta/config.json",
                 109897ULL, "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e"},
     FixtureFile{kGguf,
-                "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027/index.json",
+                "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8/index.json",
                 6391531ULL, "40803567725558418f1993e1c50948870d92ea7022fea40151846334fbd03d70"},
     FixtureFile{kGguf,
-                "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027/manifest.json",
-                14603ULL, kGguf},
+                "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8/manifest.json",
+                26385ULL, "61827c2fdd87aabd0ee6371054358b6f90433d9452ceef1910edcbe130268be1"},
     FixtureFile{kGguf,
-                "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027/"
+                "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8/"
                 "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.kv.gguf",
                 10946618ULL, "7c1460a95eb2e95377c32b14deb92cf74fe504d4feb5a62a40d48f78e9e0dcb8"},
     FixtureFile{kGguf,
-                "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027/"
+                "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8/"
                 "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.kv.gguf",
                 106ULL, "0bd485a7f050b5ac258c3722f25f2be38a7ef3e597696f3e4d7e09ec461ff978"},
     FixtureFile{kGguf,
-                "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027/"
+                "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8/"
                 "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.kv.gguf",
                 106ULL, "2fd68e0dc3770fdd9e4d52a5e9570394855926807e0e020b879651ded2b004c6"},
     FixtureFile{kMtp, "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef/index.json",

@@ -859,10 +859,12 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   Q6_K and Q8_0 matrices, BF16 indexer projections, F32 norms and routers.
 - **Artifact:** v0 `5356b5b0…`, imported verbatim by `import_m3.py build`
   ([artifact-format](artifact-format.md#qwen38-flash-next-gguf)); v1
-  `f60d801a…` by `llmp import`, bit-identical to v0
-  ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)); the
-  n-gram hash and the hyperparameters come from its kept GGUF metadata,
-  checked against the profile.
+  historical `f60d801a…` by `llmp import`, with v0 tensor-byte equivalence
+  ([proof](experiments/m36-numerical-audit/v1-equivalence.md)). Current v1
+  `b31c469e…` records all three source folds and sampling defaults
+  ([publication proof](experiments/m35-source-fold/RESULTS.md)); complete index
+  and tensor bytes are unchanged. Structural parameters and fold provenance
+  come from the stored spec/manifest; kept GGUF bytes retain source provenance.
 - **Other quantizations:** the binding takes any GGML type; the graph
   refuses one this build's products do not take. Matrix products cover
   Q8_0, Q4_0, Q2_0, the K-quants Q2_K–Q6_K, IQ1_S, IQ2_XXS/XS/S,
@@ -1010,8 +1012,10 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   `gemma-2-2b-it-Q8_0.gguf`, 2,784,495,456 bytes.
 - **Artifact:** v0 `eb18d30d…`, deep-verified
   ([gemma2-execution](experiments/gemma2-execution/README.md)); v1 `92bbb574…`
-  by `llmp import`, bit-identical to v0
-  ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)).
+  by `llmp import`, with v0 tensor-byte equivalence
+  ([proof](experiments/m36-numerical-audit/v1-equivalence.md)). Current v1
+  `151bedf7…` records the source norm fold with unchanged spec, index and all
+  listed files ([publication proof](experiments/m35-source-fold/RESULTS.md)).
 - **Template:** `ecd6ae51…` (above), through the interpreter; it refuses a
   system message.
 - **Tokenizer:** classic SentencePiece from the GGUF (256,000 tokens);
@@ -1049,7 +1053,9 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   `gemma-3-4b-it-qat-Q4_0.gguf`, 2,526,080,992 bytes.
 - **Artifact:** v0 `8c710341…`, deep-verified; v1 `5d4674ce…` by `llmp import`,
   bit-identical to v0 ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md))
-  ([gemma3-execution](experiments/gemma3-execution/README.md)).
+  ([gemma3-execution](experiments/gemma3-execution/README.md)). Current v1
+  `e6174d3a…` records the source norm fold with unchanged spec, index and all
+  listed files ([publication proof](experiments/m35-source-fold/RESULTS.md)).
 - **Template:** `7de1c58e…` (above), native.
 - **Tokenizer:** classic SentencePiece from the GGUF (262,208 tokens);
   184 of 184 corpus encodings equal pinned llama.cpp's.

@@ -1168,7 +1168,7 @@ struct ServerGrowthLifetime {
     quality = upstream_quality;
     // Gemma2 2B's published v1 artifact (D-118).
     constexpr std::string_view gemma =
-        "92bbb574ec219595d5942f05d1cce9480229b4bac5b7e22205af74499133ab4e";
+        "151bedf7db2629c33283bfc66fd4c567a1f45492d8bf661758745a4f9928e1de";
     const char* temporary = std::getenv("LLMP_TEST_SCRATCH");
     if (!temporary) return Error("explicit private scratch required");
     std::string pattern = (fs::path(temporary) / "image-growth-XXXXXX").string();

@@ -231,7 +231,7 @@ namespace v1_store {
 inline constexpr std::string_view kQwen38ModelOptTarget =
     "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9";
 inline constexpr std::string_view kQwen38Gguf =
-    "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027";
+    "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8";
 inline constexpr std::string_view kQwen38ModelOptDrafter =
     "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef";
 inline constexpr std::string_view kDeepSeekV4Target =

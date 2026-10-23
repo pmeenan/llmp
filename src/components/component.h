@@ -168,6 +168,8 @@ struct WeightRole {
   // table). Its lookup's indices are a step input the engine computes.
   bool rows_on_demand = false;
   DerivedValue derived{};
+  // A stored ordering convention governing every encoded part of this role.
+  std::string_view ordering_fold{};
 };
 
 // A role in use for an instance and the logical shape its parameters

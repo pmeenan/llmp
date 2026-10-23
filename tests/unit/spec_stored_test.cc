@@ -178,6 +178,34 @@ TEST(SpecStoredTest, TheArtifactsTensorsAsASource) {
   EXPECT_EQ(source->folds, std::vector<std::string>{"norm.plus_one"});
 }
 
+TEST(SpecStoredTest, SourceFoldProvenanceIsExplicitAndCannotBecomeAnImporterReceipt) {
+  auto plan = Plan(spec::ToJson(Target(0)));
+  plan.source_folds = std::move(plan.folds);
+  plan.folds.clear();
+  const auto artifact = Open(Publish(Scratch("source-fold"), Render(plan)));
+  EXPECT_TRUE(artifact.folds().empty());
+  ASSERT_EQ(artifact.source_folds().size(), 1U);
+  EXPECT_TRUE(spec::StoredSpec(artifact));
+  const auto source = spec::SourceOf(artifact);
+  ASSERT_TRUE(source);
+  EXPECT_TRUE(source->folds.empty());
+  ASSERT_EQ(source->preprocessing.size(), 1U);
+  EXPECT_TRUE(source->preprocessing[0].source);
+  EXPECT_EQ(source->preprocessing[0].tensors, plan.source_folds[0].second);
+
+  plan.source_folds.clear();
+  const auto missing = Open(Publish(Scratch("missing-source-fold"), Render(plan)));
+  const auto rejected = spec::StoredSpec(missing);
+  ASSERT_FALSE(rejected);
+  EXPECT_NE(rejected.error().find("preprocessing receipts"), std::string::npos);
+
+  plan.source_folds = {{"norm.plus_one", {"blk.0.attn_norm.weight"}}};
+  plan.folds = plan.source_folds;
+  const auto overlap = artifact::Artifact::Open(Publish(Scratch("overlapping-fold"), Render(plan)));
+  ASSERT_FALSE(overlap);
+  EXPECT_NE(overlap.error().ToString().find("overlap"), std::string::npos);
+}
+
 TEST(SpecStoredTest, AppliedFoldsMustBeTheCatalogsAndTheStages) {
   {
     V1Plan p = Plan(spec::ToJson(Target(0)));
@@ -197,7 +225,8 @@ TEST(SpecStoredTest, AppliedFoldsMustBeTheCatalogsAndTheStages) {
     const artifact::Artifact a = Open(Publish(Scratch("unlisted-fold"), Render(p)));
     const auto stored = spec::StoredSpec(a);
     ASSERT_FALSE(stored.has_value());
-    EXPECT_NE(stored.error().find("not among stage target's folds"), std::string::npos)
+    EXPECT_NE(stored.error().find("stored stage folds disagree with preprocessing receipts"),
+              std::string::npos)
         << stored.error();
     EXPECT_TRUE(spec::SourceOf(a).has_value());
   }
@@ -335,7 +364,8 @@ TEST(SpecStoredTest, ACompositionsSpecBindsItsComponents) {
   }
   const auto unlisted = spec::StoredSpec(compose(unfolded, target), ordered);
   ASSERT_FALSE(unlisted.has_value());
-  EXPECT_NE(unlisted.error().find("not among stage assistant's folds"), std::string::npos)
+  EXPECT_NE(unlisted.error().find("stored stage folds disagree with preprocessing receipts"),
+            std::string::npos)
       << unlisted.error();
   // A target of a container whose stage lists no fold beside a folded
   // drafter: the folds are per stage, so the drafter's never cover the

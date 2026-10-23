@@ -178,11 +178,10 @@ namespace {
 // The runner's ceiling: its spec's stage context (0: no runner).
 std::uint32_t ContextCeilingOf(const ArtifactFacts& facts) { return facts.context_ceiling; }
 
-// The recipe's, or none's (every capability off).
+// Optional architecture policy data over the generic stored-target route.
 const spec::ServingRecipe& Recipe(std::string_view architecture, std::string_view container = {}) {
-  static constexpr spec::ServingRecipe kNone{};
   const spec::ServingRecipe* recipe = RecipeOf(architecture, container);
-  return recipe != nullptr ? *recipe : kNone;
+  return recipe != nullptr ? *recipe : spec::kDefaultServingRecipe;
 }
 
 // A count as written in the bases ("262,144").
@@ -356,13 +355,6 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     return Error("unknown KV cache encoding");
   facts.kv_cache_encoding = kv_cache_encoding;
   const bool quantized_kv = kv_cache_encoding == "q8_0";
-  const auto shared_model = [](const ja::Artifact& artifact) {
-    const auto* mapping =
-        spec::FindMapping(artifact.model().architecture, artifact.model().container);
-    return mapping && (spec::ServingRecipeOf(*mapping) != nullptr || mapping->draft);
-  };
-  if (quantized_kv && (!shared_model(target) || (drafter != nullptr && !shared_model(*drafter))))
-    return Error("Q8_0 KV requires a supported shared model");
   const auto configure = [&](spec::ModelSpec& model) -> std::expected<void, std::string> {
     if (!quantized_kv) return components::ApplyKvCacheEncoding(model, format::Encoding::kF16, 0);
     auto bytes = components::KvCacheEncodingBytes(model, format::Encoding::kQ8_0);
@@ -412,11 +404,10 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     });
     if (drafter != nullptr) {
       const auto compose = [&]() -> std::expected<base::Sha256Digest, std::string> {
-        const auto* serving = RecipeOf(facts.architecture, facts.container);
-        if (!serving) return Error("component calibration has no target serving recipe");
+        const auto& serving = Recipe(facts.architecture, facts.container);
         auto prepared = PreparedDrafterComposition::Make(
             target, model, admitted->source, *drafter, *drafter_admitted, facts.vocabulary,
-            draft_vocab.value_or(serving->default_draft_vocab));
+            draft_vocab.value_or(serving.default_draft_vocab));
         if (!prepared) return Error(prepared.error());
         facts.composed_draft_vocab = (*prepared)->vocabulary();
         // Per-alias state representation changes a paid working copy, never the
@@ -741,8 +732,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
                      std::format("the drafter ({})", facts.drafter_architecture)};
   }
   // A recipe without drafters (Gemma 2's and 3's) has no speculative path.
-  if (RecipeOf(arch, facts.container) != nullptr && !recipe.drafters &&
-      (entry.drafter || entry.Bool("speculation").value_or(false)))
+  if (!recipe.drafters && (entry.drafter || entry.Bool("speculation").value_or(false)))
     return Error(
         std::format("{} serving has no qualified assistant or speculative path", recipe.family));
   const bool speculative = s.speculation.value;

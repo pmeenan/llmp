@@ -105,15 +105,20 @@ enum : std::uint16_t {
   kPostNorm,
 };
 constexpr std::array kRoles{
-    WeightRole{.name = "qkv"},
-    WeightRole{.name = "gate"},
-    WeightRole{.name = "beta"},
-    WeightRole{.name = "alpha"},
-    WeightRole{.name = "dt_bias", .encodings = kNormEncodings},
-    WeightRole{.name = "a", .encodings = kNormEncodings, .derived = kLogDecay},
-    WeightRole{.name = "conv", .encodings = kNormEncodings},
+    WeightRole{.name = "qkv", .ordering_fold = "gdn.value_heads_tiled"},
+    WeightRole{.name = "gate", .ordering_fold = "gdn.value_heads_tiled"},
+    WeightRole{.name = "beta", .ordering_fold = "gdn.value_heads_tiled"},
+    WeightRole{.name = "alpha", .ordering_fold = "gdn.value_heads_tiled"},
+    WeightRole{
+        .name = "dt_bias", .encodings = kNormEncodings, .ordering_fold = "gdn.value_heads_tiled"},
+    WeightRole{.name = "a",
+               .encodings = kNormEncodings,
+               .derived = kLogDecay,
+               .ordering_fold = "gdn.value_heads_tiled"},
+    WeightRole{
+        .name = "conv", .encodings = kNormEncodings, .ordering_fold = "gdn.value_heads_tiled"},
     WeightRole{.name = "norm", .encodings = kNormEncodings},
-    WeightRole{.name = "output"},
+    WeightRole{.name = "output", .ordering_fold = "gdn.value_heads_tiled"},
     WeightRole{.name = "input_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "post_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
 };
