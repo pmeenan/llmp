@@ -651,12 +651,15 @@ D-122).
       - **U3a One mapping per architecture:** the importer now consumes
         `spec::Mapping` directly with selected-container context; the derived
         `import::SourceMapping` structure and per-container copies are removed.
-        Gemma 2 and Gemma 3 now each have one canonical registry entry with
+        Gemma 2, Gemma 3, Qwen2, Llama and Mistral now each have one canonical registry entry with
         explicit source dialects for metadata, tensor names/parts, defaults and
         folds; serving keeps the canonical pointer. Equivalent-source synthetic
         controls check the complete spec, routed bytes and retained provenance.
-        Other architectures’ registry consolidation and artifact migration stay open.
-        The semantic metadata namespace
+        Qwen2, Llama and Mistral select their original GGUF, HF and EXL3 wire
+        tables through source dialects; their canonical roles, component structure
+        and policies are shared. Other architectures’ registry consolidation and
+        artifact migration stay open. See the [dense dialect and MXFP4 checks](experiments/m35-generic-import/dense-dialects-mxfp4.md).
+        The semantic metadata namespace is now
         derived from the architecture, failing closed on any unconsumed
         `<arch>.*` key (the hand-kept `kGgufSemantic` fails open for a
         family it omits); the shared HF↔GGUF dialect seam extended beyond
@@ -698,6 +701,10 @@ D-122).
         every import (rule 11), so native Gemma 2/3 HF imports store their
         zero-centered 1 + w fold, while Gemma 4 retains direct RMS gamma
         ([source audit](experiments/m35-u3-quality/GEMMA26-NORM.md));
+        ModelOpt MXFP4, W4A16_MXFP4 and W4A8_MXFP4_FP8 now retain packed
+        E2M1 codes and E8M0 scales through the generic route; the latter's
+        activation scale remains a separate tensor, without an activation
+        execution grant. Other quantization ingress remains open.
         Qwen3.8 ModelOpt and MLX
         expressed as mappings and both normalizers deleted. **Exit:** Qwen3.8
         ModelOpt and MLX re-import with identical tensor content digests and

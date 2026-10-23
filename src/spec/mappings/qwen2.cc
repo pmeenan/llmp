@@ -3,9 +3,11 @@
 
 #include "spec/mappings/qwen2.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <ranges>
 #include <string>
 #include <vector>
 
@@ -256,16 +258,100 @@ constexpr std::array kExl3TensorRules = {
       FromTensor("attention", "qkv_bias", "model.layers.0.self_attn.q_proj.bias"), \
       Flag("attention", "qkv_bias", false)
 
-constexpr std::array kQwen2Params = {
-    LLMP_DENSE_DECODER_CORE_PARAMS(Transform::kNone, "neox"),
-    Flag("attention", "qkv_bias", true),
-};
-
+// Source spellings and container conventions for pre-norm dense decoders.
+// Each dialect selects its own wire table while keeping canonical slot/role
+// identities shared by the architecture.
+constexpr std::array<std::string_view, 3> kContainers{"gguf", "safetensors", "exl3"};
+constexpr auto kQwen2SafetensorsTensors = [] {
+  auto out = kGgufTensors;
+  for (auto& t : out)
+    if (t.role == "table" || t.role == "q" || t.role == "k" || t.role == "v" ||
+        t.role == "output" || t.role == "gate" || t.role == "up" || t.role == "down" ||
+        (t.slot == "output" && t.role == "weight"))
+      t.any_part = true;
+  return out;
+}();
+constexpr auto kDenseGgufTensors = [] {
+  auto out = kGgufTensors;
+  for (auto& t : out)
+    if (t.role == "q_bias" || t.role == "k_bias" || t.role == "v_bias") t.optional = true;
+  return out;
+}();
+constexpr auto kDenseSafetensorsTensors = [] {
+  auto out = kDenseGgufTensors;
+  for (auto& t : out)
+    if (t.role == "table" || t.role == "q" || t.role == "k" || t.role == "v" ||
+        t.role == "output" || t.role == "gate" || t.role == "up" || t.role == "down" ||
+        (t.slot == "output" && t.role == "weight"))
+      t.any_part = true;
+  return out;
+}();
+constexpr auto kDenseExl3Tensors = [] {
+  auto out = kExl3TensorRules;
+  for (auto& t : out)
+    if (t.role == "q_bias" || t.role == "k_bias" || t.role == "v_bias") t.optional = true;
+  return out;
+}();
 // Qwen2's single-slot policy preserves the frozen v1 digests of the approved
 // Qwen2.5-0.5B GGUF and EXL3 fixtures (no capture/row-invariance claim is made
 // for EXL3).
 constexpr std::array kQwen2Policies = {
     PolicyRule{.text = "max_decode_rows 1\n", .owners_alone = true, .capture_ahead = false},
+};
+constexpr std::array kQwen2Params{
+    LLMP_DENSE_DECODER_CORE_PARAMS(Transform::kNone, "neox"),
+    Flag("attention", "qkv_bias", true),
+};
+constexpr std::array kQwen2GgufExtras{Require("rope.scaling.type", "none", true)};
+constexpr std::array kQwen2HfExtras{
+    Require("hidden_act", "silu", false),
+    ParamRule{.key = "use_sliding_window", .type = kBool, .value = {.flag = false}},
+};
+constexpr std::array kQwen2FloatOverrides{
+    ParamOverride{.slot = "attention",
+                  .param = "eps",
+                  .key = "attention.layer_norm_rms_epsilon",
+                  .rule = FromKey("attention", "eps", "attention.layer_norm_rms_epsilon", kReal,
+                                  Transform::kFloat32)},
+    ParamOverride{.slot = "ffn",
+                  .param = "eps",
+                  .key = "attention.layer_norm_rms_epsilon",
+                  .rule = FromKey("ffn", "eps", "attention.layer_norm_rms_epsilon", kReal,
+                                  Transform::kFloat32)},
+    ParamOverride{.slot = "final_norm",
+                  .param = "eps",
+                  .key = "attention.layer_norm_rms_epsilon",
+                  .rule = FromKey("final_norm", "eps", "attention.layer_norm_rms_epsilon", kReal,
+                                  Transform::kFloat32)},
+};
+constexpr std::array kQwen2Dialects{
+    SourceDialect{.architecture = "qwen2",
+                  .container = "gguf",
+                  .params = kQwen2GgufExtras,
+                  .auxiliary = kGgufAuxiliary},
+    SourceDialect{.architecture = "qwen2",
+                  .container = "safetensors",
+                  .params = kQwen2HfExtras,
+                  .tensors = kQwen2SafetensorsTensors,
+                  .tensor_aliases = kDenseHfTensors,
+                  .key_aliases = kQwen2SafetensorsKeys,
+                  .auxiliary = kSafetensorsAuxiliary,
+                  .semantic = kHfSemantic,
+                  .ignored_tensors = kHfIgnored,
+                  .null_semantics = kHfNullSemantics,
+                  .tensor_presence = kHfHeadPresence},
+    SourceDialect{.architecture = "qwen2",
+                  .container = "exl3",
+                  .overrides = kQwen2FloatOverrides,
+                  .params = kQwen2HfExtras,
+                  .tensors = kExl3TensorRules,
+                  .tensor_aliases = kExl3Tensors,
+                  .key_aliases = kQwen2SafetensorsKeys,
+                  .auxiliary = kSafetensorsAuxiliary,
+                  .semantic = kHfSemantic,
+                  .ignored_tensors = kHfIgnored,
+                  .null_semantics = kHfNullSemantics,
+                  .tensor_presence = kExl3HeadPresence},
 };
 constexpr Mapping kQwen2Mapping{
     .architecture = "qwen2",
@@ -277,97 +363,8 @@ constexpr Mapping kQwen2Mapping{
     .tensors = kGgufTensors,
     .params = kQwen2Params,
     .policies = kQwen2Policies,
-};
-
-// The GGUF omits qwen2.attention.key_length when it equals width / heads
-// (896 / 14 = 64 in the approved Qwen2.5-0.5B-Instruct FP16 fixture).
-constexpr std::array kQwen2GgufParams = {
-    LLMP_DENSE_DECODER_CORE_PARAMS(Transform::kNone, "neox"),
-    Flag("attention", "qkv_bias", true),
-    Require("rope.scaling.type", "none", true),
-};
-
-constexpr Mapping kQwen2GgufMapping{
-    .architecture = "qwen2",
-    .version = 1,
-    .pipeline = PipelineKind::kLlm,
-    .layer_count_key = "block_count",
-    .layer_types = "g",
-    .slots = kSlots,
-    .tensors = kGgufTensors,
-    .params = kQwen2GgufParams,
-    .policies = kQwen2Policies,
-    .containers = kGgufContainers,
-    .auxiliary = kGgufAuxiliary,
-};
-
-// The EXL3 config.json omits head_dim when it equals hidden_size /
-// num_attention_heads (896 / 14 = 64 in the approved 0.5B EXL3 fixtures).
-// Emit the approved float-rounded rms_eps in component parameters while
-// checking config.json's 1e-6 and all remaining profile keys.
-constexpr std::array kQwen2Exl3Params = {
-    LLMP_DENSE_DECODER_CORE_PARAMS(Transform::kFloat32, "neox"),
-    Flag("attention", "qkv_bias", true),
-    Require("hidden_act", "silu", false),
-    ParamRule{.key = "use_sliding_window", .type = kBool, .value = {.flag = false}},
-};
-
-constexpr Mapping kQwen2Exl3Mapping{
-    .architecture = "qwen2",
-    .version = 1,
-    .pipeline = PipelineKind::kLlm,
-    .layer_count_key = "block_count",
-    .layer_types = "g",
-    .slots = kSlots,
-    .tensors = kExl3TensorRules,
-    .params = kQwen2Exl3Params,
-    .policies = kQwen2Policies,
-    .containers = kExl3Containers,
-    .tensor_aliases = kExl3Tensors,
-    .key_aliases = kQwen2SafetensorsKeys,
-    .auxiliary = kSafetensorsAuxiliary,
-    .semantic = kHfSemantic,
-    .ignored_tensors = kHfIgnored,
-    .null_semantics = kHfNullSemantics,
-    .tensor_presence = kExl3HeadPresence,
-};
-constexpr std::array kQwen2SafetensorsParams = {
-    LLMP_DENSE_DECODER_CORE_PARAMS(Transform::kNone, "neox"),
-    Flag("attention", "qkv_bias", true),
-    Require("hidden_act", "silu", false),
-    ParamRule{.key = "use_sliding_window", .type = kBool, .value = {.flag = false}},
-};
-
-constexpr auto kQwen2SafetensorsTensors = [] {
-  auto out = kGgufTensors;
-  for (auto& t : out) {
-    if (t.role == "table" || t.role == "q" || t.role == "k" || t.role == "v" ||
-        t.role == "output" || t.role == "gate" || t.role == "up" || t.role == "down" ||
-        (t.slot == "output" && t.role == "weight")) {
-      t.any_part = true;
-    }
-  }
-  return out;
-}();
-
-constexpr Mapping kQwen2SafetensorsMapping{
-    .architecture = "qwen2",
-    .version = 1,
-    .pipeline = PipelineKind::kLlm,
-    .layer_count_key = "block_count",
-    .layer_types = "g",
-    .slots = kSlots,
-    .tensors = kQwen2SafetensorsTensors,
-    .params = kQwen2SafetensorsParams,
-    .policies = kQwen2Policies,
-    .containers = kSafetensorsContainers,
-    .tensor_aliases = kDenseHfTensors,
-    .key_aliases = kQwen2SafetensorsKeys,
-    .auxiliary = kSafetensorsAuxiliary,
-    .semantic = kHfSemantic,
-    .ignored_tensors = kHfIgnored,
-    .null_semantics = kHfNullSemantics,
-    .tensor_presence = kHfHeadPresence,
+    .containers = kContainers,
+    .dialects = kQwen2Dialects,
 };
 
 // Generic dense decoder policy: batched decode up to 16 rows with the shared
@@ -377,122 +374,82 @@ constexpr std::array kDensePolicies = {
     PolicyRule{.text = "max_decode_rows 16\nvector_rows 16\nproduct dense_pair\n",
                .prompts_alone = true},
 };
+constexpr std::array kDenseCanonicalParams{
+    LLMP_DENSE_DECODER_CORE_PARAMS(Transform::kNone, "normal"),
+    LLMP_DENSE_DECODER_YARN_PARAMS,
+    LLMP_DENSE_DECODER_OPTIONAL_QKV_BIAS,
+};
+constexpr std::array kDenseHfExtras{Require("hidden_act", "silu", true)};
+constexpr std::array kDenseHfOverrides{
+    ParamOverride{.slot = "attention",
+                  .param = "rotation",
+                  .key = std::string_view{},
+                  .rule = Name("attention", "rotation", "neox")},
+};
+constexpr std::array kDenseExl3Overrides{
+    ParamOverride{.slot = "attention",
+                  .param = "eps",
+                  .key = "attention.layer_norm_rms_epsilon",
+                  .rule = FromKey("attention", "eps", "attention.layer_norm_rms_epsilon", kReal,
+                                  Transform::kFloat32)},
+    ParamOverride{.slot = "ffn",
+                  .param = "eps",
+                  .key = "attention.layer_norm_rms_epsilon",
+                  .rule = FromKey("ffn", "eps", "attention.layer_norm_rms_epsilon", kReal,
+                                  Transform::kFloat32)},
+    ParamOverride{.slot = "final_norm",
+                  .param = "eps",
+                  .key = "attention.layer_norm_rms_epsilon",
+                  .rule = FromKey("final_norm", "eps", "attention.layer_norm_rms_epsilon", kReal,
+                                  Transform::kFloat32)},
+    ParamOverride{.slot = "attention",
+                  .param = "rotation",
+                  .key = std::string_view{},
+                  .rule = Name("attention", "rotation", "neox")},
+};
 
-constexpr auto kDenseGgufTensors = [] {
-  auto out = kGgufTensors;
-  for (auto& t : out)
-    if (t.role == "q_bias" || t.role == "k_bias" || t.role == "v_bias") t.optional = true;
-  return out;
-}();
+#define LLMP_DEFINE_DENSE_FAMILY_MAPPING(NAME, ARCH, GGUF_AUX)                                    \
+  constexpr auto k##NAME##Dialects =                                                              \
+      std::array{SourceDialect{.architecture = ARCH, .container = "gguf", .auxiliary = GGUF_AUX}, \
+                 SourceDialect{.architecture = ARCH,                                              \
+                               .container = "safetensors",                                        \
+                               .overrides = kDenseHfOverrides,                                    \
+                               .params = kDenseHfExtras,                                          \
+                               .tensors = kDenseSafetensorsTensors,                               \
+                               .tensor_aliases = kDenseHfTensors,                                 \
+                               .key_aliases = kHfDenseKeys,                                       \
+                               .auxiliary = kGemmaHfAuxiliary,                                    \
+                               .semantic = kHfSemantic,                                           \
+                               .ignored_tensors = kDenseSafetensorsIgnored,                       \
+                               .null_semantics = kDenseHfNulls,                                   \
+                               .tensor_presence = kHfHeadPresence},                               \
+                 SourceDialect{.architecture = ARCH,                                              \
+                               .container = "exl3",                                               \
+                               .overrides = kDenseExl3Overrides,                                  \
+                               .params = kDenseHfExtras,                                          \
+                               .tensors = kDenseExl3Tensors,                                      \
+                               .tensor_aliases = kExl3Tensors,                                    \
+                               .key_aliases = kHfDenseKeys,                                       \
+                               .auxiliary = kGemmaHfAuxiliary,                                    \
+                               .semantic = kHfSemantic,                                           \
+                               .ignored_tensors = kHfIgnored,                                     \
+                               .null_semantics = kDenseHfNulls,                                   \
+                               .tensor_presence = kExl3HeadPresence}};                            \
+  constexpr Mapping k##NAME##Mapping{.architecture = ARCH,                                        \
+                                     .version = 1,                                                \
+                                     .pipeline = PipelineKind::kLlm,                              \
+                                     .layer_count_key = "block_count",                            \
+                                     .layer_types = "g",                                          \
+                                     .slots = kSlots,                                             \
+                                     .tensors = kDenseGgufTensors,                                \
+                                     .params = kDenseCanonicalParams,                             \
+                                     .policies = kDensePolicies,                                  \
+                                     .containers = kContainers,                                   \
+                                     .dialects = k##NAME##Dialects};
 
-constexpr auto kDenseSafetensorsTensors = [] {
-  auto out = kDenseGgufTensors;
-  for (auto& t : out) {
-    if (t.role == "table" || t.role == "q" || t.role == "k" || t.role == "v" ||
-        t.role == "output" || t.role == "gate" || t.role == "up" || t.role == "down" ||
-        (t.slot == "output" && t.role == "weight")) {
-      t.any_part = true;
-    }
-  }
-  return out;
-}();
-
-constexpr auto kDenseExl3Tensors = [] {
-  auto out = kExl3TensorRules;
-  for (auto& t : out)
-    if (t.role == "q_bias" || t.role == "k_bias" || t.role == "v_bias") t.optional = true;
-  return out;
-}();
-
-#define LLMP_DEFINE_DENSE_FAMILY_MAPPINGS(NAME, ARCH, GGUF_AUX)    \
-  constexpr std::array k##NAME##GgufParams = {                     \
-      LLMP_DENSE_DECODER_CORE_PARAMS(Transform::kNone, "normal"),  \
-      LLMP_DENSE_DECODER_YARN_PARAMS,                              \
-      LLMP_DENSE_DECODER_OPTIONAL_QKV_BIAS,                        \
-  };                                                               \
-  constexpr std::array k##NAME##SafetensorsParams = {              \
-      LLMP_DENSE_DECODER_CORE_PARAMS(Transform::kNone, "neox"),    \
-      LLMP_DENSE_DECODER_YARN_PARAMS,                              \
-      LLMP_DENSE_DECODER_OPTIONAL_QKV_BIAS,                        \
-      Require("hidden_act", "silu", true),                         \
-  };                                                               \
-  constexpr std::array k##NAME##Exl3Params = {                     \
-      LLMP_DENSE_DECODER_CORE_PARAMS(Transform::kFloat32, "neox"), \
-      LLMP_DENSE_DECODER_YARN_PARAMS,                              \
-      LLMP_DENSE_DECODER_OPTIONAL_QKV_BIAS,                        \
-      Require("hidden_act", "silu", true),                         \
-  };                                                               \
-  constexpr Mapping k##NAME##Mapping{                              \
-      .architecture = ARCH,                                        \
-      .version = 1,                                                \
-      .pipeline = PipelineKind::kLlm,                              \
-      .layer_count_key = "block_count",                            \
-      .layer_types = "g",                                          \
-      .slots = kSlots,                                             \
-      .tensors = kDenseGgufTensors,                                \
-      .params = k##NAME##GgufParams,                               \
-      .policies = kDensePolicies,                                  \
-  };                                                               \
-  constexpr Mapping k##NAME##GgufMapping{                          \
-      .architecture = ARCH,                                        \
-      .version = 1,                                                \
-      .pipeline = PipelineKind::kLlm,                              \
-      .layer_count_key = "block_count",                            \
-      .layer_types = "g",                                          \
-      .slots = kSlots,                                             \
-      .tensors = kDenseGgufTensors,                                \
-      .params = k##NAME##GgufParams,                               \
-      .policies = kDensePolicies,                                  \
-      .containers = kGgufContainers,                               \
-      .auxiliary = GGUF_AUX,                                       \
-  };                                                               \
-  constexpr Mapping k##NAME##SafetensorsMapping{                   \
-      .architecture = ARCH,                                        \
-      .version = 1,                                                \
-      .pipeline = PipelineKind::kLlm,                              \
-      .layer_count_key = "block_count",                            \
-      .layer_types = "g",                                          \
-      .slots = kSlots,                                             \
-      .tensors = kDenseSafetensorsTensors,                         \
-      .params = k##NAME##SafetensorsParams,                        \
-      .policies = kDensePolicies,                                  \
-      .containers = kSafetensorsContainers,                        \
-      .tensor_aliases = kDenseHfTensors,                           \
-      .key_aliases = kHfDenseKeys,                                 \
-      .auxiliary = kGemmaHfAuxiliary,                              \
-      .semantic = kHfSemantic,                                     \
-      .ignored_tensors = kDenseSafetensorsIgnored,                 \
-      .null_semantics = kDenseHfNulls,                             \
-      .tensor_presence = kHfHeadPresence,                          \
-  };                                                               \
-  constexpr Mapping k##NAME##Exl3Mapping{                          \
-      .architecture = ARCH,                                        \
-      .version = 1,                                                \
-      .pipeline = PipelineKind::kLlm,                              \
-      .layer_count_key = "block_count",                            \
-      .layer_types = "g",                                          \
-      .slots = kSlots,                                             \
-      .tensors = kDenseExl3Tensors,                                \
-      .params = k##NAME##Exl3Params,                               \
-      .policies = kDensePolicies,                                  \
-      .containers = kExl3Containers,                               \
-      .tensor_aliases = kExl3Tensors,                              \
-      .key_aliases = kHfDenseKeys,                                 \
-      .auxiliary = kGemmaHfAuxiliary,                              \
-      .semantic = kHfSemantic,                                     \
-      .ignored_tensors = kHfIgnored,                               \
-      .null_semantics = kDenseHfNulls,                             \
-      .tensor_presence = kExl3HeadPresence,                        \
-  };
-
-LLMP_DEFINE_DENSE_FAMILY_MAPPINGS(Llama, "llama", kLlamaAuxiliary)
-LLMP_DEFINE_DENSE_FAMILY_MAPPINGS(Mistral, "mistral", kMistralAuxiliary)
-
-#undef LLMP_DEFINE_DENSE_FAMILY_MAPPINGS
-#undef LLMP_DENSE_DECODER_OPTIONAL_QKV_BIAS
-#undef LLMP_DENSE_DECODER_YARN_PARAMS
-#undef LLMP_DENSE_DECODER_CORE_PARAMS
-
+LLMP_DEFINE_DENSE_FAMILY_MAPPING(Llama, "llama", kLlamaAuxiliary)
+LLMP_DEFINE_DENSE_FAMILY_MAPPING(Mistral, "mistral", kMistralAuxiliary)
+#undef LLMP_DEFINE_DENSE_FAMILY_MAPPING
 // ------------------------------------------------------------------ qwen35
 
 constexpr std::array<std::string_view, 2> kQwen35SourceArchitectures{"qwen3_5", "qwen3_5_text"};
@@ -1055,18 +1012,18 @@ constexpr Mapping kQwen35Mapping{
 }  // namespace
 
 const Mapping& Qwen2Mapping() { return kQwen2Mapping; }
-const Mapping& Qwen2GgufMapping() { return kQwen2GgufMapping; }
-const Mapping& Qwen2Exl3Mapping() { return kQwen2Exl3Mapping; }
-const Mapping& Qwen2SafetensorsMapping() { return kQwen2SafetensorsMapping; }
+const Mapping& Qwen2GgufMapping() { return kQwen2Mapping; }
+const Mapping& Qwen2Exl3Mapping() { return kQwen2Mapping; }
+const Mapping& Qwen2SafetensorsMapping() { return kQwen2Mapping; }
 const Mapping& Qwen35Mapping() { return kQwen35Mapping; }
 
 const Mapping& LlamaMapping() { return kLlamaMapping; }
-const Mapping& LlamaGgufMapping() { return kLlamaGgufMapping; }
-const Mapping& LlamaExl3Mapping() { return kLlamaExl3Mapping; }
-const Mapping& LlamaSafetensorsMapping() { return kLlamaSafetensorsMapping; }
+const Mapping& LlamaGgufMapping() { return kLlamaMapping; }
+const Mapping& LlamaExl3Mapping() { return kLlamaMapping; }
+const Mapping& LlamaSafetensorsMapping() { return kLlamaMapping; }
 
 const Mapping& MistralMapping() { return kMistralMapping; }
-const Mapping& MistralGgufMapping() { return kMistralGgufMapping; }
-const Mapping& MistralExl3Mapping() { return kMistralExl3Mapping; }
-const Mapping& MistralSafetensorsMapping() { return kMistralSafetensorsMapping; }
+const Mapping& MistralGgufMapping() { return kMistralMapping; }
+const Mapping& MistralExl3Mapping() { return kMistralMapping; }
+const Mapping& MistralSafetensorsMapping() { return kMistralMapping; }
 }  // namespace llmp::spec::mappings

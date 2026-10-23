@@ -8,7 +8,8 @@
 // relaid out: each part keeps its own bytes.
 //
 // Described: NVIDIA ModelOpt's NVFP4 (quant_algo NVFP4 or W4A16_NVFP4,
-// group 16) and MXFP8 (MXFP8, group 32), alone or per module
+// group 16), MXFP8 (MXFP8, group 32) and MXFP4 (MXFP4, W4A16_MXFP4 or
+// W4A8_MXFP4_FP8, group 32), alone or per module
 // (MIXED_PRECISION with `quantized_layers`, as Qwen3.8 Flash Next's native
 // checkpoint has). A weight `M.weight` with block scales `M.weight_scale`
 // is quantized:
@@ -25,6 +26,11 @@
 //     whose formats must then be equal;
 //   - MXFP8: M.weight F8_E4M3 [N, K], M.weight_scale U8 or F8_E8M0
 //     [N, K / 32]: {mxfp8, kSplit, [K, N]}, parts kCodes and kBlockScales.
+//   - MXFP4: M.weight U8 [N, K / 2] (even-index E2M1 codes in the low
+//     nibble, odd-index codes in the high nibble), M.weight_scale U8 or
+//     F8_E8M0 [N, K / 32]: {mxfp4, kSplit, [K, N]}, parts kCodes and
+//     kBlockScales. W4A8_MXFP4_FP8's input_scale remains a separate dense
+//     source tensor, as it does for other ModelOpt algorithms.
 //
 // The scheme is the module's in `quantized_layers` (the longest module
 // name that is M or an ancestor of it), or the single algorithm's unless an
@@ -47,7 +53,7 @@
 // scale, so describing it needs a fold), AWQ and GPTQ (the affine
 // encoding with zero points, but packed across output columns, AWQ's in
 // its own nibble order: no layout yet), block FP8 (`fp8`), ModelOpt
-// algorithms other than the three, MLX's `quantization` object (the MLX
+// algorithms outside those described here, MLX's `quantization` object (the MLX
 // reader's), EXL3 (the EXL3 reader's), and any other method. With no
 // quantization config every tensor is dense.
 
@@ -68,12 +74,13 @@
 
 namespace llmp::import {
 
-enum class QuantScheme : std::uint8_t { kNvfp4, kMxfp8 };
+enum class QuantScheme : std::uint8_t { kNvfp4, kMxfp4, kMxfp8 };
 
 struct Quantization {
-  std::string method{};                 // "modelopt"
-  std::string algorithm{};              // "NVFP4", "W4A16_NVFP4", "MXFP8" or "MIXED_PRECISION"
-  std::optional<QuantScheme> scheme{};  // a single algorithm's
+  std::string method{};                         // "modelopt"
+  std::string algorithm{};                      // NVFP4, W4A16_NVFP4, MXFP8, MXFP4, W4A16_MXFP4,
+                                                // W4A8_MXFP4_FP8 or MIXED_PRECISION
+  std::optional<QuantScheme> scheme{};          // a single algorithm's
   std::map<std::string, QuantScheme> layers{};  // MIXED_PRECISION's modules
   std::vector<std::string> exclude{};           // a single algorithm's exclusions
   bool operator==(const Quantization&) const = default;

@@ -1951,7 +1951,10 @@ TEST(ImportNormalizeSafetensorsTest, ConditionalMetadataAliasesUseTheDeclaredPri
   auto source = ParseSafetensors(fixtures::Shard(fixtures::TinyQwen2HfEntries()),
                                  fixtures::TinyQwen2HfConfig());
   ASSERT_TRUE(source);
-  auto table = *FindImportMapping("safetensors", "qwen2");
+  auto selected = spec::ResolveSourceMapping(*FindImportMapping("safetensors", "qwen2"),
+                                             source->architecture, source->container);
+  ASSERT_TRUE(selected) << selected.error();
+  auto& table = selected->mapping;
   std::vector<spec::KeyAlias> aliases(table.key_aliases.begin(), table.key_aliases.end());
   aliases.push_back({"legacy_rms_eps", "attention.layer_norm_rms_epsilon", "rms_norm_eps"});
   table.key_aliases = aliases;
@@ -2017,7 +2020,10 @@ TEST(ImportNormalizeSafetensorsTest, SharedScalarMayPrecedeItsIndexedRowShardsWi
                     : tensor.name.ends_with(".weight_scale") ? format::PartRole::kBlockScales
                                                              : format::PartRole::kCodes;
     }
-    auto table = *FindImportMapping("safetensors", "qwen2");
+    auto selected = spec::ResolveSourceMapping(*FindImportMapping("safetensors", "qwen2"),
+                                               source->architecture, source->container);
+    ASSERT_TRUE(selected) << selected.error();
+    auto& table = selected->mapping;
     std::vector<spec::TensorAlias> aliases(table.tensor_aliases.begin(),
                                            table.tensor_aliases.end());
     aliases.push_back({"model.embed_tokens.shard_{shard}.weight", "token_embd.weight"});
@@ -2069,6 +2075,92 @@ TEST(ImportNormalizeSafetensorsTest, RealisticTransformersConfigNormalizesWithEi
     ASSERT_TRUE(unsafe);
     EXPECT_FALSE(NormalizationBound(*unsafe));
   }
+}
+
+TEST(ImportNormalizeSafetensorsTest, ModelOptMxfp4SafetensorsNormalizesAndRoutesEveryPart) {
+  auto entries = fixtures::TinyQwen2HfEntries();
+  for (auto& entry : entries) {
+    if (entry.name == "unused.empty") continue;
+    if (entry.name == "model.layers.0.self_attn.q_proj.weight") {
+      entry = fixtures::E(entry.name, "U8", {64, 32});
+    } else if (entry.name == "model.layers.0.self_attn.q_proj.weight_scale") {
+      ADD_FAILURE() << "unexpected preexisting fixture scale";
+    } else {
+      for (auto& dim : entry.shape) {
+        if (dim == 10) continue;
+        if (dim == 4) dim = 32;
+        if (dim == 8) dim = 64;
+        if (dim == 16) dim = 128;
+      }
+      entry.bytes = fixtures::DtypeBytes(entry.dtype);
+      for (const auto dim : entry.shape) entry.bytes *= dim;
+    }
+  }
+  entries.push_back(fixtures::E("model.layers.0.self_attn.q_proj.weight_scale", "U8", {64, 2}));
+  auto config = fixtures::TinyQwen2HfConfig();
+  for (const auto& [from, to] : std::array<std::pair<std::string_view, std::string_view>, 3>{
+           {{"\"hidden_size\":8", "\"hidden_size\":64"},
+            {"\"intermediate_size\":16", "\"intermediate_size\":128"},
+            {"\"head_dim\":4", "\"head_dim\":32"}}}) {
+    const auto at = config.find(from);
+    ASSERT_NE(at, std::string::npos);
+    config.replace(at, from.size(), to);
+  }
+  const auto end = config.rfind('}');
+  ASSERT_NE(end, std::string::npos);
+  config.insert(end,
+                R"(,"quantization_config":{"quant_method":"modelopt","quant_algo":"W4A16_MXFP4"})");
+  const auto shard = fixtures::Shard(entries);
+  auto input = ParseSafetensors(shard, config);
+  ASSERT_TRUE(input) << test_support::Failed(input, &Error::ToString).value_or("");
+  auto bound = NormalizationBound(*input);
+  ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
+  auto plan = test_support::NormalizeWithFixtureTarget(std::move(*input),
+                                                       {bound->metadata_bytes, bound->work_units});
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  ASSERT_TRUE(plan->is_indexed());
+  ASSERT_TRUE(components::ValidateSpec(plan->spec(), plan->canonical().tensors));
+  const auto& source_tensors = plan->source().tensors;
+  const auto codes =
+      std::ranges::find(source_tensors, "model.layers.0.self_attn.q_proj.weight", &Tensor::name);
+  const auto scales = std::ranges::find(
+      source_tensors, "model.layers.0.self_attn.q_proj.weight_scale", &Tensor::name);
+  ASSERT_NE(codes, source_tensors.end());
+  ASSERT_NE(scales, source_tensors.end());
+  EXPECT_EQ(codes->format.encoding, Encoding::kMxfp4);
+  EXPECT_EQ(codes->format.layout, format::Layout::kSplit);
+  EXPECT_EQ(codes->part, format::PartRole::kCodes);
+  EXPECT_EQ(scales->part, format::PartRole::kBlockScales);
+  EXPECT_EQ(codes->format.shape.ne[0], 64U);
+  EXPECT_EQ(codes->format.shape.ne[1], 64U);
+
+  std::size_t routed = 0;
+  for (const auto& member : plan->parts().members()) {
+    ASSERT_LT(member.source, plan->source().tensors.size());
+    const auto& source_tensor = plan->source().tensors[member.source];
+    ASSERT_EQ(member.extent, source_tensor.extent);
+    ASSERT_EQ(member.extent.file, 0U);
+    ASSERT_LE(member.extent.offset + member.extent.bytes, shard.size());
+    ASSERT_EQ(member.route.input_bytes(), member.extent.bytes);
+    std::vector<std::byte> output;
+    output.reserve(member.route.output_bytes());
+    auto execution = member.route.Start();
+    ASSERT_TRUE(execution);
+    const auto payload = std::span(shard).subspan(member.extent.offset, member.extent.bytes);
+    const PartSink sink = [&](std::uint64_t offset,
+                              std::span<const std::byte> bytes) -> std::expected<void, Error> {
+      if (offset != output.size())
+        return std::unexpected(Error{.reason = "noncontiguous MXFP4 fixture output"});
+      output.insert(output.end(), bytes.begin(), bytes.end());
+      return {};
+    };
+    auto consumed = execution->Consume(0, payload, sink);
+    ASSERT_TRUE(consumed);
+    ASSERT_TRUE(execution->Finish());
+    EXPECT_TRUE(std::ranges::equal(payload, output)) << source_tensor.name;
+    ++routed;
+  }
+  EXPECT_EQ(routed, plan->source().tensors.size());
 }
 
 TEST(ImportNormalizeSafetensorsTest, EmptyFallbackRoleMatchesAbsentButRequiredEmptyStillRefuses) {
@@ -2139,7 +2231,8 @@ TEST(ImportNormalizeTest, SemanticNamespaceIsTheArchitecturesOwn) {
         << key;
   }
   // Its own unconsumed keys refuse, for every registered GGUF table.
-  for (const std::string_view arch : {"gemma4-assistant", "dflash", "qwen4exp", "deepseek4"}) {
+  for (const std::string_view arch :
+       {"gemma4-assistant", "dflash", "qwen4exp", "deepseek4", "qwen2", "llama", "mistral"}) {
     const auto* table = FindImportMapping("gguf", arch);
     ASSERT_NE(table, nullptr) << arch;
     auto other = Tiny();

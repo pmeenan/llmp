@@ -12,15 +12,15 @@
 
 namespace llmp::spec::mappings {
 const Mapping& Qwen2Mapping();
-// Closed, byte-preserving GGUF target normalization.
+// Container-named accessors remain aliases of the canonical mapping while
+// source selection is expressed by its dialect registry.
 const Mapping& Qwen2GgufMapping();
-// Closed, multipart-copy EXL3 target normalization.
 const Mapping& Qwen2Exl3Mapping();
-// Closed, multipart-copy safetensors target normalization.
 const Mapping& Qwen2SafetensorsMapping();
 const Mapping& Qwen35Mapping();
 
 const Mapping& LlamaMapping();
+// Legacy container-named accessors return the same canonical mapping.
 const Mapping& LlamaGgufMapping();
 const Mapping& LlamaExl3Mapping();
 const Mapping& LlamaSafetensorsMapping();

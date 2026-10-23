@@ -70,6 +70,9 @@ std::optional<std::pair<QuantScheme, std::int64_t>> SchemeOf(std::string_view al
   if (algorithm == "MXFP8") {
     return std::pair(QuantScheme::kMxfp8, std::int64_t{32});
   }
+  if (algorithm == "MXFP4" || algorithm == "W4A16_MXFP4" || algorithm == "W4A8_MXFP4_FP8") {
+    return std::pair(QuantScheme::kMxfp4, std::int64_t{32});
+  }
   return std::nullopt;
 }
 
@@ -333,6 +336,12 @@ std::optional<QuantScheme> Inferred(const Tensor& w, const Tensor& s) {
       w.dims[1] % 32 == 0 && s.dims[1] == w.dims[1] / 32) {
     return QuantScheme::kMxfp8;
   }
+  // ModelOpt MXFP4 stores two E2M1 codes per byte and one U8/E8M0 scale
+  // per 32 logical inputs. NVFP4 remains distinguishable by its E4M3 scales.
+  if (Is(w, "U8", 2) && (Is(s, "U8", 2) || Is(s, "F8_E8M0", 2)) && w.dims[0] == s.dims[0] &&
+      w.dims[1] % 16 == 0 && s.dims[1] == w.dims[1] / 16) {
+    return QuantScheme::kMxfp4;
+  }
   return std::nullopt;
 }
 
@@ -355,12 +364,14 @@ std::expected<format::TensorFormat, Error> Describe(QuantScheme scheme, const Pa
   }
   const std::uint64_t n = w.dims[0];
   format::TensorFormat f{.layout = format::Layout::kSplit};
+  std::uint64_t k = 0;
   if (scheme == QuantScheme::kNvfp4) {
     if (w.dtype != "U8" || s.dtype != "F8_E4M3") {
       return refuse("NVFP4 codes that are not U8 or block scales that are not F8_E4M3");
     }
     f.encoding = Encoding::kNvfp4;
-    f.shape = {.ne = {w.dims[1] * 2, n, 1, 1}, .rank = 2};
+    k = w.dims[1] * 2;
+    f.shape = {.ne = {k, n, 1, 1}, .rank = 2};
     if (p.tensor_scale) {
       const Tensor& s2 = tensors[*p.tensor_scale];
       if ((s2.dtype != "F32" && s2.dtype != "BF16" && s2.dtype != "F16") || Elements(s2) != 1 ||
@@ -369,6 +380,16 @@ std::expected<format::TensorFormat, Error> Describe(QuantScheme scheme, const Pa
       }
       f.params.tensor_scale = true;
     }
+  } else if (scheme == QuantScheme::kMxfp4) {
+    if (w.dtype != "U8" || (s.dtype != "U8" && s.dtype != "F8_E8M0")) {
+      return refuse("MXFP4 codes that are not U8 or block scales that are not E8M0 bytes");
+    }
+    if (p.tensor_scale) {
+      return refuse("an MXFP4 weight with a tensor scale");
+    }
+    k = w.dims[1] * 2;
+    f.encoding = Encoding::kMxfp4;
+    f.shape = {.ne = {k, n, 1, 1}, .rank = 2};
   } else {
     if (w.dtype != "F8_E4M3" || (s.dtype != "U8" && s.dtype != "F8_E8M0")) {
       return refuse("MXFP8 codes that are not F8_E4M3 or block scales that are not E8M0 bytes");
@@ -377,7 +398,12 @@ std::expected<format::TensorFormat, Error> Describe(QuantScheme scheme, const Pa
       return refuse("an MXFP8 weight with a tensor scale");
     }
     f.encoding = Encoding::kMxfp8;
-    f.shape = {.ne = {w.dims[1], n, 1, 1}, .rank = 2};
+    k = w.dims[1];
+    f.shape = {.ne = {k, n, 1, 1}, .rank = 2};
+  }
+  const std::uint64_t group = scheme == QuantScheme::kNvfp4 ? 16U : 32U;
+  if (k % group != 0 || s.dims[0] != n || s.dims[1] != k / group) {
+    return refuse("a scaled weight's physical dimensions disagree with its block geometry");
   }
   const auto parts = format::PartsOf(f);
   if (!parts) {
@@ -385,7 +411,7 @@ std::expected<format::TensorFormat, Error> Describe(QuantScheme scheme, const Pa
   }
   const auto bytes = [&](PartRole role) { return parts->Find(role)->bytes; };
   if (bytes(PartRole::kCodes) != w.extent.bytes ||
-      bytes(PartRole::kBlockScales) != s.extent.bytes || s.dims[0] != n ||
+      bytes(PartRole::kBlockScales) != s.extent.bytes ||
       (p.tensor_scale && (tensors[*p.tensor_scale].dtype == "F32" ? 4U : 2U) !=
                              tensors[*p.tensor_scale].extent.bytes)) {
     return refuse("a scaled weight's parts are not the sizes its format gives them");

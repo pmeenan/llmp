@@ -1273,6 +1273,12 @@ std::vector<Entry> Mxfp8(std::string_view module, std::uint64_t n, std::uint64_t
           E(std::format("{}.weight_scale", module), std::move(scale_dtype), {n, k / 32})};
 }
 
+std::vector<Entry> Mxfp4(std::string_view module, std::uint64_t n, std::uint64_t k,
+                         std::string scale_dtype = "U8") {
+  return {E(std::format("{}.weight", module), "U8", {n, k / 2}),
+          E(std::format("{}.weight_scale", module), std::move(scale_dtype), {n, k / 32})};
+}
+
 std::vector<Entry> Join(std::initializer_list<std::vector<Entry>> parts) {
   std::vector<Entry> out;
   for (const auto& p : parts) {
@@ -1397,6 +1403,74 @@ TEST(ImportQuantizationTest, PairsMxfp8AndMixedPrecision) {
                                                 {E("u.weight_scale_2", "F32", {})}})),
                                     kConfig,
                                     R"({"quantization":{"quant_algo":"NVFP4","group_size":16}})")),
+            Rule::kQuantization);
+}
+
+TEST(ImportQuantizationTest, PairsModelOptMxfp4AlgorithmsAndInference) {
+  const format::TensorFormat want{.encoding = Encoding::kMxfp4,
+                                  .layout = Layout::kSplit,
+                                  .shape = {.ne = {64, 4, 1, 1}, .rank = 2}};
+  for (const std::string_view algorithm : {"MXFP4", "W4A16_MXFP4", "W4A8_MXFP4_FP8"}) {
+    const auto quant =
+        std::format(R"({{"quantization":{{"quant_algo":"{}","group_size":32}}}})", algorithm);
+    const auto checkpoint = ParseSafetensors(
+        Shard(Join({Mxfp4("m", 4, 64, "F8_E8M0"), {E("m.input_scale", "F32", {1})}})), kConfig,
+        quant);
+    ASSERT_TRUE(checkpoint) << algorithm << ": " << checkpoint.error().ToString();
+    EXPECT_EQ(Named(*checkpoint, "m.weight").format, want);
+    EXPECT_EQ(Named(*checkpoint, "m.weight").part, PartRole::kCodes);
+    EXPECT_EQ(Named(*checkpoint, "m.weight_scale").format, want);
+    EXPECT_EQ(Named(*checkpoint, "m.weight_scale").part, PartRole::kBlockScales);
+    EXPECT_EQ(Named(*checkpoint, "m.input_scale").format.encoding, Encoding::kF32);
+  }
+
+  const std::string mixed = R"({"quant_method":"modelopt","quant_algo":"MIXED_PRECISION",
+    "quantized_layers":{"layers.0.a":{"quant_algo":"MXFP4","group_size":32},
+                        "layers.0.b":{"quant_algo":"W4A16_MXFP4","group_size":32},
+                        "layers.0.c":{"quant_algo":"W4A8_MXFP4_FP8","group_size":32}}})";
+  const auto mixed_checkpoint =
+      ParseSafetensors(Shard(Join({Mxfp4("layers.0.a", 4, 64), Mxfp4("layers.0.b", 4, 64),
+                                   Mxfp4("layers.0.c", 4, 64), Mxfp4("layers.0.unlisted", 4, 64)})),
+                       kConfig, mixed);
+  ASSERT_TRUE(mixed_checkpoint) << mixed_checkpoint.error().ToString();
+  for (const std::string_view module :
+       {"layers.0.a", "layers.0.b", "layers.0.c", "layers.0.unlisted"}) {
+    EXPECT_EQ(Named(*mixed_checkpoint, std::format("{}.weight", module)).format, want);
+  }
+
+  const auto excluded = ParseSafetensors(
+      Shard(Join({Mxfp4("kept", 4, 64), Mxfp4("excluded", 4, 64)})), kConfig,
+      R"({"quantization":{"quant_algo":"MXFP4","group_size":32,"exclude_modules":["excluded"]}})");
+  ASSERT_TRUE(excluded) << excluded.error().ToString();
+  EXPECT_EQ(Named(*excluded, "excluded.weight").format, want);
+}
+
+TEST(ImportQuantizationTest, RefusesMalformedModelOptMxfp4Parts) {
+  const auto rule = [](std::vector<Entry> entries,
+                       std::string_view quant =
+                           R"({"quantization":{"quant_algo":"MXFP4","group_size":32}})") {
+    return RuleOf(ParseSafetensors(Shard(entries), kConfig, quant));
+  };
+  EXPECT_EQ(rule(Mxfp4("m", 4, 64), R"({"quantization":{"quant_algo":"MXFP4","group_size":16}})"),
+            Rule::kConfig);
+  EXPECT_EQ(rule({E("m.weight", "F16", {4, 32}), E("m.weight_scale", "U8", {4, 2})}),
+            Rule::kQuantization);
+  EXPECT_EQ(rule({E("m.weight", "U8", {4, 32}), E("m.weight_scale", "F8_E4M3", {4, 2})}),
+            Rule::kQuantization);
+  // Same payload byte count as the valid [4, 2] scales, but incompatible
+  // physical dimensions; sizes alone must not make this pair valid.
+  EXPECT_EQ(rule({E("m.weight", "U8", {4, 32}), E("m.weight_scale", "U8", {2, 4})}),
+            Rule::kQuantization);
+  EXPECT_EQ(rule({E("m.weight", "U8", {4, 32}), E("m.weight_scale", "U8", {4, 2}),
+                  E("m.weight_scale_2", "F32", {})}),
+            Rule::kQuantization);
+  EXPECT_EQ(rule({E("m.weight", "U8", {4, 32}), E("m.weight_scale", "U8", {4, 1})}),
+            Rule::kQuantization);
+  EXPECT_EQ(rule({E("m.weight", "U8", {4, 32}), E("m.weight_scale", "U8", {4, 2, 1})}),
+            Rule::kQuantization);
+  EXPECT_EQ(rule({E("m.weight", "U8", {4, 32}), E("m.weight_scale", "U8", {4, 0})}),
+            Rule::kQuantization);
+  EXPECT_EQ(rule({E("m.weight", "U8", {4, 24}), E("m.weight_scale", "U8", {4, 1})}),
             Rule::kQuantization);
 }
 
@@ -1546,6 +1620,25 @@ TEST(ImportQuantizationTest, RecognizesAndRefusesMethods) {
 // ---------------------------------------------------------------- directories
 
 using ImportSafetensorsFilesTest = ScratchTest;
+
+TEST_F(ImportSafetensorsFilesTest, ReadsModelOptMxfp4PartsWithoutChangingTheirBytes) {
+  const std::string config =
+      R"({"model_type":"test","quantization_config":{"quant_method":"modelopt","quant_algo":"MXFP4","group_size":32}})";
+  const auto source = Shard(Join({Mxfp4("m", 4, 64), {E("m.input_scale", "F32", {1})}}));
+  Write(dir_ / "config.json", config);
+  Write(dir_ / "model.safetensors", source);
+  const auto checkpoint = ReadSafetensors(dir_);
+  ASSERT_TRUE(checkpoint) << checkpoint.error().ToString();
+  for (const std::string_view name : {"m.weight", "m.weight_scale"}) {
+    const Tensor& tensor = Named(*checkpoint, name);
+    ASSERT_EQ(checkpoint->files[tensor.extent.file].name, "model.safetensors");
+    std::vector<std::byte> actual(tensor.extent.bytes);
+    ASSERT_TRUE(checkpoint->Read(tensor.extent, 0, actual).has_value());
+    EXPECT_TRUE(std::equal(actual.begin(), actual.end(),
+                           source.begin() + static_cast<std::ptrdiff_t>(tensor.extent.offset)))
+        << name;
+  }
+}
 
 TEST_F(ImportSafetensorsFilesTest, ReadsShardedAndSingleCheckpoints) {
   Write(dir_ / "config.json", kConfig);

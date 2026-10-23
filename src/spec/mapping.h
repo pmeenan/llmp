@@ -506,6 +506,8 @@ struct AuxiliaryNamespace {
 // Keys rename canonical inputs; parameter overrides replace a selected source
 // resolution chain, never the slots or component kinds. Empty optional selectors
 // mean all rules for the parameter; an engaged empty key selects a constant.
+// A tensor table override changes only the container's source spellings/parts;
+// each listed rule still binds a role in the canonical architecture table.
 struct SourceKey {
   std::string_view canonical{}, source{};
 };
@@ -526,6 +528,9 @@ struct SourceDialect {
   std::span<const SourceKey> keys{};
   std::span<const ParamOverride> overrides{};
   std::span<const ParamRule> params{}, defaults{};
+  // Optional container-specific tensor spellings/parts. Roles must already
+  // exist in the canonical mapping; this only selects the source wire table.
+  std::span<const TensorRule> tensors{};
   std::span<const TensorPartOverride> parts{};
   std::span<const FoldRule> folds{};
   std::span<const TensorAlias> tensor_aliases{};

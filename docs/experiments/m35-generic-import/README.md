@@ -5,7 +5,8 @@
 
 The owner-approved plain-NVFP4 and second-architecture MLX checkpoints use
 one mapping-driven normalization/publication route. Successful publication
-includes `Artifact::Open(kDeep)`, `StoredSpec` and `ValidateSpec` in the CLI;
+includes the writer's deep payload verification, `Artifact::Open`, `StoredSpec`
+and `ValidateSpec` in the CLI;
 it does not qualify serving, output quality or speed.
 
 ## Published NVFP4 proofs (2026-10-21)
@@ -57,10 +58,13 @@ The [original ModelOpt and MLX parity controls](original-parity.md) passed on
 2026-10-22: all 323,607 named tensor parts match, including every expert slice,
 independently of changed spec/provenance identities. Remaining controls:
 
-- Serve the new plain-NVFP4 and second-architecture MLX artifacts and compare
-  the Llama 3.1+ frequency-scaling path with its reference under D-085. Its
-  [prospective protocol](../m35-u3-quality/PROTOCOL.md) still requires review and
-  pre-registration before inference.
+- The registered Llama NVFP4 [likelihood and behavior controls](../m35-u3-quality/RESULTS.md)
+  and second-architecture MLX [source-quality screen](../m35-u3-quality/qwen27/RESULTS.md)
+  have completed. Llama's original 256-token Fibonacci observation remains
+  failed/unresolved; the [512-token supplement](../m35-u3-quality/FIBONACCI512-RESULTS.md)
+  passed all four fresh observations. These bounded historical results do not
+  qualify later arithmetic changes or replace the remaining speed, batching
+  and maximum-context controls. General Gemma source qualification remains open.
 - Preserve supported-family speed and quality qualifications; import success
   cannot supply numerical evidence for a new geometry or device.
 

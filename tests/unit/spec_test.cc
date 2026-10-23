@@ -1208,9 +1208,70 @@ TEST(MappingTest, GemmaRegistryHasOneArchitectureWithExplicitUnambiguousDialects
   dialect.parts = bad_part;
   EXPECT_FALSE(ValidateMapping(canonical));
   dialect = native;
+  const std::array bad_tensor{
+      TensorRule{.pattern = "unknown.weight", .slot = "unknown", .role = "q"}};
+  dialect.tensors = bad_tensor;
+  EXPECT_FALSE(ValidateMapping(canonical));
+  dialect = native;
+  std::vector<TensorRule> over_budget(kMaxMappingRules + 1);
+  dialect.tensors = over_budget;
+  EXPECT_FALSE(ResolveSourceMapping(canonical, dialect.architecture, dialect.container));
+  dialect = native;
+  std::vector<TensorRule> duplicate_tensors(canonical.tensors.begin(), canonical.tensors.end());
+  duplicate_tensors.push_back(duplicate_tensors.front());
+  dialect.tensors = duplicate_tensors;
+  EXPECT_FALSE(ValidateMapping(canonical));
+  dialect = native;
+  const std::array bad_alias{TensorAlias{"model.weight", "missing.weight"}};
+  dialect.tensor_aliases = bad_alias;
+  EXPECT_FALSE(ValidateMapping(canonical));
+  dialect = native;
   const std::array bad_fold{FoldRule{.fold = "norm.times_two", .container = "safetensors"}};
   dialect.folds = bad_fold;
   EXPECT_FALSE(ValidateMapping(canonical));
+}
+
+TEST(MappingTest, DenseDecoderArchitecturesHaveOneCanonicalRegistryWithWireSpecificTensors) {
+  std::vector<const Mapping*> seen;
+  for (const auto architecture : {"qwen2", "llama", "mistral"}) {
+    const auto count = std::ranges::count_if(
+        Mappings(), [&](const Mapping* mapping) { return mapping->architecture == architecture; });
+    EXPECT_EQ(count, 1) << architecture;
+    const Mapping* canonical = FindMapping(architecture);
+    ASSERT_NE(canonical, nullptr);
+    EXPECT_FALSE(std::ranges::contains(seen, canonical)) << architecture;
+    seen.push_back(canonical);
+    EXPECT_EQ(FindMapping(architecture, "gguf"), canonical);
+    EXPECT_EQ(FindMapping(architecture, "safetensors"), canonical);
+    EXPECT_EQ(FindMapping(architecture, "exl3"), canonical);
+    EXPECT_EQ(FindMapping(architecture, "mlx"), nullptr);
+    for (const auto container : {"gguf", "safetensors", "exl3"}) {
+      auto selected = ResolveSourceMapping(*canonical, architecture, container);
+      ASSERT_TRUE(selected) << architecture << "/" << container << ": " << selected.error();
+      EXPECT_EQ(selected->mapping.architecture, architecture);
+      EXPECT_FALSE(selected->mapping.tensors.empty());
+      EXPECT_EQ(selected->mapping.slots.data(), canonical->slots.data());
+      EXPECT_EQ(selected->mapping.policies.data(), canonical->policies.data());
+      if (std::string_view(container) == "exl3") {
+        EXPECT_TRUE(std::ranges::any_of(selected->mapping.tensors, [](const TensorRule& rule) {
+          return rule.part != format::PartRole::kData;
+        }));
+        EXPECT_FALSE(std::ranges::any_of(selected->mapping.tensors, [](const TensorRule& rule) {
+          return rule.pattern.starts_with("blk.");
+        }));
+      } else if (std::string_view(container) == "safetensors") {
+        EXPECT_TRUE(std::ranges::any_of(selected->mapping.tensors,
+                                        [](const TensorRule& rule) { return rule.any_part; }));
+        EXPECT_FALSE(std::ranges::any_of(selected->mapping.tensors, [](const TensorRule& rule) {
+          return rule.part != format::PartRole::kData;
+        }));
+      } else {
+        EXPECT_FALSE(std::ranges::any_of(selected->mapping.tensors, [](const TensorRule& rule) {
+          return rule.any_part || rule.part != format::PartRole::kData;
+        }));
+      }
+    }
+  }
 }
 
 TEST(MappingTest, SignedZeroCanonicalizesAndContainerFoldsSuppressRules) {

@@ -525,7 +525,14 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
   if (!mapping_ptr) mapping_ptr = spec::FindMapping(plan.source().architecture);
   if (mapping_ptr) {
     const auto& mapping = *mapping_ptr;
-    for (const auto& r : mapping.tensors) {
+    auto wire_tensors = mapping.tensors;
+    if (!mapping.dialects.empty()) {
+      const auto* dialect =
+          spec::FindSourceDialect(mapping, plan.source().architecture, plan.source().container);
+      if (!dialect) return Bad("publication has no selected source dialect", Rule::kConfig);
+      if (!dialect->tensors.empty()) wire_tensors = dialect->tensors;
+    }
+    for (const auto& r : wire_tensors) {
       if (!r.unbound) continue;
       GroupKey key{3, 0};
       for (const auto& slot : mapping.slots) {

@@ -1241,8 +1241,12 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapp
         return Bad("selected head IDs must be ascending in the actual target vocabulary");
       previous = id;
     }
-    const auto* dialect = FindImportMapping(input.container, target->source.architecture);
-    if (!dialect) return Bad("selected head has no source dialect for the target architecture");
+    const auto* canonical = FindImportMapping(input.container, target->source.architecture);
+    if (!canonical) return Bad("selected head has no source dialect for the target architecture");
+    auto resolved =
+        spec::ResolveSourceMapping(*canonical, target->source.architecture, input.container);
+    if (!resolved) return Bad("selected head has an invalid target source dialect");
+    const auto* dialect = &resolved->mapping;
     std::set<std::uint32_t> head_indices;
     for (std::uint32_t ti = 0; ti < input.tensors.size(); ++ti) {
       const auto& tensor = input.tensors[ti];

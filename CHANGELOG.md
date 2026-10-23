@@ -24,6 +24,11 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- ModelOpt MXFP4 weight imports preserve packed codes and block scales through
+  the generic importer. Qwen2, Llama and Mistral share one canonical mapping
+  per architecture across GGUF, HF and EXL3 source dialects
+  ([checks](docs/experiments/m35-generic-import/dense-dialects-mxfp4.md)).
+
 - GB10 scalar quantized products use incumbent reduction schedules across all
   18 VecQ encodings. Operand controls and the bounded Gemma31 scalar quality
   transfer pass, with a matched C1 speed check within the 10% adoption bound;

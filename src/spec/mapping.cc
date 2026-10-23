@@ -1186,12 +1186,7 @@ std::span<const Mapping* const> Mappings() {
       &mappings::DsparkMapping(),          &mappings::Qwen2Mapping(),
       &mappings::Qwen35Mapping(),          &mappings::Qwen38GgufMapping(),
       &mappings::Qwen38NativeMapping(),    &mappings::Qwen38MtpNativeMapping(),
-      &mappings::Qwen2GgufMapping(),       &mappings::Qwen2SafetensorsMapping(),
-      &mappings::Qwen2Exl3Mapping(),       &mappings::LlamaMapping(),
-      &mappings::LlamaGgufMapping(),       &mappings::LlamaSafetensorsMapping(),
-      &mappings::LlamaExl3Mapping(),       &mappings::MistralMapping(),
-      &mappings::MistralGgufMapping(),     &mappings::MistralSafetensorsMapping(),
-      &mappings::MistralExl3Mapping()};
+      &mappings::LlamaMapping(),           &mappings::MistralMapping()};
   return all;
 }
 
@@ -1228,7 +1223,7 @@ std::expected<ResolvedMapping, std::string> ResolveSourceMapping(const Mapping& 
   const auto* d = FindSourceDialect(canonical, architecture, container);
   if (!d) return Refuse(architecture, "missing or ambiguous source dialect");
   if (d->keys.size() + d->overrides.size() + d->params.size() + d->defaults.size() +
-          d->parts.size() + canonical.params.size() + canonical.tensors.size() >
+          d->tensors.size() + d->parts.size() + canonical.params.size() + canonical.tensors.size() >
       kMaxMappingRules)
     return Refuse(architecture, "too many source dialect rules");
   for (const auto& key : d->keys) {
@@ -1301,7 +1296,24 @@ std::expected<ResolvedMapping, std::string> ResolveSourceMapping(const Mapping& 
   out.params.insert(out.params.end(), d->params.begin(), d->params.end());
   out.params.insert(out.params.end(), d->defaults.begin(), d->defaults.end());
   m.params = out.params;
-  out.tensors.assign(canonical.tensors.begin(), canonical.tensors.end());
+  const auto tensor_rules = d->tensors.empty() ? canonical.tensors : d->tensors;
+  if (!d->tensors.empty())
+    for (const auto& rule : tensor_rules) {
+      const bool canonical_role = std::ranges::any_of(canonical.tensors, [&](const auto& base) {
+        return base.slot == rule.slot && base.role == rule.role;
+      });
+      if (!canonical_role)
+        return Refuse(architecture, "source tensor table adds a noncanonical role");
+    }
+  for (const auto& alias : d->tensor_aliases) {
+    const bool target_exists = std::ranges::any_of(tensor_rules, [&](const auto& rule) {
+      return !rule.target && rule.pattern == alias.canonical;
+    });
+    if (!IsPattern(alias.source, Layered(alias.canonical)) || !target_exists ||
+        std::ranges::count(d->tensor_aliases, alias.source, &TensorAlias::source) != 1)
+      return Refuse(architecture, "invalid or unresolved source tensor alias");
+  }
+  out.tensors.assign(tensor_rules.begin(), tensor_rules.end());
   for (const auto& part : d->parts) {
     if (std::ranges::count_if(d->parts, [&](const auto& other) {
           return other.slot == part.slot && other.role == part.role;
