@@ -1,0 +1,238 @@
+{
+  "registration": "913b7949c26478ceea4b9958225b0e204d629ad4",
+  "job": "m35-u3-q8-scalar-repair-r3",
+  "collection_valid": true,
+  "pair": {
+    "format": "llmp-quality-pair/1",
+    "name": "gemma2: v1 on the candidate against v0 on the fixed baseline, the quality control's passage",
+    "prereg": {
+      "file": "/tmp/llmp-u3-q8-quality-r3/reg/docs/experiments/m36-final/prereg/pair-gemma2.json",
+      "sha256": "77f657291cdceb45ff24b004d8556a122d309909f441e1979e7aec808bfa245d"
+    },
+    "candidate": {
+      "file": "/tmp/llmp-u3-q8-quality-r3/arm-r/quality/gemma2-quality-new.json",
+      "kind": "speed_gate",
+      "sha256": "a28790d1d483f419f62ee4e1b093f0822dce8c12e6bd866b423a3d0425feee9c"
+    },
+    "reference": {
+      "file": "/tmp/llmp-u3-gemma2-quality-78747648/arm-a/quality/gemma2-quality-old.json",
+      "kind": "speed_gate",
+      "sha256": "6cdc73fee7eb210bfcac6666d7552833aab208de4f70b5b950ec21b09a69294c"
+    },
+    "result": {
+      "targets": 1070,
+      "candidate": {
+        "mean_nll": 3.5635004927423646,
+        "perplexity": 35.28650134833719
+      },
+      "reference": {
+        "mean_nll": 3.5635004927423646,
+        "perplexity": 35.28650134833719
+      },
+      "nll_delta": 0.0,
+      "nll_delta_se": 0.0,
+      "ppl_delta_pct": 0.0,
+      "mean_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "max_abs_diff_at": {
+        "document": 0,
+        "position": 1,
+        "target": 139
+      },
+      "candidate_lower": 0,
+      "candidate_higher": 0,
+      "identical": 1070,
+      "documents": {
+        "0": {
+          "targets": 1070,
+          "candidate_nll": 3.5635004927423646,
+          "reference_nll": 3.5635004927423646,
+          "ppl_delta_pct": 0.0
+        }
+      },
+      "agreement": {
+        "tolerance": 0.1,
+        "fraction": 1.0
+      }
+    },
+    "bounds": [
+      {
+        "bound": "expected_targets",
+        "limit": 1070,
+        "observed": 1070,
+        "ok": true
+      },
+      {
+        "bound": "max_abs_ppl_delta_pct",
+        "limit": 0.5,
+        "observed": 0.0,
+        "ok": true
+      },
+      {
+        "bound": "max_mean_abs_diff",
+        "limit": 0.05,
+        "observed": 0.0,
+        "ok": true
+      },
+      {
+        "bound": "max_abs_diff",
+        "limit": 1.0,
+        "observed": 0.0,
+        "ok": true
+      },
+      {
+        "bound": "min_agreement",
+        "limit": 0.95,
+        "observed": 1.0,
+        "ok": true
+      }
+    ],
+    "pass": true
+  },
+  "runtime_sha256": "2188a8bb2fd0e126a0da02f6d5af1c809ff0e4e1682021d37869e22dc01d0d05",
+  "source_manifest_sha256": "be392d99e2128f9e7979b0656f4c49f74f659539109bdf26b1178a537799a5da",
+  "input_ids_sha256": "ee85f4ffc9be5825936ff379d873322a78c048018375805ffbb4a5cb5b1946c4",
+  "retirement": {
+    "signal": "TERM",
+    "returncode": 0
+  },
+  "supervisor": {
+    "state": "done",
+    "rc": 0,
+    "signal": null,
+    "end": 1792712019.384,
+    "supervisor_pid": 1788496
+  },
+  "prepost_identity_equal_ignoring_only_ldd_load_addresses": true,
+  "timing_observational_only": [
+    {
+      "prompt_index": 0,
+      "A": {
+        "tokens": 128,
+        "decode_tok_s": 76.06713640510011,
+        "elapsed_s": 2.4013907499611378,
+        "ttft_s": 0.7304123588837683,
+        "finish": "length",
+        "reply_sha256": "6ab43072f4e0cabec2755af8449e200296f472bd43506e4804d16d53234287e4"
+      },
+      "R": {
+        "tokens": 128,
+        "decode_tok_s": 78.44692040396107,
+        "elapsed_s": 3.3822270650416613,
+        "ttft_s": 1.7618435430340469,
+        "finish": "length",
+        "reply_sha256": "6ab43072f4e0cabec2755af8449e200296f472bd43506e4804d16d53234287e4"
+      },
+      "A_over_R_decode_rate": 0.9696637677220941,
+      "A_over_R_elapsed_time": 0.7100028187881461,
+      "text_equal": true
+    },
+    {
+      "prompt_index": 1,
+      "A": {
+        "tokens": 128,
+        "decode_tok_s": 77.20799691453396,
+        "elapsed_s": 2.1564972191117704,
+        "ttft_s": 0.5101577648892999,
+        "finish": "length",
+        "reply_sha256": "8705e323ce1d71c66b656f6fb7a66d98dc9e591f98a3b7587d040818deddcc2d"
+      },
+      "R": {
+        "tokens": 128,
+        "decode_tok_s": 79.59696774495532,
+        "elapsed_s": 3.102392004337162,
+        "ttft_s": 1.5049247182905674,
+        "finish": "length",
+        "reply_sha256": "8705e323ce1d71c66b656f6fb7a66d98dc9e591f98a3b7587d040818deddcc2d"
+      },
+      "A_over_R_decode_rate": 0.9699866603200753,
+      "A_over_R_elapsed_time": 0.6951079090253505,
+      "text_equal": true
+    }
+  ],
+  "semantics": "Both 128-token texts exactly equal retained A. Hash-table opening still incorrectly calls the index unique and misleadingly implies similar keys cause collisions; story is coherent but truncated at fixed128. No semantic pack PASS.",
+  "scope": "Single Gemma2 scalar transfer screen; no broader family qualification, golden refresh or speed gate. Original A/D FAIL and two pre-service infrastructure failures preserved.",
+  "files": {
+    "pair.json": "a738dcb0787c4dc8a1aebdbb8f309a978d0492439b936b4e1021b4f246699ceb",
+    "pair-output.txt": "a738dcb0787c4dc8a1aebdbb8f309a978d0492439b936b4e1021b4f246699ceb",
+    "plan-comparison.json": "be64c1841161a2128bad0153934059f634ee775dfed704cbb8ec9d5ac36c0317",
+    "registration.json": "5c6861ac673989819086b7d2071fa367dfb7082f263d8a775d8b773286a83087",
+    "enrollment.json": "e7eb37cbc52cf2db2672236dbddfc6bdac5122b2416f9fe67973ec9c36012dd0",
+    "post-pair-host-free.txt": "df027d7f6c6549e5cd8e1c5df85336ea59852e5380ef07dac1916a14eb4b68b9",
+    "arm-r/audit.json": "b517b0604bdb6d831c03770066f9cd57bdca10e27d46a8b671aa6640ae4399f9",
+    "arm-r/launch.json": "054d1aacfef8909752baebcce41b0c31f61bda63c448a31e1060a0822a5f8640",
+    "arm-r/preflight.json": "14928873582e06410541a224d850485490c646698bccdd4b9357764bc3782e8e",
+    "arm-r/postflight.json": "cc9949390401555edff9c73b8d24854181ada328211c803abf612b02f9984037",
+    "arm-r/plans.json": "b0566171d5f0c0448b7c144ae8b1ef174bd7e9b6f9f14b9562ffc179da759f5d",
+    "arm-r/collector-output.txt": "5eb687a941f7d619f2a0071d0aaac64f105613e3faa039aa32a6237c480502f6",
+    "supervisor/final.json": "8b0f6c9dcb6d3b6397a8f1c0df0fa86a017819e2267529701171802bb7ca8504",
+    "supervisor/log": "78c0f80f13aa9ee43e9ebd9825129c387436b45c179d7dbb611377d1081cd27a",
+    "arm-r/quality/gemma2-quality-new-reply-0.sse": "1097b553b8ae50e12539df14e4851bc034e3c5bed2892fb7c341fc6bbc2f9b1d",
+    "arm-r/quality/gemma2-quality-new-reply-1.sse": "a9ce0d8f244bbc03f203d99e2eac104d3d6fd443bc50f36b7e4fb741d244736e",
+    "arm-r/quality/gemma2-quality-new-score.json": "94689fc47cec58e1739bd1e0430dbad66c887966a4db647d75a8b52c6eb2cf07",
+    "arm-r/quality/gemma2-quality-new-score.txt": "d94ee6ec0c784a57a6f363883b91d089525b1bffa8e141a8968035734986d03b",
+    "arm-r/quality/gemma2-quality-new.json": "a28790d1d483f419f62ee4e1b093f0822dce8c12e6bd866b423a3d0425feee9c",
+    "arm-r/work/gemma2-quality-new/runtime.log": "2c7b9bdf2df15e7c765663bc22630c820a063f29061323cac4a4e8528f41c8e9"
+  },
+  "format": "llmp-q8-scalar-repair-result/1",
+  "raw_root": "/tmp/llmp-u3-q8-quality-r3",
+  "prelaunch_failures": [
+    {
+      "job": "m35-u3-q8-scalar-repair-r1",
+      "supervisor_final": {
+        "state": "failed",
+        "rc": 1,
+        "signal": null,
+        "end": 1792711354.247,
+        "supervisor_pid": 1784778
+      },
+      "supervisor_final_sha256": "ca0336fd1f16c5d1a5bda9cddb1f1402055c13395d1a3b17421e994095b174ab",
+      "supervisor_log_sha256": "27f9d0ce2882b92ae6c596879ed70e43564fb8810efdc0c2177d46ecee6a2d79",
+      "output_entries": [],
+      "service_launched": false,
+      "inference_samples": 0,
+      "reason": "Missing registered A derived audit/plans summaries on B; existing raw A score data passed pins before missing audit.json raised FileNotFoundError",
+      "reference_metadata": {
+        "reason": "Original A ASLR recovery was audited locally; these registered derived summaries were not previously copied to B",
+        "copies": {
+          "audit.json": {
+            "bytes": 128099,
+            "sha256": "8dbef444453621eaf032aece9f7860e3f42c13018ed7399e8f090ddc55d3168f"
+          },
+          "plans.json": {
+            "bytes": 18391481,
+            "sha256": "1540f862800fb6cdaeb7105bc8ef157be74cb32e66829ec56c5dc04a7d78bed6"
+          }
+        },
+        "numerical_data_changed": false
+      },
+      "registration": "3735aad4c963bf544fc43986815fbc5b2bbe1452"
+    },
+    {
+      "job": "m35-u3-q8-scalar-repair-r2",
+      "registration": "9ab2fe542e13ccecf8acdddd768c292034d4e373",
+      "status": "infrastructure_failure_before_service",
+      "cause": "existing CLI accepts label old/new, wrapper supplied q8-repair",
+      "collector_returncode": 2,
+      "service_launched": false,
+      "inference": false,
+      "arm_files": {
+        "collector-output.txt": "eb02b0b5eacfa9f918842d6f4751d1a4bc626a7b4efbf0a12b744e7fd2e651cf",
+        "launch.json": "cf23f555b18400f1868b06408224406bbe6652e492802afbe2df20783bb7c20c",
+        "postflight.json": "d3bfa16c62750c939ebe40edd79384c9e2070b76b40342f1e22e30a604bc8013",
+        "preflight.json": "1d6520d8d8093d32c20f5af590dc6c6e136f835f04f6181d053e586eddd54e8d"
+      },
+      "supervisor_files": {
+        "child.json": "f8b1a8ec018020cd91c17d550fcea867db03a4a2674a8a4bc4f581871e5d0d63",
+        "final.json": "38c3009f9c4d961d3750e48586dbea20c9f96f71fe574b9a993f178ca8c32450",
+        "gpu.json": "8791f0c6d059abeac931f57af62cda50eba9a68afa8f3391c19cfa6872bba395",
+        "job.json": "eb44882dc12e246c0f88ad7649f3fd918528b31cf8dca6469cf045dfc9dad6ff",
+        "log": "91470c3b0c411453882dfa52505fe8aa9ccb1b6a80da39e2defe9b66186254d9"
+      },
+      "prepost_identity_equal_except_ldd_addresses": true,
+      "retirement": "installed busy reports free; zero GPU compute processes",
+      "retry_authorized": false
+    }
+  ],
+  "prelaunch_failure_status_note": "Authorization field preserves the state when failure was recorded; later registration913b7949 prospectively permits first actual service collection."
+}

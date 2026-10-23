@@ -692,10 +692,18 @@ D-122).
         archive imports and matches its reference under D-085's quality
         checks.
 - [ ] **U4 Numerics as component data, per device** (2026-10-22, D-126):
-      interface implementation is complete; scalar transfer qualification remains
-      open. The registered [Gemma2 scalar screen](experiments/m35-component-numerics/gemma2-scalar/RESULTS.md)
-      fails: 1,006/1,070 targets (94.0187%) meet the 0.1-nat tolerance, below
-      the unchanged 95% bound. Frozen expectations remain unchanged.
+      interface implementation is complete; broader scalar transfer qualification
+      remains open. The original [Gemma2 A/D screen](experiments/m35-component-numerics/gemma2-scalar/RESULTS.md)
+      fails unchanged at 1,006/1,070 targets (94.0187%) within 0.1 nat. The generic
+      Q8 scalar schedule repair's [registered R screen](experiments/m35-component-numerics/gemma2-scalar/Q8-SCHEDULE-REPAIR-RESULTS.md)
+      matches all 1,070 retained A teacher scores and both 128-token replies
+      exactly under the unchanged bounds. The report preserves the hash-table
+      reply's semantic defects and both pre-launch failures. The registered
+      [three-pair Gemma2 speed screen](experiments/m35-component-numerics/gemma2-scalar/Q8-ADOPTION-SPEED-RESULTS.md)
+      passes all six metrics. The Gemma26 assistant control passes and exercises
+      three changed scalar products; its target retains ten frozen-result failures.
+      Broader qualification, including Gemma31, remains open; frozen expectations
+      are unchanged.
       Component sites join explicit device/encoding evidence identically for
       pinned and unpinned artifacts; missing device evidence keeps exact
       arithmetic and reports the requirement. Native focused/shared checks,

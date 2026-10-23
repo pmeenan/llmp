@@ -90,6 +90,11 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Dense scalar Q8 products on GB10 use the incumbent four/eight-warp reduction
+  schedule, including joined one-token rows. The registered Gemma2 screen
+  exactly matches all 1,070 baseline teacher scores; other qualification remains
+  open (M3.5 U4).
+
 - Native artifact and composition publication creates private files (0600) and
   directories (0700), preserving existing store and input permissions.
 

@@ -88,6 +88,7 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     entry.overrides["max_slots"] = std::int64_t{Envelope() ? 4 : 12};
     config.models.push_back(entry);
     options.keep_conversations = true;
+    options.debug_plans = Assistant();
     ASSERT_TRUE(Start());
   }
   bool Start() {

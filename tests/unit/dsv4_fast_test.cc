@@ -197,35 +197,54 @@ double Q4KBlockProduct(const std::uint8_t* w, const std::uint8_t* q8) {
 class Dsv4FastTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    execution_ = std::move(llmp::providers::cuda::OpenDeviceExecution(0).value());
-    stream_ = execution_->CreateStream().value();
+    auto execution = llmp::providers::cuda::OpenDeviceExecution(0);
+    ASSERT_TRUE(execution) << execution.error().detail;
+    execution_ = std::move(*execution);
+    auto stream = execution_->CreateStream();
+    ASSERT_TRUE(stream) << stream.error().detail;
+    stream_ = *stream;
     const std::uint64_t workspace = Allocate(kWorkspace);
     auto launch = LaunchContext::Create(0, *execution_, stream_,
                                         {.base = workspace, .size = Bytes(kWorkspace)});
     ASSERT_TRUE(launch.has_value()) << (launch ? "" : launch.error().detail);
     launch_ = std::move(*launch);
-    arena_ = std::make_unique<TensorArena>(TensorArena::Create(8192).value());
+    auto arena = TensorArena::Create(8192);
+    ASSERT_TRUE(arena) << arena.error().detail;
+    arena_ = std::make_unique<TensorArena>(std::move(*arena));
   }
 
   void TearDown() override {
-    Finish();
-    launch_.reset();
-    ASSERT_TRUE(execution_->DestroyStream(stream_).has_value());
+    if (stream_.valid()) {
+      if (!Finish()) return;  // Never free device allocations without confirmed completion.
+      launch_.reset();
+      auto destroyed = execution_->DestroyStream(stream_);
+      EXPECT_TRUE(destroyed) << destroyed.error().detail;
+    }
     for (void* pointer : device_) {
       EXPECT_EQ(cudaFree(pointer), cudaSuccess);
     }
   }
 
-  void Finish() {
-    const auto fence = execution_->Record(stream_).value();
+  bool Finish() {
+    auto recorded = execution_->Record(stream_);
+    EXPECT_TRUE(recorded) << recorded.error().detail;
+    if (!recorded) return false;
+    const auto fence = *recorded;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
     FenceState state = FenceState::kPending;
-    while ((state = execution_->Query(fence).value()) == FenceState::kPending &&
-           std::chrono::steady_clock::now() < deadline) {
+    do {
+      auto queried = execution_->Query(fence);
+      EXPECT_TRUE(queried) << queried.error().detail;
+      if (!queried) return false;
+      state = *queried;
+      if (state != FenceState::kPending) break;
       std::this_thread::sleep_for(std::chrono::microseconds(50));
-    }
-    ASSERT_EQ(state, FenceState::kComplete);
-    ASSERT_TRUE(execution_->Release(fence).has_value());
+    } while (std::chrono::steady_clock::now() < deadline);
+    EXPECT_EQ(state, FenceState::kComplete);
+    if (state != FenceState::kComplete) return false;
+    auto released = execution_->Release(fence);
+    EXPECT_TRUE(released) << released.error().detail;
+    return released.has_value();
   }
 
   std::uint64_t Allocate(std::size_t bytes) {
@@ -261,7 +280,7 @@ class Dsv4FastTest : public ::testing::Test {
 
   template <typename T = float>
   std::vector<T> Download(const ggml_tensor* tensor) {
-    Finish();
+    if (!Finish()) return {};
     std::vector<T> values(ggml_nbytes(tensor) / sizeof(T));
     EXPECT_EQ(cudaMemcpy(values.data(), tensor->data, ggml_nbytes(tensor), cudaMemcpyDeviceToHost),
               cudaSuccess);
@@ -476,6 +495,137 @@ TEST_F(Dsv4FastTest, GemmaQuantGeGluPreservesFusedSlabAndIndependentRows) {
                 cudaSuccess);
       EXPECT_TRUE(std::all_of(before.begin(), before.end(), [](auto x) { return x == 0xa5; }));
       EXPECT_EQ(before, after);
+    }
+  }
+}
+
+// First numerical screen: the dense scalar schedule's four-to-eight-warp
+// boundary, with real quantized random weights and nonintegral activations.
+// The oracle is the incumbent launch over the very same prepared Q8_1 bytes;
+// an ordinary MMVQ also checks that sharing preparation preserved its result.
+TEST_F(Dsv4FastTest, DenseQ8ScalarScheduleMatchesIncumbentAtPromotion) {
+  constexpr std::int64_t k = 2048, n = 64;
+  auto* w =
+      Place(ggml_new_tensor_2d(c(), GGML_TYPE_Q8_0, k, n), Quantize(GGML_TYPE_Q8_0, k, n, 173));
+  auto* x = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, 1), Normal(174, k, 0.73f));
+  auto* q8 = Place(kg::QuantizeQ8(c(), x));
+  auto* candidate = Place(kg::VecQ(c(), w, q8, nullptr, 1, false));
+  auto* prepared = Place(kg::MmvqPrepared(c(), w, q8, x));
+  auto* original = Place(ggml_mul_mat(c(), w, x));
+  ASSERT_TRUE(kg::CheckVecQ(candidate));
+  ASSERT_TRUE(kg::CheckMmvqPrepared(prepared));
+  auto quantized = kg::RunQuantizeQ8(launch(), q8);
+  ASSERT_TRUE(quantized) << quantized.error().detail;
+  auto executed = kg::RunVecQ(launch(), candidate);
+  ASSERT_TRUE(executed) << executed.error().detail;
+  const auto got = Download(candidate);
+  ASSERT_EQ(got.size(), static_cast<std::size_t>(n));
+  auto prepared_result = kg::RunMmvqPrepared(launch(), prepared);
+  ASSERT_TRUE(prepared_result) << prepared_result.error().detail;
+  auto original_result = kg::MulMatVecQ(launch(), original);
+  ASSERT_TRUE(original_result) << original_result.error().detail;
+  const auto want = Download<std::uint32_t>(prepared);
+  EXPECT_EQ(want, Download<std::uint32_t>(original));
+  ASSERT_EQ(got.size(), want.size());
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    ASSERT_TRUE(std::isfinite(got[i]));
+    EXPECT_EQ(std::bit_cast<std::uint32_t>(got[i]), want[i]) << i;
+  }
+}
+
+// The actual Gemma reduction widths, Qwen PLE/head and output-projection
+// widths, and neighboring small-K / four-to-eight-warp decisions. N=64
+// represents the whole output-row blocks of those consumers; the K loop
+// and reduction do not depend on the number of such blocks.
+TEST_F(Dsv4FastTest, DenseQ8ScalarSchedulesMatchIncumbentAcrossRolesAndJoinedRows) {
+  constexpr std::int64_t n = 64, tokens = 3;
+  for (const std::int64_t k : {320, 512, 640, 992, 1024, 1056, 2016, 2048, 2080, 2304, 2560, 4096,
+                               5120, 5632, 6144, 8192, 9216, 10240}) {
+    SCOPED_TRACE(std::format("Q8_0 k{} n{}", k, n));
+    // Fund the original MMVQ's final partial-512 read, without changing
+    // packed row strides or claiming additional complete weight rows.
+    const auto weight = [&](std::uint64_t seed) {
+      auto* w = ggml_new_tensor_2d(c(), GGML_TYPE_Q8_0, k, n);
+      auto bytes = Quantize(GGML_TYPE_Q8_0, k, n, seed);
+      const auto address = Allocate(bytes.size() + ggml_row_size(GGML_TYPE_Q8_0, 512));
+      EXPECT_EQ(cudaMemset(reinterpret_cast<void*>(address), 0,
+                           bytes.size() + ggml_row_size(GGML_TYPE_Q8_0, 512)),
+                cudaSuccess);
+      EXPECT_EQ(cudaMemcpy(reinterpret_cast<void*>(address), bytes.data(), bytes.size(),
+                           cudaMemcpyHostToDevice),
+                cudaSuccess);
+      TensorArena::Bind(w, address);
+      kg::MarkRowPaddingReadable(w);
+      return w;
+    };
+    auto* up_weights = weight(175);
+    auto* gate_weights = weight(176);
+    const auto values = Normal(177, static_cast<std::size_t>(k * tokens), 0.73f);
+    auto* input = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, tokens), values);
+    auto* q8 = Place(kg::QuantizeQ8(c(), input));
+    auto* joined = Place(kg::VecQ(c(), up_weights, q8, nullptr, tokens, false));
+    auto* joined_glu = Place(
+        kg::VecQ(c(), up_weights, q8, nullptr, tokens, false, gate_weights, kg::VecQGlu::kGeGlu));
+    for (auto* node : {joined, joined_glu}) kg::SetVecQOneToken(node);
+    auto quantized = kg::RunQuantizeQ8(launch(), q8);
+    ASSERT_TRUE(quantized) << quantized.error().detail;
+    for (auto* node : {joined, joined_glu}) {
+      auto executed = kg::RunVecQ(launch(), node);
+      ASSERT_TRUE(executed) << executed.error().detail;
+    }
+    const auto joined_bits = Download<std::uint32_t>(joined);
+    const auto joined_glu_bits = Download<std::uint32_t>(joined_glu);
+    const auto joined_q8 = Download<std::uint8_t>(q8);
+    ASSERT_EQ(joined_bits.size(), static_cast<std::size_t>(n * tokens));
+    ASSERT_EQ(joined_glu_bits.size(), joined_bits.size());
+    ASSERT_EQ(joined_q8.size(), ggml_nbytes(q8));
+    for (std::int64_t t = 0; t < tokens; ++t) {
+      SCOPED_TRACE(std::format("row{}", t));
+      auto* x = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, 1),
+                      std::vector<float>(values.begin() + t * k, values.begin() + (t + 1) * k));
+      auto* solo_q8 = Place(kg::QuantizeQ8(c(), x));
+      auto prepared = kg::RunQuantizeQ8(launch(), solo_q8);
+      ASSERT_TRUE(prepared) << prepared.error().detail;
+      const auto solo_bytes = Download<std::uint8_t>(solo_q8);
+      ASSERT_EQ(solo_bytes.size() * tokens, joined_q8.size());
+      ASSERT_TRUE(
+          std::equal(solo_bytes.begin(), solo_bytes.end(),
+                     joined_q8.begin() + t * static_cast<std::ptrdiff_t>(solo_bytes.size())));
+      auto* up = Place(kg::MmvqPrepared(c(), up_weights, solo_q8, x));
+      auto* gate = Place(kg::MmvqPrepared(c(), gate_weights, solo_q8, x));
+      for (auto* node : {up, gate}) {
+        auto executed = kg::RunMmvqPrepared(launch(), node);
+        ASSERT_TRUE(executed) << executed.error().detail;
+      }
+      const auto want = Download<std::uint32_t>(up);
+      ASSERT_EQ(want.size(), static_cast<std::size_t>(n));
+      auto* ordinary_up = Place(ggml_mul_mat(c(), up_weights, x));
+      auto* ordinary_gate = Place(ggml_mul_mat(c(), gate_weights, x));
+      for (auto* node : {ordinary_up, ordinary_gate}) {
+        auto executed = kg::MulMatVecQ(launch(), node);
+        ASSERT_TRUE(executed) << executed.error().detail;
+      }
+      ASSERT_EQ(Download<std::uint32_t>(ordinary_up), want);
+      ASSERT_EQ(Download<std::uint32_t>(ordinary_gate), Download<std::uint32_t>(gate));
+      auto* incumbent_glu = Place(ggml_geglu_split(c(), ordinary_gate, ordinary_up));
+      auto fused = kg::MulMatVecQGlu(launch(), ordinary_gate, ordinary_up, incumbent_glu);
+      ASSERT_TRUE(fused) << fused.error().detail;
+      const auto want_glu = Download<std::uint32_t>(incumbent_glu);
+      ASSERT_EQ(want_glu.size(), want.size());
+      auto* solo = Place(kg::VecQ(c(), up_weights, solo_q8, nullptr, 1, false));
+      auto* solo_glu = Place(
+          kg::VecQ(c(), up_weights, solo_q8, nullptr, 1, false, gate_weights, kg::VecQGlu::kGeGlu));
+      for (auto* node : {solo, solo_glu}) {
+        auto executed = kg::RunVecQ(launch(), node);
+        ASSERT_TRUE(executed) << executed.error().detail;
+      }
+      ASSERT_EQ(Download<std::uint32_t>(solo), want);
+      ASSERT_EQ(Download<std::uint32_t>(solo_glu), want_glu);
+      ASSERT_TRUE(std::equal(want.begin(), want.end(), joined_bits.begin() + t * n));
+      ASSERT_TRUE(std::equal(want_glu.begin(), want_glu.end(), joined_glu_bits.begin() + t * n));
+      for (const auto* bits : {&want, &want_glu})
+        ASSERT_TRUE(std::ranges::all_of(
+            *bits, [](std::uint32_t v) { return std::isfinite(std::bit_cast<float>(v)); }));
     }
   }
 }
@@ -935,7 +1085,7 @@ TEST_F(Dsv4FastTest, EveryConfigurationCoversEveryTypeTailRowsAndPaddedRows) {
             d.dst_token = static_cast<int>(nrows);
             d.glu = with_glu ? 2 : 0;
             d.limit = kLimit;
-            Finish();
+            ASSERT_TRUE(Finish());
             // NaN everywhere: an output a configuration does not write shows.
             ASSERT_EQ(cudaMemset(out->data, 0xFF, ggml_nbytes(out)), cudaSuccess);
             const bool takes = nrows % kRows[static_cast<std::size_t>(v)] == 0;
@@ -1067,7 +1217,7 @@ TEST_F(Dsv4FastTest, RoutedExpertsReadOnceMatchPerTokenProducts) {
         d.dst_slot = static_cast<int>(kOut);
         d.glu = test.glu ? 2 : 0;
         d.limit = 7.0f;
-        Finish();
+        ASSERT_TRUE(Finish());
         ASSERT_EQ(cudaMemset(node->data, 0, ggml_nbytes(node)), cudaSuccess);
         ASSERT_TRUE(kg::LaunchVecQ(test.type, d, v, nullptr))
             << what << " " << kg::VecQVariantName(v);

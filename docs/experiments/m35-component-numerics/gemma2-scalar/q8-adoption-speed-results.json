@@ -1,0 +1,780 @@
+{
+  "format": "llmp-q8-adoption-speed-result-v1",
+  "registration": "586051a322fc1fbe7662cb1c16f416edbcbb8568",
+  "verdict": "PASS",
+  "scope": "Single Gemma2 same-host Spark B C1/C2 D-085 speed regression screen only. No other-family or semantic/state qualification.",
+  "criterion": {
+    "median_paired_slowdown_max": 1.1,
+    "first_pair_stop_triggered": false,
+    "aggregation": "Mean of six measured passes per arm, then median of three paired ratios independently per metric; candidate/baseline for times, baseline/candidate for rates."
+  },
+  "median_slowdown_ratios": {
+    "C1.prefill_s": 0.9872021732370175,
+    "C1.decode_tok_s": 0.9991780447375959,
+    "C1.wall_tok_s": 0.9809970193376553,
+    "C2.prefill_s": 0.9968840277468493,
+    "C2.decode_tok_s": 0.9987138026312302,
+    "C2.wall_tok_s": 1.0007363109482166
+  },
+  "pairs": [
+    {
+      "pair": 1,
+      "valid": true,
+      "baseline_metrics": {
+        "C1.prefill_s": 3.7227804999177656,
+        "C1.decode_tok_s": 66.50258603174926,
+        "C1.wall_tok_s": 27.53837389462025,
+        "C2.prefill_s": 3.912776123965159,
+        "C2.decode_tok_s": 106.41794265693972,
+        "C2.wall_tok_s": 40.74069124702487,
+        "peak_gib": 6.017314910888672
+      },
+      "candidate_metrics": {
+        "C1.prefill_s": 3.675137000003209,
+        "C1.decode_tok_s": 66.31246685459136,
+        "C1.wall_tok_s": 28.071822188831394,
+        "C2.prefill_s": 3.849192837253213,
+        "C2.decode_tok_s": 105.90520605574683,
+        "C2.wall_tok_s": 40.71071550149139,
+        "peak_gib": 6.002803802490234
+      },
+      "matched_full_request_usage_and_prompt_indices": true,
+      "slowdown_ratios": {
+        "C1.prefill_s": 0.9872021732370175,
+        "C1.decode_tok_s": 1.0028670201272227,
+        "C1.wall_tok_s": 0.9809970193376553,
+        "C2.prefill_s": 0.983749827565521,
+        "C2.decode_tok_s": 1.0048414673866268,
+        "C2.wall_tok_s": 1.0007363109482166
+      },
+      "first_pair_clear_stop": false,
+      "audit_hashes": {
+        "baseline": "fc8473f3e441f7b7b10a81303595df9352986954383b5e9ed48bd5555c1605d1",
+        "candidate": "e983372e85ea8ed7830c5b115fd09d32983969b7e561549b6f1f9e966631b1b9"
+      }
+    },
+    {
+      "pair": 2,
+      "valid": true,
+      "baseline_metrics": {
+        "C1.prefill_s": 3.7662889999337494,
+        "C1.decode_tok_s": 66.13901303736473,
+        "C1.wall_tok_s": 26.964058637828902,
+        "C2.prefill_s": 3.864521021489054,
+        "C2.decode_tok_s": 105.97324425003733,
+        "C2.wall_tok_s": 41.008145242044264,
+        "peak_gib": 6.0194854736328125
+      },
+      "candidate_metrics": {
+        "C1.prefill_s": 3.6869930000199624,
+        "C1.decode_tok_s": 66.350374114549,
+        "C1.wall_tok_s": 27.97485684115527,
+        "C2.prefill_s": 3.8524792812143764,
+        "C2.decode_tok_s": 106.10972229565489,
+        "C2.wall_tok_s": 40.73194767299971,
+        "peak_gib": 6.009128570556641
+      },
+      "matched_full_request_usage_and_prompt_indices": true,
+      "slowdown_ratios": {
+        "C1.prefill_s": 0.9789458536200536,
+        "C1.decode_tok_s": 0.9968144704531829,
+        "C1.wall_tok_s": 0.9638676183736773,
+        "C2.prefill_s": 0.9968840277468493,
+        "C2.decode_tok_s": 0.9987138026312302,
+        "C2.wall_tok_s": 1.0067808583881601
+      },
+      "first_pair_clear_stop": false,
+      "audit_hashes": {
+        "baseline": "15549e345d00c68b6a5fcf58e2aa5c41905e85ddcfbd04521b8bf65111d6497a",
+        "candidate": "a0f6a0c84a19283905f7f3c6560e2e7201eb32f5fbb771abbb5f81a263cb9b54"
+      }
+    },
+    {
+      "pair": 3,
+      "valid": true,
+      "baseline_metrics": {
+        "C1.prefill_s": 3.726160333259031,
+        "C1.decode_tok_s": 66.04401103644176,
+        "C1.wall_tok_s": 27.483523916580936,
+        "C2.prefill_s": 3.9115613410249352,
+        "C2.decode_tok_s": 104.66183217252724,
+        "C2.wall_tok_s": 40.68042490935927,
+        "peak_gib": 6.001594543457031
+      },
+      "candidate_metrics": {
+        "C1.prefill_s": 3.7422656667573997,
+        "C1.decode_tok_s": 66.09834091559351,
+        "C1.wall_tok_s": 27.05020528285321,
+        "C2.prefill_s": 3.9064541131568453,
+        "C2.decode_tok_s": 105.7987697204399,
+        "C2.wall_tok_s": 40.68835664586041,
+        "peak_gib": 5.997406005859375
+      },
+      "matched_full_request_usage_and_prompt_indices": true,
+      "slowdown_ratios": {
+        "C1.prefill_s": 1.0043222330919621,
+        "C1.decode_tok_s": 0.9991780447375959,
+        "C1.wall_tok_s": 1.0160190515819265,
+        "C2.prefill_s": 0.9986943249963832,
+        "C2.decode_tok_s": 0.989253773452027,
+        "C2.wall_tok_s": 0.9998050612717004
+      },
+      "first_pair_clear_stop": false,
+      "audit_hashes": {
+        "baseline": "451281f6a6e1cc8440677367f0a25c63851d9814e133b5209b4616284bd7ffd1",
+        "candidate": "19c695fb39b109b6bdc1b66ef94e72e46a762f5b631cf4969f0f241a78e342fb"
+      }
+    }
+  ],
+  "arms": [
+    {
+      "pair": 1,
+      "arm": "baseline",
+      "metrics": {
+        "C1.prefill_s": 3.7227804999177656,
+        "C1.decode_tok_s": 66.50258603174926,
+        "C1.wall_tok_s": 27.53837389462025,
+        "C2.prefill_s": 3.912776123965159,
+        "C2.decode_tok_s": 106.41794265693972,
+        "C2.wall_tok_s": 40.74069124702487,
+        "peak_gib": 6.017314910888672
+      },
+      "elapsed_s": 103.91968554398045,
+      "ready_s": 2.807565180119127,
+      "requests": 21,
+      "warmup_requests": 3,
+      "measured_requests": 18,
+      "prompt_token_counts": [
+        6947,
+        7369,
+        7422,
+        7053,
+        6568,
+        6623,
+        6347,
+        6018,
+        6613,
+        6820,
+        7224,
+        7421,
+        7384,
+        6121,
+        6199,
+        6170,
+        7128,
+        7143,
+        7248,
+        7730,
+        7322
+      ],
+      "generated_tokens_each": 128,
+      "cached_tokens_total": 0,
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "raw_record": "/tmp/llmp-u3-q8-speed-586051a3/p1-baseline/runs/gemma2-b01-p0-old.json",
+      "raw_sha256": "624d6eda5a516950d0508bbd46828c8b5e877ff99f89774f7cacefa9a19032e4",
+      "external_directory": "/tmp/llmp-u3-q8-speed-586051a3/p1-baseline",
+      "evidence_sha256": {
+        "audit.json": "fc8473f3e441f7b7b10a81303595df9352986954383b5e9ed48bd5555c1605d1",
+        "pre.json": "9936001766c39904eb499a4ff2f8fa5fb3cd398cd1aa9107b800bd6d15647e64",
+        "post.json": "7f3d713a19f899705fd3e8bb68311ce56e8e9a9e24d8fd3b9689da682d2ec34d",
+        "supervisor/final.json": "e24f18907fd15742466afc23fbe9b9f785ff8e9482656740ade78dd53439269a",
+        "supervisor/job.json": "af548d570ee86cfc16299c39e87f7aeac560427d9c5a664cfb4a850374269f2f",
+        "supervisor/steps.json": "de820b7c7891b3d42d8acdc12006d66d255c474f6fb1904c781c183f83d8cefd",
+        "supervisor/log": "e68a90561404f6f62db48a319a02e89e74e22539aff96201d5b6b8a8668d884b"
+      }
+    },
+    {
+      "pair": 1,
+      "arm": "candidate",
+      "metrics": {
+        "C1.prefill_s": 3.675137000003209,
+        "C1.decode_tok_s": 66.31246685459136,
+        "C1.wall_tok_s": 28.071822188831394,
+        "C2.prefill_s": 3.849192837253213,
+        "C2.decode_tok_s": 105.90520605574683,
+        "C2.wall_tok_s": 40.71071550149139,
+        "peak_gib": 6.002803802490234
+      },
+      "elapsed_s": 103.70717772608623,
+      "ready_s": 2.811623328831047,
+      "requests": 21,
+      "warmup_requests": 3,
+      "measured_requests": 18,
+      "prompt_token_counts": [
+        6947,
+        7369,
+        7422,
+        7053,
+        6568,
+        6623,
+        6347,
+        6018,
+        6613,
+        6820,
+        7224,
+        7421,
+        7384,
+        6121,
+        6199,
+        6170,
+        7128,
+        7143,
+        7248,
+        7730,
+        7322
+      ],
+      "generated_tokens_each": 128,
+      "cached_tokens_total": 0,
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "raw_record": "/tmp/llmp-u3-q8-speed-586051a3/p1-candidate/runs/gemma2-b01-p1-new.json",
+      "raw_sha256": "5a5516d63d0a57664a1d27933042e6f1649fbaf38bfc8f6119fd9f6b3591897c",
+      "external_directory": "/tmp/llmp-u3-q8-speed-586051a3/p1-candidate",
+      "evidence_sha256": {
+        "audit.json": "e983372e85ea8ed7830c5b115fd09d32983969b7e561549b6f1f9e966631b1b9",
+        "pre.json": "9b19e5fdb0e5263985bb3914e6fe596e0ee1bbbab8d57cd8a0a79145678d352a",
+        "post.json": "42f636f049c09ba3b95c4358544497493a17e711cf91ce8be7ebf7975163220a",
+        "supervisor/final.json": "bb4f1c789264c0c8ced8dac1eda090acb3a403960f803bff5a969e0dade17f34",
+        "supervisor/job.json": "b762cef4ee6453d2437f0a677ebbfc3e9e44653a43d67be78b8fc027151797ee",
+        "supervisor/steps.json": "b763dfee2dd43e6ab2d0c11f7ee08c4e99cf17d30a8e1744eb1813f4a34d60cb",
+        "supervisor/log": "6973a6b5ad34b476a108259f5d5dccca8f138efb86d6628ab10b760d561682c1"
+      }
+    },
+    {
+      "pair": 2,
+      "arm": "candidate",
+      "metrics": {
+        "C1.prefill_s": 3.6869930000199624,
+        "C1.decode_tok_s": 66.350374114549,
+        "C1.wall_tok_s": 27.97485684115527,
+        "C2.prefill_s": 3.8524792812143764,
+        "C2.decode_tok_s": 106.10972229565489,
+        "C2.wall_tok_s": 40.73194767299971,
+        "peak_gib": 6.009128570556641
+      },
+      "elapsed_s": 103.65530519373715,
+      "ready_s": 2.806608856189996,
+      "requests": 21,
+      "warmup_requests": 3,
+      "measured_requests": 18,
+      "prompt_token_counts": [
+        6947,
+        7369,
+        7422,
+        7053,
+        6568,
+        6623,
+        6347,
+        6018,
+        6613,
+        6820,
+        7224,
+        7421,
+        7384,
+        6121,
+        6199,
+        6170,
+        7128,
+        7143,
+        7248,
+        7730,
+        7322
+      ],
+      "generated_tokens_each": 128,
+      "cached_tokens_total": 0,
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "raw_record": "/tmp/llmp-u3-q8-speed-586051a3/p2-candidate/runs/gemma2-b02-p0-new.json",
+      "raw_sha256": "196b40f4fee3aade08a438e7654eb706987022cfa67e23b5928eb3e1759f156e",
+      "external_directory": "/tmp/llmp-u3-q8-speed-586051a3/p2-candidate",
+      "evidence_sha256": {
+        "audit.json": "a0f6a0c84a19283905f7f3c6560e2e7201eb32f5fbb771abbb5f81a263cb9b54",
+        "pre.json": "42d7d083caabc64782db5c37dc8058f7100941c1e0fbed63860586879401e8e2",
+        "post.json": "7e089bfacef72bc8c1583b03dabcc09467815d85f4bddd02f729f912a68916ff",
+        "supervisor/final.json": "03dbc112bbecac0d66d69080de92552cf9d69de1217ffa6aa3608f48f3fd4eee",
+        "supervisor/job.json": "f12e6371a549f9665bf22de7204e8c266244cb03805dcb7ce3bea14543cd64be",
+        "supervisor/steps.json": "e41f17e54d3443998ccba24a1d2e706a7273882bd018333e7d9a41f98197cdcd",
+        "supervisor/log": "6391b9f249e2ea9059facb78e345e03829415eded47f6e9c58d1297216bcd2a5"
+      }
+    },
+    {
+      "pair": 2,
+      "arm": "baseline",
+      "metrics": {
+        "C1.prefill_s": 3.7662889999337494,
+        "C1.decode_tok_s": 66.13901303736473,
+        "C1.wall_tok_s": 26.964058637828902,
+        "C2.prefill_s": 3.864521021489054,
+        "C2.decode_tok_s": 105.97324425003733,
+        "C2.wall_tok_s": 41.008145242044264,
+        "peak_gib": 6.0194854736328125
+      },
+      "elapsed_s": 104.10182791110128,
+      "ready_s": 2.8117154971696436,
+      "requests": 21,
+      "warmup_requests": 3,
+      "measured_requests": 18,
+      "prompt_token_counts": [
+        6947,
+        7369,
+        7422,
+        7053,
+        6568,
+        6623,
+        6347,
+        6018,
+        6613,
+        6820,
+        7224,
+        7421,
+        7384,
+        6121,
+        6199,
+        6170,
+        7128,
+        7143,
+        7248,
+        7730,
+        7322
+      ],
+      "generated_tokens_each": 128,
+      "cached_tokens_total": 0,
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "raw_record": "/tmp/llmp-u3-q8-speed-586051a3/p2-baseline/runs/gemma2-b02-p1-old.json",
+      "raw_sha256": "197be1590630896871590565024371246df38bd2e4c2675115b06ac923d003d0",
+      "external_directory": "/tmp/llmp-u3-q8-speed-586051a3/p2-baseline",
+      "evidence_sha256": {
+        "audit.json": "15549e345d00c68b6a5fcf58e2aa5c41905e85ddcfbd04521b8bf65111d6497a",
+        "pre.json": "d9dc0966cc83aeaab2e3a6aeb332b1fef9ea5315db64c17eb766129ec46659e3",
+        "post.json": "3f4cae679db21f2569e68d4cec50495712b0d8900aa6572332136544b7e537e4",
+        "supervisor/final.json": "46fc9cc4778d9e041d5a3ae4aa288dc4c0fcce67cccde17d33e0bf4a0a98c4b7",
+        "supervisor/job.json": "0eb449eb75dba1011151feac6e88f9f676c974a6e1b09e4b9e7306e45ec67794",
+        "supervisor/steps.json": "f4c59bbfe10312796e12ae764926ffe5ab894cbc131691cf5c74b8d7248b475a",
+        "supervisor/log": "566da2c909a9779a594c2e4a0b12992198a1eebcd324a6b26cac60a070594a8f"
+      }
+    },
+    {
+      "pair": 3,
+      "arm": "baseline",
+      "metrics": {
+        "C1.prefill_s": 3.726160333259031,
+        "C1.decode_tok_s": 66.04401103644176,
+        "C1.wall_tok_s": 27.483523916580936,
+        "C2.prefill_s": 3.9115613410249352,
+        "C2.decode_tok_s": 104.66183217252724,
+        "C2.wall_tok_s": 40.68042490935927,
+        "peak_gib": 6.001594543457031
+      },
+      "elapsed_s": 104.08081725798547,
+      "ready_s": 2.8108841287903488,
+      "requests": 21,
+      "warmup_requests": 3,
+      "measured_requests": 18,
+      "prompt_token_counts": [
+        6947,
+        7369,
+        7422,
+        7053,
+        6568,
+        6623,
+        6347,
+        6018,
+        6613,
+        6820,
+        7224,
+        7421,
+        7384,
+        6121,
+        6199,
+        6170,
+        7128,
+        7143,
+        7248,
+        7730,
+        7322
+      ],
+      "generated_tokens_each": 128,
+      "cached_tokens_total": 0,
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "raw_record": "/tmp/llmp-u3-q8-speed-586051a3/p3-baseline/runs/gemma2-b03-p0-old.json",
+      "raw_sha256": "c2ff15ce53e4fb0ec71ad951b6325e6fb846f3fa9310bf7a549662662f26374a",
+      "external_directory": "/tmp/llmp-u3-q8-speed-586051a3/p3-baseline",
+      "evidence_sha256": {
+        "audit.json": "451281f6a6e1cc8440677367f0a25c63851d9814e133b5209b4616284bd7ffd1",
+        "pre.json": "c3af4dd0b03fcfd24b0e78c694a81e8823a425c67c493028250f2e1bd29d66f3",
+        "post.json": "a9eb99ebc0c31dbdb14978f131d04b08810c9f713f8037075231f110574308d1",
+        "supervisor/final.json": "14762e462869ac2125015b580654b758d4044b4e845676e360406943597c79eb",
+        "supervisor/job.json": "3718d5961c019cdae2331be139973151cf25c509e0f8db035f77c127f80a0e19",
+        "supervisor/steps.json": "d750794e11d658dd9b48f54c224afb555bb535cf4c8cf28b3e194eef9a409808",
+        "supervisor/log": "72cc429bcd25bc9285cf2bc523fa58ea711c40cccfa79745a6f92e79100774f9"
+      }
+    },
+    {
+      "pair": 3,
+      "arm": "candidate",
+      "metrics": {
+        "C1.prefill_s": 3.7422656667573997,
+        "C1.decode_tok_s": 66.09834091559351,
+        "C1.wall_tok_s": 27.05020528285321,
+        "C2.prefill_s": 3.9064541131568453,
+        "C2.decode_tok_s": 105.7987697204399,
+        "C2.wall_tok_s": 40.68835664586041,
+        "peak_gib": 5.997406005859375
+      },
+      "elapsed_s": 104.07662087399513,
+      "ready_s": 2.8108576396480203,
+      "requests": 21,
+      "warmup_requests": 3,
+      "measured_requests": 18,
+      "prompt_token_counts": [
+        6947,
+        7369,
+        7422,
+        7053,
+        6568,
+        6623,
+        6347,
+        6018,
+        6613,
+        6820,
+        7224,
+        7421,
+        7384,
+        6121,
+        6199,
+        6170,
+        7128,
+        7143,
+        7248,
+        7730,
+        7322
+      ],
+      "generated_tokens_each": 128,
+      "cached_tokens_total": 0,
+      "retirement": {
+        "signal": "TERM",
+        "returncode": 0
+      },
+      "raw_record": "/tmp/llmp-u3-q8-speed-586051a3/p3-candidate/runs/gemma2-b03-p1-new.json",
+      "raw_sha256": "02c462df7f124b37c4725aedc9a51508cd8bf2baa91a293f5978c19b2211a63c",
+      "external_directory": "/tmp/llmp-u3-q8-speed-586051a3/p3-candidate",
+      "evidence_sha256": {
+        "audit.json": "19c695fb39b109b6bdc1b66ef94e72e46a762f5b631cf4969f0f241a78e342fb",
+        "pre.json": "2e96a725129d9cabe561747f716156598eda02e543ce6aca711ee24788ad07ba",
+        "post.json": "d678fb88a2e27b16a66275b4f801d02f8b9e3fadb96346a7610779a3d865107a",
+        "supervisor/final.json": "40c3fe772fdea5d6d086b789b2e0e6a462b18b7d618f6d3c08bbe7288476c488",
+        "supervisor/job.json": "33a7ed6213ce63f5d905bcb9a8d864bb2496b8b70354237bcd521bd4ea882d02",
+        "supervisor/steps.json": "cdbdd15c22a8fef52b2fe46b82b394bf37380a7f8e3471d59eb1fda269633baa",
+        "supervisor/log": "3192899ebd8e7f34eb1c3261f9404d9f138f21a5429bc66eae7a06161c3787ee"
+      }
+    }
+  ],
+  "identities": {
+    "baseline": {
+      "runtime": "/home/pmeenan/.local/share/llmp/baselines/m35-w13-pre-q8/src/runtime/llmp-runtime",
+      "runtime_sha256": "a74178c84af8452df8b8728670787adf4d61511c65988c98a5ba6ca1964e7e79",
+      "source_manifest_sha256": "b5b66616b1338a20c3a82860fa3655eca2738e7f751e3064b8b22d1f1e876fe2",
+      "resolved_dependencies_on_b": {
+        "/usr/lib/aarch64-linux-gnu/libc.so.6": "0f1905dc27dbc6715875c70527bc8da846a10084c9c483e9d8ff76dce8d69d0e",
+        "/home/pmeenan/.local/share/llmp/baselines/m35-w13-pre-q8/lib/llmp/libcublas.so.13": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b",
+        "/usr/lib/aarch64-linux-gnu/libpthread.so.0": "6f1ab9e7d7de142dc5e2feaf6d19faceff0a0f40d5e225c922899f5362b8c353",
+        "/usr/lib/aarch64-linux-gnu/libdl.so.2": "1c16b2692a155191c97d7fdc5ce937d37c242435f05745046a794a9832b16af4",
+        "/usr/lib/aarch64-linux-gnu/librt.so.1": "93d0d5ab643b50ac1a61c2c7baf670e8aa94973fa5a2584d13db05295d5b5a0e",
+        "/usr/lib/aarch64-linux-gnu/libgcc_s.so.1": "f2d3ad2bf0b61f6bc944cc37d7b6ab7f88d2582b41ff989ca164803f56cc5f20",
+        "/home/pmeenan/.local/share/llmp/baselines/m35-w13-pre-q8/lib/llmp/libcublasLt.so.13": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30",
+        "/usr/lib/aarch64-linux-gnu/libm.so.6": "5e0391562de36de323fb9cb0f2c1b6bd6d034c840b1dac018499f5fe4ded1b4a",
+        "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": "390027e5f45f236bd1838bc54bf464c5ff01d260ab9f8b415ea8276641bce505",
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.580.178.04": "b11359b073ae9e49df81dc4f5c156378bd97fb9f6197ef64edc46e22c670bed4"
+      }
+    },
+    "candidate": {
+      "runtime": "/home/pmeenan/.local/share/llmp/baselines/m35-w15-q8-adoption/src/runtime/llmp-runtime",
+      "runtime_sha256": "c940d8c2debbf2798cff894cd7a4f40ce97d57d6815e771843e1aa2c97e4702f",
+      "source_manifest_sha256": "84cd7472fa621d9b5f0be1c729a0650b25e5202869e3c7c184d944122ceb09e8",
+      "resolved_dependencies_on_b": {
+        "/home/pmeenan/.local/share/llmp/baselines/m35-w15-q8-adoption/lib/llmp/libcublas.so.13": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b",
+        "/home/pmeenan/.local/share/llmp/baselines/m35-w15-q8-adoption/lib/llmp/libcublasLt.so.13": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30",
+        "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1": "390027e5f45f236bd1838bc54bf464c5ff01d260ab9f8b415ea8276641bce505",
+        "/usr/lib/aarch64-linux-gnu/libc.so.6": "0f1905dc27dbc6715875c70527bc8da846a10084c9c483e9d8ff76dce8d69d0e",
+        "/usr/lib/aarch64-linux-gnu/libcuda.so.580.178.04": "b11359b073ae9e49df81dc4f5c156378bd97fb9f6197ef64edc46e22c670bed4",
+        "/usr/lib/aarch64-linux-gnu/libdl.so.2": "1c16b2692a155191c97d7fdc5ce937d37c242435f05745046a794a9832b16af4",
+        "/usr/lib/aarch64-linux-gnu/libgcc_s.so.1": "f2d3ad2bf0b61f6bc944cc37d7b6ab7f88d2582b41ff989ca164803f56cc5f20",
+        "/usr/lib/aarch64-linux-gnu/libm.so.6": "5e0391562de36de323fb9cb0f2c1b6bd6d034c840b1dac018499f5fe4ded1b4a",
+        "/usr/lib/aarch64-linux-gnu/libpthread.so.0": "6f1ab9e7d7de142dc5e2feaf6d19faceff0a0f40d5e225c922899f5362b8c353",
+        "/usr/lib/aarch64-linux-gnu/librt.so.1": "93d0d5ab643b50ac1a61c2c7baf670e8aa94973fa5a2584d13db05295d5b5a0e"
+      }
+    }
+  },
+  "registered_files": {
+    "tools/speed_gate.py": "e65de36ad6ae8c12d0ce72b39c1e6f098a929068bbf0a99e5556e2656e6a7823",
+    "docs/experiments/m35-component-numerics/gemma2-scalar/Q8-ADOPTION-SPEED.md": "1fc3989adf5bbd2346b293280673f71ec656075d68c84fbfc7abd2eb19d3c002",
+    "docs/experiments/m35-component-numerics/gemma2-scalar/q8-adoption-speed-pins.json": "88223c9fb7f75de325ef63940685076dd0a20e0f56cc3f7b33b3e4c8f20a9ce3",
+    "docs/experiments/m35-component-numerics/gemma2-scalar/q8-adoption-speed-pins.json.license": "0da79db8b0b6e65fbb69e52327a3bf32af91bb70bcbfee29170b2aebd1261e21"
+  },
+  "executor_enrollment_sha256": "d5a55a6e0088e6894767e86e1e2c472715ba6c2b075ad6b796e333c6850feaac",
+  "pair_calculator_sha256": "0b0e99f6ba91637dac8857d034297d1bd6160df6120be4e34074cb10e9beddab",
+  "external_root": "/tmp/llmp-u3-q8-speed-586051a3",
+  "release": {
+    "recorded_at_utc": "2026-10-23T00:23:20.422669+00:00",
+    "observed_after_final_retirement": true,
+    "busy_returncode": 0,
+    "gpu_compute_processes": 0,
+    "stdout": "nvidia-smi compute processes: 0\nspark-56f5: free (exclusive: 0 running, 0 waiting; shared: 0 of 2 running, 0 waiting; 0 GPU compute process(es))\n",
+    "released_to_root": true
+  },
+  "limitations": [
+    "Same-host measured baseline was byte-identically copied from A with actual B dependency resolution; no cross-host timing comparison.",
+    "prefill_s measures client cohort release through last first token, not isolated GPU compute.",
+    "Original scalar A/D quality FAIL and both pre-service repair attempts remain preserved; repaired R/A exact score PASS is separate.",
+    "Gemma26 native frozen control still fails ten logits/state assertions; the assistant control passed. Neither result is replaced by speed PASS.",
+    "Observed assistant scalar stage1 selected three Q8 K4096 VecQ products; K5632 preprojection selected prepared MMVQ. Target verification rows2/4 had one owner segment and used ordinary multirow VecQ, outside the scalar schedule branch.",
+    "No new quality bounds, goldens, semantic pack, other-model qualification or milestone closure."
+  ],
+  "literal_gemma26_controls": {
+    "external_root": "/tmp/llmp-u3-w15-gemma26-controls",
+    "summary": {
+      "source_manifest_sha256": "84cd7472fa621d9b5f0be1c729a0650b25e5202869e3c7c184d944122ceb09e8",
+      "controls": {
+        "native": {
+          "pass": false,
+          "cases": [
+            {
+              "name": "PublishedMatchesFrozenRowsStateAndSpillContinuation/Gemma26",
+              "value_param": "1",
+              "file": "/home/pmeenan/src/llmp/tests/unit/gemma_native_v1_serving_gpu_test.cc",
+              "line": "415",
+              "status": "run",
+              "result": "completed",
+              "time": "13.452",
+              "timestamp": "2026-10-22T20:06:24.484",
+              "classname": "Approved/GemmaNativeV1ServingGpu"
+            }
+          ],
+          "xml_sha256": "44d90e8012df3c3d2133f4aa2194adf5823c052e85bf9b2fa364017145838673",
+          "raw_sha256": "7070e96fbda2de3830078732afc6da8e0860b04828b0e123c298ac78347879f7",
+          "returncode": 1
+        },
+        "assistant": {
+          "pass": true,
+          "cases": [
+            {
+              "name": "DraftsFromTheTargetsStateAreVerifiedAndKept/Gemma26",
+              "value_param": "26",
+              "file": "/home/pmeenan/src/llmp/tests/unit/gemma4_serving_gpu_test.cc",
+              "line": "438",
+              "status": "run",
+              "result": "completed",
+              "time": "15.761",
+              "timestamp": "2026-10-22T20:07:02.352",
+              "classname": "ApprovedProfiles/Gemma4AssistantServingGpu"
+            }
+          ],
+          "xml_sha256": "79f402f809cbc5d8f401961c2fe1caf00615e2d7d098656649ffeecc11ed883c",
+          "raw_sha256": "a15d8927771fed19a9c486d1501bf3c24843381158e2d306a09e266f647a8d49",
+          "returncode": 0
+        }
+      },
+      "selected_path_audit_sha256": "64119ed4f4161f97083ab8f4fcb1c64f12ea852dc736be83e17b1ff3cdbdb067",
+      "native_negative": "10 frozen logits/state/restored/continued/resumed failures; no head/token assertion failures. Existing oracles unchanged.",
+      "no_retries": true
+    },
+    "selected_path_audit": {
+      "plans": 4,
+      "completed_changed_domains": [
+        {
+          "header": {
+            "kind": "installed_plan",
+            "id": 1,
+            "stage": 0,
+            "phase": 0,
+            "rows": 144,
+            "segments": 1,
+            "host_bytes": 7151263
+          },
+          "uses": 2,
+          "q8_changed_width_recipes": [
+            {
+              "implementation": "ggml.mul_mat.mmq",
+              "shape": [
+                4096,
+                2816,
+                1,
+                1
+              ],
+              "source_occurrences": 25
+            }
+          ]
+        },
+        {
+          "header": {
+            "kind": "installed_plan",
+            "id": 5,
+            "stage": 1,
+            "phase": 3,
+            "rows": 1,
+            "segments": 1,
+            "host_bytes": 536894
+          },
+          "uses": 174,
+          "q8_changed_width_recipes": [
+            {
+              "implementation": "llmp.mmvq.prepared",
+              "shape": [
+                5632,
+                1024,
+                1,
+                1
+              ],
+              "source_occurrences": 1
+            },
+            {
+              "implementation": "llmp.vecq",
+              "shape": [
+                4096,
+                1024,
+                1,
+                1
+              ],
+              "source_occurrences": 3
+            }
+          ]
+        },
+        {
+          "header": {
+            "kind": "installed_plan",
+            "id": 12,
+            "stage": 0,
+            "phase": 2,
+            "rows": 4,
+            "segments": 1,
+            "host_bytes": 7417479
+          },
+          "uses": 56,
+          "q8_changed_width_recipes": [
+            {
+              "implementation": "llmp.vecq",
+              "shape": [
+                4096,
+                2816,
+                1,
+                1
+              ],
+              "source_occurrences": 25
+            }
+          ]
+        },
+        {
+          "header": {
+            "kind": "installed_plan",
+            "id": 237,
+            "stage": 0,
+            "phase": 2,
+            "rows": 2,
+            "segments": 1,
+            "host_bytes": 7417479
+          },
+          "uses": 2,
+          "q8_changed_width_recipes": [
+            {
+              "implementation": "llmp.vecq",
+              "shape": [
+                4096,
+                2816,
+                1,
+                1
+              ],
+              "source_occurrences": 25
+            }
+          ]
+        }
+      ],
+      "raw_sha256": "a15d8927771fed19a9c486d1501bf3c24843381158e2d306a09e266f647a8d49",
+      "plans_sha256": "899f058235b4c0bd8acada56ebc401f38473250868eda911c6f3350a46e94ab7",
+      "interpretation": {
+        "assistant_scalar_changed": "stage1/phase3/rows1/segments1,174successfuluses; three VecQ Q8_0 attention products K4096\u00d71024",
+        "assistant_preprojection_unchanged": "K5632\u00d71024 uses preparedMMVQ, not VecQ",
+        "target_verify_not_scalar_changed": "stage0/phase2 rows4/2,segments1,56/2uses:25VecQ K4096\u00d72816; plan.owner_row_invariant=false because segments.size()==1; lower.cc only marks VecQOneToken under that flag. These are ordinarymultirow products outside newly changed scalar branch.",
+        "source_locations": [
+          "src/planner/plan.cc:853",
+          "src/kernels/ggml/lower.cc:898",
+          "src/kernels/ggml/dsv4_fast.cu:1452"
+        ],
+        "scope": "functional assistant replay/verification+actual three changed scalar products; no targetscalarquality or allfamily closure"
+      }
+    },
+    "control_provenance": {
+      "native": {
+        "enrollment": {
+          "command": [
+            "/home/pmeenan/src/llmp/build/spark-native/tests/unit/gemma_native_v1_serving_gpu_test",
+            "--gtest_filter=Approved/GemmaNativeV1ServingGpu.PublishedMatchesFrozenRowsStateAndSpillContinuation/Gemma26",
+            "--gtest_output=xml:/tmp/llmp-u3-w15-gemma26-controls/native/result.xml"
+          ],
+          "cwd": "/home/pmeenan/src/llmp/build/spark-native/tests/unit",
+          "environment": {
+            "LLMP_TEST_SCRATCH": "/home/pmeenan/src/llmp/build/spark-native/tests/unit/scratch",
+            "LLMP_TEST_DATA": "/home/pmeenan/src/llmp/build/spark-native/tests/unit/data"
+          },
+          "binary_sha256": "65f8d2a16a44328d7611466481639e9e400b0798eba010fbb63be404a335577c",
+          "helper_sha256": "ccf526b3b057154d03593d4461a312547dd17db4fe2302dc4973cff151bd5885",
+          "source_sha256": "84cd7472fa621d9b5f0be1c729a0650b25e5202869e3c7c184d944122ceb09e8",
+          "inventory_sha256": "a9e1cead2081619f4d2499251d50e0582a6bef086e410e8aaa93ae6d1f4a32c9"
+        },
+        "evidence_sha256": {
+          "enrollment.json": "ce135ae5863006d8ce608b1eec2b06f18d0ab9bae2f1c44c8d8a5eaced5d00fa",
+          "guard-pre.json": "ef689220ba51b4cc738da376cb06f54e4bad38ca3f62569eac6251ca96a00020",
+          "guard-post.json": "ef689220ba51b4cc738da376cb06f54e4bad38ca3f62569eac6251ca96a00020",
+          "raw.log": "7070e96fbda2de3830078732afc6da8e0860b04828b0e123c298ac78347879f7",
+          "result.xml": "44d90e8012df3c3d2133f4aa2194adf5823c052e85bf9b2fa364017145838673",
+          "result.json": "282e6f19ccbd45465b2cbb9a80789ddf39691454b9aa28f4b71c19925c2dc475",
+          "supervisor/final.json": "5a9dad25e2401c6bb0f7ca69fc683236ceb9bc34e6818f7d74159631c1b99d6a",
+          "supervisor/log": "8b174b0219a0418cd5064794c0f1cacb3e16182e57b2c9b1f8479e195b7c4b7e"
+        }
+      },
+      "assistant": {
+        "enrollment": {
+          "command": [
+            "/home/pmeenan/src/llmp/build/spark-native/tests/unit/gemma4_serving_gpu_test",
+            "--gtest_filter=ApprovedProfiles/Gemma4AssistantServingGpu.DraftsFromTheTargetsStateAreVerifiedAndKept/Gemma26",
+            "--gtest_output=xml:/tmp/llmp-u3-w15-gemma26-controls/assistant/result.xml"
+          ],
+          "cwd": "/home/pmeenan/src/llmp/build/spark-native/tests/unit",
+          "environment": {
+            "LLMP_TEST_DATA": "/home/pmeenan/src/llmp/build/spark-native/tests/unit/data",
+            "LLMP_TEST_SCRATCH": "/home/pmeenan/src/llmp/build/spark-native/tests/unit/scratch"
+          },
+          "binary_sha256": "679c0bb1d75cff82ab1f917c4306de1e5dbb755ffff2c8f1e3835734d048e93b",
+          "helper_sha256": "ccf526b3b057154d03593d4461a312547dd17db4fe2302dc4973cff151bd5885",
+          "source_sha256": "84cd7472fa621d9b5f0be1c729a0650b25e5202869e3c7c184d944122ceb09e8",
+          "inventory_sha256": "a9e1cead2081619f4d2499251d50e0582a6bef086e410e8aaa93ae6d1f4a32c9"
+        },
+        "evidence_sha256": {
+          "enrollment.json": "aaf294686e4bc8c8c91334be64fa00d19babbb0fcb766641f7bfcb86fda48900",
+          "guard-pre.json": "58644d10f293198af047f8abb1464a614e3c2337a992de650392a00811924f31",
+          "guard-post.json": "58644d10f293198af047f8abb1464a614e3c2337a992de650392a00811924f31",
+          "raw.log": "a15d8927771fed19a9c486d1501bf3c24843381158e2d306a09e266f647a8d49",
+          "result.xml": "79f402f809cbc5d8f401961c2fe1caf00615e2d7d098656649ffeecc11ed883c",
+          "result.json": "42ae1df89ad8644744da18ffb250f4cba9e292a381ab67dd13c4b43ceed5113a",
+          "supervisor/final.json": "1caa394d54a96b54864194aa5a299cab5aa1611c3ae4de4a7b8860223cca971b",
+          "supervisor/log": "7b309c3b79c6c08fcde826fe11232ab67c705ce4420669fa455b0c311fe4497e"
+        }
+      }
+    },
+    "source_manifest_sha256": "84cd7472fa621d9b5f0be1c729a0650b25e5202869e3c7c184d944122ceb09e8",
+    "fresh_inventory_sha256": "a9e1cead2081619f4d2499251d50e0582a6bef086e410e8aaa93ae6d1f4a32c9",
+    "runner_sha256": "ccf526b3b057154d03593d4461a312547dd17db4fe2302dc4973cff151bd5885"
+  }
+}
