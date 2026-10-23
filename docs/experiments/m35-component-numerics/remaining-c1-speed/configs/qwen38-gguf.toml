@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
+# SPDX-License-Identifier: Apache-2.0
+schema_version = 2
+[storage]
+data_dir = "{data}"
+installed = "{share}/u2-v1-artifacts"
+[client]
+bind = ["loopback"]
+port = {port}
+[models."qwen3.8-gguf"]
+artifact = "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8"
+context = 512
+prefill_chunk = 5
+max_slots = 1
+tokenizer = "{share}/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json"
+chat_template = "{share}/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/chat_template.jinja"

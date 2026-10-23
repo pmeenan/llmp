@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
+# SPDX-License-Identifier: Apache-2.0
+schema_version = 2
+[storage]
+data_dir = "{data}"
+installed = "{share}/u2-v1-artifacts"
+[client]
+bind = ["loopback"]
+port = {port}
+[models."deepseek"]
+artifact = "01a5e5ba5a911528fd58268406ac6cff032e767fd09a20fd4c9cbf84f2043f13"
+drafter = "e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90"
+speculation = true
+wave_form = "plain"
+context = 262144
+prefill_chunk = 4096
+max_slots = 4
