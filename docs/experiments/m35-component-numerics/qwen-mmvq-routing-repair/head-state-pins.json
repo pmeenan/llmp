@@ -1,0 +1,202 @@
+{
+  "arms": {
+    "qwen-candidate-plain": {
+      "binary": "qwen38_engine_serving_gpu_test",
+      "build": "candidate",
+      "expected_target_policy": "max_decode_rows 16\nenable owner_row_invariant\n",
+      "export_dir": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-qwen-mmvq-repair-r1/head-state/export",
+      "filter": "Qwen38EngineServingGpu.DISABLED_U4DiagnosticPlainQwen38",
+      "host": "spark-56f5",
+      "model": "qwen38-plain",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-qwen-mmvq-repair-r1/head-state",
+      "target_artifact": "qwen38_gguf",
+      "target_id": "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8",
+      "transport": "configured-default"
+    }
+  },
+  "artifacts": {
+    "qwen38_gguf": {
+      "id": "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8",
+      "index_sha256": "40803567725558418f1993e1c50948870d92ea7022fea40151846334fbd03d70",
+      "manifest_sha256": "61827c2fdd87aabd0ee6371054358b6f90433d9452ceef1910edcbe130268be1",
+      "source": [
+        {
+          "bytes": 10946624,
+          "name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
+          "sha256": "268f81fdedf3149a538f252308927a4d5d1f6e062c178568a51e3b519744f8a8"
+        },
+        {
+          "bytes": 49567921344,
+          "name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf",
+          "sha256": "cfe600b236b88c7fad1613a5ca5e83b9f2beb63cbd44c32b2be50a44747c695f"
+        },
+        {
+          "bytes": 32382955968,
+          "name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf",
+          "sha256": "f1912ba34c79427d2295a58dcb2b732b5931af5bef7a373c60557a57d9ee7250"
+        }
+      ],
+      "source_metadata": [
+        {
+          "bytes": 10946618,
+          "path": "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.kv.gguf",
+          "sha256": "7c1460a95eb2e95377c32b14deb92cf74fe504d4feb5a62a40d48f78e9e0dcb8"
+        },
+        {
+          "bytes": 106,
+          "path": "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.kv.gguf",
+          "sha256": "0bd485a7f050b5ac258c3722f25f2be38a7ef3e597696f3e4d7e09ec461ff978"
+        },
+        {
+          "bytes": 106,
+          "path": "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.kv.gguf",
+          "sha256": "2fd68e0dc3770fdd9e4d52a5e9570394855926807e0e020b879651ded2b004c6"
+        }
+      ],
+      "spec_sha256": "74116647d445819311c58dc16336099c95d675d827a5cd4125cfd88fadbd47cb"
+    }
+  },
+  "conditions": "Only Qwen candidate plain repair arm; require positive native/focused controls and committed prospective registration. Speed separately requires independent exact head/state and full-plan PASS.",
+  "enabled": false,
+  "execution_order": [
+    "qwen-candidate-plain"
+  ],
+  "hosts": {
+    "spark-56f5": {
+      "actual_hostname": "spark-56f5",
+      "binaries": {
+        "candidate": {
+          "qwen38_engine_serving_gpu_test": {
+            "bytes": 304671456,
+            "mode": "0555",
+            "path": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-qwen-mmvq-repair-r1/retained/qwen38_engine_serving_gpu_test",
+            "sha256": "710a7c3c208a605b0d8418ffd47e4df3b268aaf62fe3fb667084ea2fe28e060d"
+          }
+        }
+      },
+      "libraries": {
+        "ld-linux-aarch64.so.1": {
+          "bytes": 203968,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/ld-linux-aarch64.so.1",
+          "sha256": "390027e5f45f236bd1838bc54bf464c5ff01d260ab9f8b415ea8276641bce505"
+        },
+        "libc.so.6": {
+          "bytes": 1722920,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libc.so.6",
+          "sha256": "0f1905dc27dbc6715875c70527bc8da846a10084c9c483e9d8ff76dce8d69d0e"
+        },
+        "libcublas.so.13": {
+          "bytes": 71959256,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libcublas.so.13",
+          "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+        },
+        "libcublasLt.so.13": {
+          "bytes": 648206104,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libcublasLt.so.13",
+          "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+        },
+        "libcuda.so.1": {
+          "bytes": 96460560,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libcuda.so.1",
+          "sha256": "b11359b073ae9e49df81dc4f5c156378bd97fb9f6197ef64edc46e22c670bed4"
+        },
+        "libdl.so.2": {
+          "bytes": 67440,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libdl.so.2",
+          "sha256": "1c16b2692a155191c97d7fdc5ce937d37c242435f05745046a794a9832b16af4"
+        },
+        "libgcc_s.so.1": {
+          "bytes": 133696,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libgcc_s.so.1",
+          "sha256": "f2d3ad2bf0b61f6bc944cc37d7b6ab7f88d2582b41ff989ca164803f56cc5f20"
+        },
+        "libm.so.6": {
+          "bytes": 591800,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libm.so.6",
+          "sha256": "5e0391562de36de323fb9cb0f2c1b6bd6d034c840b1dac018499f5fe4ded1b4a"
+        },
+        "libpthread.so.0": {
+          "bytes": 67440,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/libpthread.so.0",
+          "sha256": "6f1ab9e7d7de142dc5e2feaf6d19faceff0a0f40d5e225c922899f5362b8c353"
+        },
+        "librt.so.1": {
+          "bytes": 67512,
+          "mode": "0444",
+          "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib/librt.so.1",
+          "sha256": "93d0d5ab643b50ac1a61c2c7baf670e8aa94973fa5a2584d13db05295d5b5a0e"
+        }
+      },
+      "library_dir": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib",
+      "models_root": "/home/pmeenan/.local/share/llmp",
+      "store_path": "/home/pmeenan/.local/share/llmp/u2-v1-artifacts",
+      "test_data_directory": "/home/pmeenan/src/llmp/tests/unit/data"
+    }
+  },
+  "identity_crosswalk": {
+    "file": "identity-map.json",
+    "sha256": "7ca3dc8c603026cc7136531c22427ed26a29ad94ea5fff5a0b6cdcee1916af58"
+  },
+  "inputs": {
+    "qwen38-plain": {
+      "context": 512,
+      "generation_budgets": [
+        8,
+        8
+      ],
+      "prefill_chunk": 16,
+      "slots": 1,
+      "token_count": 5,
+      "token_ids": [
+        113,
+        8032,
+        15951,
+        23870,
+        31789
+      ],
+      "token_ids_i32le_sha256": "40dd7747b0ce0429b38cbcaf0198ff7e3891dd14fc3bed0289f9b499d2ceb694"
+    }
+  },
+  "prerequisites": {
+    "build_evidence_path": "/tmp/llmp-m35-orchestration/u4-qwen-speed-repair-build-r1/build-evidence.json",
+    "build_evidence_sha256": "205290ce8e268088dfb1012577299dc47c3dfc176eefa651ea86682bbc7796ce",
+    "focused_controls": "3/3 PASS;174 related PASS0skip",
+    "native_build": "PASS four targets, Spark B",
+    "reuse_review_sha256": "f520d243a9b5e607d3adccceb4860d72f0052108d7e7bff3d1025c71f37c7125"
+  },
+  "schema_version": 1,
+  "source_difference": {
+    "other": [
+      "tests/unit/ggml_lower_test.cc",
+      "tests/unit/planner_test.cc"
+    ],
+    "production": [
+      "src/kernels/ggml/capabilities.cc",
+      "src/planner/fusions.cc",
+      "src/planner/fusions.h",
+      "src/planner/pattern.cc"
+    ]
+  },
+  "sources": {
+    "candidate": {
+      "module_digest": "5f64510030d6fbeb5388fa392275026ab70215ad54c0b994e039f50f2b9f3d4b",
+      "path": "/tmp/llmp-m35-orchestration/u4-qwen-speed-repair-build-r1/source-final.json",
+      "path_count": 2935,
+      "sha256": "773f6b591adcacdab730ee8df70f022873531f301c2f09da9aa732d5bbd53381"
+    },
+    "reference": {
+      "module_digest": "2e2303d1b45514df0f494bd6cb73ae877b53647270cb45f34bcbd17969047127",
+      "path_count": 2935,
+      "sha256": "21a22f47768d4339aa7e9949cfab5cf095942149455f4ac96a2599d60d8cb2ff"
+    }
+  }
+}
