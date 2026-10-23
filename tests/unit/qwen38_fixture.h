@@ -245,6 +245,29 @@ inline std::vector<std::string> ModelOptFolds() {
   return {"gdn.value_heads_tiled", "norm.plus_one", "ssm.a_neg_exp"};
 }
 
+// Keep the fixture assembler's established .codes/.scales inputs so it can
+// construct NVFP4 part roles and geometry, then expose the native ModelOpt
+// spellings that the selected mapping reads.
+inline std::string FixtureNativeTensorName(std::string name) {
+  for (const auto& [suffix, native] :
+       {std::pair{"ffn_gate_up_exps.codes", "ffn_gate_up_exps.weight"},
+        std::pair{"ffn_gate_up_exps.scales", "ffn_gate_up_exps.weight_scale"},
+        std::pair{"ffn_down_exps.codes", "ffn_down_exps.weight"},
+        std::pair{"ffn_down_exps.scales", "ffn_down_exps.weight_scale"}}) {
+    if (name.ends_with(suffix)) {
+      name.replace(name.size() - std::string_view(suffix).size(), std::string_view(suffix).size(),
+                   native);
+      break;
+    }
+  }
+  return name;
+}
+
+inline void FixtureNativeTensorNames(std::vector<families::Qwen38Resource>& resources) {
+  for (auto& resource : resources)
+    for (auto& role : resource.roles) role = FixtureNativeTensorName(std::move(role));
+}
+
 // The resources as a mapping's source (the ModelOpt pairs assembled), with
 // `folds`.
 inline spec::Source SourceOf(std::string architecture, std::string container,
@@ -259,9 +282,13 @@ inline spec::Source SourceOf(std::string architecture, std::string container,
                        .ne = r.ne,
                        .count = r.expert_array ? r.count : 0});
   }
+  const bool native = container == "safetensors" || container == "mlx";
   auto source = FixtureSource(std::move(architecture), std::move(container), tensors,
                               kQwen38ModelOptAssembly, std::move(folds));
   EXPECT_TRUE(source.has_value()) << (source ? "" : source.error());
+  if (source && native)
+    for (auto& tensor : source->tensors)
+      tensor.name = FixtureNativeTensorName(std::move(tensor.name));
   return source.value_or(spec::Source{});
 }
 
@@ -275,7 +302,8 @@ inline spec::Source TargetSource(const families::Qwen38Profile& p, Form form) {
 
 // The MTP drafter's source (a ModelOpt import's, with its folds).
 inline spec::Source MtpSource(const families::Qwen38Profile& p, std::uint64_t selected_rows = 0) {
-  return SourceOf("qwen4exp-mtp", "safetensors", MtpResources(p, selected_rows), ModelOptFolds());
+  return SourceOf("qwen3_8_flash_next", "safetensors", MtpResources(p, selected_rows),
+                  ModelOptFolds());
 }
 
 // The target's values in `form` (qwen4exp's, Qwen38Mapping).
@@ -443,7 +471,7 @@ inline NativeModelOptFixture NativeModelOpt() {
     result.values = std::move(*values);
     result.values.push_back({"llmp.qwen4exp.expert_activation_scales", true});
   }
-  auto made = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), result.source, result.values);
+  auto made = spec::Synthesize(spec::mappings::Qwen38Mapping(), result.source, result.values);
   EXPECT_TRUE(made.has_value());
   if (made) result.model = std::move(*made);
   return result;
@@ -653,7 +681,7 @@ inline NativeMlxFixture NativeMlx() {
     result.values.push_back({"llmp.qwen4exp.experts_stacked", false});
     result.values.push_back({"llmp.qwen4exp.expert_scales", false});
   }
-  auto made = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), result.source, result.values);
+  auto made = spec::Synthesize(spec::mappings::Qwen38Mapping(), result.source, result.values);
   EXPECT_TRUE(made.has_value());
   if (made) result.model = std::move(*made);
   return result;

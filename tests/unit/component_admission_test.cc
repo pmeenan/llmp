@@ -1705,7 +1705,11 @@ TEST(ComponentAdmissionModelOptTest,
       rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262144, .slots = 8});
   ASSERT_TRUE(policy) << (policy ? "" : policy.error());
   // The native mapping's fast form.
-  EXPECT_EQ(policy->text, llmp::spec::mappings::Qwen38NativeMapping().policies.front().text);
+  const auto selected_policies = llmp::spec::PolicyRules(llmp::spec::mappings::Qwen38Mapping(),
+                                                         {source.architecture, source.container});
+  ASSERT_TRUE(selected_policies) << selected_policies.error();
+  ASSERT_FALSE(selected_policies->empty());
+  EXPECT_EQ(policy->text, selected_policies->front().text);
   EXPECT_FALSE(
       rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262145, .slots = 1}));
   EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 0, .slots = 1}));

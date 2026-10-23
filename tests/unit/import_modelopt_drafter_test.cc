@@ -17,6 +17,7 @@
 #include <format>
 #include <fstream>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -38,8 +39,27 @@ using format::PartRole;
 
 NormalizationTarget NativeTarget() {
   auto fixture = test_support::qwen38::NativeModelOpt();
-  return {&spec::mappings::Qwen38NativeMapping(), std::move(fixture.model),
-          std::move(fixture.source)};
+  return {&spec::mappings::Qwen38Mapping(), std::move(fixture.model), std::move(fixture.source)};
+}
+NormalizationTarget GgufTarget() {
+  const auto profile = test_support::families::Qwen38Flash();
+  const test_support::families::Qwen38PleHash hash{
+      .multipliers = {23703573157769, 20109073645365, 8052911324071},
+      .offsets = {0, 20000003, 40000026, 60000059, 80000106, 100000165, 120000228, 140000297,
+                  160000374, 180000455, 200000548, 220000655, 240000802, 260000955, 280001114,
+                  300001275},
+      .vocab = {20000003, 20000023, 20000033, 20000047, 20000059, 20000063, 20000069, 20000077,
+                20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161, 20000171}};
+  auto source = test_support::qwen38::TargetSource(profile, test_support::qwen38::Form::kGguf);
+  auto values =
+      test_support::qwen38::TargetValues(profile, hash, test_support::qwen38::Form::kGguf);
+  EXPECT_TRUE(values);
+  auto model = values ? spec::Synthesize(spec::mappings::Qwen38Mapping(), source, *values)
+                      : std::expected<spec::ModelSpec, std::string>(
+                            std::unexpected("GGUF fixture values are unavailable"));
+  EXPECT_TRUE(model);
+  return {&spec::mappings::Qwen38Mapping(), model ? std::move(*model) : spec::ModelSpec{},
+          std::move(source)};
 }
 std::expected<NormalizedPlan, Error> NormalizeDrafterFixture(const Checkpoint& source,
                                                              std::optional<DraftHeadList> head,
@@ -268,6 +288,44 @@ NormalizationLimits Paid(const Checkpoint& c, std::size_t ids) {
                : NormalizationLimits{};
 }
 
+void ExpectSelectedHeadPayload(const NormalizedPlan& plan, const Checkpoint& source,
+                               std::span<const std::uint32_t> selected_rows) {
+  const auto head = std::ranges::find(source.tensors, "lm_head.weight", &Tensor::name);
+  ASSERT_NE(head, source.tensors.end());
+  const auto row_bytes = format::RowBytes(head->format, PartRole::kData);
+  ASSERT_TRUE(row_bytes);
+  const auto& sub = plan.parts().source();
+  ASSERT_LT(head->extent.file, source.files.size());
+  const auto& source_file_name = source.files[head->extent.file].name;
+  const auto part_file = std::ranges::find_if(
+      sub.files, [&](const auto& file) { return file.name == source_file_name; });
+  ASSERT_NE(part_file, sub.files.end());
+  const auto part_file_index = static_cast<std::uint32_t>(part_file - sub.files.begin());
+
+  // A bounded fake range reader gives the selected source rows distinct byte
+  // signatures, then materializes only those rows from the plan's runs.
+  std::vector<std::byte> actual, expected;
+  actual.reserve(selected_rows.size() * *row_bytes);
+  expected.reserve(selected_rows.size() * *row_bytes);
+  for (const auto& member : plan.parts().members()) {
+    if (plan.parts().outputs()[member.output].name != "draft_output.weight") continue;
+    ASSERT_LT(member.source, sub.tensors.size());
+    const Extent extent = sub.tensors[member.source].extent;
+    ASSERT_EQ(extent.file, part_file_index);
+    ASSERT_GE(extent.offset, head->extent.offset);
+    for (std::uint64_t byte = 0; byte < extent.bytes; ++byte) {
+      const std::uint64_t position = extent.offset - head->extent.offset + byte;
+      const std::uint64_t token = position / *row_bytes;
+      const std::uint64_t within = position % *row_bytes;
+      actual.push_back(static_cast<std::byte>((token * 17 + within) % 251));
+    }
+  }
+  for (const std::uint32_t token : selected_rows)
+    for (std::uint64_t within = 0; within < *row_bytes; ++within)
+      expected.push_back(static_cast<std::byte>((token * 17 + within) % 251));
+  EXPECT_EQ(actual, expected);
+}
+
 // The pinned files' identities as the published manifest lists them.
 std::vector<artifact::Source> Origins(bool head, std::string_view list = "ids.txt") {
   const auto hex = [](std::string_view text) {
@@ -471,6 +529,8 @@ TEST(ImportModelOptDrafterTest, GathersASelectedHeadInItsListsOrder) {
   EXPECT_EQ(runs[1], (Extent{.file = 2, .offset = lm.extent.offset + 10 * 5120, .bytes = 5120}));
   EXPECT_EQ(runs[2],
             (Extent{.file = 2, .offset = lm.extent.offset + 248319ULL * 5120, .bytes = 5120}));
+  const std::array<std::uint32_t, 5> selected_rows{0, 1, 2, 10, 248319};
+  ExpectSelectedHeadPayload(*plan, source, selected_rows);
   const auto head_at =
       std::ranges::find(plan->parts().outputs(), "draft_output.weight", &IndexedOutput::name);
   ASSERT_NE(head_at, plan->parts().outputs().end());
@@ -502,6 +562,102 @@ TEST(ImportModelOptDrafterTest, GathersASelectedHeadInItsListsOrder) {
   EXPECT_TRUE(std::ranges::all_of(output->weights, [](const auto& w) { return w.stage.empty(); }));
   ExpectApprovedTransforms(*plan);
   EXPECT_EQ(plan->canonical().tensors.size(), MtpApproval().tensors);
+}
+
+TEST(ImportModelOptDrafterTest, SelectedHeadUsesActualGgufTargetDialectAcrossNativeDrafter) {
+  const auto source = Source();
+  auto list =
+      ReadDraftHeadList(WriteList("cross-container-ids.txt", "0\n1\n2\n10\n248319\n"), 248320);
+  ASSERT_TRUE(list);
+  auto target = GgufTarget();
+  ASSERT_TRUE(ValidateTarget(target, spec::mappings::Qwen38MtpMapping()));
+  const auto plan = Normalize(source, Paid(source, 5), &target,
+                              {.component = "mtp", .draft_head = std::move(*list)});
+  ASSERT_TRUE(plan) << plan.error().ToString();
+  EXPECT_EQ(target.source.container, "gguf");
+  EXPECT_EQ(source.container, "safetensors");
+  EXPECT_EQ(plan->selected_rows(), 5U);
+  EXPECT_EQ(plan->canonical().tensors.back().name, "draft_output.ids");
+  const auto lm = *source.FindTensor("lm_head.weight");
+  const auto target_head =
+      std::ranges::find(target.source.tensors, "output.weight", &spec::SourceTensor::name);
+  ASSERT_NE(target_head, target.source.tensors.end());
+  EXPECT_EQ(lm.format.encoding, Encoding::kBF16);
+  EXPECT_EQ(target_head->format.encoding, Encoding::kQ8_0);
+  const auto& sub = plan->parts().source();
+  ASSERT_LT(lm.extent.file, source.files.size());
+  const auto& source_file_name = source.files[lm.extent.file].name;
+  const auto part_file = std::ranges::find_if(
+      sub.files, [&](const auto& file) { return file.name == source_file_name; });
+  ASSERT_NE(part_file, sub.files.end());
+  const auto part_file_index = static_cast<std::uint32_t>(part_file - sub.files.begin());
+  std::vector<Extent> runs;
+  for (const auto& member : plan->parts().members()) {
+    if (plan->parts().outputs()[member.output].name != "draft_output.weight") continue;
+    ASSERT_LT(member.source, sub.tensors.size());
+    runs.push_back(sub.tensors[member.source].extent);
+  }
+  ASSERT_EQ(runs.size(), 3U);
+  const auto row = format::RowBytes(lm.format, PartRole::kData);
+  ASSERT_TRUE(row);
+  EXPECT_EQ(runs[0],
+            (Extent{.file = part_file_index, .offset = lm.extent.offset, .bytes = 3 * *row}));
+  EXPECT_EQ(
+      runs[1],
+      (Extent{.file = part_file_index, .offset = lm.extent.offset + 10 * *row, .bytes = *row}));
+  EXPECT_EQ(runs[2], (Extent{.file = part_file_index,
+                             .offset = lm.extent.offset + 248319ULL * *row,
+                             .bytes = *row}));
+  const std::array<std::uint32_t, 5> selected_rows{0, 1, 2, 10, 248319};
+  ExpectSelectedHeadPayload(*plan, source, selected_rows);
+}
+
+TEST(ImportModelOptDrafterTest, SelectedHeadCanonicalDrafterUsesRecipeTargetDialect) {
+  auto source = Source();
+  source.architecture = "qwen4exp-mtp";
+  const auto model_type = std::ranges::find(source.metadata, "model_type", &MetaEntry::key);
+  ASSERT_NE(model_type, source.metadata.end());
+  model_type->value = std::string(source.architecture);
+  auto list =
+      ReadDraftHeadList(WriteList("canonical-source-ids.txt", "0\n1\n2\n10\n248319\n"), 248320);
+  ASSERT_TRUE(list);
+  auto target = NativeTarget();
+  ASSERT_TRUE(ValidateTarget(target, spec::mappings::Qwen38MtpMapping()));
+  const auto plan = Normalize(source, Paid(source, 5), &target,
+                              {.component = "mtp", .draft_head = std::move(*list)});
+  ASSERT_TRUE(plan) << plan.error().ToString();
+  EXPECT_EQ(source.architecture, "qwen4exp-mtp");
+  EXPECT_EQ(target.source.container, "safetensors");
+  EXPECT_EQ(plan->selected_rows(), 5U);
+
+  const auto head = std::ranges::find(source.tensors, "lm_head.weight", &Tensor::name);
+  ASSERT_NE(head, source.tensors.end());
+  const auto& sub = plan->parts().source();
+  ASSERT_LT(head->extent.file, source.files.size());
+  const auto& source_file_name = source.files[head->extent.file].name;
+  const auto part_file = std::ranges::find_if(
+      sub.files, [&](const auto& file) { return file.name == source_file_name; });
+  ASSERT_NE(part_file, sub.files.end());
+  const auto part_file_index = static_cast<std::uint32_t>(part_file - sub.files.begin());
+  std::vector<Extent> runs;
+  for (const auto& member : plan->parts().members()) {
+    if (plan->parts().outputs()[member.output].name != "draft_output.weight") continue;
+    ASSERT_LT(member.source, sub.tensors.size());
+    runs.push_back(sub.tensors[member.source].extent);
+  }
+  ASSERT_EQ(runs.size(), 3U);
+  const auto row = format::RowBytes(head->format, PartRole::kData);
+  ASSERT_TRUE(row);
+  EXPECT_EQ(runs[0],
+            (Extent{.file = part_file_index, .offset = head->extent.offset, .bytes = 3 * *row}));
+  EXPECT_EQ(
+      runs[1],
+      (Extent{.file = part_file_index, .offset = head->extent.offset + 10 * *row, .bytes = *row}));
+  EXPECT_EQ(runs[2], (Extent{.file = part_file_index,
+                             .offset = head->extent.offset + 248319ULL * *row,
+                             .bytes = *row}));
+  const std::array<std::uint32_t, 5> selected_rows{0, 1, 2, 10, 248319};
+  ExpectSelectedHeadPayload(*plan, source, selected_rows);
 }
 
 TEST(ImportModelOptDrafterTest, RefusesWhatItCannotDescribeOrIsNotPaidFor) {
@@ -616,7 +772,7 @@ TEST(ImportModelOptDrafterTest, TargetSourceAliasesUseCanonicalMappingIdentity) 
     SCOPED_TRACE(architecture);
     auto target = NativeTarget();
     target.source.architecture = architecture;
-    ASSERT_TRUE(ValidateTarget(target, spec::mappings::Qwen38MtpNativeMapping()));
+    ASSERT_TRUE(ValidateTarget(target, spec::mappings::Qwen38MtpMapping()));
     const auto plan = Normalize(source, limits, &target, {.component = "mtp"});
     ASSERT_TRUE(plan) << plan.error().ToString();
     EXPECT_EQ(plan->canonical().architecture, "qwen4exp-mtp");
@@ -635,10 +791,10 @@ TEST(ImportModelOptDrafterTest, TargetSourceAliasesUseCanonicalMappingIdentity) 
       ASSERT_NE(target.mapping, nullptr);
     }
     if (mutation == 1) target.source.container = "gguf";
-    if (mutation == 2) target.mapping = &spec::mappings::Qwen38MtpNativeMapping();
+    if (mutation == 2) target.mapping = &spec::mappings::Qwen38MtpMapping();
     if (mutation == 3) target.model.stages.front().role = spec::StageRole::kDrafter;
     if (mutation == 4) target.model.stages.front().stream.width = 1;
-    EXPECT_FALSE(ValidateTarget(target, spec::mappings::Qwen38MtpNativeMapping()));
+    EXPECT_FALSE(ValidateTarget(target, spec::mappings::Qwen38MtpMapping()));
     EXPECT_FALSE(Normalize(source, limits, &target, {.component = "mtp"}));
   }
 }
@@ -648,7 +804,7 @@ TEST(ImportModelOptDrafterTest, SelectedIdsMustFitBothActualTargetAndCheckpointH
   for (auto& tensor : target.source.tensors)
     if (tensor.name == "token_embd.weight" || tensor.name == "output.weight")
       tensor.format.shape.ne[1] = 300000;
-  ASSERT_TRUE(ValidateTarget(target, spec::mappings::Qwen38MtpNativeMapping()));
+  ASSERT_TRUE(ValidateTarget(target, spec::mappings::Qwen38MtpMapping()));
   auto head = ReadDraftHeadList(WriteList("outside-source-ids.txt", "248320\n"), 300000);
   ASSERT_TRUE(head);
   const auto source = Source();
@@ -668,8 +824,8 @@ TEST(ImportModelOptDrafterTest, MissingTargetRefusesAndPublishedMetadataExtracti
   auto own = test_support::qwen38::MtpSource(test_support::families::Qwen38Flash(), 321);
   for (auto& tensor : target.source.tensors)
     if (tensor.name == "output.weight") tensor.format.shape.ne[1] = 100003;
-  auto values = spec::ExtractValues(spec::mappings::Qwen38MtpNativeMapping(), target.model,
-                                    target.source, own);
+  auto values =
+      spec::ExtractValues(spec::mappings::Qwen38MtpMapping(), target.model, target.source, own);
   ASSERT_TRUE(values) << values.error();
   EXPECT_EQ(std::get<std::int64_t>(Find(*values, "qwen4exp-mtp.context_length")->value), 123456);
   EXPECT_EQ(std::get<std::int64_t>(Find(*values, "qwen4exp-mtp.draft_head_rows")->value), 321);
@@ -677,8 +833,8 @@ TEST(ImportModelOptDrafterTest, MissingTargetRefusesAndPublishedMetadataExtracti
   std::erase_if(own.tensors, [](const spec::SourceTensor& tensor) {
     return tensor.name.starts_with("draft_output.");
   });
-  values = spec::ExtractValues(spec::mappings::Qwen38MtpNativeMapping(), target.model,
-                               target.source, own);
+  values =
+      spec::ExtractValues(spec::mappings::Qwen38MtpMapping(), target.model, target.source, own);
   ASSERT_TRUE(values);
   EXPECT_EQ(std::get<std::int64_t>(Find(*values, "qwen4exp-mtp.draft_vocab")->value), 65536);
 }
@@ -718,15 +874,15 @@ TEST(ImportModelOptDrafterTest, StackedAndScaledFollowTheDrafterTensors) {
     return tensor.name.contains("ffn_gate_up_exps") ||
            tensor.name.ends_with("_exps.weight_scale_2");
   });
-  auto values = spec::ExtractValues(spec::mappings::Qwen38MtpNativeMapping(), target.model,
-                                    target.source, own);
+  auto values =
+      spec::ExtractValues(spec::mappings::Qwen38MtpMapping(), target.model, target.source, own);
   ASSERT_TRUE(values) << values.error();
   EXPECT_FALSE(flag(*values, "llmp.qwen4exp.experts_stacked"));
   EXPECT_FALSE(flag(*values, "llmp.qwen4exp.expert_scales"));
   own.tensors.push_back({.name = "blk.0.ffn_gate_up_exps.weight"});
   own.tensors.push_back({.name = "blk.0.ffn_gate_exps.weight_scale_2"});
-  values = spec::ExtractValues(spec::mappings::Qwen38MtpNativeMapping(), target.model,
-                               target.source, own);
+  values =
+      spec::ExtractValues(spec::mappings::Qwen38MtpMapping(), target.model, target.source, own);
   ASSERT_TRUE(values) << values.error();
   EXPECT_TRUE(flag(*values, "llmp.qwen4exp.experts_stacked"));
   EXPECT_TRUE(flag(*values, "llmp.qwen4exp.expert_scales"));

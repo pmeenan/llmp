@@ -522,16 +522,35 @@ struct TensorPartOverride {
 };
 struct SourceDialect {
   std::string_view architecture{}, container{};
+  // Optional execution-name translation for source subarchitectures. The
+  // checkpoint spelling remains in Source; this is the component vocabulary.
+  std::string_view execution_architecture{};
+  std::span<const std::string_view> source_architectures{};
   std::string_view key_prefix{};
   bool unprefixed_keys = false;
   std::string_view tensor_prefix{}, source_key_prefix{};
+  std::string_view layer_count_key{}, context_key{}, softcap_key{}, layer_types{};
+  std::string_view layer_type_key{}, layer_type_interval_key{}, layer_flags_key{};
+  char layer_flag_type = 0;
+  std::span<const LayerTypeCode> layer_type_codes{};
+  bool explicit_layer_rules = false;
   std::span<const SourceKey> keys{};
+  // Replaces the full source parameter chain. This is separate from params,
+  // which append source-only rules to the canonical chain.
+  bool complete_params = false;
   std::span<const ParamOverride> overrides{};
   std::span<const ParamRule> params{}, defaults{};
   // Optional container-specific tensor spellings/parts. Roles must already
   // exist in the canonical mapping; this only selects the source wire table.
   std::span<const TensorRule> tensors{};
   std::span<const TensorPartOverride> parts{};
+  struct SlotSourceOverride {
+    std::string_view slot{};
+    std::optional<std::string_view> gate{}, layers_key{}, count_key{}, layers_alias{};
+    std::optional<bool> gate_absent{}, count_above{};
+    std::optional<std::uint8_t> alias_index_base{};
+  };
+  std::span<const SlotSourceOverride> slots{};
   std::span<const FoldRule> folds{};
   std::span<const TensorAlias> tensor_aliases{};
   std::span<const KeyAlias> key_aliases{};
@@ -540,6 +559,16 @@ struct SourceDialect {
   std::span<const std::string_view> semantic{}, ignored_tensors{}, null_semantics{};
   std::span<const std::string_view> ignored_tensor_prefixes{};
   std::span<const TensorPresenceRequirement> tensor_presence{};
+  std::span<const PolicyRule> policies{};
+  std::span<const GateRule> gates{};
+  std::span<const ListRequirement> lists{};
+  std::span<const format::Encoding> encodings{};
+  std::optional<bool> extended_components{};
+  bool explicit_source_semantics = false;
+  std::span<const TensorShapeRequirement> shapes{};
+  std::span<const RowIndexRequirement> row_indices{};
+  std::span<const SemanticTensorRule> semantic_tensors{};
+  std::span<const ValueRule> draft_values{};
 };
 
 struct Mapping {
@@ -632,6 +661,8 @@ struct ResolvedMapping {
   Mapping mapping;
   std::vector<ParamRule> params;
   std::vector<TensorRule> tensors;
+  std::vector<SlotRule> slots;
+  std::vector<DraftRecipe> drafts;
 };
 const SourceDialect* FindSourceDialect(const Mapping& mapping, std::string_view architecture,
                                        std::string_view container);
@@ -765,9 +796,16 @@ struct Source {
 // The actual target head's rows (its stored tensor geometry).
 std::expected<std::uint32_t, std::string> Vocabulary(const ModelSpec& model, const Source& source);
 
+struct PolicyContext {
+  std::string_view architecture{}, container{};
+};
+
 // Retained policy facts derive from components, never architecture names.
 std::vector<SourceValue> PolicyGates(const Mapping& mapping, const ModelSpec& spec,
-                                     std::string_view container);
+                                     std::string_view container,
+                                     std::string_view architecture = {});
+std::expected<std::span<const PolicyRule>, std::string> PolicyRules(const Mapping& mapping,
+                                                                    PolicyContext context = {});
 std::expected<std::vector<SourceValue>, std::string> ExtractValues(const Mapping& mapping,
                                                                    const ModelSpec& target,
                                                                    const Source& target_source,
@@ -785,10 +823,12 @@ struct Envelope {
 // and its text (empty when none does).
 std::expected<const PolicyRule*, std::string> DefaultRule(const Mapping& mapping,
                                                           std::span<const SourceValue> values,
-                                                          const Envelope& envelope = {});
+                                                          const Envelope& envelope = {},
+                                                          PolicyContext context = {});
 std::expected<std::string_view, std::string> DefaultPolicy(const Mapping& mapping,
                                                            std::span<const SourceValue> values,
-                                                           const Envelope& envelope = {});
+                                                           const Envelope& envelope = {},
+                                                           PolicyContext context = {});
 
 // The spec `mapping` makes of `source` with `values`: one target stage
 // bound to artifact 0, validated. A drafter's mapping is refused (it

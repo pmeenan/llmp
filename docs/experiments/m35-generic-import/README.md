@@ -52,21 +52,20 @@ Later repairs affect rejected-input diagnostics, MoE shared-gate singleton
 assembly, test fixtures and spatial metadata funding; this dense proof's
 published payload and stored spec do not depend on those deltas.
 
-## Controls still owed by the full U3 exit
+## U3 closeout (2026-10-23)
 
-The [original ModelOpt and MLX parity controls](original-parity.md) passed on
-2026-10-22: all 323,607 named tensor parts match, including every expert slice,
-independently of changed spec/provenance identities. Remaining controls:
+The explicit U3 exits are complete. The [canonical mapping closeout](canonical-mappings.md)
+records final source/native/shared/affected checks and the bounded numerical
+applicability assessment. Original ModelOpt/MLX parity covers all 323,607 parts;
+Llama NVFP4 and the distinct qwen3_5 MLX checkpoint import, serve and pass their
+separately documented bounded quality controls. Llama’s original 256-token
+Fibonacci result remains failed/unresolved; its separate 512-token supplement
+passes. General Gemma quality, assistant arithmetic and other U4 numerical
+obligations remain open, as do separate speed, batching and maximum-context work.
 
-- The registered Llama NVFP4 [likelihood and behavior controls](../m35-u3-quality/RESULTS.md)
-  and second-architecture MLX [source-quality screen](../m35-u3-quality/qwen27/RESULTS.md)
-  have completed. Llama's original 256-token Fibonacci observation remains
-  failed/unresolved; the [512-token supplement](../m35-u3-quality/FIBONACCI512-RESULTS.md)
-  passed all four fresh observations. These bounded historical results do not
-  qualify later arithmetic changes or replace the remaining speed, batching
-  and maximum-context controls. General Gemma source qualification remains open.
-- Preserve supported-family speed and quality qualifications; import success
-  cannot supply numerical evidence for a new geometry or device.
+Publication migrations retain complete payload proofs: [source folds](../m35-source-fold/RESULTS.md),
+[Gemma sampling](gemma-sampling-refresh.md), [EXL3 sampling](exl3-sampling-refresh.md),
+[DeepSeek sampling](deepseek-sampling.md) and [stored drafters](../m35-stored-drafter/RESULTS.md).
 
 Raw job logs remain outside Git under the supervised job stores. Timing here
 is publication elapsed time, not an inference benchmark.

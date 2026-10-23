@@ -580,153 +580,63 @@ D-122).
       "add a container" checklist. **Exit:** no production source references
       v0 or `PlanGraph`, the shared suite passes without `m3-artifacts`, and
       the fuzz run is recorded.
-- [ ] **U3 One generic import route** (before Nemotron and every new
-      family, owner 2026-10-20; three sub-slices). It retires the
-      Qwen3.8 ModelOpt and MLX normalizers (`import/modelopt_qwen38.cc`,
-      `mlx_qwen38.cc`, pinned to exact tensor counts, dimensions and the
-      string `"modelopt MIXED_PRECISION"`), and every HF quantization in the
-      formats item below (MXFP4, NVFP4, MXFP8, FP8, AWQ, GPTQ, MLX affine)
-      and every HF MoE, Nemotron's included, arrives through it.
-      **Importer-core spike (2026-10-22):** the generic mapping route replaces
-      both checkpoint normalizers, publishes stored target/drafter semantics
-      and sampling defaults, and carries Llama 3 and proportional RoPE through
-      CPU/GPU execution. The three owner-approved proof checkpoints publish
-      through deep artifact and stored-spec validation; see the
-      [import proof](experiments/m35-generic-import/README.md). The full U3
-      exit remains open: new-checkpoint serving and reference-quality qualification
-      are separate controls. Original Qwen ModelOpt and MLX re-imports have
-      [identical payload digests](experiments/m35-generic-import/original-parity.md)
-      for all 323,607 named tensor parts, including every expert slice.
-      The two EXL3 fixtures now retain their source sampling defaults with
-      [unchanged source identities and all 798 encoded parts each](experiments/m35-generic-import/exl3-sampling-refresh.md).
-      Gemma26 and Gemma31 now retain their source sampling defaults with
-      [complete payload and paired canonical identity proofs](experiments/m35-generic-import/gemma-sampling-refresh.md).
-      The Qwen GGUF sampling/provenance refresh is complete. DeepSeek’s
-      [target sampling refresh](experiments/m35-generic-import/deepseek-sampling.md)
-      is installed on both Sparks with unchanged index and encoded payload,
-      native paired-spec validation and five positive import/metadata controls.
-      Its nine frozen target differences reproduce exactly with the old artifact;
-      the three DSpark differences reproduce the retained legacy negatives.
-      Numerical qualification remains open. Four adopted drafter publications now have
-      [complete stored execution and parity proofs](experiments/m35-stored-drafter/RESULTS.md);
-      five integrated model controls pass. Three frozen numerical cases retain
-      their exact legacy-control negatives; numerical qualification and broader
-      U3 remain open. All four are installed on both Sparks with originals retained.
-      Drafter import, admission, construction and calibration use the resolved
-      canonical target architecture rather than its retained source alias. Fresh
-      drafter components publish their selected canonical execution architecture;
-      target publication and authenticated checkpoint provenance are retained. The
-      alias-failed MTP startup remains a failed startup with inference **NOTRUN**.
-      Fresh separate required-tool and named-tool cells now pass against the
-      original target/drafter pair, including actual speculative drafting, tool
-      execution and streamed follow-ups (same parity report). Broader U3/tool
-      and reference-quality qualification remain open.
-      The second-architecture MLX checkpoint passes its registered bounded
-      [source-quality screen](experiments/m35-u3-quality/qwen27/RESULTS.md):
-      both short/depth repeat pairs and all six completed raw-ID behavior
-      controls pass. Speed, batching and maximum-context qualification remain
-      open. The [norm diagnosis](experiments/m35-u3-quality/QWEN27-NORM.md)
-      and [GDN gate repair](experiments/m35-u3-quality/QWEN27-GATE.md) correct
-      independent defects; the earlier unchanged 64-token chat screen still
-      ends by length with no final content. Gemma's registered
-      [exact-source diagnostic](experiments/m35-u3-quality/GEMMA26-NORM.md#exact-source-raw-id-diagnostic)
-      reproduces the same raw-token repetition under the disclosed KV precision
-      difference. The subsequent registered [source-template Paris pair](experiments/m35-u3-quality/gemma26/paris/RESULTS.md)
-      passes on both engines with identical output IDs `[50429,106]`; this single
-      completion control leaves general Gemma quality qualification open.
-      Its registered [short likelihood pair](experiments/m35-u3-quality/gemma26/short/RESULTS.md)
-      passes the preliminary aggregate +1% PPL bound (-0.9598%), while mean/max
-      absolute per-target NLL differences are 1.3657/19.3307 nats. No per-target
-      bound, repeat, depth or broader behavior qualification is claimed.
-      The separate Llama [512-token completion supplement](experiments/m35-u3-quality/FIBONACCI512-RESULTS.md)
-      passes all four fresh observations; the original 256-token control remains
-      failed/unresolved. General Gemma source qualification remains open.
-      Startup now retains each LLM target/drafter admission and pre-KV
-      composition in paid immutable storage shared by settings, factory copies
-      and artifact views. Retried builds fund their mutable state separately,
-      reuse authenticated metadata and recheck execution capabilities. This
-      startup slice changes no artifact bytes. The four stored drafter publications
-      are adopted on both Sparks, with numerical gaps still open. Remaining U3
-      obligations include mapping consolidation/provenance, GGUF semantic metadata
-      handling and quantization ingress. Chat startup now
-      prepays verified reader workspace and reuses one construction pool across
-      retries, admitting old and new live assets together and publishing only
-      after tokenizer, reasoning, template and stop validation all succeed.
-      Later Setup failures after runner adoption remain outside this slice.
-      - **U3a One mapping per architecture:** the importer now consumes
-        `spec::Mapping` directly with selected-container context; the derived
-        `import::SourceMapping` structure and per-container copies are removed.
-        Gemma 2, Gemma 3, Qwen2, Llama and Mistral now each have one canonical registry entry with
-        explicit source dialects for metadata, tensor names/parts, defaults and
-        folds; serving keeps the canonical pointer. Equivalent-source synthetic
-        controls check the complete spec, routed bytes and retained provenance.
-        Qwen2, Llama and Mistral select their original GGUF, HF and EXL3 wire
-        tables through source dialects; their canonical roles, component structure
-        and policies are shared. Other architectures’ registry consolidation and
-        artifact migration stay open. See the [dense dialect and MXFP4 checks](experiments/m35-generic-import/dense-dialects-mxfp4.md).
-        The semantic metadata namespace is now
-        derived from the architecture, failing closed on any unconsumed
-        `<arch>.*` key (the hand-kept `kGgufSemantic` fails open for a
-        family it omits); the shared HF↔GGUF dialect seam extended beyond
-        Gemma 2/3; the family and kind names out of generic import code
-        (`normalize.cc`'s `qwen4exp.rope.dimension_count`, `dflash.` and
-        `gemma4-assistant.`, `writer.cc`'s `side.ngram`/`side.hash`,
-        `expert_relayout.cc`'s name fallbacks and `StackedNameOf`); mapping
-        provenance in the manifest (importer version, mapping architecture
-        and version) and a `spec.json` for drafter artifacts; the mapping
-        version no longer selecting a serving form (MTP replay is version 2
-        today); one artifact identity rule (the raw-manifest SHA form
-        dropped, D-121); serving reading the stored spec without
-        `FindMapping` for structure (the standalone target path now checks explicit
-        source/importer fold receipts and complete component role coverage;
-        Gemma2/Gemma3/Qwen GGUF [native publications](experiments/m35-source-fold/RESULTS.md)
-        retain complete index and tensor bytes, with only Qwen’s independently
-        documented sampling metadata added to its spec; the four drafter StoredSpec
-        publications are adopted on both Sparks with complete source/index/payload
-        and canonical paired proofs. Five integrated model controls pass; three
-        frozen numerical cases reproduce the exact legacy negatives and remain
-        unqualified. Typed
-        drafting contracts and semantic-role rebinding remove serving reconstruction
-        from kept metadata and import recipes); startup composing and admitting once,
-        opening each artifact once and taking context and sampling from the
-        spec rather than re-parsing kept `config.json` and GGUF metadata.
-        A shared [ARM SHA2 hash path](experiments/m35-sha256-arm/README.md)
-        preserves every verification pass and digest, with a portable fallback.
-        Its bounded synthetic screen and the three actual refreshed target
-        publication/index/payload/spec proofs pass; broader U3 work remains open.
-        **Exit:** a dense family of a known shape is one mapping file and one
-        registry line, and every published v1 artifact re-imports
-        content-identical apart from the new provenance fields.
-      - **U3b Quantized parts and experts:** an `{expert}` placeholder
-        gathering per-expert tensors into stacked tables; quantized part
-        kinds in safetensors and MLX rules (block, global and affine
-        scales, biases, zero points) from the `hf_quant` and `mlx` readers'
-        descriptors; the normalized plan's folds, permutations, scale-atom
-        relayouts and strided parts planned by tensor role and encoding on
-        every import (rule 11), so native Gemma 2/3 HF imports store their
-        zero-centered 1 + w fold, while Gemma 4 retains direct RMS gamma
-        ([source audit](experiments/m35-u3-quality/GEMMA26-NORM.md));
-        ModelOpt MXFP4, W4A16_MXFP4 and W4A8_MXFP4_FP8 now retain packed
-        E2M1 codes and E8M0 scales through the generic route; the latter's
-        activation scale remains a separate tensor, without an activation
-        execution grant. HF FineGrainedFP8 imports now preserve E4M3FN codes
-        and F32 multiplicative block scales in the `fp8_scaled` format, with
-        explicit two-dimensional block geometry and CPU reference decoding.
-        Its native and CUDA-disabled focused checks and complete shared regression
-        pass succeed ([evidence](experiments/m35-generic-import/block-fp8.md));
-        new GPU execution and other quantization ingress remain open.
-        Qwen3.8 ModelOpt and MLX
-        expressed as mappings and both normalizers deleted. **Exit:** Qwen3.8
-        ModelOpt and MLX re-import with identical tensor content digests and
-        no checkpoint-named import code; a plain-NVFP4 ModelOpt checkpoint
-        and an MLX checkpoint of a second architecture (proposed from the
-        archive catalog, owner-approved) import and serve; the refusal and
-        adversarial tests cover the new part kinds.
-      - **U3c Llama 3 RoPE frequency scaling** (`rope_type: "llama3"`,
-        `low_freq_factor`, `high_freq_factor`, refused today) as a RoPE
-        component parameter. **Exit:** a Llama 3.1+ HF checkpoint from the
-        archive imports and matches its reference under D-085's quality
-        checks.
+- [x] **U3 One generic import route** (completed 2026-10-23; D-125).
+      ModelOpt and MLX checkpoints use one mapping-driven normalization and
+      publication pipeline; checkpoint-specific Qwen3.8 normalizers and the
+      derived SourceMapping registry are removed. Stored target/drafter specs,
+      authenticated source metadata and explicit preprocessing receipts supply
+      serving semantics. The [closeout](experiments/m35-generic-import/canonical-mappings.md)
+      records final native/shared/affected checks, source applicability and limits.
+      - **U3a One mapping per architecture:** each registered LLM architecture
+        has one canonical mapping, with selected source dialects for metadata,
+        tensor names/parts, parameter chains, folds, selectors, layer schedules,
+        planning policies and drafter values. Dense Qwen2/Llama/Mistral
+        [controls](experiments/m35-generic-import/dense-dialects-mxfp4.md) and the
+        final Gemma4/Qwen3.8/MTP consolidation preserve canonical component roles
+        and actual source conventions. Source architecture, execution architecture
+        and mapping provenance are distinct; import-time composition resolves the
+        target's actual dialect. Selected-head regressions cover native,
+        cross-container and canonical drafter inputs with exact gathered bytes.
+        Serving consumes stored specs and typed drafting contracts rather than
+        reconstructing topology from checkpoint metadata. Startup shares admitted
+        immutable metadata, prepays reader/construction workspace and publishes
+        chat assets only after complete validation. Artifact identity follows the
+        canonical rule; importer provenance does not replace source provenance.
+        [Explicit source-fold publications](experiments/m35-source-fold/RESULTS.md),
+        [sampling refreshes](experiments/m35-generic-import/README.md) and four
+        [stored drafter publications](experiments/m35-stored-drafter/RESULTS.md)
+        preserve their complete index/payload proofs on both Sparks.
+        **Exit met:** known-shape dense families use one mapping file and registry
+        line; affected published v1 artifacts retain tensor content, with explicit
+        provenance/sampling changes documented. The scoped store inventory has no
+        Gemma3_text publication requiring its narrow provenance migration.
+      - **U3b Quantized parts and experts:** generic part descriptors carry block,
+        global and affine scales, biases and zero points; `{expert}` gathers
+        per-expert tensors. Role/encoding rules plan folds, permutations, scale
+        relayouts and strided parts at import. Native Gemma2/3 retain zero-centered
+        norm folds; Gemma4 uses direct gamma. Qwen3.8 ModelOpt and MLX
+        [re-import parity](experiments/m35-generic-import/original-parity.md)
+        covers all 323,607 named parts, including every expert slice.
+        ModelOpt MXFP4 preserves packed E2M1/E8M0 parts; HF block FP8 retains
+        E4M3FN/F32 scales with checked geometry and CPU decoding
+        ([checks](experiments/m35-generic-import/block-fp8.md)).
+        **Exit met:** original content parity, owner-approved plain ModelOpt
+        NVFP4 and second-architecture MLX import/serve controls, plus refusal and
+        adversarial coverage for new part kinds. AWQ/GPTQ and new GPU-format
+        support remain separate format work; future additions use this route.
+      - **U3c Llama3 RoPE frequency scaling:** the component carries low/high
+        frequency factors and original context through CPU/GPU execution.
+        **Exit met:** owner-approved Llama3.3 NVFP4 import and bounded
+        [reference likelihood/behavior controls](experiments/m35-u3-quality/RESULTS.md),
+        with the separately registered [512-token supplement](experiments/m35-u3-quality/FIBONACCI512-RESULTS.md).
+        The original 256-token Fibonacci observation remains failed/unresolved.
+      The distinct qwen3_5 MLX [quality screen](experiments/m35-u3-quality/qwen27/RESULTS.md)
+      passes both short/depth repeat pairs and six completed raw-ID cases; its old
+      empty-final chat smoke is retained. These explicit exits grant no general
+      Gemma NVFP4 quality, assistant numerical evidence, new device/encoding,
+      batching, maximum-context or competitive-speed qualification. Current
+      arithmetic changes and frozen numerical differences remain U4 work; old
+      negatives and original bounds are unchanged.
 - [ ] **U4 Numerics as component data, per device** (2026-10-22, D-126):
       interface implementation is complete; broader scalar transfer qualification
       remains open. The original [Gemma2 A/D screen](experiments/m35-component-numerics/gemma2-scalar/RESULTS.md)
@@ -760,7 +670,8 @@ D-122).
       ([attribution](experiments/m35-stored-drafter/RESULTS.md)).
       Assistant, ordinary joined-multirow and frozen-state qualification,
       broader checkpoint quality and other affected-domain obligations remain
-      open. Frozen expectations are unchanged; neither U3 nor U4 is closed.
+      open. Frozen expectations are unchanged. U3 is closed with explicit numerical
+      attribution; U4 remains open.
       Component sites join explicit device/encoding evidence identically for
       pinned and unpinned artifacts; missing device evidence keeps exact
       arithmetic and reports the requirement. Native focused/shared checks,

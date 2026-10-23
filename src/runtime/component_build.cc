@@ -322,11 +322,16 @@ std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSou
     if (!parsed) return Error(std::format("the drafter's policy: {}", parsed.error()));
     drafter_policy = std::move(*parsed);
   }
+  const spec::PolicyContext drafter_policy_context =
+      hold.sources.size() > 1
+          ? spec::PolicyContext{hold.sources[1].architecture, hold.sources[1].container}
+          : spec::PolicyContext{};
   if (!drafter_policy && forced && speculate) {
     // The forced route retains its shared fusion rules for the drafter,
     // but each stage's independent product policies come from its mapping.
     auto text = drafter_mapping ? spec::DefaultPolicy(*drafter_mapping, hold.drafter_values,
-                                                      {.context = context, .slots = slots})
+                                                      {.context = context, .slots = slots},
+                                                      drafter_policy_context)
                                 : std::expected<std::string_view, std::string>(std::string_view{});
     if (!text) return Error(text.error());
     auto own = text->empty() ? std::expected<planner::Policy, std::string>(planner::Policy{})
@@ -343,10 +348,11 @@ std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSou
                         : forced         ? std::optional(target_policy)
                                          : std::nullopt;
     if (!stage_policy) {
-      auto text = drafter_mapping
-                      ? spec::DefaultPolicy(*drafter_mapping, hold.drafter_values,
-                                            {.context = context, .slots = slots})
-                      : std::expected<std::string_view, std::string>(std::string_view{});
+      auto text =
+          drafter_mapping
+              ? spec::DefaultPolicy(*drafter_mapping, hold.drafter_values,
+                                    {.context = context, .slots = slots}, drafter_policy_context)
+              : std::expected<std::string_view, std::string>(std::string_view{});
       if (!text) return Error(text.error());
       auto parsed = text->empty() ? std::expected<planner::Policy, std::string>(planner::Policy{})
                                   : planner::ParsePolicy(*text);
@@ -370,6 +376,8 @@ std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSou
                       .artifacts = hold.tables},
          .bound_digest = bound,
          .mapping = stage == 0 ? nullptr : drafter_mapping,
+         .policy_context = {hold.sources.at(artifact_index).architecture,
+                            hold.sources.at(artifact_index).container},
          .values = stage == 0 ? std::span<const spec::SourceValue>{}
                               : std::span<const spec::SourceValue>(hold.drafter_values),
          .slots = slots,

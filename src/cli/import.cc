@@ -136,19 +136,34 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     base::json::AppendQuoted(name, quoted);
     Print(err, "llmp import: warning: " + quoted + ": " + std::string(reason) + '\n');
   };
-  const auto warn_skipped = [&](const import::Checkpoint& checkpoint) {
+  const auto resolve_mapping = [&](const import::Checkpoint& checkpoint)
+      -> std::expected<std::optional<spec::ResolvedMapping>, import::Error> {
+    const auto* canonical =
+        import::FindImportMapping(checkpoint.container, checkpoint.architecture);
+    if (!canonical) return std::optional<spec::ResolvedMapping>{};
+    auto selected =
+        spec::ResolveSourceMapping(*canonical, checkpoint.architecture, checkpoint.container);
+    if (!selected)
+      return std::unexpected(import::Error{.rule = import::Rule::kUnsupported,
+                                           .reason = "checkpoint source dialect is unsupported"});
+    return std::move(*selected);
+  };
+  const auto warn_skipped =
+      [&](const import::Checkpoint& checkpoint) -> std::expected<void, import::Error> {
     for (const auto& skipped : checkpoint.skipped) warn(skipped.name, skipped.reason);
     for (const auto& skipped : checkpoint.skipped_tensors) warn(skipped.name, skipped.reason);
-    if (const auto* mapping =
-            import::FindImportMapping(checkpoint.container, checkpoint.architecture))
-      for (const auto prefix : mapping->ignored_tensor_prefixes)
-        if (std::ranges::any_of(checkpoint.tensors, [&](const auto& tensor) {
-              return tensor.name.starts_with(prefix);
-            }))
-          warn(prefix, "component excluded by this text-only architecture mapping");
+    auto selected = resolve_mapping(checkpoint);
+    if (!selected) return std::unexpected(selected.error());
+    if (!*selected) return {};
+    for (const auto prefix : (**selected).mapping.ignored_tensor_prefixes)
+      if (std::ranges::any_of(checkpoint.tensors,
+                              [&](const auto& tensor) { return tensor.name.starts_with(prefix); }))
+        warn(prefix, "component excluded by this text-only architecture mapping");
+    return {};
   };
-  warn_skipped(*input);
-  for (const auto& child : input->components) warn_skipped(child);
+  if (auto warned = warn_skipped(*input); !warned) return Failure(err, warned.error());
+  for (const auto& child : input->components)
+    if (auto warned = warn_skipped(child); !warned) return Failure(err, warned.error());
   const auto finish = [&](const import::WriteResult& result, const import::Checkpoint& checkpoint,
                           bool composition, bool drafter,
                           const std::optional<std::string>& list_name = std::nullopt) {
@@ -185,20 +200,24 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
   };
   const auto publish = [&](const import::NormalizedPlan& plan, const import::Checkpoint& checkpoint,
                            std::uint64_t used) {
+    auto selected = resolve_mapping(checkpoint);
+    if (!selected) return Failure(err, selected.error());
+    if (!*selected)
+      return Failure(err, {.rule = import::Rule::kUnsupported,
+                           .reason = "checkpoint has no text import mapping"});
+    const auto& mapping = (**selected).mapping;
     for (const auto& use : plan.metadata()) {
       if (use.classification == import::MetadataClass::kAuxiliary &&
           plan.auxiliary_namespaces()[use.destination].prefix.empty())
         warn(checkpoint.metadata[use.source].key, "unread metadata retained as source provenance");
     }
-    if (const auto* table =
-            import::FindImportMapping(checkpoint.container, checkpoint.architecture))
-      for (const auto& rule : table->lists) {
-        const auto canonical = spec::CanonicalKey(*table, rule.key);
-        const auto* value = checkpoint.FindValue(canonical);
-        const auto* labels = value ? std::get_if<std::vector<std::int64_t>>(value) : nullptr;
-        if (rule.allow_unstated_extra && labels && labels->size() > plan.cost().layers)
-          warn(canonical, "trailing unimported layer labels retained as source provenance");
-      }
+    for (const auto& rule : mapping.lists) {
+      const auto canonical = spec::CanonicalKey(mapping, rule.key);
+      const auto* value = checkpoint.FindValue(canonical);
+      const auto* labels = value ? std::get_if<std::vector<std::int64_t>>(value) : nullptr;
+      if (rule.allow_unstated_extra && labels && labels->size() > plan.cost().layers)
+        warn(canonical, "trailing unimported layer labels retained as source provenance");
+    }
     auto result = import::WriteArtifact(
         plan,
         {.store = store, .build = build, .expected = expected, .metadata_bytes = metadata - used});

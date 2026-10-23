@@ -13,6 +13,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <type_traits>
 #include <utility>
@@ -600,6 +601,8 @@ void Sort(std::vector<std::uint32_t>& order, std::vector<std::uint32_t>& scratch
 
 // Every listed object is charged separately by the source-derived ledger.
 static_assert(sizeof(spec::SourceTensor) <= 256 && sizeof(spec::SourceValue) <= 256);
+static_assert(sizeof(spec::ParamRule) <= 256 && sizeof(spec::TensorRule) <= 256);
+static_assert(sizeof(spec::SlotRule) <= 256 && sizeof(spec::DraftRecipe) <= 256);
 static_assert(sizeof(spec::ComponentRef) <= 256 && sizeof(components::Instance) <= 256);
 static_assert(sizeof(spec::Param) <= 128 && sizeof(spec::WeightBinding) <= 160);
 static_assert(sizeof(model::StateTensorContract) <= 256);
@@ -1165,7 +1168,13 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::M
   charge(a.Add(a.Mul(6, V(32, 256)), a.Mul(4, Str(32))));
   charge(64 * 256 + 16 * 8192);
   charge(a.Mul(options.draft_head_rows, 4096));
-  if (m.role == spec::StageRole::kDrafter) charge(spec::kMaxSpecBytes * 32ULL);
+  if (m.role == spec::StageRole::kDrafter) {
+    charge(spec::kMaxSpecBytes * 32ULL);
+    // Composition resolves and owns the target's source dialect while the
+    // drafter's selected mapping, target spec and synthesized spec coexist.
+    // The shared resolver caps the combined rule table at kMaxMappingRules.
+    charge(V(spec::kMaxMappingRules, 256));
+  }
   const bool has_imported_folds = m.role != spec::StageRole::kDrafter &&
                                   std::ranges::any_of(m.folds, [&](const spec::FoldRule& f) {
                                     return f.imported && f.container == s.container;
@@ -1181,6 +1190,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const spec::M
   effort(a.Mul(a.Mul(4 * T, static_cast<std::uint64_t>(std::bit_width(T))), 512));
   effort(a.Mul(a.Mul(F, F), 4096));
   effort(a.Mul(a.Mul(C, 64), a.Mul(layers, 8)));
+  if (m.role == spec::StageRole::kDrafter)
+    effort(a.Mul(a.Mul(spec::kMaxMappingRules, spec::kMaxMappingRules), spec::kMaxText));
   effort(64ULL * 64 * 1024 * 256 + 1024ULL * 1024 * 256);
   if (has_imported_folds) effort(a.Mul(T, 4096));
   if (m.role == spec::StageRole::kTarget) {
@@ -1200,7 +1211,11 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapp
   if (!table.dialects.empty()) {
     auto selected = spec::ResolveSourceMapping(table, source.architecture, source.container);
     if (!selected) return Bad("missing, ambiguous or invalid source dialect", Rule::kUnsupported);
-    return Build(std::move(source), selected->mapping, limits, target, std::move(options));
+    auto built = Build(std::move(source), selected->mapping, limits, target, std::move(options));
+    if (!built) return std::unexpected(built.error());
+    built->mapping_architecture_ = table.architecture;
+    built->architecture_version_ = table.version;
+    return built;
   }
   if (table.role == spec::StageRole::kDrafter && !target)
     return Bad("drafter import requires --target TARGET_ID in the selected store",
@@ -1250,11 +1265,26 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapp
         return Bad("selected head IDs must be ascending in the actual target vocabulary");
       previous = id;
     }
-    const auto* canonical = FindImportMapping(input.container, target->source.architecture);
-    if (!canonical) return Bad("selected head has no source dialect for the target architecture");
+    // The input is a drafter checkpoint, but its output tensor names use the
+    // target's checkpoint dialect. Prefer an alias the target mapping accepts;
+    // canonical drafter names use the target architecture authenticated by
+    // the selected drafter mapping's resolved draft recipe.
+    const auto* target_mapping =
+        FindImportMapping(target->source.container, target->source.architecture);
+    if (!table.draft || table.draft->target_architecture.empty())
+      return Bad("selected head has an invalid checkpoint source dialect");
+    const std::string_view checkpoint_architecture =
+        target_mapping && spec::SupportsSource(*target_mapping, input.architecture, input.container)
+            ? std::string_view(input.architecture)
+            : table.draft->target_architecture;
+    const auto* checkpoint_mapping = FindImportMapping(input.container, checkpoint_architecture);
+    if (!checkpoint_mapping || !target_mapping ||
+        checkpoint_mapping->architecture != target_mapping->architecture ||
+        checkpoint_mapping->version != target_mapping->version)
+      return Bad("selected head source does not share the target's canonical architecture");
     auto resolved =
-        spec::ResolveSourceMapping(*canonical, target->source.architecture, input.container);
-    if (!resolved) return Bad("selected head has an invalid target source dialect");
+        spec::ResolveSourceMapping(*checkpoint_mapping, checkpoint_architecture, input.container);
+    if (!resolved) return Bad("selected head has an invalid checkpoint source dialect");
     const auto* dialect = &resolved->mapping;
     std::set<std::uint32_t> head_indices;
     for (std::uint32_t ti = 0; ti < input.tensors.size(); ++ti) {
@@ -1580,7 +1610,16 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapp
         if (at == plan.values_.end()) plan.values_.push_back(std::move(value));
       }
     }
-    auto model = drafter ? spec::ComposeDrafter(target->model, *target->mapping, table,
+    std::optional<spec::ResolvedMapping> target_resolved;
+    const spec::Mapping* target_mapping = drafter ? target->mapping : nullptr;
+    if (drafter && !target_mapping->dialects.empty()) {
+      auto selected = spec::ResolveSourceMapping(*target_mapping, target->source.architecture,
+                                                 target->source.container);
+      if (!selected) return Bad("target has an invalid source dialect");
+      target_resolved.emplace(std::move(*selected));
+      target_mapping = &target_resolved->mapping;
+    }
+    auto model = drafter ? spec::ComposeDrafter(target->model, *target_mapping, table,
                                                 plan.canonical_, plan.values_)
                          : spec::Synthesize(table, plan.canonical_, plan.values_);
     if (!model) {
@@ -1672,7 +1711,8 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint&& source, const spec::Mapp
         plan.bindings_.push_back({oi, plan.canonical_.tensors[oi].part});
     }
   }
-  for (auto& g : spec::PolicyGates(table, plan.spec_, plan.canonical_.container)) {
+  for (auto& g :
+       spec::PolicyGates(table, plan.spec_, plan.canonical_.container, plan.source_.architecture)) {
     if (std::ranges::none_of(plan.values_, [&](const auto& v) { return v.key == g.key; }))
       plan.values_.push_back(std::move(g));
   }

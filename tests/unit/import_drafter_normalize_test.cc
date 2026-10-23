@@ -302,6 +302,10 @@ TEST(ImportDrafterNormalizeTest,
 
   auto cost = NormalizationBound(*cp);
   ASSERT_TRUE(cost) << cost.error().ToString();
+  EXPECT_FALSE(
+      test_support::NormalizeWithFixtureTarget(*cp, {cost->metadata_bytes - 1, cost->work_units}));
+  EXPECT_FALSE(
+      test_support::NormalizeWithFixtureTarget(*cp, {cost->metadata_bytes, cost->work_units - 1}));
   NormalizationLimits limits{cost->metadata_bytes, cost->work_units};
   auto plan = test_support::NormalizeWithFixtureTarget(std::move(*cp), limits);
   ASSERT_TRUE(plan) << plan.error().ToString();
@@ -416,8 +420,8 @@ TEST(ImportDrafterNormalizeTest, NativeExtractionUsesCanonicalTargetAcrossSource
       auto target_source = spec::SourceOf(*target);
       auto draft_source = spec::SourceOf(*drafter);
       ASSERT_TRUE(target_source && draft_source);
-      const auto values = spec::ExtractValues(spec::mappings::Qwen38MtpNativeMapping(),
-                                              target_model, *target_source, *draft_source);
+      const auto values = spec::ExtractValues(spec::mappings::Qwen38MtpMapping(), target_model,
+                                              *target_source, *draft_source);
       ASSERT_TRUE(values) << values.error();
       for (const auto& [key, expected] :
            {std::pair{"qwen4exp-mtp.block_count", std::int64_t{1}},
@@ -458,6 +462,33 @@ TEST(ImportDrafterNormalizeTest, RefusedTargetDiagnosticOutlivesValidation) {
   }();
   EXPECT_EQ(refused.reason, "drafter target spec does not satisfy its components");
   EXPECT_EQ(refused.ToString(), "container: drafter target spec does not satisfy its components");
+}
+
+TEST(ImportDrafterNormalizeTest,
+     NativeTargetDialectDoesNotInferPeriodicLayerFactsForGgufAssistant) {
+  auto assistant = SyntheticAssistantCheckpoint(26);
+  if (!assistant) GTEST_FAIL() << "no synthetic assistant fixture in " << TestDataDir();
+  const auto cost = NormalizationBound(*assistant);
+  ASSERT_TRUE(cost) << cost.error().ToString();
+  auto target = test_support::GemmaImportTarget(26);
+  target.source.architecture = "gemma4_text";
+  target.source.container = "safetensors";
+
+  const auto* assistant_mapping = FindImportMapping("gguf", "gemma4-assistant");
+  ASSERT_NE(assistant_mapping, nullptr);
+  const auto* native_target_dialect =
+      spec::FindSourceDialect(*target.mapping, target.source.architecture, target.source.container);
+  ASSERT_NE(native_target_dialect, nullptr);
+  EXPECT_EQ(native_target_dialect->layer_type_key, "layer_types");
+  ASSERT_TRUE(ValidateTarget(target, *assistant_mapping));
+
+  const auto plan =
+      Normalize(std::move(*assistant), {cost->metadata_bytes, cost->work_units}, &target);
+  // The native target dialect carries its explicit layer schedule. Until the
+  // importer stores those target-layer facts, composition must not guess them
+  // from Gemma4's canonical periodic fallback.
+  EXPECT_FALSE(plan);
+  if (!plan) EXPECT_EQ(plan.error().reason, "source does not satisfy the architecture mapping");
 }
 
 // A supplied target must satisfy the assistant's parent dimensions. A new

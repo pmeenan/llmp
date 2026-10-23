@@ -746,8 +746,11 @@ TEST(Qwen38EngineServingGpu, GgufPlain) { Screen(kGguf, false, true, 2); }
 // the same without the block-scaled GEMM: the format ladder decodes the
 // scale-atom experts on chip (W4A16), as on a device without FP4.
 std::expected<std::string, std::string> LadderDrafterPolicy() {
-  auto policy = llmp::planner::ParsePolicy(
-      llmp::spec::mappings::Qwen38MtpNativeMapping().policies.front().text);
+  const auto rules = llmp::spec::PolicyRules(llmp::spec::mappings::Qwen38MtpMapping(),
+                                             {"qwen4exp-mtp", "safetensors"});
+  if (!rules) return std::unexpected(rules.error());
+  if (rules->empty()) return std::unexpected("native drafter policy is empty");
+  auto policy = llmp::planner::ParsePolicy(rules->front().text);
   if (!policy) return std::unexpected(policy.error());
   std::erase(policy->enabled, "moe_experts");
   if (!std::ranges::contains(policy->disabled, "moe_experts"))
@@ -1010,7 +1013,11 @@ rt::Status AddClasses(rt::LlmBuildParts& parts, Owner& owner) {
 }
 
 std::expected<rt::ComponentBuildOptions, std::string> Options(Owner& owner) {
-  auto policy = pl::ParsePolicy(llmp::spec::mappings::Qwen38Mapping().policies.front().text);
+  const auto rules =
+      llmp::spec::PolicyRules(llmp::spec::mappings::Qwen38Mapping(), {"qwen4exp", "safetensors"});
+  if (!rules) return std::unexpected(rules.error());
+  if (rules->empty()) return std::unexpected("native target policy is empty");
+  auto policy = pl::ParsePolicy(rules->front().text);
   if (!policy) return std::unexpected(policy.error());
   if (std::erase(policy->enabled, "owner_row_invariant") != 1)
     return std::unexpected("qualified target mapping policy changed");
@@ -1049,9 +1056,11 @@ std::expected<rt::ComponentBuildOptions, std::string> Options(Owner& owner) {
     return Observe(owner, in, program);
   };
   testing::Test::RecordProperty("c2_target_policy", *options.target_policy);
-  testing::Test::RecordProperty(
-      "c2_drafter_policy",
-      std::string(llmp::spec::mappings::Qwen38MtpMapping().policies.front().text));
+  const auto mtp_rules = llmp::spec::PolicyRules(llmp::spec::mappings::Qwen38MtpMapping(),
+                                                 {"qwen4exp-mtp", "safetensors"});
+  if (!mtp_rules) return std::unexpected(mtp_rules.error());
+  if (mtp_rules->empty()) return std::unexpected("native drafter policy is empty");
+  testing::Test::RecordProperty("c2_drafter_policy", std::string(mtp_rules->front().text));
   return options;
 }
 

@@ -90,7 +90,8 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
     // default.
     auto text =
         spec::DefaultPolicy(*options.mapping, options.values,
-                            {.context = options.bindings.state->context, .slots = options.slots});
+                            {.context = options.bindings.state->context, .slots = options.slots},
+                            options.policy_context);
     if (!text) {
       return std::unexpected(std::format("mapping {}'s planning policy: {}",
                                          options.mapping->architecture, text.error()));

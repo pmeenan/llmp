@@ -362,7 +362,7 @@ TEST(ImportNormalizeTest, GemmaDialectsProduceEquivalentSpecsAndEveryPayloadPart
     EXPECT_EQ(spec::ToJson(converted->spec()), spec::ToJson(native->spec()));
     EXPECT_EQ(native->source().architecture, architecture);
     EXPECT_EQ(native->canonical().architecture, architecture);
-    EXPECT_EQ(native->mapping_architecture(), architecture);
+    EXPECT_EQ(native->mapping_architecture(), gemma3 ? "gemma3" : architecture);
     EXPECT_EQ(native->architecture_version(), 1);
     ASSERT_EQ(native->source().metadata.size(), original_metadata.size());
     for (std::size_t i = 0; i < original_metadata.size(); ++i) {
@@ -1169,9 +1169,12 @@ TEST(ImportNormalizeTest, Gemma4LayerListsGatesAndExpertGeometryRefuseAmbiguity)
   s = TinyGemma4(false);
   Value(s, "gemma4.feed_forward_length", std::vector<std::int64_t>(6, 16));
   EXPECT_TRUE(test_support::NormalizeWithFixtureTarget(std::move(s), kFunded));
-  const auto table = *FindImportMapping("gguf", "gemma4");
+  const auto* canonical = FindImportMapping("gguf", "gemma4");
+  ASSERT_NE(canonical, nullptr);
   const std::array aliases{TensorAlias{"dense.{layer}.weight", "blk.{layer}.ffn_gate.weight"}};
-  auto aliased = table;
+  auto resolved = spec::ResolveSourceMapping(*canonical, "gemma4", "gguf");
+  ASSERT_TRUE(resolved);
+  auto aliased = resolved->mapping;
   aliased.tensor_aliases = aliases;
   ASSERT_TRUE(ValidateImportMapping(aliased, "gguf"));
   s = TinyGemma4(false);
@@ -1411,7 +1414,11 @@ TEST(ImportNormalizeQwenTest, ProfilePreflightHonorsExistingSourceAliases) {
     ASSERT_NE(found, input.tensors.end());
     found->name = alias.source;
   }
-  auto table = *FindImportMapping("gguf", "qwen4exp");
+  const auto* canonical = FindImportMapping("gguf", "qwen4exp");
+  ASSERT_NE(canonical, nullptr);
+  auto resolved = spec::ResolveSourceMapping(*canonical, input.architecture, input.container);
+  ASSERT_TRUE(resolved);
+  auto table = resolved->mapping;
   table.key_aliases = keys;
   table.tensor_aliases = tensors;
   ASSERT_TRUE(ValidateImportMapping(table, "gguf"));

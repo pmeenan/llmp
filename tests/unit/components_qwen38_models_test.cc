@@ -28,14 +28,17 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "artifact/artifact.h"
+#include "artifact/gguf_metadata.h"
 #include "components/step.h"
 #include "families/qwen.h"
 #include "ir/graph.h"
@@ -127,6 +130,33 @@ std::size_t Count(const llmp::ir::Graph& g, llmp::ir::Op op) {
       std::ranges::count_if(g.nodes(), [op](const llmp::ir::Node& n) { return n.key.op == op; }));
 }
 
+std::expected<sp::SamplingDefaults, std::string> GgufSamplingDefaults(
+    const ar::Artifact& artifact) {
+  constexpr std::array<std::string_view, 3> wanted{
+      "general.sampling.temp", "general.sampling.top_k", "general.sampling.top_p"};
+  for (const ar::ListedFile& file : artifact.files()) {
+    if (file.role != ar::FileRole::kSourceMetadata || !file.path.ends_with(".kv.gguf")) continue;
+    const auto raw = artifact.ReadMetadata(std::string_view(file.path).substr(5));
+    if (!raw) return std::unexpected(raw.error().ToString());
+    const auto metadata = ar::ReadGgufMetadata(
+        std::as_bytes(std::span<const char>(raw->data(), raw->size())), wanted);
+    if (!metadata) return std::unexpected(metadata.error().ToString());
+    const auto temperature = metadata->find(wanted[0]);
+    const auto top_k = metadata->find(wanted[1]);
+    const auto top_p = metadata->find(wanted[2]);
+    if (temperature == metadata->end() || top_k == metadata->end() || top_p == metadata->end())
+      continue;
+    if (temperature->second.kind != ar::GgufValue::Kind::kFloat ||
+        top_k->second.kind != ar::GgufValue::Kind::kInteger ||
+        top_p->second.kind != ar::GgufValue::Kind::kFloat)
+      return std::unexpected("GGUF sampling metadata has unexpected value types");
+    return sp::SamplingDefaults{.temperature = temperature->second.real,
+                                .top_p = top_p->second.real,
+                                .top_k = top_k->second.integer};
+  }
+  return std::unexpected("GGUF artifact has no complete raw sampling metadata");
+}
+
 pl::Segment Seg(std::uint32_t rows, std::uint32_t past, std::uint32_t outputs,
                 bool greedy = false) {
   return {.slot = 0,
@@ -160,7 +190,33 @@ TEST(ComponentsQwen38Models, EveryInstalledImportMakesItsSpec) {
     if (name == "qwen38-modelopt") {
       // The unit tests' native fixture is this artifact's tensors.
       const auto fixture = fx::NativeModelOpt();
-      EXPECT_EQ(sp::ToJson(t->spec), sp::ToJson(fixture.model));
+      auto published_fixture = fixture.model;
+      // The native source dialect represents the three expert-scale tensors
+      // individually. This older published artifact uses the equivalent
+      // converted representation: one projection_scales flag. The component
+      // contract accepts either form (projection OR per-projection flags).
+      std::size_t moe_components = 0;
+      for (auto& stage : published_fixture.stages)
+        for (auto& layer : stage.layers)
+          for (auto& component : layer.components) {
+            if (component.kind != "ffn.moe") continue;
+            ++moe_components;
+            const auto projection =
+                std::ranges::find(component.params, "projection_scales", &sp::Param::name);
+            ASSERT_NE(projection, component.params.end());
+            ASSERT_TRUE(std::holds_alternative<bool>(projection->value));
+            EXPECT_FALSE(std::get<bool>(projection->value));
+            projection->value = true;
+            for (const std::string_view scale_name : {"down_scale", "gate_scale", "up_scale"}) {
+              const auto scale = std::ranges::find(component.params, scale_name, &sp::Param::name);
+              ASSERT_NE(scale, component.params.end()) << scale_name;
+              ASSERT_TRUE(std::holds_alternative<bool>(scale->value)) << scale_name;
+              EXPECT_TRUE(std::get<bool>(scale->value)) << scale_name;
+              component.params.erase(scale);
+            }
+          }
+      ASSERT_EQ(moe_components, 48U);
+      EXPECT_EQ(sp::ToJson(t->spec), sp::ToJson(published_fixture));
       ASSERT_EQ(tensors.size(), fixture.source.tensors.size());
       for (const sp::SourceTensor& s : tensors) {
         const auto at = std::ranges::find(fixture.source.tensors, s.name, &sp::SourceTensor::name);
@@ -175,6 +231,9 @@ TEST(ComponentsQwen38Models, EveryInstalledImportMakesItsSpec) {
       auto fixture = sp::Synthesize(sp::mappings::Qwen38Mapping(),
                                     fx::TargetSource(p, fx::Form::kGguf), *values);
       ASSERT_TRUE(fixture.has_value()) << fixture.error();
+      const auto sampling = GgufSamplingDefaults(t->opened.artifact);
+      ASSERT_TRUE(sampling.has_value()) << sampling.error();
+      fixture->stages.front().sampling = *sampling;
       EXPECT_EQ(sp::ToJson(t->spec), sp::ToJson(*fixture));
     }
     // The M3 runner's state, and every target step kind builds.

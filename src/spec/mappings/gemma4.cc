@@ -262,7 +262,6 @@ constexpr Mapping kMapping{
     .auxiliary = kGgufAuxiliary,
 };
 
-constexpr std::array<std::string_view, 1> kGemma4SourceArchitectures{"gemma4_text"};
 constexpr std::array kGemma4LayerTypeCodes{
     LayerTypeCode{.value = 1, .type = 'l', .label = "sliding_attention"},
     LayerTypeCode{.value = 0, .type = 'g', .label = "full_attention"},
@@ -722,38 +721,190 @@ constexpr std::array kGemma4NativeRequirements{
                       .optional = true,
                       .boolean = true,
                       .flag_of_positive = "expert_count"}};
-constexpr Mapping kNativeMapping{
-    .architecture = "gemma4",
-    .source_architectures = kGemma4SourceArchitectures,
-    .version = 1,
-    .pipeline = PipelineKind::kLlm,
-    .source_key_prefix = "text_config.",
-    .layer_count_key = "block_count",
-    .context_key = "context_length",
-    .softcap_key = "final_logit_softcapping",
-    .layer_types = "lllllg",
-    .layer_type_key = "layer_types",
-    .layer_type_codes = kGemma4LayerTypeCodes,
-    .slots = kSlots,
-    .tensors = kGemma4NativeTensors,
-    .params = kGemma4NativeParams,
-    .folds = {},
-    .layer_flags_key = "attention.sliding_window_pattern",
-    .layer_flag_type = 'l',
-    .policies = kPolicies,
-    .serving = &kServing,
-    .containers = kNativeContainers,
-    .gates = kGates,
-    .tensor_aliases = kGemma4TensorAliases,
-    .key_aliases = kGemma4KeyAliases,
-    .auxiliary = kGemma4NativeAuxiliary,
-    .requirements = kGemma4NativeRequirements,
-    .extended_components = true,
-    .semantic = kGemma4NativeSemantic,
-    .ignored_tensors = kGemma4IgnoredTensors,
-    .null_semantics = kGemma4NativeNulls,
-    .ignored_tensor_prefixes = kGemma4IgnoredPrefixes,
-};
+constexpr std::array<std::string_view, 3> kGemma4Containers{"gguf", "safetensors", "mlx"};
+constexpr std::array<std::string_view, 1> kGemma4NativeSourceAliases{"gemma4_text"};
+constexpr std::array kGemma4AllTensors = [] {
+  constexpr auto new_roles = std::ranges::count_if(kGemma4NativeTensors, [](const auto& native) {
+    return !std::ranges::any_of(kTensors, [&](const auto& base) {
+      return base.slot == native.slot && base.role == native.role;
+    });
+  });
+  std::array<TensorRule, kTensors.size() + new_roles> out{};
+  std::ranges::copy(kTensors, out.begin());
+  std::size_t next = kTensors.size();
+  for (const auto& native : kGemma4NativeTensors) {
+    if (std::ranges::any_of(kTensors, [&](const auto& base) {
+          return base.slot == native.slot && base.role == native.role;
+        }))
+      continue;
+    out[next++] = native;
+  }
+  return out;
+}();
+constexpr std::array kGemma4AllParams = [] {
+  constexpr auto new_roles = std::ranges::count_if(kGemma4NativeParams, [](const auto& native) {
+    return !std::ranges::any_of(kParams, [&](const auto& base) {
+      return base.slot == native.slot && base.param == native.param;
+    });
+  });
+  std::array<ParamRule, kParams.size() + new_roles> out{};
+  std::ranges::copy(kParams, out.begin());
+  std::size_t next = kParams.size();
+  for (const auto& native : kGemma4NativeParams) {
+    if (std::ranges::any_of(kParams, [&](const auto& base) {
+          return base.slot == native.slot && base.param == native.param;
+        }))
+      continue;
+    out[next++] = native;
+  }
+  return out;
+}();
+constexpr std::array<SourceDialect, 5> kGemma4Dialects = {
+    SourceDialect{.architecture = "gemma4",
+                  .container = "gguf",
+                  .execution_architecture = "gemma4",
+                  .source_architectures = {},
+                  .key_prefix = {},
+                  .layer_count_key = "block_count",
+                  .context_key = {},
+                  .layer_types = "lllllg",
+                  .layer_flags_key = "attention.sliding_window_pattern",
+                  .layer_flag_type = 'l',
+                  .explicit_layer_rules = true,
+                  .complete_params = true,
+                  .params = kParams,
+                  .tensors = kTensors,
+                  .folds = {},
+                  .auxiliary = kGgufAuxiliary,
+                  .policies = kPolicies,
+                  .gates = kGates,
+                  .extended_components = false,
+                  .explicit_source_semantics = true},
+    SourceDialect{.architecture = "gemma4_text",
+                  .container = "safetensors",
+                  .execution_architecture = "gemma4",
+                  .source_architectures = kGemma4NativeSourceAliases,
+                  .source_key_prefix = "text_config.",
+                  .layer_count_key = "block_count",
+                  .context_key = "context_length",
+                  .softcap_key = "final_logit_softcapping",
+                  .layer_types = "lllllg",
+                  .layer_type_key = "layer_types",
+                  .layer_flags_key = "attention.sliding_window_pattern",
+                  .layer_flag_type = 'l',
+                  .layer_type_codes = kGemma4LayerTypeCodes,
+                  .explicit_layer_rules = true,
+                  .complete_params = true,
+                  .params = kGemma4NativeParams,
+                  .tensors = kGemma4NativeTensors,
+                  .tensor_aliases = kGemma4TensorAliases,
+                  .key_aliases = kGemma4KeyAliases,
+                  .auxiliary = kGemma4NativeAuxiliary,
+                  .requirements = kGemma4NativeRequirements,
+                  .semantic = kGemma4NativeSemantic,
+                  .ignored_tensors = kGemma4IgnoredTensors,
+                  .null_semantics = kGemma4NativeNulls,
+                  .ignored_tensor_prefixes = kGemma4IgnoredPrefixes,
+                  .policies = kPolicies,
+                  .gates = kGates,
+                  .extended_components = true,
+                  .explicit_source_semantics = true},
+    SourceDialect{.architecture = "gemma4_text",
+                  .container = "mlx",
+                  .execution_architecture = "gemma4",
+                  .source_architectures = kGemma4NativeSourceAliases,
+                  .source_key_prefix = "text_config.",
+                  .layer_count_key = "block_count",
+                  .context_key = "context_length",
+                  .softcap_key = "final_logit_softcapping",
+                  .layer_types = "lllllg",
+                  .layer_type_key = "layer_types",
+                  .layer_flags_key = "attention.sliding_window_pattern",
+                  .layer_flag_type = 'l',
+                  .layer_type_codes = kGemma4LayerTypeCodes,
+                  .explicit_layer_rules = true,
+                  .complete_params = true,
+                  .params = kGemma4NativeParams,
+                  .tensors = kGemma4NativeTensors,
+                  .tensor_aliases = kGemma4TensorAliases,
+                  .key_aliases = kGemma4KeyAliases,
+                  .auxiliary = kGemma4NativeAuxiliary,
+                  .requirements = kGemma4NativeRequirements,
+                  .semantic = kGemma4NativeSemantic,
+                  .ignored_tensors = kGemma4IgnoredTensors,
+                  .null_semantics = kGemma4NativeNulls,
+                  .ignored_tensor_prefixes = kGemma4IgnoredPrefixes,
+                  .policies = kPolicies,
+                  .gates = kGates,
+                  .extended_components = true,
+                  .explicit_source_semantics = true},
+    SourceDialect{.architecture = "gemma4",
+                  .container = "safetensors",
+                  .execution_architecture = "gemma4",
+                  .source_architectures = kGemma4NativeSourceAliases,
+                  .source_key_prefix = "text_config.",
+                  .layer_count_key = "block_count",
+                  .context_key = "context_length",
+                  .softcap_key = "final_logit_softcapping",
+                  .layer_types = "lllllg",
+                  .layer_type_key = "layer_types",
+                  .layer_flags_key = "attention.sliding_window_pattern",
+                  .layer_flag_type = 'l',
+                  .layer_type_codes = kGemma4LayerTypeCodes,
+                  .explicit_layer_rules = true,
+                  .complete_params = true,
+                  .params = kGemma4NativeParams,
+                  .tensors = kGemma4NativeTensors,
+                  .tensor_aliases = kGemma4TensorAliases,
+                  .key_aliases = kGemma4KeyAliases,
+                  .auxiliary = kGemma4NativeAuxiliary,
+                  .requirements = kGemma4NativeRequirements,
+                  .semantic = kGemma4NativeSemantic,
+                  .ignored_tensors = kGemma4IgnoredTensors,
+                  .null_semantics = kGemma4NativeNulls,
+                  .ignored_tensor_prefixes = kGemma4IgnoredPrefixes,
+                  .policies = kPolicies,
+                  .gates = kGates,
+                  .extended_components = true,
+                  .explicit_source_semantics = true},
+    SourceDialect{.architecture = "gemma4",
+                  .container = "mlx",
+                  .execution_architecture = "gemma4",
+                  .source_architectures = kGemma4NativeSourceAliases,
+                  .source_key_prefix = "text_config.",
+                  .layer_count_key = "block_count",
+                  .context_key = "context_length",
+                  .softcap_key = "final_logit_softcapping",
+                  .layer_types = "lllllg",
+                  .layer_type_key = "layer_types",
+                  .layer_flags_key = "attention.sliding_window_pattern",
+                  .layer_flag_type = 'l',
+                  .layer_type_codes = kGemma4LayerTypeCodes,
+                  .explicit_layer_rules = true,
+                  .complete_params = true,
+                  .params = kGemma4NativeParams,
+                  .tensors = kGemma4NativeTensors,
+                  .tensor_aliases = kGemma4TensorAliases,
+                  .key_aliases = kGemma4KeyAliases,
+                  .auxiliary = kGemma4NativeAuxiliary,
+                  .requirements = kGemma4NativeRequirements,
+                  .semantic = kGemma4NativeSemantic,
+                  .ignored_tensors = kGemma4IgnoredTensors,
+                  .null_semantics = kGemma4NativeNulls,
+                  .ignored_tensor_prefixes = kGemma4IgnoredPrefixes,
+                  .policies = kPolicies,
+                  .gates = kGates,
+                  .extended_components = true,
+                  .explicit_source_semantics = true}};
+constexpr Mapping kCanonicalMapping = [] {
+  auto m = kMapping;
+  m.source_architectures = kGemma4NativeSourceAliases;
+  m.tensors = kGemma4AllTensors;
+  m.params = kGemma4AllParams;
+  m.containers = kGemma4Containers;
+  m.dialects = kGemma4Dialects;
+  return m;
+}();
 
 // -------------------------------------------------------- gemma4-assistant
 
@@ -886,8 +1037,8 @@ constexpr Mapping kAssistantMapping{
 
 }  // namespace
 
-const Mapping& Gemma4Mapping() { return kMapping; }
-const Mapping& Gemma4SafetensorsMapping() { return kNativeMapping; }
+const Mapping& Gemma4Mapping() { return kCanonicalMapping; }
+const Mapping& Gemma4SafetensorsMapping() { return kCanonicalMapping; }
 const Mapping& Gemma4AssistantMapping() { return kAssistantMapping; }
 
 }  // namespace llmp::spec::mappings

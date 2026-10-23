@@ -189,14 +189,15 @@ std::expected<ComponentDrafterAdmission, std::string> ReadComponentDrafterAdmiss
 
 // The default context a mapping's rules select across its non-owners-alone
 // policies matching `gates`; 0 when none.
-std::uint32_t MappingDefaultContext(const spec::Mapping& mapping,
-                                    std::span<const spec::SourceValue> gates);
+std::expected<std::uint32_t, std::string> MappingDefaultContext(
+    const spec::Mapping& mapping, std::span<const spec::SourceValue> gates,
+    spec::PolicyContext context = {});
 
 // The context a configuration that names none takes within an approval:
 // the widest context of its mapping's rule domains that its gates select
 // and that join owners (a rule bounded by context, not an owners-alone
 // one), else its envelope's.
-std::uint32_t ApprovedDefaultContext(const Approval& approval);
+std::expected<std::uint32_t, std::string> ApprovedDefaultContext(const Approval& approval);
 
 // An image pipeline's admission (spec/image_family.h): a v1 composition
 // whose architecture has an image mapping and whose kept files are an

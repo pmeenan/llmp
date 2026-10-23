@@ -206,10 +206,13 @@ const Import& ImportOf(fx::Form form) {
   PackCutlassArrays(im.resources);
   im.source = fx::SourceOf("qwen4exp", gguf ? "gguf" : "safetensors", im.resources,
                            gguf ? std::vector<std::string>{} : fx::ModelOptFolds());
+  if (!gguf) fx::FixtureNativeTensorNames(im.resources);
   const auto values = fx::TargetValues(p, Hash(), form) | Must(__LINE__);
   im.spec = sp::Synthesize(sp::mappings::Qwen38Mapping(), im.source, values) | Must(__LINE__);
   const sp::Envelope envelope{.context = kContext, .slots = 1};
-  im.policy = pl::ParsePolicy(sp::DefaultPolicy(sp::mappings::Qwen38Mapping(), values, envelope) |
+  im.policy = pl::ParsePolicy(sp::DefaultPolicy(sp::mappings::Qwen38Mapping(), values, envelope,
+                                                {.architecture = im.source.architecture,
+                                                 .container = im.source.container}) |
                               Must(__LINE__)) |
               Must(__LINE__);
   // Descriptor-only operand controls propose the selected numerical recipe
@@ -231,13 +234,16 @@ const Import& ImportOf(fx::Form form) {
     im.mtp_resources = fx::MtpResources(p);
     PackCutlassArrays(im.mtp_resources);
     im.mtp_source =
-        fx::SourceOf("qwen4exp-mtp", "safetensors", im.mtp_resources, fx::ModelOptFolds());
+        fx::SourceOf("qwen3_8_flash_next", "safetensors", im.mtp_resources, fx::ModelOptFolds());
+    fx::FixtureNativeTensorNames(im.mtp_resources);
     const auto mtp_values = fam::Qwen38MtpValues(p, 0) | Must(__LINE__);
     im.spec_mtp = sp::ComposeDrafter(*im.spec, sp::mappings::Qwen38Mapping(),
                                      sp::mappings::Qwen38MtpMapping(), im.mtp_source, mtp_values) |
                   Must(__LINE__);
     im.mtp_policy =
-        pl::ParsePolicy(sp::DefaultPolicy(sp::mappings::Qwen38MtpMapping(), mtp_values, envelope) |
+        pl::ParsePolicy(sp::DefaultPolicy(sp::mappings::Qwen38MtpMapping(), mtp_values, envelope,
+                                          {.architecture = im.mtp_source.architecture,
+                                           .container = im.mtp_source.container}) |
                         Must(__LINE__)) |
         Must(__LINE__);
     im.mtp_policy.numerical_candidates = im.policy.numerical_candidates;

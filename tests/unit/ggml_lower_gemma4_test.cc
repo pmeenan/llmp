@@ -394,8 +394,9 @@ Ir TargetIr(std::uint32_t size, const Recipe& r) {
   EXPECT_TRUE(layout.has_value()) << layout.error();
   ir_.layouts.push_back(std::move(*layout));
   ir_.stages.push_back(&ir_.layouts[0]);
-  const auto text = llmp::spec::DefaultPolicy(llmp::spec::mappings::Gemma4Mapping(), *values,
-                                              {.context = r.context, .slots = r.slots});
+  const auto text = llmp::spec::DefaultPolicy(
+      llmp::spec::mappings::Gemma4Mapping(), *values, {.context = r.context, .slots = r.slots},
+      {.architecture = ir_.sources[0].architecture, .container = ir_.sources[0].container});
   EXPECT_TRUE(text.has_value());
   ir_.policy = pl::ParsePolicy(*text).value();
   ir_.context = r.context;
@@ -625,7 +626,9 @@ TEST(GgmlLowerGemma4Test, TargetStepsLowerTheirDraftersTaps) {
   for (const auto& l : ir_.layouts) ir_.stages.push_back(&l);
   ir_.policy =
       pl::ParsePolicy(*llmp::spec::DefaultPolicy(llmp::spec::mappings::Gemma4Mapping(),
-                                                 *target_values, {.context = kContext, .slots = 2}))
+                                                 *target_values, {.context = kContext, .slots = 2},
+                                                 {.architecture = ir_.sources[0].architecture,
+                                                  .container = ir_.sources[0].container}))
           .value();
   ir_.context = kContext;
   const pl::StepShape shape{

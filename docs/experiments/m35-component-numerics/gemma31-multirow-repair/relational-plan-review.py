@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
+# SPDX-License-Identifier: Apache-2.0
+
 # Independent retained-metadata comparator; no model execution.
 # Derived from the reviewed D/A relational comparator, with explicit identity
 # ledger membership replacing equality across the changed module fingerprint.

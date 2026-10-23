@@ -1343,7 +1343,7 @@ TEST(ComponentsQwen38Test, TargetWeightAliasesMustResolveToOneCompleteRole) {
   auto values = fam::Qwen38MtpValues(fam::Qwen38Flash(), 321);
   ASSERT_TRUE(values);
   const auto compose = [&](const spec::ModelSpec& model) {
-    return spec::ComposeDrafter(model, spec::mappings::Qwen38NativeMapping(),
+    return spec::ComposeDrafter(model, spec::mappings::Qwen38Mapping(),
                                 spec::mappings::Qwen38MtpMapping(), source, *values);
   };
   auto composed = compose(target.model);
@@ -1573,7 +1573,22 @@ TEST(ComponentsQwen38Test, EveryImportsTensorsMakeOneSpecStructure) {
     const auto& moe = s.layers[0].components[4];
     ASSERT_EQ(moe.kind, "ffn.moe");
     EXPECT_EQ(std::get<bool>(moe.Find("stacked")->value), c.form == fx::Form::kCutlass);
-    EXPECT_EQ(std::get<bool>(moe.Find("projection_scales")->value), c.form != fx::Form::kGguf);
+    EXPECT_FALSE(std::get<bool>(moe.Find("projection_scales")->value));
+    for (const auto& [param, role] :
+         {std::pair{"gate_scale", "gate_scale"}, std::pair{"up_scale", "up_scale"},
+          std::pair{"down_scale", "down_scale"}}) {
+      const bool expected_scale = c.form != fx::Form::kGguf;
+      const auto* scale = moe.Find(param);
+      if (expected_scale) {
+        ASSERT_NE(scale, nullptr) << param;
+        EXPECT_TRUE(std::get<bool>(scale->value)) << param;
+      } else {
+        EXPECT_EQ(scale, nullptr) << param;
+      }
+      EXPECT_EQ(std::ranges::count(moe.weights, role, &spec::WeightBinding::role),
+                expected_scale ? 1 : 0)
+          << role;
+    }
   }
   ASSERT_TRUE(kinds.has_value());
   // Layer 1 (the n-gram layer) first reads the side input; a QSA layer every fourth.

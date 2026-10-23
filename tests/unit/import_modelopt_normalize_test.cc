@@ -33,7 +33,10 @@ const spec::Param* ParamOf(const spec::ComponentRef& c, std::string_view name) {
 }
 TEST(ImportModelOptNormalizeTest, NativeRelaidTargetValidatesAcrossCompleteTarget) {
   auto f = Native();
-  const auto& mapping = spec::mappings::Qwen38NativeMapping();
+  auto resolved = spec::ResolveSourceMapping(spec::mappings::Qwen38Mapping(), f.source.architecture,
+                                             f.source.container);
+  ASSERT_TRUE(resolved) << resolved.error();
+  const auto& mapping = resolved->mapping;
   ASSERT_FALSE(mapping.folds.empty());
   EXPECT_TRUE(
       std::ranges::all_of(mapping.folds, [](const spec::FoldRule& fold) { return fold.imported; }));
@@ -129,7 +132,7 @@ TEST(ImportModelOptNormalizeTest, NativeMappingRejectsMissingPartAndReadsItsFold
   auto before = f.source.tensors;
   std::erase_if(f.source.tensors,
                 [](const auto& t) { return t.name == "blk.0.ffn_down_exps.weight_scale"; });
-  auto missing = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);
+  auto missing = spec::Synthesize(spec::mappings::Qwen38Mapping(), f.source, f.values);
   if (missing) EXPECT_FALSE(components::ValidateSpec(*missing, f.source.tensors));
   f.source.tensors = std::move(before);
   // Without a fold, its flag returns (the checkpoint's convention, as an
@@ -137,7 +140,7 @@ TEST(ImportModelOptNormalizeTest, NativeMappingRejectsMissingPartAndReadsItsFold
   for (const auto& [fold, flag] : std::array<std::pair<std::string_view, std::string_view>, 2>{
            {{"norm.plus_one", "norm_zero_centered"}, {"ssm.a_neg_exp", "a_log"}}}) {
     f.source.folds = {"gdn.value_heads_tiled", std::string(fold)};
-    auto spec = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);
+    auto spec = spec::Synthesize(spec::mappings::Qwen38Mapping(), f.source, f.values);
     ASSERT_TRUE(spec) << spec.error();
     // The flag the fold clears is back on: the other one's.
     const std::string_view back = flag == "a_log" ? "norm_zero_centered" : "a_log";
@@ -150,20 +153,26 @@ TEST(ImportModelOptNormalizeTest, NativeMappingRejectsMissingPartAndReadsItsFold
     EXPECT_TRUE(found) << fold;
   }
   f.source.folds.clear();
-  auto unpermuted = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);
+  auto unpermuted = spec::Synthesize(spec::mappings::Qwen38Mapping(), f.source, f.values);
   ASSERT_TRUE(unpermuted);
   EXPECT_FALSE(components::ValidateSpec(*unpermuted, f.source.tensors));
 }
-TEST(ImportModelOptNormalizeTest, ExistingConvertedMappingKeepsItsFoldAndPolicyContract) {
-  const auto& old = spec::mappings::Qwen38Mapping();
-  EXPECT_FALSE(old.folds.empty());
-  EXPECT_FALSE(old.policies.empty());
-  EXPECT_TRUE(std::ranges::none_of(old.params, [](const auto& p) {
-    return p.param == "a_log" || p.param == "norm_zero_centered";
-  }));
-  EXPECT_TRUE(std::ranges::any_of(old.tensors, [](const auto& t) {
+TEST(ImportModelOptNormalizeTest, CanonicalAndGgufMappingsKeepTheirDistinctContracts) {
+  const auto& canonical = spec::mappings::Qwen38Mapping();
+  EXPECT_FALSE(canonical.folds.empty());
+  EXPECT_FALSE(canonical.policies.empty());
+  EXPECT_TRUE(std::ranges::any_of(canonical.tensors, [](const auto& t) {
     return t.role == "gate_scale" && t.part == PartRole::kData;
   }));
+
+  auto resolved = spec::ResolveSourceMapping(canonical, "qwen4exp", "gguf");
+  ASSERT_TRUE(resolved) << resolved.error();
+  const auto& gguf = resolved->mapping;
+  EXPECT_TRUE(std::ranges::none_of(gguf.params, [](const auto& p) {
+    return p.param == "a_log" || p.param == "norm_zero_centered";
+  }));
+  EXPECT_TRUE(
+      std::ranges::none_of(gguf.tensors, [](const auto& t) { return t.role == "gate_scale"; }));
 }
 TEST(ImportModelOptNormalizeTest, RegistryRecognitionIsUniqueAndRequiresAllSourceFields) {
   constexpr std::array<std::pair<std::string_view, std::string_view>, 2> kIndexed = {{

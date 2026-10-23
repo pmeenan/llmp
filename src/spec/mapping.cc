@@ -457,6 +457,33 @@ constexpr std::uint32_t kShared = ~std::uint32_t{0};
 
 bool Layered(std::string_view pattern) { return pattern.contains(kLayerField); }
 
+bool SourceAliasPattern(std::string_view pattern, bool layered) {
+  if (pattern.empty() || pattern.size() > kMaxText) return false;
+  const auto layer = pattern.find(kLayerField);
+  const auto expert = pattern.find(kExpertField);
+  const auto shard = pattern.find(kShardField);
+  const bool indexed = expert != std::string::npos || shard != std::string::npos;
+  if ((layered != (layer != std::string::npos)) ||
+      (expert != std::string::npos && shard != std::string::npos) ||
+      (layer != std::string::npos &&
+       layer + kLayerField.size() >= (expert != std::string::npos ? expert : shard)))
+    return false;
+  if (layer != std::string::npos &&
+      pattern.find(kLayerField, layer + kLayerField.size()) != std::string::npos)
+    return false;
+  const auto index = expert != std::string::npos ? expert : shard;
+  if (index != std::string::npos) {
+    const auto field = expert != std::string::npos ? kExpertField : kShardField;
+    if (pattern.find(field, index + field.size()) != std::string::npos) return false;
+  }
+  if (!indexed && !layered) return IsText(pattern);
+  std::string normalized(pattern);
+  for (const auto field : {kLayerField, kExpertField, kShardField})
+    if (const auto at = normalized.find(field); at != std::string::npos)
+      normalized.replace(at, field.size(), "0");
+  return IsText(normalized);
+}
+
 bool MatchesArchitecture(const Mapping& m, std::string_view arch) {
   return m.architecture == arch || std::ranges::contains(m.source_architectures, arch);
 }
@@ -1140,10 +1167,53 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
 
 bool IsSourceKey(std::string_view key) { return IsText(key); }
 
+namespace {
+template <typename Rule>
+std::expected<std::span<const Rule>, std::string> ContextRules(
+    const Mapping& mapping, PolicyContext context, std::span<const Rule> SourceDialect::* member,
+    std::span<const Rule> fallback) {
+  if (mapping.dialects.empty() || (context.architecture.empty() && context.container.empty()))
+    return fallback;
+  if (context.container.empty()) return std::unexpected("policy source context lacks a container");
+  const bool has_architecture = !context.architecture.empty();
+  // Container-only calls are an explicit canonical-architecture default.
+  // ContextRules below accepts it only if every dialect for that container
+  // selects the same static rule span.
+  if (!has_architecture) context.architecture = mapping.architecture;
+  if (has_architecture) {
+    if (const auto* dialect = FindSourceDialect(mapping, context.architecture, context.container)) {
+      const auto selected = dialect->*member;
+      return selected.empty() ? fallback : selected;
+    }
+  }
+  if (context.architecture != mapping.architecture)
+    return std::unexpected("policy source context has no mapping dialect");
+  std::span<const Rule> selected{};
+  bool found = false;
+  for (const auto& dialect : mapping.dialects) {
+    if (dialect.container != context.container) continue;
+    const auto declared = dialect.*member;
+    const auto candidate = declared.empty() ? fallback : declared;
+    if (found && (selected.data() != candidate.data() || selected.size() != candidate.size()))
+      return std::unexpected("policy source context is ambiguous");
+    selected = candidate;
+    found = true;
+  }
+  if (!found) return std::unexpected("policy source context has no mapping dialect");
+  return selected;
+}
+}  // namespace
+
+std::expected<std::span<const PolicyRule>, std::string> PolicyRules(const Mapping& mapping,
+                                                                    PolicyContext context) {
+  return ContextRules(mapping, context, &SourceDialect::policies, mapping.policies);
+}
+
 std::expected<std::string_view, std::string> DefaultPolicy(const Mapping& mapping,
                                                            std::span<const SourceValue> values,
-                                                           const Envelope& envelope) {
-  auto rule = DefaultRule(mapping, values, envelope);
+                                                           const Envelope& envelope,
+                                                           PolicyContext context) {
+  auto rule = DefaultRule(mapping, values, envelope, context);
   if (!rule) {
     return std::unexpected(rule.error());
   }
@@ -1152,7 +1222,8 @@ std::expected<std::string_view, std::string> DefaultPolicy(const Mapping& mappin
 
 std::expected<const PolicyRule*, std::string> DefaultRule(const Mapping& mapping,
                                                           std::span<const SourceValue> values,
-                                                          const Envelope& envelope) {
+                                                          const Envelope& envelope,
+                                                          PolicyContext context) {
   if (auto ok = ValidateMapping(mapping); !ok) {
     return std::unexpected(ok.error());
   }
@@ -1162,7 +1233,9 @@ std::expected<const PolicyRule*, std::string> DefaultRule(const Mapping& mapping
       return Refuse(v.key, "an invalid key, or a key twice");
     }
   }
-  for (const PolicyRule& p : mapping.policies) {
+  auto policies = PolicyRules(mapping, context);
+  if (!policies) return std::unexpected(policies.error());
+  for (const PolicyRule& p : *policies) {
     auto holds = Holds(mapping, p.gate, p.gate_absent, by_key);
     if (!holds) {
       return std::unexpected(holds.error());
@@ -1178,15 +1251,12 @@ std::expected<const PolicyRule*, std::string> DefaultRule(const Mapping& mapping
 }
 
 std::span<const Mapping* const> Mappings() {
-  static const std::array all = {
-      &mappings::Gemma2Mapping(),          &mappings::Gemma3Mapping(),
-      &mappings::Gemma4Mapping(),          &mappings::Gemma4SafetensorsMapping(),
-      &mappings::Gemma4AssistantMapping(), &mappings::Qwen38Mapping(),
-      &mappings::Qwen38MtpMapping(),       &mappings::Dsv4Mapping(),
-      &mappings::DsparkMapping(),          &mappings::Qwen2Mapping(),
-      &mappings::Qwen35Mapping(),          &mappings::Qwen38GgufMapping(),
-      &mappings::Qwen38NativeMapping(),    &mappings::Qwen38MtpNativeMapping(),
-      &mappings::LlamaMapping(),           &mappings::MistralMapping()};
+  static const std::array all = {&mappings::Gemma2Mapping(), &mappings::Gemma3Mapping(),
+                                 &mappings::Gemma4Mapping(), &mappings::Gemma4AssistantMapping(),
+                                 &mappings::Qwen38Mapping(), &mappings::Qwen38MtpMapping(),
+                                 &mappings::Dsv4Mapping(),   &mappings::DsparkMapping(),
+                                 &mappings::Qwen2Mapping(),  &mappings::Qwen35Mapping(),
+                                 &mappings::LlamaMapping(),  &mappings::MistralMapping()};
   return all;
 }
 
@@ -1222,10 +1292,47 @@ std::expected<ResolvedMapping, std::string> ResolveSourceMapping(const Mapping& 
   if (canonical.dialects.empty()) return out;
   const auto* d = FindSourceDialect(canonical, architecture, container);
   if (!d) return Refuse(architecture, "missing or ambiguous source dialect");
-  if (d->keys.size() + d->overrides.size() + d->params.size() + d->defaults.size() +
-          d->tensors.size() + d->parts.size() + canonical.params.size() + canonical.tensors.size() >
-      kMaxMappingRules)
-    return Refuse(architecture, "too many source dialect rules");
+  if (d->complete_params && (!d->overrides.empty() || !d->defaults.empty()))
+    return Refuse(architecture,
+                  "a complete source parameter table cannot append or override rules");
+  std::size_t rule_count =
+      canonical.params.size() + canonical.tensors.size() + canonical.slots.size();
+  bool within_rule_limit = rule_count <= kMaxMappingRules;
+  const auto count_rules = [&](std::size_t size) {
+    if (size > kMaxMappingRules - std::min(rule_count, kMaxMappingRules)) {
+      within_rule_limit = false;
+      return;
+    }
+    rule_count += size;
+  };
+  count_rules(d->source_architectures.size());
+  count_rules(d->layer_type_codes.size());
+  count_rules(d->keys.size());
+  count_rules(d->overrides.size());
+  count_rules(d->params.size());
+  count_rules(d->defaults.size());
+  count_rules(d->tensors.size());
+  count_rules(d->parts.size());
+  count_rules(d->slots.size());
+  count_rules(d->folds.size());
+  count_rules(d->tensor_aliases.size());
+  count_rules(d->key_aliases.size());
+  count_rules(d->auxiliary.size());
+  count_rules(d->requirements.size());
+  count_rules(d->semantic.size());
+  count_rules(d->ignored_tensors.size());
+  count_rules(d->null_semantics.size());
+  count_rules(d->ignored_tensor_prefixes.size());
+  count_rules(d->tensor_presence.size());
+  count_rules(d->policies.size());
+  count_rules(d->gates.size());
+  count_rules(d->lists.size());
+  count_rules(d->encodings.size());
+  count_rules(d->shapes.size());
+  count_rules(d->row_indices.size());
+  count_rules(d->semantic_tensors.size());
+  count_rules(d->draft_values.size());
+  if (!within_rule_limit) return Refuse(architecture, "too many source dialect rules");
   for (const auto& key : d->keys) {
     if (!IsText(key.canonical) || !IsText(key.source) ||
         std::ranges::count(d->keys, key.canonical, &SourceKey::canonical) != 1)
@@ -1246,14 +1353,25 @@ std::expected<ResolvedMapping, std::string> ResolveSourceMapping(const Mapping& 
   };
   auto& m = out.mapping;
   // Preserve the emitted source identity, including a text subarchitecture.
-  m.architecture = d->architecture;
-  m.source_architectures = {};
+  m.architecture = d->execution_architecture.empty() ? d->architecture : d->execution_architecture;
+  m.source_architectures = d->source_architectures;
   m.containers = std::span(&d->container, 1);
   m.dialects = {};
   m.key_prefix = d->key_prefix;
   m.unprefixed_keys = d->unprefixed_keys;
   m.tensor_prefix = d->tensor_prefix;
   m.source_key_prefix = d->source_key_prefix;
+  if (d->explicit_layer_rules) {
+    m.layer_count_key = d->layer_count_key;
+    m.context_key = d->context_key;
+    m.softcap_key = d->softcap_key;
+    m.layer_types = d->layer_types;
+    m.layer_type_key = d->layer_type_key;
+    m.layer_type_interval_key = d->layer_type_interval_key;
+    m.layer_type_codes = d->layer_type_codes;
+    m.layer_flags_key = d->layer_flags_key;
+    m.layer_flag_type = d->layer_flag_type;
+  }
   m.layer_count_key = key(m.layer_count_key);
   m.context_key = key(m.context_key);
   m.softcap_key = key(m.softcap_key);
@@ -1267,33 +1385,84 @@ std::expected<ResolvedMapping, std::string> ResolveSourceMapping(const Mapping& 
   m.null_semantics = d->null_semantics;
   m.ignored_tensor_prefixes = d->ignored_tensor_prefixes;
   m.tensor_presence = d->tensor_presence;
-  std::vector<bool> used(d->overrides.size(), false);
-  for (auto p : canonical.params) {
-    std::optional<std::size_t> selected;
-    for (std::size_t i = 0; i < d->overrides.size(); ++i) {
-      const auto& r = d->overrides[i];
-      if (p.slot != r.slot || p.param != r.param ||
-          (r.layer_types && p.layer_types != *r.layer_types) || (r.key && p.key != *r.key))
-        continue;
-      if (selected) return Refuse(architecture, "overlapping source parameter overrides");
-      selected = i;
-    }
-    if (selected) {
-      const auto& r = d->overrides[*selected];
-      if (r.rule.slot != r.slot || r.rule.param != r.param)
-        return Refuse(architecture, "source override changes its parameter identity");
-      if (!used[*selected]) out.params.push_back(r.rule);
-      used[*selected] = true;
-    } else {
-      p.key = key(p.key);
-      p.numerator_key = key(p.numerator_key);
-      p.divisor_key = key(p.divisor_key);
-      out.params.push_back(p);
-    }
+  m.policies = d->policies.empty() ? canonical.policies : d->policies;
+  m.gates = d->gates.empty() ? canonical.gates : d->gates;
+  m.lists =
+      d->explicit_source_semantics ? d->lists : (d->lists.empty() ? canonical.lists : d->lists);
+  m.encodings = d->encodings.empty() ? canonical.encodings : d->encodings;
+  m.extended_components = d->extended_components.value_or(canonical.extended_components);
+  m.shapes =
+      d->explicit_source_semantics ? d->shapes : (d->shapes.empty() ? canonical.shapes : d->shapes);
+  m.row_indices = d->explicit_source_semantics
+                      ? d->row_indices
+                      : (d->row_indices.empty() ? canonical.row_indices : d->row_indices);
+  m.semantic_tensors =
+      d->explicit_source_semantics
+          ? d->semantic_tensors
+          : (d->semantic_tensors.empty() ? canonical.semantic_tensors : d->semantic_tensors);
+  if (!d->slots.empty()) out.slots.assign(canonical.slots.begin(), canonical.slots.end());
+  for (const auto& override : d->slots) {
+    if (std::ranges::count_if(d->slots,
+                              [&](const auto& other) { return other.slot == override.slot; }) != 1)
+      return Refuse(architecture, "duplicate source slot override");
+    const auto base = std::ranges::find(out.slots, override.slot, &SlotRule::slot);
+    if (base == out.slots.end()) return Refuse(override.slot, "unknown source slot override");
+    if (override.alias_index_base && *override.alias_index_base > 1)
+      return Refuse(override.slot, "invalid source selector index base");
+    if (override.gate) base->gate = *override.gate;
+    if (override.gate_absent) base->gate_absent = *override.gate_absent;
+    if (override.layers_key) base->layers_key = *override.layers_key;
+    if (override.count_key) base->count_key = *override.count_key;
+    if (override.count_above) base->count_above = *override.count_above;
+    if (override.layers_alias) base->layers_alias = *override.layers_alias;
+    if (override.alias_index_base) base->alias_index_base = *override.alias_index_base;
   }
-  if (std::ranges::contains(used, false))
+  if (!out.slots.empty()) {
+    m.slots = out.slots;
+  }
+  if (d->draft_values.size() != 0) {
+    if (canonical.draft == nullptr) return Refuse(architecture, "draft values on a non-drafter");
+    out.drafts.push_back(*canonical.draft);
+    out.drafts.back().values = d->draft_values;
+    m.draft = &out.drafts.back();
+  }
+  std::vector<bool> used(d->overrides.size(), false);
+  if (d->complete_params) {
+    out.params.assign(d->params.begin(), d->params.end());
+    for (const auto& rule : out.params) {
+      const bool identity = std::ranges::any_of(canonical.params, [&](const auto& base) {
+        return base.slot == rule.slot && base.param == rule.param;
+      });
+      if (!identity)
+        return Refuse(architecture, "source parameter table adds a noncanonical identity");
+    }
+  } else
+    for (auto p : canonical.params) {
+      std::optional<std::size_t> selected;
+      for (std::size_t i = 0; i < d->overrides.size(); ++i) {
+        const auto& r = d->overrides[i];
+        if (p.slot != r.slot || p.param != r.param ||
+            (r.layer_types && p.layer_types != *r.layer_types) || (r.key && p.key != *r.key))
+          continue;
+        if (selected) return Refuse(architecture, "overlapping source parameter overrides");
+        selected = i;
+      }
+      if (selected) {
+        const auto& r = d->overrides[*selected];
+        if (r.rule.slot != r.slot || r.rule.param != r.param)
+          return Refuse(architecture, "source override changes its parameter identity");
+        if (!used[*selected]) out.params.push_back(r.rule);
+        used[*selected] = true;
+      } else {
+        p.key = key(p.key);
+        p.numerator_key = key(p.numerator_key);
+        p.divisor_key = key(p.divisor_key);
+        out.params.push_back(p);
+      }
+    }
+  if (!d->complete_params && std::ranges::contains(used, false))
     return Refuse(architecture, "source override has no canonical parameter");
-  out.params.insert(out.params.end(), d->params.begin(), d->params.end());
+  if (!d->complete_params) out.params.insert(out.params.end(), d->params.begin(), d->params.end());
   out.params.insert(out.params.end(), d->defaults.begin(), d->defaults.end());
   m.params = out.params;
   const auto tensor_rules = d->tensors.empty() ? canonical.tensors : d->tensors;
@@ -1309,9 +1478,10 @@ std::expected<ResolvedMapping, std::string> ResolveSourceMapping(const Mapping& 
     const bool target_exists = std::ranges::any_of(tensor_rules, [&](const auto& rule) {
       return !rule.target && rule.pattern == alias.canonical;
     });
-    if (!IsPattern(alias.source, Layered(alias.canonical)) || !target_exists ||
+    if (!SourceAliasPattern(alias.source, Layered(alias.canonical)) || !target_exists ||
         std::ranges::count(d->tensor_aliases, alias.source, &TensorAlias::source) != 1)
-      return Refuse(architecture, "invalid or unresolved source tensor alias");
+      return Refuse(alias.source, std::format("invalid or unresolved source tensor alias to {}",
+                                              alias.canonical));
   }
   out.tensors.assign(tensor_rules.begin(), tensor_rules.end());
   for (const auto& part : d->parts) {
@@ -1363,10 +1533,13 @@ const Mapping* FindMapping(std::string_view architecture, std::string_view conta
 }
 
 std::vector<SourceValue> PolicyGates(const Mapping& mapping, const ModelSpec& model,
-                                     std::string_view container) {
+                                     std::string_view container, std::string_view architecture) {
   std::vector<SourceValue> out;
   if (model.stages.empty()) return out;
-  for (const GateRule& rule : mapping.gates) {
+  auto gates = ContextRules(mapping, PolicyContext{architecture, container}, &SourceDialect::gates,
+                            mapping.gates);
+  if (!gates) return out;
+  for (const GateRule& rule : *gates) {
     if (!rule.container.empty() && rule.container != container) continue;
     bool holds = false;
     EachComponent(model.stages.front(), [&](const ComponentRef& c, const std::string&) {
@@ -1414,6 +1587,11 @@ std::expected<std::vector<SourceValue>, std::string> ExtractValues(const Mapping
                                                                    const ModelSpec& target,
                                                                    const Source& target_source,
                                                                    const Source& source) {
+  if (!mapping.dialects.empty()) {
+    auto selected = ResolveSourceMapping(mapping, source.architecture, source.container);
+    if (!selected) return std::unexpected(selected.error());
+    return ExtractValues(selected->mapping, target, target_source, source);
+  }
   if (!mapping.draft || target.stages.empty() || target.stages.front().role != StageRole::kTarget)
     return Refuse(mapping.architecture, "drafter extraction requires a target spec");
   if (auto valid = Validate(target); !valid) return std::unexpected(valid.error());
@@ -1556,6 +1734,11 @@ Status ValidateMapping(const Mapping& m) {
     if (!MatchesArchitecture(m, d.architecture) ||
         !std::ranges::contains(m.containers, d.container))
       return Refuse(where, "source dialect outside the mapping's architecture or containers");
+    if ((!d.execution_architecture.empty() && d.execution_architecture != m.architecture) ||
+        std::ranges::any_of(d.source_architectures, [&](std::string_view alias) {
+          return !std::ranges::contains(m.source_architectures, alias);
+        }))
+      return Refuse(where, "source dialect adds an execution or source architecture");
     auto selected = ResolveSourceMapping(m, d.architecture, d.container);
     if (!selected) return std::unexpected(selected.error());
     if (auto ok = ValidateMapping(selected->mapping); !ok) return ok;
@@ -2001,6 +2184,11 @@ std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
                                                      const Mapping& target_mapping,
                                                      const Mapping& drafter, const Source& source,
                                                      std::span<const SourceValue> values) {
+  if (!drafter.dialects.empty()) {
+    auto selected = ResolveSourceMapping(drafter, source.architecture, source.container);
+    if (!selected) return std::unexpected(selected.error());
+    return ComposeDrafter(target, target_mapping, selected->mapping, source, values);
+  }
   const std::string where = std::format("mapping {}", drafter.architecture);
   if (drafter.role != StageRole::kDrafter || target_mapping.role != StageRole::kTarget) {
     return Refuse(where, "not a drafter's mapping composed with a target's");

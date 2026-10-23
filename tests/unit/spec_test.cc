@@ -382,6 +382,163 @@ TEST(MappingTest, CompiledMappingsAreValid) {
   EXPECT_EQ(FindFold("norm.times_two"), nullptr);
 }
 
+TEST(MappingTest, Gemma4AndQwen38UseOneCanonicalMappingWithMoveStableDialects) {
+  const auto check_canonical = [&](const Mapping& mapping,
+                                   std::span<const std::string_view> expected_containers) {
+    EXPECT_EQ(std::ranges::count_if(Mappings(),
+                                    [&](const Mapping* candidate) {
+                                      return candidate->architecture == mapping.architecture;
+                                    }),
+              1);
+    EXPECT_EQ(mapping.containers.size(), expected_containers.size());
+    EXPECT_TRUE(std::ranges::equal(mapping.containers, expected_containers));
+    for (const auto container : expected_containers)
+      EXPECT_EQ(FindMapping(mapping.architecture, container, mapping.version), &mapping);
+    for (const SourceDialect& dialect : mapping.dialects) {
+      auto selected = ResolveSourceMapping(mapping, dialect.architecture, dialect.container);
+      ASSERT_TRUE(selected) << dialect.architecture << "/" << dialect.container << ": "
+                            << selected.error();
+      EXPECT_EQ(selected->mapping.architecture, mapping.architecture);
+      EXPECT_EQ(selected->mapping.version, mapping.version);
+      EXPECT_EQ(selected->mapping.extended_components,
+                dialect.extended_components.value_or(mapping.extended_components));
+      if (mapping.architecture == "gemma4" && dialect.container == "gguf") {
+        EXPECT_TRUE(selected->mapping.context_key.empty());
+        EXPECT_TRUE(selected->mapping.key_prefix.empty());
+        EXPECT_EQ(KeyPrefix(selected->mapping), mapping.architecture);
+      }
+      if (mapping.architecture == "qwen4exp")
+        EXPECT_EQ(selected->mapping.context_key.empty(), dialect.container == "gguf");
+      if (mapping.architecture == "qwen4exp" && dialect.container == "gguf") {
+        EXPECT_TRUE(selected->mapping.key_prefix.empty());
+        EXPECT_EQ(KeyPrefix(selected->mapping), mapping.architecture);
+      }
+      if (mapping.architecture == "qwen4exp-mtp")
+        EXPECT_TRUE(selected->mapping.context_key.empty());
+      EXPECT_TRUE(std::ranges::contains(selected->mapping.containers, dialect.container));
+      EXPECT_TRUE(
+          dialect.architecture == mapping.architecture ||
+          std::ranges::contains(selected->mapping.source_architectures, dialect.architecture));
+      EXPECT_TRUE(ValidateMapping(selected->mapping));
+      EXPECT_EQ(selected->mapping.slots.size(), mapping.slots.size());
+      for (std::size_t i = 0; i < mapping.slots.size(); ++i) {
+        EXPECT_EQ(selected->mapping.slots[i].slot, mapping.slots[i].slot);
+        EXPECT_EQ(selected->mapping.slots[i].site, mapping.slots[i].site);
+        EXPECT_EQ(selected->mapping.slots[i].kind, mapping.slots[i].kind);
+      }
+      if (mapping.architecture == "qwen4exp" && dialect.container != "gguf") {
+        EXPECT_TRUE(selected->mapping.row_indices.empty());
+        const auto native_ngram =
+            std::ranges::find(selected->mapping.slots, "ngram", &SlotRule::slot);
+        ASSERT_NE(native_ngram, selected->mapping.slots.end());
+        EXPECT_EQ(native_ngram->layers_key, "ple.layers");
+        EXPECT_EQ(native_ngram->layers_alias, "ple.layer_ids");
+        EXPECT_EQ(native_ngram->alias_index_base, 1);
+        const auto native_ple = std::ranges::find(selected->mapping.slots, "ple", &SlotRule::slot);
+        ASSERT_NE(native_ple, selected->mapping.slots.end());
+        EXPECT_EQ(native_ple->layers_key, "ple.layers");
+        EXPECT_EQ(native_ple->layers_alias, "ple.layer_ids");
+        EXPECT_EQ(native_ple->alias_index_base, 1);
+      } else if (mapping.architecture == "qwen4exp" && dialect.container == "gguf") {
+        EXPECT_FALSE(selected->mapping.row_indices.empty());
+      }
+      for (const ParamRule& param : selected->mapping.params)
+        EXPECT_TRUE(std::ranges::any_of(mapping.params,
+                                        [&](const ParamRule& canonical) {
+                                          return canonical.slot == param.slot &&
+                                                 canonical.param == param.param;
+                                        }))
+            << dialect.architecture << "/" << dialect.container << " " << param.slot << "."
+            << param.param;
+      if (!selected->slots.empty())
+        EXPECT_EQ(selected->mapping.slots.data(), selected->slots.data());
+      if (!selected->drafts.empty()) {
+        ASSERT_EQ(selected->drafts.size(), 1U);
+        EXPECT_EQ(selected->mapping.draft, &selected->drafts.front());
+        EXPECT_EQ(selected->mapping.draft->values.data(), dialect.draft_values.data());
+      }
+      auto moved = std::move(*selected);
+      EXPECT_TRUE(moved.slots.empty() || moved.mapping.slots.data() == moved.slots.data());
+      if (!moved.drafts.empty()) {
+        ASSERT_EQ(moved.mapping.draft, &moved.drafts.front());
+        EXPECT_EQ(moved.mapping.draft->values.data(), dialect.draft_values.data());
+      }
+      ResolvedMapping assigned(mapping);
+      assigned = std::move(moved);
+      EXPECT_TRUE(assigned.slots.empty() || assigned.mapping.slots.data() == assigned.slots.data());
+      if (!assigned.drafts.empty()) {
+        ASSERT_EQ(assigned.mapping.draft, &assigned.drafts.front());
+        EXPECT_EQ(assigned.mapping.draft->values.data(), dialect.draft_values.data());
+      }
+    }
+  };
+
+  const auto& gemma4 = mappings::Gemma4Mapping();
+  const auto& qwen = mappings::Qwen38Mapping();
+  const auto& mtp = mappings::Qwen38MtpMapping();
+  check_canonical(gemma4, gemma4.containers);
+  check_canonical(qwen, qwen.containers);
+  check_canonical(mtp, mtp.containers);
+  EXPECT_EQ(&mappings::Gemma4SafetensorsMapping(), &gemma4);
+  EXPECT_EQ(&mappings::Qwen38GgufMapping(), &qwen);
+  EXPECT_EQ(&mappings::Qwen38NativeMapping(), &qwen);
+  EXPECT_EQ(&mappings::Qwen38MtpNativeMapping(), &mtp);
+  EXPECT_EQ(FindMapping("gemma4_text", "safetensors"), &gemma4);
+  EXPECT_EQ(FindMapping("qwen3_8_flash_next", "mlx"), &qwen);
+  EXPECT_EQ(FindMapping("qwen4_exp", "safetensors"), &qwen);
+  EXPECT_EQ(FindMapping("qwen4exp-mtp", "mlx"), &mtp);
+  EXPECT_EQ(FindMapping("qwen4exp-mtp", "gguf"), nullptr);
+
+  const auto canonical_mtp = ResolveSourceMapping(mtp, "qwen4exp-mtp", "safetensors");
+  const auto alias_mtp = ResolveSourceMapping(mtp, "qwen3_8_flash_next", "safetensors");
+  ASSERT_TRUE(canonical_mtp);
+  ASSERT_TRUE(alias_mtp);
+  for (const auto* selected : {&*canonical_mtp, &*alias_mtp}) {
+    EXPECT_TRUE(std::ranges::any_of(selected->mapping.tensors, [](const TensorRule& rule) {
+      return rule.pattern == "blk.{layer}.ffn_gate_up_exps.weight";
+    }));
+    EXPECT_FALSE(std::ranges::any_of(selected->mapping.tensors, [](const TensorRule& rule) {
+      return rule.pattern == "blk.{layer}.ffn_gate_up_exps.codes";
+    }));
+  }
+
+  const auto gguf = PolicyRules(qwen, {"qwen4exp", "gguf"});
+  const auto native = PolicyRules(qwen, {"qwen3_8_flash_next", "safetensors"});
+  ASSERT_TRUE(gguf);
+  ASSERT_TRUE(native);
+  ASSERT_FALSE(gguf->empty());
+  ASSERT_FALSE(native->empty());
+  EXPECT_NE(gguf->front().gate, native->front().gate);
+  EXPECT_EQ(native->front().text, qwen.policies.front().text);
+  EXPECT_TRUE(std::ranges::all_of(*gguf, &PolicyRule::common_read));
+  EXPECT_TRUE(std::ranges::none_of(*native, &PolicyRule::common_read));
+  EXPECT_TRUE(PolicyRules(qwen, {{}, "safetensors"}));
+  EXPECT_FALSE(PolicyRules(qwen, {"qwen4exp", {}}));
+
+  auto ambiguous_policy_mapping = qwen;
+  std::array ambiguous_policy_dialects{qwen.dialects[1], qwen.dialects[2]};
+  for (auto& dialect : ambiguous_policy_dialects) dialect.container = "safetensors";
+  ambiguous_policy_dialects[0].policies = native.value();
+  ambiguous_policy_dialects[1].policies = {};
+  ambiguous_policy_mapping.dialects = ambiguous_policy_dialects;
+  EXPECT_FALSE(PolicyRules(ambiguous_policy_mapping, {{}, "safetensors"}));
+
+  auto bad_alias_mapping = qwen;
+  auto bad_alias_dialect = qwen.dialects[1];
+  const auto expert_alias =
+      std::ranges::find_if(bad_alias_dialect.tensor_aliases, [](const TensorAlias& alias) {
+        return alias.source.contains("{layer}") && alias.source.contains("{expert}");
+      });
+  ASSERT_NE(expert_alias, bad_alias_dialect.tensor_aliases.end());
+  const TensorAlias bad_order{.source = "model.layers.{expert}.mlp.{layer}.gate_proj.weight",
+                              .canonical = expert_alias->canonical};
+  const std::array bad_aliases{bad_order};
+  bad_alias_dialect.tensor_aliases = bad_aliases;
+  bad_alias_mapping.dialects = std::span(&bad_alias_dialect, 1);
+  EXPECT_FALSE(ResolveSourceMapping(bad_alias_mapping, bad_alias_dialect.architecture,
+                                    bad_alias_dialect.container));
+}
+
 TEST(MappingTest, SourceIntervalsDeriveAndValidateExplicitLayerSchedules) {
   auto mapping = mappings::Gemma2Mapping();
   mapping.layer_type_interval_key = "full_attention_interval";
@@ -809,12 +966,16 @@ TEST(MappingTest, Gemma4SpecsFromTheirTablesAndProfiles) {
     // owner_padded_reads disabled on measured Gemma 4 26B-A4B C4 decode
     // regression; scheduling limits remain envelope-specific below.
     const auto bounded =
-        DefaultPolicy(mappings::Gemma4Mapping(), *values, {.context = 4096, .slots = 2});
+        DefaultPolicy(mappings::Gemma4Mapping(), *values, {.context = 4096, .slots = 2},
+                      {.architecture = "gemma4", .container = "gguf"});
     const auto envelope =
-        DefaultPolicy(mappings::Gemma4Mapping(), *values, {.context = 8192, .slots = 4});
+        DefaultPolicy(mappings::Gemma4Mapping(), *values, {.context = 8192, .slots = 4},
+                      {.architecture = "gemma4", .container = "gguf"});
     const auto outside =
-        DefaultPolicy(mappings::Gemma4Mapping(), *values, {.context = 8448, .slots = 2});
-    const auto unknown = DefaultPolicy(mappings::Gemma4Mapping(), *values);
+        DefaultPolicy(mappings::Gemma4Mapping(), *values, {.context = 8448, .slots = 2},
+                      {.architecture = "gemma4", .container = "gguf"});
+    const auto unknown = DefaultPolicy(mappings::Gemma4Mapping(), *values, {},
+                                       {.architecture = "gemma4", .container = "gguf"});
     ASSERT_TRUE(bounded && envelope && outside && unknown);
     for (const auto& policy : {*bounded, *envelope, *outside, *unknown})
       EXPECT_EQ(policy, "max_decode_rows 16\ndisable owner_padded_reads\n");
@@ -823,7 +984,8 @@ TEST(MappingTest, Gemma4SpecsFromTheirTablesAndProfiles) {
     for (const Envelope e :
          {Envelope{.context = 4096, .slots = 2}, Envelope{.context = 8192, .slots = 4},
           Envelope{.context = 8448, .slots = 2}, Envelope{}}) {
-      const auto rule = DefaultRule(mappings::Gemma4Mapping(), *values, e);
+      const auto rule = DefaultRule(mappings::Gemma4Mapping(), *values, e,
+                                    {.architecture = "gemma4", .container = "gguf"});
       ASSERT_TRUE(rule.has_value() && *rule != nullptr);
       EXPECT_TRUE((*rule)->prompts_alone);
       EXPECT_EQ((*rule)->owners_alone, e.context == 0 || e.context > 8192);
@@ -1127,10 +1289,13 @@ TEST(MappingTest, GenericDenseDecoderSynthesizesLlamaAndMistralWithRopeFreqsAndY
 }
 
 TEST(MappingTest, CheckLayerFlagsRefusesFlagWhenScheduleResolvesToAllA) {
-  Mapping m = mappings::Gemma4Mapping();
+  const Mapping& canonical = mappings::Gemma4Mapping();
+  const auto source = test_support::Gemma4Source(26);
+  auto resolved = ResolveSourceMapping(canonical, source.architecture, source.container);
+  ASSERT_TRUE(resolved);
+  Mapping& m = resolved->mapping;
   m.layer_flag_type = 'g';
   m.layer_type_key = "explicit_types";
-  auto source = test_support::Gemma4Source(26);
   auto values = *fam::Gemma4Values(fam::Gemma4_26BA4B());
   const auto count = std::ranges::find(values, "gemma4.block_count", &SourceValue::key);
   ASSERT_NE(count, values.end());

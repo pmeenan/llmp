@@ -99,3 +99,16 @@ ran once. This bounded result qualifies the registered ordinary target transfer;
 assistant draft/verify/state, matched adoption speed, other actual changed
 domains and whole U4 closure retain their own checks. It does not claim general
 Gemma model quality, a new encoding/device, C4 performance or full context.
+
+## Comparator packaging after the run
+
+The executed comparator bytes remain pinned at SHA-256
+`866642ca7502ae363bdd3c77aff84c57d69e2f2259e52d3232fc698878dd19f6`
+in registration commit `440d4b3d3e7817d7414df8bfab371fb4482a21b4`.
+A later license-header check required embedding the existing Apache-2.0 SPDX
+notice in the Python file and removing its redundant sidecar. Only those three
+comment/blank lines were prepended; the entire executable body is byte-identical.
+The packaged file now hashes to `b13aa466d5e0bbd001ea44b098145dfaf024c7ad1df4ffa7504fbcad1d237d75`.
+Historical protocol pins intentionally retain the executed file and sidecar
+identities; reproduce that run from its registration commit. No comparison or
+model observation was rerun or changed by this packaging correction.

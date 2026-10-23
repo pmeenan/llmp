@@ -123,6 +123,7 @@ struct ArtifactFacts {
   // The artifact's architecture ("deepseek4", "qwen4exp"); a composition's
   // models are pipelines (composition is true, architecture empty).
   std::string architecture;
+  std::string source_architecture;
   std::string container;
   std::uint32_t vocabulary = 0;
   std::vector<spec::SourceValue> policy_gates;

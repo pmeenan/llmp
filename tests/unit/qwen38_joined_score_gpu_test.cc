@@ -467,7 +467,11 @@ en::Status ValidateProgram(Lifetime& life, const kn::LowerInput& input,
 }
 
 std::expected<rt::ComponentBuildOptions, std::string> Options(Lifetime& life) {
-  auto policy = pl::ParsePolicy(llmp::spec::mappings::Qwen38Mapping().policies.front().text);
+  const auto rules =
+      llmp::spec::PolicyRules(llmp::spec::mappings::Qwen38Mapping(), {"qwen4exp", "safetensors"});
+  if (!rules) return std::unexpected(rules.error());
+  if (rules->empty()) return std::unexpected("native target policy is empty");
+  auto policy = pl::ParsePolicy(rules->front().text);
   if (!policy) return std::unexpected(policy.error());
   if (std::ranges::count(policy->enabled, "owner_row_invariant") != 1 ||
       std::ranges::find(policy->disabled, "owner_row_invariant") != policy->disabled.end())

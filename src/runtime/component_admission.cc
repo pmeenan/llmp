@@ -618,10 +618,13 @@ std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
                             FindApproval(artifact.model().architecture, artifact.sources())};
 }
 
-std::uint32_t MappingDefaultContext(const spec::Mapping& mapping,
-                                    std::span<const spec::SourceValue> gates) {
+std::expected<std::uint32_t, std::string> MappingDefaultContext(
+    const spec::Mapping& mapping, std::span<const spec::SourceValue> gates,
+    spec::PolicyContext context) {
   std::uint32_t widest = 0;
-  for (const spec::PolicyRule& rule : mapping.policies) {
+  auto policies = spec::PolicyRules(mapping, context);
+  if (!policies) return std::unexpected(policies.error());
+  for (const spec::PolicyRule& rule : *policies) {
     if (!rule.gate.empty()) {
       const auto at = std::ranges::find(gates, rule.gate, &spec::SourceValue::key);
       bool active = false;
@@ -639,7 +642,7 @@ std::uint32_t MappingDefaultContext(const spec::Mapping& mapping,
   return widest;
 }
 
-std::uint32_t ApprovedDefaultContext(const Approval& approval) {
+std::expected<std::uint32_t, std::string> ApprovedDefaultContext(const Approval& approval) {
   const spec::Mapping* mapping = spec::FindMapping(approval.architecture, approval.container);
   std::uint32_t widest = 0;
   if (mapping != nullptr && approval.policy != ApprovedPolicy::kNone) {
@@ -647,7 +650,10 @@ std::uint32_t ApprovedDefaultContext(const Approval& approval) {
     gates.reserve(approval.gates.size());
     for (const std::string_view gate : approval.gates)
       gates.push_back({.key = std::string(gate), .value = true});
-    widest = MappingDefaultContext(*mapping, gates);
+    auto bound = MappingDefaultContext(
+        *mapping, gates, {.architecture = approval.architecture, .container = approval.container});
+    if (!bound) return std::unexpected(bound.error());
+    widest = *bound;
   }
   return widest != 0 ? std::min(widest, approval.max_context) : approval.max_context;
 }
@@ -1091,7 +1097,9 @@ std::expected<const spec::PolicyRule*, std::string> ApprovedRule(const Approval&
   std::vector<spec::SourceValue> gates;
   for (const std::string_view gate : approval.gates)
     gates.push_back({.key = std::string(gate), .value = true});
-  auto rule = spec::DefaultRule(*mapping, gates, envelope);
+  auto rule =
+      spec::DefaultRule(*mapping, gates, envelope,
+                        {.architecture = approval.architecture, .container = approval.container});
   if (!rule) return Refused(rule.error());
   return *rule;
 }
@@ -1131,8 +1139,10 @@ std::expected<spec::PolicyRule, std::string> AdmittedPolicy(const spec::ModelSpe
   }
   const spec::Mapping* mapping = spec::FindMapping(source.architecture, source.container);
   if (mapping != nullptr) {
-    const auto gates = spec::PolicyGates(*mapping, model, source.container);
-    auto rule = spec::DefaultRule(*mapping, gates, envelope);
+    const auto gates = spec::PolicyGates(*mapping, model, source.container, source.architecture);
+    auto rule =
+        spec::DefaultRule(*mapping, gates, envelope,
+                          {.architecture = source.architecture, .container = source.container});
     if (!rule) return Refused(rule.error());
     if (*rule != nullptr) return **rule;
     if (mapping->serving != nullptr && mapping->serving->serving_rule != nullptr)

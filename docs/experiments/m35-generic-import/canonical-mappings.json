@@ -1,0 +1,76 @@
+{
+  "affected_models": {
+    "frozen_numerical_failures": 1,
+    "passed": 11,
+    "unique_registrations": 12,
+    "unresolved_skips": 0
+  },
+  "attribution_evidence_root": "/tmp/llmp-m35-orchestration/qwen-r-source-attribution-root-r1",
+  "code_files": 29,
+  "code_patch_sha256": "a231c47fa56c932530aa4231df1fa415766f5eb60436179cdfaaa6675cc2b6af",
+  "date": "2026-10-23",
+  "final_A_manifest_sha256": "4e2e9192a20855adb48f586e871341bcf622650751a88d480865e2b017d0be92",
+  "pre_U3_current_artifact_attribution": {
+    "artifact": "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8",
+    "attribution": "all seven current-A full-head/state mismatches reproduced exactly before U3 canonical changes; tokens/history still pass",
+    "binary_sha256": "a852e28c3704ce068bba0317fa1cd2329e72d64c15aead63dbeb9b55468d9ded",
+    "duration_seconds": 10.580260992050171,
+    "observed": {
+      "heads.0": {
+        "actual": "e5508d8f2656337d0f18eb4496f8099433ebb00daa746e27f82f15a65a4fca4d",
+        "frozen": "03dbc76485c368cc1554739502e2ae2b6d881c07d41694b955077fd4f4936a3b"
+      },
+      "heads.1": {
+        "actual": "85b74fe3402ebb4075ebe1bcc7b0c50304595bf673b87ee50273759acefec8b2",
+        "frozen": "54437e384a80717f2dd06f4182441cf844b42800417c0d486f27e4a77f9c40ed"
+      },
+      "logits.0": {
+        "actual": "2aaffe90ce081ce4f56e45998c2f56d0da559c28bd08b5d9d432a4542e9c3415",
+        "frozen": "a3704b0d4d21dd1f574c59853e62ad9b15033c3db325c091c3efed8b486fe458"
+      },
+      "logits.1": {
+        "actual": "5f29d060d86c96bc728870a1a413610386ed5171b2b0b89281ac77604f2011ab",
+        "frozen": "b38051fe32b3985f896a73326c09afad2bd92669c02d2b5d9fd42821cb9faffe"
+      },
+      "state.0": {
+        "actual": "2fa82b668c9171ccd13370cf5c682b944644928e760f1262647fa68d040600ee:14:64",
+        "frozen": "b508306fbfd4f474544eab40b2a70f8a8418b1a1a2a89c3f51d2c98d111532b5:14:64"
+      },
+      "state.1": {
+        "actual": "2fa82b668c9171ccd13370cf5c682b944644928e760f1262647fa68d040600ee:14:64",
+        "frozen": "b508306fbfd4f474544eab40b2a70f8a8418b1a1a2a89c3f51d2c98d111532b5:14:64"
+      },
+      "state.2": {
+        "actual": "7e7621866205aefccf689578aa934799c93511df4bdde8067e040bb0f7ceb50f:22:64",
+        "frozen": "8b42b3415cc84739f71a5ee41c40477fcaef27c5ac52bb3e6b827971c7ea1648:22:64"
+      }
+    },
+    "raw_log_sha256": "4548ab74ce056b68be7453405e2c234a6e1beb3b86bcd79556478440ccee6ad9",
+    "registered_test": "FAIL",
+    "source_manifest_sha256": "0a53dea6a1df1b79002b4e3f1af689ed724ee376c9d8ded94c9d8e4f7b0eb99a",
+    "xml_sha256": "9cbe38ccc744cf376f0a8869b278cbb269b08bb3ad2ba2243092066c5cad687b"
+  },
+  "raw_evidence_root": "/tmp/llmp-m35-orchestration/final-u3-u4-wave-r1",
+  "schema": 1,
+  "shared": {
+    "failures": 0,
+    "final_targeted_pass": 349,
+    "focused_CLI_image_writer_pass": 52,
+    "unchanged_remaining_pass": 3340,
+    "unique_registrations": 3689,
+    "unresolved_skips": 0
+  },
+  "static_checks": {
+    "U3_cpp_format": 29,
+    "checked": 2590,
+    "format_returncode": 0,
+    "headers": true,
+    "pinned_reuse_snapshot_files": 241,
+    "problems": [],
+    "reuse": true,
+    "reuse_report_sha256": "17ad7ccf54601e0ff67fe3bc4b7dee7ed208084021f386cdbc1f4d26211e78ce",
+    "reuse_returncode": 0,
+    "tool_manifest_sha256": "d6da9a33132cac54a50f342001d0a7b76c649616a3963d63c67fb12b196eabf4"
+  },
+  "status": "U3 explicit exits complete; separate U4 numerical qualification open"
+}

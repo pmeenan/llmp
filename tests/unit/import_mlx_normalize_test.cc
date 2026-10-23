@@ -62,7 +62,10 @@ TEST(ImportMlxNormalizeTest, NativeSplitPartsValidateAcrossCompleteTarget) {
   // Its folded norms and A in F32 (the parameter folds) are in it.
   EXPECT_EQ(hex, "cfeffcf6b5bdb813b2f3cab5ab4554a9aba1d83ef965a4881dabe03956f408da");
 
-  const auto& mapping = spec::mappings::Qwen38NativeMapping();
+  auto resolved = spec::ResolveSourceMapping(spec::mappings::Qwen38Mapping(), f.source.architecture,
+                                             f.source.container);
+  ASSERT_TRUE(resolved) << resolved.error();
+  const auto& mapping = resolved->mapping;
   for (const auto& fold : mapping.folds) {
     EXPECT_TRUE(fold.imported);
     if (fold.container == f.source.container)
@@ -142,8 +145,7 @@ TEST(ImportMlxNormalizeTest, EachLayerDerivesItsOwnExpertLayoutFromItsTensors) {
   });
   for (const auto& tensor : affine.source.tensors)
     if (selected(tensor)) fixture.source.tensors.push_back(tensor);
-  auto model =
-      spec::Synthesize(spec::mappings::Qwen38NativeMapping(), fixture.source, fixture.values);
+  auto model = spec::Synthesize(spec::mappings::Qwen38Mapping(), fixture.source, fixture.values);
   ASSERT_TRUE(model) << model.error();
   auto valid = components::ValidateSpec(*model, fixture.source.tensors);
   ASSERT_TRUE(valid) << valid.error();
@@ -180,8 +182,7 @@ TEST(ImportMlxNormalizeTest, ProjectionsWithinOneLayerKeepIndependentScalarBindi
                                 .rank = 3}},
            .experts = true});
     }
-    auto model =
-        spec::Synthesize(spec::mappings::Qwen38NativeMapping(), fixture.source, fixture.values);
+    auto model = spec::Synthesize(spec::mappings::Qwen38Mapping(), fixture.source, fixture.values);
     ASSERT_TRUE(model) << model.error();
     auto valid = components::ValidateSpec(*model, fixture.source.tensors);
     ASSERT_TRUE(valid) << valid.error();
@@ -221,8 +222,7 @@ TEST(ImportMlxNormalizeTest, DeclaredPleWidthMatchesItsTableAndBothProjectionInp
     if (value.key == "qwen4exp.embedding_length_per_layer_input") value.value = std::int64_t{4};
   fixture.values.push_back({"qwen4exp.ple.embed_dim", std::int64_t{64}});
   const auto validate = [&]() {
-    auto model =
-        spec::Synthesize(spec::mappings::Qwen38NativeMapping(), fixture.source, fixture.values);
+    auto model = spec::Synthesize(spec::mappings::Qwen38Mapping(), fixture.source, fixture.values);
     EXPECT_TRUE(model) << (model ? "" : model.error());
     return model && components::ValidateSpec(*model, fixture.source.tensors).has_value();
   };
@@ -250,7 +250,7 @@ TEST(ImportMlxNormalizeTest, PleLayerAndHashGeometryComeFromTheirDeclaredSourceV
     if (value.key == "qwen4exp.ple.layer_multipliers")
       value.value = std::vector<std::int64_t>{3, 5, 7, 11, 13};
   }
-  const auto& mapping = spec::mappings::Qwen38NativeMapping();
+  const auto& mapping = spec::mappings::Qwen38Mapping();
   auto model = spec::Synthesize(mapping, fixture.source, fixture.values);
   ASSERT_TRUE(model) << model.error();
   auto valid = components::ValidateSpec(*model, fixture.source.tensors);
@@ -273,7 +273,7 @@ TEST(ImportMlxNormalizeTest, NativeMappingRejectsMissingPartAndReadsRecordedFold
   auto before = f.source.tensors;
   std::erase_if(f.source.tensors,
                 [](const auto& t) { return t.name == "blk.0.ffn_gate_exps.weight_bias"; });
-  auto missing = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);
+  auto missing = spec::Synthesize(spec::mappings::Qwen38Mapping(), f.source, f.values);
   ASSERT_TRUE(missing);
   EXPECT_FALSE(components::ValidateSpec(*missing, f.source.tensors));
 
@@ -283,13 +283,13 @@ TEST(ImportMlxNormalizeTest, NativeMappingRejectsMissingPartAndReadsRecordedFold
   for (const auto& [fold, flag] : std::array<std::pair<std::string_view, std::string_view>, 2>{
            {{"norm.plus_one", "norm_zero_centered"}, {"ssm.a_neg_exp", "a_log"}}}) {
     f.source.folds = {"gdn.value_heads_tiled", std::string(fold)};
-    auto folded = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);
+    auto folded = spec::Synthesize(spec::mappings::Qwen38Mapping(), f.source, f.values);
     ASSERT_TRUE(folded) << folded.error();
     for (const auto& layer : folded->stages[0].layers)
       for (const auto& c : layer.components) EXPECT_EQ(c.Find(flag), nullptr) << fold;
   }
   f.source.folds.clear();
-  auto unpermuted = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);
+  auto unpermuted = spec::Synthesize(spec::mappings::Qwen38Mapping(), f.source, f.values);
   ASSERT_TRUE(unpermuted);
   EXPECT_FALSE(components::ValidateSpec(*unpermuted, f.source.tensors));
 }
@@ -451,7 +451,7 @@ TEST(ImportMlxNormalizeModelsTest, RealStagedCheckpointNormalizesMlxDrafter) {
   ASSERT_TRUE(checkpoint) << checkpoint.error().ToString();
 
   auto f = fx::NativeMlx();
-  NormalizationTarget target{.mapping = &spec::mappings::Qwen38NativeMapping(),
+  NormalizationTarget target{.mapping = &spec::mappings::Qwen38Mapping(),
                              .model = std::move(f.model),
                              .source = std::move(f.source)};
 

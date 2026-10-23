@@ -300,15 +300,19 @@ en::Status SetUp(Lifetime& life) {
   if (!paid) return std::unexpected("host construction prepayment refused");
   life.floats = std::make_unique<float[]>(kVocabulary);
   const auto store = fs::path(ts::V1Store());
-  for (const auto& [id, bytes, hash] : std::array{
-           std::tuple{kTarget, 8236769ULL,
-                      std::string_view{
-                          "2b29dc0f905bd670522abda9d8ef5e17f0db328c1d4fcd9f8dae63e9079dc5dd"}},
-           std::tuple{kDrafter, 159859ULL,
-                      std::string_view{
-                          "c20f71e3c79ad0505f24a5f822a8a644d53a3cdfc4e962e4e34533a508cee316"}}}) {
-    if (auto x = Metadata(store / id / "index.json", bytes, hash, true); !x) return x;
-    if (auto x = Metadata(store / id / "manifest.json", id == kTarget ? 48492 : 2779, id, true); !x)
+  for (const auto& [id, index_bytes, index_hash, manifest_bytes, manifest_hash] : std::array{
+           std::tuple{
+               kTarget, 8236769ULL,
+               std::string_view{"2b29dc0f905bd670522abda9d8ef5e17f0db328c1d4fcd9f8dae63e9079dc5dd"},
+               48492ULL, kTarget},
+           std::tuple{
+               kDrafter, 159859ULL,
+               std::string_view{"c20f71e3c79ad0505f24a5f822a8a644d53a3cdfc4e962e4e34533a508cee316"},
+               4092ULL,
+               std::string_view{
+                   "f4d84ed99ca105dfa420b362c39551f73ccb10a730aa6a893b21ff577e83add0"}}}) {
+    if (auto x = Metadata(store / id / "index.json", index_bytes, index_hash, true); !x) return x;
+    if (auto x = Metadata(store / id / "manifest.json", manifest_bytes, manifest_hash, true); !x)
       return x;
     if (auto x =
             Metadata(store / id / "meta/config.json", 109897,

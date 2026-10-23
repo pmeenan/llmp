@@ -350,6 +350,7 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     if (auto served = RequireServedVersion(*drafter); !served) return Error(served.error());
   auto admitted = ReadComponentAdmission(target);
   if (!admitted) return Error(admitted.error());
+  facts.source_architecture = admitted->source.architecture;
   const spec::Stage& target_stage = admitted->model.stages.front();
   facts.trained_context = target_stage.context;
   facts.trained_context_from = "the admitted stored spec";
@@ -360,7 +361,8 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
   if (!vocabulary) return Error(vocabulary.error());
   facts.vocabulary = *vocabulary;
   if (const auto* mapping = spec::FindMapping(facts.architecture, facts.container))
-    facts.policy_gates = spec::PolicyGates(*mapping, admitted->model, facts.container);
+    facts.policy_gates = spec::PolicyGates(*mapping, admitted->model, facts.container,
+                                           admitted->source.architecture);
   // The drafter's admission, once: its source and required stored spec as
   // checked, for its composition below.
   std::optional<ComponentDrafterAdmission> drafter_admitted;
@@ -661,19 +663,27 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   // drafter's): a default the approval refuses would never start, and a
   // wider one than its joined recipes is an explicit opt-in.
   if (s.context.source != SettingSource::kOverride) {
-    const auto within = [&](const Approval* approval) {
-      if (approval == nullptr || approval->max_context == 0) return;
-      const std::uint32_t bound = ApprovedDefaultContext(*approval);
-      if (s.context.value <= bound) return;
+    const auto within = [&](const Approval* approval) -> std::expected<void, std::string> {
+      if (approval == nullptr || approval->max_context == 0) return {};
+      const auto selected = ApprovedDefaultContext(*approval);
+      if (!selected) return std::unexpected(selected.error());
+      const std::uint32_t bound = *selected;
+      if (s.context.value <= bound) return {};
       s.context = {bound, SettingSource::kDerived,
                    std::format("the approved {} envelope's {}", approval->label, bound)};
+      return {};
     };
-    within(facts.approval);
-    if (entry.drafter) within(facts.drafter_approval);
+    if (auto ok = within(facts.approval); !ok) return Error(ok.error());
+    if (entry.drafter)
+      if (auto ok = within(facts.drafter_approval); !ok) return Error(ok.error());
     if (facts.approval == nullptr && facts.target_spec.has_value()) {
       const spec::Mapping* mapping = spec::FindMapping(arch, facts.container);
       if (mapping != nullptr) {
-        const std::uint32_t bound = MappingDefaultContext(*mapping, facts.policy_gates);
+        const auto selected = MappingDefaultContext(
+            *mapping, facts.policy_gates,
+            {.architecture = facts.source_architecture, .container = facts.container});
+        if (!selected) return Error(selected.error());
+        const std::uint32_t bound = *selected;
         if (bound != 0 && s.context.value > bound) {
           s.context = {
               bound, SettingSource::kDerived,
@@ -772,8 +782,9 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     } else if (facts.target_spec.has_value()) {
       if (const spec::Mapping* mapping = spec::FindMapping(arch, facts.container);
           mapping != nullptr) {
-        const auto rule = spec::DefaultRule(*mapping, facts.policy_gates,
-                                            {.context = context, .slots = s.max_slots.value});
+        const auto rule = spec::DefaultRule(
+            *mapping, facts.policy_gates, {.context = context, .slots = s.max_slots.value},
+            {.architecture = facts.source_architecture, .container = facts.container});
         if (!rule) return Error(rule.error());
         if (*rule != nullptr) recipe_chunk = (*rule)->prefill_chunk;
       }

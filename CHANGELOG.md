@@ -24,6 +24,11 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Gemma4, Qwen3.8 and its MTP drafter now share one canonical mapping per
+  architecture, preserving native/GGUF source conventions and stored execution
+  contracts. The generic importer’s explicit U3 exits are complete
+  ([checks and limits](docs/experiments/m35-generic-import/canonical-mappings.md)).
+
 - HF block-scaled FP8 imports retain E4M3FN codes and F32 scales with explicit
   block geometry, CPU reference decoding and validated stored specs. Device
   execution support remains separate (M3.5 U3b).

@@ -646,7 +646,7 @@ constexpr std::array kApprovals{
              .max_context = 262144,
              .max_slots = kAnyOwners,
              .gates = kModelOptGates,
-             .mapping = &spec::mappings::Qwen38NativeMapping,
+             .mapping = &spec::mappings::Qwen38Mapping,
              .numerical = kNativeNumerics},
     // Its MTP drafter (`llmp import --component mtp --draft-head`), with
     // Mia's selected head; composed with the approved native target.
@@ -667,7 +667,7 @@ constexpr std::array kApprovals{
              .max_slots = kAnyOwners,
              .policy = ApprovedPolicy::kNone,
              .target = "qwen3.8-flash-next-modelopt",
-             .mapping = &spec::mappings::Qwen38MtpNativeMapping,
+             .mapping = &spec::mappings::Qwen38MtpMapping,
              .numerical = kNativeNumerics},
     Approval{.name = "qwen3.8-flash-next-mlx",
              .label = "Qwen3.8 MLX",
@@ -683,7 +683,7 @@ constexpr std::array kApprovals{
              .max_context = 262144,
              .max_slots = kAnyOwners,
              .policy = ApprovedPolicy::kNone,
-             .mapping = &spec::mappings::Qwen38NativeMapping},
+             .mapping = &spec::mappings::Qwen38Mapping},
     // Its mapping deliberately has no policy rules: the engine's default
     // outside the shared route's own recipe.
     Approval{.name = "deepseek-v4-flash-0731-ud-q2_k_xl",

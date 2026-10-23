@@ -462,21 +462,6 @@ constexpr std::array kQwenLists{
     ListRequirement{.key = "ple.head_vocab_sizes", .size = kLayerLimit, .min_size = 1}};
 constexpr std::array kQwenRows{
     RowIndexRequirement{"ple.head_offsets", "ple.head_vocab_sizes", "per_layer_token_embd.weight"}};
-constexpr auto kGgufMapping = [] {
-  auto m = kMapping;
-  m.containers = kGgufContainers;
-  m.tensors = kGgufTensors;
-  m.params = kGgufParams;
-  m.folds = kFolds;
-  m.policies = std::span(kPolicies).last(1);
-  m.auxiliary = kQwenAuxiliary;
-  m.requirements = kQwenRequirements;
-  m.lists = kQwenLists;
-  m.extended_components = true;
-  m.row_indices = kQwenRows;
-  return m;
-}();
-
 // Native normalization binds a checkpoint's split parts to the same shared
 // roles (MLX's affine experts and tables), and the importer's relaid-out
 // NVFP4 experts (import/expert_relayout.h): the scale-atom gate-up and
@@ -1661,11 +1646,6 @@ constexpr std::array kMtpValues = {
               .origin = ValueOrigin::kVocabulary,
               .at_most = kServing.default_draft_vocab},
 };
-constexpr DraftRecipe kMtpNativeDraft{.shape = DraftRecipe::Shape::kMtp,
-                                      .target_architecture = "qwen4exp",
-                                      .values = kMtpValues,
-                                      .head_ids = kHeadIds,
-                                      .vocab_key = kRecipeDraftVocab};
 constexpr std::array<std::string_view, 7> kMtpNativeIgnoredPrefixes = {
     "lm_head.", "language_model.lm_head.", "model.visual.",         "vision_tower.",
     "visual.",  "model.language_model.",   "language_model.model.",
@@ -2106,76 +2086,230 @@ constexpr std::array kQwen38MtpNativeLists = {
                     .optional = true,
                     .per_layer = true},
 };
-constexpr auto kMtpNativeMapping = [] {
-  auto mapping = kMtpMapping;
-  mapping.containers = kNativeContainers;
-  mapping.source_architectures = kNativeSourceArchitectures;
-  mapping.source_key_prefix = "text_config.";
-  mapping.draft = &kMtpNativeDraft;
-  mapping.tensors = kMtpNativeTensors;
-  mapping.params = kMtpNativeParams;
-  mapping.folds = kNativeFolds;
-  mapping.tensor_aliases = kMtpNativeTensorAliases;
-  mapping.key_aliases = kMtpNativeKeyAliases;
-  mapping.ignored_tensor_prefixes = kMtpNativeIgnoredPrefixes;
-  mapping.auxiliary = kQwen38MtpNativeAuxiliary;
-  mapping.requirements = kQwen38MtpNativeRequirements;
-  mapping.lists = kQwen38MtpNativeLists;
-  mapping.semantic = kQwen38NativeSemantic;
-  mapping.extended_components = true;
-  return mapping;
-}();
-constexpr auto kNativeSlots = [] {
-  auto slots = kSlots;
-  for (auto& slot : slots)
-    if (slot.layers_key == kPleLayers) {
-      slot.layers_alias = "ple.layer_ids";
-      slot.alias_index_base = 1;
-    }
-  return slots;
-}();
 constexpr auto kNativeGates = [] {
   auto gates = kGates;
   for (auto& gate : gates)
     if (gate.param == "projection_scales") gate.param = "gate_scale";
   return gates;
 }();
-constexpr auto kNativeMapping = [] {
+constexpr std::array kNativeSlotSourceOverrides = {
+    SourceDialect::SlotSourceOverride{
+        .slot = "ngram", .layers_alias = "ple.layer_ids", .alias_index_base = 1},
+    SourceDialect::SlotSourceOverride{
+        .slot = "ple", .layers_alias = "ple.layer_ids", .alias_index_base = 1}};
+constexpr SourceDialect QwenTargetDialect(std::string_view source_arch,
+                                          std::string_view container) {
+  const bool native = container != "gguf";
+  return SourceDialect{
+      .architecture = source_arch,
+      .container = container,
+      .execution_architecture = "qwen4exp",
+      .source_architectures = native ? std::span<const std::string_view>(kNativeSourceArchitectures)
+                                     : std::span<const std::string_view>{},
+      .key_prefix = {},
+      .source_key_prefix = native ? "text_config." : "",
+      .layer_count_key = "block_count",
+      .context_key = native ? "context_length" : "",
+      .layer_types = "lllf",
+      .layer_type_key = native ? "layer_types" : "",
+      .layer_type_interval_key = native ? "full_attention_interval" : "full_attention_interval",
+      .layer_flags_key = native ? "" : "attention.compress_ratios",
+      .layer_flag_type = 'f',
+      .layer_type_codes = native ? std::span<const LayerTypeCode>(kNativeLayerTypeCodes)
+                                 : std::span<const LayerTypeCode>{},
+      .explicit_layer_rules = true,
+      .complete_params = true,
+      .params = native ? std::span<const ParamRule>(kNativeParams)
+                       : std::span<const ParamRule>(kGgufParams),
+      .tensors = native ? std::span<const TensorRule>(kNativeTensors)
+                        : std::span<const TensorRule>(kGgufTensors),
+      .slots = native ? std::span(kNativeSlotSourceOverrides)
+                      : std::span<const SourceDialect::SlotSourceOverride>{},
+      .folds = native ? std::span<const FoldRule>(kNativeFolds) : std::span<const FoldRule>(kFolds),
+      .tensor_aliases = native ? std::span<const TensorAlias>(kNativeTensorAliases)
+                               : std::span<const TensorAlias>{},
+      .key_aliases =
+          native ? std::span<const KeyAlias>(kNativeKeyAliases) : std::span<const KeyAlias>{},
+      .auxiliary = native ? std::span<const AuxiliaryNamespace>(kQwen38TargetNativeAuxiliary)
+                          : std::span<const AuxiliaryNamespace>(kQwenAuxiliary),
+      .requirements = native ? std::span<const ScalarRequirement>(kQwen38NativeRequirements)
+                             : std::span<const ScalarRequirement>(kQwenRequirements),
+      .semantic = native ? std::span<const std::string_view>(kQwen38NativeSemantic)
+                         : std::span<const std::string_view>{},
+      .ignored_tensors = native ? std::span<const std::string_view>(kNativeIgnoredTensors)
+                                : std::span<const std::string_view>{},
+      .ignored_tensor_prefixes = native ? std::span<const std::string_view>(kNativeIgnoredPrefixes)
+                                        : std::span<const std::string_view>{},
+      .policies = native ? std::span<const PolicyRule>(kNativePolicies)
+                         : std::span<const PolicyRule>(kPolicies).last(1),
+      .gates = native ? std::span<const GateRule>(kNativeGates) : std::span<const GateRule>(kGates),
+      .lists = native ? std::span<const ListRequirement>(kQwen38NativeLists)
+                      : std::span<const ListRequirement>(kQwenLists),
+      .extended_components = true,
+      .explicit_source_semantics = true,
+      .row_indices = native ? std::span<const RowIndexRequirement>{}
+                            : std::span<const RowIndexRequirement>(kQwenRows),
+      .semantic_tensors = native ? std::span<const SemanticTensorRule>(kNativeSemanticTensors)
+                                 : std::span<const SemanticTensorRule>{}};
+}
+constexpr std::array<SourceDialect, 7> kTargetDialects = {
+    QwenTargetDialect("qwen4exp", "gguf"),
+    QwenTargetDialect("qwen3_8_flash_next", "safetensors"),
+    QwenTargetDialect("qwen3_8_flash_next", "mlx"),
+    QwenTargetDialect("qwen4_exp", "safetensors"),
+    QwenTargetDialect("qwen4_exp", "mlx"),
+    QwenTargetDialect("qwen4exp", "safetensors"),
+    QwenTargetDialect("qwen4exp", "mlx")};
+constexpr auto kQwenAllTensors = [] {
+  constexpr auto new_roles = std::ranges::count_if(kNativeTensors, [](const auto& native) {
+    return !std::ranges::any_of(kTensors, [&](const auto& base) {
+      return base.slot == native.slot && base.role == native.role;
+    });
+  });
+  std::array<TensorRule, kTensors.size() + new_roles> out{};
+  std::ranges::copy(kTensors, out.begin());
+  std::size_t next = kTensors.size();
+  for (const auto& native : kNativeTensors) {
+    if (std::ranges::any_of(kTensors, [&](const auto& base) {
+          return base.slot == native.slot && base.role == native.role;
+        }))
+      continue;
+    out[next++] = native;
+  }
+  return out;
+}();
+constexpr auto kQwenAllParams = [] {
+  constexpr auto new_roles = std::ranges::count_if(kNativeParams, [](const auto& native) {
+    return !std::ranges::any_of(kParams, [&](const auto& base) {
+      return base.slot == native.slot && base.param == native.param;
+    });
+  });
+  std::array<ParamRule, kParams.size() + new_roles> out{};
+  std::ranges::copy(kParams, out.begin());
+  std::size_t next = kParams.size();
+  for (const auto& native : kNativeParams) {
+    if (std::ranges::any_of(kParams, [&](const auto& base) {
+          return base.slot == native.slot && base.param == native.param;
+        }))
+      continue;
+    out[next++] = native;
+  }
+  return out;
+}();
+constexpr std::array<std::string_view, 3> kQwenContainers{"gguf", "safetensors", "mlx"};
+constexpr std::array<std::string_view, 2> kMtpContainers{"safetensors", "mlx"};
+constexpr Mapping kQwenCanonicalMapping = [] {
   auto mapping = kMapping;
-  mapping.containers = kNativeContainers;
-  mapping.gates = kNativeGates;
   mapping.source_architectures = kNativeSourceArchitectures;
-  mapping.source_key_prefix = "text_config.";
-  mapping.context_key = "context_length";
-  mapping.layer_flags_key = {};
-  mapping.layer_type_key = "layer_types";
-  mapping.layer_type_interval_key = "full_attention_interval";
-  mapping.layer_type_codes = kNativeLayerTypeCodes;
-  mapping.semantic_tensors = kNativeSemanticTensors;
-  mapping.slots = kNativeSlots;
-  mapping.tensors = kNativeTensors;
-  mapping.params = kNativeParams;
-  mapping.folds = kNativeFolds;
-  mapping.policies = kNativePolicies;
-  mapping.tensor_aliases = kNativeTensorAliases;
-  mapping.key_aliases = kNativeKeyAliases;
-  mapping.ignored_tensors = kNativeIgnoredTensors;
-  mapping.ignored_tensor_prefixes = kNativeIgnoredPrefixes;
-  mapping.auxiliary = kQwen38TargetNativeAuxiliary;
-  mapping.requirements = kQwen38NativeRequirements;
-  mapping.lists = kQwen38NativeLists;
-  mapping.semantic = kQwen38NativeSemantic;
-  mapping.extended_components = true;
+  mapping.containers = kQwenContainers;
+  mapping.tensors = kQwenAllTensors;
+  mapping.params = kQwenAllParams;
+  mapping.dialects = kTargetDialects;
+  return mapping;
+}();
+
+constexpr SourceDialect QwenMtpDialect(std::string_view source_arch, std::string_view container) {
+  const bool native = container != "gguf";
+  return SourceDialect{
+      .architecture = source_arch,
+      .container = container,
+      .execution_architecture = "qwen4exp-mtp",
+      .source_architectures = native ? std::span<const std::string_view>(kNativeSourceArchitectures)
+                                     : std::span<const std::string_view>{},
+      .key_prefix = native ? "" : "qwen4exp-mtp",
+      .source_key_prefix = native ? "text_config." : "",
+      .layer_count_key = "block_count",
+      .context_key = {},
+      .layer_types = "f",
+      .explicit_layer_rules = true,
+      .complete_params = true,
+      .params = native ? std::span<const ParamRule>(kMtpNativeParams)
+                       : std::span<const ParamRule>(kMtpParams),
+      .tensors = native ? std::span<const TensorRule>(kMtpNativeTensors)
+                        : std::span<const TensorRule>(kMtpTensors),
+      .folds = native ? std::span<const FoldRule>(kNativeFolds) : std::span<const FoldRule>(kFolds),
+      .tensor_aliases = native ? std::span<const TensorAlias>(kMtpNativeTensorAliases)
+                               : std::span<const TensorAlias>{},
+      .key_aliases =
+          native ? std::span<const KeyAlias>(kMtpNativeKeyAliases) : std::span<const KeyAlias>{},
+      .auxiliary = native ? std::span<const AuxiliaryNamespace>(kQwen38MtpNativeAuxiliary)
+                          : std::span<const AuxiliaryNamespace>(kGgufAuxiliary),
+      .requirements = native ? std::span<const ScalarRequirement>(kQwen38MtpNativeRequirements)
+                             : std::span<const ScalarRequirement>{},
+      .semantic = native ? std::span<const std::string_view>(kQwen38NativeSemantic)
+                         : std::span<const std::string_view>{},
+      .ignored_tensor_prefixes = native
+                                     ? std::span<const std::string_view>(kMtpNativeIgnoredPrefixes)
+                                     : std::span<const std::string_view>{},
+      .policies = std::span(kMtpPolicies),
+      .gates = std::span<const GateRule>{},
+      .lists = native ? std::span<const ListRequirement>(kQwen38MtpNativeLists)
+                      : std::span<const ListRequirement>{},
+      .extended_components = native,
+      .explicit_source_semantics = true,
+      .draft_values =
+          native ? std::span<const ValueRule>(kMtpValues) : std::span<const ValueRule>{}};
+}
+constexpr std::array<SourceDialect, 6> kMtpDialects = {
+    QwenMtpDialect("qwen3_8_flash_next", "safetensors"),
+    QwenMtpDialect("qwen3_8_flash_next", "mlx"),
+    QwenMtpDialect("qwen4_exp", "safetensors"),
+    QwenMtpDialect("qwen4_exp", "mlx"),
+    QwenMtpDialect("qwen4exp-mtp", "safetensors"),
+    QwenMtpDialect("qwen4exp-mtp", "mlx")};
+constexpr auto kMtpAllTensors = [] {
+  constexpr auto new_roles = std::ranges::count_if(kMtpNativeTensors, [](const auto& native) {
+    return !std::ranges::any_of(kMtpTensors, [&](const auto& base) {
+      return base.slot == native.slot && base.role == native.role;
+    });
+  });
+  std::array<TensorRule, kMtpTensors.size() + new_roles> out{};
+  std::ranges::copy(kMtpTensors, out.begin());
+  std::size_t next = kMtpTensors.size();
+  for (const auto& native : kMtpNativeTensors) {
+    if (std::ranges::any_of(kMtpTensors, [&](const auto& base) {
+          return base.slot == native.slot && base.role == native.role;
+        }))
+      continue;
+    out[next++] = native;
+  }
+  return out;
+}();
+constexpr auto kMtpAllParams = [] {
+  constexpr auto new_roles = std::ranges::count_if(kMtpNativeParams, [](const auto& native) {
+    return !std::ranges::any_of(kMtpParams, [&](const auto& base) {
+      return base.slot == native.slot && base.param == native.param;
+    });
+  });
+  std::array<ParamRule, kMtpParams.size() + new_roles> out{};
+  std::ranges::copy(kMtpParams, out.begin());
+  std::size_t next = kMtpParams.size();
+  for (const auto& native : kMtpNativeParams) {
+    if (std::ranges::any_of(kMtpParams, [&](const auto& base) {
+          return base.slot == native.slot && base.param == native.param;
+        }))
+      continue;
+    out[next++] = native;
+  }
+  return out;
+}();
+constexpr Mapping kMtpCanonicalMapping = [] {
+  auto mapping = kMtpMapping;
+  mapping.source_architectures = kNativeSourceArchitectures;
+  mapping.containers = kMtpContainers;
+  mapping.tensors = kMtpAllTensors;
+  mapping.params = kMtpAllParams;
+  mapping.dialects = kMtpDialects;
   return mapping;
 }();
 #undef LLMP_QWEN38_BLOCK_PARAMS
 
 }  // namespace
 
-const Mapping& Qwen38Mapping() { return kMapping; }
-const Mapping& Qwen38GgufMapping() { return kGgufMapping; }
-const Mapping& Qwen38NativeMapping() { return kNativeMapping; }
-const Mapping& Qwen38MtpMapping() { return kMtpMapping; }
-const Mapping& Qwen38MtpNativeMapping() { return kMtpNativeMapping; }
+const Mapping& Qwen38Mapping() { return kQwenCanonicalMapping; }
+const Mapping& Qwen38GgufMapping() { return kQwenCanonicalMapping; }
+const Mapping& Qwen38NativeMapping() { return kQwenCanonicalMapping; }
+const Mapping& Qwen38MtpMapping() { return kMtpCanonicalMapping; }
+const Mapping& Qwen38MtpNativeMapping() { return kMtpCanonicalMapping; }
 
 }  // namespace llmp::spec::mappings

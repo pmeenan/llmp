@@ -91,6 +91,7 @@ struct ComponentSourceOptions {
   // `values` (spec/mapping.h DefaultPolicy; read only by Create) plans the
   // steps, and a policy that replaces it (an alias's); one of the two.
   const spec::Mapping* mapping = nullptr;
+  spec::PolicyContext policy_context{};
   std::span<const spec::SourceValue> values{};
   // The owners the runner serves: with the layout's context, the serving
   // envelope the mapping's rule is chosen for (spec::Envelope; 0: unknown,
