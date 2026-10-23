@@ -83,20 +83,25 @@ constexpr std::int32_t kFill = -7;
 constexpr std::uint32_t kAll = std::numeric_limits<std::uint32_t>::max();
 
 TEST(DrafterHeadTest, SourceRowsUseImmutableSelectedVocabulary) {
-  en::DrafterSpec drafter;
-  drafter.head_ids = std::make_shared<const std::vector<std::int32_t>>(
-      std::initializer_list<std::int32_t>{913, 7, 602});
-  drafter.head_rows = 3;
-  auto retained = drafter;
-  drafter.head_ids.reset();
-  const auto first = en::DrafterHeadToken(retained, 0, 1000);
-  const auto last = en::DrafterHeadToken(retained, 2, 1000);
-  ASSERT_TRUE(first);
-  ASSERT_TRUE(last);
-  EXPECT_EQ(*first, 913);
-  EXPECT_EQ(*last, 602);
-  EXPECT_FALSE(en::DrafterHeadToken(retained, 3, 1000));
-  EXPECT_FALSE(en::DrafterHeadToken(retained, 0, 600));
+  for (unsigned protocol = 0; protocol != 3; ++protocol) {
+    en::DrafterSpec drafter;
+    drafter.anchored = protocol == 0;
+    drafter.shape =
+        protocol == 1 ? en::DrafterSpec::Shape::kBlock : en::DrafterSpec::Shape::kAutoregressive;
+    drafter.head_ids = std::make_shared<const std::vector<std::int32_t>>(
+        std::initializer_list<std::int32_t>{913, 7, 602});
+    drafter.head_rows = 3;
+    auto retained = drafter;
+    drafter.head_ids.reset();
+    const auto first = en::DrafterHeadToken(retained, 0, 1000);
+    const auto last = en::DrafterHeadToken(retained, 2, 1000);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(last);
+    EXPECT_EQ(*first, 913);
+    EXPECT_EQ(*last, 602);
+    EXPECT_FALSE(en::DrafterHeadToken(retained, 3, 1000));
+    EXPECT_FALSE(en::DrafterHeadToken(retained, 0, 600));
+  }
 }
 
 TEST(DrafterHeadTest, OrdinaryHeadRetainsIdentityAndBounds) {
@@ -968,6 +973,28 @@ TEST_F(DecodingTest, AdaptiveDepthChangesBetweenUnitsFromCompleteStepsOnly) {
 }
 
 // --------------------------------------------------------- borrowed state
+
+TEST_F(DecodingTest, AnchoredDepthUsesActualVerifyBoundsRatherThanTheMeasuredDefault) {
+  en::DecodingMode mode{
+      .kind = en::DecodingMode::Kind::kSpeculative,
+      .drafters = {{.stage = kAssistant, .max_depth = 4, .borrows_target = true, .anchored = true}},
+      .row_invariant = false};
+  auto o = Make(mode);
+  const std::array<std::uint32_t, 1> prompts{40};
+  Prefill(prompts, &o);
+  const auto report = Unit(o, {0});
+  ASSERT_EQ(report.outcomes.size(), 1U);
+  ASSERT_FALSE(report.outcomes[0].refusal);
+  ASSERT_EQ(report.outcomes[0].drafts.size(), 1U);
+  EXPECT_EQ(report.outcomes[0].drafts[0].depth, 4U);
+  mode.drafters[0].max_depth = 17;
+  const auto bounded = en::DecodingOrchestrator::Make(*runner_, *composer_, mode, Policy());
+  ASSERT_FALSE(bounded);
+  EXPECT_NE(bounded.error().find("runner's 8"), std::string::npos);
+  mode.drafters[0].max_depth = slots().layout(kAssistant).max_rows;
+  const auto refused = en::DecodingOrchestrator::Make(*runner_, *composer_, mode, Policy());
+  EXPECT_FALSE(refused);
+}
 
 TEST_F(DecodingTest, AnOrdinaryReaderRequiresItsExactAcceptedPrefixPermit) {
   auto o = Make({.kind = en::DecodingMode::Kind::kSpeculative,

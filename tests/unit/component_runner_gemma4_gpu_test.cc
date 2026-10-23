@@ -381,12 +381,9 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
   std::optional<llmp::spec::Source> as;
   const llmp::spec::Mapping* assistant_mapping = nullptr;
   if (c.assistant) {
-    // The assistant's values as serving composes it: the approved pairing
-    // checked, its values from the metadata it keeps.
-    auto drafter_values = llmp::runtime::ComponentDrafterValues(*ta, *aa);
-    EXPECT_TRUE(drafter_values.has_value()) << (drafter_values ? "" : drafter_values.error());
-    if (!drafter_values) return out;
-    assistant_values = std::move(*drafter_values);
+    auto stored = llmp::spec::StoredSpec(*aa);
+    EXPECT_TRUE(stored) << (stored ? "" : stored.error());
+    if (!stored) return out;
     assistant_mapping = llmp::runtime::ComposedDrafterMapping(*aa);
     EXPECT_NE(assistant_mapping, nullptr);
     if (assistant_mapping == nullptr) return out;
@@ -394,8 +391,7 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
     EXPECT_TRUE(source.has_value()) << (source ? "" : source.error());
     if (!source) return out;
     as.emplace(std::move(*source));
-    auto spec = llmp::spec::ComposeDrafter(*target_spec, mapping, *assistant_mapping, *as,
-                                           assistant_values);
+    auto spec = llmp::spec::ComposeStoredDrafter(*target_spec, *stored);
     EXPECT_TRUE(spec.has_value()) << spec.error();
     if (!spec) return out;
     composed.emplace(std::move(*spec));

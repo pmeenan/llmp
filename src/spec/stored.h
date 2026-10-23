@@ -12,8 +12,8 @@
 // 0); a model of several artifacts (a pipeline's components, a target and
 // its drafter) carries it in its composition, the stages' indexes counting
 // the composition's components in their order. A component artifact may
-// carry a spec of its own (a text encoder usable alone) or none (a drafter
-// that reads its target).
+// carries its own spec; a drafter includes a target interface carrier beside
+// its executable drafter stage.
 //
 // Source-converter and importer folds, kept as distinct manifest records,
 // must be fold catalog names; their union must equal the folds of every
@@ -57,6 +57,10 @@ std::expected<ModelSpec, std::string> StoredSpec(const artifact::Artifact& artif
 std::expected<ModelSpec, std::string> ComposeStoredDrafter(
     const ModelSpec& target_spec, const ModelSpec& drafter_spec,
     std::optional<std::uint32_t> draft_vocab = std::nullopt);
+
+// The unique output shared by every drafting protocol. Selected maps must be
+// its own unambiguous IDs binding; component validation checks actual parts.
+std::expected<const ComponentRef*, std::string> DrafterOutput(const Stage& stage);
 
 // Change only an already-composed drafter's output/selected head row extent.
 // No stage, tap, source binding or canonical admission is rebuilt. Callers

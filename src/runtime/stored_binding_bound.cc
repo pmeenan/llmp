@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "components/step.h"
+#include "format/tensor_format.h"
 #include "runtime/component_bindings.h"
 #include "spec/stored.h"
 
@@ -26,6 +29,16 @@ std::expected<std::uint64_t, std::string> ComponentAdmissionBytes(
   // At most one of each per source byte, three overlapping vector capacities.
   // Strings, numeric lists, canonicalization and owned spec growth share the
   // byte term; object records and catalog defaults use the separate term.
+  // After parsing retires, this byte term also funds semantic-role rebinding.
+  // Even the shortest borrowed binding pays for its old part and the format's
+  // largest complete replacement role, including string terminators. Rebinding
+  // pre-counts and reserves its vector once, and copies strings directly.
+  constexpr std::size_t shortest_borrowed =
+      sizeof(R"({"part":"data","role":"x","stage":"x","tensor":"x"})") - 1;
+  static_assert(shortest_borrowed * (3 * (32 + sizeof(std::int64_t)) + 16) >=
+                (format::PartList::kMax + 1) *
+                        (sizeof(spec::WeightBinding) + 3 * (spec::kMaxText + 1)) +
+                    2 * sizeof(std::vector<spec::WeightBinding>));
   std::uint64_t objects = 0;
   bool quoted = false;
   for (const char c : text.value_or(std::string_view{})) {

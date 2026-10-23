@@ -5,7 +5,7 @@
 // domain's arithmetic, the automatic serving envelope (the route's only one:
 // every other request is refused before its source is read), and the
 // publication screens (Published*) of the published v1 artifacts (the target
-// d2046349 and the DSpark drafter 6b1b9dca; LLMP_DSV4_TARGET_STORE, else
+// d2046349 and the DSpark drafter e14bf29f; LLMP_DSV4_TARGET_STORE, else
 // tests/support/v1_frozen.h V1Store) against their frozen digests
 // (tests/unit/data/v1_frozen/dsv4_*.json). The serving tests
 // (dsv4_engine_serving_gpu_test.cc) cover the rest of its service.
@@ -56,7 +56,7 @@ constexpr std::string_view kArtifact =
     "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f";
 
 constexpr std::string_view kDsparkArtifact =
-    "6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41";
+    "e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90";
 
 // The store holding both: LLMP_DSV4_TARGET_STORE, else the published v1
 // store.

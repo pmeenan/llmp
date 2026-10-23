@@ -219,6 +219,26 @@ void WriteStage(std::string& out, const Stage& s) {
   out += std::to_string(s.artifact);
   Key(out, "context", first);
   out += std::to_string(s.context);
+  if (s.drafting) {
+    Key(out, "drafting", first);
+    bool field = true;
+    out += '{';
+    if (std::holds_alternative<AnchoredDraft>(*s.drafting)) {
+      Key(out, "kind", field);
+      Quoted(out, "anchored");
+    } else if (const auto* block = std::get_if<BlockDraft>(&*s.drafting)) {
+      Key(out, "fill_token", field);
+      out += std::to_string(block->fill_token);
+      Key(out, "kind", field);
+      Quoted(out, "block");
+      Key(out, "max_proposals", field);
+      out += std::to_string(block->max_proposals);
+    } else {
+      Key(out, "kind", field);
+      Quoted(out, "mtp");
+    }
+    out += '}';
+  }
   if (s.embedding) {
     Key(out, "embedding", first);
     WriteComponent(out, *s.embedding);
@@ -599,11 +619,32 @@ std::expected<Stage, std::string> ReadStage(json::Value v, const std::string& wh
   if (auto k = Keys(v, where,
                     {"artifact", "context", "folds", "heads", "layers", "name", "reads", "role",
                      "side", "stream", "taps"},
-                    {"embedding", "exports", "links", "sampling", "scalar_bindings"});
+                    {"drafting", "embedding", "exports", "links", "sampling", "scalar_bindings"});
       !k) {
     return std::unexpected(k.error());
   }
   Stage s;
+  if (const auto draft = v.find("drafting")) {
+    const std::string at = where + ".drafting";
+    const auto kind = Member(*draft, "kind");
+    if (!kind.is_string()) return Refuse(at, "missing drafting kind");
+    if (kind.string() == "anchored") {
+      if (auto keys = Keys(*draft, at, {"kind"}); !keys) return std::unexpected(keys.error());
+      s.drafting = AnchoredDraft{};
+    } else if (kind.string() == "block") {
+      if (auto keys = Keys(*draft, at, {"fill_token", "kind", "max_proposals"}); !keys)
+        return std::unexpected(keys.error());
+      LLMP_SPEC_TRY(
+          depth, Unsigned(Member(*draft, "max_proposals"), at + ".max_proposals", UINT32_MAX - 1));
+      LLMP_SPEC_TRY(fill, Unsigned(Member(*draft, "fill_token"), at + ".fill_token", INT32_MAX));
+      s.drafting = BlockDraft{static_cast<std::uint32_t>(*depth), static_cast<std::int32_t>(*fill)};
+    } else if (kind.string() == "mtp") {
+      if (auto keys = Keys(*draft, at, {"kind"}); !keys) return std::unexpected(keys.error());
+      s.drafting = MtpDraft{};
+    } else {
+      return Refuse(at, "unknown drafting kind");
+    }
+  }
   if (const auto bindings = v.find("scalar_bindings")) {
     LLMP_SPEC_TRY(list, Array(*bindings, where + ".scalar_bindings", kMaxComponents * kMaxParams));
     if (list->size() == 0) return Refuse(where + ".scalar_bindings", "present only when non-empty");
@@ -914,6 +955,14 @@ Status CheckComponent(const ComponentRef& c, const std::string& where) {
 }
 
 Status CheckStage(const ModelSpec& spec, const Stage& s, const std::string& where) {
+  if (s.drafting) {
+    if (s.role != StageRole::kDrafter || spec.pipeline != PipelineKind::kLlm)
+      return Refuse(where + ".drafting", "requires an LLM drafter stage");
+    if (const auto* block = std::get_if<BlockDraft>(&*s.drafting)) {
+      if (block->max_proposals == 0 || block->max_proposals == UINT32_MAX || block->fill_token < 0)
+        return Refuse(where + ".drafting", "invalid proposal bound or fill token");
+    }
+  }
   if (!IsName(s.name)) {
     return Refuse(where, "a name that is not valid");
   }

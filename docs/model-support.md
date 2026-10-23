@@ -712,9 +712,14 @@ seeded-sampling evidence in this study.
 - **Checkpoint:** `dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf` in the same
   pinned repository and revision.
 - **Artifact:** v0 `dd2d3f9c…`, its own artifact; it binds the target's
-  token table and head at load (no composition document, D-089's note); v1
-  `6b1b9dca…`, equally its own, bit-identical to v0 with its target
-  ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)).
+  token table and head at load (no composition document, D-089's note);
+  historical v1 `6b1b9dca…` is bit-identical to v0 with its target
+  ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)). Its current
+  StoredSpec replacement `e14bf29f…` preserves every encoded part and records
+  the source block contract. Its runtime/lifecycle control completes, with three
+  frozen numerical differences reproduced exactly by the legacy-runtime control;
+  numerical qualification remains open. The replacement is installed on both Sparks
+  ([migration proof](experiments/m35-stored-drafter/RESULTS.md)).
 - **Components:** drafter only; runs with DeepSeek V4 Flash 0731.
 - **Template and tokenizer:** its target's.
 - **Decoding:** as its target's speculative rows above.
@@ -907,11 +912,11 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   checkpoint's configuration documents and last shard (and with a head,
   `lm_head.weight`'s shard and the list): BF16 linears, its norms' 1 + w
   folded into F32, the routed experts relaid out into the scale-atom layout
-  (recorded fold and relayout), no spec of its own, validated against the
-  stored target selected by `--target`. The qualified pairing uses its approved
-  v1 target through `qwen4exp-mtp`'s native mapping and is admitted by its
-  approval row ([artifact format](artifact-format.md#native-writer)).
-  With Mia's list it is `2cb4cdb8…`, whose every tensor equals
+  (recorded fold and relayout), with its own stored execution spec validated
+  against the stored target selected by `--target`. Generic composition/admission
+  uses that structure and its complete tensor roles; mapping preferences remain
+  optional ([artifact format](artifact-format.md#native-writer)).
+  With Mia's list the historical artifact `2cb4cdb8…` has every tensor equal to
   `8600a998…`'s byte for byte. Its experts take the W4A4 grouped GEMM
   although the checkpoint quantized them W4A16: verification bounds a
   drafter's quality, and W4A4 measured faster at equal acceptance. With the
@@ -919,6 +924,11 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   scores its NLL exactly and passes the speed gate against the frozen
   baseline (1.7 to 4.6% faster decode)
   ([qwen-modelopt-v1](experiments/m36-numerical-audit/qwen-modelopt-v1.md)).
+  The current StoredSpec replacement `bb49b7da…` preserves every encoded part
+  and all six original source receipts, with four additional metadata files
+  authenticated against the same archive revision. Integrated full-logit,
+  token-schedule, composition and approval controls pass. It is installed on both
+  Sparks ([migration proof](experiments/m35-stored-drafter/RESULTS.md)).
 - **Depth:** greedy chooses between two and three passes from observed
   acceptance and a calibrated step-cost ratio, with bounded exploration.
   The policy is conversation state: restore preserves its schedule, and
@@ -1090,6 +1100,13 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   bit-identical to v0, and the assistants' v1 `2e376795…` (26B-A4B) and
   `f931e7a0…` (31B) bit-identical to their v0 with the targets
   ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)).
+  Current StoredSpec assistant replacements `1dfcaca9…` and `d9eee1ae…`
+  preserve every encoded part and store the anchored protocol. Both runtime and
+  lifecycle controls complete; 15 Gemma26 and six Gemma31 frozen differences
+  reproduce the exact legacy-runtime observations. These are negative numerical
+  results, with no golden or qualification change. Both replacements are installed
+  on both Sparks
+  ([migration proof](experiments/m35-stored-drafter/RESULTS.md)).
 - **Template:** `845f1ee4…` (above), native by probe; plain chat disables
   thinking.
 - **Tokenizer:** Gemma 4 raw UTF-8 BPE from the GGUF (262,144 tokens in

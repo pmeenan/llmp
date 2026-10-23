@@ -129,6 +129,7 @@ TEST(Calibration, KeysTheSettingsMeasuredWith) {
 TEST(Calibration, ChangingQwenWaveLanesInvalidatesItsMeasurements) {
   llmp::runtime::ModelSettings s;
   s.architecture = "qwen4exp";
+  s.drafter_mtp = true;  // Admitted execution semantics, not an architecture inference.
   s.wave_lanes.value = true;
   CalibrationKey on = Key();
   on.settings = llmp::runtime::MeasuredWith(s);
@@ -145,6 +146,7 @@ TEST(Calibration, ChangingQwenWaveLanesInvalidatesItsMeasurements) {
 TEST(Calibration, ChangingQwenDraftOrWavePolicyInvalidatesItsMeasurements) {
   llmp::runtime::ModelSettings measured;
   measured.architecture = "qwen4exp";
+  measured.drafter_mtp = true;
   measured.draft_vocab.value = 47172;
   measured.shared_wave_depth.value = 2;
   measured.draft_wave_max.value = 2;
@@ -193,6 +195,7 @@ TEST(Calibration, QwenKeysEffectiveHeadRowsWithoutItsCalibratedRatio) {
   // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
   facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
   facts.drafter_architecture = "qwen4exp-mtp";
+  facts.drafter_mtp = true;
   facts.drafter_selected_rows = 47172;
   const auto initial = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(initial.has_value());
@@ -246,6 +249,7 @@ TEST(Calibration, ExplicitFallbackOverridesInvalidateCalibratedExecutionPolicy) 
   // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
   facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
   facts.drafter_architecture = "qwen4exp-mtp";
+  facts.drafter_mtp = true;
   const auto fallback = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(fallback.has_value());
   Calibration calibrated = Measured();

@@ -1366,5 +1366,46 @@ TEST(SpecTest, ForwardReadsCyclesAndTargetAfterDrafterAreRefused) {
   EXPECT_FALSE(Validate(spec));
 }
 
+TEST(SpecTest, DraftingContractIsCanonicalShapeSpecificAndChangesIdentity) {
+  auto model = Fixture();
+  const auto original = model.Digest();
+  for (const StageDrafting& contract :
+       {StageDrafting{AnchoredDraft{}}, StageDrafting{BlockDraft{5, 42}},
+        StageDrafting{MtpDraft{}}}) {
+    model.stages.back().drafting = contract;
+    Canonicalize(model);
+    ASSERT_TRUE(Validate(model));
+    const auto json = ToJson(model);
+    const auto parsed = FromJson(json);
+    ASSERT_TRUE(parsed) << parsed.error();
+    EXPECT_EQ(*parsed, model);
+    EXPECT_EQ(ToJson(*parsed), json);
+    EXPECT_NE(model.Digest(), original);
+    auto target = model;
+    target.stages.front().drafting = contract;
+    EXPECT_FALSE(Validate(target));
+  }
+  for (const StageDrafting& contract :
+       {StageDrafting{BlockDraft{0, 0}}, StageDrafting{BlockDraft{5, -1}},
+        StageDrafting{BlockDraft{UINT32_MAX, 0}}}) {
+    model.stages.back().drafting = contract;
+    EXPECT_FALSE(Validate(model));
+    EXPECT_FALSE(FromJson(ToJson(model)));
+  }
+  model.stages.back().drafting = AnchoredDraft{};
+  const auto good = ToJson(model);
+  const std::string needle = "\"drafting\":{\"kind\":\"anchored\"}";
+  const auto offset = good.find(needle);
+  ASSERT_NE(offset, std::string::npos);
+  for (const std::string value :
+       {R"({"kind":"unknown"})", R"({"kind":"mtp","depth":3})",
+        R"({"kind":"block","max_proposals":5})", R"({"kind":"anchored","depth":3,"fill_token":0})",
+        R"({"kind":"mtp","selected_head_ids":null})"}) {
+    auto bad = good;
+    bad.replace(offset, needle.size(), "\"drafting\":" + value);
+    EXPECT_FALSE(FromJson(bad)) << value;
+  }
+}
+
 }  // namespace
 }  // namespace llmp::spec

@@ -601,8 +601,12 @@ D-122).
       [unchanged source identities and all 798 encoded parts each](experiments/m35-generic-import/exl3-sampling-refresh.md).
       Gemma26 and Gemma31 now retain their source sampling defaults with
       [complete payload and paired canonical identity proofs](experiments/m35-generic-import/gemma-sampling-refresh.md).
-      The Qwen GGUF and DeepSeek target refreshes and drafter stored-spec
-      migration remain open.
+      The Qwen GGUF sampling/provenance refresh is complete. DeepSeek’s
+      target refresh remains open. Four adopted drafter publications now have
+      [complete stored execution and parity proofs](experiments/m35-stored-drafter/RESULTS.md);
+      five integrated model controls pass. Three frozen numerical cases retain
+      their exact legacy-control negatives; numerical qualification and broader
+      U3 remain open. All four are installed on both Sparks with originals retained.
       Drafter import, admission, construction and calibration use the resolved
       canonical target architecture rather than its retained source alias. Fresh
       drafter components publish their selected canonical execution architecture;
@@ -636,9 +640,10 @@ D-122).
       composition in paid immutable storage shared by settings, factory copies
       and artifact views. Retried builds fund their mutable state separately,
       reuse authenticated metadata and recheck execution capabilities. This
-      startup slice changes no artifact bytes; mapping consolidation/provenance,
-      the four published legacy drafter specs, GGUF semantic metadata handling
-      and quantization ingress remain open U3 obligations. Chat startup now
+      startup slice changes no artifact bytes. The four stored drafter publications
+      are adopted on both Sparks, with numerical gaps still open. Remaining U3
+      obligations include mapping consolidation/provenance, GGUF semantic metadata
+      handling and quantization ingress. Chat startup now
       prepays verified reader workspace and reuses one construction pool across
       retries, admitting old and new live assets together and publishing only
       after tokenizer, reasoning, template and stop validation all succeed.
@@ -668,8 +673,13 @@ D-122).
         source/importer fold receipts and complete component role coverage;
         Gemma2/Gemma3/Qwen GGUF [native publications](experiments/m35-source-fold/RESULTS.md)
         retain complete index and tensor bytes, with only Qwen’s independently
-        documented sampling metadata added to its spec; four legacy drafter
-        StoredSpec/provenance migrations remain open); startup composing and admitting once,
+        documented sampling metadata added to its spec; the four drafter StoredSpec
+        publications are adopted on both Sparks with complete source/index/payload
+        and canonical paired proofs. Five integrated model controls pass; three
+        frozen numerical cases reproduce the exact legacy negatives and remain
+        unqualified. Typed
+        drafting contracts and semantic-role rebinding remove serving reconstruction
+        from kept metadata and import recipes); startup composing and admitting once,
         opening each artifact once and taking context and sampling from the
         spec rather than re-parsing kept `config.json` and GGUF metadata.
         A shared [ARM SHA2 hash path](experiments/m35-sha256-arm/README.md)

@@ -1500,6 +1500,10 @@ std::vector<std::string> SourceKeys(const Mapping& m) {
     const std::string canonical = CanonicalKey(m, key);
     if (std::ranges::find(keys, canonical) == keys.end()) keys.push_back(canonical);
   };
+  if (m.draft) {
+    add(m.draft->depth_key);
+    add(m.draft->fill_key);
+  }
   add(m.layer_count_key);
   add(m.context_key);
   add(m.softcap_key);
@@ -2079,6 +2083,33 @@ std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
   stage.name = std::string(drafter.stage);
   stage.role = StageRole::kDrafter;
   stage.artifact = artifact;
+  if (drafter.draft) {
+    const auto& recipe = *drafter.draft;
+    const auto integer = [&](std::string_view key, std::uint64_t least,
+                             std::uint64_t most) -> std::expected<std::uint64_t, std::string> {
+      const auto found = std::ranges::find_if(
+          values, [&](const SourceValue& v) { return MatchesCanonicalKey(drafter, key, v.key); });
+      return Count(found == values.end() ? nullptr : &found->value, key, least, most);
+    };
+    switch (recipe.shape) {
+      case DraftRecipe::Shape::kAnchored:
+        stage.drafting = AnchoredDraft{};
+        break;
+      case DraftRecipe::Shape::kBlock: {
+        auto depth = integer(recipe.depth_key, 1, UINT32_MAX - 1);
+        auto fill = integer(recipe.fill_key, 0, INT32_MAX);
+        if (!depth) return std::unexpected(depth.error());
+        if (!fill) return std::unexpected(fill.error());
+        stage.drafting =
+            BlockDraft{static_cast<std::uint32_t>(*depth), static_cast<std::int32_t>(*fill)};
+        break;
+      }
+      case DraftRecipe::Shape::kMtp: {
+        stage.drafting = MtpDraft{};
+        break;
+      }
+    }
+  }
   Stage& target_stage = spec.stages.front();
   for (const ReadRule& r : drafter.reads) {
     stage.reads.push_back(

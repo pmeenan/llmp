@@ -233,11 +233,11 @@ inline constexpr std::string_view kQwen38ModelOptTarget =
 inline constexpr std::string_view kQwen38Gguf =
     "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8";
 inline constexpr std::string_view kQwen38ModelOptDrafter =
-    "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef";
+    "bb49b7da7edb78202a64f1f9ab049412a10f2a9f73eb4eef66608e81b011f263";
 inline constexpr std::string_view kDeepSeekV4Target =
     "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f";
 inline constexpr std::string_view kDeepSeekV4Drafter =
-    "6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41";
+    "e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90";
 inline constexpr std::string_view kQwenImageComposition =
     "62497918eae947b8d4327bf8e0771318118d581c59c2c0574208345ed7cc6518";
 

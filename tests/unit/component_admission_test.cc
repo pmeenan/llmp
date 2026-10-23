@@ -30,6 +30,7 @@
 #include "families/gemma.h"
 #include "image_family.h"
 #include "import/normalize.h"
+#include "import_target_fixture.h"
 #include "ir/builder.h"
 #include "kernels/common/lower.h"
 #include "planner/pattern.h"
@@ -44,6 +45,7 @@
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
 #include "spec/mappings/qwen38.h"
+#include "spec/stored.h"
 #include "spec_fixtures.h"
 #include "tokenizer_fixtures.h"
 
@@ -1399,128 +1401,168 @@ TEST(ComponentAdmissionVersionTest, V0ArtifactsAreRefusedWithTheReimport) {
   EXPECT_TRUE(rt::RequireServedVersion(*v1).has_value());
 }
 
-TEST(ComponentAdmissionDrafterTest, CheckComponentDrafterAdmissionApprovesGemma4Assistants) {
+TEST(ComponentAdmissionDrafterTest, StoredExecutionAdmitsUnknownProvenanceAndChecksProtocol) {
   for (std::uint32_t size : {26U, 31U}) {
+    auto target = llmp::test_support::GemmaImportTarget(size);
     auto source = llmp::test_support::Gemma4AssistantSource(size);
-    auto origins =
-        size == 26 ? Origins("mtp-gemma-4-26B-A4B-it.gguf", 461766816ULL,
-                             "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b")
-                   : Origins("mtp-gemma-4-31B-it.gguf", 514687104ULL,
-                             "5ae8b0117bed601e8924c6305bd5b0585de361d51f0e77091bcb4252cf1f27de");
-    auto check = rt::CheckComponentDrafterAdmission(source, origins);
-    EXPECT_TRUE(check.has_value()) << (check ? "" : check.error());
+    auto values =
+        fam::Gemma4AssistantValues(size == 26 ? fam::Gemma4Assistant26() : fam::Gemma4Assistant31(),
+                                   size == 26 ? fam::Gemma4_26BA4B() : fam::Gemma4_31B());
+    ASSERT_TRUE(values);
+    auto composed = sp::ComposeDrafter(target.model, *target.mapping,
+                                       sp::mappings::Gemma4AssistantMapping(), source, *values);
+    ASSERT_TRUE(composed) << composed.error();
+    FixturePreprocessing(target.model, target.source);
+    for (const auto& fold : composed->stages.back().folds) {
+      auto names = llmp::components::FoldTensors(*composed, 1, fold);
+      ASSERT_TRUE(names) << names.error();
+      source.preprocessing.push_back({.name = fold,
+                                      .tensors = std::move(*names),
+                                      .source = !std::ranges::contains(source.folds, fold)});
+    }
+    auto origins = Origins("unknown-drafter.bin", 1, std::string(64, '1'));
+    source.architecture = "unregistered-drafter";
+    source.container = "safetensors";
+    EXPECT_EQ(sp::FindMapping(source.architecture, source.container), nullptr);
+    auto check = rt::CheckComponentDrafterAdmission(*composed, source, origins);
+    ASSERT_TRUE(check) << check.error();
+    auto valid = rt::CheckComposedAdmission(*composed, target.source, source);
+    ASSERT_TRUE(valid) << valid.error();
 
-    // Mutations must fail admission
+    auto missing = *composed;
+    missing.stages.back().drafting.reset();
+    EXPECT_FALSE(rt::CheckComponentDrafterAdmission(missing, source, origins));
+    auto wrong = *composed;
+    wrong.stages.back().drafting = sp::MtpDraft{};
+    EXPECT_FALSE(rt::CheckComposedAdmission(wrong, target.source, source));
+    wrong.stages.back().drafting = sp::BlockDraft{5, 0};
+    EXPECT_FALSE(rt::CheckComposedAdmission(wrong, target.source, source));
+    wrong = *composed;
+    wrong.stages.back().reads.clear();
+    EXPECT_FALSE(rt::CheckComposedAdmission(wrong, target.source, source));
+
     auto bad_source = source;
-    bad_source.container = "safetensors";
-    EXPECT_FALSE(rt::CheckComponentDrafterAdmission(bad_source, origins));
-
-    bad_source = source;
-    bad_source.folds = {"some_fold"};
-    EXPECT_FALSE(rt::CheckComponentDrafterAdmission(bad_source, origins));
-
-    auto unpinned_origins = origins;
-    unpinned_origins[0].sha256[0] ^= 1;
-    EXPECT_TRUE(rt::CheckComponentDrafterAdmission(source, unpinned_origins));
-    unpinned_origins[0].bytes = llmp::base::Bytes(0);
-    EXPECT_FALSE(rt::CheckComponentDrafterAdmission(source, unpinned_origins));
+    bad_source.container = "invalid-container";
+    EXPECT_FALSE(rt::CheckComponentDrafterAdmission(*composed, bad_source, origins));
+    origins[0].bytes = llmp::base::Bytes(0);
+    EXPECT_FALSE(rt::CheckComponentDrafterAdmission(*composed, source, origins));
   }
 }
 
-TEST(ComponentAdmissionDrafterTest, ComponentDrafterValuesApprovesV1DraftersAndRejectsMismatches) {
-  const std::filesystem::path scratch =
-      std::filesystem::path(testing::TempDir()) / "component-drafter-values-v1";
-  std::error_code ec;
-  std::filesystem::remove_all(scratch, ec);
-  std::filesystem::create_directories(scratch, ec);
-
-  const auto make_v1 = [&](const std::filesystem::path& path, std::string arch,
-                           std::string source_name, std::uint64_t bytes, std::string sha256) {
-    llmp::test::V1Plan p;
-    p.architecture = std::move(arch);
-    p.groups = {llmp::test::V1Group{
-        .kind = llmp::artifact::GroupKind::kTable,
-        .resources = {{.name = "token_embd.weight",
-                       .format = {.encoding = fm::Encoding::kBF16,
-                                  .layout = fm::Layout::kDense,
-                                  .shape = {.ne = {64, 64, 1, 1}, .rank = 2}}}}}};
-    auto rendered = llmp::test::Render(p);
-    llmp::test::Json::Array source_list;
-    source_list.emplace_back(llmp::test::Json::Object{{"bytes", static_cast<std::int64_t>(bytes)},
-                                                      {"name", std::move(source_name)},
-                                                      {"sha256", std::move(sha256)}});
-    rendered.manifest["source"] = llmp::test::Json(std::move(source_list));
-    return llmp::artifact::Artifact::Open(llmp::test::Publish(path, rendered));
+TEST(ComponentAdmissionDrafterTest, SelectedHeadsAreIndependentOfAnchoredAndBlockProtocols) {
+  const auto check_selected = [](sp::ModelSpec model, sp::Source target, sp::Source drafter) {
+    auto& stage = model.stages.back();
+    auto& output = *stage.heads.output;
+    const auto weight = std::ranges::find(output.weights, "weight", &sp::WeightBinding::role);
+    ASSERT_NE(weight, output.weights.end());
+    const auto* holder = sp::HoldingStage(model, stage, *weight);
+    ASSERT_NE(holder, nullptr);
+    const auto& table = holder->artifact == 0 ? target.tensors : drafter.tensors;
+    const auto tensor = std::ranges::find(table, weight->tensor, &sp::SourceTensor::name);
+    ASSERT_NE(tensor, table.end());
+    const auto rows = tensor->format.shape.ne[1];
+    std::erase_if(output.params, [](const auto& p) { return p.name == "selected"; });
+    output.params.push_back({"selected", true});
+    output.weights.push_back({.role = "ids", .tensor = "selected.ids"});
+    drafter.tensors.push_back({.name = "selected.ids",
+                               .format = {.encoding = fm::Encoding::kI32,
+                                          .layout = fm::Layout::kDense,
+                                          .shape = {.ne = {1, rows, 1, 1}, .rank = 2}}});
+    sp::Canonicalize(model);
+    ASSERT_TRUE(sp::DrafterOutput(stage));
+    const auto valid = rt::CheckComposedAdmission(model, target, drafter);
+    ASSERT_TRUE(valid) << valid.error();
+    // These protocols retain their full stored head; vocabulary narrowing is
+    // an MTP capability, not an incidental rewrite of every selected component.
+    EXPECT_FALSE(sp::ConfigureComposedDraftVocabulary(model, 17));
+    for (unsigned mutation = 0; mutation < 4; ++mutation) {
+      auto bad = model;
+      auto bad_source = drafter;
+      auto& head = *bad.stages.back().heads.output;
+      auto ids = std::ranges::find(head.weights, "ids", &sp::WeightBinding::role);
+      ASSERT_NE(ids, head.weights.end());
+      if (mutation == 0) ids->stage = bad.stages.front().name;
+      if (mutation == 1) ids->experts = true;
+      if (mutation == 2) ids->part = fm::PartRole::kCodes;
+      if (mutation == 3) head.weights.push_back(*ids);
+      sp::Canonicalize(bad);
+      EXPECT_TRUE(!sp::DrafterOutput(bad.stages.back()) ||
+                  !rt::CheckComposedAdmission(bad, target, bad_source))
+          << mutation;
+    }
   };
+  auto target = llmp::test_support::GemmaImportTarget(26);
+  auto drafter = llmp::test_support::Gemma4AssistantSource(26);
+  auto values = fam::Gemma4AssistantValues(fam::Gemma4Assistant26(), fam::Gemma4_26BA4B());
+  ASSERT_TRUE(values);
+  auto anchored = sp::ComposeDrafter(target.model, *target.mapping,
+                                     sp::mappings::Gemma4AssistantMapping(), drafter, *values);
+  ASSERT_TRUE(anchored) << anchored.error();
+  FixturePreprocessing(target.model, target.source);
+  check_selected(*anchored, target.source, drafter);
 
-  const auto g26_target =
-      make_v1(scratch / "g26", "gemma4", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", 16947541728ULL,
-              "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f");
-  ASSERT_TRUE(g26_target.has_value()) << (g26_target ? "" : g26_target.error().ToString());
+  target = llmp::test_support::Dsv4ImportTarget();
+  const auto& profile = fam::DsparkDeepSeekV4Flash();
+  drafter = llmp::test_support::dsv4::SourceOf(
+      "dflash", llmp::test_support::dsv4::DrafterResources(profile), sp::mappings::DsparkMapping());
+  values = fam::DsparkValues(profile);
+  ASSERT_TRUE(values);
+  auto block = sp::ComposeDrafter(target.model, *target.mapping, sp::mappings::DsparkMapping(),
+                                  drafter, *values);
+  ASSERT_TRUE(block) << block.error();
+  FixturePreprocessing(target.model, target.source);
+  const auto baseline = rt::CheckComposedAdmission(*block, target.source, drafter);
+  ASSERT_TRUE(baseline) << baseline.error();
+  auto& output = *block->stages.back().heads.output;
+  // DSpark's Markov head itself cannot select rows. The protocol can use a
+  // different valid head, so test that distinction rather than widening Markov.
+  auto markov_selected = *block;
+  markov_selected.stages.back().heads.output->params.push_back({"selected", true});
+  sp::Canonicalize(markov_selected);
+  EXPECT_FALSE(rt::CheckComposedAdmission(markov_selected, target.source, drafter));
+  std::erase_if(output.params, [](const auto& p) { return p.name == "markov"; });
+  std::erase_if(output.weights, [](const auto& w) { return w.role != "weight"; });
+  sp::Canonicalize(*block);
+  check_selected(*block, target.source, drafter);
+}
 
-  const auto g31_target =
-      make_v1(scratch / "g31", "gemma4", "gemma-4-31B-it-UD-Q4_K_XL.gguf", 18822970304ULL,
-              "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575");
-  ASSERT_TRUE(g31_target.has_value()) << (g31_target ? "" : g31_target.error().ToString());
-
-  const auto g26_asst =
-      make_v1(scratch / "a26", "gemma4-assistant", "mtp-gemma-4-26B-A4B-it.gguf", 461766816ULL,
-              "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b");
-  ASSERT_TRUE(g26_asst.has_value()) << (g26_asst ? "" : g26_asst.error().ToString());
-
-  const auto g31_asst =
-      make_v1(scratch / "a31", "gemma4-assistant", "mtp-gemma-4-31B-it.gguf", 514687104ULL,
-              "5ae8b0117bed601e8924c6305bd5b0585de361d51f0e77091bcb4252cf1f27de");
-  ASSERT_TRUE(g31_asst.has_value()) << (g31_asst ? "" : g31_asst.error().ToString());
-
-  const auto dflash =
-      make_v1(scratch / "dflash", "dflash", "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf",
-              10896057440ULL, "2c7ac54b0b64a99df1f139a9f1371a00198265e1d6a614b77597d20a655a4249");
-  ASSERT_TRUE(dflash.has_value()) << (dflash ? "" : dflash.error().ToString());
-
-  // Matched approved pairs pass their pairing; their values are the stored
-  // drafter's kept metadata, which these synthetic artifacts lack.
-  auto g26_pair = rt::ComponentDrafterValues(*g26_target, *g26_asst);
-  ASSERT_FALSE(g26_pair.has_value());
-  EXPECT_NE(g26_pair.error().find("keeps no GGUF metadata"), std::string::npos) << g26_pair.error();
-
-  auto g31_pair = rt::ComponentDrafterValues(*g31_target, *g31_asst);
-  ASSERT_FALSE(g31_pair.has_value());
-  EXPECT_NE(g31_pair.error().find("keeps no GGUF metadata"), std::string::npos) << g31_pair.error();
-
-  // Pairing qualifications do not replace structural composition. These
-  // deliberately incomplete artifacts still fail at their missing metadata.
-  for (const auto& pair :
-       {std::pair{&*g26_target, &*g31_asst}, std::pair{&*g31_target, &*g26_asst}}) {
-    auto values = rt::ComponentDrafterValues(*pair.first, *pair.second);
-    ASSERT_FALSE(values);
-    EXPECT_NE(values.error().find("keeps no GGUF metadata"), std::string::npos);
+TEST(ComponentAdmissionDrafterTest, SelectedMapFundingRequiresTheCompleteDenseDescriptor) {
+  llmp::artifact::Resource resource;
+  resource.name = "map";
+  resource.roles = {"map"};
+  resource.part = fm::PartRole::kData;
+  resource.format = fm::TensorFormat{.encoding = fm::Encoding::kI32,
+                                     .layout = fm::Layout::kDense,
+                                     .shape = {.ne = {1, 17, 1, 1}, .rank = 2}};
+  resource.bytes = llmp::base::Bytes(68);
+  EXPECT_EQ(rt::SelectedHeadStorageBytes(resource), 68U);
+  for (unsigned mutation = 0; mutation < 7; ++mutation) {
+    auto bad = resource;
+    switch (mutation) {
+      case 0:
+        bad.roles.clear();
+        break;
+      case 1:
+        bad.part = fm::PartRole::kCodes;
+        break;
+      case 2:
+        bad.format->encoding = fm::Encoding::kF32;
+        break;
+      case 3:
+        bad.format->shape.ne[0] = 2;
+        break;
+      case 4:
+        bad.format->shape.ne[1] = UINT64_MAX;
+        break;
+      case 5:
+        bad.format->shape.ne[1] = 0;
+        break;
+      case 6:
+        bad.bytes = llmp::base::Bytes(67);
+        break;
+    }
+    EXPECT_FALSE(rt::SelectedHeadStorageBytes(bad)) << mutation;
   }
-  auto arch_mismatch = rt::ComponentDrafterValues(*g26_target, *dflash);
-  ASSERT_FALSE(arch_mismatch);
-  EXPECT_NE(arch_mismatch.error().find("does not target architecture"), std::string::npos);
-
-  // A pinned drafter's composition: beside its approved target, the one its
-  // approval pins (this one is not); beside an unpinned target of its
-  // architecture (a re-quant), checked structurally, its own identity
-  // pinned by its inventory. Without a drafter stage it is refused.
-  const auto requant =
-      make_v1(scratch / "g26-requant", "gemma4", "gemma-4-26B-A4B-it-Q8_0.gguf", 27000000000ULL,
-              "0000000000000000000000000000000000000000000000000000000000000001");
-  ASSERT_TRUE(requant.has_value()) << (requant ? "" : requant.error().ToString());
-  ASSERT_EQ(rt::FindApproval("gemma4", requant->sources()), nullptr);
-  sp::ModelSpec composed;
-  composed.stages.resize(2);
-  composed.stages.front().role = sp::StageRole::kTarget;
-  composed.stages.back().role = sp::StageRole::kDrafter;
-  const auto pinned = rt::CheckComposedAdmission(composed, *g26_target, *g26_asst);
-  ASSERT_FALSE(pinned.has_value());
-  // Malformed stored structure refuses identically for qualified and unpinned sources.
-  const auto paired = rt::CheckComposedAdmission(composed, *requant, *g26_asst);
-  EXPECT_FALSE(paired.has_value());
-  sp::ModelSpec alone = composed;
-  alone.stages.pop_back();
-  EXPECT_FALSE(rt::CheckComposedAdmission(alone, *requant, *g26_asst));
 }
 
 TEST(ComponentAdmissionModelOptTest, EquivalentScaleDeclarationsHaveTheSameStructuralEligibility) {

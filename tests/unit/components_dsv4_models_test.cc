@@ -3,7 +3,7 @@
 
 // The DeepSeek V4 mappings on the published v1 artifacts (label `models`;
 // skipped when the store or the target is absent): DeepSeek V4 Flash 0731's
-// UD-Q2_K_XL (d2046349) and the DSpark drafter (6b1b9dca) composed with it.
+// UD-Q2_K_XL (d2046349) and the DSpark drafter (e14bf29f) composed with it.
 // The target's stored spec is validated against its tensors and equals the
 // spec of the unit tests' fixture (dsv4_fixture.h, synthesized with the
 // family's values, tests/support/families/dsv4.h), so the unit tests'
@@ -147,12 +147,9 @@ TEST(ComponentsDsv4Models, EveryInstalledTargetAndItsDrafterMakeTheirSpecs) {
   if (!drafter) {
     GTEST_FAIL() << "no DSpark v1 artifact in " << llmp::test_support::V1Store();
   }
-  // Its drafter composed as serving composes it: by the values it keeps.
-  const sp::Mapping* composed_mapping = rt::ComposedDrafterMapping(drafter->artifact);
-  ASSERT_EQ(composed_mapping, &drafter_mapping);
-  auto kept = rt::ComponentDrafterValues(target->artifact, drafter->artifact);
-  ASSERT_TRUE(kept.has_value()) << kept.error();
-  auto composed = sp::ComposeDrafter(*spec, mapping, drafter_mapping, drafter->source, *kept);
+  auto stored = sp::StoredSpec(drafter->artifact);
+  ASSERT_TRUE(stored) << stored.error();
+  auto composed = sp::ComposeStoredDrafter(*spec, *stored);
   ASSERT_TRUE(composed.has_value()) << composed.error();
   const std::array<std::span<const co::BoundTensor>, 2> artifacts{target->source.tensors,
                                                                   drafter->source.tensors};
@@ -231,9 +228,9 @@ TEST(ComponentsDsv4Models, ServingStateLayoutsKeepBanksAndPackedCapacity) {
   }
   auto spec = sp::StoredSpec(target->artifact);
   ASSERT_TRUE(spec.has_value()) << spec.error();
-  auto kept = rt::ComponentDrafterValues(target->artifact, drafter->artifact);
-  ASSERT_TRUE(kept.has_value()) << kept.error();
-  auto composed = sp::ComposeDrafter(*spec, mapping, drafter_mapping, drafter->source, *kept);
+  auto stored = sp::StoredSpec(drafter->artifact);
+  ASSERT_TRUE(stored) << stored.error();
+  auto composed = sp::ComposeStoredDrafter(*spec, *stored);
   ASSERT_TRUE(composed.has_value()) << composed.error();
   for (const auto& [context, rows] : {std::pair{262144U, 4096U}, {8448U, 256U}}) {
     for (std::size_t stage = 0; stage < 2; ++stage) {

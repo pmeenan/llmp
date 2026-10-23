@@ -51,12 +51,6 @@ const spec::Mapping* ComposedDrafterMapping(const artifact::Artifact& drafter);
 // other version) is refused with what to do about it, re-importing its
 // source with `llmp import`.
 std::expected<void, std::string> RequireServedVersion(const artifact::Artifact& artifact);
-// A drafter's values for its composition: the approved pairing of both
-// sources' identities, and the drafter's values from the metadata it keeps,
-// or where it keeps none, its drafting recipe's given its source
-// (spec::DraftRecipe::values).
-std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValues(
-    const artifact::Artifact& target, const artifact::Artifact& drafter);
 // A drafter's execution envelope: a context and owners. An approved
 // drafter's envelope is its settings' default, not a bound (D-119).
 std::expected<void, std::string> ComponentDrafterEnvelope(const spec::Envelope& envelope);
@@ -67,14 +61,11 @@ struct DraftHeadMap {
   std::uint32_t resource = 0;
   std::uint64_t rows = 0;
 };
+// Descriptor-only upper bound before parsing the stored execution contract.
+// Only a dense own I32 data resource can hold a selected output token map.
+std::optional<std::uint64_t> SelectedHeadStorageBytes(const artifact::Resource& resource);
 std::expected<std::optional<DraftHeadMap>, std::string> DraftHeadRows(
     const artifact::Artifact& drafter, std::string_view head_ids, std::uint64_t vocab);
-// Apply the effective draft vocabulary to composition values. Zero requests
-// all available rows; a selected head bounds the available rows. Shared by
-// settings identity derivation and the executable factory.
-std::expected<std::uint32_t, std::string> ConfigureDraftVocabulary(
-    std::span<spec::SourceValue> values, const spec::DraftRecipe& recipe, std::uint32_t requested,
-    std::uint32_t target_vocab, std::optional<std::uint32_t> selected_rows = std::nullopt);
 // The kept GGUF metadata file's name (a single file's, or the first
 // shard's, beneath `meta/`); empty when the artifact keeps none.
 std::string KeptGguf(const artifact::Artifact& artifact);
@@ -86,9 +77,6 @@ std::expected<void, std::string> ReadPlaced(const artifact::Artifact& artifact,
                                             const artifact::Placement& place,
                                             const std::function<std::expected<void, std::string>(
                                                 std::uint64_t, std::span<const std::byte>)>& each);
-// An integer the artifact's kept GGUF metadata holds under `key`.
-std::expected<std::int64_t, std::string> KeptInteger(const artifact::Artifact& artifact,
-                                                     std::string_view key);
 // A drafter's composition (before any per-alias KV encoding) with `target`:
 // one with a drafter stage whose component bindings validate against the
 // two artifacts' native tensor descriptions.
@@ -137,8 +125,10 @@ class PreparedDrafterComposition {
                                                 std::uint32_t requested_vocabulary) const;
   const spec::ModelSpec& model() const { return model_; }
   const base::Sha256Digest& numerical_semantic() const { return numerical_semantic_; }
-  const std::vector<spec::SourceValue>& values() const { return values_; }
   std::optional<std::uint32_t> vocabulary() const { return vocabulary_; }
+  std::optional<std::uint32_t> available_vocabulary() const {
+    return vocabulary_ ? std::optional(available_vocabulary_) : std::nullopt;
+  }
   const std::shared_ptr<const std::vector<std::int32_t>>& head_ids() const { return head_ids_; }
 
  private:
@@ -147,8 +137,8 @@ class PreparedDrafterComposition {
   base::Sha256Digest target_semantic_{}, numerical_semantic_{};
   std::uint32_t target_vocabulary_ = 0, available_vocabulary_ = 0;
   std::optional<std::uint32_t> vocabulary_;
+  bool narrowable_ = false;
   spec::ModelSpec model_;
-  std::vector<spec::SourceValue> values_;
   std::shared_ptr<const std::vector<std::int32_t>> head_ids_;
 };
 
@@ -159,7 +149,8 @@ std::expected<void, std::string> CheckComponentAdmission(const spec::ModelSpec& 
                                                          const spec::Source& source,
                                                          std::span<const artifact::Source> origins);
 std::expected<void, std::string> CheckComponentDrafterAdmission(
-    const spec::Source& source, std::span<const artifact::Source> origins);
+    const spec::ModelSpec& model, const spec::Source& source,
+    std::span<const artifact::Source> origins);
 
 // The artifact-level prerequisites, before its spec or source is read: a v1
 // artifact with well-formed source receipts and valid scale-atom expert slots.

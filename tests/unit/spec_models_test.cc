@@ -166,16 +166,11 @@ TEST(SpecModelsTest, Gemma4SpecsFromTheirArtifacts) {
     }
     if (size == 26) spec26 = *spec;
   }
-  // The assistant as serving composes it: the approved pairing's values
-  // from the metadata it keeps, by the mapping its approval names.
-  const auto kept = runtime::ComponentDrafterValues(*target26, *assistant26);
-  ASSERT_TRUE(kept.has_value()) << kept.error();
+  const auto stored = StoredSpec(*assistant26);
+  ASSERT_TRUE(stored) << stored.error();
   const Mapping* drafter = runtime::ComposedDrafterMapping(*assistant26);
   ASSERT_NE(drafter, nullptr);
-  const auto source = SourceOf(*assistant26);
-  ASSERT_TRUE(source.has_value()) << source.error();
-  const auto composed =
-      ComposeDrafter(*spec26, mappings::Gemma4Mapping(), *drafter, *source, *kept);
+  const auto composed = ComposeStoredDrafter(*spec26, *stored);
   ASSERT_TRUE(composed.has_value()) << composed.error();
   const auto values = fam::Gemma4AssistantValues(fam::Gemma4Assistant26(), fam::Gemma4_26BA4B());
   ASSERT_TRUE(values.has_value());

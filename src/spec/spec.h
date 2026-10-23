@@ -200,12 +200,28 @@ struct StageScalar {
   std::int64_t value = 0;
 };
 
+// Execution protocol, independent of the checkpoint dialect and performance
+// defaults. A selected map names an existing own output-role binding.
+struct AnchoredDraft {
+  bool operator==(const AnchoredDraft&) const = default;
+};
+struct BlockDraft {
+  std::uint32_t max_proposals = 0;
+  std::int32_t fill_token = 0;
+  bool operator==(const BlockDraft&) const = default;
+};
+struct MtpDraft {
+  bool operator==(const MtpDraft&) const = default;
+};
+using StageDrafting = std::variant<AnchoredDraft, BlockDraft, MtpDraft>;
+
 struct Stage {
   std::string name{};
   StageRole role = StageRole::kTarget;
   std::uint32_t artifact = 0;  // its artifact: an index into the bound artifacts (a composition's)
   std::uint32_t context = 0;   // the trained context, 0 where none applies
   SamplingDefaults sampling{};
+  std::optional<StageDrafting> drafting{};
   std::optional<ComponentRef> embedding{};
   ResidualStream stream{};
   std::vector<SideInput> side{};  // sorted by name

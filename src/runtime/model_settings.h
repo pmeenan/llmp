@@ -139,13 +139,14 @@ struct ArtifactFacts {
   std::optional<std::int64_t> top_k;
   std::optional<double> min_p;
   std::string sampling_from;
-  // The drafter's architecture (empty: no drafter) and its block: the most
-  // drafts it proposes a step (GGUF <architecture>.block_size), if kept.
+  // Admitted stored drafting semantics (architecture is only an overlay key).
   std::string drafter_architecture;
   std::optional<std::uint64_t> drafter_block;
+  bool drafter_mtp = false;
   // Qwen MTP selected-head rows: the packed BF16 matrix and matching I32
   // token map limit every request, even a larger nominal draft_vocab.
   std::optional<std::uint32_t> drafter_selected_rows;
+  std::optional<std::uint32_t> drafter_head_rows;
   // The runner's context ceiling derived from the spec's stage context /
   // position limits (0: no runner / unsupported).
   std::uint32_t context_ceiling = 0;
@@ -264,6 +265,7 @@ struct ModelSettings {
   // The serving adapter's kind (a composition's: the image pipeline).
   spec::PipelineKind pipeline = spec::PipelineKind::kLlm;
   bool drafter = false;
+  bool drafter_mtp = false;
   // Chosen before calibration from the unchanged speculation setting.
   std::optional<base::Sha256Digest> bound_spec{};
 

@@ -1805,6 +1805,21 @@ there are several streams), side inputs with the layers that read them,
 layers of components in execution order, feature taps (a layer's output,
 its streams, or the final norm's output), heads (final norm, output,
 softcap, MTP heads) and reads of another stage's tap or borrowed state.
+An executable drafter also carries a typed `drafting` contract: `anchored`
+and `mtp` are kind-only; `block` carries its source `max_proposals` and
+`fill_token`. Components validate the protocol's actual borrowed state, taps
+and injection. The unique output head's existing `selected` flag and own
+`ids` binding identify a token map independently of protocol. Serving validates
+its dense I32 descriptor, actual target vocabulary and ascending contents,
+retains its paid owner, and narrows only MTP heads. Anchored depth 3 remains a
+measured default, not a serialized source restriction. Unknown provenance
+names use neutral performance preferences without changing structural admission.
+A stored drafter's borrowed logical weight roles refer through its retained
+original target graph to component sites and owner roles in the actual target.
+Composition replaces complete roles, including split encoding parts, and
+requires consensus across tied aliases. Missing, foreign or ambiguous roles
+refuse; tensor names, container names and import mappings do not select a
+replacement. Side-input sites retain their names rather than sorted positions.
 A component reference is a kind and version, which only the catalog
 interprets, with typed parameters (integers, reals, flags, names and
 lists of integers or reals) and weight bindings (role, artifact tensor
@@ -2776,17 +2791,15 @@ amended by D-119, 2026-10-17).
 The reference fleet's pinned checkpoints are one table (`runtime/approvals.cc`),
 reviewed as a lock file: each entry's source receipts, complete native tensor
 inventory digest, the SHA-256 of the spec it executes (a target's stored
-`spec.json`; a stored drafter's composition with its named approved target, the
-drafter's values read from the GGUF metadata it keeps, `spec::SourceKeys`,
-or where it keeps none by its `DraftRecipe::values`: declarative facts from
-the actual target spec and its own tensor geometry), its qualified envelope
+`spec.json`; a stored drafter's composition with its named approved target),
+its qualified envelope
 defaults (`max_context`, `max_slots`, `wide_context`; an override past them is
 served with a warning in the log and in `llmp-runtime settings`) and the gate
 keys that select its mapping's policy rule. Under D-119, unpinned format-v1
 artifacts and compositions of supported architectures are admitted directly by
-structural and capability validation against their stored `spec.json`, native
-tensor inventory and declarative mapping (`runtime/component_admission.h`),
-deriving their envelope and policy gates from the stored spec and mapping.
+structural and capability validation against their stored `spec.json` and native
+tensor inventory (`runtime/component_admission.h`). Optional mappings provide
+performance defaults and policy gates; they do not supply execution structure.
 The inventory digest covers every tensor's name, encoding,
 layout, part, stacking, parameters and shape. Expert counts and affine
 quantization parameters are checkpoint properties, not constants in admission's
@@ -2796,13 +2809,12 @@ synthesized from a compiled profile to admit a v1 artifact (every pinned row
 names its spec digest, and Qwen3.8's ModelOpt and MLX rows also record their
 applied folds, relayouts and mapping, `Approval::fold_tensors`, `relayouts`,
 `mapping`). A stored drafter's inventory and envelope are checked wherever it
-composes, and a block drafter's bound and fill token come from its kept
-metadata. What serving does per architecture is its
-mapping's `ServingRecipe` (settings defaults, owner bounds, the shared
-route, lanes and the forced DeepSeek policy) and a
-drafter mapping's `DraftRecipe`; `Server::Make` dispatches by the stored
-spec's pipeline kind, settings applicability and the calibration
-fingerprint follow the recipe, a stored hash-routing table is checked by
+composes. The stored drafting contract supplies block bounds and fill tokens;
+kept GGUF metadata cannot substitute for missing or malformed execution structure.
+`Server::Make` dispatches by the stored pipeline kind. Optional `ServingRecipe`
+data supplies measured defaults and performance policy, while execution kind,
+head ownership, state and feature dependencies come from the admitted graph.
+A stored hash-routing table is checked by
 the spec's `side.hash` inputs, and the chat route's slice is the recipe's. No architecture name is compared in
 `src/runtime` (slice 4b deleted the v0 path that did).
 

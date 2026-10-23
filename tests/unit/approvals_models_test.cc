@@ -100,11 +100,11 @@ TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
     }
     if (approval->drafter) {
       EXPECT_TRUE(rt::CheckComponentArtifactAdmission(*artifact));
-      const auto* mapping = rt::ComposedDrafterMapping(*artifact);
-      ASSERT_NE(mapping, nullptr);
+      auto stored = sp::StoredSpec(*artifact);
+      ASSERT_TRUE(stored) << stored.error();
       auto source = sp::SourceOf(*artifact);
       ASSERT_TRUE(source) << source.error();
-      auto inventory = rt::CheckComponentDrafterAdmission(*source, artifact->sources());
+      auto inventory = rt::CheckComponentDrafterAdmission(*stored, *source, artifact->sources());
       EXPECT_TRUE(inventory) << (inventory ? "" : inventory.error());
       ++drafters;
       continue;
@@ -174,26 +174,16 @@ TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
     EXPECT_TRUE(policy) << (policy ? "" : policy.error());
     auto drafter_envelope = rt::ComponentDrafterEnvelope(envelope);
     EXPECT_TRUE(drafter_envelope) << (drafter_envelope ? "" : drafter_envelope.error());
-    // The kept values compose the pinned composition.
-    const sp::Mapping* draft_mapping = rt::ComposedDrafterMapping(*drafter);
-    const rt::Approval* target_approval =
-        rt::FindApproval(target->model().architecture, target->sources());
-    ASSERT_NE(target_approval, nullptr);
-    const sp::Mapping* target_mapping = target_approval->mapping != nullptr
-                                            ? &target_approval->mapping()
-                                            : sp::FindMapping(target->model().architecture);
-    ASSERT_TRUE(draft_mapping && target_mapping);
+    auto stored = sp::StoredSpec(*drafter);
+    ASSERT_TRUE(stored) << stored.error();
     auto source = sp::SourceOf(*drafter);
     ASSERT_TRUE(source) << source.error();
     const rt::Approval* approval =
         rt::FindApproval(drafter->model().architecture, drafter->sources());
     ASSERT_NE(approval, nullptr);
-    auto kept_values = rt::ComponentDrafterValues(*target, *drafter);
-    ASSERT_TRUE(kept_values) << kept_values.error();
-    auto from_kept =
-        sp::ComposeDrafter(admitted->model, *target_mapping, *draft_mapping, *source, *kept_values);
-    ASSERT_TRUE(from_kept) << from_kept.error();
-    EXPECT_EQ(llmp::base::ToHex(from_kept->Digest()), approval->spec);
+    auto from_stored = sp::ComposeStoredDrafter(admitted->model, *stored);
+    ASSERT_TRUE(from_stored) << from_stored.error();
+    EXPECT_EQ(llmp::base::ToHex(from_stored->Digest()), approval->spec) << sp::ToJson(*from_stored);
     // Pair names qualify a measured composition; architecture and tensor
     // geometry decide whether another target can compose the same drafter.
     for (const auto& [v0, v1] : names) {
@@ -205,20 +195,10 @@ TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
       ASSERT_TRUE(other);
       const rt::Approval* a = rt::FindApproval(other->model().architecture, other->sources());
       if (a == nullptr || a->drafter) continue;
-      const auto* other_mapping =
-          sp::FindMapping(other->model().architecture, other->model().container);
-      ASSERT_NE(other_mapping, nullptr);
-      auto other_values = rt::ComponentDrafterValues(*other, *drafter);
-      if (other->model().architecture != draft_mapping->draft->target_architecture) {
-        EXPECT_FALSE(other_values) << v1;
-        continue;
-      }
-      ASSERT_TRUE(other_values) << other_values.error();
       auto other_model = sp::StoredSpec(*other);
       auto other_source = sp::SourceOf(*other);
       ASSERT_TRUE(other_model && other_source);
-      auto composed =
-          sp::ComposeDrafter(*other_model, *other_mapping, *draft_mapping, *source, *other_values);
+      auto composed = sp::ComposeStoredDrafter(*other_model, *stored);
       if (other_model->stages.front().stream.width != admitted->model.stages.front().stream.width) {
         if (composed) {
           const std::array<std::span<const sp::SourceTensor>, 2> tables{other_source->tensors,

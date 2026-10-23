@@ -24,6 +24,15 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- Stored drafter execution contracts describe anchored, block and MTP protocols;
+  serving derives structure and selected-head ownership from the stored graph,
+  with optional performance defaults and actual row/state bounds. Four native
+  drafter publications installed on both Sparks preserve complete encoded
+  payloads and carry their own execution specs; borrowed target roles rebind generically across names and
+  split parts. Five integrated model controls pass; three frozen numerical cases
+  reproduce their legacy observations without changing goldens or qualification
+  ([proof](docs/experiments/m35-stored-drafter/RESULTS.md)).
+
 - Gemma 2, Gemma 3 and Qwen3.8 GGUF publications carry explicit source-fold
   provenance for spec-based serving admission. Complete index and tensor bytes
   are unchanged; Qwen also stores its existing source sampling defaults

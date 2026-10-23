@@ -212,6 +212,7 @@ TEST_F(ComponentBindingsTest, NativeFormatsAliasesAndHeadRowsAdmitWithoutAnImpor
 TEST_F(ComponentBindingsTest, StoredDrafterFoldCoverageIncludesOwnRolesAndRespectsBorrowedHolder) {
   auto target = Tiny();
   target.stages[0].folds = {"norm.plus_one"};
+  target.stages[0].taps = {{.name = "features", .layer = 0}};
   auto target_plan = Plan(target);
   target_plan.source_folds = {{"norm.plus_one", {"norm"}}};
   auto target_artifact = llmp::artifact::Artifact::Open(
@@ -225,6 +226,12 @@ TEST_F(ComponentBindingsTest, StoredDrafterFoldCoverageIncludesOwnRolesAndRespec
   draft.name = "assistant";
   draft.role = sp::StageRole::kDrafter;
   draft.artifact = 1;
+  draft.drafting = sp::MtpDraft{};
+  draft.embedding->kind = "embedding.projected";
+  draft.embedding->params = {
+      {"scale", 1.0}, {"feature", std::int64_t{32}}, {"tap", std::string("features")}};
+  draft.embedding->weights.push_back(W("projection", "draft.projection"));
+  draft.reads = {{.stage = "target", .kind = sp::ReadKind::kTap, .name = "features"}};
   draft.embedding->weights[0].stage = "target";
   draft.heads.output->weights[0].stage = "target";
   draft.layers[0].components[0].weights[0].tensor = "draft.first";
@@ -240,7 +247,8 @@ TEST_F(ComponentBindingsTest, StoredDrafterFoldCoverageIncludesOwnRolesAndRespec
   draft_plan.architecture = "gemma4-assistant";
   draft_plan.groups = {{.kind = llmp::artifact::GroupKind::kGlobal,
                         .resources = {{.name = "draft.first", .format = F({32})},
-                                      {.name = "draft.second", .format = F({32})}}}};
+                                      {.name = "draft.second", .format = F({32})},
+                                      {.name = "draft.projection", .format = F({64, 32})}}}};
   draft_plan.source_folds = {{"norm.plus_one", {"draft.first", "draft.second"}}};
   const auto publish = [&](const V1Plan& plan, std::string_view name) {
     return llmp::artifact::Artifact::Open(
@@ -277,16 +285,17 @@ TEST_F(ComponentBindingsTest, StoredDrafterFoldCoverageIncludesOwnRolesAndRespec
   absent_target_receipt.preprocessing.clear();
   EXPECT_FALSE(rt::CheckComposedAdmission(composed, absent_target_receipt, admitted->source));
 
-  // Source-only legacy drafters retain their distinct preliminary path until
-  // their publication migration; final composition still checks both closures.
+  // A source-only legacy artifact cannot bypass the required stored contract.
   draft_plan.spec.reset();
   draft_plan.source_folds.clear();
   auto legacy = publish(draft_plan, "legacy");
   ASSERT_TRUE(legacy);
   auto legacy_admitted = rt::ReadComponentDrafterAdmission(*legacy);
-  ASSERT_TRUE(legacy_admitted) << Failed(legacy_admitted).value_or("");
-  EXPECT_FALSE(legacy_admitted->model);
-  EXPECT_FALSE(rt::CheckComposedAdmission(composed, *target_source, legacy_admitted->source));
+  ASSERT_FALSE(legacy_admitted);
+  EXPECT_TRUE(legacy_admitted.error().contains("carries no spec of its own"));
+  const auto legacy_source = sp::SourceOf(*legacy);
+  ASSERT_TRUE(legacy_source);
+  EXPECT_FALSE(rt::CheckComposedAdmission(composed, *target_source, *legacy_source));
 }
 
 TEST_F(ComponentBindingsTest, VisitorUsesHoldingStageArtifactAndTheEmitOwners) {

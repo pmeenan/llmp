@@ -4,7 +4,7 @@
 // DeepSeek V4 Flash served by the shared engine (D-107; runtime/serving.h
 // over the component step source) on the published v1 artifacts (label
 // `models`; tests/support/v1_frozen.h V1Store: the target d2046349 and the
-// DSpark drafter 6b1b9dca), through the runtime's server as the service drives it: the
+// DSpark drafter e14bf29f), through the runtime's server as the service drives it: the
 // coverage that the retired Dsv4Runner's serving tests held
 // (plain_tokens_serving_gpu_test, dsv4_prefill_plan_test's lookahead cases)
 // on the one engine every model now shares.
@@ -91,7 +91,7 @@ namespace cfg = llmp::config;
 namespace fs = std::filesystem;
 
 constexpr const char* kTarget = "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f";
-constexpr const char* kDrafter = "6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41";
+constexpr const char* kDrafter = "e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90";
 constexpr std::uint32_t kVocab = 129280;
 // The speed gate's diagnostic tuple (its NEW arm): the node's cap (112 GiB,
 // 2 MiB aligned) with the automatic startup payment.

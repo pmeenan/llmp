@@ -213,15 +213,10 @@ TEST(ComponentsQwen38Models, TheMtpDrafterComposesWithItsTargets) {
   if (!drafter) GTEST_FAIL() << "no Qwen3.8 MTP v1 drafter in " << llmp::test_support::V1Store();
   auto t = Open("qwen38-modelopt");
   if (!t) GTEST_FAIL() << "no ModelOpt Qwen3.8 v1 target in " << llmp::test_support::V1Store();
-  // As serving composes it: the drafter's composed mapping and its kept
-  // values (the native MTP import's drafting recipe).
-  const sp::Mapping* mapping = rt::ComposedDrafterMapping(drafter->artifact);
-  ASSERT_NE(mapping, nullptr);
-  ASSERT_EQ(mapping->role, sp::StageRole::kDrafter);
-  auto values = rt::ComponentDrafterValues(t->opened.artifact, drafter->artifact);
-  ASSERT_TRUE(values.has_value()) << values.error();
+  auto stored = sp::StoredSpec(drafter->artifact);
+  ASSERT_TRUE(stored) << stored.error();
   const auto& source = drafter->source;
-  auto spec = sp::ComposeDrafter(t->spec, sp::mappings::Qwen38Mapping(), *mapping, source, *values);
+  auto spec = sp::ComposeStoredDrafter(t->spec, *stored);
   ASSERT_TRUE(spec.has_value()) << spec.error();
   // Its approval pins this composition.
   const auto approved = rt::CheckComposedAdmission(*spec, t->opened.artifact, drafter->artifact);
@@ -290,12 +285,9 @@ TEST(ComponentsQwen38Models, ServingStateLayouts) {
   if (!drafter || !t || !gguf) {
     GTEST_FAIL() << "no Qwen3.8 v1 targets and MTP drafter in " << llmp::test_support::V1Store();
   }
-  const sp::Mapping* mapping = rt::ComposedDrafterMapping(drafter->artifact);
-  ASSERT_NE(mapping, nullptr);
-  auto values = rt::ComponentDrafterValues(t->opened.artifact, drafter->artifact);
-  ASSERT_TRUE(values.has_value()) << values.error();
-  auto spec = sp::ComposeDrafter(t->spec, sp::mappings::Qwen38Mapping(), *mapping, drafter->source,
-                                 *values);
+  auto stored = sp::StoredSpec(drafter->artifact);
+  ASSERT_TRUE(stored) << stored.error();
+  auto spec = sp::ComposeStoredDrafter(t->spec, *stored);
   ASSERT_TRUE(spec.has_value()) << spec.error();
   for (std::size_t stage = 0; stage < 2; ++stage) {
     const auto f =

@@ -558,6 +558,22 @@ std::expected<void, std::string> CheckReads(const spec::ModelSpec& spec,
   const bool reads = std::ranges::any_of(mine, [](const ContractTensor& t) {
     return t.contract.borrowed_from_target || t.contract.target_writes;
   });
+  if (s.drafting) {
+    const bool borrowed = std::ranges::any_of(
+        mine, [](const ContractTensor& t) { return t.contract.borrowed_from_target; });
+    const bool features = std::ranges::any_of(mine, [](const ContractTensor& t) {
+      return t.contract.target_writes &&
+             (t.instance == nullptr || t.instance->def->inject == nullptr);
+    });
+    const bool injected = stages[si].embedding && stages[si].embedding->def->inject != nullptr;
+    const bool anchored = std::holds_alternative<spec::AnchoredDraft>(*s.drafting);
+    const bool block = std::holds_alternative<spec::BlockDraft>(*s.drafting);
+    if (anchored ? (!borrowed || !features || injected)
+        : block  ? (borrowed || features || !injected)
+                 : (borrowed || !features || injected))
+      return Refused(std::format(
+          "stage {} drafting protocol disagrees with its state/taps/injection", s.name));
+  }
   if ((reads || !s.reads.empty()) && s.role != spec::StageRole::kDrafter) {
     return Refused(std::format("stage {} reads another stage, but is no drafter", s.name));
   }

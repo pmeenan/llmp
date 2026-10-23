@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "base/sha256.h"
+#include "components/step.h"
 #include "import/normalize.h"
 #include "qwen38_fixture.h"
 #include "runtime/approvals.h"
@@ -585,10 +586,26 @@ TEST(ImportModelOptDrafterTest, TheApprovalNamesOneListAndItsInventory) {
   EXPECT_EQ(runtime::FindApproval("qwen4exp-mtp", approved), &a);
   EXPECT_EQ(runtime::FindApproval("qwen4exp", approved), nullptr);
   // Two rows, not Mia's 47,172: not the approved inventory.
-  EXPECT_TRUE(runtime::CheckComponentDrafterAdmission(plan->canonical(), approved));
-  auto other = plan->canonical();
+  // A normalization plan has not executed its folds. Admission must refuse
+  // that original projection, even when its source identity is approved.
+  EXPECT_FALSE(runtime::CheckComponentDrafterAdmission(plan->spec(), plan->canonical(), approved));
+  auto published = plan->canonical();  // synthetic post-publication descriptors only
+  for (const auto& fold : plan->planned_folds()) {
+    std::vector<std::string> tensors;
+    for (std::size_t i = 0; i < plan->bindings().size(); ++i)
+      if (std::ranges::contains(fold.outputs, plan->bindings()[i].output))
+        tensors.push_back(published.tensors[i].name);
+    std::ranges::sort(tensors);
+    tensors.erase(std::unique(tensors.begin(), tensors.end()), tensors.end());
+    ASSERT_FALSE(tensors.empty());
+    published.preprocessing.push_back({.name = fold.fold, .tensors = std::move(tensors)});
+  }
+  ASSERT_TRUE(plan->applied_folds().empty());
+  const auto admitted = runtime::CheckComponentDrafterAdmission(plan->spec(), published, approved);
+  ASSERT_TRUE(admitted) << admitted.error();
+  auto other = published;
   other.folds.push_back("unknown.fold");
-  EXPECT_FALSE(runtime::CheckComponentDrafterAdmission(other, approved));
+  EXPECT_FALSE(runtime::CheckComponentDrafterAdmission(plan->spec(), other, approved));
 }
 
 TEST(ImportModelOptDrafterTest, TargetSourceAliasesUseCanonicalMappingIdentity) {

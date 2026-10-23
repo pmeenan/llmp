@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // One owned target/MTP composition, two owners with different pending spans:
-// the published v1 ModelOpt target (02354af1) and its MTP drafter (2cb4cdb8)
+// the published v1 ModelOpt target (02354af1) and its MTP drafter (bb49b7da)
 // from the v1 store (skipped without them). This is same-implementation
 // state/capture evidence, not a quality comparison.
 #include <gtest/gtest.h>
@@ -84,7 +84,7 @@ static_assert(sizeof(std::string) <= 32 && sizeof(en::SlotLifecycle::Range) <= 2
 constexpr std::string_view kTarget =
     "02354af162f30b6ec6a117d5311da7d642c5be3128867750be55eeb7b6cd38b9";
 constexpr std::string_view kDrafter =
-    "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef";
+    "bb49b7da7edb78202a64f1f9ab049412a10f2a9f73eb4eef66608e81b011f263";
 
 std::string Env(const char* name) {
   const auto* value = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)

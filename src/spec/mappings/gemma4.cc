@@ -857,7 +857,7 @@ constexpr std::array kAssistantPolicies = {
 };
 
 // Anchored on its target's tapped features, borrowing its target's state:
-// three drafts a unit at most, its qualified transaction's
+// three drafts is its measured default, not a structural maximum
 // (docs/experiments/gemma-assistant-throughput).
 constexpr DraftRecipe kAssistantDraft{
     .shape = DraftRecipe::Shape::kAnchored, .depth = 3, .target_architecture = "gemma4"};

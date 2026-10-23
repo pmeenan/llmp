@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
@@ -29,6 +30,137 @@ static_assert(artifact::kMaxSpecBytes == kMaxSpecBytes,
 
 std::unexpected<std::string> Refuse(std::string_view where, std::string_view what) {
   return std::unexpected(std::format("{}: {}", where, what));
+}
+
+// Weight-role references retain their structural site. Side inputs are named;
+// inserting another side input must not turn its sorted index into an identity.
+template <class F>
+void EachSite(const Stage& stage, const F& visit) {
+  EachComponent(stage, [&](const ComponentRef& component, const std::string& path) {
+    if (path.starts_with("side[")) {
+      for (const auto& side : stage.side)
+        if (&side.source == &component) {
+          visit(component, "side[" + side.name + "].source");
+          return;
+        }
+    }
+    visit(component, path);
+  });
+}
+
+std::span<const WeightBinding> Role(const ComponentRef& component, std::string_view role) {
+  const auto first = std::ranges::lower_bound(component.weights, role, {}, &WeightBinding::role);
+  const auto last =
+      std::find_if(first, component.weights.end(), [&](const auto& w) { return w.role != role; });
+  return {first, last};
+}
+
+bool OwnRole(std::span<const WeightBinding> role, const Stage& stage) {
+  return !role.empty() && std::ranges::all_of(role, [&](const auto& w) {
+    return w.stage.empty() || w.stage == stage.name;
+  });
+}
+
+bool SamePhysicalRole(std::span<const WeightBinding> a, std::span<const WeightBinding> b) {
+  return std::ranges::equal(a, b, [](const auto& x, const auto& y) {
+    return x.tensor == y.tensor && x.part == y.part && x.experts == y.experts;
+  });
+}
+
+// The stored target identifies complete logical roles, including tied aliases.
+// Rebind that semantic site/role in the actual target, never a same-name tensor
+// somewhere else. Every original alias must resolve to the same physical role.
+template <class F>
+std::expected<std::size_t, std::string> ResolveTargetRoles(const ComponentRef& component,
+                                                           const Stage& stored, const Stage& target,
+                                                           const F& emit) {
+  std::expected<void, std::string> result;
+  std::size_t count = 0;
+  for (std::size_t at = 0; at < component.weights.size();) {
+    const auto requested = Role(component, component.weights[at].role);
+    at += requested.size();
+    const bool borrowed =
+        std::ranges::any_of(requested, [&](const auto& w) { return w.stage == stored.name; });
+    if (!borrowed) {
+      if (requested.size() > kMaxWeights - count)
+        return Refuse("drafter composition", "rebound role exceeds the weight bound");
+      count += requested.size();
+      for (const auto& part : requested) emit(part, part.role, part.stage);
+      continue;
+    }
+    if (!std::ranges::all_of(requested, [&](const auto& w) { return w.stage == stored.name; }))
+      return Refuse("drafter composition", "borrowed role mixes holding stages");
+    std::span<const WeightBinding> replacement;
+    EachSite(stored, [&](const ComponentRef& owner, const std::string& site) {
+      for (std::size_t i = 0; result && i < owner.weights.size();) {
+        const auto role = Role(owner, owner.weights[i].role);
+        i += role.size();
+        if (!OwnRole(role, stored) || !SamePhysicalRole(role, requested)) continue;
+        const ComponentRef* actual = nullptr;
+        EachSite(target, [&](const ComponentRef& candidate, const std::string& path) {
+          if (path == site) actual = &candidate;
+        });
+        if (!actual || actual->kind != owner.kind || actual->version != owner.version) {
+          result = Refuse("drafter composition", "borrowed target component site differs");
+          return;
+        }
+        const auto found = Role(*actual, role.front().role);
+        if (!OwnRole(found, target)) {
+          result = Refuse("drafter composition", "borrowed target role is missing or foreign");
+          return;
+        }
+        if (!replacement.empty() && !SamePhysicalRole(replacement, found)) {
+          result = Refuse("drafter composition", "borrowed target role aliases are ambiguous");
+          return;
+        }
+        replacement = found;
+      }
+    });
+    if (!result) return std::unexpected(result.error());
+    if (replacement.empty())
+      return Refuse("drafter composition", "no complete stored target role matches binding");
+    // A validated logical tensor has the format's complete part set. This
+    // format bound also limits expansion before constructing either copy.
+    if (replacement.size() > format::PartList::kMax || replacement.size() > kMaxWeights - count)
+      return Refuse("drafter composition", "rebound role exceeds the format or weight bound");
+    count += replacement.size();
+    for (const auto& part : replacement) emit(part, requested.front().role, target.name);
+  }
+  return count;
+}
+
+std::expected<void, std::string> RebindTargetRoles(Stage& drafter, const Stage& stored,
+                                                   const Stage& target) {
+  std::expected<void, std::string> result;
+  EachComponent(drafter, [&](ComponentRef& component, const std::string&) {
+    if (!result || std::ranges::none_of(component.weights,
+                                        [&](const auto& w) { return w.stage == stored.name; }))
+      return;
+    const auto count =
+        ResolveTargetRoles(component, stored, target,
+                           [](const WeightBinding&, const std::string&, const std::string&) {});
+    if (!count) {
+      result = std::unexpected(count.error());
+      return;
+    }
+    std::vector<WeightBinding> rebound;
+    rebound.reserve(*count);
+    const auto filled = ResolveTargetRoles(
+        component, stored, target,
+        [&](const WeightBinding& part, const std::string& role, const std::string& stage) {
+          rebound.push_back({.role = role,
+                             .tensor = part.tensor,
+                             .part = part.part,
+                             .experts = part.experts,
+                             .stage = stage});
+        });
+    if (!filled || *filled != *count) {
+      result = Refuse("drafter composition", "rebound role inventory changed");
+      return;
+    }
+    component.weights = std::move(rebound);
+  });
+  return result;
 }
 
 // Both preprocessing origins use catalog fold names.
@@ -144,30 +276,45 @@ std::expected<ModelSpec, std::string> StoredSpec(const artifact::Artifact& artif
   return spec;
 }
 
+std::expected<const ComponentRef*, std::string> DrafterOutput(const Stage& stage) {
+  if (stage.role != StageRole::kDrafter || !stage.drafting || !stage.heads.output ||
+      stage.heads.output->kind != "head.linear")
+    return Refuse("draft output", "requires a declared linear output head");
+  const auto& output = *stage.heads.output;
+  bool selected = false;
+  if (const auto* param = output.Find("selected")) {
+    const auto* flag = std::get_if<bool>(&param->value);
+    if (!flag) return Refuse("draft output", "selected must be a boolean");
+    selected = *flag;
+  }
+  std::size_t ids = 0;
+  for (const auto& w : output.weights) {
+    if (w.role != "ids") continue;
+    if (!selected || (!w.stage.empty() && w.stage != stage.name) || w.experts ||
+        w.part != format::PartRole::kData)
+      return Refuse("draft output", "map must name its own dense IDs binding");
+    ++ids;
+  }
+  if (ids != (selected ? 1U : 0U))
+    return Refuse("draft output", "missing or ambiguous map binding");
+  return &output;
+}
+
 std::expected<void, std::string> ConfigureComposedDraftVocabulary(ModelSpec& model,
                                                                   std::uint32_t rows) {
   if (rows == 0 || model.stages.size() != 2 || model.stages.back().role != StageRole::kDrafter)
     return Refuse("draft vocabulary", "requires a positive extent and one composed drafter");
-  auto& drafter = model.stages.back();
-  const auto set_rows = [&](ComponentRef& c, bool add_if_missing) {
-    const auto it = std::ranges::find(c.params, "rows", &Param::name);
-    if (it != c.params.end()) {
-      it->value = static_cast<std::int64_t>(rows);
-    } else if (add_if_missing) {
-      c.params.push_back({.name = "rows", .value = ParamValue(static_cast<std::int64_t>(rows))});
-    }
-  };
-  if (drafter.heads.output.has_value()) {
-    set_rows(*drafter.heads.output, true);
-  }
-  for (Layer& layer : drafter.layers) {
-    for (ComponentRef& c : layer.components) {
-      const Param* sel = c.Find("selected");
-      const auto* is_sel = sel != nullptr ? std::get_if<bool>(&sel->value) : nullptr;
-      if (is_sel != nullptr && *is_sel) {
-        set_rows(c, false);
-      }
-    }
+  if (!model.stages.back().drafting ||
+      !std::holds_alternative<MtpDraft>(*model.stages.back().drafting))
+    return Refuse("draft vocabulary", "only MTP configures an output prefix");
+  auto output = DrafterOutput(model.stages.back());
+  if (!output) return std::unexpected(output.error());
+  auto& c = *model.stages.back().heads.output;
+  const auto it = std::ranges::find(c.params, "rows", &Param::name);
+  if (it != c.params.end()) {
+    it->value = static_cast<std::int64_t>(rows);
+  } else {
+    c.params.push_back({.name = "rows", .value = ParamValue(static_cast<std::int64_t>(rows))});
   }
   Canonicalize(model);
   return Validate(model);
@@ -221,13 +368,8 @@ std::expected<ModelSpec, std::string> ComposeStoredDrafter(
       r.stage = target_stage.name;
     }
   }
-  EachComponent(drafter, [&](ComponentRef& c, const std::string&) {
-    for (WeightBinding& w : c.weights) {
-      if (w.stage == stub_target_name) {
-        w.stage = target_stage.name;
-      }
-    }
-  });
+  if (auto rebound = RebindTargetRoles(drafter, drafter_spec.stages[0], target_stage); !rebound)
+    return std::unexpected(rebound.error());
   out.stages.push_back(std::move(drafter));
   if (draft_vocab) {
     auto configured = ConfigureComposedDraftVocabulary(out, *draft_vocab);

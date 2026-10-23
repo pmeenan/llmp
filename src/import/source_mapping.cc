@@ -111,6 +111,7 @@ std::uint8_t KeyTypes(const spec::Mapping& m, std::string_view key, bool allow_u
     return !rule_key.empty() && (allow_unprefixed ? spec::MatchesCanonicalKey(m, rule_key, key)
                                                   : spec::IsCanonicalKey(m, rule_key, key));
   };
+  if (m.draft && (matches(m.draft->depth_key) || matches(m.draft->fill_key))) add(kInteger);
   if (matches(m.layer_count_key)) add(kInteger);
   if (matches(m.context_key)) add(kInteger);
   if (matches(m.softcap_key)) add(kInteger | kReal);

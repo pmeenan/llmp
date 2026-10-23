@@ -267,6 +267,7 @@ inline std::expected<std::vector<spec::SourceValue>, std::string> DsparkValues(
   std::vector<spec::SourceValue> out;
   dsv4_detail::BlockValues(out, "dflash.", p);
   out.push_back(Value("dflash.block_size", d.block_size));
+  out.push_back(spec::SourceValue{"tokenizer.ggml.mask_token_id", std::int64_t{d.mask_token}});
   out.push_back(Value("dflash.target_layers",
                       std::vector<std::int64_t>(d.target_layers.begin(), d.target_layers.end())));
   return out;

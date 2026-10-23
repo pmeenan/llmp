@@ -1081,6 +1081,22 @@ TEST(NodeConfigTest, EveryModelKeyIsTableDriven) {
   }
 }
 
+TEST(NodeConfigTest, DraftRowsKeepTheAnchorRepresentableWithoutAMeasuredCountCap) {
+  for (const auto* key : {"draft_rows", "shared_wave_depth"}) {
+    const auto config_text = [&](std::uint64_t rows) {
+      return std::format("schema_version = 2\n[models.m]\nartifact = \"{}\"\n{} = {}\n",
+                         std::string(64, 'a'), key, rows);
+    };
+    for (const auto rows : {17U, UINT32_MAX - 1}) {
+      const auto config = Parsed(config_text(rows));
+      ASSERT_EQ(config.models.size(), 1U);
+      EXPECT_EQ(config.models.front().Integer(key), rows);
+    }
+    EXPECT_THAT(Failures(config_text(UINT32_MAX)), Contains(HasSubstr(key)));
+    EXPECT_THAT(Failures(config_text(0)), Contains(HasSubstr(key)));
+  }
+}
+
 TEST(NodeConfigTest, ChecksModelKeyRules) {
   const auto failures = Failures(std::format(R"(schema_version = 2
 [models.a]

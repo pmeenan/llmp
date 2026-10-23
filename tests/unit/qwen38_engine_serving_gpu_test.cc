@@ -3,7 +3,7 @@
 
 // Single-slot screens through the real Server and Llm on the published v1
 // Qwen3.8 artifacts (tests/support/v1_frozen.h V1Store: the native ModelOpt
-// target 02354af1 with its MTP drafter 2cb4cdb8, and the GGUF import
+// target 02354af1 with its MTP drafter bb49b7da, and the GGUF import
 // b31c469e). Two arms of one binary draft and judge their own outputs and
 // must agree bit for bit; the GGUF publication arm is asserted against its
 // frozen digests (tests/unit/data/v1_frozen/qwen38_gguf.json). No
@@ -233,13 +233,13 @@ constexpr std::array kFixtureFiles{
                 "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8/"
                 "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.kv.gguf",
                 106ULL, "2fd68e0dc3770fdd9e4d52a5e9570394855926807e0e020b879651ded2b004c6"},
-    FixtureFile{kMtp, "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef/index.json",
+    FixtureFile{kMtp, "bb49b7da7edb78202a64f1f9ab049412a10f2a9f73eb4eef66608e81b011f263/index.json",
                 159859ULL, "c20f71e3c79ad0505f24a5f822a8a644d53a3cdfc4e962e4e34533a508cee316"},
     FixtureFile{kMtp,
-                "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef/manifest.json",
-                2779ULL, kMtp},
+                "bb49b7da7edb78202a64f1f9ab049412a10f2a9f73eb4eef66608e81b011f263/manifest.json",
+                4092ULL, "f4d84ed99ca105dfa420b362c39551f73ccb10a730aa6a893b21ff577e83add0"},
     FixtureFile{kMtp,
-                "2cb4cdb8d4c8bba3bf7a258d56edbae1b456d9268c238948f00210f7b1e9d0ef/meta/config.json",
+                "bb49b7da7edb78202a64f1f9ab049412a10f2a9f73eb4eef66608e81b011f263/meta/config.json",
                 109897ULL, "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e"},
     FixtureFile{"", "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json",
                 12809320ULL, "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"},

@@ -435,8 +435,8 @@ TEST(SpecStoredTest, StandaloneDrafterStoredSpecAndComposeStoredDrafter) {
   spec::Stage d{.name = "assistant", .role = spec::StageRole::kDrafter, .artifact = 1};
   d.stream = {.streams = 1, .width = 32, .mixing = std::nullopt};
   spec::ComponentRef vocab_map = C("linear", {W("weight", "blk.0.attn_norm.weight")});
-  vocab_map.params = {{.name = "rows", .value = std::int64_t{100}},
-                      {.name = "selected", .value = true}};
+  vocab_map.params = {{.name = "rows", .value = std::int64_t{100}}};
+  d.drafting = spec::MtpDraft{};
   d.layers.push_back(spec::Layer{.components = {vocab_map}});
   d.heads.output = C("head.linear", {W("weight", "output.weight")});
   d.heads.output->params = {{.name = "rows", .value = std::int64_t{100}}};
@@ -465,7 +465,7 @@ TEST(SpecStoredTest, StandaloneDrafterStoredSpecAndComposeStoredDrafter) {
   EXPECT_EQ(std::get<std::int64_t>(out_rows->value), 32);
   const spec::Param* layer_rows = composed->stages[1].layers[0].components[0].Find("rows");
   ASSERT_NE(layer_rows, nullptr);
-  EXPECT_EQ(std::get<std::int64_t>(layer_rows->value), 32);
+  EXPECT_EQ(std::get<std::int64_t>(layer_rows->value), 100);
 
   auto reusable = spec::ComposeStoredDrafter(target_spec, *got_drafter);
   ASSERT_TRUE(reusable) << llmp::test_support::Failed(reusable).value_or("");
@@ -477,6 +477,13 @@ TEST(SpecStoredTest, StandaloneDrafterStoredSpecAndComposeStoredDrafter) {
   EXPECT_EQ(reusable->stages.front(), before_rows.stages.front());
   EXPECT_EQ(reusable->stages.back().reads, before_rows.stages.back().reads);
   EXPECT_FALSE(spec::ConfigureComposedDraftVocabulary(target_spec, 32));
+  auto competing = *reusable;
+  competing.stages.back().layers.front().components.front().params.push_back({"selected", true});
+  spec::Canonicalize(competing);
+  EXPECT_TRUE(spec::ConfigureComposedDraftVocabulary(competing, 16));
+  EXPECT_EQ(std::get<std::int64_t>(
+                competing.stages.back().layers.front().components.front().Find("rows")->value),
+            100);
 
   spec::ModelSpec bad_tap = *got_drafter;
   bad_tap.stages[0].layers.resize(3);
@@ -485,6 +492,133 @@ TEST(SpecStoredTest, StandaloneDrafterStoredSpecAndComposeStoredDrafter) {
   const auto refused = spec::ComposeStoredDrafter(target_spec, bad_tap);
   ASSERT_FALSE(refused.has_value());
   EXPECT_NE(refused.error().find("exceeds target's"), std::string::npos) << refused.error();
+}
+
+TEST(SpecStoredTest, BorrowedRolesRebindByStoredComponentSiteAcrossNamesAndParts) {
+  auto target = Target(0);
+  spec::Stage draft{.name = "draft", .role = spec::StageRole::kDrafter, .artifact = 1};
+  draft.drafting = spec::MtpDraft{};
+  draft.stream.width = 64;
+  auto borrowed = W("table", "token_embd.weight");
+  borrowed.stage = "target";
+  draft.embedding = C("embedding.mtp", {borrowed});
+  draft.heads.output = C("head.linear", {W("weight", "draft.output")});
+  draft.reads = {{.stage = "target", .kind = spec::ReadKind::kTap, .name = "features"}};
+  auto stored = target;
+  stored.stages.push_back(draft);
+  spec::Canonicalize(stored);
+  auto same = spec::ComposeStoredDrafter(target, stored);
+  ASSERT_TRUE(same) << llmp::test_support::Failed(same).value_or("");
+  EXPECT_EQ(spec::ToJson(*same), spec::ToJson(stored));
+
+  auto split = target;
+  split.stages.front().name = "actual";
+  split.stages.front().embedding->weights = {W("table", "actual.codes", PartRole::kCodes),
+                                             W("table", "actual.scales", PartRole::kBlockScales),
+                                             W("table", "actual.biases", PartRole::kBiases)};
+  spec::Canonicalize(split);
+  auto composed = spec::ComposeStoredDrafter(split, stored);
+  ASSERT_TRUE(composed) << llmp::test_support::Failed(composed).value_or("");
+  auto expected = split;
+  expected.stages.push_back(draft);
+  auto& replaced = *expected.stages.back().embedding;
+  replaced.weights = split.stages.front().embedding->weights;
+  for (auto& w : replaced.weights) w.stage = "actual";
+  expected.stages.back().reads.front().stage = "actual";
+  spec::Canonicalize(expected);
+  EXPECT_EQ(*composed, expected);
+
+  auto missing = split;
+  missing.stages.front().embedding.reset();
+  EXPECT_FALSE(spec::ComposeStoredDrafter(missing, stored));
+  missing = split;
+  missing.stages.front().embedding->weights.clear();
+  EXPECT_FALSE(spec::ComposeStoredDrafter(missing, stored));
+  missing = split;
+  missing.stages.front().embedding->kind = "embedding.other";
+  EXPECT_FALSE(spec::ComposeStoredDrafter(missing, stored));
+  auto foreign = split;
+  foreign.stages.front().embedding->weights.front().stage = "absent";
+  EXPECT_FALSE(spec::ComposeStoredDrafter(foreign, stored));
+
+  // A partial source-role match must not silently expand a different role.
+  auto partial = stored;
+  partial.stages.front().embedding->weights.push_back(
+      W("table", "stored.scales", PartRole::kBlockScales));
+  spec::Canonicalize(partial);
+  EXPECT_FALSE(spec::ComposeStoredDrafter(split, partial));
+  auto mixed = stored;
+  mixed.stages.back().embedding->weights.push_back(
+      W("table", "own.scales", PartRole::kBlockScales));
+  spec::Canonicalize(mixed);
+  EXPECT_FALSE(spec::ComposeStoredDrafter(split, mixed));
+
+  // Repeated roles expand within the existing schema bound, checked before
+  // reserving the replacement vector; no model-shaped part/count allowance.
+  auto repeated = stored;
+  repeated.stages.back().embedding->weights.clear();
+  for (std::size_t i = 0; i < spec::kMaxWeights / 3; ++i) {
+    auto w = borrowed;
+    w.role = "role" + std::to_string(i);
+    repeated.stages.back().embedding->weights.push_back(std::move(w));
+  }
+  spec::Canonicalize(repeated);
+  auto expanded = spec::ComposeStoredDrafter(split, repeated);
+  ASSERT_TRUE(expanded) << llmp::test_support::Failed(expanded).value_or("");
+  EXPECT_EQ(expanded->stages.back().embedding->weights.size(), spec::kMaxWeights / 3 * 3);
+  auto one_more = borrowed;
+  one_more.role = "overflow";
+  repeated.stages.back().embedding->weights.push_back(std::move(one_more));
+  spec::Canonicalize(repeated);
+  auto overflow = spec::ComposeStoredDrafter(split, repeated);
+  ASSERT_FALSE(overflow);
+  EXPECT_NE(overflow.error().find("weight bound"), std::string::npos);
+}
+
+TEST(SpecStoredTest, BorrowedTiedAliasesRequireConsensusAndNamedSitesKeepIdentity) {
+  auto target = Target(0);
+  target.stages.front().heads.output->weights = {W("weight", "token_embd.weight")};
+  auto stored = target;
+  spec::Stage draft{.name = "draft", .role = spec::StageRole::kDrafter, .artifact = 1};
+  draft.drafting = spec::MtpDraft{};
+  draft.stream.width = 64;
+  auto borrowed = W("table", "token_embd.weight");
+  borrowed.stage = "target";
+  draft.embedding = C("embedding.mtp", {borrowed});
+  stored.stages.push_back(draft);
+  spec::Canonicalize(stored);
+  auto same = spec::ComposeStoredDrafter(target, stored);
+  ASSERT_TRUE(same) << llmp::test_support::Failed(same).value_or("");
+  EXPECT_EQ(*same, stored);
+  auto renamed = target;
+  renamed.stages.front().embedding->weights.front().tensor = "new.table";
+  renamed.stages.front().heads.output->weights.front().tensor = "new.table";
+  EXPECT_TRUE(spec::ComposeStoredDrafter(renamed, stored));
+  renamed.stages.front().heads.output->weights.front().tensor = "different.table";
+  auto ambiguous = spec::ComposeStoredDrafter(renamed, stored);
+  ASSERT_FALSE(ambiguous);
+  EXPECT_NE(ambiguous.error().find("ambiguous"), std::string::npos);
+
+  target = Target(0);
+  target.stages.front().side = {
+      {.name = "z", .source = C("linear", {W("weight", "side.z")}), .layers = {0}}};
+  stored = target;
+  borrowed = W("weight", "side.z");
+  borrowed.stage = "target";
+  draft.embedding = C("linear", {borrowed});
+  stored.stages.push_back(draft);
+  spec::Canonicalize(stored);
+  auto actual = target;
+  actual.stages.front().side.front().source.weights.front().tensor = "actual.z";
+  actual.stages.front().side.insert(
+      actual.stages.front().side.begin(),
+      {.name = "a", .source = C("linear", {W("weight", "actual.a")}), .layers = {0}});
+  spec::Canonicalize(actual);
+  auto composed = spec::ComposeStoredDrafter(actual, stored);
+  ASSERT_TRUE(composed) << llmp::test_support::Failed(composed).value_or("");
+  EXPECT_EQ(composed->stages.back().embedding->weights.front().tensor, "actual.z");
+  actual.stages.front().side.pop_back();
+  EXPECT_FALSE(spec::ComposeStoredDrafter(actual, stored));
 }
 
 }  // namespace

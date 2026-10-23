@@ -57,6 +57,7 @@ ModelEntry Model(std::string name, bool drafter = false) {
 ArtifactFacts Facts(std::string architecture, std::string drafter = {}) {
   ArtifactFacts facts;
   facts.architecture = std::move(architecture);
+  facts.drafter_mtp = drafter == "qwen4exp-mtp" || drafter == "qwen4exp_mtp";
   facts.drafter_architecture = std::move(drafter);
   if (facts.architecture == "deepseek4") {
     facts.context_ceiling = 1048576;
@@ -313,12 +314,23 @@ TEST(ModelSettings, PinnedGemma23ServingEnvelopesKeepTheFourOwnerDefault) {
   }
 }
 
-TEST(ModelSettings, Gemma23DoNotInventAnUnimplementedDrafter) {
-  for (const auto* architecture : {"gemma2", "gemma3"}) {
-    EXPECT_FALSE(ResolveSettings(Model("gemma", true), Facts(architecture), nullptr, false));
-    auto entry = Model("gemma");
+TEST(ModelSettings, OptionalRecipesCannotVetoAStoredDrafter) {
+  for (const auto* architecture : {"gemma2", "gemma3", "unregistered-target"}) {
+    auto facts = Facts(architecture, "unregistered-drafter");
+    facts.context_ceiling = 4096;
+    facts.target_spec = llmp::base::Sha256Digest{};
+    facts.composed_spec = llmp::base::Sha256Digest{};
+    const auto drafted = ResolveSettings(Model("generic", true), facts, nullptr, false);
+    ASSERT_TRUE(drafted) << drafted.error();
+    EXPECT_TRUE(drafted->speculation.value);
+    facts.composed_spec.reset();
+    facts.composed_spec_error = "invalid stored drafter";
+    EXPECT_FALSE(ResolveSettings(Model("generic", true), facts, nullptr, false));
+    auto entry = Model("generic");
     entry.overrides["speculation"] = true;
-    EXPECT_FALSE(ResolveSettings(entry, Facts(architecture), nullptr, false));
+    const auto plain = ResolveSettings(entry, facts, nullptr, false);
+    ASSERT_TRUE(plain) << plain.error();
+    EXPECT_FALSE(plain->speculation.value);
   }
 }
 
@@ -339,7 +351,7 @@ TEST(ModelSettings, ReportsTheSelectedDraftHeadsPhysicalLimit) {
   }
   ModelEntry oversized = Model("q", true);
   oversized.overrides["draft_vocab"] = std::int64_t{4194304};
-  EXPECT_FALSE(ResolveSettings(oversized, facts, nullptr, false).has_value());
+  EXPECT_EQ(Resolved(oversized, facts).draft_vocab.value, 47172U);
   const ModelSettings prefix = Resolved(Model("q", true), Facts("qwen4exp", "qwen4exp-mtp"));
   EXPECT_EQ(prefix.draft_vocab.value, 65536U);
   EXPECT_EQ(prefix.draft_vocab.source, SettingSource::kFallback);
@@ -359,13 +371,45 @@ TEST(ModelSettings, ZeroDraftVocabularyWithoutSelectedHeadBindsTheFullVocabulary
   ASSERT_TRUE(settings) << (settings ? "" : settings.error());
   EXPECT_EQ(settings->draft_vocab.value, 0U);
   EXPECT_EQ(settings->bound_spec, facts.composed_spec);
-  const llmp::spec::DraftRecipe recipe{.vocab_key = "draft.rows"};
-  std::vector<llmp::spec::SourceValue> values{{"draft.rows", std::int64_t{65536}}};
-  const auto width = llmp::runtime::ConfigureDraftVocabulary(
-      values, recipe, settings->draft_vocab.value, *facts.composed_draft_vocab);
-  ASSERT_TRUE(width);
-  EXPECT_EQ(*width, *facts.composed_draft_vocab);
-  EXPECT_EQ(std::get<std::int64_t>(values.front().value), *facts.composed_draft_vocab);
+}
+
+TEST(ModelSettings, ActualPrefixHeadBoundsDefaultAndExplicitVocabulary) {
+  for (const auto requested : {0U, 32U, 64U, 128U}) {
+    auto facts = Facts("unknown-target", "unknown-drafter");
+    facts.drafter_mtp = true;
+    facts.context_ceiling = 4096;
+    facts.vocabulary = 128;
+    facts.drafter_head_rows = 64;
+    facts.composed_draft_vocab = requested == 0 ? 64U : std::min(requested, 64U);
+    facts.target_spec = llmp::base::Sha256Digest{};
+    facts.composed_spec = llmp::base::Sha256Digest{};
+    auto entry = Model("prefix", true);
+    entry.overrides["draft_vocab"] = std::int64_t{requested};
+    const auto settings = ResolveSettings(entry, facts, nullptr, false);
+    ASSERT_TRUE(settings) << settings.error();
+    EXPECT_EQ(settings->draft_vocab.value, *facts.composed_draft_vocab);
+    facts.composed_draft_vocab = 17;
+    EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  }
+}
+
+TEST(ModelSettings, DraftDepthUsesStoredSourceAndRepresentableExecutionBounds) {
+  auto facts = Facts("unknown-target", "unknown-drafter");
+  facts.context_ceiling = 4096;
+  facts.target_spec = llmp::base::Sha256Digest{};
+  facts.composed_spec = llmp::base::Sha256Digest{};
+  auto entry = Model("generic", true);
+  for (const auto depth : {17U, UINT32_MAX - 1}) {
+    entry.overrides["draft_rows"] = std::int64_t{depth};
+    const auto settings = ResolveSettings(entry, facts, nullptr, false);
+    ASSERT_TRUE(settings) << settings.error();
+    EXPECT_EQ(settings->draft_rows.value, depth);
+  }
+  entry.overrides["draft_rows"] = std::int64_t{UINT32_MAX};
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  entry.overrides["draft_rows"] = std::int64_t{17};
+  facts.drafter_block = 16;
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
 }
 
 TEST(ModelSettings, DraftVocabularyIdentityRequiresFactsForTheSameOverride) {
@@ -484,11 +528,9 @@ TEST(ModelSettings, GemmaDefaultsKeepAnUncalibratedFourOwnerPreference) {
   entry = Model("gemma");
   entry.overrides["speculation"] = true;
   EXPECT_FALSE(Resolved(entry, facts).speculation.value);
-  // Gemma 2 and Gemma 3 have no drafter.
-  for (const char* arch : {"gemma2", "gemma3"}) {
-    EXPECT_FALSE(ResolveSettings(Model("gemma", true), Facts(arch), nullptr, false)) << arch;
-    EXPECT_FALSE(ResolveSettings(entry, Facts(arch), nullptr, false)) << arch;
-  }
+  // With no configured companion, speculation stays disabled for every target.
+  for (const char* arch : {"gemma2", "gemma3"})
+    EXPECT_FALSE(Resolved(entry, Facts(arch)).speculation.value) << arch;
 }
 
 TEST(ModelSettings, Gemma31ProductionDefaultIsBoundedAndProfileSpecific) {
@@ -735,7 +777,8 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
     return s;
   };
   const auto publish_v1 = [&](const std::filesystem::path& root, std::string arch,
-                              const llmp::spec::ModelSpec& spec, std::string container = "gguf") {
+                              const llmp::spec::ModelSpec& spec, std::string container = "gguf",
+                              std::uint32_t head_rows = 64) {
     llmp::test::V1Plan plan;
     plan.container = std::move(container);
     plan.architecture = std::move(arch);
@@ -752,6 +795,20 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
                        .format = {.encoding = llmp::format::Encoding::kF32,
                                   .layout = llmp::format::Layout::kDense,
                                   .shape = {.ne = {32, 1, 1, 1}, .rank = 1}}}}}};
+    if (spec.stages.size() == 2)
+      plan.groups.front().resources.push_back(
+          {.name = "projection.weight",
+           .format = {.encoding = llmp::format::Encoding::kF32,
+                      .layout = llmp::format::Layout::kDense,
+                      .shape = {.ne = {64, 32, 1, 1}, .rank = 2}}});
+    if (head_rows != 64) {
+      plan.groups.front().resources.front().aliases.clear();
+      plan.groups.front().resources.push_back(
+          {.name = "output.weight",
+           .format = {.encoding = llmp::format::Encoding::kF32,
+                      .layout = llmp::format::Layout::kDense,
+                      .shape = {.ne = {32, head_rows, 1, 1}, .rank = 2}}});
+    }
     return llmp::test::Publish(root, llmp::test::Render(plan));
   };
 
@@ -819,8 +876,17 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
   // ReadArtifactFacts, returning the opened artifacts and admitted specs.
   llmp::spec::Stage drafter_stage =
       make_stage("drafter", llmp::spec::StageRole::kDrafter, 1, 1048576, {});
+  drafter_stage.drafting = llmp::spec::MtpDraft{};
+  drafter_stage.embedding->kind = "embedding.projected";
+  drafter_stage.embedding->params = {
+      {"scale", 1.0}, {"feature", std::int64_t{32}}, {"tap", std::string("features")}};
+  drafter_stage.embedding->weights.push_back({.role = "projection", .tensor = "projection.weight"});
+  drafter_stage.reads = {
+      {.stage = "target", .kind = llmp::spec::ReadKind::kTap, .name = "features"}};
   llmp::spec::ModelSpec drafter_spec{.pipeline = llmp::spec::PipelineKind::kLlm,
                                      .stages = {ds_spec.stages.front(), std::move(drafter_stage)}};
+  drafter_spec.stages.front().taps = {
+      {.name = "features", .layer = 0, .point = llmp::spec::TapPoint::kLayerOut}};
   llmp::spec::Canonicalize(drafter_spec);
   const auto store_dir = scratch / "store";
   const auto pub_target = publish_v1(store_dir, "deepseek4", ds_spec);
@@ -892,11 +958,33 @@ TEST(ModelSettings, ReadsFactsFromMetadata) {
         EXPECT_TRUE(settings->speculation.value);
       }
     }
-    const auto wrong_family = llmp::runtime::ArtifactFactsOf(*ds_art, &*mtp);
-    ASSERT_TRUE(wrong_family) << wrong_family.error();
-    EXPECT_FALSE(wrong_family->composed_spec);
-    EXPECT_THAT(wrong_family->composed_spec_error, HasSubstr("does not target architecture"));
-    EXPECT_FALSE(ResolveSettings(Model("wrong-family", true), *wrong_family, nullptr, false));
+    const auto another_name = llmp::runtime::ArtifactFactsOf(*ds_art, &*mtp);
+    ASSERT_TRUE(another_name) << another_name.error();
+    EXPECT_TRUE(another_name->composed_spec) << another_name->composed_spec_error;
+  }
+  // Physical prefix width, including the default request, comes from the
+  // opened output tensor rather than the larger target vocabulary.
+  auto prefix_spec = drafter_spec;
+  prefix_spec.stages.back().heads.output->params.front().value = std::int64_t{32};
+  llmp::spec::Canonicalize(prefix_spec);
+  const auto prefix_path =
+      publish_v1(store_dir, "unregistered-drafter", prefix_spec, "safetensors", 32);
+  for (const auto requested : {std::optional<std::int64_t>{}, std::optional<std::int64_t>{0},
+                               std::optional<std::int64_t>{16}, std::optional<std::int64_t>{64}}) {
+    auto entry = composed_entry;
+    entry.drafter = prefix_path.filename().string();
+    if (requested) entry.overrides["draft_vocab"] = *requested;
+    llmp::runtime::OpenedModelArtifacts retained;
+    const auto facts = llmp::runtime::ReadArtifactFacts(entry, store_dir, &retained);
+    ASSERT_TRUE(facts) << facts.error();
+    ASSERT_TRUE(facts->composed_spec) << facts->composed_spec_error;
+    ASSERT_TRUE(retained.composition);
+    const auto expected = requested && *requested == 16 ? 16U : 32U;
+    EXPECT_EQ(facts->drafter_head_rows, 32U);
+    EXPECT_EQ(retained.composition->vocabulary(), expected);
+    const auto settings = ResolveSettings(entry, *facts, nullptr, false);
+    ASSERT_TRUE(settings) << settings.error();
+    EXPECT_EQ(settings->draft_vocab.value, expected);
   }
   const auto alias_target = llmp::artifact::Artifact::Open(
       publish_v1(store_dir, "qwen3_8_flash_next", ds_spec, "safetensors"));
@@ -1114,7 +1202,7 @@ TEST(ModelSettings, RefusesAndIgnoresOverrides) {
   entry.overrides["draft_rows"] = std::int64_t{6};
   auto refused = ResolveSettings(entry, facts, nullptr, false);
   ASSERT_FALSE(refused.has_value());
-  EXPECT_THAT(refused.error(), HasSubstr("the drafter's block of 5"));
+  EXPECT_THAT(refused.error(), HasSubstr("stored block proposal bound"));
   entry.overrides["draft_rows"] = std::int64_t{5};
   EXPECT_EQ(Resolved(entry, facts).draft_rows.value, 5U);
   // A top_p the sampler's float would make 0 (the schema's range is open
@@ -1125,7 +1213,7 @@ TEST(ModelSettings, RefusesAndIgnoresOverrides) {
 
   ModelEntry q = Model("q", true);
   q.overrides["draft_rows"] = std::int64_t{1};
-  EXPECT_FALSE(ResolveSettings(q, Facts("qwen4exp", "qwen4exp-mtp"), nullptr, false).has_value());
+  EXPECT_TRUE(ResolveSettings(q, Facts("qwen4exp", "qwen4exp-mtp"), nullptr, false).has_value());
   q.overrides["draft_rows"] = std::int64_t{2};
   q.overrides["wave_form"] = std::string("plain");
   q.overrides["wave_costs"] = std::vector<double>{1.0};
@@ -1272,7 +1360,7 @@ TEST(ModelSettings, CapabilityPredicatesAndKeyApplicability) {
   EXPECT_FALSE(KeyAppliesTo("draft_vocab", ds_facts));
   EXPECT_FALSE(KeyAppliesTo("image_size", ds_facts));
 
-  ArtifactFacts qwen_facts = Facts("qwen4exp");
+  ArtifactFacts qwen_facts = Facts("qwen4exp", "qwen4exp-mtp");
   EXPECT_TRUE(SupportsSpeculativeDrafting(qwen_facts));
   EXPECT_TRUE(SupportsWaveForm(qwen_facts));
   EXPECT_TRUE(SupportsWaveCosts(qwen_facts));
@@ -1307,9 +1395,12 @@ TEST(ModelSettings, CapabilityPredicatesAndKeyApplicability) {
 TEST(ModelSettings, DraftVocabularyUsesTheActualHeadRows) {
   auto facts = Facts("qwen4exp", "qwen4exp-mtp");
   facts.vocabulary = 100000;
+  facts.drafter_head_rows = 100000;
   auto entry = Model("other-size", true);
   entry.overrides["draft_vocab"] = std::int64_t{100001};
-  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  const auto capped = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(capped) << capped.error();
+  EXPECT_EQ(capped->draft_vocab.value, 100000U);
   entry.overrides["draft_vocab"] = std::int64_t{100000};
   EXPECT_TRUE(ResolveSettings(entry, facts, nullptr, false));
 }

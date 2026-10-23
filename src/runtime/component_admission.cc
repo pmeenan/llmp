@@ -20,7 +20,6 @@
 #include <utility>
 #include <vector>
 
-#include "artifact/gguf_metadata.h"
 #include "artifact/schema.h"
 #include "base/json_stream.h"
 #include "base/sha256.h"
@@ -156,56 +155,6 @@ std::expected<void, std::string> Pinned(const Approval& approval, const spec::Mo
   return {};
 }
 
-// GGUF's bool type.
-constexpr std::uint32_t kGgufBool = 7;
-
-// A stored artifact's source values for `mapping`: the keys it reads, from
-// the GGUF metadata the artifact keeps, as the importer read them (reals
-// widened from their stored precision, flags as flags, lists as lists).
-std::expected<std::vector<spec::SourceValue>, std::string> KeptValues(
-    const artifact::Artifact& artifact, const spec::Mapping& mapping) {
-  const std::string kv = KeptGguf(artifact);
-  if (kv.empty()) return Refused("the drafter keeps no GGUF metadata");
-  auto bytes = artifact.ReadMetadata(kv);
-  if (!bytes) return Refused(std::format("{}: {}", kv, bytes.error().ToString()));
-  const auto owned_keys = spec::SourceKeys(mapping);
-  const std::vector<std::string_view> keys(owned_keys.begin(), owned_keys.end());
-  auto read = artifact::ReadGgufMetadata(std::as_bytes(std::span(*bytes)), keys);
-  if (!read) return Refused(std::format("{}: {}", kv, read.error().ToString()));
-  std::vector<spec::SourceValue> out;
-  for (const auto& [key, value] : *read) {
-    spec::ParamValue v;
-    switch (value.kind) {
-      case artifact::GgufValue::Kind::kInteger:
-        if (value.type == kGgufBool)
-          v = value.integer != 0;
-        else
-          v = value.integer;
-        break;
-      case artifact::GgufValue::Kind::kFloat:
-        v = value.real;
-        break;
-      case artifact::GgufValue::Kind::kString:
-        v = value.text;
-        break;
-      case artifact::GgufValue::Kind::kIntegers:
-        if (value.integers.size() > spec::kMaxList)
-          return Refused("retained mapping integer list exceeds the value bound");
-        v = value.integers;
-        break;
-      case artifact::GgufValue::Kind::kFloats:
-        if (value.reals.size() > spec::kMaxList)
-          return Refused("retained mapping real list exceeds the value bound");
-        v = value.reals;
-        break;
-      case artifact::GgufValue::Kind::kOther:
-        return Refused("retained mapping value has an unsupported type");
-    }
-    out.push_back({.key = key, .value = std::move(v)});
-  }
-  return out;
-}
-
 }  // namespace
 
 std::string KeptGguf(const artifact::Artifact& a) {
@@ -308,66 +257,7 @@ bool OriginsWellFormed(std::span<const artifact::Source> origins) {
   return true;
 }
 
-bool FoldDeclared(const spec::Mapping& mapping, const spec::Source& source, std::string_view fold) {
-  return std::ranges::any_of(spec::SourceFolds(mapping, source.architecture, source.container),
-                             [&](const spec::FoldRule& rule) {
-                               return rule.fold == fold && rule.container == source.container;
-                             });
-}
-
-std::expected<void, std::string> CheckUnpinnedInventory(const spec::Source& source,
-                                                        const spec::Mapping& mapping) {
-  if (source.tensors.empty()) return Refused(kRefusedInventory);
-  for (const std::string& fold : source.folds) {
-    if (!FoldDeclared(mapping, source, fold)) {
-      return Refused("source fold is not declared by the architecture's mapping");
-    }
-  }
-  for (const auto& t : source.tensors) {
-    if (!Admissible(t)) return Refused(kRefusedInventory);
-  }
-  return {};
-}
-
 }  // namespace
-
-std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValues(
-    const artifact::Artifact& target, const artifact::Artifact& drafter) {
-  if (auto served = RequireServedVersion(target); !served) return Refused(served.error());
-  if (auto served = RequireServedVersion(drafter); !served) return Refused(served.error());
-  const spec::Mapping* mapping = ComposedDrafterMapping(drafter);
-  if (mapping == nullptr || mapping->role != spec::StageRole::kDrafter ||
-      mapping->draft == nullptr) {
-    return Refused("the drafter's architecture has no drafter mapping");
-  }
-  const Approval* t = FindApproval(target.model().architecture, target.sources());
-  const Approval* d = FindApproval(drafter.model().architecture, drafter.sources());
-  if (t != nullptr && t->drafter)
-    return Refused("target source identity is a drafter, not a target");
-  if (d != nullptr && !d->drafter)
-    return Refused("drafter source identity is a target, not a drafter");
-  const spec::Mapping* target_mapping =
-      spec::FindMapping(target.model().architecture, target.model().container);
-  if (!target_mapping || target_mapping->role != spec::StageRole::kTarget)
-    return Refused("target architecture/container has no target component mapping");
-  // Recipes name canonical architectures; manifest names retain the source dialect.
-  if (mapping->draft->target_architecture != target_mapping->architecture)
-    return Refused(std::format("drafter {} does not target architecture {}",
-                               drafter.model().architecture, target.model().architecture));
-  // A drafter without kept metadata values: its recipe's, from its source.
-  if (!mapping->draft->values.empty()) {
-    auto source = spec::SourceOf(drafter);
-    if (!source) return Refused(source.error());
-    auto target_model = spec::StoredSpec(target);
-    if (!target_model) return Refused(target_model.error());
-    auto target_source = spec::SourceOf(target);
-    if (!target_source) return Refused(target_source.error());
-    auto values = spec::ExtractValues(*mapping, *target_model, *target_source, *source);
-    if (!values) return Refused(values.error());
-    return values;
-  }
-  return KeptValues(drafter, *mapping);
-}
 
 std::expected<void, std::string> ComponentDrafterEnvelope(const spec::Envelope& envelope) {
   // An approved drafter's envelope is its settings' default (model_settings
@@ -377,49 +267,30 @@ std::expected<void, std::string> ComponentDrafterEnvelope(const spec::Envelope& 
   return {};
 }
 
+std::optional<std::uint64_t> SelectedHeadStorageBytes(const artifact::Resource& r) {
+  if (!r.format || r.roles.empty() || r.part != format::PartRole::kData ||
+      r.format->encoding != format::Encoding::kI32 || r.format->layout != format::Layout::kDense ||
+      r.format->shape.rank != 2 || r.format->shape.ne[0] != 1 || r.format->shape.ne[1] == 0 ||
+      r.format->shape.ne[1] > UINT32_MAX)
+    return std::nullopt;
+  std::uint64_t bytes = 0;
+  if (__builtin_mul_overflow(r.format->shape.ne[1], std::uint64_t{sizeof(std::int32_t)}, &bytes) ||
+      bytes != r.bytes.value())
+    return std::nullopt;
+  return bytes;
+}
+
 std::expected<std::optional<DraftHeadMap>, std::string> DraftHeadRows(
     const artifact::Artifact& drafter, std::string_view head_ids, std::uint64_t vocab) {
   if (head_ids.empty()) return std::nullopt;
   const auto index = drafter.FindResource(head_ids);
   if (!index) return std::nullopt;
   const auto& resource = drafter.resources()[*index];
-  std::uint64_t rows = 0;
-  if (resource.format && resource.format->encoding == format::Encoding::kI32 &&
-      resource.format->layout == format::Layout::kDense && resource.format->shape.rank == 2 &&
-      resource.format->shape.ne[0] == 1)
-    rows = resource.format->shape.ne[1];
+  const auto bytes = SelectedHeadStorageBytes(resource);
+  const auto rows = bytes ? *bytes / sizeof(std::int32_t) : 0;
   if (rows == 0 || rows > vocab)
     return Refused("a selected draft head's token map is not I32 [1, rows] within the vocabulary");
   return DraftHeadMap{.resource = *index, .rows = rows};
-}
-
-std::expected<std::uint32_t, std::string> ConfigureDraftVocabulary(
-    std::span<spec::SourceValue> values, const spec::DraftRecipe& recipe, std::uint32_t requested,
-    std::uint32_t target_vocab, std::optional<std::uint32_t> selected_rows) {
-  if (recipe.vocab_key.empty()) return 0;
-  const std::uint32_t available = selected_rows.value_or(target_vocab);
-  const std::uint32_t width = requested == 0 ? available : std::min(requested, available);
-  if (width == 0 || available > target_vocab)
-    return Refused("a draft head needs a positive row count within the target vocabulary");
-  const auto found = std::ranges::find(values, recipe.vocab_key, &spec::SourceValue::key);
-  if (found == values.end()) return Refused("a drafter has no draft vocabulary value");
-  found->value = static_cast<std::int64_t>(width);
-  return width;
-}
-
-std::expected<std::int64_t, std::string> KeptInteger(const artifact::Artifact& artifact,
-                                                     std::string_view key) {
-  const std::string kv = KeptGguf(artifact);
-  if (kv.empty()) return Refused(std::format("no kept GGUF metadata holds {}", key));
-  auto bytes = artifact.ReadMetadata(kv);
-  if (!bytes) return Refused(std::format("{}: {}", kv, bytes.error().ToString()));
-  const std::array<std::string_view, 1> keys{key};
-  auto read = artifact::ReadGgufMetadata(std::as_bytes(std::span(*bytes)), keys);
-  if (!read) return Refused(std::format("{}: {}", kv, read.error().ToString()));
-  const auto found = read->find(key);
-  if (found == read->end() || found->second.kind != artifact::GgufValue::Kind::kInteger)
-    return Refused(std::format("the kept metadata has no integer {}", key));
-  return found->second.integer;
 }
 
 std::expected<void, std::string> CheckComposedAdmission(const spec::ModelSpec& composed,
@@ -453,12 +324,25 @@ std::expected<void, std::string> CheckComposedAdmission(const spec::ModelSpec& c
 }
 
 std::expected<void, std::string> CheckComponentDrafterAdmission(
-    const spec::Source& source, std::span<const artifact::Source> origins) {
+    const spec::ModelSpec& model, const spec::Source& source,
+    std::span<const artifact::Source> origins) {
   if (!OriginsWellFormed(origins)) return Refused("source origins are empty or duplicate");
-  const spec::Mapping* mapping = ComposedDrafterMapping(source.architecture, source.container);
-  if (mapping == nullptr || mapping->role != spec::StageRole::kDrafter || mapping->draft == nullptr)
-    return Refused("architecture has no drafter component mapping");
-  return CheckUnpinnedInventory(source, *mapping);
+  if (!artifact::schema::IsName(source.architecture) ||
+      !artifact::schema::IsContainerName(source.container))
+    return Refused("invalid source provenance names");
+  if (model.pipeline != spec::PipelineKind::kLlm || model.stages.size() != 2 ||
+      model.stages[0].role != spec::StageRole::kTarget || model.stages[0].artifact != 0 ||
+      model.stages[1].role != spec::StageRole::kDrafter || model.stages[1].artifact != 1 ||
+      !model.stages[1].drafting)
+    return Refused("stored drafter needs its target interface and execution contract");
+  if (auto valid = spec::Validate(model); !valid) return Refused(valid.error());
+  if (source.tensors.empty() ||
+      std::ranges::any_of(source.tensors, [](const auto& t) { return !Admissible(t); }))
+    return Refused(kRefusedInventory);
+  if (auto output = spec::DrafterOutput(model.stages[1]); !output) return Refused(output.error());
+  if (auto folds = components::ValidateFoldReceipts(model, 1, source); !folds)
+    return Refused(folds.error());
+  return {};
 }
 
 std::expected<void, std::string> CheckComponentAdmission(
@@ -493,38 +377,28 @@ std::expected<void, std::string> CheckArtifactPrerequisites(const artifact::Arti
 
 std::expected<void, std::string> CheckComponentArtifactAdmission(
     const artifact::Artifact& artifact) {
-  const spec::Mapping* mapping =
-      spec::FindMapping(artifact.model().architecture, artifact.model().container);
-  if (mapping != nullptr && mapping->role == spec::StageRole::kDrafter) {
-    auto admitted = ReadComponentDrafterAdmission(artifact);
-    if (!admitted) return std::unexpected(admitted.error());
-    return {};
-  }
-  auto admitted = ReadComponentAdmission(artifact);
-  if (!admitted) return std::unexpected(admitted.error());
-  return {};
+  if (auto checked = CheckArtifactPrerequisites(artifact); !checked) return checked;
+  auto stored = spec::StoredSpec(artifact);
+  if (!stored) return Refused(stored.error());
+  auto source = spec::SourceOf(artifact);
+  if (!source) return Refused(source.error());
+  if (stored->stages.size() == 2 && stored->stages.back().role == spec::StageRole::kDrafter)
+    return CheckComponentDrafterAdmission(*stored, *source, artifact.sources());
+  return CheckComponentAdmission(*stored, *source, artifact.sources());
 }
 
 std::expected<ComponentDrafterAdmission, std::string> ReadComponentDrafterAdmission(
     const artifact::Artifact& drafter) {
   if (auto checked = CheckArtifactPrerequisites(drafter); !checked)
     return std::unexpected(checked.error());
-  std::optional<spec::ModelSpec> model;
-  if (drafter.spec_json().has_value()) {
-    auto stored = spec::StoredSpec(drafter);
-    if (!stored) return Refused(stored.error());
-    model = std::move(*stored);
-  }
+  auto model = spec::StoredSpec(drafter);
+  if (!model) return Refused(model.error());
   auto source = spec::SourceOf(drafter);
   if (!source) return Refused(source.error());
-  if (auto checked = CheckComponentDrafterAdmission(*source, drafter.sources()); !checked)
+  if (auto checked = CheckComponentDrafterAdmission(*model, *source, drafter.sources()); !checked)
     return std::unexpected(checked.error());
-  if (model) {
-    if (auto folds = components::ValidateFoldReceipts(*model, 1, *source); !folds)
-      return Refused(folds.error());
-  }
   return ComponentDrafterAdmission{
-      .model = std::move(model),
+      .model = std::move(*model),
       .source = std::move(*source),
       .approval = FindApproval(drafter.model().architecture, drafter.sources())};
 }
@@ -536,43 +410,65 @@ PreparedDrafterComposition::Make(const artifact::Artifact& target,
                                  const artifact::Artifact& drafter,
                                  const ComponentDrafterAdmission& admitted,
                                  std::uint32_t vocabulary, std::uint32_t requested_vocabulary) {
-  const auto* target_mapping =
-      spec::FindMapping(target.model().architecture, target.model().container);
-  const auto* mapping = ComposedDrafterMapping(drafter);
-  if (!target_mapping || !mapping || mapping->role != spec::StageRole::kDrafter || !mapping->draft)
-    return Refused("component composition needs target and drafter recipes");
-  const auto& recipe = *mapping->draft;
-  if (recipe.target_architecture != target_mapping->architecture)
-    return Refused(std::format("drafter {} does not target architecture {}",
-                               drafter.model().architecture, target.model().architecture));
+  if (!admitted.model || admitted.model->stages.size() != 2 ||
+      !admitted.model->stages.back().drafting)
+    return Refused("component composition requires stored drafter execution semantics");
   auto out = std::shared_ptr<PreparedDrafterComposition>(new PreparedDrafterComposition);
   out->target_ = target.id();
   out->drafter_ = drafter.id();
   out->target_semantic_ = target_model.Digest();
   out->target_vocabulary_ = vocabulary;
-  std::expected<spec::ModelSpec, std::string> canonical = std::unexpected(std::string());
-  if (admitted.model) {
-    canonical = spec::ComposeStoredDrafter(target_model, *admitted.model);
-  } else {
-    auto values = ComponentDrafterValues(target, drafter);
-    if (!values) return Refused(values.error());
-    out->values_ = std::move(*values);
-    canonical = spec::ComposeDrafter(target_model, *target_mapping, *mapping, admitted.source,
-                                     out->values_);
-  }
+  auto canonical = spec::ComposeStoredDrafter(target_model, *admitted.model);
   if (!canonical) return Refused(canonical.error());
   if (auto checked = CheckComposedAdmission(*canonical, target_source, admitted.source); !checked)
     return Refused(checked.error());
   out->numerical_semantic_ = canonical->Digest();
   out->model_ = std::move(*canonical);
-  if (!recipe.vocab_key.empty()) {
-    auto map = DraftHeadRows(drafter, recipe.head_ids, vocabulary);
+  const auto& drafting = *out->model_.stages.back().drafting;
+  if (const auto* block = std::get_if<spec::BlockDraft>(&drafting);
+      block && std::cmp_greater_equal(block->fill_token, vocabulary))
+    return Refused("block fill token is outside the actual target vocabulary");
+  out->narrowable_ = std::holds_alternative<spec::MtpDraft>(drafting);
+  {
+    auto output = spec::DrafterOutput(out->model_.stages.back());
+    if (!output) return Refused(output.error());
+    std::string_view map_name;
+    for (const auto& w : (*output)->weights)
+      if (w.role == "ids") map_name = w.tensor;
+    auto map = DraftHeadRows(drafter, map_name, vocabulary);
     if (!map) return Refused(map.error());
-    const auto selected =
-        *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt;
-    const auto available = selected.value_or(vocabulary);
-    const auto width =
-        requested_vocabulary == 0 ? available : std::min(requested_vocabulary, available);
+    if (!map_name.empty() && !*map) return Refused("declared selected head map is absent");
+    std::optional<std::uint32_t> weight_rows;
+    for (const auto& binding : (*output)->weights) {
+      if (binding.role != "weight") continue;
+      const auto* holder = spec::HoldingStage(out->model_, out->model_.stages.back(), binding);
+      if (!holder || holder->artifact > 1 || binding.experts)
+        return Refused("draft output weight has no dense holding artifact");
+      const auto& source = holder->artifact == 0 ? target_source : admitted.source;
+      const auto tensor = std::ranges::find_if(source.tensors, [&](const auto& t) {
+        return t.name == binding.tensor && t.part == binding.part && !t.experts;
+      });
+      if (tensor == source.tensors.end() || tensor->format.shape.rank != 2 ||
+          tensor->format.shape.ne[1] == 0 || tensor->format.shape.ne[1] > vocabulary)
+        return Refused("draft output weight rows exceed the actual target vocabulary");
+      const auto rows = static_cast<std::uint32_t>(tensor->format.shape.ne[1]);
+      if (weight_rows && *weight_rows != rows)
+        return Refused("draft output weight parts disagree on rows");
+      weight_rows = rows;
+    }
+    if (!weight_rows || (*map && (*map)->rows != *weight_rows))
+      return Refused("draft output and selected map row counts disagree");
+    std::uint32_t declared_rows = 0;
+    if (const auto* param = (*output)->Find("rows")) {
+      const auto* rows = std::get_if<std::int64_t>(&param->value);
+      if (!rows || *rows < 0 || std::cmp_greater(*rows, *weight_rows))
+        return Refused("stored draft output rows exceed its actual weight");
+      declared_rows = static_cast<std::uint32_t>(*rows);
+    }
+    const auto available = out->narrowable_ || declared_rows == 0 ? *weight_rows : declared_rows;
+    const auto width = !out->narrowable_ || requested_vocabulary == 0
+                           ? available
+                           : std::min(requested_vocabulary, available);
     if (width == 0 || available > vocabulary)
       return Refused("a draft head needs a positive row count within the target vocabulary");
     out->available_vocabulary_ = available;
@@ -587,15 +483,14 @@ PreparedDrafterComposition::Make(const artifact::Artifact& target,
       ids->resize(width);
       out->head_ids_ = std::make_shared<const std::vector<std::int32_t>>(std::move(*ids));
     }
-    if (!admitted.model) {
-      auto configured = ConfigureDraftVocabulary(out->values_, recipe, requested_vocabulary,
-                                                 vocabulary, selected);
-      if (!configured) return Refused(configured.error());
-    }
     // Canonical composition/admission above happens once. Only the head extent
     // changes for the configured vocabulary; taps and stage bindings survive.
-    if (auto configured = spec::ConfigureComposedDraftVocabulary(out->model_, width); !configured)
-      return Refused(configured.error());
+    if (out->narrowable_) {
+      if (auto configured = spec::ConfigureComposedDraftVocabulary(out->model_, width); !configured)
+        return Refused(configured.error());
+    }
+    if (auto valid = CheckComposedAdmission(out->model_, target_source, admitted.source); !valid)
+      return Refused(valid.error());
   }
 
   return std::shared_ptr<const PreparedDrafterComposition>(std::move(out));
@@ -608,9 +503,10 @@ std::expected<void, std::string> PreparedDrafterComposition::CheckBinding(
   if (target.id() != target_ || drafter.id() != drafter_ ||
       target_model.Digest() != target_semantic_ || vocabulary != target_vocabulary_)
     return Refused("prepared composition differs from its artifact or target structure binding");
-  if (vocabulary_ && *vocabulary_ != (requested_vocabulary == 0
-                                          ? available_vocabulary_
-                                          : std::min(requested_vocabulary, available_vocabulary_)))
+  if (narrowable_ && vocabulary_ &&
+      *vocabulary_ != (requested_vocabulary == 0
+                           ? available_vocabulary_
+                           : std::min(requested_vocabulary, available_vocabulary_)))
     return Refused("prepared composition differs from the effective draft vocabulary");
   return {};
 }

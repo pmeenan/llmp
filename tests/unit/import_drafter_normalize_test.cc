@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "artifact/artifact.h"
+#include "artifact/gguf_metadata.h"
 #include "artifact_writer.h"
 #include "base/check.h"
 #include "base/json.h"
@@ -260,11 +261,13 @@ std::expected<artifact::Artifact, artifact::Error> MakeTargetV1(
 std::expected<artifact::Artifact, artifact::Error> MakeDrafterV1(
     const std::filesystem::path& drafter_scratch, std::string arch,
     std::span<const spec::SourceTensor> tensors, std::string source_name, std::uint64_t bytes,
-    std::string sha256, std::string kept_gguf = {}, std::string container = "gguf") {
+    std::string sha256, std::string kept_gguf = {}, std::string container = "gguf",
+    std::string stored_spec = {}) {
   llmp::test::V1Plan p;
   p.architecture = std::move(arch);
   p.container = std::move(container);
   p.sources.clear();
+  if (!stored_spec.empty()) p.spec = std::move(stored_spec);
   // Kept as the importer keeps a GGUF drafter's header: meta/<stem>.kv.gguf.
   if (!kept_gguf.empty())
     p.meta.emplace_back(
@@ -320,12 +323,12 @@ TEST(ImportDrafterNormalizeTest,
   auto drafter_art =
       MakeDrafterV1(scratch / "drafter", "gemma4-assistant", plan->canonical().tensors,
                     "mtp-gemma-4-26B-A4B-it.gguf", 461766816ULL,
-                    "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b", kept_gguf);
+                    "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b", kept_gguf,
+                    "gguf", spec::ToJson(plan->spec()));
   ASSERT_TRUE(drafter_art) << (drafter_art ? "" : drafter_art.error().ToString());
   EXPECT_EQ(drafter_art->model().architecture, "gemma4-assistant");
 
-  // Drafter artifact omits standalone spec.json
-  EXPECT_FALSE(drafter_art->spec_json().has_value());
+  ASSERT_TRUE(drafter_art->spec_json().has_value());
 
   auto target_art = MakeTargetV1(
       scratch / "target", "gemma4", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", 16947541728ULL,
@@ -338,31 +341,47 @@ TEST(ImportDrafterNormalizeTest,
   std::array<artifact::Source, 1> origins{
       Origin("mtp-gemma-4-26B-A4B-it.gguf", 461766816ULL,
              "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b")};
-  auto admission = rt::CheckComponentDrafterAdmission(*drafter_source, origins);
+  auto admission = rt::CheckComponentDrafterAdmission(plan->spec(), *drafter_source, origins);
   ASSERT_TRUE(admission) << (admission ? "" : admission.error());
 
-  // Target composition values: the approved pairing, then the stored
-  // drafter's values from the GGUF metadata it keeps, the keys its mapping
-  // reads as the importer read them (the normalized plan's).
-  auto values = rt::ComponentDrafterValues(*target_art, *drafter_art);
-  ASSERT_TRUE(values) << (values ? "" : values.error());
-  EXPECT_FALSE(values->empty());
-  for (const auto& v : *values) {
-    const auto planned = std::ranges::find(plan->values(), v.key, &spec::SourceValue::key);
-    if (planned == plan->values().end()) continue;
-    if (const auto* real = std::get_if<double>(&planned->value)) {
-      const auto* kept = std::get_if<double>(&v.value);
-      ASSERT_NE(kept, nullptr) << v.key;
-      EXPECT_EQ(*kept, static_cast<double>(static_cast<float>(*real))) << v.key;
-    } else {
-      EXPECT_EQ(v.value, planned->value) << v.key;
-    }
-  }
+  auto stored = spec::StoredSpec(*drafter_art);
+  ASSERT_TRUE(stored) << stored.error();
+  EXPECT_EQ(*stored, plan->spec());
+  auto admitted = rt::ReadComponentDrafterAdmission(*drafter_art);
+  ASSERT_TRUE(admitted) << admitted.error();
+  EXPECT_EQ(*admitted->model, plan->spec());
+  EXPECT_TRUE(std::holds_alternative<spec::AnchoredDraft>(*stored->stages.back().drafting));
 
   std::filesystem::remove_all(scratch, ec);
 }
 
-TEST(ImportDrafterNormalizeTest, LegacyDrafterValuesMatchCanonicalTargetAcrossSourceAliases) {
+TEST(ImportDrafterNormalizeTest, UsableKeptMetadataCannotReplaceMissingOrMalformedStoredExecution) {
+  auto checkpoint = SyntheticAssistantCheckpoint(26);
+  ASSERT_TRUE(checkpoint);
+  const auto kept = KeptGgufHeader(*checkpoint);
+  const std::array<std::string_view, 1> wanted{"gemma4-assistant.embedding_length"};
+  const auto metadata = artifact::ReadGgufMetadata(std::as_bytes(std::span(kept)), wanted);
+  ASSERT_TRUE(metadata) << metadata.error().ToString();
+  ASSERT_TRUE(metadata->contains(wanted.front()));
+  const std::array tensors{
+      spec::SourceTensor{.name = "tiny.weight",
+                         .format = {.encoding = fm::Encoding::kF32,
+                                    .layout = fm::Layout::kDense,
+                                    .shape = {.ne = {1, 1, 1, 1}, .rank = 1}}}};
+  const auto scratch = std::filesystem::path(testing::TempDir()) / "drafter-stored-refusal";
+  for (const std::string& stored : {std::string(), std::string("{}\n")}) {
+    const auto artifact = MakeDrafterV1(scratch, "gemma4-assistant", tensors, "drafter.gguf", 1,
+                                        std::string(64, '1'), kept, "gguf", stored);
+    ASSERT_TRUE(artifact) << artifact.error().ToString();
+    const auto admitted = rt::ReadComponentDrafterAdmission(*artifact);
+    EXPECT_FALSE(admitted);
+    if (stored.empty()) EXPECT_NE(admitted.error().find("carries no spec"), std::string::npos);
+  }
+  std::error_code error;
+  std::filesystem::remove_all(scratch, error);
+}
+
+TEST(ImportDrafterNormalizeTest, NativeExtractionUsesCanonicalTargetAcrossSourceAliases) {
   const std::filesystem::path scratch =
       std::filesystem::path(testing::TempDir()) / "import-drafter-source-alias";
   std::error_code ec;
@@ -394,7 +413,11 @@ TEST(ImportDrafterNormalizeTest, LegacyDrafterValuesMatchCanonicalTargetAcrossSo
       auto target = MakeTargetV1(scratch / (container + architecture), architecture, "target.bin",
                                  1, std::string(64, '1'), container, target_spec);
       ASSERT_TRUE(target) << target.error().ToString();
-      const auto values = rt::ComponentDrafterValues(*target, *drafter);
+      auto target_source = spec::SourceOf(*target);
+      auto draft_source = spec::SourceOf(*drafter);
+      ASSERT_TRUE(target_source && draft_source);
+      const auto values = spec::ExtractValues(spec::mappings::Qwen38MtpNativeMapping(),
+                                              target_model, *target_source, *draft_source);
       ASSERT_TRUE(values) << values.error();
       for (const auto& [key, expected] :
            {std::pair{"qwen4exp-mtp.block_count", std::int64_t{1}},
@@ -406,85 +429,23 @@ TEST(ImportDrafterNormalizeTest, LegacyDrafterValuesMatchCanonicalTargetAcrossSo
       }
     }
   }
-  // A source alias is accepted only through its registered target/container mapping.
-  for (const auto& [architecture, container, reason] :
-       {std::tuple{"gemma4", "gguf", "does not target architecture"},
-        std::tuple{"qwen3_8_flash_next", "gguf", "no target component mapping"},
-        std::tuple{"qwen4exp-mtp", "safetensors", "no target component mapping"}}) {
-    SCOPED_TRACE(architecture);
-    auto target = MakeTargetV1(scratch / architecture, architecture, "target.bin", 1,
-                               std::string(64, '1'), container);
-    ASSERT_TRUE(target) << target.error().ToString();
-    const auto refused = rt::ComponentDrafterValues(*target, *drafter);
-    ASSERT_FALSE(refused);
-    EXPECT_NE(refused.error().find(reason), std::string::npos) << refused.error();
-  }
+  // Extraction is import-only. A complete source inventory without stored
+  // execution structure cannot be admitted, regardless of a known registry key.
+  EXPECT_FALSE(rt::ReadComponentDrafterAdmission(*drafter));
   std::filesystem::remove_all(scratch, ec);
 }
 
-TEST(ImportDrafterNormalizeTest, RetainedInvalidListsCannotEraseAnOptionalRequirement) {
-  const std::filesystem::path scratch =
-      std::filesystem::path(testing::TempDir()) / "import-drafter-retained-list-bound";
-  std::error_code ec;
-  std::filesystem::remove_all(scratch, ec);
-  const auto target_art =
-      MakeTargetV1(scratch / "target", "gemma4", "target.gguf", 1, std::string(64, '1'));
-  ASSERT_TRUE(target_art) << target_art.error().ToString();
-  const std::array tensors{
-      spec::SourceTensor{.name = "tiny.weight",
-                         .format = {.encoding = fm::Encoding::kF32,
-                                    .layout = fm::Layout::kDense,
-                                    .shape = {.ne = {1, 1, 1, 1}, .rank = 1}}}};
-  const std::string key = "gemma4-assistant.attention.shared_kv_layers";
-  const auto target = test_support::GemmaImportTarget(26);
-  const auto source = test_support::Gemma4AssistantSource(26);
-  const auto& mapping = spec::mappings::Gemma4AssistantMapping();
-  auto baseline = test_support::families::Gemma4AssistantValues(
-      test_support::families::Gemma4Assistant26(), test_support::families::Gemma4_26BA4B());
-  ASSERT_TRUE(baseline) << baseline.error();
-  ASSERT_TRUE(spec::ComposeDrafter(target.model, *target.mapping, mapping, source, *baseline));
-  std::size_t sequence = 0;
-  const auto read = [&](MetaValue value) {
-    Checkpoint metadata;
-    Value(metadata, key, std::move(value));
-    auto drafter = MakeDrafterV1(scratch / std::to_string(++sequence), "gemma4-assistant", tensors,
-                                 "drafter.gguf", 1, std::string(64, '2'), KeptGgufHeader(metadata));
-    EXPECT_TRUE(drafter) << (drafter ? "" : drafter.error().ToString());
-    if (!drafter)
-      return std::expected<std::vector<spec::SourceValue>, std::string>(
-          std::unexpected("test artifact publication failed"));
-    return rt::ComponentDrafterValues(*target_art, *drafter);
-  };
-  const auto valid = read(std::int64_t{4});
-  ASSERT_TRUE(valid) << valid.error();
-  ASSERT_EQ(valid->size(), 1U);
-  EXPECT_EQ(valid->front().key, key);
-  EXPECT_EQ(std::get<std::int64_t>(valid->front().value), 4);
-  for (const bool real : {false, true}) {
-    for (const auto count : {spec::kMaxList, spec::kMaxList + 1}) {
-      SCOPED_TRACE(std::format("real={} count={}", real, count));
-      const auto values =
-          real ? read(std::vector<double>(count, 4.0)) : read(std::vector<std::int64_t>(count, 4));
-      if (count > spec::kMaxList) {
-        ASSERT_FALSE(values);
-        EXPECT_NE(values.error().find("list exceeds the value bound"), std::string::npos);
-      } else {
-        ASSERT_TRUE(values) << values.error();
-        ASSERT_EQ(values->size(), 1U);
-        EXPECT_EQ(values->front().key, key);
-        auto malformed = *baseline;
-        malformed.push_back(values->front());
-        EXPECT_FALSE(
-            spec::ComposeDrafter(target.model, *target.mapping, mapping, source, malformed));
-      }
-    }
+TEST(ImportDrafterNormalizeTest, InvalidSourceListsCannotEraseAnOptionalRequirement) {
+  for (const auto count : {spec::kMaxList, spec::kMaxList + 1}) {
+    auto cp = SyntheticAssistantCheckpoint(26);
+    ASSERT_TRUE(cp);
+    Value(*cp, "gemma4-assistant.attention.shared_kv_layers", std::vector<std::int64_t>(count, 4));
+    auto cost = NormalizationBound(*cp);
+    if (!cost) continue;
+    auto plan = test_support::NormalizeWithFixtureTarget(std::move(*cp),
+                                                         {cost->metadata_bytes, cost->work_units});
+    EXPECT_FALSE(plan);
   }
-  // The metadata reader represents string arrays as kOther. A wanted mapping
-  // key cannot disappear merely because its present value has no supported type.
-  const auto unsupported = read(std::vector<std::string>{"4"});
-  ASSERT_FALSE(unsupported);
-  EXPECT_NE(unsupported.error().find("unsupported type"), std::string::npos);
-  std::filesystem::remove_all(scratch, ec);
 }
 
 TEST(ImportDrafterNormalizeTest, RefusedTargetDiagnosticOutlivesValidation) {
@@ -618,15 +579,14 @@ TEST(ImportDrafterNormalizeModelsTest,
     // Verify drafter admission
     auto drafter_source = spec::SourceOf(*drafter_art);
     ASSERT_TRUE(drafter_source) << drafter_source.error();
-    auto admission = rt::CheckComponentDrafterAdmission(*drafter_source, drafter_art->sources());
+    auto admission =
+        rt::CheckComponentDrafterAdmission(plan->spec(), *drafter_source, drafter_art->sources());
     ASSERT_TRUE(admission) << (admission ? "" : admission.error());
 
-    auto vals = rt::ComponentDrafterValues(*target_art, *drafter_art);
-    ASSERT_TRUE(vals) << vals.error();
-    const auto* mapping = rt::ComposedDrafterMapping(*drafter_art);
-    ASSERT_NE(mapping, nullptr);
-    auto composed =
-        spec::ComposeDrafter(target->model, *target->mapping, *mapping, *drafter_source, *vals);
+    auto stored = spec::StoredSpec(*drafter_art);
+    ASSERT_TRUE(stored) << stored.error();
+    EXPECT_EQ(*stored, plan->spec());
+    auto composed = spec::ComposeStoredDrafter(target->model, *stored);
     ASSERT_TRUE(composed) << composed.error();
     const std::array<std::span<const spec::SourceTensor>, 2> tables{target->source.tensors,
                                                                     drafter_source->tensors};
@@ -712,21 +672,23 @@ TEST(ImportDrafterNormalizeModelsTest,
   // Verify drafter admission
   auto drafter_source = spec::SourceOf(*drafter_art);
   ASSERT_TRUE(drafter_source) << drafter_source.error();
-  auto admission = rt::CheckComponentDrafterAdmission(*drafter_source, drafter_art->sources());
+  auto admission =
+      rt::CheckComponentDrafterAdmission(plan->spec(), *drafter_source, drafter_art->sources());
   ASSERT_TRUE(admission) << (admission ? "" : admission.error());
 
-  auto vals = rt::ComponentDrafterValues(*target_art, *drafter_art);
-  ASSERT_TRUE(vals) << vals.error();
-  const auto* mapping = rt::ComposedDrafterMapping(*drafter_art);
-  ASSERT_NE(mapping, nullptr);
-  auto composed =
-      spec::ComposeDrafter(target->model, *target->mapping, *mapping, *drafter_source, *vals);
+  auto stored = spec::StoredSpec(*drafter_art);
+  ASSERT_TRUE(stored) << stored.error();
+  EXPECT_EQ(*stored, plan->spec());
+  auto composed = spec::ComposeStoredDrafter(target->model, *stored);
   ASSERT_TRUE(composed) << composed.error();
   const std::array<std::span<const spec::SourceTensor>, 2> tables{target->source.tensors,
                                                                   drafter_source->tensors};
   EXPECT_TRUE(components::ValidateSpec(*composed, tables));
   EXPECT_TRUE(rt::CheckComposedAdmission(*composed, *target_art, *drafter_art));
-  EXPECT_FALSE(rt::ComponentDrafterValues(*gemma_target_art, *drafter_art));
+  auto wrong_target = spec::StoredSpec(*gemma_target_art);
+  ASSERT_TRUE(wrong_target) << wrong_target.error();
+  auto wrong = spec::ComposeStoredDrafter(*wrong_target, *stored);
+  EXPECT_TRUE(!wrong || !rt::CheckComposedAdmission(*wrong, *gemma_target_art, *drafter_art));
 
   RecordProperty("drafter_id", written->id);
   RecordProperty("drafter_path", written->path.string());

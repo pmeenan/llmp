@@ -158,7 +158,7 @@ bool StartupReaderLoan::Covers(const catalog::Catalog& catalog, catalog::DomainI
 }
 
 std::expected<std::uint64_t, std::string> StartupArtifactBytes(const artifact::Artifact& artifact) {
-  // Drafters may contribute a source without a stored spec; target admission
+  // Both targets and drafters contribute a stored spec; admission
   // still requires one. Pay the retained source and any spec before either
   // admission is read, independently of that semantic requirement.
   auto bound = ComponentAdmissionBytes(artifact);
@@ -198,19 +198,20 @@ std::expected<std::uint64_t, std::string> StartupStructureBytes(const artifact::
       return std::unexpected("startup composition inventory overflows");
     // Individual source/spec storage plus canonical and effective composition.
     // Each composition is bounded by the two contributing admission inventories;
-    // their descriptor terms also cover legacy recipe-generated component records.
+    // their descriptor terms include each typed stage execution contract.
     if (__builtin_mul_overflow(*bytes, std::uint64_t{3}, &*bytes))
       return std::unexpected("startup composition copies overflow");
-    const auto* mapping = ComposedDrafterMapping(*drafter);
-    if (mapping && mapping->draft && !mapping->draft->head_ids.empty()) {
-      if (auto resource = drafter->FindResource(mapping->draft->head_ids)) {
-        std::uint64_t heads = 0;
-        if (__builtin_mul_overflow(drafter->resources()[*resource].bytes.value(), std::uint64_t{3},
-                                   &heads) ||
-            __builtin_add_overflow(*bytes, heads, &*bytes))
-          return std::unexpected("startup selected-head inventory overflows");
-      }
-    }
+    // Before reading spec.json, fund any eligible selected-map descriptor.
+    // Only one output map is admitted; input, validation and retained copies
+    // coexist. A same-name resource of another format earns no allowance.
+    std::uint64_t largest = 0;
+    for (const auto& resource : drafter->resources())
+      if (const auto candidate = SelectedHeadStorageBytes(resource))
+        largest = std::max(largest, *candidate);
+    std::uint64_t heads = 0;
+    if (__builtin_mul_overflow(largest, std::uint64_t{3}, &heads) ||
+        __builtin_add_overflow(*bytes, heads, &*bytes))
+      return std::unexpected("startup selected-head inventory overflows");
   }
   return *bytes;
 }

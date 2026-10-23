@@ -51,28 +51,6 @@ bool Keeps(const ja::Artifact& a, std::string_view name) {
   });
 }
 
-std::expected<ja::GgufMetadata, std::string> ReadKeptGguf(const ja::Artifact& a,
-                                                          const std::string& kv,
-                                                          std::span<const std::string_view> keys) {
-  auto bytes = a.ReadMetadata(kv);
-  if (!bytes) {
-    return Error(std::format("{}: {}", kv, bytes.error().ToString()));
-  }
-  auto read = ja::ReadGgufMetadata(std::as_bytes(std::span(*bytes)), keys);
-  if (!read) {
-    return Error(std::format("{}: {}", kv, read.error().ToString()));
-  }
-  return std::move(*read);
-}
-
-std::optional<std::int64_t> Integer(const ja::GgufMetadata& m, std::string_view key) {
-  const auto it = m.find(key);
-  if (it == m.end() || it->second.kind != ja::GgufValue::Kind::kInteger) {
-    return std::nullopt;
-  }
-  return it->second.integer;
-}
-
 // The sampling defaults a checkpoint keeps, each within the range a request
 // may ask for (api.h); one outside it is not a default the route can apply.
 void Sampling(ArtifactFacts& facts, std::optional<double> temperature, std::optional<double> top_p,
@@ -219,9 +197,7 @@ bool SupportsWaveForm(const ArtifactFacts& facts) { return SupportsSpeculativeDr
 
 bool SupportsWaveCosts(const ArtifactFacts& facts) { return SupportsSpeculativeDrafting(facts); }
 
-bool SupportsMtpDrafting(const ArtifactFacts& facts) {
-  return Recipe(facts.architecture, facts.container).mtp_waves;
-}
+bool SupportsMtpDrafting(const ArtifactFacts& facts) { return facts.drafter_mtp; }
 
 bool SupportsSpeculativeDrafting(const ModelSettings& settings) {
   return settings.drafter || Recipe(settings.architecture, settings.container).draft_rows;
@@ -235,9 +211,7 @@ bool SupportsWaveCosts(const ModelSettings& settings) {
   return SupportsSpeculativeDrafting(settings);
 }
 
-bool SupportsMtpDrafting(const ModelSettings& settings) {
-  return Recipe(settings.architecture, settings.container).mtp_waves;
-}
+bool SupportsMtpDrafting(const ModelSettings& settings) { return settings.drafter_mtp; }
 
 bool KeyAppliesTo(std::string_view key, const ArtifactFacts& facts) {
   if (facts.composition) {
@@ -387,12 +361,14 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
   facts.vocabulary = *vocabulary;
   if (const auto* mapping = spec::FindMapping(facts.architecture, facts.container))
     facts.policy_gates = spec::PolicyGates(*mapping, admitted->model, facts.container);
-  // The drafter's admission, once: its source and optional stored spec as
+  // The drafter's admission, once: its source and required stored spec as
   // checked, for its composition below.
   std::optional<ComponentDrafterAdmission> drafter_admitted;
   if (drafter != nullptr) {
     auto d_admitted = ReadComponentDrafterAdmission(*drafter);
     if (!d_admitted) return Error(d_admitted.error());
+    facts.drafter_mtp =
+        std::holds_alternative<spec::MtpDraft>(*d_admitted->model->stages.back().drafting);
     drafter_admitted.emplace(std::move(*d_admitted));
   }
   {
@@ -409,7 +385,8 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
             target, model, admitted->source, *drafter, *drafter_admitted, facts.vocabulary,
             draft_vocab.value_or(serving.default_draft_vocab));
         if (!prepared) return Error(prepared.error());
-        facts.composed_draft_vocab = (*prepared)->vocabulary();
+        if (facts.drafter_mtp) facts.composed_draft_vocab = (*prepared)->vocabulary();
+        facts.drafter_head_rows = (*prepared)->available_vocabulary();
         // Per-alias state representation changes a paid working copy, never the
         // reusable admitted structure or its canonical numerical identity.
         auto effective = (*prepared)->model();
@@ -435,27 +412,17 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
   if (drafter != nullptr) {
     facts.drafter_architecture = drafter->model().architecture;
     facts.drafter_approval = drafter_admitted->approval;
-    const spec::Mapping* draft_mapping = ComposedDrafterMapping(*drafter);
-    const spec::DraftRecipe* draft = draft_mapping != nullptr ? draft_mapping->draft : nullptr;
-    if (draft != nullptr && draft->shape == spec::DraftRecipe::Shape::kMtp &&
-        !draft->head_ids.empty()) {
-      // A selected head: its token map's rows (its approval pins the whole
-      // inventory).
-      auto map =
-          DraftHeadRows(*drafter, draft->head_ids, std::numeric_limits<std::uint32_t>::max());
+    const auto& contract = *drafter_admitted->model->stages.back().drafting;
+    if (const auto* block = std::get_if<spec::BlockDraft>(&contract))
+      facts.drafter_block = block->max_proposals;
+    auto output = spec::DrafterOutput(drafter_admitted->model->stages.back());
+    if (!output) return Error(output.error());
+    for (const auto& weight : (*output)->weights) {
+      if (weight.role != "ids") continue;
+      auto map = DraftHeadRows(*drafter, weight.tensor, facts.vocabulary);
       if (!map) return Error(map.error());
-      if (*map) facts.drafter_selected_rows = static_cast<std::uint32_t>((*map)->rows);
-    }
-    if (const std::string kv = KeptGguf(*drafter); !kv.empty()) {
-      const std::string block_key = std::format("{}.block_size", facts.drafter_architecture);
-      const std::array<std::string_view, 1> keys = {block_key};
-      auto m = ReadKeptGguf(*drafter, kv, keys);
-      if (!m) {
-        return Error(std::format("the drafter's {}", m.error()));
-      }
-      if (const auto block = Integer(*m, block_key); block && *block > 0) {
-        facts.drafter_block = static_cast<std::uint64_t>(*block);
-      }
+      if (!*map) return Error("stored selected head map is absent");
+      facts.drafter_selected_rows = static_cast<std::uint32_t>((*map)->rows);
     }
   }
   if (opened_out != nullptr) {
@@ -615,6 +582,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   s.composition = facts.composition;
   s.pipeline = facts.composition ? spec::PipelineKind::kImage : facts.pipeline;
   s.drafter = entry.drafter.has_value();
+  s.drafter_mtp = facts.drafter_mtp;
   if (facts.composition && entry.Text("kv_cache_encoding"))
     return Error("KV cache encoding is not a composition setting");
   const auto kv = entry.Text("kv_cache_encoding").value_or("f16");
@@ -731,10 +699,6 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     s.speculation = {true, SettingSource::kDerived,
                      std::format("the drafter ({})", facts.drafter_architecture)};
   }
-  // A recipe without drafters (Gemma 2's and 3's) has no speculative path.
-  if (!recipe.drafters && (entry.drafter || entry.Bool("speculation").value_or(false)))
-    return Error(
-        std::format("{} serving has no qualified assistant or speculative path", recipe.family));
   const bool speculative = s.speculation.value;
 
   // Speed trades: calibrated on the machine, else M3's measured constants.
@@ -856,39 +820,20 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
 
   // Drafting.
   const std::optional<std::int64_t> draft_rows = entry.Integer("draft_rows");
-  if (recipe.block_drafts) {
-    // The drafter's block (0: not kept) bounds its drafts.
-    const std::uint64_t block = facts.drafter_block.value_or(0);
-    const std::int64_t asked = draft_rows.value_or(0);
-    if (block != 0 && std::cmp_greater(asked, block)) {
-      return Error(
-          std::format("draft_rows {} is more than the drafter's block of {} drafts", asked, block));
-    }
-    std::optional<std::uint32_t> derived;
-    std::string derived_basis;
-    if (block != 0 && block < recipe.default_draft_rows) {
-      derived = static_cast<std::uint32_t>(block);
-      derived_basis = std::format("{}.block_size {}", facts.drafter_architecture, block);
-    }
-    s.draft_rows =
-        Pick<std::uint32_t>(U32(draft_rows), basis("draft_rows"), {}, {}, derived, derived_basis,
-                            recipe.default_draft_rows, "measured on a GB10");
-  } else {
-    const std::int64_t asked = draft_rows.value_or(recipe.default_draft_rows);
-    if (recipe.mtp_waves) {
-      if (asked < 2 || asked > 3) {
-        return Error(std::format(
-            "draft_rows {} is outside {}'s 2 to 3 (its MTP block drafts two or three passes)",
-            asked, arch));
-      }
-    } else {
-      if (asked < 1 || asked > 16) {
-        return Error(std::format("draft_rows {} is outside {}'s 1 to 16", asked, arch));
-      }
-    }
-    s.draft_rows = Pick<std::uint32_t>(U32(draft_rows), basis("draft_rows"), {}, {}, {}, {},
-                                       recipe.default_draft_rows, "measured on a GB10");
+  const auto default_depth = recipe.default_draft_rows;
+  const auto asked = draft_rows.value_or(default_depth);
+  if (asked <= 0 || std::cmp_greater_equal(asked, UINT32_MAX))
+    return Error("draft_rows must leave room for its anchor in uint32 rows");
+  if (facts.drafter_block && draft_rows && std::cmp_greater(asked, *facts.drafter_block))
+    return Error("draft_rows exceeds the stored block proposal bound");
+  std::optional<std::uint32_t> derived;
+  std::string derived_basis;
+  if (facts.drafter_block && *facts.drafter_block < default_depth) {
+    derived = static_cast<std::uint32_t>(*facts.drafter_block);
+    derived_basis = "stored block proposal bound";
   }
+  s.draft_rows = Pick<std::uint32_t>(U32(draft_rows), basis("draft_rows"), {}, {}, derived,
+                                     derived_basis, default_depth, "serving performance default");
 
   // DeepSeek V4's waves and prefill arithmetic.
   std::optional<config::WaveForm> form;
@@ -933,24 +878,19 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     s.wave_costs = {std::move(costs), SettingSource::kFallback,
                     "measured on a GB10, widths 2 to 8"};
   }
-  // Qwen3.8's MTP and waves.
+  // MTP head extent and wave preferences.
   s.draft_vocab = Pick<std::uint32_t>(U32(entry.Integer("draft_vocab")), basis("draft_vocab"), {},
                                       {}, {}, {}, recipe.default_draft_vocab, "measured on a GB10");
-  // Keep the runner's refusal of a cap larger than its target vocabulary.
-  if (recipe.mtp_waves && speculative && facts.vocabulary != 0 &&
-      s.draft_vocab.value > facts.vocabulary) {
-    return Error(std::format("draft_vocab exceeds the {} target vocabulary", recipe.name));
-  }
-  // The runner already caps selected heads; report that effective value
-  // before registration, preserving a smaller owner-selected limit.
-  if (recipe.mtp_waves && speculative && facts.drafter_selected_rows &&
-      (s.draft_vocab.value == 0 || s.draft_vocab.value > *facts.drafter_selected_rows)) {
-    s.draft_vocab.basis += std::format(" ({} requested; selected draft head has {} rows)",
-                                       s.draft_vocab.value, *facts.drafter_selected_rows);
-    s.draft_vocab.value = *facts.drafter_selected_rows;
-    if (s.draft_vocab.source == SettingSource::kFallback) {
+  // Settings report the same actual prefix bound as prepared execution.
+  const auto head_rows =
+      facts.drafter_head_rows ? facts.drafter_head_rows : facts.drafter_selected_rows;
+  if (facts.drafter_mtp && speculative && head_rows &&
+      (s.draft_vocab.value == 0 || s.draft_vocab.value > *head_rows)) {
+    s.draft_vocab.basis += std::format(" ({} requested; actual draft head has {} rows)",
+                                       s.draft_vocab.value, *head_rows);
+    s.draft_vocab.value = *head_rows;
+    if (s.draft_vocab.source == SettingSource::kFallback)
       s.draft_vocab.source = SettingSource::kDerived;
-    }
   }
   if (facts.target_spec) {
     s.bound_spec = speculative ? facts.composed_spec : facts.target_spec;
@@ -961,7 +901,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   }
   if (speculative && facts.composed_draft_vocab &&
       *facts.composed_draft_vocab !=
-          (s.draft_vocab.value == 0 ? facts.vocabulary : s.draft_vocab.value))
+          (s.draft_vocab.value == 0 ? head_rows.value_or(facts.vocabulary) : s.draft_vocab.value))
     return Error("artifact facts were derived for a different draft vocabulary");
 
   s.depth_cost_ratio =

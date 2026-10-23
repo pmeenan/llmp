@@ -325,8 +325,9 @@ std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSou
   if (!drafter_policy && forced && speculate) {
     // The forced route retains its shared fusion rules for the drafter,
     // but each stage's independent product policies come from its mapping.
-    auto text = spec::DefaultPolicy(*drafter_mapping, hold.drafter_values,
-                                    {.context = context, .slots = slots});
+    auto text = drafter_mapping ? spec::DefaultPolicy(*drafter_mapping, hold.drafter_values,
+                                                      {.context = context, .slots = slots})
+                                : std::expected<std::string_view, std::string>(std::string_view{});
     if (!text) return Error(text.error());
     auto own = text->empty() ? std::expected<planner::Policy, std::string>(planner::Policy{})
                              : planner::ParsePolicy(*text);
@@ -342,8 +343,10 @@ std::expected<std::unique_ptr<engine::StepSource>, std::string> SealComponentSou
                         : forced         ? std::optional(target_policy)
                                          : std::nullopt;
     if (!stage_policy) {
-      auto text = spec::DefaultPolicy(*drafter_mapping, hold.drafter_values,
-                                      {.context = context, .slots = slots});
+      auto text = drafter_mapping
+                      ? spec::DefaultPolicy(*drafter_mapping, hold.drafter_values,
+                                            {.context = context, .slots = slots})
+                      : std::expected<std::string_view, std::string>(std::string_view{});
       if (!text) return Error(text.error());
       auto parsed = text->empty() ? std::expected<planner::Policy, std::string>(planner::Policy{})
                                   : planner::ParsePolicy(*text);
@@ -411,8 +414,7 @@ struct PreparedServing {
 std::expected<LlmBuildParts, std::string> AssembleComponentParts(
     engine::PagedNode& node, const fs::path& store, std::string_view id,
     std::string_view drafter_id, [[maybe_unused]] int index, const ModelSettings& settings,
-    const spec::ServingRecipe& recipe, const spec::Mapping* drafter_mapping,
-    const ComponentBuildOptions& options,
+    const spec::ServingRecipe& recipe, const ComponentBuildOptions& options,
     const std::shared_ptr<engine::ExecutionMetadataAllowance>& metadata, PreparedServing built) {
   auto* held = built.hold.get();
   const auto& target = held->layouts.front();
@@ -453,7 +455,7 @@ std::expected<LlmBuildParts, std::string> AssembleComponentParts(
   parts.config.automatic_capture_phases &= ~(1U << static_cast<unsigned>(planner::Phase::kPrefill));
   if (speculate) {
     parts.config.slots.stages.push_back(
-        {.name = std::string(drafter_mapping->stage), .layout = built.hold->layouts.at(1)});
+        {.name = built.hold->spec.stages.at(1).name, .layout = built.hold->layouts.at(1)});
     auto dweights = std::make_unique<engine::PagedWeights>();
     if (auto opened = dweights->Open(
             std::shared_ptr<const ja::Artifact>(held->prepared, &*held->prepared->drafter),
@@ -714,7 +716,7 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
     if (speculate) {
       drafter = &*prepared->drafter;
       drafter_mapping = ComposedDrafterMapping(*drafter);
-      if (!drafter_mapping || !prepared->composition)
+      if (!prepared->composition)
         return Error("prepared model has no admitted drafter composition");
       if (auto envelope = ComponentDrafterEnvelope(
               {.context = settings.context.value, .slots = settings.max_slots.value});
@@ -727,7 +729,6 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
         return Error(checked.error());
       hold->spec = composition.model();
       hold->numerical_semantics[1] = composition.numerical_semantic();
-      hold->drafter_values = composition.values();
       hold->draft_head_rows = composition.vocabulary().value_or(0);
       hold->draft_head_ids = composition.head_ids();
       hold->sources.push_back(prepared->drafter_admission->source);
@@ -825,33 +826,29 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
                                                      settings.prefill_chunk.value, indexed_masks);
     if (!prompt_bound) return Error(prompt_bound.error());
     const auto configured_chunk = *prompt_bound;
-    // How the drafter drafts (its mapping's drafting recipe).
-    const spec::DraftRecipe* draft = speculate ? drafter_mapping->draft : nullptr;
-    if (speculate && draft == nullptr)
-      return Error(std::format("the drafter's architecture {} has no drafting recipe",
-                               drafter->model().architecture));
-    const bool block = draft != nullptr && draft->shape == spec::DraftRecipe::Shape::kBlock;
-    const bool mtp = draft != nullptr && draft->shape == spec::DraftRecipe::Shape::kMtp;
+    // Execution semantics belong to the stored stage. Registry entries only
+    // offer optional performance choices for an already admitted graph.
+    const spec::DraftRecipe* draft =
+        speculate && drafter_mapping ? drafter_mapping->draft : nullptr;
+    const spec::StageDrafting* contract = speculate && hold->spec.stages.back().drafting
+                                              ? &*hold->spec.stages.back().drafting
+                                              : nullptr;
+    if (speculate && !contract) return Error("stored drafter execution contract is absent");
+    const auto* block_contract = contract ? std::get_if<spec::BlockDraft>(contract) : nullptr;
+    const bool block = block_contract != nullptr;
+    const bool mtp = contract && std::holds_alternative<spec::MtpDraft>(*contract);
     const auto small_rows = draft != nullptr ? draft->small_chunk_rows : 4U;
     const auto small_depth = draft != nullptr ? draft->small_chunk_max_depth : 2U;
     const auto depth =
         mtp ? (configured_chunk >= small_rows ? settings.draft_rows.value
                                               : std::min(settings.draft_rows.value, small_depth))
-        : block ? settings.draft_rows.value
-                : (draft != nullptr ? draft->depth : 0U);
-    // A block drafter's bound and fill token, from the metadata it keeps.
-    std::int32_t block_fill = 0;
-    if (block) {
-      auto most = KeptInteger(*drafter, draft->depth_key);
-      if (!most) return Error(most.error());
-      auto fill = KeptInteger(*drafter, draft->fill_key);
-      if (!fill) return Error(fill.error());
-      if (*fill < 0 || *fill > std::numeric_limits<std::int32_t>::max())
-        return Error("a block drafter's fill token is outside the vocabulary");
-      block_fill = static_cast<std::int32_t>(*fill);
-      if (depth == 0 || depth == UINT32_MAX || std::cmp_greater(depth, *most))
-        return Error("the resolved draft depth exceeds the bound block drafter");
-    }
+        : contract ? settings.draft_rows.value
+                   : 0U;
+    const std::int32_t block_fill = block_contract ? block_contract->fill_token : 0;
+    if (speculate && (depth == 0 || depth == UINT32_MAX))
+      return Error("draft depth must leave room for its anchor in uint32 rows");
+    if (block_contract && depth > block_contract->max_proposals)
+      return Error("the resolved draft depth exceeds the stored block bound");
     // Each stage's state by model::ExtentLayout's per-tensor rule: a tensor
     // of an extent or more on its own extents (its growth crosses extents
     // with every other's), smaller ones packed, a bank kept contiguous.
@@ -906,7 +903,7 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
                   .borrows_target = !mtp && !block,
                   .anchored = !mtp && !block,
                   .features = !block,
-                  .adaptive = mtp && depth >= 3,
+                  .adaptive = mtp && depth >= 3 && depth <= 7,
                   .depth_cost = mtp ? settings.depth_cost_ratio.value
                                     : (draft != nullptr ? draft->default_depth_cost : 1.16),
                   .device_tokens = serving_policy->device_tokens(),
@@ -1033,8 +1030,8 @@ LlmBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store, const config
                                        *artifact, drafter ? &*drafter : nullptr);
     if (!sealed) return Error(sealed.error());
     auto step_source = std::move(*sealed);
-    return AssembleComponentParts(node, store, id, drafter_id, index, settings, recipe,
-                                  drafter_mapping, options, metadata,
+    return AssembleComponentParts(node, store, id, drafter_id, index, settings, recipe, options,
+                                  metadata,
                                   {.hold = std::move(hold),
                                    .source = std::move(step_source),
                                    .placements = std::move(placements),

@@ -1893,7 +1893,7 @@ TEST_F(ImportWriterTest, DiffusersArchiveEventRecorded) {
   EXPECT_EQ(count, 1U);
 }
 
-// A drafter's publication (no spec of its own) with a gathered head and a
+// A drafter's publication with a gathered head and a
 // token map generated from its whole authenticated list file: the private
 // tiny product exercises only the shared publisher.
 class ImportDrafterWriterTest : public ImportWriterTest {
@@ -1971,6 +1971,18 @@ class ImportDrafterWriterTest : public ImportWriterTest {
                        .parts = {{.part = format::PartRole::kData,
                                   .kind = PartAssemblyKind::kRows,
                                   .sources = {1, 2}}}});
+    const format::TensorFormat projection_format{.encoding = Encoding::kBF16,
+                                                 .shape = {.ne = {8, 4, 1, 1}, .rank = 2}};
+    if (executable) {
+      source.tensors.push_back({.name = "projection.weight",
+                                .format = projection_format,
+                                .extent = {.file = 0, .offset = 160, .bytes = 64},
+                                .dtype = "BF16",
+                                .dims = {4, 8}});
+      outputs.push_back({.name = "projection.weight",
+                         .format = projection_format,
+                         .parts = {{.part = format::PartRole::kData, .sources = {3}}}});
+    }
     std::vector<SourceDisposition> dispositions(source.tensors.size());
     auto cost = IndexedPartPlan::Bound(source, outputs);
     if (!cost) return std::unexpected(cost.error());
@@ -1994,6 +2006,27 @@ class ImportDrafterWriterTest : public ImportWriterTest {
                            .weights = {{.role = "ids", .tensor = "draft_output.ids"},
                                        {.role = "weight", .tensor = "draft_output.weight"}}};
     if (executable) {
+      canonical.tensors.insert(canonical.tensors.end() - 1,
+                               {.name = "projection.weight", .format = projection_format});
+      model.stages[0].embedding = spec::ComponentRef{
+          .kind = "embedding.token", .weights = {{.role = "table", .tensor = "token_embd.weight"}}};
+      model.stages[0].heads.output = spec::ComponentRef{
+          .kind = "head.linear", .weights = {{.role = "weight", .tensor = "token_embd.weight"}}};
+      model.stages[0].layers = {
+          {{spec::ComponentRef{.kind = "norm.rms",
+                               .params = {{"eps", 0.00001}},
+                               .weights = {{.role = "weight", .tensor = "target.norm"}}}}}};
+      model.stages[0].taps = {{.name = "features", .layer = 0}};
+      model.stages[1].drafting = spec::MtpDraft{};
+      model.stages[1].embedding = spec::ComponentRef{
+          .kind = "embedding.projected",
+          .params = {{"scale", 1.0},
+                     {"feature", std::int64_t{4}},
+                     {"tap", std::string("features")}},
+          .weights = {{.role = "table", .tensor = "token_embd.weight", .stage = "target"},
+                      {.role = "projection", .tensor = "projection.weight"}}};
+      model.stages[1].reads = {
+          {.stage = "target", .kind = spec::ReadKind::kTap, .name = "features"}};
       for (auto& stage : model.stages) {
         stage.stream.width = 4;
         stage.context = 128;
@@ -2005,14 +2038,16 @@ class ImportDrafterWriterTest : public ImportWriterTest {
       model.stages[1].heads.output->params = {{"selected", true}, {"rows", std::int64_t{3}}};
       spec::Canonicalize(model);
     }
-    std::vector<GeneratedPart> generated{{.tensor = 2, .file = 1, .bytes = {}}};
+    std::vector<GeneratedPart> generated{{.tensor = executable ? 3U : 2U, .file = 1, .bytes = {}}};
     for (const int id : {1, 2, 5})
       for (int b = 0; b < 4; ++b)
         generated[0].bytes.push_back(static_cast<std::byte>(b == 0 ? id : 0));
+    std::vector<NormalizedPartBinding> bindings{{0, format::PartRole::kData},
+                                                {1, format::PartRole::kData}};
+    if (executable) bindings.push_back({2, format::PartRole::kData});
     return test_support::PartPublicationFixture::MakeDrafter(
-        std::move(*parts), std::move(canonical), std::move(model),
-        {{0, format::PartRole::kData}, {1, format::PartRole::kData}}, std::move(generated),
-        std::string(kOptions));
+        std::move(*parts), std::move(canonical), std::move(model), std::move(bindings),
+        std::move(generated), std::string(kOptions));
   }
   std::vector<std::byte> Read(const artifact::Artifact& a, const std::filesystem::path& root,
                               std::string_view name) {
@@ -2094,41 +2129,49 @@ TEST_F(ImportDrafterWriterTest, NativeComponentsPublishTheirCanonicalRoleAndKeep
     const auto stored = spec::StoredSpec(*opened);
     ASSERT_TRUE(stored) << stored.error();
     EXPECT_EQ(*stored, plan->spec());
-    ASSERT_TRUE(runtime::ReadComponentDrafterAdmission(*opened));
+    const auto admitted = runtime::ReadComponentDrafterAdmission(*opened);
+    ASSERT_TRUE(admitted) << admitted.error();
 
     spec::ModelSpec target_spec;
-    spec::Stage target{.name = "target", .context = 128};
-    target.stream.width = 4;
-    target.embedding = spec::ComponentRef{
-        .kind = "embedding.token", .weights = {{.role = "table", .tensor = "token_embd.weight"}}};
-    target.heads.output = spec::ComponentRef{
-        .kind = "head.linear", .weights = {{.role = "weight", .tensor = "token_embd.weight"}}};
-    target_spec.stages.push_back(std::move(target));
+    target_spec.stages.push_back(plan->spec().stages.front());
     spec::Canonicalize(target_spec);
     for (const std::string& architecture :
-         {std::string("qwen4exp"), source_architecture, std::string("deepseek4")}) {
+         {std::string("qwen4exp"), source_architecture, std::string("deepseek4"),
+          std::string("unregistered-target")}) {
       test::V1Plan target_plan;
       target_plan.architecture = architecture;
       target_plan.container = architecture == "deepseek4" ? "gguf" : container;
       target_plan.spec = spec::ToJson(target_spec);
-      target_plan.groups = {
-          test::V1Group{.kind = artifact::GroupKind::kTable,
-                        .resources = {{.name = "token_embd.weight",
-                                       .format = {.encoding = Encoding::kBF16,
-                                                  .shape = {.ne = {4, 10, 1, 1}, .rank = 2}}}}}};
+      target_plan.groups = {test::V1Group{
+          .kind = artifact::GroupKind::kTable,
+          .resources = {
+              {.name = "token_embd.weight",
+               .format = {.encoding = Encoding::kBF16, .shape = {.ne = {4, 10, 1, 1}, .rank = 2}}},
+              {.name = "target.norm",
+               .format = {.encoding = Encoding::kBF16,
+                          .shape = {.ne = {4, 1, 1, 1}, .rank = 1}}}}}};
       auto target_artifact = artifact::Artifact::Open(
           test::Publish(dir_ / (container + architecture), test::Render(target_plan)));
       ASSERT_TRUE(target_artifact) << target_artifact.error().ToString();
       const auto facts = runtime::ArtifactFactsOf(*target_artifact, &*opened);
       ASSERT_TRUE(facts) << facts.error();
-      if (architecture == "deepseek4") {
-        EXPECT_FALSE(facts->composed_spec);
-        EXPECT_NE(facts->composed_spec_error.find("does not target architecture"),
-                  std::string::npos);
-      } else {
-        EXPECT_TRUE(facts->composed_spec) << facts->composed_spec_error;
-        EXPECT_TRUE(facts->composed_spec_error.empty());
-      }
+      EXPECT_TRUE(facts->composed_spec) << facts->composed_spec_error;
+      EXPECT_TRUE(facts->composed_spec_error.empty());
+
+      // A compatible graph is admitted regardless of the provenance name;
+      // a real feature-width mismatch still prevents composition.
+      auto wider = target_spec;
+      wider.stages[0].stream.width = 5;
+      spec::Canonicalize(wider);
+      target_plan.spec = spec::ToJson(wider);
+      for (auto& resource : target_plan.groups[0].resources) resource.format.shape.ne[0] = 5;
+      auto incompatible = artifact::Artifact::Open(
+          test::Publish(dir_ / (container + architecture + "-wide"), test::Render(target_plan)));
+      ASSERT_TRUE(incompatible) << incompatible.error().ToString();
+      const auto refused = runtime::ArtifactFactsOf(*incompatible, &*opened);
+      ASSERT_TRUE(refused) << refused.error();
+      EXPECT_FALSE(refused->composed_spec);
+      EXPECT_FALSE(refused->composed_spec_error.empty());
     }
   }
 }
