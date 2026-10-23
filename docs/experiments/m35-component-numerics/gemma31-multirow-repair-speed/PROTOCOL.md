@@ -52,3 +52,12 @@ unchanged in R's audited source ledger. This is a syntax correction, not tuning.
 Use fresh `output-r2` paths and a new reviewed registration commit before the
 first actual timing arm. No completed timing sample is retried or replaced;
 the earlier service never became ready and produced no request sample.
+
+The corrected-policy launch also stopped before readiness or any request: the
+collector inherited system cuBLAS13.1 instead of the already-pinned13.8 closure.
+The executor now passes the pinned `runtime.ld_library_path` to its collector
+child explicitly and records it in launch.json, while its own preflight
+environment stays clean. The authenticated runtime and dependency bytes are
+unchanged; the registered closure is now also the closure used by the child.
+The failed `output-r2` is preserved. Use fresh `output-r3` paths after reviewing
+and committing this launch correction; no timing sample is replaced.

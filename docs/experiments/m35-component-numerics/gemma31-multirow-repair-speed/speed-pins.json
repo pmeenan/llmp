@@ -96,8 +96,8 @@
     },
     "semantic_completion_claim": false
   },
-  "output_root": "/tmp/llmp-u4-gemma31-multirow-c2-speed-r1/output-r2",
-  "executor_sha256": "29955902ecaec252790292d4f510fa5867aa17ac913a0d41c7b60212ca45fce2",
+  "output_root": "/tmp/llmp-u4-gemma31-multirow-c2-speed-r1/output-r3",
+  "executor_sha256": "0e03f9f6588fa0d261951aa841da7127a524101b924142c16f06762d8207651f",
   "validator_sha256": "dffe334762032e9a55292667960a5e139a2cbb7af01fa72410937a5b64752b28",
   "quality_gate_required": true,
   "collection_enabled": false,

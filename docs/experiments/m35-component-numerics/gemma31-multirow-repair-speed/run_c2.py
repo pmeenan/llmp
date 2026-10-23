@@ -176,10 +176,14 @@ if __name__ == "__main__":
     d.mkdir(mode=0o700, parents=True, exist_ok=False)
     write(d / "preflight.json", before)
     args = argv(n, arm)
-    write(d / "launch.json", {"argv": args, "executor_sha256": sha(__file__), "start_unix": time.time()})
+    write(d / "launch.json", {"argv": args, "executor_sha256": sha(__file__), "start_unix": time.time(),
+                              "collector_ld_library_path": P["runtime"]["ld_library_path"]})
     try:
         with (d / "collector-output.txt").open("xb") as f:
-            rc = subprocess.run(args, stdout=f, stderr=subprocess.STDOUT).returncode
+            collector_env = dict(os.environ)
+            collector_env["LD_LIBRARY_PATH"] = P["runtime"]["ld_library_path"]
+            rc = subprocess.run(args, env=collector_env, stdout=f,
+                                stderr=subprocess.STDOUT).returncode
         write(d / "returncode.json", {"returncode": rc})
     finally:
         after = guard()
