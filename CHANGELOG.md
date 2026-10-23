@@ -24,6 +24,10 @@ The entries below record each change; the record of the milestone is
 
 ### Added
 
+- HF block-scaled FP8 imports retain E4M3FN codes and F32 scales with explicit
+  block geometry, CPU reference decoding and validated stored specs. Device
+  execution support remains separate (M3.5 U3b).
+
 - ModelOpt MXFP4 weight imports preserve packed codes and block scales through
   the generic importer. Qwen2, Llama and Mistral share one canonical mapping
   per architecture across GGUF, HF and EXL3 source dialects

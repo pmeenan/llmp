@@ -466,8 +466,8 @@ std::optional<std::string> CompanionStem(std::string_view name, format::PartRole
       part != format::PartRole::kBiases && part != format::PartRole::kZeros) {
     return std::nullopt;
   }
-  for (std::string_view suffix : {".weight_scale_2", ".weight_scale", ".weight_bias",
-                                  ".weight_zero", ".scales", ".biases", ".zeros"}) {
+  for (std::string_view suffix : {".weight_scale_2", ".weight_scale_inv", ".weight_scale",
+                                  ".weight_bias", ".weight_zero", ".scales", ".biases", ".zeros"}) {
     if (name.size() > suffix.size() && name.ends_with(suffix)) {
       return std::format("{}.weight", name.substr(0, name.size() - suffix.size()));
     }

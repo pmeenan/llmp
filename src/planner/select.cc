@@ -581,19 +581,20 @@ std::vector<std::size_t> SelectionView::ForOperands(
       continue;
     }
     const format::TensorFormat& f = sources[i]->format;
-    operands.push_back(
-        {.operand = static_cast<std::uint8_t>(i),
-         .stacked = f.stacked,
-         .encoding = f.encoding,
-         .layout = f.layout,
-         .params = f.params,
-         .ne = {f.shape.ne.at(0), f.shape.ne.at(1), f.shape.ne.at(2), f.shape.ne.at(3)},
-         .memory =
-             execution::OperandMemory{.nb = sources[i]->nb,
-                                      .view_offset = sources[i]->view_offset,
-                                      .root_alignment = i < alignments.size() ? alignments[i] : 0,
-                                      .is_view = sources[i]->is_view()},
-         .rank = f.shape.rank});
+    operands.push_back({
+        .operand = static_cast<std::uint8_t>(i),
+        .stacked = f.stacked,
+        .encoding = f.encoding,
+        .layout = f.layout,
+        .rank = f.shape.rank,
+        .params = f.params,
+        .ne = {f.shape.ne.at(0), f.shape.ne.at(1), f.shape.ne.at(2), f.shape.ne.at(3)},
+        .memory =
+            execution::OperandMemory{.nb = sources[i]->nb,
+                                     .view_offset = sources[i]->view_offset,
+                                     .root_alignment = i < alignments.size() ? alignments[i] : 0,
+                                     .is_view = sources[i]->is_view()},
+    });
   }
   // The outputs' formats, for rules and predicates on the result.
   for (std::size_t i = 0; i < outputs.size(); ++i) {
@@ -606,6 +607,7 @@ std::vector<std::size_t> SelectionView::ForOperands(
          .stacked = f.stacked,
          .encoding = f.encoding,
          .layout = f.layout,
+         .rank = f.shape.rank,
          .params = f.params,
          .ne = {f.shape.ne.at(0), f.shape.ne.at(1), f.shape.ne.at(2), f.shape.ne.at(3)},
          .memory = execution::OperandMemory{.nb = outputs[i]->nb,
@@ -613,8 +615,7 @@ std::vector<std::size_t> SelectionView::ForOperands(
                                             .root_alignment = sources.size() + i < alignments.size()
                                                                   ? alignments[sources.size() + i]
                                                                   : 0,
-                                            .is_view = outputs[i]->is_view()},
-         .rank = f.shape.rank});
+                                            .is_view = outputs[i]->is_view()}});
   }
   const QueryShape shape = ShapeOfNode(key, sources, outputs);
   execution::CapabilityQuery query{

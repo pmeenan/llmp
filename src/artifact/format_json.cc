@@ -101,6 +101,10 @@ std::expected<void, Error> ReadParams(json::Value v, format::EncodingParams& p) 
         return std::unexpected(n.error());
       }
       p.group = static_cast<std::uint32_t>(*n);
+    } else if (key == "block_rows" || key == "block_cols") {
+      auto n = Positive(value, std::numeric_limits<std::uint32_t>::max());
+      if (!n) return std::unexpected(n.error());
+      (key == "block_rows" ? p.block_rows : p.block_cols) = static_cast<std::uint32_t>(*n);
     } else if (key == "tensor_scale" || key == "zero_point") {
       auto flag = Flag(value);
       if (!flag) {
@@ -209,6 +213,14 @@ void AppendFormatJson(const format::TensorFormat& f, std::string& out) {
     Quoted(out, name);
     out += ':';
   };
+  if (p.block_cols != 0) {
+    key("block_cols");
+    out += std::to_string(p.block_cols);
+  }
+  if (p.block_rows != 0) {
+    key("block_rows");
+    out += std::to_string(p.block_rows);
+  }
   if (p.bits != 0) {
     key("bits");
     out += std::to_string(p.bits);

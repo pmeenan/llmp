@@ -277,6 +277,22 @@ std::expected<void, DecodeError> DecodeRow(const TensorFormat& f, const Parts& p
         AffineRow(f, p, r, y);
         return {};
       }
+      if (f.encoding == Encoding::kFp8Scaled) {
+        const std::uint64_t n = f.shape.ne[1];
+        const std::uint64_t per_projection = n / f.stacked;
+        const std::uint64_t projection = r / per_projection;
+        const std::uint64_t local_row = r % per_projection;
+        const std::uint64_t grid_rows =
+            per_projection / f.params.block_rows + (per_projection % f.params.block_rows != 0);
+        const std::uint64_t grid_cols = k / f.params.block_cols + (k % f.params.block_cols != 0);
+        const std::uint64_t grid_row = projection * grid_rows + local_row / f.params.block_rows;
+        const Bytes codes = p.codes.subspan(r * k, k);
+        for (std::uint64_t j = 0; j < k; ++j) {
+          const std::uint64_t scale_index = grid_row * grid_cols + j / f.params.block_cols;
+          y[j] = E4m3ToF32(U8(codes, j)) * Load<float>(p.scales, 4 * scale_index);
+        }
+        return {};
+      }
       const std::uint64_t blocks = k / info.block_elements;
       const std::uint64_t code_bytes = k * info.element_bits / 8;
       Bytes codes;

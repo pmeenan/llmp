@@ -42,8 +42,8 @@ fmt::TensorFormat AffineWeightFormat() {
   return {.encoding = fmt::Encoding::kAffine,
           .params = {.bits = 4, .group = 32, .scale = fmt::AffineScale::kBF16},
           .layout = fmt::Layout::kSplit,
-          .shape = ir::ShapeOf({kK, kN}),
-          .stacked = 1};
+          .stacked = 1,
+          .shape = ir::ShapeOf({kK, kN})};
 }
 
 struct SingleProductFixture {

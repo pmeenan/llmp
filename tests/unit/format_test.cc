@@ -13,6 +13,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <set>
 #include <span>
@@ -145,7 +146,7 @@ TEST(FormatTest, TablesAreCompleteAndNamed) {
       EXPECT_EQ(info.ggml->block_elements, info.block_elements) << info.name;
     }
   }
-  EXPECT_EQ(format::Encodings().size(), static_cast<std::size_t>(Encoding::kAffine) + 1);
+  EXPECT_EQ(format::Encodings().size(), static_cast<std::size_t>(Encoding::kFp8Scaled) + 1);
   EXPECT_FALSE(format::EncodingByName("Q4_K"));  // names are lower-case
   EXPECT_EQ(format::EncodingByName("q4_k"), Encoding::kQ4_K);
   EXPECT_EQ(format::Info(Encoding::kNvfp4).ggml->block_elements, 64U);
@@ -264,6 +265,36 @@ TEST(FormatTest, TheTrellisHasItsCodesSignsAndMarker) {
 // The affine encoding (MLX's affine mode, AWQ's and GPTQ's arithmetic):
 // codes K · bits / 8 bytes a row, K / group scales of the scale type, and
 // as many biases, or zero points of `bits` bits padded to a byte.
+TEST(FormatTest, Fp8ScaledUsesCheckedTwoDimensionalScaleGrid) {
+  TensorFormat f = Matrix(Encoding::kFp8Scaled, Layout::kSplit, 10, 10, 2);
+  f.stacked = 2;
+  f.params.block_rows = 3;
+  f.params.block_cols = 4;
+  const auto grid = format::Fp8ScaleShapeOf(f);
+  ASSERT_TRUE(grid);
+  EXPECT_EQ(grid->ne, (std::array<std::uint64_t, 4>{3, 4, 2, 1}));
+  const auto parts = Parts(f);
+  ASSERT_EQ(parts.size(), 2U);
+  EXPECT_EQ(parts[0].bytes, 200U);
+  EXPECT_EQ(parts[1].bytes, 96U);
+  EXPECT_EQ(format::RowBytes(f, PartRole::kCodes), 10U);
+  EXPECT_EQ(format::RowBytes(f, PartRole::kBlockScales).error(), FormatError::kLayout);
+
+  f.params.block_rows = 1;
+  EXPECT_EQ(format::RowBytes(f, PartRole::kBlockScales), 12U);
+  f.params.block_rows = 3;
+  f.layout = Layout::kRowInterleaved;
+  EXPECT_EQ(Refusal(f), FormatError::kLayout);
+  f.layout = Layout::kSplit;
+  f.params.block_cols = 0;
+  EXPECT_EQ(Refusal(f), FormatError::kParams);
+  f.params.block_cols = 4;
+  f.params.block_rows = std::numeric_limits<std::uint32_t>::max();
+  EXPECT_TRUE(format::Validate(f));  // partial row blocks are valid
+  f.shape.ne[0] = std::numeric_limits<std::uint64_t>::max();
+  EXPECT_EQ(format::Fp8ScaleShapeOf(f).error(), FormatError::kOverflow);
+}
+
 TEST(FormatTest, AffineSizesAsItsBitsGroupsAndScales) {
   const auto affine = [](std::uint64_t k, std::uint64_t n, std::uint8_t bits, std::uint32_t group,
                          format::AffineScale scale, bool zeros = false,

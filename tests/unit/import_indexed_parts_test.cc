@@ -29,10 +29,11 @@ format::TensorFormat Fmt(Encoding encoding, std::initializer_list<std::uint64_t>
   format::EncodingParams params{.tensor_scale = encoding == Encoding::kNvfp4};
   if (encoding == Encoding::kAffine)
     params = {.bits = 4, .group = 32, .scale = format::AffineScale::kBF16};
+  if (encoding == Encoding::kFp8Scaled) params = {.block_rows = 3, .block_cols = 2};
   return {.encoding = encoding,
           .params = params,
           .layout = encoding == Encoding::kNvfp4 || encoding == Encoding::kMxfp8 ||
-                            encoding == Encoding::kAffine
+                            encoding == Encoding::kAffine || encoding == Encoding::kFp8Scaled
                         ? Layout::kSplit
                         : Layout::kDense,
           .shape = shape.value_or(format::Shape{})};
@@ -150,6 +151,33 @@ TEST(ImportIndexedPartsTest, AllExpertPartsGatherInNumericOrderFromPhysicalOrder
   EXPECT_EQ(plan->members().size(), 9U);
   EXPECT_EQ(plan->FindSource("expert1.part0"), ids[0][1]);
   EXPECT_FALSE(plan->FindSource("expert01.part0"));
+  Reconstruct(*plan, f, expected);
+}
+
+TEST(ImportIndexedPartsTest, Fp8ExpertPartsGatherAsIndependentMatrices) {
+  Fixture f;
+  const auto matrix = Fmt(Encoding::kFp8Scaled, {5, 5});
+  const auto gathered = Fmt(Encoding::kFp8Scaled, {5, 5, 3});
+  std::array<std::array<std::uint32_t, 3>, 2> ids{};
+  constexpr std::array roles = {PartRole::kCodes, PartRole::kBlockScales};
+  for (std::size_t expert : {2U, 0U, 1U})
+    for (std::size_t p = 0; p < roles.size(); ++p)
+      ids[p][expert] = f.Add("expert" + std::to_string(expert) + ".part" + std::to_string(p),
+                             matrix, roles[p], static_cast<unsigned>(expert * 53 + p * 17));
+  TensorAssembly out{.name = "experts", .format = gathered};
+  Payloads expected;
+  for (std::size_t p = 0; p < roles.size(); ++p) {
+    out.parts.push_back({.part = roles[p],
+                         .kind = PartAssemblyKind::kMatrices,
+                         .sources = {ids[p][0], ids[p][1], ids[p][2]}});
+    auto& bytes = expected[{0, roles[p]}];
+    for (auto id : ids[p]) bytes.insert(bytes.end(), f.payloads[id].begin(), f.payloads[id].end());
+  }
+  f.outputs.push_back(std::move(out));
+  auto plan = f.Build();
+  ASSERT_TRUE(plan) << plan.error().ToString();
+  EXPECT_EQ(plan->outputs().front().format.shape.ne[2], 3U);
+  EXPECT_EQ(plan->outputs().front().parts.Find(PartRole::kBlockScales)->bytes, 2U * 3U * 4U * 3U);
   Reconstruct(*plan, f, expected);
 }
 
@@ -303,6 +331,41 @@ TEST(ImportIndexedPartsTest, Bf16SingletonReshapeAndAllMxfp8PartsSharePermutatio
     auto plan = f.Build();
     ASSERT_TRUE(plan);
     Reconstruct(*plan, f, expected);
+  }
+}
+
+TEST(ImportIndexedPartsTest, Fp8ReshapePreservesScaleAxesDespiteEqualPartSizes) {
+  for (const bool preserve_axes : {false, true}) {
+    Fixture f;
+    auto source = Fmt(Encoding::kFp8Scaled, {1, 6});
+    source.params.block_rows = 4;
+    source.params.block_cols = 3;
+    auto destination = source;
+    destination.shape = preserve_axes ? *format::ShapeOf(std::array<std::uint64_t, 3>{1, 6, 1})
+                                      : *format::ShapeOf(std::array<std::uint64_t, 2>{6, 1});
+    const auto source_parts = format::PartsOf(source);
+    const auto destination_parts = format::PartsOf(destination);
+    ASSERT_TRUE(source_parts);
+    ASSERT_TRUE(destination_parts);
+    TensorAssembly out{.name = "fp8", .format = destination};
+    Payloads expected;
+    for (const auto& part : source_parts->parts()) {
+      // Equal sizes alone cannot authorize a reshape: the invalid case
+      // moves the scale boundary from the fourth code to the third code.
+      ASSERT_EQ(part.bytes, destination_parts->Find(part.role)->bytes);
+      const auto id = f.Add(std::string(format::PartRoleName(part.role)), source, part.role, 9);
+      out.parts.push_back(
+          {.part = part.role, .kind = PartAssemblyKind::kDenseReshape, .sources = {id}});
+      expected[{0, part.role}] = f.payloads[id];
+    }
+    f.outputs.push_back(std::move(out));
+    auto plan = f.Build();
+    if (preserve_axes) {
+      ASSERT_TRUE(plan);
+      Reconstruct(*plan, f, expected);
+    } else {
+      EXPECT_FALSE(plan);
+    }
   }
 }
 

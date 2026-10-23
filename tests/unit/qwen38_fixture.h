@@ -327,8 +327,8 @@ inline NativeModelOptFixture NativeModelOpt() {
                              std::uint8_t stacked) {
     const format::TensorFormat f{.encoding = Encoding::kNvfp4,
                                  .layout = Layout::kScaleAtoms,
-                                 .shape = {.ne = {k, n, 512, 1}, .rank = 3},
-                                 .stacked = stacked};
+                                 .stacked = stacked,
+                                 .shape = {.ne = {k, n, 512, 1}, .rank = 3}};
     t.push_back({.name = base + ".weight", .format = f, .part = PartRole::kCodes, .experts = true});
     t.push_back({.name = base + ".weight_scale",
                  .format = f,

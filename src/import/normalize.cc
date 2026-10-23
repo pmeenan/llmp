@@ -256,8 +256,9 @@ std::optional<ResolvedName> TensorName(const spec::Mapping& t, std::string_view 
                                match->is_shard};
     }
   if (!found && source_part != format::PartRole::kData && source_part != format::PartRole::kCodes) {
-    for (std::string_view suffix : {".weight_scale_2", ".weight_scale", ".weight_bias",
-                                    ".weight_zero", ".scales", ".biases", ".zeros"}) {
+    for (std::string_view suffix :
+         {".weight_scale_2", ".weight_scale_inv", ".weight_scale", ".weight_bias", ".weight_zero",
+          ".scales", ".biases", ".zeros"}) {
       if (!name.ends_with(suffix)) continue;
       const std::string base = std::string(name.substr(0, name.size() - suffix.size())) + ".weight";
       if (auto weight = TensorName(t, container, base, layers, format::PartRole::kCodes, false)) {
@@ -292,11 +293,11 @@ std::string Expand(ResolvedName n) {
 
 // Container part suffixes describe encoding geometry, independently of the
 // architecture's tensor dialect. The weight's mapping authorizes its parts.
-std::string_view PartSuffix(format::PartRole part) {
+std::string_view PartSuffix(format::PartRole part, format::Encoding encoding) {
   using enum format::PartRole;
   switch (part) {
     case kBlockScales:
-      return ".weight_scale";
+      return encoding == format::Encoding::kFp8Scaled ? ".weight_scale_inv" : ".weight_scale";
     case kTensorScale:
       return ".weight_scale_2";
     case kBiases:
@@ -307,16 +308,16 @@ std::string_view PartSuffix(format::PartRole part) {
       return ".weight";
   }
 }
-std::string PartName(std::string_view name, format::PartRole part) {
+std::string PartName(std::string_view name, format::PartRole part, format::Encoding encoding) {
   if (part == format::PartRole::kData || part == format::PartRole::kCodes) return std::string(name);
   if (name.ends_with(".weight"))
-    return std::string(name.substr(0, name.size() - 7)) + std::string(PartSuffix(part));
-  return std::string(name) + std::string(PartSuffix(part));
+    return std::string(name.substr(0, name.size() - 7)) + std::string(PartSuffix(part, encoding));
+  return std::string(name) + std::string(PartSuffix(part, encoding));
 }
 std::string WeightName(std::string_view name, format::PartRole part) {
   if (part == format::PartRole::kData || part == format::PartRole::kCodes) return std::string(name);
-  for (std::string_view suffix : {".weight_scale_2", ".weight_scale", ".weight_bias",
-                                  ".weight_zero", ".scales", ".biases", ".zeros"})
+  for (std::string_view suffix : {".weight_scale_2", ".weight_scale_inv", ".weight_scale",
+                                  ".weight_bias", ".weight_zero", ".scales", ".biases", ".zeros"})
     if (name.ends_with(suffix))
       return std::string(name.substr(0, name.size() - suffix.size())) + ".weight";
   return std::string(name);
@@ -355,17 +356,25 @@ bool SourceDescriptor(const Tensor& tensor) {
     expected.ne[0] = expected.ne[0] * bits / (*element * 8U);
   } else if (tensor.part == format::PartRole::kBlockScales ||
              tensor.part == format::PartRole::kBiases || tensor.part == format::PartRole::kZeros) {
-    const auto group = tensor.format.encoding == format::Encoding::kAffine
-                           ? tensor.format.params.group
-                           : format::Info(tensor.format.encoding).block_elements;
-    if (group == 0 || expected.ne[0] % group != 0) return false;
-    expected.ne[0] /= group;
-    if (tensor.format.encoding == format::Encoding::kAffine) {
-      const auto scale = tensor.format.params.scale;
-      const auto encoding = scale == format::AffineScale::kBF16  ? format::Encoding::kBF16
-                            : scale == format::AffineScale::kF16 ? format::Encoding::kF16
-                                                                 : format::Encoding::kF32;
-      if (*physical != encoding) return false;
+    if (tensor.format.encoding == format::Encoding::kFp8Scaled &&
+        tensor.part == format::PartRole::kBlockScales) {
+      if (*physical != format::Encoding::kF32) return false;
+      const auto grid = format::Fp8ScaleShapeOf(tensor.format);
+      if (!grid) return false;
+      expected = *grid;
+    } else {
+      const auto group = tensor.format.encoding == format::Encoding::kAffine
+                             ? tensor.format.params.group
+                             : format::Info(tensor.format.encoding).block_elements;
+      if (group == 0 || expected.ne[0] % group != 0) return false;
+      expected.ne[0] /= group;
+      if (tensor.format.encoding == format::Encoding::kAffine) {
+        const auto scale = tensor.format.params.scale;
+        const auto encoding = scale == format::AffineScale::kBF16  ? format::Encoding::kBF16
+                              : scale == format::AffineScale::kF16 ? format::Encoding::kF16
+                                                                   : format::Encoding::kF32;
+        if (*physical != encoding) return false;
+      }
     }
   } else
     return false;
@@ -563,7 +572,7 @@ void CanonicalParts(const std::vector<TensorAssembly>& outputs, spec::Source& so
     if (!parts) continue;  // The indexed planner reports invalid output formats.
     for (const auto& part : parts->parts()) {
       bindings.push_back({oi, part.role});
-      source.tensors.push_back({.name = PartName(out.name, part.role),
+      source.tensors.push_back({.name = PartName(out.name, part.role, out.format.encoding),
                                 .format = out.format,
                                 .part = part.role,
                                 .experts = out.format.shape.rank == 3});

@@ -567,6 +567,38 @@ TEST(ReferenceDecodeTest, Mxfp8IsExact) {
   }
 }
 
+TEST(ReferenceDecodeTest, Fp8ScaledUsesF32GridAcrossStacksMatricesAndSlices) {
+  TensorFormat f = Matrix(Encoding::kFp8Scaled, Layout::kSplit, 5, 10, 2);
+  f.stacked = 2;
+  f.params.block_rows = 3;
+  f.params.block_cols = 2;
+  std::vector<std::byte> codes(5 * 10 * 2);
+  std::vector<std::byte> scales(3 * 4 * 4 * 2);
+  for (std::size_t i = 0; i < codes.size(); ++i)
+    codes[i] = static_cast<std::byte>((i % 2 == 0) ? 0x38 : 0x40);  // 1 and 2 in E4M3FN
+  for (std::uint64_t m = 0; m < 2; ++m)
+    for (std::uint64_t row = 0; row < 4; ++row)
+      for (std::uint64_t col = 0; col < 3; ++col) {
+        const float scale = static_cast<float>(2 + m * 100 + row * 10 + col);
+        std::memcpy(scales.data() + (m * 12 + row * 3 + col) * 4, &scale, 4);
+      }
+  const std::array parts = {ref::PartView{PartRole::kCodes, codes},
+                            ref::PartView{PartRole::kBlockScales, scales}};
+  std::vector<float> decoded(6 * 5);
+  ASSERT_TRUE(ref::DecodeRows(f, parts, 1, 2, 6, decoded));
+  for (std::uint64_t r = 2; r < 8; ++r) {
+    const std::uint64_t projection = r / 5;
+    const std::uint64_t local_row = r % 5;
+    const std::uint64_t scale_row = projection * 2 + local_row / 3;
+    for (std::uint64_t col = 0; col < 5; ++col) {
+      const std::uint64_t source = (1 * 10 + r) * 5 + col;
+      const float code = (source % 2 == 0) ? 1.0f : 2.0f;
+      const float scale = static_cast<float>(2 + 100 + scale_row * 10 + col / 2);
+      EXPECT_EQ(decoded[(r - 2) * 5 + col], code * scale) << r << "," << col;
+    }
+  }
+}
+
 // A tensor scale per stacked matrix: gate's rows take gate's, up's up's,
 // in each of the tensor's matrices.
 TEST(ReferenceDecodeTest, TensorScalesFollowTheStackedMatrices) {

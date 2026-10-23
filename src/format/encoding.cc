@@ -48,6 +48,10 @@ constexpr std::array kAffineParts = {
     PartSpec{.role = PartRole::kBiases, .element = Encoding::kF16, .required = false},
     PartSpec{.role = PartRole::kZeros, .element = Encoding::kU8, .required = false},
 };
+constexpr std::array kFp8ScaledParts = {
+    PartSpec{.role = PartRole::kCodes, .element = Encoding::kF8E4M3, .required = true},
+    PartSpec{.role = PartRole::kBlockScales, .element = Encoding::kF32, .required = true},
+};
 
 constexpr EncodingInfo Dense(Encoding id, std::string_view name, std::uint32_t bits, bool floating,
                              std::optional<std::uint32_t> ggml = std::nullopt) {
@@ -167,6 +171,14 @@ constexpr std::array kEncodings = {
                  .floating = false,
                  .parts = kAffineParts,
                  .ggml = std::nullopt},
+    EncodingInfo{.id = Encoding::kFp8Scaled,
+                 .name = "fp8_scaled",
+                 .block_elements = 1,
+                 .element_bits = 8,
+                 .quantized = true,
+                 .floating = false,
+                 .parts = kFp8ScaledParts,
+                 .ggml = std::nullopt},
 };
 
 constexpr bool InEnumOrder() {
@@ -175,7 +187,7 @@ constexpr bool InEnumOrder() {
       return false;
     }
   }
-  return kEncodings.back().id == Encoding::kAffine;
+  return kEncodings.back().id == Encoding::kFp8Scaled;
 }
 static_assert(InEnumOrder(), "the table lists every encoding in enum order");
 

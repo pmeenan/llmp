@@ -47,10 +47,10 @@ struct TensorFormat {
   Encoding encoding = Encoding::kF32;
   EncodingParams params{};
   Layout layout = Layout::kDense;
-  Shape shape{};
   // Logical matrices stored as one along ne[1] (gate and up as 2): each
   // has ne[1] / stacked rows and, with a tensor scale, its own scale.
   std::uint8_t stacked = 1;
+  Shape shape{};
   bool operator==(const TensorFormat&) const = default;
 };
 
@@ -99,6 +99,10 @@ std::expected<void, FormatError> Validate(const TensorFormat& format);
 
 // The size rule: each part's bytes and readable range.
 std::expected<PartList, FormatError> PartsOf(const TensorFormat& format);
+
+// Physical F32 scale-grid dimensions for fp8_scaled, in GGML order. Checked
+// arithmetic and format parameters are validated; other encodings are refused.
+std::expected<Shape, FormatError> Fp8ScaleShapeOf(const TensorFormat& format);
 
 // The independently addressed element/block of a single-part strided tensor.
 // `elements` is physical layout geometry, not an encoding's scale group:

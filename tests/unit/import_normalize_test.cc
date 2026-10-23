@@ -2163,6 +2163,81 @@ TEST(ImportNormalizeSafetensorsTest, ModelOptMxfp4SafetensorsNormalizesAndRoutes
   EXPECT_EQ(routed, plan->source().tensors.size());
 }
 
+TEST(ImportNormalizeSafetensorsTest, HfFp8InverseScaleCompanionNormalizesAndRoutesExactly) {
+  auto entries = fixtures::TinyQwen2HfEntries();
+  for (auto& entry : entries) {
+    if (entry.name == "unused.empty") continue;
+    if (entry.name == "model.layers.0.self_attn.q_proj.weight") {
+      entry = fixtures::E(entry.name, "F8_E4M3", {64, 64});
+    } else {
+      for (auto& dim : entry.shape) {
+        if (dim == 10) continue;
+        if (dim == 4) dim = 32;
+        if (dim == 8) dim = 64;
+        if (dim == 16) dim = 128;
+      }
+      entry.bytes = fixtures::DtypeBytes(entry.dtype);
+      for (const auto dim : entry.shape) entry.bytes *= dim;
+    }
+  }
+  // FP8 block shape (rows=3, cols=3), with ceil edge blocks: [22,22].
+  entries.push_back(
+      fixtures::E("model.layers.0.self_attn.q_proj.weight_scale_inv", "F32", {22, 22}));
+  auto config = fixtures::TinyQwen2HfConfig();
+  for (const auto& [from, to] : std::array<std::pair<std::string_view, std::string_view>, 3>{
+           {{"\"hidden_size\":8", "\"hidden_size\":64"},
+            {"\"intermediate_size\":16", "\"intermediate_size\":128"},
+            {"\"head_dim\":4", "\"head_dim\":32"}}}) {
+    const auto at = config.find(from);
+    ASSERT_NE(at, std::string::npos);
+    config.replace(at, from.size(), to);
+  }
+  const auto end = config.rfind('}');
+  ASSERT_NE(end, std::string::npos);
+  config.insert(end, R"(,"quantization_config":{"quant_method":"fp8","weight_block_size":[3,3]})");
+  const auto shard = fixtures::Shard(entries);
+  auto input = ParseSafetensors(shard, config);
+  ASSERT_TRUE(input) << test_support::Failed(input, &Error::ToString).value_or("");
+  auto bound = NormalizationBound(*input);
+  ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
+  auto plan = test_support::NormalizeWithFixtureTarget(std::move(*input),
+                                                       {bound->metadata_bytes, bound->work_units});
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  ASSERT_TRUE(plan->is_indexed());
+  ASSERT_TRUE(components::ValidateSpec(plan->spec(), plan->canonical().tensors));
+  const auto& source_tensors = plan->source().tensors;
+  const auto codes =
+      std::ranges::find(source_tensors, "model.layers.0.self_attn.q_proj.weight", &Tensor::name);
+  const auto scales = std::ranges::find(
+      source_tensors, "model.layers.0.self_attn.q_proj.weight_scale_inv", &Tensor::name);
+  ASSERT_NE(codes, source_tensors.end());
+  ASSERT_NE(scales, source_tensors.end());
+  EXPECT_EQ(codes->format.encoding, Encoding::kFp8Scaled);
+  EXPECT_EQ(codes->format.params.block_rows, 3U);
+  EXPECT_EQ(codes->format.params.block_cols, 3U);
+  EXPECT_EQ(codes->part, format::PartRole::kCodes);
+  EXPECT_EQ(scales->part, format::PartRole::kBlockScales);
+  EXPECT_EQ(scales->dims, (std::vector<std::uint64_t>{22, 22}));
+
+  for (const auto& member : plan->parts().members()) {
+    const auto& source = plan->source().tensors[member.source];
+    std::vector<std::byte> output;
+    const PartSink sink = [&](std::uint64_t offset,
+                              std::span<const std::byte> bytes) -> std::expected<void, Error> {
+      if (offset != output.size())
+        return std::unexpected(Error{.reason = "noncontiguous FP8 test output"});
+      output.insert(output.end(), bytes.begin(), bytes.end());
+      return {};
+    };
+    auto execution = member.route.Start();
+    ASSERT_TRUE(execution);
+    const auto payload = std::span(shard).subspan(member.extent.offset, member.extent.bytes);
+    ASSERT_TRUE(execution->Consume(0, payload, sink));
+    ASSERT_TRUE(execution->Finish());
+    EXPECT_TRUE(std::ranges::equal(payload, output)) << source.name;
+  }
+}
+
 TEST(ImportNormalizeSafetensorsTest, EmptyFallbackRoleMatchesAbsentButRequiredEmptyStillRefuses) {
   // Tied: the head falls back to the token table.
   auto config = fixtures::TinyQwen2HfConfig();

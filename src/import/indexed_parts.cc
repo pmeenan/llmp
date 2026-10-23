@@ -31,6 +31,10 @@ bool SameEncoding(const format::TensorFormat& a, const format::TensorFormat& b) 
 }
 bool DenseReshape(const format::TensorFormat& a, const format::TensorFormat& b) {
   if (!SameEncoding(a, b)) return false;
+  // A two-dimensional scale grid binds to the logical row and column axes.
+  // Moving a singleton across those axes can change scale boundaries even
+  // when both physical parts keep exactly the same byte counts.
+  if (a.encoding == format::Encoding::kFp8Scaled) return a.shape.ne == b.shape.ne;
   const bool ok_dense =
       a.layout == format::Layout::kDense &&
       (a.encoding == format::Encoding::kBF16 || a.encoding == format::Encoding::kF32 ||
@@ -53,7 +57,8 @@ bool GatherEncoding(const format::TensorFormat& f) {
   return f.layout == format::Layout::kDense ||
          (f.layout == format::Layout::kSplit &&
           (f.encoding == format::Encoding::kNvfp4 || f.encoding == format::Encoding::kMxfp8 ||
-           f.encoding == format::Encoding::kMxfp4 || f.encoding == format::Encoding::kAffine));
+           f.encoding == format::Encoding::kMxfp4 || f.encoding == format::Encoding::kAffine ||
+           f.encoding == format::Encoding::kFp8Scaled));
 }
 }  // namespace
 
@@ -299,11 +304,11 @@ std::expected<IndexedPartPlan, Error> IndexedPartPlan::Make(
             valid = DenseReshape(t.format, out.format);
             break;
           case PartAssemblyKind::kRows:
-            valid = GatherEncoding(out.format) && out.format.stacked == 1 &&
-                    out.format.shape.rank == 2 && t.format.shape.rank == 2 &&
-                    t.format.shape.ne[0] == out.format.shape.ne[0] &&
-                    assembly.part != format::PartRole::kTensorScale &&
-                    Add(rows, t.format.shape.ne[1]);
+            valid =
+                out.format.encoding != format::Encoding::kFp8Scaled && GatherEncoding(out.format) &&
+                out.format.stacked == 1 && out.format.shape.rank == 2 && t.format.shape.rank == 2 &&
+                t.format.shape.ne[0] == out.format.shape.ne[0] &&
+                assembly.part != format::PartRole::kTensorScale && Add(rows, t.format.shape.ne[1]);
             break;
           case PartAssemblyKind::kMatrices:
             valid =

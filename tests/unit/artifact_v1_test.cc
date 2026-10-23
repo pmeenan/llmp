@@ -400,8 +400,13 @@ TEST(ArtifactV1Test, FormatsRoundTripThroughTheirJson) {
   three.params.k_bits = 8;
   TensorFormat interleaved = Dense(Encoding::kNvfp4, {64, 10});
   interleaved.layout = Layout::kRowInterleaved;
+  TensorFormat fp8 = Dense(Encoding::kFp8Scaled, {5, 10, 2});
+  fp8.layout = Layout::kSplit;
+  fp8.stacked = 2;
+  fp8.params.block_rows = 3;
+  fp8.params.block_cols = 2;
   for (const TensorFormat& f :
-       {scalar, four, zeros, three, interleaved, Nvfp4Atoms(64, 256), Mxfp8Split(64, 32),
+       {scalar, four, zeros, three, interleaved, fp8, Nvfp4Atoms(64, 256), Mxfp8Split(64, 32),
         Blocks(Encoding::kNvfp4, {128, 2}), Blocks(Encoding::kIQ2_XXS, {256, 4}),
         Dense(Encoding::kE8M0, {7})}) {
     std::string text;
@@ -419,6 +424,10 @@ TEST(ArtifactV1Test, FormatsRoundTripThroughTheirJson) {
   artifact::AppendFormatJson(Nvfp4Atoms(64, 256), text);
   EXPECT_EQ(text, R"({"encoding":"nvfp4","layout":"scale_atoms","ne":[64,256],)"
                   R"("params":{"tensor_scale":true},"stacked":2})");
+  text.clear();
+  artifact::AppendFormatJson(fp8, text);
+  EXPECT_EQ(text, R"({"encoding":"fp8_scaled","layout":"split","ne":[5,10,2],)"
+                  R"("params":{"block_cols":2,"block_rows":3},"stacked":2})");
 }
 
 // The container entry: a dense tensor keeps its dtype and shape (outermost
@@ -669,6 +678,12 @@ std::vector<Case> Cases() {
        [](V1Files& f, H&) {
          Entry(f, "resources", "blk.0.attn_norm.weight")["format"] = Json::Raw{
              R"({"encoding":"f32","layout":"dense","ne":[64],"params":{"bits":4},"stacked":1})"};
+       },
+       Rule::kRepr, "bad encoding parameters"},
+      {"fp8-param-other-encoding",
+       [](V1Files& f, H&) {
+         Entry(f, "resources", "blk.0.attn_norm.weight")["format"] = Json::Raw{
+             R"({"encoding":"f32","layout":"dense","ne":[64],"params":{"block_cols":2},"stacked":1})"};
        },
        Rule::kRepr, "bad encoding parameters"},
       {"unknown-codebook",

@@ -614,8 +614,8 @@ TEST(DecodeSelectedRows, CombinedRegistryPreservesOptionalExpertTensorScales) {
       const fmt::TensorFormat f{.encoding = fmt::Encoding::kNvfp4,
                                 .params = {.tensor_scale = scale},
                                 .layout = fmt::Layout::kGgmlNvfp4Blocks,
-                                .shape = ir::ShapeOf({256, 136, 4}),
-                                .stacked = stacked};
+                                .stacked = stacked,
+                                .shape = ir::ShapeOf({256, 136, 4})};
       auto one = f;
       one.shape = ir::ShapeOf({256, 136});
       const auto extents = fmt::PartsOf(one).value();
@@ -695,8 +695,8 @@ TEST(DecodeSelectedRows, RowInterleavedScalesAndStacksSelectAndLowerTheirActualP
           const fmt::TensorFormat f{.encoding = fmt::Encoding::kNvfp4,
                                     .params = {.tensor_scale = scale},
                                     .layout = fmt::Layout::kRowInterleaved,
-                                    .shape = ir::ShapeOf({256, 136, batches}),
-                                    .stacked = stacked};
+                                    .stacked = stacked,
+                                    .shape = ir::ShapeOf({256, 136, batches})};
           const auto extents = fmt::PartsOf(f).value();
           ir::Builder builder;
           builder.SetOwner(0);

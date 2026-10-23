@@ -86,6 +86,8 @@ enum class Encoding : std::uint16_t {
   // scales' element type (MLX: s · q + b) or an unsigned zero point z of
   // `bits` bits (AWQ, GPTQ: s · (q − z)). All of it is EncodingParams.
   kAffine,
+  // E4M3FN values with an F32 multiplicative scale per 2-D block.
+  kFp8Scaled,
 };
 
 // The parts a multi-part encoding stores: codes and their block scales, a
@@ -137,6 +139,9 @@ struct EncodingParams {
   std::uint32_t group = 0;
   AffineScale scale = AffineScale::kNone;
   bool zero_point = false;
+  // fp8_scaled: positive block dimensions in logical [rows, columns] order.
+  std::uint32_t block_rows = 0;
+  std::uint32_t block_cols = 0;
   bool operator==(const EncodingParams&) const = default;
 };
 

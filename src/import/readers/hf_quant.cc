@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <map>
 #include <optional>
 #include <span>
@@ -180,6 +181,26 @@ std::expected<std::optional<Quantization>, Error> Normalize(json::Value object) 
       }
       return std::optional<Quantization>(std::move(*q));
     }
+    if (m == "fp8") {
+      const auto block = object.find("weight_block_size");
+      if (!block || !block->is_array() || block->size() != 2 || !block->at(0).int64() ||
+          !block->at(1).int64() || *block->at(0).int64() <= 0 || *block->at(1).int64() <= 0 ||
+          static_cast<std::uint64_t>(*block->at(0).int64()) >
+              std::numeric_limits<std::uint32_t>::max() ||
+          static_cast<std::uint64_t>(*block->at(1).int64()) >
+              std::numeric_limits<std::uint32_t>::max()) {
+        return Refuse(Rule::kConfig, "an HF fp8 config without two positive block dimensions");
+      }
+      if ((StringMember(object, "scale_fmt") && StringMember(object, "scale_fmt") != "float") ||
+          (StringMember(object, "expert_dtype") && StringMember(object, "expert_dtype") != "fp8")) {
+        return Refuse(Rule::kUnsupported,
+                      "an HF fp8 scale or expert format outside F32 block scales and E4M3 weights");
+      }
+      Quantization q{.method = "fp8", .algorithm = "fp8", .scheme = QuantScheme::kFp8Scaled};
+      q.block_rows = static_cast<std::uint32_t>(*block->at(0).int64());
+      q.block_cols = static_cast<std::uint32_t>(*block->at(1).int64());
+      return std::optional<Quantization>(std::move(q));
+    }
     if (m == "compressed-tensors") {
       if (StringMember(object, "format") == "dense") {
         return std::optional<Quantization>();
@@ -196,10 +217,6 @@ std::expected<std::optional<Quantization>, Error> Normalize(json::Value object) 
     }
     if (m == "exl3") {
       return Refuse(Rule::kUnsupported, "an EXL3 quantization, which the EXL3 reader reads");
-    }
-    if (m == "fp8") {
-      return Refuse(Rule::kUnsupported,
-                    "a block-scaled FP8 quantization with F32 scales, which no encoding describes");
     }
     return Refuse(Rule::kUnsupported, "an unknown quantization method");
   }
@@ -349,6 +366,7 @@ struct Pair {
   std::size_t weight = 0;
   std::size_t scale = 0;
   std::optional<std::size_t> tensor_scale{};
+  std::uint32_t block_rows = 0, block_cols = 0;
 };
 
 // The pair's format under `scheme`, every part's bytes checked.
@@ -390,6 +408,16 @@ std::expected<format::TensorFormat, Error> Describe(QuantScheme scheme, const Pa
     k = w.dims[1] * 2;
     f.encoding = Encoding::kMxfp4;
     f.shape = {.ne = {k, n, 1, 1}, .rank = 2};
+  } else if (scheme == QuantScheme::kFp8Scaled) {
+    if (w.dtype != "F8_E4M3" || s.dtype != "F32" || p.tensor_scale || p.block_rows == 0 ||
+        p.block_cols == 0) {
+      return refuse("HF block FP8 requires E4M3 codes and F32 multiplicative block scales");
+    }
+    f.encoding = Encoding::kFp8Scaled;
+    k = w.dims[1];
+    f.shape = {.ne = {k, n, 1, 1}, .rank = 2};
+    f.params.block_rows = p.block_rows;
+    f.params.block_cols = p.block_cols;
   } else {
     if (w.dtype != "F8_E4M3" || (s.dtype != "U8" && s.dtype != "F8_E8M0")) {
       return refuse("MXFP8 codes that are not F8_E4M3 or block scales that are not E8M0 bytes");
@@ -401,9 +429,16 @@ std::expected<format::TensorFormat, Error> Describe(QuantScheme scheme, const Pa
     k = w.dims[1];
     f.shape = {.ne = {k, n, 1, 1}, .rank = 2};
   }
-  const std::uint64_t group = scheme == QuantScheme::kNvfp4 ? 16U : 32U;
-  if (k % group != 0 || s.dims[0] != n || s.dims[1] != k / group) {
-    return refuse("a scaled weight's physical dimensions disagree with its block geometry");
+  if (scheme == QuantScheme::kFp8Scaled) {
+    const auto physical = format::Fp8ScaleShapeOf(f);
+    if (!physical || s.dims[0] != physical->ne[1] || s.dims[1] != physical->ne[0]) {
+      return refuse("an HF FP8 scale grid whose physical dimensions disagree with block geometry");
+    }
+  } else {
+    const std::uint64_t group = scheme == QuantScheme::kNvfp4 ? 16U : 32U;
+    if (k % group != 0 || s.dims[0] != n || s.dims[1] != k / group) {
+      return refuse("a scaled weight's physical dimensions disagree with its block geometry");
+    }
   }
   const auto parts = format::PartsOf(f);
   if (!parts) {
@@ -465,16 +500,30 @@ std::expected<void, Error> ApplyQuantization(const std::optional<Quantization>& 
     const auto found = index.find(name);
     return found == index.end() ? std::nullopt : std::optional(found->second);
   };
-  constexpr std::string_view kScale = ".weight_scale";
+  if (q.scheme == QuantScheme::kFp8Scaled) {
+    for (const Tensor& t : tensors) {
+      constexpr std::string_view kOtherScale = ".weight_scale";
+      if (t.name.ends_with(kOtherScale) &&
+          find(std::string(t.name.substr(0, t.name.size() - kOtherScale.size())) + ".weight")) {
+        return RefuseTensor(Rule::kQuantization,
+                            "an HF fp8 weight with a conflicting weight_scale companion", t,
+                            static_cast<std::size_t>(&t - tensors.data()));
+      }
+    }
+  }
+  const std::string_view kScale =
+      q.scheme == QuantScheme::kFp8Scaled ? ".weight_scale_inv" : ".weight_scale";
   // A part recorded as empty (zero elements: skipped by the safetensors
   // reader) would read as absent, and change the pairing: an empty block
   // scale would leave its weight dense, an empty tensor scale would drop
   // it or take an ancestor's. Each is refused.
   for (const SkippedTensor& t : skipped) {
     const std::string_view name = t.name;
-    const bool scale = name.ends_with(kScale) || name.ends_with(".weight_scale_2");
+    const bool scale = name.ends_with(kScale) || name.ends_with(".weight_scale") ||
+                       name.ends_with(".weight_scale_inv") || name.ends_with(".weight_scale_2");
     const bool weight = name.ends_with(".weight") &&
-                        find(std::string(name.substr(0, name.size() - 7)) + std::string(kScale));
+                        (find(std::string(name.substr(0, name.size() - 7)) + ".weight_scale") ||
+                         find(std::string(name.substr(0, name.size() - 7)) + ".weight_scale_inv"));
     if (scale || weight) {
       return Refuse(Rule::kQuantization, "a quantized weight with an empty part");
     }
@@ -501,6 +550,11 @@ std::expected<void, Error> ApplyQuantization(const std::optional<Quantization>& 
       continue;
     }
     const std::string module(name.substr(0, name.size() - kScale.size()));
+    const std::string_view competing =
+        q.scheme == QuantScheme::kFp8Scaled ? ".weight_scale" : ".weight_scale_inv";
+    if (find(module + std::string(competing))) {
+      return Refuse(Rule::kQuantization, "a weight with ambiguous scale companion spellings");
+    }
     const auto weight = find(module + ".weight");
     if (!weight) {
       continue;  // not a weight's block scales: a tensor of its own, dense
@@ -517,7 +571,13 @@ std::expected<void, Error> ApplyQuantization(const std::optional<Quantization>& 
                           "a scaled weight the quantization config does not describe",
                           tensors[*weight], *weight);
     }
-    Pair pair{.weight = *weight, .scale = i, .tensor_scale = find(module + ".weight_scale_2")};
+    Pair pair{.weight = *weight,
+              .scale = i,
+              .tensor_scale = q.scheme == QuantScheme::kFp8Scaled
+                                  ? std::nullopt
+                                  : find(module + ".weight_scale_2"),
+              .block_rows = q.block_rows,
+              .block_cols = q.block_cols};
     if (!pair.tensor_scale && *scheme == QuantScheme::kNvfp4) {
       pair.tensor_scale = inherited(module);
     }

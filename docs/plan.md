@@ -704,7 +704,12 @@ D-122).
         ModelOpt MXFP4, W4A16_MXFP4 and W4A8_MXFP4_FP8 now retain packed
         E2M1 codes and E8M0 scales through the generic route; the latter's
         activation scale remains a separate tensor, without an activation
-        execution grant. Other quantization ingress remains open.
+        execution grant. HF FineGrainedFP8 imports now preserve E4M3FN codes
+        and F32 multiplicative block scales in the `fp8_scaled` format, with
+        explicit two-dimensional block geometry and CPU reference decoding.
+        Its native and CUDA-disabled focused checks and complete shared regression
+        pass succeed ([evidence](experiments/m35-generic-import/block-fp8.md));
+        new GPU execution and other quantization ingress remain open.
         Qwen3.8 ModelOpt and MLX
         expressed as mappings and both normalizers deleted. **Exit:** Qwen3.8
         ModelOpt and MLX re-import with identical tensor content digests and

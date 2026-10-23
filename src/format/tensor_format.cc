@@ -46,7 +46,10 @@ bool HasPart(const EncodingInfo& info, PartRole role) {
 
 // MXFP4, MXFP8 and NVFP4: uniform codes with a one-byte scale per block.
 bool BlockScaled(const EncodingInfo& info) {
-  return info.element_bits > 0 && HasPart(info, PartRole::kBlockScales);
+  const auto scale = std::ranges::find_if(
+      info.parts, [](const PartSpec& p) { return p.role == PartRole::kBlockScales; });
+  return info.element_bits > 0 && scale != info.parts.end() &&
+         Info(scale->element).element_bits == 8;
 }
 
 std::expected<void, FormatError> CheckShape(const TensorFormat& f) {
@@ -74,6 +77,14 @@ std::expected<void, FormatError> CheckParams(const TensorFormat& f, const Encodi
   }
   if (p.tensor_scale && !HasPart(info, PartRole::kTensorScale)) {
     return std::unexpected(FormatError::kParams);
+  }
+  const bool fp8_scaled = f.encoding == Encoding::kFp8Scaled;
+  if (fp8_scaled != (p.block_rows != 0 && p.block_cols != 0) ||
+      (!fp8_scaled && (p.block_rows != 0 || p.block_cols != 0))) {
+    return std::unexpected(FormatError::kParams);
+  }
+  if (fp8_scaled && (f.shape.rank < 2 || f.shape.rank > 4 || f.layout != Layout::kSplit)) {
+    return std::unexpected(FormatError::kLayout);
   }
   const bool affine = f.encoding == Encoding::kAffine;
   if (!affine) {
@@ -122,7 +133,7 @@ bool Holds(Layout layout, const EncodingInfo& info) {
     case Layout::kGgmlNvfp4Blocks:
       return info.id == Encoding::kNvfp4;
     case Layout::kSplit:
-      return BlockScaled(info) || info.id == Encoding::kAffine;
+      return BlockScaled(info) || info.id == Encoding::kAffine || info.id == Encoding::kFp8Scaled;
     case Layout::kRowInterleaved:
     case Layout::kScaleAtoms:
       return BlockScaled(info);
@@ -196,6 +207,16 @@ std::expected<PartList, FormatError> MatrixParts(const TensorFormat& f, const En
         }
         break;
       }
+      if (f.encoding == Encoding::kFp8Scaled) {
+        auto grid = Fp8ScaleShapeOf(f);
+        if (!grid) return std::unexpected(grid.error());
+        Size codes = Mul(k, n);
+        Size scales = Mul(grid->ne[0], grid->ne[1]);
+        if (scales) scales = Mul(*scales, 4);
+        ok = add(PartRole::kCodes, codes);
+        if (ok) ok = add(PartRole::kBlockScales, scales);
+        break;
+      }
       if (k % info.block_elements != 0) {
         return std::unexpected(FormatError::kBlock);
       }
@@ -263,6 +284,29 @@ std::optional<Shape> ShapeOf(std::span<const std::uint64_t> ne) {
   std::ranges::copy(ne, s.ne.begin());
   s.rank = static_cast<std::uint8_t>(ne.size());
   return s;
+}
+
+std::expected<Shape, FormatError> Fp8ScaleShapeOf(const TensorFormat& f) {
+  if (f.encoding != Encoding::kFp8Scaled) return std::unexpected(FormatError::kParams);
+  if (auto ok = CheckShape(f); !ok) return std::unexpected(ok.error());
+  if (auto ok = CheckParams(f, Info(f.encoding)); !ok) return std::unexpected(ok.error());
+  if (f.layout != Layout::kSplit) return std::unexpected(FormatError::kLayout);
+  const std::uint64_t rows_per_projection = f.shape.ne[1] / f.stacked;
+  const std::uint64_t col_blocks =
+      f.shape.ne[0] / f.params.block_cols + (f.shape.ne[0] % f.params.block_cols != 0);
+  const std::uint64_t row_blocks =
+      rows_per_projection / f.params.block_rows + (rows_per_projection % f.params.block_rows != 0);
+  std::uint64_t stacked_rows = 0;
+  if (__builtin_mul_overflow(row_blocks, static_cast<std::uint64_t>(f.stacked), &stacked_rows))
+    return std::unexpected(FormatError::kOverflow);
+  std::uint64_t elements = 0;
+  if (__builtin_mul_overflow(col_blocks, stacked_rows, &elements) ||
+      __builtin_mul_overflow(elements, f.shape.ne[2], &elements) ||
+      __builtin_mul_overflow(elements, f.shape.ne[3], &elements) ||
+      __builtin_mul_overflow(elements, std::uint64_t{4}, &elements))
+    return std::unexpected(FormatError::kOverflow);
+  return Shape{.ne = {col_blocks, stacked_rows, f.shape.ne[2], f.shape.ne[3]},
+               .rank = f.shape.rank};
 }
 
 std::string_view FormatErrorName(FormatError error) {
@@ -391,6 +435,11 @@ std::expected<std::uint64_t, FormatError> RowBytes(const TensorFormat& format, P
         return role == PartRole::kCodes   ? row.codes
                : role == PartRole::kZeros ? row.zeros
                                           : row.scales;
+      }
+      if (format.encoding == Encoding::kFp8Scaled) {
+        if (role == PartRole::kCodes) return k;
+        if (format.params.block_rows != 1) return std::unexpected(FormatError::kLayout);
+        return (k / format.params.block_cols + (k % format.params.block_cols != 0)) * 4;
       }
       return role == PartRole::kCodes ? CodeRowBytes(k, info) : k / info.block_elements;
     case Layout::kRowInterleaved:

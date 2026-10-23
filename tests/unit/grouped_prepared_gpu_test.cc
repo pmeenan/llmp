@@ -64,8 +64,8 @@ fmt::TensorFormat Matrix() {
   return {.encoding = fmt::Encoding::kNvfp4,
           .params = {.tensor_scale = true},
           .layout = fmt::Layout::kSplit,
-          .shape = llmp::ir::ShapeOf({kK, kN}),
-          .stacked = 2};
+          .stacked = 2,
+          .shape = llmp::ir::ShapeOf({kK, kN})};
 }
 fmt::TensorFormat AllExperts() {
   auto f = Matrix();

@@ -336,6 +336,76 @@ TEST_F(ImportWriterTest, HfSamplingDefaultsRoundTripFromAuthenticatedGenerationC
   }
 }
 
+TEST_F(ImportWriterTest, HfFp8BlockWeightsPublishWithStoredFormatAndSpec) {
+  const auto source = dir_ / "fp8-source";
+  auto entries = fixtures::TinyQwen2HfEntries();
+  for (auto& entry : entries) {
+    if (entry.name == "unused.empty") continue;
+    if (entry.name == "model.layers.0.self_attn.q_proj.weight") {
+      entry = fixtures::E(entry.name, "F8_E4M3", {64, 64});
+    } else {
+      for (auto& dim : entry.shape) {
+        if (dim == 10) continue;
+        if (dim == 4) dim = 32;
+        if (dim == 8) dim = 64;
+        if (dim == 16) dim = 128;
+      }
+      entry.bytes = fixtures::DtypeBytes(entry.dtype);
+      for (const auto dim : entry.shape) entry.bytes *= dim;
+    }
+  }
+  entries.push_back(
+      fixtures::E("model.layers.0.self_attn.q_proj.weight_scale_inv", "F32", {22, 22}));
+  auto config = fixtures::TinyQwen2HfConfig();
+  for (const auto& [from, to] : std::array<std::pair<std::string_view, std::string_view>, 3>{
+           {{"\"hidden_size\":8", "\"hidden_size\":64"},
+            {"\"intermediate_size\":16", "\"intermediate_size\":128"},
+            {"\"head_dim\":4", "\"head_dim\":32"}}}) {
+    const auto at = config.find(from);
+    ASSERT_NE(at, std::string::npos);
+    config.replace(at, from.size(), to);
+  }
+  const auto end = config.rfind('}');
+  ASSERT_NE(end, std::string::npos);
+  config.insert(end, R"(,"quantization_config":{"quant_method":"fp8","weight_block_size":[3,3]})");
+  Write(source / "config.json", config);
+  const auto shard = fixtures::Shard(entries);
+  Write(source / "model.safetensors", shard);
+  auto input = ReadCheckpoint(source);
+  ASSERT_TRUE(input) << test_support::Failed(input, &Error::ToString).value_or("");
+  auto bound = NormalizationBound(*input);
+  ASSERT_TRUE(bound);
+  auto plan = Normalize(std::move(*input), {bound->metadata_bytes, bound->work_units});
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  EXPECT_NE(std::ranges::find(plan->source().tensors, "model.layers.0.self_attn.q_proj.weight",
+                              &Tensor::name),
+            plan->source().tensors.end());
+  EXPECT_NE(std::ranges::find(plan->source().tensors,
+                              "model.layers.0.self_attn.q_proj.weight_scale_inv", &Tensor::name),
+            plan->source().tensors.end());
+  auto written = WriteArtifact(*plan, Options("fp8-store"));
+  ASSERT_TRUE(written) << test_support::Failed(written, &Error::ToString).value_or("");
+  const auto opened = artifact::Artifact::Open(written->path);
+  ASSERT_TRUE(opened);
+  const auto stored = spec::StoredSpec(*opened);
+  ASSERT_TRUE(stored) << test_support::Failed(stored).value_or("");
+  EXPECT_EQ(*stored, plan->spec());
+  const auto artifact_source = spec::SourceOf(*opened);
+  ASSERT_TRUE(artifact_source) << test_support::Failed(artifact_source).value_or("");
+  const auto weight =
+      std::ranges::find(artifact_source->tensors, "blk.0.attn_q.weight", &spec::SourceTensor::name);
+  const auto scales = std::ranges::find(artifact_source->tensors, "blk.0.attn_q.weight_scale_inv",
+                                        &spec::SourceTensor::name);
+  ASSERT_NE(weight, artifact_source->tensors.end());
+  ASSERT_NE(scales, artifact_source->tensors.end());
+  EXPECT_EQ(weight->format.encoding, Encoding::kFp8Scaled);
+  EXPECT_EQ(weight->format.params.block_rows, 3U);
+  EXPECT_EQ(weight->format.params.block_cols, 3U);
+  EXPECT_EQ(scales->format, weight->format);
+  EXPECT_EQ(scales->part, format::PartRole::kBlockScales);
+  EXPECT_TRUE(components::ValidateSpec(*stored, artifact_source->tensors));
+}
+
 TEST_F(ImportWriterTest, NestedSamplingDefaultsFillUnsetOuterValuesBeforeGenerationOverrides) {
   for (const auto [sample, override] :
        {std::pair{true, false}, std::pair{false, false}, std::pair{false, true}}) {

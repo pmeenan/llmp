@@ -113,8 +113,8 @@ bool WeightReadable(const execution::OperandFormat& o) {
   format::TensorFormat f{.encoding = o.encoding,
                          .params = o.params,
                          .layout = o.layout,
-                         .shape = {.ne = o.ne, .rank = 4},
-                         .stacked = o.stacked};
+                         .stacked = o.stacked,
+                         .shape = {.ne = o.ne, .rank = 4}};
   // Multipart aliases have no physical part-view map in the shared lowering.
   // Native one-part contiguous aliases retain their supported offset semantics.
   if (ir::UnitBytes(f) == 0) return !o.memory->is_view && o.memory->view_offset == 0;

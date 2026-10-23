@@ -329,8 +329,8 @@ fmt::TensorFormat Expert(bool gate) {
   return {.encoding = fmt::Encoding::kNvfp4,
           .params = {.tensor_scale = true},
           .layout = fmt::Layout::kSplit,
-          .shape = ir::ShapeOf({kWidth, gate ? 2 * kWidth : kWidth}),
-          .stacked = static_cast<std::uint8_t>(gate ? 2 : 1)};
+          .stacked = static_cast<std::uint8_t>(gate ? 2 : 1),
+          .shape = ir::ShapeOf({kWidth, gate ? 2 * kWidth : kWidth})};
 }
 sp::Param P(std::string name, sp::ParamValue value) { return {std::move(name), std::move(value)}; }
 sp::ComponentRef C(std::string name, std::vector<sp::Param> params) {

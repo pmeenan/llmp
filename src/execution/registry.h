@@ -222,10 +222,10 @@ struct OperandFormat {
   std::uint8_t stacked = 1;
   format::Encoding encoding = format::Encoding::kF32;
   format::Layout layout = format::Layout::kDense;
+  std::optional<std::uint8_t> rank{};  // exact logical rank when a graph supplies it
   format::EncodingParams params{};
   std::array<std::uint64_t, 4> ne{};
   std::optional<OperandMemory> memory{};
-  std::optional<std::uint8_t> rank{};  // exact logical rank when a graph supplies it
 };
 
 struct SelectionPolicy {

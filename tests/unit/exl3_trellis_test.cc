@@ -338,9 +338,9 @@ std::unique_ptr<Linear> RandomLinear(std::uint64_t seed, int k, int n, int bits)
                           .codebook = Exl3Codebook::kMcg,
                           .tensor_scale = false},
                .layout = Layout::kExl3Tiles,
+               .stacked = 1,
                .shape = {.ne = {static_cast<std::uint64_t>(k), static_cast<std::uint64_t>(n), 1, 1},
-                         .rank = 2},
-               .stacked = 1};
+                         .rank = 2}};
   const auto parts = format::PartsOf(l->format);
   EXPECT_TRUE(parts.has_value());
   l->codes.resize((*parts)[0].bytes);

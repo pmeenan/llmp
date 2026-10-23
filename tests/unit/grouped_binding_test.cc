@@ -25,8 +25,8 @@ struct Fixture {
   fmt::TensorFormat format{.encoding = fmt::Encoding::kNvfp4,
                            .params = {.tensor_scale = true},
                            .layout = fmt::Layout::kSplit,
-                           .shape = llmp::ir::ShapeOf({32, 16, 4}),
-                           .stacked = 2};
+                           .stacked = 2,
+                           .shape = llmp::ir::ShapeOf({32, 16, 4})};
   // Each pitch deliberately differs from the packed per-expert share.
   std::array<de::PitchedExpertPart, 3> parts{{{Role::kCodes, 0x10000, 4 * 512, 512},
                                               {Role::kBlockScales, 0x20000, 4 * 64, 64},

@@ -47,8 +47,8 @@ struct Inputs {
     w.desc.format = {.encoding = fmt::Encoding::kNvfp4,
                      .params = {.tensor_scale = true},
                      .layout = fmt::Layout::kSplit,
-                     .shape = ir::ShapeOf({32, 64, 4}),
-                     .stacked = 2};
+                     .stacked = 2,
+                     .shape = ir::ShapeOf({32, 64, 4})};
     w.expert_weight = kWeight;
     w.parts = {{Role::kCodes, ggml_new_tensor_2d(c, GGML_TYPE_I8, 1024, 4)},
                {Role::kBlockScales, ggml_new_tensor_2d(c, GGML_TYPE_I8, 128, 4)},
@@ -241,8 +241,8 @@ TEST(DecodeSelectedGrouped, AffineGroupedExpertsLowerAndStageDescriptors) {
   w.desc.format = {.encoding = fmt::Encoding::kAffine,
                    .params = {.bits = 4, .group = 32, .scale = fmt::AffineScale::kBF16},
                    .layout = fmt::Layout::kSplit,
-                   .shape = ir::ShapeOf({32, 64, 4}),
-                   .stacked = 1};
+                   .stacked = 1,
+                   .shape = ir::ShapeOf({32, 64, 4})};
   w.expert_weight = kWeight;
   // K=32, bits=4: codes = 16 bytes/row, N=64 -> 1024 bytes per expert
   // group=32, BF16: scales = 2 bytes/row, N=64 -> 128 bytes per expert
@@ -320,8 +320,8 @@ TEST(DecodeSelectedGrouped, AffineSplitExpertPartBindsLeavesInLowerStep) {
         .encoding = fmt::Encoding::kAffine,
         .params = {.bits = 4, .group = 32, .scale = fmt::AffineScale::kBF16},
         .layout = fmt::Layout::kSplit,
-        .shape = ir::ShapeOf({32, 64, 4}),
-        .stacked = 1};
+        .stacked = 1,
+        .shape = ir::ShapeOf({32, 64, 4})};
     const auto weight = builder.Weight(format, kWeight);
     const auto x = builder.Input(ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({32, 1, 3})));
     const auto logits = builder.Input(ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({4, 3})));

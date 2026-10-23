@@ -116,8 +116,8 @@ InventoryCase ModelOptInventory(std::string name, fm::Encoding encoding, fm::Lay
                      .params = {.tensor_scale = encoding == fm::Encoding::kNvfp4 &&
                                                 layout == fm::Layout::kSplit},
                      .layout = layout,
-                     .shape = {.ne = {128, 256, experts, 1}, .rank = 3},
-                     .stacked = stacked},
+                     .stacked = stacked,
+                     .shape = {.ne = {128, 256, experts, 1}, .rank = 3}},
           .digest = digest};
 }
 
@@ -1871,8 +1871,8 @@ TEST(ComponentAdmissionScaleAtomTest, SlotsHoldTheStackedTableFirstBackToBack) {
   const auto atoms = [](std::uint64_t k, std::uint64_t n, std::uint8_t stacked) {
     return fm::TensorFormat{.encoding = fm::Encoding::kNvfp4,
                             .layout = fm::Layout::kScaleAtoms,
-                            .shape = {.ne = {k, n, 1, 1}, .rank = 2},
-                            .stacked = stacked};
+                            .stacked = stacked,
+                            .shape = {.ne = {k, n, 1, 1}, .rank = 2}};
   };
   const std::vector<llmp::test::V1Array> gate_up{{.name = "blk.0.ffn_gate_up_exps.weight",
                                                   .format = atoms(64, 256, 2),

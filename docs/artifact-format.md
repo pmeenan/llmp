@@ -1011,11 +1011,21 @@ usable alone.
 | --- | --- |
 | `resources[]` | `name`, `group`, `offset`, `bytes`, `readable_bytes`, `roles`, optional `access: "rows"` as v0's; `format`; `part` |
 | `expert_arrays[]` | `name`, `layer`, `count`, `first_group`, `group_offset`, `slice_bytes`, `readable_bytes` as v0's; `format` (one slice's, at most two dimensions); `part` |
-| `format` | `{encoding, layout, ne, params, stacked}`: the names of `format::Info` (`q4_k`, `nvfp4`, `exl3_trellis`; `ggml_blocks`, `split`, `scale_atoms`), the logical shape in GGML's order (0 to 4 positive integers, its length the rank), the stacked matrices (1 to 255), and in `params` exactly the encoding parameters that differ from their zero defaults (`k_bits`, `codebook` `mcg`/`mul1`/`3inst`, `tensor_scale: true`, `bits`, `group`, `scale` `f16`/`bf16`/`f32`, `zero_point: true`; one written at its default is non-canonical) |
+| `format` | `{encoding, layout, ne, params, stacked}`: the names of `format::Info` (`q4_k`, `nvfp4`, `exl3_trellis`, `fp8_scaled`; `ggml_blocks`, `split`, `scale_atoms`), the logical shape in GGML's order (0 to 4 positive integers, its length the rank), the stacked matrices (1 to 255), and in `params` exactly the encoding parameters that differ from their zero defaults (`k_bits`, `codebook` `mcg`/`mul1`/`3inst`, `tensor_scale: true`, `bits`, `group`, `scale` `f16`/`bf16`/`f32`, `zero_point: true`, `block_rows`, `block_cols`; one written at its default is non-canonical) |
 | `part` | The part of the format the entry holds (`data`, `codes`, `block_scales`, `tensor_scale`, `input_signs`, `output_signs`, `codebook_marker`, `biases`, `zeros`) |
 
 Rules, in place of v0's representation rules:
 
+- **Block FP8.** `fp8_scaled` uses `split`, E4M3FN `codes` and F32
+  multiplicative `block_scales`. Both positive `block_rows` and `block_cols`
+  are required and are illegal on other encodings. For logical
+  `[K,N,M2,M3]` and `S=stacked`, the scale grid is
+  `[ceil(K/block_cols), S*ceil((N/S)/block_rows), M2, M3]` in GGML order.
+  Codes occupy one byte per element; scales occupy four bytes per grid entry.
+  Edge blocks may be partial, and scale blocks never cross independently
+  stacked projection or matrix boundaries. A row range cannot independently
+  address shared scale blocks when `block_rows>1`. Plain `f8_e4m3` remains
+  an unscaled dense element encoding.
 - **The size rule.** The format must be one `format::PartsOf` takes (a
   known encoding and layout that holds it, its parameters, whole blocks
   a row), and the entry's `bytes` and `readable_bytes` are exactly what

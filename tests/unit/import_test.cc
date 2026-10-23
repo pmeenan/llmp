@@ -1406,6 +1406,53 @@ TEST(ImportQuantizationTest, PairsMxfp8AndMixedPrecision) {
             Rule::kQuantization);
 }
 
+TEST(ImportQuantizationTest, PairsHfBlockFp8WithInverseF32ScaleGrid) {
+  const std::string config = R"({"model_type":"t","quantization_config":
+    {"quant_method":"fp8","weight_block_size":[3,2],"activation_scheme":"dynamic"}})";
+  const std::vector<Entry> entries = {E("m.weight", "F8_E4M3", {5, 5}),
+                                      E("m.weight_scale_inv", "F32", {2, 3}),
+                                      E("norm.weight", "BF16", {5})};
+  const auto checkpoint = ParseSafetensors(Shard(entries), config);
+  ASSERT_TRUE(checkpoint) << checkpoint.error().ToString();
+  const auto& weight = Named(*checkpoint, "m.weight");
+  const auto& scale = Named(*checkpoint, "m.weight_scale_inv");
+  EXPECT_EQ(weight.format.encoding, Encoding::kFp8Scaled);
+  EXPECT_EQ(weight.format.params.block_rows, 3U);
+  EXPECT_EQ(weight.format.params.block_cols, 2U);
+  EXPECT_EQ(weight.part, PartRole::kCodes);
+  EXPECT_EQ(weight.dtype, "F8_E4M3");
+  EXPECT_EQ(weight.extent.bytes, 25U);
+  EXPECT_EQ(scale.format, weight.format);
+  EXPECT_EQ(scale.part, PartRole::kBlockScales);
+  EXPECT_EQ(scale.dtype, "F32");
+  EXPECT_EQ(scale.dims, (std::vector<std::uint64_t>{2, 3}));
+  EXPECT_EQ(scale.extent.bytes, 24U);
+  EXPECT_EQ(Named(*checkpoint, "norm.weight").format.encoding, Encoding::kBF16);
+
+  const auto rule = [&](std::vector<Entry> malformed,
+                        std::string_view qc =
+                            R"({"quant_method":"fp8","weight_block_size":[3,2]})") {
+    return RuleOf(
+        ParseSafetensors(Shard(std::move(malformed)),
+                         std::format(R"({{"model_type":"t","quantization_config":{}}})", qc)));
+  };
+  EXPECT_EQ(rule({E("m.weight", "F8_E4M3", {5, 5}), E("m.weight_scale_inv", "F32", {3, 2})}),
+            Rule::kQuantization);
+  EXPECT_EQ(rule({E("m.weight", "F8_E4M3", {5, 5}), E("m.weight_scale_inv", "F16", {2, 3})}),
+            Rule::kQuantization);
+  EXPECT_EQ(rule({E("m.weight", "F8_E4M3", {5, 5}), E("m.weight_scale_inv", "F32", {2, 3}),
+                  E("m.weight_scale", "F32", {2, 3})}),
+            Rule::kQuantization);
+  EXPECT_EQ(rule({E("m.weight", "F8_E4M3", {5, 5}), E("m.weight_scale_inv", "F32", {2, 0})}),
+            Rule::kQuantization);
+  EXPECT_EQ(rule({E("m.weight", "F8_E4M3", {5, 5}), E("m.weight_scale_inv", "F32", {2, 3})},
+                 R"({"quant_method":"fp8","weight_block_size":[0,2]})"),
+            Rule::kConfig);
+  EXPECT_NE(rule({E("m.weight", "F8_E4M3", {5, 5}), E("m.weight_scale_inv", "F32", {2, 3}),
+                  E("m.weight_scale_inv", "F32", {2, 3})}),
+            std::nullopt);
+}
+
 TEST(ImportQuantizationTest, PairsModelOptMxfp4AlgorithmsAndInference) {
   const format::TensorFormat want{.encoding = Encoding::kMxfp4,
                                   .layout = Layout::kSplit,
@@ -1578,7 +1625,6 @@ TEST(ImportQuantizationTest, RecognizesAndRefusesMethods) {
           R"({"quant_method":"compressed-tensors","format":"float-quantized"})",
           R"({"quant_method":"awq","bits":4,"group_size":128})",
           R"({"quant_method":"gptq","bits":4,"group_size":128})",
-          R"({"quant_method":"fp8","weight_block_size":[128,128]})",
           R"({"quant_method":"bitsandbytes"})",
           R"({"quant_method":"modelopt","quant_algo":"FP8"})",
           R"({"quant_method":"modelopt","quant_algo":"MIXED_PRECISION","quantized_layers":{"a":{"quant_algo":"INT4_AWQ"}}})",

@@ -39,6 +39,31 @@ one Spark and on two.
 
 ---
 
+## D-127: Explicit block geometry for scaled FP8 artifacts (2026-10-23, status: accepted; extends D-113)
+
+**Decision.** `fp8_scaled` is a distinct split tensor encoding: E4M3FN codes
+and F32 multiplicative scales, with positive uint32 `block_rows` and
+`block_cols`. Each matrix and stacked projection starts its own scale grid;
+partial edge blocks use ceiling division. Geometry participates in serialized
+format validation and graph identity. Plain FP8 and the existing one-byte
+block-scale encodings retain their semantics.
+
+**Context.** HF FineGrainedFP8 stores two-dimensional F32 scale grids. Treating
+these as ordinary FP8, reciprocal scales or per-row one-byte scales would
+silently change values or addressing. Equal-byte reshapes can also move block
+boundaries, so they require matching logical extents.
+
+**Consequences.** This is an additive encoding in experimental artifact v1;
+existing encoding descriptions and identities are unchanged. Older readers
+refuse the unknown encoding rather than interpreting it as an existing format.
+The new geometry fields are rejected on every other encoding. Import and CPU
+reference decoding do not grant GPU execution or numerical qualification.
+See the [format rules](artifact-format.md) and
+[ingress evidence](experiments/m35-generic-import/block-fp8.md).
+
+**Reopen if.** A source scale grid cannot be described without ambiguous
+projection or matrix boundaries, or requires another physical scale encoding.
+
 ## D-126: Component arithmetic sites joined to explicit device evidence (2026-10-22, status: accepted at the owner's direction; amends D-123)
 
 **Decision.** Components declare each changed-arithmetic site's semantic name,

@@ -852,6 +852,23 @@ TEST(IrTest, DigestIsCanonical) {
   EXPECT_NE(variant(5), base);
 }
 
+TEST(IrTest, Fp8ScaledBlockGeometryEntersGraphDigest) {
+  const auto digest = [](std::uint32_t rows, std::uint32_t cols) {
+    format::TensorFormat f{.encoding = Encoding::kFp8Scaled,
+                           .layout = Layout::kSplit,
+                           .shape = {.ne = {8, 6, 1, 1}, .rank = 2}};
+    f.params.block_rows = rows;
+    f.params.block_cols = cols;
+    Builder b;
+    b.Weight(f, WeightRef{.role = 1});
+    auto graph = std::move(b).Finish();
+    EXPECT_TRUE(graph.has_value());
+    return graph ? graph->Digest() : base::Sha256Digest{};
+  };
+  EXPECT_NE(digest(2, 4), digest(3, 4));
+  EXPECT_NE(digest(2, 4), digest(2, 3));
+}
+
 TEST(IrTest, DigestHashesAccumulationAndHints) {
   // Production's per-node choices are part of the graph a lowering
   // reproduces: two graphs that differ only in them digest apart.
