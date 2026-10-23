@@ -653,6 +653,7 @@ constexpr Variant kVariants[] = {
     {"warp r2 w4 p4", 2, 4, 4, true},   {"warp r1 w4 p4", 1, 4, 4, true},
     {"block r4 w4 p1", 4, 4, 1, false}, {"block r1 w8 p4", 1, 8, 4, false},
     {"warp r4 w2 p4", 4, 2, 4, true},   {"block r4 w4 p4", 4, 4, 4, false},
+    {"block r2 w2 p4", 2, 2, 4, false}, {"block r1 w2 p4", 1, 2, 4, false},
 };
 
 // The four-token sibling of each one-token configuration: the same rows,
@@ -742,9 +743,17 @@ void LaunchVariant(const VecQDesc& d, int variant, cudaStream_t stream) {
     case 12:
       Launch<type, 4, 2, 4, true>(d, stream);
       break;
-    default:
+    case 13:
       Launch<type, 4, 4, 4, false>(d, stream);
       break;
+    case 14:
+      Launch<type, 2, 2, 4, false>(d, stream);
+      break;
+    case 15:
+      Launch<type, 1, 2, 4, false>(d, stream);
+      break;
+    default:
+      return;
   }
 }
 
@@ -838,12 +847,24 @@ int ScalarMmvqVariant(ggml_type type, const VecQDesc& d) {
 // Dense products: see below.
 int DefaultVariant(ggml_type type, const VecQDesc& d) {
   const bool even = d.nrows % 2 == 0;
-  if (d.ids == nullptr && d.tokens == 1) {
+  bool spark = false;
+  if (d.ids == nullptr && d.tokens >= 1 && d.tokens <= 8) {
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
-    if (GGML_CUDA_CC_IS_NVIDIA(cc) &&
-        ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_DGX_SPARK) {
+    spark =
+        GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_DGX_SPARK;
+  }
+  if (d.ids == nullptr && d.tokens == 1) {
+    if (spark) {
       return ScalarMmvqVariant(type, d);
     }
+  }
+  // Ordinary MMVQ's GB10 multi-column schedule: four warps reduce columns
+  // 2..4, two warps reduce columns 5..8, with two output rows per block.
+  // Odd row counts use the one-row tail-safe form. Keep this scoped away
+  // from grouped/routed work and the explicit one-token compatibility path.
+  if (spark && d.ids == nullptr && d.used == 1 && d.tokens >= 2 && d.tokens <= 8) {
+    if (d.tokens <= 4) return even ? 7 : 6;
+    return even ? 14 : 15;
   }
   // Qwen3.8's GGUF shapes at decode (vecq_bench's "qwen" cases on the GB10,
   // docs/experiments/qwen38-gguf/): its routed experts' types, gate and up

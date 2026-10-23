@@ -174,9 +174,7 @@ holds the history; this list is the whole queue of what is still open, with
 nothing left to "the record's carried list"; RE-058 is fixed in R6 and not
 carried):
 
-- Importer and formats: the generic import route for HF-quantized and HF-MoE
-  sources that retires Qwen3.8's checkpoint-pinned ModelOpt and MLX normalizers
-  (U3 below, before Nemotron: owner, 2026-10-20); MLX serving qualification
+- Importer and formats: MLX serving qualification
   (imported and admitted, not qualified for serving); the split NVFP4 experts'
   own fast products (a grouped vector product for decode rows and the
   block-scaled grouped GEMM over split scales); the MXFP4/MXFP8 relayout of
@@ -187,8 +185,7 @@ carried):
   ([RE-050](rough-edges.md)); `Q4_0` as a KV cache encoding setting; Qwen2's
   single-owner policy, the DeepSeek-only schedule products and the kernel
   capability predicates that name DeepSeek, Qwen3.8 or Gemma dimensions (U7
-  below); numerical qualification per device and the pinned/unpinned
-  difference in `component_admission.cc` (U4 below).
+  below).
 - Test and build infrastructure: the `native` preset test binaries' cuBLAS
   `RUNPATH`; `cpu-asan` `-fsanitize=function` on GGML `to_float` calls and the
   importer mutation test under ASan (both in the `check:full` and
@@ -635,53 +632,59 @@ D-122).
       empty-final chat smoke is retained. These explicit exits grant no general
       Gemma NVFP4 quality, assistant numerical evidence, new device/encoding,
       batching, maximum-context or competitive-speed qualification. Current
-      arithmetic changes and frozen numerical differences remain U4 work; old
+      arithmetic qualification is recorded with U4 below; retained numerical
       negatives and original bounds are unchanged.
-- [ ] **U4 Numerics as component data, per device** (2026-10-22, D-126):
-      interface implementation is complete; broader scalar transfer qualification
-      remains open. The original [Gemma2 A/D screen](experiments/m35-component-numerics/gemma2-scalar/RESULTS.md)
-      fails unchanged at 1,006/1,070 targets (94.0187%) within 0.1 nat. The generic
-      Q8 scalar schedule repair's [registered R screen](experiments/m35-component-numerics/gemma2-scalar/Q8-SCHEDULE-REPAIR-RESULTS.md)
-      matches all 1,070 retained A teacher scores and both 128-token replies
-      exactly under the unchanged bounds. The report preserves the hash-table
-      reply's semantic defects and both pre-launch failures. The registered
-      [three-pair Gemma2 speed screen](experiments/m35-component-numerics/gemma2-scalar/Q8-ADOPTION-SPEED-RESULTS.md)
-      passes all six metrics. The earlier Q8-only Gemma26 assistant control passed
-      and exercised three changed scalar products; its target retained ten
-      frozen-result failures.
-      The generic scalar schedule now follows incumbent reduction geometry across
-      all 18 VecQ encodings, with 182 positive operand controls. The registered
-      [Gemma31 scalar transfer](experiments/m35-component-numerics/gemma31-scalar/RESULTS.md)
-      matches all 1,070 teacher scores and both bounded 128-token replies exactly.
-      Its [C1 adoption speed check](experiments/m35-component-numerics/gemma31-scalar/SPEED-RESULTS.md)
-      passes: median slower-candidate ratios are 1.017852 for TTFT, 0.983462 for
-      decode and 1.003590 for wall throughput, each within the fixed 1.10 bound.
-      The registered [Gemma31 ordinary multirow screen](experiments/m35-component-numerics/gemma31-multirow/RESULTS.md)
-      completes both actual joined-owner decode and 1,070 teacher targets but
-      fails all four unchanged numerical bounds: +13.2747% PPL, mean/max
-      absolute NLL differences 0.57510/19.09824 and 33.7383% within 0.1 nat.
-      Its matching 128-token replies remain truncated. The generic reduction-schedule
-      repair passes operand and replay checks. Its [registered R comparison](experiments/m35-component-numerics/gemma31-multirow-repair/RESULTS.md)
-      matches all 1,070 original-A teacher scores exactly under unchanged bounds.
-      The [matched C2 speed check](experiments/m35-component-numerics/gemma31-multirow-repair-speed/PROTOCOL.md)
-      is registered separately; assistant/state and broader transfer qualification remain open.
-      Current Gemma26/Gemma31 assistant and DSpark controls retain 15/6/3 frozen
-      differences, reproduced exactly with the legacy drafter path
-      ([attribution](experiments/m35-stored-drafter/RESULTS.md)).
-      Assistant, ordinary joined-multirow and frozen-state qualification,
-      broader checkpoint quality and other affected-domain obligations remain
-      open. Frozen expectations are unchanged. U3 is closed with explicit numerical
-      attribution; U4 remains open.
-      Component sites join explicit device/encoding evidence identically for
-      pinned and unpinned artifacts; missing device evidence keeps exact
-      arithmetic and reports the requirement. Native focused/shared checks,
-      original U4 state/formula controls and both matched three-pair speed screens
-      passed; those checks did not establish this scalar transfer. The [LLM results](experiments/m35-component-numerics/LLM-RESULTS.md)
-      retain both strict Mia failures and the registered unchanged-target
-      limitation; MTP has separate controls and no inherited exception.
+- [x] **U4 Numerics as component data, per device** (completed 2026-10-23;
+      D-126). Admission joins explicit component roles, encodings and device
+      evidence identically for pinned and unpinned artifacts. Missing device
+      evidence keeps the exact path and reports the unmet requirement; no sm86
+      numerical grant is made. The implemented contract and focused admission,
+      state/formula and image controls pass at their recorded scope.
+      The generic GB10 scalar schedule follows upstream reduction geometry for
+      all 18 VecQ encodings (182 operand controls). Its repaired
+      [Gemma2](experiments/m35-component-numerics/gemma2-scalar/Q8-SCHEDULE-REPAIR-RESULTS.md)
+      and [Gemma31](experiments/m35-component-numerics/gemma31-scalar/RESULTS.md)
+      screens each match all 1,070 original-A teacher scores and both bounded
+      replies exactly; their matched three-pair adoption speed screens pass.
+      The ordinary two-through-eight-column repair passes 178 upstream operand
+      controls and changed-input Q8/GLU replay. The original
+      [Gemma31 A/D screen](experiments/m35-component-numerics/gemma31-multirow/RESULTS.md)
+      remains failed under all four unchanged numerical bounds; the separate
+      [repaired R screen](experiments/m35-component-numerics/gemma31-multirow-repair/RESULTS.md)
+      matches all 1,070 original-A scores exactly. Its
+      [C2 speed screen](experiments/m35-component-numerics/gemma31-multirow-repair-speed/RESULTS.md)
+      passes all three median slowdown bounds (TTFT 0.996109, decode 0.970889,
+      wall 0.987638).
+      The [remaining transfer controls](experiments/m35-component-numerics/remaining-domain-transfer/RESULTS.md)
+      pass all 14 current/reference head/state/transport arms across Gemma26,
+      Gemma31, Qwen GGUF and DeepSeek/DSpark. Full-head comparisons preserve
+      proposal/verify results, continuation state and exact spill/restore;
+      independent actual-plan reviews cover complete operand and storage
+      relationships. DeepSeek's historical two-row prefill has a source/operand
+      bridge, not a claimed current two-row execution. Unchanged wide-score
+      plans reuse Qwen's 996 and DeepSeek's 966 teacher targets; two current
+      128-token replies per family pass bounded-prefix review. DeepSeek remains
+      reasoning-only with empty final content at that bound. The initial
+      [C1 screen](experiments/m35-component-numerics/remaining-c1-speed/RESULTS.md)
+      passes Gemma26/Gemma31/DeepSeek and retains Qwen's failed 1.121499 TTFT
+      median. Shared GGML selection now prefers upstream MMVQ for GB10 ordinary
+      Q6_K/Q8_0 physical columns 5..8, preserving explicit and routed/grouped
+      contracts. The separately registered
+      [Qwen routing repair](experiments/m35-component-numerics/qwen-mmvq-routing-repair/RESULTS.md)
+      passes a new five-row head/state control and the same three-pair speed
+      bound; source/domain proofs reuse the unchanged families and replies.
+      Final native targets, 174 related checks and the shared 3,696-test
+      suite pass without skips.
+      Frozen Gemma26/Gemma31 assistant, DSpark, DeepSeek target and Qwen GGUF
+      differences remain recorded failures with unchanged expectations; the
+      positive upstream comparisons and source attribution do not rewrite them.
+      The [LLM results](experiments/m35-component-numerics/LLM-RESULTS.md)
+      retain both strict Mia failures and the unchanged-target limitation; MTP
+      has separate controls and inherits no exception.
       [Image transfer](experiments/m35-component-numerics/IMAGE-RESULTS.md)
-      passes both registered geometries and all speed pairs. No sm86 numerical
-      evidence is claimed. The implemented contract follows: each
+      retains both registered geometries and speed pairs. Completion grants no
+      new device, untested encoding, maximum context, general batching or
+      full-answer quality claim. The implemented contract follows: each
       changed-arithmetic rewrite declares the qualification it needs and the
       component roles and encodings it applies to, and admission derives
       qualifications identically for pinned and unpinned checkpoints (no

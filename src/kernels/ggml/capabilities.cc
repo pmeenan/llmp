@@ -1731,8 +1731,44 @@ bool VecQGluFormula(const ex::CapabilityQuery& q) {
            glu->limit == 0.0F));
 }
 
+// The registered GB10 five-column Q6_K/Q8_0 workload regressed in first-token
+// latency. Prefer upstream MMVQ across that two-warp column class, sharing
+// preparation where eligible and keeping automatic GLUs separate. This
+// device/encoding/physical-column choice leaves routed and grouped work alone.
+bool PreferOrdinaryMmvq(const ex::CapabilityQuery& q) {
+  const bool dense = q.op == ir::Primitive(Op::kMatMul);
+  const bool glu = q.op == ir::Fused(FusedKind::kMatMulGlu);
+  if (q.arch != 121 || (!dense && !glu) || q.rows < 5 || q.rows > 8) return false;
+  // A directly supplied fused operation keeps its implementation contract.
+  if (glu && !q.automatic_fusion) return false;
+  if (dense) {
+    const auto p = ParamsOf<ir::ProductParams>(q);
+    if (!p || p->accumulate != ir::Accumulate::kDefault || p->hint != ir::ProductHint::kNone ||
+        p->arithmetic != ir::ProductArithmetic::kImplementation)
+      return false;
+  }
+  const auto* w = Operand(q, 0);
+  const auto* x = Operand(q, glu ? 2 : 1);
+  const auto* out = Operand(q, kOut);
+  if (!w || !x || !out || w->stacked != 1 || w->layout != Layout::kGgmlBlocks ||
+      (w->encoding != Encoding::kQ6_K && w->encoding != Encoding::kQ8_0) ||
+      w->ne != std::array<std::uint64_t, 4>{q.k, q.n, 1, 1} ||
+      x->ne != std::array<std::uint64_t, 4>{q.k, q.rows, 1, 1} ||
+      out->ne != std::array<std::uint64_t, 4>{q.n, q.rows, 1, 1} ||
+      out->encoding != Encoding::kF32 || out->layout != Layout::kDense)
+    return false;
+  if (glu) {
+    const auto* up = Operand(q, 1);
+    if (!up || up->stacked != 1 || up->encoding != w->encoding || up->layout != w->layout ||
+        up->ne != w->ne)
+      return false;
+  }
+  return MmvqRouted(w->encoding, q.arch, q.rows);
+}
+
 bool AcceptsVecQ(const ex::CapabilityQuery& q) {
-  return VecQ(q) && VecQGluFormula(q) && q.rows >= 1 && q.rows <= MaxVecQRows(q);
+  return VecQ(q) && VecQGluFormula(q) && q.rows >= 1 && q.rows <= MaxVecQRows(q) &&
+         !PreferOrdinaryMmvq(q);
 }
 // Routed: its (token, slot) pairs within the kernel's 128 (the fast form's).
 // The primitive accepts one broadcast input slot or one for each selected

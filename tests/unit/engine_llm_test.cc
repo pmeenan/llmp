@@ -15,11 +15,84 @@
 // that adopts the conversation from its kept record (D-105, version 2: a
 // spill file a stage), where an old record of version 1 is refused.
 
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <fstream>
+
 #include "llm_fixture.h"
+#include "u4_diagnostic_export.h"
 
 namespace {
 using namespace llmp::test_support::llm_fixture;
 class EngineLlmTest : public LlmFixture {};
+
+TEST(U4DiagnosticExporterTest, StreamsFramedPlanRecordsAndPreservesMalformedPartialFiles) {
+  std::string parent_name =
+      (std::filesystem::path(testing::TempDir()) / "u4-export-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(parent_name.data()), nullptr);
+  const std::filesystem::path parent(parent_name);
+  auto export_to = llmp::test_support::U4DiagnosticExport::Create(parent / "registered");
+  ASSERT_TRUE(export_to) << (export_to ? "" : export_to.error());
+  struct stat directory_info{};
+  ASSERT_EQ(::stat((parent / "registered").c_str(), &directory_info), 0);
+  EXPECT_EQ(directory_info.st_mode & 0777, 0700);
+  auto move_probe = export_to->Open("move-probe.jsonl");
+  ASSERT_TRUE(move_probe) << (move_probe ? "" : move_probe.error());
+  ASSERT_TRUE(move_probe->Write("abc"));
+  auto moved_probe = std::move(*move_probe);
+  EXPECT_EQ(moved_probe.bytes(), 3U);
+  ASSERT_TRUE(moved_probe.Write("\n"));
+  EXPECT_EQ(moved_probe.bytes(), 4U);
+  ASSERT_TRUE(moved_probe.Close());
+  auto file = export_to->Open("plans-test.jsonl");
+  ASSERT_TRUE(file) << (file ? "" : file.error());
+  auto moved_file = std::move(*file);
+  llmp::test_support::U4PlanRecordWriter writer(moved_file, "test");
+  auto sink = writer.Sink();
+  sink(llmp::kernels::PlanReportEvent::kBegin, {});
+  sink(llmp::kernels::PlanReportEvent::kFragment, "{\"installed\":true}");
+  sink(llmp::kernels::PlanReportEvent::kEnd, {});
+  auto count = writer.Finish();
+  ASSERT_TRUE(count) << (count ? "" : count.error());
+  EXPECT_EQ(*count, 1U);
+  ASSERT_TRUE(moved_file.Close());
+  struct stat info{};
+  ASSERT_EQ(::stat((parent / "registered" / "plans-test.jsonl").c_str(), &info), 0);
+  EXPECT_EQ(info.st_mode & 0777, 0600);
+  std::ifstream input(parent / "registered" / "plans-test.jsonl");
+  std::string record;
+  ASSERT_TRUE(std::getline(input, record));
+  EXPECT_EQ(record, "{\"phase\":\"test\",\"record\":{\"installed\":true}}");
+  EXPECT_FALSE(export_to->Open("plans-test.jsonl"));
+
+  auto partial = export_to->Open("plans-partial.jsonl");
+  ASSERT_TRUE(partial);
+  llmp::test_support::U4PlanRecordWriter invalid(*partial, "turn");
+  auto invalid_sink = invalid.Sink();
+  invalid_sink(llmp::kernels::PlanReportEvent::kEnd, {});
+  EXPECT_FALSE(invalid.Finish());
+  ASSERT_TRUE(partial->Close());
+  EXPECT_TRUE(std::filesystem::exists(parent / "registered" / "plans-partial.jsonl"));
+  ASSERT_TRUE(export_to->Complete());
+  std::ifstream status_input(parent / "registered" / "status.jsonl");
+  std::string incomplete, complete;
+  ASSERT_TRUE(std::getline(status_input, incomplete));
+  ASSERT_TRUE(std::getline(status_input, complete));
+  EXPECT_EQ(incomplete, "{\"status\":\"incomplete\"}");
+  EXPECT_EQ(complete, "{\"status\":\"complete\"}");
+  auto full = llmp::test_support::U4JsonlFile::AdoptRawForTest(std::fopen("/dev/full", "wb"));
+  ASSERT_TRUE(full) << (full ? "" : full.error());
+  ASSERT_EQ(::setvbuf(full->Raw(), nullptr, _IONBF, 0), 0);
+  EXPECT_EQ(std::fwrite("raw", 1, 3, full->Raw()), 0U);
+  EXPECT_FALSE(full->failed());
+  EXPECT_FALSE(full->Flush());
+  auto moved_full = std::move(*full);
+  EXPECT_TRUE(moved_full.failed());
+  EXPECT_FALSE(moved_full.Close());
+  std::error_code ignored;
+  std::filesystem::remove_all(parent, ignored);
+}
 
 // Snapshot payload and variable metadata have one catalog charge. These are
 // integration controls over the real slot copy/restore path on the fake node;
@@ -889,6 +962,288 @@ TEST_F(EngineLlmTest, SpeculationWithTwoDraftersKeepsThePlainChain) {
   EXPECT_EQ(outs[0].tokens, Chain(next0, 20));
   EXPECT_EQ(outs[1].tokens, Chain(next1, 20));
   EXPECT_GT(llm_->counts().joined_waves, waves);
+}
+
+TEST_F(EngineLlmTest, DecodeObservationPreservesMappedTwoOwnerRunAndMarksOverflow) {
+  struct Run {
+    std::array<rt::Generation, 3> outputs;
+    std::array<std::vector<std::int32_t>, 3> histories;
+    std::array<std::vector<std::byte>, 3> images;
+    std::uint64_t drafted = 0;
+    std::uint64_t accepted = 0;
+    std::size_t events_before_restore = 0;
+    std::size_t events_after_restore = 0;
+    std::unique_ptr<rt::LlmDecodeObservation> trace;
+  };
+  const auto exercise = [this](bool observe, std::size_t event_limit) {
+    Run run;
+    Start(/*drafters=*/true, /*speculate=*/true);
+    if (!llm_) {
+      ADD_FAILURE() << "fake speculative model did not start";
+      return run;
+    }
+    auto mapped = rt::LlmTestAccess::SetMappedDrafterHeadForTest(*llm_, 1);
+    if (!mapped) {
+      ADD_FAILURE() << Why(mapped);
+      Stop();
+      return run;
+    }
+    if (observe) {
+      const auto bytes = rt::LlmDecodeObservation::BoundedBytes(
+          event_limit, rt::LlmDecodeObservation::kMaxTokensPerEvent);
+      if (!node_->ChargeHost(bytes, false)) {
+        ADD_FAILURE() << "cannot fund bounded decode trace";
+        Stop();
+        return run;
+      }
+      run.trace = std::make_unique<rt::LlmDecodeObservation>(
+          event_limit, rt::LlmDecodeObservation::kMaxTokensPerEvent);
+      auto installed = rt::LlmTestAccess::InstallDecodeObservation(*llm_, *run.trace, false);
+      if (!installed) {
+        ADD_FAILURE() << Why(installed);
+        Stop();
+        return run;
+      }
+    }
+    const std::array prompts{Prompt(200, 5), Prompt(90, 17)};
+    for (std::size_t owner = 0; owner < prompts.size(); ++owner) {
+      const Turned turn = Turn(owner, prompts[owner], owner == 0 ? 40 : 25,
+                               /*keep_logits=*/true);
+      run.outputs[owner] = turn.out;
+      EXPECT_EQ(turn.out.tokens, Chain(prompts[owner], owner == 0 ? 40 : 25));
+      EXPECT_EQ(turn.out.logits.size(), turn.out.tokens.size());
+      run.histories[owner] = BranchAt(owner).history();
+      run.images[owner] = NativeImage(static_cast<std::uint32_t>(owner));
+    }
+    if (run.trace) run.events_before_restore = run.trace->count;
+    const auto depth_before_spill = Depth(0);
+    auto spilled = llm_->SpillIdle(BranchAt(0));
+    if (!spilled) {
+      ADD_FAILURE() << Why(spilled);
+      Stop();
+      return run;
+    }
+    Open({&BranchAt(0)});
+    auto restore = BranchAt(0).BeginPrompt(BranchAt(0).history());
+    if (!restore) {
+      ADD_FAILURE() << restore.error();
+      Close();
+      Stop();
+      return run;
+    }
+    while (!(*restore)->done()) {
+      auto advanced = (*restore)->Advance();
+      if (!advanced) {
+        ADD_FAILURE() << Why(advanced);
+        if (!(*restore)->done()) (*restore)->Cancel();
+        (void)(*restore)->Finish();
+        restore->reset();
+        Close();
+        Stop();
+        return run;
+      }
+    }
+    auto restored = (*restore)->Finish();
+    if (!restored) {
+      ADD_FAILURE() << Why(restored);
+      restore->reset();
+      Close();
+      Stop();
+      return run;
+    }
+    restore->reset();
+    EXPECT_EQ(Depth(0), depth_before_spill);
+    Close();
+    const auto continuation = Continue(0, run.outputs[0], Prompt(10, 2));
+    const Turned resumed = Turn(0, continuation, 12, /*keep_logits=*/true);
+    run.outputs[2] = resumed.out;
+    EXPECT_EQ(resumed.reused, run.histories[0].size());
+    EXPECT_EQ(resumed.out.tokens, Chain(continuation, 12));
+    run.histories[2] = BranchAt(0).history();
+    run.images[2] = NativeImage(0);
+    if (run.trace) run.events_after_restore = run.trace->count;
+    run.drafted = llm_->counts().drafted;
+    run.accepted = llm_->counts().accepted;
+    EXPECT_GT(run.drafted, 0U);
+    EXPECT_GT(run.accepted, 0U);
+    Stop();  // destroys the orchestrator before the returned trace is inspected
+    return run;
+  };
+
+  const Run plain = exercise(false, 0);
+  const Run traced = exercise(true, rt::LlmDecodeObservation::kMaxEvents);
+  const Run overflow = exercise(true, 1);
+  ASSERT_TRUE(traced.trace);
+  ASSERT_TRUE(overflow.trace);
+  for (std::size_t owner = 0; owner < plain.outputs.size(); ++owner) {
+    for (const Run* compared : {&traced, &overflow}) {
+      EXPECT_EQ(compared->outputs[owner].tokens, plain.outputs[owner].tokens);
+      EXPECT_EQ(compared->outputs[owner].logits, plain.outputs[owner].logits);
+      EXPECT_EQ(compared->outputs[owner].drafted, plain.outputs[owner].drafted);
+      EXPECT_EQ(compared->outputs[owner].accepted, plain.outputs[owner].accepted);
+      EXPECT_EQ(compared->outputs[owner].steps, plain.outputs[owner].steps);
+      EXPECT_EQ(compared->histories[owner], plain.histories[owner]);
+      EXPECT_EQ(compared->images[owner], plain.images[owner]);
+    }
+  }
+  EXPECT_EQ(traced.drafted, plain.drafted);
+  EXPECT_EQ(traced.accepted, plain.accepted);
+  EXPECT_EQ(overflow.drafted, plain.drafted);
+  EXPECT_EQ(overflow.accepted, plain.accepted);
+
+  ASSERT_FALSE(traced.trace->incomplete);
+  ASSERT_GT(traced.trace->count, 0U);
+  bool saw_first_drafter = false, saw_mapped_drafter = false;
+  bool saw_discarded_suffix = false, saw_mapped_change = false;
+  std::array<bool, 2> saw_slots{};
+  std::array<std::uint32_t, 2> next_ordinal{};
+  std::vector<std::int32_t> mapped_ids(kWidth);
+  for (std::size_t row = 0; row < mapped_ids.size(); ++row)
+    mapped_ids[row] = static_cast<std::int32_t>(mapped_ids.size() - row - 1);
+  const std::string mapped_digest =
+      llmp::base::ToHex(llmp::base::Sha256().Update(std::as_bytes(std::span(mapped_ids))).Finish());
+  for (std::size_t i = 0; i < traced.trace->count; ++i) {
+    const auto& event = traced.trace->events[i];
+    ASSERT_LT(event.slot, saw_slots.size());
+    saw_slots[event.slot] = true;
+    EXPECT_EQ(event.ordinal, next_ordinal[event.slot]++);
+    if (event.verify) {
+      EXPECT_EQ(event.actual_rows, event.requested_rows);
+      EXPECT_EQ(event.input_tokens.size(), event.requested_rows);
+      EXPECT_FALSE(event.head_values.empty());  // all target verify rows, including suffix
+      saw_discarded_suffix |= event.keep < event.requested_rows;
+    } else if (event.drafter == 0) {
+      saw_first_drafter = true;
+      EXPECT_TRUE(event.head_map.empty());
+    } else if (event.drafter == 1) {
+      saw_mapped_drafter = true;
+      EXPECT_EQ(event.head_map, mapped_digest);
+      ASSERT_EQ(event.proposal_rows.size(), event.result_tokens.size());
+      for (std::size_t row = 0; row < event.proposal_rows.size(); ++row) {
+        ASSERT_LT(event.proposal_rows[row], mapped_ids.size());
+        EXPECT_EQ(event.result_tokens[row], mapped_ids[event.proposal_rows[row]]);
+        saw_mapped_change |=
+            event.result_tokens[row] != static_cast<std::int32_t>(event.proposal_rows[row]);
+      }
+    }
+  }
+  EXPECT_TRUE(saw_slots[0]);
+  EXPECT_TRUE(saw_slots[1]);
+  EXPECT_TRUE(saw_first_drafter);
+  EXPECT_TRUE(saw_mapped_drafter);
+  EXPECT_TRUE(saw_discarded_suffix);
+  EXPECT_TRUE(saw_mapped_change);
+  EXPECT_GT(traced.events_after_restore, traced.events_before_restore);
+  EXPECT_TRUE(overflow.trace->incomplete);
+  EXPECT_EQ(overflow.trace->count, 1U);
+}
+
+TEST_F(EngineLlmTest, FullHeadDiagnosticMatchesConfiguredNativeTokenOutput) {
+  struct Run {
+    rt::Generation output;
+    std::vector<std::int32_t> history;
+    std::vector<std::byte> image;
+    std::uint64_t drafted = 0;
+    std::uint64_t accepted = 0;
+    std::unique_ptr<rt::LlmDecodeObservation> trace;
+  };
+  const auto exercise = [this](bool observe, bool full_head) {
+    Run run;
+    native_outputs_ = true;
+    Start(/*drafters=*/true, /*speculate=*/true);
+    if (!llm_) {
+      ADD_FAILURE() << "fake native-token model did not start";
+      return run;
+    }
+    if (observe) {
+      const auto bytes = rt::LlmDecodeObservation::BoundedBytes(
+          rt::LlmDecodeObservation::kMaxEvents, rt::LlmDecodeObservation::kMaxTokensPerEvent);
+      if (!node_->ChargeHost(bytes, false)) {
+        ADD_FAILURE() << "cannot fund bounded decode trace";
+        Stop();
+        return run;
+      }
+      run.trace = std::make_unique<rt::LlmDecodeObservation>();
+      auto installed = rt::LlmTestAccess::InstallDecodeObservation(*llm_, *run.trace, full_head);
+      if (!installed) {
+        ADD_FAILURE() << Why(installed);
+        Stop();
+        return run;
+      }
+    }
+    const auto prompt = Prompt(120, 11);
+    const Turned turn = Turn(0, prompt, 32, /*keep_logits=*/true);
+    run.output = turn.out;
+    EXPECT_EQ(run.output.tokens, Chain(prompt, 32));
+    EXPECT_EQ(run.output.logits.size(), run.output.tokens.size());
+    run.history = BranchAt(0).history();
+    run.image = NativeImage(0);
+    run.drafted = llm_->counts().drafted;
+    run.accepted = llm_->counts().accepted;
+    Stop();
+    return run;
+  };
+
+  const Run plain = exercise(false, false);
+  const Run configured = exercise(true, false);
+  const Run full_head = exercise(true, true);
+  ASSERT_TRUE(configured.trace);
+  ASSERT_TRUE(full_head.trace);
+  for (const Run* compared : {&configured, &full_head}) {
+    EXPECT_EQ(compared->output.tokens, plain.output.tokens);
+    EXPECT_EQ(compared->output.logits, plain.output.logits);
+    EXPECT_EQ(compared->output.drafted, plain.output.drafted);
+    EXPECT_EQ(compared->output.accepted, plain.output.accepted);
+    EXPECT_EQ(compared->output.steps, plain.output.steps);
+    EXPECT_EQ(compared->history, plain.history);
+    EXPECT_EQ(compared->image, plain.image);
+    EXPECT_EQ(compared->drafted, plain.drafted);
+    EXPECT_EQ(compared->accepted, plain.accepted);
+  }
+  bool saw_native = false, saw_head = false;
+  for (std::size_t i = 0; i < configured.trace->count; ++i) {
+    const auto& event = configured.trace->events[i];
+    if (!event.verify) {
+      saw_native |= event.kind == rt::LlmDecodeObservation::Kind::kDeviceTokens;
+      EXPECT_TRUE(event.proposal_rows.empty());
+    }
+  }
+  for (std::size_t i = 0; i < full_head.trace->count; ++i) {
+    const auto& event = full_head.trace->events[i];
+    if (!event.verify) {
+      saw_head |= event.kind == rt::LlmDecodeObservation::Kind::kHeadRows;
+      EXPECT_EQ(event.head_width, kWidth);
+      EXPECT_EQ(event.proposal_rows.size(), event.result_tokens.size());
+      EXPECT_FALSE(event.head_values.empty());
+    }
+  }
+  EXPECT_TRUE(saw_native);
+  EXPECT_TRUE(saw_head);
+  EXPECT_FALSE(configured.trace->incomplete);
+  EXPECT_FALSE(full_head.trace->incomplete);
+}
+
+TEST_F(EngineLlmTest, DecodeObservationRefusesAnActivePromptWithoutAbandoningIt) {
+  Start(/*drafters=*/true, /*speculate=*/true);
+  ASSERT_NE(llm_, nullptr);
+  auto& branch = BranchAt(0);
+  Open({&branch});
+  auto prompt = Prompt(12, 7);
+  auto opened = branch.BeginPrompt(prompt);
+  ASSERT_TRUE(opened) << opened.error();
+  const auto bytes = rt::LlmDecodeObservation::BoundedBytes(
+      rt::LlmDecodeObservation::kMaxEvents, rt::LlmDecodeObservation::kMaxTokensPerEvent);
+  ASSERT_TRUE(node_->ChargeHost(bytes, false));
+  auto observer = std::make_unique<rt::LlmDecodeObservation>();
+  const auto refused = rt::LlmTestAccess::InstallDecodeObservation(*llm_, *observer, false);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error(), "observation requires an empty default branch");
+  if (!(*opened)->done()) (*opened)->Cancel();
+  auto finished = (*opened)->Finish();
+  ASSERT_TRUE(finished) << Why(finished);
+  opened->reset();
+  Close();
+  Stop();
 }
 
 // An idle conversation spilled (every stage's file) and restored by its

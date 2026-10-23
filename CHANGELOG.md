@@ -42,11 +42,14 @@ The entries below record each change; the record of the milestone is
   per architecture across GGUF, HF and EXL3 source dialects
   ([checks](docs/experiments/m35-generic-import/dense-dialects-mxfp4.md)).
 
-- GB10 scalar quantized products use incumbent reduction schedules across all
-  18 VecQ encodings. Operand controls and the bounded Gemma31 scalar quality
-  transfer pass, with a matched C1 speed check within the 10% adoption bound;
-  broader assistant, joined-row and frozen-state qualification remains open
-  ([results](docs/experiments/m35-component-numerics/gemma31-scalar/RESULTS.md)).
+- GB10 quantized products use upstream reduction schedules for scalar and
+  ordinary two-through-eight-column work. Component numerical evidence is
+  device-scoped and applies identically to pinned and unpinned artifacts;
+  missing evidence retains exact arithmetic. Repaired teacher-score, full-head,
+  assistant/state and matched speed controls pass at their registered scope
+  ([U4 qualification](docs/experiments/m35-component-numerics/remaining-domain-transfer/RESULTS.md)).
+  Historical frozen-result differences and strict Mia failures remain recorded
+  with unchanged bounds and expectations.
 
 - Stored drafter execution contracts describe anchored, block and MTP protocols;
   serving derives structure and selected-head ownership from the stored graph,
@@ -135,8 +138,8 @@ The entries below record each change; the record of the milestone is
 
 - Dense scalar Q8 products on GB10 use the incumbent four/eight-warp reduction
   schedule, including joined one-token rows. The registered Gemma2 screen
-  exactly matches all 1,070 baseline teacher scores; other qualification remains
-  open (M3.5 U4).
+  exactly matches all 1,070 baseline teacher scores; broader U4 transfer and
+  matched speed qualifications are complete at their documented scope.
 
 - Native artifact and composition publication creates private files (0600) and
   directories (0700), preserving existing store and input permissions.

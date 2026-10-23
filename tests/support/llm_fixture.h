@@ -38,6 +38,7 @@
 #include "fake_step_source.h"
 #include "kernels/common/lower.h"
 #include "kernels/common/recording_launch.h"
+#include "llm_test_access.h"
 #include "model/batching.h"
 #include "model/state_contract.h"
 #include "planner/step_shape.h"
@@ -45,48 +46,6 @@
 #include "runtime/kept_record.h"
 #include "runtime/serving.h"
 #include "runtime/state_keeper.h"
-
-namespace llmp::runtime {
-// Test-only access to host configuration and completed session facts. Native
-// work and failures still run through the runner, source and device providers.
-struct LlmTestAccess {
-  static void ObserveDepth(Llm& model, Llm::Branch& branch, std::uint32_t depth,
-                           std::uint32_t kept) {
-    model.BranchDecoding(branch).Observe(depth, kept);
-  }
-  static const execution::AdaptiveDepth& Depth(const Llm& model, const Llm::Branch& branch) {
-    return model.BranchDecoding(branch);
-  }
-  static Status UseChat(Llm& model, tokenizer::Tokenizer tokenizer, std::string_view text) {
-    model.tokenizer_ = std::make_unique<tokenizer::Tokenizer>(std::move(tokenizer));
-    return model.UseTemplate(text);
-  }
-  static Status UseChatAssets(Llm& model, const artifact::Artifact& artifact,
-                              const config::ModelEntry& entry, std::uint64_t cap) {
-    return model.UseChatAssets(artifact, entry, cap);
-  }
-  static bool HasChat(const Llm& model) { return model.tokenizer_ && model.template_; }
-  static auto ChatPool(const Llm& model) { return model.chat_startup_; }
-  static const chat::ChatTemplate& ChatTemplate(const Llm& model) { return *model.template_; }
-  static std::size_t LongestToken(const Llm& model) { return model.longest_token_; }
-  static PrefillHint Hint(const Llm::PromptSession& session, std::uint32_t current_end) {
-    return session.NextPrefillHint(current_end);
-  }
-  static Status ExecuteChunk(Llm& model, Llm::Branch& branch,
-                             const Llm::GenerationSession::Step& step, std::vector<float>& row) {
-    return model.RunChunkFor(branch, step.all, step.position, row);
-  }
-  static void Stops(Llm& model, std::vector<std::int32_t> stops) {
-    model.stops_ = std::move(stops);
-  }
-  static bool Ready(const Llm& model, const Llm::Branch& branch) {
-    return model.GenerationReadyFor(branch);
-  }
-  static std::optional<std::uint32_t> Remaining(const Llm& model, const Llm::Branch& branch) {
-    return model.RemainingGenerationRowsFor(branch);
-  }
-};
-}  // namespace llmp::runtime
 
 namespace llmp::test_support::llm_fixture {
 

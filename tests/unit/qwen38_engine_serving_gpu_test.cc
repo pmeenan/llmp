@@ -67,6 +67,7 @@
 #include "spec/mappings/qwen38.h"
 #include "spec/stored.h"
 #include "tokenizer_fixtures.h"
+#include "u4_diagnostic_export.h"
 #include "v1_frozen.h"
 
 namespace {
@@ -299,6 +300,7 @@ struct Lifetime {
   cfg::NodeConfig config;
   cfg::RuntimeRoles roles;
   rt::ServingOptions options;
+  std::optional<llmp::test_support::U4JsonlFile> diagnostic_log;
   std::unique_ptr<rt::Server> server;
   std::shared_ptr<en::ExecutionMetadataAllowance> observation_payment;
   std::unique_ptr<rt::Llm::PromptSession> restoration;
@@ -306,7 +308,7 @@ struct Lifetime {
   fs::path scratch;
   std::FILE* log = nullptr;
   ~Lifetime() {
-    if (log != nullptr) std::fclose(log);
+    if (log != nullptr && !diagnostic_log) std::fclose(log);
   }
 };
 static_assert(sizeof(Lifetime) <= 16384 && sizeof(rt::Server) <= 65536 && sizeof(rt::Llm) <= 65536);
@@ -363,8 +365,32 @@ std::expected<StateImage, std::string> ReadState(Lifetime& life, rt::Llm& model)
 std::expected<std::unique_ptr<Lifetime>, std::string> Run(
     std::string_view id, bool mtp, bool component, bool rows, std::uint32_t depth,
     Lifetime* previous = nullptr, const fs::path& stored_root = {}, bool publication = false,
-    std::string_view drafter = kMtp, std::optional<std::string> drafter_policy = std::nullopt) {
+    std::string_view drafter = kMtp, std::optional<std::string> drafter_policy = std::nullopt,
+    const llmp::test_support::U4ManualEnrollment* diagnostic = nullptr) {
   auto life = std::make_unique<Lifetime>();
+  std::optional<llmp::test_support::U4DiagnosticExport> export_to;
+  std::optional<llmp::test_support::U4JsonlFile> result_export;
+  if (diagnostic) {
+    if (mtp || !component || !rows || !publication || diagnostic->model != "qwen38-plain" ||
+        diagnostic->transport != "configured-default")
+      return std::unexpected(
+          "Qwen diagnostic requires the registered plain GGUF publication recipe");
+    auto created = llmp::test_support::U4DiagnosticExport::Create(diagnostic->export_directory);
+    if (!created) return std::unexpected(created.error());
+    export_to.emplace(std::move(*created));
+    auto enrolled = llmp::test_support::U4WriteEnrollment(
+        *export_to, diagnostic->model, diagnostic->store.string(), diagnostic->target_id, {},
+        diagnostic->transport, diagnostic->expected_target_policy, {});
+    if (!enrolled) return std::unexpected(enrolled.error());
+    auto results = export_to->Open("results.jsonl");
+    if (!results) return std::unexpected(results.error());
+    result_export.emplace(std::move(*results));
+    auto log = export_to->Open("runtime.log");
+    if (!log) return std::unexpected(log.error());
+    life->diagnostic_log.emplace(std::move(*log));
+    life->log = life->diagnostic_log->Raw();
+    life->options.debug_plans = true;
+  }
   const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   if (scratch == nullptr) return std::unexpected("no test scratch directory");
   fs::create_directories(scratch);
@@ -396,7 +422,7 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
   life->options.diagnostic_startup_host_bytes = publication ? 0 : kAllowance;
   life->options.diagnostic_auto_startup = publication;
   life->options.diagnostic_budget_cap_bytes = kBudget;
-  life->log = std::tmpfile();
+  if (life->log == nullptr) life->log = std::tmpfile();
   if (!life->log) return std::unexpected("opening test log");
   life->server = std::make_unique<rt::Server>(life->config, life->roles, life->options, life->log);
   rt::Llm* model = nullptr;
@@ -445,7 +471,9 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
     if (!b) return std::unexpected(b.error());
     std::array<rt::Llm::Branch*, 1> active{*b};
     if (auto s = life->server->SelectRequestBranches(*model, active); !s) return s;
-    if (auto s = (*b)->Prefill(Prompt(), life->result.heads[0]); !s) return s;
+    auto prompt = Prompt();
+    if (diagnostic) prompt.resize(5);
+    if (auto s = (*b)->Prefill(prompt, life->result.heads[0]); !s) return s;
     for (std::size_t turn = 0; turn < 2; ++turn) {
       rt::GenerateOptions options;
       options.max_tokens = 8;
@@ -461,6 +489,10 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
         auto state = ReadState(*life, *static_cast<rt::Llm*>(model));
         if (!state) return std::unexpected(state.error());
         life->result.states[turn == 0 ? 0 : 2] = std::move(*state);
+      }
+      if (export_to && turn == 0) {
+        auto snapshot = llmp::test_support::U4WritePlanSnapshot(*model, *export_to, "turn0");
+        if (!snapshot) return std::unexpected(snapshot.error());
       }
       if (turn == 0) {
         // Idle spill retains the actual pending MTP state. Restore through
@@ -497,6 +529,67 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
         if (reused + 1 != next.size()) return std::unexpected("spill resume lost its prefix");
       }
     }
+    if (export_to) {
+      for (const auto& head : life->result.heads)
+        if (head.size() != kVocab ||
+            !std::ranges::all_of(head, [](float value) { return std::isfinite(value); }))
+          return std::unexpected("Qwen diagnostic head is truncated or non-finite");
+      for (const auto& generation : life->result.generations)
+        for (const auto& row : generation.logits)
+          if (row.size() != kVocab ||
+              !std::ranges::all_of(row, [](float value) { return std::isfinite(value); }))
+            return std::unexpected("Qwen diagnostic verify row is truncated or non-finite");
+      auto& out = *result_export;
+      if (!out.Write(std::format("{{\"type\":\"prompt\",\"token_count\":{},"
+                                 "\"sha256\":\"{}\",\"token_ids\":",
+                                 prompt.size(), llmp::test_support::U4Sha256Ints(prompt))) ||
+          !llmp::test_support::U4WriteIntArray(out, prompt) || !out.Line("}"))
+        return std::unexpected("writing Qwen prompt record failed");
+      if (!out.Line("{\"type\":\"envelope\",\"context\":512,\"prefill_chunk\":16,"
+                    "\"max_slots\":1,\"max_tokens_per_turn\":8}"))
+        return std::unexpected("writing Qwen envelope record failed");
+      for (std::size_t turn = 0; turn < 2; ++turn) {
+        const auto& generation = life->result.generations[turn];
+        if (!out.Write(std::format("{{\"type\":\"turn\",\"turn\":{},\"head_width\":{},"
+                                   "\"head_sha256\":\"{}\",\"tokens\":",
+                                   turn, life->result.heads[turn].size(),
+                                   llmp::test_support::U4Sha256Floats(life->result.heads[turn]))) ||
+            !llmp::test_support::U4WriteIntArray(out, generation.tokens) ||
+            !out.Write(std::format(",\"drafted\":{},\"accepted\":{},\"history\":",
+                                   generation.drafted, generation.accepted)) ||
+            !llmp::test_support::U4WriteIntArray(out, life->result.history[turn]) ||
+            !out.Write(",\"verify_rows\":["))
+          return std::unexpected("writing Qwen diagnostic turn record failed");
+        for (std::size_t row = 0; row < generation.logits.size(); ++row) {
+          if (row && !out.Write(",")) return std::unexpected("writing Qwen row separator failed");
+          if (!out.Write(std::format("{{\"row\":{},\"width\":{},\"sha256\":\"{}\"}}", row,
+                                     generation.logits[row].size(),
+                                     llmp::test_support::U4Sha256Floats(generation.logits[row]))))
+            return std::unexpected("writing Qwen verify-row digest failed");
+        }
+        if (!out.Line("]}")) return std::unexpected("writing Qwen turn terminator failed");
+      }
+      for (std::size_t index = 0; index < life->result.states.size(); ++index) {
+        const auto& state = life->result.states[index];
+        if (!out.Write(std::format("{{\"type\":\"state\",\"index\":{},\"positions\":{},"
+                                   "\"sha256\":\"{}\",\"ranges\":[",
+                                   index, state.positions, llmp::base::ToHex(state.digest))))
+          return std::unexpected("writing Qwen state header failed");
+        for (std::size_t range = 0; range < state.ranges.size(); ++range) {
+          if (range && !out.Write(","))
+            return std::unexpected("writing Qwen state separator failed");
+          const auto& coordinate = state.ranges[range];
+          if (!out.Write(std::format("[{}, {}, {}]", coordinate[0], coordinate[1], coordinate[2])))
+            return std::unexpected("writing Qwen state coordinate failed");
+        }
+        if (!out.Line("]}")) return std::unexpected("writing Qwen state terminator failed");
+      }
+      auto snapshot = llmp::test_support::U4WritePlanSnapshot(*model, *export_to, "turn1");
+      if (!snapshot) return std::unexpected(snapshot.error());
+      if (auto closed = result_export->Close(); !closed) return closed;
+      if (!life->diagnostic_log->Flush())
+        return std::unexpected("flushing full Qwen runtime diagnostic log failed");
+    }
     if (component) {
       const auto& engine = *static_cast<rt::Llm*>(model);
       if (engine.runner().coverage().violations != 0)
@@ -516,6 +609,12 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
     const std::string reason = retired.error();
     std::ignore = life.release();
     return std::unexpected(reason + "; complete arm retained");
+  }
+  if (life->diagnostic_log) {
+    if (auto closed = life->diagnostic_log->Close(); !closed)
+      return std::unexpected(closed.error());
+    auto marked = export_to->Complete();
+    if (!marked) return std::unexpected(marked.error());
   }
   // TearDown retired GPU resources; retain the stopped Server/catalog
   // payment with its result through metadata checks and the next admission,
@@ -631,6 +730,16 @@ TEST(Qwen38EngineServingGpu, PublishedGgufMatchesFrozenHeadsStateAndSpill) {
   testing::Test::RecordProperty("restored_owners", 1);
   testing::Test::RecordProperty("native_artifact", id);
   fs::remove_all((*native)->scratch);
+}
+
+TEST(Qwen38EngineServingGpu, DISABLED_U4DiagnosticPlainQwen38) {
+  auto enrollment = llmp::test_support::U4ManualEnrollment::Read("qwen38-plain", false, false);
+  ASSERT_TRUE(enrollment) << (enrollment ? "" : enrollment.error());
+  auto run = ::Run(enrollment->target_id, false, true, true, 2, nullptr, enrollment->store, true,
+                   kMtp, std::nullopt, &*enrollment);
+  ASSERT_TRUE(run) << (run ? "" : run.error());
+  RecordProperty("diagnostic_export", enrollment->export_directory.string());
+  run->reset();
 }
 
 // No artifact, runner registration, model binding or device work is needed

@@ -826,6 +826,176 @@ TEST(GgmlLowerTest, VectorRowsBoundTheVectorForms) {
   EXPECT_FALSE(vecq(17, {}));
 }
 
+TEST(GgmlLowerTest, OrdinaryWideVectorRoutingUsesPhysicalDeviceAndEncodingDomain) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  const auto registry = PlanningRegistry();
+  for (const auto encoding : {Encoding::kQ6_K, Encoding::kQ8_0, Encoding::kQ2_K}) {
+    for (const std::uint32_t arch : {86U, 121U}) {
+      if (!kg::CompiledFor(arch)) continue;
+      for (const std::uint64_t rows : {1U, 4U, 5U, 8U, 9U}) {
+        SCOPED_TRACE(
+            std::format("encoding {} arch {} rows {}", static_cast<int>(encoding), arch, rows));
+        std::array operands{ex::OperandFormat{.operand = 0,
+                                              .encoding = encoding,
+                                              .layout = Layout::kGgmlBlocks,
+                                              .ne = {256, 64, 1, 1}},
+                            ex::OperandFormat{.operand = 1,
+                                              .encoding = Encoding::kQ8_1,
+                                              .layout = Layout::kGgmlBlocks,
+                                              .ne = {256, rows, 1, 1}},
+                            ex::OperandFormat{.operand = ex::kOutputOperand,
+                                              .encoding = Encoding::kF32,
+                                              .layout = Layout::kDense,
+                                              .ne = {64, rows, 1, 1}}};
+        auto params = ir::ToBytes(ir::ProductParams{});
+        ex::CapabilityQuery query{.op = ir::Primitive(ir::Op::kMatMul),
+                                  .operands = operands,
+                                  .rows = rows,
+                                  .k = 256,
+                                  .n = 64,
+                                  .arch = arch,
+                                  .params = params};
+        const auto has = [&](std::string_view name) {
+          return std::ranges::any_of(ex::Candidates(registry, query),
+                                     [&](std::size_t i) { return registry.at(i).name == name; });
+        };
+        const bool upstream = arch == 121 && rows >= 5 && rows <= 8 && encoding != Encoding::kQ2_K;
+        EXPECT_EQ(has("llmp.vecq.dense"), !upstream);
+        if (upstream) EXPECT_TRUE(has("llmp.mmvq.prepared"));
+        if (!upstream) continue;
+        // Outer row count alone cannot suppress a grouped physical product.
+        operands[0].ne[2] = 2;
+        EXPECT_TRUE(kg::CapabilityOf("llmp.vecq.dense")->accepts(query));
+        operands[0].ne[2] = 1;
+        operands[1].ne = {256, 1, rows, 1};
+        EXPECT_TRUE(kg::CapabilityOf("llmp.vecq.dense")->accepts(query));
+        operands[1].ne = {256, rows, 1, 1};
+        // A caller's explicit accumulation/hint/arithmetic is not a speed preference.
+        for (const auto p :
+             {ir::ProductParams{.accumulate = ir::Accumulate::kF32},
+              ir::ProductParams{.hint = ir::ProductHint::kHadamard},
+              ir::ProductParams{.arithmetic = ir::ProductArithmetic::kBlock32Q8SumF32}}) {
+          params = ir::ToBytes(p);
+          EXPECT_TRUE(kg::CapabilityOf("llmp.vecq.dense")->accepts(query));
+        }
+        params = ir::ToBytes(ir::ProductParams{});
+        std::array glu_operands{operands[0], operands[0], operands[1], operands[2]};
+        glu_operands[1].operand = 1;
+        glu_operands[2].operand = 2;
+        query.op = ir::Fused(ir::FusedKind::kMatMulGlu);
+        query.operands = glu_operands;
+        params = ir::ToBytes(ir::GluParams{.kind = ir::GluKind::kSwiGlu});
+        query.automatic_fusion = true;
+        EXPECT_FALSE(has("llmp.vecq.glu"));
+        query.automatic_fusion = false;
+        EXPECT_TRUE(has("llmp.vecq.glu"));  // explicit prepared fused IR stays supported
+      }
+    }
+  }
+}
+
+TEST(GgmlLowerTest, OrdinaryWideVectorRewriteKeepsUpstreamProductsAndSeparateGlu) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  const auto registry = PlanningRegistry();
+  for (const auto encoding : {Encoding::kQ6_K, Encoding::kQ8_0}) {
+    for (const std::uint32_t rows : {4U, 5U, 8U, 9U}) {
+      SCOPED_TRACE(std::format("encoding {} rows {}", static_cast<int>(encoding), rows));
+      ir::Builder b;
+      b.SetComponent(1);
+      const llmp::format::TensorFormat wf{
+          .encoding = encoding, .layout = Layout::kGgmlBlocks, .shape = ir::ShapeOf({256, 64})};
+      const auto x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({256, rows})));
+      const auto gate = b.Weight(wf, {.component = 1, .role = 0});
+      const auto up = b.Weight(wf, {.component = 1, .role = 1});
+      const auto other = b.Weight(wf, {.component = 1, .role = 2});
+      b.Output(b.Glu(b.MatMul(gate, x), b.MatMul(up, x), {.kind = ir::GluKind::kSwiGlu}));
+      b.Output(b.MatMul(other, x));
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+      pl::Policy policy;
+      policy.numerical_candidates = {pl::NumericalChange::kQ8VectorReduction};
+      auto plan = pl::Plan(graph->Clone(), registry, Gb10(), policy);
+      ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+      std::size_t upstream = 0, vecq = 0, separate = 0;
+      for (const auto& step : plan->steps) {
+        const auto& name = registry.at(step.implementation).name;
+        upstream += name == "llmp.mmvq.prepared" || name == "ggml.mul_mat.mmvq";
+        vecq += name == "llmp.vecq.dense" || name == "llmp.vecq.glu";
+        separate += name == "ggml.swiglu";
+      }
+      if (rows == 5 || rows == 8) {
+        EXPECT_EQ(upstream, 3U);
+        EXPECT_EQ(vecq, 0U);
+        EXPECT_EQ(separate, 1U);
+      } else {
+        EXPECT_GT(vecq, 0U);
+      }
+    }
+  }
+}
+
+TEST(GgmlLowerTest, OrdinaryWideVectorRoutingKeepsRoutedSiblingAndGroupedProducts) {
+  using llmp::format::Encoding;
+  using llmp::format::Layout;
+  const auto registry = PlanningRegistry();
+  for (const std::uint32_t rows : {5U, 8U}) {
+    SCOPED_TRACE(rows);
+    ir::Builder b;
+    b.SetComponent(1);
+    const auto x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({256, rows})));
+    const llmp::format::TensorFormat ordinary{.encoding = Encoding::kQ8_0,
+                                              .layout = Layout::kGgmlBlocks,
+                                              .shape = ir::ShapeOf({256, 64})};
+    const auto w = b.Weight(ordinary, {.component = 1, .role = 0});
+    auto expert = ordinary;
+    expert.shape = ir::ShapeOf({256, 64, 2});
+    const auto ew = b.Weight(expert, {.component = 1, .role = 1});
+    const auto ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({1, rows})));
+    b.Output(b.MatMul(w, x));
+    b.Output(b.MatMulId(ew, b.Reshape(x, ir::ShapeOf({256, 1, rows})), ids));
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+    pl::Policy policy;
+    policy.numerical_candidates = {pl::NumericalChange::kQ8VectorReduction};
+    auto plan = pl::Plan(graph->Clone(), registry, Gb10(), policy);
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    std::size_t upstream = 0, routed = 0;
+    for (const auto& step : plan->steps) {
+      const auto& name = registry.at(step.implementation).name;
+      upstream += name == "llmp.mmvq.prepared" || name == "ggml.mul_mat.mmvq";
+      routed += name == "llmp.vecq.experts";
+    }
+    EXPECT_EQ(upstream, 1U);
+    EXPECT_EQ(routed, 1U);
+
+    // The grouped entry has an independent predicate and retains its paired
+    // preparation/product recipe in the same physical token class.
+    ir::Builder grouped;
+    const auto gw = grouped.Weight({.encoding = Encoding::kQ8_0,
+                                    .layout = Layout::kGgmlBlocks,
+                                    .shape = ir::ShapeOf({256, 128})},
+                                   {});
+    const auto gx = grouped.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({256, 2, rows})));
+    const auto product = grouped.MatMul(grouped.Reshape(gw, ir::ShapeOf({256, 64, 2})),
+                                        grouped.Permute(gx, {0, 2, 1, 3}));
+    grouped.Output(grouped.Cont(grouped.Permute(product, {0, 2, 1, 3}), ir::ShapeOf({128, rows})));
+    auto gg = std::move(grouped).Finish();
+    ASSERT_TRUE(gg) << (gg ? "" : gg.error().detail);
+    const std::vector<ir::TensorId> staged{gx};
+    auto gp = pl::Plan(gg->Clone(), registry, Gb10(), policy,
+                       {.staged = staged, .written = kg::WrittenBytes});
+    ASSERT_TRUE(gp) << (gp ? "" : gp.error().detail);
+    EXPECT_EQ(std::ranges::count_if(gp->steps,
+                                    [&](const auto& step) {
+                                      return registry.at(step.implementation).name ==
+                                             "llmp.vecq.grouped";
+                                    }),
+              1);
+  }
+}
+
 // Explicit prepared IR exercises the native lowering contract without granting
 // any model numerical qualification. These are the serving tail's actual input
 // geometries, including the gate/up broadcast and the down product's slot rows.

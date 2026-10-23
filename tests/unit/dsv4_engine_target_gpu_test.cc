@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <format>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -32,11 +33,13 @@
 #include "base/sha256.h"
 #include "engine/component_source.h"
 #include "expected_error.h"
+#include "llm_test_access.h"
 #include "model/state_contract.h"
 #include "platform/host_probe.h"
 #include "runtime/component_build.h"
 #include "runtime/memory_guard.h"
 #include "runtime/serving.h"
+#include "u4_diagnostic_export.h"
 #include "v1_frozen.h"
 
 namespace {
@@ -199,9 +202,13 @@ namespace native_target {
 // handoff from the Qwen native publication proof, over this family's Server.
 namespace cfg = llmp::config;
 constexpr std::uint64_t kObservations = 128 * kMiB;
+constexpr std::uint64_t kDecodeObservationBytes = 2 * kMiB;
 // Both arms: 36 full rows, growth capacity, six coordinate inventories,
 // histories and the copy window. The catalog charge precedes every result.
 static_assert(3 * 36ULL * kVocab * sizeof(float) + 6 * 4096 * 24 + 4 * kMiB < kObservations);
+static_assert(rt::LlmDecodeObservation::BoundedBytes(
+                  rt::LlmDecodeObservation::kMaxEvents,
+                  rt::LlmDecodeObservation::kMaxTokensPerEvent) <= kDecodeObservationBytes);
 struct StateImage {
   std::vector<std::array<std::uint64_t, 3>> ranges;
   llmp::base::Sha256Digest digest{};
@@ -219,6 +226,8 @@ struct Owner {
   cfg::NodeConfig config;
   cfg::RuntimeRoles roles;
   rt::ServingOptions options;
+  std::unique_ptr<rt::LlmDecodeObservation> decode_observation;
+  std::optional<llmp::test_support::U4JsonlFile> diagnostic_log;
   std::unique_ptr<rt::Server> server;
   std::shared_ptr<en::ExecutionMetadataAllowance> observations;
   std::unique_ptr<rt::Llm::PromptSession> restoration;
@@ -226,7 +235,7 @@ struct Owner {
   fs::path scratch;
   std::FILE* log = nullptr;
   ~Owner() {
-    if (log) std::fclose(log);
+    if (log && !diagnostic_log) std::fclose(log);
   }
 };
 std::expected<StateImage, std::string> ReadState(Owner& life, rt::Llm& model) {
@@ -268,12 +277,36 @@ std::expected<StateImage, std::string> ReadState(Owner& life, rt::Llm& model) {
   return state;
 }
 
-std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, std::string_view id,
-                                                       Owner* previous = nullptr,
-                                                       std::string_view drafter = {}) {
+std::expected<std::unique_ptr<Owner>, std::string> Run(
+    const fs::path& store, std::string_view id, Owner* previous = nullptr,
+    std::string_view drafter = {},
+    const llmp::test_support::U4ManualEnrollment* diagnostic = nullptr) {
   const auto* scratch = std::getenv("LLMP_TEST_SCRATCH");
   if (!scratch) return std::unexpected("missing publication scratch");
   auto life = std::make_unique<Owner>();
+  std::optional<llmp::test_support::U4DiagnosticExport> export_to;
+  std::optional<llmp::test_support::U4JsonlFile> result_export;
+  if (diagnostic) {
+    if (drafter.empty() || diagnostic->model != "dsv4-dspark" || diagnostic->target_id != id ||
+        diagnostic->drafter_id != drafter)
+      return std::unexpected("DSpark diagnostic differs from its enrolled target/drafter pair");
+    auto created = llmp::test_support::U4DiagnosticExport::Create(diagnostic->export_directory);
+    if (!created) return std::unexpected(created.error());
+    export_to.emplace(std::move(*created));
+    auto enrolled = llmp::test_support::U4WriteEnrollment(
+        *export_to, diagnostic->model, diagnostic->store.string(), diagnostic->target_id,
+        diagnostic->drafter_id, diagnostic->transport, diagnostic->expected_target_policy,
+        diagnostic->expected_drafter_policy);
+    if (!enrolled) return std::unexpected(enrolled.error());
+    auto results = export_to->Open("results.jsonl");
+    if (!results) return std::unexpected(results.error());
+    result_export.emplace(std::move(*results));
+    auto log = export_to->Open("runtime.log");
+    if (!log) return std::unexpected(log.error());
+    life->diagnostic_log.emplace(std::move(*log));
+    life->log = life->diagnostic_log->Raw();
+    life->options.debug_plans = true;
+  }
   std::error_code ec;
   fs::create_directories(scratch, ec);
   if (ec) return std::unexpected(ec.message());
@@ -298,7 +331,7 @@ std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, st
   life->options.diagnostic_auto_startup = true;
   // DSpark's weights and state need the node's full 112 GiB (the speed gate's cap).
   life->options.diagnostic_budget_cap_bytes = drafter.empty() ? kCap : 120259084288ULL;
-  life->log = std::tmpfile();
+  if (life->log == nullptr) life->log = std::tmpfile();
   if (!life->log) return std::unexpected("opening native target log");
   life->server = std::make_unique<rt::Server>(life->config, life->roles, life->options, life->log);
   auto completed = [&]() -> Status {
@@ -307,9 +340,12 @@ std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, st
     life->result.selected_budget = node.budget().value();
     if (auto paid = node.Call(
             [&]() -> en::Status {
+              const std::uint64_t observation_bytes =
+                  kObservations + (diagnostic ? kDecodeObservationBytes : 0);
               const auto occupied = node.catalog().OccupancyOf(node.domain()).Total().value();
               const auto cap = node.budget().value();
-              const auto charge = kObservations + en::ExecutionMetadataAllowance::OverheadBytes();
+              const auto charge =
+                  observation_bytes + en::ExecutionMetadataAllowance::OverheadBytes();
               if (occupied > cap || charge > cap - occupied)
                 return std::unexpected("native target observations exceed node capacity");
               auto admitted = en::ExecutionMetadataAllowance::Admit(
@@ -317,7 +353,7 @@ std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, st
                   llmp::platform::AvailableMemoryBytes().value_or(0), rt::kUncountedMargin);
               if (!admitted) return std::unexpected(admitted.error());
               life->observations = std::move(*admitted);
-              if (!life->observations->Charge(kObservations))
+              if (!life->observations->Charge(observation_bytes))
                 return std::unexpected("native target observations lack payment");
               return {};
             },
@@ -333,11 +369,31 @@ std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, st
     if (auto activated = life->server->Activate(*model, parts); !activated) return activated;
     auto branch = model->branch(0);
     if (!branch) return std::unexpected(branch.error());
+    if (diagnostic) {
+      life->decode_observation = std::make_unique<rt::LlmDecodeObservation>();
+      const bool full_head = diagnostic->transport == "full-head";
+      auto installed =
+          rt::LlmTestAccess::InstallDecodeObservation(*model, *life->decode_observation, full_head);
+      if (!installed) return installed;
+    }
     std::array<rt::Llm::Branch*, 1> active{*branch};
     if (auto selected = life->server->SelectRequestBranches(*model, active); !selected)
       return selected;
     std::array<std::int32_t, kPrefix> prompt{};
     for (std::size_t i = 0; i < prompt.size(); ++i) prompt[i] = 100 + (i * 7919U + 17U) % 30000U;
+    if (export_to &&
+        (!result_export->Write(std::format("{{\"type\":\"prompt\",\"token_count\":{},"
+                                           "\"sha256\":\"{}\",\"token_ids\":",
+                                           prompt.size(),
+                                           llmp::test_support::U4Sha256Ints(prompt))) ||
+         !llmp::test_support::U4WriteIntArray(*result_export, prompt) || !result_export->Line("}")))
+      return std::unexpected("writing DSpark prompt record failed");
+    if (export_to &&
+        !result_export->Line(std::format("{{\"type\":\"envelope\",\"selected_budget\":{},"
+                                         "\"context\":{},\"prefill_chunk\":{},"
+                                         "\"max_tokens_per_turn\":8}}",
+                                         life->result.selected_budget, kContext, kChunk)))
+      return std::unexpected("writing DSpark envelope record failed");
     if (auto prefill = (*branch)->Prefill(prompt, life->result.heads[0]); !prefill) return prefill;
     for (unsigned turn = 0; turn != 2; ++turn) {
       rt::GenerateOptions options;
@@ -358,6 +414,10 @@ std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, st
       auto state = ReadState(*life, *model);
       if (!state) return std::unexpected(state.error());
       life->result.states[turn == 0 ? 0 : 2] = std::move(*state);
+      if (export_to && turn == 0) {
+        auto snapshot = llmp::test_support::U4WritePlanSnapshot(*model, *export_to, "turn0");
+        if (!snapshot) return std::unexpected(snapshot.error());
+      }
       if (turn) continue;
       if (auto ended = life->server->EndRequestBranches(*model); !ended) return ended;
       if (auto spilled = model->SpillIdle(**branch); !spilled) return spilled;
@@ -392,6 +452,65 @@ std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, st
       if (reused + 1 != next.size())
         return std::unexpected("native target continuation lost prefix");
     }
+    if (export_to) {
+      for (const auto& head : life->result.heads)
+        if (head.size() != kVocab ||
+            !std::ranges::all_of(head, [](float value) { return std::isfinite(value); }))
+          return std::unexpected("DSpark diagnostic head is truncated or non-finite");
+      for (const auto& generation : life->result.generations)
+        for (const auto& row : generation.logits)
+          if (row.size() != kVocab ||
+              !std::ranges::all_of(row, [](float value) { return std::isfinite(value); }))
+            return std::unexpected("DSpark diagnostic verify row is truncated or non-finite");
+      auto& out = *result_export;
+      for (std::size_t turn = 0; turn < life->result.generations.size(); ++turn) {
+        const auto& generation = life->result.generations[turn];
+        if (!out.Write(std::format("{{\"type\":\"turn\",\"turn\":{},\"head_width\":{},"
+                                   "\"head_sha256\":\"{}\",\"tokens\":",
+                                   turn, life->result.heads[turn].size(),
+                                   llmp::test_support::U4Sha256Floats(life->result.heads[turn]))) ||
+            !llmp::test_support::U4WriteIntArray(out, generation.tokens) ||
+            !out.Write(std::format(",\"drafted\":{},\"accepted\":{},\"history\":",
+                                   generation.drafted, generation.accepted)) ||
+            !llmp::test_support::U4WriteIntArray(out, life->result.history[turn]) ||
+            !out.Write(",\"verify_rows\":["))
+          return std::unexpected("writing DSpark diagnostic turn record failed");
+        for (std::size_t row = 0; row < generation.logits.size(); ++row) {
+          if (row && !out.Write(",")) return std::unexpected("writing DSpark row separator failed");
+          if (!out.Write(std::format("{{\"row\":{},\"width\":{},\"sha256\":\"{}\"}}", row,
+                                     generation.logits[row].size(),
+                                     llmp::test_support::U4Sha256Floats(generation.logits[row]))))
+            return std::unexpected("writing DSpark verify-row digest failed");
+        }
+        if (!out.Line("]}")) return std::unexpected("writing DSpark turn terminator failed");
+      }
+      for (std::size_t index = 0; index < life->result.states.size(); ++index) {
+        const auto& state = life->result.states[index];
+        if (!out.Write(std::format("{{\"type\":\"state\",\"index\":{},\"positions\":{},"
+                                   "\"sha256\":\"{}\",\"ranges\":[",
+                                   index, state.positions, llmp::base::ToHex(state.digest))))
+          return std::unexpected("writing DSpark state header failed");
+        for (std::size_t range = 0; range < state.ranges.size(); ++range) {
+          if (range && !out.Write(","))
+            return std::unexpected("writing DSpark state separator failed");
+          const auto& coordinate = state.ranges[range];
+          if (!out.Write(std::format("[{}, {}, {}]", coordinate[0], coordinate[1], coordinate[2])))
+            return std::unexpected("writing DSpark state coordinate failed");
+        }
+        if (!out.Line("]}")) return std::unexpected("writing DSpark state terminator failed");
+      }
+      if (!life->decode_observation || life->decode_observation->incomplete ||
+          life->decode_observation->count == 0)
+        return std::unexpected("DSpark decode observation was incomplete or empty");
+      auto observation = llmp::test_support::U4WriteObservation(
+          *export_to, diagnostic->model, diagnostic->transport, *life->decode_observation);
+      if (!observation) return observation;
+      auto snapshot = llmp::test_support::U4WritePlanSnapshot(*model, *export_to, "turn1");
+      if (!snapshot) return std::unexpected(snapshot.error());
+      if (auto closed = result_export->Close(); !closed) return closed;
+      if (!life->diagnostic_log->Flush())
+        return std::unexpected("flushing full DSpark runtime diagnostic log failed");
+    }
     if (model->runner().coverage().violations)
       return std::unexpected("native target used uncovered memory");
     return life->server->EndRequestBranches(*model);
@@ -405,6 +524,12 @@ std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, st
     const auto error = retired.error();
     std::ignore = life.release();
     return std::unexpected(error + "; unproven owner retained");
+  }
+  if (life->diagnostic_log) {
+    if (auto closed = life->diagnostic_log->Close(); !closed)
+      return std::unexpected(closed.error());
+    auto marked = export_to->Complete();
+    if (!marked) return std::unexpected(marked.error());
   }
   return life;
 }
@@ -472,6 +597,16 @@ void PublishedScreen(bool dspark) {
 }
 TEST(Dsv4EngineTargetGpu, PublishedGgufMatchesFrozenHeadsStateAndSpill) { PublishedScreen(false); }
 TEST(Dsv4EngineTargetGpu, PublishedDsparkMatchesFrozenHeadsStateAndSpill) { PublishedScreen(true); }
+
+TEST(Dsv4EngineTargetGpu, DISABLED_U4DiagnosticDspark) {
+  auto enrollment = llmp::test_support::U4ManualEnrollment::Read("dsv4-dspark", true, true);
+  ASSERT_TRUE(enrollment) << (enrollment ? "" : enrollment.error());
+  auto run = native_target::Run(enrollment->store, enrollment->target_id, nullptr,
+                                enrollment->drafter_id, &*enrollment);
+  ASSERT_TRUE(run) << llmp::test_support::Failed(run).value_or("");
+  RecordProperty("diagnostic_export", enrollment->export_directory.string());
+  run->reset();
+}
 
 // ---- DeepSeek V4 community IQ2_XXS ------------------------------------
 // antirez/deepseek-v4-gguf@f71f23d5's chat-v2 imatrix GGUF (IQ2_XXS

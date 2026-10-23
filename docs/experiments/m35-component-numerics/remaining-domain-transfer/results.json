@@ -1,0 +1,508 @@
+{
+  "aggregate": {
+    "actual_full_operand_plan_review": {
+      "all_remaining_families": {
+        "path": "/tmp/llmp-m35-orchestration/u4-remaining-model-plan-independent-review-r1.json",
+        "sha256": "9f24242f1132d2972726af0dceeaab9ec061071bfe37afd58dc1164826b2adbc",
+        "status": "CLEAN_G26_QWEN_DS_ACTUAL_PLAN_RELATIONSHIPS"
+      },
+      "ds_four_plan_review": {
+        "path": "/tmp/llmp-m35-orchestration/ds-all-four-plan-review-r1.json",
+        "sha256": "351c4ab6b1509797c2d1c5d83f38c3ec335636cab772bbdf6f45aa0d25eab3be",
+        "status": "PASS"
+      },
+      "ds_relational_supplement": {
+        "path": "/tmp/llmp-m35-orchestration/ds-remaining-domain-relational-review-r1.json",
+        "sha256": "bf84a86953a153f26e42227569ee525d8b837f7832d3962308c959b36f1be3a1",
+        "status": "PASS"
+      },
+      "g26_relational_supplement": {
+        "path": "/tmp/llmp-m35-orchestration/g26-remaining-domain-relational-review-r1.json",
+        "sha256": "32443a2997e40a9a4ef4f85c1a15386361594437b38f3578704e0b72f8f45ead",
+        "status": "PASS"
+      },
+      "gemma31_four_arm_plans": {
+        "path": "/tmp/llmp-m35-orchestration/u4-final-transfer-registration-r1/g31-four-arm-plan-independent-review-r1.json",
+        "sha256": "ef1e0ababf70b828e2165f7600415c27b0ff3e25aca281ef999e80faa1089a6c",
+        "status": "CLEAN_ALL_FOUR_GEMMA31_PLAN_RELATIONSHIPS"
+      },
+      "qwen_relational_supplement": {
+        "path": "/tmp/llmp-m35-orchestration/qwen-remaining-domain-relational-review-r1.json",
+        "sha256": "3a45595e1d1a0a9aad8d2f3a948f8a34f5758c44acedc9bcad754816ab9bed98",
+        "status": "PASS"
+      }
+    },
+    "current_replies": {
+      "deepseek": {
+        "bounds": {
+          "completion_tokens_each": 128,
+          "finish": "length",
+          "prompt_tokens_each": 17,
+          "requests": 2
+        },
+        "claim": "Reasoning-only prefixes with empty final content; no completed answer.",
+        "host": "spark-c4e2",
+        "job": "u4-deepseek-two-replies-r1",
+        "raw_sse_sha256": [
+          "adba478a5b2d6e846a1111e9c3b639708233ef4c17b641554a4d4e0b172a029e",
+          "7856443478935518ee1f5ddc74e9b755e3934b3c96ea35e2470cbdc694e3faca"
+        ],
+        "run_sha256": "d9deb039158800cc2aefda0bb64fd78287475c8c8c690e4519bcf0a8b77fecaf",
+        "semantic_review": {
+          "path": "/tmp/llmp-m35-orchestration/u4-deepseek-two-replies-r1/independent-semantic-review.json",
+          "sha256": "964ee53226f37d5fb38a81a9eb1298c8cfe712c3de17dc35f1f20f55cfdf0802",
+          "status": "PASS_BOUNDED_CURRENT_DEEPSEEK_REPLIES"
+        }
+      },
+      "executor_sha256": "fbe896ddce86e965b81e588b520dd85ebe70308ec4acf03d0825e87309b789a2",
+      "no_retries": true,
+      "pins_sha256": "68a6af5494c8d9e013bcf67081fb333b0661a21c9e240aa76cdab312b31b5083",
+      "qwen": {
+        "bounds": {
+          "completion_tokens_each": 128,
+          "finish": "length",
+          "prompt_tokens_each": 66,
+          "requests": 2
+        },
+        "claim": "No observed material regression in these bounded prefixes; neither response is a complete answer.",
+        "host": "spark-56f5",
+        "job": "u4-qwen-two-replies-r1",
+        "raw_sse_sha256": [
+          "3b3198026b603aeaf446ec346982abb5b505f190566ded1ec556b240e8a6d222",
+          "5cc433de4099e6ed66458b92ebc09c44d2f05e91550d1063324cc3a4ad70c10c"
+        ],
+        "run_sha256": "bc2678e472cc0deeb441937549d124051ec780cb101915eccbdd06bd2c560b56",
+        "semantic_review": {
+          "independent_path": "/tmp/llmp-m35-orchestration/u4-qwen-two-replies-r1/independent-semantic-review.json",
+          "independent_sha256": "827dc80630c7bfdaacf5f3677143321d64e0ea3bd046b80a9b8577f2e32b0813",
+          "root_path": "/tmp/llmp-m35-orchestration/u4-qwen-two-replies-r1/root-semantic-review.json",
+          "root_sha256": "455e83ee8ea742aff4134f55a5d271e55c4c5e97b264904594a9f373e741f98d",
+          "status": "PASS_BOUNDED_CURRENT_QWEN_REPLIES"
+        }
+      },
+      "raw_evidence_local_paths": {
+        "deepseek": "/tmp/llmp-m35-orchestration/u4-deepseek-two-replies-r1/",
+        "qwen": "/tmp/llmp-m35-orchestration/u4-qwen-two-replies-r1/"
+      },
+      "registration_commit": "71dfe37eed779bbe152559b9829ad9359dfdef7a"
+    },
+    "ds_prospective_two_row_bridge": {
+      "current_actual_two_row_execution_claim": false,
+      "historical_prefill_columns": {
+        "1": 1,
+        "2": 403
+      },
+      "historical_verify_columns": {
+        "4": 404
+      },
+      "note": "The source/operand bridge does not say that current DeepSeek ran or completed a two-row prefill. Actual captured current domains were reviewed separately.",
+      "review_path": "/tmp/llmp-m35-orchestration/ds-prospective-dose-review-r1.json",
+      "review_sha256": "f45711ccba5a6fa56c3bc5b7df36f3d42984e7f2ea08ec3903137aa3c26b7ce6",
+      "status": "SOURCE_AND_OPERAND_GEOMETRY_BRIDGE_ONLY"
+    },
+    "final_shared_suite": {
+      "actual_ctest_returncode": 0,
+      "errors": 0,
+      "failures": 0,
+      "files": {
+        "LastTest.log": "b3e4c11efc8cebe57f7f591d27ae567e7751d4b6f79f68a34ffa114c0f5b9236",
+        "compile-receipts.json": "1e424d9b29d87179eec0ae59ece7d104ffebdaba655172d2f6afd5345954b884",
+        "executables.json": "8453b6a3fc9f1c6d07ac1397bd078833f8c1bd009e0dacc550e05f42fe57cf56",
+        "shared.junit.xml": "411d7d188e92c2167ab16ded404b6575b25387009d3257168035954b98a3b237",
+        "shared.verbose.log": "268b04cac3b3d4adf56e18c3ca072da0fcd1c601cbceba7a3968cc1022dc0127"
+      },
+      "review_path": "/tmp/llmp-m35-orchestration/u4-final-capability-a-r1/local-evidence/root-independent-suite-review.json",
+      "review_sha256": "e8f65d79a6bee612ebd10c8697931e5886b3e28718acb51157d74c3f6b24a913",
+      "skips": 0,
+      "source_guards": {
+        "post-build-source-guard.json": "48ccbca0f45eacde15eb3d2752e4e78f55d448071ea922cefb396be12524ebaa",
+        "post-test-source-guard.json": "48ccbca0f45eacde15eb3d2752e4e78f55d448071ea922cefb396be12524ebaa",
+        "pre-build-source-guard.json": "48ccbca0f45eacde15eb3d2752e4e78f55d448071ea922cefb396be12524ebaa",
+        "pre-test-source-guard.json": "48ccbca0f45eacde15eb3d2752e4e78f55d448071ea922cefb396be12524ebaa"
+      },
+      "status": "PASS",
+      "tests": 3696,
+      "verdict": "PASS",
+      "wall_seconds": 553.64,
+      "wrapper_returncode": 0
+    },
+    "head_state_arms": {
+      "all_pass": true,
+      "all_skipped": 0,
+      "by_family": {
+        "ds": 4,
+        "g26": 4,
+        "g31": 4,
+        "qwen": 2
+      },
+      "total": 14
+    },
+    "historical_frozen_failures": [
+      {
+        "fraction_within_0_1_nat": 0.33738317757009345,
+        "maximum_absolute_nll_nats": 19.098237628581543,
+        "mean_absolute_nll_nats": 0.5751016687706009,
+        "note": "Original A/D registered negative remains untouched; later R repair result does not relabel it.",
+        "path": "docs/experiments/m35-component-numerics/gemma31-multirow/RESULTS.md",
+        "ppl_delta_percent": 13.274694677057486,
+        "status": "FAIL_RETAINED",
+        "targets": 1070,
+        "within_0_1_nat": 361
+      },
+      {
+        "frozen_differences": {
+          "deepseek_target": 9,
+          "dspark": 3,
+          "gemma26_assistant": 15,
+          "gemma31_assistant": 6,
+          "qwen_gguf": 7
+        },
+        "note": "Unchanged expected values. Legacy/source attribution and the positive current/upstream controls do not relabel these historical failures. Strict Mia failures and the unchanged-target limitation remain in ../LLM-RESULTS.md.",
+        "status": "FAIL_RETAINED"
+      }
+    ],
+    "historical_teacher_reuse": {
+      "deepseek": {
+        "completed_score_plan_rows": 967,
+        "scope": "Historical phase-4 wide score only; no current score teacher rerun.",
+        "targets": 966,
+        "uses": 1
+      },
+      "limits": "Does not qualify assistant/state or establish reply quality; current two-reply samples were collected and reviewed separately.",
+      "qwen": {
+        "completed_score_plan_rows": 997,
+        "scope": "Historical phase-4 wide score only; no current score teacher rerun.",
+        "targets": 996,
+        "uses": 1
+      },
+      "review_path": "/tmp/llmp-m35-orchestration/u4-teacher-reply-reuse-review-r1.json",
+      "review_sha256": "5a9bba23ab67cd32703df3b55158703e103dd32cc3e15d108ac3a7df31193001",
+      "verdict": "REUSE_HISTORICAL_WIDE_TEACHERS_AND_RETAINED_REFERENCE_REPLIES_WITH_FIXED_CURRENT_CANDIDATE_REPLY_COLLECTION"
+    },
+    "initial_shared_suite": {
+      "actual_ctest_returncode": 0,
+      "errors": 0,
+      "failures": 0,
+      "review_path": "/tmp/llmp-m35-orchestration/u4-final-checks-r1/shared-r2/shared/root-actual-suite-review.json",
+      "review_sha256": "f28644541854ee77d89bc1832ffda0d7cc1f769cb201035b06378c8764186787",
+      "skips": 0,
+      "status": "PASS",
+      "tests": 3693,
+      "wall_seconds": 553.84,
+      "wrapper_limitation": "Post-test summarizer referenced nonexistent shared/junit.xml; actual XML and CTest return are independently validated. Suite not rerun.",
+      "wrapper_returncode": 1
+    },
+    "remaining_open": [],
+    "scope": "No new numerical grant, frozen-oracle change, full-answer claim, or universal checkpoint qualification.",
+    "speed_closeout": {
+      "initial_four_family_result": "../remaining-c1-speed/RESULTS.md",
+      "initial_verdicts": {
+        "deepseek": "PASS",
+        "gemma26": "PASS",
+        "gemma31": "PASS",
+        "qwen38-gguf": "FAIL_RETAINED"
+      },
+      "repaired_qwen_result": "../qwen-mmvq-routing-repair/RESULTS.md",
+      "repaired_qwen_root_speed_review_sha256": "ede70f4a5aaacd23ea36429b8a42bc609feb204c0a917e427fb08dd7649482c3",
+      "repaired_qwen_verdict": "PASS",
+      "unchanged_domain_reuse_review_sha256": "f520d243a9b5e607d3adccceb4860d72f0052108d7e7bff3d1025c71f37c7125"
+    },
+    "status": "PASS_AT_RECORDED_SCOPE"
+  },
+  "domains": {
+    "ds": {
+      "arms": [
+        {
+          "arm": "ds-candidate-default",
+          "binary_sha256": "ce7f7217b2f0c3ffd5b68b37284603184a1c29c4aedbdb027fd34cea122eba89",
+          "elapsed_seconds_informational": 37.63928936375305,
+          "export_complete": true,
+          "host": "spark-c4e2",
+          "immutable_inputs_unchanged": true,
+          "observation_events": 14,
+          "proposal_callbacks": 7,
+          "results_sha256": "918842f1465842e6da799e264a4cc3a84e64852157dc1df6277c991920ea4867",
+          "returncode": 0,
+          "run_receipt_sha256": "47d3e8677b5050e9266b09d91ef33c3c1a0671c6aa1d796a491e6fe2aac04e78",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": 7
+        },
+        {
+          "arm": "ds-candidate-full-head",
+          "binary_sha256": "ce7f7217b2f0c3ffd5b68b37284603184a1c29c4aedbdb027fd34cea122eba89",
+          "elapsed_seconds_informational": 35.770386181306094,
+          "export_complete": true,
+          "host": "spark-c4e2",
+          "immutable_inputs_unchanged": true,
+          "observation_events": 14,
+          "proposal_callbacks": 7,
+          "results_sha256": "918842f1465842e6da799e264a4cc3a84e64852157dc1df6277c991920ea4867",
+          "returncode": 0,
+          "run_receipt_sha256": "bfcc9fe964f13a46b138437614be0628669287e84bd6c9ef79948075ae940a3c",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": 7
+        },
+        {
+          "arm": "ds-reference-full-head",
+          "binary_sha256": "f0acb19b94cfe59a0a2a7c4e48516b2f5da44959ea7d0789cf22ed752ae477b1",
+          "elapsed_seconds_informational": 34.9743225639686,
+          "export_complete": true,
+          "host": "spark-c4e2",
+          "immutable_inputs_unchanged": true,
+          "observation_events": 14,
+          "proposal_callbacks": 7,
+          "results_sha256": "918842f1465842e6da799e264a4cc3a84e64852157dc1df6277c991920ea4867",
+          "returncode": 0,
+          "run_receipt_sha256": "f603aea552c11505c31b860cf24ebd9d4cd69c8e0aea9262f3c9b24ccf50cf6e",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": 7
+        },
+        {
+          "arm": "ds-reference-default",
+          "binary_sha256": "f0acb19b94cfe59a0a2a7c4e48516b2f5da44959ea7d0789cf22ed752ae477b1",
+          "elapsed_seconds_informational": 34.880851429421455,
+          "export_complete": true,
+          "host": "spark-c4e2",
+          "immutable_inputs_unchanged": true,
+          "observation_events": 14,
+          "proposal_callbacks": 7,
+          "results_sha256": "918842f1465842e6da799e264a4cc3a84e64852157dc1df6277c991920ea4867",
+          "returncode": 0,
+          "run_receipt_sha256": "a80797cdbdfd0d62d9992d3c2f83954dc891bd503948cb7df768a44164ecf139",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": 7
+        }
+      ],
+      "candidate_reference_head_state": "EXACT",
+      "full_operand_review": "CLEAN",
+      "full_operand_review_sha256": "9f24242f1132d2972726af0dceeaab9ec061071bfe37afd58dc1164826b2adbc",
+      "relational_review": {
+        "path": "/tmp/llmp-m35-orchestration/ds-remaining-domain-relational-review-r1.json",
+        "sha256": "bf84a86953a153f26e42227569ee525d8b837f7832d3962308c959b36f1be3a1",
+        "status": "PASS"
+      },
+      "transport_bridge": "EXACT except registered proposal representation"
+    },
+    "g26": {
+      "arms": [
+        {
+          "arm": "g26-candidate-default",
+          "binary_sha256": "aa324294f2394083d5f651ec29a75680892c63abd4365acb7d147c89cfd3c28a",
+          "elapsed_seconds_informational": 14.18568346137181,
+          "export_complete": true,
+          "host": "spark-56f5",
+          "immutable_inputs_unchanged": true,
+          "observation_events": 168,
+          "proposal_callbacks": 126,
+          "results_sha256": "fd28e42b9006b5c77b956c63343372e4323e8dfed120f607eef3fe35ecd8aacc",
+          "returncode": 0,
+          "run_receipt_sha256": "98f1c889e892589f53e2f5803c72ba38e448fc84554462d45a5e31e1e0a9c396",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": 42
+        },
+        {
+          "arm": "g26-candidate-full-head",
+          "binary_sha256": "aa324294f2394083d5f651ec29a75680892c63abd4365acb7d147c89cfd3c28a",
+          "elapsed_seconds_informational": 14.39705030201003,
+          "export_complete": true,
+          "host": "spark-56f5",
+          "immutable_inputs_unchanged": true,
+          "observation_events": 168,
+          "proposal_callbacks": 126,
+          "results_sha256": "28f4f51288c9b6ba695ccaf69f346f8f282e53383150baaa3d499a7b3452e1c4",
+          "returncode": 0,
+          "run_receipt_sha256": "5549310f550c5fd963952ee84df492a6dc9c1e9102c746ef993b51593d52e75b",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": 42
+        },
+        {
+          "arm": "g26-reference-full-head",
+          "binary_sha256": "2a069364f74f4c724fc06be924064319b9d7781d130a4182358f097e636107c6",
+          "elapsed_seconds_informational": 14.707337848842144,
+          "export_complete": true,
+          "host": "spark-56f5",
+          "immutable_inputs_unchanged": true,
+          "observation_events": 168,
+          "proposal_callbacks": 126,
+          "results_sha256": "28f4f51288c9b6ba695ccaf69f346f8f282e53383150baaa3d499a7b3452e1c4",
+          "returncode": 0,
+          "run_receipt_sha256": "a7cafeaedd8adad6aac651a33d232680fb33f4ea4b50f7f3bee6e130e14dfebf",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": 42
+        },
+        {
+          "arm": "g26-reference-default",
+          "binary_sha256": "2a069364f74f4c724fc06be924064319b9d7781d130a4182358f097e636107c6",
+          "elapsed_seconds_informational": 13.883334262296557,
+          "export_complete": true,
+          "host": "spark-56f5",
+          "immutable_inputs_unchanged": true,
+          "observation_events": 168,
+          "proposal_callbacks": 126,
+          "results_sha256": "fd28e42b9006b5c77b956c63343372e4323e8dfed120f607eef3fe35ecd8aacc",
+          "returncode": 0,
+          "run_receipt_sha256": "05936b5b75360a50328b508ef362e03765fc1fde7348d678325b08fb2e703644",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": 42
+        }
+      ],
+      "candidate_reference_head_state": "EXACT",
+      "full_operand_review": "CLEAN",
+      "full_operand_review_sha256": "9f24242f1132d2972726af0dceeaab9ec061071bfe37afd58dc1164826b2adbc",
+      "relational_review": {
+        "path": "/tmp/llmp-m35-orchestration/g26-remaining-domain-relational-review-r1.json",
+        "sha256": "32443a2997e40a9a4ef4f85c1a15386361594437b38f3578704e0b72f8f45ead",
+        "status": "PASS"
+      },
+      "transport_bridge": "EXACT except registered proposal representation"
+    },
+    "g31": {
+      "arms": [
+        {
+          "arm": "g31-candidate-default",
+          "binary_sha256": "aa324294f2394083d5f651ec29a75680892c63abd4365acb7d147c89cfd3c28a",
+          "elapsed_seconds_informational": 14.298015424981713,
+          "export_complete": true,
+          "host": "spark-c4e2",
+          "immutable_inputs_unchanged": true,
+          "observation_events": 64,
+          "proposal_callbacks": 48,
+          "results_sha256": "9e5f85346955b1277d9b1a3ac3a22a7c15a1be0c96ab36a144afd8c6daff1311",
+          "returncode": 0,
+          "run_receipt_sha256": "a26d1f40e1fa0bb6999430c55b5f15b4ba41259611f35d73383c481a89978296",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": 16
+        },
+        {
+          "arm": "g31-candidate-full-head",
+          "binary_sha256": "aa324294f2394083d5f651ec29a75680892c63abd4365acb7d147c89cfd3c28a",
+          "elapsed_seconds_informational": 14.734733064193279,
+          "export_complete": true,
+          "host": "spark-c4e2",
+          "immutable_inputs_unchanged": true,
+          "observation_events": 64,
+          "proposal_callbacks": 48,
+          "results_sha256": "6070f6c1b8252e2b1a0a9e6686ce235e600d4f593890abec666d6f623afdd6d5",
+          "returncode": 0,
+          "run_receipt_sha256": "038c91b13da084fe1f7ff532d84b035a75342093d8e7dabc6d01068d99da47be",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": 16
+        },
+        {
+          "arm": "g31-reference-full-head",
+          "binary_sha256": "2a069364f74f4c724fc06be924064319b9d7781d130a4182358f097e636107c6",
+          "elapsed_seconds_informational": 14.466326946858317,
+          "export_complete": true,
+          "host": "spark-c4e2",
+          "immutable_inputs_unchanged": true,
+          "observation_events": 64,
+          "proposal_callbacks": 48,
+          "results_sha256": "6070f6c1b8252e2b1a0a9e6686ce235e600d4f593890abec666d6f623afdd6d5",
+          "returncode": 0,
+          "run_receipt_sha256": "cff1740a2d95c81d87240d0a3d090a00b516a6df4409a540974947be44569e15",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": 16
+        },
+        {
+          "arm": "g31-reference-default",
+          "binary_sha256": "2a069364f74f4c724fc06be924064319b9d7781d130a4182358f097e636107c6",
+          "elapsed_seconds_informational": 14.380826469045132,
+          "export_complete": true,
+          "host": "spark-c4e2",
+          "immutable_inputs_unchanged": true,
+          "observation_events": 64,
+          "proposal_callbacks": 48,
+          "results_sha256": "9e5f85346955b1277d9b1a3ac3a22a7c15a1be0c96ab36a144afd8c6daff1311",
+          "returncode": 0,
+          "run_receipt_sha256": "ab4a211bd1e8a3260cf89df1b89af7b9821105d14b2e4ec5b719d844dcabce8a",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": 16
+        }
+      ],
+      "candidate_reference_head_state": "EXACT",
+      "full_operand_review": "CLEAN",
+      "full_operand_review_sha256": "ef1e0ababf70b828e2165f7600415c27b0ff3e25aca281ef999e80faa1089a6c",
+      "transport_bridge": "EXACT except registered proposal representation"
+    },
+    "qwen": {
+      "arms": [
+        {
+          "arm": "qwen-candidate-plain",
+          "binary_sha256": "bdfc1e651a8f548e792683fda5fa647a1f3cc843a9a826f59509880ba47a22f9",
+          "elapsed_seconds_informational": 9.855269596911967,
+          "export_complete": true,
+          "host": "spark-56f5",
+          "immutable_inputs_unchanged": true,
+          "observation_events": null,
+          "proposal_callbacks": null,
+          "results_sha256": "1949919fd8b60334947bff154e4293ab2e29f28d0cbd8637914e6c4786cec306",
+          "returncode": 0,
+          "run_receipt_sha256": "f2e1a16e262b424bd0a7f1bb1509bfd6094b1716d126437f9b4496e9b2d56acb",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": null
+        },
+        {
+          "arm": "qwen-reference-plain",
+          "binary_sha256": "1987fd3989c10c17be9de43e6df52521545dd161784b82d8225afa91c3fa38aa",
+          "elapsed_seconds_informational": 9.861692576203495,
+          "export_complete": true,
+          "host": "spark-56f5",
+          "immutable_inputs_unchanged": true,
+          "observation_events": null,
+          "proposal_callbacks": null,
+          "results_sha256": "1949919fd8b60334947bff154e4293ab2e29f28d0cbd8637914e6c4786cec306",
+          "returncode": 0,
+          "run_receipt_sha256": "fcd171a3fc33909606bc7cfbe3d31f688b4a3efd245bb707178b4dbc9bf412db",
+          "skipped": 0,
+          "status": "PASS",
+          "testcases": 1,
+          "verify_callbacks": null
+        }
+      ],
+      "candidate_reference_head_state": "EXACT",
+      "full_operand_review": "CLEAN",
+      "full_operand_review_sha256": "9f24242f1132d2972726af0dceeaab9ec061071bfe37afd58dc1164826b2adbc",
+      "relational_review": {
+        "path": "/tmp/llmp-m35-orchestration/qwen-remaining-domain-relational-review-r1.json",
+        "sha256": "3a45595e1d1a0a9aad8d2f3a948f8a34f5758c44acedc9bcad754816ab9bed98",
+        "status": "PASS"
+      },
+      "transport_bridge": "plain target; no speculative observation"
+    }
+  },
+  "limits": [
+    "No new frozen expectation or numerical grant.",
+    "Historical Gemma31 A/D failure remains a retained negative; later repaired R result does not rewrite it.",
+    "DeepSeek prospective two-row prefill evidence is a source/operand geometry bridge, not a claim that a current two-row prefill executed.",
+    "Final U4 source passes174related+3696shared checks; three unchanged families reuse originalC1PASS and repairedQwen passes separately registeredC1. Existing numerical failures remain recorded; no general model/milestone completion grant."
+  ],
+  "pins_sha256": "260b46cc2404d0b18d67ad8312f52cb44d4fad6c3e0f4c425f8ad34af715bea2",
+  "registration_commit": "57acb55c0db8181eee512f9690db338d22f881a9",
+  "status": "U4_BOUNDED_QUALIFICATION_COMPLETE"
+}

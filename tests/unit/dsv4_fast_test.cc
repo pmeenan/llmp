@@ -10,8 +10,8 @@
 //   the routed products with experts shared between tokens (each read once)
 //   and repeated within a token, per-slot and broadcast activations, and
 //   the SwiGLU (clamped) against the two products' host SwiGLU;
-// - a token's sums do not depend on the other tokens of its chunk under one
-//   configuration (the dense form's reads shared);
+// - a token's sums do not depend on the other tokens of its chunk within one
+//   schedule domain (the dense form's reads shared);
 // - the routing, the combination, the hyper-connection pre-mix and the
 //   compressor against FP64 host references, and the pre-mix's F16 and
 //   BF16 weights against their F32 values bit for bit;
@@ -39,6 +39,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -264,7 +265,8 @@ class Dsv4FastTest : public ::testing::Test {
     TensorArena::Bind(tensor, address);
     if (!data.empty()) {
       EXPECT_EQ(data.size() * sizeof(T), size);
-      EXPECT_EQ(cudaMemcpy(reinterpret_cast<void*>(address), data.data(), size,  // NOLINT
+      EXPECT_EQ(cudaMemcpy(reinterpret_cast<void*>(address), data.data(),
+                           size,  // NOLINT
                            cudaMemcpyHostToDevice),
                 cudaSuccess);
       EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
@@ -294,7 +296,8 @@ class Dsv4FastTest : public ::testing::Test {
     return Download(node);
   }
 
-  void CheckScalarSchedule(ggml_type type, std::int64_t k, std::int64_t n, std::int64_t tokens);
+  void CheckScalarSchedule(ggml_type type, std::int64_t k, std::int64_t n, std::int64_t tokens,
+                           bool one_token_schedule = true);
 
   std::unique_ptr<DeviceExecution> execution_;
   StreamId stream_;
@@ -358,7 +361,8 @@ TEST_F(Dsv4FastTest, GemmaQuantGeGluPreservesFusedSlabAndIndependentRows) {
       TensorArena::Bind(fused, guarded + 256);
       for (auto* node : {g, u, fused}) kg::SetVecQOneToken(node);
       ASSERT_TRUE(kg::CheckVecQ(fused));
-      ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);  // default-stream setup before provider work
+      ASSERT_EQ(cudaDeviceSynchronize(),
+                cudaSuccess);  // default-stream setup before provider work
       Launched(kg::RunQuantizeQ8(launch(), q8), "prepare");
       Launched(kg::RunVecQ(launch(), g), "gate");
       Launched(kg::RunVecQ(launch(), u), "up");
@@ -539,10 +543,11 @@ TEST_F(Dsv4FastTest, DenseQ8ScalarScheduleMatchesIncumbentAtPromotion) {
 // the encoding/schedule matrix. Compare identical Q8_1 bytes, not separately
 // approximated input values, including the fused and joined-row paths.
 void Dsv4FastTest::CheckScalarSchedule(ggml_type type, std::int64_t k, std::int64_t n,
-                                       std::int64_t tokens) {
+                                       std::int64_t tokens, bool one_token_schedule) {
   SCOPED_TRACE(std::format("{} k{} n{} tokens{}", ggml_type_name(type), k, n, tokens));
   // Fund the original MMVQ's up-to-three tail-row and partial-512 reads.
-  // Packed strides and logical row extents stay unchanged; extra bytes are zero.
+  // Packed strides and logical row extents stay unchanged; extra bytes are
+  // zero.
   const auto weight = [&](std::uint64_t seed) {
     auto* w = ggml_new_tensor_2d(c(), type, k, n);
     auto bytes = Quantize(type, k, n, seed);
@@ -596,7 +601,8 @@ void Dsv4FastTest::CheckScalarSchedule(ggml_type type, std::int64_t k, std::int6
   auto* joined = Place(kg::VecQ(c(), up_weights, q8, nullptr, tokens, false));
   auto* joined_glu = Place(
       kg::VecQ(c(), up_weights, q8, nullptr, tokens, false, gate_weights, kg::VecQGlu::kGeGlu));
-  for (auto* node : {joined, joined_glu}) kg::SetVecQOneToken(node);
+  if (one_token_schedule)
+    for (auto* node : {joined, joined_glu}) kg::SetVecQOneToken(node);
   auto quantized = kg::RunQuantizeQ8(launch(), q8);
   ASSERT_TRUE(quantized) << quantized.error().detail;
   for (auto* node : {joined, joined_glu}) {
@@ -609,6 +615,49 @@ void Dsv4FastTest::CheckScalarSchedule(ggml_type type, std::int64_t k, std::int6
   ASSERT_EQ(joined_bits.size(), static_cast<std::size_t>(n * tokens));
   ASSERT_EQ(joined_glu_bits.size(), joined_bits.size());
   ASSERT_EQ(joined_q8.size(), ggml_nbytes(q8));
+  if (!one_token_schedule) {
+    // This is the actual-column upstream oracle (rather than a collection of
+    // one-token calls): its reduction kernel sees the same number of columns
+    // as the candidate, over the identical F32 input tensor.
+    auto* ordinary_up = Place(ggml_mul_mat(c(), reference_up, input));
+    auto* ordinary_gate = Place(ggml_mul_mat(c(), reference_gate, input));
+    for (auto* node : {ordinary_up, ordinary_gate}) {
+      auto executed = kg::MulMatVecQ(launch(), node);
+      ASSERT_TRUE(executed) << executed.error().detail;
+    }
+    auto* ordinary_glu = Place(ggml_geglu_split(c(), ordinary_gate, ordinary_up));
+    auto ordinary_glu_run = kg::GeGlu(launch(), ordinary_glu);
+    ASSERT_TRUE(ordinary_glu_run) << ordinary_glu_run.error().detail;
+    const auto multi_up = Download<std::uint32_t>(ordinary_up);
+    const auto multi_gate = Download<std::uint32_t>(ordinary_gate);
+    const auto multi_glu = Download<std::uint32_t>(ordinary_glu);
+    ASSERT_EQ(multi_up.size(), static_cast<std::size_t>(reference_rows * tokens));
+    ASSERT_EQ(multi_gate.size(), multi_up.size());
+    ASSERT_EQ(multi_glu.size(), multi_up.size());
+    if (prepared_type) {
+      auto* prepared_up = Place(kg::MmvqPrepared(c(), reference_up, q8, input));
+      auto* prepared_gate = Place(kg::MmvqPrepared(c(), reference_gate, q8, input));
+      for (auto* node : {prepared_up, prepared_gate}) {
+        ASSERT_TRUE(kg::CheckMmvqPrepared(node));
+        auto executed = kg::RunMmvqPrepared(launch(), node);
+        ASSERT_TRUE(executed) << executed.error().detail;
+      }
+      EXPECT_EQ(Download<std::uint32_t>(prepared_up), multi_up);
+      EXPECT_EQ(Download<std::uint32_t>(prepared_gate), multi_gate);
+    }
+    for (std::int64_t t = 0; t < tokens; ++t) {
+      for (std::int64_t r = 0; r < n; ++r) {
+        const auto source = static_cast<std::size_t>(t * reference_rows + r);
+        const auto target = static_cast<std::size_t>(t * n + r);
+        EXPECT_TRUE(std::isfinite(std::bit_cast<float>(joined_bits[target])));
+        EXPECT_TRUE(std::isfinite(std::bit_cast<float>(joined_glu_bits[target])));
+        EXPECT_EQ(joined_bits[target], multi_up[source])
+            << "ordinary column oracle " << t << "," << r;
+        EXPECT_EQ(joined_glu_bits[target], multi_glu[source])
+            << "ordinary GLU oracle " << t << "," << r;
+      }
+    }
+  }
   for (std::int64_t t = 0; t < tokens; ++t) {
     SCOPED_TRACE(std::format("row{}", t));
     auto* x = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, 1),
@@ -620,6 +669,7 @@ void Dsv4FastTest::CheckScalarSchedule(ggml_type type, std::int64_t k, std::int6
     ASSERT_EQ(solo_bytes.size() * static_cast<std::size_t>(tokens), joined_q8.size());
     ASSERT_TRUE(std::equal(solo_bytes.begin(), solo_bytes.end(),
                            joined_q8.begin() + t * static_cast<std::ptrdiff_t>(solo_bytes.size())));
+    if (!one_token_schedule) continue;
     auto* ordinary_up = Place(ggml_mul_mat(c(), reference_up, x));
     auto* ordinary_gate = Place(ggml_mul_mat(c(), reference_gate, x));
     for (auto* node : {ordinary_up, ordinary_gate}) {
@@ -654,8 +704,10 @@ void Dsv4FastTest::CheckScalarSchedule(ggml_type type, std::int64_t k, std::int6
     }
     ASSERT_EQ(Download<std::uint32_t>(solo), want);
     ASSERT_EQ(Download<std::uint32_t>(solo_glu), want_glu);
-    ASSERT_TRUE(std::equal(want.begin(), want.end(), joined_bits.begin() + t * n));
-    ASSERT_TRUE(std::equal(want_glu.begin(), want_glu.end(), joined_glu_bits.begin() + t * n));
+    if (one_token_schedule) {
+      ASSERT_TRUE(std::equal(want.begin(), want.end(), joined_bits.begin() + t * n));
+      ASSERT_TRUE(std::equal(want_glu.begin(), want_glu.end(), joined_glu_bits.begin() + t * n));
+    }
     for (const auto* bits : {&want, &want_glu})
       ASSERT_TRUE(std::ranges::all_of(
           *bits, [](std::uint32_t v) { return std::isfinite(std::bit_cast<float>(v)); }));
@@ -672,6 +724,86 @@ TEST_F(Dsv4FastTest, DenseQ8ScalarSchedulesMatchIncumbentAcrossRolesAndJoinedRow
     ASSERT_FALSE(HasFatalFailure());
   }
 }
+
+struct OrdinaryScheduleCase {
+  ggml_type type;
+  std::int64_t k;
+  std::int64_t n;
+  std::int64_t tokens;
+};
+
+std::vector<OrdinaryScheduleCase> OrdinaryScheduleCases() {
+  struct Encoding {
+    ggml_type type;
+    std::int64_t four_warp_k;
+  };
+  constexpr std::array<Encoding, 18> encodings = {{
+      {GGML_TYPE_Q4_0, 2048},
+      {GGML_TYPE_Q4_1, 2048},
+      {GGML_TYPE_Q5_0, 2048},
+      {GGML_TYPE_Q5_1, 2048},
+      {GGML_TYPE_Q8_0, 1024},
+      {GGML_TYPE_Q2_K, 2048},
+      {GGML_TYPE_IQ2_XXS, 4096},
+      {GGML_TYPE_MXFP4, 2048},
+      {GGML_TYPE_Q4_K, 2048},
+      {GGML_TYPE_Q5_K, 2048},
+      {GGML_TYPE_Q6_K, 1024},
+      {GGML_TYPE_IQ2_XS, 4096},
+      {GGML_TYPE_IQ3_XXS, 4096},
+      {GGML_TYPE_Q3_K, 2048},
+      {GGML_TYPE_IQ2_S, 4096},
+      {GGML_TYPE_IQ3_S, 4096},
+      {GGML_TYPE_IQ4_NL, 2048},
+      {GGML_TYPE_IQ4_XS, 4096},
+  }};
+  std::vector<OrdinaryScheduleCase> result;
+  for (const auto& encoding : encodings) {
+    const auto block = ggml_blck_size(encoding.type);
+    const std::int64_t long_k = encoding.type == GGML_TYPE_Q2_K ? 2 * encoding.four_warp_k
+                                                                : 2 * encoding.four_warp_k + block;
+    const std::array<std::int64_t, 2> ks = {encoding.four_warp_k - block, long_k};
+    // Split the column counts across a below-boundary and a long pass, so
+    // every encoding covers both K regimes without retaining a large
+    // collection of live CUDA allocations in one fixture. Q2_K keeps its
+    // long width on the upstream MMVQ-supported 512-value boundary.
+    std::vector<std::pair<std::int64_t, std::int64_t>> widths = {
+        {ks[0], 2}, {ks[0], 4}, {ks[1], 5}};
+    // Pinned upstream MMVQ declines Q2_K at eight columns; do not fabricate
+    // a same-column oracle for that unsupported case.
+    if (encoding.type != GGML_TYPE_Q2_K) widths.emplace_back(ks[1], 8);
+    for (const auto [k, columns] : widths) {
+      for (const std::int64_t rows : {64, 65}) {
+        result.push_back({encoding.type, k, rows, columns});
+      }
+    }
+  }
+  // Actual K-quant widths exercise full model dimensions and non-integral
+  // 512-value passes with the two-warp, high-column reduction.
+  for (const auto type : {GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K}) {
+    for (const std::int64_t k : {5376, 8192, 16384, 21504}) {
+      for (const std::int64_t columns : {3, 6, 7}) {
+        result.push_back({type, k, 65, columns});
+      }
+    }
+  }
+  return result;
+}
+
+class OrdinarySchedules : public Dsv4FastTest,
+                          public ::testing::WithParamInterface<OrdinaryScheduleCase> {};
+
+TEST_P(OrdinarySchedules, MatchesActualColumnMmvqAndSeparateGlu) {
+  const auto& test = GetParam();
+  CheckScalarSchedule(test.type, test.k, test.n, test.tokens, false);
+}
+
+INSTANTIATE_TEST_SUITE_P(EncodingsAndModelWidths, OrdinarySchedules,
+                         ::testing::ValuesIn(OrdinaryScheduleCases()),
+                         [](const ::testing::TestParamInfo<OrdinaryScheduleCase>& info) {
+                           return std::format("{}_K{}_N{}_C{}", ggml_type_name(info.param.type),
+                                              info.param.k, info.param.n, info.param.tokens);
+                         });
 
 struct ScalarScheduleCase {
   ggml_type type;
@@ -815,10 +947,98 @@ TEST_F(Dsv4FastTest, DenseAndGroupedProductsMatchGgmlsVectorKernel) {
   }
 }
 
-// A wave's launches (a joined wave): to sixteen tokens a
-// token's sums equal its sums among two (the multi-token launch, whatever
-// the count), and with SetVecQOneToken each token's equal a one-token
-// product's, bit for bit, dense and routed.
+TEST_F(Dsv4FastTest, OrdinaryMultirowCaptureRefreshesQ8AndGluOutputs) {
+  // C2 selects the incumbent four-warp reduction; C5 selects its two-warp
+  // reduction and crosses a partial 512-value pass. Both use odd output rows.
+  for (const auto [type, k, columns] :
+       {std::tuple{GGML_TYPE_Q4_K, std::int64_t{5376}, std::int64_t{2}},
+        std::tuple{GGML_TYPE_Q5_K, std::int64_t{5376}, std::int64_t{5}}}) {
+    constexpr std::int64_t n = 65;
+    SCOPED_TRACE(std::format("{} k{} c{}", ggml_type_name(type), k, columns));
+    const auto make_weight = [&](std::uint64_t seed) {
+      auto* weight = ggml_new_tensor_2d(c(), type, k, n);
+      auto bytes = Quantize(type, k, n, seed);
+      const auto padded = bytes.size() + 3 * ggml_row_size(type, k) + ggml_row_size(type, 512);
+      const auto address = Allocate(padded);
+      EXPECT_EQ(cudaMemset(reinterpret_cast<void*>(address), 0, padded), cudaSuccess);
+      EXPECT_EQ(cudaMemcpy(reinterpret_cast<void*>(address), bytes.data(), bytes.size(),
+                           cudaMemcpyHostToDevice),
+                cudaSuccess);
+      TensorArena::Bind(weight, address);
+      kg::MarkRowPaddingReadable(weight);
+      return weight;
+    };
+    auto* gate = make_weight(9301);
+    auto* up = make_weight(9302);
+    const auto values = Normal(9303, static_cast<std::size_t>(k * columns), 0.73F);
+    auto changed = values;
+    for (std::size_t i = 0; i < changed.size(); ++i)
+      changed[i] = -values[i] + static_cast<float>((i % 13) + 1) * 0.03125F;
+    auto* input = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, columns), values);
+    auto* q8 = Place(kg::QuantizeQ8(c(), input));
+    auto* candidate =
+        Place(kg::VecQ(c(), up, q8, nullptr, columns, false, gate, kg::VecQGlu::kGeGlu));
+    const auto reference_rows = (n + 3) / 4 * 4;
+    const auto reference = [&](ggml_tensor* weight) {
+      auto* view = ggml_new_tensor_2d(c(), type, k, reference_rows);
+      TensorArena::Bind(view, Address(weight));
+      kg::MarkRowPaddingReadable(view);
+      return view;
+    };
+    auto* reference_gate = reference(gate);
+    auto* reference_up = reference(up);
+    auto* ordinary_gate = Place(ggml_mul_mat(c(), reference_gate, input));
+    auto* ordinary_up = Place(ggml_mul_mat(c(), reference_up, input));
+    ASSERT_TRUE(kg::RunQuantizeQ8(launch(), q8));
+    ASSERT_TRUE(kg::RunVecQ(launch(), candidate));
+    const auto original = Download<std::uint32_t>(candidate);
+
+    const auto submission = execution_->Submission(stream_);
+    ASSERT_TRUE(submission);
+    const auto native_stream = reinterpret_cast<cudaStream_t>(submission->handle);
+    ASSERT_EQ(cudaStreamBeginCapture(native_stream, cudaStreamCaptureModeThreadLocal), cudaSuccess);
+    ASSERT_TRUE(kg::RunQuantizeQ8(launch(), q8));
+    ASSERT_TRUE(kg::RunVecQ(launch(), candidate));
+    cudaGraph_t graph = nullptr;
+    cudaGraphExec_t executable = nullptr;
+    ASSERT_EQ(cudaStreamEndCapture(native_stream, &graph), cudaSuccess);
+    ASSERT_EQ(cudaGraphInstantiate(&executable, graph, nullptr, nullptr, 0), cudaSuccess);
+
+    ASSERT_EQ(cudaMemcpy(input->data, changed.data(), ggml_nbytes(input), cudaMemcpyHostToDevice),
+              cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    for (auto* node : {ordinary_gate, ordinary_up}) {
+      ASSERT_TRUE(kg::MulMatVecQ(launch(), node));
+    }
+    auto* ordinary_glu = Place(ggml_geglu_split(c(), ordinary_gate, ordinary_up));
+    ASSERT_TRUE(kg::GeGlu(launch(), ordinary_glu));
+    const auto expected = Download<std::uint32_t>(ordinary_glu);
+    bool changed_output = false;
+    for (std::int64_t t = 0; t < columns; ++t)
+      for (std::int64_t r = 0; r < n; ++r)
+        changed_output |= original[static_cast<std::size_t>(t * n + r)] !=
+                          expected[static_cast<std::size_t>(t * reference_rows + r)];
+    ASSERT_TRUE(changed_output);
+    ASSERT_EQ(cudaMemset(q8->data, 0xFF, ggml_nbytes(q8)), cudaSuccess);
+    ASSERT_EQ(cudaMemset(candidate->data, 0xA5, ggml_nbytes(candidate)), cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    ASSERT_EQ(cudaGraphLaunch(executable, native_stream), cudaSuccess);
+    const auto replayed = Download<std::uint32_t>(candidate);
+    ASSERT_EQ(cudaGraphExecDestroy(executable), cudaSuccess);
+    ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+    ASSERT_EQ(replayed.size(), static_cast<std::size_t>(n * columns));
+    for (std::int64_t t = 0; t < columns; ++t) {
+      for (std::int64_t r = 0; r < n; ++r) {
+        EXPECT_EQ(replayed[static_cast<std::size_t>(t * n + r)],
+                  expected[static_cast<std::size_t>(t * reference_rows + r)])
+            << "refreshed ordinary GLU " << t << "," << r;
+      }
+    }
+  }
+}
+
+// Compare joined waves only within a fixed ordinary reduction geometry, and
+// preserve the explicit one-token and routed-owner regressions.
 TEST_F(Dsv4FastTest, WaveLaunchesKeepEachTokensSumsBitForBit) {
   // The first n values of a (from offset at) and b, bit for bit.
   const auto same = [](const std::vector<float>& a, const std::vector<float>& b, std::size_t n,
@@ -874,9 +1094,14 @@ TEST_F(Dsv4FastTest, WaveLaunchesKeepEachTokensSumsBitForBit) {
         return RunVecQ(q8, node, std::format("{} x {}", what, tokens));
       };
       if (!glu) {
-        const std::vector<float> two = run(0, 2, false);
-        const std::vector<float> sixteen = run(0, 16, false);
-        EXPECT_TRUE(same(two, sixteen, 2 * kOut)) << what << ": 16 tokens";
+        for (const auto [within_domain, joined] : {std::pair{std::int64_t{2}, std::int64_t{4}},
+                                                   std::pair{std::int64_t{5}, std::int64_t{8}},
+                                                   std::pair{std::int64_t{9}, std::int64_t{16}}}) {
+          const std::vector<float> expected = run(0, within_domain, false);
+          const std::vector<float> actual = run(0, joined, false);
+          EXPECT_TRUE(same(expected, actual, static_cast<std::size_t>(within_domain * kOut)))
+              << what << ": joined " << joined << " tokens";
+        }
       }
       // A wave's one-token launch, four tokens a pass (and three, a pass
       // part full; and six, a second pass): each token equals that token
@@ -1081,7 +1306,7 @@ TEST_F(Dsv4FastTest, EveryConfigurationCoversEveryTypeTailRowsAndPaddedRows) {
        {GGML_TYPE_IQ3_S, 1024},   {GGML_TYPE_IQ4_XS, 1024}}};
   constexpr float kLimit = 7.0f;
   // Each configuration's rows a block reads together (dsv4_fast.cu kVariants).
-  constexpr std::array<std::int64_t, 14> kRows = {1, 1, 2, 1, 2, 4, 1, 2, 2, 1, 4, 1, 4, 4};
+  constexpr std::array<std::int64_t, 16> kRows = {1, 1, 2, 1, 2, 4, 1, 2, 2, 1, 4, 1, 4, 4, 2, 1};
   ASSERT_EQ(kg::VecQVariants(), static_cast<int>(kRows.size()));
   for (const Case& test : cases) {
     for (const std::int64_t nrows : {130, 129}) {
@@ -1244,7 +1469,8 @@ TEST_F(Dsv4FastTest, RoutedExpertsReadOnceMatchPerTokenProducts) {
     const auto slab = [&](const std::vector<std::uint8_t>& bytes) {
       ggml_tensor* t = ggml_new_tensor_3d(c(), test.type, test.k, kOut, kExperts);
       const std::uint64_t address = Allocate(bytes.size());
-      EXPECT_EQ(cudaMemcpy(reinterpret_cast<void*>(address), bytes.data(), bytes.size(),  // NOLINT
+      EXPECT_EQ(cudaMemcpy(reinterpret_cast<void*>(address), bytes.data(),
+                           bytes.size(),  // NOLINT
                            cudaMemcpyHostToDevice),
                 cudaSuccess);
       TensorArena::Bind(t, address);
@@ -1832,7 +2058,8 @@ TEST_F(Dsv4FastTest, TheRegistryDeclaresAndBindsTheFastPlansImplementations) {
   }
 }
 
-// ---------------------------------------------------------------- sparse attention
+// ---------------------------------------------------------------- sparse
+// attention
 
 // The indexer's inputs with small integer values and weights of a few
 // powers of two, so every score is exact in F32 whatever the summation
