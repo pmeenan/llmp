@@ -842,13 +842,142 @@ class RetainedQualityFailure(unittest.TestCase):
                     service.return_value.stop.return_value = {"signal": "TERM", "returncode": 0}
                     self.assertEqual(gate.cmd_quality(args), 1)
                     stream.assert_called_once()
+                    self.assertIsNone(stream.call_args.args[2])
                     score.assert_not_called()
                     service.return_value.stop.assert_called_once()
                 record = json.loads((root / "out/quality/gemma2-quality-old.json").read_text())
                 self.assertEqual(record["replies"], [failed])
+                self.assertEqual(record["chat_concurrency"], {"requested": 1, "effective": 1})
                 self.assertIn(failed["error"], record["error"])
                 self.assertNotIn("score", record)
                 self.assertEqual(record["stop"]["returncode"], 0)
+
+
+class QualityConcurrency(unittest.TestCase):
+    def test_default_concurrency_runs_serially_and_keeps_prompt_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            calls = []
+            active = 0
+            peak = 0
+
+            def stream(port, body, barrier, raw):
+                nonlocal active, peak
+                self.assertIsNone(barrier)
+                active += 1
+                peak = max(peak, active)
+                calls.append((body, raw))
+                active -= 1
+                return {"error": None, "reply_sha256": str(len(calls))}
+
+            # Exercise the normal default through cmd argument lookup as well: absence of the
+            # new Namespace field remains the old serial mode.
+            with unittest.mock.patch.object(gate, "stream_chat", side_effect=stream):
+                replies, error = gate.collect_quality_replies(
+                    1, "model", 19, 1, False, pathlib.Path(directory), "quality")
+            self.assertIsNone(error)
+            self.assertEqual(peak, 1)
+            self.assertEqual([c[0]["messages"][0]["content"] for c in calls],
+                             list(gate.QUALITY_PROMPTS))
+            self.assertEqual([r["reply_sha256"] for r in replies], ["1", "2"])
+            self.assertTrue(all(raw is None for _, raw in calls))
+
+    def test_concurrent_batch_uses_barrier_and_restores_prompt_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            second_done = threading.Event()
+            completion_order = []
+
+            def stream(port, body, barrier, raw):
+                self.assertIsNotNone(barrier)
+                barrier.wait(timeout=2)
+                index = gate.QUALITY_PROMPTS.index(body["messages"][0]["content"])
+                if index == 0:
+                    self.assertTrue(second_done.wait(timeout=2))
+                else:
+                    completion_order.append(index)
+                    second_done.set()
+                    return {"error": None, "reply_sha256": str(index)}
+                completion_order.append(index)
+                return {"error": None, "reply_sha256": str(index)}
+
+            with unittest.mock.patch.object(gate, "stream_chat", side_effect=stream):
+                replies, error = gate.collect_quality_replies(
+                    1, "model", 19, 2, False, pathlib.Path(directory), "quality")
+            self.assertIsNone(error)
+            self.assertEqual(completion_order[:2], [1, 0])
+            self.assertEqual([r["reply_sha256"] for r in replies], ["0", "1"])
+
+    def test_concurrent_retained_requests_keep_indexed_raw_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = []
+
+            def stream(port, body, barrier, raw):
+                barrier.wait(timeout=2)
+                paths.append(raw)
+                return {"error": None, "raw_stream": {"file": raw.name}}
+
+            with unittest.mock.patch.object(gate, "stream_chat", side_effect=stream):
+                replies, error = gate.collect_quality_replies(
+                    1, "model", 19, 2, True, pathlib.Path(directory), "quality")
+            self.assertIsNone(error)
+            self.assertCountEqual([p.name for p in paths],
+                                  ["quality-reply-0.sse", "quality-reply-1.sse"])
+            self.assertEqual([r["raw_stream"]["file"] for r in replies],
+                             ["quality-reply-0.sse", "quality-reply-1.sse"])
+
+    def test_peer_failure_joins_batch_and_retains_both_replies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            finished = set()
+            lock = threading.Lock()
+
+            def stream(port, body, barrier, raw):
+                barrier.wait(timeout=2)
+                index = gate.QUALITY_PROMPTS.index(body["messages"][0]["content"])
+                with lock:
+                    finished.add(index)
+                return {"error": "transport failed"} if index == 0 else {
+                    "error": None, "reply_sha256": "peer"}
+
+            with unittest.mock.patch.object(gate, "stream_chat", side_effect=stream):
+                replies, error = gate.collect_quality_replies(
+                    1, "model", 19, 2, True, pathlib.Path(directory), "quality")
+            self.assertIn("greedy request 0: transport failed", error)
+            self.assertEqual(finished, {0, 1})
+            self.assertEqual([r.get("reply_sha256") for r in replies], [None, "peer"])
+            self.assertEqual(len(replies), 2)
+
+    def test_second_thread_start_failure_aborts_and_joins_started_peer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            entered = threading.Event()
+            finished = threading.Event()
+            original_start = threading.Thread.start
+            starts = 0
+
+            def stream(port, body, barrier, raw):
+                entered.set()
+                try:
+                    barrier.wait(timeout=2)
+                finally:
+                    finished.set()
+                return {"error": None, "reply_sha256": "peer"}
+
+            def start(thread):
+                nonlocal starts
+                starts += 1
+                if starts == 1:
+                    original_start(thread)
+                    self.assertTrue(entered.wait(timeout=2))
+                    return
+                raise RuntimeError("thread launch refused")
+
+            with (unittest.mock.patch.object(gate, "stream_chat", side_effect=stream),
+                  unittest.mock.patch.object(threading.Thread, "start", new=start)):
+                replies, error = gate.collect_quality_replies(
+                    1, "model", 19, 2, True, pathlib.Path(directory), "quality")
+            self.assertIn("greedy request 1: RuntimeError: thread launch refused", error)
+            self.assertTrue(finished.is_set())
+            self.assertEqual(len(replies), 2)
+            self.assertTrue(replies[0]["error"].startswith("BrokenBarrierError:"))
+            self.assertEqual(replies[1]["error"], "RuntimeError: thread launch refused")
 
 
 class Service(unittest.TestCase):

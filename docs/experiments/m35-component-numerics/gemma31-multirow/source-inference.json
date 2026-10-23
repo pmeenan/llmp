@@ -1,0 +1,53 @@
+{
+  "claim": "Under the frozen target-only, tool-free two-request collector, pure completed stage-0 kDecode rows=2 implies two distinct one-row owners through the pinned ordinary callers. Ordinary Single takes history.last(1); no-tool PrepareStep has no certain/forced span; RunPlain calls the plain decoder; continuation peers and prefill continuation decode rows are one. CheckShape enforces distinct slots. Explicit installed segments must be2. Transient completed headers omit segments: record inference separately, never invent a header. Exclude mixed-origin prefill. Manual review must confirm actual dense two-row products and ordinary non-ID arithmetic.",
+  "llm_generation": {
+    "lines": "197-248,487-497",
+    "path": "src/runtime/llm_generation.cc",
+    "sha256": "72c6f59590baca98ec0e3a1cc4bb1d6d29d81ead5f29a8953e09842b5586a198"
+  },
+  "model_runner": {
+    "lines": "164-176",
+    "path": "src/engine/model_runner.cc",
+    "sha256": "65212ecf428d65821f965b42444eeba22a406cfada30b916c9b5f81bf00710c8"
+  },
+  "phase_enum": {
+    "lines": "27-34",
+    "path": "src/execution/step_shape.h",
+    "sha256": "59708e8eb7f82f9bfef244436e4ac6b545af5e51bd9ab34f410b2c0534d6c044"
+  },
+  "step_transaction": {
+    "lines": "1660-1670",
+    "path": "src/engine/step_transaction.cc",
+    "sha256": "a45bd4db336a2864b16e5edea2de760d00d049016f2c0c561cfe1399ed1f8f93"
+  },
+  "wave_composer": {
+    "lines": "24-29,86-94",
+    "path": "src/engine/wave_composer.cc",
+    "sha256": "77b762ef1437141d797fd8f2c607bbec3caa54f9dba1f71cf5040fb7fc04e7a0"
+  },
+  "decoding": {
+    "path": "src/engine/decoding.cc",
+    "sha256": "f0ff570a3bfb5dca1f360f3695f93b90f1534d2526350426946b7b3d1f11d3e8",
+    "lines": "250-304"
+  },
+  "llm_execution": {
+    "path": "src/runtime/llm_execution.cc",
+    "sha256": "26618e1abfc5b94ea47f421f20136ee91913e4ea38b75facc346e89f358bea0b",
+    "lines": "615-639,760-827,969-990,1110-1123"
+  },
+  "prefill": {
+    "path": "src/engine/prefill.cc",
+    "sha256": "401b579264f928c29a8cab732de86ed9986f082f36065e37244bbcbe3330e469",
+    "lines": "136-191"
+  },
+  "service_backend": {
+    "path": "src/runtime/service_backend.h",
+    "sha256": "f11ce18e1e8b8e8bb6954769b85d081fa5695856e41f97bd9ad0abf704dbd35d",
+    "lines": "35-44"
+  },
+  "service_request": {
+    "path": "src/runtime/service_request.cc",
+    "sha256": "ab137e9467ca183722d8c67ec098d65bd11f01c055d5769221a10f6aa09b1321",
+    "lines": "83-84,129,215-224"
+  }
+}

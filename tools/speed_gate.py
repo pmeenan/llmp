@@ -595,6 +595,69 @@ def stream_chat(port: int, body: dict, barrier: threading.Barrier | None,
     return record
 
 
+def positive_concurrency(value: str) -> int:
+    """An argparse type for a positive request concurrency."""
+    try:
+        result = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a positive integer") from None
+    if result < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return result
+
+
+def collect_quality_replies(port: int, model: str, max_tokens: int, concurrency: int,
+                            retain_streams: bool, quality_dir: pathlib.Path,
+                            name: str) -> tuple[list[dict], str | None]:
+    """Collect fixed greedy prompts in synchronized batches, preserving prompt order.
+
+    Any request or worker-launch error returns the batch's results and prevents later scoring.
+    """
+    if concurrency < 1 or concurrency > len(QUALITY_PROMPTS):
+        raise ValueError(f"chat concurrency must be between 1 and {len(QUALITY_PROMPTS)}")
+    replies: list[dict | None] = [None] * len(QUALITY_PROMPTS)
+    for first in range(0, len(QUALITY_PROMPTS), concurrency):
+        indexes = list(range(first, min(first + concurrency, len(QUALITY_PROMPTS))))
+        barrier = threading.Barrier(len(indexes)) if len(indexes) > 1 else None
+
+        def collect(index: int) -> None:
+            body = {"model": model, "stream": True, "temperature": 0,
+                    "stream_options": {"include_usage": True}, "max_tokens": max_tokens,
+                    "messages": [{"role": "user", "content": QUALITY_PROMPTS[index]}]}
+            raw_stream = (quality_dir / f"{name}-reply-{index}.sse" if retain_streams else None)
+            try:
+                replies[index] = stream_chat(port, body, barrier, raw_stream)
+            except Exception as e:
+                replies[index] = {"error": f"{type(e).__name__}: {e}"}
+                if barrier is not None:
+                    barrier.abort()
+
+        launch_error = None
+        started: list[threading.Thread] = []
+        try:
+            for index in indexes:
+                try:
+                    thread = threading.Thread(target=collect, args=(index,))
+                    thread.start()
+                    started.append(thread)
+                except Exception as e:
+                    replies[index] = {"error": f"{type(e).__name__}: {e}"}
+                    launch_error = f"greedy request {index}: {replies[index]['error']}"
+                    if barrier is not None:
+                        barrier.abort()
+                    break
+        finally:
+            for thread in started:
+                thread.join()
+        errors = [f"greedy request {index}: {replies[index].get('error')}"
+                  for index in indexes if replies[index] and replies[index].get("error")]
+        if launch_error and launch_error not in errors:
+            errors.append(launch_error)
+        if errors:
+            return [reply for reply in replies if reply is not None], "; ".join(errors)
+    return [reply for reply in replies if reply is not None], None
+
+
 def decode_rate(requests: list[dict]) -> float | None:
     """Tokens a second while every request decodes: the window after the last first token
     and before the first last token. Each request's rate there is measured between its own
@@ -855,6 +918,11 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_quality(args: argparse.Namespace) -> int:
     family = FAMILIES[args.family]
     retain_streams = getattr(args, "retain_streams", False)
+    requested_concurrency = getattr(args, "chat_concurrency", 1)
+    if (not isinstance(requested_concurrency, int) or isinstance(requested_concurrency, bool)
+            or requested_concurrency < 1 or requested_concurrency > len(QUALITY_PROMPTS)):
+        raise SystemExit(f"chat concurrency must be between 1 and {len(QUALITY_PROMPTS)}")
+    effective_concurrency = min(requested_concurrency, len(QUALITY_PROMPTS))
     if family.kind != "llm":
         raise SystemExit(f"{family.name}: quality covers LLM families")
     out = pathlib.Path(args.out).resolve()
@@ -877,23 +945,21 @@ def cmd_quality(args: argparse.Namespace) -> int:
               "config_template": template,
               "config_sha256": hashlib.sha256(template.encode()).hexdigest(),
               "runtime_env": runtime_env,
-              "facts": host_facts(), "error": None, "replies": []}
+              "facts": host_facts(), "error": None, "replies": [],
+              "chat_concurrency": {"requested": requested_concurrency,
+                                   "effective": effective_concurrency}}
     service = None
     try:
         service = Service(runtime, config, run_dir, args.port, runtime_env)
         service.wait_ready()
-        for index, text in enumerate(QUALITY_PROMPTS):
-            body = {"model": family.model, "stream": True, "temperature": 0,
-                    "stream_options": {"include_usage": True}, "max_tokens": family.max_tokens,
-                    "messages": [{"role": "user", "content": text}]}
-            raw_stream = (out / "quality" / f"{name}-reply-{index}.sse"
-                          if retain_streams else None)
-            r = stream_chat(args.port, body, None, raw_stream)
-            record["replies"].append(r if retain_streams else
-                                     {k: r.get(k) for k in ("error", "finish", "reply_sha256",
-                                                           "usage")})
-            if retain_streams and r.get("error"):
-                raise RuntimeError(f"greedy request {index}: {r['error']}")
+        replies, error = collect_quality_replies(
+            args.port, family.model, family.max_tokens, effective_concurrency,
+            retain_streams, out / "quality", name)
+        record["replies"] = [r if retain_streams else
+                             {k: r.get(k) for k in ("error", "finish", "reply_sha256", "usage")}
+                             for r in replies]
+        if error:
+            raise RuntimeError(error)
         text = passage(corpus, 100003, family.score_chars)
         conn = http.client.HTTPConnection("127.0.0.1", args.port, timeout=3600)
         conn.request("POST", "/v1/completions", json.dumps(
@@ -1432,6 +1498,9 @@ def main(argv: list[str] | None = None) -> int:
         if command == "quality":
             p.add_argument("--retain-streams", action="store_true",
                            help="retain raw greedy SSE and full client timing records")
+            p.add_argument("--chat-concurrency", type=positive_concurrency, default=1,
+                           help="simultaneous greedy quality chat requests (default: 1; any error "
+                           "fails quality)")
         if command == "run":
             p.add_argument("--image-pixels-sha256",
                            help="this image arm's output pin, frozen before timing; quality is separate")

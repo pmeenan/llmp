@@ -53,8 +53,9 @@ The entries below record each change; the record of the milestone is
   portable scalar fallback and unchanged digests, artifact IDs and verification
   passes ([bounded hash screen](docs/experiments/m35-sha256-arm/README.md)).
 
-- Opt-in quality runs retain raw streamed replies and timing records, and
-  stop collection after an incomplete or failed stream.
+- Opt-in quality runs retain raw streamed replies and timing records, support
+  concurrent fixed prompts, and join all started requests before reporting a
+  failure. A failed reply stops likelihood collection.
 
 - LLM startup shares admitted artifact metadata and composed structure across
   settings and runner construction; retries retain successful preparation while
