@@ -1,0 +1,15 @@
+{
+  "compiled_objects_using_changed_inputs": 127,
+  "compiler_tu_receipt_count": 196,
+  "compiler_tu_receipt_tar_sha256": "aa671484b5fcd20928df202c73407ffe5727233256df46aa880f0ec94b41769d",
+  "current_compiler_receipt_sha256": "0bd29c7ba782420d638bbca4d5b9ade6a591522baed49c282883262d53a30244",
+  "full_receipts_in_repository": false,
+  "full_receipts_retained_outside_repository": "/home/pmeenan/.local/share/llmp/baselines/m35-gemma31-multirow-repair-r1/evidence/compiler-tu-receipts-r1.tar.gz",
+  "full_receipts_sha256": "aa671484b5fcd20928df202c73407ffe5727233256df46aa880f0ec94b41769d",
+  "old_compiler_receipt_sha256": "881fc140fbdeefff54c70119648920473cf817a008a3fa0280fce661f77f2074",
+  "old_current_configuration_equal_after_only_build_recipe_hash_substitution": true,
+  "production_canonical_module_sha256": "4844fe0751af7b88f170b1cd5989f5757b089f26ff3f32c8ddc63c4f085549ef",
+  "production_canonical_vs_duplicate_serializer_equal_for_every_TU": true,
+  "schema": 1,
+  "verification_status": "verified"
+}

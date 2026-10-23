@@ -746,6 +746,13 @@ D-122).
       Its [C1 adoption speed check](experiments/m35-component-numerics/gemma31-scalar/SPEED-RESULTS.md)
       passes: median slower-candidate ratios are 1.017852 for TTFT, 0.983462 for
       decode and 1.003590 for wall throughput, each within the fixed 1.10 bound.
+      The registered [Gemma31 ordinary multirow screen](experiments/m35-component-numerics/gemma31-multirow/RESULTS.md)
+      completes both actual joined-owner decode and 1,070 teacher targets but
+      fails all four unchanged numerical bounds: +13.2747% PPL, mean/max
+      absolute NLL differences 0.57510/19.09824 and 33.7383% within 0.1 nat.
+      Its matching 128-token replies remain truncated. The generic reduction-schedule
+      repair passes operand and replay checks; its [prospective R control](experiments/m35-component-numerics/gemma31-multirow-repair/PROTOCOL.md)
+      reuses the original A under unchanged bounds. No repair qualification is claimed.
       Current Gemma26/Gemma31 assistant and DSpark controls retain 15/6/3 frozen
       differences, reproduced exactly with the legacy drafter path
       ([attribution](experiments/m35-stored-drafter/RESULTS.md)).

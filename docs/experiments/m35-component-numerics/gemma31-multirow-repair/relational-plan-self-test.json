@@ -1,0 +1,997 @@
+{
+  "status": "PASS",
+  "synthetic_metadata_self_test": true,
+  "actual_R_review": false,
+  "baseline_sha256": "79c9a52a820aec254009aaba99d35c338c9a201b6d8b3885bd76a9d26dcab0d9",
+  "candidate_input_sha256": "5e94839b583e9faee2b66cc2e026e63412b169681cdf1a75424a106bd205c94d",
+  "identity_map_sha256": "12c28937c5d11dc9e6f6644ceb4bef2e5ed05957b94ba908a8c0ad2a25d08951",
+  "script_sha256": "866642ca7502ae363bdd3c77aff84c57d69e2f2259e52d3232fc698878dd19f6",
+  "baseline_identity_pairs": 20,
+  "candidate_identity_pairs": 22,
+  "negative_controls": [
+    "recipes unknown hash refused",
+    "logical_records unknown hash refused",
+    "unknown name refused",
+    "synthetic chat scheduling variance accepted with all semantic checks",
+    "missing registered score completion refused"
+  ],
+  "per_plan_results": [
+    {
+      "domain": {
+        "phase": 0,
+        "stage": 0,
+        "rows": 2,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        1
+      ],
+      "d_identity": [
+        "installed",
+        1
+      ],
+      "uses": 12,
+      "paired_descriptors": 3375,
+      "a_descriptors": 3493,
+      "d_descriptors": 3612,
+      "removed_glu_temporaries": 118,
+      "added_q8_1_preparations": 237,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 195,
+        "('llmp.vecq.dense', 'q6_k')": 69,
+        "('llmp.vecq.dense', 'q5_k')": 23
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 10
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 25,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 10,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 9,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 1,
+        "('q5_k', (5376, 2048, 1, 1))": 2
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 1,
+        "ggml.rms_norm_mul.fused": 119,
+        "ggml.rms_norm_mul_rope.fused": 119,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.mma_gqa2": 50,
+        "ggml.rms_norm_mul_add.fused": 118,
+        "ggml.mul": 59,
+        "ggml.flash_attn_ext.mma": 9
+      }
+    },
+    {
+      "domain": {
+        "phase": 0,
+        "stage": 0,
+        "rows": 1,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        18
+      ],
+      "d_identity": [
+        "installed",
+        18
+      ],
+      "uses": 1,
+      "paired_descriptors": 3375,
+      "a_descriptors": 3493,
+      "d_descriptors": 3612,
+      "removed_glu_temporaries": 118,
+      "added_q8_1_preparations": 237,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 195,
+        "('llmp.vecq.dense', 'q6_k')": 69,
+        "('llmp.vecq.dense', 'q5_k')": 23
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 10
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 25,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 10,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 9,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 1,
+        "('q5_k', (5376, 2048, 1, 1))": 2
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 1,
+        "ggml.rms_norm_mul.fused": 119,
+        "ggml.rms_norm_mul_rope.fused": 119,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.vec_d256": 50,
+        "ggml.rms_norm_mul_add.fused": 118,
+        "ggml.mul": 59,
+        "ggml.flash_attn_ext.mma": 9
+      }
+    },
+    {
+      "domain": {
+        "phase": 0,
+        "stage": 0,
+        "rows": 1,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        30
+      ],
+      "d_identity": [
+        "installed",
+        30
+      ],
+      "uses": 1,
+      "paired_descriptors": 3420,
+      "a_descriptors": 3540,
+      "d_descriptors": 3661,
+      "removed_glu_temporaries": 120,
+      "added_q8_1_preparations": 241,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 196,
+        "('llmp.vecq.dense', 'q6_k')": 70,
+        "('llmp.vecq.dense', 'q5_k')": 24,
+        "('llmp.mmvq.prepared', 'q5_k')": 1
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 12
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 26,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 12,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 10,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 2,
+        "('q5_k', (5376, 2048, 1, 1))": 2,
+        "('q5_k', (5376, 262144, 1, 1))": 1
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 3,
+        "ggml.rms_norm_mul.fused": 121,
+        "ggml.rms_norm_mul_rope.fused": 120,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.vec_d256": 50,
+        "ggml.rms_norm_mul_add.fused": 120,
+        "ggml.mul": 60,
+        "ggml.flash_attn_ext.mma": 10,
+        "ggml.get_rows": 2,
+        "ggml.unary": 1
+      }
+    },
+    {
+      "domain": {
+        "phase": 1,
+        "stage": 0,
+        "rows": 1,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        35
+      ],
+      "d_identity": [
+        "installed",
+        35
+      ],
+      "uses": 15,
+      "paired_descriptors": 3421,
+      "a_descriptors": 3541,
+      "d_descriptors": 3662,
+      "removed_glu_temporaries": 120,
+      "added_q8_1_preparations": 241,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 196,
+        "('llmp.vecq.dense', 'q6_k')": 70,
+        "('llmp.vecq.dense', 'q5_k')": 24,
+        "('llmp.mmvq.prepared', 'q5_k')": 1
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 12
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 26,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 12,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 10,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 2,
+        "('q5_k', (5376, 2048, 1, 1))": 2,
+        "('q5_k', (5376, 262144, 1, 1))": 1
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 3,
+        "ggml.rms_norm_mul.fused": 121,
+        "ggml.rms_norm_mul_rope.fused": 120,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.vec_d256": 50,
+        "ggml.rms_norm_mul_add.fused": 120,
+        "ggml.mul": 60,
+        "ggml.flash_attn_ext.mma": 10,
+        "ggml.get_rows": 2,
+        "ggml.unary": 1,
+        "llmp.argmax": 1
+      }
+    },
+    {
+      "domain": {
+        "phase": 0,
+        "stage": 0,
+        "rows": 2,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        1
+      ],
+      "d_identity": [
+        "installed",
+        42
+      ],
+      "uses": 12,
+      "paired_descriptors": 3375,
+      "a_descriptors": 3493,
+      "d_descriptors": 3612,
+      "removed_glu_temporaries": 118,
+      "added_q8_1_preparations": 237,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 195,
+        "('llmp.vecq.dense', 'q6_k')": 69,
+        "('llmp.vecq.dense', 'q5_k')": 23
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 10
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 25,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 10,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 9,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 1,
+        "('q5_k', (5376, 2048, 1, 1))": 2
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 1,
+        "ggml.rms_norm_mul.fused": 119,
+        "ggml.rms_norm_mul_rope.fused": 119,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.mma_gqa2": 50,
+        "ggml.rms_norm_mul_add.fused": 118,
+        "ggml.mul": 59,
+        "ggml.flash_attn_ext.mma": 9
+      }
+    },
+    {
+      "domain": {
+        "phase": 0,
+        "stage": 0,
+        "rows": 1,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        18
+      ],
+      "d_identity": [
+        "installed",
+        73
+      ],
+      "uses": 1,
+      "paired_descriptors": 3375,
+      "a_descriptors": 3493,
+      "d_descriptors": 3612,
+      "removed_glu_temporaries": 118,
+      "added_q8_1_preparations": 237,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 195,
+        "('llmp.vecq.dense', 'q6_k')": 69,
+        "('llmp.vecq.dense', 'q5_k')": 23
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 10
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 25,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 10,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 9,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 1,
+        "('q5_k', (5376, 2048, 1, 1))": 2
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 1,
+        "ggml.rms_norm_mul.fused": 119,
+        "ggml.rms_norm_mul_rope.fused": 119,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.vec_d256": 50,
+        "ggml.rms_norm_mul_add.fused": 118,
+        "ggml.mul": 59,
+        "ggml.flash_attn_ext.mma": 9
+      }
+    },
+    {
+      "domain": {
+        "phase": 0,
+        "stage": 0,
+        "rows": 1,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        30
+      ],
+      "d_identity": [
+        "installed",
+        95
+      ],
+      "uses": 1,
+      "paired_descriptors": 3420,
+      "a_descriptors": 3540,
+      "d_descriptors": 3661,
+      "removed_glu_temporaries": 120,
+      "added_q8_1_preparations": 241,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 196,
+        "('llmp.vecq.dense', 'q6_k')": 70,
+        "('llmp.vecq.dense', 'q5_k')": 24,
+        "('llmp.mmvq.prepared', 'q5_k')": 1
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 12
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 26,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 12,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 10,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 2,
+        "('q5_k', (5376, 2048, 1, 1))": 2,
+        "('q5_k', (5376, 262144, 1, 1))": 1
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 3,
+        "ggml.rms_norm_mul.fused": 121,
+        "ggml.rms_norm_mul_rope.fused": 120,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.vec_d256": 50,
+        "ggml.rms_norm_mul_add.fused": 120,
+        "ggml.mul": 60,
+        "ggml.flash_attn_ext.mma": 10,
+        "ggml.get_rows": 2,
+        "ggml.unary": 1
+      }
+    },
+    {
+      "domain": {
+        "phase": 1,
+        "stage": 0,
+        "rows": 2,
+        "segments": 2
+      },
+      "a_identity": [
+        "installed",
+        102
+      ],
+      "d_identity": [
+        "installed",
+        102
+      ],
+      "uses": 112,
+      "paired_descriptors": 4031,
+      "a_descriptors": 4151,
+      "d_descriptors": 4272,
+      "removed_glu_temporaries": 120,
+      "added_q8_1_preparations": 241,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 196,
+        "('llmp.vecq.dense', 'q6_k')": 70,
+        "('llmp.vecq.dense', 'q5_k')": 24,
+        "('llmp.mmvq.prepared', 'q5_k')": 1
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 12
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 26,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 12,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 10,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 2,
+        "('q5_k', (5376, 2048, 1, 1))": 2,
+        "('q5_k', (5376, 262144, 1, 1))": 1
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 4,
+        "ggml.concat": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 3,
+        "ggml.rms_norm_mul.fused": 121,
+        "ggml.rms_norm_mul_rope.fused": 120,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "llmp.flash_attn.owner_roots": 60,
+        "ggml.rms_norm_mul_add.fused": 120,
+        "ggml.mul": 60,
+        "ggml.get_rows": 2,
+        "ggml.unary": 1,
+        "llmp.argmax": 1
+      }
+    },
+    {
+      "domain": {
+        "phase": 1,
+        "stage": 0,
+        "rows": 1,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        35
+      ],
+      "d_identity": [
+        "installed",
+        109
+      ],
+      "uses": 15,
+      "paired_descriptors": 3421,
+      "a_descriptors": 3541,
+      "d_descriptors": 3662,
+      "removed_glu_temporaries": 120,
+      "added_q8_1_preparations": 241,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 196,
+        "('llmp.vecq.dense', 'q6_k')": 70,
+        "('llmp.vecq.dense', 'q5_k')": 24,
+        "('llmp.mmvq.prepared', 'q5_k')": 1
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 12
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 26,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 12,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 10,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 2,
+        "('q5_k', (5376, 2048, 1, 1))": 2,
+        "('q5_k', (5376, 262144, 1, 1))": 1
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 3,
+        "ggml.rms_norm_mul.fused": 121,
+        "ggml.rms_norm_mul_rope.fused": 120,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.vec_d256": 50,
+        "ggml.rms_norm_mul_add.fused": 120,
+        "ggml.mul": 60,
+        "ggml.flash_attn_ext.mma": 10,
+        "ggml.get_rows": 2,
+        "ggml.unary": 1,
+        "llmp.argmax": 1
+      }
+    },
+    {
+      "domain": {
+        "phase": 4,
+        "stage": 0,
+        "rows": 2,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        365
+      ],
+      "d_identity": [
+        "installed",
+        365
+      ],
+      "uses": 128,
+      "paired_descriptors": 3420,
+      "a_descriptors": 3540,
+      "d_descriptors": 3661,
+      "removed_glu_temporaries": 120,
+      "added_q8_1_preparations": 241,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 196,
+        "('llmp.vecq.dense', 'q6_k')": 70,
+        "('llmp.vecq.dense', 'q5_k')": 24,
+        "('llmp.mmvq.prepared', 'q5_k')": 1
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 12
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 26,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 12,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 10,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 2,
+        "('q5_k', (5376, 2048, 1, 1))": 2,
+        "('q5_k', (5376, 262144, 1, 1))": 1
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 3,
+        "ggml.rms_norm_mul.fused": 121,
+        "ggml.rms_norm_mul_rope.fused": 120,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.mma_gqa2": 50,
+        "ggml.rms_norm_mul_add.fused": 120,
+        "ggml.mul": 60,
+        "ggml.flash_attn_ext.mma": 10,
+        "ggml.get_rows": 2,
+        "ggml.unary": 1
+      }
+    },
+    {
+      "domain": {
+        "phase": 4,
+        "stage": 0,
+        "rows": 2,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        622
+      ],
+      "d_identity": [
+        "installed",
+        622
+      ],
+      "uses": 128,
+      "paired_descriptors": 3420,
+      "a_descriptors": 3540,
+      "d_descriptors": 3661,
+      "removed_glu_temporaries": 120,
+      "added_q8_1_preparations": 241,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 196,
+        "('llmp.vecq.dense', 'q6_k')": 70,
+        "('llmp.vecq.dense', 'q5_k')": 24,
+        "('llmp.mmvq.prepared', 'q5_k')": 1
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 12
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 26,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 12,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 10,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 2,
+        "('q5_k', (5376, 2048, 1, 1))": 2,
+        "('q5_k', (5376, 262144, 1, 1))": 1
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 3,
+        "ggml.rms_norm_mul.fused": 121,
+        "ggml.rms_norm_mul_rope.fused": 120,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.mma_gqa2": 50,
+        "ggml.rms_norm_mul_add.fused": 120,
+        "ggml.mul": 60,
+        "ggml.flash_attn_ext.mma": 10,
+        "ggml.get_rows": 2,
+        "ggml.unary": 1
+      }
+    },
+    {
+      "domain": {
+        "phase": 4,
+        "stage": 0,
+        "rows": 2,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        879
+      ],
+      "d_identity": [
+        "installed",
+        879
+      ],
+      "uses": 128,
+      "paired_descriptors": 3420,
+      "a_descriptors": 3540,
+      "d_descriptors": 3661,
+      "removed_glu_temporaries": 120,
+      "added_q8_1_preparations": 241,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 196,
+        "('llmp.vecq.dense', 'q6_k')": 70,
+        "('llmp.vecq.dense', 'q5_k')": 24,
+        "('llmp.mmvq.prepared', 'q5_k')": 1
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 12
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 26,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 12,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 10,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 2,
+        "('q5_k', (5376, 2048, 1, 1))": 2,
+        "('q5_k', (5376, 262144, 1, 1))": 1
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 3,
+        "ggml.rms_norm_mul.fused": 121,
+        "ggml.rms_norm_mul_rope.fused": 120,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.mma_gqa2": 50,
+        "ggml.rms_norm_mul_add.fused": 120,
+        "ggml.mul": 60,
+        "ggml.flash_attn_ext.mma": 10,
+        "ggml.get_rows": 2,
+        "ggml.unary": 1
+      }
+    },
+    {
+      "domain": {
+        "phase": 4,
+        "stage": 0,
+        "rows": 2,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        1136
+      ],
+      "d_identity": [
+        "installed",
+        1136
+      ],
+      "uses": 128,
+      "paired_descriptors": 3420,
+      "a_descriptors": 3540,
+      "d_descriptors": 3661,
+      "removed_glu_temporaries": 120,
+      "added_q8_1_preparations": 241,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 196,
+        "('llmp.vecq.dense', 'q6_k')": 70,
+        "('llmp.vecq.dense', 'q5_k')": 24,
+        "('llmp.mmvq.prepared', 'q5_k')": 1
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 12
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 26,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 12,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 10,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 2,
+        "('q5_k', (5376, 2048, 1, 1))": 2,
+        "('q5_k', (5376, 262144, 1, 1))": 1
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 3,
+        "ggml.rms_norm_mul.fused": 121,
+        "ggml.rms_norm_mul_rope.fused": 120,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.mma_gqa2": 50,
+        "ggml.rms_norm_mul_add.fused": 120,
+        "ggml.mul": 60,
+        "ggml.flash_attn_ext.mma": 10,
+        "ggml.get_rows": 2,
+        "ggml.unary": 1
+      }
+    },
+    {
+      "domain": {
+        "phase": 4,
+        "stage": 0,
+        "rows": 2,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        1393
+      ],
+      "d_identity": [
+        "installed",
+        1393
+      ],
+      "uses": 23,
+      "paired_descriptors": 3420,
+      "a_descriptors": 3540,
+      "d_descriptors": 3661,
+      "removed_glu_temporaries": 120,
+      "added_q8_1_preparations": 241,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 196,
+        "('llmp.vecq.dense', 'q6_k')": 70,
+        "('llmp.vecq.dense', 'q5_k')": 24,
+        "('llmp.mmvq.prepared', 'q5_k')": 1
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 12
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 26,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 12,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 10,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 2,
+        "('q5_k', (5376, 2048, 1, 1))": 2,
+        "('q5_k', (5376, 262144, 1, 1))": 1
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 3,
+        "ggml.rms_norm_mul.fused": 121,
+        "ggml.rms_norm_mul_rope.fused": 120,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.mma_gqa2": 50,
+        "ggml.rms_norm_mul_add.fused": 120,
+        "ggml.mul": 60,
+        "ggml.flash_attn_ext.mma": 10,
+        "ggml.get_rows": 2,
+        "ggml.unary": 1
+      }
+    },
+    {
+      "domain": {
+        "phase": 4,
+        "stage": 0,
+        "rows": 1,
+        "segments": 1
+      },
+      "a_identity": [
+        "installed",
+        1440
+      ],
+      "d_identity": [
+        "installed",
+        1440
+      ],
+      "uses": 1,
+      "paired_descriptors": 3420,
+      "a_descriptors": 3540,
+      "d_descriptors": 3661,
+      "removed_glu_temporaries": 120,
+      "added_q8_1_preparations": 241,
+      "dense": {
+        "('llmp.vecq.dense', 'q4_k')": 196,
+        "('llmp.vecq.dense', 'q6_k')": 70,
+        "('llmp.vecq.dense', 'q5_k')": 24,
+        "('llmp.mmvq.prepared', 'q5_k')": 1
+      },
+      "glu_weights": {
+        "q4_k": 108,
+        "q5_k": 12
+      },
+      "weight_geometries": {
+        "('q4_k', (5376, 8192, 1, 1))": 46,
+        "('q6_k', (5376, 4096, 1, 1))": 44,
+        "('q4_k', (5376, 4096, 1, 1))": 46,
+        "('q4_k', (8192, 5376, 1, 1))": 50,
+        "('q4_k', (5376, 21504, 1, 1))": 108,
+        "('q6_k', (21504, 5376, 1, 1))": 26,
+        "('q5_k', (5376, 8192, 1, 1))": 4,
+        "('q5_k', (5376, 4096, 1, 1))": 10,
+        "('q5_k', (5376, 21504, 1, 1))": 12,
+        "('q5_k', (21504, 5376, 1, 1))": 6,
+        "('q4_k', (5376, 16384, 1, 1))": 8,
+        "('q4_k', (5376, 2048, 1, 1))": 8,
+        "('q4_k', (16384, 5376, 1, 1))": 10,
+        "('q4_k', (21504, 5376, 1, 1))": 28,
+        "('q5_k', (5376, 16384, 1, 1))": 2,
+        "('q5_k', (5376, 2048, 1, 1))": 2,
+        "('q5_k', (5376, 262144, 1, 1))": 1
+      },
+      "unaffected_exact": {
+        "llmp.causal.mask": 2,
+        "ggml.get_rows.ext": 1,
+        "ggml.scale": 3,
+        "ggml.rms_norm_mul.fused": 121,
+        "ggml.rms_norm_mul_rope.fused": 120,
+        "ggml.rms_norm": 60,
+        "llmp.set_rows.grouped": 60,
+        "ggml.flash_attn_ext.vec_d256": 50,
+        "ggml.rms_norm_mul_add.fused": 120,
+        "ggml.mul": 60,
+        "ggml.flash_attn_ext.mma": 10,
+        "ggml.get_rows": 2,
+        "ggml.unary": 1
+      }
+    }
+  ]
+}

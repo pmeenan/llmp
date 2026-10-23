@@ -1,0 +1,361 @@
+{
+  "baseline_module_digest": "eb4db45dc16ed5656c7b8339ad5c5039e7e25ad8663fb4493ad04a20fd80161c",
+  "coverage": {
+    "arms": [
+      "a",
+      "d"
+    ],
+    "domains": [
+      "recipes",
+      "logical_records"
+    ],
+    "note": "Union of actual retained plan recipe and logical selection identities; exact declaration-name IdentityOf crosswalk."
+  },
+  "current_module_digest": "fd6108c80452d16ab979be78729324c409ba66991df8bd45b56f609017f0feed",
+  "errors": [],
+  "helper_output_sha256": "12c28937c5d11dc9e6f6644ceb4bef2e5ed05957b94ba908a8c0ad2a25d08951",
+  "rows": [
+    {
+      "arm": "a",
+      "current_R_identity": "0b0e324c1116a7bf23b1cde22a9cec3b8f3977eb1dc0bc900361d6bfc2be1753",
+      "match": true,
+      "name": "ggml.concat",
+      "observed_identity": "b8224102b6c416bf15bc59ab03e0450bbd102404aafd38337f611e146ba3ba5b",
+      "reconstructed_old_identity": "b8224102b6c416bf15bc59ab03e0450bbd102404aafd38337f611e146ba3ba5b"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "495e5e61f35a47be131dc263e904d6f4e4dfa1ae54655f6068b340554693755b",
+      "match": true,
+      "name": "ggml.flash_attn_ext.mma",
+      "observed_identity": "dceaceb0fd08d157786da7f13f18fc70b4ac421f3e33da3498ebfc4590f53889",
+      "reconstructed_old_identity": "dceaceb0fd08d157786da7f13f18fc70b4ac421f3e33da3498ebfc4590f53889"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "6abbdc71aded16f578b417c0f23a09ee92d5537b0c7d0ae99db6d7af6192d18e",
+      "match": true,
+      "name": "ggml.flash_attn_ext.mma_gqa2",
+      "observed_identity": "0e35a3cb4a14f39dbcada12f448176b92680f532375c5ae9b48ee56c44332eb2",
+      "reconstructed_old_identity": "0e35a3cb4a14f39dbcada12f448176b92680f532375c5ae9b48ee56c44332eb2"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "3fb6fae6a3b5ee862427fbe9aa24a9ce063c54e6241f52f48847d49b6db033c9",
+      "match": true,
+      "name": "ggml.flash_attn_ext.vec_d256",
+      "observed_identity": "d84f36b10bf13703285525f8f4d10dea70cdf667f893365ec46c79f7c6def412",
+      "reconstructed_old_identity": "d84f36b10bf13703285525f8f4d10dea70cdf667f893365ec46c79f7c6def412"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "018ec556a40874a2de71af35d29c23925dd58efb6e2229bd8b4df72d08505e04",
+      "match": true,
+      "name": "ggml.geglu",
+      "observed_identity": "2572411b3bdd206244ca462d1f3e4b0968776a5760cba003999c750f90672bb0",
+      "reconstructed_old_identity": "2572411b3bdd206244ca462d1f3e4b0968776a5760cba003999c750f90672bb0"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "a0fd2306f46e58ab7ed953254b7407086eefbe6798bac89f549389adfacd5689",
+      "match": true,
+      "name": "ggml.get_rows",
+      "observed_identity": "7f55da0e2a207c93502d87e73b391836ffa576022db6284de5d7cafe5655a1b7",
+      "reconstructed_old_identity": "7f55da0e2a207c93502d87e73b391836ffa576022db6284de5d7cafe5655a1b7"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "09ba5b322a1258755992fb35ba8096e2cde36042a671b791aafcacc45e041195",
+      "match": true,
+      "name": "ggml.get_rows.ext",
+      "observed_identity": "d9b3325f266fb7af9aaf0f694884275f5ee7208c8b5606c410bcf6fdcb2c4c78",
+      "reconstructed_old_identity": "d9b3325f266fb7af9aaf0f694884275f5ee7208c8b5606c410bcf6fdcb2c4c78"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "ff2f94b1cccec7ee569ba68db528675103e3fd9860fa74070d98c8296547ed6c",
+      "match": true,
+      "name": "ggml.mul",
+      "observed_identity": "e16ea2eef9aad5057b152d5d450b2a441ea9298d50401a56ea53ed3d6d980141",
+      "reconstructed_old_identity": "e16ea2eef9aad5057b152d5d450b2a441ea9298d50401a56ea53ed3d6d980141"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "f73a49ff355cad02ec6de8a0c221ab17f4116ceea1e891d721ec60beae5f2760",
+      "match": true,
+      "name": "ggml.mul_mat.mmvq",
+      "observed_identity": "d7e1206db6479b77676be2ea66f1e3999466666713771d9d356460d322b53a72",
+      "reconstructed_old_identity": "d7e1206db6479b77676be2ea66f1e3999466666713771d9d356460d322b53a72"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "c53d293c4a4a508def038d511a839a4596f09f0104c0b4894db8fba324b72151",
+      "match": true,
+      "name": "ggml.mul_mat_geglu.mmvq_fused",
+      "observed_identity": "fb306c820f65bc0a04e0c094e62397d85026893c9408afdab16b1238f392f626",
+      "reconstructed_old_identity": "fb306c820f65bc0a04e0c094e62397d85026893c9408afdab16b1238f392f626"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "529076b1c34ac14be1caf5f29a76c3c95605760c19d409a9edeee8798ccd87d7",
+      "match": true,
+      "name": "ggml.rms_norm",
+      "observed_identity": "9d7954e945e2684cd31ab46021eac9d1d3f2d4144badea1f00bd3a119e2efd55",
+      "reconstructed_old_identity": "9d7954e945e2684cd31ab46021eac9d1d3f2d4144badea1f00bd3a119e2efd55"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "84ea9fa392880298a145865a4d6044396d023b2d510219ca1797807133688f65",
+      "match": true,
+      "name": "ggml.rms_norm_mul.fused",
+      "observed_identity": "5ab8c25b87a80549277dcc414f9712ade53e147d9a81caf7986e845cfbff7103",
+      "reconstructed_old_identity": "5ab8c25b87a80549277dcc414f9712ade53e147d9a81caf7986e845cfbff7103"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "eccc4e0fbbe44b0c83496ec7e4a0df14ac05eace14f2590c83d54492aff7f100",
+      "match": true,
+      "name": "ggml.rms_norm_mul_add.fused",
+      "observed_identity": "00987016a8027bdda7215e1f86a1df5637f9da207b29cf055db598be867e8d38",
+      "reconstructed_old_identity": "00987016a8027bdda7215e1f86a1df5637f9da207b29cf055db598be867e8d38"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "3b320ecae4e4baa075ea8228b775d313f5142bed6a95f614ee9bed9610d0831f",
+      "match": true,
+      "name": "ggml.rms_norm_mul_rope.fused",
+      "observed_identity": "66c05d926087ad10446a979d82d4fca6ed344d3e90f61280e3b768b15935f424",
+      "reconstructed_old_identity": "66c05d926087ad10446a979d82d4fca6ed344d3e90f61280e3b768b15935f424"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "60fa37b0cc414e1b2c2640a3374bc352375a1bbaac48566542401ffa7091b642",
+      "match": true,
+      "name": "ggml.scale",
+      "observed_identity": "59211604de84bf41d8ae115d4c347c65ff267f132cdc2fe50ca8240531efb3f2",
+      "reconstructed_old_identity": "59211604de84bf41d8ae115d4c347c65ff267f132cdc2fe50ca8240531efb3f2"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "b6c3ea6a02ad25fcfa6c72351836a3401875e5dc49ee0ee51e0b899f3debbcaf",
+      "match": true,
+      "name": "ggml.unary",
+      "observed_identity": "9d8551334ced688c3db6fe76f5dbdd6ce0ad95b842c6e091acd6136f4023ba65",
+      "reconstructed_old_identity": "9d8551334ced688c3db6fe76f5dbdd6ce0ad95b842c6e091acd6136f4023ba65"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "0f6e052602a2b5141615a5d754a1b31332402324a3897b620a77736c221d12d7",
+      "match": true,
+      "name": "llmp.argmax",
+      "observed_identity": "3720c6c4bdb23ec6fc83aeb73eac941f4f6fe6db91c0b2cfa4636166a56f5694",
+      "reconstructed_old_identity": "3720c6c4bdb23ec6fc83aeb73eac941f4f6fe6db91c0b2cfa4636166a56f5694"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "1f2932ab20e9a04e027db742b9b00f1ccab13137222f5a62c9dd0b3221b3a644",
+      "match": true,
+      "name": "llmp.causal.mask",
+      "observed_identity": "81798f96ad5d7d18880f9d0838fd6110f75361aa652e08b1f0017306fc8486fb",
+      "reconstructed_old_identity": "81798f96ad5d7d18880f9d0838fd6110f75361aa652e08b1f0017306fc8486fb"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "588ff8c71a6ad017f27377e83f98332209ec596cd7b13a85b196b9cef7b22072",
+      "match": true,
+      "name": "llmp.flash_attn.owner_roots",
+      "observed_identity": "b5d241cb5af196e61e64e93d57bfc5bfcae5498731c6909d9a03defed7eb6ff4",
+      "reconstructed_old_identity": "b5d241cb5af196e61e64e93d57bfc5bfcae5498731c6909d9a03defed7eb6ff4"
+    },
+    {
+      "arm": "a",
+      "current_R_identity": "d7ca73ff89409e6db12c674f983a0fd1b9f176ef5f65546dc3311e129e97989a",
+      "match": true,
+      "name": "llmp.set_rows.grouped",
+      "observed_identity": "8ac4f6e14cdc096cfa8e8881bdc80033d24bce6340c8a2f706e0b301b44bc5a4",
+      "reconstructed_old_identity": "8ac4f6e14cdc096cfa8e8881bdc80033d24bce6340c8a2f706e0b301b44bc5a4"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "0b0e324c1116a7bf23b1cde22a9cec3b8f3977eb1dc0bc900361d6bfc2be1753",
+      "match": true,
+      "name": "ggml.concat",
+      "observed_identity": "b8224102b6c416bf15bc59ab03e0450bbd102404aafd38337f611e146ba3ba5b",
+      "reconstructed_old_identity": "b8224102b6c416bf15bc59ab03e0450bbd102404aafd38337f611e146ba3ba5b"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "495e5e61f35a47be131dc263e904d6f4e4dfa1ae54655f6068b340554693755b",
+      "match": true,
+      "name": "ggml.flash_attn_ext.mma",
+      "observed_identity": "dceaceb0fd08d157786da7f13f18fc70b4ac421f3e33da3498ebfc4590f53889",
+      "reconstructed_old_identity": "dceaceb0fd08d157786da7f13f18fc70b4ac421f3e33da3498ebfc4590f53889"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "6abbdc71aded16f578b417c0f23a09ee92d5537b0c7d0ae99db6d7af6192d18e",
+      "match": true,
+      "name": "ggml.flash_attn_ext.mma_gqa2",
+      "observed_identity": "0e35a3cb4a14f39dbcada12f448176b92680f532375c5ae9b48ee56c44332eb2",
+      "reconstructed_old_identity": "0e35a3cb4a14f39dbcada12f448176b92680f532375c5ae9b48ee56c44332eb2"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "3fb6fae6a3b5ee862427fbe9aa24a9ce063c54e6241f52f48847d49b6db033c9",
+      "match": true,
+      "name": "ggml.flash_attn_ext.vec_d256",
+      "observed_identity": "d84f36b10bf13703285525f8f4d10dea70cdf667f893365ec46c79f7c6def412",
+      "reconstructed_old_identity": "d84f36b10bf13703285525f8f4d10dea70cdf667f893365ec46c79f7c6def412"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "a0fd2306f46e58ab7ed953254b7407086eefbe6798bac89f549389adfacd5689",
+      "match": true,
+      "name": "ggml.get_rows",
+      "observed_identity": "7f55da0e2a207c93502d87e73b391836ffa576022db6284de5d7cafe5655a1b7",
+      "reconstructed_old_identity": "7f55da0e2a207c93502d87e73b391836ffa576022db6284de5d7cafe5655a1b7"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "09ba5b322a1258755992fb35ba8096e2cde36042a671b791aafcacc45e041195",
+      "match": true,
+      "name": "ggml.get_rows.ext",
+      "observed_identity": "d9b3325f266fb7af9aaf0f694884275f5ee7208c8b5606c410bcf6fdcb2c4c78",
+      "reconstructed_old_identity": "d9b3325f266fb7af9aaf0f694884275f5ee7208c8b5606c410bcf6fdcb2c4c78"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "ff2f94b1cccec7ee569ba68db528675103e3fd9860fa74070d98c8296547ed6c",
+      "match": true,
+      "name": "ggml.mul",
+      "observed_identity": "e16ea2eef9aad5057b152d5d450b2a441ea9298d50401a56ea53ed3d6d980141",
+      "reconstructed_old_identity": "e16ea2eef9aad5057b152d5d450b2a441ea9298d50401a56ea53ed3d6d980141"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "529076b1c34ac14be1caf5f29a76c3c95605760c19d409a9edeee8798ccd87d7",
+      "match": true,
+      "name": "ggml.rms_norm",
+      "observed_identity": "9d7954e945e2684cd31ab46021eac9d1d3f2d4144badea1f00bd3a119e2efd55",
+      "reconstructed_old_identity": "9d7954e945e2684cd31ab46021eac9d1d3f2d4144badea1f00bd3a119e2efd55"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "84ea9fa392880298a145865a4d6044396d023b2d510219ca1797807133688f65",
+      "match": true,
+      "name": "ggml.rms_norm_mul.fused",
+      "observed_identity": "5ab8c25b87a80549277dcc414f9712ade53e147d9a81caf7986e845cfbff7103",
+      "reconstructed_old_identity": "5ab8c25b87a80549277dcc414f9712ade53e147d9a81caf7986e845cfbff7103"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "eccc4e0fbbe44b0c83496ec7e4a0df14ac05eace14f2590c83d54492aff7f100",
+      "match": true,
+      "name": "ggml.rms_norm_mul_add.fused",
+      "observed_identity": "00987016a8027bdda7215e1f86a1df5637f9da207b29cf055db598be867e8d38",
+      "reconstructed_old_identity": "00987016a8027bdda7215e1f86a1df5637f9da207b29cf055db598be867e8d38"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "3b320ecae4e4baa075ea8228b775d313f5142bed6a95f614ee9bed9610d0831f",
+      "match": true,
+      "name": "ggml.rms_norm_mul_rope.fused",
+      "observed_identity": "66c05d926087ad10446a979d82d4fca6ed344d3e90f61280e3b768b15935f424",
+      "reconstructed_old_identity": "66c05d926087ad10446a979d82d4fca6ed344d3e90f61280e3b768b15935f424"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "60fa37b0cc414e1b2c2640a3374bc352375a1bbaac48566542401ffa7091b642",
+      "match": true,
+      "name": "ggml.scale",
+      "observed_identity": "59211604de84bf41d8ae115d4c347c65ff267f132cdc2fe50ca8240531efb3f2",
+      "reconstructed_old_identity": "59211604de84bf41d8ae115d4c347c65ff267f132cdc2fe50ca8240531efb3f2"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "b6c3ea6a02ad25fcfa6c72351836a3401875e5dc49ee0ee51e0b899f3debbcaf",
+      "match": true,
+      "name": "ggml.unary",
+      "observed_identity": "9d8551334ced688c3db6fe76f5dbdd6ce0ad95b842c6e091acd6136f4023ba65",
+      "reconstructed_old_identity": "9d8551334ced688c3db6fe76f5dbdd6ce0ad95b842c6e091acd6136f4023ba65"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "0f6e052602a2b5141615a5d754a1b31332402324a3897b620a77736c221d12d7",
+      "match": true,
+      "name": "llmp.argmax",
+      "observed_identity": "3720c6c4bdb23ec6fc83aeb73eac941f4f6fe6db91c0b2cfa4636166a56f5694",
+      "reconstructed_old_identity": "3720c6c4bdb23ec6fc83aeb73eac941f4f6fe6db91c0b2cfa4636166a56f5694"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "1f2932ab20e9a04e027db742b9b00f1ccab13137222f5a62c9dd0b3221b3a644",
+      "match": true,
+      "name": "llmp.causal.mask",
+      "observed_identity": "81798f96ad5d7d18880f9d0838fd6110f75361aa652e08b1f0017306fc8486fb",
+      "reconstructed_old_identity": "81798f96ad5d7d18880f9d0838fd6110f75361aa652e08b1f0017306fc8486fb"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "588ff8c71a6ad017f27377e83f98332209ec596cd7b13a85b196b9cef7b22072",
+      "match": true,
+      "name": "llmp.flash_attn.owner_roots",
+      "observed_identity": "b5d241cb5af196e61e64e93d57bfc5bfcae5498731c6909d9a03defed7eb6ff4",
+      "reconstructed_old_identity": "b5d241cb5af196e61e64e93d57bfc5bfcae5498731c6909d9a03defed7eb6ff4"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "dfc2758f4d9363c7e37fd63c7564845f5d05033bb0e5602592d85050d95591d9",
+      "match": true,
+      "name": "llmp.mmvq.prepared",
+      "observed_identity": "c0347827bee3c9718034495481a3367f0fa0231c062e455fd2425b0b104e7cd9",
+      "reconstructed_old_identity": "c0347827bee3c9718034495481a3367f0fa0231c062e455fd2425b0b104e7cd9"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "3f2f4b4a9904e0604c58aaad5b6c07c0f25ca907bde7db03995f099ba750acc9",
+      "match": true,
+      "name": "llmp.q8_1",
+      "observed_identity": "22ae3986c751f2f557fa496cc15fb9f59075e13d209f284141d38475943a0b8e",
+      "reconstructed_old_identity": "22ae3986c751f2f557fa496cc15fb9f59075e13d209f284141d38475943a0b8e"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "d7ca73ff89409e6db12c674f983a0fd1b9f176ef5f65546dc3311e129e97989a",
+      "match": true,
+      "name": "llmp.set_rows.grouped",
+      "observed_identity": "8ac4f6e14cdc096cfa8e8881bdc80033d24bce6340c8a2f706e0b301b44bc5a4",
+      "reconstructed_old_identity": "8ac4f6e14cdc096cfa8e8881bdc80033d24bce6340c8a2f706e0b301b44bc5a4"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "df7c588d3ee7f1aaa83c66305560077ad66a14871f3a636667c3a66012991b55",
+      "match": true,
+      "name": "llmp.vecq",
+      "observed_identity": "d2087f91b8c73b9e9733a2cc9c165cdaf7be8c6b587e2fc50f04541e0e4101ad",
+      "reconstructed_old_identity": "d2087f91b8c73b9e9733a2cc9c165cdaf7be8c6b587e2fc50f04541e0e4101ad"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "dfd27c0285c8b918080c2c761be67c475beee7f790f4cb2ff5ab46399e80882d",
+      "match": true,
+      "name": "llmp.vecq.dense",
+      "observed_domains": [
+        "logical_records"
+      ],
+      "observed_identity": "4dc289aebcdaafe6abe23075781dbdf8f29bee45f64211191ef90974a1593820",
+      "reconstructed_old_identity": "4dc289aebcdaafe6abe23075781dbdf8f29bee45f64211191ef90974a1593820"
+    },
+    {
+      "arm": "d",
+      "current_R_identity": "ce97a00201978f03fac20baf56d9b6b293d3418efb43b2f33bc9aa8e9b8f37b8",
+      "match": true,
+      "name": "llmp.vecq.glu",
+      "observed_domains": [
+        "logical_records"
+      ],
+      "observed_identity": "5f5e6191315015305a787589ab5f3cc9201b43b27df10c4c791cd5c8d353da7e",
+      "reconstructed_old_identity": "5f5e6191315015305a787589ab5f3cc9201b43b27df10c4c791cd5c8d353da7e"
+    }
+  ]
+}
