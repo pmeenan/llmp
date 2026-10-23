@@ -1,0 +1,567 @@
+{
+  "enabled": false,
+  "families": {
+    "deepseek": {
+      "arm": "candidate-current",
+      "artifacts": {
+        "deepseek4_target": {
+          "id": "01a5e5ba5a911528fd58268406ac6cff032e767fd09a20fd4c9cbf84f2043f13",
+          "index_sha256": "4f84772b3cfa5912e6a5ece00f438b9b8ac330679dd848a1896810f7d48a8e80",
+          "manifest_sha256": "115009913ef53b64002af7c1bf2a0d70888211f9d0fa3351951203d754c461b6",
+          "spec_sha256": "44c7eb37336be510acca6fe22ad676036bd8a40504593d1145e560879f7493de"
+        },
+        "dspark_drafter": {
+          "id": "e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90",
+          "index_sha256": "272e5fcdac70d1f56cd6b4515819a7643dbdef5ce0038a6f7f228fbeb864a36d",
+          "manifest_sha256": "e309cd0ec130f0cbbc06c4975d716ba11b88a737aba4d031df42099585f1661d",
+          "spec_sha256": "362a0d7ba26d65a9ca564b97786708dae036e5b337abc361c675ab93859f640a"
+        }
+      },
+      "collection_limits": {
+        "debug_plans": false,
+        "include_usage": true,
+        "max_tokens": 128,
+        "only_after_head_state_positive": true,
+        "retry": false,
+        "score_passage": false,
+        "sequential_requests": 2,
+        "stream": true,
+        "temperature": 0,
+        "timing_sample": false
+      },
+      "config": {
+        "change_rule": "substitute only current artifact identity(ies); retain all other old template bytes and normal policy",
+        "current_equivalent_template": "schema_version = 2\n[storage]\ndata_dir = \"{data}\"\ninstalled = \"{share}/u2-v1-artifacts\"\n[client]\nbind = [\"loopback\"]\nport = {port}\n[models.deepseek]\nartifact = \"01a5e5ba5a911528fd58268406ac6cff032e767fd09a20fd4c9cbf84f2043f13\"\ndrafter = \"e14bf29f28c408a742ba6ab19879e415b1ec13019c0ed33b87b7802232a0bd90\"\nspeculation = true\nwave_form = \"plain\"\ncontext = 262144\nprefill_chunk = 4096\nmax_slots = 4\n",
+        "current_equivalent_template_sha256": "0fea53ab8f140e611ccd7fd6dcdedff2747007ff92d5aa97571b30983b7e7731",
+        "historical_template": "schema_version = 2\n[storage]\ndata_dir = \"{data}\"\ninstalled = \"{share}/u2-v1-artifacts\"\n[client]\nbind = [\"loopback\"]\nport = {port}\n[models.deepseek]\nartifact = \"d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f\"\ndrafter = \"6b1b9dcafe85e07e37a0b14007280da85cd0406158eaf73a658bbaf1574eec41\"\nspeculation = true\nwave_form = \"plain\"\ncontext = 262144\nprefill_chunk = 4096\nmax_slots = 4\n",
+        "historical_template_sha256": "bd2bc1a663758f20d78956ed994d5276b77653cd7d94d4e6aaf43a0a8677ad67"
+      },
+      "current_runtime": {
+        "mode": "0555",
+        "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/bin/runtime-candidate",
+        "sha256": "95a2238acec146b9f27003804da35f3881becf83d5597feb5c74fcffc0f8be47"
+      },
+      "host": "spark-c4e2",
+      "model": "deepseek",
+      "normal_runtime_policy": "No policy overrides; use only the retained equivalent node template and explicit per-request temperature=0.",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-replies-r1/deepseek-candidate",
+      "reference": {
+        "container_path": "/tmp/llmp-u4-greedy-review/raw.json",
+        "container_sha256": "666e929a516f1c62eb07d8e4125e0944ada4cae5ce8c4c59843eb049cafb7d12",
+        "member": "deepseek-A-r1",
+        "old_quality_receipt": "/home/pmeenan/.local/share/llmp/m35-u4-capture/deepseek-A-r1/quality/deepseek-quality-old.json",
+        "old_quality_receipt_sha256": "2efb65a22c09baedb50177c9b0d6b39eeb66817354c663eb2b1bcfdd8d1ee79e",
+        "old_runtime_sha256": "405c5930accdc009ad8e824d2fcdeff00f063877f0d936c2b1a5dda6b28e519e",
+        "record_member": "greedy-text.json",
+        "record_sha256": "8030dc57edf5dc1890c645c64461d4c605e271fd7a63d16590aaa7eacbb50330",
+        "reply_semantics": "Coherent relevant reasoning/planning only; no final content before fixed128token cutoff.",
+        "requests": [
+          {
+            "index": 0,
+            "reference": {
+              "finish": "length",
+              "historical_sse_sha256": "766ac45f0b0028aad675dedf403ac92427b6f6d5c9faf775253966b08bf5c799",
+              "reply_sha256": "df49d2353a76b5939e4317f407acb6eba66310746dbd865f43d15addf3eb0bcb",
+              "usage": {
+                "completion_tokens": 128,
+                "prompt_tokens": 17,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "total_tokens": 145
+              }
+            },
+            "reference_match_is_required": {
+              "completion_tokens": 128,
+              "finish": "length",
+              "prompt_tokens": 17
+            },
+            "reply_digest_equality_is_required": false,
+            "request": {
+              "max_tokens": 128,
+              "messages": [
+                {
+                  "content": "Explain, step by step, how a hash table handles collisions.",
+                  "role": "user"
+                }
+              ],
+              "model": "deepseek",
+              "stream": true,
+              "stream_options": {
+                "include_usage": true
+              },
+              "temperature": 0
+            },
+            "request_raw_sha256": "0e63f5218ccbc68d39952154ccb2addfe86cc2076388ce67b7153fa22ec267db"
+          },
+          {
+            "index": 1,
+            "reference": {
+              "finish": "length",
+              "historical_sse_sha256": "0fc134c323319e9196f807862eefd59ed52d76a5189e169a68721dfcd40d7804",
+              "reply_sha256": "b99b204288793e07c74f02c8ceb27f8d8e22809c67bd228b2f9d67238971166b",
+              "usage": {
+                "completion_tokens": 128,
+                "prompt_tokens": 17,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "total_tokens": 145
+              }
+            },
+            "reference_match_is_required": {
+              "completion_tokens": 128,
+              "finish": "length",
+              "prompt_tokens": 17
+            },
+            "reply_digest_equality_is_required": false,
+            "request": {
+              "max_tokens": 128,
+              "messages": [
+                {
+                  "content": "Write a short story about a lighthouse keeper who finds a map.",
+                  "role": "user"
+                }
+              ],
+              "model": "deepseek",
+              "stream": true,
+              "stream_options": {
+                "include_usage": true
+              },
+              "temperature": 0
+            },
+            "request_raw_sha256": "f5c5c4153c44e8cfb5e3808e1543f952d829b059b409fb692386f4a19cdab4cc"
+          }
+        ]
+      },
+      "requests": [
+        {
+          "index": 0,
+          "reference": {
+            "finish": "length",
+            "historical_sse_sha256": "766ac45f0b0028aad675dedf403ac92427b6f6d5c9faf775253966b08bf5c799",
+            "reply_sha256": "df49d2353a76b5939e4317f407acb6eba66310746dbd865f43d15addf3eb0bcb",
+            "usage": {
+              "completion_tokens": 128,
+              "prompt_tokens": 17,
+              "prompt_tokens_details": {
+                "cached_tokens": 0
+              },
+              "total_tokens": 145
+            }
+          },
+          "reference_match_is_required": {
+            "completion_tokens": 128,
+            "finish": "length",
+            "prompt_tokens": 17
+          },
+          "reply_digest_equality_is_required": false,
+          "request": {
+            "max_tokens": 128,
+            "messages": [
+              {
+                "content": "Explain, step by step, how a hash table handles collisions.",
+                "role": "user"
+              }
+            ],
+            "model": "deepseek",
+            "stream": true,
+            "stream_options": {
+              "include_usage": true
+            },
+            "temperature": 0
+          },
+          "request_raw_sha256": "0e63f5218ccbc68d39952154ccb2addfe86cc2076388ce67b7153fa22ec267db"
+        },
+        {
+          "index": 1,
+          "reference": {
+            "finish": "length",
+            "historical_sse_sha256": "0fc134c323319e9196f807862eefd59ed52d76a5189e169a68721dfcd40d7804",
+            "reply_sha256": "b99b204288793e07c74f02c8ceb27f8d8e22809c67bd228b2f9d67238971166b",
+            "usage": {
+              "completion_tokens": 128,
+              "prompt_tokens": 17,
+              "prompt_tokens_details": {
+                "cached_tokens": 0
+              },
+              "total_tokens": 145
+            }
+          },
+          "reference_match_is_required": {
+            "completion_tokens": 128,
+            "finish": "length",
+            "prompt_tokens": 17
+          },
+          "reply_digest_equality_is_required": false,
+          "request": {
+            "max_tokens": 128,
+            "messages": [
+              {
+                "content": "Write a short story about a lighthouse keeper who finds a map.",
+                "role": "user"
+              }
+            ],
+            "model": "deepseek",
+            "stream": true,
+            "stream_options": {
+              "include_usage": true
+            },
+            "temperature": 0
+          },
+          "request_raw_sha256": "f5c5c4153c44e8cfb5e3808e1543f952d829b059b409fb692386f4a19cdab4cc"
+        }
+      ],
+      "share_root": "/home/pmeenan/.local/share/llmp",
+      "store": "/home/pmeenan/.local/share/llmp/u2-v1-artifacts",
+      "target_artifact": "deepseek4_target",
+      "target_id": "01a5e5ba5a911528fd58268406ac6cff032e767fd09a20fd4c9cbf84f2043f13",
+      "tokenizer_template": {
+        "historical_input_metadata_sha256": "a0f82870850a2740c5c17673213331dbebaa4f0bb1c4d08fa779d457b232a5e7",
+        "pins": {
+          "GGUF embedded tokenizer/chat-template source": {
+            "current_target_metadata": {
+              "bytes": 5257664,
+              "path": "meta/DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.kv.gguf",
+              "sha256": "de65c5bb660817b95cc281bf54935f9d1bcc3b22535f2eae63b35a14c7c5724b"
+            },
+            "old_to_current_bridge": "only sampling defaults changed; index/payload unchanged"
+          }
+        },
+        "provenance": "embedded GGUF metadata; no external tokenizer/template files in historical config"
+      }
+    },
+    "qwen38-gguf": {
+      "arm": "candidate-current",
+      "artifacts": {
+        "qwen38_gguf": {
+          "id": "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8",
+          "index_sha256": "40803567725558418f1993e1c50948870d92ea7022fea40151846334fbd03d70",
+          "manifest_sha256": "61827c2fdd87aabd0ee6371054358b6f90433d9452ceef1910edcbe130268be1",
+          "spec_sha256": "74116647d445819311c58dc16336099c95d675d827a5cd4125cfd88fadbd47cb"
+        }
+      },
+      "collection_limits": {
+        "debug_plans": false,
+        "include_usage": true,
+        "max_tokens": 128,
+        "only_after_head_state_positive": true,
+        "retry": false,
+        "score_passage": false,
+        "sequential_requests": 2,
+        "stream": true,
+        "temperature": 0,
+        "timing_sample": false
+      },
+      "config": {
+        "change_rule": "substitute only current artifact identity(ies); retain all other old template bytes and normal policy",
+        "current_equivalent_template": "schema_version = 2\n[storage]\ndata_dir = \"{data}\"\ninstalled = \"{share}/u2-v1-artifacts\"\n[client]\nbind = [\"loopback\"]\nport = {port}\n[models.\"qwen3.8-gguf\"]\nartifact = \"b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8\"\ncontext = 33792\nprefill_chunk = 4096\nmax_slots = 4\ntokenizer = \"{share}/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json\"\nchat_template = \"{share}/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/chat_template.jinja\"\n",
+        "current_equivalent_template_sha256": "5d6402a236371aebd3af7c939874b813b4c209113f2f26dbc7ed5ccc9cf18d96",
+        "historical_template": "schema_version = 2\n[storage]\ndata_dir = \"{data}\"\ninstalled = \"{share}/u2-v1-artifacts\"\n[client]\nbind = [\"loopback\"]\nport = {port}\n[models.\"qwen3.8-gguf\"]\nartifact = \"f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027\"\ncontext = 33792\nprefill_chunk = 4096\nmax_slots = 4\ntokenizer = \"{share}/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json\"\nchat_template = \"{share}/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/chat_template.jinja\"\n",
+        "historical_template_sha256": "5ef058ac19c04c837a44f60323352883afa491c43afcd59decbbb94b4b872fe7"
+      },
+      "current_runtime": {
+        "mode": "0555",
+        "path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/bin/runtime-candidate",
+        "sha256": "95a2238acec146b9f27003804da35f3881becf83d5597feb5c74fcffc0f8be47"
+      },
+      "host": "spark-56f5",
+      "model": "qwen3.8-gguf",
+      "normal_runtime_policy": "No policy overrides; use only the retained equivalent node template and explicit per-request temperature=0.",
+      "output_parent": "/home/pmeenan/.local/share/llmp/experiments/m35-u4-replies-r1/qwen38-gguf-candidate",
+      "reference": {
+        "container_path": "/tmp/llmp-u4-greedy-review/raw.json",
+        "container_sha256": "666e929a516f1c62eb07d8e4125e0944ada4cae5ce8c4c59843eb049cafb7d12",
+        "member": "qwen38-gguf-A-r2",
+        "old_quality_receipt": "/home/pmeenan/.local/share/llmp/m35-u4-capture/qwen38-gguf-A-r1/quality/qwen38-gguf-quality-old.json",
+        "old_quality_receipt_sha256": "28c49af3b2966b3cab4c2b855ee56a55786c5e77d28f790de0ea5d3bb9839f10",
+        "old_runtime_sha256": "405c5930accdc009ad8e824d2fcdeff00f063877f0d936c2b1a5dda6b28e519e",
+        "record_member": "greedy-text.json",
+        "record_sha256": "dc8bc6af579459abebe3ac36d32170c43f17978dd0bcbcb5a4ad222e2ba4030e",
+        "reply_semantics": "Coherent relevant explanation/story openings; truncated before full prompt completion.",
+        "requests": [
+          {
+            "index": 0,
+            "reference": {
+              "finish": "length",
+              "historical_sse_sha256": "afd80a93735a2cfe8fd4b2f6b34f8c838ac4f1fb30c79fba602fa5f41621c920",
+              "reply_sha256": "c20c132cc3a72b98f907f0b1a302bcdffb566e97c73697c863fcefdc84af6cfb",
+              "usage": {
+                "completion_tokens": 128,
+                "prompt_tokens": 66,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "total_tokens": 194
+              }
+            },
+            "reference_match_is_required": {
+              "completion_tokens": 128,
+              "finish": "length",
+              "prompt_tokens": 66
+            },
+            "reply_digest_equality_is_required": false,
+            "request": {
+              "max_tokens": 128,
+              "messages": [
+                {
+                  "content": "Explain, step by step, how a hash table handles collisions.",
+                  "role": "user"
+                }
+              ],
+              "model": "qwen3.8-gguf",
+              "stream": true,
+              "stream_options": {
+                "include_usage": true
+              },
+              "temperature": 0
+            },
+            "request_raw_sha256": "d78f58cb9ac079a13e283fba5b0f3e91fa94f263bb664f8302fcbf98f72fc791"
+          },
+          {
+            "index": 1,
+            "reference": {
+              "finish": "length",
+              "historical_sse_sha256": "20add375ef83415583bea309f54c70a55c4e2fdf4035290416eff7890a83258b",
+              "reply_sha256": "e2a6d3c910a1fa3b59da89127f12d5e52ec2820d35309e755c8d593be266330e",
+              "usage": {
+                "completion_tokens": 128,
+                "prompt_tokens": 66,
+                "prompt_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "total_tokens": 194
+              }
+            },
+            "reference_match_is_required": {
+              "completion_tokens": 128,
+              "finish": "length",
+              "prompt_tokens": 66
+            },
+            "reply_digest_equality_is_required": false,
+            "request": {
+              "max_tokens": 128,
+              "messages": [
+                {
+                  "content": "Write a short story about a lighthouse keeper who finds a map.",
+                  "role": "user"
+                }
+              ],
+              "model": "qwen3.8-gguf",
+              "stream": true,
+              "stream_options": {
+                "include_usage": true
+              },
+              "temperature": 0
+            },
+            "request_raw_sha256": "2a9f425a4c837e177784cd922d71d7ac31f8bfb8dab3b5acbc6adc9b49d4236a"
+          }
+        ]
+      },
+      "requests": [
+        {
+          "index": 0,
+          "reference": {
+            "finish": "length",
+            "historical_sse_sha256": "afd80a93735a2cfe8fd4b2f6b34f8c838ac4f1fb30c79fba602fa5f41621c920",
+            "reply_sha256": "c20c132cc3a72b98f907f0b1a302bcdffb566e97c73697c863fcefdc84af6cfb",
+            "usage": {
+              "completion_tokens": 128,
+              "prompt_tokens": 66,
+              "prompt_tokens_details": {
+                "cached_tokens": 0
+              },
+              "total_tokens": 194
+            }
+          },
+          "reference_match_is_required": {
+            "completion_tokens": 128,
+            "finish": "length",
+            "prompt_tokens": 66
+          },
+          "reply_digest_equality_is_required": false,
+          "request": {
+            "max_tokens": 128,
+            "messages": [
+              {
+                "content": "Explain, step by step, how a hash table handles collisions.",
+                "role": "user"
+              }
+            ],
+            "model": "qwen3.8-gguf",
+            "stream": true,
+            "stream_options": {
+              "include_usage": true
+            },
+            "temperature": 0
+          },
+          "request_raw_sha256": "d78f58cb9ac079a13e283fba5b0f3e91fa94f263bb664f8302fcbf98f72fc791"
+        },
+        {
+          "index": 1,
+          "reference": {
+            "finish": "length",
+            "historical_sse_sha256": "20add375ef83415583bea309f54c70a55c4e2fdf4035290416eff7890a83258b",
+            "reply_sha256": "e2a6d3c910a1fa3b59da89127f12d5e52ec2820d35309e755c8d593be266330e",
+            "usage": {
+              "completion_tokens": 128,
+              "prompt_tokens": 66,
+              "prompt_tokens_details": {
+                "cached_tokens": 0
+              },
+              "total_tokens": 194
+            }
+          },
+          "reference_match_is_required": {
+            "completion_tokens": 128,
+            "finish": "length",
+            "prompt_tokens": 66
+          },
+          "reply_digest_equality_is_required": false,
+          "request": {
+            "max_tokens": 128,
+            "messages": [
+              {
+                "content": "Write a short story about a lighthouse keeper who finds a map.",
+                "role": "user"
+              }
+            ],
+            "model": "qwen3.8-gguf",
+            "stream": true,
+            "stream_options": {
+              "include_usage": true
+            },
+            "temperature": 0
+          },
+          "request_raw_sha256": "2a9f425a4c837e177784cd922d71d7ac31f8bfb8dab3b5acbc6adc9b49d4236a"
+        }
+      ],
+      "share_root": "/home/pmeenan/.local/share/llmp",
+      "store": "/home/pmeenan/.local/share/llmp/u2-v1-artifacts",
+      "target_artifact": "qwen38_gguf",
+      "target_id": "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8",
+      "tokenizer_template": {
+        "historical_input_metadata_sha256": "051fbd8cc4e1f8393d5775c34f5f6cf666b2f087c79454f2d2734a295ca992cd",
+        "pins": {
+          "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/chat_template.jinja": {
+            "path": "/home/pmeenan/.local/share/llmp/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/chat_template.jinja",
+            "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+          },
+          "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json": {
+            "path": "/home/pmeenan/.local/share/llmp/models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json",
+            "sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
+          }
+        },
+        "provenance": "external files pinned by SHA-256"
+      }
+    }
+  },
+  "format": "llmp-u4-current-replies-prospective/1",
+  "gate": "Do not collect unless the relevant registered head/state screen passes and a separate reviewed enablement receipt binds this pins hash and the executable helper hash.",
+  "historical_raw_container": {
+    "path": "/tmp/llmp-u4-greedy-review/raw.json",
+    "sha256": "666e929a516f1c62eb07d8e4125e0944ada4cae5ce8c4c59843eb049cafb7d12"
+  },
+  "purpose": "Two current candidate reply collections only; no teacher collection or reference rerun.",
+  "runtime_helpers": {
+    "candidate_runtime_sha256": "95a2238acec146b9f27003804da35f3881becf83d5597feb5c74fcffc0f8be47",
+    "capture.py": {
+      "path": "docs/experiments/m35-component-numerics/capture.py",
+      "sha256": "c5ef533210b650b2a82db1f736d43cc69ddba5db2dfe44d8fe671a6899b12a8f"
+    },
+    "collector_api": "speed_gate.Service (runtime launcher, ordinary env, no debug_plans) plus greedy_capture.collect_reply (pinned SSE parser/raw-byte writer); no score/teacher functions.",
+    "greedy_capture.py": {
+      "path": "docs/experiments/m35-component-numerics/greedy_capture.py",
+      "sha256": "0869f7e857e539afce72199d15ded286ab14c816ea8ceb32456b1672f2317d9d"
+    },
+    "library_closure": {
+      "directory": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib",
+      "receipt_path": "/tmp/llmp-m35-orchestration/u4-export-pairs-r1/lib-receipt.json",
+      "receipt_sha256": "344179689778d15f19b78d9313b99fd50874344c8fa2596d24a81722c54021ee",
+      "runtime_environment": "LD_LIBRARY_PATH set to this flat directory for the runtime child; normal CUDA_DISABLE_PTX_JIT=1 from speed_gate.arm_env",
+      "source_host": "spark-c4e2",
+      "source_map_sha256": "f0d38f4ebd9bbe9b8a2726286e16a1cc8069c94f5cea3074a77afdc4c66396ab",
+      "unique_sonames": {
+        "ld-linux-aarch64.so.1": {
+          "bytes": 203968,
+          "sha256": "390027e5f45f236bd1838bc54bf464c5ff01d260ab9f8b415ea8276641bce505"
+        },
+        "libc.so.6": {
+          "bytes": 1722920,
+          "sha256": "0f1905dc27dbc6715875c70527bc8da846a10084c9c483e9d8ff76dce8d69d0e"
+        },
+        "libcublas.so.13": {
+          "bytes": 71959256,
+          "sha256": "ee7c1657a03695c0de790aa79e34cef9c9649756b1846b11dd44caca20ba656b"
+        },
+        "libcublasLt.so.13": {
+          "bytes": 648206104,
+          "sha256": "ba3b942f4ea43433b65e8c492a7b73de887534dc20146506ddaa4a78c79c5d30"
+        },
+        "libcuda.so.1": {
+          "bytes": 96460560,
+          "sha256": "b11359b073ae9e49df81dc4f5c156378bd97fb9f6197ef64edc46e22c670bed4"
+        },
+        "libdl.so.2": {
+          "bytes": 67440,
+          "sha256": "1c16b2692a155191c97d7fdc5ce937d37c242435f05745046a794a9832b16af4"
+        },
+        "libgcc_s.so.1": {
+          "bytes": 133696,
+          "sha256": "f2d3ad2bf0b61f6bc944cc37d7b6ab7f88d2582b41ff989ca164803f56cc5f20"
+        },
+        "libm.so.6": {
+          "bytes": 591800,
+          "sha256": "5e0391562de36de323fb9cb0f2c1b6bd6d034c840b1dac018499f5fe4ded1b4a"
+        },
+        "libpthread.so.0": {
+          "bytes": 67440,
+          "sha256": "6f1ab9e7d7de142dc5e2feaf6d19faceff0a0f40d5e225c922899f5362b8c353"
+        },
+        "librt.so.1": {
+          "bytes": 67512,
+          "sha256": "93d0d5ab643b50ac1a61c2c7baf670e8aa94973fa5a2584d13db05295d5b5a0e"
+        }
+      }
+    },
+    "speed_gate.py": {
+      "path": "tools/speed_gate.py",
+      "sha256": "1b71fda41afb81e316952567d733017bf87fcbb2a6e4205d3ea4c7b143b8e186"
+    }
+  },
+  "service": {
+    "bind": "127.0.0.1",
+    "endpoint": "/v1/chat/completions",
+    "port": 18114,
+    "request_order": "sequential index 0 then index 1"
+  },
+  "source_review": {
+    "artifact_and_input_bridge": [
+      {
+        "current_id": "b31c469e0fc129765fa91ce541cc1639661aa9bcb1ee5b885b8ffc33b6cc21c8",
+        "difference": "Only sampling defaults added; exact full index/payload/semantic content bridge retained.",
+        "evidence": "docs/experiments/m35-source-fold/results.json",
+        "evidence_sha256": "1140329cbee4a4729abdff5730688aabe880e412dd2706d8b6c94d6531206617",
+        "family": "qwen38-gguf",
+        "old_id": "f60d801a1695079ba4cd9c17d32967315bf77fc26580c1f8245b37f95d03d027",
+        "parts": 74808,
+        "payload_bytes": 81950799360
+      },
+      {
+        "current_id": "01a5e5ba5a911528fd58268406ac6cff032e767fd09a20fd4c9cbf84f2043f13",
+        "difference": "Only target sampling temperature/top_p defaults added; index/payload unchanged. Teacher disables drafting.",
+        "evidence": "docs/experiments/m35-generic-import/deepseek-sampling.md",
+        "evidence_sha256": "09ab5034ee0cc1ac94e9eaf082cb759a4456792b4877f56b21af90e9f9f025d6",
+        "family": "deepseek",
+        "old_id": "d2046349e81da7019c9d787c2eb92521b7a3f4ca9d09c398448da1a99f8eef3f",
+        "parts": 34223,
+        "payload_bytes": 96827162972
+      }
+    ],
+    "path": "/tmp/llmp-m35-orchestration/u4-teacher-reply-reuse-review-r1.json",
+    "scope": "Read-only arithmetic/input applicability for this U4 scalar/ordinary-column repair. This is not evidence that a current wide teacher run executed, nor assistant qualification or a full-answer quality grant. No inference performed.",
+    "sha256": "5a9bba23ab67cd32703df3b55158703e103dd32cc3e15d108ac3a7df31193001",
+    "teacher_reuse": "reuse completed 996-target Qwen GGUF and 966-target DeepSeek wide teachers; no new teacher run",
+    "verdict": "REUSE_HISTORICAL_WIDE_TEACHERS_AND_RETAINED_REFERENCE_REPLIES_WITH_FIXED_CURRENT_CANDIDATE_REPLY_COLLECTION"
+  }
+}
